@@ -216,6 +216,25 @@
 //!   python3 scripts/fuzz.py repro propagation <crash-file> --verbose
 
 const std = @import("std");
+
+/// The AFL++ executable is built with this file as its root. A panic there
+/// must end at once: symbolizing a stack trace takes seconds, and so does a
+/// core dump piped to a crash reporter, either of which AFL++ classifies as
+/// a hang rather than the crash it is. The repro executable has its own root
+/// and keeps the full trace for debugging.
+pub const panic = std.debug.FullPanic(aflPanic);
+
+fn aflPanic(message: []const u8, _: ?usize) noreturn {
+    @branchHint(.cold);
+    const stderr = &std.debug.lockStderr(&.{}).file_writer.interface;
+    stderr.writeAll("panic: ") catch {};
+    stderr.writeAll(message) catch {};
+    stderr.writeAll("\n") catch {};
+    if (@import("builtin").os.tag == .linux) {
+        _ = std.os.linux.prctl(@intFromEnum(std.os.linux.PR.SET_DUMPABLE), 0, 0, 0, 0);
+    }
+    @trap();
+}
 const signals = @import("signals");
 const FuzzReader = @import("FuzzReader.zig");
 

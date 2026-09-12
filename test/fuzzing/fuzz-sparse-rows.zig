@@ -117,6 +117,25 @@
 //!   python3 scripts/fuzz.py repro sparse-rows <crash-file> --verbose
 
 const std = @import("std");
+
+/// The AFL++ executable is built with this file as its root. A panic there
+/// must end at once: symbolizing a stack trace takes seconds, and so does a
+/// core dump piped to a crash reporter, either of which AFL++ classifies as
+/// a hang rather than the crash it is. The repro executable has its own root
+/// and keeps the full trace for debugging.
+pub const panic = std.debug.FullPanic(aflPanic);
+
+fn aflPanic(message: []const u8, _: ?usize) noreturn {
+    @branchHint(.cold);
+    const stderr = &std.debug.lockStderr(&.{}).file_writer.interface;
+    stderr.writeAll("panic: ") catch {};
+    stderr.writeAll(message) catch {};
+    stderr.writeAll("\n") catch {};
+    if (@import("builtin").os.tag == .linux) {
+        _ = std.os.linux.prctl(@intFromEnum(std.os.linux.PR.SET_DUMPABLE), 0, 0, 0, 0);
+    }
+    @trap();
+}
 const signals = @import("signals");
 const native_host = @import("native_host");
 const FuzzReader = @import("FuzzReader.zig");
@@ -544,9 +563,12 @@ fn generate(reader: *FuzzReader, arena: std.mem.Allocator) !Program {
     const children = try generateChildren(&generator, 0);
     if (generator.sites.items.len == 0) {
         // A program with no shared site edits nothing observable; give it one.
-        const with_site = try arena.alloc(Child, children.len + 1);
-        @memcpy(with_site[0..children.len], children);
-        with_site[children.len] = .{ .site = try generateSite(&generator) };
+        // The builder's child buffer is sized to `max_children`, so a full
+        // list gives up its last child rather than growing past the bound.
+        const kept = @min(children.len, max_children - 1);
+        const with_site = try arena.alloc(Child, kept + 1);
+        @memcpy(with_site[0..kept], children[0..kept]);
+        with_site[kept] = .{ .site = try generateSite(&generator) };
         return generateHistory(&generator, with_site);
     }
     return generateHistory(&generator, children);
