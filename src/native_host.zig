@@ -5268,6 +5268,14 @@ fn testEachAdapterCallable(roc_host: *abi.RocHost, callback: abi.RocErasedCallab
     );
 }
 
+/// Returns a fresh Str value holding the borrowed input's text. The engine
+/// drops the input after the call, so the result must be an independent value.
+fn testIdentityStrHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const call_args = testErasedArgsAs(ErasedHostValueUnaryArgs, args);
+    const text = testReadHostValueStr(roc_host, call_args.arg0);
+    writeTestErasedResult(HostValue, ret, testHostValueStr(roc_host, text.asSlice()));
+}
+
 fn testUnaryHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
     const capture = testCapturePtrAs(TestErasedI64Capture, capture_ptr);
     const call_args = testErasedArgsAs(ErasedHostValueUnaryArgs, args);
@@ -12680,6 +12688,37 @@ pub const fuzz_fixtures = struct {
     pub const strValue = testHostValueStr;
     /// A bool signal asking `predicate` of the `List I64` signal `input`.
     pub const listPredicateExpr = testNodeListPredicateExpr;
+
+    /// The capability a non-`Ref` signal expression carries.
+    pub const signalCapability = testNodeSignalExprCapabilityOrPanic;
+
+    /// A transform that returns a Str input's text as a fresh Str, for a
+    /// `map` whose only purpose is to be one shared record. The caller owns
+    /// the reference.
+    pub fn identityStrTransform(roc_host: *abi.RocHost) abi.RocErasedCallable {
+        return writeTestErasedCallable(TestErasedI64Capture, roc_host, &testIdentityStrHostValueCallable, &testErasedCallableOnDrop, .{ .amount = 0 });
+    }
+
+    /// A `map` of `input` through `transform`, whose record identity is the
+    /// transform's address: every expression built from the same transform
+    /// aliases one graph record, as `Signal.map` values cloned in Roc do.
+    /// `transform` is borrowed; the descriptor takes the two references it
+    /// holds.
+    pub fn mapExprSharing(roc_host: *abi.RocHost, transform: abi.RocErasedCallable, input: abi.NodeSignalExpr) abi.NodeSignalExpr {
+        const cap = testHostValueCapability(roc_host);
+        abi.increfErasedCallable(transform, 2);
+        return .{
+            .payload = .{
+                .map = .{
+                    ._0 = transform,
+                    ._1 = boxTestNodeSignalExpr(roc_host, input),
+                    ._2 = transform,
+                    ._3 = cap,
+                },
+            },
+            .tag = .Map,
+        };
+    }
 
     pub const StateWrite = engine.StateWrite;
 
