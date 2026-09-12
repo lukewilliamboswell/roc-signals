@@ -2,8 +2,10 @@
 """Copy canonical shared modules into each platform's flat, gitignored module layout."""
 import argparse
 import hashlib
+import os
 from pathlib import Path
 import shutil
+import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -20,6 +22,26 @@ def ignored_modules(package: Path) -> set[str]:
             if line.startswith('/') and line.endswith('.roc')}
 
 
+def atomic_copy(source: Path, destination: Path) -> None:
+    """Replace a generated copy without exposing truncated bytes to other builds."""
+    if destination.is_file() and source.read_bytes() == destination.read_bytes():
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        dir=destination.parent,
+        prefix=f'.{destination.name}.',
+        delete=False,
+    )
+    pending = Path(handle.name)
+    handle.close()
+    try:
+        shutil.copyfile(source, pending)
+        shutil.copymode(source, pending)
+        os.replace(pending, destination)
+    finally:
+        pending.unlink(missing_ok=True)
+
+
 def prepare_platform(package: Path, destination: Path) -> None:
     sources = shared_modules(package)
     generated = ignored_modules(package)
@@ -27,9 +49,9 @@ def prepare_platform(package: Path, destination: Path) -> None:
     if package.resolve() != destination.resolve():
         for path in package.glob('*.roc'):
             if path.name not in sources and path.name not in generated:
-                shutil.copyfile(path, destination / path.name)
+                atomic_copy(path, destination / path.name)
     for name, source in sources.items():
-        shutil.copyfile(source, destination / name)
+        atomic_copy(source, destination / name)
 
 
 def check_platform(package: Path) -> list[str]:

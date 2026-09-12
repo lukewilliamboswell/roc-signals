@@ -14,7 +14,7 @@ import tempfile
 import time
 
 from build_gui import executable_name
-from gui_suite import ROOT, examples
+from gui_suite import examples
 
 MARKER = "PASS: GPUI mounted, rendered, and checked "
 COUNTER_ARGUMENTS = ("--host-smoke-click", "Increment", "--host-smoke-expect", "1")
@@ -81,7 +81,8 @@ def wayland(directory, action=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--directory", type=Path, default=ROOT / ".test-out/gui")
+    parser.add_argument("--directory", type=Path, required=True,
+                        help="Directory holding GUI executables from one retained test run")
     parser.add_argument("--wayland", action="store_true", help="Run Weston on the supplied X display; use xvfb-run for CI")
     args = parser.parse_args()
     (wayland if args.wayland else run)(args.directory)

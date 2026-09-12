@@ -4,6 +4,7 @@ from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
@@ -16,6 +17,29 @@ LOADER.exec_module(MINICI)
 
 
 class MiniCiTests(unittest.TestCase):
+    def test_gui_pipeline_threads_one_owned_output_through_every_stage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "ci-owned"
+            with patch.dict(MINICI.os.environ, {MINICI.GUI_OUTPUT_ENV: str(output)}, clear=True), \
+                    patch.object(MINICI, "run") as run, \
+                    patch.object(MINICI.platform, "system", return_value="Darwin"):
+                MINICI.gui()
+                (output / "gui").mkdir(parents=True)
+                MINICI.gui_smoke()
+                MINICI.gui_scenarios()
+
+            gui_command = run.call_args_list[1].args
+            smoke_command = run.call_args_list[2].args
+            scenario_command = run.call_args_list[3].args
+            self.assertEqual(gui_command[-2:], ("--output-dir", str(output)))
+            self.assertEqual(smoke_command[-2:], ("--directory", str(output / "gui")))
+            self.assertIn(str(output / "gui-scenarios"), scenario_command)
+
+    def test_gui_consumer_requires_an_explicit_producer_output(self):
+        with patch.dict(MINICI.os.environ, {}, clear=True), \
+                self.assertRaisesRegex(SystemExit, MINICI.GUI_OUTPUT_ENV):
+            MINICI.gui_output()
+
     def test_hosted_target_omits_full_local_campaigns(self):
         with patch.object(MINICI, "shared_sources") as shared, \
                 patch.object(MINICI, "run") as run:

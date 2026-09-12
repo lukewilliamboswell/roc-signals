@@ -381,7 +381,8 @@ unsafe extern "C" {
     fn signals_scenario_choice(index: usize, out: *mut Slice);
     fn signals_scenario_scope(index: usize, out: *mut Slice);
     fn signals_scenario_count() -> usize;
-    fn signals_scenario_command(index: usize, out: *mut RawCommand);
+    fn signals_scenario_command(index: usize, out: *mut RawStep);
+    fn signals_scenario_arg(step: usize, index: usize, out: *mut RawArg);
     fn signals_scenario_close();
 }
 
@@ -398,30 +399,44 @@ struct RawScenario {
     scopes: usize,
 }
 
-/// One parsed step. `kind` and `locator_kind` carry the engine's enum tag
-/// names, so this reader never depends on the Zig enum's numbering; optional
-/// numbers travel with a presence flag and absent strings are empty slices.
+/// One parsed step as the engine hands it over. `kind` and `locator_kind`
+/// carry the engine's enum tag names, so this reader never depends on the Zig
+/// enum's numbering; the locator travels in full because every host resolves
+/// one, and every other value is a named argument read separately.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub(crate) struct RawCommand {
+pub(crate) struct RawStep {
     kind: Slice,
     line: u64,
+    column: u64,
     locator_kind: Slice,
     role: Slice,
     name: Slice,
     label: Slice,
     text: Slice,
     test_id: Slice,
-    expected_text: Slice,
-    expected_count: u64,
-    has_count: u32,
-    expected_bool: u32,
-    has_bool: u32,
-    interval_ms: u64,
-    has_interval: u32,
-    shortcut_key: u32,
-    shortcut_modifiers: u32,
-    has_shortcut: u32,
+    args: usize,
+}
+
+/// One named argument of a step; `kind` says which value field is live.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RawArg {
+    name: Slice,
+    kind: u32,
+    text: Slice,
+    unsigned: u64,
+    signed: i64,
+    boolean: u32,
+}
+
+/// A step argument, copied out of the engine's storage.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Arg {
+    Text(String),
+    Unsigned(u64),
+    Signed(i64),
+    Boolean(bool),
 }
 
 /// An owned copy of one parsed step, with every string copied out of the
@@ -430,17 +445,25 @@ pub(crate) struct RawCommand {
 pub(crate) struct Command {
     pub(crate) kind: String,
     pub(crate) line: u64,
+    pub(crate) column: u64,
     pub(crate) locator_kind: String,
     pub(crate) role: String,
     pub(crate) name: String,
     pub(crate) label: String,
     pub(crate) text: String,
     pub(crate) test_id: String,
-    pub(crate) expected_text: String,
-    pub(crate) expected_count: Option<u64>,
-    pub(crate) expected_bool: Option<bool>,
-    pub(crate) interval_ms: Option<u64>,
-    pub(crate) shortcut: Option<(u32, u32)>,
+    /// The payload's named arguments, in the engine's field order.
+    pub(crate) args: Vec<(String, Arg)>,
+}
+
+impl Command {
+    /// The argument the engine published under this name, if any.
+    pub(crate) fn arg(&self, name: &str) -> Option<&Arg> {
+        self.args
+            .iter()
+            .find(|(candidate, _)| candidate == name)
+            .map(|(_, value)| value)
+    }
 }
 
 /// A parsed window scenario: its header and its steps, owned by the host.
@@ -495,23 +518,34 @@ pub(crate) fn load_scenario(path: &str) -> Result<Scenario, String> {
         let count = signals_scenario_count();
         let mut commands = Vec::with_capacity(count);
         for index in 0..count {
-            let mut raw = std::mem::MaybeUninit::<RawCommand>::uninit();
+            let mut raw = std::mem::MaybeUninit::<RawStep>::uninit();
             signals_scenario_command(index, raw.as_mut_ptr());
             let raw = raw.assume_init();
+            let mut args = Vec::with_capacity(raw.args);
+            for arg_index in 0..raw.args {
+                let mut arg = std::mem::MaybeUninit::<RawArg>::uninit();
+                signals_scenario_arg(index, arg_index, arg.as_mut_ptr());
+                let arg = arg.assume_init();
+                let value = match arg.kind {
+                    0 => Arg::Text(arg.text.copy()),
+                    1 => Arg::Unsigned(arg.unsigned),
+                    2 => Arg::Signed(arg.signed),
+                    3 => Arg::Boolean(arg.boolean != 0),
+                    other => panic!("unknown scenario argument kind {other}"),
+                };
+                args.push((arg.name.copy(), value));
+            }
             commands.push(Command {
                 kind: raw.kind.copy(),
                 line: raw.line,
+                column: raw.column,
                 locator_kind: raw.locator_kind.copy(),
                 role: raw.role.copy(),
                 name: raw.name.copy(),
                 label: raw.label.copy(),
                 text: raw.text.copy(),
                 test_id: raw.test_id.copy(),
-                expected_text: raw.expected_text.copy(),
-                expected_count: (raw.has_count != 0).then_some(raw.expected_count),
-                expected_bool: (raw.has_bool != 0).then_some(raw.expected_bool != 0),
-                interval_ms: (raw.has_interval != 0).then_some(raw.interval_ms),
-                shortcut: (raw.has_shortcut != 0).then_some((raw.shortcut_key, raw.shortcut_modifiers)),
+                args,
             });
         }
         let scenario = Scenario {

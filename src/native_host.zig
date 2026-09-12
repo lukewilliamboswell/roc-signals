@@ -40,6 +40,7 @@ const native_timers = @import("native_timers.zig");
 comptime {
     std.testing.refAllDecls(spec_parser);
     std.testing.refAllDecls(spec_runner);
+    std.testing.refAllDecls(@import("spec/ctx.zig"));
     std.testing.refAllDecls(@import("spec/file_fixtures.zig"));
     std.testing.refAllDecls(@import("spec/sexpr.zig"));
     std.testing.refAllDecls(benchmark);
@@ -912,6 +913,10 @@ const HostEnv = struct {
     /// observes the title can skip a native window update the engine already
     /// pruned. It is an observation counter, never an alternate title route.
     document_title_revision: u64 = 0,
+    /// Present only while the benchmark replays one command through the shared
+    /// spec runner. Keeping this on the host makes measurement explicit and
+    /// instance-local rather than a process-global execution mode.
+    benchmark_stats: ?*BenchmarkStats = null,
 
     fn init() HostEnv {
         return .{
@@ -1860,6 +1865,7 @@ const HostEnv = struct {
     }
 
     fn deinit(self: *HostEnv) void {
+        if (self.benchmark_stats != null) failHost("benchmark measurement outlived its runner call");
         const allocator = self.hostAllocator();
 
         self.clearActiveSignalRoutes();
@@ -1959,7 +1965,7 @@ const HostEnv = struct {
     }
 
     fn matchesLocator(self: *HostEnv, elem: *const DomElement, locator: Locator) error{OutOfMemory}!bool {
-        if (locator.kind != .role_name or sim_dom.accessibleName(elem).len != 0) {
+        if (std.meta.activeTag(locator) != .role_name or sim_dom.accessibleName(elem).len != 0) {
             return sim_dom.matchesLocator(elem, locator);
         }
 
@@ -3206,348 +3212,29 @@ fn makeSignalsRocHost(host: *HostEnv) abi.RocHost {
     };
 }
 
-fn pointerEventIdForCommand(elem: *const DomElement, cmd_type: SpecCommandType) ?u64 {
-    return switch (cmd_type) {
-        .pointer_down => sim_dom.fixedEventId(elem, .pointer_down),
-        .pointer_up => sim_dom.fixedEventId(elem, .pointer_up),
-        .pointer_enter => sim_dom.fixedEventId(elem, .pointer_enter),
-        .pointer_leave => sim_dom.fixedEventId(elem, .pointer_leave),
-        else => null,
-    };
-}
-
-const BenchmarkDomElement = DomElement;
-
-fn hostValueUnitForBenchmark(host: *HostEnv, roc_host: *abi.RocHost) HostValue {
+fn specHostValueUnit(host: *HostEnv, roc_host: *abi.RocHost) HostValue {
     return hostValueUnit(host, roc_host);
 }
 
-fn hostValueStrForBenchmark(host: *HostEnv, roc_host: *abi.RocHost, value: []const u8) HostValue {
+fn specHostValueStr(host: *HostEnv, roc_host: *abi.RocHost, value: []const u8) HostValue {
     return hostValueStr(host, roc_host, value);
 }
 
-fn hostValueBoolForBenchmark(host: *HostEnv, roc_host: *abi.RocHost, value: bool) HostValue {
+fn specHostValueBool(host: *HostEnv, roc_host: *abi.RocHost, value: bool) HostValue {
     return hostValueBool(host, roc_host, value);
 }
 
-fn setElementValueForBenchmark(host: *HostEnv, elem: *DomElement, value: []const u8) bool {
-    return setElementUserValueIfChanged(host, elem, value);
-}
-
-fn setElementCheckedForBenchmark(elem: *DomElement, checked: bool) bool {
-    return setElementCheckedIfChanged(elem, checked);
-}
-
-fn tickIntervalSourceForBenchmark(host: *HostEnv, roc_host: *abi.RocHost, period_ms: u64) CommandCounts {
+fn tickSpecIntervalSource(host: *HostEnv, roc_host: *abi.RocHost, period_ms: u64) CommandCounts {
     return tickIntervalSource(host, roc_host, period_ms);
 }
 
-fn finishHostMetricsForBenchmark(host: *HostEnv) void {
+fn finishSpecHostMetrics(host: *HostEnv) void {
     finishHostMetrics(host);
 }
 
-fn addRuntimeMetricsForBenchmark(left: RuntimeMetrics, right: RuntimeMetrics) RuntimeMetrics {
+fn addSpecRuntimeMetrics(left: RuntimeMetrics, right: RuntimeMetrics) RuntimeMetrics {
     return addRuntimeMetrics(left, right);
 }
-
-const BenchmarkCtx = struct {
-    /// Emits fixture diagnostics separately from benchmark CSV output.
-    pub fn writeStderr(bytes: []const u8) void {
-        crash_handlers.writeStderr(bytes);
-    }
-
-    pub const Host = HostEnv;
-    pub const RocHost = abi.RocHost;
-    pub const DomElement = BenchmarkDomElement;
-
-    /// Terminates this test or host path because continuing could leave runtime meaning incoherent.
-    pub fn fail(message: []const u8) noreturn {
-        failHost(message);
-    }
-
-    /// Provides init host for native semantic observation without duplicating engine behavior.
-    pub fn initHost() Host {
-        return Host.init();
-    }
-
-    /// Provides deinit host for native semantic observation without duplicating engine behavior.
-    pub fn deinitHost(host: *Host) void {
-        host.deinit();
-    }
-
-    /// Sets verbose at the narrow host or engine boundary that owns the mutation.
-    pub fn setVerbose(host: *Host, verbose: bool) void {
-        host.test_state.verbose = verbose;
-    }
-
-    /// Constructs roc host with the host references required by the shared engine contract.
-    pub fn makeRocHost(host: *Host) RocHost {
-        return makeSignalsRocHost(host);
-    }
-
-    /// Provides attach roc host for native semantic observation without duplicating engine behavior.
-    pub fn attachRocHost(host: *Host, roc_host: *RocHost) void {
-        host.engine.roc_host = roc_host;
-    }
-
-    /// Provides enter current for native semantic observation without duplicating engine behavior.
-    pub fn enterCurrent(host: *Host, roc_host: *RocHost) void {
-        current_host = host;
-        current_roc_host = roc_host;
-    }
-
-    /// Provides leave current for native semantic observation without duplicating engine behavior.
-    pub fn leaveCurrent() void {
-        current_host = null;
-        current_roc_host = null;
-    }
-
-    /// Provides init roc ui for native semantic observation without duplicating engine behavior.
-    pub fn initRocUi() ElemBox {
-        return abi.roc_ui_init();
-    }
-
-    /// Provides accept init elem measured for native semantic observation without duplicating engine behavior.
-    pub fn acceptInitElemMeasured(host: *Host, roc_host: *RocHost, root_box: ElemBox, apply_ns: ?*u64, command_counts: ?*CommandCounts) void {
-        acceptInitElemWithStats(host, roc_host, root_box, apply_ns, command_counts);
-    }
-
-    /// Resolves element by locator from maintained indexes without scanning the full descriptor stream.
-    pub fn findElementByLocator(host: *Host, locator: Locator, line_num: usize) ?*BenchmarkDomElement {
-        return host.findElementByLocator(locator, line_num);
-    }
-
-    /// Returns by id from the host's semantic render model.
-    pub fn elementById(host: *Host, elem_id: u64) ?*BenchmarkDomElement {
-        if (elem_id >= host.dom_elements.items.len) return null;
-        const elem = &host.dom_elements.items[@intCast(elem_id)];
-        if (!elem.active) return null;
-        return elem;
-    }
-
-    /// Returns disabled from the host's semantic render model.
-    pub fn elementDisabled(elem: *const BenchmarkDomElement) bool {
-        return elem.disabled;
-    }
-
-    /// Provides fixed event id for native semantic observation without duplicating engine behavior.
-    pub fn fixedEventId(elem: *const BenchmarkDomElement, kind: render.EventKind) ?u64 {
-        return sim_dom.fixedEventId(elem, kind);
-    }
-
-    /// Provides click event id for native semantic observation without duplicating engine behavior.
-    pub fn clickEventId(elem: *const BenchmarkDomElement) ?u64 {
-        return sim_dom.fixedEventId(elem, .click);
-    }
-
-    /// Provides pointer event id for native semantic observation without duplicating engine behavior.
-    pub fn pointerEventId(elem: *const BenchmarkDomElement, cmd_type: SpecCommandType) ?u64 {
-        return pointerEventIdForCommand(elem, cmd_type);
-    }
-
-    /// Provides input event id for native semantic observation without duplicating engine behavior.
-    pub fn inputEventId(elem: *const BenchmarkDomElement) ?u64 {
-        return sim_dom.fixedEventId(elem, .input);
-    }
-
-    /// Provides check event id for native semantic observation without duplicating engine behavior.
-    pub fn checkEventId(elem: *const BenchmarkDomElement) ?u64 {
-        return sim_dom.fixedEventId(elem, .check);
-    }
-
-    /// Provides named event for native semantic observation without duplicating engine behavior.
-    pub fn namedEvent(elem: *const BenchmarkDomElement, name: []const u8) ?DomNamedEvent {
-        return nodeEventName(elem, name);
-    }
-
-    /// Returns text attr from the host's semantic render model.
-    pub fn elementTextAttr(elem: *const BenchmarkDomElement, name: []const u8) ?[]const u8 {
-        return sim_dom.textAttr(elem, name);
-    }
-
-    /// Dispatches roc event measured through validated routing and dependency-ordered propagation.
-    pub fn dispatchRocEventMeasured(host: *Host, roc_host: *RocHost, event_id: u64, payload_descriptor: BoundaryPayloadDescriptor, payload: HostValue, stats: ?*BenchmarkStats) void {
-        dispatchRocEventWithStats(host, roc_host, ids.EventId.fromRaw(event_id), payload_descriptor, payload, stats);
-    }
-
-    /// Materializes unit as a capability-owned host value for boundary delivery.
-    pub fn hostValueUnit(host: *Host, roc_host: *RocHost) HostValue {
-        return hostValueUnitForBenchmark(host, roc_host);
-    }
-
-    /// Materializes str as a capability-owned host value for boundary delivery.
-    pub fn hostValueStr(host: *Host, roc_host: *RocHost, value: []const u8) HostValue {
-        return hostValueStrForBenchmark(host, roc_host, value);
-    }
-
-    /// Materializes bool as a capability-owned host value for boundary delivery.
-    pub fn hostValueBool(host: *Host, roc_host: *RocHost, value: bool) HostValue {
-        return hostValueBoolForBenchmark(host, roc_host, value);
-    }
-
-    /// Dispatches key down measured through validated routing and dependency-ordered propagation.
-    pub fn dispatchKeyDownMeasured(host: *Host, roc_host: *RocHost, elem: *const BenchmarkDomElement, key: []const u8, shift_key: bool, stats: ?*BenchmarkStats) bool {
-        return dispatchKeyDownWithStats(host, roc_host, elem, key, shift_key, stats);
-    }
-
-    /// Dispatches submit measured through validated routing and dependency-ordered propagation.
-    pub fn dispatchSubmitMeasured(host: *Host, roc_host: *RocHost, elem: *const BenchmarkDomElement, stats: ?*BenchmarkStats) void {
-        dispatchSubmitWithStats(host, roc_host, elem, stats);
-    }
-
-    /// Dispatches reset measured through validated routing and dependency-ordered propagation.
-    pub fn dispatchResetMeasured(host: *Host, roc_host: *RocHost, elem: *const BenchmarkDomElement, stats: ?*BenchmarkStats) void {
-        dispatchResetWithStats(host, roc_host, elem, stats);
-    }
-
-    /// Updates value if changed only when the simulated or browser field actually differs.
-    pub fn setElementValueIfChanged(host: *Host, elem: *BenchmarkDomElement, value: []const u8) bool {
-        return setElementValueForBenchmark(host, elem, value);
-    }
-
-    /// Marks the controlled element focused so conflicting value writes can be deferred safely.
-    pub fn focusElement(_: *Host, elem: *BenchmarkDomElement) void {
-        sim_dom.focusElement(elem);
-    }
-
-    /// Ends controlled-element focus and applies any still-relevant deferred value.
-    pub fn blurElement(host: *Host, elem: *BenchmarkDomElement) void {
-        _ = sim_dom.blurElement(host.hostAllocator(), elem);
-    }
-
-    /// Marks the controlled input as composing so engine writes do not disrupt IME text.
-    pub fn beginComposition(_: *Host, elem: *BenchmarkDomElement) void {
-        sim_dom.beginComposition(elem);
-    }
-
-    /// Ends IME composition and reconciles the latest engine-selected value.
-    pub fn endComposition(host: *Host, elem: *BenchmarkDomElement) void {
-        _ = sim_dom.endComposition(host.hostAllocator(), elem);
-    }
-
-    /// Updates checked if changed only when the simulated or browser field actually differs.
-    pub fn setElementCheckedIfChanged(elem: *BenchmarkDomElement, checked: bool) bool {
-        return setElementCheckedForBenchmark(elem, checked);
-    }
-
-    /// Declares one answer for a hosted `Files` function; see `native_services`.
-    pub fn stubFileResult(host: *Host, stub: *const spec_file_fixtures.Stub) void {
-        host.stubFile(stub);
-    }
-
-    /// Declares one answer for the hosted `Http` function; see `native_services`.
-    pub fn stubHttpResult(host: *Host, stub: *const spec_http_fixtures.Stub) void {
-        host.stubHttp(stub);
-    }
-
-    /// Advances interval source through the shared propagation queue.
-    pub fn tickIntervalSource(host: *Host, roc_host: *RocHost, period_ms: u64) CommandCounts {
-        return tickIntervalSourceForBenchmark(host, roc_host, period_ms);
-    }
-
-    /// Seeds location before mount so the first graph evaluation observes host state.
-    pub fn setInitialLocation(host: *Host, location: boundary.LocationSnapshot) void {
-        host.setCurrentLocation(location);
-    }
-
-    /// Seeds visibility before mount so the first graph evaluation observes host state.
-    pub fn setInitialVisibility(host: *Host, visibility: boundary.VisibilitySnapshot) void {
-        host.setVisibility(visibility);
-    }
-
-    /// Seeds online before mount so the first graph evaluation observes host state.
-    pub fn setInitialOnline(host: *Host, online: boundary.OnlineSnapshot) void {
-        host.setOnline(online);
-    }
-
-    /// Seeds one storage fixture entry before mount without bypassing declared storage sources.
-    pub fn seedStorage(host: *Host, area: boundary.StorageArea, key: []const u8, value: []const u8) void {
-        host.setStorageText(area, key, value);
-    }
-
-    /// Publishes a location change and refreshes active location sources in the same engine turn.
-    pub fn navigateLocation(host: *Host, roc_host: *RocHost, location: boundary.LocationSnapshot) CommandCounts {
-        host.pushCurrentLocation(location);
-        return dispatchCurrentLocationSources(host, roc_host);
-    }
-
-    /// Moves browser history back and re-enters the location source through propagation.
-    pub fn historyBack(host: *Host, roc_host: *RocHost) CommandCounts {
-        if (!host.backCurrentLocation()) failHost("history_back had no previous location");
-        return dispatchCurrentLocationSources(host, roc_host);
-    }
-
-    /// Moves browser history forward and re-enters the location source through propagation.
-    pub fn historyForward(host: *Host, roc_host: *RocHost) CommandCounts {
-        if (!host.forwardCurrentLocation()) failHost("history_forward had no next location");
-        return dispatchCurrentLocationSources(host, roc_host);
-    }
-
-    /// Sets visibility at the narrow host or engine boundary that owns the mutation.
-    pub fn setVisibility(host: *Host, roc_host: *RocHost, visibility: boundary.VisibilitySnapshot) CommandCounts {
-        host.setVisibility(visibility);
-        return dispatchCurrentVisibilitySources(host, roc_host);
-    }
-
-    /// Sets online at the narrow host or engine boundary that owns the mutation.
-    pub fn setOnline(host: *Host, roc_host: *RocHost, online: boundary.OnlineSnapshot) CommandCounts {
-        host.setOnline(online);
-        return dispatchCurrentOnlineSources(host, roc_host);
-    }
-
-    /// Returns active interval record count by period from the maintained active-runtime indexes.
-    pub fn activeIntervalRecordCountByPeriod(host: *const Host, period_ms: u64) u64 {
-        return host.engine.activeIntervalRecordCountByPeriod(period_ms);
-    }
-
-    /// Provides finish host metrics for native semantic observation without duplicating engine behavior.
-    pub fn finishHostMetrics(host: *Host) void {
-        finishHostMetricsForBenchmark(host);
-    }
-
-    /// Provides alloc count for native semantic observation without duplicating engine behavior.
-    pub fn allocCount(host: *const Host) usize {
-        return host.alloc_count;
-    }
-
-    /// Provides dealloc count for native semantic observation without duplicating engine behavior.
-    pub fn deallocCount(host: *const Host) usize {
-        return host.dealloc_count;
-    }
-
-    /// Provides host alloc count for native semantic observation without duplicating engine behavior.
-    pub fn hostAllocCount(host: *const Host) u64 {
-        return host.host_alloc_count;
-    }
-
-    /// Provides host dealloc count for native semantic observation without duplicating engine behavior.
-    pub fn hostDeallocCount(host: *const Host) u64 {
-        return host.host_dealloc_count;
-    }
-
-    /// Provides host alloc bytes for native semantic observation without duplicating engine behavior.
-    pub fn hostAllocBytes(host: *const Host) u64 {
-        return host.host_alloc_bytes;
-    }
-
-    /// Provides host dealloc bytes for native semantic observation without duplicating engine behavior.
-    pub fn hostDeallocBytes(host: *const Host) u64 {
-        return host.host_dealloc_bytes;
-    }
-
-    /// Returns last runtime metrics retained for observability or local structural traversal.
-    pub fn lastRuntimeMetrics(host: *const Host) RuntimeMetrics {
-        return host.engine.last_runtime_metrics;
-    }
-
-    /// Provides add runtime metrics for native semantic observation without duplicating engine behavior.
-    pub fn addRuntimeMetrics(left: RuntimeMetrics, right: RuntimeMetrics) RuntimeMetrics {
-        return addRuntimeMetricsForBenchmark(left, right);
-    }
-};
-
-const BenchmarkRunner = benchmark.Runner(BenchmarkCtx);
-const runAppBenchmarks = BenchmarkRunner.runAppBenchmarks;
 
 fn refreshSpecWindowClose(host: *HostEnv) void {
     const pending = host.spec_pending_close orelse return;
@@ -3573,6 +3260,18 @@ fn refreshSpecWindowClose(host: *HostEnv) void {
 }
 
 const SpecRunnerCtx = struct {
+    /// The full contract: this is the semantic host, so every capability the
+    /// runner knows about is implemented here.
+    pub const capabilities: spec_runner.ctx.Capabilities = .{
+        .environment = true,
+        .window = true,
+        .effect_fixtures = true,
+        .manual_effects = true,
+        .allocation_trace = true,
+        .measured = true,
+        .setup = true,
+    };
+
     /// Counts prepared occurrences still owned by the shared engine.
     pub fn pendingEffectCount(host: *HostEnv) u64 {
         return host.engine.pending_effects.items.len;
@@ -3598,6 +3297,75 @@ const SpecRunnerCtx = struct {
 
     pub const Host = HostEnv;
     pub const RocHost = abi.RocHost;
+
+    /// Creates the production native host used by both semantic specs and
+    /// benchmark replay.
+    pub fn initHost(entropy_seed: u32) Host {
+        var host = Host.init();
+        host.entropy_seed = entropy_seed;
+        return host;
+    }
+
+    /// Releases the production host and all engine-owned resources.
+    pub fn deinitHost(host: *Host) void {
+        host.deinit();
+    }
+
+    /// Enables ordinary host diagnostics without changing execution meaning.
+    pub fn setVerbose(host: *Host, verbose: bool) void {
+        host.test_state.verbose = verbose;
+    }
+
+    /// Constructs the Roc callback table used by the production native host.
+    pub fn makeRocHost(host: *Host) RocHost {
+        return makeSignalsRocHost(host);
+    }
+
+    /// Attaches the callback table to the shared engine instance.
+    pub fn attachRocHost(host: *Host, roc_host: *RocHost) void {
+        host.engine.roc_host = roc_host;
+    }
+
+    /// Enters the existing native callback boundary for this host instance.
+    pub fn enterCurrent(host: *Host, roc_host: *RocHost) void {
+        current_host = host;
+        current_roc_host = roc_host;
+    }
+
+    /// Leaves the native callback boundary established for a benchmark run.
+    pub fn leaveCurrent() void {
+        current_host = null;
+        current_roc_host = null;
+    }
+
+    /// Calls the application's ordinary `roc_ui_init` entry point.
+    pub fn initRocUi() ElemBox {
+        return abi.roc_ui_init();
+    }
+
+    /// Applies the initial element through the production sink while exposing
+    /// only timing and command-count observation to the benchmark.
+    pub fn acceptInitElemMeasured(host: *Host, roc_host: *RocHost, root_box: ElemBox, apply_ns: ?*u64, command_counts: ?*CommandCounts) void {
+        acceptInitElemWithStats(host, roc_host, root_box, apply_ns, command_counts);
+    }
+
+    /// Settles mount-time effects exactly as the ordinary native SCM entry
+    /// point does before exposing the first executable step or assertion.
+    pub fn settleAfterMount(host: *Host, roc_host: *RocHost) void {
+        drainEffects(host, roc_host);
+    }
+
+    /// Attaches a caller-owned accumulator around one normal runner call.
+    pub fn beginMeasurement(host: *Host, stats: *BenchmarkStats) void {
+        if (host.benchmark_stats != null) failHost("benchmark measurement is already active");
+        host.benchmark_stats = stats;
+    }
+
+    /// Ends measurement without retaining the caller-owned accumulator.
+    pub fn endMeasurement(host: *Host) void {
+        if (host.benchmark_stats == null) failHost("benchmark measurement is not active");
+        host.benchmark_stats = null;
+    }
 
     /// Terminates this test or host path because continuing could leave runtime meaning incoherent.
     pub fn fail(message: []const u8) noreturn {
@@ -3673,23 +3441,23 @@ const SpecRunnerCtx = struct {
 
     /// Dispatches roc event through validated routing and dependency-ordered propagation.
     pub fn dispatchRocEvent(host: *Host, roc_host: *RocHost, event_id: ids.EventId, payload_descriptor: BoundaryPayloadDescriptor, payload: HostValue) void {
-        dispatchRocEventWithStats(host, roc_host, event_id, payload_descriptor, payload, null);
+        dispatchRocEventWithStats(host, roc_host, event_id, payload_descriptor, payload, host.benchmark_stats);
         drainEffects(host, roc_host);
     }
 
     /// Materializes unit as a capability-owned host value for boundary delivery.
     pub fn hostValueUnit(host: *Host, roc_host: *RocHost) HostValue {
-        return hostValueUnitForBenchmark(host, roc_host);
+        return specHostValueUnit(host, roc_host);
     }
 
     /// Materializes str as a capability-owned host value for boundary delivery.
     pub fn hostValueStr(host: *Host, roc_host: *RocHost, value: []const u8) HostValue {
-        return hostValueStrForBenchmark(host, roc_host, value);
+        return specHostValueStr(host, roc_host, value);
     }
 
     /// Materializes bool as a capability-owned host value for boundary delivery.
     pub fn hostValueBool(host: *Host, roc_host: *RocHost, value: bool) HostValue {
-        return hostValueBoolForBenchmark(host, roc_host, value);
+        return specHostValueBool(host, roc_host, value);
     }
 
     /// Materializes u8 list as a capability-owned host value for boundary delivery.
@@ -3744,27 +3512,63 @@ const SpecRunnerCtx = struct {
 
     /// Advances interval source through the shared propagation queue.
     pub fn tickIntervalSource(host: *Host, roc_host: *RocHost, period_ms: u64) CommandCounts {
-        const counts = tickIntervalSourceForBenchmark(host, roc_host, period_ms);
+        const start_ns = benchmark.nowNs();
+        const counts = tickSpecIntervalSource(host, roc_host, period_ms);
         drainEffects(host, roc_host);
+        recordMeasuredSource(host, start_ns, counts);
         return counts;
+    }
+
+    /// Seeds location before mount so initialization observes the declared SCM setup.
+    pub fn setInitialLocation(host: *Host, location: boundary.LocationSnapshot) void {
+        host.setCurrentLocation(location);
+    }
+
+    /// Seeds visibility before mount so initialization observes the declared SCM setup.
+    pub fn setInitialVisibility(host: *Host, visibility: boundary.VisibilitySnapshot) void {
+        host.setVisibility(visibility);
+    }
+
+    /// Seeds connectivity before mount so initialization observes the declared SCM setup.
+    pub fn setInitialOnline(host: *Host, online: boundary.OnlineSnapshot) void {
+        host.setOnline(online);
+    }
+
+    /// Seeds one storage value through the host-owned storage model before mount.
+    pub fn seedStorage(host: *Host, area: boundary.StorageArea, key: []const u8, value: []const u8) void {
+        host.setStorageText(area, key, value);
+    }
+
+    /// Keeps prepared effects queued until explicit SCM `run-effect` steps.
+    pub fn enableManualEffects(host: *Host) void {
+        host.spec_manual_effects = true;
     }
 
     /// Publishes a location change and refreshes active location sources in the same engine turn.
     pub fn navigateLocation(host: *Host, roc_host: *RocHost, location: boundary.LocationSnapshot) CommandCounts {
+        const start_ns = benchmark.nowNs();
         host.pushCurrentLocation(location);
-        return dispatchCurrentLocationSources(host, roc_host);
+        const counts = dispatchCurrentLocationSources(host, roc_host);
+        recordMeasuredSource(host, start_ns, counts);
+        return counts;
     }
 
     /// Moves browser history back and re-enters the location source through propagation.
     pub fn historyBack(host: *Host, roc_host: *RocHost) CommandCounts {
+        const start_ns = benchmark.nowNs();
         if (!host.backCurrentLocation()) failHost("history_back had no previous location");
-        return dispatchCurrentLocationSources(host, roc_host);
+        const counts = dispatchCurrentLocationSources(host, roc_host);
+        recordMeasuredSource(host, start_ns, counts);
+        return counts;
     }
 
     /// Moves browser history forward and re-enters the location source through propagation.
     pub fn historyForward(host: *Host, roc_host: *RocHost) CommandCounts {
+        const start_ns = benchmark.nowNs();
         if (!host.forwardCurrentLocation()) failHost("history_forward had no next location");
-        return dispatchCurrentLocationSources(host, roc_host);
+        const counts = dispatchCurrentLocationSources(host, roc_host);
+        recordMeasuredSource(host, start_ns, counts);
+        return counts;
     }
 
     /// Provides current location for native semantic observation without duplicating engine behavior.
@@ -3774,14 +3578,28 @@ const SpecRunnerCtx = struct {
 
     /// Sets visibility at the narrow host or engine boundary that owns the mutation.
     pub fn setVisibility(host: *Host, roc_host: *RocHost, visibility: boundary.VisibilitySnapshot) CommandCounts {
+        const start_ns = benchmark.nowNs();
         host.setVisibility(visibility);
-        return dispatchCurrentVisibilitySources(host, roc_host);
+        const counts = dispatchCurrentVisibilitySources(host, roc_host);
+        recordMeasuredSource(host, start_ns, counts);
+        return counts;
     }
 
     /// Sets online at the narrow host or engine boundary that owns the mutation.
     pub fn setOnline(host: *Host, roc_host: *RocHost, online: boundary.OnlineSnapshot) CommandCounts {
+        const start_ns = benchmark.nowNs();
         host.setOnline(online);
-        return dispatchCurrentOnlineSources(host, roc_host);
+        const counts = dispatchCurrentOnlineSources(host, roc_host);
+        recordMeasuredSource(host, start_ns, counts);
+        return counts;
+    }
+
+    fn recordMeasuredSource(host: *Host, start_ns: u64, counts: CommandCounts) void {
+        if (host.benchmark_stats) |stats| {
+            stats.dispatch_apply_ns += benchmark.nowNs() - start_ns;
+            stats.commands.addAll(counts);
+            stats.actions += 1;
+        }
     }
 
     /// Provides storage value for native semantic observation without duplicating engine behavior.
@@ -3802,7 +3620,7 @@ const SpecRunnerCtx = struct {
 
     /// Provides finish host metrics for native semantic observation without duplicating engine behavior.
     pub fn finishHostMetrics(host: *Host) void {
-        finishHostMetricsForBenchmark(host);
+        finishSpecHostMetrics(host);
     }
 
     /// Provides cleanup event count for native semantic observation without duplicating engine behavior.
@@ -3820,6 +3638,41 @@ const SpecRunnerCtx = struct {
         return host.engine.last_runtime_metrics;
     }
 
+    /// Returns Roc allocation calls observed by this host instance.
+    pub fn allocCount(host: *const Host) usize {
+        return host.alloc_count;
+    }
+
+    /// Returns Roc deallocation calls observed by this host instance.
+    pub fn deallocCount(host: *const Host) usize {
+        return host.dealloc_count;
+    }
+
+    /// Returns host-retained allocation calls for benchmark accounting.
+    pub fn hostAllocCount(host: *const Host) u64 {
+        return host.host_alloc_count;
+    }
+
+    /// Returns host-retained deallocation calls for benchmark accounting.
+    pub fn hostDeallocCount(host: *const Host) u64 {
+        return host.host_dealloc_count;
+    }
+
+    /// Returns bytes allocated into host-retained ownership.
+    pub fn hostAllocBytes(host: *const Host) u64 {
+        return host.host_alloc_bytes;
+    }
+
+    /// Returns bytes released from host-retained ownership.
+    pub fn hostDeallocBytes(host: *const Host) u64 {
+        return host.host_dealloc_bytes;
+    }
+
+    /// Adds runtime metric snapshots using the engine's canonical field set.
+    pub fn addRuntimeMetrics(left: RuntimeMetrics, right: RuntimeMetrics) RuntimeMetrics {
+        return addSpecRuntimeMetrics(left, right);
+    }
+
     /// Provides trace allocation checkpoint for native semantic observation without duplicating engine behavior.
     pub fn traceAllocationCheckpoint(host: *Host, line_num: usize, command_name: []const u8) void {
         host.traceAllocationCheckpoint(line_num, command_name);
@@ -3827,6 +3680,8 @@ const SpecRunnerCtx = struct {
 };
 
 const SpecRunner = spec_runner.Runner(SpecRunnerCtx);
+const BenchmarkRunner = benchmark.Runner(SpecRunnerCtx);
+const runAppBenchmarks = BenchmarkRunner.runAppBenchmarks;
 
 comptime {
     if (!host_fixtures) {
@@ -3899,6 +3754,7 @@ comptime {
             @export(&Gpui.scenarioScope, .{ .name = "signals_scenario_scope" });
             @export(&Gpui.scenarioCount, .{ .name = "signals_scenario_count" });
             @export(&Gpui.scenarioCommand, .{ .name = "signals_scenario_command" });
+            @export(&Gpui.scenarioArg, .{ .name = "signals_scenario_arg" });
             @export(&Gpui.scenarioClose, .{ .name = "signals_scenario_close" });
         } else @export(&main, .{ .name = "main" });
         if (@import("builtin").os.tag == .windows) {
@@ -4092,7 +3948,7 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
             writeStderr("Error: --host-bench-app requires a ReleaseFast host; run `zig build build-test-hosts -Doptimize=ReleaseFast` before building the Roc app\n");
             return 1;
         }
-        return runAppBenchmarks(options.spec_file.?, options.bench_name, options.bench_warmup, options.bench_iterations, options.bench_samples, options.verbose) catch |err| {
+        return runAppBenchmarks(options.spec_file.?, options.bench_name, options.bench_warmup, options.bench_iterations, options.bench_samples, options.verbose, options.entropy_seed) catch |err| {
             writeStderr("HOST ERROR: ");
             writeStderr(@errorName(err));
             writeStderr("\n");
@@ -4106,51 +3962,6 @@ fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
         writeStderr("\n");
         return 1;
     };
-}
-
-fn locationSnapshotFromSpecText(text: []const u8) boundary.LocationSnapshot {
-    return spec_parser.locationSnapshotFromSpecText(text) catch failHost("set_initial_location path must start with /");
-}
-
-fn visibilitySnapshotFromSpecText(text: []const u8) boundary.VisibilitySnapshot {
-    return spec_parser.visibilitySnapshotFromSpecText(text) catch failHost("visibility must be visible or hidden");
-}
-
-fn onlineSnapshotFromSpecText(text: []const u8) boundary.OnlineSnapshot {
-    return spec_parser.onlineSnapshotFromSpecText(text) catch failHost("online state must be online or offline");
-}
-
-fn applyPreMountSpecCommands(host: *HostEnv, commands: []const SpecCommand) void {
-    for (commands) |cmd| {
-        switch (cmd.cmd_type) {
-            .set_initial_location => {
-                const text = cmd.expected_text orelse failHost("set_initial_location command is missing URL text");
-                host.setCurrentLocation(locationSnapshotFromSpecText(text));
-            },
-            .set_initial_visibility => {
-                const text = cmd.expected_text orelse failHost("set_initial_visibility command is missing visibility text");
-                host.setVisibility(visibilitySnapshotFromSpecText(text));
-            },
-            .set_initial_online => {
-                const text = cmd.expected_text orelse failHost("set_initial_online command is missing online text");
-                host.setOnline(onlineSnapshotFromSpecText(text));
-            },
-            .seed_file_result => host.stubFile(&(cmd.file_stub orelse failHost("file stub command carried no stub"))),
-            .seed_http_result => host.stubHttp(&(cmd.http_stub orelse failHost("http stub command carried no stub"))),
-            .manual_effects => host.spec_manual_effects = true,
-            .seed_local_storage, .seed_session_storage => {
-                const key = cmd.task_name orelse failHost("seed storage command is missing key text");
-                const value = cmd.expected_text orelse failHost("seed storage command is missing value text");
-                const area: boundary.StorageArea = switch (cmd.cmd_type) {
-                    .seed_local_storage => .local,
-                    .seed_session_storage => .session,
-                    else => unreachable,
-                };
-                host.setStorageText(area, key, value);
-            },
-            else => {},
-        }
-    }
 }
 
 fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, result_json: bool, fail_on_allocation: ?usize, entropy_seed: u32) error{}!c_int {
@@ -4210,7 +4021,9 @@ fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, 
     defer current_roc_host = null;
     defer host_env.deinit();
 
-    applyPreMountSpecCommands(&host_env, host_env.test_state.commands);
+    if (SpecRunner.applySetup(&host_env, host_env.test_state.commands) != 0) {
+        failHost("spec setup was rejected by the shared runner");
+    }
     if (!result_json) {
         acceptInitElem(&host_env, &roc_host, abi.roc_ui_init());
         drainEffects(&host_env, &roc_host);
@@ -12501,27 +12314,31 @@ const Gpui = struct {
     };
     /// One parsed step, self-describing: `kind` and `locator_kind` carry the
     /// enum tag names rather than their numbering, so the Rust reader and this
-    /// writer never have to agree on an ordinal. Optional numbers travel with a
-    /// presence flag; absent strings are zero-length slices.
-    const RawCommand = extern struct {
+    /// writer never have to agree on an ordinal. The locator is the one payload
+    /// every host resolves, so it travels in full; every other value of the
+    /// payload is a named argument read through `scenarioArg`, reflected from
+    /// the payload struct, so a new step or field needs no change here.
+    const RawStep = extern struct {
         kind: Slice,
         line: u64,
+        column: u64,
         locator_kind: Slice,
         role: Slice,
         name: Slice,
         label: Slice,
         text: Slice,
         test_id: Slice,
-        expected_text: Slice,
-        expected_count: u64,
-        has_count: u32,
-        expected_bool: u32,
-        has_bool: u32,
-        interval_ms: u64,
-        has_interval: u32,
-        shortcut_key: u32,
-        shortcut_modifiers: u32,
-        has_shortcut: u32,
+        args: usize,
+    };
+    /// One named argument of a step. `kind` says which value field is live:
+    /// 0 text, 1 unsigned, 2 signed, 3 boolean.
+    const RawArg = extern struct {
+        name: Slice,
+        kind: u32,
+        text: Slice,
+        unsigned: u64,
+        signed: i64,
+        boolean: u32,
     };
     fn optionalSlice(value: ?[]const u8) Slice {
         return Slice.from(value orelse "");
@@ -12575,30 +12392,72 @@ const Gpui = struct {
     fn scenarioCount() callconv(.c) usize {
         return openScenario().commands.len;
     }
-    fn scenarioCommand(index: usize, out: *RawCommand) callconv(.c) void {
+    fn scenarioCommand(index: usize, out: *RawStep) callconv(.c) void {
         const spec = openScenario();
         if (index >= spec.commands.len) failHost("scenario command index out of range");
         const cmd = spec.commands[index];
+        const locator = spec_parser.legacyView(cmd.step).locator;
         out.* = .{
-            .kind = Slice.from(@tagName(cmd.cmd_type)),
+            .kind = Slice.from(@tagName(cmd.step)),
             .line = cmd.line_num,
-            .locator_kind = Slice.from(@tagName(cmd.locator.kind)),
-            .role = optionalSlice(cmd.locator.role),
-            .name = optionalSlice(cmd.locator.name),
-            .label = optionalSlice(cmd.locator.label),
-            .text = optionalSlice(cmd.locator.text),
-            .test_id = optionalSlice(cmd.locator.test_id),
-            .expected_text = optionalSlice(cmd.expected_text),
-            .expected_count = cmd.expected_count orelse 0,
-            .has_count = @intFromBool(cmd.expected_count != null),
-            .expected_bool = @intFromBool(cmd.expected_bool orelse false),
-            .has_bool = @intFromBool(cmd.expected_bool != null),
-            .interval_ms = cmd.interval_ms orelse 0,
-            .has_interval = @intFromBool(cmd.interval_ms != null),
-            .shortcut_key = if (cmd.shortcut) |chord| chord.key else 0,
-            .shortcut_modifiers = if (cmd.shortcut) |chord| chord.modifiers else 0,
-            .has_shortcut = @intFromBool(cmd.shortcut != null),
+            .column = cmd.column_num,
+            .locator_kind = Slice.from(@tagName(locator.kind)),
+            .role = optionalSlice(locator.role),
+            .name = optionalSlice(locator.name),
+            .label = optionalSlice(locator.label),
+            .text = optionalSlice(locator.text),
+            .test_id = optionalSlice(locator.test_id),
+            .args = stepArgCount(cmd.step),
         };
+    }
+    /// Reads one named argument of a step. A scalar payload is one argument
+    /// named `value`; a struct payload contributes one argument per field other
+    /// than its locator, and a key chord contributes `key` and `modifiers`.
+    fn scenarioArg(step_index: usize, arg_index: usize, out: *RawArg) callconv(.c) void {
+        const spec = openScenario();
+        if (step_index >= spec.commands.len) failHost("scenario command index out of range");
+        var cursor: usize = 0;
+        switch (spec.commands[step_index].step) {
+            inline else => |payload| {
+                if (emitArgs(payload, "value", arg_index, &cursor, out)) return;
+            },
+        }
+        failHost("scenario argument index out of range");
+    }
+    fn stepArgCount(step: spec_parser.Step) usize {
+        var cursor: usize = 0;
+        var scratch: RawArg = undefined;
+        switch (step) {
+            inline else => |payload| _ = emitArgs(payload, "value", std.math.maxInt(usize), &cursor, &scratch),
+        }
+        return cursor;
+    }
+    /// Walks a payload, counting arguments through `cursor` and filling `out`
+    /// when the walk reaches `wanted`. Returns true once it has been filled.
+    fn emitArgs(payload: anytype, name: []const u8, wanted: usize, cursor: *usize, out: *RawArg) bool {
+        const T = @TypeOf(payload);
+        if (T == void or T == spec_parser.Locator) return false;
+        // A scripted file or HTTP answer is applied by this engine, never by
+        // the window host, so it publishes no arguments.
+        if (T == spec_file_fixtures.Stub or T == spec_http_fixtures.Stub) return false;
+        if (T == []const u8) return emitArg(.{ .name = Slice.from(name), .kind = 0, .text = Slice.from(payload), .unsigned = 0, .signed = 0, .boolean = 0 }, wanted, cursor, out);
+        if (T == u64) return emitArg(.{ .name = Slice.from(name), .kind = 1, .text = Slice.from(""), .unsigned = payload, .signed = 0, .boolean = 0 }, wanted, cursor, out);
+        if (T == i64) return emitArg(.{ .name = Slice.from(name), .kind = 2, .text = Slice.from(""), .unsigned = 0, .signed = payload, .boolean = 0 }, wanted, cursor, out);
+        if (T == bool) return emitArg(.{ .name = Slice.from(name), .kind = 3, .text = Slice.from(""), .unsigned = 0, .signed = 0, .boolean = @intFromBool(payload) }, wanted, cursor, out);
+        if (T == signals.key_chord.Chord) {
+            if (emitArgs(@as(u64, payload.key), "key", wanted, cursor, out)) return true;
+            return emitArgs(@as(u64, payload.modifiers), "modifiers", wanted, cursor, out);
+        }
+        inline for (std.meta.fields(T)) |field| {
+            if (emitArgs(@field(payload, field.name), field.name, wanted, cursor, out)) return true;
+        }
+        return false;
+    }
+    fn emitArg(arg: RawArg, wanted: usize, cursor: *usize, out: *RawArg) bool {
+        const found = cursor.* == wanted;
+        if (found) out.* = arg;
+        cursor.* += 1;
+        return found;
     }
     fn scenarioClose() callconv(.c) void {
         if (scenario_spec) |spec| {

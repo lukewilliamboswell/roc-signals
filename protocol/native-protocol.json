@@ -1,7 +1,7 @@
 {
  "schema_version": 1,
  "comment": "Single authority for the native GUI protocol tables. Edit this file, then run `python3 scripts/generate_protocol.py` to regenerate the committed Zig, Rust, Roc, and docs artifacts. `docs/native-gui-protocol.md` documents the add-a-field procedure.",
- "protocol_version": 12,
+ "protocol_version": 13,
  "timer_version": 1,
  "custom_text_field_id": 7,
  "custom_bool_field_id": 3,
@@ -299,6 +299,10 @@
   ]
  },
  "version_history": [
+  {
+   "version": 13,
+   "summary": "Adds the source column to each scenario step so cross-language diagnostics identify the exact SCM form."
+  },
   {
    "version": 12,
    "summary": "Adds the `native_read_only` boolean field and its node word: a control that refuses edits while staying readable and keyboard reachable, distinct from disabled."

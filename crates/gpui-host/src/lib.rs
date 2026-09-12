@@ -1467,7 +1467,7 @@ pub unsafe extern "C" fn main(argc: i32, argv: *const *const i8) -> i32 {
                     let deferred = match outcome {
                         Ok(deferred) => deferred,
                         Err(error) => {
-                            failure = Some(format!("line {}: {error}", step.line));
+                            failure = Some(format!("{}:{}: {error}", step.line, step.column));
                             break;
                         }
                     };

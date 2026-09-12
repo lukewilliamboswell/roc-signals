@@ -60,7 +60,6 @@ pub const SpecCommandType = enum {
     history_back,
     history_forward,
     expect_current_location,
-    assert_current_location,
     expect_document_title,
     expect_local_storage,
     expect_session_storage,
@@ -84,22 +83,45 @@ pub const SpecCommandType = enum {
     close,
 };
 
-/// Whether a step exists only for a scenario driven against a real window.
-pub fn isWindowOnly(cmd_type: SpecCommandType) bool {
-    return switch (cmd_type) {
-        .wait, .type_text, .key, .expect_onscreen, .expect_history, .expect_count, .expect_selected, .expect_focused, .snapshot, .close => true,
-        else => false,
+/// Which built-in host can execute a step. This is the single admission table
+/// used by parsing and by the generated window-step manifest.
+pub const StepCapability = enum { semantic, window, both };
+
+/// The lifecycle role of a command in a complete spec execution.
+///
+/// This is deliberately exhaustive: adding vocabulary requires declaring how
+/// runners sequence it instead of silently dropping the new command.
+pub const StepRole = enum { setup, operation, assertion, measurement_boundary };
+
+/// Returns the execution role that every runner must preserve for this step.
+pub fn stepRole(kind: SpecCommandType) StepRole {
+    return switch (kind) {
+        .set_initial_location, .set_initial_visibility, .set_initial_online, .seed_local_storage, .seed_session_storage, .seed_file_result, .seed_http_result, .manual_effects => .setup,
+
+        .click, .real_click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave, .key_down, .shortcut, .request_window_close, .focus, .blur, .change, .select_option, .composition_start, .composition_end, .custom_event, .submit, .fill, .check, .uncheck, .stub_file_result, .stub_http_result, .run_effect, .tick_interval, .tick_interval_if_active, .navigate, .set_visibility, .set_online, .history_back, .history_forward, .wait, .type_text, .key, .close => .operation,
+
+        .expect_window_closed, .expect_text, .expect_visible, .expect_absent, .expect_value, .expect_attr, .expect_no_attr, .expect_checked, .expect_disabled, .expect_updates, .expect_pending_effects, .expect_cleanup, .expect_interval, .expect_current_location, .expect_document_title, .expect_local_storage, .expect_session_storage, .expect_no_local_storage, .expect_no_session_storage, .expect_metric_delta, .expect_metric_delta_at_most, .expect_onscreen, .expect_history, .expect_count, .expect_selected, .expect_focused, .snapshot => .assertion,
+
+        .mark_metrics => .measurement_boundary,
     };
 }
 
-/// The window-only steps the GUI host decodes by tag name. The Rust decoder
-/// carries the same list; a test on each side pins the two together, because
-/// the tag names cross the ABI as strings and nothing else checks them.
-pub const window_step_tags = [_][]const u8{
-    "wait",           "click",         "focus",           "type_text",      "key",             "shortcut",
-    "expect_visible", "expect_absent", "expect_text",     "expect_value",   "expect_disabled", "expect_selected",
-    "expect_focused", "expect_count",  "expect_onscreen", "expect_history", "snapshot",        "close",
-};
+test "step roles distinguish ordered fixtures from setup and assertions" {
+    try std.testing.expectEqual(StepRole.setup, stepRole(.seed_http_result));
+    try std.testing.expectEqual(StepRole.operation, stepRole(.stub_http_result));
+    try std.testing.expectEqual(StepRole.operation, stepRole(.run_effect));
+    try std.testing.expectEqual(StepRole.assertion, stepRole(.expect_pending_effects));
+    try std.testing.expectEqual(StepRole.measurement_boundary, stepRole(.mark_metrics));
+}
+
+/// Returns the built-in host capability required by a step.
+pub fn stepCapability(kind: SpecCommandType) StepCapability {
+    return switch (kind) {
+        .wait, .type_text, .key, .expect_onscreen, .expect_history, .expect_count, .expect_selected, .expect_focused, .snapshot, .close => .window,
+        .click, .focus, .shortcut, .expect_visible, .expect_absent, .expect_text, .expect_value, .expect_disabled => .both,
+        else => .semantic,
+    };
+}
 
 /// Writes a parsed spec in one deterministic line per command, every field
 /// spelled out. This is what a spec *means* to the runner, independent of how
@@ -129,23 +151,24 @@ pub fn writeCanonical(writer: *std.Io.Writer, spec: ParsedTestSpec) std.Io.Write
     }
     try writer.writeByte('\n');
     for (spec.commands) |cmd| {
-        try writer.print("  {d}: {s}", .{ cmd.line_num, @tagName(cmd.cmd_type) });
-        try writer.print(" locator={s}", .{@tagName(cmd.locator.kind)});
-        try writeField(writer, "role", cmd.locator.role);
-        try writeField(writer, "name", cmd.locator.name);
-        try writeField(writer, "label", cmd.locator.label);
-        try writeField(writer, "text", cmd.locator.text);
-        try writeField(writer, "test_id", cmd.locator.test_id);
-        try writeField(writer, "task", cmd.task_name);
-        if (cmd.file_stub) |stub| try writeFileStub(writer, stub);
-        if (cmd.http_stub) |stub| try writeHttpStub(writer, stub);
-        try writeField(writer, "attr", cmd.expected_attr);
-        if (cmd.interval_ms) |value| try writer.print(" interval={d}", .{value});
-        if (cmd.shortcut) |chord| try writer.print(" shortcut={d}+{d}", .{ chord.key, chord.modifiers });
-        try writeField(writer, "expected", cmd.expected_text);
-        if (cmd.expected_count) |value| try writer.print(" count={d}", .{value});
-        if (cmd.expected_metric_delta) |value| try writer.print(" delta={d}", .{value});
-        if (cmd.expected_bool) |value| try writer.print(" bool={}", .{value});
+        const view = legacyView(cmd.step);
+        try writer.print("  {d}: {s}", .{ cmd.line_num, @tagName(cmd.step) });
+        try writer.print(" locator={s}", .{@tagName(view.locator.kind)});
+        try writeField(writer, "role", view.locator.role);
+        try writeField(writer, "name", view.locator.name);
+        try writeField(writer, "label", view.locator.label);
+        try writeField(writer, "text", view.locator.text);
+        try writeField(writer, "test_id", view.locator.test_id);
+        try writeField(writer, "task", view.task);
+        if (view.file_stub) |stub| try writeFileStub(writer, stub);
+        if (view.http_stub) |stub| try writeHttpStub(writer, stub);
+        try writeField(writer, "attr", view.attr);
+        if (view.interval) |value| try writer.print(" interval={d}", .{value});
+        if (view.shortcut) |chord| try writer.print(" shortcut={d}+{d}", .{ chord.key, chord.modifiers });
+        try writeField(writer, "expected", view.expected);
+        if (view.count) |value| try writer.print(" count={d}", .{value});
+        if (view.delta) |value| try writer.print(" delta={d}", .{value});
+        if (view.boolean) |value| try writer.print(" bool={}", .{value});
         try writer.writeByte('\n');
     }
 }
@@ -218,6 +241,60 @@ fn writeHttpStub(writer: *std.Io.Writer, stub: http_fixtures.Stub) std.Io.Writer
     }
 }
 
+/// The flat view of a step the canonical form and the scenario ABI both
+/// spell: one slot per kind of value, so a step's payload is legible without
+/// knowing its type. The typed union is the model; this is its projection.
+pub const LegacyLocator = struct {
+    kind: LocatorKind = .none,
+    role: ?[]const u8 = null,
+    name: ?[]const u8 = null,
+    label: ?[]const u8 = null,
+    text: ?[]const u8 = null,
+    test_id: ?[]const u8 = null,
+};
+
+pub const LegacyView = struct {
+    locator: LegacyLocator = .{},
+    task: ?[]const u8 = null,
+    file_stub: ?file_fixtures.Stub = null,
+    http_stub: ?http_fixtures.Stub = null,
+    attr: ?[]const u8 = null,
+    interval: ?u64 = null,
+    shortcut: ?signals.key_chord.Chord = null,
+    expected: ?[]const u8 = null,
+    count: ?u64 = null,
+    delta: ?i64 = null,
+    boolean: ?bool = null,
+};
+
+/// Projects a typed step onto the flat view. Every string here borrows the step.
+pub fn legacyView(step: Step) LegacyView {
+    return switch (step) {
+        .click, .real_click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave, .focus, .blur, .composition_start, .composition_end, .submit, .check, .uncheck, .expect_visible, .expect_absent, .expect_onscreen, .expect_focused => |target| .{ .locator = target.legacy() },
+        .change, .select_option, .fill, .expect_text, .expect_value, .type_text => |args| .{ .locator = args.target.legacy(), .expected = args.text },
+        .expect_checked, .expect_disabled, .expect_selected => |args| .{ .locator = args.target.legacy(), .boolean = args.expected },
+        .expect_updates, .expect_history => |args| .{ .locator = args.target.legacy(), .count = args.count },
+        .key_down => |args| .{ .locator = args.target.legacy(), .expected = args.key, .boolean = args.shift },
+        .shortcut => |args| .{ .locator = args.target.legacy(), .shortcut = args.chord },
+        .custom_event => |args| .{ .locator = args.target.legacy(), .task = args.name, .expected = args.detail },
+        .expect_attr => |args| .{ .locator = args.target.legacy(), .attr = args.name, .expected = args.value },
+        .expect_no_attr => |args| .{ .locator = args.target.legacy(), .attr = args.name },
+        .stub_file_result, .seed_file_result => |args| .{ .task = args.label, .file_stub = args.stub },
+        .stub_http_result, .seed_http_result => |args| .{ .task = args.label, .http_stub = args.stub },
+        .tick_interval, .tick_interval_if_active, .wait => |period| .{ .interval = period },
+        .expect_cleanup => |args| .{ .task = args.name, .count = args.count },
+        .run_effect, .expect_pending_effects => |count| .{ .count = count },
+        .expect_interval => |args| .{ .interval = args.period_ms, .count = args.count },
+        .set_initial_location, .set_initial_visibility, .set_initial_online, .navigate, .set_visibility, .set_online, .expect_current_location, .expect_document_title, .key, .snapshot => |text| .{ .expected = text },
+        .expect_no_local_storage, .expect_no_session_storage => |key| .{ .task = key },
+        .seed_local_storage, .seed_session_storage, .expect_local_storage, .expect_session_storage => |pair| .{ .task = pair.key, .expected = pair.value },
+        .expect_metric_delta, .expect_metric_delta_at_most => |args| .{ .expected = args.metric, .delta = args.delta },
+        .expect_count => |args| .{ .expected = args.prefix, .count = args.count },
+        .expect_window_closed => |flag| .{ .boolean = flag },
+        .request_window_close, .history_back, .history_forward, .mark_metrics, .manual_effects, .close => .{},
+    };
+}
+
 fn writeField(writer: *std.Io.Writer, name: []const u8, value: ?[]const u8) std.Io.Writer.Error!void {
     if (value) |text| {
         try writer.print(" {s}=", .{name});
@@ -281,53 +358,175 @@ pub const LocatorKind = enum {
     test_id,
 };
 
-pub const Locator = struct {
-    kind: LocatorKind,
-    role: ?[]const u8 = null,
-    name: ?[]const u8 = null,
-    label: ?[]const u8 = null,
-    text: ?[]const u8 = null,
-    test_id: ?[]const u8 = null,
+pub const RoleName = struct { role: []const u8, name: []const u8 };
+
+/// A semantic locator with exactly the payload its kind requires. Impossible
+/// combinations such as a label locator carrying a test id cannot be built.
+pub const Locator = union(LocatorKind) {
+    none: void,
+    role_name: RoleName,
+    label: []const u8,
+    text: []const u8,
+    test_id: []const u8,
 
     fn deinit(self: Locator, allocator: std.mem.Allocator) void {
-        if (self.role) |value| allocator.free(value);
-        if (self.name) |value| allocator.free(value);
-        if (self.label) |value| allocator.free(value);
-        if (self.text) |value| allocator.free(value);
-        if (self.test_id) |value| allocator.free(value);
+        switch (self) {
+            .none => {},
+            .role_name => |value| {
+                allocator.free(value.role);
+                allocator.free(value.name);
+            },
+            .label, .text, .test_id => |value| allocator.free(value),
+        }
+    }
+
+    /// Projects the typed locator only at the raw cross-language boundary.
+    pub fn legacy(self: Locator) LegacyLocator {
+        return switch (self) {
+            .none => .{},
+            .role_name => |value| .{ .kind = .role_name, .role = value.role, .name = value.name },
+            .label => |value| .{ .kind = .label, .label = value },
+            .text => |value| .{ .kind = .text, .text = value },
+            .test_id => |value| .{ .kind = .test_id, .test_id = value },
+        };
     }
 };
 
 fn emptyLocator() Locator {
-    return .{ .kind = .none };
+    return .none;
+}
+
+pub const LocatorText = struct { target: Locator, text: []const u8 };
+pub const LocatorBool = struct { target: Locator, expected: bool };
+pub const LocatorCount = struct { target: Locator, count: u64 };
+pub const KeyDown = struct { target: Locator, key: []const u8, shift: bool };
+pub const Shortcut = struct { target: Locator, chord: signals.key_chord.Chord };
+pub const CustomEvent = struct { target: Locator, name: []const u8, detail: []const u8 };
+pub const Attr = struct { target: Locator, name: []const u8, value: []const u8 };
+pub const AttrName = struct { target: Locator, name: []const u8 };
+/// A scripted file answer with the label the spec gave it.
+pub const FileStub = struct { label: []const u8, stub: file_fixtures.Stub };
+/// A scripted HTTP answer with the label the spec gave it.
+pub const HttpStub = struct { label: []const u8, stub: http_fixtures.Stub };
+pub const NamedCount = struct { name: []const u8, count: u64 };
+pub const IntervalCount = struct { period_ms: u64, count: u64 };
+pub const KeyValue = struct { key: []const u8, value: []const u8 };
+pub const MetricDelta = struct { metric: []const u8, delta: i64 };
+pub const PrefixCount = struct { prefix: []const u8, count: u64 };
+
+/// One step with exactly the payload its kind carries. The union is tagged by
+/// `SpecCommandType` so `@tagName` still spells the step for the ABI and the
+/// reports, and a runner switch that forgets a kind fails to compile.
+pub const Step = union(SpecCommandType) {
+    click: Locator,
+    real_click: Locator,
+    pointer_down: Locator,
+    pointer_up: Locator,
+    pointer_enter: Locator,
+    pointer_leave: Locator,
+    key_down: KeyDown,
+    shortcut: Shortcut,
+    request_window_close: void,
+    expect_window_closed: bool,
+    focus: Locator,
+    blur: Locator,
+    change: LocatorText,
+    select_option: LocatorText,
+    composition_start: Locator,
+    composition_end: Locator,
+    custom_event: CustomEvent,
+    submit: Locator,
+    fill: LocatorText,
+    check: Locator,
+    uncheck: Locator,
+    expect_text: LocatorText,
+    expect_visible: Locator,
+    expect_absent: Locator,
+    expect_value: LocatorText,
+    expect_attr: Attr,
+    expect_no_attr: AttrName,
+    expect_checked: LocatorBool,
+    expect_disabled: LocatorBool,
+    expect_updates: LocatorCount,
+    stub_file_result: FileStub,
+    seed_file_result: FileStub,
+    stub_http_result: HttpStub,
+    seed_http_result: HttpStub,
+    manual_effects: void,
+    run_effect: u64,
+    expect_pending_effects: u64,
+    tick_interval: u64,
+    tick_interval_if_active: u64,
+    expect_cleanup: NamedCount,
+    expect_interval: IntervalCount,
+    set_initial_location: []const u8,
+    set_initial_visibility: []const u8,
+    set_initial_online: []const u8,
+    seed_local_storage: KeyValue,
+    seed_session_storage: KeyValue,
+    navigate: []const u8,
+    set_visibility: []const u8,
+    set_online: []const u8,
+    history_back: void,
+    history_forward: void,
+    expect_current_location: []const u8,
+    expect_document_title: []const u8,
+    expect_local_storage: KeyValue,
+    expect_session_storage: KeyValue,
+    expect_no_local_storage: []const u8,
+    expect_no_session_storage: []const u8,
+    mark_metrics: void,
+    expect_metric_delta: MetricDelta,
+    expect_metric_delta_at_most: MetricDelta,
+    wait: u64,
+    type_text: LocatorText,
+    key: []const u8,
+    expect_onscreen: Locator,
+    expect_history: LocatorCount,
+    expect_count: PrefixCount,
+    expect_selected: LocatorBool,
+    expect_focused: Locator,
+    snapshot: []const u8,
+    close: void,
+
+    /// The kind of this step, for reports and the ABI.
+    pub fn kind(self: Step) SpecCommandType {
+        return std.meta.activeTag(self);
+    }
+
+    /// Releases every string and locator the payload owns, by walking its
+    /// fields: a new payload type needs no new release code.
+    pub fn deinit(self: Step, allocator: std.mem.Allocator) void {
+        switch (self) {
+            inline else => |payload| freePayload(allocator, payload),
+        }
+    }
+};
+
+fn freePayload(allocator: std.mem.Allocator, payload: anytype) void {
+    const T = @TypeOf(payload);
+    if (T == void or T == bool or T == u64 or T == i64 or T == signals.key_chord.Chord) return;
+    if (T == []const u8) return allocator.free(payload);
+    if (T == Locator or T == file_fixtures.Stub or T == http_fixtures.Stub) return payload.deinit(allocator);
+    inline for (std.meta.fields(T)) |field| freePayload(allocator, @field(payload, field.name));
 }
 
 pub const SpecCommand = struct {
-    cmd_type: SpecCommandType,
-    locator: Locator,
-    task_name: ?[]const u8 = null,
-    expected_attr: ?[]const u8 = null,
-    interval_ms: ?u64 = null,
-    shortcut: ?signals.key_chord.Chord = null,
-    expected_text: ?[]const u8,
-    expected_count: ?u64,
-    expected_metric_delta: ?i64 = null,
-    expected_bool: ?bool,
-    file_stub: ?file_fixtures.Stub = null,
-    http_stub: ?http_fixtures.Stub = null,
+    step: Step,
     line_num: usize,
+    /// One-based source column of the step form. Older synthetic commands may
+    /// omit it and retain the conventional first column.
+    column_num: usize = 1,
+
+    /// The kind of this command, for reports and the ABI.
+    pub fn kind(self: SpecCommand) SpecCommandType {
+        return self.step.kind();
+    }
 };
 
 /// Releases every allocation owned by spec commands.
 pub fn freeSpecCommands(allocator: std.mem.Allocator, commands: []SpecCommand) void {
-    for (commands) |cmd| {
-        cmd.locator.deinit(allocator);
-        if (cmd.task_name) |name| allocator.free(name);
-        if (cmd.expected_attr) |attr| allocator.free(attr);
-        if (cmd.expected_text) |text| allocator.free(text);
-        if (cmd.file_stub) |stub| stub.deinit(allocator);
-        if (cmd.http_stub) |stub| stub.deinit(allocator);
-    }
+    for (commands) |cmd| cmd.step.deinit(allocator);
     if (commands.len > 0) {
         allocator.free(commands);
     }
@@ -459,17 +658,17 @@ pub fn parseSExprTestSpecFrom(allocator: std.mem.Allocator, content: []const u8,
     }
     if (!saw_steps) return ParseError.InvalidFormat;
     if (is_scenario) {
-        // A scenario runs the real file workers, so a fixture that resolves a
-        // task by name has nothing to resolve; and closing the window ends the
-        // run, so nothing may follow it.
+        // A scenario runs real file and HTTP effects, so scripted answers are
+        // test-only; closing the window ends the run, so nothing may follow it.
         for (commands.items, 0..) |cmd, index| {
-            switch (cmd.cmd_type) {
+            switch (cmd.step) {
+                .stub_file_result, .stub_http_result => return ParseError.InvalidFormat,
                 .close => if (index + 1 != commands.items.len) return ParseError.InvalidFormat,
                 else => {},
             }
         }
     } else {
-        for (commands.items) |cmd| if (isWindowOnly(cmd.cmd_type)) return ParseError.InvalidFormat;
+        for (commands.items) |cmd| if (stepCapability(cmd.kind()) == .window) return ParseError.InvalidFormat;
     }
 
     return .{
@@ -546,74 +745,261 @@ fn dupeStringList(allocator: std.mem.Allocator, value: sexpr.Expr, symbols: bool
 }
 
 /// Decodes a window-only step directly from its form, or returns null when
-/// the head is not one. These never pass through the legacy line grammar.
+/// the head is not one.
 fn decodeWindowForm(allocator: std.mem.Allocator, head: []const u8, args: []const sexpr.Expr, line: usize) ParseError!?SpecCommand {
-    var command: SpecCommand = .{
-        .cmd_type = .wait,
-        .locator = emptyLocator(),
-        .expected_text = null,
-        .expected_count = null,
-        .expected_bool = null,
-        .line_num = line,
-    };
-    if (std.mem.eql(u8, head, "wait")) {
+    const step: Step = if (std.mem.eql(u8, head, "wait")) blk: {
         if (args.len != 1) return ParseError.InvalidFormat;
-        command.interval_ms = try exprUnsigned(args[0]);
-    } else if (std.mem.eql(u8, head, "type")) {
+        break :blk .{ .wait = try exprUnsigned(args[0]) };
+    } else if (std.mem.eql(u8, head, "type")) blk: {
+        break :blk .{ .type_text = try locatorText(allocator, args) };
+    } else if (std.mem.eql(u8, head, "key")) blk: {
+        break :blk .{ .key = try oneText(allocator, args) };
+    } else if (std.mem.eql(u8, head, "expect-onscreen")) blk: {
+        break :blk .{ .expect_onscreen = try oneLocator(allocator, args) };
+    } else if (std.mem.eql(u8, head, "expect-focused")) blk: {
+        break :blk .{ .expect_focused = try oneLocator(allocator, args) };
+    } else if (std.mem.eql(u8, head, "expect-selected")) blk: {
+        break :blk .{ .expect_selected = try locatorBool(allocator, args) };
+    } else if (std.mem.eql(u8, head, "expect-history")) blk: {
+        break :blk .{ .expect_history = try locatorCount(allocator, args) };
+    } else if (std.mem.eql(u8, head, "expect-count")) blk: {
         if (args.len != 2) return ParseError.InvalidFormat;
-        command.cmd_type = .type_text;
-        command.locator = try locatorFromExpr(allocator, args[0]);
-        errdefer command.locator.deinit(allocator);
-        const text = exprString(args[1]) orelse return ParseError.InvalidFormat;
-        if (text.len == 0) return ParseError.InvalidFormat;
-        command.expected_text = try dupePlain(allocator, text);
-    } else if (std.mem.eql(u8, head, "key")) {
-        if (args.len != 1) return ParseError.InvalidFormat;
-        command.cmd_type = .key;
-        const text = exprString(args[0]) orelse return ParseError.InvalidFormat;
-        if (text.len == 0) return ParseError.InvalidFormat;
-        command.expected_text = try dupePlain(allocator, text);
-    } else if (std.mem.eql(u8, head, "expect-onscreen")) {
-        if (args.len != 1) return ParseError.InvalidFormat;
-        command.cmd_type = .expect_onscreen;
-        command.locator = try locatorFromExpr(allocator, args[0]);
-    } else if (std.mem.eql(u8, head, "expect-focused")) {
-        if (args.len != 1) return ParseError.InvalidFormat;
-        command.cmd_type = .expect_focused;
-        command.locator = try locatorFromExpr(allocator, args[0]);
-    } else if (std.mem.eql(u8, head, "expect-selected")) {
-        if (args.len != 2) return ParseError.InvalidFormat;
-        command.cmd_type = .expect_selected;
-        command.locator = try locatorFromExpr(allocator, args[0]);
-        errdefer command.locator.deinit(allocator);
-        command.expected_bool = try exprBool(args[1]);
-    } else if (std.mem.eql(u8, head, "expect-history")) {
-        if (args.len != 2) return ParseError.InvalidFormat;
-        command.cmd_type = .expect_history;
-        command.locator = try locatorFromExpr(allocator, args[0]);
-        errdefer command.locator.deinit(allocator);
-        command.expected_count = try exprUnsigned(args[1]);
-    } else if (std.mem.eql(u8, head, "expect-count")) {
-        if (args.len != 2) return ParseError.InvalidFormat;
-        command.cmd_type = .expect_count;
-        const prefix = exprString(args[0]) orelse return ParseError.InvalidFormat;
-        if (prefix.len == 0) return ParseError.InvalidFormat;
-        command.expected_text = try dupePlain(allocator, prefix);
-        errdefer allocator.free(command.expected_text.?);
-        command.expected_count = try exprUnsigned(args[1]);
-    } else if (std.mem.eql(u8, head, "snapshot")) {
-        if (args.len != 1) return ParseError.InvalidFormat;
-        command.cmd_type = .snapshot;
-        const text = exprString(args[0]) orelse return ParseError.InvalidFormat;
-        if (text.len == 0) return ParseError.InvalidFormat;
-        command.expected_text = try dupePlain(allocator, text);
-    } else if (std.mem.eql(u8, head, "close")) {
+        const prefix = try dupePlain(allocator, try nonEmptyString(args[0]));
+        errdefer allocator.free(prefix);
+        break :blk .{ .expect_count = .{ .prefix = prefix, .count = try exprUnsigned(args[1]) } };
+    } else if (std.mem.eql(u8, head, "snapshot")) blk: {
+        break :blk .{ .snapshot = try oneText(allocator, args) };
+    } else if (std.mem.eql(u8, head, "close")) blk: {
         if (args.len != 0) return ParseError.InvalidFormat;
-        command.cmd_type = .close;
-    } else {
-        return null;
+        break :blk .close;
+    } else return null;
+    return .{ .step = step, .line_num = line };
+}
+
+/// The pre-mount state a `(setup ...)` may declare. Setup is declarative:
+/// nothing here dispatches an event or touches the tree.
+fn decodeSetupForm(allocator: std.mem.Allocator, head: []const u8, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
+    const step: Step = if (std.mem.eql(u8, head, "manual-effects")) blk: {
+        if (args.len != 0) return ParseError.InvalidFormat;
+        break :blk .manual_effects;
+    } else if (std.mem.eql(u8, head, "initial-location"))
+        .{ .set_initial_location = try oneText(allocator, args) }
+    else if (std.mem.eql(u8, head, "initial-visibility"))
+        .{ .set_initial_visibility = try oneSymbol(allocator, args) }
+    else if (std.mem.eql(u8, head, "initial-online"))
+        .{ .set_initial_online = try oneSymbol(allocator, args) }
+    else if (std.mem.eql(u8, head, "local-storage"))
+        .{ .seed_local_storage = try keyValue(allocator, args) }
+    else if (std.mem.eql(u8, head, "session-storage"))
+        .{ .seed_session_storage = try keyValue(allocator, args) }
+    else
+        return ParseError.InvalidFormat;
+    return .{ .step = step, .line_num = line };
+}
+
+/// Every step a `(test ...)` may take, decoded straight from its form. The
+/// head is the spec spelling; the tag is the runner's. Argument shapes are
+/// checked here once, with the line of the form in every refusal. Setup
+/// vocabulary is refused inside steps by falling through to the unknown-head
+/// refusal: none of those heads is a step.
+fn decodeStepForm(allocator: std.mem.Allocator, head: []const u8, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
+    if (std.mem.eql(u8, head, "run-effect") or std.mem.eql(u8, head, "expect-pending-effects")) {
+        if (args.len != 1) return ParseError.InvalidFormat;
+        const count = try exprUnsigned(args[0]);
+        return .{
+            .step = if (std.mem.eql(u8, head, "run-effect")) .{ .run_effect = count } else .{ .expect_pending_effects = count },
+            .line_num = line,
+        };
     }
-    return command;
+    const Shape = enum { locator, locator_text, locator_bool, locator_count, text, symbol, key_value, key, named_count, interval, metric_delta, none };
+    const Form = struct { head: []const u8, tag: SpecCommandType, shape: Shape };
+    const forms = [_]Form{
+        .{ .head = "click", .tag = .click, .shape = .locator },
+        .{ .head = "real-click", .tag = .real_click, .shape = .locator },
+        .{ .head = "pointer-down", .tag = .pointer_down, .shape = .locator },
+        .{ .head = "pointer-up", .tag = .pointer_up, .shape = .locator },
+        .{ .head = "pointer-enter", .tag = .pointer_enter, .shape = .locator },
+        .{ .head = "pointer-leave", .tag = .pointer_leave, .shape = .locator },
+        .{ .head = "focus", .tag = .focus, .shape = .locator },
+        .{ .head = "blur", .tag = .blur, .shape = .locator },
+        .{ .head = "composition-start", .tag = .composition_start, .shape = .locator },
+        .{ .head = "composition-end", .tag = .composition_end, .shape = .locator },
+        .{ .head = "submit", .tag = .submit, .shape = .locator },
+        .{ .head = "check", .tag = .check, .shape = .locator },
+        .{ .head = "uncheck", .tag = .uncheck, .shape = .locator },
+        .{ .head = "expect-visible", .tag = .expect_visible, .shape = .locator },
+        .{ .head = "expect-absent", .tag = .expect_absent, .shape = .locator },
+        .{ .head = "fill", .tag = .fill, .shape = .locator_text },
+        .{ .head = "change", .tag = .change, .shape = .locator_text },
+        .{ .head = "select-option", .tag = .select_option, .shape = .locator_text },
+        .{ .head = "expect-text", .tag = .expect_text, .shape = .locator_text },
+        .{ .head = "expect-value", .tag = .expect_value, .shape = .locator_text },
+        .{ .head = "expect-checked", .tag = .expect_checked, .shape = .locator_bool },
+        .{ .head = "expect-disabled", .tag = .expect_disabled, .shape = .locator_bool },
+        .{ .head = "expect-updates", .tag = .expect_updates, .shape = .locator_count },
+        .{ .head = "navigate", .tag = .navigate, .shape = .text },
+        .{ .head = "expect-current-location", .tag = .expect_current_location, .shape = .text },
+        .{ .head = "assert-current-location", .tag = .expect_current_location, .shape = .text },
+        .{ .head = "expect-document-title", .tag = .expect_document_title, .shape = .text },
+        .{ .head = "set-visibility", .tag = .set_visibility, .shape = .symbol },
+        .{ .head = "set-online", .tag = .set_online, .shape = .symbol },
+        .{ .head = "history-back", .tag = .history_back, .shape = .none },
+        .{ .head = "history-forward", .tag = .history_forward, .shape = .none },
+        .{ .head = "request-window-close", .tag = .request_window_close, .shape = .none },
+        .{ .head = "mark-metrics", .tag = .mark_metrics, .shape = .none },
+        .{ .head = "expect-local-storage", .tag = .expect_local_storage, .shape = .key_value },
+        .{ .head = "expect-session-storage", .tag = .expect_session_storage, .shape = .key_value },
+        .{ .head = "expect-no-local-storage", .tag = .expect_no_local_storage, .shape = .key },
+        .{ .head = "expect-no-session-storage", .tag = .expect_no_session_storage, .shape = .key },
+        .{ .head = "expect-cleanup", .tag = .expect_cleanup, .shape = .named_count },
+        .{ .head = "tick-interval", .tag = .tick_interval, .shape = .interval },
+        .{ .head = "tick-interval-if-active", .tag = .tick_interval_if_active, .shape = .interval },
+        .{ .head = "expect-metric-delta", .tag = .expect_metric_delta, .shape = .metric_delta },
+        .{ .head = "expect-metric-delta-at-most", .tag = .expect_metric_delta_at_most, .shape = .metric_delta },
+    };
+    inline for (forms) |form| {
+        if (std.mem.eql(u8, head, form.head)) {
+            const name = @tagName(form.tag);
+            const step: Step = switch (form.shape) {
+                .locator => @unionInit(Step, name, try oneLocator(allocator, args)),
+                .locator_text => @unionInit(Step, name, try locatorText(allocator, args)),
+                .locator_bool => @unionInit(Step, name, try locatorBool(allocator, args)),
+                .locator_count => @unionInit(Step, name, try locatorCount(allocator, args)),
+                .text => @unionInit(Step, name, try oneText(allocator, args)),
+                .symbol => @unionInit(Step, name, try oneSymbol(allocator, args)),
+                .key_value => @unionInit(Step, name, try keyValue(allocator, args)),
+                .key => @unionInit(Step, name, try oneText(allocator, args)),
+                .named_count => @unionInit(Step, name, try namedCount(allocator, args)),
+                .interval => blk: {
+                    if (args.len != 1) return ParseError.InvalidFormat;
+                    break :blk @unionInit(Step, name, try exprUnsigned(args[0]));
+                },
+                .metric_delta => @unionInit(Step, name, try metricDelta(allocator, args)),
+                .none => if (args.len == 0) @unionInit(Step, name, {}) else return ParseError.InvalidFormat,
+            };
+            return .{ .step = step, .line_num = line };
+        }
+    }
+    // The forms whose shape is their own.
+    const step: Step = if (std.mem.eql(u8, head, "key-down")) blk: {
+        if (args.len != 3) return ParseError.InvalidFormat;
+        const target = try locatorFromExpr(allocator, args[0]);
+        errdefer target.deinit(allocator);
+        const key = try dupePlain(allocator, exprString(args[1]) orelse return ParseError.InvalidFormat);
+        errdefer allocator.free(key);
+        break :blk .{ .key_down = .{ .target = target, .key = key, .shift = try exprBool(args[2]) } };
+    } else if (std.mem.eql(u8, head, "shortcut")) blk: {
+        if (args.len != 3) return ParseError.InvalidFormat;
+        const key = exprString(args[1]) orelse return ParseError.InvalidFormat;
+        const modifiers = try exprUnsigned(args[2]);
+        if (modifiers > std.math.maxInt(u32)) return ParseError.InvalidFormat;
+        const chord = signals.key_chord.parse(key, @intCast(modifiers)) catch return ParseError.InvalidFormat;
+        break :blk .{ .shortcut = .{ .target = try locatorFromExpr(allocator, args[0]), .chord = chord } };
+    } else if (std.mem.eql(u8, head, "custom-event")) blk: {
+        if (args.len != 3) return ParseError.InvalidFormat;
+        const target = try locatorFromExpr(allocator, args[0]);
+        errdefer target.deinit(allocator);
+        const name = try dupePlain(allocator, exprString(args[1]) orelse return ParseError.InvalidFormat);
+        errdefer allocator.free(name);
+        const detail = try dupePlain(allocator, exprString(args[2]) orelse return ParseError.InvalidFormat);
+        break :blk .{ .custom_event = .{ .target = target, .name = name, .detail = detail } };
+    } else if (std.mem.eql(u8, head, "expect-attr")) blk: {
+        if (args.len != 3) return ParseError.InvalidFormat;
+        const target = try locatorFromExpr(allocator, args[0]);
+        errdefer target.deinit(allocator);
+        const name = try dupePlain(allocator, exprSymbol(args[1]) orelse exprString(args[1]) orelse return ParseError.InvalidFormat);
+        errdefer allocator.free(name);
+        const value = try dupePlain(allocator, exprString(args[2]) orelse return ParseError.InvalidFormat);
+        break :blk .{ .expect_attr = .{ .target = target, .name = name, .value = value } };
+    } else if (std.mem.eql(u8, head, "expect-no-attr")) blk: {
+        if (args.len != 2) return ParseError.InvalidFormat;
+        const target = try locatorFromExpr(allocator, args[0]);
+        errdefer target.deinit(allocator);
+        const name = try dupePlain(allocator, exprSymbol(args[1]) orelse exprString(args[1]) orelse return ParseError.InvalidFormat);
+        break :blk .{ .expect_no_attr = .{ .target = target, .name = name } };
+    } else if (std.mem.eql(u8, head, "expect-window-closed")) blk: {
+        if (args.len != 1) return ParseError.InvalidFormat;
+        break :blk .{ .expect_window_closed = try exprBool(args[0]) };
+    } else if (std.mem.eql(u8, head, "expect-interval")) blk: {
+        if (args.len != 2) return ParseError.InvalidFormat;
+        break :blk .{ .expect_interval = .{ .period_ms = try exprUnsigned(args[0]), .count = try exprUnsigned(args[1]) } };
+    } else return ParseError.InvalidFormat;
+    return .{ .step = step, .line_num = line };
+}
+
+fn nonEmptyString(expr: sexpr.Expr) ParseError![]const u8 {
+    const text = exprString(expr) orelse return ParseError.InvalidFormat;
+    if (text.len == 0) return ParseError.InvalidFormat;
+    return text;
+}
+
+fn oneLocator(allocator: std.mem.Allocator, args: []const sexpr.Expr) ParseError!Locator {
+    if (args.len != 1) return ParseError.InvalidFormat;
+    return locatorFromExpr(allocator, args[0]);
+}
+
+fn oneText(allocator: std.mem.Allocator, args: []const sexpr.Expr) ParseError![]const u8 {
+    if (args.len != 1) return ParseError.InvalidFormat;
+    return dupePlain(allocator, exprString(args[0]) orelse return ParseError.InvalidFormat);
+}
+
+/// A bare-word value such as `hidden` or `offline`; the host validates the
+/// vocabulary through `visibilitySnapshotFromSpecText` and its siblings.
+fn oneSymbol(allocator: std.mem.Allocator, args: []const sexpr.Expr) ParseError![]const u8 {
+    if (args.len != 1) return ParseError.InvalidFormat;
+    return dupePlain(allocator, exprSymbol(args[0]) orelse return ParseError.InvalidFormat);
+}
+
+fn locatorText(allocator: std.mem.Allocator, args: []const sexpr.Expr) ParseError!LocatorText {
+    if (args.len != 2) return ParseError.InvalidFormat;
+    const target = try locatorFromExpr(allocator, args[0]);
+    errdefer target.deinit(allocator);
+    return .{ .target = target, .text = try dupePlain(allocator, exprString(args[1]) orelse return ParseError.InvalidFormat) };
+}
+
+fn locatorBool(allocator: std.mem.Allocator, args: []const sexpr.Expr) ParseError!LocatorBool {
+    if (args.len != 2) return ParseError.InvalidFormat;
+    const target = try locatorFromExpr(allocator, args[0]);
+    errdefer target.deinit(allocator);
+    return .{ .target = target, .expected = try exprBool(args[1]) };
+}
+
+fn locatorCount(allocator: std.mem.Allocator, args: []const sexpr.Expr) ParseError!LocatorCount {
+    if (args.len != 2) return ParseError.InvalidFormat;
+    const target = try locatorFromExpr(allocator, args[0]);
+    errdefer target.deinit(allocator);
+    return .{ .target = target, .count = try exprUnsigned(args[1]) };
+}
+
+fn keyValue(allocator: std.mem.Allocator, args: []const sexpr.Expr) ParseError!KeyValue {
+    if (args.len != 2) return ParseError.InvalidFormat;
+    const key = try dupePlain(allocator, exprString(args[0]) orelse return ParseError.InvalidFormat);
+    errdefer allocator.free(key);
+    return .{ .key = key, .value = try dupePlain(allocator, exprString(args[1]) orelse return ParseError.InvalidFormat) };
+}
+
+fn namedCount(allocator: std.mem.Allocator, args: []const sexpr.Expr) ParseError!NamedCount {
+    if (args.len != 2) return ParseError.InvalidFormat;
+    const name = try dupePlain(allocator, exprString(args[0]) orelse return ParseError.InvalidFormat);
+    errdefer allocator.free(name);
+    return .{ .name = name, .count = try exprUnsigned(args[1]) };
+}
+
+fn metricDelta(allocator: std.mem.Allocator, args: []const sexpr.Expr) ParseError!MetricDelta {
+    if (args.len != 2) return ParseError.InvalidFormat;
+    const metric = try dupePlain(allocator, exprSymbol(args[0]) orelse return ParseError.InvalidFormat);
+    errdefer allocator.free(metric);
+    return .{ .metric = metric, .delta = try exprInteger(args[1]) };
+}
+
+fn exprInteger(expr: sexpr.Expr) ParseError!i64 {
+    return switch (expr.value) {
+        .atom => |atom| switch (atom) {
+            .integer => |value| value,
+            else => ParseError.InvalidFormat,
+        },
+        else => ParseError.InvalidFormat,
+    };
 }
 
 fn exprUnsigned(expr: sexpr.Expr) ParseError!u64 {
@@ -649,13 +1035,13 @@ fn locatorFromExpr(allocator: std.mem.Allocator, expr: sexpr.Expr) ParseError!Lo
         const name = exprString(items[3]) orelse return ParseError.InvalidFormat;
         const role_copy = try dupePlain(allocator, role);
         errdefer allocator.free(role_copy);
-        return .{ .kind = .role_name, .role = role_copy, .name = try dupePlain(allocator, name) };
+        return .{ .role_name = .{ .role = role_copy, .name = try dupePlain(allocator, name) } };
     }
     if (items.len != 2) return ParseError.InvalidFormat;
     const value = exprString(items[1]) orelse return ParseError.InvalidFormat;
-    if (std.mem.eql(u8, kind, "label")) return .{ .kind = .label, .label = try dupePlain(allocator, value) };
-    if (std.mem.eql(u8, kind, "text")) return .{ .kind = .text, .text = try dupePlain(allocator, value) };
-    if (std.mem.eql(u8, kind, "test-id")) return .{ .kind = .test_id, .test_id = try dupePlain(allocator, value) };
+    if (std.mem.eql(u8, kind, "label")) return .{ .label = try dupePlain(allocator, value) };
+    if (std.mem.eql(u8, kind, "text")) return .{ .text = try dupePlain(allocator, value) };
+    if (std.mem.eql(u8, kind, "test-id")) return .{ .test_id = try dupePlain(allocator, value) };
     return ParseError.InvalidFormat;
 }
 
@@ -674,7 +1060,7 @@ fn appendDecodedForm(
 
     // Scripted primitives are allowed in both sections: in setup they seed
     // the answer before the application mounts, in steps they stub it.
-    const command: SpecCommand = if (file_fixtures.recognizes(head))
+    var command: SpecCommand = if (file_fixtures.recognizes(head))
         try decodeFileFixtureForm(allocator, base_dir, head, args, is_setup, line)
     else if (http_fixtures.recognizes(head))
         try decodeHttpFixtureForm(allocator, head, args, is_setup, line)
@@ -684,6 +1070,7 @@ fn appendDecodedForm(
         window
     else
         try decodeStepForm(allocator, head, args, line);
+    command.column_num = form.span.column;
 
     commands.append(allocator, command) catch {
         freeOneCommand(allocator, command);
@@ -695,14 +1082,9 @@ fn appendDecodedForm(
 /// `(setup ...)`, which seeds the answer before the application mounts.
 fn decodeFileFixtureForm(allocator: std.mem.Allocator, base_dir: []const u8, head: []const u8, args: []const sexpr.Expr, is_setup: bool, line: usize) ParseError!SpecCommand {
     const fixture = try file_fixtures.parse(allocator, base_dir, head, args);
+    const payload: FileStub = .{ .label = fixture.label, .stub = fixture.stub };
     return .{
-        .cmd_type = if (is_setup) .seed_file_result else .stub_file_result,
-        .locator = emptyLocator(),
-        .task_name = fixture.label,
-        .expected_text = null,
-        .expected_count = null,
-        .expected_bool = null,
-        .file_stub = fixture.stub,
+        .step = if (is_setup) .{ .seed_file_result = payload } else .{ .stub_file_result = payload },
         .line_num = line,
     };
 }
@@ -710,289 +1092,10 @@ fn decodeFileFixtureForm(allocator: std.mem.Allocator, base_dir: []const u8, hea
 /// A scripted HTTP exchange, stubbed in the steps or seeded in the setup.
 fn decodeHttpFixtureForm(allocator: std.mem.Allocator, head: []const u8, args: []const sexpr.Expr, is_setup: bool, line: usize) ParseError!SpecCommand {
     const fixture = try http_fixtures.parse(allocator, head, args);
+    const payload: HttpStub = .{ .label = fixture.label, .stub = fixture.stub };
     return .{
-        .cmd_type = if (is_setup) .seed_http_result else .stub_http_result,
-        .locator = emptyLocator(),
-        .task_name = fixture.label,
-        .expected_text = null,
-        .expected_count = null,
-        .expected_bool = null,
-        .http_stub = fixture.stub,
+        .step = if (is_setup) .{ .seed_http_result = payload } else .{ .stub_http_result = payload },
         .line_num = line,
-    };
-}
-
-/// A bare command with nothing but its type and line; the decoders below fill
-/// in what each form carries and free what they took if a later argument fails.
-fn bare(cmd_type: SpecCommandType, line: usize) SpecCommand {
-    return .{
-        .cmd_type = cmd_type,
-        .locator = emptyLocator(),
-        .expected_text = null,
-        .expected_count = null,
-        .expected_bool = null,
-        .line_num = line,
-    };
-}
-
-/// The pre-mount state a `(setup ...)` may declare. Setup is declarative:
-/// nothing here dispatches an event or touches the tree.
-fn decodeSetupForm(allocator: std.mem.Allocator, head: []const u8, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
-    if (std.mem.eql(u8, head, "manual-effects")) {
-        if (args.len != 0) return ParseError.InvalidFormat;
-        return bare(.manual_effects, line);
-    }
-    if (std.mem.eql(u8, head, "initial-location")) {
-        return textForm(allocator, .set_initial_location, args, line);
-    } else if (std.mem.eql(u8, head, "initial-visibility")) {
-        return symbolForm(allocator, .set_initial_visibility, args, line);
-    } else if (std.mem.eql(u8, head, "initial-online")) {
-        return symbolForm(allocator, .set_initial_online, args, line);
-    } else if (std.mem.eql(u8, head, "local-storage")) {
-        return keyValueForm(allocator, .seed_local_storage, args, line);
-    } else if (std.mem.eql(u8, head, "session-storage")) {
-        return keyValueForm(allocator, .seed_session_storage, args, line);
-    }
-    return ParseError.InvalidFormat;
-}
-
-/// Every step a `(test ...)` may take, decoded straight from its form. The
-/// head is the spec spelling; the command type is the runner's. Argument
-/// shapes are checked here once, with the line of the form in every refusal.
-fn decodeStepForm(allocator: std.mem.Allocator, head: []const u8, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
-    if (std.mem.eql(u8, head, "run-effect") or std.mem.eql(u8, head, "expect-pending-effects")) {
-        if (args.len != 1) return ParseError.InvalidFormat;
-        var command = bare(if (std.mem.eql(u8, head, "run-effect")) .run_effect else .expect_pending_effects, line);
-        command.expected_count = try exprUnsigned(args[0]);
-        return command;
-    }
-    // Setup vocabulary is refused inside steps by falling through to the
-    // unknown-head refusal below: none of these heads is a step.
-    const Shape = enum { locator, locator_text, locator_bool, locator_count, text, symbol, key_value, key, count_after_key, interval, interval_count, metric_delta, none };
-    const Form = struct { head: []const u8, cmd_type: SpecCommandType, shape: Shape };
-    const forms = [_]Form{
-        .{ .head = "click", .cmd_type = .click, .shape = .locator },
-        .{ .head = "real-click", .cmd_type = .real_click, .shape = .locator },
-        .{ .head = "pointer-down", .cmd_type = .pointer_down, .shape = .locator },
-        .{ .head = "pointer-up", .cmd_type = .pointer_up, .shape = .locator },
-        .{ .head = "pointer-enter", .cmd_type = .pointer_enter, .shape = .locator },
-        .{ .head = "pointer-leave", .cmd_type = .pointer_leave, .shape = .locator },
-        .{ .head = "focus", .cmd_type = .focus, .shape = .locator },
-        .{ .head = "blur", .cmd_type = .blur, .shape = .locator },
-        .{ .head = "composition-start", .cmd_type = .composition_start, .shape = .locator },
-        .{ .head = "composition-end", .cmd_type = .composition_end, .shape = .locator },
-        .{ .head = "submit", .cmd_type = .submit, .shape = .locator },
-        .{ .head = "check", .cmd_type = .check, .shape = .locator },
-        .{ .head = "uncheck", .cmd_type = .uncheck, .shape = .locator },
-        .{ .head = "expect-visible", .cmd_type = .expect_visible, .shape = .locator },
-        .{ .head = "expect-absent", .cmd_type = .expect_absent, .shape = .locator },
-        .{ .head = "fill", .cmd_type = .fill, .shape = .locator_text },
-        .{ .head = "change", .cmd_type = .change, .shape = .locator_text },
-        .{ .head = "select-option", .cmd_type = .select_option, .shape = .locator_text },
-        .{ .head = "expect-text", .cmd_type = .expect_text, .shape = .locator_text },
-        .{ .head = "expect-value", .cmd_type = .expect_value, .shape = .locator_text },
-        .{ .head = "expect-checked", .cmd_type = .expect_checked, .shape = .locator_bool },
-        .{ .head = "expect-disabled", .cmd_type = .expect_disabled, .shape = .locator_bool },
-        .{ .head = "expect-updates", .cmd_type = .expect_updates, .shape = .locator_count },
-        .{ .head = "navigate", .cmd_type = .navigate, .shape = .text },
-        .{ .head = "expect-current-location", .cmd_type = .expect_current_location, .shape = .text },
-        .{ .head = "assert-current-location", .cmd_type = .expect_current_location, .shape = .text },
-        .{ .head = "expect-document-title", .cmd_type = .expect_document_title, .shape = .text },
-        .{ .head = "set-visibility", .cmd_type = .set_visibility, .shape = .symbol },
-        .{ .head = "set-online", .cmd_type = .set_online, .shape = .symbol },
-        .{ .head = "history-back", .cmd_type = .history_back, .shape = .none },
-        .{ .head = "history-forward", .cmd_type = .history_forward, .shape = .none },
-        .{ .head = "request-window-close", .cmd_type = .request_window_close, .shape = .none },
-        .{ .head = "mark-metrics", .cmd_type = .mark_metrics, .shape = .none },
-        .{ .head = "expect-local-storage", .cmd_type = .expect_local_storage, .shape = .key_value },
-        .{ .head = "expect-session-storage", .cmd_type = .expect_session_storage, .shape = .key_value },
-        .{ .head = "expect-no-local-storage", .cmd_type = .expect_no_local_storage, .shape = .key },
-        .{ .head = "expect-no-session-storage", .cmd_type = .expect_no_session_storage, .shape = .key },
-        .{ .head = "expect-cleanup", .cmd_type = .expect_cleanup, .shape = .count_after_key },
-        .{ .head = "tick-interval", .cmd_type = .tick_interval, .shape = .interval },
-        .{ .head = "tick-interval-if-active", .cmd_type = .tick_interval_if_active, .shape = .interval },
-        .{ .head = "expect-interval", .cmd_type = .expect_interval, .shape = .interval_count },
-        .{ .head = "expect-metric-delta", .cmd_type = .expect_metric_delta, .shape = .metric_delta },
-        .{ .head = "expect-metric-delta-at-most", .cmd_type = .expect_metric_delta_at_most, .shape = .metric_delta },
-    };
-    for (forms) |form| {
-        if (!std.mem.eql(u8, head, form.head)) continue;
-        return switch (form.shape) {
-            .locator => locatorForm(allocator, form.cmd_type, args, line),
-            .locator_text => locatorTextForm(allocator, form.cmd_type, args, line),
-            .locator_bool => locatorBoolForm(allocator, form.cmd_type, args, line),
-            .locator_count => locatorCountForm(allocator, form.cmd_type, args, line),
-            .text => textForm(allocator, form.cmd_type, args, line),
-            .symbol => symbolForm(allocator, form.cmd_type, args, line),
-            .key_value => keyValueForm(allocator, form.cmd_type, args, line),
-            .key => keyForm(allocator, form.cmd_type, args, line),
-            .count_after_key => countAfterKeyForm(allocator, form.cmd_type, args, line),
-            .interval => intervalForm(form.cmd_type, args, line),
-            .interval_count => intervalCountForm(args, line),
-            .metric_delta => metricDeltaForm(allocator, form.cmd_type, args, line),
-            .none => if (args.len == 0) bare(form.cmd_type, line) else ParseError.InvalidFormat,
-        };
-    }
-    // The few forms whose shape is their own.
-    if (std.mem.eql(u8, head, "key-down")) {
-        if (args.len != 3) return ParseError.InvalidFormat;
-        var command = bare(.key_down, line);
-        command.locator = try locatorFromExpr(allocator, args[0]);
-        errdefer command.locator.deinit(allocator);
-        command.expected_text = try dupePlain(allocator, exprString(args[1]) orelse return ParseError.InvalidFormat);
-        errdefer allocator.free(command.expected_text.?);
-        command.expected_bool = try exprBool(args[2]);
-        return command;
-    } else if (std.mem.eql(u8, head, "shortcut")) {
-        if (args.len != 3) return ParseError.InvalidFormat;
-        const key = exprString(args[1]) orelse return ParseError.InvalidFormat;
-        const modifiers = try exprUnsigned(args[2]);
-        if (modifiers > std.math.maxInt(u32)) return ParseError.InvalidFormat;
-        const chord = signals.key_chord.parse(key, @intCast(modifiers)) catch return ParseError.InvalidFormat;
-        var command = bare(.shortcut, line);
-        command.locator = try locatorFromExpr(allocator, args[0]);
-        command.shortcut = chord;
-        return command;
-    } else if (std.mem.eql(u8, head, "custom-event")) {
-        if (args.len != 3) return ParseError.InvalidFormat;
-        var command = bare(.custom_event, line);
-        command.locator = try locatorFromExpr(allocator, args[0]);
-        errdefer command.locator.deinit(allocator);
-        command.task_name = try dupePlain(allocator, exprString(args[1]) orelse return ParseError.InvalidFormat);
-        errdefer allocator.free(command.task_name.?);
-        command.expected_text = try dupePlain(allocator, exprString(args[2]) orelse return ParseError.InvalidFormat);
-        return command;
-    } else if (std.mem.eql(u8, head, "expect-attr")) {
-        if (args.len != 3) return ParseError.InvalidFormat;
-        var command = bare(.expect_attr, line);
-        command.locator = try locatorFromExpr(allocator, args[0]);
-        errdefer command.locator.deinit(allocator);
-        command.expected_attr = try dupePlain(allocator, exprSymbol(args[1]) orelse exprString(args[1]) orelse return ParseError.InvalidFormat);
-        errdefer allocator.free(command.expected_attr.?);
-        command.expected_text = try dupePlain(allocator, exprString(args[2]) orelse return ParseError.InvalidFormat);
-        return command;
-    } else if (std.mem.eql(u8, head, "expect-no-attr")) {
-        if (args.len != 2) return ParseError.InvalidFormat;
-        var command = bare(.expect_no_attr, line);
-        command.locator = try locatorFromExpr(allocator, args[0]);
-        errdefer command.locator.deinit(allocator);
-        command.expected_attr = try dupePlain(allocator, exprSymbol(args[1]) orelse exprString(args[1]) orelse return ParseError.InvalidFormat);
-        return command;
-    } else if (std.mem.eql(u8, head, "expect-window-closed")) {
-        if (args.len != 1) return ParseError.InvalidFormat;
-        var command = bare(.expect_window_closed, line);
-        command.expected_bool = try exprBool(args[0]);
-        return command;
-    }
-    return ParseError.InvalidFormat;
-}
-
-fn locatorForm(allocator: std.mem.Allocator, cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
-    if (args.len != 1) return ParseError.InvalidFormat;
-    var command = bare(cmd_type, line);
-    command.locator = try locatorFromExpr(allocator, args[0]);
-    return command;
-}
-
-fn locatorTextForm(allocator: std.mem.Allocator, cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
-    if (args.len != 2) return ParseError.InvalidFormat;
-    var command = bare(cmd_type, line);
-    command.locator = try locatorFromExpr(allocator, args[0]);
-    errdefer command.locator.deinit(allocator);
-    command.expected_text = try dupePlain(allocator, exprString(args[1]) orelse return ParseError.InvalidFormat);
-    return command;
-}
-
-fn locatorBoolForm(allocator: std.mem.Allocator, cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
-    if (args.len != 2) return ParseError.InvalidFormat;
-    var command = bare(cmd_type, line);
-    command.locator = try locatorFromExpr(allocator, args[0]);
-    errdefer command.locator.deinit(allocator);
-    command.expected_bool = try exprBool(args[1]);
-    return command;
-}
-
-fn locatorCountForm(allocator: std.mem.Allocator, cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
-    if (args.len != 2) return ParseError.InvalidFormat;
-    var command = bare(cmd_type, line);
-    command.locator = try locatorFromExpr(allocator, args[0]);
-    errdefer command.locator.deinit(allocator);
-    command.expected_count = try exprUnsigned(args[1]);
-    return command;
-}
-
-fn textForm(allocator: std.mem.Allocator, cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
-    if (args.len != 1) return ParseError.InvalidFormat;
-    var command = bare(cmd_type, line);
-    command.expected_text = try dupePlain(allocator, exprString(args[0]) orelse return ParseError.InvalidFormat);
-    return command;
-}
-
-/// A bare-word value such as `hidden` or `offline`; the host validates the
-/// vocabulary through `visibilitySnapshotFromSpecText` and its siblings.
-fn symbolForm(allocator: std.mem.Allocator, cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
-    if (args.len != 1) return ParseError.InvalidFormat;
-    var command = bare(cmd_type, line);
-    command.expected_text = try dupePlain(allocator, exprSymbol(args[0]) orelse return ParseError.InvalidFormat);
-    return command;
-}
-
-fn keyValueForm(allocator: std.mem.Allocator, cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
-    if (args.len != 2) return ParseError.InvalidFormat;
-    var command = bare(cmd_type, line);
-    command.task_name = try dupePlain(allocator, exprString(args[0]) orelse return ParseError.InvalidFormat);
-    errdefer allocator.free(command.task_name.?);
-    command.expected_text = try dupePlain(allocator, exprString(args[1]) orelse return ParseError.InvalidFormat);
-    return command;
-}
-
-fn keyForm(allocator: std.mem.Allocator, cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
-    if (args.len != 1) return ParseError.InvalidFormat;
-    var command = bare(cmd_type, line);
-    command.task_name = try dupePlain(allocator, exprString(args[0]) orelse return ParseError.InvalidFormat);
-    return command;
-}
-
-fn countAfterKeyForm(allocator: std.mem.Allocator, cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
-    if (args.len != 2) return ParseError.InvalidFormat;
-    var command = bare(cmd_type, line);
-    command.task_name = try dupePlain(allocator, exprString(args[0]) orelse return ParseError.InvalidFormat);
-    errdefer allocator.free(command.task_name.?);
-    command.expected_count = try exprUnsigned(args[1]);
-    return command;
-}
-
-fn intervalForm(cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
-    if (args.len != 1) return ParseError.InvalidFormat;
-    var command = bare(cmd_type, line);
-    command.interval_ms = try exprUnsigned(args[0]);
-    return command;
-}
-
-fn intervalCountForm(args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
-    if (args.len != 2) return ParseError.InvalidFormat;
-    var command = bare(.expect_interval, line);
-    command.interval_ms = try exprUnsigned(args[0]);
-    command.expected_count = try exprUnsigned(args[1]);
-    return command;
-}
-
-fn metricDeltaForm(allocator: std.mem.Allocator, cmd_type: SpecCommandType, args: []const sexpr.Expr, line: usize) ParseError!SpecCommand {
-    if (args.len != 2) return ParseError.InvalidFormat;
-    var command = bare(cmd_type, line);
-    command.expected_text = try dupePlain(allocator, exprSymbol(args[0]) orelse return ParseError.InvalidFormat);
-    errdefer allocator.free(command.expected_text.?);
-    command.expected_metric_delta = try exprInteger(args[1]);
-    return command;
-}
-
-fn exprInteger(expr: sexpr.Expr) ParseError!i64 {
-    return switch (expr.value) {
-        .atom => |atom| switch (atom) {
-            .integer => |value| value,
-            else => ParseError.InvalidFormat,
-        },
-        else => ParseError.InvalidFormat,
     };
 }
 
@@ -1029,12 +1132,7 @@ fn exprSymbolEql(expr: sexpr.Expr, expected: []const u8) bool {
 }
 
 fn freeOneCommand(allocator: std.mem.Allocator, command: SpecCommand) void {
-    command.locator.deinit(allocator);
-    if (command.task_name) |name| allocator.free(name);
-    if (command.expected_attr) |attr| allocator.free(attr);
-    if (command.expected_text) |text| allocator.free(text);
-    if (command.file_stub) |stub| stub.deinit(allocator);
-    if (command.http_stub) |stub| stub.deinit(allocator);
+    command.step.deinit(allocator);
 }
 
 fn freeCommandList(allocator: std.mem.Allocator, commands: *std.ArrayListUnmanaged(SpecCommand)) void {
@@ -1061,15 +1159,16 @@ test "S-expression spec parser decodes setup locators actions and assertions" {
 
     try std.testing.expectEqualStrings("save a profile", spec.name);
     try std.testing.expectEqual(@as(usize, 7), spec.commands.len);
-    try std.testing.expectEqual(SpecCommandType.set_initial_location, spec.commands[0].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.set_initial_location, spec.commands[0].kind());
     try std.testing.expectEqual(@as(usize, 4), spec.commands[0].line_num);
-    try std.testing.expectEqual(SpecCommandType.seed_local_storage, spec.commands[2].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.fill, spec.commands[3].cmd_type);
-    try std.testing.expectEqual(LocatorKind.label, spec.commands[3].locator.kind);
-    try std.testing.expectEqualStrings("a@example.com", spec.commands[3].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.real_click, spec.commands[4].cmd_type);
-    try std.testing.expectEqual(LocatorKind.role_name, spec.commands[4].locator.kind);
-    try std.testing.expectEqual(SpecCommandType.expect_metric_delta, spec.commands[6].cmd_type);
+    try std.testing.expectEqual(@as(usize, 5), spec.commands[0].column_num);
+    try std.testing.expectEqual(SpecCommandType.seed_local_storage, spec.commands[2].kind());
+    try std.testing.expectEqual(SpecCommandType.fill, spec.commands[3].kind());
+    try std.testing.expectEqual(LocatorKind.label, legacyView(spec.commands[3].step).locator.kind);
+    try std.testing.expectEqualStrings("a@example.com", legacyView(spec.commands[3].step).expected.?);
+    try std.testing.expectEqual(SpecCommandType.real_click, spec.commands[4].kind());
+    try std.testing.expectEqual(LocatorKind.role_name, legacyView(spec.commands[4].step).locator.kind);
+    try std.testing.expectEqual(SpecCommandType.expect_metric_delta, spec.commands[6].kind());
 }
 
 test "S-expression locators name text containing separators and quotes" {
@@ -1082,10 +1181,10 @@ test "S-expression locators name text containing separators and quotes" {
     const spec = try parseSExprTestSpec(std.testing.allocator, content);
     defer spec.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(LocatorKind.label, spec.commands[0].locator.kind);
-    try std.testing.expectEqualStrings("Go to C:\\Users", spec.commands[0].locator.label.?);
-    try std.testing.expectEqual(LocatorKind.role_name, spec.commands[1].locator.kind);
-    try std.testing.expectEqualStrings("say \"hi\"", spec.commands[1].locator.name.?);
+    try std.testing.expectEqual(LocatorKind.label, legacyView(spec.commands[0].step).locator.kind);
+    try std.testing.expectEqualStrings("Go to C:\\Users", legacyView(spec.commands[0].step).locator.label.?);
+    try std.testing.expectEqual(LocatorKind.role_name, legacyView(spec.commands[1].step).locator.kind);
+    try std.testing.expectEqualStrings("say \"hi\"", legacyView(spec.commands[1].step).locator.name.?);
 }
 
 test "a scenario carries its header and window-only steps" {
@@ -1121,23 +1220,23 @@ test "a scenario carries its header and window-only steps" {
     try std.testing.expectEqual(@as(usize, 2), scenario.on.len);
     try std.testing.expectEqualStrings("client-frame", scenario.on[0]);
     try std.testing.expectEqual(@as(usize, 11), spec.commands.len);
-    try std.testing.expectEqual(SpecCommandType.click, spec.commands[0].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.wait, spec.commands[1].cmd_type);
-    try std.testing.expectEqual(@as(u64, 800), spec.commands[1].interval_ms.?);
-    try std.testing.expectEqual(SpecCommandType.expect_count, spec.commands[2].cmd_type);
-    try std.testing.expectEqualStrings("event-", spec.commands[2].expected_text.?);
-    try std.testing.expectEqual(@as(u64, 3), spec.commands[2].expected_count.?);
-    try std.testing.expectEqual(SpecCommandType.type_text, spec.commands[3].cmd_type);
-    try std.testing.expectEqual(LocatorKind.label, spec.commands[3].locator.kind);
-    try std.testing.expectEqualStrings("hello", spec.commands[3].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.key, spec.commands[4].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.expect_onscreen, spec.commands[5].cmd_type);
-    try std.testing.expectEqualStrings("count", spec.commands[5].locator.test_id.?);
-    try std.testing.expectEqual(@as(u64, 0), spec.commands[6].expected_count.?);
-    try std.testing.expectEqual(true, spec.commands[7].expected_bool.?);
-    try std.testing.expectEqual(SpecCommandType.expect_focused, spec.commands[8].cmd_type);
-    try std.testing.expectEqualStrings("following", spec.commands[9].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.close, spec.commands[10].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.click, spec.commands[0].kind());
+    try std.testing.expectEqual(SpecCommandType.wait, spec.commands[1].kind());
+    try std.testing.expectEqual(@as(u64, 800), legacyView(spec.commands[1].step).interval.?);
+    try std.testing.expectEqual(SpecCommandType.expect_count, spec.commands[2].kind());
+    try std.testing.expectEqualStrings("event-", legacyView(spec.commands[2].step).expected.?);
+    try std.testing.expectEqual(@as(u64, 3), legacyView(spec.commands[2].step).count.?);
+    try std.testing.expectEqual(SpecCommandType.type_text, spec.commands[3].kind());
+    try std.testing.expectEqual(LocatorKind.label, legacyView(spec.commands[3].step).locator.kind);
+    try std.testing.expectEqualStrings("hello", legacyView(spec.commands[3].step).expected.?);
+    try std.testing.expectEqual(SpecCommandType.key, spec.commands[4].kind());
+    try std.testing.expectEqual(SpecCommandType.expect_onscreen, spec.commands[5].kind());
+    try std.testing.expectEqualStrings("count", legacyView(spec.commands[5].step).locator.test_id.?);
+    try std.testing.expectEqual(@as(u64, 0), legacyView(spec.commands[6].step).count.?);
+    try std.testing.expectEqual(true, legacyView(spec.commands[7].step).boolean.?);
+    try std.testing.expectEqual(SpecCommandType.expect_focused, spec.commands[8].kind());
+    try std.testing.expectEqualStrings("following", legacyView(spec.commands[9].step).expected.?);
+    try std.testing.expectEqual(SpecCommandType.close, spec.commands[10].kind());
     try std.testing.expectEqual(@as(usize, 18), spec.commands[10].line_num);
 }
 
@@ -1147,11 +1246,11 @@ test "manual effect controls distinguish setup mode from occurrence execution" {
         "(test \"manual\" (setup (manual-effects)) (steps (expect-pending-effects 2) (run-effect 2)))",
     );
     defer spec.deinit(std.testing.allocator);
-    try std.testing.expectEqual(SpecCommandType.manual_effects, spec.commands[0].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.expect_pending_effects, spec.commands[1].cmd_type);
-    try std.testing.expectEqual(@as(u64, 2), spec.commands[1].expected_count.?);
-    try std.testing.expectEqual(SpecCommandType.run_effect, spec.commands[2].cmd_type);
-    try std.testing.expectEqual(@as(u64, 2), spec.commands[2].expected_count.?);
+    try std.testing.expectEqual(SpecCommandType.manual_effects, spec.commands[0].kind());
+    try std.testing.expectEqual(SpecCommandType.expect_pending_effects, spec.commands[1].kind());
+    try std.testing.expectEqual(@as(u64, 2), spec.commands[1].step.expect_pending_effects);
+    try std.testing.expectEqual(SpecCommandType.run_effect, spec.commands[2].kind());
+    try std.testing.expectEqual(@as(u64, 2), spec.commands[2].step.run_effect);
     for ([_][]const u8{
         "(test \"bad\" (steps (manual-effects)))",
         "(test \"bad\" (setup (manual-effects 1)) (steps (run-effect 1)))",
@@ -1183,7 +1282,8 @@ test "a scenario and a test each refuse the other's steps" {
     try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(test \"t\" (steps (wait 5)))"));
     try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(test \"t\" (steps (close)))"));
     // A scenario runs the real workers, so a fixture has nothing to resolve.
-    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" (steps (resolve-file-choice \"open\" (canceled))))"));
+    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" (steps (stub-file-choice \"open\" (canceled))))"));
+    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" (steps (stub-http-reject \"load\" :kind network :detail \"offline\")))"));
     // Nothing can follow the close that ends the run.
     try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" (steps (close) (wait 1)))"));
     // Setup is pre-mount state for the display-free host only.
@@ -1197,7 +1297,7 @@ test "a scenario and a test each refuse the other's steps" {
     const plain = try parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" (steps (expect-visible (text \"0\")) (expect-disabled (role button :name \"Save\") true)))");
     defer plain.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u32, 0), plain.scenario.?.window_width);
-    try std.testing.expectEqual(SpecCommandType.expect_disabled, plain.commands[1].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.expect_disabled, plain.commands[1].kind());
 }
 
 test "S-expression spec parser rejects executable setup and empty steps" {
@@ -1286,18 +1386,68 @@ test "all checked-in specs decode to the committed golden" {
     }
 }
 
-test "the window step vocabulary the GUI host decodes is exactly the tags it needs" {
-    // Every window-only step must be in the list the Rust host decodes, and
-    // every listed tag must exist, so a renamed tag fails here and in the Rust
-    // twin of this test rather than at run time as "no meaning against a window".
-    inline for (std.meta.tags(SpecCommandType)) |tag| {
-        var listed = false;
-        for (window_step_tags) |name| listed = listed or std.mem.eql(u8, name, @tagName(tag));
-        if (isWindowOnly(tag)) try std.testing.expect(listed);
+/// The window steps and their argument names and types, reflected from the
+/// `Step` union the way the scenario ABI publishes them. The Rust decoder's
+/// tests read this file, so a renamed tag or payload field is caught on both
+/// sides. Regenerate it deliberately with `zig build spec-manifest`.
+const spec_steps_path = "test/spec-steps.json";
+
+/// Writes the machine-readable contract for every step accepted by a window
+/// host, derived from the typed union and the central capability table.
+pub fn writeStepManifest(writer: *std.Io.Writer) std.Io.Writer.Error!void {
+    try writer.writeAll("[\n");
+    var first_step = true;
+    inline for (std.meta.fields(Step)) |field| {
+        const tag = @field(SpecCommandType, field.name);
+        if (comptime stepCapability(tag) != .semantic) {
+            if (!first_step) try writer.writeAll(",\n");
+            first_step = false;
+            try writer.print("  {{\"kind\":\"{s}\",\"capability\":\"{s}\",\"args\":[", .{ field.name, @tagName(stepCapability(tag)) });
+            var first_arg = true;
+            try writeArgManifest(writer, field.type, "value", &first_arg);
+            try writer.writeAll("]}");
+        }
     }
-    for (window_step_tags) |name| {
-        try std.testing.expect(std.meta.stringToEnum(SpecCommandType, name) != null);
+    try writer.writeAll("\n]\n");
+}
+
+fn writeArgManifest(writer: *std.Io.Writer, comptime T: type, comptime name: []const u8, first: *bool) std.Io.Writer.Error!void {
+    if (T == void or T == Locator) return;
+    if (T == signals.key_chord.Chord) {
+        try writeManifestArg(writer, "key", "unsigned", first);
+        return writeManifestArg(writer, "modifiers", "unsigned", first);
     }
+    if (T == []const u8) return writeManifestArg(writer, name, "text", first);
+    if (T == u64) return writeManifestArg(writer, name, "unsigned", first);
+    if (T == i64) return writeManifestArg(writer, name, "signed", first);
+    if (T == bool) return writeManifestArg(writer, name, "boolean", first);
+    inline for (std.meta.fields(T)) |field| try writeArgManifest(writer, field.type, field.name, first);
+}
+
+fn writeManifestArg(writer: *std.Io.Writer, comptime name: []const u8, comptime kind: []const u8, first: *bool) std.Io.Writer.Error!void {
+    if (!first.*) try writer.writeByte(',');
+    first.* = false;
+    try writer.print("{{\"name\":\"{s}\",\"type\":\"{s}\"}}", .{ name, kind });
+}
+
+test "the published window steps match the committed manifest" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try writeStepManifest(&out.writer);
+    if (std.process.Environ.getPosix(std.testing.environ, "SIGNALS_UPDATE_SPEC_MANIFEST") != null) {
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = spec_steps_path, .data = out.written() });
+        return;
+    }
+    const expected = try std.Io.Dir.cwd().readFileAlloc(io, spec_steps_path, std.testing.allocator, .limited(64 * 1024));
+    defer std.testing.allocator.free(expected);
+    try std.testing.expectEqualStrings(expected, out.written());
+}
+
+test "step capability classifies both built-in hosts from one table" {
+    try std.testing.expectEqual(StepCapability.semantic, stepCapability(.fill));
+    try std.testing.expectEqual(StepCapability.window, stepCapability(.type_text));
+    try std.testing.expectEqual(StepCapability.both, stepCapability(.click));
 }
 
 test "the canonical form spells every field and escapes text" {
@@ -1356,60 +1506,60 @@ test "spec parser parses actions and assertions" {
     const commands = spec.commands;
 
     try std.testing.expectEqual(@as(usize, 32), commands.len);
-    try std.testing.expectEqual(SpecCommandType.set_initial_location, commands[0].cmd_type);
-    try std.testing.expectEqualStrings("/services/api?tab=logs#tail", commands[0].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.set_initial_visibility, commands[1].cmd_type);
-    try std.testing.expectEqualStrings("hidden", commands[1].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.set_initial_online, commands[2].cmd_type);
-    try std.testing.expectEqualStrings("offline", commands[2].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.seed_local_storage, commands[3].cmd_type);
-    try std.testing.expectEqualStrings("checkout:draft", commands[3].task_name.?);
-    try std.testing.expectEqualStrings("saved", commands[3].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.seed_session_storage, commands[4].cmd_type);
-    try std.testing.expectEqualStrings("checkout:flash", commands[4].task_name.?);
-    try std.testing.expectEqualStrings("shown", commands[4].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.click, commands[5].cmd_type);
-    try std.testing.expectEqual(LocatorKind.role_name, commands[5].locator.kind);
-    try std.testing.expectEqualStrings("button", commands[5].locator.role.?);
-    try std.testing.expectEqualStrings("Save", commands[5].locator.name.?);
-    try std.testing.expectEqual(SpecCommandType.real_click, commands[6].cmd_type);
-    try std.testing.expectEqualStrings("a@example.com", commands[7].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.focus, commands[8].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.blur, commands[9].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.change, commands[10].cmd_type);
-    try std.testing.expectEqualStrings("changed@example.com", commands[10].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.select_option, commands[11].cmd_type);
-    try std.testing.expectEqualStrings("growth", commands[11].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.composition_start, commands[12].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.composition_end, commands[13].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.custom_event, commands[14].cmd_type);
-    try std.testing.expectEqualStrings("chart", commands[14].locator.test_id.?);
-    try std.testing.expectEqualStrings("chart-select", commands[14].task_name.?);
-    try std.testing.expectEqualStrings("now | 1,200 rpm", commands[14].expected_text.?);
-    try std.testing.expectEqualStrings("data-state", commands[15].expected_attr.?);
-    try std.testing.expectEqualStrings("ready", commands[15].expected_text.?);
-    try std.testing.expectEqualStrings("aria-invalid", commands[16].expected_attr.?);
-    try std.testing.expectEqual(@as(?u64, 250), commands[17].interval_ms);
-    try std.testing.expectEqual(SpecCommandType.tick_interval_if_active, commands[18].cmd_type);
-    try std.testing.expectEqual(@as(?u64, 250), commands[18].interval_ms);
-    try std.testing.expectEqual(@as(?u64, 1), commands[19].expected_count);
-    try std.testing.expectEqual(@as(?u64, 250), commands[19].interval_ms);
-    try std.testing.expectEqual(SpecCommandType.navigate, commands[20].cmd_type);
-    try std.testing.expectEqualStrings("/services/web?tab=deploys#events", commands[20].expected_text.?);
-    try std.testing.expectEqualStrings("visible", commands[21].expected_text.?);
-    try std.testing.expectEqualStrings("online", commands[22].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.history_back, commands[23].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.history_forward, commands[24].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.expect_current_location, commands[25].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.set_initial_location, commands[0].kind());
+    try std.testing.expectEqualStrings("/services/api?tab=logs#tail", legacyView(commands[0].step).expected.?);
+    try std.testing.expectEqual(SpecCommandType.set_initial_visibility, commands[1].kind());
+    try std.testing.expectEqualStrings("hidden", legacyView(commands[1].step).expected.?);
+    try std.testing.expectEqual(SpecCommandType.set_initial_online, commands[2].kind());
+    try std.testing.expectEqualStrings("offline", legacyView(commands[2].step).expected.?);
+    try std.testing.expectEqual(SpecCommandType.seed_local_storage, commands[3].kind());
+    try std.testing.expectEqualStrings("checkout:draft", legacyView(commands[3].step).task.?);
+    try std.testing.expectEqualStrings("saved", legacyView(commands[3].step).expected.?);
+    try std.testing.expectEqual(SpecCommandType.seed_session_storage, commands[4].kind());
+    try std.testing.expectEqualStrings("checkout:flash", legacyView(commands[4].step).task.?);
+    try std.testing.expectEqualStrings("shown", legacyView(commands[4].step).expected.?);
+    try std.testing.expectEqual(SpecCommandType.click, commands[5].kind());
+    try std.testing.expectEqual(LocatorKind.role_name, legacyView(commands[5].step).locator.kind);
+    try std.testing.expectEqualStrings("button", legacyView(commands[5].step).locator.role.?);
+    try std.testing.expectEqualStrings("Save", legacyView(commands[5].step).locator.name.?);
+    try std.testing.expectEqual(SpecCommandType.real_click, commands[6].kind());
+    try std.testing.expectEqualStrings("a@example.com", legacyView(commands[7].step).expected.?);
+    try std.testing.expectEqual(SpecCommandType.focus, commands[8].kind());
+    try std.testing.expectEqual(SpecCommandType.blur, commands[9].kind());
+    try std.testing.expectEqual(SpecCommandType.change, commands[10].kind());
+    try std.testing.expectEqualStrings("changed@example.com", legacyView(commands[10].step).expected.?);
+    try std.testing.expectEqual(SpecCommandType.select_option, commands[11].kind());
+    try std.testing.expectEqualStrings("growth", legacyView(commands[11].step).expected.?);
+    try std.testing.expectEqual(SpecCommandType.composition_start, commands[12].kind());
+    try std.testing.expectEqual(SpecCommandType.composition_end, commands[13].kind());
+    try std.testing.expectEqual(SpecCommandType.custom_event, commands[14].kind());
+    try std.testing.expectEqualStrings("chart", legacyView(commands[14].step).locator.test_id.?);
+    try std.testing.expectEqualStrings("chart-select", legacyView(commands[14].step).task.?);
+    try std.testing.expectEqualStrings("now | 1,200 rpm", legacyView(commands[14].step).expected.?);
+    try std.testing.expectEqualStrings("data-state", legacyView(commands[15].step).attr.?);
+    try std.testing.expectEqualStrings("ready", legacyView(commands[15].step).expected.?);
+    try std.testing.expectEqualStrings("aria-invalid", legacyView(commands[16].step).attr.?);
+    try std.testing.expectEqual(@as(?u64, 250), legacyView(commands[17].step).interval);
+    try std.testing.expectEqual(SpecCommandType.tick_interval_if_active, commands[18].kind());
+    try std.testing.expectEqual(@as(?u64, 250), legacyView(commands[18].step).interval);
+    try std.testing.expectEqual(@as(?u64, 1), legacyView(commands[19].step).count);
+    try std.testing.expectEqual(@as(?u64, 250), legacyView(commands[19].step).interval);
+    try std.testing.expectEqual(SpecCommandType.navigate, commands[20].kind());
+    try std.testing.expectEqualStrings("/services/web?tab=deploys#events", legacyView(commands[20].step).expected.?);
+    try std.testing.expectEqualStrings("visible", legacyView(commands[21].step).expected.?);
+    try std.testing.expectEqualStrings("online", legacyView(commands[22].step).expected.?);
+    try std.testing.expectEqual(SpecCommandType.history_back, commands[23].kind());
+    try std.testing.expectEqual(SpecCommandType.history_forward, commands[24].kind());
+    try std.testing.expectEqual(SpecCommandType.expect_current_location, commands[25].kind());
     // `assert-current-location` is the older spelling of the same assertion.
-    try std.testing.expectEqual(SpecCommandType.expect_current_location, commands[26].cmd_type);
-    try std.testing.expectEqualStrings("Service Ops Center", commands[27].expected_text.?);
-    try std.testing.expectEqualStrings("checkout:draft", commands[28].task_name.?);
-    try std.testing.expectEqualStrings("saved", commands[28].expected_text.?);
-    try std.testing.expectEqualStrings("checkout:flash", commands[29].task_name.?);
-    try std.testing.expectEqual(SpecCommandType.expect_no_local_storage, commands[30].cmd_type);
-    try std.testing.expectEqualStrings("checkout:missing", commands[30].task_name.?);
-    try std.testing.expectEqual(SpecCommandType.expect_no_session_storage, commands[31].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.expect_current_location, commands[26].kind());
+    try std.testing.expectEqualStrings("Service Ops Center", legacyView(commands[27].step).expected.?);
+    try std.testing.expectEqualStrings("checkout:draft", legacyView(commands[28].step).task.?);
+    try std.testing.expectEqualStrings("saved", legacyView(commands[28].step).expected.?);
+    try std.testing.expectEqualStrings("checkout:flash", legacyView(commands[29].step).task.?);
+    try std.testing.expectEqual(SpecCommandType.expect_no_local_storage, commands[30].kind());
+    try std.testing.expectEqualStrings("checkout:missing", legacyView(commands[30].step).task.?);
+    try std.testing.expectEqual(SpecCommandType.expect_no_session_storage, commands[31].kind());
 }
 
 test "spec parser parses browser environment value text" {
@@ -1446,28 +1596,28 @@ test "spec parser parses async cleanup metrics and boolean commands" {
     const commands = spec.commands;
 
     try std.testing.expectEqual(@as(usize, 7), commands.len);
-    try std.testing.expectEqual(SpecCommandType.key_down, commands[0].cmd_type);
+    try std.testing.expectEqual(SpecCommandType.key_down, commands[0].kind());
     try std.testing.expectEqual(@as(usize, 4), commands[0].line_num);
-    try std.testing.expectEqualStrings("textbox", commands[0].locator.role.?);
-    try std.testing.expectEqualStrings("Search", commands[0].locator.name.?);
-    try std.testing.expectEqualStrings("Enter", commands[0].expected_text.?);
-    try std.testing.expectEqual(@as(?bool, true), commands[0].expected_bool);
-    try std.testing.expectEqual(SpecCommandType.expect_checked, commands[1].cmd_type);
-    try std.testing.expectEqualStrings("Enabled", commands[1].locator.label.?);
-    try std.testing.expectEqual(@as(?bool, false), commands[1].expected_bool);
-    try std.testing.expectEqual(SpecCommandType.expect_disabled, commands[2].cmd_type);
-    try std.testing.expectEqualStrings("submit", commands[2].locator.test_id.?);
-    try std.testing.expectEqual(@as(?bool, true), commands[2].expected_bool);
-    try std.testing.expectEqual(SpecCommandType.expect_cleanup, commands[3].cmd_type);
-    try std.testing.expectEqualStrings("fetch user", commands[3].task_name.?);
-    try std.testing.expectEqual(@as(?u64, 2), commands[3].expected_count);
-    try std.testing.expectEqual(SpecCommandType.mark_metrics, commands[4].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.expect_metric_delta, commands[5].cmd_type);
-    try std.testing.expectEqualStrings("closure_releases", commands[5].expected_text.?);
-    try std.testing.expectEqual(@as(?i64, -1), commands[5].expected_metric_delta);
-    try std.testing.expectEqual(SpecCommandType.expect_metric_delta_at_most, commands[6].cmd_type);
-    try std.testing.expectEqualStrings("host_retained_alloc_delta", commands[6].expected_text.?);
-    try std.testing.expectEqual(@as(?i64, 0), commands[6].expected_metric_delta);
+    try std.testing.expectEqualStrings("textbox", legacyView(commands[0].step).locator.role.?);
+    try std.testing.expectEqualStrings("Search", legacyView(commands[0].step).locator.name.?);
+    try std.testing.expectEqualStrings("Enter", legacyView(commands[0].step).expected.?);
+    try std.testing.expectEqual(@as(?bool, true), legacyView(commands[0].step).boolean);
+    try std.testing.expectEqual(SpecCommandType.expect_checked, commands[1].kind());
+    try std.testing.expectEqualStrings("Enabled", legacyView(commands[1].step).locator.label.?);
+    try std.testing.expectEqual(@as(?bool, false), legacyView(commands[1].step).boolean);
+    try std.testing.expectEqual(SpecCommandType.expect_disabled, commands[2].kind());
+    try std.testing.expectEqualStrings("submit", legacyView(commands[2].step).locator.test_id.?);
+    try std.testing.expectEqual(@as(?bool, true), legacyView(commands[2].step).boolean);
+    try std.testing.expectEqual(SpecCommandType.expect_cleanup, commands[3].kind());
+    try std.testing.expectEqualStrings("fetch user", legacyView(commands[3].step).task.?);
+    try std.testing.expectEqual(@as(?u64, 2), legacyView(commands[3].step).count);
+    try std.testing.expectEqual(SpecCommandType.mark_metrics, commands[4].kind());
+    try std.testing.expectEqual(SpecCommandType.expect_metric_delta, commands[5].kind());
+    try std.testing.expectEqualStrings("closure_releases", legacyView(commands[5].step).expected.?);
+    try std.testing.expectEqual(@as(?i64, -1), legacyView(commands[5].step).delta);
+    try std.testing.expectEqual(SpecCommandType.expect_metric_delta_at_most, commands[6].kind());
+    try std.testing.expectEqualStrings("host_retained_alloc_delta", legacyView(commands[6].step).expected.?);
+    try std.testing.expectEqual(@as(?i64, 0), legacyView(commands[6].step).delta);
 }
 
 test "spec parser parses pointer form and visibility commands" {
@@ -1490,26 +1640,26 @@ test "spec parser parses pointer form and visibility commands" {
     const commands = spec.commands;
 
     try std.testing.expectEqual(@as(usize, 12), commands.len);
-    try std.testing.expectEqual(SpecCommandType.pointer_down, commands[0].cmd_type);
-    try std.testing.expectEqualStrings("drag-handle", commands[0].locator.test_id.?);
-    try std.testing.expectEqual(SpecCommandType.pointer_up, commands[1].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.pointer_enter, commands[2].cmd_type);
-    try std.testing.expectEqualStrings("Drop zone", commands[2].locator.text.?);
-    try std.testing.expectEqual(SpecCommandType.pointer_leave, commands[3].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.submit, commands[4].cmd_type);
-    try std.testing.expectEqualStrings("Save", commands[4].locator.name.?);
-    try std.testing.expectEqual(SpecCommandType.check, commands[5].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.uncheck, commands[6].cmd_type);
-    try std.testing.expectEqualStrings("Enabled", commands[6].locator.label.?);
-    try std.testing.expectEqual(SpecCommandType.expect_text, commands[7].cmd_type);
-    try std.testing.expectEqualStrings("Ready", commands[7].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.expect_visible, commands[8].cmd_type);
-    try std.testing.expectEqual(SpecCommandType.expect_absent, commands[9].cmd_type);
-    try std.testing.expectEqualStrings("Loading", commands[9].locator.text.?);
-    try std.testing.expectEqual(SpecCommandType.expect_value, commands[10].cmd_type);
-    try std.testing.expectEqualStrings("a@example.com", commands[10].expected_text.?);
-    try std.testing.expectEqual(SpecCommandType.expect_updates, commands[11].cmd_type);
-    try std.testing.expectEqual(@as(?u64, 3), commands[11].expected_count);
+    try std.testing.expectEqual(SpecCommandType.pointer_down, commands[0].kind());
+    try std.testing.expectEqualStrings("drag-handle", legacyView(commands[0].step).locator.test_id.?);
+    try std.testing.expectEqual(SpecCommandType.pointer_up, commands[1].kind());
+    try std.testing.expectEqual(SpecCommandType.pointer_enter, commands[2].kind());
+    try std.testing.expectEqualStrings("Drop zone", legacyView(commands[2].step).locator.text.?);
+    try std.testing.expectEqual(SpecCommandType.pointer_leave, commands[3].kind());
+    try std.testing.expectEqual(SpecCommandType.submit, commands[4].kind());
+    try std.testing.expectEqualStrings("Save", legacyView(commands[4].step).locator.name.?);
+    try std.testing.expectEqual(SpecCommandType.check, commands[5].kind());
+    try std.testing.expectEqual(SpecCommandType.uncheck, commands[6].kind());
+    try std.testing.expectEqualStrings("Enabled", legacyView(commands[6].step).locator.label.?);
+    try std.testing.expectEqual(SpecCommandType.expect_text, commands[7].kind());
+    try std.testing.expectEqualStrings("Ready", legacyView(commands[7].step).expected.?);
+    try std.testing.expectEqual(SpecCommandType.expect_visible, commands[8].kind());
+    try std.testing.expectEqual(SpecCommandType.expect_absent, commands[9].kind());
+    try std.testing.expectEqualStrings("Loading", legacyView(commands[9].step).locator.text.?);
+    try std.testing.expectEqual(SpecCommandType.expect_value, commands[10].kind());
+    try std.testing.expectEqualStrings("a@example.com", legacyView(commands[10].step).expected.?);
+    try std.testing.expectEqual(SpecCommandType.expect_updates, commands[11].kind());
+    try std.testing.expectEqual(@as(?u64, 3), legacyView(commands[11].step).count);
 }
 
 test "spec parser rejects malformed commands" {
@@ -1548,11 +1698,11 @@ test "spec parser validates exact native shortcut keys and modifiers" {
     defer spec.deinit(std.testing.allocator);
     const commands = spec.commands;
     try std.testing.expectEqual(@as(usize, 3), commands.len);
-    try std.testing.expectEqual(SpecCommandType.shortcut, commands[0].cmd_type);
-    try std.testing.expectEqualStrings("editor", commands[0].locator.test_id.?);
-    try std.testing.expect(commands[0].shortcut.?.eql(try signals.key_chord.parse("s", 1)));
-    try std.testing.expect(commands[1].shortcut.?.eql(try signals.key_chord.parse("s", 3)));
-    try std.testing.expect(commands[2].shortcut.?.eql(try signals.key_chord.parse("Escape", 0)));
+    try std.testing.expectEqual(SpecCommandType.shortcut, commands[0].kind());
+    try std.testing.expectEqualStrings("editor", legacyView(commands[0].step).locator.test_id.?);
+    try std.testing.expect(legacyView(commands[0].step).shortcut.?.eql(try signals.key_chord.parse("s", 1)));
+    try std.testing.expect(legacyView(commands[1].step).shortcut.?.eql(try signals.key_chord.parse("s", 3)));
+    try std.testing.expect(legacyView(commands[2].step).shortcut.?.eql(try signals.key_chord.parse("Escape", 0)));
     for ([_][]const u8{
         "(shortcut (test-id \"editor\") \"S\" 1)",
         "(shortcut (test-id \"editor\") \"ctrl-s\" 1)",
@@ -1572,8 +1722,8 @@ test "S-expression spec parser decodes native shortcuts" {
     );
     defer spec.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 1), spec.commands.len);
-    try std.testing.expectEqual(SpecCommandType.shortcut, spec.commands[0].cmd_type);
-    try std.testing.expect(spec.commands[0].shortcut.?.eql(try signals.key_chord.parse("s", 3)));
+    try std.testing.expectEqual(SpecCommandType.shortcut, spec.commands[0].kind());
+    try std.testing.expect(legacyView(spec.commands[0].step).shortcut.?.eql(try signals.key_chord.parse("s", 3)));
 }
 
 test "file fixture forms reject malformed values and release partial allocations" {
@@ -1608,11 +1758,12 @@ fn parseFileFixtureAllocationCase(allocator: std.mem.Allocator) !void {
     );
     defer parsed.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 5), parsed.commands.len);
-    try std.testing.expectEqualStrings("/tmp/λ:note.txt", parsed.commands[0].file_stub.?.choice.?);
-    try std.testing.expect(parsed.commands[1].file_stub.?.choice == null);
-    try std.testing.expectEqual(file_fixtures.Kind.directory, parsed.commands[3].file_stub.?.stat.kind);
-    try std.testing.expectEqual(SpecCommandType.stub_file_result, parsed.commands[4].cmd_type);
-    try std.testing.expectEqual(file_fixtures.ErrorKind.permission_denied, parsed.commands[4].file_stub.?.reject.kind);
+    try std.testing.expectEqualStrings("/tmp/λ:note.txt", parsed.commands[0].step.stub_file_result.stub.choice.?);
+    try std.testing.expect(parsed.commands[1].step.stub_file_result.stub.choice == null);
+    try std.testing.expectEqual(file_fixtures.Kind.directory, parsed.commands[3].step.stub_file_result.stub.stat.kind);
+    try std.testing.expectEqual(SpecCommandType.stub_file_result, parsed.commands[4].kind());
+    try std.testing.expectEqual(file_fixtures.ErrorKind.permission_denied, parsed.commands[4].step.stub_file_result.stub.reject.kind);
+    try std.testing.expectEqual(@as(usize, 4), parsed.commands[1].line_num);
 }
 
 test "file fixture parsing owns every allocation on success and refusal" {
@@ -1624,8 +1775,8 @@ test "window close requests and assertions decode without locators" {
         \\(test "closing" (steps (request-window-close) (expect-window-closed false)))
     );
     defer spec.deinit(std.testing.allocator);
-    try std.testing.expectEqual(SpecCommandType.request_window_close, spec.commands[0].cmd_type);
-    try std.testing.expectEqual(false, spec.commands[1].expected_bool.?);
+    try std.testing.expectEqual(SpecCommandType.request_window_close, spec.commands[0].kind());
+    try std.testing.expectEqual(false, legacyView(spec.commands[1].step).boolean.?);
     try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(test \"t\" (steps (request-window-close extra)))"));
     try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(test \"t\" (steps (expect-window-closed yes)))"));
 }
@@ -1640,17 +1791,17 @@ fn parseExtendedFileFixtureAllocationCase(allocator: std.mem.Allocator) !void {
         \\  (stub-file-open "launch" :path "/tmp/λ")))
     );
     defer parsed.deinit(allocator);
-    const meta = parsed.commands[0].file_stub.?.stat;
+    const meta = parsed.commands[0].step.stub_file_result.stub.stat;
     try std.testing.expectEqual(@as(u64, 18446744073709551615), meta.bytes);
     try std.testing.expectEqual(@as(u64, 13), meta.inode);
-    const directory = parsed.commands[1].file_stub.?.directory;
+    const directory = parsed.commands[1].step.stub_file_result.stub.directory;
     try std.testing.expectEqual(@as(usize, 3), directory.entries.len);
     try std.testing.expectEqual(file_fixtures.Kind.symbolic_link, directory.entries[2].kind);
     try std.testing.expectEqual(@as(u64, 18446744073709551615), directory.entries[0].bytes);
-    const read = parsed.commands[2].file_stub.?.read;
+    const read = parsed.commands[2].step.stub_file_result.stub.read;
     try std.testing.expectEqual(@as(?u64, 3), read.offset);
     try std.testing.expectEqual(@as(?u64, 70000), read.size);
-    try std.testing.expectEqualStrings("/tmp/λ", parsed.commands[3].file_stub.?.open);
+    try std.testing.expectEqualStrings("/tmp/λ", parsed.commands[3].step.stub_file_result.stub.open);
 }
 
 test "extended file fixtures preserve full unsigned cursors under allocation failure" {

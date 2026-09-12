@@ -18,7 +18,7 @@
 //! presentation-only vocabulary (`expect-onscreen`, `expect-history`, `close`)
 //! that the display-free runner refuses in turn.
 
-use crate::bridge::{Command, Scenario};
+use crate::bridge::{Arg, Command, Scenario};
 use crate::probe;
 use std::fmt::Write as _;
 
@@ -95,10 +95,11 @@ pub(crate) enum Action {
     Close,
 }
 
-/// A decoded step, keeping its source line so a failure can be located.
+/// A decoded step, keeping its source position so a failure can be located.
 #[derive(Clone, Debug)]
 pub(crate) struct Step {
     pub(crate) line: usize,
+    pub(crate) column: usize,
     pub(crate) action: Action,
 }
 
@@ -116,61 +117,94 @@ pub(crate) fn steps(scenario: &Scenario) -> Result<Vec<Step>, String> {
             decode(command)
                 .map(|action| Step {
                     line: command.line as usize,
+                    column: command.column as usize,
                     action,
                 })
-                .map_err(|error| format!("line {}: {error}", command.line))
+                .map_err(|error| format!("{}:{}: {error}", command.line, command.column))
         })
         .collect()
 }
 
 fn decode(command: &Command) -> Result<Action, String> {
     let locator = || Locator::decode(command);
-    let count = || {
-        command
-            .expected_count
-            .map(|value| value as usize)
-            .ok_or_else(|| format!("{} needs a count", command.kind))
+    let text = |name: &str| match command.arg(name) {
+        Some(Arg::Text(value)) => Ok(value.clone()),
+        _ => Err(format!("{} needs a text argument {name}", command.kind)),
     };
-    let flag = || {
-        command
-            .expected_bool
-            .ok_or_else(|| format!("{} needs true or false", command.kind))
+    let unsigned = |name: &str| match command.arg(name) {
+        Some(Arg::Unsigned(value)) => Ok(*value),
+        _ => Err(format!("{} needs a count argument {name}", command.kind)),
     };
-    Ok(match command.kind.as_str() {
-        "wait" => Action::Wait(
-            command
-                .interval_ms
-                .ok_or("wait expects milliseconds")?,
-        ),
-        "click" => Action::Click(locator()?),
-        "focus" => Action::Focus(locator()?),
-        "type_text" => Action::Type(locator()?, command.expected_text.clone()),
-        "key" => Action::Key(command.expected_text.clone()),
-        "shortcut" => Action::Key(chord_keystroke(
-            command
-                .shortcut
-                .ok_or("shortcut expects a key and modifiers")?,
-        )?),
-        "expect_visible" => Action::ExpectVisible(locator()?),
-        "expect_absent" => Action::ExpectAbsent(locator()?),
-        "expect_text" => Action::ExpectText(locator()?, command.expected_text.clone()),
-        "expect_value" => Action::ExpectValue(locator()?, command.expected_text.clone()),
-        "expect_disabled" => Action::ExpectDisabled(locator()?, flag()?),
-        "expect_selected" => Action::ExpectSelected(locator()?, flag()?),
-        "expect_focused" => Action::ExpectFocused(locator()?),
-        "expect_count" => Action::ExpectCount(command.expected_text.clone(), count()?),
-        "expect_onscreen" => Action::ExpectOnscreen(locator()?),
-        "expect_history" => Action::ExpectHistory(locator()?, count()?),
-        "snapshot" => Action::Snapshot(command.expected_text.clone()),
-        "close" => Action::Close,
-        "fill" => return Err("fill sets a value without the keyboard; a window scenario types with (type ...)".into()),
-        "real_click" => return Err("real_click is the simulated pointer; a window scenario uses (click ...)".into()),
-        other => {
-            return Err(format!(
-                "{other} has no meaning against a real window; it belongs in a (test ...)"
-            ))
-        }
+    let count = |name: &str| {
+        usize::try_from(unsigned(name)?)
+            .map_err(|_| format!("{} argument {name} is too large", command.kind))
+    };
+    let flag = |name: &str| match command.arg(name) {
+        Some(Arg::Boolean(value)) => Ok(*value),
+        _ => Err(format!("{} needs true or false for {name}", command.kind)),
+    };
+    let kind = match WindowCommandKind::from_name(&command.kind) {
+        Some(kind) => kind,
+        None if command.kind == "fill" => return Err("fill sets a value without the keyboard; a window scenario types with (type ...)".into()),
+        None if command.kind == "real_click" => return Err("real_click is the simulated pointer; a window scenario uses (click ...)".into()),
+        None => return Err(format!("{} has no meaning against a real window; it belongs in a (test ...)", command.kind)),
+    };
+    Ok(match kind {
+        WindowCommandKind::Wait => Action::Wait(unsigned("value")?),
+        WindowCommandKind::Click => Action::Click(locator()?),
+        WindowCommandKind::Focus => Action::Focus(locator()?),
+        WindowCommandKind::TypeText => Action::Type(locator()?, text("text")?),
+        WindowCommandKind::Key => Action::Key(text("value")?),
+        WindowCommandKind::Shortcut => Action::Key(chord_keystroke((
+            u32::try_from(unsigned("key")?).map_err(|_| "shortcut key is too large")?,
+            u32::try_from(unsigned("modifiers")?).map_err(|_| "shortcut modifiers are too large")?,
+        ))?),
+        WindowCommandKind::ExpectVisible => Action::ExpectVisible(locator()?),
+        WindowCommandKind::ExpectAbsent => Action::ExpectAbsent(locator()?),
+        WindowCommandKind::ExpectText => Action::ExpectText(locator()?, text("text")?),
+        WindowCommandKind::ExpectValue => Action::ExpectValue(locator()?, text("text")?),
+        WindowCommandKind::ExpectDisabled => Action::ExpectDisabled(locator()?, flag("expected")?),
+        WindowCommandKind::ExpectSelected => Action::ExpectSelected(locator()?, flag("expected")?),
+        WindowCommandKind::ExpectFocused => Action::ExpectFocused(locator()?),
+        WindowCommandKind::ExpectCount => Action::ExpectCount(text("prefix")?, count("count")?),
+        WindowCommandKind::ExpectOnscreen => Action::ExpectOnscreen(locator()?),
+        WindowCommandKind::ExpectHistory => Action::ExpectHistory(locator()?, count("count")?),
+        WindowCommandKind::Snapshot => Action::Snapshot(text("value")?),
+        WindowCommandKind::Close => Action::Close,
     })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowCommandKind {
+    Wait, Click, Focus, TypeText, Key, Shortcut, ExpectVisible, ExpectAbsent,
+    ExpectText, ExpectValue, ExpectDisabled, ExpectSelected, ExpectFocused,
+    ExpectCount, ExpectOnscreen, ExpectHistory, Snapshot, Close,
+}
+
+impl WindowCommandKind {
+    const ALL: [Self; 18] = [
+        Self::Wait, Self::Click, Self::Focus, Self::TypeText, Self::Key, Self::Shortcut,
+        Self::ExpectVisible, Self::ExpectAbsent, Self::ExpectText, Self::ExpectValue,
+        Self::ExpectDisabled, Self::ExpectSelected, Self::ExpectFocused, Self::ExpectCount,
+        Self::ExpectOnscreen, Self::ExpectHistory, Self::Snapshot, Self::Close,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Wait => "wait", Self::Click => "click", Self::Focus => "focus",
+            Self::TypeText => "type_text", Self::Key => "key", Self::Shortcut => "shortcut",
+            Self::ExpectVisible => "expect_visible", Self::ExpectAbsent => "expect_absent",
+            Self::ExpectText => "expect_text", Self::ExpectValue => "expect_value",
+            Self::ExpectDisabled => "expect_disabled", Self::ExpectSelected => "expect_selected",
+            Self::ExpectFocused => "expect_focused", Self::ExpectCount => "expect_count",
+            Self::ExpectOnscreen => "expect_onscreen", Self::ExpectHistory => "expect_history",
+            Self::Snapshot => "snapshot", Self::Close => "close",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.name() == name)
+    }
 }
 
 /// Spells an engine key chord the way GPUI writes a binding, so a spec's
@@ -617,18 +651,20 @@ mod tests {
         Command {
             kind: kind.into(),
             line: 7,
+            column: 9,
             locator_kind: "none".into(),
             role: String::new(),
             name: String::new(),
             label: String::new(),
             text: String::new(),
             test_id: String::new(),
-            expected_text: String::new(),
-            expected_count: None,
-            expected_bool: None,
-            interval_ms: None,
-            shortcut: None,
+            args: Vec::new(),
         }
+    }
+
+    fn with(mut command: Command, name: &str, value: Arg) -> Command {
+        command.args.push((name.into(), value));
+        command
     }
 
     #[test]
@@ -641,17 +677,18 @@ mod tests {
         let mut typed = command("type_text");
         typed.locator_kind = "label".into();
         typed.label = "Task title".into();
-        typed.expected_text = "A new task".into();
+        let typed = with(typed, "text", Arg::Text("A new task".into()));
         assert_eq!(
             decode(&typed).unwrap(),
             Action::Type(Locator::Text("Task title".into()), "A new task".into())
         );
-        let mut wait = command("wait");
-        wait.interval_ms = Some(200);
+        let wait = with(command("wait"), "value", Arg::Unsigned(200));
         assert_eq!(decode(&wait).unwrap(), Action::Wait(200));
-        let mut count = command("expect_count");
-        count.expected_text = "card-".into();
-        count.expected_count = Some(4);
+        let count = with(
+            with(command("expect_count"), "prefix", Arg::Text("card-".into())),
+            "count",
+            Arg::Unsigned(4),
+        );
         assert_eq!(decode(&count).unwrap(), Action::ExpectCount("card-".into(), 4));
         let mut onscreen = command("expect_onscreen");
         onscreen.locator_kind = "test_id".into();
@@ -663,41 +700,68 @@ mod tests {
         assert_eq!(decode(&command("close")).unwrap(), Action::Close);
     }
 
-    /// The engine's `window_step_tags`, spelled again here on purpose: the tag
-    /// names cross the ABI as strings, and the Zig test over that list and this
-    /// one are what keep a renamed tag from surfacing at run time as a step
-    /// with "no meaning against a real window".
-    const WINDOW_STEP_TAGS: [&str; 18] = [
-        "wait", "click", "focus", "type_text", "key", "shortcut",
-        "expect_visible", "expect_absent", "expect_text", "expect_value", "expect_disabled", "expect_selected",
-        "expect_focused", "expect_count", "expect_onscreen", "expect_history", "snapshot", "close",
-    ];
+    /// The window-step vocabulary and arguments the engine publishes, as
+    /// `test/spec-steps.json` records them from the Zig union by reflection.
+    /// Reading the file here ties the argument names this decoder asks for to
+    /// the names the engine emits: a renamed tag or payload field fails here
+    /// rather than at run time as a step with no meaning.
+    #[derive(Debug, serde::Deserialize)]
+    struct PublishedStep {
+        kind: String,
+        capability: String,
+        args: Vec<PublishedArg>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct PublishedArg {
+        name: String,
+        #[serde(rename = "type")]
+        kind: String,
+    }
+
+    fn published_steps() -> Vec<PublishedStep> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/spec-steps.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+        serde_json::from_str(&text)
+            .unwrap_or_else(|error| panic!("cannot decode {}: {error}", path.display()))
+    }
 
     #[test]
-    fn every_window_step_tag_the_engine_publishes_is_decoded() {
-        for tag in WINDOW_STEP_TAGS {
-            let mut generic = command(tag);
+    fn every_published_window_step_decodes_with_the_arguments_the_engine_emits() {
+        let steps = published_steps();
+        assert_eq!(steps.len(), WindowCommandKind::ALL.len(), "{steps:?}");
+        for decoded in WindowCommandKind::ALL {
+            assert!(steps.iter().any(|step| step.kind == decoded.name()),
+                "{} is decoded by the window host but absent from the engine manifest", decoded.name());
+        }
+        for PublishedStep { kind, capability, args } in steps {
+            assert!(capability == "window" || capability == "both", "{kind}: {capability}");
+            let mut generic = command(&kind);
             generic.locator_kind = "test_id".into();
             generic.test_id = "x".into();
-            generic.expected_text = "x".into();
-            generic.expected_count = Some(1);
-            generic.expected_bool = Some(true);
-            generic.interval_ms = Some(1);
-            generic.shortcut = Some(('s' as u32, 1));
+            for PublishedArg { name, kind: arg_type } in args {
+                let value = match arg_type.as_str() {
+                    "text" => Arg::Text("x".into()),
+                    "unsigned" => Arg::Unsigned(115),
+                    "signed" => Arg::Signed(1),
+                    "boolean" => Arg::Boolean(true),
+                    other => panic!("unknown argument type {other}"),
+                };
+                generic = with(generic, &name, value);
+            }
             let outcome = decode(&generic);
-            assert!(
-                !matches!(&outcome, Err(error) if error.contains("no meaning")),
-                "{tag} is published by the engine but not decoded here: {outcome:?}"
-            );
+            assert!(outcome.is_ok(), "{kind} is published by the engine but does not decode here: {outcome:?}");
         }
     }
 
     #[test]
     fn a_spec_shortcut_becomes_the_keystroke_a_person_would_press() {
-        let mut shortcut = command("shortcut");
-        shortcut.locator_kind = "test_id".into();
-        shortcut.test_id = "notes-editor".into();
-        shortcut.shortcut = Some(('s' as u32, 1 | 2));
+        let shortcut = with(
+            with(command("shortcut"), "key", Arg::Unsigned('s' as u64)),
+            "modifiers",
+            Arg::Unsigned(1 | 2),
+        );
         assert_eq!(decode(&shortcut).unwrap(), Action::Key("ctrl-shift-s".into()));
         assert_eq!(chord_keystroke((256, 0)).unwrap(), "enter");
         assert_eq!(chord_keystroke((256 + 4, 8)).unwrap(), "cmd-left");
@@ -711,9 +775,7 @@ mod tests {
         let error = decode(&fill).unwrap_err();
         assert!(error.contains("(type ...)"), "{error}");
         assert!(decode(&command("tick_interval")).unwrap_err().contains("(test ...)"));
-        let mut wait = command("wait");
-        wait.interval_ms = None;
-        assert!(decode(&wait).is_err());
+        assert!(decode(&command("wait")).is_err());
         let scenario = Scenario {
             name: "s".into(),
             window: None,
@@ -724,7 +786,7 @@ mod tests {
             commands: vec![command("mark_metrics")],
         };
         let error = steps(&scenario).unwrap_err();
-        assert!(error.starts_with("line 7:"), "{error}");
+        assert!(error.starts_with("7:9:"), "{error}");
     }
 
     #[test]

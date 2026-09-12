@@ -1,0 +1,20 @@
+[
+  {"kind":"click","capability":"both","args":[]},
+  {"kind":"shortcut","capability":"both","args":[{"name":"key","type":"unsigned"},{"name":"modifiers","type":"unsigned"}]},
+  {"kind":"focus","capability":"both","args":[]},
+  {"kind":"expect_text","capability":"both","args":[{"name":"text","type":"text"}]},
+  {"kind":"expect_visible","capability":"both","args":[]},
+  {"kind":"expect_absent","capability":"both","args":[]},
+  {"kind":"expect_value","capability":"both","args":[{"name":"text","type":"text"}]},
+  {"kind":"expect_disabled","capability":"both","args":[{"name":"expected","type":"boolean"}]},
+  {"kind":"wait","capability":"window","args":[{"name":"value","type":"unsigned"}]},
+  {"kind":"type_text","capability":"window","args":[{"name":"text","type":"text"}]},
+  {"kind":"key","capability":"window","args":[{"name":"value","type":"text"}]},
+  {"kind":"expect_onscreen","capability":"window","args":[]},
+  {"kind":"expect_history","capability":"window","args":[{"name":"count","type":"unsigned"}]},
+  {"kind":"expect_count","capability":"window","args":[{"name":"prefix","type":"text"},{"name":"count","type":"unsigned"}]},
+  {"kind":"expect_selected","capability":"window","args":[{"name":"expected","type":"boolean"}]},
+  {"kind":"expect_focused","capability":"window","args":[]},
+  {"kind":"snapshot","capability":"window","args":[{"name":"value","type":"text"}]},
+  {"kind":"close","capability":"window","args":[]}
+]

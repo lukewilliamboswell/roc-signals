@@ -242,7 +242,10 @@ linked-app fatal campaign complements native refusal/retry tests; it does not
 turn arbitrary native crashes into accepted outcomes. Roc-allocator fatal
 boundaries also have focused linked-host tests.
 
-Use `--keep-output` when debugging generated artifacts under `.test-out/`.
+Each test-driver invocation owns a unique directory under `.test-out/`, so
+concurrent suites cannot delete or overwrite one another's artifacts. Use
+`--keep-output` when debugging; the driver prints the retained directory. Pass
+`--output-dir PATH` when a script needs a predictable, newly-created path.
 
 For small documentation edits that do not change behavior or coverage claims,
 run the lightweight tidy gate:
@@ -291,8 +294,8 @@ attestation service:
 - `platform-web/targets/arm64musl/libc.a`
 - `platform-web/targets/wasm32/host.wasm`
 
-Roc app executables built during tests are written under `.test-out/` by
-`scripts/test.py`.
+Roc app executables built during tests are written under the invocation's
+printed `.test-out/run-*` directory by `scripts/test.py`.
 
 ## Dependency artifact releases
 
@@ -833,8 +836,8 @@ To inspect command-wire byte traffic for a built wasm app, keep wasm outputs and
 mount an artifact with telemetry summarization:
 
 ```sh
-python3 scripts/test.py wasm --keep-output
-node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs .test-out/wasm/package-explorer.wasm package-explorer --telemetry-summary
+python3 scripts/test.py wasm --keep-output --output-dir .test-out/inspect-wasm
+node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs .test-out/inspect-wasm/wasm/package-explorer.wasm package-explorer --telemetry-summary
 ```
 
 Repeat the mount command for each public wasm app when refreshing a public-app
@@ -964,8 +967,15 @@ Put each independent case in its own `*.scm` file under the app's
 fresh app process. A file's head form says which host runs it: a `(test ...)`
 runs on the display-free host, a `(scenario ...)` against a real window (see
 [Window scenarios](#window-scenarios) below). Keep pre-mount state in an optional `(setup ...)` form;
-setup accepts only `initial-location`, `initial-visibility`, `initial-online`,
-`local-storage`, and `session-storage`.
+setup accepts `initial-location`, `initial-visibility`, `initial-online`,
+`local-storage`, `session-storage`, `manual-effects`, and the same scripted
+Files and HTTP answers accepted in test steps. Scenarios deliberately reject
+setup and scripted answers because they exercise live host effects.
+
+The typed step model is also the source of `test/spec-steps.json`, which records
+the capability and payload fields of every step accepted by the window host.
+Run `zig build spec-manifest` after intentionally changing that vocabulary and
+review the generated diff. Ordinary `zig build test` rejects uncommitted drift.
 
 ### Writing specs that do not rot
 
@@ -1069,8 +1079,9 @@ that does not fit, or a native editor that kept the previous document's undo
 history. For the GUI examples those states are covered by `(scenario ...)`
 specs, which live in the same `specs/` directory, use the same locators and
 the same step names, and are parsed by the same engine parser. The GUI host
-interprets them against a real window, through its `--host-scenario` flag;
-`python3 scripts/gui_scenarios.py --directory .test-out/gui` runs every one.
+interprets them against a real window, through its `--host-scenario` flag. Run
+`GUI_TEST_OUTPUT=.test-out/my-gui-run python3 scripts/minici gui gui-scenarios`
+to build and exercise one explicitly owned set of executables.
 
 ```lisp
 (scenario "detail reachability"
@@ -1115,8 +1126,8 @@ be last and leaves through the window's own close request the way the frame's
 close button does — an application with unsaved work may answer with a dialog
 and keep the window. The display-free host refuses every one of these by name.
 
-Every run writes a JSON report of every observation under
-`.test-out/gui-scenarios/<app>/`, and on macOS also photographs the
+Every run writes a JSON report of every observation under the owning run's
+`gui-scenarios/<app>/` directory, and on macOS also photographs the
 application's own window in the state the scenario finished in — including the
 state a failing assertion stopped at. Captures go through `gui_capture.py`, so
 they find the window by the process id the driver started and refuse a window
@@ -1304,20 +1315,29 @@ list lives in `src/spec/spec_runner.zig`.
 
 ## Benchmark Mode
 
-The Python driver builds benchmark binaries under `.test-out/bench-bin` when the
-bench suite runs. The default `all` suite includes benchmarks on supported native
-hosts; use `python3 scripts/test.py bench --native always` to force the focused
-bench gate. A built app binary also accepts benchmark flags directly:
+The Python driver builds benchmark binaries under the printed run directory's
+`bench-bin/` subdirectory when the bench suite runs. The default `all` suite
+includes benchmarks on supported native hosts; use
+`python3 scripts/test.py bench --native always --keep-output --output-dir .test-out/inspect-bench`
+to retain a predictable copy for direct inspection. A built app binary also
+accepts benchmark flags directly:
 
 ```sh
-.test-out/bench-bin/signals-data-grid-bench --host-bench-app --host-bench-name signals-data-grid --host-bench-iterations 100 --host-bench-samples 3 examples-web/data-grid/specs/initial-mount.scm
+.test-out/inspect-bench/bench-bin/signals-data-grid-bench --host-bench-app --host-bench-name signals-data-grid --host-bench-iterations 100 --host-bench-samples 3 --host-entropy-seed 0 examples-web/data-grid/specs/initial-mount.scm
 ```
 
-The host initializes a fresh app per iteration, applies the initial command
-batch, then replays commands classified as benchmark actions in
-`src/bench/benchmark.zig` (user actions, browser-environment changes, and interval ticks).
-Expectation and metric assertion commands remain the semantic correctness suite
-used by `python3 scripts/test.py native`.
+The driver supplies the same deterministic entropy seed as the native SCM
+suite. The host initializes a fresh app per iteration, applies SCM setup and settles
+mount-time effects through the same pre-step path as a semantic test, then
+replays each typed operational command through the production `SpecRunnerCtx`
+and its ordinary event/effect path. Before accepting measurements, the first
+replay also executes every expectation and metric assertion in sequence. Later
+warmup and sample iterations omit assertions because repeatable benchmark
+operations can deliberately evolve data beyond the scenario's one-replay
+expected values. Benchmark code attaches only timing and command-count
+observation around operational commands. This keeps the benchmark exercising
+and validating the behavior developers actually ship instead of a parallel
+simulation of it.
 
 The keyed fixture also has a production browser adapter under
 `benchmarks/js-framework-benchmark/roc-signals-keyed/`. Build and verify it with:
@@ -1523,9 +1543,13 @@ each app must have specs. Every GUI check must pass; this suite has no known-fai
 allowlist. `--spec-filter`, `--shard`, `--jobs`, and `--fail-fast` also apply.
 The default `all` suite includes GUI checks on Linux x86_64; run `gui` explicitly
 on macOS, where it requires full Xcode and the Metal toolchain. CI runs them in a
-dedicated Linux, Windows, and macOS jobs. GUI executables remain under `.test-out/gui`
-when output is kept. Linux CI then runs `xvfb-run -a python3 scripts/gui_smoke.py --wayland`
-with Weston and Mesa's software Vulkan driver. Weston runs on Xvfb so GPUI
+dedicated Linux, Windows, and macOS jobs. GUI executables remain under the
+printed run directory's `gui/` subdirectory when output is kept. A multi-stage
+run sets `GUI_TEST_OUTPUT` once and passes that owned directory explicitly to
+the build, smoke, and scenario stages; for example,
+`GUI_TEST_OUTPUT=.test-out/my-gui-run python3 scripts/minici gui gui-smoke gui-scenarios`.
+Linux CI runs the equivalent through Xvfb, Weston, and Mesa's software Vulkan
+driver. Weston runs on Xvfb so GPUI
 receives a Wayland input seat as well as a virtual display; Weston's headless
 backend provides no seat and GPUI 0.2.2 requires one.
 It opens every maintained example, requires

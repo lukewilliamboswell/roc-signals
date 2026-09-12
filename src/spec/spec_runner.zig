@@ -10,21 +10,25 @@ const render = signals.render;
 const runtime_limits = signals.runtime_limits;
 const spec_parser = @import("spec_parser.zig");
 const file_fixtures = @import("file_fixtures.zig");
+pub const ctx = @import("ctx.zig");
 
 const BoundaryPayloadDescriptor = boundary.BoundaryPayloadDescriptor;
 const RuntimeMetrics = engine.RuntimeMetrics;
 const SpecCommand = spec_parser.SpecCommand;
 const SpecCommandType = spec_parser.SpecCommandType;
 
+/// Result of asking a semantic host to execute one typed SCM command.
+pub const StepOutcome = enum { handled, unsupported, failed };
+
 fn storageValueForCtx(comptime Ctx: type, host: *Ctx.Host, area: boundary.StorageArea, key: []const u8) ?[]const u8 {
-    if (comptime @hasDecl(Ctx, "storageValue")) {
+    if (comptime ctx.has(Ctx, .environment)) {
         return Ctx.storageValue(host, area, key);
     }
     return null;
 }
 
 fn documentTitleForCtx(comptime Ctx: type, host: *Ctx.Host) []const u8 {
-    if (comptime @hasDecl(Ctx, "documentTitle")) {
+    if (comptime ctx.has(Ctx, .environment)) {
         return Ctx.documentTitle(host);
     }
     return "";
@@ -44,16 +48,16 @@ fn writeLocatorFailureForCtx(comptime Ctx: type, line_num: usize, message: []con
 /// rendered", so say what actually happened and point at the fix.
 fn writeLocatorMiss(comptime Ctx: type, line_num: usize, locator: spec_parser.Locator) void {
     var buf: [512]u8 = undefined;
-    const msg = switch (locator.kind) {
-        .text => std.fmt.bufPrint(
+    const msg = switch (locator) {
+        .text => |expected| std.fmt.bufPrint(
             &buf,
             "TEST FAILED at line {d}: no element has text \"{s}\"\n" ++
                 "  A text: locator matches on content, so a changed value looks like a\n" ++
                 "  missing element. Give the element a test_id and assert its value:\n" ++
-                "    expect_text test_id:\"...\" \"{s}\"\n" ++
+                "    (expect-text (test-id \"...\") \"{s}\")\n" ++
                 "  To see what did render, assert a wrong value on the container:\n" ++
-                "    expect_text role:region name:\"...\" \"PROBE\"\n",
-            .{ line_num, locator.text orelse "", locator.text orelse "" },
+                "    (expect-text (role region :name \"...\") \"PROBE\")\n",
+            .{ line_num, expected, expected },
         ) catch "TEST FAILED\n",
         else => std.fmt.bufPrint(
             &buf,
@@ -394,29 +398,168 @@ fn appendDescendantText(
     }
 }
 
+/// Reads one runtime metric by its spec name, or null for an unknown name.
+pub fn runtimeMetricValue(metrics: RuntimeMetrics, name: []const u8) ?i64 {
+    // A u64 gauge past i64 range would be an engine bug, not a spec's; refuse
+    // it here so no host has to.
+    const u64MetricAsI64 = struct {
+        fn cast(value: u64) i64 {
+            return std.math.cast(i64, value) orelse @panic("runtime metric exceeded signed assertion range");
+        }
+    }.cast;
+    if (std.mem.eql(u8, name, "active_graph_records_rebuilt")) return u64MetricAsI64(metrics.active_graph_records_rebuilt);
+    if (std.mem.eql(u8, name, "active_intervals_synced")) return u64MetricAsI64(metrics.active_intervals_synced);
+    if (std.mem.eql(u8, name, "reset_dom")) return u64MetricAsI64(metrics.reset_dom);
+    if (std.mem.eql(u8, name, "create_element")) return u64MetricAsI64(metrics.create_element);
+    if (std.mem.eql(u8, name, "append_child")) return u64MetricAsI64(metrics.append_child);
+    if (std.mem.eql(u8, name, "remove_node")) return u64MetricAsI64(metrics.remove_node);
+    if (std.mem.eql(u8, name, "move_before")) return u64MetricAsI64(metrics.move_before);
+    if (std.mem.eql(u8, name, "set_text")) return u64MetricAsI64(metrics.set_text);
+    if (std.mem.eql(u8, name, "set_value")) return u64MetricAsI64(metrics.set_value);
+    if (std.mem.eql(u8, name, "set_checked")) return u64MetricAsI64(metrics.set_checked);
+    if (std.mem.eql(u8, name, "set_disabled")) return u64MetricAsI64(metrics.set_disabled);
+    if (std.mem.eql(u8, name, "set_metadata")) return u64MetricAsI64(metrics.set_metadata);
+    if (std.mem.eql(u8, name, "bind_event")) return u64MetricAsI64(metrics.bind_event);
+    if (std.mem.eql(u8, name, "allocs_this_event")) return u64MetricAsI64(metrics.allocs_this_event);
+    if (std.mem.eql(u8, name, "deallocs_this_event")) return u64MetricAsI64(metrics.deallocs_this_event);
+    if (std.mem.eql(u8, name, "host_allocs_this_event")) return u64MetricAsI64(metrics.host_allocs_this_event);
+    if (std.mem.eql(u8, name, "host_deallocs_this_event")) return u64MetricAsI64(metrics.host_deallocs_this_event);
+    if (std.mem.eql(u8, name, "host_alloc_bytes_this_event")) return u64MetricAsI64(metrics.host_alloc_bytes_this_event);
+    if (std.mem.eql(u8, name, "host_dealloc_bytes_this_event")) return u64MetricAsI64(metrics.host_dealloc_bytes_this_event);
+    if (std.mem.eql(u8, name, "events_processed")) return u64MetricAsI64(metrics.events_processed);
+    if (std.mem.eql(u8, name, "dirty_source_roots")) return u64MetricAsI64(metrics.dirty_source_roots);
+    if (std.mem.eql(u8, name, "propagation_prunes")) return u64MetricAsI64(metrics.propagation_prunes);
+    if (std.mem.eql(u8, name, "derived_calls_into_roc")) return u64MetricAsI64(metrics.derived_calls_into_roc);
+    if (std.mem.eql(u8, name, "each_key_compares")) return u64MetricAsI64(metrics.each_key_compares);
+    if (std.mem.eql(u8, name, "each_key_hashes")) return u64MetricAsI64(metrics.each_key_hashes);
+    if (std.mem.eql(u8, name, "each_key_reuse_compares")) return u64MetricAsI64(metrics.each_key_reuse_compares);
+    if (std.mem.eql(u8, name, "each_key_duplicate_compares")) return u64MetricAsI64(metrics.each_key_duplicate_compares);
+    if (std.mem.eql(u8, name, "each_item_compares")) return u64MetricAsI64(metrics.each_item_compares);
+    if (std.mem.eql(u8, name, "each_syncs")) return u64MetricAsI64(metrics.each_syncs);
+    if (std.mem.eql(u8, name, "each_sync_keys")) return u64MetricAsI64(metrics.each_sync_keys);
+    if (std.mem.eql(u8, name, "each_sync_existing_rows")) return u64MetricAsI64(metrics.each_sync_existing_rows);
+    if (std.mem.eql(u8, name, "recompute_batches")) return u64MetricAsI64(metrics.recompute_batches);
+    if (std.mem.eql(u8, name, "patches_emitted")) return u64MetricAsI64(metrics.patches_emitted);
+    if (std.mem.eql(u8, name, "scopes_created")) return u64MetricAsI64(metrics.scopes_created);
+    if (std.mem.eql(u8, name, "scopes_disposed")) return u64MetricAsI64(metrics.scopes_disposed);
+    if (std.mem.eql(u8, name, "rows_reused")) return u64MetricAsI64(metrics.rows_reused);
+    if (std.mem.eql(u8, name, "selector_members_dirtied")) return u64MetricAsI64(metrics.selector_members_dirtied);
+    if (std.mem.eql(u8, name, "rows_created")) return u64MetricAsI64(metrics.rows_created);
+    if (std.mem.eql(u8, name, "rows_order_links_touched")) return u64MetricAsI64(metrics.rows_order_links_touched);
+    if (std.mem.eql(u8, name, "rows_removed")) return u64MetricAsI64(metrics.rows_removed);
+    if (std.mem.eql(u8, name, "rows_render_roots_moved")) return u64MetricAsI64(metrics.rows_render_roots_moved);
+    if (std.mem.eql(u8, name, "closure_retains")) return u64MetricAsI64(metrics.closure_retains);
+    if (std.mem.eql(u8, name, "closure_releases")) return u64MetricAsI64(metrics.closure_releases);
+    if (std.mem.eql(u8, name, "render_indexes_refreshed")) return u64MetricAsI64(metrics.render_indexes_refreshed);
+    if (std.mem.eql(u8, name, "signal_record_table_rebuilt")) return u64MetricAsI64(metrics.signal_record_table_rebuilt);
+    if (std.mem.eql(u8, name, "stream_nodes_scanned")) return u64MetricAsI64(metrics.stream_nodes_scanned);
+    if (std.mem.eql(u8, name, "stream_nodes_scanned_apply")) return u64MetricAsI64(metrics.stream_nodes_scanned_apply);
+    if (std.mem.eql(u8, name, "stream_nodes_scanned_children")) return u64MetricAsI64(metrics.stream_nodes_scanned_children);
+    if (std.mem.eql(u8, name, "stream_nodes_scanned_dirty_scope")) return u64MetricAsI64(metrics.stream_nodes_scanned_dirty_scope);
+    if (std.mem.eql(u8, name, "stream_nodes_scanned_events")) return u64MetricAsI64(metrics.stream_nodes_scanned_events);
+    if (std.mem.eql(u8, name, "stream_nodes_scanned_mounts")) return u64MetricAsI64(metrics.stream_nodes_scanned_mounts);
+    if (std.mem.eql(u8, name, "stream_nodes_scanned_remove_target")) return u64MetricAsI64(metrics.stream_nodes_scanned_remove_target);
+    if (std.mem.eql(u8, name, "stream_nodes_scanned_render_scope")) return u64MetricAsI64(metrics.stream_nodes_scanned_render_scope);
+    if (std.mem.eql(u8, name, "stream_nodes_scanned_splice")) return u64MetricAsI64(metrics.stream_nodes_scanned_splice);
+    if (std.mem.eql(u8, name, "retained_alloc_delta")) return metrics.retained_alloc_delta;
+    if (std.mem.eql(u8, name, "host_retained_alloc_delta")) return metrics.host_retained_alloc_delta;
+    if (std.mem.eql(u8, name, "host_retained_bytes_delta")) return metrics.host_retained_bytes_delta;
+    return null;
+}
+
 /// Builds the semantic spec runner for a host adapter and its observable DOM surface.
 pub fn Runner(comptime Ctx: type) type {
+    ctx.assertRunnerCtx(Ctx);
     return struct {
         const Host = Ctx.Host;
         const RocHost = Ctx.RocHost;
 
-        /// Runs  using the host semantics and measurement boundaries defined by this module.
-        pub fn run(host: *Host, roc_host: *RocHost, commands: []const SpecCommand, verbose: bool) c_int {
-            var metrics_mark: ?RuntimeMetrics = null;
+        /// Applies only declarative setup commands before `roc_ui_init`.
+        /// Action and assertion commands are ignored here because the parser
+        /// keeps the two phases distinct even though they share one slice
+        /// during the current migration.
+        pub fn applySetup(host: *Host, commands: []const SpecCommand) c_int {
+            if (comptime !Ctx.capabilities.setup) return 1;
+            for (commands) |command| switch (command.step) {
+                .set_initial_location => |text| {
+                    const value = locationSnapshotFromSpecText(command.line_num, text) orelse return 1;
+                    Ctx.setInitialLocation(host, value);
+                },
+                .set_initial_visibility => |text| {
+                    const value = visibilitySnapshotFromSpecText(command.line_num, text) orelse return 1;
+                    Ctx.setInitialVisibility(host, value);
+                },
+                .set_initial_online => |text| {
+                    const value = onlineSnapshotFromSpecText(command.line_num, text) orelse return 1;
+                    Ctx.setInitialOnline(host, value);
+                },
+                .seed_local_storage => |pair| Ctx.seedStorage(host, .local, pair.key, pair.value),
+                .seed_session_storage => |pair| Ctx.seedStorage(host, .session, pair.key, pair.value),
+                .seed_file_result => |fixture| {
+                    if (comptime !Ctx.capabilities.effect_fixtures) return 1;
+                    Ctx.stubFileResult(host, &fixture.stub);
+                },
+                .seed_http_result => |fixture| {
+                    if (comptime !Ctx.capabilities.effect_fixtures) return 1;
+                    Ctx.stubHttpResult(host, &fixture.stub);
+                },
+                .manual_effects => {
+                    if (comptime !Ctx.capabilities.manual_effects) return 1;
+                    Ctx.enableManualEffects(host);
+                },
+                else => {},
+            };
+            return 0;
+        }
 
+        /// Stateful execution boundary for a sequence of SCM commands.
+        /// Metric marks live here so callers cannot accidentally erase them by
+        /// dispatching a scenario one command at a time.
+        pub const Session = struct {
+            metrics_mark: ?RuntimeMetrics = null,
+
+            /// Dispatches one command while preserving sequence state.
+            pub fn dispatch(self: *Session, host: *Host, roc_host: *RocHost, command: SpecCommand) StepOutcome {
+                if (spec_parser.stepCapability(command.kind()) == .window) return .unsupported;
+                const supported = switch (command.kind()) {
+                    .set_visibility, .set_online => Ctx.capabilities.environment,
+                    .request_window_close, .expect_window_closed => Ctx.capabilities.window,
+                    .stub_file_result, .stub_http_result => Ctx.capabilities.effect_fixtures,
+                    .run_effect, .expect_pending_effects => Ctx.capabilities.manual_effects,
+                    else => true,
+                };
+                if (!supported) return .unsupported;
+                const commands = [_]SpecCommand{command};
+                return if (runWithSession(self, host, roc_host, &commands, false) == 0) .handled else .failed;
+            }
+        };
+
+        /// Dispatches one standalone command through the semantic runner.
+        pub fn dispatch(host: *Host, roc_host: *RocHost, command: SpecCommand) StepOutcome {
+            var session: Session = .{};
+            return session.dispatch(host, roc_host, command);
+        }
+
+        /// Runs commands using the host semantics and measurement boundaries defined by this module.
+        pub fn run(host: *Host, roc_host: *RocHost, commands: []const SpecCommand, verbose: bool) c_int {
+            var session: Session = .{};
+            return runWithSession(&session, host, roc_host, commands, verbose);
+        }
+
+        fn runWithSession(session: *Session, host: *Host, roc_host: *RocHost, commands: []const SpecCommand, verbose: bool) c_int {
             for (commands) |cmd| {
                 if (verbose) {
                     var buffer: [160]u8 = undefined;
-                    const message = std.fmt.bufPrint(&buffer, "[SPEC] line {d}: {s}\n", .{ cmd.line_num, @tagName(cmd.cmd_type) }) catch "[SPEC] command\n";
+                    const message = std.fmt.bufPrint(&buffer, "[SPEC] line {d}: {s}\n", .{ cmd.line_num, @tagName(cmd.step) }) catch "[SPEC] command\n";
                     Ctx.writeStderr(message);
                 }
-                switch (cmd.cmd_type) {
+                switch (cmd.step) {
                     .wait, .type_text, .key, .expect_onscreen, .expect_history, .expect_count, .expect_selected, .expect_focused, .snapshot, .close => {
                         // The parser already keeps these out of a (test ...);
                         // this is the runner's own word on it, for a command
                         // list assembled some other way.
                         var buffer: [160]u8 = undefined;
-                        const message = std.fmt.bufPrint(&buffer, "Error: line {d}: {s} runs only against a real window; put it in a (scenario ...)\n", .{ cmd.line_num, @tagName(cmd.cmd_type) }) catch "Error: window-only step\n";
+                        const message = std.fmt.bufPrint(&buffer, "Error: line {d}: {s} runs only against a real window; put it in a (scenario ...)\n", .{ cmd.line_num, @tagName(cmd.step) }) catch "Error: window-only step\n";
                         Ctx.writeStderr(message);
                         return 1;
                     },
@@ -426,46 +569,34 @@ pub fn Runner(comptime Ctx: type) type {
                         // transferred values in outer defers after their last
                         // internal metrics flush.
                         Ctx.finishHostMetrics(host);
-                        metrics_mark = Ctx.lastRuntimeMetrics(host);
+                        session.metrics_mark = Ctx.lastRuntimeMetrics(host);
                     },
 
                     .set_initial_location, .set_initial_visibility, .set_initial_online, .seed_local_storage, .seed_session_storage, .seed_file_result, .seed_http_result, .manual_effects => {},
 
-                    .set_visibility => {
-                        if (comptime !@hasDecl(Ctx, "setVisibility")) {
+                    .set_visibility => |text| {
+                        if (comptime !Ctx.capabilities.environment) {
                             writeLocatorFailure(cmd.line_num, "visibility commands are not supported by this runner");
                             return 1;
                         } else {
-                            const text = cmd.expected_text orelse {
-                                writeLocatorFailure(cmd.line_num, "set_visibility command had no visibility text");
-                                return 1;
-                            };
                             const visibility = visibilitySnapshotFromSpecText(cmd.line_num, text) orelse return 1;
                             _ = Ctx.setVisibility(host, roc_host, visibility);
                             Ctx.finishHostMetrics(host);
                         }
                     },
 
-                    .set_online => {
-                        if (comptime !@hasDecl(Ctx, "setOnline")) {
+                    .set_online => |text| {
+                        if (comptime !Ctx.capabilities.environment) {
                             writeLocatorFailure(cmd.line_num, "online commands are not supported by this runner");
                             return 1;
                         } else {
-                            const text = cmd.expected_text orelse {
-                                writeLocatorFailure(cmd.line_num, "set_online command had no online text");
-                                return 1;
-                            };
                             const online = onlineSnapshotFromSpecText(cmd.line_num, text) orelse return 1;
                             _ = Ctx.setOnline(host, roc_host, online);
                             Ctx.finishHostMetrics(host);
                         }
                     },
 
-                    .navigate => {
-                        const text = cmd.expected_text orelse {
-                            writeLocatorFailure(cmd.line_num, "navigate command had no URL text");
-                            return 1;
-                        };
+                    .navigate => |text| {
                         const location = locationSnapshotFromSpecText(cmd.line_num, text) orelse return 1;
                         _ = Ctx.navigateLocation(host, roc_host, location);
                         Ctx.finishHostMetrics(host);
@@ -481,11 +612,7 @@ pub fn Runner(comptime Ctx: type) type {
                         Ctx.finishHostMetrics(host);
                     },
 
-                    .expect_current_location, .assert_current_location => {
-                        const text = cmd.expected_text orelse {
-                            writeLocatorFailure(cmd.line_num, "current-location assertion had no URL text");
-                            return 1;
-                        };
+                    .expect_current_location => |text| {
                         const expected = locationSnapshotFromSpecText(cmd.line_num, text) orelse return 1;
                         const actual = Ctx.currentLocation(host);
                         if (!std.mem.eql(u8, actual.path, expected.path)) {
@@ -502,11 +629,7 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_document_title => {
-                        const expected = cmd.expected_text orelse {
-                            writeLocatorFailure(cmd.line_num, "document-title assertion had no text");
-                            return 1;
-                        };
+                    .expect_document_title => |expected| {
                         const actual = documentTitleForCtx(Ctx, host);
                         if (!std.mem.eql(u8, actual, expected)) {
                             writeStringMismatch(cmd.line_num, "document title", expected, actual);
@@ -514,16 +637,10 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_local_storage, .expect_session_storage => {
-                        const key = cmd.task_name orelse {
-                            writeLocatorFailure(cmd.line_num, "storage assertion had no key text");
-                            return 1;
-                        };
-                        const expected = cmd.expected_text orelse {
-                            writeLocatorFailure(cmd.line_num, "storage assertion had no value text");
-                            return 1;
-                        };
-                        const area: boundary.StorageArea = switch (cmd.cmd_type) {
+                    .expect_local_storage, .expect_session_storage => |pair| {
+                        const key = pair.key;
+                        const expected = pair.value;
+                        const area: boundary.StorageArea = switch (cmd.step) {
                             .expect_local_storage => .local,
                             .expect_session_storage => .session,
                             else => unreachable,
@@ -538,12 +655,8 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_no_local_storage, .expect_no_session_storage => {
-                        const key = cmd.task_name orelse {
-                            writeLocatorFailure(cmd.line_num, "storage absence assertion had no key text");
-                            return 1;
-                        };
-                        const area: boundary.StorageArea = switch (cmd.cmd_type) {
+                    .expect_no_local_storage, .expect_no_session_storage => |key| {
+                        const area: boundary.StorageArea = switch (cmd.step) {
                             .expect_no_local_storage => .local,
                             .expect_no_session_storage => .session,
                             else => unreachable,
@@ -554,8 +667,8 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .click => {
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .click => |locator| {
+                        const elem = Ctx.findElementByLocator(host, locator, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -577,8 +690,8 @@ pub fn Runner(comptime Ctx: type) type {
                         Ctx.dispatchRocEvent(host, roc_host, event_id, BoundaryPayloadDescriptor.init(.unit, .none), Ctx.hostValueUnit(host, roc_host));
                     },
 
-                    .real_click => {
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .real_click => |locator| {
+                        const elem = Ctx.findElementByLocator(host, locator, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -598,8 +711,8 @@ pub fn Runner(comptime Ctx: type) type {
                         if (!dispatchRealClickDefaultAction(Ctx, host, roc_host, target_id, click_result, cmd.line_num)) return 1;
                     },
 
-                    .pointer_down, .pointer_up, .pointer_enter, .pointer_leave => {
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .pointer_down, .pointer_up, .pointer_enter, .pointer_leave => |locator| {
+                        const elem = Ctx.findElementByLocator(host, locator, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -607,8 +720,8 @@ pub fn Runner(comptime Ctx: type) type {
                             writeLocatorFailure(cmd.line_num, "target is disabled");
                             return 1;
                         }
-                        const event_id = pointerEventIdForCommand(elem, cmd.cmd_type) orelse blk: {
-                            const event_name = pointerEventNameForCommand(cmd.cmd_type) orelse {
+                        const event_id = pointerEventIdForCommand(elem, cmd.kind()) orelse blk: {
+                            const event_name = pointerEventNameForCommand(cmd.kind()) orelse {
                                 writeLocatorFailure(cmd.line_num, "unsupported pointer event command");
                                 return 1;
                             };
@@ -625,8 +738,8 @@ pub fn Runner(comptime Ctx: type) type {
                         Ctx.dispatchRocEvent(host, roc_host, event_id, BoundaryPayloadDescriptor.init(.unit, .none), Ctx.hostValueUnit(host, roc_host));
                     },
 
-                    .key_down => {
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .key_down => |args| {
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -642,14 +755,8 @@ pub fn Runner(comptime Ctx: type) type {
                             writeLocatorFailure(cmd.line_num, "keydown binding does not request the key/shift payload descriptor");
                             return 1;
                         }
-                        const key = cmd.expected_text orelse {
-                            writeLocatorFailure(cmd.line_num, "key_down command is missing key text");
-                            return 1;
-                        };
-                        const shift_key = cmd.expected_bool orelse {
-                            writeLocatorFailure(cmd.line_num, "key_down command is missing shift flag");
-                            return 1;
-                        };
+                        const key = args.key;
+                        const shift_key = args.shift;
                         const target_id = elem.id;
                         const payload_bytes = encodeKeyShiftPayload(Ctx.allocator(host), key, shift_key);
                         defer Ctx.allocator(host).free(payload_bytes);
@@ -660,16 +767,16 @@ pub fn Runner(comptime Ctx: type) type {
                     },
 
                     .request_window_close => {
-                        if (@hasDecl(Ctx, "requestWindowClose")) {
+                        if (comptime Ctx.capabilities.window) {
                             Ctx.requestWindowClose(host, roc_host);
                         } else {
                             writeLocatorFailure(cmd.line_num, "window close requires the native GUI semantic host");
                             return 1;
                         }
                     },
-                    .expect_window_closed => {
-                        if (@hasDecl(Ctx, "windowClosed")) {
-                            if (Ctx.windowClosed(host) != cmd.expected_bool.?) {
+                    .expect_window_closed => |expected| {
+                        if (comptime Ctx.capabilities.window) {
+                            if (Ctx.windowClosed(host) != expected) {
                                 writeLocatorFailure(cmd.line_num, "window closed state differs from expected");
                                 return 1;
                             }
@@ -678,8 +785,8 @@ pub fn Runner(comptime Ctx: type) type {
                             return 1;
                         }
                     },
-                    .shortcut => {
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .shortcut => |args| {
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -687,11 +794,7 @@ pub fn Runner(comptime Ctx: type) type {
                             writeLocatorFailure(cmd.line_num, "target is disabled");
                             return 1;
                         }
-                        const chord = cmd.shortcut orelse {
-                            writeLocatorFailure(cmd.line_num, "shortcut command is missing its validated chord");
-                            return 1;
-                        };
-                        const event = Ctx.shortcutEvent(elem, chord) orelse {
+                        const event = Ctx.shortcutEvent(elem, args.chord) orelse {
                             writeLocatorFailure(cmd.line_num, "target has no binding for this exact shortcut");
                             return 1;
                         };
@@ -702,12 +805,12 @@ pub fn Runner(comptime Ctx: type) type {
                         Ctx.dispatchRocEvent(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host));
                     },
 
-                    .focus, .blur, .composition_start, .composition_end => {
-                        const event_name = namedUnitEventNameForCommand(cmd.cmd_type) orelse {
+                    .focus, .blur, .composition_start, .composition_end => |locator| {
+                        const event_name = namedUnitEventNameForCommand(cmd.kind()) orelse {
                             writeLocatorFailure(cmd.line_num, "unsupported named unit event command");
                             return 1;
                         };
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                        const elem = Ctx.findElementByLocator(host, locator, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -723,7 +826,7 @@ pub fn Runner(comptime Ctx: type) type {
                             writeLocatorFailure(cmd.line_num, "named event binding does not use a unit payload descriptor");
                             return 1;
                         }
-                        switch (cmd.cmd_type) {
+                        switch (cmd.step) {
                             .focus => Ctx.focusElement(host, elem),
                             .blur => Ctx.blurElement(host, elem),
                             .composition_start => Ctx.beginComposition(host, elem),
@@ -733,9 +836,9 @@ pub fn Runner(comptime Ctx: type) type {
                         Ctx.dispatchRocEvent(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host));
                     },
 
-                    .change => {
-                        const value = cmd.expected_text orelse "";
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .change => |args| {
+                        const value = args.text;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -755,9 +858,9 @@ pub fn Runner(comptime Ctx: type) type {
                         Ctx.dispatchRocEvent(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, value));
                     },
 
-                    .select_option => {
-                        const value = cmd.expected_text orelse "";
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .select_option => |args| {
+                        const value = args.text;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -768,13 +871,10 @@ pub fn Runner(comptime Ctx: type) type {
                         if (!dispatchSelectOptionEvent(Ctx, host, roc_host, elem, value, cmd.line_num)) return 1;
                     },
 
-                    .custom_event => {
-                        const event_name = cmd.task_name orelse {
-                            writeLocatorFailure(cmd.line_num, "custom_event command had no event name");
-                            return 1;
-                        };
-                        const detail = cmd.expected_text orelse "";
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .custom_event => |args| {
+                        const event_name = args.name;
+                        const detail = args.detail;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -793,17 +893,17 @@ pub fn Runner(comptime Ctx: type) type {
                         Ctx.dispatchRocEvent(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueStr(host, roc_host, detail));
                     },
 
-                    .submit => {
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .submit => |locator| {
+                        const elem = Ctx.findElementByLocator(host, locator, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
                         if (!dispatchSubmitEvent(Ctx, host, roc_host, elem, cmd.line_num)) return 1;
                     },
 
-                    .fill => {
-                        const value = cmd.expected_text orelse "";
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .fill => |args| {
+                        const value = args.text;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -823,9 +923,9 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .check, .uncheck => {
-                        const checked = cmd.cmd_type == .check;
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .check, .uncheck => |locator| {
+                        const checked = cmd.kind() == .check;
+                        const elem = Ctx.findElementByLocator(host, locator, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -836,26 +936,26 @@ pub fn Runner(comptime Ctx: type) type {
                         if (!dispatchCheckedChangeEvent(Ctx, host, roc_host, elem, checked, cmd.line_num)) return 1;
                     },
 
-                    .stub_file_result => {
-                        if (comptime !@hasDecl(Ctx, "stubFileResult")) {
+                    .stub_file_result => |stub| {
+                        if (comptime !Ctx.capabilities.effect_fixtures) {
                             writeLocatorFailure(cmd.line_num, "file stubs are not supported by this runner");
                             return 1;
                         }
-                        Ctx.stubFileResult(host, &(cmd.file_stub orelse unreachable));
+                        Ctx.stubFileResult(host, &stub.stub);
                     },
 
-                    .stub_http_result => {
-                        if (comptime !@hasDecl(Ctx, "stubHttpResult")) {
+                    .stub_http_result => |stub| {
+                        if (comptime !Ctx.capabilities.effect_fixtures) {
                             writeLocatorFailure(cmd.line_num, "http stubs are not supported by this runner");
                             return 1;
                         }
-                        Ctx.stubHttpResult(host, &(cmd.http_stub orelse unreachable));
+                        Ctx.stubHttpResult(host, &stub.stub);
                     },
-                    .run_effect => {
-                        if (comptime @hasDecl(Ctx, "runSpecEffect")) {
-                            if (!Ctx.runSpecEffect(host, roc_host, cmd.expected_count.?)) {
+                    .run_effect => |occurrence| {
+                        if (comptime Ctx.capabilities.manual_effects) {
+                            if (!Ctx.runSpecEffect(host, roc_host, occurrence)) {
                                 var buffer: [192]u8 = undefined;
-                                const message = std.fmt.bufPrint(&buffer, "effect occurrence {d} is not pending or manual mode is disabled", .{cmd.expected_count.?}) catch unreachable;
+                                const message = std.fmt.bufPrint(&buffer, "effect occurrence {d} is not pending or manual mode is disabled", .{occurrence}) catch unreachable;
                                 writeLocatorFailure(cmd.line_num, message);
                                 return 1;
                             }
@@ -864,12 +964,12 @@ pub fn Runner(comptime Ctx: type) type {
                             return 1;
                         }
                     },
-                    .expect_pending_effects => {
-                        if (comptime @hasDecl(Ctx, "pendingEffectCount")) {
+                    .expect_pending_effects => |expected| {
+                        if (comptime Ctx.capabilities.manual_effects) {
                             const actual = Ctx.pendingEffectCount(host);
-                            if (actual != cmd.expected_count.?) {
+                            if (actual != expected) {
                                 var buffer: [192]u8 = undefined;
-                                const message = std.fmt.bufPrint(&buffer, "expected {d} pending effects, got {d}", .{ cmd.expected_count.?, actual }) catch unreachable;
+                                const message = std.fmt.bufPrint(&buffer, "expected {d} pending effects, got {d}", .{ expected, actual }) catch unreachable;
                                 writeLocatorFailure(cmd.line_num, message);
                                 return 1;
                             }
@@ -879,45 +979,37 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .tick_interval => {
-                        const period_ms = cmd.interval_ms orelse {
-                            writeLocatorFailure(cmd.line_num, "interval command had no period");
-                            return 1;
-                        };
+                    .tick_interval => |period_ms| {
                         _ = Ctx.tickIntervalSource(host, roc_host, period_ms);
                         Ctx.finishHostMetrics(host);
                     },
 
-                    .tick_interval_if_active => {
-                        const period_ms = cmd.interval_ms orelse {
-                            writeLocatorFailure(cmd.line_num, "interval command had no period");
-                            return 1;
-                        };
+                    .tick_interval_if_active => |period_ms| {
                         if (Ctx.activeIntervalRecordCountByPeriod(host, period_ms) != 0) {
                             _ = Ctx.tickIntervalSource(host, roc_host, period_ms);
                             Ctx.finishHostMetrics(host);
                         }
                     },
 
-                    .expect_visible => {
-                        _ = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
-                            writeLocatorMiss(Ctx, cmd.line_num, cmd.locator);
+                    .expect_visible => |locator| {
+                        _ = Ctx.findElementByLocator(host, locator, cmd.line_num) orelse {
+                            writeLocatorMiss(Ctx, cmd.line_num, locator);
                             return 1;
                         };
                     },
 
-                    .expect_absent => {
-                        const match_count = Ctx.countElementsByLocator(host, cmd.locator);
+                    .expect_absent => |locator| {
+                        const match_count = Ctx.countElementsByLocator(host, locator);
                         if (match_count != 0) {
                             writeAbsentFailure(cmd.line_num, match_count);
                             return 1;
                         }
                     },
 
-                    .expect_text => {
-                        const expected = cmd.expected_text orelse "";
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
-                            writeLocatorMiss(Ctx, cmd.line_num, cmd.locator);
+                    .expect_text => |args| {
+                        const expected = args.text;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
+                            writeLocatorMiss(Ctx, cmd.line_num, args.target);
                             return 1;
                         };
                         if (elem.text) |own_text| {
@@ -940,9 +1032,9 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_value => {
-                        const expected = cmd.expected_text orelse "";
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .expect_value => |args| {
+                        const expected = args.text;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -953,13 +1045,10 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_attr => {
-                        const attr_name = cmd.expected_attr orelse {
-                            writeLocatorFailure(cmd.line_num, "attr assertion had no attr name");
-                            return 1;
-                        };
-                        const expected = cmd.expected_text orelse "";
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .expect_attr => |args| {
+                        const attr_name = args.name;
+                        const expected = args.value;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -973,12 +1062,9 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_no_attr => {
-                        const attr_name = cmd.expected_attr orelse {
-                            writeLocatorFailure(cmd.line_num, "attr assertion had no attr name");
-                            return 1;
-                        };
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .expect_no_attr => |args| {
+                        const attr_name = args.name;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -988,9 +1074,9 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_checked => {
-                        const expected = cmd.expected_bool orelse false;
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .expect_checked => |args| {
+                        const expected = args.expected;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -1000,9 +1086,9 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_disabled => {
-                        const expected = cmd.expected_bool orelse false;
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .expect_disabled => |args| {
+                        const expected = args.expected;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -1012,9 +1098,9 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_updates => {
-                        const expected = cmd.expected_count orelse 0;
-                        const elem = Ctx.findElementByLocator(host, cmd.locator, cmd.line_num) orelse {
+                    .expect_updates => |args| {
+                        const expected = args.count;
+                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
                             writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
                             return 1;
                         };
@@ -1027,9 +1113,9 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_cleanup => {
-                        const name = cmd.task_name orelse "";
-                        const expected = cmd.expected_count orelse 0;
+                    .expect_cleanup => |args| {
+                        const name = args.name;
+                        const expected = args.count;
                         const actual = Ctx.cleanupEventCount(host, name);
                         if (actual != expected) {
                             var buf: [512]u8 = undefined;
@@ -1039,9 +1125,9 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_interval => {
-                        const period_ms = cmd.interval_ms orelse 0;
-                        const expected = cmd.expected_count orelse 0;
+                    .expect_interval => |args| {
+                        const period_ms = args.period_ms;
+                        const expected = args.count;
                         const actual = Ctx.activeIntervalRecordCountByPeriod(host, period_ms);
                         if (actual != expected) {
                             var buf: [512]u8 = undefined;
@@ -1051,10 +1137,10 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_metric_delta => {
-                        const metric_name = cmd.expected_text orelse "";
-                        const expected = cmd.expected_metric_delta orelse 0;
-                        const marked = metrics_mark orelse {
+                    .expect_metric_delta => |args| {
+                        const metric_name = args.metric;
+                        const expected = args.delta;
+                        const marked = session.metrics_mark orelse {
                             writeMetricFailure(cmd.line_num, "mark_metrics must run before expect_metric_delta");
                             return 1;
                         };
@@ -1073,10 +1159,10 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .expect_metric_delta_at_most => {
-                        const metric_name = cmd.expected_text orelse "";
-                        const expected = cmd.expected_metric_delta orelse 0;
-                        const marked = metrics_mark orelse {
+                    .expect_metric_delta_at_most => |args| {
+                        const metric_name = args.metric;
+                        const expected = args.delta;
+                        const marked = session.metrics_mark orelse {
                             writeMetricFailure(cmd.line_num, "mark_metrics must run before expect_metric_delta_at_most");
                             return 1;
                         };
@@ -1095,8 +1181,8 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
                 }
-                if (comptime @hasDecl(Ctx, "traceAllocationCheckpoint")) {
-                    Ctx.traceAllocationCheckpoint(host, cmd.line_num, @tagName(cmd.cmd_type));
+                if (comptime Ctx.capabilities.allocation_trace) {
+                    Ctx.traceAllocationCheckpoint(host, cmd.line_num, @tagName(cmd.step));
                 }
             }
 
@@ -1105,71 +1191,6 @@ pub fn Runner(comptime Ctx: type) type {
             }
 
             return 0;
-        }
-
-        fn u64MetricAsI64(value: u64) i64 {
-            return std.math.cast(i64, value) orelse Ctx.fail("runtime metric exceeded signed assertion range");
-        }
-
-        fn runtimeMetricValue(metrics: RuntimeMetrics, name: []const u8) ?i64 {
-            if (std.mem.eql(u8, name, "active_graph_records_rebuilt")) return u64MetricAsI64(metrics.active_graph_records_rebuilt);
-            if (std.mem.eql(u8, name, "active_intervals_synced")) return u64MetricAsI64(metrics.active_intervals_synced);
-            if (std.mem.eql(u8, name, "reset_dom")) return u64MetricAsI64(metrics.reset_dom);
-            if (std.mem.eql(u8, name, "create_element")) return u64MetricAsI64(metrics.create_element);
-            if (std.mem.eql(u8, name, "append_child")) return u64MetricAsI64(metrics.append_child);
-            if (std.mem.eql(u8, name, "remove_node")) return u64MetricAsI64(metrics.remove_node);
-            if (std.mem.eql(u8, name, "move_before")) return u64MetricAsI64(metrics.move_before);
-            if (std.mem.eql(u8, name, "set_text")) return u64MetricAsI64(metrics.set_text);
-            if (std.mem.eql(u8, name, "set_value")) return u64MetricAsI64(metrics.set_value);
-            if (std.mem.eql(u8, name, "set_checked")) return u64MetricAsI64(metrics.set_checked);
-            if (std.mem.eql(u8, name, "set_disabled")) return u64MetricAsI64(metrics.set_disabled);
-            if (std.mem.eql(u8, name, "set_metadata")) return u64MetricAsI64(metrics.set_metadata);
-            if (std.mem.eql(u8, name, "bind_event")) return u64MetricAsI64(metrics.bind_event);
-            if (std.mem.eql(u8, name, "allocs_this_event")) return u64MetricAsI64(metrics.allocs_this_event);
-            if (std.mem.eql(u8, name, "deallocs_this_event")) return u64MetricAsI64(metrics.deallocs_this_event);
-            if (std.mem.eql(u8, name, "host_allocs_this_event")) return u64MetricAsI64(metrics.host_allocs_this_event);
-            if (std.mem.eql(u8, name, "host_deallocs_this_event")) return u64MetricAsI64(metrics.host_deallocs_this_event);
-            if (std.mem.eql(u8, name, "host_alloc_bytes_this_event")) return u64MetricAsI64(metrics.host_alloc_bytes_this_event);
-            if (std.mem.eql(u8, name, "host_dealloc_bytes_this_event")) return u64MetricAsI64(metrics.host_dealloc_bytes_this_event);
-            if (std.mem.eql(u8, name, "events_processed")) return u64MetricAsI64(metrics.events_processed);
-            if (std.mem.eql(u8, name, "dirty_source_roots")) return u64MetricAsI64(metrics.dirty_source_roots);
-            if (std.mem.eql(u8, name, "propagation_prunes")) return u64MetricAsI64(metrics.propagation_prunes);
-            if (std.mem.eql(u8, name, "derived_calls_into_roc")) return u64MetricAsI64(metrics.derived_calls_into_roc);
-            if (std.mem.eql(u8, name, "each_key_compares")) return u64MetricAsI64(metrics.each_key_compares);
-            if (std.mem.eql(u8, name, "each_key_hashes")) return u64MetricAsI64(metrics.each_key_hashes);
-            if (std.mem.eql(u8, name, "each_key_reuse_compares")) return u64MetricAsI64(metrics.each_key_reuse_compares);
-            if (std.mem.eql(u8, name, "each_key_duplicate_compares")) return u64MetricAsI64(metrics.each_key_duplicate_compares);
-            if (std.mem.eql(u8, name, "each_item_compares")) return u64MetricAsI64(metrics.each_item_compares);
-            if (std.mem.eql(u8, name, "each_syncs")) return u64MetricAsI64(metrics.each_syncs);
-            if (std.mem.eql(u8, name, "each_sync_keys")) return u64MetricAsI64(metrics.each_sync_keys);
-            if (std.mem.eql(u8, name, "each_sync_existing_rows")) return u64MetricAsI64(metrics.each_sync_existing_rows);
-            if (std.mem.eql(u8, name, "recompute_batches")) return u64MetricAsI64(metrics.recompute_batches);
-            if (std.mem.eql(u8, name, "patches_emitted")) return u64MetricAsI64(metrics.patches_emitted);
-            if (std.mem.eql(u8, name, "scopes_created")) return u64MetricAsI64(metrics.scopes_created);
-            if (std.mem.eql(u8, name, "scopes_disposed")) return u64MetricAsI64(metrics.scopes_disposed);
-            if (std.mem.eql(u8, name, "rows_reused")) return u64MetricAsI64(metrics.rows_reused);
-            if (std.mem.eql(u8, name, "selector_members_dirtied")) return u64MetricAsI64(metrics.selector_members_dirtied);
-            if (std.mem.eql(u8, name, "rows_created")) return u64MetricAsI64(metrics.rows_created);
-            if (std.mem.eql(u8, name, "rows_order_links_touched")) return u64MetricAsI64(metrics.rows_order_links_touched);
-            if (std.mem.eql(u8, name, "rows_removed")) return u64MetricAsI64(metrics.rows_removed);
-            if (std.mem.eql(u8, name, "rows_render_roots_moved")) return u64MetricAsI64(metrics.rows_render_roots_moved);
-            if (std.mem.eql(u8, name, "closure_retains")) return u64MetricAsI64(metrics.closure_retains);
-            if (std.mem.eql(u8, name, "closure_releases")) return u64MetricAsI64(metrics.closure_releases);
-            if (std.mem.eql(u8, name, "render_indexes_refreshed")) return u64MetricAsI64(metrics.render_indexes_refreshed);
-            if (std.mem.eql(u8, name, "signal_record_table_rebuilt")) return u64MetricAsI64(metrics.signal_record_table_rebuilt);
-            if (std.mem.eql(u8, name, "stream_nodes_scanned")) return u64MetricAsI64(metrics.stream_nodes_scanned);
-            if (std.mem.eql(u8, name, "stream_nodes_scanned_apply")) return u64MetricAsI64(metrics.stream_nodes_scanned_apply);
-            if (std.mem.eql(u8, name, "stream_nodes_scanned_children")) return u64MetricAsI64(metrics.stream_nodes_scanned_children);
-            if (std.mem.eql(u8, name, "stream_nodes_scanned_dirty_scope")) return u64MetricAsI64(metrics.stream_nodes_scanned_dirty_scope);
-            if (std.mem.eql(u8, name, "stream_nodes_scanned_events")) return u64MetricAsI64(metrics.stream_nodes_scanned_events);
-            if (std.mem.eql(u8, name, "stream_nodes_scanned_mounts")) return u64MetricAsI64(metrics.stream_nodes_scanned_mounts);
-            if (std.mem.eql(u8, name, "stream_nodes_scanned_remove_target")) return u64MetricAsI64(metrics.stream_nodes_scanned_remove_target);
-            if (std.mem.eql(u8, name, "stream_nodes_scanned_render_scope")) return u64MetricAsI64(metrics.stream_nodes_scanned_render_scope);
-            if (std.mem.eql(u8, name, "stream_nodes_scanned_splice")) return u64MetricAsI64(metrics.stream_nodes_scanned_splice);
-            if (std.mem.eql(u8, name, "retained_alloc_delta")) return metrics.retained_alloc_delta;
-            if (std.mem.eql(u8, name, "host_retained_alloc_delta")) return metrics.host_retained_alloc_delta;
-            if (std.mem.eql(u8, name, "host_retained_bytes_delta")) return metrics.host_retained_bytes_delta;
-            return null;
         }
 
         fn encodeKeyShiftPayload(allocator: std.mem.Allocator, key: []const u8, shift_key: bool) []u8 {
@@ -2123,24 +2144,11 @@ test "spec runner submit dispatches enabled unit bindings" {
 }
 
 test "spec runner resolves runtime metric names" {
-    const TestCtx = struct {
-        pub const Host = void;
-        pub const RocHost = void;
-
-        /// Terminates this test or host path because continuing could leave runtime meaning incoherent.
-        pub fn fail(_: []const u8) noreturn {
-            unreachable;
-        }
-
-        /// Writes a diagnostic directly to standard error without entering application semantics.
-        pub fn writeStderr(_: []const u8) void {}
-    };
-    const TestRunner = Runner(TestCtx);
     var metrics = engine.zeroRuntimeMetrics();
     metrics.rows_reused = 7;
     metrics.retained_alloc_delta = -2;
 
-    try std.testing.expectEqual(@as(?i64, 7), TestRunner.runtimeMetricValue(metrics, "rows_reused"));
-    try std.testing.expectEqual(@as(?i64, -2), TestRunner.runtimeMetricValue(metrics, "retained_alloc_delta"));
-    try std.testing.expectEqual(@as(?i64, null), TestRunner.runtimeMetricValue(metrics, "missing_metric"));
+    try std.testing.expectEqual(@as(?i64, 7), runtimeMetricValue(metrics, "rows_reused"));
+    try std.testing.expectEqual(@as(?i64, -2), runtimeMetricValue(metrics, "retained_alloc_delta"));
+    try std.testing.expectEqual(@as(?i64, null), runtimeMetricValue(metrics, "missing_metric"));
 }
