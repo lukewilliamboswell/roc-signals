@@ -5568,17 +5568,50 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn collectInitialEach(self: *@This(), roc_host: *abi.RocHost, scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, ordinal: *ids.SiteOrdinal, binder_stack: *shared_buffer.List(HostBinderBinding), payload: abi_view.EachElem, dirty_source_node_ids: []const u64) CollectionError!void {
+                var staging: InitialEachStaging = .{};
+                var adopted = false;
+                defer staging.release(Ctx.allocator(self.host_ctx), self.host_ctx, roc_host, &self.engine.pending_roc_metrics, adopted);
+                try self.collectInitialEachInto(roc_host, scope_id, parent_elem_id, ordinal, binder_stack, payload, dirty_source_node_ids, &staging);
+                adopted = true;
+            }
+
+            /// Everything an initial each stages before the collection adopts
+            /// it, released from one place so the body below carries no defers.
+            /// Scratch and the evaluated rows are dropped on every path (the
+            /// evaluation hands its inputs over before adoption); the site
+            /// descriptor, each descriptor, and row table only when they were
+            /// not adopted.
+            const InitialEachStaging = struct {
+                site: ?HostNodeDescriptorStream.PreparedScopeSite = null,
+                prepared_each: ?HostNodeDescriptorStream.PreparedEach = null,
+                evaluated: ?*PreparedInitialEach = null,
+                prepared_site: ?HostEachRowSite = null,
+                row_render_ranges: []RowRenderSpanRange = &.{},
+                stable_edits: []rows_transition.StableEdit = &.{},
+
+                fn release(self: *@This(), allocator: std.mem.Allocator, ctx: Ctx.Handle, roc_host: *abi.RocHost, metrics: anytype, adopted: bool) void {
+                    allocator.free(self.stable_edits);
+                    allocator.free(self.row_render_ranges);
+                    if (self.evaluated) |evaluated| evaluated.deinit();
+                    if (adopted) return;
+                    if (self.prepared_site) |*prepared_site| prepared_site.deinit(allocator);
+                    if (self.prepared_each) |*prepared_each| prepared_each.abort(allocator, ctx, roc_host, metrics);
+                    if (self.site) |*site| site.abort(allocator);
+                }
+            };
+
+            fn collectInitialEachInto(self: *@This(), roc_host: *abi.RocHost, scope_id: ids.ScopeId, parent_elem_id: ids.ElemId, ordinal: *ids.SiteOrdinal, binder_stack: *shared_buffer.List(HostBinderBinding), payload: abi_view.EachElem, dirty_source_node_ids: []const u64, staging: *InitialEachStaging) CollectionError!void {
                 const allocator = Ctx.allocator(self.host_ctx);
                 const site_ordinal = ordinal.*;
                 const node_id = try self.reserveNodeIdentity(scope_id, site_ordinal);
                 try self.reserveScopeDescriptors(scope_id, 0, 1);
-                var site = self.stream.prepareScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .each, binder_stack.items) catch return error.OutOfMemory;
+                staging.site = self.stream.prepareScopeSite(allocator, node_id, scope_id, site_ordinal, parent_elem_id, .each, binder_stack.items) catch return error.OutOfMemory;
+                const site = &staging.site.?;
                 site.desc.render_insert_index = self.prepared_render_order.items.len;
-                errdefer site.abort(allocator);
                 try self.appendConstructionPosition(scope_id, parent_elem_id, .marker(node_id, .each));
                 const items = try self.bindSignalRoot(roc_host, payload.rows.*, binder_stack.items);
-                var prepared_each = self.stream.prepareEach(node_id, items, payload.ops, &self.engine.pending_roc_metrics);
-                errdefer prepared_each.abort(allocator, self.host_ctx, roc_host, &self.engine.pending_roc_metrics);
+                staging.prepared_each = self.stream.prepareEach(node_id, items, payload.ops, &self.engine.pending_roc_metrics);
+                const prepared_each = &staging.prepared_each.?;
                 self.signal_records.transferDescriptorRoot(items.record);
                 const journaled = self.signal_bindings.pop() orelse @panic("staged each binding journal underflow");
                 if (journaled.record != items.record or journaled.source_node_ids.ptr != items.source_node_ids.ptr) @panic("staged each binding journal transfer mismatch");
@@ -5596,14 +5629,14 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.liveEachSiteIndex(scope_id, site_ordinal)) |site_index| {
                     try self.collectNestedRowSync(roc_host, scope_id, parent_elem_id, site_ordinal, site_index, &prepared_each.desc, binder_stack, dirty_source_node_ids);
                     try self.appendConstructionPosition(scope_id, parent_elem_id, .marker(node_id, .each_end));
-                    self.prepared_state_sites.appendAssumeCapacity(site);
-                    self.prepared_eaches.appendAssumeCapacity(prepared_each);
+                    self.prepared_state_sites.appendAssumeCapacity(site.*);
+                    self.prepared_eaches.appendAssumeCapacity(prepared_each.*);
                     ordinal.* = ids.SiteOrdinal.fromRaw(ordinal.*.raw() + 1);
                     return;
                 }
 
-                const evaluated = try PreparedInitialEach.prepare(self.engine, self.host_ctx, roc_host, &prepared_each.desc, scope_id, site_ordinal, allocator, self.prepared_state_cells.items);
-                defer evaluated.deinit();
+                staging.evaluated = try PreparedInitialEach.prepare(self.engine, self.host_ctx, roc_host, &prepared_each.desc, scope_id, site_ordinal, allocator, self.prepared_state_cells.items);
+                const evaluated = staging.evaluated.?;
                 try evaluated.reserveForCollection(self);
                 // Initial-row bindings are staged while the row scopes are
                 // collected below, so reserve their full generation bound
@@ -5625,8 +5658,8 @@ pub fn Engine(comptime Ctx: type) type {
                 // The site's own row tables are sized to exactly its rows and
                 // filled below during preparation; publication moves the whole
                 // site into `engine.each_row_sites`, whose slot the plan holds.
-                var prepared_site = HostEachRowSite{ .key = .{ .parent_scope_id = scope_id, .site_ordinal = site_ordinal } };
-                errdefer prepared_site.deinit(allocator);
+                staging.prepared_site = HostEachRowSite{ .key = .{ .parent_scope_id = scope_id, .site_ordinal = site_ordinal } };
+                const prepared_site = &staging.prepared_site.?;
                 prepared_site.scope_ids.ensureTotalCapacity(allocator, evaluated.rows.len) catch return error.OutOfMemory;
                 prepared_site.hash_links.ensureTotalCapacity(allocator, evaluated.rows.len) catch return error.OutOfMemory;
                 prepared_site.hash_heads.ensureTotalCapacity(allocator, std.math.cast(u32, evaluated.rows.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
@@ -5645,8 +5678,8 @@ pub fn Engine(comptime Ctx: type) type {
                     self.engine.active_each_candidate_generation = previous_generation;
                     self.engine.active_each_candidate_rows_site_id = previous_rows_site_id;
                 }
-                const row_render_ranges = allocator.alloc(RowRenderSpanRange, evaluated.rows.len) catch return error.OutOfMemory;
-                defer allocator.free(row_render_ranges);
+                staging.row_render_ranges = allocator.alloc(RowRenderSpanRange, evaluated.rows.len) catch return error.OutOfMemory;
+                const row_render_ranges = staging.row_render_ranges;
                 for (evaluated.rows, 0..) |row, row_index| {
                     const row_scope_id = try self.reserveEachRowScopeGeneration(scope_id, site_ordinal, row.key_hash, row.row_handle);
                     prepared_site.scope_ids.appendAssumeCapacity(row_scope_id);
@@ -5684,8 +5717,8 @@ pub fn Engine(comptime Ctx: type) type {
                 evaluated.inputs.rows_site_key = rows_key;
                 evaluated.inputs.rows_site_published = existing_rows_site_id != null;
                 const edit_offset: usize = if (existing_rows_site_id != null) 1 else 0;
-                const stable_edits = allocator.alloc(rows_transition.StableEdit, evaluated.rows.len + edit_offset) catch return error.OutOfMemory;
-                defer allocator.free(stable_edits);
+                staging.stable_edits = allocator.alloc(rows_transition.StableEdit, evaluated.rows.len + edit_offset) catch return error.OutOfMemory;
+                const stable_edits = staging.stable_edits;
                 if (edit_offset != 0) stable_edits[0] = .clear;
                 for (evaluated.rows, prepared_site.scope_ids.items, 0..) |row, row_scope_id, row_index| {
                     const slot = evaluated.inputs.slot(row_index) orelse return error.InvalidDescriptor;
@@ -5727,9 +5760,9 @@ pub fn Engine(comptime Ctx: type) type {
                 const input_index = self.prepared_initial_each_inputs.items.len;
                 self.prepared_initial_each_inputs.append(allocator, evaluated.inputs) catch return error.OutOfMemory;
                 evaluated.owns_inputs = false;
-                self.prepared_state_sites.appendAssumeCapacity(site);
-                self.prepared_eaches.appendAssumeCapacity(prepared_each);
-                self.prepared_each_sites.appendAssumeCapacity(prepared_site);
+                self.prepared_state_sites.appendAssumeCapacity(site.*);
+                self.prepared_eaches.appendAssumeCapacity(prepared_each.*);
+                self.prepared_each_sites.appendAssumeCapacity(prepared_site.*);
                 for (row_render_ranges) |range| self.row_render_span_intents.appendAssumeCapacity(.{ .owner = .{ .initial = input_index }, .range = range });
                 ordinal.* = ids.SiteOrdinal.fromRaw(ordinal.*.raw() + 1);
             }
