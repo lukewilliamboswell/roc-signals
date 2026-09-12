@@ -92,6 +92,7 @@ TARGETS = (
     Target("keyed-scopes", "keyed-row identity, scope retirement, reuse barriers, disposal"),
     Target("rows-transitions", "canonical stable-slot Rows transitions, lineage, abort, and retry"),
     Target("structural", "collect/prepare/commit atomicity under allocation failure"),
+    Target("sparse-rows", "direct Rows deltas against the snapshot path: order, identity, memberships, work bounds"),
     Target("ownership", "retained-value and callable ownership across erased calls"),
     Target("boundary", "boundary schema and event extraction plan parsing"),
 )
