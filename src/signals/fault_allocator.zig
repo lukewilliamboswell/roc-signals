@@ -7,6 +7,34 @@ pub const FaultAllocator = struct {
     fail_number: ?usize = null,
     attempts: usize = 0,
     induced_failures: usize = 0,
+    bytes: ByteMetrics = .{},
+
+    /// Requested-byte accounting for every allocation that passed through
+    /// this allocator. Sizes are the caller's requested lengths, not the
+    /// backing allocator's rounded blocks, so two runs of the same code
+    /// report identical numbers regardless of the backing allocator.
+    pub const ByteMetrics = struct {
+        /// Bytes currently owned by callers.
+        live: usize = 0,
+        /// Highest `live` observed since the last reset.
+        peak: usize = 0,
+        /// Bytes returned through `free` or shrunk through resize/remap.
+        /// Frees of memory that predates this instance (tests that re-create
+        /// the allocator around one live host) saturate `live` at zero.
+        freed: usize = 0,
+        /// Bytes requested through alloc or growth, successful or not.
+        requested: usize = 0,
+
+        fn grow(self: *ByteMetrics, delta: usize) void {
+            self.live += delta;
+            self.peak = @max(self.peak, self.live);
+        }
+
+        fn shrink(self: *ByteMetrics, delta: usize) void {
+            self.live -|= delta;
+            self.freed += delta;
+        }
+    };
 
     const vtable: std.mem.Allocator.VTable = .{
         .alloc = alloc,
@@ -35,6 +63,13 @@ pub const FaultAllocator = struct {
         self.induced_failures = 0;
     }
 
+    /// Restarts byte accounting at the current live size so a caller can
+    /// measure the peak and freed bytes of one bounded operation. Live bytes
+    /// are preserved because they describe memory that is still owned.
+    pub fn resetByteMetrics(self: *FaultAllocator) void {
+        self.bytes = .{ .live = self.bytes.live, .peak = self.bytes.live };
+    }
+
     fn shouldFail(self: *FaultAllocator) bool {
         self.attempts += 1;
         if (self.fail_number) |number| if (self.attempts >= number) {
@@ -50,25 +85,39 @@ pub const FaultAllocator = struct {
 
     fn alloc(ptr: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
         const self = fromPtr(ptr);
+        self.bytes.requested += len;
         if (self.shouldFail()) return null;
-        return self.backing.rawAlloc(len, alignment, ret_addr);
+        const result = self.backing.rawAlloc(len, alignment, ret_addr);
+        if (result != null) self.bytes.grow(len);
+        return result;
     }
 
     fn resize(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
         const self = fromPtr(ptr);
+        if (new_len > memory.len) self.bytes.requested += new_len - memory.len;
         if (self.shouldFail()) return false;
-        return self.backing.rawResize(memory, alignment, new_len, ret_addr);
+        const resized = self.backing.rawResize(memory, alignment, new_len, ret_addr);
+        if (resized) self.recordResize(memory.len, new_len);
+        return resized;
     }
 
     fn remap(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
         const self = fromPtr(ptr);
+        if (new_len > memory.len) self.bytes.requested += new_len - memory.len;
         if (self.shouldFail()) return null;
-        return self.backing.rawRemap(memory, alignment, new_len, ret_addr);
+        const remapped = self.backing.rawRemap(memory, alignment, new_len, ret_addr);
+        if (remapped != null) self.recordResize(memory.len, new_len);
+        return remapped;
     }
 
     fn free(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
         const self = fromPtr(ptr);
+        self.bytes.shrink(memory.len);
         self.backing.rawFree(memory, alignment, ret_addr);
+    }
+
+    fn recordResize(self: *FaultAllocator, old_len: usize, new_len: usize) void {
+        if (new_len >= old_len) self.bytes.grow(new_len - old_len) else self.bytes.shrink(old_len - new_len);
     }
 };
 
@@ -131,4 +180,34 @@ test "teardown remains allocation-free while faults are armed" {
 
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqual(@as(usize, 0), fault.induced_failures);
+}
+
+test "fault allocator meters requested live, peak, and freed bytes" {
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+
+    const first = try allocator.alloc(u8, 32);
+    const second = try allocator.alloc(u8, 16);
+    try std.testing.expectEqual(@as(usize, 48), fault.bytes.live);
+    try std.testing.expectEqual(@as(usize, 48), fault.bytes.peak);
+    try std.testing.expectEqual(@as(usize, 48), fault.bytes.requested);
+    allocator.free(second);
+    try std.testing.expectEqual(@as(usize, 32), fault.bytes.live);
+    try std.testing.expectEqual(@as(usize, 48), fault.bytes.peak);
+    try std.testing.expectEqual(@as(usize, 16), fault.bytes.freed);
+
+    fault.resetByteMetrics();
+    try std.testing.expectEqual(@as(usize, 32), fault.bytes.live);
+    try std.testing.expectEqual(@as(usize, 32), fault.bytes.peak);
+    try std.testing.expectEqual(@as(usize, 0), fault.bytes.freed);
+    try std.testing.expectEqual(@as(usize, 0), fault.bytes.requested);
+
+    // A refused allocation is requested but never live.
+    fault.configure(1);
+    try std.testing.expectError(error.OutOfMemory, allocator.alloc(u8, 64));
+    try std.testing.expectEqual(@as(usize, 64), fault.bytes.requested);
+    try std.testing.expectEqual(@as(usize, 32), fault.bytes.live);
+    fault.configure(null);
+    allocator.free(first);
+    try std.testing.expectEqual(@as(usize, 0), fault.bytes.live);
 }

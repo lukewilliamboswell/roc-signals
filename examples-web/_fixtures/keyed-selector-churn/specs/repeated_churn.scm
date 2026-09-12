@@ -1,0 +1,26 @@
+(test "repeated remove and append churn keeps the selector index footprint flat"
+  (steps
+    (click (role button :name "Create 1,000 rows"))
+    (click (role button :name "Append one row"))
+    (click (role button :name "Remove row 1001"))
+    (click (role button :name "Append one row"))
+    (click (role button :name "Remove row 1002"))
+    (click (role button :name "Append one row"))
+    (expect-visible (test-id "row-1003"))
+    ; Each cycle removes and re-adds one same-length key: memberships and
+    ; retained host storage return to exactly where they started.
+    (mark-metrics)
+    (click (role button :name "Remove row 1003"))
+    (click (role button :name "Append one row"))
+    (expect-absent (test-id "row-1003"))
+    (expect-visible (test-id "row-1004"))
+    (expect-metric-delta selector_memberships_released 2)
+    (expect-metric-delta selector_registrations 2)
+    (expect-metric-delta-at-most selector_registry_visits 8)
+    (expect-metric-delta retained_alloc_delta 0)
+    (expect-metric-delta host_retained_alloc_delta 0)
+    (expect-metric-delta host_retained_bytes_delta 0)
+    (mark-metrics)
+    (click (role button :name "Select row 1004"))
+    (expect-attr (test-id "row-1004") class "danger")
+    (expect-metric-delta selector_members_dirtied 1)))

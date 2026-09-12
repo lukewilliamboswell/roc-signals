@@ -1969,6 +1969,15 @@ const HostEnv = struct {
             return sim_dom.matchesLocator(elem, locator);
         }
 
+        // Descendant text is only the fallback accessible name of a container
+        // with no own label, text, or value. Concatenating it copies the whole
+        // subtree through the counted host allocator, so it is built only once
+        // the element's role already matches; otherwise every container in the
+        // document would be flattened on each role lookup and that O(DOM)
+        // harness work would land in the next event's allocation metrics.
+        const role = sim_dom.implicitRole(elem) orelse return false;
+        if (!std.mem.eql(u8, role, locator.role_name.role)) return false;
+
         var descendant_text: std.ArrayListUnmanaged(u8) = .empty;
         defer descendant_text.deinit(self.hostAllocator());
         try self.appendDescendantText(elem, &descendant_text);
@@ -3383,7 +3392,10 @@ const SpecRunnerCtx = struct {
         return host.hostAllocator();
     }
 
-    /// Resolves element by locator from maintained indexes without scanning the full descriptor stream.
+    /// Resolves a semantic locator by scanning the simulated DOM's active
+    /// elements. The harness keeps no locator index, so this is O(DOM)
+    /// test-side work; it allocates only when a role locator must fall back
+    /// to a matching container's descendant text.
     pub fn findElementByLocator(host: *Host, locator: Locator, line_num: usize) ?*DomElement {
         return host.findElementByLocator(locator, line_num);
     }
@@ -4423,6 +4435,43 @@ test "native fault coordinates exclude Roc allocation and reallocation internals
     const retry = try host.hostAllocator().alloc(u8, 32);
     host.hostAllocator().free(retry);
     try std.testing.expectEqual(@as(usize, 2), host.allocation_sweep.attempts);
+}
+
+test "native role locator flattens descendant text only for role matches" {
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.deinit();
+        std.testing.expectEqual(std.heap.Check.ok, host.gpa.deinit()) catch @panic("host leak");
+    }
+    const allocator = host.hostAllocator();
+
+    // A section with no own text carries its accessible name in two text
+    // children; a plain div container has the same shape but no role.
+    try host.dom_elements.append(allocator, sim_dom.Element.init(0, try allocator.dupe(u8, "section")));
+    try host.dom_elements.append(allocator, sim_dom.Element.init(1, try allocator.dupe(u8, "span")));
+    try host.dom_elements.append(allocator, sim_dom.Element.init(2, try allocator.dupe(u8, "span")));
+    try host.dom_elements.append(allocator, sim_dom.Element.init(3, try allocator.dupe(u8, "div")));
+    for (host.dom_elements.items) |*elem| elem.active = true;
+    try host.dom_elements.items[0].children.append(allocator, 1);
+    try host.dom_elements.items[0].children.append(allocator, 2);
+    try host.dom_elements.items[3].children.append(allocator, 1);
+    try host.dom_elements.items[3].children.append(allocator, 2);
+    sim_dom.setOwnedString(allocator, &host.dom_elements.items[1].text, "Row ");
+    sim_dom.setOwnedString(allocator, &host.dom_elements.items[2].text, "totals");
+
+    const locator: Locator = .{ .role_name = .{ .role = "region", .name = "Row totals" } };
+
+    // The role mismatch is decided before any descendant text is copied.
+    const allocs_before = host.host_alloc_count;
+    try std.testing.expect(!try host.matchesLocator(&host.dom_elements.items[3], locator));
+    try std.testing.expectEqual(allocs_before, host.host_alloc_count);
+
+    // A role match still resolves through the concatenated descendant text.
+    try std.testing.expect(try host.matchesLocator(&host.dom_elements.items[0], locator));
+    try std.testing.expect(host.host_alloc_count > allocs_before);
+    try std.testing.expectEqual(&host.dom_elements.items[0], host.findElementByLocator(locator, 1).?);
 }
 
 test "native fault resize and remap preserve memory and metrics until retry" {
@@ -7112,6 +7161,240 @@ test "mixed row and nested branch disposal retries every allocation failure" {
             try std.testing.expectEqual(@as(usize, 3), host.dom_elements.items[@intCast(row_parent)].children.items.len);
             try std.testing.expect(activeTextElementId(&host, "confirm") != null);
             try std.testing.expect(activeTextElementId(&host, "closed") == null);
+            return attempts;
+        }
+    };
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts > 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+/// A `Signal.select` expression whose identity is its own false initializer,
+/// as the Roc platform emits it: the token, the false-branch thunk, and the
+/// true-branch thunk are the selector's three callables.
+fn testNodeSelectExpr(roc_host: *abi.RocHost, input: abi.NodeSignalExpr, input_cap: HostValueCapability, key: []const u8) abi.NodeSignalExpr {
+    const false_init = testHostValueInitialThunk(roc_host, testHostValueBool(false));
+    const true_init = testHostValueInitialThunk(roc_host, testHostValueBool(true));
+    const cap = testHostValueCapability(roc_host);
+    abi.increfErasedCallable(false_init, 1);
+    return .{
+        .payload = .{
+            .select = .{
+                ._0 = false_init,
+                ._1 = boxTestNodeSignalExpr(roc_host, input),
+                ._2 = RocStr.fromSlice(key, roc_host),
+                ._3 = testTextReadHandle(roc_host, input_cap),
+                ._4 = false_init,
+                ._5 = true_init,
+                ._6 = cap,
+            },
+        },
+        .tag = .Select,
+    };
+}
+
+test "sparse branch replacement with selector members leaks nothing on any allocation failure" {
+    // Selector memberships appended by a sparse structural change are staged
+    // under the transaction's ownership and only enter the live registry at
+    // commit. The plan is torn down field by field on refusal, so the render
+    // stage must release that staging along with the other graph artifacts;
+    // this sweep fails at teardown if any coordinate leaves it behind.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.engine_allocator_override = null;
+                host.deinit();
+                std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("sparse selector replacement leaked");
+            }
+            const show_token = newTestBinderToken(&roc_host);
+            const selected_token = newTestBinderToken(&roc_host);
+            const show_cap = testHostValueCapability(&roc_host);
+            const selected_cap = testHostValueCapability(&roc_host);
+            const first = testNodeSelectExpr(&roc_host, testNodeRefExpr(selected_token), selected_cap, "row-2");
+            const second = testNodeSelectExpr(&roc_host, testNodeRefExpr(selected_token), selected_cap, "row-5");
+            const first_attrs = [_]abi.NodeAttr{testNodeSignalBoolAttr(&roc_host, .checked, first)};
+            const second_attrs = [_]abi.NodeAttr{testNodeSignalBoolAttr(&roc_host, .checked, second)};
+            const table = testElementWith(&roc_host, "table", &.{}, &.{
+                testElementWith(&roc_host, "input", &first_attrs, &.{}),
+                testElementWith(&roc_host, "input", &second_attrs, &.{}),
+            });
+            const hidden = testNodeText(&roc_host, "table-hidden");
+            const toggle = testNodeWhenReadingState(&roc_host, show_token, show_cap, table, hidden);
+            const selected = testNodeStateWithTokenAndInitialCapability(&roc_host, selected_token, testHostValueStr(&roc_host, "row-2"), toggle, selected_cap);
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, show_token, testHostValueBool(false), selected, show_cap);
+            defer root.decref(&roc_host);
+            _ = try tryRenderInitialRoot(&host, &roc_host, root, &.{});
+            var show_id: ?u64 = null;
+            for (host.engine.active_stream.scope_sites.items) |site| {
+                if (site.kind != .state) continue;
+                show_id = site.node_id.raw();
+                break;
+            }
+            try std.testing.expect(activeTextElementId(&host, "table-hidden") != null);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.selectors.memberCount());
+            const generation = host.engine.dirty_signal_generation;
+            const allocations = host.roc_allocations.snapshot();
+
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            _ = host.engine.tryDispatchStateValue(&host, &roc_host, show_id.?, testHostValueBool(true), show_cap) catch |err| retry: {
+                try std.testing.expect(failure_number != null);
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
+                try std.testing.expectEqual(generation, host.engine.dirty_signal_generation);
+                try std.testing.expect(activeTextElementId(&host, "table-hidden") != null);
+                try std.testing.expectEqual(@as(usize, 0), host.engine.selectors.memberCount());
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations));
+                fault.configure(null);
+                break :retry try host.engine.tryDispatchStateValue(&host, &roc_host, show_id.?, testHostValueBool(true), show_cap);
+            };
+            const attempts = fault.attempts;
+            try std.testing.expect(activeTextElementId(&host, "table-hidden") == null);
+            try std.testing.expectEqual(@as(usize, 2), host.engine.selectors.memberCount());
+            _ = try host.engine.tryDispatchStateValue(&host, &roc_host, show_id.?, testHostValueBool(false), show_cap);
+            try std.testing.expect(activeTextElementId(&host, "table-hidden") != null);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.selectors.memberCount());
+            return attempts;
+        }
+    };
+    const attempts = try Runner.run(null);
+    try std.testing.expect(attempts > 0);
+    for (1..attempts + 1) |failure_number| _ = try Runner.run(failure_number);
+}
+
+/// Generation identity the delta-describing `Rows` adapters report. The test
+/// body advances these between dispatches so a refused transaction's retry
+/// describes the same generation and parent as the attempt it repeats.
+var test_rows_delta_generation: u64 = 0;
+var test_rows_delta_parent: u64 = 0;
+
+fn testEachKeyBytes(values: []const i64) u64 {
+    var total: u64 = 0;
+    for (values) |value| {
+        var buffer: [32]u8 = undefined;
+        total += @intCast((std.fmt.bufPrint(&buffer, "{d}", .{value}) catch unreachable).len);
+    }
+    return total;
+}
+
+/// Describes the list as a snapshot until a parent generation is announced,
+/// then as a direct-parent delta that appends the list's last item.
+fn testEachDescribeAppendDeltaCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const call_args = testErasedArgsAs(erased_calls.ErasedHostValueU64Args, args);
+    defer testDropHostValue(roc_host, call_args.arg0);
+    const list = testReadHostValueI64List(roc_host, call_args.arg0);
+    const items = list.items();
+    const key_bytes = testEachKeyBytes(items);
+    const host = hostFromRocHost(roc_host);
+    const token = if (test_rows_delta_parent == 0)
+        host.engine.pushRowsSnapshotDescriptionSink(host, call_args.arg1, test_rows_delta_generation, @intCast(list.length), key_bytes) catch @panic("test description sink rejected Rows snapshot output")
+    else
+        host.engine.pushRowsDeltaDescriptionSink(host, call_args.arg1, test_rows_delta_generation, test_rows_delta_parent, @intCast(list.length), key_bytes, 1, 1, testEachKeyBytes(items[items.len - 1 ..])) catch @panic("test description sink rejected Rows delta output");
+    writeTestErasedResult(u64, ret, token);
+}
+
+/// Copies the one canonical operation `testEachDescribeAppendDeltaCallable`
+/// advertises: insert the last item's stable slot at the end of the order.
+fn testEachCopyAppendDeltaCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const call_args = testErasedArgsAs(erased_calls.ErasedHostValueU64Args, args);
+    defer testDropHostValue(roc_host, call_args.arg0);
+    const list = testReadHostValueI64List(roc_host, call_args.arg0);
+    const items = list.items();
+    var buffer: [32]u8 = undefined;
+    const key = std.fmt.bufPrint(&buffer, "{d}", .{items[items.len - 1]}) catch unreachable;
+    const owned_key = abi.RocStr.fromSlice(key, roc_host);
+    defer abi.RocStrRelease.release(owned_key, roc_host);
+    const host = hostFromRocHost(roc_host);
+    const token = host.engine.pushRowsDeltaInsertSink(host, call_args.arg1, 0, 0, @intCast(list.length), owned_key.asSlice()) catch @panic("test delta sink rejected Rows adapter output");
+    writeTestErasedResult(u64, ret, token);
+}
+
+/// A keyed `each` whose adapters can hand the engine a direct-parent delta.
+fn testNodeEachWithAppendDeltaAdapters(roc_host: *abi.RocHost, signal: abi.NodeSignalExpr, items_cap: HostValueCapability) abi.Elem {
+    const item_cap = testHostValueCapability(roc_host);
+    return .{
+        .payload = .{
+            .each = .{
+                .rows = boxTestNodeSignalExpr(roc_host, signal),
+                .ops = .{
+                    .rows_capability = hv.retainHostValueCapability(items_cap),
+                    .item_capability = item_cap,
+                    .describe = testEachAdapterCallable(roc_host, &testEachDescribeAppendDeltaCallable),
+                    .copy_snapshot = testEachAdapterCallable(roc_host, &testEachCopyKeysCallable),
+                    .copy_delta = testEachAdapterCallable(roc_host, &testEachCopyAppendDeltaCallable),
+                    .compare_slots = testEachAdapterCallable(roc_host, &testEachComparePairsCallable),
+                    .clone_item = testEachAdapterCallable(roc_host, &testEachCloneItemCallable),
+                    .row = testEachAdapterCallable(roc_host, &testStatefulRowElemCallable),
+                },
+            },
+        },
+        .tag = .Each,
+    };
+}
+
+test "direct-parent Rows delta preparation leaks nothing on any allocation failure" {
+    // A direct-parent delta reserves its operation buffer and key arena in one
+    // preparation step. A refusal between those reservations must release
+    // whatever the step already obtained; this sweep fails at teardown if any
+    // coordinate leaves that partial reservation behind.
+    const Runner = struct {
+        fn run(failure_number: ?usize) !usize {
+            var host = HostEnv.init();
+            var roc_host = makeSignalsRocHost(&host);
+            host.engine.roc_host = &roc_host;
+            defer {
+                host.engine_allocator_override = null;
+                host.deinit();
+                std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("direct-parent Rows delta leaked");
+            }
+            test_rows_delta_generation = 1;
+            test_rows_delta_parent = 0;
+            const list_token = newTestBinderToken(&roc_host);
+            const cap = testHostValueCapability(&roc_host);
+            const each = testNodeEachWithAppendDeltaAdapters(&roc_host, testNodeRefExpr(list_token), cap);
+            const section = testElementWith(&roc_host, "section", &.{}, &.{each});
+            const root = testNodeStateWithTokenAndInitialCapability(&roc_host, list_token, testHostValueI64List(&roc_host, &.{ testHostValueI64(1), testHostValueI64(2) }), section, cap);
+            defer root.decref(&roc_host);
+            _ = try tryRenderInitialRoot(&host, &roc_host, root, &.{});
+            var list_id: ?u64 = null;
+            for (host.engine.active_stream.scope_sites.items) |site| {
+                if (site.kind != .state) continue;
+                list_id = site.node_id.raw();
+                break;
+            }
+            try std.testing.expect(activeTextElementId(&host, "row-2-2") != null);
+            try std.testing.expect(activeTextElementId(&host, "row-3-3") == null);
+
+            // The next description names the mounted generation as its parent,
+            // so the engine takes the direct delta path rather than the
+            // counted snapshot fallback.
+            test_rows_delta_generation = 2;
+            test_rows_delta_parent = 1;
+            const generation = host.engine.dirty_signal_generation;
+            const allocations = host.roc_allocations.snapshot();
+            const keys_hashed = host.engine.pending_roc_metrics.rows_index_keys_hashed;
+            const candidates_visited = host.engine.pending_roc_metrics.rows_candidate_rows_visited;
+            var fault = FaultAllocator.init(host.gpa.allocator());
+            fault.configure(failure_number);
+            host.engine_allocator_override = fault.allocator();
+            _ = host.engine.tryDispatchStateValue(&host, &roc_host, list_id.?, testHostValueI64List(&roc_host, &.{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) }), cap) catch |err| retry: {
+                try std.testing.expect(failure_number != null);
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
+                try std.testing.expectEqual(generation, host.engine.dirty_signal_generation);
+                try std.testing.expect(activeTextElementId(&host, "row-3-3") == null);
+                try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.liveCountSince(allocations));
+                fault.configure(null);
+                break :retry try host.engine.tryDispatchStateValue(&host, &roc_host, list_id.?, testHostValueI64List(&roc_host, &.{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3) }), cap);
+            };
+            const attempts = fault.attempts;
+            try std.testing.expect(activeTextElementId(&host, "row-3-3") != null);
+            try std.testing.expectEqual(keys_hashed, host.engine.pending_roc_metrics.rows_index_keys_hashed);
+            try std.testing.expect(host.engine.pending_roc_metrics.rows_candidate_rows_visited > candidates_visited);
             return attempts;
         }
     };

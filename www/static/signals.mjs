@@ -419,6 +419,15 @@ export class SignalsRuntime {
     this.nodes = new Map([[0, root]]);
     this.nodeIds = new WeakMap([[root, 0]]);
     this.eventCleanups = new Map();
+    // Listener keys grouped by owning element id, so a removed subtree can
+    // release exactly the registrations of its own descendants instead of
+    // scanning every live listener. Mirrors `eventCleanups`; both are
+    // maintained through the registration helpers below.
+    this.eventCleanupKeysByElem = new Map();
+    // Count of listener registrations examined by `releaseSubtree`. Contract
+    // tests assert it follows the removed bindings rather than the total
+    // number of live listeners.
+    this.subtreeListenerInspections = 0;
     this.controlledInputs = new Map();
     this.pendingSelectValues = new Map();
     this.intervals = new Map();
@@ -433,7 +442,13 @@ export class SignalsRuntime {
     this.crypto = options.crypto ?? globalThis.crypto;
     this.networkEventTarget = options.networkEventTarget ?? this.eventTarget;
     this.behaviors = normalizeBehaviors(options.behaviors);
+    // Behaviour instances keyed by owning element id. `releaseSubtree` looks
+    // each removed node up here directly, so cleanup cost follows the removed
+    // nodes that carry a behaviour rather than every live instance.
     this.behaviorInstances = new Map();
+    // Count of behaviour instances examined by `releaseSubtree`. Contract
+    // tests assert it equals the removed instances, never instances × roots.
+    this.subtreeBehaviorInspections = 0;
     this.pendingBehaviorAttaches = new Set();
     this.pendingBehaviorUpdates = new Map();
     this.telemetryLog = normalizeTelemetry(options.telemetry);
@@ -1063,8 +1078,7 @@ export class SignalsRuntime {
     this.clearOnlineListener();
     this.clearPointerProbe();
     this.clearAsyncResources();
-    for (const cleanup of this.eventCleanups.values()) cleanup();
-    this.eventCleanups.clear();
+    this.releaseAllEventCleanups();
     this.clearControlledInputs();
     this.cleanupBehaviors();
     if (this.hasErrorReporter) {
@@ -1350,9 +1364,10 @@ export class SignalsRuntime {
 
       case Op.removeNode: {
         const node = this.node(record.a);
-        this.cleanupBehaviorSubtree(node);
-        node.parentNode?.removeChild(node);
+        // Behaviours are cleaned up during the walk while the subtree is
+        // still attached, so their cleanups observe the element in place.
         this.releaseSubtree(node);
+        node.parentNode?.removeChild(node);
         return;
       }
 
@@ -1749,7 +1764,7 @@ export class SignalsRuntime {
     } else {
       elem.addEventListener(domEvent, listener, listenerOptions);
     }
-    this.eventCleanups.set(key, cleanup);
+    this.registerEventCleanup(elemId, key, cleanup);
     elem.dataset.rocEventId = String(eventId);
     if (installPointerDrag) {
       elem.dataset.rocPointerDrag = "true";
@@ -1899,12 +1914,14 @@ export class SignalsRuntime {
     });
   }
 
-  cleanupBehaviorSubtree(node) {
-    for (const [elemId, instance] of [...this.behaviorInstances.entries()]) {
-      if (node === instance.el || nodeContains(node, instance.el)) {
-        this.cleanupBehavior(elemId);
-      }
+  // Releases the behaviour owned by one removed element, if any. Elements
+  // without a behaviour cost a single map lookup and are not counted.
+  releaseElementBehavior(elemId) {
+    if (!this.behaviorInstances.has(elemId)) {
+      return;
     }
+    this.subtreeBehaviorInspections += 1;
+    this.cleanupBehavior(elemId);
   }
 
   cleanupBehaviors() {
@@ -2008,7 +2025,7 @@ export class SignalsRuntime {
       return;
     }
     cleanup();
-    this.eventCleanups.delete(key);
+    this.dropEventCleanup(elemId, key);
     const elem = this.nodes.get(elemId);
     if (elem && elem.dataset) {
       delete elem.dataset.rocEventId;
@@ -2199,6 +2216,56 @@ export class SignalsRuntime {
     return node;
   }
 
+  // Records one listener cleanup under both its canonical `elemId:domEvent`
+  // key and its owning element. Rebinding the same key replaces the cleanup
+  // without duplicating the per-element entry.
+  registerEventCleanup(elemId, key, cleanup) {
+    this.eventCleanups.set(key, cleanup);
+    let keys = this.eventCleanupKeysByElem.get(elemId);
+    if (keys === undefined) {
+      keys = new Set();
+      this.eventCleanupKeysByElem.set(elemId, keys);
+    }
+    keys.add(key);
+  }
+
+  // Forgets one listener registration from both indexes. Callers run the
+  // cleanup themselves so disposal ordering stays explicit at the call site.
+  dropEventCleanup(elemId, key) {
+    this.eventCleanups.delete(key);
+    const keys = this.eventCleanupKeysByElem.get(elemId);
+    if (keys === undefined) {
+      return;
+    }
+    keys.delete(key);
+    if (keys.size === 0) {
+      this.eventCleanupKeysByElem.delete(elemId);
+    }
+  }
+
+  // Runs and forgets every listener owned by one element. Work is bounded by
+  // that element's own bindings; elements without listeners cost one lookup.
+  releaseElementEventCleanups(elemId) {
+    const keys = this.eventCleanupKeysByElem.get(elemId);
+    if (keys === undefined) {
+      return;
+    }
+    this.eventCleanupKeysByElem.delete(elemId);
+    for (const key of keys) {
+      this.subtreeListenerInspections += 1;
+      const cleanup = this.eventCleanups.get(key);
+      this.eventCleanups.delete(key);
+      cleanup?.();
+    }
+  }
+
+  // Runs and forgets every live listener; used by unmount and full DOM resets.
+  releaseAllEventCleanups() {
+    for (const cleanup of this.eventCleanups.values()) cleanup();
+    this.eventCleanups.clear();
+    this.eventCleanupKeysByElem.clear();
+  }
+
   registerNode(id, node) {
     const previous = this.nodes.get(id);
     if (previous) {
@@ -2210,8 +2277,9 @@ export class SignalsRuntime {
 
   // Releases every per-node registration under one removed root: the engine
   // publishes a single `remove_node` for a retired subtree, so the ids,
-  // listeners, controlled inputs, and pending behaviour work of every
-  // descendant are released here, exactly once, with the root's.
+  // behaviours, listeners, controlled inputs, and pending behaviour work of
+  // every descendant are released here, exactly once, with the root's. Runs
+  // before the root leaves the DOM so behaviour cleanups see it attached.
   releaseSubtree(root) {
     const released = new Set();
     const stack = [root];
@@ -2222,7 +2290,9 @@ export class SignalsRuntime {
         released.add(elemId);
         this.nodeIds.delete(node);
         this.nodes.delete(elemId);
+        this.releaseElementBehavior(elemId);
         this.clearControlledInput(elemId);
+        this.releaseElementEventCleanups(elemId);
         this.pendingBehaviorAttaches.delete(elemId);
         this.pendingBehaviorUpdates.delete(elemId);
       }
@@ -2230,14 +2300,6 @@ export class SignalsRuntime {
       if (children) {
         for (let index = children.length - 1; index >= 0; index -= 1) {
           stack.push(children[index]);
-        }
-      }
-    }
-    if (released.size !== 0 && this.eventCleanups.size !== 0) {
-      for (const key of [...this.eventCleanups.keys()]) {
-        if (released.has(Number(key.slice(0, key.indexOf(":"))))) {
-          this.eventCleanups.get(key)();
-          this.eventCleanups.delete(key);
         }
       }
     }
@@ -2252,10 +2314,7 @@ export class SignalsRuntime {
     });
     this.clearAsyncResources();
     this.cleanupBehaviors();
-    for (const cleanup of this.eventCleanups.values()) {
-      cleanup();
-    }
-    this.eventCleanups.clear();
+    this.releaseAllEventCleanups();
     this.clearControlledInputs();
     this.nodes.clear();
     this.nodes.set(0, this.root);
@@ -2517,23 +2576,6 @@ function normalizeBehaviors(behaviors) {
 
 function isElementLike(node) {
   return !!node && typeof node.getAttribute === "function" && typeof node.setAttribute === "function";
-}
-
-function nodeContains(root, child) {
-  if (!root || !child) {
-    return false;
-  }
-  if (typeof root.contains === "function") {
-    return root.contains(child);
-  }
-  let current = child.parentNode ?? null;
-  while (current) {
-    if (current === root) {
-      return true;
-    }
-    current = current.parentNode ?? null;
-  }
-  return false;
 }
 
 function consoleTelemetry(entry) {

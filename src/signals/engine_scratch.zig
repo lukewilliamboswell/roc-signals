@@ -7,6 +7,7 @@ const descriptor_stream = @import("descriptor_stream.zig");
 const each_runtime = @import("each_runtime.zig");
 const ids = @import("ids.zig");
 const retained_values = @import("retained_values.zig");
+const signal_records = @import("signal_records.zig");
 const structural_splice = @import("structural_splice.zig");
 
 pub const Scratch = struct {
@@ -32,6 +33,11 @@ pub const Scratch = struct {
     dirty_changed_record_id_set: std.AutoHashMapUnmanaged(u64, void) = .empty,
     selector_dirty_roots: shared_buffer.List(u64) = .empty,
     elem_owned_removal: structural_splice.ElemOwnedRemovalScratch = .{},
+    /// Emptied cache-overlay containers parked between source transactions.
+    /// See `signal_records.PreparedCacheUpdates.Storage`: the overlay is
+    /// reserved for the whole graph, so retaining it is what keeps a
+    /// steady-state event from paying an O(total graph) reservation.
+    cache_overlay: ?signal_records.PreparedCacheUpdates.Storage = null,
 
     /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: *Scratch, allocator: std.mem.Allocator) void {
@@ -57,6 +63,7 @@ pub const Scratch = struct {
         self.dirty_changed_record_id_set.deinit(allocator);
         self.selector_dirty_roots.deinit(allocator);
         self.elem_owned_removal.deinit(allocator);
+        if (self.cache_overlay) |*storage| storage.deinit(allocator);
         self.* = .{};
     }
 };
@@ -84,6 +91,9 @@ test "engine scratch deinit resets retained scratch storage" {
     try scratch.dirty_changed_record_ids.append(allocator, 17);
     try scratch.dirty_changed_record_id_set.put(allocator, 17, {});
     try scratch.selector_dirty_roots.append(allocator, 18);
+    scratch.cache_overlay = .{};
+    try scratch.cache_overlay.?.updates.ensureTotalCapacity(allocator, 4);
+    try scratch.cache_overlay.?.indexes.ensureTotalCapacity(allocator, 4);
 
     scratch.deinit(allocator);
 
@@ -107,4 +117,5 @@ test "engine scratch deinit resets retained scratch storage" {
     try std.testing.expectEqual(@as(usize, 0), scratch.dirty_changed_record_ids.items.len);
     try std.testing.expectEqual(@as(usize, 0), scratch.dirty_changed_record_id_set.count());
     try std.testing.expectEqual(@as(usize, 0), scratch.selector_dirty_roots.items.len);
+    try std.testing.expect(scratch.cache_overlay == null);
 }

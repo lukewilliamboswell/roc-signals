@@ -111,7 +111,7 @@
 //!    still get its own row.
 //!  - **Reuse barrier.** `Lifecycle.blocksReuse` compares `generation ==
 //!    barrier`. Rather than sample the two directions, the target predicts the
-//!    *exact* id every intern will return - the lowest-indexed inactive slot the
+//!    *exact* id every intern will return - the oldest-retired inactive slot the
 //!    barrier does not block, or a fresh append when there is none - and checks
 //!    it at every row creation, component intern, and branch intern. Over- and
 //!    under-blocking are equally reachable from an equality, and one prediction
@@ -539,14 +539,13 @@ const Provisional = struct {
     key_token: usize,
     item_token: usize,
     /// What the slot held before preparation claimed it, so an abort can put it
-    /// back rather than leave a retirement behind.
+    /// back rather than leave a retirement behind. Null when the slot was
+    /// appended, in which case an abort pops it instead.
     previous_scope: ?Scope,
-    /// Whether the slot was appended rather than recycled, which decides whether
-    /// an abort pops it or restores it.
-    appended: bool,
-    /// Whether the id was still on the retired-ever list when preparation took
-    /// it off, so an abort can put it back there too.
-    was_retired: bool,
+    /// Where the id sat on the retired-ever list when preparation took it off,
+    /// so an abort can put it back in the same place; the list order is the
+    /// model's retirement order, which is what predicts the next reuse.
+    retired_position: ?usize,
 };
 
 /// One freshly interned keyed row scope, with everything an abort needs in order
@@ -554,8 +553,7 @@ const Provisional = struct {
 const InternedRow = struct {
     scope_id: ScopeId,
     previous_scope: ?Scope,
-    appended: bool,
-    was_retired: bool,
+    retired_position: ?usize,
 };
 
 /// Which fault positions one prepared reconciliation is probed at.
@@ -671,7 +669,9 @@ const World = struct {
     retiring_site: ?each.SiteKey = null,
     /// Scope ids retired in `generation`, which the barrier must keep blocked.
     retired_here: std.ArrayListUnmanaged(ScopeId) = .empty,
-    /// Retired scope ids not yet handed back out, for the stale-aliasing oracle.
+    /// Retired scope ids not yet handed back out, in retirement order. The
+    /// stale-aliasing oracle reads it as a set; `expectedInternId` reads it as
+    /// the model's reusable-slot ring.
     retired_ever: std.ArrayListUnmanaged(ScopeId) = .empty,
     duplicate: ?each.DuplicateKeyInfo = null,
     live_scopes: usize = 0,
@@ -714,22 +714,27 @@ const World = struct {
 
     /// Predicts the scope id the next intern must return.
     ///
-    /// `scope_tree` reuses the lowest-indexed inactive slot the barrier does not
-    /// block and appends only when there is none. Predicting the id rather than
-    /// sampling "was it fresh?" is what makes both directions of the reuse
-    /// barrier one oracle: over-blocking shows up as an unexpected append and
-    /// under-blocking as an unexpected reuse.
+    /// `scope_tree` reuses the oldest-retired slot the barrier does not block
+    /// and appends only when there is none. The model keeps its own retirement
+    /// order in `retired_ever` and skips blocked entries rather than stopping
+    /// at the first one, so an engine that stops early at a blocked slot with
+    /// an older unblocked slot behind it predicts a reuse the engine turns into
+    /// an append. Predicting the id rather than sampling "was it fresh?" is
+    /// what makes both directions of the reuse barrier one oracle:
+    /// over-blocking shows up as an unexpected append and under-blocking as an
+    /// unexpected reuse.
     ///
     /// The comparison is re-spelled here rather than delegated to `blocksReuse`
     /// on purpose. A model that called the function it is checking would agree
     /// with any change to it.
     fn expectedInternId(self: *const World) ScopeId {
-        for (self.scopes.items) |scope| {
-            if (scope.lifecycle.isActive()) continue;
+        for (self.retired_ever.items) |scope_id| {
+            const scope = self.scopes.items[scope_id.index()];
+            if (scope.lifecycle.isActive()) fail("{s} world lists live scope {d} as retired", .{ self.name(), scope_id.raw() });
             if (scope.lifecycle.retiredGeneration()) |retired| {
                 if (retired == self.generation) continue;
             }
-            return scope.scope_id;
+            return scope_id;
         }
         return ScopeId.fromIndex(self.scopes.items.len);
     }
@@ -1250,7 +1255,7 @@ const World = struct {
         // Read before the append, because a recycled slot is about to be
         // overwritten and an abort has to be able to put back what was there.
         const previous_scope = if (expected.index() < scope_count) self.scopes.items[expected.index()] else null;
-        const was_retired = containsId(self.retired_ever.items, expected);
+        const retired_position = indexOfId(self.retired_ever.items, expected);
 
         // Only exhaustion may be refused. The remaining errors describe an
         // invalid parent, which is a harness mistake rather than a fault the
@@ -1268,8 +1273,7 @@ const World = struct {
         return .{
             .scope_id = result.scope_id,
             .previous_scope = previous_scope,
-            .appended = result.scope_id.index() >= scope_count,
-            .was_retired = was_retired,
+            .retired_position = retired_position,
         };
     }
 
@@ -1304,8 +1308,7 @@ const World = struct {
             .key_token = key.token,
             .item_token = item.token,
             .previous_scope = interned.previous_scope,
-            .appended = interned.appended,
-            .was_retired = interned.was_retired,
+            .retired_position = interned.retired_position,
         });
         return interned.scope_id;
     }
@@ -1349,18 +1352,14 @@ const World = struct {
             self.release(entry.key_token);
             self.release(entry.item_token);
             self.live_scopes -= 1;
-            if (entry.was_retired) self.retired_ever.appendAssumeCapacity(entry.scope_id);
-            // Prepared rows are published into the intrusive child topology so
-            // the harness exercises the same committed primitives as the
-            // engine. Undo that topology before either popping a fresh suffix
-            // slot or restoring a recycled retired slot.
-            scope_tree.retireScopeAssumeValid(Row, self.scopes.items, entry.scope_id, self.generation);
-            if (entry.appended) {
-                self.scopes.items.len -= 1;
-            } else {
-                self.scopes.items[entry.scope_id.index()] = entry.previous_scope orelse
-                    fail("{s} recycled provisional scope {d} had no prior slot", .{ self.name(), entry.scope_id.raw() });
-            }
+            if (entry.retired_position) |position| self.retired_ever.insertAssumeCapacity(position, entry.scope_id);
+            // Prepared rows are published into the intrusive child topology and
+            // taken out of the reusable ring, so the harness exercises the same
+            // committed primitives as the engine. Retiring them here would link
+            // them at the ring tail and then pop or overwrite the slot behind
+            // the ring's back; unpublishing puts the slot back where
+            // publication found it.
+            scope_tree.unpublishScopeAssumeValid(Row, &self.scopes, entry.scope_id, entry.previous_scope);
         }
         self.provisional.clearRetainingCapacity();
     }
@@ -1463,6 +1462,13 @@ fn containsId(list: []const ScopeId, scope_id: ScopeId) bool {
         if (item == scope_id) return true;
     }
     return false;
+}
+
+fn indexOfId(list: []const ScopeId, scope_id: ScopeId) ?usize {
+    for (list, 0..) |item, index| {
+        if (item == scope_id) return index;
+    }
+    return null;
 }
 
 fn removeId(list: *std.ArrayListUnmanaged(ScopeId), scope_id: ScopeId) void {
@@ -2077,7 +2083,9 @@ fn checkBarrier(gpa: std.mem.Allocator, reader: *FuzzReader, debug: bool) void {
         const root = (scope_tree.internRoot(Row, gpa, &scopes) catch fail("root intern failed", .{})).scope_id;
         const first = (scope_tree.internComponent(Row, gpa, &scopes, root, component_ordinal, retired) catch
             fail("component intern failed", .{})).scope_id;
-        scopes.items[first.index()].lifecycle = .{ .retired = retired };
+        // Retire through the engine's own path: a slot only becomes reusable by
+        // entering the reusable ring, which a bare lifecycle write never does.
+        scope_tree.retireScopeAssumeValid(Row, scopes.items, first, retired);
 
         const next = (scope_tree.internComponent(Row, gpa, &scopes, root, SiteOrdinal.fromRaw(99), barrier) catch
             fail("component intern failed", .{})).scope_id;

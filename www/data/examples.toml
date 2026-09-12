@@ -570,6 +570,18 @@ wasm = false
 native = true
 bench = false
 
+[[examples]]
+slug = "keyed-selector-churn"
+title = "Keyed Selector Churn"
+description = "Internal keyed-row selector fixture proving structural changes patch selector memberships locally at 1k and 10k rows."
+source = "examples-web/_fixtures/keyed-selector-churn/main.roc"
+specs = "examples-web/_fixtures/keyed-selector-churn/specs"
+public = false
+wasm = false
+native = true
+bench = false
+fault_specs = ["small_churn.scm"]
+
 
 [[examples]]
 slug = "metric-semantics"
@@ -644,6 +656,17 @@ source = "examples-web/_fixtures/keyed-row-edits/main.roc"
 public = false
 wasm = true
 native = false
+bench = false
+
+[[examples]]
+slug = "rows-direct-delta-locality"
+title = "Rows Direct Delta Locality"
+description = "Internal fixture: single-row Rows deltas at 1,000 and 10,000 rows with exact engine work counts."
+source = "examples-web/_fixtures/rows-direct-delta-locality/main.roc"
+specs = "examples-web/_fixtures/rows-direct-delta-locality/specs"
+public = false
+wasm = false
+native = true
 bench = false
 
 [[examples]]

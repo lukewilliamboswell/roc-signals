@@ -552,6 +552,7 @@ const EngineScratch = engine_scratch.Scratch;
 // host drives ingestion and consumes the stream to render.
 
 pub const HostNodeDescriptorStream = descriptor_stream.Stream;
+pub const HostRetiredDescriptors = descriptor_stream.RetiredDescriptors;
 
 // Host-agnostic readers over a descriptor stream. These operate purely on the
 // stream's descriptor tables and panic on internal invariant violations, so they
@@ -883,7 +884,11 @@ pub fn Engine(comptime Ctx: type) type {
             /// Performs release record inside the shared engine while preserving transaction and changed-set invariants.
             pub fn releaseRecord(self: *@This(), record: *HostSignalRecord) void {
                 switch (record.payload) {
-                    .select, .keyed_select => |payload| self.engine.selectors.unregister(Ctx.allocator(self.ctx), payload.input, payload.key, record),
+                    .select, .keyed_select => |payload| {
+                        self.engine.selectors.unregister(Ctx.allocator(self.ctx), payload.input, payload.key, record);
+                        self.engine.pending_roc_metrics.bump(.selector_registry_visits, 1);
+                        self.engine.pending_roc_metrics.bump(.selector_memberships_released, 1);
+                    },
                     .row_source => |payload| {
                         const removed = self.engine.active_row_sources.fetchRemove(payload.row_handle) orelse @panic("retired row source was absent from its handle index");
                         if (removed.value != record) @panic("retired row source index pointed at a different record");
@@ -1453,7 +1458,24 @@ pub fn Engine(comptime Ctx: type) type {
             removed_handles: []row_handles.RowHandleId = &.{},
             retired_generation: ?*each_generation.Generation = null,
             direct_delta: bool = false,
+            direct_index: DirectRowIndex = .{},
             phase: CommitPhase = .prepared,
+
+            /// Edit-bounded site-index bookkeeping for a matching-parent
+            /// sparse delta. Survivors, moves, and item updates never enter
+            /// the site's key index or membership table: only rows the
+            /// transition created or removed do, and those are already
+            /// enumerated by the transition's own journals. Counts are
+            /// derived arithmetically from the transition, never by walking
+            /// the candidate.
+            const DirectRowIndex = struct {
+                /// Scopes the transition created, in creation-journal order.
+                created_scope_ids: []ids.ScopeId = &.{},
+                /// Final row count of the site after publication.
+                candidate_len: usize = 0,
+                /// Surviving rows whose item changed in this delta.
+                updated_count: usize = 0,
+            };
 
             fn adaptCandidate(candidate: rows_transition.CandidateRow) CollectionError!CandidateRow {
                 const row_id = candidate.row_id orelse return error.InvalidDescriptor;
@@ -1488,6 +1510,7 @@ pub fn Engine(comptime Ctx: type) type {
                 parent_owner: rows_site_store.OwnerToken,
                 inputs: *PreparedEachInputs,
                 scope_claims: *scope_runtime.PreparedScopeClaims,
+                direct_index: *DirectRowIndex,
             ) CollectionError!each_runtime.PreparedRowSync {
                 const delta = if (inputs.delta) |*value| value else return error.InvalidDescriptor;
                 if (!delta.complete) return error.InvalidDescriptor;
@@ -1567,61 +1590,68 @@ pub fn Engine(comptime Ctx: type) type {
                 const transition = &inputs.rows_transition.?;
                 if (transition.candidateLen() != inputs.generation.item_count) return error.InvalidDescriptor;
 
-                const binding_edits = std.math.add(usize, transition.candidateLen(), transition.removedRows().len) catch return error.ResourceLimit;
+                // Work here is bounded by the edit batch: created and removed
+                // rows come from the transition's journals and changed
+                // survivors from its touched set. The untouched remainder of
+                // the site is never visited, so nothing below scales with
+                // `candidateLen()`.
+                const created_rows = transition.createdRows();
+                const removed_rows = transition.removedRows();
+                const binding_edits = std.math.add(usize, delta.ops.items.len, removed_rows.len) catch return error.ResourceLimit;
                 inputs.candidate_bindings.reserve(binding_edits) catch |err| return switch (err) {
                     error.OutOfMemory => error.OutOfMemory,
                     error.ResourceLimit => error.ResourceLimit,
                 };
 
-                const next_scope_ids = allocator.alloc(ids.ScopeId, transition.candidateLen()) catch return error.OutOfMemory;
-                errdefer allocator.free(next_scope_ids);
-                const key_hashes = allocator.alloc(u64, transition.candidateLen()) catch return error.OutOfMemory;
-                errdefer allocator.free(key_hashes);
-                const item_changed = allocator.alloc(bool, transition.candidateLen()) catch return error.OutOfMemory;
-                errdefer allocator.free(item_changed);
-                const scope_created = allocator.alloc(bool, transition.candidateLen()) catch return error.OutOfMemory;
-                errdefer allocator.free(scope_created);
-                const removed_scope_ids = allocator.alloc(ids.ScopeId, transition.removedRows().len) catch return error.OutOfMemory;
+                const created_scope_ids = allocator.alloc(ids.ScopeId, created_rows.len) catch return error.OutOfMemory;
+                errdefer allocator.free(created_scope_ids);
+                const removed_scope_ids = allocator.alloc(ids.ScopeId, removed_rows.len) catch return error.OutOfMemory;
                 errdefer allocator.free(removed_scope_ids);
 
                 var highest_scope_id = ids.root_scope;
-                var created_count: usize = 0;
-                var candidate = transition.iterateCandidate();
-                var index: usize = 0;
-                while (candidate.next()) |row| : (index += 1) {
-                    if (index >= next_scope_ids.len or row.metadata.row_handle == 0 or row.metadata.item_slot == 0) return error.InvalidDescriptor;
-                    const scope_id = ids.ScopeId.fromRaw(row.metadata.scope_id);
-                    next_scope_ids[index] = scope_id;
-                    key_hashes[index] = std.hash.Wyhash.hash(0, row.key);
-                    item_changed[index] = row.item_changed;
-                    scope_created[index] = row.created;
-                    if (row.created) created_count += 1;
-                    if (scope_id.raw() > highest_scope_id.raw()) highest_scope_id = scope_id;
+                for (created_rows, created_scope_ids) |row, *scope_id| {
+                    if (row.metadata.row_handle == 0 or row.metadata.item_slot == 0) return error.InvalidDescriptor;
+                    scope_id.* = ids.ScopeId.fromRaw(row.metadata.scope_id);
+                    if (scope_id.raw() > highest_scope_id.raw()) highest_scope_id = scope_id.*;
                 }
-                if (index != next_scope_ids.len) return error.InvalidDescriptor;
+                var updated_count: usize = 0;
+                var changed = transition.iterateChangedCandidates();
+                while (changed.next()) |row| {
+                    if (row.metadata.row_handle == 0 or row.metadata.item_slot == 0) return error.InvalidDescriptor;
+                    updated_count += 1;
+                }
+                engine.pending_roc_metrics.bump(.rows_candidate_rows_visited, @intCast(created_rows.len + updated_count));
 
-                for (transition.removedRows(), removed_scope_ids) |row_id, *scope_id| {
+                for (removed_rows, removed_scope_ids) |row_id, *scope_id| {
                     const row = rows_store.getRowConst(rows_site_id, row_id) catch return error.InvalidDescriptor;
                     if (row.metadata.row_handle == 0) return error.InvalidDescriptor;
                     scope_id.* = ids.ScopeId.fromRaw(row.metadata.scope_id);
                     inputs.candidate_bindings.removeAssumeCapacity(row_handles.RowHandleId.fromRaw(row.metadata.row_handle)) catch return error.InvalidDescriptor;
                 }
 
+                // The site index grows by at most the created rows; removals
+                // swap-remove in place. Membership must cover the highest
+                // created scope, which is the only fresh slot it can name.
                 const legacy_site = &engine.each_row_sites.items[site_index];
-                legacy_site.scope_ids.ensureTotalCapacity(allocator, next_scope_ids.len) catch return error.OutOfMemory;
-                legacy_site.hash_links.ensureTotalCapacity(allocator, next_scope_ids.len) catch return error.OutOfMemory;
-                legacy_site.hash_heads.ensureTotalCapacity(allocator, std.math.cast(u32, next_scope_ids.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                legacy_site.scope_ids.ensureUnusedCapacity(allocator, created_rows.len) catch return error.OutOfMemory;
+                legacy_site.hash_links.ensureUnusedCapacity(allocator, created_rows.len) catch return error.OutOfMemory;
+                legacy_site.hash_heads.ensureUnusedCapacity(allocator, std.math.cast(u32, created_rows.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 engine.each_row_memberships_by_scope_id.ensureTotalCapacity(allocator, std.math.add(usize, highest_scope_id.index(), 1) catch return error.ResourceLimit) catch return error.OutOfMemory;
 
+                direct_index.* = .{
+                    .created_scope_ids = created_scope_ids,
+                    .candidate_len = transition.candidateLen(),
+                    .updated_count = updated_count,
+                };
                 return .{
                     .allocator = allocator,
                     .site_index = site_index,
-                    .next_scope_ids = next_scope_ids,
-                    .key_hashes = key_hashes,
-                    .row_items_changed = item_changed,
-                    .scope_created = scope_created,
+                    .next_scope_ids = &.{},
+                    .key_hashes = &.{},
+                    .row_items_changed = &.{},
+                    .scope_created = &.{},
                     .removed_scope_ids = removed_scope_ids,
-                    .created_count = created_count,
+                    .created_count = created_rows.len,
                     .highest_scope_id = highest_scope_id,
                 };
             }
@@ -1645,7 +1675,9 @@ pub fn Engine(comptime Ctx: type) type {
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(plan);
                 plan.* = undefined;
-                plan.owned_scope_claims = if (shared_scope_claims == null) scope_runtime.PreparedScopeClaims.init(allocator, engine.scopes.items) else null;
+                plan.direct_index = .{};
+                errdefer allocator.free(plan.direct_index.created_scope_ids);
+                plan.owned_scope_claims = if (shared_scope_claims == null) scope_runtime.PreparedScopeClaims.init(allocator, engine.scopes.items, ids.Generation.fromRaw(engine.identity_reuse_barrier)) else null;
                 plan.scope_claims = shared_scope_claims orelse &plan.owned_scope_claims.?;
                 errdefer if (plan.owned_scope_claims != null) {
                     plan.scope_claims.abort();
@@ -1664,7 +1696,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const site_index = engine.activeEachRowSiteIndex(site.scope_id, site.ordinal) orelse @panic("active each descriptor had no row site");
                 const direct_delta = inputs.delta != null and !inputs.snapshot.complete;
                 var rows = if (direct_delta)
-                    try prepareDirectRows(engine, ctx, allocator, site, site_index, rows_store, rows_site_id, parent_owner, &inputs, plan.scope_claims)
+                    try prepareDirectRows(engine, ctx, allocator, site, site_index, rows_store, rows_site_id, parent_owner, &inputs, plan.scope_claims, &plan.direct_index)
                 else blk: {
                     const binding_edits = std.math.add(usize, inputs.generation.item_count, engine.each_row_sites.items[site_index].scope_ids.items.len) catch return error.ResourceLimit;
                     inputs.candidate_bindings.reserve(binding_edits) catch |err| return switch (err) {
@@ -1773,42 +1805,49 @@ pub fn Engine(comptime Ctx: type) type {
                 return result;
             }
 
+            /// Publishes a matching-parent sparse delta into the site's key
+            /// index and membership table by touching only the rows the
+            /// transition removed or created. Removed rows swap-remove out
+            /// of the dense site table (one moved survivor per removal), and
+            /// created rows append under the key hash their scope already
+            /// carries, so no surviving key is rehashed and no untouched
+            /// membership entry is rewritten. Committed row order lives in
+            /// the Rows store, not in this table. Capacity was preflighted
+            /// by `prepareDirectRows`; nothing here allocates.
             fn commitDirectRows(self: *@This()) HostKeyedRowDiffResult {
-                const site = &self.engine.each_row_sites.items[self.rows.site_index];
-                while (self.engine.each_row_memberships_by_scope_id.items.len <= self.rows.highest_scope_id.index()) self.engine.each_row_memberships_by_scope_id.appendAssumeCapacity(null);
-                for (site.scope_ids.items) |scope_id| self.engine.each_row_memberships_by_scope_id.items[scope_id.index()] = null;
-                site.scope_ids.clearRetainingCapacity();
-                site.scope_ids.appendSliceAssumeCapacity(self.rows.next_scope_ids);
-                site.hash_links.items.len = self.rows.next_scope_ids.len;
-                @memset(site.hash_links.items, each_runtime.missing_row_index);
-                site.hash_heads.clearRetainingCapacity();
-                for (self.rows.next_scope_ids, self.rows.key_hashes, 0..) |scope_id, key_hash, row_index| {
-                    const entry = site.hash_heads.getOrPutAssumeCapacity(key_hash);
-                    if (entry.found_existing) site.hash_links.items[row_index] = entry.value_ptr.*;
-                    entry.value_ptr.* = row_index;
-                    self.engine.each_row_memberships_by_scope_id.items[scope_id.index()] = .{ .site_index = self.rows.site_index, .row_index = row_index };
+                const engine = self.engine;
+                const site_index = self.rows.site_index;
+                var row_keys = EachRowScopeKeyLookup{ .engine = engine };
+                var entries_rewritten: u64 = 0;
+                for (self.rows.removed_scope_ids) |scope_id| {
+                    // Swap-removal rewrites the last row's membership unless
+                    // the removed row already was the last one.
+                    const membership = engine.each_row_memberships_by_scope_id.items[scope_id.index()] orelse @panic("removed each row lacked site membership");
+                    const moved_survivor: u64 = if (membership.row_index + 1 != engine.each_row_sites.items[site_index].scope_ids.items.len) 1 else 0;
+                    each_runtime.removeRowFromSiteIndex(&engine.each_row_sites, &engine.each_row_memberships_by_scope_id, scope_id, scope_runtime.eachRowKeyHash(engine.scopes.items, scope_id), &row_keys);
+                    entries_rewritten += 1 + moved_survivor;
                 }
+                for (self.direct_index.created_scope_ids) |scope_id| {
+                    each_runtime.appendRowToSiteIndex(self.allocator, &engine.each_row_sites, &engine.each_row_memberships_by_scope_id, site_index, scope_id, scope_runtime.eachRowKeyHash(engine.scopes.items, scope_id));
+                    entries_rewritten += 1;
+                }
+                engine.pending_roc_metrics.bump(.rows_membership_entries_rewritten, entries_rewritten);
 
-                var unchanged_count: u64 = 0;
-                var updated_count: u64 = 0;
-                for (self.rows.scope_created, self.rows.row_items_changed) |created, changed| {
-                    if (created) continue;
-                    if (changed) updated_count += 1 else unchanged_count += 1;
-                }
+                const created_count = self.direct_index.created_scope_ids.len;
+                const candidate_len = self.direct_index.candidate_len;
+                const updated_count = self.direct_index.updated_count;
+                if (candidate_len < created_count + updated_count) @panic("direct Rows delta counted more edited rows than the site holds");
                 const result = HostKeyedRowDiffResult{
-                    .scope_ids = self.rows.next_scope_ids,
-                    .row_items_changed = self.rows.row_items_changed,
-                    .scope_created = self.rows.scope_created,
+                    .scope_ids = &.{},
+                    .row_items_changed = &.{},
+                    .scope_created = &.{},
                     .removed_scope_ids = self.rows.removed_scope_ids,
-                    .rows_reused = self.rows.next_scope_ids.len - self.rows.created_count,
-                    .rows_created = @intCast(self.rows.created_count),
+                    .rows_reused = candidate_len - created_count,
+                    .rows_created = @intCast(created_count),
                     .rows_removed = @intCast(self.rows.removed_scope_ids.len),
-                    .row_items_unchanged = unchanged_count,
-                    .row_items_updated = updated_count,
+                    .row_items_unchanged = @intCast(candidate_len - created_count - updated_count),
+                    .row_items_updated = @intCast(updated_count),
                 };
-                self.rows.next_scope_ids = &.{};
-                self.rows.row_items_changed = &.{};
-                self.rows.scope_created = &.{};
                 self.rows.removed_scope_ids = &.{};
                 return result;
             }
@@ -1825,6 +1864,7 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                 }
                 self.allocator.free(self.removed_handles);
+                self.allocator.free(self.direct_index.created_scope_ids);
                 if (self.owned_scope_claims != null) {
                     self.scope_claims.abort();
                     self.scope_claims.deinit();
@@ -1909,7 +1949,7 @@ pub fn Engine(comptime Ctx: type) type {
                     .engine = engine,
                     .host_ctx = ctx,
                     .roc_host = roc_host,
-                    .scope_claims = scope_runtime.PreparedScopeClaims.init(allocator, engine.scopes.items),
+                    .scope_claims = scope_runtime.PreparedScopeClaims.init(allocator, engine.scopes.items, ids.Generation.fromRaw(engine.identity_reuse_barrier)),
                     .rows = rows,
                     .replacements = replacements,
                 };
@@ -1936,7 +1976,7 @@ pub fn Engine(comptime Ctx: type) type {
                     try PreparedReplacementOwner.addRootCounts(&total, replacement.counts);
                     root_count = std.math.add(usize, root_count, replacement.row_elems.len) catch return error.ResourceLimit;
                 }
-                const owner = try PreparedReplacementOwner.create(self.engine, self.host_ctx, self.roc_host, limits, total, root_count);
+                const owner = try PreparedReplacementOwner.create(self.engine, self.host_ctx, self.roc_host, limits, total, root_count, .sparse);
                 errdefer owner.deinit();
                 owner.collection.cache_overlay = self.cache_overlay;
                 try owner.collection.stageExternalStates(self.roc_host, self.external_state);
@@ -2398,7 +2438,7 @@ pub fn Engine(comptime Ctx: type) type {
                     row_root_count = std.math.add(usize, row_root_count, replacement.row_elems.len) catch return error.ResourceLimit;
                 }
                 const root_count = std.math.add(usize, normalized.selected_indexes.len, row_root_count) catch return error.ResourceLimit;
-                const replacement_owner = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, total, root_count);
+                const replacement_owner = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, total, root_count, .sparse);
                 errdefer replacement_owner.deinit();
                 replacement_owner.collection.cache_overlay = overlay;
                 try replacement_owner.collection.stageExternalStates(roc_host, state_update);
@@ -2796,7 +2836,11 @@ pub fn Engine(comptime Ctx: type) type {
             };
             var delta: each_collection.DeltaStorage = .{};
             var has_delta = false;
-            errdefer if (has_delta) delta.deinit(allocator);
+            // `DeltaStorage.prepare` grows the operation buffer before the key
+            // arena, so a refusal inside it can leave storage behind while
+            // `has_delta` is still false. Releasing unconditionally is a no-op
+            // for untouched storage and returns that partial reservation.
+            errdefer delta.deinit(allocator);
             if (use_direct_delta) {
                 const delta_shape = description.delta;
                 var delta_sink = delta.prepare(allocator, delta_shape.op_count, delta_shape.delta_key_count, delta_shape.delta_key_bytes) catch |err| return switch (err) {
@@ -2844,6 +2888,7 @@ pub fn Engine(comptime Ctx: type) type {
                 .delta = if (has_delta) delta else null,
             };
             snapshot = .{};
+            delta = .{};
             has_delta = false;
             return result;
         }
@@ -2867,33 +2912,42 @@ pub fn Engine(comptime Ctx: type) type {
             return &self.scratch.binder_stack;
         }
 
+        const PreparedSelectorAppend = selector_runtime.Registry(HostSignalRecord).PreparedAppend;
+
+        /// Stages the selector memberships a prepared graph change appends.
+        ///
+        /// Work here is proportional to the appended records: surviving
+        /// memberships stay in the live registry untouched, and retired ones
+        /// leave through `ActiveSignalGraphLifecycle.releaseRecord` when the
+        /// release closure runs at commit. Staged keys and buckets are owned by
+        /// the returned value until `commitPreparedSelectors` moves them into the
+        /// live registry; dropping it before then is the complete rollback. The
+        /// live registry's tables are only grown, never edited, before commit.
         fn prepareSelectorsForGraphChange(
             self: *Self,
             allocator: std.mem.Allocator,
-            release: *const active_graph.PreparedReleaseClosure(HostSignalRecord),
             append: *const active_graph.PreparedGraphAppend(HostSignalRecord),
-        ) CollectionError!selector_runtime.Registry(HostSignalRecord) {
-            var prepared: selector_runtime.Registry(HostSignalRecord) = .{};
+        ) CollectionError!PreparedSelectorAppend {
+            var prepared: PreparedSelectorAppend = .{};
             errdefer prepared.deinit(allocator);
-            for (self.active_signal_graph.items, release.final_record_ids) |node, final_id| {
-                if (final_id == null) continue;
-                switch (node.record.payload) {
-                    .select, .keyed_select => |payload| prepared.register(allocator, payload.input, payload.key, node.record) catch return error.OutOfMemory,
-                    else => {},
-                }
-            }
             for (append.new_nodes) |node| switch (node.record.payload) {
-                .select, .keyed_select => |payload| prepared.register(allocator, payload.input, payload.key, node.record) catch return error.OutOfMemory,
+                .select, .keyed_select => |payload| prepared.stage(allocator, payload.input, payload.key, node.record) catch return error.OutOfMemory,
                 else => {},
             };
+            prepared.reserveLive(allocator, &self.selectors) catch return error.OutOfMemory;
             return prepared;
         }
 
-        fn commitPreparedSelectors(self: *Self, allocator: std.mem.Allocator, prepared: *selector_runtime.Registry(HostSignalRecord)) void {
-            var retired = self.selectors;
-            self.selectors = prepared.*;
-            prepared.* = .{};
-            retired.deinit(allocator);
+        /// Publishes staged selector memberships after the release closure has
+        /// unregistered the retired ones. Allocation-free by construction. The
+        /// selector work counters are reported here, once per committed
+        /// transaction, so a preparation that was refused and retried does not
+        /// inflate them.
+        fn commitPreparedSelectors(self: *Self, allocator: std.mem.Allocator, prepared: *PreparedSelectorAppend, append: *const active_graph.PreparedGraphAppend(HostSignalRecord)) void {
+            self.pending_roc_metrics.bump(.selector_registry_visits, append.new_nodes.len);
+            self.pending_roc_metrics.bump(.selector_registrations, prepared.staged_memberships);
+            self.pending_roc_metrics.bump(.selector_key_bytes_copied, prepared.staged_key_bytes);
+            prepared.commitInto(allocator, &self.selectors);
         }
 
         fn debugPhase(ctx: Ctx.Handle, phase: DebugPhase) void {
@@ -3632,6 +3686,37 @@ pub fn Engine(comptime Ctx: type) type {
         fn rememberPreparedDirtySignalResult(_: *Self, overlay: *signal_records.PreparedCacheUpdates, record: *HostSignalRecord, dirty_generation: u64, result: HostSignalEvalResult) HostSignalEvalResult {
             overlay.rememberResultAssumeCapacity(signal_records.EvaluationKey.fromRecord(record), dirty_generation, result.changed);
             return result;
+        }
+
+        /// Upper bound on the entries one source transaction can stage in its
+        /// cache overlay: every active record may memoize one result and
+        /// replace one cache slot, and every cache-bearing descriptor may
+        /// replace its slot. Descriptor lanes are counted by length, which
+        /// equals the route count without walking the per-record route tables.
+        fn preparedCacheOverlayBound(self: *const Self) error{ResourceLimit}!usize {
+            var expected = self.active_signal_graph.items.len;
+            const stream = &self.active_stream;
+            const lanes = [_]usize{
+                stream.signal_text_nodes.items.len,
+                stream.signal_text_attrs.items.len,
+                stream.signal_custom_text_attrs.items.len,
+                stream.signal_optional_custom_text_attrs.items.len,
+                stream.signal_custom_bool_attrs.items.len,
+                stream.signal_bool_attrs.items.len,
+                stream.on_changes.items.len,
+                stream.whens.items.len,
+                stream.eaches.items.len,
+            };
+            for (lanes) |lane| expected = std.math.add(usize, expected, lane) catch return error.ResourceLimit;
+            return expected;
+        }
+
+        /// Ends a transaction's cache overlay: staged or displaced values are
+        /// released exactly as `PreparedCacheUpdates.deinit` would, and the
+        /// emptied containers are parked in engine scratch so the next
+        /// transaction reserves nothing when the graph has not grown.
+        fn releasePreparedCacheOverlay(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, overlay: *signal_records.PreparedCacheUpdates) void {
+            overlay.deinitRetaining(ctx, roc_host, &self.pending_roc_metrics, &self.scratch.cache_overlay);
         }
 
         /// Publishes a prepared overlay: every staged cache replacement becomes
@@ -4510,6 +4595,15 @@ pub fn Engine(comptime Ctx: type) type {
                 elems: usize = 0,
                 nodes: usize = 0,
             };
+            /// One scope this collection will publish, in claim order. Scope
+            /// intents and each-row scopes are journaled in separate lists,
+            /// but a child is always claimed after its parent, so replaying
+            /// claims in order attaches every child beneath an already
+            /// published parent even when reused ids are not monotonic.
+            const ScopePublication = union(enum) {
+                intent: usize,
+                each_row: usize,
+            };
             engine: *Self,
             host_ctx: Ctx.Handle,
             stream: *HostNodeDescriptorStream,
@@ -4517,7 +4611,17 @@ pub fn Engine(comptime Ctx: type) type {
             scopes: collection_plan.ScopeOverlay = .{},
             node_identities: collection_plan.IdentityOverlay = .{},
             dom_identities: collection_plan.IdentityOverlay = .{},
-            reusable_scope_cursor: usize = 0,
+            /// Newest committed reusable-ring slot this collection has walked
+            /// past (claimed or skipped), or null before the first walk. The
+            /// next candidate is its ring successor; the ring itself is never
+            /// modified until commit publishes the claimed slots.
+            last_reused_scope_id: ?ids.ScopeId = null,
+            /// Set once the ring ran out or its next slot was barrier-blocked;
+            /// later claims take fresh slots without touching the ring.
+            scope_reuse_exhausted: bool = false,
+            scope_claim_work: if (builtin.is_test) scope_runtime.ScopeClaimWork else void = if (builtin.is_test) .{} else {},
+            /// Claim-order journal replayed by `commit`; see `ScopePublication`.
+            scope_publications: shared_buffer.List(ScopePublication) = .empty,
             fresh_scope_cursor: u64 = 0,
             reusable_node_cursor: usize = 0,
             fresh_node_cursor: u64 = 0,
@@ -4752,6 +4856,7 @@ pub fn Engine(comptime Ctx: type) type {
                     collection.prepared_eaches.ensureUnusedCapacity(allocator, self.each_sites) catch return error.OutOfMemory;
                     collection.prepared_each_sites.ensureUnusedCapacity(allocator, self.each_sites) catch return error.OutOfMemory;
                     collection.prepared_each_row_scopes.ensureUnusedCapacity(allocator, self.each_rows) catch return error.OutOfMemory;
+                    collection.scope_publications.ensureTotalCapacity(allocator, try total(self.scope_intents, self.each_rows)) catch return error.OutOfMemory;
                     collection.prepared_named_event_groups.ensureUnusedCapacity(allocator, self.named_events) catch return error.OutOfMemory;
                     collection.prepared_named_event_group_by_elem.ensureUnusedCapacity(allocator, named_events_u32) catch return error.OutOfMemory;
                     collection.signal_records.prepare(allocator, self.signal_records, self.signal_roots) catch return error.OutOfMemory;
@@ -4818,6 +4923,7 @@ pub fn Engine(comptime Ctx: type) type {
                     std.debug.assert(collection.prepared_eaches.capacity >= self.each_sites);
                     std.debug.assert(collection.prepared_each_sites.capacity >= self.each_sites);
                     std.debug.assert(collection.prepared_each_row_scopes.capacity >= self.each_rows);
+                    std.debug.assert(collection.scope_publications.capacity >= self.scope_intents +| self.each_rows);
                     std.debug.assert(collection.prepared_named_event_groups.capacity >= self.named_events);
                     std.debug.assert(collection.signal_bindings.capacity >= self.signal_roots);
                     std.debug.assert(collection.signal_records.token_intents.capacity >= self.signal_records);
@@ -4843,7 +4949,7 @@ pub fn Engine(comptime Ctx: type) type {
                     std.debug.assert(stream.states.capacity - stream.states.items.len >= self.scope_sites);
                     std.debug.assert(stream.whens.capacity - stream.whens.items.len >= self.when_sites);
                     std.debug.assert(stream.eaches.capacity - stream.eaches.items.len >= self.each_sites);
-                    std.debug.assert(stream.descriptor_indexes_by_elem_id.capacity >= self.dom_base +| self.nodes +| 1);
+                    std.debug.assert(stream.descriptor_indexes_by_elem_id.capacityCovers(self.dom_base +| self.nodes));
                     if (self.scope_sites != 0) std.debug.assert(stream.descriptor_indexes_by_node_id.capacity >= self.node_base +| self.scope_sites);
                 }
 
@@ -4957,6 +5063,7 @@ pub fn Engine(comptime Ctx: type) type {
                         for (self.signal_bindings.items) |binding| allocator.free(binding.source_node_ids);
                     }
                     self.scopes.abort();
+                    self.scope_publications.clearRetainingCapacity();
                     self.node_identities.abort();
                     self.dom_identities.abort();
                 }
@@ -4973,6 +5080,7 @@ pub fn Engine(comptime Ctx: type) type {
                 self.prepared_states.deinit(allocator);
                 self.prepared_state_cells.deinit(allocator);
                 self.prepared_each_row_scopes.deinit(allocator);
+                self.scope_publications.deinit(allocator);
                 self.prepared_whens.deinit(allocator);
                 self.prepared_eaches.deinit(allocator);
                 for (self.prepared_each_sites.items) |*site| site.deinit(allocator);
@@ -5075,10 +5183,14 @@ pub fn Engine(comptime Ctx: type) type {
             fn rootScope(self: *@This()) CollectionError!scope_tree.InternResult {
                 const key: collection_plan.ScopeKey = .{ .parent_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(0), .kind = .root };
                 const active_id: ?ids.ScopeId = if (self.engine.scopes.items.len != 0) ids.root_scope else null;
+                const intent_index = self.scopes.intents.items.len;
                 const scope_id = self.scopes.reserve(key, active_id, &.{ids.root_scope}) catch |err| switch (err) {
                     error.NoCapacity => return error.ResourceLimit,
                     error.NoAvailableScope => return error.InvalidScope,
                 };
+                // A fresh root is the first claim of an empty table; a live
+                // root resolves through the overlay without a new intent.
+                if (self.scopes.intents.items.len != intent_index) try self.noteScopeClaimed(scope_id, null, .{ .intent = intent_index });
                 return .{ .scope_id = scope_id, .created = active_id == null };
             }
 
@@ -5098,28 +5210,76 @@ pub fn Engine(comptime Ctx: type) type {
                 }
             }
 
+            /// Peeks the next committed reusable-ring slot this collection may
+            /// claim, without consuming it. The walk starts at the ring head
+            /// (oldest retirement) and resumes after the last slot handed out,
+            /// so provisional claims never touch committed availability and
+            /// an aborted collection leaves the ring exactly as it found it.
+            /// Slots another party already reserved with this transaction
+            /// (`reserved_ids`) are stepped over; they sit at the ring head
+            /// because that party walked the same ring, so the skip is
+            /// bounded by that party's own claim count. A barrier-blocked
+            /// slot ends the walk for good: every later slot was retired in
+            /// the same or a later generation.
+            fn nextReusableScopeCandidate(self: *@This()) ?ids.ScopeId {
+                if (self.scope_reuse_exhausted) return null;
+                const scopes = self.engine.scopes.items;
+                const barrier = ids.Generation.fromRaw(self.engine.identity_reuse_barrier);
+                var candidate = if (self.last_reused_scope_id) |last| after_last: {
+                    if (scopes[last.index()].lifecycle.isActive() or !scope_tree.isLinkedReusable(HostEachRowScopeStep, scopes, last)) @panic("provisionally claimed scope slot changed under an open collection");
+                    break :after_last scope_tree.nextReusableScope(HostEachRowScopeStep, scopes, last);
+                } else scope_tree.firstReusableScope(HostEachRowScopeStep, scopes);
+                while (candidate) |scope_id| : (candidate = scope_tree.nextReusableScope(HostEachRowScopeStep, scopes, scope_id)) {
+                    if (builtin.is_test) self.scope_claim_work.reusable_slots_visited += 1;
+                    if (scopes[scope_id.index()].lifecycle.blocksReuse(barrier)) break;
+                    if (self.scopes.reserved_ids.contains(scope_id)) {
+                        self.last_reused_scope_id = scope_id;
+                        continue;
+                    }
+                    return scope_id;
+                }
+                self.scope_reuse_exhausted = true;
+                return null;
+            }
+
+            /// Returns the lowest fresh id above the committed table and this
+            /// collection's earlier fresh claims that no reservation holds.
+            fn nextFreshScopeId(self: *const @This()) CollectionError!u64 {
+                var fresh_id = @max(self.fresh_scope_cursor, @as(u64, @intCast(self.engine.scopes.items.len)));
+                while (self.scopes.reserved_ids.contains(ids.ScopeId.fromRaw(fresh_id))) fresh_id = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
+                return fresh_id;
+            }
+
+            /// Records that `scope_id` was claimed: advances the ring cursor
+            /// or the fresh cursor, and journals the publication in claim order.
+            fn noteScopeClaimed(self: *@This(), scope_id: ids.ScopeId, reused: ?ids.ScopeId, publication: ScopePublication) CollectionError!void {
+                if (reused != null and reused.? == scope_id) {
+                    self.last_reused_scope_id = scope_id;
+                } else {
+                    self.fresh_scope_cursor = std.math.add(u64, scope_id.raw(), 1) catch return error.ResourceLimit;
+                    if (builtin.is_test) self.scope_claim_work.fresh_slots_claimed += 1;
+                }
+                self.scope_publications.appendAssumeCapacity(publication);
+            }
+
             fn reserveScopeIdentity(self: *@This(), key: collection_plan.ScopeKey, active_id: ?u64) CollectionError!u64 {
                 if (self.scopes.lookup(key, if (active_id) |id| ids.ScopeId.fromRaw(id) else null)) |id| return id.raw();
                 var candidates: [2]ids.ScopeId = undefined;
                 var candidate_count: usize = 0;
-                while (self.reusable_scope_cursor < self.engine.scopes.items.len) : (self.reusable_scope_cursor += 1) {
-                    const scope = self.engine.scopes.items[self.reusable_scope_cursor];
-                    if (scope.lifecycle.blocksReuse(ids.Generation.fromRaw(self.engine.identity_reuse_barrier))) continue;
-                    if (self.scopes.reserved_ids.contains(scope.scope_id)) continue;
-                    candidates[candidate_count] = scope.scope_id;
+                const reused = self.nextReusableScopeCandidate();
+                if (reused) |scope_id| {
+                    candidates[candidate_count] = scope_id;
                     candidate_count += 1;
-                    self.reusable_scope_cursor += 1;
-                    break;
                 }
-                var fresh_id = @max(self.fresh_scope_cursor, @as(u64, @intCast(self.engine.scopes.items.len)));
-                while (self.scopes.reserved_ids.contains(ids.ScopeId.fromRaw(fresh_id))) fresh_id = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
+                const fresh_id = try self.nextFreshScopeId();
                 candidates[candidate_count] = ids.ScopeId.fromRaw(fresh_id);
                 candidate_count += 1;
+                const intent_index = self.scopes.intents.items.len;
                 const reserved = self.scopes.reserve(key, if (active_id) |id| ids.ScopeId.fromRaw(id) else null, candidates[0..candidate_count]) catch |err| switch (err) {
                     error.NoCapacity => return error.ResourceLimit,
                     error.NoAvailableScope => return error.InvalidScope,
                 };
-                if (reserved.raw() == fresh_id) self.fresh_scope_cursor = std.math.add(u64, fresh_id, 1) catch return error.ResourceLimit;
+                try self.noteScopeClaimed(reserved, reused, .{ .intent = intent_index });
                 return reserved.raw();
             }
 
@@ -5154,26 +5314,13 @@ pub fn Engine(comptime Ctx: type) type {
             fn reserveEachRowScopeGeneration(self: *@This(), parent_scope_id: ids.ScopeId, site_ordinal: ids.SiteOrdinal, key_hash: u64, row_handle: row_handles.RowHandleId) CollectionError!ids.ScopeId {
                 try self.validateScope(parent_scope_id);
 
-                var scope_id: ?u64 = null;
-                while (self.reusable_scope_cursor < self.engine.scopes.items.len) : (self.reusable_scope_cursor += 1) {
-                    const scope = self.engine.scopes.items[self.reusable_scope_cursor];
-                    if (scope.lifecycle.blocksReuse(ids.Generation.fromRaw(self.engine.identity_reuse_barrier))) continue;
-                    if (self.scopes.reserved_ids.contains(scope.scope_id)) continue;
-                    scope_id = scope.scope_id.raw();
-                    self.reusable_scope_cursor += 1;
-                    break;
-                }
-                if (scope_id == null) {
-                    var fresh = @max(self.fresh_scope_cursor, @as(u64, @intCast(self.engine.scopes.items.len)));
-                    while (self.scopes.reserved_ids.contains(ids.ScopeId.fromRaw(fresh))) fresh = std.math.add(u64, fresh, 1) catch return error.ResourceLimit;
-                    scope_id = fresh;
-                    self.fresh_scope_cursor = std.math.add(u64, fresh, 1) catch return error.ResourceLimit;
-                }
-                const claimed = scope_id.?;
+                const reused = self.nextReusableScopeCandidate();
+                const claimed: u64 = if (reused) |scope_id| scope_id.raw() else try self.nextFreshScopeId();
                 self.scopes.reserveExternal(ids.ScopeId.fromRaw(claimed)) catch |err| switch (err) {
                     error.NoCapacity => return error.ResourceLimit,
                     error.DuplicateScope => return error.InvalidScope,
                 };
+                try self.noteScopeClaimed(ids.ScopeId.fromRaw(claimed), reused, .{ .each_row = self.prepared_each_row_scopes.items.len });
                 if (std.debug.runtime_safety) std.debug.assert(claimed < self.plan.scope_base + self.plan.scope_intents);
                 self.prepared_each_row_scopes.appendAssumeCapacity(.{
                     .scope_id = ids.ScopeId.fromRaw(claimed),
@@ -6508,29 +6655,28 @@ pub fn Engine(comptime Ctx: type) type {
                     final_scope_len = @max(final_scope_len, std.math.add(usize, scope_id.index(), 1) catch @panic("prepared scope id overflow"));
                 }
                 // Scope and each-row reservations share one dense id space but
-                // are journaled separately. Merge their already-monotonic ids
-                // so fresh slots remain a contiguous suffix while publication
-                // also attaches every scope to the durable child topology.
-                var scope_intent_index: usize = 0;
-                var each_row_scope_index: usize = 0;
-                while (scope_intent_index < self.scopes.intents.items.len or each_row_scope_index < self.prepared_each_row_scopes.items.len) {
-                    const uses_scope_intent = each_row_scope_index == self.prepared_each_row_scopes.items.len or (scope_intent_index < self.scopes.intents.items.len and self.scopes.intents.items[scope_intent_index].id.raw() < self.prepared_each_row_scopes.items[each_row_scope_index].scope_id.raw());
-                    const scope: HostScope = if (uses_scope_intent) scope: {
-                        const intent = self.scopes.intents.items[scope_intent_index];
-                        scope_intent_index += 1;
-                        break :scope switch (intent.key.kind) {
-                            .root => .{ .scope_id = intent.id, .parent_scope_id = null, .step = .root, .lifecycle = .active },
-                            .component => .{ .scope_id = intent.id, .parent_scope_id = intent.key.parent_id, .step = .{ .component = .{ .site_ordinal = intent.key.ordinal } }, .lifecycle = .active },
-                            .when_branch => |branch| .{ .scope_id = intent.id, .parent_scope_id = intent.key.parent_id, .step = .{ .when_branch = .{ .site_ordinal = intent.key.ordinal, .branch = branch } }, .lifecycle = .active },
-                        };
-                    } else scope: {
-                        const prepared_scope = self.prepared_each_row_scopes.items[each_row_scope_index];
-                        each_row_scope_index += 1;
-                        break :scope prepared_scope;
+                // are journaled separately. Replay them in claim order: fresh
+                // ids were handed out ascending, so the fresh suffix publishes
+                // contiguously, and every parent was claimed before its
+                // children, so reused slots (whose ids follow the ring, not
+                // the table) attach beneath an already published parent.
+                if (self.scope_publications.items.len != self.scopes.intents.items.len + self.prepared_each_row_scopes.items.len) @panic("scope publication journal does not cover every claim");
+                for (self.scope_publications.items) |publication| {
+                    const scope: HostScope = switch (publication) {
+                        .intent => |index| scope: {
+                            const intent = self.scopes.intents.items[index];
+                            break :scope switch (intent.key.kind) {
+                                .root => .{ .scope_id = intent.id, .parent_scope_id = null, .step = .root, .lifecycle = .active },
+                                .component => .{ .scope_id = intent.id, .parent_scope_id = intent.key.parent_id, .step = .{ .component = .{ .site_ordinal = intent.key.ordinal } }, .lifecycle = .active },
+                                .when_branch => |branch| .{ .scope_id = intent.id, .parent_scope_id = intent.key.parent_id, .step = .{ .when_branch = .{ .site_ordinal = intent.key.ordinal, .branch = branch } }, .lifecycle = .active },
+                            };
+                        },
+                        .each_row => |index| self.prepared_each_row_scopes.items[index],
                     };
                     scope_tree.publishScopeAssumeCapacity(HostEachRowScopeStep, &self.engine.scopes, original_scope_len, scope);
                     self.engine.recordScopeCreated();
                 }
+                self.scope_publications.clearRetainingCapacity();
                 if (self.engine.scopes.items.len != final_scope_len) @panic("prepared scope suffix did not publish contiguously");
                 // Rows an each mounted inside this collection are created rows
                 // just like the rows a keyed reconciliation creates; a spec
@@ -7621,7 +7767,7 @@ pub fn Engine(comptime Ctx: type) type {
                 }
                 const plan = try prepareEvaluated(engine, ctx, roc_host, each, prepared_rows);
                 errdefer plan.deinit();
-                plan.replacement = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, plan.counts, plan.row_elems.len);
+                plan.replacement = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, plan.counts, plan.row_elems.len, .sparse);
                 plan.owns_replacement = true;
                 plan.replacement.collection.cache_overlay = cache_overlay;
                 try plan.replacement.collection.stageExternalStates(roc_host, state_update);
@@ -7635,7 +7781,8 @@ pub fn Engine(comptime Ctx: type) type {
             fn prepareEvaluated(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, each: HostNodeEachDesc, prepared_rows: *PreparedActiveEachRows) CollectionError!*@This() {
                 const rows = &prepared_rows.rows;
                 const inputs = &prepared_rows.inputs;
-                if (inputs.generation.item_count != rows.next_scope_ids.len) return error.ResourceLimit;
+                const row_count = if (prepared_rows.direct_delta) prepared_rows.candidateRows().len() else rows.next_scope_ids.len;
+                if (inputs.generation.item_count != row_count) return error.ResourceLimit;
                 const allocator = Ctx.allocator(ctx);
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(plan);
@@ -8005,44 +8152,37 @@ pub fn Engine(comptime Ctx: type) type {
             }
         };
 
-        fn prepareRetiredStreamCapacity(engine: *Self, allocator: std.mem.Allocator, retired: *HostNodeDescriptorStream, removal: *const structural_splice.PreparedRemoval, retired_scope_ids: anytype) CollectionError!void {
+        /// Reserves the retirement journal for exactly the descriptors a
+        /// prepared removal displaces. The journal owns retired payloads
+        /// from the allocation-free commit until the plan is torn down, so
+        /// this preflight is sized by the removal alone: it never consults
+        /// the live stream's token count or the highest retired id.
+        fn prepareRetiredStreamCapacity(allocator: std.mem.Allocator, retired: *HostRetiredDescriptors, removal: *const structural_splice.PreparedRemoval) CollectionError!void {
             const indexes = &removal.descriptor_indexes;
-            try retired.reserveRetiredStaticPublication(
-                allocator,
-                indexes.element_indexes.items.len,
-                indexes.text_node_indexes.items.len,
-                indexes.static_text_attr_indexes.items.len,
-                indexes.static_bool_attr_indexes.items.len,
-                indexes.signal_text_node_indexes.items.len,
-                indexes.signal_text_attr_indexes.items.len,
-                indexes.signal_bool_attr_indexes.items.len,
-                engine.active_stream.signal_records_by_token.count(),
-                indexes.event_indexes.items.len,
-                removal.scan.removed_elem_ids,
-                &engine.active_stream,
-                removal.node_indexes.scope_site_indexes.items,
-                removal.node_indexes.state_indexes.items.len,
-                removal.node_indexes.when_indexes.items.len,
-                removal.node_indexes.each_indexes.items.len,
-            );
-            try retired.reserveRetiredCustomPublication(
-                allocator,
-                &engine.active_stream,
-                removal.scan.removed_elem_ids,
-                indexes.static_custom_text_attr_indexes.items.len,
-                indexes.signal_custom_text_attr_indexes.items.len,
-                indexes.signal_optional_custom_text_attr_indexes.items.len,
-                indexes.static_custom_bool_attr_indexes.items.len,
-                indexes.signal_custom_bool_attr_indexes.items.len,
-            );
-            retired.reserveRetiredLifecyclePublication(
-                allocator,
-                &engine.active_stream,
-                retired_scope_ids,
-                removal.node_indexes.on_change_indexes.items.len,
-                removal.node_indexes.mount_indexes.items.len,
-                removal.node_indexes.cleanup_indexes.items.len,
-            ) catch return error.OutOfMemory;
+            const nodes = &removal.node_indexes;
+            try retired.reserve(allocator, .{
+                .render_nodes = removal.scan.removed_elem_ids.len,
+                .elements = indexes.element_indexes.items.len,
+                .text_nodes = indexes.text_node_indexes.items.len,
+                .static_text_attrs = indexes.static_text_attr_indexes.items.len,
+                .static_bool_attrs = indexes.static_bool_attr_indexes.items.len,
+                .signal_text_nodes = indexes.signal_text_node_indexes.items.len,
+                .signal_text_attrs = indexes.signal_text_attr_indexes.items.len,
+                .signal_bool_attrs = indexes.signal_bool_attr_indexes.items.len,
+                .events = indexes.event_indexes.items.len,
+                .static_custom_text_attrs = indexes.static_custom_text_attr_indexes.items.len,
+                .signal_custom_text_attrs = indexes.signal_custom_text_attr_indexes.items.len,
+                .signal_optional_custom_text_attrs = indexes.signal_optional_custom_text_attr_indexes.items.len,
+                .static_custom_bool_attrs = indexes.static_custom_bool_attr_indexes.items.len,
+                .signal_custom_bool_attrs = indexes.signal_custom_bool_attr_indexes.items.len,
+                .scope_sites = nodes.scope_site_indexes.items.len,
+                .states = nodes.state_indexes.items.len,
+                .whens = nodes.when_indexes.items.len,
+                .eaches = nodes.each_indexes.items.len,
+                .on_changes = nodes.on_change_indexes.items.len,
+                .mounts = nodes.mount_indexes.items.len,
+                .cleanups = nodes.cleanup_indexes.items.len,
+            });
         }
 
         fn collectRetiredGraphRootsForRemoval(engine: *Self, allocator: std.mem.Allocator, removal: *const structural_splice.PreparedRemoval, roots: *shared_buffer.List(*HostSignalRecord)) CollectionError!void {
@@ -8245,11 +8385,15 @@ pub fn Engine(comptime Ctx: type) type {
                 return total;
             }
 
-            fn create(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, limits: collection_budget.Limits, counts: StaticRootCounts, expected_roots: usize) CollectionError!*@This() {
+            /// `index_mode` selects how the collected stream keys its identity
+            /// tables: dense when this stream will become the active stream,
+            /// sparse when it is a per-transaction replacement later moved
+            /// into the active stream (see `descriptor_stream.IndexMode`).
+            fn create(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, limits: collection_budget.Limits, counts: StaticRootCounts, expected_roots: usize, index_mode: descriptor_stream.IndexMode) CollectionError!*@This() {
                 const allocator = Ctx.allocator(ctx);
                 const owner = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(owner);
-                owner.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host };
+                owner.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host, .stream = HostNodeDescriptorStream.initEmpty(index_mode) };
                 errdefer owner.stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
                 owner.collection = try StagedCollectionCtx.init(engine, ctx, &owner.stream, limits, counts, expected_roots);
                 return owner;
@@ -8371,7 +8515,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(plan);
                 const counts = try countStaticRootNodes(root);
-                const owner = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, counts, 1);
+                const owner = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, counts, 1, .dense);
                 errdefer owner.deinit();
                 try engine.collectActiveElemRootDescriptorsWith(*StagedCollectionCtx, &owner.collection, ctx, roc_host, &owner.stream, root, dirty_source_node_ids);
                 owner.materialize();
@@ -8934,13 +9078,13 @@ pub fn Engine(comptime Ctx: type) type {
             row_retirement: ?each_runtime.PreparedRowRemovals = null,
             retired_stable_generations: shared_buffer.List(*each_generation.Generation) = .empty,
             effects_retirement: ?PreparedEffectRetirements = null,
-            retired_stream: HostNodeDescriptorStream = .{},
+            retired_stream: HostRetiredDescriptors = .{},
             publication: ?structural_splice.PreparedPublicationDeltas = null,
             final_render_topology: ?PreparedFinalRenderTopology = null,
             render_layout_plan: ?PreparedRenderLayoutPlan = null,
             graph_release: ?active_graph.PreparedReleaseClosure(HostSignalRecord) = null,
             graph_append: ?active_graph.PreparedGraphAppend(HostSignalRecord) = null,
-            selector_registry: ?selector_runtime.Registry(HostSignalRecord) = null,
+            selector_registry: ?PreparedSelectorAppend = null,
             sink_edits: ?active_graph.PreparedSinkRouteEdits = null,
             source_route_appends: ?active_graph.PreparedRouteAppends(u64) = null,
             text_route_appends: ?active_graph.PreparedRouteAppends(active_graph.TextSink) = null,
@@ -8962,6 +9106,9 @@ pub fn Engine(comptime Ctx: type) type {
             retired_active_events: shared_buffer.List(ActiveEventDesc) = .empty,
             initial_root: bool = false,
             sparse_render_membership: bool = false,
+            /// Direct-root classification cost of the last sparse scope
+            /// preparation; tests assert it stays linear in retiring scopes.
+            direct_root_classification_work: DirectRootClassificationWork = .{},
 
             // Inspect only descriptors owned by the retiring branch. The
             // descriptor pool is not document order after a sparse row edit.
@@ -9145,7 +9292,7 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer if (!plan_owns_cleanup) allocator.destroy(plan);
                 plan.* = .{ .engine = engine, .host_ctx = ctx, .roc_host = roc_host };
                 errdefer if (!plan_owns_cleanup) plan.retired_stream.deinit(allocator, ctx, roc_host, &engine.pending_roc_metrics);
-                plan.replacement = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, total, selections.len);
+                plan.replacement = try PreparedReplacementOwner.create(engine, ctx, roc_host, limits, total, selections.len, .sparse);
                 errdefer if (!plan_owns_cleanup) plan.replacement.deinit();
                 plan.replacement.collection.cache_overlay = cache_overlay;
                 try plan.replacement.collection.stageExternalStates(roc_host, state_update);
@@ -9411,6 +9558,75 @@ pub fn Engine(comptime Ctx: type) type {
                 return plan;
             }
 
+            /// Work performed while splitting retiring scopes into direct
+            /// synchronized row roots and nested scopes. `membership_probes`
+            /// is one per retiring scope, so a restored nested scan over the
+            /// roots would report the triangular product instead.
+            pub const DirectRootClassificationWork = struct {
+                roots_indexed: usize = 0,
+                scopes_classified: usize = 0,
+                membership_probes: usize = 0,
+                direct_matches: usize = 0,
+            };
+
+            /// Preflighted membership of the synchronized direct row roots.
+            ///
+            /// A Rows transition already retires its direct rows through the
+            /// rows-site plan; only nested descendants (child rows, components,
+            /// branches) need the scope-owned row retirement. Deciding which
+            /// side each retiring scope falls on must cost one probe per scope
+            /// rather than a scan over every root, otherwise clearing K rows
+            /// pays K(K+1)/2 comparisons. `init` performs the only allocation;
+            /// `classify` is allocation free so the caller can preflight the
+            /// nested buffer and commit without a fallible step in between.
+            pub const DirectRowRootMembership = struct {
+                roots: []const ids.ScopeId,
+                set: std.AutoHashMapUnmanaged(u64, void) = .{},
+
+                /// Indexes `roots`. Duplicate roots are a caller contract
+                /// error because each root is retired exactly once. On
+                /// `OutOfMemory` nothing is retained and the call can be
+                /// retried.
+                pub fn init(allocator: std.mem.Allocator, roots: []const ids.ScopeId) CollectionError!@This() {
+                    var membership: @This() = .{ .roots = roots };
+                    errdefer membership.deinit(allocator);
+                    membership.set.ensureTotalCapacity(allocator, std.math.cast(u32, roots.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+                    for (roots) |root| {
+                        const entry = membership.set.getOrPutAssumeCapacity(root.raw());
+                        if (entry.found_existing) return error.InvalidDescriptor;
+                    }
+                    return membership;
+                }
+
+                /// Releases the index. Safe after a failed `init`.
+                pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+                    self.set.deinit(allocator);
+                }
+
+                /// Appends every retiring scope that is not a direct root to
+                /// `nested`, which must already hold capacity for all of
+                /// `retirement_scope_ids`; this never allocates. Every direct
+                /// root must be among the retiring scopes, otherwise the
+                /// caller passed roots outside the retired subtrees and the
+                /// call refuses with `InvalidDescriptor`; `nested` is caller
+                /// scratch and holds no meaning after a refusal.
+                pub fn classify(self: *const @This(), retirement_scope_ids: []const ids.ScopeId, nested: *shared_buffer.List(ids.ScopeId)) CollectionError!DirectRootClassificationWork {
+                    std.debug.assert(nested.capacity - nested.items.len >= retirement_scope_ids.len);
+                    var work: DirectRootClassificationWork = .{ .roots_indexed = self.roots.len };
+                    for (retirement_scope_ids) |scope_id| {
+                        work.scopes_classified += 1;
+                        work.membership_probes += 1;
+                        if (self.set.contains(scope_id.raw())) {
+                            work.direct_matches += 1;
+                        } else {
+                            nested.appendAssumeCapacity(scope_id);
+                        }
+                    }
+                    if (work.direct_matches != self.roots.len) return error.InvalidDescriptor;
+                    return work;
+                }
+            };
+
             // Exact scope ownership is shared by one Rows edit and mixed
             // structural edits. Render-pool positions never identify ownership.
             fn prepareSparseExternalScopes(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, replacement: *PreparedReplacementOwner, retired_roots: []const ids.ScopeId, synced_row_roots: []const ids.ScopeId, suppressed_parents: []const u64, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
@@ -9458,12 +9674,9 @@ pub fn Engine(comptime Ctx: type) type {
                 var nested_row_scopes: shared_buffer.List(ids.ScopeId) = .empty;
                 defer nested_row_scopes.deinit(allocator);
                 nested_row_scopes.ensureTotalCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
-                for (retirement_scope_ids) |scope_id| {
-                    const is_direct = for (synced_row_roots) |root| {
-                        if (root == scope_id) break true;
-                    } else false;
-                    if (!is_direct) nested_row_scopes.appendAssumeCapacity(scope_id);
-                }
+                var direct_roots = try DirectRowRootMembership.init(allocator, synced_row_roots);
+                defer direct_roots.deinit(allocator);
+                plan.direct_root_classification_work = try direct_roots.classify(retirement_scope_ids, &nested_row_scopes);
                 plan.row_retirement = try prepareRowRetirementForScopes(engine, allocator, nested_row_scopes.items);
                 errdefer if (plan.row_retirement) |*retirement_plan| retirement_plan.deinit(allocator);
                 plan.retired_stable_generations.ensureTotalCapacity(allocator, plan.row_retirement.?.rows.len) catch return error.OutOfMemory;
@@ -9481,7 +9694,7 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer plan.retired_active_events.deinit(allocator);
                 if (cache_overlay) |overlay| try engine.reserveCacheBearingDescriptorPublication(allocator, &plan.replacement.stream, overlay);
                 try engine.active_stream.reserveMovedStreamPublication(allocator, &plan.replacement.stream);
-                try prepareRetiredStreamCapacity(engine, allocator, &plan.retired_stream, &plan.removal.?.removal, retirement_scope_ids);
+                try prepareRetiredStreamCapacity(allocator, &plan.retired_stream, &plan.removal.?.removal);
                 const on_change_base = std.math.sub(usize, engine.active_stream.on_changes.items.len, plan.removal.?.removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
                 const mount_base = std.math.sub(usize, engine.active_stream.mounts.items.len, plan.removal.?.removal.node_indexes.mount_indexes.items.len) catch return error.ResourceLimit;
                 plan.publication = structural_splice.preparePublicationDeltas(allocator, plan.replacement.stream.render_nodes.items, &.{}, on_change_base, plan.replacement.stream.on_changes.items.len, mount_base, plan.replacement.stream.mounts.items.len) catch return error.OutOfMemory;
@@ -9703,7 +9916,7 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer self.retired_active_events.deinit(allocator);
                 if (cache_overlay) |overlay| try self.engine.reserveCacheBearingDescriptorPublication(allocator, &self.replacement.stream, overlay);
                 try self.engine.active_stream.reserveMovedStreamPublication(allocator, &self.replacement.stream);
-                try prepareRetiredStreamCapacity(self.engine, allocator, &self.retired_stream, &self.removal.?.removal, retirement_scope_ids);
+                try prepareRetiredStreamCapacity(allocator, &self.retired_stream, &self.removal.?.removal);
                 const on_change_base = std.math.sub(usize, self.engine.active_stream.on_changes.items.len, self.removal.?.removal.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
                 const mount_base = std.math.sub(usize, self.engine.active_stream.mounts.items.len, self.removal.?.removal.node_indexes.mount_indexes.items.len) catch return error.ResourceLimit;
                 self.publication = structural_splice.preparePublicationDeltas(allocator, self.replacement.stream.render_nodes.items, &.{}, on_change_base, self.replacement.stream.on_changes.items.len, mount_base, self.replacement.stream.mounts.items.len) catch return error.OutOfMemory;
@@ -9729,12 +9942,12 @@ pub fn Engine(comptime Ctx: type) type {
                         error.InvalidRelease => return error.InvalidSignalGraphRelease,
                     };
                     errdefer if (self.graph_release) |*release| release.deinit(allocator);
-                    self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, self.graph_release.?.final_record_ids, replacement_roots.items) catch |err| switch (err) {
+                    self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, &self.graph_release.?, replacement_roots.items) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.InvalidAppend => return error.InvalidSignalGraphAppend,
                     };
                     errdefer if (self.graph_append) |*append| append.deinit(allocator);
-                    self.selector_registry = try self.engine.prepareSelectorsForGraphChange(allocator, &self.graph_release.?, &self.graph_append.?);
+                    self.selector_registry = try self.engine.prepareSelectorsForGraphChange(allocator, &self.graph_append.?);
                     errdefer if (self.selector_registry) |*registry| registry.deinit(allocator);
                     try self.engine.reserveActiveIntervals(self.host_ctx, self.graph_append.?.appendedIntervalSourceCount());
                     try self.engine.reserveActiveRowSources(self.host_ctx, self.graph_append.?.appendedRowSourceCount());
@@ -9755,12 +9968,18 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn prepareRender(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
                 if (!self.initial_root and !self.engine.render_cache.hasRoot()) return;
+                // The sparse plan is torn down field by field on failure, not
+                // through `deinit`, so every graph artifact prepared before the
+                // render stage is released here, including the staged selector
+                // memberships whose only other owner is the commit path.
                 errdefer {
                     self.deinitGraphRoutes(allocator);
                     if (self.graph_append) |*append| append.deinit(allocator);
                     self.graph_append = null;
                     if (self.graph_release) |*release| release.deinit(allocator);
                     self.graph_release = null;
+                    if (self.selector_registry) |*registry| registry.deinit(allocator);
+                    self.selector_registry = null;
                     if (self.sink_edits) |*edits| edits.deinit(allocator);
                     self.sink_edits = null;
                 }
@@ -9830,9 +10049,9 @@ pub fn Engine(comptime Ctx: type) type {
                 self.change_route_appends.?.apply(&self.engine.active_change_signal_routes, graph_count);
                 self.structural_route_appends.?.apply(&self.engine.active_structural_signal_routes, graph_count);
                 var lifecycle = ActiveSignalGraphLifecycle{ .engine = self.engine, .ctx = self.host_ctx };
-                release.releaseRetired(Ctx.allocator(self.host_ctx), &lifecycle);
+                release.releaseRetired(Ctx.allocator(self.host_ctx), self.engine.active_signal_graph.items, &lifecycle);
                 append.registerAppendedEffects(&lifecycle);
-                self.engine.commitPreparedSelectors(Ctx.allocator(self.host_ctx), &self.selector_registry.?);
+                self.engine.commitPreparedSelectors(Ctx.allocator(self.host_ctx), &self.selector_registry.?, append);
             }
 
             fn commitRenderAssumeCapacity(self: *@This()) void {
@@ -10118,23 +10337,23 @@ pub fn Engine(comptime Ctx: type) type {
                 var source_count = self.engine.active_source_signal_routes.items.len;
                 for (source.items) |entry| source_count = @max(source_count, std.math.add(usize, @intCast(entry.route_index), 1) catch return error.ResourceLimit);
                 self.graph_source_route_count = source_count;
-                self.source_route_appends = active_graph.prepareSourceRouteAppendsAfterRelease(allocator, &self.engine.active_source_signal_routes, self.graph_release.?.final_record_ids, source_count, source.items) catch |err| switch (err) {
+                self.source_route_appends = active_graph.prepareSourceRouteAppendsAfterRelease(allocator, &self.engine.active_source_signal_routes, &self.graph_release.?.remap, source_count, source.items) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
-                self.text_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.TextSink, allocator, &self.engine.active_text_signal_routes, self.graph_release.?.original_record_ids, graph_count, text.items) catch |err| switch (err) {
+                self.text_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.TextSink, allocator, &self.engine.active_text_signal_routes, &self.graph_release.?.remap, graph_count, text.items) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
-                self.bool_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.BoolSink, allocator, &self.engine.active_bool_signal_routes, self.graph_release.?.original_record_ids, graph_count, bools.items) catch |err| switch (err) {
+                self.bool_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.BoolSink, allocator, &self.engine.active_bool_signal_routes, &self.graph_release.?.remap, graph_count, bools.items) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
-                self.change_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.ChangeSink, allocator, &self.engine.active_change_signal_routes, self.graph_release.?.original_record_ids, graph_count, changes.items) catch |err| switch (err) {
+                self.change_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.ChangeSink, allocator, &self.engine.active_change_signal_routes, &self.graph_release.?.remap, graph_count, changes.items) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
-                self.structural_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.StructuralSink, allocator, &self.engine.active_structural_signal_routes, self.graph_release.?.original_record_ids, graph_count, structural.items) catch |err| switch (err) {
+                self.structural_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.StructuralSink, allocator, &self.engine.active_structural_signal_routes, &self.graph_release.?.remap, graph_count, structural.items) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
@@ -10144,19 +10363,19 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn appendTextRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.TextSink)), record: *HostSignalRecord, sink: active_graph.TextSink) CollectionError!void {
-                const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
+                const id = self.graph_append.?.plannedRecordId(&self.graph_release.?.remap, self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
             fn appendBoolRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.BoolSink)), record: *HostSignalRecord, sink: active_graph.BoolSink) CollectionError!void {
-                const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
+                const id = self.graph_append.?.plannedRecordId(&self.graph_release.?.remap, self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
             fn appendChangeRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.ChangeSink)), record: *HostSignalRecord, sink: active_graph.ChangeSink) CollectionError!void {
-                const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
+                const id = self.graph_append.?.plannedRecordId(&self.graph_release.?.remap, self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
             fn appendStructuralRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.StructuralSink)), record: *HostSignalRecord, sink: active_graph.StructuralSink) CollectionError!void {
-                const id = self.graph_append.?.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
+                const id = self.graph_append.?.plannedRecordId(&self.graph_release.?.remap, self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
             fn deinitGraphRoutes(self: *@This(), allocator: std.mem.Allocator) void {
@@ -10239,8 +10458,8 @@ pub fn Engine(comptime Ctx: type) type {
             engine: *Self,
             host_ctx: Ctx.Handle,
             roc_host: *abi.RocHost,
-            replacement_stream: HostNodeDescriptorStream = .{},
-            retired_stream: HostNodeDescriptorStream = .{},
+            replacement_stream: HostNodeDescriptorStream = .sparse_replacement,
+            retired_stream: HostRetiredDescriptors = .{},
             collection: StagedCollectionCtx = undefined,
             replacement_scope_id: u64 = 0,
             retired_scope_id: u64 = 0,
@@ -10258,7 +10477,7 @@ pub fn Engine(comptime Ctx: type) type {
             sink_edits: ?active_graph.PreparedSinkRouteEdits = null,
             graph_release: ?active_graph.PreparedReleaseClosure(HostSignalRecord) = null,
             graph_append: ?active_graph.PreparedGraphAppend(HostSignalRecord) = null,
-            selector_registry: ?selector_runtime.Registry(HostSignalRecord) = null,
+            selector_registry: ?PreparedSelectorAppend = null,
             source_route_appends: ?active_graph.PreparedRouteAppends(u64) = null,
             text_route_appends: ?active_graph.PreparedRouteAppends(active_graph.TextSink) = null,
             bool_route_appends: ?active_graph.PreparedRouteAppends(active_graph.BoolSink) = null,
@@ -10349,7 +10568,7 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer allocator.free(plan.state_cell_indexes);
                 try state_retirement.reserveRetired(allocator, &plan.retired_state_cells);
                 errdefer plan.retired_state_cells.deinit(allocator);
-                try prepareRetiredStreamCapacity(engine_ptr, allocator, &plan.retired_stream, &plan.removal.?, plan.scope_retirement.?.scope_ids);
+                try prepareRetiredStreamCapacity(allocator, &plan.retired_stream, &plan.removal.?);
                 const on_change_base = std.math.sub(usize, engine_ptr.active_stream.on_changes.items.len, plan.removal.?.node_indexes.on_change_indexes.items.len) catch return error.ResourceLimit;
                 const mount_base = std.math.sub(usize, engine_ptr.active_stream.mounts.items.len, plan.removal.?.node_indexes.mount_indexes.items.len) catch return error.ResourceLimit;
                 plan.publication = structural_splice.preparePublicationDeltas(
@@ -10390,11 +10609,11 @@ pub fn Engine(comptime Ctx: type) type {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.InvalidRelease => return error.InvalidSignalGraphRelease,
                     };
-                    self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, self.graph_release.?.final_record_ids, replacement_roots.items) catch |err| switch (err) {
+                    self.graph_append = active_graph.prepareGraphAppend(HostSignalRecord, allocator, self.engine.active_signal_graph.items, &self.graph_release.?, replacement_roots.items) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.InvalidAppend => return error.InvalidSignalGraphAppend,
                     };
-                    self.selector_registry = try self.engine.prepareSelectorsForGraphChange(allocator, &self.graph_release.?, &self.graph_append.?);
+                    self.selector_registry = try self.engine.prepareSelectorsForGraphChange(allocator, &self.graph_append.?);
                     try self.engine.reserveActiveIntervals(self.host_ctx, self.graph_append.?.appendedIntervalSourceCount());
                     try self.engine.reserveActiveRowSources(self.host_ctx, self.graph_append.?.appendedRowSourceCount());
                     try self.prepareGraphRoutes(allocator);
@@ -10894,7 +11113,7 @@ pub fn Engine(comptime Ctx: type) type {
                 var source_count = self.engine.active_source_signal_routes.items.len;
                 for (source.items) |entry| source_count = @max(source_count, std.math.add(usize, @intCast(entry.route_index), 1) catch return error.ResourceLimit);
                 self.graph_source_route_count = source_count;
-                self.source_route_appends = active_graph.prepareSourceRouteAppendsAfterRelease(allocator, &self.engine.active_source_signal_routes, self.graph_release.?.final_record_ids, source_count, source.items) catch |err| switch (err) {
+                self.source_route_appends = active_graph.prepareSourceRouteAppendsAfterRelease(allocator, &self.engine.active_source_signal_routes, &self.graph_release.?.remap, source_count, source.items) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
@@ -10926,19 +11145,19 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn appendTextRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.TextSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.TextSink) CollectionError!void {
-                const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
+                const id = graph_plan.plannedRecordId(&self.graph_release.?.remap, self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
             fn appendBoolRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.BoolSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.BoolSink) CollectionError!void {
-                const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
+                const id = graph_plan.plannedRecordId(&self.graph_release.?.remap, self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
             fn appendChangeRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.ChangeSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.ChangeSink) CollectionError!void {
-                const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
+                const id = graph_plan.plannedRecordId(&self.graph_release.?.remap, self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
             fn appendStructuralRoute(self: *@This(), allocator: std.mem.Allocator, routes: *shared_buffer.List(active_graph.RouteAppend(active_graph.StructuralSink)), graph_plan: *const active_graph.PreparedGraphAppend(HostSignalRecord), record: *HostSignalRecord, sink: active_graph.StructuralSink) CollectionError!void {
-                const id = graph_plan.plannedRecordId(self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
+                const id = graph_plan.plannedRecordId(&self.graph_release.?.remap, self.engine.active_signal_graph.items, record) orelse return error.InvalidSignalGraphAppend;
                 routes.append(allocator, .{ .route_index = id, .value = sink }) catch return error.OutOfMemory;
             }
 
@@ -10981,9 +11200,9 @@ pub fn Engine(comptime Ctx: type) type {
                 self.change_route_appends.?.apply(&self.engine.active_change_signal_routes, graph_count);
                 self.structural_route_appends.?.apply(&self.engine.active_structural_signal_routes, graph_count);
                 var lifecycle = ActiveSignalGraphLifecycle{ .engine = self.engine, .ctx = self.host_ctx };
-                release.releaseRetired(Ctx.allocator(self.host_ctx), &lifecycle);
+                release.releaseRetired(Ctx.allocator(self.host_ctx), self.engine.active_signal_graph.items, &lifecycle);
                 append.registerAppendedEffects(&lifecycle);
-                self.engine.commitPreparedSelectors(Ctx.allocator(self.host_ctx), &self.selector_registry.?);
+                self.engine.commitPreparedSelectors(Ctx.allocator(self.host_ctx), &self.selector_registry.?, append);
             }
 
             fn commitRenderCacheAssumeCapacity(self: *@This()) void {
@@ -11051,79 +11270,99 @@ pub fn Engine(comptime Ctx: type) type {
                 ) catch return error.OutOfMemory;
             }
 
-            fn descriptorSwapMap(allocator: std.mem.Allocator, len: usize) std.mem.Allocator.Error![]usize {
-                const map = try allocator.alloc(usize, len);
-                for (map, 0..) |*entry, index| entry.* = index;
-                return map;
-            }
+            /// Tracks which original descriptor currently occupies each lane
+            /// index while a batch of swap-removals is replayed. Only indexes a
+            /// removal displaced are recorded, so the map is sized by the
+            /// removal batch rather than by the lane it edits.
+            const DescriptorSwapMap = struct {
+                moved: std.AutoHashMapUnmanaged(usize, usize) = .empty,
+
+                fn init(allocator: std.mem.Allocator, removals: usize) std.mem.Allocator.Error!DescriptorSwapMap {
+                    var self = DescriptorSwapMap{};
+                    try self.moved.ensureTotalCapacity(allocator, std.math.cast(u32, removals) orelse return error.OutOfMemory);
+                    return self;
+                }
+
+                fn deinit(self: *DescriptorSwapMap, allocator: std.mem.Allocator) void {
+                    self.moved.deinit(allocator);
+                }
+
+                fn get(self: *const DescriptorSwapMap, index: usize) usize {
+                    return self.moved.get(index) orelse index;
+                }
+
+                fn set(self: *DescriptorSwapMap, index: usize, original: usize) void {
+                    self.moved.putAssumeCapacity(index, original);
+                }
+            };
 
             fn appendTextSinkEdits(allocator: std.mem.Allocator, engine_ptr: *Self, edits: *shared_buffer.List(active_graph.TextSinkEdit), descriptors: anytype, removal_indexes: []const usize, kind: active_graph.TextSinkKind) CollectionError!void {
-                const map = try descriptorSwapMap(allocator, descriptors.len);
-                defer allocator.free(map);
+                var map = try DescriptorSwapMap.init(allocator, removal_indexes.len);
+                defer map.deinit(allocator);
                 var live_len = descriptors.len;
                 for (removal_indexes) |index| {
                     if (index >= live_len) return error.ResourceLimit;
-                    edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(descriptors[map[index]].signal.record), .kind = kind, .old_index = index });
+                    edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(descriptors[map.get(index)].signal.record), .kind = kind, .old_index = index });
                     const last_index = live_len - 1;
                     if (index != last_index) {
-                        edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(descriptors[map[last_index]].signal.record), .kind = kind, .old_index = last_index, .new_index = index });
-                        map[index] = map[last_index];
+                        edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(descriptors[map.get(last_index)].signal.record), .kind = kind, .old_index = last_index, .new_index = index });
+                        map.set(index, map.get(last_index));
                     }
                     live_len = last_index;
                 }
             }
 
             fn appendBoolSinkEdits(allocator: std.mem.Allocator, engine_ptr: *Self, edits: *shared_buffer.List(active_graph.BoolSinkEdit), descriptors: anytype, removal_indexes: []const usize, kind: active_graph.BoolSinkKind) CollectionError!void {
-                const map = try descriptorSwapMap(allocator, descriptors.len);
-                defer allocator.free(map);
+                var map = try DescriptorSwapMap.init(allocator, removal_indexes.len);
+                defer map.deinit(allocator);
                 var live_len = descriptors.len;
                 for (removal_indexes) |index| {
                     if (index >= live_len) return error.ResourceLimit;
-                    edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(descriptors[map[index]].signal.record), .kind = kind, .old_index = index });
+                    edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(descriptors[map.get(index)].signal.record), .kind = kind, .old_index = index });
                     const last_index = live_len - 1;
                     if (index != last_index) {
-                        edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(descriptors[map[last_index]].signal.record), .kind = kind, .old_index = last_index, .new_index = index });
-                        map[index] = map[last_index];
+                        edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(descriptors[map.get(last_index)].signal.record), .kind = kind, .old_index = last_index, .new_index = index });
+                        map.set(index, map.get(last_index));
                     }
                     live_len = last_index;
                 }
             }
 
             fn appendChangeSinkEdits(allocator: std.mem.Allocator, engine_ptr: *Self, edits: *shared_buffer.List(active_graph.ChangeSinkEdit), descriptors: anytype, removal_indexes: []const usize) CollectionError!void {
-                const map = try descriptorSwapMap(allocator, descriptors.len);
-                defer allocator.free(map);
+                var map = try DescriptorSwapMap.init(allocator, removal_indexes.len);
+                defer map.deinit(allocator);
                 var live_len = descriptors.len;
                 for (removal_indexes) |index| {
                     if (index >= live_len) return error.ResourceLimit;
-                    edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(descriptors[map[index]].signal.record), .old_index = index });
+                    edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(descriptors[map.get(index)].signal.record), .old_index = index });
                     const last_index = live_len - 1;
                     if (index != last_index) {
-                        edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(descriptors[map[last_index]].signal.record), .old_index = last_index, .new_index = index });
-                        map[index] = map[last_index];
+                        edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(descriptors[map.get(last_index)].signal.record), .old_index = last_index, .new_index = index });
+                        map.set(index, map.get(last_index));
                     }
                     live_len = last_index;
                 }
             }
 
             fn appendStructuralSinkEdits(allocator: std.mem.Allocator, engine_ptr: *Self, edits: *shared_buffer.List(active_graph.StructuralSinkEdit), descriptors: anytype, removal_indexes: []const usize, comptime kind: active_graph.StructuralKind) CollectionError!void {
-                const map = try descriptorSwapMap(allocator, descriptors.len);
-                defer allocator.free(map);
+                var map = try DescriptorSwapMap.init(allocator, removal_indexes.len);
+                defer map.deinit(allocator);
                 var live_len = descriptors.len;
                 for (removal_indexes) |index| {
                     if (index >= live_len) return error.ResourceLimit;
                     const record = switch (kind) {
-                        .when => descriptors[map[index]].condition.record,
-                        .each => descriptors[map[index]].items.record,
+                        .when => descriptors[map.get(index)].condition.record,
+                        .each => descriptors[map.get(index)].items.record,
                     };
                     edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(record), .kind = kind, .old_index = index });
                     const last_index = live_len - 1;
                     if (index != last_index) {
                         const moved_record = switch (kind) {
-                            .when => descriptors[map[last_index]].condition.record,
-                            .each => descriptors[map[last_index]].items.record,
+                            .when => descriptors[map.get(last_index)].condition.record,
+                            .each => descriptors[map.get(last_index)].items.record,
                         };
                         edits.appendAssumeCapacity(.{ .record_id = engine_ptr.requireActiveSignalRecordId(moved_record), .kind = kind, .old_index = last_index, .new_index = index });
-                        map[index] = map[last_index];
+                        map.set(index, map.get(last_index));
                     }
                     live_len = last_index;
                 }
@@ -11334,11 +11573,6 @@ pub fn Engine(comptime Ctx: type) type {
             const record_id = active_graph.appendNode(HostSignalRecord, Ctx.allocator(ctx), &self.active_signal_graph, record, rank);
             self.pending_roc_metrics.bump(.active_graph_records_rebuilt, 1);
             return record_id;
-        }
-
-        /// Appends active signal dependent id using capacity that must already satisfy the caller's transaction contract.
-        pub fn appendActiveSignalDependentId(self: *Self, ctx: Ctx.Handle, input_record_id: u64, dependent_record_id: u64) void {
-            active_graph.appendDependentId(HostSignalRecord, Ctx.allocator(ctx), self.active_signal_graph.items, input_record_id, dependent_record_id);
         }
 
         /// Appends active source signal route using capacity that must already satisfy the caller's transaction contract.
@@ -13287,15 +13521,18 @@ pub fn Engine(comptime Ctx: type) type {
         /// commits or aborts.
         pub fn prepareChangedActiveSignalRecordIds(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, overlay: *signal_records.PreparedCacheUpdates, dirty_record_ids: []const u64, dirty_source_node_ids: []const u64, dirty_generation: u64) CollectionError![]u64 {
             const allocator = Ctx.allocator(ctx);
+            // Changed ids are a subset of the dirty closure plus the selector
+            // members it dirties, so every container here is sized by those
+            // sets rather than by the whole graph; the selector wave grows them
+            // again before it evaluates anything.
             var changed = shared_buffer.List(u64).empty;
             errdefer changed.deinit(allocator);
-            changed.ensureTotalCapacity(allocator, self.active_signal_graph.items.len) catch return error.OutOfMemory;
+            changed.ensureTotalCapacity(allocator, dirty_record_ids.len) catch return error.OutOfMemory;
             var changed_set = &self.scratch.dirty_changed_record_id_set;
             changed_set.clearRetainingCapacity();
-            changed_set.ensureTotalCapacity(allocator, std.math.cast(u32, self.active_signal_graph.items.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
+            changed_set.ensureTotalCapacity(allocator, std.math.cast(u32, dirty_record_ids.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
             var selector_roots = &self.scratch.selector_dirty_roots;
             selector_roots.clearRetainingCapacity();
-            selector_roots.ensureTotalCapacity(allocator, self.active_signal_graph.items.len) catch return error.OutOfMemory;
             for (dirty_record_ids) |record_id| {
                 if (record_id >= self.active_signal_graph.items.len) return error.ResourceLimit;
                 const record = self.active_signal_graph.items[@intCast(record_id)].record;
@@ -13333,6 +13570,8 @@ pub fn Engine(comptime Ctx: type) type {
                     self.selectors.membersForKey(input_record, old_key.asSlice()),
                     self.selectors.membersForKey(input_record, next_key.asSlice()),
                 };
+                const member_total = std.math.add(usize, member_sets[0].len, member_sets[1].len) catch return error.ResourceLimit;
+                selector_roots.ensureUnusedCapacity(allocator, member_total) catch return error.OutOfMemory;
                 for (member_sets) |members| for (members) |selector_member| {
                     const member_id = selector_member.active_graph_id orelse return error.InvalidDescriptor;
                     selector_roots.appendAssumeCapacity(member_id);
@@ -13342,6 +13581,8 @@ pub fn Engine(comptime Ctx: type) type {
             overlay.selector_members_dirtied = std.math.add(u64, overlay.selector_members_dirtied, std.math.cast(u64, selector_roots.items.len) orelse return error.ResourceLimit) catch return error.ResourceLimit;
             if (selector_roots.items.len != 0) {
                 const selector_dirty_ids = self.scratchDirtyActiveSignalRecordIdsForRoots(ctx, selector_roots.items);
+                changed.ensureUnusedCapacity(allocator, selector_dirty_ids.len) catch return error.OutOfMemory;
+                changed_set.ensureUnusedCapacity(allocator, std.math.cast(u32, selector_dirty_ids.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
                 for (selector_dirty_ids) |record_id| {
                     const record = self.active_signal_graph.items[@intCast(record_id)].record;
                     const result = try self.evalPreparedDirtyHostSignalRecord(ctx, roc_host, overlay, record, dirty_source_node_ids, dirty_generation);
@@ -13867,9 +14108,20 @@ pub fn Engine(comptime Ctx: type) type {
             const site_index = self.activeEachRowSiteIndex(parent_scope_id, site_ordinal) orelse {
                 return allocator.alloc(ids.ScopeId, 0) catch return scope_tree.Error.OutOfMemory;
             };
-            const source = self.each_row_sites.items[site_index].scope_ids.items;
-            const result = allocator.alloc(ids.ScopeId, source.len) catch return scope_tree.Error.OutOfMemory;
-            @memcpy(result, source);
+            const row_count = self.each_row_sites.items[site_index].scope_ids.items.len;
+            const result = allocator.alloc(ids.ScopeId, row_count) catch return scope_tree.Error.OutOfMemory;
+            errdefer allocator.free(result);
+            // The dense site table is a membership index; committed row order
+            // is owned by the Rows store, so report rows in that order.
+            const rows_site_id = self.rows_site_ids.get(.{ .parent_scope_id = parent_scope_id, .site_ordinal = site_ordinal }) orelse return scope_tree.Error.UnknownScope;
+            const store = if (self.rows_store) |*store| store else return scope_tree.Error.UnknownScope;
+            var rows = store.iterate(rows_site_id) catch return scope_tree.Error.UnknownScope;
+            var index: usize = 0;
+            while (rows.next()) |entry| : (index += 1) {
+                if (index >= result.len) return scope_tree.Error.UnknownScope;
+                result[index] = ids.ScopeId.fromRaw(entry.row.metadata.scope_id);
+            }
+            if (index != result.len) return scope_tree.Error.UnknownScope;
             return result;
         }
 
@@ -13949,16 +14201,18 @@ pub fn Engine(comptime Ctx: type) type {
         }
 
         /// Orders two rows of one each site by their committed row order.
+        /// The Rows store's order index answers each rank in logarithmic
+        /// expected time; the dense site index is a key/membership table
+        /// whose slot order is not row order after a sparse delta.
         fn compareEachRowScopes(self: *Self, parent_scope_id: u64, site_ordinal: ids.SiteOrdinal, row_a: u64, row_b: u64) CollectionError!SiteOrder {
-            const site_index = self.each_row_site_indexes.get(.{ .parent_scope_id = ids.ScopeId.fromRaw(parent_scope_id), .site_ordinal = site_ordinal }) orelse return error.InvalidScope;
-            var rank_a: ?usize = null;
-            var rank_b: ?usize = null;
-            for (self.each_row_sites.items[site_index].scope_ids.items, 0..) |scope_id, rank| {
-                if (scope_id.raw() == row_a) rank_a = rank;
-                if (scope_id.raw() == row_b) rank_b = rank;
-            }
-            const a = rank_a orelse return error.InvalidScope;
-            const b = rank_b orelse return error.InvalidScope;
+            const rows_site_id = self.rows_site_ids.get(.{ .parent_scope_id = ids.ScopeId.fromRaw(parent_scope_id), .site_ordinal = site_ordinal }) orelse return error.InvalidScope;
+            const store = if (self.rows_store) |*store| store else return error.InvalidScope;
+            const location_a = store.findScope(row_a) orelse return error.InvalidScope;
+            const location_b = store.findScope(row_b) orelse return error.InvalidScope;
+            if (location_a.site_id != rows_site_id or location_b.site_id != rows_site_id) return error.InvalidScope;
+            const render_order = (store.getSiteConst(rows_site_id) catch return error.InvalidScope).render_order;
+            const a = render_order.rank(location_a.row_id) catch return error.InvalidScope;
+            const b = render_order.rank(location_b.row_id) catch return error.InvalidScope;
             return if (a < b) .before else .after;
         }
 
@@ -15990,16 +16244,12 @@ pub fn Engine(comptime Ctx: type) type {
                 const allocator = Ctx.allocator(ctx);
                 if (owned.entries.items.len == 0 and state_update == null) return null;
                 const generation = std.math.add(u64, engine.dirty_signal_generation, 1) catch return error.ResourceLimit;
-                var expected = engine.active_signal_graph.items.len;
-                for (engine.active_text_signal_routes.items) |routes| expected = std.math.add(usize, expected, routes.len()) catch return error.ResourceLimit;
-                for (engine.active_bool_signal_routes.items) |routes| expected = std.math.add(usize, expected, routes.len()) catch return error.ResourceLimit;
-                for (engine.active_structural_signal_routes.items) |routes| expected = std.math.add(usize, expected, routes.len()) catch return error.ResourceLimit;
-                for (engine.active_change_signal_routes.items) |routes| expected = std.math.add(usize, expected, routes.len()) catch return error.ResourceLimit;
+                const expected = try engine.preparedCacheOverlayBound();
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(plan);
-                var caches = signal_records.PreparedCacheUpdates.init(allocator, expected) catch return error.OutOfMemory;
+                var caches = signal_records.PreparedCacheUpdates.initWithStorage(allocator, expected, signal_records.PreparedCacheUpdates.takeRetained(&engine.scratch.cache_overlay)) catch return error.OutOfMemory;
                 var caches_owned = true;
-                errdefer if (caches_owned) caches.deinit(ctx, roc_host, &engine.pending_roc_metrics);
+                errdefer if (caches_owned) engine.releasePreparedCacheOverlay(ctx, roc_host, &caches);
                 var root_record_ids: shared_buffer.List(u64) = .empty;
                 defer root_record_ids.deinit(allocator);
                 try root_record_ids.ensureTotalCapacityPrecise(allocator, owned.entries.items.len);
@@ -16018,7 +16268,7 @@ pub fn Engine(comptime Ctx: type) type {
                     root_record_ids.appendAssumeCapacity(engine.requireActiveSignalRecordId(entry.record));
                 }
                 if (root_record_ids.items.len == 0 and state_update == null) {
-                    caches.deinit(ctx, roc_host, &engine.pending_roc_metrics);
+                    engine.releasePreparedCacheOverlay(ctx, roc_host, &caches);
                     allocator.destroy(plan);
                     return null;
                 }
@@ -16063,7 +16313,7 @@ pub fn Engine(comptime Ctx: type) type {
                 };
                 caches_owned = false;
                 splice_owned = false;
-                errdefer plan.caches.deinit(ctx, roc_host, &engine.pending_roc_metrics);
+                errdefer engine.releasePreparedCacheOverlay(ctx, roc_host, &plan.caches);
                 errdefer if (plan.render_splice) |*owned_splice| owned_splice.deinit();
                 try engine.prepareOnChangeCommands(ctx, roc_host, &plan.caches, changed, state_node_ids, generation, &plan.pending_on_change_commands);
                 errdefer {
@@ -16348,7 +16598,7 @@ pub fn Engine(comptime Ctx: type) type {
                 if (self.position_edits) |*positions| positions.deinit();
                 if (self.publication_phase.needsAbort()) self.batch_target.abort();
                 if (comptime @hasDecl(Ctx, "RenderPublication")) if (self.host_publication) |*publication| publication.deinit();
-                self.caches.deinit(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
+                self.engine.releasePreparedCacheOverlay(self.host_ctx, self.roc_host, &self.caches);
                 if (self.state_update) |*update| update.deinit(self.host_ctx, self.roc_host, &self.engine.pending_roc_metrics);
                 if (self.structural_downstream) |downstream| downstream.deinit();
                 if (self.composite_structural) |composite| composite.deinit();
@@ -17442,7 +17692,7 @@ test "combined replacement owner assigns distinct identities across two each sit
             const second_site = HostNodeScopeSiteDesc{ .node_id = ids.NodeId.fromRaw(20), .scope_id = ids.ScopeId.fromRaw(0), .ordinal = ids.SiteOrdinal.fromRaw(20), .parent_elem_id = ids.ElemId.fromRaw(0), .render_insert_index = 0, .kind = .each, .binder_bindings = &.{} };
 
             fault.configure(failure_number);
-            const owner = Engine(VerifyCtx).PreparedReplacementOwner.create(&engine, &ctx, roc_host, .{}, counts, 3) catch |err| {
+            const owner = Engine(VerifyCtx).PreparedReplacementOwner.create(&engine, &ctx, roc_host, .{}, counts, 3, .sparse) catch |err| {
                 try std.testing.expectEqual(error.OutOfMemory, err);
                 return fault.attempts;
             };
@@ -17515,7 +17765,7 @@ test "final render placements preserve two disjoint intervals under one parent" 
             engine.active_stream.appendTextNode(ctx.allocator, ids.ElemId.fromRaw(3), ids.root_elem, ids.root_scope, "middle");
             engine.active_stream.appendTextNode(ctx.allocator, ids.ElemId.fromRaw(4), ids.root_elem, ids.ScopeId.fromRaw(2), "old-right");
             engine.active_stream.appendTextNode(ctx.allocator, ids.ElemId.fromRaw(5), ids.root_elem, ids.root_scope, "z");
-            const replacement = try Engine(VerifyCtx).PreparedReplacementOwner.create(&engine, &ctx, host, .{}, .{}, 0);
+            const replacement = try Engine(VerifyCtx).PreparedReplacementOwner.create(&engine, &ctx, host, .{}, .{}, 0, .sparse);
             defer replacement.deinit();
             replacement.stream.appendTextNode(ctx.allocator, ids.ElemId.fromRaw(6), ids.root_elem, ids.ScopeId.fromRaw(3), "new-left");
             replacement.stream.appendTextNode(ctx.allocator, ids.ElemId.fromRaw(7), ids.root_elem, ids.ScopeId.fromRaw(4), "new-right");
@@ -17721,7 +17971,7 @@ test "provisional each-row scopes abort and publish without partial scope mutati
             defer deinitVerifyStateEngine(&engine, &ctx, host);
             _ = try engine.internRootScope(ctx.allocator);
             fault.configure(fail_at);
-            var overlay = scope_runtime.PreparedEachRowScopes.init(ctx.allocator, engine.scopes.items);
+            var overlay = scope_runtime.PreparedEachRowScopes.init(ctx.allocator, engine.scopes.items, ids.Generation.fromRaw(engine.identity_reuse_barrier));
             defer overlay.deinit();
 
             _ = cap;
@@ -17978,8 +18228,8 @@ test "staged scope identity reuse does not consume the fresh suffix" {
     const first = try engine.internWhenBranchScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(1), .false_branch);
     const second = try engine.internWhenBranchScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(2), .false_branch);
     _ = try engine.internWhenBranchScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(3), .false_branch);
-    engine.scopes.items[first.scope_id.index()].lifecycle = .{ .retired = ids.Generation.fromRaw(0) };
-    engine.scopes.items[second.scope_id.index()].lifecycle = .{ .retired = ids.Generation.fromRaw(0) };
+    scope_tree.retireScopeAssumeValid(HostEachRowScopeStep, engine.scopes.items, first.scope_id, ids.Generation.fromRaw(0));
+    scope_tree.retireScopeAssumeValid(HostEachRowScopeStep, engine.scopes.items, second.scope_id, ids.Generation.fromRaw(0));
     engine.identity_reuse_barrier = 1;
 
     var stream: HostNodeDescriptorStream = .{};
@@ -17990,6 +18240,288 @@ test "staged scope identity reuse does not consume the fresh suffix" {
     try std.testing.expectEqual(@as(u64, 1), try collection.reserveScopeIdentity(.{ .parent_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(4), .kind = .component }, null));
     try std.testing.expectEqual(@as(u64, 2), try collection.reserveScopeIdentity(.{ .parent_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(5), .kind = .component }, null));
     try std.testing.expectEqual(@as(u64, 4), try collection.reserveScopeIdentity(.{ .parent_id = ids.root_scope, .ordinal = ids.SiteOrdinal.fromRaw(6), .kind = .component }, null));
+}
+
+fn deinitStagedScopeEngine(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost) void {
+    engine.states.deinit(ctx.allocator);
+    engine.state_indexes_by_node_id.deinit(ctx.allocator);
+    engine.node_identities.deinit(ctx.allocator);
+    engine.active_node_identity_ids.deinit(ctx.allocator);
+    deinitVerifyStaticEngine(engine, ctx);
+}
+
+fn engineReusableRingLen(engine: *const Engine(VerifyCtx)) usize {
+    var count: usize = 0;
+    var cursor = scope_tree.firstReusableScope(HostEachRowScopeStep, engine.scopes.items);
+    while (cursor) |scope_id| : (cursor = scope_tree.nextReusableScope(HostEachRowScopeStep, engine.scopes.items, scope_id)) count += 1;
+    return count;
+}
+
+fn appendLiveEngineRow(engine: *Engine(VerifyCtx), parent: ids.ScopeId, key: u64) !ids.ScopeId {
+    return (try scope_tree.appendFreshEachRow(HostEachRowScopeStep, std.testing.allocator, &engine.scopes, parent, .{
+        .site_ordinal = ids.SiteOrdinal.fromRaw(1),
+        .key_hash = key,
+        .row_handle = row_handles.RowHandleId.fromRaw(key),
+    })).scope_id;
+}
+
+fn retireEngineScope(engine: *Engine(VerifyCtx), scope_id: ids.ScopeId, generation: u64) void {
+    scope_tree.retireScopeAssumeValid(HostEachRowScopeStep, engine.scopes.items, scope_id, ids.Generation.fromRaw(generation));
+}
+
+const StagedScopeClaimKind = enum { component, when_branch, each_row };
+
+/// Opens a staged collection with budget for `claims` scopes of every kind.
+fn initStagedScopeCollection(engine: *Engine(VerifyCtx), ctx: *VerifyCtxHost, stream: *HostNodeDescriptorStream, claims: usize, external_scopes: usize) !Engine(VerifyCtx).StagedCollectionCtx {
+    var collection = try Engine(VerifyCtx).StagedCollectionCtx.init(engine, ctx, stream, .{}, .{ .component_sites = claims, .when_sites = claims }, external_scopes);
+    errdefer collection.deinit();
+    try collection.reserveCounts(.{ .external_scopes = claims, .each_rows = claims });
+    return collection;
+}
+
+fn stagedClaimOne(collection: *Engine(VerifyCtx).StagedCollectionCtx, kind: StagedScopeClaimKind, parent: ids.ScopeId, ordinal: u64) !ids.ScopeId {
+    return switch (kind) {
+        .component => ids.ScopeId.fromRaw(try collection.reserveScopeIdentity(.{ .parent_id = parent, .ordinal = ids.SiteOrdinal.fromRaw(ordinal), .kind = .component }, null)),
+        .when_branch => (try collection.reserveWhenBranchScope(parent, ids.SiteOrdinal.fromRaw(ordinal), .true_branch)).scope_id,
+        .each_row => try collection.reserveEachRowScopeGeneration(parent, ids.SiteOrdinal.fromRaw(ordinal), ordinal, row_handles.RowHandleId.fromRaw(ordinal)),
+    };
+}
+
+test "one staged scope claim visits at most one slot regardless of unrelated live scopes" {
+    for ([_]StagedScopeClaimKind{ .component, .when_branch, .each_row }) |kind| {
+        for ([_]usize{ 1_000, 10_000 }) |live_rows| {
+            var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+            var engine = Engine(VerifyCtx).init();
+            defer deinitStagedScopeEngine(&engine, &ctx);
+            _ = try engine.internRootScope(std.testing.allocator);
+            var retired_row: ?ids.ScopeId = null;
+            for (0..live_rows) |i| {
+                const row = try appendLiveEngineRow(&engine, ids.root_scope, @intCast(i + 1));
+                if (i == live_rows / 2) retired_row = row;
+            }
+            const table_len = engine.scopes.items.len;
+            engine.identity_reuse_barrier = 1;
+            var stream: HostNodeDescriptorStream = .{};
+            defer stream.deinit(ctx.allocator, &ctx, undefined, &engine.pending_roc_metrics);
+
+            // No reusable slot anywhere: the claim asks the ring once and takes a fresh id.
+            {
+                var collection = try initStagedScopeCollection(&engine, &ctx, &stream, 1, 0);
+                defer collection.deinit();
+                const fresh = try stagedClaimOne(&collection, kind, ids.root_scope, 3);
+                try std.testing.expectEqual(ids.ScopeId.fromIndex(table_len), fresh);
+                try std.testing.expectEqual(scope_runtime.ScopeClaimWork{ .reusable_slots_visited = 0, .fresh_slots_claimed = 1 }, collection.scope_claim_work);
+            }
+
+            // One retired slot among the live rows: one visit, and the slot
+            // stays committed-available until a commit publishes it.
+            retireEngineScope(&engine, retired_row.?, 0);
+            {
+                var collection = try initStagedScopeCollection(&engine, &ctx, &stream, 1, 0);
+                defer collection.deinit();
+                const reused = try stagedClaimOne(&collection, kind, ids.root_scope, 4);
+                try std.testing.expectEqual(retired_row.?, reused);
+                try std.testing.expectEqual(scope_runtime.ScopeClaimWork{ .reusable_slots_visited = 1, .fresh_slots_claimed = 0 }, collection.scope_claim_work);
+                try std.testing.expect(scope_tree.isLinkedReusable(HostEachRowScopeStep, engine.scopes.items, retired_row.?));
+            }
+            // The aborted claim consumed nothing.
+            try std.testing.expectEqual(@as(usize, 1), engineReusableRingLen(&engine));
+            try std.testing.expectEqual(table_len, engine.scopes.items.len);
+        }
+    }
+}
+
+test "one staged scope claim visits one slot with a large retired reusable table" {
+    for ([_]StagedScopeClaimKind{ .component, .when_branch, .each_row }) |kind| {
+        var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+        var engine = Engine(VerifyCtx).init();
+        defer deinitStagedScopeEngine(&engine, &ctx);
+        _ = try engine.internRootScope(std.testing.allocator);
+        const retired_rows: usize = 10_000;
+        for (0..retired_rows) |i| _ = try appendLiveEngineRow(&engine, ids.root_scope, @intCast(i + 1));
+        // Retire from the highest index down so the ring head is the highest
+        // slot; a lowest-index scan would visit the whole table to find it.
+        var index: usize = engine.scopes.items.len;
+        while (index > 1) {
+            index -= 1;
+            retireEngineScope(&engine, ids.ScopeId.fromIndex(index), 1);
+        }
+        try std.testing.expectEqual(retired_rows, engineReusableRingLen(&engine));
+        var stream: HostNodeDescriptorStream = .{};
+        defer stream.deinit(ctx.allocator, &ctx, undefined, &engine.pending_roc_metrics);
+
+        // Every slot is barrier-blocked: the head says so in one visit.
+        engine.identity_reuse_barrier = 1;
+        {
+            var collection = try initStagedScopeCollection(&engine, &ctx, &stream, 2, 0);
+            defer collection.deinit();
+            const blocked = try stagedClaimOne(&collection, kind, ids.root_scope, 3);
+            try std.testing.expectEqual(ids.ScopeId.fromIndex(retired_rows + 1), blocked);
+            const blocked_again = try stagedClaimOne(&collection, kind, ids.root_scope, 4);
+            try std.testing.expectEqual(ids.ScopeId.fromIndex(retired_rows + 2), blocked_again);
+            try std.testing.expectEqual(scope_runtime.ScopeClaimWork{ .reusable_slots_visited = 1, .fresh_slots_claimed = 2 }, collection.scope_claim_work);
+        }
+
+        // The next generation claims the head (highest index) in one visit.
+        engine.identity_reuse_barrier = 2;
+        {
+            var collection = try initStagedScopeCollection(&engine, &ctx, &stream, 1, 0);
+            defer collection.deinit();
+            const reused = try stagedClaimOne(&collection, kind, ids.root_scope, 5);
+            try std.testing.expectEqual(ids.ScopeId.fromIndex(retired_rows), reused);
+            try std.testing.expectEqual(scope_runtime.ScopeClaimWork{ .reusable_slots_visited = 1, .fresh_slots_claimed = 0 }, collection.scope_claim_work);
+        }
+        try std.testing.expectEqual(retired_rows, engineReusableRingLen(&engine));
+    }
+}
+
+test "staged scope claims walk the ring in retirement order, skip external reservations, and re-derive after abort" {
+    var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+    var engine = Engine(VerifyCtx).init();
+    defer deinitStagedScopeEngine(&engine, &ctx);
+    _ = try engine.internRootScope(std.testing.allocator);
+    const a = (try engine.internComponentScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(1))).scope_id;
+    const b = (try engine.internComponentScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(2))).scope_id;
+    const c = (try engine.internComponentScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(3))).scope_id;
+    const d = (try engine.internComponentScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(4))).scope_id;
+    retireEngineScope(&engine, c, 0);
+    retireEngineScope(&engine, a, 0);
+    retireEngineScope(&engine, d, 0);
+    retireEngineScope(&engine, b, 1);
+    engine.identity_reuse_barrier = 1;
+    var stream: HostNodeDescriptorStream = .{};
+    defer stream.deinit(ctx.allocator, &ctx, undefined, &engine.pending_roc_metrics);
+
+    // Mixed claims share one cursor: c, a, d in retirement order, then b
+    // blocks and the rest are fresh. Nothing is consumed before commit.
+    {
+        var collection = try initStagedScopeCollection(&engine, &ctx, &stream, 2, 0);
+        defer collection.deinit();
+        try std.testing.expectEqual(c, try stagedClaimOne(&collection, .component, ids.root_scope, 5));
+        try std.testing.expectEqual(a, try stagedClaimOne(&collection, .when_branch, c, 6));
+        try std.testing.expectEqual(d, try stagedClaimOne(&collection, .each_row, a, 7));
+        try std.testing.expectEqual(ids.ScopeId.fromRaw(5), try stagedClaimOne(&collection, .each_row, ids.root_scope, 8));
+        try std.testing.expectEqual(ids.ScopeId.fromRaw(6), try stagedClaimOne(&collection, .component, ids.root_scope, 9));
+        try std.testing.expectEqual(scope_runtime.ScopeClaimWork{ .reusable_slots_visited = 4, .fresh_slots_claimed = 2 }, collection.scope_claim_work);
+        try std.testing.expectEqual(@as(usize, 4), engineReusableRingLen(&engine));
+        try std.testing.expectEqual(@as(usize, 5), engine.scopes.items.len);
+    }
+
+    // A retry after abort re-derives the same ids from the untouched ring.
+    {
+        var collection = try initStagedScopeCollection(&engine, &ctx, &stream, 1, 0);
+        defer collection.deinit();
+        try std.testing.expectEqual(c, try stagedClaimOne(&collection, .each_row, ids.root_scope, 5));
+        try std.testing.expectEqual(a, try stagedClaimOne(&collection, .component, ids.root_scope, 6));
+    }
+
+    // Slots an enclosing transaction already reserved are stepped over, at a
+    // cost bounded by that reservation count, and the claim resumes behind them.
+    {
+        var collection = try initStagedScopeCollection(&engine, &ctx, &stream, 1, 2);
+        defer collection.deinit();
+        try collection.attachExternalScopeIds(&.{ c.raw(), a.raw() });
+        try std.testing.expectEqual(d, try stagedClaimOne(&collection, .component, ids.root_scope, 5));
+        try std.testing.expectEqual(scope_runtime.ScopeClaimWork{ .reusable_slots_visited = 3, .fresh_slots_claimed = 0 }, collection.scope_claim_work);
+        try std.testing.expectEqual(ids.ScopeId.fromRaw(5), try stagedClaimOne(&collection, .each_row, ids.root_scope, 6));
+        try std.testing.expectEqual(scope_runtime.ScopeClaimWork{ .reusable_slots_visited = 4, .fresh_slots_claimed = 1 }, collection.scope_claim_work);
+    }
+
+    // A retired parent is rejected before any slot is claimed.
+    {
+        var collection = try initStagedScopeCollection(&engine, &ctx, &stream, 1, 0);
+        defer collection.deinit();
+        try std.testing.expectError(error.InvalidScope, collection.reserveEachRowScopeGeneration(b, ids.SiteOrdinal.fromRaw(1), 1, row_handles.RowHandleId.fromRaw(1)));
+        try std.testing.expectError(error.InvalidScope, collection.validateScope(ids.ScopeId.fromRaw(99)));
+        try std.testing.expectEqual(scope_runtime.ScopeClaimWork{}, collection.scope_claim_work);
+    }
+    try std.testing.expectEqual(@as(usize, 4), engineReusableRingLen(&engine));
+    try std.testing.expectEqual(@as(usize, 5), engine.scopes.items.len);
+}
+
+test "staged commit publishes reused parents before reused children and faults leave the ring coherent" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var roc_env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&roc_env);
+    const root = verifyStaticRoot(&.{}, &.{verifyStaticText()});
+
+    const Runner = struct {
+        fn run(host: *abi.RocHost, elem: abi.Elem, fail_at: ?usize) !usize {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            var ctx = VerifyCtxHost{ .allocator = fault.allocator() };
+            var engine = Engine(VerifyCtx).init();
+            engine.roc_host = host;
+            defer deinitVerifyStateEngine(&engine, &ctx, host);
+            _ = try engine.internRootScope(std.testing.allocator);
+            const a = (try engine.internComponentScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(1))).scope_id;
+            _ = try engine.internComponentScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(2));
+            const c = (try engine.internComponentScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(3))).scope_id;
+            // c retires before a, so the ring hands out the higher id first:
+            // the parent claim gets 3 and its child claim gets 1. Publishing
+            // in id order would attach 1 beneath a still-retired 3.
+            retireEngineScope(&engine, c, 0);
+            retireEngineScope(&engine, a, 0);
+            engine.identity_reuse_barrier = 1;
+            fault.configure(fail_at);
+
+            const prepared = Engine(VerifyCtx).PreparedRootCollection.prepare(&engine, &ctx, host, elem, .{}, &.{}) catch |err| {
+                try std.testing.expect(fail_at != null);
+                try std.testing.expectEqual(error.OutOfMemory, err);
+                return fault.attempts;
+            };
+            const collection = &prepared.owner.collection;
+            const claimed: ?struct { outer: ids.ScopeId, inner: ids.ScopeId, row: ids.ScopeId } = claim: {
+                collection.reserveCounts(.{ .roots = .{ .when_sites = 2 }, .external_scopes = 1, .each_rows = 1 }) catch break :claim null;
+                const outer = collection.reserveWhenBranchScope(ids.root_scope, ids.SiteOrdinal.fromRaw(5), .true_branch) catch break :claim null;
+                const inner = collection.reserveWhenBranchScope(outer.scope_id, ids.SiteOrdinal.fromRaw(6), .true_branch) catch break :claim null;
+                const row = collection.reserveEachRowScopeGeneration(inner.scope_id, ids.SiteOrdinal.fromRaw(7), 11, row_handles.RowHandleId.fromRaw(0x0000_0001_0000_0001)) catch break :claim null;
+                break :claim .{ .outer = outer.scope_id, .inner = inner.scope_id, .row = row };
+            };
+            const attempts = fault.attempts;
+            if (claimed == null or fail_at != null) {
+                try std.testing.expect(fail_at != null);
+                prepared.deinit();
+                // Whatever the fault position, the committed ring and table are untouched.
+                try std.testing.expectEqual(@as(usize, 4), engine.scopes.items.len);
+                try std.testing.expectEqual(@as(usize, 2), engineReusableRingLen(&engine));
+                try std.testing.expectEqual(@as(?ids.ScopeId, c), scope_tree.firstReusableScope(HostEachRowScopeStep, engine.scopes.items));
+                try std.testing.expect(!engine.scopes.items[a.index()].lifecycle.isActive());
+                try std.testing.expect(!engine.scopes.items[c.index()].lifecycle.isActive());
+                return attempts;
+            }
+            try std.testing.expectEqual(c, claimed.?.outer);
+            try std.testing.expectEqual(a, claimed.?.inner);
+            try std.testing.expectEqual(ids.ScopeId.fromRaw(4), claimed.?.row);
+
+            fault.configure(1);
+            var stream = prepared.commit();
+            try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+            try std.testing.expectEqual(@as(usize, 5), engine.scopes.items.len);
+            try std.testing.expectEqual(@as(usize, 0), engineReusableRingLen(&engine));
+            try std.testing.expectEqual(@as(?ids.ScopeId, ids.root_scope), engine.scopes.items[c.index()].parent_scope_id);
+            try std.testing.expectEqual(@as(?ids.ScopeId, c), engine.scopes.items[a.index()].parent_scope_id);
+            try std.testing.expectEqual(@as(?ids.ScopeId, a), engine.scopes.items[4].parent_scope_id);
+            try std.testing.expectEqual(@as(?ids.ScopeId, a), engine.scopes.items[c.index()].first_child_scope_id);
+            try std.testing.expectEqual(@as(?ids.ScopeId, ids.ScopeId.fromRaw(4)), engine.scopes.items[a.index()].first_child_scope_id);
+            try std.testing.expect(engine.scopes.items[a.index()].lifecycle.isActive());
+            try std.testing.expect(engine.scopes.items[c.index()].lifecycle.isActive());
+            stream.deinit(ctx.allocator, &ctx, host, &engine.pending_roc_metrics);
+
+            // Retiring the republished subtree queues it again for the next generation.
+            retireEngineScope(&engine, ids.ScopeId.fromRaw(4), 1);
+            retireEngineScope(&engine, a, 1);
+            retireEngineScope(&engine, c, 1);
+            try std.testing.expectEqual(@as(usize, 3), engineReusableRingLen(&engine));
+            try std.testing.expectEqual(ids.ScopeId.fromRaw(5), (try engine.internComponentScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(8))).scope_id);
+            engine.identity_reuse_barrier = 2;
+            try std.testing.expectEqual(ids.ScopeId.fromRaw(4), (try engine.internComponentScope(std.testing.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(9))).scope_id);
+            return attempts;
+        }
+    };
+
+    const attempts = try Runner.run(&roc_host, root, null);
+    try std.testing.expect(attempts != 0);
+    for (1..attempts + 1) |fail_at| _ = try Runner.run(&roc_host, root, fail_at);
 }
 
 test "staged node identity reuse does not consume the fresh suffix" {
@@ -19188,6 +19720,160 @@ test "structural targets mark ten thousand flat row roots with exact linear subt
     try std.testing.expectEqual(@as(usize, 10_000), targets.scope_retirement.?.work.validation_parent_links_followed);
 }
 
+fn countDirectRootNestedScan(retirement_scope_ids: []const ids.ScopeId, synced_row_roots: []const ids.ScopeId, nested: *shared_buffer.List(ids.ScopeId)) usize {
+    // Reference for the retired quadratic classification: one equality per
+    // (retiring scope, root) pair until the first hit.
+    var comparisons: usize = 0;
+    for (retirement_scope_ids) |scope_id| {
+        const is_direct = for (synced_row_roots) |root| {
+            comparisons += 1;
+            if (root == scope_id) break true;
+        } else false;
+        if (!is_direct) nested.appendAssumeCapacity(scope_id);
+    }
+    return comparisons;
+}
+
+test "sparse scope retirement classifies flat direct row roots with one probe per scope" {
+    const Membership = Engine(VerifyCtx).PreparedStructuralDownstream.DirectRowRootMembership;
+    const measure = struct {
+        fn run(row_count: usize) !void {
+            var engine = Engine(VerifyCtx).init();
+            defer engine.scopes.deinit(std.testing.allocator);
+            const root = try engine.internRootScope(std.testing.allocator);
+            var roots: shared_buffer.List(ids.ScopeId) = .empty;
+            defer roots.deinit(std.testing.allocator);
+            try roots.ensureTotalCapacity(std.testing.allocator, row_count);
+            for (0..row_count) |index| {
+                const row = try scope_runtime.appendFreshEachRow(
+                    std.testing.allocator,
+                    &engine.scopes,
+                    root.scope_id,
+                    ids.SiteOrdinal.fromRaw(@intCast(index + 1)),
+                    index,
+                    row_handles.RowHandleId.fromRaw(@intCast(0x0000_0001_0000_0001 + index)),
+                );
+                roots.appendAssumeCapacity(row.scope_id);
+            }
+            var retirement = try scope_runtime.prepareSubtreesRetirement(HostEachRowScopeStep, std.testing.allocator, engine.scopes.items, roots.items);
+            defer retirement.deinit(std.testing.allocator);
+            try std.testing.expectEqual(row_count, retirement.scope_ids.len);
+
+            var nested: shared_buffer.List(ids.ScopeId) = .empty;
+            defer nested.deinit(std.testing.allocator);
+            try nested.ensureTotalCapacity(std.testing.allocator, retirement.scope_ids.len);
+            var membership = try Membership.init(std.testing.allocator, roots.items);
+            defer membership.deinit(std.testing.allocator);
+            const work = try membership.classify(retirement.scope_ids, &nested);
+            // Direct rows belong to the rows-site plan; none may be retired a
+            // second time through the scope-owned row retirement.
+            try std.testing.expectEqual(@as(usize, 0), nested.items.len);
+            try std.testing.expectEqual(row_count, work.roots_indexed);
+            try std.testing.expectEqual(row_count, work.scopes_classified);
+            try std.testing.expectEqual(row_count, work.direct_matches);
+            // Linear: exactly one membership probe per retiring scope. A
+            // restored nested scan over the roots reports the triangular
+            // count below instead and fails here.
+            try std.testing.expectEqual(row_count, work.membership_probes);
+
+            var reference_nested: shared_buffer.List(ids.ScopeId) = .empty;
+            defer reference_nested.deinit(std.testing.allocator);
+            try reference_nested.ensureTotalCapacity(std.testing.allocator, retirement.scope_ids.len);
+            const triangular = row_count * (row_count + 1) / 2;
+            try std.testing.expectEqual(triangular, countDirectRootNestedScan(retirement.scope_ids, roots.items, &reference_nested));
+            try std.testing.expectEqualSlices(ids.ScopeId, reference_nested.items, nested.items);
+        }
+    }.run;
+    // clear1k: 500_500 baseline comparisons; clear10k: 50_005_000.
+    try measure(1_000);
+    try measure(10_000);
+}
+
+test "sparse scope retirement keeps nested rows and independent scopes while direct roots stay linear" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const Membership = Engine(VerifyCtx).PreparedStructuralDownstream.DirectRowRootMembership;
+    const row_count = 1_000;
+    var engine = Engine(VerifyCtx).init();
+    defer engine.scopes.deinit(std.testing.allocator);
+    const root = try engine.internRootScope(std.testing.allocator);
+    var direct_rows: shared_buffer.List(ids.ScopeId) = .empty;
+    defer direct_rows.deinit(std.testing.allocator);
+    var expected_nested: shared_buffer.List(ids.ScopeId) = .empty;
+    defer expected_nested.deinit(std.testing.allocator);
+    // Each direct row owns a component that owns a nested row, and one
+    // surviving sibling row is never part of the retirement.
+    for (0..row_count) |index| {
+        const row = try scope_runtime.appendFreshEachRow(std.testing.allocator, &engine.scopes, root.scope_id, ids.SiteOrdinal.fromRaw(1), index, row_handles.RowHandleId.fromRaw(@intCast(0x0000_0001_0000_0001 + index)));
+        const component = try engine.internComponentScope(std.testing.allocator, row.scope_id, ids.SiteOrdinal.fromRaw(3));
+        const nested_row = try scope_runtime.appendFreshEachRow(std.testing.allocator, &engine.scopes, component.scope_id, ids.SiteOrdinal.fromRaw(4), index, row_handles.RowHandleId.fromRaw(@intCast(0x0000_0002_0000_0001 + index)));
+        try direct_rows.append(std.testing.allocator, row.scope_id);
+        try expected_nested.append(std.testing.allocator, nested_row.scope_id);
+        try expected_nested.append(std.testing.allocator, component.scope_id);
+    }
+    const survivor = try scope_runtime.appendFreshEachRow(std.testing.allocator, &engine.scopes, root.scope_id, ids.SiteOrdinal.fromRaw(1), row_count, row_handles.RowHandleId.fromRaw(0x0000_0003_0000_0001));
+    // An independently retiring `when` branch is not a synchronized row root,
+    // so it and its child are nested scopes for the scope-owned retirement.
+    const branch = try engine.internWhenBranchScope(std.testing.allocator, root.scope_id, ids.SiteOrdinal.fromRaw(2), .true_branch);
+    const branch_row = try scope_runtime.appendFreshEachRow(std.testing.allocator, &engine.scopes, branch.scope_id, ids.SiteOrdinal.fromRaw(5), 7, row_handles.RowHandleId.fromRaw(0x0000_0004_0000_0001));
+    try expected_nested.append(std.testing.allocator, branch_row.scope_id);
+    try expected_nested.append(std.testing.allocator, branch.scope_id);
+
+    var retired_roots: shared_buffer.List(ids.ScopeId) = .empty;
+    defer retired_roots.deinit(std.testing.allocator);
+    try retired_roots.appendSlice(std.testing.allocator, direct_rows.items);
+    try retired_roots.append(std.testing.allocator, branch.scope_id);
+    var retirement = try scope_runtime.prepareSubtreesRetirement(HostEachRowScopeStep, std.testing.allocator, engine.scopes.items, retired_roots.items);
+    defer retirement.deinit(std.testing.allocator);
+    const retiring_count = 3 * row_count + 2;
+    try std.testing.expectEqual(@as(usize, retiring_count), retirement.scope_ids.len);
+    for (retirement.scope_ids) |scope_id| try std.testing.expect(scope_id != survivor.scope_id);
+
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var nested: shared_buffer.List(ids.ScopeId) = .empty;
+    defer nested.deinit(fault.allocator());
+    try nested.ensureTotalCapacity(fault.allocator(), retirement.scope_ids.len);
+    fault.configure(null);
+    var membership = try Membership.init(fault.allocator(), direct_rows.items);
+    const init_attempts = fault.attempts;
+    try std.testing.expect(init_attempts != 0);
+    // Classification is allocation free once the index exists.
+    fault.configure(1);
+    const work = try membership.classify(retirement.scope_ids, &nested);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    fault.configure(null);
+    membership.deinit(fault.allocator());
+    try std.testing.expectEqual(@as(usize, retiring_count), work.scopes_classified);
+    try std.testing.expectEqual(@as(usize, retiring_count), work.membership_probes);
+    try std.testing.expectEqual(@as(usize, row_count), work.direct_matches);
+    try std.testing.expectEqualSlices(ids.ScopeId, expected_nested.items, nested.items);
+    for (nested.items) |scope_id| for (direct_rows.items) |direct| try std.testing.expect(scope_id != direct);
+
+    var reference_nested: shared_buffer.List(ids.ScopeId) = .empty;
+    defer reference_nested.deinit(std.testing.allocator);
+    try reference_nested.ensureTotalCapacity(std.testing.allocator, retirement.scope_ids.len);
+    const reference_comparisons = countDirectRootNestedScan(retirement.scope_ids, direct_rows.items, &reference_nested);
+    try std.testing.expectEqualSlices(ids.ScopeId, reference_nested.items, nested.items);
+    // Nested descendants each scan every root without a hit.
+    try std.testing.expect(reference_comparisons >= (2 * row_count + 2) * row_count);
+
+    // Every index allocation refusal is recoverable and leaves no index behind.
+    for (1..init_attempts + 1) |fail_at| {
+        fault.configure(fail_at);
+        try std.testing.expectError(error.OutOfMemory, Membership.init(fault.allocator(), direct_rows.items));
+        fault.configure(null);
+        var retry = try Membership.init(fault.allocator(), direct_rows.items);
+        retry.deinit(fault.allocator());
+    }
+
+    // Contract errors: a duplicated direct root, and a direct root that is
+    // not among the retiring scopes.
+    try std.testing.expectError(error.InvalidDescriptor, Membership.init(std.testing.allocator, &.{ direct_rows.items[0], direct_rows.items[0] }));
+    var foreign = try Membership.init(std.testing.allocator, &.{survivor.scope_id});
+    defer foreign.deinit(std.testing.allocator);
+    nested.clearRetainingCapacity();
+    try std.testing.expectError(error.InvalidDescriptor, foreign.classify(retirement.scope_ids, &nested));
+}
+
 test "structural targets ignore already retired scope slots" {
     var engine = Engine(VerifyCtx).init();
     defer engine.scopes.deinit(std.testing.allocator);
@@ -19592,13 +20278,13 @@ test "branch replacement preparation leaves the active branch unpublished" {
                 const old_state_id = engine.states.items[plan.state_cell_indexes[0]].state_id;
                 const replacement_state_id = plan.replacement_stream.states.items[0].node_id;
                 const replacement_signal_record = plan.replacement_stream.signal_bool_attrs.items[0].signal.record;
-                const planned_signal_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, replacement_signal_record) orelse return error.TestUnexpectedResult;
-                const planned_text_attr_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.signal_text_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
-                const planned_text_node_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.signal_text_nodes.items[0].signal.record) orelse return error.TestUnexpectedResult;
-                const planned_custom_text_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.signal_custom_text_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
-                const planned_optional_text_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.signal_optional_custom_text_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
-                const planned_custom_bool_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.signal_custom_bool_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
-                const planned_change_record_id = plan.graph_append.?.plannedRecordId(engine.active_signal_graph.items, plan.replacement_stream.on_changes.items[0].signal.record) orelse return error.TestUnexpectedResult;
+                const planned_signal_record_id = plan.graph_append.?.plannedRecordId(&plan.graph_release.?.remap, engine.active_signal_graph.items, replacement_signal_record) orelse return error.TestUnexpectedResult;
+                const planned_text_attr_record_id = plan.graph_append.?.plannedRecordId(&plan.graph_release.?.remap, engine.active_signal_graph.items, plan.replacement_stream.signal_text_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
+                const planned_text_node_record_id = plan.graph_append.?.plannedRecordId(&plan.graph_release.?.remap, engine.active_signal_graph.items, plan.replacement_stream.signal_text_nodes.items[0].signal.record) orelse return error.TestUnexpectedResult;
+                const planned_custom_text_record_id = plan.graph_append.?.plannedRecordId(&plan.graph_release.?.remap, engine.active_signal_graph.items, plan.replacement_stream.signal_custom_text_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
+                const planned_optional_text_record_id = plan.graph_append.?.plannedRecordId(&plan.graph_release.?.remap, engine.active_signal_graph.items, plan.replacement_stream.signal_optional_custom_text_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
+                const planned_custom_bool_record_id = plan.graph_append.?.plannedRecordId(&plan.graph_release.?.remap, engine.active_signal_graph.items, plan.replacement_stream.signal_custom_bool_attrs.items[0].signal.record) orelse return error.TestUnexpectedResult;
+                const planned_change_record_id = plan.graph_append.?.plannedRecordId(&plan.graph_release.?.remap, engine.active_signal_graph.items, plan.replacement_stream.on_changes.items[0].signal.record) orelse return error.TestUnexpectedResult;
                 const replacement_record_refs_before_graph = replacement_signal_record.ref_count;
                 fault.configure(1);
                 plan.commitAssumeCapacity();
@@ -20141,10 +20827,10 @@ test "aggregate branch collection sweeps allocation failures without publication
                 .map => |payload| payload.input,
                 else => return error.TestUnexpectedResult,
             };
-            const first_new_id = prepared.graph_append.?.plannedRecordId(engine.active_signal_graph.items, first_new).?;
-            const second_new_id = prepared.graph_append.?.plannedRecordId(engine.active_signal_graph.items, second_new).?;
-            const first_input_id = prepared.graph_append.?.plannedRecordId(engine.active_signal_graph.items, first_input).?;
-            const second_input_id = prepared.graph_append.?.plannedRecordId(engine.active_signal_graph.items, second_input).?;
+            const first_new_id = prepared.graph_append.?.plannedRecordId(&prepared.graph_release.?.remap, engine.active_signal_graph.items, first_new).?;
+            const second_new_id = prepared.graph_append.?.plannedRecordId(&prepared.graph_release.?.remap, engine.active_signal_graph.items, second_new).?;
+            const first_input_id = prepared.graph_append.?.plannedRecordId(&prepared.graph_release.?.remap, engine.active_signal_graph.items, first_input).?;
+            const second_input_id = prepared.graph_append.?.plannedRecordId(&prepared.graph_release.?.remap, engine.active_signal_graph.items, second_input).?;
             const first_new_scope = prepared.replacement_scope_ids[0];
             const second_new_scope = prepared.replacement_scope_ids[1];
             try std.testing.expect(first_new_id != second_new_id);
@@ -20390,4 +21076,82 @@ test "native shortcuts distinguish modifiers and reject conflicting event policy
     try std.testing.expectError(error.InvalidDescriptor, collection.appendAttr(&roc_host, scope, elem, invalid, bindings));
     try std.testing.expectEqual(@as(usize, 2), collection.prepared_events.items.len);
     try std.testing.expectEqual(@as(usize, 0), stream.events.items.len);
+}
+
+test "retirement journal reservation is sized by the prepared removal, never by live tokens or the highest retired id" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    // Baseline (issue #113): `prepareRetiredStreamCapacity` handed the whole
+    // live token count to the retired stream and the retired stream
+    // initialized dense per-id metadata through the highest retired id, so
+    // retiring row N of N cost O(N) bytes. The journal reserves two slots
+    // (one render node, one element) and the same bytes for id 1 and id N
+    // at 1k and at 10k live rows and tokens.
+    var reference_requested: ?usize = null;
+    for ([_]usize{ 1_000, 10_000 }) |live_count| {
+        for ([_]u64{ 1, @intCast(live_count) }) |target| {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            const allocator = fault.allocator();
+            var env = abi.RocEnv{ .allocator = allocator, .roc_io = abi.RocIo.default() };
+            var roc_host = abi.makeRocHost(&env);
+            var ctx = VerifyCtxHost{ .allocator = allocator };
+            var engine = Engine(VerifyCtx).init();
+            defer engine.scopes.deinit(allocator);
+            defer engine.active_stream.deinit(allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
+            var record = HostSignalRecord{ .ref_count = 1, .payload = .{ .const_value = .{
+                .init = .fromAbi(@as(HostSignalToken, @ptrFromInt(0x7000))),
+                .cap = HostValueCapability{ .clone = null, .drop = null, .eq = null },
+            } } };
+            try engine.active_stream.reservePreparedSignalRecordPublication(allocator, live_count);
+            for (1..live_count + 1) |raw| {
+                _ = engine.active_stream.appendElement(allocator, ids.ElemId.fromRaw(raw), ids.ElemId.fromRaw(0), ids.ScopeId.fromRaw(@intCast(raw)), "div");
+                engine.active_stream.rememberSignalRecordAssumeCapacity(@ptrFromInt(0x1_0000 + raw * 16), &record);
+            }
+            try std.testing.expectEqual(live_count, engine.active_stream.signal_records_by_token.count());
+
+            var removal = try structural_splice.prepareScopeOwnedRemoval(HostNodeDescriptorStream, allocator, &engine.active_stream, &.{ids.ScopeId.fromRaw(@intCast(target))});
+            defer removal.deinit(allocator);
+            try std.testing.expectEqualSlices(u64, &.{target}, removal.scan.removed_elem_ids);
+            try std.testing.expectEqual(@as(usize, 1), removal.descriptor_indexes.element_indexes.items.len);
+
+            var journal: HostRetiredDescriptors = .{};
+            defer journal.deinit(allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
+            fault.configure(null);
+            fault.resetByteMetrics();
+            try Engine(VerifyCtx).prepareRetiredStreamCapacity(allocator, &journal, &removal);
+            try std.testing.expectEqual(@as(usize, 2), journal.reservedSlots());
+            try std.testing.expectEqual(@as(usize, 2), fault.attempts);
+            const requested = fault.bytes.requested;
+            try std.testing.expectEqual(@sizeOf(HostRenderNode) + @sizeOf(HostNodeDescriptorStream.ElementDesc), requested);
+            if (reference_requested) |expected| try std.testing.expectEqual(expected, requested) else reference_requested = requested;
+
+            // Publication is allocation free against the reserved journal.
+            fault.configure(1);
+            engine.active_stream.removeRenderChild(ids.ElemId.fromRaw(0), ids.ElemId.fromRaw(target));
+            var replacement: HostNodeDescriptorStream = .{};
+            defer replacement.deinit(allocator, &ctx, &roc_host, &engine.pending_roc_metrics);
+            engine.active_stream.commitSparseRenderNodesAssumeCapacity(&replacement, &journal, removal.scan.removed_elem_ids);
+            engine.active_stream.finishSparseRenderNodeRetirement(removal.scan.removed_elem_ids);
+            engine.active_stream.commitStaticDescriptorReplacementAssumeCapacity(
+                &replacement,
+                &journal,
+                removal.descriptor_indexes.element_indexes.items,
+                &.{},
+                &.{},
+                &.{},
+                &.{},
+                &.{},
+                &.{},
+                &.{},
+                &.{},
+                &.{},
+                &.{},
+                &.{},
+            );
+            try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+            fault.configure(null);
+            try std.testing.expectEqual(@as(usize, 2), journal.retiredCount());
+            try std.testing.expectEqual(live_count - 1, engine.active_stream.elements.items.len);
+            try std.testing.expectEqual(ids.ElemId.fromRaw(target), journal.elements.items[0].elem_id);
+        }
+    }
 }

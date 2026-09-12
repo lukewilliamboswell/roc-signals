@@ -1590,7 +1590,10 @@ opaque Roc value, after which the host hashes and compares those bytes itself. A
 generic key constrained only by `is_eq` cannot provide a host hash index and
 would force the forbidden O(M) member scan.
 
-Adjacency, ranks, and the dirty set are dense integer-indexed structures. The
+Adjacency, ranks, and the dirty set are dense integer-indexed structures.
+Adjacency lists are unordered sets: each node records the slot its edge occupies
+in every input's list, so dropping or renumbering one edge is O(1) regardless
+of that input's fan-out, and propagation order comes from ranks alone. The
 callable address is used only to preserve signal aliasing while descriptors are
 ingested; active graph/node/runtime identities remain host-owned dense integers.
 The app provides text key material to `Ui.each` and `Signal.select`; graph
@@ -1881,6 +1884,13 @@ spec can assert a hard bound:
   changes this event. A spec asserting `expect_metric_delta
   selector_members_dirtied 2` alongside `derived_calls_into_roc 0` on a
   selection change in a large list is the canary for Product Goal 3.
+- **`selector_registry_visits` / `selector_registrations` /
+  `selector_key_bytes_copied` / `selector_memberships_released`** — the work
+  the selector index did while a structural change was prepared and published:
+  graph records it examined, memberships it added, key bytes it copied into
+  index ownership, and memberships it removed. Removing or appending one row
+  in a list of N selected rows must move these by the selectors of that one
+  row; a rebuild of the index over the survivors makes them track N.
 
 Telemetry placement is deliberate:
 

@@ -286,13 +286,13 @@ pub fn prepareRouteAppends(comptime Route: type, allocator: std.mem.Allocator, r
 /// Builds sink route replacements against the dense record layout that will
 /// exist after a prepared release. Slots without a surviving old record start
 /// empty instead of inheriting routes from the old occupant of that dense ID.
-pub fn prepareRouteAppendsAfterRelease(comptime Route: type, allocator: std.mem.Allocator, routes: *const RouteTable(Route), original_record_ids: []const usize, final_count: usize, appends: []const RouteAppend(Route)) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(Route) {
-    return prepareRouteAppendsAfterReleaseWithWork(Route, allocator, routes, original_record_ids, final_count, appends, null);
+pub fn prepareRouteAppendsAfterRelease(comptime Route: type, allocator: std.mem.Allocator, routes: *const RouteTable(Route), remap: *const DenseRemap, final_count: usize, appends: []const RouteAppend(Route)) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(Route) {
+    return prepareRouteAppendsAfterReleaseWithWork(Route, allocator, routes, remap, final_count, appends, null);
 }
 
-fn prepareRouteAppendsAfterReleaseWithWork(comptime Route: type, allocator: std.mem.Allocator, routes: *const RouteTable(Route), original_record_ids: []const usize, final_count: usize, appends: []const RouteAppend(Route), lookup_work: ?*usize) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(Route) {
-    if (original_record_ids.len > final_count) return error.InvalidAppend;
-    return prepareDenseRouteAppends(Route, allocator, routes, original_record_ids, final_count, appends, lookup_work);
+fn prepareRouteAppendsAfterReleaseWithWork(comptime Route: type, allocator: std.mem.Allocator, routes: *const RouteTable(Route), remap: *const DenseRemap, final_count: usize, appends: []const RouteAppend(Route), lookup_work: ?*usize) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(Route) {
+    if (remap.survivor_count > final_count) return error.InvalidAppend;
+    return prepareDenseRouteAppends(Route, allocator, routes, remap, final_count, appends, lookup_work);
 }
 
 /// Runtime metadata describing how to read each append's destination record
@@ -320,10 +320,16 @@ const RouteIndexStream = struct {
     }
 };
 
-/// Per-destination bookkeeping owned by the shared planner. `append_count`
-/// is the number of inputs targeting that final record; `replacement_index`
-/// is the position of its typed replacement once one has been prepared.
-const DenseRouteCounts = struct { append_count: usize = 0, replacement_index: usize = std.math.maxInt(usize) };
+/// Per-destination bookkeeping owned by the shared planner, one entry per
+/// targeted final record in first-appearance order. `append_count` is the
+/// number of inputs targeting that record; the entry's position doubles as
+/// the index of its typed replacement.
+const DenseRouteGroup = struct { route_index: u64, append_count: usize = 0 };
+
+/// Sparse index from a targeted final record id to its `DenseRouteGroup`
+/// position, so planning reserves storage for the targeted records only and
+/// never for the whole final graph.
+const DenseRouteGroupIndex = std.AutoHashMapUnmanaged(u64, usize);
 
 /// Closed operation table through which the shared planner drives typed route
 /// storage. Every operation is a batch over one replacement group or over the
@@ -341,8 +347,8 @@ const DenseRoutePlanOps = struct {
     /// failure the replacement holds no storage and is not counted as written.
     prepare_replacement: *const fn (owner: *anyopaque, allocator: std.mem.Allocator, written: usize, route_index: u64, old_index: ?usize, merged_len: usize) std.mem.Allocator.Error!void,
     /// Appends every input route, in input order, into the replacement chosen
-    /// by `counts[route_index].replacement_index`; capacity is already reserved.
-    append_inputs: *const fn (owner: *anyopaque, counts: []const DenseRouteCounts) void,
+    /// by `groups.get(route_index)`; capacity is already reserved.
+    append_inputs: *const fn (owner: *anyopaque, groups: *const DenseRouteGroupIndex) void,
     /// Releases the initialized prefix `[0..written)` and the replacement
     /// slice after a failed plan, leaving the committed table untouched.
     release_prefix: *const fn (owner: *anyopaque, allocator: std.mem.Allocator, written: usize) void,
@@ -399,9 +405,9 @@ fn DenseRouteAdapter(comptime Route: type) type {
             if (old_index) |index| for (self.routes.items[index].slice()) |value| replacement.next.appendAssumeCapacity(value);
         }
 
-        fn appendInputs(owner: *anyopaque, counts: []const DenseRouteCounts) void {
+        fn appendInputs(owner: *anyopaque, groups: *const DenseRouteGroupIndex) void {
             const self = recover(owner);
-            for (self.appends) |entry| self.replacements[counts[@intCast(entry.route_index)].replacement_index].next.appendAssumeCapacity(entry.value);
+            for (self.appends) |entry| self.replacements[groups.get(entry.route_index).?].next.appendAssumeCapacity(entry.value);
         }
 
         fn releasePrefix(owner: *anyopaque, allocator: std.mem.Allocator, written: usize) void {
@@ -417,97 +423,104 @@ fn DenseRouteAdapter(comptime Route: type) type {
 /// inputs per final record, allocates one typed replacement per targeted
 /// record, reserves each replacement's merged capacity, copies the survivor's
 /// existing routes, and finally appends the inputs in their original order.
-/// `original_record_ids` maps final dense IDs to the old record that survives
-/// there; a final slot without a survivor starts empty and never inherits the
-/// routes of the old occupant of that dense ID.
+/// `remap`, when present, resolves each final dense ID to the old record that
+/// survives there; a final slot without a survivor starts empty and never
+/// inherits the routes of the old occupant of that dense ID.
 ///
 /// The committed table is only read. On any failure the adapter's initialized
 /// prefix is released and the caller observes no change. Every typed operation
 /// is dispatched once per replacement group or once per plan, never per route.
-///
-/// Known cost gap (not addressed here): this planner allocates and scans a
-/// `final_count`-sized counter array, so its work is proportional to the
-/// final record count rather than to the number of appended routes. Sharing
-/// the body across route kinds neither hides nor worsens that bound; the
-/// locality repair is tracked separately.
-fn planDenseRouteAppends(allocator: std.mem.Allocator, plan: DenseRoutePlan, route_ids: RouteIndexStream, routes_len: usize, original_record_ids: ?[]const usize, final_count: usize, lookup_work: ?*usize) (std.mem.Allocator.Error || error{InvalidAppend})!void {
-    const counts = try allocator.alloc(DenseRouteCounts, final_count);
-    defer allocator.free(counts);
-    @memset(counts, .{});
-    var group_count: usize = 0;
+/// Storage and work are proportional to the appended routes and the targeted
+/// records; the final graph length only bounds the accepted ids.
+fn planDenseRouteAppends(allocator: std.mem.Allocator, plan: DenseRoutePlan, route_ids: RouteIndexStream, routes_len: usize, remap: ?*const DenseRemap, final_count: usize, lookup_work: ?*usize) (std.mem.Allocator.Error || error{InvalidAppend})!void {
+    var groups: shared_buffer.List(DenseRouteGroup) = .empty;
+    defer groups.deinit(allocator);
+    var group_index: DenseRouteGroupIndex = .empty;
+    defer group_index.deinit(allocator);
+    // Reject invalid destinations before reserving anything, then reserve
+    // once, bounded by the appended routes: a plan's allocation count does
+    // not depend on how many routes it carries.
+    for (0..route_ids.len) |position| if (route_ids.at(position) >= final_count) return error.InvalidAppend;
+    try groups.ensureTotalCapacity(allocator, route_ids.len);
+    try group_index.ensureTotalCapacity(allocator, std.math.cast(u32, route_ids.len) orelse return error.InvalidAppend);
     for (0..route_ids.len) |position| {
         const route_index = route_ids.at(position);
-        if (route_index >= final_count) return error.InvalidAppend;
-        const slot = &counts[@intCast(route_index)];
-        if (slot.append_count == 0) group_count += 1;
+        const entry = group_index.getOrPutAssumeCapacity(route_index);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = groups.items.len;
+            groups.appendAssumeCapacity(.{ .route_index = route_index });
+        }
+        const slot = &groups.items[entry.value_ptr.*];
         slot.append_count = std.math.add(usize, slot.append_count, 1) catch return error.InvalidAppend;
     }
-    try plan.ops.alloc_replacements(plan.owner, allocator, group_count);
+    try plan.ops.alloc_replacements(plan.owner, allocator, groups.items.len);
     var written: usize = 0;
     errdefer plan.ops.release_prefix(plan.owner, allocator, written);
-    for (counts, 0..) |*slot, route_index| {
-        if (slot.append_count == 0) continue;
+    for (groups.items) |slot| {
         if (lookup_work) |counter| counter.* += 1;
-        const old_index: ?usize = if (original_record_ids) |original| blk: {
-            if (route_index >= original.len) break :blk null;
-            const candidate = original[route_index];
+        const old_index: ?usize = if (remap) |mapping| blk: {
+            const candidate: usize = @intCast(mapping.originalId(slot.route_index) orelse break :blk null);
             break :blk if (candidate < routes_len) candidate else null;
-        } else if (route_index < routes_len) route_index else null;
+        } else if (slot.route_index < routes_len) @as(usize, @intCast(slot.route_index)) else null;
         const existing_len = if (old_index) |index| plan.ops.existing_len(plan.owner, index) else 0;
         const merged_len = std.math.add(usize, existing_len, slot.append_count) catch return error.InvalidAppend;
-        slot.replacement_index = written;
-        try plan.ops.prepare_replacement(plan.owner, allocator, written, @intCast(route_index), old_index, merged_len);
+        try plan.ops.prepare_replacement(plan.owner, allocator, written, slot.route_index, old_index, merged_len);
         written += 1;
     }
-    plan.ops.append_inputs(plan.owner, counts);
+    plan.ops.append_inputs(plan.owner, &group_index);
 }
 
 /// Typed entry to the shared planner: binds this route type's adapter, runs
 /// the erased body, and hands the prepared replacements to the caller. On
 /// failure nothing is owned by the returned value and the committed table is
 /// unchanged.
-fn prepareDenseRouteAppends(comptime Route: type, allocator: std.mem.Allocator, routes: *const RouteTable(Route), original_record_ids: ?[]const usize, final_count: usize, appends: []const RouteAppend(Route), lookup_work: ?*usize) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(Route) {
+fn prepareDenseRouteAppends(comptime Route: type, allocator: std.mem.Allocator, routes: *const RouteTable(Route), remap: ?*const DenseRemap, final_count: usize, appends: []const RouteAppend(Route), lookup_work: ?*usize) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(Route) {
     var adapter = DenseRouteAdapter(Route){ .routes = routes, .appends = appends };
-    try planDenseRouteAppends(allocator, adapter.bind(), RouteIndexStream.of(Route, appends), routes.items.len, original_record_ids, final_count, lookup_work);
+    try planDenseRouteAppends(allocator, adapter.bind(), RouteIndexStream.of(Route, appends), routes.items.len, remap, final_count, lookup_work);
     return .{ .replacements = adapter.replacements };
 }
 
 /// Merges new source routes against the post-retirement dense record mapping.
-pub fn prepareSourceRouteAppendsAfterRelease(allocator: std.mem.Allocator, routes: *const RouteTable(u64), final_record_ids: []const ?u64, final_source_count: usize, appends: []const RouteAppend(u64)) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(u64) {
-    const Counts = struct { append_count: usize = 0, replacement_index: usize = std.math.maxInt(usize) };
-    const counts = try allocator.alloc(Counts, final_source_count);
-    defer allocator.free(counts);
-    @memset(counts, .{});
-    var group_count: usize = 0;
+/// Only the source routes the appends target are read or copied; the retired
+/// and displaced record ids inside them resolve through the sparse `remap`.
+pub fn prepareSourceRouteAppendsAfterRelease(allocator: std.mem.Allocator, routes: *const RouteTable(u64), remap: *const DenseRemap, final_source_count: usize, appends: []const RouteAppend(u64)) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(u64) {
+    var groups: shared_buffer.List(DenseRouteGroup) = .empty;
+    defer groups.deinit(allocator);
+    var group_index: DenseRouteGroupIndex = .empty;
+    defer group_index.deinit(allocator);
+    for (appends) |entry| if (entry.route_index >= final_source_count) return error.InvalidAppend;
+    try groups.ensureTotalCapacity(allocator, appends.len);
+    try group_index.ensureTotalCapacity(allocator, std.math.cast(u32, appends.len) orelse return error.InvalidAppend);
     for (appends) |entry| {
-        if (entry.route_index >= final_source_count) return error.InvalidAppend;
-        const slot = &counts[@intCast(entry.route_index)];
-        if (slot.append_count == 0) group_count += 1;
-        slot.append_count = std.math.add(usize, slot.append_count, 1) catch return error.InvalidAppend;
+        const slot = group_index.getOrPutAssumeCapacity(entry.route_index);
+        if (!slot.found_existing) {
+            slot.value_ptr.* = groups.items.len;
+            groups.appendAssumeCapacity(.{ .route_index = entry.route_index });
+        }
+        const group = &groups.items[slot.value_ptr.*];
+        group.append_count = std.math.add(usize, group.append_count, 1) catch return error.InvalidAppend;
     }
-    const replacements = try allocator.alloc(PreparedRouteAppends(u64).Replacement, group_count);
+    const replacements = try allocator.alloc(PreparedRouteAppends(u64).Replacement, groups.items.len);
     errdefer allocator.free(replacements);
     var written: usize = 0;
     errdefer for (replacements[0..written]) |*replacement| replacement.next.deinit(allocator);
-    for (counts, 0..) |*slot, route_index| {
-        if (slot.append_count == 0) continue;
+    for (groups.items) |group| {
+        const route_index: usize = @intCast(group.route_index);
         const existing = if (route_index < routes.items.len) routes.items[route_index].slice() else &.{};
         var survivor_count: usize = 0;
         for (existing) |old_id| {
-            const old_index: usize = @intCast(old_id);
-            if (old_index >= final_record_ids.len) return error.InvalidAppend;
-            if (final_record_ids[old_index] != null) survivor_count += 1;
+            if (old_id >= remap.original_count) return error.InvalidAppend;
+            if (remap.finalId(old_id) != null) survivor_count += 1;
         }
-        const merged_len = std.math.add(usize, survivor_count, slot.append_count) catch return error.InvalidAppend;
-        replacements[written] = .{ .route_index = @intCast(route_index) };
-        slot.replacement_index = written;
+        const merged_len = std.math.add(usize, survivor_count, group.append_count) catch return error.InvalidAppend;
+        replacements[written] = .{ .route_index = group.route_index };
         written += 1;
         try replacements[written - 1].next.ensureUnusedCapacity(allocator, merged_len);
-        for (existing) |old_id| if (final_record_ids[@intCast(old_id)]) |new_id| {
+        for (existing) |old_id| if (remap.finalId(old_id)) |new_id| {
             replacements[written - 1].next.appendAssumeCapacity(new_id);
         };
     }
-    for (appends) |entry| replacements[counts[@intCast(entry.route_index)].replacement_index].next.appendAssumeCapacity(entry.value);
+    for (appends) |entry| replacements[group_index.get(entry.route_index).?].next.appendAssumeCapacity(entry.value);
     return .{ .replacements = replacements };
 }
 
@@ -1003,35 +1016,44 @@ pub fn requireRecordId(comptime Record: type, nodes: []const Node(Record), recor
 /// Emits the already-decided command that attaches a newly created render node.
 pub fn appendNode(comptime Record: type, allocator: std.mem.Allocator, nodes: *shared_buffer.List(Node(Record)), record: *Record, node_rank: u64) u64 {
     const record_id: u64 = @intCast(nodes.items.len);
+    const input_slots = signal_graph.InputSlots.init(allocator, distinctInputCount(Record, record)) catch @panic("out of memory");
     nodes.append(allocator, .{
         .record = record.retain(),
         .rank = node_rank,
+        .input_slots = input_slots,
     }) catch @panic("out of memory");
     record.active_graph_id = record_id;
     return record_id;
 }
 
-/// Appends dependent id using capacity that must already satisfy the caller's transaction contract.
-pub fn appendDependentId(comptime Record: type, allocator: std.mem.Allocator, nodes: []Node(Record), input_record_id: u64, dependent_record_id: u64) void {
-    signal_graph.appendDependent(Record, allocator, nodes, input_record_id, dependent_record_id) catch |err| switch (err) {
-        error.OutOfMemory => @panic("out of memory"),
-        error.UnknownNode => @panic("active signal dependent referenced an unknown input record"),
-        else => @panic("active signal dependent insertion missed its edge"),
-    };
+/// Appends the edge from every distinct input of `dependent_record_id` to it,
+/// recording each edge's slot at the matching input position. The inputs must
+/// already hold dense ids; ingestion appends the node first and then wires it.
+pub fn appendInputEdges(comptime Record: type, allocator: std.mem.Allocator, nodes: []Node(Record), dependent_record_id: u64) void {
+    var inputs = DistinctInputIterator(Record).init(nodes[@intCast(dependent_record_id)].record);
+    while (inputs.next()) |input| {
+        signal_graph.appendDependent(Record, allocator, nodes, requireRecordId(Record, nodes, input.record), dependent_record_id, input.position) catch |err| switch (err) {
+            error.OutOfMemory => @panic("out of memory"),
+            error.UnknownNode => @panic("active signal dependent referenced an unknown input record"),
+            else => @panic("active signal dependent insertion missed its edge"),
+        };
+    }
 }
 
-/// Removes dependent id and releases the ownership attached to that live entry.
-pub fn removeDependentId(comptime Record: type, allocator: std.mem.Allocator, nodes: []Node(Record), input_record_id: u64, dependent_record_id: u64) void {
-    signal_graph.removeDependent(Record, allocator, nodes, input_record_id, dependent_record_id) catch |err| switch (err) {
-        error.OutOfMemory => @panic("out of memory"),
+/// Drops the edge `input_record_id -> dependent_record_id` through the
+/// dependent's recorded slot at `input_position`, freeing the input's spilled
+/// adjacency once it is inline-sized. Allocation-free.
+pub fn removeDependentId(comptime Record: type, allocator: std.mem.Allocator, nodes: []Node(Record), input_record_id: u64, dependent_record_id: u64, input_position: u32) void {
+    signal_graph.removeDependent(Record, allocator, nodes, input_record_id, dependent_record_id, input_position, InputPositionResolver(Record){}) catch |err| switch (err) {
         error.UnknownNode => @panic("active signal dependent removal referenced an unknown input record"),
         else => @panic("active signal dependent removal missed its edge"),
     };
 }
 
-/// Replaces dependent id while releasing displaced ownership exactly once.
-pub fn replaceDependentId(comptime Record: type, nodes: []Node(Record), input_record_id: u64, old_dependent_id: u64, new_dependent_id: u64) void {
-    signal_graph.replaceDependent(Record, nodes, input_record_id, old_dependent_id, new_dependent_id) catch |err| switch (err) {
+/// Renumbers one edge in place through the slot stored on the dependent's
+/// node at `dependent_node_id`.
+pub fn replaceDependentId(comptime Record: type, nodes: []Node(Record), input_record_id: u64, dependent_node_id: u64, input_position: u32, old_dependent_id: u64, new_dependent_id: u64) void {
+    signal_graph.replaceDependent(Record, nodes, input_record_id, dependent_node_id, input_position, old_dependent_id, new_dependent_id) catch |err| switch (err) {
         error.UnknownNode => @panic("active signal dependent rewrite referenced an unknown input record"),
         else => @panic("active signal dependent rewrite missed its edge"),
     };
@@ -1293,6 +1315,92 @@ pub fn recordSliceContains(comptime Record: type, records: []const *Record, reco
     return false;
 }
 
+/// One distinct input of a record together with its input position: the
+/// index under which the record's node stores its adjacency slot for that
+/// input (`Node.input_slots`).
+pub fn DistinctInput(comptime Record: type) type {
+    return struct { record: *Record, position: u32 };
+}
+
+/// Enumerates a record's distinct inputs in canonical position order: `map`
+/// and selectors expose their single input, `map2` its left then right input
+/// (once when they coincide), and `combine` each child at its first
+/// occurrence. Every adjacency maintenance path derives input positions from
+/// this iterator so slots recorded at ingestion resolve identically at
+/// release, renumbering and audit time.
+pub fn DistinctInputIterator(comptime Record: type) type {
+    return struct {
+        record: *Record,
+        index: usize = 0,
+        position: u32 = 0,
+
+        /// Starts enumerating `record`'s distinct inputs from position zero.
+        pub fn init(record: *Record) @This() {
+            return .{ .record = record };
+        }
+
+        /// Returns the next distinct input, or null once every input was seen.
+        pub fn next(self: *@This()) ?DistinctInput(Record) {
+            const input: *Record = switch (self.record.payload) {
+                .ref, .const_value, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => return null,
+                .map => |payload| blk: {
+                    if (self.index != 0) return null;
+                    break :blk payload.input;
+                },
+                .select, .keyed_select => |payload| blk: {
+                    if (self.index != 0) return null;
+                    break :blk payload.input;
+                },
+                .map2 => |payload| blk: {
+                    if (self.index == 0) break :blk payload.left;
+                    if (self.index == 1 and payload.right != payload.left) break :blk payload.right;
+                    return null;
+                },
+                .combine => |payload| blk: {
+                    while (self.index < payload.children.len) : (self.index += 1) {
+                        const child = payload.children[self.index];
+                        if (!recordSliceContains(Record, payload.children[0..self.index], child)) break :blk child;
+                    }
+                    return null;
+                },
+            };
+            self.index += 1;
+            const position = self.position;
+            self.position += 1;
+            return .{ .record = input, .position = position };
+        }
+    };
+}
+
+/// Counts a record's distinct inputs: the arity of its `InputSlots`.
+pub fn distinctInputCount(comptime Record: type, record: *Record) usize {
+    var count: usize = 0;
+    var inputs = DistinctInputIterator(Record).init(record);
+    while (inputs.next()) |_| count += 1;
+    return count;
+}
+
+/// Resolves the input position under which `record` reads `input`. Cost is
+/// the record's own arity; a record that does not read `input` is a wiring
+/// defect.
+pub fn recordInputPosition(comptime Record: type, record: *Record, input: *const Record) u32 {
+    var inputs = DistinctInputIterator(Record).init(record);
+    while (inputs.next()) |entry| if (entry.record == input) return entry.position;
+    @panic("active signal graph record does not read the given input");
+}
+
+/// Adapts `inputPosition` to the dense-id interface `signal_graph` uses when a
+/// swap-removed edge moves another dependent's id into the vacated slot.
+pub fn InputPositionResolver(comptime Record: type) type {
+    return struct {
+        /// Resolves the position under which the dependent at `dependent_id`
+        /// reads the input at `input_id`; both are dense ids into `nodes`.
+        pub fn inputPosition(_: @This(), nodes: []const Node(Record), dependent_id: u64, input_id: u64) u32 {
+            return recordInputPosition(Record, nodes[@intCast(dependent_id)].record, nodes[@intCast(input_id)].record);
+        }
+    };
+}
+
 /// Appends input records using capacity that must already satisfy the caller's transaction contract.
 pub fn appendInputRecords(comptime Record: type, allocator: std.mem.Allocator, records: *shared_buffer.List(*Record), record: *Record) void {
     switch (record.payload) {
@@ -1374,24 +1482,10 @@ pub fn retainRecord(
         .const_value, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source => {},
         .row_source => hooks.ensureRowSource(record),
         .interval_source => |payload| hooks.ensureInterval(record.token().?, payload.period_ms),
-        .map => |payload| appendDependentId(Record, allocator, nodes.items, requireRecordId(Record, nodes.items, payload.input), record_id),
-        .select, .keyed_select => |payload| {
-            appendDependentId(Record, allocator, nodes.items, requireRecordId(Record, nodes.items, payload.input), record_id);
-            hooks.ensureSelector(payload.input, payload.key, record);
-        },
-        .map2 => |payload| {
-            appendDependentId(Record, allocator, nodes.items, requireRecordId(Record, nodes.items, payload.left), record_id);
-            if (payload.right != payload.left) {
-                appendDependentId(Record, allocator, nodes.items, requireRecordId(Record, nodes.items, payload.right), record_id);
-            }
-        },
-        .combine => |payload| {
-            for (payload.children, 0..) |child, index| {
-                if (recordSliceContains(Record, payload.children[0..index], child)) continue;
-                appendDependentId(Record, allocator, nodes.items, requireRecordId(Record, nodes.items, child), record_id);
-            }
-        },
+        .select, .keyed_select => |payload| hooks.ensureSelector(payload.input, payload.key, record),
+        .map, .map2, .combine => {},
     }
+    appendInputEdges(Record, allocator, nodes.items, record_id);
 
     return records_rebuilt;
 }
@@ -1402,12 +1496,102 @@ pub const PreparedReleaseStep = struct {
     moved_record_id: ?u64,
 };
 
+/// A survivor input whose adjacency list a prepared transaction replaces at
+/// commit. `record_id` is the input's original dense id. A compaction
+/// (`rewrite_slots`) holds the survivors with final ids at live size and
+/// must rewrite their recorded slots; a capacity clone made for an append
+/// preserves the live prefix, so slots and the planned in-place edits still
+/// apply to it. After `applyAdjacency`, `dependents` holds the displaced list
+/// until `deinit` frees it.
 pub const PreparedAdjacencyReplacement = struct {
     record_id: u64,
     dependents: signal_graph.OwnedAdjacency,
+    rewrite_slots: bool,
+};
+
+/// One edge a prepared release drops in place: a retired dependent's edge
+/// into a survivor input, addressed through the dependent's recorded slot.
+pub const PreparedEdgeDrop = struct {
+    input_id: u64,
+    dependent_id: u64,
+    position: u32,
+};
+
+/// One edge whose dependent id changes in place because that dependent
+/// survives in a new dense slot after the retired records are removed.
+pub const PreparedEdgeRenumber = struct {
+    input_id: u64,
+    dependent_id: u64,
+    final_id: u64,
+    position: u32,
+};
+
+/// Counters a preparation step reports to focused tests: `records` is every
+/// committed graph record inspected, `edges` every adjacency entry read, and
+/// `lookups` every record outside the committed graph resolved. Production
+/// callers pass no counter; the counts exist so a test can prove that
+/// preparation touched only the affected records rather than the whole graph.
+pub const PreparationWork = struct {
+    records: usize = 0,
+    edges: usize = 0,
+    lookups: usize = 0,
+};
+
+/// Sparse description of how a prepared release renumbers dense graph ids.
+///
+/// Only retired records and the survivors a swap-removal displaced have
+/// entries; every other id keeps its slot. A survivor whose original id is
+/// below `survivor_count` never moves (it is never the last live slot), so an
+/// id without an entry maps to itself in both directions. Storage and lookups
+/// are therefore proportional to the retired set, not to the graph.
+pub const DenseRemap = struct {
+    /// Original dense id to its final id, or null when the record retires.
+    moved: std.AutoHashMapUnmanaged(u64, ?u64) = .empty,
+    /// Final dense id to the original id of the displaced survivor now there.
+    inverse: std.AutoHashMapUnmanaged(u64, u64) = .empty,
+    /// Committed graph length the remap was prepared against.
+    original_count: usize,
+    /// Graph length once the retired records are removed.
+    survivor_count: usize,
+
+    /// A remap for a graph of `count` records in which nothing retires or moves.
+    pub fn identity(count: usize) DenseRemap {
+        return .{ .original_count = count, .survivor_count = count };
+    }
+
+    /// Releases the sparse tables.
+    pub fn deinit(self: *DenseRemap, allocator: std.mem.Allocator) void {
+        self.moved.deinit(allocator);
+        self.inverse.deinit(allocator);
+        self.* = undefined;
+    }
+
+    /// Resolves a committed record's final dense id, or null once it retires.
+    /// An id outside the committed graph is a caller defect.
+    pub fn finalId(self: *const DenseRemap, original_id: u64) ?u64 {
+        if (original_id >= self.original_count) @panic("dense remap queried an id outside the committed graph");
+        if (self.moved.get(original_id)) |final| return final;
+        return original_id;
+    }
+
+    /// Resolves the committed record that will occupy `final_id`, or null when
+    /// that slot is beyond the survivors (a slot a later append will fill).
+    pub fn originalId(self: *const DenseRemap, final_id: u64) ?u64 {
+        if (final_id >= self.survivor_count) return null;
+        return self.inverse.get(final_id) orelse final_id;
+    }
 };
 
 /// Owns a read-only simulation of recursive active-record release and dense remaps.
+///
+/// Adjacency edits are planned per edge: each retired record's edge into a
+/// survivor input is dropped through the dependent's recorded slot, and each
+/// displaced survivor's edges are renumbered through the same slots, so the
+/// prepared work and the commit are O(affected edges), never O(fan-out) of a
+/// hot shared input. A survivor input whose spilled storage would keep more
+/// than four times its live entries is instead rebuilt at its live size (a
+/// compaction in `replacements`), which keeps retained capacity bounded while
+/// staying amortized O(1) per dropped edge.
 pub fn PreparedReleaseClosure(comptime Record: type) type {
     return struct {
         const Phase = enum {
@@ -1419,15 +1603,27 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
 
         records: []*Record,
         steps: []PreparedReleaseStep,
-        final_record_ids: []?u64,
-        /// Direct inverse for every surviving dense id: final id to the
-        /// committed record index that occupied it before this release.
-        original_record_ids: []usize,
+        /// Sparse id renumbering the append and route planners resolve against.
+        remap: DenseRemap,
         /// Use-count decrements owed to survivors whose count drops but never
         /// reaches zero once the same transaction's retains are netted in.
         survivor_use_decrements: []ExistingUseIncrement,
-        adjacency: []PreparedAdjacencyReplacement,
-        retired_adjacency: []signal_graph.OwnedAdjacency,
+        /// Edges dropped in place at `applyAdjacency`, one per retired record
+        /// and survivor input; compacted inputs are excluded.
+        edge_drops: []PreparedEdgeDrop,
+        /// Edges renumbered in place for displaced survivors; compacted inputs
+        /// are excluded because their rebuilt lists already carry final ids.
+        edge_renumbers: []PreparedEdgeRenumber,
+        /// Survivor inputs whose lists are replaced at commit: release
+        /// compactions, plus capacity clones the same transaction's append
+        /// requested through `reserveAdjacencyForAppend`.
+        replacements: shared_buffer.List(PreparedAdjacencyReplacement),
+        /// Original input id to its index in `replacements`.
+        replacement_index: std.AutoHashMapUnmanaged(u64, usize),
+        /// Survivor inputs edited in place; their spilled storage is released
+        /// after publication if the drops (net of the same transaction's
+        /// appends) left it inline-sized.
+        trimmed_inputs: []*Record,
         retired_nodes: []Node(Record),
         retired_text_routes: []SmallRouteList(TextSink),
         retired_bool_routes: []SmallRouteList(BoolSink),
@@ -1435,19 +1631,42 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
         retired_structural_routes: []SmallRouteList(StructuralSink),
         phase: Phase = .prepared,
 
+        /// A release that retires nothing from a graph of `count` records, for
+        /// appends that follow no removal. Owns no storage, so `deinit` is a
+        /// formality and every commit step is a no-op.
+        pub fn none(count: usize) @This() {
+            return .{
+                .records = &.{},
+                .steps = &.{},
+                .remap = DenseRemap.identity(count),
+                .survivor_use_decrements = &.{},
+                .edge_drops = &.{},
+                .edge_renumbers = &.{},
+                .replacements = .empty,
+                .replacement_index = .empty,
+                .trimmed_inputs = &.{},
+                .retired_nodes = &.{},
+                .retired_text_routes = &.{},
+                .retired_bool_routes = &.{},
+                .retired_change_routes = &.{},
+                .retired_structural_routes = &.{},
+            };
+        }
+
         /// Releases preparation storage without changing graph state.
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
             allocator.free(self.records);
             allocator.free(self.steps);
-            allocator.free(self.final_record_ids);
-            allocator.free(self.original_record_ids);
+            self.remap.deinit(allocator);
             allocator.free(self.survivor_use_decrements);
-            switch (self.phase) {
-                .prepared => for (self.adjacency) |*replacement| replacement.dependents.deinit(allocator),
-                .adjacency_committed, .dense_committed, .retired_released => for (self.retired_adjacency) |*items| items.deinit(allocator),
-            }
-            allocator.free(self.adjacency);
-            allocator.free(self.retired_adjacency);
+            allocator.free(self.edge_drops);
+            allocator.free(self.edge_renumbers);
+            // Before commit each entry owns the prepared list; afterwards it
+            // owns the list the commit displaced. Both are freed here.
+            for (self.replacements.items) |*replacement| replacement.dependents.deinit(allocator);
+            self.replacements.deinit(allocator);
+            self.replacement_index.deinit(allocator);
+            allocator.free(self.trimmed_inputs);
             if (self.phase == .dense_committed) @panic("committed graph retirement was not finalized");
             allocator.free(self.retired_nodes);
             allocator.free(self.retired_text_routes);
@@ -1457,15 +1676,56 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
             self.* = undefined;
         }
 
-        /// Swaps every prepared survivor/remap adjacency slice without allocation.
+        /// Guarantees that survivor `final_input_id` can take `extra` more
+        /// dependents at commit without allocating. A list this release
+        /// already replaces is grown in place (it is transaction-owned); a
+        /// live list with room needs nothing; a full live list is cloned with
+        /// geometric headroom and installed at `applyAdjacency`, so committed
+        /// state is untouched until commit and a refusal leaks nothing. The
+        /// clone costs O(live) but follows at least that many appends, so an
+        /// added edge stays amortized O(1); `work` counts the entries copied.
+        pub fn reserveAdjacencyForAppend(self: *@This(), allocator: std.mem.Allocator, nodes: []const Node(Record), final_input_id: u64, extra: usize, work: ?*PreparationWork) (std.mem.Allocator.Error || error{InvalidAppend})!void {
+            if (self.phase != .prepared) @panic("release adjacency was reserved after commit");
+            const original_id = self.remap.originalId(final_input_id) orelse return error.InvalidAppend;
+            if (self.replacement_index.get(original_id)) |index| {
+                return self.replacements.items[index].dependents.ensureUnusedCapacity(allocator, extra);
+            }
+            const live = &nodes[@intCast(original_id)].dependents;
+            if (live.unusedCapacity() >= extra) return;
+            if (work) |counter| counter.edges += live.len();
+            try self.replacements.ensureUnusedCapacity(allocator, 1);
+            try self.replacement_index.ensureUnusedCapacity(allocator, 1);
+            var clone = try live.cloneWithCapacity(allocator, extra);
+            errdefer clone.deinit(allocator);
+            self.replacement_index.putAssumeCapacity(original_id, self.replacements.items.len);
+            self.replacements.appendAssumeCapacity(.{ .record_id = original_id, .dependents = clone, .rewrite_slots = false });
+        }
+
+        /// Applies every prepared adjacency edit without allocation: installs
+        /// compacted lists and rewrites their survivors' slots, drops retired
+        /// edges by swap-remove, then renumbers displaced survivors' edges.
+        /// Runs against original dense ids, before `applyDense`.
         pub fn applyAdjacency(self: *@This(), nodes: []Node(Record)) void {
             if (self.phase != .prepared) @panic("release closure adjacency was already committed");
-            for (self.adjacency, self.retired_adjacency) |*replacement, *retired| {
+            for (self.replacements.items) |*replacement| {
                 const index: usize = @intCast(replacement.record_id);
                 if (index >= nodes.len) @panic("prepared adjacency referenced an unknown record");
-                retired.* = nodes[index].dependents;
+                const displaced = nodes[index].dependents;
                 nodes[index].dependents = replacement.dependents;
-                replacement.dependents = .empty;
+                replacement.dependents = displaced;
+                if (!replacement.rewrite_slots) continue;
+                const input_record = nodes[index].record;
+                for (nodes[index].dependents.slice(), 0..) |final_dependent, slot| {
+                    const original_dependent = self.remap.originalId(final_dependent) orelse @panic("compacted adjacency listed a dependent outside the survivors");
+                    const dependent = &nodes[@intCast(original_dependent)];
+                    dependent.input_slots.set(recordInputPosition(Record, dependent.record, input_record), @intCast(slot));
+                }
+            }
+            for (self.edge_drops) |drop| {
+                signal_graph.unlinkDependent(Record, nodes, drop.input_id, drop.dependent_id, drop.position, InputPositionResolver(Record){}) catch @panic("prepared edge drop no longer matched the graph");
+            }
+            for (self.edge_renumbers) |edit| {
+                signal_graph.replaceDependent(Record, nodes, edit.input_id, edit.dependent_id, edit.position, edit.dependent_id, edit.final_id) catch @panic("prepared edge renumber no longer matched the graph");
             }
             self.phase = .adjacency_committed;
         }
@@ -1482,15 +1742,21 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
                 if (record.active_use_count < decrement.count) @panic("prepared survivor use decrement underflowed a live record");
                 record.active_use_count -= decrement.count;
             }
-            for (source_routes.items) |*route| {
-                var write: usize = 0;
-                const items = route.mutableSlice();
-                for (items) |old_id| {
-                    const next_id = self.final_record_ids[@intCast(old_id)] orelse continue;
-                    items[write] = next_id;
-                    write += 1;
+            // Source routes are keyed by source node, and only `ref` records
+            // occupy them, so the retired and displaced refs name exactly the
+            // route entries that change.
+            for (self.records) |record| switch (record.payload) {
+                .ref => |source_node_id| removeSourceRoute(source_routes, source_node_id, record.active_graph_id.?),
+                else => {},
+            };
+            var displaced = self.remap.inverse.iterator();
+            while (displaced.next()) |entry| {
+                const original_id = entry.value_ptr.*;
+                const final_id = entry.key_ptr.*;
+                switch (nodes.items[@intCast(original_id)].record.payload) {
+                    .ref => |source_node_id| replaceSourceRouteId(source_routes, source_node_id, original_id, final_id),
+                    else => {},
                 }
-                while (route.len() > write) _ = route.swapRemove(route.len() - 1);
             }
             var live_len = nodes.items.len;
             for (self.steps, 0..) |step, step_index| {
@@ -1541,12 +1807,21 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
 
         /// Releases every retired record after the dense graph committed:
         /// frees its adjacency, removes its interval registration through
-        /// `hooks`, and hands the record itself to `hooks.releaseRecord`.
-        pub fn releaseRetired(self: *@This(), allocator: std.mem.Allocator, hooks: anytype) void {
+        /// `hooks`, and hands the record itself to `hooks.releaseRecord`. Also
+        /// trims the survivor inputs edited in place; this runs after the
+        /// same transaction's append published, so a list it grew is never
+        /// trimmed underneath it. `nodes` is the published graph.
+        pub fn releaseRetired(self: *@This(), allocator: std.mem.Allocator, nodes: []Node(Record), hooks: anytype) void {
             if (self.phase != .dense_committed) @panic("retired graph ownership release order was invalid");
+            for (self.trimmed_inputs) |input| {
+                const input_id = input.active_graph_id orelse @panic("trimmed adjacency input lost its dense id");
+                nodes[@intCast(input_id)].dependents.trim(allocator);
+            }
             for (self.retired_nodes) |node| {
                 var dependents = node.dependents;
                 dependents.deinit(allocator);
+                var input_slots = node.input_slots;
+                input_slots.deinit(allocator);
                 switch (node.record.payload) {
                     .interval_source => hooks.removeInterval(node.record.token().?),
                     else => {},
@@ -1564,12 +1839,22 @@ pub fn PreparedReleaseClosure(comptime Record: type) type {
 
 pub const ExistingUseIncrement = struct { record_id: u64, count: usize };
 
-pub const SurvivorAdjacencyAppend = struct {
-    record_id: u64,
-    dependents: signal_graph.OwnedAdjacency,
+/// One edge a prepared append adds from a survivor input (final dense id) to
+/// a new record, appended into capacity reserved during preparation.
+pub const SurvivorEdgeAppend = struct {
+    input_id: u64,
+    dependent_id: u64,
+    position: u32,
 };
 
 /// Owns read-only topology and use-count decisions for replacement records.
+///
+/// Edges between new records are built in the new nodes during preparation.
+/// Edges from survivor inputs are recorded one per edge and appended at
+/// `commitNodes` into capacity reserved on the input's list (through the
+/// release closure's `reserveAdjacencyForAppend`), so adding a row that reads
+/// a hot shared signal costs O(1) amortized on that signal, not a copy of its
+/// fan-out on every append.
 pub fn PreparedGraphAppend(comptime Record: type) type {
     return struct {
         const Phase = enum { prepared, committed };
@@ -1579,10 +1864,8 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
         ranks: []u64,
         use_counts: []usize,
         existing_use_increments: []ExistingUseIncrement,
-        survivor_adjacency: []SurvivorAdjacencyAppend,
+        survivor_edges: []SurvivorEdgeAppend,
         new_nodes: []Node(Record),
-        retired_adjacency: []signal_graph.OwnedAdjacency,
-        final_existing_record_ids: []?u64,
         survivor_count: usize,
         phase: Phase = .prepared,
 
@@ -1668,11 +1951,12 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
         }
 
         /// Resolves a record to the dense id it will have after publication.
-        pub fn plannedRecordId(self: *const @This(), original_nodes: []const Node(Record), record: *const Record) ?u64 {
+        /// `remap` is the release remap this append was prepared against.
+        pub fn plannedRecordId(self: *const @This(), remap: *const DenseRemap, original_nodes: []const Node(Record), record: *const Record) ?u64 {
             if (record.active_graph_id) |original_id| {
                 const index: usize = @intCast(original_id);
                 if (index >= original_nodes.len or original_nodes[index].record != record) return null;
-                return self.final_existing_record_ids[index];
+                return remap.finalId(original_id);
             }
             for (self.records, self.record_ids) |planned, id| if (planned == record) return id;
             return null;
@@ -1684,17 +1968,13 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
         }
 
         /// Publishes prepared nodes, edges, ids, and use counts without allocating.
+        /// Must follow the release closure's `applyDense`, so survivor lists
+        /// (including compacted ones) are the lists whose capacity was reserved.
         pub fn commitNodes(self: *@This(), nodes: *shared_buffer.List(Node(Record))) void {
             if (self.phase != .prepared or nodes.items.len != self.survivor_count) @panic("replacement graph publication violated its prepared snapshot");
             for (self.existing_use_increments) |increment| {
                 const record = nodes.items[@intCast(increment.record_id)].record;
                 record.active_use_count += increment.count;
-            }
-            for (self.survivor_adjacency, self.retired_adjacency) |*replacement, *retired| {
-                const index: usize = @intCast(replacement.record_id);
-                retired.* = nodes.items[index].dependents;
-                nodes.items[index].dependents = replacement.dependents;
-                replacement.dependents = .empty;
             }
             for (self.new_nodes, self.record_ids, self.use_counts) |*node, id, uses| {
                 _ = node.record.retain();
@@ -1702,6 +1982,10 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
                 node.record.active_use_count = uses;
                 nodes.appendAssumeCapacity(node.*);
                 node.dependents = .empty;
+                node.input_slots = .empty;
+            }
+            for (self.survivor_edges) |edge| {
+                signal_graph.appendDependentAssumeCapacity(Record, nodes.items, edge.input_id, edge.dependent_id, edge.position) catch @panic("prepared survivor edge referenced an unknown record");
             }
             self.phase = .committed;
         }
@@ -1713,36 +1997,64 @@ pub fn PreparedGraphAppend(comptime Record: type) type {
             allocator.free(self.ranks);
             allocator.free(self.use_counts);
             allocator.free(self.existing_use_increments);
-            for (self.survivor_adjacency) |*replacement| replacement.dependents.deinit(allocator);
-            allocator.free(self.survivor_adjacency);
-            for (self.new_nodes) |*node| node.dependents.deinit(allocator);
+            allocator.free(self.survivor_edges);
+            for (self.new_nodes) |*node| {
+                node.dependents.deinit(allocator);
+                node.input_slots.deinit(allocator);
+            }
             allocator.free(self.new_nodes);
-            for (self.retired_adjacency) |*retired| retired.deinit(allocator);
-            allocator.free(self.retired_adjacency);
-            allocator.free(self.final_existing_record_ids);
             self.* = undefined;
         }
     };
 }
 
 /// Resolves survivor records and topologically enumerates only missing records.
-pub fn prepareGraphAppend(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), final_record_ids: []const ?u64, roots: []const *Record) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedGraphAppend(Record) {
-    return prepareGraphAppendWithWork(Record, allocator, nodes, final_record_ids, roots, null);
+///
+/// `release` is the release closure prepared for the same transaction (or
+/// `PreparedReleaseClosure.none` when nothing retires): the append resolves ids
+/// through its remap and asks it to reserve adjacency capacity for the edges
+/// the append adds, so the commit sequence stays allocation-free and a refused
+/// transaction leaves the committed graph untouched.
+pub fn prepareGraphAppend(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), release: *PreparedReleaseClosure(Record), roots: []const *Record) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedGraphAppend(Record) {
+    return prepareGraphAppendWithWork(Record, allocator, nodes, release, roots, null);
 }
 
-fn prepareGraphAppendWithWork(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), final_record_ids: []const ?u64, roots: []const *Record, lookup_work: ?*usize) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedGraphAppend(Record) {
-    if (lookup_work) |work| work.* = 0;
-    if (final_record_ids.len != nodes.len) return error.InvalidAppend;
-    var survivor_count: usize = 0;
-    for (final_record_ids) |final_id| {
-        if (final_id) |id| {
-            const next = std.math.add(usize, @intCast(id), 1) catch return error.InvalidAppend;
-            survivor_count = @max(survivor_count, next);
-        }
+/// Sparse per-original-record counter used while planning: the map holds only
+/// records the plan touched and `order` remembers first-touch order so the
+/// published increment list is deterministic.
+const TouchedCounts = struct {
+    counts: std.AutoHashMapUnmanaged(u64, usize) = .empty,
+    order: shared_buffer.List(u64) = .empty,
+
+    fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        self.counts.deinit(allocator);
+        self.order.deinit(allocator);
     }
-    const existing_counts = try allocator.alloc(usize, nodes.len);
-    defer allocator.free(existing_counts);
-    @memset(existing_counts, 0);
+
+    fn add(self: *@This(), allocator: std.mem.Allocator, key: u64, amount: usize) std.mem.Allocator.Error!bool {
+        try self.order.ensureUnusedCapacity(allocator, 1);
+        const entry = try self.counts.getOrPut(allocator, key);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = 0;
+            self.order.appendAssumeCapacity(key);
+        }
+        const next = std.math.add(usize, entry.value_ptr.*, amount) catch return false;
+        entry.value_ptr.* = next;
+        return true;
+    }
+
+    fn get(self: *const @This(), key: u64) usize {
+        return self.counts.get(key) orelse 0;
+    }
+};
+
+fn prepareGraphAppendWithWork(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), release: *PreparedReleaseClosure(Record), roots: []const *Record, work: ?*PreparationWork) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedGraphAppend(Record) {
+    if (work) |counter| counter.* = .{};
+    const remap = &release.remap;
+    if (remap.original_count != nodes.len) return error.InvalidAppend;
+    const survivor_count = remap.survivor_count;
+    var existing_counts: TouchedCounts = .{};
+    defer existing_counts.deinit(allocator);
     var records: shared_buffer.List(*Record) = .empty;
     errdefer records.deinit(allocator);
     var ranks: shared_buffer.List(u64) = .empty;
@@ -1753,36 +2065,37 @@ fn prepareGraphAppendWithWork(comptime Record: type, allocator: std.mem.Allocato
     defer new_record_indexes.deinit(allocator);
 
     const Builder = struct {
-        fn retain(record: *Record, prepare_allocator: std.mem.Allocator, graph_nodes: []const Node(Record), mapping: []const ?u64, survivor_len: usize, existing: []usize, new_records: *shared_buffer.List(*Record), new_ranks: *shared_buffer.List(u64), new_uses: *shared_buffer.List(usize), indexes: *std.AutoHashMapUnmanaged(*Record, usize), work: ?*usize) (std.mem.Allocator.Error || error{InvalidAppend})!struct { id: u64, rank: u64 } {
+        fn retain(record: *Record, prepare_allocator: std.mem.Allocator, graph_nodes: []const Node(Record), mapping: *const DenseRemap, existing: *TouchedCounts, new_records: *shared_buffer.List(*Record), new_ranks: *shared_buffer.List(u64), new_uses: *shared_buffer.List(usize), indexes: *std.AutoHashMapUnmanaged(*Record, usize), counter: ?*PreparationWork) (std.mem.Allocator.Error || error{InvalidAppend})!struct { id: u64, rank: u64 } {
             if (record.active_graph_id) |original_id| {
                 const index: usize = @intCast(original_id);
                 if (index >= graph_nodes.len or graph_nodes[index].record != record) return error.InvalidAppend;
-                const final_id = mapping[index] orelse return error.InvalidAppend;
-                existing[index] = std.math.add(usize, existing[index], 1) catch return error.InvalidAppend;
+                if (counter) |c| c.records += 1;
+                const final_id = mapping.finalId(original_id) orelse return error.InvalidAppend;
+                if (!try existing.add(prepare_allocator, original_id, 1)) return error.InvalidAppend;
                 return .{ .id = final_id, .rank = graph_nodes[index].rank };
             }
-            if (work) |count| count.* += 1;
+            if (counter) |c| c.lookups += 1;
             if (indexes.get(record)) |index| {
                 new_uses.items[index] = std.math.add(usize, new_uses.items[index], 1) catch return error.InvalidAppend;
-                return .{ .id = @intCast(survivor_len + index), .rank = new_ranks.items[index] };
+                return .{ .id = @intCast(mapping.survivor_count + index), .rank = new_ranks.items[index] };
             }
             var new_rank: u64 = 0;
             switch (record.payload) {
-                .map => |payload| new_rank = std.math.add(u64, (try retain(payload.input, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses, indexes, work)).rank, 1) catch return error.InvalidAppend,
-                .select, .keyed_select => |payload| new_rank = std.math.add(u64, (try retain(payload.input, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses, indexes, work)).rank, 1) catch return error.InvalidAppend,
+                .map => |payload| new_rank = std.math.add(u64, (try retain(payload.input, prepare_allocator, graph_nodes, mapping, existing, new_records, new_ranks, new_uses, indexes, counter)).rank, 1) catch return error.InvalidAppend,
+                .select, .keyed_select => |payload| new_rank = std.math.add(u64, (try retain(payload.input, prepare_allocator, graph_nodes, mapping, existing, new_records, new_ranks, new_uses, indexes, counter)).rank, 1) catch return error.InvalidAppend,
                 .map2 => |payload| {
-                    const left = try retain(payload.left, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses, indexes, work);
-                    const right = if (payload.right == payload.left) left else try retain(payload.right, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses, indexes, work);
+                    const left = try retain(payload.left, prepare_allocator, graph_nodes, mapping, existing, new_records, new_ranks, new_uses, indexes, counter);
+                    const right = if (payload.right == payload.left) left else try retain(payload.right, prepare_allocator, graph_nodes, mapping, existing, new_records, new_ranks, new_uses, indexes, counter);
                     new_rank = std.math.add(u64, @max(left.rank, right.rank), 1) catch return error.InvalidAppend;
                 },
                 .combine => |payload| for (payload.children, 0..) |child, child_index| {
                     if (recordSliceContains(Record, payload.children[0..child_index], child)) continue;
-                    const child_rank = std.math.add(u64, (try retain(child, prepare_allocator, graph_nodes, mapping, survivor_len, existing, new_records, new_ranks, new_uses, indexes, work)).rank, 1) catch return error.InvalidAppend;
+                    const child_rank = std.math.add(u64, (try retain(child, prepare_allocator, graph_nodes, mapping, existing, new_records, new_ranks, new_uses, indexes, counter)).rank, 1) catch return error.InvalidAppend;
                     new_rank = @max(new_rank, child_rank);
                 },
                 .ref, .const_value, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
             }
-            const id: u64 = @intCast(std.math.add(usize, survivor_len, new_records.items.len) catch return error.InvalidAppend);
+            const id: u64 = @intCast(std.math.add(usize, mapping.survivor_count, new_records.items.len) catch return error.InvalidAppend);
             try new_records.append(prepare_allocator, record);
             try new_ranks.append(prepare_allocator, new_rank);
             try new_uses.append(prepare_allocator, 1);
@@ -1790,15 +2103,15 @@ fn prepareGraphAppendWithWork(comptime Record: type, allocator: std.mem.Allocato
             return .{ .id = id, .rank = new_rank };
         }
     };
-    for (roots) |root| _ = try Builder.retain(root, allocator, nodes, final_record_ids, survivor_count, existing_counts, &records, &ranks, &uses, &new_record_indexes, lookup_work);
+    for (roots) |root| _ = try Builder.retain(root, allocator, nodes, remap, &existing_counts, &records, &ranks, &uses, &new_record_indexes, work);
 
-    var increments: shared_buffer.List(ExistingUseIncrement) = .empty;
-    errdefer increments.deinit(allocator);
-    try increments.ensureTotalCapacity(allocator, nodes.len);
-    for (existing_counts, final_record_ids, nodes) |count, final_id, node| if (count != 0) {
-        _ = std.math.add(usize, node.record.active_use_count, count) catch return error.InvalidAppend;
-        increments.appendAssumeCapacity(.{ .record_id = final_id orelse return error.InvalidAppend, .count = count });
-    };
+    const owned_increments = try allocator.alloc(ExistingUseIncrement, existing_counts.order.items.len);
+    errdefer allocator.free(owned_increments);
+    for (owned_increments, existing_counts.order.items) |*increment, original_id| {
+        const count = existing_counts.get(original_id);
+        _ = std.math.add(usize, nodes[@intCast(original_id)].record.active_use_count, count) catch return error.InvalidAppend;
+        increment.* = .{ .record_id = remap.finalId(original_id) orelse return error.InvalidAppend, .count = count };
+    }
     const owned_records = try records.toOwnedSlice(allocator);
     errdefer allocator.free(owned_records);
     const record_ids = try allocator.alloc(u64, owned_records.len);
@@ -1808,103 +2121,63 @@ fn prepareGraphAppendWithWork(comptime Record: type, allocator: std.mem.Allocato
     errdefer allocator.free(owned_ranks);
     const owned_uses = try uses.toOwnedSlice(allocator);
     errdefer allocator.free(owned_uses);
-    const owned_increments = try increments.toOwnedSlice(allocator);
-    errdefer allocator.free(owned_increments);
-    const total_count = std.math.add(usize, survivor_count, owned_records.len) catch return error.InvalidAppend;
-    const adjacency_lists = try allocator.alloc(signal_graph.OwnedAdjacency, total_count);
-    defer allocator.free(adjacency_lists);
-    @memset(adjacency_lists, .empty);
-    const adjacency_touched = try allocator.alloc(bool, survivor_count);
-    defer allocator.free(adjacency_touched);
-    @memset(adjacency_touched, false);
-    const final_to_original = try allocator.alloc(usize, survivor_count);
-    defer allocator.free(final_to_original);
-    @memset(final_to_original, std.math.maxInt(usize));
-    for (final_record_ids, 0..) |final_id, original_index| if (final_id) |id| {
-        const final_index: usize = @intCast(id);
-        if (final_index >= final_to_original.len or final_to_original[final_index] != std.math.maxInt(usize)) return error.InvalidAppend;
-        final_to_original[final_index] = original_index;
-    };
-    errdefer for (adjacency_lists) |*list| list.deinit(allocator);
-    const EdgeBuilder = struct {
-        fn resolvedRecordId(target: *Record, original_nodes: []const Node(Record), mapping: []const ?u64, survivor_len: usize, appended: *const std.AutoHashMapUnmanaged(*Record, usize), work: ?*usize) error{InvalidAppend}!u64 {
-            if (target.active_graph_id) |original_id| {
-                const index: usize = @intCast(original_id);
-                if (index >= original_nodes.len or original_nodes[index].record != target) return error.InvalidAppend;
-                return mapping[index] orelse return error.InvalidAppend;
+    const new_lists = try allocator.alloc(signal_graph.OwnedAdjacency, owned_records.len);
+    defer allocator.free(new_lists);
+    @memset(new_lists, .empty);
+    errdefer for (new_lists) |*list| list.deinit(allocator);
+    const new_slots = try allocator.alloc(signal_graph.InputSlots, owned_records.len);
+    defer allocator.free(new_slots);
+    @memset(new_slots, .empty);
+    errdefer for (new_slots) |*slots| slots.deinit(allocator);
+    for (new_slots, owned_records) |*slots, record| slots.* = try signal_graph.InputSlots.init(allocator, distinctInputCount(Record, record));
+    // Survivor inputs gain edges in place: one planned edge each, plus one
+    // capacity reservation per survivor input touched.
+    var survivor_edges: shared_buffer.List(SurvivorEdgeAppend) = .empty;
+    errdefer survivor_edges.deinit(allocator);
+    var survivor_extra: TouchedCounts = .{};
+    defer survivor_extra.deinit(allocator);
+    for (owned_records, record_ids, 0..) |record, dependent_id, dependent_index| {
+        var inputs = DistinctInputIterator(Record).init(record);
+        while (inputs.next()) |input| {
+            // A record outside the committed graph is one this append introduces.
+            const original_id = input.record.active_graph_id orelse {
+                if (work) |c| c.lookups += 1;
+                const index = new_record_indexes.get(input.record) orelse return error.InvalidAppend;
+                const slot = try new_lists[index].append(allocator, dependent_id);
+                new_slots[dependent_index].set(input.position, slot);
+                continue;
+            };
+            const original_index: usize = @intCast(original_id);
+            if (original_index >= nodes.len or nodes[original_index].record != input.record) return error.InvalidAppend;
+            const final_id = remap.finalId(original_id) orelse return error.InvalidAppend;
+            if (work) |c| {
+                c.records += 1;
+                c.edges += 1;
             }
-            if (work) |count| count.* += 1;
-            const index = appended.get(target) orelse return error.InvalidAppend;
-            return @intCast(std.math.add(usize, survivor_len, index) catch return error.InvalidAppend);
+            if (!try survivor_extra.add(allocator, final_id, 1)) return error.InvalidAppend;
+            try survivor_edges.append(allocator, .{ .input_id = final_id, .dependent_id = dependent_id, .position = input.position });
         }
-
-        fn append(input: *Record, dependent_id: u64, prepare_allocator: std.mem.Allocator, original_nodes: []const Node(Record), mapping: []const ?u64, survivor_len: usize, appended: *const std.AutoHashMapUnmanaged(*Record, usize), inverse: []const usize, lists: []signal_graph.OwnedAdjacency, touched: []bool, work: ?*usize) (std.mem.Allocator.Error || error{InvalidAppend})!void {
-            const input_id = try resolvedRecordId(input, original_nodes, mapping, survivor_len, appended, work);
-            const input_index: usize = @intCast(input_id);
-            if (input_index >= lists.len) return error.InvalidAppend;
-            if (input_index < survivor_len and !touched[input_index]) {
-                const original_index = inverse[input_index];
-                if (original_index == std.math.maxInt(usize) or original_index >= original_nodes.len) return error.InvalidAppend;
-                const source = original_nodes[original_index].dependents.slice();
-                for (source) |original_dependent| {
-                    const original_dependent_index: usize = @intCast(original_dependent);
-                    if (original_dependent_index >= mapping.len) return error.InvalidAppend;
-                    if (mapping[original_dependent_index]) |final_dependent| try lists[input_index].append(prepare_allocator, final_dependent);
-                }
-                touched[input_index] = true;
-            }
-            if (!containsU64(lists[input_index].slice(), dependent_id)) try lists[input_index].append(prepare_allocator, dependent_id);
-        }
-    };
-    for (owned_records, record_ids) |record, dependent_id| switch (record.payload) {
-        .map => |payload| try EdgeBuilder.append(payload.input, dependent_id, allocator, nodes, final_record_ids, survivor_count, &new_record_indexes, final_to_original, adjacency_lists, adjacency_touched, lookup_work),
-        .select, .keyed_select => |payload| try EdgeBuilder.append(payload.input, dependent_id, allocator, nodes, final_record_ids, survivor_count, &new_record_indexes, final_to_original, adjacency_lists, adjacency_touched, lookup_work),
-        .map2 => |payload| {
-            try EdgeBuilder.append(payload.left, dependent_id, allocator, nodes, final_record_ids, survivor_count, &new_record_indexes, final_to_original, adjacency_lists, adjacency_touched, lookup_work);
-            if (payload.right != payload.left) try EdgeBuilder.append(payload.right, dependent_id, allocator, nodes, final_record_ids, survivor_count, &new_record_indexes, final_to_original, adjacency_lists, adjacency_touched, lookup_work);
-        },
-        .combine => |payload| for (payload.children, 0..) |child, child_index| {
-            if (!recordSliceContains(Record, payload.children[0..child_index], child)) try EdgeBuilder.append(child, dependent_id, allocator, nodes, final_record_ids, survivor_count, &new_record_indexes, final_to_original, adjacency_lists, adjacency_touched, lookup_work);
-        },
-        .ref, .const_value, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
-    };
-    var survivor_replacement_count: usize = 0;
-    for (adjacency_touched) |touched| if (touched) {
-        survivor_replacement_count += 1;
-    };
-    var survivor_replacements = try allocator.alloc(SurvivorAdjacencyAppend, survivor_replacement_count);
-    errdefer allocator.free(survivor_replacements);
-    var survivor_write: usize = 0;
-    for (adjacency_touched, 0..) |touched, id| if (touched) {
-        survivor_replacements[survivor_write] = .{ .record_id = @intCast(id), .dependents = adjacency_lists[id] };
-        adjacency_lists[id] = .empty;
-        survivor_write += 1;
-    };
-    errdefer for (survivor_replacements[0..survivor_write]) |*replacement| replacement.dependents.deinit(allocator);
+    }
+    for (survivor_extra.order.items) |final_id| {
+        try release.reserveAdjacencyForAppend(allocator, nodes, final_id, survivor_extra.get(final_id), work);
+    }
+    const owned_survivor_edges = try survivor_edges.toOwnedSlice(allocator);
+    errdefer allocator.free(owned_survivor_edges);
     const new_nodes = try allocator.alloc(Node(Record), owned_records.len);
     errdefer allocator.free(new_nodes);
-    var new_node_write: usize = 0;
-    errdefer for (new_nodes[0..new_node_write]) |*node| node.dependents.deinit(allocator);
-    for (new_nodes, owned_records, owned_ranks, 0..) |*node, record, prepared_rank, index| {
-        node.* = .{ .record = record, .rank = prepared_rank, .dependents = adjacency_lists[survivor_count + index] };
-        adjacency_lists[survivor_count + index] = .empty;
-        new_node_write += 1;
+    for (new_nodes, owned_records, owned_ranks, new_lists, new_slots) |*node, record, prepared_rank, *list, *slots| {
+        node.* = .{ .record = record, .rank = prepared_rank, .dependents = list.*, .input_slots = slots.* };
+        list.* = .empty;
+        slots.* = .empty;
     }
-    const retired_adjacency = try allocator.alloc(signal_graph.OwnedAdjacency, survivor_replacements.len);
-    errdefer allocator.free(retired_adjacency);
-    @memset(retired_adjacency, .empty);
-    const owned_final_existing_ids = try allocator.dupe(?u64, final_record_ids);
-    errdefer allocator.free(owned_final_existing_ids);
     return .{
         .records = owned_records,
         .record_ids = record_ids,
         .ranks = owned_ranks,
         .use_counts = owned_uses,
         .existing_use_increments = owned_increments,
-        .survivor_adjacency = survivor_replacements,
+        .survivor_edges = owned_survivor_edges,
         .new_nodes = new_nodes,
-        .retired_adjacency = retired_adjacency,
-        .final_existing_record_ids = owned_final_existing_ids,
         .survivor_count = survivor_count,
     };
 }
@@ -1914,42 +2187,40 @@ fn prepareGraphAppendWithWork(comptime Record: type, allocator: std.mem.Allocato
 /// entered, while a record outside the graph is walked once through its inputs.
 /// This is the same walk `prepareGraphAppend` performs, so a release closure
 /// prepared with the replacement roots nets the retains the append will add.
-fn countExistingRetainsWithWork(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), roots: []const *Record, existing: []usize, lookup_work: ?*usize) (std.mem.Allocator.Error || error{InvalidRelease})!void {
+/// Only records the walk reaches gain an entry in `existing`.
+fn countExistingRetainsWithWork(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), roots: []const *Record, existing: *TouchedCounts, work: ?*PreparationWork) (std.mem.Allocator.Error || error{InvalidRelease})!void {
     var visited: std.AutoHashMapUnmanaged(*Record, void) = .empty;
     defer visited.deinit(allocator);
     const root_capacity = std.math.cast(u32, roots.len) orelse return error.InvalidRelease;
     try visited.ensureUnusedCapacity(allocator, root_capacity);
     const Walker = struct {
-        fn walk(record: *Record, walk_allocator: std.mem.Allocator, graph_nodes: []const Node(Record), counts: []usize, seen: *std.AutoHashMapUnmanaged(*Record, void), work: ?*usize) (std.mem.Allocator.Error || error{InvalidRelease})!void {
+        fn walk(record: *Record, walk_allocator: std.mem.Allocator, graph_nodes: []const Node(Record), counts: *TouchedCounts, seen: *std.AutoHashMapUnmanaged(*Record, void), counter: ?*PreparationWork) (std.mem.Allocator.Error || error{InvalidRelease})!void {
             if (record.active_graph_id) |original_id| {
                 const index: usize = @intCast(original_id);
                 if (index >= graph_nodes.len or graph_nodes[index].record != record) return error.InvalidRelease;
-                counts[index] = std.math.add(usize, counts[index], 1) catch return error.InvalidRelease;
+                if (counter) |c| c.records += 1;
+                if (!try counts.add(walk_allocator, original_id, 1)) return error.InvalidRelease;
                 return;
             }
-            if (work) |counter| counter.* += 1;
+            if (counter) |c| c.lookups += 1;
             const entry = try seen.getOrPut(walk_allocator, record);
             if (entry.found_existing) return;
             switch (record.payload) {
-                .map => |payload| try walk(payload.input, walk_allocator, graph_nodes, counts, seen, work),
-                .select, .keyed_select => |payload| try walk(payload.input, walk_allocator, graph_nodes, counts, seen, work),
+                .map => |payload| try walk(payload.input, walk_allocator, graph_nodes, counts, seen, counter),
+                .select, .keyed_select => |payload| try walk(payload.input, walk_allocator, graph_nodes, counts, seen, counter),
                 .map2 => |payload| {
-                    try walk(payload.left, walk_allocator, graph_nodes, counts, seen, work);
-                    if (payload.right != payload.left) try walk(payload.right, walk_allocator, graph_nodes, counts, seen, work);
+                    try walk(payload.left, walk_allocator, graph_nodes, counts, seen, counter);
+                    if (payload.right != payload.left) try walk(payload.right, walk_allocator, graph_nodes, counts, seen, counter);
                 },
                 .combine => |payload| for (payload.children, 0..) |child, child_index| {
                     if (recordSliceContains(Record, payload.children[0..child_index], child)) continue;
-                    try walk(child, walk_allocator, graph_nodes, counts, seen, work);
+                    try walk(child, walk_allocator, graph_nodes, counts, seen, counter);
                 },
                 .ref, .const_value, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
             }
         }
     };
-    for (roots) |root| try Walker.walk(root, allocator, nodes, existing, &visited, lookup_work);
-}
-
-fn countExistingRetains(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), roots: []const *Record, existing: []usize) (std.mem.Allocator.Error || error{InvalidRelease})!void {
-    return countExistingRetainsWithWork(Record, allocator, nodes, roots, existing, null);
+    for (roots) |root| try Walker.walk(root, allocator, nodes, existing, &visited, work);
 }
 
 /// Simulates descriptor-root releases, recursive zero-use inputs, and dense
@@ -1960,119 +2231,216 @@ fn countExistingRetains(comptime Record: type, allocator: std.mem.Allocator, nod
 /// so a committed record that one descriptor drops while another picks it up
 /// survives with its dense id instead of being retired and re-appended. Every
 /// survivor whose count still falls is recorded and decremented at `applyDense`.
+///
+/// Work and reserved storage are proportional to the records the release
+/// reaches (retired records, the survivors whose use counts change, the
+/// displaced last-slot survivors) and to their edges, each addressed through
+/// the dependent's recorded slot rather than by scanning an input's fan-out;
+/// the rest of the graph is neither visited nor mirrored. `auditDenseIds` is
+/// the whole-graph consistency check for tests and diagnostics.
 pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), roots: []const *Record, retained_roots: []const *Record) (std.mem.Allocator.Error || error{InvalidRelease})!PreparedReleaseClosure(Record) {
-    const counts = try allocator.alloc(usize, nodes.len);
-    defer allocator.free(counts);
-    const scheduled = try allocator.alloc(bool, nodes.len);
-    defer allocator.free(scheduled);
-    @memset(scheduled, false);
-    const retained = try allocator.alloc(usize, nodes.len);
-    defer allocator.free(retained);
-    @memset(retained, 0);
-    try countExistingRetains(Record, allocator, nodes, retained_roots, retained);
-    for (nodes, retained, 0..) |node, retains, index| {
-        if (node.record.active_graph_id != @as(u64, @intCast(index))) return error.InvalidRelease;
-        counts[index] = std.math.add(usize, node.record.active_use_count, retains) catch return error.InvalidRelease;
-    }
+    return prepareReleaseClosureWithWork(Record, allocator, nodes, roots, retained_roots, null);
+}
 
+fn prepareReleaseClosureWithWork(comptime Record: type, allocator: std.mem.Allocator, nodes: []const Node(Record), roots: []const *Record, retained_roots: []const *Record, work: ?*PreparationWork) (std.mem.Allocator.Error || error{InvalidRelease})!PreparedReleaseClosure(Record) {
+    if (work) |counter| counter.* = .{};
+    var retained: TouchedCounts = .{};
+    defer retained.deinit(allocator);
+    try countExistingRetainsWithWork(Record, allocator, nodes, retained_roots, &retained, work);
+
+    // Remaining use count per touched record, netted against the retains.
+    var counts: TouchedCounts = .{};
+    defer counts.deinit(allocator);
     var records: shared_buffer.List(*Record) = .empty;
     errdefer records.deinit(allocator);
-    try records.ensureTotalCapacity(allocator, nodes.len);
     const Simulator = struct {
-        fn decrement(record: *Record, graph_nodes: []const Node(Record), simulated_counts: []usize, is_scheduled: []bool, output: *shared_buffer.List(*Record)) error{InvalidRelease}!void {
+        fn decrement(record: *Record, sim_allocator: std.mem.Allocator, graph_nodes: []const Node(Record), remaining: *TouchedCounts, retains: *const TouchedCounts, output: *shared_buffer.List(*Record), counter: ?*PreparationWork) (std.mem.Allocator.Error || error{InvalidRelease})!void {
             const record_id = record.active_graph_id orelse return error.InvalidRelease;
             const index: usize = @intCast(record_id);
-            if (index >= graph_nodes.len or graph_nodes[index].record != record or simulated_counts[index] == 0) return error.InvalidRelease;
-            simulated_counts[index] -= 1;
-            if (simulated_counts[index] != 0) return;
-            if (is_scheduled[index]) return error.InvalidRelease;
-            is_scheduled[index] = true;
-            output.appendAssumeCapacity(record);
+            if (index >= graph_nodes.len or graph_nodes[index].record != record) return error.InvalidRelease;
+            if (counter) |c| c.records += 1;
+            try remaining.order.ensureUnusedCapacity(sim_allocator, 1);
+            const entry = try remaining.counts.getOrPut(sim_allocator, record_id);
+            if (!entry.found_existing) {
+                entry.value_ptr.* = std.math.add(usize, record.active_use_count, retains.get(record_id)) catch return error.InvalidRelease;
+                remaining.order.appendAssumeCapacity(record_id);
+            }
+            if (entry.value_ptr.* == 0) return error.InvalidRelease;
+            entry.value_ptr.* -= 1;
+            if (entry.value_ptr.* != 0) return;
+            try output.append(sim_allocator, record);
             switch (record.payload) {
-                .map => |payload| try decrement(payload.input, graph_nodes, simulated_counts, is_scheduled, output),
-                .select, .keyed_select => |payload| try decrement(payload.input, graph_nodes, simulated_counts, is_scheduled, output),
+                .map => |payload| try decrement(payload.input, sim_allocator, graph_nodes, remaining, retains, output, counter),
+                .select, .keyed_select => |payload| try decrement(payload.input, sim_allocator, graph_nodes, remaining, retains, output, counter),
                 .map2 => |payload| {
-                    try decrement(payload.left, graph_nodes, simulated_counts, is_scheduled, output);
-                    if (payload.right != payload.left) try decrement(payload.right, graph_nodes, simulated_counts, is_scheduled, output);
+                    try decrement(payload.left, sim_allocator, graph_nodes, remaining, retains, output, counter);
+                    if (payload.right != payload.left) try decrement(payload.right, sim_allocator, graph_nodes, remaining, retains, output, counter);
                 },
                 .combine => |payload| {
                     for (payload.children, 0..) |child, child_index| {
                         if (recordSliceContains(Record, payload.children[0..child_index], child)) continue;
-                        try decrement(child, graph_nodes, simulated_counts, is_scheduled, output);
+                        try decrement(child, sim_allocator, graph_nodes, remaining, retains, output, counter);
                     }
                 },
                 .ref, .const_value, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
             }
         }
     };
-    for (roots) |root| try Simulator.decrement(root, nodes, counts, scheduled, &records);
+    for (roots) |root| try Simulator.decrement(root, allocator, nodes, &counts, &retained, &records, work);
 
     var decrement_count: usize = 0;
-    for (nodes, retained, counts) |node, retains, remaining| {
-        if (remaining != 0 and node.record.active_use_count + retains != remaining) decrement_count += 1;
+    for (counts.order.items) |record_id| {
+        const remaining = counts.get(record_id);
+        if (remaining != 0 and nodes[@intCast(record_id)].record.active_use_count + retained.get(record_id) != remaining) decrement_count += 1;
     }
     const survivor_use_decrements = try allocator.alloc(ExistingUseIncrement, decrement_count);
     errdefer allocator.free(survivor_use_decrements);
     var decrement_write: usize = 0;
-    for (nodes, retained, counts, 0..) |node, retains, remaining, index| {
-        if (remaining == 0 or node.record.active_use_count + retains == remaining) continue;
-        survivor_use_decrements[decrement_write] = .{ .record_id = @intCast(index), .count = node.record.active_use_count + retains - remaining };
+    for (counts.order.items) |record_id| {
+        const remaining = counts.get(record_id);
+        const before = nodes[@intCast(record_id)].record.active_use_count + retained.get(record_id);
+        if (remaining == 0 or before == remaining) continue;
+        survivor_use_decrements[decrement_write] = .{ .record_id = record_id, .count = before - remaining };
         decrement_write += 1;
     }
 
-    const slots = try allocator.alloc(u64, nodes.len);
-    defer allocator.free(slots);
-    const positions = try allocator.alloc(usize, nodes.len);
-    defer allocator.free(positions);
-    for (slots, positions, 0..) |*slot, *position, index| {
-        slot.* = @intCast(index);
-        position.* = index;
-    }
+    // Simulate the swap-removals. Only slots that diverge from the identity
+    // layout are recorded: `position_of` maps a displaced original id to its
+    // current slot and `slot_at` maps a slot to the original id now in it.
+    var position_of: std.AutoHashMapUnmanaged(u64, usize) = .empty;
+    defer position_of.deinit(allocator);
+    var slot_at: std.AutoHashMapUnmanaged(usize, u64) = .empty;
+    defer slot_at.deinit(allocator);
+    const step_capacity = std.math.cast(u32, records.items.len) orelse return error.InvalidRelease;
+    try position_of.ensureTotalCapacity(allocator, step_capacity);
+    try slot_at.ensureTotalCapacity(allocator, step_capacity);
     const steps = try allocator.alloc(PreparedReleaseStep, records.items.len);
     errdefer allocator.free(steps);
     var live_len = nodes.len;
     for (records.items, steps) |record, *step| {
         const original_id = record.active_graph_id.?;
-        const removal_index = positions[@intCast(original_id)];
+        const removal_index = position_of.get(original_id) orelse @as(usize, @intCast(original_id));
         const last_index = live_len - 1;
-        const moved_original_id = slots[last_index];
+        const moved_original_id = slot_at.get(last_index) orelse @as(u64, @intCast(last_index));
         step.* = .{
             .record_id = original_id,
             .removal_index = @intCast(removal_index),
             .moved_record_id = if (removal_index == last_index) null else moved_original_id,
         };
         if (removal_index != last_index) {
-            slots[removal_index] = moved_original_id;
-            positions[@intCast(moved_original_id)] = removal_index;
+            slot_at.putAssumeCapacity(removal_index, moved_original_id);
+            position_of.putAssumeCapacity(moved_original_id, removal_index);
         }
         live_len = last_index;
     }
-    const final_record_ids = try allocator.alloc(?u64, nodes.len);
-    errdefer allocator.free(final_record_ids);
-    @memset(final_record_ids, null);
-    for (slots[0..live_len], 0..) |original_id, final_id| final_record_ids[@intCast(original_id)] = @intCast(final_id);
-    const original_record_ids = try allocator.alloc(usize, live_len);
-    errdefer allocator.free(original_record_ids);
-    for (original_record_ids, slots[0..live_len]) |*original, slot| original.* = @intCast(slot);
-    var adjacency_count: usize = 0;
-    for (nodes, 0..) |node, original_id| {
-        var next_len: usize = 0;
-        var changed = false;
-        for (node.dependents.slice()) |dependent_id| {
-            const final_id = final_record_ids[@intCast(dependent_id)] orelse {
-                changed = true;
-                continue;
-            };
-            if (final_id != dependent_id) changed = true;
-            next_len += 1;
-        }
-        if (changed or next_len != node.dependents.len() or final_record_ids[original_id] == null and node.dependents.len() != 0) adjacency_count += 1;
+    var remap: DenseRemap = .{ .original_count = nodes.len, .survivor_count = live_len };
+    errdefer remap.deinit(allocator);
+    try remap.moved.ensureTotalCapacity(allocator, step_capacity * 2);
+    try remap.inverse.ensureTotalCapacity(allocator, step_capacity);
+    for (records.items) |record| remap.moved.putAssumeCapacity(record.active_graph_id.?, null);
+    var displaced = position_of.iterator();
+    while (displaced.next()) |entry| {
+        const original_id = entry.key_ptr.*;
+        if (remap.moved.contains(original_id)) continue;
+        const final_id: u64 = @intCast(entry.value_ptr.*);
+        if (final_id == original_id) continue;
+        remap.moved.putAssumeCapacity(original_id, final_id);
+        remap.inverse.putAssumeCapacity(final_id, original_id);
     }
-    const adjacency = try allocator.alloc(PreparedAdjacencyReplacement, adjacency_count);
-    errdefer allocator.free(adjacency);
-    const retired_adjacency = try allocator.alloc(signal_graph.OwnedAdjacency, adjacency_count);
-    errdefer allocator.free(retired_adjacency);
-    @memset(retired_adjacency, .empty);
+
+    // Adjacency edits are planned per edge. Retired records drop their edges
+    // into survivor inputs; displaced survivors renumber theirs. Each edge is
+    // addressed through the dependent's recorded slot, so the work here and
+    // at commit is one entry per affected edge, never a copy of an input's
+    // fan-out. A retired input's list is freed wholesale, so edges into it
+    // are validated but not dropped.
+    var drop_counts: TouchedCounts = .{};
+    defer drop_counts.deinit(allocator);
+    var edge_drops: shared_buffer.List(PreparedEdgeDrop) = .empty;
+    errdefer edge_drops.deinit(allocator);
+    for (records.items) |record| {
+        const dependent_id = record.active_graph_id.?;
+        var inputs = DistinctInputIterator(Record).init(record);
+        while (inputs.next()) |input| {
+            const input_id = try validatedEdge(Record, nodes, input.record, dependent_id, input.position, work);
+            if (remap.finalId(input_id) == null) continue;
+            if (!try drop_counts.add(allocator, input_id, 1)) return error.InvalidRelease;
+            try edge_drops.append(allocator, .{ .input_id = input_id, .dependent_id = dependent_id, .position = input.position });
+        }
+    }
+    var edge_renumbers: shared_buffer.List(PreparedEdgeRenumber) = .empty;
+    errdefer edge_renumbers.deinit(allocator);
+    // A survivor can be displaced by more than one step (it lands in a hole
+    // that later becomes the last live slot); its edges renumber once, to
+    // its final id.
+    var renumbered: std.AutoHashMapUnmanaged(u64, void) = .empty;
+    defer renumbered.deinit(allocator);
+    try renumbered.ensureTotalCapacity(allocator, step_capacity);
+    for (steps) |step| {
+        const moved_id = step.moved_record_id orelse continue;
+        const final_id = remap.finalId(moved_id) orelse continue;
+        if (final_id == moved_id) continue;
+        if (renumbered.getOrPutAssumeCapacity(moved_id).found_existing) continue;
+        const moved_record = nodes[@intCast(moved_id)].record;
+        var inputs = DistinctInputIterator(Record).init(moved_record);
+        while (inputs.next()) |input| {
+            const input_id = try validatedEdge(Record, nodes, input.record, moved_id, input.position, work);
+            if (remap.finalId(input_id) == null) return error.InvalidRelease;
+            try edge_renumbers.append(allocator, .{ .input_id = input_id, .dependent_id = moved_id, .final_id = final_id, .position = input.position });
+        }
+    }
+    // Bounded retained capacity: a survivor input whose spilled list would
+    // keep more than four times its live entries is rebuilt at its live size
+    // (in its existing order, with final ids). The copy costs O(live) and
+    // follows at least three-quarters of the capacity worth of drops, so a
+    // dropped edge stays amortized O(1). Drops and renumbers into a compacted
+    // input are subsumed by its rebuilt list.
+    var replacements: shared_buffer.List(PreparedAdjacencyReplacement) = .empty;
+    errdefer {
+        for (replacements.items) |*replacement| replacement.dependents.deinit(allocator);
+        replacements.deinit(allocator);
+    }
+    var replacement_index: std.AutoHashMapUnmanaged(u64, usize) = .empty;
+    errdefer replacement_index.deinit(allocator);
+    var trimmed: shared_buffer.List(*Record) = .empty;
+    errdefer trimmed.deinit(allocator);
+    for (drop_counts.order.items) |input_id| {
+        const current = &nodes[@intCast(input_id)].dependents;
+        const live_after = current.len() - drop_counts.get(input_id);
+        if (live_after <= 1 or !current.shouldCompact(live_after)) {
+            try trimmed.append(allocator, nodes[@intCast(input_id)].record);
+            continue;
+        }
+        if (work) |counter| counter.edges += current.len();
+        const replacement = try allocator.alloc(u64, live_after);
+        errdefer allocator.free(replacement);
+        var write: usize = 0;
+        for (current.slice()) |dependent_id| {
+            const final_id = remap.finalId(dependent_id) orelse continue;
+            if (write == live_after) return error.InvalidRelease;
+            replacement[write] = final_id;
+            write += 1;
+        }
+        if (write != live_after) return error.InvalidRelease;
+        try replacement_index.put(allocator, input_id, replacements.items.len);
+        try replacements.append(allocator, .{ .record_id = input_id, .dependents = signal_graph.OwnedAdjacency.adopt(allocator, replacement), .rewrite_slots = true });
+    }
+    if (replacement_index.count() != 0) {
+        var kept: usize = 0;
+        for (edge_drops.items) |drop| {
+            if (replacement_index.contains(drop.input_id)) continue;
+            edge_drops.items[kept] = drop;
+            kept += 1;
+        }
+        edge_drops.items.len = kept;
+        kept = 0;
+        for (edge_renumbers.items) |edit| {
+            if (replacement_index.contains(edit.input_id)) continue;
+            edge_renumbers.items[kept] = edit;
+            kept += 1;
+        }
+        edge_renumbers.items.len = kept;
+    }
     const retired_nodes = try allocator.alloc(Node(Record), records.items.len);
     errdefer allocator.free(retired_nodes);
     const retired_text_routes = try allocator.alloc(SmallRouteList(TextSink), records.items.len);
@@ -2087,44 +2455,69 @@ pub fn prepareReleaseClosure(comptime Record: type, allocator: std.mem.Allocator
     const retired_structural_routes = try allocator.alloc(SmallRouteList(StructuralSink), records.items.len);
     errdefer allocator.free(retired_structural_routes);
     @memset(retired_structural_routes, .empty);
-    var adjacency_write: usize = 0;
-    errdefer for (adjacency[0..adjacency_write]) |*replacement| replacement.dependents.deinit(allocator);
-    for (nodes, 0..) |node, original_id| {
-        var next_len: usize = 0;
-        var changed = false;
-        for (node.dependents.slice()) |dependent_id| {
-            const final_id = final_record_ids[@intCast(dependent_id)] orelse {
-                changed = true;
-                continue;
-            };
-            if (final_id != dependent_id) changed = true;
-            next_len += 1;
-        }
-        if (!changed and next_len == node.dependents.len() and !(final_record_ids[original_id] == null and node.dependents.len() != 0)) continue;
-        var replacement: signal_graph.OwnedAdjacency = .empty;
-        errdefer replacement.deinit(allocator);
-        for (node.dependents.slice()) |dependent_id| {
-            const final_id = final_record_ids[@intCast(dependent_id)] orelse continue;
-            try replacement.append(allocator, final_id);
-        }
-        adjacency[adjacency_write] = .{ .record_id = @intCast(original_id), .dependents = replacement };
-        replacement = .empty;
-        adjacency_write += 1;
-    }
+    const owned_drops = try edge_drops.toOwnedSlice(allocator);
+    errdefer allocator.free(owned_drops);
+    const owned_renumbers = try edge_renumbers.toOwnedSlice(allocator);
+    errdefer allocator.free(owned_renumbers);
+    const owned_trimmed = try trimmed.toOwnedSlice(allocator);
+    errdefer allocator.free(owned_trimmed);
+    const owned_records = try records.toOwnedSlice(allocator);
     return .{
-        .records = try records.toOwnedSlice(allocator),
+        .records = owned_records,
         .steps = steps,
-        .final_record_ids = final_record_ids,
-        .original_record_ids = original_record_ids,
+        .remap = remap,
         .survivor_use_decrements = survivor_use_decrements,
-        .adjacency = adjacency,
-        .retired_adjacency = retired_adjacency,
+        .edge_drops = owned_drops,
+        .edge_renumbers = owned_renumbers,
+        .replacements = replacements,
+        .replacement_index = replacement_index,
+        .trimmed_inputs = owned_trimmed,
         .retired_nodes = retired_nodes,
         .retired_text_routes = retired_text_routes,
         .retired_bool_routes = retired_bool_routes,
         .retired_change_routes = retired_change_routes,
         .retired_structural_routes = retired_structural_routes,
     };
+}
+
+/// Checks that the committed edge `input -> dependent_id` exists exactly where
+/// the dependent's slot at `position` says, returning the input's dense id.
+/// One adjacency entry is read, which `work` counts.
+fn validatedEdge(comptime Record: type, nodes: []const Node(Record), input: *Record, dependent_id: u64, position: u32, work: ?*PreparationWork) error{InvalidRelease}!u64 {
+    const input_id = input.active_graph_id orelse return error.InvalidRelease;
+    if (input_id >= nodes.len or nodes[@intCast(input_id)].record != input) return error.InvalidRelease;
+    const dependent = nodes[@intCast(dependent_id)];
+    if (position >= dependent.input_slots.len()) return error.InvalidRelease;
+    const slot = dependent.input_slots.get(position);
+    const dependents = nodes[@intCast(input_id)].dependents.slice();
+    if (work) |counter| counter.edges += 1;
+    if (slot >= dependents.len or dependents[slot] != dependent_id) return error.InvalidRelease;
+    return input_id;
+}
+
+/// Whole-graph audit that every dense slot holds a record carrying that slot
+/// as its id. This is O(graph) by construction and belongs in tests and debug
+/// diagnostics; production release preparation validates only the records it
+/// touches.
+pub fn auditDenseIds(comptime Record: type, nodes: []const Node(Record)) error{InvalidRelease}!void {
+    var total_edges: usize = 0;
+    var total_inputs: usize = 0;
+    for (nodes, 0..) |node, index| {
+        if (node.record.active_graph_id != @as(u64, @intCast(index))) return error.InvalidRelease;
+        for (node.dependents.slice()) |dependent_id| if (dependent_id >= nodes.len) return error.InvalidRelease;
+        total_edges += node.dependents.len();
+        // Every input's recorded slot must point back at this record, and the
+        // edge totals must match so no stale entry survives anywhere.
+        var arity: usize = 0;
+        var inputs = DistinctInputIterator(Record).init(node.record);
+        while (inputs.next()) |input| {
+            _ = try validatedEdge(Record, nodes, input.record, @intCast(index), input.position, null);
+            arity += 1;
+        }
+        if (arity != node.input_slots.len()) return error.InvalidRelease;
+        total_inputs += arity;
+    }
+    if (total_edges != total_inputs) return error.InvalidRelease;
 }
 
 /// Releases the test or plan's owned signal record exactly once.
@@ -2156,8 +2549,8 @@ pub fn releaseRecord(
         .map, .map2, .select, .keyed_select, .combine => {},
     }
 
-    for (input_records.items) |input_record| {
-        removeDependentId(Record, allocator, nodes.items, requireRecordId(Record, nodes.items, input_record), record_id);
+    for (input_records.items, 0..) |input_record, position| {
+        removeDependentId(Record, allocator, nodes.items, requireRecordId(Record, nodes.items, input_record), record_id, @intCast(position));
     }
 
     removeNode(Record, allocator, nodes, source_routes, text_routes, bool_routes, change_routes, structural_routes, record_id, record, hooks);
@@ -2172,6 +2565,8 @@ pub fn clear(comptime Record: type, allocator: std.mem.Allocator, nodes: *shared
     for (nodes.items, 0..) |node, index| {
         var dependents = node.dependents;
         dependents.deinit(allocator);
+        var input_slots = node.input_slots;
+        input_slots.deinit(allocator);
         const active_graph_id = node.record.active_graph_id orelse @panic("active signal graph record was missing its dense id");
         if (active_graph_id != @as(u64, @intCast(index))) @panic("active signal graph record dense id did not match its slot");
         node.record.active_graph_id = null;
@@ -2310,24 +2705,18 @@ fn appendUniqueInputRecord(comptime Record: type, allocator: std.mem.Allocator, 
     }
 }
 
+/// Renumbers the edges and source route of a record that a dense swap-remove
+/// just moved from `old_record_id` into `new_record_id`. Each edge is found
+/// through the moved record's own slots, so the cost is its arity, not the
+/// fan-out of its inputs.
 fn updateMovedRecordEdges(comptime Record: type, nodes: []Node(Record), source_routes: *RouteTable(u64), moved_record: *Record, old_record_id: u64, new_record_id: u64) void {
     switch (moved_record.payload) {
         .ref => |source_node_id| replaceSourceRouteId(source_routes, source_node_id, old_record_id, new_record_id),
-        .const_value, .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
-        .map => |payload| replaceDependentId(Record, nodes, requireRecordId(Record, nodes, payload.input), old_record_id, new_record_id),
-        .select, .keyed_select => |payload| replaceDependentId(Record, nodes, requireRecordId(Record, nodes, payload.input), old_record_id, new_record_id),
-        .map2 => |payload| {
-            replaceDependentId(Record, nodes, requireRecordId(Record, nodes, payload.left), old_record_id, new_record_id);
-            if (payload.right != payload.left) {
-                replaceDependentId(Record, nodes, requireRecordId(Record, nodes, payload.right), old_record_id, new_record_id);
-            }
-        },
-        .combine => |payload| {
-            for (payload.children, 0..) |child, index| {
-                if (recordSliceContains(Record, payload.children[0..index], child)) continue;
-                replaceDependentId(Record, nodes, requireRecordId(Record, nodes, child), old_record_id, new_record_id);
-            }
-        },
+        else => {},
+    }
+    var inputs = DistinctInputIterator(Record).init(moved_record);
+    while (inputs.next()) |input| {
+        replaceDependentId(Record, nodes, requireRecordId(Record, nodes, input.record), new_record_id, input.position, old_record_id, new_record_id);
     }
 }
 
@@ -2350,6 +2739,7 @@ fn removeNode(
     if (nodes.items[record_index].dependents.len() != 0) @panic("active signal graph removed a record with live dependents");
 
     nodes.items[record_index].dependents.deinit(allocator);
+    nodes.items[record_index].input_slots.deinit(allocator);
     const last_index = nodes.items.len - 1;
     removeSinkRoutesForRecordId(allocator, text_routes, bool_routes, change_routes, structural_routes, record_index, last_index);
     _ = nodes.swapRemove(record_index);
@@ -2417,6 +2807,18 @@ fn containsU64(items: []const u64, target: u64) bool {
 const TestRecord = struct {
     id: u64,
 };
+
+/// Wires `input_id -> dependent_id` for the payload-free dirty-queue test
+/// records: the dependent's next free position (counted from the edges it
+/// already has) receives the slot, and two positions fit inline.
+fn appendTestEdge(nodes: []Node(TestRecord), input_id: u64, dependent_id: u64) !void {
+    var position: u32 = 0;
+    for (nodes) |node| for (node.dependents.slice()) |existing| if (existing == dependent_id) {
+        position += 1;
+    };
+    if (nodes[@intCast(dependent_id)].input_slots.len() == 0) nodes[@intCast(dependent_id)].input_slots = try signal_graph.InputSlots.init(std.testing.allocator, 2);
+    try signal_graph.appendDependent(TestRecord, std.testing.allocator, nodes, input_id, dependent_id, position);
+}
 
 const LifecycleTestRecord = struct {
     id: u64,
@@ -2526,6 +2928,24 @@ const LifecycleTestHooks = struct {
     }
 };
 
+/// Builds a sparse remap from an explicit per-original final id table so a
+/// test can state a layout directly; null retires that original record.
+fn testRemapFromFinalIds(allocator: std.mem.Allocator, final_ids: []const ?u64) !DenseRemap {
+    var survivors: usize = 0;
+    for (final_ids) |final| if (final != null) {
+        survivors += 1;
+    };
+    var remap: DenseRemap = .{ .original_count = final_ids.len, .survivor_count = survivors };
+    errdefer remap.deinit(allocator);
+    for (final_ids, 0..) |final, original| {
+        const original_id: u64 = @intCast(original);
+        if (final == original_id) continue;
+        try remap.moved.put(allocator, original_id, final);
+        if (final) |final_id| try remap.inverse.put(allocator, final_id, original_id);
+    }
+    return remap;
+}
+
 const LifecycleSignalBinding = struct {
     record: *LifecycleTestRecord,
 };
@@ -2625,7 +3045,8 @@ test "post-release route appends use direct sparse survivor inversion with linea
     }
     // Old records 3 and 0 survive as final records 0 and 1. Final records 2
     // and 3 are fresh, so they intentionally have no inverse entry.
-    const original_record_ids = [_]usize{ 3, 0 };
+    var remap = try testRemapFromFinalIds(std.testing.allocator, &.{ 1, null, null, 0 });
+    defer remap.deinit(std.testing.allocator);
     const appends = [_]RouteAppend(TextSink){
         .{ .route_index = 0, .value = .{ .kind = .text_attr, .index = 10 } },
         .{ .route_index = 1, .value = .{ .kind = .text_attr, .index = 11 } },
@@ -2634,7 +3055,7 @@ test "post-release route appends use direct sparse survivor inversion with linea
 
     var work: usize = 0;
     var counter = FaultAllocator.init(std.testing.allocator);
-    var baseline = try prepareRouteAppendsAfterReleaseWithWork(TextSink, counter.allocator(), &routes, &original_record_ids, 4, &appends, &work);
+    var baseline = try prepareRouteAppendsAfterReleaseWithWork(TextSink, counter.allocator(), &routes, &remap, 4, &appends, &work);
     defer baseline.deinit(counter.allocator());
     try std.testing.expectEqual(@as(usize, appends.len), work);
     const attempts = counter.attempts;
@@ -2642,10 +3063,11 @@ test "post-release route appends use direct sparse survivor inversion with linea
     for (1..attempts + 1) |failure_number| {
         var fault = FaultAllocator.init(std.testing.allocator);
         fault.configure(failure_number);
-        try std.testing.expectError(error.OutOfMemory, prepareRouteAppendsAfterRelease(TextSink, fault.allocator(), &routes, &original_record_ids, 4, &appends));
+        try std.testing.expectError(error.OutOfMemory, prepareRouteAppendsAfterRelease(TextSink, fault.allocator(), &routes, &remap, 4, &appends));
         for (routes.items, 0..) |route, index| try std.testing.expectEqualDeep(TextSink{ .kind = .text_node, .index = index }, route.slice()[0]);
     }
-    try std.testing.expectError(error.InvalidAppend, prepareRouteAppendsAfterRelease(TextSink, std.testing.allocator, &routes, &.{ 0, 1, 2 }, 2, &appends));
+    const oversized = DenseRemap.identity(3);
+    try std.testing.expectError(error.InvalidAppend, prepareRouteAppendsAfterRelease(TextSink, std.testing.allocator, &routes, &oversized, 2, &appends));
 
     try baseline.reserveOuter(counter.allocator(), &routes, 4);
     counter.configure(1);
@@ -2659,18 +3081,20 @@ test "post-release route appends use direct sparse survivor inversion with linea
 test "post-release route inversion lookup work scales with appended groups" {
     const measure = struct {
         fn run(count: usize) !usize {
-            const inverse = try std.testing.allocator.alloc(usize, count);
-            defer std.testing.allocator.free(inverse);
+            const final_ids = try std.testing.allocator.alloc(?u64, count);
+            defer std.testing.allocator.free(final_ids);
             const appends = try std.testing.allocator.alloc(RouteAppend(TextSink), count);
             defer std.testing.allocator.free(appends);
-            for (inverse, appends, 0..) |*original, *append, index| {
-                original.* = count - index - 1;
+            for (final_ids, appends, 0..) |*final, *append, index| {
+                final.* = @intCast(count - index - 1);
                 append.* = .{ .route_index = @intCast(index), .value = .{ .kind = .text_node, .index = index } };
             }
+            var remap = try testRemapFromFinalIds(std.testing.allocator, final_ids);
+            defer remap.deinit(std.testing.allocator);
             var routes: RouteTable(TextSink) = .empty;
             defer routes.deinit(std.testing.allocator);
             var work: usize = 0;
-            var prepared = try prepareRouteAppendsAfterReleaseWithWork(TextSink, std.testing.allocator, &routes, inverse, count, appends, &work);
+            var prepared = try prepareRouteAppendsAfterReleaseWithWork(TextSink, std.testing.allocator, &routes, &remap, count, appends, &work);
             defer prepared.deinit(std.testing.allocator);
             return work;
         }
@@ -2756,7 +3180,8 @@ test "shared dense route planner serves every sink kind through retirement, faul
         // Old records 2 and 3 survive as final records 0 and 1. Final records
         // 2, 3, and 4 are fresh; final 2 reuses the dense ID of a spilled old
         // record and must not inherit its routes.
-        const original_record_ids = [_]usize{ 2, 3 };
+        var remap = try testRemapFromFinalIds(std.testing.allocator, &.{ null, null, 0, 1 });
+        defer remap.deinit(std.testing.allocator);
         const appends = [_]RouteAppend(Route){
             .{ .route_index = 3, .value = sampleRoute(Route, 30) },
             .{ .route_index = 0, .value = sampleRoute(Route, 10) },
@@ -2768,7 +3193,7 @@ test "shared dense route planner serves every sink kind through retirement, faul
         };
 
         var counter = FaultAllocator.init(std.testing.allocator);
-        var baseline = try prepareRouteAppendsAfterRelease(Route, counter.allocator(), &routes, &original_record_ids, 5, &appends);
+        var baseline = try prepareRouteAppendsAfterRelease(Route, counter.allocator(), &routes, &remap, 5, &appends);
         defer baseline.deinit(counter.allocator());
         try std.testing.expectEqual(@as(usize, 4), baseline.replacements.len);
         // Counters, replacements, and one spill per multi-route replacement.
@@ -2782,7 +3207,7 @@ test "shared dense route planner serves every sink kind through retirement, faul
         for (1..attempts + 1) |failure_number| {
             var fault = FaultAllocator.init(std.testing.allocator);
             fault.configure(failure_number);
-            try std.testing.expectError(error.OutOfMemory, prepareRouteAppendsAfterRelease(Route, fault.allocator(), &routes, &original_record_ids, 5, &appends));
+            try std.testing.expectError(error.OutOfMemory, prepareRouteAppendsAfterRelease(Route, fault.allocator(), &routes, &remap, 5, &appends));
             try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
             try expectUnchanged(&routes, &snapshot);
         }
@@ -2790,14 +3215,15 @@ test "shared dense route planner serves every sink kind through retirement, faul
         // Invalid destinations are rejected before any replacement is built.
         const invalid = [_]RouteAppend(Route){.{ .route_index = 5, .value = sampleRoute(Route, 50) }};
         var rejected = FaultAllocator.init(std.testing.allocator);
-        try std.testing.expectError(error.InvalidAppend, prepareRouteAppendsAfterRelease(Route, rejected.allocator(), &routes, &original_record_ids, 5, &invalid));
-        try std.testing.expectEqual(@as(usize, 1), rejected.attempts);
+        try std.testing.expectError(error.InvalidAppend, prepareRouteAppendsAfterRelease(Route, rejected.allocator(), &routes, &remap, 5, &invalid));
+        try std.testing.expectEqual(@as(usize, 0), rejected.attempts);
         try std.testing.expectError(error.InvalidAppend, prepareRouteAppends(Route, rejected.allocator(), &routes, 5, &invalid));
-        try std.testing.expectError(error.InvalidAppend, prepareRouteAppendsAfterRelease(Route, rejected.allocator(), &routes, &.{ 0, 1, 2 }, 2, &appends));
+        const oversized = DenseRemap.identity(3);
+        try std.testing.expectError(error.InvalidAppend, prepareRouteAppendsAfterRelease(Route, rejected.allocator(), &routes, &oversized, 2, &appends));
         try expectUnchanged(&routes, &snapshot);
 
         // No appends prepare no replacements and publish only padding.
-        var nothing = try prepareRouteAppendsAfterRelease(Route, counter.allocator(), &routes, &original_record_ids, 5, &.{});
+        var nothing = try prepareRouteAppendsAfterRelease(Route, counter.allocator(), &routes, &remap, 5, &.{});
         defer nothing.deinit(counter.allocator());
         try std.testing.expectEqual(@as(usize, 0), nothing.replacements.len);
 
@@ -2830,7 +3256,8 @@ test "dense source route preparation remaps survivors before ordered appends" {
     try routes.items[0].append(std.testing.allocator, 3);
     try routes.items[0].append(std.testing.allocator, 1);
     try routes.items[0].append(std.testing.allocator, 2);
-    const final_record_ids = [_]?u64{ 4, null, 7, 9 };
+    var remap = try testRemapFromFinalIds(std.testing.allocator, &.{ 4, null, 7, 9 });
+    defer remap.deinit(std.testing.allocator);
     const appends = [_]RouteAppend(u64){
         .{ .route_index = 2, .value = 12 },
         .{ .route_index = 0, .value = 10 },
@@ -2838,13 +3265,13 @@ test "dense source route preparation remaps survivors before ordered appends" {
         .{ .route_index = 0, .value = 11 },
     };
     var counter = FaultAllocator.init(std.testing.allocator);
-    var prepared = try prepareSourceRouteAppendsAfterRelease(counter.allocator(), &routes, &final_record_ids, 3, &appends);
+    var prepared = try prepareSourceRouteAppendsAfterRelease(counter.allocator(), &routes, &remap, 3, &appends);
     defer prepared.deinit(counter.allocator());
     const attempts = counter.attempts;
     for (1..attempts + 1) |failure_number| {
         var fault = FaultAllocator.init(std.testing.allocator);
         fault.configure(failure_number);
-        try std.testing.expectError(error.OutOfMemory, prepareSourceRouteAppendsAfterRelease(fault.allocator(), &routes, &final_record_ids, 3, &appends));
+        try std.testing.expectError(error.OutOfMemory, prepareSourceRouteAppendsAfterRelease(fault.allocator(), &routes, &remap, 3, &appends));
         try std.testing.expectEqualSlices(u64, &.{ 3, 1, 2 }, routes.items[0].slice());
     }
     try prepared.reserveOuter(counter.allocator(), &routes, 3);
@@ -2882,29 +3309,32 @@ test "prepared graph append enumerates missing topology without mutating survivo
     _ = retainRecord(LifecycleTestRecord, std.testing.allocator, &nodes, &source_routes, 4, &survivor, &hooks);
     try std.testing.expectEqual(@as(usize, 1), survivor.active_use_count);
     try std.testing.expectEqualSlices(u64, &.{0}, source_routes.items[0].slice());
-    const mapping = [_]?u64{0};
+    var none = PreparedReleaseClosure(LifecycleTestRecord).none(1);
+    defer none.deinit(std.testing.allocator);
+    const mapping = &none.remap;
     const roots = [_]*LifecycleTestRecord{ &mapped, &root };
 
     var counter = FaultAllocator.init(std.testing.allocator);
-    var baseline = try prepareGraphAppend(LifecycleTestRecord, counter.allocator(), nodes.items, &mapping, &roots);
+    var baseline = try prepareGraphAppend(LifecycleTestRecord, counter.allocator(), nodes.items, &none, &roots);
     defer baseline.deinit(counter.allocator());
     const attempts = counter.attempts;
     try std.testing.expect(attempts != 0);
     try std.testing.expectEqualSlices(*LifecycleTestRecord, &.{ &mapped, &fresh, &root }, baseline.records);
     try std.testing.expectEqualSlices(u64, &.{ 1, 2, 3 }, baseline.record_ids);
-    try std.testing.expectEqual(@as(?u64, 0), baseline.plannedRecordId(nodes.items, &survivor));
-    try std.testing.expectEqual(@as(?u64, 1), baseline.plannedRecordId(nodes.items, &mapped));
-    try std.testing.expectEqual(@as(?u64, 2), baseline.plannedRecordId(nodes.items, &fresh));
-    try std.testing.expectEqual(@as(?u64, 3), baseline.plannedRecordId(nodes.items, &root));
+    try std.testing.expectEqual(@as(?u64, 0), baseline.plannedRecordId(mapping, nodes.items, &survivor));
+    try std.testing.expectEqual(@as(?u64, 1), baseline.plannedRecordId(mapping, nodes.items, &mapped));
+    try std.testing.expectEqual(@as(?u64, 2), baseline.plannedRecordId(mapping, nodes.items, &fresh));
+    try std.testing.expectEqual(@as(?u64, 3), baseline.plannedRecordId(mapping, nodes.items, &root));
     try std.testing.expectEqualSlices(u64, &.{ 1, 0, 2 }, baseline.ranks);
     try std.testing.expectEqualSlices(usize, &.{ 2, 1, 1 }, baseline.use_counts);
     try std.testing.expectEqual(@as(usize, 1), mapped.ref_count);
     try std.testing.expectEqual(@as(usize, 1), fresh.ref_count);
     try std.testing.expectEqual(@as(usize, 1), root.ref_count);
     try std.testing.expectEqualSlices(ExistingUseIncrement, &.{.{ .record_id = 0, .count = 1 }}, baseline.existing_use_increments);
-    try std.testing.expectEqual(@as(usize, 1), baseline.survivor_adjacency.len);
-    try std.testing.expectEqual(@as(u64, 0), baseline.survivor_adjacency[0].record_id);
-    try std.testing.expectEqualSlices(u64, &.{1}, baseline.survivor_adjacency[0].dependents.slice());
+    // The survivor's edge is appended in place at commit (its inline slot is
+    // free), so the release owns no replacement list for it.
+    try std.testing.expectEqualSlices(SurvivorEdgeAppend, &.{.{ .input_id = 0, .dependent_id = 1, .position = 0 }}, baseline.survivor_edges);
+    try std.testing.expectEqual(@as(usize, 0), none.replacements.items.len);
     try std.testing.expectEqualSlices(u64, &.{3}, baseline.new_nodes[0].dependents.slice());
     try std.testing.expectEqualSlices(u64, &.{3}, baseline.new_nodes[1].dependents.slice());
     try std.testing.expectEqualSlices(u64, &.{}, baseline.new_nodes[2].dependents.slice());
@@ -2912,7 +3342,7 @@ test "prepared graph append enumerates missing topology without mutating survivo
     for (1..attempts + 1) |failure_number| {
         var fault = FaultAllocator.init(std.testing.allocator);
         fault.configure(failure_number);
-        try std.testing.expectError(error.OutOfMemory, prepareGraphAppend(LifecycleTestRecord, fault.allocator(), nodes.items, &mapping, &roots));
+        try std.testing.expectError(error.OutOfMemory, prepareGraphAppend(LifecycleTestRecord, fault.allocator(), nodes.items, &none, &roots));
         try std.testing.expectEqual(@as(usize, 1), nodes.items.len);
         try std.testing.expectEqual(@as(?u64, 0), survivor.active_graph_id);
         try std.testing.expectEqual(@as(usize, 1), survivor.active_use_count);
@@ -2962,14 +3392,18 @@ test "prepared graph append indexes new records with linear lookup work" {
                 root.* = map;
             }
 
-            var lookup_work: usize = 0;
-            var prepared = try prepareGraphAppendWithWork(LifecycleTestRecord, std.testing.allocator, &.{}, &.{}, roots, &lookup_work);
+            var work: PreparationWork = .{};
+            var empty = PreparedReleaseClosure(LifecycleTestRecord).none(0);
+            defer empty.deinit(std.testing.allocator);
+            var prepared = try prepareGraphAppendWithWork(LifecycleTestRecord, std.testing.allocator, &.{}, &empty, roots, &work);
             defer prepared.deinit(std.testing.allocator);
             try std.testing.expectEqual(count + 1, prepared.records.len);
             try std.testing.expectEqual(count, prepared.use_counts[0]);
             try std.testing.expectEqual(@as(u64, 0), prepared.ranks[0]);
             for (prepared.ranks[1..]) |prepared_rank| try std.testing.expectEqual(@as(u64, 1), prepared_rank);
-            return lookup_work;
+            try std.testing.expectEqual(@as(usize, 0), work.records);
+            try std.testing.expectEqual(@as(usize, 0), work.edges);
+            return work.lookups;
         }
     }.run;
 
@@ -2991,9 +3425,11 @@ test "replacement retain indexing has linear work and terminates shared cycles" 
                 map.* = .{ .id = @intCast(index + 2), .payload = .{ .map = .{ .input = &shared } } };
                 root.* = map;
             }
-            var work: usize = 0;
-            try countExistingRetainsWithWork(LifecycleTestRecord, std.testing.allocator, &.{}, roots, &.{}, &work);
-            return work;
+            var work: PreparationWork = .{};
+            var existing: TouchedCounts = .{};
+            defer existing.deinit(std.testing.allocator);
+            try countExistingRetainsWithWork(LifecycleTestRecord, std.testing.allocator, &.{}, roots, &existing, &work);
+            return work.lookups;
         }
     }.run;
 
@@ -3005,9 +3441,11 @@ test "replacement retain indexing has linear work and terminates shared cycles" 
     var left = LifecycleTestRecord{ .id = 1, .payload = .const_value };
     var right = LifecycleTestRecord{ .id = 2, .payload = .{ .map = .{ .input = &left } } };
     left.payload = .{ .map = .{ .input = &right } };
-    var cycle_work: usize = 0;
-    try countExistingRetainsWithWork(LifecycleTestRecord, std.testing.allocator, &.{}, &.{&left}, &.{}, &cycle_work);
-    try std.testing.expectEqual(@as(usize, 3), cycle_work);
+    var cycle_work: PreparationWork = .{};
+    var cycle_existing: TouchedCounts = .{};
+    defer cycle_existing.deinit(std.testing.allocator);
+    try countExistingRetainsWithWork(LifecycleTestRecord, std.testing.allocator, &.{}, &.{&left}, &cycle_existing, &cycle_work);
+    try std.testing.expectEqual(@as(usize, 3), cycle_work.lookups);
 }
 
 test "prepared release closure nets replacement retains so a handed-over record survives" {
@@ -3059,7 +3497,12 @@ test "prepared release closure nets replacement retains so a handed-over record 
     const release_attempts = counter.attempts;
     try std.testing.expect(release_attempts != 0);
     try std.testing.expectEqualSlices(*LifecycleTestRecord, &.{&old_root}, release.records);
-    try std.testing.expectEqualSlices(?u64, &.{ 0, 1, null, 2 }, release.final_record_ids);
+    try std.testing.expectEqual(@as(?u64, 0), release.remap.finalId(0));
+    try std.testing.expectEqual(@as(?u64, 1), release.remap.finalId(1));
+    try std.testing.expectEqual(@as(?u64, null), release.remap.finalId(2));
+    try std.testing.expectEqual(@as(?u64, 2), release.remap.finalId(3));
+    try std.testing.expectEqual(@as(?u64, 3), release.remap.originalId(2));
+    try std.testing.expectEqual(@as(usize, 3), release.remap.survivor_count);
     try std.testing.expectEqualSlices(ExistingUseIncrement, &.{ .{ .record_id = 0, .count = 1 }, .{ .record_id = 1, .count = 1 } }, release.survivor_use_decrements);
     for (1..release_attempts + 1) |failure_number| {
         var fault = FaultAllocator.init(std.testing.allocator);
@@ -3070,12 +3513,12 @@ test "prepared release closure nets replacement retains so a handed-over record 
         for (nodes.items, 0..) |node, index| try std.testing.expectEqual(@as(?u64, @intCast(index)), node.record.active_graph_id);
     }
 
-    var append = try prepareGraphAppend(LifecycleTestRecord, counter.allocator(), nodes.items, release.final_record_ids, &replacement_roots);
+    var append = try prepareGraphAppend(LifecycleTestRecord, counter.allocator(), nodes.items, &release, &replacement_roots);
     defer append.deinit(counter.allocator());
     try std.testing.expectEqualSlices(*LifecycleTestRecord, &.{&new_root}, append.records);
     try std.testing.expectEqualSlices(u64, &.{3}, append.record_ids);
     try std.testing.expectEqualSlices(ExistingUseIncrement, &.{.{ .record_id = 0, .count = 1 }}, append.existing_use_increments);
-    try std.testing.expectEqual(@as(?u64, 0), append.plannedRecordId(nodes.items, &source));
+    try std.testing.expectEqual(@as(?u64, 0), append.plannedRecordId(&release.remap, nodes.items, &source));
 
     try append.reservePublication(counter.allocator(), &nodes);
     try append.reserveParallelRoutes(counter.allocator(), &text_routes, &bool_routes, &change_routes, &structural_routes);
@@ -3084,7 +3527,7 @@ test "prepared release closure nets replacement retains so a handed-over record 
     release.applyDense(&nodes, &source_routes, &text_routes, &bool_routes, &change_routes, &structural_routes);
     append.commitNodes(&nodes);
     append.commitParallelRoutes(&text_routes, &bool_routes, &change_routes, &structural_routes);
-    release.releaseRetired(counter.allocator(), &hooks);
+    release.releaseRetired(counter.allocator(), nodes.items, &hooks);
     try std.testing.expectEqual(@as(usize, 0), counter.attempts);
     try std.testing.expectEqual(@as(usize, 4), nodes.items.len);
     try std.testing.expectEqual(@as(?u64, 0), source.active_graph_id);
@@ -3146,8 +3589,11 @@ test "prepared release closure preserves shared diamond and computes dense remap
     try std.testing.expectEqualDeep(PreparedReleaseStep{ .record_id = 1, .removal_index = 1, .moved_record_id = 2 }, baseline.steps[1]);
     try std.testing.expectEqualDeep(PreparedReleaseStep{ .record_id = 2, .removal_index = 1, .moved_record_id = null }, baseline.steps[2]);
     try std.testing.expectEqualDeep(PreparedReleaseStep{ .record_id = 0, .removal_index = 0, .moved_record_id = null }, baseline.steps[3]);
-    try std.testing.expectEqualSlices(?u64, &.{ null, null, null, null }, baseline.final_record_ids);
-    try std.testing.expectEqual(@as(usize, 3), baseline.adjacency.len);
+    for (0..4) |original| try std.testing.expectEqual(@as(?u64, null), baseline.remap.finalId(@intCast(original)));
+    try std.testing.expectEqual(@as(usize, 0), baseline.remap.survivor_count);
+    // Every input retires with its dependents, so no list is edited in place.
+    try std.testing.expectEqual(@as(usize, 0), baseline.edge_drops.len);
+    try std.testing.expectEqual(@as(usize, 0), baseline.replacements.items.len);
     try std.testing.expect(attempts != 0);
 
     for (1..attempts + 1) |failure_number| {
@@ -3166,9 +3612,11 @@ test "prepared release closure preserves shared diamond and computes dense remap
     counter.configure(1);
     baseline.applyAdjacency(nodes.items);
     try std.testing.expectEqual(@as(usize, 0), counter.attempts);
-    try std.testing.expectEqualSlices(u64, &.{}, nodes.items[0].dependents.slice());
-    try std.testing.expectEqualSlices(u64, &.{}, nodes.items[1].dependents.slice());
-    try std.testing.expectEqualSlices(u64, &.{}, nodes.items[2].dependents.slice());
+    // Retired inputs keep their lists until `releaseRetired` frees them
+    // wholesale; nothing is edited edge by edge.
+    try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, nodes.items[0].dependents.slice());
+    try std.testing.expectEqualSlices(u64, &.{3}, nodes.items[1].dependents.slice());
+    try std.testing.expectEqualSlices(u64, &.{3}, nodes.items[2].dependents.slice());
     baseline.applyDense(&nodes, &source_routes, &text_routes, &bool_routes, &change_routes, &structural_routes);
     try std.testing.expectEqual(@as(usize, 0), nodes.items.len);
     try std.testing.expectEqual(@as(usize, 0), text_routes.items.len);
@@ -3177,9 +3625,662 @@ test "prepared release closure preserves shared diamond and computes dense remap
     try std.testing.expectEqual(@as(usize, 0), structural_routes.items.len);
     try std.testing.expectEqualSlices(u64, &.{}, source_routes.items[0].slice());
     try std.testing.expectEqual(@as(usize, 0), counter.attempts);
-    baseline.releaseRetired(counter.allocator(), &hooks);
+    baseline.releaseRetired(counter.allocator(), nodes.items, &hooks);
     counter.configure(null);
     baseline.deinit(counter.allocator());
+}
+
+/// Locality fixture: `count` independent rows, each `ref` source -> `map`
+/// label -> `map2(label, source)` root, plus an unrelated live diamond that
+/// must survive every transaction untouched. Rows may additionally share one
+/// `shared` ref when `shared_input` is set, which models a row binding that
+/// reads a selection signal every other row also reads.
+const LocalityRows = struct {
+    const Row = struct {
+        source: LifecycleTestRecord,
+        label: LifecycleTestRecord,
+        root: LifecycleTestRecord,
+    };
+
+    allocator: std.mem.Allocator,
+    rows: []Row,
+    shared: LifecycleTestRecord,
+    diamond_source: LifecycleTestRecord,
+    diamond_left: LifecycleTestRecord,
+    diamond_right: LifecycleTestRecord,
+    diamond_root: LifecycleTestRecord,
+    nodes: shared_buffer.List(Node(LifecycleTestRecord)) = .empty,
+    source_routes: RouteTable(u64) = .empty,
+    text_routes: RouteTable(TextSink) = .empty,
+    bool_routes: RouteTable(BoolSink) = .empty,
+    change_routes: RouteTable(ChangeSink) = .empty,
+    structural_routes: RouteTable(StructuralSink) = .empty,
+    hooks: LifecycleTestHooks = .{},
+
+    fn sourceNodeCount(self: *const LocalityRows) usize {
+        return self.rows.len + 2;
+    }
+
+    /// Builds `count` committed rows. Records live behind stable heap
+    /// addresses because the graph keys them by pointer.
+    fn init(allocator: std.mem.Allocator, count: usize, shared_input: bool) !*LocalityRows {
+        const self = try allocator.create(LocalityRows);
+        errdefer allocator.destroy(self);
+        const rows = try allocator.alloc(Row, count);
+        errdefer allocator.free(rows);
+        self.* = .{
+            .allocator = allocator,
+            .rows = rows,
+            .shared = .{ .id = 1, .payload = .{ .ref = @intCast(count) } },
+            .diamond_source = .{ .id = 2, .payload = .{ .ref = @intCast(count + 1) } },
+            .diamond_left = .{ .id = 3, .payload = .const_value },
+            .diamond_right = .{ .id = 4, .payload = .const_value },
+            .diamond_root = .{ .id = 5, .payload = .const_value },
+        };
+        self.diamond_left.payload = .{ .map = .{ .input = &self.diamond_source } };
+        self.diamond_right.payload = .{ .map = .{ .input = &self.diamond_source } };
+        self.diamond_root.payload = .{ .map2 = .{ .left = &self.diamond_left, .right = &self.diamond_right } };
+        for (self.rows, 0..) |*row, index| self.initRow(row, index, shared_input);
+        for (self.rows) |*row| try self.commitRoot(&row.root);
+        try self.commitRoot(&self.diamond_root);
+        return self;
+    }
+
+    fn initRow(self: *LocalityRows, row: *Row, index: usize, shared_input: bool) void {
+        const base: u64 = @intCast(10 + index * 3);
+        row.source = .{ .id = base, .payload = .{ .ref = @intCast(index) } };
+        row.label = .{ .id = base + 1, .payload = .{ .map = .{ .input = &row.source } } };
+        row.root = .{ .id = base + 2, .payload = .{ .map2 = .{ .left = &row.label, .right = if (shared_input) &self.shared else &row.source } } };
+    }
+
+    /// Retains a root the way initial ingestion does and gives its record a
+    /// text sink so dense moves can be checked against the parallel tables.
+    fn commitRoot(self: *LocalityRows, root: *LifecycleTestRecord) !void {
+        _ = retainRecord(LifecycleTestRecord, self.allocator, &self.nodes, &self.source_routes, self.sourceNodeCount(), root, &self.hooks);
+        while (self.text_routes.items.len < self.nodes.items.len) {
+            try self.text_routes.append(self.allocator, .empty);
+            try self.bool_routes.append(self.allocator, .empty);
+            try self.change_routes.append(self.allocator, .empty);
+            try self.structural_routes.append(self.allocator, .empty);
+        }
+        self.text_routes.items[@intCast(root.active_graph_id.?)] = .{ .one = .{ .kind = .text_node, .index = @intCast(root.id) } };
+    }
+
+    fn deinit(self: *LocalityRows) void {
+        const allocator = self.allocator;
+        clearSourceRoutes(allocator, &self.source_routes);
+        self.source_routes.deinit(allocator);
+        clearSinkRoutes(allocator, &self.text_routes, &self.bool_routes, &self.change_routes, &self.structural_routes);
+        self.text_routes.deinit(allocator);
+        self.bool_routes.deinit(allocator);
+        self.change_routes.deinit(allocator);
+        self.structural_routes.deinit(allocator);
+        clear(LifecycleTestRecord, allocator, &self.nodes, &self.hooks);
+        self.nodes.deinit(allocator);
+        allocator.free(self.rows);
+        allocator.destroy(self);
+    }
+
+    /// Whole-graph audit (test only): dense ids match slots, every edge points
+    /// at a live slot, every input lists its dependent exactly once, every
+    /// live `ref` sits in its source route exactly once, retired records carry
+    /// no id, and each root's text sink travelled with its record.
+    fn audit(self: *LocalityRows) !void {
+        try auditDenseIds(LifecycleTestRecord, self.nodes.items);
+        try std.testing.expectEqual(self.nodes.items.len, self.text_routes.items.len);
+        var inputs: shared_buffer.List(*LifecycleTestRecord) = .empty;
+        defer inputs.deinit(self.allocator);
+        for (self.nodes.items, 0..) |node, index| {
+            const id: u64 = @intCast(index);
+            try std.testing.expect(node.record.active_use_count != 0);
+            inputs.clearRetainingCapacity();
+            appendInputRecords(LifecycleTestRecord, self.allocator, &inputs, node.record);
+            for (inputs.items) |input| {
+                const input_id: usize = @intCast(input.active_graph_id orelse return error.TestUnexpectedResult);
+                var seen: usize = 0;
+                for (self.nodes.items[input_id].dependents.slice()) |dependent| if (dependent == id) {
+                    seen += 1;
+                };
+                try std.testing.expectEqual(@as(usize, 1), seen);
+                try std.testing.expect(self.nodes.items[input_id].rank < node.rank);
+            }
+            switch (node.record.payload) {
+                .ref => |source_node_id| {
+                    var seen: usize = 0;
+                    for (self.source_routes.items[@intCast(source_node_id)].slice()) |route_id| if (route_id == id) {
+                        seen += 1;
+                    };
+                    try std.testing.expectEqual(@as(usize, 1), seen);
+                },
+                else => {},
+            }
+        }
+        var total_routed: usize = 0;
+        for (self.source_routes.items) |route| total_routed += route.len();
+        var live_refs: usize = 0;
+        for (self.nodes.items) |node| switch (node.record.payload) {
+            .ref => live_refs += 1,
+            else => {},
+        };
+        try std.testing.expectEqual(live_refs, total_routed);
+        for (self.rows) |*row| try self.auditRoot(&row.root);
+        try self.auditRoot(&self.diamond_root);
+    }
+
+    fn auditRoot(self: *LocalityRows, root: *const LifecycleTestRecord) !void {
+        if (root.active_graph_id) |id| {
+            const routes = self.text_routes.items[@intCast(id)].slice();
+            try std.testing.expectEqual(@as(usize, 1), routes.len);
+            try std.testing.expectEqual(@as(usize, @intCast(root.id)), routes[0].index);
+            try std.testing.expectEqual(@as(usize, 2), root.ref_count);
+        } else {
+            try std.testing.expectEqual(@as(usize, 0), root.active_use_count);
+            try std.testing.expectEqual(@as(usize, 1), root.ref_count);
+        }
+    }
+};
+
+/// One prepared structural transaction over a `LocalityRows` fixture, built
+/// in the same order the engine builds it: release, append, then every
+/// route planner (including the no-op planners for sink kinds with no
+/// appends). Measures the work counters and the allocator traffic.
+const LocalityTransaction = struct {
+    release: PreparedReleaseClosure(LifecycleTestRecord),
+    append: PreparedGraphAppend(LifecycleTestRecord),
+    source_appends: PreparedRouteAppends(u64),
+    text_appends: PreparedRouteAppends(TextSink),
+    bool_appends: PreparedRouteAppends(BoolSink),
+    change_appends: PreparedRouteAppends(ChangeSink),
+    structural_appends: PreparedRouteAppends(StructuralSink),
+    release_work: PreparationWork = .{},
+    append_work: PreparationWork = .{},
+    source_route_count: usize,
+
+    fn prepare(allocator: std.mem.Allocator, fixture: *LocalityRows, retired_roots: []const *LifecycleTestRecord, replacement_rows: []LocalityRows.Row) !LocalityTransaction {
+        var replacement_roots: shared_buffer.List(*LifecycleTestRecord) = .empty;
+        defer replacement_roots.deinit(std.testing.allocator);
+        for (replacement_rows) |*row| try replacement_roots.append(std.testing.allocator, &row.root);
+        var self: LocalityTransaction = undefined;
+        self.release_work = .{};
+        self.append_work = .{};
+        self.release = try prepareReleaseClosureWithWork(LifecycleTestRecord, allocator, fixture.nodes.items, retired_roots, replacement_roots.items, &self.release_work);
+        errdefer self.release.deinit(allocator);
+        self.append = try prepareGraphAppendWithWork(LifecycleTestRecord, allocator, fixture.nodes.items, &self.release, replacement_roots.items, &self.append_work);
+        errdefer self.append.deinit(allocator);
+        const graph_count = self.append.finalGraphCount();
+        var source_inputs: shared_buffer.List(RouteAppend(u64)) = .empty;
+        defer source_inputs.deinit(std.testing.allocator);
+        var text_inputs: shared_buffer.List(RouteAppend(TextSink)) = .empty;
+        defer text_inputs.deinit(std.testing.allocator);
+        for (replacement_rows) |*row| {
+            const root_id = self.append.plannedRecordId(&self.release.remap, fixture.nodes.items, &row.root) orelse return error.TestUnexpectedResult;
+            try text_inputs.append(std.testing.allocator, .{ .route_index = root_id, .value = .{ .kind = .text_node, .index = @intCast(row.root.id) } });
+            const source_id = self.append.plannedRecordId(&self.release.remap, fixture.nodes.items, &row.source) orelse return error.TestUnexpectedResult;
+            try source_inputs.append(std.testing.allocator, .{ .route_index = row.source.payload.ref, .value = source_id });
+        }
+        self.source_route_count = fixture.source_routes.items.len;
+        for (source_inputs.items) |entry| self.source_route_count = @max(self.source_route_count, @as(usize, @intCast(entry.route_index)) + 1);
+        self.source_appends = try prepareSourceRouteAppendsAfterRelease(allocator, &fixture.source_routes, &self.release.remap, self.source_route_count, source_inputs.items);
+        errdefer self.source_appends.deinit(allocator);
+        self.text_appends = try prepareRouteAppendsAfterRelease(TextSink, allocator, &fixture.text_routes, &self.release.remap, graph_count, text_inputs.items);
+        errdefer self.text_appends.deinit(allocator);
+        self.bool_appends = try prepareRouteAppendsAfterRelease(BoolSink, allocator, &fixture.bool_routes, &self.release.remap, graph_count, &.{});
+        errdefer self.bool_appends.deinit(allocator);
+        self.change_appends = try prepareRouteAppendsAfterRelease(ChangeSink, allocator, &fixture.change_routes, &self.release.remap, graph_count, &.{});
+        errdefer self.change_appends.deinit(allocator);
+        self.structural_appends = try prepareRouteAppendsAfterRelease(StructuralSink, allocator, &fixture.structural_routes, &self.release.remap, graph_count, &.{});
+        errdefer self.structural_appends.deinit(allocator);
+        try self.append.reservePublication(allocator, &fixture.nodes);
+        try self.append.reserveParallelRoutes(allocator, &fixture.text_routes, &fixture.bool_routes, &fixture.change_routes, &fixture.structural_routes);
+        try self.source_appends.reserveOuter(allocator, &fixture.source_routes, self.source_route_count);
+        return self;
+    }
+
+    /// Publishes in engine order. Retiring roots drop their text sink first,
+    /// as the engine's sink edits do before dense retirement.
+    fn commit(self: *LocalityTransaction, allocator: std.mem.Allocator, fixture: *LocalityRows) void {
+        for (self.release.records) |record| fixture.text_routes.items[@intCast(record.active_graph_id.?)] = .empty;
+        self.release.applyAdjacency(fixture.nodes.items);
+        self.release.applyDense(&fixture.nodes, &fixture.source_routes, &fixture.text_routes, &fixture.bool_routes, &fixture.change_routes, &fixture.structural_routes);
+        self.append.commitNodes(&fixture.nodes);
+        self.append.commitParallelRoutes(&fixture.text_routes, &fixture.bool_routes, &fixture.change_routes, &fixture.structural_routes);
+        self.source_appends.apply(&fixture.source_routes, self.source_route_count);
+        const graph_count = self.append.finalGraphCount();
+        self.text_appends.apply(&fixture.text_routes, graph_count);
+        self.bool_appends.apply(&fixture.bool_routes, graph_count);
+        self.change_appends.apply(&fixture.change_routes, graph_count);
+        self.structural_appends.apply(&fixture.structural_routes, graph_count);
+        self.append.registerAppendedEffects(&fixture.hooks);
+        self.release.releaseRetired(allocator, fixture.nodes.items, &fixture.hooks);
+    }
+
+    fn deinit(self: *LocalityTransaction, allocator: std.mem.Allocator) void {
+        self.structural_appends.deinit(allocator);
+        self.change_appends.deinit(allocator);
+        self.bool_appends.deinit(allocator);
+        self.text_appends.deinit(allocator);
+        self.source_appends.deinit(allocator);
+        self.append.deinit(allocator);
+        self.release.deinit(allocator);
+    }
+};
+
+/// Work and allocator traffic one prepared transaction cost.
+const LocalityCost = struct {
+    records: usize,
+    edges: usize,
+    attempts: usize,
+    bytes: usize,
+    graph_len: usize,
+
+    fn expectIndependentOfGraphSize(small: LocalityCost, large: LocalityCost) !void {
+        try std.testing.expect(large.graph_len > 9 * small.graph_len);
+        try std.testing.expectEqual(small.records, large.records);
+        try std.testing.expectEqual(small.edges, large.edges);
+        try std.testing.expectEqual(small.attempts, large.attempts);
+        try std.testing.expectEqual(small.bytes, large.bytes);
+    }
+};
+
+fn measureLocality(fixture: *LocalityRows, retired_roots: []const *LifecycleTestRecord, replacement_rows: []LocalityRows.Row, commit: bool) !LocalityCost {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var counter = FaultAllocator.init(std.testing.allocator);
+    const graph_len = fixture.nodes.items.len;
+    var transaction = try LocalityTransaction.prepare(counter.allocator(), fixture, retired_roots, replacement_rows);
+    const cost: LocalityCost = .{
+        .records = transaction.release_work.records + transaction.append_work.records,
+        .edges = transaction.release_work.edges + transaction.append_work.edges,
+        .attempts = counter.attempts,
+        .bytes = counter.bytes.requested,
+        .graph_len = graph_len,
+    };
+    if (commit) {
+        counter.configure(1);
+        transaction.commit(counter.allocator(), fixture);
+        try std.testing.expectEqual(@as(usize, 0), counter.attempts);
+        counter.configure(null);
+    }
+    transaction.deinit(counter.allocator());
+    return cost;
+}
+
+fn initReplacementRows(count: usize, first_source_node: u64) ![]LocalityRows.Row {
+    const rows = try std.testing.allocator.alloc(LocalityRows.Row, count);
+    for (rows, 0..) |*row, index| {
+        const base: u64 = 100_000 + @as(u64, @intCast(index)) * 3;
+        row.source = .{ .id = base, .payload = .{ .ref = first_source_node + @as(u64, @intCast(index)) } };
+        row.label = .{ .id = base + 1, .payload = .{ .map = .{ .input = &row.source } } };
+        row.root = .{ .id = base + 2, .payload = .{ .map2 = .{ .left = &row.label, .right = &row.source } } };
+    }
+    return rows;
+}
+
+test "release and append preparation for one row is independent of graph size" {
+    const sizes = [_]usize{ 1_000, 10_000 };
+    var removal: [2]LocalityCost = undefined;
+    var pure_append: [2]LocalityCost = undefined;
+    var mixed: [2]LocalityCost = undefined;
+    var full_clear: [2]LocalityCost = undefined;
+    for (sizes, 0..) |count, sample| {
+        var fixture = try LocalityRows.init(std.testing.allocator, count, false);
+        defer fixture.deinit();
+        try std.testing.expectEqual(3 * count + 4, fixture.nodes.items.len);
+
+        // Remove one row from the middle after the graph is fully live.
+        const middle = &fixture.rows[count / 2];
+        removal[sample] = try measureLocality(fixture, &.{&middle.root}, &.{}, true);
+        try std.testing.expectEqual(3 * count + 1, fixture.nodes.items.len);
+        try std.testing.expectEqual(@as(?u64, null), middle.root.active_graph_id);
+        try std.testing.expectEqual(@as(u64, 3), fixture.hooks.record_releases);
+        try fixture.audit();
+
+        // Pure append of a few rows; the release side must do no graph work.
+        const appended = try initReplacementRows(4, @intCast(count + 2));
+        defer std.testing.allocator.free(appended);
+        pure_append[sample] = try measureLocality(fixture, &.{}, appended, true);
+        try std.testing.expectEqual(3 * count + 13, fixture.nodes.items.len);
+        try fixture.audit();
+
+        // Mixed: retire one committed row while another row arrives.
+        const replaced = try initReplacementRows(1, @intCast(count + 6));
+        defer std.testing.allocator.free(replaced);
+        mixed[sample] = try measureLocality(fixture, &.{&fixture.rows[1].root}, replaced, true);
+        try std.testing.expectEqual(3 * count + 13, fixture.nodes.items.len);
+        try fixture.audit();
+
+        // Full clear retires everything and is measured against its own size.
+        var everything: shared_buffer.List(*LifecycleTestRecord) = .empty;
+        defer everything.deinit(std.testing.allocator);
+        for (fixture.rows) |*row| if (row.root.active_graph_id != null) try everything.append(std.testing.allocator, &row.root);
+        for (appended) |*row| try everything.append(std.testing.allocator, &row.root);
+        for (replaced) |*row| try everything.append(std.testing.allocator, &row.root);
+        try everything.append(std.testing.allocator, &fixture.diamond_root);
+        const live_before = fixture.nodes.items.len;
+        full_clear[sample] = try measureLocality(fixture, everything.items, &.{}, true);
+        try std.testing.expectEqual(@as(usize, 0), fixture.nodes.items.len);
+        try std.testing.expectEqual(@as(usize, 0), fixture.text_routes.items.len);
+        try std.testing.expectEqual(live_before, fixture.hooks.record_releases - 6);
+        // Clearing visits each row four times (root, label, source twice
+        // through the map2) and the diamond five times: work proportional to
+        // the retired set, not more.
+        try std.testing.expectEqual(4 * (everything.items.len - 1) + 5, full_clear[sample].records);
+        for (fixture.source_routes.items) |route| try std.testing.expectEqual(@as(usize, 0), route.len());
+    }
+    try LocalityCost.expectIndependentOfGraphSize(removal[0], removal[1]);
+    try LocalityCost.expectIndependentOfGraphSize(pure_append[0], pure_append[1]);
+    try LocalityCost.expectIndependentOfGraphSize(mixed[0], mixed[1]);
+    // One row: root, label, and the source reached through both map2 inputs.
+    try std.testing.expectEqual(@as(usize, 4), removal[0].records);
+    try std.testing.expect(removal[0].edges <= 8);
+    try std.testing.expectEqual(@as(usize, 0), pure_append[0].records);
+    try std.testing.expectEqual(@as(usize, 0), pure_append[0].edges);
+    try std.testing.expect(full_clear[1].records > 9 * full_clear[0].records);
+}
+
+test "sparse release keeps shared inputs, duplicate edges, and removal order coherent" {
+    // Shared input retained by survivors: every row's root also reads `shared`.
+    {
+        var fixture = try LocalityRows.init(std.testing.allocator, 6, true);
+        defer fixture.deinit();
+        try std.testing.expectEqual(@as(usize, 6), fixture.shared.active_use_count);
+        const shared_id: usize = @intCast(fixture.shared.active_graph_id.?);
+        const before = try std.testing.allocator.dupe(u64, fixture.nodes.items[shared_id].dependents.slice());
+        defer std.testing.allocator.free(before);
+        const retired_root_id = fixture.rows[2].root.active_graph_id.?;
+
+        var preview = try prepareReleaseClosure(LifecycleTestRecord, std.testing.allocator, fixture.nodes.items, &.{&fixture.rows[2].root}, &.{});
+        try std.testing.expectEqualSlices(*LifecycleTestRecord, &.{ &fixture.rows[2].root, &fixture.rows[2].label, &fixture.rows[2].source }, preview.records);
+        try std.testing.expectEqualSlices(ExistingUseIncrement, &.{.{ .record_id = @intCast(shared_id), .count = 1 }}, preview.survivor_use_decrements);
+        // Expected survivor edges: the retired root's edge dropped, the
+        // others renumbered through the remap. Order within the list is not
+        // a contract (the drop swaps the last edge into the hole), so compare
+        // as sets.
+        var expected: shared_buffer.List(u64) = .empty;
+        defer expected.deinit(std.testing.allocator);
+        for (before) |old| if (preview.remap.finalId(old)) |final| try expected.append(std.testing.allocator, final);
+        try std.testing.expectEqual(before.len - 1, expected.items.len);
+        std.mem.sort(u64, expected.items, {}, std.sort.asc(u64));
+        // The root's edge into its own label is not dropped edge by edge: the
+        // label retires too and its list is freed wholesale. Only the edge
+        // into the surviving `shared` input is planned.
+        try std.testing.expectEqualSlices(PreparedEdgeDrop, &.{.{ .input_id = @intCast(shared_id), .dependent_id = retired_root_id, .position = 1 }}, preview.edge_drops);
+        preview.deinit(std.testing.allocator);
+
+        _ = try measureLocality(fixture, &.{&fixture.rows[2].root}, &.{}, true);
+        try fixture.audit();
+        try std.testing.expectEqual(@as(usize, 5), fixture.shared.active_use_count);
+        try std.testing.expectEqual(@as(?u64, @intCast(shared_id)), fixture.shared.active_graph_id);
+        const actual = try std.testing.allocator.dupe(u64, fixture.nodes.items[shared_id].dependents.slice());
+        defer std.testing.allocator.free(actual);
+        std.mem.sort(u64, actual, {}, std.sort.asc(u64));
+        try std.testing.expectEqualSlices(u64, expected.items, actual);
+        for (fixture.rows) |*row| if (row.root.active_graph_id) |id| {
+            try std.testing.expect(containsU64(fixture.nodes.items[shared_id].dependents.slice(), id));
+        };
+        try std.testing.expect(!containsU64(fixture.nodes.items[shared_id].dependents.slice(), retired_root_id) or retired_root_id < fixture.nodes.items.len);
+        try std.testing.expectEqualSlices(u64, &.{@intCast(shared_id)}, fixture.source_routes.items[6].slice());
+    }
+
+    // Duplicate inputs: `map2(x, x)` and `combine([x, x])` decrement `x` once.
+    {
+        var x = LifecycleTestRecord{ .id = 1, .payload = .{ .ref = 0 } };
+        var twice = LifecycleTestRecord{ .id = 2, .payload = .{ .map2 = .{ .left = &x, .right = &x } } };
+        var children = [_]*LifecycleTestRecord{ &x, &x };
+        var combined = LifecycleTestRecord{ .id = 3, .payload = .{ .combine = .{ .children = &children } } };
+        var nodes: shared_buffer.List(Node(LifecycleTestRecord)) = .empty;
+        var source_routes: RouteTable(u64) = .empty;
+        var text_routes: RouteTable(TextSink) = .empty;
+        var bool_routes: RouteTable(BoolSink) = .empty;
+        var change_routes: RouteTable(ChangeSink) = .empty;
+        var structural_routes: RouteTable(StructuralSink) = .empty;
+        var hooks: LifecycleTestHooks = .{};
+        defer {
+            clearSourceRoutes(std.testing.allocator, &source_routes);
+            source_routes.deinit(std.testing.allocator);
+            clear(LifecycleTestRecord, std.testing.allocator, &nodes, &hooks);
+            nodes.deinit(std.testing.allocator);
+        }
+        _ = retainRecord(LifecycleTestRecord, std.testing.allocator, &nodes, &source_routes, 1, &twice, &hooks);
+        _ = retainRecord(LifecycleTestRecord, std.testing.allocator, &nodes, &source_routes, 1, &combined, &hooks);
+        try std.testing.expectEqual(@as(usize, 2), x.active_use_count);
+        try std.testing.expectEqualSlices(u64, &.{ 1, 2 }, nodes.items[0].dependents.slice());
+
+        var release = try prepareReleaseClosure(LifecycleTestRecord, std.testing.allocator, nodes.items, &.{&twice}, &.{});
+        defer release.deinit(std.testing.allocator);
+        try std.testing.expectEqualSlices(*LifecycleTestRecord, &.{&twice}, release.records);
+        try std.testing.expectEqualSlices(ExistingUseIncrement, &.{.{ .record_id = 0, .count = 1 }}, release.survivor_use_decrements);
+        // `twice` drops its single edge into x (both inputs coincide, so one
+        // position) and `combined` moves from slot 2 into slot 1.
+        try std.testing.expectEqualSlices(PreparedEdgeDrop, &.{.{ .input_id = 0, .dependent_id = 1, .position = 0 }}, release.edge_drops);
+        try std.testing.expectEqualSlices(PreparedEdgeRenumber, &.{.{ .input_id = 0, .dependent_id = 2, .final_id = 1, .position = 0 }}, release.edge_renumbers);
+        release.applyAdjacency(nodes.items);
+        try std.testing.expectEqualSlices(u64, &.{1}, nodes.items[0].dependents.slice());
+        release.applyDense(&nodes, &source_routes, &text_routes, &bool_routes, &change_routes, &structural_routes);
+        release.releaseRetired(std.testing.allocator, nodes.items, &hooks);
+        try std.testing.expectEqual(@as(usize, 1), x.active_use_count);
+        try std.testing.expectEqual(@as(?u64, 1), combined.active_graph_id);
+        try std.testing.expectEqualSlices(u64, &.{0}, source_routes.items[0].slice());
+        try auditDenseIds(LifecycleTestRecord, nodes.items);
+
+        var last = try prepareReleaseClosure(LifecycleTestRecord, std.testing.allocator, nodes.items, &.{&combined}, &.{});
+        defer last.deinit(std.testing.allocator);
+        try std.testing.expectEqualSlices(*LifecycleTestRecord, &.{ &combined, &x }, last.records);
+        last.applyAdjacency(nodes.items);
+        last.applyDense(&nodes, &source_routes, &text_routes, &bool_routes, &change_routes, &structural_routes);
+        last.releaseRetired(std.testing.allocator, nodes.items, &hooks);
+        try std.testing.expectEqual(@as(usize, 0), nodes.items.len);
+        try std.testing.expectEqual(@as(usize, 0), source_routes.items[0].len());
+    }
+
+    // Removal order: retiring the first and last rows together makes the
+    // last row's records move into the first row's holes and then retire
+    // from their new slots; the reverse order retires them in place first.
+    for ([_][2]usize{ .{ 0, 7 }, .{ 7, 0 }, .{ 3, 4 }, .{ 7, 6 } }) |order| {
+        var fixture = try LocalityRows.init(std.testing.allocator, 8, false);
+        defer fixture.deinit();
+        const roots = [_]*LifecycleTestRecord{ &fixture.rows[order[0]].root, &fixture.rows[order[1]].root };
+        var release = try prepareReleaseClosure(LifecycleTestRecord, std.testing.allocator, fixture.nodes.items, &roots, &.{});
+        try std.testing.expectEqual(@as(usize, 6), release.records.len);
+        try std.testing.expectEqual(@as(usize, 3 * 8 + 4 - 6), release.remap.survivor_count);
+        for (release.records) |record| try std.testing.expectEqual(@as(?u64, null), release.remap.finalId(record.active_graph_id.?));
+        // Every displaced survivor came from beyond the survivor prefix.
+        var displaced = release.remap.inverse.iterator();
+        while (displaced.next()) |entry| {
+            try std.testing.expect(entry.value_ptr.* >= release.remap.survivor_count);
+            try std.testing.expect(entry.key_ptr.* < release.remap.survivor_count);
+            try std.testing.expectEqual(@as(?u64, entry.key_ptr.*), release.remap.finalId(entry.value_ptr.*));
+        }
+        release.deinit(std.testing.allocator);
+        _ = try measureLocality(fixture, &roots, &.{}, true);
+        try std.testing.expectEqual(@as(usize, 3 * 8 + 4 - 6), fixture.nodes.items.len);
+        try fixture.audit();
+        try std.testing.expectEqual(@as(u64, 6), fixture.hooks.record_releases);
+    }
+}
+
+test "dropping or adding one edge on a shared input is independent of its fan-out" {
+    const sizes = [_]usize{ 1_000, 10_000 };
+    var removal: [2]LocalityCost = undefined;
+    var shared_append: [2]LocalityCost = undefined;
+    var mixed: [2]LocalityCost = undefined;
+    for (sizes, 0..) |count, sample| {
+        // Replacement rows outlive the fixture: once published they belong to
+        // its graph and are released by its teardown.
+        const appended = try initReplacementRows(1, @intCast(count + 2));
+        defer std.testing.allocator.free(appended);
+        const replaced = try initReplacementRows(1, @intCast(count + 3));
+        defer std.testing.allocator.free(replaced);
+        var fixture = try LocalityRows.init(std.testing.allocator, count, true);
+        defer fixture.deinit();
+        const shared_id: usize = @intCast(fixture.shared.active_graph_id.?);
+        try std.testing.expectEqual(count, fixture.nodes.items[shared_id].dependents.len());
+
+        // Retire one of the `count` rows that all read `shared`.
+        removal[sample] = try measureLocality(fixture, &.{&fixture.rows[count / 2].root}, &.{}, true);
+        try std.testing.expectEqual(count - 1, fixture.nodes.items[shared_id].dependents.len());
+        try std.testing.expectEqual(count - 1, fixture.shared.active_use_count);
+        try fixture.audit();
+
+        // Add one more row that reads `shared`.
+        for (appended) |*row| row.root.payload = .{ .map2 = .{ .left = &row.label, .right = &fixture.shared } };
+        shared_append[sample] = try measureLocality(fixture, &.{}, appended, true);
+        try std.testing.expectEqual(count, fixture.nodes.items[shared_id].dependents.len());
+        try fixture.audit();
+
+        // Replace one `shared` reader with another in a single transaction.
+        for (replaced) |*row| row.root.payload = .{ .map2 = .{ .left = &row.label, .right = &fixture.shared } };
+        mixed[sample] = try measureLocality(fixture, &.{&fixture.rows[1].root}, replaced, true);
+        try std.testing.expectEqual(count, fixture.nodes.items[shared_id].dependents.len());
+        try std.testing.expectEqual(count, fixture.shared.active_use_count);
+        try fixture.audit();
+    }
+    try LocalityCost.expectIndependentOfGraphSize(removal[0], removal[1]);
+    try LocalityCost.expectIndependentOfGraphSize(shared_append[0], shared_append[1]);
+    try LocalityCost.expectIndependentOfGraphSize(mixed[0], mixed[1]);
+    // One retired row is root, label and source; the root's two edges and the
+    // label's one are validated through their slots. Nothing reads the rest
+    // of `shared`'s fan-out (which would add `count` edges here).
+    try std.testing.expectEqual(@as(usize, 4), removal[0].records);
+    try std.testing.expect(removal[0].edges <= 8);
+    try std.testing.expect(shared_append[0].edges <= 2);
+    try std.testing.expect(mixed[0].edges <= 10);
+}
+
+test "shared input adjacency compacts after bulk retirement, clones when full, and trims to inline" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    // Rows appended later outlive the fixture, which releases them at teardown.
+    const three = try initReplacementRows(3, 70);
+    defer std.testing.allocator.free(three);
+    const two = try initReplacementRows(2, 74);
+    defer std.testing.allocator.free(two);
+    var fixture = try LocalityRows.init(std.testing.allocator, 64, true);
+    defer fixture.deinit();
+    const shared_id: usize = @intCast(fixture.shared.active_graph_id.?);
+    for (three) |*row| row.root.payload = .{ .map2 = .{ .left = &row.label, .right = &fixture.shared } };
+    for (two) |*row| row.root.payload = .{ .map2 = .{ .left = &row.label, .right = &fixture.shared } };
+    // Ingestion grew the list geometrically: 64 readers fill 64 slots.
+    try std.testing.expectEqual(@as(usize, 64), fixture.nodes.items[shared_id].dependents.len());
+    try std.testing.expectEqual(@as(u32, 64), fixture.nodes.items[shared_id].dependents.capacity);
+
+    const Step = struct {
+        fn run(rows: *LocalityRows, retired: []const *LifecycleTestRecord, appended: []LocalityRows.Row, expected_replacements: usize, expected_rewrite: bool) !LocalityTransaction {
+            var counter = FaultAllocator.init(std.testing.allocator);
+            var transaction = try LocalityTransaction.prepare(counter.allocator(), rows, retired, appended);
+            try std.testing.expectEqual(expected_replacements, transaction.release.replacements.items.len);
+            for (transaction.release.replacements.items) |replacement| try std.testing.expectEqual(expected_rewrite, replacement.rewrite_slots);
+            counter.configure(1);
+            transaction.commit(counter.allocator(), rows);
+            try std.testing.expectEqual(@as(usize, 0), counter.attempts);
+            counter.configure(null);
+            return transaction;
+        }
+    };
+
+    // Retiring half leaves 32 live entries in 64 slots: above a quarter, so
+    // the edges are dropped in place and the storage is kept.
+    var half: [32]*LifecycleTestRecord = undefined;
+    for (&half, 0..) |*root, index| root.* = &fixture.rows[index].root;
+    var first = try Step.run(fixture, &half, &.{}, 0, false);
+    try std.testing.expectEqual(half.len, first.release.edge_drops.len);
+    first.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 32), fixture.nodes.items[shared_id].dependents.len());
+    try std.testing.expectEqual(@as(u32, 64), fixture.nodes.items[shared_id].dependents.capacity);
+    try fixture.audit();
+
+    // Sixteen more leave 16 live in 64 slots: the list is rebuilt at its live
+    // size with every survivor's slot rewritten. Each retired row validates
+    // its own three edges, and the copy reads the 32 entries still live, two
+    // per drop in this step; the copy is bounded by the drops that led to it,
+    // so a dropped edge stays amortized O(1).
+    var quarter: [16]*LifecycleTestRecord = undefined;
+    for (&quarter, 0..) |*root, index| root.* = &fixture.rows[32 + index].root;
+    var second = try Step.run(fixture, &quarter, &.{}, 1, true);
+    try std.testing.expectEqual(@as(usize, 0), second.release.edge_drops.len);
+    try std.testing.expectEqual(3 * quarter.len + 32, second.release_work.edges);
+    second.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 16), fixture.nodes.items[shared_id].dependents.len());
+    try std.testing.expectEqual(@as(u32, 16), fixture.nodes.items[shared_id].dependents.capacity);
+    try fixture.audit();
+
+    // A full list that loses one reader and gains three in one transaction:
+    // the append clones it with geometric headroom (committed storage is not
+    // grown during preparation) and the drop lands on the installed clone.
+    var third = try Step.run(fixture, &.{&fixture.rows[48].root}, three, 1, false);
+    try std.testing.expectEqual(@as(usize, 1), third.release.edge_drops.len);
+    third.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 18), fixture.nodes.items[shared_id].dependents.len());
+    try std.testing.expectEqual(@as(u32, 32), fixture.nodes.items[shared_id].dependents.capacity);
+    try std.testing.expectEqual(@as(?u64, null), fixture.rows[48].root.active_graph_id);
+    try fixture.audit();
+
+    // With headroom left, two more readers append in place.
+    var fourth = try Step.run(fixture, &.{}, two, 0, false);
+    fourth.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 20), fixture.nodes.items[shared_id].dependents.len());
+    try std.testing.expectEqual(@as(u32, 32), fixture.nodes.items[shared_id].dependents.capacity);
+    try fixture.audit();
+
+    // Retiring every reader but one returns the list to its inline form.
+    var rest: shared_buffer.List(*LifecycleTestRecord) = .empty;
+    defer rest.deinit(std.testing.allocator);
+    for (fixture.rows[49..]) |*row| try rest.append(std.testing.allocator, &row.root);
+    for (three) |*row| try rest.append(std.testing.allocator, &row.root);
+    try rest.append(std.testing.allocator, &two[0].root);
+    var fifth = try Step.run(fixture, rest.items, &.{}, 0, false);
+    fifth.deinit(std.testing.allocator);
+    try std.testing.expectEqualSlices(u64, &.{two[1].root.active_graph_id.?}, fixture.nodes.items[shared_id].dependents.slice());
+    try std.testing.expectEqual(@as(u32, 0), fixture.nodes.items[shared_id].dependents.capacity);
+    try std.testing.expectEqual(@as(usize, 1), fixture.shared.active_use_count);
+    try fixture.audit();
+}
+
+test "structural preparation refusal publishes nothing and leaks nothing" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    // Replacement rows outlive the fixture: once published they belong to
+    // its graph and are released by its teardown.
+    const replaced = try initReplacementRows(2, 14);
+    defer std.testing.allocator.free(replaced);
+    var fixture = try LocalityRows.init(std.testing.allocator, 12, true);
+    defer fixture.deinit();
+    // The replacement rows also read `shared`, so the transaction nets a
+    // release against a retain on the same survivor.
+    for (replaced) |*row| row.root.payload = .{ .map2 = .{ .left = &row.label, .right = &fixture.shared } };
+    const retired = [_]*LifecycleTestRecord{ &fixture.rows[5].root, &fixture.rows[11].root };
+
+    var counter = FaultAllocator.init(std.testing.allocator);
+    var baseline = try LocalityTransaction.prepare(counter.allocator(), fixture, &retired, replaced);
+    const attempts = counter.attempts;
+    try std.testing.expect(attempts != 0);
+    // The two retired roots drop `shared` twice and the two replacement roots
+    // pick it up again: it survives in place with a netted decrement the
+    // append's increments restore in the same publication.
+    try std.testing.expectEqualSlices(ExistingUseIncrement, &.{.{ .record_id = fixture.shared.active_graph_id.?, .count = 2 }}, baseline.release.survivor_use_decrements);
+    try std.testing.expectEqualSlices(ExistingUseIncrement, &.{.{ .record_id = fixture.shared.active_graph_id.?, .count = 2 }}, baseline.append.existing_use_increments);
+    baseline.deinit(counter.allocator());
+
+    const live_len = fixture.nodes.items.len;
+    for (1..attempts + 1) |failure_number| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        fault.configure(failure_number);
+        try std.testing.expectError(error.OutOfMemory, LocalityTransaction.prepare(fault.allocator(), fixture, &retired, replaced));
+        try std.testing.expectEqual(live_len, fixture.nodes.items.len);
+        try std.testing.expectEqual(@as(usize, 12), fixture.shared.active_use_count);
+        try std.testing.expectEqual(@as(usize, 1), fixture.rows[5].root.active_use_count);
+        try std.testing.expectEqual(@as(usize, 1), fixture.rows[11].source.active_use_count);
+        try std.testing.expectEqual(@as(u64, 0), fixture.hooks.record_releases);
+        for (replaced) |*row| {
+            try std.testing.expectEqual(@as(?u64, null), row.root.active_graph_id);
+            try std.testing.expectEqual(@as(usize, 1), row.root.ref_count);
+        }
+        try fixture.audit();
+    }
+
+    _ = try measureLocality(fixture, &retired, replaced, true);
+    try fixture.audit();
+    try std.testing.expectEqual(@as(usize, 12), fixture.shared.active_use_count);
+    try std.testing.expectEqual(live_len, fixture.nodes.items.len);
+    try std.testing.expectEqual(@as(u64, 6), fixture.hooks.record_releases);
+    for (replaced) |*row| try std.testing.expectEqual(@as(usize, 2), row.root.ref_count);
 }
 
 test "active graph dirty queue collects roots and dependents by rank" {
@@ -3201,10 +4302,10 @@ test "active graph dirty queue collects roots and dependents by rank" {
         }
     }
 
-    try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 0, 1);
-    try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 0, 2);
-    try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 2, 3);
-    try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 3, 1);
+    try appendTestEdge(&nodes, 0, 1);
+    try appendTestEdge(&nodes, 0, 2);
+    try appendTestEdge(&nodes, 2, 3);
+    try appendTestEdge(&nodes, 3, 1);
 
     var queue = DirtyRecordQueue{};
     defer queue.deinit(std.testing.allocator);
@@ -3222,8 +4323,8 @@ test "active graph dirty queue reservation sweeps failures and makes collection 
         .{ .record = &records[2], .rank = 2 },
     };
     defer for (&nodes) |*node| node.dependents.deinit(std.testing.allocator);
-    try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 0, 1);
-    try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 1, 2);
+    try appendTestEdge(&nodes, 0, 1);
+    try appendTestEdge(&nodes, 1, 2);
 
     var baseline_fault = FaultAllocator.init(std.testing.allocator);
     var baseline = DirtyRecordQueue{};
@@ -3262,8 +4363,8 @@ test "active graph dirty queue collects source-route dependents by rank" {
             node.dependents.deinit(std.testing.allocator);
         }
     }
-    try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 1, 2);
-    try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 2, 0);
+    try appendTestEdge(&nodes, 1, 2);
+    try appendTestEdge(&nodes, 2, 0);
 
     var source_routes: RouteTable(u64) = .empty;
     defer source_routes.deinit(std.testing.allocator);
@@ -3296,10 +4397,10 @@ test "active graph dirty queue reuses retained buffers and ranks reachable recor
             node.dependents.deinit(std.testing.allocator);
         }
     }
-    try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 0, 1);
-    try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 0, 2);
-    try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 1, 3);
-    try signal_graph.appendDependent(TestRecord, std.testing.allocator, &nodes, 2, 3);
+    try appendTestEdge(&nodes, 0, 1);
+    try appendTestEdge(&nodes, 0, 2);
+    try appendTestEdge(&nodes, 1, 3);
+    try appendTestEdge(&nodes, 2, 3);
 
     var source_routes: RouteTable(u64) = .empty;
     defer source_routes.deinit(std.testing.allocator);

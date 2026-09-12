@@ -50,10 +50,32 @@ pub const RuntimeMetrics = struct {
     retained_alloc_delta: i64,
     reset_dom: u64,
     rows_created: u64,
+    /// Candidate rows a direct-parent `Rows` delta visited while preparing or
+    /// publishing its site index. Bounded by the edit batch, not the site.
+    rows_candidate_rows_visited: u64,
+    /// Committed row keys hashed again to maintain a site's key index. A
+    /// direct-parent delta reuses the hashes the generation already carries.
+    rows_index_keys_hashed: u64,
+    /// Site-index membership entries cleared or written by a direct-parent
+    /// delta. Each inserted or removed row costs a bounded number of entries.
+    rows_membership_entries_rewritten: u64,
     rows_order_links_touched: u64,
     rows_removed: u64,
     rows_render_roots_moved: u64,
     rows_reused: u64,
+    /// Selector memberships appended to the keyed index this event. A
+    /// structural change registers only the selector records it creates.
+    selector_registrations: u64,
+    /// Key bytes copied into index ownership by those registrations.
+    selector_key_bytes_copied: u64,
+    /// Selector memberships removed from the keyed index this event, one per
+    /// retired selector record.
+    selector_memberships_released: u64,
+    /// Graph records the keyed index examined while a structural change was
+    /// prepared or published: appended records plus retired selector records.
+    /// Bounded by the changed set; a full re-enumeration of the surviving
+    /// graph makes it track N.
+    selector_registry_visits: u64,
     selector_members_dirtied: u64,
     scopes_created: u64,
     scopes_disposed: u64,

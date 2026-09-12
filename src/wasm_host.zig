@@ -376,7 +376,7 @@ var roc_benchmark_counters: AllocationCounters = .{};
 var benchmark_host_baseline: AllocationCounters = .{};
 var benchmark_roc_baseline_live_count: u64 = 0;
 var benchmark_roc_baseline_live_bytes: u64 = 0;
-const benchmark_metrics_schema_version: u32 = 4;
+const benchmark_metrics_schema_version: u32 = 5;
 const runtime_metric_count = std.meta.fields(engine.RuntimeMetrics).len;
 const BenchmarkMetricsBlock = extern struct {
     roc: [10]u64,
