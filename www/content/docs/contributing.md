@@ -721,7 +721,7 @@ rejected at the boundary long before reaching the behavior worth testing.
 | --- | --- | --- |
 | `propagation` | generated DAG plus update sequence | dependency order, glitch freedom, equality cutoffs, diamond deduplication, one evaluation per node per generation |
 | `keyed-scopes` | generated row edits and branch flips | key identity across insert/remove/reorder, scope retirement, reuse barriers, complete disposal |
-| `structural` | generated initial root of sibling and nested `each` sites, mounted through the native host with allocation failure injected at a chosen or every preparation attempt | published topology matches the model, nothing published after a refusal, retry on the same engine succeeds, commit and teardown never allocate |
+| `structural` | generated root of sibling and nested `each` and `when` sites plus a sequence of live edits, mounted and edited through the native host with allocation failure injected at one input-chosen attempt (or, for one input in sixteen, every attempt) | published topology and document order match the model, nothing published or leaked after a refusal, retry on the same engine succeeds, commit and teardown never allocate |
 | `ownership` | generated capability and value routing | retained-value and callable ownership balance, rejection of mismatched routing |
 | `boundary` | raw bytes | schema and extraction-plan parsing: truncation, trailing bytes, invalid UTF-8, duplicate fields |
 
