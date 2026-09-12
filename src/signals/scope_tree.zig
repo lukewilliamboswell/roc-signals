@@ -91,6 +91,15 @@ pub fn Scope(comptime Row: type) type {
         previous_sibling_scope_id: ?ScopeId = null,
         /// Next active child owned by the same parent.
         next_sibling_scope_id: ?ScopeId = null,
+        /// Reusable-slot ring links. A retired scope is linked between the
+        /// slot retired just before it and the one retired just after it, so
+        /// claiming a reusable slot reads the ring head instead of scanning
+        /// the dense table. The root slot doubles as the ring sentinel: its
+        /// `next` link is the oldest retired slot and its `previous` link the
+        /// newest. Both links are null on an active scope and on a sentinel
+        /// whose ring is empty. See `linkReusable` for the maintenance rule.
+        previous_reusable_scope_id: ?ScopeId = null,
+        next_reusable_scope_id: ?ScopeId = null,
         step: Step(Row),
         lifecycle: Lifecycle = .active,
     };
@@ -305,7 +314,9 @@ pub fn publishScopeAssumeCapacity(comptime Row: type, scopes: *shared_buffer.Lis
         const previous = &scopes.items[index];
         if (previous.lifecycle.isActive()) @panic("prepared scope reused an active slot");
         if (previous.first_child_scope_id != null or previous.last_child_scope_id != null) @panic("retired scope retained child topology");
+        if (prepared.previous_reusable_scope_id != null or prepared.next_reusable_scope_id != null) @panic("prepared scope carried reusable-slot links");
         detachFromParent(Row, scopes.items, prepared.scope_id);
+        unlinkReusable(Row, scopes.items, prepared.scope_id);
         scopes.items[index] = prepared;
     } else {
         if (index != scopes.items.len) @panic("prepared scope suffix was not contiguous");
@@ -322,6 +333,68 @@ pub fn retireScopeAssumeValid(comptime Row: type, scopes: []Scope(Row), scope_id
     if (scope.first_child_scope_id != null or scope.last_child_scope_id != null) @panic("scope retired before its active children");
     detachFromParent(Row, scopes, scope_id);
     scope.lifecycle = .{ .retired = retirement_generation };
+    linkReusable(Row, scopes, scope_id);
+}
+
+/// Returns the oldest retired slot in the reusable ring, or null when every
+/// slot in the table is active. Slots are ordered by retirement, so a caller
+/// that finds the head blocked by its reuse barrier knows every later slot
+/// was retired in the same or a later generation and can stop immediately.
+pub fn firstReusableScope(comptime Row: type, scopes: []const Scope(Row)) ?ScopeId {
+    if (scopes.len == 0) return null;
+    return scopes[semantic_ids.root_scope.index()].next_reusable_scope_id;
+}
+
+/// Returns the slot retired after `scope_id`, or null when `scope_id` is the
+/// newest retired slot. `scope_id` must currently be linked in the ring.
+pub fn nextReusableScope(comptime Row: type, scopes: []const Scope(Row), scope_id: ScopeId) ?ScopeId {
+    const next = scopes[scope_id.index()].next_reusable_scope_id orelse @panic("scope is not a linked reusable slot");
+    return if (next == semantic_ids.root_scope) null else next;
+}
+
+/// Reports whether `scope_id` is currently linked in the reusable ring.
+pub fn isLinkedReusable(comptime Row: type, scopes: []const Scope(Row), scope_id: ScopeId) bool {
+    return scope_id != semantic_ids.root_scope and scopes[scope_id.index()].next_reusable_scope_id != null;
+}
+
+/// Appends a freshly retired slot at the ring tail. Retirement is the only
+/// way a slot enters the ring and publication (`publishScopeAssumeCapacity`)
+/// the only way it leaves, so ring membership tracks the retired lifecycle
+/// exactly and the ring is ordered by retirement generation. The root slot is
+/// the sentinel and is never linked as a member: a retired root cannot be
+/// re-interned, so the table is finished once that happens.
+fn linkReusable(comptime Row: type, scopes: []Scope(Row), scope_id: ScopeId) void {
+    if (scope_id == semantic_ids.root_scope) return;
+    const scope = &scopes[scope_id.index()];
+    if (scope.previous_reusable_scope_id != null or scope.next_reusable_scope_id != null) @panic("retired scope was already a reusable slot");
+    const sentinel = &scopes[semantic_ids.root_scope.index()];
+    const tail_id = sentinel.previous_reusable_scope_id orelse semantic_ids.root_scope;
+    scope.previous_reusable_scope_id = tail_id;
+    scope.next_reusable_scope_id = semantic_ids.root_scope;
+    if (tail_id == semantic_ids.root_scope) sentinel.next_reusable_scope_id = scope_id else scopes[tail_id.index()].next_reusable_scope_id = scope_id;
+    sentinel.previous_reusable_scope_id = scope_id;
+}
+
+/// Removes a slot from the ring before it is republished as an active scope.
+/// A slot whose lifecycle was retired without `retireScopeAssumeValid` (test
+/// fixtures do this) is not linked and is left alone.
+fn unlinkReusable(comptime Row: type, scopes: []Scope(Row), scope_id: ScopeId) void {
+    const scope = &scopes[scope_id.index()];
+    const next_id = scope.next_reusable_scope_id orelse return;
+    const previous_id = scope.previous_reusable_scope_id orelse @panic("reusable slot ring link was half initialized");
+    const sentinel = &scopes[semantic_ids.root_scope.index()];
+    if (previous_id == semantic_ids.root_scope) {
+        sentinel.next_reusable_scope_id = if (next_id == semantic_ids.root_scope) null else next_id;
+    } else {
+        scopes[previous_id.index()].next_reusable_scope_id = next_id;
+    }
+    if (next_id == semantic_ids.root_scope) {
+        sentinel.previous_reusable_scope_id = if (previous_id == semantic_ids.root_scope) null else previous_id;
+    } else {
+        scopes[next_id.index()].previous_reusable_scope_id = previous_id;
+    }
+    scope.previous_reusable_scope_id = null;
+    scope.next_reusable_scope_id = null;
 }
 
 fn attachToParent(comptime Row: type, scopes: []Scope(Row), scope_id: ScopeId) void {
@@ -509,4 +582,48 @@ test "scope ids retired in a dirty generation are not reused until the next one"
     scopes.items[during_flush.scope_id.index()].lifecycle = .{ .retired = Generation.fromRaw(5) };
     const next_flush = try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(3), Generation.fromRaw(6));
     try std.testing.expectEqual(first, next_flush.scope_id);
+}
+
+test "retirement links slots into the reusable ring and republication unlinks them" {
+    var scopes: shared_buffer.List(Scope(TestRow)) = .empty;
+    defer scopes.deinit(std.testing.allocator);
+
+    const root = (try internRoot(TestRow, std.testing.allocator, &scopes)).scope_id;
+    try std.testing.expectEqual(@as(?ScopeId, null), firstReusableScope(TestRow, scopes.items));
+    const a = (try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(1), semantic_ids.initial_generation)).scope_id;
+    const b = (try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(2), semantic_ids.initial_generation)).scope_id;
+    const c = (try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(3), semantic_ids.initial_generation)).scope_id;
+
+    retireScopeAssumeValid(TestRow, scopes.items, b, Generation.fromRaw(1));
+    retireScopeAssumeValid(TestRow, scopes.items, c, Generation.fromRaw(1));
+    retireScopeAssumeValid(TestRow, scopes.items, a, Generation.fromRaw(1));
+    try std.testing.expectEqual(@as(?ScopeId, b), firstReusableScope(TestRow, scopes.items));
+    try std.testing.expectEqual(@as(?ScopeId, c), nextReusableScope(TestRow, scopes.items, b));
+    try std.testing.expectEqual(@as(?ScopeId, a), nextReusableScope(TestRow, scopes.items, c));
+    try std.testing.expectEqual(@as(?ScopeId, null), nextReusableScope(TestRow, scopes.items, a));
+
+    // A scan-selected reuse (lowest index first) unlinks from the tail of the ring.
+    const reused = try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(4), Generation.fromRaw(2));
+    try std.testing.expectEqual(a, reused.scope_id);
+    try std.testing.expect(!isLinkedReusable(TestRow, scopes.items, a));
+    try std.testing.expectEqual(@as(?ScopeId, b), firstReusableScope(TestRow, scopes.items));
+    try std.testing.expectEqual(@as(?ScopeId, c), nextReusableScope(TestRow, scopes.items, b));
+    try std.testing.expectEqual(@as(?ScopeId, null), nextReusableScope(TestRow, scopes.items, c));
+
+    // Head removals keep the sentinel consistent, and a re-retired slot re-enters exactly once.
+    _ = try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(5), Generation.fromRaw(2));
+    try std.testing.expectEqual(@as(?ScopeId, c), firstReusableScope(TestRow, scopes.items));
+    _ = try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(6), Generation.fromRaw(2));
+    try std.testing.expectEqual(@as(?ScopeId, null), firstReusableScope(TestRow, scopes.items));
+    try std.testing.expectEqual(@as(?ScopeId, null), scopes.items[root.index()].previous_reusable_scope_id);
+    retireScopeAssumeValid(TestRow, scopes.items, a, Generation.fromRaw(2));
+    try std.testing.expectEqual(@as(?ScopeId, a), firstReusableScope(TestRow, scopes.items));
+    try std.testing.expectEqual(@as(?ScopeId, null), nextReusableScope(TestRow, scopes.items, a));
+
+    // A slot retired by direct lifecycle assignment is not linked and may still be republished.
+    scopes.items[b.index()].lifecycle = .{ .retired = Generation.fromRaw(2) };
+    try std.testing.expect(!isLinkedReusable(TestRow, scopes.items, b));
+    const direct = try internComponent(TestRow, std.testing.allocator, &scopes, root, SiteOrdinal.fromRaw(7), Generation.fromRaw(3));
+    try std.testing.expectEqual(a, direct.scope_id);
+    try std.testing.expectEqual(@as(?ScopeId, null), firstReusableScope(TestRow, scopes.items));
 }

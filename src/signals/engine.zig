@@ -1645,7 +1645,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const plan = allocator.create(@This()) catch return error.OutOfMemory;
                 errdefer allocator.destroy(plan);
                 plan.* = undefined;
-                plan.owned_scope_claims = if (shared_scope_claims == null) scope_runtime.PreparedScopeClaims.init(allocator, engine.scopes.items) else null;
+                plan.owned_scope_claims = if (shared_scope_claims == null) scope_runtime.PreparedScopeClaims.init(allocator, engine.scopes.items, ids.Generation.fromRaw(engine.identity_reuse_barrier)) else null;
                 plan.scope_claims = shared_scope_claims orelse &plan.owned_scope_claims.?;
                 errdefer if (plan.owned_scope_claims != null) {
                     plan.scope_claims.abort();
@@ -1909,7 +1909,7 @@ pub fn Engine(comptime Ctx: type) type {
                     .engine = engine,
                     .host_ctx = ctx,
                     .roc_host = roc_host,
-                    .scope_claims = scope_runtime.PreparedScopeClaims.init(allocator, engine.scopes.items),
+                    .scope_claims = scope_runtime.PreparedScopeClaims.init(allocator, engine.scopes.items, ids.Generation.fromRaw(engine.identity_reuse_barrier)),
                     .rows = rows,
                     .replacements = replacements,
                 };
@@ -17790,7 +17790,7 @@ test "provisional each-row scopes abort and publish without partial scope mutati
             defer deinitVerifyStateEngine(&engine, &ctx, host);
             _ = try engine.internRootScope(ctx.allocator);
             fault.configure(fail_at);
-            var overlay = scope_runtime.PreparedEachRowScopes.init(ctx.allocator, engine.scopes.items);
+            var overlay = scope_runtime.PreparedEachRowScopes.init(ctx.allocator, engine.scopes.items, ids.Generation.fromRaw(engine.identity_reuse_barrier));
             defer overlay.deinit();
 
             _ = cap;
