@@ -1704,7 +1704,6 @@ pub fn Engine(comptime Ctx: type) type {
             const Staging = struct {
                 inputs: ?PreparedEachInputs = null,
                 hooks: PreparedEachRowSyncHooks = undefined,
-                hooks_ready: bool = false,
                 rows: ?each_runtime.PreparedRowSync = null,
                 removed_handles: []row_handles.RowHandleId = &.{},
                 direct_delta: bool = false,
@@ -1715,7 +1714,6 @@ pub fn Engine(comptime Ctx: type) type {
                         rows.abort(&self.hooks);
                         rows.deinit();
                     }
-                    if (self.hooks_ready) self.hooks.deinit();
                     if (self.inputs) |*inputs| inputs.deinit();
                 }
             };
@@ -1728,7 +1726,6 @@ pub fn Engine(comptime Ctx: type) type {
                 staging.inputs = try PreparedEachInputs.prepareWithOverlay(engine, ctx, roc_host, each, allocator, overlay, &.{}, parent_owner.raw());
                 const inputs = &staging.inputs.?;
                 staging.hooks = PreparedEachRowSyncHooks.initWithScopeClaims(engine, ctx, roc_host, plan.scope_claims);
-                staging.hooks_ready = true;
                 const hooks = &staging.hooks;
                 hooks.inputs = inputs;
                 hooks.base.inputs = inputs;
@@ -2194,7 +2191,7 @@ pub fn Engine(comptime Ctx: type) type {
         ///
         /// - Roc values: the branch elems built here are borrowed by the
         ///   replacement owner and released exactly once, on success and on
-        ///   refusal alike, from the `OwnedBranchElems` list the outer
+        ///   refusal alike, from the creation-order list the outer
         ///   `prepareWithSubsumedFlag` walks.
         /// - Anything the engine keeps or swaps into persistent state
         ///   (`committed_row_bindings`, the final render topology, and the
@@ -2212,23 +2209,6 @@ pub fn Engine(comptime Ctx: type) type {
                 len: usize,
                 site_start: usize,
                 site_len: usize,
-            };
-
-            /// Branch elems built during preparation, in creation order.
-            /// The slice lives in the arena; the elems are decref'd by the
-            /// outer prepare exactly once regardless of outcome.
-            const OwnedBranchElems = struct {
-                elems: []abi.Elem = &.{},
-                len: usize = 0,
-
-                fn push(self: *@This(), elem: abi.Elem) void {
-                    self.elems[self.len] = elem;
-                    self.len += 1;
-                }
-
-                fn release(self: *const @This(), roc_host: *abi.RocHost) void {
-                    for (self.elems[0..self.len]) |elem| elem.decref(roc_host);
-                }
             };
 
             arena: std.heap.ArenaAllocator,
@@ -2338,9 +2318,11 @@ pub fn Engine(comptime Ctx: type) type {
                     .changes = changes,
                     .overlay = overlay,
                 };
-                var owned: OwnedBranchElems = .{};
+                // Branch elems built during preparation, in creation order, on
+                // the arena; released here exactly once regardless of outcome.
+                var owned: shared_buffer.List(abi.Elem) = .empty;
                 const result = plan.prepareInto(ctx, roc_host, limits, dirty_source_node_ids, state_update, all_eaches_subsumed, &owned);
-                owned.release(roc_host);
+                for (owned.items) |elem| elem.decref(roc_host);
                 result catch |err| {
                     plan.releaseArena();
                     return err;
@@ -2348,7 +2330,7 @@ pub fn Engine(comptime Ctx: type) type {
                 return plan;
             }
 
-            fn prepareInto(plan: *@This(), ctx: Ctx.Handle, roc_host: *abi.RocHost, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, state_update: []const PreparedExternalState, all_eaches_subsumed: *bool, owned: *OwnedBranchElems) CollectionError!void {
+            fn prepareInto(plan: *@This(), ctx: Ctx.Handle, roc_host: *abi.RocHost, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, state_update: []const PreparedExternalState, all_eaches_subsumed: *bool, owned: *shared_buffer.List(abi.Elem)) CollectionError!void {
                 const engine = plan.engine;
                 const changes = plan.changes;
                 const overlay = plan.overlay;
@@ -2365,7 +2347,7 @@ pub fn Engine(comptime Ctx: type) type {
                 var normalized = try PreparedDirtyWhenSet.prepareWhenSubset(engine, scratch, changes);
                 if (normalized.selected_indexes.len == 0) return error.ResourceLimit;
 
-                owned.elems = scratch.alloc(abi.Elem, normalized.selected_indexes.len) catch return error.OutOfMemory;
+                owned.ensureTotalCapacityPrecise(scratch, normalized.selected_indexes.len) catch return error.OutOfMemory;
                 const selections_storage = scratch.alloc(AggregateBranchSelection, normalized.selected_indexes.len) catch return error.OutOfMemory;
                 var selections = selections_storage;
                 for (normalized.selected_indexes, 0..) |change_index, selection_index| {
@@ -2383,7 +2365,7 @@ pub fn Engine(comptime Ctx: type) type {
                         .present => |cell| cell,
                     } else change.pending_when_cache orelse return error.InvalidDescriptor;
                     const branch_elem = engine.buildWhenElem(ctx, roc_host, when_desc.ops, value_cell.value, value_cell.cap);
-                    owned.push(branch_elem);
+                    owned.appendAssumeCapacity(branch_elem);
                     selections[selection_index] = .{
                         .node_id = change.node_id,
                         .parent_scope_id = site.scope_id,
@@ -2583,19 +2565,23 @@ pub fn Engine(comptime Ctx: type) type {
                     layout.* = try PreparedEachRowRenderLayout.prepare(engine, scratch, site, &prepared_rows.rows, replacement.replacement_rows, &replacement_owner.collection);
                 }
 
-                var descriptor_roots_list = shared_buffer.List(u64).empty;
-                var retired_roots_list = shared_buffer.List(u64).empty;
-                for (selections) |selection| {
-                    descriptor_roots_list.append(scratch, selection.retired_scope_id.raw()) catch return error.OutOfMemory;
-                    retired_roots_list.append(scratch, selection.retired_scope_id.raw()) catch return error.OutOfMemory;
-                }
+                // Both lists are reserved to their bounds up front: the arena
+                // only grows its tail allocation in place, so interleaved
+                // growth would copy and strand the other list's buffer.
+                var retired_bound: usize = selections.len;
+                var descriptor_extra: usize = 0;
                 for (rows.rows[0..rows.prepared_len], rows.replacements[0..rows.prepared_len]) |prepared_rows, replacement| {
-                    for (prepared_rows.rows.removed_scope_ids) |scope_id| descriptor_roots_list.append(scratch, scope_id.raw()) catch return error.OutOfMemory;
-                    for (prepared_rows.rows.removed_scope_ids) |scope_id| retired_roots_list.append(scratch, scope_id.raw()) catch return error.OutOfMemory;
-                    for (replacement.replacement_rows) |range| if (!range.created) {
-                        descriptor_roots_list.append(scratch, range.scope_id.raw()) catch return error.OutOfMemory;
-                    };
+                    retired_bound = std.math.add(usize, retired_bound, prepared_rows.rows.removed_scope_ids.len) catch return error.ResourceLimit;
+                    descriptor_extra = std.math.add(usize, descriptor_extra, replacement.replacement_rows.len) catch return error.ResourceLimit;
                 }
+                var retired_roots_list = shared_buffer.List(u64).empty;
+                retired_roots_list.ensureTotalCapacityPrecise(scratch, retired_bound) catch return error.OutOfMemory;
+                for (selections) |selection| retired_roots_list.appendAssumeCapacity(selection.retired_scope_id.raw());
+                for (rows.rows[0..rows.prepared_len]) |prepared_rows| for (prepared_rows.rows.removed_scope_ids) |scope_id| retired_roots_list.appendAssumeCapacity(scope_id.raw());
+                var descriptor_roots_list = shared_buffer.List(u64).empty;
+                descriptor_roots_list.ensureTotalCapacityPrecise(scratch, std.math.add(usize, retired_bound, descriptor_extra) catch return error.ResourceLimit) catch return error.OutOfMemory;
+                descriptor_roots_list.appendSliceAssumeCapacity(retired_roots_list.items);
+                for (rows.replacements[0..rows.prepared_len]) |replacement| for (replacement.replacement_rows) |range| if (!range.created) descriptor_roots_list.appendAssumeCapacity(range.scope_id.raw());
                 const descriptor_roots = try normalizedScopeRoots(engine, scratch, descriptor_roots_list.items);
                 const retired_roots = try normalizedScopeRoots(engine, scratch, retired_roots_list.items);
                 const targets = try PreparedStructuralTargets.prepare(engine, scratch, descriptor_roots, retired_roots, &replacement_owner.collection);
@@ -2606,13 +2592,6 @@ pub fn Engine(comptime Ctx: type) type {
                 for (layouts) |*layout| try layout_plan.describeEachSite(layout);
                 try layout_plan.describeNestedSites(replacement_owner.collection.nested_row_syncs.items);
                 try layout_plan.resolve(engine, targets.descriptor_target_scopes);
-                // The topology's buffers are swapped into the live stream at
-                // commit and the displaced ones freed through its allocator,
-                // so it must use the host allocator.
-                var final_render_topology = try PreparedFinalRenderTopology.preparePlaced(engine, backing, replacement_owner, targets.descriptor_target_scopes, layout_plan.removed_render_count, layout_plan.placements.items);
-                var final_topology_owned = true;
-                errdefer if (final_topology_owned) final_render_topology.deinit();
-
                 var removal_starts = shared_buffer.List(usize).empty;
                 var inside_target = false;
                 for (engine.active_stream.render_nodes.items, 0..) |node, index| {
@@ -2632,8 +2611,11 @@ pub fn Engine(comptime Ctx: type) type {
                 try replacement_owner.collection.appendNestedSiteRenderParents(scratch, &parents);
                 const downstream = try PreparedStructuralDownstream.prepareExternal(engine, ctx, roc_host, replacement_owner, descriptor_roots, retired_roots, removal_starts.items, null, parents.items, overlay);
                 errdefer downstream.deinit();
-                downstream.final_render_topology = final_render_topology;
-                final_topology_owned = false;
+                // The topology's buffers are swapped into the live stream at
+                // commit and the displaced ones freed through its allocator,
+                // so it uses the host allocator; the downstream owns it from
+                // the moment it exists.
+                downstream.final_render_topology = try PreparedFinalRenderTopology.preparePlaced(engine, backing, replacement_owner, targets.descriptor_target_scopes, layout_plan.removed_render_count, layout_plan.placements.items);
                 try downstream.adoptRenderLayoutPlan(layout_plan);
                 try downstream.prepareFinalRenderTopology(parents.items);
                 downstream.suppressed_render_parent_ids = &.{};
