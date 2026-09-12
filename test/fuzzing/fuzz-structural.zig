@@ -186,15 +186,32 @@
 //!
 //! # Fault placement
 //!
-//! Every input first runs unfaulted, which records the mount's preparation
-//! attempt count and each edit's transaction attempt count. Each of those counts
-//! is then swept independently: when the count is small the whole `1..count`
-//! sweep runs, otherwise the input selects one attempt and coverage guidance
-//! spreads the choice. A swept edit re-mounts and replays the earlier edits
-//! unfaulted first, so the fault always lands on a transaction whose starting
-//! state is the committed topology the model predicts. Faults are injected
-//! through the host's engine allocator override, the same seam the hand-written
-//! native sweeps use.
+//! Every input first runs unfaulted, exactly, which records the mount's
+//! preparation attempt count and each edit's transaction attempt count. The
+//! input then selects one of those transactions and one of its attempts, and
+//! that single fault is injected in a second run, so a typical input costs one
+//! unfaulted run plus one faulted re-run. A faulted edit re-mounts and replays
+//! the earlier edits unfaulted first, so the fault always lands on a
+//! transaction whose starting state is the committed topology the model
+//! predicts. Faults are injected through the host's engine allocator override,
+//! the same seam the hand-written native sweeps use.
+//!
+//! One input in `full_sweep_period` instead sweeps every attempt of every
+//! transaction whose count is at most `max_full_sweep_attempts`. Which inputs
+//! sweep is decided by a hash of the whole input rather than by a byte the
+//! generator reads, on purpose: a sweep reaches more edges than a sample, so a
+//! reader-drawn choice would let coverage feedback fill the queue with sweeping
+//! inputs until the campaign ran at sweep speed. Sweeping used to be a coin
+//! flip per transaction, and every unswept transaction was still faulted once,
+//! so with up to four transactions of up to forty attempts each an input cost
+//! between five and 160 mount-and-replay runs; the campaign ran at ~165
+//! executions per second and never finished a queue cycle. The sampled form
+//! keeps the property - every attempt of every transaction is still reachable,
+//! since transaction and position are generator bytes AFL++ mutates and the
+//! reference model judges every position the same way - and gives the
+//! exhaustive form to a fixed, mutation-independent minority so a sweep-shaped
+//! defect (one that only a run at a specific position of a specific shape
+//! shows) still gets its dense coverage on a share of every campaign.
 //!
 //! # Seams
 //!
@@ -263,6 +280,10 @@ const shared_key_base: i64 = 100;
 /// Full sweeps are quadratic in the attempt count, so past this bound one attempt
 /// per input keeps the fuzzer fast and lets coverage pick the position.
 const max_full_sweep_attempts = 40;
+/// One input in this many sweeps every attempt instead of sampling one. The
+/// choice hashes the whole input, so it is deterministic per input and outside
+/// the fuzzer's coverage feedback; see "Fault placement" above.
+const full_sweep_period = 16;
 /// Largest key `generateList` can produce: `max_rows` steps of at most three
 /// above `shared_key_base`. A `contains` operand is drawn from this range so it
 /// is sometimes present and sometimes not.
@@ -516,39 +537,49 @@ pub fn zig_fuzz_test_inner(buf: [*]u8, len: isize, debug: bool) void {
         for (edit_attempts, 0..) |attempts, index| std.debug.print("edit {d} attempts: {d}\n", .{ index, attempts });
     }
 
-    if (mount_attempts != 0) {
-        if (chooseFullSweep(&reader, mount_attempts)) {
-            if (debug) std.debug.print("sweeping every mount attempt\n", .{});
+    const full_sweep = choosesFullSweep(buf[0..@intCast(len)]);
+    if (full_sweep) {
+        if (debug) std.debug.print("input selected for a full fault sweep\n", .{});
+        if (mount_attempts != 0 and mount_attempts <= max_full_sweep_attempts) {
             for (1..mount_attempts + 1) |failure_number| _ = run(program, .{ .mount_failure = failure_number });
-        } else {
-            const failure_number = 1 + reader.intRangeAtMost(usize, 0, mount_attempts - 1);
-            if (debug) std.debug.print("injecting mount failure at attempt {d}\n", .{failure_number});
-            _ = run(program, .{ .mount_failure = failure_number });
         }
-    }
-
-    for (edit_attempts, 0..) |attempts, edit_index| {
-        if (attempts == 0) continue;
-        if (chooseFullSweep(&reader, attempts)) {
-            if (debug) std.debug.print("sweeping every attempt of edit {d}\n", .{edit_index});
+        for (edit_attempts, 0..) |attempts, edit_index| {
+            if (attempts == 0 or attempts > max_full_sweep_attempts) continue;
             for (1..attempts + 1) |failure_number| {
                 _ = run(program, .{ .faulted_edit = edit_index, .edit_failure = failure_number });
             }
-        } else {
-            const failure_number = 1 + reader.intRangeAtMost(usize, 0, attempts - 1);
-            if (debug) std.debug.print("injecting edit {d} failure at attempt {d}\n", .{ edit_index, failure_number });
-            _ = run(program, .{ .faulted_edit = edit_index, .edit_failure = failure_number });
         }
+        return;
+    }
+
+    // Sampled placement: one transaction, one attempt, both drawn from the
+    // input. Transaction zero is the mount and `n` is edit `n - 1`.
+    const transaction = reader.intRangeAtMost(usize, 0, edit_attempts.len);
+    if (transaction == 0) {
+        if (mount_attempts == 0) return;
+        const failure_number = 1 + reader.intRangeAtMost(usize, 0, mount_attempts - 1);
+        if (debug) std.debug.print("injecting mount failure at attempt {d}\n", .{failure_number});
+        _ = run(program, .{ .mount_failure = failure_number });
+    } else {
+        const edit_index = transaction - 1;
+        const attempts = edit_attempts[edit_index];
+        if (attempts == 0) return;
+        const failure_number = 1 + reader.intRangeAtMost(usize, 0, attempts - 1);
+        if (debug) std.debug.print("injecting edit {d} failure at attempt {d}\n", .{ edit_index, failure_number });
+        _ = run(program, .{ .faulted_edit = edit_index, .edit_failure = failure_number });
     }
 }
 
-/// Decides whether one transaction gets an exhaustive fault sweep.
+/// Decides whether an input sweeps every fault position of its transactions.
 ///
-/// A whole sweep costs one full mount-and-replay per attempt, so it is affordable
-/// only for short transactions. Past the bound the input picks a single position
-/// instead and AFL++'s coverage feedback is what spreads the choice across runs.
-fn chooseFullSweep(reader: *FuzzReader, attempts: usize) bool {
-    return attempts <= max_full_sweep_attempts and reader.boolean();
+/// A whole sweep costs one full mount-and-replay per attempt, so it is given to
+/// one input in `full_sweep_period` and, within those, only to transactions
+/// short enough to sweep. The decision hashes the input bytes rather than
+/// reading a generator byte so that a mutation cannot buy a sweep, which keeps
+/// the queue from drifting toward sweep-heavy inputs; every other input samples
+/// one position per transaction and coverage guidance spreads the choice.
+fn choosesFullSweep(input: []const u8) bool {
+    return std.hash.Wyhash.hash(0, input) % full_sweep_period == 0;
 }
 
 /// Generator state threaded through the element tree.

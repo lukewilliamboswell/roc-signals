@@ -721,7 +721,7 @@ rejected at the boundary long before reaching the behavior worth testing.
 | --- | --- | --- |
 | `propagation` | generated DAG plus update sequence | dependency order, glitch freedom, equality cutoffs, diamond deduplication, one evaluation per node per generation |
 | `keyed-scopes` | generated row edits and branch flips | key identity across insert/remove/reorder, scope retirement, reuse barriers, complete disposal |
-| `structural` | generated initial root of sibling and nested `each` sites, mounted through the native host with allocation failure injected at a chosen or every preparation attempt | published topology matches the model, nothing published after a refusal, retry on the same engine succeeds, commit and teardown never allocate |
+| `structural` | generated root of sibling and nested `each` and `when` sites plus a sequence of live edits, mounted and edited through the native host with allocation failure injected at one input-chosen attempt (or, for one input in sixteen, every attempt) | published topology and document order match the model, nothing published or leaked after a refusal, retry on the same engine succeeds, commit and teardown never allocate |
 | `sparse-rows` | generated `each` sites over one slot-table cell, plus a history of canonical stable-slot edit batches described as direct deltas, snapshots, stale-sibling deltas, rollbacks, or selection changes, applied in one world as described and in a second world as snapshots only | store order, dense-table and membership consistency, row identity across edits, document order, world agreement, and per-edit bounds on `rows_candidate_rows_visited`, `rows_membership_entries_rewritten`, and `selector_registry_visits`, with refusal sweeps on the mount and every direct edit |
 | `ownership` | generated capability and value routing | retained-value and callable ownership balance, rejection of mismatched routing |
 | `boundary` | raw bytes | schema and extraction-plan parsing: truncation, trailing bytes, invalid UTF-8, duplicate fields |
@@ -739,6 +739,8 @@ that has to be remembered or retyped:
 python3 scripts/fuzz.py list
 python3 scripts/fuzz.py run propagation --time 10m
 python3 scripts/fuzz.py run all --time 5m -j 4
+python3 scripts/fuzz.py campaign --time 2h -j 2
+python3 scripts/fuzz.py distill structural
 python3 scripts/fuzz.py status
 ```
 
@@ -753,6 +755,17 @@ previous session's queue rather than importing new seeds, and `clean` discards b
 Watch `stability`, which should sit near 100%. A lower number means the target is
 not deterministic for a fixed input, which breaks the reference-model comparison
 and must be fixed before any crash it reports can be trusted.
+
+`campaign` is `run` with one total budget split by weight rather than the same
+time per target: the subsystem targets saturate their queues in minutes, so
+each gets a two-minute floor, and the rest goes to `structural`, the one target
+that drives the whole engine. The weights are the `CAMPAIGN_WEIGHTS` table in
+`scripts/fuzz.py`; the nightly `fuzz.yml` workflow runs a campaign.
+
+`distill <target>` carries a campaign forward. It runs `afl-cmin` over the live
+queues, refuses anything that fails replay, and writes a capped, content-hash
+named set into `test/fuzzing/corpus/<target>/` for the next campaign to start
+from and for `check` to replay. `test/fuzzing/README.md` explains the cap.
 
 ### Prerequisites
 

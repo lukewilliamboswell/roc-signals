@@ -10,8 +10,8 @@ on:
   workflow_dispatch:
     inputs:
       duration:
-        description: "How long to fuzz each target, e.g. 10m, 1h"
-        default: "20m"
+        description: "Total budget across the targets, split by weight, e.g. 1h, 3h"
+        default: "2h"
       targets:
         description: "Target names, or 'all'"
         default: "all"
@@ -27,9 +27,9 @@ jobs:
   campaign:
     name: Fuzz ${{ github.event.inputs.targets || 'all' }}
     runs-on: ubuntu-24.04
-    # Six targets at the default 20m each, plus builds, with room for the
-    # dispatch input to ask for longer without the job being killed mid-run.
-    timeout-minutes: 180
+    # The default 2h campaign, plus builds, with room for the dispatch input to
+    # ask for longer without the job being killed mid-run.
+    timeout-minutes: 240
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -50,10 +50,13 @@ jobs:
       - name: Configure the system for AFL++
         run: sudo afl-system-config || true
 
+      # `campaign` splits one budget by weight rather than giving each target
+      # the same time, since the subsystem targets saturate in minutes and the
+      # full-engine `structural` target needs hours; see scripts/fuzz.py.
       - name: Fuzz
         run: |
-          python3 scripts/fuzz.py run ${{ github.event.inputs.targets || 'all' }} \
-            --time "${{ github.event.inputs.duration || '20m' }}" \
+          python3 scripts/fuzz.py campaign ${{ github.event.inputs.targets || 'all' }} \
+            --time "${{ github.event.inputs.duration || '2h' }}" \
             -j 2
 
       - name: Report

@@ -52,6 +52,7 @@ code under test, the corpus replayed, the defect reverted:
 | `boundary` | 6 / 6 |
 | `selectors` | 6 / 6 |
 | `sparse-rows` | 7 / 7 reached (2 equivalent, see below) |
+| `structural` | 2 / 2 reached, on the sampled sweep and the distilled corpus |
 
 The boundary row is why this section exists. Three of those six originally
 **survived**: deleting the duplicate-field-name, empty-record, or field-name
@@ -104,6 +105,21 @@ signal's transform and overwrite its committed cache before commit, and at
 some refusal positions the produced value survives the rollback. The target's
 refused-edit ledger check skips exactly the edits that trigger it and says so
 in `expectRefusedEditLedger`; removing that carve-out is part of the fix.
+The structural row was measured after the fault sweep went from exhaustive to
+sampled (see the target's header), replaying the 405 committed inputs. Two
+mutants in `engine.zig` were caught: dropping the collection release on the
+each-generation refusal path (5 inputs, "refusal leaked Roc allocations") and
+appending created rows at their parent's end instead of at their anchor (161
+inputs, "render tree text order diverges from the model"). The same session
+recorded what the corpus does *not* reach, which is the coverage gap the row
+above does not show: reversing the stable-slot edit order handed to the Rows
+store is reached by 227 inputs and survives, because slot order is
+`rows-transitions`' model rather than this target's; and the render layout
+plan (`layoutRegion`, `layoutSurvivor`, `apply`), the direct-delta row commit,
+and the pure-permutation path are reached by none of the 405 inputs, so
+mutants there survive unreached. Every `insertRootsBefore` call the corpus
+makes carries at most one root, so row order in the committed corpus is
+decided by anchors alone.
 
 ## The corpus is the product
 
@@ -115,6 +131,41 @@ one. `.fuzz-out/` is scratch by contrast: large, machine-specific, and deleted b
 Campaigns run in the scheduled `fuzz.yml` workflow rather than on pull requests,
 because they are unbounded and too variable to gate a change on. They upload
 their crashes and corpora, since both are otherwise lost with the runner.
+
+### Carrying a campaign forward
+
+Every campaign starts from the committed corpus, so whatever a campaign reached
+and did not commit is searched for again next time. `fuzz.py distill <target>`
+is how a queue becomes corpus: it traces the live `.fuzz-out/<target>` queues
+together with the previous distillate under `afl-showmap`, keeps the smallest
+set that still reaches every edge (the `afl-cmin` cover, done here because
+`afl-cmin` pins a 64 KiB map these targets outgrow), refuses any survivor that
+fails replay (a crash belongs in `add` beside its fix, not in a corpus that has
+to stay green), and writes the rest as `distilled-<hash>` files. Content-hash names
+make a re-distillation of the same queue a no-op diff; hand-named inputs are
+never renamed or removed. `--tmin N` additionally shrinks the N largest
+survivors with `afl-tmin`, bounded per input by `--tmin-timeout`.
+
+The committed distillate is capped at 400 inputs and 1 MB per target
+(`DISTILL_MAX_INPUTS`, `DISTILL_MAX_BYTES` in `fuzz.py`). The corpus is replayed
+on every pull request and read by reviewers, so it must stay cheap and
+diffable: 400 inputs is a few seconds of replay per target, and past 1 MB a
+directory of opaque bytes is no longer something a review can look at. When
+the edge cover is larger than the cap, survivors are kept in order of how many
+still-uncovered edges each adds, and `distill` reports how many edges the cut
+gives up.
+
+### Budgeting a campaign
+
+`fuzz.py run all --time T` gives every target the same T, which is the wrong
+split. In a 28-minute campaign `propagation` completed 88 queue cycles,
+`rows-transitions` 37 and `keyed-scopes` 5, and then found nothing new, while
+`structural` - the only target that drives the whole engine, and where every
+real bug so far has come from - completed none. `fuzz.py campaign --time T`
+divides one total budget by the weights in `CAMPAIGN_WEIGHTS` instead: every
+target gets a floor of two minutes so it re-covers its queue and confirms
+nothing regressed, and the rest goes overwhelmingly to `structural`. The
+weights live in that one table so changing the split is a one-line review.
 
 ## Notes
 
