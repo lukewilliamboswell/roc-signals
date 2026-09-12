@@ -7,42 +7,43 @@
 # regenerate this file automatically to bless a larger artifact, and never
 # derive it from a diagnostic or profiler build. Mandatory production stack
 # checks are included. The accepted compiler-upgrade baseline is recorded in
-# test/size/nightly-2026-09-11-baseline.json; PR #119 accepts the size cost.
+# test/size/nightly-2026-09-11-baseline.json; PR #119 accepts the compiler
+# size cost and PR #120 accepts the delta-locality engine size cost.
 #
 # Regenerate after an accepted change with:
 #   python3 scripts/wasm_size.py --write-budgets .test-out/size/<label>/report.json
 
 [baseline]
-revision = "835c28623d4ddbeb2732fc25999dcdb5d9e83ef2"
+revision = "4c35ccf3010b53ca4359f6bc2b994d686562870f"
 roc = "Roc compiler version nightly-2026-09-11-793f9d8"
 zig = "0.16.0"
 compression = "node-zlib"
 headroom_percent = 1
 
 [fixtures.static-text]
-raw = 860636  # measured 852115
-gzip = 317780  # measured 314634
+raw = 891884  # measured 883054
+gzip = 328013  # measured 324766
 
 [fixtures.counter]
-raw = 868097  # measured 859502
-gzip = 320734  # measured 317559
+raw = 899368  # measured 890464
+gzip = 330867  # measured 327592
 
 [fixtures.branch-replacement]
-raw = 875872  # measured 867200
-gzip = 322804  # measured 319608
+raw = 907217  # measured 898235
+gzip = 332807  # measured 329512
 
 [fixtures.keyed-row-edits]
-raw = 1509752  # measured 1494804
-gzip = 523444  # measured 518262
+raw = 1542059  # measured 1526792
+gzip = 535122  # measured 529824
 
 [fixtures.two-row-types]
-raw = 1531079  # measured 1515920
-gzip = 533627  # measured 528344
+raw = 1564317  # measured 1548829
+gzip = 545293  # measured 539895
 
 [fixtures.js-framework-benchmark]
-raw = 1506031  # measured 1491120
-gzip = 522738  # measured 517563
+raw = 1538442  # measured 1523210
+gzip = 534378  # measured 529088
 
 [fixtures.recipe-scaler]
-raw = 1342420  # measured 1329129
-gzip = 462194  # measured 457618
+raw = 1375640  # measured 1362020
+gzip = 473454  # measured 468767
