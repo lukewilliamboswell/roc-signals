@@ -439,9 +439,9 @@ pub fn build(b: *std.Build) void {
 
 /// Fuzz targets, one per `test/fuzzing/fuzz-<name>.zig`.
 ///
-/// The first six drive the engine as a state machine: they decode fuzzer bytes
-/// into a valid program and check it against a slow reference model. `boundary`
-/// is a conventional byte-oriented parser target.
+/// All but `boundary` drive the engine as a state machine: they decode fuzzer
+/// bytes into a valid program and check it against a slow reference model.
+/// `boundary` is a conventional byte-oriented parser target.
 const fuzz_targets = [_][]const u8{
     "propagation",
     "keyed-scopes",
@@ -449,6 +449,7 @@ const fuzz_targets = [_][]const u8{
     "structural",
     "selectors",
     "sparse-rows",
+    "transactions",
     "ownership",
     "boundary",
 };

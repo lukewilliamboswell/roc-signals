@@ -28,6 +28,7 @@ step.
 | `structural` | collect/prepare/commit atomicity under allocation failure | committed topology derived from the shape and the current list |
 | `selectors` | selector memberships, fused keyed selects, and `when` on selected values under structural change | the exact document, the live membership multiset, the selector work counters, and the graph's adjacency and routes, all from the shape and the current `(list, selection)` |
 | `sparse-rows` | direct `Rows` deltas against the counted snapshot path: store order, row identity, memberships, structural work bounds | an ordered `(slot, key, item)` model per generation, plus a second world that applies every edit as a snapshot |
+| `transactions` | event dispatch, effect results, timer ticks, source results, and coordinated writes as host transactions under allocation failure | the state cells, document text, effect queues, and interval registry after every transaction, and unchanged after every refusal |
 | `ownership` | retained-value and callable ownership across erased calls | a ledger of what each capability owns, checked every step |
 | `boundary` | boundary schema and event extraction plan parsing | the grammar itself, plus one-rule-broken trees |
 
@@ -53,6 +54,7 @@ code under test, the corpus replayed, the defect reverted:
 | `selectors` | 6 / 6 |
 | `sparse-rows` | 7 / 7 reached (2 equivalent, see below) |
 | `structural` | 2 / 2 reached, on the sampled sweep and the distilled corpus |
+| `transactions` | 4 / 4 |
 
 The boundary row is why this section exists. Three of those six originally
 **survived**: deleting the duplicate-field-name, empty-record, or field-name

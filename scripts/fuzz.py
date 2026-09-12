@@ -68,9 +68,10 @@ DISTILL_MAX_BYTES = 1_000_000
 # regressed. `CAMPAIGN_MIN_SECONDS` keeps the smallest share from rounding to a
 # run that ends before AFL++ finishes calibrating its seeds.
 CAMPAIGN_WEIGHTS = {
-    "structural": 45,
+    "structural": 35,
     "sparse-rows": 15,
     "selectors": 15,
+    "transactions": 15,
     "propagation": 5,
     "keyed-scopes": 5,
     "rows-transitions": 5,
@@ -138,6 +139,7 @@ TARGETS = (
     Target("structural", "collect/prepare/commit atomicity under allocation failure"),
     Target("selectors", "selector memberships, keyed selects, and selected-value whens under structural change"),
     Target("sparse-rows", "direct Rows deltas against the snapshot path: order, identity, memberships, work bounds"),
+    Target("transactions", "event, effect-result, timer, and coordinated-write transactions under allocation failure"),
     Target("ownership", "retained-value and callable ownership across erased calls"),
     Target("boundary", "boundary schema and event extraction plan parsing"),
 )
@@ -228,8 +230,17 @@ def seed_corpus(target: Target) -> None:
     cheapest way to reach deep engine states quickly on the next run.
     """
     target.corpus_dir.mkdir(parents=True, exist_ok=True)
+    known = read_known_failures()
     for regression in target.regression_inputs():
-        shutil.copyfile(regression, target.corpus_dir / f"regression-{regression.name}")
+        # AFL++ dry-runs every seed and aborts on one that crashes, so an input
+        # kept only to reproduce an unfixed bug cannot seed a campaign. The
+        # corpus directory persists between runs, so a copy seeded before the
+        # input was listed has to go too.
+        seed = target.corpus_dir / f"regression-{regression.name}"
+        if f"{target.name}/{regression.name}" in known:
+            seed.unlink(missing_ok=True)
+            continue
+        shutil.copyfile(regression, seed)
     if any(target.corpus_dir.iterdir()):
         return
     (target.corpus_dir / "seed").write_bytes(target.seed)
