@@ -448,6 +448,7 @@ const fuzz_targets = [_][]const u8{
     "rows-transitions",
     "structural",
     "selectors",
+    "sparse-rows",
     "ownership",
     "boundary",
 };

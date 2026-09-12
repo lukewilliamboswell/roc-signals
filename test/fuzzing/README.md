@@ -27,6 +27,7 @@ step.
 | `rows-transitions` | canonical stable-slot generations, lineage, abort, and retry | an ordered array of stable slots, exact keys, and values |
 | `structural` | collect/prepare/commit atomicity under allocation failure | committed topology derived from the shape and the current list |
 | `selectors` | selector memberships, fused keyed selects, and `when` on selected values under structural change | the exact document, the live membership multiset, the selector work counters, and the graph's adjacency and routes, all from the shape and the current `(list, selection)` |
+| `sparse-rows` | direct `Rows` deltas against the counted snapshot path: store order, row identity, memberships, structural work bounds | an ordered `(slot, key, item)` model per generation, plus a second world that applies every edit as a snapshot |
 | `ownership` | retained-value and callable ownership across erased calls | a ledger of what each capability owns, checked every step |
 | `boundary` | boundary schema and event extraction plan parsing | the grammar itself, plus one-rule-broken trees |
 
@@ -50,6 +51,7 @@ code under test, the corpus replayed, the defect reverted:
 | `keyed-scopes` | 14 / 14 |
 | `boundary` | 6 / 6 |
 | `selectors` | 6 / 6 |
+| `sparse-rows` | 7 / 7 reached (2 equivalent, see below) |
 
 The boundary row is why this section exists. Three of those six originally
 **survived**: deleting the duplicate-field-name, empty-record, or field-name
@@ -59,6 +61,24 @@ could tell a parser that enforces those rules from one that does not. The fourth
 angle — build a tree that breaks exactly one rule, require exactly that rule's
 error — was added in response, and is the reason to mutate rather than to admire
 a green run.
+
+`sparse-rows` was built against these defects, one at a time: the direct
+path visiting every candidate row (`rows_candidate_rows_visited` bound), a
+swap-removal that leaves the moved survivor's membership stale, a stale
+sibling delta trusted as direct (its ops are refused or its rows visited
+through a path the model says was not taken), an in-place update not marked
+changed, a selector membership never unregistered, a membership counter
+rewriting the whole site, and the snapshot path re-creating every surviving
+row instead of matching keys (identity oracle). Two further mutants were not
+caught because nothing in the target's program space reaches them, and both
+are equivalent there rather than gaps: ignoring the scope reuse barrier,
+which only blocks reuse of a scope retired in the *same* generation while
+every row claim precedes retirement in these transactions; and skipping the
+early retirement of a direct delta's removed rows, which only matters when a
+structural replacement in the same transaction overlaps them. A generated
+program that disposes a branch and instantiates rows in one transaction would
+reach the first; a nested replacement over a removed row would reach the
+second.
 
 When adding or changing an oracle, mutate the code it is meant to watch and
 confirm the target notices. A mutation that no input reaches is a coverage gap

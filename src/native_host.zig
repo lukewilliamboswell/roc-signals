@@ -12735,6 +12735,48 @@ pub const fuzz_fixtures = struct {
     pub fn runtimeMetrics(host: *const HostEnv) RuntimeMetrics {
         return addRuntimeMetrics(host.engine.last_runtime_metrics, host.engine.pending_roc_metrics);
     }
+    /// Resolves the host behind a Roc host table from inside an erased
+    /// callable, which is how a generated `Rows` adapter reaches the engine's
+    /// description and copy sinks.
+    pub const hostOf = hostFromRocHost;
+    /// Argument layout of the `describe`, `copy_snapshot`, and `copy_delta`
+    /// adapters: the retained collection value and the active sink token.
+    pub const HostValueU64Args = erased_calls.ErasedHostValueU64Args;
+    pub const dropHostValue = testDropHostValue;
+    /// A `Signal.select` over the state cell `binder_token` names, true while
+    /// that cell holds exactly `key`.
+    pub fn selectOnState(roc_host: *abi.RocHost, binder_token: HostBinderToken, state_cap: HostValueCapability, key: []const u8) abi.NodeSignalExpr {
+        return testNodeSelectExpr(roc_host, testNodeRefExpr(binder_token), state_cap, key);
+    }
+
+    /// An `each` over the state cell `binder_token` binds whose `Rows`
+    /// adapters are supplied by the caller, so a fuzz target can describe the
+    /// cell's value as a snapshot generation, a direct-parent delta, or a
+    /// stale-sibling delta and copy whichever the engine asks for. The
+    /// `compare_slots` and `clone_item` adapters index the cell's `i64` list
+    /// by stable slot, so the list must be a slot table: element `slot - 1`
+    /// is the item the slot names, and a retired slot keeps its element.
+    pub fn eachWithRowsAdapters(comptime Capture: type, roc_host: *abi.RocHost, binder_token: HostBinderToken, state_cap: HostValueCapability, describe_fn: abi.RocErasedCallableFn, copy_snapshot_fn: abi.RocErasedCallableFn, copy_delta_fn: abi.RocErasedCallableFn, row_fn: abi.RocErasedCallableFn, capture: Capture) abi.Elem {
+        const item_cap = testHostValueCapability(roc_host);
+        return .{
+            .payload = .{
+                .each = .{
+                    .rows = boxTestNodeSignalExpr(roc_host, testNodeRefExpr(binder_token)),
+                    .ops = .{
+                        .rows_capability = hv.retainHostValueCapability(state_cap),
+                        .item_capability = item_cap,
+                        .describe = writeTestErasedCallable(Capture, roc_host, describe_fn, &testErasedCallableOnDrop, capture),
+                        .copy_snapshot = writeTestErasedCallable(Capture, roc_host, copy_snapshot_fn, &testErasedCallableOnDrop, capture),
+                        .copy_delta = writeTestErasedCallable(Capture, roc_host, copy_delta_fn, &testErasedCallableOnDrop, capture),
+                        .compare_slots = testEachAdapterCallable(roc_host, &testEachComparePairsCallable),
+                        .clone_item = testEachAdapterCallable(roc_host, &testEachCloneItemCallable),
+                        .row = writeTestErasedCallable(Capture, roc_host, row_fn, &testErasedCallableOnDrop, capture),
+                    },
+                },
+            },
+            .tag = .Each,
+        };
+    }
 };
 
 // Worktree-only GPUI experiment. The ABI publishes committed, touched native
