@@ -42,6 +42,7 @@
     "examples-web/_fixtures/optional-text-attr/main.roc",
     "examples-web/_fixtures/radio-group-control/main.roc",
     "examples-web/_fixtures/recursive-switch/main.roc",
+    "examples-web/_fixtures/rows-direct-delta-locality/main.roc",
     "examples-web/_fixtures/select-control/main.roc",
     "examples-web/_fixtures/signal-combine-caps/main.roc",
     "examples-web/_fixtures/signal-record-builder/main.roc",
