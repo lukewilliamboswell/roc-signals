@@ -1590,6 +1590,13 @@ pub fn Engine(comptime Ctx: type) type {
                 const transition = &inputs.rows_transition.?;
                 if (transition.candidateLen() != inputs.generation.item_count) return error.InvalidDescriptor;
 
+                return prepareDirectRowIndex(engine, allocator, site_index, rows_site_id, inputs, direct_index);
+            }
+
+            fn prepareDirectRowIndex(engine: *Self, allocator: std.mem.Allocator, site_index: usize, rows_site_id: rows_site_store.SiteId, inputs: *PreparedEachInputs, direct_index: *DirectRowIndex) CollectionError!each_runtime.PreparedRowSync {
+                const transition = &inputs.rows_transition.?;
+                const delta = &inputs.delta.?;
+                const rows_store = engine.rowsStore(allocator);
                 // Work here is bounded by the edit batch: created and removed
                 // rows come from the transition's journals and changed
                 // survivors from its touched set. The untouched remainder of
@@ -1839,11 +1846,14 @@ pub fn Engine(comptime Ctx: type) type {
             /// the Rows store, not in this table. Capacity was preflighted
             /// by `prepareDirectRows`; nothing here allocates.
             fn commitDirectRows(self: *@This()) HostKeyedRowDiffResult {
-                const engine = self.engine;
-                const site_index = self.rows.site_index;
+                return commitDirectRowIndex(self.engine, self.allocator, &self.rows, self.direct_index);
+            }
+
+            fn commitDirectRowIndex(engine: *Self, allocator: std.mem.Allocator, rows: *each_runtime.PreparedRowSync, direct_index: DirectRowIndex) HostKeyedRowDiffResult {
+                const site_index = rows.site_index;
                 var row_keys = EachRowScopeKeyLookup{ .engine = engine };
                 var entries_rewritten: u64 = 0;
-                for (self.rows.removed_scope_ids) |scope_id| {
+                for (rows.removed_scope_ids) |scope_id| {
                     // Swap-removal rewrites the last row's membership unless
                     // the removed row already was the last one.
                     const membership = engine.each_row_memberships_by_scope_id.items[scope_id.index()] orelse @panic("removed each row lacked site membership");
@@ -1851,28 +1861,28 @@ pub fn Engine(comptime Ctx: type) type {
                     each_runtime.removeRowFromSiteIndex(&engine.each_row_sites, &engine.each_row_memberships_by_scope_id, scope_id, scope_runtime.eachRowKeyHash(engine.scopes.items, scope_id), &row_keys);
                     entries_rewritten += 1 + moved_survivor;
                 }
-                for (self.direct_index.created_scope_ids) |scope_id| {
-                    each_runtime.appendRowToSiteIndex(self.allocator, &engine.each_row_sites, &engine.each_row_memberships_by_scope_id, site_index, scope_id, scope_runtime.eachRowKeyHash(engine.scopes.items, scope_id));
+                for (direct_index.created_scope_ids) |scope_id| {
+                    each_runtime.appendRowToSiteIndex(allocator, &engine.each_row_sites, &engine.each_row_memberships_by_scope_id, site_index, scope_id, scope_runtime.eachRowKeyHash(engine.scopes.items, scope_id));
                     entries_rewritten += 1;
                 }
                 engine.pending_roc_metrics.bump(.rows_membership_entries_rewritten, entries_rewritten);
 
-                const created_count = self.direct_index.created_scope_ids.len;
-                const candidate_len = self.direct_index.candidate_len;
-                const updated_count = self.direct_index.updated_count;
+                const created_count = direct_index.created_scope_ids.len;
+                const candidate_len = direct_index.candidate_len;
+                const updated_count = direct_index.updated_count;
                 if (candidate_len < created_count + updated_count) @panic("direct Rows delta counted more edited rows than the site holds");
                 const result = HostKeyedRowDiffResult{
                     .scope_ids = &.{},
                     .row_items_changed = &.{},
                     .scope_created = &.{},
-                    .removed_scope_ids = self.rows.removed_scope_ids,
+                    .removed_scope_ids = rows.removed_scope_ids,
                     .rows_reused = candidate_len - created_count,
                     .rows_created = @intCast(created_count),
-                    .rows_removed = @intCast(self.rows.removed_scope_ids.len),
+                    .rows_removed = @intCast(rows.removed_scope_ids.len),
                     .row_items_unchanged = @intCast(candidate_len - created_count - updated_count),
                     .row_items_updated = @intCast(updated_count),
                 };
-                self.rows.removed_scope_ids = &.{};
+                rows.removed_scope_ids = &.{};
                 return result;
             }
 
@@ -5792,6 +5802,7 @@ pub fn Engine(comptime Ctx: type) type {
                 rows_site_id: rows_site_store.SiteId,
                 parent_owner: rows_site_store.OwnerToken,
                 inputs: *PreparedEachInputs,
+                direct_index: *PreparedActiveEachRows.DirectRowIndex,
             ) CollectionError!each_runtime.PreparedRowSync {
                 const allocator = Ctx.allocator(self.host_ctx);
                 const engine_ptr = self.engine;
@@ -5865,63 +5876,31 @@ pub fn Engine(comptime Ctx: type) type {
                 const transition = &inputs.rows_transition.?;
                 if (transition.candidateLen() != inputs.generation.item_count) return error.InvalidDescriptor;
 
-                const binding_edits = std.math.add(usize, delta.ops.items.len, transition.removedRows().len) catch return error.ResourceLimit;
-                inputs.candidate_bindings.reserve(binding_edits) catch |err| return switch (err) {
-                    error.OutOfMemory => error.OutOfMemory,
-                    error.ResourceLimit => error.ResourceLimit,
-                };
-
+                var rows = try PreparedActiveEachRows.prepareDirectRowIndex(engine_ptr, allocator, site_index, rows_site_id, inputs, direct_index);
+                errdefer rows.deinit();
+                // Parent recollection needs complete layout order. These arrays
+                // are layout scratch only; mirror indexing uses the sparse journal.
                 const next_scope_ids = allocator.alloc(ids.ScopeId, transition.candidateLen()) catch return error.OutOfMemory;
                 errdefer allocator.free(next_scope_ids);
-                const key_hashes = allocator.alloc(u64, transition.candidateLen()) catch return error.OutOfMemory;
-                errdefer allocator.free(key_hashes);
                 const item_changed = allocator.alloc(bool, transition.candidateLen()) catch return error.OutOfMemory;
                 errdefer allocator.free(item_changed);
                 const scope_created = allocator.alloc(bool, transition.candidateLen()) catch return error.OutOfMemory;
                 errdefer allocator.free(scope_created);
-                const removed_scope_ids = allocator.alloc(ids.ScopeId, transition.removedRows().len) catch return error.OutOfMemory;
-                errdefer allocator.free(removed_scope_ids);
-
-                var highest_scope_id = ids.root_scope;
-                var created_count: usize = 0;
                 var candidate = transition.iterateCandidate();
                 var index: usize = 0;
                 while (candidate.next()) |row| : (index += 1) {
                     if (index >= next_scope_ids.len or row.metadata.row_handle == 0 or row.metadata.item_slot == 0) return error.InvalidDescriptor;
                     const row_scope_id = ids.ScopeId.fromRaw(row.metadata.scope_id);
                     next_scope_ids[index] = row_scope_id;
-                    key_hashes[index] = std.hash.Wyhash.hash(0, row.key);
                     item_changed[index] = row.item_changed;
                     scope_created[index] = row.created;
-                    if (row.created) created_count += 1;
-                    if (row_scope_id.raw() > highest_scope_id.raw()) highest_scope_id = row_scope_id;
                 }
                 if (index != next_scope_ids.len) return error.InvalidDescriptor;
 
-                for (transition.removedRows(), removed_scope_ids) |row_id, *removed_scope_id| {
-                    const row = rows_store.getRowConst(rows_site_id, row_id) catch return error.InvalidDescriptor;
-                    if (row.metadata.row_handle == 0) return error.InvalidDescriptor;
-                    removed_scope_id.* = ids.ScopeId.fromRaw(row.metadata.scope_id);
-                    inputs.candidate_bindings.removeAssumeCapacity(row_handles.RowHandleId.fromRaw(row.metadata.row_handle)) catch return error.InvalidDescriptor;
-                }
-
-                const legacy_site = &engine_ptr.each_row_sites.items[site_index];
-                legacy_site.scope_ids.ensureTotalCapacity(allocator, next_scope_ids.len) catch return error.OutOfMemory;
-                legacy_site.hash_links.ensureTotalCapacity(allocator, next_scope_ids.len) catch return error.OutOfMemory;
-                legacy_site.hash_heads.ensureTotalCapacity(allocator, std.math.cast(u32, next_scope_ids.len) orelse return error.ResourceLimit) catch return error.OutOfMemory;
-                engine_ptr.each_row_memberships_by_scope_id.ensureTotalCapacity(allocator, std.math.add(usize, highest_scope_id.index(), 1) catch return error.ResourceLimit) catch return error.OutOfMemory;
-
-                return .{
-                    .allocator = allocator,
-                    .site_index = site_index,
-                    .next_scope_ids = next_scope_ids,
-                    .key_hashes = key_hashes,
-                    .row_items_changed = item_changed,
-                    .scope_created = scope_created,
-                    .removed_scope_ids = removed_scope_ids,
-                    .created_count = created_count,
-                    .highest_scope_id = highest_scope_id,
-                };
+                rows.next_scope_ids = next_scope_ids;
+                rows.row_items_changed = item_changed;
+                rows.scope_created = scope_created;
+                return rows;
             }
 
             /// Everything a nested row sync stages before the collection adopts
@@ -5930,6 +5909,7 @@ pub fn Engine(comptime Ctx: type) type {
             /// row sync, recollection flags, layout pieces) only when the sync
             /// was not adopted into `nested_row_syncs`.
             const NestedRowSyncStaging = struct {
+                direct_index: PreparedActiveEachRows.DirectRowIndex = .{},
                 inputs: ?PreparedEachInputs = null,
                 hooks: StagedEachRowSyncHooks = undefined,
                 rows: ?each_runtime.PreparedRowSync = null,
@@ -5951,6 +5931,7 @@ pub fn Engine(comptime Ctx: type) type {
                     self.collected_item_slots.deinit(allocator);
                     self.row_render_ranges.deinit(allocator);
                     if (adopted) return;
+                    allocator.free(self.direct_index.created_scope_ids);
                     allocator.free(self.pieces);
                     allocator.free(self.recollected);
                     if (self.rows) |*rows| {
@@ -5997,7 +5978,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const hooks = &staging.hooks;
                 engine_ptr.recordEachSync(inputs.generation.item_count, engine_ptr.each_row_sites.items[site_index].scope_ids.items.len);
                 staging.rows = if (direct_delta)
-                    try self.prepareNestedDirectRows(scope_id, site_ordinal, site_index, rows_site_id, parent_owner, inputs)
+                    try self.prepareNestedDirectRows(scope_id, site_ordinal, site_index, rows_site_id, parent_owner, inputs, &staging.direct_index)
                 else blk: {
                     const binding_edits = std.math.add(usize, inputs.generation.item_count, engine_ptr.each_row_sites.items[site_index].scope_ids.items.len) catch return error.ResourceLimit;
                     inputs.candidate_bindings.reserve(binding_edits) catch |err| return switch (err) {
@@ -6209,6 +6190,7 @@ pub fn Engine(comptime Ctx: type) type {
                     .inputs = inputs.*,
                     .rows = rows.*,
                     .direct_delta = direct_delta,
+                    .direct_index = staging.direct_index,
                     .recollected = recollected,
                     .pieces = pieces,
                 });
@@ -7295,6 +7277,7 @@ pub fn Engine(comptime Ctx: type) type {
             inputs: PreparedEachInputs,
             rows: each_runtime.PreparedRowSync,
             direct_delta: bool = false,
+            direct_index: PreparedActiveEachRows.DirectRowIndex = .{},
             retired_generation: ?*each_generation.Generation = null,
             /// Per next row: a survivor re-collected in place.
             recollected: []bool,
@@ -7359,47 +7342,12 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn commitDirectRows(self: *@This(), engine_ptr: *Self) HostKeyedRowDiffResult {
-                const site = &engine_ptr.each_row_sites.items[self.rows.site_index];
-                while (engine_ptr.each_row_memberships_by_scope_id.items.len <= self.rows.highest_scope_id.index()) engine_ptr.each_row_memberships_by_scope_id.appendAssumeCapacity(null);
-                for (site.scope_ids.items) |scope_id| engine_ptr.each_row_memberships_by_scope_id.items[scope_id.index()] = null;
-                site.scope_ids.clearRetainingCapacity();
-                site.scope_ids.appendSliceAssumeCapacity(self.rows.next_scope_ids);
-                site.hash_links.items.len = self.rows.next_scope_ids.len;
-                @memset(site.hash_links.items, each_runtime.missing_row_index);
-                site.hash_heads.clearRetainingCapacity();
-                for (self.rows.next_scope_ids, self.rows.key_hashes, 0..) |scope_id, key_hash, row_index| {
-                    const entry = site.hash_heads.getOrPutAssumeCapacity(key_hash);
-                    if (entry.found_existing) site.hash_links.items[row_index] = entry.value_ptr.*;
-                    entry.value_ptr.* = row_index;
-                    engine_ptr.each_row_memberships_by_scope_id.items[scope_id.index()] = .{ .site_index = self.rows.site_index, .row_index = row_index };
-                }
-
-                var unchanged_count: u64 = 0;
-                var updated_count: u64 = 0;
-                for (self.rows.scope_created, self.rows.row_items_changed) |created, changed| {
-                    if (created) continue;
-                    if (changed) updated_count += 1 else unchanged_count += 1;
-                }
-                const result = HostKeyedRowDiffResult{
-                    .scope_ids = self.rows.next_scope_ids,
-                    .row_items_changed = self.rows.row_items_changed,
-                    .scope_created = self.rows.scope_created,
-                    .removed_scope_ids = self.rows.removed_scope_ids,
-                    .rows_reused = self.rows.next_scope_ids.len - self.rows.created_count,
-                    .rows_created = @intCast(self.rows.created_count),
-                    .rows_removed = @intCast(self.rows.removed_scope_ids.len),
-                    .row_items_unchanged = unchanged_count,
-                    .row_items_updated = updated_count,
-                };
-                self.rows.next_scope_ids = &.{};
-                self.rows.row_items_changed = &.{};
-                self.rows.scope_created = &.{};
-                self.rows.removed_scope_ids = &.{};
-                return result;
+                return PreparedActiveEachRows.commitDirectRowIndex(engine_ptr, self.allocator, &self.rows, self.direct_index);
             }
 
             fn deinit(self: *@This()) void {
                 self.rows.deinit();
+                self.allocator.free(self.direct_index.created_scope_ids);
                 if (self.retired_generation) |generation| {
                     generation.deinit(self.allocator, self.inputs.ctx, self.inputs.roc_host, &self.inputs.engine.pending_roc_metrics);
                     self.allocator.destroy(generation);
@@ -18753,6 +18701,114 @@ test "prepared each inputs use generation-scoped dense indexes" {
     try std.testing.expect(@FieldType(Inputs, "keys") == []usize);
     try std.testing.expect(@FieldType(Inputs, "items") == []usize);
     try std.testing.expect(@FieldType(Inputs, "candidate_bindings") == each_generation.CandidateBindings);
+}
+
+test "nested staging releases created-row journal when later layout allocation refuses" {
+    const Staging = Engine(VerifyCtx).StagedCollectionCtx.NestedRowSyncStaging;
+    var fault = @import("fault_allocator.zig").FaultAllocator.init(std.testing.allocator);
+    var staging: Staging = .{};
+    staging.direct_index.created_scope_ids = try fault.allocator().dupe(ids.ScopeId, &.{ids.ScopeId.fromRaw(7)});
+    staging.recollected = try fault.allocator().alloc(bool, 3);
+    fault.configure(1);
+    try std.testing.expectError(error.OutOfMemory, fault.allocator().alloc(Engine(VerifyCtx).PreparedRenderLayoutPlan.Piece, 3));
+    staging.release(fault.allocator(), undefined, false);
+    try std.testing.expectEqual(@as(usize, 0), fault.bytes.live);
+    try std.testing.expectEqual(@as(usize, 1), fault.attempts);
+}
+
+test "nested direct mirror preparation and publication touch only removed rows" {
+    // Explicit recollection seam: production Row.signal updates do not rebuild
+    // surviving row builders, but a retained nested collection must still obey
+    // sparse mirror ownership when a caller recollects its live parent.
+    const E = Engine(VerifyCtx);
+    for ([_]usize{ 1_000, 10_000 }) |count| {
+        var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+        var engine = E.init();
+        defer deinitVerifyStaticEngine(&engine, &ctx);
+        _ = try engine.internRootScope(ctx.allocator);
+        const parent = (try engine.internComponentScope(ctx.allocator, ids.root_scope, ids.SiteOrdinal.fromRaw(0))).scope_id;
+        const ordinal = ids.SiteOrdinal.fromRaw(1);
+        const store = engine.rowsStore(ctx.allocator);
+        const owner = try rows_site_store.OwnerToken.fromRaw(1);
+        const site_id = try store.createSite(owner);
+        const edits = try ctx.allocator.alloc(rows_transition.Edit, count);
+        defer ctx.allocator.free(edits);
+        const keys = try ctx.allocator.alloc([24]u8, count);
+        defer ctx.allocator.free(keys);
+        for (edits, keys, 0..) |*edit, *buffer, index| {
+            const key = try std.fmt.bufPrint(buffer, "nested-{d}", .{index});
+            const handle = try engine.row_handle_registry.insert(ctx.allocator, {});
+            const scope_id = engine.createEachRowScope(&ctx, parent, ordinal, std.hash.Wyhash.hash(0, key), handle);
+            edit.* = .{ .insert = .{ .key = key, .metadata = .{ .item_slot = index + 1, .scope_id = scope_id.raw(), .row_handle = handle.raw() } } };
+        }
+        var seed = try rows_transition.PreparedTransition.prepare(ctx.allocator, store, site_id, owner, try rows_site_store.OwnerToken.fromRaw(2), edits);
+        defer seed.deinit();
+        seed.commit();
+        const site_index = engine.each_row_site_indexes.get(.{ .parent_scope_id = parent, .site_ordinal = ordinal }).?;
+        var stream: HostNodeDescriptorStream = .{};
+        defer stream.deinit(ctx.allocator, &ctx, undefined, &engine.pending_roc_metrics);
+        var collection = try E.StagedCollectionCtx.init(&engine, &ctx, &stream, .{}, .{}, 0);
+        defer collection.deinit();
+        var generation: each_generation.Generation = undefined;
+        generation.rows_generation = 3;
+        generation.item_count = count - 1;
+        var fault = @import("fault_allocator.zig").FaultAllocator.init(std.testing.allocator);
+        var attempts: usize = 0;
+        var failure: usize = 0;
+        while (failure == 0 or failure <= attempts) : (failure += 1) {
+            fault.configure(if (failure == 0) null else failure);
+            ctx.allocator = fault.allocator();
+            var inputs: E.PreparedEachInputs = undefined;
+            inputs.generation = &generation;
+            inputs.delta = .{ .complete = true };
+            // Input decoding precedes the preparation allocation sweep.
+            try inputs.delta.?.ops.append(std.testing.allocator, .{ .remove = .{ .first_slot = count / 2, .count = 1 } });
+            defer inputs.delta.?.deinit(std.testing.allocator);
+            inputs.candidate_bindings = each_generation.CandidateBindings.init(fault.allocator());
+            defer inputs.candidate_bindings.deinit();
+            inputs.rows_transition = null;
+            defer if (inputs.rows_transition) |*transition| transition.deinit();
+            var direct: E.PreparedActiveEachRows.DirectRowIndex = .{};
+            defer fault.allocator().free(direct.created_scope_ids);
+            const result = collection.prepareNestedDirectRows(parent, ordinal, site_index, site_id, try rows_site_store.OwnerToken.fromRaw(2), &inputs, &direct);
+            if (failure == 0) {
+                var rows = try result;
+                rows.deinit();
+                attempts = fault.attempts;
+            } else {
+                try std.testing.expectError(error.OutOfMemory, result);
+            }
+            try std.testing.expectEqual(count, engine.each_row_sites.items[site_index].scope_ids.items.len);
+            try std.testing.expectEqual(count, (try store.getSiteConst(site_id)).len);
+        }
+        fault.configure(null);
+        var inputs: E.PreparedEachInputs = undefined;
+        inputs.generation = &generation;
+        inputs.delta = .{ .complete = true };
+        try inputs.delta.?.ops.append(std.testing.allocator, .{ .remove = .{ .first_slot = count / 2, .count = 1 } });
+        defer inputs.delta.?.deinit(std.testing.allocator);
+        inputs.candidate_bindings = each_generation.CandidateBindings.init(fault.allocator());
+        defer inputs.candidate_bindings.deinit();
+        inputs.rows_transition = null;
+        defer if (inputs.rows_transition) |*transition| transition.deinit();
+        var nested: E.PreparedNestedRowSync = undefined;
+        nested.allocator = fault.allocator();
+        nested.direct_index = .{};
+        defer fault.allocator().free(nested.direct_index.created_scope_ids);
+        const visits = engine.pending_roc_metrics.rows_candidate_rows_visited;
+        nested.rows = try collection.prepareNestedDirectRows(parent, ordinal, site_index, site_id, try rows_site_store.OwnerToken.fromRaw(2), &inputs, &nested.direct_index);
+        defer nested.rows.deinit();
+        const writes = engine.pending_roc_metrics.rows_membership_entries_rewritten;
+        fault.configure(1);
+        var diff = nested.commitDirectRows(&engine);
+        defer diff.deinit(fault.allocator());
+        inputs.rows_transition.?.commit();
+        try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+        try std.testing.expectEqual(visits, engine.pending_roc_metrics.rows_candidate_rows_visited);
+        try std.testing.expectEqual(writes + 2, engine.pending_roc_metrics.rows_membership_entries_rewritten);
+        try std.testing.expectEqual(count - 1, engine.each_row_sites.items[site_index].scope_ids.items.len);
+        ctx.allocator = std.testing.allocator;
+    }
 }
 
 test "created and changed Rows adapter work is exact for a sparse nested edit" {
