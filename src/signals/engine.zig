@@ -17000,10 +17000,20 @@ pub fn Engine(comptime Ctx: type) type {
             effect.* = undefined;
         }
 
+        /// Reserves one running-effect slot before the host dequeues an effect
+        /// or hands its thunk to a worker. Refusal leaves pending effects and
+        /// their ownership unchanged. With no intervening admission, the next
+        /// trackRunningEffect call cannot allocate.
+        pub fn prepareRunningEffect(self: *Self, ctx: Ctx.Handle) std.mem.Allocator.Error!void {
+            try self.running_effects.ensureUnusedCapacity(Ctx.allocator(ctx), 1);
+        }
+
         /// Records an effect whose thunk the host has handed to its worker,
         /// taking over the reads reference until the effect finishes.
+        /// Recoverable hosts call prepareRunningEffect before handing off work;
+        /// hosts without preflight retain the fatal allocation boundary here.
         pub fn trackRunningEffect(self: *Self, ctx: Ctx.Handle, effect: *PendingEffect) void {
-            self.running_effects.ensureUnusedCapacity(Ctx.allocator(ctx), 1) catch @panic("out of memory");
+            self.prepareRunningEffect(ctx) catch @panic("out of memory");
             self.running_effects.appendAssumeCapacity(.{
                 .id = effect.id,
                 .owner_scope_id = effect.owner_scope_id,
@@ -19314,6 +19324,40 @@ test "staged evaluation reads a source settled by the enclosing transaction" {
     try std.testing.expectEqual(derived_calls_before, engine.pending_roc_metrics.derived_calls_into_roc);
     try std.testing.expectEqual(HostValue.fromRaw(1), source.payload.interval_source.cached_value.present.value);
     try std.testing.expectEqual(HostValue.fromRaw(10), mapped.payload.map.cached_value.present.value);
+}
+
+test "running effect admission refuses before dequeue and transfers without allocation" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var ctx = VerifyCtxHost{ .allocator = failing.allocator() };
+    var engine = Engine(VerifyCtx).init();
+    defer engine.running_effects.deinit(std.testing.allocator);
+    defer engine.pending_effects.deinit(std.testing.allocator);
+    var record = HostSignalRecord{ .ref_count = 1, .payload = .{ .ref = 1 } };
+    const effect = PendingEffect{
+        .id = 7,
+        .owner_scope_id = ids.ScopeId.fromRaw(0),
+        .thunk = @ptrFromInt(0x1000),
+        .reads = .{ .record = &record, .source_node_ids = &.{} },
+    };
+    try engine.pending_effects.append(std.testing.allocator, effect);
+    try std.testing.expectError(error.OutOfMemory, engine.prepareRunningEffect(&ctx));
+    try std.testing.expectEqual(@as(usize, 1), engine.pending_effects.items.len);
+    try std.testing.expectEqual(@as(usize, 0), engine.running_effects.items.len);
+    try std.testing.expectEqual(effect.thunk, engine.pending_effects.items[0].thunk);
+    try std.testing.expectEqual(@as(usize, 1), record.ref_count);
+
+    ctx.allocator = std.testing.allocator;
+    try engine.prepareRunningEffect(&ctx);
+    var admitted = engine.takeNextPendingEffect().?;
+    var no_allocations = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    ctx.allocator = no_allocations.allocator();
+    engine.trackRunningEffect(&ctx, &admitted);
+    try std.testing.expect(!no_allocations.has_induced_failure);
+    const finished = engine.finishRunningEffect(effect.id);
+    try std.testing.expectEqual(effect.reads.record, finished.reads.record);
+    try std.testing.expectEqual(@as(usize, 0), engine.pending_effects.items.len);
+    try std.testing.expectEqual(@as(usize, 0), engine.running_effects.items.len);
+    try std.testing.expectEqual(@as(usize, 1), record.ref_count);
 }
 
 test "action snapshots refresh derived reads without replacing settled caches" {
