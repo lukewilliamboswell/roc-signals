@@ -3021,7 +3021,16 @@ const EffectJob = struct {
 fn prepareEffectThunk(effect: abi.RocErasedCallable, snapshot: HostValue, cap: HostValueCapability) abi.RocErasedCallable {
     // Both platforms provide these entry points. Zig-only host fixtures have
     // no linked Roc application and therefore cannot invoke a Roc effect.
-    if (comptime host_fixtures) {
+    // The fuzz build stands in for the export with the export's ownership
+    // contract: the closure reference and the capability reference are
+    // consumed, the snapshot stays borrowed, and the closure itself becomes
+    // the thunk, so a fuzz target reads its capture to decide which result it
+    // delivers.
+    if (comptime build_options.fuzz_fixtures) {
+        const host = current_host orelse failHost("effect preparation needs a bound fuzz host");
+        hv.releaseHostValueCapability(cap, host.engine.roc_host orelse failHost("effect preparation needs the fuzz host's Roc host"));
+        return effect;
+    } else if (comptime host_fixtures) {
         failHost("effect closures require a linked Roc application");
     } else {
         return abi.roc_prepare_effect(effect, snapshot.toRaw(), cap);
@@ -5266,6 +5275,14 @@ fn testEachAdapterCallable(roc_host: *abi.RocHost, callback: abi.RocErasedCallab
         &testErasedCallableOnDrop,
         .{ .amount = 0 },
     );
+}
+
+/// Returns a fresh Str value holding the borrowed input's text. The engine
+/// drops the input after the call, so the result must be an independent value.
+fn testIdentityStrHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
+    const call_args = testErasedArgsAs(ErasedHostValueUnaryArgs, args);
+    const text = testReadHostValueStr(roc_host, call_args.arg0);
+    writeTestErasedResult(HostValue, ret, testHostValueStr(roc_host, text.asSlice()));
 }
 
 fn testUnaryHostValueCallable(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, capture_ptr: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
@@ -12623,6 +12640,482 @@ pub const fuzz_fixtures = struct {
     pub const eachRowKeyI64 = testEachRowKeyI64;
     pub const readI64 = testReadHostValueI64;
     pub const writeResult = writeTestErasedResult;
+
+    /// The stable row handle a row builder receives beside its key. Reading it
+    /// borrows nothing, so it may be taken before `eachRowKeyI64` releases the
+    /// key string in the same argument block.
+    pub fn eachRowHandle(args: ?[*]const u8) u64 {
+        return testErasedArgsAs(erased_calls.ErasedRocStrU64Args, args).arg1;
+    }
+
+    /// A `Signal.select` member over `input`, true while the string `input`
+    /// holds equals `key`. Each call mints a fresh identity callable, so two
+    /// members with the same key are two graph records and two memberships.
+    pub const selectExpr = testNodeSelectExpr;
+
+    /// A fused keyed-row selector for the row `row_handle` of the site whose
+    /// identity is `site`, as `Row.select` emits it. The engine keys the record
+    /// by `(site, row_handle)` and requires `key` to equal that row's key
+    /// exactly. `site` is borrowed: the descriptor takes the two references it
+    /// holds, so the caller keeps its own until every row built from it is gone.
+    pub fn keyedSelectExpr(roc_host: *abi.RocHost, site: abi.RocErasedCallable, row_handle: u64, input: abi.NodeSignalExpr, input_cap: HostValueCapability, key: []const u8) abi.NodeSignalExpr {
+        const true_init = testHostValueInitialThunk(roc_host, testHostValueBool(true));
+        const cap = testHostValueCapability(roc_host);
+        abi.increfErasedCallable(site, 2);
+        return .{
+            .payload = .{
+                .keyed_select = .{
+                    ._0 = row_handle,
+                    ._1 = site,
+                    ._2 = boxTestNodeSignalExpr(roc_host, input),
+                    ._3 = RocStr.fromSlice(key, roc_host),
+                    ._4 = testTextReadHandle(roc_host, input_cap),
+                    ._5 = site,
+                    ._6 = true_init,
+                    ._7 = cap,
+                },
+            },
+            .tag = .KeyedSelect,
+        };
+    }
+
+    /// An initializer thunk yielding `false`, the shape a keyed selector site
+    /// identity takes. The caller owns the returned reference.
+    pub fn keyedSelectSite(roc_host: *abi.RocHost) abi.RocErasedCallable {
+        return testHostValueInitialThunk(roc_host, testHostValueBool(false));
+    }
+    pub const decrefCallable = abi.decrefErasedCallable;
+
+    /// A `when` whose condition is any bool signal expression.
+    pub const whenWithSignal = testNodeWhenWithSignal;
+    /// A bool attribute bound to a signal, published through the bool sink routes.
+    pub const signalBoolAttr = testNodeSignalBoolAttr;
+    pub const BoolField = RenderBoolField;
+    /// A text node showing a string signal, published through the text sink routes.
+    pub const textSignalWithCapability = testNodeTextSignalWithCapability;
+    pub const refExpr = testNodeRefExpr;
+    pub const strValue = testHostValueStr;
+    /// A bool signal asking `predicate` of the `List I64` signal `input`.
+    pub const listPredicateExpr = testNodeListPredicateExpr;
+
+    /// The capability a non-`Ref` signal expression carries.
+    pub const signalCapability = testNodeSignalExprCapabilityOrPanic;
+
+    /// A transform that returns a Str input's text as a fresh Str, for a
+    /// `map` whose only purpose is to be one shared record. The caller owns
+    /// the reference.
+    pub fn identityStrTransform(roc_host: *abi.RocHost) abi.RocErasedCallable {
+        return writeTestErasedCallable(TestErasedI64Capture, roc_host, &testIdentityStrHostValueCallable, &testErasedCallableOnDrop, .{ .amount = 0 });
+    }
+
+    /// A `map` of `input` through `transform`, whose record identity is the
+    /// transform's address: every expression built from the same transform
+    /// aliases one graph record, as `Signal.map` values cloned in Roc do.
+    /// `transform` is borrowed; the descriptor takes the two references it
+    /// holds.
+    pub fn mapExprSharing(roc_host: *abi.RocHost, transform: abi.RocErasedCallable, input: abi.NodeSignalExpr) abi.NodeSignalExpr {
+        const cap = testHostValueCapability(roc_host);
+        abi.increfErasedCallable(transform, 2);
+        return .{
+            .payload = .{
+                .map = .{
+                    ._0 = transform,
+                    ._1 = boxTestNodeSignalExpr(roc_host, input),
+                    ._2 = transform,
+                    ._3 = cap,
+                },
+            },
+            .tag = .Map,
+        };
+    }
+
+    pub const StateWrite = engine.StateWrite;
+
+    /// Publishes several state writes as one transaction, the entry an action
+    /// with more than one reducer takes.
+    // Transaction sources beyond a state write.
+    //
+    // The seams below let a fuzz target open every kind of host transaction
+    // the design names - event dispatch, effect results, timer ticks, source
+    // results, and coordinated writes - through the engine's recoverable
+    // `try*` entry points, so an injected preparation failure comes back as
+    // a `CollectionError` the oracle can judge instead of the spec host's
+    // fatal `failHost` classification.
+
+    pub const RunningEffect = engine.RunningEffect;
+    pub const SignalRecord = HostSignalRecord;
+    pub const EventKind = RenderEventKind;
+    pub const ExtractionPlan = EventExtractionPlanKind;
+    pub const TextField = RenderTextField;
+    pub const Cmd = erased_calls.Cmd;
+    pub const Capability = HostValueCapability;
+
+    /// The payload a generated event carries: a unit for click-like kinds, a
+    /// string for `input`, matching the kinds' boundary descriptors.
+    pub const EventPayload = union(enum) {
+        unit,
+        text: []const u8,
+    };
+
+    /// The active event id bound to `kind` on the live element whose
+    /// `test_id` is `test_id`, or null when no such element is live.
+    pub fn activeEventIdByTestId(host: *const HostEnv, test_id: []const u8, kind: RenderEventKind) ?u64 {
+        for (host.dom_elements.items) |elem| {
+            if (!elem.active) continue;
+            const id = elem.test_id orelse continue;
+            if (!std.mem.eql(u8, id, test_id)) continue;
+            const binding = switch (kind) {
+                .click => elem.event_bindings.click,
+                .input => elem.event_bindings.input,
+                else => null,
+            } orelse return null;
+            return binding.event_id.raw();
+        }
+        return null;
+    }
+
+    /// Dispatches one DOM event into the engine as one host transaction and
+    /// reports a refused preparation instead of terminating the host.
+    ///
+    /// This is the spec host's `dispatchRocEvent` minus its classification:
+    /// the payload is owned and dropped here on every path, a reducer's
+    /// proposal is consumed by the state transaction, and an action's command
+    /// is evaluated once and released after the run. A refusal leaves the
+    /// engine exactly as it was, and the same event can be dispatched again.
+    pub fn dispatchEvent(host: *HostEnv, roc_host: *abi.RocHost, event_id: u64, payload_spec: EventPayload) HostEngine.CollectionError!CommandCounts {
+        defer finishHostMetrics(host);
+        const desc = hostEventById(host, ids.EventId.fromRaw(event_id));
+        const payload = switch (payload_spec) {
+            .unit => hostValueUnit(host, roc_host),
+            .text => |bytes| hostValueStr(host, roc_host, bytes),
+        };
+        const expected_descriptor = switch (payload_spec) {
+            .unit => RenderEventKind.click.payloadDescriptor(),
+            .text => RenderEventKind.input.payloadDescriptor(),
+        };
+        validateBoundaryPayloadDescriptor(desc, expected_descriptor);
+        const payload_cap = signals.retained_values.retainHostValueCapability(desc.handler.payloadCapability(), &host.engine.pending_roc_metrics);
+        defer signals.retained_values.releaseHostValueCapability(payload_cap, roc_host, &host.engine.pending_roc_metrics);
+        host.setHostValueCapability(payload, payload_cap);
+        defer {
+            host.debug_phase = .event_drop_payload;
+            callHostValueToUnitWithCapability(host, roc_host, payload_cap, hv.hostValueCapabilityDrop(payload_cap), payload);
+        }
+        if (desc.handler == .action) {
+            const cmd = host.engine.evaluateEventAction(host, roc_host, desc, payload);
+            defer cmd.decref(roc_host);
+            var action_desc = desc;
+            host.engine.effect_origin = &action_desc.handler.action.reads;
+            defer host.engine.effect_origin = null;
+            return host.engine.tryRunCommand(host, roc_host, desc.handler.action.scope_id, cmd);
+        }
+        const target_node_id = desc.handler.reduce.target_node_id;
+        const state_cap = host.stateCapability(target_node_id);
+        const next = host.engine.evaluateEventReducer(host, roc_host, desc, payload);
+        return host.engine.tryDispatchStateValue(host, roc_host, target_node_id.raw(), next, state_cap);
+    }
+
+    /// Publishes several state writes as one atomic transaction. Every value
+    /// is consumed on success and on refusal alike.
+    pub fn dispatchStateWrites(host: *HostEnv, roc_host: *abi.RocHost, writes: []const engine.StateWrite) HostEngine.CollectionError!CommandCounts {
+        return host.engine.tryDispatchStateWrites(host, roc_host, writes);
+    }
+
+    /// The runtime metrics accumulated so far: everything already finished
+    /// into the last-event totals plus whatever the current or most recent
+    /// transaction left pending. A fuzz oracle differences two readings to get
+    /// one transaction's work, whichever of the two places it was recorded in.
+    pub fn runtimeMetrics(host: *const HostEnv) RuntimeMetrics {
+        return addRuntimeMetrics(host.engine.last_runtime_metrics, host.engine.pending_roc_metrics);
+    }
+    /// Resolves the host behind a Roc host table from inside an erased
+    /// callable, which is how a generated `Rows` adapter reaches the engine's
+    /// description and copy sinks.
+    pub const hostOf = hostFromRocHost;
+    /// Argument layout of the `describe`, `copy_snapshot`, and `copy_delta`
+    /// adapters: the retained collection value and the active sink token.
+    pub const HostValueU64Args = erased_calls.ErasedHostValueU64Args;
+    pub const dropHostValue = testDropHostValue;
+    /// A `Signal.select` over the state cell `binder_token` names, true while
+    /// that cell holds exactly `key`.
+    pub fn selectOnState(roc_host: *abi.RocHost, binder_token: HostBinderToken, state_cap: HostValueCapability, key: []const u8) abi.NodeSignalExpr {
+        return testNodeSelectExpr(roc_host, testNodeRefExpr(binder_token), state_cap, key);
+    }
+
+    /// An `each` over the state cell `binder_token` binds whose `Rows`
+    /// adapters are supplied by the caller, so a fuzz target can describe the
+    /// cell's value as a snapshot generation, a direct-parent delta, or a
+    /// stale-sibling delta and copy whichever the engine asks for. The
+    /// `compare_slots` and `clone_item` adapters index the cell's `i64` list
+    /// by stable slot, so the list must be a slot table: element `slot - 1`
+    /// is the item the slot names, and a retired slot keeps its element.
+    pub fn eachWithRowsAdapters(comptime Capture: type, roc_host: *abi.RocHost, binder_token: HostBinderToken, state_cap: HostValueCapability, describe_fn: abi.RocErasedCallableFn, copy_snapshot_fn: abi.RocErasedCallableFn, copy_delta_fn: abi.RocErasedCallableFn, row_fn: abi.RocErasedCallableFn, capture: Capture) abi.Elem {
+        const item_cap = testHostValueCapability(roc_host);
+        return .{
+            .payload = .{
+                .each = .{
+                    .rows = boxTestNodeSignalExpr(roc_host, testNodeRefExpr(binder_token)),
+                    .ops = .{
+                        .rows_capability = hv.retainHostValueCapability(state_cap),
+                        .item_capability = item_cap,
+                        .describe = writeTestErasedCallable(Capture, roc_host, describe_fn, &testErasedCallableOnDrop, capture),
+                        .copy_snapshot = writeTestErasedCallable(Capture, roc_host, copy_snapshot_fn, &testErasedCallableOnDrop, capture),
+                        .copy_delta = writeTestErasedCallable(Capture, roc_host, copy_delta_fn, &testErasedCallableOnDrop, capture),
+                        .compare_slots = testEachAdapterCallable(roc_host, &testEachComparePairsCallable),
+                        .clone_item = testEachAdapterCallable(roc_host, &testEachCloneItemCallable),
+                        .row = writeTestErasedCallable(Capture, roc_host, row_fn, &testErasedCallableOnDrop, capture),
+                    },
+                },
+            },
+            .tag = .Each,
+        };
+    }
+    /// An effect the host has taken from the engine's queue and handed to its
+    /// worker. The thunk is the closure `Then` declared; in the fuzz build it
+    /// is the closure itself, so its capture says which effect this is.
+    pub const StartedEffect = struct {
+        id: u64,
+        thunk: abi.RocErasedCallable,
+    };
+
+    /// Takes the oldest queued effect and records it as running, exactly as
+    /// the spec host's `runNextEffect` does before handing the thunk to a
+    /// worker. The caller owns the thunk. The engine's own bookkeeping here
+    /// is a fatal boundary (it panics rather than refuses on exhaustion), so
+    /// a fault sweep must not cover this call.
+    pub fn startNextEffect(host: *HostEnv) ?StartedEffect {
+        var effect = host.engine.takeNextPendingEffect() orelse return null;
+        const started = StartedEffect{ .id = effect.id, .thunk = effect.thunk };
+        host.engine.trackRunningEffect(host, &effect);
+        return started;
+    }
+
+    /// Removes a running effect's record so its result can be applied. The
+    /// returned record must be handed back through `releaseFinishedEffect`
+    /// once the result has committed.
+    pub fn finishRunningEffect(host: *HostEnv, id: u64) engine.RunningEffect {
+        return host.engine.finishRunningEffect(id);
+    }
+
+    /// Applies the command an effect returned, with the effect's declared
+    /// reads as origin and its owner resolved to the nearest scope still
+    /// active, so writes to states retired while it ran are skipped. This is
+    /// the recoverable half of `completeEffectJob`: a refusal leaves the
+    /// running record intact and the caller may apply the command again.
+    pub fn applyEffectResult(host: *HostEnv, roc_host: *abi.RocHost, running: *engine.RunningEffect, cmd: erased_calls.Cmd) HostEngine.CollectionError!CommandCounts {
+        defer finishHostMetrics(host);
+        const owner_scope_id = host.engine.nearestActiveScope(running.owner_scope_id);
+        host.engine.effect_origin = &running.reads;
+        host.engine.applying_effect_result = true;
+        defer {
+            host.engine.applying_effect_result = false;
+            host.engine.effect_origin = null;
+        }
+        return host.engine.tryRunCommand(host, roc_host, owner_scope_id, cmd);
+    }
+
+    /// Releases the reads a finished effect held.
+    pub fn releaseFinishedEffect(host: *HostEnv, running: *engine.RunningEffect) void {
+        host.engine.releaseFinishedEffect(host, running);
+    }
+
+    /// Effects `Then` commands have queued and the host has not started.
+    pub fn pendingEffectCount(host: *const HostEnv) usize {
+        return host.engine.pending_effects.items.len;
+    }
+
+    /// Effects the host has started and not yet finished.
+    pub fn runningEffectCount(host: *const HostEnv) usize {
+        return host.engine.running_effects.items.len;
+    }
+
+    /// Event bindings in the committed event table; a refused transaction
+    /// must leave this count unchanged.
+    pub fn activeEventCount(host: *const HostEnv) usize {
+        return host.engine.active_events.items.len;
+    }
+
+    /// Interval sources registered with the host's timer registry.
+    pub fn activeIntervalCount(host: *const HostEnv) usize {
+        return host.engine.active_intervals.entries.items.len;
+    }
+
+    /// The runtime token of the active interval registered with `period_ms`,
+    /// or null when no such interval is live.
+    pub fn intervalRuntimeToken(host: *const HostEnv, period_ms: u64) ?u64 {
+        for (host.engine.active_intervals.entries.items) |entry| {
+            if (entry.period_ms == period_ms) return entry.token.raw();
+        }
+        return null;
+    }
+
+    /// Advances the interval behind `token` as the production host does on a
+    /// timer notification. The engine's tick path is a fatal boundary:
+    /// preparation failure panics rather than refuses.
+    pub fn tickInterval(host: *HostEnv, roc_host: *abi.RocHost, token: u64) CommandCounts {
+        defer finishHostMetrics(host);
+        return host.engine.tickIntervalSourceByRuntimeToken(host, roc_host, token);
+    }
+
+    /// The live interval source record registered with `period_ms`.
+    pub fn intervalRecord(host: *HostEnv, period_ms: u64) ?*HostSignalRecord {
+        return host.engine.activeIntervalRecordByPeriod(period_ms);
+    }
+
+    /// The capability an interval source's values carry.
+    pub fn intervalCapability(record: *HostSignalRecord) HostValueCapability {
+        return record.requireIntervalSource().cap;
+    }
+
+    /// Publishes `value` as the next value of an effect source - the seam a
+    /// timer tick or a task result enters through - and reports a refused
+    /// preparation. The value is consumed on success and on refusal.
+    pub fn dispatchEffectSourceValue(host: *HostEnv, roc_host: *abi.RocHost, record: *HostSignalRecord, value: HostValue) HostEngine.CollectionError!CommandCounts {
+        defer finishHostMetrics(host);
+        return host.engine.tryDispatchEffectSourceValue(host, roc_host, record, value);
+    }
+
+    /// Reads the i64 an interval source currently holds.
+    pub fn intervalValue(host: *HostEnv, roc_host: *abi.RocHost, record: *HostSignalRecord) i64 {
+        const value = host.engine.evalHostSignalRecord(host, roc_host, record);
+        defer host.engine.dropHostSignalRecordValue(host, roc_host, record, value);
+        return testReadHostValueI64(roc_host, value);
+    }
+
+    /// The exact capability owning the state cell behind `node_id`.
+    pub fn stateCapability(host: *HostEnv, node_id: u64) HostValueCapability {
+        return host.stateCapability(ids.NodeId.fromRaw(node_id));
+    }
+
+    /// An i64 value already carrying `cap`, as a reducer or command must
+    /// return for a state owned by that capability.
+    pub fn i64ValueWithCapability(roc_host: *abi.RocHost, value: i64, cap: HostValueCapability) HostValue {
+        return hv.makeI64WithCapability(hostFromRocHost(roc_host), roc_host, value, cap);
+    }
+
+    pub const readStr = testReadHostValueStr;
+    pub const retainCapability = hv.retainHostValueCapability;
+    pub const cloneBinderToken = cloneTestBinderToken;
+    pub const initialThunk = testHostValueInitialThunk;
+    pub const staticTextAttr = testNodeStaticTextAttr;
+    pub const mapExpr = testNodeMapExpr;
+    pub const i64TextSignal = testNodeI64TextSignal;
+    pub const intervalSourceExpr = testNodeIntervalSourceExpr;
+    pub const eventExtractionPlan = testEventExtractionPlan;
+    pub const eventDelivery = testNodeEventDelivery;
+    pub const eventPolicy = testNodeEventPolicy;
+    pub const erasedCallable = writeTestErasedCallable;
+    pub const boxSignalExpr = boxTestNodeSignalExpr;
+
+    /// Releases a callable a fuzz target owns, such as a started effect's thunk.
+    pub fn releaseCallable(roc_host: *abi.RocHost, callable: abi.RocErasedCallable) void {
+        abi.decrefErasedCallable(callable, roc_host);
+    }
+
+    /// Borrows the capture of a callable built through `erasedCallable`.
+    pub fn callableCapture(comptime Capture: type, callable: abi.RocErasedCallable) *Capture {
+        return testCapturePtrAs(Capture, abi.rocErasedCallableCapturePtr(callable));
+    }
+
+    /// An event binding whose handler reduces the state `binder_token` binds
+    /// through `reducer`, called with (current, read, payload) and a capture
+    /// of the caller's choosing.
+    pub fn eventReduceAttr(comptime Capture: type, roc_host: *abi.RocHost, kind: RenderEventKind, binder_token: HostBinderToken, plan: EventExtractionPlanKind, reducer: abi.RocErasedCallableFn, capture: Capture) abi.NodeAttr {
+        const transform = writeTestErasedCallable(Capture, roc_host, reducer, &testErasedCallableOnDrop, capture);
+        const payload_cap = testHostValueCapability(roc_host);
+        return .{
+            .payload = .{ .on = .{
+                .key_chord = std.mem.zeroes(@FieldType(abi.NodeEventBinding, "key_chord")),
+                .kind = .{ .id = @intFromEnum(kind) },
+                .msg = .{
+                    .event_extraction_plan = testEventExtractionPlan(roc_host, plan),
+                    .handler = .{ .payload = .{ .reduce = .{
+                        .binder = cloneTestBinderToken(binder_token),
+                        .read_binder = cloneTestBinderToken(binder_token),
+                        .payload_reducer = .{
+                            .capability = payload_cap,
+                            .read_capability = hv.retainHostValueCapability(payload_cap),
+                            .transform = transform,
+                        },
+                    } }, .tag = .Reduce },
+                },
+                .name = RocStr.empty(),
+                .delivery = testNodeEventDelivery(false),
+                .policy = testNodeEventPolicy(0),
+            } },
+            .tag = .On,
+        };
+    }
+
+    /// An event binding whose handler is an action: `to_cmd` is called with
+    /// (snapshot of `reads`, payload) and returns the command to run.
+    pub fn eventActionAttr(comptime Capture: type, roc_host: *abi.RocHost, kind: RenderEventKind, plan: EventExtractionPlanKind, reads: abi.NodeSignalExpr, to_cmd: abi.RocErasedCallableFn, capture: Capture) abi.NodeAttr {
+        const callable = writeTestErasedCallable(Capture, roc_host, to_cmd, &testErasedCallableOnDrop, capture);
+        return .{
+            .payload = .{ .on = .{
+                .key_chord = std.mem.zeroes(@FieldType(abi.NodeEventBinding, "key_chord")),
+                .kind = .{ .id = @intFromEnum(kind) },
+                .msg = .{
+                    .event_extraction_plan = testEventExtractionPlan(roc_host, plan),
+                    .handler = .{ .payload = .{ .action = .{
+                        .payload_cap = testHostValueCapability(roc_host),
+                        .reads = boxTestNodeSignalExpr(roc_host, reads),
+                        .to_cmd = callable,
+                    } }, .tag = .Action },
+                },
+                .name = RocStr.empty(),
+                .delivery = testNodeEventDelivery(false),
+                .policy = testNodeEventPolicy(0),
+            } },
+            .tag = .On,
+        };
+    }
+
+    /// A `Set` change writing `value`, which must already carry `cap`, into
+    /// the state `binder_token` binds. The change owns one reference to the
+    /// token and to the capability.
+    pub fn stateSetChange(roc_host: *abi.RocHost, binder_token: HostBinderToken, cap: HostValueCapability, value: HostValue) abi.NodeStateChange {
+        return .{
+            .payload = .{ .set = .{
+                .binder = cloneTestBinderToken(binder_token),
+                .update = .{ .capability = hv.retainHostValueCapability(cap), .initial = testHostValueInitialThunk(roc_host, value) },
+            } },
+            .tag = .Set,
+        };
+    }
+
+    /// A `Transform` change applying `transform` (with its capture) to the
+    /// settled value of the state `binder_token` binds.
+    pub fn stateTransformChange(comptime Capture: type, roc_host: *abi.RocHost, binder_token: HostBinderToken, cap: HostValueCapability, transform: abi.RocErasedCallableFn, capture: Capture) abi.NodeStateChange {
+        return .{
+            .payload = .{ .transform = .{
+                .binder = cloneTestBinderToken(binder_token),
+                .capability = hv.retainHostValueCapability(cap),
+                .transform = writeTestErasedCallable(Capture, roc_host, transform, &testErasedCallableOnDrop, capture),
+            } },
+            .tag = .Transform,
+        };
+    }
+
+    /// An `UpdateChanges` command: every change commits in one atomic
+    /// transaction. The command takes ownership of the changes.
+    pub fn updateChangesCmd(roc_host: *abi.RocHost, changes: []const abi.NodeStateChange) erased_calls.Cmd {
+        return .{ .payload = .{ .update_changes = abi.RocList(abi.NodeStateChange).fromSlice(changes, roc_host) }, .tag = .UpdateChanges };
+    }
+
+    /// A `Then` command: the changes commit now and `effect` (with its
+    /// capture) is queued for the host to run after the turn settles.
+    pub fn thenCmd(comptime Capture: type, roc_host: *abi.RocHost, changes: []const abi.NodeStateChange, effect: abi.RocErasedCallableFn, capture: Capture) erased_calls.Cmd {
+        return .{ .payload = .{ .then = .{
+            .changes = abi.RocList(abi.NodeStateChange).fromSlice(changes, roc_host),
+            .effect = writeTestErasedCallable(Capture, roc_host, effect, &testErasedCallableOnDrop, capture),
+        } }, .tag = .Then };
+    }
+
+    /// Releases a command a fuzz target built and has finished applying.
+    pub fn releaseCmd(roc_host: *abi.RocHost, cmd: erased_calls.Cmd) void {
+        cmd.decref(roc_host);
+    }
 };
 
 // Worktree-only GPUI experiment. The ABI publishes committed, touched native

@@ -43,3 +43,9 @@ saying which bug it belongs to, and the bug belongs in `wip/issues.md`.
 
 Names are descriptive rather than content-hashed, because the reason an input is
 kept is not recoverable from its bytes.
+
+The exception is `distilled-<hash>`, written by `fuzz.py distill` from a
+campaign's live queue (see `test/fuzzing/README.md`, "Carrying a campaign
+forward"). Those are kept for their coverage rather than for a story, and the
+hash is what lets a re-distillation replace exactly the set it wrote last time
+and nothing else. `distill` never touches a hand-named input.
