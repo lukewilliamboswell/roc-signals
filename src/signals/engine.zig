@@ -3254,7 +3254,9 @@ pub fn Engine(comptime Ctx: type) type {
             self.render_cache.replaceChildrenForMoves(ctx, parent_elem_id, next_child_ids, counts);
         }
 
-        /// Applies render event binding after preparation has fixed semantics and reserved fallible growth.
+        /// Updates a fixed event on the direct-render compatibility path.
+        /// Prepared transactions instead journal bindings with their complete
+        /// render splice, keeping fallible pool growth before publication.
         pub fn applyRenderEventBinding(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, kind: RenderEventKind, binding: ?HostRequiredEventBinding, counts: *render.Counts) void {
             self.render_cache.applyEventBinding(ctx, elem_id, kind, binding, counts);
         }
@@ -9204,10 +9206,7 @@ pub fn Engine(comptime Ctx: type) type {
                     self.render_batch_target.?.abort();
                     self.publication_phase.resetPreflight();
                 }
-                if (comptime @hasDecl(Ctx, "RenderPublication")) if (self.host_render_publication) |*publication| {
-                    publication.deinit();
-                    self.host_render_publication = null;
-                };
+                if (self.host_render_publication != null) @panic("render plan changed after final host preparation");
                 for (splice.sparse_children.items) |*journal| if (journal.parent_elem_id == parent) {
                     journal.reserveAdditional(touched, wire) catch |err| return positionError(err);
                     return journal;
@@ -9230,10 +9229,7 @@ pub fn Engine(comptime Ctx: type) type {
                     self.render_batch_target.?.abort();
                     self.publication_phase.resetPreflight();
                 }
-                if (comptime @hasDecl(Ctx, "RenderPublication")) if (self.host_render_publication) |*publication| {
-                    publication.deinit();
-                    self.host_render_publication = null;
-                };
+                if (self.host_render_publication != null) @panic("render plan changed after final host preparation");
                 self.replacement.preparePositions().preflight() catch |err| return positionError(err);
                 const allocator = Ctx.allocator(self.host_ctx);
                 const splice = &self.render_splice.?;
@@ -9243,13 +9239,6 @@ pub fn Engine(comptime Ctx: type) type {
                 };
                 splice.preflight(self.render_batch_target.?, allocator) catch |err| return positionError(err);
                 self.publication_phase.markPreflighted();
-                if (comptime @hasDecl(Ctx, "prepareRenderPublication")) {
-                    self.host_render_publication = Ctx.prepareRenderPublication(self.host_ctx, splice) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        error.ResourceLimit => return error.ResourceLimit,
-                        error.InvalidRenderTopology => return error.InvalidRenderTopology,
-                    };
-                }
             }
 
             fn retirePositions(self: *@This()) CollectionError!void {
@@ -9330,7 +9319,10 @@ pub fn Engine(comptime Ctx: type) type {
             }
 
             fn prepare(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, selections: []const AggregateBranchSelection, limits: collection_budget.Limits, dirty_source_node_ids: []const u64) CollectionError!*@This() {
-                return prepareWithState(engine, ctx, roc_host, selections, limits, dirty_source_node_ids, &.{}, null);
+                const plan = try prepareWithState(engine, ctx, roc_host, selections, limits, dirty_source_node_ids, &.{}, null);
+                errdefer plan.deinit();
+                try plan.prepareHostPublication();
+                return plan;
             }
 
             fn prepareWithState(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, selections: []const AggregateBranchSelection, limits: collection_budget.Limits, dirty_source_node_ids: []const u64, state_update: []const PreparedExternalState, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
@@ -9474,10 +9466,7 @@ pub fn Engine(comptime Ctx: type) type {
                     self.render_batch_target.?.abort();
                     self.publication_phase.resetPreflight();
                 }
-                if (comptime @hasDecl(Ctx, "RenderPublication")) if (self.host_render_publication) |*publication| {
-                    publication.deinit();
-                    self.host_render_publication = null;
-                };
+                if (self.host_render_publication != null) @panic("render plan changed after final host preparation");
                 var child_capacity: usize = 0;
                 for (parent_elem_ids) |parent_elem_id| {
                     const parent_index = std.math.cast(usize, parent_elem_id) orelse return error.ResourceLimit;
@@ -9506,13 +9495,6 @@ pub fn Engine(comptime Ctx: type) type {
                     error.ResourceLimit => return error.ResourceLimit,
                 };
                 self.publication_phase.markPreflighted();
-                if (comptime @hasDecl(Ctx, "prepareRenderPublication")) {
-                    self.host_render_publication = Ctx.prepareRenderPublication(self.host_ctx, splice) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        error.ResourceLimit => return error.ResourceLimit,
-                        error.InvalidRenderTopology => return error.InvalidRenderTopology,
-                    };
-                }
             }
 
             fn adoptScalarRenderSplice(self: *@This(), scalar: *render_cache_mod.PreparedRenderSplice(Ctx)) CollectionError!void {
@@ -9522,10 +9504,7 @@ pub fn Engine(comptime Ctx: type) type {
                     self.render_batch_target.?.abort();
                     self.publication_phase.resetPreflight();
                 }
-                if (comptime @hasDecl(Ctx, "RenderPublication")) if (self.host_render_publication) |*publication| {
-                    publication.deinit();
-                    self.host_render_publication = null;
-                };
+                if (self.host_render_publication != null) @panic("render plan changed after final host preparation");
                 splice.adoptScalarUpdates(scalar) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.ResourceLimit => return error.ResourceLimit,
@@ -9535,13 +9514,7 @@ pub fn Engine(comptime Ctx: type) type {
                     error.ResourceLimit => return error.ResourceLimit,
                 };
                 self.publication_phase.markPreflighted();
-                if (comptime @hasDecl(Ctx, "prepareRenderPublication")) {
-                    self.host_render_publication = Ctx.prepareRenderPublication(self.host_ctx, splice) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        error.ResourceLimit => return error.ResourceLimit,
-                        error.InvalidRenderTopology => return error.InvalidRenderTopology,
-                    };
-                }
+                try self.prepareHostPublication();
             }
 
             fn prepareExternalEach(engine: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, rows: *const each_runtime.PreparedRowSync, inputs: *const PreparedEachInputs, replacement: *PreparedEachRowReplacementCollection, layout: *const PreparedEachRowRenderLayout, cache_overlay: ?*signal_records.PreparedCacheUpdates) CollectionError!*@This() {
@@ -9811,10 +9784,7 @@ pub fn Engine(comptime Ctx: type) type {
                     self.render_batch_target.?.abort();
                     self.publication_phase.resetPreflight();
                 }
-                if (comptime @hasDecl(Ctx, "RenderPublication")) if (self.host_render_publication) |*publication| {
-                    publication.deinit();
-                    self.host_render_publication = null;
-                };
+                if (self.host_render_publication != null) @panic("render plan changed after final host preparation");
 
                 const journal = try self.sparseJournal(site.parent_elem_id, 0, 0);
                 const positions = self.replacement.preparePositions();
@@ -10020,8 +9990,16 @@ pub fn Engine(comptime Ctx: type) type {
                     error.ResourceLimit => return error.ResourceLimit,
                 };
                 self.publication_phase.markPreflighted();
+            }
+
+            // The caller seals the complete structural and scalar plan once.
+            // Host shadows own copied strings and child state, so preparing them
+            // while journals still compose would duplicate all that ownership.
+            fn prepareHostPublication(self: *@This()) CollectionError!void {
+                if (self.host_render_publication != null) @panic("host publication prepared twice");
                 if (comptime @hasDecl(Ctx, "prepareRenderPublication")) {
-                    self.host_render_publication = Ctx.prepareRenderPublication(self.host_ctx, &self.render_splice.?) catch |err| switch (err) {
+                    const splice = if (self.render_splice) |*value| value else return;
+                    self.host_render_publication = Ctx.prepareRenderPublication(self.host_ctx, splice) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.ResourceLimit => return error.ResourceLimit,
                         error.InvalidRenderTopology => return error.InvalidRenderTopology,
@@ -10446,6 +10424,7 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer allocator.destroy(plan);
                 const downstream = try PreparedStructuralDownstream.prepareInitialRoot(owner.engine, owner.host_ctx, owner.roc_host, owner);
                 errdefer downstream.deinit();
+                try downstream.prepareHostPublication();
                 plan.* = .{ .root = root, .downstream = downstream };
                 return plan;
             }
@@ -15559,6 +15538,7 @@ pub fn Engine(comptime Ctx: type) type {
             defer layout.deinit();
             const downstream = try PreparedStructuralDownstream.prepareExternalEach(self, ctx, roc_host, &rows.rows, &rows.inputs, replacement, &layout, null);
             defer downstream.deinit();
+            try downstream.prepareHostPublication();
 
             const RowCommit = struct {
                 plan: *PreparedActiveEachRows,

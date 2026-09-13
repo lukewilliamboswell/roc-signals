@@ -216,8 +216,12 @@ pub const PreparedPublication = struct {
         var self = PreparedPublication{ .allocator = allocator, .original_len = elements.items.len };
         errdefer self.deinit();
         try elements.ensureTotalCapacity(allocator, std.math.add(usize, std.math.cast(usize, max_elem_id) orelse return error.ResourceLimit, 1) catch return error.ResourceLimit);
-        try self.existing.ensureTotalCapacity(allocator, touched_ids.len);
-        try self.existing_ids.ensureTotalCapacity(allocator, touched_ids.len);
+        var existing_count: usize = 0;
+        for (touched_ids) |elem_id| {
+            if (elem_id < elements.items.len) existing_count += 1;
+        }
+        try self.existing.ensureTotalCapacity(allocator, existing_count);
+        try self.existing_ids.ensureTotalCapacity(allocator, existing_count);
         try self.indexes.ensureUnusedCapacity(allocator, std.math.cast(u32, touched_ids.len) orelse return error.ResourceLimit);
         const required_len = std.math.add(usize, std.math.cast(usize, max_elem_id) orelse return error.ResourceLimit, 1) catch return error.ResourceLimit;
         const append_count = required_len -| elements.items.len;
@@ -1240,4 +1244,21 @@ test "native shortcuts clear one exact chord without disturbing sibling bindings
     try std.testing.expectEqual(@as(u64, 2), elem.named_events.items[0].binding.event_id.raw());
     clearEvent(allocator, &elem, render_sink.EventBindingKey.fromNamed("keydown", save));
     try std.testing.expectEqual(@as(usize, 1), elem.named_events.items.len);
+}
+
+test "native creation reserves no existing element shadows" {
+    const allocator = std.testing.allocator;
+    var elements: std.ArrayListUnmanaged(Element) = .empty;
+    defer {
+        for (elements.items) |*elem| elem.deinit(allocator);
+        elements.deinit(allocator);
+    }
+    var plan = try PreparedPublication.init(allocator, &elements, &.{ 0, 1, 2 }, 2);
+    defer plan.deinit();
+    try std.testing.expectEqual(@as(usize, 0), plan.existing.capacity);
+    try std.testing.expectEqual(@as(usize, 0), plan.existing_ids.capacity);
+    try std.testing.expectEqual(@as(usize, 3), plan.appended.items.len);
+    try std.testing.expectEqual(@as(usize, 3), plan.indexes.count());
+    plan.apply(&elements);
+    try std.testing.expectEqual(@as(usize, 3), elements.items.len);
 }
