@@ -3122,7 +3122,7 @@ fn runNextEffect(host: *HostEnv, roc_host: *abi.RocHost) bool {
 /// are skipped.
 fn completeEffectJob(host: *HostEnv, roc_host: *abi.RocHost, job: *EffectJob) void {
     var running = host.engine.finishRunningEffect(job.id);
-    const owner_scope_id = host.engine.nearestActiveScope(running.owner_scope_id);
+    const owner_scope_id = host.engine.nearestActiveEffectScope(running.owner_scopes);
     host.engine.effect_origin = &running.reads;
     host.engine.applying_effect_result = true;
     // A refused preparation leaves the command independently owned by the job.
@@ -9697,7 +9697,8 @@ test "completed effect retries its retained result after preparation refusal" {
     const binding = &host.engine.active_stream.signal_text_nodes.items[0].signal;
     const references_before = binding.record.ref_count;
     const reads = try binding.cloneRetained(host.hostAllocator(), &host.engine.pending_roc_metrics);
-    try host.engine.running_effects.append(host.hostAllocator(), .{ .id = 17, .owner_scope_id = ids.ScopeId.fromRaw(0), .reads = reads });
+    const owner_scopes = try host.hostAllocator().dupe(engine.EffectOwnerScope, &.{.{ .scope_id = ids.ScopeId.fromRaw(0), .activation_generation = ids.initial_generation }});
+    try host.engine.running_effects.append(host.hostAllocator(), .{ .id = 17, .owner_scopes = owner_scopes, .reads = reads });
     const job = try host.hostAllocator().create(EffectJob);
     // Model the worker's single completed invocation. The consumed thunk is
     // deliberately unavailable: completion must only reuse this owned result.
@@ -13043,7 +13044,7 @@ pub const fuzz_fixtures = struct {
     /// running record intact and the caller may apply the command again.
     pub fn applyEffectResult(host: *HostEnv, roc_host: *abi.RocHost, running: *engine.RunningEffect, cmd: erased_calls.Cmd) HostEngine.CollectionError!CommandCounts {
         defer finishHostMetrics(host);
-        const owner_scope_id = host.engine.nearestActiveScope(running.owner_scope_id);
+        const owner_scope_id = host.engine.nearestActiveEffectScope(running.owner_scopes);
         host.engine.effect_origin = &running.reads;
         host.engine.applying_effect_result = true;
         defer {

@@ -95,6 +95,7 @@ pub const PreparedScopeClaims = struct {
                 .key_hash = key_hash,
                 .row_handle = row_handle,
             } },
+            .activation_generation = self.reuse_barrier,
             .lifecycle = .active,
         });
         if (reused != null) {

@@ -102,6 +102,10 @@ pub fn Scope(comptime Row: type) type {
         previous_reusable_scope_id: ?ScopeId = null,
         next_reusable_scope_id: ?ScopeId = null,
         step: Step(Row),
+        /// Generation in which this exact scope lifetime became active. Dense
+        /// scope slots may be reused after retirement; this token keeps work
+        /// admitted by an earlier lifetime from targeting the replacement.
+        activation_generation: Generation = semantic_ids.initial_generation,
         lifecycle: Lifecycle = .active,
     };
 }
@@ -242,6 +246,7 @@ fn publishClaimedScope(comptime Row: type, allocator: std.mem.Allocator, scopes:
         .scope_id = scope_id,
         .parent_scope_id = parent_scope_id,
         .step = step,
+        .activation_generation = reuse_barrier,
     });
     return .{ .scope_id = scope_id, .created = true };
 }

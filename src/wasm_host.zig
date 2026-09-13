@@ -2130,7 +2130,7 @@ export fn roc_ui_effect_complete(token: u32) callconv(.c) void {
     };
     beginCommandTransaction();
     var running = shared_engine.finishRunningEffect(job.id);
-    const scope = shared_engine.nearestActiveScope(running.owner_scope_id);
+    const scope = shared_engine.nearestActiveEffectScope(running.owner_scopes);
     shared_engine.effect_origin = &running.reads;
     shared_engine.applying_effect_result = true;
     _ = shared_engine.tryRunCommand(.{}, &roc_host, scope, cmd) catch |err| failHostWithFmt("effect result transaction failed: {s}", .{@errorName(err)});

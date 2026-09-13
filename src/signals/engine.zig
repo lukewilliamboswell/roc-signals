@@ -142,13 +142,21 @@ pub const HostSignalRecord = signal_records.Record;
 pub const HostSignalBinding = signal_records.Binding;
 pub const validateExistingSignalRecord = signal_records.validateExistingSignalRecord;
 
+/// One exact lifetime in an admitted effect's owner-to-root scope chain.
+/// Completion uses the activation generation as well as the dense id because
+/// a retired scope slot may have been recycled for a new mounted instance.
+pub const EffectOwnerScope = struct {
+    scope_id: ids.ScopeId,
+    activation_generation: ids.Generation,
+};
+
 /// One effect accepted by a committed `Then`, owned by the engine until the
 /// host takes it: the thunk Roc prepared from the effect closure and its reads
 /// snapshot, and an independently retained reference to the declared reads so
 /// a chained `Then` in the effect's result can snapshot them again.
 pub const PendingEffect = struct {
     id: u64,
-    owner_scope_id: ids.ScopeId,
+    owner_scopes: []EffectOwnerScope,
     thunk: abi.RocErasedCallable,
     reads: HostSignalBinding,
 };
@@ -157,7 +165,7 @@ pub const PendingEffect = struct {
 /// reads so the command the effect returns can snapshot them.
 pub const RunningEffect = struct {
     id: u64,
-    owner_scope_id: ids.ScopeId,
+    owner_scopes: []EffectOwnerScope,
     reads: HostSignalBinding,
 };
 
@@ -5367,6 +5375,7 @@ pub fn Engine(comptime Ctx: type) type {
                         .key_hash = key_hash,
                         .row_handle = row_handle,
                     } },
+                    .activation_generation = ids.Generation.fromRaw(self.engine.identity_reuse_barrier),
                     .lifecycle = .active,
                 });
                 return ids.ScopeId.fromRaw(claimed);
@@ -6742,9 +6751,9 @@ pub fn Engine(comptime Ctx: type) type {
                         .intent => |index| scope: {
                             const intent = self.scopes.intents.items[index];
                             break :scope switch (intent.key.kind) {
-                                .root => .{ .scope_id = intent.id, .parent_scope_id = null, .step = .root, .lifecycle = .active },
-                                .component => .{ .scope_id = intent.id, .parent_scope_id = intent.key.parent_id, .step = .{ .component = .{ .site_ordinal = intent.key.ordinal } }, .lifecycle = .active },
-                                .when_branch => |branch| .{ .scope_id = intent.id, .parent_scope_id = intent.key.parent_id, .step = .{ .when_branch = .{ .site_ordinal = intent.key.ordinal, .branch = branch } }, .lifecycle = .active },
+                                .root => .{ .scope_id = intent.id, .parent_scope_id = null, .step = .root, .activation_generation = ids.Generation.fromRaw(self.engine.identity_reuse_barrier), .lifecycle = .active },
+                                .component => .{ .scope_id = intent.id, .parent_scope_id = intent.key.parent_id, .step = .{ .component = .{ .site_ordinal = intent.key.ordinal } }, .activation_generation = ids.Generation.fromRaw(self.engine.identity_reuse_barrier), .lifecycle = .active },
+                                .when_branch => |branch| .{ .scope_id = intent.id, .parent_scope_id = intent.key.parent_id, .step = .{ .when_branch = .{ .site_ordinal = intent.key.ordinal, .branch = branch } }, .activation_generation = ids.Generation.fromRaw(self.engine.identity_reuse_barrier), .lifecycle = .active },
                             };
                         },
                         .each_row => |index| self.prepared_each_row_scopes.items[index],
@@ -16941,6 +16950,8 @@ pub fn Engine(comptime Ctx: type) type {
                 try self.pending_effects.ensureUnusedCapacity(allocator, 1);
                 var reads = try origin.cloneRetained(allocator, &self.pending_roc_metrics);
                 errdefer self.releaseEffectReads(ctx, &reads);
+                const owner_scopes = try self.captureEffectOwnerScopes(allocator, owner_scope_id);
+                errdefer allocator.free(owner_scopes);
                 const cap = retained_values.retainHostValueCapability(self.hostSignalBindingCapability(ctx, &reads), &self.pending_roc_metrics);
                 defer retained_values.releaseHostValueCapability(cap, roc_host, &self.pending_roc_metrics);
                 const before = self.evalHostSignalBindingSnapshot(ctx, roc_host, &reads);
@@ -16957,7 +16968,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const thunk = retained_values.prepareEffectWithCapability(Ctx, ctx, roc_host, cmd.effect, snapshot, cap, &self.pending_roc_metrics);
                 self.pending_effects.appendAssumeCapacity(.{
                     .id = self.next_effect_id,
-                    .owner_scope_id = self.nearestActiveScope(owner_scope_id),
+                    .owner_scopes = owner_scopes,
                     .thunk = thunk,
                     .reads = reads,
                 });
@@ -16985,6 +16996,36 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
+        fn captureEffectOwnerScopes(self: *Self, allocator: std.mem.Allocator, owner_scope_id: ids.ScopeId) std.mem.Allocator.Error![]EffectOwnerScope {
+            var count: usize = 0;
+            var current: ?ids.ScopeId = owner_scope_id;
+            while (current) |scope_id| {
+                count += 1;
+                current = self.scopes.items[scope_id.index()].parent_scope_id;
+            }
+            const owners = try allocator.alloc(EffectOwnerScope, count);
+            current = owner_scope_id;
+            var index: usize = 0;
+            while (current) |scope_id| : (index += 1) {
+                const scope = self.scopes.items[scope_id.index()];
+                owners[index] = .{ .scope_id = scope_id, .activation_generation = scope.activation_generation };
+                current = scope.parent_scope_id;
+            }
+            return owners;
+        }
+
+        /// Finds the nearest scope from the admitted effect's original owner
+        /// chain whose exact lifetime remains active. A recycled dense scope
+        /// slot is not the scope instance that admitted the effect.
+        pub fn nearestActiveEffectScope(self: *Self, owner_scopes: []const EffectOwnerScope) ids.ScopeId {
+            for (owner_scopes) |owner| {
+                if (owner.scope_id.index() >= self.scopes.items.len) continue;
+                const scope = self.scopes.items[owner.scope_id.index()];
+                if (scope.lifecycle.isActive() and scope.activation_generation == owner.activation_generation) return owner.scope_id;
+            }
+            @panic("effect owner's root scope is inactive");
+        }
+
         /// Hands the host the oldest queued effect, transferring ownership of
         /// its thunk and reads reference.
         pub fn takeNextPendingEffect(self: *Self) ?PendingEffect {
@@ -16997,6 +17038,7 @@ pub fn Engine(comptime Ctx: type) type {
             const roc_host = self.roc_host orelse @panic("pending effect cannot release its thunk without a Roc host");
             abi.decrefErasedCallable(effect.thunk, roc_host);
             self.releaseEffectReads(ctx, &effect.reads);
+            Ctx.allocator(ctx).free(effect.owner_scopes);
             effect.* = undefined;
         }
 
@@ -17016,7 +17058,7 @@ pub fn Engine(comptime Ctx: type) type {
             self.prepareRunningEffect(ctx) catch @panic("out of memory");
             self.running_effects.appendAssumeCapacity(.{
                 .id = effect.id,
-                .owner_scope_id = effect.owner_scope_id,
+                .owner_scopes = effect.owner_scopes,
                 .reads = effect.reads,
             });
             effect.* = undefined;
@@ -17033,6 +17075,7 @@ pub fn Engine(comptime Ctx: type) type {
         /// Releases the reads of a finished effect the host has applied.
         pub fn releaseFinishedEffect(self: *Self, ctx: Ctx.Handle, running: *RunningEffect) void {
             self.releaseEffectReads(ctx, &running.reads);
+            Ctx.allocator(ctx).free(running.owner_scopes);
             running.* = undefined;
         }
 
@@ -19341,7 +19384,7 @@ test "running effect admission refuses before dequeue and transfers without allo
     record.* = .{ .ref_count = 1, .payload = .{ .ref = 1 } };
     const effect = PendingEffect{
         .id = 7,
-        .owner_scope_id = ids.ScopeId.fromRaw(0),
+        .owner_scopes = try std.testing.allocator.dupe(EffectOwnerScope, &.{.{ .scope_id = ids.ScopeId.fromRaw(0), .activation_generation = ids.initial_generation }}),
         .thunk = thunk,
         .reads = .{ .record = record, .source_node_ids = try std.testing.allocator.dupe(u64, &.{1}) },
     };
