@@ -1745,18 +1745,24 @@ export class SignalsRuntime {
       const responseBits = this.dispatchEventPayload(eventId, payloadDescriptor, event, payloadTelemetry, {
         drainCommands: false,
       });
-      const responsePolicy = applyDynamicEventResponse(responseBits, event);
-      if (this.telemetryLog && responsePolicy.changed) {
-        this.emitTelemetry("dom_event_response", {
-          domEvent,
-          eventId,
-          responseBits,
-          preventedDefault: responsePolicy.preventedDefault,
-          stoppedPropagation: responsePolicy.stoppedPropagation,
-          stoppedImmediatePropagation: responsePolicy.stoppedImmediatePropagation,
-        });
+      try {
+        const responsePolicy = applyDynamicEventResponse(responseBits, event);
+        if (this.telemetryLog && responsePolicy.changed) {
+          this.emitTelemetry("dom_event_response", {
+            domEvent,
+            eventId,
+            responseBits,
+            preventedDefault: responsePolicy.preventedDefault,
+            stoppedPropagation: responsePolicy.stoppedPropagation,
+            stoppedImmediatePropagation: responsePolicy.stoppedImmediatePropagation,
+          });
+        }
+        this.applyPendingCommands(`event:${eventId}`);
+      } catch (err) {
+        // DOM responses precede the drain, so this execution sits outside
+        // dispatch's containment boundary. A partial drain cannot be resumed.
+        throw this.poisonAfterHostFailure(err);
       }
-      this.applyPendingCommands(`event:${eventId}`);
     };
     cleanup = () => elem.removeEventListener(domEvent, listener, listenerOptions);
     if (listenerOptions === undefined) {

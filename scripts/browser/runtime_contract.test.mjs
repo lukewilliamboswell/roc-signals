@@ -3267,34 +3267,46 @@ test("remove then recreate gives behaviours and listeners a fresh element lifeti
   assert.equal(runtime.eventCleanups.size, 0);
 });
 
-test("a live id collision during event drain contains the mount and cleans the original once", () => {
-  const cleaned = [];
-  const errors = [];
-  const { host, runtime } = mountWith([
-    { op: Op.createElement, a: 1, s: "input" },
-    { dynamic: { op: DynamicOp.setAttrText, elemId: 1, name: "data-signals-behavior", value: "probe" } },
-    { op: Op.bindInput, a: 1, b: 42 },
-    { op: Op.appendChild, a: 0, b: 1 },
-  ], {
-    behaviors: { probe: { attach: el => () => cleaned.push(el) } },
-    onError: err => errors.push(err),
+for (const delivery of ["direct", "DOM"]) {
+  test(`a live id collision during ${delivery} event drain contains the mount and cleans the original once`, () => {
+    const cleaned = [];
+    const errors = [];
+    const { host, runtime } = mountWith([
+      { op: Op.createElement, a: 1, s: "input" },
+      { dynamic: { op: DynamicOp.setAttrText, elemId: 1, name: "data-signals-behavior", value: "probe" } },
+      { op: Op.bindInput, a: 1, b: 42 },
+      { op: Op.appendChild, a: 0, b: 1 },
+    ], {
+      behaviors: { probe: { attach: el => () => cleaned.push(el) } },
+      onError: err => errors.push(err),
+    });
+    const original = runtime.nodes.get(1);
+    host.eventResponses.set(42, () => [
+      { op: Op.setValue, a: 1, s: "applied before failure" },
+      { op: Op.createElement, a: 1, s: "div" },
+      { op: Op.removeNode, a: 1 },
+    ]);
+    assert.throws(
+      () => delivery === "direct" ? runtime.dispatchString(42, "input") : fireEvent(original, "input"),
+      /reuses live DOM node id 1/,
+    );
+    assert.equal(runtime.mounted, false);
+    assert.equal(errors.length, 1);
+    assert.equal(runtime.nodes.get(1), original);
+    assert.equal(original.value, "applied before failure");
+    assert.deepEqual(cleaned, [original]);
+    assert.equal(runtime.eventCleanups.size, 0);
+    assert.equal(runtime.behaviorInstances.size, 0);
+    assert.equal(runtime.lastCommands.length, 0);
+    assert.throws(() => runtime.dispatchString(42, "later"), /reuses live DOM node id 1/);
+    fireEvent(original, "input");
+    assert.equal(host.dispatches.length, 1);
+    runtime.unmount();
+    runtime.unmount();
+    assert.deepEqual(cleaned, [original]);
+    assert.equal(errors.length, 1);
   });
-  const original = runtime.nodes.get(1);
-  host.eventResponses.set(42, () => [
-    { op: Op.createElement, a: 1, s: "div" },
-    { op: Op.removeNode, a: 1 },
-  ]);
-  assert.throws(() => runtime.dispatchString(42, "input"), /reuses live DOM node id 1/);
-  assert.equal(runtime.mounted, false);
-  assert.equal(errors.length, 1);
-  assert.equal(runtime.nodes.get(1), original);
-  assert.deepEqual(cleaned, [original]);
-  assert.equal(runtime.eventCleanups.size, 0);
-  fireEvent(original, "input");
-  assert.equal(host.dispatches.length, 1);
-  runtime.unmount();
-  assert.deepEqual(cleaned, [original]);
-});
+}
 
 test("behaviour index tracks rebinding, marker removal, pending work, and unmount", () => {
   const calls = [];
