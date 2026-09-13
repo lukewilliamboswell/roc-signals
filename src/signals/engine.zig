@@ -12837,7 +12837,10 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Performs eval host signal record inside the shared engine while preserving transaction and changed-set invariants.
+        /// Returns an independently owned copy of a record's settled value,
+        /// initializing an uncached record when first collected. This read obeys
+        /// signal equality cutoffs; action snapshots use their explicit fresh
+        /// evaluation path instead of replacing the settled cache.
         pub fn evalHostSignalRecord(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord) HostValue {
             return self.evalHostSignalRecordWithProvisionalStates(ctx, roc_host, record, &.{});
         }
@@ -12943,9 +12946,27 @@ pub fn Engine(comptime Ctx: type) type {
         /// re-running Roc or replacing committed ownership. Only uncached new
         /// records are initialized here, owned by the provisional collection.
         fn evalHostSignalRecordStaged(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord, provisional_states: []const HostState, overlay: ?*const signal_records.PreparedCacheUpdates) HostValue {
+            return self.evalHostSignalRecordRead(ctx, roc_host, record, provisional_states, overlay, .settled);
+        }
+
+        const SignalReadMode = enum { settled, snapshot };
+
+        /// Action snapshots must reflect current sources even when a read's
+        /// equality cutoff suppressed propagation or its original scope retired.
+        /// Derived results belong to this read alone and never replace caches.
+        fn evalHostSignalBindingSnapshot(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, signal: *HostSignalBinding) HostValue {
+            return self.evalHostSignalRecordRead(ctx, roc_host, signal.record, &.{}, null, .snapshot);
+        }
+
+        fn evalHostSignalRecordRead(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord, provisional_states: []const HostState, overlay: ?*const signal_records.PreparedCacheUpdates, read_mode: SignalReadMode) HostValue {
             if (record.cachedSlot()) |slot| {
                 const settled = if (overlay) |prepared| prepared.readSlot(slot) else slot;
-                if (settled.* == .present) return self.cloneCachedSignalValue(ctx, settled);
+                if (settled.* == .present) switch (record.payload) {
+                    .map, .map2, .combine, .select, .keyed_select => {
+                        if (read_mode == .settled) return self.cloneCachedSignalValue(ctx, settled);
+                    },
+                    else => return self.cloneCachedSignalValue(ctx, settled),
+                };
             }
             switch (record.payload) {
                 .ref => |node_id| {
@@ -12954,45 +12975,51 @@ pub fn Engine(comptime Ctx: type) type {
                 },
                 .const_value => |*payload| {
                     const value = erased_calls.callValueInitThunk(roc_host, payload.init.toAbi());
+                    if (read_mode == .snapshot) return value;
                     return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
                 },
                 .map => |*payload| {
-                    const input = self.evalHostSignalRecordStaged(ctx, roc_host, payload.input, provisional_states, overlay);
+                    const input = self.evalHostSignalRecordRead(ctx, roc_host, payload.input, provisional_states, overlay, read_mode);
                     defer self.dropHostSignalRecordValueWithProvisionalStates(ctx, roc_host, payload.input, input, provisional_states);
                     self.recordDerivedCall();
                     const input_cap = self.hostSignalRecordCapabilityWithProvisionalStates(ctx, payload.input, provisional_states);
                     const value = callHostValueToHostValueWithCapability(ctx, roc_host, input_cap, payload.transform.toAbi(), input);
+                    if (read_mode == .snapshot) return value;
                     return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
                 },
                 .map2 => |*payload| {
-                    const left = self.evalHostSignalRecordStaged(ctx, roc_host, payload.left, provisional_states, overlay);
+                    const left = self.evalHostSignalRecordRead(ctx, roc_host, payload.left, provisional_states, overlay, read_mode);
                     defer self.dropHostSignalRecordValueWithProvisionalStates(ctx, roc_host, payload.left, left, provisional_states);
-                    const right = self.evalHostSignalRecordStaged(ctx, roc_host, payload.right, provisional_states, overlay);
+                    const right = self.evalHostSignalRecordRead(ctx, roc_host, payload.right, provisional_states, overlay, read_mode);
                     defer self.dropHostSignalRecordValueWithProvisionalStates(ctx, roc_host, payload.right, right, provisional_states);
                     self.recordDerivedCall();
                     const left_cap = self.hostSignalRecordCapabilityWithProvisionalStates(ctx, payload.left, provisional_states);
                     const right_cap = self.hostSignalRecordCapabilityWithProvisionalStates(ctx, payload.right, provisional_states);
                     const value = callHostValueHostValueToHostValueWithCapabilities(ctx, roc_host, left_cap, right_cap, payload.transform.toAbi(), left, right);
+                    if (read_mode == .snapshot) return value;
                     return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
                 },
                 .select, .keyed_select => |*payload| {
-                    if (payload.false_value == .absent) {
+                    if (read_mode == .settled and payload.false_value == .absent) {
                         const value = erased_calls.callValueInitThunk(roc_host, payload.false_init.toAbi());
                         payload.false_value.replace(ctx, roc_host, &self.pending_roc_metrics, value, payload.cap);
                     }
-                    if (payload.true_value == .absent) {
+                    if (read_mode == .settled and payload.true_value == .absent) {
                         const value = erased_calls.callValueInitThunk(roc_host, payload.true_init.toAbi());
                         payload.true_value.replace(ctx, roc_host, &self.pending_roc_metrics, value, payload.cap);
                     }
-                    const input = self.evalHostSignalRecordStaged(ctx, roc_host, payload.input, provisional_states, overlay);
+                    const input = self.evalHostSignalRecordRead(ctx, roc_host, payload.input, provisional_states, overlay, read_mode);
                     defer self.dropHostSignalRecordValueWithProvisionalStates(ctx, roc_host, payload.input, input, provisional_states);
                     const selected = callHostValueToStrWithCapability(ctx, roc_host, payload.input_read.capability, payload.input_read.read, input);
                     defer selected.decref(roc_host);
                     const desired = if (std.mem.eql(u8, selected.asSlice(), payload.key)) blk: {
+                        if (payload.true_value == .absent) break :blk erased_calls.callValueInitThunk(roc_host, payload.true_init.toAbi());
                         break :blk self.cloneCachedSignalValue(ctx, &payload.true_value);
                     } else blk: {
+                        if (payload.false_value == .absent) break :blk erased_calls.callValueInitThunk(roc_host, payload.false_init.toAbi());
                         break :blk self.cloneCachedSignalValue(ctx, &payload.false_value);
                     };
+                    if (read_mode == .snapshot) return desired;
                     return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, desired, payload.cap);
                 },
                 .combine => |*payload| {
@@ -13005,7 +13032,7 @@ pub fn Engine(comptime Ctx: type) type {
                         values.deinit(allocator);
                     }
                     for (payload.children) |child| {
-                        values.append(allocator, self.evalHostSignalRecordStaged(ctx, roc_host, child, provisional_states, overlay)) catch @panic("out of memory");
+                        values.append(allocator, self.evalHostSignalRecordRead(ctx, roc_host, child, provisional_states, overlay, read_mode)) catch @panic("out of memory");
                     }
                     const list = HostValueList.fromSlice(values.items, roc_host);
                     defer list.decref(roc_host);
@@ -13016,6 +13043,7 @@ pub fn Engine(comptime Ctx: type) type {
                         self.dropHostSignalRecordValueWithProvisionalStates(ctx, roc_host, child, child_value, provisional_states);
                     }
                     values.deinit(allocator);
+                    if (read_mode == .snapshot) return value;
                     return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
                 },
                 .interval_source => |*payload| {
@@ -13040,6 +13068,7 @@ pub fn Engine(comptime Ctx: type) type {
                     const slot = if (overlay) |prepared| prepared.readSlot(&payload.cached_value) else &payload.cached_value;
                     if (slot.* == .absent) {
                         const value = self.materializeEachRowItem(ctx, roc_host, payload);
+                        if (read_mode == .snapshot) return value;
                         return self.replaceSignalExprCacheAndClone(ctx, &payload.cached_value, roc_host, value, payload.cap);
                     }
                     return self.cloneCachedSignalValue(ctx, slot);
@@ -13047,7 +13076,9 @@ pub fn Engine(comptime Ctx: type) type {
             }
         }
 
-        /// Performs eval host signal binding inside the shared engine while preserving transaction and changed-set invariants.
+        /// Reads the binding's settled signal value as an independently owned
+        /// value. The caller releases it through the binding's capability.
+        /// This does not refresh derived reads for an action continuation.
         pub fn evalHostSignalBinding(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, signal: *HostSignalBinding) HostValue {
             return self.evalHostSignalRecord(ctx, roc_host, signal.record);
         }
@@ -14024,13 +14055,15 @@ pub fn Engine(comptime Ctx: type) type {
             );
         }
 
-        /// Builds one command for one accepted occurrence, borrowing the
-        /// settled declared reads. Re-evaluating equal events is intentional;
-        /// signal propagation itself never invokes this callback.
+        /// Builds one command for one accepted occurrence from declared reads.
+        /// Re-evaluating equal events is intentional;
+        /// signal propagation itself never invokes this callback. Its snapshot
+        /// evaluates declared reads from current sources without changing their
+        /// signal caches, even when those caches were pruned by equality.
         pub fn evaluateEventAction(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, desc: HostActiveEventDesc, payload: HostValue) abi.NodeCmd {
             var handler = desc.handler.action;
             const cap = self.hostSignalBindingCapability(ctx, &handler.reads);
-            const snapshot = self.evalHostSignalBinding(ctx, roc_host, &handler.reads);
+            const snapshot = self.evalHostSignalBindingSnapshot(ctx, roc_host, &handler.reads);
             defer callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), snapshot);
             return retained_values.callHostValueHostValueToCmdWithCapabilities(Ctx, ctx, roc_host, cap, handler.payload_cap, handler.to_cmd.toAbi(), snapshot, payload);
         }
@@ -16910,14 +16943,14 @@ pub fn Engine(comptime Ctx: type) type {
                 errdefer self.releaseEffectReads(ctx, &reads);
                 const cap = retained_values.retainHostValueCapability(self.hostSignalBindingCapability(ctx, &reads), &self.pending_roc_metrics);
                 defer retained_values.releaseHostValueCapability(cap, roc_host, &self.pending_roc_metrics);
-                const before = self.evalHostSignalBinding(ctx, roc_host, &reads);
+                const before = self.evalHostSignalBindingSnapshot(ctx, roc_host, &reads);
                 var before_dropped = false;
                 errdefer if (!before_dropped) callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), before);
                 const counts = try self.tryUpdateChangeCommands(ctx, roc_host, owner_scope_id, cmd.changes.items());
                 const snapshot = if (self.readsStatesActive(&reads)) blk: {
                     callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), before);
                     before_dropped = true;
-                    break :blk self.evalHostSignalBinding(ctx, roc_host, &reads);
+                    break :blk self.evalHostSignalBindingSnapshot(ctx, roc_host, &reads);
                 } else before;
                 before_dropped = true;
                 defer callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), snapshot);
@@ -19281,6 +19314,53 @@ test "staged evaluation reads a source settled by the enclosing transaction" {
     try std.testing.expectEqual(derived_calls_before, engine.pending_roc_metrics.derived_calls_into_roc);
     try std.testing.expectEqual(HostValue.fromRaw(1), source.payload.interval_source.cached_value.present.value);
     try std.testing.expectEqual(HostValue.fromRaw(10), mapped.payload.map.cached_value.present.value);
+}
+
+test "action snapshots refresh derived reads without replacing settled caches" {
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const callable = abi.rocErasedCallableAllocate(&roc_host, verifyStateCallable, null, 0).?;
+    defer abi.decrefErasedCallable(callable, &roc_host);
+    const eq_callable = abi.rocErasedCallableAllocate(&roc_host, verifyHostValueEqCallable, null, 0).?;
+    defer abi.decrefErasedCallable(eq_callable, &roc_host);
+    const cap = HostValueCapability{ .clone = callable, .drop = callable, .eq = eq_callable };
+    var ctx = VerifyCtxHost{ .allocator = std.testing.allocator };
+    var engine = Engine(VerifyCtx).init();
+    var source = HostSignalRecord{ .ref_count = 1, .payload = .{ .interval_source = .{
+        .period_ms = 100,
+        .initial = .fromAbi(callable),
+        .tick = .fromAbi(callable),
+        .cap = cap,
+        .cached_value = .{ .present = HostValueCell.initRetained(HostValue.fromRaw(1), cap, &engine.pending_roc_metrics) },
+    } } };
+    defer source.payload.interval_source.cached_value.deinit(&ctx, &roc_host, &engine.pending_roc_metrics);
+    var mapped = HostSignalRecord{ .ref_count = 1, .payload = .{ .map = .{
+        .input = &source,
+        .transform = .fromAbi(callable),
+        .cap = cap,
+        .cached_value = .{ .present = HostValueCell.initRetained(HostValue.fromRaw(10), cap, &engine.pending_roc_metrics) },
+    } } };
+    defer mapped.payload.map.cached_value.deinit(&ctx, &roc_host, &engine.pending_roc_metrics);
+    var reads = HostSignalBinding{ .record = &mapped, .source_node_ids = &.{} };
+
+    // A sampled read can retain its last published value after an equality
+    // cutoff. A Then may also retire its read's scope while its input survives.
+    // Neither active membership nor a populated cache makes that value a fresh
+    // action snapshot. The transform returns 42; the published value stays 10.
+    for ([_]?u64{ 0, null }) |active_id| {
+        mapped.active_graph_id = active_id;
+        const calls = engine.pending_roc_metrics.derived_calls_into_roc;
+        const retains = engine.pending_roc_metrics.closure_retains;
+        const releases = engine.pending_roc_metrics.closure_releases;
+        try std.testing.expectEqual(HostValue.fromRaw(42), engine.evalHostSignalBindingSnapshot(&ctx, &roc_host, &reads));
+        try std.testing.expectEqual(calls + 1, engine.pending_roc_metrics.derived_calls_into_roc);
+        try std.testing.expectEqual(retains, engine.pending_roc_metrics.closure_retains);
+        try std.testing.expectEqual(releases, engine.pending_roc_metrics.closure_releases);
+        try std.testing.expectEqual(HostValue.fromRaw(10), mapped.payload.map.cached_value.present.value);
+        try std.testing.expectEqual(HostValue.fromRaw(1), source.payload.interval_source.cached_value.present.value);
+        try std.testing.expectEqual(HostValue.fromRaw(10), engine.evalHostSignalBinding(&ctx, &roc_host, &reads));
+        try std.testing.expectEqual(calls + 1, engine.pending_roc_metrics.derived_calls_into_roc);
+    }
 }
 
 test "static root counts nested signal attribute records" {
