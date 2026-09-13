@@ -61,7 +61,9 @@ main = || Ui.state(
 	0.I64,
 	|count| {
 		Elem.col(
-			{ padding: 16, gap: 12, width: Fill, height: Fill, bg: theme.background, fg: theme.text_primary },
+			# Leave room for the native title bar at the minimum window size.
+			# Compact spacing keeps every control visible without shrinking buttons.
+			{ padding: 8, gap: 4, width: Fill, height: Fill, bg: theme.background, fg: theme.text_primary },
 			[
 				Ui.on_change_initial(Signal.const("Counter - Roc Signals"), Gui.set_title),
 				Elem.heading("Counter"),
@@ -79,8 +81,8 @@ main = || Ui.state(
 					[
 						Elem.panel(
 							{
-								padding: 16,
-								gap: 12,
+								padding: 8,
+								gap: 4,
 								border_width: 1,
 								radius: theme.radius,
 								border_color: theme.border,
@@ -88,7 +90,7 @@ main = || Ui.state(
 							},
 							[
 								Elem.col(
-									{ test_id: "count", font_size: 32, fg: theme.text_primary },
+									{ test_id: "count", font_size: 20, fg: theme.text_primary },
 									[Elem.text_s(count.read(|value| value.to_str()))],
 								),
 								Elem.row(
