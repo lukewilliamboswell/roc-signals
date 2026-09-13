@@ -15,28 +15,82 @@ pub const BoundaryPayloadDescriptor = boundary.BoundaryPayloadDescriptor;
 pub const EventBindingKey = render_sink.EventBindingKey;
 pub const EventBinding = render_sink.EventBinding;
 
+/// Dense nodes carry only indexes; payloads occupy reusable cache-owned slots.
+/// Zero denotes an absent binding and never addresses pool storage.
 pub const EventBindings = struct {
-    click: ?EventBinding = null,
-    input: ?EventBinding = null,
-    check: ?EventBinding = null,
-    pointer_down: ?EventBinding = null,
-    pointer_up: ?EventBinding = null,
-    pointer_enter: ?EventBinding = null,
-    pointer_leave: ?EventBinding = null,
+    click: u32 = 0,
+    input: u32 = 0,
+    check: u32 = 0,
+    pointer_down: u32 = 0,
+    pointer_up: u32 = 0,
+    pointer_enter: u32 = 0,
+    pointer_leave: u32 = 0,
 };
 
-/// Maps a fixed event kind to its compact cache slot.
-pub fn eventBindingSlot(bindings: *EventBindings, kind: EventKind) *?EventBinding {
+fn eventBindingSlot(bindings: *EventBindings, kind: EventKind) *u32 {
     return switch (kind) {
-        .click => &bindings.click,
-        .input => &bindings.input,
-        .check => &bindings.check,
-        .pointer_down => &bindings.pointer_down,
-        .pointer_up => &bindings.pointer_up,
-        .pointer_enter => &bindings.pointer_enter,
-        .pointer_leave => &bindings.pointer_leave,
+        inline else => |field| &@field(bindings, @tagName(field)),
     };
 }
+
+const EventPool = struct {
+    const live = std.math.maxInt(u32);
+    const Slot = struct { binding: EventBinding, next_free: u32 = live };
+    slots: shared_buffer.List(Slot) = .empty,
+    free_head: u32 = 0,
+    free_count: usize = 0,
+    reserved_count: usize = 0,
+
+    fn acquire(self: *EventPool, allocator: std.mem.Allocator, count: usize) (std.mem.Allocator.Error || error{ResourceLimit})!void {
+        try self.reserve(allocator, count);
+        self.reserved_count += count;
+    }
+
+    fn releaseReservation(self: *EventPool, count: usize) void {
+        if (count > self.reserved_count) @panic("event pool reservation released twice");
+        self.reserved_count -= count;
+    }
+
+    fn reserve(self: *EventPool, allocator: std.mem.Allocator, additional: usize) (std.mem.Allocator.Error || error{ResourceLimit})!void {
+        const outstanding = std.math.add(usize, self.reserved_count, additional) catch return error.ResourceLimit;
+        const required = std.math.add(usize, self.slots.items.len, outstanding -| self.free_count) catch return error.ResourceLimit;
+        if (required >= live) return error.ResourceLimit;
+        try self.slots.ensureTotalCapacity(allocator, required);
+    }
+
+    fn get(self: *const EventPool, index: u32) ?EventBinding {
+        if (index == 0) return null;
+        const slot = self.slots.items[index - 1];
+        if (slot.next_free != live) @panic("retired event cache slot read");
+        return slot.binding;
+    }
+
+    fn replace(self: *EventPool, index: *u32, binding: ?EventBinding) void {
+        if (binding) |value| {
+            if (index.* != 0) {
+                self.slots.items[index.* - 1].binding = value;
+            } else if (self.free_head != 0) {
+                index.* = self.free_head;
+                const slot = &self.slots.items[index.* - 1];
+                self.free_head = slot.next_free;
+                self.free_count -= 1;
+                slot.* = .{ .binding = value };
+            } else {
+                self.slots.appendAssumeCapacity(.{ .binding = value });
+                index.* = @intCast(self.slots.items.len);
+            }
+        } else if (index.* != 0) {
+            self.slots.items[index.* - 1].next_free = self.free_head;
+            self.free_head = index.*;
+            self.free_count += 1;
+            index.* = 0;
+        }
+    }
+
+    fn release(self: *EventPool, bindings: *EventBindings) void {
+        inline for (std.meta.tags(EventKind)) |kind| self.replace(eventBindingSlot(bindings, kind), null);
+    }
+};
 
 pub const CustomTextAttr = struct {
     name: []const u8,
@@ -171,21 +225,8 @@ pub const ScalarNode = struct {
         return null;
     }
 
-    fn fixedEventBindingSlot(self: *ScalarNode, kind: EventKind) *?EventBinding {
+    fn fixedEventBindingSlot(self: *ScalarNode, kind: EventKind) *u32 {
         return eventBindingSlot(&self.event_bindings, kind);
-    }
-
-    fn fixedEventId(self: *const ScalarNode, kind: EventKind) ?u64 {
-        const binding = switch (kind) {
-            .click => self.event_bindings.click,
-            .input => self.event_bindings.input,
-            .check => self.event_bindings.check,
-            .pointer_down => self.event_bindings.pointer_down,
-            .pointer_up => self.event_bindings.pointer_up,
-            .pointer_enter => self.event_bindings.pointer_enter,
-            .pointer_leave => self.event_bindings.pointer_leave,
-        } orelse return null;
-        return binding.event_id.raw();
     }
 };
 
@@ -569,7 +610,11 @@ pub const PreparedChildrenReplacement = struct {
 pub const PreparedNodeRemoval = struct {
     elem_id: ids.ElemId,
     publication: RemovalPublication,
-    retired: ScalarNode = .{},
+    // Retirement retains ownership, not topology or scalar comparison state.
+    retired_text: [std.meta.tags(TextField).len]?[]const u8 = @splat(null),
+    retired_children: shared_buffer.List(ids.ElemId) = .empty,
+    retired_attrs: shared_buffer.List(CustomTextAttr) = .empty,
+    retired_events: shared_buffer.List(NamedEvent) = .empty,
     phase: JournalPhase = .prepared,
 
     /// Validates an active non-root cache node without mutating it.
@@ -579,18 +624,30 @@ pub const PreparedNodeRemoval = struct {
         return .{ .elem_id = elem_id, .publication = publication };
     }
 
-    /// Transfers the active node into retired ownership without allocating.
+    /// Moves owned strings and lists into retirement and releases reusable
+    /// event slots. Topology and unowned scalar state need no retirement copy.
     pub fn apply(self: *PreparedNodeRemoval, comptime Ctx: type, cache: *Cache(Ctx)) void {
         if (self.phase.isApplied()) @panic("prepared render node removal committed twice");
         const node = &cache.nodes.items[self.elem_id.index()];
-        self.retired = node.*;
+        cache.event_pool.release(&node.event_bindings);
+        inline for (std.meta.tags(TextField), 0..) |field, index| {
+            self.retired_text[index] = node.textSlot(field).*;
+        }
+        self.retired_children = node.children;
+        self.retired_attrs = node.custom_text_attrs;
+        self.retired_events = node.named_events;
         node.* = .{};
         self.phase = .applied;
     }
 
     /// Releases a committed retired node; abort before commit owns nothing.
     pub fn deinit(self: *PreparedNodeRemoval, allocator: std.mem.Allocator) void {
-        if (self.phase.isApplied()) self.retired.deinit(allocator);
+        for (self.retired_text) |text| if (text) |bytes| allocator.free(bytes);
+        self.retired_children.deinit(allocator);
+        for (self.retired_attrs.items) |attr| attr.deinit(allocator);
+        self.retired_attrs.deinit(allocator);
+        for (self.retired_events.items) |event| event.deinit(allocator);
+        self.retired_events.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -754,22 +811,40 @@ pub const PreparedFixedEventUpdate = struct {
     kind: EventKind,
     next: ?EventBinding,
     retired: ?EventBinding = null,
+    reservation: ?*EventPool = null,
     phase: JournalPhase = .prepared,
 
-    /// Canonicalizes delivery metadata and validates the active node.
-    pub fn prepare(comptime Ctx: type, cache: *const Cache(Ctx), elem_id: ids.ElemId, kind: EventKind, binding: ?EventBinding) error{MissingNode}!PreparedFixedEventUpdate {
+    /// Validates the node, canonicalizes delivery, and reserves reusable pool
+    /// capacity without installing the binding. Refusal leaves the old slot live.
+    pub fn prepare(comptime Ctx: type, allocator: std.mem.Allocator, cache: *Cache(Ctx), elem_id: ids.ElemId, kind: EventKind, binding: ?EventBinding) (std.mem.Allocator.Error || error{ MissingNode, ResourceLimit })!PreparedFixedEventUpdate {
         const index = elem_id.index();
         if (index >= cache.nodes.items.len or !cache.nodes.items[index].isActive()) return error.MissingNode;
-        return .{ .elem_id = elem_id, .kind = kind, .next = if (binding) |value| value.withDeliveryFor(.{ .fixed = kind }) else null };
+        if (binding != null) try cache.event_pool.acquire(allocator, 1);
+        return .{
+            .elem_id = elem_id,
+            .kind = kind,
+            .next = if (binding) |value| value.withDeliveryFor(.{ .fixed = kind }) else null,
+            .reservation = if (binding != null) &cache.event_pool else null,
+        };
     }
 
     /// Swaps the prepared binding into the active cache without allocation.
     pub fn apply(self: *PreparedFixedEventUpdate, comptime Ctx: type, cache: *Cache(Ctx)) void {
         if (self.phase.isApplied()) @panic("prepared fixed event update committed twice");
+        if (self.reservation) |pool| if (pool != &cache.event_pool) @panic("fixed event reservation belongs to another cache");
         const slot = cache.nodes.items[self.elem_id.index()].fixedEventBindingSlot(self.kind);
-        self.retired = slot.*;
-        slot.* = self.next;
+        self.retired = cache.event_pool.get(slot.*);
+        cache.event_pool.replace(slot, self.next);
+        if (self.reservation) |pool| pool.releaseReservation(1);
+        self.reservation = null;
         self.phase = .applied;
+    }
+
+    /// Releases a standalone update's slot reservation after refusal or abort.
+    /// Committed updates and splice-owned updates have already released it.
+    pub fn deinit(self: *PreparedFixedEventUpdate) void {
+        if (self.reservation) |pool| pool.releaseReservation(1);
+        self.* = undefined;
     }
 };
 
@@ -946,6 +1021,8 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         text_fields: shared_buffer.List(PreparedTextFieldUpdate) = .empty,
         bool_fields: shared_buffer.List(PreparedBoolFieldUpdate) = .empty,
         fixed_events: shared_buffer.List(PreparedFixedEventUpdate) = .empty,
+        event_reservation: ?*EventPool = null,
+        reserved_event_slots: usize = 0,
         custom_attrs: shared_buffer.List(PreparedCustomTextAttrsReplacement) = .empty,
         custom_attr_wire_edits: shared_buffer.List(PreparedCustomTextAttrsReplacement.WireEdit) = .empty,
         named_events: shared_buffer.List(PreparedNamedEventsReplacement) = .empty,
@@ -974,6 +1051,11 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             };
             errdefer self.deinit();
             try cache.preflightNodeCapacity(allocator, prepared_counts.node_capacity);
+            // Each in-flight plan owns its reservation. A second plan must
+            // reserve beyond this one even though neither has installed slots.
+            try cache.event_pool.acquire(allocator, prepared_counts.fixed_events);
+            self.event_reservation = &cache.event_pool;
+            self.reserved_event_slots = prepared_counts.fixed_events;
             try self.removals.ensureTotalCapacity(allocator, prepared_counts.removals);
             try self.creations.ensureTotalCapacity(allocator, prepared_counts.creations);
             try self.children.ensureTotalCapacity(allocator, prepared_counts.children);
@@ -1375,7 +1457,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             if (self.reused_nodes.getPtr(elem_id.raw())) |fields| fields.events |= ReusedNodeFields.eventBit(kind);
             const next = if (binding) |value| value.withDeliveryFor(.{ .fixed = kind }) else null;
             if (self.activeNode(cache, elem_id)) |node| {
-                const old = eventBindingSlot(@constCast(&node.event_bindings), kind).*;
+                const old = cache.event_pool.get(eventBindingSlot(@constCast(&node.event_bindings), kind).*);
                 if ((old == null and next == null) or (old != null and next != null and old.?.eql(next.?))) return;
             }
             self.fixed_events.appendAssumeCapacity(.{ .elem_id = elem_id, .kind = kind, .next = next });
@@ -1696,6 +1778,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
         /// Publishes every prepared cache delta without allocation.
         pub fn apply(self: *Self, cache: *Cache(Ctx)) void {
             if (self.phase.isApplied()) @panic("prepared render splice committed twice");
+            if (self.cache != cache) @panic("prepared render splice belongs to another cache");
             self.tags.apply(Ctx, cache);
             for (self.removals.items) |*value| value.apply(Ctx, cache);
             for (self.creations.items) |*value| value.apply(Ctx, cache);
@@ -1705,6 +1788,8 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             for (self.text_fields.items) |*value| value.apply(Ctx, cache);
             for (self.bool_fields.items) |*value| value.apply(Ctx, cache);
             for (self.fixed_events.items) |*value| value.apply(Ctx, cache);
+            if (self.event_reservation) |pool| pool.releaseReservation(self.reserved_event_slots);
+            self.event_reservation = null;
             for (self.custom_attrs.items) |*value| value.apply(Ctx, cache);
             for (self.named_events.items) |*value| value.apply(Ctx, cache);
             self.phase = .applied;
@@ -1718,6 +1803,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
 
         /// Releases provisional deltas on abort or retired cache ownership after commit.
         pub fn deinit(self: *Self) void {
+            if (self.event_reservation) |pool| pool.releaseReservation(self.reserved_event_slots);
             var index = self.named_events.items.len;
             while (index != 0) {
                 index -= 1;
@@ -1781,6 +1867,7 @@ pub fn Cache(comptime Ctx: type) type {
         const Self = @This();
 
         nodes: shared_buffer.List(ScalarNode) = .empty,
+        event_pool: EventPool = .{},
         interned_tags: std.StringHashMapUnmanaged([]const u8) = .empty,
         move_child_indexes: std.AutoHashMapUnmanaged(u64, usize) = .empty,
         move_old_indexes: shared_buffer.List(usize) = .empty,
@@ -1790,9 +1877,11 @@ pub fn Cache(comptime Ctx: type) type {
         pub fn deinit(self: *Self, ctx: Ctx.Handle) void {
             const allocator = Ctx.allocator(ctx);
             for (self.nodes.items) |*node| {
+                self.event_pool.release(&node.event_bindings);
                 node.deinit(allocator);
             }
             self.nodes.deinit(allocator);
+            self.event_pool.slots.deinit(allocator);
             var interned_tags = self.interned_tags.valueIterator();
             while (interned_tags.next()) |tag| allocator.free(tag.*);
             self.interned_tags.deinit(allocator);
@@ -1946,6 +2035,7 @@ pub fn Cache(comptime Ctx: type) type {
         pub fn reset(self: *Self, ctx: Ctx.Handle) void {
             const allocator = Ctx.allocator(ctx);
             for (self.nodes.items) |*node| {
+                self.event_pool.release(&node.event_bindings);
                 node.deinit(allocator);
             }
             self.nodes.items.len = 0;
@@ -2062,6 +2152,7 @@ pub fn Cache(comptime Ctx: type) type {
                 self.deactivateSubtree(allocator, current);
                 child_id = next;
             }
+            self.event_pool.release(&self.nodes.items[index].event_bindings);
             self.nodes.items[index].deinit(allocator);
         }
 
@@ -2165,25 +2256,28 @@ pub fn Cache(comptime Ctx: type) type {
             Ctx.sink(ctx).replaceChildrenForMoves(parent_elem_id, next_child_ids);
         }
 
-        /// Applies event binding after preparation has fixed semantics and reserved fallible growth.
+        /// Updates a binding on the legacy direct-render path. Pool growth
+        /// precedes slot mutation and traps on refusal; transactional callers
+        /// use PreparedRenderSplice to reserve and publish atomically.
         pub fn applyEventBinding(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, kind: EventKind, binding: ?EventBinding, counts: *render.Counts) void {
             const node = self.activeNode(elem_id);
             const slot = node.fixedEventBindingSlot(kind);
             if (binding) |raw_next| {
                 const next = raw_next.withDeliveryFor(.{ .fixed = kind });
                 if (!next.policy.isNone()) @panic("fixed event binding carried listener policy");
-                if (slot.*) |existing| {
+                if (self.event_pool.get(slot.*)) |existing| {
                     if (existing.eql(next)) return;
                 }
 
-                slot.* = next;
+                if (slot.* == 0) self.event_pool.reserve(Ctx.allocator(ctx), 1) catch @panic("event cache allocation failed");
+                self.event_pool.replace(slot, next);
                 Ctx.sink(ctx).bindEvent(elem_id, .{ .fixed = kind }, next);
                 counts.addEventBinding();
                 return;
             }
 
-            if (slot.* == null) return;
-            slot.* = null;
+            if (slot.* == 0) return;
+            self.event_pool.replace(slot, null);
             Ctx.sink(ctx).clearEvent(elem_id, .{ .fixed = kind });
             counts.addEventBinding();
         }
@@ -2247,13 +2341,13 @@ pub fn Cache(comptime Ctx: type) type {
                     cached.activeTag(),
                     cached.parent_id,
                     cached.children.items,
-                    ids.optionalEventFromRaw(cached.fixedEventId(.click)),
-                    ids.optionalEventFromRaw(cached.fixedEventId(.input)),
-                    ids.optionalEventFromRaw(cached.fixedEventId(.check)),
-                    ids.optionalEventFromRaw(cached.fixedEventId(.pointer_down)),
-                    ids.optionalEventFromRaw(cached.fixedEventId(.pointer_up)),
-                    ids.optionalEventFromRaw(cached.fixedEventId(.pointer_enter)),
-                    ids.optionalEventFromRaw(cached.fixedEventId(.pointer_leave)),
+                    if (self.event_pool.get(cached.event_bindings.click)) |binding| binding.event_id else null,
+                    if (self.event_pool.get(cached.event_bindings.input)) |binding| binding.event_id else null,
+                    if (self.event_pool.get(cached.event_bindings.check)) |binding| binding.event_id else null,
+                    if (self.event_pool.get(cached.event_bindings.pointer_down)) |binding| binding.event_id else null,
+                    if (self.event_pool.get(cached.event_bindings.pointer_up)) |binding| binding.event_id else null,
+                    if (self.event_pool.get(cached.event_bindings.pointer_enter)) |binding| binding.event_id else null,
+                    if (self.event_pool.get(cached.event_bindings.pointer_leave)) |binding| binding.event_id else null,
                 );
             }
         }
@@ -2615,6 +2709,7 @@ test "render cache capacity preflight is recoverable and logically inert" {
     defer {
         cache.nodes.items[0].children.deinit(allocator);
         cache.nodes.deinit(allocator);
+        cache.event_pool.slots.deinit(allocator);
     }
     try cache.nodes.append(allocator, ScalarNode.initActive("root"));
 
@@ -2647,6 +2742,7 @@ test "prepared child replacement aborts cleanly and commits allocation free" {
     defer {
         for (cache.nodes.items) |*node| node.deinit(allocator);
         cache.nodes.deinit(allocator);
+        cache.event_pool.slots.deinit(allocator);
     }
     try cache.nodes.append(allocator, ScalarNode.initActive("root"));
     try cache.nodes.append(allocator, ScalarNode.initActive("div"));
@@ -2682,6 +2778,7 @@ test "prepared render splice adopts a final child slice without allocating" {
     defer {
         for (cache.nodes.items) |*node| node.deinit(allocator);
         cache.nodes.deinit(allocator);
+        cache.event_pool.slots.deinit(allocator);
         var tags = cache.interned_tags.valueIterator();
         while (tags.next()) |tag| allocator.free(tag.*);
         cache.interned_tags.deinit(allocator);
@@ -2717,6 +2814,7 @@ test "prepared render splice leaves rejected owned children with the caller" {
     defer {
         for (cache.nodes.items) |*node| node.deinit(allocator);
         cache.nodes.deinit(allocator);
+        cache.event_pool.slots.deinit(allocator);
         var tags = cache.interned_tags.valueIterator();
         while (tags.next()) |tag| allocator.free(tag.*);
         cache.interned_tags.deinit(allocator);
@@ -2803,6 +2901,7 @@ test "prepared render node removal defers ownership and applies allocation free"
     defer {
         for (cache.nodes.items) |*node| node.deinit(allocator);
         cache.nodes.deinit(allocator);
+        cache.event_pool.slots.deinit(allocator);
     }
     try cache.nodes.append(allocator, ScalarNode.initActive("root"));
     var child = ScalarNode.initActive("div");
@@ -2820,7 +2919,7 @@ test "prepared render node removal defers ownership and applies allocation free"
     committed.apply(TestCtx, &cache);
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expect(!cache.nodes.items[1].isActive());
-    try std.testing.expectEqualStrings("owned", committed.retired.text.?);
+    try std.testing.expectEqualStrings("owned", committed.retired_text[std.mem.indexOfScalar(TextField, std.meta.tags(TextField), .text).?].?);
     fault.configure(null);
     committed.deinit(allocator);
 }
@@ -2831,6 +2930,7 @@ test "prepared render node creation sweeps allocation failures and retries" {
         fn deinit(cache: *Cache(TestCtx), allocator: std.mem.Allocator) void {
             for (cache.nodes.items) |*node| node.deinit(allocator);
             cache.nodes.deinit(allocator);
+            cache.event_pool.slots.deinit(allocator);
             var tags = cache.interned_tags.valueIterator();
             while (tags.next()) |tag| allocator.free(tag.*);
             cache.interned_tags.deinit(allocator);
@@ -2897,6 +2997,7 @@ test "prepared scalar fields abort cleanly and publish allocation free" {
     defer {
         for (cache.nodes.items) |*node| node.deinit(allocator);
         cache.nodes.deinit(allocator);
+        cache.event_pool.slots.deinit(allocator);
     }
     var node = ScalarNode.initActive("input");
     node.value = try allocator.dupe(u8, "old");
@@ -2916,9 +3017,11 @@ test "prepared scalar fields abort cleanly and publish allocation free" {
     var text = try PreparedTextFieldUpdate.prepare(TestCtx, allocator, &cache, ids.root_elem, .value, "new");
     var boolean = try PreparedBoolFieldUpdate.prepare(TestCtx, &cache, ids.root_elem, .checked, true);
     const old_binding = EventBinding{ .event_id = ids.EventId.fromRaw(1), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) };
-    cache.nodes.items[0].event_bindings.click = old_binding;
+    try cache.event_pool.reserve(allocator, 1);
+    cache.event_pool.replace(&cache.nodes.items[0].event_bindings.click, old_binding);
     const next_binding = EventBinding{ .event_id = ids.EventId.fromRaw(2), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) };
-    var event = try PreparedFixedEventUpdate.prepare(TestCtx, &cache, ids.root_elem, .click, next_binding);
+    var event = try PreparedFixedEventUpdate.prepare(TestCtx, allocator, &cache, ids.root_elem, .click, next_binding);
+    defer event.deinit();
     fault.configure(1);
     text.apply(TestCtx, &cache);
     boolean.apply(TestCtx, &cache);
@@ -2926,7 +3029,7 @@ test "prepared scalar fields abort cleanly and publish allocation free" {
     try std.testing.expectEqual(@as(usize, 0), fault.attempts);
     try std.testing.expectEqualStrings("new", cache.nodes.items[0].value.?);
     try std.testing.expect(cache.nodes.items[0].checked.?);
-    try std.testing.expectEqual(ids.EventId.fromRaw(2), cache.nodes.items[0].event_bindings.click.?.event_id);
+    try std.testing.expectEqual(ids.EventId.fromRaw(2), cache.event_pool.get(cache.nodes.items[0].event_bindings.click).?.event_id);
     try std.testing.expectEqual(ids.EventId.fromRaw(1), event.retired.?.event_id);
     try std.testing.expectEqualStrings("old", text.retired.?);
     fault.configure(null);
@@ -2941,6 +3044,7 @@ test "prepared custom attributes sweep failures and publish allocation free" {
     defer {
         for (cache.nodes.items) |*node| node.deinit(allocator);
         cache.nodes.deinit(allocator);
+        cache.event_pool.slots.deinit(allocator);
     }
     var node = ScalarNode.initActive("div");
     try node.custom_text_attrs.append(allocator, .{
@@ -2985,6 +3089,7 @@ test "prepared named events sweep failures and publish allocation free" {
     defer {
         for (cache.nodes.items) |*node| node.deinit(allocator);
         cache.nodes.deinit(allocator);
+        cache.event_pool.slots.deinit(allocator);
     }
     var node = ScalarNode.initActive("div");
     try node.named_events.append(allocator, .{
@@ -3028,6 +3133,7 @@ test "prepared render splice composes mixed cache deltas allocation free" {
     defer {
         for (cache.nodes.items) |*node| node.deinit(allocator);
         cache.nodes.deinit(allocator);
+        cache.event_pool.slots.deinit(allocator);
         var tags = cache.interned_tags.valueIterator();
         while (tags.next()) |tag| allocator.free(tag.*);
         cache.interned_tags.deinit(allocator);
@@ -3103,7 +3209,7 @@ test "prepared render splice composes mixed cache deltas allocation free" {
     try std.testing.expectEqualStrings("button", cache.nodes.items[7].activeTag().?);
     try std.testing.expectEqualStrings("next", cache.nodes.items[7].label.?);
     try std.testing.expect(cache.nodes.items[7].disabled.?);
-    try std.testing.expectEqual(ids.EventId.fromRaw(9), cache.nodes.items[7].event_bindings.click.?.event_id);
+    try std.testing.expectEqual(ids.EventId.fromRaw(9), cache.event_pool.get(cache.nodes.items[7].event_bindings.click).?.event_id);
     try std.testing.expectEqualStrings("data-new", cache.nodes.items[7].custom_text_attrs.items[0].name);
     try std.testing.expectEqualStrings("focus", cache.nodes.items[7].named_events.items[0].name);
     try std.testing.expectEqualSlices(ids.ElemId, &.{ids.ElemId.fromRaw(7)}, cache.nodes.items[1].children.items);
@@ -3300,7 +3406,8 @@ test "prepared render splice reuses a same-tag slot and clears the fields its ne
     node.label = try allocator.dupe(u8, "old label");
     node.value = try allocator.dupe(u8, "same");
     node.checked = true;
-    node.event_bindings.click = .{ .event_id = ids.EventId.fromRaw(3), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) };
+    try cache.event_pool.reserve(allocator, 1);
+    cache.event_pool.replace(&node.event_bindings.click, .{ .event_id = ids.EventId.fromRaw(3), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) });
     try cache.nodes.append(allocator, node);
     try cache.nodes.items[0].children.append(allocator, ids.ElemId.fromRaw(1));
 
@@ -3340,7 +3447,7 @@ test "prepared render splice reuses a same-tag slot and clears the fields its ne
     try std.testing.expectEqualStrings("same", applied.value.?);
     try std.testing.expectEqual(@as(?[]const u8, null), applied.label);
     try std.testing.expectEqual(@as(?bool, null), applied.checked);
-    try std.testing.expect(applied.event_bindings.click == null);
+    try std.testing.expect(applied.event_bindings.click == 0);
     try std.testing.expectEqualSlices(ids.ElemId, &.{ids.ElemId.fromRaw(1)}, cache.nodes.items[0].children.items);
 }
 
@@ -3666,21 +3773,24 @@ test "unchanged event binding emits no duplicate command" {
 
 test "event binding slots are keyed by event kind" {
     var bindings = EventBindings{};
+    var pool: EventPool = .{};
+    defer pool.slots.deinit(std.testing.allocator);
+    try pool.reserve(std.testing.allocator, 3);
     const click = EventBinding{ .event_id = ids.EventId.fromRaw(1), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) };
     const input = EventBinding{ .event_id = ids.EventId.fromRaw(2), .payload_descriptor = BoundaryPayloadDescriptor.init(.str, .target_value) };
     const pointer_down = EventBinding{ .event_id = ids.EventId.fromRaw(3), .payload_descriptor = BoundaryPayloadDescriptor.init(.bool, .target_checked) };
 
-    eventBindingSlot(&bindings, .click).* = click;
-    eventBindingSlot(&bindings, .input).* = input;
-    eventBindingSlot(&bindings, .pointer_down).* = pointer_down;
+    pool.replace(eventBindingSlot(&bindings, .click), click);
+    pool.replace(eventBindingSlot(&bindings, .input), input);
+    pool.replace(eventBindingSlot(&bindings, .pointer_down), pointer_down);
 
-    try std.testing.expectEqual(click, bindings.click.?);
-    try std.testing.expectEqual(input, bindings.input.?);
-    try std.testing.expectEqual(pointer_down, bindings.pointer_down.?);
-    try std.testing.expectEqual(@as(?EventBinding, null), bindings.check);
-    try std.testing.expectEqual(@as(?EventBinding, null), bindings.pointer_up);
-    try std.testing.expectEqual(@as(?EventBinding, null), bindings.pointer_enter);
-    try std.testing.expectEqual(@as(?EventBinding, null), bindings.pointer_leave);
+    try std.testing.expectEqual(click, pool.get(bindings.click).?);
+    try std.testing.expectEqual(input, pool.get(bindings.input).?);
+    try std.testing.expectEqual(pointer_down, pool.get(bindings.pointer_down).?);
+    try std.testing.expectEqual(@as(?EventBinding, null), pool.get(bindings.check));
+    try std.testing.expectEqual(@as(?EventBinding, null), pool.get(bindings.pointer_up));
+    try std.testing.expectEqual(@as(?EventBinding, null), pool.get(bindings.pointer_enter));
+    try std.testing.expectEqual(@as(?EventBinding, null), pool.get(bindings.pointer_leave));
 }
 
 test "event bindings derive delivery before cache storage and sink commands" {
@@ -3698,7 +3808,7 @@ test "event bindings derive delivery before cache storage and sink commands" {
         .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
     };
     cache.applyEventBinding(&host, ids.ElemId.fromRaw(1), .pointer_down, fixed, &counts);
-    const fixed_delivery = cache.activeNode(ids.ElemId.fromRaw(1)).event_bindings.pointer_down.?.delivery;
+    const fixed_delivery = cache.event_pool.get(cache.activeNode(ids.ElemId.fromRaw(1)).event_bindings.pointer_down).?.delivery;
     try std.testing.expectEqual(render_sink.EventDeliveryRequest.auto, fixed_delivery.requested);
     try std.testing.expectEqual(render_sink.EventDeliveryEffective.native, fixed_delivery.effective);
     try std.testing.expectEqual(render_sink.EventDeliveryReason.pointer_drag, fixed_delivery.reason);
@@ -3858,4 +3968,166 @@ test "browser rejects both native drag fields before publication" {
         try std.testing.expectError(error.UnsupportedNativePresentation, plan.validateBrowserFields());
         try std.testing.expectEqual(@as(usize, 0), cache.nodes.items.len);
     }
+}
+
+test "fixed event pool reserves atomically and reuses retired slots" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var pool: EventPool = .{};
+    defer pool.slots.deinit(fault.allocator());
+    var first = EventBindings{};
+    var second = EventBindings{};
+    const binding = EventBinding{ .event_id = ids.EventId.fromRaw(1), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) };
+    try std.testing.expectError(error.ResourceLimit, pool.reserve(fault.allocator(), std.math.maxInt(usize)));
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    fault.configure(1);
+    try std.testing.expectError(error.OutOfMemory, pool.reserve(fault.allocator(), 7));
+    try std.testing.expectEqual(@as(usize, 0), pool.slots.items.len);
+    fault.configure(null);
+    try pool.reserve(fault.allocator(), 7);
+    fault.configure(1);
+    for (0..1000) |cycle| {
+        inline for (std.meta.tags(EventKind)) |kind| pool.replace(eventBindingSlot(&first, kind), binding);
+        inline for (std.meta.tags(EventKind)) |kind| try std.testing.expectEqual(binding, pool.get(eventBindingSlot(&first, kind).*).?);
+        pool.release(&first);
+        var replacement = binding;
+        replacement.event_id = ids.EventId.fromRaw(cycle + 2);
+        pool.replace(&second.click, replacement);
+        try std.testing.expectEqual(replacement, pool.get(second.click).?);
+        try std.testing.expectEqual(@as(u32, 0), first.click);
+        pool.release(&second);
+    }
+    try std.testing.expectEqual(@as(usize, 7), pool.slots.items.len);
+    try std.testing.expectEqual(@as(usize, 7), pool.free_count);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+}
+
+test "render cache payload slots and retirement exclude cold dense state" {
+    try std.testing.expectEqual(@as(usize, 28), @sizeOf(EventBindings));
+    // This fails if retirement resumes copying complete topology records.
+    try std.testing.expect(@sizeOf(PreparedNodeRemoval) < @sizeOf(ScalarNode));
+}
+
+test "compact retirement owns every field and returns event slots before reuse" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var cache: Cache(TestCtx) = .{};
+    defer {
+        for (cache.nodes.items) |*node| node.deinit(allocator);
+        cache.nodes.deinit(allocator);
+        cache.event_pool.slots.deinit(allocator);
+    }
+    try cache.nodes.append(allocator, ScalarNode.initActive("root"));
+    try cache.nodes.append(allocator, ScalarNode.initActive("input"));
+    const node = &cache.nodes.items[1];
+    inline for (std.meta.tags(TextField)) |field| node.textSlot(field).* = try allocator.dupe(u8, @tagName(field));
+    try node.children.append(allocator, ids.ElemId.fromRaw(2));
+    try node.custom_text_attrs.append(allocator, .{ .name = try allocator.dupe(u8, "data-name"), .value = try allocator.dupe(u8, "value") });
+    const binding = EventBinding{ .event_id = ids.EventId.fromRaw(1), .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none) };
+    try node.named_events.append(allocator, .{ .name = try allocator.dupe(u8, "focus"), .binding = binding });
+    try cache.event_pool.reserve(allocator, 7);
+    inline for (std.meta.tags(EventKind)) |kind| cache.event_pool.replace(node.fixedEventBindingSlot(kind), binding);
+    var retirement = try PreparedNodeRemoval.prepare(TestCtx, &cache, ids.ElemId.fromRaw(1), .subtree_root);
+    defer retirement.deinit(allocator);
+    fault.configure(1);
+    retirement.apply(TestCtx, &cache);
+    try std.testing.expect(!node.isActive());
+    try std.testing.expectEqual(@as(usize, 7), cache.event_pool.free_count);
+    inline for (std.meta.tags(TextField), 0..) |field, index| try std.testing.expectEqualStrings(@tagName(field), retirement.retired_text[index].?);
+    try std.testing.expectEqualStrings("focus", retirement.retired_events.items[0].name);
+    try std.testing.expectEqualStrings("data-name", retirement.retired_attrs.items[0].name);
+    try std.testing.expectEqualSlices(ids.ElemId, &.{ids.ElemId.fromRaw(2)}, retirement.retired_children.items);
+    node.* = ScalarNode.initActive("button");
+    cache.event_pool.replace(&node.event_bindings.click, binding);
+    try std.testing.expectEqual(binding, cache.event_pool.get(node.event_bindings.click).?);
+    try std.testing.expectEqual(@as(usize, 7), cache.event_pool.slots.items.len);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+}
+
+test "simultaneous fixed event preparations reserve aggregate capacity" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var cache: Cache(TestCtx) = .{};
+    defer {
+        for (cache.nodes.items) |*node| node.deinit(allocator);
+        cache.nodes.deinit(allocator);
+        cache.event_pool.slots.deinit(allocator);
+    }
+    const count = 64;
+    for (0..count) |_| try cache.nodes.append(allocator, ScalarNode.initActive("button"));
+    var updates: [count]PreparedFixedEventUpdate = undefined;
+    var prepared: usize = 0;
+    defer for (updates[0..prepared]) |*update| update.deinit();
+    for (&updates, 0..) |*update, index| {
+        update.* = try PreparedFixedEventUpdate.prepare(TestCtx, allocator, &cache, ids.ElemId.fromIndex(index), .click, .{
+            .event_id = ids.EventId.fromIndex(index + 1),
+            .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
+        });
+        prepared += 1;
+    }
+    try std.testing.expectEqual(@as(usize, count), cache.event_pool.reserved_count);
+    try std.testing.expectEqual(@as(usize, 0), cache.event_pool.slots.items.len);
+    fault.configure(1);
+    for (&updates) |*update| update.apply(TestCtx, &cache);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 0), cache.event_pool.reserved_count);
+    for (cache.nodes.items, 0..) |node, index| try std.testing.expectEqual(ids.EventId.fromIndex(index + 1), cache.event_pool.get(node.event_bindings.click).?.event_id);
+
+    // Independent splices also coexist before either publishes. Their
+    // reservations must add, and an aborted third plan releases only its own.
+    for (cache.nodes.items) |*node| cache.event_pool.release(&node.event_bindings);
+    cache.event_pool.slots.deinit(allocator);
+    cache.event_pool = .{};
+    fault.configure(null);
+    var first = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{ .fixed_events = count / 2 });
+    defer first.deinit();
+    var second = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{ .fixed_events = count / 2 });
+    defer second.deinit();
+    try std.testing.expectEqual(@as(usize, count), cache.event_pool.reserved_count);
+    for (0..count) |index| {
+        const plan = if (index < count / 2) &first else &second;
+        try plan.addFixedEvent(&cache, ids.ElemId.fromIndex(index), .click, .{
+            .event_id = ids.EventId.fromIndex(index + 1),
+            .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
+        });
+    }
+    fault.configure(1);
+    first.apply(&cache);
+    second.apply(&cache);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 0), cache.event_pool.reserved_count);
+    try std.testing.expectEqual(@as(usize, count), cache.event_pool.slots.items.len);
+    fault.configure(null);
+    var aborted = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{ .fixed_events = count });
+    try std.testing.expectEqual(@as(usize, count), cache.event_pool.reserved_count);
+    aborted.deinit();
+    try std.testing.expectEqual(@as(usize, 0), cache.event_pool.reserved_count);
+}
+
+test "refused event reservation preserves another prepared owner's lease" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    const allocator = fault.allocator();
+    var cache: Cache(TestCtx) = .{};
+    defer {
+        for (cache.nodes.items) |*node| node.deinit(allocator);
+        cache.nodes.deinit(allocator);
+        cache.event_pool.slots.deinit(allocator);
+    }
+    try cache.nodes.append(allocator, ScalarNode.initActive("button"));
+    var update = try PreparedFixedEventUpdate.prepare(TestCtx, allocator, &cache, ids.root_elem, .click, .{
+        .event_id = ids.EventId.fromRaw(1),
+        .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
+    });
+    defer update.deinit();
+    fault.configure(1);
+    try std.testing.expectError(error.OutOfMemory, PreparedRenderSplice(TestCtx).init(allocator, &cache, .{ .fixed_events = 1024 }));
+    try std.testing.expectEqual(@as(usize, 1), cache.event_pool.reserved_count);
+    try std.testing.expectEqual(@as(u32, 0), cache.nodes.items[0].event_bindings.click);
+    fault.configure(1);
+    update.apply(TestCtx, &cache);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 0), cache.event_pool.reserved_count);
 }
