@@ -19327,17 +19327,23 @@ test "staged evaluation reads a source settled by the enclosing transaction" {
 }
 
 test "running effect admission refuses before dequeue and transfers without allocation" {
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    const thunk = abi.rocErasedCallableAllocate(&roc_host, verifyStateCallable, null, 0).?;
+    defer abi.decrefErasedCallable(thunk, &roc_host);
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     var ctx = VerifyCtxHost{ .allocator = failing.allocator() };
     var engine = Engine(VerifyCtx).init();
+    engine.roc_host = &roc_host;
     defer engine.running_effects.deinit(std.testing.allocator);
     defer engine.pending_effects.deinit(std.testing.allocator);
-    var record = HostSignalRecord{ .ref_count = 1, .payload = .{ .ref = 1 } };
+    const record = try std.testing.allocator.create(HostSignalRecord);
+    record.* = .{ .ref_count = 1, .payload = .{ .ref = 1 } };
     const effect = PendingEffect{
         .id = 7,
         .owner_scope_id = ids.ScopeId.fromRaw(0),
-        .thunk = @ptrFromInt(0x1000),
-        .reads = .{ .record = &record, .source_node_ids = &.{} },
+        .thunk = thunk,
+        .reads = .{ .record = record, .source_node_ids = try std.testing.allocator.dupe(u64, &.{1}) },
     };
     try engine.pending_effects.append(std.testing.allocator, effect);
     try std.testing.expectError(error.OutOfMemory, engine.prepareRunningEffect(&ctx));
@@ -19353,11 +19359,12 @@ test "running effect admission refuses before dequeue and transfers without allo
     ctx.allocator = no_allocations.allocator();
     engine.trackRunningEffect(&ctx, &admitted);
     try std.testing.expect(!no_allocations.has_induced_failure);
-    const finished = engine.finishRunningEffect(effect.id);
+    var finished = engine.finishRunningEffect(effect.id);
     try std.testing.expectEqual(effect.reads.record, finished.reads.record);
     try std.testing.expectEqual(@as(usize, 0), engine.pending_effects.items.len);
     try std.testing.expectEqual(@as(usize, 0), engine.running_effects.items.len);
     try std.testing.expectEqual(@as(usize, 1), record.ref_count);
+    engine.releaseFinishedEffect(&ctx, &finished);
 }
 
 test "action snapshots refresh derived reads without replacing settled caches" {
