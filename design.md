@@ -3113,6 +3113,14 @@ version it was built against plus the feature bits it depends on (such as
 `dynamic_attrs` and `dynamic_events`). A version or feature mismatch is a boundary
 error, not a compatibility shim.
 
+`CreateElement` and `CreateText` require an unregistered node id. Replacing a
+rendered node emits `RemoveNode` for that node or an ancestor before creating
+its replacement, even when the numeric id is reused. Removal releases all
+descendant registrations, including behaviours, listeners, and pending input
+work. Creating over a live id is a protocol error; the executor must preserve
+the original registration for cleanup and must not transfer it to the new DOM
+node. Id zero belongs to the mount root and cannot be created by either op.
+
 The host appends fixed-width records to `roc_ui_command_buffer_*`: six little
 endian `u32` words (`op`, then five integer operands). Hot operations fit
 entirely in those operands. Free-form text for hot string ops (`CreateElement`,

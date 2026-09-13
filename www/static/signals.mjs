@@ -2267,9 +2267,10 @@ export class SignalsRuntime {
   }
 
   registerNode(id, node) {
-    const previous = this.nodes.get(id);
-    if (previous) {
-      this.nodeIds.delete(previous);
+    // Creation starts a new lifetime. The producer must first remove the old
+    // node (or its ancestor), releasing its registrations before reusing an id.
+    if (this.nodes.has(id)) {
+      throw new Error(`Signals create command reuses live DOM node id ${id}; remove the old node first`);
     }
     this.nodes.set(id, node);
     this.nodeIds.set(node, id);
