@@ -117,6 +117,25 @@
 //!   python3 scripts/fuzz.py repro sparse-rows <crash-file> --verbose
 
 const std = @import("std");
+
+/// The AFL++ executable is built with this file as its root. A panic there
+/// must end at once: symbolizing a stack trace takes seconds, and so does a
+/// core dump piped to a crash reporter, either of which AFL++ classifies as
+/// a hang rather than the crash it is. The repro executable has its own root
+/// and keeps the full trace for debugging.
+pub const panic = std.debug.FullPanic(aflPanic);
+
+fn aflPanic(message: []const u8, _: ?usize) noreturn {
+    @branchHint(.cold);
+    const stderr = &std.debug.lockStderr(&.{}).file_writer.interface;
+    stderr.writeAll("panic: ") catch {};
+    stderr.writeAll(message) catch {};
+    stderr.writeAll("\n") catch {};
+    if (@import("builtin").os.tag == .linux) {
+        _ = std.os.linux.prctl(@intFromEnum(std.os.linux.PR.SET_DUMPABLE), 0, 0, 0, 0);
+    }
+    @trap();
+}
 const signals = @import("signals");
 const native_host = @import("native_host");
 const FuzzReader = @import("FuzzReader.zig");
@@ -544,9 +563,14 @@ fn generate(reader: *FuzzReader, arena: std.mem.Allocator) !Program {
     const children = try generateChildren(&generator, 0);
     if (generator.sites.items.len == 0) {
         // A program with no shared site edits nothing observable; give it one.
-        const with_site = try arena.alloc(Child, children.len + 1);
-        @memcpy(with_site[0..children.len], children);
-        with_site[children.len] = .{ .site = try generateSite(&generator) };
+        // The builder's child buffer is sized to `max_children`, so a full
+        // list gives up its last child rather than growing past the bound.
+        // The annotation matters: `@min` against a comptime bound narrows
+        // its result to `u3`, which `kept + 1` then overflows.
+        const kept: usize = @min(children.len, max_children - 1);
+        const with_site = try arena.alloc(Child, kept + 1);
+        @memcpy(with_site[0..kept], children[0..kept]);
+        with_site[kept] = .{ .site = try generateSite(&generator) };
         return generateHistory(&generator, with_site);
     }
     return generateHistory(&generator, children);
@@ -676,7 +700,7 @@ fn generateHistory(generator: *Generator, children: []const Child) !Program {
         if (kind == .rollback) {
             if (pickGeneration(reader, history.items, current.generation)) |older| {
                 try draft.restore(arena, older);
-                edit.* = .{ .kind = .rollback, .ops = &.{}, .generation = older.generation, .parent = 0, .result = try draft.snapshot(arena, older.generation, selected), .created = countCreated(current.rows, older.rows), .updated = 0, .removed = countCreated(older.rows, current.rows) };
+                edit.* = .{ .kind = .rollback, .ops = &.{}, .generation = older.generation, .parent = 0, .result = try draft.snapshot(arena, older.generation, selected), .created = countCreated(current.rows, older.rows), .updated = countUpdated(current.rows, older.rows), .removed = countCreated(older.rows, current.rows) };
                 current = edit.result;
                 try history.append(arena, current);
                 continue;
@@ -691,9 +715,16 @@ fn generateHistory(generator: *Generator, children: []const Child) !Program {
         var ops = try canonicalize(arena, reader, before, draft.rows.items, touched.items);
         if (ops.len == 0) {
             // Every draw cancelled out, which the platform would publish as
-            // no new generation at all; make the batch a real transition.
-            const inserted = try insertRow(&draft, reader, arena, 0);
-            try touched.append(arena, inserted.insert.slot);
+            // no new generation at all; make the batch a real transition. A
+            // list already at `max_rows` (or a full slot table) drops its
+            // last row instead, since `drawRawOp` sizes its scratch buffers
+            // to that bound.
+            if (draft.rows.items.len >= max_rows or draft.slots.items.len >= max_slots) {
+                if (draft.rows.pop()) |dropped| try touched.append(arena, dropped.slot);
+            } else {
+                const inserted = try insertRow(&draft, reader, arena, 0);
+                try touched.append(arena, inserted.insert.slot);
+            }
             ops = try canonicalize(arena, reader, before, draft.rows.items, touched.items);
         }
         var updated: u64 = 0;
@@ -741,13 +772,30 @@ fn generateHistory(generator: *Generator, children: []const Child) !Program {
 }
 
 /// Rows of `after` whose slot is not in `before`.
+/// Rows are identified by key, not slot: after a rollback the slot table is
+/// shorter and a retired slot is reused for a fresh key, which the engine
+/// reconciles as one removal and one creation rather than a surviving row.
 fn countCreated(before: []const ModelRow, after: []const ModelRow) u64 {
     var count: u64 = 0;
     for (after) |row| {
         const present = for (before) |old| {
-            if (old.slot == row.slot) break true;
+            if (old.key == row.key) break true;
         } else false;
         if (!present) count += 1;
+    }
+    return count;
+}
+
+/// Rows whose key survives from `before` to `after` with a different item.
+fn countUpdated(before: []const ModelRow, after: []const ModelRow) u64 {
+    var count: u64 = 0;
+    for (after) |row| {
+        for (before) |old| {
+            if (old.key == row.key) {
+                count += @intFromBool(old.item != row.item);
+                break;
+            }
+        }
     }
     return count;
 }
