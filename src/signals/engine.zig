@@ -9171,6 +9171,7 @@ pub fn Engine(comptime Ctx: type) type {
             retired_state_cells: shared_buffer.List(HostState) = .empty,
             row_retirement: ?each_runtime.PreparedRowRemovals = null,
             retired_stable_generations: shared_buffer.List(*each_generation.Generation) = .empty,
+            retired_rows_sites: shared_buffer.List(each_runtime.SiteKey) = .empty,
             effects_retirement: ?PreparedEffectRetirements = null,
             retired_stream: HostRetiredDescriptors = .{},
             publication: ?structural_splice.PreparedPublicationDeltas = null,
@@ -9772,7 +9773,7 @@ pub fn Engine(comptime Ctx: type) type {
                 nested_row_scopes.ensureTotalCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
                 plan.direct_root_classification_work = try direct_roots.classify(retirement_scope_ids, nested_row_scopes);
                 plan.row_retirement = try prepareRowRetirementForScopes(engine, allocator, nested_row_scopes.items);
-                plan.retired_stable_generations.ensureTotalCapacity(allocator, plan.row_retirement.?.rows.len) catch return error.OutOfMemory;
+                try plan.prepareOwnedRowsSiteRetirement(allocator, retirement_scope_ids);
                 plan.effects_retirement = try PreparedEffectRetirements.prepare(engine, allocator, plan.removal.?.removal.node_indexes.cleanup_indexes.items);
                 plan.retired_scope_steps.ensureUnusedCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
 
@@ -9987,7 +9988,7 @@ pub fn Engine(comptime Ctx: type) type {
                     }
                     self.row_retirement = try prepareRowRetirementForScopes(self.engine, allocator, nested.items);
                 }
-                self.retired_stable_generations.ensureTotalCapacity(allocator, self.row_retirement.?.rows.len) catch return error.OutOfMemory;
+                try self.prepareOwnedRowsSiteRetirement(allocator, retirement_scope_ids);
                 self.effects_retirement = try PreparedEffectRetirements.prepare(self.engine, allocator, self.removal.?.removal.node_indexes.cleanup_indexes.items);
                 self.retired_scope_steps.ensureUnusedCapacity(allocator, retirement_scope_ids.len) catch return error.OutOfMemory;
                 const removed_event_count = self.removal.?.removal.descriptor_indexes.event_indexes.items.len;
@@ -10069,6 +10070,17 @@ pub fn Engine(comptime Ctx: type) type {
                         error.InvalidRenderTopology => return error.InvalidRenderTopology,
                     };
                 }
+            }
+
+            fn prepareOwnedRowsSiteRetirement(self: *@This(), allocator: std.mem.Allocator, scope_ids: []const ids.ScopeId) CollectionError!void {
+                for (scope_ids) |scope_id| {
+                    for (self.engine.active_stream.scopeOwnedNodeIds(scope_id)) |node_id| {
+                        const site = self.engine.activeScopeSiteByNodeId(node_id.raw(), .each) orelse continue;
+                        const key: each_runtime.SiteKey = .{ .parent_scope_id = site.scope_id, .site_ordinal = site.ordinal };
+                        if (self.engine.rows_site_ids.contains(key)) self.retired_rows_sites.append(allocator, key) catch return error.OutOfMemory;
+                    }
+                }
+                self.retired_stable_generations.ensureTotalCapacity(allocator, self.retired_rows_sites.items.len) catch return error.OutOfMemory;
             }
 
             fn commitCollection(self: *@This()) void {
@@ -10237,16 +10249,19 @@ pub fn Engine(comptime Ctx: type) type {
                     if (self.engine.rows_store) |*store| for (row_retirement.rows) |row| {
                         const retired = store.retireScope(row.scope_id.raw()) orelse continue;
                         Ctx.allocator(self.host_ctx).free(retired.key);
-                        if (!retired.site_empty) continue;
-                        const mapped_site = self.engine.rows_site_ids.get(row.site_key) orelse @panic("retired empty Rows site lacked its construction identity");
-                        if (mapped_site != retired.site_id) @panic("retired empty Rows site identity named another site");
-                        if (!self.engine.rows_site_ids.remove(row.site_key)) unreachable;
-                        if (self.engine.each_generation_ids_by_rows_site.fetchRemove(retired.site_id)) |generation_entry| {
+                    };
+                }
+                // Sites belong to their declaring scope even when they have no
+                // rows. Unregister them before a replacement claims that scope.
+                if (self.engine.rows_store) |*store| {
+                    for (self.retired_rows_sites.items) |key| {
+                        const site_id = self.engine.rows_site_ids.fetchRemove(key).?.value;
+                        if (self.engine.each_generation_ids_by_rows_site.fetchRemove(site_id)) |generation_entry| {
                             const generation = self.engine.each_generations.fetchRemove(generation_entry.value) orelse @panic("retired Rows site generation was absent");
                             self.retired_stable_generations.appendAssumeCapacity(generation.value);
                         }
-                        store.destroyEmptySite(retired.site_id) catch @panic("retired Rows site was not empty");
-                    };
+                        store.destroyEmptySite(site_id) catch @panic("retired Rows site was not empty");
+                    }
                 }
                 // Retire journaled rows before the collection publishes its
                 // sites: a re-collected nested site takes over the slot its
@@ -10292,6 +10307,7 @@ pub fn Engine(comptime Ctx: type) type {
                     allocator.destroy(generation);
                 }
                 self.retired_stable_generations.deinit(allocator);
+                self.retired_rows_sites.deinit(allocator);
                 if (self.effects_retirement) |*effects| effects.deinit(allocator, self.roc_host);
                 for (self.retired_active_events.items) |event| self.engine.deinitActiveEventDesc(self.host_ctx, self.roc_host, event);
                 self.retired_active_events.deinit(allocator);
