@@ -9254,7 +9254,7 @@ pub fn Engine(comptime Ctx: type) type {
 
             fn retirePositions(self: *@This()) CollectionError!void {
                 const positions = self.replacement.preparePositions();
-                for (self.targets.?.scope_retirement.?.scope_ids) |scope| positions.retireScope(scope) catch |err| return positionError(err);
+                positions.retireScopes(self.targets.?.scope_retirement.?.scope_ids) catch |err| return positionError(err);
             }
 
             fn adoptSparseBranches(self: *@This(), selections: []const AggregateBranchSelection, collected: anytype) CollectionError!void {

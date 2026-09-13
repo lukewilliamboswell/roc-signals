@@ -348,6 +348,28 @@ pub const Prepared = struct {
             };
         }
 
+        fn removeSet(self: *Parent, positions: []const PositionId) Error!void {
+            switch (self.order) {
+                .small => |*small| for (positions) |position| {
+                    _ = try small.removeRange(position, 1);
+                },
+                .tree => |*tree| {
+                    _ = try tree.edits.removeSet(positions);
+                },
+            }
+        }
+
+        fn copyRange(self: *const Parent, first: PositionId, output: []PositionId) Error!void {
+            switch (self.order) {
+                .small => |*small| {
+                    const start = try small.rank(first);
+                    if (output.len > small.len - start) return error.InvalidRange;
+                    @memcpy(output, small.slice()[start..][0..output.len]);
+                },
+                .tree => |*tree| try tree.edits.copyRange(first, output),
+            }
+        }
+
         fn moveRange(self: *Parent, first: PositionId, count: usize, before: ?PositionId) Error!Index.MoveResult {
             return switch (self.order) {
                 .small => |*small| small.moveRange(first, count, before),
@@ -366,15 +388,18 @@ pub const Prepared = struct {
     };
 
     /// Preparation work summary for regression tests: how many parents were
-    /// touched, how many needed a hash-backed tree, and how many tree records
-    /// were path-copied. Bulk creation of small parents must keep the tree
-    /// numbers proportional to the number of large parents, not to rows.
+    /// touched and how many needed a tree. Distinct touched records, copies
+    /// of committed records, and removed identities are separate counters:
+    /// retiring a large subtree must not masquerade as copying every node.
+    /// Small-parent creation keeps tree work local to the large parents.
     pub const Work = struct {
         parents: usize = 0,
         small_parents: usize = 0,
         tree_parents: usize = 0,
         fresh_tree_indexes: usize = 0,
         tree_nodes_touched: usize = 0,
+        tree_nodes_copied: usize = 0,
+        tree_nodes_removed: usize = 0,
     };
 
     positions: *Positions,
@@ -413,7 +438,10 @@ pub const Prepared = struct {
                 .tree => |*tree| {
                     summary.tree_parents += 1;
                     if (value.owned) summary.fresh_tree_indexes += 1;
-                    summary.tree_nodes_touched += tree.edits.stats().nodes_touched;
+                    const stats = tree.edits.stats();
+                    summary.tree_nodes_touched += stats.nodes_touched;
+                    summary.tree_nodes_copied += stats.nodes_copied;
+                    summary.tree_nodes_removed += stats.nodes_removed;
                 },
             }
         }
@@ -487,14 +515,53 @@ pub const Prepared = struct {
         try self.removeOwnership(old);
     }
 
-    /// Removes only the units owned by this scope, including invisible site
-    /// and row markers. The caller supplies every retiring descendant scope.
-    /// On failure the candidate must be discarded; committed ownership and
-    /// lexical order remain unchanged.
+    /// Removes only this scope's lexical units; callers disposing descendants
+    /// together should use `retireScopes` to share their parent-order work.
     pub fn retireScope(self: *Prepared, owner: ids.ScopeId) Error!void {
-        while (self.scopeHead(owner).first) |position| {
-            const old = self.membership(position) orelse return error.InvalidRow;
-            try self.remove(old.entry.parent, position);
+        try self.retireScopes(&.{owner});
+    }
+
+    /// Retires the supplied scopes' owned positions in one sparse pass per
+    /// affected parent. Membership links provide identities without scanning
+    /// unrelated parents or scopes; the order index keeps every interleaved
+    /// survivor. Nested scopes must be explicitly supplied by scope teardown.
+    /// Any failure leaves committed order and ownership intact and requires
+    /// discarding this candidate before retrying.
+    pub fn retireScopes(self: *Prepared, owners: []const ids.ScopeId) Error!void {
+        const Group = struct { first: ?usize = null };
+        const Item = struct { position: PositionId, next: ?usize };
+        const allocator = self.positions.allocator;
+        var groups: std.AutoHashMapUnmanaged(ids.ElemId, Group) = .empty;
+        defer groups.deinit(allocator);
+        var items: std.ArrayList(Item) = .empty;
+        defer items.deinit(allocator);
+        for (owners) |owner| {
+            var current = self.scopeHead(owner).first;
+            while (current) |position| {
+                const old = self.membership(position) orelse return error.InvalidRow;
+                const entry = try groups.getOrPut(allocator, old.entry.parent);
+                if (!entry.found_existing) entry.value_ptr.* = .{};
+                const group = entry.value_ptr;
+                try items.append(allocator, .{ .position = position, .next = group.first });
+                group.first = items.items.len - 1;
+                current = old.next;
+            }
+        }
+        const scratch = try allocator.alloc(PositionId, items.items.len);
+        defer allocator.free(scratch);
+        var iterator = groups.iterator();
+        while (iterator.next()) |group| {
+            var current = group.value_ptr.first;
+            var count: usize = 0;
+            while (current) |index| {
+                const item = items.items[index];
+                scratch[count] = item.position;
+                count += 1;
+                current = item.next;
+            }
+            const value = try self.parent(group.key_ptr.*);
+            try value.removeSet(scratch[0..count]);
+            for (scratch[0..count]) |position| try self.removeOwnership(self.membership(position) orelse return error.InvalidRow);
         }
     }
 
@@ -516,10 +583,12 @@ pub const Prepared = struct {
         const first_rank = try value.rank(first);
         const last_rank = try value.rank(last);
         if (last_rank < first_rank) return error.InvalidRange;
-        for (0..last_rank - first_rank + 1) |_| {
-            const position = try value.rowAt(first_rank);
-            try self.remove(parent_id, position);
-        }
+        const count = last_rank - first_rank + 1;
+        const retired = try self.positions.allocator.alloc(PositionId, count);
+        defer self.positions.allocator.free(retired);
+        try value.copyRange(first, retired);
+        _ = try value.removeRange(first, count);
+        for (retired) |position| try self.removeOwnership(self.membership(position) orelse return error.InvalidRow);
     }
 
     /// Returns one position's candidate rank for ordering a changed set of
@@ -1094,4 +1163,107 @@ test "bulk row creation keeps order-index allocation proportional to large paren
     try std.testing.expectEqual(end_marker, (try positions.nextPosition(body, PositionId.rowEnd(last_scope))).?);
     try std.testing.expectEqual(ids.ElemId.fromRaw(next_elem - 8), (try positions.anchor(body, PositionId.rowStart(last_scope))).?);
     try std.testing.expectEqual(ids.ElemId.fromRaw(next_elem - 1), (try positions.anchor(ids.ElemId.fromRaw(next_elem - 2), PositionId.element(ids.ElemId.fromRaw(next_elem - 1)))).?);
+}
+
+test "bulk scope retirement groups nested parents and preserves outer boundaries" {
+    const allocator = std.testing.allocator;
+    for ([_]usize{ 1000, 10000 }) |count| {
+        var positions = Positions.init(allocator);
+        defer positions.deinit();
+        const outer = ids.ScopeId.fromRaw(0);
+        const first = PositionId.marker(ids.NodeId.fromRaw(1), .each);
+        const last = PositionId.marker(ids.NodeId.fromRaw(1), .each_end);
+        var initial = positions.prepare();
+        defer initial.deinit();
+        try initial.place(.{ .parent = ids.root_elem, .position = first, .owner = outer }, null);
+        const owners = try allocator.alloc(ids.ScopeId, count * 2);
+        defer allocator.free(owners);
+        for (0..count) |index| {
+            const owner = ids.ScopeId.fromIndex(index + 1);
+            const nested = ids.ScopeId.fromIndex(count + index + 1);
+            owners[index * 2] = owner;
+            owners[index * 2 + 1] = nested;
+            const root = ids.ElemId.fromIndex(index + 1);
+            for ([_]PositionId{ PositionId.rowStart(owner), PositionId.element(root), PositionId.rowEnd(owner) }) |position| {
+                try initial.place(.{ .parent = ids.root_elem, .position = position, .owner = owner }, null);
+            }
+            try initial.place(.{ .parent = ids.root_elem, .position = PositionId.marker(ids.NodeId.fromIndex(index + 2), .when), .owner = nested }, null);
+            try initial.place(.{ .parent = root, .position = PositionId.element(ids.ElemId.fromIndex(count + index + 1)), .owner = nested }, null);
+        }
+        try initial.place(.{ .parent = ids.root_elem, .position = last, .owner = outer }, null);
+        try initial.place(.{ .parent = ids.ElemId.fromIndex(3 * count), .position = PositionId.element(ids.ElemId.fromIndex(3 * count + 1)), .owner = outer }, null);
+        try initial.preflight();
+        initial.commit();
+        var candidate = positions.prepare();
+        defer candidate.deinit();
+        try candidate.retireScopes(owners);
+        const work = candidate.work();
+        try std.testing.expectEqual(count + 1, work.parents);
+        try std.testing.expectEqual(@as(usize, 1), work.tree_parents);
+        try std.testing.expect(work.tree_nodes_copied <= 2);
+        try std.testing.expectEqual(count * 4, work.tree_nodes_removed);
+        try std.testing.expectEqual(last, (try candidate.nextPosition(ids.root_elem, first)).?);
+        try std.testing.expectEqual(@as(usize, 3), positions.ownedCount(owners[0]));
+        try candidate.preflight();
+        candidate.commit();
+        for (owners) |owner| try std.testing.expectEqual(@as(usize, 0), positions.ownedCount(owner));
+        try std.testing.expectEqual(@as(usize, 3), positions.ownedCount(outer));
+        try std.testing.expectEqual(@as(u32, 2), positions.parents.count());
+    }
+}
+
+fn prepareGroupedRetirementForFault(positions: *Positions) !Prepared {
+    var candidate = positions.prepare();
+    errdefer candidate.deinit();
+    // Exercise contiguous membership retirement before the remaining owned
+    // sets, as a Rows range edit followed by nested scope cleanup does.
+    try candidate.retireRange(ids.root_elem, PositionId.marker(ids.NodeId.fromRaw(101), .when), PositionId.marker(ids.NodeId.fromRaw(102), .when));
+    try candidate.retireScopes(&.{ ids.ScopeId.fromRaw(1), ids.ScopeId.fromRaw(2) });
+    try candidate.preflight();
+    return candidate;
+}
+
+fn seedGroupedRetirementForFault(positions: *Positions) !void {
+    var seed = positions.prepare();
+    defer seed.deinit();
+    for (0..16) |index| try seed.place(.{ .parent = ids.root_elem, .position = PositionId.marker(ids.NodeId.fromIndex(100 + index), .when), .owner = ids.ScopeId.fromIndex(index % 3) }, null);
+    for (1..3) |index| try seed.place(.{ .parent = ids.ElemId.fromRaw(7), .position = PositionId.element(ids.ElemId.fromIndex(200 + index)), .owner = ids.ScopeId.fromIndex(index) }, null);
+    try seed.preflight();
+    seed.commit();
+}
+
+test "grouped scope retirement sweeps allocation refusal and retries on the same positions" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var counted = FaultAllocator.init(std.testing.allocator);
+    var initial = Positions.init(counted.allocator());
+    defer initial.deinit();
+    try seedGroupedRetirementForFault(&initial);
+    counted.configure(null);
+    var baseline = try prepareGroupedRetirementForFault(&initial);
+    defer baseline.deinit();
+    const attempts = counted.attempts;
+    for (1..attempts + 1) |failure| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        var positions = Positions.init(fault.allocator());
+        defer positions.deinit();
+        try seedGroupedRetirementForFault(&positions);
+        fault.configure(failure);
+        try std.testing.expectError(error.OutOfMemory, prepareGroupedRetirementForFault(&positions));
+        for (0..16) |index| {
+            const position = PositionId.marker(ids.NodeId.fromIndex(100 + index), .when);
+            try std.testing.expectEqual(index, try positions.parents.getPtr(ids.root_elem).?.rank(position));
+            try std.testing.expectEqual(ids.ScopeId.fromIndex(index % 3), positions.entry(position).?.owner);
+        }
+        fault.configure(null);
+        var retry = try prepareGroupedRetirementForFault(&positions);
+        defer retry.deinit();
+        fault.configure(1);
+        retry.commit();
+        try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+        try std.testing.expectEqual(@as(usize, 6), positions.ownedCount(ids.ScopeId.fromRaw(0)));
+        try std.testing.expectEqual(@as(usize, 0), positions.ownedCount(ids.ScopeId.fromRaw(1)));
+        try std.testing.expectEqual(@as(usize, 0), positions.ownedCount(ids.ScopeId.fromRaw(2)));
+        try std.testing.expectEqual(@as(u32, 1), positions.parents.count());
+        fault.configure(null);
+    }
 }

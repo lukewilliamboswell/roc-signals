@@ -63,6 +63,8 @@ pub fn StableOrderIndex(comptime Id: type, comptime Span: type) type {
         /// distinct row-order records changed at least once during preparation.
         pub const Stats = struct {
             nodes_touched: usize = 0,
+            nodes_copied: usize = 0,
+            nodes_removed: usize = 0,
             roots_moved: usize = 0,
             effective_moves: usize = 0,
         };
@@ -368,8 +370,12 @@ pub fn StableOrderIndex(comptime Id: type, comptime Span: type) type {
             overlay: std.AutoHashMapUnmanaged(Id, Node) = .empty,
             removed: std.AutoHashMapUnmanaged(Id, void) = .empty,
             root: ?Id,
+            /// Test-only exact lookup instrumentation; the counter must outlive the candidate.
+            /// Production builds compile the counting branch away.
+            lookup_work: ?*usize = null,
             roots_moved: usize = 0,
             effective_moves: usize = 0,
+            copied_nodes: usize = 0,
             commit_preflighted: bool = false,
             committed: bool = false,
 
@@ -408,6 +414,8 @@ pub fn StableOrderIndex(comptime Id: type, comptime Span: type) type {
                 }
                 return .{
                     .nodes_touched = touched,
+                    .nodes_copied = self.copied_nodes,
+                    .nodes_removed = self.removed.count(),
                     .roots_moved = self.roots_moved,
                     .effective_moves = self.effective_moves,
                 };
@@ -471,15 +479,49 @@ pub fn StableOrderIndex(comptime Id: type, comptime Span: type) type {
                 const first_rank = try self.rank(first);
                 if (count > self.len() - first_rank) return error.InvalidRange;
                 var result = RootRange{};
-                for (0..count) |offset| {
-                    const row_id = try self.rowAt(first_rank + offset);
-                    const row_span = (self.get(row_id) orelse return error.InvalidRow).span;
-                    if (row_span.root_count == 0) continue;
-                    if (result.first == null) result.first = row_span.first_root;
-                    result.last = row_span.last_root;
-                    result.count = std.math.add(usize, result.count, row_span.root_count) catch return error.ResourceLimit;
-                }
+                self.collectRootRange(self.root, first_rank, count, &result);
                 return result;
+            }
+
+            fn collectRootRange(self: *const Prepared, root_id: ?Id, start: usize, count: usize, result: *RootRange) void {
+                if (count == 0) return;
+                const node = self.get(root_id.?) orelse unreachable;
+                if (start == 0 and count == node.subtree_rows) {
+                    if (result.first == null) result.first = node.subtree_first_root;
+                    if (node.subtree_last_root) |last| result.last = last;
+                    result.count += node.subtree_roots;
+                    return;
+                }
+                const left_rows = self.nodeRows(node.left);
+                const end = start + count;
+                if (start < left_rows) self.collectRootRange(node.left, start, @min(end, left_rows) - start, result);
+                if (start <= left_rows and end > left_rows and node.span.root_count != 0) {
+                    if (result.first == null) result.first = node.span.first_root;
+                    result.last = node.span.last_root;
+                    result.count += node.span.root_count;
+                }
+                if (end > left_rows + 1) self.collectRootRange(node.right, @max(start, left_rows + 1) - left_rows - 1, end - @max(start, left_rows + 1), result);
+            }
+
+            /// Copies only the requested interval into caller-owned storage in
+            /// order. Subtrees outside the interval are never enumerated.
+            pub fn copyRange(self: *const Prepared, first: Id, output: []Id) error{ InvalidRow, InvalidRange }!void {
+                const start = try self.rank(first);
+                if (output.len > self.len() - start) return error.InvalidRange;
+                self.copyRangeFrom(self.root, start, output);
+            }
+
+            fn copyRangeFrom(self: *const Prepared, root_id: ?Id, start: usize, output: []Id) void {
+                if (output.len == 0) return;
+                const id = root_id.?;
+                const node = self.get(id) orelse unreachable;
+                const left_rows = self.nodeRows(node.left);
+                const end = start + output.len;
+                const left_count = if (start < left_rows) @min(end, left_rows) - start else 0;
+                if (left_count != 0) self.copyRangeFrom(node.left, start, output[0..left_count]);
+                const own_count: usize = if (start <= left_rows and end > left_rows) 1 else 0;
+                if (own_count != 0) output[left_count] = id;
+                if (left_count + own_count < output.len) self.copyRangeFrom(node.right, @max(start, left_rows + 1) - left_rows - 1, output[left_count + own_count ..]);
             }
 
             /// Inserts a new stable row before `before`, or at the end for
@@ -525,6 +567,61 @@ pub fn StableOrderIndex(comptime Id: type, comptime Span: type) type {
                 self.root = try self.merge(prefix_and_tail.left, middle_and_suffix.right);
                 self.markRemovedSubtree(middle);
                 return .{ .rows_removed = count, .roots_removed = roots_removed };
+            }
+
+            /// Removes an explicit set without repeatedly splitting the tree.
+            /// The sparse ancestor closure is visited once; untouched subtrees
+            /// remain shared. Input identity is authoritative, so interleaved
+            /// survivors and zero-root rows are preserved. Duplicate or stale
+            /// identities are rejected. Failure requires discarding this plan.
+            pub fn removeSet(self: *Prepared, row_ids: []const Id) Error!RemoveResult {
+                self.invalidatePreflight();
+                var affected: std.AutoHashMapUnmanaged(Id, bool) = .empty;
+                defer affected.deinit(self.allocator);
+                var roots_removed: usize = 0;
+                // Record targets before ancestors, allowing an ancestor to be
+                // a target too without mistaking it for duplicate input.
+                for (row_ids) |id| {
+                    const node = self.get(id) orelse return error.InvalidRow;
+                    const entry = try affected.getOrPut(self.allocator, id);
+                    if (entry.found_existing) return error.DuplicateRow;
+                    entry.value_ptr.* = true;
+                    roots_removed += spanRoots(node.span);
+                }
+                for (row_ids) |id| {
+                    var ancestor = (self.get(id) orelse unreachable).parent;
+                    while (ancestor) |next| {
+                        const entry = try affected.getOrPut(self.allocator, next);
+                        if (entry.found_existing) {
+                            // A target's ancestry will be covered by its own
+                            // input iteration; any other entry was walked.
+                            break;
+                        }
+                        entry.value_ptr.* = false;
+                        ancestor = (self.get(next) orelse unreachable).parent;
+                    }
+                }
+                try self.removed.ensureUnusedCapacity(self.allocator, std.math.cast(u32, row_ids.len) orelse return error.ResourceLimit);
+                self.root = try self.filterRemoved(self.root, &affected);
+                try self.setParent(self.root, null);
+                return .{ .rows_removed = row_ids.len, .roots_removed = roots_removed };
+            }
+
+            fn filterRemoved(self: *Prepared, root_id: ?Id, affected: *const std.AutoHashMapUnmanaged(Id, bool)) Error!?Id {
+                const id = root_id orelse return null;
+                const retiring = affected.get(id) orelse return id;
+                const node = self.get(id) orelse unreachable;
+                const left = try self.filterRemoved(node.left, affected);
+                const right = try self.filterRemoved(node.right, affected);
+                if (retiring) {
+                    const joined = try self.merge(left, right);
+                    self.removed.putAssumeCapacity(id, {});
+                    return joined;
+                }
+                try self.setLeft(id, left);
+                try self.setRight(id, right);
+                try self.refresh(id);
+                return id;
             }
 
             /// Moves a contiguous range before `before` in the post-removal
@@ -619,6 +716,9 @@ pub fn StableOrderIndex(comptime Id: type, comptime Span: type) type {
             }
 
             fn get(self: *const Prepared, row_id: Id) ?Node {
+                if (@import("builtin").is_test) if (self.lookup_work) |counter| {
+                    counter.* += 1;
+                };
                 if (self.removed.contains(row_id)) return null;
                 if (self.overlay.get(row_id)) |node| return node;
                 return self.base.nodes.get(row_id);
@@ -629,6 +729,7 @@ pub fn StableOrderIndex(comptime Id: type, comptime Span: type) type {
                 if (self.overlay.getPtr(row_id)) |node| return node;
                 const committed = self.base.nodes.get(row_id) orelse return error.InvalidRow;
                 try self.overlay.put(self.allocator, row_id, committed);
+                self.copied_nodes += 1;
                 return self.overlay.getPtr(row_id).?;
             }
 
@@ -1031,4 +1132,149 @@ test "ten thousand row single-range move copies logarithmic topology paths" {
     try prepared.preflightCommit();
     prepared.commitAssumePreflighted();
     try std.testing.expectEqual(row(5_000), try order.rowAt(10));
+}
+
+test "bulk order retirement shares traversal and copies only surviving paths" {
+    const allocator = std.testing.allocator;
+    for ([_]usize{ 3000, 30000 }) |count| {
+        var order = TestOrder.init(allocator);
+        defer order.deinit();
+        const entries = try allocator.alloc(TestOrder.Entry, count + 2);
+        defer allocator.free(entries);
+        const retired = try allocator.alloc(RowId, count);
+        defer allocator.free(retired);
+        for (entries, 0..) |*entry, index| entry.* = .{ .row_id = row(index), .span = if (index % 3 == 0) .{} else oneRoot(index + 1) };
+        for (retired, 0..) |*id, index| id.* = row(index + 1);
+        _ = try order.seed(entries);
+        var candidate = order.prepare();
+        defer candidate.deinit();
+        var lookups: usize = 0;
+        candidate.lookup_work = &lookups;
+        const roots = try candidate.rootsInRange(row(1), count);
+        try std.testing.expect(lookups < 300);
+        lookups = 0;
+        const result = try candidate.removeSet(retired);
+        try std.testing.expectEqual(count, result.rows_removed);
+        try std.testing.expectEqual(roots.count, result.roots_removed);
+        try std.testing.expect(lookups < 6 * count + 300);
+        try std.testing.expect(candidate.stats().nodes_copied <= 2);
+        try std.testing.expectEqual(count, candidate.stats().nodes_removed);
+        try std.testing.expectEqual(@as(usize, 2), candidate.len());
+        try std.testing.expectEqual(row(0), try candidate.rowAt(0));
+        try std.testing.expectEqual(row(count + 1), try candidate.rowAt(1));
+        try std.testing.expectEqual(count + 2, order.len());
+        try candidate.preflightCommit();
+        candidate.commitAssumePreflighted();
+        try std.testing.expectEqual(@as(usize, 2), order.len());
+    }
+}
+
+test "sparse order removal preserves interleaved survivors and bounds unrelated work" {
+    const allocator = std.testing.allocator;
+    for ([_]usize{ 1000, 10000 }) |count| {
+        var order = TestOrder.init(allocator);
+        defer order.deinit();
+        const entries = try allocator.alloc(TestOrder.Entry, count);
+        defer allocator.free(entries);
+        for (entries, 0..) |*entry, index| entry.* = .{ .row_id = row(index), .span = if (index % 2 == 0) .{} else oneRoot(index + 1) };
+        _ = try order.seed(entries);
+        var candidate = order.prepare();
+        defer candidate.deinit();
+        var lookups: usize = 0;
+        candidate.lookup_work = &lookups;
+        _ = try candidate.removeSet(&.{ row(100), row(102), row(107) });
+        try std.testing.expect(lookups < 1500);
+        try std.testing.expect(candidate.stats().nodes_copied < 100);
+        try std.testing.expectEqual(count - 3, candidate.len());
+        var rank: usize = 0;
+        for (0..count) |index| {
+            if (index == 100 or index == 102 or index == 107) {
+                try std.testing.expectError(error.InvalidRow, candidate.rank(row(index)));
+                continue;
+            }
+            try std.testing.expectEqual(row(index), try candidate.rowAt(rank));
+            try std.testing.expectEqual(rank, try candidate.rank(row(index)));
+            rank += 1;
+        }
+        const output = try allocator.alloc(RowId, 20);
+        defer allocator.free(output);
+        try candidate.copyRange(row(98), output);
+        for (output, 0..) |id, offset| try std.testing.expectEqual(try candidate.rowAt(98 + offset), id);
+    }
+}
+
+fn prepareSetRemovalForFault(order: *TestOrder) !TestOrder.PreparedEdits {
+    var candidate = order.prepare();
+    errdefer candidate.deinit();
+    _ = try candidate.removeSet(&.{ row(1), row(3), row(4), row(8), row(9), row(10) });
+    try candidate.preflightCommit();
+    return candidate;
+}
+
+test "bulk order retirement allocation refusal preserves committed order and retry" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var fault = FaultAllocator.init(std.testing.allocator);
+    var order = TestOrder.init(fault.allocator());
+    defer order.deinit();
+    var entries: [16]TestOrder.Entry = undefined;
+    for (&entries, 0..) |*entry, index| entry.* = .{ .row_id = row(index), .span = oneRoot(index + 1) };
+    _ = try order.seed(&entries);
+    fault.configure(null);
+    var counted = try prepareSetRemovalForFault(&order);
+    const attempts = fault.attempts;
+    counted.deinit();
+    for (1..attempts + 1) |failure| {
+        fault.configure(failure);
+        try std.testing.expectError(error.OutOfMemory, prepareSetRemovalForFault(&order));
+        for (0..16) |index| try std.testing.expectEqual(row(index), try order.rowAt(index));
+        fault.configure(null);
+        var retry = try prepareSetRemovalForFault(&order);
+        retry.deinit();
+    }
+    fault.configure(null);
+    var final = try prepareSetRemovalForFault(&order);
+    defer final.deinit();
+    fault.configure(1);
+    final.commitAssumePreflighted();
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 10), order.len());
+    fault.configure(null);
+}
+
+test "grouped removal and reinsertion histories match independent dense order" {
+    const allocator = std.testing.allocator;
+    var order = TestOrder.init(allocator);
+    defer order.deinit();
+    var entries: [64]TestOrder.Entry = undefined;
+    var reference: std.ArrayList(RowId) = .empty;
+    defer reference.deinit(allocator);
+    for (&entries, 0..) |*entry, index| {
+        entry.* = .{ .row_id = row(index), .span = oneRoot(index + 1) };
+        try reference.append(allocator, row(index));
+    }
+    _ = try order.seed(&entries);
+    var random = std.Random.DefaultPrng.init(0x147);
+    for (0..100) |_| {
+        var candidate = order.prepare();
+        defer candidate.deinit();
+        for (0..2) |_| {
+            var removed: [7]RowId = undefined;
+            for (&removed) |*id| id.* = reference.orderedRemove(random.random().uintLessThan(usize, reference.items.len));
+            _ = try candidate.removeSet(&removed);
+            for (removed) |id| {
+                const at = random.random().uintLessThan(usize, reference.items.len + 1);
+                const before = if (at < reference.items.len) reference.items[at] else null;
+                const root_id = (try order.span(id)).first_root.?;
+                try candidate.insertBefore(id, before, oneRoot(root_id));
+                try reference.insert(allocator, at, id);
+            }
+        }
+        for (reference.items, 0..) |id, index| {
+            try std.testing.expectEqual(id, try candidate.rowAt(index));
+            try std.testing.expectEqual(index, try candidate.rank(id));
+        }
+        try candidate.preflightCommit();
+        candidate.commitAssumePreflighted();
+        for (reference.items, 0..) |id, index| try std.testing.expectEqual(id, try order.rowAt(index));
+    }
 }
