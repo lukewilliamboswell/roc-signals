@@ -18,6 +18,9 @@
     (expect-metric-delta rows_created 1)
     (expect-metric-delta rows_removed 0)
     (expect-metric-delta active_graph_records_rebuilt 0)
+    ; Five model projections and the new row label; existing selected/hovered
+    ; maps must not run again when the new row binds their settled values.
+    (expect-metric-delta-at-most derived_calls_into_roc 6)
     (expect-attr (test-id "row-3") class "danger")
     (expect-attr (test-id "row-1001") class "")
     ; The new membership is live: selecting it dirties the old members and it.

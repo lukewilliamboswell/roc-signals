@@ -945,12 +945,14 @@ pub const Binding = struct {
     record: *Record,
     source_node_ids: []u64,
 
-    /// Creates an independently owned retained value using its attached capability.
-    pub fn cloneRetained(self: Binding, allocator: std.mem.Allocator, metrics: anytype) Binding {
+    /// Copies the source ids and retains the shared record for a new binding.
+    /// Allocation failure leaves the original binding and record ownership unchanged.
+    pub fn cloneRetained(self: Binding, allocator: std.mem.Allocator, metrics: anytype) std.mem.Allocator.Error!Binding {
         _ = metrics;
+        const source_node_ids = try allocator.dupe(u64, self.source_node_ids);
         return .{
             .record = self.record.retain(),
-            .source_node_ids = allocator.dupe(u64, self.source_node_ids) catch @panic("out of memory"),
+            .source_node_ids = source_node_ids,
         };
     }
 
@@ -1014,6 +1016,44 @@ pub fn appendSignalRecordSourceNodeIdsFallible(allocator: std.mem.Allocator, sou
         },
         .interval_source, .entropy_seed_source, .location_source, .online_source, .visibility_source, .storage_source, .row_source => {},
     }
+}
+
+test "binding clone refuses before retaining and retries with independent source ids" {
+    const TestCtx = struct {
+        /// No cached values are present in this source-reference fixture.
+        pub fn cloneHostValue(_: *@This(), value: HostValue) HostValue {
+            return value;
+        }
+        /// Satisfies the capability-call boundary; this fixture has no callbacks.
+        pub fn pushHostValueCapabilities(_: *@This(), _: []const HostValueCapability) void {}
+        /// Ends the unused capability-call boundary.
+        pub fn popHostValueCapabilities(_: *@This()) void {}
+    };
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    var ctx = TestCtx{};
+    var metrics = struct {
+        /// Source references retain no callables or capability values.
+        pub fn bump(_: *@This(), comptime _: anytype, _: u64) void {}
+    }{};
+    var original = Binding{
+        .record = try Record.tryInit(std.testing.allocator, .{ .ref = 7 }),
+        .source_node_ids = try std.testing.allocator.dupe(u64, &.{7}),
+    };
+    defer original.deinit(std.testing.allocator, &ctx, &roc_host, &metrics);
+    var fault = @import("fault_allocator.zig").FaultAllocator.init(std.testing.allocator);
+    fault.configure(1);
+    try std.testing.expectError(error.OutOfMemory, original.cloneRetained(fault.allocator(), &metrics));
+    try std.testing.expectEqual(@as(usize, 1), original.record.ref_count);
+    try std.testing.expectEqualSlices(u64, &.{7}, original.source_node_ids);
+    fault.configure(null);
+    var cloned = try original.cloneRetained(fault.allocator(), &metrics);
+    try std.testing.expectEqual(@as(usize, 2), original.record.ref_count);
+    try std.testing.expect(original.source_node_ids.ptr != cloned.source_node_ids.ptr);
+    cloned.source_node_ids[0] = 8;
+    try std.testing.expectEqualSlices(u64, &.{7}, original.source_node_ids);
+    cloned.deinit(fault.allocator(), &ctx, &roc_host, &metrics);
+    try std.testing.expectEqual(@as(usize, 1), original.record.ref_count);
 }
 
 test "fallible signal record construction preserves payload ownership on OOM" {

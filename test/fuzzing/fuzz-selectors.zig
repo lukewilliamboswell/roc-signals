@@ -99,14 +99,11 @@
 //!
 //! # Defects found
 //!
-//!  - **A new reader over a live derived signal re-evaluates it during
-//!    staging.** `evalHostSignalRecordStaged`'s `map` arm calls the transform
-//!    of a present, non-dirty record whenever a new descriptor binds it and
-//!    writes the result into the committed cache before commit. Every select
-//!    over the shared keyed input costs a derived call the changed set does
-//!    not justify, and at some fault positions the produced value outlives
-//!    the refusal. `expectRefusedEditLedger` carries the carve-out and the
-//!    corpus input `refused-edit-keeps-shared-map-value` the reproduction.
+//!  - **A new reader over a live derived signal re-evaluated it during
+//!    staging.** The committed cache changed before publication and could
+//!    retain the new value after refusal. The strict refusal ledger and
+//!    `refused-edit-keeps-shared-map-value` corpus input guard cache reuse
+//!    and provisional ownership on this path.
 //!
 //! # Not yet covered
 //!
@@ -437,9 +434,6 @@ const Transition = struct {
     released: u64 = 0,
     dirtied: u64 = 0,
     appended_records: u64 = 0,
-    /// New selects reading the shared keyed input, the trigger of the
-    /// refusal-path defect described at `expectRefusedEditLedger`.
-    registered_shared_input: u64 = 0,
 
     fn of(arena: std.mem.Allocator, before: *const Model, after: *const Model, before_state: State, after_state: State) Transition {
         var transition = Transition{};
@@ -461,7 +455,6 @@ const Transition = struct {
             if (new.kind != .select) continue;
             transition.registered += 1;
             transition.key_bytes += new.key.len;
-            if (new.shared_input) transition.registered_shared_input += 1;
         }
         if (!std.mem.eql(u8, before_state.selected, after_state.selected)) {
             for (before.instances.items) |old| {
@@ -951,7 +944,7 @@ fn runEdits(host: *Host, roc_host: *abi.RocHost, program: Program, plan: Plan, f
             if (retains != releases) {
                 fail("edit {d} refused at attempt {d} left {d} retains against {d} releases", .{ edit_index, number, retains, releases });
             }
-            expectRefusedEditLedger(host, arena, program, previous, state, allocations_before, edit_index, number);
+            expectRefusedEditLedger(host, allocations_before, edit_index, number);
 
             fault.configure(null);
             phase = "edit retried after a refusal";
@@ -989,29 +982,9 @@ fn stateNodeIds(host: *const Host) Cells {
     return .{ .list = sites[0].node_id.raw(), .selected = sites[1].node_id.raw() };
 }
 
-/// Asserts a refused edit released every Roc allocation it made - except
-/// under one known engine defect, which this carve-out documents rather than
-/// hides.
-///
-/// When an edit creates a select over the shared keyed input, the staged
-/// collector evaluates that input through `evalHostSignalRecordStaged`, whose
-/// `map` arm re-runs the transform of a live, non-dirty record and writes the
-/// result into the committed record's cache before commit
-/// (`replaceSignalExprCacheAndClone`). That is one derived call into Roc per
-/// edit that the changed set does not justify, a mutation of committed state
-/// during preparation, and at some fault positions - observed in
-/// `collectEachRow`, `prepareRetiredStreamCapacity` and
-/// `finishSparsePublication` - the produced value survives the rollback
-/// outright. The corpus input `refused-edit-keeps-shared-map-value` reproduces
-/// it. Until the engine returns the cached clone for a present, non-dirty
-/// record, the ledger check is skipped for exactly those edits; every other
-/// refusal is held to the strict standard, and removing this carve-out is
-/// part of the fix.
-fn expectRefusedEditLedger(host: *const Host, arena: std.mem.Allocator, program: Program, previous: State, state: State, allocations_before: @TypeOf(host.roc_allocations.snapshot()), edit_index: usize, number: usize) void {
-    const before_model = Model.of(arena, program, previous);
-    const after_model = Model.of(arena, program, state);
-    const transition = Transition.of(arena, &before_model, &after_model, previous, state);
-    if (transition.registered_shared_input != 0) return;
+/// Refusal must release every provisional Roc allocation, including values
+/// read through newly constructed selectors over shared derived records.
+fn expectRefusedEditLedger(host: *const Host, allocations_before: @TypeOf(host.roc_allocations.snapshot()), edit_index: usize, number: usize) void {
     if (host.roc_allocations.liveCountSince(allocations_before) != 0 or host.roc_allocations.snapshot().live_bytes != allocations_before.live_bytes) {
         for (host.roc_allocations.allocations.items) |alloc| {
             if (alloc.id >= allocations_before.next_id) std.debug.print("still live from the refused edit: phase={t} size={d} site=0x{x}\n", .{ alloc.phase, alloc.requested_size, alloc.return_address });

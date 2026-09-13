@@ -4353,7 +4353,7 @@ pub fn Engine(comptime Ctx: type) type {
                     },
                     .signal_text => {
                         const desc = findSignalTextNodeDesc(previous, node.elem_id.raw()) orelse @panic("copyActiveScopeSubtreeDescriptors: render node has no matching descriptor");
-                        const signal = desc.signal.cloneRetained(allocator, &self.pending_roc_metrics);
+                        const signal = desc.signal.cloneRetained(allocator, &self.pending_roc_metrics) catch @panic("out of memory");
                         stream.appendSignalTextNode(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.elem_id, desc.parent_elem_id, desc.scope_id, signal, desc.read);
                         stream.signal_text_nodes.items[stream.signal_text_nodes.items.len - 1].cached_value = self.cloneHostSignalCacheSlot(ctx, desc.cached_value, &self.pending_roc_metrics);
                     },
@@ -4366,7 +4366,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
             for (previous.signal_text_attrs.items) |desc| {
                 if (!u64SliceContains(copied_elem_ids.items, desc.elem_id.raw())) continue;
-                const signal = desc.signal.cloneRetained(allocator, &self.pending_roc_metrics);
+                const signal = desc.signal.cloneRetained(allocator, &self.pending_roc_metrics) catch @panic("out of memory");
                 stream.appendSignalTextAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.elem_id, desc.field, signal, desc.read);
                 stream.signal_text_attrs.items[stream.signal_text_attrs.items.len - 1].cached_value = self.cloneHostSignalCacheSlot(ctx, desc.cached_value, &self.pending_roc_metrics);
             }
@@ -4376,13 +4376,13 @@ pub fn Engine(comptime Ctx: type) type {
             }
             for (previous.signal_custom_text_attrs.items) |desc| {
                 if (!u64SliceContains(copied_elem_ids.items, desc.elem_id.raw())) continue;
-                const signal = desc.signal.cloneRetained(allocator, &self.pending_roc_metrics);
+                const signal = desc.signal.cloneRetained(allocator, &self.pending_roc_metrics) catch @panic("out of memory");
                 stream.appendSignalCustomTextAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.elem_id, desc.name, signal, desc.read);
                 stream.signal_custom_text_attrs.items[stream.signal_custom_text_attrs.items.len - 1].cached_value = self.cloneHostSignalCacheSlot(ctx, desc.cached_value, &self.pending_roc_metrics);
             }
             for (previous.signal_optional_custom_text_attrs.items) |desc| {
                 if (!u64SliceContains(copied_elem_ids.items, desc.elem_id.raw())) continue;
-                const signal = desc.signal.cloneRetained(allocator, &self.pending_roc_metrics);
+                const signal = desc.signal.cloneRetained(allocator, &self.pending_roc_metrics) catch @panic("out of memory");
                 stream.appendSignalOptionalCustomTextAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.elem_id, desc.name, signal, desc.present, desc.read);
                 stream.signal_optional_custom_text_attrs.items[stream.signal_optional_custom_text_attrs.items.len - 1].cached_value = self.cloneHostSignalCacheSlot(ctx, desc.cached_value, &self.pending_roc_metrics);
             }
@@ -4392,7 +4392,7 @@ pub fn Engine(comptime Ctx: type) type {
             }
             for (previous.signal_custom_bool_attrs.items) |desc| {
                 if (!u64SliceContains(copied_elem_ids.items, desc.elem_id.raw())) continue;
-                const signal = desc.signal.cloneRetained(allocator, &self.pending_roc_metrics);
+                const signal = desc.signal.cloneRetained(allocator, &self.pending_roc_metrics) catch @panic("out of memory");
                 stream.appendSignalCustomBoolAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.elem_id, desc.name, signal, desc.read);
                 stream.signal_custom_bool_attrs.items[stream.signal_custom_bool_attrs.items.len - 1].cached_value = self.cloneHostSignalCacheSlot(ctx, desc.cached_value, &self.pending_roc_metrics);
             }
@@ -4402,13 +4402,13 @@ pub fn Engine(comptime Ctx: type) type {
             }
             for (previous.signal_bool_attrs.items) |desc| {
                 if (!u64SliceContains(copied_elem_ids.items, desc.elem_id.raw())) continue;
-                const signal = desc.signal.cloneRetained(allocator, &self.pending_roc_metrics);
+                const signal = desc.signal.cloneRetained(allocator, &self.pending_roc_metrics) catch @panic("out of memory");
                 stream.appendSignalBoolAttr(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.elem_id, desc.field, signal, desc.read);
                 stream.signal_bool_attrs.items[stream.signal_bool_attrs.items.len - 1].cached_value = self.cloneHostSignalCacheSlot(ctx, desc.cached_value, &self.pending_roc_metrics);
             }
             for (previous.on_changes.items) |desc| {
                 if (!(self.scopeIsDescendantOrSelf(desc.scope_id.raw(), root_scope_id) catch @panic("scope descriptor referenced an unknown parent scope"))) continue;
-                const signal = desc.signal.cloneRetained(allocator, &self.pending_roc_metrics);
+                const signal = desc.signal.cloneRetained(allocator, &self.pending_roc_metrics) catch @panic("out of memory");
                 stream.appendOnChange(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.scope_id, signal, desc.to_cmd, desc.run_initial, desc.run_initial_pending);
                 stream.on_changes.items[stream.on_changes.items.len - 1].cached_value = self.cloneHostSignalCacheSlot(ctx, desc.cached_value, &self.pending_roc_metrics);
             }
@@ -4443,13 +4443,13 @@ pub fn Engine(comptime Ctx: type) type {
             }
             for (previous.whens.items) |desc| {
                 if (!self.streamNodeIdInScopeSubtree(previous, desc.node_id, ids.ScopeId.fromRaw(root_scope_id))) continue;
-                const condition = desc.condition.cloneRetained(allocator, &self.pending_roc_metrics);
+                const condition = desc.condition.cloneRetained(allocator, &self.pending_roc_metrics) catch @panic("out of memory");
                 stream.appendWhen(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.node_id, condition, desc.ops);
                 stream.whens.items[stream.whens.items.len - 1].cached_value = self.cloneHostSignalCacheSlot(ctx, desc.cached_value, &self.pending_roc_metrics);
             }
             for (previous.eaches.items) |desc| {
                 if (!self.streamNodeIdInScopeSubtree(previous, desc.node_id, ids.ScopeId.fromRaw(root_scope_id))) continue;
-                const items = desc.items.cloneRetained(allocator, &self.pending_roc_metrics);
+                const items = desc.items.cloneRetained(allocator, &self.pending_roc_metrics) catch @panic("out of memory");
                 stream.appendEach(allocator, ctx, roc_host, &self.pending_roc_metrics, desc.node_id, items, desc.ops);
                 stream.eaches.items[stream.eaches.items.len - 1].cached_value = self.cloneHostSignalCacheSlot(ctx, desc.cached_value, &self.pending_roc_metrics);
             }
@@ -12990,12 +12990,15 @@ pub fn Engine(comptime Ctx: type) type {
         /// read, or a derived record already re-evaluated for this transaction)
         /// reads that staged value, never the committed one, so a branch
         /// mounted by the transaction observes the same values as the scalar
-        /// updates published beside it.
+        /// updates published beside it. Propagation settles existing records
+        /// before collection; adding a reader clones that settled cache without
+        /// re-running Roc or replacing committed ownership. Only uncached new
+        /// records are initialized here, owned by the provisional collection.
         fn evalHostSignalRecordStaged(self: *Self, ctx: Ctx.Handle, roc_host: *abi.RocHost, record: *HostSignalRecord, provisional_states: []const HostState, overlay: ?*const signal_records.PreparedCacheUpdates) HostValue {
-            if (overlay) |prepared| if (record.cachedSlot()) |slot| {
-                const staged = prepared.readSlot(slot);
-                if (staged != slot and staged.* == .present) return self.cloneCachedSignalValue(ctx, staged);
-            };
+            if (record.cachedSlot()) |slot| {
+                const settled = if (overlay) |prepared| prepared.readSlot(slot) else slot;
+                if (settled.* == .present) return self.cloneCachedSignalValue(ctx, settled);
+            }
             switch (record.payload) {
                 .ref => |node_id| {
                     for (provisional_states) |state| if (state.state_id == node_id) return Ctx.cloneHostValue(ctx, state.activePayloadConst().cell.value);
@@ -16955,7 +16958,7 @@ pub fn Engine(comptime Ctx: type) type {
                 const origin = self.effect_origin orelse @panic("a Then command needs declared reads; bind it through an action, a change sink, or Action.on_mount");
                 const allocator = Ctx.allocator(ctx);
                 try self.pending_effects.ensureUnusedCapacity(allocator, 1);
-                var reads = origin.cloneRetained(allocator, &self.pending_roc_metrics);
+                var reads = try origin.cloneRetained(allocator, &self.pending_roc_metrics);
                 errdefer self.releaseEffectReads(ctx, &reads);
                 const cap = retained_values.retainHostValueCapability(self.hostSignalBindingCapability(ctx, &reads), &self.pending_roc_metrics);
                 defer retained_values.releaseHostValueCapability(cap, roc_host, &self.pending_roc_metrics);
@@ -19211,16 +19214,17 @@ test "staged evaluation reads a source settled by the enclosing transaction" {
     try std.testing.expectEqual(HostValue.fromRaw(1), engine.evalHostSignalRecordStaged(&ctx, &roc_host, &source, &.{}, null));
     // Inside the transaction the staged value is the only honest one.
     try std.testing.expectEqual(HostValue.fromRaw(2), engine.evalHostSignalRecordStaged(&ctx, &roc_host, &source, &.{}, &overlay));
-    // A derived record the transaction has not re-evaluated is recomputed
-    // from the staged input; one it has re-evaluated reads its staged result
-    // instead of calling Roc again.
+    // Adding a reader of an existing record preserves its settled cache. Dirty
+    // propagation, rather than collection, owns evaluating changed inputs and
+    // staging the resulting derived value.
     const derived_calls_before = engine.pending_roc_metrics.derived_calls_into_roc;
-    try std.testing.expectEqual(HostValue.fromRaw(42), engine.evalHostSignalRecordStaged(&ctx, &roc_host, &mapped, &.{}, &overlay));
-    try std.testing.expectEqual(derived_calls_before + 1, engine.pending_roc_metrics.derived_calls_into_roc);
+    try std.testing.expectEqual(HostValue.fromRaw(10), engine.evalHostSignalRecordStaged(&ctx, &roc_host, &mapped, &.{}, null));
+    try std.testing.expectEqual(derived_calls_before, engine.pending_roc_metrics.derived_calls_into_roc);
     overlay.stageAssumeCapacity(&mapped.payload.map.cached_value, HostValue.fromRaw(7), cap, &engine.pending_roc_metrics);
     try std.testing.expectEqual(HostValue.fromRaw(7), engine.evalHostSignalRecordStaged(&ctx, &roc_host, &mapped, &.{}, &overlay));
-    try std.testing.expectEqual(derived_calls_before + 1, engine.pending_roc_metrics.derived_calls_into_roc);
+    try std.testing.expectEqual(derived_calls_before, engine.pending_roc_metrics.derived_calls_into_roc);
     try std.testing.expectEqual(HostValue.fromRaw(1), source.payload.interval_source.cached_value.present.value);
+    try std.testing.expectEqual(HostValue.fromRaw(10), mapped.payload.map.cached_value.present.value);
 }
 
 test "static root counts nested signal attribute records" {
