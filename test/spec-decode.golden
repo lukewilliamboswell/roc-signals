@@ -254,11 +254,11 @@ test "Counter propagates events through the shared engine"
   11: click locator=role_name role="button" name="Reset"
   12: expect_text locator=test_id test_id="count" expected="0"
 == examples-gui/counter/specs/minimum-window-layout.scm
-scenario "minimum-window-layout" window=360x240 assets=none choose=[] diagnostic="GUI-35. Where the compositor delegates decorations to the host, the host's own title bar and insets take 48 of the window's 240 pixels, and the button row is laid out below the window." on=[client-frame]
-  10: expect_onscreen locator=test_id test_id="count"
-  11: expect_onscreen locator=test_id test_id="Increment"
-  12: expect_onscreen locator=test_id test_id="Decrement"
-  13: expect_onscreen locator=test_id test_id="Reset"
+scenario "minimum-window-layout" window=360x240 assets=none choose=[] diagnostic=none on=[]
+  7: expect_onscreen locator=test_id test_id="count"
+  8: expect_onscreen locator=test_id test_id="Increment"
+  9: expect_onscreen locator=test_id test_id="Decrement"
+  10: expect_onscreen locator=test_id test_id="Reset"
 == examples-gui/counter/specs/minimum-window.scm
 scenario "minimum-window" window=360x240 assets=none choose=[] diagnostic=none on=[]
   7: expect_visible locator=text text="Counter"
