@@ -17,3 +17,12 @@
 # wip/issues.md, "`Then` clones its declared reads at a fatal boundary inside a
 # recoverable prepare". Delete this line once the input passes.
 transactions/then-reads-clone-fatal-oom
+
+# A `when` branch that retires while its Rows site is empty never unregisters
+# that site (only the last retiring row removes the key), so a rollback that
+# remounts the branch at the site's own generation is refused with
+# InvalidDescriptor by `prepareStable`'s owner-token check. See
+# https://github.com/lukewilliamboswell/roc-signals/issues/137 and
+# wip/issues.md, "A retired when branch keeps its empty Rows site
+# registered". Delete this line once the input passes.
+sparse-rows/rollback-remounts-retired-when-site

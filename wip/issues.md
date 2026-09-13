@@ -453,6 +453,28 @@ record it retained. Delete the corpus line from
 `test/fuzzing/corpus/known-failures.txt` when the input passes; the corpus
 entry stays as the regression test.
 
+## A retired when branch keeps its empty Rows site registered
+
+**Priority: P1** — A well-formed rollback refused as an invalid descriptor.
+Tracked as issue #137.
+
+`rows_site_ids` entries are removed only on the row-retirement path in
+`src/signals/engine.zig` (the `retired.site_empty` branch of the commit),
+so a Rows site that was empty when its owning `when` branch retired keeps
+its construction key mapped to the mount-time site and owner token. When
+the branch remounts, `collectInitialEachInto` finds the stale site and
+goes through `prepareStable` instead of claiming a fresh one; a remount at
+a higher generation passes by accident (`.clear` against an empty site),
+but a rollback that republishes the site's own generation fails the
+`next_owner == parent_owner` check and the whole transaction is refused.
+The `sparse-rows` target found it on #135; the known failure
+`sparse-rows/rollback-remounts-retired-when-site` reproduces it.
+
+The fix is to retire a branch's empty Rows sites when the branch scope
+retires, the same as the non-empty case does through its last row. Delete
+the corpus line from `test/fuzzing/corpus/known-failures.txt` when the
+input passes; the entry stays as the regression test.
+
 ## Keep the focused Zig test path fast
 
 **Priority: P2** — Reduce iteration cost if test runtime becomes a measured
