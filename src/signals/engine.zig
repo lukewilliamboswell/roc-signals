@@ -10326,7 +10326,10 @@ pub fn Engine(comptime Ctx: type) type {
                     bools.items,
                     changes.items,
                     structural.items,
-                ) catch return error.OutOfMemory;
+                ) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.InvalidEdit => return error.InvalidDescriptor,
+                };
             }
 
             fn prepareGraphRoutes(self: *@This(), allocator: std.mem.Allocator) CollectionError!void {
@@ -11309,7 +11312,10 @@ pub fn Engine(comptime Ctx: type) type {
                     bools.items,
                     changes.items,
                     structural.items,
-                ) catch return error.OutOfMemory;
+                ) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.InvalidEdit => return error.InvalidDescriptor,
+                };
             }
 
             /// Tracks which original descriptor currently occupies each lane
