@@ -7,6 +7,7 @@ const boundary = @import("boundary.zig");
 const retained = @import("retained_values.zig");
 const row_handles = @import("row_handles.zig");
 const roles = @import("callable_roles.zig");
+const TransactionMap = @import("transaction_map.zig").TransactionMap;
 
 pub const HostValue = retained.HostValue;
 pub const HostValueCell = retained.HostValueCell;
@@ -151,10 +152,10 @@ pub const PreparedCacheUpdates = struct {
 
     allocator: std.mem.Allocator,
     updates: shared_buffer.List(PreparedCacheUpdate) = .empty,
-    indexes: std.AutoHashMapUnmanaged(*CacheSlot, usize) = .empty,
+    indexes: TransactionMap(*CacheSlot, usize) = .empty,
     results: shared_buffer.List(Result) = .empty,
-    result_indexes: std.AutoHashMapUnmanaged(EvaluationKey, usize) = .empty,
-    provisional_values: std.AutoHashMapUnmanaged(EvaluationKey, *const HostValueCell) = .empty,
+    result_indexes: TransactionMap(EvaluationKey, usize) = .empty,
+    provisional_values: TransactionMap(EvaluationKey, *const HostValueCell) = .empty,
     derived_calls: u64 = 0,
     propagation_prunes: u64 = 0,
     selector_members_dirtied: u64 = 0,
@@ -170,10 +171,10 @@ pub const PreparedCacheUpdates = struct {
     /// staged value is released and every container is logically empty.
     pub const Storage = struct {
         updates: shared_buffer.List(PreparedCacheUpdate) = .empty,
-        indexes: std.AutoHashMapUnmanaged(*CacheSlot, usize) = .empty,
+        indexes: TransactionMap(*CacheSlot, usize) = .empty,
         results: shared_buffer.List(Result) = .empty,
-        result_indexes: std.AutoHashMapUnmanaged(EvaluationKey, usize) = .empty,
-        provisional_values: std.AutoHashMapUnmanaged(EvaluationKey, *const HostValueCell) = .empty,
+        result_indexes: TransactionMap(EvaluationKey, usize) = .empty,
+        provisional_values: TransactionMap(EvaluationKey, *const HostValueCell) = .empty,
 
         /// Frees the retained containers; they hold no values.
         pub fn deinit(self: *Storage, allocator: std.mem.Allocator) void {
@@ -189,7 +190,7 @@ pub const PreparedCacheUpdates = struct {
         /// larger of two candidates when a nested transaction returns its
         /// overlay while another is already parked.
         pub fn retainedCapacity(self: *const Storage) usize {
-            return self.updates.capacity +| self.results.capacity +| self.indexes.capacity() +| self.result_indexes.capacity() +| self.provisional_values.capacity();
+            return self.updates.capacity * @sizeOf(PreparedCacheUpdate) +| self.results.capacity * @sizeOf(Result) +| self.indexes.retainedBytes() +| self.result_indexes.retainedBytes() +| self.provisional_values.retainedBytes();
         }
     };
 
@@ -365,8 +366,8 @@ pub const PreparedCacheUpdates = struct {
     /// Releases provisional or displaced values like `deinit`, then parks the
     /// emptied containers in `slot` for the next transaction instead of
     /// freeing them. Only entries this transaction touched are reset: the
-    /// lists drop their length and the hash maps clear their occupancy
-    /// metadata, so no value or index storage is rewritten. When `slot`
+    /// lists drop their length and the indexes reset only journaled occupancy
+    /// bytes, including removed buckets, without scanning retained capacity. When `slot`
     /// already holds storage, the smaller of the two is freed so at most one
     /// graph-sized overlay stays parked.
     pub fn deinitRetaining(self: *PreparedCacheUpdates, ctx: anytype, roc_host: *abi.RocHost, metrics: anytype, slot: *?Storage) void {
@@ -1329,4 +1330,52 @@ test "prepared cache overlay storage is retained across transactions and reused 
     small.deinitRetaining(&ctx, &roc_host, &metrics, &slot);
     try std.testing.expect(slot.?.updates.capacity >= 4096);
     try std.testing.expectEqual(@as(usize, 0), slot.?.indexes.count());
+}
+
+test "prepared cache overlay resets all indexes by transaction touches after a burst" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    const TestCtx = struct {
+        /// This index-only fixture never enters an erased capability call.
+        pub fn pushHostValueCapabilities(_: *@This(), _: []const HostValueCapability) void {}
+        /// Balances the unused capability-frame interface required by teardown.
+        pub fn popHostValueCapabilities(_: *@This()) void {}
+    };
+    const TestMetrics = struct {
+        /// No retained values are staged by this index-reset fixture.
+        pub fn bump(_: *@This(), comptime _: anytype, _: u64) void {}
+    };
+    var ctx: TestCtx = .{};
+    var metrics: TestMetrics = .{};
+    var env = abi.RocEnv{ .allocator = std.testing.allocator, .roc_io = abi.RocIo.default() };
+    var roc_host = abi.makeRocHost(&env);
+    // Only addresses are indexed; no fake erased value crosses a capability.
+    var borrowed: HostValueCell = undefined;
+    for ([_]u32{ 1000, 10000 }) |size| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        const allocator = fault.allocator();
+        const caches = try std.testing.allocator.alloc(CacheSlot, size);
+        defer std.testing.allocator.free(caches);
+        @memset(caches, .absent);
+        var parked: ?PreparedCacheUpdates.Storage = null;
+        defer if (parked) |*storage| storage.deinit(allocator);
+        var burst = try PreparedCacheUpdates.init(allocator, size);
+        for (caches, 0..) |*cache, index| {
+            const key: EvaluationKey = @enumFromInt(index + 1);
+            burst.indexes.putAssumeCapacity(cache, index);
+            burst.rememberResultAssumeCapacity(key, 1, false);
+            burst.bindProvisionalValueAssumeCapacity(key, &borrowed);
+        }
+        burst.deinitRetaining(&ctx, &roc_host, &metrics, &parked);
+        const before = [_]u64{ parked.?.indexes.reset_bytes, parked.?.result_indexes.reset_bytes, parked.?.provisional_values.reset_bytes };
+        fault.configure(1);
+        var small = try PreparedCacheUpdates.initWithStorage(allocator, size, PreparedCacheUpdates.takeRetained(&parked));
+        small.indexes.putAssumeCapacity(&caches[0], 0);
+        small.rememberResultAssumeCapacity(@enumFromInt(1), 2, true);
+        small.bindProvisionalValueAssumeCapacity(@enumFromInt(1), &borrowed);
+        small.clearProvisionalValues();
+        small.deinitRetaining(&ctx, &roc_host, &metrics, &parked);
+        const after = [_]u64{ parked.?.indexes.reset_bytes, parked.?.result_indexes.reset_bytes, parked.?.provisional_values.reset_bytes };
+        for (before, after) |old, new| try std.testing.expectEqual(@as(u64, 1), new - old);
+        try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    }
 }
