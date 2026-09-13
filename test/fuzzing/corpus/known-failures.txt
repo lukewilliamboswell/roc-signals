@@ -26,3 +26,12 @@ transactions/then-reads-clone-fatal-oom
 # wip/issues.md, "A retired when branch keeps its empty Rows site
 # registered". Delete this line once the input passes.
 sparse-rows/rollback-remounts-retired-when-site
+
+# An effect queued by a `when` branch's scoped button, started, and then
+# completed after the branch retired and re-instantiated writes its result
+# into the new instance's scoped state instead of skipping the retired
+# destination (design.md, "Requests, effects, and cancellation"). See
+# https://github.com/lukewilliamboswell/roc-signals/issues/138 and
+# wip/issues.md, "An effect from a retired branch instance writes into the
+# remounted scoped state". Delete this line once the input passes.
+transactions/retired-branch-effect-writes-remounted-state
