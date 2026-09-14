@@ -10355,19 +10355,19 @@ pub fn Engine(comptime Ctx: type) type {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
-                self.text_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.TextSink, allocator, &self.engine.active_text_signal_routes, &self.graph_release.?.remap, graph_count, text.items) catch |err| switch (err) {
+                self.text_route_appends = active_graph.prepareSinkRouteAppendsAfterEdits(active_graph.TextSink, allocator, &self.engine.active_text_signal_routes, &self.graph_release.?.remap, graph_count, text.items, self.sink_edits.?.text) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
-                self.bool_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.BoolSink, allocator, &self.engine.active_bool_signal_routes, &self.graph_release.?.remap, graph_count, bools.items) catch |err| switch (err) {
+                self.bool_route_appends = active_graph.prepareSinkRouteAppendsAfterEdits(active_graph.BoolSink, allocator, &self.engine.active_bool_signal_routes, &self.graph_release.?.remap, graph_count, bools.items, self.sink_edits.?.bools) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
-                self.change_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.ChangeSink, allocator, &self.engine.active_change_signal_routes, &self.graph_release.?.remap, graph_count, changes.items) catch |err| switch (err) {
+                self.change_route_appends = active_graph.prepareSinkRouteAppendsAfterEdits(active_graph.ChangeSink, allocator, &self.engine.active_change_signal_routes, &self.graph_release.?.remap, graph_count, changes.items, self.sink_edits.?.changes) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
-                self.structural_route_appends = active_graph.prepareRouteAppendsAfterRelease(active_graph.StructuralSink, allocator, &self.engine.active_structural_signal_routes, &self.graph_release.?.remap, graph_count, structural.items) catch |err| switch (err) {
+                self.structural_route_appends = active_graph.prepareSinkRouteAppendsAfterEdits(active_graph.StructuralSink, allocator, &self.engine.active_structural_signal_routes, &self.graph_release.?.remap, graph_count, structural.items, self.sink_edits.?.structural) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
@@ -11141,19 +11141,19 @@ pub fn Engine(comptime Ctx: type) type {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
-                self.text_route_appends = active_graph.prepareRouteAppends(active_graph.TextSink, allocator, &self.engine.active_text_signal_routes, graph_count, text.items) catch |err| switch (err) {
+                self.text_route_appends = active_graph.prepareSinkRouteAppendsAfterEdits(active_graph.TextSink, allocator, &self.engine.active_text_signal_routes, &self.graph_release.?.remap, graph_count, text.items, self.sink_edits.?.text) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
-                self.bool_route_appends = active_graph.prepareRouteAppends(active_graph.BoolSink, allocator, &self.engine.active_bool_signal_routes, graph_count, bools.items) catch |err| switch (err) {
+                self.bool_route_appends = active_graph.prepareSinkRouteAppendsAfterEdits(active_graph.BoolSink, allocator, &self.engine.active_bool_signal_routes, &self.graph_release.?.remap, graph_count, bools.items, self.sink_edits.?.bools) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
-                self.change_route_appends = active_graph.prepareRouteAppends(active_graph.ChangeSink, allocator, &self.engine.active_change_signal_routes, graph_count, changes.items) catch |err| switch (err) {
+                self.change_route_appends = active_graph.prepareSinkRouteAppendsAfterEdits(active_graph.ChangeSink, allocator, &self.engine.active_change_signal_routes, &self.graph_release.?.remap, graph_count, changes.items, self.sink_edits.?.changes) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
-                self.structural_route_appends = active_graph.prepareRouteAppends(active_graph.StructuralSink, allocator, &self.engine.active_structural_signal_routes, graph_count, structural.items) catch |err| switch (err) {
+                self.structural_route_appends = active_graph.prepareSinkRouteAppendsAfterEdits(active_graph.StructuralSink, allocator, &self.engine.active_structural_signal_routes, &self.graph_release.?.remap, graph_count, structural.items, self.sink_edits.?.structural) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     error.InvalidAppend => return error.InvalidSignalGraphAppend,
                 };
