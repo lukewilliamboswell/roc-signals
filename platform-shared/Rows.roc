@@ -134,12 +134,11 @@ rows_index_take_first = |tree| match tree {
 }
 
 ## Exact UTF-8 ordering makes key comparison deterministic without a hash
-## collision bucket. Its byte comparison cost is explicit in every key lookup.
-RowsKey := [RowsKey(Str)].{
+## collision bucket. Cache bytes in the persistent index so an AVL walk does
+## not materialize both strings again at every comparison.
+RowsKey := [RowsKey(List(U8))].{
 	is_lt : RowsKey, RowsKey -> Bool
-	is_lt = |RowsKey(left), RowsKey(right)| {
-		left_bytes = left.to_utf8()
-		right_bytes = right.to_utf8()
+	is_lt = |RowsKey(left_bytes), RowsKey(right_bytes)| {
 		var $index = 0
 		var $less = left_bytes.len() < right_bytes.len()
 		var $done = False
@@ -160,11 +159,11 @@ RowsKeyIndex := [RowsKeyIndex(RowsIndex(RowsKey, U64))].{
 	empty : () -> RowsKeyIndex
 	empty = || RowsKeyIndex(RowsIndex.empty())
 	get : RowsKeyIndex, Str -> Try(U64, [Missing])
-	get = |RowsKeyIndex(tree), key| RowsIndex.get(tree, RowsKey(key))
+	get = |RowsKeyIndex(tree), key| RowsIndex.get(tree, RowsKey(key.to_utf8()))
 	insert : RowsKeyIndex, Str, U64 -> RowsKeyIndex
-	insert = |RowsKeyIndex(tree), key, value| RowsKeyIndex(tree.insert(RowsKey(key), value))
+	insert = |RowsKeyIndex(tree), key, value| RowsKeyIndex(tree.insert(RowsKey(key.to_utf8()), value))
 	remove : RowsKeyIndex, Str -> RowsKeyIndex
-	remove = |RowsKeyIndex(tree), key| RowsKeyIndex(tree.remove(RowsKey(key)))
+	remove = |RowsKeyIndex(tree), key| RowsKeyIndex(tree.remove(RowsKey(key.to_utf8())))
 	len : RowsKeyIndex -> U64
 	len = |RowsKeyIndex(tree)| tree.len()
 }

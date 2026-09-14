@@ -34,9 +34,19 @@ def check_rows_builders(source: str) -> None:
         raise AssertionError(f'Rows.roc:{line}: unbounded front insertion on {receiver}')
 
 
+def check_rows_key_comparison(source: str) -> None:
+    key_start = source.index('RowsKey :=')
+    key_end = source.index('\nRowsKeyIndex :=', key_start)
+    comparator = source[key_start:key_end]
+    if '.to_utf8()' in comparator:
+        raise AssertionError('Rows key comparison must use cached UTF-8 bytes')
+
+
 class RowsBuilderComplexityTests(unittest.TestCase):
     def test_unbounded_builders_do_not_shift_existing_lists(self):
-        check_rows_builders((ROOT / 'platform-shared/Rows.roc').read_text())
+        source = (ROOT / 'platform-shared/Rows.roc').read_text()
+        check_rows_builders(source)
+        check_rows_key_comparison(source)
         fixture = (ROOT / 'examples-web/_fixtures/js-framework-benchmark/main.roc').read_text()
         self.assertNotRegex(fixture, r'\.prepend\(')
 
@@ -52,6 +62,18 @@ class RowsBuilderComplexityTests(unittest.TestCase):
 ''' + source[end:]
         with self.assertRaisesRegex(AssertionError, 'unbounded front insertion'):
             check_rows_builders(mutant)
+
+    def test_rematerializing_key_bytes_during_comparison_is_rejected(self):
+        source = (ROOT / 'platform-shared/Rows.roc').read_text()
+        mutant = source.replace(
+            'is_lt = |RowsKey(left_bytes), RowsKey(right_bytes)| {',
+            'is_lt = |RowsKey(left), RowsKey(right)| {\n'
+            '\t\tleft_bytes = left.to_utf8()\n'
+            '\t\tright_bytes = right.to_utf8()',
+            1,
+        )
+        with self.assertRaisesRegex(AssertionError, 'cached UTF-8 bytes'):
+            check_rows_key_comparison(mutant)
 
 
 if __name__ == '__main__':
