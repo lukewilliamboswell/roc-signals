@@ -475,27 +475,6 @@ retires, the same as the non-empty case does through its last row. Delete
 the corpus line from `test/fuzzing/corpus/known-failures.txt` when the
 input passes; the entry stays as the regression test.
 
-## An effect from a retired branch instance writes into the remounted scoped state
-
-**Priority: P1** — A late effect result crosses the retirement barrier.
-Tracked as issue #138.
-
-design.md, "Requests, effects, and cancellation", says a result write whose
-destination was retired with a disposed scope is skipped. The `transactions`
-fuzz target found a sequence where a `Then` effect queued by a `when`
-branch's scoped button is started, the branch is retired (list emptied) and
-re-instantiated (list refilled), and completing the effect then writes its
-result into the *new* instance's scoped state. The simpler corpus seed
-`scoped-then-result-after-branch-flip` passes, so the skip works in the
-plain case; the failing input has several queued effects and a root write
-while the branch is hidden, and which of those matters is not isolated. A
-plausible cause is a skip check keyed on a reused scope id rather than the
-instance; unverified. The known failure
-`transactions/retired-branch-effect-writes-remounted-state` reproduces it.
-
-Delete the corpus line from `test/fuzzing/corpus/known-failures.txt` when
-the input passes; the entry stays as the regression test.
-
 ## Keep the focused Zig test path fast
 
 **Priority: P2** — Reduce iteration cost if test runtime becomes a measured

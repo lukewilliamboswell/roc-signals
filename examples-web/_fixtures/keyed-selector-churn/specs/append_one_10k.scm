@@ -18,6 +18,8 @@
     (expect-metric-delta rows_created 1)
     (expect-metric-delta rows_removed 0)
     (expect-metric-delta active_graph_records_rebuilt 0)
+    ; Five model projections and the new row label, independent of row count.
+    (expect-metric-delta-at-most derived_calls_into_roc 6)
     (expect-attr (test-id "row-3") class "danger")
     (expect-attr (test-id "row-10001") class "")
     ; The new membership is live: selecting it dirties the old members and it.

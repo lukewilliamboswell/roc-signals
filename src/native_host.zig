@@ -992,16 +992,32 @@ const HostEnv = struct {
 
     /// Declares one answer for a hosted `Files` function in spec mode.
     fn stubFile(self: *HostEnv, stub: *const spec_file_fixtures.Stub) void {
+        self.tryStubFile(stub) catch {
+            if (!self.recoverSelectedOutOfMemory()) failHost("out of memory registering file fixture");
+            self.tryStubFile(stub) catch failHost("out of memory retrying file fixture registration");
+        };
+    }
+
+    fn tryStubFile(self: *HostEnv, stub: *const spec_file_fixtures.Stub) std.mem.Allocator.Error!void {
         const gpa = self.hostAllocator();
-        const copy = stub.dupe(gpa) catch @panic("out of memory");
-        self.file_stubs.append(gpa, copy) catch @panic("out of memory");
+        try self.file_stubs.ensureUnusedCapacity(gpa, 1);
+        const copy = try stub.dupe(gpa);
+        self.file_stubs.appendAssumeCapacity(copy);
     }
 
     /// Declares one answer for the hosted `Http` function in spec mode.
     fn stubHttp(self: *HostEnv, stub: *const spec_http_fixtures.Stub) void {
+        self.tryStubHttp(stub) catch {
+            if (!self.recoverSelectedOutOfMemory()) failHost("out of memory registering HTTP fixture");
+            self.tryStubHttp(stub) catch failHost("out of memory retrying HTTP fixture registration");
+        };
+    }
+
+    fn tryStubHttp(self: *HostEnv, stub: *const spec_http_fixtures.Stub) std.mem.Allocator.Error!void {
         const gpa = self.hostAllocator();
-        const copy = stub.dupe(gpa) catch @panic("out of memory");
-        self.http_stubs.append(gpa, copy) catch @panic("out of memory");
+        try self.http_stubs.ensureUnusedCapacity(gpa, 1);
+        const copy = try stub.dupe(gpa);
+        self.http_stubs.appendAssumeCapacity(copy);
     }
 
     fn deinitServiceStubs(self: *HostEnv) void {
@@ -3064,12 +3080,29 @@ fn drainEffects(host: *HostEnv, roc_host: *abi.RocHost) void {
     while (runNextEffect(host, roc_host)) {}
 }
 
+// Reserve both host and engine worker bookkeeping while the pending queue
+// still owns the thunk and reads. A refusal releases only this staged job.
+fn tryPrepareEffectJob(host: *HostEnv) std.mem.Allocator.Error!*EffectJob {
+    const allocator = host.hostAllocator();
+    const job = try allocator.create(EffectJob);
+    errdefer allocator.destroy(job);
+    try host.engine.prepareRunningEffect(host);
+    return job;
+}
+
+fn prepareEffectJob(host: *HostEnv) *EffectJob {
+    return tryPrepareEffectJob(host) catch retry: {
+        if (!host.recoverSelectedOutOfMemory()) failHost("out of memory preparing effect worker admission");
+        break :retry tryPrepareEffectJob(host) catch failHost("out of memory retrying effect worker admission");
+    };
+}
+
 // Advance exactly one prepared occurrence. Chained effects remain queued so a
 // manual executor can observe each commit independently. Allocate the host job
 // before taking ownership from the engine's cleanup-managed pending queue.
 fn runNextEffect(host: *HostEnv, roc_host: *abi.RocHost) bool {
     if (host.engine.pending_effects.items.len == 0) return false;
-    const job = host.hostAllocator().create(EffectJob) catch @panic("out of memory");
+    const job = prepareEffectJob(host);
     var effect = host.engine.takeNextPendingEffect() orelse unreachable;
     job.* = .{ .id = effect.id, .thunk = effect.thunk };
     host.engine.trackRunningEffect(host, &effect);
@@ -3089,10 +3122,15 @@ fn runNextEffect(host: *HostEnv, roc_host: *abi.RocHost) bool {
 /// are skipped.
 fn completeEffectJob(host: *HostEnv, roc_host: *abi.RocHost, job: *EffectJob) void {
     var running = host.engine.finishRunningEffect(job.id);
-    const owner_scope_id = host.engine.nearestActiveScope(running.owner_scope_id);
+    const owner_scope_id = host.engine.nearestActiveEffectScope(running.owner_scopes);
     host.engine.effect_origin = &running.reads;
     host.engine.applying_effect_result = true;
-    _ = host.engine.tryRunCommand(host, roc_host, owner_scope_id, job.cmd) catch |err| failPreparedStateDispatch(err);
+    // A refused preparation leaves the command independently owned by the job.
+    // Retry that result, never the effectful thunk which produced it.
+    _ = host.engine.tryRunCommand(host, roc_host, owner_scope_id, job.cmd) catch |err| retry: {
+        if (err != error.OutOfMemory or !host.recoverSelectedOutOfMemory()) failPreparedStateDispatch(err);
+        break :retry host.engine.tryRunCommand(host, roc_host, owner_scope_id, job.cmd) catch |retry_err| failPreparedStateDispatch(retry_err);
+    };
     host.engine.applying_effect_result = false;
     host.engine.effect_origin = null;
     job.cmd.decref(roc_host);
@@ -3302,7 +3340,7 @@ const SpecRunnerCtx = struct {
         if (!host.spec_manual_effects or Gpui.live) return false;
         for (host.engine.pending_effects.items, 0..) |pending, index| {
             if (pending.id != id) continue;
-            const job = host.hostAllocator().create(EffectJob) catch @panic("out of memory");
+            const job = prepareEffectJob(host);
             var effect = host.engine.pending_effects.orderedRemove(index);
             job.* = .{ .id = effect.id, .thunk = effect.thunk };
             host.engine.trackRunningEffect(host, &effect);
@@ -4386,6 +4424,64 @@ test "signals host allocation ledger tracks exact returned pointers" {
     try std.testing.expectEqual(@as(u64, 4), host.dealloc_count);
     try std.testing.expectEqual(@as(u64, 4), host.engine.pending_roc_metrics.allocs_this_event);
     try std.testing.expectEqual(@as(u64, 4), host.engine.pending_roc_metrics.deallocs_this_event);
+}
+
+test "effect worker admission unwinds both bookkeeping allocation refusals" {
+    var attempts: usize = 0;
+    var failure: usize = 0;
+    while (failure == 0 or failure <= attempts) : (failure += 1) {
+        var host = HostEnv.init();
+        defer {
+            host.engine.running_effects.deinit(host.hostAllocator());
+            std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("effect admission leaked");
+        }
+        host.configureAllocationFailure(if (failure == 0) null else failure);
+        const result = tryPrepareEffectJob(&host);
+        const job = if (failure == 0) blk: {
+            attempts = host.allocation_fault.?.attempts;
+            try std.testing.expect(attempts >= 2);
+            break :blk try result;
+        } else blk: {
+            try std.testing.expectError(error.OutOfMemory, result);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.running_effects.items.len);
+            try std.testing.expectEqual(@as(usize, 0), host.engine.pending_effects.items.len);
+            host.configureAllocationFailure(null);
+            break :blk try tryPrepareEffectJob(&host);
+        };
+        try std.testing.expect(host.engine.running_effects.capacity >= 1);
+        host.hostAllocator().destroy(job);
+    }
+}
+
+test "service fixture registration rolls back every allocation refusal and retries" {
+    var headers = [_]spec_http_fixtures.Header{.{ .name = "content-type", .value = "text/plain" }};
+    const http: spec_http_fixtures.Stub = .{ .response = .{ .uri = "https://fixture.test", .status = 200, .headers = &headers, .body = "response" } };
+    var entries = [_]spec_file_fixtures.Entry{.{ .path = "/fixture/child", .kind = .file, .bytes = 8 }};
+    const file: spec_file_fixtures.Stub = .{ .directory = .{ .path = "/fixture", .entries = &entries } };
+    for ([_]bool{ false, true }) |is_http| {
+        var attempts: usize = 0;
+        var failure: usize = 0;
+        while (failure == 0 or failure <= attempts) : (failure += 1) {
+            var host = HostEnv.init();
+            defer {
+                host.deinitServiceStubs();
+                std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("fixture refusal leaked");
+            }
+            host.configureAllocationFailure(if (failure == 0) null else failure);
+            const result = if (is_http) host.tryStubHttp(&http) else host.tryStubFile(&file);
+            if (failure == 0) {
+                try result;
+                attempts = host.allocation_fault.?.attempts;
+                try std.testing.expect(attempts > 1);
+            } else {
+                try std.testing.expectError(error.OutOfMemory, result);
+                try std.testing.expectEqual(@as(usize, 0), host.file_stubs.items.len + host.http_stubs.items.len);
+                host.configureAllocationFailure(null);
+                if (is_http) try host.tryStubHttp(&http) else try host.tryStubFile(&file);
+            }
+            try std.testing.expectEqual(@as(usize, 1), host.file_stubs.items.len + host.http_stubs.items.len);
+        }
+    }
 }
 
 test "recoverable sweep distinguishes nested fatal commands without claiming a retry" {
@@ -9580,6 +9676,50 @@ test "event state transaction commits the expected mutation" {
     try std.testing.expect(attempts != 0);
 }
 
+test "completed effect retries its retained result after preparation refusal" {
+    var host = HostEnv.init();
+    var roc_host = makeSignalsRocHost(&host);
+    host.engine.roc_host = &roc_host;
+    defer {
+        host.allocation_sweep.tracking = false;
+        host.deinit();
+        std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("effect result retry leaked");
+    }
+    const token = newTestBinderToken(&roc_host);
+    const cap = testHostValueCapability(&roc_host);
+    const child = abi.Elem{ .payload = .{ .text_signal = .{
+        .read = testI64TextReadHandle(&roc_host, cap),
+        .signal = boxTestNodeSignalExpr(&roc_host, testNodeRefExpr(token)),
+    } }, .tag = .TextSignal };
+    const root = testNodeStateWithTokenAndInitialCapability(&roc_host, token, testHostValueI64(1), child, cap);
+    defer root.decref(&roc_host);
+    _ = try tryRenderInitialRoot(&host, &roc_host, root, &.{});
+    const binding = &host.engine.active_stream.signal_text_nodes.items[0].signal;
+    const references_before = binding.record.ref_count;
+    const reads = try binding.cloneRetained(host.hostAllocator(), &host.engine.pending_roc_metrics);
+    const owner_scopes = try host.hostAllocator().dupe(engine.EffectOwnerScope, &.{.{ .scope_id = ids.ScopeId.fromRaw(0), .activation_generation = ids.initial_generation }});
+    try host.engine.running_effects.append(host.hostAllocator(), .{ .id = 17, .owner_scopes = owner_scopes, .reads = reads });
+    const job = try host.hostAllocator().create(EffectJob);
+    // Model the worker's single completed invocation. The consumed thunk is
+    // deliberately unavailable: completion must only reuse this owned result.
+    // Calling runEffectJob again also fails in this Zig-only host fixture.
+    job.* = .{
+        .id = 17,
+        .thunk = undefined,
+        .cmd = fuzz_fixtures.updateChangesCmd(&roc_host, &.{fuzz_fixtures.stateSetChange(&roc_host, token, cap, testHostValueI64(2))}),
+    };
+    const patches_before = host.engine.render_metrics.set_text;
+    host.allocation_sweep = .{ .tracking = true, .fail_on_allocation = 1 };
+    completeEffectJob(&host, &roc_host, job);
+    try std.testing.expect(host.allocation_sweep.refusal_observed);
+    try std.testing.expectEqualStrings("2", host.dom_elements.items[1].text.?);
+    try std.testing.expectEqual(patches_before + 1, host.engine.render_metrics.set_text);
+    try std.testing.expectEqual(references_before, binding.record.ref_count);
+    try std.testing.expectEqual(@as(usize, 0), host.engine.running_effects.items.len);
+    try std.testing.expect(host.engine.effect_origin == null);
+    try std.testing.expect(!host.engine.applying_effect_result);
+}
+
 test "a scalar state transaction folds its commands into the render metrics" {
     // PreparedSourceTransaction.commit records published command counts in
     // `render_metrics` on every structural branch, but the scalar branch (a
@@ -12904,7 +13044,7 @@ pub const fuzz_fixtures = struct {
     /// running record intact and the caller may apply the command again.
     pub fn applyEffectResult(host: *HostEnv, roc_host: *abi.RocHost, running: *engine.RunningEffect, cmd: erased_calls.Cmd) HostEngine.CollectionError!CommandCounts {
         defer finishHostMetrics(host);
-        const owner_scope_id = host.engine.nearestActiveScope(running.owner_scope_id);
+        const owner_scope_id = host.engine.nearestActiveEffectScope(running.owner_scopes);
         host.engine.effect_origin = &running.reads;
         host.engine.applying_effect_result = true;
         defer {

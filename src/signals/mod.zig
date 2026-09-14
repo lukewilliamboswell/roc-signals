@@ -51,6 +51,7 @@ pub const selector_runtime = @import("selector_runtime.zig");
 pub const shared_buffer = @import("shared_buffer.zig");
 pub const structural_positions = @import("structural_positions.zig");
 pub const structural_splice = @import("structural_splice.zig");
+pub const transaction_map = @import("transaction_map.zig");
 
 // Discover imported tests even when the command filters out namespace tests.
 comptime {
@@ -71,6 +72,7 @@ comptime {
     std.testing.refAllDecls(engine_contract);
     std.testing.refAllDecls(engine_metrics);
     std.testing.refAllDecls(engine_scratch);
+    std.testing.refAllDecls(transaction_map);
     std.testing.refAllDecls(fault_allocator);
     std.testing.refAllDecls(host_value_registry);
     std.testing.refAllDecls(identity_table);

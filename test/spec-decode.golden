@@ -254,11 +254,11 @@ test "Counter propagates events through the shared engine"
   11: click locator=role_name role="button" name="Reset"
   12: expect_text locator=test_id test_id="count" expected="0"
 == examples-gui/counter/specs/minimum-window-layout.scm
-scenario "minimum-window-layout" window=360x240 assets=none choose=[] diagnostic="GUI-35. Where the compositor delegates decorations to the host, the host's own title bar and insets take 48 of the window's 240 pixels, and the button row is laid out below the window." on=[client-frame]
-  10: expect_onscreen locator=test_id test_id="count"
-  11: expect_onscreen locator=test_id test_id="Increment"
-  12: expect_onscreen locator=test_id test_id="Decrement"
-  13: expect_onscreen locator=test_id test_id="Reset"
+scenario "minimum-window-layout" window=360x240 assets=none choose=[] diagnostic=none on=[]
+  7: expect_onscreen locator=test_id test_id="count"
+  8: expect_onscreen locator=test_id test_id="Increment"
+  9: expect_onscreen locator=test_id test_id="Decrement"
+  10: expect_onscreen locator=test_id test_id="Reset"
 == examples-gui/counter/specs/minimum-window.scm
 scenario "minimum-window" window=360x240 assets=none choose=[] diagnostic=none on=[]
   7: expect_visible locator=text text="Counter"
@@ -1918,17 +1918,18 @@ test "append one row at 10k registers only the new memberships"
   18: expect_metric_delta locator=none expected="rows_created" delta=1
   19: expect_metric_delta locator=none expected="rows_removed" delta=0
   20: expect_metric_delta locator=none expected="active_graph_records_rebuilt" delta=0
-  21: expect_attr locator=test_id test_id="row-3" attr="class" expected="danger"
-  22: expect_attr locator=test_id test_id="row-10001" attr="class" expected=""
-  24: mark_metrics locator=none
-  25: click locator=role_name role="button" name="Select row 10001"
-  26: expect_attr locator=test_id test_id="row-3" attr="class" expected=""
-  27: expect_attr locator=test_id test_id="pinned-3" attr="class" expected=""
-  28: expect_attr locator=test_id test_id="row-10001" attr="class" expected="danger"
-  29: expect_metric_delta locator=none expected="selector_members_dirtied" delta=3
-  30: expect_metric_delta_at_most locator=none expected="derived_calls_into_roc" delta=5
-  31: expect_metric_delta locator=none expected="selector_registry_visits" delta=0
-  32: expect_metric_delta locator=none expected="rows_created" delta=0
+  22: expect_metric_delta_at_most locator=none expected="derived_calls_into_roc" delta=6
+  23: expect_attr locator=test_id test_id="row-3" attr="class" expected="danger"
+  24: expect_attr locator=test_id test_id="row-10001" attr="class" expected=""
+  26: mark_metrics locator=none
+  27: click locator=role_name role="button" name="Select row 10001"
+  28: expect_attr locator=test_id test_id="row-3" attr="class" expected=""
+  29: expect_attr locator=test_id test_id="pinned-3" attr="class" expected=""
+  30: expect_attr locator=test_id test_id="row-10001" attr="class" expected="danger"
+  31: expect_metric_delta locator=none expected="selector_members_dirtied" delta=3
+  32: expect_metric_delta_at_most locator=none expected="derived_calls_into_roc" delta=5
+  33: expect_metric_delta locator=none expected="selector_registry_visits" delta=0
+  34: expect_metric_delta locator=none expected="rows_created" delta=0
 == examples-web/_fixtures/keyed-selector-churn/specs/append_one_1k.scm
 test "append one row at 1k registers only the new memberships"
   3: click locator=role_name role="button" name="Create 1,000 rows"
@@ -1946,17 +1947,18 @@ test "append one row at 1k registers only the new memberships"
   18: expect_metric_delta locator=none expected="rows_created" delta=1
   19: expect_metric_delta locator=none expected="rows_removed" delta=0
   20: expect_metric_delta locator=none expected="active_graph_records_rebuilt" delta=0
-  21: expect_attr locator=test_id test_id="row-3" attr="class" expected="danger"
-  22: expect_attr locator=test_id test_id="row-1001" attr="class" expected=""
-  24: mark_metrics locator=none
-  25: click locator=role_name role="button" name="Select row 1001"
-  26: expect_attr locator=test_id test_id="row-3" attr="class" expected=""
-  27: expect_attr locator=test_id test_id="pinned-3" attr="class" expected=""
-  28: expect_attr locator=test_id test_id="row-1001" attr="class" expected="danger"
-  29: expect_metric_delta locator=none expected="selector_members_dirtied" delta=3
-  30: expect_metric_delta_at_most locator=none expected="derived_calls_into_roc" delta=5
-  31: expect_metric_delta locator=none expected="selector_registry_visits" delta=0
-  32: expect_metric_delta locator=none expected="rows_created" delta=0
+  23: expect_metric_delta_at_most locator=none expected="derived_calls_into_roc" delta=6
+  24: expect_attr locator=test_id test_id="row-3" attr="class" expected="danger"
+  25: expect_attr locator=test_id test_id="row-1001" attr="class" expected=""
+  27: mark_metrics locator=none
+  28: click locator=role_name role="button" name="Select row 1001"
+  29: expect_attr locator=test_id test_id="row-3" attr="class" expected=""
+  30: expect_attr locator=test_id test_id="pinned-3" attr="class" expected=""
+  31: expect_attr locator=test_id test_id="row-1001" attr="class" expected="danger"
+  32: expect_metric_delta locator=none expected="selector_members_dirtied" delta=3
+  33: expect_metric_delta_at_most locator=none expected="derived_calls_into_roc" delta=5
+  34: expect_metric_delta locator=none expected="selector_registry_visits" delta=0
+  35: expect_metric_delta locator=none expected="rows_created" delta=0
 == examples-web/_fixtures/keyed-selector-churn/specs/dispose_remount_footprint.scm
 test "repeated dispose and remount of selected rows returns to the same footprint"
   3: click locator=role_name role="button" name="Create 1,000 rows"
@@ -2703,6 +2705,78 @@ test "move one row within 1,000 rows"
   22: expect_metric_delta locator=none expected="rows_render_roots_moved" delta=1
   23: expect_metric_delta locator=none expected="each_key_hashes" delta=0
   24: expect_metric_delta_at_most locator=none expected="host_allocs_this_event" delta=768
+== examples-web/_fixtures/rows-direct-delta-locality/specs/nested_lineage.scm
+test "nested rollback and stale siblings return to sparse direct edits"
+  3: click locator=test_id test_id="use-nested"
+  4: click locator=test_id test_id="create-1k"
+  5: click locator=test_id test_id="append-one"
+  6: click locator=test_id test_id="stale-sibling-append"
+  7: expect_absent locator=test_id test_id="row-1001"
+  8: expect_visible locator=test_id test_id="row-1002"
+  9: mark_metrics locator=none
+  10: click locator=test_id test_id="append-one"
+  11: expect_visible locator=test_id test_id="row-1003"
+  12: expect_metric_delta locator=none expected="rows_candidate_rows_visited" delta=2
+  13: expect_metric_delta locator=none expected="rows_membership_entries_rewritten" delta=1
+  14: click locator=test_id test_id="roll-back"
+  15: expect_absent locator=test_id test_id="row-1003"
+  16: mark_metrics locator=none
+  17: click locator=test_id test_id="remove-middle"
+  18: expect_text locator=test_id test_id="count" expected="Rows: 1000"
+  19: expect_metric_delta locator=none expected="rows_candidate_rows_visited" delta=0
+  20: expect_metric_delta locator=none expected="rows_membership_entries_rewritten" delta=2
+== examples-web/_fixtures/rows-direct-delta-locality/specs/nested_locality_1000.scm
+test "nested 1000 row mirror follows sparse child edits"
+  3: click locator=test_id test_id="use-nested"
+  4: click locator=test_id test_id="create-1k"
+  5: expect_visible locator=test_id test_id="row-1000"
+  6: mark_metrics locator=none
+  7: click locator=test_id test_id="append-one"
+  8: expect_visible locator=test_id test_id="row-1001"
+  9: expect_metric_delta locator=none expected="rows_candidate_rows_visited" delta=2
+  10: expect_metric_delta locator=none expected="rows_membership_entries_rewritten" delta=1
+  11: expect_metric_delta locator=none expected="rows_created" delta=1
+  12: expect_metric_delta locator=none expected="rows_removed" delta=0
+  13: mark_metrics locator=none
+  14: click locator=test_id test_id="move-first-to-end"
+  15: expect_visible locator=test_id test_id="row-1"
+  16: expect_metric_delta locator=none expected="rows_candidate_rows_visited" delta=0
+  17: expect_metric_delta locator=none expected="rows_membership_entries_rewritten" delta=0
+  18: expect_metric_delta locator=none expected="rows_created" delta=0
+  19: expect_metric_delta locator=none expected="rows_removed" delta=0
+  20: mark_metrics locator=none
+  21: click locator=test_id test_id="remove-middle"
+  22: expect_text locator=test_id test_id="count" expected="Rows: 1000"
+  23: expect_metric_delta locator=none expected="rows_candidate_rows_visited" delta=0
+  24: expect_metric_delta_at_most locator=none expected="rows_membership_entries_rewritten" delta=2
+  25: expect_metric_delta locator=none expected="rows_created" delta=0
+  26: expect_metric_delta locator=none expected="rows_removed" delta=1
+== examples-web/_fixtures/rows-direct-delta-locality/specs/nested_locality_10000.scm
+test "nested 10000 row mirror follows sparse child edits"
+  3: click locator=test_id test_id="use-nested"
+  4: click locator=test_id test_id="create-10k"
+  5: expect_visible locator=test_id test_id="row-10000"
+  6: mark_metrics locator=none
+  7: click locator=test_id test_id="append-one"
+  8: expect_visible locator=test_id test_id="row-10001"
+  9: expect_metric_delta locator=none expected="rows_candidate_rows_visited" delta=2
+  10: expect_metric_delta locator=none expected="rows_membership_entries_rewritten" delta=1
+  11: expect_metric_delta locator=none expected="rows_created" delta=1
+  12: expect_metric_delta locator=none expected="rows_removed" delta=0
+  13: mark_metrics locator=none
+  14: click locator=test_id test_id="move-first-to-end"
+  15: expect_visible locator=test_id test_id="row-1"
+  16: expect_metric_delta locator=none expected="rows_candidate_rows_visited" delta=0
+  17: expect_metric_delta locator=none expected="rows_membership_entries_rewritten" delta=0
+  18: expect_metric_delta locator=none expected="rows_created" delta=0
+  19: expect_metric_delta locator=none expected="rows_removed" delta=0
+  20: mark_metrics locator=none
+  21: click locator=test_id test_id="remove-middle"
+  22: expect_text locator=test_id test_id="count" expected="Rows: 10000"
+  23: expect_metric_delta locator=none expected="rows_candidate_rows_visited" delta=0
+  24: expect_metric_delta_at_most locator=none expected="rows_membership_entries_rewritten" delta=2
+  25: expect_metric_delta locator=none expected="rows_created" delta=0
+  26: expect_metric_delta locator=none expected="rows_removed" delta=1
 == examples-web/_fixtures/rows-direct-delta-locality/specs/remove_one_10k.scm
 test "remove one row from 10,000 rows"
   10: click locator=test_id test_id="create-10k"

@@ -1745,18 +1745,24 @@ export class SignalsRuntime {
       const responseBits = this.dispatchEventPayload(eventId, payloadDescriptor, event, payloadTelemetry, {
         drainCommands: false,
       });
-      const responsePolicy = applyDynamicEventResponse(responseBits, event);
-      if (this.telemetryLog && responsePolicy.changed) {
-        this.emitTelemetry("dom_event_response", {
-          domEvent,
-          eventId,
-          responseBits,
-          preventedDefault: responsePolicy.preventedDefault,
-          stoppedPropagation: responsePolicy.stoppedPropagation,
-          stoppedImmediatePropagation: responsePolicy.stoppedImmediatePropagation,
-        });
+      try {
+        const responsePolicy = applyDynamicEventResponse(responseBits, event);
+        if (this.telemetryLog && responsePolicy.changed) {
+          this.emitTelemetry("dom_event_response", {
+            domEvent,
+            eventId,
+            responseBits,
+            preventedDefault: responsePolicy.preventedDefault,
+            stoppedPropagation: responsePolicy.stoppedPropagation,
+            stoppedImmediatePropagation: responsePolicy.stoppedImmediatePropagation,
+          });
+        }
+        this.applyPendingCommands(`event:${eventId}`);
+      } catch (err) {
+        // DOM responses precede the drain, so this execution sits outside
+        // dispatch's containment boundary. A partial drain cannot be resumed.
+        throw this.poisonAfterHostFailure(err);
       }
-      this.applyPendingCommands(`event:${eventId}`);
     };
     cleanup = () => elem.removeEventListener(domEvent, listener, listenerOptions);
     if (listenerOptions === undefined) {
@@ -2267,9 +2273,10 @@ export class SignalsRuntime {
   }
 
   registerNode(id, node) {
-    const previous = this.nodes.get(id);
-    if (previous) {
-      this.nodeIds.delete(previous);
+    // Creation starts a new lifetime. The producer must first remove the old
+    // node (or its ancestor), releasing its registrations before reusing an id.
+    if (this.nodes.has(id)) {
+      throw new Error(`Signals create command reuses live DOM node id ${id}; remove the old node first`);
     }
     this.nodes.set(id, node);
     this.nodeIds.set(node, id);

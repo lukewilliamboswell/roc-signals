@@ -1,8 +1,8 @@
 (scenario "minimum-window"
   :window "360x240"
   ; The smallest window the host allows. The reading a person came for and the
-  ; actions they take must both still work there; only the *layout* at that size
-  ; is a separate, currently-failing diagnostic.
+  ; actions they take must both still work there. The companion layout scenario
+  ; also checks that every control fits without scrolling.
   (steps
     (expect-visible (text "Counter"))
     (click (role button :name "Increment"))

@@ -95,6 +95,7 @@ pub const PreparedScopeClaims = struct {
                 .key_hash = key_hash,
                 .row_handle = row_handle,
             } },
+            .activation_generation = self.reuse_barrier,
             .lifecycle = .active,
         });
         if (reused != null) {
@@ -912,6 +913,30 @@ test "scope subtree work ignores ten thousand unrelated scopes and retries after
     try std.testing.expect(!scopes.items[target_grandchild.index()].lifecycle.isActive());
     try std.testing.expect(scopes.items[semantic_ids.ScopeId.fromRaw(4).index()].lifecycle.isActive());
     try std.testing.expectEqual(@as(?semantic_ids.ScopeId, semantic_ids.ScopeId.fromRaw(4)), scopes.items[semantic_ids.root_scope.index()].first_child_scope_id);
+}
+
+test "retirement preparation bytes and visits depend on roots not live or reusable scope table size" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var expected_bytes: ?usize = null;
+    for ([_]usize{ 1_000, 10_000 }) |size| {
+        for ([_]bool{ false, true }) |retire_unrelated| {
+            var fixture = try ClaimFixture.init();
+            defer fixture.deinit();
+            const target = try fixture.appendRow(semantic_ids.root_scope, 1);
+            for (0..size) |i| {
+                const unrelated = try fixture.appendRow(semantic_ids.root_scope, @intCast(i + 2));
+                if (retire_unrelated) fixture.retire(unrelated, 0);
+            }
+            var fault = FaultAllocator.init(std.testing.allocator);
+            var plan = try prepareSubtreesRetirement(EachRowScopeStep, fault.allocator(), fixture.scopes.items, &.{target});
+            defer plan.deinit(fault.allocator());
+            if (expected_bytes) |bytes| try std.testing.expectEqual(bytes, fault.bytes.requested) else expected_bytes = fault.bytes.requested;
+            try std.testing.expectEqual(@as(usize, 2), plan.work.scope_visits);
+            try std.testing.expectEqual(@as(usize, 1), plan.work.validation_roots_checked);
+            try std.testing.expectEqual(@as(usize, 1), plan.work.validation_parent_links_followed);
+            try std.testing.expectEqual(@as(usize, 0), plan.work.child_links_followed);
+        }
+    }
 }
 
 test "ten thousand flat retirement roots validate with linear indexed work and retry after every allocation failure" {

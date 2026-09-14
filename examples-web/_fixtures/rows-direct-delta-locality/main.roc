@@ -1,4 +1,4 @@
-app [main] { roc: "nightly-2026-09-12-220fd47", pf: platform "../../../platform-web/main.roc" }
+app [main] { pf: platform "../../../platform-web/main.roc", roc: "nightly-2026-09-12-220fd47" }
 
 import pf.Elem exposing [Elem]
 import pf.Html
@@ -12,6 +12,9 @@ import pf.Ui
 ## (a delta from a stale sibling generation), and a rollback to an earlier
 ## generation, so the counted direct path and the counted snapshot path can be
 ## told apart by their metrics.
+## Nested mode covers ordinary row-source propagation through a parent into
+## its child list. Explicit parent recollection is tested separately at the
+## engine seam because public Row.signal updates retain the parent builder.
 Row : { id : Str, label : Str }
 
 Model : { rows : Rows(Row), previous : Rows(Row), parked : List(Row), next_id : U64 }
@@ -120,28 +123,36 @@ render_row = |row| {
 	Html.div([Html.test_id("row-${key}")], [Html.text_s(row.map(|value| value.label))])
 }
 
+## Changes propagate through the parent row source to its nested list.
+render_parent : Ui.Row(Model) -> Elem
+render_parent = |parent| Html.div([Html.test_id("rows")], [Ui.each(parent.map(|value| value.rows), render_row)])
+
 main : () -> Elem
 main = || {
 	Ui.state(
 		{ rows: Rows.empty(row_key), previous: Rows.empty(row_key), parked: [], next_id: 1 },
 		|model| {
 			rows = model.signal().map(|value| value.rows)
-			Html.div(
-				[],
-				[
-					Html.heading("Rows direct delta locality"),
-					Html.paragraph_s_attrs(model.signal().map(count_label), [Html.test_id("count")]),
-					Html.button_attrs("Create 1,000 rows", [Html.test_id("create-1k")], model.update(|value| create(value, 1000))),
-					Html.button_attrs("Create 10,000 rows", [Html.test_id("create-10k")], model.update(|value| create(value, 10000))),
-					Html.button_attrs("Append one row", [Html.test_id("append-one")], model.update(append_one)),
-					Html.button_attrs("Remove middle row", [Html.test_id("remove-middle")], model.update(remove_middle)),
-					Html.button_attrs("Move first row to end", [Html.test_id("move-first-to-end")], model.update(move_first_to_end)),
-					Html.button_attrs("Apply mixed batch", [Html.test_id("mixed-batch")], model.update(mixed_batch)),
-					Html.button_attrs("Reinsert removed row", [Html.test_id("reinsert-removed")], model.update(reinsert_parked)),
-					Html.button_attrs("Append from stale sibling", [Html.test_id("stale-sibling-append")], model.update(stale_sibling_append)),
-					Html.button_attrs("Roll back", [Html.test_id("roll-back")], model.update(rollback)),
-					Html.div([Html.test_id("rows")], [Ui.each(rows, render_row)]),
-				],
+			Ui.state(
+				False,
+				|nested| Html.div(
+					[],
+					[
+						Html.heading("Rows direct delta locality"),
+						Html.button_attrs("Use nested rows", [Html.test_id("use-nested")], nested.update(|_| True)),
+						Html.paragraph_s_attrs(model.signal().map(count_label), [Html.test_id("count")]),
+						Html.button_attrs("Create 1,000 rows", [Html.test_id("create-1k")], model.update(|value| create(value, 1000))),
+						Html.button_attrs("Create 10,000 rows", [Html.test_id("create-10k")], model.update(|value| create(value, 10000))),
+						Html.button_attrs("Append one row", [Html.test_id("append-one")], model.update(append_one)),
+						Html.button_attrs("Remove middle row", [Html.test_id("remove-middle")], model.update(remove_middle)),
+						Html.button_attrs("Move first row to end", [Html.test_id("move-first-to-end")], model.update(move_first_to_end)),
+						Html.button_attrs("Apply mixed batch", [Html.test_id("mixed-batch")], model.update(mixed_batch)),
+						Html.button_attrs("Reinsert removed row", [Html.test_id("reinsert-removed")], model.update(reinsert_parked)),
+						Html.button_attrs("Append from stale sibling", [Html.test_id("stale-sibling-append")], model.update(stale_sibling_append)),
+						Html.button_attrs("Roll back", [Html.test_id("roll-back")], model.update(rollback)),
+						Ui.when(nested.signal(), || Ui.each(model.signal().map(|value| Rows.from_list([value], |_| "parent") ?? crash "duplicate parent"), render_parent), || Html.div([Html.test_id("rows")], [Ui.each(rows, render_row)])),
+					],
+				),
 			)
 		},
 	)

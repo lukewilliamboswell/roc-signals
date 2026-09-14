@@ -3178,6 +3178,136 @@ for (const [survivors, removedRoots] of [
   });
 }
 
+for (const op of [Op.createElement, Op.createText]) {
+  test(`creation ${op} rejects a live id without stranding its behaviour or listeners`, () => {
+    const calls = [];
+    const behaviors = {
+      probe: {
+        attach(el) {
+          const listener = () => calls.push(["event", el]);
+          el.addEventListener("probe", listener);
+          return () => {
+            calls.push(["cleanup", el]);
+            el.removeEventListener("probe", listener);
+          };
+        },
+      },
+    };
+    const { host, runtime } = mountWith([
+      { op: Op.createElement, a: 1, s: "section" },
+      { op: Op.createElement, a: 2, s: "input" },
+      { dynamic: { op: DynamicOp.setAttrText, elemId: 2, name: "data-signals-behavior", value: "probe" } },
+      { op: Op.bindInput, a: 2, b: 42 },
+      { op: Op.appendChild, a: 1, b: 2 },
+      { op: Op.appendChild, a: 0, b: 1 },
+    ], { behaviors });
+    const original = runtime.nodes.get(2);
+    host.writeCommands([{ op, a: 2, s: "replacement" }]);
+    assert.throws(() => runtime.applyPendingCommands("invalid-creation"), /reuses live DOM node id 2/);
+    assert.equal(runtime.nodes.get(2), original);
+    assert.equal(runtime.nodeIds.get(original), 2);
+    assert.equal(runtime.behaviorInstances.get(2).el, original);
+    assert.deepEqual(calls, []);
+
+    // The rejected command leaves the original identity available to cleanup.
+    host.writeCommands([{ op: Op.removeNode, a: 1 }]);
+    runtime.applyPendingCommands("remove-original-subtree");
+    assert.deepEqual(calls, [["cleanup", original]]);
+    fireEvent(original, "probe");
+    fireEvent(original, "input");
+    assert.deepEqual(host.dispatches, []);
+    assert.deepEqual(calls, [["cleanup", original]]);
+    assert.equal(runtime.behaviorInstances.size, 0);
+    assert.equal(runtime.eventCleanups.size, 0);
+    runtime.unmount();
+    assert.deepEqual(calls, [["cleanup", original]]);
+  });
+}
+
+test("remove then recreate gives behaviours and listeners a fresh element lifetime", () => {
+  const calls = [];
+  const behaviors = {
+    probe: {
+      attach(el) {
+        calls.push(["attach", el]);
+        return () => calls.push(["cleanup", el]);
+      },
+    },
+  };
+  const create = [
+    { op: Op.createElement, a: 1, s: "section" },
+    { op: Op.createElement, a: 2, s: "input" },
+    { dynamic: { op: DynamicOp.setAttrText, elemId: 2, name: "data-signals-behavior", value: "probe" } },
+    { op: Op.bindInput, a: 2, b: 42 },
+    { op: Op.appendChild, a: 1, b: 2 },
+    { op: Op.appendChild, a: 0, b: 1 },
+  ];
+  const { host, runtime } = mountWith(create, { behaviors });
+  const original = runtime.nodes.get(2);
+  host.writeCommands([{ op: Op.removeNode, a: 1 }, ...create]);
+  runtime.applyPendingCommands("replace-subtree");
+  const replacement = runtime.nodes.get(2);
+  assert.notEqual(replacement, original);
+  assert.equal(runtime.nodeIds.get(original), undefined);
+  assert.equal(runtime.behaviorInstances.get(2).el, replacement);
+  assert.deepEqual(calls, [["attach", original], ["cleanup", original], ["attach", replacement]]);
+  fireEvent(original, "input");
+  assert.deepEqual(host.dispatches, []);
+  replacement.value = "fresh";
+  fireEvent(replacement, "input");
+  assert.deepEqual(host.dispatches, [{ eventId: 42, kind: PayloadKind.str, payload: "fresh" }]);
+
+  host.writeCommands([{ op: Op.removeNode, a: 1 }]);
+  runtime.applyPendingCommands("remove-replacement");
+  runtime.unmount();
+  assert.deepEqual(calls, [
+    ["attach", original], ["cleanup", original],
+    ["attach", replacement], ["cleanup", replacement],
+  ]);
+  assert.equal(runtime.eventCleanups.size, 0);
+});
+
+for (const delivery of ["direct", "DOM"]) {
+  test(`a live id collision during ${delivery} event drain contains the mount and cleans the original once`, () => {
+    const cleaned = [];
+    const errors = [];
+    const { host, runtime } = mountWith([
+      { op: Op.createElement, a: 1, s: "input" },
+      { dynamic: { op: DynamicOp.setAttrText, elemId: 1, name: "data-signals-behavior", value: "probe" } },
+      { op: Op.bindInput, a: 1, b: 42 },
+      { op: Op.appendChild, a: 0, b: 1 },
+    ], {
+      behaviors: { probe: { attach: el => () => cleaned.push(el) } },
+      onError: err => errors.push(err),
+    });
+    const original = runtime.nodes.get(1);
+    host.eventResponses.set(42, () => [
+      { op: Op.setValue, a: 1, s: "applied before failure" },
+      { op: Op.createElement, a: 1, s: "div" },
+      { op: Op.removeNode, a: 1 },
+    ]);
+    assert.throws(
+      () => delivery === "direct" ? runtime.dispatchString(42, "input") : fireEvent(original, "input"),
+      /reuses live DOM node id 1/,
+    );
+    assert.equal(runtime.mounted, false);
+    assert.equal(errors.length, 1);
+    assert.equal(runtime.nodes.get(1), original);
+    assert.equal(original.value, "applied before failure");
+    assert.deepEqual(cleaned, [original]);
+    assert.equal(runtime.eventCleanups.size, 0);
+    assert.equal(runtime.behaviorInstances.size, 0);
+    assert.equal(runtime.lastCommands.length, 0);
+    assert.throws(() => runtime.dispatchString(42, "later"), /reuses live DOM node id 1/);
+    fireEvent(original, "input");
+    assert.equal(host.dispatches.length, 1);
+    runtime.unmount();
+    runtime.unmount();
+    assert.deepEqual(cleaned, [original]);
+    assert.equal(errors.length, 1);
+  });
+}
+
 test("behaviour index tracks rebinding, marker removal, pending work, and unmount", () => {
   const calls = [];
   const behaviors = {
