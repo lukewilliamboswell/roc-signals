@@ -4,6 +4,320 @@
 ## collection operations below; the `platform_*` functions are internal adapter
 ## hooks for `Ui.each` and the shared engine.
 
+## A persistent AVL directory. Every edit rebuilds only its search path and at
+## most two rotation nodes; retained generations never copy a flat entry table.
+## Cached heights and sizes describe live entries, not historical capacity.
+RowsIndex(key, value) := [IndexEmpty, IndexNode({ key : key, value : value, left : RowsIndex(key, value), right : RowsIndex(key, value), height : U64, size : U64 })].{
+	empty : () -> RowsIndex(key, value)
+	empty = || IndexEmpty
+
+	len : RowsIndex(key, value) -> U64
+	len = |tree| match tree {
+		IndexEmpty => 0
+		IndexNode(node) => node.size
+	}
+
+	is_empty : RowsIndex(key, value) -> Bool
+	is_empty = |tree| tree.len() == 0
+
+	get : RowsIndex(key, value), key -> Try(value, [Missing])
+		where [key.is_lt : key, key -> Bool]
+	get = |tree, key| match tree {
+		IndexEmpty => Err(Missing)
+		IndexNode(node) => if key.is_lt(node.key) {
+			RowsIndex.get(node.left, key)
+		} else if node.key.is_lt(key) {
+			RowsIndex.get(node.right, key)
+		} else {
+			Ok(node.value)
+		}
+	}
+
+	insert : RowsIndex(key, value), key, value -> RowsIndex(key, value)
+		where [key.is_lt : key, key -> Bool]
+	insert = |tree, key, value| match tree {
+		IndexEmpty => rows_index_node(key, value, IndexEmpty, IndexEmpty)
+		IndexNode(node) => if key.is_lt(node.key) {
+			rows_index_balance(node.key, node.value, node.left.insert(key, value), node.right)
+		} else if node.key.is_lt(key) {
+			rows_index_balance(node.key, node.value, node.left, node.right.insert(key, value))
+		} else {
+			rows_index_node(key, value, node.left, node.right)
+		}
+	}
+
+	remove : RowsIndex(key, value), key -> RowsIndex(key, value)
+		where [key.is_lt : key, key -> Bool]
+	remove = |tree, key| match tree {
+		IndexEmpty => IndexEmpty
+		IndexNode(node) => if key.is_lt(node.key) {
+			rows_index_balance(node.key, node.value, node.left.remove(key), node.right)
+		} else if node.key.is_lt(key) {
+			rows_index_balance(node.key, node.value, node.left, node.right.remove(key))
+		} else {
+			match node.right {
+				IndexEmpty => node.left
+				IndexNode(_) => {
+					first = rows_index_take_first(node.right)
+					rows_index_balance(first.key, first.value, node.left, first.rest)
+				}
+			}
+		}
+	}
+}
+
+rows_index_height : RowsIndex(key, value) -> U64
+rows_index_height = |tree| match tree {
+	IndexEmpty => 0
+	IndexNode(node) => node.height
+}
+
+rows_index_node : key, value, RowsIndex(key, value), RowsIndex(key, value) -> RowsIndex(key, value)
+rows_index_node = |key, value, left, right| {
+	left_height = rows_index_height(left)
+	right_height = rows_index_height(right)
+	IndexNode({
+		key,
+		value,
+		left,
+		right,
+		height: 1 + if left_height > right_height {
+			left_height
+		} else {
+			right_height
+		},
+		size: 1 + left.len() + right.len(),
+	})
+}
+
+rows_index_balance : key, value, RowsIndex(key, value), RowsIndex(key, value) -> RowsIndex(key, value)
+rows_index_balance = |key, value, left, right| {
+	if rows_index_height(left) > rows_index_height(right) + 1 {
+		match left {
+			IndexEmpty => crash "Rows index missing heavy left branch"
+			IndexNode(child) => if rows_index_height(child.left) >= rows_index_height(child.right) {
+				rows_index_node(child.key, child.value, child.left, rows_index_node(key, value, child.right, right))
+			} else {
+				match child.right {
+					IndexEmpty => crash "Rows index missing left rotation pivot"
+					IndexNode(pivot) => rows_index_node(pivot.key, pivot.value, rows_index_node(child.key, child.value, child.left, pivot.left), rows_index_node(key, value, pivot.right, right))
+				}
+			}
+		}
+	} else if rows_index_height(right) > rows_index_height(left) + 1 {
+		match right {
+			IndexEmpty => crash "Rows index missing heavy right branch"
+			IndexNode(child) => if rows_index_height(child.right) >= rows_index_height(child.left) {
+				rows_index_node(child.key, child.value, rows_index_node(key, value, left, child.left), child.right)
+			} else {
+				match child.left {
+					IndexEmpty => crash "Rows index missing right rotation pivot"
+					IndexNode(pivot) => rows_index_node(pivot.key, pivot.value, rows_index_node(key, value, left, pivot.left), rows_index_node(child.key, child.value, pivot.right, child.right))
+				}
+			}
+		}
+	} else {
+		rows_index_node(key, value, left, right)
+	}
+}
+
+rows_index_take_first : RowsIndex(key, value) -> { key : key, value : value, rest : RowsIndex(key, value) }
+rows_index_take_first = |tree| match tree {
+	IndexEmpty => crash "Rows index minimum of empty tree"
+	IndexNode(node) => match node.left {
+		IndexEmpty => { key: node.key, value: node.value, rest: node.right }
+		IndexNode(_) => {
+			first = rows_index_take_first(node.left)
+			{ ..first, rest: rows_index_balance(node.key, node.value, first.rest, node.right) }
+		}
+	}
+}
+
+## Exact UTF-8 ordering makes key comparison deterministic without a hash
+## collision bucket. Its byte comparison cost is explicit in every key lookup.
+RowsKey := [RowsKey(Str)].{
+	is_lt : RowsKey, RowsKey -> Bool
+	is_lt = |RowsKey(left), RowsKey(right)| {
+		left_bytes = left.to_utf8()
+		right_bytes = right.to_utf8()
+		var $index = 0
+		var $less = left_bytes.len() < right_bytes.len()
+		var $done = False
+		while !$done and $index < left_bytes.len() and $index < right_bytes.len() {
+			a = left_bytes.get($index) ?? crash "Rows key byte missing"
+			b = right_bytes.get($index) ?? crash "Rows key byte missing"
+			if a != b {
+				$less = a < b
+				$done = True
+			}
+			$index = $index + 1
+		}
+		$less
+	}
+}
+
+RowsKeyIndex := [RowsKeyIndex(RowsIndex(RowsKey, U64))].{
+	empty : () -> RowsKeyIndex
+	empty = || RowsKeyIndex(RowsIndex.empty())
+	get : RowsKeyIndex, Str -> Try(U64, [Missing])
+	get = |RowsKeyIndex(tree), key| RowsIndex.get(tree, RowsKey(key))
+	insert : RowsKeyIndex, Str, U64 -> RowsKeyIndex
+	insert = |RowsKeyIndex(tree), key, value| RowsKeyIndex(tree.insert(RowsKey(key), value))
+	remove : RowsKeyIndex, Str -> RowsKeyIndex
+	remove = |RowsKeyIndex(tree), key| RowsKeyIndex(tree.remove(RowsKey(key)))
+	len : RowsKeyIndex -> U64
+	len = |RowsKeyIndex(tree)| tree.len()
+}
+
+## Free IDs and edit history use a persistent stack indexed by dense positions.
+## Retained edit states must not force full-list copying on every new touch. Push/pop
+## copy only logarithmic AVL paths, and releasing a retained stack has bounded
+## tree depth rather than one recursive destructor frame per vacant slot.
+RowsIdStack := { items : RowsIndex(U64, U64) }.{
+	empty : () -> RowsIdStack
+	empty = || { items: RowsIndex.empty() }
+	prepend : RowsIdStack, U64 -> RowsIdStack
+	prepend = |free, value| { items: free.items.insert(free.items.len(), value) }
+	first : RowsIdStack -> Try(U64, [Missing])
+	first = |free| if free.items.is_empty() {
+		Err(Missing)
+	} else {
+		free.items.get(free.items.len() - 1)
+	}
+	drop_first : RowsIdStack, U64 -> RowsIdStack
+	drop_first = |free, count| {
+		var $items = free.items
+		var $remaining = count
+		while $remaining > 0 and !$items.is_empty() {
+			$items = $items.remove($items.len() - 1)
+			$remaining = $remaining - 1
+		}
+		{ items: $items }
+	}
+	len : RowsIdStack -> U64
+	len = |free| free.items.len()
+	is_empty : RowsIdStack -> Bool
+	is_empty = |free| free.items.is_empty()
+	from_list : List(U64) -> RowsIdStack
+	from_list = |values| { items: rows_id_stack_from_range(values, 0, values.len()) }
+	to_list : RowsIdStack -> List(U64)
+	to_list = |free| {
+		var $items = List.with_capacity(free.len())
+		var $remaining = free.len()
+		while $remaining > 0 {
+			$remaining = $remaining - 1
+			$items = $items.append(free.items.get($remaining) ?? crash "Rows free stack position missing")
+		}
+		$items
+	}
+}
+
+## Build the complete free stack in linear work without retaining a chain of
+## intermediate AVL roots. Descending stack positions preserve list-first reuse.
+rows_id_stack_from_range : List(U64), U64, U64 -> RowsIndex(U64, U64)
+rows_id_stack_from_range = |values, first, count| if count == 0 {
+	RowsIndex.empty()
+} else {
+	left_count = count.div_trunc_by(2)
+	middle = first + left_count
+	value = values.get(values.len() - 1 - middle) ?? crash "Rows free stack builder index missing"
+	rows_index_node(middle, value, rows_id_stack_from_range(values, first, left_count), rows_id_stack_from_range(values, middle + 1, count - left_count - 1))
+}
+
+## Slot IDs reserve 32 bits for the index; 32-cell chunks leave 27 directory
+## bits. Six bounded 32-way levels cover that complete space. Copy-on-write
+## retains at most 32 child lists at each level, even when old generations live.
+## Empty branches allocate nothing, and directory shape depends on slot IDs,
+## never the number of generations or a retained flat-table capacity.
+## Keep the directory structural and its helpers top-level: generic nominal
+## methods currently fail with application-item payloads on the pinned compiler.
+## https://github.com/roc-lang/roc/issues/11377
+RowsDirectoryCell(value) : [DirectoryEmpty, DirectoryValue(value)]
+
+RowsSlotDirectory(value) : { root : List(List(List(List(List(List(RowsDirectoryCell(value))))))), count : U64 }
+
+rows_slot_directory_empty : () -> RowsSlotDirectory(value)
+rows_slot_directory_empty = || { root: [], count: 0 }
+
+rows_slot_directory_len : RowsSlotDirectory(value) -> U64
+rows_slot_directory_len = |directory| directory.count
+
+rows_slot_directory_is_empty : RowsSlotDirectory(value) -> Bool
+rows_slot_directory_is_empty = |directory| directory.count == 0
+
+rows_slot_directory_get : RowsSlotDirectory(value), U64 -> Try(value, [Missing])
+rows_slot_directory_get = |directory, key| {
+	if key >= 134217728 {
+		Err(Missing)
+	} else {
+		level_0 = directory.root.get(key.div_trunc_by(33554432).rem_by(32)) ? |_| Missing
+		level_1 = level_0.get(key.div_trunc_by(1048576).rem_by(32)) ? |_| Missing
+		level_2 = level_1.get(key.div_trunc_by(32768).rem_by(32)) ? |_| Missing
+		level_3 = level_2.get(key.div_trunc_by(1024).rem_by(32)) ? |_| Missing
+		level_4 = level_3.get(key.div_trunc_by(32).rem_by(32)) ? |_| Missing
+		level_5 = level_4.get(key.div_trunc_by(1).rem_by(32)) ? |_| Missing
+		match level_5 {
+			DirectoryEmpty => Err(Missing)
+			DirectoryValue(value) => Ok(value)
+		}
+	}
+}
+
+rows_slot_directory_insert : RowsSlotDirectory(value), U64, value -> RowsSlotDirectory(value)
+rows_slot_directory_insert = |directory, key, value| {
+	if key >= 134217728 {
+		crash "Rows slot directory exceeds the packed index space"
+	}
+	offset_0 = key.div_trunc_by(33554432).rem_by(32)
+	offset_1 = key.div_trunc_by(1048576).rem_by(32)
+	offset_2 = key.div_trunc_by(32768).rem_by(32)
+	offset_3 = key.div_trunc_by(1024).rem_by(32)
+	offset_4 = key.div_trunc_by(32).rem_by(32)
+	offset_5 = key.div_trunc_by(1).rem_by(32)
+	var $level_0 = directory.root
+	var $level_1 = $level_0.get(offset_0) ?? []
+	var $level_2 = $level_1.get(offset_1) ?? []
+	var $level_3 = $level_2.get(offset_2) ?? []
+	var $level_4 = $level_3.get(offset_3) ?? []
+	var $level_5 = $level_4.get(offset_4) ?? []
+	added = match $level_5.get(offset_5) {
+		Ok(DirectoryValue(_)) => False
+		_ => True
+	}
+	while $level_5.len() <= offset_5 {
+		$level_5 = $level_5.append(DirectoryEmpty)
+	}
+	$level_5 = $level_5.set(offset_5, DirectoryValue(value)) ?? crash "Rows slot directory leaf was missing"
+	while $level_4.len() <= offset_4 {
+		$level_4 = $level_4.append([])
+	}
+	$level_4 = $level_4.set(offset_4, $level_5) ?? crash "Rows slot directory branch was missing"
+	while $level_3.len() <= offset_3 {
+		$level_3 = $level_3.append([])
+	}
+	$level_3 = $level_3.set(offset_3, $level_4) ?? crash "Rows slot directory branch was missing"
+	while $level_2.len() <= offset_2 {
+		$level_2 = $level_2.append([])
+	}
+	$level_2 = $level_2.set(offset_2, $level_3) ?? crash "Rows slot directory branch was missing"
+	while $level_1.len() <= offset_1 {
+		$level_1 = $level_1.append([])
+	}
+	$level_1 = $level_1.set(offset_1, $level_2) ?? crash "Rows slot directory branch was missing"
+	while $level_0.len() <= offset_0 {
+		$level_0 = $level_0.append([])
+	}
+	$level_0 = $level_0.set(offset_0, $level_1) ?? crash "Rows slot directory branch was missing"
+	{
+		root: $level_0,
+		count: directory.count + if added {
+			1
+		} else {
+			0
+		},
+	}
+}
+
 RowsGenerationCallable : Box(({} -> Box({})))
 
 RowsEntry(item) : { slot : U64, key : Str, item : item }
@@ -14,7 +328,7 @@ RowsOrderParent : [OrderParent({ node : U64, child : U64 }), OrderRoot]
 
 RowsOrderCell(value) : [OrderCellEmpty, OrderCellValue(value)]
 
-RowsOrderTable(value) : Dict(U64, List(RowsOrderCell(value)))
+RowsOrderTable(value) : RowsIndex(U64, List(RowsOrderCell(value)))
 
 RowsOrderEntry(value) : { key : U64, value : value }
 
@@ -41,8 +355,8 @@ rows_order_table_get = |table, key| {
 	}
 }
 
-## Store one value in a bounded 32-cell chunk. Edit paths copy at most one
-## chunk, while snapshot construction grows only the much smaller chunk map.
+## Store one value in a bounded 32-cell chunk and path-copy its AVL directory.
+## Retaining the old table never copies or retains every directory entry.
 rows_order_table_set : RowsOrderTable(value), U64, value -> RowsOrderTable(value)
 rows_order_table_set = |table, key, value| {
 	location = rows_order_table_location(key)
@@ -68,7 +382,7 @@ rows_order_table_remove = |table, key| {
 }
 
 ## Build a table from arbitrary nonzero keys by sorting once, then publishing
-## each completed 32-cell chunk with one persistent dictionary insertion.
+## each completed 32-cell chunk with one persistent directory insertion.
 rows_order_table_from_entries : List(RowsOrderEntry(value)) -> RowsOrderTable(value)
 rows_order_table_from_entries = |entries| {
 	sorted = entries.sort_with(
@@ -80,8 +394,7 @@ rows_order_table_from_entries = |entries| {
 			Same
 		},
 	)
-	chunk_capacity = (entries.len() + rows_order_table_chunk_size - 1).div_trunc_by(rows_order_table_chunk_size)
-	var $table = Dict.with_capacity(chunk_capacity)
+	var $table = RowsIndex.empty()
 	var $chunk_key = 0
 	var $chunk = []
 	var $has_chunk = False
@@ -111,7 +424,7 @@ RowsOrder : {
 	parents : RowsOrderTable(RowsOrderParent),
 	slot_leaf : RowsOrderTable(U64),
 	next_node : U64,
-	free_nodes : List(U64),
+	free_nodes : RowsIdStack,
 }
 
 rows_order_node_len : RowsOrderNode -> U64
@@ -123,15 +436,12 @@ rows_order_node_len = |node|
 
 rows_order_empty : () -> RowsOrder
 rows_order_empty = || {
-	nodes = rows_order_table_set(Dict.empty(), 1, OrderLeaf({ slots: [], len: 0 }))
-	parents = rows_order_table_set(Dict.empty(), 1, OrderRoot)
+	nodes = rows_order_table_set(RowsIndex.empty(), 1, OrderLeaf({ slots: [], len: 0 }))
+	parents = rows_order_table_set(RowsIndex.empty(), 1, OrderRoot)
 	slot_leaf : RowsOrderTable(U64)
-	slot_leaf = Dict.empty()
-	{ root: 1, nodes, parents, slot_leaf, next_node: 2, free_nodes: [] }
+	slot_leaf = RowsIndex.empty()
+	{ root: 1, nodes, parents, slot_leaf, next_node: 2, free_nodes: RowsIdStack.empty() }
 }
-
-rows_reverse_u64 : List(U64) -> List(U64)
-rows_reverse_u64 = |values| values.fold([], |reversed, value| reversed.prepend(value))
 
 ## Build a fresh 32-way order tree bottom-up. Snapshot construction already
 ## knows the complete stable-slot sequence, so inserting each slot through the
@@ -141,30 +451,36 @@ rows_order_from_slots = |slots| {
 	if slots.is_empty() {
 		rows_order_empty()
 	} else {
-		var $node_values = List.with_capacity(slots.len())
-		var $node_entries = []
-		var $parent_entries = []
+		leaf_count = (slots.len() + 31).div_trunc_by(32)
+		var $node_capacity = leaf_count
+		var $level_count = leaf_count
+		while $level_count > 1 {
+			$level_count = ($level_count + 31).div_trunc_by(32)
+			$node_capacity = $node_capacity + $level_count
+		}
+		var $node_values = List.with_capacity($node_capacity)
+		var $node_entries = List.with_capacity($node_capacity)
+		var $parent_entries = List.with_capacity($node_capacity)
 		var $slot_leaf_entries = List.with_capacity(slots.len())
 		var $next_node = 1
 		var $offset = 0
-		var $level = []
+		var $level = List.with_capacity(leaf_count)
 		while $offset < slots.len() {
 			leaf_slots = slots.drop_first($offset).take_first(32)
 			leaf_id = $next_node
 			$next_node = $next_node + 1
 			leaf = OrderLeaf({ slots: leaf_slots, len: leaf_slots.len() })
 			$node_values = $node_values.append(leaf)
-			$node_entries = $node_entries.prepend({ key: leaf_id, value: leaf })
+			$node_entries = $node_entries.append({ key: leaf_id, value: leaf })
 			for slot in leaf_slots {
 				$slot_leaf_entries = $slot_leaf_entries.append({ key: rows_slot_index(slot), value: leaf_id })
 			}
-			$level = $level.prepend(leaf_id)
+			$level = $level.append(leaf_id)
 			$offset = $offset + leaf_slots.len()
 		}
-		$level = rows_reverse_u64($level)
 
 		while $level.len() > 1 {
-			var $next_level = []
+			var $next_level = List.with_capacity(($level.len() + 31).div_trunc_by(32))
 			var $child_offset = 0
 			while $child_offset < $level.len() {
 				children = $level.drop_first($child_offset).take_first(32)
@@ -175,27 +491,27 @@ rows_order_from_slots = |slots| {
 				for child_id in children {
 					child = $node_values.get(child_id - 1) ?? crash "Rows bulk order child was missing"
 					$len = $len + rows_order_node_len(child)
-					$parent_entries = $parent_entries.prepend({ key: child_id, value: OrderParent({ node: branch_id, child: $child_index }) })
+					$parent_entries = $parent_entries.append({ key: child_id, value: OrderParent({ node: branch_id, child: $child_index }) })
 					$child_index = $child_index + 1
 				}
 				branch = OrderBranch({ children, len: $len })
 				$node_values = $node_values.append(branch)
-				$node_entries = $node_entries.prepend({ key: branch_id, value: branch })
-				$next_level = $next_level.prepend(branch_id)
+				$node_entries = $node_entries.append({ key: branch_id, value: branch })
+				$next_level = $next_level.append(branch_id)
 				$child_offset = $child_offset + children.len()
 			}
-			$level = rows_reverse_u64($next_level)
+			$level = $next_level
 		}
 
 		root = $level.get(0) ?? crash "Rows bulk order lost its root"
-		$parent_entries = $parent_entries.prepend({ key: root, value: OrderRoot })
+		$parent_entries = $parent_entries.append({ key: root, value: OrderRoot })
 		{
 			root,
 			nodes: rows_order_table_from_entries($node_entries),
 			parents: rows_order_table_from_entries($parent_entries),
 			slot_leaf: rows_order_table_from_entries($slot_leaf_entries),
 			next_node: $next_node,
-			free_nodes: [],
+			free_nodes: RowsIdStack.empty(),
 		}
 	}
 }
@@ -295,7 +611,14 @@ rows_order_set_child_parents = |order, parent_id, children| {
 	var $index = 0
 	while $index < children.len() {
 		child_id = children.get($index) ?? crash "Rows order child index was invalid while parenting"
-		$parents = rows_order_table_set($parents, child_id, OrderParent({ node: parent_id, child: $index }))
+		existing = rows_order_table_get($parents, child_id)
+		unchanged = match existing {
+			Ok(OrderParent(parent)) => parent.node == parent_id and parent.child == $index
+			_ => False
+		}
+		if !unchanged {
+			$parents = rows_order_table_set($parents, child_id, OrderParent({ node: parent_id, child: $index }))
+		}
 		$index = $index + 1
 	}
 	{ ..order, parents: $parents }
@@ -319,16 +642,14 @@ rows_order_insert_node = |order, node_id, index, slot| {
 				left_nodes = rows_order_table_set(allocation.order.nodes, node_id, OrderLeaf({ slots: left_slots, len: left_slots.len() }))
 				nodes = rows_order_table_set(left_nodes, right_id, OrderLeaf({ slots: right_slots, len: right_slots.len() }))
 				var $slot_leaf = allocation.order.slot_leaf
-				for left_slot in left_slots {
-					$slot_leaf = rows_order_table_set($slot_leaf, rows_slot_index(left_slot), node_id)
+				if index < 16 {
+					$slot_leaf = rows_order_table_set($slot_leaf, rows_slot_index(slot), node_id)
 				}
 				for right_slot in right_slots {
 					$slot_leaf = rows_order_table_set($slot_leaf, rows_slot_index(right_slot), right_id)
 				}
-				parent = rows_order_table_get(allocation.order.parents, node_id) ?? crash "Rows order leaf parent was missing"
-				parents = rows_order_table_set(allocation.order.parents, right_id, parent)
 				{
-					order: { ..allocation.order, nodes, parents, slot_leaf: $slot_leaf },
+					order: { ..allocation.order, nodes, slot_leaf: $slot_leaf },
 					replacements: [node_id, right_id],
 				}
 			}
@@ -359,7 +680,11 @@ rows_order_insert_node = |order, node_id, index, slot| {
 					..child_rewrite.order,
 					nodes: rows_order_table_set(child_rewrite.order.nodes, node_id, OrderBranch({ children: replaced_children, len: len + 1 })),
 				}
-				parented = rows_order_set_child_parents(updated_order, node_id, replaced_children)
+				parented = if child_rewrite.replacements.len() == 1 {
+					updated_order
+				} else {
+					rows_order_set_child_parents(updated_order, node_id, replaced_children)
+				}
 				{ order: parented, replacements: [node_id] }
 			} else {
 				left_children = replaced_children.take_first(16)
@@ -370,9 +695,7 @@ rows_order_insert_node = |order, node_id, index, slot| {
 				right_len = rows_order_children_len(child_rewrite.order, right_children)
 				left_nodes = rows_order_table_set(allocation.order.nodes, node_id, OrderBranch({ children: left_children, len: left_len }))
 				nodes = rows_order_table_set(left_nodes, right_id, OrderBranch({ children: right_children, len: right_len }))
-				parent = rows_order_table_get(allocation.order.parents, node_id) ?? crash "Rows order branch parent was missing"
-				parents = rows_order_table_set(allocation.order.parents, right_id, parent)
-				split_order = { ..allocation.order, nodes, parents }
+				split_order = { ..allocation.order, nodes }
 				left_parented = rows_order_set_child_parents(split_order, node_id, left_children)
 				right_parented = rows_order_set_child_parents(left_parented, right_id, right_children)
 				{ order: right_parented, replacements: [node_id, right_id] }
@@ -590,8 +913,8 @@ rows_order_fold = |order, initial, push| rows_order_fold_node(order, order.root,
 RowsSlotCell(item) : [RowsSlotLive({ generation : U64, key : Str, item : item }), RowsSlotVacant({ generation : U64 }), RowsSlotRetired]
 
 RowsSlotStore(item) : {
-	chunks : Dict(U64, List(RowsSlotCell(item))),
-	free : List(U64),
+	chunks : RowsSlotDirectory(List(RowsSlotCell(item))),
+	free : RowsIdStack,
 	next_index : U64,
 }
 
@@ -611,9 +934,9 @@ rows_slot_generation = |slot| slot.div_trunc_by(rows_slot_base)
 
 rows_slots_empty : () -> RowsSlotStore(item)
 rows_slots_empty = || {
-	chunks : Dict(U64, List(RowsSlotCell(item)))
-	chunks = Dict.empty()
-	{ chunks, free: [], next_index: 1 }
+	chunks : RowsSlotDirectory(List(RowsSlotCell(item)))
+	chunks = rows_slot_directory_empty()
+	{ chunks, free: RowsIdStack.empty(), next_index: 1 }
 }
 
 rows_slots_cell : RowsSlotStore(item), U64 -> Try(RowsSlotCell(item), [Missing])
@@ -624,7 +947,7 @@ rows_slots_cell = |slots, index| {
 		zero_index = index - 1
 		chunk_index = zero_index.div_trunc_by(32)
 		offset = zero_index.rem_by(32)
-		chunk = slots.chunks.get(chunk_index) ? |_| Missing
+		chunk = rows_slot_directory_get(slots.chunks, chunk_index) ? |_| Missing
 		match chunk.get(offset) {
 			Ok(cell) => Ok(cell)
 			Err(_) => Err(Missing)
@@ -637,14 +960,14 @@ rows_slots_set_cell = |slots, index, cell| {
 	zero_index = index - 1
 	chunk_index = zero_index.div_trunc_by(32)
 	offset = zero_index.rem_by(32)
-	chunk = slots.chunks.get(chunk_index) ?? []
+	chunk = rows_slot_directory_get(slots.chunks, chunk_index) ?? []
 	updated_chunk =
 		if offset == chunk.len() {
 			chunk.append(cell)
 		} else {
 			chunk.set(offset, cell) ?? crash "Rows slot chunk offset was invalid"
 		}
-	{ ..slots, chunks: slots.chunks.insert(chunk_index, updated_chunk) }
+	{ ..slots, chunks: rows_slot_directory_insert(slots.chunks, chunk_index, updated_chunk) }
 }
 
 rows_slots_get : RowsSlotStore(item), U64 -> Try({ key : Str, item : item }, [Missing])
@@ -742,7 +1065,7 @@ RowsStorage(item) : {
 	key_of : Box((item -> Str)),
 	order : RowsOrder,
 	slots : RowsSlotStore(item),
-	key_index : Dict(Str, U64),
+	key_index : RowsKeyIndex,
 	snapshot_key_bytes : U64,
 	op_count : U64,
 	delta_key_count : U64,
@@ -752,44 +1075,48 @@ RowsStorage(item) : {
 RowsBuild(item) : {
 	order_slots : List(U64),
 	slots : RowsSlotStore(item),
-	key_index : Dict(Str, U64),
+	key_index : RowsKeyIndex,
 	key_bytes : U64,
 	slot_chunks_written : U64,
 }
 
 RowsFreshBuild(item) : {
 	order_slots : List(U64),
-	chunks : Dict(U64, List(RowsSlotCell(item))),
+	chunks : RowsSlotDirectory(List(RowsSlotCell(item))),
 	current_chunk : List(RowsSlotCell(item)),
-	key_index : Dict(Str, U64),
+	key_index : RowsKeyIndex,
 	key_bytes : U64,
 	chunk_writes : U64,
 }
 
 RowsSlotWrite(item) : { cell : RowsSlotCell(item), offset : U64 }
 
+## Replacement reservations retain prior records while inspecting old slots.
+## Both patch lookup and publication order therefore need shared paths rather
+## than flat containers that could copy all accumulated work on each write.
 RowsSlotPatches(item) : {
-	by_chunk : Dict(U64, List(RowsSlotWrite(item))),
-	chunk_ids_rev : List(U64),
+	by_chunk : RowsSlotDirectory(List(RowsSlotWrite(item))),
+	chunk_ids : RowsIdStack,
 }
 
+## Keep reserved order IDs persistent too; materialize the final ordered List
+## once after every key and slot reservation has succeeded.
 RowsReplacementBuild(item) : {
-	order_slots : List(U64),
-	key_index : Dict(Str, U64),
+	order_slots : RowsIdStack,
+	key_index : RowsKeyIndex,
 	key_bytes : U64,
 	patches : RowsSlotPatches(item),
-	free_cursor : U64,
+	free_cursor : RowsIdStack,
 	next_index : U64,
 }
 
 RowsEditState(item) : {
 	order : RowsOrder,
 	slots : RowsSlotStore(item),
-	key_index : Dict(Str, U64),
+	key_index : RowsKeyIndex,
 	key_bytes : U64,
-	removed : Dict(Str, RowsEntry(item)),
-	touched : Dict(U64, Bool),
-	touched_rev : List(U64),
+	removed : RowsKeyIndex,
+	touched_history : RowsIdStack,
 }
 
 rows_generation_callable : () -> RowsGenerationCallable
@@ -800,10 +1127,10 @@ rows_generation_callable = || {
 	Box.box(identity)
 }
 
-rows_empty_indexes : () -> { key_index : Dict(Str, U64) }
+rows_empty_indexes : () -> { key_index : RowsKeyIndex }
 rows_empty_indexes = || {
-	key_index : Dict(Str, U64)
-	key_index = Dict.empty()
+	key_index : RowsKeyIndex
+	key_index = RowsKeyIndex.empty()
 	{ key_index }
 }
 
@@ -828,18 +1155,18 @@ rows_slots_patch = |patches, index, cell| {
 	chunk_id = zero_index.div_trunc_by(32)
 	offset = zero_index.rem_by(32)
 	write = { cell, offset }
-	match patches.by_chunk.get(chunk_id) {
+	match rows_slot_directory_get(patches.by_chunk, chunk_id) {
 		Ok(writes) => {
 			duplicate = writes.find_first(|existing| existing.offset == offset)
 			match duplicate {
 				Ok(_) => crash "Rows slot patch wrote one cell twice"
-				Err(_) => { ..patches, by_chunk: patches.by_chunk.insert(chunk_id, writes.prepend(write)) }
+				Err(_) => { ..patches, by_chunk: rows_slot_directory_insert(patches.by_chunk, chunk_id, writes.prepend(write)) }
 			}
 		}
 		Err(_) => {
 			{
-				by_chunk: patches.by_chunk.insert(chunk_id, [write]),
-				chunk_ids_rev: patches.chunk_ids_rev.prepend(chunk_id),
+				by_chunk: rows_slot_directory_insert(patches.by_chunk, chunk_id, [write]),
+				chunk_ids: patches.chunk_ids.prepend(chunk_id),
 			}
 		}
 	}
@@ -855,13 +1182,13 @@ rows_slots_patched_cell = |writes, offset|
 ## Publish each touched slot chunk once. A touched chunk is rebuilt from its
 ## old immutable cells plus at most 32 replacement cells; untouched chunks stay
 ## shared with the previous generation.
-rows_slots_apply_patches : RowsSlotStore(item), RowsSlotPatches(item), List(U64), U64 -> { slot_chunks_written : U64, slots : RowsSlotStore(item) }
+rows_slots_apply_patches : RowsSlotStore(item), RowsSlotPatches(item), RowsIdStack, U64 -> { slot_chunks_written : U64, slots : RowsSlotStore(item) }
 rows_slots_apply_patches = |old, patches, free, next_index| {
 	var $chunks = old.chunks
 	var $written = 0
-	for chunk_id in patches.chunk_ids_rev {
-		writes = patches.by_chunk.get(chunk_id) ?? crash "Rows touched slot chunk had no patches"
-		old_chunk = old.chunks.get(chunk_id) ?? []
+	for chunk_id in rows_reverse(patches.chunk_ids.to_list()) {
+		writes = rows_slot_directory_get(patches.by_chunk, chunk_id) ?? crash "Rows touched slot chunk had no patches"
+		old_chunk = rows_slot_directory_get(old.chunks, chunk_id) ?? []
 		first_index = chunk_id * 32 + 1
 		available = next_index - first_index
 		final_len = if available < 32 {
@@ -880,7 +1207,7 @@ rows_slots_apply_patches = |old, patches, free, next_index| {
 			$chunk = $chunk.append(cell)
 			$offset = $offset + 1
 		}
-		$chunks = $chunks.insert(chunk_id, $chunk)
+		$chunks = rows_slot_directory_insert($chunks, chunk_id, $chunk)
 		$written = $written + 1
 	}
 	{ slot_chunks_written: $written, slots: { chunks: $chunks, free, next_index } }
@@ -909,7 +1236,7 @@ rows_build_fresh_loop = |items, key_of, index, len, build|
 					{
 						order_slots: build.order_slots.append(slot),
 						chunks: if chunk_complete {
-							build.chunks.insert(chunk_id, chunk)
+							rows_slot_directory_insert(build.chunks, chunk_id, chunk)
 						} else {
 							build.chunks
 						},
@@ -931,17 +1258,15 @@ rows_build_fresh_loop = |items, key_of, index, len, build|
 		}
 	}
 
-## Build a fresh snapshot with one dictionary insertion per completed 32-cell
-## slot chunk. Ordered slots append into their final preallocated sequence, and
-## exact-key lookup remains one preallocated hash insertion per row so duplicate
-## keys are rejected while their first occurrence is still known.
+## Build slot chunks directly and publish each once into the bounded directory.
+## Ordered slots append into their final preallocated sequence. The exact-key
+## index rejects each duplicate before later input items are examined.
 rows_build_fresh : List(item), Box((item -> Str)) -> Try(RowsBuild(item), Rows.Error)
 rows_build_fresh = |items, key_of| {
 	len = items.len()
 	if len >= rows_slot_base {
 		Err(Rows.Error.SlotExhausted)
 	} else {
-		chunk_capacity = (len + 31).div_trunc_by(32)
 		built = rows_build_fresh_loop(
 			items,
 			key_of,
@@ -949,9 +1274,9 @@ rows_build_fresh = |items, key_of| {
 			len,
 			{
 				order_slots: List.with_capacity(len),
-				chunks: Dict.with_capacity(chunk_capacity),
+				chunks: rows_slot_directory_empty(),
 				current_chunk: List.with_capacity(32),
-				key_index: Dict.with_capacity(len),
+				key_index: RowsKeyIndex.empty(),
 				key_bytes: 0,
 				chunk_writes: 0,
 			},
@@ -959,7 +1284,7 @@ rows_build_fresh = |items, key_of| {
 		if built.current_chunk.is_empty() {
 			Ok({
 				order_slots: built.order_slots,
-				slots: { chunks: built.chunks, free: [], next_index: len + 1 },
+				slots: { chunks: built.chunks, free: RowsIdStack.empty(), next_index: len + 1 },
 				key_index: built.key_index,
 				key_bytes: built.key_bytes,
 				slot_chunks_written: built.chunk_writes,
@@ -968,7 +1293,7 @@ rows_build_fresh = |items, key_of| {
 			last_chunk_id = len.div_trunc_by(32)
 			Ok({
 				order_slots: built.order_slots,
-				slots: { chunks: built.chunks.insert(last_chunk_id, built.current_chunk), free: [], next_index: len + 1 },
+				slots: { chunks: rows_slot_directory_insert(built.chunks, last_chunk_id, built.current_chunk), free: RowsIdStack.empty(), next_index: len + 1 },
 				key_index: built.key_index,
 				key_bytes: built.key_bytes,
 				slot_chunks_written: built.chunk_writes + 1,
@@ -1009,7 +1334,7 @@ rows_build_replacement_loop = |items, key_of, old, index, len, build|
 							})
 						}
 						Err(_) => {
-							match old.slots.free.get(build.free_cursor) {
+							match build.free_cursor.first() {
 								Ok(slot_index) => {
 									free_cell = rows_slots_cell(old.slots, slot_index) ?? crash "Rows free slot was missing"
 									generation =
@@ -1018,7 +1343,7 @@ rows_build_replacement_loop = |items, key_of, old, index, len, build|
 											_ => crash "Rows free slot was not vacant"
 										}
 									Ok({
-										free_cursor: build.free_cursor + 1,
+										free_cursor: build.free_cursor.drop_first(1),
 										next_index: build.next_index,
 										slot: rows_slot_pack(slot_index, generation),
 										cell: RowsSlotLive({ generation, key, item }),
@@ -1047,7 +1372,7 @@ rows_build_replacement_loop = |items, key_of, old, index, len, build|
 					index + 1,
 					len,
 					{
-						order_slots: build.order_slots.append(reserved.slot),
+						order_slots: build.order_slots.prepend(reserved.slot),
 						key_index: build.key_index.insert(key, reserved.slot),
 						key_bytes: build.key_bytes + key.count_utf8_bytes(),
 						patches: rows_slots_patch(build.patches, rows_slot_index(reserved.slot), reserved.cell),
@@ -1062,7 +1387,6 @@ rows_build_replacement_loop = |items, key_of, old, index, len, build|
 rows_build_replacement : List(item), Box((item -> Str)), RowsStorage(item) -> Try(RowsBuild(item), Rows.Error)
 rows_build_replacement = |items, key_of, old| {
 	len = items.len()
-	patch_capacity = old.slots.chunks.len() + (len + 31).div_trunc_by(32)
 	partial = rows_build_replacement_loop(
 		items,
 		key_of,
@@ -1070,16 +1394,16 @@ rows_build_replacement = |items, key_of, old| {
 		0,
 		len,
 		{
-			order_slots: List.with_capacity(len),
-			key_index: Dict.with_capacity(len),
+			order_slots: RowsIdStack.empty(),
+			key_index: RowsKeyIndex.empty(),
 			key_bytes: 0,
-			patches: { by_chunk: Dict.with_capacity(patch_capacity), chunk_ids_rev: [] },
-			free_cursor: 0,
+			patches: { by_chunk: rows_slot_directory_empty(), chunk_ids: RowsIdStack.empty() },
+			free_cursor: old.slots.free,
 			next_index: old.slots.next_index,
 		},
 	)?
 	var $patches = partial.patches
-	var $released_rev = []
+	var $released = List.with_capacity(rows_order_len(old.order))
 	var $index = 0
 	while $index < rows_order_len(old.order) {
 		entry = rows_entry_at(old.order, old.slots, $index) ?? crash "Rows replacement old index was invalid"
@@ -1092,17 +1416,16 @@ rows_build_replacement = |items, key_of, old| {
 					$patches = rows_slots_patch($patches, slot_index, RowsSlotRetired)
 				} else {
 					$patches = rows_slots_patch($patches, slot_index, RowsSlotVacant({ generation: generation + 1 }))
-					$released_rev = $released_rev.prepend(slot_index)
+					$released = $released.append(slot_index)
 				}
 			}
 		}
 		$index = $index + 1
 	}
-	remaining_free = old.slots.free.drop_first(partial.free_cursor)
-	final_free = $released_rev.concat(remaining_free)
+	final_free = $released.fold(partial.free_cursor, |free, index| free.prepend(index))
 	patched = rows_slots_apply_patches(old.slots, $patches, final_free, partial.next_index)
 	Ok({
-		order_slots: partial.order_slots,
+		order_slots: rows_reverse(partial.order_slots.to_list()),
 		slots: patched.slots,
 		key_index: partial.key_index,
 		key_bytes: partial.key_bytes,
@@ -1110,24 +1433,23 @@ rows_build_replacement = |items, key_of, old| {
 	})
 }
 
-## Retire every live slot one chunk at a time. Rebuilding the dense chunk map
-## avoids path-copying the whole persistent dictionary and one 32-cell chunk
-## for every row. The old generation retains its immutable storage; this
+## Retire every live slot one chunk at a time. Rebuilding complete chunks avoids
+## copying one 32-cell chunk for every row. The old generation retains its immutable storage; this
 ## produces the independently owned slot generation used by the new empty
 ## collection. Vacant generations remain unchanged, saturated live slots retire
 ## permanently, and the free list is rebuilt without duplicates from the cells
 ## that the new generation actually owns.
 rows_release_all_slots : RowsStorage(item) -> RowsSlotStore(item)
 rows_release_all_slots = |old| {
-	chunk_count = old.slots.chunks.len()
+	chunk_count = rows_slot_directory_len(old.slots.chunks)
 	free_capacity = old.slots.free.len() + rows_order_len(old.order)
-	empty_chunks : Dict(U64, List(RowsSlotCell(item)))
-	empty_chunks = Dict.with_capacity(chunk_count)
+	empty_chunks : RowsSlotDirectory(List(RowsSlotCell(item)))
+	empty_chunks = rows_slot_directory_empty()
 	var $chunks = empty_chunks
 	var $free = List.with_capacity(free_capacity)
 	var $chunk_id = 0
 	while $chunk_id < chunk_count {
-		old_chunk = old.slots.chunks.get($chunk_id) ?? crash "Rows clear slot chunk was missing"
+		old_chunk = rows_slot_directory_get(old.slots.chunks, $chunk_id) ?? crash "Rows clear slot chunk was missing"
 		var $new_chunk = List.with_capacity(old_chunk.len())
 		var $offset = 0
 		for cell in old_chunk {
@@ -1150,25 +1472,26 @@ rows_release_all_slots = |old| {
 			}
 			$offset = $offset + 1
 		}
-		$chunks = $chunks.insert($chunk_id, $new_chunk)
+		$chunks = rows_slot_directory_insert($chunks, $chunk_id, $new_chunk)
 		$chunk_id = $chunk_id + 1
 	}
-	{ chunks: $chunks, free: $free, next_index: old.slots.next_index }
+	{ chunks: $chunks, free: RowsIdStack.from_list($free), next_index: old.slots.next_index }
 }
 
 rows_reverse : List(a) -> List(a)
 rows_reverse = |items| {
-	var $reversed = []
-	for item in items {
-		$reversed = $reversed.prepend(item)
+	var $reversed = List.with_capacity(items.len())
+	var $remaining = items.len()
+	while $remaining > 0 {
+		$remaining = $remaining - 1
+		$reversed = $reversed.append(items.get($remaining) ?? crash "Rows reversal index was invalid")
 	}
 	$reversed
 }
 
-rows_remove_at_loop : RowsEditState(item), U64, U64, List(RowsEntry(item)) -> RowsEditState(item)
-rows_remove_at_loop = |state, at, remaining, removed_rev|
+rows_remove_at_loop : RowsEditState(item), U64, U64 -> RowsEditState(item)
+rows_remove_at_loop = |state, at, remaining|
 	if remaining == 0 {
-		_ = removed_rev
 		state
 	} else {
 		entry = rows_entry_at(state.order, state.slots, at) ?? crash "Rows removal index exceeded its order"
@@ -1178,20 +1501,19 @@ rows_remove_at_loop = |state, at, remaining, removed_rev|
 			order: order_removal.order,
 			key_index: state.key_index.remove(entry.key),
 			key_bytes: state.key_bytes - entry.key.count_utf8_bytes(),
-			removed: state.removed.insert(entry.key, entry),
-			touched: state.touched.insert(entry.slot, True),
-			touched_rev: state.touched_rev.prepend(entry.slot),
+			removed: state.removed.insert(entry.key, entry.slot),
+
+			touched_history: state.touched_history.prepend(entry.slot),
 		}
-		rows_remove_at_loop(next, at, remaining - 1, removed_rev.prepend(entry))
+		rows_remove_at_loop(next, at, remaining - 1)
 	}
 
 rows_remove_at : RowsEditState(item), U64, U64 -> RowsEditState(item)
-rows_remove_at = |state, at, count| rows_remove_at_loop(state, at, count, [])
+rows_remove_at = |state, at, count| rows_remove_at_loop(state, at, count)
 
-rows_insert_items : RowsEditState(item), Box((item -> Str)), U64, List(item), U64, U64, List(RowsEntry(item)) -> Try(RowsEditState(item), Rows.Error)
-rows_insert_items = |state, key_of, at, items, item_index, item_len, entries_rev|
+rows_insert_items : RowsEditState(item), Box((item -> Str)), U64, List(item), U64, U64 -> Try(RowsEditState(item), Rows.Error)
+rows_insert_items = |state, key_of, at, items, item_index, item_len|
 	if item_index == item_len {
-		_ = entries_rev
 		Ok(state)
 	} else {
 		item = items.get(item_index) ?? crash "Rows inserted item length changed during construction"
@@ -1201,10 +1523,10 @@ rows_insert_items = |state, key_of, at, items, item_index, item_len, entries_rev
 			Err(_) => {
 				entry_and_state =
 					match state.removed.get(key) {
-						Ok(removed_entry) => {
-							replaced_slots = rows_slots_replace(state.slots, removed_entry.slot, key, item) ?? crash "Rows removed entry slot became stale"
+						Ok(removed_slot) => {
+							replaced_slots = rows_slots_replace(state.slots, removed_slot, key, item) ?? crash "Rows removed entry slot became stale"
 							{
-								entry: { slot: removed_entry.slot, key, item },
+								entry: { slot: removed_slot, key, item },
 								state: { ..state, slots: replaced_slots, removed: state.removed.remove(key) },
 							}
 						}
@@ -1222,10 +1544,10 @@ rows_insert_items = |state, key_of, at, items, item_index, item_len, entries_rev
 					order: rows_order_insert(entry_and_state.state.order, reserved_index, entry_and_state.entry.slot),
 					key_index: entry_and_state.state.key_index.insert(key, entry_and_state.entry.slot),
 					key_bytes: entry_and_state.state.key_bytes + key.count_utf8_bytes(),
-					touched: entry_and_state.state.touched.insert(entry_and_state.entry.slot, True),
-					touched_rev: entry_and_state.state.touched_rev.prepend(entry_and_state.entry.slot),
+
+					touched_history: entry_and_state.state.touched_history.prepend(entry_and_state.entry.slot),
 				}
-				rows_insert_items(next_state, key_of, at, items, item_index + 1, item_len, entries_rev.prepend(entry_and_state.entry))
+				rows_insert_items(next_state, key_of, at, items, item_index + 1, item_len)
 			}
 		}
 	}
@@ -1233,15 +1555,15 @@ rows_insert_items = |state, key_of, at, items, item_index, item_len, entries_rev
 rows_order_take_range : RowsOrder, U64, U64 -> { order : RowsOrder, slots : List(U64) }
 rows_order_take_range = |order, from, count| {
 	var $order = order
-	var $slots_rev = []
+	var $slots = List.with_capacity(count)
 	var $remaining = count
 	while $remaining > 0 {
 		removal = rows_order_remove($order, from)
 		$order = removal.order
-		$slots_rev = $slots_rev.prepend(removal.removed)
+		$slots = $slots.append(removal.removed)
 		$remaining = $remaining - 1
 	}
-	{ order: $order, slots: rows_reverse($slots_rev) }
+	{ order: $order, slots: $slots }
 }
 
 rows_order_insert_range : RowsOrder, U64, List(U64) -> RowsOrder
@@ -1263,7 +1585,7 @@ rows_apply_one = |state, key_of, edit|
 			if items.is_empty() {
 				Ok(state)
 			} else {
-				rows_insert_items(state, key_of, rows_order_len(state.order), items, 0, items.len(), [])
+				rows_insert_items(state, key_of, rows_order_len(state.order), items, 0, items.len())
 			}
 		Clear =>
 			if rows_order_len(state.order) == 0 {
@@ -1277,7 +1599,7 @@ rows_apply_one = |state, key_of, edit|
 			} else if items.is_empty() {
 				Ok(state)
 			} else {
-				rows_insert_items(state, key_of, at, items, 0, items.len(), [])
+				rows_insert_items(state, key_of, at, items, 0, items.len())
 			}
 		InsertBefore({ before, items }) =>
 			match state.key_index.get(before) {
@@ -1287,7 +1609,7 @@ rows_apply_one = |state, key_of, edit|
 						Ok(state)
 					} else {
 						at = rows_order_rank(state.order, before_slot) ?? crash "Rows key slot was absent from order"
-						rows_insert_items(state, key_of, at, items, 0, items.len(), [])
+						rows_insert_items(state, key_of, at, items, 0, items.len())
 					}
 				}
 		MoveKeyBefore({ key, before }) =>
@@ -1324,7 +1646,7 @@ rows_apply_one = |state, key_of, edit|
 					} else {
 						taken = rows_order_take_range(state.order, from, 1)
 						moved_order = rows_order_insert_range(taken.order, to, taken.slots)
-						next = { ..state, order: moved_order, touched: state.touched.insert(moving_slot, True), touched_rev: state.touched_rev.prepend(moving_slot) }
+						next = { ..state, order: moved_order, touched_history: state.touched_history.prepend(moving_slot) }
 						Ok(next)
 					}
 				}
@@ -1340,13 +1662,11 @@ rows_apply_one = |state, key_of, edit|
 			} else {
 				taken = rows_order_take_range(state.order, from, count)
 				moved_order = rows_order_insert_range(taken.order, to, taken.slots)
-				var $touched = state.touched
-				var $touched_rev = state.touched_rev
+				var $touched_history = state.touched_history
 				for moved_slot in taken.slots {
-					$touched = $touched.insert(moved_slot, True)
-					$touched_rev = $touched_rev.prepend(moved_slot)
+					$touched_history = $touched_history.prepend(moved_slot)
 				}
-				next = { ..state, order: moved_order, touched: $touched, touched_rev: $touched_rev }
+				next = { ..state, order: moved_order, touched_history: $touched_history }
 				Ok(next)
 			}
 		}
@@ -1380,7 +1700,7 @@ rows_apply_one = |state, key_of, edit|
 						Ok(state)
 					} else {
 						updated_slots = rows_slots_replace(state.slots, before_entry.slot, new_key, item) ?? crash "Rows set slot became stale"
-						next = { ..state, slots: updated_slots, touched: state.touched.insert(before_entry.slot, True), touched_rev: state.touched_rev.prepend(before_entry.slot) }
+						next = { ..state, slots: updated_slots, touched_history: state.touched_history.prepend(before_entry.slot) }
 						Ok(next)
 					}
 				} else {
@@ -1388,7 +1708,7 @@ rows_apply_one = |state, key_of, edit|
 						Ok(_) => Err(DuplicateKey(new_key))
 						Err(_) => {
 							removed = rows_remove_at(state, at, 1)
-							rows_insert_items(removed, key_of, at, [item], 0, 1, [])
+							rows_insert_items(removed, key_of, at, [item], 0, 1)
 						}
 					}
 				}
@@ -1422,7 +1742,7 @@ rows_touched_equal = |old, final| {
 		False
 	} else {
 		var $equal = True
-		for slot in final.touched_rev {
+		for slot in final.touched_history.to_list() {
 			if $equal {
 				old_rank = rows_order_rank(old.order, slot)
 				final_rank = rows_order_rank(final.order, slot)
@@ -1456,7 +1776,7 @@ rows_touched_equal = |old, final| {
 
 rows_number_transitions : List(RowsTransition) -> List(RowsTransition)
 rows_number_transitions = |transitions| {
-	var $numbered = []
+	var $numbered = List.with_capacity(transitions.len())
 	var $op_index = 0
 	for transition in transitions {
 		numbered_transition =
@@ -1467,10 +1787,10 @@ rows_number_transitions = |transitions| {
 				RemoveRows(payload) => RemoveRows({ ..payload, op_index: $op_index })
 				UpdateRow(payload) => UpdateRow({ ..payload, op_index: $op_index })
 			}
-		$numbered = $numbered.prepend(numbered_transition)
+		$numbered = $numbered.append(numbered_transition)
 		$op_index = $op_index + 1
 	}
-	rows_reverse($numbered)
+	$numbered
 }
 
 rows_canonical_transitions : RowsStorage(item), RowsEditState(item) -> List(RowsTransition)
@@ -1482,19 +1802,20 @@ rows_canonical_transitions = |old, final| {
 		seen : Dict(U64, Bool)
 		seen = Dict.empty()
 		var $seen = seen
-		var $touched = []
-		for slot in final.touched_rev {
+		var $touched = List.with_capacity(final.touched_history.len())
+		for slot in final.touched_history.to_list() {
 			match $seen.get(slot) {
 				Ok(_) => {}
 				Err(_) => {
 					$seen = $seen.insert(slot, True)
-					$touched = $touched.prepend(slot)
+					$touched = $touched.append(slot)
 				}
 			}
 		}
 
+		$touched = rows_reverse($touched)
 		var $working = old.order
-		var $canonical_rev = []
+		var $canonical = List.with_capacity($touched.len())
 		for slot in $touched {
 			match rows_order_rank($working, slot) {
 				Err(_) => {}
@@ -1504,7 +1825,7 @@ rows_canonical_transitions = |old, final| {
 						Err(_) => {
 							removal = rows_order_remove($working, at)
 							$working = removal.order
-							$canonical_rev = $canonical_rev.prepend(RemoveRows({ op_index: 0, first_slot: slot, count: 1 }))
+							$canonical = $canonical.append(RemoveRows({ op_index: 0, first_slot: slot, count: 1 }))
 						}
 					}
 				}
@@ -1531,20 +1852,48 @@ rows_canonical_transitions = |old, final| {
 						},
 				)
 
+		# Appended slots already have authenticated final ranks. If every old
+		# touched slot stayed at its old rank and new slots form the exact tail,
+		# emit their before-slot-zero transitions without rebuilding that tail
+		# in a second persistent order tree just for normalization.
+		old_len = rows_order_len(old.order)
+		var $append_only = rows_order_len(final.order) > old_len and rows_order_len($working) == old_len
+		var $appended = 0
+		if $append_only {
+			for target in target_rows {
+				match rows_order_rank(old.order, target.slot) {
+					Ok(rank) => {
+						$append_only = $append_only and rank == target.rank
+					}
+					Err(_) => {
+						$append_only = $append_only and target.rank == old_len + $appended
+						$appended = $appended + 1
+					}
+				}
+			}
+		}
+		$append_only = $append_only and rows_order_len(final.order) == old_len + $appended
+
 		for target in target_rows {
 			match rows_order_rank($working, target.slot) {
 				Err(_) => {
-					before_slot = rows_order_get($working, target.rank) ?? 0
-					$working = rows_order_insert($working, target.rank, target.slot)
+					before_slot = if $append_only {
+						0
+					} else {
+						rows_order_get($working, target.rank) ?? 0
+					}
+					if !$append_only {
+						$working = rows_order_insert($working, target.rank, target.slot)
+					}
 					entry = rows_entry_for_slot(final.slots, target.slot) ?? crash "Rows canonical inserted slot was stale"
-					$canonical_rev = $canonical_rev.prepend(InsertRow({ op_index: 0, before_slot, slot: target.slot, key: entry.key }))
+					$canonical = $canonical.append(InsertRow({ op_index: 0, before_slot, slot: target.slot, key: entry.key }))
 				}
 				Ok(current_rank) =>
 					if current_rank != target.rank {
 						removal = rows_order_remove($working, current_rank)
 						before_slot = rows_order_get(removal.order, target.rank) ?? 0
 						$working = rows_order_insert(removal.order, target.rank, target.slot)
-						$canonical_rev = $canonical_rev.prepend(MoveRows({ op_index: 0, first_slot: target.slot, count: 1, before_slot }))
+						$canonical = $canonical.append(MoveRows({ op_index: 0, first_slot: target.slot, count: 1, before_slot }))
 					}
 				}
 		}
@@ -1556,12 +1905,12 @@ rows_canonical_transitions = |old, final| {
 					old_entry = rows_entry_for_slot(old.slots, target.slot) ?? crash "Rows canonical old slot was stale"
 					final_entry = rows_entry_for_slot(final.slots, target.slot) ?? crash "Rows canonical final slot was stale"
 					if old_entry.key != final_entry.key or !old_entry.item.is_eq(final_entry.item) {
-						$canonical_rev = $canonical_rev.prepend(UpdateRow({ op_index: 0, slot: target.slot, key: final_entry.key }))
+						$canonical = $canonical.append(UpdateRow({ op_index: 0, slot: target.slot, key: final_entry.key }))
 					}
 				}
 			}
 		}
-		rows_number_transitions(rows_reverse($canonical_rev))
+		rows_number_transitions($canonical)
 	}
 }
 
@@ -1571,7 +1920,7 @@ rows_release_absent_touched = |state| {
 	seen = Dict.empty()
 	var $seen = seen
 	var $slots = state.slots
-	for slot in state.touched_rev {
+	for slot in state.touched_history.to_list() {
 		match $seen.get(slot) {
 			Ok(_) => {}
 			Err(_) => {
@@ -1710,7 +2059,7 @@ Rows(item) :: [Rows(RowsStorage(item))].{
 	replace_all : Rows(item), List(item) -> Try(Rows(item), Error)
 	replace_all = |Rows(old), items| {
 		built =
-			if old.slots.next_index == 1 and old.slots.chunks.len() == 0 {
+			if old.slots.next_index == 1 and rows_slot_directory_len(old.slots.chunks) == 0 {
 				rows_build_fresh(items, old.key_of)?
 			} else {
 				rows_build_replacement(items, old.key_of, old)?
@@ -1766,16 +2115,16 @@ Rows(item) :: [Rows(RowsStorage(item))].{
 				}),
 			)
 		} else {
-			removed : Dict(Str, RowsEntry(item))
-			removed = Dict.empty()
+			removed : RowsKeyIndex
+			removed = RowsKeyIndex.empty()
 			state = {
 				order: old.order,
 				slots: old.slots,
 				key_index: old.key_index,
 				key_bytes: old.snapshot_key_bytes,
 				removed,
-				touched: Dict.empty(),
-				touched_rev: [],
+
+				touched_history: RowsIdStack.empty(),
 			}
 			applied = rows_apply_many(state, old.key_of, edits, 0, edits.len())?
 			if rows_touched_equal(old, applied) {
@@ -1834,16 +2183,14 @@ Rows(item) :: [Rows(RowsStorage(item))].{
 	## Materialize items in row order.
 	to_list : Rows(item) -> List(item)
 	to_list = |Rows(storage)| {
-		reversed =
-			rows_order_fold(
-				storage.order,
-				[],
-				|items, slot| {
-					entry = rows_entry_for_slot(storage.slots, slot) ?? crash "Rows materialization slot was stale"
-					items.prepend(entry.item)
-				},
-			)
-		rows_reverse(reversed)
+		rows_order_fold(
+			storage.order,
+			List.with_capacity(rows_order_len(storage.order)),
+			|items, slot| {
+				entry = rows_entry_for_slot(storage.slots, slot) ?? crash "Rows materialization slot was stale"
+				items.append(entry.item)
+			},
+		)
 	}
 
 	## O(1) generation equality used by ordinary signal pruning. The hosted hook
@@ -2000,11 +2347,11 @@ expect {
 		expected_chunks = (count + 31).div_trunc_by(32)
 		last_chunk_ok =
 			if count == 0 {
-				built.slots.chunks.len() == 0
+				rows_slot_directory_len(built.slots.chunks) == 0
 			} else {
 				last_chunk_id = (count - 1).div_trunc_by(32)
 				expected_last_len = (count - 1).rem_by(32) + 1
-				last_chunk = built.slots.chunks.get(last_chunk_id)?
+				last_chunk = rows_slot_directory_get(built.slots.chunks, last_chunk_id)?
 				last_chunk.len() == expected_last_len
 			}
 		last_slot_ok =
@@ -2025,7 +2372,7 @@ expect {
 		$valid =
 			$valid
 				and built.slot_chunks_written == expected_chunks
-					and built.slots.chunks.len() == expected_chunks
+					and rows_slot_directory_len(built.slots.chunks) == expected_chunks
 						and built.slots.next_index == count + 1
 							and built.slots.free.is_empty()
 								and built.key_index.len() == count
@@ -2062,7 +2409,7 @@ expect {
 	)
 
 	planned.slot_chunks_written == 3
-		and replaced_storage.slots.chunks.len() == 3
+		and rows_slot_directory_len(replaced_storage.slots.chunks) == 3
 			and replaced_storage.slots.next_index == 66
 				and replaced_survivor_slot == initial_survivor_slot
 					and reused_indexes == [2, 34]
@@ -2079,10 +2426,10 @@ expect {
 expect {
 	max_generation = 4294967295
 	old_slot = rows_slot_pack(1, max_generation)
-	chunks : Dict(U64, List(RowsSlotCell(RowsTestItem)))
-	chunks = Dict.with_capacity(1).insert(0, [RowsSlotLive({ generation: max_generation, key: "a", item: rows_test_item("a", 1) })])
-	key_index : Dict(Str, U64)
-	key_index = Dict.with_capacity(1).insert("a", old_slot)
+	chunks : RowsSlotDirectory(List(RowsSlotCell(RowsTestItem)))
+	chunks = rows_slot_directory_insert(rows_slot_directory_empty(), 0, [RowsSlotLive({ generation: max_generation, key: "a", item: rows_test_item("a", 1) })])
+	key_index : RowsKeyIndex
+	key_index = RowsKeyIndex.empty().insert("a", old_slot)
 	old : RowsStorage(RowsTestItem)
 	old = {
 		token: rows_generation_callable(),
@@ -2090,7 +2437,7 @@ expect {
 		transition: Snapshot,
 		key_of: Box.box(rows_test_key),
 		order: rows_order_from_slots([old_slot]),
-		slots: { chunks, free: [], next_index: 2 },
+		slots: { chunks, free: RowsIdStack.empty(), next_index: 2 },
 		key_index,
 		snapshot_key_bytes: 1,
 		op_count: 0,
@@ -2145,8 +2492,9 @@ expect {
 	max_generation = 4294967295
 	first_slot = rows_slot_pack(1, 1)
 	saturated_slot = rows_slot_pack(4, max_generation)
-	chunks : Dict(U64, List(RowsSlotCell(RowsTestItem)))
-	chunks = Dict.with_capacity(1).insert(
+	chunks : RowsSlotDirectory(List(RowsSlotCell(RowsTestItem)))
+	chunks = rows_slot_directory_insert(
+		rows_slot_directory_empty(),
 		0,
 		[
 			RowsSlotLive({ generation: 1, key: "a", item: rows_test_item("a", 1) }),
@@ -2155,8 +2503,8 @@ expect {
 			RowsSlotLive({ generation: max_generation, key: "d", item: rows_test_item("d", 4) }),
 		],
 	)
-	key_index : Dict(Str, U64)
-	key_index = Dict.with_capacity(2).insert("a", first_slot).insert("d", saturated_slot)
+	key_index : RowsKeyIndex
+	key_index = RowsKeyIndex.empty().insert("a", first_slot).insert("d", saturated_slot)
 	old_storage : RowsStorage(RowsTestItem)
 	old_storage = {
 		token: rows_generation_callable(),
@@ -2164,7 +2512,7 @@ expect {
 		transition: Snapshot,
 		key_of: Box.box(rows_test_key),
 		order: rows_order_from_slots([first_slot, saturated_slot]),
-		slots: { chunks, free: [2], next_index: 5 },
+		slots: { chunks, free: RowsIdStack.from_list([2]), next_index: 5 },
 		key_index,
 		snapshot_key_bytes: 2,
 		op_count: 0,
@@ -2199,7 +2547,7 @@ expect {
 		and second_preserved
 			and third_retired
 				and saturated_retired
-					and cleared_storage.slots.free == [1, 2]
+					and cleared_storage.slots.free.to_list() == [1, 2]
 						and Rows.platform_item_for_slot(old, first_slot)?.value() == 1
 							and Rows.platform_item_for_slot(old, saturated_slot)?.value() == 4
 }
@@ -2214,7 +2562,7 @@ expect {
 	cleared.len() == 0
 		and Rows.platform_transition_kind(cleared) == Snapshot
 			and storage.slots.next_index == 1
-				and storage.slots.chunks.is_empty()
+				and rows_slot_directory_is_empty(storage.slots.chunks)
 					and storage.slots.free.is_empty()
 }
 
@@ -2228,8 +2576,8 @@ expect {
 	exhausted_storage = {
 		..initial_storage,
 		order: rows_order_empty(),
-		slots: { chunks: Dict.empty(), free: [], next_index: rows_slot_base },
-		key_index: Dict.empty(),
+		slots: { chunks: rows_slot_directory_empty(), free: RowsIdStack.empty(), next_index: rows_slot_base },
+		key_index: RowsKeyIndex.empty(),
 		snapshot_key_bytes: 0,
 	}
 	exhausted = Rows.replace_all(Rows(exhausted_storage), [rows_test_item("new", 5)])
@@ -2282,13 +2630,13 @@ expect {
 ## Fresh bulk construction creates exactly the packed 32-way shape: 32 leaves
 ## and one root for 1k rows, with no edit-path nodes or free-list churn.
 expect {
-	var $slots_rev = []
+	var $slots = []
 	var $slot = 1
 	while $slot <= 1000 {
-		$slots_rev = $slots_rev.prepend($slot)
+		$slots = $slots.append($slot)
 		$slot = $slot + 1
 	}
-	order = rows_order_from_slots(rows_reverse_u64($slots_rev))
+	order = rows_order_from_slots($slots)
 
 	rows_order_len(order) == 1000 and order.nodes.len() == 2 and order.parents.len() == 2 and order.slot_leaf.len() == 32 and order.next_node == 34 and order.free_nodes.is_empty() and rows_order_get(order, 999)? == 1000 and rows_order_rank(order, 513)? == 512
 }
@@ -2527,7 +2875,7 @@ expect {
 	}
 	Rows(storage) = $rows
 
-	storage.slots.next_index == 3 and storage.slots.chunks.len() == 1 and storage.order.nodes.len() <= 3 and storage.order.parents.len() <= 3
+	storage.slots.next_index == 3 and rows_slot_directory_len(storage.slots.chunks) == 1 and storage.order.nodes.len() <= 3 and storage.order.parents.len() <= 3
 }
 
 ## A 10k direct clear publishes one structural operation, retires every old
@@ -2565,7 +2913,7 @@ expect {
 				and initial_storage.order.slot_leaf.len() == 313
 					and initial_storage.order.next_node == 325
 						and initial_storage.order.free_nodes.is_empty()
-							and initial_storage.slots.chunks.len() == 313
+							and rows_slot_directory_len(initial_storage.slots.chunks) == 313
 								and initial_storage.key_index.len() == 10000
 									and Rows.get(initial, 0)?.value() == 0
 										and Rows.get(initial, 9999)?.value() == 9999
@@ -2591,4 +2939,153 @@ expect {
 		}
 
 	range_is_error and duplicate_is_error
+}
+
+rows_index_valid : RowsIndex(key, value) -> Bool
+	where [key.is_lt : key, key -> Bool]
+rows_index_valid = |tree| match tree {
+	IndexEmpty => True
+	IndexNode(node) => {
+		left_height = rows_index_height(node.left)
+		right_height = rows_index_height(node.right)
+		left_ordered = match node.left {
+			IndexEmpty => True
+			IndexNode(left) => left.key.is_lt(node.key)
+		}
+		right_ordered = match node.right {
+			IndexEmpty => True
+			IndexNode(right) => node.key.is_lt(right.key)
+		}
+		expected_height = 1 + if left_height > right_height {
+			left_height
+		} else {
+			right_height
+		}
+		left_ordered and right_ordered and left_height <= right_height + 1 and right_height <= left_height + 1 and node.height == expected_height and node.size == 1 + node.left.len() + node.right.len() and rows_index_valid(node.left) and rows_index_valid(node.right)
+	}
+}
+
+## All AVL rotation shapes and repeated retirement preserve surviving entries,
+## exact cached sizes, bounded height, and an independently retained old root.
+expect {
+	initial : RowsIndex(U64, U64)
+	initial = RowsIndex.empty()
+	var $index = initial
+	var $key = 0.U64
+	while $key < 1024 {
+		$index = $index.insert(($key * 613).rem_by(1024), $key)
+		$index = $index.insert(($key * 613).rem_by(1024), ($key * 613).rem_by(1024))
+		$key = $key + 1
+	}
+	retained = $index
+	var $valid = rows_index_valid(retained)
+	$key = 0
+	while $key < 1024 {
+		removed = ($key * 613).rem_by(1024)
+		$index = $index.remove(removed)
+		$valid = $valid and rows_index_valid($index) and $index.len() == 1023 - $key and retained.get(removed)? == removed
+		$key = $key + 1
+	}
+	$valid and $index.is_empty() and retained.len() == 1024 and rows_index_height(retained) <= 15
+}
+
+## The slot directory shares untouched chunks across multiple forks and grows
+## across both leaf and directory boundaries without changing retained values.
+expect {
+	var $directory = rows_slot_directory_empty()
+	var $key = 0.U64
+	while $key < 3125 {
+		$directory = rows_slot_directory_insert($directory, $key, [$key])
+		$key = $key + 1
+	}
+	old = $directory
+	left = rows_slot_directory_insert(old, 31, [9999])
+	right = rows_slot_directory_insert(old, 1024, [8888])
+	grown = rows_slot_directory_insert(left, 3125, [3125])
+	rows_slot_directory_get(old, 31)? == [31] and rows_slot_directory_get(left, 31)? == [9999] and rows_slot_directory_get(right, 31)? == [31] and rows_slot_directory_get(old, 1024)? == [1024] and rows_slot_directory_get(right, 1024)? == [8888] and rows_slot_directory_get(grown, 3125)? == [3125] and rows_slot_directory_len(old) == 3125 and rows_slot_directory_len(grown) == 3126
+}
+
+## A retained large collection survives edits that split leaves and branches,
+## grow roots, remove middle ranges, and reuse retired order nodes. A separate
+## List models the exact order, including moves interpreted after removal.
+expect {
+	items = rows_test_items(1050)
+	initial = Rows.from_list(items, rows_test_key)?
+	var $rows = initial
+	var $model = items
+	var $step = 0.U64
+	var $valid = True
+	while $step < 64 {
+		at = ($step * 37).rem_by($model.len())
+		item = rows_test_item("new-${$step.to_str()}", 2000 + $step)
+		old = $rows
+		$rows = Rows.apply($rows, [InsertAt({ at, items: [item] })])?
+		$model = $model.take_first(at).concat([item]).concat($model.drop_first(at))
+		$valid = $valid and old.len() + 1 == $rows.len() and Rows.to_list($rows) == $model
+		if $step.rem_by(3) == 0 {
+			from = $model.len() - 2
+			moving = $model.drop_first(from)
+			$rows = Rows.apply($rows, [MoveRange({ from, count: 2, to: 0 })])?
+			$model = moving.concat($model.take_first(from))
+		} else {
+			$rows = Rows.apply($rows, [RemoveRange({ at: 1, count: 1 })])?
+			$model = $model.take_first(1).concat($model.drop_first(2))
+		}
+		$valid = $valid and Rows.to_list($rows) == $model
+		$step = $step + 1
+	}
+	$valid and Rows.to_list(initial) == items
+}
+
+## A clear of a large collection must not leave a linear ownership chain: both
+## retained generations and the active free stack have logarithmic drop depth.
+expect {
+	var $values = List.with_capacity(10000)
+	var $index = 0.U64
+	while $index < 10000 {
+		$values = $values.append($index)
+		$index = $index + 1
+	}
+	retained = RowsIdStack.from_list($values)
+	free = retained.drop_first(100)
+	changed = free.prepend(20000)
+	retained.first()? == 0 and free.first()? == 100 and changed.first()? == 20000 and retained.to_list() == $values and rows_index_valid(retained.items) and rows_index_valid(changed.items) and rows_index_height(retained.items) <= 15 and rows_index_height(changed.items) <= 15
+}
+
+## Retirement visits newest touches first before pushing free IDs, so
+## multiple removals reuse slots in the same order as their original edits.
+expect {
+	initial = Rows.from_list(rows_test_items(5), rows_test_key)?
+	removed = Rows.apply(initial, [RemoveKey("1"), RemoveKey("3")])?
+	reused = Rows.apply(removed, [Append([rows_test_item("a", 10), rows_test_item("b", 11)])])?
+	first = Rows.platform_slot_at(reused, 3)?
+	second = Rows.platform_slot_at(reused, 4)?
+	rows_slot_index(first) == 2 and rows_slot_index(second) == 4 and rows_slot_generation(first) == 2 and rows_slot_generation(second) == 2 and Rows.get(initial, 1)?.value() == 1 and Rows.get(initial, 3)?.value() == 3
+}
+
+## Sparse patch directories distinguish absent cells from stored values, even
+## at the highest representable chunk ID. Forks retain their independent cells.
+expect {
+	empty = rows_slot_directory_empty()
+	high = rows_slot_directory_insert(empty, 134217727, [7.U64])
+	low = rows_slot_directory_insert(high, 0, [1])
+	middle = rows_slot_directory_insert(low, 1025, [2])
+	fork = rows_slot_directory_insert(middle, 134217727, [8])
+	missing = match rows_slot_directory_get(middle, 1024) {
+		Err(Missing) => True
+		_ => False
+	}
+	missing and rows_slot_directory_is_empty(empty) and rows_slot_directory_len(high) == 1 and rows_slot_directory_len(middle) == 3 and rows_slot_directory_len(fork) == 3 and rows_slot_directory_get(middle, 134217727)? == [7] and rows_slot_directory_get(fork, 134217727)? == [8] and rows_slot_directory_get(middle, 0)? == [1] and rows_slot_directory_get(middle, 1025)? == [2]
+}
+
+## Exact key lookup distinguishes prefixes and canonically equivalent Unicode
+## spellings by their original UTF-8 bytes, including through retained forks.
+expect {
+	original = RowsKeyIndex.empty().insert("", 1).insert("a", 2).insert("aa", 3).insert("é", 4).insert("é", 5).insert("😀", 6)
+	changed = original.remove("a").insert("é", 7)
+	absent = match changed.get("a") {
+		Err(Missing) => True
+		_ => False
+	}
+	absent and original.get("a")? == 2 and changed.get("")? == 1 and changed.get("aa")? == 3 and changed.get("é")? == 7 and original.get("é")? == 4 and changed.get("é")? == 5 and changed.get("😀")? == 6
 }

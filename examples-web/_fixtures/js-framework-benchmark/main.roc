@@ -1,6 +1,6 @@
 app [main] {
-	roc: "nightly-2026-09-12-220fd47",
 	pf: platform "../../../platform-web/main.roc",
+	roc: "nightly-2026-09-12-220fd47",
 	rand: "https://github.com/kili-ilo/roc-random/releases/download/0.9.2/2ZXLX8WRqrosGu1V3VL5aXqgtfTRvJmjFPx8a26ecVmc.tar.zst",
 }
 
@@ -60,12 +60,14 @@ append_rows = |model, count| {
 
 update_every_tenth : Model -> Model
 update_every_tenth = |model| {
-	var $edits = []
-	var $index = 0
-	while $index < model.rows.len() {
-		row = Rows.get(model.rows, $index) ?? crash "benchmark row index was invalid"
-		$edits = $edits.prepend(SetAt({ at: $index, item: { ..row, label: "${row.label} !!!" } }))
-		$index = $index + 10
+	count = (model.rows.len() + 9).div_trunc_by(10)
+	var $edits = List.with_capacity(count)
+	var $remaining = count
+	while $remaining > 0 {
+		$remaining = $remaining - 1
+		index = $remaining * 10
+		row = Rows.get(model.rows, index) ?? crash "benchmark row index was invalid"
+		$edits = $edits.append(SetAt({ at: index, item: { ..row, label: "${row.label} !!!" } }))
 	}
 	rows = Rows.apply(model.rows, $edits) ?? crash "benchmark row update was invalid"
 	{ ..model, rows }

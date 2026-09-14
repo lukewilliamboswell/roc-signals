@@ -196,6 +196,12 @@ companion supplies exact allocation and shared-engine diagnostics after parity
 checks. Wall time is deliberately non-gating. See `docs/profiling.md` for case
 selection, comparison, and profiler workflows.
 
+For focused retained-collection scaling, run `python3 scripts/rows_scaling.py
+--roc-bin /path/to/roc`. The deterministic builder and parent-publication probes
+are `python3 scripts/test_rows_builders.py` and
+`python3 scripts/test_rows_parent_publications.py --roc-bin /path/to/roc`;
+see `docs/profiling.md` for their allocation and semantic contracts.
+
 `fault` is the slower deterministic host-allocation campaign. It first runs
 the focused native SCM fixtures normally to record their runtime host allocation
 counts, then runs each allocation coordinate as an isolated process through the same

@@ -4,6 +4,47 @@ Use measurements to choose engine work. A useful optimization starts with a
 repeatable workload, identifies a specific source of cost, and demonstrates
 that the cost and wall time both improved without changing behavior.
 
+## Check retained Rows scaling
+
+The no-render Rows probe retains and reads old generations while editing
+collections of 1,000, 10,000, and 100,000 rows. It separates collection work
+from row rendering and checks allocation **bytes plus reallocation-copy bytes**;
+allocation call counts alone cannot detect a copied flat directory.
+
+```sh
+python3 scripts/rows_scaling.py --roc-bin /path/to/roc > .test-out/rows-scaling.jsonl
+python3 scripts/test_rows_builders.py
+python3 scripts/test_rows_parent_publications.py --roc-bin /path/to/roc
+```
+
+The paired optimized Wasm probe times the production artifact and checks its
+commands and state against an instrumented companion. An untimed complete-row
+audit checks both current and retained values after each measured action;
+unmount must release all retained values. Fixed updates include a large
+historical capacity with only one live row after clear. Structural edits allow
+logarithmic directory growth. Bulk cases bound allocation growth for a tenfold
+increase in edit or row count, allowing logarithmic persistent-index paths.
+Clear itself still scans historical slot chunks to rebuild ascending free-slot
+order; this probe makes no changed-set or timing claim for small-live Clear. These are collection allocation gates, not browser timing claims.
+Fresh construction, snapshot replacement, and remove/reinsert batches have
+separate scaling cases. The full keyed-table benchmark additionally checks the
+rendered workloads.
+
+The builder guard rejects unbounded contiguous-list front insertion, whose
+quadratic memmove cost may allocate no extra bytes. The parent-publication probe
+instruments an isolated module copy and requires exactly one chunk publication
+per changed parent relationship, including leaf, internal, and root splits.
+Both probes deliberately restore the corresponding defect and require rejection.
+No diagnostic fields or counters are added to the production Rows type.
+
+The allocation probe starts Node with `--no-maglev`, matching the browser
+scenario workaround for a Node/V8 background-compilation and GC deadlock.
+Each record includes the Node version and flags; this probe does not establish
+production JavaScript timing claims. To check the directory oracle itself, run
+`rows_scaling.py` with `--flat-directory-mutation` and a separate `--output-dir`;
+it restores flat COW storage in generated copies and must fail the allocation
+growth gate after passing the same retained-value and teardown checks.
+
 ## Start with a ReleaseFast native host
 
 Roc links the platform host that is already present under `platform-web/targets/`
