@@ -127,6 +127,14 @@ run additionally covers the slower fault, benchmark, bundle, and coverage
 campaigns. Platform-specific linking and archive checks still run on their
 corresponding CI runners.
 
+The source, smoke, and hosted gates also run one optimized paired Wasm benchmark
+sample to catch reporting and runtime-registry drift. This checks semantic and
+wire parity, not a timing threshold, followed by an untimed command-storage
+retention and remount regression on the diagnostic artifact.
+They also check Rows builder and parent-publication work, then run a bounded
+allocation-scaling sample with independently retained generations. These gates
+assert work and ownership; they do not impose machine-dependent timing limits.
+
 During investigation, pass one or more target names, such as
 `python3 scripts/minici gui gui-smoke gui-scenarios`, but run the complete command before
 pushing.

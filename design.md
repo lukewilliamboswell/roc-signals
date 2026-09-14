@@ -3086,6 +3086,7 @@ roc_ui_protocol_features() -> u32
 roc_ui_command_record_words() -> usize
 roc_ui_command_buffer_ptr() -> usize
 roc_ui_command_buffer_len() -> usize
+roc_ui_command_buffer_clear() -> void // acknowledge the complete copied batch
 roc_ui_string_buffer_ptr() -> usize
 roc_ui_string_buffer_len() -> usize
 roc_ui_dynamic_buffer_ptr() -> usize

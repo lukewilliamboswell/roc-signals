@@ -605,7 +605,7 @@ runtime.unmount();
 
 Also exported: `instantiateSignalsWasm`, `instantiateSignalsBytes`.
 
-The browser wire protocol is version 16. Deploy the Wasm application and
+The browser wire protocol is version 17. Deploy the Wasm application and
 `signals.mjs` together: the runtime rejects a mismatched host before mounting.
 Version 15 removes task command opcodes 20 and 21 and the
 `roc_ui_resolve` export. Rebuild older applications; there is no task-transport
@@ -613,6 +613,12 @@ compatibility adapter. Version 16 additionally requires bounded effect stacks
 and post-link instrumentation. After a direct Roc Wasm build, run
 `python3 scripts/instrument_wasm.py path/to/app.wasm` before serving it.
 The repository's test and site builders perform this step automatically.
+Version 17 requires `roc_ui_command_buffer_clear`: the runtime copies each batch
+and acknowledges it before executing browser callbacks. The host retains at most
+64 KiB per command bank after acknowledgement and releases both banks after the
+final unmount batch is copied. Large batches remain supported; their storage is
+reacquired during the next preparation. This releases allocator storage for reuse,
+not committed Wasm pages.
 Hosted HTTP effects require WebAssembly JSPI support.
 
 HTTP effects use ordinary requests and responses through `fetchImpl` (default:

@@ -41,11 +41,12 @@ class MiniCiTests(unittest.TestCase):
             MINICI.gui_output()
 
     def test_hosted_target_omits_full_local_campaigns(self):
-        with patch.object(MINICI, "shared_sources") as shared, \
+        with patch.dict(MINICI.os.environ, {"ROC_BIN": "/tools/pinned-roc"}), \
+                patch.object(MINICI, "shared_sources") as shared, \
                 patch.object(MINICI, "run") as run:
             MINICI.hosted()
         shared.assert_called_once_with()
-        command = run.call_args.args
+        command = run.call_args_list[0].args
         self.assertIn("native", command)
         self.assertIn("fuzz", command)
         self.assertNotIn("fault", command)
@@ -53,6 +54,15 @@ class MiniCiTests(unittest.TestCase):
         self.assertNotIn("bench", command)
         self.assertNotIn("bundle", command)
         self.assertNotIn("coverage", command)
+        paired = next(call.args for call in run.call_args_list if "wasm-bench" in call.args)
+        self.assertIn("wasm-bench", paired)
+        self.assertEqual(paired[paired.index("--bench-case") + 1], "create_1k")
+        for option in ("--bench-iterations", "--bench-samples"):
+            self.assertEqual(paired[paired.index(option) + 1], "1")
+        self.assertEqual(paired[paired.index("--bench-warmups") + 1], "0")
+        scaling = next(call.args for call in run.call_args_list if "scripts/rows_scaling.py" in call.args)
+        self.assertEqual(scaling[scaling.index("--samples") + 1], "1")
+        self.assertIn("--skip-host-build", scaling)
 
     def test_compiler_mismatch_stops_before_selected_target(self):
         target = Mock()
