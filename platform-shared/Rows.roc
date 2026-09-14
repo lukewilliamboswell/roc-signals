@@ -4,8 +4,8 @@
 ## collection operations below; the `platform_*` functions are internal adapter
 ## hooks for `Ui.each` and the shared engine.
 
-## A persistent AVL directory. Every edit rebuilds only its search path and at
-## most two rotation nodes; retained generations never copy a flat entry table.
+## A persistent AVL directory. Every edit rebuilds its search path and any
+## adjacent rotation nodes; retained generations never copy a flat entry table.
 ## Cached heights and sizes describe live entries, not historical capacity.
 RowsIndex(key, value) := [IndexEmpty, IndexNode({ key : key, value : value, left : RowsIndex(key, value), right : RowsIndex(key, value), height : U64, size : U64 })].{
 	empty : () -> RowsIndex(key, value)
@@ -263,6 +263,17 @@ rows_slot_directory_get = |directory, key| {
 	}
 }
 
+## Keep each bounded branch update behind one call boundary. Besides sharing
+## the operation, this prevents ownership paths from multiplying across levels.
+rows_directory_set_child : List(List(value)), U64, List(value) -> List(List(value))
+rows_directory_set_child = |children, index, child| {
+	var $children = children
+	while $children.len() <= index {
+		$children = $children.append([])
+	}
+	$children.set(index, child) ?? crash "Rows slot directory branch was missing"
+}
+
 rows_slot_directory_insert : RowsSlotDirectory(value), U64, value -> RowsSlotDirectory(value)
 rows_slot_directory_insert = |directory, key, value| {
 	if key >= 134217728 {
@@ -288,26 +299,11 @@ rows_slot_directory_insert = |directory, key, value| {
 		$level_5 = $level_5.append(DirectoryEmpty)
 	}
 	$level_5 = $level_5.set(offset_5, DirectoryValue(value)) ?? crash "Rows slot directory leaf was missing"
-	while $level_4.len() <= offset_4 {
-		$level_4 = $level_4.append([])
-	}
-	$level_4 = $level_4.set(offset_4, $level_5) ?? crash "Rows slot directory branch was missing"
-	while $level_3.len() <= offset_3 {
-		$level_3 = $level_3.append([])
-	}
-	$level_3 = $level_3.set(offset_3, $level_4) ?? crash "Rows slot directory branch was missing"
-	while $level_2.len() <= offset_2 {
-		$level_2 = $level_2.append([])
-	}
-	$level_2 = $level_2.set(offset_2, $level_3) ?? crash "Rows slot directory branch was missing"
-	while $level_1.len() <= offset_1 {
-		$level_1 = $level_1.append([])
-	}
-	$level_1 = $level_1.set(offset_1, $level_2) ?? crash "Rows slot directory branch was missing"
-	while $level_0.len() <= offset_0 {
-		$level_0 = $level_0.append([])
-	}
-	$level_0 = $level_0.set(offset_0, $level_1) ?? crash "Rows slot directory branch was missing"
+	$level_4 = rows_directory_set_child($level_4, offset_4, $level_5)
+	$level_3 = rows_directory_set_child($level_3, offset_3, $level_4)
+	$level_2 = rows_directory_set_child($level_2, offset_2, $level_3)
+	$level_1 = rows_directory_set_child($level_1, offset_1, $level_2)
+	$level_0 = rows_directory_set_child($level_0, offset_0, $level_1)
 	{
 		root: $level_0,
 		count: directory.count + if added {
@@ -458,7 +454,7 @@ rows_order_from_slots = |slots| {
 			$level_count = ($level_count + 31).div_trunc_by(32)
 			$node_capacity = $node_capacity + $level_count
 		}
-		var $node_values = List.with_capacity($node_capacity)
+		var $node_lengths = List.with_capacity($node_capacity)
 		var $node_entries = List.with_capacity($node_capacity)
 		var $parent_entries = List.with_capacity($node_capacity)
 		var $slot_leaf_entries = List.with_capacity(slots.len())
@@ -470,7 +466,7 @@ rows_order_from_slots = |slots| {
 			leaf_id = $next_node
 			$next_node = $next_node + 1
 			leaf = OrderLeaf({ slots: leaf_slots, len: leaf_slots.len() })
-			$node_values = $node_values.append(leaf)
+			$node_lengths = $node_lengths.append(leaf_slots.len())
 			$node_entries = $node_entries.append({ key: leaf_id, value: leaf })
 			for slot in leaf_slots {
 				$slot_leaf_entries = $slot_leaf_entries.append({ key: rows_slot_index(slot), value: leaf_id })
@@ -489,13 +485,13 @@ rows_order_from_slots = |slots| {
 				var $len = 0
 				var $child_index = 0
 				for child_id in children {
-					child = $node_values.get(child_id - 1) ?? crash "Rows bulk order child was missing"
-					$len = $len + rows_order_node_len(child)
+					child_len = $node_lengths.get(child_id - 1) ?? crash "Rows bulk order child was missing"
+					$len = $len + child_len
 					$parent_entries = $parent_entries.append({ key: child_id, value: OrderParent({ node: branch_id, child: $child_index }) })
 					$child_index = $child_index + 1
 				}
 				branch = OrderBranch({ children, len: $len })
-				$node_values = $node_values.append(branch)
+				$node_lengths = $node_lengths.append($len)
 				$node_entries = $node_entries.append({ key: branch_id, value: branch })
 				$next_level = $next_level.append(branch_id)
 				$child_offset = $child_offset + children.len()
