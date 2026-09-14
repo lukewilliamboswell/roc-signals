@@ -1212,6 +1212,69 @@ test "bulk scope retirement groups nested parents and preserves outer boundaries
     }
 }
 
+test "fixed scope retirement ignores thousands of unrelated parents and scopes" {
+    const allocator = std.testing.allocator;
+    var expected_copies: ?usize = null;
+    for ([_]usize{ 1000, 10000 }) |unrelated_count| {
+        var positions = Positions.init(allocator);
+        defer positions.deinit();
+        const outer = ids.ScopeId.fromRaw(0);
+        const retired = ids.ScopeId.fromRaw(1);
+        const nested = ids.ScopeId.fromRaw(2);
+        const first = PositionId.marker(ids.NodeId.fromRaw(1), .each);
+        const last = PositionId.marker(ids.NodeId.fromRaw(1), .each_end);
+        var seed = positions.prepare();
+        defer seed.deinit();
+        try seed.place(.{ .parent = ids.root_elem, .position = first, .owner = outer }, null);
+        for (0..16) |index| try seed.place(.{
+            .parent = ids.root_elem,
+            .position = PositionId.element(ids.ElemId.fromIndex(index + 1)),
+            .owner = retired,
+        }, null);
+        try seed.place(.{ .parent = ids.root_elem, .position = last, .owner = outer }, null);
+        try seed.place(.{ .parent = ids.ElemId.fromRaw(1), .position = PositionId.marker(ids.NodeId.fromRaw(2), .when), .owner = nested }, null);
+        for (0..unrelated_count) |index| {
+            const owner = ids.ScopeId.fromIndex(index + 3);
+            const parent = ids.ElemId.fromIndex(100 + index * 3);
+            for (1..3) |offset| try seed.place(.{
+                .parent = parent,
+                .position = PositionId.element(ids.ElemId.fromIndex(100 + index * 3 + offset)),
+                .owner = owner,
+            }, null);
+        }
+        try seed.preflight();
+        seed.commit();
+        var candidate = positions.prepare();
+        defer candidate.deinit();
+        try candidate.retireScopes(&.{ retired, nested });
+        const work = candidate.work();
+        try std.testing.expectEqual(@as(usize, 2), work.parents);
+        try std.testing.expectEqual(@as(usize, 1), work.tree_parents);
+        try std.testing.expectEqual(@as(usize, 1), work.small_parents);
+        try std.testing.expectEqual(@as(usize, 16), work.tree_nodes_removed);
+        try std.testing.expect(work.tree_nodes_copied <= 2);
+        if (expected_copies) |copies| try std.testing.expectEqual(copies, work.tree_nodes_copied);
+        expected_copies = work.tree_nodes_copied;
+        try std.testing.expectEqual(@as(usize, 16), positions.ownedCount(retired));
+        try candidate.preflight();
+        candidate.commit();
+        try std.testing.expectEqual(@as(usize, 0), positions.ownedCount(retired));
+        try std.testing.expectEqual(@as(usize, 0), positions.ownedCount(nested));
+        try std.testing.expectEqual(@as(usize, 2), positions.ownedCount(outer));
+        try std.testing.expectEqual(last, (try positions.nextPosition(ids.root_elem, first)).?);
+        try std.testing.expectEqual(unrelated_count + 1, @as(usize, positions.parents.count()));
+        for (0..unrelated_count) |index| {
+            const owner = ids.ScopeId.fromIndex(index + 3);
+            const parent = ids.ElemId.fromIndex(100 + index * 3);
+            const left = PositionId.element(ids.ElemId.fromIndex(101 + index * 3));
+            const right = PositionId.element(ids.ElemId.fromIndex(102 + index * 3));
+            try std.testing.expectEqual(@as(usize, 2), positions.ownedCount(owner));
+            try std.testing.expectEqual(right, (try positions.nextPosition(parent, left)).?);
+            try std.testing.expectEqual(@as(?PositionId, null), try positions.nextPosition(parent, right));
+        }
+    }
+}
+
 fn prepareGroupedRetirementForFault(positions: *Positions) !Prepared {
     var candidate = positions.prepare();
     errdefer candidate.deinit();
