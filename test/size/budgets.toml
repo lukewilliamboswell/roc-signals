@@ -6,44 +6,45 @@
 # (compiler upgrade, accepted feature cost) in the pull request. Never
 # regenerate this file automatically to bless a larger artifact, and never
 # derive it from an instrumented or profiler build. Mandatory production stack
-# checks are included. The accepted compiler-upgrade baseline is recorded in
-# test/size/nightly-2026-09-11-baseline.json (PR #119); these budgets were
-# ratcheted down after the prepare-phase cleanup work for issue #121.
+# checks are included. These values track test/size/performance-baseline.json;
+# the matched earlier build is test/size/performance-before.json. See
+# docs/profiling.md for the measured cost of persistent indexes, sparse edit
+# journals, grouped retirement, and bounded command retention.
 #
 # Regenerate after an accepted change with:
 #   python3 scripts/wasm_size.py --write-budgets .test-out/size/<label>/report.json
 
 [baseline]
-revision = "5667fb4d44d103f99097705682705dd5f6c4618c"
-roc = "Roc compiler version nightly-2026-09-11-793f9d8"
+revision = "a878eb59ef902e0b5d1f5c1abe8cb8f756e2a5e8"
+roc = "Roc compiler version nightly-2026-09-12-220fd47"
 zig = "0.16.0"
 compression = "node-zlib"
 headroom_percent = 1
 
 [fixtures.static-text]
-raw = 826960  # measured 818773
-gzip = 316095  # measured 312966
+raw = 844149  # measured 835792
+gzip = 323003  # measured 319805
 
 [fixtures.counter]
-raw = 834445  # measured 826184
-gzip = 319185  # measured 316025
+raw = 851610  # measured 843179
+gzip = 325835  # measured 322609
 
 [fixtures.branch-replacement]
-raw = 842309  # measured 833970
-gzip = 321359  # measured 318178
+raw = 859425  # measured 850916
+gzip = 327888  # measured 324642
 
 [fixtures.keyed-row-edits]
-raw = 1477163  # measured 1462538
-gzip = 523342  # measured 518161
+raw = 1633874  # measured 1617698
+gzip = 550311  # measured 544863
 
 [fixtures.two-row-types]
-raw = 1498971  # measured 1484130
-gzip = 533639  # measured 528356
+raw = 1701031  # measured 1684190
+gzip = 578353  # measured 572627
 
 [fixtures.js-framework-benchmark]
-raw = 1473534  # measured 1458945
-gzip = 522623  # measured 517449
+raw = 1634847  # measured 1618661
+gzip = 555303  # measured 549805
 
 [fixtures.recipe-scaler]
-raw = 1310265  # measured 1297293
-gzip = 461714  # measured 457143
+raw = 1551199  # measured 1535841
+gzip = 515374  # measured 510272

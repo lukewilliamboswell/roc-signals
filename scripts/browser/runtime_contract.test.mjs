@@ -204,6 +204,11 @@ class MockHost {
       roc_ui_command_record_words: () => RECORD_WORDS,
       roc_ui_command_buffer_ptr: () => (this.cmdLen === 0 ? 0 : CMD_BASE),
       roc_ui_command_buffer_len: () => this.cmdLen,
+      roc_ui_command_buffer_clear: () => {
+        this.cmdLen = 0;
+        this.strLen = 0;
+        this.dynamicLen = 0;
+      },
       roc_ui_string_buffer_ptr: () => STR_BASE,
       roc_ui_string_buffer_len: () => this.strLen,
       roc_ui_dynamic_buffer_ptr: () => (this.dynamicLen === 0 ? 0 : DYN_BASE),
@@ -3562,3 +3567,107 @@ test("retired task opcodes are rejected instead of starting host work", () => {
 function textBytes(value) {
   return new TextEncoder().encode(value);
 }
+
+
+test("command acknowledgement precedes callbacks and survives reclaimed memory", () => {
+  const { host, runtime } = mountWith([]);
+  const clear = host.exports.roc_ui_command_buffer_clear;
+  let acknowledgements = 0;
+  host.exports.roc_ui_command_buffer_clear = () => {
+    acknowledgements += 1;
+    clear();
+    host.memory.grow(1);
+    new Uint8Array(host.memory.buffer).fill(0, CMD_BASE, ERROR_BASE);
+  };
+  const apply = runtime.applyCommand.bind(runtime);
+  runtime.applyCommand = record => {
+    assert.equal(acknowledgements, 1);
+    return apply(record);
+  };
+  host.writeCommands([
+    { op: Op.createElement, a: 1, s: "div" },
+    { op: Op.createText, a: 2, s: "copied text" },
+    { op: Op.appendChild, a: 1, b: 2 },
+    { op: Op.appendChild, a: 0, b: 1 },
+    { dynamic: { op: DynamicOp.setAttrText, elemId: 1, name: "title", value: "copied attribute" } },
+  ]);
+  runtime.applyPendingCommands();
+  assert.equal(runtime.nodes.get(2).textContent, "copied text");
+  assert.equal(runtime.nodes.get(1).getAttribute("title"), "copied attribute");
+  assert.equal(host.cmdLen, 0);
+  assert.equal(host.strLen, 0);
+  assert.equal(host.dynamicLen, 0);
+  runtime.applyCommand = apply;
+  runtime.unmount();
+  assert.equal(acknowledgements, 2, "even an empty final publication is acknowledged");
+});
+
+test("protocol rejects a missing command acknowledgement before mount", () => {
+  const host = new MockHost();
+  delete host.exports.roc_ui_command_buffer_clear;
+  assert.throws(() => new SignalsRuntime(host.exports, installDomDouble()), /roc_ui_command_buffer_clear is missing/);
+  assert.equal(host.prepareMounts, 0);
+});
+
+test("acknowledging an outer snapshot cannot drain a callback's newer publication", () => {
+  const { host, runtime } = mountWith([]);
+  runtime.telemetryLog = entry => {
+    if (entry.kind !== "commands") return;
+    runtime.telemetryLog = null;
+    assert.equal(host.cmdLen, 0, "the outer batch was acknowledged before the callback");
+    host.writeCommands([
+      { op: Op.createText, a: 2, s: "new publication" },
+      { op: Op.appendChild, a: 0, b: 2 },
+    ]);
+  };
+  host.writeCommands([
+    { op: Op.createText, a: 1, s: "outer snapshot" },
+    { op: Op.appendChild, a: 0, b: 1 },
+  ]);
+  runtime.applyPendingCommands();
+  assert.equal(runtime.nodes.get(1).textContent, "outer snapshot");
+  assert.ok(host.cmdLen > 0, "new output remains available for its own drain");
+  runtime.applyPendingCommands();
+  assert.equal(runtime.nodes.get(2).textContent, "new publication");
+  assert.equal(host.cmdLen, 0);
+  runtime.unmount();
+});
+
+test("acknowledgement traps poison mount, direct drain, and final unmount", () => {
+  for (const phase of ["mount", "drain", "unmount"]) {
+    const { host, runtime } = mountWith([]);
+    if (phase === "mount") runtime.unmount();
+    const previousBuffers = runtime.commandBuffers;
+    host.exports.roc_ui_command_buffer_clear = () => {
+      throw new WebAssembly.RuntimeError("acknowledgement trap");
+    };
+    const run = phase === "drain" ? () => runtime.applyPendingCommands() : () => runtime[phase]();
+    assert.throws(run, /acknowledgement trap/);
+    assert.match(runtime.failedError?.message ?? "", /acknowledgement trap/);
+    assert.equal(runtime.mounted, false);
+    assert.equal(runtime.commandBuffers, previousBuffers);
+  }
+});
+
+test("final cleanup strings survive acknowledgement and execute once before remount", () => {
+  const titles = [];
+  const document = { set title(value) { titles.push(value); } };
+  const { host, runtime } = mountWith([], { document });
+  const unmount = host.exports.roc_ui_unmount;
+  host.exports.roc_ui_unmount = () => {
+    unmount();
+    host.writeCommands([{ op: Op.setDocumentTitle, s: "final cleanup" }]);
+  };
+  const clear = host.exports.roc_ui_command_buffer_clear;
+  host.exports.roc_ui_command_buffer_clear = () => {
+    clear();
+    host.memory.grow(1);
+    new Uint8Array(host.memory.buffer).fill(0, CMD_BASE, ERROR_BASE);
+  };
+  runtime.unmount();
+  assert.deepEqual(titles, ["final cleanup"]);
+  runtime.mount();
+  assert.deepEqual(titles, ["final cleanup"]);
+  host.exports.roc_ui_unmount = unmount;
+  runtime.unmount();
+});

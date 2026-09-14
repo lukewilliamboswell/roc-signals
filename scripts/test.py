@@ -735,6 +735,7 @@ def run_size_budgets(roc_bin: str) -> None:
 def run_wasm_runtime_benchmarks(roc_bin: str, args: argparse.Namespace) -> None:
     output = TEST_OUT / "wasm-benchmark"
     output.mkdir(parents=True, exist_ok=True)
+    benchmark_run([sys.executable, "scripts/prepare_platforms.py"])
     benchmark_run(["zig", "build", "build-wasm-benchmark-host"])
 
     production_platform = output / "production-platform"
@@ -795,6 +796,8 @@ def run_wasm_runtime_benchmarks(roc_bin: str, args: argparse.Namespace) -> None:
     for pattern in args.bench_case:
         command.extend(("--case", pattern))
     subprocess.run([str(part) for part in command], cwd=ROOT, check=True)
+
+    benchmark_run(["node", "scripts/browser/wasm_command_retention.test.mjs", diagnostic_wasm])
 
 
 def rewrite_platform_headers(root: Path, platform_ref: str) -> None:
@@ -1034,9 +1037,10 @@ def main() -> int:
     validate_args_before_build(args, suites)
     roc_bin = command_path(args.roc_bin)
     TEST_OUT = create_test_output(args.output_dir)
-    print(f"Test output: {TEST_OUT}")
+    progress_output = sys.stderr if suites == {"wasm-bench"} else sys.stdout
+    print(f"Test output: {TEST_OUT}", file=progress_output)
 
-    if suites != {"gui"}:
+    if suites not in ({"gui"}, {"wasm-bench"}):
         build_hosts()
 
     if "gui" in suites:
@@ -1126,7 +1130,7 @@ def main() -> int:
     if not args.keep_output and TEST_OUT.exists():
         shutil.rmtree(TEST_OUT)
     elif args.keep_output:
-        print(f"Kept test output: {TEST_OUT}")
+        print(f"Kept test output: {TEST_OUT}", file=progress_output)
     if not ledger.outcomes:
         return 0
     status = known_failures.report(ledger, known_failures_path)

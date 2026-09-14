@@ -47,6 +47,7 @@ const runtime = new SignalsRuntime({
   roc_ui_effect_next: () => ++entries <= 2 ? entries : 0,
   roc_ui_effect_complete: forbidden,
   roc_ui_unmount: forbidden,
+  roc_ui_command_buffer_clear: forbidden,
   roc_ui_last_error_ptr: forbidden,
   roc_ui_protocol_version: () => Protocol.version,
   roc_ui_protocol_features: () => ProtocolFeature.dynamicAttrs | ProtocolFeature.dynamicEvents,

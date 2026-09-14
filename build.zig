@@ -135,7 +135,15 @@ pub fn build(b: *std.Build) void {
     wasm_benchmark_options.addOption(bool, "wasm_benchmark", true);
     wasm_benchmark_options.addOption(bool, "wasm_allocation_ledger", true);
     const wasm_benchmark_host = buildWasmHostObject(b, wasm_target, .ReleaseFast, wasm_benchmark_options.createModule());
-    const wasm_production_benchmark_host = buildWasmHostObject(b, wasm_target, .ReleaseFast, build_options_module);
+    // This target always emits ReleaseFast, even when the caller leaves the
+    // top-level optimization at Debug. Its options must describe that same
+    // production mode rather than accidentally enabling the allocation ledger.
+    const wasm_production_benchmark_options = b.addOptions();
+    wasm_production_benchmark_options.addOption(bool, "metrics", metrics);
+    wasm_production_benchmark_options.addOption(bool, "fuzz_fixtures", false);
+    wasm_production_benchmark_options.addOption(bool, "wasm_benchmark", false);
+    wasm_production_benchmark_options.addOption(bool, "wasm_allocation_ledger", false);
+    const wasm_production_benchmark_host = buildWasmHostObject(b, wasm_target, .ReleaseFast, wasm_production_benchmark_options.createModule());
     const install_wasm_production_benchmark_host = b.addInstallFileWithDir(
         wasm_production_benchmark_host.getEmittedBin(),
         .prefix,

@@ -19,30 +19,58 @@ pub fn RouteTable(comptime Route: type) type {
 }
 
 /// Stores the common zero-or-one route case inline while retaining ordinary
-/// independently owned storage for records with multiple routes.
+/// independently owned storage for records with multiple routes. Spilled sink
+/// lists also own an inverse identity-to-slot map; zero/one sinks pay no map
+/// allocation and source routes retain their unindexed representation.
 pub fn SmallRouteList(comptime Route: type) type {
     return union(enum) {
         empty,
         one: Route,
-        many: shared_buffer.List(Route),
+        many: if (indexed) *Many else Many,
 
         const Self = @This();
+        const indexed = Route == TextSink or Route == BoolSink or Route == ChangeSink or Route == StructuralSink;
+        const Many = struct {
+            list: shared_buffer.List(Route) = .empty,
+            index: if (indexed) std.AutoHashMapUnmanaged(SinkRouteKey, usize) else void = if (indexed) .empty else {},
 
-        /// Borrows all routes in insertion order without transferring their storage.
+            fn reserve(self: *Many, allocator: std.mem.Allocator, required: usize) std.mem.Allocator.Error!void {
+                try self.list.ensureTotalCapacity(allocator, required);
+                if (indexed) try self.index.ensureTotalCapacity(allocator, std.math.cast(u32, required) orelse return error.OutOfMemory);
+            }
+
+            fn append(self: *Many, route: Route) void {
+                if (indexed) {
+                    const entry = self.index.getOrPutAssumeCapacity(routeKey(route));
+                    if (entry.found_existing) @panic("duplicate sink route identity");
+                    entry.value_ptr.* = self.list.items.len;
+                }
+                self.list.appendAssumeCapacity(route);
+            }
+
+            fn deinit(self: *Many, allocator: std.mem.Allocator) void {
+                self.list.deinit(allocator);
+                if (indexed) self.index.deinit(allocator);
+            }
+        };
+
+        /// Borrows routes in their current dense order without transferring storage.
         pub fn slice(self: *const Self) []const Route {
             return switch (self.*) {
                 .empty => &.{},
                 .one => |*value| @as(*const [1]Route, @ptrCast(value))[0..],
-                .many => |list| list.items,
+                .many => |list| list.list.items,
             };
         }
 
-        /// Mutably borrows all routes in insertion order for in-place remapping.
+        /// Mutably borrows unindexed source routes for dense record remapping.
+        /// Sink mutations must use the methods that maintain their inverse map.
         pub fn mutableSlice(self: *Self) []Route {
+            if (indexed) @compileError("sink route mutations must maintain their inverse index");
             return switch (self.*) {
                 .empty => &.{},
                 .one => |*value| @as(*[1]Route, @ptrCast(value))[0..],
-                .many => |*list| list.items,
+                .many => |*list| list.list.items,
             };
         }
 
@@ -56,18 +84,18 @@ pub fn SmallRouteList(comptime Route: type) type {
             const required = std.math.add(usize, self.len(), additional) catch return error.OutOfMemory;
             if (required <= 1) return;
             switch (self.*) {
-                .empty => {
-                    var list: shared_buffer.List(Route) = .empty;
-                    try list.ensureTotalCapacity(allocator, required);
-                    self.* = .{ .many = list };
+                .empty, .one => {
+                    var many = Many{};
+                    errdefer many.deinit(allocator);
+                    try many.reserve(allocator, required);
+                    if (self.* == .one) many.append(self.one);
+                    if (indexed) {
+                        const owned = try allocator.create(Many);
+                        owned.* = many;
+                        self.* = .{ .many = owned };
+                    } else self.* = .{ .many = many };
                 },
-                .one => |value| {
-                    var list: shared_buffer.List(Route) = .empty;
-                    try list.ensureTotalCapacity(allocator, required);
-                    list.appendAssumeCapacity(value);
-                    self.* = .{ .many = list };
-                },
-                .many => |*list| try list.ensureUnusedCapacity(allocator, additional),
+                .many => try self.many.reserve(allocator, required),
             }
         }
 
@@ -82,7 +110,7 @@ pub fn SmallRouteList(comptime Route: type) type {
             switch (self.*) {
                 .empty => self.* = .{ .one = value },
                 .one => @panic("small route list lacked prepared spill capacity"),
-                .many => |*list| list.appendAssumeCapacity(value),
+                .many => self.many.append(value),
             }
         }
 
@@ -95,14 +123,60 @@ pub fn SmallRouteList(comptime Route: type) type {
                     self.* = .empty;
                     break :blk value;
                 },
-                .many => |*list| list.swapRemove(index),
+                .many => blk: {
+                    const many = if (indexed) self.many else &self.many;
+                    const old = many.list.swapRemove(index);
+                    if (indexed) {
+                        if (!many.index.remove(routeKey(old))) @panic("missing sink inverse route");
+                        if (index < many.list.items.len) many.index.getPtr(routeKey(many.list.items[index])).?.* = index;
+                    }
+                    break :blk old;
+                },
             };
+        }
+
+        /// Resolves an exact sink identity without scanning other subscribers.
+        /// The singleton remains inline; spilled sinks own an inverse slot map.
+        pub fn sinkSlot(self: *const Self, key: SinkRouteKey) ?usize {
+            if (!indexed) @compileError("only descriptor sinks have keyed slots");
+            return switch (self.*) {
+                .empty => null,
+                .one => |route| if (std.meta.eql(routeKey(route), key)) 0 else null,
+                .many => |many| many.index.get(key),
+            };
+        }
+
+        /// Renumbers one prevalidated sink while keeping its inverse route
+        /// current. Capacity is unchanged and publication cannot allocate.
+        pub fn setSinkIndex(self: *Self, slot: usize, index: usize) void {
+            if (!indexed) @compileError("only descriptor sinks have keyed slots");
+            switch (self.*) {
+                .empty => @panic("renumbered empty sink route"),
+                .one => |*route| {
+                    if (slot != 0) @panic("sink slot out of bounds");
+                    route.index = index;
+                },
+                .many => |many| {
+                    const route = &many.list.items[slot];
+                    if (route.index == index) return;
+                    const old = routeKey(route.*);
+                    var next = old;
+                    next.index = index;
+                    if (many.index.contains(next)) @panic("duplicate sink route destination");
+                    if (!many.index.remove(old)) @panic("missing sink inverse route");
+                    many.index.putAssumeCapacity(next, slot);
+                    route.index = index;
+                },
+            }
         }
 
         /// Releases spilled storage and restores the list to its empty inline state.
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
             switch (self.*) {
-                .many => |*list| list.deinit(allocator),
+                .many => {
+                    self.many.deinit(allocator);
+                    if (indexed) allocator.destroy(self.many);
+                },
                 .empty, .one => {},
             }
             self.* = .empty;
@@ -348,7 +422,7 @@ const DenseRoutePlanOps = struct {
     prepare_replacement: *const fn (owner: *anyopaque, allocator: std.mem.Allocator, written: usize, route_index: u64, old_index: ?usize, merged_len: usize) std.mem.Allocator.Error!void,
     /// Appends every input route, in input order, into the replacement chosen
     /// by `groups.get(route_index)`; capacity is already reserved.
-    append_inputs: *const fn (owner: *anyopaque, groups: *const DenseRouteGroupIndex) void,
+    append_inputs: *const fn (owner: *anyopaque, groups: *const DenseRouteGroupIndex) error{InvalidAppend}!void,
     /// Releases the initialized prefix `[0..written)` and the replacement
     /// slice after a failed plan, leaving the committed table untouched.
     release_prefix: *const fn (owner: *anyopaque, allocator: std.mem.Allocator, written: usize) void,
@@ -369,6 +443,7 @@ fn DenseRouteAdapter(comptime Route: type) type {
         routes: *const RouteTable(Route),
         appends: []const RouteAppend(Route),
         replacements: []Replacement = &.{},
+        edits: ?*const SinkEditGroups = null,
 
         const Self = @This();
         const Replacement = PreparedRouteAppends(Route).Replacement;
@@ -402,12 +477,28 @@ fn DenseRouteAdapter(comptime Route: type) type {
             const replacement = &self.replacements[written];
             replacement.* = .{ .route_index = route_index };
             try replacement.next.ensureUnusedCapacity(allocator, merged_len);
-            if (old_index) |index| for (self.routes.items[index].slice()) |value| replacement.next.appendAssumeCapacity(value);
+            if (old_index) |index| {
+                for (self.routes.items[index].slice()) |value| replacement.next.appendAssumeCapacity(value);
+                // The journal addresses original physical slots. Replay it on
+                // this private copy before any new descriptor reuses an index.
+                if (Route != u64) if (self.edits) |edits| {
+                    var cursor = if (edits.records.get(index)) |group| group.first else null;
+                    while (cursor) |edit_index| {
+                        const edit = edits.items[edit_index];
+                        if (edit.new_index) |next| replacement.next.setSinkIndex(edit.slot, next) else _ = replacement.next.swapRemove(edit.slot);
+                        cursor = edits.next[edit_index];
+                    }
+                };
+            }
         }
 
-        fn appendInputs(owner: *anyopaque, groups: *const DenseRouteGroupIndex) void {
+        fn appendInputs(owner: *anyopaque, groups: *const DenseRouteGroupIndex) error{InvalidAppend}!void {
             const self = recover(owner);
-            for (self.appends) |entry| self.replacements[groups.get(entry.route_index).?].next.appendAssumeCapacity(entry.value);
+            for (self.appends) |entry| {
+                const next = &self.replacements[groups.get(entry.route_index).?].next;
+                if (Route != u64) if (next.sinkSlot(routeKey(entry.value)) != null) return error.InvalidAppend;
+                next.appendAssumeCapacity(entry.value);
+            }
         }
 
         fn releasePrefix(owner: *anyopaque, allocator: std.mem.Allocator, written: usize) void {
@@ -467,7 +558,7 @@ fn planDenseRouteAppends(allocator: std.mem.Allocator, plan: DenseRoutePlan, rou
         try plan.ops.prepare_replacement(plan.owner, allocator, written, slot.route_index, old_index, merged_len);
         written += 1;
     }
-    plan.ops.append_inputs(plan.owner, &group_index);
+    try plan.ops.append_inputs(plan.owner, &group_index);
 }
 
 /// Typed entry to the shared planner: binds this route type's adapter, runs
@@ -477,6 +568,51 @@ fn planDenseRouteAppends(allocator: std.mem.Allocator, plan: DenseRoutePlan, rou
 fn prepareDenseRouteAppends(comptime Route: type, allocator: std.mem.Allocator, routes: *const RouteTable(Route), remap: ?*const DenseRemap, final_count: usize, appends: []const RouteAppend(Route), lookup_work: ?*usize) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(Route) {
     var adapter = DenseRouteAdapter(Route){ .routes = routes, .appends = appends };
     try planDenseRouteAppends(allocator, adapter.bind(), RouteIndexStream.of(Route, appends), routes.items.len, remap, final_count, lookup_work);
+    return .{ .replacements = adapter.replacements };
+}
+
+// Group only the prepared edits, preserving their order within each original
+// record. Replacement groups can then find their own edits in O(1), including
+// when graph compaction moved that record to a different final dense id.
+const SinkEditGroups = struct {
+    const Group = struct { first: ?usize, last: usize };
+    items: []const SinkSlotEdit,
+    next: []?usize,
+    records: std.AutoHashMapUnmanaged(u64, Group) = .empty,
+
+    fn init(allocator: std.mem.Allocator, items: []const SinkSlotEdit) std.mem.Allocator.Error!SinkEditGroups {
+        var result = SinkEditGroups{ .items = items, .next = try allocator.alloc(?usize, items.len) };
+        errdefer result.deinit(allocator);
+        for (items, 0..) |edit, index| {
+            result.next[index] = null;
+            const entry = try result.records.getOrPut(allocator, edit.record_id);
+            if (entry.found_existing) {
+                result.next[entry.value_ptr.last] = index;
+                entry.value_ptr.last = index;
+            } else entry.value_ptr.* = .{ .first = index, .last = index };
+        }
+        return result;
+    }
+
+    fn deinit(self: *SinkEditGroups, allocator: std.mem.Allocator) void {
+        self.records.deinit(allocator);
+        allocator.free(self.next);
+    }
+};
+
+/// Composes validated sink edits, graph compaction, and new descriptor routes
+/// in private replacement lists. Edits refer to the original route tables and
+/// are replayed only for records receiving appends; other records keep the
+/// ordinary prepared-edit publication path. Commit the original edits before
+/// applying these replacements. Allocation refusal or duplicate new identities
+/// leave committed routes untouched, and replacement publication cannot fail.
+pub fn prepareSinkRouteAppendsAfterEdits(comptime Route: type, allocator: std.mem.Allocator, routes: *const RouteTable(Route), remap: *const DenseRemap, final_count: usize, appends: []const RouteAppend(Route), edits: []const SinkSlotEdit) (std.mem.Allocator.Error || error{InvalidAppend})!PreparedRouteAppends(Route) {
+    if (remap.survivor_count > final_count) return error.InvalidAppend;
+    if (appends.len == 0) return .{ .replacements = try allocator.alloc(PreparedRouteAppends(Route).Replacement, 0) };
+    var grouped = try SinkEditGroups.init(allocator, edits);
+    defer grouped.deinit(allocator);
+    var adapter = DenseRouteAdapter(Route){ .routes = routes, .appends = appends, .edits = &grouped };
+    try planDenseRouteAppends(allocator, adapter.bind(), RouteIndexStream.of(Route, appends), routes.items.len, remap, final_count, null);
     return .{ .replacements = adapter.replacements };
 }
 
@@ -524,14 +660,23 @@ pub fn prepareSourceRouteAppendsAfterRelease(allocator: std.mem.Allocator, route
     return .{ .replacements = replacements };
 }
 
+/// One validated physical slot in the sequential swap-removal journal. Slots
+/// are resolved during preparation, so publication never searches a fanout list.
+const SinkSlotEdit = struct { record_id: u64, slot: usize, new_index: ?usize };
+
+/// Exact planner work, excluding hash-table implementation probes. Sink
+/// routes are resolved through inverse slots and every edit is visited once.
+pub const SinkEditWork = struct { route_lookups: usize = 0, edits_resolved: usize = 0 };
+
 /// Owns validated sink-route removals and moved-descriptor index patches.
 pub const PreparedSinkRouteEdits = struct {
-    text: []TextSinkEdit,
-    bools: []BoolSinkEdit,
-    changes: []ChangeSinkEdit,
-    structural: []StructuralSinkEdit,
+    text: []SinkSlotEdit,
+    bools: []SinkSlotEdit,
+    changes: []SinkSlotEdit,
+    structural: []SinkSlotEdit,
+    work: SinkEditWork = .{},
 
-    /// Releases preparation storage without changing live routes.
+    /// Releases the journal without changing committed routes.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         allocator.free(self.text);
         allocator.free(self.bools);
@@ -540,112 +685,105 @@ pub const PreparedSinkRouteEdits = struct {
         self.* = undefined;
     }
 
-    /// Applies exact route removals and index patches without allocation.
+    fn applySlots(comptime Route: type, routes: *RouteTable(Route), edits: []const SinkSlotEdit) void {
+        for (edits) |edit| {
+            const route = &routes.items[@intCast(edit.record_id)];
+            if (edit.new_index) |index| route.setSinkIndex(edit.slot, index) else _ = route.swapRemove(edit.slot);
+        }
+    }
+
+    /// Replays the exact prepared slots without allocating or searching routes.
+    /// The route tables must still describe the generation used to prepare.
     pub fn apply(self: *const @This(), text_routes: *RouteTable(TextSink), bool_routes: *RouteTable(BoolSink), change_routes: *RouteTable(ChangeSink), structural_routes: *RouteTable(StructuralSink)) void {
-        for (self.text) |edit| if (edit.new_index) |new_index|
-            updateTextRouteIndex(text_routes, edit.record_id, edit.kind, edit.old_index, new_index)
-        else
-            removeTextRoute(text_routes, edit.record_id, edit.kind, edit.old_index);
-        for (self.bools) |edit| if (edit.new_index) |new_index|
-            updateBoolRouteIndex(bool_routes, edit.record_id, edit.kind, edit.old_index, new_index)
-        else
-            removeBoolRoute(bool_routes, edit.record_id, edit.kind, edit.old_index);
-        for (self.changes) |edit| if (edit.new_index) |new_index|
-            updateChangeRouteIndex(change_routes, edit.record_id, edit.old_index, new_index)
-        else
-            removeChangeRoute(change_routes, edit.record_id, edit.old_index);
-        for (self.structural) |edit| if (edit.new_index) |new_index|
-            updateStructuralRouteIndex(structural_routes, edit.record_id, edit.kind, edit.old_index, new_index)
-        else
-            removeStructuralRoute(structural_routes, edit.record_id, edit.kind, edit.old_index);
+        applySlots(TextSink, text_routes, self.text);
+        applySlots(BoolSink, bool_routes, self.bools);
+        applySlots(ChangeSink, change_routes, self.changes);
+        applySlots(StructuralSink, structural_routes, self.structural);
     }
 };
 
-/// Copies and validates sink edits before route mutation begins.
-pub fn prepareSinkRouteEdits(allocator: std.mem.Allocator, text_routes: *const RouteTable(TextSink), bool_routes: *const RouteTable(BoolSink), change_routes: *const RouteTable(ChangeSink), structural_routes: *const RouteTable(StructuralSink), text: []const TextSinkEdit, bools: []const BoolSinkEdit, changes: []const ChangeSinkEdit, structural: []const StructuralSinkEdit) std.mem.Allocator.Error!PreparedSinkRouteEdits {
-    for (text, 0..) |edit, index| if (!containsTextSinkAfter(text_routes, text[0..index], edit)) return error.OutOfMemory;
-    for (bools, 0..) |edit, index| if (!containsBoolSinkAfter(bool_routes, bools[0..index], edit)) return error.OutOfMemory;
-    for (changes, 0..) |edit, index| if (!containsChangeSinkAfter(change_routes, changes[0..index], edit)) return error.OutOfMemory;
-    for (structural, 0..) |edit, index| if (!containsStructuralSinkAfter(structural_routes, structural[0..index], edit)) return error.OutOfMemory;
-    const owned_text = try allocator.dupe(TextSinkEdit, text);
+const SinkEditError = std.mem.Allocator.Error || error{InvalidEdit};
+const SinkKey = struct { record_id: u64, kind: usize, index: usize };
+const SinkRouteKey = struct { kind: usize, index: usize };
+fn routeKey(route: anytype) SinkRouteKey {
+    return .{ .kind = sinkKind(route), .index = route.index };
+}
+fn sinkKind(value: anytype) usize {
+    return if (@hasField(@TypeOf(value), "kind")) @intFromEnum(value.kind) else 0;
+}
+
+// Overlay entries shadow exact committed keys, including tombstones. Only
+// slots actually displaced by this journal are retained; one edit of a large
+// shared signal never clones or walks its remaining fanout.
+fn candidateSinkSlot(comptime Route: type, routes: *const RouteTable(Route), keys: *const std.AutoHashMapUnmanaged(SinkKey, ?usize), key: SinkKey, work: *SinkEditWork) ?usize {
+    work.route_lookups += 1;
+    if (keys.getPtr(key)) |slot| return slot.*;
+    return routes.items[@intCast(key.record_id)].sinkSlot(.{ .kind = key.kind, .index = key.index });
+}
+
+fn prepareSinkSlots(comptime Route: type, comptime Edit: type, allocator: std.mem.Allocator, routes: *const RouteTable(Route), edits: []const Edit, work: *SinkEditWork) SinkEditError![]SinkSlotEdit {
+    const SlotKey = struct { record_id: u64, slot: usize };
+    var lengths: std.AutoHashMapUnmanaged(u64, usize) = .empty;
+    defer lengths.deinit(allocator);
+    var keys: std.AutoHashMapUnmanaged(SinkKey, ?usize) = .empty;
+    defer keys.deinit(allocator);
+    var slots: std.AutoHashMapUnmanaged(SlotKey, SinkKey) = .empty;
+    defer slots.deinit(allocator);
+    const result = try allocator.alloc(SinkSlotEdit, edits.len);
+    errdefer allocator.free(result);
+    for (edits, result) |edit, *planned| {
+        if (edit.record_id >= routes.items.len) return error.InvalidEdit;
+        const route = &routes.items[@intCast(edit.record_id)];
+        const old_key = SinkKey{ .record_id = edit.record_id, .kind = sinkKind(edit), .index = edit.old_index };
+        const slot = candidateSinkSlot(Route, routes, &keys, old_key, work) orelse return error.InvalidEdit;
+        work.edits_resolved += 1;
+        planned.* = .{ .record_id = edit.record_id, .slot = slot, .new_index = edit.new_index };
+        if (edit.new_index) |index| {
+            if (index == edit.old_index) continue;
+            var new_key = old_key;
+            new_key.index = index;
+            if (candidateSinkSlot(Route, routes, &keys, new_key, work) != null) return error.InvalidEdit;
+            try keys.put(allocator, old_key, null);
+            try keys.put(allocator, new_key, slot);
+            if (route.len() > 1) try slots.put(allocator, .{ .record_id = edit.record_id, .slot = slot }, new_key);
+        } else {
+            try keys.put(allocator, old_key, null);
+            // Inline routes cannot displace another slot. The common one-sink
+            // record therefore needs only its key tombstone in preparation.
+            if (route.len() == 1) continue;
+            const length = try lengths.getOrPut(allocator, edit.record_id);
+            if (!length.found_existing) length.value_ptr.* = route.len();
+            length.value_ptr.* -= 1;
+            const last = length.value_ptr.*;
+            if (slot != last) {
+                const last_slot = SlotKey{ .record_id = edit.record_id, .slot = last };
+                const moved = slots.get(last_slot) orelse blk: {
+                    work.route_lookups += 1;
+                    const value = route.slice()[last];
+                    break :blk SinkKey{ .record_id = edit.record_id, .kind = sinkKind(value), .index = value.index };
+                };
+                try slots.put(allocator, .{ .record_id = edit.record_id, .slot = slot }, moved);
+                try keys.put(allocator, moved, slot);
+            }
+        }
+    }
+    return result;
+}
+
+/// Validates ordered edits against a private indexed simulation of targeted
+/// routes. Stale identities and duplicate destinations are contract errors;
+/// allocation refusal leaves every committed list untouched. The returned
+/// physical-slot journal commits in O(edits), including high-fanout records.
+pub fn prepareSinkRouteEdits(allocator: std.mem.Allocator, text_routes: *const RouteTable(TextSink), bool_routes: *const RouteTable(BoolSink), change_routes: *const RouteTable(ChangeSink), structural_routes: *const RouteTable(StructuralSink), text: []const TextSinkEdit, bools: []const BoolSinkEdit, changes: []const ChangeSinkEdit, structural: []const StructuralSinkEdit) SinkEditError!PreparedSinkRouteEdits {
+    var work = SinkEditWork{};
+    const owned_text = try prepareSinkSlots(TextSink, TextSinkEdit, allocator, text_routes, text, &work);
     errdefer allocator.free(owned_text);
-    const owned_bools = try allocator.dupe(BoolSinkEdit, bools);
+    const owned_bools = try prepareSinkSlots(BoolSink, BoolSinkEdit, allocator, bool_routes, bools, &work);
     errdefer allocator.free(owned_bools);
-    const owned_changes = try allocator.dupe(ChangeSinkEdit, changes);
+    const owned_changes = try prepareSinkSlots(ChangeSink, ChangeSinkEdit, allocator, change_routes, changes, &work);
     errdefer allocator.free(owned_changes);
-    return .{
-        .text = owned_text,
-        .bools = owned_bools,
-        .changes = owned_changes,
-        .structural = try allocator.dupe(StructuralSinkEdit, structural),
-    };
-}
-
-fn editedSinkIndex(comptime Edit: type, record_id: u64, kind: anytype, initial: usize, prior: []const Edit) ?usize {
-    var current = initial;
-    for (prior) |edit| {
-        if (edit.record_id != record_id) continue;
-        if (@hasField(Edit, "kind") and edit.kind != kind) continue;
-        if (edit.old_index != current) continue;
-        current = edit.new_index orelse return null;
-    }
-    return current;
-}
-
-fn containsTextSinkAfter(routes: *const RouteTable(TextSink), prior: []const TextSinkEdit, edit: TextSinkEdit) bool {
-    if (edit.record_id >= routes.items.len) return false;
-    for (routes.items[@intCast(edit.record_id)].slice()) |sink| {
-        if (sink.kind != edit.kind) continue;
-        if (editedSinkIndex(TextSinkEdit, edit.record_id, edit.kind, sink.index, prior) == edit.old_index) return true;
-    }
-    return false;
-}
-
-fn containsBoolSinkAfter(routes: *const RouteTable(BoolSink), prior: []const BoolSinkEdit, edit: BoolSinkEdit) bool {
-    if (edit.record_id >= routes.items.len) return false;
-    for (routes.items[@intCast(edit.record_id)].slice()) |sink| {
-        if (sink.kind != edit.kind) continue;
-        if (editedSinkIndex(BoolSinkEdit, edit.record_id, edit.kind, sink.index, prior) == edit.old_index) return true;
-    }
-    return false;
-}
-
-fn containsChangeSinkAfter(routes: *const RouteTable(ChangeSink), prior: []const ChangeSinkEdit, edit: ChangeSinkEdit) bool {
-    if (edit.record_id >= routes.items.len) return false;
-    for (routes.items[@intCast(edit.record_id)].slice()) |sink| {
-        if (editedSinkIndex(ChangeSinkEdit, edit.record_id, {}, sink.index, prior) == edit.old_index) return true;
-    }
-    return false;
-}
-
-fn containsStructuralSinkAfter(routes: *const RouteTable(StructuralSink), prior: []const StructuralSinkEdit, edit: StructuralSinkEdit) bool {
-    if (edit.record_id >= routes.items.len) return false;
-    for (routes.items[@intCast(edit.record_id)].slice()) |sink| {
-        if (sink.kind != edit.kind) continue;
-        if (editedSinkIndex(StructuralSinkEdit, edit.record_id, edit.kind, sink.index, prior) == edit.old_index) return true;
-    }
-    return false;
-}
-
-fn containsTextSink(routes: *const RouteTable(TextSink), edit: TextSinkEdit) bool {
-    if (edit.record_id >= routes.items.len) return false;
-    for (routes.items[@intCast(edit.record_id)].slice()) |sink| if (sink.kind == edit.kind and sink.index == edit.old_index) return true;
-    return false;
-}
-fn containsBoolSink(routes: *const RouteTable(BoolSink), edit: BoolSinkEdit) bool {
-    if (edit.record_id >= routes.items.len) return false;
-    for (routes.items[@intCast(edit.record_id)].slice()) |sink| if (sink.kind == edit.kind and sink.index == edit.old_index) return true;
-    return false;
-}
-fn containsChangeSink(routes: *const RouteTable(ChangeSink), edit: ChangeSinkEdit) bool {
-    if (edit.record_id >= routes.items.len) return false;
-    for (routes.items[@intCast(edit.record_id)].slice()) |sink| if (sink.index == edit.old_index) return true;
-    return false;
-}
-fn containsStructuralSink(routes: *const RouteTable(StructuralSink), edit: StructuralSinkEdit) bool {
-    if (edit.record_id >= routes.items.len) return false;
-    for (routes.items[@intCast(edit.record_id)].slice()) |sink| if (sink.kind == edit.kind and sink.index == edit.old_index) return true;
-    return false;
+    const owned_structural = try prepareSinkSlots(StructuralSink, StructuralSinkEdit, allocator, structural_routes, structural, &work);
+    return .{ .text = owned_text, .bools = owned_bools, .changes = owned_changes, .structural = owned_structural, .work = work };
 }
 
 pub const DirtyStructuralSignal = struct {
@@ -1183,29 +1321,19 @@ pub fn appendTextRoute(allocator: std.mem.Allocator, text_routes: *RouteTable(Te
 /// Removes text route and releases the ownership attached to that live entry.
 pub fn removeTextRoute(text_routes: *RouteTable(TextSink), record_id: u64, kind: TextSinkKind, index: usize) void {
     const route_index: usize = @intCast(record_id);
-    if (route_index >= text_routes.items.len) @panic("active text signal route removal referenced an unknown signal record");
-    var route = &text_routes.items[route_index];
-    for (route.slice(), 0..) |sink, sink_index| {
-        if (sink.kind == kind and sink.index == index) {
-            _ = route.swapRemove(sink_index);
-            return;
-        }
-    }
-    @panic("active text signal route removal missed its sink");
+    if (route_index >= text_routes.items.len) @panic("sink edit referenced an unknown record");
+    const route = &text_routes.items[route_index];
+    const slot = route.sinkSlot(.{ .kind = @intFromEnum(kind), .index = index }) orelse @panic("sink edit missed its identity");
+    _ = route.swapRemove(slot);
 }
 
 /// Updates the dense text route descriptor index after a local structural splice.
 pub fn updateTextRouteIndex(text_routes: *RouteTable(TextSink), record_id: u64, kind: TextSinkKind, old_index: usize, new_index: usize) void {
-    if (old_index == new_index) return;
     const route_index: usize = @intCast(record_id);
-    if (route_index >= text_routes.items.len) @panic("active text signal route update referenced an unknown signal record");
-    for (text_routes.items[route_index].mutableSlice()) |*sink| {
-        if (sink.kind == kind and sink.index == old_index) {
-            sink.index = new_index;
-            return;
-        }
-    }
-    @panic("active text signal route update missed its sink");
+    if (route_index >= text_routes.items.len) @panic("sink edit referenced an unknown record");
+    const route = &text_routes.items[route_index];
+    const slot = route.sinkSlot(.{ .kind = @intFromEnum(kind), .index = old_index }) orelse @panic("sink edit missed its identity");
+    route.setSinkIndex(slot, new_index);
 }
 
 /// Appends bool route using capacity that must already satisfy the caller's transaction contract.
@@ -1216,29 +1344,19 @@ pub fn appendBoolRoute(allocator: std.mem.Allocator, bool_routes: *RouteTable(Bo
 /// Removes bool route and releases the ownership attached to that live entry.
 pub fn removeBoolRoute(bool_routes: *RouteTable(BoolSink), record_id: u64, kind: BoolSinkKind, index: usize) void {
     const route_index: usize = @intCast(record_id);
-    if (route_index >= bool_routes.items.len) @panic("active bool signal route removal referenced an unknown signal record");
-    var route = &bool_routes.items[route_index];
-    for (route.slice(), 0..) |sink, sink_index| {
-        if (sink.kind == kind and sink.index == index) {
-            _ = route.swapRemove(sink_index);
-            return;
-        }
-    }
-    @panic("active bool signal route removal missed its sink");
+    if (route_index >= bool_routes.items.len) @panic("sink edit referenced an unknown record");
+    const route = &bool_routes.items[route_index];
+    const slot = route.sinkSlot(.{ .kind = @intFromEnum(kind), .index = index }) orelse @panic("sink edit missed its identity");
+    _ = route.swapRemove(slot);
 }
 
 /// Updates the dense bool route descriptor index after a local structural splice.
 pub fn updateBoolRouteIndex(bool_routes: *RouteTable(BoolSink), record_id: u64, kind: BoolSinkKind, old_index: usize, new_index: usize) void {
-    if (old_index == new_index) return;
     const route_index: usize = @intCast(record_id);
-    if (route_index >= bool_routes.items.len) @panic("active bool signal route update referenced an unknown signal record");
-    for (bool_routes.items[route_index].mutableSlice()) |*sink| {
-        if (sink.kind == kind and sink.index == old_index) {
-            sink.index = new_index;
-            return;
-        }
-    }
-    @panic("active bool signal route update missed its sink");
+    if (route_index >= bool_routes.items.len) @panic("sink edit referenced an unknown record");
+    const route = &bool_routes.items[route_index];
+    const slot = route.sinkSlot(.{ .kind = @intFromEnum(kind), .index = old_index }) orelse @panic("sink edit missed its identity");
+    route.setSinkIndex(slot, new_index);
 }
 
 /// Appends change route using capacity that must already satisfy the caller's transaction contract.
@@ -1249,29 +1367,19 @@ pub fn appendChangeRoute(allocator: std.mem.Allocator, change_routes: *RouteTabl
 /// Removes change route and releases the ownership attached to that live entry.
 pub fn removeChangeRoute(change_routes: *RouteTable(ChangeSink), record_id: u64, index: usize) void {
     const route_index: usize = @intCast(record_id);
-    if (route_index >= change_routes.items.len) @panic("active change signal route removal referenced an unknown signal record");
-    var route = &change_routes.items[route_index];
-    for (route.slice(), 0..) |sink, sink_index| {
-        if (sink.index == index) {
-            _ = route.swapRemove(sink_index);
-            return;
-        }
-    }
-    @panic("active change signal route removal missed its sink");
+    if (route_index >= change_routes.items.len) @panic("sink edit referenced an unknown record");
+    const route = &change_routes.items[route_index];
+    const slot = route.sinkSlot(.{ .kind = 0, .index = index }) orelse @panic("sink edit missed its identity");
+    _ = route.swapRemove(slot);
 }
 
 /// Updates the dense change route descriptor index after a local structural splice.
 pub fn updateChangeRouteIndex(change_routes: *RouteTable(ChangeSink), record_id: u64, old_index: usize, new_index: usize) void {
-    if (old_index == new_index) return;
     const route_index: usize = @intCast(record_id);
-    if (route_index >= change_routes.items.len) @panic("active change signal route update referenced an unknown signal record");
-    for (change_routes.items[route_index].mutableSlice()) |*sink| {
-        if (sink.index == old_index) {
-            sink.index = new_index;
-            return;
-        }
-    }
-    @panic("active change signal route update missed its sink");
+    if (route_index >= change_routes.items.len) @panic("sink edit referenced an unknown record");
+    const route = &change_routes.items[route_index];
+    const slot = route.sinkSlot(.{ .kind = 0, .index = old_index }) orelse @panic("sink edit missed its identity");
+    route.setSinkIndex(slot, new_index);
 }
 
 /// Appends structural route using capacity that must already satisfy the caller's transaction contract.
@@ -1282,29 +1390,19 @@ pub fn appendStructuralRoute(allocator: std.mem.Allocator, structural_routes: *R
 /// Removes structural route and releases the ownership attached to that live entry.
 pub fn removeStructuralRoute(structural_routes: *RouteTable(StructuralSink), record_id: u64, kind: StructuralKind, index: usize) void {
     const route_index: usize = @intCast(record_id);
-    if (route_index >= structural_routes.items.len) @panic("active structural signal route removal referenced an unknown signal record");
-    var route = &structural_routes.items[route_index];
-    for (route.slice(), 0..) |sink, sink_index| {
-        if (sink.kind == kind and sink.index == index) {
-            _ = route.swapRemove(sink_index);
-            return;
-        }
-    }
-    @panic("active structural signal route removal missed its sink");
+    if (route_index >= structural_routes.items.len) @panic("sink edit referenced an unknown record");
+    const route = &structural_routes.items[route_index];
+    const slot = route.sinkSlot(.{ .kind = @intFromEnum(kind), .index = index }) orelse @panic("sink edit missed its identity");
+    _ = route.swapRemove(slot);
 }
 
 /// Updates the dense structural route descriptor index after a local structural splice.
 pub fn updateStructuralRouteIndex(structural_routes: *RouteTable(StructuralSink), record_id: u64, kind: StructuralKind, old_index: usize, new_index: usize) void {
-    if (old_index == new_index) return;
     const route_index: usize = @intCast(record_id);
-    if (route_index >= structural_routes.items.len) @panic("active structural signal route update referenced an unknown signal record");
-    for (structural_routes.items[route_index].mutableSlice()) |*sink| {
-        if (sink.kind == kind and sink.index == old_index) {
-            sink.index = new_index;
-            return;
-        }
-    }
-    @panic("active structural signal route update missed its sink");
+    if (route_index >= structural_routes.items.len) @panic("sink edit referenced an unknown record");
+    const route = &structural_routes.items[route_index];
+    const slot = route.sinkSlot(.{ .kind = @intFromEnum(kind), .index = old_index }) orelse @panic("sink edit missed its identity");
+    route.setSinkIndex(slot, new_index);
 }
 
 /// Records slice contains in the metrics or lifecycle state owned by this operation.
@@ -4719,4 +4817,235 @@ test "active graph stream rebuild retains records and rebuilds sink routes" {
     clear(LifecycleTestRecord, std.testing.allocator, &nodes, &hooks);
     try std.testing.expectEqual(@as(?u64, null), source.active_graph_id);
     try std.testing.expectEqual(@as(?u64, null), mapped.active_graph_id);
+}
+
+test "sink edit planning bounds independent records and high fanout linearly" {
+    const allocator = std.testing.allocator;
+    for ([_]usize{ 1000, 10000 }) |count| {
+        for ([_]bool{ false, true }) |fanout| {
+            var text: RouteTable(TextSink) = .empty;
+            defer {
+                for (text.items) |*routes| routes.deinit(allocator);
+                text.deinit(allocator);
+            }
+            try text.ensureTotalCapacity(allocator, if (fanout) 1 else count);
+            if (fanout) text.appendAssumeCapacity(.empty);
+            const edits = try allocator.alloc(TextSinkEdit, count);
+            defer allocator.free(edits);
+            for (0..count) |index| {
+                const route = TextSink{ .kind = .text_node, .index = index };
+                if (fanout) try text.items[0].append(allocator, route) else text.appendAssumeCapacity(.{ .one = route });
+                edits[index] = .{ .record_id = if (fanout) 0 else index, .kind = .text_node, .old_index = index };
+            }
+            var bools: RouteTable(BoolSink) = .empty;
+            var changes: RouteTable(ChangeSink) = .empty;
+            var structural: RouteTable(StructuralSink) = .empty;
+            var plan = try prepareSinkRouteEdits(allocator, &text, &bools, &changes, &structural, edits, &.{}, &.{}, &.{});
+            defer plan.deinit(allocator);
+            try std.testing.expect(plan.work.route_lookups <= 2 * count);
+            try std.testing.expectEqual(count, plan.work.edits_resolved);
+            plan.apply(&text, &bools, &changes, &structural);
+            for (text.items) |*routes| try std.testing.expectEqual(@as(usize, 0), routes.len());
+        }
+    }
+}
+
+test "sink edit journal matches sequential lookup with interleaving and renumber chains" {
+    const allocator = std.testing.allocator;
+    var actual: RouteTable(TextSink) = .empty;
+    var reference = [_]std.ArrayList(TextSink){ .empty, .empty, .empty };
+    defer {
+        for (actual.items) |*routes| routes.deinit(allocator);
+        for (&reference) |*routes| routes.deinit(allocator);
+        actual.deinit(allocator);
+    }
+    for (&reference) |*expected| {
+        try actual.append(allocator, .empty);
+        for (0..32) |index| {
+            const route = TextSink{ .kind = @enumFromInt(index % 4), .index = index };
+            try actual.items[actual.items.len - 1].append(allocator, route);
+            try expected.append(allocator, route);
+        }
+    }
+    var edits: std.ArrayList(TextSinkEdit) = .empty;
+    defer edits.deinit(allocator);
+    var random = std.Random.DefaultPrng.init(0x144);
+    for (0..400) |step| {
+        const record = random.random().uintLessThan(usize, 3);
+        const routes = reference[record].items;
+        if (routes.len == 0) continue;
+        const chosen_slot = random.random().uintLessThan(usize, routes.len);
+        const chosen = routes[chosen_slot];
+        const next: ?usize = if (step % 7 == 0) null else 1000 + step;
+        try edits.append(allocator, .{ .record_id = record, .kind = chosen.kind, .old_index = chosen.index, .new_index = next });
+        if (next) |index| reference[record].items[chosen_slot].index = index else _ = reference[record].swapRemove(chosen_slot);
+    }
+    var bools: RouteTable(BoolSink) = .empty;
+    var changes: RouteTable(ChangeSink) = .empty;
+    var structural: RouteTable(StructuralSink) = .empty;
+    var plan = try prepareSinkRouteEdits(allocator, &actual, &bools, &changes, &structural, edits.items, &.{}, &.{}, &.{});
+    defer plan.deinit(allocator);
+    try std.testing.expect(plan.work.route_lookups <= 2 * edits.items.len);
+    try std.testing.expectEqual(edits.items.len, plan.work.edits_resolved);
+    plan.apply(&actual, &bools, &changes, &structural);
+    for (actual.items, &reference) |*got, *expected| try std.testing.expectEqualSlices(TextSink, expected.items, got.slice());
+}
+
+test "sink edit preparation rejects stale and duplicate identities without mutation" {
+    const allocator = std.testing.allocator;
+    var routes: RouteTable(TextSink) = .empty;
+    defer {
+        for (routes.items) |*value| value.deinit(allocator);
+        routes.deinit(allocator);
+    }
+    try routes.append(allocator, .empty);
+    try routes.items[0].append(allocator, .{ .kind = .text_node, .index = 2 });
+    try routes.items[0].append(allocator, .{ .kind = .text_node, .index = 8 });
+    const invalid = [_][]const TextSinkEdit{
+        &.{.{ .record_id = 1, .kind = .text_node, .old_index = 2 }},
+        &.{.{ .record_id = 0, .kind = .text_attr, .old_index = 2 }},
+        &.{ .{ .record_id = 0, .kind = .text_node, .old_index = 2 }, .{ .record_id = 0, .kind = .text_node, .old_index = 2 } },
+        &.{.{ .record_id = 0, .kind = .text_node, .old_index = 2, .new_index = 8 }},
+        &.{ .{ .record_id = 0, .kind = .text_node, .old_index = 2, .new_index = 3 }, .{ .record_id = 0, .kind = .text_node, .old_index = 2 } },
+    };
+    for (invalid) |edits| {
+        var work = SinkEditWork{};
+        try std.testing.expectError(error.InvalidEdit, prepareSinkSlots(TextSink, TextSinkEdit, allocator, &routes, edits, &work));
+        try std.testing.expectEqualSlices(TextSink, &.{ .{ .kind = .text_node, .index = 2 }, .{ .kind = .text_node, .index = 8 } }, routes.items[0].slice());
+    }
+}
+
+test "one sink edit stays constant with unrelated fanout" {
+    const allocator = std.testing.allocator;
+    for ([_]usize{ 1000, 10000, 100000 }) |count| {
+        var routes: RouteTable(TextSink) = .empty;
+        defer {
+            for (routes.items) |*route| route.deinit(allocator);
+            routes.deinit(allocator);
+        }
+        try routes.append(allocator, .empty);
+        try routes.items[0].ensureUnusedCapacity(allocator, count);
+        for (0..count) |index| routes.items[0].appendAssumeCapacity(.{ .kind = .text_node, .index = index });
+        var work = SinkEditWork{};
+        const plan = try prepareSinkSlots(TextSink, TextSinkEdit, allocator, &routes, &.{.{ .record_id = 0, .kind = .text_node, .old_index = 0 }}, &work);
+        defer allocator.free(plan);
+        try std.testing.expectEqual(@as(usize, 2), work.route_lookups);
+        try std.testing.expectEqual(@as(usize, 1), work.edits_resolved);
+        PreparedSinkRouteEdits.applySlots(TextSink, &routes, plan);
+        try std.testing.expectEqual(count - 1, routes.items[0].len());
+        try std.testing.expectEqual(null, routes.items[0].sinkSlot(.{ .kind = 0, .index = 0 }));
+        try std.testing.expectEqual(@as(?usize, 0), routes.items[0].sinkSlot(.{ .kind = 0, .index = count - 1 }));
+    }
+}
+
+test "indexed sink spill refuses atomically and owns its inverse map" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    var counted = FaultAllocator.init(std.testing.allocator);
+    var baseline: SmallRouteList(TextSink) = .empty;
+    try baseline.append(counted.allocator(), .{ .kind = .text_node, .index = 1 });
+    try std.testing.expectEqual(@as(usize, 0), counted.attempts);
+    try baseline.append(counted.allocator(), .{ .kind = .text_node, .index = 2 });
+    const attempts = counted.attempts;
+    baseline.deinit(counted.allocator());
+    for (1..attempts + 1) |failure| {
+        var fault = FaultAllocator.init(std.testing.allocator);
+        var routes: SmallRouteList(TextSink) = .empty;
+        defer routes.deinit(fault.allocator());
+        try routes.append(fault.allocator(), .{ .kind = .text_node, .index = 1 });
+        fault.configure(failure);
+        try std.testing.expectError(error.OutOfMemory, routes.append(fault.allocator(), .{ .kind = .text_node, .index = 2 }));
+        try std.testing.expectEqual(@as(usize, 1), routes.len());
+        try std.testing.expectEqual(@as(?usize, 0), routes.sinkSlot(.{ .kind = 0, .index = 1 }));
+        fault.configure(null);
+        try routes.append(fault.allocator(), .{ .kind = .text_node, .index = 2 });
+        routes.setSinkIndex(0, 3);
+        try std.testing.expectEqual(null, routes.sinkSlot(.{ .kind = 0, .index = 1 }));
+        try std.testing.expectEqual(@as(?usize, 0), routes.sinkSlot(.{ .kind = 0, .index = 3 }));
+        _ = routes.swapRemove(0);
+        try std.testing.expectEqual(@as(?usize, 0), routes.sinkSlot(.{ .kind = 0, .index = 2 }));
+    }
+}
+
+// The first record retires. Its last peer moves to dense slot zero, while a
+// different shared record reuses a descriptor index removed by the same turn.
+fn checkEditedRouteAppends(comptime Route: type, allocator: std.mem.Allocator) !void {
+    var routes: RouteTable(Route) = .empty;
+    defer {
+        clearRouteTable(Route, std.testing.allocator, &routes);
+        routes.deinit(std.testing.allocator);
+    }
+    for (0..3) |_| try routes.append(std.testing.allocator, .empty);
+    try routes.items[0].append(std.testing.allocator, sampleRoute(Route, 90));
+    for ([_]usize{ 10, 11, 12 }) |index| try routes.items[1].append(std.testing.allocator, sampleRoute(Route, index));
+    for ([_]usize{ 20, 21 }) |index| try routes.items[2].append(std.testing.allocator, sampleRoute(Route, index));
+    var remap = try testRemapFromFinalIds(std.testing.allocator, &.{ null, 1, 0 });
+    defer remap.deinit(std.testing.allocator);
+    const edits = [_]SinkSlotEdit{
+        .{ .record_id = 1, .slot = 0, .new_index = null },
+        .{ .record_id = 2, .slot = 0, .new_index = 22 },
+        .{ .record_id = 1, .slot = 0, .new_index = 5 },
+    };
+    const appends = [_]RouteAppend(Route){
+        .{ .route_index = 1, .value = sampleRoute(Route, 12) },
+        .{ .route_index = 0, .value = sampleRoute(Route, 23) },
+    };
+    var prepared = prepareSinkRouteAppendsAfterEdits(Route, allocator, &routes, &remap, 2, &appends, &edits) catch |err| {
+        try expectSampleRoutes(Route, &.{ 10, 11, 12 }, routes.items[1].slice());
+        try expectSampleRoutes(Route, &.{ 20, 21 }, routes.items[2].slice());
+        return err;
+    };
+    defer prepared.deinit(allocator);
+    try expectSampleRoutes(Route, &.{ 10, 11, 12 }, routes.items[1].slice());
+    try expectSampleRoutes(Route, &.{ 20, 21 }, routes.items[2].slice());
+    // Normal publication edits the committed lists once, then compacts record
+    // ids, then adopts replacements already containing those same edits.
+    PreparedSinkRouteEdits.applySlots(Route, &routes, &edits);
+    var retired = routes.swapRemove(0);
+    defer retired.deinit(std.testing.allocator);
+    prepared.apply(&routes, 2);
+    try expectSampleRoutes(Route, &.{ 22, 21, 23 }, routes.items[0].slice());
+    try expectSampleRoutes(Route, &.{ 5, 11, 12 }, routes.items[1].slice());
+    for (routes.items) |*list| for (list.slice(), 0..) |route, slot| {
+        try std.testing.expectEqual(slot, list.sinkSlot(routeKey(route)).?);
+    };
+}
+
+test "sink appends compose retired and renumbered identities before dense publication" {
+    const FaultAllocator = @import("fault_allocator.zig").FaultAllocator;
+    inline for (.{ TextSink, BoolSink, ChangeSink, StructuralSink }) |Route| {
+        var counted = FaultAllocator.init(std.testing.allocator);
+        try checkEditedRouteAppends(Route, counted.allocator());
+        const allocation_count = counted.attempts;
+        for (0..allocation_count) |fail_at| {
+            var fault = FaultAllocator.init(std.testing.allocator);
+            fault.configure(fail_at + 1);
+            try std.testing.expectError(error.OutOfMemory, checkEditedRouteAppends(Route, fault.allocator()));
+        }
+        var after_last = FaultAllocator.init(std.testing.allocator);
+        after_last.configure(allocation_count + 1);
+        try checkEditedRouteAppends(Route, after_last.allocator());
+        try std.testing.expectEqual(allocation_count, after_last.attempts);
+    }
+}
+
+test "sink append composition rejects genuine duplicate surviving or new identities" {
+    inline for (.{ TextSink, BoolSink, ChangeSink, StructuralSink }) |Route| {
+        var routes: RouteTable(Route) = .empty;
+        defer {
+            clearRouteTable(Route, std.testing.allocator, &routes);
+            routes.deinit(std.testing.allocator);
+        }
+        try routes.append(std.testing.allocator, .empty);
+        try routes.items[0].append(std.testing.allocator, sampleRoute(Route, 1));
+        var remap = try testRemapFromFinalIds(std.testing.allocator, &.{0});
+        defer remap.deinit(std.testing.allocator);
+        const duplicate_existing = [_]RouteAppend(Route){.{ .route_index = 0, .value = sampleRoute(Route, 1) }};
+        try std.testing.expectError(error.InvalidAppend, prepareSinkRouteAppendsAfterEdits(Route, std.testing.allocator, &routes, &remap, 1, &duplicate_existing, &.{}));
+        const duplicate_new = [_]RouteAppend(Route){
+            .{ .route_index = 0, .value = sampleRoute(Route, 2) },
+            .{ .route_index = 0, .value = sampleRoute(Route, 2) },
+        };
+        try std.testing.expectError(error.InvalidAppend, prepareSinkRouteAppendsAfterEdits(Route, std.testing.allocator, &routes, &remap, 1, &duplicate_new, &.{}));
+        try expectSampleRoutes(Route, &.{1}, routes.items[0].slice());
+    }
 }

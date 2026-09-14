@@ -60,6 +60,25 @@ def smoke() -> None:
     shared_sources()
     run(sys.executable, "scripts/test.py", "zig", "browser", "roc-check", "roc-test", "wasm", "size", "--native", "never", "--bundle", "never")
     run(sys.executable, "scripts/fuzz.py", "check")
+    wasm_benchmark_smoke()
+
+
+def wasm_benchmark_smoke() -> None:
+    """Exercise the paired reporting boundary with linked optimized artifacts."""
+    run(sys.executable, "scripts/test_rows_builders.py")
+    run(sys.executable, "scripts/test_rows_parent_publications.py", "--roc-bin", os.environ["ROC_BIN"])
+    run(
+        sys.executable, "scripts/test.py", "wasm-bench",
+        "--bench-case", "create_1k", "--bench-warmups", "0",
+        "--bench-iterations", "1", "--bench-samples", "1",
+        "--bench-app-opt", "speed",
+    )
+    # The preceding paired build produced ReleaseFast hosts with truthful
+    # production/diagnostic allocator modes; reuse those exact objects.
+    run(
+        sys.executable, "scripts/rows_scaling.py", "--roc-bin", os.environ["ROC_BIN"],
+        "--samples", "1", "--skip-host-build",
+    )
 
 
 def hosted() -> None:
@@ -71,11 +90,13 @@ def hosted() -> None:
         "zig", "fuzz", "browser", "roc-check", "roc-test", "wasm", "native", "size",
         "--bundle", "never",
     )
+    wasm_benchmark_smoke()
 
 
 def source() -> None:
     shared_sources()
     run(sys.executable, "scripts/test.py")
+    wasm_benchmark_smoke()
 
 
 def gui() -> None:

@@ -91,6 +91,10 @@ async function runIteration(bytes, scenario, diagnostic) {
     onError: (error) => { throw error; },
   });
   runtime.mount();
+  const ledgerEntries = instance.exports.roc_ui_debug_live_allocation_count();
+  if (diagnostic ? ledgerEntries === 0 : ledgerEntries !== 0) {
+    throw new Error(`benchmark ${diagnostic ? "diagnostic" : "production"} allocation-ledger mode is incorrect`);
+  }
   for (const action of scenario.setup ?? []) runAction(root, action);
   if (diagnostic) resetBenchmarkMetrics(instance.exports);
   runtime.benchmarkRecorder.begin();
@@ -107,6 +111,12 @@ async function runIteration(bytes, scenario, diagnostic) {
   const protocolFeatures = instance.exports.roc_ui_protocol_features();
   const metricsSchema = diagnostic ? instance.exports.roc_ui_benchmark_metrics_schema_version() : null;
   runtime.unmount();
+  if (diagnostic) {
+    const teardown = readBenchmarkMetrics(instance.exports);
+    if (teardown.command_buffer_capacity_bytes !== 0n || teardown.roc_live_bytes !== 0n || runtime.liveHostValues() !== 0) {
+      throw new Error(`benchmark case ${scenario.id} retained command or Roc ownership after unmount`);
+    }
+  }
   return { measured, diagnostics, signature, state, protocolVersion, protocolFeatures, metricsSchema };
 }
 
@@ -133,7 +143,7 @@ function addInto(target, source) {
 function addDiagnostics(target, source) {
   for (const [name, value] of Object.entries(source)) {
     const isPeak = name.includes("peak_live_");
-    const isStableGauge = /_(?:live_count|live_bytes|live_count_before|live_bytes_before)$/.test(name) || name.startsWith("wasm_pages_");
+    const isStableGauge = /_(?:live_count|live_bytes|live_count_before|live_bytes_before)$/.test(name) || name.startsWith("wasm_pages_") || name === "command_buffer_capacity_bytes";
     if (isPeak) {
       target[name] = target[name] === undefined ? value : (value > target[name] ? value : target[name]);
     } else if (isStableGauge) {
@@ -235,7 +245,7 @@ async function main() {
           live_runtime_nodes: production.state.live_nodes,
           live_runtime_listeners: production.state.listeners,
           live_runtime_behaviors: production.state.behaviors,
-          live_runtime_tasks: production.state.tasks,
+          live_runtime_effects: production.state.running_effects,
           live_runtime_intervals: production.state.intervals,
           live_runtime_host_values: production.state.host_values,
           live_runtime_wasm_pages: production.state.wasm_pages,

@@ -455,6 +455,7 @@ const NativeCtx = struct {
 
     /// Prepares the native simulated-DOM shadow without mutating host-visible state.
     pub fn prepareRenderPublication(ctx: Handle, splice: anytype) RenderPublication.PrepareError!RenderPublication {
+        if (builtin.is_test) ctx.render_publication_preparations += 1;
         return RenderPublication.prepare(ctx, splice);
     }
 
@@ -917,6 +918,7 @@ const HostEnv = struct {
     /// spec runner. Keeping this on the host makes measurement explicit and
     /// instance-local rather than a process-global execution mode.
     benchmark_stats: ?*BenchmarkStats = null,
+    render_publication_preparations: if (builtin.is_test) usize else void = if (builtin.is_test) 0 else {},
 
     fn init() HostEnv {
         return .{
@@ -7144,13 +7146,20 @@ test "coordinated state writes give new branches the complete proposed snapshot"
                 .signal = boxTestNodeSignalExpr(&roc_host, testNodeRefExpr(value_token)),
             } }, .tag = .TextSignal };
             const branch = testNodeWhenReadingState(&roc_host, visible_token, visible_cap, text, testNodeText(&roc_host, "off"));
-            const inner = testNodeStateWithTokenAndInitialCapability(&roc_host, value_token, testHostValueI64(7), branch, value_cap);
+            const persistent_text = abi.Elem{ .payload = .{ .text_signal = .{
+                .read = testI64TextReadHandle(&roc_host, value_cap),
+                .signal = boxTestNodeSignalExpr(&roc_host, testNodeRefExpr(value_token)),
+            } }, .tag = .TextSignal };
+            const content = testElement(&roc_host, &.{ persistent_text, branch });
+            const inner = testNodeStateWithTokenAndInitialCapability(&roc_host, value_token, testHostValueI64(7), content, value_cap);
             const root = testNodeStateWithTokenAndInitialCapability(&roc_host, visible_token, testHostValueBool(false), inner, visible_cap);
             defer root.decref(&roc_host);
             _ = try tryRenderInitialRoot(&host, &roc_host, root, &.{});
             const visible = host.engine.active_stream.scope_sites.items[0].node_id;
             const value = host.engine.active_stream.scope_sites.items[1].node_id;
+            const persistent_text_id = activeTextElementId(&host, "7").?;
             const generation = host.engine.dirty_signal_generation;
+            const publications_before = host.render_publication_preparations;
             var writes = [_]engine.StateWrite{
                 .{ .state_id = visible.raw(), .value = testHostValueBool(true), .cap = host.stateCapability(visible) },
                 .{ .state_id = value.raw(), .value = testHostValueI64(42), .cap = host.stateCapability(value) },
@@ -7173,6 +7182,8 @@ test "coordinated state writes give new branches the complete proposed snapshot"
                 break :retry try host.engine.tryDispatchStateWrites(&host, &roc_host, &writes);
             };
             const attempts = fault.attempts;
+            if (failure_number == null) try std.testing.expectEqual(@as(usize, 1), host.render_publication_preparations - publications_before);
+            try std.testing.expectEqualStrings("42", host.dom_elements.items[@intCast(persistent_text_id)].text.?);
             try std.testing.expectEqual(generation + 1, host.engine.dirty_signal_generation);
             try std.testing.expect(activeTextElementId(&host, "off") == null);
             try std.testing.expect(activeTextElementId(&host, "42") != null);
@@ -7853,8 +7864,10 @@ test "list source each transaction commits the expected publication" {
             var fault = FaultAllocator.init(host.gpa.allocator());
             fault.configure(failure_number);
             host.engine_allocator_override = fault.allocator();
+            const publications_before = host.render_publication_preparations;
             const result = host.engine.tryDispatchEffectSourceValue(&host, &roc_host, record, next);
             const attempts = fault.attempts;
+            if (failure_number == null) try std.testing.expectEqual(@as(usize, 1), host.render_publication_preparations - publications_before);
             if (failure_number != null) {
                 try std.testing.expectError(error.OutOfMemory, result);
                 try std.testing.expectEqual(@as(usize, 1), fault.induced_failures);
@@ -7947,8 +7960,10 @@ test "one state transaction updates two each sites atomically through production
             var fault = FaultAllocator.init(host.gpa.allocator());
             fault.configure(failure_number);
             host.engine_allocator_override = fault.allocator();
+            const publications_before = host.render_publication_preparations;
             const result = host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64List(&roc_host, &next_items), state_cap);
             const attempts = fault.attempts;
+            if (failure_number == null) try std.testing.expectEqual(@as(usize, 1), host.render_publication_preparations - publications_before);
             if (failure_number != null) {
                 try std.testing.expectError(error.OutOfMemory, result);
                 try std.testing.expectEqual(generation_before, host.engine.dirty_signal_generation);
@@ -8057,8 +8072,10 @@ test "one state transaction updates two each sites under distinct parents throug
             var fault = FaultAllocator.init(host.gpa.allocator());
             fault.configure(failure_number);
             host.engine_allocator_override = fault.allocator();
+            const publications_before = host.render_publication_preparations;
             const result = host.engine.tryDispatchStateValue(&host, &roc_host, state_id.raw(), testHostValueI64List(&roc_host, &next_items), state_cap);
             const attempts = fault.attempts;
+            if (failure_number == null) try std.testing.expectEqual(@as(usize, 1), host.render_publication_preparations - publications_before);
             if (failure_number != null) {
                 try std.testing.expectError(error.OutOfMemory, result);
                 try std.testing.expectEqual(generation_before, host.engine.dirty_signal_generation);
@@ -9003,7 +9020,9 @@ test "a when branch and an each under one parent grow in one transaction and re-
 
             const grown = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3), testHostValueI64(4) };
             const retry = [_]HostValue{ testHostValueI64(1), testHostValueI64(2), testHostValueI64(3), testHostValueI64(4) };
+            const publications_before = host.render_publication_preparations;
             const attempts = try dispatchStateValueSweeping(&host, &roc_host, list_state_id, testHostValueI64List(&roc_host, &grown), testHostValueI64List(&roc_host, &retry), cap, failure_number);
+            if (failure_number == null) try std.testing.expectEqual(@as(usize, 1), host.render_publication_preparations - publications_before);
             try expectScopeSiteInsertIndex(&host, when_id, .when, 1);
             try expectScopeSiteInsertIndex(&host, shared_each_id, .each, 2);
             try expectScopeSiteInsertIndex(&host, trailing_each_id, .each, 6);
@@ -9923,7 +9942,9 @@ test "signals host dirty each append patches only changed row" {
     const patch_start = host.engine.render_metrics.patches_emitted;
     const graph_rebuild_start = host.engine.pending_roc_metrics.active_graph_records_rebuilt;
 
+    const publications_before = host.render_publication_preparations;
     const patch_counts = applyDirtyStructuralSignalsLocally(&host, &roc_host, &dirty_source_node_ids, dirty_generation, dirty_structural_signals);
+    try std.testing.expectEqual(@as(usize, 1), host.render_publication_preparations - publications_before);
 
     try std.testing.expectEqual(@as(u64, row_count), host.engine.pending_roc_metrics.rows_reused - rows_reused_start);
     try std.testing.expectEqual(@as(u64, 1), host.engine.pending_roc_metrics.rows_created - rows_created_start);
@@ -12022,6 +12043,9 @@ const HostPlateauSnapshot = struct {
     host_retained_alloc_delta: i64,
     host_retained_bytes_delta: i64,
     dom_elements_len: usize,
+    render_event_slots_len: usize,
+    render_event_slots_capacity: usize,
+    render_event_slots_free: usize,
     active_events_len: usize,
     event_descriptors_len: usize,
     signal_descriptors_len: usize,
@@ -12061,6 +12085,9 @@ const HostPlateauSnapshot = struct {
             .host_retained_alloc_delta = metrics.host_retained_alloc_delta,
             .host_retained_bytes_delta = metrics.host_retained_bytes_delta,
             .dom_elements_len = current.dom_elements.items.len,
+            .render_event_slots_len = current.engine.render_cache.event_pool.slots.items.len,
+            .render_event_slots_capacity = current.engine.render_cache.event_pool.slots.capacity,
+            .render_event_slots_free = current.engine.render_cache.event_pool.free_count,
             .active_events_len = current.engine.active_events.items.len,
             .event_descriptors_len = current.engine.event_descriptors.items.len,
             .signal_descriptors_len = current.engine.signal_descriptors.items.len,
@@ -12290,8 +12317,10 @@ test "native initial root with sibling and nested each sites publishes allocatio
             var fault = FaultAllocator.init(host.gpa.allocator());
             fault.configure(failure_number);
             host.engine_allocator_override = fault.allocator();
+            const publications_before = host.render_publication_preparations;
             const result = tryRenderInitialRootWithArmedPublication(&host, &roc_host, root, &fault);
             const attempts = fault.attempts;
+            if (failure_number == null) try std.testing.expectEqual(@as(usize, 1), host.render_publication_preparations - publications_before);
             if (failure_number != null) {
                 try std.testing.expectError(error.OutOfMemory, result);
                 try expectUnpublished(&host);

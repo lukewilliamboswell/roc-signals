@@ -4,6 +4,47 @@ Use measurements to choose engine work. A useful optimization starts with a
 repeatable workload, identifies a specific source of cost, and demonstrates
 that the cost and wall time both improved without changing behavior.
 
+## Check retained Rows scaling
+
+The no-render Rows probe retains and reads old generations while editing
+collections of 1,000, 10,000, and 100,000 rows. It separates collection work
+from row rendering and checks allocation **bytes plus reallocation-copy bytes**;
+allocation call counts alone cannot detect a copied flat directory.
+
+```sh
+python3 scripts/rows_scaling.py --roc-bin /path/to/roc > .test-out/rows-scaling.jsonl
+python3 scripts/test_rows_builders.py
+python3 scripts/test_rows_parent_publications.py --roc-bin /path/to/roc
+```
+
+The paired optimized Wasm probe times the production artifact and checks its
+commands and state against an instrumented companion. An untimed complete-row
+audit checks both current and retained values after each measured action;
+unmount must release all retained values. Fixed updates include a large
+historical capacity with only one live row after clear. Structural edits allow
+logarithmic directory growth. Bulk cases bound allocation growth for a tenfold
+increase in edit or row count, allowing logarithmic persistent-index paths.
+Clear itself still scans historical slot chunks to rebuild ascending free-slot
+order; this probe makes no changed-set or timing claim for small-live Clear. These are collection allocation gates, not browser timing claims.
+Fresh construction, snapshot replacement, and remove/reinsert batches have
+separate scaling cases. The full keyed-table benchmark additionally checks the
+rendered workloads.
+
+The builder guard rejects unbounded contiguous-list front insertion, whose
+quadratic memmove cost may allocate no extra bytes. The parent-publication probe
+instruments an isolated module copy and requires exactly one chunk publication
+per changed parent relationship, including leaf, internal, and root splits.
+Both probes deliberately restore the corresponding defect and require rejection.
+No diagnostic fields or counters are added to the production Rows type.
+
+The allocation probe starts Node with `--no-maglev`, matching the browser
+scenario workaround for a Node/V8 background-compilation and GC deadlock.
+Each record includes the Node version and flags; this probe does not establish
+production JavaScript timing claims. To check the directory oracle itself, run
+`rows_scaling.py` with `--flat-directory-mutation` and a separate `--output-dir`;
+it restores flat COW storage in generated copies and must fail the allocation
+growth gate after passing the same retained-value and teardown checks.
+
 ## Start with a ReleaseFast native host
 
 Roc links the platform host that is already present under `platform-web/targets/`
@@ -105,9 +146,17 @@ The native benchmark CSV separates:
 - `dispatch_roc_ns`: time executing the Roc event reducer;
 - `dispatch_apply_ns`: host propagation, reconciliation, and render-command
   generation;
-- `total_ns`: the complete measured operation, including small harness costs;
+- `total_ns`: the sum of initialization and dispatch phase timers, not an
+  outer wall-clock measurement;
 - runtime counters such as scanned descriptors, keyed-row work, emitted
   patches, and allocation counts.
+
+The native CSV's runtime-counter snapshot includes mount and setup work, even
+when `mark-metrics` limits the dispatch timers to the selected action. In
+particular, fields named `*_this_event` in that snapshot are not action-only
+allocator measurements. Label them as lifecycle totals; any subtraction of
+matched setup totals must be identified as a derived difference. The paired
+Wasm diagnostic runner resets its counters immediately before the marked action.
 
 Report the median and range from multiple samples. One sample is useful only
 for finding very large regressions. Avoid increasing `--host-bench-iterations` for
@@ -163,9 +212,11 @@ Timing columns are integer nanosecond totals across the sample:
 - `wasm_event_ns` brackets the real `roc_ui_event` export;
 - `command_read_ns` materializes fixed records;
 - `command_snapshot_ns` copies string and dynamic buffers for reentrancy;
+- `command_acknowledge_ns` releases the copied host publication and trims retained
+  command storage through `roc_ui_command_buffer_clear`;
 - `command_execute_ns` is the command-apply duration after subtracting its
-  nested read and snapshot phases;
-- `event_residual_js_ns` is the total minus those four mutually exclusive
+  nested read, snapshot, and acknowledgement phases;
+- `event_residual_js_ns` is the total minus those five mutually exclusive
   phases.
 
 The runner rejects missing or duplicated required phases and rejects nested
@@ -178,6 +229,20 @@ engine counters are summed across fresh iterations. Peak allocation fields are
 the maximum observed iteration. Live/before/after gauges and committed page
 counts must agree across the fresh diagnostic instances or the sample is
 rejected; they are reported once rather than added together.
+
+The CSV column `live_runtime_effects` counts executor effects currently running
+in JavaScript, not queued engine effects. It replaces the obsolete
+`live_runtime_tasks` column; update CSV consumers to use the new name.
+Production/diagnostic parity includes this registry count. Metrics schema 6 adds
+`command_buffer_capacity_bytes`, a post-acknowledgement retained-storage gauge
+reported once per sample. `command_buffer_growth_bytes` records the largest growth
+above the marked baseline before acknowledgement, even when the bank is then
+released. Every paired iteration asserts zero command-buffer capacity and Roc
+value ownership after unmount.
+After collecting samples, the driver also checks repeated 10,000-row creation
+and clearing across two mounts of one diagnostic instance. This untimed
+regression checks the retained command budget after each action and complete
+command-storage release after each unmount.
 
 Interpret timings together with the work columns: fixed record/string/dynamic
 wire bytes, every opcode count, decode counts and bytes, copied buffers and
@@ -282,6 +347,18 @@ comparison against the September 4 compiler increased cumulative raw Wasm by
 `two-row-types`. The upgrade's compiler fixes justify this accepted size cost.
 `test/size/budgets.toml` identifies the measurement
 revision used for its explicit raw and gzip budgets, with 1% headroom.
+`test/size/performance-before.json` and `performance-baseline.json` record the
+matched production cost of persistent Rows indexes, sparse graph edit journals,
+grouped retirement, compact event storage, and bounded command retention.
+The compiler and compression settings are identical. Across the seven fixtures,
+raw Wasm grows 10.07%, gzip 6.18%, and Brotli 4.80%; the keyed-table fixture grows
+10.85% raw and 6.35% gzip. This is an explicit artifact-size tradeoff for bounded
+edit work and lower retained/allocation costs, not a size optimization.
+Before recording that baseline, factoring bounded directory updates and storing
+only scalar lengths in construction scratch reduced the recipe fixture by
+48,916 raw bytes and 12,245 gzip bytes. Changes must still be checked across all
+fixtures and compression formats: those reductions did not improve every
+individual result. The paired reports retain each measurement and artifact hash.
 `python3 scripts/test.py size` fails when a
 fixture exceeds its budget. After an accepted change, regenerate the budgets
 from the new report with `--write-budgets` and review the diff; never bless a

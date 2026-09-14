@@ -376,7 +376,7 @@ var roc_benchmark_counters: AllocationCounters = .{};
 var benchmark_host_baseline: AllocationCounters = .{};
 var benchmark_roc_baseline_live_count: u64 = 0;
 var benchmark_roc_baseline_live_bytes: u64 = 0;
-const benchmark_metrics_schema_version: u32 = 5;
+const benchmark_metrics_schema_version: u32 = 6;
 const runtime_metric_count = std.meta.fields(engine.RuntimeMetrics).len;
 const BenchmarkMetricsBlock = extern struct {
     roc: [10]u64,
@@ -390,6 +390,7 @@ const BenchmarkMetricsBlock = extern struct {
     host_live_count_before: u64,
     host_live_bytes_before: u64,
     command_buffer_growth_bytes: u64,
+    command_buffer_capacity_bytes: u64,
     wasm_pages_before: u64,
     wasm_pages_after: u64,
     runtime: [runtime_metric_count]u64,
@@ -398,6 +399,7 @@ var benchmark_metrics_block: BenchmarkMetricsBlock = std.mem.zeroes(BenchmarkMet
 var benchmark_command_capacity_bytes: u64 = 0;
 var benchmark_pages_before: u64 = 0;
 var command_batch: render.TransactionalBatch = .{};
+var final_command_batch: bool = false;
 var initial_entropy_seed: ?u32 = null;
 var initial_location_payload: ?[]u8 = null;
 var initial_visibility_payload: ?[]u8 = null;
@@ -608,6 +610,7 @@ fn clearCommandBuffers() void {
 /// engine begins a batch and ends it with `publishCommandTransaction`; the
 /// engine transactions and sink commands in between seal into that one batch.
 fn beginCommandTransaction() void {
+    final_command_batch = false;
     command_batch.begin();
 }
 
@@ -677,7 +680,9 @@ fn updateBenchmarkMetricsBlock() void {
     benchmark_metrics_block.roc_live_bytes_before = benchmark_roc_baseline_live_bytes;
     benchmark_metrics_block.host_live_count_before = benchmark_host_baseline.live_count;
     benchmark_metrics_block.host_live_bytes_before = benchmark_host_baseline.live_bytes;
-    benchmark_metrics_block.command_buffer_growth_bytes = commandBufferCapacityBytes() -| benchmark_command_capacity_bytes;
+    const command_capacity = commandBufferCapacityBytes();
+    benchmark_metrics_block.command_buffer_growth_bytes = @max(benchmark_metrics_block.command_buffer_growth_bytes, command_capacity -| benchmark_command_capacity_bytes);
+    benchmark_metrics_block.command_buffer_capacity_bytes = command_capacity;
     benchmark_metrics_block.wasm_pages_before = benchmark_pages_before;
     benchmark_metrics_block.wasm_pages_after = @wasmMemorySize(0);
     inline for (std.meta.fields(engine.RuntimeMetrics), 0..) |field, index| {
@@ -1923,7 +1928,12 @@ export fn roc_ui_command_record_words() callconv(.c) usize {
 }
 
 export fn roc_ui_command_buffer_clear() callconv(.c) void {
-    clearCommandBuffers();
+    if (host_poisoned) {
+        command_batch.discard();
+        return;
+    }
+    command_batch.acknowledge(allocator(), if (final_command_batch) 0 else runtime_limits.retained_command_bytes_per_bank);
+    if (comptime build_options.wasm_benchmark) updateBenchmarkMetricsBlock();
 }
 
 export fn roc_ui_last_error_ptr() callconv(.c) usize {
@@ -2324,6 +2334,7 @@ export fn roc_ui_unmount() callconv(.c) void {
     clearInitialVisibilityPayload();
     clearInitialOnlinePayload();
     clearStorageEnvironment();
+    final_command_batch = true;
     publishCommandTransaction();
 }
 

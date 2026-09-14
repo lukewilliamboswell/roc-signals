@@ -1,6 +1,6 @@
 import { Op, SignalsRuntime } from "../../www/static/signals.mjs";
 
-const PHASES = ["wasm_event_ns", "command_read_ns", "command_snapshot_ns", "command_execute_ns"];
+const PHASES = ["wasm_event_ns", "command_read_ns", "command_snapshot_ns", "command_acknowledge_ns", "command_execute_ns"];
 export const OPCODE_NAMES = [
   "reset_dom", "create_element", "create_text", "append_child", "remove_node", "move_before",
   "set_text", "set_value", "set_checked", "set_disabled", "set_role", "set_label", "set_test_id",
@@ -71,7 +71,7 @@ export class BenchmarkPhaseRecorder {
   finish() {
     this.active = false;
     if (this.eventCalls !== 1) throw new Error(`benchmark sample requires one marked event, observed ${this.eventCalls}`);
-    for (const name of ["wasm_event_ns", "command_read_ns", "command_execute_ns"]) {
+    for (const name of ["wasm_event_ns", "command_read_ns", "command_acknowledge_ns", "command_execute_ns"]) {
       if (this.calls[name] !== 1) throw new Error(`benchmark phase ${name} must execute once, observed ${this.calls[name]}`);
     }
     if (this.calls.command_snapshot_ns > 1) {
@@ -124,17 +124,23 @@ export class BenchmarkSignalsRuntime extends SignalsRuntime {
     return buffers;
   }
 
+  acknowledgeCommands() {
+    return this.benchmarkRecorder.measure("command_acknowledge_ns", () => super.acknowledgeCommands());
+  }
+
   applyPendingCommands(phase = "host-call") {
     if (!this.benchmarkRecorder.active) return super.applyPendingCommands(phase);
     const readBefore = this.benchmarkRecorder.timings.command_read_ns;
     const snapshotBefore = this.benchmarkRecorder.timings.command_snapshot_ns;
+    const acknowledgeBefore = this.benchmarkRecorder.timings.command_acknowledge_ns;
     const start = this.benchmarkRecorder.clock();
     const result = super.applyPendingCommands(phase);
     const elapsed = this.benchmarkRecorder.clock() - start;
     const nestedRead = this.benchmarkRecorder.timings.command_read_ns - readBefore;
     const nestedSnapshot = this.benchmarkRecorder.timings.command_snapshot_ns - snapshotBefore;
-    if (nestedRead + nestedSnapshot > elapsed) throw new Error("command read/snapshot time exceeds applyPendingCommands duration");
-    this.benchmarkRecorder.timings.command_execute_ns += elapsed - nestedRead - nestedSnapshot;
+    const nestedAcknowledge = this.benchmarkRecorder.timings.command_acknowledge_ns - acknowledgeBefore;
+    if (nestedRead + nestedSnapshot + nestedAcknowledge > elapsed) throw new Error("command read/snapshot/acknowledgement time exceeds applyPendingCommands duration");
+    this.benchmarkRecorder.timings.command_execute_ns += elapsed - nestedRead - nestedSnapshot - nestedAcknowledge;
     this.benchmarkRecorder.calls.command_execute_ns += 1;
     return result;
   }
@@ -152,8 +158,8 @@ export class BenchmarkSignalsRuntime extends SignalsRuntime {
     work.fixed_record_count += records.length;
     work.fixed_record_words = this.exports.roc_ui_command_record_words();
     work.fixed_record_bytes += records.length * this.exports.roc_ui_command_record_words() * 4;
-    work.fixed_string_bytes += this.exports.roc_ui_string_buffer_len();
-    work.dynamic_bytes += this.exports.roc_ui_dynamic_buffer_len();
+    work.fixed_string_bytes += this.commandBuffers?.strings.byteLength ?? 0;
+    work.dynamic_bytes += this.commandBuffers?.dynamic.byteLength ?? 0;
     for (const record of records) {
       const name = OPCODE_NAME_BY_ID.get(record.op);
       if (name === undefined) throw new Error(`benchmark observed unknown command opcode ${record.op}`);
@@ -172,7 +178,7 @@ export class BenchmarkSignalsRuntime extends SignalsRuntime {
       live_nodes: this.nodes.size,
       listeners: this.eventCleanups.size,
       behaviors: this.behaviorInstances.size,
-      tasks: this.tasks.size,
+      running_effects: this.runningEffects.size,
       intervals: this.intervals.size,
       host_values: this.liveHostValues(),
       wasm_pages: this.exports.memory.buffer.byteLength / 65536,

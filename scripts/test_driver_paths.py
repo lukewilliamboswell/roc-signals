@@ -1,7 +1,8 @@
 """Driver paths and test manifests remain stable across routine formatting."""
 
 import ast
-from contextlib import chdir
+from contextlib import chdir, redirect_stdout, redirect_stderr
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -57,6 +58,22 @@ class OutputDirectoryTests(unittest.TestCase):
             self.assertEqual(test_driver.create_test_output(output), output)
             with self.assertRaisesRegex(SystemExit, "already exists"):
                 test_driver.create_test_output(output)
+
+    def test_standalone_wasm_benchmark_keeps_stdout_csv_and_skips_native_hosts(self) -> None:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(sys, "argv", ["test.py", "wasm-bench", "--roc-bin", sys.executable,
+                                          "--keep-output", "--output-dir", str(Path(directory) / "run")]), \
+                patch.object(test_driver, "TEST_OUT", test_driver.TEST_OUT), \
+                patch.object(test_driver, "build_hosts") as build_hosts, \
+                patch.object(test_driver, "run_wasm_runtime_benchmarks",
+                             side_effect=lambda *_: print("case,time\ncreate,1")), \
+                redirect_stdout(stdout), redirect_stderr(stderr):
+            self.assertEqual(test_driver.main(), 0)
+        build_hosts.assert_not_called()
+        self.assertEqual(stdout.getvalue(), "case,time\ncreate,1\n")
+        self.assertIn("Test output:", stderr.getvalue())
+        self.assertIn("Kept test output:", stderr.getvalue())
 
     def test_native_wrapper_places_binaries_in_the_current_run(self) -> None:
         with tempfile.TemporaryDirectory() as directory, \

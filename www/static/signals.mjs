@@ -44,10 +44,11 @@ export const Op = Object.freeze({
   setDocumentTitle: 32,
 });
 
-// Version 16 requires bounded effect stacks and post-link stack checks.
+// Version 17 acknowledges owned command snapshots before browser execution.
+// Bounded effect stacks and post-link stack checks remain required.
 // Retired task opcodes 20 and 21 remain invalid.
 export const Protocol = Object.freeze({
-  version: 16,
+  version: 17,
 });
 
 export const ProtocolFeature = Object.freeze({
@@ -513,6 +514,9 @@ export class SignalsRuntime {
     }
     if (typeof this.exports.roc_ui_dynamic_buffer_len !== "function") {
       throw new Error("Signals wasm export roc_ui_dynamic_buffer_len is missing");
+    }
+    if (typeof this.exports.roc_ui_command_buffer_clear !== "function") {
+      throw new Error("Signals wasm export roc_ui_command_buffer_clear is missing");
     }
     const version = this.exports.roc_ui_protocol_version();
     if (version !== Protocol.version) {
@@ -1220,18 +1224,21 @@ export class SignalsRuntime {
     this.lastCommands = records;
     const previousBuffers = this.commandBuffers;
     this.commandBuffers = buffers;
-    this.emitCommandTelemetry(phase, records);
     const previousDecodeStats = this.commandDecodeStats;
     const previousStorageBatch = this.storageBatch;
     const decodeStats = newCommandDecodeStats();
-    this.commandDecodeStats = decodeStats;
-    this.storageBatch = new Map();
+    const storageBatch = new Map();
     try {
+      // Records and both side buffers are now JS-owned. Acknowledge before any
+      // callback can publish a newer batch, so this cannot clear its output.
+      this.acknowledgeCommands();
+      this.emitCommandTelemetry(phase, records);
+      this.commandDecodeStats = decodeStats;
+      this.storageBatch = storageBatch;
       for (const record of records) {
         this.applyCommand(record);
       }
     } finally {
-      const storageBatch = this.storageBatch;
       this.commandBuffers = previousBuffers;
       this.commandDecodeStats = previousDecodeStats;
       this.storageBatch = previousStorageBatch;
@@ -1250,6 +1257,14 @@ export class SignalsRuntime {
     this.emitAllocationTelemetry(phase);
     this.scheduleEffects();
     return records;
+  }
+
+  acknowledgeCommands() {
+    try {
+      this.views.callHost(this.exports.roc_ui_command_buffer_clear);
+    } catch (error) {
+      throw this.poisonAfterHostFailure(error);
+    }
   }
 
   scheduleEffects() {
@@ -2355,8 +2370,8 @@ export class SignalsRuntime {
       phase,
       count: records.length,
       fixedRecordBytes: records.length * this.exports.roc_ui_command_record_words() * 4,
-      fixedStringBytes: this.exports.roc_ui_string_buffer_len(),
-      dynamicBytes: this.exports.roc_ui_dynamic_buffer_len(),
+      fixedStringBytes: this.commandBuffers?.strings.byteLength ?? 0,
+      dynamicBytes: this.commandBuffers?.dynamic.byteLength ?? 0,
       opCounts,
       commands,
     });

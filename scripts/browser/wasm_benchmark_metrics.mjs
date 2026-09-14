@@ -1,4 +1,4 @@
-export const BENCHMARK_METRICS_SCHEMA_VERSION = 5;
+export const BENCHMARK_METRICS_SCHEMA_VERSION = 6;
 
 const ALLOCATION_FIELDS = [
   "alloc_calls",
@@ -56,7 +56,7 @@ export const BENCHMARK_METRIC_FIELDS = [
   "host_retained_count_delta", "host_retained_bytes_delta",
   "roc_live_count_before", "roc_live_bytes_before",
   "host_live_count_before", "host_live_bytes_before",
-  "command_buffer_growth_bytes", "wasm_pages_before", "wasm_pages_after",
+  "command_buffer_growth_bytes", "command_buffer_capacity_bytes", "wasm_pages_before", "wasm_pages_after",
   ...RUNTIME_METRIC_FIELDS.map((name) => `runtime_${name}`),
 ];
 

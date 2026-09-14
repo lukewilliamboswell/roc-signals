@@ -5,10 +5,11 @@ const shared_buffer = @import("shared_buffer.zig");
 const boundary = @import("boundary.zig");
 const ids = @import("ids.zig");
 
-/// Version 16 requires post-link stack instrumentation and explicit effect
-/// stack bounds. Task opcodes 20 and 21 remain retired.
+/// Version 17 requires explicit acknowledgement of copied command batches so
+/// their backing storage can be reclaimed before executing browser callbacks.
+/// Bounded effect stacks remain required; task opcodes 20 and 21 remain retired.
 /// Hosts and browser executors must agree on this version before mounting.
-pub const protocol_version: u32 = 16;
+pub const protocol_version: u32 = 17;
 pub const protocol_feature_dynamic_attrs: u32 = 1 << 0;
 pub const protocol_feature_dynamic_events: u32 = 1 << 1;
 pub const protocol_features: u32 = protocol_feature_dynamic_attrs | protocol_feature_dynamic_events;
@@ -541,6 +542,11 @@ pub const BatchBuffers = struct {
     strings: shared_buffer.List(u8) = .empty,
     dynamic: DynamicBuffer = .{},
 
+    fn capacityBytes(self: *const BatchBuffers) usize {
+        return (@sizeOf(Record) *| self.commands.records.capacity) +|
+            self.strings.capacity +| self.dynamic.bytes.capacity;
+    }
+
     fn deinit(self: *BatchBuffers, allocator: std.mem.Allocator) void {
         self.commands.deinit(allocator);
         self.strings.deinit(allocator);
@@ -693,6 +699,20 @@ pub const TransactionalBatch = struct {
     /// Clears published while retaining bounded storage where the type promises reuse.
     pub fn clearPublished(self: *TransactionalBatch) void {
         self.published.clearRetainingCapacity();
+    }
+
+    /// Ends the consumer's borrow after it has copied the complete publication.
+    /// Keeps only banks within the per-bank byte budget; zero releases all
+    /// storage after final unmount. This allocates nothing, leaves configured
+    /// command limits intact, and never trims live staging or accepted output.
+    pub fn acknowledge(self: *TransactionalBatch, allocator: std.mem.Allocator, retained_bytes_per_bank: usize) void {
+        if (self.transaction_open or self.hasUnsealedStaging() or
+            self.staged.commands.len() != 0 or self.staged.strings.items.len != 0 or self.staged.dynamic.len() != 0)
+            @panic("cannot acknowledge commands while a transaction is staging");
+        self.published.clearRetainingCapacity();
+        for ([_]*BatchBuffers{ &self.published, &self.staged }) |bank| {
+            if (bank.capacityBytes() > retained_bytes_per_bank) bank.deinit(allocator);
+        }
     }
 
     /// Returns whether the consumer has drained the prior publication.
@@ -1596,4 +1616,54 @@ test "every native scalar counts as metadata without a browser opcode" {
     }
     try std.testing.expectEqual(@as(u64, native_protocol.native_text_field_count + native_protocol.native_bool_field_count), counts.total);
     try std.testing.expectEqual(counts.total, counts.set_metadata);
+}
+
+test "acknowledgement bounds both banks and final drain releases all storage" {
+    const allocator = std.testing.allocator;
+    var batch: TransactionalBatch = .{};
+    defer batch.deinit(allocator);
+    const limits: BatchLimits = .{ .command_records = 4096, .string_bytes = 131072, .dynamic_bytes = 131072 };
+    try batch.setLimits(limits);
+    // Fill both banks, as two consecutive large publications would do.
+    for (0..2) |_| {
+        batch.begin();
+        try batch.preflight(allocator, .{ .commands = 2048, .strings = 100000, .dynamic = 100000 });
+        batch.stageSinkCommandAssumeCapacity(.set_text, 1, 0, 4, 0, 0);
+        try batch.staged.strings.appendSlice(allocator, "kept");
+        batch.commit();
+        batch.publish();
+    }
+    try std.testing.expect(batch.published.capacityBytes() > 65536);
+    try std.testing.expect(batch.staged.capacityBytes() > 65536);
+    try std.testing.expectEqualStrings("kept", batch.published.strings.items);
+    var fault = @import("fault_allocator.zig").FaultAllocator.init(allocator);
+    fault.configure(1);
+    batch.acknowledge(fault.allocator(), 65536);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expect(batch.isPublishedDrained());
+    try std.testing.expectEqual(@as(usize, 0), batch.published.capacityBytes());
+    try std.testing.expectEqual(@as(usize, 0), batch.staged.capacityBytes());
+    try std.testing.expectEqualDeep(limits, batch.limits);
+
+    // A small next batch reacquires capacity through ordinary fallible preflight.
+    batch.begin();
+    try std.testing.expectError(error.OutOfMemory, batch.preflight(fault.allocator(), .{ .commands = 1, .strings = 4 }));
+    batch.abort();
+    try std.testing.expect(batch.isPublishedDrained());
+    fault.configure(null);
+    try batch.preflight(fault.allocator(), .{ .commands = 1, .strings = 4 });
+    batch.stageSinkCommandAssumeCapacity(.set_text, 1, 0, 4, 0, 0);
+    try batch.staged.strings.appendSlice(allocator, "next");
+    batch.commit();
+    batch.publish();
+    const retained = batch.published.capacityBytes();
+    try std.testing.expect(retained > 0 and retained <= 65536);
+    batch.acknowledge(allocator, 65536);
+    try std.testing.expectEqual(retained, batch.published.capacityBytes());
+    fault.configure(1);
+    batch.acknowledge(fault.allocator(), 0);
+    batch.acknowledge(fault.allocator(), 0);
+    try std.testing.expectEqual(@as(usize, 0), fault.attempts);
+    try std.testing.expectEqual(@as(usize, 0), batch.published.capacityBytes());
+    try std.testing.expectEqualDeep(limits, batch.limits);
 }
