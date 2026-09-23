@@ -17,7 +17,7 @@ Node := [].{
 	## The host maps this pointer to the construction-order node id during the
 	## active descriptor walk. The pointer carries binder alias identity while the
 	## dense state/node identity remains host-owned.
-	BinderRef := [BinderRef(Box((() -> HostValue)))]
+	BinderRef := [BinderRef(Box((() => HostValue)))]
 
 	## An accepted event's extraction plan and declared handler. Reducers replace
 	## a bound source; actions read a settled signal snapshot and produce a
@@ -29,16 +29,16 @@ Node := [].{
 	## that discovers dependencies or runs when a displayed value changes.
 	EventHandler := [
 		Reduce({ binder : BinderRef, read_binder : BinderRef, payload_reducer : HostValue.EventReducerHandle }),
-		Action({ reads : Box(SignalExpr), payload_cap : HostValue.CapabilityHandle, to_cmd : Box((HostValue, HostValue -> Cmd)) }),
+		Action({ reads : Box(SignalExpr), payload_cap : HostValue.CapabilityHandle, to_cmd : Box((HostValue, HostValue => Cmd)) }),
 	]
 
 	## A scope-owned timer whose ticks update an ordinary source in the graph.
 	IntervalSource : {
-		token : Box((() -> HostValue)),
+		token : Box((() => HostValue)),
 		period_ms : U64,
 		cap : HostValue.CapabilityHandle,
-		initial : Box((() -> HostValue)),
-		tick : Box((HostValue -> HostValue)),
+		initial : Box((() => HostValue)),
+		tick : Box((HostValue => HostValue)),
 	}
 
 	## Signal expression. `Ref` reads a binder's current value. Other variants are
@@ -48,18 +48,18 @@ Node := [].{
 	## field. `IntervalSource` ticks enter the same graph as state changes.
 	SignalExpr := [
 		Ref(BinderRef),
-		ConstValue(Box((() -> HostValue)), Box((() -> HostValue)), HostValue.CapabilityHandle),
-		RowSource(U64, Box((() -> HostValue)), Box((() -> HostValue)), HostValue.CapabilityHandle),
-		EntropySeedSource(Box((HostValue -> HostValue)), Box((HostValue -> HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
-		LocationSource(Box((HostValue -> HostValue)), Box((HostValue -> HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
-		StorageSource(Box((HostValue -> HostValue)), U64, Str, Box((HostValue -> HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
-		VisibilitySource(Box((HostValue -> HostValue)), Box((HostValue -> HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
-		KeyedSelect(U64, Box((() -> HostValue)), Box(SignalExpr), Str, HostValue.TextReadHandle, Box((() -> HostValue)), Box((() -> HostValue)), HostValue.CapabilityHandle),
-		Map(Box((HostValue -> HostValue)), Box(SignalExpr), Box((HostValue -> HostValue)), HostValue.CapabilityHandle),
-		Map2(Box((HostValue, HostValue -> HostValue)), Box(SignalExpr), Box(SignalExpr), Box((HostValue, HostValue -> HostValue)), HostValue.CapabilityHandle),
-		Select(Box((() -> HostValue)), Box(SignalExpr), Str, HostValue.TextReadHandle, Box((() -> HostValue)), Box((() -> HostValue)), HostValue.CapabilityHandle),
-		OnlineSource(Box((HostValue -> HostValue)), Box((HostValue -> HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
-		Combine(Box((List(HostValue) -> HostValue)), List(SignalExpr), Box((List(HostValue) -> HostValue)), HostValue.CapabilityHandle),
+		ConstValue(Box((() => HostValue)), Box((() => HostValue)), HostValue.CapabilityHandle),
+		RowSource(U64, Box((() => HostValue)), Box((() => HostValue)), HostValue.CapabilityHandle),
+		EntropySeedSource(Box((HostValue => HostValue)), Box((HostValue => HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
+		LocationSource(Box((HostValue => HostValue)), Box((HostValue => HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
+		StorageSource(Box((HostValue => HostValue)), U64, Str, Box((HostValue => HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
+		VisibilitySource(Box((HostValue => HostValue)), Box((HostValue => HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
+		KeyedSelect(U64, Box((() => HostValue)), Box(SignalExpr), Str, HostValue.TextReadHandle, Box((() => HostValue)), Box((() => HostValue)), HostValue.CapabilityHandle),
+		Map(Box((HostValue => HostValue)), Box(SignalExpr), Box((HostValue => HostValue)), HostValue.CapabilityHandle),
+		Map2(Box((HostValue, HostValue => HostValue)), Box(SignalExpr), Box(SignalExpr), Box((HostValue, HostValue => HostValue)), HostValue.CapabilityHandle),
+		Select(Box((() => HostValue)), Box(SignalExpr), Str, HostValue.TextReadHandle, Box((() => HostValue)), Box((() => HostValue)), HostValue.CapabilityHandle),
+		OnlineSource(Box((HostValue => HostValue)), Box((HostValue => HostValue)), HostValue.CapabilityHandle, HostValue.CapabilityHandle),
+		Combine(Box((List(HostValue) => HostValue)), List(SignalExpr), Box((List(HostValue) => HostValue)), HostValue.CapabilityHandle),
 		IntervalSource(IntervalSource),
 	]
 
@@ -71,7 +71,7 @@ Node := [].{
 	StateTransform := {
 		binder : BinderRef,
 		capability : HostValue.CapabilityHandle,
-		transform : Box((HostValue -> HostValue)),
+		transform : Box((HostValue => HostValue)),
 	}
 
 	## One state change in an atomic batch: replace the value outright, or

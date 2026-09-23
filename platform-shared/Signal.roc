@@ -12,8 +12,8 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 	Keyed(value) := {
 		input : Box(Node.SignalExpr),
 		input_read : HostValue.TextReadHandle,
-		false_init : Box((() -> HostValue)),
-		true_init : Box((() -> HostValue)),
+		false_init : Box((() => HostValue)),
+		true_init : Box((() => HostValue)),
 		cap : Capability(value),
 	}.{
 
@@ -66,15 +66,15 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		source_from_tick = |initial_value, next| {
 			cap = Capability.new()
 
-			initial : () -> HostValue
-			initial = || Capability.store(Box.box(initial_value), cap)
-			initial_box = Box.box(initial)
+			initial! : () => HostValue
+			initial! = || Capability.store!(Box.box(initial_value), cap)
+			initial_box = Box.box(initial!)
 
-			tick : HostValue -> HostValue
-			tick = |current_hv| {
+			tick! : HostValue => HostValue
+			tick! = |current_hv| {
 				current : a
-				current = Box.unbox(Capability.get(current_hv, cap))
-				Capability.store(Box.box(next(current)), cap)
+				current = Box.unbox(Capability.get!(current_hv, cap))
+				Capability.store!(Box.box(next(current)), cap)
 			}
 
 			{
@@ -84,7 +84,7 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 						period_ms,
 						cap: Capability.handle(cap),
 						initial: initial_box,
-						tick: Box.box(tick),
+						tick: Box.box(tick!),
 					}),
 				),
 				cap,
@@ -101,9 +101,9 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		]
 	const = |value| {
 		cap = Capability.new()
-		init : () -> HostValue
-		init = || Capability.store(Box.box(value), cap)
-		init_box = Box.box(init)
+		init! : () => HostValue
+		init! = || Capability.store!(Box.box(value), cap)
+		init_box = Box.box(init!)
 		{
 			expr: Box.box(
 				Node.SignalExpr.ConstValue(
@@ -125,15 +125,15 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		]
 	map = |signal, f| {
 		output_cap = Capability.new()
-		wrapped : HostValue -> HostValue
-		wrapped = |input_hv| {
+		wrapped! : HostValue => HostValue
+		wrapped! = |input_hv| {
 			typed_input : a
-			typed_input = Box.unbox(Capability.get(input_hv, signal.cap))
+			typed_input = Box.unbox(Capability.get!(input_hv, signal.cap))
 			typed_output : b
 			typed_output = f(typed_input)
-			Capability.store(Box.box(typed_output), output_cap)
+			Capability.store!(Box.box(typed_output), output_cap)
 		}
-		transform_box = Box.box(wrapped)
+		transform_box = Box.box(wrapped!)
 
 		{
 			expr: Box.box(
@@ -155,17 +155,17 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		]
 	map2 = |left, right, f| {
 		output_cap = Capability.new()
-		wrapped : HostValue, HostValue -> HostValue
-		wrapped = |left_hv, right_hv| {
+		wrapped! : HostValue, HostValue => HostValue
+		wrapped! = |left_hv, right_hv| {
 			left_v : a
-			left_v = Box.unbox(Capability.get(left_hv, left.cap))
+			left_v = Box.unbox(Capability.get!(left_hv, left.cap))
 			right_v : b
-			right_v = Box.unbox(Capability.get(right_hv, right.cap))
+			right_v = Box.unbox(Capability.get!(right_hv, right.cap))
 			output : c
 			output = f(left_v, right_v)
-			Capability.store(Box.box(output), output_cap)
+			Capability.store!(Box.box(output), output_cap)
 		}
-		transform_box = Box.box(wrapped)
+		transform_box = Box.box(wrapped!)
 
 		{
 			expr: Box.box(
@@ -187,15 +187,15 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 	select = |selected, key| {
 		output_cap = Capability.new()
 
-		read_selected : HostValue -> Str
-		read_selected = |input_hv| Box.unbox(Capability.get(input_hv, selected.cap))
+		read_selected! : HostValue => Str
+		read_selected! = |input_hv| Box.unbox(Capability.get!(input_hv, selected.cap))
 
-		init_false : () -> HostValue
-		init_false = || Capability.store(Box.box(False), output_cap)
-		false_box = Box.box(init_false)
+		init_false! : () => HostValue
+		init_false! = || Capability.store!(Box.box(False), output_cap)
+		false_box = Box.box(init_false!)
 
-		init_true : () -> HostValue
-		init_true = || Capability.store(Box.box(True), output_cap)
+		init_true! : () => HostValue
+		init_true! = || Capability.store!(Box.box(True), output_cap)
 
 		{
 			expr: Box.box(
@@ -203,9 +203,9 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 					false_box,
 					selected.expr,
 					key,
-					{ capability: Capability.handle(selected.cap), read: Box.box(read_selected) },
+					{ capability: Capability.handle(selected.cap), read: Box.box(read_selected!) },
 					false_box,
-					Box.box(init_true),
+					Box.box(init_true!),
 					Capability.handle(output_cap),
 				),
 			),
@@ -220,17 +220,17 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		]
 	keyed = |selected, when_selected, otherwise| {
 		output_cap = Capability.new()
-		read_selected : HostValue -> Str
-		read_selected = |input_hv| Box.unbox(Capability.get(input_hv, selected.cap))
-		init_false : () -> HostValue
-		init_false = || Capability.store(Box.box(otherwise), output_cap)
-		init_true : () -> HostValue
-		init_true = || Capability.store(Box.box(when_selected), output_cap)
+		read_selected! : HostValue => Str
+		read_selected! = |input_hv| Box.unbox(Capability.get!(input_hv, selected.cap))
+		init_false! : () => HostValue
+		init_false! = || Capability.store!(Box.box(otherwise), output_cap)
+		init_true! : () => HostValue
+		init_true! = || Capability.store!(Box.box(when_selected), output_cap)
 		{
 			input: selected.expr,
-			input_read: { capability: Capability.handle(selected.cap), read: Box.box(read_selected) },
-			false_init: Box.box(init_false),
-			true_init: Box.box(init_true),
+			input_read: { capability: Capability.handle(selected.cap), read: Box.box(read_selected!) },
+			false_init: Box.box(init_false!),
+			true_init: Box.box(init_true!),
 			cap: output_cap,
 		}
 	}
@@ -257,13 +257,19 @@ Signal(a) := { expr : Box(Node.SignalExpr), cap : Capability(a) }.{
 		input_caps = signals.map(|s| s.cap)
 		output_cap = Capability.new()
 		exprs = signals.map(|s| Box.unbox(Signal.clone_expr(s.expr)))
-		transform : List(HostValue) -> HostValue
-		transform = |items| {
+		transform! : List(HostValue) => HostValue
+		transform! = |items| {
+			var $values = List.with_capacity(items.len())
+			for index in 0.U64.until(items.len()) {
+				host_value = items.get(index) ?? crash "combine received fewer values than signals"
+				cap = input_caps.get(index) ?? crash "combine received more values than signals"
+				$values = $values.append(Box.unbox(Capability.get!(host_value, cap)))
+			}
 			values : List(a)
-			values = List.map2(items, input_caps, |host_value, cap| Box.unbox(Capability.get(host_value, cap)))
-			Capability.store(Box.box(project(values)), output_cap)
+			values = $values
+			Capability.store!(Box.box(project(values)), output_cap)
 		}
-		transform_box = Box.box(transform)
+		transform_box = Box.box(transform!)
 		{
 			expr: Box.box(
 				Node.SignalExpr.Combine(

@@ -288,10 +288,12 @@ pub const PreparedTransition = struct {
     /// Prepares the stable-slot delta emitted by `Rows.copy_delta`. All range
     /// walks are bounded by the advertised changed count; no committed-site
     /// scan is used to discover operands.
+    /// A republication of the committed generation (`next_owner ==
+    /// parent_owner`) is accepted only as an empty edit batch.
     pub fn prepareStable(allocator: std.mem.Allocator, store: *Store, site_id: SiteId, parent_owner: OwnerToken, next_owner: OwnerToken, edits: []const StableEdit) Error!PreparedTransition {
         const committed = store.getSiteConst(site_id) catch return error.InvalidSite;
         if (committed.owner_token != parent_owner) return error.ParentMismatch;
-        if (next_owner.raw() == 0 or next_owner == parent_owner) return error.InvalidOwnerToken;
+        if (next_owner.raw() == 0 or (next_owner == parent_owner and edits.len != 0)) return error.InvalidOwnerToken;
         var self = PreparedTransition{ .allocator = allocator, .store = store, .site_id = site_id, .next_owner = next_owner, .head = if (committed.head) |row| existingRef(row) else null, .tail = if (committed.tail) |row| existingRef(row) else null, .len = committed.len, .render_order = committed.render_order.prepare() };
         errdefer self.deinit();
         for (edits) |edit| switch (edit) {
@@ -1066,6 +1068,23 @@ test "Rows preparation rejects stale parents and duplicate exact keys without pu
         .{ .insert = .{ .key = "same", .metadata = .{ .item_slot = 1, .scope_id = 1 } } },
         .{ .insert = .{ .key = "same", .metadata = .{ .item_slot = 2, .scope_id = 2 } } },
     }));
+    try expectOrder(&store, site, &.{});
+    try std.testing.expectEqual(owner, (try store.getSiteConst(site)).owner_token);
+}
+
+test "Rows republication of the committed generation is only an empty stable batch" {
+    var store = Store.init(std.testing.allocator);
+    defer store.deinit();
+    const owner = try OwnerToken.fromRaw(20);
+    const site = try store.createSite(owner);
+
+    try std.testing.expectError(error.InvalidOwnerToken, PreparedTransition.prepareStable(std.testing.allocator, &store, site, owner, owner, &.{.clear}));
+    try std.testing.expectError(error.InvalidOwnerToken, PreparedTransition.prepare(std.testing.allocator, &store, site, owner, owner, &.{}));
+
+    var republished = try PreparedTransition.prepareStable(std.testing.allocator, &store, site, owner, owner, &.{});
+    defer republished.deinit();
+    try std.testing.expectEqual(@as(usize, 0), republished.candidateLen());
+    republished.commit();
     try expectOrder(&store, site, &.{});
     try std.testing.expectEqual(owner, (try store.getSiteConst(site)).owner_token);
 }

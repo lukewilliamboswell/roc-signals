@@ -905,6 +905,26 @@ rows_order_fold_node = |order, node_id, initial, push| {
 rows_order_fold : RowsOrder, state, (state, U64 -> state) -> state
 rows_order_fold = |order, initial, push| rows_order_fold_node(order, order.root, initial, push)
 
+## Effectful in-order traversal used by host adapters whose sinks are hosted
+## effects; mirrors `rows_order_fold_node` without allocating.
+rows_order_fold_node! : RowsOrder, U64, state, (state, U64 => state) => state
+rows_order_fold_node! = |order, node_id, initial, push!| {
+	node = rows_order_table_get(order.nodes, node_id) ?? crash "Rows order fold node was missing"
+	{ slots, children } =
+		match node {
+			OrderLeaf(leaf) => { slots: leaf.slots, children: [] }
+			OrderBranch(branch) => { slots: [], children: branch.children }
+		}
+	var $state = initial
+	for slot in slots {
+		$state = push!($state, slot)
+	}
+	for child_id in children {
+		$state = rows_order_fold_node!(order, child_id, $state, push!)
+	}
+	$state
+}
+
 RowsSlotCell(item) : [RowsSlotLive({ generation : U64, key : Str, item : item }), RowsSlotVacant({ generation : U64 }), RowsSlotRetired]
 
 RowsSlotStore(item) : {
@@ -2004,10 +2024,6 @@ Rows(item) :: [Rows(RowsStorage(item))].{
 	## Platform-private snapshot entry passed to adapter callbacks.
 	SnapshotEntry(item) : RowsEntry(item)
 
-	## Hosted O(1) raw callable-identity comparison. `platform-web/main.roc` binds
-	## this declaration to `roc_rows_same_generation_callable` in both hosts.
-	same_generation_callable! : RowsGenerationCallable, RowsGenerationCallable -> Bool
-
 	## Construct an empty collection that owns `key_of`.
 	empty : (item -> Str) -> Rows(item)
 	empty = |key_of| {
@@ -2188,10 +2204,14 @@ Rows(item) :: [Rows(RowsStorage(item))].{
 		)
 	}
 
-	## O(1) generation equality used by ordinary signal pruning. The hosted hook
-	## compares raw boxed callable identity and never invokes the callable.
+	## Conservative O(1) equality for ordinary signal pruning: every comparison
+	## reports a change. Pure Roc cannot observe generation identity (hosted
+	## functions are effectful; roc-lang/roc#11387), and a content comparison would
+	## cost O(rows). A false negative only costs a wake: `Ui.each` still
+	## authenticates the generation in the engine and splices only changed rows,
+	## and republishing the mounted generation is a no-op there.
 	is_eq : Rows(item), Rows(item) -> Bool
-	is_eq = |Rows(left), Rows(right)| Rows.same_generation_callable!(left.token, right.token)
+	is_eq = |_, _| False
 
 	## Explicit structural equality for callers that genuinely need it.
 	content_is_eq : Rows(item), Rows(item) -> Bool
@@ -2279,15 +2299,16 @@ Rows(item) :: [Rows(RowsStorage(item))].{
 
 	## Platform-private allocation-free snapshot fold. The callback receives the
 	## order index plus stable slot, cached key, and typed item.
-	platform_copy_snapshot : Rows(item), state, (state, U64, U64, Str -> state) -> state
-	platform_copy_snapshot = |Rows(storage), initial, push| {
+	platform_copy_snapshot! : Rows(item), state, (state, U64, U64, Str => state) => state
+	platform_copy_snapshot! = |Rows(storage), initial, push!| {
 		folded =
-			rows_order_fold(
+			rows_order_fold_node!(
 				storage.order,
+				storage.order.root,
 				{ index: 0, state: initial },
 				|next, slot| {
 					entry = rows_entry_for_slot(storage.slots, slot) ?? crash "Rows snapshot slot was stale"
-					{ index: next.index + 1, state: push(next.state, next.index, entry.slot, entry.key) }
+					{ index: next.index + 1, state: push!(next.state, next.index, entry.slot, entry.key) }
 				},
 			)
 		folded.state
@@ -2295,12 +2316,23 @@ Rows(item) :: [Rows(RowsStorage(item))].{
 
 	## Platform-private delta fold. Snapshot generations yield the initial state;
 	## adapters must inspect `platform_transition_kind` before selecting a path.
-	platform_copy_delta : Rows(item), state, (state, Delta(item) -> state) -> state
-	platform_copy_delta = |Rows(storage), initial, push|
+	## Platform-private canonical transitions from the immediate parent; empty
+	## for snapshot generations.
+	platform_transitions : Rows(item) -> List(Delta(item))
+	platform_transitions = |Rows(storage)|
 		match storage.transition {
-			Snapshot => initial
-			Delta(transitions) => transitions.fold(initial, push)
+			Snapshot => []
+			Delta(transitions) => transitions
 		}
+
+	platform_copy_delta! : Rows(item), state, (state, Delta(item) => state) => state
+	platform_copy_delta! = |rows, initial, push!| {
+		var $state = initial
+		for transition in Rows.platform_transitions(rows) {
+			$state = push!($state, transition)
+		}
+		$state
+	}
 
 }
 
@@ -2803,7 +2835,7 @@ expect {
 			SetKey({ key: "a", item: rows_test_item("a", 3) }),
 		],
 	)?
-	transition_count = Rows.platform_copy_delta(updated, 0, |count, _transition| count + 1)
+	transition_count = Rows.platform_transitions(updated).fold(0, |count, _transition| count + 1)
 
 	Rows.platform_transition_kind(updated) == Delta and transition_count == 1
 }
@@ -2821,9 +2853,7 @@ expect {
 	)?
 	delta = Rows.platform_description(updated)
 	stable_operands =
-		Rows.platform_copy_delta(
-			updated,
-			True,
+		Rows.platform_transitions(updated).fold(True,
 			|valid, transition|
 				valid and match transition {
 					InsertRow({ op_index, before_slot, slot, key }) => op_index == 0 and before_slot == 0 and slot != 0 and key == "xyz"
@@ -2882,9 +2912,7 @@ expect {
 	old_slot = Rows.platform_slot_at(initial, 0)?
 	cleared = Rows.apply(initial, [Clear])?
 	description = Rows.platform_description(cleared)
-	transition_count = Rows.platform_copy_delta(
-		cleared,
-		0,
+	transition_count = Rows.platform_transitions(cleared).fold(0,
 		|count, transition|
 			count
 				+ match transition {

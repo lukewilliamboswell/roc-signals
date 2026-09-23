@@ -2198,13 +2198,6 @@ fn rowsDeltaUpdateSinkPush(token: u64, op_index: u64, slot: u64, key: abi.RocStr
     return host.engine.pushRowsDeltaUpdateSink(host, token, op_index, slot, key.asSlice()) catch failHost("Rows delta update sink rejected the active transaction");
 }
 
-fn rowsSameGenerationCallable(left: abi.RocErasedCallable, right: abi.RocErasedCallable) callconv(.c) bool {
-    const roc_host = current_roc_host orelse @panic("Rows generation comparison requires an active Roc host");
-    defer abi.decrefErasedCallable(left, roc_host);
-    defer abi.decrefErasedCallable(right, roc_host);
-    return left != null and left == right;
-}
-
 fn hostValueGetWithCapability(value: u64, cap: HostValueCapability) callconv(.c) abi.RocBox {
     return currentHost().getHostValueWithCapability(HostValue.fromRaw(value), cap);
 }
@@ -3355,7 +3348,6 @@ comptime {
         @export(&rowsDeltaMoveRangeSinkPush, .{ .name = "roc_rows_delta_move_range_sink_push", .visibility = .hidden });
         @export(&rowsDeltaRemoveRangeSinkPush, .{ .name = "roc_rows_delta_remove_range_sink_push", .visibility = .hidden });
         @export(&rowsDeltaUpdateSinkPush, .{ .name = "roc_rows_delta_update_sink_push", .visibility = .hidden });
-        @export(&rowsSameGenerationCallable, .{ .name = "roc_rows_same_generation_callable", .visibility = .hidden });
         @export(&hostValueClone, .{ .name = "roc_host_value_clone", .visibility = .hidden });
         @export(&hostValueGetWithCapability, .{ .name = "roc_host_value_get_with_capability", .visibility = .hidden });
         @export(&hostValueGetWithSplit, .{ .name = "roc_host_value_get_with_split", .visibility = .hidden });

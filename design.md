@@ -499,15 +499,19 @@ A conservative comparison may return false for observationally interchangeable
 values; that permits extra propagation rather than suppressing a meaningful
 change. Value-change effects follow this declared comparison and may therefore
 run again; action occurrence semantics do not depend on it.
-Comparisons must be pure and deterministic, and their execution and allocation
+Comparisons must be deterministic and observationally pure, and their execution and allocation
 cost count toward the operation budget. The platform must not assume laws such
 as reflexivity when a supported value's comparison does not provide them.
 
-`Rows.is_eq` is a generation comparison, not content equality: aliases of one
-immutable generation compare equal, while independently constructed generations
-may compare unequal even with equal items. `Rows.content_is_eq` supplies the
-explicit content operation. Generation identity is not application identity and
-must not be serialized as a key or used to encode action occurrences.
+`Rows.is_eq` is the conservative comparison: it always reports a change. Pure
+Roc cannot observe generation identity, because every hosted function is
+effectful (roc-lang/roc#11387), and content equality would cost O(rows). A
+`Rows` value, or a record containing one, therefore always propagates; `Ui.each`
+still authenticates the generation in the engine and splices only changed rows,
+and republishing the committed generation is an empty delta.
+`Rows.content_is_eq` supplies the explicit content operation. Generation
+identity is not application identity and must not be serialized as a key or
+used to encode action occurrences.
 
 ## Core Concepts
 
@@ -749,9 +753,9 @@ typed instruction manual attached to the opaque cell. Conceptually:
 ```roc
 # Produced at the monomorphized edge, stored beside the opaque cell.
 CapabilityHandle := {
-    clone : Box((HostValue -> HostValue)),        # split-and-store clone
-    eq    : Box((HostValue, HostValue -> Bool)),  # value pruning
-    drop  : Box((HostValue -> {})),               # release, incl. nested fields
+    clone : Box((HostValue => HostValue)),        # split-and-store clone
+    eq    : Box((HostValue, HostValue => Bool)),  # value pruning
+    drop  : Box((HostValue => {})),               # release, incl. nested fields
 }
 ```
 
@@ -786,12 +790,13 @@ CapabilityHandle := {
 `Rows(item)` is an opaque, ordinary Roc value: it can live in state, effect
 results, records, and derived signals. It owns `key_of`, cached exact keys, and
 stable generational slot ids, and publishes either a full snapshot or a
-normalized delta from its immediate parent. `Rows.is_eq` compares a private
-boxed-callable generation identity in O(1); cloning a value preserves identity,
-while every content-changing operation creates a fresh identity. A hosted
-callable-identity hook is the only code allowed to compare those tokens. The ABI
-proof must establish uniqueness in optimized native and Wasm builds and balanced
-ARC ownership; no pointer/content approximation may replace that proof.
+normalized delta from its immediate parent. Each generation carries a private
+boxed-callable identity; cloning a value preserves identity, while every
+content-changing operation creates a fresh identity. Only the engine compares
+those tokens, after `Ui.each`'s effectful describe callback passes them to the
+description sink; Roc code never compares them (see `Rows.is_eq` above). The
+ABI proof must establish uniqueness in optimized native and Wasm builds and
+balanced ARC ownership; no pointer/content approximation may replace that proof.
 
 The collection requires indexed order, stable generational slots containing
 items and cached keys, and an exact-key persistent index. A 32-way order tree

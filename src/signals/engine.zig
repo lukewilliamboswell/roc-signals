@@ -2868,7 +2868,13 @@ pub fn Engine(comptime Ctx: type) type {
                 .snapshot => |value| .{ .generation = value.generation, .item_count = value.item_count, .key_bytes = value.snapshot_key_bytes },
                 .delta => |value| .{ .generation = value.generation, .item_count = value.item_count, .key_bytes = value.snapshot_key_bytes },
             };
-            const use_direct_delta = switch (description) {
+            // `Rows.is_eq` is conservatively false (pure Roc cannot observe
+            // generation identity), so a site can be woken with the generation
+            // it already committed. That republication is an empty direct
+            // delta: authenticated by the same generation identity, it copies
+            // nothing and leaves every row scope in place.
+            const republished = if (expected_rows_parent) |expected| shape.generation == expected else false;
+            const use_direct_delta = republished or switch (description) {
                 .snapshot => false,
                 .delta => |value| if (expected_rows_parent) |expected| value.parent == expected else false,
             };
@@ -2879,7 +2885,17 @@ pub fn Engine(comptime Ctx: type) type {
             // `has_delta` is still false. Releasing unconditionally is a no-op
             // for untouched storage and returns that partial reservation.
             errdefer delta.deinit(allocator);
-            if (use_direct_delta) {
+            if (republished) {
+                var delta_sink = delta.prepare(allocator, 0, 0, 0) catch |err| return switch (err) {
+                    error.OutOfMemory => error.OutOfMemory,
+                    error.ResourceLimit => error.ResourceLimit,
+                    else => error.InvalidDescriptor,
+                };
+                has_delta = true;
+                const delta_token = self.active_each_sinks.activateDelta(&delta_sink) catch return error.ResourceLimit;
+                errdefer self.active_each_sinks.abort(delta_token) catch {};
+                self.active_each_sinks.finishDelta(delta_token) catch return error.InvalidDescriptor;
+            } else if (use_direct_delta) {
                 const delta_shape = description.delta;
                 var delta_sink = delta.prepare(allocator, delta_shape.op_count, delta_shape.delta_key_count, delta_shape.delta_key_bytes) catch |err| return switch (err) {
                     error.OutOfMemory => error.OutOfMemory,
