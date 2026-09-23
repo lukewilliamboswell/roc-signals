@@ -1,4 +1,4 @@
-app [main] { pf: platform "../../platform-gui/main.roc", roc: "nightly-2026-09-12-220fd47" }
+app [main] { pf: platform "../../platform-gui/main.roc", roc: "nightly-2026-09-22-e494788" }
 
 import pf.Action exposing [Action]
 import pf.Elem exposing [Elem]

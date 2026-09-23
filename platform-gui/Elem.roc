@@ -36,18 +36,18 @@ Elem := [
 	Component({ child : Box(Elem) }),
 	Cleanup({ cleanup : Node.Cleanup }),
 	Element({ namespace : [Html, Svg], tag : Str, attrs : List(Node.Attr), children : List(Elem) }),
-	OnChange({ signal : Box(Node.SignalExpr), to_cmd : Box((HostValue -> Node.Cmd)) }),
-	OnChangeInitial({ signal : Box(Node.SignalExpr), to_cmd : Box((HostValue -> Node.Cmd)) }),
+	OnChange({ signal : Box(Node.SignalExpr), to_cmd : Box((HostValue => Node.Cmd)) }),
+	OnChangeInitial({ signal : Box(Node.SignalExpr), to_cmd : Box((HostValue => Node.Cmd)) }),
 	OnMount({ to_cmd : Box((() -> Node.Cmd)) }),
 	Text(Str),
 	TextSignal({ signal : Box(Node.SignalExpr), read : HostValue.TextReadHandle }),
-	State({ binder : Node.BinderRef, initial : Box((() -> HostValue)), cap : HostValue.CapabilityHandle, child : Box(Elem) }),
+	State({ binder : Node.BinderRef, initial : Box((() => HostValue)), cap : HostValue.CapabilityHandle, child : Box(Elem) }),
 	When(
 		{
 			condition : Box(Node.SignalExpr),
 			ops : {
 				case_capability : HostValue.CapabilityHandle,
-				build : Box((HostValue -> Elem)),
+				build : Box((HostValue => Elem)),
 			},
 		},
 	),
@@ -57,11 +57,11 @@ Elem := [
 			ops : {
 				rows_capability : HostValue.CapabilityHandle,
 				item_capability : HostValue.CapabilityHandle,
-				describe : Box((HostValue, U64 -> U64)),
-				copy_snapshot : Box((HostValue, U64 -> U64)),
-				copy_delta : Box((HostValue, U64 -> U64)),
-				compare_slots : Box((HostValue, HostValue, List(U64), U64 -> U64)),
-				clone_item : Box((HostValue, U64 -> HostValue)),
+				describe : Box((HostValue, U64 => U64)),
+				copy_snapshot : Box((HostValue, U64 => U64)),
+				copy_delta : Box((HostValue, U64 => U64)),
+				compare_slots : Box((HostValue, HostValue, List(U64), U64 => U64)),
+				clone_item : Box((HostValue, U64 => HostValue)),
 				row : Box((Str, U64 -> Elem)),
 			},
 		},
@@ -718,17 +718,17 @@ style_attr = |direction, style| Node.Attr.StaticText({ field: native_style_field
 signal_text : Node.TextField, Signal(Str) -> Node.Attr
 signal_text = |field, value| {
 	cap = value.cap
-	read : HostValue -> Str
-	read = |host_value| Box.unbox(Capability.get(host_value, cap))
-	Node.Attr.SignalText({ field, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(cap), read: Box.box(read) } })
+	read! : HostValue => Str
+	read! = |host_value| Box.unbox(Capability.get!(host_value, cap))
+	Node.Attr.SignalText({ field, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(cap), read: Box.box(read!) } })
 }
 
 signal_bool : Node.BoolField, Signal(Bool) -> Node.Attr
 signal_bool = |field, value| {
 	cap = value.cap
-	read : HostValue -> Bool
-	read = |host_value| Box.unbox(Capability.get(host_value, cap))
-	Node.Attr.SignalBool({ field, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(cap), read: Box.box(read) } })
+	read! : HostValue => Bool
+	read! = |host_value| Box.unbox(Capability.get!(host_value, cap))
+	Node.Attr.SignalBool({ field, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(cap), read: Box.box(read!) } })
 }
 
 native_event : Str, Node.Handler, [None, Some(Node.KeyChord)] -> Node.Attr
@@ -857,9 +857,9 @@ build_heading = |value| Elem.Element({ namespace: Html, tag: "h2", attrs: [stati
 build_text_s : Signal(Str) -> Elem
 build_text_s = |value| {
 	cap = value.cap
-	read : HostValue -> Str
-	read = |host_value| Box.unbox(Capability.get(host_value, cap))
-	Elem.TextSignal({ signal: Signal.to_expr(value), read: { capability: Capability.handle(cap), read: Box.box(read) } })
+	read! : HostValue => Str
+	read! = |host_value| Box.unbox(Capability.get!(host_value, cap))
+	Elem.TextSignal({ signal: Signal.to_expr(value), read: { capability: Capability.handle(cap), read: Box.box(read!) } })
 }
 
 build_button : Str, Node.Handler -> Elem

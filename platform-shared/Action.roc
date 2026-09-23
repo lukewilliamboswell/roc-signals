@@ -103,26 +103,26 @@ Action(a) := [Action(Node.Cmd)].{
 	sampled = |trigger, reads| {
 		pair_cap : Capability.Capability({ tick : trigger, value : a })
 		pair_cap = Capability.new_with_eq(|left, right| left.tick == right.tick)
-		pair : HostValue, HostValue -> HostValue
-		pair = |tick_hv, reads_hv| {
+		pair! : HostValue, HostValue => HostValue
+		pair! = |tick_hv, reads_hv| {
 			tick : trigger
-			tick = Box.unbox(Capability.get(tick_hv, trigger.cap))
+			tick = Box.unbox(Capability.get!(tick_hv, trigger.cap))
 			value : a
-			value = Box.unbox(Capability.get(reads_hv, reads.cap))
-			Capability.store(Box.box({ tick, value }), pair_cap)
+			value = Box.unbox(Capability.get!(reads_hv, reads.cap))
+			Capability.store!(Box.box({ tick, value }), pair_cap)
 		}
-		pair_box = Box.box(pair)
+		pair_box = Box.box(pair!)
 		paired : Signal({ tick : trigger, value : a })
 		paired = Signal.from_expr(Node.SignalExpr.Map2(pair_box, Signal.to_expr(trigger), Signal.to_expr(reads), pair_box, Capability.handle(pair_cap)), pair_cap)
 		value_cap : Capability.Capability(a)
 		value_cap = Capability.new_with_eq(|_, _| False)
-		project : HostValue -> HostValue
-		project = |pair_hv| {
+		project! : HostValue => HostValue
+		project! = |pair_hv| {
 			current : { tick : trigger, value : a }
-			current = Box.unbox(Capability.get(pair_hv, pair_cap))
-			Capability.store(Box.box(current.value), value_cap)
+			current = Box.unbox(Capability.get!(pair_hv, pair_cap))
+			Capability.store!(Box.box(current.value), value_cap)
 		}
-		project_box = Box.box(project)
+		project_box = Box.box(project!)
 		Signal.from_expr(Node.SignalExpr.Map(project_box, Signal.to_expr(paired), project_box, Capability.handle(value_cap)), value_cap)
 	}
 }

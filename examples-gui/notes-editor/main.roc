@@ -1,4 +1,4 @@
-app [main] { roc: "nightly-2026-09-12-220fd47", pf: platform "../../platform-gui/main.roc", unicode: "../../vendor/unicode/main.roc" }
+app [main] { roc: "nightly-2026-09-22-e494788", pf: platform "../../platform-gui/main.roc", unicode: "../../vendor/unicode/main.roc" }
 
 import pf.Action exposing [Action]
 import pf.Elem exposing [Elem]

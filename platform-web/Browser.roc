@@ -169,13 +169,13 @@ Browser := [].{
 		location_cap = Capability.new()
 		payload_cap = Capability.new()
 
-		from_payload : HostValue -> HostValue
-		from_payload = |payload_hv| {
+		from_payload! : HostValue => HostValue
+		from_payload! = |payload_hv| {
 			payload_bytes : List(U8)
-			payload_bytes = Box.unbox(Capability.take(payload_hv, payload_cap))
-			Capability.store(Box.box(decode_location_payload(payload_bytes)), location_cap)
+			payload_bytes = Box.unbox(Capability.take!(payload_hv, payload_cap))
+			Capability.store!(Box.box(decode_location_payload(payload_bytes)), location_cap)
 		}
-		from_payload_box = Box.box(from_payload)
+		from_payload_box = Box.box(from_payload!)
 
 		Signal.from_expr(
 			Node.SignalExpr.LocationSource(
@@ -198,13 +198,13 @@ Browser := [].{
 		seed_cap = Capability.new()
 		payload_cap = Capability.new()
 
-		from_payload : HostValue -> HostValue
-		from_payload = |payload_hv| {
+		from_payload! : HostValue => HostValue
+		from_payload! = |payload_hv| {
 			payload_bytes : List(U8)
-			payload_bytes = Box.unbox(Capability.take(payload_hv, payload_cap))
-			Capability.store(Box.box(decode_entropy_seed_payload(payload_bytes)), seed_cap)
+			payload_bytes = Box.unbox(Capability.take!(payload_hv, payload_cap))
+			Capability.store!(Box.box(decode_entropy_seed_payload(payload_bytes)), seed_cap)
 		}
-		from_payload_box = Box.box(from_payload)
+		from_payload_box = Box.box(from_payload!)
 
 		Signal.from_expr(
 			Node.SignalExpr.EntropySeedSource(
@@ -224,13 +224,13 @@ Browser := [].{
 		visibility_cap = Capability.new()
 		payload_cap = Capability.new()
 
-		from_payload : HostValue -> HostValue
-		from_payload = |payload_hv| {
+		from_payload! : HostValue => HostValue
+		from_payload! = |payload_hv| {
 			payload_bytes : List(U8)
-			payload_bytes = Box.unbox(Capability.take(payload_hv, payload_cap))
-			Capability.store(Box.box(decode_visibility_payload(payload_bytes)), visibility_cap)
+			payload_bytes = Box.unbox(Capability.take!(payload_hv, payload_cap))
+			Capability.store!(Box.box(decode_visibility_payload(payload_bytes)), visibility_cap)
 		}
-		from_payload_box = Box.box(from_payload)
+		from_payload_box = Box.box(from_payload!)
 
 		Signal.from_expr(
 			Node.SignalExpr.VisibilitySource(
@@ -250,13 +250,13 @@ Browser := [].{
 		online_cap = Capability.new()
 		payload_cap = Capability.new()
 
-		from_payload : HostValue -> HostValue
-		from_payload = |payload_hv| {
+		from_payload! : HostValue => HostValue
+		from_payload! = |payload_hv| {
 			payload_bytes : List(U8)
-			payload_bytes = Box.unbox(Capability.take(payload_hv, payload_cap))
-			Capability.store(Box.box(decode_online_payload(payload_bytes)), online_cap)
+			payload_bytes = Box.unbox(Capability.take!(payload_hv, payload_cap))
+			Capability.store!(Box.box(decode_online_payload(payload_bytes)), online_cap)
 		}
-		from_payload_box = Box.box(from_payload)
+		from_payload_box = Box.box(from_payload!)
 
 		Signal.from_expr(
 			Node.SignalExpr.OnlineSource(
@@ -274,13 +274,13 @@ Browser := [].{
 		storage_cap = Capability.new()
 		payload_cap = Capability.new()
 
-		from_payload : HostValue -> HostValue
-		from_payload = |payload_hv| {
+		from_payload! : HostValue => HostValue
+		from_payload! = |payload_hv| {
 			payload_bytes : List(U8)
-			payload_bytes = Box.unbox(Capability.take(payload_hv, payload_cap))
-			Capability.store(Box.box(decode_storage_payload(payload_bytes)), storage_cap)
+			payload_bytes = Box.unbox(Capability.take!(payload_hv, payload_cap))
+			Capability.store!(Box.box(decode_storage_payload(payload_bytes)), storage_cap)
 		}
-		from_payload_box = Box.box(from_payload)
+		from_payload_box = Box.box(from_payload!)
 
 		Signal.from_expr(
 			Node.SignalExpr.StorageSource(

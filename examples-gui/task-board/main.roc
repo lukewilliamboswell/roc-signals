@@ -1,4 +1,4 @@
-app [main] { roc: "nightly-2026-09-12-220fd47", pf: platform "../../platform-gui/main.roc" }
+app [main] { roc: "nightly-2026-09-22-e494788", pf: platform "../../platform-gui/main.roc" }
 
 import Board
 import Codec

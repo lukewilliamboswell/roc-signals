@@ -2424,12 +2424,6 @@ export fn roc_rows_delta_update_sink_push(token: u64, op_index: u64, slot: u64, 
     return shared_engine.pushRowsDeltaUpdateSink(WasmCtx{}, token, op_index, slot, key.asSlice()) catch failHostWith("Rows delta update sink rejected the active transaction");
 }
 
-export fn roc_rows_same_generation_callable(left: abi.RocErasedCallable, right: abi.RocErasedCallable) callconv(.c) bool {
-    defer abi.decrefErasedCallable(left, &roc_host);
-    defer abi.decrefErasedCallable(right, &roc_host);
-    return left != null and left == right;
-}
-
 export fn roc_host_value_get_with_capability(value: u64, cap: HostValueCapability) callconv(.c) abi.RocBox {
     const previous_phase = roc_allocation_phase;
     roc_allocation_phase = .host_value_get;
