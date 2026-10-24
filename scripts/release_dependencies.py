@@ -17,71 +17,11 @@ from dependency_artifacts import sha256, unpack_verified, verify_archive, read_l
 
 REPOSITORY = "lukewilliamboswell/roc-signals"
 KINDS = {
-    "macos-interfaces": {
-        "targets": ("macos-sysroot",),
-        "files": (),
-        "licenses": (),
-        "workflow": "macos-interface-dependencies.yml",
-        "inventory_error": "dependency release must include the generated macOS linker interfaces",
-        "validation": "The catalog-derived interfaces passed final Roc application links and native GUI specs against the reviewed released host; two independent generations produced identical archives.",
-    },
-    "unwind": {"targets": ("x64glibc",), "files": ("libunwind.a",),
-               "licenses": ("LICENSE.TXT", "LICENSE-ZIG"),
-               "extra_files": tuple("sources/unwind/" + name for name in (
-                   "source.tar.xz",
-                   "dependencies/unwind.json",
-                   "dependencies/unwind/Dockerfile",
-                   "test/dependencies/unwind.cpp",
-                   "test/dependencies/unwind.rs",
-                   "test/dependencies/unwind-rust.c",
-                   "scripts/build_unwind.py",
-                   "scripts/build_glibc.py",
-                   "scripts/test_unwind_rust.py",
-                   "scripts/dependency_archive.py",
-                   "scripts/dependency_artifacts.py",
-               )),
-               "workflow": "unwind-dependencies.yml",
-               "inventory_error": "dependency release must include the tested LLVM unwinder",
-               "validation": "The extracted candidate passed C++ exception handling and Rust panic recovery with destructor tests; two clean builds produced identical archives. Original sources and reproduction inputs accompany the library."},
-    "glibc": {"targets": ("x64glibc",), "files": ("crt1.o", "libc.so", "libm.so", "libc_nonshared.a"),
-              "licenses": ("COPYING.LIB", "LICENSES", "LICENSE-ZIG", "LICENSE-LLVM",
-                           'LICENSE-LINUX-GPL-2.0', 'LICENSE-LINUX-GPL-1.0', 'LICENSE-LINUX-LGPL-2.0', 'LICENSE-LINUX-LGPL-2.1', 'LICENSE-LINUX-Linux-syscall-note', 'LICENSE-LINUX-MIT', 'LICENSE-LINUX-BSD-3-Clause'),
-              "extra_files": tuple("sources/glibc/" + name for name in (
-                  "source.tar.xz", "dependencies/glibc.json", "dependencies/glibc/COPYING.LIB",
-                  'dependencies/glibc/LICENSE-LINUX-GPL-2.0', 'dependencies/glibc/LICENSE-LINUX-GPL-1.0', 'dependencies/glibc/LICENSE-LINUX-LGPL-2.0', 'dependencies/glibc/LICENSE-LINUX-LGPL-2.1', 'dependencies/glibc/LICENSE-LINUX-Linux-syscall-note', 'dependencies/glibc/LICENSE-LINUX-MIT', 'dependencies/glibc/LICENSE-LINUX-BSD-3-Clause',
-                  "dependencies/glibc/Dockerfile", "test/dependencies/glibc.c",
-                  "scripts/build_glibc.py", "scripts/dependency_archive.py", "scripts/dependency_artifacts.py")),
-              "workflow": "glibc-dependencies.yml",
-              "inventory_error": "dependency release must include the tested glibc link inputs",
-              "validation": "The extracted candidate passed startup, termination, math, allocation, and thread tests; two clean builds produced identical archives. Corresponding bundled sources and reproduction inputs accompany the binaries."},
-    "xkbcommon": {"targets": ("x64glibc",), "files": ("libxkbcommon.so", "libxkbcommon-x11.so"),
-                  "licenses": ("LICENSE",), "workflow": "xkbcommon-dependencies.yml",
-                  "inventory_error": "dependency release must include both tested xkbcommon libraries",
-                  "validation": "The extracted candidate parsed and translated a self-contained keyboard map, and two clean builds produced identical archives."},
     "musl": {"targets": ("x64musl", "arm64musl"), "files": ("libc.a", "crt1.o"),
              "licenses": ("COPYRIGHT",), "workflow": "dependencies.yml",
              "inventory_error": "dependency release must include both tested musl architectures",
              "validation": "Both architectures passed native linked tests and a second build comparison."},
-    "windows-imports": {"targets": ("x64win",), "files": ("advapi32.lib",),
-                        "licenses": ("COPYING",), "workflow": "windows-dependencies.yml",
-                        "inventory_error": "dependency release must include the tested Windows import archive",
-                        "validation": "The candidate passed a native Windows DLL import probe and a second build comparison."},
-    "freetype": {"targets": ("x64glibc",), "files": ("libfreetype.so",),
-                 "licenses": ("LICENSE.TXT", "FTL.TXT", "GPLv2.TXT", "NOTICE"),
-                 "workflow": "freetype-dependencies.yml",
-                 "inventory_error": "dependency release must include the tested FreeType archive",
-                 "validation": "The extracted candidate rendered the expected glyph bitmap, and two clean container builds produced identical archives."},
 }
-
-
-def release_files(kind, policy):
-    """Resolve a catalog-sized inventory without coupling unrelated producers to it."""
-    if kind == "macos-interfaces":
-        catalog = json.loads((Path(__file__).resolve().parents[1]
-                              / "dependencies/macos-interfaces/interfaces.json").read_text())
-        return (*(library["path"] for library in catalog["libraries"]),
-                "interfaces.json", "manifest.json", "PROVENANCE.md")
-    return policy["files"]
 
 
 def prepare(directory, tag, environment, kind="musl"):
@@ -112,9 +52,8 @@ def prepare(directory, tag, environment, kind="musl"):
             }
             verify_archive(archive, entry)
             manifest = unpack_verified(archive, entry, Path(temporary) / target)
-            required = {f"targets/{target}/{name}" for name in release_files(kind, policy)}
+            required = {f"targets/{target}/{name}" for name in policy["files"]}
             required.update(f"licenses/{kind}/{name}" for name in policy["licenses"])
-            required.update(policy.get("extra_files", ()))
             if set(manifest["files"]) != required:
                 raise ValueError(f"{kind} release has an incomplete or unexpected file set")
             artifacts[f"{kind}-{target}"] = entry

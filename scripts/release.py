@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Prepare, smoke-test, verify, and publish one combined platform release.
+"""Prepare, smoke-test, verify, and publish one platform release.
 
-The release contains exactly two Roc platform bundles plus one example-source
+The release contains exactly the web Roc platform bundle plus one example-source
 archive. Host engines and external linker inputs are downloaded from immutable
 locks and verified by content hash; this module never builds them.
 """
@@ -22,11 +22,8 @@ import zipfile
 
 import bundle_browser
 from instrument_wasm import instrument_wasm
-from build_gui import build_environment, executable_name, host_target
 from compiler_pins import read_pin, replace_pin
 from dependency_artifacts import read_lock
-import gui_smoke
-from gui_suite import examples as gui_examples
 import spec_driver
 import test as driver
 from toolchain import app_platform_span, replace_platform, validate_roots, verify_compiler
@@ -95,7 +92,7 @@ def zip_entry(archive: zipfile.ZipFile, name: str, data: bytes) -> None:
     archive.writestr(entry, data)
 
 
-def write_examples(path: Path, pin: str, web_url: str, gui_url: str) -> None:
+def write_examples(path: Path, pin: str, web_url: str) -> None:
     with zipfile.ZipFile(path, "x") as archive:
         runtime = bundle_browser.runtime_files(("example_tasks.mjs", "service_ops_charts.mjs"))
         for name, data in sorted(runtime.items()):
@@ -116,18 +113,10 @@ def write_examples(path: Path, pin: str, web_url: str, gui_url: str) -> None:
                 'fetchImpl: createPublicExampleFetch(), behaviors: serviceOpsBehaviors });\n</script>\n'
             )
             zip_entry(archive, (example.source.parent / "index.html").as_posix(), page.encode())
-        for app in gui_examples():
-            for source in tracked_files(app):
-                data = source.read_bytes()
-                if source == app / "main.roc":
-                    data = replace_platform(replace_pin(data.decode(), pin), gui_url).encode()
-                zip_entry(archive, source.relative_to(ROOT).as_posix(), data)
-        for source in tracked_files(ROOT / "vendor/unicode"):
-            zip_entry(archive, source.relative_to(ROOT).as_posix(), source.read_bytes())
         readme = (
             "# Roc Signals release examples\n\n"
-            "`examples-web/` and `examples-gui/` are distinct applications using distinct platform APIs. "
-            "Their headers pin the two platform assets from the same immutable release.\n"
+            "Every application under `examples-web/` pins the web platform asset "
+            "from the same immutable release.\n"
         )
         zip_entry(archive, "README.md", readme.encode())
 
@@ -146,23 +135,21 @@ def extract_examples(path: Path, destination: Path) -> None:
 
 def read_manifest(directory: Path) -> dict:
     manifest = json.loads((directory / MANIFEST).read_text(encoding="utf-8"))
-    if (manifest.get("schema_version") != 2 or not VERSION.fullmatch(manifest.get("version", ""))
+    if (manifest.get("schema_version") != 3 or not VERSION.fullmatch(manifest.get("version", ""))
             or not re.fullmatch(r"[0-9a-f]{40}", manifest.get("source_sha", ""))):
-        raise ValueError("unsupported combined platform release manifest")
+        raise ValueError("unsupported platform release manifest")
     if manifest.get("max_transitive_mb") != MAX_TRANSITIVE_MB:
         raise ValueError("release package budget differs from the reviewed RC policy")
     if manifest.get("provenance") != {
         "signer_workflow": REPOSITORY + "/.github/workflows/release.yml",
         "source_ref": "refs/heads/main",
     }:
-        raise ValueError("unsupported combined release provenance policy")
+        raise ValueError("unsupported release provenance policy")
     assets = manifest.get("assets", {})
-    if set(assets) != {"web", "gui", "examples"}:
-        raise ValueError("release must contain web, GUI, and example assets")
+    if set(assets) != {"web", "examples"}:
+        raise ValueError("release must contain exactly the web platform and example assets")
     if assets["examples"]["name"] != EXAMPLES:
         raise ValueError("release example archive has the wrong identity")
-    if assets["web"]["name"] == assets["gui"]["name"]:
-        raise ValueError("web and GUI must remain distinct platform packages")
     expected = {MANIFEST, "release-notes.md"}
     for kind, asset in assets.items():
         name = asset.get("name", "")
@@ -173,9 +160,9 @@ def read_manifest(directory: Path) -> dict:
             raise ValueError(f"{kind} release asset differs from its manifest")
         expected.add(name)
     if {path.name for path in directory.iterdir()} != expected:
-        raise ValueError("combined release contains an unexpected asset")
+        raise ValueError("release contains an unexpected asset")
     inputs = manifest.get("inputs", {})
-    if set(inputs) != {"web_hosts", "gui_hosts", "linker_inputs"}:
+    if set(inputs) != {"web_hosts", "linker_inputs"}:
         raise ValueError("release input locks are incomplete")
     return manifest
 
@@ -210,11 +197,6 @@ def require_headers(root: Path, manifest: dict) -> None:
         if (read_pin(source) != pin
                 or platform_url(source.read_text(encoding="utf-8")) != manifest["assets"]["web"]["url"]):
             raise ValueError(f"web example header differs from the release: {example.source}")
-    for app in gui_examples():
-        source = root / app.relative_to(ROOT) / "main.roc"
-        if (read_pin(source) != pin
-                or platform_url(source.read_text(encoding="utf-8")) != manifest["assets"]["gui"]["url"]):
-            raise ValueError(f"GUI example header differs from the release: {source.relative_to(root)}")
 
 
 def bind_local_headers(root: Path, manifest: dict, origin: str) -> None:
@@ -222,12 +204,6 @@ def bind_local_headers(root: Path, manifest: dict, origin: str) -> None:
         source = root / example.source
         source.write_text(
             replace_platform(source.read_text(encoding="utf-8"), origin + "/" + manifest["assets"]["web"]["name"]),
-            encoding="utf-8",
-        )
-    for app in gui_examples():
-        source = root / app.relative_to(ROOT) / "main.roc"
-        source.write_text(
-            replace_platform(source.read_text(encoding="utf-8"), origin + "/" + manifest["assets"]["gui"]["name"]),
             encoding="utf-8",
         )
 
@@ -258,32 +234,7 @@ def check_web(roc: str, root: Path, output: Path) -> None:
             raise ValueError(f"web release specs failed: {example.slug}")
 
 
-def check_gui(roc: str, root: Path, output: Path) -> None:
-    target = host_target()
-    if target is None:
-        raise ValueError("combined release smoke requires a supported native GUI runner")
-    binaries = output / "gui"
-    binaries.mkdir(parents=True, exist_ok=True)
-    environment = build_environment()
-    for app in gui_examples():
-        released = root / app.relative_to(ROOT)
-        source = released / "main.roc"
-        roc_run(roc, "check", source, env=environment)
-        roc_run(roc, "test", source, "--opt=dev", env=environment)
-        executable = binaries / executable_name(app.name)
-        roc_run(roc, "build", source, f"--target={target}", "--opt=dev", "--no-cache",
-                f"--output={executable}", env=environment)
-        results = spec_driver.run_suite(executable, released / "specs", jobs=2, timeout_seconds=30)
-        spec_driver.print_summary(results)
-        if any(not result.passed for result in results):
-            raise ValueError(f"GUI release specs failed: {app.name}")
-    if os.environ.get("SIGNALS_WAYLAND_SMOKE") == "1":
-        gui_smoke.wayland(binaries)
-    else:
-        gui_smoke.run(binaries, environment)
-
-
-def prepare(version: str, directory: Path, roc: str, web_host_lock: Path, gui_host_lock: Path) -> None:
+def prepare(version: str, directory: Path, roc: str, web_host_lock: Path) -> None:
     source_sha = clean_source_sha()
     if not VERSION.fullmatch(version):
         raise ValueError("release version must be unprefixed SemVer without build metadata")
@@ -296,7 +247,6 @@ def prepare(version: str, directory: Path, roc: str, web_host_lock: Path, gui_ho
         raise ValueError(f"finalize {notes} before preparing a release")
     locks = {
         "web_hosts": read_lock(web_host_lock),
-        "gui_hosts": read_lock(gui_host_lock),
         "linker_inputs": read_lock(ROOT / "dependencies.lock.json"),
     }
     directory.mkdir(parents=True, exist_ok=True)
@@ -304,34 +254,28 @@ def prepare(version: str, directory: Path, roc: str, web_host_lock: Path, gui_ho
         bundles = Path(temporary) / "bundles"
         environment = dict(os.environ, ROC_BIN=roc)
         subprocess.run([
-            os.fspath(ROOT / "scripts/bundle.sh"), "--package", "all", "--no-build",
+            os.fspath(ROOT / "scripts/bundle.sh"), "--no-build",
             "--prebuilt-web-host-lock", os.fspath(web_host_lock),
-            "--prebuilt-host-lock", os.fspath(gui_host_lock),
             "--output-dir", os.fspath(bundles),
         ], cwd=ROOT, env=environment, check=True)
         bundle_manifest = json.loads((bundles / "bundles.json").read_text(encoding="utf-8"))
-        if set(bundle_manifest) != {"web", "gui"}:
-            raise ValueError("bundler did not produce exactly web and GUI packages")
-        paths = {}
-        for kind in ("web", "gui"):
-            source = bundles / bundle_manifest[kind]
-            if source.suffixes[-2:] != [".tar", ".zst"] or source.parent != bundles / kind:
-                raise ValueError("unexpected Roc bundle output")
-            destination = directory / source.name
-            shutil.copyfile(source, destination)
-            paths[kind] = destination
-    web_url = f"{RELEASE_BASE}/{version}/{paths['web'].name}"
-    gui_url = f"{RELEASE_BASE}/{version}/{paths['gui'].name}"
-    write_examples(directory / EXAMPLES, pin, web_url, gui_url)
+        if set(bundle_manifest) != {"web"}:
+            raise ValueError("bundler did not produce exactly the web package")
+        source = bundles / bundle_manifest["web"]
+        if source.suffixes[-2:] != [".tar", ".zst"] or source.parent != bundles:
+            raise ValueError("unexpected Roc bundle output")
+        web = directory / source.name
+        shutil.copyfile(source, web)
+    web_url = f"{RELEASE_BASE}/{version}/{web.name}"
+    write_examples(directory / EXAMPLES, pin, web_url)
     manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "version": version,
         "source_sha": source_sha,
         "compiler_pin": pin,
         "max_transitive_mb": MAX_TRANSITIVE_MB,
         "assets": {
-            "web": record(paths["web"], version),
-            "gui": record(paths["gui"], version),
+            "web": record(web, version),
             "examples": record(directory / EXAMPLES, version),
         },
         "inputs": locks,
@@ -366,7 +310,6 @@ def check(directory: Path, roc: str) -> None:
             bind_local_headers(root, manifest, f"http://127.0.0.1:{server.port}")
             with fresh_cache(Path(temporary) / "cache"):
                 check_web(roc, root, Path(temporary) / "outputs")
-                check_gui(roc, root, Path(temporary) / "outputs")
 
 
 def require_publish_context(manifest: dict) -> None:
@@ -407,7 +350,6 @@ def main() -> None:
     parser.add_argument("--directory", type=Path, default=ROOT / ".release-out")
     parser.add_argument("--roc-bin", default=os.environ.get("ROC_BIN") or os.environ.get("ROC") or "roc")
     parser.add_argument("--web-host-lock", type=Path, default=ROOT / "web-host.lock.json")
-    parser.add_argument("--gui-host-lock", type=Path, default=ROOT / "gui-host.lock.json")
     args = parser.parse_args()
     directory = args.directory.resolve()
     if args.command == "verify":
@@ -418,7 +360,7 @@ def main() -> None:
         return
     roc = driver.command_path(args.roc_bin)
     if args.command == "prepare":
-        prepare(args.version, directory, roc, args.web_host_lock.resolve(), args.gui_host_lock.resolve())
+        prepare(args.version, directory, roc, args.web_host_lock.resolve())
     else:
         check(directory, roc)
 

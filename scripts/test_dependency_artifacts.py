@@ -19,7 +19,7 @@ from dependency_archive import write_archive
 
 class DependencyTests(unittest.TestCase):
     def test_corresponding_sources_must_belong_to_the_dependency(self):
-        for index, name in enumerate(("sources/musl/source.tar.xz", "sources/glibc/source.tar.xz",
+        for index, name in enumerate(("sources/musl/source.tar.xz", "sources/zlib/source.tar.xz",
                                       "sources/musl-other/source.tar.xz")):
             with self.subTest(name=name):
                 archive = write_archive(self.root / f"source-{index}.tar", {
