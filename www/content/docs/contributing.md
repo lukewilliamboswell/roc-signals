@@ -689,12 +689,28 @@ and content-hash verifies the immutable web hosts and external linker inputs,
 then runs `roc bundle`. It builds no Zig code. The result is one web platform
 archive and `signals-examples.zip`, whose app headers name the final asset URL.
 `signals-release.json` records those URLs, SHA-256 digests, sizes, input locks,
-and the compiler pin.
+and the compiler pin. The published notes are the reviewed
+`releases/<tag>.md` followed by a generated appendix naming the source
+revision, the compiler pin, every asset digest, and every locked host and
+linker input by release and digest. A tag with a SemVer prerelease suffix is
+published as a prerelease and is never marked latest; a final version becomes
+the latest release.
+
+Before dispatching, confirm that `web-host.lock.json` matches the checkout's
+host inputs; preparation refuses a stale lock. If engine or host sources have
+changed since the locked hosts were built, dispatch
+`.github/workflows/web-hosts.yml` on `main` with a new `deps-web-hosts-<date>.<n>`
+tag and land its published `dependencies.lock.json` as `web-host.lock.json`
+first.
+
+After publication, open a reviewed pull request that points the public
+examples' platform URLs at the new release's web asset. The release workflow
+does not write to `main`.
 
 To exercise preparation locally:
 
 ```sh
-python3 scripts/release.py prepare --version 0.2.0-rc3
+python3 scripts/release.py prepare --version 0.2.0
 python3 scripts/release.py check
 python3 scripts/release.py verify
 ```
@@ -720,7 +736,7 @@ Ordinary publication rejects any existing tag or release. After partial
 publication, inspect the tag SHA and every existing asset against the retained
 `signals-release.json` and original Actions artifacts. Preserve matching files;
 upload only missing original assets through a reviewed recovery operation, verify
-fresh downloads, then resume deployment/follow-up. Do not rerun preparation from
+fresh downloads, then resume the example follow-up. Do not rerun preparation from
 a moving branch, overwrite assets, or move a tag. If the original artifacts cannot
 be recovered, prepare a new version rather than claiming the old identity.
 

@@ -187,6 +187,23 @@ class ReleaseTests(unittest.TestCase):
                         self.assertRaisesRegex(ValueError, "explicit main"):
                     release.require_publish_context(manifest)
 
+    def test_only_a_semver_prerelease_is_published_as_a_prerelease(self):
+        self.assertEqual(release.channel_flags("0.2.0-rc3"), ["--prerelease", "--latest=false"])
+        self.assertEqual(release.channel_flags("0.2.0"), ["--latest"])
+
+    def test_release_notes_record_source_compiler_assets_and_inputs(self):
+        lock = {"schema_version": 1, "artifacts": {"musl-x64musl": {
+            "release": "deps-musl-1.2.6", "asset": "musl-x64musl.tar", "sha256": "b" * 64}}}
+        notes = release.provenance_notes({
+            "source_sha": "a" * 40,
+            "compiler_pin": "nightly-2026-10-23-18478ff",
+            "assets": {"web": {"url": "https://release/Web.tar.zst", "sha256": "c" * 64}},
+            "inputs": {"linker_inputs": lock},
+        })
+        for expected in ("a" * 40, "nightly-2026-10-23-18478ff", "https://release/Web.tar.zst",
+                         "c" * 64, "deps-musl-1.2.6", "b" * 64):
+            self.assertIn(expected, notes)
+
     def test_workflow_has_one_publisher_and_no_host_toolchain_setup(self):
         workflow = (release.ROOT / ".github/workflows/release.yml").read_text()
         self.assertEqual(workflow.count("contents: write"), 1)

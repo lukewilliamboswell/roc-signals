@@ -106,7 +106,7 @@ class EffectContractTests(unittest.TestCase):
                          ["node", "--no-maglev", "--experimental-wasm-jspi"])
 
     def test_release_mount_commands_enable_jspi(self) -> None:
-        for name in ("release.py", "site_release.py"):
+        for name in ("release.py",):
             tree = ast.parse(Path(__file__).with_name(name).read_text(encoding="utf-8"))
             commands = [node for node in ast.walk(tree) if isinstance(node, ast.List)
                         and any(isinstance(value, ast.Constant)
