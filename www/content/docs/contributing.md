@@ -661,10 +661,12 @@ python3 scripts/serve.py --no-server --app-opt size
 ```
 
 Routine Roc tests and native smoke builds use `--opt=dev` to keep feedback fast.
-The pinned compiler's dev backend still emits invalid Wasm for the maintained
-`two-row-types` fixture, so ordinary Wasm smoke builds use `--opt=size` as a
-narrow workaround. Track the reproducer upstream and switch those builds to
-`--opt=dev` once the pinned compiler contains the fix. Keep artifact validation
+The pinned compiler's Wasm dev backend never re-selects a `Ui.when` branch it
+has left ([roc-lang/roc#12560](https://github.com/roc-lang/roc/issues/12560),
+reproduced in `repro/wasm-dev-when-reselect/`), so ordinary Wasm smoke builds
+and `serve.py`'s default use `--opt=size` as a narrow workaround. Avoid
+`--app-opt dev` for Wasm until then: it builds, but conditional views misbehave.
+Switch those builds to `--opt=dev` once the pinned compiler contains the fix. Keep artifact validation
 enabled; compiler exit status alone does not establish that a Wasm artifact is
 valid. Production site builds use `--app-opt size`; both modes write `dist/`.
 
