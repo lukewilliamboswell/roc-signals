@@ -10,6 +10,11 @@ own the compiler pins, including internal web fixtures. `.github/roc-nightly.jso
 workflows; it contains no duplicate version authority. The selected pins agree.
 The bot changes only their compiler literals, preserving all package/platform URLs.
 
+Validation workflows install this compiler with `.github/actions/setup-roc`,
+which reads it from the headers and refuses any other. Their remaining tools
+come from `Blueprint.roc` and `Blueprint.lock`, which name no compiler, so a pin
+update leaves them unchanged.
+
 The required pull-request check is `Platform source`. Development tests bind
 temporary copies to current source. Exact combined bundles and their rewritten
 example archive are tested from fresh caches by the explicitly dispatched
@@ -17,10 +22,10 @@ release workflow rather than rebuilt by ordinary pull-request CI. A failed
 released dependency may require a platform patch and a new immutable release
 before retrying the nightly.
 
-Every reference to shared automation (these callers and `actions/check-release`)
-pins `7aff4132691ad4fc348abe9df146a57512b49bd6`, the `tools-0.4.0` commit.
-Dependabot proposes reviewed reference updates; move all of them together. See
-the shared controller's
+Every reference to shared automation (these callers, `actions/check-release` and
+`actions/setup-blueprint`) pins `7aff4132691ad4fc348abe9df146a57512b49bd6`,
+the `tools-0.4.0` commit. Dependabot proposes reviewed reference updates; move
+all of them together. See the shared controller's
 [trust reference](https://github.com/lukewilliamboswell/roc-automation/blob/7aff4132691ad4fc348abe9df146a57512b49bd6/actions/nightly/security-model.adoc)
 for the strict ruleset and signature checks. Automatic merging requires active
 pull-request and up-to-date required-check rules, Actions PR creation, and no bot

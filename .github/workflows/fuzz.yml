@@ -34,11 +34,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install Zig
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+      - name: Install Blueprint
+        uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@7aff4132691ad4fc348abe9df146a57512b49bd6
         with:
-          version: 0.16.0
-          use-cache: false
+          cache: 'true'
+          cache-workload: fuzz
 
       - name: Install AFL++
         run: |
@@ -55,13 +55,13 @@ jobs:
       # full-engine `structural` target needs hours; see scripts/fuzz.py.
       - name: Fuzz
         run: |
-          python3 scripts/fuzz.py campaign ${{ github.event.inputs.targets || 'all' }} \
+          blueprint run fuzz -- campaign ${{ github.event.inputs.targets || 'all' }} \
             --time "${{ github.event.inputs.duration || '2h' }}" \
             -j 2
 
       - name: Report
         if: always()
-        run: python3 scripts/fuzz.py status
+        run: blueprint run fuzz -- status
 
       # The crashing inputs are the whole product of the run, and they are gone
       # with the runner unless they are uploaded. Corpora go too: they are the

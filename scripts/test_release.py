@@ -191,8 +191,14 @@ class ReleaseTests(unittest.TestCase):
         workflow = (release.ROOT / ".github/workflows/release.yml").read_text()
         self.assertEqual(workflow.count("contents: write"), 1)
         self.assertIn("./.github/actions/setup-roc", workflow)
-        self.assertNotIn("./.github/actions/setup-toolchain", workflow)
         self.assertNotIn("zig", workflow.lower())
+        # The release tasks run in Blueprint's release environment, which must
+        # not gain Zig directly or by extending the development environment.
+        self.assertIn("blueprint run release", workflow)
+        blueprint = (release.ROOT / "Blueprint.roc").read_text()
+        environment = next(line for line in blueprint.splitlines() if 'Environment("release"' in line)
+        self.assertNotIn("zig", environment)
+        self.assertNotIn('Extend("dev")', environment)
 
 
 if __name__ == "__main__":

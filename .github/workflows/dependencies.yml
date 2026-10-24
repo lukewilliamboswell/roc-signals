@@ -12,6 +12,8 @@ on:
       - scripts/test_musl_artifact.py
       - test/dependencies/musl.c
       - .github/workflows/dependencies.yml
+      - Blueprint.roc
+      - Blueprint.lock
   workflow_dispatch:
     inputs:
       release_tag:
@@ -46,19 +48,19 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: '3.12'
-      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@7aff4132691ad4fc348abe9df146a57512b49bd6
         with:
-          version: 0.16.0
-          use-cache: false
+          cache: 'true'
+          cache-workload: musl
       - name: Check dependency admission failures
-        run: python3 -m unittest scripts/test_dependency_artifacts.py
+        run: blueprint run unittest -- scripts/test_dependency_artifacts.py
       - name: Build from pinned upstream source
-        run: python3 scripts/build_musl.py --target '${{ matrix.target }}' --output '${{ runner.temp }}/dependencies'
+        run: blueprint run build-musl -- --target '${{ matrix.target }}' --output '${{ runner.temp }}/dependencies'
       - name: Test the exact archive on its native architecture
-        run: python3 scripts/test_musl_artifact.py '${{ runner.temp }}/dependencies/musl-${{ matrix.target }}.tar' --target '${{ matrix.target }}'
+        run: blueprint run test-musl -- '${{ runner.temp }}/dependencies/musl-${{ matrix.target }}.tar' --target '${{ matrix.target }}'
       - name: Check reproducibility in a second build directory
         run: |
-          python3 scripts/build_musl.py --target '${{ matrix.target }}' --output '${{ runner.temp }}/rebuild'
+          blueprint run build-musl -- --target '${{ matrix.target }}' --output '${{ runner.temp }}/rebuild'
           cmp '${{ runner.temp }}/dependencies/musl-${{ matrix.target }}.tar' '${{ runner.temp }}/rebuild/musl-${{ matrix.target }}.tar'
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
