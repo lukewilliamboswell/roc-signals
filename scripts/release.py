@@ -216,8 +216,9 @@ def check_web(roc: str, root: Path, output: Path) -> None:
         roc_run(roc, "test", source, "--opt=dev")
         wasm = output / "wasm" / (example.slug + ".wasm")
         wasm.parent.mkdir(parents=True, exist_ok=True)
-        # TODO(upstream): link the compiler issue and switch to --opt=dev once
-        # the two-row-types fixture produces valid Wasm with that backend.
+        # TODO(upstream): switch to --opt=dev once the wasm32 dev backend
+        # re-selects a Ui.when branch it left
+        # (https://github.com/roc-lang/roc/issues/12560).
         roc_run(roc, "build", source, "--target=wasm32", "--opt=size", "--no-cache", f"--output={wasm}")
         instrument_wasm(wasm)
         driver.run(["node", "--no-maglev", "--experimental-wasm-jspi", ROOT / "scripts/browser/mount_wasm_example.mjs", wasm,
