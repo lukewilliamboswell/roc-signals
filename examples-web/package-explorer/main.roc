@@ -1,11 +1,11 @@
-app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst", roc: "nightly-2026-09-12-220fd47" }
+app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst", roc: "nightly-2026-10-23-18478ff" }
 
 import Load
 import pf.Action
 import Catalog
 import Route
 import pf.Browser
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
 import pf.Rows
 import pf.Signal
@@ -299,7 +299,7 @@ package_panels = |route, intent, detail, versions, deps| {
 				Action.sampled(package_id, { query: package_id, current: detail.signal() }.Signal),
 				|read|
 					if read.query.is_empty() {
-						Action.none
+						Action.none()
 					} else {
 						Load.start(detail, "detail", { loading: Catalog.detail_loading, ready: Catalog.detail_ready, failed: Catalog.detail_failed }, read)
 					},
@@ -308,7 +308,7 @@ package_panels = |route, intent, detail, versions, deps| {
 				Action.sampled(package_id, { query: package_id, current: versions.signal() }.Signal),
 				|read|
 					if read.query.is_empty() {
-						Action.none
+						Action.none()
 					} else {
 						Load.start(versions, "versions", { loading: Catalog.versions_loading, ready: Catalog.versions_ready, failed: Catalog.versions_failed }, read)
 					},
@@ -317,7 +317,7 @@ package_panels = |route, intent, detail, versions, deps| {
 				Action.sampled(package_id, { query: package_id, current: deps.signal() }.Signal),
 				|read|
 					if read.query.is_empty() {
-						Action.none
+						Action.none()
 					} else {
 						Load.start(deps, "deps", { loading: Catalog.deps_loading, ready: Catalog.deps_ready, failed: Catalog.deps_failed }, read)
 					},

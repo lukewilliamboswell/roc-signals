@@ -4,7 +4,7 @@
 ## anything else degrades to plain text. Adapted from the
 ## examples-web/_fixtures/markdown-elem parser (the proven app-land path; no
 ## roc-parser package exists yet).
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
 import pf.Rows
 import pf.Signal

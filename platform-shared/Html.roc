@@ -1,8 +1,8 @@
-import Elem exposing [Elem]
-import HostValue exposing [HostValue]
-import Capability exposing [Capability]
+import Elem
+import HostValue
+import Capability
 import Node
-import Signal exposing [Signal]
+import Signal
 
 field_text : Node.TextField
 field_text = { id: 1 }
@@ -123,9 +123,9 @@ Html := [].{
 	class_attr_s : Signal(Str) -> Node.Attr
 	class_attr_s = |signal| {
 		cap = signal.cap
-		read : HostValue -> Str
-		read = |value| Box.unbox(Capability.get(value, cap))
-		Node.Attr.SignalText({ field: field_class, name: "", signal: Signal.to_expr(signal), read: { capability: Capability.handle(cap), read: Box.box(read) } })
+		read! : HostValue => Str
+		read! = |value| Box.unbox(Capability.get!(value, cap))
+		Node.Attr.SignalText({ field: field_class, name: "", signal: Signal.to_expr(signal), read: { capability: Capability.handle(cap), read: Box.box(read!) } })
 	}
 
 	## Static text attribute by name.
@@ -136,9 +136,9 @@ Html := [].{
 	attr_s : Str, Signal(Str) -> Node.Attr
 	attr_s = |name, signal| {
 		cap = signal.cap
-		read : HostValue -> Str
-		read = |value| Box.unbox(Capability.get(value, cap))
-		Node.Attr.SignalText({ field: field_custom, name, signal: Signal.to_expr(signal), read: { capability: Capability.handle(cap), read: Box.box(read) } })
+		read! : HostValue => Str
+		read! = |value| Box.unbox(Capability.get!(value, cap))
+		Node.Attr.SignalText({ field: field_custom, name, signal: Signal.to_expr(signal), read: { capability: Capability.handle(cap), read: Box.box(read!) } })
 	}
 
 	## Signal-backed optional text attribute by name. `None` removes the attr;
@@ -146,17 +146,17 @@ Html := [].{
 	attr_maybe_s : Str, Signal([None, Some(Str)]) -> Node.Attr
 	attr_maybe_s = |name, signal| {
 		cap = signal.cap
-		present : HostValue -> Bool
-		present = |value|
-			match Box.unbox(Capability.get(value, cap)) {
+		present! : HostValue => Bool
+		present! = |value|
+			match Box.unbox(Capability.get!(value, cap)) {
 				None => False
 				Some(_) => True
 			}
-		read : HostValue -> Str
-		read = |value|
-			match Box.unbox(Capability.get(value, cap)) {
+		read! : HostValue => Str
+		read! = |value|
+			match Box.unbox(Capability.get!(value, cap)) {
 				None => {
-					crash "optional text attr read when absent"
+					crash "optional text attr read! when absent"
 				}
 				Some(text) => text
 			}
@@ -164,8 +164,8 @@ Html := [].{
 			field: field_custom,
 			name,
 			signal: Signal.to_expr(signal),
-			present: { capability: Capability.handle(cap), read: Box.box(present) },
-			read: { capability: Capability.handle(cap), read: Box.box(read) },
+			present: { capability: Capability.handle(cap), read: Box.box(present!) },
+			read: { capability: Capability.handle(cap), read: Box.box(read!) },
 		})
 	}
 
@@ -187,9 +187,9 @@ Html := [].{
 	bool_attr_s : Str, Signal(Bool) -> Node.Attr
 	bool_attr_s = |name, signal| {
 		cap = signal.cap
-		read : HostValue -> Bool
-		read = |value| Box.unbox(Capability.get(value, cap))
-		Node.Attr.SignalBool({ field: bool_field_custom, name, signal: Signal.to_expr(signal), read: { capability: Capability.handle(cap), read: Box.box(read) } })
+		read! : HostValue => Bool
+		read! = |value| Box.unbox(Capability.get!(value, cap))
+		Node.Attr.SignalBool({ field: bool_field_custom, name, signal: Signal.to_expr(signal), read: { capability: Capability.handle(cap), read: Box.box(read!) } })
 	}
 
 	## Static `required` boolean attribute.
@@ -410,13 +410,13 @@ Html := [].{
 	paragraph_s_c : Signal(Str), Str -> Elem
 	paragraph_s_c = |signal, classes| {
 		cap = signal.cap
-		read : HostValue -> Str
-		read = |value| Box.unbox(Capability.get(value, cap))
+		read! : HostValue => Str
+		read! = |value| Box.unbox(Capability.get!(value, cap))
 		Elem.Element({
 			namespace: Html,
 			tag: "p",
 			attrs: [
-				Node.Attr.SignalText({ field: field_text, name: "", signal: Signal.to_expr(signal), read: { capability: Capability.handle(cap), read: Box.box(read) } }),
+				Node.Attr.SignalText({ field: field_text, name: "", signal: Signal.to_expr(signal), read: { capability: Capability.handle(cap), read: Box.box(read!) } }),
 				class_attr(classes),
 			],
 			children: [],
@@ -436,14 +436,14 @@ Html := [].{
 	paragraph_s_attrs : Signal(Str), List(Node.Attr) -> Elem
 	paragraph_s_attrs = |signal, attrs| {
 		cap = signal.cap
-		read : HostValue -> Str
-		read = |value| Box.unbox(Capability.get(value, cap))
+		read! : HostValue => Str
+		read! = |value| Box.unbox(Capability.get!(value, cap))
 		Elem.Element({
 			namespace: Html,
 			tag: "p",
 			attrs: List.concat(
 				[
-					Node.Attr.SignalText({ field: field_text, name: "", signal: Signal.to_expr(signal), read: { capability: Capability.handle(cap), read: Box.box(read) } }),
+					Node.Attr.SignalText({ field: field_text, name: "", signal: Signal.to_expr(signal), read: { capability: Capability.handle(cap), read: Box.box(read!) } }),
 				],
 				attrs,
 			),
@@ -459,22 +459,22 @@ Html := [].{
 	text_s : Signal(Str) -> Elem
 	text_s = |signal| {
 		cap = signal.cap
-		read : HostValue -> Str
-		read = |value| Box.unbox(Capability.get(value, cap))
-		Elem.TextSignal({ signal: Signal.to_expr(signal), read: { capability: Capability.handle(cap), read: Box.box(read) } })
+		read! : HostValue => Str
+		read! = |value| Box.unbox(Capability.get!(value, cap))
+		Elem.TextSignal({ signal: Signal.to_expr(signal), read: { capability: Capability.handle(cap), read: Box.box(read!) } })
 	}
 
 	## Signal-backed preformatted text block.
 	pre_s_c : Signal(Str), Str -> Elem
 	pre_s_c = |signal, classes| {
 		cap = signal.cap
-		read : HostValue -> Str
-		read = |value| Box.unbox(Capability.get(value, cap))
+		read! : HostValue => Str
+		read! = |value| Box.unbox(Capability.get!(value, cap))
 		Elem.Element({
 			namespace: Html,
 			tag: "pre",
 			attrs: [
-				Node.Attr.SignalText({ field: field_text, name: "", signal: Signal.to_expr(signal), read: { capability: Capability.handle(cap), read: Box.box(read) } }),
+				Node.Attr.SignalText({ field: field_text, name: "", signal: Signal.to_expr(signal), read: { capability: Capability.handle(cap), read: Box.box(read!) } }),
 				class_attr(classes),
 			],
 			children: [],
@@ -515,13 +515,13 @@ Html := [].{
 	button_s_attrs : Signal(Str), List(Node.Attr), Node.Handler -> Elem
 	button_s_attrs = |label, attrs, msg| {
 		label_cap = label.cap
-		read_label : HostValue -> Str
-		read_label = |value| Box.unbox(Capability.get(value, label_cap))
+		read_label! : HostValue => Str
+		read_label! = |value| Box.unbox(Capability.get!(value, label_cap))
 		Elem.Element({
 			namespace: Html,
 			tag: "button",
 			attrs: [
-				Node.Attr.SignalText({ field: field_text, name: "", signal: Signal.to_expr(label), read: { capability: Capability.handle(label_cap), read: Box.box(read_label) } }),
+				Node.Attr.SignalText({ field: field_text, name: "", signal: Signal.to_expr(label), read: { capability: Capability.handle(label_cap), read: Box.box(read_label!) } }),
 				event_attr(fixed_event_binding(fixed_event_click, msg)),
 			].concat(attrs),
 			children: [],
@@ -541,16 +541,16 @@ Html := [].{
 	action_button_attrs = |label, disabled, attrs, msg| {
 		label_cap = label.cap
 		disabled_cap = disabled.cap
-		read_label : HostValue -> Str
-		read_label = |value| Box.unbox(Capability.get(value, label_cap))
-		read_disabled : HostValue -> Bool
-		read_disabled = |value| Box.unbox(Capability.get(value, disabled_cap))
+		read_label! : HostValue => Str
+		read_label! = |value| Box.unbox(Capability.get!(value, label_cap))
+		read_disabled! : HostValue => Bool
+		read_disabled! = |value| Box.unbox(Capability.get!(value, disabled_cap))
 		Elem.Element({
 			namespace: Html,
 			tag: "button",
 			attrs: [
-				Node.Attr.SignalText({ field: field_text, name: "", signal: Signal.to_expr(label), read: { capability: Capability.handle(label_cap), read: Box.box(read_label) } }),
-				Node.Attr.SignalBool({ field: bool_field_disabled, name: "", signal: Signal.to_expr(disabled), read: { capability: Capability.handle(disabled_cap), read: Box.box(read_disabled) } }),
+				Node.Attr.SignalText({ field: field_text, name: "", signal: Signal.to_expr(label), read: { capability: Capability.handle(label_cap), read: Box.box(read_label!) } }),
+				Node.Attr.SignalBool({ field: bool_field_disabled, name: "", signal: Signal.to_expr(disabled), read: { capability: Capability.handle(disabled_cap), read: Box.box(read_disabled!) } }),
 				event_attr(fixed_event_binding(fixed_event_click, msg)),
 			].concat(attrs),
 			children: [],
@@ -570,15 +570,15 @@ Html := [].{
 	text_input_attrs : Str, Signal(Str), List(Node.Attr), Node.Handler -> Elem
 	text_input_attrs = |label, value, attrs, msg| {
 		value_cap = value.cap
-		read_value : HostValue -> Str
-		read_value = |host_value| Box.unbox(Capability.get(host_value, value_cap))
+		read_value! : HostValue => Str
+		read_value! = |host_value| Box.unbox(Capability.get!(host_value, value_cap))
 		Elem.Element({
 			namespace: Html,
 			tag: "input",
 			attrs: [
 				Node.Attr.StaticText({ field: field_role, name: "", value: "textbox" }),
 				Node.Attr.StaticText({ field: field_label, name: "", value: label }),
-				Node.Attr.SignalText({ field: field_value, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(value_cap), read: Box.box(read_value) } }),
+				Node.Attr.SignalText({ field: field_value, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(value_cap), read: Box.box(read_value!) } }),
 				event_attr(fixed_event_binding(fixed_event_input, msg)),
 			].concat(attrs),
 			children: [],
@@ -598,8 +598,8 @@ Html := [].{
 	number_input_attrs : Str, Signal(Str), List(Node.Attr), Node.Handler -> Elem
 	number_input_attrs = |label, value, attrs, msg| {
 		value_cap = value.cap
-		read_value : HostValue -> Str
-		read_value = |host_value| Box.unbox(Capability.get(host_value, value_cap))
+		read_value! : HostValue => Str
+		read_value! = |host_value| Box.unbox(Capability.get!(host_value, value_cap))
 		Elem.Element({
 			namespace: Html,
 			tag: "input",
@@ -607,7 +607,7 @@ Html := [].{
 				Node.Attr.StaticText({ field: field_role, name: "", value: "spinbutton" }),
 				Node.Attr.StaticText({ field: field_label, name: "", value: label }),
 				attr("type", "number"),
-				Node.Attr.SignalText({ field: field_value, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(value_cap), read: Box.box(read_value) } }),
+				Node.Attr.SignalText({ field: field_value, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(value_cap), read: Box.box(read_value!) } }),
 				event_attr(fixed_event_binding(fixed_event_input, msg)),
 			].concat(attrs),
 			children: [],
@@ -627,15 +627,15 @@ Html := [].{
 	textarea_attrs : Str, Signal(Str), List(Node.Attr), Node.Handler -> Elem
 	textarea_attrs = |label, value, attrs, msg| {
 		value_cap = value.cap
-		read_value : HostValue -> Str
-		read_value = |host_value| Box.unbox(Capability.get(host_value, value_cap))
+		read_value! : HostValue => Str
+		read_value! = |host_value| Box.unbox(Capability.get!(host_value, value_cap))
 		Elem.Element({
 			namespace: Html,
 			tag: "textarea",
 			attrs: [
 				Node.Attr.StaticText({ field: field_role, name: "", value: "textbox" }),
 				Node.Attr.StaticText({ field: field_label, name: "", value: label }),
-				Node.Attr.SignalText({ field: field_value, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(value_cap), read: Box.box(read_value) } }),
+				Node.Attr.SignalText({ field: field_value, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(value_cap), read: Box.box(read_value!) } }),
 				event_attr(fixed_event_binding(fixed_event_input, msg)),
 			].concat(attrs),
 			children: [],
@@ -655,15 +655,15 @@ Html := [].{
 	select_attrs : Str, Signal(Str), List(Node.Attr), List(Elem), Node.Handler -> Elem
 	select_attrs = |label, value, attrs, options, msg| {
 		value_cap = value.cap
-		read_value : HostValue -> Str
-		read_value = |host_value| Box.unbox(Capability.get(host_value, value_cap))
+		read_value! : HostValue => Str
+		read_value! = |host_value| Box.unbox(Capability.get!(host_value, value_cap))
 		Elem.Element({
 			namespace: Html,
 			tag: "select",
 			attrs: [
 				Node.Attr.StaticText({ field: field_role, name: "", value: "combobox" }),
 				Node.Attr.StaticText({ field: field_label, name: "", value: label }),
-				Node.Attr.SignalText({ field: field_value, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(value_cap), read: Box.box(read_value) } }),
+				Node.Attr.SignalText({ field: field_value, name: "", signal: Signal.to_expr(value), read: { capability: Capability.handle(value_cap), read: Box.box(read_value!) } }),
 				on_change(msg),
 			].concat(attrs),
 			children: options,
@@ -702,8 +702,8 @@ Html := [].{
 	radio_attrs = |label, name, value, selected, attrs, msg| {
 		checked = selected.map(|current| current == value)
 		checked_cap = checked.cap
-		read_checked : HostValue -> Bool
-		read_checked = |host_value| Box.unbox(Capability.get(host_value, checked_cap))
+		read_checked! : HostValue => Bool
+		read_checked! = |host_value| Box.unbox(Capability.get!(host_value, checked_cap))
 		Elem.Element({
 			namespace: Html,
 			tag: "input",
@@ -713,7 +713,7 @@ Html := [].{
 				attr("type", "radio"),
 				attr("name", name),
 				Node.Attr.StaticText({ field: field_value, name: "", value }),
-				Node.Attr.SignalBool({ field: bool_field_checked, name: "", signal: Signal.to_expr(checked), read: { capability: Capability.handle(checked_cap), read: Box.box(read_checked) } }),
+				Node.Attr.SignalBool({ field: bool_field_checked, name: "", signal: Signal.to_expr(checked), read: { capability: Capability.handle(checked_cap), read: Box.box(read_checked!) } }),
 				on_change(msg),
 			].concat(attrs),
 			children: [],
@@ -733,15 +733,15 @@ Html := [].{
 	checkbox_attrs : Str, Signal(Bool), List(Node.Attr), Node.Handler -> Elem
 	checkbox_attrs = |label, checked, attrs, msg| {
 		checked_cap = checked.cap
-		read_checked : HostValue -> Bool
-		read_checked = |value| Box.unbox(Capability.get(value, checked_cap))
+		read_checked! : HostValue => Bool
+		read_checked! = |value| Box.unbox(Capability.get!(value, checked_cap))
 		Elem.Element({
 			namespace: Html,
 			tag: "input",
 			attrs: [
 				Node.Attr.StaticText({ field: field_role, name: "", value: "checkbox" }),
 				Node.Attr.StaticText({ field: field_label, name: "", value: label }),
-				Node.Attr.SignalBool({ field: bool_field_checked, name: "", signal: Signal.to_expr(checked), read: { capability: Capability.handle(checked_cap), read: Box.box(read_checked) } }),
+				Node.Attr.SignalBool({ field: bool_field_checked, name: "", signal: Signal.to_expr(checked), read: { capability: Capability.handle(checked_cap), read: Box.box(read_checked!) } }),
 				event_attr(fixed_event_binding(fixed_event_check, msg)),
 			].concat(attrs),
 			children: [],

@@ -1699,7 +1699,7 @@ fn freeRocAllocation(ptr: *anyopaque, alignment_arg: usize) RocAllocation {
     return alloc;
 }
 
-export fn roc_alloc(length: usize, alignment: usize) callconv(.c) ?*anyopaque {
+export fn roc_alloc(length: usize, alignment: usize) callconv(.c) *anyopaque {
     if (host_poisoned) @trap();
     const result = if (comptime build_options.wasm_allocation_ledger)
         allocRocMemory(length, alignment) orelse failHostWith("Roc allocation failed")
@@ -1794,7 +1794,7 @@ export fn roc_dealloc(ptr: *anyopaque, alignment: usize) callconv(.c) void {
     }
 }
 
-export fn roc_realloc(ptr: *anyopaque, new_length: usize, alignment_arg: usize) callconv(.c) ?*anyopaque {
+export fn roc_realloc(ptr: *anyopaque, new_length: usize, alignment_arg: usize) callconv(.c) *anyopaque {
     if (comptime !build_options.wasm_allocation_ledger) {
         const old_user_ptr: [*]const u8 = @ptrCast(ptr);
         const old_header: *const InlineRocAllocationHeader = @ptrFromInt(@intFromPtr(old_user_ptr) - @sizeOf(InlineRocAllocationHeader));
@@ -2339,7 +2339,7 @@ export fn roc_crashed(ptr: [*]const u8, len: usize) callconv(.c) void {
     failHostWithFmt("Roc crashed: {s}", .{ptr[0..len]});
 }
 
-fn rocAllocForAbi(_: *abi.RocHost, length: usize, alignment: usize) callconv(.c) ?*anyopaque {
+fn rocAllocForAbi(_: *abi.RocHost, length: usize, alignment: usize) callconv(.c) *anyopaque {
     return roc_alloc(length, alignment);
 }
 
@@ -2347,7 +2347,7 @@ fn rocDeallocForAbi(_: *abi.RocHost, ptr: *anyopaque, alignment: usize) callconv
     roc_dealloc(ptr, alignment);
 }
 
-fn rocReallocForAbi(_: *abi.RocHost, ptr: *anyopaque, new_length: usize, alignment: usize) callconv(.c) ?*anyopaque {
+fn rocReallocForAbi(_: *abi.RocHost, ptr: *anyopaque, new_length: usize, alignment: usize) callconv(.c) *anyopaque {
     return roc_realloc(ptr, new_length, alignment);
 }
 
@@ -2415,12 +2415,6 @@ export fn roc_rows_delta_remove_range_sink_push(token: u64, op_index: u64, first
 export fn roc_rows_delta_update_sink_push(token: u64, op_index: u64, slot: u64, key: abi.RocStr) callconv(.c) u64 {
     defer abi.RocStrRelease.release(key, &roc_host);
     return shared_engine.pushRowsDeltaUpdateSink(WasmCtx{}, token, op_index, slot, key.asSlice()) catch failHostWith("Rows delta update sink rejected the active transaction");
-}
-
-export fn roc_rows_same_generation_callable(left: abi.RocErasedCallable, right: abi.RocErasedCallable) callconv(.c) bool {
-    defer abi.decrefErasedCallable(left, &roc_host);
-    defer abi.decrefErasedCallable(right, &roc_host);
-    return left != null and left == right;
 }
 
 export fn roc_host_value_get_with_capability(value: u64, cap: HostValueCapability) callconv(.c) abi.RocBox {

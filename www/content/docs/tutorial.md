@@ -38,7 +38,7 @@ Start with no reactivity at all.
 ```roc
 app [main] { pf: platform "../../platform-web/main.roc" }
 
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
 
 main : () -> Elem
@@ -70,7 +70,7 @@ Add a text input whose value echoes back as you type.
 ```roc
 app [main] { pf: platform "../../platform-web/main.roc" }
 
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
 import pf.Ui
 
@@ -126,9 +126,9 @@ Real state is more than a string. Define the domain types and render a list.
 ```roc
 app [main] { pf: platform "../../platform-web/main.roc" }
 
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
-import pf.Rows exposing [Rows]
+import pf.Rows
 import pf.Signal
 import pf.Ui
 
@@ -407,9 +407,9 @@ the same updated model.
 ```roc
 app [main] { pf: platform "../../platform-web/main.roc" }
 
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
-import pf.Rows exposing [Rows]
+import pf.Rows
 import pf.Signal
 import pf.Ui
 

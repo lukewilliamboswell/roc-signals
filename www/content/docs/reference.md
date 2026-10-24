@@ -18,13 +18,13 @@ built-in API and where a JavaScript behaviour can help.
 ## Imports
 
 ```roc
-import pf.Elem exposing [Elem]
-import pf.Action exposing [Action]
+import pf.Elem
+import pf.Action
 import pf.Browser
 import pf.Html
 import pf.Http
 import pf.Signal
-import pf.Rows exposing [Rows]
+import pf.Rows
 import pf.Svg
 import pf.Ui
 ```
@@ -67,12 +67,12 @@ For three or more inputs use the record builder rather than nesting `map2`:
 
 ## Action
 
-Import `pf.Action exposing [Action]`. Actions describe an atomic batch of
+Import `pf.Action`. Actions describe an atomic batch of
 state reducers, optionally followed by effectful Roc code.
 
 | Member | Purpose |
 | --- | --- |
-| `Action.none` | make no changes |
+| `Action.none()` | make no changes |
 | `Action.update(changes)` | commit a list of `State.write` reducers atomically |
 | `Action.then(changes, effect!)` | commit changes, then run an effect with fresh declared reads |
 | `Action.run(reads, handler)` | bind a unit event |

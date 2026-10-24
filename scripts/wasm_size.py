@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bundle_browser import runtime_files  # noqa: E402
 from instrument_wasm import instrument_wasm  # noqa: E402
-from toolchain import development_pin, replace_platform, verify_compiler  # noqa: E402
+from toolchain import development_pin, local_platform_reference, replace_platform, verify_compiler  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SIZE_DIR = ROOT / "test" / "size"
@@ -202,7 +202,7 @@ def build_fixture(roc_bin: str, fixture: Fixture, platform_manifest: Path, sourc
     source_dir = source_root / fixture.name
     shutil.copytree(ROOT / fixture.source.parent, source_dir, dirs_exist_ok=True)
     app = source_dir / fixture.source.name
-    app.write_text(replace_platform(app.read_text(encoding="utf-8"), str(platform_manifest.resolve())), encoding="utf-8")
+    app.write_text(replace_platform(app.read_text(encoding="utf-8"), local_platform_reference(app, platform_manifest)), encoding="utf-8")
     run([roc_bin, "build", *APP_FLAGS, f"--output={output}", app])
     instrument_wasm(output)
 

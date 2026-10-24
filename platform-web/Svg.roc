@@ -1,7 +1,7 @@
-import Elem exposing [Elem]
+import Elem
 import Html
 import Node
-import Signal exposing [Signal]
+import Signal
 
 ## SVG constructors share ordinary attributes, events, signals, and scopes.
 ## Every element selects SVG explicitly, including children of dynamic branches.

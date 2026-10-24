@@ -1,4 +1,4 @@
-import HostValue exposing [HostValue]
+import HostValue
 
 ## Typed authority for reading, cloning, comparing, and dropping opaque
 ## host-owned values.
@@ -18,15 +18,15 @@ Capability(a) := [
 		split_handle : Box((Box(a) -> { keep : Box(a), out : Box(a) }))
 		split_handle = Box.box(split)
 
-		clone : HostValue -> HostValue
-		clone = |host_value| {
+		clone! : HostValue => HostValue
+		clone! = |host_value| {
 			boxed : Box(a)
 			boxed = HostValue.get_with_split!(host_value, split_handle)
 			HostValue.store_with_existing_capability!(boxed, host_value)
 		}
 
-		eq : HostValue, HostValue -> Bool
-		eq = |left_hv, right_hv| {
+		eq! : HostValue, HostValue => Bool
+		eq! = |left_hv, right_hv| {
 			left : a
 			left = Box.unbox(HostValue.get_with_split!(left_hv, split_handle))
 			right : a
@@ -34,15 +34,15 @@ Capability(a) := [
 			is_equal(left, right)
 		}
 
-		drop : HostValue -> {}
-		drop = |host_value| {
+		drop! : HostValue => {}
+		drop! = |host_value| {
 			boxed : Box(a)
 			boxed = HostValue.take_with_split!(host_value, split_handle)
 			_ = boxed
 			{}
 		}
 
-		Capability({ clone: Box.box(clone), eq: Box.box(eq), drop: Box.box(drop) })
+		Capability({ clone: Box.box(clone!), eq: Box.box(eq!), drop: Box.box(drop!) })
 	}
 
 	## Create a capability using the type's `is_eq` implementation.
@@ -57,22 +57,22 @@ Capability(a) := [
 	handle = |Capability(handle_value)| handle_value
 
 	## Return the host-value equality thunk for this capability.
-	eq : Capability(a) -> Box((HostValue, HostValue -> Bool))
+	eq : Capability(a) -> Box((HostValue, HostValue => Bool))
 	eq = |Capability(handle_value)| handle_value.eq
 
 	## Return the host-value drop thunk for this capability.
-	drop : Capability(a) -> Box((HostValue -> {}))
+	drop : Capability(a) -> Box((HostValue => {}))
 	drop = |Capability(handle_value)| handle_value.drop
 
 	## Store a boxed Roc value behind this capability.
-	store : Box(a), Capability(a) -> HostValue
-	store = |boxed, cap| HostValue.store_with_capability!(boxed, Capability.handle(cap))
+	store! : Box(a), Capability(a) => HostValue
+	store! = |boxed, cap| HostValue.store_with_capability!(boxed, Capability.handle(cap))
 
 	## Read a boxed Roc value through this capability without consuming it.
-	get : HostValue, Capability(a) -> Box(a)
-	get = |host_value, cap| HostValue.get_with_capability!(host_value, Capability.handle(cap))
+	get! : HostValue, Capability(a) => Box(a)
+	get! = |host_value, cap| HostValue.get_with_capability!(host_value, Capability.handle(cap))
 
 	## Consume a host value and recover the boxed Roc value.
-	take : HostValue, Capability(a) -> Box(a)
-	take = |host_value, cap| HostValue.take_with_capability!(host_value, Capability.handle(cap))
+	take! : HostValue, Capability(a) => Box(a)
+	take! = |host_value, cap| HostValue.take_with_capability!(host_value, Capability.handle(cap))
 }

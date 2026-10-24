@@ -5,7 +5,7 @@
 ## HTML. Adapted from `examples-web/conduit/Markdown.roc`, with heading levels
 ## carried in the block key so the outline can be derived from parsed blocks
 ## rather than re-scanning the raw source.
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
 import pf.Rows
 import pf.Signal

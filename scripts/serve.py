@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import functools
 import http.server
+import json
 import os
 from pathlib import Path
 import platform
@@ -240,10 +241,10 @@ def bundle_platform(roc_bin: str, out_dir: Path) -> Path:
         check=True,
     )
     print(result.stdout, end="")
-    for line in result.stdout.splitlines():
-        if line.startswith("Created:"):
-            return Path(line.split(":", 1)[1].strip())
-    raise SystemExit("scripts/bundle.sh did not print a Created: line")
+    # Roc reports the archive relative to its staging directory, so the
+    # manifest bundle_platforms.py writes is the authority for its location.
+    manifest = json.loads((out_dir / "bundles.json").read_text(encoding="utf-8"))
+    return out_dir / manifest["web"]
 
 
 class ReusableTcpServer(socketserver.TCPServer):

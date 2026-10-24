@@ -58,6 +58,16 @@ def replace_platform(source: str, reference: str) -> str:
     return source[:start] + reference + source[end:]
 
 
+def local_platform_reference(app: Path, manifest: Path) -> str:
+    """Spell a local platform manifest as a header reference for `app`.
+
+    Roc rejects absolute platform paths, so a checkout-local platform is always
+    named relative to the directory holding the app module that imports it.
+    """
+    reference = Path(os.path.relpath(manifest.resolve(), app.resolve().parent)).as_posix()
+    return reference if reference.startswith("../") else "./" + reference
+
+
 def development_pin(root: Path = ROOT) -> str:
     return read_pin(root / "platform-web/main.roc")
 

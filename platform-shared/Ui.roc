@@ -1,11 +1,11 @@
-import Elem exposing [Elem]
-import HostValue exposing [HostValue]
-import Capability exposing [Capability]
+import Elem
+import HostValue
+import Capability
 import EventExtraction
 import EachSink
 import Node
-import Rows exposing [Rows]
-import Signal exposing [Signal]
+import Rows
+import Signal
 
 state_event_msg : Node.BinderRef, Node.BinderRef, Node.EventExtractionPlan, HostValue.EventReducerHandle -> Node.Handler
 state_event_msg = |binder, read_binder, event_extraction_plan, payload_reducer| {
@@ -18,10 +18,10 @@ state_event_msg = |binder, read_binder, event_extraction_plan, payload_reducer| 
 action_event_msg : Signal(a), Node.EventExtractionPlan, Capability(payload), (a, payload -> Node.Cmd) -> Node.Handler
 action_event_msg = |reads, event_extraction_plan, payload_cap, to_cmd| {
 	read_cap = reads.cap
-	wrapped : HostValue, HostValue -> Node.Cmd
-	wrapped = |read_value, payload_value| {
-		typed_reads = Box.unbox(Capability.get(read_value, read_cap))
-		typed_payload = Box.unbox(Capability.get(payload_value, payload_cap))
+	wrapped! : HostValue, HostValue => Node.Cmd
+	wrapped! = |read_value, payload_value| {
+		typed_reads = Box.unbox(Capability.get!(read_value, read_cap))
+		typed_payload = Box.unbox(Capability.get!(payload_value, payload_cap))
 		to_cmd(typed_reads, typed_payload)
 	}
 	{
@@ -29,7 +29,7 @@ action_event_msg = |reads, event_extraction_plan, payload_cap, to_cmd| {
 		handler: Node.EventHandler.Action({
 			reads: Signal.to_expr(reads),
 			payload_cap: Capability.handle(payload_cap),
-			to_cmd: Box.box(wrapped),
+			to_cmd: Box.box(wrapped!),
 		}),
 	}
 }
@@ -164,19 +164,19 @@ Ui := [].{
 			## Keep the host's unit extraction payload inhabited across the erased ABI.
 			payload_cap : Capability({})
 			payload_cap = Capability.new()
-			wrapped : HostValue, HostValue, HostValue -> HostValue
-			wrapped = |current_hv, _read_hv, _payload_hv| {
+			wrapped! : HostValue, HostValue, HostValue => HostValue
+			wrapped! = |current_hv, _read_hv, _payload_hv| {
 				current : a
-				current = Box.unbox(Capability.get(current_hv, current_cap))
+				current = Box.unbox(Capability.get!(current_hv, current_cap))
 				next : a
 				next = f(current)
-				Capability.store(Box.box(next), current_cap)
+				Capability.store!(Box.box(next), current_cap)
 			}
 			state_event_msg(
 				st.ref,
 				st.ref,
 				EventExtraction.unit,
-				{ capability: Capability.handle(payload_cap), read_capability: Capability.handle(current_cap), transform: Box.box(wrapped) },
+				{ capability: Capability.handle(payload_cap), read_capability: Capability.handle(current_cap), transform: Box.box(wrapped!) },
 			)
 		}
 
@@ -185,21 +185,21 @@ Ui := [].{
 		update_str = |st, f| {
 			current_cap = st.cap
 			payload_cap = Capability.new()
-			wrapped : HostValue, HostValue, HostValue -> HostValue
-			wrapped = |current_hv, _read_hv, payload_hv| {
+			wrapped! : HostValue, HostValue, HostValue => HostValue
+			wrapped! = |current_hv, _read_hv, payload_hv| {
 				current : a
-				current = Box.unbox(Capability.get(current_hv, current_cap))
+				current = Box.unbox(Capability.get!(current_hv, current_cap))
 				payload : Str
-				payload = Box.unbox(Capability.get(payload_hv, payload_cap))
+				payload = Box.unbox(Capability.get!(payload_hv, payload_cap))
 				next : a
 				next = f(current, payload)
-				Capability.store(Box.box(next), current_cap)
+				Capability.store!(Box.box(next), current_cap)
 			}
 			state_event_msg(
 				st.ref,
 				st.ref,
 				EventExtraction.target_value,
-				{ capability: Capability.handle(payload_cap), read_capability: Capability.handle(current_cap), transform: Box.box(wrapped) },
+				{ capability: Capability.handle(payload_cap), read_capability: Capability.handle(current_cap), transform: Box.box(wrapped!) },
 			)
 		}
 
@@ -208,21 +208,21 @@ Ui := [].{
 		update_bool = |st, f| {
 			current_cap = st.cap
 			payload_cap = Capability.new()
-			wrapped : HostValue, HostValue, HostValue -> HostValue
-			wrapped = |current_hv, _read_hv, payload_hv| {
+			wrapped! : HostValue, HostValue, HostValue => HostValue
+			wrapped! = |current_hv, _read_hv, payload_hv| {
 				current : a
-				current = Box.unbox(Capability.get(current_hv, current_cap))
+				current = Box.unbox(Capability.get!(current_hv, current_cap))
 				payload : Bool
-				payload = Box.unbox(Capability.get(payload_hv, payload_cap))
+				payload = Box.unbox(Capability.get!(payload_hv, payload_cap))
 				next : a
 				next = f(current, payload)
-				Capability.store(Box.box(next), current_cap)
+				Capability.store!(Box.box(next), current_cap)
 			}
 			state_event_msg(
 				st.ref,
 				st.ref,
 				EventExtraction.target_checked,
-				{ capability: Capability.handle(payload_cap), read_capability: Capability.handle(current_cap), transform: Box.box(wrapped) },
+				{ capability: Capability.handle(payload_cap), read_capability: Capability.handle(current_cap), transform: Box.box(wrapped!) },
 			)
 		}
 
@@ -231,21 +231,21 @@ Ui := [].{
 		update_detail = |st, f| {
 			current_cap = st.cap
 			payload_cap = Capability.new()
-			wrapped : HostValue, HostValue, HostValue -> HostValue
-			wrapped = |current_hv, _read_hv, payload_hv| {
+			wrapped! : HostValue, HostValue, HostValue => HostValue
+			wrapped! = |current_hv, _read_hv, payload_hv| {
 				current : a
-				current = Box.unbox(Capability.get(current_hv, current_cap))
+				current = Box.unbox(Capability.get!(current_hv, current_cap))
 				payload : Str
-				payload = Box.unbox(Capability.get(payload_hv, payload_cap))
+				payload = Box.unbox(Capability.get!(payload_hv, payload_cap))
 				next : a
 				next = f(current, payload)
-				Capability.store(Box.box(next), current_cap)
+				Capability.store!(Box.box(next), current_cap)
 			}
 			state_event_msg(
 				st.ref,
 				st.ref,
 				EventExtraction.detail,
-				{ capability: Capability.handle(payload_cap), read_capability: Capability.handle(current_cap), transform: Box.box(wrapped) },
+				{ capability: Capability.handle(payload_cap), read_capability: Capability.handle(current_cap), transform: Box.box(wrapped!) },
 			)
 		}
 
@@ -254,21 +254,21 @@ Ui := [].{
 		update_key = |st, f| {
 			current_cap = st.cap
 			payload_cap = Capability.new()
-			wrapped : HostValue, HostValue, HostValue -> HostValue
-			wrapped = |current_hv, _read_hv, payload_hv| {
+			wrapped! : HostValue, HostValue, HostValue => HostValue
+			wrapped! = |current_hv, _read_hv, payload_hv| {
 				current : a
-				current = Box.unbox(Capability.get(current_hv, current_cap))
+				current = Box.unbox(Capability.get!(current_hv, current_cap))
 				payload_bytes : List(U8)
-				payload_bytes = Box.unbox(Capability.get(payload_hv, payload_cap))
+				payload_bytes = Box.unbox(Capability.get!(payload_hv, payload_cap))
 				next : a
 				next = f(current, decode_key_payload(payload_bytes))
-				Capability.store(Box.box(next), current_cap)
+				Capability.store!(Box.box(next), current_cap)
 			}
 			state_event_msg(
 				st.ref,
 				st.ref,
 				EventExtraction.key_shift,
-				{ capability: Capability.handle(payload_cap), read_capability: Capability.handle(current_cap), transform: Box.box(wrapped) },
+				{ capability: Capability.handle(payload_cap), read_capability: Capability.handle(current_cap), transform: Box.box(wrapped!) },
 			)
 		}
 
@@ -278,73 +278,73 @@ Ui := [].{
 		update_with = |st, other, f| {
 			payload_cap : Capability({})
 			payload_cap = Capability.new()
-			wrapped : HostValue, HostValue, HostValue -> HostValue
-			wrapped = |current_hv, read_hv, _payload_hv| {
-				current = Box.unbox(Capability.get(current_hv, st.cap))
-				read_value = Box.unbox(Capability.get(read_hv, other.cap))
-				Capability.store(Box.box(f(current, read_value)), st.cap)
+			wrapped! : HostValue, HostValue, HostValue => HostValue
+			wrapped! = |current_hv, read_hv, _payload_hv| {
+				current = Box.unbox(Capability.get!(current_hv, st.cap))
+				read_value = Box.unbox(Capability.get!(read_hv, other.cap))
+				Capability.store!(Box.box(f(current, read_value)), st.cap)
 			}
-			state_event_msg(st.ref, other.ref, EventExtraction.unit, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(other.cap), transform: Box.box(wrapped) })
+			state_event_msg(st.ref, other.ref, EventExtraction.unit, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(other.cap), transform: Box.box(wrapped!) })
 		}
 
 		## Build a text reducer that atomically snapshots `read`.
 		update_str_with : State(a), State(b), (a, b, Str -> a) -> Node.Handler
 		update_str_with = |st, other, f| {
 			payload_cap = Capability.new()
-			wrapped : HostValue, HostValue, HostValue -> HostValue
-			wrapped = |current_hv, read_hv, payload_hv| {
-				current = Box.unbox(Capability.get(current_hv, st.cap))
-				read_value = Box.unbox(Capability.get(read_hv, other.cap))
+			wrapped! : HostValue, HostValue, HostValue => HostValue
+			wrapped! = |current_hv, read_hv, payload_hv| {
+				current = Box.unbox(Capability.get!(current_hv, st.cap))
+				read_value = Box.unbox(Capability.get!(read_hv, other.cap))
 				payload : Str
-				payload = Box.unbox(Capability.get(payload_hv, payload_cap))
-				Capability.store(Box.box(f(current, read_value, payload)), st.cap)
+				payload = Box.unbox(Capability.get!(payload_hv, payload_cap))
+				Capability.store!(Box.box(f(current, read_value, payload)), st.cap)
 			}
-			state_event_msg(st.ref, other.ref, EventExtraction.target_value, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(other.cap), transform: Box.box(wrapped) })
+			state_event_msg(st.ref, other.ref, EventExtraction.target_value, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(other.cap), transform: Box.box(wrapped!) })
 		}
 
 		## Build a checkbox reducer that atomically snapshots `read`.
 		update_bool_with : State(a), State(b), (a, b, Bool -> a) -> Node.Handler
 		update_bool_with = |st, other, f| {
 			payload_cap = Capability.new()
-			wrapped : HostValue, HostValue, HostValue -> HostValue
-			wrapped = |current_hv, read_hv, payload_hv| {
-				current = Box.unbox(Capability.get(current_hv, st.cap))
-				read_value = Box.unbox(Capability.get(read_hv, other.cap))
+			wrapped! : HostValue, HostValue, HostValue => HostValue
+			wrapped! = |current_hv, read_hv, payload_hv| {
+				current = Box.unbox(Capability.get!(current_hv, st.cap))
+				read_value = Box.unbox(Capability.get!(read_hv, other.cap))
 				payload : Bool
-				payload = Box.unbox(Capability.get(payload_hv, payload_cap))
-				Capability.store(Box.box(f(current, read_value, payload)), st.cap)
+				payload = Box.unbox(Capability.get!(payload_hv, payload_cap))
+				Capability.store!(Box.box(f(current, read_value, payload)), st.cap)
 			}
-			state_event_msg(st.ref, other.ref, EventExtraction.target_checked, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(other.cap), transform: Box.box(wrapped) })
+			state_event_msg(st.ref, other.ref, EventExtraction.target_checked, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(other.cap), transform: Box.box(wrapped!) })
 		}
 
 		## Build a custom-detail reducer that atomically snapshots `read`.
 		update_detail_with : State(a), State(b), (a, b, Str -> a) -> Node.Handler
 		update_detail_with = |st, other, f| {
 			payload_cap = Capability.new()
-			wrapped : HostValue, HostValue, HostValue -> HostValue
-			wrapped = |current_hv, read_hv, payload_hv| {
-				current = Box.unbox(Capability.get(current_hv, st.cap))
-				read_value = Box.unbox(Capability.get(read_hv, other.cap))
+			wrapped! : HostValue, HostValue, HostValue => HostValue
+			wrapped! = |current_hv, read_hv, payload_hv| {
+				current = Box.unbox(Capability.get!(current_hv, st.cap))
+				read_value = Box.unbox(Capability.get!(read_hv, other.cap))
 				payload : Str
-				payload = Box.unbox(Capability.get(payload_hv, payload_cap))
-				Capability.store(Box.box(f(current, read_value, payload)), st.cap)
+				payload = Box.unbox(Capability.get!(payload_hv, payload_cap))
+				Capability.store!(Box.box(f(current, read_value, payload)), st.cap)
 			}
-			state_event_msg(st.ref, other.ref, EventExtraction.detail, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(other.cap), transform: Box.box(wrapped) })
+			state_event_msg(st.ref, other.ref, EventExtraction.detail, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(other.cap), transform: Box.box(wrapped!) })
 		}
 
 		## Build a key reducer that atomically snapshots `read`.
 		update_key_with : State(a), State(b), (a, b, KeyPayload -> a) -> Node.Handler
 		update_key_with = |st, other, f| {
 			payload_cap = Capability.new()
-			wrapped : HostValue, HostValue, HostValue -> HostValue
-			wrapped = |current_hv, read_hv, payload_hv| {
-				current = Box.unbox(Capability.get(current_hv, st.cap))
-				read_value = Box.unbox(Capability.get(read_hv, other.cap))
+			wrapped! : HostValue, HostValue, HostValue => HostValue
+			wrapped! = |current_hv, read_hv, payload_hv| {
+				current = Box.unbox(Capability.get!(current_hv, st.cap))
+				read_value = Box.unbox(Capability.get!(read_hv, other.cap))
 				payload_bytes : List(U8)
-				payload_bytes = Box.unbox(Capability.get(payload_hv, payload_cap))
-				Capability.store(Box.box(f(current, read_value, decode_key_payload(payload_bytes))), st.cap)
+				payload_bytes = Box.unbox(Capability.get!(payload_hv, payload_cap))
+				Capability.store!(Box.box(f(current, read_value, decode_key_payload(payload_bytes))), st.cap)
 			}
-			state_event_msg(st.ref, other.ref, EventExtraction.key_shift, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(other.cap), transform: Box.box(wrapped) })
+			state_event_msg(st.ref, other.ref, EventExtraction.key_shift, { capability: Capability.handle(payload_cap), read_capability: Capability.handle(other.cap), transform: Box.box(wrapped!) })
 		}
 
 		## Build a command that replaces this state. Unlike event messages, state
@@ -361,12 +361,12 @@ Ui := [].{
 		update_cmd : State(a), (a -> a) -> Node.Cmd
 		update_cmd = |st, f| {
 			cap = st.cap
-			transform : HostValue -> HostValue
-			transform = |current| {
-				value = Box.unbox(Capability.get(current, cap))
-				Capability.store(Box.box(f(value)), cap)
+			transform! : HostValue => HostValue
+			transform! = |current| {
+				value = Box.unbox(Capability.get!(current, cap))
+				Capability.store!(Box.box(f(value)), cap)
 			}
-			Node.Cmd.UpdateTransform({ binder: st.ref, capability: Capability.handle(cap), transform: Box.box(transform) })
+			Node.Cmd.UpdateTransform({ binder: st.ref, capability: Capability.handle(cap), transform: Box.box(transform!) })
 		}
 
 		## Describe replacing this state with `next` when a batch commits. Prefer
@@ -375,11 +375,11 @@ Ui := [].{
 		set : State(a), a -> StateWrite
 		set = |st, next| {
 			cap = st.cap
-			initial : () -> HostValue
-			initial = || Capability.store(Box.box(next), cap)
+			initial! : () => HostValue
+			initial! = || Capability.store!(Box.box(next), cap)
 			Node.StateChange.Set({
 				binder: st.ref,
-				update: { capability: Capability.handle(cap), initial: Box.box(initial) },
+				update: { capability: Capability.handle(cap), initial: Box.box(initial!) },
 			})
 		}
 
@@ -388,12 +388,12 @@ Ui := [].{
 		write : State(a), (a -> a) -> StateWrite
 		write = |st, f| {
 			cap = st.cap
-			transform : HostValue -> HostValue
-			transform = |current| {
-				value = Box.unbox(Capability.get(current, cap))
-				Capability.store(Box.box(f(value)), cap)
+			transform! : HostValue => HostValue
+			transform! = |current| {
+				value = Box.unbox(Capability.get!(current, cap))
+				Capability.store!(Box.box(f(value)), cap)
 			}
-			Node.StateChange.Transform({ binder: st.ref, capability: Capability.handle(cap), transform: Box.box(transform) })
+			Node.StateChange.Transform({ binder: st.ref, capability: Capability.handle(cap), transform: Box.box(transform!) })
 		}
 	}
 
@@ -406,9 +406,9 @@ Ui := [].{
 		]
 	state = |init, body| {
 		cap = Capability.new()
-		initial : () -> HostValue
-		initial = || Capability.store(Box.box(init), cap)
-		initial_box = Box.box(initial)
+		initial! : () => HostValue
+		initial! = || Capability.store!(Box.box(init), cap)
+		initial_box = Box.box(initial!)
 		handle : State(a)
 		handle = { ref: Node.BinderRef.BinderRef(initial_box), cap }
 		child = body(handle)
@@ -441,10 +441,10 @@ Ui := [].{
 		read_cap = reads.cap
 		payload_cap : Capability({})
 		payload_cap = Capability.new()
-		wrapped : HostValue, HostValue -> Node.Cmd
-		wrapped = |read_value, _payload| {
+		wrapped! : HostValue, HostValue => Node.Cmd
+		wrapped! = |read_value, _payload| {
 			typed : a
-			typed = Box.unbox(Capability.get(read_value, read_cap))
+			typed = Box.unbox(Capability.get!(read_value, read_cap))
 			to_cmd(typed)
 		}
 		{
@@ -452,7 +452,7 @@ Ui := [].{
 			handler: Node.EventHandler.Action({
 				reads: Signal.to_expr(reads),
 				payload_cap: Capability.handle(payload_cap),
-				to_cmd: Box.box(wrapped),
+				to_cmd: Box.box(wrapped!),
 			}),
 		}
 	}
@@ -485,26 +485,26 @@ Ui := [].{
 	on_change : Signal(a), (a -> Node.Cmd) -> Elem
 	on_change = |signal, to_cmd| {
 		cap = signal.cap
-		wrapped : HostValue -> Node.Cmd
-		wrapped = |value| {
+		wrapped! : HostValue => Node.Cmd
+		wrapped! = |value| {
 			typed : a
-			typed = Box.unbox(Capability.get(value, cap))
+			typed = Box.unbox(Capability.get!(value, cap))
 			to_cmd(typed)
 		}
-		Elem.OnChange({ signal: Signal.to_expr(signal), to_cmd: Box.box(wrapped) })
+		Elem.OnChange({ signal: Signal.to_expr(signal), to_cmd: Box.box(wrapped!) })
 	}
 
 	## Run a command with the first mounted signal value and later changed values.
 	on_change_initial : Signal(a), (a -> Node.Cmd) -> Elem
 	on_change_initial = |signal, to_cmd| {
 		cap = signal.cap
-		wrapped : HostValue -> Node.Cmd
-		wrapped = |value| {
+		wrapped! : HostValue => Node.Cmd
+		wrapped! = |value| {
 			typed : a
-			typed = Box.unbox(Capability.get(value, cap))
+			typed = Box.unbox(Capability.get!(value, cap))
 			to_cmd(typed)
 		}
-		Elem.OnChangeInitial({ signal: Signal.to_expr(signal), to_cmd: Box.box(wrapped) })
+		Elem.OnChangeInitial({ signal: Signal.to_expr(signal), to_cmd: Box.box(wrapped!) })
 	}
 
 	## Run a command when the owning scope first mounts.
@@ -524,17 +524,17 @@ Ui := [].{
 		]
 	switch = |condition, build| {
 		case_cap = condition.cap
-		build_hv : HostValue -> Elem
-		build_hv = |value| {
+		build_hv! : HostValue => Elem
+		build_hv! = |value| {
 			case_value : case
-			case_value = Box.unbox(Capability.take(value, case_cap))
+			case_value = Box.unbox(Capability.take!(value, case_cap))
 			build(case_value)
 		}
 		Elem.When({
 			condition: Signal.to_expr(condition),
 			ops: {
 				case_capability: Capability.handle(case_cap),
-				build: Box.box(build_hv),
+				build: Box.box(build_hv!),
 			},
 		})
 	}
@@ -562,15 +562,15 @@ Ui := [].{
 	each = |rows, row| {
 		rows_cap = rows.cap
 		item_cap = Capability.new()
-		read_rows : HostValue -> Rows(item)
-		read_rows = |rows_hv| {
+		read_rows! : HostValue => Rows(item)
+		read_rows! = |rows_hv| {
 			typed_rows : Rows(item)
-			typed_rows = Box.unbox(Capability.take(rows_hv, rows_cap))
+			typed_rows = Box.unbox(Capability.take!(rows_hv, rows_cap))
 			typed_rows
 		}
-		describe_hv : HostValue, U64 -> U64
-		describe_hv = |owner, initial_token| {
-			description = Rows.platform_description(read_rows(owner))
+		describe_hv! : HostValue, U64 => U64
+		describe_hv! = |owner, initial_token| {
+			description = Rows.platform_description(read_rows!(owner))
 			match description.kind {
 				Snapshot => EachSink.push_snapshot_description!(initial_token, description.generation, description.item_count, description.snapshot_key_bytes)
 				Delta => {
@@ -583,17 +583,17 @@ Ui := [].{
 				}
 			}
 		}
-		copy_snapshot_hv : HostValue, U64 -> U64
-		copy_snapshot_hv = |owner, initial_token|
-			Rows.platform_copy_snapshot(
-				read_rows(owner),
+		copy_snapshot_hv! : HostValue, U64 => U64
+		copy_snapshot_hv! = |owner, initial_token|
+			Rows.platform_copy_snapshot!(
+				read_rows!(owner),
 				initial_token,
 				|token, index, slot, key| EachSink.push_snapshot!(token, index, slot, key),
 			)
-		copy_delta_hv : HostValue, U64 -> U64
-		copy_delta_hv = |owner, initial_token| {
-			typed_rows = read_rows(owner)
-			Rows.platform_copy_delta(
+		copy_delta_hv! : HostValue, U64 => U64
+		copy_delta_hv! = |owner, initial_token| {
+			typed_rows = read_rows!(owner)
+			Rows.platform_copy_delta!(
 				typed_rows,
 				initial_token,
 				|token, transition|
@@ -606,10 +606,10 @@ Ui := [].{
 					},
 			)
 		}
-		compare_slots_hv : HostValue, HostValue, List(U64), U64 -> U64
-		compare_slots_hv = |old_owner, new_owner, pairs, initial_token| {
-			old_rows = read_rows(old_owner)
-			new_rows = read_rows(new_owner)
+		compare_slots_hv! : HostValue, HostValue, List(U64), U64 => U64
+		compare_slots_hv! = |old_owner, new_owner, pairs, initial_token| {
+			old_rows = read_rows!(old_owner)
+			new_rows = read_rows!(new_owner)
 			if pairs.len() % 2 != 0 {
 				crash "Rows comparison pairs must be interleaved"
 			}
@@ -627,10 +627,10 @@ Ui := [].{
 			}
 			$token
 		}
-		clone_item_hv : HostValue, U64 -> HostValue
-		clone_item_hv = |owner, slot| {
-			item = Rows.platform_item_for_slot(read_rows(owner), slot) ?? crash "Rows item slot was not live"
-			Capability.store(Box.box(item), item_cap)
+		clone_item_hv! : HostValue, U64 => HostValue
+		clone_item_hv! = |owner, slot| {
+			item = Rows.platform_item_for_slot(read_rows!(owner), slot) ?? crash "Rows item slot was not live"
+			Capability.store!(Box.box(item), item_cap)
 		}
 		row_hv : Str, U64 -> Elem
 		row_hv = |key, row_handle| {
@@ -648,11 +648,11 @@ Ui := [].{
 			ops: {
 				rows_capability: Capability.handle(rows_cap),
 				item_capability: Capability.handle(item_cap),
-				describe: Box.box(describe_hv),
-				copy_snapshot: Box.box(copy_snapshot_hv),
-				copy_delta: Box.box(copy_delta_hv),
-				compare_slots: Box.box(compare_slots_hv),
-				clone_item: Box.box(clone_item_hv),
+				describe: Box.box(describe_hv!),
+				copy_snapshot: Box.box(copy_snapshot_hv!),
+				copy_delta: Box.box(copy_delta_hv!),
+				compare_slots: Box.box(compare_slots_hv!),
+				clone_item: Box.box(clone_item_hv!),
 				row: Box.box(row_hv),
 			},
 		})

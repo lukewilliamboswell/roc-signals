@@ -8,7 +8,7 @@ import Auth
 import Nav
 import Session
 import Styles
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
 import pf.Action
 import pf.Signal
@@ -104,7 +104,7 @@ Settings := {}.{
 										Action.on_change(
 											Action.sampled(form_signal.map(|value| value.serial), submission),
 											|snapshot| if snapshot.serial == 0 {
-												Action.none
+												Action.none()
 											} else {
 												Action.then(
 													[response.set({ serial: snapshot.serial, result: AuthIdle })],

@@ -88,7 +88,7 @@ mkdir -p examples-web/hello/specs
 ```roc
 app [main] { pf: platform "../../platform-web/main.roc" }
 
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
 import pf.Ui
 

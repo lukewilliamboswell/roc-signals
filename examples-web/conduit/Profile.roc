@@ -8,7 +8,7 @@ import Nav
 import Route
 import Session
 import Styles
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
 import pf.Rows
 import pf.Action
@@ -127,7 +127,7 @@ Profile := {}.{
 														Action.on_change(
 															Action.sampled(model_signal.map(|value| value.follow_serial), follow_request),
 															|request| if request.serial == 0 or request.username.is_empty() {
-																Action.none
+																Action.none()
 															} else {
 																Action.then([follow.set({ serial: request.serial, result: FollowIdle })], |read| follow!(follow, read))
 															},

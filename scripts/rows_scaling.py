@@ -7,6 +7,7 @@ import subprocess
 import test as driver
 from instrument_wasm import instrument_wasm
 from prepare_platforms import prepare_platform
+from toolchain import local_platform_reference
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -57,7 +58,7 @@ def main() -> None:
             rows_source = flat_directory_mutation(rows_source)
         (platform / 'Rows.roc').write_text(rows_source)
         source = output / f'{kind}.roc'
-        source.write_text(driver.PLATFORM_HEADER_RE.sub(f'platform "{platform / "main.roc"}"', original, count=1))
+        source.write_text(driver.PLATFORM_HEADER_RE.sub(f'platform "{local_platform_reference(source, platform / "main.roc")}"', original, count=1))
         wasm = output / f'{kind}.wasm'
         driver.benchmark_run([args.roc_bin, 'build', '--target=wasm32', '--opt=speed', '--no-cache', f'--output={wasm}', source])
         instrument_wasm(wasm)

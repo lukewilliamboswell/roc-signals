@@ -4,7 +4,7 @@ platform ""
 	}
 	exposes [Elem, Event, Action, Signal, Html, Svg, Ui, Http, Browser, Rows]
 	packages {
-		roc: "nightly-2026-09-12-220fd47",
+		roc: "nightly-2026-10-23-18478ff",
 		http: "https://github.com/roc-lang/http/releases/download/0.1/6LcdNq2r7xTBwj972ecYWUkMWobJr94yL2NyJpHRAXap.tar.zst",
 	}
 	provides { "roc_ui_init": ui_init, "roc_prepare_effect": prepare_effect!, "roc_run_effect": run_effect! }
@@ -26,7 +26,6 @@ platform ""
 		"roc_host_value_store_with_existing_capability": HostValue.store_with_existing_capability!,
 		"roc_host_value_take_with_capability": HostValue.take_with_capability!,
 		"roc_host_value_take_with_split": HostValue.take_with_split!,
-		"roc_rows_same_generation_callable": Rows.same_generation_callable!,
 	}
 	targets: {
 		inputs_dir: "targets/",
@@ -41,9 +40,9 @@ platform ""
 		arm64musl: { inputs: ["crt1.o", "libhost.a", app, "libc.a"] },
 	}
 
-import Elem exposing [Elem]
+import Elem
 import EachSink
-import HostValue exposing [HostValue]
+import HostValue
 import Node
 import Event
 import Action

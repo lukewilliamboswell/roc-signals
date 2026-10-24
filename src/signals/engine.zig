@@ -2868,7 +2868,13 @@ pub fn Engine(comptime Ctx: type) type {
                 .snapshot => |value| .{ .generation = value.generation, .item_count = value.item_count, .key_bytes = value.snapshot_key_bytes },
                 .delta => |value| .{ .generation = value.generation, .item_count = value.item_count, .key_bytes = value.snapshot_key_bytes },
             };
-            const use_direct_delta = switch (description) {
+            // `Rows.is_eq` is conservatively false (pure Roc cannot observe
+            // generation identity), so a site can be woken with the generation
+            // it already committed. That republication is an empty direct
+            // delta: authenticated by the same generation identity, it copies
+            // nothing and leaves every row scope in place.
+            const republished = if (expected_rows_parent) |expected| shape.generation == expected else false;
+            const use_direct_delta = republished or switch (description) {
                 .snapshot => false,
                 .delta => |value| if (expected_rows_parent) |expected| value.parent == expected else false,
             };
@@ -2879,7 +2885,17 @@ pub fn Engine(comptime Ctx: type) type {
             // `has_delta` is still false. Releasing unconditionally is a no-op
             // for untouched storage and returns that partial reservation.
             errdefer delta.deinit(allocator);
-            if (use_direct_delta) {
+            if (republished) {
+                var delta_sink = delta.prepare(allocator, 0, 0, 0) catch |err| return switch (err) {
+                    error.OutOfMemory => error.OutOfMemory,
+                    error.ResourceLimit => error.ResourceLimit,
+                    else => error.InvalidDescriptor,
+                };
+                has_delta = true;
+                const delta_token = self.active_each_sinks.activateDelta(&delta_sink) catch return error.ResourceLimit;
+                errdefer self.active_each_sinks.abort(delta_token) catch {};
+                self.active_each_sinks.finishDelta(delta_token) catch return error.InvalidDescriptor;
+            } else if (use_direct_delta) {
                 const delta_shape = description.delta;
                 var delta_sink = delta.prepare(allocator, delta_shape.op_count, delta_shape.delta_key_count, delta_shape.delta_key_bytes) catch |err| return switch (err) {
                     error.OutOfMemory => error.OutOfMemory,
@@ -2929,6 +2945,47 @@ pub fn Engine(comptime Ctx: type) type {
             delta = .{};
             has_delta = false;
             return result;
+        }
+
+        /// Reports whether a changed each items value still names the Rows
+        /// generation its site committed. Pure Roc cannot observe generation
+        /// identity (hosted functions are effectful), so `Rows.is_eq` is
+        /// conservatively false and a model change that leaves the rows
+        /// untouched still marks the items signal changed. The engine owns
+        /// generation identity: one O(1) description of the cached value
+        /// settles it, and a republished generation has nothing to reconcile,
+        /// so propagation drops the site's structural change instead of
+        /// syncing its rows. A site without a committed Rows owner has no
+        /// generation to match and always reconciles.
+        fn eachRepublishesCommittedGeneration(
+            self: *Self,
+            ctx: Ctx.Handle,
+            roc_host: *abi.RocHost,
+            scope_id: ids.ScopeId,
+            site_ordinal: ids.SiteOrdinal,
+            each: *const HostNodeEachDesc,
+            overlay: ?*const signal_records.PreparedCacheUpdates,
+        ) CollectionError!bool {
+            const rows_site_id = self.rows_site_ids.get(.{ .parent_scope_id = scope_id, .site_ordinal = site_ordinal }) orelse return false;
+            const rows_store = if (self.rows_store) |*store| store else return false;
+            const committed = (rows_store.getSiteConst(rows_site_id) catch return error.InvalidDescriptor).owner_token;
+            const items_slot = if (overlay) |prepared| prepared.readSlot(@constCast(&each.cached_value)) else &each.cached_value;
+            const collection = self.cloneCachedSignalValue(ctx, items_slot);
+            const items_cap = self.hostSignalRecordCapabilityWithProvisionalStates(ctx, each.items.record, &.{});
+            assertHostValueCapabilitiesMatch(each.ops.rows_capability, items_cap, "Rows capability did not match its signal value");
+            defer callHostValueToUnitWithCapability(ctx, roc_host, items_cap, hv.hostValueCapabilityDrop(items_cap), collection);
+
+            var description_sink: each_collection.DescriptionSink = .{};
+            const description_token = self.active_each_sinks.activateDescription(&description_sink) catch return error.ResourceLimit;
+            errdefer self.active_each_sinks.abort(description_token) catch {};
+            const described = retained_values.callRowsDescribe(Ctx, ctx, roc_host, items_cap, each.ops.describe, collection, @intFromEnum(description_token));
+            if (described != @intFromEnum(description_token)) return error.InvalidDescriptor;
+            const description = self.active_each_sinks.finishDescription(description_token) catch return error.InvalidDescriptor;
+            const generation = switch (description) {
+                .snapshot => |value| value.generation,
+                .delta => |value| value.generation,
+            };
+            return generation == committed.raw();
         }
 
         /// Performs deinit scratch inside the shared engine while preserving transaction and changed-set invariants.
@@ -13844,6 +13901,7 @@ pub fn Engine(comptime Ctx: type) type {
                         const cached = self.updatePreparedDirtySignalExprCache(ctx, roc_host, overlay, &desc.cached_value, result.value, cap);
                         self.dropHostSignalRecordValue(ctx, roc_host, desc.items.record, cached.value);
                         if (!cached.changed) continue;
+                        if (try self.eachRepublishesCommittedGeneration(ctx, roc_host, site.scope_id, site.ordinal, desc, overlay)) continue;
                         changes.appendAssumeCapacity(.{
                             .kind = .each,
                             .node_id = desc.node_id,
@@ -13946,7 +14004,11 @@ pub fn Engine(comptime Ctx: type) type {
                                 callHostValueToUnitWithCapability(ctx, roc_host, cap, hv.hostValueCapabilityDrop(cap), result.value);
                                 continue;
                             }
-                            if (self.updateDirtySignalCache(ctx, roc_host, &desc.cached_value, result.value, cap)) {
+                            const republished = if (self.updateDirtySignalCache(ctx, roc_host, &desc.cached_value, result.value, cap))
+                                self.eachRepublishesCommittedGeneration(ctx, roc_host, site.scope_id, site.ordinal, desc, null) catch @panic("committed each generation could not be described")
+                            else
+                                true;
+                            if (!republished) {
                                 dirty_structural_signals.append(allocator, .{
                                     .kind = .each,
                                     .node_id = desc.node_id,

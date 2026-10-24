@@ -1,10 +1,10 @@
-app [main] { roc: "nightly-2026-09-12-220fd47", pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst" }
+app [main] { roc: "nightly-2026-10-23-18478ff", pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst" }
 
 import Cells
 import Formula
 import Sheet
 
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
 import pf.Rows
 import pf.Signal

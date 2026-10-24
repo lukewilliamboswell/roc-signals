@@ -1,8 +1,8 @@
 import Capability
-import Elem exposing [Elem]
-import HostValue exposing [HostValue]
+import Elem
+import HostValue
 import Node
-import Signal exposing [Signal]
+import Signal
 import Ui
 
 ## What an event does. An action is data the engine interprets: a batch of
@@ -16,9 +16,10 @@ import Ui
 ## the declared reads, which is also what each effect receives.
 Action(a) := [Action(Node.Cmd)].{
 
-	## Change nothing.
-	none : Action(a)
-	none = Action(Node.Cmd.Noop)
+	## Change nothing. A thunk, because only functions are polymorphic: each
+	## call produces an action at the caller's read type.
+	none : () -> Action(a)
+	none = || Action(Node.Cmd.Noop)
 
 	## Apply these changes atomically. Duplicate targets are an error.
 	update : List(Ui.StateWrite) -> Action(a)
@@ -103,26 +104,26 @@ Action(a) := [Action(Node.Cmd)].{
 	sampled = |trigger, reads| {
 		pair_cap : Capability.Capability({ tick : trigger, value : a })
 		pair_cap = Capability.new_with_eq(|left, right| left.tick == right.tick)
-		pair : HostValue, HostValue -> HostValue
-		pair = |tick_hv, reads_hv| {
+		pair! : HostValue, HostValue => HostValue
+		pair! = |tick_hv, reads_hv| {
 			tick : trigger
-			tick = Box.unbox(Capability.get(tick_hv, trigger.cap))
+			tick = Box.unbox(Capability.get!(tick_hv, trigger.cap))
 			value : a
-			value = Box.unbox(Capability.get(reads_hv, reads.cap))
-			Capability.store(Box.box({ tick, value }), pair_cap)
+			value = Box.unbox(Capability.get!(reads_hv, reads.cap))
+			Capability.store!(Box.box({ tick, value }), pair_cap)
 		}
-		pair_box = Box.box(pair)
+		pair_box = Box.box(pair!)
 		paired : Signal({ tick : trigger, value : a })
 		paired = Signal.from_expr(Node.SignalExpr.Map2(pair_box, Signal.to_expr(trigger), Signal.to_expr(reads), pair_box, Capability.handle(pair_cap)), pair_cap)
 		value_cap : Capability.Capability(a)
 		value_cap = Capability.new_with_eq(|_, _| False)
-		project : HostValue -> HostValue
-		project = |pair_hv| {
+		project! : HostValue => HostValue
+		project! = |pair_hv| {
 			current : { tick : trigger, value : a }
-			current = Box.unbox(Capability.get(pair_hv, pair_cap))
-			Capability.store(Box.box(current.value), value_cap)
+			current = Box.unbox(Capability.get!(pair_hv, pair_cap))
+			Capability.store!(Box.box(current.value), value_cap)
 		}
-		project_box = Box.box(project)
+		project_box = Box.box(project!)
 		Signal.from_expr(Node.SignalExpr.Map(project_box, Signal.to_expr(paired), project_box, Capability.handle(value_cap)), value_cap)
 	}
 }

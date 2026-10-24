@@ -1,4 +1,4 @@
-app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst", roc: "nightly-2026-09-12-220fd47" }
+app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst", roc: "nightly-2026-10-23-18478ff" }
 
 ## Status Page — four independent service checks fanning in to one rollup.
 ##
@@ -21,7 +21,7 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 ## `from_str` that runs once, at the host boundary, on the payload the HTTP effect
 ## returned. Every branch after that is a `match` on a tag.
 
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Action
 import Poll
 import pf.Browser

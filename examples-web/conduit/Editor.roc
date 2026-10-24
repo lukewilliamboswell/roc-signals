@@ -8,7 +8,7 @@ import Route
 import Session
 import Styles
 import pf.Browser
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
 import pf.Action
 import pf.Signal
@@ -98,7 +98,7 @@ Editor := {}.{
 										Action.on_change(
 											Action.sampled(form_signal.map(|value| value.serial), submission),
 											|snapshot| if snapshot.serial == 0 {
-												Action.none
+												Action.none()
 											} else {
 												Action.then([response.set({ serial: snapshot.serial, result: ArticleIdle })], |read| save!(response, read))
 											},
@@ -245,7 +245,7 @@ Editor := {}.{
 												Action.on_change(
 													Action.sampled(form_signal.map(|value| value.serial), submission),
 													|snapshot| if snapshot.serial == 0 or snapshot.slug.is_empty() {
-														Action.none
+														Action.none()
 													} else {
 														Action.then([response.set({ serial: snapshot.serial, result: ArticleIdle })], |read| save!(response, read))
 													},

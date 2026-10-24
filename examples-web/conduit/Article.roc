@@ -11,7 +11,7 @@ import Session
 import Styles
 import pf.Action
 import pf.Browser
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
 import pf.Rows
 import pf.Signal
@@ -97,7 +97,7 @@ Article := {}.{
 										favorite_action = Action.run(
 											{ article: article_state, slug: slug, token: token, generation: model.signal().map(|value| value.favorite_generation) }.Signal,
 											|read| if read.slug.is_empty() {
-												Action.none
+												Action.none()
 											} else {
 												generation = read.generation + 1
 												Action.then([model.write(|current| { ..current, favorite_generation: generation, favorite_result: FavoriteIdle })], |_| favorite!(model, read, generation))
@@ -193,7 +193,7 @@ Article := {}.{
 												Action.on_change(
 													Action.sampled(model_signal.map(|value| value.article_delete_serial), article_delete_request),
 													|read| if read.serial == 0 or read.slug.is_empty() {
-														Action.none
+														Action.none()
 													} else {
 														Action.then([model.write(|current| { ..current, article_delete_result: DeleteIdle })], |snapshot| delete_article!(model, snapshot))
 													},
@@ -201,7 +201,7 @@ Article := {}.{
 												Action.on_change(
 													Action.sampled(model_signal.map(|value| value.comment_serial), comment_request),
 													|read| if read.serial == 0 or read.slug.is_empty() {
-														Action.none
+														Action.none()
 													} else {
 														Action.then([model.write(|current| { ..current, comment_result: CommentIdle })], |snapshot| create_comment!(model, snapshot))
 													},
@@ -209,7 +209,7 @@ Article := {}.{
 												Action.on_change(
 													Action.sampled(model_signal.map(|value| value.comment_delete_serial), comment_delete_request),
 													|read| if read.serial == 0 or read.slug.is_empty() or read.id == 0 {
-														Action.none
+														Action.none()
 													} else {
 														Action.then([model.write(|current| { ..current, comment_delete_result: CommentDeleteIdle })], |snapshot| delete_comment!(model, snapshot))
 													},
