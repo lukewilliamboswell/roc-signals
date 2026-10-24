@@ -25,12 +25,10 @@ const DebugPhase = signals.debug_phase.Phase;
 const FaultAllocator = signals.fault_allocator.FaultAllocator;
 const spec_parser = @import("spec/spec_parser.zig");
 const spec_runner = @import("spec/spec_runner.zig");
-const spec_file_fixtures = @import("spec/file_fixtures.zig");
 const spec_http_fixtures = @import("spec/http_fixtures.zig");
 const services = @import("native_services.zig");
 const benchmark = @import("bench/benchmark.zig");
 const sim_dom = @import("sim_dom.zig");
-const native_style = signals.native_style;
 const roc_alloc_ledger = @import("roc_alloc_ledger.zig");
 const crash_handlers = @import("crash_handlers.zig");
 const native_timers = @import("native_timers.zig");
@@ -41,15 +39,12 @@ comptime {
     std.testing.refAllDecls(spec_parser);
     std.testing.refAllDecls(spec_runner);
     std.testing.refAllDecls(@import("spec/ctx.zig"));
-    std.testing.refAllDecls(@import("spec/file_fixtures.zig"));
     std.testing.refAllDecls(@import("spec/sexpr.zig"));
     std.testing.refAllDecls(benchmark);
     std.testing.refAllDecls(sim_dom);
     std.testing.refAllDecls(roc_alloc_ledger);
     std.testing.refAllDecls(native_timers);
 }
-
-const gpui_spike = @hasDecl(build_options, "gpui_spike") and build_options.gpui_spike;
 
 const enable_runtime_metrics = host_fixtures or build_options.metrics;
 const default_native_entropy_seed: u32 = 0x726f6353;
@@ -80,43 +75,10 @@ const NativeRenderPublication = struct {
     pub const PrepareError = std.mem.Allocator.Error || error{ ResourceLimit, InvalidRenderTopology };
 
     dom: sim_dom.PreparedPublication,
-    gui_order: ?signals.native_child_order.Prepared = null,
-    retired_nodes: []const render_cache.PreparedNodeRemoval = &.{},
-    window_registration: ?u64 = null,
-
-    fn validateDrag(node: *const sim_dom.Element) error{InvalidRenderTopology}!void {
-        if (!node.active) return;
-        if (node.native_drag_key) |key| {
-            if (key.len == 0 or key.len > 256 or !std.unicode.utf8ValidateSlice(key)) return error.InvalidRenderTopology;
-        }
-        if (node.native_drop_target) {
-            const event = sim_dom.namedEvent(node, "drop") orelse return error.InvalidRenderTopology;
-            if (event.binding.delivery.requested != .native or event.binding.key_chord != null or !event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.str, .detail))) return error.InvalidRenderTopology;
-        }
-    }
-
-    fn validateWindow(node: *const sim_dom.Element) error{InvalidRenderTopology}!void {
-        if (!node.active) return;
-        if (node.native_window_close) |policy| {
-            if (!std.mem.eql(u8, node.tag, "window") or node.parent_id != 0) return error.InvalidRenderTopology;
-            if (!std.mem.eql(u8, policy, "keep-open") and !std.mem.eql(u8, policy, "await-decision") and !std.mem.eql(u8, policy, "close")) return error.InvalidRenderTopology;
-            const event = sim_dom.namedEvent(node, "close-requested") orelse return error.InvalidRenderTopology;
-            if (event.binding.delivery.requested != .native or event.binding.key_chord != null or !event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) return error.InvalidRenderTopology;
-        } else if (std.mem.eql(u8, node.tag, "window")) return error.InvalidRenderTopology;
-    }
 
     fn prepareTextField(allocator: std.mem.Allocator, node: *sim_dom.Element, field: RenderTextField, next: ?[]const u8) std.mem.Allocator.Error!void {
         const slot: *?[]const u8 = switch (field) {
             inline else => |comptime_field| &@field(node, @tagName(comptime_field)),
-        };
-        if (field == .native_viewport) if (next) |bytes| {
-            _ = native_style.decodeViewport(bytes) catch failHost("invalid native viewport record");
-        };
-        if (field == .native_fonts) if (next) |bytes| {
-            _ = native_style.validateFontDeclaration(bytes) catch failHost("invalid native font declaration");
-        };
-        if (field == .native_style) if (next) |bytes| {
-            _ = native_style.decode(bytes) catch failHost("invalid native presentation record");
         };
         if (field == .value) value: {
             if (next == null) {
@@ -178,30 +140,6 @@ const NativeRenderPublication = struct {
 
     fn prepare(host: *HostEnv, splice: anytype) PrepareError!NativeRenderPublication {
         const allocator = host.hostAllocator();
-        var gui_order: ?signals.native_child_order.Prepared = if (gpui_spike and Gpui.live) Gpui.child_order.prepare() else null;
-        errdefer if (gui_order) |*candidate| candidate.deinit();
-        if (gui_order) |*candidate| {
-            // These are executor edits already decided by the engine. Keeping
-            // an indexed projection avoids cloning a wide DOM child snapshot.
-            for (splice.removals.items) |entry| candidate.replace(entry.elem_id, &.{}) catch |err| return nativeOrderError(err);
-            for (splice.children.items) |entry| candidate.replace(entry.parent_elem_id, entry.next) catch |err| return nativeOrderError(err);
-            for (splice.sparse_children.items) |journal| {
-                for (journal.shadows.items) |shadow| {
-                    const index = shadow.elem_id.index();
-                    if (index < host.engine.render_cache.nodes.items.len) {
-                        const old = host.engine.render_cache.nodes.items[index];
-                        if (old.isActive() and old.parent_id == journal.parent_elem_id and shadow.parent_id != journal.parent_elem_id) {
-                            candidate.detach(journal.parent_elem_id, shadow.elem_id) catch |err| return nativeOrderError(err);
-                        }
-                    }
-                }
-                for (journal.wireEdits()) |edit| switch (edit) {
-                    .append => |child| candidate.place(journal.parent_elem_id, child, null) catch |err| return nativeOrderError(err),
-                    .move_before => |move| candidate.place(journal.parent_elem_id, move.child, move.before) catch |err| return nativeOrderError(err),
-                };
-            }
-            candidate.preflight() catch |err| return nativeOrderError(err);
-        }
         var touched: std.AutoHashMapUnmanaged(u64, void) = .empty;
         defer touched.deinit(allocator);
         var count: usize = 0;
@@ -234,7 +172,6 @@ const NativeRenderPublication = struct {
             touched.putAssumeCapacity(entry.elem_id.raw(), {});
             max_elem_id = @max(max_elem_id, entry.elem_id.raw());
         };
-        if (gpui_spike and max_elem_id >= Gpui.limit) return error.ResourceLimit;
         const touched_ids = try allocator.alloc(u64, touched.count());
         defer allocator.free(touched_ids);
         var iterator = touched.keyIterator();
@@ -257,14 +194,14 @@ const NativeRenderPublication = struct {
                 .element => |element| element.namespace,
             };
         }
-        if (gui_order == null) for (splice.children.items) |entry| {
+        for (splice.children.items) |entry| {
             const parent = dom.node(entry.parent_elem_id.raw()) orelse return error.InvalidRenderTopology;
             parent.children.deinit(allocator);
             parent.children = .empty;
             try parent.children.ensureTotalCapacity(allocator, entry.next.len);
             for (entry.next) |child_id| parent.children.appendAssumeCapacity(child_id.raw());
-        };
-        if (gui_order == null) for (splice.sparse_children.items) |entry| {
+        }
+        for (splice.sparse_children.items) |entry| {
             const parent = dom.node(entry.parent_elem_id.raw()) orelse return error.InvalidRenderTopology;
             // The journal's final links decide detachments even when no wire
             // append/move is needed. Retiring a node alone does not remove its
@@ -284,7 +221,7 @@ const NativeRenderPublication = struct {
             };
             try parent.children.ensureUnusedCapacity(allocator, appended);
             for (entry.wireEdits()) |edit| try prepareSparseChildEdit(parent, edit);
-        };
+        }
         for (splice.parent_intents.items) |intent| (dom.node(intent.child_id.raw()) orelse return error.InvalidRenderTopology).parent_id = if (intent.next) |parent_id| parent_id.raw() else null;
         for (splice.text_fields.items) |entry| {
             const node = dom.node(entry.elem_id.raw()) orelse return error.InvalidRenderTopology;
@@ -297,9 +234,6 @@ const NativeRenderPublication = struct {
                     node.checked = entry.next orelse false;
                     node.checked_update_count += 1;
                 },
-                .selected => node.selected = entry.next orelse false,
-                .native_drop_target => node.native_drop_target = entry.next orelse false,
-                .native_read_only => node.native_read_only = entry.next orelse false,
                 .disabled => {
                     node.disabled = entry.next orelse false;
                     node.disabled_update_count += 1;
@@ -340,81 +274,27 @@ const NativeRenderPublication = struct {
                 .binding = event.binding,
             });
         }
-        var window_registration = host.window_registration;
-        // Remove the old registration before considering replacements, independent
-        // of publication order. Only touched descriptors participate.
-        if (window_registration) |id| {
-            if (dom.node(id)) |node| {
-                if (!node.active or node.native_window_close == null) window_registration = null;
-            }
-        }
-        inline for (.{ dom.existing.items, dom.appended.items }) |nodes| {
-            for (nodes) |*node| {
-                try validateWindow(node);
-                if (node.active and node.native_window_close != null) {
-                    if (window_registration) |id| {
-                        if (id != node.id) return error.InvalidRenderTopology;
-                    }
-                    window_registration = node.id;
-                }
-            }
-        }
-        for (dom.existing.items) |*node| try validateDrag(node);
-        for (dom.appended.items) |*node| try validateDrag(node);
-        if (gpui_spike and Gpui.live) {
-            for (splice.removals.items) |removed| {
-                if (Gpui.lifetimes[removed.elem_id.index()] == std.math.maxInt(u64)) return error.ResourceLimit;
-            }
-        }
-        return .{ .dom = dom, .gui_order = gui_order, .retired_nodes = splice.removals.items, .window_registration = window_registration };
+        return .{ .dom = dom };
     }
 
     fn apply(self: *NativeRenderPublication, host: *HostEnv) void {
         self.dom.apply(&host.dom_elements);
-        host.window_registration = self.window_registration;
-        if (host.spec_pending_close) |pending| {
-            for (self.retired_nodes) |removed| {
-                if (removed.elem_id.raw() == pending.node) host.spec_pending_close = null;
-            }
-            refreshSpecWindowClose(host);
-        }
-        if (self.gui_order) |*candidate| candidate.commit();
-        if (gpui_spike) {
-            if (Gpui.live) {
-                for (self.retired_nodes) |removed| Gpui.lifetimes[removed.elem_id.index()] += 1;
-            }
-            for (self.dom.existing_ids.items) |id| Gpui.touch(id);
-            for (self.dom.original_len..host.dom_elements.items.len) |id| Gpui.touch(id);
-        }
     }
 
     /// Releases provisional DOM slots on abort or displaced slots after publication.
     pub fn deinit(self: *NativeRenderPublication) void {
         self.dom.deinit();
-        if (self.gui_order) |*candidate| candidate.deinit();
-    }
-
-    fn nativeOrderError(err: signals.native_child_order.Error) PrepareError {
-        return switch (err) {
-            error.OutOfMemory => error.OutOfMemory,
-            error.ResourceLimit => error.ResourceLimit,
-            else => error.InvalidRenderTopology,
-        };
     }
 };
 
 const NativeCtx = struct {
-    pub const supports_native_shortcuts = true;
-    /// Native-only scalar fields publish through the typed prepared DOM view.
-    pub const native_presentation = true;
     pub const Handle = *HostEnv;
-    /// The native host runs `Then` effects as each turn settles: the live
-    /// host on its own worker threads, the spec host to completion on the
-    /// spot.
+    /// The native host runs `Then` effects to completion as each turn
+    /// settles, so specs stay deterministic.
     pub const runsEffects = true;
 
-    /// Has Roc turn an effect closure and its reads snapshot into the thunk a
-    /// worker runs. The export consumes the closure and capability references;
+    /// Has Roc turn an effect closure and its reads snapshot into the thunk the
+    /// host runs. The export consumes the closure and capability references;
     /// the snapshot handle remains borrowed for the call.
     pub fn prepareEffect(_: Handle, _: *abi.RocHost, effect: abi.RocErasedCallable, snapshot: HostValue, cap: HostValueCapability) abi.RocErasedCallable {
         return prepareEffectThunk(effect, snapshot, cap);
@@ -441,11 +321,6 @@ const NativeCtx = struct {
     /// Creates the host's zeroed metric accumulator for a new engine operation.
     pub fn zeroMetrics() Metrics {
         return zeroRuntimeMetrics();
-    }
-
-    /// Reserves native timer identities before a structural transaction commits.
-    pub fn reserveTimerRegistrations(ctx: Handle, additional: usize) error{ OutOfMemory, ResourceLimit }!void {
-        if (gpui_spike and Gpui.live) try Gpui.timers.reserve(allocator(ctx), additional);
     }
 
     /// Returns the allocator owned by this host context for shared-engine work.
@@ -577,13 +452,7 @@ const HostActiveStructuralSignalKind = engine.HostActiveStructuralSignalKind;
 const HostDirtyStructuralSignal = engine.HostDirtyStructuralSignal;
 const HostKeyedRowDiffResult = engine.HostKeyedRowDiffResult;
 
-pub const std_options: std.Options = blk: {
-    var options = crash_handlers.std_options;
-    // The Windows fault handler installed by main needs tracing enabled to
-    // report the call stack, rather than only the access-violation address.
-    options.allow_stack_tracing = builtin.os.tag == .windows;
-    break :blk options;
-};
+pub const std_options: std.Options = crash_handlers.std_options;
 pub const panic = crash_handlers.panic;
 
 fn writeStderr(bytes: []const u8) void {
@@ -893,15 +762,11 @@ const HostEnv = struct {
     debug_phase: DebugPhase = .idle,
     active_capabilities: hv.ActiveCapabilityStack = .{},
     dom_elements: std.ArrayListUnmanaged(DomElement) = .empty,
-    window_registration: ?u64 = null,
-    spec_pending_close: ?struct { node: u64, event: ids.EventId } = null,
-    spec_window_closed: bool = false,
     // Manual spec execution leaves prepared effects owned by the engine until
-    // a test explicitly advances them. The live GUI never enables this mode.
+    // a test explicitly advances them.
     spec_manual_effects: bool = false,
-    /// Spec-declared results for the synchronous `Files` primitives, consumed
-    /// oldest first as requests arrive; only the display-free spec host uses them.
-    file_stubs: services.FileStubs = .empty,
+    /// Spec-declared answers for the hosted `Http.send!`, consumed in
+    /// declaration order as requests arrive.
     http_stubs: services.HttpStubs = .empty,
     location_history: std.ArrayListUnmanaged(NativeLocation) = .empty,
     location_index: usize = 0,
@@ -910,9 +775,9 @@ const HostEnv = struct {
     online: boundary.OnlineSnapshot = .online,
     storage_entries: std.ArrayListUnmanaged(NativeStorageEntry) = .empty,
     document_title: ?[]u8 = null,
-    /// Bumped only when the applied title text actually changes, so a host that
-    /// observes the title can skip a native window update the engine already
-    /// pruned. It is an observation counter, never an alternate title route.
+    /// Bumped only when the applied title text actually changes, so tests can
+    /// observe that the engine pruned an equal title. It is an observation
+    /// counter, never an alternate title route.
     document_title_revision: u64 = 0,
     /// Present only while the benchmark replays one command through the shared
     /// spec runner. Keeping this on the host makes measurement explicit and
@@ -992,21 +857,6 @@ const HostEnv = struct {
         return .{ .ptr = self, .vtable = &HostAllocator.vtable };
     }
 
-    /// Declares one answer for a hosted `Files` function in spec mode.
-    fn stubFile(self: *HostEnv, stub: *const spec_file_fixtures.Stub) void {
-        self.tryStubFile(stub) catch {
-            if (!self.recoverSelectedOutOfMemory()) failHost("out of memory registering file fixture");
-            self.tryStubFile(stub) catch failHost("out of memory retrying file fixture registration");
-        };
-    }
-
-    fn tryStubFile(self: *HostEnv, stub: *const spec_file_fixtures.Stub) std.mem.Allocator.Error!void {
-        const gpa = self.hostAllocator();
-        try self.file_stubs.ensureUnusedCapacity(gpa, 1);
-        const copy = try stub.dupe(gpa);
-        self.file_stubs.appendAssumeCapacity(copy);
-    }
-
     /// Declares one answer for the hosted `Http` function in spec mode.
     fn stubHttp(self: *HostEnv, stub: *const spec_http_fixtures.Stub) void {
         self.tryStubHttp(stub) catch {
@@ -1024,9 +874,6 @@ const HostEnv = struct {
 
     fn deinitServiceStubs(self: *HostEnv) void {
         const allocator = self.hostAllocator();
-        for (self.file_stubs.items) |stub| stub.deinit(allocator);
-        self.file_stubs.deinit(allocator);
-        self.file_stubs = .empty;
         for (self.http_stubs.items) |stub| stub.deinit(allocator);
         self.http_stubs.deinit(allocator);
         self.http_stubs = .empty;
@@ -1159,15 +1006,13 @@ const HostEnv = struct {
         clearNodeEvent(self, command);
     }
 
-    /// Adapts the shared engine's start interval command to this host without re-deciding reactive meaning.
-    pub fn sinkStartInterval(_: *HostEnv, token: ids.IntervalToken, period_ms: u64) void {
-        if (gpui_spike and Gpui.live) Gpui.timers.start(token.raw(), period_ms);
-    }
+    /// Adapts the shared engine's start interval command to this host. Spec
+    /// intervals advance only when a step ticks them, so nothing is scheduled.
+    pub fn sinkStartInterval(_: *HostEnv, _: ids.IntervalToken, _: u64) void {}
 
-    /// Adapts the shared engine's cancel interval command to this host without re-deciding reactive meaning.
-    pub fn sinkCancelInterval(_: *HostEnv, token: ids.IntervalToken) void {
-        if (gpui_spike and Gpui.live) Gpui.timers.cancel(token.raw());
-    }
+    /// Adapts the shared engine's cancel interval command to this host. Spec
+    /// intervals own no host registration, so there is nothing to release.
+    pub fn sinkCancelInterval(_: *HostEnv, _: ids.IntervalToken) void {}
 
     /// Adapts the shared engine's navigate command to this host without re-deciding reactive meaning.
     pub fn sinkNavigate(self: *HostEnv, kind: render_sink.NavigationKind, location: boundary.LocationSnapshot) void {
@@ -2189,15 +2034,8 @@ fn rocAllocFn(roc_host: *abi.RocHost, length: usize, alignment: usize) callconv(
     return rocAllocAt(roc_host, length, alignment, @returnAddress());
 }
 
-/// Roc code runs on the UI thread and on the effect worker, and both reach the
-/// allocation ledger through these hooks, so the ledger and its metrics are
-/// updated under one lock.
-var roc_alloc_lock: std.Io.Mutex = .init;
-
 fn rocAllocAt(roc_host: *abi.RocHost, length: usize, alignment: usize, return_address: usize) ?*anyopaque {
     const host = hostFromRocHost(roc_host);
-    std.Io.Threaded.mutexLock(&roc_alloc_lock);
-    defer std.Io.Threaded.mutexUnlock(&roc_alloc_lock);
     const previous_origin = host.allocation_sweep.origin;
     host.allocation_sweep.origin = .roc;
     defer host.allocation_sweep.origin = previous_origin;
@@ -2209,8 +2047,6 @@ fn rocAllocAt(roc_host: *abi.RocHost, length: usize, alignment: usize, return_ad
 
 fn rocDeallocFn(roc_host: *abi.RocHost, ptr: *anyopaque, alignment: usize) callconv(.c) void {
     const host = hostFromRocHost(roc_host);
-    std.Io.Threaded.mutexLock(&roc_alloc_lock);
-    defer std.Io.Threaded.mutexUnlock(&roc_alloc_lock);
     const previous_origin = host.allocation_sweep.origin;
     host.allocation_sweep.origin = .roc;
     defer host.allocation_sweep.origin = previous_origin;
@@ -2225,8 +2061,6 @@ fn rocReallocFn(roc_host: *abi.RocHost, ptr: *anyopaque, new_length: usize, alig
 
 fn rocReallocAt(roc_host: *abi.RocHost, ptr: *anyopaque, new_length: usize, alignment_arg: usize, return_address: usize) ?*anyopaque {
     const host = hostFromRocHost(roc_host);
-    std.Io.Threaded.mutexLock(&roc_alloc_lock);
-    defer std.Io.Threaded.mutexUnlock(&roc_alloc_lock);
     const previous_origin = host.allocation_sweep.origin;
     host.allocation_sweep.origin = .roc;
     defer host.allocation_sweep.origin = previous_origin;
@@ -2275,169 +2109,14 @@ fn hostRealloc(ptr: *anyopaque, new_length: usize, alignment: usize) callconv(.c
     return rocReallocAt(currentRocHost(), ptr, new_length, alignment, @returnAddress());
 }
 
-/// Libc's environment block. It is declared here rather than through `std.c`
-/// so the musl hosts, which resolve libc only when the application links,
-/// can still reference it. Darwin does not export `environ` from a shared
-/// library image, so it is reached through `_NSGetEnviron` there.
-extern var environ: [*:null]?[*:0]u8;
-extern fn _NSGetEnviron() *[*:null]?[*:0]u8;
-
-/// The running process's environment as the standard library's handle. Windows
-/// reads the live block; POSIX targets view libc's `environ` in place.
-fn processEnviron() std.process.Environ {
-    if (comptime std.process.Environ.Block == std.process.Environ.GlobalBlock) return .{ .block = .global };
-    const c_environ = if (comptime builtin.os.tag.isDarwin()) _NSGetEnviron().* else environ;
-    var count: usize = 0;
-    while (c_environ[count] != null) : (count += 1) {}
-    return .{ .block = .{ .slice = c_environ[0..count :null] } };
-}
-
-/// Hosted `Env.var!`: reads one process environment variable. Roc transfers
-/// the name to the host, so it is released here; the result string is one
-/// owned reference handed back to Roc. Any lookup failure is `Missing`.
-fn hostEnvVar(name: abi.RocStr) callconv(.c) abi.EnvVarResult {
-    const roc_host = currentRocHost();
-    defer name.decref(roc_host);
-    const allocator = currentHost().hostAllocator();
-    const value = std.process.Environ.getAlloc(processEnviron(), allocator, name.asSlice()) catch {
-        return .{ .payload = undefined, .tag = .Err };
-    };
-    defer allocator.free(value);
-    var result: abi.EnvVarResult = .{ .payload = undefined, .tag = .Ok };
-    const text = abi.RocStr.fromSlice(value, roc_host);
-    if (comptime @sizeOf(usize) == 8) {
-        result.payload = .{ .ok = text };
-    } else {
-        const slot: *abi.RocStr = @ptrCast(@alignCast(&result.payload));
-        slot.* = text;
-    }
-    return result;
-}
-
-/// The hosted `Files` and `Http` functions. Each receives owned Roc
-/// arguments, releases them, and returns the typed result the glue declares;
-/// the work itself happens in `native_services`, from the Rust host's C
-/// structs in a live window and from declared stubs in the spec host.
-fn hostFilesChooseFile() callconv(.c) abi.FilesChoose_fileResult {
-    const roc_host = currentRocHost();
-    if (!Gpui.live) return services.stubChoose(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, "choose_file");
-    return services.choose(roc_host, .file, "", false, "");
-}
-
-fn hostFilesChooseDirectory() callconv(.c) abi.FilesChoose_fileResult {
-    const roc_host = currentRocHost();
-    if (!Gpui.live) return services.stubChoose(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, "choose_directory");
-    return services.choose(roc_host, .directory, "", false, "");
-}
-
-fn hostFilesChooseSavePath(args: abi.FilesChoose_save_pathArgs) callconv(.c) abi.FilesChoose_fileResult {
-    const roc_host = currentRocHost();
-    defer args.decref(roc_host);
-    if (!Gpui.live) return services.stubChoose(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, "choose_save_path");
-    var holder = args;
-    const home = holder.directory.tag == .Home;
-    const directory: []const u8 = if (home) "" else @as(*const abi.RocStr, @ptrCast(@alignCast(&holder.directory.payload))).asSlice();
-    return services.choose(roc_host, .save_path, directory, home, holder.suggested_name.asSlice());
-}
-
-fn hostFilesStat(path: abi.RocStr) callconv(.c) abi.FilesStatResult {
-    const roc_host = currentRocHost();
-    defer path.decref(roc_host);
-    if (!Gpui.live) return services.stubStat(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, path.asSlice());
-    return services.stat(roc_host, path.asSlice());
-}
-
-fn hostFilesReadBytes(args: abi.FilesRead_bytesArgs) callconv(.c) abi.FilesRead_bytesResult {
-    const roc_host = currentRocHost();
-    defer args.decref(roc_host);
-    if (!Gpui.live) return services.stubReadBytes(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, args.path.asSlice(), args.offset, args.max_bytes);
-    return services.readBytes(roc_host, args.path.asSlice(), args.offset, args.max_bytes);
-}
-
-fn hostFilesWriteBytes(args: abi.FilesWrite_bytesArgs) callconv(.c) services.UnitResult {
-    const roc_host = currentRocHost();
-    defer args.decref(roc_host);
-    if (!Gpui.live) return services.stubUnit(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host);
-    const bytes: []const u8 = if (args.bytes.elements_ptr) |ptr| ptr[0..args.bytes.length] else "";
-    return services.writeBytes(roc_host, args.path.asSlice(), bytes);
-}
-
-fn hostFilesRename(args: abi.FilesRenameArgs) callconv(.c) services.UnitResult {
-    const roc_host = currentRocHost();
-    defer args.decref(roc_host);
-    if (!Gpui.live) return services.stubUnit(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host);
-    return services.rename(roc_host, args.from.asSlice(), args.to.asSlice());
-}
-
-fn hostFilesRemove(path: abi.RocStr) callconv(.c) services.UnitResult {
-    const roc_host = currentRocHost();
-    defer path.decref(roc_host);
-    if (!Gpui.live) return services.stubUnit(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host);
-    return services.remove(roc_host, path.asSlice());
-}
-
-fn hostFilesSync(path: abi.RocStr) callconv(.c) services.UnitResult {
-    const roc_host = currentRocHost();
-    defer path.decref(roc_host);
-    if (!Gpui.live) return services.stubUnit(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host);
-    return services.sync(roc_host, path.asSlice());
-}
-
-fn hostFilesListDirectory(path: abi.RocStr) callconv(.c) abi.FilesList_directoryResult {
-    const roc_host = currentRocHost();
-    defer path.decref(roc_host);
-    const host = currentHost();
-    if (!Gpui.live) return services.stubListDirectory(host.hostAllocator(), &host.file_stubs, roc_host, path.asSlice());
-    return services.listDirectory(roc_host, host.hostAllocator(), path.asSlice());
-}
-
-fn hostFilesOpenPath(path: abi.RocStr) callconv(.c) services.UnitResult {
-    const roc_host = currentRocHost();
-    defer path.decref(roc_host);
-    if (!Gpui.live) return services.stubOpenPath(currentHost().hostAllocator(), &currentHost().file_stubs, roc_host, path.asSlice());
-    return services.openPath(roc_host, path.asSlice());
-}
-
-fn hostFilesAssetsRoot() callconv(.c) abi.RocStr {
-    const roc_host = currentRocHost();
-    if (!Gpui.live) return abi.RocStr.fromSlice(services.spec_assets_root, roc_host);
-    return services.assetsRoot(roc_host);
-}
-
+/// Hosted `Http.send!`. Roc transfers the request to the host, so it is
+/// released here. The display-free host never touches the network: the
+/// request is answered by URI from the stubs the running spec declared.
 fn hostHttpSend(request: abi.Request) callconv(.c) abi.HttpSendResult {
     const roc_host = currentRocHost();
     defer request.decref(roc_host);
     const host = currentHost();
-    const gpa = host.hostAllocator();
-    var holder = request;
-    if (comptime !gpui_spike) return services.stubHttpSend(gpa, &host.http_stubs, roc_host, holder.uri.asSlice());
-    if (!Gpui.live) return services.stubHttpSend(gpa, &host.http_stubs, roc_host, holder.uri.asSlice());
-    const method: []const u8 = switch (holder.method.tag) {
-        .CONNECT => "CONNECT",
-        .DELETE => "DELETE",
-        .GET => "GET",
-        .HEAD => "HEAD",
-        .OPTIONS => "OPTIONS",
-        .PATCH => "PATCH",
-        .POST => "POST",
-        .PUT => "PUT",
-        .TRACE => "TRACE",
-        .Unknown => @as(*const abi.RocStr, @ptrCast(@alignCast(&holder.method.payload))).asSlice(),
-    };
-    const timeout_ms: ?u64 = switch (holder.timeout_ms.tag) {
-        .NoTimeout => null,
-        .TimeoutMilliseconds => @as(*const u64, @ptrCast(@alignCast(&holder.timeout_ms.payload))).*,
-    };
-    const pairs = if (holder.headers.elements_ptr) |ptr| ptr[0..holder.headers.length] else &.{};
-    const headers = gpa.alloc(services.HeaderIn, pairs.len) catch @panic("out of memory");
-    defer gpa.free(headers);
-    for (pairs, 0..) |*pair, index| {
-        const name = pair._0.asSlice();
-        const value = pair._1.asSlice();
-        headers[index] = .{ .name_ptr = name.ptr, .name_len = name.len, .value_ptr = value.ptr, .value_len = value.len };
-    }
-    const body: []const u8 = if (holder.body.elements_ptr) |ptr| ptr[0..holder.body.length] else "";
-    return services.httpSend(roc_host, gpa, .{ .method = method, .uri = holder.uri.asSlice(), .timeout_ms = timeout_ms, .headers = headers, .body = body });
+    return services.stubHttpSend(host.hostAllocator(), &host.http_stubs, roc_host, request.uri.asSlice());
 }
 
 fn hostDbg(bytes: [*]const u8, len: usize) callconv(.c) void {
@@ -2629,18 +2308,6 @@ fn setRenderTextField(host: *HostEnv, elem_id: ids.ElemId, field: RenderTextFiel
     switch (field) {
         .text => setElementText(host, elem, value),
         .value => setElementValue(host, elem, value),
-        .native_style => {
-            _ = native_style.decode(value) catch failHost("invalid native presentation record");
-            sim_dom.setOwnedString(host.hostAllocator(), &elem.native_style, value);
-        },
-        .native_fonts => {
-            _ = native_style.validateFontDeclaration(value) catch failHost("invalid native font declaration");
-            sim_dom.setOwnedString(host.hostAllocator(), &elem.native_fonts, value);
-        },
-        .native_viewport => {
-            _ = native_style.decodeViewport(value) catch failHost("invalid native viewport record");
-            sim_dom.setOwnedString(host.hostAllocator(), &elem.native_viewport, value);
-        },
         // Every remaining scalar is an owned string slot named after its field.
         inline else => |comptime_field| sim_dom.setOwnedString(host.hostAllocator(), &@field(elem, @tagName(comptime_field)), value),
     }
@@ -2655,8 +2322,6 @@ fn setRenderBoolField(host: *HostEnv, elem_id: ids.ElemId, field: RenderBoolFiel
     switch (field) {
         .checked => setElementChecked(elem, value),
         .disabled => setElementDisabled(elem, value),
-        // Every remaining boolean is a plain flag named after its field.
-        inline else => |comptime_field| @field(elem, @tagName(comptime_field)) = value,
     }
 }
 
@@ -2679,8 +2344,6 @@ fn clearRenderBoolField(host: *HostEnv, elem_id: ids.ElemId, field: RenderBoolFi
     switch (field) {
         .checked => setElementChecked(elem, false),
         .disabled => setElementDisabled(elem, false),
-        // Every remaining boolean is a plain flag named after its field.
-        inline else => |comptime_field| @field(elem, @tagName(comptime_field)) = false,
     }
 }
 
@@ -3028,7 +2691,7 @@ fn acceptInitElem(host: *HostEnv, roc_host: *abi.RocHost, root_box: ElemBox) voi
 }
 
 /// One effect between its UI-thread preparation and the application of its
-/// result. The worker touches only `thunk` and `cmd`; everything else about
+/// result. Running it touches only `thunk` and `cmd`; everything else about
 /// the effect stays with the engine's running-effect record.
 const EffectJob = struct {
     id: u64,
@@ -3037,7 +2700,7 @@ const EffectJob = struct {
 };
 
 fn prepareEffectThunk(effect: abi.RocErasedCallable, snapshot: HostValue, cap: HostValueCapability) abi.RocErasedCallable {
-    // Both platforms provide these entry points. Zig-only host fixtures have
+    // The platform provides these entry points. Zig-only host fixtures have
     // no linked Roc application and therefore cannot invoke a Roc effect.
     // The fuzz build stands in for the export with the export's ownership
     // contract: the closure reference and the capability reference are
@@ -3055,7 +2718,7 @@ fn prepareEffectThunk(effect: abi.RocErasedCallable, snapshot: HostValue, cap: H
     }
 }
 
-/// The worker's entry point. It runs Roc code that reaches the host only
+/// Runs one prepared effect thunk. It runs Roc code that reaches the host only
 /// through the allocation hooks and the hosted effectful primitives.
 fn runEffectJob(job: *EffectJob) void {
     if (comptime host_fixtures) {
@@ -3065,20 +2728,16 @@ fn runEffectJob(job: *EffectJob) void {
     }
 }
 
-/// Hands the effects queued by the turns that just committed, oldest first,
-/// to workers. Each thunk was prepared by Roc when its `Then` committed. The
-/// live host runs every thunk on its own worker, so effects overlap and their
-/// results apply as they complete; the spec host runs each to completion on
-/// the spot, so specs stay deterministic. The spec host does not spawn a
-/// thread for this: the Roc linker for macOS resolves only the symbols the
-/// platform's own host needs, and `pthread_join` is not among them, so a
-/// joined worker here failed every macOS application link. An effect that
-/// queues further effects extends the same drain.
+/// Runs the effects queued by the turns that just committed, oldest first.
+/// Each thunk was prepared by Roc when its `Then` committed; the spec host
+/// runs each to completion on the spot, so specs stay deterministic. It does
+/// not spawn a thread for this: the Roc linker for macOS resolves only the
+/// symbols the platform's own host needs, and `pthread_join` is not among
+/// them, so a joined worker here failed every macOS application link. An
+/// effect that queues further effects extends the same drain; a spec that
+/// declared manual effects advances them one step at a time instead.
 fn drainEffects(host: *HostEnv, roc_host: *abi.RocHost) void {
-    if (host.spec_manual_effects) {
-        if (Gpui.live) failHost("manual effect execution is restricted to native specs");
-        return;
-    }
+    if (host.spec_manual_effects) return;
     while (runNextEffect(host, roc_host)) {}
 }
 
@@ -3108,12 +2767,8 @@ fn runNextEffect(host: *HostEnv, roc_host: *abi.RocHost) bool {
     var effect = host.engine.takeNextPendingEffect() orelse unreachable;
     job.* = .{ .id = effect.id, .thunk = effect.thunk };
     host.engine.trackRunningEffect(host, &effect);
-    if (Gpui.live) {
-        Gpui.queueEffectJob(job);
-    } else {
-        runEffectJob(job);
-        completeEffectJob(host, roc_host, job);
-    }
+    runEffectJob(job);
+    completeEffectJob(host, roc_host, job);
     return true;
 }
 
@@ -3294,35 +2949,11 @@ fn addSpecRuntimeMetrics(left: RuntimeMetrics, right: RuntimeMetrics) RuntimeMet
     return addRuntimeMetrics(left, right);
 }
 
-fn refreshSpecWindowClose(host: *HostEnv) void {
-    const pending = host.spec_pending_close orelse return;
-    if (host.window_registration != pending.node) {
-        host.spec_pending_close = null;
-        return;
-    }
-    const node = &host.dom_elements.items[@intCast(pending.node)];
-    const event = sim_dom.namedEvent(node, "close-requested") orelse {
-        host.spec_pending_close = null;
-        return;
-    };
-    if (event.binding.event_id != pending.event) {
-        host.spec_pending_close = null;
-        return;
-    }
-    const policy = node.native_window_close orelse unreachable;
-    if (std.mem.eql(u8, policy, "keep-open")) host.spec_pending_close = null;
-    if (std.mem.eql(u8, policy, "close")) {
-        host.spec_pending_close = null;
-        host.spec_window_closed = true;
-    }
-}
-
 const SpecRunnerCtx = struct {
     /// The full contract: this is the semantic host, so every capability the
     /// runner knows about is implemented here.
     pub const capabilities: spec_runner.ctx.Capabilities = .{
         .environment = true,
-        .window = true,
         .effect_fixtures = true,
         .manual_effects = true,
         .allocation_trace = true,
@@ -3339,7 +2970,7 @@ const SpecRunnerCtx = struct {
     /// Its real closure consumes existing service stubs; chained effects stay
     /// pending, and the normal completion path applies the returned action.
     pub fn runSpecEffect(host: *HostEnv, roc_host: *abi.RocHost, id: u64) bool {
-        if (!host.spec_manual_effects or Gpui.live) return false;
+        if (!host.spec_manual_effects) return false;
         for (host.engine.pending_effects.items, 0..) |pending, index| {
             if (pending.id != id) continue;
             const job = prepareEffectJob(host);
@@ -3467,33 +3098,6 @@ const SpecRunnerCtx = struct {
         return nodeEventName(elem, name);
     }
 
-    /// Simulates the native close ingress through the one declared unit event.
-    /// A pending decision remains owned by its registration until cancellation,
-    /// successful closure, or retirement; repeated requests retain that decision.
-    pub fn requestWindowClose(host: *Host, roc_host: *RocHost) void {
-        if (host.spec_window_closed or host.spec_pending_close != null) return;
-        const id = host.window_registration orelse {
-            host.spec_window_closed = true;
-            return;
-        };
-        const event = sim_dom.namedEvent(&host.dom_elements.items[@intCast(id)], "close-requested").?.binding;
-        host.spec_pending_close = .{ .node = id, .event = event.event_id };
-        dispatchRocEventWithStats(host, roc_host, event.event_id, event.payload_descriptor, SpecRunnerCtx.hostValueUnit(host, roc_host), null);
-        refreshSpecWindowClose(host);
-    }
-
-    /// Reports simulated closure after committed application decisions. This is
-    /// semantic evidence; GPUI tests establish actual native window admission.
-    pub fn windowClosed(host: *const Host) bool {
-        return host.spec_window_closed;
-    }
-
-    /// Resolves one declared native shortcut without simulating focus or host key routing.
-    pub fn shortcutEvent(elem: *const DomElement, chord: signals.key_chord.Chord) ?DomNamedEvent {
-        const index = elem.namedEventIndexFiltered("keydown", chord) orelse return null;
-        return elem.named_events.items[index];
-    }
-
     /// Provides fixed event id for native semantic observation without duplicating engine behavior.
     pub fn fixedEventId(elem: *const DomElement, kind: RenderEventKind) ?ids.EventId {
         const raw = sim_dom.fixedEventId(elem, kind) orelse return null;
@@ -3559,11 +3163,6 @@ const SpecRunnerCtx = struct {
     /// Returns text attr from the host's semantic render model.
     pub fn elementTextAttr(elem: *const DomElement, name: []const u8) ?[]const u8 {
         return sim_dom.textAttr(elem, name);
-    }
-
-    /// Declares one answer for a hosted `Files` function; see `native_services`.
-    pub fn stubFileResult(host: *Host, stub: *const spec_file_fixtures.Stub) void {
-        host.stubFile(stub);
     }
 
     /// Declares one answer for the hosted `Http` function; see `native_services`.
@@ -3673,12 +3272,6 @@ const SpecRunnerCtx = struct {
         return host.currentDocumentTitle();
     }
 
-    /// Provides the document title revision so a host or spec can tell a repeated
-    /// title from a re-applied one without inspecting engine internals.
-    pub fn documentTitleRevision(host: *const Host) u64 {
-        return host.document_title_revision;
-    }
-
     /// Provides finish host metrics for native semantic observation without duplicating engine behavior.
     pub fn finishHostMetrics(host: *Host) void {
         finishSpecHostMetrics(host);
@@ -3750,25 +3343,7 @@ comptime {
         @export(&hostDealloc, .{ .name = "roc_dealloc", .visibility = .hidden });
         @export(&hostRealloc, .{ .name = "roc_realloc", .visibility = .hidden });
         @export(&hostDbg, .{ .name = "roc_dbg", .visibility = .hidden });
-        @export(&hostEnvVar, .{ .name = "roc_env_var", .visibility = .hidden });
         @export(&hostHttpSend, .{ .name = "roc_http_send", .visibility = .hidden });
-        // HTTP is shared: display-free web specs use service stubs, while live
-        // GUI effects call the Rust adapter. Files remain GUI-only and require
-        // exports only from that platform's engine build.
-        if (gpui_spike) {
-            @export(&hostFilesChooseFile, .{ .name = "roc_files_choose_file", .visibility = .hidden });
-            @export(&hostFilesChooseDirectory, .{ .name = "roc_files_choose_directory", .visibility = .hidden });
-            @export(&hostFilesChooseSavePath, .{ .name = "roc_files_choose_save_path", .visibility = .hidden });
-            @export(&hostFilesStat, .{ .name = "roc_files_stat", .visibility = .hidden });
-            @export(&hostFilesReadBytes, .{ .name = "roc_files_read_bytes", .visibility = .hidden });
-            @export(&hostFilesWriteBytes, .{ .name = "roc_files_write_bytes", .visibility = .hidden });
-            @export(&hostFilesRename, .{ .name = "roc_files_rename", .visibility = .hidden });
-            @export(&hostFilesRemove, .{ .name = "roc_files_remove", .visibility = .hidden });
-            @export(&hostFilesSync, .{ .name = "roc_files_sync", .visibility = .hidden });
-            @export(&hostFilesListDirectory, .{ .name = "roc_files_list_directory", .visibility = .hidden });
-            @export(&hostFilesOpenPath, .{ .name = "roc_files_open_path", .visibility = .hidden });
-            @export(&hostFilesAssetsRoot, .{ .name = "roc_files_assets_root", .visibility = .hidden });
-        }
         @export(&hostExpectFailed, .{ .name = "roc_expect_failed", .visibility = .hidden });
         @export(&hostCrashed, .{ .name = "roc_crashed", .visibility = .hidden });
         @export(&eachBoolSinkPush, .{ .name = "roc_each_bool_sink_push", .visibility = .hidden });
@@ -3789,42 +3364,9 @@ comptime {
         @export(&hostValueTakeWithCapability, .{ .name = "roc_host_value_take_with_capability", .visibility = .hidden });
         @export(&hostValueTakeWithSplit, .{ .name = "roc_host_value_take_with_split", .visibility = .hidden });
 
-        if (gpui_spike) {
-            @export(&main, .{ .name = "signals_spec_main" });
-            @export(&Gpui.mount, .{ .name = "signals_mount" });
-            @export(&Gpui.nodeSize, .{ .name = "signals_node_size" });
-            @export(&Gpui.protocolVersion, .{ .name = "signals_protocol_version" });
-            @export(&Gpui.unmount, .{ .name = "signals_unmount" });
-            @export(&Gpui.dispatch, .{ .name = "signals_dispatch" });
-            @export(&Gpui.count, .{ .name = "signals_changed_count" });
-            @export(&Gpui.read, .{ .name = "signals_read_changed" });
-            @export(&Gpui.childAt, .{ .name = "signals_child_at" });
-            @export(&Gpui.readShortcuts, .{ .name = "signals_read_shortcuts" });
-            @export(&Gpui.metrics, .{ .name = "signals_metrics" });
-            @export(&Gpui.documentTitle, .{ .name = "signals_document_title" });
-            @export(&Gpui.timerVersion, .{ .name = "signals_timer_version" });
-            @export(&Gpui.timerSize, .{ .name = "signals_timer_size" });
-            @export(&Gpui.nextTimer, .{ .name = "signals_timer_next" });
-            @export(&Gpui.tickTimer, .{ .name = "signals_timer_tick" });
-            @export(&Gpui.nextRocEffect, .{ .name = "signals_roc_effect_next" });
-            @export(&Gpui.runRocEffect, .{ .name = "signals_roc_effect_run" });
-            @export(&Gpui.completeRocEffect, .{ .name = "signals_roc_effect_done" });
-            @export(&Gpui.scenarioOpen, .{ .name = "signals_scenario_open" });
-            @export(&Gpui.scenarioHeader, .{ .name = "signals_scenario_header" });
-            @export(&Gpui.scenarioChoice, .{ .name = "signals_scenario_choice" });
-            @export(&Gpui.scenarioScope, .{ .name = "signals_scenario_scope" });
-            @export(&Gpui.scenarioCount, .{ .name = "signals_scenario_count" });
-            @export(&Gpui.scenarioCommand, .{ .name = "signals_scenario_command" });
-            @export(&Gpui.scenarioArg, .{ .name = "signals_scenario_arg" });
-            @export(&Gpui.scenarioClose, .{ .name = "signals_scenario_close" });
-        } else @export(&main, .{ .name = "main" });
-        if (@import("builtin").os.tag == .windows) {
-            @export(&__main, .{ .name = "__main" });
-        }
+        @export(&main, .{ .name = "main" });
     }
 }
-
-fn __main() callconv(.c) void {}
 
 /// The most arguments a host command line may carry. A native host takes a spec
 /// file and a handful of controls; a longer command line is a mistake worth
@@ -3967,11 +3509,6 @@ fn parseHostArgs(args: []const []const u8) HostArgResult {
 }
 
 fn main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
-    // A Roc application links no Zig start code, so nothing installs the
-    // fault handler that turns an access violation into a trace on stderr.
-    // Windows reports such a crash only as an exit status; the trace is
-    // what makes it diagnosable from a CI log.
-    if (comptime builtin.os.tag == .windows and std.debug.have_segfault_handling_support) std.debug.attachSegfaultHandler();
     var arg_storage: [max_host_args][]const u8 = undefined;
     const arg_count: usize = if (argc > 0) @intCast(argc) else 1;
     if (arg_count > max_host_args + 1) {
@@ -4053,22 +3590,6 @@ fn platform_main(spec_file: []const u8, verbose: bool, trace_allocations: bool, 
         return 2;
     };
     defer allocator.free(parsed_spec.name);
-    if (parsed_spec.scenario) |scenario| {
-        // A scenario needs a real window: layout bounds, native editor
-        // history, the platform's own close path. This host has none of them,
-        // and pretending would report a pass for evidence it never gathered.
-        scenario.deinit(allocator);
-        spec_parser.freeSpecCommands(allocator, parsed_spec.commands);
-        writeStderr("Error: this file is a (scenario ...); run it against a window with --host-scenario\n");
-        if (result_json) writeSpecJsonResult(.{
-            .id = spec_file,
-            .name = spec_file,
-            .status = "error",
-            .duration_ns = benchmark.nowNs() - started_ns,
-            .failure = .{ .phase = "parse", .kind = "window_scenario", .message = "window scenarios run through the GUI host" },
-        });
-        return 2;
-    }
     host_env.test_state.commands = parsed_spec.commands;
     host_env.test_state.commands_allocator = allocator;
     host_env.test_state.verbose = verbose;
@@ -4458,31 +3979,27 @@ test "effect worker admission unwinds both bookkeeping allocation refusals" {
 test "service fixture registration rolls back every allocation refusal and retries" {
     var headers = [_]spec_http_fixtures.Header{.{ .name = "content-type", .value = "text/plain" }};
     const http: spec_http_fixtures.Stub = .{ .response = .{ .uri = "https://fixture.test", .status = 200, .headers = &headers, .body = "response" } };
-    var entries = [_]spec_file_fixtures.Entry{.{ .path = "/fixture/child", .kind = .file, .bytes = 8 }};
-    const file: spec_file_fixtures.Stub = .{ .directory = .{ .path = "/fixture", .entries = &entries } };
-    for ([_]bool{ false, true }) |is_http| {
-        var attempts: usize = 0;
-        var failure: usize = 0;
-        while (failure == 0 or failure <= attempts) : (failure += 1) {
-            var host = HostEnv.init();
-            defer {
-                host.deinitServiceStubs();
-                std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("fixture refusal leaked");
-            }
-            host.configureAllocationFailure(if (failure == 0) null else failure);
-            const result = if (is_http) host.tryStubHttp(&http) else host.tryStubFile(&file);
-            if (failure == 0) {
-                try result;
-                attempts = host.allocation_fault.?.attempts;
-                try std.testing.expect(attempts > 1);
-            } else {
-                try std.testing.expectError(error.OutOfMemory, result);
-                try std.testing.expectEqual(@as(usize, 0), host.file_stubs.items.len + host.http_stubs.items.len);
-                host.configureAllocationFailure(null);
-                if (is_http) try host.tryStubHttp(&http) else try host.tryStubFile(&file);
-            }
-            try std.testing.expectEqual(@as(usize, 1), host.file_stubs.items.len + host.http_stubs.items.len);
+    var attempts: usize = 0;
+    var failure: usize = 0;
+    while (failure == 0 or failure <= attempts) : (failure += 1) {
+        var host = HostEnv.init();
+        defer {
+            host.deinitServiceStubs();
+            std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("fixture refusal leaked");
         }
+        host.configureAllocationFailure(if (failure == 0) null else failure);
+        const result = host.tryStubHttp(&http);
+        if (failure == 0) {
+            try result;
+            attempts = host.allocation_fault.?.attempts;
+            try std.testing.expect(attempts > 1);
+        } else {
+            try std.testing.expectError(error.OutOfMemory, result);
+            try std.testing.expectEqual(@as(usize, 0), host.http_stubs.items.len);
+            host.configureAllocationFailure(null);
+            try host.tryStubHttp(&http);
+        }
+        try std.testing.expectEqual(@as(usize, 1), host.http_stubs.items.len);
     }
 }
 
@@ -4863,59 +4380,6 @@ test "native prepared render publication keeps DOM unchanged until armed apply" 
     try std.testing.expectEqual(@as(usize, 0), host.allocation_fault.?.attempts);
     try std.testing.expectEqualStrings("same", dom_value_node.value.?);
     try std.testing.expectEqual(@as(?[]const u8, null), dom_value_node.pending_value);
-    host.configureAllocationFailure(null);
-}
-
-test "native drag publication rejects incomplete handlers without exposing metadata" {
-    var host = HostEnv.init();
-    var roc_host = makeSignalsRocHost(&host);
-    host.engine.roc_host = &roc_host;
-    defer {
-        host.deinit();
-        std.testing.expectEqual(.ok, host.gpa.deinit()) catch @panic("drag publication leaked");
-    }
-    const allocator = host.hostAllocator();
-    host.engine.resetRenderTree(&host);
-    const elem_id = ids.ElemId.fromRaw(1);
-    host.engine.appendRenderNode(&host, elem_id, ids.ElemId.fromRaw(0), "div");
-    var splice = try render_cache.PreparedRenderSplice(NativeCtx).init(allocator, &host.engine.render_cache, .{
-        .node_capacity = 2,
-        .text_fields = 2,
-        .bool_fields = 1,
-        .named_events = 1,
-        .named_event_wire_edits = 1,
-        .wire_commands = 4,
-    });
-    defer splice.deinit();
-    try splice.addTextField(&host.engine.render_cache, elem_id, .native_drag_key, "task-λ");
-    try splice.addTextField(&host.engine.render_cache, elem_id, .native_viewport, "1,24,0");
-    try splice.addBoolField(&host.engine.render_cache, elem_id, .native_drop_target, true);
-    // The drop flag and its detail handler must publish together. Refusal must
-    // release the prepared strings and leave every live field untouched.
-    try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.prepare(&host, &splice));
-    try std.testing.expectEqual(@as(?[]const u8, null), host.dom_elements.items[1].native_drag_key);
-    try std.testing.expectEqual(@as(?[]const u8, null), host.dom_elements.items[1].native_viewport);
-    try std.testing.expect(!host.dom_elements.items[1].native_drop_target);
-    try std.testing.expectEqual(@as(usize, 0), host.dom_elements.items[1].named_events.items.len);
-    try splice.addNamedEvents(&host.engine.render_cache, elem_id, &.{.{
-        .name = "drop",
-        .binding = .{
-            .event_id = ids.EventId.fromRaw(17),
-            .delivery = .{ .requested = .native },
-            .payload_descriptor = BoundaryPayloadDescriptor.init(.str, .detail),
-        },
-    }});
-    var publication = try NativeRenderPublication.prepare(&host, &splice);
-    defer publication.deinit();
-    try std.testing.expect(!host.dom_elements.items[1].native_drop_target);
-    host.configureAllocationFailure(1);
-    publication.apply(&host);
-    try std.testing.expectEqual(@as(usize, 0), host.allocation_fault.?.attempts);
-    try std.testing.expectEqualStrings("task-λ", host.dom_elements.items[1].native_drag_key.?);
-    try std.testing.expectEqualStrings("1,24,0", host.dom_elements.items[1].native_viewport.?);
-    try std.testing.expect(host.dom_elements.items[1].native_drop_target);
-    const drop = sim_dom.namedEvent(&host.dom_elements.items[1], "drop").?;
-    try std.testing.expectEqual(@as(u64, 17), drop.binding.event_id.raw());
     host.configureAllocationFailure(null);
 }
 
@@ -6643,8 +6107,8 @@ test "signals host browser environment sources and commands update native state"
     }
 
     {
-        // Re-applying the same title is an equality cutoff at this boundary: a
-        // window host observing the revision must not be asked to re-title.
+        // Re-applying the same title is an equality cutoff at this boundary:
+        // the host must not record a second title application.
         const cmd = testDocumentTitleCmd(&roc_host, "Ops ready");
         retainTestCmd(cmd);
         defer releaseTestCmd(&roc_host, cmd);
@@ -10353,10 +9817,9 @@ test "signals host structural patch clears fields absent from reused DOM node" {
 
     const initial_attrs = [_]abi.NodeAttr{
         testNodeStaticTextAttr(&roc_host, .label, "Initial label"),
-        testNodeStaticTextAttr(&roc_host, .native_placeholder, "Initial hint"),
-        testNodeStaticTextAttr(&roc_host, .native_image_source, "avatars/initial.png"),
-        testNodeStaticTextAttr(&roc_host, .native_font_family, "Initial Mono"),
-        testNodeStaticTextAttr(&roc_host, .native_fonts, "1\nInitial Mono\nAAAA"),
+        testNodeStaticTextAttr(&roc_host, .role, "region"),
+        testNodeStaticTextAttr(&roc_host, .test_id, "initial-section"),
+        testNodeStaticTextAttr(&roc_host, .class, "initial"),
         testNodeStaticCustomTextAttr(&roc_host, "data-mode", "initial"),
         testNodeStaticBoolAttr(.disabled, true),
     };
@@ -10370,10 +9833,9 @@ test "signals host structural patch clears fields absent from reused DOM node" {
 
     const section_id = host.engine.active_stream.elements.items[0].elem_id;
     try std.testing.expectEqualStrings("Initial label", host.dom_elements.items[@intCast(section_id.raw())].label.?);
-    try std.testing.expectEqualStrings("Initial hint", host.dom_elements.items[@intCast(section_id.raw())].native_placeholder.?);
-    try std.testing.expectEqualStrings("avatars/initial.png", host.dom_elements.items[@intCast(section_id.raw())].native_image_source.?);
-    try std.testing.expectEqualStrings("Initial Mono", host.dom_elements.items[@intCast(section_id.raw())].native_font_family.?);
-    try std.testing.expectEqualStrings("1\nInitial Mono\nAAAA", host.dom_elements.items[@intCast(section_id.raw())].native_fonts.?);
+    try std.testing.expectEqualStrings("region", host.dom_elements.items[@intCast(section_id.raw())].role.?);
+    try std.testing.expectEqualStrings("initial-section", host.dom_elements.items[@intCast(section_id.raw())].test_id.?);
+    try std.testing.expectEqualStrings("initial", host.dom_elements.items[@intCast(section_id.raw())].class.?);
     try std.testing.expectEqualStrings("initial", elementTextAttr(&host.dom_elements.items[@intCast(section_id.raw())], "data-mode").?);
     try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].disabled);
 
@@ -10388,13 +9850,12 @@ test "signals host structural patch clears fields absent from reused DOM node" {
 
     try std.testing.expectEqual(@as(u64, 0), patch_counts.reset_dom);
     try std.testing.expectEqual(@as(u64, 0), patch_counts.create_element);
-    try std.testing.expectEqual(@as(u64, 6), patch_counts.set_metadata);
+    try std.testing.expectEqual(@as(u64, 5), patch_counts.set_metadata);
     try std.testing.expectEqual(@as(u64, 1), patch_counts.set_disabled);
     try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].label == null);
-    try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].native_placeholder == null);
-    try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].native_image_source == null);
-    try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].native_font_family == null);
-    try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].native_fonts == null);
+    try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].role == null);
+    try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].test_id == null);
+    try std.testing.expect(host.dom_elements.items[@intCast(section_id.raw())].class == null);
     try std.testing.expect(elementTextAttr(&host.dom_elements.items[@intCast(section_id.raw())], "data-mode") == null);
     try std.testing.expect(!host.dom_elements.items[@intCast(section_id.raw())].disabled);
 }
@@ -11196,7 +10657,6 @@ fn testNodeEventAttrWithPlan(roc_host: *abi.RocHost, kind: RenderEventKind, bind
     return .{
         .payload = .{
             .on = .{
-                .key_chord = std.mem.zeroes(@FieldType(abi.NodeEventBinding, "key_chord")),
                 .kind = .{ .id = @intFromEnum(kind) },
                 .msg = .{
                     .event_extraction_plan = testEventExtractionPlan(roc_host, extraction_plan),
@@ -11231,7 +10691,6 @@ fn testNodeUnitIncrementEventAttr(roc_host: *abi.RocHost, kind: RenderEventKind,
     return .{
         .payload = .{
             .on = .{
-                .key_chord = std.mem.zeroes(@FieldType(abi.NodeEventBinding, "key_chord")),
                 .kind = .{ .id = @intFromEnum(kind) },
                 .msg = .{
                     .event_extraction_plan = testEventExtractionPlan(roc_host, .none),
@@ -13039,8 +12498,7 @@ pub const fuzz_fixtures = struct {
             .tag = .Each,
         };
     }
-    /// An effect the host has taken from the engine's queue and handed to its
-    /// worker. The thunk is the closure `Then` declared; in the fuzz build it
+    /// An effect the host has taken from the engine's queue to run. The thunk is the closure `Then` declared; in the fuzz build it
     /// is the closure itself, so its capture says which effect this is.
     pub const StartedEffect = struct {
         id: u64,
@@ -13048,8 +12506,8 @@ pub const fuzz_fixtures = struct {
     };
 
     /// Takes the oldest queued effect and records it as running, exactly as
-    /// the spec host's `runNextEffect` does before handing the thunk to a
-    /// worker. The caller owns the thunk. The engine's own bookkeeping here
+    /// the spec host's `runNextEffect` does before running the thunk. The
+    /// caller owns the thunk. The engine's own bookkeeping here
     /// is a fatal boundary (it panics rather than refuses on exhaustion), so
     /// a fault sweep must not cover this call.
     pub fn startNextEffect(host: *HostEnv) ?StartedEffect {
@@ -13194,7 +12652,6 @@ pub const fuzz_fixtures = struct {
         const payload_cap = testHostValueCapability(roc_host);
         return .{
             .payload = .{ .on = .{
-                .key_chord = std.mem.zeroes(@FieldType(abi.NodeEventBinding, "key_chord")),
                 .kind = .{ .id = @intFromEnum(kind) },
                 .msg = .{
                     .event_extraction_plan = testEventExtractionPlan(roc_host, plan),
@@ -13222,7 +12679,6 @@ pub const fuzz_fixtures = struct {
         const callable = writeTestErasedCallable(Capture, roc_host, to_cmd, &testErasedCallableOnDrop, capture);
         return .{
             .payload = .{ .on = .{
-                .key_chord = std.mem.zeroes(@FieldType(abi.NodeEventBinding, "key_chord")),
                 .kind = .{ .id = @intFromEnum(kind) },
                 .msg = .{
                     .event_extraction_plan = testEventExtractionPlan(roc_host, plan),
@@ -13287,472 +12743,6 @@ pub const fuzz_fixtures = struct {
     }
 };
 
-// Worktree-only GPUI experiment. The ABI publishes committed, touched native
-// render slots, not Roc layouts. No Rust callback runs inside a transaction.
-const Gpui = struct {
-    const limit = 65536;
-    const Slice = extern struct {
-        ptr: [*]const u8,
-        len: usize,
-        fn from(value: []const u8) Slice {
-            return .{ .ptr = value.ptr, .len = value.len };
-        }
-    };
-    const Shortcut = extern struct {
-        event: u64,
-        key: u32,
-        modifiers: u32,
-    };
-    // The extern node layout is generated from the protocol manifest, so this
-    // Zig writer and the Rust reader can never disagree on field order.
-    const Node = render.native_protocol.RawNode(Slice, native_style.Style, native_style.Viewport);
-    var host: HostEnv = undefined;
-    var roc_host: abi.RocHost = undefined;
-    var live = false;
-
-    // A window scenario is parsed by the same spec parser as every other spec,
-    // then read by the Rust host one command at a time. The parsed spec lives
-    // here, on its own allocator, so it neither depends on nor outlives a
-    // mounted runtime: a scenario is opened before mount and closed after the
-    // report is written. Every slice handed out borrows this storage.
-    var scenario_gpa: std.heap.DebugAllocator(.{ .safety = true }) = .init;
-    var scenario_spec: ?spec_parser.ParsedTestSpec = null;
-
-    /// The header of an opened scenario. Slices borrow the parsed spec; a
-    /// zero-length assets or diagnostic slice means the header did not name one.
-    const RawScenario = extern struct {
-        name: Slice,
-        window_width: u32,
-        window_height: u32,
-        assets: Slice,
-        choices: usize,
-        diagnostic: Slice,
-        scopes: usize,
-    };
-    /// One parsed step, self-describing: `kind` and `locator_kind` carry the
-    /// enum tag names rather than their numbering, so the Rust reader and this
-    /// writer never have to agree on an ordinal. The locator is the one payload
-    /// every host resolves, so it travels in full; every other value of the
-    /// payload is a named argument read through `scenarioArg`, reflected from
-    /// the payload struct, so a new step or field needs no change here.
-    const RawStep = extern struct {
-        kind: Slice,
-        line: u64,
-        column: u64,
-        locator_kind: Slice,
-        role: Slice,
-        name: Slice,
-        label: Slice,
-        text: Slice,
-        test_id: Slice,
-        args: usize,
-    };
-    /// One named argument of a step. `kind` says which value field is live:
-    /// 0 text, 1 unsigned, 2 signed, 3 boolean.
-    const RawArg = extern struct {
-        name: Slice,
-        kind: u32,
-        text: Slice,
-        unsigned: u64,
-        signed: i64,
-        boolean: u32,
-    };
-    fn optionalSlice(value: ?[]const u8) Slice {
-        return Slice.from(value orelse "");
-    }
-    /// Parses a scenario file. Returns 0 on success, 1 for a missing file, 2
-    /// for a malformed spec, 3 for a file that is a (test ...) rather than a
-    /// (scenario ...), and 4 for any other read failure. Only one scenario is
-    /// open at a time; opening another closes the first.
-    fn scenarioOpen(path: Slice) callconv(.c) u32 {
-        scenarioClose();
-        const allocator = scenario_gpa.allocator();
-        const parsed = spec_parser.parseTestSpecFile(allocator, path.ptr[0..path.len]) catch |err| return switch (err) {
-            ParseError.FileNotFound => 1,
-            ParseError.InvalidFormat => 2,
-            else => 4,
-        };
-        if (parsed.scenario == null) {
-            parsed.deinit(allocator);
-            return 3;
-        }
-        scenario_spec = parsed;
-        return 0;
-    }
-    fn openScenario() *const spec_parser.ParsedTestSpec {
-        if (scenario_spec) |*spec| return spec;
-        failHost("scenario read before it was opened");
-    }
-    fn scenarioHeader(out: *RawScenario) callconv(.c) void {
-        const spec = openScenario();
-        const header = spec.scenario.?;
-        out.* = .{
-            .name = Slice.from(spec.name),
-            .window_width = header.window_width,
-            .window_height = header.window_height,
-            .assets = optionalSlice(header.assets),
-            .choices = header.choices.len,
-            .diagnostic = optionalSlice(header.diagnostic),
-            .scopes = header.on.len,
-        };
-    }
-    fn scenarioChoice(index: usize, out: *Slice) callconv(.c) void {
-        const header = openScenario().scenario.?;
-        if (index >= header.choices.len) failHost("scenario choice index out of range");
-        out.* = Slice.from(header.choices[index]);
-    }
-    fn scenarioScope(index: usize, out: *Slice) callconv(.c) void {
-        const header = openScenario().scenario.?;
-        if (index >= header.on.len) failHost("scenario scope index out of range");
-        out.* = Slice.from(header.on[index]);
-    }
-    fn scenarioCount() callconv(.c) usize {
-        return openScenario().commands.len;
-    }
-    fn scenarioCommand(index: usize, out: *RawStep) callconv(.c) void {
-        const spec = openScenario();
-        if (index >= spec.commands.len) failHost("scenario command index out of range");
-        const cmd = spec.commands[index];
-        const locator = spec_parser.legacyView(cmd.step).locator;
-        out.* = .{
-            .kind = Slice.from(@tagName(cmd.step)),
-            .line = cmd.line_num,
-            .column = cmd.column_num,
-            .locator_kind = Slice.from(@tagName(locator.kind)),
-            .role = optionalSlice(locator.role),
-            .name = optionalSlice(locator.name),
-            .label = optionalSlice(locator.label),
-            .text = optionalSlice(locator.text),
-            .test_id = optionalSlice(locator.test_id),
-            .args = stepArgCount(cmd.step),
-        };
-    }
-    /// Reads one named argument of a step. A scalar payload is one argument
-    /// named `value`; a struct payload contributes one argument per field other
-    /// than its locator, and a key chord contributes `key` and `modifiers`.
-    fn scenarioArg(step_index: usize, arg_index: usize, out: *RawArg) callconv(.c) void {
-        const spec = openScenario();
-        if (step_index >= spec.commands.len) failHost("scenario command index out of range");
-        var cursor: usize = 0;
-        switch (spec.commands[step_index].step) {
-            inline else => |payload| {
-                if (emitArgs(payload, "value", arg_index, &cursor, out)) return;
-            },
-        }
-        failHost("scenario argument index out of range");
-    }
-    fn stepArgCount(step: spec_parser.Step) usize {
-        var cursor: usize = 0;
-        var scratch: RawArg = undefined;
-        switch (step) {
-            inline else => |payload| _ = emitArgs(payload, "value", std.math.maxInt(usize), &cursor, &scratch),
-        }
-        return cursor;
-    }
-    /// Walks a payload, counting arguments through `cursor` and filling `out`
-    /// when the walk reaches `wanted`. Returns true once it has been filled.
-    fn emitArgs(payload: anytype, name: []const u8, wanted: usize, cursor: *usize, out: *RawArg) bool {
-        const T = @TypeOf(payload);
-        if (T == void or T == spec_parser.Locator) return false;
-        // A scripted file or HTTP answer is applied by this engine, never by
-        // the window host, so it publishes no arguments.
-        if (T == spec_file_fixtures.Stub or T == spec_http_fixtures.Stub) return false;
-        if (T == []const u8) return emitArg(.{ .name = Slice.from(name), .kind = 0, .text = Slice.from(payload), .unsigned = 0, .signed = 0, .boolean = 0 }, wanted, cursor, out);
-        if (T == u64) return emitArg(.{ .name = Slice.from(name), .kind = 1, .text = Slice.from(""), .unsigned = payload, .signed = 0, .boolean = 0 }, wanted, cursor, out);
-        if (T == i64) return emitArg(.{ .name = Slice.from(name), .kind = 2, .text = Slice.from(""), .unsigned = 0, .signed = payload, .boolean = 0 }, wanted, cursor, out);
-        if (T == bool) return emitArg(.{ .name = Slice.from(name), .kind = 3, .text = Slice.from(""), .unsigned = 0, .signed = 0, .boolean = @intFromBool(payload) }, wanted, cursor, out);
-        if (T == signals.key_chord.Chord) {
-            if (emitArgs(@as(u64, payload.key), "key", wanted, cursor, out)) return true;
-            return emitArgs(@as(u64, payload.modifiers), "modifiers", wanted, cursor, out);
-        }
-        inline for (std.meta.fields(T)) |field| {
-            if (emitArgs(@field(payload, field.name), field.name, wanted, cursor, out)) return true;
-        }
-        return false;
-    }
-    fn emitArg(arg: RawArg, wanted: usize, cursor: *usize, out: *RawArg) bool {
-        const found = cursor.* == wanted;
-        if (found) out.* = arg;
-        cursor.* += 1;
-        return found;
-    }
-    fn scenarioClose() callconv(.c) void {
-        if (scenario_spec) |spec| {
-            spec.deinit(scenario_gpa.allocator());
-            scenario_spec = null;
-        }
-    }
-    var timers: native_timers.Registry = .{};
-    // Prepared effects wait here until the Rust host collects them; each runs
-    // on its own worker and its result applies whenever it completes.
-    var effect_jobs: std.ArrayListUnmanaged(*EffectJob) = .empty;
-    var effects_running: std.ArrayListUnmanaged(*EffectJob) = .empty;
-    var child_order: signals.native_child_order.Tree = undefined;
-    var lifetimes: [limit]u64 = @splat(0);
-    var changed: [limit]u64 = undefined;
-    var seen: [limit]bool = @splat(false);
-    var changed_len: usize = 0;
-
-    fn clear() void {
-        for (changed[0..changed_len]) |id| seen[id] = false;
-        changed_len = 0;
-    }
-    fn touch(id: u64) void {
-        if (id >= limit) failHost("GPUI spike node limit exceeded");
-        if (!seen[id]) {
-            changed[changed_len] = id;
-            changed_len += 1;
-            seen[id] = true;
-        }
-    }
-    fn protocolVersion() callconv(.c) u32 {
-        return render.native_protocol.protocol_version;
-    }
-    fn nodeSize() callconv(.c) usize {
-        return @sizeOf(Node);
-    }
-    fn mount() callconv(.c) void {
-        if (live) failHost("GPUI spike already mounted");
-        clear();
-        @memset(&lifetimes, 0);
-        host = HostEnv.init();
-        child_order = signals.native_child_order.Tree.init(host.hostAllocator());
-        roc_host = makeSignalsRocHost(&host);
-        host.engine.roc_host = &roc_host;
-        current_host = &host;
-        current_roc_host = &roc_host;
-        live = true;
-        acceptInitElem(&host, &roc_host, abi.roc_ui_init());
-        drainEffects(&host, &roc_host);
-    }
-    fn unmount() callconv(.c) void {
-        if (!live) return;
-        child_order.deinit();
-        for (effect_jobs.items) |job| {
-            abi.decrefErasedCallable(job.thunk, &roc_host);
-            host.hostAllocator().destroy(job);
-        }
-        effect_jobs.deinit(host.hostAllocator());
-        effect_jobs = .empty;
-        const effects_still_running = effects_running.items.len != 0;
-        effects_running.deinit(host.hostAllocator());
-        effects_running = .empty;
-        host.deinit();
-        timers.deinit(host.hostAllocator());
-        // A thunk still running on a worker owns its job until it returns,
-        // so shutting down mid-effect cannot account for those allocations.
-        if (host.gpa.deinit() == .leak and !effects_still_running) failHost("GPUI spike leaked host allocations");
-        current_host = null;
-        current_roc_host = null;
-        live = false;
-        clear();
-    }
-    // Unit, controlled text, event detail, and checked payloads share event identity and
-    // capability validation route used by native specs.
-    fn validatePayload(kind: u32, bytes: []const u8, boolean: u32) error{InvalidGuiPayload}!void {
-        if (bytes.len > 1024 * 1024) return error.InvalidGuiPayload;
-        switch (kind) {
-            0 => if (bytes.len != 0 or boolean != 0) return error.InvalidGuiPayload,
-            1, 3 => if (boolean != 0 or !std.unicode.utf8ValidateSlice(bytes)) return error.InvalidGuiPayload,
-            2 => if (bytes.len != 0 or boolean > 1) return error.InvalidGuiPayload,
-            else => return error.InvalidGuiPayload,
-        }
-    }
-    fn dispatch(event: u64, kind: u32, ptr: [*]const u8, len: usize, boolean: u32) callconv(.c) void {
-        if (!live or len > 1024 * 1024) failHost("invalid GPUI spike input");
-        validatePayload(kind, ptr[0..len], boolean) catch failHost("invalid GUI event payload");
-        clear();
-        const payload = switch (kind) {
-            0 => hostValueUnit(&host, &roc_host),
-            1, 3 => hostValueStr(&host, &roc_host, ptr[0..len]),
-            2 => if (boolean <= 1 and len == 0) hostValueBool(&host, &roc_host, boolean == 1) else failHost("invalid GUI boolean payload"),
-            else => failHost("unsupported GPUI spike event kind"),
-        };
-        const descriptor = switch (kind) {
-            0 => RenderEventKind.click.payloadDescriptor(),
-            1 => RenderEventKind.input.payloadDescriptor(),
-            2 => RenderEventKind.check.payloadDescriptor(),
-            3 => BoundaryPayloadDescriptor.init(.str, .detail),
-            else => unreachable,
-        };
-        dispatchRocEvent(&host, &roc_host, ids.EventId.fromRaw(event), descriptor, payload);
-        drainEffects(&host, &roc_host);
-    }
-    fn count() callconv(.c) usize {
-        return changed_len;
-    }
-    // Copies one element's committed native filters into caller-owned storage.
-    // Capacity is checked before any output is written; there is no allocation
-    // or callback while the borrowed engine table is being read.
-    fn readShortcuts(elem_id: u64, output: [*]Shortcut, capacity: usize) callconv(.c) usize {
-        if (!live or elem_id >= host.dom_elements.items.len) failHost("invalid native shortcut element");
-        const elem = &host.dom_elements.items[@intCast(elem_id)];
-        if (!elem.active) return 0;
-        var needed: usize = 0;
-        for (elem.named_events.items) |event| if (event.binding.key_chord != null) {
-            needed += 1;
-        };
-        if (needed > signals.key_chord.max_per_element or capacity < needed) failHost("native shortcut copy exceeded its capacity");
-        var index: usize = 0;
-        for (elem.named_events.items) |event| if (event.binding.key_chord) |chord| {
-            output[index] = .{ .event = event.binding.event_id.raw(), .key = chord.key, .modifiers = chord.modifiers };
-            index += 1;
-        };
-        return needed;
-    }
-    // Reports the window identity the graph has already decided. The slice
-    // borrows engine-owned storage that stays valid until the next engine turn,
-    // so the caller must copy before dispatching again. The revision lets the
-    // host skip a native window update for a title that did not change; it is
-    // an observation of the SetDocumentTitle command, not a second title route.
-    fn documentTitle(out: *Slice) callconv(.c) u64 {
-        if (!live) failHost("native title read before mount");
-        out.* = Slice.from(host.currentDocumentTitle());
-        return host.document_title_revision;
-    }
-    // Every slice is borrowed until the next mount/dispatch/unmount call. Rust
-    // copies it before another host call and never owns any Roc allocation.
-    fn read(index: usize, out: *Node) callconv(.c) void {
-        if (!live or index >= changed_len) failHost("invalid GPUI spike change index");
-        const elem = &host.dom_elements.items[changed[index]];
-        out.* = .{
-            .id = elem.id,
-            .active = @intFromBool(elem.active),
-            .parent = elem.parent_id orelse 0,
-            .tag = Slice.from(elem.tag),
-            .text = Slice.from(elem.text orelse ""),
-            .value = Slice.from(elem.value orelse ""),
-            .label = Slice.from(elem.label orelse ""),
-            .role = Slice.from(elem.role orelse ""),
-            .test_id = Slice.from(elem.test_id orelse ""),
-            .class = Slice.from(elem.class orelse ""),
-            .placeholder = Slice.from(elem.native_placeholder orelse ""),
-            .image_source = Slice.from(elem.native_image_source orelse ""),
-            .font_family = Slice.from(elem.native_font_family orelse ""),
-            .fonts = Slice.from(elem.native_fonts orelse ""),
-            .child_count = child_order.count(ids.ElemId.fromRaw(elem.id)),
-            .click = if (elem.event_bindings.click) |binding| binding.event_id.raw() else 0,
-            .input = if (elem.event_bindings.input) |binding| binding.event_id.raw() else 0,
-            .check = if (elem.event_bindings.check) |binding| binding.event_id.raw() else 0,
-            .checked = @intFromBool(elem.checked),
-            .disabled = @intFromBool(elem.disabled),
-            .selected = @intFromBool(elem.selected),
-            .read_only = @intFromBool(elem.native_read_only),
-            .style_present = @intFromBool(elem.native_style != null),
-            .style = if (elem.native_style) |bytes| native_style.decode(bytes) catch unreachable else .{},
-            .viewport = if (elem.native_viewport) |bytes| native_style.decodeViewport(bytes) catch unreachable else .{},
-            .lifetime = lifetimes[elem.id],
-            .drag_key = Slice.from(elem.native_drag_key orelse ""),
-            .drop = if (elem.active and elem.native_drop_target) sim_dom.namedEvent(elem, "drop").?.binding.event_id.raw() else 0,
-            .close_requested = if (elem.active and elem.native_window_close != null) sim_dom.namedEvent(elem, "close-requested").?.binding.event_id.raw() else 0,
-            .close_policy = if (elem.native_window_close) |policy| (if (std.mem.eql(u8, policy, "keep-open")) @as(u64, 1) else if (std.mem.eql(u8, policy, "await-decision")) @as(u64, 2) else @as(u64, 3)) else 0,
-        };
-    }
-    fn childAt(parent: u64, rank: usize) callconv(.c) u64 {
-        if (!live) failHost("GPUI child query before mount");
-        return (child_order.childAt(ids.ElemId.fromRaw(parent), rank) catch failHost("invalid GPUI child rank")).raw();
-    }
-    fn queueEffectJob(job: *EffectJob) void {
-        effect_jobs.append(host.hostAllocator(), job) catch @panic("out of memory");
-    }
-    // Hands the Rust host the next prepared effect. The job pointer is opaque
-    // to Rust; it comes back through `runRocEffect` on a worker thread and
-    // `completeRocEffect` on the UI thread.
-    fn nextRocEffect(out: *u64) callconv(.c) u32 {
-        if (!live) failHost("effect read before mount");
-        if (effect_jobs.items.len == 0) return 0;
-        const job = effect_jobs.orderedRemove(0);
-        effects_running.append(host.hostAllocator(), job) catch @panic("out of memory");
-        out.* = @intFromPtr(job);
-        return 1;
-    }
-    // Runs on a Rust host worker thread: only the job and Roc code.
-    fn runRocEffect(job_raw: u64) callconv(.c) void {
-        const job: *EffectJob = @ptrFromInt(job_raw);
-        runEffectJob(job);
-    }
-    fn completeRocEffect(job_raw: u64) callconv(.c) void {
-        if (!live) failHost("effect completion before mount");
-        const job: *EffectJob = @ptrFromInt(job_raw);
-        const index = std.mem.indexOfScalar(*EffectJob, effects_running.items, job) orelse failHost("effect completion does not match a running effect");
-        _ = effects_running.orderedRemove(index);
-        clear();
-        completeEffectJob(&host, &roc_host, job);
-        drainEffects(&host, &roc_host);
-    }
-    fn timerVersion() callconv(.c) u32 {
-        return render.native_protocol.timer_version;
-    }
-    fn timerSize() callconv(.c) usize {
-        return @sizeOf(native_timers.Message);
-    }
-    fn nextTimer(out: *native_timers.Message) callconv(.c) u32 {
-        if (!live) failHost("GPUI timer read before mount");
-        out.* = timers.next() orelse return 0;
-        return 1;
-    }
-    fn tickTimer(token: u64) callconv(.c) u32 {
-        if (!live) failHost("GPUI timer tick before mount");
-        clear();
-        if (!timers.isActive(token)) return 0;
-        _ = host.engine.tickIntervalSourceByRuntimeToken(&host, &roc_host, token);
-        drainEffects(&host, &roc_host);
-        return 1;
-    }
-    fn metrics(out: [*]u64) callconv(.c) void {
-        out[0] = host.engine.last_runtime_metrics.derived_calls_into_roc;
-        out[1] = host.engine.last_runtime_metrics.scopes_created;
-        out[2] = host.engine.last_runtime_metrics.scopes_disposed;
-    }
-};
-
-test "native presentation and selection publish together after validation" {
-    var host = HostEnv.init();
-    var roc_host = makeSignalsRocHost(&host);
-    host.engine.roc_host = &roc_host;
-    defer {
-        host.deinit();
-        _ = host.gpa.deinit();
-    }
-    host.engine.resetRenderTree(&host);
-    const allocator = host.hostAllocator();
-    var splice = try render_cache.PreparedRenderSplice(NativeCtx).init(allocator, &host.engine.render_cache, .{
-        .node_capacity = 1,
-        .text_fields = 1,
-        .bool_fields = 1,
-        .wire_commands = 2,
-    });
-    defer splice.deinit();
-    const encoded = "2,0,12,16,1,0,2,120,1,1193046,16777216,16777216,16777215,0,1,8,18,0,2";
-    try splice.addTextField(&host.engine.render_cache, ids.root_elem, .native_style, encoded);
-    try splice.addBoolField(&host.engine.render_cache, ids.root_elem, .selected, true);
-    var publication = try NativeRenderPublication.prepare(&host, &splice);
-    defer publication.deinit();
-    try std.testing.expect(host.dom_elements.items[0].native_style == null);
-    try std.testing.expect(!host.dom_elements.items[0].selected);
-    host.configureAllocationFailure(1);
-    publication.apply(&host);
-    try std.testing.expectEqual(@as(usize, 0), host.allocation_fault.?.attempts);
-    try std.testing.expectEqualStrings(encoded, host.dom_elements.items[0].native_style.?);
-    try std.testing.expect(host.dom_elements.items[0].selected);
-    try std.testing.expectEqual(@as(u32, 12), (try native_style.decode(host.dom_elements.items[0].native_style.?)).gap);
-}
-
-test "native GUI payload contract rejects unused fields and invalid UTF-8" {
-    try Gpui.validatePayload(0, "", 0);
-    try Gpui.validatePayload(1, "hello λ", 0);
-    try Gpui.validatePayload(2, "", 1);
-    try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(0, "extra", 0));
-    try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(0, "", 1));
-    try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(1, "\xff", 0));
-    try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(1, "text", 1));
-    try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(2, "", 2));
-    try Gpui.validatePayload(3, "task-λ", 0);
-    try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(3, "\xff", 0));
-    try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(3, "task", 1));
-    try std.testing.expectError(error.InvalidGuiPayload, Gpui.validatePayload(4, "", 0));
-}
-
 test "native sparse move-before attaches a new root and repositions an existing root" {
     const allocator = std.testing.allocator;
     var parent = sim_dom.Element.init(0, try allocator.dupe(u8, "div"));
@@ -13763,248 +12753,6 @@ test "native sparse move-before attaches a new root and repositions an existing 
     try std.testing.expectEqualSlices(u64, &.{ 3, 2 }, parent.children.items);
     try NativeRenderPublication.prepareSparseChildEdit(&parent, .{ .move_before = .{ .child = ids.ElemId.fromRaw(2), .before = ids.ElemId.fromRaw(3) } });
     try std.testing.expectEqualSlices(u64, &.{ 2, 3 }, parent.children.items);
-}
-
-test "native drag metadata rejects invalid keys and mismatched detail handlers" {
-    const allocator = std.testing.allocator;
-    var node = sim_dom.Element.init(1, try allocator.dupe(u8, "div"));
-    defer node.deinit(allocator);
-    node.native_drag_key = try allocator.dupe(u8, "");
-    try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.validateDrag(&node));
-    allocator.free(node.native_drag_key.?);
-    node.native_drag_key = try allocator.dupe(u8, "task-λ");
-    try NativeRenderPublication.validateDrag(&node);
-    node.native_drop_target = true;
-    try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.validateDrag(&node));
-    try node.named_events.append(allocator, .{ .name = try allocator.dupe(u8, "drop"), .binding = .{
-        .event_id = ids.EventId.fromRaw(1),
-        .delivery = .{ .requested = .native },
-        .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
-    } });
-    try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.validateDrag(&node));
-    node.named_events.items[0].binding.payload_descriptor = BoundaryPayloadDescriptor.init(.str, .detail);
-    try NativeRenderPublication.validateDrag(&node);
-}
-
-test "native window close rejects malformed policy ownership and event payloads" {
-    const allocator = std.testing.allocator;
-    var node = sim_dom.Element.init(1, try allocator.dupe(u8, "window"));
-    defer node.deinit(allocator);
-    node.parent_id = 0;
-    try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.validateWindow(&node));
-    node.native_window_close = try allocator.dupe(u8, "await-decision");
-    try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.validateWindow(&node));
-    try node.named_events.append(allocator, .{ .name = try allocator.dupe(u8, "close-requested"), .binding = .{
-        .event_id = ids.EventId.fromRaw(1),
-        .delivery = .{ .requested = .native },
-        .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
-    } });
-    try NativeRenderPublication.validateWindow(&node);
-    node.parent_id = 2;
-    try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.validateWindow(&node));
-    node.parent_id = 0;
-    node.named_events.items[0].binding.payload_descriptor = BoundaryPayloadDescriptor.init(.str, .detail);
-    try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.validateWindow(&node));
-    node.named_events.items[0].binding.payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none);
-    allocator.free(node.native_window_close.?);
-    node.native_window_close = try allocator.dupe(u8, "guess");
-    try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.validateWindow(&node));
-}
-
-test "native window registration rejects duplicates before publication" {
-    var host = HostEnv.init();
-    var roc_host = makeSignalsRocHost(&host);
-    host.engine.roc_host = &roc_host;
-    defer {
-        host.deinit();
-        _ = host.gpa.deinit();
-    }
-    const allocator = host.hostAllocator();
-    host.engine.resetRenderTree(&host);
-    var splice = try render_cache.PreparedRenderSplice(NativeCtx).init(allocator, &host.engine.render_cache, .{
-        .node_capacity = 3,
-        .new_tags = 2,
-        .creations = 2,
-        .children = 1,
-        .child_links = 2,
-        .text_fields = 2,
-        .named_events = 2,
-        .named_event_wire_edits = 2,
-        .wire_commands = 10,
-    });
-    defer splice.deinit();
-    const first = ids.ElemId.fromRaw(1);
-    const second = ids.ElemId.fromRaw(2);
-    try splice.addCreation(&host.engine.render_cache, first, "window");
-    try splice.addCreation(&host.engine.render_cache, second, "window");
-    try splice.addChildren(&host.engine.render_cache, ids.root_elem, &.{ first, second });
-    for ([_]ids.ElemId{ first, second }) |id| {
-        try splice.addTextField(&host.engine.render_cache, id, .native_window_close, "keep-open");
-        try splice.addNamedEvents(&host.engine.render_cache, id, &.{.{ .name = "close-requested", .binding = .{
-            .event_id = ids.EventId.fromRaw(id.raw()),
-            .delivery = .{ .requested = .native },
-            .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
-        } }});
-    }
-    try std.testing.expectError(error.InvalidRenderTopology, NativeRenderPublication.prepare(&host, &splice));
-    try std.testing.expectEqual(@as(?u64, null), host.window_registration);
-    try std.testing.expectEqual(@as(usize, 1), host.dom_elements.items.len);
-}
-
-test "native GUI tombstone reads do not dereference retired drop registrations" {
-    try std.testing.expect(!Gpui.live);
-    Gpui.host = HostEnv.init();
-    Gpui.roc_host = makeSignalsRocHost(&Gpui.host);
-    Gpui.host.engine.roc_host = &Gpui.roc_host;
-    const allocator = Gpui.host.hostAllocator();
-    Gpui.child_order = signals.native_child_order.Tree.init(allocator);
-    Gpui.live = true;
-    defer {
-        Gpui.live = false;
-        Gpui.clear();
-        Gpui.child_order.deinit();
-        Gpui.host.deinit();
-        _ = Gpui.host.gpa.deinit();
-    }
-    const tag = try allocator.dupe(u8, "div");
-    try Gpui.host.dom_elements.append(allocator, sim_dom.Element.init(0, tag));
-    const elem = &Gpui.host.dom_elements.items[0];
-    elem.native_drop_target = true;
-    try elem.named_events.append(allocator, .{ .name = try allocator.dupe(u8, "drop"), .binding = .{
-        .event_id = ids.EventId.fromRaw(7),
-        .delivery = .{ .requested = .native },
-        .payload_descriptor = BoundaryPayloadDescriptor.init(.str, .detail),
-    } });
-    Gpui.touch(0);
-    var out: Gpui.Node = undefined;
-    Gpui.read(0, &out);
-    try std.testing.expectEqual(@as(u64, 7), out.drop);
-    // Retirement releases registrations before publishing the inactive slot.
-    allocator.free(elem.named_events.items[0].name);
-    elem.named_events.clearRetainingCapacity();
-    elem.active = false;
-    Gpui.read(0, &out);
-    try std.testing.expectEqual(@as(u64, 0), out.active);
-    try std.testing.expectEqual(@as(u64, 0), out.drop);
-    try std.testing.expectEqual(@as(u64, 0), out.close_requested);
-    try std.testing.expectEqual(@as(u64, 0), out.click);
-    try std.testing.expectEqual(@as(u64, 0), out.input);
-    try std.testing.expectEqual(@as(u64, 0), out.check);
-}
-
-test "native GUI drop dispatch preserves event detail through the real engine boundary" {
-    const Reducer = struct {
-        fn call(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
-            const values = testErasedArgsAs(ErasedHostValueTernaryArgs, args);
-            var text = testReadHostValueStr(roc_host, values.arg2);
-            defer text.decref(roc_host);
-            if (!std.mem.eql(u8, text.asSlice(), "task-λ")) @panic("drop changed the key");
-            const current = testReadHostValueI64(roc_host, values.arg0);
-            const host = hostFromRocHost(roc_host);
-            writeTestErasedResult(HostValue, ret, capabilityTestHostValue(host, roc_host, hostValueI64(host, roc_host, current + 1)));
-        }
-    };
-    try std.testing.expect(!Gpui.live);
-    Gpui.host = HostEnv.init();
-    Gpui.roc_host = makeSignalsRocHost(&Gpui.host);
-    Gpui.host.engine.roc_host = &Gpui.roc_host;
-    Gpui.child_order = signals.native_child_order.Tree.init(Gpui.host.hostAllocator());
-    Gpui.live = true;
-    defer {
-        Gpui.live = false;
-        Gpui.clear();
-        Gpui.child_order.deinit();
-        Gpui.host.deinit();
-        std.debug.assert(Gpui.host.gpa.deinit() == .ok);
-    }
-    const state_token = newTestBinderToken(&Gpui.roc_host);
-    var drop = testNodeEventAttrWithPlan(&Gpui.roc_host, .click, state_token, .detail, &Reducer.call);
-    drop.payload.on.kind.id = 0;
-    drop.payload.on.name = RocStr.fromSlice("drop", &Gpui.roc_host);
-    drop.payload.on.delivery = testNodeEventDelivery(true);
-    const target = testElementWith(&Gpui.roc_host, "div", &.{drop}, &.{});
-    const root = testNodeStateWithTokenAndInitial(&Gpui.roc_host, state_token, testHostValueI64(0), target);
-    defer root.decref(&Gpui.roc_host);
-    var stream: HostNodeDescriptorStream = .{};
-    Gpui.host.collectActiveElemRootDescriptors(&Gpui.roc_host, &stream, root, &.{});
-    _ = applyNodeDescriptorStream(&Gpui.host, &Gpui.roc_host, &stream);
-    Gpui.host.rebuildActiveEventsFromStream(&stream);
-    Gpui.host.engine.active_stream = stream;
-    const event = Gpui.host.engine.active_events.items[0];
-    const state_id = stream.scope_sites.items[0].node_id;
-    try std.testing.expect(event.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.str, .detail)));
-    try std.testing.expect(!event.payload_descriptor.eql(RenderEventKind.input.payloadDescriptor()));
-    for (1..3) |expected| {
-        Gpui.dispatch(1, 3, "task-λ".ptr, "task-λ".len, 0);
-        try expectHostValueI64(Gpui.host.stateValueByNodeId(state_id), @intCast(expected));
-    }
-}
-
-test "native GUI unit input and checked dispatch preserve their extraction descriptors" {
-    inline for (.{ RenderEventKind.click, RenderEventKind.input, RenderEventKind.check }) |kind| {
-        const Reducer = struct {
-            fn call(roc_host: *abi.RocHost, ret: ?[*]u8, args: ?[*]const u8, _: ?[*]u8, _: ?[*]u8, _: *?*const anyopaque) callconv(.c) void {
-                const values = testErasedArgsAs(ErasedHostValueTernaryArgs, args);
-                const current = testReadHostValueI64(roc_host, values.arg0);
-                switch (kind) {
-                    .click => {},
-                    .input => {
-                        var text = testReadHostValueStr(roc_host, values.arg2);
-                        defer text.decref(roc_host);
-                        if (!std.mem.eql(u8, text.asSlice(), "edited-λ")) @panic("input changed text");
-                    },
-                    .check => if (testReadHostValueBool(roc_host, values.arg2) != (current == 0)) @panic("check changed boolean"),
-                    else => unreachable,
-                }
-                const host = hostFromRocHost(roc_host);
-                writeTestErasedResult(HostValue, ret, capabilityTestHostValue(host, roc_host, hostValueI64(host, roc_host, current + 1)));
-            }
-        };
-        try std.testing.expect(!Gpui.live);
-        Gpui.host = HostEnv.init();
-        Gpui.roc_host = makeSignalsRocHost(&Gpui.host);
-        Gpui.host.engine.roc_host = &Gpui.roc_host;
-        Gpui.child_order = signals.native_child_order.Tree.init(Gpui.host.hostAllocator());
-        Gpui.live = true;
-        defer {
-            Gpui.live = false;
-            Gpui.clear();
-            Gpui.child_order.deinit();
-            Gpui.host.deinit();
-            std.testing.expectEqual(.ok, Gpui.host.gpa.deinit()) catch @panic("GUI event dispatch leaked");
-        }
-        const plan: EventExtractionPlanKind = switch (kind) {
-            .click => .none,
-            .input => .target_value,
-            .check => .target_checked,
-            else => unreachable,
-        };
-        const state_token = newTestBinderToken(&Gpui.roc_host);
-        const attr = testNodeEventAttrWithPlan(&Gpui.roc_host, kind, state_token, plan, &Reducer.call);
-        const target = testElementWith(&Gpui.roc_host, "input", &.{attr}, &.{});
-        const root = testNodeStateWithTokenAndInitial(&Gpui.roc_host, state_token, testHostValueI64(0), target);
-        defer root.decref(&Gpui.roc_host);
-        var stream: HostNodeDescriptorStream = .{};
-        Gpui.host.collectActiveElemRootDescriptors(&Gpui.roc_host, &stream, root, &.{});
-        _ = applyNodeDescriptorStream(&Gpui.host, &Gpui.roc_host, &stream);
-        Gpui.host.rebuildActiveEventsFromStream(&stream);
-        Gpui.host.engine.active_stream = stream;
-        const event = Gpui.host.engine.active_events.items[0];
-        const state_id = stream.scope_sites.items[0].node_id;
-        try std.testing.expect(event.payload_descriptor.eql(kind.payloadDescriptor()));
-        try std.testing.expect(!event.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.str, .detail)));
-        const wire_kind: u32 = switch (kind) {
-            .click => 0,
-            .input => 1,
-            .check => 2,
-            else => unreachable,
-        };
-        const bytes: []const u8 = if (kind == .input) "edited-λ" else "";
-        for (1..3) |expected| {
-            Gpui.dispatch(1, wire_kind, bytes.ptr, bytes.len, if (kind == .check and expected == 1) 1 else 0);
-            try expectHostValueI64(Gpui.host.stateValueByNodeId(state_id), @intCast(expected));
-        }
-    }
 }
 
 test "host argument parsing keeps values out of the flag namespace" {

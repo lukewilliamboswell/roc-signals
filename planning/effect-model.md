@@ -21,8 +21,8 @@ and gate results belong in the pull request, not here.
   [contributing.md](../www/content/docs/contributing.md), including release
   build paths, and keep the concrete remaining checklist in the implementing
   issue or pull request.
-- Provision JSPI-capable Node and Binaryen explicitly in the three-platform
-  release smoke workflow, then validate exact release candidates on each OS.
+- Provision JSPI-capable Node and Binaryen explicitly in the release smoke
+  workflow, then validate exact release candidates on each runner.
   Source CI provisioning alone does not establish release readiness.
 - Keep semantic SCM specs human-readable and first-order: select a pending
   occurrence and run its entire closure against ordinary service stubs.
@@ -59,30 +59,25 @@ before claiming throughput proportional to completed work.
 
 ## Strengthen the hosted boundary
 
-- Audit compatibility protection for the native effect handoff and primitive
+- Audit compatibility protection for the effect handoff and primitive
   service ABI. Add version/layout validation where missing and document the
   ownership contract for next/run/done, failure, and shutdown.
 - Give contract failures structured diagnostics, including missing declared
   reads, duplicate batch destinations, unsupported effect execution, and
   failed result preparation.
-- Extend fault placement to worker allocation, mailbox saturation, result
-  arrival during teardown, and cross-thread allocator ownership. Test that
-  the UI thread never waits on a worker that needs a chooser reply.
-- Check deterministic coverage for each hosted primitive, including environment
-  reads, without expanding the SCM language into an execution simulator.
+- Extend fault placement to result arrival during teardown.
+- Check deterministic coverage for each hosted primitive without expanding the SCM language into an execution simulator.
 - Preserve tests for completion-order races, equal but distinct occurrences,
   reparenting, and retired writes across both hosts. Use focused live executor
   tests for behavior whole-closure semantic tests cannot establish.
 
 ## Separate workstreams
 
-- [capability-api.md](capability-api.md) owns explicit authority and delegation
-  at hosted-function boundaries; it must not introduce a second effect model.
 - [test-harness-architecture.md](test-harness-architecture.md) owns parser,
-  resolver, scenario timing, and result-protocol improvements. Undertake them
+  resolver, and result-protocol improvements. Undertake them
   independently unless a concrete shipping blocker requires a narrow change.
-- Props APIs, shared element parity enforcement, and styling work remain
-  independent API projects. Do not bundle them into effect-model convergence.
+- Props APIs remain an independent API project. Do not bundle them into
+  effect-model convergence.
 
 Stable laws and rationale belong in `design.md`; public behavior belongs in
 maintained reference documentation; implementation and verification evidence

@@ -9,7 +9,6 @@ const ids = signals.ids;
 const render = signals.render;
 const runtime_limits = signals.runtime_limits;
 const spec_parser = @import("spec_parser.zig");
-const file_fixtures = @import("file_fixtures.zig");
 pub const ctx = @import("ctx.zig");
 
 const BoundaryPayloadDescriptor = boundary.BoundaryPayloadDescriptor;
@@ -502,10 +501,6 @@ pub fn Runner(comptime Ctx: type) type {
                 },
                 .seed_local_storage => |pair| Ctx.seedStorage(host, .local, pair.key, pair.value),
                 .seed_session_storage => |pair| Ctx.seedStorage(host, .session, pair.key, pair.value),
-                .seed_file_result => |fixture| {
-                    if (comptime !Ctx.capabilities.effect_fixtures) return 1;
-                    Ctx.stubFileResult(host, &fixture.stub);
-                },
                 .seed_http_result => |fixture| {
                     if (comptime !Ctx.capabilities.effect_fixtures) return 1;
                     Ctx.stubHttpResult(host, &fixture.stub);
@@ -521,17 +516,15 @@ pub fn Runner(comptime Ctx: type) type {
 
         /// Stateful execution boundary for a sequence of SCM commands.
         /// Metric marks live here so callers cannot accidentally erase them by
-        /// dispatching a scenario one command at a time.
+        /// dispatching a spec one command at a time.
         pub const Session = struct {
             metrics_mark: ?RuntimeMetrics = null,
 
             /// Dispatches one command while preserving sequence state.
             pub fn dispatch(self: *Session, host: *Host, roc_host: *RocHost, command: SpecCommand) StepOutcome {
-                if (spec_parser.stepCapability(command.kind()) == .window) return .unsupported;
                 const supported = switch (command.kind()) {
                     .set_visibility, .set_online => Ctx.capabilities.environment,
-                    .request_window_close, .expect_window_closed => Ctx.capabilities.window,
-                    .stub_file_result, .stub_http_result => Ctx.capabilities.effect_fixtures,
+                    .stub_http_result => Ctx.capabilities.effect_fixtures,
                     .run_effect, .expect_pending_effects => Ctx.capabilities.manual_effects,
                     else => true,
                 };
@@ -561,15 +554,6 @@ pub fn Runner(comptime Ctx: type) type {
                     Ctx.writeStderr(message);
                 }
                 switch (cmd.step) {
-                    .wait, .type_text, .key, .expect_onscreen, .expect_history, .expect_count, .expect_selected, .expect_focused, .snapshot, .close => {
-                        // The parser already keeps these out of a (test ...);
-                        // this is the runner's own word on it, for a command
-                        // list assembled some other way.
-                        var buffer: [160]u8 = undefined;
-                        const message = std.fmt.bufPrint(&buffer, "Error: line {d}: {s} runs only against a real window; put it in a (scenario ...)\n", .{ cmd.line_num, @tagName(cmd.step) }) catch "Error: window-only step\n";
-                        Ctx.writeStderr(message);
-                        return 1;
-                    },
                     .mark_metrics => {
                         // Refresh absolute retained-allocation gauges at the
                         // command boundary. Mount and dispatch can release
@@ -579,7 +563,7 @@ pub fn Runner(comptime Ctx: type) type {
                         session.metrics_mark = Ctx.lastRuntimeMetrics(host);
                     },
 
-                    .set_initial_location, .set_initial_visibility, .set_initial_online, .seed_local_storage, .seed_session_storage, .seed_file_result, .seed_http_result, .manual_effects => {},
+                    .set_initial_location, .set_initial_visibility, .set_initial_online, .seed_local_storage, .seed_session_storage, .seed_http_result, .manual_effects => {},
 
                     .set_visibility => |text| {
                         if (comptime !Ctx.capabilities.environment) {
@@ -773,45 +757,6 @@ pub fn Runner(comptime Ctx: type) type {
                         }
                     },
 
-                    .request_window_close => {
-                        if (comptime Ctx.capabilities.window) {
-                            Ctx.requestWindowClose(host, roc_host);
-                        } else {
-                            writeLocatorFailure(cmd.line_num, "window close requires the native GUI semantic host");
-                            return 1;
-                        }
-                    },
-                    .expect_window_closed => |expected| {
-                        if (comptime Ctx.capabilities.window) {
-                            if (Ctx.windowClosed(host) != expected) {
-                                writeLocatorFailure(cmd.line_num, "window closed state differs from expected");
-                                return 1;
-                            }
-                        } else {
-                            writeLocatorFailure(cmd.line_num, "window close requires the native GUI semantic host");
-                            return 1;
-                        }
-                    },
-                    .shortcut => |args| {
-                        const elem = Ctx.findElementByLocator(host, args.target, cmd.line_num) orelse {
-                            writeLocatorFailure(cmd.line_num, "locator did not resolve to one element");
-                            return 1;
-                        };
-                        if (elem.disabled) {
-                            writeLocatorFailure(cmd.line_num, "target is disabled");
-                            return 1;
-                        }
-                        const event = Ctx.shortcutEvent(elem, args.chord) orelse {
-                            writeLocatorFailure(cmd.line_num, "target has no binding for this exact shortcut");
-                            return 1;
-                        };
-                        if (!event.binding.payload_descriptor.eql(BoundaryPayloadDescriptor.init(.unit, .none))) {
-                            writeLocatorFailure(cmd.line_num, "shortcut binding does not use a unit payload descriptor");
-                            return 1;
-                        }
-                        Ctx.dispatchRocEvent(host, roc_host, event.binding.event_id, event.binding.payload_descriptor, Ctx.hostValueUnit(host, roc_host));
-                    },
-
                     .focus, .blur, .composition_start, .composition_end => |locator| {
                         const event_name = namedUnitEventNameForCommand(cmd.kind()) orelse {
                             writeLocatorFailure(cmd.line_num, "unsupported named unit event command");
@@ -941,14 +886,6 @@ pub fn Runner(comptime Ctx: type) type {
                             return 1;
                         }
                         if (!dispatchCheckedChangeEvent(Ctx, host, roc_host, elem, checked, cmd.line_num)) return 1;
-                    },
-
-                    .stub_file_result => |stub| {
-                        if (comptime !Ctx.capabilities.effect_fixtures) {
-                            writeLocatorFailure(cmd.line_num, "file stubs are not supported by this runner");
-                            return 1;
-                        }
-                        Ctx.stubFileResult(host, &stub.stub);
                     },
 
                     .stub_http_result => |stub| {

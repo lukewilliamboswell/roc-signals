@@ -6,20 +6,17 @@ from pathlib import Path
 import subprocess
 import sys
 
-AREAS = frozenset({"source", "gui", "site"})
-WEB = frozenset({"source", "site"})
-SHARED = WEB
+AREAS = frozenset({"source", "site"})
 
 
 def verify_results(results):
     if results["changes"]["result"] != "success":
         raise ValueError("CI selection did not succeed")
     selection = results["changes"]["outputs"]
-    for job in ("source", "gui", "gui-windows", "gui-macos", "site"):
-        area = "gui" if job.startswith("gui") else job
-        enabled = selection[area]
+    for job in sorted(AREAS):
+        enabled = selection[job]
         if enabled not in ("true", "false"):
-            raise ValueError(f"invalid selection for {area}")
+            raise ValueError(f"invalid selection for {job}")
         expected = "success" if enabled == "true" else "skipped"
         if results[job]["result"] != expected:
             raise ValueError(f"{job}: expected {expected}, got {results[job]['result']}")
@@ -29,31 +26,15 @@ def verify_results(results):
 def classify(paths):
     selected = set()
     for path in paths:
-        if path.startswith(("platform-shared/", "src/signals/")):
-            # Shared semantics run through both platform suites. GUI CI reuses
-            # matching released hosts and otherwise builds the current sources.
-            selected.update(SHARED)
-            selected.add("gui")
-        elif path.startswith(("src/spec/", "src/sim_dom", "protocol/")):
-            # The spec parser, runner, simulated DOM and protocol manifest are
-            # shared by every spec on every host.
+        if path.startswith("www/static/"):
+            # The bundled browser runtime is source, not documentation.
             selected.update(AREAS)
-        elif path.startswith(("platform-gui/", "crates/gpui-host/")):
-            selected.add("gui")
-        elif path.startswith(("examples-gui/", "test/gui/")):
-            selected.add("gui")
-        elif path.startswith("src/native_host"):
-            # The native host is the display-free spec host for GUI apps too.
-            selected.update(WEB)
-            selected.add("gui")
-        elif path.startswith(("platform-web/", "examples-web/", "src/wasm")):
-            selected.update(WEB)
-        elif path.startswith("www/static/"):
-            selected.update(WEB)
         elif (path.startswith(("www/", "docs/", "releases/"))
               or path in {"README.md", "AGENTS.md", "design.md", "style.md", "THIRD_PARTY_LICENSES.md"}):
             selected.add("site")
         else:
+            # Engine, hosts, platforms, examples, specs, tooling and unknown
+            # paths all feed the hosted source tests and the published site.
             selected.update(AREAS)
     return {area: area in selected for area in sorted(AREAS)}
 

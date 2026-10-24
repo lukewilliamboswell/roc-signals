@@ -1,22 +1,26 @@
 """Guard CI selection against skipping affected or unclassified source."""
 
 import unittest
-from ci_changes import AREAS, WEB, classify, verify_results
+from ci_changes import AREAS, classify, verify_results
 
 
 class ChangeSelectionTests(unittest.TestCase):
     def test_gate_accepts_only_intentional_skips_and_successes(self):
         results = {"changes": {"result": "success", "outputs": {
-            area: "true" if area == "gui" else "false" for area in AREAS
+            "source": "true", "site": "false",
         }}}
-        for job in ("source", "gui", "gui-windows", "gui-macos", "site"):
-            results[job] = {"result": "success" if job.startswith("gui") else "skipped"}
+        results["source"] = {"result": "success"}
+        results["site"] = {"result": "skipped"}
         verify_results(results)
         for bad in ("failure", "cancelled", "skipped"):
-            results["gui"]["result"] = bad
+            results["source"]["result"] = bad
             with self.assertRaises(ValueError):
                 verify_results(results)
-        results["gui"]["result"] = "success"
+        results["source"]["result"] = "success"
+        results["site"]["result"] = "success"
+        with self.assertRaises(ValueError):
+            verify_results(results)
+        results["site"]["result"] = "skipped"
         results["changes"]["result"] = "failure"
         with self.assertRaises(ValueError):
             verify_results(results)
@@ -25,38 +29,25 @@ class ChangeSelectionTests(unittest.TestCase):
         return {name for name, enabled in classify(paths).items() if enabled}
 
     def test_unknown_and_shared_changes_run_every_area(self):
-        for path in ("new-component/input", "build.zig", "Cargo.lock",
-                     ".github/workflows/ci.yml", "new-component/fixture.md", "dependencies.lock.json"):
+        for path in ("new-component/input", "build.zig", ".github/workflows/ci.yml",
+                     "new-component/fixture.md", "dependencies.lock.json"):
             self.assertEqual(self.selected([path]), AREAS, path)
 
-    def test_gui_host_and_platform_sources_select_native_gui_checks(self):
-        for path in ("crates/gpui-host/src/lib.rs", "platform-gui/main.roc"):
-            self.assertEqual(self.selected([path]), {"gui"})
-
-    def test_shared_engine_runs_web_and_gui_specs(self):
-        # The GUI job is the only one that runs GUI specs and window scenarios
-        # through the engine, so an engine change must select it as well.
-        for path in ("src/signals/engine.zig", "platform-shared/Signal.roc", "src/native_host.zig"):
-            self.assertEqual(self.selected([path]), WEB | {"gui"}, path)
-
-    def test_spec_machinery_runs_every_area(self):
-        for path in ("src/spec/spec_parser.zig", "src/sim_dom.zig", "protocol/native-protocol.json"):
+    def test_engine_platform_and_spec_sources_run_every_area(self):
+        for path in ("src/signals/engine.zig", "platform-shared/Signal.roc", "src/native_host.zig",
+                     "src/spec/spec_parser.zig", "src/sim_dom.zig", "protocol/native-protocol.json",
+                     "platform-web/main.roc", "examples-web/counter/main.roc", "src/wasm_host.zig"):
             self.assertEqual(self.selected([path]), AREAS, path)
-
-    def test_gui_apps_and_specs_use_the_reviewed_prebuilt_host(self):
-        self.assertEqual(self.selected(["test/gui/task/main.roc", "examples-gui/counter/main.roc"]), {"gui"})
 
     def test_documentation_changes_select_site(self):
         self.assertEqual(self.selected(["www/content/docs/contributing.md"]), {"site"})
+        self.assertEqual(self.selected(["design.md", "releases/unreleased.md"]), {"site"})
 
     def test_runtime_javascript_is_not_treated_as_documentation(self):
         self.assertIn("source", self.selected(["www/static/signals.mjs"]))
 
     def test_multiple_areas_are_unioned(self):
-        self.assertEqual(self.selected(["docs/guide.md", "examples-gui/counter/main.roc"]), {"site", "gui"})
-
-    def test_removed_gui_and_added_unknown_paths_trigger_full_validation(self):
-        self.assertEqual(self.selected(["crates/gpui-host/src/lib.rs", "new-host/lib.rs"]), AREAS)
+        self.assertEqual(self.selected(["docs/guide.md", "examples-web/counter/main.roc"]), AREAS)
 
 
 if __name__ == "__main__":

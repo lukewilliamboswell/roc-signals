@@ -4,7 +4,6 @@ const std = @import("std");
 const signals = @import("signals");
 const boundary = signals.boundary;
 const sexpr = @import("sexpr.zig");
-const file_fixtures = @import("file_fixtures.zig");
 const http_fixtures = @import("http_fixtures.zig");
 
 pub const SpecCommandType = enum {
@@ -15,9 +14,6 @@ pub const SpecCommandType = enum {
     pointer_enter,
     pointer_leave,
     key_down,
-    shortcut,
-    request_window_close,
-    expect_window_closed,
     focus,
     blur,
     change,
@@ -38,8 +34,6 @@ pub const SpecCommandType = enum {
     expect_checked,
     expect_disabled,
     expect_updates,
-    stub_file_result,
-    seed_file_result,
     stub_http_result,
     seed_http_result,
     manual_effects,
@@ -68,24 +62,7 @@ pub const SpecCommandType = enum {
     mark_metrics,
     expect_metric_delta,
     expect_metric_delta_at_most,
-    // Window-only steps. A `(scenario ...)` runs against the real window through
-    // the GUI host, where these observe layout, native editor history and the
-    // window's own lifecycle; the display-free runner refuses them by name.
-    wait,
-    type_text,
-    key,
-    expect_onscreen,
-    expect_history,
-    expect_count,
-    expect_selected,
-    expect_focused,
-    snapshot,
-    close,
 };
-
-/// Which built-in host can execute a step. This is the single admission table
-/// used by parsing and by the generated window-step manifest.
-pub const StepCapability = enum { semantic, window, both };
 
 /// The lifecycle role of a command in a complete spec execution.
 ///
@@ -96,11 +73,11 @@ pub const StepRole = enum { setup, operation, assertion, measurement_boundary };
 /// Returns the execution role that every runner must preserve for this step.
 pub fn stepRole(kind: SpecCommandType) StepRole {
     return switch (kind) {
-        .set_initial_location, .set_initial_visibility, .set_initial_online, .seed_local_storage, .seed_session_storage, .seed_file_result, .seed_http_result, .manual_effects => .setup,
+        .set_initial_location, .set_initial_visibility, .set_initial_online, .seed_local_storage, .seed_session_storage, .seed_http_result, .manual_effects => .setup,
 
-        .click, .real_click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave, .key_down, .shortcut, .request_window_close, .focus, .blur, .change, .select_option, .composition_start, .composition_end, .custom_event, .submit, .fill, .check, .uncheck, .stub_file_result, .stub_http_result, .run_effect, .tick_interval, .tick_interval_if_active, .navigate, .set_visibility, .set_online, .history_back, .history_forward, .wait, .type_text, .key, .close => .operation,
+        .click, .real_click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave, .key_down, .focus, .blur, .change, .select_option, .composition_start, .composition_end, .custom_event, .submit, .fill, .check, .uncheck, .stub_http_result, .run_effect, .tick_interval, .tick_interval_if_active, .navigate, .set_visibility, .set_online, .history_back, .history_forward => .operation,
 
-        .expect_window_closed, .expect_text, .expect_visible, .expect_absent, .expect_value, .expect_attr, .expect_no_attr, .expect_checked, .expect_disabled, .expect_updates, .expect_pending_effects, .expect_cleanup, .expect_interval, .expect_current_location, .expect_document_title, .expect_local_storage, .expect_session_storage, .expect_no_local_storage, .expect_no_session_storage, .expect_metric_delta, .expect_metric_delta_at_most, .expect_onscreen, .expect_history, .expect_count, .expect_selected, .expect_focused, .snapshot => .assertion,
+        .expect_text, .expect_visible, .expect_absent, .expect_value, .expect_attr, .expect_no_attr, .expect_checked, .expect_disabled, .expect_updates, .expect_pending_effects, .expect_cleanup, .expect_interval, .expect_current_location, .expect_document_title, .expect_local_storage, .expect_session_storage, .expect_no_local_storage, .expect_no_session_storage, .expect_metric_delta, .expect_metric_delta_at_most => .assertion,
 
         .mark_metrics => .measurement_boundary,
     };
@@ -114,41 +91,14 @@ test "step roles distinguish ordered fixtures from setup and assertions" {
     try std.testing.expectEqual(StepRole.measurement_boundary, stepRole(.mark_metrics));
 }
 
-/// Returns the built-in host capability required by a step.
-pub fn stepCapability(kind: SpecCommandType) StepCapability {
-    return switch (kind) {
-        .wait, .type_text, .key, .expect_onscreen, .expect_history, .expect_count, .expect_selected, .expect_focused, .snapshot, .close => .window,
-        .click, .focus, .shortcut, .expect_visible, .expect_absent, .expect_text, .expect_value, .expect_disabled => .both,
-        else => .semantic,
-    };
-}
-
 /// Writes a parsed spec in one deterministic line per command, every field
 /// spelled out. This is what a spec *means* to the runner, independent of how
 /// it was spelled, and the checked-in golden of every spec's canonical form is
 /// the proof that a parser change changed nothing: the same spec must produce
 /// the same command sequence.
 pub fn writeCanonical(writer: *std.Io.Writer, spec: ParsedTestSpec) std.Io.Writer.Error!void {
-    try writer.print("{s} ", .{if (spec.scenario != null) "scenario" else "test"});
+    try writer.writeAll("test ");
     try writeQuoted(writer, spec.name);
-    if (spec.scenario) |header| {
-        try writer.print(" window={d}x{d}", .{ header.window_width, header.window_height });
-        try writer.writeAll(" assets=");
-        try writeOptionalQuoted(writer, header.assets);
-        try writer.writeAll(" choose=[");
-        for (header.choices, 0..) |choice, index| {
-            if (index > 0) try writer.writeByte(' ');
-            try writeQuoted(writer, choice);
-        }
-        try writer.writeAll("] diagnostic=");
-        try writeOptionalQuoted(writer, header.diagnostic);
-        try writer.writeAll(" on=[");
-        for (header.on, 0..) |token, index| {
-            if (index > 0) try writer.writeByte(' ');
-            try writer.writeAll(token);
-        }
-        try writer.writeByte(']');
-    }
     try writer.writeByte('\n');
     for (spec.commands) |cmd| {
         const view = legacyView(cmd.step);
@@ -160,11 +110,9 @@ pub fn writeCanonical(writer: *std.Io.Writer, spec: ParsedTestSpec) std.Io.Write
         try writeField(writer, "text", view.locator.text);
         try writeField(writer, "test_id", view.locator.test_id);
         try writeField(writer, "task", view.task);
-        if (view.file_stub) |stub| try writeFileStub(writer, stub);
         if (view.http_stub) |stub| try writeHttpStub(writer, stub);
         try writeField(writer, "attr", view.attr);
         if (view.interval) |value| try writer.print(" interval={d}", .{value});
-        if (view.shortcut) |chord| try writer.print(" shortcut={d}+{d}", .{ chord.key, chord.modifiers });
         try writeField(writer, "expected", view.expected);
         if (view.count) |value| try writer.print(" count={d}", .{value});
         if (view.delta) |value| try writer.print(" delta={d}", .{value});
@@ -173,52 +121,8 @@ pub fn writeCanonical(writer: *std.Io.Writer, spec: ParsedTestSpec) std.Io.Write
     }
 }
 
-/// A scripted file answer, every field spelled out in the order the form
+/// A scripted HTTP answer, every field spelled out in the order the form
 /// declares them, so a stub that changes shape moves a golden line.
-fn writeFileStub(writer: *std.Io.Writer, stub: file_fixtures.Stub) std.Io.Writer.Error!void {
-    try writer.print(" file={s}", .{@tagName(stub)});
-    switch (stub) {
-        .choice => |path| {
-            try writer.writeAll(" path=");
-            try writeOptionalQuoted(writer, path);
-        },
-        .stat => |value| {
-            try writeField(writer, "path", value.path);
-            try writer.print(" kind={s} bytes={d} device={d} inode={d}", .{ @tagName(value.kind), value.bytes, value.device, value.inode });
-        },
-        .read => |value| {
-            try writeField(writer, "path", value.path);
-            // A `:file` stub may carry an image; text is quoted, anything
-            // else is named by length and digest so the golden stays text.
-            if (std.unicode.utf8ValidateSlice(value.bytes)) {
-                try writeField(writer, "bytes", value.bytes);
-            } else {
-                var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
-                std.crypto.hash.sha2.Sha256.hash(value.bytes, &digest, .{});
-                try writer.print(" bytes=<{d} bytes sha256:{x}>", .{ value.bytes.len, digest });
-            }
-            if (value.offset) |offset| try writer.print(" offset={d}", .{offset});
-            if (value.size) |size| try writer.print(" size={d}", .{size});
-        },
-        .directory => |value| {
-            try writeField(writer, "path", value.path);
-            try writer.writeAll(" entries=[");
-            for (value.entries, 0..) |entry, index| {
-                if (index > 0) try writer.writeByte(' ');
-                try writer.print("{s}:{d}:", .{ @tagName(entry.kind), entry.bytes });
-                try writeQuoted(writer, entry.path);
-            }
-            try writer.writeByte(']');
-        },
-        .open => |path| try writeField(writer, "path", path),
-        .reject => |value| {
-            try writer.print(" kind={s}", .{@tagName(value.kind)});
-            try writeField(writer, "detail", value.detail);
-        },
-    }
-}
-
-/// A scripted HTTP answer in the same spirit.
 fn writeHttpStub(writer: *std.Io.Writer, stub: http_fixtures.Stub) std.Io.Writer.Error!void {
     try writer.print(" http={s}", .{@tagName(stub)});
     switch (stub) {
@@ -241,8 +145,7 @@ fn writeHttpStub(writer: *std.Io.Writer, stub: http_fixtures.Stub) std.Io.Writer
     }
 }
 
-/// The flat view of a step the canonical form and the scenario ABI both
-/// spell: one slot per kind of value, so a step's payload is legible without
+/// The flat view of a step the canonical form spells: one slot per kind of value, so a step's payload is legible without
 /// knowing its type. The typed union is the model; this is its projection.
 pub const LegacyLocator = struct {
     kind: LocatorKind = .none,
@@ -256,11 +159,9 @@ pub const LegacyLocator = struct {
 pub const LegacyView = struct {
     locator: LegacyLocator = .{},
     task: ?[]const u8 = null,
-    file_stub: ?file_fixtures.Stub = null,
     http_stub: ?http_fixtures.Stub = null,
     attr: ?[]const u8 = null,
     interval: ?u64 = null,
-    shortcut: ?signals.key_chord.Chord = null,
     expected: ?[]const u8 = null,
     count: ?u64 = null,
     delta: ?i64 = null,
@@ -270,28 +171,24 @@ pub const LegacyView = struct {
 /// Projects a typed step onto the flat view. Every string here borrows the step.
 pub fn legacyView(step: Step) LegacyView {
     return switch (step) {
-        .click, .real_click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave, .focus, .blur, .composition_start, .composition_end, .submit, .check, .uncheck, .expect_visible, .expect_absent, .expect_onscreen, .expect_focused => |target| .{ .locator = target.legacy() },
-        .change, .select_option, .fill, .expect_text, .expect_value, .type_text => |args| .{ .locator = args.target.legacy(), .expected = args.text },
-        .expect_checked, .expect_disabled, .expect_selected => |args| .{ .locator = args.target.legacy(), .boolean = args.expected },
-        .expect_updates, .expect_history => |args| .{ .locator = args.target.legacy(), .count = args.count },
+        .click, .real_click, .pointer_down, .pointer_up, .pointer_enter, .pointer_leave, .focus, .blur, .composition_start, .composition_end, .submit, .check, .uncheck, .expect_visible, .expect_absent => |target| .{ .locator = target.legacy() },
+        .change, .select_option, .fill, .expect_text, .expect_value => |args| .{ .locator = args.target.legacy(), .expected = args.text },
+        .expect_checked, .expect_disabled => |args| .{ .locator = args.target.legacy(), .boolean = args.expected },
+        .expect_updates => |args| .{ .locator = args.target.legacy(), .count = args.count },
         .key_down => |args| .{ .locator = args.target.legacy(), .expected = args.key, .boolean = args.shift },
-        .shortcut => |args| .{ .locator = args.target.legacy(), .shortcut = args.chord },
         .custom_event => |args| .{ .locator = args.target.legacy(), .task = args.name, .expected = args.detail },
         .expect_attr => |args| .{ .locator = args.target.legacy(), .attr = args.name, .expected = args.value },
         .expect_no_attr => |args| .{ .locator = args.target.legacy(), .attr = args.name },
-        .stub_file_result, .seed_file_result => |args| .{ .task = args.label, .file_stub = args.stub },
         .stub_http_result, .seed_http_result => |args| .{ .task = args.label, .http_stub = args.stub },
-        .tick_interval, .tick_interval_if_active, .wait => |period| .{ .interval = period },
+        .tick_interval, .tick_interval_if_active => |period| .{ .interval = period },
         .expect_cleanup => |args| .{ .task = args.name, .count = args.count },
         .run_effect, .expect_pending_effects => |count| .{ .count = count },
         .expect_interval => |args| .{ .interval = args.period_ms, .count = args.count },
-        .set_initial_location, .set_initial_visibility, .set_initial_online, .navigate, .set_visibility, .set_online, .expect_current_location, .expect_document_title, .key, .snapshot => |text| .{ .expected = text },
+        .set_initial_location, .set_initial_visibility, .set_initial_online, .navigate, .set_visibility, .set_online, .expect_current_location, .expect_document_title => |text| .{ .expected = text },
         .expect_no_local_storage, .expect_no_session_storage => |key| .{ .task = key },
         .seed_local_storage, .seed_session_storage, .expect_local_storage, .expect_session_storage => |pair| .{ .task = pair.key, .expected = pair.value },
         .expect_metric_delta, .expect_metric_delta_at_most => |args| .{ .expected = args.metric, .delta = args.delta },
-        .expect_count => |args| .{ .expected = args.prefix, .count = args.count },
-        .expect_window_closed => |flag| .{ .boolean = flag },
-        .request_window_close, .history_back, .history_forward, .mark_metrics, .manual_effects, .close => .{},
+        .history_back, .history_forward, .mark_metrics, .manual_effects => .{},
     };
 }
 
@@ -300,10 +197,6 @@ fn writeField(writer: *std.Io.Writer, name: []const u8, value: ?[]const u8) std.
         try writer.print(" {s}=", .{name});
         try writeQuoted(writer, text);
     }
-}
-
-fn writeOptionalQuoted(writer: *std.Io.Writer, value: ?[]const u8) std.Io.Writer.Error!void {
-    if (value) |text| try writeQuoted(writer, text) else try writer.writeAll("none");
 }
 
 /// Quotes with the same escapes the reader accepts, so a golden line is
@@ -320,35 +213,6 @@ fn writeQuoted(writer: *std.Io.Writer, text: []const u8) std.Io.Writer.Error!voi
     };
     try writer.writeByte('"');
 }
-
-/// The header of a `(scenario ...)`: what the window run needs before its
-/// first step. Everything here used to be script front matter read by the
-/// Python driver; the host owns it now so that one parser decides.
-pub const Scenario = struct {
-    /// Requested window size in logical pixels; zero means the host default.
-    window_width: u32 = 0,
-    window_height: u32 = 0,
-    /// Assets root, relative to the example directory, or null for `assets/`.
-    assets: ?[]const u8 = null,
-    /// Paths handed to the file and folder choosers in order, relative to the
-    /// example directory, instead of opening native dialogs.
-    choices: [][]const u8 = &.{},
-    /// A defect this scenario documents; its failure is reported, not fatal.
-    diagnostic: ?[]const u8 = null,
-    /// Where the diagnostic applies: systems (`linux`, `macos`, `windows`) or
-    /// the frame the run saw (`client-frame`, `server-frame`). Empty means everywhere.
-    on: [][]const u8 = &.{},
-
-    /// Releases every string this header owns.
-    pub fn deinit(self: Scenario, allocator: std.mem.Allocator) void {
-        if (self.assets) |value| allocator.free(value);
-        for (self.choices) |choice| allocator.free(choice);
-        if (self.choices.len > 0) allocator.free(self.choices);
-        if (self.diagnostic) |value| allocator.free(value);
-        for (self.on) |token| allocator.free(token);
-        if (self.on.len > 0) allocator.free(self.on);
-    }
-};
 
 pub const LocatorKind = enum {
     none,
@@ -400,19 +264,15 @@ pub const LocatorText = struct { target: Locator, text: []const u8 };
 pub const LocatorBool = struct { target: Locator, expected: bool };
 pub const LocatorCount = struct { target: Locator, count: u64 };
 pub const KeyDown = struct { target: Locator, key: []const u8, shift: bool };
-pub const Shortcut = struct { target: Locator, chord: signals.key_chord.Chord };
 pub const CustomEvent = struct { target: Locator, name: []const u8, detail: []const u8 };
 pub const Attr = struct { target: Locator, name: []const u8, value: []const u8 };
 pub const AttrName = struct { target: Locator, name: []const u8 };
-/// A scripted file answer with the label the spec gave it.
-pub const FileStub = struct { label: []const u8, stub: file_fixtures.Stub };
 /// A scripted HTTP answer with the label the spec gave it.
 pub const HttpStub = struct { label: []const u8, stub: http_fixtures.Stub };
 pub const NamedCount = struct { name: []const u8, count: u64 };
 pub const IntervalCount = struct { period_ms: u64, count: u64 };
 pub const KeyValue = struct { key: []const u8, value: []const u8 };
 pub const MetricDelta = struct { metric: []const u8, delta: i64 };
-pub const PrefixCount = struct { prefix: []const u8, count: u64 };
 
 /// One step with exactly the payload its kind carries. The union is tagged by
 /// `SpecCommandType` so `@tagName` still spells the step for the ABI and the
@@ -425,9 +285,6 @@ pub const Step = union(SpecCommandType) {
     pointer_enter: Locator,
     pointer_leave: Locator,
     key_down: KeyDown,
-    shortcut: Shortcut,
-    request_window_close: void,
-    expect_window_closed: bool,
     focus: Locator,
     blur: Locator,
     change: LocatorText,
@@ -448,8 +305,6 @@ pub const Step = union(SpecCommandType) {
     expect_checked: LocatorBool,
     expect_disabled: LocatorBool,
     expect_updates: LocatorCount,
-    stub_file_result: FileStub,
-    seed_file_result: FileStub,
     stub_http_result: HttpStub,
     seed_http_result: HttpStub,
     manual_effects: void,
@@ -478,16 +333,6 @@ pub const Step = union(SpecCommandType) {
     mark_metrics: void,
     expect_metric_delta: MetricDelta,
     expect_metric_delta_at_most: MetricDelta,
-    wait: u64,
-    type_text: LocatorText,
-    key: []const u8,
-    expect_onscreen: Locator,
-    expect_history: LocatorCount,
-    expect_count: PrefixCount,
-    expect_selected: LocatorBool,
-    expect_focused: Locator,
-    snapshot: []const u8,
-    close: void,
 
     /// The kind of this step, for reports and the ABI.
     pub fn kind(self: Step) SpecCommandType {
@@ -505,9 +350,9 @@ pub const Step = union(SpecCommandType) {
 
 fn freePayload(allocator: std.mem.Allocator, payload: anytype) void {
     const T = @TypeOf(payload);
-    if (T == void or T == bool or T == u64 or T == i64 or T == signals.key_chord.Chord) return;
+    if (T == void or T == bool or T == u64 or T == i64) return;
     if (T == []const u8) return allocator.free(payload);
-    if (T == Locator or T == file_fixtures.Stub or T == http_fixtures.Stub) return payload.deinit(allocator);
+    if (T == Locator or T == http_fixtures.Stub) return payload.deinit(allocator);
     inline for (std.meta.fields(T)) |field| freePayload(allocator, @field(payload, field.name));
 }
 
@@ -535,14 +380,11 @@ pub fn freeSpecCommands(allocator: std.mem.Allocator, commands: []SpecCommand) v
 pub const ParsedTestSpec = struct {
     name: []const u8,
     commands: []SpecCommand,
-    /// Present for a `(scenario ...)`, absent for a `(test ...)`.
-    scenario: ?Scenario = null,
 
     /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
     pub fn deinit(self: ParsedTestSpec, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         freeSpecCommands(allocator, self.commands);
-        if (self.scenario) |scenario| scenario.deinit(allocator);
     }
 };
 
@@ -562,7 +404,7 @@ pub fn parseTestSpecFile(allocator: std.mem.Allocator, file_path: []const u8) Pa
     };
     defer allocator.free(content);
 
-    return parseSExprTestSpecFrom(allocator, content, std.fs.path.dirname(file_path) orelse "");
+    return parseSExprTestSpec(allocator, content);
 }
 
 fn dupePlain(allocator: std.mem.Allocator, input: []const u8) ParseError![]u8 {
@@ -606,11 +448,6 @@ pub fn onlineSnapshotFromSpecText(text: []const u8) ParseError!boundary.OnlineSn
 
 /// Parses sexpr test spec and rejects malformed input without semantic recovery.
 pub fn parseSExprTestSpec(allocator: std.mem.Allocator, content: []const u8) ParseError!ParsedTestSpec {
-    return parseSExprTestSpecFrom(allocator, content, "");
-}
-
-/// Parses spec text whose relative file references resolve against `base_dir`.
-pub fn parseSExprTestSpecFrom(allocator: std.mem.Allocator, content: []const u8, base_dir: []const u8) ParseError!ParsedTestSpec {
     var reader = sexpr.Reader.init(allocator, content);
     const root = reader.readOne() catch |err| switch (err) {
         error.InvalidSyntax => return ParseError.InvalidFormat,
@@ -620,160 +457,37 @@ pub fn parseSExprTestSpecFrom(allocator: std.mem.Allocator, content: []const u8,
 
     const root_items = exprList(root) orelse return ParseError.InvalidFormat;
     if (root_items.len < 3) return ParseError.InvalidFormat;
-    const is_scenario = exprSymbolEql(root_items[0], "scenario");
-    if (!is_scenario and !exprSymbolEql(root_items[0], "test")) return ParseError.InvalidFormat;
+    if (!exprSymbolEql(root_items[0], "test")) return ParseError.InvalidFormat;
     const name = exprString(root_items[1]) orelse return ParseError.InvalidFormat;
     const name_copy = allocator.dupe(u8, name) catch return ParseError.OutOfMemory;
     errdefer allocator.free(name_copy);
-
-    var scenario: ?Scenario = null;
-    errdefer if (scenario) |header| header.deinit(allocator);
-    var sections_from: usize = 2;
-    if (is_scenario) {
-        const header = try parseScenarioHeader(allocator, root_items[2..]);
-        scenario = header.scenario;
-        sections_from += header.consumed;
-    }
 
     var commands: std.ArrayListUnmanaged(SpecCommand) = .empty;
     errdefer freeCommandList(allocator, &commands);
     var saw_setup = false;
     var saw_steps = false;
 
-    for (root_items[sections_from..]) |section| {
+    for (root_items[2..]) |section| {
         const section_items = exprList(section) orelse return ParseError.InvalidFormat;
         if (section_items.len == 0) return ParseError.InvalidFormat;
         if (exprSymbolEql(section_items[0], "setup")) {
-            if (is_scenario or saw_setup or saw_steps) return ParseError.InvalidFormat;
+            if (saw_setup or saw_steps) return ParseError.InvalidFormat;
             saw_setup = true;
-            for (section_items[1..]) |form| try appendDecodedForm(allocator, &commands, form, true, base_dir);
+            for (section_items[1..]) |form| try appendDecodedForm(allocator, &commands, form, true);
         } else if (exprSymbolEql(section_items[0], "steps")) {
             if (saw_steps) return ParseError.InvalidFormat;
             saw_steps = true;
             if (section_items.len == 1) return ParseError.InvalidFormat;
-            for (section_items[1..]) |form| try appendDecodedForm(allocator, &commands, form, false, base_dir);
+            for (section_items[1..]) |form| try appendDecodedForm(allocator, &commands, form, false);
         } else {
             return ParseError.InvalidFormat;
         }
     }
     if (!saw_steps) return ParseError.InvalidFormat;
-    if (is_scenario) {
-        // A scenario runs real file and HTTP effects, so scripted answers are
-        // test-only; closing the window ends the run, so nothing may follow it.
-        for (commands.items, 0..) |cmd, index| {
-            switch (cmd.step) {
-                .stub_file_result, .stub_http_result => return ParseError.InvalidFormat,
-                .close => if (index + 1 != commands.items.len) return ParseError.InvalidFormat,
-                else => {},
-            }
-        }
-    } else {
-        for (commands.items) |cmd| if (stepCapability(cmd.kind()) == .window) return ParseError.InvalidFormat;
-    }
-
     return .{
         .name = name_copy,
         .commands = commands.toOwnedSlice(allocator) catch return ParseError.OutOfMemory,
-        .scenario = scenario,
     };
-}
-
-/// Reads the `:keyword value` pairs between a scenario's name and its `(steps ...)`.
-fn parseScenarioHeader(allocator: std.mem.Allocator, items: []const sexpr.Expr) ParseError!struct { scenario: Scenario, consumed: usize } {
-    var scenario: Scenario = .{};
-    errdefer scenario.deinit(allocator);
-    var index: usize = 0;
-    while (index < items.len) {
-        const key = exprSymbol(items[index]) orelse break;
-        if (key.len == 0 or key[0] != ':') break;
-        if (index + 1 >= items.len) return ParseError.InvalidFormat;
-        const value = items[index + 1];
-        if (std.mem.eql(u8, key, ":window")) {
-            if (scenario.window_width != 0) return ParseError.InvalidFormat;
-            const text = exprString(value) orelse return ParseError.InvalidFormat;
-            const separator = std.mem.indexOfAny(u8, text, "xX") orelse return ParseError.InvalidFormat;
-            scenario.window_width = std.fmt.parseInt(u32, text[0..separator], 10) catch return ParseError.InvalidFormat;
-            scenario.window_height = std.fmt.parseInt(u32, text[separator + 1 ..], 10) catch return ParseError.InvalidFormat;
-            if (scenario.window_width == 0 or scenario.window_height == 0) return ParseError.InvalidFormat;
-        } else if (std.mem.eql(u8, key, ":assets")) {
-            if (scenario.assets != null) return ParseError.InvalidFormat;
-            const text = exprString(value) orelse return ParseError.InvalidFormat;
-            if (text.len == 0) return ParseError.InvalidFormat;
-            scenario.assets = try dupePlain(allocator, text);
-        } else if (std.mem.eql(u8, key, ":choose")) {
-            if (scenario.choices.len != 0) return ParseError.InvalidFormat;
-            scenario.choices = try dupeStringList(allocator, value, false);
-        } else if (std.mem.eql(u8, key, ":diagnostic")) {
-            if (scenario.diagnostic != null) return ParseError.InvalidFormat;
-            const text = exprString(value) orelse return ParseError.InvalidFormat;
-            if (text.len == 0) return ParseError.InvalidFormat;
-            scenario.diagnostic = try dupePlain(allocator, text);
-        } else if (std.mem.eql(u8, key, ":on")) {
-            if (scenario.on.len != 0) return ParseError.InvalidFormat;
-            scenario.on = try dupeStringList(allocator, value, true);
-            for (scenario.on) |token| {
-                const known = [_][]const u8{ "linux", "macos", "windows", "client-frame", "server-frame" };
-                var recognized = false;
-                for (known) |candidate| recognized = recognized or std.mem.eql(u8, token, candidate);
-                if (!recognized) return ParseError.InvalidFormat;
-            }
-        } else {
-            return ParseError.InvalidFormat;
-        }
-        index += 2;
-    }
-    // A scope without a diagnostic scopes nothing.
-    if (scenario.on.len != 0 and scenario.diagnostic == null) return ParseError.InvalidFormat;
-    return .{ .scenario = scenario, .consumed = index };
-}
-
-/// Copies a non-empty list of strings (or, for `symbols`, of bare symbols).
-fn dupeStringList(allocator: std.mem.Allocator, value: sexpr.Expr, symbols: bool) ParseError![][]const u8 {
-    const items = exprList(value) orelse return ParseError.InvalidFormat;
-    if (items.len == 0) return ParseError.InvalidFormat;
-    var out: std.ArrayListUnmanaged([]const u8) = .empty;
-    errdefer {
-        for (out.items) |item| allocator.free(item);
-        out.deinit(allocator);
-    }
-    for (items) |item| {
-        const text = (if (symbols) exprSymbol(item) else exprString(item)) orelse return ParseError.InvalidFormat;
-        if (text.len == 0) return ParseError.InvalidFormat;
-        out.append(allocator, try dupePlain(allocator, text)) catch return ParseError.OutOfMemory;
-    }
-    return out.toOwnedSlice(allocator) catch return ParseError.OutOfMemory;
-}
-
-/// Decodes a window-only step directly from its form, or returns null when
-/// the head is not one.
-fn decodeWindowForm(allocator: std.mem.Allocator, head: []const u8, args: []const sexpr.Expr, line: usize) ParseError!?SpecCommand {
-    const step: Step = if (std.mem.eql(u8, head, "wait")) blk: {
-        if (args.len != 1) return ParseError.InvalidFormat;
-        break :blk .{ .wait = try exprUnsigned(args[0]) };
-    } else if (std.mem.eql(u8, head, "type")) blk: {
-        break :blk .{ .type_text = try locatorText(allocator, args) };
-    } else if (std.mem.eql(u8, head, "key")) blk: {
-        break :blk .{ .key = try oneText(allocator, args) };
-    } else if (std.mem.eql(u8, head, "expect-onscreen")) blk: {
-        break :blk .{ .expect_onscreen = try oneLocator(allocator, args) };
-    } else if (std.mem.eql(u8, head, "expect-focused")) blk: {
-        break :blk .{ .expect_focused = try oneLocator(allocator, args) };
-    } else if (std.mem.eql(u8, head, "expect-selected")) blk: {
-        break :blk .{ .expect_selected = try locatorBool(allocator, args) };
-    } else if (std.mem.eql(u8, head, "expect-history")) blk: {
-        break :blk .{ .expect_history = try locatorCount(allocator, args) };
-    } else if (std.mem.eql(u8, head, "expect-count")) blk: {
-        if (args.len != 2) return ParseError.InvalidFormat;
-        const prefix = try dupePlain(allocator, try nonEmptyString(args[0]));
-        errdefer allocator.free(prefix);
-        break :blk .{ .expect_count = .{ .prefix = prefix, .count = try exprUnsigned(args[1]) } };
-    } else if (std.mem.eql(u8, head, "snapshot")) blk: {
-        break :blk .{ .snapshot = try oneText(allocator, args) };
-    } else if (std.mem.eql(u8, head, "close")) blk: {
-        if (args.len != 0) return ParseError.InvalidFormat;
-        break :blk .close;
-    } else return null;
-    return .{ .step = step, .line_num = line };
 }
 
 /// The pre-mount state a `(setup ...)` may declare. Setup is declarative:
@@ -845,7 +559,6 @@ fn decodeStepForm(allocator: std.mem.Allocator, head: []const u8, args: []const 
         .{ .head = "set-online", .tag = .set_online, .shape = .symbol },
         .{ .head = "history-back", .tag = .history_back, .shape = .none },
         .{ .head = "history-forward", .tag = .history_forward, .shape = .none },
-        .{ .head = "request-window-close", .tag = .request_window_close, .shape = .none },
         .{ .head = "mark-metrics", .tag = .mark_metrics, .shape = .none },
         .{ .head = "expect-local-storage", .tag = .expect_local_storage, .shape = .key_value },
         .{ .head = "expect-session-storage", .tag = .expect_session_storage, .shape = .key_value },
@@ -888,13 +601,6 @@ fn decodeStepForm(allocator: std.mem.Allocator, head: []const u8, args: []const 
         const key = try dupePlain(allocator, exprString(args[1]) orelse return ParseError.InvalidFormat);
         errdefer allocator.free(key);
         break :blk .{ .key_down = .{ .target = target, .key = key, .shift = try exprBool(args[2]) } };
-    } else if (std.mem.eql(u8, head, "shortcut")) blk: {
-        if (args.len != 3) return ParseError.InvalidFormat;
-        const key = exprString(args[1]) orelse return ParseError.InvalidFormat;
-        const modifiers = try exprUnsigned(args[2]);
-        if (modifiers > std.math.maxInt(u32)) return ParseError.InvalidFormat;
-        const chord = signals.key_chord.parse(key, @intCast(modifiers)) catch return ParseError.InvalidFormat;
-        break :blk .{ .shortcut = .{ .target = try locatorFromExpr(allocator, args[0]), .chord = chord } };
     } else if (std.mem.eql(u8, head, "custom-event")) blk: {
         if (args.len != 3) return ParseError.InvalidFormat;
         const target = try locatorFromExpr(allocator, args[0]);
@@ -917,9 +623,6 @@ fn decodeStepForm(allocator: std.mem.Allocator, head: []const u8, args: []const 
         errdefer target.deinit(allocator);
         const name = try dupePlain(allocator, exprSymbol(args[1]) orelse exprString(args[1]) orelse return ParseError.InvalidFormat);
         break :blk .{ .expect_no_attr = .{ .target = target, .name = name } };
-    } else if (std.mem.eql(u8, head, "expect-window-closed")) blk: {
-        if (args.len != 1) return ParseError.InvalidFormat;
-        break :blk .{ .expect_window_closed = try exprBool(args[0]) };
     } else if (std.mem.eql(u8, head, "expect-interval")) blk: {
         if (args.len != 2) return ParseError.InvalidFormat;
         break :blk .{ .expect_interval = .{ .period_ms = try exprUnsigned(args[0]), .count = try exprUnsigned(args[1]) } };
@@ -1050,7 +753,6 @@ fn appendDecodedForm(
     commands: *std.ArrayListUnmanaged(SpecCommand),
     form: sexpr.Expr,
     is_setup: bool,
-    base_dir: []const u8,
 ) ParseError!void {
     const items = exprList(form) orelse return ParseError.InvalidFormat;
     if (items.len == 0) return ParseError.InvalidFormat;
@@ -1060,14 +762,10 @@ fn appendDecodedForm(
 
     // Scripted primitives are allowed in both sections: in setup they seed
     // the answer before the application mounts, in steps they stub it.
-    var command: SpecCommand = if (file_fixtures.recognizes(head))
-        try decodeFileFixtureForm(allocator, base_dir, head, args, is_setup, line)
-    else if (http_fixtures.recognizes(head))
+    var command: SpecCommand = if (http_fixtures.recognizes(head))
         try decodeHttpFixtureForm(allocator, head, args, is_setup, line)
     else if (is_setup)
         try decodeSetupForm(allocator, head, args, line)
-    else if (try decodeWindowForm(allocator, head, args, line)) |window|
-        window
     else
         try decodeStepForm(allocator, head, args, line);
     command.column_num = form.span.column;
@@ -1075,17 +773,6 @@ fn appendDecodedForm(
     commands.append(allocator, command) catch {
         freeOneCommand(allocator, command);
         return ParseError.OutOfMemory;
-    };
-}
-
-/// A scripted file primitive: a `(stub-file-* ...)` step, or the same form in
-/// `(setup ...)`, which seeds the answer before the application mounts.
-fn decodeFileFixtureForm(allocator: std.mem.Allocator, base_dir: []const u8, head: []const u8, args: []const sexpr.Expr, is_setup: bool, line: usize) ParseError!SpecCommand {
-    const fixture = try file_fixtures.parse(allocator, base_dir, head, args);
-    const payload: FileStub = .{ .label = fixture.label, .stub = fixture.stub };
-    return .{
-        .step = if (is_setup) .{ .seed_file_result = payload } else .{ .stub_file_result = payload },
-        .line_num = line,
     };
 }
 
@@ -1187,59 +874,6 @@ test "S-expression locators name text containing separators and quotes" {
     try std.testing.expectEqualStrings("say \"hi\"", legacyView(spec.commands[1].step).locator.name.?);
 }
 
-test "a scenario carries its header and window-only steps" {
-    const content =
-        \\(scenario "follow and close"
-        \\  :window "800x600"
-        \\  :assets "assets"
-        \\  :choose ("specs/fixtures/events.log")
-        \\  :diagnostic "GUI-35. The frame takes 48 pixels."
-        \\  :on (client-frame linux)
-        \\  (steps
-        \\    (click (role button :name "Open log…"))
-        \\    (wait 800)
-        \\    (expect-count "event-" 3)
-        \\    (type (label "Note text") "hello")
-        \\    (key "ctrl-s")
-        \\    (expect-onscreen (test-id "count"))
-        \\    (expect-history (label "Task notes") 0)
-        \\    (expect-selected (test-id "task-4") true)
-        \\    (expect-focused (test-id "Increment"))
-        \\    (snapshot "following")
-        \\    (close)))
-    ;
-    const spec = try parseSExprTestSpec(std.testing.allocator, content);
-    defer spec.deinit(std.testing.allocator);
-    const scenario = spec.scenario.?;
-    try std.testing.expectEqual(@as(u32, 800), scenario.window_width);
-    try std.testing.expectEqual(@as(u32, 600), scenario.window_height);
-    try std.testing.expectEqualStrings("assets", scenario.assets.?);
-    try std.testing.expectEqual(@as(usize, 1), scenario.choices.len);
-    try std.testing.expectEqualStrings("specs/fixtures/events.log", scenario.choices[0]);
-    try std.testing.expectEqualStrings("GUI-35. The frame takes 48 pixels.", scenario.diagnostic.?);
-    try std.testing.expectEqual(@as(usize, 2), scenario.on.len);
-    try std.testing.expectEqualStrings("client-frame", scenario.on[0]);
-    try std.testing.expectEqual(@as(usize, 11), spec.commands.len);
-    try std.testing.expectEqual(SpecCommandType.click, spec.commands[0].kind());
-    try std.testing.expectEqual(SpecCommandType.wait, spec.commands[1].kind());
-    try std.testing.expectEqual(@as(u64, 800), legacyView(spec.commands[1].step).interval.?);
-    try std.testing.expectEqual(SpecCommandType.expect_count, spec.commands[2].kind());
-    try std.testing.expectEqualStrings("event-", legacyView(spec.commands[2].step).expected.?);
-    try std.testing.expectEqual(@as(u64, 3), legacyView(spec.commands[2].step).count.?);
-    try std.testing.expectEqual(SpecCommandType.type_text, spec.commands[3].kind());
-    try std.testing.expectEqual(LocatorKind.label, legacyView(spec.commands[3].step).locator.kind);
-    try std.testing.expectEqualStrings("hello", legacyView(spec.commands[3].step).expected.?);
-    try std.testing.expectEqual(SpecCommandType.key, spec.commands[4].kind());
-    try std.testing.expectEqual(SpecCommandType.expect_onscreen, spec.commands[5].kind());
-    try std.testing.expectEqualStrings("count", legacyView(spec.commands[5].step).locator.test_id.?);
-    try std.testing.expectEqual(@as(u64, 0), legacyView(spec.commands[6].step).count.?);
-    try std.testing.expectEqual(true, legacyView(spec.commands[7].step).boolean.?);
-    try std.testing.expectEqual(SpecCommandType.expect_focused, spec.commands[8].kind());
-    try std.testing.expectEqualStrings("following", legacyView(spec.commands[9].step).expected.?);
-    try std.testing.expectEqual(SpecCommandType.close, spec.commands[10].kind());
-    try std.testing.expectEqual(@as(usize, 18), spec.commands[10].line_num);
-}
-
 test "manual effect controls distinguish setup mode from occurrence execution" {
     const spec = try parseSExprTestSpec(
         std.testing.allocator,
@@ -1277,29 +911,6 @@ test "spec parser rejects retired task simulation controls" {
     }
 }
 
-test "a scenario and a test each refuse the other's steps" {
-    // A test cannot wait on a real clock or read layout bounds.
-    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(test \"t\" (steps (wait 5)))"));
-    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(test \"t\" (steps (close)))"));
-    // A scenario runs the real workers, so a fixture has nothing to resolve.
-    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" (steps (stub-file-choice \"open\" (canceled))))"));
-    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" (steps (stub-http-reject \"load\" :kind network :detail \"offline\")))"));
-    // Nothing can follow the close that ends the run.
-    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" (steps (close) (wait 1)))"));
-    // Setup is pre-mount state for the display-free host only.
-    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" (setup (initial-online offline)) (steps (wait 1)))"));
-    // Header values are checked, and a scope needs something to scope.
-    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" :window \"wide\" (steps (wait 1)))"));
-    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" :on (linux) (steps (wait 1)))"));
-    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" :diagnostic \"x\" :on (beos) (steps (wait 1)))"));
-    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" :size \"1x1\" (steps (wait 1)))"));
-    // A plain scenario with no header is fine, and the shared steps still parse.
-    const plain = try parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" (steps (expect-visible (text \"0\")) (expect-disabled (role button :name \"Save\") true)))");
-    defer plain.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(u32, 0), plain.scenario.?.window_width);
-    try std.testing.expectEqual(SpecCommandType.expect_disabled, plain.commands[1].kind());
-}
-
 test "S-expression spec parser rejects executable setup and empty steps" {
     try std.testing.expectError(
         ParseError.InvalidFormat,
@@ -1328,7 +939,7 @@ test "all checked-in specs decode to the committed golden" {
         for (paths.items) |path| allocator.free(path);
         paths.deinit(allocator);
     }
-    for ([_][]const u8{ "examples-web", "examples-gui", "test/gui" }) |directory| {
+    for ([_][]const u8{"examples-web"}) |directory| {
         const examples = try std.Io.Dir.cwd().openDir(io, directory, .{ .iterate = true });
         defer examples.close(io);
         var walker = try examples.walk(allocator);
@@ -1386,80 +997,16 @@ test "all checked-in specs decode to the committed golden" {
     }
 }
 
-/// The window steps and their argument names and types, reflected from the
-/// `Step` union the way the scenario ABI publishes them. The Rust decoder's
-/// tests read this file, so a renamed tag or payload field is caught on both
-/// sides. Regenerate it deliberately with `zig build spec-manifest`.
-const spec_steps_path = "test/spec-steps.json";
-
-/// Writes the machine-readable contract for every step accepted by a window
-/// host, derived from the typed union and the central capability table.
-pub fn writeStepManifest(writer: *std.Io.Writer) std.Io.Writer.Error!void {
-    try writer.writeAll("[\n");
-    var first_step = true;
-    inline for (std.meta.fields(Step)) |field| {
-        const tag = @field(SpecCommandType, field.name);
-        if (comptime stepCapability(tag) != .semantic) {
-            if (!first_step) try writer.writeAll(",\n");
-            first_step = false;
-            try writer.print("  {{\"kind\":\"{s}\",\"capability\":\"{s}\",\"args\":[", .{ field.name, @tagName(stepCapability(tag)) });
-            var first_arg = true;
-            try writeArgManifest(writer, field.type, "value", &first_arg);
-            try writer.writeAll("]}");
-        }
-    }
-    try writer.writeAll("\n]\n");
-}
-
-fn writeArgManifest(writer: *std.Io.Writer, comptime T: type, comptime name: []const u8, first: *bool) std.Io.Writer.Error!void {
-    if (T == void or T == Locator) return;
-    if (T == signals.key_chord.Chord) {
-        try writeManifestArg(writer, "key", "unsigned", first);
-        return writeManifestArg(writer, "modifiers", "unsigned", first);
-    }
-    if (T == []const u8) return writeManifestArg(writer, name, "text", first);
-    if (T == u64) return writeManifestArg(writer, name, "unsigned", first);
-    if (T == i64) return writeManifestArg(writer, name, "signed", first);
-    if (T == bool) return writeManifestArg(writer, name, "boolean", first);
-    inline for (std.meta.fields(T)) |field| try writeArgManifest(writer, field.type, field.name, first);
-}
-
-fn writeManifestArg(writer: *std.Io.Writer, comptime name: []const u8, comptime kind: []const u8, first: *bool) std.Io.Writer.Error!void {
-    if (!first.*) try writer.writeByte(',');
-    first.* = false;
-    try writer.print("{{\"name\":\"{s}\",\"type\":\"{s}\"}}", .{ name, kind });
-}
-
-test "the published window steps match the committed manifest" {
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
-    defer out.deinit();
-    try writeStepManifest(&out.writer);
-    if (std.process.Environ.getPosix(std.testing.environ, "SIGNALS_UPDATE_SPEC_MANIFEST") != null) {
-        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = spec_steps_path, .data = out.written() });
-        return;
-    }
-    const expected = try std.Io.Dir.cwd().readFileAlloc(io, spec_steps_path, std.testing.allocator, .limited(64 * 1024));
-    defer std.testing.allocator.free(expected);
-    try std.testing.expectEqualStrings(expected, out.written());
-}
-
-test "step capability classifies both built-in hosts from one table" {
-    try std.testing.expectEqual(StepCapability.semantic, stepCapability(.fill));
-    try std.testing.expectEqual(StepCapability.window, stepCapability(.type_text));
-    try std.testing.expectEqual(StepCapability.both, stepCapability(.click));
-}
-
 test "the canonical form spells every field and escapes text" {
-    const spec = try parseSExprTestSpec(std.testing.allocator, "(scenario \"s\" :window \"800x600\" :choose (\"a b\") (steps (type (label \"Note\") \"x\\ny\") (expect-count \"row-\" 2)))");
+    const spec = try parseSExprTestSpec(std.testing.allocator, "(test \"s\" (steps (fill (label \"Note\") \"x\\ny\") (expect-updates (test-id \"row\") 2)))");
     defer spec.deinit(std.testing.allocator);
     var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
     try writeCanonical(&out.writer, spec);
     try std.testing.expectEqualStrings(
-        "scenario \"s\" window=800x600 assets=none choose=[\"a b\"] diagnostic=none on=[]\n" ++
-            "  1: type_text locator=label label=\"Note\" expected=\"x\\ny\"\n" ++
-            "  1: expect_count locator=none expected=\"row-\" count=2\n",
+        "test \"s\"\n" ++
+            "  1: fill locator=label label=\"Note\" expected=\"x\\ny\"\n" ++
+            "  1: expect_updates locator=test_id test_id=\"row\" count=2\n",
         out.written(),
     );
 }
@@ -1686,153 +1233,4 @@ test "spec parser rejects malformed commands" {
         defer std.testing.allocator.free(source);
         try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, source));
     }
-}
-
-test "spec parser validates exact native shortcut keys and modifiers" {
-    const spec = try parseSExprTestSpec(std.testing.allocator,
-        \\(test "shortcuts" (steps
-        \\  (shortcut (test-id "editor") "s" 1)
-        \\  (shortcut (test-id "editor") "s" 3)
-        \\  (shortcut (test-id "editor") "Escape" 0)))
-    );
-    defer spec.deinit(std.testing.allocator);
-    const commands = spec.commands;
-    try std.testing.expectEqual(@as(usize, 3), commands.len);
-    try std.testing.expectEqual(SpecCommandType.shortcut, commands[0].kind());
-    try std.testing.expectEqualStrings("editor", legacyView(commands[0].step).locator.test_id.?);
-    try std.testing.expect(legacyView(commands[0].step).shortcut.?.eql(try signals.key_chord.parse("s", 1)));
-    try std.testing.expect(legacyView(commands[1].step).shortcut.?.eql(try signals.key_chord.parse("s", 3)));
-    try std.testing.expect(legacyView(commands[2].step).shortcut.?.eql(try signals.key_chord.parse("Escape", 0)));
-    for ([_][]const u8{
-        "(shortcut (test-id \"editor\") \"S\" 1)",
-        "(shortcut (test-id \"editor\") \"ctrl-s\" 1)",
-        "(shortcut (test-id \"editor\") \"s\" 16)",
-        "(shortcut (test-id \"editor\") \"s\" -1)",
-        "(shortcut (test-id \"editor\") \"s\" true)",
-    }) |step| {
-        const source = try std.fmt.allocPrint(std.testing.allocator, "(test \"t\" (steps {s}))", .{step});
-        defer std.testing.allocator.free(source);
-        try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, source));
-    }
-}
-
-test "S-expression spec parser decodes native shortcuts" {
-    const spec = try parseSExprTestSpec(std.testing.allocator,
-        \\(test "save" (steps (shortcut (test-id "editor") "s" 3)))
-    );
-    defer spec.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(usize, 1), spec.commands.len);
-    try std.testing.expectEqual(SpecCommandType.shortcut, spec.commands[0].kind());
-    try std.testing.expect(legacyView(spec.commands[0].step).shortcut.?.eql(try signals.key_chord.parse("s", 3)));
-}
-
-test "file fixture forms reject malformed values and release partial allocations" {
-    const invalid = [_][]const u8{
-        "(stub-file-choice \"open\" (chosen \"relative\"))",
-        "(stub-file-choice \"open\" (canceled \"extra\"))",
-        "(stub-file-choice \"open\" (chosen \"/tmp/a\") \"extra\")",
-        "(stub-file-read \"read\" :path \"/tmp/a\" :path \"duplicate\")",
-        "(stub-file-read \"read\" :path \"/tmp/a\" :wrong \"value\")",
-        "(stub-file-read \"read\" :path \"/tmp/a\" :text false)",
-        "(stub-file-read \"read\" :path \"/tmp/a\" :text \"abc\" :size 2)",
-        "(stub-file-stat \"stat\" :path \"/tmp/a\" :kind file :bytes -1)",
-        "(stub-file-reject \"read\" :kind invented :detail \"no\")",
-        "(stub-file-reject \"read\" :kind canceled :detail \"\")",
-    };
-    for (invalid) |form| {
-        const content = try std.fmt.allocPrint(std.testing.allocator, "(test \"invalid\" (steps {s}))", .{form});
-        defer std.testing.allocator.free(content);
-        try std.testing.expectError(error.InvalidFormat, parseSExprTestSpec(std.testing.allocator, content));
-    }
-}
-
-fn parseFileFixtureAllocationCase(allocator: std.mem.Allocator) !void {
-    var parsed = try parseSExprTestSpec(allocator,
-        \\(test "file workflow"
-        \\  (steps
-        \\    (stub-file-choice "open" (chosen "/tmp/λ:note.txt"))
-        \\    (stub-file-choice "save" (canceled))
-        \\    (stub-file-read "read" :path "/tmp/a" :text "first\nλ")
-        \\    (stub-file-stat "stat" :bytes 0 :path "/tmp/a" :kind directory)
-        \\    (stub-file-reject "read" :detail "not allowed" :kind permission-denied)))
-    );
-    defer parsed.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 5), parsed.commands.len);
-    try std.testing.expectEqualStrings("/tmp/λ:note.txt", parsed.commands[0].step.stub_file_result.stub.choice.?);
-    try std.testing.expect(parsed.commands[1].step.stub_file_result.stub.choice == null);
-    try std.testing.expectEqual(file_fixtures.Kind.directory, parsed.commands[3].step.stub_file_result.stub.stat.kind);
-    try std.testing.expectEqual(SpecCommandType.stub_file_result, parsed.commands[4].kind());
-    try std.testing.expectEqual(file_fixtures.ErrorKind.permission_denied, parsed.commands[4].step.stub_file_result.stub.reject.kind);
-    try std.testing.expectEqual(@as(usize, 4), parsed.commands[1].line_num);
-}
-
-test "file fixture parsing owns every allocation on success and refusal" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseFileFixtureAllocationCase, .{});
-}
-
-test "window close requests and assertions decode without locators" {
-    const spec = try parseSExprTestSpec(std.testing.allocator,
-        \\(test "closing" (steps (request-window-close) (expect-window-closed false)))
-    );
-    defer spec.deinit(std.testing.allocator);
-    try std.testing.expectEqual(SpecCommandType.request_window_close, spec.commands[0].kind());
-    try std.testing.expectEqual(false, legacyView(spec.commands[1].step).boolean.?);
-    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(test \"t\" (steps (request-window-close extra)))"));
-    try std.testing.expectError(ParseError.InvalidFormat, parseSExprTestSpec(std.testing.allocator, "(test \"t\" (steps (expect-window-closed yes)))"));
-}
-
-fn parseExtendedFileFixtureAllocationCase(allocator: std.mem.Allocator) !void {
-    var parsed = try parseSExprTestSpec(allocator,
-        \\(test "native content"
-        \\ (steps
-        \\  (stub-file-stat "tail" :path "/tmp/log" :kind file :bytes 18446744073709551615 :device 1 :inode 13)
-        \\  (stub-file-directory "folder" :path "/tmp" :entries ((file "/tmp/λ" 18446744073709551615) (directory "/tmp/child" 0) (symbolic-link "/tmp/link" 9)))
-        \\  (stub-file-read "preview" :path "/tmp/λ" :text "first\nsecond" :offset 3 :size 70000)
-        \\  (stub-file-open "launch" :path "/tmp/λ")))
-    );
-    defer parsed.deinit(allocator);
-    const meta = parsed.commands[0].step.stub_file_result.stub.stat;
-    try std.testing.expectEqual(@as(u64, 18446744073709551615), meta.bytes);
-    try std.testing.expectEqual(@as(u64, 13), meta.inode);
-    const directory = parsed.commands[1].step.stub_file_result.stub.directory;
-    try std.testing.expectEqual(@as(usize, 3), directory.entries.len);
-    try std.testing.expectEqual(file_fixtures.Kind.symbolic_link, directory.entries[2].kind);
-    try std.testing.expectEqual(@as(u64, 18446744073709551615), directory.entries[0].bytes);
-    const read = parsed.commands[2].step.stub_file_result.stub.read;
-    try std.testing.expectEqual(@as(?u64, 3), read.offset);
-    try std.testing.expectEqual(@as(?u64, 70000), read.size);
-    try std.testing.expectEqualStrings("/tmp/λ", parsed.commands[3].step.stub_file_result.stub.open);
-}
-
-test "extended file fixtures preserve full unsigned cursors under allocation failure" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, parseExtendedFileFixtureAllocationCase, .{});
-}
-
-test "extended file fixtures reject noncanonical unsigned numbers and unknown tags" {
-    for ([_][]const u8{ "-1", "+1", "00", "01", "18446744073709551616", "\"123\"" }) |number| {
-        const text = try std.fmt.allocPrint(std.testing.allocator, "(test \"bad cursor\" (steps (stub-file-stat \"tail\" :path \"/tmp/log\" :kind file :bytes 1 :device {s} :inode 1)))", .{number});
-        defer std.testing.allocator.free(text);
-        try std.testing.expectError(error.InvalidFormat, parseSExprTestSpec(std.testing.allocator, text));
-    }
-    for ([_][]const u8{
-        "(stub-file-read \"preview\" :path \"/tmp/a\" :text \"x\" :truncated true)",
-        "(stub-file-directory \"folder\" :path \"/tmp\" :entries ((imaginary \"/tmp/a\" 1)))",
-        "(stub-file-directory \"folder\" :path \"/tmp\" :entries ((file \"/tmp/a\" +1)))",
-        "(stub-file-stat \"tail\" :path \"/tmp/log\" :kind pipe :bytes 1)",
-        "(stub-file-stat \"tail\" :path \"/tmp/log\" :kind file)",
-        "(stub-file-stat \"tail\" :path \"/tmp/log\" :kind file :bytes 1 :device 1 :device 2)",
-    }) |form| {
-        const text = try std.fmt.allocPrint(std.testing.allocator, "(test \"bad native content\" (steps {s}))", .{form});
-        defer std.testing.allocator.free(text);
-        try std.testing.expectError(error.InvalidFormat, parseSExprTestSpec(std.testing.allocator, text));
-    }
-}
-
-test "extended file fixtures reject oversized preview text before settlement" {
-    const oversized = try std.testing.allocator.alloc(u8, 65537);
-    defer std.testing.allocator.free(oversized);
-    @memset(oversized, 'a');
-    const text = try std.fmt.allocPrint(std.testing.allocator, "(test \"too large\" (steps (stub-file-preview \"preview\" :path \"/tmp/a\" :text \"{s}\" :truncated false)))", .{oversized});
-    defer std.testing.allocator.free(text);
-    try std.testing.expectError(error.InvalidFormat, parseSExprTestSpec(std.testing.allocator, text));
 }

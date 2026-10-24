@@ -1,4 +1,4 @@
-"""The combined release publishes and tests exact immutable platform bytes."""
+"""The release publishes and tests exact immutable platform bytes."""
 
 import ast
 import json
@@ -32,19 +32,18 @@ class ReleaseTests(unittest.TestCase):
 
     def manifest_fixture(self, root):
         assets = {}
-        for kind, name in (("web", "WebHash.tar.zst"), ("gui", "GuiHash.tar.zst"),
-                           ("examples", release.EXAMPLES)):
+        for kind, name in (("web", "WebHash.tar.zst"), ("examples", release.EXAMPLES)):
             path = root / name
             path.write_bytes(kind.encode())
             assets[kind] = release.record(path, "0.2.0-rc2")
         manifest = {
-            "schema_version": 2,
+            "schema_version": 3,
             "version": "0.2.0-rc2",
             "source_sha": "a" * 40,
             "compiler_pin": "nightly-2026-09-04-c125b82",
             "max_transitive_mb": release.MAX_TRANSITIVE_MB,
             "assets": assets,
-            "inputs": {"web_hosts": {}, "gui_hosts": {}, "linker_inputs": {}},
+            "inputs": {"web_hosts": {}, "linker_inputs": {}},
             "provenance": {
                 "signer_workflow": release.REPOSITORY + "/.github/workflows/release.yml",
                 "source_ref": "refs/heads/main",
@@ -54,18 +53,23 @@ class ReleaseTests(unittest.TestCase):
         (root / "release-notes.md").write_text("notes")
         return manifest
 
-    def test_manifest_requires_two_distinct_platforms_and_exact_bytes(self):
+    def test_manifest_requires_exactly_the_web_platform_and_exact_bytes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             manifest = self.manifest_fixture(root)
             self.assertEqual(release.read_manifest(root), manifest)
-            (root / "GuiHash.tar.zst").write_bytes(b"replacement")
+            (root / "WebHash.tar.zst").write_bytes(b"replacement")
             with self.assertRaisesRegex(ValueError, "differs from its manifest"):
                 release.read_manifest(root)
             manifest = self.manifest_fixture(root)
-            manifest["assets"]["gui"] = manifest["assets"]["web"]
+            manifest["assets"]["extra"] = manifest["assets"]["web"]
             (root / release.MANIFEST).write_text(json.dumps(manifest))
-            with self.assertRaisesRegex(ValueError, "distinct platform"):
+            with self.assertRaisesRegex(ValueError, "exactly the web platform"):
+                release.read_manifest(root)
+            manifest = self.manifest_fixture(root)
+            manifest["schema_version"] = 2
+            (root / release.MANIFEST).write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError, "unsupported platform release manifest"):
                 release.read_manifest(root)
 
     def test_manifest_rejects_missing_inputs_and_unexpected_assets(self):
@@ -81,24 +85,15 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unexpected asset"):
                 release.read_manifest(root)
 
-    def test_examples_keep_web_and_gui_roots_distinct_and_include_assets(self):
+    def test_examples_bind_the_web_platform_and_include_pages(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             web = root / "examples-web/demo"
-            gui = root / "examples-gui/demo"
-            vendor = root / "vendor/unicode"
-            for directory in (web, gui, vendor):
-                directory.mkdir(parents=True)
+            web.mkdir(parents=True)
             (web / "main.roc").write_text(
                 'app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "../../platform-web/main.roc" }'
             )
-            (gui / "main.roc").write_text(
-                'app [main] { roc: "nightly-2026-09-04-c125b82", pf: platform "../../platform-gui/main.roc" }'
-            )
-            (gui / "theme.json").write_bytes(b"{\"theme\":true}")
-            (gui / "assets").mkdir()
-            (gui / "assets/font.ttf").write_bytes(b"example-owned-font")
-            (vendor / "Unicode.roc").write_text("module []")
+            (web / "data.json").write_bytes(b"{\"rows\":true}")
             web_example = SimpleNamespace(source=Path("examples-web/demo/main.roc"))
             archive = root / release.EXAMPLES
 
@@ -107,24 +102,18 @@ class ReleaseTests(unittest.TestCase):
 
             with patch.object(release, "ROOT", root), \
                     patch.object(release, "web_examples", return_value=(web_example,)), \
-                    patch.object(release, "gui_examples", return_value=(gui,)), \
                     patch.object(release, "tracked_files", side_effect=files), \
                     patch.object(release.bundle_browser, "runtime_files", return_value={"signals.mjs": b"runtime"}):
-                release.write_examples(archive, "nightly-2026-09-04-c125b82", "https://release/Web.tar.zst",
-                                       "https://release/Gui.tar.zst")
+                release.write_examples(archive, "nightly-2026-09-04-c125b82", "https://release/Web.tar.zst")
             with zipfile.ZipFile(archive) as packed:
                 self.assertIn('platform "https://release/Web.tar.zst"',
                               packed.read("examples-web/demo/main.roc").decode())
-                self.assertIn('platform "https://release/Gui.tar.zst"',
-                              packed.read("examples-gui/demo/main.roc").decode())
-                self.assertEqual(packed.read("examples-gui/demo/theme.json"), b"{\"theme\":true}")
+                self.assertEqual(packed.read("examples-web/demo/data.json"), b"{\"rows\":true}")
+                self.assertEqual(packed.read("browser/signals.mjs"), b"runtime")
                 page = packed.read("examples-web/demo/index.html").decode()
                 self.assertIn('import { createPublicExampleFetch }', page)
                 self.assertIn('fetchImpl: createPublicExampleFetch()', page)
                 self.assertNotIn('taskHandler', page)
-                self.assertEqual(
-                    packed.read("examples-gui/demo/assets/font.ttf"), b"example-owned-font"
-                )
 
     def test_archive_escape_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -138,32 +127,26 @@ class ReleaseTests(unittest.TestCase):
 
     def test_every_release_compiler_command_raises_the_fat_package_budget(self):
         with patch.object(release.driver, "run") as run:
-            release.roc_run("roc", "build", Path("example/main.roc"), "--target=x64glibc")
+            release.roc_run("roc", "build", Path("example/main.roc"), "--target=x64musl")
         command = run.call_args.args[0]
         self.assertIn(f"--max-transitive-mb={release.MAX_TRANSITIVE_MB}", command)
 
-    def test_prepare_invokes_only_the_no_build_two_package_bundler(self):
+    def test_prepare_invokes_only_the_no_build_web_bundler(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "releases").mkdir()
             (root / "releases/0.2.0-rc2.md").write_text("candidate")
             output = root / "release"
             web_lock = root / "web.lock"
-            gui_lock = root / "gui.lock"
             web_lock.write_text("{}")
-            gui_lock.write_text("{}")
             calls = []
 
             def bundle(command, **kwargs):
                 calls.append(command)
                 bundle_root = Path(command[command.index("--output-dir") + 1])
-                for kind, name in (("web", "WebHash.tar.zst"), ("gui", "GuiHash.tar.zst")):
-                    path = bundle_root / kind / name
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_bytes(kind.encode())
-                (bundle_root / "bundles.json").write_text(json.dumps({
-                    "web": "web/WebHash.tar.zst", "gui": "gui/GuiHash.tar.zst",
-                }))
+                bundle_root.mkdir(parents=True, exist_ok=True)
+                (bundle_root / "WebHash.tar.zst").write_bytes(b"web")
+                (bundle_root / "bundles.json").write_text(json.dumps({"web": "WebHash.tar.zst"}))
                 return subprocess.CompletedProcess(command, 0)
 
             def examples(path, *args):
@@ -177,15 +160,15 @@ class ReleaseTests(unittest.TestCase):
                     patch.object(release, "read_lock", return_value={"schema_version": 1, "artifacts": {}}), \
                     patch.object(release, "write_examples", side_effect=examples), \
                     patch.object(release.subprocess, "run", side_effect=bundle):
-                release.prepare("0.2.0-rc2", output, "roc", web_lock, gui_lock)
+                release.prepare("0.2.0-rc2", output, "roc", web_lock)
             self.assertEqual(len(calls), 1)
             command = list(map(os.fspath, calls[0]))
-            self.assertIn("--package", command)
-            self.assertIn("all", command)
             self.assertIn("--no-build", command)
             self.assertIn("--prebuilt-web-host-lock", command)
-            self.assertIn("--prebuilt-host-lock", command)
-            self.assertFalse(any(tool in command for tool in ("zig", "cargo", "rustc")))
+            self.assertNotIn("zig", command)
+            manifest = release.read_manifest(output)
+            self.assertEqual(set(manifest["assets"]), {"web", "examples"})
+            self.assertEqual(set(manifest["inputs"]), {"web_hosts", "linker_inputs"})
 
     def test_publication_requires_exact_tested_main_context(self):
         manifest = {"source_sha": "a" * 40}
@@ -210,8 +193,6 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("./.github/actions/setup-roc", workflow)
         self.assertNotIn("./.github/actions/setup-toolchain", workflow)
         self.assertNotIn("zig", workflow.lower())
-        self.assertNotIn("cargo", workflow.lower())
-        self.assertFalse((release.ROOT / ".github/workflows/gui-release.yml").exists())
 
 
 if __name__ == "__main__":

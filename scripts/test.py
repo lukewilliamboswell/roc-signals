@@ -135,7 +135,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     suites = (
         "all", "zig", "fuzz", "browser", "roc-check", "roc-test",
-        "wasm", "wasm-fault", "wasm-bench", "native", "gui", "fault",
+        "wasm", "wasm-fault", "wasm-bench", "native", "fault",
         "bundle", "bench", "size",
     )
     parser.add_argument(
@@ -216,14 +216,6 @@ def parse_args() -> argparse.Namespace:
         help="Delete entries from the known-failures file that passed in this run. Never adds entries.",
     )
     parser.add_argument("--spec-timeout", type=float, default=30.0, metavar="SECONDS")
-    parser.add_argument("--gui-build-jobs", type=int, default=2, metavar="N", help="Concurrent Cargo jobs for the GUI host (default: 2).")
-    parser.add_argument(
-        "--gui-host-lock",
-        type=Path,
-        default=Path(os.environ["GUI_HOST_LOCK"]) if "GUI_HOST_LOCK" in os.environ else None,
-        metavar="PATH",
-        help="Use the verified GUI host selected by this release lock instead of rebuilding it.",
-    )
     parser.add_argument("--bench-case", action="append", default=[], metavar="GLOB", help="Select Wasm benchmark cases. Repeatable.")
     parser.add_argument("--bench-warmups", type=int, default=1, metavar="N", help="Complete warm-up passes for wasm-bench.")
     parser.add_argument("--bench-iterations", type=int, default=20, metavar="N", help="Fresh paired iterations per Wasm benchmark sample.")
@@ -898,7 +890,7 @@ def bundle_platform(roc_bin: str) -> Path:
     bundle_out.mkdir(parents=True, exist_ok=True)
     env["BUNDLE_OUT_DIR"] = str(bundle_out)
     result = subprocess.run(
-        [str(ROOT / "scripts" / "bundle.sh"), "--package", "web", "--no-build"],
+        [str(ROOT / "scripts" / "bundle.sh"), "--no-build"],
         cwd=ROOT,
         env=env,
         text=True,
@@ -1019,8 +1011,6 @@ def validate_args_before_build(args: argparse.Namespace, suites: set[str]) -> No
 def main() -> int:
     global TEST_OUT
 
-    import gui_suite
-
     args = parse_args()
     examples = load_examples()
     suites = set(args.suites)
@@ -1029,10 +1019,6 @@ def main() -> int:
             "zig", "fuzz", "browser", "roc-check", "roc-test", "wasm",
             "wasm-fault", "native", "fault", "bundle", "bench",
         }
-        # macOS GUI builds need full Xcode plus the optional Metal toolchain;
-        # keep them explicit so the ordinary native suite works with CLT alone.
-        if gui_suite.supported_host() and platform.system() == "Linux":
-            suites.add("gui")
 
     validate_args_before_build(args, suites)
     roc_bin = command_path(args.roc_bin)
@@ -1040,11 +1026,8 @@ def main() -> int:
     progress_output = sys.stderr if suites == {"wasm-bench"} else sys.stdout
     print(f"Test output: {TEST_OUT}", file=progress_output)
 
-    if suites not in ({"gui"}, {"wasm-bench"}):
+    if suites != {"wasm-bench"}:
         build_hosts()
-
-    if "gui" in suites:
-        gui_suite.run(roc_bin, args, TEST_OUT / "gui")
 
     if "zig" in suites:
         run_zig_suite()

@@ -8,7 +8,6 @@ const render = @import("render_commands.zig");
 const render_sink = @import("render_sink.zig");
 const retained = @import("retained_values.zig");
 const roles = @import("callable_roles.zig");
-const key_chord = @import("key_chord.zig");
 
 pub const HostValueCapability = retained.HostValueCapability;
 pub const HostTextRead = retained.HostTextRead;
@@ -464,7 +463,6 @@ pub const NamedEventAttr = struct {
     name: RocStrView,
     policy: EventPolicy,
     delivery_request: EventDeliveryRequest,
-    key_chord: ?key_chord.Chord,
     msg: EventMessage,
 };
 
@@ -542,25 +540,12 @@ pub const NodeAttr = union(enum) {
                 const payload = attr.payload_on();
                 const kind_id = payload.kind.id;
                 const policy = eventPolicyFromAbi(payload.policy);
-                const chord: ?key_chord.Chord = switch (payload.key_chord.tag) {
-                    .None => null,
-                    .Some => filtered: {
-                        const raw = payload.key_chord.payload_some();
-                        const modifiers = @as(u32, @intFromBool(raw.control)) * key_chord.control |
-                            @as(u32, @intFromBool(raw.shift)) * key_chord.shift |
-                            @as(u32, @intFromBool(raw.alt)) * key_chord.alt |
-                            @as(u32, @intFromBool(raw.meta)) * key_chord.meta;
-                        break :filtered key_chord.parse(raw.key.asSlice(), modifiers) catch @panic("native shortcut descriptor used an invalid key chord");
-                    },
-                };
-                if (chord != null and (kind_id != 0 or !std.mem.eql(u8, payload.name.asSlice(), "keydown"))) @panic("native shortcut filter requires a named keydown event");
                 if (kind_id == 0) {
                     if (payload.name.asSlice().len == 0) @panic("named event descriptor used an empty name");
                     break :blk .{ .named_event = .{
                         .name = RocStrView.fromAbi(payload.name),
                         .policy = policy,
                         .delivery_request = eventDeliveryRequestFromAbi(payload.delivery),
-                        .key_chord = chord,
                         .msg = EventMessage.fromAbi(payload.msg),
                     } };
                 }
@@ -1183,7 +1168,6 @@ test "NodeAttr.fromAbi decodes static bool attrs and events" {
     const reducer = std.mem.zeroes(HostEventReducer);
     const event = abi.NodeAttr{
         .payload = .{ .on = .{
-            .key_chord = std.mem.zeroes(@FieldType(abi.NodeEventBinding, "key_chord")),
             .kind = .{ .id = @intFromEnum(EventKind.pointer_down) },
             .msg = .{
                 .event_extraction_plan = testEventExtractionPlan(.record_key_shift),
@@ -1216,7 +1200,6 @@ test "NodeAttr.fromAbi decodes named events" {
     const reducer = std.mem.zeroes(HostEventReducer);
     const attr = abi.NodeAttr{
         .payload = .{ .on = .{
-            .key_chord = std.mem.zeroes(@FieldType(abi.NodeEventBinding, "key_chord")),
             .kind = .{ .id = 0 },
             .msg = .{
                 .event_extraction_plan = testEventExtractionPlan(.none),

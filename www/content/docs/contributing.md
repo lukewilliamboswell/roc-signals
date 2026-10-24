@@ -35,17 +35,17 @@ is no npm dependency or package manifest.
 
 Pull requests and pushes to `main` run a bounded hosted source gate: Zig and
 browser contracts, Roc checks and tests, Wasm builds and size budgets, fuzz
-corpus replay, and ordinary native semantic specs. Change selection adds GUI
-and site jobs only when their inputs are affected. `Platform source` is the
-required aggregate check. Exact archive creation and release-URL example smoke
-tests belong to the combined release workflow, which validates the same
-candidate on Linux, macOS, and Windows before publication. Pages deploys the
-supported release, not development builds from ordinary pushes.
+corpus replay, and ordinary native semantic specs. Change selection adds the
+site job only when its inputs are affected. `Platform source` is the required
+aggregate check. Exact archive creation and release-URL example smoke tests
+belong to the release workflow, which validates the candidate before
+publication. Pages deploys the supported release, not development builds from
+ordinary pushes.
 
-Compiler pins live in both platform headers and every web and GUI example
-header, including internal web fixtures. `.github/roc-nightly.json` selects all
-of them for coordinated compiler updates; adding an example requires registering
-its header there. Public web dependency URLs remain unchanged during these updates. Run
+Compiler pins live in the platform header and every web example header,
+including internal web fixtures. `.github/roc-nightly.json` selects all of them
+for coordinated compiler updates; adding an example requires registering its
+header there. Public web dependency URLs remain unchanged during these updates. Run
 `python3 scripts/toolchain.py --check --roc-bin /path/to/roc` to validate the
 selected roots and installed compiler. The nightly bot advances those pins while
 preserving release URLs and automatically merges only a passing pin-only PR.
@@ -59,17 +59,15 @@ system identifies the boundary it can test; it does not select a release build.
 | Workflow / job | When and purpose | Artifact and build mode | Evidence |
 | --- | --- | --- | --- |
 | `CI` / Hosted source tests | Affected PRs; all main pushes and manual CI runs | Current web/shared sources; development native checks, ReleaseSmall Wasm hosts and size-optimized Roc Wasm apps | Zig and JS contracts, Roc checks/tests, fuzz corpus replay, Wasm builds, native specs, size budgets |
-| `CI` / Native GUI jobs | Affected PRs; all main pushes and manual CI runs | Matching `gui-host.lock.json` release, otherwise current Rust dev + Zig Debug host; Roc dev apps | GUI checks/tests, all application and fixture specs; Rust adapter tests when building from source |
 | `CI` / Documentation and site | Affected PRs; all main pushes and manual CI runs | Current documentation and templates | Zola validation |
-| `GUI host link inputs` | Explicit dispatch; validate and optionally publish independent host outputs | Rust release + Zig ReleaseFast; selected native targets | Exact archive application tests, build/tool/source/license evidence, Windows archive audit |
 | `Web host inputs` | Explicit dispatch; validate and optionally publish independent host outputs | Complete web host set from current sources; final package uses Zig ReleaseSmall | Native/Wasm application checks and host archive packaging |
-| `Combined platform release candidate` | Explicit dispatch; validate or publish the assembled product | Exact locked host and dependency releases | Both packages served from fresh caches and tested on Linux, macOS, Windows |
+| Release workflow | Explicit dispatch; validate or publish the assembled product | Exact locked host and dependency releases | The package served from fresh caches and smoke-tested |
 
-The intended profile policy is Debug for ordinary native development,
-ReleaseFast for native GUI releases, and ReleaseSmall for web packages.
-ReleaseSafe is for optimized checks that retain Zig's runtime safety checks,
-such as fuzzing. Application boundary validation must remain active in every
-mode; `std.debug.assert` is not a production contract check.
+The intended profile policy is Debug for ordinary native development and
+ReleaseSmall for web packages. ReleaseSafe is for optimized checks that retain
+Zig's runtime safety checks, such as fuzzing. Application boundary validation
+must remain active in every mode; `std.debug.assert` is not a production
+contract check.
 
 The hosted source gate retains production-mode Wasm builds and size budgets,
 plus Debug/ReleaseSmall effect-stack checks. The current Roc Wasm backend
@@ -81,33 +79,14 @@ campaigns remain explicit local suites. Dependency
 producer workflows have their own recipe-specific triggers and probes; an
 ordinary host or app edit does not rebuild third-party libraries.
 
-The native GUI jobs share the same selection and build policy, with these
-explicit OS differences:
-
-| Runner | Application host | Rust adapter tests on source fallback | Desktop integration in ordinary CI |
-| --- | --- | --- | --- |
-| Linux x86_64 | GNU/glibc Rust target + Zig GNU/Linux engine | Native Rust target | All example render smoke checks and scripted scenarios under Weston/Xvfb/software Vulkan |
-| macOS arm64 | Native Rust target + Zig macOS engine | Native Rust target | Semantic specs only; desktop checks remain available locally and release smoke tests validate packaged rendering |
-| Windows x86_64 | Rust `x86_64-pc-windows-gnullvm` + Zig Windows GNU engine | MSVC native target | Semantic specs only; release smoke tests validate packaged rendering |
-
-Windows' MSVC test binary is a Rust adapter test, not the distributable host.
-The Roc-linked semantic specs exercise the GNU application ABI. Cargo therefore
-builds two dependency sets on a cold Windows runner; the ordinary dependency
-cache reduces repeat work without treating cached workspace code as a released
-host. Do not describe these jobs as identical desktop coverage. A passing
-semantic spec does not establish pointer, keyboard, dialog, GPU, or accessibility
-behavior on that OS.
-
 Host producers run only by explicit dispatch. Dispatching on a branch validates
 a candidate without publication; publishing requires `main` and the release
 workflow's remaining gates. Ordinary CI never collects temporary debugger
-artifacts or creates GUI release bundles. Add a focused regression test or an
+artifacts or creates release bundles. Add a focused regression test or an
 explicit investigation workflow when diagnosing a failure.
 
-`test_ci_changes.py` protects job selection; `test_dependency_workflow_filters.py`
-protects the ordinary/release split and dependency producer triggers. The GUI
-build tests protect dev versus release mode selection. Keep the checks tied to
-these behavioral boundaries rather than copying entire workflow files into tests.
+`test_ci_changes.py` protects job selection. Keep the checks tied to these
+behavioral boundaries rather than copying entire workflow files into tests.
 
 ## Pre-commit CI check
 
@@ -118,10 +97,8 @@ python3 scripts/minici
 ```
 
 It runs every locally reproducible CI area: selection checks, the complete web
-and shared source suite, fuzz corpus validation, coverage on macOS, GUI
-semantics and real rendering, published examples, release archive validation,
-and the documentation site. Linux requires Weston and Xvfb for the rendering
-check; macOS and Windows launch the built applications directly. Hosted CI uses
+and shared source suite, fuzz corpus validation, coverage on macOS, published
+examples, release archive validation, and the documentation site. Hosted CI uses
 the `hosted` mini-CI target for bounded pull-request feedback; the default local
 run additionally covers the slower fault, benchmark, bundle, and coverage
 campaigns. Platform-specific linking and archive checks still run on their
@@ -136,7 +113,7 @@ allocation-scaling sample with independently retained generations. These gates
 assert work and ownership; they do not impose machine-dependent timing limits.
 
 During investigation, pass one or more target names, such as
-`python3 scripts/minici gui gui-smoke gui-scenarios`, but run the complete command before
+`python3 scripts/minici hosted`, but run the complete command before
 pushing.
 
 ## Test Driver
@@ -162,7 +139,6 @@ python3 scripts/test.py roc-test
 python3 scripts/test.py wasm
 python3 scripts/test.py wasm-bench --roc-bin /path/to/roc
 python3 scripts/test.py native --native always
-python3 scripts/test.py gui
 python3 scripts/test.py fault --native always
 python3 scripts/test.py bundle --bundle always
 python3 scripts/test.py bench --native always
@@ -327,78 +303,12 @@ and its reviewed lock entry records both its exact SHA-256 and the shared narrow
 host-input fingerprint. Application modules, examples, platform API files,
 documentation, and release packaging do not change that fingerprint.
 
-Combined platform releases consume `web-host.lock.json`. Ordinary source checks
+Platform releases consume `web-host.lock.json`. Ordinary source checks
 build the hosts needed by their selected suites; they do not produce release
 archives. GitHub attestations remain available for external provenance inspection, while ordinary admission uses the reviewed content
 hashes without calling an attestation service. The independently released musl
 startup objects and libc archives remain final linker inputs rather than web
 host outputs.
-
-### macOS linker interfaces
-
-To inventory the compiled Rust host's external references without reading SDK
-interfaces, build the optimized archive and use the active Rust toolchain's
-LLVM reader. The matching reader is necessary because the static library can
-contain Rust standard-library bitcode that older Apple or Homebrew tools cannot
-read:
-
-```sh
-rustup component add llvm-tools-preview
-TOOLCHAINS=Metal cargo build --locked -p signals-gpui-host --release -j 2
-python3 scripts/audit_macos_archive.py target/release/libsignals_gpui_host.a --output /tmp/rust-host-imports.json
-python3 -m unittest scripts/test_macos_archive_audit.py
-```
-
-For a custom Cargo target directory, substitute its release archive path. Supply
-additional archives as positional arguments to subtract their definitions too;
-for example, include `platform-gui/targets/arm64mac/libengine.a` from the same
-platform build. The report records archive hashes, the reader version, and each
-external symbol's referring members. A reader failure aborts the inventory
-instead of publishing partial results. `--llvm-nm` selects an explicit compatible
-reader when inspecting an archive from another Rust toolchain.
-
-This is a conservative archive inventory before extraction and dead stripping.
-It includes application callbacks and unused dependency code. It does not assign
-symbols to frameworks or establish weak-import attributes or interface provenance.
-Use it to review required interfaces; a minimal stub set additionally needs
-reviewed library ownership and final-link validation for the released archives
-and supported compiler.
-
-The reviewed catalog in `dependencies/macos-interfaces/interfaces.json` selects
-symbols for generated TBD files and records the source URLs for each interface.
-The producer consumes this catalog without reading host or SDK bytes:
-
-```sh
-python3 scripts/build_macos_stubs.py \
-  --output /tmp/macos-interfaces-candidate
-```
-
-`dependencies.lock.json` selects an immutable `deps-macos-interfaces-<version>` release by exact
-archive size and SHA-256. Ordinary GUI tests and `bundle_platforms.py` stage its
-exact TBDs, catalog, provenance statement, manifest, and dependency receipt;
-they never invoke the generator. Admission validates the catalog bundled in the
-locked release; the checkout's catalog is the recipe for the next release.
-Changing the catalog requires a new producer release and reviewed lock update
-before consumers use the new interfaces. Changing a host requires only final-link
-validation against the selected interface release; it does not regenerate or
-relabel those linker inputs.
-
-The `macOS interface dependency releases` workflow generates the catalog-only
-`.tbd` archive twice, compares the exact bytes, and then performs final Roc
-application links and native GUI specs, including internal GUI fixtures,
-against the attested host selected by
-`gui-host.lock.json`. Validation uses a clean checkout of that host release's
-recorded source revision, so its platform modules and fixtures match the released
-ABI. For a local candidate, pass that checkout with `--host-source` to
-`scripts/build_macos_interfaces.py`; mismatched host sources are rejected before
-download or linking. Generation still uses the current checkout's catalog.
-An explicit dispatch on `main` with a fresh
-`deps-macos-interfaces-<version>` tag publishes the tested archive and its
-consumer lock with GitHub build provenance. Generation reads neither host nor
-SDK bytes; the host is an independently released validation input, not part of
-the generated artifact's identity. Review and adopt the emitted lock entry
-separately. The adopted entry is consumed by ordinary CI and GUI package
-bundling without an online attestation check.
 
 ### musl
 
@@ -448,34 +358,9 @@ command attaches all assets before publishing; publication then locks their byte
 and the tag. Historical releases created before immutability was enabled remain
 mutable and must not be described as having that protection.
 
-The `Complete Windows system import releases` workflow builds its independent
-pure-import package on Linux x86-64 and executes the exact candidate on Windows.
-It installs the recipe's checksum-pinned Rust and Zig tools itself. To reproduce
-both builds with Python 3.12 or newer:
-
-```sh
-python3 scripts/build_windows_system_imports.py --output /tmp/windows-imports-a --cache /tmp/windows-import-downloads
-python3 scripts/build_windows_system_imports.py --output /tmp/windows-imports-b --cache /tmp/windows-import-downloads
-cmp /tmp/windows-imports-a/windows-system-imports-x64mingw.tar /tmp/windows-imports-b/windows-system-imports-x64mingw.tar
-python3 scripts/test_windows_system_import_artifact.py /tmp/windows-imports-a/windows-system-imports-x64mingw.tar
-```
-
-The last command requires Zig 0.16.0. On Windows, run the same candidate probe
-with `--require-native`; cross-linking on Linux is not a native runtime test.
-Publication uses a fresh `deps-windows-system-imports-<version>` tag on `main`
-after both build and native jobs pass. This package does not yet replace existing
-Windows consumer inputs or provide CRT implementations.
-
-Ordinary GUI CI caches compiled Cargo dependencies using the lockfile, Rust environment,
-and runner image identity. Only successful pushes to `main` save the cache;
-pull requests restore it without publishing entries. Workspace host code remains
-outside that dependency cache and is rebuilt from the current checkout. This is
-a build acceleration mechanism, separate from verification of release inputs.
-Published-download checks continue to use fresh Roc caches.
-
 Pull-request CI selects affected jobs from the complete merge-base diff using
-`scripts/ci_changes.py`. GUI-only changes run the native GUI jobs; web changes
-run browser/native source checks. Published-example and release archive checks
+`scripts/ci_changes.py`. Web and shared changes run browser/native source
+checks. Published-example and release archive checks
 belong to explicit release validation.
 Known documentation paths run the site check. Shared engine changes, build
 infrastructure, compiler/dependency locks, and unknown paths select every area.
@@ -484,171 +369,6 @@ validation still run every area, and release workflows retain their full gates.
 The required `Platform source` check verifies the selection job and requires
 success from every selected job; it accepts a skip only for an unselected area.
 New commits cancel superseded PR CI runs, but do not cancel main or release runs.
-
-The `Windows dependency releases` workflow independently generates the ADVAPI32
-import library from the definition and license hashes in
-`dependencies/windows-imports.json`. It executes a probe linked against that
-candidate on Windows and compares two builds before signing. Dispatch it on
-`main` with a new `deps-windows-imports-<version>` tag. The emitted lock identifies
-`windows-dependencies.yml` as its signing workflow. To exercise its producer:
-
-```sh
-python3 scripts/build_windows_imports.py --output /tmp/windows-import-candidate
-python3 scripts/test_windows_import_artifact.py /tmp/windows-import-candidate/windows-imports-x64win.tar
-```
-
-The second command cross-links on Linux; native execution is required on Windows
-before publication. This artifact contains no Signals host or application
-manifest resource.
-
-The `FreeType dependency releases` workflow builds the pinned upstream source
-from `dependencies/freetype.json`. On Linux x86-64, Python 3.12 and Docker are
-sufficient to run the same producer:
-
-```sh
-python3 scripts/build_freetype.py --output /tmp/freetype-candidate
-python3 scripts/build_freetype.py --output /tmp/freetype-rebuild
-cmp /tmp/freetype-candidate/freetype-x64glibc.tar /tmp/freetype-rebuild/freetype-x64glibc.tar
-python3 -m unittest scripts/test_freetype_dependencies.py
-```
-
-Source downloads are cached by digest under `~/.cache/roc-signals/sources` and
-verified again before each build. Docker constructs the reviewed builder from
-its base-image digest, bootstrap CA and Zig distribution digests, and authenticated Ubuntu package
-snapshot; the actual compilation has no network access and does not mount Cargo
-or platform target directories as build inputs. Each candidate is extracted and
-tested by rendering an exact glyph bitmap. No compiler pin or platform host
-build is involved. CI repeats the build in another clean container before
-publication.
-
-Dispatch this workflow on `main` with a new `deps-freetype-<version>` tag to
-publish tested bytes and their lock through `freetype-dependencies.yml`.
-Review and merge the lock entry separately when adopting the dependency. The
-Linux GUI builder verifies that release before compilation; the bundler verifies
-it again in fresh staging and excludes the development copy of `libfreetype.so`.
-Combined GUI bundles retain the lock entries and notices for FreeType,
-xkbcommon, Windows imports, glibc link inputs, and the LLVM unwinder. Linux CRT
-and unwinder inputs come from their independent verified releases.
-The artifact preserves FreeType's system SONAME; applications still use the operating
-system's runtime font libraries. The C compiler is Zig 0.16.0, targeting baseline
-x86-64 and glibc 2.39; the separate Roc compiler pin is preserved.
-The Linux link list omits the legacy `libutil`, `librt`, `libpthread`, and
-`libdl` compatibility libraries. The supported glibc provides the required
-symbols through libc; both native application specs and rendering smoke tests
-exercise this link list. xkbcommon and its X11 library remain required inputs.
-See `dependencies/README.md` for the input and
-runtime boundaries.
-
-The `glibc dependency releases` workflow generates Linux x86-64 startup and
-glibc link inputs from the checksum-pinned Zig distribution. Reproduce it with
-Python 3.12 and Docker:
-
-```sh
-python3 scripts/build_glibc.py --output /tmp/glibc-candidate
-python3 scripts/build_glibc.py --output /tmp/glibc-rebuild
-cmp /tmp/glibc-candidate/glibc-x64glibc.tar /tmp/glibc-rebuild/glibc-x64glibc.tar
-python3 -m unittest scripts/test_glibc_dependencies.py scripts/test_dependency_artifacts.py
-```
-
-Both builds run the native probe against their extracted candidate. Dispatch
-`glibc-dependencies.yml` on `main` with a new `deps-glibc-<version>` tag to attest
-and publish the tested bytes. The archive contains corresponding source and a
-standalone reproduction tree under `sources/glibc/`; run the same build command
-from that directory to reproduce the producer. Review the resulting consumer
-lock and platform link-input changes separately before adoption. Normal GUI
-builds reuse this pinned release, and bundles retain its complete source and
-notice payload alongside the link inputs. Admission requires the target-specific
-header source payload plus complete glibc, LLVM and Linux header license terms;
-older artifacts missing those notices are refused.
-
-The `xkbcommon dependency releases` workflow independently builds both keyboard
-libraries from the source and tool versions pinned in `dependencies/xkbcommon.json`.
-Its native Meson configuration uses Zig. To reproduce the producer on Linux x86-64
-with Python 3.12 and Docker:
-
-```sh
-python3 scripts/build_xkbcommon.py --output /tmp/xkbcommon-candidate
-python3 scripts/build_xkbcommon.py --output /tmp/xkbcommon-rebuild
-cmp /tmp/xkbcommon-candidate/xkbcommon-x64glibc.tar /tmp/xkbcommon-rebuild/xkbcommon-x64glibc.tar
-python3 -m unittest scripts/test_xkbcommon_dependencies.py scripts/test_prepare_dependencies.py
-```
-
-Dispatch `xkbcommon-dependencies.yml` on `main` with a new
-`deps-xkbcommon-<version>` tag to publish the tested, attested archive. Review the
-resulting lock entry separately. Normal GUI builds download and verify the pinned
-release; they do not rebuild xkbcommon or copy its link libraries from the build
-machine. Bundles independently verify and stage both libraries and their license.
-The runtime still uses the operating system's xkbcommon/XCB libraries and keyboard
-layout data through the libraries' existing SONAMEs.
-
-The `LLVM unwind dependency releases` workflow independently builds Linux x86-64
-`libunwind.a` from the same checksum-pinned Zig distribution. Reproduce the two
-container builds and test Rust panic recovery with Rust 1.95.0 installed:
-
-```sh
-python3 scripts/build_unwind.py --output /tmp/unwind-candidate
-python3 scripts/build_unwind.py --output /tmp/unwind-rebuild
-cmp /tmp/unwind-candidate/unwind-x64glibc.tar /tmp/unwind-rebuild/unwind-x64glibc.tar
-python3 scripts/test_unwind_rust.py --candidate /tmp/unwind-candidate/unwind-x64glibc.tar
-python3 -m unittest scripts/test_unwind_dependencies.py scripts/test_glibc_dependencies.py
-```
-
-Each build tests C++ exception handling and destructor execution using the
-extracted candidate with explicit final link inputs. Rust's probe checks panic
-recovery and `Drop` execution. Dispatch `unwind-dependencies.yml` on `main` with a
-new `deps-unwind-<version>` tag to attest and publish the tested archive. Original
-sources, notices, and reproduction inputs accompany `libunwind.a`; C++ support
-archives used only by the producer probe are excluded. Adopting the resulting
-consumer lock is a separate review. Linux GUI host builds and bundle staging
-verify that lock and use its `libunwind.a`, preserving notices and reproduction
-sources in bundles. No ambient GCC unwinder is copied into platform inputs.
-
-For host-license review, `scripts/rust_license_inventory.py` collects original
-notices from the crate archives selected by a `cargo-about --format json`
-report. It checks each archive against `Cargo.lock`, preserves the publisher's
-manifest separately, and reports packages without standalone notice files:
-
-```sh
-python3 scripts/rust_license_inventory.py --about /tmp/host-about.json --lock Cargo.lock --cache /path/to/cargo/registry/cache --supplements dependencies/gui-host-notices/manifest.json --review dependencies/gui-host-notices/review.json --include-sources --output /tmp/host-notices
-python3 -m unittest scripts/test_rust_license_inventory.py
-```
-
-The cache argument names the directory containing the downloaded `.crate`
-archives. Supplements preserve original upstream notice files and are admitted
-only when their crate hash and Git revision match the published archive. Their
-own bytes are checked against the reviewed manifest. The report determines the
-selected package set; this collector does
-not establish that the selection covers a host binary, resolve missing upstream
-notices, or account for toolchain runtime notices. Its inventory is review
-evidence, not permission to publish an incomplete host package.
-
-`--include-sources` also retains each selected original `.crate` archive with
-its locked hash. This preserves notices embedded in source comments and makes
-the published source available for review. Retaining source does not establish
-that an absent license grant exists; packages without standalone notices remain
-explicit in `missing_notice_files`.
-`--review` regenerates selected original source comments, declarations, and
-upstream caveats from the hash-bound review manifest. Its evidence categories
-do not certify permission or make standalone-file absence a publication blocker.
-
-Collect toolchain notice evidence separately from the distributions pinned in
-`dependencies/gui-host-notices/toolchains.json`:
-
-```sh
-python3 scripts/toolchain_license_inventory.py --target x64glibc --rust-archive /path/to/rustc-1.95.0-x86_64-unknown-linux-gnu.tar.xz --zig-source-archive /path/to/zig-0.16.0.tar.xz --output /tmp/host-toolchain-notices
-python3 -m unittest discover -s scripts -p test_toolchain_license_inventory.py
-```
-
-The collector verifies archive hashes before reading notice files. It retains
-Rust's standard-library copyright report and license texts, plus Zig's license
-and complete original source archive so source-level notices are preserved.
-Use the recipe's Rust distribution for the selected target. This is review
-evidence; it does not identify which runtime components a particular host links
-or cover SDK inputs. The release composer incorporates both inventories into the host/source pair
-with the actual compiled dependency selection and publication validation.
-
-Explicit GUI host release dispatches build only the selected native host targets.
-Pull requests validate complete host/source pairs on Linux, Windows, and macOS.
 
 ## Coverage
 
@@ -823,27 +543,17 @@ only finished once the invariant it violated is asserted somewhere permanent.
 
 ## Bundles
 
-Build both app-independent hosts and create both platform bundles:
+Build the app-independent web hosts and create the platform bundle:
 
 ```sh
 scripts/bundle.sh
-# Build and serve web/ and gui/ bundles plus URL-bound GUI example sources:
+# Build and serve the bundle:
 scripts/bundle.sh --serve --port 8000
 ```
 
 The script uses `ROC_BIN`, `ROC`, or `roc` from `PATH`; use the pinned compiler.
-Archives and `bundles.json` default to `.test-out/bundles`, with separate `web/`
-and `gui/` directories. `BUNDLE_OUT_DIR` or `--output-dir` changes that root.
-`--package web` and `--package gui` select one platform and put its archive
-directly in the output directory. `--no-build` reuses prepared hosts;
-`--debug-gui` selects development Rust and Zig builds. Use the default optimized
-GUI build for distributable archives. A fat GUI archive containing every native
-target exceeds the compiler's default 100 MiB expanded transitive package budget;
-local-file platform builds passing does not establish that a URL-bound bundle
-can be consumed. Release-candidate checks therefore pass the implemented
-`--max-transitive-mb=512` option explicitly. The older diagnostic's suggested
-`--max-transitive-bytes` spelling is incorrect. Keep the override visible until
-host-size work makes it unnecessary.
+Archives and `bundles.json` default to `.test-out/bundles`. `BUNDLE_OUT_DIR` or
+`--output-dir` changes that root, and `--no-build` reuses prepared hosts.
 
 For the separate browser JavaScript artifact, run `python3 scripts/bundle_browser.py`.
 
@@ -936,17 +646,15 @@ when work on the next release begins. Published notes describe that upgrade;
 do not rewrite them to follow later APIs. The site guides document the supported
 API and link to releases rather than duplicating version-specific instructions.
 
-Dispatch `Combined platform release candidate` on `main` with `release_tag` and
-`validate_only: false`.
+Dispatch the release workflow (`.github/workflows/release.yml`) on `main` with
+`release_tag` and `validate_only: false`.
 The release guard explicitly permits exact-nightly bootstrap; it does not claim
 a stable Roc compiler exists. Preparation records the final source SHA, downloads
-and content-hash verifies the immutable web hosts, GUI hosts, and external linker
-inputs, then runs `roc bundle` exactly twice. It builds no Zig or Rust code. The
-result is one web platform archive, one fat GUI platform archive, and
-`signals-examples.zip`; the latter contains two distinct app roots whose headers
-name their corresponding final asset URLs. `signals-release.json` records those
-URLs, SHA-256 digests, sizes, input locks, compiler pin, and the explicit fat-package
-budget.
+and content-hash verifies the immutable web hosts and external linker inputs,
+then runs `roc bundle`. It builds no Zig code. The result is one web platform
+archive and `signals-examples.zip`, whose app headers name the final asset URL.
+`signals-release.json` records those URLs, SHA-256 digests, sizes, input locks,
+and the compiler pin.
 
 To exercise preparation locally:
 
@@ -958,14 +666,20 @@ python3 scripts/release.py verify
 
 Preparation requires a clean committed checkout so its source SHA identifies the
 actual inputs. Output defaults to ignored `.release-out/` and must be empty;
-retain an existing candidate when investigating or recovering a release. Linux
-x64, Apple Silicon macOS, and Windows x64 runners each download the same candidate,
-serve both exact platform archives over loopback, verify every extracted app header,
-and run web and GUI smoke paths. Web apps build for Wasm on every runner and use the
-native spec host where available. Every GUI app builds for the runner's native
-target, runs semantic specs, and must report successful rendering. Only those
-already-tested bytes reach the single publishing job. `validate_only: true` runs
-the complete flow without creating a tag or release.
+retain an existing candidate when investigating or recovering a release. Each
+smoke runner downloads the same candidate, serves the exact platform archive over
+loopback, verifies every extracted app header, and runs the web smoke paths:
+every web app builds for Wasm and uses the native spec host where available.
+Only those already-tested bytes reach the single publishing job.
+`validate_only: true` runs the complete flow without creating a tag or release.
+
+Packaging changes do not rebuild the host. `web-host.lock.json` selects
+immutable host releases whose narrow source fingerprints must match the
+checkout; packaging and publication refuse a lock that does not.
+`dependencies.lock.json` independently selects the external linker inputs.
+Ordinary admission uses the recorded byte counts and SHA-256 hashes without an
+attestation service. The publishing job additionally attests the exact bundle,
+example archive, and release manifest for users who want external provenance.
 
 Ordinary publication rejects any existing tag or release. After partial
 publication, inspect the tag SHA and every existing asset against the retained
@@ -994,18 +708,10 @@ ordering and rendering details in JavaScript/browser contract tests.
 
 Put each independent case in its own `*.scm` file under the app's
 `specs/` directory. The driver discovers files recursively and gives each one a
-fresh app process. A file's head form says which host runs it: a `(test ...)`
-runs on the display-free host, a `(scenario ...)` against a real window (see
-[Window scenarios](#window-scenarios) below). Keep pre-mount state in an optional `(setup ...)` form;
+fresh app process. Keep pre-mount state in an optional `(setup ...)` form;
 setup accepts `initial-location`, `initial-visibility`, `initial-online`,
 `local-storage`, `session-storage`, `manual-effects`, and the same scripted
-Files and HTTP answers accepted in test steps. Scenarios deliberately reject
-setup and scripted answers because they exercise live host effects.
-
-The typed step model is also the source of `test/spec-steps.json`, which records
-the capability and payload fields of every step accepted by the window host.
-Run `zig build spec-manifest` after intentionally changing that vocabulary and
-review the generated diff. Ordinary `zig build test` rejects uncommitted drift.
+HTTP answers accepted in test steps.
 
 ### Writing specs that do not rot
 
@@ -1071,21 +777,12 @@ Supported action commands:
 - `(pointer-down <locator>)`, `(pointer-up <locator>)`
 - `(pointer-enter <locator>)`, `(pointer-leave <locator>)`
 - `(key-down <locator> "<key>" true|false)`
-- `(shortcut <locator> "<key>" <modifier-mask>)` (native GUI)
 - `(focus <locator>)`, `(blur <locator>)`
 - `(composition-start <locator>)`, `(composition-end <locator>)`
 - `(change <locator> "<value>")`, `(select-option <locator> "<value>")`
 - `(custom-event <locator> "<event-name>" "<detail>")`
 - `(submit <locator>)`, `(fill <locator> "<text>")`
 - `(check <locator>)` and `(uncheck <locator>)`
-
-`shortcut` dispatches the exact `shortcuts` binding declared on the located
-region through the shared engine. Keys use the public canonical vocabulary;
-modifier bits are Control `1`, Shift `2`, Alt `4`, and Meta `8` (add them for a
-combination). For example, `(shortcut (test-id "editor") "s" 3)` invokes
-Control+Shift+S. Missing bindings, invalid keys, and masks outside `0..15` fail.
-This command checks application semantics and scope disposal. GPUI interaction
-tests cover focused routing, native editor precedence, and event propagation.
 
 Supported assertions:
 
@@ -1101,155 +798,15 @@ Supported assertions:
 - `(expect-disabled <locator> true|false)`
 - `(expect-updates <locator> <count>)`
 
-### Window scenarios
+### Readable HTTP fixtures
 
-The display-free host runs the engine without a presentation layer, so a
-`(test ...)` cannot see a control that GPUI laid out beyond the window, a dialog
-that does not fit, or a native editor that kept the previous document's undo
-history. For the GUI examples those states are covered by `(scenario ...)`
-specs, which live in the same `specs/` directory, use the same locators and
-the same step names, and are parsed by the same engine parser. The GUI host
-interprets them against a real window, through its `--host-scenario` flag. Run
-`GUI_TEST_OUTPUT=.test-out/my-gui-run python3 scripts/minici gui gui-scenarios`
-to build and exercise one explicitly owned set of executables.
-
-```lisp
-(scenario "detail reachability"
-  :window "800x600"
-  (steps
-    (click (test-id "edit-task-4"))
-    (wait 400)
-    (expect-selected (test-id "task-4") true)
-    (expect-value (label "Task title") "Polish the project sidebar")
-    (expect-history (label "Task notes") 0)
-    (expect-onscreen (test-id "task-detail"))
-    (snapshot "task-4-selected")))
-```
-
-The header names what the run needs, relative to the example directory:
-`:window "WIDTHxHEIGHT"` sizes the window (the host default otherwise, and a
-capture harness's `--host-window-size` overrides it); `:assets "path"` runs
-against a prepared assets root instead of the example's `assets/`, which is how
-the asset scenarios show a missing, altered or unreadable file without a
-scenario damaging the working tree (see `task-board/specs/assets-problem/`,
-whose `generate.py` derives that root from the shipped assets); and
-`:choose ("path" ...)` answers the file and folder choosers in order, because a
-native dialog cannot be driven from a spec. Everything past the chooser — the
-listing, preview, log-follow or open worker — is the real one, which is what
-separates a scenario from a test that resolves the worker's result by name;
-the parser refuses a `resolve-file-*` fixture inside a scenario for that reason.
-
-A scenario shares `click`, `focus`, `shortcut`, `expect-visible`,
-`expect-absent`, `expect-text`, `expect-value` and `expect-disabled` with a
-test. Its own steps are `(wait ms)`, which lets timers, effects and propagation
-settle; `(type locator "text")`, which focuses an editor and types through the
-real key dispatch path (a scenario refuses `fill`, which sets a value without
-the keyboard); `(key "ctrl-s")`, one keystroke written the way GPUI writes
-bindings; `(expect-selected locator true)`, `(expect-focused locator)` and
-`(expect-count "test-id-prefix" n)`; `(expect-history locator n)`, which reads
-how many native undo entries an editor is holding — how document ownership
-becomes testable; `(expect-onscreen locator)`, which reads a control's laid-out
-bounds and means *visible without scrolling*, so a failure is a usability
-finding rather than proof that nothing can reach the control; `(snapshot
-"name")`, which records the rendered tree as evidence; and `(close)`, which must
-be last and leaves through the window's own close request the way the frame's
-close button does — an application with unsaved work may answer with a dialog
-and keep the window. The display-free host refuses every one of these by name.
-
-Every run writes a JSON report of every observation under the owning run's
-`gui-scenarios/<app>/` directory, and on macOS also photographs the
-application's own window in the state the scenario finished in — including the
-state a failing assertion stopped at. Captures go through `gui_capture.py`, so
-they find the window by the process id the driver started and refuse a window
-whose size does not match what the report says was requested; no region of
-your desktop is captured. The report is written before a `(close)` takes the
-window, so the driver also reads the process exit status: a crash during
-teardown fails the scenario even when every assertion passed. Pass
-`--no-capture` to run the scenarios alone, `--scenario SUBSTRING` to select
-some of them, and `--artifacts PATH` to write elsewhere.
-
-A scenario whose header carries `:diagnostic "reason"` documents a defect owned
-elsewhere. It runs and its failure is reported, but it does not fail the run —
-and a diagnostic that starts passing *does* fail the run, so a fix cannot leave
-a stale exclusion behind. Never weaken an assertion to make a scenario pass;
-state the reason and let it run as a diagnostic instead. A defect that only
-some runs show adds `:on (...)`, naming systems (`linux`, `macos`, `windows`)
-or the window frame the run saw (`client-frame` where the host drew its own
-title bar and insets, which it does when the compositor delegated decorations
-and the window is not fullscreen, as on a Wayland desktop; `server-frame`
-otherwise, as on macOS). The host copies the diagnostic and its scope into the
-report and records which frame the run had, so the driver judges a scope from
-the evidence alone; the scenario is an ordinary check wherever nothing named
-matches.
-
-The scenarios are platform-neutral, because the interpreter lives in the host
-rather than in the driver: the same checks run on every system the GUI
-supports. Only the captures are macOS-only, and the driver says which half it
-ran rather than reporting a pass for evidence it never gathered. On Linux the
-scenarios need the same private display as the smoke checks, which
-`python3 scripts/minici gui-scenarios` arranges — under Weston on an Xvfb
-display there, and directly on macOS and Windows. CI runs that target after
-`gui-smoke` and keeps the JSON reports when it fails.
-
-Two limits found by running the driver against real fixes: a dialog is lifted
-into its own render layer and the bounds probe records nothing for it, so
-`expect-onscreen` cannot judge a dialog and those scenarios rely on their
-capture instead; and a control inside a scrolling region is likewise not
-recorded. Both are gaps in the probe, not properties of the applications.
-
-Keep the two forms apart by what they prove. Semantic and work-budget
-assertions belong in a test; presentation assertions belong in a scenario. A
-scenario is not the place to re-check what a test already proves.
-
-### Readable native file fixtures
-
-The `Files` primitives run synchronously inside an effect, so their results
-are declared ahead of time with `stub-file-*` forms, either in `setup` for
-mount-time effects or in `steps` before the step that triggers the call. A
-stub is a typed value the spec host hands back exactly as a real call would:
-
-```lisp
-(stub-file-choice "notes-open" (chosen "/tmp/meeting.txt"))
-(stub-file-read "notes-read" :path "/tmp/meeting.txt" :text "First line\nSecond line: λ")
-(click (role button :name "Open…"))
-(expect-value (label "Note text") "First line\nSecond line: λ")
-```
-
-Each stub answers one primitive call. A stat, read, directory, or launch stub
-is consumed by the first call of its kind whose path matches; a choice stub
-answers the next chooser; a `stub-file-reject` answers the next call of any
-kind, so declare it after any choice stub the same step needs. Writes,
-renames, removals, and flushes succeed without a stub and fail only when a
-reject stub is the next stub declared. A call with no matching stub returns
-`Unavailable` naming the missing stub.
-
-The conveniences are Roc code, so a spec stubs the primitives underneath
-them: `read_text!` is one read; `read_preview!` is one read whose `:size` may
-exceed its text to report truncation; `write_text!` needs no stub; `scan!` is
-one directory stub per folder it descends into; and `verify_assets!` is one
-read per manifest entry under `/assets`, the spec host's assets root, where
-`:file` supplies the bytes of a real asset relative to the spec's folder. The
-activity monitor's log reader is one stat plus one read per chunk. The
-vocabulary is:
-
-```lisp
-(stub-file-choice "save-path" (canceled))
-(stub-file-choice "save-path" (chosen "/tmp/project.board.json"))
-(stub-file-stat "log" :path "/tmp/app.log" :kind file :bytes 6 :device 1 :inode 2)
-(stub-file-read "read" :path "/tmp/note.txt" :text "Contents")
-(stub-file-read "tail" :path "/tmp/app.log" :text "Ready\n" :offset 6 :size 12)
-(stub-file-read "asset" :path "/assets/avatars/maya.png" :file "../assets/avatars/maya.png")
-(stub-file-directory "folder" :path "/tmp" :entries
-  ((file "/tmp/readme.txt" 123) (directory "/tmp/project" 0)
-   (symbolic-link "/tmp/latest" 12) (other "/tmp/socket" 0)))
-(stub-file-open "launch" :path "/tmp/readme.txt")
-(stub-file-reject "read" :kind permission-denied :detail "/tmp/note.txt")
-```
-
-The hosted `Http` functions are stubbed the same way. A response stub answers
-the next request for its URL; a reject stub answers the next request for any
-URL. Error kinds are `invalid-request`, `network`, `timeout`, `too-large`, and
-`unavailable`; `timeout` requires empty detail. Headers are optional:
+The hosted `Http` functions run synchronously inside an effect on the native
+spec host, so their results are declared ahead of time, either in `setup` for
+mount-time effects or in `steps` before the step that triggers the request. A
+response stub answers the next request for its URL; a reject stub answers the
+next request for any URL. Error kinds are `invalid-request`, `network`,
+`timeout`, `too-large`, and `unavailable`; `timeout` requires empty detail.
+Headers are optional:
 
 ```lisp
 (stub-http "feed" :url "https://example.test/feed" :status 200 :body "{\"items\":[]}")
@@ -1258,38 +815,15 @@ URL. Error kinds are `invalid-request`, `network`, `timeout`, `too-large`, and
 (stub-http-reject "feed" :kind timeout :detail "")
 ```
 
-Fields may appear in any order; each documented field is required exactly once.
-Paths must be valid UTF-8, at most 4096 bytes, and absolute in one of the
-spellings a native worker returns: POSIX-rooted (`/tmp/note.txt`), drive-rooted
-(`C:\Users\Lee` or `C:/Users/Lee`), or a UNC prefix (`\\server\share\docs`), so a
-stub can express a Windows result directly. Unknown fields, duplicate fields,
-invalid types, and oversized values reject the spec.
-
-A read's `:size` and `:offset` and a stat's `:bytes`, `:device`, and `:inode`
-are canonical unsigned decimal U64 values, including values above signed
-I64's maximum. Signs, leading zeros, quoted numbers, and overflow are refused.
-Directory stubs accept up to 10,000 entries and four MiB of combined
-root/entry path bytes.
-
 Fields may appear in any order; each documented field is required exactly
-once unless marked optional. Choice tags are `chosen` and `canceled`. Error
-kinds are `not-found`, `permission-denied`, `invalid-utf8`, `invalid-path`,
-`resource-limit`, `io`, and `unavailable`. Paths must be absolute, valid
-UTF-8, and at most 4096 bytes; read text is bounded at 32 MiB and error detail
-at 4096 UTF-8 bytes. Unknown fields, duplicate fields, invalid types, and
-oversized values reject the spec.
+once unless marked optional. Unknown fields, duplicate fields, invalid types,
+and oversized values reject the spec.
 
-These stubs simulate results and perform no filesystem IO. They establish
-application response and state behavior; real filesystem and native chooser
-behavior need host tests and a native walkthrough. The Board and
-Notes journeys demonstrate save snapshots, failed loads, dismissed choosers,
-retries, and retained drafts.
-
-A supplied result does not assert the request payload the app emitted. For
-example, resolving a write with `:bytes 14` does not prove that the app submitted
-those fourteen bytes. Test snapshot construction as pure application logic and
-check real submitted data through focused native IO workflows. The harness
-currently exposes pending effect counts, not request-body assertions.
+These stubs simulate results and perform no network IO. They establish
+application response and state behavior; real `fetch` behavior needs the
+browser contract tests. A supplied result does not assert the request payload
+the app emitted. Test request construction as pure application logic. The
+harness currently exposes pending effect counts, not request-body assertions.
 
 Supported async and lifecycle commands:
 
@@ -1297,15 +831,8 @@ Supported async and lifecycle commands:
 - `(expect-pending-effects <count>)`
 - `(run-effect <occurrence-id>)`
 - `(tick-interval <period-ms>)`, `(tick-interval-if-active <period-ms>)`
-- `(request-window-close)`, `(expect-window-closed true|false)` (native GUI lifecycle)
 - `(expect-interval <period-ms> <count>)`
 - `(expect-cleanup "<cleanup-name>" <count>)`
-
-A window-close assertion records the committed close decision. The harness
-keeps the final semantic tree available for inspection; it does not simulate
-an OS window or automatically reject subsequent interactions with that tree.
-End the interaction journey at closure and use GPUI lifecycle tests to verify
-native removal and teardown.
 
 Supported metric commands:
 
@@ -1440,347 +967,10 @@ from full snapshot reconciliation when testing update costs.
 Regenerate glue after changing exposed platform types or provided entrypoints:
 
 ```sh
-roc glue <path-to-roc>/src/glue/src/ZigGlue.roc src/signals platform-gui/main.roc
+roc glue <path-to-roc>/src/glue/src/ZigGlue.roc src/signals platform-web/main.roc
 zig fmt src/signals/roc_platform_abi.zig
 ```
 
-Use the `ZigGlue.roc` from the same Roc commit named by the `roc` header in `platform-gui/main.roc`. Generate from the native platform: its header additionally provides `roc_prepare_effect` and `roc_run_effect`, which the native host links, while the two platforms otherwise declare the same hosted and provided symbols. The host
+Use the `ZigGlue.roc` from the same Roc commit named by the `roc` header in `platform-web/main.roc`. The host
 uses the generated types' public `incref` and `decref` methods; generated helper
 functions are implementation details and must not be made public by hand.
-
-## Native GUI platform spike
-
-`platform-shared/` owns common signal, scope, descriptor, ownership, and render
-construction modules. `scripts/prepare_platforms.py` copies its Roc files into
-`platform-web/` and `platform-gui/`. `Elem.roc` is the exception: each platform owns its
-own copy, because the native platform declares its control constructors inside
-the `Elem` module and Roc allows neither a second module for the same type nor
-an import cycle. Keep the `Elem` tag union identical in both copies. These flat generated copies are individually
-gitignored. The fixed repository layout needs no per-platform source configuration.
-
-Run `python3 scripts/prepare_platforms.py --check` or
-`zig build run-check-platform-sources` to compare SHA-256 hashes without changing
-any files. Missing, modified, and stale shared-module entries fail the check.
-The check runs with `zig build test`, and CI exercises deliberate drift detection.
-Refresh copies after editing canonical sources with
-`python3 scripts/prepare_platforms.py`. Bundle staging always reads the canonical
-shared sources, even when local generated copies are stale.
-
-The flat layout is intentional: nested `shared/` imports and hosted declarations
-currently fail with the pinned compiler, including when compiled from bundles.
-
-The GUI targets are Apple Silicon macOS, Linux x86_64 with glibc and a
-Wayland/GPU session, and Windows x86_64. Host development needs Rust (tested
-with 1.95.0 on macOS, Linux, and Windows CI) and Zig 0.16. Linux also
-needs a C toolchain for Rust dependencies with native code,
-xkbcommon development packages, and the xkbcommon-X11 runtime. FreeType is
-an independently verified release input. The Linux Cargo `links` override in
-`.cargo/config.toml` supplies `dylib=freetype` and suppresses freetype-sys
-`build.rs` entirely, so missing pkg-config cannot trigger its bundled C build.
-Roc links the released FreeType input separately; host release evidence rejects
-any executed or compiled freetype-sys build script. Changing that crate version
-requires reviewing the override. macOS needs Xcode
-with its Metal compiler component (`xcodebuild -downloadComponent MetalToolchain`).
-If Xcode reports mismatched support frameworks, complete
-`xcodebuild -runFirstLaunch` first. Windows uses Rust's MSVC compiler host with
-its `x86_64-pc-windows-gnullvm` target (`rustup target add --toolchain 1.95.0
-x86_64-pc-windows-gnullvm`). The shared Windows builder pins Zig 0.16.0 and the
-Microsoft-signed FXC/compiler DLL pair from SDK 10.0.26100.0, file version
-10.0.26100.8249. It checks the actual loaded compiler DLL and committed hashes;
-ambient `GPUI_FXC_PATH` cannot override release shader tooling. Optimized builds
-compile GPUI shaders before packaging; development builds compile them at runtime.
-A local Windows host build needs PowerShell 7 (`pwsh`) on `PATH`, the SDK
-10.0.26100.0 `fxc.exe` and `d3dcompiler_47.dll` under `ProgramFiles(x86)`, the
-`1.95.0` toolchain with its `x86_64-pc-windows-gnullvm` target, and an
-authenticated `gh`; `python scripts/build_gui.py --debug` checks all of them
-before compiling and names every one that is missing. Without them, verify
-against the released host instead:
-`GUI_HOST_LOCK=gui-host.lock.json python scripts/test.py gui`.
-
-Windows host builds verify and reuse both independently signed dependencies in
-`dependencies.lock.json`: complete per-DLL import archives and GNU CRT inputs.
-Authenticated GitHub CLI access is required. There is no local native dependency
-build fallback. The host and engine use the GNU ABI, and the host build produces
-its own application manifest resource. Structural COFF validation separates only
-import records and exact linker helpers from the raw Rust archive, preserving
-every implementation member byte-for-byte and in order. The transformation
-receipt binds raw Cargo output to the final archive; engine/resource bytes remain
-unchanged. Complete original notices are bundled and the validated source
-companion remains a separate release asset.
-
-Roc's final Windows link explicitly selects `--target=x64mingw` and uses all
-released inputs from the platform header. For a direct Windows build, run
-`roc build --target=x64mingw examples-gui/counter/main.roc --output=Counter.exe`. It does not discover installed MSVC/SDK
-libraries. FXC remains a build-time SDK tool. Use `python` instead of `python3`
-in the commands below on Windows, where `python3` can be a Store shortcut.
-`build.zig` prefers `python` there. The workspace pins GPUI 0.2.2.
-
-The separate `Windows GNU host candidate` workflow can inventory shader tooling
-or test identified CI artifacts before release. It uses the same native builder
-and structural transformer as production. Its full app gate admits original
-notices and paired sources, then runs all six builds/specs/render checks natively
-and through a fresh HTTP bundle cache. Candidate artifacts do not substitute for
-signed production dependency admission.
-
-Other native targets, including Intel macOS and Windows on Arm, are not
-implemented.
-The GUI builder selects `TOOLCHAINS=Metal` on macOS unless explicitly overridden;
-use the same setting for direct `cargo test` commands if Xcode's default lookup
-still reports the installed Metal component as missing.
-
-The GUI platform header lists the Rust host and Zig engine as separate link
-inputs: `libsignals_gpui_host.a` and `libengine.a` on all supported native targets. Roc links these with the
-application object and the other declared inputs to produce the executable.
-The builder does not merge them into a combined host archive. Rebuild older
-prebuilt target directories before using them with this header.
-
-Cargo tracks the checkout identity supplied by `.cargo/config.toml` through the
-host's `build.rs`. This prevents stale host reuse when multiple checkouts share
-`CARGO_TARGET_DIR`, without cleaning the host on every build. Run direct Cargo
-commands from the workspace or crate directory so Cargo discovers that config.
-
-```sh
-python3 scripts/build_gui.py --debug
-roc build examples-gui/counter/main.roc --output=.test-out/Counter
-.test-out/Counter
-# Same executable, display-free semantic check:
-.test-out/Counter --host-run-spec-json examples-gui/counter/specs/counting.scm
-# Brief rendering/adapter integration check:
-.test-out/Counter --host-smoke --host-smoke-click Increment --host-smoke-expect '1'
-```
-
-`python3 scripts/test.py gui --roc-bin /path/to/pinned/roc --keep-output`
-checks the compiler identity and prepares shared sources. With `GUI_HOST_LOCK`,
-it reuses the reviewed host when its input fingerprint matches; otherwise it
-builds the current Rust host in dev mode and the Zig engine in Debug mode, then
-runs focused GPUI adapter/editor tests. It runs `roc check` and `roc test` for
-each registered GUI app and internal fixture under `test/gui/`, builds fresh
-executables, and runs their native semantic specs without a display.
-Roc checks, tests, and application builds use the dev backend. Optimized Zig
-and Rust host builds, Cargo release evidence, archive audits, and exact bundle
-validation belong to the manually dispatched host and combined release workflows.
-`python3 scripts/build_gui.py --debug` selects Rust dev and Zig Debug together;
-without `--debug`, the release builder explicitly selects Rust release and Zig
-ReleaseFast. Direct `zig build build-gui-engine` uses Zig's default Debug mode,
-with `-Doptimize=ReleaseFast` for release builds and `-Doptimize=ReleaseSafe`
-for explicit checked optimized validation.
-Windows keeps the GNU application ABI and native MSVC Rust unit tests; their
-separate dependency builds use the ordinary GUI dependency cache. A cold cache
-still incurs both builds. The Windows builder logs commands and elapsed times
-so engine compilation is visible in CI logs.
-
-The manifest at `examples-gui/examples.toml` must list every app directory, and
-each app must have specs. Every GUI check must pass; this suite has no known-failure
-allowlist. `--spec-filter`, `--shard`, `--jobs`, and `--fail-fast` also apply.
-The default `all` suite includes GUI checks on Linux x86_64; run `gui` explicitly
-on macOS, where it requires full Xcode and the Metal toolchain. CI runs them in a
-dedicated Linux, Windows, and macOS jobs. GUI executables remain under the
-printed run directory's `gui/` subdirectory when output is kept. A multi-stage
-run sets `GUI_TEST_OUTPUT` once and passes that owned directory explicitly to
-the build, smoke, and scenario stages; for example,
-`GUI_TEST_OUTPUT=.test-out/my-gui-run python3 scripts/minici gui gui-smoke gui-scenarios`.
-Linux CI runs the equivalent through Xvfb, Weston, and Mesa's software Vulkan
-driver. Weston runs on Xvfb so GPUI
-receives a Wayland input seat as well as a virtual display; Weston's headless
-backend provides no seat and GPUI 0.2.2 requires one.
-It opens every maintained example, requires
-the host's explicit rendering result, checks the counter's increment action,
-and fails on a crash or a 30-second timeout. This checks the GPUI window/rendering
-path separately from the display-free specs. Run the same script on a desktop
-after the GUI suite to exercise the local graphics driver.
-
-## Native GUI host flags
-
-Normal GUI launches do not print engine metrics. Pass `--host-trace-engine` to an
-app executable to log event-turn metrics to stderr; `--host-smoke` prints its explicit
-validation result, and `--host-scenario` prints its own pass or failure line. Host
-errors remain visible without tracing.
-
-Host builds default to two Cargo workers. Use `scripts/build_gui.py --jobs N`
-or `scripts/test.py gui --gui-build-jobs N` to adjust memory pressure. Parallel
-app work should serialize substantial host builds. Cargo reuses valid cached
-artifacts without an unconditional host clean. Rebuilding and optimizing the
-Rust host uses ThinLTO across its Rust dependency graph to keep the archive
-within Roc’s package-size budget. External native link libraries
-have independent release cycles and are fetched from their verified locks.
-GUI specs validate shared
-semantics; the separate window smoke above checks rendering and adapter dispatch,
-and does not establish OS keyboard, pointer, or IME behavior. GPUI adapter tests
-exercise simulated input and layout; they also do not replace a native desktop walkthrough.
-
-After `scripts/bundle.sh --package gui --serve`, download `http://127.0.0.1:8000/Counter.roc`
-and run `roc build Counter.roc`. Alternatively, `roc run Counter.roc --opt=speed`
-compiles and opens the window directly. Plain `roc run` currently encounters a
-compiler-generated required-`main` shim collision; use one of the explicit
-commands above. The app author needs the pinned Roc compiler
-and the target operating system (plus runtime GUI libraries on Linux).
-Rust and Zig are used when preparing the platform bundle. Windows application
-linking still needs Roc's implicit MSVC/SDK inputs. On macOS, the package embeds compiled Metal shaders
-and generates the required framework/library link stubs from the reviewed
-interface catalog into
-`targets/macos-sysroot`; building a bundled app does not need Xcode. The
-final application link takes place on the user's machine during `roc build`
-or the compilation step of `roc run`. The `.tbd` files supply interface metadata;
-macOS supplies the actual framework implementations at runtime. Running an
-already-built executable does not require an Apple SDK. The macOS
-build is validated on macOS 26.3; older versions are not yet validated.
-This produces a native executable, not a desktop
-installer. Linux bundles now include independently built glibc 2.39 link stubs,
-startup objects and complete corresponding source/license inventories. The Rust
-host still depends on its build environment's glibc ABI; the pinned link inputs
-do not establish compatibility with older Linux distributions.
-
-The manually dispatched `GUI host link inputs` workflow (`gui-hosts.yml`) builds
-optimized native candidates and runs all GUI application specs with the pinned
-Roc compiler against their extracted archives. Candidate tests populate empty target directories from the
-independently verified Linux or Windows releases; development target copies are
-not admitted as dependency evidence. All native producers capture the actual Cargo build
-stream, filtered metadata, and unchanged lock with `build_gui.py --cargo-evidence`.
-The notice composer selects the conservative set of compiled packages, retains
-original notices and source declarations, and supplies pinned canonical SPDX
-terms under an explicit expression policy. These reference terms are labeled
-separately from upstream notices; template copyright placeholders are not
-attributed to crates. Unknown expressions and incomplete evidence are rejected.
-
-Mac `--cargo-evidence` builds use a fresh Cargo target beneath the evidence output's
-parent directory so cached shaders cannot be attributed to different tools.
-That scratch target is removed when the build process exits, after the host
-archive has been copied into the platform target directory. The existing host build receipt records the selected Metal/metallib executable
-hashes and version diagnostics, Xcode/SDK identities, and GPUI shader/header/AIR/
-metallib hashes bound to the resulting host. Ordinary development builds retain
-normal Cargo caching. The Mac source companion retains this evidence with the
-exact selected crate sources and compiler notices. No Apple SDK or tool binaries
-are added to the receipt. The original
-objc2 SDK-derived qualification remains preserved as an upstream declaration,
-not treated as an inferred distribution prohibition.
-
-Each eligible candidate comprises `gui-host-<target>.tar` plus
-`gui-host-sources-<target>.tar`. The host contains a hash-indexed compressed notice
-archive; the companion retains exact locked crate sources, Zig sources, and
-Cargo evidence. Rust distribution notices include its standard-library copyright
-report. The host manifest binds the companion digest, and both exact tested
-artifacts receive build attestations and appear in the release lock. Source
-companions remain accessible through that lock without occupying the Roc platform
-bundle or being downloaded for each app build. Preserve the notice archive and
-linked source access when redistributing the bundle.
-
-A main-branch manual dispatch selects Linux, Windows, macOS, Linux and Windows,
-or all three targets
-for an independent `deps-gui-host-<version>` release. Mac admission requires the
-complete source/notice pair and native final links/specs against the independently
-released project-authored interfaces; copied SDK stubs are not release inputs. The original
-objc2 qualification is retained alongside its declared license terms. Missing
-standalone license files alone are not a blanket
-publication prohibition: original source evidence and declarations remain visible
-in the package inventory and reviewed expression policy.
-
-Set `HOST_RELEASE` to the actual published tag, verify its lock asset, and pass
-the reviewed lock directly to the bundler:
-
-```sh
-gh release download "$HOST_RELEASE" --pattern dependencies.lock.json --dir /tmp/hosts
-scripts/bundle.sh --package gui --no-build --prebuilt-host-lock /tmp/hosts/dependencies.lock.json
-```
-
-The bundler downloads and verifies every selected archive, including cached
-copies, against the reviewed size and SHA-256. The lock also records its producer
-repository, source commit, main ref, and workflow for optional provenance
-inspection. It extracts into private staging and checks whether the actual Rust
-host, Zig engine, Cargo manifest, lock, or build configuration changed since the
-host release. Platform Roc APIs, applications, semantic specs, documentation,
-packaging, and external linker inputs do not invalidate a compatible host.
-Host-related source must be clean and committed. Overlapping local and prebuilt
-hosts for one target are errors.
-
-The GUI test driver accepts the same reviewed lock through
-`python3 scripts/test.py gui --gui-host-lock /path/to/dependencies.lock.json` or
-`GUI_HOST_LOCK`. It downloads only the host for the current operating system,
-stages that target's independently released system link inputs, and runs the
-ordinary Roc checks, builds, and semantic specs without rebuilding Cargo or Zig
-host code. Cargo host tests and fresh host-output construction remain part of the
-dedicated producer workflow when actual host inputs or producer machinery change.
-
-A reviewed host release can only be published from `main`, so a branch that
-changes the host sources has no matching release yet. When the lock does not
-describe the checkout's host inputs, the driver says so and builds and tests the
-host from source for that run instead of refusing to start — otherwise a host
-change could never reach `main` to be released from. Asking for the verified
-host itself still refuses a mismatched lock: the fallback is the test driver's
-decision, never something a release or a bundle can inherit. The macOS bundle
-step is skipped in that case for the same reason — there is no released archive
-for it to validate.
-
-Because that job may build the host, its runner needs the host's build inputs:
-the FreeType and xkbcommon development packages on Linux, and the
-`x86_64-pc-windows-gnullvm` Rust target on Windows. Generating the macOS
-interface catalog remains outside ordinary CI; that has its own producer and
-review.
-
-These archives contain host code and licenses, not external system libraries or
-SDK stubs. Every included target must also have its external link inputs supplied;
-the bundler rejects incomplete targets. Windows ADVAPI32 imports and all declared
-Linux external link inputs are fetched through their independent verified locks.
-Completing Windows CRT/import separation and macOS SDK stub admission remains
-separate work. Raw prebuilt directories are no longer accepted.
-
-The bundle output also contains every registered GUI app under `examples-gui/`,
-including its supporting Roc modules and semantic specs. Those generated app
-headers refer to the served bundle URL. With the server still running, build an
-app directly from the output directory:
-
-```sh
-roc build .test-out/bundles/examples-gui/notes-editor/main.roc --output=.test-out/Notes
-.test-out/Notes
-```
-
-`Gui` offers typed rows, columns, panels, native styles, headings/text, enabled
-buttons, labeled inputs, and checkboxes. See the native presentation protocol in
-`docs/native-gui-protocol.md` for field compatibility and limits. Signals, keyed
-rows, scopes, and ownership remain in the shared engine.
-Wide collections use `Elem.virtual_list` to bound child lookup and layout to the
-visible range; ordinary containers enumerate direct children when rendered.
-See [Native GUI](@/docs/native-gui.md) for controls and keyboard regions, and
-`crates/gpui-host/README.md` for the boundary limits.
-
-### Combined platform release candidates
-
-The single release workflow publishes the web and GUI platforms together without
-conflating their APIs. Web applications and GUI applications remain separate app
-roots and may share ordinary Roc modules, but each header names its own platform
-archive. The GUI archive is deliberately fat: it contains the admitted
-`x64glibc`, `arm64mac`, and `x64mingw` hosts and their target-confined linker inputs.
-The web archive contains its native spec hosts and Wasm browser host.
-
-Packaging changes do not rebuild either host. `web-host.lock.json` and
-`gui-host.lock.json` select immutable host releases whose narrow source
-fingerprints must match the checkout; packaging and publication refuse a lock
-that does not, and only the GUI test driver falls back to a source build. `dependencies.lock.json` independently
-selects the external linker inputs, including the catalog-derived macOS TBDs.
-Ordinary admission uses the recorded byte counts and SHA-256 hashes without an
-attestation service. The publishing job additionally attests the exact two bundles,
-example archive, and release manifest for users who want external provenance.
-
-Mac admission final-links maintained applications against the reviewed TBD catalog;
-Windows retains the complete GNU runtime and system import order; Linux retains
-the reviewed glibc, FreeType, xkbcommon, and unwinder inputs. Missing final-link
-symbols are feedback to the relevant external linker-input catalog and do not make
-those interfaces host-build dependencies.
-
-### Validate generated macOS bundles
-
-Creating a bundle from the reviewed locks is platform-independent. Native Apple
-Silicon validation happens after bundling: the macOS runner downloads the same
-candidate as the other smoke runners, serves it over HTTP with an empty Roc
-cache, final-links every maintained GUI example against the selected released
-host archives and interface inputs, and runs its native specs. It does not
-install Rust, build Cargo, build the Zig engine, download the Metal toolchain,
-or regenerate TBDs:
-
-```sh
-GUI_HOST_LOCK=gui-host.lock.json python3 scripts/minici gui
-python3 scripts/bundle_platforms.py --package gui --no-build --output-dir /tmp/macos-bundle
-python3 scripts/check_macos_interfaces.py --bundle /tmp/macos-bundle
-```
-
-These are candidate checks. Mac host and interface production remain separate
-release cycles; ordinary consumers use their reviewed content hashes.

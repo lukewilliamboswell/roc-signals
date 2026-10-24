@@ -131,21 +131,10 @@ pub const ScalarNode = struct {
     test_id: ?[]const u8 = null,
     value: ?[]const u8 = null,
     class: ?[]const u8 = null,
-    native_style: ?[]const u8 = null,
-    native_viewport: ?[]const u8 = null,
-    native_drag_key: ?[]const u8 = null,
-    native_window_close: ?[]const u8 = null,
-    native_placeholder: ?[]const u8 = null,
-    native_image_source: ?[]const u8 = null,
-    native_font_family: ?[]const u8 = null,
-    native_fonts: ?[]const u8 = null,
     custom_text_attrs: shared_buffer.List(CustomTextAttr) = .empty,
     named_events: shared_buffer.List(NamedEvent) = .empty,
     checked: ?bool = null,
     disabled: ?bool = null,
-    selected: ?bool = null,
-    native_drop_target: ?bool = null,
-    native_read_only: ?bool = null,
 
     fn deinit(self: *ScalarNode, allocator: std.mem.Allocator) void {
         inline for (comptime std.meta.tags(TextField)) |field| {
@@ -214,13 +203,8 @@ pub const ScalarNode = struct {
 
     /// Resolves a named event to its cache entry without scanning unrelated bindings.
     pub fn namedEventIndex(self: *const ScalarNode, name: []const u8) ?usize {
-        return self.namedEventIndexFiltered(name, null);
-    }
-
-    /// Resolves one exact named binding, including its optional keyboard filter.
-    pub fn namedEventIndexFiltered(self: *const ScalarNode, name: []const u8, chord: ?@import("key_chord.zig").Chord) ?usize {
         for (self.named_events.items, 0..) |event, index| {
-            if (std.mem.eql(u8, event.name, name) and @import("key_chord.zig").optionalEql(event.binding.key_chord, chord)) return index;
+            if (std.mem.eql(u8, event.name, name)) return index;
         }
         return null;
     }
@@ -1009,7 +993,6 @@ pub const reused_node_max_clears: usize = std.enums.values(TextField).len + std.
 pub fn PreparedRenderSplice(comptime Ctx: type) type {
     return struct {
         const Self = @This();
-        const publishes_native_fields = @hasDecl(Ctx, "native_presentation") and Ctx.native_presentation;
 
         allocator: std.mem.Allocator,
         tags: PreparedTagOverlay,
@@ -1548,7 +1531,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             if (cache_index < cache.nodes.items.len and cache.nodes.items[cache_index].isActive()) {
                 for (cache.nodes.items[cache_index].named_events.items, 0..) |old, old_index| {
                     var found = false;
-                    for (prepared.next) |next| if (std.mem.eql(u8, old.name, next.name) and @import("key_chord.zig").optionalEql(old.binding.key_chord, next.binding.key_chord)) {
+                    for (prepared.next) |next| if (std.mem.eql(u8, old.name, next.name)) {
                         found = true;
                         break;
                     };
@@ -1561,7 +1544,7 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             for (prepared.next, 0..) |next, next_index| {
                 var unchanged = false;
                 if (cache_index < cache.nodes.items.len and cache.nodes.items[cache_index].isActive()) {
-                    if (cache.nodes.items[cache_index].namedEventIndexFiltered(next.name, next.binding.key_chord)) |old_index| unchanged = cache.nodes.items[cache_index].named_events.items[old_index].binding.eql(next.binding);
+                    if (cache.nodes.items[cache_index].namedEventIndex(next.name)) |old_index| unchanged = cache.nodes.items[cache_index].named_events.items[old_index].binding.eql(next.binding);
                 }
                 if (!unchanged) {
                     self.named_event_wire_edits.appendAssumeCapacity(.{ .bind_next = next_index });
@@ -1594,14 +1577,8 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             }
             for (self.children.items) |children| for (self.childWireEdits(children)) |_| try result.addFixed(0);
             for (self.sparse_children.items) |children| for (children.wireEdits()) |_| try result.addFixed(0);
-            for (self.text_fields.items) |field| {
-                if ((field.field.isNative()) and comptime publishes_native_fields) continue;
-                try result.addFixed(if (field.next) |bytes| bytes.len else 0);
-            }
-            for (self.bool_fields.items) |field| {
-                if (field.field.isNative() and comptime publishes_native_fields) continue;
-                try result.addFixed(0);
-            }
+            for (self.text_fields.items) |field| try result.addFixed(if (field.next) |bytes| bytes.len else 0);
+            for (self.bool_fields.items) |_| try result.addFixed(0);
             for (self.fixed_events.items) |event| if (event.next) |binding| {
                 if (binding.canUseFixedOpcode(event.kind)) try result.addFixed(0) else try result.addBindEvent(event.kind.domEventName().len, binding.payload_descriptor.extractionBytes().len);
             } else try result.addFixed(0);
@@ -1615,13 +1592,9 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             for (self.named_events.items) |replacement| {
                 const old = if (self.oldNode(replacement.elem_id)) |node| node.named_events.items else &.{};
                 for (self.namedEventWireEdits(replacement)) |edit| switch (edit) {
-                    .clear_old => |index| {
-                        if (old[index].binding.key_chord != null and comptime publishes_native_fields) continue;
-                        try result.addClearEvent(old[index].name.len);
-                    },
+                    .clear_old => |index| try result.addClearEvent(old[index].name.len),
                     .bind_next => |index| {
                         const next = replacement.next[index];
-                        if (next.binding.key_chord != null and comptime publishes_native_fields) continue;
                         try result.addBindEvent(next.name.len, next.binding.payload_descriptor.extractionBytes().len);
                     },
                 };
@@ -1660,28 +1633,10 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
             self.sink_command_count = std.math.add(usize, self.sink_command_count, count) catch return error.ResourceLimit;
         }
 
-        fn validateBrowserFields(self: *const Self) error{ UnsupportedNativePresentation, UnsupportedNativeKeyboard }!void {
-            for (self.text_fields.items) |field| if (field.field.isNative()) return error.UnsupportedNativePresentation;
-            for (self.bool_fields.items) |field| if (field.field.isNative()) return error.UnsupportedNativePresentation;
-            for (self.named_events.items) |replacement| {
-                for (replacement.next) |event| if (event.binding.key_chord != null) return error.UnsupportedNativeKeyboard;
-                if (self.oldNode(replacement.elem_id)) |node| {
-                    for (node.named_events.items) |event| if (event.binding.key_chord != null) return error.UnsupportedNativeKeyboard;
-                }
-            }
-        }
-
-        /// Reserves exact canonical wire storage. Browser contexts reject native
-        /// fields; native contexts publish them through their typed preparation.
+        /// Reserves exact canonical wire storage for every journal entry.
         pub fn preflight(self: *const Self, batch: *render.TransactionalBatch, allocator: std.mem.Allocator) render.PreflightError!void {
             if (!batch.isPublishedDrained()) return error.ResourceLimit;
             errdefer batch.abort();
-            if (comptime !publishes_native_fields) {
-                self.validateBrowserFields() catch |err| switch (err) {
-                    error.UnsupportedNativePresentation => @panic("native presentation is unsupported by the browser host"),
-                    error.UnsupportedNativeKeyboard => @panic("native keyboard shortcuts are unsupported by the browser host"),
-                };
-            }
             try batch.preflight(allocator, try self.capacity());
         }
 
@@ -1694,12 +1649,6 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
 
         /// Encodes canonical journals into the already-reserved transaction buffers.
         pub fn stageAssumeCapacity(self: *const Self, batch: *render.TransactionalBatch, allocator: std.mem.Allocator) render.PreflightError!void {
-            if (comptime !publishes_native_fields) {
-                self.validateBrowserFields() catch |err| switch (err) {
-                    error.UnsupportedNativePresentation => @panic("native presentation is unsupported by the browser host"),
-                    error.UnsupportedNativeKeyboard => @panic("native keyboard shortcuts are unsupported by the browser host"),
-                };
-            }
             if (self.reset_dom) try batch.staged.commands.appendRaw(allocator, .reset_dom, 0, 0, 0, 0, 0);
             for (self.removals.items) |removal| if (removal.publication == .subtree_root) try batch.staged.commands.appendRaw(allocator, .remove_node, wireElem(removal.elem_id).raw(), 0, 0, 0, 0);
             for (self.creations.items) |creation| {
@@ -1722,14 +1671,8 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                 .append => |child| try batch.staged.commands.appendRaw(allocator, .append_child, wireElem(children.parent_elem_id).raw(), wireElem(child).raw(), 0, 0, 0),
                 .move_before => |move| try batch.staged.commands.appendRaw(allocator, .move_before, wireElem(children.parent_elem_id).raw(), wireElem(move.child).raw(), if (move.before) |before| wireElem(before).raw() else 0, 0, 0),
             };
-            for (self.text_fields.items) |field| {
-                if ((field.field.isNative()) and comptime publishes_native_fields) continue;
-                try appendText(batch, allocator, render.textSetOp(field.field), field.elem_id, field.next orelse "");
-            }
-            for (self.bool_fields.items) |field| {
-                if (field.field.isNative() and comptime publishes_native_fields) continue;
-                try batch.staged.commands.appendRaw(allocator, render.boolSetOp(field.field), wireElem(field.elem_id).raw(), @intFromBool(field.next orelse false), 0, 0, 0);
-            }
+            for (self.text_fields.items) |field| try appendText(batch, allocator, render.textSetOp(field.field), field.elem_id, field.next orelse "");
+            for (self.bool_fields.items) |field| try batch.staged.commands.appendRaw(allocator, render.boolSetOp(field.field), wireElem(field.elem_id).raw(), @intFromBool(field.next orelse false), 0, 0, 0);
             for (self.fixed_events.items) |event| if (event.next) |binding| {
                 if (binding.canUseFixedOpcode(event.kind)) try batch.staged.commands.appendRaw(allocator, event.kind.bindOp(), wireElem(event.elem_id).raw(), (render.WireEventId.fromEngine(binding.event_id) catch unreachable).raw(), 0, 0, 0) else {
                     const slice = try batch.staged.dynamic.appendBindEvent(allocator, wireElem(event.elem_id), render.WireEventId.fromEngine(binding.event_id) catch unreachable, event.kind.domEventName(), binding.policy.toWireBits(), binding.delivery.toWire(), binding.payload_descriptor);
@@ -1760,14 +1703,12 @@ pub fn PreparedRenderSplice(comptime Ctx: type) type {
                 for (self.namedEventWireEdits(replacement)) |edit| switch (edit) {
                     .clear_old => |index| {
                         const event = old[index];
-                        if (event.binding.key_chord != null and comptime publishes_native_fields) continue;
                         const slice = try batch.staged.dynamic.appendClearEvent(allocator, wireElem(replacement.elem_id), event.name);
                         try batch.staged.commands.appendRaw(allocator, .extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
                     },
                     .bind_next => |index| {
                         const next = replacement.next[index];
                         const binding = next.binding;
-                        if (binding.key_chord != null and comptime publishes_native_fields) continue;
                         const slice = try batch.staged.dynamic.appendBindEvent(allocator, wireElem(replacement.elem_id), render.WireEventId.fromEngine(binding.event_id) catch unreachable, next.name, binding.policy.toWireBits(), binding.delivery.toWire(), binding.payload_descriptor);
                         try batch.staged.commands.appendRaw(allocator, .extended, slice.offset.raw(), slice.len.raw(), 0, 0, 0);
                     },
@@ -2284,15 +2225,9 @@ pub fn Cache(comptime Ctx: type) type {
 
         /// Applies named event binding after preparation has fixed semantics and reserved fallible growth.
         pub fn applyNamedEventBinding(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, name: []const u8, binding: ?EventBinding, counts: *render.Counts) void {
-            self.applyNamedEventBindingFiltered(ctx, elem_id, name, if (binding) |value| value.key_chord else null, binding, counts);
-        }
-
-        /// Replaces or clears exactly one named listener and its optional chord.
-        /// The caller has already reserved its descriptor and host publication.
-        pub fn applyNamedEventBindingFiltered(self: *Self, ctx: Ctx.Handle, elem_id: ids.ElemId, name: []const u8, chord: ?@import("key_chord.zig").Chord, binding: ?EventBinding, counts: *render.Counts) void {
             const allocator = Ctx.allocator(ctx);
             const node = self.activeNode(elem_id);
-            const existing_index = node.namedEventIndexFiltered(name, chord);
+            const existing_index = node.namedEventIndex(name);
 
             if (binding) |raw_next| {
                 const next = raw_next.withDeliveryFor(.{ .named = name });
@@ -2312,14 +2247,14 @@ pub fn Cache(comptime Ctx: type) type {
                     };
                 }
 
-                Ctx.sink(ctx).bindEvent(elem_id, EventBindingKey.fromNamed(name, chord), next);
+                Ctx.sink(ctx).bindEvent(elem_id, .{ .named = name }, next);
                 counts.addEventBinding();
                 return;
             }
 
             const index = existing_index orelse return;
             const removed = node.named_events.orderedRemove(index);
-            Ctx.sink(ctx).clearEvent(elem_id, EventBindingKey.fromNamed(removed.name, chord));
+            Ctx.sink(ctx).clearEvent(elem_id, .{ .named = removed.name });
             removed.deinit(allocator);
             counts.addEventBinding();
         }
@@ -2509,14 +2444,14 @@ const TestSink = struct {
         self.host.last_event_binding = binding;
         switch (key) {
             .fixed => self.host.bind_event_count += 1,
-            .named, .filtered => self.host.bind_named_event_count += 1,
+            .named => self.host.bind_named_event_count += 1,
         }
     }
     /// Removes a host event registration whose engine-owned binding is no longer active.
     pub fn clearEvent(self: TestSink, _: ids.ElemId, key: EventBindingKey) void {
         switch (key) {
             .fixed => self.host.clear_event_count += 1,
-            .named, .filtered => self.host.clear_named_event_count += 1,
+            .named => self.host.clear_named_event_count += 1,
         }
     }
     /// Checks that the host render surface matches the engine's committed node metadata.
@@ -3878,96 +3813,6 @@ test "named event replacement and clear are idempotent" {
     cache.applyNamedEventBinding(&host, ids.ElemId.fromRaw(1), "submit", null, &counts);
     try std.testing.expectEqual(@as(u64, 1), host.clear_named_event_count);
     try std.testing.expectEqual(@as(u64, 3), counts.bind_event);
-}
-
-test "browser presentation preparation rejects native fields before staging" {
-    const allocator = std.testing.allocator;
-    var host = TestHost{};
-    var cache: Cache(TestCtx) = .{};
-    defer cache.deinit(&host);
-    var plan = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{
-        .node_capacity = 1,
-        .new_tags = 1,
-        .creations = 1,
-        .text_fields = 1,
-        .bool_fields = 1,
-        .wire_commands = 3,
-    });
-    defer plan.deinit();
-    try plan.addCreation(&cache, ids.root_elem, "div");
-    try plan.validateBrowserFields();
-    try plan.addBoolField(&cache, ids.root_elem, .selected, true);
-    try std.testing.expectError(error.UnsupportedNativePresentation, plan.validateBrowserFields());
-    plan.bool_fields.items.len = 0;
-    try plan.addTextField(&cache, ids.root_elem, .native_style, "2,1,8,0,0,0,0,0,0,16777216,16777216,16777216,16777216,16777216,0,0,0,0,0");
-    try std.testing.expectError(error.UnsupportedNativePresentation, plan.validateBrowserFields());
-    try std.testing.expectEqual(@as(usize, 0), cache.nodes.items.len);
-}
-
-test "browser keyboard preparation rejects native filters before staging" {
-    const allocator = std.testing.allocator;
-    var host = TestHost{};
-    var cache: Cache(TestCtx) = .{};
-    defer cache.deinit(&host);
-    var plan = try PreparedRenderSplice(TestCtx).init(allocator, &cache, .{
-        .node_capacity = 1,
-        .new_tags = 1,
-        .creations = 1,
-        .named_events = 1,
-        .named_event_wire_edits = 1,
-        .wire_commands = 2,
-    });
-    defer plan.deinit();
-    try plan.addCreation(&cache, ids.root_elem, "div");
-    try plan.validateBrowserFields();
-    const chord = try @import("key_chord.zig").parse("s", 1);
-    try plan.addNamedEvents(&cache, ids.root_elem, &.{.{ .name = "keydown", .binding = .{
-        .event_id = ids.EventId.fromRaw(1),
-        .key_chord = chord,
-        .payload_descriptor = BoundaryPayloadDescriptor.init(.unit, .none),
-    } }});
-    try std.testing.expectError(error.UnsupportedNativeKeyboard, plan.validateBrowserFields());
-    try std.testing.expectEqual(@as(usize, 0), cache.nodes.items.len);
-    try std.testing.expectEqual(@as(usize, 1), plan.named_events.items.len);
-}
-
-test "browser refuses native viewport metadata before staging" {
-    var host = TestHost{};
-    var cache: Cache(TestCtx) = .{};
-    defer cache.deinit(&host);
-    var plan = try PreparedRenderSplice(TestCtx).init(std.testing.allocator, &cache, .{
-        .node_capacity = 1,
-        .new_tags = 1,
-        .creations = 1,
-        .text_fields = 1,
-        .wire_commands = 2,
-    });
-    defer plan.deinit();
-    try plan.addCreation(&cache, ids.root_elem, "div");
-    try plan.addTextField(&cache, ids.root_elem, .native_viewport, "1,44,1");
-    try std.testing.expectError(error.UnsupportedNativePresentation, plan.validateBrowserFields());
-    try std.testing.expectEqual(@as(usize, 0), cache.nodes.items.len);
-}
-
-test "browser rejects both native drag fields before publication" {
-    var host = TestHost{};
-    var cache: Cache(TestCtx) = .{};
-    defer cache.deinit(&host);
-    for ([_]bool{ false, true }) |target| {
-        var plan = try PreparedRenderSplice(TestCtx).init(std.testing.allocator, &cache, .{
-            .node_capacity = 1,
-            .new_tags = 1,
-            .creations = 1,
-            .text_fields = 1,
-            .bool_fields = 1,
-            .wire_commands = 2,
-        });
-        defer plan.deinit();
-        try plan.addCreation(&cache, ids.root_elem, "div");
-        if (target) try plan.addBoolField(&cache, ids.root_elem, .native_drop_target, true) else try plan.addTextField(&cache, ids.root_elem, .native_drag_key, "task-1");
-        try std.testing.expectError(error.UnsupportedNativePresentation, plan.validateBrowserFields());
-        try std.testing.expectEqual(@as(usize, 0), cache.nodes.items.len);
-    }
 }
 
 test "fixed event pool reserves atomically and reuses retired slots" {

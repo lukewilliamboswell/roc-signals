@@ -1,10 +1,10 @@
-name: Combined platform release candidate
+name: Platform release candidate
 
 on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: New combined prerelease SemVer, without a v prefix
+        description: New prerelease SemVer, without a v prefix
         type: string
         required: true
         default: 0.2.0-rc3
@@ -17,12 +17,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: combined-release-${{ github.ref }}
+  group: platform-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   bundle:
-    name: Bundle two platforms from immutable inputs
+    name: Bundle the web platform from immutable inputs
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -50,13 +50,13 @@ jobs:
         run: python3 scripts/release.py verify --directory "$RUNNER_TEMP/release"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: combined-platform-release
+          name: platform-release
           path: ${{ runner.temp }}/release/
           retention-days: 30
           if-no-files-found: error
 
   smoke:
-    name: Serve and smoke both packages (${{ matrix.name }})
+    name: Serve and smoke the release (${{ matrix.name }})
     needs: bundle
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
@@ -68,8 +68,6 @@ jobs:
             os: ubuntu-24.04
           - name: macOS arm64
             os: macos-15
-          - name: Windows x64
-            os: windows-2025
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -81,24 +79,13 @@ jobs:
       - uses: ./.github/actions/setup-roc
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: combined-platform-release
+          name: platform-release
           path: ${{ runner.temp }}/release
-      - name: Install native GUI smoke runtime
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libfreetype6 libxkbcommon0 libxkbcommon-x11-0 weston xvfb xauth mesa-vulkan-drivers
-      - name: Serve both exact packages and run all example smoke tests
-        if: runner.os != 'Linux'
-        run: python3 scripts/release.py check --directory "${{ runner.temp }}/release"
-      - name: Serve both exact packages and run all example smoke tests
-        if: runner.os == 'Linux'
-        env:
-          SIGNALS_WAYLAND_SMOKE: '1'
-        run: xvfb-run -a -s '-screen 0 1280x1024x24' python3 scripts/release.py check --directory "$RUNNER_TEMP/release"
+      - name: Serve the exact package and run all example smoke tests
+        run: python3 scripts/release.py check --directory "$RUNNER_TEMP/release"
 
   publish:
-    name: Publish the exact tested combined release
+    name: Publish the exact tested release
     if: ${{ !inputs.validate_only && github.ref == 'refs/heads/main' && github.repository == 'lukewilliamboswell/roc-signals' }}
     needs: smoke
     runs-on: ubuntu-24.04
@@ -116,7 +103,7 @@ jobs:
           python-version: '3.12'
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: combined-platform-release
+          name: platform-release
           path: ${{ runner.temp }}/release
       - name: Verify the exact tested bytes
         run: python3 scripts/release.py verify --directory "$RUNNER_TEMP/release"
