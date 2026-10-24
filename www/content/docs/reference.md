@@ -12,9 +12,6 @@ For worked examples, follow the topic guides. The public modules under
 `platform-web/` provide signatures and module documentation; internal descriptor and
 host-value helpers are not application APIs.
 
-For native controls, layouts, virtual lists, and keyboard regions, see
-[Native GUI](@/docs/native-gui.md).
-
 The [browser limits](#deliberately-absent) describe capabilities without a
 built-in API and where a JavaScript behaviour can help.
 
@@ -92,118 +89,6 @@ Disposing the originating scope does not cancel an admitted effect. Its result
 updates surviving state destinations and skips retired ones. Applications that
 need latest-request-wins behavior encode a generation or request identity in
 their state reducers; there is no implicit task cancellation or stale-result rule.
-
-## Native Files
-
-Import `pf.Files` with `platform-gui`. The host provides a small set of
-primitives; everything else in the module is ordinary Roc built on them, and
-an app can build its own conveniences the same way. Every function is
-effectful, runs inside an action's effect, and returns `Try(value, Error)`.
-
-Primitives:
-
-| Function | Successful value |
-| --- | --- |
-| `choose_file!()` | `Choice` |
-| `choose_directory!()` | `Choice` |
-| `choose_save_path!({ directory, suggested_name })` | `Choice` |
-| `stat!(path)` | `{ kind, bytes, device, inode }` |
-| `read_bytes!({ path, offset, max_bytes })` | `{ bytes, size }` |
-| `write_bytes!({ path, bytes })` | `{}` |
-| `rename!({ from, to })` | `{}` |
-| `remove!(path)` | `{}` |
-| `sync!(path)` | `{}` |
-| `list_directory!(path)` | `{ path, entries }` |
-| `open_path!(path)` | `{}` |
-| `assets_root!()` | `Str` |
-
-Conveniences written in Roc:
-
-| Function | Successful value |
-| --- | --- |
-| `read_text!(path)` | `{ path, text }`, at most 1 MiB of UTF-8 |
-| `write_text!({ path, text })` | `{ path, bytes }`, through a temporary sibling, a flush, and a rename |
-| `read_preview!(path)` | `{ path, text, truncated }`, a UTF-8 prefix of at most 64 KiB |
-| `scan!(root)` | `{ root, entries }`, recursive within 10,000 entries, 64 levels, and 4 MiB of paths |
-| `verify_assets!(entries)` | `List(AssetCheck)`, each manifest entry hashed with `Crypto.SHA256` under the assets root |
-
-`Choice` is `[Chosen(Str), Canceled]`. The save chooser's `directory` is
-`Home` or `At(absolute_path)`; `Home` resolves the native user's profile root
-(`HOME` on Linux and macOS, `USERPROFILE` on Windows), and only an environment
-that names no UTF-8 directory at all returns `Unavailable`. `Kind` is
-`File`, `Directory`, `SymbolicLink`, or `Other`. `stat!` never follows a
-symbolic link, and `read_bytes!` refuses anything but a regular file. `device`
-and `inode` identify a file across renames, which is how the activity
-monitor's log reader notices rotation. Paths are absolute UTF-8 of at most
-4,096 bytes. `open_path!` requests the desktop's associated application:
-the Unix file service, which macOS builds also use, hands the path to `gio open`,
-and the Windows service hands it to `rundll32.exe url.dll,FileProtocolHandler`;
-success confirms the launch, not the application's lifetime, and an unassociated
-extension on Windows still counts as a launch. Paths are spelled by the operating
-system the host runs on: a Windows worker returns drive-rooted paths written
-with backslashes, and UNC and device paths are refused with `InvalidPath` when
-they are chosen, because the Windows worker walks names below a drive's volume
-root only. Writes replace a regular file's contents in place; `write_text!`
-that fails before its rename leaves the destination untouched.
-
-`Error` is `[Canceled, NotFound(Str), PermissionDenied(Str), InvalidUtf8(Str),
-InvalidPath(Str), ResourceLimit(Str), Io(Str), Unavailable(Str)]`. The host
-never produces `Canceled`; it is for apps that treat a dismissed chooser as a
-failure, which instead arrives as `Ok(Choice.Canceled)`.
-`Files.error_text(error)` formats errors for display, and diagnostic detail is
-bounded at 4,096 UTF-8 bytes.
-
-`Files.parse_path(text)` recognizes one path by shape and returns a `Files.Path`
-carrying that spelling: drive designators (`C:`) and UNC prefixes (`\\`) are
-Windows, everything else is POSIX, where only `/` separates and a backslash is an
-ordinary file-name byte. The exact bytes are preserved; nothing is rewritten.
-`to_str` returns them, and `root`, `is_root`, `name`, `parent`, `trimmed`,
-`components`, and `join(component)` answer parent, name, root, and breadcrumb
-questions lexically, without consulting the filesystem or resolving `.`/`..`.
-Derive these through `Files.Path` rather than by splitting a path string, which
-is wrong on whichever operating system the application was not written for.
-
-
-## Native Actions
-
-`Action(a)` is what a handler returns, where `a` is the type of the handler's
-declared reads. `Action.update(changes)` commits a batch; `Action.then(changes,
-effect)` commits the batch, runs `effect : a => Action(a)` on a worker thread
-after that commit with a fresh snapshot of the reads, and continues with its
-result on the UI thread. Each effect runs on its own worker thread; results
-apply in completion order. `Action.run`, `run_str`, `run_bool`, `run_detail`, and `run_key` bind an
-action to an event; `Action.on_change`, `on_change_initial`, `on_mount`, and
-`every` bind one to a signal, mount, or interval. `Action.none` changes
-nothing. `state.write(f)` is a reducer applied at commit; `state.set(v)`
-replaces the value. The platform's `roc_prepare_effect` and `roc_run_effect`
-entry points are its only effectful exports: the first decodes the snapshot on
-the UI thread, the second runs the effect on the worker.
-
-`Env.var!(name)` is a hosted effectful function returning `Try(Str, [Missing])`;
-it, the `Files` functions, and the `Http` functions can only be called from
-inside an effect.
-
-## Native Http
-
-Import `pf.Http` with `platform-gui`. Requests and responses are the
-`roc-lang/http` package's `Request` and `Response` values, so an app that
-imports that package can build them with its helpers and pass them straight
-through:
-
-| Function | Result |
-| --- | --- |
-| `send!(request)` | `Try(Response, Error)` |
-| `get!(uri)` | `Try(Response, Error)`, with a 30 second timeout |
-| `get_text!(uri)` | `Try(Str, Error)`, a 2xx UTF-8 body |
-| `error_text(error)` | `Str` |
-
-`Error` is `[InvalidRequest(Str), Network(Str), Timeout, TooLarge(Str),
-Status(U16), InvalidUtf8, Unavailable(Str)]`. `send!` treats any status as a
-success and follows redirects; `get_text!` returns `Status` for a status
-outside 200-299. A request's `NoTimeout` waits as long as the server does.
-Request and response bodies are bounded at 8 MiB, and diagnostic detail at
-4,096 UTF-8 bytes. TLS uses the native root certificates. The spec host never
-touches the network; it answers each call from a `stub-http` result.
 
 ## Ui
 
@@ -416,6 +301,8 @@ typed responses even for non-2xx statuses. `get_text!` instead returns
 
 The runtime does not set
 `credentials`, `redirect`, `mode`, `cache`, or referrer policy.
+The native spec host never touches the network; it answers each call from a
+`stub-http` result.
 
 ## Browser
 
@@ -526,8 +413,6 @@ one case as `(test "name" (steps ...))`. See [Testing](@/docs/testing.md).
 ```lisp
 (expect-pending-effects <count>)
 (run-effect <occurrence-id>)
-(stub-file-choice "<label>" (chosen "<path>"))
-(stub-file-read "<label>" :path "<path>" :text "<text>")
 (stub-http "<label>" :url "<url>" :status <code> :body "<text>")
 (tick-interval <period-ms>)
 (tick-interval-if-active <period-ms>)

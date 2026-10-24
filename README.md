@@ -5,8 +5,11 @@
 
 # Roc Signals
 
-Roc Signals is a Roc platform for building small reactive interfaces that can
-run in a browser, in a native GPUI window, or under the native test host.
+Roc Signals is a Roc platform for building small reactive interfaces that run
+in a browser and under the native test host.
+
+A native desktop GUI platform built on the same model is developed separately
+in [lukewilliamboswell/roc-gui](https://github.com/lukewilliamboswell/roc-gui).
 
 An app describes its UI with values, signals, and event handlers. The host keeps
 that description alive, owns retained state, runs tasks, and patches only the
@@ -33,7 +36,6 @@ this order:
 | [Structuring a Real App](www/content/docs/app-architecture.md) | How Conduit is organized |
 | [Testing](www/content/docs/testing.md) | Spec language, deterministic async, work budgets |
 | [Under the Hood](www/content/docs/under-the-hood.md) | Wire protocol, capabilities, performance model |
-| [Native GUI](www/content/docs/native-gui.md) | Native controls, keyboard regions, files, timers, and example apps |
 | [Reference](www/content/docs/reference.md) | Complete API surface |
 | [Contributing](www/content/docs/contributing.md) | Local setup, tests, host artifacts, bundles, releases |
 
@@ -46,21 +48,6 @@ It contains the complete examples, native specs, browser runtime, and direct Roc
 build commands. Install the exact compiler named in the application's `roc`
 header. A platform archive already contains its host binaries; users need no
 Zig build or repository checkout.
-
-Try a prebuilt release candidate with Roc `nightly-2026-09-04-c125b82`:
-
-| Native target | Download |
-| --- | --- |
-| Linux x86_64 (glibc/Wayland) | [Linux starters — rc.1](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.1/signals-gui-starters.zip) |
-| Apple Silicon macOS | [Mac starters — rc.2](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.2/signals-gui-starters.zip) |
-| Windows x86_64 | [Windows starters — rc.3](https://github.com/lukewilliamboswell/roc-signals/releases/download/gui-0.1.0-rc.3/signals-gui-starters.zip) |
-
-Extract the archive and build Counter with `roc build --target=x64glibc --output=counter examples-gui/counter/main.roc`
-on Linux, or `roc build --target=arm64mac --output=counter examples-gui/counter/main.roc`
-on Apple Silicon. Run `./counter`. On Windows, use
-`roc build --target=x64mingw --output=counter.exe examples-gui/counter/main.roc`
-and run `.\counter.exe` in PowerShell. These starters need no Rust, Zig, or repository
-checkout. See [Native GUI](www/content/docs/native-gui.md#try-a-release-candidate) for runtime requirements.
 
 Public web examples pin immutable platform/package release URLs. The nightly bot
 updates their compiler pins and the development platform pin together, tests both
@@ -87,10 +74,6 @@ python3 scripts/serve.py --port 8000
 
 The examples live under [examples-web/](examples-web/). Each public example has its own
 directory with `main.roc`, any supporting modules, and a native test spec.
-
-The [native example collection](examples-gui/) includes a task board, notes
-editor, folder explorer, and simulated activity monitor. Native setup and
-commands are in [contributing](www/content/docs/contributing.md#native-gui-platform-spike).
 
 To run the validation suite:
 
@@ -136,21 +119,12 @@ guidance, and the validation expected for engine optimizations.
 
 - [platform-web/](platform-web/) contains the Roc platform package and target host
   artifacts used by Roc builds.
+- [platform-shared/](platform-shared/) contains the signal, scope, row, and
+  descriptor modules that `scripts/prepare_platforms.py` copies into
+  `platform-web/`; the copies are gitignored and checked by SHA-256.
 - [src/](src/) contains the Zig engine, native host, wasm host, specs, and
   benchmark support.
 - [examples-web/](examples-web/) contains maintained Roc example apps and native specs.
 - [www/](www/) contains the Zola site, static JavaScript runtime, user docs, and
   example-page metadata.
 - [scripts/](scripts/) contains the Python drivers and repository checks.
-
-## Native GUI spike
-
-This worktree also contains `platform-gui`, backed by the shared Zig engine and
-an app-independent Rust GPUI host in `crates/gpui-host`. Common Roc modules
-live in `platform-shared/`; the preparation script copies its modules into each platform’s root, with the
-generated files gitignored and checked by SHA-256. `platform-web` is the
-browser platform. Run `scripts/bundle.sh --serve` to build and serve both Roc
-platform bundles, including a downloadable `Counter.roc` that builds with
-`roc build Counter.roc`. The GUI spike targets Apple Silicon macOS, Linux x64/Wayland, and Windows x64.
-See [contributing](www/content/docs/contributing.md#native-gui-platform-spike)
-for prerequisites, local examples, and current limitations.

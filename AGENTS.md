@@ -129,7 +129,7 @@
 
 ## Keep documentation truthful and durable
 
-- Keep public behavior consistent across `platform-web/`, `platform-gui/`, `platform-shared/`, maintained docs under
+- Keep public behavior consistent across `platform-web/`, `platform-shared/`, maintained docs under
   `www/content/docs/`, examples, and tests. Documentation examples are part of
   the product surface, not disposable illustrations.
 - Put stable architecture and rationale in `design.md`, current contributor
