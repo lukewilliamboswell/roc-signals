@@ -1,6 +1,7 @@
 zig-out/
 .zig-cache/
 .claude/
+.blueprint/
 zig-pkg/
 kcov-output/
 roc-cache/

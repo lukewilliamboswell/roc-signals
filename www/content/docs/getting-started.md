@@ -32,6 +32,10 @@ include the host binaries.
   [Tailwind CSS standalone CLI](https://tailwindcss.com/blog/standalone-cli)
   version 3.4.17 (the site configuration is for Tailwind v3).
 
+Instead of installing Zig and the site tools yourself, you can run
+`blueprint shell` in the checkout to get the exact versions the repository
+pins; [Contributing](@/docs/contributing.md#prerequisites) explains the setup.
+
 ## Get the platform
 
 For an app outside this repository, download `signals-starters.zip` from the

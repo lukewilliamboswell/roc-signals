@@ -35,9 +35,10 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - run: python3 scripts/minici selection
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@7aff4132691ad4fc348abe9df146a57512b49bd6
+      - run: blueprint run selection
       - id: select
-        run: python3 scripts/ci_changes.py
+        run: blueprint run ci-changes
 
   source:
     needs: changes
@@ -49,15 +50,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: ./.github/actions/setup-toolchain
-      - name: Install Wasm stack instrumentation
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y binaryen
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@7aff4132691ad4fc348abe9df146a57512b49bd6
         with:
-          node-version: '23.9.0'
-      - run: python3 scripts/minici hosted
+          cache: 'true'
+          cache-workload: dev
+      - uses: ./.github/actions/setup-roc
+      - run: blueprint run hosted
 
   platform-source:
     name: Platform source
@@ -82,12 +80,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Install pinned Zola
-        run: |
-          curl -fsSL https://github.com/getzola/zola/releases/download/v0.22.1/zola-v0.22.1-x86_64-unknown-linux-gnu.tar.gz -o "$RUNNER_TEMP/zola.tar.gz"
-          echo "0ca09aa40376aaa9ddfb512ff9ad963262ef95edb0d0f2d5ec6961b6f5cf22ef  $RUNNER_TEMP/zola.tar.gz" | sha256sum --check
-          tar -xzf "$RUNNER_TEMP/zola.tar.gz" -C "$RUNNER_TEMP"
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@7aff4132691ad4fc348abe9df146a57512b49bd6
       - name: Check documentation and templates
-        run: |
-          export PATH="$RUNNER_TEMP:$PATH"
-          python3 scripts/minici site
+        run: blueprint run site

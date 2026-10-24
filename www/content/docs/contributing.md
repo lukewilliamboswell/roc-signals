@@ -13,25 +13,57 @@ apps. For a user-oriented introduction, start with the
 
 ## Prerequisites
 
-Install:
+[Blueprint](https://github.com/lukewilliamboswell/roc-blueprint) provides the
+pinned development tools. `Blueprint.roc` declares them and the repository's
+tasks, and `Blueprint.lock` records the SHA-256 of every download. Install the
+`blueprint` release that the platform URL in `Blueprint.roc` names (0.8.0): with
+Nix, `nix profile install github:lukewilliamboswell/roc-blueprint/0.8.0`, or
+download the `blueprint-<system>` binary from that release and check it against
+the release's `blueprint.sha256`. It supports x86-64 and AArch64 Linux and Apple
+Silicon macOS. The environment needs no Nix: every pinned tool is a release
+download, verified on every use. It provides:
 
 - Zig 0.16.0,
-- Python 3,
+- Node.js 23.9.0 (the Wasm effect-stack tests need `--experimental-wasm-jspi`),
+- Binaryen's `wasm-opt`, version 133 (every linked browser app requires the
+  `--stack-check` post-link pass),
+- Zola 0.22.1,
+- the Tailwind CSS 3.4.17 standalone CLI (the site uses the v3 configuration).
+
+Install these yourself:
+
+- Python 3.12 or later, as `python3`,
+- Git,
 - GitHub CLI (`gh`), authenticated for release operations and optional
   attestation inspection,
-- Node.js,
-- Binaryen's `wasm-opt` (every linked browser app requires the `--stack-check`
-  post-link pass; locally verified with version 116),
-- Zola,
-- the Tailwind CSS 3.4.17 standalone CLI (the site uses the v3 configuration),
-- Roc.
+- AFL++, for fuzzing campaigns only (see [Fuzzing](#fuzzing)),
+- the Roc compiler named by the `roc` header in `platform-web/main.roc`.
 
-Local scripts use `roc` from `PATH` by default. Override it with `ROC_BIN`,
-`ROC`, or `python3 scripts/test.py --roc-bin /path/to/roc`.
+Run a task with `blueprint run <task>`, passing the script's own arguments after
+`--`, or enter the environment with `blueprint shell` and run the commands in
+this guide directly. `blueprint tasks` lists the tasks:
 
-CI uses the official `roc-lang/setup-roc` GitHub Action. The repository does not
-build Roc itself. The site build uses standalone command-line tools only; there
-is no npm dependency or package manifest.
+```sh
+blueprint run minici                  # python3 scripts/minici
+blueprint run hosted                  # python3 scripts/minici hosted
+blueprint run test -- zig --jobs 2    # python3 scripts/test.py zig --jobs 2
+blueprint run serve                   # python3 scripts/serve.py
+```
+
+Local scripts use `roc` from `PATH` by default. Override it with `ROC_BIN`, or
+with `python3 scripts/test.py --roc-bin /path/to/roc`. The scripts also read
+`ROC`, but Blueprint reads `ROC` too, as the compiler that evaluates
+`Blueprint.roc`, and refuses one of another version; select the compiler under
+test with `ROC_BIN` when running through Blueprint.
+
+CI sets up the same environment with roc-automation's `actions/setup-blueprint`,
+installs the pinned compiler with the official `roc-lang/setup-roc` GitHub
+Action, and runs the same tasks. The repository does not build Roc itself. The
+site build uses standalone command-line tools only; there is no npm dependency
+or package manifest.
+
+Update a tool by changing its recipe in `Blueprint.roc`, then run
+`blueprint update <program>` and review the new digests in `Blueprint.lock`.
 
 Pull requests and pushes to `main` run a bounded hosted source gate: Zig and
 browser contracts, Roc checks and tests, Wasm builds and size budgets, fuzz
@@ -503,7 +535,8 @@ from and for `check` to replay. `test/fuzzing/README.md` explains the cap.
 
 ### Prerequisites
 
-Fuzzing needs AFL++ on `PATH`:
+Fuzzing needs AFL++ on `PATH`; Blueprint's `fuzz` task expects it from the
+machine, since AFL++ publishes no relocatable release:
 
 ```sh
 sudo apt install afl++   # or: brew install afl++
