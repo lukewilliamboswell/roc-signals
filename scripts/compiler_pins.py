@@ -1,4 +1,4 @@
-# Vendored from roc-automation e1c09714c4d9e93fc03d2d1e4186ca543bc60d50.
+# Vendored from roc-automation 7aff4132691ad4fc348abe9df146a57512b49bd6.
 # License: UPL-1.0; see vendor/roc-automation-LICENSE.
 """Narrow source-preserving reader for compiler pins in Roc root headers.
 
@@ -6,6 +6,7 @@ This is not a Roc parser: the consumer compiler remains the grammar authority.
 Only literal roc fields in the initial header dependency record are supported.
 """
 import re
+import json
 from pathlib import Path
 
 TOKEN = re.compile(r'#[^\n]*|"(?:\\.|[^"\\])*"|[A-Za-z_][A-Za-z_0-9!]*|[^\s]', re.DOTALL)
@@ -68,7 +69,13 @@ def header_pin(source):
     return None
 
 
-def discover(sources):
+def discover(sources, manifest=None):
+    if manifest is not None:
+        validate_manifest(manifest)
+        if set(sources) != {manifest['path']}:
+            raise ValueError('Manifest must be the only compiler authority')
+        source = sources[manifest['path']]
+        return {manifest['path']: (source, manifest_pin(source, manifest['key']))}
     result = {}
     for path, source in sources.items():
         if path.endswith('.roc'):
@@ -131,14 +138,71 @@ def selected(path, paths):
     return path in validate_paths(paths)
 
 
-def local_sources(root, paths=None):
+def local_sources(root, paths=None, manifest=None):
+    if manifest is not None:
+        if paths is not None:
+            raise ValueError('Manifest and header compiler authorities are mutually exclusive')
+        paths = [validate_manifest(manifest)['path']]
+    elif paths is not None:
+        validate_paths(paths)
     if paths is None:
         return {'.roc-version': (root / '.roc-version').read_text(encoding='utf-8')}
-    validate_paths(paths)
     sources = {}
     for path in paths:
         location = root / path
-        if location.is_symlink() or not location.resolve().is_relative_to(root.resolve()):
+        if (not location.is_file() or any((root / Path(*Path(path).parts[:i])).is_symlink()
+                                        for i in range(1, len(Path(path).parts) + 1))
+                or not location.resolve().is_relative_to(root.resolve())):
             raise ValueError('Compiler source must be a regular file inside the repository')
-        sources[path] = location.read_text(encoding='utf-8')
+        sources[path] = location.read_bytes().decode('utf-8')
     return sources
+
+
+def validate_manifest(manifest):
+    if (not isinstance(manifest, dict) or set(manifest) != {'path', 'key'}
+            or not isinstance(manifest['path'], str) or not isinstance(manifest['key'], str)
+            or not re.fullmatch(r'[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.json', manifest['path'])
+            or any(part in {'.', '..', '.git'} for part in manifest['path'].split('/'))
+            or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', manifest['key'])):
+        raise ValueError('compiler_manifest requires a safe JSON path and top-level key')
+    return manifest
+
+
+def manifest_pin(source, key):
+    """Validate the whole document, then locate the literal without reserializing it."""
+    def unique(pairs):
+        result = {}
+        for name, value in pairs:
+            if name in result:
+                raise ValueError('Duplicate JSON key')
+            result[name] = value
+        return result
+
+    def invalid_constant(value):
+        raise ValueError('Invalid JSON constant: ' + value)
+
+    decoder = json.JSONDecoder(object_pairs_hook=unique, parse_constant=invalid_constant)
+    document = decoder.decode(source)
+    if not isinstance(document, dict) or not isinstance(document.get(key), str) or not PIN.fullmatch(document[key]):
+        raise ValueError('Manifest compiler must be a supported literal version')
+    cursor = source.index('{') + 1
+    while True:
+        cursor = re.compile(r'\s*').match(source, cursor).end()
+        name, cursor = decoder.raw_decode(source, cursor)
+        cursor = re.compile(r'\s*:\s*').match(source, cursor).end()
+        start = cursor
+        _, cursor = decoder.raw_decode(source, cursor)
+        if name == key:
+            literal = source[start:cursor]
+            if literal != json.dumps(document[key]):
+                raise ValueError('Manifest compiler version must not contain JSON escapes')
+            return start + 1, cursor - 1, document[key]
+        cursor = re.compile(r'\s*,\s*').match(source, cursor).end()
+
+
+def configured_paths(config):
+    if 'compiler_manifest' in config:
+        if 'compiler_roots' in config:
+            raise ValueError('Manifest and header compiler authorities are mutually exclusive')
+        return [validate_manifest(config['compiler_manifest'])['path']]
+    return validate_paths(config['compiler_roots']) if 'compiler_roots' in config else ['.roc-version']

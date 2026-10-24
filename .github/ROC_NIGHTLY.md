@@ -17,9 +17,11 @@ release workflow rather than rebuilt by ordinary pull-request CI. A failed
 released dependency may require a platform patch and a new immutable release
 before retrying the nightly.
 
-The caller pins shared automation to `13b98f8428993bf0dcca9fbaa3b7762ec3e25d34`.
-Dependabot proposes reviewed reference updates. See the shared
-[integration guide](https://github.com/lukewilliamboswell/roc-automation/blob/13b98f8428993bf0dcca9fbaa3b7762ec3e25d34/docs/integration.md)
+Every reference to shared automation (these callers and `actions/check-release`)
+pins `7aff4132691ad4fc348abe9df146a57512b49bd6`, the `tools-0.4.0` commit.
+Dependabot proposes reviewed reference updates; move all of them together. See
+the shared controller's
+[trust reference](https://github.com/lukewilliamboswell/roc-automation/blob/7aff4132691ad4fc348abe9df146a57512b49bd6/actions/nightly/security-model.adoc)
 for the strict ruleset and signature checks. Automatic merging requires active
 pull-request and up-to-date required-check rules, Actions PR creation, and no bot
 bypass. Default token permissions stay read-only; candidate test jobs receive no
