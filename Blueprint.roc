@@ -26,6 +26,8 @@ zola_program = Fetch("zola", zola)
 
 node_program = Fetch("node", node)
 
+wasm_opt_program = Fetch("wasm-opt", wasm_opt)
+
 config = [
 	Name("roc-signals"),
 	Systems(["x86_64-linux", "aarch64-linux", "aarch64-darwin"]),
@@ -34,7 +36,7 @@ config = [
 	# stored tree, which Blueprint then refuses as modified and unpacks again.
 	Environment("scripts", [Expect(["python3", "git"])]),
 	# Building and testing the engine, the hosts and the examples.
-	Environment("dev", [Extend("scripts"), Programs([zig_program, node_program, Fetch("wasm-opt", wasm_opt)])]),
+	Environment("dev", [Extend("scripts"), Programs([zig_program, node_program, wasm_opt_program])]),
 	# Checking the documentation site's links and templates.
 	Environment("docs", [Extend("scripts"), Programs([zola_program])]),
 	# Building and serving the site, which compiles the live examples.
@@ -42,9 +44,9 @@ config = [
 	# Building and testing the musl linker inputs, which need only `zig cc`.
 	Environment("musl", [Extend("scripts"), Programs([zig_program])]),
 	# A release bundles released hosts and builds none, so it has no Zig. It
-	# runs the examples' Wasm under Node and talks to GitHub through the
-	# machine's `gh`.
-	Environment("release", [Extend("scripts"), Programs([node_program]), Expect(["gh"])]),
+	# instruments the examples' Wasm with wasm-opt, runs it under Node, and
+	# talks to GitHub through the machine's `gh`.
+	Environment("release", [Extend("scripts"), Programs([node_program, wasm_opt_program]), Expect(["gh"])]),
 	# Fuzzing campaigns link against the machine's AFL++, which publishes no
 	# relocatable release.
 	Environment("fuzz", [Extend("dev"), Expect(["afl-cc", "afl-fuzz"])]),
