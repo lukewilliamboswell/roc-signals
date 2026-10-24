@@ -1,4 +1,4 @@
-app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst", roc: "nightly-2026-09-22-e494788" }
+app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst", roc: "nightly-2026-10-23-18478ff" }
 
 # Support Inbox
 #
@@ -19,9 +19,9 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 # summary counters, the send-button disabled state - is derived.
 
 import Inbox
-import pf.Action exposing [Action]
+import pf.Action
 import pf.Http
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
 import pf.Rows
 import pf.Signal
@@ -689,7 +689,7 @@ inbox_app = |inbox_state, delivery| {
 										Action.sampled(selected_sig, snapshot_reads(inbox_state, selected_sig)),
 										|read|
 											if read.request == "" {
-												Action.none
+												Action.none()
 											} else {
 												start_snapshot(inbox_state, { ..read, request: Inbox.Request.to_str(Inbox.Request.Read(read.request)) })
 											},
@@ -759,7 +759,7 @@ DeliveryRead : { generation : U64, request : Inbox.SendRequest, cid : Str }
 
 start_delivery : Ui.State(DeliveryState), DeliveryRead -> Action(DeliveryRead)
 start_delivery = |state, read| match read.request {
-	NoSend => Action.none
+	NoSend => Action.none()
 	Send(body) => {
 		generation = read.generation + 1
 		Action.then([state.write(|_current| { generation, result: Inbox.SendResult.Idle })], |_| deliver!(state, body, read.cid, generation))

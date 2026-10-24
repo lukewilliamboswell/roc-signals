@@ -114,7 +114,7 @@ class BenchmarkManifestTests(unittest.TestCase):
             'Html.attr("aria-hidden", "true")',
             'Html.attr("id", "tbody")',
             'selected.keyed("danger", "")',
-            'import pf.Rows exposing [Rows]',
+            'import pf.Rows\n',
             'Model : { rows : Rows(Row)',
             'Rows.replace_all(model.rows, generated.rows)',
             'Ui.each(rows, |each_row| render_row(model, selected_keyed, each_row.key(), each_row))',

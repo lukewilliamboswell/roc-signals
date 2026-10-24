@@ -1,4 +1,4 @@
-import HostValue exposing [HostValue]
+import HostValue
 
 ## Pure UI descriptor tree produced by `build`. This is the explicit data the
 ## host ingests. Structural UI identity comes from a deterministic pre-order host

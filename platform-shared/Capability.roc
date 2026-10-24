@@ -1,4 +1,4 @@
-import HostValue exposing [HostValue]
+import HostValue
 
 ## Typed authority for reading, cloning, comparing, and dropping opaque
 ## host-owned values.

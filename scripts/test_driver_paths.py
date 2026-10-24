@@ -161,5 +161,31 @@ class FaultManifestTests(unittest.TestCase):
                 test_driver.add_wasm_fault_exports(source)
 
 
+class LocalPlatformReferenceTests(unittest.TestCase):
+    """Roc rejects absolute platform paths, so local platforms are spelled relative to each app."""
+
+    def test_local_platform_is_relative_to_each_app(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "platform-web" / "main.roc"
+            manifest.parent.mkdir()
+            manifest.write_text("platform \"\"\n")
+            nested = root / "copy" / "examples-web" / "demo" / "main.roc"
+            sibling = root / "main.roc"
+            for app in (nested, sibling):
+                app.parent.mkdir(parents=True, exist_ok=True)
+                app.write_text('app [main] { pf: platform "https://example/x.tar.zst" }\n')
+            test_driver.rewrite_platform_headers(root / "copy", manifest)
+            self.assertIn('platform "../../../platform-web/main.roc"', nested.read_text())
+            self.assertEqual(test_driver.local_platform_reference(sibling, manifest), "./platform-web/main.roc")
+
+    def test_urls_pass_through_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            app = Path(directory) / "main.roc"
+            app.write_text('app [main] { pf: platform "../p/main.roc" }\n')
+            test_driver.rewrite_platform_headers(Path(directory), "http://127.0.0.1:1/p.tar.zst")
+            self.assertIn('platform "http://127.0.0.1:1/p.tar.zst"', app.read_text())
+
+
 if __name__ == "__main__":
     unittest.main()

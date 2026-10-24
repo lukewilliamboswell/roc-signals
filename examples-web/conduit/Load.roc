@@ -1,7 +1,7 @@
 ## A page-owned HTTP result. New requests supersede publication, not execution.
 import Api
-import pf.Action exposing [Action]
-import pf.Elem exposing [Elem]
+import pf.Action
+import pf.Elem
 import pf.Http
 import pf.Signal
 import pf.Ui
@@ -21,7 +21,7 @@ Load := [].{
 	start : Ui.State(Load.State(a)), (Str -> Api.Remote(a)), Load.Read(a) -> Action(Load.Read(a))
 		where [a.is_eq : a, a -> Bool]
 	start = |state, decode, read| if read.uri.is_empty() {
-		Action.none
+		Action.none()
 	} else {
 		generation = read.current.generation + 1
 		Action.then(

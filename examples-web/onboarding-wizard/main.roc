@@ -1,4 +1,4 @@
-app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst", roc: "nightly-2026-09-22-e494788" }
+app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst", roc: "nightly-2026-10-23-18478ff" }
 
 ## Onboarding Wizard — four steps, eight state handles, zero stored validation.
 ##
@@ -52,8 +52,8 @@ app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/rel
 ##     the only thing that validates.
 
 import pf.Browser
-import pf.Elem exposing [Elem]
-import pf.Action exposing [Action]
+import pf.Elem
+import pf.Action
 import pf.Http
 import pf.Html
 import pf.Rows

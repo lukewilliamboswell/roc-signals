@@ -10,10 +10,10 @@ import Route
 import Session
 import Styles
 import pf.Browser
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
 import pf.Rows
-import pf.Action exposing [Action]
+import pf.Action
 import pf.Signal
 import pf.Ui
 
@@ -171,7 +171,7 @@ Feed := {}.{
 
 	start_favorite : Ui.State(Feed.FavoriteState), Feed.FavoriteRead -> Action(Feed.FavoriteRead)
 	start_favorite = |state, read| if read.slug.is_empty() {
-		Action.none
+		Action.none()
 	} else {
 		generation = read.generation + 1
 		Action.then([state.write(|current| { ..current, generation })], |_| favorite!(state, read, generation))

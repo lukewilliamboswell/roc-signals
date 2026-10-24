@@ -701,12 +701,14 @@ const TestHost = struct {
     used: usize = 0,
     storage: [64 * 1024]u8 align(arena_alignment) = undefined,
 
-    fn rocAlloc(raw: *abi.RocHost, size: usize, alignment: usize) callconv(.c) ?*anyopaque {
+    // Roc's allocation hooks never return null, so a request this arena cannot
+    // satisfy is a broken test rather than a recoverable failure.
+    fn rocAlloc(raw: *abi.RocHost, size: usize, alignment: usize) callconv(.c) *anyopaque {
         const self: *TestHost = @ptrCast(@alignCast(raw.env));
-        if (alignment == 0 or !std.math.isPowerOfTwo(alignment) or alignment > arena_alignment) return null;
+        if (alignment == 0 or !std.math.isPowerOfTwo(alignment) or alignment > arena_alignment) @panic("test arena alignment unsupported");
         const start = std.mem.alignForward(usize, self.used, alignment);
-        const end = std.math.add(usize, start, size) catch return null;
-        if (end > self.storage.len) return null;
+        const end = std.math.add(usize, start, size) catch @panic("test arena overflow");
+        if (end > self.storage.len) @panic("test arena exhausted");
         self.used = end;
         self.allocations += 1;
         return @ptrCast(self.storage[start..].ptr);
@@ -717,8 +719,8 @@ const TestHost = struct {
         self.deallocations += 1;
     }
 
-    fn rocRealloc(_: *abi.RocHost, _: *anyopaque, _: usize, _: usize) callconv(.c) ?*anyopaque {
-        return null;
+    fn rocRealloc(_: *abi.RocHost, _: *anyopaque, _: usize, _: usize) callconv(.c) *anyopaque {
+        @panic("test arena does not reallocate");
     }
     fn message(_: *abi.RocHost, _: [*]const u8, _: usize) callconv(.c) void {}
 

@@ -1,7 +1,7 @@
 app [main] { pf: platform "../../platform-web/main.roc" }
 
 import pf.Action
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
 import pf.Http
 import pf.Signal

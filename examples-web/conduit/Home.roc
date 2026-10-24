@@ -6,10 +6,10 @@ import Feed
 import Nav
 import Route
 import Session
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
 import pf.Rows
-import pf.Action exposing [Action]
+import pf.Action
 import pf.Signal
 import pf.Ui
 

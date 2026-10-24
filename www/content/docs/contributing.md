@@ -920,7 +920,7 @@ known submission-policy gaps.
 Apps import:
 
 ```roc
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
 import pf.Signal
 import pf.Ui

@@ -1,8 +1,8 @@
 import Capability
-import Elem exposing [Elem]
-import HostValue exposing [HostValue]
+import Elem
+import HostValue
 import Node
-import Signal exposing [Signal]
+import Signal
 import Ui
 
 ## What an event does. An action is data the engine interprets: a batch of
@@ -16,9 +16,10 @@ import Ui
 ## the declared reads, which is also what each effect receives.
 Action(a) := [Action(Node.Cmd)].{
 
-	## Change nothing.
-	none : Action(a)
-	none = Action(Node.Cmd.Noop)
+	## Change nothing. A thunk, because only functions are polymorphic: each
+	## call produces an action at the caller's read type.
+	none : () -> Action(a)
+	none = || Action(Node.Cmd.Noop)
 
 	## Apply these changes atomically. Duplicate targets are an error.
 	update : List(Ui.StateWrite) -> Action(a)

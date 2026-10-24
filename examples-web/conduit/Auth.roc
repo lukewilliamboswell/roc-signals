@@ -9,7 +9,7 @@ import Route
 import Session
 import Styles
 import pf.Browser
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
 import pf.Rows
 import pf.Action
@@ -111,7 +111,7 @@ Auth := {}.{
 										Action.on_change(
 											submission,
 											|snapshot| if snapshot.serial == 0 {
-												Action.none
+												Action.none()
 											} else {
 												Action.then(
 													[response.set({ serial: snapshot.serial, result: AuthIdle })],

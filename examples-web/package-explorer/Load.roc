@@ -1,4 +1,4 @@
-import pf.Action exposing [Action]
+import pf.Action
 import pf.Http
 import pf.Ui
 

@@ -44,7 +44,7 @@ checks descendant tags, table-cell classes, the remove icon, and keyed node
 movement/removal. Those extra attributes remain part of the measured render
 cost. Labels use upstream's adjective/colour/noun vocabulary but choose entries
 from a pure PCG stream seeded once per browser mount. The fixture pins
-[`roc-random` 0.9.2](https://github.com/kili-ilo/roc-random/releases/tag/0.9.2),
+[`roc-random` 0.9.3](https://github.com/kili-ilo/roc-random/releases/tag/0.9.3),
 licensed UPL-1.0; JavaScript supplies only the initial seed and row generation
 remains in Roc. Confirm the extra semantic-test attributes with upstream before
 presenting this directory as a submission-ready implementation.

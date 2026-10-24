@@ -1,11 +1,11 @@
-import Elem exposing [Elem]
-import HostValue exposing [HostValue]
-import Capability exposing [Capability]
+import Elem
+import HostValue
+import Capability
 import EventExtraction
 import EachSink
 import Node
-import Rows exposing [Rows]
-import Signal exposing [Signal]
+import Rows
+import Signal
 
 state_event_msg : Node.BinderRef, Node.BinderRef, Node.EventExtractionPlan, HostValue.EventReducerHandle -> Node.Handler
 state_event_msg = |binder, read_binder, event_extraction_plan, payload_reducer| {

@@ -43,18 +43,23 @@ Http := [].{
 	header_from_tuple = |(name, value)| { name, value }
 
 	## HTTP `GET` method.
+	method_get : Method
 	method_get = GET
 
 	## HTTP `POST` method.
+	method_post : Method
 	method_post = POST
 
 	## HTTP `PUT` method.
+	method_put : Method
 	method_put = PUT
 
 	## HTTP `DELETE` method.
+	method_delete : Method
 	method_delete = DELETE
 
 	## HTTP `PATCH` method.
+	method_patch : Method
 	method_patch = PATCH
 
 	## Custom HTTP method.

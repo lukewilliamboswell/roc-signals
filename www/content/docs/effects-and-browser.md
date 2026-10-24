@@ -13,7 +13,7 @@ as UI events. Timers and browser environment values remain explicit signals.
 
 ## Actions and HTTP
 
-Import `pf.Action exposing [Action]` and `pf.Http`. An effectful function
+Import `pf.Action` and `pf.Http`. An effectful function
 can call HTTP and return the state changes that follow. For example, given a
 `Ui.State(Str)` named `status`:
 

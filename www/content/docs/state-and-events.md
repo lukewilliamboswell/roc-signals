@@ -443,7 +443,7 @@ Html.div(
 )
 ```
 
-Use an action to submit. Import `pf.Action exposing [Action]`. In this fragment,
+Use an action to submit. Import `pf.Action`. In this fragment,
 `send_invite!` is an application effect that accepts an email and returns the
 next action, as described in [Effects, HTTP, and the Browser](@/docs/effects-and-browser.md):
 

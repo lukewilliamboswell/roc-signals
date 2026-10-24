@@ -1,7 +1,7 @@
-import HostValue exposing [HostValue]
-import Capability exposing [Capability]
+import HostValue
+import Capability
 import Node
-import Signal exposing [Signal]
+import Signal
 
 read_byte : List(U8) -> { byte : U8, rest : List(U8) }
 read_byte = |bytes|

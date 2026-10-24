@@ -1,8 +1,8 @@
-app [main] { roc: "nightly-2026-09-22-e494788", pf: platform "../../../platform-web/main.roc" }
+app [main] { roc: "nightly-2026-10-23-18478ff", pf: platform "../../../platform-web/main.roc" }
 
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
-import pf.Rows exposing [Rows]
+import pf.Rows
 import pf.Signal
 import pf.Ui
 

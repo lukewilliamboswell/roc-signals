@@ -2030,11 +2030,11 @@ fn failRocReallocError(err: roc_alloc_ledger.ReallocError) noreturn {
     failHost(roc_alloc_ledger.reallocErrorMessage(err));
 }
 
-fn rocAllocFn(roc_host: *abi.RocHost, length: usize, alignment: usize) callconv(.c) ?*anyopaque {
+fn rocAllocFn(roc_host: *abi.RocHost, length: usize, alignment: usize) callconv(.c) *anyopaque {
     return rocAllocAt(roc_host, length, alignment, @returnAddress());
 }
 
-fn rocAllocAt(roc_host: *abi.RocHost, length: usize, alignment: usize, return_address: usize) ?*anyopaque {
+fn rocAllocAt(roc_host: *abi.RocHost, length: usize, alignment: usize, return_address: usize) *anyopaque {
     const host = hostFromRocHost(roc_host);
     const previous_origin = host.allocation_sweep.origin;
     host.allocation_sweep.origin = .roc;
@@ -2055,11 +2055,11 @@ fn rocDeallocFn(roc_host: *abi.RocHost, ptr: *anyopaque, alignment: usize) callc
     host.recordHostFree(alloc.allocated_size);
 }
 
-fn rocReallocFn(roc_host: *abi.RocHost, ptr: *anyopaque, new_length: usize, alignment_arg: usize) callconv(.c) ?*anyopaque {
+fn rocReallocFn(roc_host: *abi.RocHost, ptr: *anyopaque, new_length: usize, alignment_arg: usize) callconv(.c) *anyopaque {
     return rocReallocAt(roc_host, ptr, new_length, alignment_arg, @returnAddress());
 }
 
-fn rocReallocAt(roc_host: *abi.RocHost, ptr: *anyopaque, new_length: usize, alignment_arg: usize, return_address: usize) ?*anyopaque {
+fn rocReallocAt(roc_host: *abi.RocHost, ptr: *anyopaque, new_length: usize, alignment_arg: usize, return_address: usize) *anyopaque {
     const host = hostFromRocHost(roc_host);
     const previous_origin = host.allocation_sweep.origin;
     host.allocation_sweep.origin = .roc;
@@ -2097,7 +2097,7 @@ fn rocCrashedFn(roc_host: *abi.RocHost, bytes: [*]const u8, len: usize) callconv
     std.process.exit(1);
 }
 
-fn hostAlloc(length: usize, alignment: usize) callconv(.c) ?*anyopaque {
+fn hostAlloc(length: usize, alignment: usize) callconv(.c) *anyopaque {
     return rocAllocAt(currentRocHost(), length, alignment, @returnAddress());
 }
 
@@ -2105,7 +2105,7 @@ fn hostDealloc(ptr: *anyopaque, alignment: usize) callconv(.c) void {
     rocDeallocFn(currentRocHost(), ptr, alignment);
 }
 
-fn hostRealloc(ptr: *anyopaque, new_length: usize, alignment: usize) callconv(.c) ?*anyopaque {
+fn hostRealloc(ptr: *anyopaque, new_length: usize, alignment: usize) callconv(.c) *anyopaque {
     return rocReallocAt(currentRocHost(), ptr, new_length, alignment, @returnAddress());
 }
 
@@ -3900,9 +3900,9 @@ test "signals host allocation ledger tracks exact returned pointers" {
         _ = host.gpa.deinit();
     }
 
-    const first = rocAllocFn(&roc_host, 8, 8) orelse return error.OutOfMemory;
-    const middle = rocAllocFn(&roc_host, 16, 8) orelse return error.OutOfMemory;
-    const last = rocAllocFn(&roc_host, 24, 8) orelse return error.OutOfMemory;
+    const first = rocAllocFn(&roc_host, 8, 8);
+    const middle = rocAllocFn(&roc_host, 16, 8);
+    const last = rocAllocFn(&roc_host, 24, 8);
 
     try std.testing.expectEqual(@as(usize, 3), host.roc_allocations.allocations.items.len);
     try std.testing.expect(findExactRocAllocationIndex(&host, first) != null);
@@ -3919,7 +3919,7 @@ test "signals host allocation ledger tracks exact returned pointers" {
     try std.testing.expectEqual(@as(u64, 3), host.engine.pending_roc_metrics.allocs_this_event);
     try std.testing.expectEqual(@as(u64, 1), host.engine.pending_roc_metrics.deallocs_this_event);
 
-    const grown = rocReallocFn(&roc_host, first, 32, 8) orelse return error.OutOfMemory;
+    const grown = rocReallocFn(&roc_host, first, 32, 8);
 
     try std.testing.expectEqual(@as(usize, 2), host.roc_allocations.allocations.items.len);
     try std.testing.expectEqual(@as(?usize, null), findExactRocAllocationIndex(&host, first));
@@ -4032,9 +4032,9 @@ test "native fault coordinates exclude Roc allocation and reallocation internals
     }
 
     host.allocation_sweep = .{ .tracking = true, .fail_on_allocation = 1 };
-    const first = rocAllocFn(&roc_host, 8, 8) orelse return error.OutOfMemory;
-    const grown = rocReallocFn(&roc_host, first, 8192, 8) orelse return error.OutOfMemory;
-    const shrunk = rocReallocFn(&roc_host, grown, 16, 8) orelse return error.OutOfMemory;
+    const first = rocAllocFn(&roc_host, 8, 8);
+    const grown = rocReallocFn(&roc_host, first, 8192, 8);
+    const shrunk = rocReallocFn(&roc_host, grown, 16, 8);
     rocDeallocFn(&roc_host, shrunk, 8);
     try std.testing.expectEqual(@as(usize, 0), host.allocation_sweep.attempts);
     try std.testing.expect(!host.allocation_sweep.selected_seen);
@@ -4166,7 +4166,7 @@ test "native host allocation injection remains recoverable outside Roc ABI calls
     try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.allocations.items.len);
 
     host.configureAllocationFailure(null);
-    const recovered = rocAllocFn(&roc_host, 32, 8) orelse return error.OutOfMemory;
+    const recovered = rocAllocFn(&roc_host, 32, 8);
     try std.testing.expectEqual(@as(usize, 1), host.roc_allocations.allocations.items.len);
     rocDeallocFn(&roc_host, recovered, 8);
     try std.testing.expectEqual(@as(usize, 0), host.roc_allocations.allocations.items.len);
@@ -4182,7 +4182,7 @@ test "native Roc ABI allocation failures terminate in a subprocess" {
             host.configureAllocationFailure(1);
             _ = rocAllocFn(&roc_host, 32, 8);
         } else if (std.mem.eql(u8, mode, "realloc")) {
-            const original = rocAllocFn(&roc_host, 32, 8) orelse unreachable;
+            const original = rocAllocFn(&roc_host, 32, 8);
             host.configureAllocationFailure(1);
             _ = rocReallocFn(&roc_host, original, 64, 8);
         } else if (std.mem.eql(u8, mode, "event_callback")) {

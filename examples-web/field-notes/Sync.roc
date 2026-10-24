@@ -1,5 +1,5 @@
 import Notes
-import pf.Action exposing [Action]
+import pf.Action
 import pf.Http
 import pf.Ui
 
@@ -12,7 +12,7 @@ Sync := [].{
 	## Each occurrence owns its token; a later lane request invalidates its result.
 	start : Ui.State(Sync.Lane), Sync.Read -> Action(Sync.Read)
 	start = |lane, read| match read.request {
-		Idle => Action.none
+		Idle => Action.none()
 		Send(token) => {
 			generation = read.generation + 1
 			Action.then([lane.write(|current| { ..current, generation })], |_| Sync.send!(lane, token, generation))

@@ -2460,7 +2460,7 @@ Ui.Row.select : Ui.Row(item), Signal.Keyed(value) -> Signal(value)
 # { first: first_signal, last: last_signal, active: active_signal }.Signal
 
 # Actions, hosted effects, and scoped timers
-Action.none : Action(a)
+Action.none : () -> Action(a)
 Action.update : List(Ui.StateWrite) -> Action(a)
 Action.then : List(Ui.StateWrite), (a => Action(a)) -> Action(a)
 Action.run : Signal(a), (a -> Action(a)) -> Handler

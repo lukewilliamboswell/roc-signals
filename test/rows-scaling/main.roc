@@ -1,8 +1,8 @@
-app [main] { pf: platform "../../platform-web/main.roc", roc: "nightly-2026-09-22-e494788" }
+app [main] { pf: platform "../../platform-web/main.roc", roc: "nightly-2026-10-23-18478ff" }
 
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
-import pf.Rows exposing [Rows]
+import pf.Rows
 import pf.Ui
 
 Row : { id : Str, value : U64 }

@@ -26,7 +26,7 @@ from urllib.parse import urlparse
 import known_failures
 import spec_driver
 from instrument_wasm import instrument_wasm
-from toolchain import replace_platform
+from toolchain import local_platform_reference, replace_platform
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -481,7 +481,7 @@ def run_coordinated_writes_wasm_faults(roc_bin: str) -> None:
     fixture = ROOT / "examples-web/_fixtures/coordinated-writes/main.roc"
     app = output / "main.roc"
     app.write_text(PLATFORM_HEADER_RE.sub(
-        f'platform "{manifest.resolve()}"', fixture.read_text(encoding="utf-8"), count=1,
+        f'platform "{local_platform_reference(app, manifest)}"', fixture.read_text(encoding="utf-8"), count=1,
     ), encoding="utf-8")
     wasm = output / "app.wasm"
     run([roc_bin, "build", "--target=wasm32", "--opt=size", "--no-cache", f"--output={wasm}", app])
@@ -750,11 +750,11 @@ def run_wasm_runtime_benchmarks(roc_bin: str, args: argparse.Namespace) -> None:
     diagnostic_source = source_dir / "diagnostic.roc"
     original = (ROOT / fixture.source).read_text(encoding="utf-8")
     production_source.write_text(
-        PLATFORM_HEADER_RE.sub(f'platform "{(production_platform / "main.roc").resolve()}"', original, count=1),
+        PLATFORM_HEADER_RE.sub(f'platform "{local_platform_reference(production_source, production_platform / "main.roc")}"', original, count=1),
         encoding="utf-8",
     )
     diagnostic_source.write_text(
-        PLATFORM_HEADER_RE.sub(f'platform "{(diagnostic_platform / "main.roc").resolve()}"', original, count=1),
+        PLATFORM_HEADER_RE.sub(f'platform "{local_platform_reference(diagnostic_source, diagnostic_platform / "main.roc")}"', original, count=1),
         encoding="utf-8",
     )
     production_wasm = output / "js-framework-production.wasm"
@@ -792,15 +792,17 @@ def run_wasm_runtime_benchmarks(roc_bin: str, args: argparse.Namespace) -> None:
     benchmark_run(["node", "scripts/browser/wasm_command_retention.test.mjs", diagnostic_wasm])
 
 
-def rewrite_platform_headers(root: Path, platform_ref: str) -> None:
+def rewrite_platform_headers(root: Path, platform_ref: str | Path) -> None:
+    """Point every app header under `root` at a platform URL or local manifest."""
     for source in sorted(root.rglob("*.roc")):
         text = source.read_text(encoding="utf-8")
-        updated = replace_platform(text, platform_ref)
+        reference = local_platform_reference(source, platform_ref) if isinstance(platform_ref, Path) else platform_ref
+        updated = replace_platform(text, reference)
         if updated != text:
             source.write_text(updated, encoding="utf-8")
 
 
-def rewrite_examples_for_platform(platform_ref: str, dest_root: Path) -> None:
+def rewrite_examples_for_platform(platform_ref: str | Path, dest_root: Path) -> None:
     if dest_root.exists():
         shutil.rmtree(dest_root)
     examples_dest = dest_root / "examples-web"
@@ -821,7 +823,7 @@ def run_local_native_specs(
     fault_campaign: bool = False,
 ) -> None:
     source_root = TEST_OUT / "native-source"
-    rewrite_examples_for_platform(str((ROOT / "platform-web" / "main.roc").resolve()), source_root)
+    rewrite_examples_for_platform(ROOT / "platform-web" / "main.roc", source_root)
     run_native_specs(
         roc_bin,
         examples,
@@ -839,13 +841,13 @@ def run_local_native_specs(
 
 def run_local_roc_checks(roc_bin: str, examples: tuple[Example, ...]) -> None:
     source_root = TEST_OUT / "roc-check-source"
-    rewrite_examples_for_platform(str((ROOT / "platform-web" / "main.roc").resolve()), source_root)
+    rewrite_examples_for_platform(ROOT / "platform-web" / "main.roc", source_root)
     run_roc_checks(roc_bin, examples, source_root=source_root)
 
 
 def run_local_roc_tests(roc_bin: str, examples: tuple[Example, ...]) -> None:
     source_root = TEST_OUT / "roc-test-source"
-    rewrite_examples_for_platform(str((ROOT / "platform-web" / "main.roc").resolve()), source_root)
+    rewrite_examples_for_platform(ROOT / "platform-web" / "main.roc", source_root)
     run_roc_tests(roc_bin, examples, source_root=source_root)
 
 
@@ -855,7 +857,7 @@ def run_local_benchmarks(roc_bin: str, examples: tuple[Example, ...]) -> None:
     # timings measure validation machinery rather than production behavior.
     run(["zig", "build", "build-test-hosts", "-Doptimize=ReleaseFast"])
     source_root = TEST_OUT / "bench-source"
-    rewrite_examples_for_platform(str((ROOT / "platform-web" / "main.roc").resolve()), source_root)
+    rewrite_examples_for_platform(ROOT / "platform-web" / "main.roc", source_root)
     run_benchmarks(roc_bin, examples, source_root=source_root)
 
 

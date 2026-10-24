@@ -1,8 +1,8 @@
-import Elem exposing [Elem]
-import HostValue exposing [HostValue]
-import Capability exposing [Capability]
+import Elem
+import HostValue
+import Capability
 import Node
-import Signal exposing [Signal]
+import Signal
 
 field_text : Node.TextField
 field_text = { id: 1 }

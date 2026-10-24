@@ -1,5 +1,5 @@
 import Node
-import HostValue exposing [HostValue]
+import HostValue
 
 ## UI element descriptor tree. Markup nodes (`Element`, `Text`, `TextSignal`)
 ## carry no identity. Scope/binder nodes are the identity-bearing positions the

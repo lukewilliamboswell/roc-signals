@@ -1,4 +1,4 @@
-app [main] { roc: "nightly-2026-09-22-e494788", pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst" }
+app [main] { roc: "nightly-2026-10-23-18478ff", pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst" }
 
 ## Split the Bill — the gallery's teaching example for derived state.
 ##
@@ -28,7 +28,7 @@ app [main] { roc: "nightly-2026-09-22-e494788", pf: platform "https://github.com
 ##   the leftover cents to the first participants in trip order, so the shares
 ##   always add back to the exact amount and the balances always sum to $0.00.
 
-import pf.Elem exposing [Elem]
+import pf.Elem
 import pf.Html
 import pf.Rows
 import pf.Signal
