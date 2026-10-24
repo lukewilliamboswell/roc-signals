@@ -903,10 +903,10 @@ def bundle_platform(roc_bin: str) -> Path:
     )
     print(result.stdout, end="")
     result.check_returncode()
-    for line in result.stdout.splitlines():
-        if line.startswith("Created:"):
-            return Path(line.split(":", 1)[1].strip())
-    raise SystemExit("scripts/bundle.sh did not print a Created: line")
+    # Roc reports the archive relative to its staging directory, so the
+    # manifest bundle_platforms.py writes is the authority for its location.
+    manifest = json.loads((bundle_out / "bundles.json").read_text(encoding="utf-8"))
+    return bundle_out / manifest["web"]
 
 
 def run_bundle_specs(
