@@ -29,7 +29,6 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       source: ${{ steps.select.outputs.source }}
-      gui: ${{ steps.select.outputs.gui }}
       site: ${{ steps.select.outputs.site }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -60,119 +59,9 @@ jobs:
           node-version: '23.9.0'
       - run: python3 scripts/minici hosted
 
-  gui:
-    needs: changes
-    if: needs.changes.outputs.gui == 'true'
-    name: Native GUI build and specs
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    env:
-      GUI_HOST_LOCK: gui-host.lock.json
-      GUI_TEST_OUTPUT: .test-out/gui-${{ github.run_id }}-${{ github.run_attempt }}
-      RUSTUP_TOOLCHAIN: 1.95.0
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-toolchain
-      - name: Install the GUI host Rust toolchain
-        run: rustup toolchain install 1.95.0 --profile minimal
-      - name: Install GUI runtime dependencies
-        run: |
-          sudo apt-get update
-          # The development packages are needed whenever this job builds the host
-          # itself, which it does when the lock predates a host change.
-          sudo apt-get install -y libfreetype6 libxkbcommon0 libxkbcommon-x11-0 \
-            libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev
-      - name: Restore compiled Rust dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
-        with:
-          shared-key: gui-dev
-          cache-workspace-crates: false
-          cache-bin: false
-          env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET GPUI_FXC_PATH DEVELOPER_DIR TOOLCHAINS
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-      - name: Verify GUI discovery and applications
-        run: python3 scripts/minici gui
-      - name: Open GUI examples with software Vulkan
-        run: |
-          sudo apt-get install -y weston xvfb xauth mesa-vulkan-drivers
-          python3 scripts/minici gui-smoke
-      - name: Drive the scripted GUI scenarios
-        run: python3 scripts/minici gui-scenarios
-      - name: Keep the scenario reports on failure
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: gui-scenario-reports
-          path: ${{ env.GUI_TEST_OUTPUT }}/gui-scenarios
-          if-no-files-found: ignore
-
-  gui-windows:
-    needs: changes
-    if: needs.changes.outputs.gui == 'true'
-    name: Native GUI build and specs (Windows)
-    runs-on: windows-2025
-    timeout-minutes: 60
-    env:
-      GUI_HOST_LOCK: gui-host.lock.json
-      RUSTUP_TOOLCHAIN: 1.95.0
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: '3.12'
-      - uses: ./.github/actions/setup-toolchain
-      - name: Install the Windows host Rust target
-        shell: bash
-        run: |
-          # Only needed when this job builds the host, but installing it
-          # unconditionally keeps the two paths from diverging silently.
-          rustup toolchain install 1.95.0 --profile minimal
-          rustup target add --toolchain 1.95.0 x86_64-pc-windows-gnullvm
-      - name: Restore compiled Rust dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
-        with:
-          shared-key: gui-dev
-          cache-workspace-crates: false
-          cache-bin: false
-          env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET GPUI_FXC_PATH DEVELOPER_DIR TOOLCHAINS
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-      - name: Verify GUI discovery and applications
-        run: python scripts/minici gui
-
-  gui-macos:
-    needs: changes
-    if: needs.changes.outputs.gui == 'true'
-    name: Native GUI build and specs (macOS)
-    runs-on: macos-15
-    timeout-minutes: 60
-    env:
-      GUI_HOST_LOCK: gui-host.lock.json
-      RUSTUP_TOOLCHAIN: 1.95.0
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup-toolchain
-      - name: Install the GUI host Rust toolchain
-        run: rustup toolchain install 1.95.0 --profile minimal
-      - name: Restore compiled Rust dependencies
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
-        with:
-          shared-key: gui-dev
-          cache-workspace-crates: false
-          cache-bin: false
-          env-vars: ImageVersion CC CXX CFLAGS CXXFLAGS LDFLAGS SDKROOT MACOSX_DEPLOYMENT_TARGET GPUI_FXC_PATH DEVELOPER_DIR TOOLCHAINS
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-      - name: Verify GUI applications with separate archives
-        run: python3 scripts/minici gui
-
   platform-source:
     name: Platform source
-    needs: [changes, source, gui, gui-windows, gui-macos, site]
+    needs: [changes, source, site]
     if: always()
     runs-on: ubuntu-24.04
     steps:

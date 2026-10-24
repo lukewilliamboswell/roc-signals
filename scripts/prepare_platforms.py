@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Copy canonical shared modules into each platform's flat, gitignored module layout."""
+"""Copy canonical shared modules into the web platform's flat, gitignored module layout."""
 import argparse
 import hashlib
 import os
@@ -77,7 +77,7 @@ if __name__ == '__main__':
     parser.add_argument('--check', action='store_true', help='Reject missing or drifting copies without modifying files')
     args = parser.parse_args()
     errors = []
-    for name in ['platform-web', 'platform-gui']:
+    for name in ['platform-web']:
         package = ROOT / name
         if not args.check:
             prepare_platform(package, package)
