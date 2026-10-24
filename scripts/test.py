@@ -410,7 +410,8 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...], ledger: known_f
             output = wasm_dir / f"{example.slug}.wasm"
             try:
                 # TODO(upstream): link the compiler issue and use --opt=dev once
-                # the two-row-types fixture produces valid Wasm with that backend.
+                # that backend remounts a Ui.when branch it left on wasm32; see
+                # repro/wasm-dev-when-reselect (event-actions fails under it).
                 run(
                     [
                         roc_bin,

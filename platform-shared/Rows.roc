@@ -223,44 +223,7 @@ rows_id_stack_from_range = |values, first, count| if count == 0 {
 	rows_index_node(middle, value, rows_id_stack_from_range(values, first, left_count), rows_id_stack_from_range(values, middle + 1, count - left_count - 1))
 }
 
-## Slot IDs reserve 32 bits for the index; 32-cell chunks leave 27 directory
-## bits. Six bounded 32-way levels cover that complete space. Copy-on-write
-## retains at most 32 child lists at each level, even when old generations live.
-## Empty branches allocate nothing, and directory shape depends on slot IDs,
-## never the number of generations or a retained flat-table capacity.
-## Keep the directory structural and its helpers top-level: generic nominal
-## methods currently fail with application-item payloads on the pinned compiler.
-## https://github.com/roc-lang/roc/issues/11377
 RowsDirectoryCell(value) : [DirectoryEmpty, DirectoryValue(value)]
-
-RowsSlotDirectory(value) : { root : List(List(List(List(List(List(RowsDirectoryCell(value))))))), count : U64 }
-
-rows_slot_directory_empty : () -> RowsSlotDirectory(value)
-rows_slot_directory_empty = || { root: [], count: 0 }
-
-rows_slot_directory_len : RowsSlotDirectory(value) -> U64
-rows_slot_directory_len = |directory| directory.count
-
-rows_slot_directory_is_empty : RowsSlotDirectory(value) -> Bool
-rows_slot_directory_is_empty = |directory| directory.count == 0
-
-rows_slot_directory_get : RowsSlotDirectory(value), U64 -> Try(value, [Missing])
-rows_slot_directory_get = |directory, key| {
-	if key >= 134217728 {
-		Err(Missing)
-	} else {
-		level_0 = directory.root.get(key.div_trunc_by(33554432).rem_by(32)) ? |_| Missing
-		level_1 = level_0.get(key.div_trunc_by(1048576).rem_by(32)) ? |_| Missing
-		level_2 = level_1.get(key.div_trunc_by(32768).rem_by(32)) ? |_| Missing
-		level_3 = level_2.get(key.div_trunc_by(1024).rem_by(32)) ? |_| Missing
-		level_4 = level_3.get(key.div_trunc_by(32).rem_by(32)) ? |_| Missing
-		level_5 = level_4.get(key.div_trunc_by(1).rem_by(32)) ? |_| Missing
-		match level_5 {
-			DirectoryEmpty => Err(Missing)
-			DirectoryValue(value) => Ok(value)
-		}
-	}
-}
 
 ## Keep each bounded branch update behind one call boundary. Besides sharing
 ## the operation, this prevents ownership paths from multiplying across levels.
@@ -273,43 +236,77 @@ rows_directory_set_child = |children, index, child| {
 	$children.set(index, child) ?? crash "Rows slot directory branch was missing"
 }
 
-rows_slot_directory_insert : RowsSlotDirectory(value), U64, value -> RowsSlotDirectory(value)
-rows_slot_directory_insert = |directory, key, value| {
-	if key >= 134217728 {
-		crash "Rows slot directory exceeds the packed index space"
-	}
-	offset_0 = key.div_trunc_by(33554432).rem_by(32)
-	offset_1 = key.div_trunc_by(1048576).rem_by(32)
-	offset_2 = key.div_trunc_by(32768).rem_by(32)
-	offset_3 = key.div_trunc_by(1024).rem_by(32)
-	offset_4 = key.div_trunc_by(32).rem_by(32)
-	offset_5 = key.div_trunc_by(1).rem_by(32)
-	var $level_0 = directory.root
-	var $level_1 = $level_0.get(offset_0) ?? []
-	var $level_2 = $level_1.get(offset_1) ?? []
-	var $level_3 = $level_2.get(offset_2) ?? []
-	var $level_4 = $level_3.get(offset_3) ?? []
-	var $level_5 = $level_4.get(offset_4) ?? []
-	added = match $level_5.get(offset_5) {
-		Ok(DirectoryValue(_)) => False
-		_ => True
-	}
-	while $level_5.len() <= offset_5 {
-		$level_5 = $level_5.append(DirectoryEmpty)
-	}
-	$level_5 = $level_5.set(offset_5, DirectoryValue(value)) ?? crash "Rows slot directory leaf was missing"
-	$level_4 = rows_directory_set_child($level_4, offset_4, $level_5)
-	$level_3 = rows_directory_set_child($level_3, offset_3, $level_4)
-	$level_2 = rows_directory_set_child($level_2, offset_2, $level_3)
-	$level_1 = rows_directory_set_child($level_1, offset_1, $level_2)
-	$level_0 = rows_directory_set_child($level_0, offset_0, $level_1)
-	{
-		root: $level_0,
-		count: directory.count + if added {
-			1
+## Slot IDs reserve 32 bits for the index; 32-cell chunks leave 27 directory
+## bits. Six bounded 32-way levels cover that complete space. Copy-on-write
+## retains at most 32 child lists at each level, even when old generations live.
+## Empty branches allocate nothing, and directory shape depends on slot IDs,
+## never the number of generations or a retained flat-table capacity.
+RowsSlotDirectory(value) := { root : List(List(List(List(List(List(RowsDirectoryCell(value))))))), count : U64 }.{
+	empty : () -> RowsSlotDirectory(value)
+	empty = || { root: [], count: 0 }
+
+	len : RowsSlotDirectory(value) -> U64
+	len = |directory| directory.count
+
+	is_empty : RowsSlotDirectory(value) -> Bool
+	is_empty = |directory| directory.count == 0
+
+	get : RowsSlotDirectory(value), U64 -> Try(value, [Missing])
+	get = |directory, key| {
+		if key >= 134217728 {
+			Err(Missing)
 		} else {
-			0
-		},
+			level_0 = directory.root.get(key.div_trunc_by(33554432).rem_by(32)) ? |_| Missing
+			level_1 = level_0.get(key.div_trunc_by(1048576).rem_by(32)) ? |_| Missing
+			level_2 = level_1.get(key.div_trunc_by(32768).rem_by(32)) ? |_| Missing
+			level_3 = level_2.get(key.div_trunc_by(1024).rem_by(32)) ? |_| Missing
+			level_4 = level_3.get(key.div_trunc_by(32).rem_by(32)) ? |_| Missing
+			level_5 = level_4.get(key.div_trunc_by(1).rem_by(32)) ? |_| Missing
+			match level_5 {
+				DirectoryEmpty => Err(Missing)
+				DirectoryValue(value) => Ok(value)
+			}
+		}
+	}
+
+	insert : RowsSlotDirectory(value), U64, value -> RowsSlotDirectory(value)
+	insert = |directory, key, value| {
+		if key >= 134217728 {
+			crash "Rows slot directory exceeds the packed index space"
+		}
+		offset_0 = key.div_trunc_by(33554432).rem_by(32)
+		offset_1 = key.div_trunc_by(1048576).rem_by(32)
+		offset_2 = key.div_trunc_by(32768).rem_by(32)
+		offset_3 = key.div_trunc_by(1024).rem_by(32)
+		offset_4 = key.div_trunc_by(32).rem_by(32)
+		offset_5 = key.div_trunc_by(1).rem_by(32)
+		var $level_0 = directory.root
+		var $level_1 = $level_0.get(offset_0) ?? []
+		var $level_2 = $level_1.get(offset_1) ?? []
+		var $level_3 = $level_2.get(offset_2) ?? []
+		var $level_4 = $level_3.get(offset_3) ?? []
+		var $level_5 = $level_4.get(offset_4) ?? []
+		added = match $level_5.get(offset_5) {
+			Ok(DirectoryValue(_)) => False
+			_ => True
+		}
+		while $level_5.len() <= offset_5 {
+			$level_5 = $level_5.append(DirectoryEmpty)
+		}
+		$level_5 = $level_5.set(offset_5, DirectoryValue(value)) ?? crash "Rows slot directory leaf was missing"
+		$level_4 = rows_directory_set_child($level_4, offset_4, $level_5)
+		$level_3 = rows_directory_set_child($level_3, offset_3, $level_4)
+		$level_2 = rows_directory_set_child($level_2, offset_2, $level_3)
+		$level_1 = rows_directory_set_child($level_1, offset_1, $level_2)
+		$level_0 = rows_directory_set_child($level_0, offset_0, $level_1)
+		{
+			root: $level_0,
+			count: directory.count + if added {
+				1
+			} else {
+				0
+			},
+		}
 	}
 }
 
@@ -910,17 +907,18 @@ rows_order_fold = |order, initial, push| rows_order_fold_node(order, order.root,
 rows_order_fold_node! : RowsOrder, U64, state, (state, U64 => state) => state
 rows_order_fold_node! = |order, node_id, initial, push!| {
 	node = rows_order_table_get(order.nodes, node_id) ?? crash "Rows order fold node was missing"
-	{ slots, children } =
-		match node {
-			OrderLeaf(leaf) => { slots: leaf.slots, children: [] }
-			OrderBranch(branch) => { slots: [], children: branch.children }
-		}
 	var $state = initial
-	for slot in slots {
-		$state = push!($state, slot)
-	}
-	for child_id in children {
-		$state = rows_order_fold_node!(order, child_id, $state, push!)
+	match node {
+		OrderLeaf(leaf) => {
+			for slot in leaf.slots {
+				$state = push!($state, slot)
+			}
+		}
+		OrderBranch(branch) => {
+			for child_id in branch.children {
+				$state = rows_order_fold_node!(order, child_id, $state, push!)
+			}
+		}
 	}
 	$state
 }
@@ -950,7 +948,7 @@ rows_slot_generation = |slot| slot.div_trunc_by(rows_slot_base)
 rows_slots_empty : () -> RowsSlotStore(item)
 rows_slots_empty = || {
 	chunks : RowsSlotDirectory(List(RowsSlotCell(item)))
-	chunks = rows_slot_directory_empty()
+	chunks = RowsSlotDirectory.empty()
 	{ chunks, free: RowsIdStack.empty(), next_index: 1 }
 }
 
@@ -962,7 +960,7 @@ rows_slots_cell = |slots, index| {
 		zero_index = index - 1
 		chunk_index = zero_index.div_trunc_by(32)
 		offset = zero_index.rem_by(32)
-		chunk = rows_slot_directory_get(slots.chunks, chunk_index) ? |_| Missing
+		chunk = RowsSlotDirectory.get(slots.chunks, chunk_index) ? |_| Missing
 		match chunk.get(offset) {
 			Ok(cell) => Ok(cell)
 			Err(_) => Err(Missing)
@@ -975,14 +973,14 @@ rows_slots_set_cell = |slots, index, cell| {
 	zero_index = index - 1
 	chunk_index = zero_index.div_trunc_by(32)
 	offset = zero_index.rem_by(32)
-	chunk = rows_slot_directory_get(slots.chunks, chunk_index) ?? []
+	chunk = RowsSlotDirectory.get(slots.chunks, chunk_index) ?? []
 	updated_chunk =
 		if offset == chunk.len() {
 			chunk.append(cell)
 		} else {
 			chunk.set(offset, cell) ?? crash "Rows slot chunk offset was invalid"
 		}
-	{ ..slots, chunks: rows_slot_directory_insert(slots.chunks, chunk_index, updated_chunk) }
+	{ ..slots, chunks: RowsSlotDirectory.insert(slots.chunks, chunk_index, updated_chunk) }
 }
 
 rows_slots_get : RowsSlotStore(item), U64 -> Try({ key : Str, item : item }, [Missing])
@@ -1170,17 +1168,17 @@ rows_slots_patch = |patches, index, cell| {
 	chunk_id = zero_index.div_trunc_by(32)
 	offset = zero_index.rem_by(32)
 	write = { cell, offset }
-	match rows_slot_directory_get(patches.by_chunk, chunk_id) {
+	match RowsSlotDirectory.get(patches.by_chunk, chunk_id) {
 		Ok(writes) => {
 			duplicate = writes.find_first(|existing| existing.offset == offset)
 			match duplicate {
 				Ok(_) => crash "Rows slot patch wrote one cell twice"
-				Err(_) => { ..patches, by_chunk: rows_slot_directory_insert(patches.by_chunk, chunk_id, writes.prepend(write)) }
+				Err(_) => { ..patches, by_chunk: RowsSlotDirectory.insert(patches.by_chunk, chunk_id, writes.prepend(write)) }
 			}
 		}
 		Err(_) => {
 			{
-				by_chunk: rows_slot_directory_insert(patches.by_chunk, chunk_id, [write]),
+				by_chunk: RowsSlotDirectory.insert(patches.by_chunk, chunk_id, [write]),
 				chunk_ids: patches.chunk_ids.prepend(chunk_id),
 			}
 		}
@@ -1202,8 +1200,8 @@ rows_slots_apply_patches = |old, patches, free, next_index| {
 	var $chunks = old.chunks
 	var $written = 0
 	for chunk_id in rows_reverse(patches.chunk_ids.to_list()) {
-		writes = rows_slot_directory_get(patches.by_chunk, chunk_id) ?? crash "Rows touched slot chunk had no patches"
-		old_chunk = rows_slot_directory_get(old.chunks, chunk_id) ?? []
+		writes = RowsSlotDirectory.get(patches.by_chunk, chunk_id) ?? crash "Rows touched slot chunk had no patches"
+		old_chunk = RowsSlotDirectory.get(old.chunks, chunk_id) ?? []
 		first_index = chunk_id * 32 + 1
 		available = next_index - first_index
 		final_len = if available < 32 {
@@ -1222,7 +1220,7 @@ rows_slots_apply_patches = |old, patches, free, next_index| {
 			$chunk = $chunk.append(cell)
 			$offset = $offset + 1
 		}
-		$chunks = rows_slot_directory_insert($chunks, chunk_id, $chunk)
+		$chunks = RowsSlotDirectory.insert($chunks, chunk_id, $chunk)
 		$written = $written + 1
 	}
 	{ slot_chunks_written: $written, slots: { chunks: $chunks, free, next_index } }
@@ -1251,7 +1249,7 @@ rows_build_fresh_loop = |items, key_of, index, len, build|
 					{
 						order_slots: build.order_slots.append(slot),
 						chunks: if chunk_complete {
-							rows_slot_directory_insert(build.chunks, chunk_id, chunk)
+							RowsSlotDirectory.insert(build.chunks, chunk_id, chunk)
 						} else {
 							build.chunks
 						},
@@ -1289,7 +1287,7 @@ rows_build_fresh = |items, key_of| {
 			len,
 			{
 				order_slots: List.with_capacity(len),
-				chunks: rows_slot_directory_empty(),
+				chunks: RowsSlotDirectory.empty(),
 				current_chunk: List.with_capacity(32),
 				key_index: RowsKeyIndex.empty(),
 				key_bytes: 0,
@@ -1308,7 +1306,7 @@ rows_build_fresh = |items, key_of| {
 			last_chunk_id = len.div_trunc_by(32)
 			Ok({
 				order_slots: built.order_slots,
-				slots: { chunks: rows_slot_directory_insert(built.chunks, last_chunk_id, built.current_chunk), free: RowsIdStack.empty(), next_index: len + 1 },
+				slots: { chunks: RowsSlotDirectory.insert(built.chunks, last_chunk_id, built.current_chunk), free: RowsIdStack.empty(), next_index: len + 1 },
 				key_index: built.key_index,
 				key_bytes: built.key_bytes,
 				slot_chunks_written: built.chunk_writes + 1,
@@ -1412,7 +1410,7 @@ rows_build_replacement = |items, key_of, old| {
 			order_slots: RowsIdStack.empty(),
 			key_index: RowsKeyIndex.empty(),
 			key_bytes: 0,
-			patches: { by_chunk: rows_slot_directory_empty(), chunk_ids: RowsIdStack.empty() },
+			patches: { by_chunk: RowsSlotDirectory.empty(), chunk_ids: RowsIdStack.empty() },
 			free_cursor: old.slots.free,
 			next_index: old.slots.next_index,
 		},
@@ -1456,15 +1454,15 @@ rows_build_replacement = |items, key_of, old| {
 ## that the new generation actually owns.
 rows_release_all_slots : RowsStorage(item) -> RowsSlotStore(item)
 rows_release_all_slots = |old| {
-	chunk_count = rows_slot_directory_len(old.slots.chunks)
+	chunk_count = RowsSlotDirectory.len(old.slots.chunks)
 	free_capacity = old.slots.free.len() + rows_order_len(old.order)
 	empty_chunks : RowsSlotDirectory(List(RowsSlotCell(item)))
-	empty_chunks = rows_slot_directory_empty()
+	empty_chunks = RowsSlotDirectory.empty()
 	var $chunks = empty_chunks
 	var $free = List.with_capacity(free_capacity)
 	var $chunk_id = 0
 	while $chunk_id < chunk_count {
-		old_chunk = rows_slot_directory_get(old.slots.chunks, $chunk_id) ?? crash "Rows clear slot chunk was missing"
+		old_chunk = RowsSlotDirectory.get(old.slots.chunks, $chunk_id) ?? crash "Rows clear slot chunk was missing"
 		var $new_chunk = List.with_capacity(old_chunk.len())
 		var $offset = 0
 		for cell in old_chunk {
@@ -1487,7 +1485,7 @@ rows_release_all_slots = |old| {
 			}
 			$offset = $offset + 1
 		}
-		$chunks = rows_slot_directory_insert($chunks, $chunk_id, $new_chunk)
+		$chunks = RowsSlotDirectory.insert($chunks, $chunk_id, $new_chunk)
 		$chunk_id = $chunk_id + 1
 	}
 	{ chunks: $chunks, free: RowsIdStack.from_list($free), next_index: old.slots.next_index }
@@ -2070,7 +2068,7 @@ Rows(item) :: [Rows(RowsStorage(item))].{
 	replace_all : Rows(item), List(item) -> Try(Rows(item), Error)
 	replace_all = |Rows(old), items| {
 		built =
-			if old.slots.next_index == 1 and rows_slot_directory_len(old.slots.chunks) == 0 {
+			if old.slots.next_index == 1 and RowsSlotDirectory.len(old.slots.chunks) == 0 {
 				rows_build_fresh(items, old.key_of)?
 			} else {
 				rows_build_replacement(items, old.key_of, old)?
@@ -2374,11 +2372,11 @@ expect {
 		expected_chunks = (count + 31).div_trunc_by(32)
 		last_chunk_ok =
 			if count == 0 {
-				rows_slot_directory_len(built.slots.chunks) == 0
+				RowsSlotDirectory.len(built.slots.chunks) == 0
 			} else {
 				last_chunk_id = (count - 1).div_trunc_by(32)
 				expected_last_len = (count - 1).rem_by(32) + 1
-				last_chunk = rows_slot_directory_get(built.slots.chunks, last_chunk_id)?
+				last_chunk = RowsSlotDirectory.get(built.slots.chunks, last_chunk_id)?
 				last_chunk.len() == expected_last_len
 			}
 		last_slot_ok =
@@ -2399,7 +2397,7 @@ expect {
 		$valid =
 			$valid
 				and built.slot_chunks_written == expected_chunks
-					and rows_slot_directory_len(built.slots.chunks) == expected_chunks
+					and RowsSlotDirectory.len(built.slots.chunks) == expected_chunks
 						and built.slots.next_index == count + 1
 							and built.slots.free.is_empty()
 								and built.key_index.len() == count
@@ -2436,7 +2434,7 @@ expect {
 	)
 
 	planned.slot_chunks_written == 3
-		and rows_slot_directory_len(replaced_storage.slots.chunks) == 3
+		and RowsSlotDirectory.len(replaced_storage.slots.chunks) == 3
 			and replaced_storage.slots.next_index == 66
 				and replaced_survivor_slot == initial_survivor_slot
 					and reused_indexes == [2, 34]
@@ -2454,7 +2452,7 @@ expect {
 	max_generation = 4294967295
 	old_slot = rows_slot_pack(1, max_generation)
 	chunks : RowsSlotDirectory(List(RowsSlotCell(RowsTestItem)))
-	chunks = rows_slot_directory_insert(rows_slot_directory_empty(), 0, [RowsSlotLive({ generation: max_generation, key: "a", item: rows_test_item("a", 1) })])
+	chunks = RowsSlotDirectory.insert(RowsSlotDirectory.empty(), 0, [RowsSlotLive({ generation: max_generation, key: "a", item: rows_test_item("a", 1) })])
 	key_index : RowsKeyIndex
 	key_index = RowsKeyIndex.empty().insert("a", old_slot)
 	old : RowsStorage(RowsTestItem)
@@ -2520,8 +2518,8 @@ expect {
 	first_slot = rows_slot_pack(1, 1)
 	saturated_slot = rows_slot_pack(4, max_generation)
 	chunks : RowsSlotDirectory(List(RowsSlotCell(RowsTestItem)))
-	chunks = rows_slot_directory_insert(
-		rows_slot_directory_empty(),
+	chunks = RowsSlotDirectory.insert(
+		RowsSlotDirectory.empty(),
 		0,
 		[
 			RowsSlotLive({ generation: 1, key: "a", item: rows_test_item("a", 1) }),
@@ -2589,7 +2587,7 @@ expect {
 	cleared.len() == 0
 		and Rows.platform_transition_kind(cleared) == Snapshot
 			and storage.slots.next_index == 1
-				and rows_slot_directory_is_empty(storage.slots.chunks)
+				and RowsSlotDirectory.is_empty(storage.slots.chunks)
 					and storage.slots.free.is_empty()
 }
 
@@ -2603,7 +2601,7 @@ expect {
 	exhausted_storage = {
 		..initial_storage,
 		order: rows_order_empty(),
-		slots: { chunks: rows_slot_directory_empty(), free: RowsIdStack.empty(), next_index: rows_slot_base },
+		slots: { chunks: RowsSlotDirectory.empty(), free: RowsIdStack.empty(), next_index: rows_slot_base },
 		key_index: RowsKeyIndex.empty(),
 		snapshot_key_bytes: 0,
 	}
@@ -2900,7 +2898,7 @@ expect {
 	}
 	Rows(storage) = $rows
 
-	storage.slots.next_index == 3 and rows_slot_directory_len(storage.slots.chunks) == 1 and storage.order.nodes.len() <= 3 and storage.order.parents.len() <= 3
+	storage.slots.next_index == 3 and RowsSlotDirectory.len(storage.slots.chunks) == 1 and storage.order.nodes.len() <= 3 and storage.order.parents.len() <= 3
 }
 
 ## A 10k direct clear publishes one structural operation, retires every old
@@ -2936,7 +2934,7 @@ expect {
 				and initial_storage.order.slot_leaf.len() == 313
 					and initial_storage.order.next_node == 325
 						and initial_storage.order.free_nodes.is_empty()
-							and rows_slot_directory_len(initial_storage.slots.chunks) == 313
+							and RowsSlotDirectory.len(initial_storage.slots.chunks) == 313
 								and initial_storage.key_index.len() == 10000
 									and Rows.get(initial, 0)?.value() == 0
 										and Rows.get(initial, 9999)?.value() == 9999
@@ -3015,17 +3013,17 @@ expect {
 ## The slot directory shares untouched chunks across multiple forks and grows
 ## across both leaf and directory boundaries without changing retained values.
 expect {
-	var $directory = rows_slot_directory_empty()
+	var $directory = RowsSlotDirectory.empty()
 	var $key = 0.U64
 	while $key < 3125 {
-		$directory = rows_slot_directory_insert($directory, $key, [$key])
+		$directory = RowsSlotDirectory.insert($directory, $key, [$key])
 		$key = $key + 1
 	}
 	old = $directory
-	left = rows_slot_directory_insert(old, 31, [9999])
-	right = rows_slot_directory_insert(old, 1024, [8888])
-	grown = rows_slot_directory_insert(left, 3125, [3125])
-	rows_slot_directory_get(old, 31)? == [31] and rows_slot_directory_get(left, 31)? == [9999] and rows_slot_directory_get(right, 31)? == [31] and rows_slot_directory_get(old, 1024)? == [1024] and rows_slot_directory_get(right, 1024)? == [8888] and rows_slot_directory_get(grown, 3125)? == [3125] and rows_slot_directory_len(old) == 3125 and rows_slot_directory_len(grown) == 3126
+	left = RowsSlotDirectory.insert(old, 31, [9999])
+	right = RowsSlotDirectory.insert(old, 1024, [8888])
+	grown = RowsSlotDirectory.insert(left, 3125, [3125])
+	RowsSlotDirectory.get(old, 31)? == [31] and RowsSlotDirectory.get(left, 31)? == [9999] and RowsSlotDirectory.get(right, 31)? == [31] and RowsSlotDirectory.get(old, 1024)? == [1024] and RowsSlotDirectory.get(right, 1024)? == [8888] and RowsSlotDirectory.get(grown, 3125)? == [3125] and RowsSlotDirectory.len(old) == 3125 and RowsSlotDirectory.len(grown) == 3126
 }
 
 ## A retained large collection survives edits that split leaves and branches,
@@ -3089,16 +3087,16 @@ expect {
 ## Sparse patch directories distinguish absent cells from stored values, even
 ## at the highest representable chunk ID. Forks retain their independent cells.
 expect {
-	empty = rows_slot_directory_empty()
-	high = rows_slot_directory_insert(empty, 134217727, [7.U64])
-	low = rows_slot_directory_insert(high, 0, [1])
-	middle = rows_slot_directory_insert(low, 1025, [2])
-	fork = rows_slot_directory_insert(middle, 134217727, [8])
-	missing = match rows_slot_directory_get(middle, 1024) {
+	empty = RowsSlotDirectory.empty()
+	high = RowsSlotDirectory.insert(empty, 134217727, [7.U64])
+	low = RowsSlotDirectory.insert(high, 0, [1])
+	middle = RowsSlotDirectory.insert(low, 1025, [2])
+	fork = RowsSlotDirectory.insert(middle, 134217727, [8])
+	missing = match RowsSlotDirectory.get(middle, 1024) {
 		Err(Missing) => True
 		_ => False
 	}
-	missing and rows_slot_directory_is_empty(empty) and rows_slot_directory_len(high) == 1 and rows_slot_directory_len(middle) == 3 and rows_slot_directory_len(fork) == 3 and rows_slot_directory_get(middle, 134217727)? == [7] and rows_slot_directory_get(fork, 134217727)? == [8] and rows_slot_directory_get(middle, 0)? == [1] and rows_slot_directory_get(middle, 1025)? == [2]
+	missing and RowsSlotDirectory.is_empty(empty) and RowsSlotDirectory.len(high) == 1 and RowsSlotDirectory.len(middle) == 3 and RowsSlotDirectory.len(fork) == 3 and RowsSlotDirectory.get(middle, 134217727)? == [7] and RowsSlotDirectory.get(fork, 134217727)? == [8] and RowsSlotDirectory.get(middle, 0)? == [1] and RowsSlotDirectory.get(middle, 1025)? == [2]
 }
 
 ## Exact key lookup distinguishes prefixes and canonically equivalent Unicode

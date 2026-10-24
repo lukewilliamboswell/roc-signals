@@ -539,9 +539,11 @@ in CI and the zero target in Success Criteria Tier 2 is enforced, not hoped.
 **Priority: P2** — Resolve upstream limitations when they obstruct a
 representative workflow.
 
-Several compiler bugs have reproductions but no upstream issue. The variable
-Boolean inference case ships `repro/var-bool-inference/`; the `List.sort_with`
-first-element pivot case needs only a short write-up.
+Several compiler bugs have reproductions but no upstream issue. The Wasm dev
+backend case, where a `Ui.when` never switches back to a branch it left, ships
+`repro/wasm-dev-when-reselect/`; the `List.sort_with` first-element pivot case
+needs only a short write-up. The variable Boolean inference case no longer
+reproduces on nightly-2026-10-23.
 
 Two method-constraint failures share the "two identical printed types" signature and may share a root
 cause in method-constraint solving; worth mentioning that in whichever is filed
