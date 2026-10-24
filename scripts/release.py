@@ -94,7 +94,7 @@ def zip_entry(archive: zipfile.ZipFile, name: str, data: bytes) -> None:
 
 def write_examples(path: Path, pin: str, web_url: str) -> None:
     with zipfile.ZipFile(path, "x") as archive:
-        runtime = bundle_browser.runtime_files(("example_tasks.mjs", "service_ops_charts.mjs"))
+        runtime = bundle_browser.runtime_files(("signals.mjs", "example_tasks.mjs", "service_ops_charts.mjs"))
         for name, data in sorted(runtime.items()):
             zip_entry(archive, "browser/" + name, data)
         for example in web_examples():
@@ -139,7 +139,7 @@ def read_manifest(directory: Path) -> dict:
             or not re.fullmatch(r"[0-9a-f]{40}", manifest.get("source_sha", ""))):
         raise ValueError("unsupported platform release manifest")
     if manifest.get("max_transitive_mb") != MAX_TRANSITIVE_MB:
-        raise ValueError("release package budget differs from the reviewed RC policy")
+        raise ValueError("release package budget differs from the reviewed release policy")
     if manifest.get("provenance") != {
         "signer_workflow": REPOSITORY + "/.github/workflows/release.yml",
         "source_ref": "refs/heads/main",
@@ -286,18 +286,39 @@ def prepare(version: str, directory: Path, roc: str, web_host_lock: Path) -> Non
         },
     }
     (directory / MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    assets = "\n".join(
-        f"- {kind}: {item['url']} — SHA-256 `{item['sha256']}`"
-        for kind, item in manifest["assets"].items()
-    )
     (directory / "release-notes.md").write_text(
-        notes.read_text(encoding="utf-8").rstrip() + "\n\n## Tested assets\n\n" + assets + "\n\n"
-        + f"Example builds use `--max-transitive-mb={MAX_TRANSITIVE_MB}` for this fat RC.\n",
+        notes.read_text(encoding="utf-8").rstrip() + "\n\n" + provenance_notes(manifest),
         encoding="utf-8",
     )
     read_manifest(directory)
     if clean_source_sha() != source_sha:
         raise ValueError("source changed during release preparation")
+
+
+def provenance_notes(manifest: dict) -> str:
+    """Render the identities a reader needs to audit this release.
+
+    The hand-written notes describe the upgrade; this appendix records what was
+    tested: the source revision, the compiler pin, each published asset's
+    SHA-256, and every locked host and linker input by release and digest.
+    """
+    lines = [
+        "## Tested assets",
+        "",
+        *(f"- {kind}: {item['url']} — SHA-256 `{item['sha256']}`"
+          for kind, item in manifest["assets"].items()),
+        "",
+        f"Source revision `{manifest['source_sha']}`, built and tested with Roc "
+        f"`{manifest['compiler_pin']}`. Example builds use "
+        f"`--max-transitive-mb={MAX_TRANSITIVE_MB}`.",
+        "",
+        "## Locked inputs",
+        "",
+    ]
+    for lock in manifest["inputs"].values():
+        for identity, entry in sorted(lock["artifacts"].items()):
+            lines.append(f"- {identity}: `{entry['release']}` {entry['asset']} — SHA-256 `{entry['sha256']}`")
+    return "\n".join(lines) + "\n"
 
 
 def check(directory: Path, roc: str) -> None:
@@ -340,14 +361,19 @@ def publish(directory: Path) -> None:
     subprocess.run([
         "gh", "release", "create", tag, *map(str, assets), "--repo", REPOSITORY,
         "--target", manifest["source_sha"], "--title", f"Roc Signals {tag}",
-        "--notes-file", directory / "release-notes.md", "--prerelease", "--latest=false",
+        "--notes-file", directory / "release-notes.md", *channel_flags(tag),
     ], check=True)
+
+
+def channel_flags(tag: str) -> list[str]:
+    """Mark a SemVer prerelease as such and keep it off "latest"; a final release becomes latest."""
+    return ["--prerelease", "--latest=false"] if "-" in tag else ["--latest"]
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("prepare", "check", "verify", "publish"))
-    parser.add_argument("--version", default="0.2.0-rc3")
+    parser.add_argument("--version", default="0.2.0")
     parser.add_argument("--directory", type=Path, default=ROOT / ".release-out")
     parser.add_argument("--roc-bin", default=os.environ.get("ROC_BIN") or os.environ.get("ROC") or "roc")
     parser.add_argument("--web-host-lock", type=Path, default=ROOT / "web-host.lock.json")

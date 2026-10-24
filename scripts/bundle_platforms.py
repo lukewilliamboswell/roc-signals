@@ -103,6 +103,12 @@ def main():
             if (ROOT / name).is_file():
                 shutil.copyfile(ROOT / name, stage / name)
         files = sorted(str(p.relative_to(stage)) for p in stage.rglob('*') if p.is_file())
+        # TODO(upstream): drop this reordering once Linux `roc bundle` resolves
+        # hosted declarations independently of argument order
+        # (https://github.com/roc-lang/roc/issues/12565); listing the platform
+        # root after its hosted type modules fails there.
+        files.remove('main.roc')
+        files.insert(0, 'main.roc')
         result = subprocess.run([roc, 'bundle', *files, '--output-dir', str(output)], cwd=stage, text=True, stdout=subprocess.PIPE, check=True)
         print(result.stdout, end='', flush=True)
         created = next((line.split('Created:', 1)[1].strip() for line in result.stdout.splitlines() if 'Created:' in line), None)
