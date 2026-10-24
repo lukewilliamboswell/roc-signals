@@ -1,6 +1,6 @@
 # `--target=wasm32 --opt=dev` does not remount a `Ui.when` branch it left
 
-Upstream: not filed (draft issue in the pull request that added this directory).
+Upstream: [roc-lang/roc#12560](https://github.com/roc-lang/roc/issues/12560).
 
 Reproduced with Roc `nightly-2026-10-23-18478ff` on macOS arm64.
 
@@ -35,7 +35,8 @@ browser contract: its "Toggle actions" button hides and then re-shows a
 `Ui.when` branch. Change the wasm suite's `--opt=size` to `--opt=dev` in
 `scripts/test.py` (`build_wasm_apps`) and run `python3 scripts/test.py wasm`;
 `event-actions` fails with `missing action button: Append snapshot` and the
-rendered text ends in `Actions hidden`.
+rendered text ends in `Actions hidden`, and `svg` fails with `same-name
+namespace change reused the wrong rendered node`.
 
 The reproduction still depends on this platform; it has not been reduced to a
 platform-free program.

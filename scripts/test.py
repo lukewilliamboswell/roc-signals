@@ -409,9 +409,10 @@ def build_wasm_apps(roc_bin: str, examples: tuple[Example, ...], ledger: known_f
                 continue
             output = wasm_dir / f"{example.slug}.wasm"
             try:
-                # TODO(upstream): link the compiler issue and use --opt=dev once
-                # that backend remounts a Ui.when branch it left on wasm32; see
-                # repro/wasm-dev-when-reselect (event-actions fails under it).
+                # TODO(upstream): use --opt=dev once the wasm32 dev backend
+                # re-selects a Ui.when branch it left
+                # (https://github.com/roc-lang/roc/issues/12560; see
+                # repro/wasm-dev-when-reselect; event-actions and svg fail under it).
                 run(
                     [
                         roc_bin,
