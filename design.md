@@ -2793,6 +2793,9 @@ The wasm host emits dynamic records for metadata text attributes
 text attributes from `Html.attr`, `Html.attr_s`, and `Html.attr_maybe_s`. The
 Roc descriptor makes the custom path explicit with `Node.field_custom` plus a
 `name` field on text attrs; fixed text fields must carry an empty name.
+The fixed text and bool field ids, the reserved custom ids, and each field's
+browser opcode have one authority, `protocol/native-protocol.json`; the engine
+and command encoder read its generated Zig tables rather than restating them.
 `SetText`, `SetValue`, bool fields, fixed click/input/check/pointer event binds,
 timers remain fixed records when they can be represented without
 policy/delivery/payload expansion. General named events, and fixed events that
