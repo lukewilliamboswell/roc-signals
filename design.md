@@ -507,8 +507,12 @@ as reflexivity when a supported value's comparison does not provide them.
 Roc cannot observe generation identity, because every hosted function is
 effectful (roc-lang/roc#11387), and content equality would cost O(rows). A
 `Rows` value, or a record containing one, therefore always propagates; `Ui.each`
-still authenticates the generation in the engine and splices only changed rows,
-and republishing the committed generation is an empty delta.
+still authenticates the generation in the engine and splices only changed rows.
+The engine owns generation identity: when a changed items value describes the
+generation its site already committed, an O(1) description settles it and the
+site drops out of the structural change set, so a republished generation costs
+no row work. A re-collected nested site that receives its committed generation
+reconciles it as an empty delta.
 `Rows.content_is_eq` supplies the explicit content operation. Generation
 identity is not application identity and must not be serialized as a key or
 used to encode action occurrences.
