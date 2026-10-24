@@ -1,4 +1,4 @@
-app [main] { roc: "nightly-2026-10-23-18478ff", pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0-rc2/AvyUxjkQaEPU7NKikDiz3U48XGMX1fpFgw2bppV87qLA.tar.zst" }
+app [main] { roc: "nightly-2026-10-23-18478ff", pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0/HVuoh24a8qDGufPf1Q2PxUDdNiSRJfgZiSDgDPz4cTqZ.tar.zst" }
 
 import Query
 import pf.Elem
