@@ -187,6 +187,16 @@ class ReleaseTests(unittest.TestCase):
                         self.assertRaisesRegex(ValueError, "explicit main"):
                     release.require_publish_context(manifest)
 
+    def test_example_archive_ships_the_complete_browser_runtime(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / release.EXAMPLES
+            with patch.object(release, "web_examples", return_value=()):
+                release.write_examples(archive, "nightly-2026-10-23-18478ff", "https://release/Web.tar.zst")
+            with zipfile.ZipFile(archive) as packed:
+                names = set(packed.namelist())
+        for name in release.bundle_browser.runtime_files():
+            self.assertIn("browser/" + name, names)
+
     def test_only_a_semver_prerelease_is_published_as_a_prerelease(self):
         self.assertEqual(release.channel_flags("0.2.0-rc3"), ["--prerelease", "--latest=false"])
         self.assertEqual(release.channel_flags("0.2.0"), ["--latest"])

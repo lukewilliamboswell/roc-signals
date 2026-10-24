@@ -94,7 +94,7 @@ def zip_entry(archive: zipfile.ZipFile, name: str, data: bytes) -> None:
 
 def write_examples(path: Path, pin: str, web_url: str) -> None:
     with zipfile.ZipFile(path, "x") as archive:
-        runtime = bundle_browser.runtime_files(("example_tasks.mjs", "service_ops_charts.mjs"))
+        runtime = bundle_browser.runtime_files(("signals.mjs", "example_tasks.mjs", "service_ops_charts.mjs"))
         for name, data in sorted(runtime.items()):
             zip_entry(archive, "browser/" + name, data)
         for example in web_examples():
