@@ -43,9 +43,9 @@ The platform architecture and host boundary notes live in [design.md](design.md)
 
 ## Use a release
 
-Download `signals-starters.zip` from the [web platform RC, 0.2.0-rc2](https://github.com/lukewilliamboswell/roc-signals/releases/tag/0.2.0-rc2).
-It contains the complete examples, native specs, browser runtime, and direct Roc
-build commands. Install the exact compiler named in the application's `roc`
+Download `signals-examples.zip` from [Roc Signals 0.2.0](https://github.com/lukewilliamboswell/roc-signals/releases/tag/0.2.0).
+It contains the complete examples, their native specs, and the matching browser
+runtime under `browser/`. Install the exact compiler named in the application's `roc`
 header. A platform archive already contains its host binaries; users need no
 Zig build or repository checkout.
 

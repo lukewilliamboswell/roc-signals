@@ -38,10 +38,10 @@ pins; [Contributing](@/docs/contributing.md#prerequisites) explains the setup.
 
 ## Get the platform
 
-For an app outside this repository, download `signals-starters.zip` from the
+For an app outside this repository, download `signals-examples.zip` from the
 [platform releases](https://github.com/lukewilliamboswell/roc-signals/releases).
-It contains complete applications, native specs, the matching browser runtime,
-and a README with direct Roc build commands. Its application headers name
+It contains complete applications, their native specs, and the matching browser
+runtime under `browser/`. Its application headers name
 immutable release URLs; no platform checkout, Zig build, or Python test wrapper
 is needed.
 
@@ -247,10 +247,10 @@ browser runtime files listed below:
 
 Copy `signals.mjs`, `wasm_memory_views.mjs`, and `controlled_input_policy.mjs`
 from `www/static/` next to your `.wasm`, preserving their relative paths.
-Alternatively, run `python3 scripts/bundle_browser.py` and extract the resulting
-`.test-out/signals-browser.zip` there. New releases include this browser archive
-alongside the platform bundle. It contains the runtime's imported modules and a
-manifest recording the compiler pin and file digests.
+Alternatively, take them from `browser/` in a release's `signals-examples.zip`,
+or run `python3 scripts/bundle_browser.py` and extract the resulting
+`.test-out/signals-browser.zip`, which adds a manifest recording the compiler
+pin and file digests.
 
 Serve these files over HTTP, for example with `python3 -m http.server 8000`
 from their directory, then open `http://localhost:8000`. Opening the HTML as a
