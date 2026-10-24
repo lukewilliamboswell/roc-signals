@@ -5,66 +5,66 @@
       "name": "web-host",
       "target": "x64mac",
       "repository": "lukewilliamboswell/roc-signals",
-      "release": "deps-web-hosts-20260910.1",
+      "release": "deps-web-hosts-20261024.1",
       "asset": "web-host-x64mac.tar",
-      "sha256": "aa1afc695ef76408738bd8cb4fc98ddf88ba2c0b6620122ff40a2ca90ec340c7",
-      "size": 1781760,
-      "source_sha": "e209fe4b62541fba5388a29c6a7735863b2ff073",
+      "sha256": "b40a70e4da8e4d3553a16f5ec93e78930cb9416fea3a1830cdfdfe964b38d009",
+      "size": 1720320,
+      "source_sha": "c38f25e33fd77a59e32e03478aeb1c00db93a1ed",
       "source_ref": "refs/heads/main",
       "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/web-hosts.yml",
-      "input_fingerprint": "88b4170c35bf336b23e99aa10340858fc00c8058801041a2aceb0285a8501e5c"
+      "input_fingerprint": "b1450710ca0f071d97740edba8e305b8363b5c6a88da81793deb84cedf52b251"
     },
     "web-host-arm64mac": {
       "name": "web-host",
       "target": "arm64mac",
       "repository": "lukewilliamboswell/roc-signals",
-      "release": "deps-web-hosts-20260910.1",
+      "release": "deps-web-hosts-20261024.1",
       "asset": "web-host-arm64mac.tar",
-      "sha256": "5ffdee7788036cc359581f6815bb93137c56ba9be7daa24b8eb068cbd65ac159",
-      "size": 2007040,
-      "source_sha": "e209fe4b62541fba5388a29c6a7735863b2ff073",
+      "sha256": "febe99c8241fe3f059d05c70d89b6196497141b7f19f4b56dae0335dc81af3c4",
+      "size": 1955840,
+      "source_sha": "c38f25e33fd77a59e32e03478aeb1c00db93a1ed",
       "source_ref": "refs/heads/main",
       "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/web-hosts.yml",
-      "input_fingerprint": "88b4170c35bf336b23e99aa10340858fc00c8058801041a2aceb0285a8501e5c"
+      "input_fingerprint": "b1450710ca0f071d97740edba8e305b8363b5c6a88da81793deb84cedf52b251"
     },
     "web-host-x64musl": {
       "name": "web-host",
       "target": "x64musl",
       "repository": "lukewilliamboswell/roc-signals",
-      "release": "deps-web-hosts-20260910.1",
+      "release": "deps-web-hosts-20261024.1",
       "asset": "web-host-x64musl.tar",
-      "sha256": "eda7047f895dc8076873ea86b6f6827e0bf04692e059edcf08490ea0462211a9",
-      "size": 2549760,
-      "source_sha": "e209fe4b62541fba5388a29c6a7735863b2ff073",
+      "sha256": "97a43dad8117b8076fa39324f6872cbcb58cd05ff0fa59f2e378869271aa95eb",
+      "size": 2478080,
+      "source_sha": "c38f25e33fd77a59e32e03478aeb1c00db93a1ed",
       "source_ref": "refs/heads/main",
       "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/web-hosts.yml",
-      "input_fingerprint": "88b4170c35bf336b23e99aa10340858fc00c8058801041a2aceb0285a8501e5c"
+      "input_fingerprint": "b1450710ca0f071d97740edba8e305b8363b5c6a88da81793deb84cedf52b251"
     },
     "web-host-arm64musl": {
       "name": "web-host",
       "target": "arm64musl",
       "repository": "lukewilliamboswell/roc-signals",
-      "release": "deps-web-hosts-20260910.1",
+      "release": "deps-web-hosts-20261024.1",
       "asset": "web-host-arm64musl.tar",
-      "sha256": "7d9a24479f8daad9ee11118e8f2f2dc136470eb6d784253ef5707bd8f5198425",
-      "size": 3379200,
-      "source_sha": "e209fe4b62541fba5388a29c6a7735863b2ff073",
+      "sha256": "c970b2635bed66a60234d4021a16b44220fe89aab6876f51b481d098c2525d80",
+      "size": 3256320,
+      "source_sha": "c38f25e33fd77a59e32e03478aeb1c00db93a1ed",
       "source_ref": "refs/heads/main",
       "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/web-hosts.yml",
-      "input_fingerprint": "88b4170c35bf336b23e99aa10340858fc00c8058801041a2aceb0285a8501e5c"
+      "input_fingerprint": "b1450710ca0f071d97740edba8e305b8363b5c6a88da81793deb84cedf52b251"
     },
     "web-host-wasm32": {
       "name": "web-host",
       "target": "wasm32",
       "repository": "lukewilliamboswell/roc-signals",
-      "release": "deps-web-hosts-20260910.1",
+      "release": "deps-web-hosts-20261024.1",
       "asset": "web-host-wasm32.tar",
-      "sha256": "6c35f7a8a431b26277baaf813289612cecb134ece229712aeed4a8c4dfdcfb45",
-      "size": 1167360,
-      "source_sha": "e209fe4b62541fba5388a29c6a7735863b2ff073",
+      "sha256": "8f414e113a5e6f6660a3a14707f5ca60b788088cfc9806a2b42c2b9c142fe72c",
+      "size": 1126400,
+      "source_sha": "c38f25e33fd77a59e32e03478aeb1c00db93a1ed",
       "source_ref": "refs/heads/main",
       "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/web-hosts.yml",
-      "input_fingerprint": "88b4170c35bf336b23e99aa10340858fc00c8058801041a2aceb0285a8501e5c"
+      "input_fingerprint": "b1450710ca0f071d97740edba8e305b8363b5c6a88da81793deb84cedf52b251"
     }
   }
 }
