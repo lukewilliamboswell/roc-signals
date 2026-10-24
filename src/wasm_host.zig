@@ -55,7 +55,6 @@ const WasmCtx = struct {
     pub fn prepareEffect(_: Handle, _: *abi.RocHost, effect: abi.RocErasedCallable, snapshot: HostValue, cap: HostValueCapability) abi.RocErasedCallable {
         return abi.roc_prepare_effect(effect, snapshot.toRaw(), cap);
     }
-    pub const supports_native_shortcuts = false;
     pub const Handle = WasmCtx;
     pub const RegistryOps = hv.RegistryOps();
     pub const Metrics = if (build_options.wasm_benchmark) engine.RuntimeMetrics else engine.NoMetrics;
@@ -199,7 +198,6 @@ const WasmSink = struct {
 
     /// Applies an engine-decided text field value to one render node.
     pub fn applyTextField(_: WasmSink, elem_id: ids.ElemId, field: RenderTextField, value: []const u8) void {
-        if (field.isNative()) failHostWithFmt("native presentation is unsupported by the browser host", .{});
         appendStringCommand(render.textSetOp(field), toU32(elem_id.raw()), value);
     }
 
@@ -215,7 +213,6 @@ const WasmSink = struct {
 
     /// Clears an engine-decided text field from one render node.
     pub fn clearTextField(_: WasmSink, elem_id: ids.ElemId, field: RenderTextField) void {
-        if (field.isNative()) failHostWithFmt("native presentation is unsupported by the browser host", .{});
         appendStringCommand(render.textSetOp(field), toU32(elem_id.raw()), "");
     }
 
@@ -231,7 +228,6 @@ const WasmSink = struct {
 
     /// Publishes a validated canonical event binding selected by the engine.
     pub fn bindEvent(_: WasmSink, elem_id: ids.ElemId, key: EventBindingKey, binding: EventBinding) void {
-        if (binding.key_chord != null) failHostWithFmt("native keyboard shortcuts are unsupported by the browser host", .{});
         appendEventBindCommand(.{ .elem_id = elem_id, .key = key, .binding = binding });
     }
 
@@ -806,7 +802,6 @@ fn appendEventBindCommand(command: EventBindCommand) void {
             }
         },
         .named => |name| appendDynamicBindEvent(elem_id, name, toU32(binding.event_id.raw()), binding.policy.toWireBits(), binding.delivery.toWire(), binding.payload_descriptor),
-        .filtered => failHostWith("native keyboard shortcuts are unsupported by the browser host"),
     }
 }
 
@@ -815,7 +810,6 @@ fn appendEventClearCommand(command: EventClearCommand) void {
     switch (command.key) {
         .fixed => |kind| appendCommand(.clear_event, elem_id, toU32(@intFromEnum(kind)), 0, 0, 0),
         .named => |name| appendDynamicClearEvent(elem_id, name),
-        .filtered => failHostWith("native keyboard shortcuts are unsupported by the browser host"),
     }
 }
 
@@ -836,7 +830,6 @@ fn appendDynamicClearEvent(elem_id: u32, name: []const u8) void {
 }
 
 fn appendBoolFieldCommand(field: RenderBoolField, elem_id: u32, value: bool) void {
-    if (field.isNative()) failHostWithFmt("native selection is unsupported by the browser host", .{});
     appendCommand(render.boolSetOp(field), elem_id, @intFromBool(value), 0, 0, 0);
 }
 

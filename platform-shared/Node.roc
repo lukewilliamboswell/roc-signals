@@ -144,12 +144,7 @@ Node := [].{
 		On(EventBinding),
 	]
 
-	## An exact native keyboard chord. The named key and all four modifiers are
-	## explicit descriptor data; a host never derives them from control labels.
-	KeyChord : { key : Str, control : Bool, shift : Bool, alt : Bool, meta : Bool }
-
-	## Event binding descriptor attached to an element. A native key filter owns
-	## one unit keydown route; its event and callable share the element's scope.
-	## Hosts without this capability reject the filter before publication.
-	EventBinding := { kind : FixedEventKind, msg : Handler, policy : EventPolicy, delivery : EventDelivery, name : Str, key_chord : [None, Some(KeyChord)] }
+	## Event binding descriptor attached to an element. Its event and callable
+	## share the element's scope.
+	EventBinding := { kind : FixedEventKind, msg : Handler, policy : EventPolicy, delivery : EventDelivery, name : Str }
 }

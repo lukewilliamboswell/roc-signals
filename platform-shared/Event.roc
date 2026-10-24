@@ -11,7 +11,4 @@ Event := [].{
 	## Application code builds handlers and hands them to controls; it never
 	## inspects one.
 	Handler : Node.Handler
-
-	## An exact key plus every modifier, matched as a whole by `shortcuts`.
-	KeyChord : Node.KeyChord
 }

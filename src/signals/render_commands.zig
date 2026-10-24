@@ -1190,28 +1190,20 @@ pub const native_protocol = @import("native_protocol_gen.zig");
 pub const TextField = native_protocol.TextField;
 pub const BoolField = native_protocol.BoolField;
 
-/// Returns the browser opcode for a web text scalar. Native presentation has
-/// no browser encoding and must be rejected before wire preparation. The
-/// mapping comes from the generated protocol table, never a local literal.
+/// Returns the browser opcode that sets a text scalar. The mapping comes from
+/// the generated field table, never a local literal, and is resolved at
+/// compile time so a table naming an unknown opcode fails the build.
 pub fn textSetOp(field: TextField) Op {
     return switch (field) {
-        inline else => |comptime_field| blk: {
-            const name = comptime comptime_field.browserOpName();
-            if (name == null) @panic("native text metadata has no browser opcode");
-            break :blk @field(Op, name.?);
-        },
+        inline else => |comptime_field| @field(Op, comptime_field.browserOpName()),
     };
 }
 
-/// Returns the browser opcode for a web boolean. Native selection is kept in
-/// the native publication and may never enter a browser command batch.
+/// Returns the browser opcode that sets a boolean scalar, resolved from the
+/// generated field table exactly as `textSetOp` is.
 pub fn boolSetOp(field: BoolField) Op {
     return switch (field) {
-        inline else => |comptime_field| blk: {
-            const name = comptime comptime_field.browserOpName();
-            if (name == null) @panic("native boolean metadata has no browser opcode");
-            break :blk @field(Op, name.?);
-        },
+        inline else => |comptime_field| @field(Op, comptime_field.browserOpName()),
     };
 }
 
@@ -1324,10 +1316,9 @@ pub const Counts = struct {
         self.addOp(.move_before);
     }
 
-    /// Counts one changed scalar. Native presentation contributes a metadata
-    /// operation without claiming it has a browser opcode.
+    /// Counts one changed text scalar under the opcode that sets it.
     pub fn addTextField(self: *Counts, field: TextField) void {
-        if (field.isNative()) self.addOp(.extended) else self.addOp(textSetOp(field));
+        self.addOp(textSetOp(field));
     }
 
     /// Appends text attr to the prepared, unpublished command batch.
@@ -1335,9 +1326,9 @@ pub const Counts = struct {
         self.addOp(.extended);
     }
 
-    /// Counts one changed boolean, including native selection as metadata.
+    /// Counts one changed boolean scalar under the opcode that sets it.
     pub fn addBoolField(self: *Counts, field: BoolField) void {
-        if (field.isNative()) self.addOp(.extended) else self.addOp(boolSetOp(field));
+        self.addOp(boolSetOp(field));
     }
 
     /// Appends event binding to the prepared, unpublished command batch.
@@ -1604,18 +1595,6 @@ fn readTestU32(bytes: []const u8, cursor: *usize) u32 {
     const value = std.mem.readInt(u32, bytes[cursor.*..][0..@sizeOf(u32)], .little);
     cursor.* += @sizeOf(u32);
     return value;
-}
-
-test "every native scalar counts as metadata without a browser opcode" {
-    var counts: Counts = .{};
-    inline for (std.meta.tags(TextField)) |field| {
-        if (field.isNative()) counts.addTextField(field);
-    }
-    inline for (std.meta.tags(BoolField)) |field| {
-        if (field.isNative()) counts.addBoolField(field);
-    }
-    try std.testing.expectEqual(@as(u64, native_protocol.native_text_field_count + native_protocol.native_bool_field_count), counts.total);
-    try std.testing.expectEqual(counts.total, counts.set_metadata);
 }
 
 test "acknowledgement bounds both banks and final drain releases all storage" {

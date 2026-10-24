@@ -85,35 +85,14 @@ pub fn build(b: *std.Build) void {
     const run_check_test_wiring_step = b.step("run-check-test-wiring", "Check Zig test wiring");
     const run_fmt_zig_step = b.step("run-fmt-zig", "Format Zig code");
     const run_test_zig_step = b.step("run-test-zig", "Run Zig unit tests");
-    const spec_manifest_step = b.step("spec-manifest", "Regenerate the reflected SCM step manifest");
     const run_test_browser_step = b.step("run-test-browser", "Run browser JavaScript contract tests");
     const build_coverage_tests_step = b.step("build-coverage-tests", "Build native host coverage test binaries");
     const run_coverage_native_host_step = b.step("run-coverage-native-host", "Run native host and signals tests with kcov coverage");
     const test_step = b.step("test", "Run Zig-only checks and tests");
     const build_fuzz_step = b.step("build-fuzz", "Build every fuzz target and its repro executable");
 
-    // Experimental native shared-library boundary; never included in release hosts.
-    const gpui_options = b.addOptions();
-    gpui_options.addOption(bool, "metrics", true);
-    gpui_options.addOption(bool, "fuzz_fixtures", false);
-    gpui_options.addOption(bool, "gpui_spike", true);
-    // Windows host and engine share the GNU ABI. Independently released CRT
-    // inputs supply runtime helpers during Roc's final application link.
-    const gpui_windows = native_target.result.os.tag == .windows;
-    const gpui_target = if (gpui_windows)
-        b.resolveTargetQuery(.{ .cpu_arch = native_target.result.cpu.arch, .os_tag = .windows, .abi = .gnu })
-    else
-        native_target;
-    // Ordinary GUI checks use Debug; the release builder explicitly requests
-    // ReleaseFast. Keep this target on the shared optimization selector.
-    const gpui_host = buildNativeHostLib(b, gpui_target, optimize, gpui_options.createModule(), true);
-    gpui_host.bundle_compiler_rt = !gpui_windows;
-    const gpui_install = b.addInstallFile(gpui_host.getEmittedBin(), "gui/libengine.a");
-    b.step("build-gui-engine", "Build the experimental GPUI native bridge").dependOn(&gpui_install.step);
-
     build_hosts_step.dependOn(&prepare_platforms.step);
     build_wasm_host_step.dependOn(&prepare_platforms.step);
-    gpui_install.step.dependOn(&prepare_platforms.step);
 
     const install_step = b.getInstallStep();
     install_step.dependOn(build_hosts_step);
@@ -172,15 +151,6 @@ pub fn build(b: *std.Build) void {
     });
     const run_host_test = b.addRunArtifact(host_test);
     if (b.args) |args| run_host_test.addArgs(args);
-
-    const manifest_test = b.addTest(.{
-        .name = "signals_spec_manifest",
-        .root_module = createNativeHostModule(b, native_target, optimize, build_options_module),
-        .filters = &.{"the published window steps match the committed manifest"},
-    });
-    const update_manifest = b.addRunArtifact(manifest_test);
-    update_manifest.setEnvironmentVariable("SIGNALS_UPDATE_SPEC_MANIFEST", "1");
-    spec_manifest_step.dependOn(&update_manifest.step);
 
     run_test_zig_step.dependOn(&run_shared_test.step);
     run_test_zig_step.dependOn(&run_host_test.step);
@@ -638,10 +608,7 @@ fn buildNativeHostLib(
         .linkage = .static,
         .root_module = createNativeHostModule(b, target, optimize, build_options),
     });
-    // Windows keeps its symbols for now: a spec that passes and then dies
-    // with an access violation at teardown is only diagnosable from the
-    // trace the fault handler prints, and a stripped host cannot print one.
-    host_lib.root_module.strip = optimize != .Debug and !profile and target.result.os.tag != .windows;
+    host_lib.root_module.strip = optimize != .Debug and !profile;
     host_lib.root_module.pic = true;
     host_lib.bundle_compiler_rt = true;
     host_lib.link_function_sections = true;

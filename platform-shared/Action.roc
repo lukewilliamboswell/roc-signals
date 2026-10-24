@@ -53,7 +53,7 @@ Action(a) := [Action(Node.Cmd)].{
 		Action(cmd) => cmd
 	}
 
-	## Bind an action to a unit event such as a click or a shortcut. `reads`
+	## Bind an action to a unit event such as a click. `reads`
 	## are snapshotted when the event fires; equal events remain separate
 	## occurrences, and a change in the reads alone never runs the action.
 	run : Signal(a), (a -> Action(a)) -> Node.Handler

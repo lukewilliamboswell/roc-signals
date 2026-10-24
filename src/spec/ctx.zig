@@ -7,7 +7,7 @@
 //! it. This module names the surface once. The required declarations are what
 //! every spec host provides; the optional ones come in capability groups, all
 //! or nothing, so a host cannot half-implement one and a step can ask
-//! `Ctx.capabilities.window` at compile time instead of `@hasDecl` scattered
+//! `Ctx.capabilities.environment` at compile time instead of `@hasDecl` scattered
 //! through the runner.
 
 const std = @import("std");
@@ -18,9 +18,7 @@ pub const Capabilities = struct {
     /// Browser-shaped environment: visibility, online state, storage areas
     /// and the document title.
     environment: bool = false,
-    /// A window whose closure the application may veto.
-    window: bool = false,
-    /// Scripted Files and HTTP responses for deterministic effect execution.
+    /// Scripted HTTP responses for deterministic effect execution.
     effect_fixtures: bool = false,
     /// Explicit inspection and execution of queued effect occurrences.
     manual_effects: bool = false,
@@ -34,21 +32,20 @@ pub const Capabilities = struct {
 
 /// The declarations every spec host provides.
 pub const required = [_][]const u8{
-    "fail",                       "writeStderr",       "allocator",
-    "findElementByLocator",       "elementById",       "countElementsByLocator",
-    "namedEvent",                 "shortcutEvent",     "fixedEventId",
-    "dispatchRocEvent",           "hostValueUnit",     "hostValueStr",
-    "hostValueBool",              "hostValueU8List",   "setElementValueIfChanged",
-    "setElementCheckedIfChanged", "focusElement",      "blurElement",
-    "beginComposition",           "endComposition",    "elementTextAttr",
-    "tickIntervalSource",         "navigateLocation",  "historyBack",
-    "historyForward",             "currentLocation",   "finishHostMetrics",
-    "lastRuntimeMetrics",         "cleanupEventCount", "activeIntervalRecordCountByPeriod",
+    "fail",                 "writeStderr",                       "allocator",
+    "findElementByLocator", "elementById",                       "countElementsByLocator",
+    "namedEvent",           "fixedEventId",                      "dispatchRocEvent",
+    "hostValueUnit",        "hostValueStr",                      "hostValueBool",
+    "hostValueU8List",      "setElementValueIfChanged",          "setElementCheckedIfChanged",
+    "focusElement",         "blurElement",                       "beginComposition",
+    "endComposition",       "elementTextAttr",                   "tickIntervalSource",
+    "navigateLocation",     "historyBack",                       "historyForward",
+    "currentLocation",      "finishHostMetrics",                 "lastRuntimeMetrics",
+    "cleanupEventCount",    "activeIntervalRecordCountByPeriod",
 };
 
 const environment_decls = [_][]const u8{ "setVisibility", "setOnline", "storageValue", "documentTitle" };
-const window_decls = [_][]const u8{ "requestWindowClose", "windowClosed" };
-const effect_fixture_decls = [_][]const u8{ "stubFileResult", "stubHttpResult" };
+const effect_fixture_decls = [_][]const u8{"stubHttpResult"};
 const manual_effect_decls = [_][]const u8{ "pendingEffectCount", "runSpecEffect" };
 const allocation_trace_decls = [_][]const u8{"traceAllocationCheckpoint"};
 const measured_decls = [_][]const u8{ "beginMeasurement", "endMeasurement" };
@@ -68,7 +65,6 @@ pub fn assertRunnerCtx(comptime Ctx: type) void {
         const caps: Capabilities = Ctx.capabilities;
         for (required) |name| requireFn(Ctx, name, "the spec runner");
         if (caps.environment) for (environment_decls) |name| requireFn(Ctx, name, "the environment capability");
-        if (caps.window) for (window_decls) |name| requireFn(Ctx, name, "the window capability");
         if (caps.effect_fixtures) for (effect_fixture_decls) |name| requireFn(Ctx, name, "the effect_fixtures capability");
         if (caps.manual_effects) for (manual_effect_decls) |name| requireFn(Ctx, name, "the manual_effects capability");
         if (caps.allocation_trace) for (allocation_trace_decls) |name| requireFn(Ctx, name, "the allocation_trace capability");
@@ -93,16 +89,14 @@ pub fn has(comptime Ctx: type, comptime capability: std.meta.FieldEnum(Capabilit
 
 test "a capability is all or nothing and an absent declaration is named" {
     const Complete = struct {
-        pub const capabilities: Capabilities = .{ .window = true };
-        /// Stands in for a host's close request.
-        pub fn requestWindowClose() void {}
-        /// Stands in for a host's closed-state read.
-        pub fn windowClosed() bool {
-            return false;
-        }
+        pub const capabilities: Capabilities = .{ .measured = true };
+        /// Stands in for a host's measurement start.
+        pub fn beginMeasurement() void {}
+        /// Stands in for a host's measurement end.
+        pub fn endMeasurement() void {}
     };
-    try std.testing.expect(has(Complete, .window));
+    try std.testing.expect(has(Complete, .measured));
     try std.testing.expect(!has(Complete, .environment));
     const Bare = struct {};
-    try std.testing.expect(!has(Bare, .window));
+    try std.testing.expect(!has(Bare, .measured));
 }
