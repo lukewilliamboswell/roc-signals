@@ -1,4 +1,4 @@
-app [main] { pf: platform "../../../platform-web/main.roc", roc: "nightly-2026-10-23-18478ff" }
+app [main] { pf: platform "../../../platform-web/main.roc", roc: "nightly-2026-10-31-f7bef6b" }
 
 import pf.Elem
 import pf.Html
