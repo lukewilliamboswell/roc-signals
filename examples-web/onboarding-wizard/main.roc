@@ -1,4 +1,4 @@
-app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0/HVuoh24a8qDGufPf1Q2PxUDdNiSRJfgZiSDgDPz4cTqZ.tar.zst", roc: "nightly-2026-10-23-18478ff" }
+app [main] { pf: platform "https://github.com/lukewilliamboswell/roc-signals/releases/download/0.2.0/HVuoh24a8qDGufPf1Q2PxUDdNiSRJfgZiSDgDPz4cTqZ.tar.zst", roc: "nightly-2026-10-31-f7bef6b" }
 
 ## Onboarding Wizard — four steps, eight state handles, zero stored validation.
 ##

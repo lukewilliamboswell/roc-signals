@@ -1,6 +1,6 @@
 app [main] {
 	pf: platform "../../../platform-web/main.roc",
-	roc: "nightly-2026-10-23-18478ff",
+	roc: "nightly-2026-10-31-f7bef6b",
 	rand: "https://github.com/kili-ilo/roc-random/releases/download/0.9.3/HoULZB8QzktiNPYSe9myzy9JQzm1nMbjDPVWoA63QpVf.tar.zst",
 }
 
