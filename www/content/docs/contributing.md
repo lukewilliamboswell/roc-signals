@@ -670,6 +670,10 @@ Switch those builds to `--opt=dev` once the pinned compiler contains the fix. Ke
 enabled; compiler exit status alone does not establish that a Wasm artifact is
 valid. Production site builds use `--app-opt size`; both modes write `dist/`.
 
+## Documentation
+
+Keep documentation focused on current reader tasks. Remove superseded guidance and status narratives; keep release changes in release records and investigations or unresolved work in issues. Follow the [shared documentation guide](https://lukewilliamboswell.github.io/roc-automation/documentation.html#write-project-documentation).
+
 ## Releases
 
 Keep user-facing changes and migration instructions in `releases/unreleased.md`,
@@ -873,8 +877,8 @@ and oversized values reject the spec.
 These stubs simulate results and perform no network IO. They establish
 application response and state behavior; real `fetch` behavior needs the
 browser contract tests. A supplied result does not assert the request payload
-the app emitted. Test request construction as pure application logic. The
-harness currently exposes pending effect counts, not request-body assertions.
+the app emitted. Test request construction as pure application logic. Use pending effect counts to check task lifecycle; assert request construction
+in pure application tests.
 
 Supported async and lifecycle commands:
 

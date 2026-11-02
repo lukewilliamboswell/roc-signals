@@ -34,7 +34,7 @@ line, so the list only ever shrinks.
 Listing an input is not a way to quiet a failure. The alternative is deleting the
 input, which throws away the reproduction; keeping it listed means the bug stays
 visible in every run and the fix is what removes it. Each entry needs a comment
-saying which bug it belongs to, and the bug belongs in `wip/issues.md`.
+saying which bug it belongs to, and the bug belongs in a focused GitHub issue.
 
 ## Adding one
 

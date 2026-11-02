@@ -338,27 +338,9 @@ when comparing:
   `.test-out/size/<label>/` and rebinds each fixture there, so concurrent
   builds cannot overwrite each other's measurement input.
 
-`test/size/baseline.json` preserves the historical measurement;
-`test/size/effect-model-baseline.json` records the accepted production
-effect-model measurement. `test/size/nightly-2026-09-11-baseline.json` records
-the accepted compiler-upgrade measurement from PR #119. The same-machine
-comparison against the September 4 compiler increased cumulative raw Wasm by
-0.60% and gzip by 1.05%; the largest individual gzip increase was 4.28% for
-`two-row-types`. The upgrade's compiler fixes justify this accepted size cost.
-`test/size/budgets.toml` identifies the measurement
-revision used for its explicit raw and gzip budgets, with 1% headroom.
-`test/size/performance-before.json` and `performance-baseline.json` record the
-matched production cost of persistent Rows indexes, sparse graph edit journals,
-grouped retirement, compact event storage, and bounded command retention.
-The compiler and compression settings are identical. Across the seven fixtures,
-raw Wasm grows 10.07%, gzip 6.18%, and Brotli 4.80%; the keyed-table fixture grows
-10.85% raw and 6.35% gzip. This is an explicit artifact-size tradeoff for bounded
-edit work and lower retained/allocation costs, not a size optimization.
-Before recording that baseline, factoring bounded directory updates and storing
-only scalar lengths in construction scratch reduced the recipe fixture by
-48,916 raw bytes and 12,245 gzip bytes. Changes must still be checked across all
-fixtures and compression formats: those reductions did not improve every
-individual result. The paired reports retain each measurement and artifact hash.
+`test/size/budgets.toml` names the reviewed measurement revision and explicit
+raw and gzip limits. Keep paired reports with their compiler, compression
+settings and artifact identities when reviewing a proposed budget change.
 `python3 scripts/test.py size` fails when a
 fixture exceeds its budget. After an accepted change, regenerate the budgets
 from the new report with `--write-budgets` and review the diff; never bless a
