@@ -180,15 +180,10 @@ gives up.
 
 ### Budgeting a campaign
 
-`fuzz.py run all --time T` gives every target the same T, which is the wrong
-split. In a 28-minute campaign `propagation` completed 88 queue cycles,
-`rows-transitions` 37 and `keyed-scopes` 5, and then found nothing new, while
-`structural` - the only target that drives the whole engine, and where every
-real bug so far has come from - completed none. `fuzz.py campaign --time T`
-divides one total budget by the weights in `CAMPAIGN_WEIGHTS` instead: every
-target gets a floor of two minutes so it re-covers its queue and confirms
-nothing regressed, and the rest goes overwhelmingly to `structural`. The
-weights live in that one table so changing the split is a one-line review.
+`fuzz.py campaign --time T` divides one total budget using `CAMPAIGN_WEIGHTS`.
+Each target receives a two-minute floor to replay its queue; the remaining
+budget prioritizes the structural target, which exercises the complete engine.
+Review changes to the weights alongside campaign results in the relevant issue.
 
 ## Notes
 

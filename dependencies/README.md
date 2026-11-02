@@ -18,8 +18,7 @@ The web platform's prebuilt native and Wasm hosts are published the same way by
 archives are platform build outputs rather than external dependencies: each
 records a committed-source fingerprint and payload hashes, and the producer runs
 the Roc checks, Roc tests, native specs and Wasm mounts against the exact outputs
-it packages. Host publication currently does not require a second build
-comparison.
+it packages. An independent build comparison is needed to establish reproducibility.
 
 Every archive contains `dependency.json`, its exact target files, and license
 notices. External dependency manifests record upstream identity, producer/recipe
@@ -44,28 +43,17 @@ for consumers pinned to them; a security replacement receives a new identity.
 For commands and release operation, see the
 [contributor guide](../www/content/docs/contributing.md#dependency-artifact-releases).
 
-## Coverage and remaining boundaries
+## Evidence boundaries
 
-The artifact contract above applies to the inputs selected in the root
-`dependencies.lock.json` and `web-host.lock.json`. It is not a provenance claim
-for historical platform releases.
+The contracts above apply to the inputs named by `dependencies.lock.json` and
+`web-host.lock.json`. Host archives provide engine objects; external musl
+inputs come from the dependency lock. A host source change does not change an
+external dependency identity.
 
-| Input | Build and consumption boundary | Remaining gap |
-| --- | --- | --- |
-| musl libc and startup objects | Independent source build, native candidate tests, reproducibility check, immutable release, and verified consumer lock | Dependency updates still require a deliberate release and lock review. |
-| Prebuilt web hosts (`libhost.a`, `host.wasm`) | The bundler verifies the host-release lock, producer provenance, exact five-target inventory, and committed host source compatibility before staging extracted bytes | Host releases supply no external link inputs; the musl targets take those from the dependency lock. |
-
-Host-owned engine objects and the web `libhost.a` and `host.wasm` remain platform
-build outputs. Changing their source should not change external dependency
-identities. A dependency recipe or toolchain change must produce a new dependency
-release before consumers adopt it.
-
-An attestation identifies who produced particular bytes and from which workflow
-and source revision. The pinned upstream inputs, recipe review, candidate tests,
-and immutable release are separate controls; an attestation alone does not prove
-that an ambient system library was built from reviewed source. Producer workflows
-publish attestations for users who want that provenance evidence; the repository's
-reviewed content hashes are the trust anchor used by ordinary consumers.
+An attestation identifies producer bytes, workflow and source revision. Reviewed
+upstream inputs, candidate tests and an independent build comparison establish
+separate facts. Routine consumers admit bytes using the reviewed content hashes
+rather than depending on an online attestation service.
 
 ## Producer CI selection
 

@@ -34,15 +34,9 @@ git diff --check
 zig build run-check-tidy
 ```
 
-The native `examples-web/conduit/specs/` suite is the authoritative behavior spec.
-On 2026-07-20 it passed end to end with the PATH Roc
-`release-fast-8eaa9abd`, including loading, empty, validation, network-error,
-stale-response, navigation, and server-confirmed mutation paths. The full
-repository gate and public dev/size site builds pass with the same compiler.
+The native `examples-web/conduit/specs/` suite covers application response,
+navigation, stale-result handling and confirmed mutations. Browser contract
+tests exercise the fetch boundary separately.
 
-`Api.response_state` deliberately materializes the package's opaque HTTP
-response into a small plain record before page-specific domain decoding. This
-keeps the package-aligned HTTP API while avoiding a compiler stack overflow
-caused by folding the opaque response directly into Conduit's large domain
-unions. A real-backend pass and the long soak remain closeout evidence rather
-than feature gaps in the script.
+`Api.response_state` converts the opaque HTTP response to a plain record before
+domain decoding, keeping that boundary separate from Conduit's larger unions.

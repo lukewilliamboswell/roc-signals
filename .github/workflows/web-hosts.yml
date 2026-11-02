@@ -29,7 +29,7 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: '3.12'
-      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@7aff4132691ad4fc348abe9df146a57512b49bd6
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@8454f8ed9acc026c85e31e87b132dfeeaf9f1b81
         with:
           cache: 'true'
           cache-workload: dev

@@ -165,3 +165,5 @@
 - Add or change an instruction here only when it should govern unrelated future
   work across the repository. If it is likely to expire with one feature, bug,
   release, or tool version, it does not belong here.
+
+Keep documentation focused on current reader tasks. Remove superseded guidance and status narratives; keep release changes in release records and investigations or unresolved work in issues. See the [contributor guide](www/content/docs/contributing.md#documentation).

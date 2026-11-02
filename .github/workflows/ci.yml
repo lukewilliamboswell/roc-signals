@@ -35,7 +35,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@7aff4132691ad4fc348abe9df146a57512b49bd6
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@8454f8ed9acc026c85e31e87b132dfeeaf9f1b81
       - run: blueprint run selection
       - id: select
         run: blueprint run ci-changes
@@ -50,7 +50,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@7aff4132691ad4fc348abe9df146a57512b49bd6
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@8454f8ed9acc026c85e31e87b132dfeeaf9f1b81
         with:
           cache: 'true'
           cache-workload: dev
@@ -80,6 +80,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@7aff4132691ad4fc348abe9df146a57512b49bd6
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@8454f8ed9acc026c85e31e87b132dfeeaf9f1b81
       - name: Check documentation and templates
         run: blueprint run site

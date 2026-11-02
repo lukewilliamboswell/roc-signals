@@ -1,9 +1,4 @@
 {
-  "workflows": [
-    "ci.yml",
-    "release.yml"
-  ],
-  "auto_merge": true,
   "compiler_roots": [
     "platform-web/main.roc",
     "test/wasm/action/main.roc",
