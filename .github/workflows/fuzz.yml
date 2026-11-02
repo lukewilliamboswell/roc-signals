@@ -35,7 +35,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Blueprint
-        uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@7aff4132691ad4fc348abe9df146a57512b49bd6
+        uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@8454f8ed9acc026c85e31e87b132dfeeaf9f1b81
         with:
           cache: 'true'
           cache-workload: fuzz
