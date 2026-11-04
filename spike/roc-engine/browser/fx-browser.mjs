@@ -68,11 +68,17 @@ const stats = (page) => page.evaluate(() => ({ live: [...window.__rt.live.keys()
 {
   const { page, ctx } = await open(true);
   check("mount: popstate subscription only", await stats(page), { live: [1] });
+  const svg = () => page.evaluate(() => {
+    const c = document.querySelector("[aria-label=badge] circle");
+    return [document.querySelector("[aria-label=badge]").namespaceURI, c.namespaceURI, c.getAttribute("class"), c.getBBox().width];
+  });
+  check("svg elements in the SVG namespace, class attribute set", await svg(), ["http://www.w3.org/2000/svg", "http://www.w3.org/2000/svg", "idle", 8]);
   await click(page, "issue 0");
   await click(page, "issue 0");
   check("two GETs pending in issue order", await pending(page), ["2 GET /s0/1", "3 GET /s0/2"]);
   await page.evaluate(() => window.__rt.runEffect(3, { status: 201, body: "second" }));
   check("answer out of order", await log(page), "0:2:201:second");
+  check("svg class updated", (await svg())[2], "busy");
   await click(page, "issue 1");
   check("third request admitted (bound 3 incl. popstate)", await pending(page), ["2 GET /s0/1", "4 GET /s1/1"]);
   await click(page, "issue 1");

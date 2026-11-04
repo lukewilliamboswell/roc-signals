@@ -10,7 +10,7 @@ k = m % 5
 
 def article(i, fav=False, count=None):
     return {"slug": f"article-{i}", "title": f"Article {i}", "description": f"Description {i}.",
-            "tagList": ["signals", "roc"], "createdAt": "2026-06-01T08:00:00.000Z", "favorited": fav,
+            "tagList": ["roc"], "createdAt": "2026-06-01T08:00:00.000Z", "favorited": fav,
             "favoritesCount": i % 5 if count is None else count,
             "author": {"username": "anna" if i % 2 == 0 else "max", "bio": "", "image": "https://example.test/a.png", "following": False}}
 

@@ -91,6 +91,10 @@ FxApp := [].{
 			FxApp.site(st, 1),
 			FxApp.site(st, 2),
 			Engine.element("pre", [Engine.test_id("log")], [Engine.text_v(st.val().map(|s| Str.join_with(s.log, "|")))]),
+			# An SVG badge (namespace check in the browser): its class follows the log length.
+			Engine.element("svg", [Engine.attr("aria-label", "badge"), Engine.attr("width", "10"), Engine.attr("height", "10")], [
+				Engine.element("circle", [Engine.attr("r", "4"), Engine.attr("cx", "5"), Engine.attr("cy", "5"), Engine.class_v(st.val().map(|s| if s.log.is_empty() "idle" else "busy"))], []),
+			]),
 		]),
 	)
 

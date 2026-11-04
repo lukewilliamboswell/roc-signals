@@ -100,8 +100,27 @@ function walk(root, path) {
 
 const BOOL_ATTRS = new Set(["disabled", "selected", "readonly", "required", "hidden", "multiple", "open"]);
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+// Elements are created in the SVG namespace for <svg> and anything inside it.
+function createIn(doc, tag, parent) {
+  if (tag === "svg" || (parent && parent.namespaceURI === SVG_NS && parent.tagName !== "foreignObject")) return doc.createElementNS(SVG_NS, tag);
+  return doc.createElement(tag);
+}
+
+function toSvg(doc, node) {
+  if (node.nodeType !== 1) return node.cloneNode(true);
+  const el = doc.createElementNS(SVG_NS, node.tagName.toLowerCase());
+  for (const a of node.attributes) el.setAttribute(a.name, a.value);
+  for (const c of node.childNodes) el.appendChild(toSvg(doc, c));
+  return el;
+}
+
 function setAttr(el, name, value) {
-  if (name === "class") {
+  if (name === "class" && el.namespaceURI === SVG_NS) {
+    if (value === "") el.removeAttribute("class");
+    else el.setAttribute("class", value);
+  } else if (name === "class") {
     el.className = value;
   } else if (name === "value") {
     if (el.value !== value) el.value = value;
@@ -367,20 +386,22 @@ export class RocEngineRuntime {
       at += n;
       return s;
     };
-    const node = () => {
+    const node = (parent) => {
       const kind = u8[at++];
       if (kind === 2) return doc.createTextNode(str());
-      const el = doc.createElement(str());
+      const el = createIn(doc, str(), parent);
       const attrs = u8[at++];
       for (let i = 0; i < attrs; i += 1) {
         const name = str();
         setAttr(el, name, str());
       }
       const children = u8[at++];
-      for (let i = 0; i < children; i += 1) el.appendChild(node());
+      for (let i = 0; i < children; i += 1) el.appendChild(node(el));
       return el;
     };
-    const root = node();
+    // Templates are parsed as HTML; a row template first placed under an SVG
+    // parent is re-created in the SVG namespace once (see INST).
+    const root = node(null);
     const holes = [];
     const count = u8[at++];
     for (let i = 0; i < count; i += 1) {
@@ -434,6 +455,13 @@ export class RocEngineRuntime {
           const site = dv.getUint32(at + 12, true);
           const tpl = this.templates[site];
           at += 16;
+          if (!tpl.svg && tpl.root.namespaceURI !== SVG_NS) {
+            const p = before === 0 ? this.lookup(parent) : this.lookup(before).parentNode;
+            if (p.namespaceURI === SVG_NS && p.tagName !== "foreignObject") {
+              tpl.root = toSvg(doc, tpl.root);
+              tpl.svg = true;
+            }
+          }
           const el = tpl.root.cloneNode(true);
           el.__rn = node;
           const holes = tpl.holes;
@@ -519,7 +547,8 @@ export class RocEngineRuntime {
           const n = dv.getUint32(at + 12, true);
           const s = readStr(u8, at + 16, n);
           at += 16 + n;
-          const el = op === OP_ELEM ? doc.createElement(s) : doc.createTextNode(s);
+          const parentEl = before === 0 ? this.lookup(parent) : this.lookup(before).parentNode;
+          const el = op === OP_ELEM ? createIn(doc, s, parentEl) : doc.createTextNode(s);
           this.place(el, parent, before);
           if (op === OP_ELEM && el.tagName === "OPTION") settleSelect(el.parentNode);
           this.statics[node] = el;
