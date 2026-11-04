@@ -118,6 +118,24 @@ function toSvg(doc, node) {
   return el;
 }
 
+// Controlled text values (design.md, "Controlled inputs"): an equal value is
+// a no-op (caret and selection stay put); a differing value is deferred while
+// the control is focused or composing (IME) and applied on blur, unless a
+// later input echo already matched it.
+function setValue(el, value) {
+  if (el.value === value) {
+    el.__deferred = undefined;
+    return;
+  }
+  const doc = el.ownerDocument;
+  if (el.__composing || (doc && doc.activeElement === el && el.tagName !== "SELECT")) {
+    el.__deferred = value;
+    return;
+  }
+  el.__deferred = undefined;
+  el.value = value;
+}
+
 function setAttr(el, name, value) {
   if (name === "class" && el.namespaceURI === SVG_NS) {
     if (value === "") el.removeAttribute("class");
@@ -125,7 +143,7 @@ function setAttr(el, name, value) {
   } else if (name === "class") {
     el.className = value;
   } else if (name === "value") {
-    if (el.value !== value) el.value = value;
+    setValue(el, value);
     if (el.tagName === "SELECT") el.__v = value;
     if (value === "") el.removeAttribute("value");
     else el.setAttribute("value", value);
@@ -151,9 +169,15 @@ function settleSelect(parent) {
   if (p && p.tagName === "SELECT" && p.__v !== undefined && p.value !== p.__v) p.value = p.__v;
 }
 
+const DOM_EVENT = { focus: "focusin", blur: "focusout" };
+const APP_EVENT = { focusin: "focus", focusout: "blur" };
+
 function payloadOf(event) {
   const t = event.target;
   switch (event.type) {
+    case "focusin":
+    case "focusout":
+      return t.value ?? "";
     case "input":
       return t.value ?? "";
     case "change":
@@ -205,6 +229,7 @@ export class RocEngineRuntime {
     this.sites = [];
     this.templates = [];
     this.listening = new Map();
+    this.internal = [];
     this.onEvent = (event) => this.handle(event);
     this.timing = options.timing ?? null;
     this.busy = false;
@@ -228,6 +253,7 @@ export class RocEngineRuntime {
   // Boot: read the app's declared storage keys, stage the URL and their
   // values, then mount.
   mount() {
+    this.controlListeners();
     this.listen("click");
     const x = this.x;
     x.boot_keys();
@@ -269,6 +295,8 @@ export class RocEngineRuntime {
     for (const id of [...this.live.keys()]) this.cancel(id);
     for (const [type, fn] of this.listening) this.root.removeEventListener(type, fn);
     this.listening.clear();
+    for (const [type, fn] of this.internal) this.root.removeEventListener(type, fn, true);
+    this.internal = [];
     this.x.drop();
     this.root.textContent = "";
     this.statics = [];
@@ -276,18 +304,49 @@ export class RocEngineRuntime {
     this.templates = [];
   }
 
+  // Controlled-input bookkeeping: composition flags, deferred values applied
+  // on blur, and input echoes that make a deferred value moot. Runs before
+  // (capture) and independently of the app's own handlers.
+  controlListeners() {
+    const on = (type, fn) => {
+      this.root.addEventListener(type, fn, true);
+      this.internal.push([type, fn]);
+    };
+    on("compositionstart", (e) => {
+      e.target.__composing = true;
+    });
+    on("compositionend", (e) => {
+      e.target.__composing = false;
+    });
+    on("input", (e) => {
+      const t = e.target;
+      if (t.__deferred !== undefined && t.__deferred === t.value) t.__deferred = undefined;
+    });
+    on("focusout", (e) => {
+      const t = e.target;
+      t.__composing = false;
+      if (t.__deferred !== undefined) {
+        const v = t.__deferred;
+        t.__deferred = undefined;
+        if (t.value !== v) t.value = v;
+      }
+    });
+  }
+
   // One delegated listener per event type, added the first time a LISTEN
   // command or template hole names that type.
+  // App "focus"/"blur" handlers listen to the bubbling focusin/focusout.
   listen(type) {
-    if (this.listening.has(type)) return;
-    this.listening.set(type, this.onEvent);
-    this.root.addEventListener(type, this.onEvent);
+    const dom = DOM_EVENT[type] ?? type;
+    if (this.listening.has(dom)) return;
+    this.listening.set(dom, this.onEvent);
+    this.root.addEventListener(dom, this.onEvent);
   }
 
   // The nearest handler for this event type walking up from the target
   // (bubbling), then the nearest node carrying an engine id.
   handle(event) {
-    const type = event.type;
+    const type = APP_EVENT[event.type] ?? event.type;
     let node = event.target;
     // Handler numbers are stored as -1 - h when the handler asks for
     // preventDefault.
