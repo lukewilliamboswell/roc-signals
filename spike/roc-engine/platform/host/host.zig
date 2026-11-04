@@ -24,7 +24,8 @@ const Step = extern struct {
     state: *anyopaque,
 };
 
-extern fn roc_engine_init() callconv(.c) Step;
+extern fn roc_engine_keys() callconv(.c) RocList;
+extern fn roc_engine_init(boot: RocList) callconv(.c) Step;
 extern fn roc_engine_event(state: *anyopaque, buf: RocList, node: u32, handler: u32, payload: RocList) callconv(.c) Step;
 extern fn roc_engine_drop(state: *anyopaque, buf: RocList) callconv(.c) void;
 
@@ -127,12 +128,39 @@ export fn roc_crashed(bytes: [*]const u8, len: usize) callconv(.c) void {
 // ---------------------------------------------------------------------------
 // JavaScript-facing exports.
 
-/// Mount the app: builds the instance and leaves the mount commands readable.
+/// Before mount: the storage keys the app declares (count:u32 then key:str
+/// each), readable through `cmd_ptr`/`cmd_len` until `init`. JavaScript reads
+/// their values and stages the boot bytes with `payload_reserve`.
+export fn boot_keys() callconv(.c) void {
+    if (state != null or cmds.ptr != null) @trap();
+    cmds = roc_engine_keys();
+}
+
+/// Mount the app with the staged boot bytes (URL and storage values; empty
+/// when nothing was staged): builds the instance and leaves the mount
+/// commands readable. The key list buffer, if any, is released by Roc.
 export fn init() callconv(.c) void {
     if (state != null) @trap();
-    const step = roc_engine_init();
+    const boot = pending_payload;
+    pending_payload = RocList.empty;
+    const keys = cmds;
+    cmds = RocList.empty;
+    const step = roc_engine_init(boot);
     state = step.state;
     cmds = step.cmds;
+    releaseList(keys);
+}
+
+/// Drop one reference to a Roc `List(U8)` the host owns (no-op for empty or
+/// static lists); frees the allocation when it was the last one.
+fn releaseList(list: RocList) void {
+    if (list.cap & 1 != 0) @trap(); // the host never holds a seamless slice
+    const p = list.ptr orelse return;
+    const rc: *isize = @ptrCast(@alignCast(p - @sizeOf(usize)));
+    if (rc.* == 0) return;
+    if (rc.* == 1) {
+        _ = freeRaw(p - @sizeOf(usize), @alignOf(usize));
+    } else rc.* -= 1;
 }
 
 /// Payload bytes for the next `event`, staged by JavaScript through

@@ -8,7 +8,7 @@ cp $R/src/*.roc $R/platform/Engine.roc $F/
 for f in $R/apps/$A/*.roc; do
   b=$(basename $f)
   case $b in
-    fuzz-main.roc) sed "s#platform \"[^\"]*fuzzpf/main.roc\"#platform \"$FUZZPF\"#" $f > $F/main.roc ;;
+    fuzz-main.roc) sed "s#platform \"[^\"]*fuzzpf/main.roc\"#platform \"$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' $FUZZPF $F)\"#" $f > $F/main.roc ;;
     wasm-main.roc|timing-main.roc) ;;
     *) cp $f $F/$b ;;
   esac

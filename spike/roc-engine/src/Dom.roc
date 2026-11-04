@@ -286,14 +286,14 @@ Dom := [].{
 	apply = |dom0, b| Dom.apply_ops(dom0, b).0
 
 	op_name : U8 -> Str
-	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT"].get(op.to_u64()) ?? "?"
+	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORE", "TITLE"].get(op.to_u64()) ?? "?"
 
 	## Opcode histogram of a batch, e.g. "SETTEXT=1 ATTR=1".
 	describe : List(U8) -> Str
 	describe = |ops| {
 		var $parts = []
 		var $op = 1.U8
-		while $op <= 12 {
+		while $op <= 17 {
 			n = ops.count_if(|o| o == $op)
 			if n > 0 {
 				$parts = $parts.append("${Dom.op_name($op)}=${n.to_str()}")
@@ -303,9 +303,33 @@ Dom := [].{
 		Str.join_with($parts, " ")
 	}
 
+	## An effect command, decoded independently of the engine.
+	FxCmd : [
+		Http(U32, Str, Str, List((Str, Str)), Str),
+		Get(U32, Str),
+		Timer(U32, U32),
+		Interval(U32, U32),
+		Pop(U32),
+		Cancel(U32),
+		Push(Str),
+		Replace(Str),
+		Set(Str, Str),
+		Remove(Str),
+		Title(Str),
+	]
+
 	## Apply one batch and also return its opcode sequence.
 	apply_ops : Model, List(U8) -> (Model, List(U8))
 	apply_ops = |dom0, b| {
+		(d, ops, _) = Dom.apply_fx(dom0, b)
+		(d, ops)
+	}
+
+	## Apply one batch; also return its opcodes and its effect commands in
+	## stream order.
+	apply_fx : Model, List(U8) -> (Model, List(U8), List(FxCmd))
+	apply_fx = |dom0, b| {
+		var $fx = []
 		var $d = dom0
 		var $at = 0.U64
 		var $ops = []
@@ -429,11 +453,72 @@ Dom := [].{
 				(t, next) = Dom.str(b, $at + 4)
 				$at = next
 				$d = Dom.set_text_on($d, i, t)
+			} else if op == 13 {
+				id = Dom.u32(b, $at)
+				kind = Dom.byte(b, $at + 4)
+				$at = $at + 5
+				if kind == 1 {
+					(method, a1) = Dom.str(b, $at)
+					(url, a2) = Dom.str(b, a1)
+					n = Dom.u32(b, a2).to_u64()
+					var $hs = []
+					var $a = a2 + 4
+					var $k = 0.U64
+					while $k < n {
+						(hk, h1) = Dom.str(b, $a)
+						(hv, h2) = Dom.str(b, h1)
+						$hs = $hs.append((hk, hv))
+						$a = h2
+						$k = $k + 1
+					}
+					(body, a3) = Dom.str(b, $a)
+					$at = a3
+					$fx = $fx.append(Http(id, method, url, $hs, body))
+				} else if kind == 2 {
+					(key, a1) = Dom.str(b, $at)
+					$at = a1
+					$fx = $fx.append(Get(id, key))
+				} else if kind == 3 {
+					$fx = $fx.append(Timer(id, Dom.u32(b, $at)))
+					$at = $at + 4
+				} else if kind == 4 {
+					$fx = $fx.append(Interval(id, Dom.u32(b, $at)))
+					$at = $at + 4
+				} else if kind == 5 {
+					$fx = $fx.append(Pop(id))
+				} else {
+					crash "unknown effect kind ${kind.to_str()}"
+				}
+			} else if op == 14 {
+				$fx = $fx.append(Cancel(Dom.u32(b, $at)))
+				$at = $at + 4
+			} else if op == 15 {
+				mode = Dom.byte(b, $at)
+				(url, a1) = Dom.str(b, $at + 1)
+				$at = a1
+				$fx = $fx.append(if mode == 1 Push(url) else if mode == 2 Replace(url) else crash "unknown nav mode")
+			} else if op == 16 {
+				mode = Dom.byte(b, $at)
+				(key, a1) = Dom.str(b, $at + 1)
+				if mode == 1 {
+					(v, a2) = Dom.str(b, a1)
+					$at = a2
+					$fx = $fx.append(Set(key, v))
+				} else if mode == 2 {
+					$at = a1
+					$fx = $fx.append(Remove(key))
+				} else {
+					crash "unknown store op"
+				}
+			} else if op == 17 {
+				(t, a1) = Dom.str(b, $at)
+				$at = a1
+				$fx = $fx.append(Title(t))
 			} else {
 				crash "unknown command ${op.to_str()}"
 			}
 		}
-		($d, $ops)
+		($d, $ops, $fx)
 	}
 
 	## The (node, handler) pair an event `ev` on node index i dispatches, as

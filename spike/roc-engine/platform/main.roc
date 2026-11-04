@@ -9,12 +9,12 @@ platform ""
 	}
 	exposes [Engine]
 	packages {}
-	provides { "roc_engine_init": init_for_host, "roc_engine_event": event_for_host, "roc_engine_drop": drop_for_host }
+	provides { "roc_engine_keys": keys_for_host, "roc_engine_init": init_for_host, "roc_engine_event": event_for_host, "roc_engine_drop": drop_for_host }
 	targets: {
 		inputs_dir: "targets/",
 		wasm32: {
 			inputs: ["host.wasm", app],
-			exports: ["init", "event", "drop", "payload_reserve", "cmd_ptr", "cmd_len", "metric", "reset_metrics", "err_ptr", "err_len"],
+			exports: ["boot_keys", "init", "event", "drop", "payload_reserve", "cmd_ptr", "cmd_len", "metric", "reset_metrics", "err_ptr", "err_len"],
 		},
 	}
 
@@ -25,9 +25,15 @@ import Engine
 ## passed back into the next call for reuse).
 Step : { cmds : List(U8), state : Box(Instance) }
 
-init_for_host : () -> Step
-init_for_host = || {
-	(state, cmds) = (main.init)()
+## The storage keys the app declares, encoded count:u32 (key:str)*; the host
+## reads their values before mount.
+keys_for_host : () -> List(U8)
+keys_for_host = || (main.keys)()
+
+## Mount with the boot bytes (URL and declared storage values).
+init_for_host : List(U8) -> Step
+init_for_host = |boot| {
+	(state, cmds) = (main.init)(boot)
 	{ cmds, state: Box.box(state) }
 }
 

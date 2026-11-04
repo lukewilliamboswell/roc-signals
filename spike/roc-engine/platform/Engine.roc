@@ -140,6 +140,11 @@ Engine := [].{
 			}
 		}
 
+		## An effect site's reaction: a reducer over this state given the value
+		## the request was issued for and its result.
+		on_result : State(ctx, s), (s, a, Res -> s) -> Reaction(ctx, a)
+		on_result = |{ mask, get: _, modify }, f| { mask, run: |e, a, r| modify(e, |s| f(s, a, r)) }
+
 		## A reducer that receives the event payload (an input's value).
 		set_value : State(ctx, s), (s, Str -> s) -> Handler(ctx)
 		set_value = |{ mask, get: _, modify }, f| { mask, run: |e, p| modify(e, |s| f(s, p)) }
@@ -256,7 +261,16 @@ Engine := [].{
 
 	Mount(ctx) := [Mount((ctx, Args, Tx -> (Inst(ctx), U64, Tx)))]
 
-	Msg := [Fire(List(U32), U64, U32, Str), Changed(U64), Dispose(Bool)]
+	## An event's payload: a DOM event's value, or an effect result.
+	Payload : [Ev(Str), Fx(Res)]
+
+	ev_str : Payload -> Str
+	ev_str = |p| match p {
+		Ev(s) => s
+		Fx(_) => ""
+	}
+
+	Msg := [Fire(List(U32), U64, U32, Payload), Changed(U64), Dispose(Bool)]
 
 	## Fire always hands the (possibly transformed) environment back up with
 	## the mask of the layer it changed (0 = nothing changed).
@@ -280,6 +294,7 @@ Engine := [].{
 		evals : U64,
 		paths : List(List(U32)),
 		site_free : List(U32),
+		fx : Fx,
 	}
 
 	Hole(ctx) : { node : U32, mask : U64, attr : Str, read : (ctx -> Str), last : Str }
@@ -310,59 +325,59 @@ Engine := [].{
 	}
 
 	emit : Tx, (List(U8) -> List(U8)) -> Tx
-	emit = |{ cmds, next, free, routes, evals, paths, site_free }, write| { cmds: write(cmds), next, free, routes, evals, paths, site_free }
+	emit = |{ cmds, next, free, routes, evals, paths, site_free, fx }, write| { cmds: write(cmds), next, free, routes, evals, paths, site_free, fx }
 
 	count_evals : Tx, U64 -> Tx
-	count_evals = |{ cmds, next, free, routes, evals, paths, site_free }, n| { cmds, next, free, routes, evals: evals + n, paths, site_free }
+	count_evals = |{ cmds, next, free, routes, evals, paths, site_free, fx }, n| { cmds, next, free, routes, evals: evals + n, paths, site_free, fx }
 
 	## Allocate a static node id, reusing a freed one first.
 	alloc_id : Tx -> (U32, Tx)
-	alloc_id = |{ cmds, next, free, routes, evals, paths, site_free }| {
+	alloc_id = |{ cmds, next, free, routes, evals, paths, site_free, fx }| {
 		match free.last() {
-			Ok(id) => (id, { cmds, next, free: free.drop_last(1), routes, evals, paths, site_free })
+			Ok(id) => (id, { cmds, next, free: free.drop_last(1), routes, evals, paths, site_free, fx })
 			Err(_) => {
 				if next >= 1048575 {
 					crash "static node ids exhausted"
 				}
-				(next, { cmds, next: next + 1, free, routes, evals, paths, site_free })
+				(next, { cmds, next: next + 1, free, routes, evals, paths, site_free, fx })
 			}
 		}
 	}
 
 	## Release a static node id and its route.
 	free_id : Tx, U32 -> Tx
-	free_id = |{ cmds, next, free, routes, evals, paths, site_free }, id| {
+	free_id = |{ cmds, next, free, routes, evals, paths, site_free, fx }, id| {
 		routes2 = if id.to_u64() < routes.len() routes.set(id.to_u64(), NoRoute) ?? routes else routes
-		{ cmds, next, free: free.append(id), routes: routes2, evals, paths, site_free }
+		{ cmds, next, free: free.append(id), routes: routes2, evals, paths, site_free, fx }
 	}
 
 	set_route : Tx, U32, List(U32), U32 -> Tx
-	set_route = |{ cmds, next, free, routes, evals, paths, site_free }, id, path, handler| {
+	set_route = |{ cmds, next, free, routes, evals, paths, site_free, fx }, id, path, handler| {
 		var $r = routes
 		while $r.len() <= id.to_u64() {
 			$r = $r.append(NoRoute)
 		}
-		{ cmds, next, free, routes: $r.set(id.to_u64(), Route(path, handler)) ?? $r, evals, paths, site_free }
+		{ cmds, next, free, routes: $r.set(id.to_u64(), Route(path, handler)) ?? $r, evals, paths, site_free, fx }
 	}
 
 	## Allocate an each-site id (template id and row node prefix).
 	alloc_site : Tx, List(U32) -> (U32, Tx)
-	alloc_site = |{ cmds, next, free, routes, evals, paths, site_free }, path| {
+	alloc_site = |{ cmds, next, free, routes, evals, paths, site_free, fx }, path| {
 		match site_free.last() {
-			Ok(s) => (s, { cmds, next, free, routes, evals, paths: paths.set(s.to_u64(), path) ?? crash "site", site_free: site_free.drop_last(1) })
+			Ok(s) => (s, { cmds, next, free, routes, evals, paths: paths.set(s.to_u64(), path) ?? crash "site", site_free: site_free.drop_last(1), fx })
 			Err(_) => {
 				s = paths.len().to_u32_wrap()
 				if s >= 4095 {
 					crash "each sites exhausted"
 				}
-				(s, { cmds, next, free, routes, evals, paths: paths.append(path), site_free })
+				(s, { cmds, next, free, routes, evals, paths: paths.append(path), site_free, fx })
 			}
 		}
 	}
 
 	free_site : Tx, U32 -> Tx
-	free_site = |{ cmds, next, free, routes, evals, paths, site_free }, s| {
-		{ cmds, next, free, routes, evals, paths: paths.set(s.to_u64(), []) ?? paths, site_free: site_free.append(s) }
+	free_site = |{ cmds, next, free, routes, evals, paths, site_free, fx }, s| {
+		{ cmds, next, free, routes, evals, paths: paths.set(s.to_u64(), []) ?? paths, site_free: site_free.append(s), fx }
 	}
 
 	bit : U64 -> U64
@@ -536,16 +551,16 @@ Engine := [].{
 	}
 
 	## Run handler `h` of this block (the event's target is this block).
-	fire_leaf : Block(ctx), ctx, U32, Str -> Out(ctx)
+	fire_leaf : Block(ctx), ctx, U32, Payload -> Out(ctx)
 	fire_leaf = |block, env, h, payload| {
 		match block.handlers.get(h.to_u64()) {
-			Ok(handler) => Pending((handler.run)(env, payload), handler.mask)
+			Ok(handler) => Pending((handler.run)(env, Engine.ev_str(payload)), handler.mask)
 			Err(_) => Pending(env, 0)
 		}
 	}
 
 	## Forward the event to child `path[pos]`, which must exist.
-	fire_kid : Block(ctx), ctx, List(U32), U64, U32, Str, Tx -> (Block(ctx), Out(ctx), Tx)
+	fire_kid : Block(ctx), ctx, List(U32), U64, U32, Payload, Tx -> (Block(ctx), Out(ctx), Tx)
 	fire_kid = |block, env, path, pos, h, payload, tx| {
 		k = (path.get(pos) ?? 0).to_u64()
 		{ holes, handlers, children, child_reads, child_top, nodes, tops, reads } = block
@@ -1024,12 +1039,12 @@ Engine := [].{
 		pend2 = Engine.put_at(pend, si, 0)
 		node = Engine.row_node(cfg.site, slot)
 		row_env = env(key, item)
-		{ cmds, next, free: idfree, routes, evals, paths, site_free } = tx
+		{ cmds, next, free: idfree, routes, evals, paths, site_free, fx } = tx
 		var $c = Engine.put_u32(Engine.put_u32(Engine.put_u32(Engine.put_u32(cmds.append(1), node), cfg.parent), before), cfg.site)
 		var $lasts = lasts
 		var $sels = sels
 		var $ev = 0.U64
-		var $t = { cmds: [], next, free: idfree, routes, evals, paths, site_free }
+		var $t = { cmds: [], next, free: idfree, routes, evals, paths, site_free, fx }
 		var $bound = []
 		var $hi = 0.U64
 		for hole in cfg.plan.holes {
@@ -1053,8 +1068,8 @@ Engine := [].{
 			$hi = $hi + 1
 		}
 		known2 = known or cfg.sel_mask != 0
-		{ cmds: _, next: n3, free: f3, routes: r3, evals: e3, paths: p3, site_free: sf3 } = $t
-		var $tx = { cmds: $c, next: n3, free: f3, routes: r3, evals: e3 + $ev, paths: p3, site_free: sf3 }
+		{ cmds: _, next: n3, free: f3, routes: r3, evals: e3, paths: p3, site_free: sf3, fx: fx3 } = $t
+		var $tx = { cmds: $c, next: n3, free: f3, routes: r3, evals: e3 + $ev, paths: p3, site_free: sf3, fx: fx3 }
 		if cfg.dynamic {
 			var $insts = []
 			var $km = kid_mask
@@ -1606,7 +1621,7 @@ Engine := [].{
 	## Takes the columns owned and hands back only the outer environment, so
 	## nothing that references the columns or the row item is alive when the
 	## site is rebuilt (roc-lang/roc#12846 class).
-	each_fire_kid : Cols(Row(ctx, item), item), Row(ctx, item), U64, List(U32), U64, U32, Str, Tx -> (Cols(Row(ctx, item), item), ctx, U64, Tx)
+	each_fire_kid : Cols(Row(ctx, item), item), Row(ctx, item), U64, List(U32), U64, U32, Payload, Tx -> (Cols(Row(ctx, item), item), ctx, U64, Tx)
 	each_fire_kid = |cols, row_env, si, path, pos, h, payload, tx| {
 		j = (path.get(pos + 1) ?? 0).to_u64()
 		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask } = cols
@@ -1674,7 +1689,7 @@ Engine := [].{
 									# columns as borrowed and every later write copied them
 									# (roc-lang/roc#12846).
 									next = Engine.each_inst(cfg, rows, cols)
-									{ outer, key: _, item: _ } = (handler.run)(row_env, payload)
+									{ outer, key: _, item: _ } = (handler.run)(row_env, Engine.ev_str(payload))
 									(next, Pending(outer, handler.mask), tx)
 								}
 								Err(_) => {
@@ -2094,6 +2109,379 @@ Engine := [].{
 		}
 	}
 
+	## ------------------------------------------------------------------
+	## Effects.
+	##
+	## An effect site watches a value. At mount (`watch`; `on_change` skips
+	## mount) and whenever the value changes (equality-pruned), `plan` turns
+	## the value into requests.
+	##
+	## - Commands (Push, Replace, Title, StorageSet, StorageRemove) are
+	##   emitted into the command stream and forgotten.
+	## - Awaited requests (Http, StorageGet, Timer, Interval, Popstate) get a
+	##   fresh instance-wide id (issue order, from 1), are recorded in the
+	##   in-flight table with the issuing site's path, and are owned by that
+	##   site. Disposing the site cancels every one it still owns (CANCEL id)
+	##   and forgets it. Interval and Popstate are subscriptions: they stay in
+	##   flight, delivering any number of results, until the site is disposed.
+	## - A result enters exactly as a DOM event does: one turn that fires down
+	##   the owning site's path, where the site's reaction runs as a handler
+	##   with the value the request was issued for, then the Changed pass.
+	## - A result whose id is not in flight (cancelled, already delivered,
+	##   never issued) is dropped before any state is touched and counted in
+	##   `stale`. The site checks its own ownership too, so a path that a
+	##   disposed site's successor now occupies never receives its results.
+	## - The in-flight table is bounded by `max`. A request beyond it is not
+	##   issued (no command): it is refused, counted, and its owner receives a
+	##   typed `Refused` result in a follow-up turn.
+	## - `Self` asks for a follow-up turn with result `Now`: how an effect site
+	##   changes state in response to its value changing, without writing
+	##   during the turn that is evaluating. Follow-up ids are a separate
+	##   space (high bit set) so host-visible ids stay consecutive.
+	## - Follow-up turns run after the current turn, in order, at most
+	##   `max_turns` per host call; exceeding it is a contract error (an
+	##   effect feedback loop) and traps the instance.
+	##
+	## Command stream additions:
+	##  13 FX      id kind:u8 ... 1 HTTP method:str url:str n:u32 (name:str value:str)* body:str
+	##                            2 STORAGE_GET key:str  3 TIMER ms:u32  4 INTERVAL ms:u32  5 POPSTATE
+	##  14 CANCEL  id
+	##  15 NAV     mode:u8 (1 push, 2 replace) url:str
+	##  16 STORE   op:u8 (1 set: key:str value:str, 2 remove: key:str)
+	##  17 TITLE   text:str
+	## Results come back as an event on node `fx_node` with handler = id and
+	## payload bytes: 1 status:u16 body (HTTP response), 2 message (network
+	## failure), 3 value (storage value), 4 (storage missing), 5 (timer
+	## fired), 6 url (location).
+	Req : [
+		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str }),
+		StorageGet(Str),
+		Timer(U32),
+		Interval(U32),
+		Popstate,
+		Self,
+		Push(Str),
+		Replace(Str),
+		Title(Str),
+		StorageSet(Str, Str),
+		StorageRemove(Str),
+	]
+
+	Res : [Http({ status : U16, body : Str }), Network(Str), Value(Str), Missing, Fired, Location(Str), Now, Refused]
+
+	Live : { id : U32, path : List(U32), sub : Bool }
+
+	Queued : { id : U32, path : List(U32), res : Res }
+
+	Fx : {
+		next : U32,
+		inner : U32,
+		live : List(Live),
+		queue : List(Queued),
+		max : U64,
+		issued : U64,
+		delivered : U64,
+		stale : U64,
+		refused : U64,
+		cancelled : U64,
+	}
+
+	fx_empty : Fx
+	fx_empty = { next: 1, inner: 2147483648, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0 }
+
+	## The host node id that marks an event as an effect result.
+	fx_node : U32
+	fx_node = 4294967295
+
+	## Follow-up turns allowed per host call.
+	max_turns : U64
+	max_turns = 64
+
+	## What an effect site does with a result: a reducer over the context,
+	## given the value the request was issued for.
+	Reaction(ctx, a) : { mask : U64, run : (ctx, a, Res -> ctx) }
+
+	## A reaction that ignores every result (command-only sites).
+	ignore : {} -> Reaction(ctx, a)
+	ignore = |_| { mask: 0, run: |e, _, _| e }
+
+	## A request the site owns: its id, whether it is a subscription, and the
+	## value it was issued for.
+	Owned(a) : { id : U32, sub : Bool, a : a }
+
+	EffectCfg(ctx, a) : { v : Val(ctx, a), plan : (a -> List(Req)), react : Reaction(ctx, a), path : List(U32) }
+
+	with_fx : Tx, (Fx -> Fx) -> Tx
+	with_fx = |{ cmds, next, free, routes, evals, paths, site_free, fx }, f| { cmds, next, free, routes, evals, paths, site_free, fx: f(fx) }
+
+	fx_count : Tx, [Delivered, Stale] -> Tx
+	fx_count = |tx, k| Engine.with_fx(tx, |fx| match k {
+		Delivered => { ..fx, delivered: fx.delivered + 1 }
+		Stale => { ..fx, stale: fx.stale + 1 }
+	})
+
+	is_sub : Req -> Bool
+	is_sub = |req| match req {
+		Interval(_) => True
+		Popstate => True
+		_ => False
+	}
+
+	put_req : List(U8), U32, Req -> List(U8)
+	put_req = |c, id, req| {
+		head = Engine.put_u32(c.append(13), id)
+		match req {
+			Http({ method, url, headers, body }) => {
+				var $b = Engine.put_u32(Engine.put_str(Engine.put_str(head.append(1), method), url), headers.len().to_u32_wrap())
+				for (k, v) in headers {
+					$b = Engine.put_str(Engine.put_str($b, k), v)
+				}
+				Engine.put_str($b, body)
+			}
+			StorageGet(k) => Engine.put_str(head.append(2), k)
+			Timer(ms) => Engine.put_u32(head.append(3), ms)
+			Interval(ms) => Engine.put_u32(head.append(4), ms)
+			Popstate => head.append(5)
+			_ => crash "not an awaited request"
+		}
+	}
+
+	## Admit an awaited request (or refuse it when the table is full).
+	fx_admit : Tx, List(U32), Req -> (U32, Tx)
+	fx_admit = |{ cmds, next, free, routes, evals, paths, site_free, fx }, path, req| {
+		{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled } = fx
+		if live.len() >= max {
+			fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled }
+			(id, { cmds, next, free, routes, evals, paths, site_free, fx: fx2 })
+		} else {
+			fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: Engine.is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled }
+			(id, { cmds: Engine.put_req(cmds, id, req), next, free, routes, evals, paths, site_free, fx: fx2 })
+		}
+	}
+
+	## Queue a follow-up turn for `path` with result `res`.
+	fx_follow : Tx, List(U32), Res -> (U32, Tx)
+	fx_follow = |tx, path, res| {
+		id = tx.fx.inner
+		(id, Engine.with_fx(tx, |fx| { ..fx, inner: id + 1, queue: fx.queue.append({ id, path, res }) }))
+	}
+
+	## Issue a site's requests for value `a`.
+	issue : Tx, List(U32), List(Req), a, List(Owned(a)) -> (Tx, List(Owned(a)))
+	issue = |tx, path, reqs, a, owned| {
+		var $tx = tx
+		var $owned = owned
+		for req in reqs {
+			match req {
+				Push(url) => {
+					$tx = Engine.emit($tx, |c| Engine.put_str(c.append(15).append(1), url))
+				}
+				Replace(url) => {
+					$tx = Engine.emit($tx, |c| Engine.put_str(c.append(15).append(2), url))
+				}
+				Title(t) => {
+					$tx = Engine.emit($tx, |c| Engine.put_str(c.append(17), t))
+				}
+				StorageSet(k, v) => {
+					$tx = Engine.emit($tx, |c| Engine.put_str(Engine.put_str(c.append(16).append(1), k), v))
+				}
+				StorageRemove(k) => {
+					$tx = Engine.emit($tx, |c| Engine.put_str(c.append(16).append(2), k))
+				}
+				Self => {
+					(id, t1) = Engine.fx_follow($tx, path, Now)
+					$tx = t1
+					$owned = $owned.append({ id, sub: False, a })
+				}
+				_ => {
+					(id, t1) = Engine.fx_admit($tx, path, req)
+					$tx = t1
+					$owned = $owned.append({ id, sub: Engine.is_sub(req), a })
+				}
+			}
+		}
+		($tx, $owned)
+	}
+
+	## Cancel and forget every request a disposed site still owns.
+	fx_release : Tx, List(Owned(a)) -> Tx
+	fx_release = |tx, owned| {
+		var $tx = tx
+		for o in owned {
+			id = o.id
+			if $tx.fx.live.any(|l| l.id == id) {
+				t1 = Engine.with_fx($tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id), cancelled: fx.cancelled + 1 })
+				$tx = Engine.emit(t1, |c| Engine.put_u32(c.append(14), id))
+			}
+		}
+		$tx
+	}
+
+	## An effect site. `initial`: also issue for the value at mount.
+	effect : Val(ctx, a), Bool, (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
+		where [a.is_eq : a, a -> Bool]
+	effect = |v, initial, plan, react| Site(
+		Mount(|env, args, tx| {
+			a = (v.read)(env)
+			cfg = { v, plan, react, path: args.path }
+			t1 = Engine.count_evals(tx, 1)
+			if initial {
+				(t2, owned) = Engine.issue(t1, args.path, plan(a), a, [])
+				(Engine.effect_inst(cfg, a, owned), Engine.eff_mask(v), t2)
+			} else {
+				(Engine.effect_inst(cfg, a, []), Engine.eff_mask(v), t1)
+			}
+		}),
+		|_| Engine.eff_mask(v),
+	)
+
+	## Issue for the value at mount and on every change.
+	watch : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
+		where [a.is_eq : a, a -> Bool]
+	watch = |v, plan, react| Engine.effect(v, True, plan, react)
+
+	## Issue on every change of the value after mount.
+	on_change : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
+		where [a.is_eq : a, a -> Bool]
+	on_change = |v, plan, react| Engine.effect(v, False, plan, react)
+
+	effect_inst : EffectCfg(ctx, a), a, List(Owned(a)) -> Inst(ctx)
+		where [a.is_eq : a, a -> Bool]
+	effect_inst = |cfg0, last0, owned0| {
+		held = Held({ cfg: cfg0, last: last0, owned: owned0 })
+		Inst(|env, msg, tx| {
+			Held({ cfg, last, owned }) = held
+			match msg {
+				Changed(mask) => {
+					if Engine.eff_mask(cfg.v).bitwise_and(mask) == 0 {
+						(Engine.effect_inst(cfg, last, owned), Done, tx)
+					} else {
+						a = (cfg.v.read)(env)
+						t1 = Engine.count_evals(tx, 1)
+						if a == last {
+							(Engine.effect_inst(cfg, last, owned), Done, t1)
+						} else {
+							(t2, owned2) = Engine.issue(t1, cfg.path, (cfg.plan)(a), a, owned)
+							(Engine.effect_inst(cfg, a, owned2), Done, t2)
+						}
+					}
+				}
+				Fire(path, pos, h, payload) => {
+					if pos < path.len() {
+						(Engine.effect_inst(cfg, last, owned), Pending(env, 0), tx)
+					} else {
+						match payload {
+							Ev(_) => (Engine.effect_inst(cfg, last, owned), Pending(env, 0), tx)
+							Fx(res) => Engine.effect_deliver(cfg, last, owned, env, h, res, tx)
+						}
+					}
+				}
+				Dispose(_) => (Engine.noop({}), Done, Engine.fx_release(tx, owned))
+			}
+		})
+	}
+
+	effect_deliver : EffectCfg(ctx, a), a, List(Owned(a)), ctx, U32, Res, Tx -> (Inst(ctx), Out(ctx), Tx)
+		where [a.is_eq : a, a -> Bool]
+	effect_deliver = |cfg, last, owned, env, id, res, tx| {
+		match owned.find_first_index(|o| o.id == id) {
+			Ok(i) => {
+				entry = owned.get(i) ?? crash "owned"
+				kept = if entry.sub owned else owned.drop_at(i)
+				react = cfg.react
+				next = Engine.effect_inst(cfg, last, kept)
+				(next, Pending((react.run)(env, entry.a, res), react.mask), Engine.fx_count(tx, Delivered))
+			}
+			Err(_) => (Engine.effect_inst(cfg, last, owned), Pending(env, 0), Engine.fx_count(tx, Stale))
+		}
+	}
+
+	## Engine counters for effects.
+	fx_stats : App -> { issued : U64, delivered : U64, stale : U64, refused : U64, cancelled : U64, live : U64 }
+	fx_stats = |a| {
+		fx = a.tx.fx
+		{ issued: fx.issued, delivered: fx.delivered, stale: fx.stale, refused: fx.refused, cancelled: fx.cancelled, live: fx.live.len() }
+	}
+
+	## Ids currently in flight (issue order).
+	fx_live : App -> List(U32)
+	fx_live = |a| a.tx.fx.live.map(|l| l.id)
+
+	## Decode a host result payload (see the command stream additions).
+	decode_res : List(U8) -> Res
+	decode_res = |b| {
+		tag = b.first() ?? 0
+		text = |n| Str.from_utf8(b.drop_first(n)) ?? crash "effect result is not UTF-8"
+		if tag == 1 {
+			status = (b.get(1) ?? 0).to_u16() + (b.get(2) ?? 0).to_u16().shl_wrap(8)
+			Http({ status, body: text(3) })
+		} else if tag == 2 {
+			Network(text(1))
+		} else if tag == 3 {
+			Value(text(1))
+		} else if tag == 4 {
+			Missing
+		} else if tag == 5 {
+			Fired
+		} else if tag == 6 {
+			Location(text(1))
+		} else {
+			crash "unknown effect result tag"
+		}
+	}
+
+	## What the host knows before the first render: the URL and the declared
+	## storage keys' values (missing keys are absent).
+	Boot : { url : Str, storage : List((Str, Str)) }
+
+	get_u32 : List(U8), U64 -> U32
+	get_u32 = |b, at| {
+		b0 = (b.get(at) ?? crash "short boot").to_u32()
+		b1 = (b.get(at + 1) ?? crash "short boot").to_u32()
+		b2 = (b.get(at + 2) ?? crash "short boot").to_u32()
+		b3 = (b.get(at + 3) ?? crash "short boot").to_u32()
+		b0 + b1.shl_wrap(8) + b2.shl_wrap(16) + b3.shl_wrap(24)
+	}
+
+	get_str : List(U8), U64 -> (Str, U64)
+	get_str = |b, at| {
+		n = Engine.get_u32(b, at).to_u64()
+		bytes = b.sublist({ start: at + 4, len: n })
+		if bytes.len() != n {
+			crash "short boot"
+		}
+		(Str.from_utf8(bytes) ?? crash "boot is not UTF-8", at + 4 + n)
+	}
+
+	## Boot bytes: url:str count:u32 (key:str value:str)*. Empty = no boot.
+	decode_boot : List(U8) -> Boot
+	decode_boot = |b| {
+		if b.is_empty() {
+			{ url: "", storage: [] }
+		} else {
+			(url, a1) = Engine.get_str(b, 0)
+			n = Engine.get_u32(b, a1).to_u64()
+			var $at = a1 + 4
+			var $kv = []
+			var $i = 0.U64
+			while $i < n {
+				(k, a2) = Engine.get_str(b, $at)
+				(v, a3) = Engine.get_str(b, a2)
+				$kv = $kv.append((k, v))
+				$at = a3
+				$i = $i + 1
+			}
+			{ url, storage: $kv }
+		}
+	}
+
+	## The value of a boot storage key.
+	boot_storage : Boot, Str -> Try(Str, [Missing])
+	boot_storage = |boot, key| match boot.storage.find_first(|(k, _)| k == key) {
+		Ok((_, v)) => Ok(v)
+		Err(_) => Err(Missing)
+	}
+
 	const : a -> Val(ctx, a)
 	const = |value| { mask: 0, read: |_| value, sel: NoSel }
 
@@ -2135,13 +2523,51 @@ Engine := [].{
 	App := { root : Inst(Root), tx : Tx }
 
 	new_tx : List(U8) -> Tx
-	new_tx = |cmds| { cmds, next: 1, free: [], routes: [], evals: 0, paths: [[]], site_free: [] }
+	new_tx = |cmds| { cmds, next: 1, free: [], routes: [], evals: 0, paths: [[]], site_free: [], fx: Engine.fx_empty }
 
-	## Mount the application under host node 0.
+	## Mount the application under host node 0 (default effect bound).
 	mount : Elem(Root) -> App
-	mount = |elem| {
-		(block, tx) = Engine.mount_block(Root, elem, 0, [], 0, 0, { cap: 0, local: False }, Engine.new_tx([]))
-		{ root: Engine.block_inst(block), tx }
+	mount = |elem| Engine.mount_with(32, elem)
+
+	## Mount with an in-flight effect bound; runs any follow-up turns the
+	## mount queued.
+	mount_with : U64, Elem(Root) -> App
+	mount_with = |max, elem| {
+		{ cmds, next, free, routes, evals, paths, site_free, fx } = Engine.new_tx([])
+		tx0 = { cmds, next, free, routes, evals, paths, site_free, fx: { ..fx, max } }
+		(block, tx) = Engine.mount_block(Root, elem, 0, [], 0, 0, { cap: 0, local: False }, tx0)
+		Engine.drain({ root: Engine.block_inst(block), tx })
+	}
+
+	## One turn: fire down `path`, then the root's Changed pass.
+	turn : App, List(U32), U32, Payload -> App
+	turn = |{ root, tx }, path, h, payload| {
+		(root2, out, tx2) = Engine.call(root, Root, Fire(path, 0, h, payload), tx)
+		mask = Engine.out_mask(out)
+		if mask == 0 {
+			{ root: root2, tx: tx2 }
+		} else {
+			(root3, _, tx3) = Engine.call(root2, Root, Changed(mask), tx2)
+			{ root: root3, tx: tx3 }
+		}
+	}
+
+	## Run queued follow-up turns in order, bounded per host call.
+	drain : App -> App
+	drain = |app0| {
+		var $app = app0
+		var $turns = 0.U64
+		while !$app.tx.fx.queue.is_empty() {
+			if $turns >= Engine.max_turns {
+				crash "effect follow-up turns exceeded the per-call budget (feedback loop)"
+			}
+			{ root, tx } = $app
+			q = tx.fx.queue.first() ?? crash "queue"
+			tx1 = Engine.with_fx(tx, |fx| { ..fx, queue: fx.queue.drop_first(1) })
+			$app = Engine.turn({ root, tx: tx1 }, q.path, q.id, Fx(q.res))
+			$turns = $turns + 1
+		}
+		$app
 	}
 
 	## Deliver an event on host node `node`: a static node (routes table) or a
@@ -2163,15 +2589,19 @@ Engine := [].{
 		}
 		match target {
 			Err(Stale) => { root, tx }
-			Ok((path, h)) => {
-				(root2, out, tx2) = Engine.call(root, Root, Fire(path, 0, h, payload), tx)
-				mask = Engine.out_mask(out)
-				if mask == 0 {
-					{ root: root2, tx: tx2 }
-				} else {
-					(root3, _, tx3) = Engine.call(root2, Root, Changed(mask), tx2)
-					{ root: root3, tx: tx3 }
-				}
+			Ok((path, h)) => Engine.drain(Engine.turn({ root, tx }, path, h, Ev(payload)))
+		}
+	}
+
+	## An effect result from the host: one turn, exactly like an event. An id
+	## that is not in flight is dropped and counted (`stale`).
+	result : App, U32, Res -> App
+	result = |{ root, tx }, id, res| {
+		match tx.fx.live.find_first(|l| l.id == id) {
+			Err(_) => { root, tx: Engine.fx_count(tx, Stale) }
+			Ok(entry) => {
+				tx1 = if entry.sub tx else Engine.with_fx(tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id) })
+				Engine.drain(Engine.turn({ root, tx: tx1 }, entry.path, id, Fx(res)))
 			}
 		}
 	}
@@ -2185,27 +2615,44 @@ Engine := [].{
 	## Hand the accumulated commands to the host and take a buffer back.
 	take_cmds : App, List(U8) -> (App, List(U8))
 	take_cmds = |{ root, tx }, buf| {
-		{ cmds, next, free, routes, evals, paths, site_free } = tx
-		({ root, tx: { cmds: buf.clear(), next, free, routes, evals, paths, site_free } }, cmds)
+		{ cmds, next, free, routes, evals, paths, site_free, fx } = tx
+		({ root, tx: { cmds: buf.clear(), next, free, routes, evals, paths, site_free, fx } }, cmds)
 	}
 
 	evals : App -> U64
 	evals = |a| a.tx.evals
 
-	## The host-facing program: mount once, then one transaction per event.
+	## The host-facing program: the declared storage keys (read by the host
+	## before mount), mount once with the boot bytes, then one transaction
+	## per event or effect result.
 	Program(state) : {
-		init : () -> (state, List(U8)),
+		keys : () -> List(U8),
+		init : List(U8) -> (state, List(U8)),
 		event : state, List(U8), U32, U32, List(U8) -> (state, List(U8)),
 	}
 
 	program : (() -> Elem(Root)) -> Program(App)
-	program = |view| {
-		init: || Engine.take_cmds(Engine.mount(view()), []),
+	program = |view| Engine.program_boot({ storage_keys: [], max_inflight: 32 }, |_| view())
+
+	program_boot : { storage_keys : List(Str), max_inflight : U64 }, (Boot -> Elem(Root)) -> Program(App)
+	program_boot = |cfg, view| {
+		keys: || {
+			var $b = Engine.put_u32([], cfg.storage_keys.len().to_u32_wrap())
+			for k in cfg.storage_keys {
+				$b = Engine.put_str($b, k)
+			}
+			$b
+		},
+		init: |boot| Engine.take_cmds(Engine.mount_with(cfg.max_inflight, view(Engine.decode_boot(boot))), []),
 		event: |inst, buf, node, handler, payload| {
 			{ root, tx } = inst
-			{ cmds: _, next, free, routes, evals: ev, paths, site_free } = tx
-			fresh = { root, tx: { cmds: buf.clear(), next, free, routes, evals: ev, paths, site_free } }
-			Engine.take_cmds(Engine.event(fresh, node, handler, Str.from_utf8(payload) ?? ""), [])
+			{ cmds: _, next, free, routes, evals: ev, paths, site_free, fx } = tx
+			fresh = { root, tx: { cmds: buf.clear(), next, free, routes, evals: ev, paths, site_free, fx } }
+			if node == Engine.fx_node {
+				Engine.take_cmds(Engine.result(fresh, handler, Engine.decode_res(payload)), [])
+			} else {
+				Engine.take_cmds(Engine.event(fresh, node, handler, Str.from_utf8(payload) ?? crash "event payload is not UTF-8"), [])
+			}
 		},
 	}
 }
