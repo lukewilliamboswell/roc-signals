@@ -1,0 +1,12 @@
+# Optimised Wasm sizes, 2026-11-05: --opt=size, then wasm-opt -Oz --all-features; gzip -9 of the -Oz file.
+# Spike: platform/Engine.roc + Zig host (ReleaseSmall), nightly 2026-11-03 (scripts/wbuild.sh + wsize.sh).
+# Current: examples-web/<app> on platform-web with the ReleaseSmall wasm host, nightly 2026-09-12 (the tree's
+# pin; scripts/cursize.sh), before the mandatory stack-check pass (+~77 KB raw for conduit).
+app                spike raw   spike -Oz    spike gz |     cur raw     cur -Oz      cur gz |    gz %
+form-builder         1758596     1747966      545478 |     1600185     1524762      519110 |    105%
+kanban-board         1274435     1266701      404832 |     1474213     1407465      483121 |     84%
+data-grid             855173      846690      266259 |     1463462     1396118      482434 |     55%
+markdown-editor      3147438     3077711      938822 |     1677918     1592851      546053 |    172%
+conduit              5274106     5188529     1500677 |     3080902     2949310      940416 |    160%
+# Phase 4 spike -Oz gz for reference (before payloads/effects/focus/containment): form 394,136; kanban 301,501;
+# grid 203,353; markdown 671,205 (planning/roc-engine-evidence/p4apps/results/sizes.txt).
