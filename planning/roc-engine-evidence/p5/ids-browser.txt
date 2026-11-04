@@ -27,3 +27,8 @@ ok   30 round trips: pages flat, no growth in live allocations or live bytes aft
    cycles (pages, live): [[142,966,175959],[142,966,175959],[142,966,175959],[142,966,175959],[142,965,184723]] ... [[142,965,184723],[142,966,175959]]
 == soak conduit: all pass
 == jfb: all pass
+# markdown-editor rerun with the fixed-document cycle (append/remove-section adds a newline per trip by design):
+ok   random walk: 3000 events in 310 ms, no fault
+ok   30 round trips: pages flat, no growth in live allocations or live bytes after 3 warm-up cycles (exactly equal: true)
+   cycles (pages, live): [[140,148,39064],[140,148,38984],[140,148,38984],[140,148,38984],[140,148,38984]] ... [[140,148,38984],[140,148,38984]]
+== soak markdown-editor: all pass
