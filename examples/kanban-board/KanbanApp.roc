@@ -98,9 +98,16 @@ KanbanApp := [].{
 		)
 	}
 
+	## Compiler workaround: a local closure here that captures `cp` (in a
+	## component body with an `each` over a record item) makes monotype
+	## lowering take ~100 s and 6 GB. A top-level function capturing nothing
+	## does not. Repro: repro/monotype-closure-capture/main.roc (not yet filed
+	## upstream). Remove once the pinned compiler is fixed.
+	slug_of : Val(CC, ColumnProp), Str -> Val(CC, Str)
+	slug_of = |cp, prefix| cp.map(|p| "${prefix}-${Kanban.Column.slug(p.column)}")
+
 	column_view : Val(CC, ColumnProp), State(CC, List(CardAct)) -> Elem(CC)
 	column_view = |cp, out| {
-		slug = |prefix| cp.map(|p| "${prefix}-${Kanban.Column.slug(p.column)}")
 		heading = cp.map(|p| Kanban.Column.to_str(p.column))
 		matching = cp.map(|p| p.views.len())
 		Engine.element(
@@ -114,20 +121,20 @@ KanbanApp := [].{
 							"flex min-w-0 items-baseline gap-2",
 							[
 								Engine.element("h2", [Engine.class("card-title")], [Engine.text_v(heading)]),
-								Html.p_v(cp.map(|p| if (p.count == 1) "1 card" else "${p.count.to_str()} cards"), [Engine.class("hint numeric"), Engine.test_id_v(slug("count"))]),
+								Html.p_v(cp.map(|p| if (p.count == 1) "1 card" else "${p.count.to_str()} cards"), [Engine.class("hint numeric"), Engine.test_id_v(KanbanApp.slug_of(cp, "count"))]),
 							],
 						),
-						Html.p_v(cp.map(|p| Kanban.WipState.to_str(p.wip)), [Engine.class_v(cp.map(|p| Kanban.WipState.class(p.wip))), Engine.test_id_v(slug("wip"))]),
+						Html.p_v(cp.map(|p| Kanban.WipState.to_str(p.wip)), [Engine.class_v(cp.map(|p| Kanban.WipState.class(p.wip))), Engine.test_id_v(KanbanApp.slug_of(cp, "wip"))]),
 					],
 				),
 				Html.div(
 					"panel-body",
 					[
-						Html.p_v(matching.map(|n| "${n.to_str()} shown"), [Engine.class("hint numeric"), Engine.test_id_v(slug("matching"))]),
+						Html.p_v(matching.map(|n| "${n.to_str()} shown"), [Engine.class("hint numeric"), Engine.test_id_v(KanbanApp.slug_of(cp, "matching"))]),
 						Engine.each(cp.map(|p| p.views), |v| v.title, |row| KanbanApp.card_row(out, row)),
 						Engine.when(
 							matching.map(|n| n == 0),
-							|| Engine.element("p", [Engine.class("empty-state"), Engine.test_id_v(slug("empty"))], [Engine.text("No cards")]),
+							|| Engine.element("p", [Engine.class("empty-state"), Engine.test_id_v(KanbanApp.slug_of(cp, "empty"))], [Engine.text("No cards")]),
 							|| Engine.text(""),
 						),
 					],
