@@ -81,8 +81,8 @@ Changed pass. Disposal follows design.md: subscriptions, intervals and timers ar
 admitted HTTP/storage reads reparent to the surviving `when`/`switch`/`each` that disposed them
 and run their reaction there (writes to retired states skipped and counted, survivors commit).
 Unknown, delivered, stopped or purged ids are dropped and counted. A model-oracle fuzz target
-(apps/effects, bound 5) passes ~85k programs per minute with exact allocation baselines; 9 of 10
-mutations are caught by the model (incl. cancel-on-dispose), the tenth by the allocation baseline.
+(apps/effects, bound 5) passes ~85k programs per minute with exact allocation baselines; of 9
+mutations, 8 are caught by the model (incl. cancel-on-dispose), the ninth by the allocation baseline.
 
 Conduit: full port (apps/conduit; builtin Json works). Specs 24/25 natively and 24/25 in Chrome
 (manual effects); an automatic-mode journey against the deterministic RealWorld backend passes.
