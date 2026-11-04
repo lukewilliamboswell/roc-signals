@@ -7,9 +7,10 @@ $R/scripts/fz.sh effects build > /dev/null || exit 1
 F=$P/fz-effects
 cp $F/Engine.roc $F/Engine.good.roc
 OUT=$P/results/mutations-fx.txt
-: > $OUT
+: >> $OUT
 run() {
   name=$1; from=$2; to=$3
+  if [ -n "${ONLY:-}" ] && [ "$ONLY" != "$name" ]; then return; fi
   python3 - "$F/Engine.good.roc" "$F/Engine.roc" "$from" "$to" <<'PY'
 import sys
 s = open(sys.argv[1]).read()
@@ -30,6 +31,6 @@ run followups-lifo '			q = tx.fx.queue.first() ?? crash "queue"
 			tx1 = Engine.with_fx(tx, |fx| { ..fx, queue: fx.queue.drop_last(1) })'
 run stale-applied '			Err(_) => (Engine.effect_inst(cfg, last, owned), Pending(env, 0), Engine.fx_count(tx, Stale))' '			Err(_) => (Engine.effect_inst(cfg, last, owned), Pending((cfg.react.run)(env, last, res), cfg.react.mask), Engine.fx_count(tx, Stale))'
 run site-keeps-owned 'kept = if entry.sub owned else owned.drop_at(i)' 'kept = owned'
-run no-queue-purge '			} else if $tx.fx.queue.any(|q| q.id == id) {' '			} else if False {'
+run no-queue-purge '			} else if $tx.fx.queue.any(|q| q.id == id) {' '			} else if $tx.fx.queue.len() > 1000000 {'
 cp $F/Engine.good.roc $F/Engine.roc
 rm -f $F/tm

@@ -1,0 +1,8 @@
+mutation dispose-no-cancel: fx-channel: finding; baseline not_checked; examples 4; exploration skipped (attempted 0, accepted 0, rejected 0) :: roc crashed] step 4 toggle 0: effect commands [], model [Cancel(3)]
+mutation result-keeps-live: fx-channel: finding; baseline not_checked; examples 4; exploration skipped (attempted 0, accepted 0, rejected 0) :: roc crashed] step 3 deliver 2: counters [3, 3, 0, 1, 0, 3] (issued delivered stale refused cancelled live), model [3, 3, 0, 1, 0, 2]
+mutation no-bound: fx-channel: finding; baseline not_checked; examples 4; exploration skipped (attempted 0, accepted 0, rejected 0) :: roc crashed] step 2 issue 0: effect commands [Http(4, 
+mutation followups-lifo: fx-channel: finding; baseline not_checked; examples 4; exploration skipped (attempted 0, accepted 0, rejected 0) :: roc crashed] step 2 issue 0: log 
+mutation stale-applied: fx-channel: passed; baseline matched; examples 4; exploration passed (attempted 174776, accepted 173503, rejected 1273) :: 
+mutation site-keeps-owned: fx-channel: baseline_changed; baseline changed; examples 4; exploration skipped (attempted 0, accepted 0, rejected 0) :: 
+mutation no-queue-purge: BUILD FAILED
+mutation no-queue-purge: fx-channel: finding; baseline not_checked; examples 4; exploration skipped (attempted 0, accepted 0, rejected 0) :: roc crashed] step 8 issue 1: counters [3, 6, 3, 4, 2, 1] (issued delivered stale refused cancelled live), model [3, 6, 4, 4, 2, 1]

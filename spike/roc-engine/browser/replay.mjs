@@ -26,16 +26,28 @@ const files = {
   "/runtime.mjs": path.join(here, "..", "platform", "runtime.mjs"),
   "/app.wasm": path.join(appDir, process.env.WASM ?? "app.wasm"),
 };
+let hooks = null;
+if (process.env.HOOKS) hooks = (await import(path.resolve(process.env.HOOKS))).default;
+
 const types = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm" };
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, "http://x");
   if (u.pathname === "/favicon.ico") {
     res.writeHead(204);
     res.end();
     return;
   }
-  let f = files[u.pathname];
-  if (!f && u.pathname.endsWith("/")) f = files["/index.html"];
+  // Files are served by basename under any path (apps mount under a base
+  // path, e.g. /roc-signals/examples-web/conduit/), directories as index.
+  let f = u.pathname.endsWith("/") ? files["/index.html"] : files["/" + path.basename(u.pathname)];
+  if (!f && hooks && hooks.serve) {
+    const r = await hooks.serve(u, req);
+    if (r) {
+      res.writeHead(r.status, { "content-type": r.type ?? "application/json" });
+      res.end(r.body);
+      return;
+    }
+  }
   if (!f || !fs.existsSync(f)) {
     res.writeHead(404);
     res.end();
@@ -168,18 +180,17 @@ async function step(page, s, hooks) {
     case "expect-metric-delta-at-least":
       return;
     default:
-      if (hooks && hooks[h]) return hooks[h](page, s);
+      if (hooks && hooks[h]) return hooks[h](page, s, spec);
       throw new Error(`unsupported step ${h}`);
   }
 }
 
-let hooks = null;
-if (process.env.HOOKS) hooks = (await import(path.resolve(process.env.HOOKS))).default;
 
 const results = [];
 for (const spec of specs) {
   if (only && !only.test(spec.file)) continue;
-  const page = await browser.newPage();
+  const context = await browser.createBrowserContext();
+  const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
   page.on("console", (m) => {
@@ -194,6 +205,7 @@ for (const spec of specs) {
     await page.evaluateOnNewDocument(fs.readFileSync(files["/locate.js"], "utf8"));
     if (hooks && hooks.before) await hooks.before(page, spec);
     await page.goto(url);
+    if (hooks && hooks.loaded) await hooks.loaded(page, spec);
     await page.waitForFunction("window.__ready || window.__error", { timeout: 20000 });
     const err = await page.evaluate("window.__error");
     if (err) throw new Error(`mount failed: ${err}`);
@@ -216,6 +228,7 @@ for (const spec of specs) {
   results.push({ file: spec.file, ok: failed === null, steps: spec.steps.length, ms: Date.now() - t0, failed });
   console.log(`${failed === null ? "PASS" : "FAIL"} ${spec.file} (${spec.steps.length} steps, ${Date.now() - t0} ms)${failed ? "\n     " + failed : ""}`);
   await page.close();
+  await context.close();
 }
 await browser.close();
 server.close();

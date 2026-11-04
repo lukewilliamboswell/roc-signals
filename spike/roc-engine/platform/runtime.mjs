@@ -10,6 +10,16 @@
 // `event`): click/submit "", input: the target's value, change: "true"/"false"
 // for a checkbox or radio, else the target's value, keydown/keyup: the key.
 //
+// Effects (see "Effects" in Engine.roc): the engine emits FX requests with
+// ids, CANCEL, NAV, STORE and TITLE commands. They are collected while a
+// batch is applied and performed only after the whole batch is applied.
+// Each awaited result comes back as its own event on FX_NODE (one turn, in
+// completion order). In manual mode (options.manualEffects) HTTP requests
+// and timers wait in `pending` until runEffect() answers them; the engine,
+// not this file, decides staleness: a result for a cancelled id is never
+// sent because CANCEL forgets it here, and anything late is dropped by the
+// engine and counted.
+//
 // Attribute values: "" removes the attribute. `value` and `checked` are set
 // as properties (the live control state), boolean attributes (disabled,
 // selected, readonly, required, hidden, multiple) are present for any value
@@ -27,6 +37,21 @@ const OP_ATTR = 9;
 const OP_TEXTNODE = 10;
 const OP_LISTEN = 11;
 const OP_SETTEXT = 12;
+
+const OP_FX = 13;
+const OP_CANCEL = 14;
+const OP_NAV = 15;
+const OP_STORE = 16;
+const OP_TITLE = 17;
+
+// Effect results are events on this node; the handler number is the id.
+const FX_NODE = 0xffffffff;
+const RES_HTTP = 1;
+const RES_NETWORK = 2;
+const RES_VALUE = 3;
+const RES_MISSING = 4;
+const RES_FIRED = 5;
+const RES_LOCATION = 6;
 
 const HOLE_TEXT = 1;
 const HOLE_ATTR = 2;
@@ -120,6 +145,33 @@ function payloadOf(event) {
 
 const utf8enc = new TextEncoder();
 
+function u32(v) {
+  const b = new Uint8Array(4);
+  new DataView(b.buffer).setUint32(0, v, true);
+  return b;
+}
+
+function encStr(s) {
+  const b = utf8enc.encode(s);
+  return concat([u32(b.length), b]);
+}
+
+function concat(parts) {
+  let n = 0;
+  for (const p of parts) n += p.length;
+  const out = new Uint8Array(n);
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
+}
+
+function httpResult(status, body) {
+  return concat([new Uint8Array([RES_HTTP, status & 0xff, (status >>> 8) & 0xff]), utf8enc.encode(body)]);
+}
+
 export class RocEngineRuntime {
   constructor(exports, root, options = {}) {
     this.x = exports;
@@ -133,15 +185,64 @@ export class RocEngineRuntime {
     this.timing = options.timing ?? null;
     this.busy = false;
     this.queue = [];
+    this.manual = options.manualEffects ?? false;
+    this.fxOut = [];
+    // id -> { kind, req, cancel } for every effect this runtime holds.
+    this.live = new Map();
+    // Manual mode: awaited non-subscription requests in issue order.
+    this.issued = [];
+    this.win = options.window ?? globalThis.window;
+    this.storage = options.storage ?? (() => {
+      try {
+        return this.win.localStorage;
+      } catch (_) {
+        return null;
+      }
+    })();
   }
 
+  // Boot: read the app's declared storage keys, stage the URL and their
+  // values, then mount.
   mount() {
     this.listen("click");
-    this.x.init();
-    this.apply();
+    const x = this.x;
+    x.boot_keys();
+    const u8 = new Uint8Array(x.memory.buffer, x.cmd_ptr(), x.cmd_len());
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    const keys = [];
+    let at = 4;
+    for (let i = dv.getUint32(0, true); i > 0; i -= 1) {
+      const n = dv.getUint32(at, true);
+      keys.push(readStr(u8, at + 4, n));
+      at += 4 + n;
+    }
+    const pairs = [];
+    for (const k of keys) {
+      let v = null;
+      try {
+        v = this.storage ? this.storage.getItem(k) : null;
+      } catch (_) {
+        v = null;
+      }
+      if (v !== null) pairs.push([k, v]);
+    }
+    const loc = this.win ? this.win.location : null;
+    const url = loc ? loc.pathname + loc.search + loc.hash : "";
+    const parts = [encStr(url), u32(pairs.length)];
+    for (const [k, v] of pairs) parts.push(encStr(k), encStr(v));
+    this.stage(concat(parts));
+    this.busy = true;
+    try {
+      x.init();
+      this.apply();
+    } finally {
+      this.busy = false;
+    }
+    this.drainQueue();
   }
 
   unmount() {
+    for (const id of [...this.live.keys()]) this.cancel(id);
     for (const [type, fn] of this.listening) this.root.removeEventListener(type, fn);
     this.listening.clear();
     this.x.drop();
@@ -189,21 +290,30 @@ export class RocEngineRuntime {
     this.busy = true;
     try {
       this.deliver(node, handler, payload);
-      while (this.queue.length > 0) {
-        const [n, h, p] = this.queue.shift();
-        this.deliver(n, h, p);
-      }
     } finally {
       this.busy = false;
+    }
+    this.drainQueue();
+  }
+
+  drainQueue() {
+    while (!this.busy && this.queue.length > 0) {
+      const [n, h, p] = this.queue.shift();
+      this.busy = true;
+      try {
+        this.deliver(n, h, p);
+      } finally {
+        this.busy = false;
+      }
     }
   }
 
   stage(payload) {
-    if (payload === "") {
+    if (payload === "" || payload.length === 0) {
       this.x.payload_reserve(0);
       return;
     }
-    const bytes = utf8enc.encode(payload);
+    const bytes = typeof payload === "string" ? utf8enc.encode(payload) : payload;
     const ptr = this.x.payload_reserve(bytes.length);
     new Uint8Array(this.x.memory.buffer, ptr, bytes.length).set(bytes);
   }
@@ -283,8 +393,19 @@ export class RocEngineRuntime {
     return { root, holes };
   }
 
-  // Returns the number of command bytes applied.
+  // Returns the number of command bytes applied. Effect commands found in
+  // the batch run after the whole batch has been applied.
   apply() {
+    const n = this.applyBatch();
+    if (this.fxOut.length > 0) {
+      const out = this.fxOut;
+      this.fxOut = [];
+      for (const fx of out) this.perform(fx);
+    }
+    return n;
+  }
+
+  applyBatch() {
     const x = this.x;
     const len = x.cmd_len();
     if (len === 0) return 0;
@@ -424,6 +545,64 @@ export class RocEngineRuntime {
           at += 8 + n;
           break;
         }
+        case OP_FX: {
+          const id = dv.getUint32(at, true);
+          const kind = u8[at + 4];
+          at += 5;
+          const str = () => {
+            const n = dv.getUint32(at, true);
+            const v = readStr(u8, at + 4, n);
+            at += 4 + n;
+            return v;
+          };
+          if (kind === 1) {
+            const method = str();
+            const url = str();
+            const headers = [];
+            let n = dv.getUint32(at, true);
+            at += 4;
+            for (; n > 0; n -= 1) headers.push([str(), str()]);
+            const body = str();
+            this.fxOut.push({ op: "http", id, method, url, headers, body });
+          } else if (kind === 2) {
+            this.fxOut.push({ op: "get", id, key: str() });
+          } else if (kind === 3 || kind === 4) {
+            this.fxOut.push({ op: kind === 3 ? "timer" : "interval", id, ms: dv.getUint32(at, true) });
+            at += 4;
+          } else if (kind === 5) {
+            this.fxOut.push({ op: "popstate", id });
+          } else throw new Error(`unknown effect kind ${kind}`);
+          break;
+        }
+        case OP_CANCEL:
+          this.fxOut.push({ op: "cancel", id: dv.getUint32(at, true) });
+          at += 4;
+          break;
+        case OP_NAV: {
+          const mode = u8[at];
+          const n = dv.getUint32(at + 1, true);
+          this.fxOut.push({ op: mode === 1 ? "push" : "replace", url: readStr(u8, at + 5, n) });
+          at += 5 + n;
+          break;
+        }
+        case OP_STORE: {
+          const mode = u8[at];
+          const n = dv.getUint32(at + 1, true);
+          const key = readStr(u8, at + 5, n);
+          at += 5 + n;
+          if (mode === 1) {
+            const m = dv.getUint32(at, true);
+            this.fxOut.push({ op: "set", key, value: readStr(u8, at + 4, m) });
+            at += 4 + m;
+          } else this.fxOut.push({ op: "remove", key });
+          break;
+        }
+        case OP_TITLE: {
+          const n = dv.getUint32(at, true);
+          this.fxOut.push({ op: "title", text: readStr(u8, at + 4, n) });
+          at += 4 + n;
+          break;
+        }
         default:
           throw new Error(`unknown engine command ${op} at byte ${at - 1}`);
       }
@@ -431,14 +610,143 @@ export class RocEngineRuntime {
     return len;
   }
 
+  // ---------------------------------------------------------------------
+  // Effects.
+
+  result(id, bytes) {
+    this.dispatch(FX_NODE, id, bytes);
+  }
+
+  perform(fx) {
+    const w = this.win;
+    switch (fx.op) {
+      case "push":
+        w.history.pushState(null, "", fx.url);
+        return;
+      case "replace":
+        w.history.replaceState(null, "", fx.url);
+        return;
+      case "title":
+        w.document.title = fx.text;
+        return;
+      case "set":
+      case "remove":
+        try {
+          if (fx.op === "set") this.storage.setItem(fx.key, fx.value);
+          else this.storage.removeItem(fx.key);
+        } catch (e) {
+          // A storage write failure is a host diagnostic, not an app result.
+          console.warn(`storage ${fx.op} ${fx.key} failed: ${e}`);
+        }
+        return;
+      case "cancel":
+        this.cancel(fx.id);
+        return;
+      case "popstate": {
+        const fn = () => {
+          const l = w.location;
+          this.result(fx.id, concat([new Uint8Array([RES_LOCATION]), utf8enc.encode(l.pathname + l.search + l.hash)]));
+        };
+        w.addEventListener("popstate", fn);
+        this.live.set(fx.id, { kind: "sub", cancel: () => w.removeEventListener("popstate", fn) });
+        return;
+      }
+      case "interval": {
+        const h = setInterval(() => this.result(fx.id, new Uint8Array([RES_FIRED])), fx.ms);
+        this.live.set(fx.id, { kind: "sub", cancel: () => clearInterval(h) });
+        return;
+      }
+      case "get": {
+        // One turn later, never inside the current call.
+        const h = setTimeout(() => {
+          this.live.delete(fx.id);
+          let v = null;
+          try {
+            v = this.storage ? this.storage.getItem(fx.key) : null;
+          } catch (_) {
+            v = null;
+          }
+          this.result(fx.id, v === null ? new Uint8Array([RES_MISSING]) : concat([new Uint8Array([RES_VALUE]), utf8enc.encode(v)]));
+        }, 0);
+        this.live.set(fx.id, { kind: "get", cancel: () => clearTimeout(h) });
+        return;
+      }
+      case "timer":
+      case "http": {
+        if (this.manual) {
+          this.live.set(fx.id, { kind: fx.op, req: fx, cancel: () => {} });
+          this.issued.push(fx.id);
+          return;
+        }
+        if (fx.op === "timer") {
+          const h = setTimeout(() => {
+            this.live.delete(fx.id);
+            this.result(fx.id, new Uint8Array([RES_FIRED]));
+          }, fx.ms);
+          this.live.set(fx.id, { kind: "timer", cancel: () => clearTimeout(h) });
+          return;
+        }
+        const ctl = new AbortController();
+        this.live.set(fx.id, { kind: "http", req: fx, cancel: () => ctl.abort() });
+        const init = { method: fx.method, headers: fx.headers, signal: ctl.signal };
+        if (fx.method !== "GET" && fx.method !== "HEAD" && fx.body !== "") init.body = fx.body;
+        (this.fetch ?? globalThis.fetch)(fx.url, init)
+          .then(async (r) => {
+            const body = await r.text();
+            if (!this.live.has(fx.id)) return;
+            this.live.delete(fx.id);
+            this.result(fx.id, httpResult(r.status, body));
+          })
+          .catch((e) => {
+            if (!this.live.has(fx.id)) return; // cancelled: the engine forgot it
+            this.live.delete(fx.id);
+            this.result(fx.id, concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(String(e))]));
+          });
+        return;
+      }
+      default:
+        throw new Error(`unknown effect ${fx.op}`);
+    }
+  }
+
+  cancel(id) {
+    const e = this.live.get(id);
+    if (e === undefined) return;
+    this.live.delete(id);
+    e.cancel();
+  }
+
+  // Manual mode: awaited requests still pending, in issue order.
+  pendingEffects() {
+    return this.issued.filter((id) => this.live.has(id)).map((id) => this.live.get(id).req ?? { id });
+  }
+
+  // Manual mode: answer pending request `id` with an HTTP response
+  // ({ status, body }), a network failure ({ network: message }) or a timer
+  // tick ({}). Returns false when `id` is not pending (cancelled/answered).
+  runEffect(id, answer) {
+    if (!this.live.has(id)) return false;
+    this.live.delete(id);
+    if (answer.network !== undefined) this.result(id, concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(answer.network)]));
+    else if (answer.status !== undefined) this.result(id, httpResult(answer.status, answer.body ?? ""));
+    else this.result(id, new Uint8Array([RES_FIRED]));
+    return true;
+  }
+
+  // Deliver a result for an arbitrary id, bypassing this runtime's own
+  // bookkeeping (stale-result tests: the engine must drop and count it).
+  injectResult(id, status, body) {
+    this.result(id, httpResult(status, body));
+  }
+
   liveRows(site = 1) {
     return (this.sites[site] ?? []).reduce((n, el) => n + (el === undefined ? 0 : 1), 0);
   }
 }
 
-export async function mountRocEngineApp({ wasmUrl, root }) {
+export async function mountRocEngineApp({ wasmUrl, root, ...options }) {
   const { instance } = await instantiateEngineWasm(wasmUrl);
-  const runtime = new RocEngineRuntime(instance.exports, root);
+  const runtime = new RocEngineRuntime(instance.exports, root, options);
   runtime.mount();
   return runtime;
 }
