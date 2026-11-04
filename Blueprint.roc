@@ -28,6 +28,13 @@ node_program = Fetch("node", node)
 
 wasm_opt_program = Fetch("wasm-opt", wasm_opt)
 
+# The Roc nightly the Roc-owned engine is built and tested with. It is also
+# the scripts' tooling compiler (`roc-stable`), so every script's `roc` header
+# field names the same release. roc-overlay packages it as
+# `nix#rocpkgs.nightly-2026-11-03-34bd006`; it is fetched directly here so no
+# environment starts Nix.
+roc_stable_program = Fetch("roc-stable", Recipes.roc_nightly("nightly-2026-11-03-34bd006"))
+
 config = [
 	Name("roc-signals"),
 	Systems(["x86_64-linux", "aarch64-linux", "aarch64-darwin"]),
@@ -50,7 +57,24 @@ config = [
 	# Fuzzing campaigns link against the machine's AFL++, which publishes no
 	# relocatable release.
 	Environment("fuzz", [Extend("dev"), Expect(["afl-cc", "afl-fuzz"])]),
+	# The Roc-owned engine (engine/v2): native and browser spec runs, the
+	# test platform's fetched inputs, and the scripts that drive them. curl,
+	# tar, zstd and sha256sum fetch and verify the roc-fuzz release inputs of
+	# platform-test.
+	#
+	# Chrome is the machine's `google-chrome` for now. Chrome for Testing ships
+	# only zip archives, and blueprint 0.8.0 (and 0.9.0) unpacks a Zip download
+	# with `tar -xf`, which GNU tar cannot read; the pinned recipe is ready
+	# below as `chrome` and replaces this Expect once blueprint unpacks zips on
+	# Linux.
+	Environment("engine", [Programs([roc_stable_program, zig_program, node_program]), Expect(["curl", "tar", "zstd", "sha256sum", "google-chrome"])]),
 	Shell("default", [Use("site")]),
+	# The engine/v2 gate: formatting, roc test, platform-test, every ported
+	# app's specs natively and in Chrome, and the mutation check.
+	Task("check", [Use("engine"), Run(["scripts/check_all.roc"])]),
+	# One or more apps' specs: `blueprint run spec -- --browser kanban-board`.
+	Task("spec", [Use("engine"), Run(["scripts/spec.roc", "--"])]),
+	Task("platform-test", [Use("engine"), Run(["scripts/build_platform_test.roc"])]),
 	# The scripts/minici targets, which CI jobs and contributors share;
 	# `minici` alone runs every area reproducible on this machine.
 	Task("minici", [Use("site"), Run(["python3", "scripts/minici"])]),
@@ -127,6 +151,19 @@ tailwind = |system| {
 		"x86_64-linux" => File("${base}/tailwindcss-linux-x64")
 		"aarch64-linux" => File("${base}/tailwindcss-linux-arm64")
 		"aarch64-darwin" => File("${base}/tailwindcss-macos-arm64")
+		_ => Unavailable
+	}
+}
+
+# Chrome for Testing, for the browser spec runner (tests/browser/replay.mjs).
+# No build exists for aarch64 Linux. Not yet used: see the `engine`
+# environment.
+chrome : System -> Config.Download
+chrome = |system| {
+	base = "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.38"
+	match system {
+		"x86_64-linux" => Archive("${base}/linux64/chrome-linux64.zip", Zip, "chrome-linux64/chrome")
+		"aarch64-darwin" => Archive("${base}/mac-arm64/chrome-mac-arm64.zip", Zip, "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing")
 		_ => Unavailable
 	}
 }

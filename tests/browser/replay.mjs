@@ -1,5 +1,5 @@
 // replay.mjs --wasm APP.wasm --runtime runtime.mjs --steps STEPS.jsonl
-//            [--chrome PATH] [--filter REGEX] [--out RESULTS.json] [--pending-phase3]
+//            [--chrome PATH] [--filter REGEX] [--out RESULTS.json] [--pending-phase3] [--json-lines]
 //
 // The browser spec runner. It replays specs in real headless Chrome, one
 // fresh browser context (fresh instance, fresh storage) per spec. The steps
@@ -16,6 +16,9 @@
 // Work assertions (`metric_step` in the step JSON) need engine counters that
 // do not exist yet. They fail as unsupported, or with `--pending-phase3` are
 // recorded and the spec reports `pending-phase3`. An unknown step fails.
+//
+// Progress goes to stderr. With `--json-lines`, stdout carries one result
+// line per spec in the native runner's `roc-signals/spec-result/v2` shape.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -25,7 +28,7 @@ import { launch } from "./cdp.mjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 function parseArgs(argv) {
-  const o = { chrome: process.env.CHROME ?? "chrome", filter: null, out: null, pending: false };
+  const o = { chrome: process.env.CHROME ?? "chrome", filter: null, out: null, pending: false, jsonLines: false };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     const val = () => {
@@ -40,6 +43,7 @@ function parseArgs(argv) {
     else if (a === "--filter") o.filter = new RegExp(val());
     else if (a === "--out") o.out = val();
     else if (a === "--pending-phase3") o.pending = true;
+    else if (a === "--json-lines") o.jsonLines = true;
     else throw new Error(`unknown option ${a}`);
   }
   for (const k of ["wasm", "runtime", "steps"]) if (!o[k]) throw new Error(`--${k} is required`);
@@ -347,17 +351,23 @@ for (const spec of specs) {
     };
   }
   const status = failed ? "failed" : pending.length ? "pending-phase3" : "passed";
-  results.push({ id: spec.id, name: spec.name, status, ms: Date.now() - t0, failure: failed, pending_steps: pending });
-  console.log(`${status.toUpperCase().padEnd(14)} ${spec.id} (${spec.steps.length} steps, ${Date.now() - t0} ms)${failed ? `\n     ${failed.message}` : ""}`);
+  const ms = Date.now() - t0;
+  results.push({ id: spec.id, name: spec.name, status, ms, failure: failed, pending_steps: pending });
+  console.error(`${status.toUpperCase().padEnd(14)} ${spec.id} (${spec.steps.length} steps, ${ms} ms)${failed ? `\n     ${failed.message}` : ""}`);
+  if (opts.jsonLines) {
+    const failure = failed && { phase: "step", ...failed };
+    const line = { protocol: "roc-signals/spec-result/v2", id: spec.id, name: spec.name, status, duration_ns: ms * 1e6, failure, pending_steps: pending };
+    process.stdout.write(`${JSON.stringify(line)}\n`);
+  }
   await page.close();
 }
 await browser.close();
 server.close();
 const count = (st) => results.filter((r) => r.status === st).length;
 const pendingSteps = results.reduce((n, r) => n + r.pending_steps.length, 0);
-console.log(
+console.error(
   `== ${count("passed")} passed, ${count("failed")} failed, ${count("pending-phase3")} pending-phase3 (${pendingSteps} work steps pending); fills typed=${stats.typed} fallback=${stats.typedFallback}`,
 );
-for (const f of stats.fallbacks) console.log(`   fallback: ${f}`);
+for (const f of stats.fallbacks) console.error(`   fallback: ${f}`);
 if (opts.out) fs.writeFileSync(opts.out, JSON.stringify({ results, stats }, null, 1));
 process.exit(count("failed") === 0 && results.length > 0 ? 0 : 1);
