@@ -1,16 +1,16 @@
-finding not_checked
-== specs failed
+passed accepted
+== specs passed
 == bench-20 passed
-  mount                    allocs=   742 bytes=     670361
-  tags                     allocs=    72 bytes=      26424
-  feed                     allocs=  1812 bytes=     792831
-  favorite                 allocs=    15 bytes=      21886
-  favorite-response        allocs=    47 bytes=      23907
-  tag-click                allocs=    80 bytes=      77418
+  mount                    allocs=   743 bytes=     672057
+  tags                     allocs=    72 bytes=      27488
+  feed                     allocs=  1812 bytes=     793895
+  favorite                 allocs=    15 bytes=      22950
+  favorite-response        allocs=    47 bytes=      24971
+  tag-click                allocs=    80 bytes=      78482
 == bench-200 passed
-  mount                    allocs=   742 bytes=     670361
-  tags                     allocs=    72 bytes=      26424
-  feed                     allocs= 17078 bytes=    7654987
-  favorite                 allocs=    16 bytes=      26260
-  favorite-response        allocs=    47 bytes=      28245
-  tag-click                allocs=   441 bytes=     580586
+  mount                    allocs=   743 bytes=     672057
+  tags                     allocs=    72 bytes=      27488
+  feed                     allocs= 17078 bytes=    7656051
+  favorite                 allocs=    16 bytes=      27324
+  favorite-response        allocs=    47 bytes=      29309
+  tag-click                allocs=   441 bytes=     581650

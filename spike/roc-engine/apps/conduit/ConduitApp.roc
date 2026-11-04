@@ -82,6 +82,10 @@ ConduitApp := [].{
 		loc : Str,
 		nav : { serial : U64, url : Str },
 		session : Session,
+		## A session accepted by a login, applied in the turn after the
+		## navigation it triggers (as the original's storage-backed session
+		## source refreshed after the home page mounted).
+		incoming : Session,
 		loads : Loads,
 		auth : AuthForm,
 		settings : SettingsForm,
@@ -150,6 +154,7 @@ ConduitApp := [].{
 			loc: if boot.url.is_empty() ConduitApp.home_url else boot.url,
 			nav: { serial: 0, url: "" },
 			session,
+			incoming: Anonymous,
 			loads: ConduitApp.empty_loads,
 			auth: ConduitApp.auth0,
 			settings: ConduitApp.settings0,
@@ -461,7 +466,11 @@ ConduitApp := [].{
 			result = Api.classify_auth(Api.response_of(res))
 			m1 = { ..m, auth: { ..m.auth, result } }
 			match result {
-				AuthAccepted(user) => ConduitApp.navigate({ ..m1, session: SignedIn({ token: user.token, username: user.username }) }, ConduitApp.home_url)
+				# Spec fidelity (login-422): the original navigated first and its
+				# storage-backed session flipped in a later turn, so home mounted
+				# anonymous (feed + tags) and then re-requested the feed with the
+				# token. The session is applied by a root follow-up turn.
+				AuthAccepted(user) => ConduitApp.navigate({ ..m1, incoming: SignedIn({ token: user.token, username: user.username }) }, ConduitApp.home_url)
 				_ => m1
 			}
 		}
@@ -1562,6 +1571,14 @@ ConduitApp := [].{
 				Engine.watch(mv.map(ConduitApp.guard_url), |u| if u.is_empty() [] else [Replace(u), Self], st.on_result(|m, u, _| if !u.is_empty() and ConduitApp.guard_url(m) == u ConduitApp.set_loc(m, u) else m)),
 				Engine.watch(mv.map(ConduitApp.title_of), |t| [Title(t)], Engine.ignore({})),
 				Engine.on_change(mv.map(|m| m.session), ConduitApp.storage_plan, Engine.ignore({})),
+				Engine.on_change(
+					mv.map(|m| m.incoming),
+					|s| match s {
+						SignedIn(_) => [Self]
+						Anonymous => []
+					},
+					st.on_result(|m, s, _| { ..m, session: s, incoming: Anonymous }),
+				),
 				ConduitApp.header(st),
 				Engine.element("main", [Engine.class(Styles.main)], [Engine.switch(mv.map(|m| Route.kind(ConduitApp.route_of(m))), ConduitApp.all_kinds, |k| ConduitApp.page(st, k))]),
 				Engine.element(
