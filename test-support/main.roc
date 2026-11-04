@@ -1,6 +1,5 @@
-## Engine-independent test support: the `.scm` parser and JSON output.
-##
-## `SpecRunner.roc` lives beside these modules but is not part of the package:
-## it needs the engine's `Dom.roc` oracle and the test platform's `Cli`, so it
-## is compiled with each app's native spec build.
-package [JsonOut, Scm] {}
+## Test support for roc-signals apps, independent of the engine: the `.scm`
+## parser, the native spec runner, the command-stream oracle (`Dom`), the
+## long-session soak and JSON output. Apps drive it through their `Program`,
+## the record the hosts call, so nothing here depends on `Engine.roc`.
+package [Dom, JsonOut, Scm, Soak, SpecRunner] {}

@@ -1,18 +1,17 @@
 {
   "name": "js-framework-benchmark-roc-signals",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "main": "dist/main.mjs",
   "js-framework-benchmark": {
-    "frameworkVersion": "0.1.0",
+    "frameworkVersion": "0.2.0",
     "frameworkHomeURL": "https://github.com/lukewilliamboswell/roc-signals",
     "language": "WebAssembly"
   },
   "scripts": {
     "dev": "npm run build-prod",
-    "build-prod": "python3 build.py",
-    "verify": "python3 verify.py"
+    "build-prod": "echo 'dist/ is built in the roc-signals checkout: blueprint run jfb' && test -f dist/app.wasm"
   },
   "license": "UPL-1.0"
 }

@@ -37,5 +37,6 @@ plan.md
 /main
 
 # Phase 2 test tooling: fetched roc-fuzz inputs and the built cli.o; local build trees.
-platform-test/targets/
+platform/targets/
+platform/test-targets/
 .build/

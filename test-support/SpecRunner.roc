@@ -1,4 +1,3 @@
-import pf.Cli
 import Dom
 import Scm
 import JsonOut
@@ -204,13 +203,19 @@ SpecRunner := [].{
 				other => return Err("unsupported in this engine yet: setup ${Str.inspect(other)}")
 			}
 		}
+		Ok(SpecRunner.mount(program, $url, $storage))
+	}
+
+	## Mount the app at `url` with `storage` as local storage; the app's
+	## declared keys that hold a value become its boot storage.
+	mount : Program(state), Str, List({ key : Str, value : Str }) -> S(state)
+	mount = |program, url, storage| {
 		declared = SpecRunner.decode_keys((program.keys)())
-		storage = $storage
 		boot_kvs = declared.keep_oks(|k| storage.find_first(|kv| kv.key == k))
-		(inst, cmds) = (program.init)(SpecRunner.encode_boot($url, boot_kvs))
-		browser = { loc: $url, back: [], fwd: [], title: "", storage, pending: [], issued: [], subs: [], stubs: [] }
+		(inst, cmds) = (program.init)(SpecRunner.encode_boot(url, boot_kvs))
+		browser = { loc: url, back: [], fwd: [], title: "", storage, pending: [], issued: [], subs: [], stubs: [] }
 		(dom, _, fx) = Dom.apply_fx(Dom.new({}), cmds)
-		Ok({ inst, buf: cmds, dom, browser: SpecRunner.absorb(browser, fx) })
+		{ inst, buf: cmds, dom, browser: SpecRunner.absorb(browser, fx) }
 	}
 
 	## Dispatch event `ev` with `payload` from DOM node index `i`, as the
@@ -434,6 +439,10 @@ SpecRunner := [].{
 
 	# ------------------------------------------------------------------ CLI
 
+	## The host services the `spec` command uses, passed in by the test
+	## program (the test platform's `Cli`), so this package stays pure.
+	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64 }
+
 	Options : { filter : Str, emit_steps : Bool, mode : Mode, files : List(Str) }
 
 	usage : Str
@@ -512,12 +521,12 @@ SpecRunner := [].{
 	## The `spec` command: parse every file, then either emit the parsed steps
 	## as JSON lines (`--emit-steps`) or run each spec and print one
 	## `spec-result` JSON line per spec. Exit 0 when nothing failed.
-	main! : Program(state), List(Str) => I32
-	main! = |program, args| {
+	main! : Program(state), Io, List(Str) => I32
+	main! = |program, io, args| {
 		opts = match SpecRunner.parse_args(args) {
 			Ok(o) => o
 			Err(msg) => {
-				Cli.stderr!("${msg}\n${SpecRunner.usage}")
+				(io.stderr!)("${msg}\n${SpecRunner.usage}")
 				return 2
 			}
 		}
@@ -525,21 +534,21 @@ SpecRunner := [].{
 		for path in opts.files {
 			id = SpecRunner.id_of(path)
 			if SpecRunner.glob(opts.filter, id) {
-				text = Str.from_utf8(Cli.read_file!(path)) ?? ""
-				t0 = Cli.now_ns!()
+				text = Str.from_utf8((io.read_file!)(path)) ?? ""
+				t0 = (io.now_ns!)()
 				match Scm.parse(text) {
 					Err(problem) => {
 						$counts = { ..$counts, error: $counts.error + 1 }
-						Cli.stdout!(
+						(io.stdout!)(
 							"${SpecRunner.result_line({ id, name: "", status: "error", duration_ns: 0, failure: SpecRunner.failure_json("parse", "parse", Scm.show_problem(path, problem), 0, problem.pos), pending: [] })}\n",
 						)
 					}
 					Ok(spec) if opts.emit_steps => {
-						Cli.stdout!("${JsonOut.render(Scm.to_json(id, spec))}\n")
+						(io.stdout!)("${JsonOut.render(Scm.to_json(id, spec))}\n")
 					}
 					Ok(spec) => {
 						outcome = SpecRunner.run(program, spec, opts.mode)
-						dt = Cli.now_ns!() - t0
+						dt = (io.now_ns!)() - t0
 						line = match outcome {
 							Passed => {
 								$counts = { ..$counts, passed: $counts.passed + 1 }
@@ -556,14 +565,14 @@ SpecRunner := [].{
 								SpecRunner.result_line({ id, name: spec.name, status: "failed", duration_ns: dt, failure: SpecRunner.failure_json("step", kind_name, full, step, at.pos), pending: [] })
 							}
 						}
-						Cli.stdout!("${line}\n")
+						(io.stdout!)("${line}\n")
 					}
 				}
 			}
 		}
 		c = $counts
 		if !opts.emit_steps {
-			Cli.stderr!("specs: ${c.passed.to_str()} passed, ${c.failed.to_str()} failed, ${c.error.to_str()} error, ${c.pending.to_str()} pending-phase3 (${c.pending_steps.to_str()} work steps pending)\n")
+			(io.stderr!)("specs: ${c.passed.to_str()} passed, ${c.failed.to_str()} failed, ${c.error.to_str()} error, ${c.pending.to_str()} pending-phase3 (${c.pending_steps.to_str()} work steps pending)\n")
 		}
 		if (c.failed + c.error == 0) 0 else 1
 	}

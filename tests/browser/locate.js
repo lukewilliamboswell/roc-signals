@@ -4,6 +4,8 @@
 // the accessible name (aria-label, else text content), `text` is a text node
 // whose value is exactly the string. First match in document order.
 window.__loc = function (loc) {
+  // The array form ["role", ROLE, NAME] / [KIND, VALUE] is accepted too.
+  if (Array.isArray(loc)) loc = loc[0] === "role" ? { kind: "role", role: loc[1], name: loc[2] } : { kind: loc[0], value: loc[1] };
   const root = document.getElementById("app");
   const { kind } = loc;
   const a = kind === "role" ? loc.role : loc.value;

@@ -47,8 +47,7 @@ main! = |raw_args| {
 	o = Checks.options!({ pending_phase3: !$strict, filter: $filter })?
 	Checks.prepare_platform!(o)?
 	if $browser {
-		_ = SpecSuite.build_web_platform!(o)?
-		{}
+		SpecSuite.build_web_platform!(o)?
 	}
 	var $problems = []
 	for example in apps {

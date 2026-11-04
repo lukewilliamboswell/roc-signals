@@ -57,7 +57,7 @@ Checks := [].{
 	## that passes it is not evidence of anything.
 	mutation! : SpecSuite.Options, Str, Str => Try(List(Str), _)
 	mutation! = |o, runner, wasm| {
-		original = Path.read_utf8!(Path.utf8("examples-web/kanban-board/specs/initial-render.scm"))?
+		original = Path.read_utf8!(Path.utf8("examples/kanban-board/specs/initial-render.scm"))?
 		good = "(expect-text (test-id \"board-total\") \"5\")"
 		if !original.contains(good) {
 			return Ok(["mutation: initial-render.scm no longer holds ${good}; choose a new assertion to break"])

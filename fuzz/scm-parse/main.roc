@@ -1,5 +1,5 @@
 app [target] {
-	pf: platform "../../platform-test/main.roc",
+	pf: platform "../../platform/test.roc",
 	ts: "../../test-support/main.roc",
 }
 

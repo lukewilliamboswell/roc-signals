@@ -8,11 +8,15 @@ import cli.Path
 import src/Checks
 import src/Proc
 import src/SpecSuite
+import src/Targets
 
-## The `check` task (Phase 2a scope): formatting, the script pins, `roc test`
-## on the test support, the `--fuzz` build of the test platform, every ported
-## app's original `.scm` specs natively and in Chrome, and the mutation check
-## that both spec runners reject a broken spec.
+## The `check` task, the per-pull-request gate: the script pins, formatting,
+## `roc test`, the test platform and the `scm-parse` fuzz target, every ported
+## app's original `.scm` specs natively and in Chrome, the spec mutation check
+## (both runners reject a broken spec), the runtime contract tests in Chrome
+## (effects, controls, Conduit journey) and the js-framework-benchmark check.
+## The soak runs, the app fuzz targets' baselines and the engine mutation gate
+## are `check-slow`.
 ##
 ## Work assertions cannot run until Phase 3 adds the engine's counters, so the
 ## suite runs with `--pending-phase3`: they are counted and reported, never
@@ -25,8 +29,7 @@ main! = |_args| {
 	$problems = $problems.concat(script_pins!()?)
 
 	Proc.note!("== formatting")
-	spec_mains = SpecSuite.apps.map(|a| "${SpecSuite.apps_dir}/${a}/SpecMain.roc")
-	$problems = $problems.concat(check!({ program: o.compiler, args: ["fmt", "--check", "scripts", "test-support", "platform-test", "fuzz"].concat(spec_mains), cwd: "." }, "roc fmt --check")?)
+	$problems = $problems.concat(check!({ program: o.compiler, args: ["fmt", "--check", "scripts", "platform", "test-support", "examples", "tests/apps", "fuzz", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"], cwd: "." }, "roc fmt --check")?)
 
 	Proc.note!("== roc test")
 	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "test-support/main.roc"], cwd: "." }, "roc test test-support")?)
@@ -34,14 +37,13 @@ main! = |_args| {
 
 	Proc.note!("== platform-test")
 	Checks.prepare_platform!(o)?
-	$problems = $problems.concat(spec_runner_tests!(o)?)
 	$problems = $problems.concat(fuzz_smoke!(o)?)
 
 	Proc.note!("== specs")
 	var $native = SpecSuite.empty_tally
 	var $browser = SpecSuite.empty_tally
 	var $kanban = { runner: "", wasm: "" }
-	_ = SpecSuite.build_web_platform!(o)?
+	SpecSuite.build_web_platform!(o)?
 	for example in SpecSuite.apps {
 		r = Checks.run_app!(o, example, Bool.True)?
 		$native = Checks.add($native, r.native)
@@ -52,8 +54,14 @@ main! = |_args| {
 	}
 	$problems = $problems.concat($native.problems).concat($browser.problems)
 
-	Proc.note!("== mutation check")
+	Proc.note!("== spec mutation check")
 	$problems = $problems.concat(Checks.mutation!(o, $kanban.runner, $kanban.wasm)?)
+
+	Proc.note!("== runtime contracts in Chrome")
+	$problems = $problems.concat(Targets.browser_contracts!(o, "${o.build_dir}/wasm/conduit/app.wasm")?)
+
+	Proc.note!("== js-framework-benchmark")
+	$problems = $problems.concat(Targets.jfb!(o)?)
 
 	Proc.note!("")
 	Proc.note!(SpecSuite.summary("all apps", Native, $native))
@@ -101,42 +109,11 @@ script_pins! = || {
 	Ok($out)
 }
 
-## The runner's own expects, compiled against a stand-in program so they need
-## no engine build.
-spec_runner_tests! : SpecSuite.Options => Try(List(Str), _)
-spec_runner_tests! = |o| {
-	dir = "${o.build_dir}/spec-runner-tests"
-	SpecSuite.fresh_dir!(dir)?
-	for f in [SpecSuite.oracle].concat(SpecSuite.support) {
-		SpecSuite.copy!(f, dir)?
-	}
-	platform_main = SpecSuite.relative("${o.root}/platform-test/main.roc", dir)
-	main =
-		\\app [target] { pf: platform "${platform_main}" }
-		\\
-		\\import pf.Target
-		\\import SpecRunner
-		\\
-		\\program = { keys: || [0, 0, 0, 0], init: |_| ({}, []), event: |s, _, _, _, _| (s, []) }
-		\\
-		\\target = Target.cli({ name: "spec-runner-tests", main!: |args| SpecRunner.main!(program, args) })
-		\\
-	Path.write_utf8!(Path.utf8("${dir}/main.roc"), main)?
-	check!({ program: o.compiler, args: ["test", "main.roc"], cwd: dir }, "roc test SpecRunner")
-}
-
-## Every fuzz target builds with `--fuzz` against platform-test and passes
-## `check` (its declared examples, once each).
+## The parser's fuzz target builds with `--fuzz` and passes its examples and
+## baseline; the app targets, which take minutes, are `check-slow`.
 fuzz_smoke! : SpecSuite.Options => Try(List(Str), _)
 fuzz_smoke! = |o| {
-	var $out = []
-	for target in ["scm-parse"] {
-		dir = "fuzz/${target}"
-		exe = "${o.build_dir}/fuzz-${target}"
-		$out = $out.concat(check!({ program: o.compiler, args: ["build", "--fuzz", "--opt=speed", "${dir}/main.roc", "--output=${exe}"], cwd: "." }, "roc build --fuzz ${dir}")?)
-		if $out.is_empty() {
-			$out = $out.concat(check!({ program: exe, args: ["check", "--baseline=${o.build_dir}/fuzz-${target}_baseline.json"], cwd: o.build_dir }, "${target} check")?)
-		}
-	}
-	Ok($out)
+	target = { name: "scm-parse", main: "fuzz/scm-parse/main.roc" }
+	exe = Targets.build_fuzz!(o, target)?
+	Targets.fuzz_check!(o, target, exe)
 }
