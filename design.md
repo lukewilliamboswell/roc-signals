@@ -227,7 +227,7 @@ flowchart LR
     DOM -->|"event (node, handler, payload)"| JS
     JS -->|"payload_reserve + event"| Host
 
-    Engine --> Test["platform-test<br/>native test platform"]
+    Engine --> Test["platform/test.roc<br/>native test platform"]
     Test --> Oracle["test-support/Dom.roc<br/>independent command-stream oracle"]
     Scm["examples/*/specs/*.scm"] --> Parser["test-support/Scm.roc<br/>one parser"]
     Parser --> Native["SpecRunner.roc (native)"]
@@ -239,7 +239,8 @@ The repository has one platform (`platform/`), web only. The same
 
 - **The web platform** compiles the app and engine to Wasm with the thin host.
   It is the product.
-- **The native test platform** (`platform-test/`) runs the same engine
+- **The native test platform** (`platform/test.roc`, a second root of
+  `platform/`) runs the same engine
   natively for specs, soak runs and roc-fuzz targets. Because the engine is
   pure, a test drives it by calling its transaction functions and decoding the
   command stream; there is no simulated host with its own semantics.
@@ -814,7 +815,7 @@ poisoned one. External effects already performed are not undone.
 **Contract errors the engine raises today:** duplicate key; switch value not in
 its cases; row template not a single element; focus reference inside a row
 template; effect follow-up budget exceeded; event payload not UTF-8; unknown
-effect result tag. **Resource limits:** static node ids, live `each` sites.
+effect result tag. **Resource limits:** node ids (2³² − 2 live nodes).
 
 **Target:** malformed boot bytes and a non-UTF-8 effect result are `contract`
 errors (today they crash unclassified and report as `app_crash`); the
@@ -823,10 +824,6 @@ lack it today); and every caller-controlled count that the
 wire encodes in a narrow field — template attributes, children, holes, hole
 path depth, row handlers (all `u8`) — is checked and reported as
 `resource_limit` instead of wrapping.
-
-**Target:** node ids are a dense recycled pool with a routes table, so the
-number of live `each` sites is bounded only by the node-id space, not by a
-fixed bit split of the id.
 
 ## Boundedness
 
@@ -840,8 +837,7 @@ bound and a declared behaviour at the bound:
 | HTTP timeout | 600 s | Capped |
 | Staged payloads | 1 | Previous one freed |
 | Diagnostic text | 512 bytes | Truncated |
-| Static node ids | 2²⁰ − 2 | `resource_limit` poison |
-| Live `each` sites | 4,094 | `resource_limit` poison (see the target above) |
+| Live node ids (rows included) | 2³² − 2 | `resource_limit` poison |
 | Runtime ingress queue | **Target:** bounded | **Target:** classified refusal |
 
 Wasm memory growth is an allocator mechanism, not a resource policy. Persistent
@@ -875,7 +871,7 @@ stubs), and a list of steps written against the rendered UI:
 The grammar has **one parser, written in Roc** (`test-support/Scm.roc`), which
 produces a typed list of steps. Both runners consume it:
 
-- the **native runner** (`SpecRunner.roc` under `platform-test`) drives
+- the **native runner** (`SpecRunner.roc`, built by each app's `main-test.roc` on the test platform) drives
   `Engine.roc` directly and asserts against the `Dom.roc` model;
 - the **browser runner** replays the same steps, emitted as data by the same
   parser, against the real runtime in headless Chrome.
@@ -928,7 +924,8 @@ through allocation plateaus in soak runs instead.
 
 ### Fuzzing, soak and contract tests
 
-- **roc-fuzz targets** (`fuzz/`) decode arbitrary bytes into valid programs and
+- **roc-fuzz targets** (each app's `main-fuzz.roc`, and `fuzz/` for targets of
+  the shared support) decode arbitrary bytes into valid programs and
   check the engine against a reference model: keyed reconciliation, effect
   lifecycle (issue, dispose, reparent, deliver, refuse, cancel, stale), and the
   explorer-driven soak walk over the live DOM. Their oracles, not their inputs,
@@ -1193,14 +1190,23 @@ An event is `event(node, handler)` with the payload staged first:
 ### Node ids
 
 - `0` is the mount root.
-- Static nodes (elements, text nodes, anchors, nested-site placeholders) use
-  ids `1 … 2²⁰ − 2`, recycled after removal.
-- Row nodes are `(site << 20) | (slot + 1)` for `each` site ids `1 … 4094`.
+- Every other node the engine creates — elements, text nodes, anchors,
+  nested-site placeholders and row roots alike — takes a `u32` id from one
+  dense pool, `1 … 2³² − 2`. A removed node's id returns to a free list and is
+  reused. Running out is a `resource_limit` poison.
+- The engine keeps a **routes table** indexed by node id: a static node's
+  entry is its block path and handler, a row root's entry is its `each`
+  site and slot. Delivering an event is one O(1) lookup plus the site's
+  path. A freed id has no route, so an event for it is dropped.
+- `each` sites have their own dense, recycled ids (the template id of
+  `TEMPLATE`, `INST` and `CLEAR`), independent of node ids.
+- The runtime indexes nodes by id alone. It records each row root's site, so
+  `CLEAR parent site` forgets exactly that site's rows through a per-site row
+  set; `Dom.roc` does the same.
+- Because ids are reused, the runtime drops a queued DOM event whose element
+  has left the document or whose id now names a different element, before it
+  reaches the engine.
 - `0xffffffff` is the effect node and never names a DOM node.
-
-**Target:** a dense recycled node pool replaces the site/slot split, keeping
-row lookup O(1) through a routes table; the runtime then indexes nodes by id
-alone.
 
 ### Commands
 

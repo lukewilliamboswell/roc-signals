@@ -120,7 +120,8 @@
   refusal at the in-flight bound, stale results, follow-up bounds, containment
   and recovery, and protocol rejection as applicable.
 - Use `.scm` specs under `examples/<app>/specs/` for application-visible
-  behavior and work, run natively and in Chrome; roc-fuzz targets under `fuzz/`
+  behavior and work, run natively and in Chrome; roc-fuzz targets (each app's
+  `main-fuzz.roc`, and `fuzz/` for the shared support)
   for engine sequences and allocation baselines; and contract cases under
   `tests/` for `host.zig` and `runtime.mjs` against the wire protocol. Keep
   semantic locators stable and assert structural work exactly.
