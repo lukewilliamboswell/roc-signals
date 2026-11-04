@@ -1,0 +1,71 @@
+==> zig build build-wasm-host -Doptimize=ReleaseSmall
+Shared platform copies match (SHA-256).
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/basetree/.test-out/size/basecheck/static-text.wasm /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/basetree/.test-out/size/basecheck/source/static-text/main.roc
+0 errors and 0 warnings found in 890ms while successfully building:
+
+    .test-out/size/basecheck/static-text.wasm
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/basetree/.test-out/size/basecheck/counter.wasm /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/basetree/.test-out/size/basecheck/source/counter/main.roc
+0 errors and 0 warnings found in 1.2s while successfully building:
+
+    .test-out/size/basecheck/counter.wasm
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/basetree/.test-out/size/basecheck/branch-replacement.wasm /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/basetree/.test-out/size/basecheck/source/branch-replacement/main.roc
+0 errors and 0 warnings found in 1.2s while successfully building:
+
+    .test-out/size/basecheck/branch-replacement.wasm
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/basetree/.test-out/size/basecheck/keyed-row-edits.wasm /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/basetree/.test-out/size/basecheck/source/keyed-row-edits/main.roc
+0 errors and 0 warnings found in 1m 7s while successfully building:
+
+    .test-out/size/basecheck/keyed-row-edits.wasm
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/basetree/.test-out/size/basecheck/two-row-types.wasm /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/basetree/.test-out/size/basecheck/source/two-row-types/main.roc
+0 errors and 0 warnings found in 1m 37s while successfully building:
+
+    .test-out/size/basecheck/two-row-types.wasm
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/basetree/.test-out/size/basecheck/js-framework-benchmark.wasm /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/basetree/.test-out/size/basecheck/source/js-framework-benchmark/main.roc
+0 errors and 0 warnings found in 1m 27s while successfully building:
+
+    .test-out/size/basecheck/js-framework-benchmark.wasm
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/basetree/.test-out/size/basecheck/recipe-scaler.wasm /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/basetree/.test-out/size/basecheck/source/recipe-scaler/main.roc
+0 errors and 0 warnings found in 11.2s while successfully building:
+
+    .test-out/size/basecheck/recipe-scaler.wasm
+wrote /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/basetree/.test-out/size/basecheck/report.json
+revision ea1da63d; Roc compiler version nightly-2026-11-01-48d3369; zig 0.16.0; compression node-zlib
+
+| Fixture | Raw | Code | Data | gzip 9 | Brotli 11 | Delivered gzip |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| static-text | 726,866 | 685,642 | 37,354 | 281,419 | 220,832 | 309,430 |
+| counter | 732,035 | 690,531 | 37,629 | 283,744 | 222,727 | 311,755 |
+| branch-replacement | 736,930 | 695,702 | 37,316 | 285,093 | 223,738 | 313,104 |
+| keyed-row-edits | 3,720,167 | 3,674,279 | 41,545 | 1,025,347 | 652,175 | 1,053,358 |
+| two-row-types | 4,771,156 | 4,724,529 | 42,166 | 1,278,523 | 700,608 | 1,306,534 |
+| js-framework-benchmark | 3,735,315 | 3,688,948 | 41,954 | 1,036,410 | 657,748 | 1,064,421 |
+| recipe-scaler | 1,610,230 | 1,563,118 | 42,474 | 513,075 | 349,999 | 541,086 |
+| **cumulative** | 16,032,699 | 15,722,749 | 280,438 | 4,703,611 | 3,027,827 | 4,899,688 |
+
+JS bridge: 130,238 B raw, 28,011 B gzip, 23,973 B Brotli (5 modules)
+
+| Fixture | Metric | Measured | Budget | Margin |
+| --- | --- | ---: | ---: | ---: |
+| static-text | raw | 726,866 | 852,038 | +125,172 |
+| static-text | gzip | 281,419 | 326,416 | +44,997 |
+| counter | raw | 732,035 | 857,331 | +125,296 |
+| counter | gzip | 283,744 | 328,572 | +44,828 |
+| branch-replacement | raw | 736,930 | 863,080 | +126,150 |
+| branch-replacement | gzip | 285,093 | 330,065 | +44,972 |
+| keyed-row-edits | raw | 3,720,167 | 1,658,863 | -2,061,304 |
+| keyed-row-edits | gzip | 1,025,347 | 557,070 | -468,277 |
+| two-row-types | raw | 4,771,156 | 1,669,504 | -3,101,652 |
+| two-row-types | gzip | 1,278,523 | 553,547 | -724,976 |
+| js-framework-benchmark | raw | 3,735,315 | 1,661,848 | -2,073,467 |
+| js-framework-benchmark | gzip | 1,036,410 | 561,993 | -474,417 |
+| recipe-scaler | raw | 1,610,230 | 1,331,563 | -278,667 |
+| recipe-scaler | gzip | 513,075 | 458,347 | -54,728 |
+
+SIZE BUDGET FAILURE: keyed-row-edits raw 3,720,167 exceeds budget 1,658,863 by 2,061,304 bytes
+SIZE BUDGET FAILURE: keyed-row-edits gzip 1,025,347 exceeds budget 557,070 by 468,277 bytes
+SIZE BUDGET FAILURE: two-row-types raw 4,771,156 exceeds budget 1,669,504 by 3,101,652 bytes
+SIZE BUDGET FAILURE: two-row-types gzip 1,278,523 exceeds budget 553,547 by 724,976 bytes
+SIZE BUDGET FAILURE: js-framework-benchmark raw 3,735,315 exceeds budget 1,661,848 by 2,073,467 bytes
+SIZE BUDGET FAILURE: js-framework-benchmark gzip 1,036,410 exceeds budget 561,993 by 474,417 bytes
+SIZE BUDGET FAILURE: recipe-scaler raw 1,610,230 exceeds budget 1,331,563 by 278,667 bytes
+SIZE BUDGET FAILURE: recipe-scaler gzip 513,075 exceeds budget 458,347 by 54,728 bytes

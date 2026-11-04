@@ -1,0 +1,32 @@
+Test output: /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/one_elem.out
+
+==> /usr/bin/python3 scripts/prepare_platforms.py
+Shared platform copies match (SHA-256).
+
+==> zig build build-wasm-benchmark-host
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/one_elem.out/wasm-benchmark/js-framework-production.wasm /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/one_elem.out/wasm-benchmark/source/production.roc
+0 errors and 0 warnings found in 1m 6s while successfully building:
+
+    ../one_elem.out/wasm-benchmark/js-framework-production.wasm
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/one_elem.out/wasm-benchmark/js-framework-diagnostic.wasm /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/one_elem.out/wasm-benchmark/source/diagnostic.roc
+0 errors and 0 warnings found in 1m 6s while successfully building:
+
+    ../one_elem.out/wasm-benchmark/js-framework-diagnostic.wasm
+Error: benchmark create_1k sample 1 iteration 1 failed
+    at main (file:///tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/one_elem/scripts/browser/run_wasm_benchmarks.mjs:232:17)
+Error: benchmark case create_1k failed its final behavior assertion
+    at runIteration (file:///tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/one_elem/scripts/browser/run_wasm_benchmarks.mjs:103:39)
+    at async main (file:///tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/one_elem/scripts/browser/run_wasm_benchmarks.mjs:229:24)
+Traceback (most recent call last):
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/one_elem/scripts/test.py", line 1132, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/one_elem/scripts/test.py", line 1058, in main
+    run_wasm_runtime_benchmarks(roc_bin, args)
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/one_elem/scripts/test.py", line 792, in run_wasm_runtime_benchmarks
+    subprocess.run([str(part) for part in command], cwd=ROOT, check=True)
+  File "/usr/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['node', 'scripts/browser/run_wasm_benchmarks.mjs', '--production', '/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/one_elem.out/wasm-benchmark/js-framework-production.wasm', '--diagnostic', '/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/one_elem.out/wasm-benchmark/js-framework-diagnostic.wasm', '--warmups', '0', '--iterations', '1', '--samples', '1', '--metadata', '{"roc_compiler":"Roc compiler version nightly-2026-11-01-48d3369","wasm_host_optimization":"ReleaseFast","roc_app_optimization":"size","fixture":"js-framework-benchmark","fixture_sha256":"25e80eeb4c66eb90e3c9616697950373f0cf995f26787043de9aeaea6ddbafa3","production_host_sha256":"49ffb6f0a97819be62dc4832d71b76af65c3a9cbaeb30671a1ce51968df62c7a","diagnostic_host_sha256":"d30d43cc9ac628499bc175bac55fad58546d93819d63364244b0991624b1ada1"}', '--case', 'create_1k']' returned non-zero exit status 1.

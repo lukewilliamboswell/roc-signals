@@ -1,0 +1,32 @@
+(test "Conduit — Settings: authed update, then sign out clears the namespaced keys"
+  (setup
+    (manual-effects)
+    (local-storage "conduit.jwt" "jwt.conduit.kim")
+    (local-storage "conduit.username" "kim")
+    (initial-location "/roc-signals/examples-web/conduit/#/settings")
+  )
+  (steps
+    ; Settings: authed update, then sign out clears the namespaced keys
+
+    (expect-document-title "Settings - Conduit")
+    (expect-visible (role heading :name "Settings"))
+    (expect-visible (text "Signed in as kim"))
+    (click (role button :name "Update Settings"))
+    (expect-pending-effects 1)
+    (stub-http "settings response" :url "/api/user" :status 422 :body "{\"errors\":{\"body\":[\"must update at least one field\"]}}")
+    (run-effect 1)
+    (expect-visible (text "body must update at least one field"))
+    (fill (label "Email") "kim@new.test")
+    (click (role button :name "Update Settings"))
+    (expect-pending-effects 1)
+    (stub-http "settings response" :url "/api/user" :status 200 :body "{\"user\":{\"email\":\"kim@conduit.test\",\"token\":\"jwt.conduit.kim\",\"username\":\"kim\",\"bio\":\"Reader.\",\"image\":\"\"}}")
+    (run-effect 2)
+    (expect-visible (text "Settings saved."))
+    (click (role button :name "Sign out"))
+    (expect-no-local-storage "conduit.jwt")
+    (expect-no-local-storage "conduit.username")
+    (expect-current-location "/roc-signals/examples-web/conduit/#/login")
+    (expect-visible (role link :name "Sign in"))
+    (expect-absent (role link :name "Settings"))
+  )
+)

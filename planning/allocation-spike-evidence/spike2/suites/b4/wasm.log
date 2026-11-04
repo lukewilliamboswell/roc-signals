@@ -1,0 +1,311 @@
+Test output: /tmp/claude-1000/s2/suites/b4/out-wasm-238334
+
+==> zig build build-test-hosts
+Shared platform copies match (SHA-256).
+
+==> zig build build-test-hosts -Doptimize=ReleaseSmall
+Shared platform copies match (SHA-256).
+Created: ../8kgkc43P4FL9ZiQQs8ojFsv8zGTA42zniHDEDz3MPqyf.tar.zst
+Compressed size: 6997463 bytes
+Uncompressed size: 28281650 bytes
+Compression ratio: 4.04:1
+Time: 167 ms
+web: http://127.0.0.1:8000/8kgkc43P4FL9ZiQQs8ojFsv8zGTA42zniHDEDz3MPqyf.tar.zst
+
+Testing wasm apps with local platform bundle: http://127.0.0.1:34699/8kgkc43P4FL9ZiQQs8ojFsv8zGTA42zniHDEDz3MPqyf.tar.zst
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/onboarding-wizard.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/onboarding-wizard/main.roc
+127.0.0.1 - - [02/Nov/2026 18:12:13] "GET /8kgkc43P4FL9ZiQQs8ojFsv8zGTA42zniHDEDz3MPqyf.tar.zst HTTP/1.1" 200 -
+0 errors and 0 warnings found in 15.8s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/onboarding-wizard.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/onboarding-wizard.wasm onboarding-wizard
+mounted onboarding-wizard
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/availability-picker.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/availability-picker/main.roc
+0 errors and 0 warnings found in 13.0s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/availability-picker.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/availability-picker.wasm availability-picker
+mounted availability-picker
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/field-notes.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/field-notes/main.roc
+0 errors and 0 warnings found in 12.5s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/field-notes.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/field-notes.wasm field-notes
+mounted field-notes
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/support-inbox.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/support-inbox/main.roc
+0 errors and 0 warnings found in 14.0s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/support-inbox.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/support-inbox.wasm support-inbox
+mounted support-inbox
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/dependency-scheduler.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/dependency-scheduler/main.roc
+0 errors and 0 warnings found in 13.7s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/dependency-scheduler.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/dependency-scheduler.wasm dependency-scheduler
+mounted dependency-scheduler
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/recipe-scaler.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/recipe-scaler/main.roc
+0 errors and 0 warnings found in 9.7s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/recipe-scaler.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/recipe-scaler.wasm recipe-scaler
+mounted recipe-scaler
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/query-builder.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/query-builder/main.roc
+0 errors and 0 warnings found in 10.0s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/query-builder.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/query-builder.wasm query-builder
+mounted query-builder
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/token-editor.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/token-editor/main.roc
+0 errors and 0 warnings found in 9.3s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/token-editor.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/token-editor.wasm token-editor
+mounted token-editor
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/package-explorer.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/package-explorer/main.roc
+0 errors and 0 warnings found in 11.3s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/package-explorer.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/package-explorer.wasm package-explorer
+mounted package-explorer
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/loan-comparator.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/loan-comparator/main.roc
+0 errors and 0 warnings found in 16.2s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/loan-comparator.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/loan-comparator.wasm loan-comparator
+mounted loan-comparator
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/data-grid.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/data-grid/main.roc
+0 errors and 0 warnings found in 13.3s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/data-grid.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/data-grid.wasm data-grid
+mounted data-grid
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/pomodoro-tracker.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/pomodoro-tracker/main.roc
+0 errors and 0 warnings found in 8.4s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/pomodoro-tracker.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/pomodoro-tracker.wasm pomodoro-tracker
+mounted pomodoro-tracker
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/form-builder.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/form-builder/main.roc
+0 errors and 0 warnings found in 19.7s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/form-builder.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/form-builder.wasm form-builder
+mounted form-builder
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/status-page.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/status-page/main.roc
+0 errors and 0 warnings found in 19.2s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/status-page.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/status-page.wasm status-page
+mounted status-page
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/flight-search.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/flight-search/main.roc
+0 errors and 0 warnings found in 16.1s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/flight-search.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/flight-search.wasm flight-search
+mounted flight-search
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/wasm_flight_search.test.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/flight-search.wasm
+Flight search mounts, fetches once, renders results, and releases retained values.
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/kanban-board.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/kanban-board/main.roc
+0 errors and 0 warnings found in 27.7s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/kanban-board.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/kanban-board.wasm kanban-board
+mounted kanban-board
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/spreadsheet-lite.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/spreadsheet-lite/main.roc
+0 errors and 0 warnings found in 13.2s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/spreadsheet-lite.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/spreadsheet-lite.wasm spreadsheet-lite
+mounted spreadsheet-lite
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/split-the-bill.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/split-the-bill/main.roc
+0 errors and 0 warnings found in 24.5s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/split-the-bill.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/split-the-bill.wasm split-the-bill
+mounted split-the-bill
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/markdown-editor.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/markdown-editor/main.roc
+0 errors and 0 warnings found in 22.0s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/markdown-editor.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/markdown-editor.wasm markdown-editor
+mounted markdown-editor
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/log-viewer.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/log-viewer/main.roc
+0 errors and 0 warnings found in 12.1s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/log-viewer.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/log-viewer.wasm log-viewer
+mounted log-viewer
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/conduit.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/conduit/main.roc
+0 errors and 0 warnings found in 47.1s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/conduit.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/conduit.wasm conduit
+mounted conduit
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/each-duplicate-key.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/_fixtures/each-duplicate-key/main.roc
+0 errors and 0 warnings found in 10.6s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/each-duplicate-key.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/each-duplicate-key.wasm each-duplicate-key --expect-error duplicate key "alert-42"
+mount failed as expected for each-duplicate-key
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/location-source.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/_fixtures/location-source/main.roc
+0 errors and 0 warnings found in 959ms while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/location-source.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/location-source.wasm location-source --exercise-location-source
+mounted location-source
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/location-navigation.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/_fixtures/location-navigation/main.roc
+0 errors and 0 warnings found in 1.1s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/location-navigation.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/location-navigation.wasm location-navigation --exercise-location-navigation
+mounted location-navigation
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/location-canonical-branch.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/_fixtures/location-canonical-branch/main.roc
+0 errors and 0 warnings found in 1.2s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/location-canonical-branch.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/location-canonical-branch.wasm location-canonical-branch --exercise-location-canonical-branch
+mounted location-canonical-branch
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/storage-commands.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/_fixtures/storage-commands/main.roc
+0 errors and 0 warnings found in 1.1s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/storage-commands.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/storage-commands.wasm storage-commands --exercise-storage-commands
+mounted storage-commands
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/on-change-initial.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/_fixtures/on-change-initial/main.roc
+0 errors and 0 warnings found in 1.6s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/on-change-initial.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/on-change-initial.wasm on-change-initial
+mounted on-change-initial
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/state-commands.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/_fixtures/state-commands/main.roc
+0 errors and 0 warnings found in 1.7s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/state-commands.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/state-commands.wasm state-commands --exercise-state-updates
+mounted state-commands
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/svg.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/_fixtures/svg/main.roc
+0 errors and 0 warnings found in 1.2s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/svg.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/svg.wasm svg --exercise-svg
+mounted svg
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/coordinated-writes.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/_fixtures/coordinated-writes/main.roc
+0 errors and 0 warnings found in 2.0s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/coordinated-writes.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/coordinated-writes.wasm coordinated-writes --exercise-coordinated-writes
+mounted coordinated-writes
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/event-actions.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/_fixtures/event-actions/main.roc
+0 errors and 0 warnings found in 1.9s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/event-actions.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/event-actions.wasm event-actions --exercise-event-actions
+exercised repeated actions, snapshots, completion order, and effects surviving disposal in event-actions
+mounted event-actions
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/state-reads.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/_fixtures/state-reads/main.roc
+0 errors and 0 warnings found in 1.1s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/state-reads.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/state-reads.wasm state-reads
+mounted state-reads
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/recursive-switch.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/_fixtures/recursive-switch/main.roc
+0 errors and 0 warnings found in 1.2s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/recursive-switch.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/recursive-switch.wasm recursive-switch
+mounted recursive-switch
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/branch-replacement.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/_fixtures/branch-replacement/main.roc
+0 errors and 0 warnings found in 1.3s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/branch-replacement.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/branch-replacement.wasm branch-replacement
+mounted branch-replacement
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/keyed-row-edits.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/_fixtures/keyed-row-edits/main.roc
+0 errors and 0 warnings found in 1m 6s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/keyed-row-edits.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/keyed-row-edits.wasm keyed-row-edits
+mounted keyed-row-edits
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/two-row-types.wasm /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm-source/examples-web/_fixtures/two-row-types/main.roc
+0 errors and 0 warnings found in 1m 25s while successfully building:
+
+    ../../../../../../s2/suites/b4/out-wasm-238334/wasm/two-row-types.wasm
+
+==> node --no-maglev --experimental-wasm-jspi scripts/browser/mount_wasm_example.mjs /tmp/claude-1000/s2/suites/b4/out-wasm-238334/wasm/two-row-types.wasm two-row-types
+mounted two-row-types
+
+=== known-failure ratchet (/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b4/test/known-failures.txt) ===
+36 passed, 0 known failing, 0 fixed, 0 regressed, 36 total

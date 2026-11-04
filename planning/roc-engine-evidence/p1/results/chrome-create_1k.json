@@ -1,0 +1,139 @@
+{
+ "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+ "iterations": 9,
+ "warmups": 2,
+ "cases": {
+  "create_1k": {
+   "current": [
+    {
+     "script_ms": 119.90000009536743,
+     "layout_ms": 138.60000002384186,
+     "wasm_ms": 105.39999997615814,
+     "decode_ms": 0,
+     "pages": 1169
+    },
+    {
+     "script_ms": 86.79999995231628,
+     "layout_ms": 102.79999995231628,
+     "wasm_ms": 72.79999995231628,
+     "decode_ms": 0,
+     "pages": 1169
+    },
+    {
+     "script_ms": 70.39999997615814,
+     "layout_ms": 86.29999995231628,
+     "wasm_ms": 56.200000047683716,
+     "decode_ms": 0,
+     "pages": 1169
+    },
+    {
+     "script_ms": 81.30000007152557,
+     "layout_ms": 97,
+     "wasm_ms": 67.89999997615814,
+     "decode_ms": 0,
+     "pages": 1169
+    },
+    {
+     "script_ms": 66.39999997615814,
+     "layout_ms": 82.19999992847443,
+     "wasm_ms": 53.799999952316284,
+     "decode_ms": 0,
+     "pages": 1169
+    },
+    {
+     "script_ms": 67.39999997615814,
+     "layout_ms": 82,
+     "wasm_ms": 54.5,
+     "decode_ms": 0,
+     "pages": 1169
+    },
+    {
+     "script_ms": 63.5,
+     "layout_ms": 76.69999992847443,
+     "wasm_ms": 53.199999928474426,
+     "decode_ms": 0,
+     "pages": 1169
+    },
+    {
+     "script_ms": 62.5,
+     "layout_ms": 76.59999990463257,
+     "wasm_ms": 52.5,
+     "decode_ms": 0,
+     "pages": 1169
+    },
+    {
+     "script_ms": 63.39999997615814,
+     "layout_ms": 79.5,
+     "wasm_ms": 52.5,
+     "decode_ms": 0,
+     "pages": 1169
+    }
+   ],
+   "new": [
+    {
+     "script_ms": 4.5,
+     "layout_ms": 20.100000023841858,
+     "wasm_ms": 2.399999976158142,
+     "decode_ms": 0.2999999523162842,
+     "pages": 144
+    },
+    {
+     "script_ms": 3.200000047683716,
+     "layout_ms": 19.399999976158142,
+     "wasm_ms": 0.3999999761581421,
+     "decode_ms": 0.20000004768371582,
+     "pages": 144
+    },
+    {
+     "script_ms": 3.9000000953674316,
+     "layout_ms": 18.40000009536743,
+     "wasm_ms": 2.100000023841858,
+     "decode_ms": 0.2999999523162842,
+     "pages": 144
+    },
+    {
+     "script_ms": 2.600000023841858,
+     "layout_ms": 18.700000047683716,
+     "wasm_ms": 0.5,
+     "decode_ms": 0.2999999523162842,
+     "pages": 144
+    },
+    {
+     "script_ms": 3.799999952316284,
+     "layout_ms": 18.100000023841858,
+     "wasm_ms": 2,
+     "decode_ms": 0.2999999523162842,
+     "pages": 144
+    },
+    {
+     "script_ms": 2.399999976158142,
+     "layout_ms": 16.199999928474426,
+     "wasm_ms": 0.3999999761581421,
+     "decode_ms": 0.40000009536743164,
+     "pages": 144
+    },
+    {
+     "script_ms": 3.899999976158142,
+     "layout_ms": 26.200000047683716,
+     "wasm_ms": 2,
+     "decode_ms": 0.19999992847442627,
+     "pages": 144
+    },
+    {
+     "script_ms": 2.4000000953674316,
+     "layout_ms": 17.90000009536743,
+     "wasm_ms": 0.30000007152557373,
+     "decode_ms": 0.2999999523162842,
+     "pages": 144
+    },
+    {
+     "script_ms": 2.8000000715255737,
+     "layout_ms": 16.700000047683716,
+     "wasm_ms": 0.40000009536743164,
+     "decode_ms": 0.3999999761581421,
+     "pages": 144
+    }
+   ]
+  }
+ }
+}

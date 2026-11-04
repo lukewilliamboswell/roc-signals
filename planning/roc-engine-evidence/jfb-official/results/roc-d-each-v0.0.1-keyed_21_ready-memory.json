@@ -1,0 +1,1 @@
+{"framework":"roc-d-each-v0.0.1-keyed","keyed":true,"benchmark":"21_ready-memory","type":"memory","values":{"DEFAULT":{"min":9.190672874450684,"max":9.190672874450684,"median":9.190672874450684,"mean":9.190672874450684,"stddev":null,"values":[9.190672874450684]}}}

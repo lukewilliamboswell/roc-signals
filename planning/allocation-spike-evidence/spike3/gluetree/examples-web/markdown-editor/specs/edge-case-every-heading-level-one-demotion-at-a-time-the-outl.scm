@@ -1,0 +1,80 @@
+(test "Markdown editor — Edge case: every heading level, one demotion at a time. The outline row"
+  (steps
+    ; Given the state established by earlier scenarios
+    (mark-metrics)
+    (uncheck (label "Number the outline"))
+    (check (label "Number the outline"))
+    (mark-metrics)
+    (select-option (label "Reading speed") "100")
+    (select-option (label "Reading speed") "300")
+    (select-option (label "Reading speed") "200")
+    (mark-metrics)
+    (click (role button :name "Append a word"))
+    (mark-metrics)
+    (click (role button :name "Append a section"))
+    (click (role button :name "Append a section"))
+    (click (role button :name "Load heading drill"))
+    (mark-metrics)
+    (click (role button :name "Move the last section up"))
+    (mark-metrics)
+    (click (role button :name "Remove the last section"))
+    (mark-metrics)
+    (click (role button :name "Append a section"))
+    (mark-metrics)
+    (click (role button :name "Demote the last heading"))
+    (click (role button :name "Load document without headings"))
+    (click (role button :name "Clear document"))
+    (fill (label "Markdown source") "word")
+    (fill (label "Markdown source") "# Only")
+    (fill (label "Markdown source") "## Costs & Trade-offs (2026)")
+    (fill (label "Markdown source") "An unmatched ** stays literal, so does a lone ` backtick.")
+    (fill (label "Markdown source") "The text [not a link( and ![not an image( are left alone.")
+    (fill (label "Markdown source") "#nospace is not a heading, and neither is a bare # on its own line.")
+    (fill (label "Markdown source") "# ***")
+    (click (role button :name "Append a section"))
+    (fill (label "Markdown source") "## Use **map2** for `fan-in`")
+
+    ; 10. Edge case: every heading level, one demotion at a time. The outline row
+    ; keeps its slug key throughout, so only its level attribute changes.
+    ; ---------------------------------------------------------------------------
+
+    (fill (label "Markdown source") "# One")
+    (expect-attr (test-id "toc:one") data-level "1")
+    (click (role button :name "Demote the last heading"))
+    (expect-attr (test-id "toc:one") data-level "2")
+    (click (role button :name "Demote the last heading"))
+    (expect-attr (test-id "toc:one") data-level "3")
+    (click (role button :name "Demote the last heading"))
+    (expect-attr (test-id "toc:one") data-level "4")
+    (click (role button :name "Demote the last heading"))
+    (expect-attr (test-id "toc:one") data-level "5")
+    (mark-metrics)
+    (click (role button :name "Demote the last heading"))
+    (expect-attr (test-id "toc:one") data-level "6")
+    ; The keyed block and outline rows survive because their keys are unchanged.
+    ; The heading tag is structural, however, so `Ui.switch` retires the h5
+    ; branch and creates the h6 branch. Its nested inline-segment row belongs to
+    ; that branch scope and is therefore created once in the replacement branch.
+    ; Retiring the old branch is scope disposal, not a keyed reconciliation
+    ; removal, so it intentionally does not increment rows_removed.
+    (expect-metric-delta rows_created 1)
+    (expect-metric-delta rows_removed 0)
+    ; Level six is the floor: another demotion is a no-op.
+    (mark-metrics)
+    (click (role button :name "Demote the last heading"))
+    (expect-attr (test-id "toc:one") data-level "6")
+    (expect-text (test-id "stat-headings") "1")
+    (expect-metric-delta rows_created 0)
+    (expect-metric-delta rows_removed 0)
+    ; A level-one heading straight to a level-six heading: the jump is preserved.
+    (fill (label "Markdown source") "# One")
+    (click (role button :name "Append a section"))
+    (click (role button :name "Demote the last heading"))
+    (click (role button :name "Demote the last heading"))
+    (click (role button :name "Demote the last heading"))
+    (click (role button :name "Demote the last heading"))
+    (expect-text (test-id "stat-headings") "2")
+    (expect-attr (test-id "toc:one") data-level "1")
+    (expect-attr (test-id "toc:new-section") data-level "6")
+  )
+)

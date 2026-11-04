@@ -1,0 +1,15 @@
+0 errors and 0 warnings found in 15.9s while successfully building:
+
+=== PANIC (no stack trace) ===
+Ui.each_template: a row template may contain only static elements, text, and key placeholders
+signal exit 134
+0 errors and 0 warnings found in 15.3s while successfully building:
+
+=== PANIC (no stack trace) ===
+Ui.each_template: a row template may not contain signal-backed attributes or events
+event exit 134
+0 errors and 0 warnings found in 12.4s while successfully building:
+
+=== PANIC (no stack trace) ===
+Ui.each_template: a row template may contain only static elements, text, and key placeholders
+state exit 134

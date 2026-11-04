@@ -1,0 +1,4 @@
+create_1k | dispatch_apply_ns: base 64.15 [60.62-73.43] cand 64.38 [61.32-72.85] ms | dispatch_roc_ns: base 14.64 [14.29-16.99] cand 14.62 [14.14-16.17] ms | total_ns: base 80.51 [75.28-90.36] cand 79.66 [76.04-89.39] ms
+create_10k | dispatch_apply_ns: base 885.23 [857.99-1007.48] cand 854.68 [810.77-892.20] ms | dispatch_roc_ns: base 214.99 [204.23-229.98] cand 201.56 [196.33-211.41] ms | total_ns: base 1109.44 [1071.27-1212.23] cand 1064.83 [1009.68-1091.26] ms
+update_10k | dispatch_apply_ns: base 23.38 [17.31-26.52] cand 20.23 [16.19-26.02] ms | dispatch_roc_ns: base 40.00 [34.12-43.42] cand 36.50 [32.51-42.17] ms | total_ns: base 65.28 [51.78-70.28] cand 56.60 [49.04-68.57] ms
+clear_10k | dispatch_apply_ns: base 497.06 [431.54-535.32] cand 503.42 [449.52-583.37] ms | dispatch_roc_ns: base 4.53 [4.13-5.21] cand 5.00 [3.86-6.13] ms | total_ns: base 502.01 [436.44-541.05] cand 509.53 [455.22-589.39] ms

@@ -1,0 +1,80 @@
+records 185047
+== ROC total 81564 = 81.56/row; bytes 9635896 = 9636/row
+   26.00/row       4162 B/row  roc__pfcaf61c78666dcc9f3c1d9a827200f66 roc_app_llvm:?
+   14.00/row        560 B/row  roc__pf1432eff46fcd58bb490cb82de18a8ce roc_app_llvm:?
+   10.00/row        480 B/row  roc__pae1700e756b0d3c1546f1401409b10ca.fast roc_app_llvm:?
+    8.06/row        709 B/row  roc__p815458a7129e3d7ea965ca29d41ec7f3.fast roc_app_llvm:?
+    6.94/row        611 B/row  roc__pa293042d3c1d3d1d2ce5b033679b1ee7.fast roc_app_llvm:?
+    4.00/row        256 B/row  roc__pbd7f0199472b903e0e8cfa49d6b51423 roc_app_llvm:?
+    3.04/row        209 B/row  roc__p30c447726b1dd709eb5ae053b201e781.fast roc_app_llvm:?
+    3.00/row       1200 B/row  roc__pfefab24d45e544bcf4f317a3282e84ff.fast roc_app_llvm:?
+    2.02/row       1150 B/row  roc__p81e4a36a82cc8b7fac7b1adf7c8d1a25 roc_app_llvm:?
+    2.00/row         80 B/row  roc__p5cbf62f36bf64bd5fc6e933384b29eca roc_app_llvm:?
+    1.00/row         64 B/row  roc__p0503ff6dcea3f5d50e51b2a60e3417ef roc_app_llvm:?
+    1.00/row         40 B/row  roc__p207c0931e94dbae74b9739f3bd7068e8 roc_app_llvm:?
+    0.12/row          5 B/row  dev_wrappers.roc_builtins_list_set roc_app_llvm:?
+    0.12/row         11 B/row  roc__paabd4a0719cb791468c3dec0924796dc.fast roc_app_llvm:?
+    0.08/row          7 B/row  roc__p82840db3fbb8445bcc1a4923c9caedb8.fast roc_app_llvm:?
+    0.04/row         22 B/row  roc__pf821a16cad3dbe988f6ffab9c14705b2.fast roc_app_llvm:?
+    0.04/row         33 B/row  roc_cold_shim.roc_builtins_list_reserve_for_append roc_app_llvm:?
+    0.03/row          2 B/row  list.RocList.reallocate roc_app_llvm:?
+    0.03/row          2 B/row  dev_wrappers.roc_builtins_str_concat roc_app_llvm:?
+    0.02/row         13 B/row  roc__p014dbf4b8895152268d7089adf518eef roc_app_llvm:?
+    0.00/row          0 B/row  roc__p2f26e11cf5dd465d7120507a2cad91ad.fast roc_app_llvm:?
+    0.00/row          0 B/row  roc__pfcf3c397778b284da9f2bd217258d952.fast roc_app_llvm:?
+    0.00/row          0 B/row  roc__pe973a74da4c50c762502f38bec907d49.fast roc_app_llvm:?
+    0.00/row          0 B/row  roc__pfc1515d7a1b0dd558278441e772739c8.fast roc_app_llvm:?
+    0.00/row          2 B/row  roc__pb002bd83808daf5999c751f8b7e1e830.fast roc_app_llvm:?
+    0.00/row          1 B/row  roc__pb925262f3053b8c3f9e6840cab4671a7.fast roc_app_llvm:?
+    0.00/row         16 B/row  roc__p40c6492c86774015bcfbad15125359fb.fast roc_app_llvm:?
+    0.00/row          1 B/row  roc__paab6d73c31cc79e907784632ddf5ccb5 roc_app_llvm:?
+    0.00/row          1 B/row  roc__p91340d7b8a683d6508478769f9963272 roc_app_llvm:?
+    0.00/row          0 B/row  roc__p158a4e70f60817cf4a3df3330eab4a5a roc_app_llvm:?
+ size classes: 40:26.1 88:19.2 64:5.0 128:5.0 32:4.0 176:4.0 144:3.0 336:3.0 568:2.0 56:2.0 11:1.8 592:1.0 464:1.0 256:1.0 304:1.0 496:1.0
+== HOST total 103483 = 103.48/row; bytes 82537324 = 82537/row
+   16.00/row         63 B/row  engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.prep engine.zig:10027
+   10.00/row        103 B/row  engine.Engine(native_host.NativeCtx).collectActiveElemDescriptorsWith_ engine.zig:6922
+   10.00/row        113 B/row  native_host.NativeRenderPublication.prepare__anon_57057 native_host.zig:228
+    8.00/row         16 B/row  descriptor_stream.Stream.prepareElementInNamespace descriptor_stream.zig:2863
+    8.00/row         93 B/row  engine.Engine(native_host.NativeCtx).BranchReplacementPlan.prepareRend engine.zig:10913
+    6.00/row         72 B/row  engine.Engine(native_host.NativeCtx).BranchReplacementPlan.prepareRend engine.zig:10908
+    6.00/row         93 B/row  engine.Engine(native_host.NativeCtx).BranchReplacementPlan.prepareRend engine.zig:10975
+    6.00/row        856 B/row  native_host.NativeRenderPublication.prepare__anon_57057 native_host.zig:201
+    4.00/row         29 B/row  engine.Engine(native_host.NativeCtx).StagedCollectionCtx.appendAttr engine.zig:6510
+    4.00/row        122 B/row  engine.Engine(native_host.NativeCtx).BranchReplacementPlan.prepareRend engine.zig:10988
+    3.00/row        595 B/row  engine.Engine(native_host.NativeCtx).StagedCollectionCtx.bindSignalRoo engine.zig:6673
+    2.01/row        182 B/row  engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.prep engine.zig:9748
+    2.01/row        367 B/row  engine.Engine(native_host.NativeCtx).StagedCollectionCtx.appendAttr engine.zig:6509
+    2.01/row        366 B/row  descriptor_stream.Stream.reserveMovedStreamPublication descriptor_stream.zig:1207
+    2.00/row        272 B/row  engine.Engine(native_host.NativeCtx).StagedCollectionCtx.appendAttr engine.zig:6475
+    2.00/row        320 B/row  native_host.NativeRenderPublication.prepare__anon_57057 native_host.zig:259
+    2.00/row        336 B/row  native_host.NativeRenderPublication.prepare__anon_57057 native_host.zig:271
+    1.02/row        168 B/row  rows_transition.PreparedTransition.prepareStable rows_transition.zig:?
+    1.01/row        326 B/row  descriptor_stream.Stream.reserveMovedStreamPublication descriptor_stream.zig:?
+    1.00/row        144 B/row  engine.Engine(native_host.NativeCtx).PreparedEachRowReplacementCollect engine.zig:7852
+    1.00/row        136 B/row  engine.Engine(native_host.NativeCtx).StagedCollectionCtx.reserveScopeD engine.zig:5254
+    1.00/row        136 B/row  engine.Engine(native_host.NativeCtx).StagedCollectionCtx.bindSignalRoo engine.zig:6676
+    1.00/row          8 B/row  engine.Engine(native_host.NativeCtx).StagedCollectionCtx.appendAttr engine.zig:6347
+    1.00/row          3 B/row  descriptor_stream.Stream.prepareTextNode descriptor_stream.zig:2870
+    1.00/row        296 B/row  engine.Engine(native_host.NativeCtx).bindSignalExprViewWith__anon_6261 engine.zig:4111
+    1.00/row          3 B/row  engine.Engine(native_host.NativeCtx).BranchReplacementPlan.prepareRend engine.zig:10912
+    1.00/row         18 B/row  engine.Engine(native_host.NativeCtx).BranchReplacementPlan.prepareRend engine.zig:10918
+    0.02/row        139 B/row  hash_map.HashMapUnmanaged(u64,usize,hash_map.AutoContext(u64),80).grow hash_map.zig:?
+    0.01/row        106 B/row  engine.Engine(native_host.NativeCtx).PreparedActiveEachRows.prepareInt engine.zig:1750
+    0.01/row        166 B/row  engine.Engine(native_host.NativeCtx).PreparedEachRowSyncHooks.prepareC engine.zig:1064
+    0.01/row        189 B/row  active_signal_graph.prepareGraphAppendWithWork__anon_50625 active_signal_graph.zig:2204
+    0.01/row        156 B/row  engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.spar engine.zig:9236
+    0.01/row         48 B/row  active_signal_graph.prepareGraphAppendWithWork__anon_50625.Builder.ret active_signal_graph.zig:2182
+    0.01/row       4226 B/row  hash_map.HashMapUnmanaged(structural_positions.PositionId,?structural_ hash_map.zig:749
+    0.01/row      10143 B/row  engine.Engine(native_host.NativeCtx).BranchReplacementPlan.prepareRend engine.zig:10869
+    0.01/row       3030 B/row  hash_map.HashMapUnmanaged(ids.Identity(.elem,u64),structural_positions hash_map.zig:749
+    0.01/row       1135 B/row  hash_map.HashMapUnmanaged(rows_ids.Identity("Rows row"[0..8]),rows_ren hash_map.zig:749
+    0.01/row        139 B/row  hash_map.HashMapUnmanaged(*signal_records.Record,usize,hash_map.AutoCo hash_map.zig:1115
+    0.01/row         16 B/row  signal_graph.OwnedAdjacency.append signal_graph.zig:140
+    0.01/row        350 B/row  hash_map.HashMapUnmanaged(ids.Identity(.scope,u64),structural_position hash_map.zig:749
+    0.01/row       1711 B/row  hash_map.HashMapUnmanaged(structural_positions.PositionId,rows_render_ hash_map.zig:?
+    0.01/row        855 B/row  hash_map.HashMapUnmanaged(u128,rows_transition.Shadow,hash_map.AutoCon hash_map.zig:1115
+    0.01/row        201 B/row  hash_map.HashMapUnmanaged([]const u8,rows_transition.KeyState,hash_map hash_map.zig:1115
+    0.01/row        168 B/row  hash_map.HashMapUnmanaged(u64,rows_transition.KeyState,hash_map.AutoCo hash_map.zig:1295
+    0.01/row        102 B/row  hash_map.HashMapUnmanaged(u64,engine.Engine(native_host.NativeCtx).Sta hash_map.zig:1295
+ size classes: 8:18.0 2:10.8 136:10.0 3:8.1 4:7.0 5:6.0 11:6.0 14:5.5 144:5.0 1:4.1 296:3.0 26:3.0 32:3.0 7:2.7 160:2.0 56:2.0

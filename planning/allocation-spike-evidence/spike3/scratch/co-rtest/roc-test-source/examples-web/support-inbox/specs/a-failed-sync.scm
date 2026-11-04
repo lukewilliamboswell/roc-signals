@@ -1,0 +1,45 @@
+(test "Support inbox — failed sync and recovery preserve selection"
+  (setup (manual-effects))
+  (steps
+    ; Keep a selection even when the latest successful snapshot becomes empty.
+    (stub-http "initial inbox" :url "/api/inbox" :status 200 :body "c1|Card declined|Ada Lovelace|me#m1|c1|customer|My card was declined|read|-")
+    (run-effect 1)
+    (click (test-id "open-c1"))
+    (stub-http "empty snapshot" :url "/api/inbox" :status 200 :body "#")
+    (run-effect 2)
+
+    ; a failed sync
+
+    (tick-interval 4000)
+    (expect-pending-effects 1)
+    (stub-http-reject "poll timeout" :kind timeout :detail "")
+    (run-effect 3)
+    (expect-pending-effects 0)
+    (expect-text (test-id "sync-status") "Failed — Timeout")
+    (expect-text (test-id "summary-conversations") "0")
+    (expect-text (test-id "summary-unread") "0")
+    (expect-text (test-id "summary-sending") "0")
+    ; a later poll recovers
+    (tick-interval 4000)
+    (stub-http "recovered inbox" :url "/api/inbox" :status 200 :body "c1|Card declined|Ada Lovelace|me;c2|Cannot log in|Grace Hopper|sam;c3|Refund status|Alan Turing|me#m1|c1|customer|My card was declined|read|-;m2|c1|agent|Looking into it now|read|-")
+    (run-effect 4)
+    (expect-text (test-id "sync-status") "Up to date")
+    (expect-text (test-id "summary-conversations") "3")
+    (expect-text (test-id "summary-unread") "0")
+    (expect-text (test-id "summary-sending") "0")
+    (expect-text (test-id "thread-title") "Card declined")
+    (expect-text (test-id "body-m1") "My card was declined")
+    (expect-text (test-id "filter-notice") "All open conversations are listed.")
+    ; Failure with populated data must preserve the last successful snapshot.
+    (tick-interval 4000)
+    (stub-http-reject "second poll timeout" :kind timeout :detail "")
+    (mark-metrics)
+    (run-effect 5)
+    (expect-metric-delta rows_removed 0)
+    (expect-metric-delta rows_created 0)
+    (expect-text (test-id "sync-status") "Failed — Timeout")
+    (expect-text (test-id "summary-conversations") "3")
+    (expect-text (test-id "body-m1") "My card was declined")
+    (expect-pending-effects 0)
+  )
+)

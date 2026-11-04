@@ -1,0 +1,183 @@
+{
+ "results": [
+  {
+   "file": "article-writes-editor-create-edit-comments-and-delete",
+   "ok": true,
+   "steps": 112,
+   "ms": 506,
+   "failed": null
+  },
+  {
+   "file": "back-forward-stay-in-sync-across-live-pages",
+   "ok": true,
+   "steps": 22,
+   "ms": 110,
+   "failed": null
+  },
+  {
+   "file": "deep-link-cold-mounts-the-article-page-loading-then-content",
+   "ok": true,
+   "steps": 26,
+   "ms": 90,
+   "failed": null
+  },
+  {
+   "file": "editor-older-success-cannot-override-newer-rejection",
+   "ok": true,
+   "steps": 16,
+   "ms": 133,
+   "failed": null
+  },
+  {
+   "file": "empty-state",
+   "ok": true,
+   "steps": 11,
+   "ms": 98,
+   "failed": null
+  },
+  {
+   "file": "error-state-renders-in-app",
+   "ok": true,
+   "steps": 6,
+   "ms": 73,
+   "failed": null
+  },
+  {
+   "file": "favoriting-and-unfavoriting-a-feed-article",
+   "ok": true,
+   "steps": 14,
+   "ms": 132,
+   "failed": null
+  },
+  {
+   "file": "guarded-routes-redirect-anonymous-visitors-to-sign-in",
+   "ok": true,
+   "steps": 5,
+   "ms": 71,
+   "failed": null
+  },
+  {
+   "file": "home-both-fetches-pending-then-tags-and-feed-render",
+   "ok": true,
+   "steps": 17,
+   "ms": 77,
+   "failed": null
+  },
+  {
+   "file": "login-422-envelope-renders-success-persists-the-session",
+   "ok": true,
+   "steps": 27,
+   "ms": 133,
+   "failed": null
+  },
+  {
+   "file": "login-older-success-cannot-replace-a-newer-rejection",
+   "ok": true,
+   "steps": 16,
+   "ms": 119,
+   "failed": null
+  },
+  {
+   "file": "network-failure-article",
+   "ok": true,
+   "steps": 3,
+   "ms": 67,
+   "failed": null
+  },
+  {
+   "file": "network-failure-comments",
+   "ok": true,
+   "steps": 8,
+   "ms": 76,
+   "failed": null
+  },
+  {
+   "file": "network-failure-editor-load",
+   "ok": true,
+   "steps": 4,
+   "ms": 68,
+   "failed": null
+  },
+  {
+   "file": "network-failure-home",
+   "ok": true,
+   "steps": 8,
+   "ms": 70,
+   "failed": null
+  },
+  {
+   "file": "network-failure-profile-articles",
+   "ok": true,
+   "steps": 7,
+   "ms": 68,
+   "failed": null
+  },
+  {
+   "file": "network-failure-profile",
+   "ok": true,
+   "steps": 3,
+   "ms": 76,
+   "failed": null
+  },
+  {
+   "file": "pagination-23-articles-two-pages-page-switch-swaps-the-list",
+   "ok": true,
+   "steps": 13,
+   "ms": 99,
+   "failed": null
+  },
+  {
+   "file": "profile-page-profile-card-plus-author-articles-then-favorites-ta",
+   "ok": true,
+   "steps": 39,
+   "ms": 162,
+   "failed": null
+  },
+  {
+   "file": "published-example-urls-mount-the-app-home-under-any-site-base-pa",
+   "ok": true,
+   "steps": 4,
+   "ms": 62,
+   "failed": null
+  },
+  {
+   "file": "register-422-envelope-renders-all-required-fields",
+   "ok": true,
+   "steps": 10,
+   "ms": 96,
+   "failed": null
+  },
+  {
+   "file": "settings-authed-update-then-sign-out-clears-the-namespaced-keys",
+   "ok": true,
+   "steps": 20,
+   "ms": 131,
+   "failed": null
+  },
+  {
+   "file": "settings-response-after-sign-out-does-not-restore-session",
+   "ok": true,
+   "steps": 16,
+   "ms": 126,
+   "failed": null
+  },
+  {
+   "file": "tag-switching-ignores-an-older-response",
+   "ok": true,
+   "steps": 21,
+   "ms": 116,
+   "failed": null
+  },
+  {
+   "file": "your-feed-tab-drives-the-authenticated-feed-endpoint",
+   "ok": true,
+   "steps": 11,
+   "ms": 94,
+   "failed": null
+  }
+ ],
+ "stats": {
+  "typed": 18,
+  "typedFallback": 0
+ }
+}

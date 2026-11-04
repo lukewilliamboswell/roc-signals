@@ -1,0 +1,1 @@
+{"framework":"roc-d-each-v0.0.1-keyed","keyed":true,"benchmark":"22_run-memory","type":"memory","values":{"DEFAULT":{"min":11.000018119812012,"max":11.000018119812012,"median":11.000018119812012,"mean":11.000018119812012,"stddev":null,"values":[11.000018119812012]}}}

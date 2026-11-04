@@ -1,0 +1,119 @@
+	## ------------------------------------------------------------------
+	## Component boundary with a fixed environment (after p2size/r2dnb),
+	## generalised: any prop type `p` and an outward action type `a`.
+	##
+	## The body is typed over `Comp(p, a)` only, never over the caller's
+	## context, so it is specialised once per (p, a), not per call site.
+	## Inside, the prop is layer 0. The body also gets a write handle on the
+	## component's outward action list (`out.push(...)`, mask 0: writing it
+	## refreshes nothing inside). When an event inside the component settles,
+	## the boundary hands each pushed action to the caller's `Sink`, which
+	## turns it into an update of an outer state.
+	##
+	## The boundary does not retain the prop: it re-reads it from the caller's
+	## environment when an outer layer it reads changes, and when an event
+	## enters. Retaining it (for equality pruning at the boundary) would hold a
+	## second reference to whatever the prop projects out of an outer state
+	## (typically a list), and every reducer on that state would then copy it.
+	## Pruning happens at the holes and rows inside instead.
+	Comp(p, a) := { prop : p, out : List(a) }
+
+	## Where a component's actions go: the reducer also reports the layer it
+	## changed.
+	Sink(ctx, a) : { run : (ctx, a -> (ctx, U64)) }
+
+	sink : State(ctx, s), (s, a -> s) -> Sink(ctx, a)
+	sink = |st, f| {
+		{ mask, get: _, modify } = st
+		{ run: |e, a| (modify(e, |s| f(s, a)), mask) }
+	}
+
+	## Route each action to one of two sinks.
+	split : Sink(ctx, a), Sink(ctx, b), (c -> [L(a), R(b)]) -> Sink(ctx, c)
+	split = |l, r, route| {
+		lr = l.run
+		rr = r.run
+		{
+			run: |e, c| match route(c) {
+				L(a) => lr(e, a)
+				R(b) => rr(e, b)
+			},
+		}
+	}
+
+	component : Val(ctx, p), Sink(ctx, a), (Val(Comp(p, a), p), State(Comp(p, a), List(a)) -> Elem(Comp(p, a))) -> Elem(ctx)
+	component = |prop, snk, body| Site(Mount(|env, args, tx| {
+		v = (prop.read)(env)
+		out_handle = {
+			mask: 0,
+			get: |e| e.out,
+			modify: |e, f| {
+				{ prop: pv, out } = e
+				Comp.{ prop: pv, out: f(out) }
+			},
+		}
+		elem = body({ mask: 1, read: |e| e.prop, sel: NoSel }, out_handle)
+		(block, tx1) = Engine.mount_block(Comp.{ prop: v, out: [] }, elem, 0, args.path, args.parent, args.before, Engine.count_evals(tx, 1))
+		(Engine.comp_inst(prop, snk, block), Engine.eff_mask(prop), tx1)
+	}))
+
+	comp_inst : Val(ctx, p), Sink(ctx, a), Block(Comp(p, a)) -> Inst(ctx)
+	comp_inst = |prop0, snk0, block0| {
+		held = Held({ prop: prop0, snk: snk0, block: block0 })
+		Inst(|env, msg, tx| {
+			Held({ prop, snk, block }) = held
+			match msg {
+				Changed(mask) => {
+					if Engine.eff_mask(prop).bitwise_and(mask) == 0 {
+						(Engine.comp_inst(prop, snk, block), Done, tx)
+					} else {
+						v = (prop.read)(env)
+						(b2, t2) = Engine.refresh(block, Comp.{ prop: v, out: [] }, 1, Engine.count_evals(tx, 1))
+						(Engine.comp_inst(prop, snk, b2), Done, t2)
+					}
+				}
+				Fire(path, pos, h, payload) => {
+					match Engine.fire_target(block, path, pos) {
+						Leaf => {
+							inner = Comp.{ prop: (prop.read)(env), out: [] }
+							Engine.comp_settle(prop, snk, block, env, Engine.fire_leaf(block, inner, h, payload), Engine.count_evals(tx, 1))
+						}
+						Kid => {
+							inner = Comp.{ prop: (prop.read)(env), out: [] }
+							(b2, out, t2) = Engine.fire_kid(block, inner, path, pos, h, payload, Engine.count_evals(tx, 1))
+							Engine.comp_settle(prop, snk, b2, env, out, t2)
+						}
+						Miss => (Engine.comp_inst(prop, snk, block), Pending(env, 0), tx)
+					}
+				}
+				Dispose(remove) => {
+					t2 = Engine.dispose_block(block, Comp.{ prop: (prop.read)(env), out: [] }, remove, tx)
+					(Engine.noop({}), Done, t2)
+				}
+			}
+		})
+	}
+
+	comp_settle : Val(ctx, p), Sink(ctx, a), Block(Comp(p, a)), ctx, Out(Comp(p, a)), Tx -> (Inst(ctx), Out(ctx), Tx)
+	comp_settle = |prop, snk, block, env, out, tx| {
+		match out {
+			Done => crash "fire must hand the environment back"
+			Pending(inner, _) => {
+				{ prop: _, out: actions } = inner
+				if actions.is_empty() {
+					(Engine.comp_inst(prop, snk, block), Pending(env, 0), tx)
+				} else {
+					run = snk.run
+					var $e = env
+					var $m = 0.U64
+					for a in actions {
+						(e2, m2) = run($e, a)
+						$e = e2
+						$m = $m.bitwise_or(m2)
+					}
+					(Engine.comp_inst(prop, snk, block), Pending($e, $m), tx)
+				}
+			}
+		}
+	}
+

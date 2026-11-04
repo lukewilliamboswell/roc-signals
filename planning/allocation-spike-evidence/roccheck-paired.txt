@@ -1,0 +1,18 @@
+1 base exit=1 last=examples-web/conduit/main.roc ran out of memory
+1 s1 exit=1 last=examples-web/spreadsheet-lite/main.roc Segmentation fault
+1 s2 exit=1 last=examples-web/spreadsheet-lite/main.roc Segmentation fault
+2 base exit=1 last=examples-web/conduit/main.roc ran out of memory
+2 s1 exit=1 last=examples-web/spreadsheet-lite/main.roc Segmentation fault
+2 s2 exit=1 last=examples-web/spreadsheet-lite/main.roc ran out of memory
+3 base exit=1 last=examples-web/conduit/main.roc ran out of memory
+3 s1 exit=1 last=examples-web/spreadsheet-lite/main.roc ran out of memory
+3 s2 exit=1 last=examples-web/spreadsheet-lite/main.roc ran out of memory
+4 base exit=1 last=examples-web/conduit/main.roc Segmentation fault
+4 s1 exit=1 last=examples-web/spreadsheet-lite/main.roc ran out of memory
+4 s2 exit=1 last=examples-web/spreadsheet-lite/main.roc ran out of memory
+5 base exit=1 last=examples-web/conduit/main.roc ran out of memory
+5 s1 exit=1 last=examples-web/spreadsheet-lite/main.roc Segmentation fault
+5 s2 exit=1 last=examples-web/spreadsheet-lite/main.roc Segmentation fault
+6 base exit=1 last=examples-web/conduit/main.roc ran out of memory
+6 s1 exit=1 last=examples-web/spreadsheet-lite/main.roc Segmentation fault
+6 s2 exit=1 last=examples-web/spreadsheet-lite/main.roc ran out of memory

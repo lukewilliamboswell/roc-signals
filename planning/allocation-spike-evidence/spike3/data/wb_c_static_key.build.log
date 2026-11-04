@@ -1,0 +1,48 @@
+Test output: /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_static_key.out
+
+==> /usr/bin/python3 scripts/prepare_platforms.py
+Shared platform copies match (SHA-256).
+
+==> zig build build-wasm-benchmark-host
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_static_key.out/wasm-benchmark/js-framework-production.wasm /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_static_key.out/wasm-benchmark/source/production.roc
+0 errors and 0 warnings found in 1m 10s while successfully building:
+
+    ../c_static_key.out/wasm-benchmark/js-framework-production.wasm
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_static_key.out/wasm-benchmark/js-framework-diagnostic.wasm /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_static_key.out/wasm-benchmark/source/diagnostic.roc
+0 errors and 0 warnings found in 1m 11s while successfully building:
+
+    ../c_static_key.out/wasm-benchmark/js-framework-diagnostic.wasm
+
+==> node scripts/browser/wasm_command_retention.test.mjs /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_static_key.out/wasm-benchmark/js-framework-diagnostic.wasm
+node:internal/modules/run_main:104
+    triggerUncaughtException(
+    ^
+
+AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+0 !== 1
+
+    at file:///tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_static_key/scripts/browser/wasm_command_retention.test.mjs:30:12 {
+  generatedMessage: true,
+  code: 'ERR_ASSERTION',
+  actual: 0,
+  expected: 1,
+  operator: 'strictEqual'
+}
+
+Node.js v23.9.0
+Traceback (most recent call last):
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_static_key/scripts/test.py", line 1132, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_static_key/scripts/test.py", line 1058, in main
+    run_wasm_runtime_benchmarks(roc_bin, args)
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_static_key/scripts/test.py", line 794, in run_wasm_runtime_benchmarks
+    benchmark_run(["node", "scripts/browser/wasm_command_retention.test.mjs", diagnostic_wasm])
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_static_key/scripts/test.py", line 696, in benchmark_run
+    subprocess.run([str(part) for part in command], cwd=cwd, check=True, stdout=sys.stderr)
+  File "/usr/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['node', 'scripts/browser/wasm_command_retention.test.mjs', '/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_static_key.out/wasm-benchmark/js-framework-diagnostic.wasm']' returned non-zero exit status 1.

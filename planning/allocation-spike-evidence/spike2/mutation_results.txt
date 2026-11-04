@@ -1,0 +1,24 @@
+none: spec_driver exit=0
+[PASS] clicks.scm (1.4 ms)
+
+260 passed, 0 failed, 260 total (0.29s worker time)
+Fault outcomes: continued=6, refused_then_retried=250, skipped_roc=3
+failing coordinates: 0 []
+arena-growth-infallible: spec_driver exit=1
+mutant: infallible scratch growth
+
+226 passed, 34 failed, 260 total (132.50s worker time)
+Fault outcomes: continued=6, refused_then_retried=216, skipped_roc=3
+failing coordinates: 0 []
+state-writes-infallible: spec_driver exit=1
+mutant: infallible state write journal
+
+258 passed, 2 failed, 260 total (3.38s worker time)
+Fault outcomes: continued=6, refused_then_retried=248, skipped_roc=3
+failing coordinates: 0 []
+text-alias-in-scratch: spec_driver exit=1
+=== PANIC (no stack trace) ===
+Invalid free
+
+0 passed, 1 failed, 1 total (1.06s worker time)
+failing coordinates: 0 []

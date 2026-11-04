@@ -1,0 +1,6 @@
+p1b-gate: passed; baseline unbaselined; examples 1; exploration not_requested (attempted 0, accepted 0, rejected 0)
+gate                     mount                        allocs=   16383 reallocs=2502 deallocs=    7309 bytes=     6511556 peak=     2828916
+gate                     sparse                       allocs=       6 reallocs=   0 deallocs=       2 bytes=        8584 peak=     3036948
+gate                     sparse-again                 allocs=       6 reallocs=   0 deallocs=       6 bytes=        8584 peak=     2415503
+gate                     swap                         allocs=    3798 reallocs= 747 deallocs=    1752 bytes=     1262774 peak=     2885965
+gate                     swap-back                    allocs=    3797 reallocs= 725 deallocs=    3797 bytes=      969000 peak=     3339461

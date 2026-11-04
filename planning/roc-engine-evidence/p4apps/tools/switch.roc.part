@@ -1,0 +1,82 @@
+	## ------------------------------------------------------------------
+	## A conditional over a value: the content is `body(k)` for the current
+	## value `k` of `sel`, rebuilt when it changes. `cases` lists every value
+	## `sel` can take; the site's static reads are the union over them (so it
+	## listens exactly), and a value outside `cases` is a contract error.
+	Switch(ctx, k) : { sel : Val(ctx, k), cases : List(k), body : (k -> Elem(ctx)), anchor : U32, depth : U64, path : List(U32), cap : U64, local : Bool }
+
+	switch_reads : Val(ctx, k), List(k), (k -> Elem(ctx)), U64 -> U64
+	switch_reads = |sel, cases, body, d| {
+		var $m = Engine.eff_mask(sel)
+		for c in cases {
+			$m = $m.bitwise_or(Engine.elem_reads(body(c), d))
+		}
+		$m
+	}
+
+	switch : Val(ctx, k), List(k), (k -> Elem(ctx)) -> Elem(ctx)
+		where [k.is_eq : k, k -> Bool]
+	switch = |sel, cases, body| Site(Mount(|env, args, tx| {
+		(anchor, tx1) = Engine.alloc_id(tx)
+		before = args.before
+		tx2 = Engine.emit(tx1, |c| Engine.put_str(Engine.put_u32(Engine.put_u32(Engine.put_u32(c.append(10), anchor), args.parent), before), ""))
+		k = Engine.switch_value(sel, cases, env)
+		(block, tx3) = Engine.mount_block(env, body(k), args.depth, args.path, 0, anchor, { cap: args.cap, local: args.local }, Engine.count_evals(tx2, 1))
+		reads = if args.cap != 0 args.cap else Engine.switch_reads(sel, cases, body, args.depth)
+		w = { sel, cases, body, anchor, depth: args.depth, path: args.path, cap: args.cap, local: args.local }
+		(Engine.switch_inst(w, k, block), reads, tx3)
+	}), |d| Engine.switch_reads(sel, cases, body, d))
+
+	switch_value : Val(ctx, k), List(k), ctx -> k
+		where [k.is_eq : k, k -> Bool]
+	switch_value = |sel, cases, env| {
+		k = (sel.read)(env)
+		if cases.contains(k) k else crash "switch value is not one of its cases"
+	}
+
+	switch_inst : Switch(ctx, k), k, Block(ctx) -> Inst(ctx)
+		where [k.is_eq : k, k -> Bool]
+	switch_inst = |w0, cur0, block0| {
+		held = Held({ w: w0, cur: cur0, block: block0 })
+		Inst(|env, msg, tx| {
+			Held({ w, cur, block }) = held
+			match msg {
+				Changed(mask) => {
+					if Engine.eff_mask(w.sel).bitwise_and(mask) != 0 {
+						k = Engine.switch_value(w.sel, w.cases, env)
+						t1 = Engine.count_evals(tx, 1)
+						if k == cur {
+							(b2, t2) = Engine.refresh(block, env, mask, t1)
+							(Engine.switch_inst(w, cur, b2), Done, t2)
+						} else {
+							t2 = Engine.dispose_block(block, env, True, t1)
+							(b3, t3) = Engine.mount_block(env, (w.body)(k), w.depth, w.path, 0, w.anchor, { cap: w.cap, local: w.local }, t2)
+							(Engine.switch_inst(w, k, b3), Done, t3)
+						}
+					} else {
+						(b2, t2) = Engine.refresh(block, env, mask, tx)
+						(Engine.switch_inst(w, cur, b2), Done, t2)
+					}
+				}
+				Fire(path, pos, h, payload) => {
+					match Engine.fire_target(block, path, pos) {
+						Leaf => {
+							out = Engine.fire_leaf(block, env, h, payload)
+							(Engine.switch_inst(w, cur, block), out, tx)
+						}
+						Kid => {
+							(b2, out, t2) = Engine.fire_kid(block, env, path, pos, h, payload, tx)
+							(Engine.switch_inst(w, cur, b2), out, t2)
+						}
+						Miss => (Engine.switch_inst(w, cur, block), Pending(env, 0), tx)
+					}
+				}
+				Dispose(remove) => {
+					t1 = Engine.dispose_block(block, env, remove, tx)
+					t2 = if remove Engine.emit(t1, |c| Engine.put_u32(c.append(5), w.anchor)) else t1
+					(Engine.noop({}), Done, Engine.free_id(t2, w.anchor))
+				}
+			}
+		})
+	}
+

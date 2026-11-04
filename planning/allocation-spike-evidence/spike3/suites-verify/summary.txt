@@ -1,0 +1,3 @@
+wasm exit=0 seconds=435
+browser exit=0 seconds=35
+fuzz exit=0 seconds=34

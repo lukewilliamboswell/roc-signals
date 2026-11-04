@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "artifacts": {
+    "musl-x64musl": {
+      "name": "musl",
+      "target": "x64musl",
+      "repository": "lukewilliamboswell/roc-signals",
+      "release": "deps-musl-1.2.6-20260909.1",
+      "asset": "musl-x64musl.tar",
+      "sha256": "24d89921ac75d953f7bf5f84bf0445556a9477e85a930922cc49c8fa8874d4b1",
+      "size": 8529920,
+      "source_sha": "29666398255ff2fd83c24627a9b170ecd2f7be5a",
+      "source_ref": "refs/heads/main",
+      "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/dependencies.yml"
+    },
+    "musl-arm64musl": {
+      "name": "musl",
+      "target": "arm64musl",
+      "repository": "lukewilliamboswell/roc-signals",
+      "release": "deps-musl-1.2.6-20260909.1",
+      "asset": "musl-arm64musl.tar",
+      "sha256": "c9b3b1fc85b4441c1ff8e4e2822dc3f7adf511315c2fdf366aa67d96cd7c093b",
+      "size": 9011200,
+      "source_sha": "29666398255ff2fd83c24627a9b170ecd2f7be5a",
+      "source_ref": "refs/heads/main",
+      "signer_workflow": "lukewilliamboswell/roc-signals/.github/workflows/dependencies.yml"
+    }
+  }
+}

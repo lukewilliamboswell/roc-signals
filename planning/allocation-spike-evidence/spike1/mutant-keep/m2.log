@@ -1,0 +1,117 @@
+run-test-zig
++- run test signals_shared 467 pass, 2 fail (469 total)
+error: 'host_value_registry.test.host value registry permits active-capability split access for capability thunks' failed:
+       expected error.InactiveCapability, found anyopaque@2090
+       /home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:300:82: 0x11c69a3 in allocBytesWithAlignment__anon_8804 (std.zig)
+           const byte_ptr = self.rawAlloc(byte_count, alignment, return_address) orelse return error.OutOfMemory;
+                                                                                        ^
+       /home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:286:5: 0x19f557e in allocWithSizeAndAlignment__anon_111609 (std.zig)
+           return self.allocBytesWithAlignment(alignment, byte_count, return_address);
+           ^
+       /home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:274:55: 0x19f5044 in allocAdvancedWithRetAddr (std.zig)
+           const ptr: [*]align(a.toByteUnits()) T = @ptrCast(try self.allocWithSizeAndAlignment(@sizeOf(T), a, n, return_address));
+                                                             ^
+       /home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:198:5: 0x19f511f in alloc__anon_111549 (std.zig)
+           return self.allocAdvancedWithRetAddr(T, null, n, @returnAddress());
+           ^
+       /home/lbw/Documents/Github/roc-signals/.claude/worktrees/agent-a7f367a813cf0c931/src/signals/engine.zig:5871:102: 0x1a2c23b in prepareNestedDirectRows (mod.zig)
+                       const edits = allocator.alloc(rows_transition.StableEdit, delta.ops.items.len) catch return error.OutOfMemory;
+                                                                                                            ^
+       /home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:300:82: 0x144d6b3 in allocBytesWithAlignment__anon_64232 (std.zig)
+           const byte_ptr = self.rawAlloc(byte_count, alignment, return_address) orelse return error.OutOfMemory;
+                                                                                        ^
+       /home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:286:5: 0x144d43e in allocWithSizeAndAlignment__anon_64230 (std.zig)
+           return self.allocBytesWithAlignment(alignment, byte_count, return_address);
+           ^
+       /home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:274:55: 0x144cbb4 in allocAdvancedWithRetAddr (std.zig)
+           const ptr: [*]align(a.toByteUnits()) T = @ptrCast(try self.allocWithSizeAndAlignment(@sizeOf(T), a, n, return_address));
+                                                             ^
+       /home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:262:5: 0x144cc8f in alignedAlloc__anon_64221 (std.zig)
+           return self.allocAdvancedWithRetAddr(T, alignment, n, @returnAddress());
+           ^
+       /home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/hash_map.zig:1477:27: 0x15070c6 in allocate (std.zig)
+                   const slice = try allocator.alignedAlloc(u8, max_align, total_size);
+                                 ^
+       /home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/hash_map.zig:1434:13: 0x1505b24 in grow (std.zig)
+                   try map.allocate(allocator, new_cap);
+                   ^
+       /home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/hash_map.zig:1295:17: 0x15058d9 in growIfNeeded (std.zig)
+                       try self.grow(allocator, capacityForSize(self.load() + new_count), ctx);
+                       ^
+       /home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/hash_map.zig:1119:70: 0x1504825 in getOrPutContextAdapted__anon_70035 (std.zig)
+                           const index = self.getIndex(key, key_ctx) orelse return err;
+                                                                            ^
+       /home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/hash_map.zig:1100:25: 0x150439f in getOrPutContext (std.zig)
+                   const gop = try self.getOrPutContextAdapted(allocator, key, ctx, ctx);
+                               ^
+       /home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/hash_map.zig:1097:13: 0x15041d3 in getOrPut (std.zig)
+                   return self.getOrPutContext(allocator, key, undefined);
+                   ^
+       /home/lbw/Documents/Github/roc-signals/.claude/worktrees/agent-a7f367a813cf0c931/src/signals/rows_transition.zig:865:73: 0x150328c in insertShadow (mod.zig)
+               const result = self.shadows.getOrPut(self.allocator, ref) catch return error.OutOfMemory;
+                                                                               ^
+       /home/lbw/Documents/Github/roc-signals/.claude/worktrees/agent-a7f367a813cf0c931/src/signals/rows_transition.zig:878:9: 0x1502dc7 in getShadow (mod.zig)
+               try self.insertShadow(ref, .{
+               ^
+       /home/lbw/Documents/Github/roc-signals/.claude/worktrees/agent-a7f367a813cf0c931/src/signals/rows_transition.zig:792:29: 0x150984f in applyStableRemove (mod.zig)
+                   const shadow = (try self.getShadow(current)).*;
+                                   ^
+       /home/lbw/Documents/Github/roc-signals/.claude/worktrees/agent-a7f367a813cf0c931/src/signals/rows_transition.zig:301:32: 0x14c8805 in prepareStable (mod.zig)
+                   .remove => |value| try self.applyStableRemove(value.first_slot, value.count),
+                                      ^
+       /home/lbw/Documents/Github/roc-signals/.claude/worktrees/agent-a7f367a813cf0c931/src/signals/engine.zig:5930:31: 0x1a2d82f in prepareNestedDirectRows (mod.zig)
+                       ) catch |err| return switch (err) {
+                                     ^
+       /home/lbw/Documents/Github/roc-signals/.claude/worktrees/agent-a7f367a813cf0c931/src/signals/shared_buffer.zig:62:76: 0x13ae493 in relocate (mod.zig)
+           const next = gpa.rawAlloc(new_bytes, alignment, return_address) orelse return error.OutOfMemory;
+                                                                                  ^
+       /home/lbw/Documents/Github/roc-signals/.claude/worktrees/agent-a7f367a813cf0c931/src/signals/shared_buffer.zig:139:26: 0x15045f0 in ensureTotalCapacityPrecise (mod.zig)
+                   const next = try relocate(
+                                ^
+       /home/lbw/Documents/Github/roc-signals/.claude/worktrees/agent-a7f367a813cf0c931/src/signals/shared_buffer.zig:128:13: 0x15042b9 in ensureTotalCapacity (mod.zig)
+                   return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                   ^
+       /home/lbw/Documents/Github/roc-signals/.claude/worktrees/agent-a7f367a813cf0c931/src/signals/shared_buffer.zig:156:13: 0x1504105 in ensureUnusedCapacity (mod.zig)
+                   return self.ensureTotalCapacity(gpa, total);
+                   ^
+       /home/lbw/Documents/Github/roc-signals/.claude/worktrees/agent-a7f367a813cf0c931/src/signals/shared_buffer.zig:187:13: 0x1503dcf in addOne (mod.zig)
+                   try self.ensureUnusedCapacity(gpa, 1);
+                   ^
+       /home/lbw/Documents/Github/roc-signals/.claude/worktrees/agent-a7f367a813cf0c931/src/signals/shared_buffer.zig:161:26: 0x1503a3e in append (mod.zig)
+                   const slot = try self.addOne(gpa);
+                                ^
+       /home/lbw/Documents/Github/roc-signals/.claude/worktrees/agent-a7f367a813cf0c931/src/signals/rows_transition.zig:870:13: 0x1503401 in insertShadow (mod.zig)
+                   return error.OutOfMemory;
+                   ^
+       /home/lbw/Documents/Github/roc-signals/.claude/worktrees/agent-a7f367a813cf0c931/src/signals/rows_transition.zig:878:9: 0x1502dc7 in getShadow (mod.zig)
+               try self.insertShadow(ref, .{
+               ^
+       /home/lbw/Documents/Github/roc-signals/.claude/worktrees/agent-a7f367a813cf0c931/src/signals/rows_transition.zig:792:29: 0x150984f in applyStableRemove (mod.zig)
+                   const shadow = (try self.getShadow(current)).*;
+                                   ^
+       /home/lbw/Documents/Github/roc-signals/.claude/worktrees/agent-a7f367a813cf0c931/src/signals/rows_transition.zig:301:32: 0x14c8805 in prepareStable (mod.zig)
+                   .remove => |value| try self.applyStableRemove(value.first_slot, value.count),
+                                      ^
+       /home/lbw/Documents/Github/roc-signals/.claude/worktrees/agent-a7f367a813cf0c931/src/signals/engine.zig:5930:31: 0x1a2d82f in prepareNestedDirectRows (mod.zig)
+                       ) catch |err| return switch (err) {
+                                     ^
+       /home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:300:82: 0x144d6b3 in allocBytesWithAlignment__anon_64232 (std.zig)
+           const byte_ptr = self.rawAlloc(byte_count, alignment, return_address) orelse return error.OutOfMemory;
+                                                                                        ^
+       (190 additional stack frames skipped due to buffer size limitations...)
+error: 'host_value_registry.test.host value registry refuses a shared-read box at the wrong capability before typed access' failed:
+       expected error.InactiveCapability, found anyopaque@a0
+       /home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/testing.zig:65:9: 0x15c6316 in expectError__anon_75673 (std.zig)
+               return error.TestExpectedError;
+               ^
+       /home/lbw/Documents/Github/roc-signals/.claude/worktrees/agent-a7f367a813cf0c931/src/signals/host_value_registry.zig:560:5: 0x15d0c0d in test.host value registry refuses a shared-read box at the wrong capability before typed access (mod.zig)
+           try std.testing.expectError(Error.InactiveCapability, registry.getWithSplit(alias, split, ops));
+           ^
+failed command: ./.zig-cache/o/738b3eb7e2540399e8c1198772e76dee/signals_shared --cache-dir=./.zig-cache --seed=0x685130f --listen=-
+
+Build Summary: 4/6 steps succeeded (1 failed); 622/624 tests passed (2 failed)
+run-test-zig transitive failure
++- run test signals_shared 467 pass, 2 fail (469 total)
+
+error: the following build command failed with exit code 1:
+.zig-cache/o/d1125b701795d13049c399633fb0eda2/build /home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/zig /home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib /home/lbw/Documents/Github/roc-signals/.claude/worktrees/agent-a7f367a813cf0c931 .zig-cache /home/lbw/.cache/zig --seed 0x685130f -Z2c3cc5c6d8f7bb57 run-test-zig

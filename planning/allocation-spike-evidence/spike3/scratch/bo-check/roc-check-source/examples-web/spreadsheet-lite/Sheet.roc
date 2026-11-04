@@ -1,0 +1,207 @@
+## Whole-sheet evaluation: resolve every cell in dependency order, detecting
+## reference cycles, and hand back display-ready output.
+import Cells
+import Formula
+
+Sheet := [].{
+
+	## What kind of thing a cell computed to. Presentation is derived from this
+	## tag, never from the rendered text, so the red tint and the `#DIV/0!` it
+	## tints can never disagree. `to_str` is the single encode point for the
+	## `data-kind` attribute the specs assert on.
+	CellKind := [Empty, Number, Text, Error].{
+		is_eq : CellKind, CellKind -> Bool
+		is_eq = |left, right|
+			match left {
+				Empty => match right {
+					Empty => True
+					_ => False
+				}
+				Number => match right {
+					Number => True
+					_ => False
+				}
+				Text => match right {
+					Text => True
+					_ => False
+				}
+				Error => match right {
+					Error => True
+					_ => False
+				}
+			}
+
+		to_str : CellKind -> Str
+		to_str = |kind|
+			match kind {
+				Empty => "empty"
+				Number => "number"
+				Text => "text"
+				Error => "error"
+			}
+	}
+
+	## Display-ready cell output: the text to show and a coarse kind tag.
+	CellOut : { text : Str, kind : CellKind }
+
+	source_at : List(Str), U64 -> Str
+	source_at = |sources, index| sources.get(index) ?? ""
+
+	put_slot : List(Formula.Slot), U64, Formula.Slot -> List(Formula.Slot)
+	put_slot = |slots, index, slot| slots.set(index, slot) ?? slots
+
+	## Resolve one cell, walking its dependency edges first. A dependency that is
+	## still `Busy` means this cell is part of a reference cycle.
+	eval_index : List(Str), List(Formula.Slot), U64 -> List(Formula.Slot)
+	eval_index = |sources, slots, index|
+		match slots.get(index) {
+			Ok(Ready(_)) => slots
+			Ok(Busy) => slots
+			_ => {
+				source = Sheet.source_at(sources, index).trim()
+				if !source.starts_with("=") {
+					Sheet.put_slot(slots, index, Ready(Formula.literal_value(source)))
+				} else {
+					tokens = Formula.tokenize(source.drop_prefix("="))
+					deps = Formula.refs_of(tokens)
+					var $slots = Sheet.put_slot(slots, index, Busy)
+					var $cycle = False
+					var $dep = 0
+
+					while $dep < deps.len() {
+						cell = deps.get($dep) ?? 0
+
+						match $slots.get(cell) {
+							Ok(Busy) => {
+								$cycle = True
+							}
+							Ok(Ready(_)) => {}
+							_ => {
+								$slots = Sheet.eval_index(sources, $slots, cell)
+							}
+						}
+
+						$dep = $dep + 1
+					}
+
+					result =
+						if $cycle {
+							Bad("#CYCLE!")
+						} else {
+							Formula.eval_tokens(tokens, $slots)
+						}
+					Sheet.put_slot($slots, index, Ready(result))
+				}
+			}
+		}
+
+	## Evaluate the whole sheet in dependency order.
+	evaluate : List(Str) -> List(Formula.Value)
+	evaluate = |sources| {
+		var $slots = []
+		var $fill = 0
+
+		while $fill < Cells.cell_count {
+			$slots = $slots.append(Pending)
+			$fill = $fill + 1
+		}
+
+		var $index = 0
+
+		while $index < Cells.cell_count {
+			$slots = Sheet.eval_index(sources, $slots, $index)
+			$index = $index + 1
+		}
+
+		$slots.map(
+			|slot|
+				match slot {
+					Ready(value) => value
+					_ => Empty
+				},
+		)
+	}
+
+	## Display text and kind for one value.
+	to_out : Formula.Value -> CellOut
+	to_out = |value|
+		match value {
+			Empty => { text: "", kind: Empty }
+			Number(number) => { text: Cells.format_number(number), kind: Number }
+			Text(text) => { text, kind: Text }
+			Bad(message) => { text: message, kind: Error }
+		}
+
+	## Evaluate a sheet straight to display-ready outputs.
+	evaluate_out : List(Str) -> List(CellOut)
+	evaluate_out = |sources| Sheet.evaluate(sources).map(Sheet.to_out)
+
+	## The starting workbook: a small quarterly budget plus deliberate error,
+	## cycle, empty-reference, and isolated-cell cases.
+	initial_cells : List(Str)
+	initial_cells = [
+		# Row 1
+		"Item", "Q1", "Q2", "Total", "", "Checks", "", "",
+		# Row 2
+		"Rent", "1200", "1300", "=B2+C2", "", "=2+3*4", "", "",
+		# Row 3
+		"Cloud", "400", "=B3*2", "=B3+C3", "", "=(2+3)*4", "", "",
+		# Row 4
+		"Travel", "250", "150", "=B4+C4", "", "=10/4", "", "",
+		# Row 5
+		"Subtotal", "=SUM(B2:B4)", "=SUM(C2:C4)", "=SUM(D2:D4)", "", "=SUM(B2:C4)", "", "",
+		# Row 6
+		"Tax", "", "", "=D5*0.1", "", "", "", "",
+		# Row 7
+		"Total due", "", "", "=D5+D6", "", "", "", "",
+		# Row 8
+		"People", "4", "", "=D7/B8", "", "", "", "",
+		# Row 9
+		"Divide by zero", "=1/0", "=B9+1", "", "", "", "", "",
+		# Row 10
+		"Cycle", "=C10+1", "=B10+1", "", "", "", "", "",
+		# Row 11
+		"", "", "", "", "", "", "", "",
+		# Row 12
+		"Spare", "=E12+5", "7", "", "", "", "", "",
+	]
+}
+
+## The empty kind encodes as the `data-kind` value the specs read.
+expect Sheet.CellKind.to_str(Empty) == "empty"
+
+## The number kind encodes as the `data-kind` value the specs read.
+expect Sheet.CellKind.to_str(Number) == "number"
+
+## The text kind encodes as the `data-kind` value the specs read.
+expect Sheet.CellKind.to_str(Text) == "text"
+
+## The error kind encodes as the `data-kind` value the specs read.
+expect Sheet.CellKind.to_str(Error) == "error"
+
+## A one-hop sum of two literal cells computes as a number.
+expect Sheet.evaluate_out(Sheet.initial_cells).get(11) == Ok({ text: "2500", kind: Number })
+
+## A non-numeric literal stays text, so it is neither summed nor right-aligned.
+expect Sheet.evaluate_out(Sheet.initial_cells).get(8) == Ok({ text: "Rent", kind: Text })
+
+## A rectangular SUM adds every member of the range.
+expect Sheet.evaluate_out(Sheet.initial_cells).get(37) == Ok({ text: "4100", kind: Number })
+
+## A three-hop chain resolves in dependency order, not sheet order.
+expect Sheet.evaluate_out(Sheet.initial_cells).get(59) == Ok({ text: "1127.5", kind: Number })
+
+## A divide by zero reports the error at the cell that performed it.
+expect Sheet.evaluate_out(Sheet.initial_cells).get(65) == Ok({ text: "#DIV/0!", kind: Error })
+
+## An error propagates to the cells that read it, rather than being read as zero.
+expect Sheet.evaluate_out(Sheet.initial_cells).get(66) == Ok({ text: "#DIV/0!", kind: Error })
+
+## Two cells that reference each other are reported as a cycle, not left pending.
+expect Sheet.evaluate_out(Sheet.initial_cells).get(73) == Ok({ text: "#CYCLE!", kind: Error })
+
+## A formula reading an empty cell treats it as zero.
+expect Sheet.evaluate_out(Sheet.initial_cells).get(89) == Ok({ text: "5", kind: Number })
+
+## A cell with no source evaluates to the empty kind, not to text.
+expect Sheet.evaluate_out(Sheet.initial_cells).get(80) == Ok({ text: "", kind: Empty })

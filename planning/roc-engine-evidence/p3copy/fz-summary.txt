@@ -1,0 +1,93 @@
+baseline_changed changed
+== bench-1k passed
+  create                   allocs=    62 bytes=     822934
+  update-every-10th        allocs=    38 bytes=      11298
+  update-one               allocs=     2 bytes=        304
+  select                   allocs=     9 bytes=      33200
+  select-other             allocs=     9 bytes=      33200
+  select-same              allocs=     3 bytes=        832
+  swap                     allocs=     2 bytes=        304
+  remove                   allocs=     5 bytes=        976
+  equal-write-prune        allocs=     1 bytes=        232
+  append-1k                allocs=    35 bytes=     765728
+  clear                    allocs=     2 bytes=        296
+  create-1k                allocs=    49 bytes=     686270
+  replace-1k               allocs=    37 bytes=     284920
+  clear-1k                 allocs=     3 bytes=        368
+== bench-10k passed
+  create                   allocs=   361 bytes=    7835736
+  update-every-10th        allocs=   294 bytes=     160042
+  update-one               allocs=     1 bytes=        232
+  select                   allocs=     8 bytes=     321128
+  select-other             allocs=     8 bytes=     321128
+  select-same              allocs=     3 bytes=        832
+  swap                     allocs=     1 bytes=        232
+  remove                   allocs=     4 bytes=        904
+  equal-write-prune        allocs=     1 bytes=        232
+  append-1k                allocs=    37 bytes=     672192
+  clear                    allocs=     2 bytes=        296
+  create-1k                allocs=    52 bytes=     480582
+  replace-1k               allocs=    40 bytes=      79250
+  clear-1k                 allocs=     2 bytes=        296
+== bench-100k passed
+  create                   allocs=  3226 bytes=   66897810
+  update-every-10th        allocs=  2786 bytes=    1699586
+  update-one               allocs=     1 bytes=        232
+  select                   allocs=     8 bytes=    3201128
+  select-other             allocs=     8 bytes=    3201128
+  select-same              allocs=     3 bytes=        832
+  swap                     allocs=     1 bytes=        232
+  remove                   allocs=     4 bytes=        904
+  equal-write-prune        allocs=     1 bytes=        232
+  append-1k                allocs=    37 bytes=    6402200
+  clear                    allocs=     2 bytes=        296
+  create-1k                allocs=    61 bytes=     481068
+  replace-1k               allocs=    40 bytes=      79250
+  clear-1k                 allocs=     2 bytes=        296
+== run-select-update passed
+  step                     allocs=    15 bytes=      15216
+  step                     allocs=     9 bytes=       1968
+  step                     allocs=     3 bytes=        494
+  step                     allocs=     9 bytes=       1968
+  step                     allocs=     2 bytes=        304
+  step                     allocs=     2 bytes=        304
+  step                     allocs=     5 bytes=        976
+  step                     allocs=     1 bytes=        232
+  step                     allocs=     2 bytes=       2246
+  step                     allocs=     2 bytes=        296
+== reorders passed
+  step                     allocs=    15 bytes=      15216
+  step                     allocs=     3 bytes=       1488
+  step                     allocs=     9 bytes=       1968
+  step                     allocs=    10 bytes=       3704
+  step                     allocs=    12 bytes=       2519
+  step                     allocs=     3 bytes=       1184
+  step                     allocs=     9 bytes=       1294
+  step                     allocs=    10 bytes=       1366
+  step                     allocs=     4 bytes=        904
+  step                     allocs=     3 bytes=        872
+  step                     allocs=     9 bytes=       1794
+  step                     allocs=     9 bytes=        756
+== select-remove-selected passed
+  step                     allocs=    11 bytes=       2032
+  step                     allocs=     9 bytes=       1328
+  step                     allocs=     5 bytes=        976
+  step                     allocs=     9 bytes=       1328
+  step                     allocs=     1 bytes=       1872
+  step                     allocs=     9 bytes=       1424
+  step                     allocs=     3 bytes=        368
+  step                     allocs=    10 bytes=       1808
+  step                     allocs=     8 bytes=       1256
+== canary passed
+  canary-details-row-b     allocs=    10 bytes=       4488
+  canary-details-row-b-again allocs=     7 bytes=       3088
+  canary-toggle-row-a      allocs=    14 bytes=       3560
+  canary-select-row-b      allocs=     3 bytes=       1200
+  canary-add               allocs=    24 bytes=      12424
+  canary-remove-row-a      allocs=     5 bytes=       1552
+== nested-each passed
+  nested-add-g1            allocs=    15 bytes=       1640
+  nested-add-g2            allocs=    13 bytes=       1408
+  nested-add-g1-second     allocs=     5 bytes=        984
+  nested-remove-g1-first   allocs=     7 bytes=       1496
+  nested-remove-g2-outer-key allocs=     8 bytes=       1528

@@ -1,0 +1,75 @@
+Test output: /tmp/claude-1000/s2/suites/b2/out-fault-4130965
+
+==> zig build build-test-hosts
+Shared platform copies match (SHA-256).
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-fault-4130965/bin/signals-svg /tmp/claude-1000/s2/suites/b2/out-fault-4130965/native-source/examples-web/_fixtures/svg/main.roc
+0 errors and 0 warnings found in 228ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-fault-4130965/bin/signals-svg
+
+==> /tmp/claude-1000/s2/suites/b2/out-fault-4130965/bin/signals-svg /tmp/claude-1000/s2/suites/b2/out-fault-4130965/native-source/examples-web/_fixtures/svg/specs
+[PASS] svg.scm (2.8 ms)
+
+706 passed, 0 failed, 706 total (1.92s worker time)
+Fault outcomes: continued=29, refused_then_retried=664, skipped_roc=12
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-fault-4130965/bin/signals-coordinated-writes /tmp/claude-1000/s2/suites/b2/out-fault-4130965/native-source/examples-web/_fixtures/coordinated-writes/main.roc
+0 errors and 0 warnings found in 234ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-fault-4130965/bin/signals-coordinated-writes
+
+==> /tmp/claude-1000/s2/suites/b2/out-fault-4130965/bin/signals-coordinated-writes /tmp/claude-1000/s2/suites/b2/out-fault-4130965/native-source/examples-web/_fixtures/coordinated-writes/specs
+[PASS] coordinated-writes.scm (4.8 ms)
+
+1075 passed, 0 failed, 1075 total (5.59s worker time)
+Fault outcomes: continued=52, refused_then_retried=1002, skipped_fatal_command=11, skipped_roc=9
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-fault-4130965/bin/signals-event-actions /tmp/claude-1000/s2/suites/b2/out-fault-4130965/native-source/examples-web/_fixtures/event-actions/main.roc
+0 errors and 0 warnings found in 257ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-fault-4130965/bin/signals-event-actions
+
+==> /tmp/claude-1000/s2/suites/b2/out-fault-4130965/bin/signals-event-actions /tmp/claude-1000/s2/suites/b2/out-fault-4130965/native-source/examples-web/_fixtures/event-actions/specs
+[PASS] event-actions-typed.scm (3.5 ms)
+[PASS] event-actions-loading-disposal.scm (5.9 ms)
+[PASS] event-actions.scm (11.8 ms)
+
+4179 passed, 0 failed, 4179 total (33.32s worker time)
+Fault outcomes: continued=213, refused_then_retried=3882, skipped_roc=81
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-fault-4130965/bin/signals-markdown-elem /tmp/claude-1000/s2/suites/b2/out-fault-4130965/native-source/examples-web/_fixtures/markdown-elem/main.roc
+0 errors and 0 warnings found in 565ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-fault-4130965/bin/signals-markdown-elem
+
+==> /tmp/claude-1000/s2/suites/b2/out-fault-4130965/bin/signals-markdown-elem /tmp/claude-1000/s2/suites/b2/out-fault-4130965/native-source/examples-web/_fixtures/markdown-elem/specs
+[PASS] main.scm (12.0 ms)
+
+2360 passed, 0 failed, 2360 total (37.03s worker time)
+Fault outcomes: continued=103, refused_then_retried=1651, skipped_roc=605
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-fault-4130965/bin/signals-keyed-selector-churn /tmp/claude-1000/s2/suites/b2/out-fault-4130965/native-source/examples-web/_fixtures/keyed-selector-churn/main.roc
+0 errors and 0 warnings found in 634ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-fault-4130965/bin/signals-keyed-selector-churn
+
+==> /tmp/claude-1000/s2/suites/b2/out-fault-4130965/bin/signals-keyed-selector-churn /tmp/claude-1000/s2/suites/b2/out-fault-4130965/native-source/examples-web/_fixtures/keyed-selector-churn/specs
+[PASS] small_churn.scm (15.0 ms)
+
+2808 passed, 0 failed, 2808 total (44.69s worker time)
+Fault outcomes: continued=166, refused_then_retried=2198, skipped_roc=443
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-fault-4130965/bin/signals-when-each-dispose /tmp/claude-1000/s2/suites/b2/out-fault-4130965/native-source/examples-web/_fixtures/when-each-dispose/main.roc
+0 errors and 0 warnings found in 382ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-fault-4130965/bin/signals-when-each-dispose
+
+==> /tmp/claude-1000/s2/suites/b2/out-fault-4130965/bin/signals-when-each-dispose /tmp/claude-1000/s2/suites/b2/out-fault-4130965/native-source/examples-web/_fixtures/when-each-dispose/specs
+[PASS] main.scm (11.9 ms)
+
+2406 passed, 0 failed, 2406 total (30.06s worker time)
+Fault outcomes: continued=127, refused_then_retried=2028, skipped_roc=250
+
+=== known-failure ratchet (/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/known-failures.txt) ===
+13534 passed, 0 known failing, 0 fixed, 0 regressed, 13534 total

@@ -1,0 +1,95 @@
+Test output: /tmp/claude-1000/s2/suites/base/out-roc-check-3652512
+
+==> zig build build-test-hosts
+Shared platform copies match (SHA-256).
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/onboarding-wizard/main.roc
+No errors found in 421ms for ../../../../../../s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/onboarding-wizard/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/availability-picker/main.roc
+No errors found in 192ms for ../../../../../../s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/availability-picker/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/field-notes/main.roc
+No errors found in 85ms for ../../../../../../s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/field-notes/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/support-inbox/main.roc
+No errors found in 156ms for ../../../../../../s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/support-inbox/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/dependency-scheduler/main.roc
+No errors found in 379ms for ../../../../../../s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/dependency-scheduler/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/recipe-scaler/main.roc
+No errors found in 89ms for ../../../../../../s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/recipe-scaler/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/query-builder/main.roc
+No errors found in 170ms for ../../../../../../s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/query-builder/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/token-editor/main.roc
+No errors found in 85ms for ../../../../../../s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/token-editor/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/package-explorer/main.roc
+No errors found in 111ms for ../../../../../../s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/package-explorer/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/loan-comparator/main.roc
+No errors found in 173ms for ../../../../../../s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/loan-comparator/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/data-grid/main.roc
+No errors found in 101ms for ../../../../../../s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/data-grid/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/pomodoro-tracker/main.roc
+No errors found in 124ms for ../../../../../../s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/pomodoro-tracker/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/form-builder/main.roc
+No errors found in 68ms for ../../../../../../s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/form-builder/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/status-page/main.roc
+No errors found in 151ms for ../../../../../../s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/status-page/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/flight-search/main.roc
+No errors found in 135ms for ../../../../../../s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/flight-search/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/kanban-board/main.roc
+No errors found in 159ms for ../../../../../../s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/kanban-board/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/spreadsheet-lite/main.roc
+No errors found in 170ms for ../../../../../../s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/spreadsheet-lite/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/split-the-bill/main.roc
+No errors found in 118ms for ../../../../../../s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/split-the-bill/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/markdown-editor/main.roc
+No errors found in 78ms for ../../../../../../s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/markdown-editor/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/log-viewer/main.roc
+No errors found in 125ms for ../../../../../../s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/log-viewer/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/conduit/main.roc
+
+Segmentation fault (SIGSEGV) in the Roc compiler.
+Fault address: 0x85
+
+No compiler work was recorded on thread 3659909 (main).
+
+Reproduce with:
+  ../../../../../../../../home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/conduit/main.roc
+
+Stack trace:
+Cannot print stack trace: stack tracing is disabled
+
+Please report this issue at: https://github.com/roc-lang/roc/issues
+
+Traceback (most recent call last):
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/basetree/scripts/test.py", line 1132, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/basetree/scripts/test.py", line 1043, in main
+    run_local_roc_checks(roc_bin, examples)
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/basetree/scripts/test.py", line 847, in run_local_roc_checks
+    run_roc_checks(roc_bin, examples, source_root=source_root)
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/basetree/scripts/test.py", line 371, in run_roc_checks
+    run([roc_bin, "check", source_root / example.source])
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/basetree/scripts/test.py", line 233, in run
+    subprocess.run([str(part) for part in command], cwd=cwd, env=env, check=True)
+  File "/usr/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['/home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc', 'check', '/tmp/claude-1000/s2/suites/base/out-roc-check-3652512/roc-check-source/examples-web/conduit/main.roc']' returned non-zero exit status 139.

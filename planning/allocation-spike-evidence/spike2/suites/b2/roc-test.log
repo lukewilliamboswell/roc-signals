@@ -1,0 +1,70 @@
+Test output: /tmp/claude-1000/s2/suites/b2/out-roc-test-4130965
+
+==> zig build build-test-hosts
+Shared platform copies match (SHA-256).
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/b2/out-roc-test-4130965/roc-test-source/examples-web/onboarding-wizard/main.roc
+All (58) tests passed in 236.3 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/b2/out-roc-test-4130965/roc-test-source/examples-web/availability-picker/main.roc
+All (55) tests passed in 152.3 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/b2/out-roc-test-4130965/roc-test-source/examples-web/field-notes/main.roc
+All (52) tests passed in 83.1 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/b2/out-roc-test-4130965/roc-test-source/examples-web/support-inbox/main.roc
+All (51) tests passed in 128.0 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/b2/out-roc-test-4130965/roc-test-source/examples-web/dependency-scheduler/main.roc
+All (45) tests passed in 274.2 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/b2/out-roc-test-4130965/roc-test-source/examples-web/recipe-scaler/main.roc
+All (68) tests passed in 91.9 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/b2/out-roc-test-4130965/roc-test-source/examples-web/query-builder/main.roc
+All (45) tests passed in 149.1 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/b2/out-roc-test-4130965/roc-test-source/examples-web/token-editor/main.roc
+All (59) tests passed in 86.8 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/b2/out-roc-test-4130965/roc-test-source/examples-web/package-explorer/main.roc
+All (60) tests passed in 110.1 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/b2/out-roc-test-4130965/roc-test-source/examples-web/loan-comparator/main.roc
+All (62) tests passed in 118.7 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/b2/out-roc-test-4130965/roc-test-source/examples-web/data-grid/main.roc
+All (53) tests passed in 131.8 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/b2/out-roc-test-4130965/roc-test-source/examples-web/pomodoro-tracker/main.roc
+All (46) tests passed in 105.7 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/b2/out-roc-test-4130965/roc-test-source/examples-web/form-builder/main.roc
+All (60) tests passed in 95.9 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/b2/out-roc-test-4130965/roc-test-source/examples-web/status-page/main.roc
+All (61) tests passed in 144.9 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/b2/out-roc-test-4130965/roc-test-source/examples-web/flight-search/main.roc
+All (51) tests passed in 122.3 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/b2/out-roc-test-4130965/roc-test-source/examples-web/kanban-board/main.roc
+All (63) tests passed in 131.4 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/b2/out-roc-test-4130965/roc-test-source/examples-web/spreadsheet-lite/main.roc
+The Roc compiler ran out of memory trying to preallocate virtual address space for compiling and running this program. Try using `roc build` to build the executable separately, then run it manually.
+Traceback (most recent call last):
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/scripts/test.py", line 1132, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/scripts/test.py", line 1045, in main
+    run_local_roc_tests(roc_bin, examples)
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/scripts/test.py", line 853, in run_local_roc_tests
+    run_roc_tests(roc_bin, examples, source_root=source_root)
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/scripts/test.py", line 387, in run_roc_tests
+    run([roc_bin, "test", "--opt=dev", source_root / example.source])
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/scripts/test.py", line 233, in run
+    subprocess.run([str(part) for part in command], cwd=cwd, env=env, check=True)
+  File "/usr/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['/home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc', 'test', '--opt=dev', '/tmp/claude-1000/s2/suites/b2/out-roc-test-4130965/roc-test-source/examples-web/spreadsheet-lite/main.roc']' returned non-zero exit status 1.

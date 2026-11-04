@@ -1,0 +1,15 @@
+(test "update every 10th row in 10,000 rows"
+  (steps
+    (click (role button :name "Create 10,000 rows"))
+    (mark-metrics)
+    (click (role button :name "Update every 10th row"))
+    (expect-text (test-id "row-1") "1odd pink car !!!")
+    (expect-text (test-id "row-11") "11mushy orange bbq !!!")
+    (expect-metric-delta set_text 1000)
+    (expect-metric-delta rows_created 0)
+    (expect-metric-delta rows_removed 0)
+    (expect-metric-delta rows_order_links_touched 0)
+    (expect-metric-delta rows_render_roots_moved 0)
+    (expect-metric-delta stream_nodes_scanned 0)
+    (expect-metric-delta render_indexes_refreshed 0)
+    (expect-metric-delta active_graph_records_rebuilt 0) (expect-metric-delta allocs_this_event 999999)))

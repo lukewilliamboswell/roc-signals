@@ -1,0 +1,217 @@
+{
+ "cases": {
+  "append_1k_to_10k": {
+   "summary": {
+    "current": {
+     "total_ns": {
+      "median": 354.629431,
+      "min": 188.169859,
+      "max": 724.689276,
+      "n": 9
+     },
+     "wasm_ns": {
+      "median": 275.717409,
+      "min": 160.798447,
+      "max": 612.046625,
+      "n": 9
+     },
+     "apply_ns": {
+      "median": 48.849037,
+      "min": 17.695192,
+      "max": 138.38075,
+      "n": 9
+     },
+     "bytes": 1146056,
+     "pages": 12151
+    },
+    "new": {
+     "total_ns": {
+      "median": 1.722634,
+      "min": 1.06456,
+      "max": 2.835186,
+      "n": 9
+     },
+     "wasm_ns": {
+      "median": 0.416013,
+      "min": 0.312917,
+      "max": 0.556461,
+      "n": 9
+     },
+     "apply_ns": {
+      "median": 1.231288,
+      "min": 0.685998,
+      "max": 2.184977,
+      "n": 9
+     },
+     "bytes": 45097,
+     "pages": 212
+    },
+    "ratio_median_total": 0.004857560736407126
+   },
+   "samples": {
+    "current": [
+     {
+      "total_ns": 198219302,
+      "wasm_ns": 167693955,
+      "apply_ns": 30185189,
+      "bytes": 1146056,
+      "commands": 35000,
+      "pages": 12151
+     },
+     {
+      "total_ns": 209962966,
+      "wasm_ns": 160798447,
+      "apply_ns": 48849037,
+      "bytes": 1146056,
+      "commands": 35000,
+      "pages": 12151
+     },
+     {
+      "total_ns": 188169859,
+      "wasm_ns": 169865897,
+      "apply_ns": 17695192,
+      "bytes": 1146056,
+      "commands": 35000,
+      "pages": 12151
+     },
+     {
+      "total_ns": 408899787,
+      "wasm_ns": 334413824,
+      "apply_ns": 73969057,
+      "bytes": 1146056,
+      "commands": 35000,
+      "pages": 12151
+     },
+     {
+      "total_ns": 549547671,
+      "wasm_ns": 504884084,
+      "apply_ns": 43953292,
+      "bytes": 1146056,
+      "commands": 35000,
+      "pages": 12151
+     },
+     {
+      "total_ns": 414611127,
+      "wasm_ns": 275717409,
+      "apply_ns": 138380750,
+      "bytes": 1146056,
+      "commands": 35000,
+      "pages": 12151
+     },
+     {
+      "total_ns": 354629431,
+      "wasm_ns": 312565672,
+      "apply_ns": 40869231,
+      "bytes": 1146056,
+      "commands": 35000,
+      "pages": 12151
+     },
+     {
+      "total_ns": 724689276,
+      "wasm_ns": 612046625,
+      "apply_ns": 112092582,
+      "bytes": 1146056,
+      "commands": 35000,
+      "pages": 12151
+     },
+     {
+      "total_ns": 327572178,
+      "wasm_ns": 268975584,
+      "apply_ns": 58071373,
+      "bytes": 1146056,
+      "commands": 35000,
+      "pages": 12151
+     }
+    ],
+    "new": [
+     {
+      "total_ns": 1284640,
+      "wasm_ns": 316464,
+      "apply_ns": 911277,
+      "bytes": 45097,
+      "commands": 0,
+      "pages": 212
+     },
+     {
+      "total_ns": 1375112,
+      "wasm_ns": 416013,
+      "apply_ns": 892953,
+      "bytes": 45097,
+      "commands": 0,
+      "pages": 212
+     },
+     {
+      "total_ns": 1064560,
+      "wasm_ns": 312917,
+      "apply_ns": 685998,
+      "bytes": 45097,
+      "commands": 0,
+      "pages": 212
+     },
+     {
+      "total_ns": 1414928,
+      "wasm_ns": 336211,
+      "apply_ns": 1008183,
+      "bytes": 45097,
+      "commands": 0,
+      "pages": 212
+     },
+     {
+      "total_ns": 2558368,
+      "wasm_ns": 523438,
+      "apply_ns": 1908970,
+      "bytes": 45097,
+      "commands": 0,
+      "pages": 212
+     },
+     {
+      "total_ns": 2835186,
+      "wasm_ns": 529820,
+      "apply_ns": 2184977,
+      "bytes": 45097,
+      "commands": 0,
+      "pages": 212
+     },
+     {
+      "total_ns": 1926704,
+      "wasm_ns": 498450,
+      "apply_ns": 1314537,
+      "bytes": 45097,
+      "commands": 0,
+      "pages": 212
+     },
+     {
+      "total_ns": 2822843,
+      "wasm_ns": 556461,
+      "apply_ns": 2156312,
+      "bytes": 45097,
+      "commands": 0,
+      "pages": 212
+     },
+     {
+      "total_ns": 1722634,
+      "wasm_ns": 397017,
+      "apply_ns": 1231288,
+      "bytes": 45097,
+      "commands": 0,
+      "pages": 212
+     }
+    ]
+   }
+  }
+ },
+ "pages": {
+  "current": {
+   "mount": 141,
+   "after_create_10k": 11926,
+   "after_clear": 13000,
+   "after_6_cycles": 16366
+  },
+  "new": {
+   "mount": 135,
+   "after_create_10k": 211,
+   "after_clear": 211,
+   "after_6_cycles": 212
+  }
+ }
+}

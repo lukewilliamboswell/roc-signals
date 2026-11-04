@@ -1,0 +1,23 @@
+Share retained boxes on read instead of copying them
+
+A capability read unboxed the stored value and boxed it twice, so every
+non-consuming read cost two allocations and every equality check four. The
+read closure now returns the box it was given in both fields, which makes
+compiled Roc retain it. The host stays refcount-free and the hosted signatures
+do not change.
+
+Holders stay isolated because unboxing a shared box retains nested references
+and any mutation sees those counts. Registry and capability checks are about
+handles, so they still apply; a new test refuses a shared box at the wrong
+capability, and for a stale handle, before typed access.
+
+The ownership fuzz target now runs the real shared closure on odd edges, and
+keeps the freeing split on even edges for what only that shape can detect.
+It also refuses a box with no remaining owners, because a freed box can still
+look live to the magic check. The large-each allocation budgets drop from 200
+to 25 per row, and an event cut off by equality may allocate at most 2. The
+task-latest-wins spec warms one more cycle, since one-time host growth now lands
+later; its plateau assertion is unchanged.
+
+This departs from the split law in design.md. The proposed wording is reviewed
+separately.

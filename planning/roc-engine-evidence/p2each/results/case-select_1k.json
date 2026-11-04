@@ -1,0 +1,333 @@
+{
+ "cases": {
+  "select_1k": {
+   "summary": {
+    "current": {
+     "total_ns": {
+      "median": 0.188378,
+      "min": 0.170643,
+      "max": 0.330618,
+      "n": 11
+     },
+     "wasm_ns": {
+      "median": 0.095611,
+      "min": 0.087937,
+      "max": 0.117964,
+      "n": 11
+     },
+     "apply_ns": {
+      "median": 0.045877,
+      "min": 0.038764,
+      "max": 0.146438,
+      "n": 11
+     },
+     "bytes": 54,
+     "pages": 1169
+    },
+    "p1": {
+     "total_ns": {
+      "median": 0.049805,
+      "min": 0.038463,
+      "max": 0.085622,
+      "n": 11
+     },
+     "wasm_ns": {
+      "median": 0.011091,
+      "min": 0.009528,
+      "max": 0.012815,
+      "n": 11
+     },
+     "apply_ns": {
+      "median": 0.011612,
+      "min": 0.009217,
+      "max": 0.043953,
+      "n": 11
+     },
+     "bytes": 14,
+     "pages": 144
+    },
+    "p2": {
+     "total_ns": {
+      "median": 0.077086,
+      "min": 0.069021,
+      "max": 0.11051,
+      "n": 11
+     },
+     "wasm_ns": {
+      "median": 0.041789,
+      "min": 0.038994,
+      "max": 0.056227,
+      "n": 11
+     },
+     "apply_ns": {
+      "median": 0.010811,
+      "min": 0.008796,
+      "max": 0.01581,
+      "n": 11
+     },
+     "bytes": 26,
+     "pages": 145
+    }
+   },
+   "samples": {
+    "current": [
+     {
+      "total_ns": 330618,
+      "wasm_ns": 117964,
+      "apply_ns": 64132,
+      "bytes": 54,
+      "pages": 1169
+     },
+     {
+      "total_ns": 194049,
+      "wasm_ns": 96443,
+      "apply_ns": 49294,
+      "bytes": 54,
+      "pages": 1169
+     },
+     {
+      "total_ns": 276014,
+      "wasm_ns": 110390,
+      "apply_ns": 120469,
+      "bytes": 54,
+      "pages": 1169
+     },
+     {
+      "total_ns": 196443,
+      "wasm_ns": 92746,
+      "apply_ns": 57649,
+      "bytes": 54,
+      "pages": 1169
+     },
+     {
+      "total_ns": 182928,
+      "wasm_ns": 93197,
+      "apply_ns": 42991,
+      "bytes": 54,
+      "pages": 1169
+     },
+     {
+      "total_ns": 170643,
+      "wasm_ns": 87937,
+      "apply_ns": 38764,
+      "bytes": 54,
+      "pages": 1169
+     },
+     {
+      "total_ns": 188378,
+      "wasm_ns": 94429,
+      "apply_ns": 43843,
+      "bytes": 54,
+      "pages": 1169
+     },
+     {
+      "total_ns": 176675,
+      "wasm_ns": 92125,
+      "apply_ns": 42010,
+      "bytes": 54,
+      "pages": 1169
+     },
+     {
+      "total_ns": 185882,
+      "wasm_ns": 95822,
+      "apply_ns": 44555,
+      "bytes": 54,
+      "pages": 1169
+     },
+     {
+      "total_ns": 182056,
+      "wasm_ns": 95611,
+      "apply_ns": 45877,
+      "bytes": 54,
+      "pages": 1169
+     },
+     {
+      "total_ns": 322682,
+      "wasm_ns": 117303,
+      "apply_ns": 146438,
+      "bytes": 54,
+      "pages": 1169
+     }
+    ],
+    "p1": [
+     {
+      "total_ns": 62949,
+      "wasm_ns": 11783,
+      "apply_ns": 11642,
+      "bytes": 14,
+      "pages": 144
+     },
+     {
+      "total_ns": 50415,
+      "wasm_ns": 10630,
+      "apply_ns": 9649,
+      "bytes": 14,
+      "pages": 144
+     },
+     {
+      "total_ns": 54984,
+      "wasm_ns": 11662,
+      "apply_ns": 11612,
+      "bytes": 14,
+      "pages": 144
+     },
+     {
+      "total_ns": 85622,
+      "wasm_ns": 12815,
+      "apply_ns": 43953,
+      "bytes": 14,
+      "pages": 144
+     },
+     {
+      "total_ns": 42551,
+      "wasm_ns": 10951,
+      "apply_ns": 9879,
+      "bytes": 14,
+      "pages": 144
+     },
+     {
+      "total_ns": 49805,
+      "wasm_ns": 11673,
+      "apply_ns": 13485,
+      "bytes": 14,
+      "pages": 144
+     },
+     {
+      "total_ns": 45416,
+      "wasm_ns": 11612,
+      "apply_ns": 11111,
+      "bytes": 14,
+      "pages": 144
+     },
+     {
+      "total_ns": 38463,
+      "wasm_ns": 9528,
+      "apply_ns": 9217,
+      "bytes": 14,
+      "pages": 144
+     },
+     {
+      "total_ns": 46007,
+      "wasm_ns": 10931,
+      "apply_ns": 11993,
+      "bytes": 14,
+      "pages": 144
+     },
+     {
+      "total_ns": 76085,
+      "wasm_ns": 11071,
+      "apply_ns": 41970,
+      "bytes": 14,
+      "pages": 144
+     },
+     {
+      "total_ns": 46729,
+      "wasm_ns": 11091,
+      "apply_ns": 9338,
+      "bytes": 14,
+      "pages": 144
+     }
+    ],
+    "p2": [
+     {
+      "total_ns": 80553,
+      "wasm_ns": 39706,
+      "apply_ns": 8796,
+      "bytes": 26,
+      "pages": 145
+     },
+     {
+      "total_ns": 77387,
+      "wasm_ns": 40286,
+      "apply_ns": 9098,
+      "bytes": 26,
+      "pages": 145
+     },
+     {
+      "total_ns": 110510,
+      "wasm_ns": 56227,
+      "apply_ns": 15128,
+      "bytes": 26,
+      "pages": 145
+     },
+     {
+      "total_ns": 77086,
+      "wasm_ns": 43202,
+      "apply_ns": 13285,
+      "bytes": 26,
+      "pages": 145
+     },
+     {
+      "total_ns": 69883,
+      "wasm_ns": 42060,
+      "apply_ns": 9909,
+      "bytes": 26,
+      "pages": 145
+     },
+     {
+      "total_ns": 86183,
+      "wasm_ns": 49404,
+      "apply_ns": 14157,
+      "bytes": 26,
+      "pages": 145
+     },
+     {
+      "total_ns": 69021,
+      "wasm_ns": 41789,
+      "apply_ns": 10350,
+      "bytes": 26,
+      "pages": 145
+     },
+     {
+      "total_ns": 69522,
+      "wasm_ns": 39204,
+      "apply_ns": 11432,
+      "bytes": 26,
+      "pages": 145
+     },
+     {
+      "total_ns": 85282,
+      "wasm_ns": 43462,
+      "apply_ns": 15810,
+      "bytes": 26,
+      "pages": 145
+     },
+     {
+      "total_ns": 69602,
+      "wasm_ns": 38994,
+      "apply_ns": 9979,
+      "bytes": 26,
+      "pages": 145
+     },
+     {
+      "total_ns": 70714,
+      "wasm_ns": 41038,
+      "apply_ns": 10811,
+      "bytes": 26,
+      "pages": 145
+     }
+    ]
+   }
+  }
+ },
+ "pages": {
+  "current": {
+   "mount": 141,
+   "after_create_10k": 11926,
+   "after_clear": 13000,
+   "after_6_cycles": 16366
+  },
+  "p1": {
+   "mount": 135,
+   "after_create_10k": 211,
+   "after_clear": 211,
+   "after_6_cycles": 212
+  },
+  "p2": {
+   "mount": 137,
+   "after_create_10k": 227,
+   "after_clear": 227,
+   "after_6_cycles": 227
+  }
+ }
+}

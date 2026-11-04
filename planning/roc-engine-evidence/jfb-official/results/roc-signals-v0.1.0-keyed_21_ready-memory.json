@@ -1,0 +1,1 @@
+{"framework":"roc-signals-v0.1.0-keyed","keyed":true,"benchmark":"21_ready-memory","type":"memory","values":{"DEFAULT":{"min":10.204822540283203,"max":10.204822540283203,"median":10.204822540283203,"mean":10.204822540283203,"stddev":null,"values":[10.204822540283203]}}}

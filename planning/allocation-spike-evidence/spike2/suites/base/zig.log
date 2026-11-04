@@ -1,0 +1,44 @@
+[0;32m[OK][0m All Zig lints passed
+ed
+base/out-zig-3652512
+
+==> zig build build-test-hosts
+Shared platform copies match (SHA-256).
+
+==> zig build test
+Shared platform copies match (SHA-256).
+fatal: not a git repository (or any of the parent directories): .git
+error: GitFailed
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/basetree/scripts/checks/tidy.zig:63:9: 0x11d2355 in runGitLints (tidy.zig)
+        return error.GitFailed;
+        ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/basetree/scripts/checks/tidy.zig:25:9: 0x11d42da in main (tidy.zig)
+        try runGitLints(gpa, io);
+        ^
+[0;32m[OK][0m All tidy checks passed
+test
++- run-check-git-lints
+   +- run exe tidy failure
+error: process exited with error code 1
+failed command: ./.zig-cache/o/6eeefda1d901e49b14058f44c92755d6/tidy --git-lints
+
+Build Summary: 19/22 steps succeeded (1 failed); 623/623 tests passed
+test transitive failure
++- run-check-git-lints transitive failure
+   +- run exe tidy failure
+
+error: the following build command failed with exit code 1:
+.zig-cache/o/bc0d3a776f326feb08af975a26a10d71/build /home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/zig /home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/basetree .zig-cache /home/lbw/.cache/zig --seed 0x3ee80318 -Z6ab67346c05dcc75 test
+Traceback (most recent call last):
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/basetree/scripts/test.py", line 1132, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/basetree/scripts/test.py", line 1037, in main
+    run_zig_suite()
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/basetree/scripts/test.py", line 313, in run_zig_suite
+    run(["zig", "build", "test"])
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/basetree/scripts/test.py", line 233, in run
+    subprocess.run([str(part) for part in command], cwd=cwd, env=env, check=True)
+  File "/usr/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['zig', 'build', 'test']' returned non-zero exit status 1.

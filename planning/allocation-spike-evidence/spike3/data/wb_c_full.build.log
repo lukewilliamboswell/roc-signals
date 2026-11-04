@@ -1,0 +1,19 @@
+Test output: /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_full.out
+
+==> /usr/bin/python3 scripts/prepare_platforms.py
+Shared platform copies match (SHA-256).
+
+==> zig build build-wasm-benchmark-host
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_full.out/wasm-benchmark/js-framework-production.wasm /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_full.out/wasm-benchmark/source/production.roc
+0 errors and 0 warnings found in 1m 41s while successfully building:
+
+    ../c_full.out/wasm-benchmark/js-framework-production.wasm
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=wasm32 --opt=size --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_full.out/wasm-benchmark/js-framework-diagnostic.wasm /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_full.out/wasm-benchmark/source/diagnostic.roc
+0 errors and 0 warnings found in 1m 39s while successfully building:
+
+    ../c_full.out/wasm-benchmark/js-framework-diagnostic.wasm
+
+==> node scripts/browser/wasm_command_retention.test.mjs /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_full.out/wasm-benchmark/js-framework-diagnostic.wasm
+Kept test output: /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_full.out

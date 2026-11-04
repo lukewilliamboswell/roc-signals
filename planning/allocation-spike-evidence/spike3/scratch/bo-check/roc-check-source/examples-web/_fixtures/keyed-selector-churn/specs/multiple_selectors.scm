@@ -1,0 +1,27 @@
+(test "two keyed selectors per row stay independent across structural churn"
+  (steps
+    (click (role button :name "Create 1,000 rows"))
+    (mark-metrics)
+    (click (role button :name "Hover row 5"))
+    (expect-attr (test-id "row-5") data-hover "hover")
+    (expect-attr (test-id "row-6") data-hover "")
+    ; The hover selector has its own input: only row 5's hover member is dirtied.
+    (expect-metric-delta selector_members_dirtied 1)
+    (expect-metric-delta-at-most derived_calls_into_roc 5)
+    (expect-metric-delta selector_registry_visits 0)
+    (mark-metrics)
+    (click (role button :name "Select row 2"))
+    (expect-attr (test-id "row-2") class "danger")
+    (expect-attr (test-id "pinned-2") class "danger")
+    (expect-attr (test-id "row-5") data-hover "hover")
+    (expect-attr (test-id "row-5") class "")
+    (expect-metric-delta selector_members_dirtied 2)
+    (mark-metrics)
+    (click (role button :name "Remove row 5"))
+    (expect-absent (test-id "row-5"))
+    ; Both of the removed row's memberships leave, one per selector.
+    (expect-metric-delta selector_memberships_released 2)
+    (expect-metric-delta selector_registry_visits 2)
+    (expect-metric-delta selector_registrations 0)
+    (expect-attr (test-id "row-2") class "danger")
+    (expect-attr (test-id "row-6") data-hover "")))

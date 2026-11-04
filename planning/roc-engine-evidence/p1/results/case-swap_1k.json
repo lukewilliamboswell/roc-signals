@@ -1,0 +1,249 @@
+{
+ "cases": {
+  "swap_1k": {
+   "summary": {
+    "current": {
+     "total_ns": {
+      "median": 39.430128,
+      "min": 1.223854,
+      "max": 45.133383,
+      "n": 11
+     },
+     "wasm_ns": {
+      "median": 39.099747,
+      "min": 0.767714,
+      "max": 44.865943,
+      "n": 11
+     },
+     "apply_ns": {
+      "median": 0.124978,
+      "min": 0.089491,
+      "max": 0.20469,
+      "n": 11
+     },
+     "bytes": 48,
+     "pages": 1169
+    },
+    "new": {
+     "total_ns": {
+      "median": 0.22525,
+      "min": 0.083349,
+      "max": 0.338986,
+      "n": 11
+     },
+     "wasm_ns": {
+      "median": 0.121833,
+      "min": 0.012725,
+      "max": 0.176336,
+      "n": 11
+     },
+     "apply_ns": {
+      "median": 0.049424,
+      "min": 0.02083,
+      "max": 0.095562,
+      "n": 11
+     },
+     "bytes": 18,
+     "pages": 144
+    },
+    "ratio_median_total": 0.005712636793874978
+   },
+   "samples": {
+    "current": [
+     {
+      "total_ns": 39430128,
+      "wasm_ns": 39099747,
+      "apply_ns": 160776,
+      "bytes": 48,
+      "commands": 2,
+      "pages": 1169
+     },
+     {
+      "total_ns": 42906917,
+      "wasm_ns": 42570345,
+      "apply_ns": 187237,
+      "bytes": 48,
+      "commands": 2,
+      "pages": 1169
+     },
+     {
+      "total_ns": 3715826,
+      "wasm_ns": 3232434,
+      "apply_ns": 94641,
+      "bytes": 48,
+      "commands": 2,
+      "pages": 1169
+     },
+     {
+      "total_ns": 45133383,
+      "wasm_ns": 44865943,
+      "apply_ns": 138484,
+      "bytes": 48,
+      "commands": 2,
+      "pages": 1169
+     },
+     {
+      "total_ns": 4572980,
+      "wasm_ns": 4039002,
+      "apply_ns": 124978,
+      "bytes": 48,
+      "commands": 2,
+      "pages": 1169
+     },
+     {
+      "total_ns": 44011533,
+      "wasm_ns": 43673820,
+      "apply_ns": 204690,
+      "bytes": 48,
+      "commands": 2,
+      "pages": 1169
+     },
+     {
+      "total_ns": 2102379,
+      "wasm_ns": 1595151,
+      "apply_ns": 110711,
+      "bytes": 48,
+      "commands": 2,
+      "pages": 1169
+     },
+     {
+      "total_ns": 42296583,
+      "wasm_ns": 42036106,
+      "apply_ns": 123586,
+      "bytes": 48,
+      "commands": 2,
+      "pages": 1169
+     },
+     {
+      "total_ns": 1223854,
+      "wasm_ns": 777703,
+      "apply_ns": 89491,
+      "bytes": 48,
+      "commands": 2,
+      "pages": 1169
+     },
+     {
+      "total_ns": 40879391,
+      "wasm_ns": 40300066,
+      "apply_ns": 143724,
+      "bytes": 48,
+      "commands": 2,
+      "pages": 1169
+     },
+     {
+      "total_ns": 1249272,
+      "wasm_ns": 767714,
+      "apply_ns": 98648,
+      "bytes": 48,
+      "commands": 2,
+      "pages": 1169
+     }
+    ],
+    "new": [
+     {
+      "total_ns": 338986,
+      "wasm_ns": 176336,
+      "apply_ns": 70485,
+      "bytes": 18,
+      "commands": 0,
+      "pages": 144
+     },
+     {
+      "total_ns": 155046,
+      "wasm_ns": 12725,
+      "apply_ns": 34415,
+      "bytes": 18,
+      "commands": 0,
+      "pages": 144
+     },
+     {
+      "total_ns": 225250,
+      "wasm_ns": 122774,
+      "apply_ns": 49424,
+      "bytes": 18,
+      "commands": 0,
+      "pages": 144
+     },
+     {
+      "total_ns": 118135,
+      "wasm_ns": 13065,
+      "apply_ns": 53332,
+      "bytes": 18,
+      "commands": 0,
+      "pages": 144
+     },
+     {
+      "total_ns": 246620,
+      "wasm_ns": 126882,
+      "apply_ns": 49254,
+      "bytes": 18,
+      "commands": 0,
+      "pages": 144
+     },
+     {
+      "total_ns": 99470,
+      "wasm_ns": 15560,
+      "apply_ns": 26320,
+      "bytes": 18,
+      "commands": 0,
+      "pages": 144
+     },
+     {
+      "total_ns": 252852,
+      "wasm_ns": 124287,
+      "apply_ns": 77457,
+      "bytes": 18,
+      "commands": 0,
+      "pages": 144
+     },
+     {
+      "total_ns": 94791,
+      "wasm_ns": 16571,
+      "apply_ns": 26501,
+      "bytes": 18,
+      "commands": 0,
+      "pages": 144
+     },
+     {
+      "total_ns": 272640,
+      "wasm_ns": 121833,
+      "apply_ns": 95562,
+      "bytes": 18,
+      "commands": 0,
+      "pages": 144
+     },
+     {
+      "total_ns": 83349,
+      "wasm_ns": 12834,
+      "apply_ns": 20830,
+      "bytes": 18,
+      "commands": 0,
+      "pages": 144
+     },
+     {
+      "total_ns": 258603,
+      "wasm_ns": 128054,
+      "apply_ns": 77238,
+      "bytes": 18,
+      "commands": 0,
+      "pages": 144
+     }
+    ]
+   }
+  }
+ },
+ "pages": {
+  "current": {
+   "mount": 141,
+   "after_create_10k": 11926,
+   "after_clear": 13000,
+   "after_6_cycles": 16366
+  },
+  "new": {
+   "mount": 135,
+   "after_create_10k": 211,
+   "after_clear": 211,
+   "after_6_cycles": 212
+  }
+ }
+}

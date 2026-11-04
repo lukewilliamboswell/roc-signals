@@ -1,0 +1,1 @@
+{"framework":"roc-engine-p1-v0.0.1-keyed","keyed":true,"benchmark":"22_run-memory","type":"memory","values":{"DEFAULT":{"min":10.911040306091309,"max":10.911040306091309,"median":10.911040306091309,"mean":10.911040306091309,"stddev":null,"values":[10.911040306091309]}}}

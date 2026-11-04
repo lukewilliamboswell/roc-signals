@@ -1,0 +1,25 @@
+(test "Conduit — favoriting and unfavoriting a feed article"
+  (setup
+    (manual-effects)
+    (local-storage "conduit.jwt" "jwt.conduit.kim")
+    (local-storage "conduit.username" "kim")
+    (initial-location "/roc-signals/examples-web/conduit/#/")
+  )
+  (steps
+    ; Settle the home requests before exercising the article's favorite action.
+    (stub-http "tags" :url "/api/tags" :status 200 :body "{\"tags\":[]}")
+    (run-effect 2)
+    (stub-http "feed" :url "/api/articles?limit=20&offset=0" :status 200 :body "{\"articles\":[{\"slug\":\"keyed-lists-without-tears\",\"title\":\"Keyed lists without tears\",\"description\":\"Field notes on stable row identity.\",\"tagList\":[\"signals\",\"webdev\"],\"createdAt\":\"2026-06-01T08:00:00.000Z\",\"favorited\":false,\"favoritesCount\":2,\"author\":{\"username\":\"anna\",\"bio\":\"Signals platform notes.\",\"image\":\"https://example.test/avatars/anna.png\",\"following\":false}}],\"articlesCount\":1}")
+    (run-effect 1)
+    (click (role button :name "Favorite Keyed lists without tears (2)"))
+    (expect-pending-effects 1)
+    (stub-http "favorite response" :url "/api/articles/keyed-lists-without-tears/favorite" :status 200 :body "{\"article\":{\"slug\":\"keyed-lists-without-tears\",\"title\":\"Keyed lists without tears\",\"description\":\"Field notes on stable row identity.\",\"body\":\"unused\",\"tagList\":[\"signals\",\"webdev\"],\"createdAt\":\"2026-06-01T08:00:00.000Z\",\"favorited\":true,\"favoritesCount\":3,\"author\":{\"username\":\"anna\",\"bio\":\"Signals platform notes.\",\"image\":\"https://example.test/avatars/anna.png\",\"following\":false}}}")
+    (run-effect 3)
+    (expect-visible (role button :name "Unfavorite Keyed lists without tears (3)"))
+    (click (role button :name "Unfavorite Keyed lists without tears (3)"))
+    (expect-pending-effects 1)
+    (stub-http "favorite response" :url "/api/articles/keyed-lists-without-tears/favorite" :status 200 :body "{\"article\":{\"slug\":\"keyed-lists-without-tears\",\"title\":\"Keyed lists without tears\",\"description\":\"Field notes on stable row identity.\",\"body\":\"unused\",\"tagList\":[\"signals\",\"webdev\"],\"createdAt\":\"2026-06-01T08:00:00.000Z\",\"favorited\":false,\"favoritesCount\":2,\"author\":{\"username\":\"anna\",\"bio\":\"Signals platform notes.\",\"image\":\"https://example.test/avatars/anna.png\",\"following\":false}}}")
+    (run-effect 4)
+    (expect-visible (role button :name "Favorite Keyed lists without tears (2)"))
+  )
+)

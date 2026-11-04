@@ -1,0 +1,1505 @@
+$ zig build build-fuzz
+
+=== propagation: 45 input(s) ===
+  FAIL test/fuzzing/corpus/propagation/cmin-04
+  FAIL test/fuzzing/corpus/propagation/cmin-06
+  FAIL test/fuzzing/corpus/propagation/cmin-07
+  FAIL test/fuzzing/corpus/propagation/cmin-08
+  FAIL test/fuzzing/corpus/propagation/cmin-09
+  FAIL test/fuzzing/corpus/propagation/cmin-10
+  FAIL test/fuzzing/corpus/propagation/cmin-11
+  FAIL test/fuzzing/corpus/propagation/cmin-12
+  FAIL test/fuzzing/corpus/propagation/cmin-13
+  FAIL test/fuzzing/corpus/propagation/cmin-14
+  FAIL test/fuzzing/corpus/propagation/cmin-15
+  FAIL test/fuzzing/corpus/propagation/cmin-16
+  FAIL test/fuzzing/corpus/propagation/cmin-17
+  FAIL test/fuzzing/corpus/propagation/cmin-18
+  FAIL test/fuzzing/corpus/propagation/cmin-19
+  FAIL test/fuzzing/corpus/propagation/cmin-20
+  FAIL test/fuzzing/corpus/propagation/cmin-21
+  FAIL test/fuzzing/corpus/propagation/cmin-22
+  FAIL test/fuzzing/corpus/propagation/cmin-23
+  FAIL test/fuzzing/corpus/propagation/cmin-24
+  FAIL test/fuzzing/corpus/propagation/cmin-25
+  FAIL test/fuzzing/corpus/propagation/cmin-26
+  FAIL test/fuzzing/corpus/propagation/cmin-27
+  FAIL test/fuzzing/corpus/propagation/cmin-28
+  FAIL test/fuzzing/corpus/propagation/cmin-29
+  FAIL test/fuzzing/corpus/propagation/cmin-30
+  FAIL test/fuzzing/corpus/propagation/cmin-31
+  FAIL test/fuzzing/corpus/propagation/cmin-32
+  FAIL test/fuzzing/corpus/propagation/cmin-33
+  FAIL test/fuzzing/corpus/propagation/cmin-34
+  FAIL test/fuzzing/corpus/propagation/cmin-35
+  FAIL test/fuzzing/corpus/propagation/cmin-36
+  FAIL test/fuzzing/corpus/propagation/cmin-37
+  FAIL test/fuzzing/corpus/propagation/cmin-38
+  FAIL test/fuzzing/corpus/propagation/cmin-39
+  FAIL test/fuzzing/corpus/propagation/combine-refusal-must-drop-children
+
+=== keyed-scopes: 44 input(s) ===
+  all passed
+
+=== rows-transitions: 26 input(s) ===
+  all passed
+
+=== structural: 405 input(s) ===
+  all passed
+
+=== selectors: 7 input(s) ===
+  all passed
+
+=== sparse-rows: 15 input(s) ===
+  all passed
+
+=== transactions: 7 input(s) ===
+  all passed
+
+=== ownership: 44 input(s) ===
+  all passed
+
+=== boundary: 45 input(s) ===
+  all passed
+
+replayed 638 input(s); 36 regressed, 0 known failing, 0 fixed
+
+--- propagation test/fuzzing/corpus/propagation/cmin-04 ---
+thread 29532 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x7489d6a2a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x7489d6a2a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-04 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-06 ---
+thread 29821 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x78bbad02a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x78bbad02a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-06 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-07 ---
+thread 29939 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x7cbfd2a2a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x7cbfd2a2a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-07 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-08 ---
+thread 30033 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x72484422a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x72484422a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-08 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-09 ---
+thread 30144 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x747f08e2a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x747f08e2a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-09 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-10 ---
+thread 30381 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x7dbd0b42a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x7dbd0b42a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-10 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-11 ---
+thread 30732 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x733b7142a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x733b7142a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-11 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-12 ---
+thread 31036 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x771bb482a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x771bb482a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-12 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-13 ---
+thread 31331 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x7fc84762a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x7fc84762a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-13 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-14 ---
+thread 31449 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x7e9c3c62a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x7e9c3c62a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-14 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-15 ---
+thread 31461 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x7a5f9d42a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x7a5f9d42a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-15 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-16 ---
+thread 31488 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x74034262a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x74034262a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-16 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-17 ---
+thread 31497 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x76dc0d62a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x76dc0d62a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-17 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-18 ---
+thread 31506 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x7efab042a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x7efab042a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-18 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-19 ---
+thread 31530 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x79aacf62a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x79aacf62a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-19 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-20 ---
+thread 31538 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x79d60782a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x79d60782a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-20 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-21 ---
+thread 31547 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x7552ea42a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x7552ea42a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-21 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-22 ---
+thread 31590 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x76331d62a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x76331d62a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-22 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-23 ---
+thread 31597 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x77b2c302a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x77b2c302a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-23 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-24 ---
+thread 31606 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x72066ea2a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x72066ea2a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-24 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-25 ---
+thread 31614 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x77344442a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x77344442a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-25 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-26 ---
+thread 31621 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x76d352e2a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x76d352e2a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-26 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-27 ---
+thread 31630 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x78b61c22a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x78b61c22a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-27 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-28 ---
+thread 31720 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x79513ce2a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x79513ce2a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-28 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-29 ---
+thread 31742 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x75fa3a22a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x75fa3a22a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-29 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-30 ---
+thread 31756 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x7e3be282a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x7e3be282a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-30 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-31 ---
+thread 31775 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x7411c2a2a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x7411c2a2a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-31 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-32 ---
+thread 31782 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x72715622a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x72715622a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-32 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-33 ---
+thread 31847 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x745246c2a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x745246c2a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-33 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-34 ---
+thread 31936 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x76fa99e2a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x76fa99e2a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-34 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-35 ---
+thread 31947 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x7e76f4e2a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x7e76f4e2a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-35 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-36 ---
+thread 31967 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x72d30802a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x72d30802a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-36 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-37 ---
+thread 31974 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x78d4c502a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x78d4c502a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-37 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-38 ---
+thread 31981 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x73121ce2a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x73121ce2a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-38 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/cmin-39 ---
+thread 31997 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x728f9c82a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x728f9c82a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/cmin-39 --verbose
+
+--- propagation test/fuzzing/corpus/propagation/combine-refusal-must-drop-children ---
+thread 32009 panic: reached unreachable code
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/debug.zig:420:14: 0x1058269 in assert (std.zig)
+    if (!ok) unreachable; // assertion failure
+             ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/transaction_scratch.zig:185:25: 0x12fe139 in alloc (mod.zig)
+        std.debug.assert(self.depth > 0);
+                        ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/mem/Allocator.zig:142:26: 0x12436f2 in rawAlloc (mod.zig)
+    return a.vtable.alloc(a.ptr, len, alignment, ret_addr);
+                         ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:139:38: 0x1242e16 in ensureTotalCapacityPrecise (mod.zig)
+            const next = try relocate(
+                                     ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/shared_buffer.zig:128:51: 0x123f779 in ensureTotalCapacity (mod.zig)
+            return self.ensureTotalCapacityPrecise(gpa, growCapacity(T, new_capacity));
+                                                  ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/src/signals/engine.zig:13644:40: 0x12abfc1 in prepareChangedActiveSignalRecordIds (mod.zig)
+            changed.ensureTotalCapacity(scratch, dirty_record_ids.len) catch return error.OutOfMemory;
+                                       ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1031:76: 0x12399da in applyPrepared (fuzz-propagation.zig)
+            const changed = self.engine.prepareChangedActiveSignalRecordIds(&self.host, &self.roc_host, &rehearsal, dirty, &.{}, generation) catch {
+                                                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:893:44: 0x123893f in apply (fuzz-propagation.zig)
+            .prepared => self.applyPrepared(update),
+                                           ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-propagation.zig:1645:48: 0x1203223 in zig_fuzz_test_inner (fuzz-propagation.zig)
+        const prepared_outcome = prepared.apply(entry);
+                                               ^
+/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/fuzzing/fuzz-repro.zig:58:34: 0x12005dd in main (fuzz-repro.zig)
+    fuzz_test.zig_fuzz_test_inner(bytes.ptr, @intCast(bytes.len), verbose);
+                                 ^
+/home/lbw/.cache/blueprint/v1/trees/sha256/70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00.tar.xz/zig-x86_64-linux-0.16.0/lib/std/start.zig:737:30: 0x11f9a47 in callMain (std.zig)
+    return wrapMain(root.main(.{
+                             ^
+../sysdeps/nptl/libc_start_call_main.h:58:16: 0x7a1bf522a1c9 in __libc_start_call_main (../sysdeps/x86/libc-start.c)
+../csu/libc-start.c:360:3: 0x7a1bf522a28a in __libc_start_main_impl (../sysdeps/x86/libc-start.c)
+???:?:?: 0x1312894 in ??? (???)
+debug with: python3 scripts/fuzz.py repro propagation test/fuzzing/corpus/propagation/combine-refusal-must-drop-children --verbose

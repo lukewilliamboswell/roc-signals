@@ -1,0 +1,16 @@
+passed accepted
+== specs passed
+== bench-20 passed
+  mount                    allocs=   743 bytes=     672057
+  tags                     allocs=    72 bytes=      27488
+  feed                     allocs=  1812 bytes=     793895
+  favorite                 allocs=    15 bytes=      22950
+  favorite-response        allocs=    47 bytes=      24971
+  tag-click                allocs=    80 bytes=      78482
+== bench-200 passed
+  mount                    allocs=   743 bytes=     672057
+  tags                     allocs=    72 bytes=      27488
+  feed                     allocs= 17078 bytes=    7656051
+  favorite                 allocs=    16 bytes=      27324
+  favorite-response        allocs=    47 bytes=      29309
+  tag-click                allocs=   441 bytes=     581650

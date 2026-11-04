@@ -1,0 +1,29 @@
+Retain transaction scratch so a repeated event allocates nothing on the host
+
+A counter click made 20 host allocations of its own: state write journals,
+the transaction plan, changed-record ids, render journals, and on the native
+host a command batch and simulated-DOM publication. All of them end with the
+transaction, and design.md already gives them a lifetime domain.
+
+Add TransactionScratch, a chunked store for those buffers. It keeps at most
+1 MiB between transactions, whatever the graph size. Growth still reports
+OutOfMemory through the host allocator, so preflight refusal is unchanged.
+Values the cache adopts at commit stay on the host allocator. Safety builds
+poison released chunks, which turns a retained alias into a visible failure.
+Buffers of 4 KiB or more go straight to the host allocator, because bump
+storage has to copy them as they grow. At 64 KiB that cost Wasm clear_10k
+about 25%.
+
+Text a transaction displaces is kept for the next value of the same length,
+capped at 64 buffers of 256 bytes. The simulated DOM keeps its displaced
+element snapshots the same way. Both keep only the latest transaction's
+buffers, so their footprint follows the last event, not a high-water mark.
+
+The fault campaign must still see every allocation, so it now passes
+--host-exact-scratch, which gives each allocation its own chunk and disables
+the spares. host_retained_*_delta now excludes this reusable capacity, and
+specs can read host_only_allocs_this_event, because host_allocs_this_event
+also counts Roc allocations.
+
+A counter click goes from 20 host allocations to 0. Structural events and
+row construction are mostly unchanged; see the spike report.

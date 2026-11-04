@@ -1,0 +1,37 @@
+(test "Support inbox — poll acknowledgment wins over a late send failure"
+  (setup (manual-effects))
+  (steps
+    (stub-http "one conversation" :url "/api/inbox" :status 200 :body "c1|Card declined|Ada Lovelace|me#")
+    (run-effect 1)
+    (click (test-id "open-c1"))
+    (stub-http "read conversation" :url "/api/inbox" :status 200 :body "c1|Card declined|Ada Lovelace|me#")
+    (run-effect 2)
+
+    ; The send is occurrence 3. Leave it queued while the next poll completes.
+    (fill (label "Message") "Refund issued")
+    (click (role button :name "Send message"))
+    (expect-visible (role region :name "Message p1"))
+    (expect-text (test-id "mstate-p1") "sending")
+    (tick-interval 4000)
+    (expect-pending-effects 2)
+    (stub-http "server confirms client p1" :url "/api/inbox" :status 200 :body "c1|Card declined|Ada Lovelace|me#m9|c1|agent|Refund issued|read|p1")
+    (mark-metrics)
+    (run-effect 4)
+    (expect-metric-delta rows_created 0)
+    (expect-metric-delta rows_removed 0)
+    (expect-text (test-id "send-state") "Delivered")
+    (expect-text (test-id "body-p1") "Refund issued")
+    (expect-text (test-id "mstate-p1") "delivered")
+    (expect-absent (role region :name "Message m9"))
+
+    ; The server snapshot is authoritative even if the original POST later fails.
+    (stub-http "late send failure" :url "/api/inbox/send" :status 503 :body "reply lost")
+    (mark-metrics)
+    (run-effect 3)
+    (expect-metric-delta patches_emitted 0)
+    (expect-pending-effects 0)
+    (expect-text (test-id "send-state") "Delivered")
+    (expect-text (test-id "send-error") "No send errors")
+    (expect-visible (role region :name "Message p1"))
+  )
+)

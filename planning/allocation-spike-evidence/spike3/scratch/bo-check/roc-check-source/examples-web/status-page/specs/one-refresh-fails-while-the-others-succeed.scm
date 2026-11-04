@@ -1,0 +1,42 @@
+(test "Status page — One refresh fails while the others succeed"
+  (setup (manual-effects))
+  (steps
+    ; Start with all four services healthy.
+    (stub-http "api" :url "/api/status/api" :status 200 :body "operational|99.98")
+    (run-effect 1)
+    (stub-http "web" :url "/api/status/web" :status 200 :body "operational|99.99")
+    (run-effect 2)
+    (stub-http "database" :url "/api/status/database" :status 200 :body "operational|99.90")
+    (run-effect 3)
+    (stub-http "notifications" :url "/api/status/notifications" :status 200 :body "operational|99.95")
+    (run-effect 4)
+    (stub-http "incidents" :url "/api/status/incidents" :status 200 :body "")
+    (run-effect 5)
+
+    ; One refresh fails while the others succeed
+
+    (tick-interval 5000)
+    (stub-http-reject "notifications timeout" :kind timeout :detail "")
+    ; Effect 9 is the notifications refresh in this five-service batch.
+    (run-effect 9)
+    (stub-http "api" :url "/api/status/api" :status 200 :body "operational|99.98")
+    (run-effect 6)
+    (stub-http "web" :url "/api/status/web" :status 200 :body "operational|99.99")
+    (run-effect 7)
+    (stub-http "database" :url "/api/status/database" :status 200 :body "operational|99.90")
+    (run-effect 8)
+    (expect-text (test-id "service-notifications-status") "Check failed")
+    (expect-visible (text "Last refresh failed: Timeout"))
+    (expect-text (test-id "service-notifications-uptime") "not reported")
+    (expect-text (test-id "overall-rollup") "Degraded performance")
+    (expect-text (test-id "count-operational") "3")
+    (expect-text (test-id "count-degraded") "1")
+    (expect-text (test-id "count-outage") "0")
+    (expect-text (test-id "count-awaiting") "0")
+    (expect-text (test-id "overall-uptime") "99.95%")
+    (expect-text (test-id "service-api-status") "Operational")
+    (stub-http "incidents" :url "/api/status/incidents" :status 200 :body "")
+    (run-effect 10)
+    (expect-pending-effects 0)
+  )
+)

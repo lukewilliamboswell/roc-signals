@@ -1,0 +1,19 @@
+counter/click#0:Increment {'allocs_this_event': 2, 'host_allocs_this_event': 39, 'closure_retains': 12, 'derived_calls_into_roc': 1}
+counter/click#1:Increment {'allocs_this_event': 2, 'host_allocs_this_event': 22, 'closure_retains': 12, 'derived_calls_into_roc': 1}
+counter/click#2:Increment {'allocs_this_event': 2, 'host_allocs_this_event': 22, 'closure_retains': 12, 'derived_calls_into_roc': 1}
+large-each-08/main#0:Update middle row {'allocs_this_event': 82, 'host_allocs_this_event': 240, 'closure_retains': 39, 'derived_calls_into_roc': 2}
+large-each-08/main#1:Update middle row {'allocs_this_event': 1, 'host_allocs_this_event': 5, 'closure_retains': 3, 'derived_calls_into_roc': 0}
+large-each-08/main#2:Append one row {'allocs_this_event': 107, 'host_allocs_this_event': 337, 'closure_retains': 60, 'derived_calls_into_roc': 3}
+large-each-08/main#3:Remove middle row {'allocs_this_event': 72, 'host_allocs_this_event': 262, 'closure_retains': 30, 'derived_calls_into_roc': 1}
+large-each-08/main#4:Filter even rows {'allocs_this_event': 63, 'host_allocs_this_event': 334, 'closure_retains': 51, 'derived_calls_into_roc': 2}
+large-each-08/main#5:Reverse rows {'allocs_this_event': 136, 'host_allocs_this_event': 406, 'closure_retains': 114, 'derived_calls_into_roc': 5}
+large-each-08/main#6:Reset rows {'allocs_this_event': 80, 'host_allocs_this_event': 206, 'closure_retains': 30, 'derived_calls_into_roc': 1}
+large-each-64/main#0:Update middle row {'allocs_this_event': 754, 'host_allocs_this_event': 1221, 'closure_retains': 39, 'derived_calls_into_roc': 2}
+large-each-64/main#1:Append one row {'allocs_this_event': 790, 'host_allocs_this_event': 1325, 'closure_retains': 60, 'derived_calls_into_roc': 3}
+large-each-64/main#2:Remove middle row {'allocs_this_event': 738, 'host_allocs_this_event': 1237, 'closure_retains': 30, 'derived_calls_into_roc': 1}
+large-each-64/main#3:Filter even rows {'allocs_this_event': 342, 'host_allocs_this_event': 1010, 'closure_retains': 51, 'derived_calls_into_roc': 2}
+large-each-64/main#4:Reverse rows {'allocs_this_event': 1200, 'host_allocs_this_event': 2239, 'closure_retains': 702, 'derived_calls_into_roc': 33}
+large-each-64/main#5:Reset rows {'allocs_this_event': 752, 'host_allocs_this_event': 1193, 'closure_retains': 30, 'derived_calls_into_roc': 1}
+js-framework-benchmark/update_10k#0:Update every 10th row {'allocs_this_event': 23416, 'host_allocs_this_event': 27488, 'closure_retains': 9027, 'derived_calls_into_roc': 1002}
+js-framework-benchmark/select_1k#0:Select row 3 {'allocs_this_event': 3, 'host_allocs_this_event': 35, 'closure_retains': 27, 'derived_calls_into_roc': 2}
+js-framework-benchmark/swap_1k#0:Swap Rows {'allocs_this_event': 576, 'host_allocs_this_event': 677, 'closure_retains': 27, 'derived_calls_into_roc': 2}

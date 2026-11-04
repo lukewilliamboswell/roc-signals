@@ -1,0 +1,80 @@
+    81.82%     0.00%  [.] bench.benchmark.Runner(native_host.SpecRunnerCtx).runBenchmarkIteration             
+    80.12%     0.00%  [.] native_host.dispatchRocEventWithStats (inlined)                                     
+    80.12%     0.00%  [.] spec.spec_runner.Runner(native_host.SpecRunnerCtx).runWithSession                   
+    79.27%     0.00%  [.] bench.benchmark.Runner(native_host.SpecRunnerCtx).runCommand (inlined)              
+    79.27%     0.00%  [.] bench.benchmark.Runner(native_host.SpecRunnerCtx).runOperationMeasured (inlined)    
+    79.27%     0.00%  [.] spec.spec_runner.Runner(native_host.SpecRunnerCtx).Session.dispatch (inlined)       
+    75.90%     0.00%  [.] native_host.SpecRunnerCtx.dispatchRocEvent                                          
+    63.80%     0.00%  [.] engine.Engine(native_host.NativeCtx).tryDispatchStateValue (inlined)                
+    54.17%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.prepareRoots         
+    54.17%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.prepareRootsInto     
+    54.17%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.prepareStates        
+    48.19%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.prepareState (inlined
+    27.42%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.prepareSparseExter
+    20.85%     0.04%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.adoptSparseEachRen
+    20.85%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.adoptSparseSnapsho
+    19.83%     0.08%  [.] engine.Engine(native_host.NativeCtx).PreparedReplacementOwner.placeConstructionRange
+    19.57%     0.65%  [.] structural_positions.Prepared.place                                                 
+    18.27%     0.26%  [.] native_host.rocAllocAt                                                              
+    17.94%     0.00%  [.] 0xffffffffb1400bb7                                                                  
+    17.94%     0.00%  [.] roc_alloc_ledger.Ledger.allocate (inlined)                                          
+    17.34%     0.00%  [.] 0xffffffffb2a89e61                                                                  
+    16.61%     0.26%  [.] roc__pfefab24d45e544bcf4f317a3282e84ff.fast                                         
+    16.32%     0.00%  [.] erased_calls.callErasedCallable (inlined)                                           
+    16.32%     0.00%  [.] erased_calls.callErasedHostValueHostValueHostValueToHostValue (inlined)             
+    16.32%     0.00%  [.] retained_values.callHostValueHostValueHostValueToHostValueWithCapabilities__anon_680
+    16.28%     0.00%  [.] roc__p7f95ab54dfcecf59feb95aa9858cbced                                              
+    16.13%     0.00%  [.] engine.Engine(native_host.NativeCtx).evaluateEventReducer                           
+    16.04%     0.00%  [.] structural_positions.Prepared.Parent.insertBefore (inlined)                         
+    15.86%     0.00%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_positi
+    15.18%     0.00%  [.] 0xffffffffb1760122                                                                  
+    14.87%     0.04%  [k] 0xffffffffb140012b                                                                  
+    14.72%     0.00%  [.] 0xffffffffb1b4bc9d                                                                  
+    14.43%     0.04%  [k] 0xffffffffb2a81b29                                                                  
+    13.76%     1.62%  [.] heap.debug_allocator.DebugAllocator(.{ .stack_trace_frames = 0, .enable_memory_limit
+    13.20%     0.00%  [.] 0xffffffffb1b4b95a                                                                  
+    13.07%     0.00%  [.] 0xffffffffb1b4b3bf                                                                  
+    12.94%     0.00%  [.] memcpy (inlined)                                                                    
+    12.23%     0.00%  [.] mem.Allocator.rawAlloc (inlined)                                                    
+    12.05%     1.58%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_positi
+    11.95%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedEachRowReplacementCollection.prepare   
+    10.79%     0.00%  [.] 0xffffffffb168f921                                                                  
+    10.79%     0.00%  [.] 0xffffffffb1b50dbb                                                                  
+    10.76%     0.00%  [.] compiler_rt.memcpy.copyForwards (inlined)                                           
+    10.71%     0.00%  [.] 0xffffffffb1b773d4                                                                  
+    10.54%     0.00%  [.] 0xffffffffb1b753d3                                                                  
+     9.53%     1.65%  [.] heap.debug_allocator.DebugAllocator(.{ .stack_trace_frames = 0, .enable_memory_limit
+     9.41%     9.41%  [.] compiler_rt.memcpy.memcpyFast                                                       
+     8.75%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.adoptScalarRenderS
+     8.75%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.prepareHostPublica
+     8.47%     1.11%  [.] native_host.NativeCtx.prepareRenderPublication__anon_57045                          
+     8.47%     0.00%  [.] native_host.NativeRenderPublication.prepare__anon_57057 (inlined)                   
+     8.44%     0.00%  [.] compiler_rt.memcpy.copyBlocks (inlined)                                             
+     8.44%     0.00%  [.] compiler_rt.memcpy.copyBlocksAlignedSource (inlined)                                
+     8.25%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.commit (inlined)     
+     8.09%     0.00%  [.] roc_alloc_ledger.Ledger.deallocate (inlined)                                        
+     8.01%     0.04%  [.] engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.commitWithPublication
+     7.93%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.commitAssumeCapaci
+     7.82%     1.19%  [.] native_host.rocDeallocFn                                                            
+     7.63%     3.67%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,rows_render_order.StableOr
+     7.57%     0.00%  [.] 0xffffffffb1b4a014                                                                  
+     7.32%     0.63%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_positi
+     7.29%     0.00%  [.] mem.Allocator.rawAlloc (inlined)                                                    
+     7.02%     0.00%  [.] heap.PageAllocator.map (inlined)                                                    
+     6.93%     0.44%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_positi
+     6.69%     0.00%  [.] mem.Allocator.rawFree (inlined)                                                     
+     6.64%     0.04%  [.] 0xffffffffb1b752bf                                                                  
+     6.22%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.prepareSparseExter
+     6.22%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.prepareSparseExter
+     6.07%     0.04%  [.] 0xffffffffb1b74423                                                                  
+     6.02%     1.57%  [.] roc_alloc_ledger.Ledger.record                                                      
+     5.97%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.prepareState (inlined
+     5.83%     0.74%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.prepareGraphRender
+     5.79%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.prepareRender (inl
+     5.71%     0.00%  [.] engine.Engine(native_host.NativeCtx).BranchReplacementPlan.prepareRenderTopology (in
+     5.71%     0.00%  [.] engine.Engine(native_host.NativeCtx).BranchReplacementPlan.prepareRenderTopologyInto
+     5.64%     0.00%  [.] mem.Allocator.rawFree (inlined)                                                     
+     5.54%     0.31%  [.] roc__p979e6d1a8fdeb0aa8d15f3d73fe6e107                                              
+     5.49%     0.07%  [.] heap.PageAllocator.alloc                                                            
+     5.48%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,rows_render_order.StableOr
+     5.48%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,rows_render_order.StableOr

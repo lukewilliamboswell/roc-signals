@@ -1,0 +1,110 @@
+{
+ "results": [
+  {
+   "file": "a-single-field-form",
+   "ok": true,
+   "steps": 54,
+   "ms": 628,
+   "failed": null
+  },
+  {
+   "file": "adding-a-checkbox-field",
+   "ok": true,
+   "steps": 36,
+   "ms": 241,
+   "failed": null
+  },
+  {
+   "file": "adding-a-number-field",
+   "ok": false,
+   "steps": 42,
+   "ms": 156,
+   "failed": "step 32 [{\"sym\":\"expect-text\"},[{\"sym\":\"test-id\"},\"preview-f3-verdict\"],\"Rule error: minimum is not a number\"]: [\"test-id\",\"preview-f3-verdict\"] text \"Must be at most 10\", expected \"Rule error: minimum is not a number\""
+  },
+  {
+   "file": "adding-a-select-field",
+   "ok": true,
+   "steps": 41,
+   "ms": 205,
+   "failed": null
+  },
+  {
+   "file": "adding-the-remaining-field-types",
+   "ok": true,
+   "steps": 36,
+   "ms": 277,
+   "failed": null
+  },
+  {
+   "file": "answering-the-generated-form",
+   "ok": true,
+   "steps": 16,
+   "ms": 73,
+   "failed": null
+  },
+  {
+   "file": "clearing-the-preview-answers",
+   "ok": true,
+   "steps": 46,
+   "ms": 409,
+   "failed": null
+  },
+  {
+   "file": "deleting-a-field-that-holds-invalid-input",
+   "ok": true,
+   "steps": 51,
+   "ms": 389,
+   "failed": null
+  },
+  {
+   "file": "editing-one-field-s-label-fine-grained",
+   "ok": true,
+   "steps": 24,
+   "ms": 123,
+   "failed": null
+  },
+  {
+   "file": "initial-mount",
+   "ok": true,
+   "steps": 44,
+   "ms": 38,
+   "failed": null
+  },
+  {
+   "file": "reordering",
+   "ok": true,
+   "steps": 51,
+   "ms": 362,
+   "failed": null
+  },
+  {
+   "file": "the-empty-form",
+   "ok": true,
+   "steps": 53,
+   "ms": 510,
+   "failed": null
+  },
+  {
+   "file": "the-key-cross-level-assertion",
+   "ok": true,
+   "steps": 15,
+   "ms": 92,
+   "failed": null
+  }
+ ],
+ "stats": {
+  "typed": 152,
+  "typedFallback": 9,
+  "fallbacks": [
+   "\"2x\" typed as \"2\" into input[type=number] connected=true",
+   "\"2x\" typed as \"2\" into input[type=number] connected=true",
+   "\"2x\" typed as \"2\" into input[type=number] connected=true",
+   "\"2x\" typed as \"2\" into input[type=number] connected=true",
+   "\"2x\" typed as \"2\" into input[type=number] connected=true",
+   "\"2x\" typed as \"2\" into input[type=number] connected=true",
+   "\"2x\" typed as \"2\" into input[type=number] connected=true",
+   "\"2x\" typed as \"2\" into input[type=number] connected=true",
+   "\"2x\" typed as \"2\" into input[type=number] connected=true"
+  ]
+ }
+}
