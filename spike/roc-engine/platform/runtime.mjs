@@ -48,6 +48,7 @@ const OP_CANCEL = 14;
 const OP_NAV = 15;
 const OP_STORE = 16;
 const OP_TITLE = 17;
+const OP_FOCUS = 18;
 
 // Effect results are events on this node; the handler number is the id.
 const FX_NODE = 0xffffffff;
@@ -57,6 +58,7 @@ const RES_VALUE = 3;
 const RES_MISSING = 4;
 const RES_FIRED = 5;
 const RES_LOCATION = 6;
+const RES_TIMEOUT = 7;
 
 const HOLE_TEXT = 1;
 const HOLE_ATTR = 2;
@@ -216,8 +218,11 @@ function concat(parts) {
   return out;
 }
 
-function httpResult(status, body) {
-  return concat([new Uint8Array([RES_HTTP, status & 0xff, (status >>> 8) & 0xff]), utf8enc.encode(body)]);
+function httpResult(status, body, headers = []) {
+  const parts = [new Uint8Array([RES_HTTP, status & 0xff, (status >>> 8) & 0xff]), u32(headers.length)];
+  for (const [k, v] of headers) parts.push(encStr(k), encStr(v));
+  parts.push(utf8enc.encode(body));
+  return concat(parts);
 }
 
 export class RocEngineRuntime {
@@ -235,6 +240,8 @@ export class RocEngineRuntime {
     this.busy = false;
     this.queue = [];
     this.manual = options.manualEffects ?? false;
+    // Armed HTTP timeout timers (for tests: must return to 0).
+    this.timers = 0;
     this.fxOut = [];
     // id -> { kind, req, cancel } for every effect this runtime holds.
     this.live = new Map();
@@ -664,7 +671,9 @@ export class RocEngineRuntime {
             at += 4;
             for (; n > 0; n -= 1) headers.push([str(), str()]);
             const body = str();
-            this.fxOut.push({ op: "http", id, method, url, headers, body });
+            const timeout = dv.getUint32(at, true);
+            at += 4;
+            this.fxOut.push({ op: "http", id, method, url, headers, body, timeout });
           } else if (kind === 2) {
             this.fxOut.push({ op: "get", id, key: str() });
           } else if (kind === 3 || kind === 4) {
@@ -696,6 +705,11 @@ export class RocEngineRuntime {
             this.fxOut.push({ op: "set", key, value: readStr(u8, at + 4, m) });
             at += 4 + m;
           } else this.fxOut.push({ op: "remove", key });
+          break;
+        }
+        case OP_FOCUS: {
+          this.fxOut.push({ op: "focus", mode: u8[at], node: dv.getUint32(at + 1, true) });
+          at += 5;
           break;
         }
         case OP_TITLE: {
@@ -730,6 +744,18 @@ export class RocEngineRuntime {
       case "title":
         w.document.title = fx.text;
         return;
+      case "focus": {
+        // After the batch: the element exists. Focus events this raises are
+        // queued (busy) and delivered as their own turns.
+        const el = this.lookup(fx.node);
+        if (!el) return;
+        if (fx.mode === 2) el.blur();
+        else {
+          el.focus();
+          if (fx.mode === 3 && typeof el.select === "function") el.select();
+        }
+        return;
+      }
       case "set":
       case "remove":
         try {
@@ -792,8 +818,35 @@ export class RocEngineRuntime {
           this.live.set(fx.id, { kind: "timer", cancel: () => clearTimeout(h) });
           return;
         }
+        // One abort controller and at most one timeout timer per admitted
+        // request (bounded by the engine's in-flight cap); the timer is
+        // cleared on completion, failure, timeout or cancel.
         const ctl = new AbortController();
-        this.live.set(fx.id, { kind: "http", req: fx, cancel: () => ctl.abort() });
+        let timer = null;
+        const done = () => {
+          if (timer === null) return;
+          clearTimeout(timer);
+          timer = null;
+          this.timers -= 1;
+        };
+        if (fx.timeout > 0) {
+          this.timers += 1;
+          timer = setTimeout(() => {
+            if (!this.live.has(fx.id)) return;
+            this.live.delete(fx.id);
+            done();
+            ctl.abort();
+            this.result(fx.id, new Uint8Array([RES_TIMEOUT]));
+          }, fx.timeout);
+        }
+        this.live.set(fx.id, {
+          kind: "http",
+          req: fx,
+          cancel: () => {
+            done();
+            ctl.abort();
+          },
+        });
         const init = { method: fx.method, headers: fx.headers, signal: ctl.signal };
         if (fx.method !== "GET" && fx.method !== "HEAD" && fx.body !== "") init.body = fx.body;
         (this.fetch ?? globalThis.fetch)(fx.url, init)
@@ -801,11 +854,13 @@ export class RocEngineRuntime {
             const body = await r.text();
             if (!this.live.has(fx.id)) return;
             this.live.delete(fx.id);
-            this.result(fx.id, httpResult(r.status, body));
+            done();
+            this.result(fx.id, httpResult(r.status, body, [...r.headers]));
           })
           .catch((e) => {
-            if (!this.live.has(fx.id)) return; // cancelled: the engine forgot it
+            if (!this.live.has(fx.id)) return; // cancelled or timed out
             this.live.delete(fx.id);
+            done();
             this.result(fx.id, concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(String(e))]));
           });
         return;
@@ -833,8 +888,9 @@ export class RocEngineRuntime {
   runEffect(id, answer) {
     if (!this.live.has(id)) return false;
     this.live.delete(id);
-    if (answer.network !== undefined) this.result(id, concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(answer.network)]));
-    else if (answer.status !== undefined) this.result(id, httpResult(answer.status, answer.body ?? ""));
+    if (answer.timeout) this.result(id, new Uint8Array([RES_TIMEOUT]));
+    else if (answer.network !== undefined) this.result(id, concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(answer.network)]));
+    else if (answer.status !== undefined) this.result(id, httpResult(answer.status, answer.body ?? "", answer.headers ?? []));
     else this.result(id, new Uint8Array([RES_FIRED]));
     return true;
   }

@@ -347,9 +347,9 @@ ConduitApp := [].{
 		if s.serial == 0 {
 			[]
 		} else if s.method == "GET" or s.method == "DELETE" {
-			[Http({ method: s.method, url: s.url, headers: Api.auth_headers(s.token), body: s.body })]
+			[Http({ method: s.method, url: s.url, headers: Api.auth_headers(s.token), body: s.body, timeout_ms: Api.timeout_ms })]
 		} else {
-			[Http({ method: s.method, url: s.url, headers: Api.json_headers(s.token), body: s.body })]
+			[Http({ method: s.method, url: s.url, headers: Api.json_headers(s.token), body: s.body, timeout_ms: Api.timeout_ms })]
 		}
 	}
 

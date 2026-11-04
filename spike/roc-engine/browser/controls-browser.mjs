@@ -103,6 +103,22 @@ const text = (page, id) => page.$eval(`[data-testid="${id}"]`, (e) => e.textCont
   check("after blur", (await val(page, "Upper"))[0], "ABCかん");
   await ctx.close();
 }
+{
+  // 4. Focus commands and focus/blur events.
+  const { page, ctx } = await open();
+  const active = () => page.evaluate(() => document.activeElement.getAttribute("aria-label") ?? document.activeElement.tagName);
+  const clickButton = (name) => page.evaluate((n) => [...document.querySelectorAll("button")].find((b) => b.textContent === n).click(), name);
+  await clickButton("Focus upper");
+  check("Focus command focuses the referenced input", await active(), "Upper");
+  await clickButton("Select plain");
+  check("SelectText focuses and selects", [await active(), await val(page, "Plain")], ["Plain", ["hello world", 0, 11]]);
+  check("focus event delivered with the value payload", (await text(page, "log")).split("|").includes("focus:hello world"), true);
+  await clickButton("Blur plain");
+  check("Blur command blurs it; blur event delivered", [await active() !== "Plain", (await text(page, "log")).split("|").includes("blur:hello world")], [true, true]);
+  await clickButton("Focus missing");
+  check("missing reference: no focus change, no error", await active() !== "Plain", true);
+  await ctx.close();
+}
 await browser.close();
 server.close();
 console.log(failures === 0 ? "== controls: all pass" : `== controls: ${failures} failures`);

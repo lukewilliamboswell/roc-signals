@@ -52,12 +52,12 @@ export default {
   },
   "stub-http": async (page, s) => {
     const o = opts(s);
-    next = { url: o.url, status: Number(o.status), body: o.body ?? "" };
+    next = { url: o.url, status: Number(o.status), body: o.body ?? "", headers: [["content-type", "application/json"]] };
   },
   "stub-http-reject": async (page, s) => {
     const o = opts(s);
     // Same texts as the native harness (src/FxSpec.roc): the app shows them verbatim.
-    next = { network: o.kind === "timeout" ? "Timeout" : `Network("${o.detail}")` };
+    next = o.kind === "timeout" ? { timeout: true } : { network: `Network("${o.detail}")` };
   },
   "run-effect": async (page, s) => {
     const n = Number(sym(s[1]) ?? s[1]);

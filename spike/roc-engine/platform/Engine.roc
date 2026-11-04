@@ -239,7 +239,9 @@ Engine := [].{
 		}
 	}
 
-	Attr(ctx) := [Static(Str, Str), Dyn(Str, Val(ctx, Str)), On(Str, Handler(ctx))]
+	## `Ref(name)`: a scoped focus reference (effects Focus/Blur/SelectText
+	## name it; engine ids are never exposed to the app).
+	Attr(ctx) := [Static(Str, Str), Dyn(Str, Val(ctx, Str)), On(Str, Handler(ctx)), Ref(Str)]
 
 	Elem(ctx) := [
 		Element(Str, List(Attr(ctx)), List(Elem(ctx))),
@@ -363,7 +365,8 @@ Engine := [].{
 	free_id : Tx, U32 -> Tx
 	free_id = |{ cmds, next, free, routes, evals, paths, site_free, fx }, id| {
 		routes2 = if id.to_u64() < routes.len() routes.set(id.to_u64(), NoRoute) ?? routes else routes
-		{ cmds, next, free: free.append(id), routes: routes2, evals, paths, site_free, fx }
+		fx2 = if fx.refs.any(|(_, i)| i == id) { ..fx, refs: fx.refs.keep_if(|(_, i)| i != id) } else fx
+		{ cmds, next, free: free.append(id), routes: routes2, evals, paths, site_free, fx: fx2 }
 	}
 
 	set_route : Tx, U32, List(U32), U32 -> Tx
@@ -465,6 +468,7 @@ Engine := [].{
 				tx1 = Engine.emit(tx, |c| Engine.put_str(Engine.put_u32(Engine.put_u32(c.append(11), id), h), ev))
 				(Engine.add_handler(block, handler), Engine.set_route(tx1, id, path, h))
 			}
+			Ref(name) => (block, Engine.with_fx(tx, |fx| { ..fx, refs: fx.refs.keep_if(|(n, _)| n != name).append((name, id)) }))
 		}
 	}
 
@@ -956,6 +960,7 @@ Engine := [].{
 							$holes = $holes.append({ kind: 3, mask: 0, smask: 0, skey: |_| "", read: |_| "", col: $handlers.len(), live: False })
 							$handlers = $handlers.append(handler)
 						}
+						Ref(_) => crash "contract: focus refs are not supported inside each rows (use one in a nested site)"
 					}
 				}
 				$tree = $tree.append(kids.len().to_u8_wrap())
@@ -2214,18 +2219,21 @@ Engine := [].{
 	##   effect feedback loop) and traps the instance.
 	##
 	## Command stream additions:
-	##  13 FX      id kind:u8 ... 1 HTTP method:str url:str n:u32 (name:str value:str)* body:str
+	##  13 FX      id kind:u8 ... 1 HTTP method:str url:str n:u32 (name:str value:str)* body:str timeout_ms:u32
 	##                            2 STORAGE_GET key:str  3 TIMER ms:u32  4 INTERVAL ms:u32  5 POPSTATE
 	##  14 CANCEL  id
 	##  15 NAV     mode:u8 (1 push, 2 replace) url:str
 	##  16 STORE   op:u8 (1 set: key:str value:str, 2 remove: key:str)
 	##  17 TITLE   text:str
+	##  18 FOCUS   op:u8 (1 focus, 2 blur, 3 select text) node   (end of turn)
 	## Results come back as an event on node `fx_node` with handler = id and
-	## payload bytes: 1 status:u16 body (HTTP response), 2 message (network
+	## payload bytes: 1 status:u16 n:u32 (name:str value:str)* body (HTTP
+	## response with its headers), 7 (HTTP timeout), 2 message (network
 	## failure), 3 value (storage value), 4 (storage missing), 5 (timer
 	## fired), 6 url (location).
 	Req : [
-		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str }),
+		## `timeout_ms` 0 = no timeout; capped at `max_timeout_ms`.
+		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32 }),
 		StorageGet(Str),
 		Timer(U32),
 		Interval(U32),
@@ -2234,11 +2242,18 @@ Engine := [].{
 		Push(Str),
 		Replace(Str),
 		Title(Str),
+		Focus(Str),
+		Blur(Str),
+		SelectText(Str),
 		StorageSet(Str, Str),
 		StorageRemove(Str),
 	]
 
-	Res : [Http({ status : U16, body : Str }), Network(Str), Value(Str), Missing, Fired, Location(Str), Now, Refused]
+	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Now, Refused]
+
+	## Largest per-request HTTP timeout the host will arm (10 minutes).
+	max_timeout_ms : U32
+	max_timeout_ms = 600000
 
 	Live : { id : U32, path : List(U32), sub : Bool }
 
@@ -2257,10 +2272,14 @@ Engine := [].{
 		cancelled : U64,
 		reparented : U64,
 		skipped : U64,
+		## Focus references (name, node) and focus commands awaiting the end
+		## of the turn (op 1 focus, 2 blur, 3 select, ref name).
+		refs : List((Str, U32)),
+		focus : List((U8, Str)),
 	}
 
 	fx_empty : Fx
-	fx_empty = { next: 1, inner: 2147483648, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0 }
+	fx_empty = { next: 1, inner: 2147483648, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, refs: [], focus: [] }
 
 	## The host node id that marks an event as an effect result.
 	fx_node : U32
@@ -2310,16 +2329,19 @@ Engine := [].{
 		_ => False
 	}
 
+	min_u32 : U32, U32 -> U32
+	min_u32 = |a, b| if a < b a else b
+
 	put_req : List(U8), U32, Req -> List(U8)
 	put_req = |c, id, req| {
 		head = Engine.put_u32(c.append(13), id)
 		match req {
-			Http({ method, url, headers, body }) => {
+			Http({ method, url, headers, body, timeout_ms }) => {
 				var $b = Engine.put_u32(Engine.put_str(Engine.put_str(head.append(1), method), url), headers.len().to_u32_wrap())
 				for (k, v) in headers {
 					$b = Engine.put_str(Engine.put_str($b, k), v)
 				}
-				Engine.put_str($b, body)
+				Engine.put_u32(Engine.put_str($b, body), Engine.min_u32(timeout_ms, Engine.max_timeout_ms))
 			}
 			StorageGet(k) => Engine.put_str(head.append(2), k)
 			Timer(ms) => Engine.put_u32(head.append(3), ms)
@@ -2332,12 +2354,12 @@ Engine := [].{
 	## Admit an awaited request (or refuse it when the table is full).
 	fx_admit : Tx, List(U32), Req -> (U32, Tx)
 	fx_admit = |{ cmds, next, free, routes, evals, paths, site_free, fx }, path, req| {
-		{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped } = fx
+		{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs, focus } = fx
 		if live.len() >= max {
-			fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped }
+			fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, refs, focus }
 			(id, { cmds, next, free, routes, evals, paths, site_free, fx: fx2 })
 		} else {
-			fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: Engine.is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped }
+			fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: Engine.is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, refs, focus }
 			(id, { cmds: Engine.put_req(cmds, id, req), next, free, routes, evals, paths, site_free, fx: fx2 })
 		}
 	}
@@ -2361,6 +2383,15 @@ Engine := [].{
 				}
 				Replace(url) => {
 					$tx = Engine.emit($tx, |c| Engine.put_str(c.append(15).append(2), url))
+				}
+				Focus(n) => {
+					$tx = Engine.with_fx($tx, |fx| { ..fx, focus: fx.focus.append((1, n)) })
+				}
+				Blur(n) => {
+					$tx = Engine.with_fx($tx, |fx| { ..fx, focus: fx.focus.append((2, n)) })
+				}
+				SelectText(n) => {
+					$tx = Engine.with_fx($tx, |fx| { ..fx, focus: fx.focus.append((3, n)) })
 				}
 				Title(t) => {
 					$tx = Engine.emit($tx, |c| Engine.put_str(c.append(17), t))
@@ -2636,7 +2667,20 @@ Engine := [].{
 		text = |n| Str.from_utf8(b.drop_first(n)) ?? crash "effect result is not UTF-8"
 		if tag == 1 {
 			status = (b.get(1) ?? 0).to_u16() + (b.get(2) ?? 0).to_u16().shl_wrap(8)
-			Http({ status, body: text(3) })
+			n = Engine.get_u32(b, 3).to_u64()
+			var $at = 7.U64
+			var $hs = []
+			var $i = 0.U64
+			while $i < n {
+				(k, a1) = Engine.get_str(b, $at)
+				(v, a2) = Engine.get_str(b, a1)
+				$hs = $hs.append((k, v))
+				$at = a2
+				$i = $i + 1
+			}
+			Http({ status, headers: $hs, body: text($at) })
+		} else if tag == 7 {
+			Timeout
 		} else if tag == 2 {
 			Network(text(1))
 		} else if tag == 3 {
@@ -2737,6 +2781,10 @@ Engine := [].{
 	on : Str, Handler(ctx) -> Attr(ctx)
 	on = |ev, h| On(ev, h)
 
+	## A focus reference on this element (see Focus/Blur/SelectText).
+	ref : Str -> Attr(ctx)
+	ref = |name| Ref(name)
+
 	on_click : Handler(ctx) -> Attr(ctx)
 	on_click = |h| On("click", h)
 
@@ -2758,19 +2806,43 @@ Engine := [].{
 		{ cmds, next, free, routes, evals, paths, site_free, fx } = Engine.new_tx([])
 		tx0 = { cmds, next, free, routes, evals, paths, site_free, fx: { ..fx, max } }
 		(block, tx) = Engine.mount_block(Root, elem, 0, [], 0, 0, { cap: 0, local: False }, tx0)
-		Engine.drain({ root: Engine.block_inst(block), tx })
+		Engine.drain({ root: Engine.block_inst(block), tx: Engine.flush_focus(tx) })
 	}
 
-	## One turn: fire down `path`, then the root's Changed pass.
+	## One turn: fire down `path`, then the root's Changed pass, then the
+	## turn's focus commands (resolved now, so a reference mounted later in
+	## the same turn is found; a missing one is counted stale).
 	turn : App, List(U32), U32, Payload -> App
 	turn = |{ root, tx }, path, h, payload| {
 		(root2, out, tx2) = Engine.call(root, Root, Fire(path, 0, h, payload), tx)
 		mask = Engine.out_mask(out)
 		if mask == 0 {
-			{ root: root2, tx: tx2 }
+			{ root: root2, tx: Engine.flush_focus(tx2) }
 		} else {
 			(root3, _, tx3) = Engine.call(root2, Root, Changed(mask), tx2)
-			{ root: root3, tx: tx3 }
+			{ root: root3, tx: Engine.flush_focus(tx3) }
+		}
+	}
+
+	## Command 18 FOCUS op:u8 node:u32 (1 focus, 2 blur, 3 select text).
+	flush_focus : Tx -> Tx
+	flush_focus = |tx| {
+		if tx.fx.focus.is_empty() {
+			tx
+		} else {
+			reqs = tx.fx.focus
+			var $tx = Engine.with_fx(tx, |fx| { ..fx, focus: [] })
+			for (op, name) in reqs {
+				match $tx.fx.refs.find_first(|(n, _)| n == name) {
+					Ok((_, node)) => {
+						$tx = Engine.emit($tx, |c| Engine.put_u32(c.append(18).append(op), node))
+					}
+					Err(_) => {
+						$tx = Engine.with_fx($tx, |fx| { ..fx, stale: fx.stale + 1 })
+					}
+				}
+			}
+			$tx
 		}
 	}
 
@@ -2801,7 +2873,10 @@ Engine := [].{
 		target = if site == 0 {
 			match tx.routes.get(node.to_u64()) ?? NoRoute {
 				NoRoute => Err(Stale)
-				Route(path, h) => Ok((path, h))
+				# The node's route gives the block path; the handler number comes
+				# from the host (LISTEN carried it per event name), so an element
+				# with several handlers (input + focus + blur) reaches each one.
+				Route(path, _) => Ok((path, handler))
 			}
 		} else {
 			match tx.paths.get(site.to_u64()) {

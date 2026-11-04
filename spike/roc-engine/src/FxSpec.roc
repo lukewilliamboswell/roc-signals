@@ -65,7 +65,7 @@ FxSpec := [].{
 		for c in fx {
 			b = $b
 			$b = match c {
-				Http(id, _, url, _, _) => { ..b, pending: b.pending.append({ id, url }), issued: b.issued.append(id) }
+				Http(id, _, url, _, _, _) => { ..b, pending: b.pending.append({ id, url }), issued: b.issued.append(id) }
 				Get(id, key) => { ..b, pending: b.pending.append({ id, url: "storage:${key}" }), issued: b.issued.append(id) }
 				Timer(id, _) => { ..b, pending: b.pending.append({ id, url: "timer" }), issued: b.issued.append(id) }
 				Interval(id, _) => { ..b, subs: b.subs.append(id) }
@@ -76,6 +76,7 @@ FxSpec := [].{
 				Set(k, v) => { ..b, storage: FxSpec.set_store(b.storage, k, v) }
 				Remove(k) => { ..b, storage: b.storage.keep_if(|(k2, _)| k2 != k) }
 				Title(t) => { ..b, title: t }
+				Focus(_, _) => b
 			}
 		}
 		$b
@@ -123,6 +124,11 @@ FxSpec := [].{
 		$st
 	}
 
+	## A rejected request: a typed Timeout, or a network failure whose text is
+	## what the original platform showed.
+	reject_res : Str, Str -> Engine.Res
+	reject_res = |kind, detail| if kind == "timeout" Timeout else Network(FxSpec.reject_text(kind, detail))
+
 	reject_text : Str, Str -> Str
 	reject_text = |kind, detail| if kind == "timeout" "Timeout" else if kind == "network" "Network(\"${detail}\")" else "${kind}(\"${detail}\")"
 
@@ -149,8 +155,8 @@ FxSpec := [].{
 				stub = b.stubs.get(k) ?? crash "stub"
 				b2 = { ..b, stubs: b.stubs.drop_at(k), pending: b.pending.keep_if(|q| q.id != id) }
 				res = match stub {
-					Resp(_, status, body) => Http({ status, body })
-					Rej(kind, detail) => Network(FxSpec.reject_text(kind, detail))
+					Resp(_, status, body) => Http({ status, headers: [("content-type", "application/json")], body })
+					Rej(kind, detail) => FxSpec.reject_res(kind, detail)
 				}
 				Ok(FxSpec.deliver({ s: st.s, b: b2 }, id, res))
 			}
@@ -229,8 +235,8 @@ FxSpec := [].{
 							stale0 = Engine.fx_stats($s.s.eng).stale
 							k = b.stubs.find_first_index(|_| True) ?? crash "lenient: no stub"
 							res = match b.stubs.get(k) ?? crash "stub" {
-								Resp(_, status, body) => Http({ status, body })
-								Rej(kind, detail) => Network(FxSpec.reject_text(kind, detail))
+								Resp(_, status, body) => Http({ status, headers: [("content-type", "application/json")], body })
+								Rej(kind, detail) => FxSpec.reject_res(kind, detail)
 							}
 							$s = FxSpec.deliver({ s: $s.s, b: { ..b, stubs: b.stubs.drop_at(k) } }, id, res)
 							if Engine.fx_stats($s.s.eng).stale != stale0 + 1 {

@@ -9,3 +9,6 @@ mutation no-queue-purge: fx-channel: finding; baseline not_checked; examples 4; 
 mutation site-keeps-owned: fx-channel: baseline_changed; baseline changed; examples 4; exploration skipped (attempted 0, accepted 0, rejected 0) :: 
 mutation no-reparent-route: fx-channel: baseline_changed; baseline changed; examples 4; exploration skipped (attempted 0, accepted 0, rejected 0) :: 
 mutation no-reparent-route (exploration with the mutant's own baseline accepted): fx-channel: finding; exploration finding after 185 inputs :: step 27 deliver 6: counters skipped 0, model 1 (the orphan's result was routed to the disposed site's old path and vanished)
+mutation timeout-uncapped: fx-channel: finding; baseline not_checked; examples 4; exploration skipped (attempted 0, accepted 0, rejected 0) :: roc crashed] step 9 toggle 1: effect commands [Http(17, 
+mutation timeout-as-network: fx-channel: finding; baseline not_checked; examples 4; exploration skipped (attempted 0, accepted 0, rejected 0) :: roc crashed] step 5 deliver 3: log 
+mutation header-value-lost: fx-channel: finding; baseline not_checked; examples 4; exploration skipped (attempted 0, accepted 0, rejected 0) :: roc crashed] step 3 deliver 2: log 

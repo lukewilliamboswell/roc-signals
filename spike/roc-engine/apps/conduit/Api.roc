@@ -241,11 +241,16 @@ Api := {}.{
 	## platform reported (`Network("offline")`, `Timeout`).
 	response_of : Engine.Res -> Api.ResponseState
 	response_of = |res| match res {
-		Http({ status, body }) => { status, body, error: "", ready: True }
+		Http({ status, headers: _, body }) => { status, body, error: "", ready: True }
 		Network(message) => { status: 0, body: "", error: message, ready: True }
+		Timeout => { status: 0, body: "", error: "Timeout", ready: True }
 		Refused => { status: 0, body: "", error: "Refused", ready: True }
 		_ => { status: 0, body: "", error: "Unexpected result", ready: True }
 	}
+
+	## Per-request HTTP timeout (a typed Timeout result when it fires).
+	timeout_ms : U32
+	timeout_ms = 30000
 
 	auth_headers : Str -> List((Str, Str))
 	auth_headers = |token| if token.is_empty() {
@@ -263,16 +268,16 @@ Api := {}.{
 		}
 
 	get_request : Str, Str -> Engine.Req
-	get_request = |uri, token| Http({ method: "GET", url: uri, headers: auth_headers(token), body: "" })
+	get_request = |uri, token| Http({ method: "GET", url: uri, headers: auth_headers(token), body: "", timeout_ms: Api.timeout_ms })
 
 	post_request : Str, Str, Str -> Engine.Req
-	post_request = |uri, body, token| Http({ method: "POST", url: uri, headers: json_headers(token), body })
+	post_request = |uri, body, token| Http({ method: "POST", url: uri, headers: json_headers(token), body, timeout_ms: Api.timeout_ms })
 
 	put_request : Str, Str, Str -> Engine.Req
-	put_request = |uri, body, token| Http({ method: "PUT", url: uri, headers: json_headers(token), body })
+	put_request = |uri, body, token| Http({ method: "PUT", url: uri, headers: json_headers(token), body, timeout_ms: Api.timeout_ms })
 
 	delete_request : Str, Str -> Engine.Req
-	delete_request = |uri, token| Http({ method: "DELETE", url: uri, headers: auth_headers(token), body: "" })
+	delete_request = |uri, token| Http({ method: "DELETE", url: uri, headers: auth_headers(token), body: "", timeout_ms: Api.timeout_ms })
 
 	## A GET whose body decodes into a page resource (the original `Load`).
 	decode_get : Api.ResponseState, (Str -> Api.Remote(a)) -> Api.Remote(a)

@@ -29,16 +29,22 @@ FxApp := [].{
 		if c == 0 {
 			[]
 		} else {
-			get = Http({ method: "GET", url: FxApp.url_of(k, c), headers: [("accept", "text/plain")], body: "" })
+			get = Http({ method: "GET", url: FxApp.url_of(k, c), headers: [("accept", "text/plain")], body: "", timeout_ms: FxApp.timeout_of(c) })
 			if c % 6 == 0 [get, Self, Self] else if c % 3 == 0 [get, Self] else [get]
 		}
 	}
+
+	## G's per-request timeout: 300 ms for odd counts, else c * 250 s (above
+	## the host cap from 4).
+	timeout_of : U64 -> U32
+	timeout_of = |c| if c % 2 == 1 300 else c.to_u32_wrap() * 250000
 
 	describe : U64, U64, Engine.Res -> Str
 	describe = |k, c, r| {
 		head = "${k.to_str()}:${c.to_str()}"
 		match r {
-			Http({ status, body }) => "${head}:${status.to_str()}:${body}"
+			Http({ status, headers, body }) => "${head}:${status.to_str()}:${body}:${Str.join_with(headers.map(|(n, v)| "${n}=${v}"), ",")}"
+			Timeout => "${head}:timeout"
 			Network(m) => "${head}:net:${m}"
 			Refused => "${head}:refused"
 			Now => "${head}:self"
@@ -83,7 +89,7 @@ FxApp := [].{
 					Engine.state(0.U64, |hits| Engine.element("span", [Engine.test_id("hits ${k.to_str()}")], [
 						Engine.watch(
 							st.val().map(|s| s.counts.get(k) ?? 0).lift(),
-							|c| if c == 0 [] else [Http({ method: "GET", url: "/h${k.to_str()}/${c.to_str()}", headers: [], body: "" })],
+							|c| if c == 0 [] else [Http({ method: "GET", url: "/h${k.to_str()}/${c.to_str()}", headers: [], body: "", timeout_ms: 0 })],
 							hits.on_result(|h, _, _| h + 1),
 						),
 						Engine.text_v(hits.val().map(|h| h.to_str())),

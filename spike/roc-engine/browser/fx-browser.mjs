@@ -23,7 +23,7 @@ const server = http.createServer((req, res) => {
   const m = /^\/s(\d)\/(\d+)$/.exec(u.pathname);
   if (m) {
     const send = () => {
-      res.writeHead(200, { "content-type": "text/plain" });
+      res.writeHead(200, { "content-type": "text/plain", "x-test": "yes" });
       res.end(`srv${m[1]}.${m[2]}`);
     };
     // /s2/* is held until released (to test abort on dispose).
@@ -82,17 +82,17 @@ const stats = (page) => page.evaluate(() => ({ live: [...window.__rt.live.keys()
   check("G and H requests pending in issue order", await pending(page), ["5 GET /s0/1", "6 GET /h0/1", "7 GET /s0/2", "8 GET /h0/2"]);
   await page.evaluate(() => window.__rt.runEffect(7, { status: 201, body: "second" }));
   await page.evaluate(() => window.__rt.runEffect(6, { status: 200, body: "" }));
-  check("answer out of order (log and branch-local hits)", [await log(page), await hits(0)], ["0:2:201:second", "1"]);
+  check("answer out of order (log and branch-local hits)", [await log(page), await hits(0)], ["0:2:201:second:", "1"]);
   check("svg class updated", (await svg())[2], "busy");
   await page.evaluate(() => window.__rt.tick(3));
-  check("interval tick through the subscription", await log(page), "0:2:201:second|1:0:other");
+  check("interval tick through the subscription", await log(page), "0:2:201:second:|1:0:other");
   await click(page, "issue 1");
   await click(page, "issue 1");
-  check("bound 8 reached: G and H refused in follow-up turns", [await log(page), await hits(1)], ["0:2:201:second|1:0:other|1:2:refused", "1"]);
+  check("bound 8 reached: G and H refused in follow-up turns", [await log(page), await hits(1)], ["0:2:201:second:|1:0:other|1:2:refused", "1"]);
   await click(page, "toggle 0");
   check("dispose stops the interval, keeps admitted requests", [(await stats(page)).live.includes(2), await pending(page)], [false, ["5 GET /s0/1", "8 GET /h0/2", "9 GET /s1/1", "10 GET /h1/1"]]);
   await page.evaluate(() => window.__rt.runEffect(5, { status: 200, body: "after" }));
-  check("reparented G result still applies to the surviving log", (await log(page)).endsWith("|0:1:200:after"), true);
+  check("reparented G result still applies to the surviving log", (await log(page)).endsWith("|0:1:200:after:"), true);
   const before = await log(page);
   await page.evaluate(() => window.__rt.runEffect(8, { status: 200, body: "" }));
   check("reparented H result is a skipped write (branch gone)", [await log(page), await hits(0)], [before, null]);
@@ -115,15 +115,20 @@ const stats = (page) => page.evaluate(() => ({ live: [...window.__rt.live.keys()
   const { page, ctx } = await open(false);
   await click(page, "issue 0");
   await page.waitForFunction(() => document.querySelector("[data-testid=log]").textContent.length > 0);
-  check("auto mode: real fetch result", await log(page), "0:1:200:srv0.1");
+  check("auto mode: real fetch result with response headers", (await log(page)).startsWith("0:1:200:srv0.1:") && (await log(page)).includes("x-test=yes"), true);
   await click(page, "issue 2");
   await new Promise((r) => setTimeout(r, 100));
   check("slow request in flight", (await stats(page)).live.includes(7), true);
   await click(page, "toggle 2");
   check("dispose keeps the admitted fetch (reparented), stops the interval", [(await stats(page)).live.includes(7), (await stats(page)).live.includes(4)], [true, false]);
+  await page.waitForFunction(() => document.querySelector("[data-testid=log]").textContent.includes("2:1:timeout"), { timeout: 3000 });
+  check("300 ms timeout: typed Timeout result, request dropped, timer cleared", [(await log(page)).split("|").includes("2:1:timeout"), (await stats(page)).live.includes(7), await page.evaluate(() => window.__rt.timers)], [true, false, 0]);
   slowRelease && slowRelease();
-  await page.waitForFunction(() => document.querySelector("[data-testid=log]").textContent.includes("srv2.1"));
-  check("reparented fetch result applied after dispose", (await log(page)).split("|").includes("2:1:200:srv2.1"), true);
+  await new Promise((r) => setTimeout(r, 200));
+  check("the response after its timeout is never applied", (await log(page)).includes("srv2.1"), false);
+  await click(page, "issue 0");
+  await page.waitForFunction(() => document.querySelector("[data-testid=log]").textContent.includes("srv0.2"));
+  check("completed request clears its timeout timer", await page.evaluate(() => window.__rt.timers), 0);
   await ctx.close();
 }
 await browser.close();

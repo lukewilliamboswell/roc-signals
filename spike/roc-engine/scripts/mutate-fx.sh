@@ -36,5 +36,10 @@ run followups-lifo '			q = tx.fx.queue.first() ?? crash "queue"
 			tx1 = Engine.with_fx(tx, |fx| { ..fx, queue: fx.queue.drop_last(1) })'
 run no-queue-purge '			} else if $tx.fx.queue.any(|q| q.id == id) {' '			} else if $tx.fx.queue.len() > 1000000 {'
 run site-keeps-owned 'kept = if entry.sub owned else owned.drop_at(i)' 'kept = owned'
+run timeout-uncapped 'Engine.put_u32(Engine.put_str($b, body), Engine.min_u32(timeout_ms, Engine.max_timeout_ms))' 'Engine.put_u32(Engine.put_str($b, body), timeout_ms)'
+run header-value-lost '				$hs = $hs.append((k, v))' '				$hs = $hs.append((k, Str.concat(v, "x")))'
+run timeout-as-network '		} else if tag == 7 {
+			Timeout' '		} else if tag == 7 {
+			Network("Timeout")'
 cp $F/Engine.good.roc $F/Engine.roc
 rm -f $F/tm

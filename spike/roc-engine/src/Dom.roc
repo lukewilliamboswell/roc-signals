@@ -286,14 +286,14 @@ Dom := [].{
 	apply = |dom0, b| Dom.apply_ops(dom0, b).0
 
 	op_name : U8 -> Str
-	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORE", "TITLE"].get(op.to_u64()) ?? "?"
+	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORE", "TITLE", "FOCUS"].get(op.to_u64()) ?? "?"
 
 	## Opcode histogram of a batch, e.g. "SETTEXT=1 ATTR=1".
 	describe : List(U8) -> Str
 	describe = |ops| {
 		var $parts = []
 		var $op = 1.U8
-		while $op <= 17 {
+		while $op <= 18 {
 			n = ops.count_if(|o| o == $op)
 			if n > 0 {
 				$parts = $parts.append("${Dom.op_name($op)}=${n.to_str()}")
@@ -305,7 +305,7 @@ Dom := [].{
 
 	## An effect command, decoded independently of the engine.
 	FxCmd : [
-		Http(U32, Str, Str, List((Str, Str)), Str),
+		Http(U32, Str, Str, List((Str, Str)), Str, U32),
 		Get(U32, Str),
 		Timer(U32, U32),
 		Interval(U32, U32),
@@ -316,6 +316,7 @@ Dom := [].{
 		Set(Str, Str),
 		Remove(Str),
 		Title(Str),
+		Focus(U8, U32),
 	]
 
 	## Apply one batch and also return its opcode sequence.
@@ -472,8 +473,9 @@ Dom := [].{
 						$k = $k + 1
 					}
 					(body, a3) = Dom.str(b, $a)
-					$at = a3
-					$fx = $fx.append(Http(id, method, url, $hs, body))
+					timeout = Dom.u32(b, a3)
+					$at = a3 + 4
+					$fx = $fx.append(Http(id, method, url, $hs, body, timeout))
 				} else if kind == 2 {
 					(key, a1) = Dom.str(b, $at)
 					$at = a1
@@ -510,6 +512,9 @@ Dom := [].{
 				} else {
 					crash "unknown store op"
 				}
+			} else if op == 18 {
+				$fx = $fx.append(Focus(Dom.byte(b, $at), Dom.u32(b, $at + 1)))
+				$at = $at + 5
 			} else if op == 17 {
 				(t, a1) = Dom.str(b, $at)
 				$at = a1

@@ -92,7 +92,10 @@ admit = |m, k, c, kind| {
 	} else {
 		url = if kind == G FxApp.url_of(k, c) else "/h${k.to_str()}/${c.to_str()}"
 		headers = if kind == G [("accept", "text/plain")] else []
-		{ ..m, next: id + 1, issued: m.issued + 1, live: m.live.append({ id, k, c, kind, orphan: False }), fx: m.fx.append(Http(id, "GET", url, headers, "")) }
+		# G asks for 300 ms (odd c) or c * 250 s, capped at 600 s; H for none
+		asked = if c % 2 == 1 300 else c * 250000
+		timeout = if kind == G (if asked > 600000 600000 else asked.to_u32_wrap()) else 0
+		{ ..m, next: id + 1, issued: m.issued + 1, live: m.live.append({ id, k, c, kind, orphan: False }), fx: m.fx.append(Http(id, "GET", url, headers, "", timeout)) }
 	}
 }
 
@@ -208,10 +211,36 @@ click! = |s, name| {
 	apply!(s, a, c)
 }
 
+## Results go through the wire: an independent encoder here, the engine's
+## decoder there (the round trip is part of what the model checks).
 deliver! : Spec.S, U32, Engine.Res => E
 deliver! = |s, id, res| {
-	(a, c) = Engine.take_cmds(Engine.result(s.eng, id, res), [])
+	(a, c) = Engine.take_cmds(Engine.result(s.eng, id, Engine.decode_res(encode_res(res))), [])
 	apply!(s, a, c)
+}
+
+le32 : List(U8), U64 -> List(U8)
+le32 = |b, v| b.append(v.to_u8_wrap()).append(v.shr_zf_wrap(8).to_u8_wrap()).append(v.shr_zf_wrap(16).to_u8_wrap()).append(v.shr_zf_wrap(24).to_u8_wrap())
+
+wstr : List(U8), Str -> List(U8)
+wstr = |b, s| le32(b, s.count_utf8_bytes()).concat(Str.to_utf8(s))
+
+encode_res : Engine.Res -> List(U8)
+encode_res = |res| match res {
+	Http({ status, headers, body }) => {
+		var $b = le32([1, status.to_u8_wrap(), status.shr_zf_wrap(8).to_u8_wrap()], headers.len())
+		for (n, v) in headers {
+			$b = wstr(wstr($b, n), v)
+		}
+		$b.concat(Str.to_utf8(body))
+	}
+	Network(m) => [2].concat(Str.to_utf8(m))
+	Timeout => [7]
+	Value(v) => [3].concat(Str.to_utf8(v))
+	Missing => [4]
+	Fired => [5]
+	Location(u) => [6].concat(Str.to_utf8(u))
+	_ => crash "not a host result"
 }
 
 show_fx : List(Dom.FxCmd) -> Str
@@ -271,7 +300,13 @@ run_program! = |prog| {
 		} else if op == 2 {
 			id = (arg.to_u32() % $m.next) + 1
 			body = "b${arg.to_str()}"
-			res = Http({ status: 200, body })
+			res = if arg % 3 == 0 {
+				Http({ status: 200, headers: [], body })
+			} else if arg % 3 == 1 {
+				Http({ status: 201, headers: [("x-a", "1"), ("x-b", "v${arg.to_str()}")], body })
+			} else {
+				Timeout
+			}
 			(deliver!($s, id, res), model_deliver(m0, id, res), "deliver ${id.to_str()}")
 		} else {
 			url = "/u${arg.to_str()}"
@@ -308,12 +343,12 @@ bench! = |_| {
 	$s = step!($s, "issue", |a| Engine.event(a, n0, h0, ""))
 	$s = step!($s, "issue-again", |a| Engine.event(a, n0, h0, ""))
 	$s = step!($s, "issue-self", |a| Engine.event(a, n0, h0, ""))
-	$s = step!($s, "deliver", |a| Engine.result(a, 5, Http({ status: 200, body: "ok" })))
-	$s = step!($s, "deliver-stale", |a| Engine.result(a, 5, Http({ status: 200, body: "late" })))
+	$s = step!($s, "deliver", |a| Engine.result(a, 5, Http({ status: 200, headers: [], body: "ok" })))
+	$s = step!($s, "deliver-stale", |a| Engine.result(a, 5, Http({ status: 200, headers: [], body: "late" })))
 	$s = step!($s, "popstate", |a| Engine.result(a, 1, Location("/next")))
 	$s = step!($s, "dispose-reparent", |a| Engine.event(a, t0, th0, ""))
-	$s = step!($s, "deliver-orphan-g", |a| Engine.result(a, 7, Http({ status: 200, body: "after" })))
-	$s = step!($s, "deliver-orphan-h-skipped", |a| Engine.result(a, 6, Http({ status: 200, body: "after" })))
+	$s = step!($s, "deliver-orphan-g", |a| Engine.result(a, 7, Http({ status: 200, headers: [("x-n", "1")], body: "after" })))
+	$s = step!($s, "deliver-orphan-h-skipped", |a| Engine.result(a, 6, Http({ status: 200, headers: [("x-n", "1")], body: "after" })))
 	$s = step!($s, "deliver-cancelled-tick", |a| Engine.result(a, 2, Fired))
 	$s = step!($s, "remount-issue", |a| Engine.event(a, t0, th0, ""))
 	st = Engine.fx_stats($s.eng)
