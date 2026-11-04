@@ -13,6 +13,8 @@ import FxApp
 ##   commands the engine emitted (decoded by Dom, in stream order), the
 ##   rendered reaction log and the engine's effect counters must equal the
 ##   model's. The in-flight bound is 3 (the popstate subscription holds one).
+##   Multiples of 6 make a follow-up hide its own site mid-drain, so its
+##   second follow-up must be dropped (counted stale), never delivered.
 ## - "bench": a fixed sequence with exact allocation baselines per step.
 
 Live : { id : U32, k : U64, c : U64, sub : Bool }
@@ -48,9 +50,11 @@ model_new = |max| {
 	fx: [Pop(1)],
 }
 
-## Site k issues for count c: the GET (admitted or refused), then the Self
-## follow-up when c is a multiple of 3. Follow-ups are delivered after the
-## turn, in order.
+## Site k issues for count c: the GET (admitted or refused), then one Self
+## follow-up when c is a multiple of 3 and two when it is a multiple of 6.
+## Follow-ups are delivered after the turn, in order; the first Self for a
+## multiple of 6 hides the site, which cancels its in-flight requests and
+## drops its remaining follow-up (stale).
 request : M, U64, U64 -> M
 request = |m, k, c| {
 	if c == 0 {
@@ -63,12 +67,27 @@ request = |m, k, c| {
 		} else {
 			{ ..m, next: id + 1, issued: m.issued + 1, live: m.live.append({ id, k, c, sub: False }), fx: m.fx.append(Http(id, "GET", url, [("accept", "text/plain")], "")) }
 		}
-		if c % 3 == 0 {
+		if c % 6 == 0 {
+			m2 = { ..m1, log: m1.log.append(FxApp.describe(k, c, Now)), delivered: m1.delivered + 1 }
+			hidden = hide(m2, k)
+			{ ..hidden, stale: hidden.stale + 1 }
+		} else if c % 3 == 0 {
 			{ ..m1, log: m1.log.append(FxApp.describe(k, c, Now)), delivered: m1.delivered + 1 }
 		} else {
 			m1
 		}
 	}
+}
+
+hide : M, U64 -> M
+hide = |m, k| {
+	var $m = { ..m, shown: m.shown.set(k, False) ?? m.shown }
+	for l in m.live {
+		if l.k == k {
+			$m = { ..$m, fx: $m.fx.append(Cancel(l.id)), cancelled: $m.cancelled + 1 }
+		}
+	}
+	{ ..$m, live: $m.live.keep_if(|l| l.k != k) }
 }
 
 model_issue : M, U64 -> M
@@ -81,13 +100,7 @@ model_issue = |m, k| {
 model_toggle : M, U64 -> M
 model_toggle = |m, k| {
 	if m.shown.get(k) ?? False {
-		var $m = { ..m, shown: m.shown.set(k, False) ?? m.shown }
-		for l in m.live {
-			if l.k == k {
-				$m = { ..$m, fx: $m.fx.append(Cancel(l.id)), cancelled: $m.cancelled + 1 }
-			}
-		}
-		{ ..$m, live: $m.live.keep_if(|l| l.k != k) }
+		hide(m, k)
 	} else {
 		m1 = { ..m, shown: m.shown.set(k, True) ?? m.shown }
 		request(m1, k, m.counts.get(k) ?? 0)
@@ -241,6 +254,8 @@ target = Fuzz.target_with!({
 		ex("lifecycle", 1, [0, 0, 0, 0, 0, 0, 2, 1, 1, 0, 2, 2, 1, 0, 3, 7, 0, 1, 0, 2]),
 		# saturate across sites, popstate, stale and never-issued ids
 		ex("saturate", 1, [0, 0, 0, 1, 0, 2, 2, 3, 2, 4, 3, 5, 0, 1, 1, 1, 2, 9, 2, 255]),
+		# six issues on site 1: the sixth's first follow-up hides the site mid-drain
+		ex("self-dispose", 1, [0, 1, 2, 2, 0, 1, 2, 3, 0, 1, 0, 1, 2, 5, 0, 1, 0, 1, 1, 1, 0, 1]),
 	],
 	generator: { mode: Fuzz.constant(1), program: Fuzz.list(Fuzz.u8, 64) }.Fuzz,
 	test!,

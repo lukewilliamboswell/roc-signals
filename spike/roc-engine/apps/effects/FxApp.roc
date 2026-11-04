@@ -6,7 +6,9 @@ import H
 ## the site and cancels what it owns), plus a popstate subscription at the
 ## root. Every reaction appends a line to the root log, rendered as text.
 ## Site k issues GET /s<k>/<count> for every nonzero count, plus a `Self`
-## follow-up when the count is a multiple of 3.
+## follow-up when the count is a multiple of 3, and a second one when it is a
+## multiple of 6; the first follow-up's reaction then hides the site, so the
+## second must be dropped with it (counted stale), never delivered.
 FxApp := [].{
 	S : { counts : List(U64), shown : List(Bool), log : List(Str) }
 
@@ -24,7 +26,7 @@ FxApp := [].{
 			[]
 		} else {
 			get = Http({ method: "GET", url: FxApp.url_of(k, c), headers: [("accept", "text/plain")], body: "" })
-			if c % 3 == 0 [get, Self] else [get]
+			if c % 6 == 0 [get, Self, Self] else if c % 3 == 0 [get, Self] else [get]
 		}
 	}
 
@@ -50,6 +52,15 @@ FxApp := [].{
 	toggle : S, U64 -> S
 	toggle = |{ counts, shown, log }, k| { counts, shown: shown.update(k, |b| !b) ?? shown, log }
 
+	react : S, U64, U64, Engine.Res -> S
+	react = |s, k, c, r| {
+		s1 = FxApp.log_line(s, FxApp.describe(k, c, r))
+		match r {
+			Now => if c % 6 == 0 FxApp.toggle(s1, k) else s1
+			_ => s1
+		}
+	}
+
 	site : State(Ctx, S), U64 -> Elem(Ctx)
 	site = |st, k| {
 		label = "site ${k.to_str()}"
@@ -63,7 +74,7 @@ FxApp := [].{
 					Engine.watch(
 						st.val().map(|s| s.counts.get(k) ?? 0),
 						FxApp.plan(k),
-						st.on_result(|s, c, r| FxApp.log_line(s, FxApp.describe(k, c, r))),
+						st.on_result(|s, c, r| FxApp.react(s, k, c, r)),
 					),
 				]),
 				|| Engine.text(""),

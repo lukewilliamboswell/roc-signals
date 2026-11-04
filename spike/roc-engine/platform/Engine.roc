@@ -2303,7 +2303,10 @@ Engine := [].{
 		($tx, $owned)
 	}
 
-	## Cancel and forget every request a disposed site still owns.
+	## Cancel and forget every request a disposed site still owns: in-flight
+	## ones are cancelled (CANCEL), queued follow-ups it would have received
+	## are dropped and counted as stale, so no later turn reaches the path the
+	## site occupied.
 	fx_release : Tx, List(Owned(a)) -> Tx
 	fx_release = |tx, owned| {
 		var $tx = tx
@@ -2312,6 +2315,8 @@ Engine := [].{
 			if $tx.fx.live.any(|l| l.id == id) {
 				t1 = Engine.with_fx($tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id), cancelled: fx.cancelled + 1 })
 				$tx = Engine.emit(t1, |c| Engine.put_u32(c.append(14), id))
+			} else if $tx.fx.queue.any(|q| q.id == id) {
+				$tx = Engine.with_fx($tx, |fx| { ..fx, queue: fx.queue.keep_if(|q| q.id != id), stale: fx.stale + 1 })
 			}
 		}
 		$tx
