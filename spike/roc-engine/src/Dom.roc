@@ -41,13 +41,8 @@ Dom := [].{
 		if id == 0 {
 			return dom.root
 		}
-		site = id.shr_zf_wrap(20).to_u64()
-		r = if site == 0 {
-			dom.statics.get(id.to_u64()) ?? 0
-		} else {
-			slot = (id.bitwise_and(1048575) - 1).to_u64()
-			(dom.rows.get(site) ?? []).get(slot) ?? 0
-		}
+		# statics[id]: node index + 1 in the low 40 bits, row site + 1 above.
+		r = (dom.statics.get(id.to_u64()) ?? 0).bitwise_and(1099511627775)
 		if r == 0 {
 			crash "command names an unknown node ${id.to_str()}"
 		}
@@ -72,20 +67,28 @@ Dom := [].{
 		{ nodes, statics: $s.set(id.to_u64(), idx + 1) ?? crash "static", rows, tpls, root }
 	}
 
-	set_row : Model, U32, U64 -> Model
-	set_row = |{ nodes, statics, rows, tpls, root }, id, idx| {
-		site = id.shr_zf_wrap(20).to_u64()
-		slot = (id.bitwise_and(1048575) - 1).to_u64()
+	## Bind a row element: its node index, its site (recorded with the id and
+	## in the site's row list, so CLEAR can forget the site's rows).
+	set_row : Model, U32, U64, U64 -> Model
+	set_row = |{ nodes, statics, rows, tpls, root }, id, idx, site| {
+		var $s = statics
+		while $s.len() <= id.to_u64() {
+			$s = $s.append(0)
+		}
 		var $r = rows
 		while $r.len() <= site {
 			$r = $r.append([])
 		}
 		{ list, prev } = $r.replace(site, []) ?? crash "row"
-		var $l = prev
-		while $l.len() <= slot {
-			$l = $l.append(0)
-		}
-		{ nodes, statics, rows: list.set(site, $l.set(slot, idx + 1) ?? crash "row") ?? crash "row", tpls, root }
+		packed = (idx + 1).bitwise_or((site + 1).shl_wrap(40))
+		{ nodes, statics: $s.set(id.to_u64(), packed) ?? crash "static", rows: list.set(site, prev.append(id.to_u64())) ?? crash "row", tpls, root }
+	}
+
+	## The site of a bound row element (Err for a static node).
+	site_of : Model, U32 -> Try(U64, [Static])
+	site_of = |dom, id| {
+		v = (dom.statics.get(id.to_u64()) ?? 0).shr_zf_wrap(40)
+		if v == 0 Err(Static) else Ok(v - 1)
 	}
 
 	empty_node : DNode
@@ -100,17 +103,19 @@ Dom := [].{
 	}
 
 	bind : Model, U32, U64 -> Model
-	bind = |dom, id, idx| if id.shr_zf_wrap(20) == 0 Dom.set_static(dom, id, idx) else Dom.set_row(dom, id, idx)
+	bind = |dom, id, idx| Dom.set_static(dom, id, idx)
 
 	unbind : Model, U32 -> Model
 	unbind = |{ nodes, statics, rows, tpls, root }, id| {
-		site = id.shr_zf_wrap(20).to_u64()
-		if site == 0 {
-			{ nodes, statics: statics.set(id.to_u64(), 0) ?? statics, rows, tpls, root }
+		packed = statics.get(id.to_u64()) ?? 0
+		statics2 = statics.set(id.to_u64(), 0) ?? statics
+		site1 = packed.shr_zf_wrap(40)
+		if site1 == 0 {
+			{ nodes, statics: statics2, rows, tpls, root }
 		} else {
-			slot = (id.bitwise_and(1048575) - 1).to_u64()
+			site = site1 - 1
 			{ list, prev } = rows.replace(site, []) ?? crash "row"
-			{ nodes, statics, rows: list.set(site, prev.set(slot, 0) ?? prev) ?? crash "row", tpls, root }
+			{ nodes, statics: statics2, rows: list.set(site, prev.keep_if(|r| r != id.to_u64())) ?? crash "row", tpls, root }
 		}
 	}
 
@@ -342,7 +347,8 @@ Dom := [].{
 				nid = Dom.u32(b, $at)
 				parent = Dom.u32(b, $at + 4)
 				before = Dom.u32(b, $at + 8)
-				tpl = $d.tpls.get(Dom.u32(b, $at + 12).to_u64()) ?? crash "unknown template"
+				site_id = Dom.u32(b, $at + 12).to_u64()
+				tpl = $d.tpls.get(site_id) ?? crash "unknown template"
 				$at = $at + 16
 				(d1, root, _) = Dom.build($d, tpl.bytes, 0)
 				r = Dom.node(d1, root)
@@ -375,14 +381,14 @@ Dom := [].{
 					}
 				}
 				$dd = Dom.place($dd, root, parent, before)
-				$d = Dom.bind($dd, nid, root)
+				$d = Dom.set_row($dd, nid, root, site_id)
 			} else if op == 2 or op == 3 {
 				nid = Dom.u32(b, $at)
 				h = Dom.byte(b, $at + 4).to_u64()
 				(v, next) = Dom.str(b, $at + 5)
 				$at = next
 				row = Dom.lookup($d, nid)
-				tpl = $d.tpls.get(nid.shr_zf_wrap(20).to_u64()) ?? crash "unknown template"
+				tpl = $d.tpls.get(Dom.site_of($d, nid) ?? crash "TEXT/HATTR on a non-row node") ?? crash "unknown template"
 				hole = tpl.holes.get(h) ?? crash "unknown hole"
 				target = Dom.node($d, row).ht.get(h) ?? crash "hole target"
 				$d = if op == 2 Dom.set_text_on($d, target, v) else Dom.set_attr_on($d, target, hole.name, v)
@@ -409,7 +415,11 @@ Dom := [].{
 					$dd = Dom.modify($dd, k, |kn| { ..kn, parent: 0 })
 				}
 				{ nodes, statics, rows, tpls, root } = $dd
-				$d = { nodes, statics, rows: if site < rows.len() rows.set(site, []) ?? rows else rows, tpls, root }
+				var $st = statics
+				for rid in rows.get(site) ?? [] {
+					$st = $st.set(rid, 0) ?? $st
+				}
+				$d = { nodes, statics: $st, rows: if site < rows.len() rows.set(site, []) ?? rows else rows, tpls, root }
 			} else if op == 7 {
 				tpl = Dom.u32(b, $at).to_u64()
 				n = Dom.u32(b, $at + 4).to_u64()

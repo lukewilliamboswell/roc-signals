@@ -5,6 +5,7 @@ import Engine
 import Dom
 import Spec
 import ControlsApp
+import ManyApp
 
 ## Native tests of focus references and focus/blur events (apps/controls):
 ## Focus/SelectText/Blur effects resolve their reference at the end of the
@@ -57,12 +58,39 @@ focus! = |_| {
 	Fuzz.keep
 }
 
+## More than 4,095 each sites (5,001 at mount; 5,000 rows each with a
+## nested each), shrunk and regrown with new keys so site and node ids are
+## recycled; clicks deep in the newest rows must route to the right row.
+many! : U64 => Fuzz.Outcome
+many! = |n| {
+	s0 = Spec.start(ManyApp.main(n))
+	click = |s, loc| Spec.one(s, Click(loc)) ?? crash "click ${Spec.show_loc(loc)}"
+	log = |s| Dom.text_of(s.dom, Spec.find(s.dom, TestId("log")) ?? crash "no log")
+	s1 = click(s0, Label("g0r4999-b"))
+	if log(s1) != "g0r4999-b" {
+		crash "first click: ${log(s1)}"
+	}
+	s2 = click(click(s1, Role("button", "Shrink")), Role("button", "Grow"))
+	match Spec.find(s2.dom, Label("g0r0-a")) {
+		Ok(_) => crash "old rows still present"
+		Err(_) => {}
+	}
+	s3 = click(click(s2, Label("g1r4999-a")), Label("g1r0-b"))
+	if log(s3) != "g0r4999-b|g1r4999-a|g1r0-b" {
+		crash "after regrow: ${log(s3)}"
+	}
+	Fuzz.keep
+}
+
 Input : { mode : U8, pad : U8 }
 
 target = Fuzz.target_with!({
 	name: "controls",
-	examples: [Fuzz.example({ name: "focus", revision: "1", make: || { mode: 0, pad: 0 } })],
+	examples: [
+		Fuzz.example({ name: "focus", revision: "1", make: || { mode: 0, pad: 0 } }),
+		Fuzz.example({ name: "many-sites", revision: "1", make: || { mode: 1, pad: 0 } }),
+	],
 	generator: { mode: Fuzz.constant(0), pad: Fuzz.constant(0) }.Fuzz,
-	test!: |_| focus!({}),
+	test!: |{ mode, pad }| if mode == 1 many!(5000 + pad.to_u64()) else focus!({}),
 	show: Str.inspect,
 })

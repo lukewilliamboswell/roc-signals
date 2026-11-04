@@ -146,22 +146,32 @@ soak_walk! = |program| {
 
 ## Soak, mode 3: 2,000 seeded events per example (five examples, seeds 1-5:
 ## 10k events; one 10k walk exceeds the per-input timeout through the DOM
-## oracle), leak-checked, then Home -> Sign in -> Home 12 times on the
+## oracle), leak-checked, then Home -> Sign in -> Home 48 times on the
 ## engine alone: live allocations flat.
 soak_10k! : U64 => Fuzz.Outcome
 soak_10k! = |seed| {
 	Fuzz.expect_no_leaks!(|| Soak.walk_n(answer(Spec.start(ConduitApp.main(boot))), seed, 2000, answer))
 	(s1, evs) = Soak.triples(answer(Spec.start(ConduitApp.main(boot))), cycle, answer)
-	counts = Soak.replay!(s1.eng, evs, 12, answer_app, |_| Fuzz.live_alloc_count!())
+	counts = Soak.replay!(s1.eng, evs, 48, answer_app, begin!, net_bytes!)
 	match Soak.flat(counts, 2) {
 		Ok(_) => {}
 		Err(m) => crash m
 	}
-	Fuzz.mark!("soak cycle live allocations ${Str.inspect(counts)}")
+	Fuzz.mark!("soak cycle net live bytes ${Str.inspect(counts.sublist({ start: 0, len: 4 }))} ... (${counts.len().to_str()} cycles)")
 	Fuzz.keep
 }
 
 Input : { mode : U8, size : U64, program : List(U8) }
+
+## Soak probes: a measured region around one cycle; its net live bytes.
+begin! : {} => Fuzz.Measurement
+begin! = |_| Fuzz.start_measure!("cycle")
+
+net_bytes! : Fuzz.Measurement => I64
+net_bytes! = |w| {
+	stats = w.finish!()
+	stats.exit_live_bytes.to_i64_wrap() - stats.entry_live_bytes.to_i64_wrap()
+}
 
 test! : Input => Fuzz.Outcome
 test! = |{ mode, size, program }| {

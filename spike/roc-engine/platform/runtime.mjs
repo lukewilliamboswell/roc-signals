@@ -65,8 +65,6 @@ const HOLE_ATTR = 2;
 const HOLE_CLICK = 3;
 const HOLE_BIND = 4;
 
-const SITE_SHIFT = 20;
-const SLOT_MASK = 0xfffff;
 
 export async function instantiateEngineBytes(bytes) {
   return WebAssembly.instantiate(bytes, { env: {} });
@@ -447,7 +445,7 @@ export class RocEngineRuntime {
           event.preventDefault();
           handler = -1 - handler;
         }
-        this.dispatch(node.__rn, handler, payloadOf(event));
+        this.dispatch(node.__rn, handler, payloadOf(event), node);
         return;
       }
       node = node.parentNode;
@@ -456,13 +454,15 @@ export class RocEngineRuntime {
 
   // Events raised while a batch is being applied (or while Wasm runs) are
   // queued and delivered in order after it; they never re-enter.
-  dispatch(node, handler, payload) {
+  // `el` (DOM events only): a queued event is dropped if its element left
+  // the DOM or its node id was recycled meanwhile (ids are reused).
+  dispatch(node, handler, payload, el) {
     if (this.poisoned) {
       this.refused += 1;
       return;
     }
     if (this.busy) {
-      this.queue.push([node, handler, payload]);
+      this.queue.push([node, handler, payload, el]);
       return;
     }
     this.busy = true;
@@ -476,7 +476,8 @@ export class RocEngineRuntime {
 
   drainQueue() {
     while (!this.busy && !this.poisoned && this.queue.length > 0) {
-      const [n, h, p] = this.queue.shift();
+      const [n, h, p, el] = this.queue.shift();
+      if (el !== undefined && (!el.isConnected || el.__rn !== n)) continue;
       this.busy = true;
       try {
         this.guard(() => this.deliver(n, h, p));
@@ -513,10 +514,10 @@ export class RocEngineRuntime {
     t.record(t1 - t0, t2 - t1, bytes);
   }
 
+  // One dense node id space (rows included); rows also carry their site
+  // (el.__site) and are tracked per site so CLEAR can forget them.
   lookup(node) {
-    const site = node >>> SITE_SHIFT;
-    if (site === 0) return node === 0 ? this.root : this.statics[node];
-    return this.sites[site][(node & SLOT_MASK) - 1];
+    return node === 0 ? this.root : this.statics[node];
   }
 
   place(el, parent, before) {
@@ -643,15 +644,18 @@ export class RocEngineRuntime {
           }
           this.place(el, parent, before);
           if (el.tagName === "OPTION") settleSelect(el.parentNode);
-          this.sites[site][(node & SLOT_MASK) - 1] = el;
+          el.__site = site;
+          this.statics[node] = el;
+          this.sites[site].add(node);
           break;
         }
         case OP_TEXT:
         case OP_HATTR: {
           const node = dv.getUint32(at, true);
-          const hole = this.templates[node >>> SITE_SHIFT].holes[u8[at + 4]];
+          const row = this.lookup(node);
+          const hole = this.templates[row.__site].holes[u8[at + 4]];
           const n = dv.getUint32(at + 5, true);
-          const target = this.lookup(node).__ht[u8[at + 4]];
+          const target = row.__ht[u8[at + 4]];
           const v = readStr(u8, at + 9, n);
           if (op === OP_TEXT) target.nodeValue = v;
           else setAttr(target, hole.name, v);
@@ -669,15 +673,16 @@ export class RocEngineRuntime {
           const node = dv.getUint32(at, true);
           const el = this.lookup(node);
           el.parentNode.removeChild(el);
-          const site = node >>> SITE_SHIFT;
-          if (site === 0) this.statics[node] = undefined;
-          else this.sites[site][(node & SLOT_MASK) - 1] = undefined;
+          if (el.__site !== undefined) this.sites[el.__site].delete(node);
+          this.statics[node] = undefined;
           at += 4;
           break;
         }
         case OP_CLEAR: {
           const parent = this.lookup(dv.getUint32(at, true));
-          this.sites[dv.getUint32(at + 4, true)] = [];
+          const site = dv.getUint32(at + 4, true);
+          for (const n of this.sites[site]) this.statics[n] = undefined;
+          this.sites[site] = new Set();
           parent.textContent = "";
           at += 8;
           break;
@@ -686,7 +691,7 @@ export class RocEngineRuntime {
           const tpl = dv.getUint32(at, true);
           const n = dv.getUint32(at + 4, true);
           this.templates[tpl] = this.parseTemplate(u8, dv, at + 8, n);
-          this.sites[tpl] = [];
+          this.sites[tpl] = new Set();
           at += 8 + n;
           break;
         }
@@ -993,7 +998,7 @@ export class RocEngineRuntime {
   }
 
   liveRows(site = 1) {
-    return (this.sites[site] ?? []).reduce((n, el) => n + (el === undefined ? 0 : 1), 0);
+    return (this.sites[site] ?? new Set()).size;
   }
 }
 
