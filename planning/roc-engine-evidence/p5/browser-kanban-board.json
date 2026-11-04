@@ -1,0 +1,83 @@
+{
+ "results": [
+  {
+   "file": "adding-cards-empty-duplicate-valid",
+   "ok": true,
+   "steps": 50,
+   "ms": 237,
+   "failed": null
+  },
+  {
+   "file": "cross-column-move",
+   "ok": true,
+   "steps": 21,
+   "ms": 62,
+   "failed": null
+  },
+  {
+   "file": "delete-the-card-that-currently-matches-the-filter",
+   "ok": true,
+   "steps": 32,
+   "ms": 137,
+   "failed": null
+  },
+  {
+   "file": "empty-a-whole-column",
+   "ok": true,
+   "steps": 51,
+   "ms": 223,
+   "failed": null
+  },
+  {
+   "file": "filter-fans-in-with-column-membership",
+   "ok": true,
+   "steps": 36,
+   "ms": 117,
+   "failed": null
+  },
+  {
+   "file": "initial-render",
+   "ok": true,
+   "steps": 53,
+   "ms": 49,
+   "failed": null
+  },
+  {
+   "file": "move-the-only-card-out-of-a-column-leaving-it-empty",
+   "ok": true,
+   "steps": 33,
+   "ms": 159,
+   "failed": null
+  },
+  {
+   "file": "per-row-edit-does-not-disturb-siblings",
+   "ok": true,
+   "steps": 15,
+   "ms": 110,
+   "failed": null
+  },
+  {
+   "file": "reorder-inside-a-column",
+   "ok": true,
+   "steps": 20,
+   "ms": 88,
+   "failed": null
+  },
+  {
+   "file": "wip-limit-crosses-and-un-crosses",
+   "ok": true,
+   "steps": 41,
+   "ms": 187,
+   "failed": null
+  }
+ ],
+ "stats": {
+  "typed": 40,
+  "typedFallback": 3,
+  "fallbacks": [
+   "\"abc\" typed as \"\" into input[type=number] connected=true",
+   "\"abc\" typed as \"\" into input[type=number] connected=true",
+   "\"abc\" typed as \"\" into input[type=number] connected=true"
+  ]
+ }
+}

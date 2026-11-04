@@ -1,0 +1,85 @@
+{
+ "results": [
+  {
+   "file": "back-to-the-sample-document-the-whole-graph-restores",
+   "ok": true,
+   "steps": 55,
+   "ms": 629,
+   "failed": null
+  },
+  {
+   "file": "contrast-adding-a-heading-does-rebuild-the-outline-by-exactly",
+   "ok": true,
+   "steps": 20,
+   "ms": 125,
+   "failed": null
+  },
+  {
+   "file": "edge-case-a-document-with-no-headings-at-all",
+   "ok": true,
+   "steps": 28,
+   "ms": 244,
+   "failed": null
+  },
+  {
+   "file": "edge-case-an-empty-document-all-four-views-stay-locatable",
+   "ok": true,
+   "steps": 44,
+   "ms": 267,
+   "failed": null
+  },
+  {
+   "file": "edge-case-every-heading-level-one-demotion-at-a-time-the-outl",
+   "ok": true,
+   "steps": 62,
+   "ms": 576,
+   "failed": null
+  },
+  {
+   "file": "edge-case-markdown-special-characters-and-text-that-looks-like",
+   "ok": true,
+   "steps": 55,
+   "ms": 409,
+   "failed": null
+  },
+  {
+   "file": "initial-render-every-region-heading-and-derived-value",
+   "ok": true,
+   "steps": 65,
+   "ms": 50,
+   "failed": null
+  },
+  {
+   "file": "list-behaviour-add-remove-reorder-and-per-row-edits-in-the-out",
+   "ok": true,
+   "steps": 52,
+   "ms": 229,
+   "failed": null
+  },
+  {
+   "file": "numbering-toggle-a-fan-in-of-the-heading-spine-and-a-boolean",
+   "ok": true,
+   "steps": 13,
+   "ms": 72,
+   "failed": null
+  },
+  {
+   "file": "reading-speed-a-fan-in-of-the-counts-and-the-selected-words-pe",
+   "ok": true,
+   "steps": 15,
+   "ms": 77,
+   "failed": null
+  },
+  {
+   "file": "the-teaching-point-a-paragraph-edit-updates-the-statistics-and",
+   "ok": true,
+   "steps": 18,
+   "ms": 97,
+   "failed": null
+  }
+ ],
+ "stats": {
+  "typed": 30,
+  "typedFallback": 0
+ }
+}

@@ -56,7 +56,8 @@ export default {
   },
   "stub-http-reject": async (page, s) => {
     const o = opts(s);
-    next = { network: o.kind === "timeout" ? "timeout" : o.detail || o.kind };
+    // Same texts as the native harness (src/FxSpec.roc): the app shows them verbatim.
+    next = { network: o.kind === "timeout" ? "Timeout" : `Network("${o.detail}")` };
   },
   "run-effect": async (page, s) => {
     const n = Number(sym(s[1]) ?? s[1]);
@@ -114,6 +115,13 @@ export default {
     }));
   },
   navigate: async (page, s) => {
+    if (!s[1].includes("#")) {
+      // Leaving the hash entirely is a cross-document navigation in a real
+      // browser: the page reloads and the app mounts fresh at that URL.
+      await page.evaluate((url) => location.assign(url), s[1]);
+      await page.waitForFunction("window.__ready || window.__error", { timeout: 20000 });
+      return;
+    }
     // A user navigation within the document (hash route): a new history
     // entry and a popstate the app's subscription receives.
     await page.evaluate((url) => new Promise((r) => {

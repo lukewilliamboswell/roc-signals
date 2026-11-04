@@ -1,0 +1,183 @@
+{
+ "results": [
+  {
+   "file": "article-writes-editor-create-edit-comments-and-delete",
+   "ok": false,
+   "steps": 112,
+   "ms": 457,
+   "failed": "step 110 [{\"sym\":\"expect-pending-effects\"},{\"sym\":\"4\"}]: pending effects 2 [\"/api/articles?limit=20&offset=0\",\"/api/tags\"], expected 4"
+  },
+  {
+   "file": "back-forward-stay-in-sync-across-live-pages",
+   "ok": true,
+   "steps": 22,
+   "ms": 123,
+   "failed": null
+  },
+  {
+   "file": "deep-link-cold-mounts-the-article-page-loading-then-content",
+   "ok": true,
+   "steps": 26,
+   "ms": 88,
+   "failed": null
+  },
+  {
+   "file": "editor-older-success-cannot-override-newer-rejection",
+   "ok": true,
+   "steps": 16,
+   "ms": 147,
+   "failed": null
+  },
+  {
+   "file": "empty-state",
+   "ok": true,
+   "steps": 11,
+   "ms": 109,
+   "failed": null
+  },
+  {
+   "file": "error-state-renders-in-app",
+   "ok": true,
+   "steps": 6,
+   "ms": 74,
+   "failed": null
+  },
+  {
+   "file": "favoriting-and-unfavoriting-a-feed-article",
+   "ok": true,
+   "steps": 14,
+   "ms": 141,
+   "failed": null
+  },
+  {
+   "file": "guarded-routes-redirect-anonymous-visitors-to-sign-in",
+   "ok": true,
+   "steps": 5,
+   "ms": 75,
+   "failed": null
+  },
+  {
+   "file": "home-both-fetches-pending-then-tags-and-feed-render",
+   "ok": true,
+   "steps": 17,
+   "ms": 79,
+   "failed": null
+  },
+  {
+   "file": "login-422-envelope-renders-success-persists-the-session",
+   "ok": false,
+   "steps": 27,
+   "ms": 126,
+   "failed": "step 17 [{\"sym\":\"expect-pending-effects\"},{\"sym\":\"3\"}]: pending effects 2 [\"/api/articles?limit=20&offset=0\",\"/api/tags\"], expected 3"
+  },
+  {
+   "file": "login-older-success-cannot-replace-a-newer-rejection",
+   "ok": true,
+   "steps": 16,
+   "ms": 137,
+   "failed": null
+  },
+  {
+   "file": "network-failure-article",
+   "ok": true,
+   "steps": 3,
+   "ms": 72,
+   "failed": null
+  },
+  {
+   "file": "network-failure-comments",
+   "ok": true,
+   "steps": 8,
+   "ms": 77,
+   "failed": null
+  },
+  {
+   "file": "network-failure-editor-load",
+   "ok": true,
+   "steps": 4,
+   "ms": 71,
+   "failed": null
+  },
+  {
+   "file": "network-failure-home",
+   "ok": true,
+   "steps": 8,
+   "ms": 71,
+   "failed": null
+  },
+  {
+   "file": "network-failure-profile-articles",
+   "ok": true,
+   "steps": 7,
+   "ms": 69,
+   "failed": null
+  },
+  {
+   "file": "network-failure-profile",
+   "ok": true,
+   "steps": 3,
+   "ms": 72,
+   "failed": null
+  },
+  {
+   "file": "pagination-23-articles-two-pages-page-switch-swaps-the-list",
+   "ok": true,
+   "steps": 13,
+   "ms": 110,
+   "failed": null
+  },
+  {
+   "file": "profile-page-profile-card-plus-author-articles-then-favorites-ta",
+   "ok": true,
+   "steps": 39,
+   "ms": 176,
+   "failed": null
+  },
+  {
+   "file": "published-example-urls-mount-the-app-home-under-any-site-base-pa",
+   "ok": true,
+   "steps": 4,
+   "ms": 75,
+   "failed": null
+  },
+  {
+   "file": "register-422-envelope-renders-all-required-fields",
+   "ok": true,
+   "steps": 10,
+   "ms": 93,
+   "failed": null
+  },
+  {
+   "file": "settings-authed-update-then-sign-out-clears-the-namespaced-keys",
+   "ok": true,
+   "steps": 20,
+   "ms": 144,
+   "failed": null
+  },
+  {
+   "file": "settings-response-after-sign-out-does-not-restore-session",
+   "ok": false,
+   "steps": 16,
+   "ms": 111,
+   "failed": "step 7 [{\"sym\":\"expect-pending-effects\"},{\"sym\":\"1\"}]: pending effects 0 [], expected 1"
+  },
+  {
+   "file": "tag-switching-ignores-an-older-response",
+   "ok": true,
+   "steps": 21,
+   "ms": 127,
+   "failed": null
+  },
+  {
+   "file": "your-feed-tab-drives-the-authenticated-feed-endpoint",
+   "ok": true,
+   "steps": 11,
+   "ms": 104,
+   "failed": null
+  }
+ ],
+ "stats": {
+  "typed": 18,
+  "typedFallback": 0
+ }
+}

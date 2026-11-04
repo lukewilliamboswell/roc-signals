@@ -96,7 +96,7 @@ async function typeInto(page, el, v) {
 
 const stats = { typed: 0, typedFallback: 0 };
 
-async function step(page, s, hooks) {
+async function step(page, s, hooks, spec) {
   const h = sym(s[0]);
   switch (h) {
     case "click": {
@@ -210,7 +210,7 @@ for (const spec of specs) {
     const err = await page.evaluate("window.__error");
     if (err) throw new Error(`mount failed: ${err}`);
     for (; i < spec.steps.length; i += 1) {
-      await step(page, spec.steps[i], hooks);
+      await step(page, spec.steps[i], hooks, spec);
       if (errors.length) throw new Error(`page error: ${errors.join("; ")}`);
     }
   } catch (e) {
