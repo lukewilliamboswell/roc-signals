@@ -75,7 +75,7 @@ Targets := [].{
 
 	browser! : SpecSuite.Options, Str, List(Str) => Try(List(Str), _)
 	browser! = |o, script, args| {
-		{ code, .. } = Proc.output!({ program: o.node, args: ["tests/browser/${script}", "--runtime", SpecSuite.runtime, "--chrome", o.chrome].concat(args), cwd: o.root })?
+		code = Proc.status!({ program: o.node, args: ["tests/browser/${script}", "--runtime", SpecSuite.runtime, "--chrome", o.chrome].concat(args), cwd: o.root })?
 		Ok(if (code == 0) [] else ["${script} ${Str.join_with(args, " ")} failed (exit ${code.to_str()})"])
 	}
 
@@ -109,7 +109,7 @@ Targets := [].{
 		Proc.run!({ program: o.compiler, args: ["build", "--target=wasm32", "--opt=speed", "${Targets.jfb_dir}/app/main.roc", "--output=${dist}/app.wasm"], cwd: o.root })?
 		Path.copy!(Path.utf8("${o.root}/${SpecSuite.runtime}"), Path.utf8("${dist}/runtime.mjs"))?
 		Path.copy!(Path.utf8("${o.root}/${Targets.jfb_dir}/src/main.mjs"), Path.utf8("${dist}/main.mjs"))?
-		{ code, .. } = Proc.output!({ program: o.node, args: ["tests/browser/jfb-check.mjs", "--dist", dist, "--chrome", o.chrome], cwd: o.root })?
+		code = Proc.status!({ program: o.node, args: ["tests/browser/jfb-check.mjs", "--dist", dist, "--chrome", o.chrome], cwd: o.root })?
 		Ok(if (code == 0) [] else ["jfb-check failed (exit ${code.to_str()})"])
 	}
 }

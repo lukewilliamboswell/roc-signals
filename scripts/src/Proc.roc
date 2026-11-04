@@ -28,6 +28,18 @@ Proc := [].{
 		}
 	}
 
+	## Run with the terminal inherited and return the exit code, for a caller
+	## that judges the result itself.
+	status! : Job => Try(I32, [CommandFailed(Str)])
+	status! = |job| {
+		Stdout.line!("RUN ${Proc.show(job)}") ?? {}
+		output = Proc.cmd(job).inherit_stdio().run!() ? |e| CommandFailed("${Proc.show(job)}: ${Str.inspect(e)}")
+		match output.status {
+			Exited(code) => Ok(code)
+			Signaled(signal) => Err(CommandFailed("${Proc.show(job)} ended by signal ${signal.to_str()}"))
+		}
+	}
+
 	## Run and return the exit code and captured stdout, with stderr passed
 	## through, for a caller that judges the result itself.
 	output! : Job => Try({ code : I32, stdout : List(U8) }, [CommandFailed(Str)])
