@@ -20,6 +20,9 @@
 // sent because CANCEL forgets it here, and anything late is dropped by the
 // engine and counted.
 //
+// Handler event names may carry a policy suffix: "click:prevent" listens to
+// "click" and calls preventDefault when it dispatches (in-app links, forms).
+//
 // Attribute values: "" removes the attribute. `value` and `checked` are set
 // as properties (the live control state), boolean attributes (disabled,
 // selected, readonly, required, hidden, multiple) are present for any value
@@ -265,14 +268,19 @@ export class RocEngineRuntime {
   handle(event) {
     const type = event.type;
     let node = event.target;
-    let handler = -1;
+    // Handler numbers are stored as -1 - h when the handler asks for
+    // preventDefault.
+    let handler = null;
     while (node && node !== this.root) {
-      if (handler < 0 && node.__h !== undefined) {
+      if (handler === null && node.__h !== undefined) {
         const h = node.__h[type];
         if (h !== undefined) handler = h;
       }
-      if (node.__rn !== undefined && handler >= 0) {
-        if (type === "submit") event.preventDefault();
+      if (node.__rn !== undefined && handler !== null) {
+        if (handler < 0) {
+          event.preventDefault();
+          handler = -1 - handler;
+        }
         this.dispatch(node.__rn, handler, payloadOf(event));
         return;
       }
@@ -385,7 +393,7 @@ export class RocEngineRuntime {
       else if (kind === HOLE_CLICK) {
         hole.handler = u8[at++];
         hole.name = str();
-        this.listen(hole.name);
+        this.listen(hole.name.split(":")[0]);
       }
       holes.push(hole);
     }
@@ -447,7 +455,8 @@ export class RocEngineRuntime {
               at += 4 + n;
             } else if (hole.kind === HOLE_CLICK) {
               if (target.__h === undefined) target.__h = {};
-              target.__h[hole.name] = hole.handler;
+              const [type, policy] = hole.name.split(":");
+              target.__h[type] = policy === "prevent" ? -1 - hole.handler : hole.handler;
             } else {
               this.statics[dv.getUint32(at, true)] = target;
               at += 4;
@@ -533,8 +542,10 @@ export class RocEngineRuntime {
           const type = readStr(u8, at + 12, n);
           el.__rn = node;
           if (el.__h === undefined) el.__h = {};
-          el.__h[type] = dv.getUint32(at + 4, true);
-          this.listen(type);
+          const [base, policy] = type.split(":");
+          const h = dv.getUint32(at + 4, true);
+          el.__h[base] = policy === "prevent" ? -1 - h : h;
+          this.listen(base);
           at += 12 + n;
           break;
         }

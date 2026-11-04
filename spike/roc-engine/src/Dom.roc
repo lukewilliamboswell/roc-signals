@@ -531,7 +531,8 @@ Dom := [].{
 		while True {
 			n = Dom.node(dom, $n)
 			if $h < 0 {
-				match n.hs.find_first(|(e, _)| e == ev) {
+				# A handler name may carry a policy suffix ("click:prevent").
+				match n.hs.find_first(|(e, _)| e == ev or e.starts_with("${ev}:")) {
 					Ok((_, hh)) => {
 						$h = hh.to_i64()
 					}
