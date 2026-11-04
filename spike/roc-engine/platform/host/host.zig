@@ -135,22 +135,53 @@ export fn init() callconv(.c) void {
     cmds = step.cmds;
 }
 
-/// One DOM event = one transaction. The previous command bytes are handed back
-/// to Roc for reuse; the new ones are readable until the next call.
+/// Payload bytes for the next `event`, staged by JavaScript through
+/// `payload_reserve`. Owned by the host until `event` moves it into Roc.
+var pending_payload: RocList = RocList.empty;
+
+/// Allocate a Roc `List(U8)` of `len` bytes for the next event's payload and
+/// return the address JavaScript writes the bytes to (0 when `len` is 0).
+/// The list is laid out as Roc expects for a non-refcounted element type: one
+/// usize refcount (1) directly before the elements, and the capacity stored
+/// shifted left by one (the low bit tags a seamless slice). A
+/// previously staged payload that was never delivered is freed first, so at
+/// most one staged payload exists. JavaScript must re-read `memory.buffer`
+/// after this call (the allocation may grow memory).
+export fn payload_reserve(len: usize) callconv(.c) usize {
+    dropPending();
+    if (len == 0) return 0;
+    const base: [*]u8 = @ptrCast(allocRaw(len + @sizeOf(usize), @alignOf(usize)));
+    const rc: *isize = @ptrCast(@alignCast(base));
+    rc.* = 1;
+    const data = base + @sizeOf(usize);
+    pending_payload = .{ .ptr = data, .len = len, .cap = len << 1 };
+    return @intFromPtr(data);
+}
+
+fn dropPending() void {
+    if (pending_payload.ptr) |p| _ = freeRaw(p - @sizeOf(usize), @alignOf(usize));
+    pending_payload = RocList.empty;
+}
+
+/// One DOM event (or effect result) = one transaction. The previous command
+/// bytes are handed back to Roc for reuse; the staged payload (if any) moves
+/// into Roc, which owns and frees it. The new commands are readable until the
+/// next call.
 export fn event(node: u32, handler: u32) callconv(.c) void {
     const owned = state orelse @trap();
     const buf = cmds;
+    const payload = pending_payload;
     state = null;
     cmds = RocList.empty;
-    // p4apps: size-measurement host. The event payload (input values) is not
-    // marshalled from JavaScript yet; every event carries an empty payload.
-    const step = roc_engine_event(owned, buf, node, handler, RocList.empty);
+    pending_payload = RocList.empty;
+    const step = roc_engine_event(owned, buf, node, handler, payload);
     state = step.state;
     cmds = step.cmds;
 }
 
 /// Release the instance and the command buffer (teardown).
 export fn drop() callconv(.c) void {
+    dropPending();
     const owned = state orelse @trap();
     const buf = cmds;
     state = null;

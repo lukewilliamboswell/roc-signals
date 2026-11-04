@@ -1,12 +1,11 @@
 #!/bin/bash
-# tbuild.sh APP -- sync src/ + apps/APP into tm-APP and build the native timing binary (basic-cli, --opt=speed).
-P=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/roc-engine/p4apps
-ROC=/home/lbw/roc_nightly-linux_x86_64-2026-11-03-34bd006/roc
+# tbuild.sh APP -- sync src/ + apps/APP into $P/tm-APP and build the native timing binary (basic-cli, --opt=speed).
+. "$(dirname "$0")/env.sh"
 A=$1
 F=$P/tm-$A
 mkdir -p $F
-cp $P/src/*.roc $F/
-for f in $P/apps/$A/*.roc; do
+cp $R/src/*.roc $R/platform/Engine.roc $F/
+for f in $R/apps/$A/*.roc; do
   b=$(basename $f)
   case $b in
     timing-main.roc) cp $f $F/main.roc ;;

@@ -1,10 +1,19 @@
-// Browser runtime for the Phase 2 unified Roc engine (representation D with a
-// column-store `each`). Derived from the Phase 1 runtime: the engine decides
-// everything; this file only applies its command bytes to the DOM and routes
-// clicks back as (node id, handler number). Commands are read straight out of
-// Wasm linear memory after each call; views are re-created per apply.
+// Browser runtime for the pure Roc engine (platform/Engine.roc). The engine
+// decides everything; this file applies its command bytes to the DOM and
+// routes DOM events back as (node id, handler number, payload bytes).
+// Commands are read straight out of Wasm linear memory after each call; views
+// are re-created per apply (a call may grow memory).
 //
-// Encoding: see p2each/src/Engine.roc (command stream header).
+// Encoding: see the command stream header in platform/Engine.roc.
+//
+// Event payloads (UTF-8, staged with `payload_reserve` and moved into Roc by
+// `event`): click/submit "", input: the target's value, change: "true"/"false"
+// for a checkbox or radio, else the target's value, keydown/keyup: the key.
+//
+// Attribute values: "" removes the attribute. `value` and `checked` are set
+// as properties (the live control state), boolean attributes (disabled,
+// selected, readonly, required, hidden, multiple) are present for any value
+// other than "" and "false".
 
 const OP_INST = 1;
 const OP_TEXT = 2;
@@ -61,10 +70,55 @@ function walk(root, path) {
   return node;
 }
 
+const BOOL_ATTRS = new Set(["disabled", "selected", "readonly", "required", "hidden", "multiple", "open"]);
+
 function setAttr(el, name, value) {
-  if (name === "class") el.className = value;
-  else el.setAttribute(name, value);
+  if (name === "class") {
+    el.className = value;
+  } else if (name === "value") {
+    if (el.value !== value) el.value = value;
+    if (el.tagName === "SELECT") el.__v = value;
+    if (value === "") el.removeAttribute("value");
+    else el.setAttribute("value", value);
+  } else if (name === "checked") {
+    el.checked = value === "true";
+    if (el.checked) el.setAttribute("checked", "");
+    else el.removeAttribute("checked");
+  } else if (BOOL_ATTRS.has(name)) {
+    if (value === "" || value === "false") el.removeAttribute(name);
+    else el.setAttribute(name, "");
+  } else if (value === "") {
+    el.removeAttribute(name);
+  } else {
+    el.setAttribute(name, value);
+  }
 }
+
+// A <select>'s value can only be set once its options exist: re-apply the
+// desired value when an option is inserted below it.
+function settleSelect(parent) {
+  let p = parent;
+  if (p && p.tagName === "OPTGROUP") p = p.parentNode;
+  if (p && p.tagName === "SELECT" && p.__v !== undefined && p.value !== p.__v) p.value = p.__v;
+}
+
+function payloadOf(event) {
+  const t = event.target;
+  switch (event.type) {
+    case "input":
+      return t.value ?? "";
+    case "change":
+      if (t.type === "checkbox" || t.type === "radio") return t.checked ? "true" : "false";
+      return t.value ?? "";
+    case "keydown":
+    case "keyup":
+      return event.key;
+    default:
+      return "";
+  }
+}
+
+const utf8enc = new TextEncoder();
 
 export class RocEngineRuntime {
   constructor(exports, root, options = {}) {
@@ -74,18 +128,22 @@ export class RocEngineRuntime {
     this.statics = [];
     this.sites = [];
     this.templates = [];
-    this.onClick = (event) => this.click(event);
+    this.listening = new Map();
+    this.onEvent = (event) => this.handle(event);
     this.timing = options.timing ?? null;
+    this.busy = false;
+    this.queue = [];
   }
 
   mount() {
-    this.root.addEventListener("click", this.onClick);
+    this.listen("click");
     this.x.init();
     this.apply();
   }
 
   unmount() {
-    this.root.removeEventListener("click", this.onClick);
+    for (const [type, fn] of this.listening) this.root.removeEventListener(type, fn);
+    this.listening.clear();
     this.x.drop();
     this.root.textContent = "";
     this.statics = [];
@@ -93,21 +151,67 @@ export class RocEngineRuntime {
     this.templates = [];
   }
 
-  click(event) {
+  // One delegated listener per event type, added the first time a LISTEN
+  // command or template hole names that type.
+  listen(type) {
+    if (this.listening.has(type)) return;
+    this.listening.set(type, this.onEvent);
+    this.root.addEventListener(type, this.onEvent);
+  }
+
+  // The nearest handler for this event type walking up from the target
+  // (bubbling), then the nearest node carrying an engine id.
+  handle(event) {
+    const type = event.type;
     let node = event.target;
     let handler = -1;
     while (node && node !== this.root) {
-      if (handler < 0 && node.__rh !== undefined) handler = node.__rh;
-      if (node.__rn !== undefined) {
-        if (handler >= 0) this.dispatch(node.__rn, handler);
+      if (handler < 0 && node.__h !== undefined) {
+        const h = node.__h[type];
+        if (h !== undefined) handler = h;
+      }
+      if (node.__rn !== undefined && handler >= 0) {
+        if (type === "submit") event.preventDefault();
+        this.dispatch(node.__rn, handler, payloadOf(event));
         return;
       }
       node = node.parentNode;
     }
   }
 
-  dispatch(node, handler) {
+  // Events raised while a batch is being applied (or while Wasm runs) are
+  // queued and delivered in order after it; they never re-enter.
+  dispatch(node, handler, payload) {
+    if (this.busy) {
+      this.queue.push([node, handler, payload]);
+      return;
+    }
+    this.busy = true;
+    try {
+      this.deliver(node, handler, payload);
+      while (this.queue.length > 0) {
+        const [n, h, p] = this.queue.shift();
+        this.deliver(n, h, p);
+      }
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  stage(payload) {
+    if (payload === "") {
+      this.x.payload_reserve(0);
+      return;
+    }
+    const bytes = utf8enc.encode(payload);
+    const ptr = this.x.payload_reserve(bytes.length);
+    new Uint8Array(this.x.memory.buffer, ptr, bytes.length).set(bytes);
+  }
+
+  deliver(node, handler, payload) {
+    if (globalThis.__trace) console.log("event", node, handler, JSON.stringify(payload));
     const t = this.timing;
+    this.stage(payload);
     if (t === null) {
       this.x.event(node, handler);
       this.apply();
@@ -168,7 +272,11 @@ export class RocEngineRuntime {
       at += depth;
       const hole = { kind, path, name: null, handler: 0 };
       if (kind === HOLE_ATTR) hole.name = str();
-      else if (kind === HOLE_CLICK) hole.handler = u8[at++];
+      else if (kind === HOLE_CLICK) {
+        hole.handler = u8[at++];
+        hole.name = str();
+        this.listen(hole.name);
+      }
       holes.push(hole);
     }
     if (at !== start + len) throw new Error("template length mismatch");
@@ -200,25 +308,32 @@ export class RocEngineRuntime {
           const el = tpl.root.cloneNode(true);
           el.__rn = node;
           const holes = tpl.holes;
+          // Hole targets are resolved once, here: a nested site inserting
+          // content into the row later shifts sibling indices.
+          const targets = new Array(holes.length);
+          for (let i = 0; i < holes.length; i += 1) targets[i] = walk(el, holes[i].path);
+          el.__ht = targets;
           for (let i = 0; i < holes.length; i += 1) {
             const hole = holes[i];
-            const target = walk(el, hole.path);
+            const target = targets[i];
             if (hole.kind === HOLE_TEXT) {
               const n = dv.getUint32(at, true);
               target.nodeValue = readStr(u8, at + 4, n);
               at += 4 + n;
             } else if (hole.kind === HOLE_ATTR) {
               const n = dv.getUint32(at, true);
-              if (n !== 0 || hole.name !== "class") setAttr(target, hole.name, readStr(u8, at + 4, n));
+              setAttr(target, hole.name, readStr(u8, at + 4, n));
               at += 4 + n;
             } else if (hole.kind === HOLE_CLICK) {
-              target.__rh = hole.handler;
+              if (target.__h === undefined) target.__h = {};
+              target.__h[hole.name] = hole.handler;
             } else {
               this.statics[dv.getUint32(at, true)] = target;
               at += 4;
             }
           }
           this.place(el, parent, before);
+          if (el.tagName === "OPTION") settleSelect(el.parentNode);
           this.sites[site][(node & SLOT_MASK) - 1] = el;
           break;
         }
@@ -227,7 +342,7 @@ export class RocEngineRuntime {
           const node = dv.getUint32(at, true);
           const hole = this.templates[node >>> SITE_SHIFT].holes[u8[at + 4]];
           const n = dv.getUint32(at + 5, true);
-          const target = walk(this.lookup(node), hole.path);
+          const target = this.lookup(node).__ht[u8[at + 4]];
           const v = readStr(u8, at + 9, n);
           if (op === OP_TEXT) target.nodeValue = v;
           else setAttr(target, hole.name, v);
@@ -276,6 +391,7 @@ export class RocEngineRuntime {
           at += 16 + n;
           const el = op === OP_ELEM ? doc.createElement(s) : doc.createTextNode(s);
           this.place(el, parent, before);
+          if (op === OP_ELEM && el.tagName === "OPTION") settleSelect(el.parentNode);
           this.statics[node] = el;
           break;
         }
@@ -292,9 +408,13 @@ export class RocEngineRuntime {
         case OP_LISTEN: {
           const node = dv.getUint32(at, true);
           const el = this.statics[node];
+          const n = dv.getUint32(at + 8, true);
+          const type = readStr(u8, at + 12, n);
           el.__rn = node;
-          el.__rh = dv.getUint32(at + 4, true);
-          at += 8;
+          if (el.__h === undefined) el.__h = {};
+          el.__h[type] = dv.getUint32(at + 4, true);
+          this.listen(type);
+          at += 12 + n;
           break;
         }
         case OP_SETTEXT: {

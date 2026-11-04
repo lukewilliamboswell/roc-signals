@@ -1,16 +1,18 @@
 #!/bin/bash
-# fz.sh APP [check|build] -- sync src/ + apps/APP into fz-APP and type-check or build the fuzz target.
-P=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/roc-engine/p4apps
-ROC=/home/lbw/roc_nightly-linux_x86_64-2026-11-03-34bd006/roc
+# fz.sh APP [check|build] -- sync src/ + apps/APP into $P/fz-APP and type-check or build the fuzz target.
+. "$(dirname "$0")/env.sh"
 A=$1; M=${2:-check}
 F=$P/fz-$A
 mkdir -p $F
-cp $P/src/*.roc $F/
-for f in $P/apps/$A/*.roc; do
+cp $R/src/*.roc $R/platform/Engine.roc $F/
+for f in $R/apps/$A/*.roc; do
   b=$(basename $f)
-  [ $b = fuzz-main.roc ] && cp $f $F/main.roc || cp $f $F/$b
+  case $b in
+    fuzz-main.roc) sed "s#platform \"[^\"]*fuzzpf/main.roc\"#platform \"$FUZZPF\"#" $f > $F/main.roc ;;
+    wasm-main.roc|timing-main.roc) ;;
+    *) cp $f $F/$b ;;
+  esac
 done
-rm -f $F/wasm-main.roc
 cd $F
 if [ $M = check ]; then
   timeout 900 $ROC check main.roc 2>&1 | grep -v '^$' | head -${LINES_OUT:-60}

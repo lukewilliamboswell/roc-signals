@@ -1,0 +1,13 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>roc engine spike</title></head>
+<body><div id="app"></div>
+<script type="module">
+import { mountRocEngineApp } from "./runtime.mjs";
+const params = new URLSearchParams(location.search);
+try {
+  window.__rt = await mountRocEngineApp({ wasmUrl: params.get("wasm") ?? "app.wasm", root: document.getElementById("app") });
+  window.__ready = true;
+} catch (e) {
+  window.__error = String(e && e.stack || e);
+}
+</script></body></html>
