@@ -1,7 +1,8 @@
 # Roc-owned reactive engine spike
 
 Temporary spike tree for the experiment described in `planning/roc-engine-spike.md`.
-Results: `planning/roc-engine-results.md`; evidence per phase: `planning/roc-engine-evidence/`.
+Results (incl. Phase 5: payloads, effects, Conduit): `planning/roc-engine-results.md`;
+evidence per phase: `planning/roc-engine-evidence/` (Phase 5: `p5/`).
 Not part of the product surface; remove or fold into the real platform before merging to main.
 
 - `platform/`: pure Roc engine (`Engine.roc`), platform `main.roc`, Zig Wasm host, `runtime.mjs`.
@@ -19,8 +20,8 @@ Upstream issues: roc-lang/roc#12835 #12836 #12841 #12846 #12847 #12848.
 - Wasm payloads: `payload_reserve(len)` stages a Roc `List(U8)` that the next `event` moves into
   Roc. `boot_keys` + `init` pass the URL and the declared storage values. Effect results are
   events on node `0xffffffff` with handler = request id (see "Effects" in `platform/Engine.roc`).
-- Effects: `Engine.watch` / `on_change` sites; awaited requests are owned by the issuing site
-  (cancelled on dispose), bounded in flight (refusal is a typed `Refused` follow-up), and stale
+- Effects: `Engine.watch` / `on_change` sites; disposal stops subscriptions, intervals and timers,
+  while admitted HTTP/storage reads reparent to the surviving ancestor (design.md), bounded in flight (refusal is a typed `Refused` follow-up), and stale
   results are dropped and counted. `apps/effects` is the model-oracle fuzz target;
   `scripts/mutate-fx.sh` runs the mutation check.
 - Browser: `scripts/browser.sh APP` replays an example's `.scm` specs in headless Chrome

@@ -1,14 +1,18 @@
 import Engine exposing [Elem, Root, In, State]
 import H
 
-## Effect-channel test app: three effect sites, each watching a per-site
-## counter in the root state and shown or hidden by a `when` (hiding disposes
-## the site and cancels what it owns), plus a popstate subscription at the
-## root. Every reaction appends a line to the root log, rendered as text.
-## Site k issues GET /s<k>/<count> for every nonzero count, plus a `Self`
-## follow-up when the count is a multiple of 3, and a second one when it is a
-## multiple of 6; the first follow-up's reaction then hides the site, so the
-## second must be dropped with it (counted stale), never delivered.
+## Effect-channel test app: three sites, each shown or hidden by a `when`
+## (hiding disposes the branch). Each branch holds:
+## - G: watches the site's root counter, issues GET /s<k>/<count> for every
+##   nonzero count (plus a `Self` follow-up on multiples of 3, two on
+##   multiples of 6, the first of which hides the site mid-drain); its
+##   reaction appends to the root log (a surviving state).
+## - H: inside a branch-local `state` (hits), issues GET /h<k>/<count>; its
+##   reaction increments hits (a state retired when the branch is disposed).
+## - an Interval subscription whose ticks append to the root log.
+## Disposal stops the interval and reparents G and H requests to the `when`:
+## G results still reach the log, H results are skipped writes.
+## A popstate subscription at the root appends to the log too.
 FxApp := [].{
 	S : { counts : List(U64), shown : List(Bool), log : List(Str) }
 
@@ -76,6 +80,15 @@ FxApp := [].{
 						FxApp.plan(k),
 						st.on_result(|s, c, r| FxApp.react(s, k, c, r)),
 					),
+					Engine.state(0.U64, |hits| Engine.element("span", [Engine.test_id("hits ${k.to_str()}")], [
+						Engine.watch(
+							st.val().map(|s| s.counts.get(k) ?? 0).lift(),
+							|c| if c == 0 [] else [Http({ method: "GET", url: "/h${k.to_str()}/${c.to_str()}", headers: [], body: "" })],
+							hits.on_result(|h, _, _| h + 1),
+						),
+						Engine.text_v(hits.val().map(|h| h.to_str())),
+					])),
+					Engine.watch(Engine.const(0.U64), |_| [Interval(1000)], st.on_result(|s, _, r| FxApp.log_line(s, FxApp.describe(k, 0, r)))),
 				]),
 				|| Engine.text(""),
 			),

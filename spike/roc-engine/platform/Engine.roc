@@ -274,7 +274,22 @@ Engine := [].{
 
 	## Fire always hands the (possibly transformed) environment back up with
 	## the mask of the layer it changed (0 = nothing changed).
-	Out(ctx) := [Done, Pending(ctx, U64)]
+	Out(ctx) := [Done, Pending(ctx, U64), Orphaned(List(Orphan(ctx)))]
+
+	## An admitted request whose issuing site was disposed (design.md,
+	## "Requests, effects, and cancellation"): it survives and reparents to the
+	## nearest surviving ancestor site. `run` applies its reaction in that
+	## ancestor's current environment: writes to states that were retired
+	## with the disposed scope land in a snapshot that is discarded (the third
+	## component counts them), writes to surviving states commit, and the
+	## mask reports only surviving layers.
+	Orphan(ctx) : { id : U32, run : (ctx, Res -> (ctx, U64, U64)) }
+
+	orphans_of : Out(ctx) -> List(Orphan(ctx))
+	orphans_of = |out| match out {
+		Orphaned(l) => l
+		_ => []
+	}
 
 	Inst(ctx) := [Inst((ctx, Msg, Tx -> (Inst(ctx), Out(ctx), Tx)))]
 
@@ -569,15 +584,19 @@ Engine := [].{
 		({ holes, handlers, children: list.set(k, next) ?? crash "child", child_reads, child_top, nodes, tops, reads }, out, tx1)
 	}
 
-	dispose_block : Block(ctx), ctx, Bool, Tx -> Tx
+	## Dispose a block's children (and its nodes); returns the orphans its
+	## nested sites left, typed by this block's environment.
+	dispose_block : Block(ctx), ctx, Bool, Tx -> (List(Orphan(ctx)), Tx)
 	dispose_block = |{ holes: _, handlers: _, children, child_reads: _, child_top, nodes, tops, reads: _ }, env, remove, tx| {
 		var $tx = tx
 		var $j = 0.U64
 		var $ks = children
+		var $orph = []
 		while $j < $ks.len() {
 			kid_top = child_top.get($j) ?? False
 			{ list, prev } = $ks.replace($j, Engine.noop({})) ?? crash "child"
-			(_, _, t1) = Engine.call(prev, env, Dispose(remove and kid_top), $tx)
+			(_, out, t1) = Engine.call(prev, env, Dispose(remove and kid_top), $tx)
+			$orph = $orph.concat(Engine.orphans_of(out))
 			$ks = list
 			$tx = t1
 			$j = $j + 1
@@ -590,7 +609,7 @@ Engine := [].{
 		for id in nodes {
 			$tx = Engine.free_id($tx, id)
 		}
-		$tx
+		($orph, $tx)
 	}
 
 	## ------------------------------------------------------------------
@@ -602,6 +621,7 @@ Engine := [].{
 	state_settle = |block, depth, local, out, tx| {
 		match out {
 			Done => crash "fire must hand the environment back"
+			Orphaned(_) => crash "fire must hand the environment back"
 			Pending(next_inner, mask) => {
 				{ outer: next_outer, value: s2 } = next_inner
 				own = Engine.bit(depth)
@@ -642,8 +662,8 @@ Engine := [].{
 					}
 				}
 				Dispose(remove) => {
-					t2 = Engine.dispose_block(block, In.{ outer: env, value: s }, remove, tx)
-					(Engine.noop({}), Done, t2)
+					(orph, t2) = Engine.dispose_block(block, In.{ outer: env, value: s }, remove, tx)
+					(Engine.noop({}), Orphaned(Engine.lower_in(orph, s, depth)), t2)
 				}
 			}
 		})
@@ -652,11 +672,13 @@ Engine := [].{
 	## A conditional site. The branch is rebuilt when the condition changes.
 	When(ctx) : { cond : Val(ctx, Bool), yes : (() -> Elem(ctx)), no : (() -> Elem(ctx)), anchor : U32, depth : U64, path : List(U32), cap : U64, local : Bool }
 
-	when_inst : When(ctx), Bool, Block(ctx) -> Inst(ctx)
-	when_inst = |w0, cur0, block0| {
-		held = Held({ w: w0, cur: cur0, block: block0 })
+	## `adopted`: orphans reparented to this site when a branch it disposed
+	## left admitted requests behind.
+	when_inst : When(ctx), Bool, List(Orphan(ctx)), Block(ctx) -> Inst(ctx)
+	when_inst = |w0, cur0, adopted0, block0| {
+		held = Held({ w: w0, cur: cur0, adopted: adopted0, block: block0 })
 		Inst(|env, msg, tx| {
-			Held({ w, cur, block }) = held
+			Held({ w, cur, adopted, block }) = held
 			match msg {
 				Changed(mask) => {
 					cm = Engine.eff_mask(w.cond)
@@ -665,35 +687,43 @@ Engine := [].{
 						t1 = Engine.count_evals(tx, 1)
 						if c == cur {
 							(b2, t2) = Engine.refresh(block, env, mask, t1)
-							(Engine.when_inst(w, cur, b2), Done, t2)
+							(Engine.when_inst(w, cur, adopted, b2), Done, t2)
 						} else {
-							t2 = Engine.dispose_block(block, env, True, t1)
+							(orph, t2) = Engine.dispose_block(block, env, True, t1)
 							elem = if c (w.yes)() else (w.no)()
-							(b3, t3) = Engine.mount_block(env, elem, w.depth, w.path, 0, w.anchor, { cap: w.cap, local: w.local }, t2)
-							(Engine.when_inst(w, c, b3), Done, t3)
+							(b3, t3) = Engine.mount_block(env, elem, w.depth, w.path, 0, w.anchor, { cap: w.cap, local: w.local }, Engine.fx_adopt(t2, w.path, orph))
+							(Engine.when_inst(w, c, adopted.concat(orph), b3), Done, t3)
 						}
 					} else {
 						(b2, t2) = Engine.refresh(block, env, mask, tx)
-						(Engine.when_inst(w, cur, b2), Done, t2)
+						(Engine.when_inst(w, cur, adopted, b2), Done, t2)
 					}
 				}
 				Fire(path, pos, h, payload) => {
-					match Engine.fire_target(block, path, pos) {
-						Leaf => {
-							out = Engine.fire_leaf(block, env, h, payload)
-							(Engine.when_inst(w, cur, block), out, tx)
+					match Engine.leaf_fx(path, pos, payload) {
+						Ok(res) => {
+							(ad2, out, t2) = Engine.adopt_deliver(adopted, env, h, res, tx)
+							(Engine.when_inst(w, cur, ad2, block), out, t2)
 						}
-						Kid => {
-							(b2, out, t2) = Engine.fire_kid(block, env, path, pos, h, payload, tx)
-							(Engine.when_inst(w, cur, b2), out, t2)
+						Err(_) => {
+							match Engine.fire_target(block, path, pos) {
+								Leaf => {
+									out = Engine.fire_leaf(block, env, h, payload)
+									(Engine.when_inst(w, cur, adopted, block), out, tx)
+								}
+								Kid => {
+									(b2, out, t2) = Engine.fire_kid(block, env, path, pos, h, payload, tx)
+									(Engine.when_inst(w, cur, adopted, b2), out, t2)
+								}
+								Miss => (Engine.when_inst(w, cur, adopted, block), Pending(env, 0), tx)
+							}
 						}
-						Miss => (Engine.when_inst(w, cur, block), Pending(env, 0), tx)
 					}
 				}
 				Dispose(remove) => {
-					t1 = Engine.dispose_block(block, env, remove, tx)
+					(orph, t1) = Engine.dispose_block(block, env, remove, tx)
 					t2 = if remove Engine.emit(t1, |c| Engine.put_u32(c.append(5), w.anchor)) else t1
-					(Engine.noop({}), Done, Engine.free_id(t2, w.anchor))
+					(Engine.noop({}), Orphaned(adopted.concat(orph)), Engine.free_id(t2, w.anchor))
 				}
 			}
 		})
@@ -723,7 +753,10 @@ Engine := [].{
 						Miss => (Engine.block_inst(block), Pending(env, 0), tx)
 					}
 				}
-				Dispose(remove) => (Engine.noop({}), Done, Engine.dispose_block(block, env, remove, tx))
+				Dispose(remove) => {
+					(orph, t2) = Engine.dispose_block(block, env, remove, tx)
+					(Engine.noop({}), Orphaned(orph), t2)
+				}
 			}
 		})
 	}
@@ -996,6 +1029,9 @@ Engine := [].{
 		sels : List(Str),
 		known : Bool,
 		kid_mask : U64,
+		## Rows dropped since the site last took them, with the orphans their
+		## nested sites left (admitted requests that outlive the row).
+		dropped : List({ key : Str, item : item, orphans : List(Orphan(r)) }),
 	}
 
 	cols_empty : U64, U64 -> Cols(r, item)
@@ -1013,6 +1049,7 @@ Engine := [].{
 		sels: List.repeat("", nholes),
 		known: False,
 		kid_mask: 0,
+		dropped: [],
 	}
 
 	row_node : U32, U32 -> U32
@@ -1026,7 +1063,7 @@ Engine := [].{
 	create_row : EachCfg(r, item), Cols(r, item), (Str, item -> r), item, U32, Tx -> (Cols(r, item), U32, Tx)
 		where [item.is_eq : item, item -> Bool]
 	create_row = |cfg, cols, env, item, before, tx| {
-		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask } = cols
+		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped } = cols
 		key = (cfg.key)(item)
 		(slot, free2) = match free.last() {
 			Ok(s) => (s, free.drop_last(1))
@@ -1085,10 +1122,10 @@ Engine := [].{
 				$tx = t4
 				$j = $j + 1
 			}
-			cols2 = { items: items2, keys: keys2, order, free: free2, index: index2, lasts: $lasts, kids: Engine.put_at(kids, si, $insts), binds: Engine.put_at(binds, si, $bound), pend: pend2, dirty, sels: $sels, known: known2, kid_mask: $km }
+			cols2 = { items: items2, keys: keys2, order, free: free2, index: index2, lasts: $lasts, kids: Engine.put_at(kids, si, $insts), binds: Engine.put_at(binds, si, $bound), pend: pend2, dirty, sels: $sels, known: known2, kid_mask: $km, dropped }
 			(cols2, slot, $tx)
 		} else {
-			cols2 = { items: items2, keys: keys2, order, free: free2, index: index2, lasts: $lasts, kids, binds, pend: pend2, dirty, sels: $sels, known: known2, kid_mask }
+			cols2 = { items: items2, keys: keys2, order, free: free2, index: index2, lasts: $lasts, kids, binds, pend: pend2, dirty, sels: $sels, known: known2, kid_mask, dropped }
 			(cols2, slot, $tx)
 		}
 	}
@@ -1096,7 +1133,7 @@ Engine := [].{
 	## Release one row's storage and nested sites. `remove` emits REMOVE.
 	drop_row : EachCfg(r, item), Cols(r, item), (Str, item -> r), U32, Bool, Tx -> (Cols(r, item), Tx)
 	drop_row = |cfg, cols, env, slot, remove, tx| {
-		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask } = cols
+		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped } = cols
 		si = slot.to_u64()
 		key = keys.get(si) ?? crash "key"
 		index2 = Engine.index_remove(index, slot, key)
@@ -1110,9 +1147,11 @@ Engine := [].{
 			var $t = t1
 			var $rk = row_kids
 			var $j = 0.U64
+			var $orph = []
 			while $j < $rk.len() {
 				{ list: rl, prev: kid } = $rk.replace($j, Engine.noop({})) ?? crash "kid"
-				(_, _, t2) = Engine.call(kid, row_env, Dispose(False), $t)
+				(_, out, t2) = Engine.call(kid, row_env, Dispose(False), $t)
+				$orph = $orph.concat(Engine.orphans_of(out))
 				$rk = rl
 				$t = t2
 				$j = $j + 1
@@ -1120,9 +1159,10 @@ Engine := [].{
 			for b in row_binds {
 				$t = Engine.free_id($t, b)
 			}
-			({ items, keys, order, free: free.append(slot), index: index2, lasts, kids: kl, binds: bl, pend: pend2, dirty, sels, known, kid_mask }, $t)
+			dropped2 = if $orph.is_empty() dropped else dropped.append({ key, item, orphans: $orph })
+			({ items, keys, order, free: free.append(slot), index: index2, lasts, kids: kl, binds: bl, pend: pend2, dirty, sels, known, kid_mask, dropped: dropped2 }, $t)
 		} else {
-			({ items, keys, order, free: free.append(slot), index: index2, lasts, kids, binds, pend: pend2, dirty, sels, known, kid_mask }, t1)
+			({ items, keys, order, free: free.append(slot), index: index2, lasts, kids, binds, pend: pend2, dirty, sels, known, kid_mask, dropped }, t1)
 		}
 	}
 
@@ -1137,11 +1177,11 @@ Engine := [].{
 	}
 
 	mark : Cols(r, item), U32, U64 -> Cols(r, item)
-	mark = |{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask }, slot, m| {
+	mark = |{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped }, slot, m| {
 		si = slot.to_u64()
 		p = pend.get(si) ?? 0
 		dirty2 = if p == 0 dirty.append(slot) else dirty
-		{ items, keys, order, free, index, lasts, kids, binds, pend: pend.set(si, p.bitwise_or(m)) ?? pend, dirty: dirty2, sels, known, kid_mask }
+		{ items, keys, order, free, index, lasts, kids, binds, pend: pend.set(si, p.bitwise_or(m)) ?? pend, dirty: dirty2, sels, known, kid_mask, dropped }
 	}
 
 	## A kept row whose new item may differ: equal items are pruned here.
@@ -1156,19 +1196,19 @@ Engine := [].{
 		if same {
 			cols
 		} else {
-			{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask } = cols
-			Engine.mark({ items: items.set(si, item) ?? crash "item", keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask }, slot, row_bit)
+			{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped } = cols
+			Engine.mark({ items: items.set(si, item) ?? crash "item", keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped }, slot, row_bit)
 		}
 	}
 
 	set_order : Cols(r, item), List(U32) -> Cols(r, item)
-	set_order = |{ items, keys, order: _, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask }, order| {
-		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask }
+	set_order = |{ items, keys, order: _, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped }, order| {
+		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped }
 	}
 
 	take_order : Cols(r, item) -> (Cols(r, item), List(U32))
-	take_order = |{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask }| {
-		({ items, keys, order: [], free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask }, order)
+	take_order = |{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped }| {
+		({ items, keys, order: [], free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped }, order)
 	}
 
 	end_ref : EachCfg(r, item) -> U32
@@ -1197,6 +1237,7 @@ Engine := [].{
 	clear_rows : EachCfg(r, item), Cols(r, item), (Str, item -> r), Bool, Tx -> (Cols(r, item), Tx)
 	clear_rows = |cfg, cols, env, dom, tx| {
 		var $tx = tx
+		var $dropped = []
 		if !dom {
 			{}
 		} else if cfg.sole {
@@ -1225,12 +1266,17 @@ Engine := [].{
 						row_env = env(key, item)
 						var $rk = cols.kids.get($i) ?? []
 						var $j = 0.U64
+						var $orph = []
 						while $j < $rk.len() {
 							{ list: rl, prev: kid } = $rk.replace($j, Engine.noop({})) ?? crash "kid"
-							(_, _, t2) = Engine.call(kid, row_env, Dispose(False), $tx)
+							(_, out, t2) = Engine.call(kid, row_env, Dispose(False), $tx)
+							$orph = $orph.concat(Engine.orphans_of(out))
 							$rk = rl
 							$tx = t2
 							$j = $j + 1
+						}
+						if !$orph.is_empty() {
+							$dropped = $dropped.append({ key, item, orphans: $orph })
 						}
 						for b in cols.binds.get($i) ?? [] {
 							$tx = Engine.free_id($tx, b)
@@ -1241,9 +1287,10 @@ Engine := [].{
 				$i = $i + 1
 			}
 		}
-		{ sels, known, kid_mask, lasts, items: _, keys: _, order: _, free: _, index: _, kids: _, binds: _, pend: _, dirty: _ } = cols
+		{ sels, known, kid_mask, lasts, dropped: dropped0, items: _, keys: _, order: _, free: _, index: _, kids: _, binds: _, pend: _, dirty: _ } = cols
+		dropped = dropped0.concat($dropped)
 		ncols = lasts.len()
-		({ items: [], keys: [], order: [], free: [], index: Engine.index_empty, lasts: List.repeat([], ncols), kids: [], binds: [], pend: [], dirty: [], sels, known, kid_mask }, $tx)
+		({ items: [], keys: [], order: [], free: [], index: Engine.index_empty, lasts: List.repeat([], ncols), kids: [], binds: [], pend: [], dirty: [], sels, known, kid_mask, dropped }, $tx)
 	}
 
 	## Append rows new_list[from..] at the end of the site.
@@ -1508,7 +1555,7 @@ Engine := [].{
 	## their nested sites.
 	settle : EachCfg(r, item), Cols(r, item), (Str, item -> r), Tx -> (Cols(r, item), Tx)
 	settle = |cfg, cols, env, tx| {
-		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask } = cols
+		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped } = cols
 		var $lasts = lasts
 		var $pend = pend
 		var $kids = kids
@@ -1553,7 +1600,7 @@ Engine := [].{
 				$kids = kl.set(si, $rk) ?? crash "kids"
 			}
 		}
-		({ items, keys, order, free, index, lasts: $lasts, kids: $kids, binds, pend: $pend, dirty: dirty.clear(), sels, known, kid_mask }, $tx)
+		({ items, keys, order, free, index, lasts: $lasts, kids: $kids, binds, pend: $pend, dirty: dirty.clear(), sels, known, kid_mask, dropped }, $tx)
 	}
 
 	## Selection changed: mark only the previously and newly selected rows.
@@ -1562,8 +1609,8 @@ Engine := [].{
 		first = cols.order.first()
 		match first {
 			Err(_) => {
-				{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known: _, kid_mask } = cols
-				{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known: False, kid_mask }
+				{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known: _, kid_mask, dropped } = cols
+				{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known: False, kid_mask, dropped }
 			}
 			Ok(s0) => {
 				key0 = cols.keys.get(s0.to_u64()) ?? crash "key"
@@ -1593,8 +1640,8 @@ Engine := [].{
 								}
 								Err(_) => {}
 							}
-							{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known: _, kid_mask } = $cols
-							$cols = { items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels: sels.set($hi, nk) ?? sels, known: True, kid_mask }
+							{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known: _, kid_mask, dropped } = $cols
+							$cols = { items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels: sels.set($hi, nk) ?? sels, known: True, kid_mask, dropped }
 						}
 					}
 					$hi = $hi + 1
@@ -1624,17 +1671,17 @@ Engine := [].{
 	each_fire_kid : Cols(Row(ctx, item), item), Row(ctx, item), U64, List(U32), U64, U32, Payload, Tx -> (Cols(Row(ctx, item), item), ctx, U64, Tx)
 	each_fire_kid = |cols, row_env, si, path, pos, h, payload, tx| {
 		j = (path.get(pos + 1) ?? 0).to_u64()
-		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask } = cols
+		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped } = cols
 		{ list: kl, prev: row_kids } = kids.replace(si, []) ?? crash "kids"
 		if j < row_kids.len() {
 			{ list: rl, prev: kid } = row_kids.replace(j, Engine.noop({})) ?? crash "kid"
 			(k2, out, t2) = Engine.call(kid, row_env, Fire(path, pos + 2, h, payload), tx)
 			kids2 = kl.set(si, rl.set(j, k2) ?? crash "kid") ?? crash "kids"
 			(outer, m) = Engine.row_out(out)
-			({ items, keys, order, free, index, lasts, kids: kids2, binds, pend, dirty, sels, known, kid_mask }, outer, m, t2)
+			({ items, keys, order, free, index, lasts, kids: kids2, binds, pend, dirty, sels, known, kid_mask, dropped }, outer, m, t2)
 		} else {
 			{ outer, key: _, item: _ } = row_env
-			({ items, keys, order, free, index, lasts, kids: kl.set(si, row_kids) ?? crash "kids", binds, pend, dirty, sels, known, kid_mask }, outer, 0, tx)
+			({ items, keys, order, free, index, lasts, kids: kl.set(si, row_kids) ?? crash "kids", binds, pend, dirty, sels, known, kid_mask, dropped }, outer, 0, tx)
 		}
 	}
 
@@ -1645,14 +1692,16 @@ Engine := [].{
 			(outer, m)
 		}
 		Done => crash "fire must hand the environment back"
+		Orphaned(_) => crash "fire must hand the environment back"
 	}
 
-	each_inst : EachCfg(Row(ctx, item), item), Val(ctx, List(item)), Cols(Row(ctx, item), item) -> Inst(ctx)
+	## `adopted`: orphans reparented here from removed rows.
+	each_inst : EachCfg(Row(ctx, item), item), Val(ctx, List(item)), List(Orphan(ctx)), Cols(Row(ctx, item), item) -> Inst(ctx)
 		where [item.is_eq : item, item -> Bool]
-	each_inst = |cfg0, rows0, cols0| {
-		held = Held({ cfg: cfg0, rows: rows0, cols: cols0 })
+	each_inst = |cfg0, rows0, adopted0, cols0| {
+		held = Held({ cfg: cfg0, rows: rows0, adopted: adopted0, cols: cols0 })
 		Inst(|env, msg, tx| {
-			Held({ cfg, rows, cols }) = held
+			Held({ cfg, rows, adopted, cols }) = held
 			mk = |k, it| Row.{ outer: env, key: k, item: it }
 			match msg {
 				Changed(mask) => {
@@ -1670,13 +1719,19 @@ Engine := [].{
 						(c2, tx)
 					}
 					(c4, t4) = Engine.settle(cfg, c3, mk, t1)
-					(Engine.each_inst(cfg, rows, c4), Done, t4)
+					(c5, orph) = Engine.take_dropped(c4, cfg.depth)
+					(Engine.each_inst(cfg, rows, adopted.concat(orph), c5), Done, Engine.fx_adopt(t4, cfg.path, orph))
 				}
 				Fire(path, pos, h, payload) => {
-					slot = path.get(pos) ?? crash "row path"
+					slot = path.get(pos) ?? 0
 					si = slot.to_u64()
-					if !Engine.is_live(cols, si) {
-						(Engine.each_inst(cfg, rows, cols), Pending(env, 0), tx)
+					fx = Engine.leaf_fx(path, pos, payload)
+					if fx.is_ok() {
+						res = fx ?? crash "fx"
+						(ad2, out, t2) = Engine.adopt_deliver(adopted, env, h, res, tx)
+						(Engine.each_inst(cfg, rows, ad2, cols), out, t2)
+					} else if !Engine.is_live(cols, si) {
+						(Engine.each_inst(cfg, rows, adopted, cols), Pending(env, 0), tx)
 					} else {
 						key = cols.keys.get(si) ?? crash "key"
 						item = cols.items.get(si) ?? crash "item"
@@ -1688,30 +1743,26 @@ Engine := [].{
 									# handler call first, --opt=speed/size treated the captured
 									# columns as borrowed and every later write copied them
 									# (roc-lang/roc#12846).
-									next = Engine.each_inst(cfg, rows, cols)
+									next = Engine.each_inst(cfg, rows, adopted, cols)
 									{ outer, key: _, item: _ } = (handler.run)(row_env, Engine.ev_str(payload))
 									(next, Pending(outer, handler.mask), tx)
 								}
 								Err(_) => {
 									{ outer, key: _, item: _ } = row_env
-									(Engine.each_inst(cfg, rows, cols), Pending(outer, 0), tx)
+									(Engine.each_inst(cfg, rows, adopted, cols), Pending(outer, 0), tx)
 								}
 							}
 						} else {
 							(cols2, outer, m, t2) = Engine.each_fire_kid(cols, row_env, si, path, pos, h, payload, tx)
-							(Engine.each_inst(cfg, rows, cols2), Pending(outer, m), t2)
+							(Engine.each_inst(cfg, rows, adopted, cols2), Pending(outer, m), t2)
 						}
 					}
 				}
 				Dispose(remove) => {
-					t1 = if remove or cfg.dynamic {
-						(_, t) = Engine.clear_rows(cfg, cols, mk, remove, tx)
-						t
-					} else {
-						tx
-					}
+					(c1, t1) = if remove or cfg.dynamic Engine.clear_rows(cfg, cols, mk, remove, tx) else (cols, tx)
+					(_, orph) = Engine.take_dropped(c1, cfg.depth)
 					t2 = if !cfg.sole { if remove Engine.free_id(Engine.emit(t1, |c| Engine.put_u32(c.append(5), cfg.anchor)), cfg.anchor) else Engine.free_id(t1, cfg.anchor) } else t1
-					(Engine.noop({}), Done, Engine.free_site(t2, cfg.site))
+					(Engine.noop({}), Orphaned(adopted.concat(orph)), Engine.free_site(t2, cfg.site))
 				}
 			}
 		})
@@ -1802,7 +1853,7 @@ Engine := [].{
 		# Nested sites in the template report their static reads (kreads),
 		# which also covers rows mounted later.
 		reads = Engine.eff_mask(rows).bitwise_or(outer_mask).bitwise_or(smask_all).bitwise_or(plan.kreads.bitwise_and(row_bit - 1))
-		(Engine.each_inst(cfg, rows, cols), reads, tx4)
+		(Engine.each_inst(cfg, rows, [], cols), reads, tx4)
 	}), |d| Engine.eff_mask(rows).bitwise_or(Engine.elem_reads(template(RowRef.{ depth: d + 1 }), d + 1).bitwise_and(Engine.bit(d + 1) - 1)))
 
 	when : Val(ctx, Bool), (() -> Elem(ctx)), (() -> Elem(ctx)) -> Elem(ctx)
@@ -1822,7 +1873,7 @@ Engine := [].{
 			Engine.eff_mask(cond).bitwise_or(block.reads).bitwise_or(Engine.elem_reads(other, args.depth))
 		}
 		w = { cond, yes, no, anchor, depth: args.depth, path: args.path, cap: args.cap, local: args.local }
-		(Engine.when_inst(w, c, block), reads, tx3)
+		(Engine.when_inst(w, c, [], block), reads, tx3)
 	}), |d| Engine.eff_mask(cond).bitwise_or(Engine.elem_reads(yes(), d)).bitwise_or(Engine.elem_reads(no(), d)))
 
 	## ------------------------------------------------------------------
@@ -1851,7 +1902,7 @@ Engine := [].{
 		(block, tx3) = Engine.mount_block(env, body(k), args.depth, args.path, 0, anchor, { cap: args.cap, local: args.local }, Engine.count_evals(tx2, 1))
 		reads = if args.cap != 0 args.cap else Engine.switch_reads(sel, cases, body, args.depth)
 		w = { sel, cases, body, anchor, depth: args.depth, path: args.path, cap: args.cap, local: args.local }
-		(Engine.switch_inst(w, k, block), reads, tx3)
+		(Engine.switch_inst(w, k, [], block), reads, tx3)
 	}), |d| Engine.switch_reads(sel, cases, body, d))
 
 	switch_value : Val(ctx, k), List(k), ctx -> k
@@ -1861,12 +1912,12 @@ Engine := [].{
 		if cases.contains(k) k else crash "switch value is not one of its cases"
 	}
 
-	switch_inst : Switch(ctx, k), k, Block(ctx) -> Inst(ctx)
+	switch_inst : Switch(ctx, k), k, List(Orphan(ctx)), Block(ctx) -> Inst(ctx)
 		where [k.is_eq : k, k -> Bool]
-	switch_inst = |w0, cur0, block0| {
-		held = Held({ w: w0, cur: cur0, block: block0 })
+	switch_inst = |w0, cur0, adopted0, block0| {
+		held = Held({ w: w0, cur: cur0, adopted: adopted0, block: block0 })
 		Inst(|env, msg, tx| {
-			Held({ w, cur, block }) = held
+			Held({ w, cur, adopted, block }) = held
 			match msg {
 				Changed(mask) => {
 					if Engine.eff_mask(w.sel).bitwise_and(mask) != 0 {
@@ -1874,34 +1925,42 @@ Engine := [].{
 						t1 = Engine.count_evals(tx, 1)
 						if k == cur {
 							(b2, t2) = Engine.refresh(block, env, mask, t1)
-							(Engine.switch_inst(w, cur, b2), Done, t2)
+							(Engine.switch_inst(w, cur, adopted, b2), Done, t2)
 						} else {
-							t2 = Engine.dispose_block(block, env, True, t1)
-							(b3, t3) = Engine.mount_block(env, (w.body)(k), w.depth, w.path, 0, w.anchor, { cap: w.cap, local: w.local }, t2)
-							(Engine.switch_inst(w, k, b3), Done, t3)
+							(orph, t2) = Engine.dispose_block(block, env, True, t1)
+							(b3, t3) = Engine.mount_block(env, (w.body)(k), w.depth, w.path, 0, w.anchor, { cap: w.cap, local: w.local }, Engine.fx_adopt(t2, w.path, orph))
+							(Engine.switch_inst(w, k, adopted.concat(orph), b3), Done, t3)
 						}
 					} else {
 						(b2, t2) = Engine.refresh(block, env, mask, tx)
-						(Engine.switch_inst(w, cur, b2), Done, t2)
+						(Engine.switch_inst(w, cur, adopted, b2), Done, t2)
 					}
 				}
 				Fire(path, pos, h, payload) => {
-					match Engine.fire_target(block, path, pos) {
-						Leaf => {
-							out = Engine.fire_leaf(block, env, h, payload)
-							(Engine.switch_inst(w, cur, block), out, tx)
+					match Engine.leaf_fx(path, pos, payload) {
+						Ok(res) => {
+							(ad2, out, t2) = Engine.adopt_deliver(adopted, env, h, res, tx)
+							(Engine.switch_inst(w, cur, ad2, block), out, t2)
 						}
-						Kid => {
-							(b2, out, t2) = Engine.fire_kid(block, env, path, pos, h, payload, tx)
-							(Engine.switch_inst(w, cur, b2), out, t2)
+						Err(_) => {
+							match Engine.fire_target(block, path, pos) {
+								Leaf => {
+									out = Engine.fire_leaf(block, env, h, payload)
+									(Engine.switch_inst(w, cur, adopted, block), out, tx)
+								}
+								Kid => {
+									(b2, out, t2) = Engine.fire_kid(block, env, path, pos, h, payload, tx)
+									(Engine.switch_inst(w, cur, adopted, b2), out, t2)
+								}
+								Miss => (Engine.switch_inst(w, cur, adopted, block), Pending(env, 0), tx)
+							}
 						}
-						Miss => (Engine.switch_inst(w, cur, block), Pending(env, 0), tx)
 					}
 				}
 				Dispose(remove) => {
-					t1 = Engine.dispose_block(block, env, remove, tx)
+					(orph, t1) = Engine.dispose_block(block, env, remove, tx)
 					t2 = if remove Engine.emit(t1, |c| Engine.put_u32(c.append(5), w.anchor)) else t1
-					(Engine.noop({}), Done, Engine.free_id(t2, w.anchor))
+					(Engine.noop({}), Orphaned(adopted.concat(orph)), Engine.free_id(t2, w.anchor))
 				}
 			}
 		})
@@ -1958,8 +2017,8 @@ Engine := [].{
 					}
 				}
 				Dispose(remove) => {
-					t2 = Engine.dispose_block(block, In.{ outer: env, value: v }, remove, tx)
-					(Engine.noop({}), Done, t2)
+					(orph, t2) = Engine.dispose_block(block, In.{ outer: env, value: v }, remove, tx)
+					(Engine.noop({}), Orphaned(Engine.lower_in(orph, v, depth)), t2)
 				}
 			}
 		})
@@ -1972,6 +2031,7 @@ Engine := [].{
 	derive_settle = |input, block, depth, out, tx| {
 		match out {
 			Done => crash "fire must hand the environment back"
+			Orphaned(_) => crash "fire must hand the environment back"
 			Pending(next_inner, mask) => {
 				{ outer, value } = next_inner
 				(Engine.derive_inst(input, value, block, depth), Pending(outer, mask), tx)
@@ -2068,8 +2128,8 @@ Engine := [].{
 					}
 				}
 				Dispose(remove) => {
-					t2 = Engine.dispose_block(block, Comp.{ prop: (prop.read)(env), out: [] }, remove, tx)
-					(Engine.noop({}), Done, t2)
+					(orph, t2) = Engine.dispose_block(block, Comp.{ prop: (prop.read)(env), out: [] }, remove, tx)
+					(Engine.noop({}), Orphaned(Engine.lower_comp(orph, prop, snk)), t2)
 				}
 			}
 		})
@@ -2081,6 +2141,7 @@ Engine := [].{
 	comp_actions : Out(Comp(p, a)) -> List(a)
 	comp_actions = |out| match out {
 		Done => crash "fire must hand the environment back"
+		Orphaned(_) => crash "fire must hand the environment back"
 		Pending(inner, _) => {
 			{ prop: _, out: actions } = inner
 			actions
@@ -2121,9 +2182,19 @@ Engine := [].{
 	## - Awaited requests (Http, StorageGet, Timer, Interval, Popstate) get a
 	##   fresh instance-wide id (issue order, from 1), are recorded in the
 	##   in-flight table with the issuing site's path, and are owned by that
-	##   site. Disposing the site cancels every one it still owns (CANCEL id)
-	##   and forgets it. Interval and Popstate are subscriptions: they stay in
-	##   flight, delivering any number of results, until the site is disposed.
+	##   site. Interval and Popstate are subscriptions: they stay in flight,
+	##   delivering any number of results, until the site is disposed.
+	## - Disposal (design.md, "Requests, effects, and cancellation" and the
+	##   lifetime table): subscriptions, intervals and timers are stopped
+	##   (CANCEL id) and forgotten. Admitted requests (Http, StorageGet) are
+	##   not cancelled: they reparent to the nearest surviving ancestor site
+	##   (the `when`/`switch` that switched branch, or the `each` that removed
+	##   the row), which delivers the result by running the reaction in its
+	##   current environment. The disposed layers are snapshots there: writes
+	##   to retired states are skipped and counted (`skipped`), writes to
+	##   surviving states commit. Reading of the design: a reaction writes one
+	##   state, so "per-write" application is per reaction; the snapshot of a
+	##   retired layer is retained until the result arrives (bounded by `max`).
 	## - A result enters exactly as a DOM event does: one turn that fires down
 	##   the owning site's path, where the site's reaction runs as a handler
 	##   with the value the request was issued for, then the Changed pass.
@@ -2184,10 +2255,12 @@ Engine := [].{
 		stale : U64,
 		refused : U64,
 		cancelled : U64,
+		reparented : U64,
+		skipped : U64,
 	}
 
 	fx_empty : Fx
-	fx_empty = { next: 1, inner: 2147483648, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0 }
+	fx_empty = { next: 1, inner: 2147483648, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0 }
 
 	## The host node id that marks an event as an effect result.
 	fx_node : U32
@@ -2207,7 +2280,7 @@ Engine := [].{
 
 	## A request the site owns: its id, whether it is a subscription, and the
 	## value it was issued for.
-	Owned(a) : { id : U32, sub : Bool, a : a }
+	Owned(a) : { id : U32, sub : Bool, keep : Bool, a : a }
 
 	EffectCfg(ctx, a) : { v : Val(ctx, a), plan : (a -> List(Req)), react : Reaction(ctx, a), path : List(U32) }
 
@@ -2224,6 +2297,16 @@ Engine := [].{
 	is_sub = |req| match req {
 		Interval(_) => True
 		Popstate => True
+		_ => False
+	}
+
+	## Requests that survive their site's disposal (design.md: an admitted
+	## effect reparents). Subscriptions, intervals and timers are scoped:
+	## disposal stops them.
+	is_kept : Req -> Bool
+	is_kept = |req| match req {
+		Http(_) => True
+		StorageGet(_) => True
 		_ => False
 	}
 
@@ -2249,12 +2332,12 @@ Engine := [].{
 	## Admit an awaited request (or refuse it when the table is full).
 	fx_admit : Tx, List(U32), Req -> (U32, Tx)
 	fx_admit = |{ cmds, next, free, routes, evals, paths, site_free, fx }, path, req| {
-		{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled } = fx
+		{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped } = fx
 		if live.len() >= max {
-			fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled }
+			fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped }
 			(id, { cmds, next, free, routes, evals, paths, site_free, fx: fx2 })
 		} else {
-			fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: Engine.is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled }
+			fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: Engine.is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped }
 			(id, { cmds: Engine.put_req(cmds, id, req), next, free, routes, evals, paths, site_free, fx: fx2 })
 		}
 	}
@@ -2291,35 +2374,166 @@ Engine := [].{
 				Self => {
 					(id, t1) = Engine.fx_follow($tx, path, Now)
 					$tx = t1
-					$owned = $owned.append({ id, sub: False, a })
+					$owned = $owned.append({ id, sub: False, keep: False, a })
 				}
 				_ => {
 					(id, t1) = Engine.fx_admit($tx, path, req)
 					$tx = t1
-					$owned = $owned.append({ id, sub: Engine.is_sub(req), a })
+					$owned = $owned.append({ id, sub: Engine.is_sub(req), keep: Engine.is_kept(req), a })
 				}
 			}
 		}
 		($tx, $owned)
 	}
 
-	## Cancel and forget every request a disposed site still owns: in-flight
-	## ones are cancelled (CANCEL), queued follow-ups it would have received
-	## are dropped and counted as stale, so no later turn reaches the path the
-	## site occupied.
-	fx_release : Tx, List(Owned(a)) -> Tx
-	fx_release = |tx, owned| {
+	## A disposed site's requests (design.md, "Requests, effects, and
+	## cancellation"): admitted requests (HTTP, storage read) survive and
+	## become orphans that reparent to the nearest surviving ancestor;
+	## subscriptions, intervals and timers are stopped (CANCEL) and forgotten;
+	## queued follow-ups it would have received are dropped and counted stale.
+	fx_dispose : Tx, Reaction(ctx, a), List(Owned(a)) -> (List(Orphan(ctx)), Tx)
+	fx_dispose = |tx, react, owned| {
 		var $tx = tx
+		var $orph = []
+		run = react.run
+		mask = react.mask
 		for o in owned {
 			id = o.id
 			if $tx.fx.live.any(|l| l.id == id) {
-				t1 = Engine.with_fx($tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id), cancelled: fx.cancelled + 1 })
-				$tx = Engine.emit(t1, |c| Engine.put_u32(c.append(14), id))
+				if o.keep {
+					a = o.a
+					$orph = $orph.append({ id, run: |e, r| (run(e, a, r), mask, 0) })
+				} else {
+					t1 = Engine.with_fx($tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id), cancelled: fx.cancelled + 1 })
+					$tx = Engine.emit(t1, |c| Engine.put_u32(c.append(14), id))
+				}
 			} else if $tx.fx.queue.any(|q| q.id == id) {
 				$tx = Engine.with_fx($tx, |fx| { ..fx, queue: fx.queue.keep_if(|q| q.id != id), stale: fx.stale + 1 })
 			}
 		}
-		$tx
+		($orph, $tx)
+	}
+
+	## A surviving site takes over orphans: their results now route to it.
+	fx_adopt : Tx, List(U32), List(Orphan(ctx)) -> Tx
+	fx_adopt = |tx, path, orphans| {
+		if orphans.is_empty() {
+			tx
+		} else {
+			ids = orphans.map(|o| o.id)
+			Engine.with_fx(tx, |fx| {
+				..fx,
+				live: fx.live.map(|l| if ids.contains(l.id) { id: l.id, path, sub: l.sub } else l),
+				reparented: fx.reparented + ids.len(),
+			})
+		}
+	}
+
+	## An effect result arriving at the site path itself (not below it).
+	leaf_fx : List(U32), U64, Payload -> Try(Res, [NotFx])
+	leaf_fx = |path, pos, payload| {
+		if pos >= path.len() {
+			match payload {
+				Fx(r) => Ok(r)
+				Ev(_) => Err(NotFx)
+			}
+		} else {
+			Err(NotFx)
+		}
+	}
+
+	## Deliver a result to an adopted orphan: its reaction runs in this
+	## site's current environment; writes to retired states are counted as
+	## skipped. An id this site does not hold is dropped and counted stale.
+	adopt_deliver : List(Orphan(ctx)), ctx, U32, Res, Tx -> (List(Orphan(ctx)), Out(ctx), Tx)
+	adopt_deliver = |adopted, env, id, res, tx| {
+		match adopted.find_first_index(|o| o.id == id) {
+			Ok(i) => {
+				o = adopted.get(i) ?? crash "adopted"
+				run = o.run
+				kept = adopted.drop_at(i)
+				(e2, m, sk) = run(env, res)
+				(kept, Pending(e2, m), Engine.with_fx(tx, |fx| { ..fx, delivered: fx.delivered + 1, skipped: fx.skipped + sk }))
+			}
+			Err(_) => (adopted, Pending(env, 0), Engine.fx_count(tx, Stale))
+		}
+	}
+
+	## Lower orphans through a state or derived layer at `depth` being
+	## disposed with final value `v`: the layer is a discarded snapshot.
+	lower_in : List(Orphan(In(ctx, s))), s, U64 -> List(Orphan(ctx))
+	lower_in = |os, v, depth| {
+		keep = Engine.bit(depth) - 1
+		os.map(|o| {
+			run = o.run
+			{
+				id: o.id,
+				run: |e, r| {
+					(inner, m, sk) = run(In.{ outer: e, value: v }, r)
+					{ outer, value: _ } = inner
+					(outer, m.bitwise_and(keep), if m.bitwise_and(keep.bitwise_not()) != 0 sk + 1 else sk)
+				},
+			}
+		})
+	}
+
+	## Lower orphans through a removed row (key and item are snapshots).
+	lower_row : List(Orphan(Row(ctx, item))), Str, item, U64 -> List(Orphan(ctx))
+	lower_row = |os, key, item, depth| {
+		keep = Engine.bit(depth) - 1
+		os.map(|o| {
+			run = o.run
+			{
+				id: o.id,
+				run: |e, r| {
+					(row, m, sk) = run(Row.{ outer: e, key, item }, r)
+					{ outer, key: _, item: _ } = row
+					(outer, m.bitwise_and(keep), if m.bitwise_and(keep.bitwise_not()) != 0 sk + 1 else sk)
+				},
+			}
+		})
+	}
+
+	## Lower orphans through a disposed component: the prop is re-read from
+	## the caller's environment, inner writes are discarded (counted), and
+	## pushed actions go through the sink as for a live event.
+	lower_comp : List(Orphan(Comp(p, a))), Val(ctx, p), Sink(ctx, a) -> List(Orphan(ctx))
+	lower_comp = |os, prop, snk| {
+		read = prop.read
+		srun = snk.run
+		os.map(|o| {
+			run = o.run
+			{
+				id: o.id,
+				run: |e, r| {
+					(inner, m, sk) = run(Comp.{ prop: read(e), out: [] }, r)
+					{ prop: _, out: actions } = inner
+					var $e = e
+					var $m = 0.U64
+					for act in actions {
+						(e2, m2) = srun($e, act)
+						$e = e2
+						$m = $m.bitwise_or(m2)
+					}
+					($e, $m, if m != 0 sk + 1 else sk)
+				},
+			}
+		})
+	}
+
+	## Take a site's dropped rows and lower their orphans to the site.
+	take_dropped : Cols(Row(ctx, item), item), U64 -> (Cols(Row(ctx, item), item), List(Orphan(ctx)))
+	take_dropped = |cols, depth| {
+		if cols.dropped.is_empty() {
+			(cols, [])
+		} else {
+			{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped } = cols
+			var $o = []
+			for d in dropped {
+				$o = $o.concat(Engine.lower_row(d.orphans, d.key, d.item, depth))
+			}
+			({ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped: [] }, $o)
+		}
 	}
 
 	## An effect site. `initial`: also issue for the value at mount.
@@ -2381,7 +2595,10 @@ Engine := [].{
 						}
 					}
 				}
-				Dispose(_) => (Engine.noop({}), Done, Engine.fx_release(tx, owned))
+				Dispose(_) => {
+					(orph, t2) = Engine.fx_dispose(tx, cfg.react, owned)
+					(Engine.noop({}), Orphaned(orph), t2)
+				}
 			}
 		})
 	}
@@ -2402,10 +2619,10 @@ Engine := [].{
 	}
 
 	## Engine counters for effects.
-	fx_stats : App -> { issued : U64, delivered : U64, stale : U64, refused : U64, cancelled : U64, live : U64 }
+	fx_stats : App -> { issued : U64, delivered : U64, stale : U64, refused : U64, cancelled : U64, live : U64, reparented : U64, skipped : U64 }
 	fx_stats = |a| {
 		fx = a.tx.fx
-		{ issued: fx.issued, delivered: fx.delivered, stale: fx.stale, refused: fx.refused, cancelled: fx.cancelled, live: fx.live.len() }
+		{ issued: fx.issued, delivered: fx.delivered, stale: fx.stale, refused: fx.refused, cancelled: fx.cancelled, live: fx.live.len(), reparented: fx.reparented, skipped: fx.skipped }
 	}
 
 	## Ids currently in flight (issue order).
@@ -2614,7 +2831,7 @@ Engine := [].{
 	out_mask : Out(Root) -> U64
 	out_mask = |out| match out {
 		Pending(_, m) => m
-		Done => 0
+		_ => 0
 	}
 
 	## Hand the accumulated commands to the host and take a buffer back.

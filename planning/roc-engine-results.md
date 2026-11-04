@@ -63,3 +63,37 @@ blocker for real apps. Engine added derive, component(prop, sink, body), switch,
 payloads, static read masks, root settle. Wasm host does not yet marshal event payloads.
 Authoring: 82-93% of original view code; explicit lift/lift_row; hidden copy traps
 (keep_if on shared lists, large state not outermost, deriving projections of state).
+
+## Phase 5: payloads, effect channel, Conduit (2026-11-05; evidence p5/)
+
+Payloads: the Wasm host stages a Roc `List(U8)` per event (`payload_reserve`; capacity is stored
+shifted left by one, else short values read as seamless slices and trap). `runtime.mjs` caught up
+with the command stream (event names on LISTEN/template holes, row hole targets resolved at INST,
+"" removes an attribute, value/checked/boolean attributes as live control state, `:prevent` event
+policy, SVG namespace). Real-Chrome replays with typed input: form-builder 12/13 (a number input
+sanitizes "2x"), kanban 10/10, data-grid 9/9, markdown 11/11; jfb keyed checks pass.
+
+Effect channel (pure engine): `watch` / `on_change` sites turn value changes into requests.
+Commands (history push/replace, title, storage set/remove) are emitted. Awaited requests (HTTP,
+storage read, timer, interval, popstate) get instance-wide ids, a bounded in-flight table
+(refusal is a typed `Refused` follow-up), and results enter as events through the same turn and
+Changed pass. Disposal follows design.md: subscriptions, intervals and timers are cancelled;
+admitted HTTP/storage reads reparent to the surviving `when`/`switch`/`each` that disposed them
+and run their reaction there (writes to retired states skipped and counted, survivors commit).
+Unknown, delivered, stopped or purged ids are dropped and counted. A model-oracle fuzz target
+(apps/effects, bound 5) passes ~85k programs per minute with exact allocation baselines; 9 of 10
+mutations are caught by the model (incl. cancel-on-dispose), the tenth by the allocation baseline.
+
+Conduit: full port (apps/conduit; builtin Json works). Specs 24/25 natively and 24/25 in Chrome
+(manual effects); an automatic-mode journey against the deterministic RealWorld backend passes.
+login-422 expects a second, identical feed request that the original engine admits incidentally
+("currently admits two feed generations"); the port does not reproduce it. Native timing vs the
+current engine: mount 68 vs 610 us; feed render 236 us vs ~5.4 ms (N=20), 2.2 vs ~50 ms (N=200);
+tag-click 0.60 vs 17.2 ms (N=200). Sparse allocations flat for favorite (15-16) and its response
+(47) at 10x data.
+
+Open blockers (not code size): controlled-input focus/IME deferral; no focus commands or
+blur/focus events, static `:prevent` only; HTTP results carry status and body only, no timeout
+policy; contract errors trap the instance (no containment/remount); reparented orphans retain a
+snapshot of the retired layers until their result arrives (bounded by the in-flight cap).
+Compiler: roc-lang/roc#12851 (undeclared type in a `provides` annotation segfaults in monotype).

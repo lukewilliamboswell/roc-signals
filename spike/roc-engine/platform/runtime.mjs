@@ -15,10 +15,12 @@
 // batch is applied and performed only after the whole batch is applied.
 // Each awaited result comes back as its own event on FX_NODE (one turn, in
 // completion order). In manual mode (options.manualEffects) HTTP requests
-// and timers wait in `pending` until runEffect() answers them; the engine,
-// not this file, decides staleness: a result for a cancelled id is never
-// sent because CANCEL forgets it here, and anything late is dropped by the
-// engine and counted.
+// and timers wait in `pending` until runEffect() answers them and intervals
+// tick only through tick(); the engine, not this file, decides staleness: a
+// result for a cancelled subscription or timer is never sent because CANCEL
+// forgets it here, and anything late is dropped by the engine and counted.
+// Admitted requests are never cancelled by the engine (they reparent when
+// their site is disposed), so their results are always delivered.
 //
 // Handler event names may carry a policy suffix: "click:prevent" listens to
 // "click" and calls preventDefault when it dispatches (in-app links, forms).
@@ -692,6 +694,11 @@ export class RocEngineRuntime {
         return;
       }
       case "interval": {
+        if (this.manual) {
+          // Manual mode: ticks only through tick(id).
+          this.live.set(fx.id, { kind: "sub", req: fx, cancel: () => {} });
+          return;
+        }
         const h = setInterval(() => this.result(fx.id, new Uint8Array([RES_FIRED])), fx.ms);
         this.live.set(fx.id, { kind: "sub", cancel: () => clearInterval(h) });
         return;
@@ -770,6 +777,14 @@ export class RocEngineRuntime {
     if (answer.network !== undefined) this.result(id, concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(answer.network)]));
     else if (answer.status !== undefined) this.result(id, httpResult(answer.status, answer.body ?? ""));
     else this.result(id, new Uint8Array([RES_FIRED]));
+    return true;
+  }
+
+  // Manual mode: one tick of a live interval subscription.
+  tick(id) {
+    const e = this.live.get(id);
+    if (e === undefined || e.kind !== "sub") return false;
+    this.result(id, new Uint8Array([RES_FIRED]));
     return true;
   }
 

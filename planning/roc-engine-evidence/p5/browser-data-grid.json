@@ -4,63 +4,63 @@
    "file": "empty-filter-result",
    "ok": true,
    "steps": 65,
-   "ms": 371,
+   "ms": 327,
    "failed": null
   },
   {
    "file": "filtering",
    "ok": true,
    "steps": 64,
-   "ms": 276,
+   "ms": 261,
    "failed": null
   },
   {
    "file": "initial-mount",
    "ok": true,
    "steps": 30,
-   "ms": 31,
+   "ms": 34,
    "failed": null
   },
   {
    "file": "inline-editing",
    "ok": true,
    "steps": 38,
-   "ms": 205,
+   "ms": 206,
    "failed": null
   },
   {
    "file": "paging-past-the-end",
    "ok": true,
    "steps": 53,
-   "ms": 393,
+   "ms": 379,
    "failed": null
   },
   {
    "file": "paging",
    "ok": true,
    "steps": 28,
-   "ms": 173,
+   "ms": 161,
    "failed": null
   },
   {
    "file": "per-row-selection",
    "ok": true,
    "steps": 34,
-   "ms": 241,
+   "ms": 230,
    "failed": null
   },
   {
    "file": "single-row-filter-result",
    "ok": true,
    "steps": 39,
-   "ms": 286,
+   "ms": 269,
    "failed": null
   },
   {
    "file": "sorting",
    "ok": true,
    "steps": 38,
-   "ms": 116,
+   "ms": 120,
    "failed": null
   }
  ],

@@ -7,7 +7,7 @@ $R/scripts/fz.sh effects build > /dev/null || exit 1
 F=$P/fz-effects
 cp $F/Engine.roc $F/Engine.good.roc
 OUT=$P/results/mutations-fx.txt
-: >> $OUT
+[ -z "${ONLY:-}" ] && : > $OUT
 run() {
   name=$1; from=$2; to=$3
   if [ -n "${ONLY:-}" ] && [ "$ONLY" != "$name" ]; then return; fi
@@ -23,14 +23,18 @@ PY
   msg=$(grep -ho 'roc crashed[^"]*\|crashed: [^"]*' $F/.roc-fuzz/mut/$name/run.log 2>/dev/null | head -1 | cut -c1-200)
   echo "mutation $name: $out :: $msg" | tee -a $OUT
 }
-run dispose-no-cancel 'Dispose(_) => (Engine.noop({}), Done, Engine.fx_release(tx, owned))' 'Dispose(_) => (Engine.noop({}), Done, tx)'
+run cancels-on-dispose '				if o.keep {' '				if o.keep and o.id == 0 {'
+run subscriptions-survive-dispose '				if o.keep {' '				if o.keep or o.id != 0 {'
+run no-reparent-route '				live: fx.live.map(|l| if ids.contains(l.id) { id: l.id, path, sub: l.sub } else l),' '				live: fx.live.map(|l| if ids.contains(l.id) { id: l.id, path: l.path.concat(path).drop_last(path.len()), sub: l.sub } else l),'
+run retired-write-uncounted '					{ outer, value: _ } = inner
+					(outer, m.bitwise_and(keep), if m.bitwise_and(keep.bitwise_not()) != 0 sk + 1 else sk)' '					{ outer, value: _ } = inner
+					(outer, m.bitwise_and(keep), sk)'
 run result-keeps-live 'tx1 = if entry.sub tx else Engine.with_fx(tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id) })' 'tx1 = tx'
 run no-bound '		if live.len() >= max {' '		if live.len() >= max + 1000 {'
 run followups-lifo '			q = tx.fx.queue.first() ?? crash "queue"
 			tx1 = Engine.with_fx(tx, |fx| { ..fx, queue: fx.queue.drop_first(1) })' '			q = tx.fx.queue.last() ?? crash "queue"
 			tx1 = Engine.with_fx(tx, |fx| { ..fx, queue: fx.queue.drop_last(1) })'
-run stale-applied '			Err(_) => (Engine.effect_inst(cfg, last, owned), Pending(env, 0), Engine.fx_count(tx, Stale))' '			Err(_) => (Engine.effect_inst(cfg, last, owned), Pending((cfg.react.run)(env, last, res), cfg.react.mask), Engine.fx_count(tx, Stale))'
-run site-keeps-owned 'kept = if entry.sub owned else owned.drop_at(i)' 'kept = owned'
 run no-queue-purge '			} else if $tx.fx.queue.any(|q| q.id == id) {' '			} else if $tx.fx.queue.len() > 1000000 {'
+run site-keeps-owned 'kept = if entry.sub owned else owned.drop_at(i)' 'kept = owned'
 cp $F/Engine.good.roc $F/Engine.roc
 rm -f $F/tm
