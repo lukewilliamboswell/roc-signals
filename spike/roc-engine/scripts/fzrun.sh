@@ -6,7 +6,7 @@ if [ "${2:-}" != nobuild ]; then
   $R/scripts/fz.sh $A build || exit 1
 fi
 cd $P/fz-$A || exit 1
-timeout ${FZ_TIMEOUT:-900} ./t ${FZ_MODE:-accept} > accept.out 2>&1
+timeout ${FZ_TIMEOUT:-1800} ./t ${FZ_MODE:-accept} ${FZ_ARGS:---timeout=900} > accept.out 2>&1
 tail -2 accept.out
 RP=$(ls -td .roc-fuzz/reports/*/ | head -1)
 head -40 $RP/run.log

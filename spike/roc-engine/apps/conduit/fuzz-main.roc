@@ -4,6 +4,7 @@ import fuzz.Fuzz
 import Engine
 import Dom
 import Spec
+import Soak
 import FxSpec
 import ConduitApp
 import ConduitSpecs
@@ -90,22 +91,107 @@ bench! = |n| {
 	Fuzz.keep
 }
 
-Input : { mode : U8, size : U64 }
+## One body that satisfies every RealWorld envelope the app decodes (each
+## decoder reads its own key): the soak's answer to every request.
+universal : Str
+universal = "{\"articles\":[{\"slug\":\"soak-a\",\"title\":\"Soak A\",\"description\":\"d\",\"body\":\"# Hi\\nthere\",\"tagList\":[\"roc\"],\"createdAt\":\"2026-06-01T08:00:00.000Z\",\"favorited\":false,\"favoritesCount\":1,\"author\":{\"username\":\"anna\",\"bio\":\"\",\"image\":\"\",\"following\":false}}],\"articlesCount\":1,\"article\":{\"slug\":\"soak-a\",\"title\":\"Soak A\",\"description\":\"d\",\"body\":\"# Hi\\nthere\",\"tagList\":[\"roc\"],\"createdAt\":\"2026-06-01T08:00:00.000Z\",\"favorited\":false,\"favoritesCount\":1,\"author\":{\"username\":\"anna\",\"bio\":\"\",\"image\":\"\",\"following\":false}},\"tags\":[\"roc\",\"signals\"],\"comments\":[{\"id\":1,\"createdAt\":\"2026-06-01T08:00:00.000Z\",\"body\":\"c\",\"author\":{\"username\":\"anna\",\"bio\":\"\",\"image\":\"\",\"following\":false}}],\"profile\":{\"username\":\"anna\",\"bio\":\"\",\"image\":\"\",\"following\":false},\"user\":{\"email\":\"kim@conduit.test\",\"token\":\"jwt.kim\",\"username\":\"kim\",\"bio\":\"\",\"image\":\"\"}}"
+
+## Answer every in-flight request (id 1 is the popstate subscription), a few
+## rounds deep (an answer may issue more requests).
+answer_app : Engine.App, List(U8) -> (Engine.App, List(U8))
+answer_app = |a0, b0| {
+	var $a = a0
+	var $b = b0
+	var $round = 0.U64
+	while $round < 4 {
+		ids = Engine.fx_live($a).keep_if(|id| id != 1)
+		for id in ids {
+			(a1, b1) = Engine.take_cmds(Engine.result($a, id, Http({ status: 200, headers: [], body: universal })), $b)
+			$a = a1
+			$b = b1
+		}
+		$round = $round + 1
+	}
+	($a, $b)
+}
+
+## The same, keeping the DOM model in step.
+answer : Spec.S -> Spec.S
+answer = |s0| {
+	var $s = s0
+	var $round = 0.U64
+	while $round < 4 {
+		ids = Engine.fx_live($s.eng).keep_if(|id| id != 1)
+		for id in ids {
+			(a1, c) = Engine.take_cmds(Engine.result($s.eng, id, Http({ status: 200, headers: [], body: universal })), [])
+			$s = { eng: a1, dom: Dom.apply($s.dom, c), steps: $s.steps + 1 }
+		}
+		$round = $round + 1
+	}
+	$s
+}
+
+boot : Engine.Boot
+boot = { url: "/roc-signals/examples-web/conduit/#/", storage: [] }
+
+cycle : List(Spec.Step)
+cycle = [Click(Role("link", "Sign in")), Click(Role("link", "Home"))]
+
+## Soak, mode 2: explorer-driven walk with every request answered; leak-free.
+soak_walk! : List(U8) => Fuzz.Outcome
+soak_walk! = |program| {
+	Fuzz.expect_no_leaks!(|| Soak.walk(answer(Spec.start(ConduitApp.main(boot))), program, answer))
+	Fuzz.keep
+}
+
+## Soak, mode 3: 2,000 seeded events per example (five examples, seeds 1-5:
+## 10k events; one 10k walk exceeds the per-input timeout through the DOM
+## oracle), leak-checked, then Home -> Sign in -> Home 12 times on the
+## engine alone: live allocations flat.
+soak_10k! : U64 => Fuzz.Outcome
+soak_10k! = |seed| {
+	Fuzz.expect_no_leaks!(|| Soak.walk_n(answer(Spec.start(ConduitApp.main(boot))), seed, 2000, answer))
+	(s1, evs) = Soak.triples(answer(Spec.start(ConduitApp.main(boot))), cycle, answer)
+	counts = Soak.replay!(s1.eng, evs, 12, answer_app, |_| Fuzz.live_alloc_count!())
+	match Soak.flat(counts, 2) {
+		Ok(_) => {}
+		Err(m) => crash m
+	}
+	Fuzz.mark!("soak cycle live allocations ${Str.inspect(counts)}")
+	Fuzz.keep
+}
+
+Input : { mode : U8, size : U64, program : List(U8) }
 
 test! : Input => Fuzz.Outcome
-test! = |{ mode, size }| if mode == 0 bench!(size) else specs!({})
+test! = |{ mode, size, program }| {
+	if mode == 0 {
+		if size > 1000 Fuzz.reject else bench!(size)
+	} else if mode == 2 {
+		soak_walk!(program)
+	} else if mode == 3 {
+		soak_10k!(size)
+	} else {
+		specs!({})
+	}
+}
 
 ex : Str, U8, U64 -> Fuzz.Example(Input)
-ex = |name, mode, size| Fuzz.example({ name, revision: "1", make: || { mode, size } })
+ex = |name, mode, size| Fuzz.example({ name, revision: "1", make: || { mode, size, program: [] } })
 
 target = Fuzz.target_with!({
 	name: "conduit",
 	examples: [
 		ex("specs", 1, 0),
+		ex("soak-2k-s1", 3, 1),
+		ex("soak-2k-s2", 3, 2),
+		ex("soak-2k-s3", 3, 3),
+		ex("soak-2k-s4", 3, 4),
+		ex("soak-2k-s5", 3, 5),
 		ex("bench-20", 0, 20),
 		ex("bench-200", 0, 200),
 	],
-	generator: { mode: Fuzz.constant(1), size: Fuzz.constant(0) }.Fuzz,
+	generator: { mode: Fuzz.constant(2), size: Fuzz.constant(0), program: Fuzz.list(Fuzz.u8, 400) }.Fuzz,
 	test!,
 	show: Str.inspect,
 })

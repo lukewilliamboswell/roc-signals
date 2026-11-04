@@ -97,3 +97,45 @@ blur/focus events, static `:prevent` only; HTTP results carry status and body on
 policy; contract errors trap the instance (no containment/remount); reparented orphans retain a
 snapshot of the retired layers until their result arrives (bounded by the in-flight cap).
 Compiler: roc-lang/roc#12851 (undeclared type in a `provides` annotation segfaults in monotype).
+
+### Phase 5b: blockers resolved (2026-11-05)
+
+- Controlled inputs (design.md "Controlled inputs"): an equal value is a no-op, so caret and
+  selection stay. A differing value is deferred while the control is focused or composing and
+  applied on blur, unless a later input echo matched it. design.md says blur, not compositionend.
+  Chrome tests cover typing, deleting and replacing mid-text and a CDP IME composition. Two
+  runtime mutations are caught.
+- Focus: `Engine.ref(name)` plus Focus/Blur/SelectText effects, resolved at the end of the turn into
+  `18 FOCUS op node`; a missing reference is counted stale. App `focus`/`blur` events carry the
+  value. Native and Chrome tests. Found and fixed: an element with several handlers routed every
+  event to its last handler.
+- HTTP: results carry headers; `timeout_ms` per request (capped at 600 s) yields a typed `Timeout`.
+  The timer is cleared on completion, failure or cancel. The model checks the wire round trip;
+  uncapped timeouts, a lost header value and Timeout decoded as Network are all caught.
+- Containment (design.md failure rules): a Roc crash, failed expect or allocation failure poisons
+  the instance. It records a classified, bounded diagnostic (contract, resource_limit,
+  out_of_memory, app_crash, expect_failed), e.g. `contract: duplicate key "r0" in each at site
+  /3/0`, discards staged commands and refuses re-entry. The runtime reports the fault, detaches
+  listeners and effects, keeps the last DOM and recovers with a fresh instance. Covered by a
+  Chrome test.
+- Conduit login-422 (spec fidelity): the original navigated first and its storage-backed session
+  flipped a turn later, so home fetched the feed anonymously, then again with the token. The port
+  reproduces that request order. Conduit now passes 25/25 natively and in Chrome.
+- Soak, native: every app's target has an explorer-driven random walk over the live DOM (leak-checked)
+  and seeded examples of 10k events. Markdown and Conduit run them as 5 x 2k, because one 10k
+  walk through the DOM oracle exceeds the per-input timeout. All runs are leak-free. A round trip
+  replayed 12 times on the engine alone gives flat live allocations after one warm-up cycle:
+  form 149, kanban 235, grid 73, markdown 656.
+- Soak, Chrome: 3,000 random events per app with no fault. Then 30 round trips: pages are flat
+  (139-144) and live allocations exactly flat for the four apps; Conduit, with async effects,
+  jitters 942/943 with no growth.
+  Found while soaking: `resource_limit` at 4,095 live each sites (12-bit site ids in node ids).
+  The form bench with ~65k fields hits it. This is a real scale limit.
+- Conduit in Chrome (eager Wasm compile, median ms, current vs spike): feed N=200 76.7 vs 17.8;
+  tag-click N=200 22.4 vs 3.8; feed N=20 9.2 vs 3.4; mount 3.1 vs 1.9. First paint is slower for
+  the spike (62-67 vs 25-26 ms) because it is the larger module.
+- Optimised Wasm sizes (gzip of -Oz), spike vs current: form 545 vs 519 KB, kanban 405 vs 483,
+  grid 266 vs 482, markdown 939 vs 546, Conduit 1,501 vs 940. Code size is still the main
+  blocker (roc-lang/roc#12847, #12848).
+  Current-engine finding: its browser storage import misreads keys of 11 bytes or fewer (Roc
+  small strings on wasm32).

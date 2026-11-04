@@ -4,6 +4,7 @@ import fuzz.Fuzz
 import Engine
 import Dom
 import Spec
+import Soak
 import GridData
 import GridApp
 import GridSpecs
@@ -66,10 +67,41 @@ bench! = |n| {
 
 Input : { mode : U8, size : U64, program : List(U8) }
 
+## A round trip back to the initial state (soak cycle).
+cycle : List(Spec.Step)
+cycle = [Fill(Label("Filter"), "Node-0007"), Fill(Label("Filter"), ""), Click(Role("button", "Next page")), Click(Role("button", "Previous page"))]
+
+## Soak, mode 2: an explorer-driven random walk (two bytes per event) from a
+## fresh mount, which must free everything it allocated.
+soak_walk! : List(U8) => Fuzz.Outcome
+soak_walk! = |program| {
+	Fuzz.expect_no_leaks!(|| Soak.walk(Spec.start(GridApp.main({})), program, |s| s))
+	Fuzz.keep
+}
+
+## Soak, mode 3: 10k seeded random events (leak-checked), then the round trip
+## 12 times on the engine alone: live allocations flat after 2 warm-up cycles.
+soak_10k! : {} => Fuzz.Outcome
+soak_10k! = |_| {
+	Fuzz.expect_no_leaks!(|| Soak.walk_n(Spec.start(GridApp.main({})), 7, 10000, |s| s))
+	(s1, evs) = Soak.triples(Spec.start(GridApp.main({})), cycle, |s| s)
+	counts = Soak.replay!(s1.eng, evs, 12, |a, b| (a, b), |_| Fuzz.live_alloc_count!())
+	match Soak.flat(counts, 2) {
+		Ok(_) => {}
+		Err(m) => crash m
+	}
+	Fuzz.mark!("soak cycle live allocations ${Str.inspect(counts)}")
+	Fuzz.keep
+}
+
 test! : Input => Fuzz.Outcome
-test! = |{ mode, size, program: _ }| {
+test! = |{ mode, size, program }| {
 	if mode == 0 {
-		bench!(size)
+		if size > 12000 Fuzz.reject else bench!(size)
+	} else if mode == 2 {
+		soak_walk!(program)
+	} else if mode == 3 {
+		soak_10k!({})
 	} else {
 		specs!({})
 	}
@@ -82,10 +114,11 @@ target = Fuzz.target_with!({
 	name: "p4-data-grid",
 	examples: [
 		ex("specs", 1, 0),
+		ex("soak-10k", 3, 0),
 		ex("bench-1200", 0, 1200),
 		ex("bench-12000", 0, 12000),
 	],
-	generator: { mode: Fuzz.constant(1), size: Fuzz.constant(0), program: Fuzz.list(Fuzz.u8, 8) }.Fuzz,
+	generator: { mode: Fuzz.constant(2), size: Fuzz.constant(0), program: Fuzz.list(Fuzz.u8, 400) }.Fuzz,
 	test!,
 	show: Str.inspect,
 })
