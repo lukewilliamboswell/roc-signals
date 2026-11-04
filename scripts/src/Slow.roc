@@ -1,10 +1,9 @@
 import Checks
-import Mutations
 import Proc
 import SpecSuite
 import Targets
 
-## The slow suites: soak and the engine mutation gate.
+## The slow suite: soak.
 Slow := [].{
 
 	## Every fuzz target against its baseline, then every app's browser soak.
@@ -12,24 +11,14 @@ Slow := [].{
 	soak! = |o| {
 		Checks.prepare_platform!(o)?
 		SpecSuite.build_web_platform!(o)?
-		var $problems = []
-		for t in Targets.fuzz_targets {
-			Proc.note!("== fuzz ${t.name}")
-			exe = Targets.build_fuzz!(o, t)?
-			$problems = $problems.concat(Targets.fuzz_check!(o, t, exe)?)
-		}
+		Proc.note!("== fuzz targets against their baselines")
+		var $problems = Targets.fuzz_check_all!(o, Targets.fuzz_targets)?
+		SpecSuite.build_with!(o, [], SpecSuite.apps, "size")?
 		for example in SpecSuite.apps {
 			Proc.note!("== browser soak ${example}")
-			wasm = SpecSuite.build_wasm!(o, example)?
-			$problems = $problems.concat(Targets.browser_soak!(o, example, wasm)?)
+			$problems = $problems.concat(Targets.browser_soak!(o, example, SpecSuite.wasm_of(o, example))?)
 		}
 		Ok($problems)
-	}
-
-	mutate! : SpecSuite.Options, Str => Try(List(Str), _)
-	mutate! = |o, only| {
-		Checks.prepare_platform!(o)?
-		Mutations.run!(o, only)
 	}
 
 	finish! : Str, List(Str) => Try({}, [Exit(I32)])

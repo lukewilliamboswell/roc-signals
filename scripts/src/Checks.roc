@@ -22,17 +22,18 @@ Checks := [].{
 	prepare_platform! : SpecSuite.Options => Try({}, _)
 	prepare_platform! = |o| PlatformTest.prepare!({ root: o.root, build_dir: o.build_dir, zig: o.zig })
 
-	## Build and run one app's specs natively, and in Chrome when `browser`.
+	## Run one app's specs natively, and in Chrome when `browser`, with the
+	## builds `SpecSuite.build!` made.
 	## Returns the tallies and the native runner's path.
 	run_app! : SpecSuite.Options, Str, Bool => Try({ native : SpecSuite.Tally, browser : SpecSuite.Tally, runner : Str }, _)
 	run_app! = |o, example, browser| {
 		specs = SpecSuite.spec_files!(example)?
-		runner = SpecSuite.build_native!(o, example)?
+		runner = SpecSuite.runner_of(o, example)
 		native = SpecSuite.tally(SpecSuite.empty_tally, example, Native, SpecSuite.run_native!(o, runner, specs)?)
 		Proc.note!(SpecSuite.summary(example, Native, native))
 		in_browser =
 			if browser {
-				wasm = SpecSuite.build_wasm!(o, example)?
+				wasm = SpecSuite.wasm_of(o, example)
 				t = SpecSuite.tally(SpecSuite.empty_tally, example, Browser, SpecSuite.run_browser!(o, example, runner, wasm, specs)?)
 				Proc.note!(SpecSuite.summary(example, Browser, t))
 				t
@@ -55,14 +56,14 @@ Checks := [].{
 	## Each runner must reject a deliberately broken spec: a copy of
 	## kanban-board's initial-render with one expected text changed. A runner
 	## that passes it is not evidence of anything.
-	mutation! : SpecSuite.Options, Str, Str => Try(List(Str), _)
-	mutation! = |o, runner, wasm| {
+	broken_spec! : SpecSuite.Options, Str, Str => Try(List(Str), _)
+	broken_spec! = |o, runner, wasm| {
 		original = Path.read_utf8!(Path.utf8("examples/kanban-board/specs/initial-render.scm"))?
 		good = "(expect-text (test-id \"board-total\") \"5\")"
 		if !original.contains(good) {
-			return Ok(["mutation: initial-render.scm no longer holds ${good}; choose a new assertion to break"])
+			return Ok(["broken-spec self-check: initial-render.scm no longer holds ${good}; choose a new assertion to break"])
 		}
-		dir = "${o.build_dir}/mutation"
+		dir = "${o.build_dir}/broken-spec"
 		SpecSuite.fresh_dir!(dir)?
 		broken = "${dir}/initial-render-broken.scm"
 		Path.write_utf8!(Path.utf8(broken), original.replace_each(good, "(expect-text (test-id \"board-total\") \"6\")"))?
@@ -74,8 +75,8 @@ Checks := [].{
 		rejected = |lines| lines.any(|l| SpecSuite.json_field(l, "status") == "failed" and SpecSuite.json_message(l).contains("expected \\\"6\\\""))
 		Ok(
 			[]
-				.concat(if (rejected(native)) [] else ["mutation: the native runner did not reject the broken spec"])
-				.concat(if (rejected(in_browser)) [] else ["mutation: the browser runner did not reject the broken spec"]),
+				.concat(if (rejected(native)) [] else ["broken-spec self-check: the native runner did not reject the broken spec"])
+				.concat(if (rejected(in_browser)) [] else ["broken-spec self-check: the browser runner did not reject the broken spec"]),
 		)
 	}
 }

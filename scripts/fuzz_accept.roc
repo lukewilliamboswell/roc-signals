@@ -4,6 +4,7 @@ app [main!] {
 	roc: "nightly-2026-11-03-34bd006",
 }
 
+import cli.OsStr
 import src/Checks
 import src/Proc
 import src/Targets
@@ -13,8 +14,8 @@ import src/Targets
 ## step: run it on purpose, read the diff, and commit it. CI never runs it.
 ## `fuzz_accept.roc -- NAME` accepts one target.
 main! = |args| {
-	only = match args {
-		[Utf8(name), ..] => name
+	only = match args.map(OsStr.display).drop_if(|s| s == "--") {
+		[name, ..] => name
 		_ => ""
 	}
 	o = Checks.options!({ pending_phase3: Bool.True, filter: "*" })?

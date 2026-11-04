@@ -4,6 +4,7 @@ app [main!] {
 	roc: "nightly-2026-11-03-34bd006",
 }
 
+import cli.OsStr
 import src/Checks
 import src/Proc
 import src/SpecSuite
@@ -14,13 +15,7 @@ import src/SpecSuite
 ## `--strict` runs work assertions as the failures they are until Phase 3
 ## adds the engine's counters; by default they are counted as pending-phase3.
 main! = |raw_args| {
-	args = raw_args.keep_oks(
-		|a|
-			match a {
-				Utf8(s) => Ok(s)
-				_ => Err(NotUtf8)
-			},
-	)
+	args = raw_args.map(OsStr.display).drop_if(|a| a == "--")
 	var $browser = Bool.False
 	var $strict = Bool.False
 	var $filter = "*"
@@ -49,6 +44,7 @@ main! = |raw_args| {
 	if $browser {
 		SpecSuite.build_web_platform!(o)?
 	}
+	SpecSuite.build!(o, apps, if ($browser) apps else [])?
 	var $problems = []
 	for example in apps {
 		r = Checks.run_app!(o, example, $browser)?

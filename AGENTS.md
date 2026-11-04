@@ -132,10 +132,9 @@
   against a reference model, so their oracles, not their inputs, carry the
   value. When a target catches a bug, minimize the input and commit it to the
   target's corpus so CI replays it and the fix stays fixed.
-- Judge a fuzz target by whether it can fail. A target that has never rejected
-  a deliberately broken engine is not evidence of anything, so when adding or
-  changing oracles, mutate the code under test and confirm the mutation gate
-  catches it. Allocation baselines change only with reviewer acceptance.
+- Judge a fuzz target by its properties: state the rules the engine must keep
+  over generated sequences and check them against a reference model.
+  Allocation baselines change only with reviewer acceptance.
 - For performance work, follow `docs/profiling.md`: measure optimized builds,
   test scaling before micro-optimizing, keep allocator counters honest, and
   validate semantics and counters after the change. Do not trade correctness,

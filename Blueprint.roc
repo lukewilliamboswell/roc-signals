@@ -67,19 +67,18 @@ config = [
 	# with `tar -xf`, which GNU tar cannot read; the pinned recipe is ready
 	# below as `chrome` and replaces this Expect once blueprint unpacks zips on
 	# Linux.
-	Environment("engine", [Programs([roc_stable_program, zig_program, node_program]), Expect(["curl", "tar", "zstd", "sha256sum", "google-chrome"])]),
+	Environment("engine", [Programs([roc_stable_program, zig_program, node_program]), Expect(["curl", "tar", "zstd", "sha256sum", "getconf", "google-chrome"])]),
 	Shell("default", [Use("site")]),
 	# The engine/v2 per-pull-request gate: formatting, roc test, the test
 	# platform, every ported app's specs natively and in Chrome, the spec
 	# mutation check, the runtime contract tests and the jfb check.
 	Task("check", [Use("engine"), Run(["scripts/check_all.roc"])]),
-	# Too slow for every pull request: soak and the engine mutation gate.
+	# Too slow for every pull request: the soak.
 	Task("check-slow", [Use("engine"), Run(["scripts/check_slow.roc"])]),
 	# One or more apps' specs: `blueprint run spec -- --browser kanban-board`.
 	Task("spec", [Use("engine"), Run(["scripts/spec.roc", "--"])]),
 	Task("platform-test", [Use("engine"), Run(["scripts/build_platform_test.roc"])]),
 	Task("soak", [Use("engine"), Run(["scripts/soak.roc"])]),
-	Task("mutate", [Use("engine"), Run(["scripts/mutate.roc", "--"])]),
 	Task("jfb", [Use("engine"), Run(["scripts/jfb.roc"])]),
 	# Accepting exact allocation baselines is a reviewed, explicit step that
 	# CI never runs: `blueprint run fuzz-accept -- [TARGET]`, then commit

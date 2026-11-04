@@ -27,11 +27,43 @@ export async function launch({ executablePath, timeoutMs = 20000 }) {
       `--user-data-dir=${profile}`,
       "about:blank",
     ],
-    { stdio: ["ignore", "ignore", "pipe"] },
+    { stdio: ["ignore", "ignore", "pipe"], detached: true },
   );
+  // Chrome never outlives this process: whatever ends it (a normal exit, a
+  // thrown error, a failed test's process.exit, or SIGINT/SIGTERM from a
+  // timeout), the browser is killed and its profile removed. Only SIGKILL of
+  // node itself cannot be caught; the scripts' callers use SIGTERM.
+  const cleanup = () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch (_) {
+        child.kill("SIGKILL");
+      }
+    }
+    fs.rmSync(profile, { recursive: true, force: true });
+  };
+  process.on("exit", cleanup);
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    process.on(sig, () => {
+      cleanup();
+      process.exit(128 + (sig === "SIGINT" ? 2 : sig === "SIGTERM" ? 15 : 1));
+    });
+  }
+  process.on("uncaughtException", (e) => {
+    console.error(e);
+    cleanup();
+    process.exit(1);
+  });
+  process.on("unhandledRejection", (e) => {
+    console.error(e);
+    cleanup();
+    process.exit(1);
+  });
   const wsUrl = await new Promise((resolve, reject) => {
     let buf = "";
     const timer = setTimeout(() => reject(new Error(`chrome did not start within ${timeoutMs} ms: ${buf}`)), timeoutMs);
+    timer.unref();
     child.stderr.on("data", (d) => {
       buf += d.toString();
       const m = buf.match(/DevTools listening on (ws:\/\/\S+)/);
@@ -80,8 +112,17 @@ class Connection {
     const id = this.next++;
     const msg = { id, method, params };
     if (sessionId) msg.sessionId = sessionId;
+    // A protocol call that never answers fails the test instead of hanging it.
     return new Promise((resolve, reject) => {
-      this.waiting.set(id, { resolve, reject, method });
+      const timer = setTimeout(() => {
+        this.waiting.delete(id);
+        reject(new Error(`${method}: no answer within 120 s`));
+      }, 120000);
+      this.waiting.set(id, {
+        resolve: (v) => (clearTimeout(timer), resolve(v)),
+        reject: (e) => (clearTimeout(timer), reject(e)),
+        method,
+      });
       this.ws.send(JSON.stringify(msg));
     });
   }

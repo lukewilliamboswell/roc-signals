@@ -73,13 +73,51 @@ SpecSuite := [].{
 
 	# ------------------------------------------------------------- native
 
-	## Build the native spec runner for `example`; returns its path.
-	build_native! : Options, Str => Try(Str, _)
-	build_native! = |o, example| {
-		dir = "${o.build_dir}/native/${example}"
-		Path.create_all!(Path.utf8(dir))?
-		Proc.run!({ program: o.compiler, args: ["build", "--opt=dev", "${SpecSuite.dir_of(example)}/main-test.roc", "--output=${dir}/runner"], cwd: o.root })?
-		Ok("${dir}/runner")
+	## The native spec runner of `example` (built by `build!`).
+	runner_of : Options, Str -> Str
+	runner_of = |o, example| "${o.build_dir}/native/${example}/runner"
+
+	## The browser build of an app or test app (built by `build!`).
+	wasm_of : Options, Str -> Str
+	wasm_of = |o, name| "${o.build_dir}/wasm/${name}/app.wasm"
+
+	## A build of the app or test app `main` (`main-test.roc` or
+	## `main-web.roc`) at optimisation level `opt`.
+	build_job : Options, Str, Str, Str, Str -> Proc.Job
+	build_job = |o, opt, main, target, output| {
+		program: o.compiler,
+		args: ["build", "--opt=${opt}"].concat(if (target == "") [] else ["--target=${target}"]).concat([main, "--output=${output}"]),
+		cwd: o.root,
+	}
+
+	## Build, in parallel (bounded by the CPU count), the native runners of
+	## `natives` and the browser builds of `webs` (app names, or
+	## `tests/apps/NAME` for a test app). A failed build is an error.
+	build! : Options, List(Str), List(Str) => Try({}, _)
+	build! = |o, natives, webs| SpecSuite.build_with!(o, natives, webs, "dev")
+
+	## `build!` with the browser builds at optimisation level `web_opt`. The
+	## soak measures the memory of the shipping artifact, so it builds with
+	## `size`; everything else tests behaviour and builds with `dev`.
+	build_with! : Options, List(Str), List(Str), Str => Try({}, _)
+	build_with! = |o, natives, webs, web_opt| {
+		var $jobs = []
+		for example in natives {
+			Path.create_all!(Path.utf8("${o.build_dir}/native/${example}"))?
+			$jobs = $jobs.append(SpecSuite.build_job(o, "dev", "${SpecSuite.dir_of(example)}/main-test.roc", "", SpecSuite.runner_of(o, example)))
+		}
+		for w in webs {
+			name = w.split_on("/").last() ?? w
+			dir = if (w.starts_with("tests/apps/")) w else SpecSuite.dir_of(w)
+			Path.create_all!(Path.utf8("${o.build_dir}/wasm/${name}"))?
+			$jobs = $jobs.append(SpecSuite.build_job(o, web_opt, "${dir}/main-web.roc", "wasm32", SpecSuite.wasm_of(o, name)))
+		}
+		results = Proc.parallel!($jobs, Proc.cpus!())?
+		failed = List.map2($jobs, results, |job, r| (job, r.code)).keep_if(|(_, code)| code != 0)
+		match failed.first() {
+			Ok((job, code)) => Err(BuildFailed("${Proc.show(job)} exited with ${code.to_str()}"))
+			Err(_) => Ok({})
+		}
 	}
 
 	## Where an app lives.
@@ -148,15 +186,6 @@ SpecSuite := [].{
 	build_web_platform! = |o| {
 		Path.create_all!(Path.utf8("${o.root}/platform/targets/wasm32"))?
 		Proc.run!({ program: o.zig, args: ["build-obj", "host/host.zig", "-target", "wasm32-freestanding", "-O", "ReleaseSmall", "-fstrip", "-femit-bin=targets/wasm32/host.wasm"], cwd: "${o.root}/platform" })
-	}
-
-	## Build `example` for the browser; returns the Wasm path.
-	build_wasm! : Options, Str => Try(Str, _)
-	build_wasm! = |o, example| {
-		dir = "${o.build_dir}/wasm/${example}"
-		Path.create_all!(Path.utf8(dir))?
-		Proc.run!({ program: o.compiler, args: ["build", "--target=wasm32", "--opt=size", "${SpecSuite.dir_of(example)}/main-web.roc", "--output=${dir}/app.wasm"], cwd: o.root })?
-		Ok("${dir}/app.wasm")
 	}
 
 	## Emit the parsed steps with the native runner, then replay them in

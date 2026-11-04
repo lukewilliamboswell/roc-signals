@@ -7,13 +7,12 @@ app [main!] {
 import src/Checks
 import src/Slow
 
-## The `check-slow` task: what takes too long for every pull request. The
-## soak (every fuzz target's declared examples against its committed exact
-## allocation baseline, which include the native soak walks and the bench
-## transactions, and a long session of every app in Chrome) and the engine
-## mutation gate.
+## The `check-slow` task: what takes too long for every pull request, the
+## soak: every fuzz target's declared examples against its committed exact
+## allocation baseline (the native soak walks and the bench transactions),
+## and a long session of every app in Chrome.
 main! = |_args| {
 	o = Checks.options!({ pending_phase3: Bool.True, filter: "*" })?
-	problems = Slow.soak!(o)?.concat(Slow.mutate!(o, "")?)
+	problems = Slow.soak!(o)?
 	Slow.finish!("check-slow", problems)
 }

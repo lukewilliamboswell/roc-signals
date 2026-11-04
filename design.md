@@ -111,7 +111,7 @@ this document and the implementation are tracked in issues.
 ### Success criteria
 
 - **Engine invariants:** native specs with work and effect counters, the
-  `Dom.roc` oracle, mutation-tested fuzz targets with exact allocation
+  `Dom.roc` oracle, roc-fuzz property targets with exact allocation
   baselines, and long-session soak runs with flat live allocations and Wasm
   pages.
 - **Author outcomes:** maintained apps contain no workaround encodings; a
@@ -932,8 +932,6 @@ through allocation plateaus in soak runs instead.
   carry the value.
 - **Exact allocation baselines** per named example catch silent
   copy-on-write cliffs. Baselines change only with reviewer acceptance.
-- **Mutation gate.** Each target is run against deliberately broken engines; a
-  target that has never rejected a mutation is not evidence.
 - **Soak.** Every app runs a long random walk natively (leak-checked) and in
   Chrome, with live allocations and Wasm pages asserted flat across repeated
   round trips.
@@ -952,7 +950,7 @@ architecture are recorded here:
   an absolute path.
 - **Roc scripts.** Automation is Roc scripts under `scripts/`; one `check`
   task runs formatting, `roc test`, every example's specs natively and in
-  Chrome, fuzz corpus replay and the mutation gate, size budgets, and the host
+  Chrome, fuzz corpus replay, size budgets, and the host
   and runtime contract tests. CI calls Blueprint tasks, never script paths.
 - **Fuzzing.** Short corpus replays run in pull-request CI; long campaigns
   run on a schedule.

@@ -29,32 +29,59 @@ Targets := [].{
 	baseline : Str -> Str
 	baseline = |name| "fuzz/baselines/${name}_baseline.json"
 
-	## Build a fuzz target (`--fuzz --opt=speed`); returns the executable.
-	build_fuzz! : SpecSuite.Options, Fuzz => Try(Str, _)
-	build_fuzz! = |o, { name, main }| {
-		dir = "${o.build_dir}/fuzz/${name}"
-		SpecSuite.fresh_dir!(dir)?
-		Proc.run!({ program: o.compiler, args: ["build", "--fuzz", "--opt=speed", main, "--output=${dir}/target"], cwd: o.root })?
-		Ok("${dir}/target")
+	## Where a target's executable is built.
+	exe_of : SpecSuite.Options, Fuzz -> Str
+	exe_of = |o, { name, .. }| "${o.build_dir}/fuzz/${name}/target"
+
+	## Build fuzz targets in parallel. `--fuzz` needs the LLVM backend, so
+	## these builds use `--opt=speed` (the compiler refuses `--opt=dev`).
+	build_fuzz_all! : SpecSuite.Options, List(Fuzz) => Try({}, _)
+	build_fuzz_all! = |o, fuzzes| {
+		var $jobs = []
+		for t in fuzzes {
+			SpecSuite.fresh_dir!("${o.build_dir}/fuzz/${t.name}")?
+			$jobs = $jobs.append({ program: o.compiler, args: ["build", "--fuzz", "--opt=speed", t.main, "--output=${Targets.exe_of(o, t)}"], cwd: o.root })
+		}
+		results = Proc.parallel!($jobs, Proc.cpus!())?
+		match List.map2(fuzzes, results, |t, r| (t, r.code)).keep_if(|(_, c)| c != 0).first() {
+			Ok((t, c)) => Err(BuildFailed("fuzz ${t.name}: build exited with ${c.to_str()}"))
+			Err(_) => Ok({})
+		}
 	}
 
-	## Run a target's declared examples once each against its committed
-	## baseline. A finding, a changed baseline or a missing one is a problem.
-	fuzz_check! : SpecSuite.Options, Fuzz, Str => Try(List(Str), _)
-	fuzz_check! = |o, { name, .. }, exe| {
-		{ code, stdout } = Proc.output!({ program: exe, args: ["check", "--baseline=${o.root}/${Targets.baseline(name)}", "--timeout=1800"], cwd: "${o.build_dir}/fuzz/${name}" })?
-		out = Str.from_utf8_lossy(stdout)
-		Proc.note!(out)
-		Ok(
-			if code != 0 or !out.contains("${name}: passed") {
-				["fuzz ${name}: ${out.trim()}"]
-			} else if !out.contains("baseline matched") {
-				["fuzz ${name}: no accepted baseline (${Targets.baseline(name)}); review the observations and run `blueprint run fuzz-accept`"]
-			} else {
-				[]
-			},
-		)
+	build_fuzz! : SpecSuite.Options, Fuzz => Try(Str, _)
+	build_fuzz! = |o, t| {
+		Targets.build_fuzz_all!(o, [t])?
+		Ok(Targets.exe_of(o, t))
 	}
+
+	check_job : SpecSuite.Options, Fuzz -> Proc.Job
+	check_job = |o, t| { program: Targets.exe_of(o, t), args: ["check", "--baseline=${o.root}/${Targets.baseline(t.name)}", "--timeout=1800"], cwd: "${o.build_dir}/fuzz/${t.name}" }
+
+	## A target's check, judged: a finding, a changed baseline or a missing
+	## one is a problem.
+	judge : Str, I32, Str -> List(Str)
+	judge = |name, code, out|
+		if code != 0 or !out.contains("${name}: passed") {
+			["fuzz ${name}: ${out.trim()}"]
+		} else if !out.contains("baseline matched") {
+			["fuzz ${name}: no accepted baseline (${Targets.baseline(name)}); review the observations and run `blueprint run fuzz-accept`"]
+		} else {
+			[]
+		}
+
+	## Build every target, then check each one's declared examples against its
+	## committed baseline, in parallel (the checks are independent processes
+	## and allocation counts do not depend on timing).
+	fuzz_check_all! : SpecSuite.Options, List(Fuzz) => Try(List(Str), _)
+	fuzz_check_all! = |o, fuzzes| {
+		Targets.build_fuzz_all!(o, fuzzes)?
+		results = Proc.parallel!(fuzzes.map(|t| Targets.check_job(o, t)), Proc.cpus!())?
+		Ok(List.map2(fuzzes, results, |t, r| Targets.judge(t.name, r.code, r.output)).join())
+	}
+
+	fuzz_check! : SpecSuite.Options, Fuzz, Str => Try(List(Str), _)
+	fuzz_check! = |o, t, _exe| Targets.fuzz_check_all!(o, [t])
 
 	## Accept a target's allocation observations as its baseline: an explicit
 	## review step, never run by CI.
@@ -64,28 +91,19 @@ Targets := [].{
 		Proc.run!({ program: exe, args: ["accept", "--baseline=${o.root}/${Targets.baseline(name)}", "--timeout=1800"], cwd: "${o.build_dir}/fuzz/${name}" })
 	}
 
-	## Build a test app (`tests/apps/<name>`) for the browser.
-	build_test_wasm! : SpecSuite.Options, Str => Try(Str, _)
-	build_test_wasm! = |o, name| {
-		dir = "${o.build_dir}/wasm/${name}"
-		Path.create_all!(Path.utf8(dir))?
-		Proc.run!({ program: o.compiler, args: ["build", "--target=wasm32", "--opt=size", "tests/apps/${name}/main-web.roc", "--output=${dir}/app.wasm"], cwd: o.root })?
-		Ok("${dir}/app.wasm")
-	}
-
 	browser! : SpecSuite.Options, Str, List(Str) => Try(List(Str), _)
 	browser! = |o, script, args| {
 		code = Proc.status!({ program: o.node, args: ["tests/browser/${script}", "--runtime", SpecSuite.runtime, "--chrome", o.chrome].concat(args), cwd: o.root })?
 		Ok(if (code == 0) [] else ["${script} ${Str.join_with(args, " ")} failed (exit ${code.to_str()})"])
 	}
 
-	## The runtime contract tests in Chrome: the effect channel (tests/apps/effects),
+	## The runtime contract tests in Chrome (test apps built by `SpecSuite.build!`): the effect channel (tests/apps/effects),
 	## controlled inputs, focus and containment (tests/apps/controls), and
 	## Conduit's user journey against the RealWorld mock backend.
 	browser_contracts! : SpecSuite.Options, Str => Try(List(Str), _)
 	browser_contracts! = |o, conduit_wasm| {
-		fx = Targets.build_test_wasm!(o, "effects")?
-		controls = Targets.build_test_wasm!(o, "controls")?
+		fx = SpecSuite.wasm_of(o, "effects")
+		controls = SpecSuite.wasm_of(o, "controls")
 		Ok(
 			Targets.browser!(o, "fx-browser.mjs", ["--wasm", fx])?
 				.concat(Targets.browser!(o, "controls-browser.mjs", ["--wasm", controls])?)

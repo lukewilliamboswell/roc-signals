@@ -51,6 +51,50 @@ Proc := [].{
 		}
 	}
 
+	## Run and return the exit code and stdout and stderr together, in order.
+	merged! : Job => Try({ code : I32, stdout : List(U8) }, [CommandFailed(Str)])
+	merged! = |job| {
+		output = Proc.cmd(job).stderr(MergeWithStdout).output_limit(MaxBytes(256 * 1024 * 1024)).run!() ? |e| CommandFailed("${Proc.show(job)}: ${Str.inspect(e)}")
+		match output.status {
+			Exited(code) => Ok({ code, stdout: output.stdout_bytes })
+			Signaled(signal) => Err(CommandFailed("${Proc.show(job)} ended by signal ${signal.to_str()}"))
+		}
+	}
+
+	## Run independent jobs at most `limit` at a time. Each job's output is
+	## captured and printed whole, in job order, when it finishes, so the log
+	## reads the same however the jobs interleave. Returns each job's exit code
+	## and output in job order.
+	parallel! : List(Job), U64 => Try(List({ code : I32, output : Str }), [CommandFailed(Str)])
+	parallel! = |jobs, limit| {
+		var $codes = []
+		for chunk in jobs.chunks_of(if (limit == 0) 1 else limit) {
+			var $running = []
+			for job in chunk {
+				child = Proc.cmd(job).stdout(Capture).stderr(MergeWithStdout).spawn!() ? |e| CommandFailed("${Proc.show(job)}: ${Str.inspect(e)}")
+				$running = $running.append((job, child))
+			}
+			for (job, child) in $running {
+				output = child.wait!() ? |e| CommandFailed("${Proc.show(job)}: ${Str.inspect(e)}")
+				Stdout.line!("RUN ${Proc.show(job)}") ?? {}
+				Stdout.write_bytes!(output.stdout_bytes) ?? {}
+				code = match output.status {
+					Exited(c) => c
+					Signaled(_) => -1
+				}
+				$codes = $codes.append({ code, output: Str.from_utf8_lossy(output.stdout_bytes) })
+			}
+		}
+		Ok($codes)
+	}
+
+	## How many jobs to run at once: the machine's online CPUs.
+	cpus! : () => U64
+	cpus! = || {
+		out = Proc.cmd({ program: "getconf", args: ["_NPROCESSORS_ONLN"], cwd: "." }).run!() ?? crash "getconf"
+		U64.from_str(Str.from_utf8_lossy(out.stdout_bytes).trim()) ?? 1
+	}
+
 	## Run and return stdout; a non-zero exit is an error.
 	capture! : Job => Try(List(U8), [CommandFailed(Str)])
 	capture! = |job| {

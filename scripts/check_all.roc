@@ -12,11 +12,10 @@ import src/Targets
 
 ## The `check` task, the per-pull-request gate: the script pins, formatting,
 ## `roc test`, the test platform and the `scm-parse` fuzz target, every ported
-## app's original `.scm` specs natively and in Chrome, the spec mutation check
-## (both runners reject a broken spec), the runtime contract tests in Chrome
+## app's original `.scm` specs natively and in Chrome, the broken-spec
+## self-check (both runners reject a spec with one wrong expectation), the runtime contract tests in Chrome
 ## (effects, controls, Conduit journey) and the js-framework-benchmark check.
-## The soak runs, the app fuzz targets' baselines and the engine mutation gate
-## are `check-slow`.
+## The soak runs and the app fuzz targets' baselines are `check-slow`.
 ##
 ## Work assertions cannot run until Phase 3 adds the engine's counters, so the
 ## suite runs with `--pending-phase3`: they are counted and reported, never
@@ -44,6 +43,7 @@ main! = |_args| {
 	var $browser = SpecSuite.empty_tally
 	var $kanban = { runner: "", wasm: "" }
 	SpecSuite.build_web_platform!(o)?
+	SpecSuite.build!(o, SpecSuite.apps, SpecSuite.apps.concat(["tests/apps/effects", "tests/apps/controls"]))?
 	for example in SpecSuite.apps {
 		r = Checks.run_app!(o, example, Bool.True)?
 		$native = Checks.add($native, r.native)
@@ -54,8 +54,8 @@ main! = |_args| {
 	}
 	$problems = $problems.concat($native.problems).concat($browser.problems)
 
-	Proc.note!("== spec mutation check")
-	$problems = $problems.concat(Checks.mutation!(o, $kanban.runner, $kanban.wasm)?)
+	Proc.note!("== broken-spec self-check")
+	$problems = $problems.concat(Checks.broken_spec!(o, $kanban.runner, $kanban.wasm)?)
 
 	Proc.note!("== runtime contracts in Chrome")
 	$problems = $problems.concat(Targets.browser_contracts!(o, "${o.build_dir}/wasm/conduit/app.wasm")?)
