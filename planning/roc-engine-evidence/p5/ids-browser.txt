@@ -1,0 +1,29 @@
+form-builder: == 12/13 specs pass; fills typed=152 fallback=9
+kanban-board: == 10/10 specs pass; fills typed=40 fallback=3
+data-grid: == 9/9 specs pass; fills typed=32 fallback=0
+markdown-editor: == 11/11 specs pass; fills typed=30 fallback=0
+conduit: == 25/25 specs pass; fills typed=18 fallback=0
+journey: == conduit journey: all pass
+fx: == fx browser contract: all pass
+controls: == controls: all pass
+ok   random walk: 3000 events in 679 ms, no fault
+ok   30 round trips: pages flat, no growth in live allocations or live bytes after 3 warm-up cycles (exactly equal: true)
+   cycles (pages, live): [[139,164,36484],[139,164,36484],[139,164,36484],[139,164,36484],[139,164,36484]] ... [[139,164,36484],[139,164,36484]]
+== soak form-builder: all pass
+ok   random walk: 3000 events in 311 ms, no fault
+ok   30 round trips: pages flat, no growth in live allocations or live bytes after 3 warm-up cycles (exactly equal: true)
+   cycles (pages, live): [[139,260,59980],[139,260,59928],[139,260,59928],[139,260,59928],[139,260,59928]] ... [[139,260,59928],[139,260,59928]]
+== soak kanban-board: all pass
+ok   random walk: 3000 events in 622 ms, no fault
+ok   30 round trips: pages flat, no growth in live allocations or live bytes after 3 warm-up cycles (exactly equal: true)
+   cycles (pages, live): [[144,98,63856],[144,98,63856],[144,98,63856],[144,98,63856],[144,98,63856]] ... [[144,98,63856],[144,98,63856]]
+== soak data-grid: all pass
+ok   random walk: 3000 events in 338 ms, no fault
+FAIL 30 round trips: pages flat, no growth in live allocations or live bytes after 3 warm-up cycles (exactly equal: false) [[139,706,95974],[139,706,94465],[139,706,94468],[139,706,94471],[139,706,94474],[139,706,94477],[139,706,94480],[139,706,94483],[139,706,94486],[139,706,94489],[139,706,94492],[139,706,94495],[139,706,94498],[139,706,94501],[139,706,94504],[139,706,94507],[139,706,94510],[139,706,94513],[139,706,94516],[139,706,94519],[139,706,94522],[139,706,94525],[139,706,94528],[139,706,94531],[139,706,94534],[139,706,94537],[139,706,94540],[139,706,94543],[139,706,94546],[139,706,94549]]
+   cycles (pages, live): [[139,706,95974],[139,706,94465],[139,706,94468],[139,706,94471],[139,706,94474]] ... [[139,706,94546],[139,706,94549]]
+== soak markdown-editor: 1 failures
+ok   random walk: 3000 events in 2272 ms, no fault
+ok   30 round trips: pages flat, no growth in live allocations or live bytes after 3 warm-up cycles (exactly equal: false)
+   cycles (pages, live): [[142,966,175959],[142,966,175959],[142,966,175959],[142,966,175959],[142,965,184723]] ... [[142,965,184723],[142,966,175959]]
+== soak conduit: all pass
+== jfb: all pass

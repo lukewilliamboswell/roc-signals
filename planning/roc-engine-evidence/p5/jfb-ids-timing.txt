@@ -1,0 +1,2 @@
+A /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/p5/jfb-old/dist: create 1k 29.4 ms, create 10k 240.6 ms (median of 15)
+B /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/p5/jfb/dist: create 1k 29.9 ms, create 10k 248.1 ms (median of 15)

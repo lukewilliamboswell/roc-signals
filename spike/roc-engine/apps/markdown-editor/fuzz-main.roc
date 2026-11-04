@@ -71,7 +71,9 @@ Input : { mode : U8, size : U64, program : List(U8) }
 
 ## A round trip back to the initial state (soak cycle).
 cycle : List(Spec.Step)
-cycle = [Click(Role("button", "Append a section")), Click(Role("button", "Remove the last section"))]
+## (Append then remove a section is not an exact inverse in this app: each
+## round trip leaves one more trailing newline, so it grows by design.)
+cycle = [Click(Role("button", "Load heading drill")), Click(Role("button", "Load document without headings"))]
 
 ## Soak, mode 2: an explorer-driven random walk (two bytes per event) from a
 ## fresh mount, which must free everything it allocated.
@@ -83,19 +85,29 @@ soak_walk! = |program| {
 
 ## Soak, mode 3: 2,000 seeded random events per example (five examples,
 ## seeds 1-5: 10k events; the DOM oracle makes one 10k walk exceed the
-## per-input timeout here), leak-checked, then the round trip 12 times on
+## per-input timeout here), leak-checked, then the round trip 48 times on
 ## the engine alone: live allocations flat after 2 warm-up cycles.
 soak_10k! : U64 => Fuzz.Outcome
 soak_10k! = |seed| {
 	Fuzz.expect_no_leaks!(|| Soak.walk_n(Spec.start(MdApp.main({})), seed, 2000, |s| s))
 	(s1, evs) = Soak.triples(Spec.start(MdApp.main({})), cycle, |s| s)
-	counts = Soak.replay!(s1.eng, evs, 12, |a, b| (a, b), |_| Fuzz.live_alloc_count!())
+	counts = Soak.replay!(s1.eng, evs, 48, |a, b| (a, b), begin!, net_bytes!)
 	match Soak.flat(counts, 2) {
 		Ok(_) => {}
 		Err(m) => crash m
 	}
-	Fuzz.mark!("soak cycle live allocations ${Str.inspect(counts)}")
+	Fuzz.mark!("soak cycle net live bytes ${Str.inspect(counts.sublist({ start: 0, len: 4 }))} ... (${counts.len().to_str()} cycles)")
 	Fuzz.keep
+}
+
+## Soak probes: a measured region around one cycle; its net live bytes.
+begin! : {} => Fuzz.Measurement
+begin! = |_| Fuzz.start_measure!("cycle")
+
+net_bytes! : Fuzz.Measurement => I64
+net_bytes! = |w| {
+	stats = w.finish!()
+	stats.exit_live_bytes.to_i64_wrap() - stats.entry_live_bytes.to_i64_wrap()
 }
 
 test! : Input => Fuzz.Outcome

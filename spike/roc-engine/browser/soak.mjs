@@ -5,8 +5,8 @@
 //    Conduit runs with automatic effects against the RealWorld mock backend.
 //    The instance must never fault.
 // 2. On a fresh page, an app round trip (back to the initial state) 30 times:
-//    Wasm memory pages and the host's live allocation count (metric 4) must
-//    be flat after 3 warm-up cycles.
+//    Wasm memory pages must be flat and the host's live allocation count and
+//    live bytes (metrics 4, 5) must not grow after 3 warm-up cycles.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -25,7 +25,7 @@ if (conduit) handle = (await import(path.join(repo, "www/static/conduit_backend.
 const files = {
   "index.html": path.join(here, "index.html"),
   "locate.js": path.join(here, "locate.js"),
-  "runtime.mjs": path.join(here, "..", "platform", "runtime.mjs"),
+  "runtime.mjs": process.env.RUNTIME ?? path.join(here, "..", "platform", "runtime.mjs"),
   "app.wasm": path.join(appDir, "app.wasm"),
 };
 const server = http.createServer(async (req, res) => {
@@ -140,15 +140,18 @@ const CYCLES = {
   "form-builder": [["fill", ["label", "Answer f1"], "Ada"], ["fill", ["label", "Answer f1"], ""], ["click", ["role", "button", "Move up f2"]], ["click", ["role", "button", "Move up f1"]]],
   "kanban-board": [["fill", ["label", "New card title"], "Soak card"], ["click", ["role", "button", "Add card"]], ["click", ["role", "button", "Delete: Soak card"]]],
   "data-grid": [["fill", ["label", "Filter"], "Node-0007"], ["fill", ["label", "Filter"], ""], ["click", ["role", "button", "Next page"]], ["click", ["role", "button", "Previous page"]]],
-  "markdown-editor": [["click", ["role", "button", "Append a section"]], ["click", ["role", "button", "Remove the last section"]]],
+  // Append + remove a section is not an exact inverse in this app (one more
+  // trailing newline per trip): load two fixed documents instead.
+  "markdown-editor": [["click", ["role", "button", "Load heading drill"]], ["click", ["role", "button", "Load document without headings"]]],
   conduit: [["click", ["role", "link", "Sign in"]], ["click", ["role", "link", "Home"]]],
 };
 {
   const { ctx, page } = await open();
   if (conduit) await settle(page);
   const cycle = CYCLES[app];
+  const NCYC = Number(process.env.CYCLES ?? 30);
   const samples = [];
-  for (let c = 0; c < 30; c += 1) {
+  for (let c = 0; c < NCYC; c += 1) {
     for (const [op, loc, v] of cycle) {
       const r = await page.evaluate((op, loc, v) => {
         const el = window.__loc(loc);
@@ -163,18 +166,19 @@ const CYCLES = {
       if (r) throw new Error(r);
       if (conduit) await settle(page);
     }
-    samples.push(await page.evaluate(() => [window.__rt.x.memory.buffer.byteLength / 65536, Number(window.__rt.x.metric(4))]));
+    samples.push(await page.evaluate(() => [window.__rt.x.memory.buffer.byteLength / 65536, Number(window.__rt.x.metric(4)), Number(window.__rt.x.metric(5))]));
   }
   // Flat: identical pages; live allocations with no growth (the later half
   // never exceeds the earlier half). Exact equality is also reported: an
   // async effect app may jitter by an allocation depending on timing.
   const tail = samples.slice(3);
   const half = Math.floor(tail.length / 2);
-  const maxOf = (xs) => Math.max(...xs.map((s) => s[1]));
+  const maxOf = (xs, i) => Math.max(...xs.map((s) => s[i]));
   const pagesFlat = tail.every((s) => s[0] === tail[0][0]);
-  const noGrowth = maxOf(tail.slice(half)) <= maxOf(tail.slice(0, half));
-  const exact = tail.every((s) => s[1] === tail[0][1]);
-  check(`30 round trips: pages flat, no live-allocation growth after 3 warm-up cycles (exactly equal: ${exact})`, pagesFlat && noGrowth && !(await page.evaluate(() => window.__rt.poisoned)), JSON.stringify(samples));
+  // live allocation count (1) and live bytes (2): no growth
+  const noGrowth = [1, 2].every((i) => maxOf(tail.slice(half), i) <= maxOf(tail.slice(0, half), i));
+  const exact = tail.every((s) => s[1] === tail[0][1] && s[2] === tail[0][2]);
+  check(`${NCYC} round trips: pages flat, no growth in live allocations or live bytes after 3 warm-up cycles (exactly equal: ${exact})`, pagesFlat && noGrowth && !(await page.evaluate(() => window.__rt.poisoned)), JSON.stringify(samples));
   console.log(`   cycles (pages, live): ${JSON.stringify(samples.slice(0, 5))} ... ${JSON.stringify(samples.slice(-2))}`);
   await ctx.close();
 }

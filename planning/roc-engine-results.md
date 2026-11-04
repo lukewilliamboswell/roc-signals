@@ -129,7 +129,8 @@ Compiler: roc-lang/roc#12851 (undeclared type in a `provides` annotation segfaul
 - Soak, Chrome: 3,000 random events per app with no fault. Then 30 round trips: pages are flat
   (139-144) and live allocations exactly flat for the four apps; Conduit, with async effects,
   jitters 942/943 with no growth.
-  Found while soaking: `resource_limit` at 4,095 live each sites (12-bit site ids in node ids).
+  Found while soaking: `resource_limit` at 4,095 live each sites (12-bit site ids in node ids);
+  resolved in Phase 5c below.
   The form bench with ~65k fields hits it. This is a real scale limit.
 - Conduit in Chrome (eager Wasm compile, median ms, current vs spike): feed N=200 76.7 vs 17.8;
   tag-click N=200 22.4 vs 3.8; feed N=20 9.2 vs 3.4; mount 3.1 vs 1.9. First paint is slower for
@@ -139,3 +140,42 @@ Compiler: roc-lang/roc#12851 (undeclared type in a `provides` annotation segfaul
   blocker (roc-lang/roc#12847, #12848).
   Current-engine finding: its browser storage import misreads keys of 11 bytes or fewer (Roc
   small strings on wasm32).
+
+### Phase 5c: node and site ids without bit-width limits (2026-11-05)
+
+Rows used to get node ids `(site << 20) | slot+1`: at most 4,095 live each sites and 1M rows per
+site. Now every element, rows included, takes a dense u32 id from one recycled pool. The routes
+table maps the id to a block path or to a row's (site, slot), so event routing is one O(1) lookup
+plus the site's path. Each site ids are dense, recycled, and no longer packed into anything. The
+only limit left is 2^32 - 2 live nodes, i.e. memory.
+
+Recycled ids can't alias:
+- a freed node id has no route, so a stale event drops;
+- the runtime drops a queued event whose element left the DOM or whose id was reused;
+- a site's rows are forgotten on CLEAR (per-site row sets in the runtime and the DOM oracle).
+
+Results:
+- **More than 4,095 each sites:** a test app mounts 5,001 sites (5,000 rows, each with a nested
+  each), shrinks to 1,250 rows, then regrows 5,000 with new keys, so sites and ids are recycled.
+  Clicks deep in the newest rows route correctly. It passes natively. The old engine crashes with
+  `resource_limit: each sites exhausted`. The form app mounts 65,536 fields (65,537 each sites:
+  3.36M allocations, 2.19 GB requested).
+- **Specs:** all specs pass natively, and the Chrome replays are unchanged (form 12/13, kanban
+  10/10, grid 9/9, markdown 11/11, Conduit 25/25, Conduit journey, effect, controls and jfb
+  checks). Baselines are re-accepted.
+- **Allocations:** 80 of 110 bench steps are unchanged; 30 rise slightly from the routes and
+  row-node columns, e.g. data-grid page turns 18 -> 21, kanban filter-one 360 -> 466 at N=400,
+  Conduit feed N=200 17,078 -> 17,280, form mount N=200 +2 allocations.
+- **A leak found and fixed:** row ids now come from the shared pool, so a disposed static each
+  (no DOM removal needed) must still release them. Missing that leaked ids in Conduit, and Chrome
+  pages grew from 142 to 159 over 200 round trips while the live allocation count stayed flat.
+  - The browser soak now also asserts no growth in live bytes.
+  - The native soak replays its round trip 48 times inside measured regions and requires zero net
+    live bytes per cycle after warm-up.
+  - It catches the leak in a mutant (2,560 bytes at cycle 19). The fix is flat: Conduit stays at
+    142 pages and 175,959 bytes.
+- **jfb in Chrome** (eager compile, median of 15, old vs new id scheme): create 1k 29.4 vs 29.9 ms,
+  create 10k 240.6 vs 248.1 ms (+3%: one pooled id and one route entry per row). The keyed checks
+  all pass.
+- **Markdown cycle:** the app's append/remove-section trip is not an exact inverse (one more
+  trailing newline per trip), so its soak cycle now loads two fixed documents.

@@ -96,18 +96,28 @@ soak_walk! = |program| {
 }
 
 ## Soak, mode 3: 10k seeded random events (leak-checked), then the round trip
-## 12 times on the engine alone: live allocations flat after 2 warm-up cycles.
+## 48 times on the engine alone: live allocations flat after 2 warm-up cycles.
 soak_10k! : {} => Fuzz.Outcome
 soak_10k! = |_| {
 	Fuzz.expect_no_leaks!(|| Soak.walk_n(Spec.start(KanbanApp.main({})), 7, 10000, |s| s))
 	(s1, evs) = Soak.triples(Spec.start(KanbanApp.main({})), cycle, |s| s)
-	counts = Soak.replay!(s1.eng, evs, 12, |a, b| (a, b), |_| Fuzz.live_alloc_count!())
+	counts = Soak.replay!(s1.eng, evs, 48, |a, b| (a, b), begin!, net_bytes!)
 	match Soak.flat(counts, 2) {
 		Ok(_) => {}
 		Err(m) => crash m
 	}
-	Fuzz.mark!("soak cycle live allocations ${Str.inspect(counts)}")
+	Fuzz.mark!("soak cycle net live bytes ${Str.inspect(counts.sublist({ start: 0, len: 4 }))} ... (${counts.len().to_str()} cycles)")
 	Fuzz.keep
+}
+
+## Soak probes: a measured region around one cycle; its net live bytes.
+begin! : {} => Fuzz.Measurement
+begin! = |_| Fuzz.start_measure!("cycle")
+
+net_bytes! : Fuzz.Measurement => I64
+net_bytes! = |w| {
+	stats = w.finish!()
+	stats.exit_live_bytes.to_i64_wrap() - stats.entry_live_bytes.to_i64_wrap()
 }
 
 test! : Input => Fuzz.Outcome

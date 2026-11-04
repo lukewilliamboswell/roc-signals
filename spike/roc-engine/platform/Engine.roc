@@ -41,7 +41,10 @@
 ##  10 TEXTNODE node parent before text
 ##  11 LISTEN   node handler event:str
 ##  12 SETTEXT  node text
-## Node ids: rows are (site << 20) | (slot + 1); other nodes use site 0.
+## Node ids: one dense u32 space for every element (rows included), recycled
+## through a free list; the routes table maps each to a block path or to a
+## row's (site, slot). Each sites are dense u32 ids (template ids), recycled.
+## Limits are memory, not bit widths (2^32 - 2 live nodes; fx_node reserved).
 Engine := [].{
 	Root := [Root]
 
@@ -295,7 +298,9 @@ Engine := [].{
 
 	Inst(ctx) := [Inst((ctx, Msg, Tx -> (Inst(ctx), Out(ctx), Tx)))]
 
-	Route := [NoRoute, Route(List(U32), U32)]
+	## A node's route: a static node's block path, or a row element's site
+	## and slot (resolved through the site's current path).
+	Route := [NoRoute, Route(List(U32), U32), RowOf(U32, U32)]
 
 	## Storage captured by a site closure. Wrapping a site's captures in a
 	## single-tag nominal and unwrapping them inside the closure body keeps
@@ -353,8 +358,8 @@ Engine := [].{
 		match free.last() {
 			Ok(id) => (id, { cmds, next, free: free.drop_last(1), routes, evals, paths, site_free, fx })
 			Err(_) => {
-				if next >= 1048575 {
-					crash "resource_limit: static node ids exhausted (1048575)"
+				if next >= 4294967294 {
+					crash "resource_limit: node ids exhausted (4294967294 live nodes)"
 				}
 				(next, { cmds, next: next + 1, free, routes, evals, paths, site_free, fx })
 			}
@@ -378,16 +383,22 @@ Engine := [].{
 		{ cmds, next, free, routes: $r.set(id.to_u64(), Route(path, handler)) ?? $r, evals, paths, site_free, fx }
 	}
 
-	## Allocate an each-site id (template id and row node prefix).
+	set_row_route : Tx, U32, U32, U32 -> Tx
+	set_row_route = |{ cmds, next, free, routes, evals, paths, site_free, fx }, id, site, slot| {
+		var $r = routes
+		while $r.len() <= id.to_u64() {
+			$r = $r.append(NoRoute)
+		}
+		{ cmds, next, free, routes: $r.set(id.to_u64(), RowOf(site, slot)) ?? $r, evals, paths, site_free, fx }
+	}
+
+	## Allocate an each-site id (template id).
 	alloc_site : Tx, List(U32) -> (U32, Tx)
 	alloc_site = |{ cmds, next, free, routes, evals, paths, site_free, fx }, path| {
 		match site_free.last() {
 			Ok(s) => (s, { cmds, next, free, routes, evals, paths: paths.set(s.to_u64(), path) ?? crash "site", site_free: site_free.drop_last(1), fx })
 			Err(_) => {
 				s = paths.len().to_u32_wrap()
-				if s >= 4095 {
-					crash "resource_limit: each sites exhausted (4095 live each sites)"
-				}
 				(s, { cmds, next, free, routes, evals, paths: paths.append(path), site_free, fx })
 			}
 		}
@@ -1037,6 +1048,9 @@ Engine := [].{
 		## Rows dropped since the site last took them, with the orphans their
 		## nested sites left (admitted requests that outlive the row).
 		dropped : List({ key : Str, item : item, orphans : List(Orphan(r)) }),
+		## The host node id of each slot's row element (dense node ids,
+		## shared with static nodes; routes map them back to site and slot).
+		rnodes : List(U32),
 	}
 
 	cols_empty : U64, U64 -> Cols(r, item)
@@ -1055,6 +1069,7 @@ Engine := [].{
 		known: False,
 		kid_mask: 0,
 		dropped: [],
+		rnodes: [],
 	}
 
 	## Construction-site path for diagnostics: child positions from the root.
@@ -1066,8 +1081,9 @@ Engine := [].{
 	dup_key : List(U32), Str -> Str
 	dup_key = |path, key| "contract: duplicate key \"${key}\" in each at site ${Engine.show_path(path)}"
 
-	row_node : U32, U32 -> U32
-	row_node = |site, slot| site.shl_wrap(20) + slot + 1
+	## The node id of a live row.
+	node_of : Cols(r, item), U32 -> U32
+	node_of = |cols, slot| cols.rnodes.get(slot.to_u64()) ?? crash "internal: row node"
 
 	put_at : List(a), U64, a -> List(a)
 	put_at = |list, i, v| if i == list.len() list.append(v) else (list.set(i, v) ?? crash "column")
@@ -1077,7 +1093,7 @@ Engine := [].{
 	create_row : EachCfg(r, item), Cols(r, item), (Str, item -> r), item, U32, Tx -> (Cols(r, item), U32, Tx)
 		where [item.is_eq : item, item -> Bool]
 	create_row = |cfg, cols, env, item, before, tx| {
-		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped } = cols
+		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes } = cols
 		key = (cfg.key)(item)
 		(slot, free2) = match free.last() {
 			Ok(s) => (s, free.drop_last(1))
@@ -1088,9 +1104,10 @@ Engine := [].{
 		index2 = Engine.index_insert(index, keys2, key, slot, cfg.path)
 		items2 = Engine.put_at(items, si, item)
 		pend2 = Engine.put_at(pend, si, 0)
-		node = Engine.row_node(cfg.site, slot)
+		(node, tx0) = Engine.alloc_id(tx)
+		rnodes2 = Engine.put_at(rnodes, si, node)
 		row_env = env(key, item)
-		{ cmds, next, free: idfree, routes, evals, paths, site_free, fx } = tx
+		{ cmds, next, free: idfree, routes, evals, paths, site_free, fx } = Engine.set_row_route(tx0, node, cfg.site, slot)
 		var $c = Engine.put_u32(Engine.put_u32(Engine.put_u32(Engine.put_u32(cmds.append(1), node), cfg.parent), before), cfg.site)
 		var $lasts = lasts
 		var $sels = sels
@@ -1136,10 +1153,10 @@ Engine := [].{
 				$tx = t4
 				$j = $j + 1
 			}
-			cols2 = { items: items2, keys: keys2, order, free: free2, index: index2, lasts: $lasts, kids: Engine.put_at(kids, si, $insts), binds: Engine.put_at(binds, si, $bound), pend: pend2, dirty, sels: $sels, known: known2, kid_mask: $km, dropped }
+			cols2 = { items: items2, keys: keys2, order, free: free2, index: index2, lasts: $lasts, kids: Engine.put_at(kids, si, $insts), binds: Engine.put_at(binds, si, $bound), pend: pend2, dirty, sels: $sels, known: known2, kid_mask: $km, dropped, rnodes: rnodes2 }
 			(cols2, slot, $tx)
 		} else {
-			cols2 = { items: items2, keys: keys2, order, free: free2, index: index2, lasts: $lasts, kids, binds, pend: pend2, dirty, sels: $sels, known: known2, kid_mask, dropped }
+			cols2 = { items: items2, keys: keys2, order, free: free2, index: index2, lasts: $lasts, kids, binds, pend: pend2, dirty, sels: $sels, known: known2, kid_mask, dropped, rnodes: rnodes2 }
 			(cols2, slot, $tx)
 		}
 	}
@@ -1147,12 +1164,14 @@ Engine := [].{
 	## Release one row's storage and nested sites. `remove` emits REMOVE.
 	drop_row : EachCfg(r, item), Cols(r, item), (Str, item -> r), U32, Bool, Tx -> (Cols(r, item), Tx)
 	drop_row = |cfg, cols, env, slot, remove, tx| {
-		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped } = cols
+		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes } = cols
 		si = slot.to_u64()
 		key = keys.get(si) ?? crash "key"
 		index2 = Engine.index_remove(index, slot, key)
 		pend2 = pend.set(si, 0) ?? pend
-		t1 = if remove Engine.emit(tx, |c| Engine.put_u32(c.append(5), Engine.row_node(cfg.site, slot))) else tx
+		node = rnodes.get(si) ?? crash "internal: row node"
+		t0 = if remove Engine.emit(tx, |c| Engine.put_u32(c.append(5), node)) else tx
+		t1 = Engine.free_id(t0, node)
 		if cfg.dynamic {
 			{ list: kl, prev: row_kids } = kids.replace(si, []) ?? crash "kids"
 			{ list: bl, prev: row_binds } = binds.replace(si, []) ?? crash "binds"
@@ -1174,9 +1193,9 @@ Engine := [].{
 				$t = Engine.free_id($t, b)
 			}
 			dropped2 = if $orph.is_empty() dropped else dropped.append({ key, item, orphans: $orph })
-			({ items, keys, order, free: free.append(slot), index: index2, lasts, kids: kl, binds: bl, pend: pend2, dirty, sels, known, kid_mask, dropped: dropped2 }, $t)
+			({ items, keys, order, free: free.append(slot), index: index2, lasts, kids: kl, binds: bl, pend: pend2, dirty, sels, known, kid_mask, dropped: dropped2, rnodes }, $t)
 		} else {
-			({ items, keys, order, free: free.append(slot), index: index2, lasts, kids, binds, pend: pend2, dirty, sels, known, kid_mask, dropped }, t1)
+			({ items, keys, order, free: free.append(slot), index: index2, lasts, kids, binds, pend: pend2, dirty, sels, known, kid_mask, dropped, rnodes }, t1)
 		}
 	}
 
@@ -1191,11 +1210,11 @@ Engine := [].{
 	}
 
 	mark : Cols(r, item), U32, U64 -> Cols(r, item)
-	mark = |{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped }, slot, m| {
+	mark = |{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes }, slot, m| {
 		si = slot.to_u64()
 		p = pend.get(si) ?? 0
 		dirty2 = if p == 0 dirty.append(slot) else dirty
-		{ items, keys, order, free, index, lasts, kids, binds, pend: pend.set(si, p.bitwise_or(m)) ?? pend, dirty: dirty2, sels, known, kid_mask, dropped }
+		{ items, keys, order, free, index, lasts, kids, binds, pend: pend.set(si, p.bitwise_or(m)) ?? pend, dirty: dirty2, sels, known, kid_mask, dropped, rnodes }
 	}
 
 	## A kept row whose new item may differ: equal items are pruned here.
@@ -1210,28 +1229,28 @@ Engine := [].{
 		if same {
 			cols
 		} else {
-			{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped } = cols
-			Engine.mark({ items: items.set(si, item) ?? crash "item", keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped }, slot, row_bit)
+			{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes } = cols
+			Engine.mark({ items: items.set(si, item) ?? crash "item", keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes }, slot, row_bit)
 		}
 	}
 
 	set_order : Cols(r, item), List(U32) -> Cols(r, item)
-	set_order = |{ items, keys, order: _, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped }, order| {
-		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped }
+	set_order = |{ items, keys, order: _, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes }, order| {
+		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes }
 	}
 
 	take_order : Cols(r, item) -> (Cols(r, item), List(U32))
-	take_order = |{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped }| {
-		({ items, keys, order: [], free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped }, order)
+	take_order = |{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes }| {
+		({ items, keys, order: [], free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes }, order)
 	}
 
 	end_ref : EachCfg(r, item) -> U32
 	end_ref = |cfg| if cfg.sole 0 else cfg.anchor
 
 	## The node a row inserted at position `pos` (of `order`) goes before.
-	ref_at : EachCfg(r, item), List(U32), U64 -> U32
-	ref_at = |cfg, order, pos| match order.get(pos) {
-		Ok(s) => Engine.row_node(cfg.site, s)
+	ref_at : EachCfg(r, item), Cols(r, item), U64 -> U32
+	ref_at = |cfg, cols, pos| match cols.order.get(pos) {
+		Ok(s) => Engine.node_of(cols, s)
 		Err(_) => Engine.end_ref(cfg)
 	}
 
@@ -1247,6 +1266,16 @@ Engine := [].{
 		}
 	}
 
+	## Release every live row's node id (the DOM goes with its parent).
+	free_rows : Cols(r, item), Tx -> Tx
+	free_rows = |cols, tx| {
+		var $tx = tx
+		for slot in cols.order {
+			$tx = Engine.free_id($tx, Engine.node_of(cols, slot))
+		}
+		$tx
+	}
+
 	## Remove every row.
 	clear_rows : EachCfg(r, item), Cols(r, item), (Str, item -> r), Bool, Tx -> (Cols(r, item), Tx)
 	clear_rows = |cfg, cols, env, dom, tx| {
@@ -1258,8 +1287,11 @@ Engine := [].{
 			$tx = Engine.emit($tx, |c| Engine.put_u32(Engine.put_u32(c.append(6), cfg.parent), cfg.site))
 		} else {
 			for slot in cols.order {
-				$tx = Engine.emit($tx, |c| Engine.put_u32(c.append(5), Engine.row_node(cfg.site, slot)))
+				$tx = Engine.emit($tx, |c| Engine.put_u32(c.append(5), Engine.node_of(cols, slot)))
 			}
+		}
+		for slot in cols.order {
+			$tx = Engine.free_id($tx, Engine.node_of(cols, slot))
 		}
 		if cfg.dynamic {
 			var $i = 0.U64
@@ -1301,10 +1333,10 @@ Engine := [].{
 				$i = $i + 1
 			}
 		}
-		{ sels, known, kid_mask, lasts, dropped: dropped0, items: _, keys: _, order: _, free: _, index: _, kids: _, binds: _, pend: _, dirty: _ } = cols
+		{ sels, known, kid_mask, lasts, dropped: dropped0, items: _, keys: _, order: _, free: _, index: _, kids: _, binds: _, pend: _, dirty: _, rnodes: _ } = cols
 		dropped = dropped0.concat($dropped)
 		ncols = lasts.len()
-		({ items: [], keys: [], order: [], free: [], index: Engine.index_empty, lasts: List.repeat([], ncols), kids: [], binds: [], pend: [], dirty: [], sels, known, kid_mask, dropped }, $tx)
+		({ items: [], keys: [], order: [], free: [], index: Engine.index_empty, lasts: List.repeat([], ncols), kids: [], binds: [], pend: [], dirty: [], sels, known, kid_mask, dropped, rnodes: [] }, $tx)
 	}
 
 	## Append rows new_list[from..] at the end of the site.
@@ -1380,9 +1412,9 @@ Engine := [].{
 					first = list.get($i) ?? crash "row"
 					last = list.get($ne - 1) ?? crash "row"
 					if Engine.same_row(cfg, $cols, b, first) and Engine.same_row(cfg, $cols, a, last) {
-						na = Engine.row_node(cfg.site, a)
-						nb = Engine.row_node(cfg.site, b)
-						after = Engine.ref_at(cfg, $cols.order, $oe)
+						na = Engine.node_of($cols, a)
+						nb = Engine.node_of($cols, b)
+						after = Engine.ref_at(cfg, $cols, $oe)
 						$tx = Engine.emit($tx, |c| Engine.put_u32(Engine.put_u32(Engine.put_u32(Engine.put_u32(c.append(4), nb), na).append(4), na), after))
 						$cols = Engine.keep_row(Engine.keep_row($cols, b, first, row_bit), a, last, row_bit)
 						(c2, order) = Engine.take_order($cols)
@@ -1401,7 +1433,7 @@ Engine := [].{
 				if $oe == $cols.order.len() {
 					Engine.append_rows(cfg, $cols, env, list, $i, $tx)
 				} else {
-					before = Engine.ref_at(cfg, $cols.order, $oe)
+					before = Engine.ref_at(cfg, $cols, $oe)
 					var $new_slots = []
 					var $k = $i
 					while $k < $ne {
@@ -1494,7 +1526,7 @@ Engine := [].{
 		stable = Engine.lis_mark($seq)
 		# place from the end
 		var $slots = List.repeat(0.U32, ne - i)
-		var $ref = Engine.ref_at(cfg, $cols.order, oe)
+		var $ref = Engine.ref_at(cfg, $cols, oe)
 		var $p = ne
 		while $p > i {
 			$p = $p - 1
@@ -1506,10 +1538,10 @@ Engine := [].{
 				$cols = c2
 				$tx = t2
 				$slots = $slots.set(idx, slot) ?? $slots
-				$ref = Engine.row_node(cfg.site, slot)
+				$ref = Engine.node_of($cols, slot)
 			} else {
 				slot = (f - 1).to_u32_wrap()
-				node = Engine.row_node(cfg.site, slot)
+				node = Engine.node_of($cols, slot)
 				if !(stable.get(idx) ?? False) {
 					r = $ref
 					$tx = Engine.emit($tx, |c| Engine.put_u32(Engine.put_u32(c.append(4), node), r))
@@ -1569,7 +1601,7 @@ Engine := [].{
 	## their nested sites.
 	settle : EachCfg(r, item), Cols(r, item), (Str, item -> r), Tx -> (Cols(r, item), Tx)
 	settle = |cfg, cols, env, tx| {
-		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped } = cols
+		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes } = cols
 		var $lasts = lasts
 		var $pend = pend
 		var $kids = kids
@@ -1581,7 +1613,7 @@ Engine := [].{
 			key = keys.get(si) ?? crash "key"
 			item = items.get(si) ?? crash "item"
 			row_env = env(key, item)
-			node = Engine.row_node(cfg.site, slot)
+			node = rnodes.get(si) ?? crash "internal: row node"
 			var $hi = 0.U64
 			for hole in cfg.plan.holes {
 				if hole.live and hole.mask.bitwise_or(hole.smask).bitwise_and(m) != 0 {
@@ -1614,7 +1646,7 @@ Engine := [].{
 				$kids = kl.set(si, $rk) ?? crash "kids"
 			}
 		}
-		({ items, keys, order, free, index, lasts: $lasts, kids: $kids, binds, pend: $pend, dirty: dirty.clear(), sels, known, kid_mask, dropped }, $tx)
+		({ items, keys, order, free, index, lasts: $lasts, kids: $kids, binds, pend: $pend, dirty: dirty.clear(), sels, known, kid_mask, dropped, rnodes }, $tx)
 	}
 
 	## Selection changed: mark only the previously and newly selected rows.
@@ -1623,8 +1655,8 @@ Engine := [].{
 		first = cols.order.first()
 		match first {
 			Err(_) => {
-				{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known: _, kid_mask, dropped } = cols
-				{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known: False, kid_mask, dropped }
+				{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known: _, kid_mask, dropped, rnodes } = cols
+				{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known: False, kid_mask, dropped, rnodes }
 			}
 			Ok(s0) => {
 				key0 = cols.keys.get(s0.to_u64()) ?? crash "key"
@@ -1654,8 +1686,8 @@ Engine := [].{
 								}
 								Err(_) => {}
 							}
-							{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known: _, kid_mask, dropped } = $cols
-							$cols = { items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels: sels.set($hi, nk) ?? sels, known: True, kid_mask, dropped }
+							{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known: _, kid_mask, dropped, rnodes } = $cols
+							$cols = { items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels: sels.set($hi, nk) ?? sels, known: True, kid_mask, dropped, rnodes }
 						}
 					}
 					$hi = $hi + 1
@@ -1685,17 +1717,17 @@ Engine := [].{
 	each_fire_kid : Cols(Row(ctx, item), item), Row(ctx, item), U64, List(U32), U64, U32, Payload, Tx -> (Cols(Row(ctx, item), item), ctx, U64, Tx)
 	each_fire_kid = |cols, row_env, si, path, pos, h, payload, tx| {
 		j = (path.get(pos + 1) ?? 0).to_u64()
-		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped } = cols
+		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes } = cols
 		{ list: kl, prev: row_kids } = kids.replace(si, []) ?? crash "kids"
 		if j < row_kids.len() {
 			{ list: rl, prev: kid } = row_kids.replace(j, Engine.noop({})) ?? crash "kid"
 			(k2, out, t2) = Engine.call(kid, row_env, Fire(path, pos + 2, h, payload), tx)
 			kids2 = kl.set(si, rl.set(j, k2) ?? crash "kid") ?? crash "kids"
 			(outer, m) = Engine.row_out(out)
-			({ items, keys, order, free, index, lasts, kids: kids2, binds, pend, dirty, sels, known, kid_mask, dropped }, outer, m, t2)
+			({ items, keys, order, free, index, lasts, kids: kids2, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes }, outer, m, t2)
 		} else {
 			{ outer, key: _, item: _ } = row_env
-			({ items, keys, order, free, index, lasts, kids: kl.set(si, row_kids) ?? crash "kids", binds, pend, dirty, sels, known, kid_mask, dropped }, outer, 0, tx)
+			({ items, keys, order, free, index, lasts, kids: kl.set(si, row_kids) ?? crash "kids", binds, pend, dirty, sels, known, kid_mask, dropped, rnodes }, outer, 0, tx)
 		}
 	}
 
@@ -1773,7 +1805,9 @@ Engine := [].{
 					}
 				}
 				Dispose(remove) => {
-					(c1, t1) = if remove or cfg.dynamic Engine.clear_rows(cfg, cols, mk, remove, tx) else (cols, tx)
+					# Row node ids come from the shared pool: release them even when
+					# nothing else needs doing for a static row set.
+					(c1, t1) = if remove or cfg.dynamic Engine.clear_rows(cfg, cols, mk, remove, tx) else (cols, Engine.free_rows(cols, tx))
 					(_, orph) = Engine.take_dropped(c1, cfg.depth)
 					t2 = if !cfg.sole { if remove Engine.free_id(Engine.emit(t1, |c| Engine.put_u32(c.append(5), cfg.anchor)), cfg.anchor) else Engine.free_id(t1, cfg.anchor) } else t1
 					(Engine.noop({}), Orphaned(adopted.concat(orph)), Engine.free_site(t2, cfg.site))
@@ -2567,12 +2601,12 @@ Engine := [].{
 		if cols.dropped.is_empty() {
 			(cols, [])
 		} else {
-			{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped } = cols
+			{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes } = cols
 			var $o = []
 			for d in dropped {
 				$o = $o.concat(Engine.lower_row(d.orphans, d.key, d.item, depth))
 			}
-			({ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped: [] }, $o)
+			({ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped: [], rnodes }, $o)
 		}
 	}
 
@@ -2878,19 +2912,18 @@ Engine := [].{
 	## `payload` is the event's value ("" for clicks).
 	event : App, U32, U32, Str -> App
 	event = |{ root, tx }, node, handler, payload| {
-		site = node.shr_zf_wrap(20)
-		target = if site == 0 {
-			match tx.routes.get(node.to_u64()) ?? NoRoute {
-				NoRoute => Err(Stale)
-				# The node's route gives the block path; the handler number comes
-				# from the host (LISTEN carried it per event name), so an element
-				# with several handlers (input + focus + blur) reaches each one.
-				Route(path, _) => Ok((path, handler))
-			}
-		} else {
-			match tx.paths.get(site.to_u64()) {
-				Ok(path) => if path.is_empty() Err(Stale) else Ok((path.append(node.bitwise_and(1048575) - 1), handler))
-				Err(_) => Err(Stale)
+		# O(1): the route gives a static node's block path or a row's site and
+		# slot (the site's path + slot). The handler number comes from the host
+		# (LISTEN or the template carried it per event name), so an element
+		# with several handlers reaches each one. A freed node id has NoRoute.
+		target = match tx.routes.get(node.to_u64()) ?? NoRoute {
+			NoRoute => Err(Stale)
+			Route(path, _) => Ok((path, handler))
+			RowOf(site, slot) => {
+				match tx.paths.get(site.to_u64()) {
+					Ok(path) => if path.is_empty() Err(Stale) else Ok((path.append(slot), handler))
+					Err(_) => Err(Stale)
+				}
 			}
 		}
 		match target {

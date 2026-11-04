@@ -133,31 +133,33 @@ Soak := [].{
 	}
 
 	## Replay a round trip on the engine alone (no DOM model, command buffer
-	## reused) `k` times; the live allocation count after each cycle.
-	replay! : Engine.App, List((U32, U32, Str)), U64, (Engine.App, List(U8) -> (Engine.App, List(U8))), ({} => U64) => List(U64)
-	replay! = |app0, evs, k, after, live!| {
+	## reused) `k` times. Each cycle runs inside a measured region (`begin!`,
+	## `end!`); `end!` reports the live bytes the cycle left behind (exit
+	## minus entry), so probes never see their own bookkeeping.
+	replay! : Engine.App, List((U32, U32, Str)), U64, (Engine.App, List(U8) -> (Engine.App, List(U8))), ({} => m), (m => I64) => List(I64)
+	replay! = |app0, evs, k, after, begin!, end!| {
 		var $a = app0
 		var $buf = []
 		var $counts = []
 		var $c = 0.U64
 		while $c < k {
+			m = begin!({})
 			for (node, h, payload) in evs {
 				(a1, b1) = Engine.take_cmds(Engine.event($a, node, h, payload), $buf)
 				(a2, b2) = after(a1, b1)
 				$a = a2
 				$buf = b2
 			}
-			$counts = $counts.append(live!({}))
+			$counts = $counts.append(end!(m))
 			$c = $c + 1
 		}
 		$counts
 	}
 
-	## Live allocations must be flat across cycles after `warm` warm-up cycles.
-	flat : List(U64), U64 -> Try({}, Str)
-	flat = |counts, warm| {
-		tail = counts.drop_first(warm)
-		first = tail.first() ?? 0
-		if !tail.any(|c| c != first) Ok({}) else Err("live allocations not flat across cycles: ${Str.inspect(counts)}")
+	## After `warm` warm-up cycles every cycle must leave zero net live bytes.
+	flat : List(I64), U64 -> Try({}, Str)
+	flat = |nets, warm| {
+		tail = nets.drop_first(warm)
+		if !tail.any(|c| c != 0) Ok({}) else Err("cycles leave live bytes behind (net per cycle): ${Str.inspect(nets)}")
 	}
 }
