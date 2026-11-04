@@ -14,7 +14,7 @@ platform ""
 		inputs_dir: "targets/",
 		wasm32: {
 			inputs: ["host.wasm", app],
-			exports: ["boot_keys", "init", "event", "drop", "payload_reserve", "cmd_ptr", "cmd_len", "metric", "reset_metrics", "err_ptr", "err_len"],
+			exports: ["fault", "boot_keys", "init", "event", "drop", "payload_reserve", "cmd_ptr", "cmd_len", "metric", "reset_metrics", "err_ptr", "err_len"],
 		},
 	}
 

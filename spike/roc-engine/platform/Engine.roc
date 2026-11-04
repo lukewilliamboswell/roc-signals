@@ -354,7 +354,7 @@ Engine := [].{
 			Ok(id) => (id, { cmds, next, free: free.drop_last(1), routes, evals, paths, site_free, fx })
 			Err(_) => {
 				if next >= 1048575 {
-					crash "static node ids exhausted"
+					crash "resource_limit: static node ids exhausted (1048575)"
 				}
 				(next, { cmds, next: next + 1, free, routes, evals, paths, site_free, fx })
 			}
@@ -386,7 +386,7 @@ Engine := [].{
 			Err(_) => {
 				s = paths.len().to_u32_wrap()
 				if s >= 4095 {
-					crash "each sites exhausted"
+					crash "resource_limit: each sites exhausted (4095 live each sites)"
 				}
 				(s, { cmds, next, free, routes, evals, paths: paths.append(path), site_free, fx })
 			}
@@ -624,8 +624,8 @@ Engine := [].{
 	state_settle : Block(In(ctx, s)), U64, Bool, Out(In(ctx, s)), Tx -> (Inst(ctx), Out(ctx), Tx)
 	state_settle = |block, depth, local, out, tx| {
 		match out {
-			Done => crash "fire must hand the environment back"
-			Orphaned(_) => crash "fire must hand the environment back"
+			Done => crash "internal: fire must hand the environment back"
+			Orphaned(_) => crash "internal: fire must hand the environment back"
 			Pending(next_inner, mask) => {
 				{ outer: next_outer, value: s2 } = next_inner
 				own = Engine.bit(depth)
@@ -836,11 +836,11 @@ Engine := [].{
 
 	## Insert a fresh key (the key column must already hold it at `slot`).
 	## A duplicate key is a contract error, never an alias.
-	index_insert : KeyIndex, List(Str), Str, U32 -> KeyIndex
-	index_insert = |index, keys, key, slot| {
+	index_insert : KeyIndex, List(Str), Str, U32, List(U32) -> KeyIndex
+	index_insert = |index, keys, key, slot, path| {
 		h = Engine.hash_str(key)
 		match Engine.index_find(index, keys, key, h) {
-			Ok(_) => crash "duplicate key in each"
+			Ok(_) => crash Engine.dup_key(path, key)
 			Err(Missing) => {}
 		}
 		grown = if (index.count + 1) * 2 > 1.U64.shl_wrap(index.bits) Engine.grow(index) else index
@@ -852,14 +852,14 @@ Engine := [].{
 	index_remove : KeyIndex, U32, Str -> KeyIndex
 	index_remove = |{ hs, vals, count, bits }, slot, key| {
 		if count == 0 {
-			crash "remove of missing key"
+			crash "internal: remove of missing key"
 		}
 		mask = (1.U64.shl_wrap(bits)) - 1
 		h = Engine.hash_str(key)
 		var $b = Engine.bucket(h, bits)
 		while (vals.get($b) ?? 0) != slot + 1 {
 			if (vals.get($b) ?? 0) == 0 {
-				crash "remove of missing key"
+				crash "internal: remove of missing key"
 			}
 			$b = ($b + 1).bitwise_and(mask)
 		}
@@ -993,7 +993,7 @@ Engine := [].{
 	compile = |elem, depth| {
 		match elem {
 			Element(_, _, _) => Engine.compile_elem(Engine.plan_empty({}), elem, [], depth)
-			_ => crash "an each row template must be a single element"
+			_ => crash "contract: an each row template must be a single element"
 		}
 	}
 
@@ -1057,6 +1057,15 @@ Engine := [].{
 		dropped: [],
 	}
 
+	## Construction-site path for diagnostics: child positions from the root.
+	show_path : List(U32) -> Str
+	show_path = |path| "/${Str.join_with(path.map(|p| p.to_str()), "/")}"
+
+	## The diagnostic for a duplicate each key (design.md: duplicate keys are
+	## errors, not aliases).
+	dup_key : List(U32), Str -> Str
+	dup_key = |path, key| "contract: duplicate key \"${key}\" in each at site ${Engine.show_path(path)}"
+
 	row_node : U32, U32 -> U32
 	row_node = |site, slot| site.shl_wrap(20) + slot + 1
 
@@ -1076,7 +1085,7 @@ Engine := [].{
 		}
 		si = slot.to_u64()
 		keys2 = Engine.put_at(keys, si, key)
-		index2 = Engine.index_insert(index, keys2, key, slot)
+		index2 = Engine.index_insert(index, keys2, key, slot, cfg.path)
 		items2 = Engine.put_at(items, si, item)
 		pend2 = Engine.put_at(pend, si, 0)
 		node = Engine.row_node(cfg.site, slot)
@@ -1451,10 +1460,10 @@ Engine := [].{
 			r = match Engine.index_find(cols.index, cols.keys, key, Engine.hash_str(key)) {
 				Ok(s) => {
 					if ($oldpos.get(s.to_u64()) ?? 0) == 0 {
-						crash "duplicate key in each"
+						crash Engine.dup_key(cfg.path, key)
 					}
 					if $seen.get(s.to_u64()) ?? False {
-						crash "duplicate key in each"
+						crash Engine.dup_key(cfg.path, key)
 					}
 					$seen = $seen.set(s.to_u64(), True) ?? $seen
 					s.to_u64() + 1
@@ -1696,8 +1705,8 @@ Engine := [].{
 			{ outer, key: _, item: _ } = e2
 			(outer, m)
 		}
-		Done => crash "fire must hand the environment back"
-		Orphaned(_) => crash "fire must hand the environment back"
+		Done => crash "internal: fire must hand the environment back"
+		Orphaned(_) => crash "internal: fire must hand the environment back"
 	}
 
 	## `adopted`: orphans reparented here from removed rows.
@@ -1903,18 +1912,18 @@ Engine := [].{
 		(anchor, tx1) = Engine.alloc_id(tx)
 		before = args.before
 		tx2 = Engine.emit(tx1, |c| Engine.put_str(Engine.put_u32(Engine.put_u32(Engine.put_u32(c.append(10), anchor), args.parent), before), ""))
-		k = Engine.switch_value(sel, cases, env)
+		k = Engine.switch_value(sel, cases, env, args.path)
 		(block, tx3) = Engine.mount_block(env, body(k), args.depth, args.path, 0, anchor, { cap: args.cap, local: args.local }, Engine.count_evals(tx2, 1))
 		reads = if args.cap != 0 args.cap else Engine.switch_reads(sel, cases, body, args.depth)
 		w = { sel, cases, body, anchor, depth: args.depth, path: args.path, cap: args.cap, local: args.local }
 		(Engine.switch_inst(w, k, [], block), reads, tx3)
 	}), |d| Engine.switch_reads(sel, cases, body, d))
 
-	switch_value : Val(ctx, k), List(k), ctx -> k
+	switch_value : Val(ctx, k), List(k), ctx, List(U32) -> k
 		where [k.is_eq : k, k -> Bool]
-	switch_value = |sel, cases, env| {
+	switch_value = |sel, cases, env, path| {
 		k = (sel.read)(env)
-		if cases.contains(k) k else crash "switch value is not one of its cases"
+		if cases.contains(k) k else crash "contract: switch value is not one of its cases at site ${Engine.show_path(path)}"
 	}
 
 	switch_inst : Switch(ctx, k), k, List(Orphan(ctx)), Block(ctx) -> Inst(ctx)
@@ -1926,7 +1935,7 @@ Engine := [].{
 			match msg {
 				Changed(mask) => {
 					if Engine.eff_mask(w.sel).bitwise_and(mask) != 0 {
-						k = Engine.switch_value(w.sel, w.cases, env)
+						k = Engine.switch_value(w.sel, w.cases, env, w.path)
 						t1 = Engine.count_evals(tx, 1)
 						if k == cur {
 							(b2, t2) = Engine.refresh(block, env, mask, t1)
@@ -2035,8 +2044,8 @@ Engine := [].{
 		where [a.is_eq : a, a -> Bool]
 	derive_settle = |input, block, depth, out, tx| {
 		match out {
-			Done => crash "fire must hand the environment back"
-			Orphaned(_) => crash "fire must hand the environment back"
+			Done => crash "internal: fire must hand the environment back"
+			Orphaned(_) => crash "internal: fire must hand the environment back"
 			Pending(next_inner, mask) => {
 				{ outer, value } = next_inner
 				(Engine.derive_inst(input, value, block, depth), Pending(outer, mask), tx)
@@ -2145,8 +2154,8 @@ Engine := [].{
 	## reference into an outer state) is dropped before any sink reducer runs.
 	comp_actions : Out(Comp(p, a)) -> List(a)
 	comp_actions = |out| match out {
-		Done => crash "fire must hand the environment back"
-		Orphaned(_) => crash "fire must hand the environment back"
+		Done => crash "internal: fire must hand the environment back"
+		Orphaned(_) => crash "internal: fire must hand the environment back"
 		Pending(inner, _) => {
 			{ prop: _, out: actions } = inner
 			actions
@@ -2692,7 +2701,7 @@ Engine := [].{
 		} else if tag == 6 {
 			Location(text(1))
 		} else {
-			crash "unknown effect result tag"
+			crash "contract: unknown effect result tag"
 		}
 	}
 
@@ -2853,7 +2862,7 @@ Engine := [].{
 		var $turns = 0.U64
 		while !$app.tx.fx.queue.is_empty() {
 			if $turns >= Engine.max_turns {
-				crash "effect follow-up turns exceeded the per-call budget (feedback loop)"
+				crash "contract: effect follow-up turns exceeded the per-call budget of 64 (feedback loop)"
 			}
 			{ root, tx } = $app
 			q = tx.fx.queue.first() ?? crash "queue"
@@ -2948,7 +2957,7 @@ Engine := [].{
 			if node == Engine.fx_node {
 				Engine.take_cmds(Engine.result(fresh, handler, Engine.decode_res(payload)), [])
 			} else {
-				Engine.take_cmds(Engine.event(fresh, node, handler, Str.from_utf8(payload) ?? crash "event payload is not UTF-8"), [])
+				Engine.take_cmds(Engine.event(fresh, node, handler, Str.from_utf8(payload) ?? crash "contract: event payload is not UTF-8"), [])
 			}
 		},
 	}

@@ -9,7 +9,7 @@ import H
 ## through an effect site, and focus/blur handlers on "Plain" log their
 ## payloads. The log is rendered for the tests.
 ControlsApp := [].{
-	S : { plain : Str, upper : Str, log : List(Str), ask : { serial : U64, req : [None, F(Str), B(Str), Sel(Str)] } }
+	S : { plain : Str, upper : Str, log : List(Str), ask : { serial : U64, req : [None, F(Str), B(Str), Sel(Str)] }, rows : List(Str) }
 
 	Ctx : In(Root, S)
 
@@ -56,10 +56,15 @@ ControlsApp := [].{
 			},
 			Engine.ignore({}),
 		),
+		## Containment: "Duplicate row" appends an existing key (a contract
+		## error: duplicate keys are errors, not aliases).
+		H.button("Add row", [], st.update(|s| { ..s, rows: s.rows.append("r${s.rows.len().to_str()}") })),
+		H.button("Duplicate row", [], st.update(|s| { ..s, rows: s.rows.append("r0") })),
+		Engine.element("ul", [Engine.test_id("rows")], [Engine.each(st.val().map(|s| s.rows), |r| r, |row| Engine.element("li", [], [Engine.text_v(row.key())]))]),
 		Engine.element("p", [Engine.test_id("state")], [Engine.text_v(st.val().map(|s| "${s.plain}|${s.upper}"))]),
 		Engine.element("pre", [Engine.test_id("log")], [Engine.text_v(st.val().map(|s| Str.join_with(s.log, "|")))]),
 	])
 
 	main : {} -> Elem(Root)
-	main = |_| Engine.state({ plain: "hello world", upper: "", log: [], ask: { serial: 0, req: None } }, |st| ControlsApp.view(st))
+	main = |_| Engine.state({ plain: "hello world", upper: "", log: [], ask: { serial: 0, req: None }, rows: [] }, |st| ControlsApp.view(st))
 }

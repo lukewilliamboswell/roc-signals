@@ -55,7 +55,7 @@ fn allocRaw(size: usize, align_arg: usize) *anyopaque {
     const a = alignment(align_arg);
     const offset = headerOffset(a);
     const backing = offset + size;
-    const base = std.heap.wasm_allocator.rawAlloc(backing, a, @returnAddress()) orelse @trap();
+    const base = std.heap.wasm_allocator.rawAlloc(backing, a, @returnAddress()) orelse outOfMemory(size);
     const user = base + offset;
     const header: *Header = @ptrFromInt(@intFromPtr(user) - @sizeOf(Header));
     header.* = .{ .requested = size, .backing = backing };
@@ -102,6 +102,19 @@ export fn roc_realloc(ptr: *anyopaque, size: usize, align_arg: usize) callconv(.
     return next;
 }
 
+// ---------------------------------------------------------------------------
+// Fault containment (design.md, "Memory management and allocation failure"
+// and "Diagnostics contract"). A Roc crash, a failed expect or an allocation
+// failure poisons the instance: the diagnostic is written to storage reserved
+// here (no allocation, bounded), staged commands are discarded, and the call
+// traps. A poisoned instance never re-enters Roc: every engine entry point
+// traps immediately; only `fault`, `err_ptr`/`err_len`, `metric` and
+// `cmd_len` (0) answer. Recovery is a fresh instance (JavaScript side).
+
+/// Error classes (closed set): 0 healthy, 1 contract, 2 resource_limit,
+/// 3 out_of_memory, 4 app_crash (any other Roc crash), 5 expect_failed.
+var fault_class: u32 = 0;
+
 var last_error: [512]u8 = undefined;
 var last_error_len: usize = 0;
 
@@ -111,18 +124,49 @@ fn keepError(bytes: [*]const u8, len: usize) void {
     last_error_len = n;
 }
 
+fn startsWith(bytes: [*]const u8, len: usize, prefix: []const u8) bool {
+    return len >= prefix.len and std.mem.eql(u8, bytes[0..prefix.len], prefix);
+}
+
+fn poison(class: u32) noreturn {
+    fault_class = class;
+    // Staged (unpublished) commands are never observed; nothing is freed:
+    // the Roc heap may be mid-mutation, so it is abandoned with the instance.
+    cmds = RocList.empty;
+    pending_payload = RocList.empty;
+    state = null;
+    @trap();
+}
+
+fn outOfMemory(size: usize) noreturn {
+    const msg = "out_of_memory: allocation failed";
+    keepError(msg.ptr, msg.len);
+    _ = size;
+    poison(3);
+}
+
 export fn roc_dbg(bytes: [*]const u8, len: usize) callconv(.c) void {
-    keepError(bytes, len);
+    if (fault_class == 0) keepError(bytes, len);
 }
 
 export fn roc_expect_failed(bytes: [*]const u8, len: usize) callconv(.c) void {
     keepError(bytes, len);
-    @trap();
+    poison(5);
 }
 
 export fn roc_crashed(bytes: [*]const u8, len: usize) callconv(.c) void {
     keepError(bytes, len);
-    @trap();
+    const class: u32 = if (startsWith(bytes, len, "contract:")) 1 else if (startsWith(bytes, len, "resource_limit:")) 2 else 4;
+    poison(class);
+}
+
+/// 0 when healthy, else the fault class of the poisoned instance.
+export fn fault() callconv(.c) u32 {
+    return fault_class;
+}
+
+fn refuseIfPoisoned() void {
+    if (fault_class != 0) @trap();
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +176,7 @@ export fn roc_crashed(bytes: [*]const u8, len: usize) callconv(.c) void {
 /// each), readable through `cmd_ptr`/`cmd_len` until `init`. JavaScript reads
 /// their values and stages the boot bytes with `payload_reserve`.
 export fn boot_keys() callconv(.c) void {
+    refuseIfPoisoned();
     if (state != null or cmds.ptr != null) @trap();
     cmds = roc_engine_keys();
 }
@@ -140,6 +185,7 @@ export fn boot_keys() callconv(.c) void {
 /// when nothing was staged): builds the instance and leaves the mount
 /// commands readable. The key list buffer, if any, is released by Roc.
 export fn init() callconv(.c) void {
+    refuseIfPoisoned();
     if (state != null) @trap();
     const boot = pending_payload;
     pending_payload = RocList.empty;
@@ -176,6 +222,7 @@ var pending_payload: RocList = RocList.empty;
 /// most one staged payload exists. JavaScript must re-read `memory.buffer`
 /// after this call (the allocation may grow memory).
 export fn payload_reserve(len: usize) callconv(.c) usize {
+    refuseIfPoisoned();
     dropPending();
     if (len == 0) return 0;
     const base: [*]u8 = @ptrCast(allocRaw(len + @sizeOf(usize), @alignOf(usize)));
@@ -196,6 +243,7 @@ fn dropPending() void {
 /// into Roc, which owns and frees it. The new commands are readable until the
 /// next call.
 export fn event(node: u32, handler: u32) callconv(.c) void {
+    refuseIfPoisoned();
     const owned = state orelse @trap();
     const buf = cmds;
     const payload = pending_payload;
@@ -208,7 +256,10 @@ export fn event(node: u32, handler: u32) callconv(.c) void {
 }
 
 /// Release the instance and the command buffer (teardown).
+/// Teardown. Idempotent at the containment boundary: a poisoned instance
+/// (or one already dropped) does nothing.
 export fn drop() callconv(.c) void {
+    if (fault_class != 0 or state == null) return;
     dropPending();
     const owned = state orelse @trap();
     const buf = cmds;

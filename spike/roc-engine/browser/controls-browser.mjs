@@ -119,6 +119,45 @@ const text = (page, id) => page.$eval(`[data-testid="${id}"]`, (e) => e.textCont
   check("missing reference: no focus change, no error", await active() !== "Plain", true);
   await ctx.close();
 }
+{
+  // 5. Containment: a contract error poisons the instance; it is reported,
+  // refuses further work without re-entering Wasm, keeps the last DOM, and a
+  // fresh instance recovers.
+  const { page, ctx, errors } = await open();
+  const clickButton = (name) => page.evaluate((n) => [...document.querySelectorAll("button")].find((b) => b.textContent === n).click(), name);
+  await page.evaluate(() => {
+    window.__faults = [];
+    window.__rt.onFault = (f) => window.__faults.push(f);
+  });
+  await clickButton("Add row");
+  await clickButton("Add row");
+  check("rows render", await text(page, "rows"), "r0r1");
+  await clickButton("Duplicate row");
+  const f = await page.evaluate(() => window.__faults);
+  check("one fault reported with class and construction-site path", [f.length, f[0] && f[0].class, f[0] && /^contract: duplicate key "r0" in each at site \/\d/.test(f[0].message)], [1, "contract", true]);
+  check("host reports the poisoned class; staged commands discarded", await page.evaluate(() => [window.__rt.x.fault(), window.__rt.x.cmd_len()]), [1, 0]);
+  check("last committed DOM kept as fallback", await text(page, "rows"), "r0r1");
+  const before = await text(page, "state");
+  await clickButton("Add row");
+  await (await input(page, "Plain")).type("zz");
+  await page.evaluate(() => window.__rt.dispatch(1, 0, ""));
+  check("listeners detached; later events and direct dispatch refused", [await text(page, "rows"), await text(page, "state"), await page.evaluate(() => [window.__rt.listening.size, window.__rt.refused])], ["r0r1", before, [0, 1]]);
+  const reentry = await page.evaluate(() => {
+    try {
+      window.__rt.x.event(1, 0);
+      return "entered";
+    } catch (e) {
+      return "trapped";
+    }
+  });
+  check("the poisoned host itself refuses engine entry", reentry, "trapped");
+  check("fault printed to the console", errors.some((e) => e.includes("roc engine fault [contract]")), true);
+  await page.evaluate(() => window.__rt.recover());
+  check("recover(): fresh instance, initial state", [await text(page, "rows"), (await val(page, "Plain"))[0], await page.evaluate(() => window.__rt.x.fault())], ["", "hello world", 0]);
+  await clickButton("Add row");
+  check("recovered instance handles events", await text(page, "rows"), "r0");
+  await ctx.close();
+}
 await browser.close();
 server.close();
 console.log(failures === 0 ? "== controls: all pass" : `== controls: ${failures} failures`);

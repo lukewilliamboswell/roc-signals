@@ -239,6 +239,10 @@ export class RocEngineRuntime {
     this.timing = options.timing ?? null;
     this.busy = false;
     this.queue = [];
+    this.poisoned = null;
+    this.refused = 0;
+    this.onFault = options.onFault ?? null;
+    this.module = options.module ?? null;
     this.manual = options.manualEffects ?? false;
     // Armed HTTP timeout timers (for tests: must return to 0).
     this.timers = 0;
@@ -260,6 +264,11 @@ export class RocEngineRuntime {
   // Boot: read the app's declared storage keys, stage the URL and their
   // values, then mount.
   mount() {
+    this.guard(() => this.mountInner());
+    this.drainQueue();
+  }
+
+  mountInner() {
     this.controlListeners();
     this.listen("click");
     const x = this.x;
@@ -295,7 +304,77 @@ export class RocEngineRuntime {
     } finally {
       this.busy = false;
     }
-    this.drainQueue();
+  }
+
+  // ---------------------------------------------------------------------
+  // Containment (design.md, "Memory management and allocation failure",
+  // "Browser execution and external failure"). Any trap or executor failure
+  // poisons this runtime: the diagnostic is read from the instance's
+  // reserved storage (fresh memory view), listeners and asynchronous work
+  // are detached, staged commands and queued events are dropped, the last
+  // committed DOM stays as fallback, and every later call is refused
+  // without re-entering Wasm. recover() mounts a fresh instance.
+
+  guard(fn) {
+    if (this.poisoned) {
+      this.refused += 1;
+      return null;
+    }
+    try {
+      return fn();
+    } catch (e) {
+      this.contain(e);
+      return null;
+    }
+  }
+
+  contain(error) {
+    if (this.poisoned) return;
+    const CLASSES = ["executor", "contract", "resource_limit", "out_of_memory", "app_crash", "expect_failed"];
+    let code = 0;
+    let message = String(error && error.message ? error.message : error);
+    try {
+      code = this.x.fault();
+      if (code !== 0) message = new TextDecoder().decode(new Uint8Array(this.x.memory.buffer, this.x.err_ptr(), this.x.err_len()));
+    } catch (_) {
+      code = 0;
+    }
+    this.poisoned = { class: CLASSES[code] ?? "unknown", code, message, trap: String(error) };
+    for (const [type, fn] of this.listening) this.root.removeEventListener(type, fn);
+    this.listening.clear();
+    for (const [type, fn] of this.internal) this.root.removeEventListener(type, fn, true);
+    this.internal = [];
+    for (const e of this.live.values()) {
+      try {
+        e.cancel();
+      } catch (_) {
+        // teardown is best effort and never re-enters Wasm
+      }
+    }
+    this.live.clear();
+    this.queue = [];
+    this.fxOut = [];
+    console.error(`roc engine fault [${this.poisoned.class}]: ${message}`);
+    if (this.onFault) this.onFault(this.poisoned);
+  }
+
+  // A fresh instance from the same module; the poisoned one is abandoned.
+  async recover() {
+    if (!this.module) throw new Error("recover() needs the compiled module (mountRocEngineApp keeps it)");
+    const instance = await WebAssembly.instantiate(this.module, { env: {} });
+    this.x = instance.exports;
+    this.root.textContent = "";
+    this.statics = [];
+    this.sites = [];
+    this.templates = [];
+    this.live = new Map();
+    this.issued = [];
+    this.queue = [];
+    this.fxOut = [];
+    this.busy = false;
+    this.poisoned = null;
+    this.mount();
+    return this;
   }
 
   unmount() {
@@ -378,13 +457,17 @@ export class RocEngineRuntime {
   // Events raised while a batch is being applied (or while Wasm runs) are
   // queued and delivered in order after it; they never re-enter.
   dispatch(node, handler, payload) {
+    if (this.poisoned) {
+      this.refused += 1;
+      return;
+    }
     if (this.busy) {
       this.queue.push([node, handler, payload]);
       return;
     }
     this.busy = true;
     try {
-      this.deliver(node, handler, payload);
+      this.guard(() => this.deliver(node, handler, payload));
     } finally {
       this.busy = false;
     }
@@ -392,11 +475,11 @@ export class RocEngineRuntime {
   }
 
   drainQueue() {
-    while (!this.busy && this.queue.length > 0) {
+    while (!this.busy && !this.poisoned && this.queue.length > 0) {
       const [n, h, p] = this.queue.shift();
       this.busy = true;
       try {
-        this.deliver(n, h, p);
+        this.guard(() => this.deliver(n, h, p));
       } finally {
         this.busy = false;
       }
@@ -886,7 +969,7 @@ export class RocEngineRuntime {
   // ({ status, body }), a network failure ({ network: message }) or a timer
   // tick ({}). Returns false when `id` is not pending (cancelled/answered).
   runEffect(id, answer) {
-    if (!this.live.has(id)) return false;
+    if (this.poisoned || !this.live.has(id)) return false;
     this.live.delete(id);
     if (answer.timeout) this.result(id, new Uint8Array([RES_TIMEOUT]));
     else if (answer.network !== undefined) this.result(id, concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(answer.network)]));
@@ -915,8 +998,11 @@ export class RocEngineRuntime {
 }
 
 export async function mountRocEngineApp({ wasmUrl, root, ...options }) {
-  const { instance } = await instantiateEngineWasm(wasmUrl);
-  const runtime = new RocEngineRuntime(instance.exports, root, options);
+  const response = await fetch(wasmUrl);
+  if (!response.ok) throw new Error(`failed to fetch ${wasmUrl}: ${response.status}`);
+  const module = await WebAssembly.compile(await response.arrayBuffer());
+  const instance = await WebAssembly.instantiate(module, { env: {} });
+  const runtime = new RocEngineRuntime(instance.exports, root, { ...options, module });
   runtime.mount();
   return runtime;
 }
