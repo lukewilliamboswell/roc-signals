@@ -2,152 +2,167 @@
 
 ## Follow the architectural authority
 
-- Read `design.md` completely before proposing or changing public APIs, signal
-  semantics, identity, scopes, ownership, scheduling, effects, rendering, host
-  boundaries, wire formats, or lifecycle behavior.
+- Read `design.md` completely before proposing or changing public APIs, site
+  semantics, identity, scopes, propagation, effects, rendering, the host
+  boundary, the wire protocol, the spec language, or lifecycle behavior.
 - Treat `design.md` as the authoritative target architecture. The implementation
   may lag behind it; move the implementation toward the design rather than
-  treating conflicting current code as precedent.
+  treating conflicting current code as precedent. Paragraphs marked **Target**
+  are design that has not landed, not permission for a different interim
+  meaning.
 - Preserve the non-negotiable constraints in `design.md`: no Roc compiler
   changes, no guessing or recovery that changes meaning, work proportional to
-  the changed set rather than total graph or tree size, mutation confined to
-  the host, structurally safe erased values, and one shared engine behind
-  thin hosts.
+  the changed set rather than total tree size, a pure Roc engine behind a host
+  that only allocates, stages payloads and classifies faults, typed site storage
+  with no host-held Roc values, and the command stream as the only output.
 - If requested work conflicts with the design, identify the conflict explicitly.
-  Do not conceal it in compatibility glue, a special case, duplicated host
-  behavior, or an undocumented boundary convention.
+  Do not conceal it in compatibility glue, a special case, logic in the host or
+  runtime, or an undocumented boundary convention.
 - Change `design.md` only for a deliberate change to the intended architecture,
   not to rationalize an implementation shortcut or record the current state of
   unfinished work.
 
 ## Protect the reactive model
 
-- Keep the dependency graph explicit Roc data and the mutable runtime in the
-  Zig engine. Do not introduce compiler analysis, runtime dependency discovery,
-  mutable Roc state, or a second reactive mechanism.
-- Preserve glitch-free, dependency-ordered propagation and equality pruning.
-  A source update, event, timer, or task result must enter through the same
-  propagation model; do not create a side channel that bypasses scheduling,
-  pruning, scope ownership, or metrics.
-- Treat construction-site identity within a scope and stable keys across list
-  rows as semantic contracts. Do not derive identity from content, DOM
-  position, native pointers exposed to applications, or a scan of existing
-  nodes. Duplicate keys are errors, not aliases.
-- Keep dynamic structure owned by explicit scopes. Disposal must detach its
-  rendered structure and release every node, closure, effect, task, retained
-  value, and host registration owned by that scope.
-- Maintain the complexity budget through data structures as well as algorithms.
-  Node lookup, identity resolution, dirty scheduling, and descriptor access may
-  not hide an O(total graph), O(total tree), or O(total DOM) scan on an update
-  path advertised as O(changed).
-- Keep rendering a consequence of graph propagation. The browser executor
-  applies an already-decided command stream; it must not reconstruct reactive
-  meaning, diff application state, or make decisions that belong in the engine.
+- Keep the engine in pure Roc in `platform/`. Every dynamic site is one closure
+  that owns its typed storage and answers `Fire`, `Changed` and `Dispose`. Do
+  not introduce a node table, a value registry, runtime dependency discovery,
+  host-side state, or a second reactive mechanism.
+- Dependencies are declared by read masks on values, built before anything
+  runs. Preserve glitch-free propagation: all writes of a turn are applied
+  before the single observation pass, and order follows nesting. Preserve
+  equality pruning at holes, rows, `derive`, branch selection and effect sites.
+- A DOM event, an effect result and a follow-up enter through the same turn:
+  route, fire, settle, Changed pass, end-of-turn focus. Do not create a side
+  channel that bypasses routing, pruning, scope ownership, the in-flight table
+  or the counters.
+- Treat construction-site identity within a scope and exact keys within an
+  `each` site as semantic contracts. Do not derive identity from content, DOM
+  position, or engine ids exposed to applications. Duplicate keys are contract
+  errors, not aliases.
+- Keep dynamic structure owned by explicit scopes. Disposing a site removes its
+  nodes, frees its ids and routes, cancels its subscriptions and timers, and
+  reparents its admitted requests to the nearest surviving ancestor, exactly as
+  `design.md` specifies.
+- Maintain the complexity budget through data structures as well as
+  algorithms. Event routing, row lookup, refresh and disposal may not hide a
+  scan of the whole tree, every site, or the DOM on a path advertised as
+  O(changed). State honestly where an operation is linear, as `each`
+  reconciliation is in its list.
+- Keep rendering a consequence of propagation. The browser runtime applies an
+  already-decided command stream and performs requested effects; it must not
+  reconstruct reactive meaning, diff application state, or decide anything that
+  belongs in the engine.
 
-## Keep erasure and ownership safe
+## Keep ownership and boundaries safe
 
-- Treat retained Roc values as opaque capability-owned cells. The host must not
-  inspect their layout, infer their type, copy their bytes, or manipulate nested
-  reference counts itself; clone, compare, and drop only through the capability
-  belonging to that retained edge.
-- Preserve the split-and-replace ownership law described in `design.md`: a get
-  produces an independently owned value while leaving an independently owned
-  value in the source cell. Never model this operation as an untracked borrow.
-- Make ownership transitions explicit at every ABI and host boundary. For each
-  allocation or retained callable, establish who owns it before the call, on
-  success, on refusal, on allocation failure, and during teardown.
-- Preflight fallible growth before publishing externally visible commands or
-  mutating committed runtime state. A failed command batch, render splice, or
-  payload materialization must not expose a partial transaction that cannot be
-  retried or cleaned up safely.
-- Bound host-retained work and payloads. Define reservation, release,
-  saturation, cancellation, and shutdown behavior before adding a queue,
-  registry, cache, task class, timer class, or browser bridge.
-- Reject programmer and contract errors at the narrowest trustworthy boundary.
-  Do not silently repair invalid descriptors, substitute values, discard
-  non-lossy work, or continue after state may have become incoherent.
+- Preserve in-place updates. Exactly one closure references a site's storage;
+  environments move through handlers rather than being shared; no second
+  reference is kept for convenience. A change that makes a column or state copy
+  on every update is a regression even when output is correct, and allocation
+  baselines must catch it.
+- Keep the host to its job. `host.zig` holds one opaque boxed engine state, the
+  last command buffer, at most one staged payload, the allocator and the fault
+  state. It clears its slots before each call into Roc and never interprets the
+  state, the commands or any Roc value. Lay out staged lists exactly as Roc
+  expects and never hold a seamless slice.
+- Make ownership explicit at the boundary. For each list that crosses it (boot
+  bytes, payloads, command buffers, key lists), establish who owns it before the
+  call, after it, and when the instance is poisoned or dropped.
+- Publish atomically. A command batch becomes visible only when its call
+  returns; a trap discards it. JavaScript reads command bytes only after the
+  call, refreshes memory views after every call that can allocate, and applies
+  effects only after the whole batch is applied.
+- Bound host-retained and in-flight work. Define the bound and the behavior at
+  the bound — typed refusal, classified diagnostic, cancellation, teardown —
+  before adding a queue, table, request kind, timer class or runtime registry.
+  Never silently drop non-lossy work.
+- Reject programmer and contract errors at the narrowest trustworthy boundary
+  with a classified diagnostic that names the rule and the construction site.
+  Do not repair invalid input, substitute values, or continue after state may
+  have become incoherent: poison the instance and recover with a fresh one.
 
 ## Preserve one engine and honest boundaries
 
-- Put reactive scheduling, structural reconciliation, identity, effect
-  lifecycle, and ownership policy in `src/signals/`. Native and Wasm hosts adapt
-  the engine to their environments; they do not independently implement its
-  semantics.
-- Keep `src/signals/roc_platform_abi.zig` a raw external layout contract. Build
-  small borrowed typed views above it rather than spreading offset arithmetic,
-  tag interpretation, or host-private meaning through the engine.
-- Treat the Wasm command buffer, event payloads, exports, and JavaScript runtime
-  as a versioned protocol. Update producer, consumer, validation, tests, and
-  user-facing compatibility information together.
-- Keep command publication atomic across Wasm memory growth and JavaScript view
-  refreshes. JavaScript must not retain stale linear-memory views or observe a
-  buffer before the engine has committed its complete contents.
-- Preserve the native host as the semantic and observability host and the Wasm
-  host as the browser-boundary host. Browser-only behavior belongs in focused
-  JavaScript contract tests; shared signal and structure semantics belong in
-  the engine and native host tests.
+- Put scheduling, reconciliation, identity, effect lifecycle and containment
+  policy in `platform/Engine.roc` and the platform's Roc modules. The host and
+  `runtime.mjs` adapt the engine to the browser; they do not implement its
+  semantics. The test platform drives the same engine; it does not simulate a
+  different one.
+- Treat the command stream, event records, effect payloads, boot bytes and Wasm
+  exports as one versioned protocol. Change the Roc encoder and decoders,
+  `test-support/Dom.roc`, `runtime.mjs`, the contract tests in `tests/` and
+  Appendix B of `design.md` together.
+- Keep `test-support/Dom.roc` independent of the engine. It is the oracle; code
+  shared with `Engine.roc` would let one bug pass its own test.
+- Keep `.scm` specs the single source of truth for application-visible
+  behavior, parsed by the one Roc parser in `test-support/`. Unknown steps are
+  hard errors in every runner. Do not weaken, skip or reinterpret a step to make
+  it pass; a reinterpretation is a design change recorded in `design.md` and in
+  the commit.
 
 ## Complete changes across affected layers
 
-- Trace boundary and public API changes through the Roc platform modules, Zig
-  ABI and typed views, shared engine, all affected hosts, browser runtime, specs,
-  examples, generated/bundled artifacts, and maintained documentation wherever
-  each layer is affected.
+- Trace boundary and public API changes through the engine, the typed view
+  modules, `platform/main.roc`, `host.zig`, `runtime.mjs`, the test platform and
+  oracle, specs, examples, generated or bundled artifacts, and maintained
+  documentation wherever each layer is affected.
 - Read `style.md` before editing Roc. Follow the conventions there for types,
   static-dispatch hooks, builders, errors, strings, and top-level `expect`
   tests; do not duplicate those detailed rules here.
-- Follow `www/content/docs/contributing.md` for current setup, test commands,
-  coverage, bundles, site builds, releases, and spec mechanics. Commands and
-  tool versions belong there because they can change independently of these
-  principles.
-- Test invariants and failure paths, not only successful output. Cover ordering,
-  equality cutoffs, identity reuse, scope disposal, ownership transfer,
-  allocation failure, boundedness, retry, cancellation, and protocol rejection
-  as applicable.
-- Use native semantic specs for application-visible behavior and work budgets,
-  focused Zig tests for engine seams and ownership, and JavaScript tests for the
-  JS/Wasm contract. Keep semantic locators stable; assert structural work
-  exactly and bound incidental engine work as described in the testing docs.
+- Follow `www/content/docs/contributing.md` for current setup, tasks, test
+  commands, bundles, site builds, releases and spec mechanics. Commands and tool
+  versions belong there and in `Blueprint.roc`, because they change
+  independently of these principles. Automation is Roc scripts under
+  `scripts/`, invoked through Blueprint tasks.
+- Test invariants and failure paths, not only successful output. Cover
+  ordering, equality cutoffs, identity reuse, scope disposal, reparenting,
+  refusal at the in-flight bound, stale results, follow-up bounds, containment
+  and recovery, and protocol rejection as applicable.
+- Use `.scm` specs under `examples/<app>/specs/` for application-visible
+  behavior and work, run natively and in Chrome; roc-fuzz targets under `fuzz/`
+  for engine sequences and allocation baselines; and contract cases under
+  `tests/` for `host.zig` and `runtime.mjs` against the wire protocol. Keep
+  semantic locators stable and assert structural work exactly.
 - Reach for fuzzing where the bug class is a *sequence* rather than a case:
-  scheduling order, identity reuse across retirement, ownership balance over a
-  long history, fault position crossed with structure. The targets in
-  `test/fuzzing/` are generators — they decode arbitrary bytes into a valid
-  program and check it against a reference model, so their oracles, not their
-  inputs, are what carry the value. When a target catches a bug, minimize the
-  input and land it with `scripts/fuzz.py add`; CI replays that corpus on every
-  pull request, which is what keeps a fixed crash fixed.
-- Judge a fuzz target by whether it can fail. A target that has never rejected a
-  deliberately broken engine is not evidence of anything, so when adding or
-  changing oracles, mutate the code under test and confirm the target catches it.
+  reconciliation order, identity reuse across disposal, effect lifetime across
+  disposal and reparenting, allocation balance over a long history. Targets are
+  generators that decode arbitrary bytes into a valid program and check it
+  against a reference model, so their oracles, not their inputs, carry the
+  value. When a target catches a bug, minimize the input and commit it to the
+  target's corpus so CI replays it and the fix stays fixed.
+- Judge a fuzz target by whether it can fail. A target that has never rejected
+  a deliberately broken engine is not evidence of anything, so when adding or
+  changing oracles, mutate the code under test and confirm the mutation gate
+  catches it. Allocation baselines change only with reviewer acceptance.
 - For performance work, follow `docs/profiling.md`: measure optimized builds,
-  test scaling before micro-optimizing, preserve allocator honesty, and validate
-  semantics and work counters after the change. Do not trade correctness,
-  bounded memory, or architectural clarity for a local benchmark win.
+  test scaling before micro-optimizing, keep allocator counters honest, and
+  validate semantics and counters after the change. Do not trade correctness,
+  bounded memory or architectural clarity for a local benchmark win.
 - Preserve unrelated user changes. Keep the requested change focused, and
   report adjacent design or implementation gaps separately rather than folding
   them into an unrequested rewrite.
 
 ## Keep documentation truthful and durable
 
-- Keep public behavior consistent across `platform-web/`, `platform-shared/`, maintained docs under
-  `www/content/docs/`, examples, and tests. Documentation examples are part of
-  the product surface, not disposable illustrations.
+- Keep public behavior consistent across `platform/`, maintained docs under
+  `www/content/docs/`, examples, and specs. Documentation examples are part of
+  the product surface and must compile.
 - Put stable architecture and rationale in `design.md`, current contributor
   workflow in the contributing docs, detailed Roc conventions in `style.md`,
   public behavior in reference or module documentation, and local invariants
   beside the code they constrain.
 - Review documentation as part of every pull request, including every added or
-  changed Zig `pub fn` doc comment. Do not treat satisfying the `///` lint as
-  sufficient: each comment must be well written and give a helpful narrative
+  changed doc comment on an exposed Roc function and every Zig `pub fn` or
+  `export fn`. Each comment must be well written and give a helpful narrative
   explanation of the function's purpose and, where relevant, its contract,
   ownership, failure behavior, or architectural role. Reject comments that
-  merely restate the function name or signature without helping a reader
-  understand why or how to use it.
+  merely restate the name or signature.
 - Track reproducible compiler limitations in upstream GitHub issues. Once
   filed, link the issue beside any local workaround, keep the workaround narrow
-  and identifiable, and remove it once the pinned compiler contains the fix. Do not
-  let an upstream defect become an undocumented platform semantic or weaken the
-  target architecture.
+  and identifiable, list it in `design.md`'s compiler limitations, and remove it
+  once the pinned compiler contains the fix. Do not let an upstream defect
+  become a platform semantic or weaken the target architecture.
 
 ## Keep this file enduring
 
