@@ -1,0 +1,28 @@
+create_1k         p1 11.393 (wasm 2.382 js 8.790) [11.393-11.393] | p2 12.438 (wasm 5.439 js 6.860) [12.438-12.438] n=1
+wasm pages {"p1":{"mount":135,"after_create_10k":211,"after_clear":211,"after_6_cycles":212},"p2":{"mount":137,"after_create_10k":227,"after_clear":227,"after_6_cycles":227}}
+exit=0 create_1k
+replace_1k        p1 9.663 (wasm 0.614 js 8.948) [9.663-9.663] | p2 5.008 (wasm 1.566 js 3.369) [5.008-5.008] n=1
+wasm pages {"p1":{"mount":135,"after_create_10k":211,"after_clear":211,"after_6_cycles":212},"p2":{"mount":137,"after_create_10k":227,"after_clear":227,"after_6_cycles":227}}
+exit=0 replace_1k
+select_1k         p1 0.080 (wasm 0.012 js 0.013) [0.080-0.080] | p2 0.097 (wasm 0.038 js 0.010) [0.097-0.097] n=1
+wasm pages {"p1":{"mount":135,"after_create_10k":211,"after_clear":211,"after_6_cycles":212},"p2":{"mount":137,"after_create_10k":227,"after_clear":227,"after_6_cycles":227}}
+exit=0 select_1k
+swap_1k           p1 0.240 (wasm 0.085 js 0.093) [0.240-0.240] | p2 0.284 (wasm 0.199 js 0.035) [0.284-0.284] n=1
+wasm pages {"p1":{"mount":135,"after_create_10k":211,"after_clear":211,"after_6_cycles":212},"p2":{"mount":137,"after_create_10k":227,"after_clear":227,"after_6_cycles":227}}
+exit=0 swap_1k
+remove_1k         p1 0.187 (wasm 0.062 js 0.055) [0.187-0.187] | p2 0.497 (wasm 0.395 js 0.039) [0.497-0.497] n=1
+wasm pages {"p1":{"mount":135,"after_create_10k":211,"after_clear":211,"after_6_cycles":212},"p2":{"mount":137,"after_create_10k":227,"after_clear":227,"after_6_cycles":227}}
+exit=0 remove_1k
+update_10k        p1 2.028 (wasm 0.541 js 1.381) [2.028-2.028] | p2 2.359 (wasm 1.229 js 1.052) [2.359-2.359] n=1
+wasm pages {"p1":{"mount":135,"after_create_10k":211,"after_clear":211,"after_6_cycles":212},"p2":{"mount":137,"after_create_10k":227,"after_clear":227,"after_6_cycles":227}}
+exit=0 update_10k
+create_10k        p1 43.989 (wasm 5.019 js 38.773) [43.989-43.989] | p2 73.037 (wasm 10.872 js 61.990) [73.037-73.037] n=1
+wasm pages {"p1":{"mount":135,"after_create_10k":211,"after_clear":211,"after_6_cycles":212},"p2":{"mount":137,"after_create_10k":227,"after_clear":227,"after_6_cycles":227}}
+exit=0 create_10k
+append_1k_to_10k  p1 1.568 (wasm 0.376 js 1.100) [1.568-1.568] | p2 3.219 (wasm 1.814 js 1.330) [3.219-3.219] n=1
+wasm pages {"p1":{"mount":135,"after_create_10k":211,"after_clear":211,"after_6_cycles":212},"p2":{"mount":137,"after_create_10k":227,"after_clear":227,"after_6_cycles":227}}
+exit=0 append_1k_to_10k
+clear_10k         p1 1.150 (wasm 0.384 js 0.650) [1.150-1.150] | p2 1.415 (wasm 0.713 js 0.587) [1.415-1.415] n=1
+wasm pages {"p1":{"mount":135,"after_create_10k":211,"after_clear":211,"after_6_cycles":212},"p2":{"mount":137,"after_create_10k":227,"after_clear":227,"after_6_cycles":227}}
+exit=0 clear_10k
+ALLDONE

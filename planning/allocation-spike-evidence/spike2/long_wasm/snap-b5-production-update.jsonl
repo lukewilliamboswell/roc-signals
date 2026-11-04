@@ -1,0 +1,6 @@
+{"label":"start","cycle":0,"wasm_pages":11941,"host_values":70007,"live_nodes":100024}
+{"label":"after","cycle":100,"wasm_pages":11972,"host_values":70007,"live_nodes":100024}
+{"label":"after","cycle":250,"wasm_pages":12159,"host_values":70007,"live_nodes":100024}
+{"label":"after","cycle":500,"wasm_pages":12161,"host_values":70007,"live_nodes":100024}
+{"label":"after","cycle":750,"wasm_pages":12409,"host_values":70007,"live_nodes":100024}
+{"label":"after","cycle":1000,"wasm_pages":12409,"host_values":70007,"live_nodes":100024}

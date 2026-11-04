@@ -1,0 +1,13 @@
+samples 2696, in dispatch 2165
+ 37.31% total  46.47% dispatch  alloc-in-phase   6.8%  render topology / positions
+ 17.25% total  21.48% dispatch  alloc-in-phase   0.0%  outside dispatch (startup, spec parse, kernel)
+ 16.39% total  20.42% dispatch  alloc-in-phase  89.6%  reducer: Rows generation (Roc)
+  5.68% total   7.07% dispatch  alloc-in-phase   8.5%  other inside PreparedEachRowReplacementCollection
+  5.30% total   6.61% dispatch  alloc-in-phase   0.0%  commit
+  4.86% total   6.05% dispatch  alloc-in-phase  10.7%  descriptor ingestion (collect walk)
+  3.56% total   4.43% dispatch  alloc-in-phase   7.3%  row reconciliation prepare
+  2.56% total   3.19% dispatch  alloc-in-phase  89.9%  row elem release
+  2.52% total   3.14% dispatch  alloc-in-phase  88.2%  row builder (Roc Elem construction)
+  2.45% total   3.05% dispatch  alloc-in-phase  92.4%  teardown (host deinit)
+  1.19% total   1.48% dispatch  alloc-in-phase  15.6%  command publication
+  0.93% total   1.15% dispatch  alloc-in-phase  32.0%  other structural prepare

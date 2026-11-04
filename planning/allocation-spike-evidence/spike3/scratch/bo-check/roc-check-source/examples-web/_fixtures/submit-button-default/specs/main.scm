@@ -1,0 +1,26 @@
+(test "Submit button default"
+  (steps
+    ; Submit button default-action scenario
+
+    (expect-visible (role heading :name "Submit Button Default"))
+    (expect-attr (role region :name "Submit Button Default") data-fixture "submit-button-default")
+    (expect-attr (role form :name "Default submit form") id "default-submit-form")
+    (expect-no-attr (role button :name "Send via implicit submit") type)
+    (expect-attr (role button :name "Send via explicit submit") type "submit")
+    (expect-attr (role button :name "Click without submit") type "button")
+    (expect-text (text "Clicks: 0") "Clicks: 0")
+    (expect-text (text "Submits: 0") "Submits: 0")
+    (real-click (role button :name "Send via implicit submit"))
+    (expect-text (text "Clicks: 1") "Clicks: 1")
+    (expect-text (text "Submits: 1") "Submits: 1")
+    (real-click (role button :name "Click without submit"))
+    (expect-text (text "Clicks: 2") "Clicks: 2")
+    (expect-text (text "Submits: 1") "Submits: 1")
+    (real-click (role button :name "Send via explicit submit"))
+    (expect-text (text "Clicks: 3") "Clicks: 3")
+    (expect-text (text "Submits: 2") "Submits: 2")
+    (submit (role form :name "Default submit form"))
+    (expect-text (text "Clicks: 3") "Clicks: 3")
+    (expect-text (text "Submits: 3") "Submits: 3")
+  )
+)

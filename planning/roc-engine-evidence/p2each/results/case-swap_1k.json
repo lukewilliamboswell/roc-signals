@@ -1,0 +1,333 @@
+{
+ "cases": {
+  "swap_1k": {
+   "summary": {
+    "current": {
+     "total_ns": {
+      "median": 25.13327,
+      "min": 24.463761,
+      "max": 26.746252,
+      "n": 11
+     },
+     "wasm_ns": {
+      "median": 24.801511,
+      "min": 24.285472,
+      "max": 26.266862,
+      "n": 11
+     },
+     "apply_ns": {
+      "median": 0.116792,
+      "min": 0.095251,
+      "max": 0.152981,
+      "n": 11
+     },
+     "bytes": 48,
+     "pages": 1169
+    },
+    "p1": {
+     "total_ns": {
+      "median": 0.22146,
+      "min": 0.182597,
+      "max": 0.417713,
+      "n": 11
+     },
+     "wasm_ns": {
+      "median": 0.126289,
+      "min": 0.103496,
+      "max": 0.294779,
+      "n": 11
+     },
+     "apply_ns": {
+      "median": 0.057629,
+      "min": 0.043572,
+      "max": 0.087035,
+      "n": 11
+     },
+     "bytes": 18,
+     "pages": 144
+    },
+    "p2": {
+     "total_ns": {
+      "median": 0.345035,
+      "min": 0.266135,
+      "max": 0.505659,
+      "n": 11
+     },
+     "wasm_ns": {
+      "median": 0.264111,
+      "min": 0.202244,
+      "max": 0.394408,
+      "n": 11
+     },
+     "apply_ns": {
+      "median": 0.05233,
+      "min": 0.028975,
+      "max": 0.082577,
+      "n": 11
+     },
+     "bytes": 18,
+     "pages": 146
+    }
+   },
+   "samples": {
+    "current": [
+     {
+      "total_ns": 26180818,
+      "wasm_ns": 25944961,
+      "apply_ns": 138733,
+      "bytes": 48,
+      "pages": 1169
+     },
+     {
+      "total_ns": 26746252,
+      "wasm_ns": 26266862,
+      "apply_ns": 116792,
+      "bytes": 48,
+      "pages": 1169
+     },
+     {
+      "total_ns": 24705449,
+      "wasm_ns": 24484821,
+      "apply_ns": 100060,
+      "bytes": 48,
+      "pages": 1169
+     },
+     {
+      "total_ns": 25436056,
+      "wasm_ns": 25173437,
+      "apply_ns": 111091,
+      "bytes": 48,
+      "pages": 1169
+     },
+     {
+      "total_ns": 24732670,
+      "wasm_ns": 24545215,
+      "apply_ns": 96162,
+      "bytes": 48,
+      "pages": 1169
+     },
+     {
+      "total_ns": 25575870,
+      "wasm_ns": 25310748,
+      "apply_ns": 152981,
+      "bytes": 48,
+      "pages": 1169
+     },
+     {
+      "total_ns": 24510970,
+      "wasm_ns": 24292045,
+      "apply_ns": 123184,
+      "bytes": 48,
+      "pages": 1169
+     },
+     {
+      "total_ns": 25878695,
+      "wasm_ns": 25673496,
+      "apply_ns": 104308,
+      "bytes": 48,
+      "pages": 1169
+     },
+     {
+      "total_ns": 24722622,
+      "wasm_ns": 24494489,
+      "apply_ns": 121501,
+      "bytes": 48,
+      "pages": 1169
+     },
+     {
+      "total_ns": 25133270,
+      "wasm_ns": 24801511,
+      "apply_ns": 125238,
+      "bytes": 48,
+      "pages": 1169
+     },
+     {
+      "total_ns": 24463761,
+      "wasm_ns": 24285472,
+      "apply_ns": 95251,
+      "bytes": 48,
+      "pages": 1169
+     }
+    ],
+    "p1": [
+     {
+      "total_ns": 283929,
+      "wasm_ns": 180573,
+      "apply_ns": 57629,
+      "bytes": 18,
+      "pages": 144
+     },
+     {
+      "total_ns": 221460,
+      "wasm_ns": 126289,
+      "apply_ns": 54734,
+      "bytes": 18,
+      "pages": 144
+     },
+     {
+      "total_ns": 211581,
+      "wasm_ns": 117002,
+      "apply_ns": 56216,
+      "bytes": 18,
+      "pages": 144
+     },
+     {
+      "total_ns": 347860,
+      "wasm_ns": 235206,
+      "apply_ns": 69352,
+      "bytes": 18,
+      "pages": 144
+     },
+     {
+      "total_ns": 249353,
+      "wasm_ns": 124035,
+      "apply_ns": 87035,
+      "bytes": 18,
+      "pages": 144
+     },
+     {
+      "total_ns": 197465,
+      "wasm_ns": 103496,
+      "apply_ns": 55626,
+      "bytes": 18,
+      "pages": 144
+     },
+     {
+      "total_ns": 319606,
+      "wasm_ns": 218274,
+      "apply_ns": 62198,
+      "bytes": 18,
+      "pages": 144
+     },
+     {
+      "total_ns": 182597,
+      "wasm_ns": 103526,
+      "apply_ns": 44285,
+      "bytes": 18,
+      "pages": 144
+     },
+     {
+      "total_ns": 216321,
+      "wasm_ns": 142842,
+      "apply_ns": 43572,
+      "bytes": 18,
+      "pages": 144
+     },
+     {
+      "total_ns": 417713,
+      "wasm_ns": 294779,
+      "apply_ns": 83799,
+      "bytes": 18,
+      "pages": 144
+     },
+     {
+      "total_ns": 207293,
+      "wasm_ns": 118615,
+      "apply_ns": 62539,
+      "bytes": 18,
+      "pages": 144
+     }
+    ],
+    "p2": [
+     {
+      "total_ns": 505659,
+      "wasm_ns": 394408,
+      "apply_ns": 72127,
+      "bytes": 18,
+      "pages": 146
+     },
+     {
+      "total_ns": 374831,
+      "wasm_ns": 274371,
+      "apply_ns": 58160,
+      "bytes": 18,
+      "pages": 146
+     },
+     {
+      "total_ns": 360925,
+      "wasm_ns": 250335,
+      "apply_ns": 62338,
+      "bytes": 18,
+      "pages": 146
+     },
+     {
+      "total_ns": 286353,
+      "wasm_ns": 209237,
+      "apply_ns": 43753,
+      "bytes": 18,
+      "pages": 146
+     },
+     {
+      "total_ns": 266135,
+      "wasm_ns": 202244,
+      "apply_ns": 34525,
+      "bytes": 18,
+      "pages": 146
+     },
+     {
+      "total_ns": 396692,
+      "wasm_ns": 305690,
+      "apply_ns": 55355,
+      "bytes": 18,
+      "pages": 146
+     },
+     {
+      "total_ns": 343081,
+      "wasm_ns": 258771,
+      "apply_ns": 52018,
+      "bytes": 18,
+      "pages": 146
+     },
+     {
+      "total_ns": 285582,
+      "wasm_ns": 214046,
+      "apply_ns": 46969,
+      "bytes": 18,
+      "pages": 146
+     },
+     {
+      "total_ns": 394689,
+      "wasm_ns": 281945,
+      "apply_ns": 82577,
+      "bytes": 18,
+      "pages": 146
+     },
+     {
+      "total_ns": 345035,
+      "wasm_ns": 264872,
+      "apply_ns": 52330,
+      "bytes": 18,
+      "pages": 146
+     },
+     {
+      "total_ns": 319426,
+      "wasm_ns": 264111,
+      "apply_ns": 28975,
+      "bytes": 18,
+      "pages": 146
+     }
+    ]
+   }
+  }
+ },
+ "pages": {
+  "current": {
+   "mount": 141,
+   "after_create_10k": 11926,
+   "after_clear": 13000,
+   "after_6_cycles": 16366
+  },
+  "p1": {
+   "mount": 135,
+   "after_create_10k": 211,
+   "after_clear": 211,
+   "after_6_cycles": 212
+  },
+  "p2": {
+   "mount": 137,
+   "after_create_10k": 227,
+   "after_clear": 227,
+   "after_6_cycles": 227
+  }
+ }
+}

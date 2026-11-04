@@ -1,0 +1,870 @@
+Test output: /tmp/claude-1000/s2/suites/b2/out-native-4130965
+
+==> zig build build-test-hosts
+Shared platform copies match (SHA-256).
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-onboarding-wizard /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/onboarding-wizard/main.roc
+0 errors and 0 warnings found in 1.4s while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-onboarding-wizard
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-onboarding-wizard /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/onboarding-wizard/specs
+[PASS] an-invalid-step-blocks-navigation.scm (20.2 ms)
+[PASS] a-later-field-whose-options-depend-on-an-earlier-answer.scm (33.6 ms)
+[PASS] editing-step-2-does-not-re-render-step-1-s-fields.scm (24.7 ms)
+[PASS] changing-the-earlier-answer-resets-the-dependent-field.scm (61.8 ms)
+[PASS] fix-the-step-and-move-on.scm (29.9 ms)
+[PASS] jump-backwards-to-a-step-answers-preserved.scm (33.6 ms)
+[PASS] per-field-validation-on-the-invite-list.scm (40.2 ms)
+[PASS] progress-navigation-availability.scm (20.9 ms)
+[PASS] restored-initial-state.scm (16.0 ms)
+[PASS] forward-again-answers-preserved.scm (88.2 ms)
+[PASS] back-to-step-1-editing-one-field-leaves-the-other-alone.scm (169.4 ms)
+[PASS] submitting-pending-supersede-stale-success-failure.scm (205.0 ms)
+[PASS] start-over-the-empty-initial-state.scm (320.4 ms)
+
+13 passed, 0 failed, 13 total (1.06s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-availability-picker /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/availability-picker/main.roc
+0 errors and 0 warnings found in 989ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-availability-picker
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-availability-picker /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/availability-picker/specs
+[PASS] half-hour-offset-zone.scm (24.6 ms)
+[PASS] draft-validation.scm (34.1 ms)
+[PASS] initial-mount.scm (13.1 ms)
+[PASS] marking-it-busy-creates-an-overlapping-commitment-conflict.scm (16.8 ms)
+[PASS] adding-a-slot-one-new-row-and-the-draft-clears-via-state-set-cmd.scm (61.3 ms)
+[PASS] marking-one-slot-available-leaves-its-siblings-alone.scm (18.3 ms)
+[PASS] negative-offset-pushes-a-slot-backwards-past-the-week-boundary.scm (28.1 ms)
+[PASS] resolving-the-conflict.scm (35.2 ms)
+[PASS] removal-down-to-a-day-with-no-availability-at-all.scm (80.0 ms)
+[PASS] reorder-keeps-every-row-scope.scm (91.5 ms)
+[PASS] the-headline-one-timezone-change-reprojects-every-rendered-slot.scm (37.3 ms)
+[PASS] total-hours-summary-tracks-a-per-row-edit.scm (60.2 ms)
+[PASS] boundary-times-exactly-midnight-and-exactly-23-30.scm (239.5 ms)
+[PASS] single-item-then-the-empty-list.scm (156.1 ms)
+
+14 passed, 0 failed, 14 total (0.90s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-field-notes /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/field-notes/main.roc
+0 errors and 0 warnings found in 1.3s while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-field-notes
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-field-notes /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/field-notes/specs
+[PASS] capturing-while-offline.scm (23.4 ms)
+[PASS] initial-mount.scm (8.8 ms)
+[PASS] filtering-hides-synced-rows-without-touching-the-others.scm (37.9 ms)
+[PASS] going-offline-mid-sync-then-a-stale-result-arriving-late.scm (48.1 ms)
+[PASS] queueing-while-offline.scm (40.8 ms)
+[PASS] pausing-auto-sync-then-deleting-a-queued-note.scm (60.0 ms)
+[PASS] reorder-promoting-a-note-changes-the-drain-order.scm (40.0 ms)
+[PASS] the-connection-returns-and-the-outbox-drains-one-at-a-time.scm (114.0 ms)
+[PASS] editing-an-already-synced-note-re-queues-it.scm (278.4 ms)
+[PASS] retrying-the-failed-note.scm (184.8 ms)
+[PASS] persistence.scm (716.3 ms)
+
+11 passed, 0 failed, 11 total (1.55s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-support-inbox /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/support-inbox/main.roc
+0 errors and 0 warnings found in 1.6s while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-support-inbox
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-support-inbox /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/support-inbox/specs
+[PASS] a-conversation-with-no-messages.scm (18.2 ms)
+[PASS] a-newer-read-supersedes-the-older-result.scm (27.0 ms)
+[PASS] a-failed-sync.scm (38.7 ms)
+[PASS] a-send-fails-and-rolls-back.scm (45.7 ms)
+[PASS] empty-inbox-edge.scm (27.1 ms)
+[PASS] first-snapshot-arrives.scm (12.8 ms)
+[PASS] initial-mount.scm (8.0 ms)
+[PASS] filter-meets-selection.scm (33.3 ms)
+[PASS] pausing-and-resuming-polling.scm (22.5 ms)
+[PASS] optimistic-sending.scm (31.0 ms)
+[PASS] poll-acknowledges-before-send-completes.scm (26.3 ms)
+[PASS] selecting-a-conversation.scm (20.9 ms)
+[PASS] the-key-budget.scm (27.5 ms)
+[PASS] the-server-reorders-rows.scm (24.3 ms)
+[PASS] unread-clears-when-the-thread-is-read.scm (22.4 ms)
+
+15 passed, 0 failed, 15 total (0.39s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-dependency-scheduler /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/dependency-scheduler/main.roc
+0 errors and 0 warnings found in 1.1s while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-dependency-scheduler
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-dependency-scheduler /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/dependency-scheduler/specs
+[PASS] a-zero-duration-milestone.scm (94.5 ms)
+[PASS] initial-render.scm (36.2 ms)
+[PASS] adding-and-removing-a-dependency-edge.scm (127.7 ms)
+[PASS] moving-a-leaf-task-changes-only-that-leaf.scm (53.2 ms)
+[PASS] filtering-the-list-to-the-critical-path.scm (227.7 ms)
+[PASS] a-dependency-cycle-is-reported-not-hung-on.scm (238.9 ms)
+[PASS] the-critical-path-moves-when-a-parallel-branch-grows-long-enough.scm (94.4 ms)
+[PASS] write-spec-is-the-head-of-spec-api-sync-qa-launch-so-delaying-it.scm (38.6 ms)
+[PASS] reordering-the-list-keeps-every-row-scope.scm (272.4 ms)
+[PASS] the-focus-readout-is-an-independent-source-feeding-the-same-solv.scm (313.3 ms)
+[PASS] the-empty-list.scm (804.3 ms)
+
+11 passed, 0 failed, 11 total (2.30s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-recipe-scaler /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/recipe-scaler/main.roc
+0 errors and 0 warnings found in 1.2s while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-recipe-scaler
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-recipe-scaler /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/recipe-scaler/specs
+[PASS] initial-mount.scm (7.5 ms)
+[PASS] building-the-shopping-list.scm (16.8 ms)
+[PASS] exactly-the-14-quantity-sinks-effective-servings-scale-note-and.scm (20.3 ms)
+[PASS] scaling-down-rounding-and-the-boundaries.scm (44.9 ms)
+[PASS] scaling-by-pan-size-instead-of-servings.scm (66.4 ms)
+[PASS] switching-recipe-this-is-structural.scm (64.4 ms)
+[PASS] the-unit-system-toggle-changes-every-convertible-quantity.scm (39.4 ms)
+[PASS] removing-recipes-from-the-shopping-list.scm (175.2 ms)
+
+8 passed, 0 failed, 8 total (0.43s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-query-builder /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/query-builder/main.roc
+0 errors and 0 warnings found in 1.2s while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-query-builder
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-query-builder /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/query-builder/specs
+[PASS] and-or-on-a-group.scm (216.6 ms)
+[PASS] edge-case-empty-leaf-value.scm (14.5 ms)
+[PASS] deleting-a-leaf-sibling.scm (261.2 ms)
+[PASS] deleting-a-nested-group.scm (273.7 ms)
+[PASS] back-to-a-single-condition.scm (363.5 ms)
+[PASS] initial-state.scm (7.5 ms)
+[PASS] every-operator.scm (112.9 ms)
+[PASS] editing-a-leaf-three-levels-deep-does-not-recreate-its-siblings.scm (300.0 ms)
+[PASS] nesting-a-group-inside-a-group.scm (215.8 ms)
+[PASS] second-independent-source-fan-in.scm (141.4 ms)
+[PASS] negating-the-root.scm (345.8 ms)
+[PASS] empty-root-group.scm (531.6 ms)
+[PASS] three-levels-of-nesting.scm (334.3 ms)
+
+13 passed, 0 failed, 13 total (3.12s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-token-editor /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/token-editor/main.roc
+0 errors and 0 warnings found in 1.5s while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-token-editor
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-token-editor /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/token-editor/specs
+[PASS] initial-state.scm (8.3 ms)
+[PASS] one-colour-edit-reaches-every-dependent-binding-without-rebuildi.scm (10.1 ms)
+[PASS] a-second-pair-crossing-aa-independently.scm (31.7 ms)
+[PASS] invalid-hex.scm (40.5 ms)
+[PASS] the-aa-flag-crosses-4-5-1-in-both-directions.scm (11.0 ms)
+[PASS] boundary-a-spacing-token-of-zero.scm (84.1 ms)
+[PASS] radius-md-appears-only-in-the-stylesheet-so-editing-it-must-not.scm (72.2 ms)
+[PASS] several-tokens-invalid-at-once.scm (143.1 ms)
+[PASS] uppercase-hex-normalises-through-every-binding.scm (140.7 ms)
+
+9 passed, 0 failed, 9 total (0.54s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-package-explorer /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/package-explorer/main.roc
+0 errors and 0 warnings found in 1.6s while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-package-explorer
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-package-explorer /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/package-explorer/specs
+[PASS] a-deep-link.scm (7.9 ms)
+[PASS] c-the-search-page-s-own-loading-loaded-transition.scm (8.0 ms)
+[PASS] b-navigating-away-retires-panel-state.scm (13.9 ms)
+[PASS] e-keyed-row-budgets-and-per-row-edits.scm (27.8 ms)
+[PASS] d-latest-wins-search-and-a-stale-result.scm (44.0 ms)
+[PASS] h-unknown-address.scm (7.6 ms)
+[PASS] f-opening-a-package-three-panels-settle-independently.scm (38.8 ms)
+[PASS] g-back-and-forward.scm (59.4 ms)
+
+8 passed, 0 failed, 8 total (0.21s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-loan-comparator /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/loan-comparator/main.roc
+0 errors and 0 warnings found in 1.1s while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-loan-comparator
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-loan-comparator /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/loan-comparator/specs
+[PASS] an-extra-payment-large-enough-to-shorten-the-schedule.scm (38.8 ms)
+[PASS] a-principal-of-zero-an-empty-schedule-that-still-clears.scm (64.9 ms)
+[PASS] a-term-of-one-month.scm (79.4 ms)
+[PASS] a-rate-of-zero.scm (94.8 ms)
+[PASS] editing-scenario-a-s-rate-derived-figures-follow-siblings-do-n.scm (34.2 ms)
+[PASS] initial-mounted-state.scm (26.3 ms)
+[PASS] back-to-the-baseline-scenario-a.scm (113.5 ms)
+[PASS] switching-the-compared-pair.scm (24.5 ms)
+[PASS] zero-extra-payment-restores-the-full-term.scm (47.9 ms)
+[PASS] editing-scenario-c-does-not-disturb-a-or-b.scm (161.8 ms)
+[PASS] invalid-input.scm (148.8 ms)
+
+11 passed, 0 failed, 11 total (0.84s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-data-grid /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/data-grid/main.roc
+0 errors and 0 warnings found in 1.2s while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-data-grid
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-data-grid /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/data-grid/specs
+[PASS] initial-mount.scm (56.3 ms)
+[PASS] inline-editing.scm (3224.0 ms)
+[PASS] empty-filter-result.scm (3377.8 ms)
+[PASS] filtering.scm (4158.5 ms)
+[PASS] paging.scm (2545.5 ms)
+[PASS] paging-past-the-end.scm (5770.3 ms)
+[PASS] per-row-selection.scm (2668.0 ms)
+[PASS] single-row-filter-result.scm (3665.8 ms)
+[PASS] sorting.scm (2063.9 ms)
+
+9 passed, 0 failed, 9 total (27.53s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-pomodoro-tracker /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/pomodoro-tracker/main.roc
+0 errors and 0 warnings found in 906ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-pomodoro-tracker
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-pomodoro-tracker /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/pomodoro-tracker/specs
+[PASS] initial-render-restored-from-storage.scm (4.7 ms)
+[PASS] attaching-a-different-project-mid-session.scm (16.2 ms)
+[PASS] pause-voids-the-block-in-progress.scm (22.2 ms)
+[PASS] resume-starts-a-fresh-block.scm (37.8 ms)
+[PASS] reset-returns-to-idle.scm (67.8 ms)
+[PASS] start-the-running-branch-mounts-the-interval.scm (14.6 ms)
+[PASS] a-project-with-no-logged-time-is-still-fully-usable.scm (140.9 ms)
+[PASS] logging-the-block-writes-the-ledger-and-rewinds-the-clock.scm (146.3 ms)
+[PASS] run-a-whole-cycle-to-the-work-break-boundary.scm (80.5 ms)
+
+9 passed, 0 failed, 9 total (0.53s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-form-builder /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/form-builder/main.roc
+0 errors and 0 warnings found in 965ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-form-builder
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-form-builder /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/form-builder/specs
+[PASS] adding-a-number-field.scm (71.3 ms)
+[PASS] adding-a-select-field.scm (161.6 ms)
+[PASS] answering-the-generated-form.scm (13.6 ms)
+[PASS] a-single-field-form.scm (212.5 ms)
+[PASS] adding-a-checkbox-field.scm (226.1 ms)
+[PASS] adding-the-remaining-field-types.scm (176.0 ms)
+[PASS] editing-one-field-s-label-fine-grained.scm (27.5 ms)
+[PASS] initial-mount.scm (9.9 ms)
+[PASS] clearing-the-preview-answers.scm (226.3 ms)
+[PASS] deleting-a-field-that-holds-invalid-input.scm (198.2 ms)
+[PASS] the-key-cross-level-assertion.scm (24.5 ms)
+[PASS] reordering.scm (208.6 ms)
+[PASS] the-empty-form.scm (246.9 ms)
+
+13 passed, 0 failed, 13 total (1.80s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-status-page /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/status-page/main.roc
+0 errors and 0 warnings found in 958ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-status-page
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-status-page /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/status-page/specs
+[PASS] a-stale-check-result-arriving-after-a-newer-request-is-ignored.scm (23.0 ms)
+[PASS] first-incident-arrives-with-three-updates-in-publish-order.scm (23.2 ms)
+[PASS] empty-incident-feed-disposes-the-timeline.scm (28.1 ms)
+[PASS] first-results-everything-healthy-empty-incident-timeline.scm (26.7 ms)
+[PASS] initial-mount.scm (17.4 ms)
+[PASS] hiding-the-page-stops-polling.scm (37.5 ms)
+[PASS] a-real-outage-keeps-the-page-at-major-outage.scm (69.6 ms)
+[PASS] one-refresh-fails-while-the-others-succeed.scm (21.5 ms)
+[PASS] one-service-degrades-the-rollup-follows.scm (27.9 ms)
+[PASS] returning-to-visible-resumes-polling.scm (43.4 ms)
+[PASS] several-services-degrade-the-rollup-escalates-to-a-major-outage.scm (36.9 ms)
+[PASS] recovery-and-reordering-the-timeline.scm (107.5 ms)
+
+12 passed, 0 failed, 12 total (0.46s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-flight-search /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/flight-search/main.roc
+0 errors and 0 warnings found in 939ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-flight-search
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-flight-search /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/flight-search/specs
+[PASS] a-filter-is-an-effect-trigger.scm (29.4 ms)
+[PASS] fan-in-two-filters-combined.scm (153.6 ms)
+[PASS] initial-mount.scm (6.8 ms)
+[PASS] failure.scm (200.4 ms)
+[PASS] a-filter-that-excludes-every-returned-flight.scm (203.0 ms)
+[PASS] sorting-is-local-no-refetch-and-the-rows-are-reused-not-recreate.scm (20.8 ms)
+[PASS] an-empty-result-set-from-the-backend.scm (254.5 ms)
+[PASS] success.scm (12.1 ms)
+[PASS] sorting-while-a-request-is-in-flight.scm (97.9 ms)
+[PASS] sorting-an-empty-set-still-does-not-refetch.scm (222.7 ms)
+[PASS] latest-wins-a-superseded-response-is-ignored.scm (295.0 ms)
+[PASS] widen-back-to-every-flight-then-a-final-re-sort-over-four-rows.scm (387.9 ms)
+
+12 passed, 0 failed, 12 total (1.88s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-kanban-board /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/kanban-board/main.roc
+0 errors and 0 warnings found in 716ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-kanban-board
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-kanban-board /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/kanban-board/specs
+[PASS] cross-column-move.scm (22.3 ms)
+[PASS] delete-the-card-that-currently-matches-the-filter.scm (64.5 ms)
+[PASS] filter-fans-in-with-column-membership.scm (46.8 ms)
+[PASS] initial-render.scm (16.9 ms)
+[PASS] adding-cards-empty-duplicate-valid.scm (112.7 ms)
+[PASS] per-row-edit-does-not-disturb-siblings.scm (31.2 ms)
+[PASS] empty-a-whole-column.scm (139.0 ms)
+[PASS] reorder-inside-a-column.scm (27.4 ms)
+[PASS] move-the-only-card-out-of-a-column-leaving-it-empty.scm (82.0 ms)
+[PASS] wip-limit-crosses-and-un-crosses.scm (77.9 ms)
+
+10 passed, 0 failed, 10 total (0.62s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-spreadsheet-lite /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/spreadsheet-lite/main.roc
+0 errors and 0 warnings found in 959ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-spreadsheet-lite
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-spreadsheet-lite /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/spreadsheet-lite/specs
+[PASS] b2-d2-d5-d6-d7-d8-and-b2-b5-f5-d5-already-covered.scm (133.4 ms)
+[PASS] editing-a-cell-nothing-depends-on.scm (173.6 ms)
+[PASS] error-paths.scm (1179.8 ms)
+[PASS] initial-mount.scm (96.1 ms)
+[PASS] empty-cell-references.scm (1571.5 ms)
+[PASS] precedence-and-unary-minus.scm (2284.7 ms)
+[PASS] grid-mode-toggle.scm (3905.6 ms)
+[PASS] selection-and-the-bar.scm (120.2 ms)
+[PASS] editing-survives-every-reorder.scm (4707.2 ms)
+[PASS] them.scm (124.1 ms)
+[PASS] keyed-row-add-remove.scm (4969.6 ms)
+[PASS] row-reorder.scm (3943.8 ms)
+[PASS] the-new-dependent-updates-with-it.scm (5639.5 ms)
+
+13 passed, 0 failed, 13 total (28.85s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-split-the-bill /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/split-the-bill/main.roc
+0 errors and 0 warnings found in 1.1s while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-split-the-bill
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-split-the-bill /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/split-the-bill/specs
+[PASS] editing-one-expense-reuses-every-row.scm (19.8 ms)
+[PASS] initial-render.scm (13.7 ms)
+[PASS] invalid-amounts.scm (48.4 ms)
+[PASS] changing-who-shares-an-expense.scm (223.0 ms)
+[PASS] adding-a-person-re-splits-every-expense.scm (294.5 ms)
+[PASS] adding-an-expense.scm (345.1 ms)
+[PASS] rounding-that-does-not-divide-evenly.scm (26.7 ms)
+[PASS] one-person-then-none.scm (447.5 ms)
+[PASS] removing-a-person.scm (352.3 ms)
+[PASS] removing-expenses.scm (333.5 ms)
+
+10 passed, 0 failed, 10 total (2.10s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-markdown-editor /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/markdown-editor/main.roc
+0 errors and 0 warnings found in 1.0s while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-markdown-editor
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-markdown-editor /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/markdown-editor/specs
+[PASS] contrast-adding-a-heading-does-rebuild-the-outline-by-exactly.scm (51.2 ms)
+[PASS] edge-case-a-document-with-no-headings-at-all.scm (99.7 ms)
+[PASS] edge-case-an-empty-document-all-four-views-stay-locatable.scm (109.6 ms)
+[PASS] initial-render-every-region-heading-and-derived-value.scm (28.4 ms)
+[PASS] back-to-the-sample-document-the-whole-graph-restores.scm (196.9 ms)
+[PASS] edge-case-markdown-special-characters-and-text-that-looks-like.scm (131.7 ms)
+[PASS] numbering-toggle-a-fan-in-of-the-heading-spine-and-a-boolean.scm (30.8 ms)
+[PASS] list-behaviour-add-remove-reorder-and-per-row-edits-in-the-out.scm (93.4 ms)
+[PASS] reading-speed-a-fan-in-of-the-counts-and-the-selected-words-pe.scm (26.5 ms)
+[PASS] edge-case-every-heading-level-one-demotion-at-a-time-the-outl.scm (209.9 ms)
+[PASS] the-teaching-point-a-paragraph-edit-updates-the-statistics-and.scm (32.1 ms)
+
+11 passed, 0 failed, 11 total (1.01s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-log-viewer /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/log-viewer/main.roc
+0 errors and 0 warnings found in 872ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-log-viewer
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-log-viewer /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/log-viewer/specs
+[PASS] fanning-into-one-visible-set-signal-follow-tail-toggling-newest.scm (4.7 ms)
+[PASS] a-query-that-matches-nothing.scm (19.9 ms)
+[PASS] filters-and-query-fan-in-to-one-visible-set-the-debug-row-is-the.scm (24.9 ms)
+[PASS] clearing-while-a-level-filter-and-a-query-are-active-keeps-the-c.scm (35.7 ms)
+[PASS] follow-tail-toggles-while-lines-keep-arriving.scm (26.1 ms)
+[PASS] level-filter-removes-only-its-own-rows.scm (13.6 ms)
+[PASS] one-line-the-single-item-boundary.scm (10.7 ms)
+[PASS] query-highlights-matches-inside-the-level-filtered-set.scm (14.9 ms)
+[PASS] hiding-a-level-removes-only-that-level-s-rows-from-a-42-line-buf.scm (587.3 ms)
+[PASS] appending-line-41-to-a-40-line-buffer-must-reuse-every-existing.scm (648.2 ms)
+[PASS] reordering-the-buffer-moves-rows-without-creating-or-removing-an.scm (590.6 ms)
+[PASS] one-more-append-to-show-the-budget-is-flat-per-line-rather-than.scm (653.9 ms)
+[PASS] restore-a-wide-open-view-for-the-granularity-measurement.scm (484.3 ms)
+[PASS] typing-a-query-re-marks-the-existing-rows-without-recreating-any.scm (547.3 ms)
+
+14 passed, 0 failed, 14 total (3.66s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-conduit /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/conduit/main.roc
+0 errors and 0 warnings found in 1.9s while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-conduit
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-conduit /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/conduit/specs
+[PASS] editor-older-success-cannot-override-newer-rejection.scm (12.3 ms)
+[PASS] deep-link-cold-mounts-the-article-page-loading-then-content.scm (23.5 ms)
+[PASS] empty-state.scm (13.6 ms)
+[PASS] error-state-renders-in-app.scm (10.2 ms)
+[PASS] favoriting-and-unfavoriting-a-feed-article.scm (14.2 ms)
+[PASS] back-forward-stay-in-sync-across-live-pages.scm (53.3 ms)
+[PASS] guarded-routes-redirect-anonymous-visitors-to-sign-in.scm (12.3 ms)
+[PASS] login-older-success-cannot-replace-a-newer-rejection.scm (7.6 ms)
+[PASS] home-both-fetches-pending-then-tags-and-feed-render.scm (18.8 ms)
+[PASS] login-422-envelope-renders-success-persists-the-session.scm (19.1 ms)
+[PASS] network-failure-article.scm (9.9 ms)
+[PASS] network-failure-editor-load.scm (9.1 ms)
+[PASS] network-failure-comments.scm (15.2 ms)
+[PASS] network-failure-home.scm (9.1 ms)
+[PASS] network-failure-profile.scm (8.8 ms)
+[PASS] network-failure-profile-articles.scm (11.8 ms)
+[PASS] published-example-urls-mount-the-app-home-under-any-site-base-pa.scm (7.8 ms)
+[PASS] pagination-23-articles-two-pages-page-switch-swaps-the-list.scm (36.8 ms)
+[PASS] register-422-envelope-renders-all-required-fields.scm (16.7 ms)
+[PASS] profile-page-profile-card-plus-author-articles-then-favorites-ta.scm (42.5 ms)
+[PASS] settings-authed-update-then-sign-out-clears-the-namespaced-keys.scm (22.9 ms)
+[PASS] settings-response-after-sign-out-does-not-restore-session.scm (14.4 ms)
+[PASS] tag-switching-ignores-an-older-response.scm (17.9 ms)
+[PASS] your-feed-tab-drives-the-authenticated-feed-endpoint.scm (20.3 ms)
+[PASS] article-writes-editor-create-edit-comments-and-delete.scm (292.6 ms)
+
+25 passed, 0 failed, 25 total (0.72s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-task-latest-wins /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/task-latest-wins/main.roc
+0 errors and 0 warnings found in 338ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-task-latest-wins
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-task-latest-wins /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/task-latest-wins/specs
+[PASS] cancel.scm (2.7 ms)
+[PASS] main.scm (5.1 ms)
+
+2 passed, 0 failed, 2 total (0.01s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-location-source /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/location-source/main.roc
+0 errors and 0 warnings found in 300ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-location-source
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-location-source /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/location-source/specs
+[PASS] main.scm (2.0 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-location-navigation /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/location-navigation/main.roc
+0 errors and 0 warnings found in 319ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-location-navigation
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-location-navigation /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/location-navigation/specs
+[PASS] main.scm (1.7 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-location-canonical-branch /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/location-canonical-branch/main.roc
+0 errors and 0 warnings found in 317ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-location-canonical-branch
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-location-canonical-branch /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/location-canonical-branch/specs
+[PASS] direct-main.scm (2.3 ms)
+[PASS] main.scm (2.3 ms)
+
+2 passed, 0 failed, 2 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-storage-commands /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/storage-commands/main.roc
+0 errors and 0 warnings found in 301ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-storage-commands
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-storage-commands /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/storage-commands/specs
+[PASS] main.scm (1.3 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-on-change-initial /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/on-change-initial/main.roc
+0 errors and 0 warnings found in 289ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-on-change-initial
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-on-change-initial /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/on-change-initial/specs
+[PASS] main.scm (2.1 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-state-commands /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/state-commands/main.roc
+0 errors and 0 warnings found in 349ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-state-commands
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-state-commands /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/state-commands/specs
+[PASS] retained-history.scm (3.1 ms)
+[PASS] main.scm (1.7 ms)
+
+2 passed, 0 failed, 2 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-svg /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/svg/main.roc
+0 errors and 0 warnings found in 374ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-svg
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-svg /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/svg/specs
+[PASS] svg.scm (4.1 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-coordinated-writes /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/coordinated-writes/main.roc
+0 errors and 0 warnings found in 318ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-coordinated-writes
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-coordinated-writes /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/coordinated-writes/specs
+[PASS] coordinated-writes.scm (5.4 ms)
+
+1 passed, 0 failed, 1 total (0.01s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-event-actions /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/event-actions/main.roc
+0 errors and 0 warnings found in 435ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-event-actions
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-event-actions /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/event-actions/specs
+[PASS] event-actions-typed.scm (3.8 ms)
+[PASS] event-actions-loading-disposal.scm (5.9 ms)
+[PASS] event-actions.scm (9.5 ms)
+
+3 passed, 0 failed, 3 total (0.02s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-state-reads /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/state-reads/main.roc
+0 errors and 0 warnings found in 281ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-state-reads
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-state-reads /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/state-reads/specs
+[PASS] main.scm (1.4 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-markdown-elem /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/markdown-elem/main.roc
+0 errors and 0 warnings found in 1.0s while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-markdown-elem
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-markdown-elem /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/markdown-elem/specs
+[PASS] main.scm (19.8 ms)
+
+1 passed, 0 failed, 1 total (0.02s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-task-to-utf8-lifetime /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/task-to-utf8-lifetime/main.roc
+0 errors and 0 warnings found in 362ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-task-to-utf8-lifetime
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-task-to-utf8-lifetime /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/task-to-utf8-lifetime/specs
+[PASS] main.scm (2.0 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-controlled-input-contract /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/controlled-input-contract/main.roc
+0 errors and 0 warnings found in 389ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-controlled-input-contract
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-controlled-input-contract /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/controlled-input-contract/specs
+[PASS] main.scm (8.2 ms)
+
+1 passed, 0 failed, 1 total (0.01s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-select-control /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/select-control/main.roc
+0 errors and 0 warnings found in 347ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-select-control
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-select-control /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/select-control/specs
+[PASS] main.scm (2.5 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-textarea-control /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/textarea-control/main.roc
+0 errors and 0 warnings found in 344ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-textarea-control
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-textarea-control /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/textarea-control/specs
+[PASS] main.scm (2.7 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-radio-group-control /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/radio-group-control/main.roc
+0 errors and 0 warnings found in 338ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-radio-group-control
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-radio-group-control /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/radio-group-control/specs
+[PASS] main.scm (2.8 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-number-input-control /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/number-input-control/main.roc
+0 errors and 0 warnings found in 311ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-number-input-control
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-number-input-control /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/number-input-control/specs
+[PASS] main.scm (3.7 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-form-validation-pattern /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/form-validation-pattern/main.roc
+0 errors and 0 warnings found in 365ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-form-validation-pattern
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-form-validation-pattern /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/form-validation-pattern/specs
+[PASS] main.scm (10.1 ms)
+
+1 passed, 0 failed, 1 total (0.01s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-signal-record-builder /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/signal-record-builder/main.roc
+0 errors and 0 warnings found in 437ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-signal-record-builder
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-signal-record-builder /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/signal-record-builder/specs
+[PASS] main.scm (3.1 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-callable-signal-identity /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/callable-signal-identity/main.roc
+0 errors and 0 warnings found in 272ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-callable-signal-identity
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-callable-signal-identity /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/callable-signal-identity/specs
+[PASS] main.scm (2.4 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-optional-text-attr /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/optional-text-attr/main.roc
+0 errors and 0 warnings found in 382ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-optional-text-attr
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-optional-text-attr /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/optional-text-attr/specs
+[PASS] main.scm (1.5 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-submit-button-default /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/submit-button-default/main.roc
+0 errors and 0 warnings found in 304ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-submit-button-default
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-submit-button-default /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/submit-button-default/specs
+[PASS] main.scm (2.7 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-form-reset-default /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/form-reset-default/main.roc
+0 errors and 0 warnings found in 324ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-form-reset-default
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-form-reset-default /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/form-reset-default/specs
+[PASS] main.scm (2.7 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-checkbox-real-click /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/checkbox-real-click/main.roc
+0 errors and 0 warnings found in 324ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-checkbox-real-click
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-checkbox-real-click /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/checkbox-real-click/specs
+[PASS] main.scm (1.6 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-large-each-08 /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/large-each-08/main.roc
+0 errors and 0 warnings found in 681ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-large-each-08
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-large-each-08 /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/large-each-08/specs
+[PASS] main.scm (20.1 ms)
+
+1 passed, 0 failed, 1 total (0.02s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-counter /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/counter/main.roc
+0 errors and 0 warnings found in 277ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-counter
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-counter /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/counter/specs
+[PASS] steady_state.scm (1.6 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-large-each-64 /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/large-each-64/main.roc
+0 errors and 0 warnings found in 651ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-large-each-64
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-large-each-64 /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/large-each-64/specs
+[PASS] steady_state.scm (27.1 ms)
+[PASS] main.scm (113.1 ms)
+
+2 passed, 0 failed, 2 total (0.14s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-js-framework-benchmark /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/js-framework-benchmark/main.roc
+0 errors and 0 warnings found in 838ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-js-framework-benchmark
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-js-framework-benchmark /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/js-framework-benchmark/specs
+[PASS] remove_1k.scm (835.7 ms)
+[PASS] create_1k.scm (877.1 ms)
+[PASS] append_1k_to_empty.scm (1710.1 ms)
+[PASS] select_1k.scm (798.8 ms)
+[PASS] swap_1k.scm (800.1 ms)
+[PASS] replace_1k.scm (2434.7 ms)
+[PASS] append_1k_to_10k.scm (10970.0 ms)
+[PASS] clear_10k.scm (13651.1 ms)
+[PASS] create_10k.scm (9781.4 ms)
+[PASS] update_10k.scm (9942.7 ms)
+
+10 passed, 0 failed, 10 total (51.80s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-signal-combine-caps /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/signal-combine-caps/main.roc
+0 errors and 0 warnings found in 392ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-signal-combine-caps
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-signal-combine-caps /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/signal-combine-caps/specs
+[PASS] main.scm (2.0 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-signal-select-128 /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/signal-select-128/main.roc
+0 errors and 0 warnings found in 835ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-signal-select-128
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-signal-select-128 /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/signal-select-128/specs
+[PASS] selector.scm (149.2 ms)
+
+1 passed, 0 failed, 1 total (0.15s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-keyed-selector-churn /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/keyed-selector-churn/main.roc
+0 errors and 0 warnings found in 1.2s while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-keyed-selector-churn
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-keyed-selector-churn /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/keyed-selector-churn/specs
+[PASS] multiple_selectors.scm (693.9 ms)
+[PASS] append_one_1k.scm (722.2 ms)
+[PASS] key_movement.scm (741.1 ms)
+[PASS] remove_one_1k.scm (682.2 ms)
+[PASS] repeated_churn.scm (732.8 ms)
+[PASS] small_churn.scm (25.3 ms)
+[PASS] nested_disposal.scm (1537.2 ms)
+[PASS] selected_row_retirement.scm (896.8 ms)
+[PASS] dispose_remount_footprint.scm (3159.0 ms)
+[PASS] append_one_10k.scm (8808.4 ms)
+[PASS] remove_one_10k.scm (8488.3 ms)
+
+11 passed, 0 failed, 11 total (26.49s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-metric-semantics /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/metric-semantics/main.roc
+0 errors and 0 warnings found in 357ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-metric-semantics
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-metric-semantics /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/metric-semantics/specs
+[PASS] main.scm (1.9 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-when-each-dispose /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/when-each-dispose/main.roc
+0 errors and 0 warnings found in 883ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-when-each-dispose
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-when-each-dispose /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/when-each-dispose/specs
+[PASS] main.scm (22.7 ms)
+
+1 passed, 0 failed, 1 total (0.02s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-recursive-switch /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/recursive-switch/main.roc
+0 errors and 0 warnings found in 511ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-recursive-switch
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-recursive-switch /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/recursive-switch/specs
+[PASS] main.scm (4.6 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-keyboard-events /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/keyboard-events/main.roc
+0 errors and 0 warnings found in 356ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-keyboard-events
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-keyboard-events /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/keyboard-events/specs
+[PASS] main.scm (2.4 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-custom-events /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/custom-events/main.roc
+0 errors and 0 warnings found in 325ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-custom-events
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-custom-events /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/custom-events/specs
+[PASS] main.scm (1.7 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-rows-direct-delta-locality /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/rows-direct-delta-locality/main.roc
+0 errors and 0 warnings found in 988ms while successfully building:
+
+    ../../../../../../s2/suites/b2/out-native-4130965/bin/signals-rows-direct-delta-locality
+
+==> /tmp/claude-1000/s2/suites/b2/out-native-4130965/bin/signals-rows-direct-delta-locality /tmp/claude-1000/s2/suites/b2/out-native-4130965/native-source/examples-web/_fixtures/rows-direct-delta-locality/specs
+[PASS] append_one_1k.scm (467.6 ms)
+[PASS] mixed_batch_1k.scm (504.2 ms)
+[PASS] move_one_1k.scm (459.9 ms)
+[PASS] nested_locality_1000.scm (554.0 ms)
+[PASS] nested_lineage.scm (1084.6 ms)
+[PASS] move_one_10k.scm (5926.9 ms)
+[PASS] append_one_10k.scm (5927.7 ms)
+[PASS] remove_one_1k.scm (513.4 ms)
+[PASS] remove_reinsert_churn_1k.scm (529.4 ms)
+[PASS] rollback_then_direct_1k.scm (690.5 ms)
+[PASS] stale_sibling_then_direct_1k.scm (726.0 ms)
+[PASS] remove_one_10k.scm (5888.1 ms)
+[PASS] steady_append_one_1k.scm (478.0 ms)
+[PASS] nested_locality_10000.scm (6427.1 ms)
+[PASS] steady_move_one_1k.scm (494.2 ms)
+[PASS] steady_remove_one_1k.scm (470.0 ms)
+[PASS] steady_append_one_10k.scm (6208.5 ms)
+[PASS] steady_move_one_10k.scm (6189.5 ms)
+[PASS] steady_remove_one_10k.scm (6144.1 ms)
+
+19 passed, 0 failed, 19 total (49.68s worker time)
+
+=== known-failure ratchet (/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/snap-b2/test/known-failures.txt) ===
+332 passed, 0 known failing, 0 fixed, 0 regressed, 332 total

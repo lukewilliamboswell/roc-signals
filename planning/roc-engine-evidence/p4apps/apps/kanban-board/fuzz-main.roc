@@ -1,0 +1,107 @@
+app [target] { fuzz: platform "../../p0a/fuzzpf/main.roc" }
+
+import fuzz.Fuzz
+import Engine
+import Dom
+import Spec
+import Kanban
+import KanbanApp
+import KanbanSpecs
+
+## Kanban Board on the p4 engine.
+## - "specs": every original .scm spec replayed through Spec.run.
+## - "bench-N": N cards spread over the four columns (filter "", WIP "1"),
+##   then measured single transactions on a card in the middle of Backlog.
+
+specs! : {} => Fuzz.Outcome
+specs! = |_| {
+	for (name, steps) in KanbanSpecs.all {
+		match Spec.run(KanbanApp.main({}), steps) {
+			Ok(_) => {}
+			Err(msg) => crash "spec ${name}: ${msg}"
+		}
+	}
+	Fuzz.keep
+}
+
+board_of : U64 -> Kanban.Board
+board_of = |n| {
+	var $cards = []
+	var $i = 0.U64
+	while $i < n {
+		column = match $i % 4 {
+			0 => Backlog
+			1 => InProgress
+			2 => Review
+			_ => Done
+		}
+		$cards = $cards.append({ title: "Card ${$i.to_str()}", column, flags: 0 })
+		$i = $i + 1
+	}
+	{ cards: Kanban.canonical($cards), draft: "" }
+}
+
+mstep! : Spec.S, Str, Spec.Loc, Str, Str => Spec.S
+mstep! = |s, name, loc, ev, payload| {
+	i = Spec.find(s.dom, loc) ?? crash "${name}: no ${Spec.show_loc(loc)}"
+	(node, h) = Dom.target(s.dom, i, ev) ?? crash "${name}: no handler"
+	{ eng, dom, steps } = s
+	w = Fuzz.start_measure!(name)
+	(a, c) = Engine.take_cmds(Engine.event(eng, node, h, payload), [])
+	_ = w.finish!()
+	{ eng: a, dom: Dom.apply(dom, c), steps: steps + 1 }
+}
+
+bench! : U64 => Fuzz.Outcome
+bench! = |n| {
+	board = board_of(n)
+	view = KanbanApp.main_with(board)
+	w = Fuzz.start_measure!("mount")
+	(a0, c0) = Engine.take_cmds(Engine.mount(view), [])
+	_ = w.finish!()
+	# The app's own derivation, outside the engine: the four column views.
+	wj = Fuzz.start_measure!("app-columns_of")
+	cols = KanbanApp.columns_of(board.cards, "", "1")
+	_ = wj.finish!()
+	_ = cols
+	mid = "Card ${((n // 2) // 4 * 4).to_str()}"
+	var $s = { eng: a0, dom: Dom.apply(Dom.new({}), c0), steps: 0 }
+	$s = mstep!($s, "flag", Role("button", "Flag: ${mid}"), "click", "")
+	$s = mstep!($s, "flag-again", Role("button", "Flag: ${mid}"), "click", "")
+	$s = mstep!($s, "move-right", Role("button", "Move right: ${mid}"), "click", "")
+	$s = mstep!($s, "move-left", Role("button", "Move left: ${mid}"), "click", "")
+	$s = mstep!($s, "type-draft", Label("New card title"), "input", "Fresh card")
+	$s = mstep!($s, "add-card", Role("button", "Add card"), "click", "")
+	$s = mstep!($s, "wip-limit", Label("WIP limit"), "input", "3")
+	$s = mstep!($s, "filter-one", Label("Filter cards"), "input", mid)
+	$s = mstep!($s, "filter-clear", Label("Filter cards"), "input", "")
+	$s = mstep!($s, "delete", Role("button", "Delete: ${mid}"), "click", "")
+	_ = $s
+	Fuzz.keep
+}
+
+Input : { mode : U8, size : U64, program : List(U8) }
+
+test! : Input => Fuzz.Outcome
+test! = |{ mode, size, program: _ }| {
+	if mode == 0 {
+		bench!(size)
+	} else {
+		specs!({})
+	}
+}
+
+ex : Str, U8, U64 -> Fuzz.Example(Input)
+ex = |name, mode, size| Fuzz.example({ name, revision: "1", make: || { mode, size, program: [] } })
+
+target = Fuzz.target_with!({
+	name: "p4-kanban-board",
+	examples: [
+		ex("specs", 1, 0),
+		ex("bench-40", 0, 40),
+		ex("bench-400", 0, 400),
+	],
+	generator: { mode: Fuzz.constant(1), size: Fuzz.constant(0), program: Fuzz.list(Fuzz.u8, 8) }.Fuzz,
+	test!,
+	show: Str.inspect,
+})

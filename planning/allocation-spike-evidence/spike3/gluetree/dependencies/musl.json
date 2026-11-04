@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "name": "musl",
+  "version": "1.2.6",
+  "repository": "https://git.musl-libc.org/git/musl",
+  "revision": "5e9972eaef08ccf55dabe254ac829a30329793d3",
+  "zig_version": "0.16.0",
+  "targets": {
+    "x64musl": "x86_64-linux-musl",
+    "arm64musl": "aarch64-linux-musl"
+  }
+}

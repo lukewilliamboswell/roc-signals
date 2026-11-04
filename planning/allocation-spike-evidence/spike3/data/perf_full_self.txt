@@ -1,0 +1,34 @@
+     8.22%  [.] compiler_rt.memcpy.memcpyFast                                                       
+     7.93%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.appendTextRoute   
+     5.13%  [.] hash_map.HashMapUnmanaged(u64,u64,hash_map.AutoContext(u64),80).getOrPutAssumeCapaci
+     3.68%  [k] 0xffffffffb1b79f5e                                                                  
+     3.34%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,rows_render_order.StableOr
+     2.77%  [.] roc_alloc_ledger.Ledger.removeAt                                                    
+     2.37%  [.] native_host.rocDeallocFn                                                            
+     1.90%  [.] descriptor_stream.Stream.elemDescriptorIndex                                        
+     1.57%  [.] heap.debug_allocator.DebugAllocator(.{ .stack_trace_frames = 0, .enable_memory_limit
+     1.51%  [.] heap.debug_allocator.DebugAllocator(.{ .stack_trace_frames = 0, .enable_memory_limit
+     1.49%  [.] roc_alloc_ledger.Ledger.record                                                      
+     1.35%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_positi
+     1.13%  [.] native_host.NativeRenderPublication.prepareSparseChildEdit                          
+     1.08%  [.] roc_platform_abi.decrefElem                                                         
+     0.97%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_positi
+     0.83%  [.] rows_render_order.StableOrderIndex(rows_ids.Identity("Rows row"[0..8]),rows_site_sto
+     0.81%  [.] native_host.HostAllocator.alloc                                                     
+     0.78%  [.] compiler_rt.memset                                                                  
+     0.76%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_positi
+     0.76%  [.] native_host.NativeCtx.prepareRenderPublication__anon_56987                          
+     0.74%  [.] native_host.rocAllocAt                                                              
+     0.65%  [.] engine.Engine(native_host.NativeCtx).StagedCollectionCtx.materializeStream          
+     0.64%  [.] hash_map.HashMapUnmanaged(u64,descriptor_stream.RenderElemIndex,hash_map.AutoContext
+     0.63%  [.] compiler_rt.memmove.memmoveFast                                                     
+     0.62%  [.] engine.Engine(native_host.NativeCtx).StagedCollectionCtx.reserveScopeDescriptors    
+     0.58%  [.] render_cache.PreparedNodeCreation.prepareShape__anon_48591                          
+     0.58%  [.] engine.Engine(native_host.NativeCtx).BranchReplacementPlan.writeReplacementChildren 
+     0.58%  [.] roc_llvm_rc_decref_175                                                              
+     0.56%  [.] sim_dom.Element.deinit                                                              
+     0.52%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.prepareGraphRender
+     0.51%  [k] 0xffffffffb1401268                                                                  
+     0.46%  [.] engine.Engine(native_host.NativeCtx).countStaticRootNodes                           
+     0.45%  [.] roc__pa293042d3c1d3d1d2ce5b033679b1ee7.fast                                         
+     0.41%  [.] sim_dom.PreparedPublication.node                                                    

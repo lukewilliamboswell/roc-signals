@@ -1,0 +1,27 @@
+Phase 3 size spike (2026-11-04, nightly 2026-11-03-34bd006). Wasm sizes: --opt=size, then wasm-opt -Oz, in KB of 1000 B.
+Gate: <=15 KB per extra state type; <=25 KB per extra each site; jfb <=~150 KB;
+create/clear-10k within 1.5x of p2; allocations not worse.
+
+Size matrix: size-matrix.txt (p3c row = first p3c build, which had a list-copy regression; invalid).
+Best variants:
+                 jfb    +state(s1)  state avg(s3)  +each(e1)  +each(e2)
+  p2 (baseline) 463.5   60.0        60.0           148.5      153.4
+  p2-own        326.8   48.4        48.0           144.7      153.2   (only the borrowed child-call loops changed)
+  p3e-own       297.0   21.3        18.8            63.2       61.7
+  p3m           297.7   16.3        13.7            63.0       62.8   (= p3h-own + ascending fresh runs)
+
+Timing (paired3.mjs, one Node process per case, timing.lock; p1 = p2 engine --opt=speed; ms median, n=9): timing.txt
+  p3m --opt=size   create_10k 54.08 vs 49.79 (1.09x)   clear_10k 0.334 vs 0.555
+  p3m --opt=speed  create_10k 48.84 vs 48.00 (1.02x)   clear_10k 0.439 vs 0.597
+  p2-own speed     create_10k 44.09 vs 50.87           clear_10k 0.556 vs 0.580
+  (p3h-own before the ascending-run fix: create_10k 75.5 vs 40.6, a 2x JS-side cost of insertBefore-from-the-end)
+
+Allocations (native roc-fuzz check, exact, bench-10k): allocs-native.txt
+  p2-own == p2 on every step. p3e-own: +1 alloc on each reconcile step (one key-scratch list copy,
+  240 KB at 10k native; the same column-copy class as the p3copy defect). p3m: same +1, plus +2
+  on select steps and +2 on create (erased-call allocations).
+Oracle: the Phase 2 DOM/eval/identity fuzz target, minus the nested-row apps (not supported by p3).
+  It passed (check + explore) for p2-own, p3h-own, p3e-own and p3m: fz-*.txt.
+Action-lens bisect (p2 each_fixed, -Oz): lens-bisect.txt. Any single action adds ~305-315 KB; a second adds ~2-10 KB.
+  Cause: a second specialisation of the whole each_fixed core (native copies: each_fixed_inst 24->48,
+  reconcile 3->6, create_row 13->25), not the lens code.

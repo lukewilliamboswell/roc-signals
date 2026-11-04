@@ -1,0 +1,770 @@
+    79.72%     0.00%  [.] bench.benchmark.Runner(native_host.SpecRunnerCtx).runBenchmarkIteration               
+    76.29%     0.00%  [.] native_host.dispatchRocEventWithStats (inlined)                                       
+    71.43%     0.00%  [.] bench.benchmark.Runner(native_host.SpecRunnerCtx).runCommand (inlined)                
+    71.43%     0.00%  [.] bench.benchmark.Runner(native_host.SpecRunnerCtx).runOperationMeasured (inlined)      
+    71.43%     0.00%  [.] spec.spec_runner.Runner(native_host.SpecRunnerCtx).Session.dispatch (inlined)         
+    64.75%     0.00%  [.] native_host.SpecRunnerCtx.dispatchRocEvent                                            
+    64.72%     0.00%  [.] spec.spec_runner.Runner(native_host.SpecRunnerCtx).runWithSession                     
+    64.72%     0.00%  [.] engine.Engine(native_host.NativeCtx).tryDispatchStateValue (inlined)                  
+    56.95%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.prepareRoots           
+    56.95%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.prepareRootsInto       
+    56.74%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.prepareState (inlined) 
+    56.74%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.prepareStates          
+    36.17%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.prepareSparseExterna
+    20.15%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.prepareSparseExterna
+    20.15%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.prepareSparseExterna
+    19.73%     0.52%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.prepareGraphRenderAn
+    15.88%     0.00%  [.] roc_alloc_ledger.Ledger.allocate (inlined)                                            
+    15.79%     0.06%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.adoptSparseEachRende
+    15.79%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.adoptSparseSnapshotR
+    15.08%     0.00%  [.] 0xffffffffb1400bb7                                                                    
+    14.83%     0.06%  [.] engine.Engine(native_host.NativeCtx).PreparedReplacementOwner.placeConstructionRange  
+    14.77%     0.00%  [.] 0xffffffffb2a89e61                                                                    
+    14.62%     0.26%  [.] structural_positions.Prepared.place                                                   
+    13.18%     0.06%  [k] 0xffffffffb140012b                                                                    
+    12.93%     0.08%  [k] 0xffffffffb2a81b29                                                                    
+    12.74%     0.00%  [.] 0xffffffffb1760122                                                                    
+    12.45%     0.00%  [.] 0xffffffffb1b4bc9d                                                                    
+    12.17%     0.23%  [.] roc__pfefab24d45e544bcf4f317a3282e84ff.fast                                           
+    12.02%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedEachRowReplacementCollection.prepare     
+    11.91%     0.00%  [.] roc__paab6d73c31cc79e907784632ddf5ccb5                                                
+    11.83%     0.00%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_position
+    11.83%     0.00%  [.] structural_positions.Prepared.Parent.insertBefore (inlined)                           
+    11.57%     0.00%  [.] engine.Engine(native_host.NativeCtx).evaluateEventReducer                             
+    11.57%     0.00%  [.] erased_calls.callErasedCallable (inlined)                                             
+    11.57%     0.00%  [.] erased_calls.callErasedHostValueHostValueHostValueToHostValue (inlined)               
+    11.57%     0.00%  [.] retained_values.callHostValueHostValueHostValueToHostValueWithCapabilities__anon_67957
+    11.54%     0.00%  [.] native_host.SpecRunnerCtx.dispatchRocEvent                                            
+    11.54%     0.00%  [.] spec.spec_runner.Runner(native_host.SpecRunnerCtx).runWithSession                     
+    11.38%     0.00%  [.] 0xffffffffb1b4b95a                                                                    
+    11.32%     0.00%  [.] 0xffffffffb1b4b3bf                                                                    
+    11.09%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.prepareRender (inlin
+    11.03%     0.00%  [.] engine.Engine(native_host.NativeCtx).BranchReplacementPlan.prepareRenderTopology (inli
+    11.03%     0.00%  [.] engine.Engine(native_host.NativeCtx).BranchReplacementPlan.prepareRenderTopologyInto (
+    10.61%     1.51%  [.] heap.debug_allocator.DebugAllocator(.{ .stack_trace_frames = 0, .enable_memory_limit =
+    10.22%     0.00%  [.] memcpy (inlined)                                                                      
+     9.85%     0.00%  [.] roc_alloc_ledger.Ledger.deallocate (inlined)                                          
+     9.76%     0.00%  [.] mem.Allocator.rawAlloc (inlined)                                                      
+     9.62%     0.00%  [.] 0xffffffffb168f921                                                                    
+     9.62%     0.00%  [.] 0xffffffffb1b50dbb                                                                    
+     9.51%     0.00%  [.] 0xffffffffb1b773d4                                                                    
+     9.25%     0.00%  [.] 0xffffffffb1b753d3                                                                    
+     9.01%     1.57%  [.] heap.debug_allocator.DebugAllocator(.{ .stack_trace_frames = 0, .enable_memory_limit =
+     8.98%     1.35%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_position
+     8.42%     0.00%  [.] compiler_rt.memcpy.copyForwards (inlined)                                             
+     8.28%     0.00%  [.] native_host.SpecRunnerCtx.deinitHost (inlined)                                        
+     8.25%     0.14%  [.] native_host.HostEnv.deinit                                                            
+     8.22%     8.22%  [.] compiler_rt.memcpy.memcpyFast                                                         
+     8.08%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.prepareGraphRoutes (
+     7.99%     0.06%  [.] native_host.rocAllocAt                                                                
+     7.99%     7.93%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.appendTextRoute     
+     7.93%     0.00%  [.] active_signal_graph.PreparedGraphAppend(signal_records.Record).plannedRecordId (inline
+     7.66%     2.26%  [.] native_host.rocDeallocFn                                                              
+     7.14%     0.00%  [.] compiler_rt.memcpy.copyBlocks (inlined)                                               
+     7.14%     0.00%  [.] compiler_rt.memcpy.copyBlocksAlignedSource (inlined)                                  
+     7.06%     0.00%  [.] mem.Allocator.rawFree (inlined)                                                       
+     6.93%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.commit (inlined)       
+     6.88%     0.00%  [.] 0xffffffffb1b4a014                                                                    
+     6.75%     0.03%  [.] engine.Engine(native_host.NativeCtx).BranchReplacementPlan.evalPreparedSignalText     
+     6.72%     0.21%  [.] engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.commitWithPublication__
+     6.66%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.commitAssumeCapacity
+     6.55%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.adoptScalarRenderSpl
+     6.53%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.prepareHostPublicati
+     6.41%     0.03%  [.] engine.Engine(native_host.NativeCtx).BranchReplacementPlan.evalPreparedSignalBinding  
+     6.41%     0.00%  [.] engine.Engine(native_host.NativeCtx).evalHostSignalBindingStaged (inlined)            
+     6.41%     0.00%  [.] engine.Engine(native_host.NativeCtx).evalHostSignalRecordStaged (inlined)             
+     6.38%     0.05%  [.] 0xffffffffb1b752bf                                                                    
+     6.26%     0.32%  [.] engine.Engine(native_host.NativeCtx).evalHostSignalRecordRead                         
+     6.18%     0.76%  [.] native_host.NativeCtx.prepareRenderPublication__anon_56987                            
+     6.15%     0.00%  [.] native_host.NativeRenderPublication.prepare__anon_56999 (inlined)                     
+     6.02%     3.34%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,rows_render_order.StableOrde
+     6.00%     0.00%  [.] 0xffffffffb1b74423                                                                    
+     5.88%     0.00%  [.] heap.PageAllocator.map (inlined)                                                      
+     5.88%     0.00%  [.] mem.Allocator.rawAlloc (inlined)                                                      
+     5.67%     0.00%  [.] hash_map.HashMapUnmanaged(usize,usize,hash_map.AutoContext(usize),80).getOrPut (inline
+     5.67%     0.00%  [.] hash_map.HashMapUnmanaged(usize,usize,hash_map.AutoContext(usize),80).getOrPutContext 
+     5.65%     0.00%  [.] hash_map.HashMapUnmanaged(usize,usize,hash_map.AutoContext(usize),80).getOrPutContextA
+     5.61%     0.20%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_position
+     5.33%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedEachRowReplacementCollection.collectInto 
+     5.31%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedEachRowReplacementCollection.collectRowsI
+     5.31%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedReplacementOwner.collectEachRow (inlined)
+     5.25%     0.29%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_position
+     5.24%     5.13%  [.] hash_map.HashMapUnmanaged(u64,u64,hash_map.AutoContext(u64),80).getOrPutAssumeCapacity
+     5.19%     0.00%  [.] mem.Allocator.rawFree (inlined)                                                       
+     5.19%     0.20%  [.] host_value_registry.Registry(roc_platform_abi.HostValueCapabilityHandle__struct_1346).
+     5.07%     0.08%  [.] roc__p044c7bb42f8532c2edd90b8f74773bc8                                                
+     5.02%     0.00%  [.] host_values.RegistryOps().callHostValueToHostValueWithCapability (inlined)            
+     5.02%     0.00%  [.] host_values.RegistryOps().cloneValueWithCapability (inlined)                          
+     4.99%     0.00%  [.] erased_calls.callErasedCallable (inlined)                                             
+     4.99%     0.00%  [.] erased_calls.callErasedHostValueToHostValue (inlined)                                 
+     4.89%     0.00%  [.] 0xffffffffb1bc95ee                                                                    
+     4.71%     0.60%  [.] native_host.rocAllocAt                                                                
+     4.66%     1.46%  [.] roc_alloc_ledger.Ledger.record                                                        
+     4.50%     0.06%  [.] descriptor_stream.Stream.deinit__anon_7088                                            
+     4.41%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,rows_render_order.StableOrde
+     4.41%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,rows_render_order.StableOrde
+     4.40%     0.00%  [.] engine.Engine(native_host.NativeCtx).collectActiveEachRowElemDescriptorsWith__anon_574
+     4.37%     0.20%  [.] engine.Engine(native_host.NativeCtx).collectActiveElemDescriptorsWith__anon_58511     
+     4.23%     3.68%  [k] 0xffffffffb1b79f5e                                                                    
+     4.22%     0.09%  [.] engine.Engine(native_host.NativeCtx).materializeEachRowItem                           
+     4.18%     0.11%  [.] heap.PageAllocator.alloc                                                              
+     4.13%     0.00%  [.] retained_values.callRowsCloneItem__anon_48100                                         
+     3.99%     0.00%  [.] native_host.HostEnv.cloneHostValue (inlined)                                          
+     3.99%     0.00%  [.] native_host.NativeCtx.cloneHostValue (inlined)                                        
+     3.93%     0.00%  [.] heap.PageAllocator.free                                                               
+     3.89%     0.00%  [.] descriptor_stream.deinitDescriptorLists__anon_24304 (inlined)                         
+     3.88%     0.08%  [.] roc__p81e4a36a82cc8b7fac7b1adf7c8d1a25                                                
+     3.80%     0.00%  [.] 0xffffffffb1b87530                                                                    
+     3.74%     0.08%  [.] native_host.rocAllocAt                                                                
+     3.64%     0.76%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_position
+     3.60%     0.00%  [.] 0xffffffffb1b49c1d                                                                    
+     3.40%     0.00%  [.] 0xffffffffb1bcc8ad                                                                    
+     3.37%     0.45%  [.] roc__pa293042d3c1d3d1d2ce5b033679b1ee7.fast                                           
+     3.23%     0.00%  [.] roc_alloc_ledger.Ledger.removeForDealloc (inlined)                                    
+     3.12%     0.00%  [.] os.linux.mmap (inlined)                                                               
+     3.12%     0.00%  [.] os.linux.x86_64.syscall6 (inlined)                                                    
+     3.12%     0.00%  [.] posix.mmap (inlined)                                                                  
+     3.07%     0.00%  [.] 0xffffffffb168f714                                                                    
+     3.07%     0.00%  [.] 0xffffffffb16efff3                                                                    
+     3.07%     0.00%  [.] 0xffffffffb1b513a4                                                                    
+     2.98%     0.00%  [.] 0xffffffffb1b738dd                                                                    
+     2.78%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedEachRowReplacementCollection.releaseEvalu
+     2.78%     0.00%  [.] roc_platform_abi.Elem__struct_4490.decref (inlined)                                   
+     2.75%     2.72%  [.] roc_alloc_ledger.Ledger.removeAt                                                      
+     2.73%     0.09%  [.] heap.PageAllocator.free                                                               
+     2.73%     1.08%  [.] roc_platform_abi.decrefElem                                                           
+     2.72%     0.00%  [.] 0xffffffffb1b0e519                                                                    
+     2.70%     0.00%  [.] 0xffffffffb1b49c37                                                                    
+     2.70%     0.00%  [.] roc_platform_abi.__AnonStruct_bd18d2347125ecd0__struct_5461.decref (inlined)          
+     2.69%     0.12%  [.] native_host.rocDeallocFn                                                              
+     2.65%     0.81%  [.] native_host.HostAllocator.alloc                                                       
+     2.59%     0.40%  [.] roc__pfcaf61c78666dcc9f3c1d9a827200f66                                                
+     2.47%     0.00%  [.] 0xffffffffb1b5260e                                                                    
+     2.45%     0.00%  [.] roc_platform_abi.RocListWith(roc_platform_abi.Elem__struct_4490,true).deinitWith__anon
+     2.45%     0.00%  [.] roc_platform_abi.decrefListOfElem (inlined)                                           
+     2.43%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,rows_render_order.StableOrde
+     2.43%     0.06%  [.] signal_records.Binding.deinit__anon_24063                                             
+     2.41%     0.00%  [.] 0xffffffffb1b767b3                                                                    
+     2.40%     0.00%  [.] signal_records.Record.release__anon_24123 (inlined)                                   
+     2.35%     0.00%  [.] roc_platform_abi.ElemRelease.release (inlined)                                        
+     2.35%     0.00%  [.] roc_platform_abi.Elem__struct_4490.decref (inlined)                                   
+     2.33%     0.00%  [.] 0xffffffffb1b802af                                                                    
+     2.33%     0.00%  [.] 0xffffffffb1b86091                                                                    
+     2.28%     0.03%  [.] heap.debug_allocator.DebugAllocator(.{ .stack_trace_frames = 0, .enable_memory_limit =
+     2.25%     0.00%  [.] mem.Allocator.rawFree (inlined)                                                       
+     2.24%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedReplacementOwner.materialize (inlined)   
+     2.20%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedActiveEachRows.prepareInto (inlined)     
+     2.20%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedActiveEachRows.prepareWithOverlay (inline
+     2.20%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedActiveEachRows.prepareWithOverlayAndScope
+     2.14%     0.09%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_position
+     2.13%     0.00%  [.] 0xffffffffb1c0f4fd                                                                    
+     2.06%     0.00%  [.] rows_transition.PreparedTransition.prepareStable                                      
+     2.05%     0.00%  [.] 0xffffffffb1b5496a                                                                    
+     2.04%     0.00%  [.] 0xffffffffb1b738aa                                                                    
+     1.98%     0.65%  [.] engine.Engine(native_host.NativeCtx).StagedCollectionCtx.materializeStream            
+     1.93%     0.00%  [.] mem.Allocator.rawAlloc (inlined)                                                      
+     1.90%     0.00%  [.] 0xffffffffb1b55488                                                                    
+     1.90%     1.90%  [.] descriptor_stream.Stream.elemDescriptorIndex                                          
+     1.90%     0.00%  [.] 0xffffffffb1b4369f                                                                    
+     1.87%     0.00%  [.] 0xffffffffb1b4a1c6                                                                    
+     1.86%     0.00%  [.] hash_map.HashMapUnmanaged(usize,usize,hash_map.AutoContext(usize),80).getIndex__anon_4
+     1.84%     0.00%  [.] 0xffffffffb1ae5229                                                                    
+     1.84%     0.00%  [.] 0xffffffffb1ae6c0f                                                                    
+     1.84%     0.00%  [.] 0xffffffffb1b43576                                                                    
+     1.80%     0.02%  [.] descriptor_stream.SignalTextNodeDesc.deinit__anon_25431                               
+     1.80%     0.00%  [.] descriptor_stream.deinitSignalTextFields__anon_25992 (inlined)                        
+     1.78%     0.00%  [.] 0xffffffffb1b43310                                                                    
+     1.76%     0.03%  [.] roc_alloc_ledger.Ledger.record                                                        
+     1.72%     0.03%  [.] rows_transition.PreparedTransition.finishPreparation                                  
+     1.71%     0.00%  [.] 0xffffffffb1bc99dc                                                                    
+     1.70%     0.00%  [.] 0xffffffffb1b42ba3                                                                    
+     1.67%     1.13%  [.] native_host.NativeRenderPublication.prepareSparseChildEdit                            
+     1.63%     0.00%  [.] roc_platform_abi.RocListWith(roc_platform_abi.NodeAttr__struct_5479,true).deinitWith__
+     1.63%     0.00%  [.] roc_platform_abi.decrefListOfNodeAttr (inlined)                                       
+     1.63%     0.00%  [.] 0xffffffffb176009c                                                                    
+     1.59%     0.00%  [.] rows_transition.PreparedTransition.prepareRenderOrder (inlined)                       
+     1.57%     0.00%  [.] structural_positions.Prepared.addOwnership (inlined)                                  
+     1.55%     0.03%  [.] 0xffffffffb1ae513f                                                                    
+     1.55%     0.00%  [.] 0xffffffffb1b75240                                                                    
+     1.54%     0.00%  [.] 0xffffffffb2a636f8                                                                    
+     1.51%     0.00%  [.] descriptor_stream.IndexTable(descriptor_stream.ElemDescriptorIndex,.{ .element = .none
+     1.51%     0.00%  [.] descriptor_stream.elemDescriptorIndex__anon_40475 (inlined)                           
+     1.50%     0.17%  [.] engine.Engine(native_host.NativeCtx).StagedCollectionCtx.appendAttr                   
+     1.50%     0.00%  [.] engine.Engine(native_host.NativeCtx).clearActiveEvents (inlined)                      
+     1.50%     0.00%  [.] engine.Engine(native_host.NativeCtx).deinitActiveEventDesc (inlined)                  
+     1.50%     0.00%  [.] native_host.HostEnv.clearActiveEvents (inlined)                                       
+     1.50%     0.21%  [.] retained_values.HostValueCell.deinit__anon_22584                                      
+     1.49%     0.08%  [.] signal_records.deinitOwnedPayload__anon_24150                                         
+     1.46%     0.03%  [.] roc__pf1432eff46fcd58bb490cb82de18a8ce                                                
+     1.44%     0.00%  [.] erased_calls.callErasedCallable (inlined)                                             
+     1.44%     0.00%  [.] erased_calls.callErasedHostValueToUnit (inlined)                                      
+     1.44%     0.00%  [.] retained_values.callCapabilityDrop (inlined)                                          
+     1.43%     0.00%  [.] rows_render_order.StableOrderIndex(rows_ids.Identity("Rows row"[0..8]),rows_site_store
+     1.42%     0.12%  [.] descriptor_stream.EventHandler.deinit__anon_24747                                     
+     1.42%     0.00%  [.] engine.Engine(native_host.NativeCtx).StagedCollectionCtx.appendElement (inlined)      
+     1.33%     0.00%  [.] memset (inlined)                                                                      
+     1.32%     0.03%  [.] engine.Engine(native_host.NativeCtx).PreparedEachRowReplacementCollection.finalizeRend
+     1.32%     0.11%  [.] roc__p815458a7129e3d7ea965ca29d41ec7f3.fast                                           
+     1.29%     0.00%  [.] 0xffffffffb1b752aa                                                                    
+     1.29%     0.06%  [.] roc__pae1700e756b0d3c1546f1401409b10ca.fast                                           
+     1.28%     0.00%  [.] 0xffffffffb1b423f5                                                                    
+     1.26%     0.03%  [.] descriptor_stream.SignalBoolAttrDesc.deinit__anon_25535                               
+     1.26%     0.00%  [.] descriptor_stream.deinitSignalBoolFields__anon_25861 (inlined)                        
+     1.25%     0.83%  [.] rows_render_order.StableOrderIndex(rows_ids.Identity("Rows row"[0..8]),rows_site_store
+     1.25%     0.00%  [.] signal_records.CacheSlot.deinit__anon_22979 (inlined)                                 
+     1.22%     0.00%  [.] hash_map.HashMapUnmanaged(usize,usize,hash_map.AutoContext(usize),80).getPtr (inlined)
+     1.22%     0.00%  [.] hash_map.HashMapUnmanaged(usize,usize,hash_map.AutoContext(usize),80).getPtrAdapted__a
+     1.22%     0.00%  [.] hash_map.HashMapUnmanaged(usize,usize,hash_map.AutoContext(usize),80).getPtrContext (i
+     1.20%     0.00%  [.] compiler_rt.memcpy.copyFixedLength (inlined)                                          
+     1.19%     0.00%  [.] mem.Allocator.rawFree (inlined)                                                       
+     1.19%     0.12%  [.] sim_dom.PreparedPublication.init                                                      
+     1.17%     0.00%  [.] roc__p722482cadcda68750cb62025ef5d85bd                                                
+     1.16%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedReplacementOwner.commitPositions (inlined
+     1.16%     0.00%  [.] descriptor_stream.Stream.appendPreparedStaticNode (inlined)                           
+     1.13%     0.15%  [.] structural_positions.Prepared.commit                                                  
+     1.13%     0.00%  [.] 0xffffffffb1baadff                                                                    
+     1.11%     0.00%  [.] roc_alloc_ledger.Ledger.findExactIndex (inlined)                                      
+     1.11%     0.03%  [.] 0xffffffffb1b85e06                                                                    
+     1.11%     0.00%  [.] 0xffffffffb1ae4ee5                                                                    
+     1.10%     0.28%  [.] rows_render_order.StableOrderIndex(rows_ids.Identity("Rows row"[0..8]),rows_site_store
+     1.10%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.commitRenderAssumeCa
+     1.09%     0.00%  [.] 0xffffffffb1b734ca                                                                    
+     1.08%     0.00%  [.] hash_map.HashMapUnmanaged(usize,usize,hash_map.AutoContext(usize),80).get (inlined)   
+     1.08%     0.00%  [.] hash_map.HashMapUnmanaged(usize,usize,hash_map.AutoContext(usize),80).getAdapted__anon
+     1.08%     0.00%  [.] hash_map.HashMapUnmanaged(usize,usize,hash_map.AutoContext(usize),80).getContext (inli
+     1.05%     0.10%  [.] descriptor_stream.renderNodeParentElemId__anon_42166                                  
+     1.05%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.deinit                 
+     1.04%     0.00%  [.] hash_map.HashMapUnmanaged(u64,u64,hash_map.AutoContext(u64),80).capacity (inlined)    
+     1.03%     0.00%  [.] host_values.releaseHostValueCapability (inlined)                                      
+     1.03%     0.00%  [.] retained_values.releaseHostEventReducer__anon_24766 (inlined)                         
+     1.03%     0.00%  [.] retained_values.releaseHostValueCapability__anon_22601 (inlined)                      
+     1.02%     0.00%  [.] hash_map.HashMapUnmanaged(usize,usize,hash_map.AutoContext(usize),80).getIndex__anon_4
+     1.02%     0.22%  [.] structural_positions.Prepared.parent                                                  
+     1.02%     0.00%  [.] array_list.Aligned(sim_dom.Element,null).appendAssumeCapacity (inlined)               
+     1.00%     0.00%  [.] 0xffffffffb1b74f15                                                                    
+     0.99%     0.00%  [.] 0xffffffffb1ae4b18                                                                    
+     0.99%     0.00%  [.] hash_map.HashMapUnmanaged(usize,descriptor_stream.ElemDescriptorIndex,hash_map.AutoCon
+     0.99%     0.00%  [.] 0xffffffffb2a65d9c                                                                    
+     0.99%     0.00%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_position
+     0.98%     0.20%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,?structural_positions.Positi
+     0.97%     0.97%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_position
+     0.97%     0.00%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_position
+     0.96%     0.00%  [.] 0xffffffffb1b82cad                                                                    
+     0.96%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.publishRenderLast   
+     0.96%     0.00%  [.] native_host.NativeCtx.publishRenderPublication (inlined)                              
+     0.96%     0.00%  [.] native_host.NativeRenderPublication.apply (inlined)                                   
+     0.96%     0.00%  [.] sim_dom.PreparedPublication.apply (inlined)                                           
+     0.95%     0.03%  [.] heap.PageAllocator.alloc                                                              
+     0.94%     0.00%  [.] mem.Allocator.rawFree (inlined)                                                       
+     0.94%     0.00%  [.] 0xffffffffb1c0ddce                                                                    
+     0.94%     0.46%  [.] engine.Engine(native_host.NativeCtx).countStaticRootNodes                             
+     0.92%     0.38%  [.] roc_platform_abi.HostValueCapabilityHandle__struct_1346.decref                        
+     0.92%     0.00%  [.] 0xffffffffb1ae4e22                                                                    
+     0.92%     0.03%  [.] heap.PageAllocator.alloc                                                              
+     0.90%     0.00%  [.] engine.Engine(native_host.NativeCtx).clearScopes (inlined)                            
+     0.90%     0.00%  [.] native_host.HostEnv.clearScopes (inlined)                                             
+     0.90%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,?structural_positions.Positi
+     0.90%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,?structural_positions.Positi
+     0.90%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,?structural_positions.Positi
+     0.90%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,?structural_positions.Positi
+     0.89%     0.00%  [.] hash_map.HashMapUnmanaged(usize,usize,hash_map.AutoContext(usize),80).remove (inlined)
+     0.89%     0.00%  [.] hash_map.HashMapUnmanaged(usize,usize,hash_map.AutoContext(usize),80).removeAdapted__a
+     0.89%     0.00%  [.] hash_map.HashMapUnmanaged(usize,usize,hash_map.AutoContext(usize),80).removeContext (i
+     0.87%     0.00%  [.] array_list.Aligned(roc_alloc_ledger.Allocation,null).append (inlined)                 
+     0.87%     0.00%  [.] array_list.Aligned(sim_dom.Element,null).appendAssumeCapacity (inlined)               
+     0.86%     0.56%  [.] sim_dom.Element.deinit                                                                
+     0.86%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,rows_render_order.StableOrde
+     0.86%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,rows_render_order.StableOrde
+     0.86%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,rows_render_order.StableOrde
+     0.86%     0.03%  [.] 0xffffffffb1b55535                                                                    
+     0.84%     0.00%  [.] 0xffffffffb1c0ddb4                                                                    
+     0.83%     0.02%  [.] rows_transition.PreparedTransition.setCandidateRenderSpanAssumeCapacity               
+     0.83%     0.00%  [.] hash_map.HashMapUnmanaged(ids.Identity(.elem,u64),structural_positions.Prepared.Parent
+     0.83%     0.00%  [.] hash_map.HashMapUnmanaged(ids.Identity(.elem,u64),structural_positions.Prepared.Parent
+     0.83%     0.00%  [.] hash_map.HashMapUnmanaged(ids.Identity(.elem,u64),structural_positions.Prepared.Parent
+     0.83%     0.00%  [.] hash_map.HashMapUnmanaged(ids.Identity(.elem,u64),structural_positions.Prepared.Parent
+     0.82%     0.00%  [.] 0xffffffffb1ae4fef                                                                    
+     0.81%     0.00%  [.] heap.PageAllocator.free                                                               
+     0.81%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,?structural_positions.Positi
+     0.81%     0.00%  [.] engine.Engine(native_host.NativeCtx).StagedCollectionCtx.bindSignalRoot               
+     0.80%     0.00%  [.] 0xffffffffb1b738d5                                                                    
+     0.80%     0.00%  [.] 0xffffffffb1b4a0f7                                                                    
+     0.80%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,rows_render_order.StableOrde
+     0.80%     0.35%  [.] render_cache.PreparedRenderSplice(native_host.NativeCtx).apply                        
+     0.79%     0.62%  [.] engine.Engine(native_host.NativeCtx).StagedCollectionCtx.reserveScopeDescriptors      
+     0.78%     0.78%  [.] compiler_rt.memset                                                                    
+     0.77%     0.03%  [.] roc__pf821a16cad3dbe988f6ffab9c14705b2.fast                                           
+     0.76%     0.00%  [.] descriptor_stream.findElementDesc__anon_40237 (inlined)                               
+     0.76%     0.02%  [.] rows_render_order.StableOrderIndex(rows_ids.Identity("Rows row"[0..8]),rows_site_store
+     0.75%     0.00%  [.] roc_platform_abi.decrefErasedCallable (inlined)                                       
+     0.75%     0.00%  [.] rows_render_order.StableOrderIndex(rows_ids.Identity("Rows row"[0..8]),rows_site_store
+     0.75%     0.00%  [.] 0xffffffffb1b4b8d0                                                                    
+     0.73%     0.00%  [.] 0xffffffffb1400f0b                                                                    
+     0.73%     0.03%  [.] roc__p30c447726b1dd709eb5ae053b201e781.fast                                           
+     0.73%     0.00%  [.] 0xffffffffb1baaeb7                                                                    
+     0.72%     0.00%  [.] 0xffffffffb1b74b45                                                                    
+     0.72%     0.00%  [.] 0xffffffffb1b403f9                                                                    
+     0.71%     0.05%  [.] hash_map.HashMapUnmanaged(ids.Identity(.elem,u64),structural_positions.Prepared.Parent
+     0.71%     0.00%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_position
+     0.70%     0.00%  [.] hash_map.HashMapUnmanaged(usize,descriptor_stream.ElemDescriptorIndex,hash_map.AutoCon
+     0.70%     0.00%  [.] hash_map.HashMapUnmanaged(usize,descriptor_stream.ElemDescriptorIndex,hash_map.AutoCon
+     0.69%     0.00%  [.] 0xffffffffb1b8763d                                                                    
+     0.69%     0.30%  [.] descriptor_stream.Stream.commitSparseRenderNodesAssumeCapacity                        
+     0.69%     0.00%  [.] descriptor_stream.commitSparseRenderNodes__anon_43795 (inlined)                       
+     0.68%     0.00%  [.] 0xffffffffb2a6397d                                                                    
+     0.68%     0.16%  [.] roc_host_value_get_with_capability                                                    
+     0.68%     0.00%  [.] host_value_registry.Registry(roc_platform_abi.HostValueCapabilityHandle__struct_1346).
+     0.68%     0.00%  [.] host_value_registry.Registry(roc_platform_abi.HostValueCapabilityHandle__struct_1346).
+     0.68%     0.00%  [.] native_host.HostEnv.getHostValueWithCapability (inlined)                              
+     0.68%     0.00%  [.] 0xffffffffb1ae4866                                                                    
+     0.68%     0.17%  [.] descriptor_stream.Stream.commitStaticDescriptorReplacementAssumeCapacity              
+     0.68%     0.00%  [.] 0xffffffffb176266b                                                                    
+     0.67%     0.64%  [.] hash_map.HashMapUnmanaged(u64,descriptor_stream.RenderElemIndex,hash_map.AutoContext(u
+     0.66%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedEachRowReplacementCollection.deinit      
+     0.66%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedReplacementOwner.deinit                  
+     0.66%     0.03%  [.] render_cache.PreparedRenderSplice(native_host.NativeCtx).addOwnedChildren             
+     0.65%     0.28%  [.] 0xffffffffb1400b90                                                                    
+     0.65%     0.11%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_position
+     0.65%     0.00%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_position
+     0.65%     0.00%  [.] structural_positions.Prepared.Parent.firstRootAtOrAfter (inlined)                     
+     0.65%     0.00%  [.] structural_positions.Prepared.anchor                                                  
+     0.65%     0.00%  [.] 0xffffffffb1ab94c5                                                                    
+     0.64%     0.09%  [.] render_cache.PreparedRenderSplice(native_host.NativeCtx).addCreationShape             
+     0.64%     0.00%  [.] render_cache.PreparedRenderSplice(native_host.NativeCtx).addCreationOptions (inlined) 
+     0.64%     0.00%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_position
+     0.64%     0.00%  [.] roc_platform_abi.decrefBoxWith (inlined)                                              
+     0.64%     0.58%  [.] render_cache.PreparedNodeCreation.prepareShape__anon_48591                            
+     0.64%     0.00%  [.] 0xffffffffb1b826e3                                                                    
+     0.63%     0.00%  [.] 0xffffffffb1b46b0f                                                                    
+     0.63%     0.63%  [.] compiler_rt.memmove.memmoveFast                                                       
+     0.63%     0.00%  [.] memmove (inlined)                                                                     
+     0.62%     0.11%  [.] engine.Engine(native_host.NativeCtx).replaceSignalExprCacheAndClone                   
+     0.62%     0.00%  [.] each_generation.Generation.deinit__anon_22463 (inlined)                               
+     0.62%     0.00%  [.] engine.Engine(native_host.NativeCtx).deinitEachGenerationOwnership (inlined)          
+     0.61%     0.00%  [.] 0xffffffffb1b40182                                                                    
+     0.61%     0.00%  [.] 0xffffffffb1c0e2bc                                                                    
+     0.60%     0.00%  [.] hash_map.HashMapUnmanaged(rows_ids.Identity("Rows row"[0..8]),rows_render_order.Stable
+     0.60%     0.00%  [.] hash_map.HashMapUnmanaged(rows_ids.Identity("Rows row"[0..8]),rows_render_order.Stable
+     0.60%     0.00%  [.] hash_map.HashMapUnmanaged(rows_ids.Identity("Rows row"[0..8]),rows_render_order.Stable
+     0.60%     0.00%  [.] compiler_rt.memmove.copyBackwards (inlined)                                           
+     0.59%     0.00%  [.] 0xffffffffb1c044d5                                                                    
+     0.59%     0.03%  [.] 0xffffffffb1765d68                                                                    
+     0.59%     0.00%  [.] 0xffffffffb1b3ff5f                                                                    
+     0.58%     0.58%  [.] engine.Engine(native_host.NativeCtx).BranchReplacementPlan.writeReplacementChildren   
+     0.58%     0.58%  [.] roc_llvm_rc_decref_175                                                                
+     0.58%     0.00%  [.] hash_map.HashMapUnmanaged(ids.Identity(.elem,u64),structural_positions.Prepared.Parent
+     0.58%     0.00%  [.] hash_map.HashMapUnmanaged(rows_ids.Identity("Rows row"[0..8]),rows_render_order.Stable
+     0.58%     0.00%  [.] 0xffffffffb1b38779                                                                    
+     0.57%     0.00%  [.] 0xffffffffb1b7c709                                                                    
+     0.57%     0.00%  [.] 0xffffffffb1b84c16                                                                    
+     0.57%     0.09%  [.] engine.Engine(native_host.NativeCtx).validateRenderNodeDescriptorIntegrity            
+     0.56%     0.00%  [.] 0xffffffffb1b3ec17                                                                    
+     0.56%     0.03%  [.] 0xffffffffb2a8baca                                                                    
+     0.56%     0.00%  [.] 0xffffffffb1ae501e                                                                    
+     0.55%     0.06%  [.] rows_render_order.StableOrderIndex(rows_ids.Identity("Rows row"[0..8]),rows_site_store
+     0.55%     0.00%  [.] 0xffffffffb1b4a1bb                                                                    
+     0.55%     0.00%  [.] engine.Engine(native_host.NativeCtx).StagedCollectionCtx.appendSignalText (inlined)   
+     0.55%     0.00%  [.] compiler_rt.memcpy.copySmallLength (inlined)                                          
+     0.55%     0.06%  [.] engine.Engine(native_host.NativeCtx).bindSignalExprViewWith__anon_62552               
+     0.54%     0.00%  [.] engine.Engine(native_host.NativeCtx).callHostValueToStrWithCapability                 
+     0.54%     0.00%  [.] erased_calls.callErasedCallable (inlined)                                             
+     0.54%     0.00%  [.] erased_calls.callErasedHostValueToStr (inlined)                                       
+     0.54%     0.00%  [.] retained_values.callHostValueToStrWithCapability__anon_47914 (inlined)                
+     0.54%     0.00%  [.] 0xffffffffb1aa3cf9                                                                    
+     0.54%     0.00%  [.] array_list.Aligned(u64,null).insertAssumeCapacity (inlined)                           
+     0.54%     0.00%  [.] engine.Engine(native_host.NativeCtx).cloneCachedSignalValue (inlined)                 
+     0.54%     0.00%  [.] native_host.HostEnv.cloneHostValue (inlined)                                          
+     0.54%     0.00%  [.] native_host.NativeCtx.cloneHostValue (inlined)                                        
+     0.53%     0.00%  [.] engine.Engine(native_host.NativeCtx).deinitRenderCache (inlined)                      
+     0.53%     0.00%  [.] render_cache.Cache(native_host.NativeCtx).deinit (inlined)                            
+     0.53%     0.00%  [.] 0xffffffffb2a5e179                                                                    
+     0.52%     0.00%  [.] 0xffffffffb1c0f4ec                                                                    
+     0.52%     0.00%  [.] signal_records.Record.release__anon_24123 (inlined)                                   
+     0.52%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,structural_positions.Positio
+     0.52%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,structural_positions.Positio
+     0.52%     0.00%  [.] render_cache.PreparedTagOverlay.resolve__anon_48613 (inlined)                         
+     0.51%     0.51%  [k] 0xffffffffb1401268                                                                    
+     0.51%     0.00%  [.] 0xffffffffb1aa36d2                                                                    
+     0.50%     0.00%  [.] 0xffffffffb1b9b96a                                                                    
+     0.50%     0.00%  [.] 0xffffffffb1b9db38                                                                    
+     0.49%     0.17%  [.] hash_map.HashMapUnmanaged(each_generation.GenerationId,*each_generation.Generation,has
+     0.49%     0.00%  [.] debug_phase.dumpRec (inlined)                                                         
+     0.47%     0.00%  [.] 0xffffffffb2a55d78                                                                    
+     0.47%     0.00%  [.] mem.Allocator.allocAdvancedWithRetAddr (inlined)                                      
+     0.47%     0.00%  [.] mem.Allocator.allocBytesWithAlignment__anon_18760 (inlined)                           
+     0.47%     0.00%  [.] mem.Allocator.allocWithSizeAndAlignment__anon_18754 (inlined)                         
+     0.47%     0.00%  [.] mem.Allocator.alloc__anon_18740 (inlined)                                             
+     0.47%     0.00%  [.] mem.Allocator.dupe__anon_27829 (inlined)                                              
+     0.47%     0.00%  [.] mem.Allocator.rawAlloc (inlined)                                                      
+     0.47%     0.00%  [.] roc__p6ef63e87d0420d45cdd7822b5230843c                                                
+     0.47%     0.00%  [.] roc_llvm_rc_host_drop_204                                                             
+     0.46%     0.00%  [.] hash_map.HashMapUnmanaged(usize,usize,hash_map.AutoContext(usize),80).growIfNeeded (in
+     0.46%     0.06%  [.] roc_llvm_rc_decref_28                                                                 
+     0.46%     0.00%  [.] 0xffffffffb1b3e8d9                                                                    
+     0.46%     0.00%  [.] 0xffffffffb1b73ff6                                                                    
+     0.45%     0.00%  [.] 0xffffffffb1b9ccf6                                                                    
+     0.45%     0.00%  [.] render_cache.PreparedNodeCreation.apply__anon_38998 (inlined)                         
+     0.45%     0.00%  [.] shared_buffer.List(render_cache.ScalarNode).appendAssumeCapacity (inlined)            
+     0.44%     0.00%  [.] 0xffffffffb2a55bbf                                                                    
+     0.44%     0.00%  [.] 0xffffffffb1b73e90                                                                    
+     0.44%     0.41%  [.] sim_dom.PreparedPublication.node                                                      
+     0.43%     0.00%  [.] engine.Engine(native_host.NativeCtx).rowRenderSpanForRange (inlined)                  
+     0.43%     0.00%  [.] engine.renderNodeParentElemId (inlined)                                               
+     0.43%     0.00%  [.] hash_map.HashMapUnmanaged([]const u8,[]const u8,hash_map.StringContext,80).get (inline
+     0.43%     0.00%  [.] hash_map.HashMapUnmanaged([]const u8,[]const u8,hash_map.StringContext,80).getAdapted_
+     0.43%     0.00%  [.] hash_map.HashMapUnmanaged([]const u8,[]const u8,hash_map.StringContext,80).getContext 
+     0.43%     0.00%  [.] array_list.Aligned(u64,null).appendAssumeCapacity (inlined)                           
+     0.43%     0.06%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_position
+     0.43%     0.00%  [.] hash_map.getAutoHashFn__struct_38539.hash (inlined)                                   
+     0.43%     0.06%  [k] 0xffffffffb1889265                                                                    
+     0.43%     0.31%  [.] engine.Engine(native_host.NativeCtx).StagedCollectionCtx.reserveDomIdentity           
+     0.43%     0.00%  [.] 0xffffffffb1762701                                                                    
+     0.43%     0.00%  [.] 0xffffffffb1b54e8d                                                                    
+     0.42%     0.00%  [.] 0xffffffffb1b78e81                                                                    
+     0.42%     0.14%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_position
+     0.41%     0.00%  [.] 0xffffffffb1b62b5f                                                                    
+     0.40%     0.29%  [.] roc_llvm_rc_decref_27                                                                 
+     0.40%     0.00%  [.] roc_platform_abi.NodeAttrRelease.release (inlined)                                    
+     0.40%     0.00%  [.] roc_platform_abi.NodeAttr__struct_5479.decref (inlined)                               
+     0.40%     0.00%  [.] roc_platform_abi.decrefNodeAttr (inlined)                                             
+     0.40%     0.40%  [.] hash_map.HashMapUnmanaged(u64,void,hash_map.AutoContext(u64),80).getOrPutAssumeCapacit
+     0.40%     0.40%  [.] structural_positions.Prepared.membership                                              
+     0.40%     0.17%  [.] descriptor_stream.IndexTable(descriptor_stream.ElemDescriptorIndex,.{ .element = .none
+     0.40%     0.00%  [.] hash.wyhash.Wyhash.hash (inlined)                                                     
+     0.40%     0.00%  [.] hash_map.HashMapUnmanaged(u64,engine.Engine(native_host.NativeCtx).StagedCollectionCtx
+     0.40%     0.00%  [.] hash_map.HashMapUnmanaged(u64,engine.Engine(native_host.NativeCtx).StagedCollectionCtx
+     0.39%     0.00%  [.] 0xffffffffb1aa2df6                                                                    
+     0.39%     0.00%  [.] 0xffffffffb1b3874e                                                                    
+     0.39%     0.00%  [.] descriptor_stream.Stream.prepareElementInNamespace (inlined)                          
+     0.39%     0.00%  [.] 0xffffffffb17987f5                                                                    
+     0.39%     0.00%  [.] 0xffffffffb1798b8e                                                                    
+     0.39%     0.00%  [.] 0xffffffffb1798f9e                                                                    
+     0.39%     0.00%  [.] 0xffffffffb18967de                                                                    
+     0.39%     0.39%  [k] 0xffffffffb2a8bac8                                                                    
+     0.38%     0.00%  [.] render_cache.ScalarNode.deinit (inlined)                                              
+     0.38%     0.00%  [.] mem.Allocator.rawFree (inlined)                                                       
+     0.38%     0.00%  [.] hash_map.HashMapUnmanaged(u64,sim_dom.PreparedPublication.Slot,hash_map.AutoContext(u6
+     0.38%     0.00%  [.] hash_map.HashMapUnmanaged(u64,sim_dom.PreparedPublication.Slot,hash_map.AutoContext(u6
+     0.38%     0.00%  [.] hash_map.HashMapUnmanaged(u64,sim_dom.PreparedPublication.Slot,hash_map.AutoContext(u6
+     0.38%     0.00%  [.] hash_map.HashMapUnmanaged(u64,sim_dom.PreparedPublication.Slot,hash_map.AutoContext(u6
+     0.38%     0.00%  [.] debug_phase.dumpRec (inlined)                                                         
+     0.37%     0.06%  [.] roc__pbd7f0199472b903e0e8cfa49d6b51423                                                
+     0.37%     0.00%  [.] 0xffffffffb1894713                                                                    
+     0.37%     0.00%  [.] 0xffffffffb1896340                                                                    
+     0.37%     0.00%  [.] hash_map.HashMapUnmanaged(each_generation.GenerationId,*each_generation.Generation,has
+     0.37%     0.00%  [.] hash_map.getAutoEqlFn__struct_38554.eql (inlined)                                     
+     0.37%     0.00%  [.] meta.eql__anon_38573 (inlined)                                                        
+     0.37%     0.00%  [.] 0xffffffffb1b7bf80                                                                    
+     0.37%     0.22%  [.] native_host.NativeRenderPublication.prepareTextField                                  
+     0.37%     0.08%  [.] descriptor_stream.Stream.prepareStaticNode                                            
+     0.37%     0.00%  [.] mem.Allocator.allocAdvancedWithRetAddr (inlined)                                      
+     0.37%     0.00%  [.] mem.Allocator.allocBytesWithAlignment__anon_18760 (inlined)                           
+     0.37%     0.00%  [.] mem.Allocator.allocWithSizeAndAlignment__anon_18754 (inlined)                         
+     0.37%     0.00%  [.] mem.Allocator.alloc__anon_18740 (inlined)                                             
+     0.37%     0.00%  [.] mem.Allocator.dupe__anon_27829 (inlined)                                              
+     0.37%     0.00%  [.] mem.Allocator.rawAlloc (inlined)                                                      
+     0.36%     0.00%  [.] 0xffffffffb1b7258b                                                                    
+     0.36%     0.00%  [.] roc_alloc_ledger.Ledger.recordFreed (inlined)                                         
+     0.36%     0.00%  [.] 0xffffffffb1b41a37                                                                    
+     0.36%     0.00%  [.] descriptor_stream.findElementDesc__anon_40237 (inlined)                               
+     0.36%     0.00%  [.] engine.findElementDesc (inlined)                                                      
+     0.36%     0.00%  [.] shared_buffer.relocate                                                                
+     0.36%     0.00%  [.] mem.Allocator.free__anon_6978 (inlined)                                               
+     0.35%     0.00%  [.] 0xffffffffb1b73330                                                                    
+     0.35%     0.00%  [.] render_cache.PreparedNamedEventsReplacement.prepareKnownNode (inlined)                
+     0.35%     0.00%  [.] render_cache.PreparedRenderSplice(native_host.NativeCtx).addNamedEvents               
+     0.35%     0.27%  [.] engine.Engine(native_host.NativeCtx).BranchReplacementPlan.prepareReplacementChildren 
+     0.34%     0.03%  [.] roc__p429732aa641376477ad1292b448a5707                                                
+     0.34%     0.00%  [.] 0xffffffffb2a5c27a                                                                    
+     0.34%     0.00%  [.] 0xffffffffb17366f6                                                                    
+     0.34%     0.00%  [.] 0xffffffffb1b4a08e                                                                    
+     0.34%     0.03%  [.] 0xffffffffb1b9b35e                                                                    
+     0.34%     0.00%  [.] descriptor_stream.Stream.firstRenderChild (inlined)                                   
+     0.34%     0.00%  [.] descriptor_stream.firstRenderChild__anon_49254 (inlined)                              
+     0.33%     0.33%  [.] rows_render_order.StableOrderIndex(rows_ids.Identity("Rows row"[0..8]),rows_site_store
+     0.33%     0.00%  [.] hash_map.HashMapUnmanaged(u64,u64,hash_map.AutoContext(u64),80).Metadata.isUsed (inlin
+     0.32%     0.00%  [.] roc_llvm_rc_decref_176                                                                
+     0.32%     0.00%  [.] mem.Allocator.allocAdvancedWithRetAddr (inlined)                                      
+     0.32%     0.00%  [.] mem.Allocator.rawAlloc (inlined)                                                      
+     0.32%     0.30%  [.] hash_map.HashMapUnmanaged(u128,u64,hash_map.AutoContext(u128),80).putAssumeCapacity   
+     0.32%     0.00%  [.] 0xffffffffb1ae50e6                                                                    
+     0.32%     0.03%  [.] render_cache.PreparedRenderSplice(native_host.NativeCtx).addTextField                 
+     0.32%     0.00%  [.] 0xffffffffb1b41a27                                                                    
+     0.32%     0.00%  [.] 0xffffffffb1b49ffc                                                                    
+     0.31%     0.23%  [.] abi_view.NodeAttr.fromAbi                                                             
+     0.31%     0.00%  [.] active_signal_graph.prepareGraphAppend__anon_47174 (inlined)                          
+     0.31%     0.00%  [.] 0xffffffffb18c7207                                                                    
+     0.31%     0.00%  [.] 0xffffffffb18c80f4                                                                    
+     0.31%     0.00%  [.] rows_transition.PreparedTransition.applyStableInsert                                  
+     0.31%     0.00%  [.] 0xffffffffb1b7315a                                                                    
+     0.31%     0.31%  [.] native_host.HostAllocator.free                                                        
+     0.31%     0.23%  [.] descriptor_stream.Stream.reserveScopeDescriptorOwnership                              
+     0.30%     0.00%  [.] 0xffffffffb2a557d5                                                                    
+     0.30%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.deinit              
+     0.29%     0.00%  [.] hash_map.HashMapUnmanaged(u128,u64,hash_map.AutoContext(u128),80).getOrPutAssumeCapaci
+     0.29%     0.00%  [.] hash_map.HashMapUnmanaged(u128,u64,hash_map.AutoContext(u128),80).putAssumeCapacityCon
+     0.29%     0.08%  [.] active_signal_graph.prepareGraphAppendWithWork__anon_50567                            
+     0.29%     0.00%  [.] 0xffffffffb1b6085c                                                                    
+     0.29%     0.00%  [.] 0xffffffffb18e0e27                                                                    
+     0.29%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedActiveEachRows.commit                    
+     0.29%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.commitWithPublication__
+     0.29%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedEachRowReplacementCollection.prepareEvalu
+     0.29%     0.00%  [.] hash_map.HashMapUnmanaged(u64,descriptor_stream.RenderElemIndex,hash_map.AutoContext(u
+     0.29%     0.00%  [.] hash_map.HashMapUnmanaged(u64,descriptor_stream.RenderElemIndex,hash_map.AutoContext(u
+     0.29%     0.00%  [.] hash_map.HashMapUnmanaged(u64,descriptor_stream.RenderElemIndex,hash_map.AutoContext(u
+     0.29%     0.00%  [.] hash_map.HashMapUnmanaged(u64,descriptor_stream.RenderElemIndex,hash_map.AutoContext(u
+     0.29%     0.09%  [.] roc__p207c0931e94dbae74b9739f3bd7068e8                                                
+     0.28%     0.00%  [.] 0xffffffffb1b49c82                                                                    
+     0.28%     0.00%  [.] hash_map.HashMapUnmanaged(u64,engine.Engine(native_host.NativeCtx).StagedCollectionCtx
+     0.28%     0.26%  [.] 0xffffffffb2a55942                                                                    
+     0.28%     0.00%  [.] descriptor_stream.IndexTable(descriptor_stream.ScopeDescriptorOwnership,.{ .elem_ids =
+     0.28%     0.00%  [.] mem.Allocator.free__anon_9386 (inlined)                                               
+     0.28%     0.00%  [.] engine.Engine(native_host.NativeCtx).clearEachRowSites (inlined)                      
+     0.28%     0.00%  [.] hash_map.HashMapUnmanaged(rows_ids.Identity("Rows row"[0..8]),rows_render_order.Stable
+     0.28%     0.00%  [.] hash_map.HashMapUnmanaged(rows_ids.Identity("Rows row"[0..8]),rows_render_order.Stable
+     0.28%     0.00%  [.] hash_map.HashMapUnmanaged(rows_ids.Identity("Rows row"[0..8]),rows_render_order.Stable
+     0.28%     0.00%  [.] hash_map.HashMapUnmanaged(rows_ids.Identity("Rows row"[0..8]),rows_render_order.Stable
+     0.28%     0.20%  [.] roc__p0503ff6dcea3f5d50e51b2a60e3417ef                                                
+     0.28%     0.25%  [.] engine.Engine(native_host.NativeCtx).StagedCollectionCtx.appendConstructionPosition   
+     0.28%     0.00%  [.] roc_platform_abi.dropErasedCallablePayload (inlined)                                  
+     0.28%     0.00%  [.] 0xffffffffb1b22210                                                                    
+     0.27%     0.00%  [.] hash_map.HashMapUnmanaged(u128,u64,hash_map.AutoContext(u128),80).getOrPutAssumeCapaci
+     0.27%     0.00%  [.] mem.Allocator.allocBytesWithAlignment__anon_18760 (inlined)                           
+     0.27%     0.00%  [.] mem.Allocator.allocWithSizeAndAlignment__anon_18754 (inlined)                         
+     0.27%     0.00%  [.] mem.Allocator.alloc__anon_18740 (inlined)                                             
+     0.27%     0.00%  [.] mem.Allocator.dupe__anon_27829 (inlined)                                              
+     0.26%     0.00%  [.] hash_map.HashMapUnmanaged(u64,descriptor_stream.RenderElemIndex,hash_map.AutoContext(u
+     0.26%     0.00%  [.] roc_llvm_rc_decref_175                                                                
+     0.26%     0.00%  [.] engine.Engine(native_host.NativeCtx).StagedCollectionCtx.StagedSignalRecordCtx.init (i
+     0.26%     0.00%  [.] signal_records.Record.tryInit (inlined)                                               
+     0.26%     0.00%  [.] signal_records.Record.tryInitOwned__anon_63052 (inlined)                              
+     0.26%     0.00%  [.] 0xffffffffb1c09016                                                                    
+     0.26%     0.00%  [.] hash_map.HashMapUnmanaged(usize,descriptor_stream.ScopeDescriptorOwnership,hash_map.Au
+     0.26%     0.00%  [.] hash_map.HashMapUnmanaged(usize,descriptor_stream.ScopeDescriptorOwnership,hash_map.Au
+     0.26%     0.00%  [.] hash_map.HashMapUnmanaged(usize,descriptor_stream.ScopeDescriptorOwnership,hash_map.Au
+     0.26%     0.00%  [.] roc_platform_abi.freeBoxAllocation (inlined)                                          
+     0.26%     0.00%  [.] 0xffffffffb1bb2612                                                                    
+     0.26%     0.00%  [.] 0xffffffffb1ae3a6a                                                                    
+     0.26%     0.00%  [.] mem.Allocator.dupe__anon_27829 (inlined)                                              
+     0.26%     0.00%  [.] 0xffffffffb1895fb0                                                                    
+     0.26%     0.00%  [.] mem.Allocator.dupe__anon_27829 (inlined)                                              
+     0.25%     0.00%  [.] structural_positions.Positions.deinit (inlined)                                       
+     0.25%     0.03%  [.] rows_render_order.StableOrderIndex(rows_ids.Identity("Rows row"[0..8]),rows_site_store
+     0.25%     0.00%  [.] 0xffffffffb1895fc4                                                                    
+     0.25%     0.00%  [.] descriptor_stream.Stream.appendPreparedStaticAttr (inlined)                           
+     0.25%     0.00%  [.] mem.Allocator.free__anon_6978 (inlined)                                               
+     0.25%     0.08%  [.] 0xffffffffb1766153                                                                    
+     0.25%     0.00%  [.] 0xffffffffb176555f                                                                    
+     0.25%     0.00%  [.] hash_map.HashMapUnmanaged(u64,descriptor_stream.RenderElemIndex,hash_map.AutoContext(u
+     0.25%     0.00%  [.] hash_map.HashMapUnmanaged(u64,descriptor_stream.RenderElemIndex,hash_map.AutoContext(u
+     0.25%     0.00%  [.] hash_map.HashMapUnmanaged(u64,descriptor_stream.RenderElemIndex,hash_map.AutoContext(u
+     0.25%     0.00%  [.] 0xffffffffb2a85838                                                                    
+     0.25%     0.00%  [.] 0xffffffffb1b74a2d                                                                    
+     0.24%     0.00%  [.] descriptor_stream.findElementDesc__anon_40237 (inlined)                               
+     0.24%     0.00%  [.] descriptor_stream.renderNodeShape__anon_47340 (inlined)                               
+     0.24%     0.00%  [.] 0xffffffffb1c0db30                                                                    
+     0.24%     0.09%  [.] render_cache.PreparedRenderSplice(native_host.NativeCtx).stageAssumeCapacity          
+     0.24%     0.17%  [.] roc_host_value_take_with_split                                                        
+     0.24%     0.00%  [.] hash.wyhash.Wyhash.hash (inlined)                                                     
+     0.24%     0.00%  [.] hash_map.getAutoHashFn__struct_40167.hash (inlined)                                   
+     0.24%     0.24%  [.] descriptor_stream.Stream.nextRenderSibling                                            
+     0.24%     0.00%  [.] 0xffffffffb1c0d54a                                                                    
+     0.24%     0.00%  [.] hash_map.HashMapUnmanaged(usize,descriptor_stream.ElemDescriptorIndex,hash_map.AutoCon
+     0.23%     0.00%  [.] mem.Allocator.free__anon_9386 (inlined)                                               
+     0.23%     0.00%  [.] mem.Allocator.rawFree (inlined)                                                       
+     0.23%     0.00%  [.] structural_positions.Prepared.deinit                                                  
+     0.23%     0.00%  [.] compiler_rt.memcpy.copyLessThan16 (inlined)                                           
+     0.23%     0.00%  [.] mem.Allocator.free__anon_7401 (inlined)                                               
+     0.23%     0.00%  [.] engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.finishSparsePublicat
+     0.23%     0.00%  [.] 0xffffffffb1b79f60                                                                    
+     0.23%     0.00%  [.] Io.Threaded.mutexLock (inlined)                                                       
+     0.23%     0.00%  [.] atomic.Value(Io.Mutex.State).cmpxchgStrong (inlined)                                  
+     0.23%     0.00%  [.] 0xffffffffb2a89457                                                                    
+     0.23%     0.00%  [.] 0xffffffffb1b7dd1a                                                                    
+     0.23%     0.00%  [.] 0xffffffffb2a894b0                                                                    
+     0.23%     0.00%  [.] engine.Engine(native_host.NativeCtx).dropHostSignalRecordValueWithProvisionalStates (i
+     0.23%     0.09%  [.] render_cache.PreparedSparseChildren.insertRootsBefore__anon_55373                     
+     0.23%     0.00%  [.] roc__pf436be11350a24eff46b9abcfb2ab083                                                
+     0.23%     0.00%  [.] 0xffffffffb1c0bec1                                                                    
+     0.23%     0.00%  [.] mem.Allocator.allocAdvancedWithRetAddr (inlined)                                      
+     0.23%     0.00%  [.] mem.Allocator.allocBytesWithAlignment__anon_18760 (inlined)                           
+     0.23%     0.00%  [.] mem.Allocator.allocWithSizeAndAlignment__anon_18754 (inlined)                         
+     0.23%     0.00%  [.] mem.Allocator.alloc__anon_18740 (inlined)                                             
+     0.23%     0.00%  [.] mem.Allocator.rawAlloc (inlined)                                                      
+     0.23%     0.00%  [.] mem.Allocator.allocAdvancedWithRetAddr (inlined)                                      
+     0.23%     0.00%  [.] mem.Allocator.allocBytesWithAlignment__anon_18760 (inlined)                           
+     0.23%     0.00%  [.] mem.Allocator.allocWithSizeAndAlignment__anon_18754 (inlined)                         
+     0.23%     0.00%  [.] mem.Allocator.alloc__anon_18740 (inlined)                                             
+     0.23%     0.00%  [.] mem.Allocator.rawAlloc (inlined)                                                      
+     0.23%     0.00%  [.] 0xffffffffb1b43efb                                                                    
+     0.23%     0.11%  [.] descriptor_stream.Stream.appendPreparedSignalDescriptor                               
+     0.23%     0.17%  [.] roc__p3641510928a2286facbf94b166f461e0.fast                                           
+     0.22%     0.00%  [.] hash_map.HashMapUnmanaged(u64,descriptor_stream.RenderElemIndex,hash_map.AutoContext(u
+     0.22%     0.00%  [.] hash_map.HashMapUnmanaged(u64,descriptor_stream.RenderElemIndex,hash_map.AutoContext(u
+     0.22%     0.00%  [.] 0xffffffffb2a9af27                                                                    
+     0.22%     0.00%  [.] 0xffffffffb2a89e72                                                                    
+     0.22%     0.00%  [.] 0xffffffffb17653c0                                                                    
+     0.22%     0.14%  [.] signal_records.walkTree__anon_41558                                                   
+     0.22%     0.00%  [.] hash_map.HashMapUnmanaged(u64,descriptor_stream.RenderElemIndex,hash_map.AutoContext(u
+     0.22%     0.00%  [.] hash.wyhash.Wyhash.final2 (inlined)                                                   
+     0.22%     0.00%  [.] hash.wyhash.Wyhash.hash (inlined)                                                     
+     0.22%     0.00%  [.] hash_map.getAutoHashFn__struct_40167.hash (inlined)                                   
+     0.22%     0.00%  [.] hash_map.getAutoEqlFn__struct_40178.eql (inlined)                                     
+     0.22%     0.00%  [.] meta.eql__anon_40185 (inlined)                                                        
+     0.22%     0.00%  [.] 0xffffffffb1ae3ba3                                                                    
+     0.22%     0.00%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_position
+     0.22%     0.00%  [.] mem.Allocator.rawFree (inlined)                                                       
+     0.21%     0.00%  [.] host_value_registry.Registry(roc_platform_abi.HostValueCapabilityHandle__struct_1346).
+     0.21%     0.00%  [.] host_value_registry.Registry(roc_platform_abi.HostValueCapabilityHandle__struct_1346).
+     0.21%     0.00%  [.] host_values.RegistryOps().releaseCapability (inlined)                                 
+     0.21%     0.00%  [.] host_values.releaseHostValueCapability (inlined)                                      
+     0.21%     0.00%  [.] native_host.HostEnv.takeHostValueWithSplit (inlined)                                  
+     0.21%     0.00%  [.] mem.Allocator.rawAlloc (inlined)                                                      
+     0.21%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,rows_render_order.StableOrde
+     0.21%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,rows_render_order.StableOrde
+     0.21%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,rows_render_order.StableOrde
+     0.21%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,rows_render_order.StableOrde
+     0.21%     0.08%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,rows_render_order.StableOrde
+     0.21%     0.00%  [.] descriptor_stream.nextRenderSibling__anon_49251 (inlined)                             
+     0.21%     0.21%  [.] descriptor_stream.IndexTable(descriptor_stream.ScopeDescriptorOwnership,.{ .elem_ids =
+     0.21%     0.00%  [.] descriptor_stream.IndexTable(descriptor_stream.ScopeDescriptorOwnership,.{ .elem_ids =
+     0.21%     0.00%  [.] hash_map.HashMapUnmanaged(usize,descriptor_stream.ScopeDescriptorOwnership,hash_map.Au
+     0.21%     0.00%  [.] hash_map.HashMapUnmanaged(usize,descriptor_stream.ScopeDescriptorOwnership,hash_map.Au
+     0.21%     0.00%  [.] hash_map.HashMapUnmanaged(usize,descriptor_stream.ScopeDescriptorOwnership,hash_map.Au
+     0.21%     0.00%  [.] hash_map.HashMapUnmanaged(usize,descriptor_stream.ScopeDescriptorOwnership,hash_map.Au
+     0.21%     0.00%  [.] hash_map.HashMapUnmanaged(u64,descriptor_stream.RenderElemIndex,hash_map.AutoContext(u
+     0.20%     0.00%  [.] descriptor_stream.findTextNodeDesc__anon_40249 (inlined)                              
+     0.20%     0.09%  [.] render_cache.PreparedRenderSplice(native_host.NativeCtx).addCustomAttrs               
+     0.20%     0.00%  [.] 0xffffffffb1b753b0                                                                    
+     0.20%     0.00%  [.] array_list.Aligned(sim_dom.Element,null).deinit (inlined)                             
+     0.20%     0.00%  [.] mem.Allocator.free__anon_23136 (inlined)                                              
+     0.20%     0.00%  [.] 0xffffffffb18c5fb4                                                                    
+     0.20%     0.00%  [.] 0xffffffffb1b81889                                                                    
+     0.20%     0.00%  [.] compiler_rt.memcpy.copyRange4 (inlined)                                               
+     0.20%     0.00%  [.] compiler_rt.memcpy.copy16ToSmallLimit (inlined)                                       
+     0.20%     0.00%  [.] shared_buffer.List(render_cache.PreparedTextFieldUpdate).appendAssumeCapacity (inlined
+     0.20%     0.12%  [.] roc_host_value_store_with_existing_capability                                         
+     0.20%     0.00%  [.] native_host.HostEnv.storeHostValueWithExistingCapability (inlined)                    
+     0.20%     0.00%  [.] hash_map.HashMapUnmanaged(usize,descriptor_stream.ScopeDescriptorOwnership,hash_map.Au
+     0.20%     0.00%  [.] 0xffffffffb1b730f2                                                                    
+     0.20%     0.06%  [.] 0xffffffffb1889261                                                                    
+     0.20%     0.00%  [.] engine.Engine(native_host.NativeCtx).StagedCollectionCtx.appendText (inlined)         
+     0.20%     0.00%  [.] hash.wyhash.Wyhash.final2 (inlined)                                                   
+     0.20%     0.00%  [.] engine.Engine(native_host.NativeCtx).callHostValueToUnitWithCapability                
+     0.20%     0.00%  [.] erased_calls.callErasedCallable (inlined)                                             
+     0.20%     0.00%  [.] erased_calls.callErasedHostValueToUnit (inlined)                                      
+     0.20%     0.00%  [.] retained_values.callHostValueToUnitWithCapability__anon_30701 (inlined)               
+     0.20%     0.02%  [.] engine.Engine(native_host.NativeCtx).StagedCollectionCtx.commit                       
+     0.20%     0.00%  [.] hash.wyhash.Wyhash.smallKey (inlined)                                                 
+     0.20%     0.00%  [.] collection_budget.StreamBudget.charge (inlined)                                       
+     0.20%     0.03%  [.] roc__p5cbf62f36bf64bd5fc6e933384b29eca                                                
+     0.20%     0.00%  [.] engine.Engine(native_host.NativeCtx).callHostValueToHostValueWithCapability           
+     0.20%     0.00%  [.] erased_calls.callErasedCallable (inlined)                                             
+     0.20%     0.00%  [.] erased_calls.callErasedHostValueToHostValue (inlined)                                 
+     0.20%     0.00%  [.] retained_values.callHostValueToHostValueWithCapability__anon_30779 (inlined)          
+     0.20%     0.00%  [.] hash_map.HashMapUnmanaged(u64,engine.Engine(native_host.NativeCtx).StagedCollectionCtx
+     0.20%     0.03%  [.] 0xffffffffb1b518ff                                                                    
+     0.20%     0.00%  [.] roc_llvm_rc_decref_35                                                                 
+     0.20%     0.00%  [.] 0xffffffffb1ae3b72                                                                    
+     0.19%     0.00%  [.] descriptor_stream.Stream.rememberSignalRecordTreeAssumeCapacity.Context.visit (inlined
+     0.19%     0.00%  [.] erased_calls.callErasedCallable (inlined)                                             
+     0.19%     0.00%  [.] erased_calls.callValueInitThunk (inlined)                                             
+     0.19%     0.19%  [.] hash_map.HashMapUnmanaged([*]u8,*signal_records.Record,hash_map.AutoContext([*]u8),80)
+     0.19%     0.14%  [.] 0xffffffffb190d7e5                                                                    
+     0.19%     0.19%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,?structural_positions.Positi
+     0.19%     0.00%  [.] descriptor_stream.renderNodeIndex__anon_39111 (inlined)                               
+     0.19%     0.00%  [.] hash.wyhash.Wyhash.mum (inlined)                                                      
+     0.19%     0.00%  [.] collection_plan.SignalRecordPlan([*]u8,signal_records.KeyedSelectIdentity,signal_recor
+     0.19%     0.00%  [.] descriptor_stream.Stream.rememberPreparedSignalRecordTreeAssumeCapacity (inlined)     
+     0.19%     0.00%  [.] descriptor_stream.Stream.rememberSignalRecordTreeAssumeCapacity (inlined)             
+     0.19%     0.00%  [.] engine.Engine(native_host.NativeCtx).StagedCollectionCtx.SignalPublisher.publishDescri
+     0.19%     0.19%  [k] 0xffffffffb1b71aaa                                                                    
+     0.19%     0.00%  [.] 0xffffffffb1ae4e1a                                                                    
+     0.19%     0.00%  [.] mem.Allocator.destroy__anon_24152 (inlined)                                           
+     0.19%     0.00%  [.] hash_map.HashMapUnmanaged(u64,descriptor_stream.RenderElemIndex,hash_map.AutoContext(u
+     0.19%     0.00%  [.] hash_map.HashMapUnmanaged(u64,descriptor_stream.RenderElemIndex,hash_map.AutoContext(u
+     0.19%     0.00%  [.] hash_map.HashMapUnmanaged(u64,descriptor_stream.RenderElemIndex,hash_map.AutoContext(u
+     0.19%     0.00%  [.] hash_map.HashMapUnmanaged(u64,descriptor_stream.RenderElemIndex,hash_map.AutoContext(u
+     0.19%     0.12%  [.] active_signal_graph.prepareGraphAppendWithWork__anon_50567.Builder.retain             
+     0.19%     0.00%  [.] 0xffffffffb2a6600c                                                                    
+     0.18%     0.05%  [.] descriptor_stream.Stream.reservePreparedCustomAttrElem                                
+     0.18%     0.00%  [.] render_commands.Buffer.appendRaw (inlined)                                            
+     0.18%     0.00%  [.] shared_buffer.List(render_commands.Record).append (inlined)                           
+     0.18%     0.00%  [.] hash.wyhash.Wyhash.final2 (inlined)                                                   
+     0.18%     0.00%  [.] render_cache.PreparedChildrenReplacement.apply__anon_39004 (inlined)                  
+     0.18%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,rows_render_order.StableOrde
+     0.18%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,rows_render_order.StableOrde
+     0.18%     0.00%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_position
+     0.18%     0.00%  [.] hash_map.HashMapUnmanaged(u64,descriptor_stream.RenderElemIndex,hash_map.AutoContext(u
+     0.18%     0.00%  [.] hash_map.HashMapUnmanaged(u64,descriptor_stream.RenderElemIndex,hash_map.AutoContext(u
+     0.17%     0.03%  [.] 0xffffffffb1c0d559                                                                    
+     0.17%     0.00%  [.] hash_map.HashMapUnmanaged(u64,u64,hash_map.AutoContext(u64),80).Metadata.isFree (inlin
+     0.17%     0.17%  [k] 0xffffffffb1b1165c                                                                    
+     0.17%     0.00%  [.] rows_render_order.StableOrderIndex(rows_ids.Identity("Rows row"[0..8]),rows_site_store
+     0.17%     0.17%  [.] descriptor_stream.IndexTable(descriptor_stream.ElemDescriptorIndex,.{ .element = .none
+     0.17%     0.00%  [.] array_list.Aligned(u64,null).addOneAssumeCapacity (inlined)                           
+     0.17%     0.03%  [.] 0xffffffffb1b41cad                                                                    
+     0.17%     0.00%  [.] host_value_registry.Registry(roc_platform_abi.HostValueCapabilityHandle__struct_1346).
+     0.17%     0.00%  [.] descriptor_stream.deinitNamedEventIndexLists__anon_24310 (inlined)                    
+     0.17%     0.00%  [.] shared_buffer.List(usize).deinit (inlined)                                            
+     0.17%     0.14%  [k] 0xffffffffb1400080                                                                    
+     0.17%     0.17%  [.] render_cache.PreparedSparseChildren.shadow__anon_55531                                
+     0.17%     0.08%  [.] host_value_registry.Registry(roc_platform_abi.HostValueCapabilityHandle__struct_1346).
+     0.17%     0.03%  [.] collection_plan.IdentityOverlay.reserve                                               
+     0.17%     0.11%  [.] hash_map.HashMapUnmanaged([]const u8,[]const u8,hash_map.StringContext,80).getIndex__a
+     0.17%     0.03%  [.] rows_transition.PreparedTransition.insertShadow                                       
+     0.17%     0.00%  [.] hash_map.HashMapUnmanaged(u128,rows_transition.Shadow,hash_map.AutoContext(u128),80).g
+     0.17%     0.00%  [.] hash_map.HashMapUnmanaged(u128,rows_transition.Shadow,hash_map.AutoContext(u128),80).g
+     0.17%     0.00%  [.] hash_map.HashMapUnmanaged(u128,rows_transition.Shadow,hash_map.AutoContext(u128),80).g
+     0.17%     0.00%  [.] 0xffffffffb1b41ede                                                                    
+     0.17%     0.00%  [.] 0xffffffffb1b63257                                                                    
+     0.17%     0.03%  [.] array_list.Aligned(u64,null).ensureTotalCapacity                                      
+     0.17%     0.00%  [.] 0xffffffffb1b8768c                                                                    
+     0.17%     0.09%  [.] engine.Engine(native_host.NativeCtx).ActiveSignalGraphLifecycle.releaseRecord         
+     0.17%     0.00%  [.] 0xffffffffb1b51794                                                                    
+     0.17%     0.00%  [.] 0xffffffffb1b522f3                                                                    
+     0.17%     0.00%  [.] descriptor_stream.Stream.prepareStaticTextAttr (inlined)                              
+     0.17%     0.00%  [.] sim_dom.TextAttr.deinit (inlined)                                                     
+     0.17%     0.00%  [.] array_list.Aligned(sim_dom.NamedEvent,null).deinit (inlined)                          
+     0.17%     0.00%  [.] 0xffffffffb1b74af7                                                                    
+     0.17%     0.00%  [.] rows_render_order.StableOrderIndex(structural_positions.PositionId,structural_position
+     0.17%     0.17%  [k] 0xffffffffb1766150                                                                    
+     0.17%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,?structural_positions.Positi
+     0.17%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,?structural_positions.Positi
+     0.17%     0.00%  [.] hash_map.HashMapUnmanaged(structural_positions.PositionId,?structural_positions.Positi
+     0.17%     0.00%  [.] descriptor_stream.Stream.rememberSignalRecordTreeAssumeCapacity (inlined)             
+     0.17%     0.00%  [.] shared_buffer.List(descriptor_stream.ElemDescriptorIndex).appendAssumeCapacity (inline
+     0.17%     0.00%  [.] 0xffffffffb1b824ee                                                                    
+     0.17%     0.00%  [.] hash_map.HashMapUnmanaged(u64,void,hash_map.AutoContext(u64),80).getOrPutAssumeCapacit
+     0.17%     0.00%  [.] hash_map.HashMapUnmanaged(u64,void,hash_map.AutoContext(u64),80).putAssumeCapacity (in
+     0.17%     0.00%  [.] hash_map.HashMapUnmanaged(u64,void,hash_map.AutoContext(u64),80).putAssumeCapacityCont
+     0.17%     0.00%  [.] 0xffffffffb2a8a47d                                                                    
+     0.16%     0.11%  [k] 0xffffffffb1766313                                                                    
+     0.16%     0.00%  [.] Io.Threaded.mutexUnlock (inlined)                                                     
+     0.16%     0.03%  [.] 0xffffffffb1ae3b94                                                                    
+     0.16%     0.00%  [.] 0xffffffffb2a8945c                                                                    
+     0.16%     0.00%  [.] native_host.HostEnv.recordHostAlloc (inlined)                                         
+     0.16%     0.00%  [.] hash_map.HashMapUnmanaged(u64,void,hash_map.AutoContext(u64),80).getOrPutAssumeCapacit
+     0.16%     0.00%  [.] hash_map.HashMapUnmanaged(u64,void,hash_map.AutoContext(u64),80).putAssumeCapacity (in
+     0.16%     0.00%  [.] hash_map.HashMapUnmanaged(u64,void,hash_map.AutoContext(u64),80).putAssumeCapacityCont
+     0.16%     0.00%  [.] shared_buffer.List(descriptor_stream.CustomAttrDescriptorIndex).ensureTotalCapacity (i
+     0.16%     0.00%  [.] shared_buffer.List(descriptor_stream.CustomAttrDescriptorIndex).ensureTotalCapacityPre
+     0.16%     0.00%  [.] shared_buffer.List(descriptor_stream.CustomAttrDescriptorIndex).ensureUnusedCapacity (
+     0.16%     0.00%  [.] hash.wyhash.Wyhash.hash (inlined)                                                     
+     0.16%     0.00%  [.] hash_map.getAutoHashFn__struct_38539.hash (inlined)                                   
+     0.16%     0.00%  [.] retained_values.releaseHostBoolRead__anon_25876 (inlined)                             
+     0.16%     0.00%  [.] roc_platform_abi.decrefBoxWith (inlined)                                              
+     0.16%     0.00%  [.] roc_platform_abi.decrefErasedCallable (inlined)                                       
+     0.16%     0.00%  [.] roc_platform_abi.freeBoxAllocation (inlined)                                          
+     0.16%     0.00%  [.] signal_records.CacheSlot.deinit__anon_22979 (inlined)                                 
+     0.16%     0.00%  [.] hash_map.HashMapUnmanaged(usize,usize,hash_map.AutoContext(usize),80).Metadata.isUsed 
+     0.16%     0.00%  [.] hash_map.HashMapUnmanaged(u64,void,hash_map.AutoContext(u64),80).capacity (inlined)   
+     0.16%     0.00%  [.] mem.Allocator.allocAdvancedWithRetAddr (inlined)                                      
+     0.16%     0.00%  [.] mem.Allocator.allocBytesWithAlignment__anon_18706 (inlined)                           
+     0.16%     0.00%  [.] mem.Allocator.allocWithSizeAndAlignment__anon_18691 (inlined)                         
+     0.16%     0.00%  [.] mem.Allocator.alloc__anon_46427 (inlined)                                             
+     0.16%     0.00%  [.] mem.Allocator.rawAlloc (inlined)                                                      
+     0.16%     0.00%  [.] 0xffffffffb1c08ff9                                                                    
+     0.15%     0.00%  [.] descriptor_stream.Stream.renderNodeIndex (inlined)                                    
+     0.15%     0.00%  [.] descriptor_stream.renderNodeIndex__anon_39111 (inlined)                               
+     0.15%     0.00%  [.] hash.wyhash.Wyhash.mum (inlined)                                                      

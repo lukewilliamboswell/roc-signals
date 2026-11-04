@@ -1,0 +1,177 @@
+//! Runtime metric counters and no-op metric sinks for the Signals engine.
+
+const std = @import("std");
+const builtin = @import("builtin");
+const build_options = @import("build_options");
+
+pub const enable_runtime_metrics = builtin.is_test or build_options.metrics;
+
+pub const RuntimeMetrics = struct {
+    active_graph_records_rebuilt: u64,
+    append_child: u64,
+    active_intervals_synced: u64,
+    allocs_this_event: u64,
+    bind_event: u64,
+    closure_releases: u64,
+    closure_retains: u64,
+    create_element: u64,
+    deallocs_this_event: u64,
+    /// One per `map` / `map2` / `combine` transform actually evaluated. This is
+    /// the fine-grained budget: it should scale with the size of the change,
+    /// not with the size of the graph.
+    derived_calls_into_roc: u64,
+    each_key_compares: u64,
+    each_key_hashes: u64,
+    each_key_reuse_compares: u64,
+    each_key_duplicate_compares: u64,
+    each_item_compares: u64,
+    each_syncs: u64,
+    each_sync_keys: u64,
+    each_sync_existing_rows: u64,
+    events_processed: u64,
+    host_alloc_bytes_this_event: u64,
+    host_allocs_this_event: u64,
+    host_dealloc_bytes_this_event: u64,
+    host_deallocs_this_event: u64,
+    host_retained_alloc_delta: i64,
+    host_retained_bytes_delta: i64,
+    move_before: u64,
+    /// Source signals dirtied by a change: one per event dispatch, or the
+    /// number of host source signals a location/visibility/online/storage
+    /// change touched. This says nothing about how much derived work followed —
+    /// use `derived_calls_into_roc` for that, and `propagation_prunes` for
+    /// equality cutoffs that stopped propagation.
+    dirty_source_roots: u64,
+    patches_emitted: u64,
+    propagation_prunes: u64,
+    recompute_batches: u64,
+    remove_node: u64,
+    render_indexes_refreshed: u64,
+    retained_alloc_delta: i64,
+    reset_dom: u64,
+    rows_created: u64,
+    /// Candidate rows a direct-parent `Rows` delta visited while preparing or
+    /// publishing its site index. Bounded by the edit batch, not the site.
+    rows_candidate_rows_visited: u64,
+    /// Committed row keys hashed again to maintain a site's key index. A
+    /// direct-parent delta reuses the hashes the generation already carries.
+    rows_index_keys_hashed: u64,
+    /// Site-index membership entries cleared or written by a direct-parent
+    /// delta. Each inserted or removed row costs a bounded number of entries.
+    rows_membership_entries_rewritten: u64,
+    rows_order_links_touched: u64,
+    rows_removed: u64,
+    rows_render_roots_moved: u64,
+    rows_reused: u64,
+    /// Selector memberships appended to the keyed index this event. A
+    /// structural change registers only the selector records it creates.
+    selector_registrations: u64,
+    /// Key bytes copied into index ownership by those registrations.
+    selector_key_bytes_copied: u64,
+    /// Selector memberships removed from the keyed index this event, one per
+    /// retired selector record.
+    selector_memberships_released: u64,
+    /// Graph records the keyed index examined while a structural change was
+    /// prepared or published: appended records plus retired selector records.
+    /// Bounded by the changed set; a full re-enumeration of the surviving
+    /// graph makes it track N.
+    selector_registry_visits: u64,
+    selector_members_dirtied: u64,
+    scopes_created: u64,
+    scopes_disposed: u64,
+    set_checked: u64,
+    set_disabled: u64,
+    set_metadata: u64,
+    set_text: u64,
+    set_value: u64,
+    signal_record_table_rebuilt: u64,
+    stream_nodes_scanned: u64,
+    stream_nodes_scanned_apply: u64,
+    stream_nodes_scanned_children: u64,
+    stream_nodes_scanned_dirty_scope: u64,
+    stream_nodes_scanned_events: u64,
+    stream_nodes_scanned_mounts: u64,
+    stream_nodes_scanned_on_change: u64,
+    stream_nodes_scanned_remove_target: u64,
+    stream_nodes_scanned_render_scope: u64,
+    stream_nodes_scanned_splice: u64,
+
+    pub const Field = std.meta.FieldEnum(@This());
+
+    pub inline fn bump(self: *RuntimeMetrics, comptime field: Field, n: u64) void {
+        if (comptime !enable_runtime_metrics) return;
+        @field(self, @tagName(field)) += n;
+    }
+};
+
+/// Performs zero runtime metrics inside the shared engine while preserving transaction and changed-set invariants.
+pub fn zeroRuntimeMetrics() RuntimeMetrics {
+    return std.mem.zeroes(RuntimeMetrics);
+}
+
+/// Performs add runtime metrics inside the shared engine while preserving transaction and changed-set invariants.
+pub fn addRuntimeMetrics(left: RuntimeMetrics, right: RuntimeMetrics) RuntimeMetrics {
+    var result: RuntimeMetrics = undefined;
+    inline for (std.meta.fields(RuntimeMetrics)) |field| {
+        @field(result, field.name) = @field(left, field.name) + @field(right, field.name);
+    }
+    return result;
+}
+
+/// Zero-size stand-in for `RuntimeMetrics`: every `bump` is a comptime no-op.
+pub const NoMetrics = struct {
+    pub const Field = RuntimeMetrics.Field;
+
+    pub inline fn bump(_: *NoMetrics, comptime _: Field, _: u64) void {}
+};
+
+/// Dispatch counters, accumulated per host event and folded into the finalized
+/// runtime metrics. Engine-owned so both hosts share one dispatch path.
+pub const DispatchMetrics = struct {
+    events_processed: u64 = 0,
+    recompute_batches: u64 = 0,
+};
+
+test "zeroRuntimeMetrics clears every runtime metric field" {
+    const metrics = zeroRuntimeMetrics();
+
+    inline for (std.meta.fields(RuntimeMetrics)) |field| {
+        switch (field.type) {
+            u64 => try std.testing.expectEqual(@as(u64, 0), @field(metrics, field.name)),
+            i64 => try std.testing.expectEqual(@as(i64, 0), @field(metrics, field.name)),
+            else => @compileError("runtime metrics must stay scalar counters"),
+        }
+    }
+}
+
+test "RuntimeMetrics bump updates requested counter when metrics are enabled" {
+    var metrics = zeroRuntimeMetrics();
+    metrics.bump(.dirty_source_roots, 3);
+
+    if (comptime enable_runtime_metrics) {
+        try std.testing.expectEqual(@as(u64, 3), metrics.dirty_source_roots);
+    } else {
+        try std.testing.expectEqual(@as(u64, 0), metrics.dirty_source_roots);
+    }
+}
+
+test "addRuntimeMetrics folds unsigned and signed counters" {
+    var left = zeroRuntimeMetrics();
+    var right = zeroRuntimeMetrics();
+    left.dirty_source_roots = 3;
+    right.dirty_source_roots = 4;
+    left.host_retained_alloc_delta = -2;
+    right.host_retained_alloc_delta = 5;
+
+    const total = addRuntimeMetrics(left, right);
+
+    try std.testing.expectEqual(@as(u64, 7), total.dirty_source_roots);
+    try std.testing.expectEqual(@as(i64, 3), total.host_retained_alloc_delta);
+}
+
+test "NoMetrics is a zero-size no-op metrics sink" {
+    try std.testing.expectEqual(@as(usize, 0), @sizeOf(NoMetrics));
+    var metrics: NoMetrics = .{};
+    metrics.bump(.closure_retains, 2);
+    metrics.bump(.dirty_source_roots, 1);
+}

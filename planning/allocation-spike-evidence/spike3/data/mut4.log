@@ -1,0 +1,86 @@
+Test output: /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault
+
+==> zig build build-test-hosts
+Shared platform copies match (SHA-256).
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/bin/signals-svg /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/native-source/examples-web/_fixtures/svg/main.roc
+0 errors and 0 warnings found in 268ms while successfully building:
+
+    ../scratch/mu-fault/bin/signals-svg
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/bin/signals-svg /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/native-source/examples-web/_fixtures/svg/specs
+[PASS] svg.scm (3.6 ms)
+
+712 passed, 0 failed, 712 total (2.38s worker time)
+Fault outcomes: continued=31, refused_then_retried=668, skipped_roc=12
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/bin/signals-coordinated-writes /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/native-source/examples-web/_fixtures/coordinated-writes/main.roc
+0 errors and 0 warnings found in 519ms while successfully building:
+
+    ../scratch/mu-fault/bin/signals-coordinated-writes
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/bin/signals-coordinated-writes /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/native-source/examples-web/_fixtures/coordinated-writes/specs
+[PASS] coordinated-writes.scm (7.3 ms)
+
+1095 passed, 0 failed, 1095 total (7.54s worker time)
+Fault outcomes: continued=60, refused_then_retried=1014, skipped_fatal_command=11, skipped_roc=9
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/bin/signals-event-actions /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/native-source/examples-web/_fixtures/event-actions/main.roc
+0 errors and 0 warnings found in 287ms while successfully building:
+
+    ../scratch/mu-fault/bin/signals-event-actions
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/bin/signals-event-actions /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/native-source/examples-web/_fixtures/event-actions/specs
+[PASS] event-actions-typed.scm (3.6 ms)
+[PASS] event-actions-loading-disposal.scm (5.2 ms)
+[PASS] event-actions.scm (10.6 ms)
+
+4241 passed, 0 failed, 4241 total (37.84s worker time)
+Fault outcomes: continued=244, refused_then_retried=3913, skipped_roc=81
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/bin/signals-markdown-elem /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/native-source/examples-web/_fixtures/markdown-elem/main.roc
+0 errors and 0 warnings found in 923ms while successfully building:
+
+    ../scratch/mu-fault/bin/signals-markdown-elem
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/bin/signals-markdown-elem /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/native-source/examples-web/_fixtures/markdown-elem/specs
+[PASS] main.scm (17.8 ms)
+
+2370 passed, 0 failed, 2370 total (36.83s worker time)
+Fault outcomes: continued=108, refused_then_retried=1656, skipped_roc=605
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/bin/signals-keyed-selector-churn /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/native-source/examples-web/_fixtures/keyed-selector-churn/main.roc
+0 errors and 0 warnings found in 687ms while successfully building:
+
+    ../scratch/mu-fault/bin/signals-keyed-selector-churn
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/bin/signals-keyed-selector-churn /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/native-source/examples-web/_fixtures/keyed-selector-churn/specs
+[PASS] small_churn.scm (17.2 ms)
+
+2824 passed, 0 failed, 2824 total (48.57s worker time)
+Fault outcomes: continued=174, refused_then_retried=2206, skipped_roc=443
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/bin/signals-when-each-dispose /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/native-source/examples-web/_fixtures/when-each-dispose/main.roc
+0 errors and 0 warnings found in 377ms while successfully building:
+
+    ../scratch/mu-fault/bin/signals-when-each-dispose
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/bin/signals-when-each-dispose /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/native-source/examples-web/_fixtures/when-each-dispose/specs
+[PASS] main.scm (12.1 ms)
+
+2418 passed, 0 failed, 2418 total (31.28s worker time)
+Fault outcomes: continued=133, refused_then_retried=2034, skipped_roc=250
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/bin/signals-row-template /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/native-source/examples-web/_fixtures/row-template/main.roc
+0 errors and 0 warnings found in 439ms while successfully building:
+
+    ../scratch/mu-fault/bin/signals-row-template
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/bin/signals-row-template /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/scratch/mu-fault/native-source/examples-web/_fixtures/row-template/specs
+[PASS] fault.scm (11.8 ms)
+
+3731 passed, 0 failed, 3731 total (57.64s worker time)
+Fault outcomes: continued=151, refused_then_retried=3009, skipped_roc=570
+
+=== known-failure ratchet (/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/mutree/test/known-failures.txt) ===
+17391 passed, 0 known failing, 0 fixed, 0 regressed, 17391 total

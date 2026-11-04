@@ -1,0 +1,1 @@
+{"framework":"roc-signals-v0.1.0-keyed","keyed":true,"benchmark":"25_run-clear-memory","type":"memory","values":{"DEFAULT":{"min":115.15658283233643,"max":115.15658283233643,"median":115.15658283233643,"mean":115.15658283233643,"stddev":null,"values":[115.15658283233643]}}}

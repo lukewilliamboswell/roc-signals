@@ -1,0 +1,73 @@
+records 122915
+== ROC total 38559 = 38.56/row; bytes 5897424 = 5897/row
+   17.00/row       3042 B/row  roc__p979e6d1a8fdeb0aa8d15f3d73fe6e107 roc_app_llvm:?
+    8.06/row        709 B/row  roc__p815458a7129e3d7ea965ca29d41ec7f3.fast roc_app_llvm:?
+    6.94/row        611 B/row  roc__pa293042d3c1d3d1d2ce5b033679b1ee7.fast roc_app_llvm:?
+    3.04/row        209 B/row  roc__p30c447726b1dd709eb5ae053b201e781.fast roc_app_llvm:?
+    3.00/row       1200 B/row  roc__pfefab24d45e544bcf4f317a3282e84ff.fast roc_app_llvm:?
+    0.12/row          5 B/row  dev_wrappers.roc_builtins_list_set roc_app_llvm:?
+    0.12/row         11 B/row  roc__paabd4a0719cb791468c3dec0924796dc.fast roc_app_llvm:?
+    0.08/row          7 B/row  roc__p82840db3fbb8445bcc1a4923c9caedb8.fast roc_app_llvm:?
+    0.04/row         22 B/row  roc__pf821a16cad3dbe988f6ffab9c14705b2.fast roc_app_llvm:?
+    0.04/row         33 B/row  roc_cold_shim.roc_builtins_list_reserve_for_append roc_app_llvm:?
+    0.03/row          2 B/row  list.RocList.reallocate roc_app_llvm:?
+    0.03/row          2 B/row  dev_wrappers.roc_builtins_str_concat roc_app_llvm:?
+    0.02/row         14 B/row  roc__p81e4a36a82cc8b7fac7b1adf7c8d1a25 roc_app_llvm:?
+    0.02/row         11 B/row  roc__p014dbf4b8895152268d7089adf518eef roc_app_llvm:?
+    0.00/row          0 B/row  roc__p2f26e11cf5dd465d7120507a2cad91ad.fast roc_app_llvm:?
+    0.00/row          0 B/row  roc__pfcf3c397778b284da9f2bd217258d952.fast roc_app_llvm:?
+    0.00/row          0 B/row  roc__pe973a74da4c50c762502f38bec907d49.fast roc_app_llvm:?
+    0.00/row          0 B/row  roc__pfc1515d7a1b0dd558278441e772739c8.fast roc_app_llvm:?
+    0.00/row          2 B/row  roc__pb002bd83808daf5999c751f8b7e1e830.fast roc_app_llvm:?
+    0.00/row          1 B/row  roc__pb925262f3053b8c3f9e6840cab4671a7.fast roc_app_llvm:?
+    0.00/row         16 B/row  roc__p40c6492c86774015bcfbad15125359fb.fast roc_app_llvm:?
+    0.00/row          1 B/row  roc__p7f95ab54dfcecf59feb95aa9858cbced roc_app_llvm:?
+    0.00/row          1 B/row  roc__p31d555466961aa4c53034d319be16883 roc_app_llvm:?
+ size classes: 88:16.2 176:6.0 128:5.0 336:2.0 11:1.8 592:1.0 144:1.0 464:1.0 256:1.0 304:1.0 32:1.0 34:1.0 10:0.2 40:0.1 72:0.0 2832:0.0
+== HOST total 84356 = 84.36/row; bytes 71944498 = 71944/row
+   14.00/row         53 B/row  engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.prep engine.zig:10027
+   10.00/row        101 B/row  native_host.NativeRenderPublication.prepare__anon_57057 native_host.zig:228
+    8.00/row         16 B/row  descriptor_stream.Stream.prepareElementInNamespace descriptor_stream.zig:2863
+    8.00/row         93 B/row  engine.Engine(native_host.NativeCtx).collectActiveElemDescriptorsWith_ engine.zig:6922
+    8.00/row         93 B/row  engine.Engine(native_host.NativeCtx).BranchReplacementPlan.prepareRend engine.zig:10913
+    6.00/row         72 B/row  engine.Engine(native_host.NativeCtx).BranchReplacementPlan.prepareRend engine.zig:10908
+    6.00/row         93 B/row  engine.Engine(native_host.NativeCtx).BranchReplacementPlan.prepareRend engine.zig:10975
+    6.00/row        856 B/row  native_host.NativeRenderPublication.prepare__anon_57057 native_host.zig:201
+    4.00/row         29 B/row  engine.Engine(native_host.NativeCtx).StagedCollectionCtx.appendAttr engine.zig:6510
+    2.01/row        367 B/row  engine.Engine(native_host.NativeCtx).StagedCollectionCtx.appendAttr engine.zig:6509
+    2.01/row        366 B/row  descriptor_stream.Stream.reserveMovedStreamPublication descriptor_stream.zig:1207
+    2.00/row          8 B/row  descriptor_stream.Stream.prepareTextNode descriptor_stream.zig:2870
+    2.00/row          8 B/row  engine.Engine(native_host.NativeCtx).BranchReplacementPlan.prepareRend engine.zig:10912
+    2.00/row        320 B/row  native_host.NativeRenderPublication.prepare__anon_57057 native_host.zig:259
+    1.02/row        168 B/row  rows_transition.PreparedTransition.prepareStable rows_transition.zig:?
+    1.01/row        326 B/row  descriptor_stream.Stream.reserveMovedStreamPublication descriptor_stream.zig:?
+    1.00/row        144 B/row  engine.Engine(native_host.NativeCtx).PreparedEachRowReplacementCollect engine.zig:7852
+    1.00/row        136 B/row  engine.Engine(native_host.NativeCtx).StagedCollectionCtx.reserveScopeD engine.zig:5254
+    0.02/row        139 B/row  hash_map.HashMapUnmanaged(u64,usize,hash_map.AutoContext(u64),80).grow hash_map.zig:?
+    0.01/row        106 B/row  engine.Engine(native_host.NativeCtx).PreparedActiveEachRows.prepareInt engine.zig:1750
+    0.01/row        166 B/row  engine.Engine(native_host.NativeCtx).PreparedEachRowSyncHooks.prepareC engine.zig:1064
+    0.01/row        156 B/row  engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.spar engine.zig:9236
+    0.01/row       4226 B/row  hash_map.HashMapUnmanaged(structural_positions.PositionId,?structural_ hash_map.zig:749
+    0.01/row       3030 B/row  hash_map.HashMapUnmanaged(ids.Identity(.elem,u64),structural_positions hash_map.zig:749
+    0.01/row       1135 B/row  hash_map.HashMapUnmanaged(rows_ids.Identity("Rows row"[0..8]),rows_ren hash_map.zig:749
+    0.01/row      10010 B/row  engine.Engine(native_host.NativeCtx).BranchReplacementPlan.prepareRend engine.zig:10869
+    0.01/row        350 B/row  hash_map.HashMapUnmanaged(ids.Identity(.scope,u64),structural_position hash_map.zig:749
+    0.01/row       1711 B/row  hash_map.HashMapUnmanaged(structural_positions.PositionId,rows_render_ hash_map.zig:?
+    0.01/row        855 B/row  hash_map.HashMapUnmanaged(u128,rows_transition.Shadow,hash_map.AutoCon hash_map.zig:1115
+    0.01/row        201 B/row  hash_map.HashMapUnmanaged([]const u8,rows_transition.KeyState,hash_map hash_map.zig:1115
+    0.01/row        168 B/row  hash_map.HashMapUnmanaged(u64,rows_transition.KeyState,hash_map.AutoCo hash_map.zig:1295
+    0.01/row        102 B/row  hash_map.HashMapUnmanaged(u64,engine.Engine(native_host.NativeCtx).Sta hash_map.zig:1295
+    0.01/row        233 B/row  hash_map.HashMapUnmanaged(usize,descriptor_stream.ScopeDescriptorOwner hash_map.zig:1115
+    0.01/row        102 B/row  hash_map.HashMapUnmanaged(ids.Identity(.scope,u64),engine.Engine(nativ hash_map.zig:1295
+    0.01/row         38 B/row  engine.Engine(native_host.NativeCtx).PreparedEachRowSyncHooks.prepareC engine.zig:1057
+    0.01/row         38 B/row  rows_transition.PreparedTransition.applyStableInsert rows_transition.zig:780
+    0.01/row       1106 B/row  hash_map.HashMapUnmanaged(usize,usize,hash_map.AutoContext(usize),80). hash_map.zig:1115
+    0.01/row         81 B/row  engine.Engine(native_host.NativeCtx).StagedCollectionCtx.reserveDomIde engine.zig:5474
+    0.01/row       1445 B/row  engine.Engine(native_host.NativeCtx).PreparedStructuralDownstream.prep engine.zig:9741
+    0.01/row       9122 B/row  native_host.NativeRenderPublication.prepare__anon_57057 native_host.zig:180
+    0.00/row         25 B/row  engine.Engine(native_host.NativeCtx).PreparedActiveEachRows.prepareInt engine.zig:1734
+    0.00/row         68 B/row  roc_alloc_ledger.Ledger.allocate roc_alloc_ledger.zig:219
+    0.00/row          0 B/row  engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.prepare engine.zig:16310
+    0.00/row         35 B/row  hash_map.HashMapUnmanaged(u64,usize,hash_map.AutoContext(u64),80).ensu hash_map.zig:749
+    0.00/row        936 B/row  engine.Engine(native_host.NativeCtx).StagedCollectionCtx.CapacityPlan. engine.zig:4983
+ size classes: 8:17.0 2:10.6 4:7.0 3:6.3 136:6.0 11:6.0 14:5.4 144:5.0 1:4.1 5:3.0 26:3.0 32:3.0 7:2.7 160:2.0 248:1.0 176:1.0

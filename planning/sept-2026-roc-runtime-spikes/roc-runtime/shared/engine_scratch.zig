@@ -1,0 +1,121 @@
+//! Reusable scratch buffers for descriptor collection and structural patching.
+
+const std = @import("std");
+const shared_buffer = @import("shared_buffer.zig");
+const active_signal_graph = @import("active_signal_graph.zig");
+const descriptor_stream = @import("descriptor_stream.zig");
+const each_runtime = @import("each_runtime.zig");
+const ids = @import("ids.zig");
+const retained_values = @import("retained_values.zig");
+const signal_records = @import("signal_records.zig");
+const structural_splice = @import("structural_splice.zig");
+
+pub const Scratch = struct {
+    debug_seen_render_nodes: shared_buffer.List(bool) = .empty,
+    debug_expected_children: shared_buffer.List(u64) = .empty,
+    stream_direct_children: shared_buffer.List(u64) = .empty,
+    binder_stack: shared_buffer.List(descriptor_stream.BinderBinding) = .empty,
+    each_keys: shared_buffer.List(retained_values.HostValue) = .empty,
+    each_key_hashes: shared_buffer.List(u64) = .empty,
+    each_next_hash_heads: std.AutoHashMapUnmanaged(u64, usize) = .empty,
+    each_next_hash_links: shared_buffer.List(usize) = .empty,
+    each_matched_existing: shared_buffer.List(bool) = .empty,
+    each_row_ranges: std.AutoHashMapUnmanaged(ids.ScopeId, each_runtime.RenderSegment) = .empty,
+    each_removed_elem_ids: shared_buffer.List(u64) = .empty,
+    each_touched_parent_ids: shared_buffer.List(u64) = .empty,
+    each_replacement_elem_ids: shared_buffer.List(u64) = .empty,
+    each_moved_event_elem_ids: shared_buffer.List(u64) = .empty,
+    each_replacement_on_change_indices: shared_buffer.List(usize) = .empty,
+    each_replacement_mount_indices: shared_buffer.List(usize) = .empty,
+    replacement_target_scopes: shared_buffer.List(bool) = .empty,
+    dirty_active_records: active_signal_graph.DirtyRecordQueue = .{},
+    dirty_changed_record_ids: shared_buffer.List(u64) = .empty,
+    dirty_changed_record_id_set: std.AutoHashMapUnmanaged(u64, void) = .empty,
+    selector_dirty_roots: shared_buffer.List(u64) = .empty,
+    elem_owned_removal: structural_splice.ElemOwnedRemovalScratch = .{},
+    /// Emptied cache-overlay containers parked between source transactions.
+    /// See `signal_records.PreparedCacheUpdates.Storage`: the overlay is
+    /// reserved for the whole graph, so retaining it is what keeps a
+    /// steady-state event from paying an O(total graph) reservation.
+    cache_overlay: ?signal_records.PreparedCacheUpdates.Storage = null,
+
+    /// Releases every resource owned by this value and leaves no retained host or Roc ownership behind.
+    pub fn deinit(self: *Scratch, allocator: std.mem.Allocator) void {
+        self.debug_seen_render_nodes.deinit(allocator);
+        self.debug_expected_children.deinit(allocator);
+        self.stream_direct_children.deinit(allocator);
+        self.binder_stack.deinit(allocator);
+        self.each_keys.deinit(allocator);
+        self.each_key_hashes.deinit(allocator);
+        self.each_next_hash_heads.deinit(allocator);
+        self.each_next_hash_links.deinit(allocator);
+        self.each_matched_existing.deinit(allocator);
+        self.each_row_ranges.deinit(allocator);
+        self.each_removed_elem_ids.deinit(allocator);
+        self.each_touched_parent_ids.deinit(allocator);
+        self.each_replacement_elem_ids.deinit(allocator);
+        self.each_moved_event_elem_ids.deinit(allocator);
+        self.each_replacement_on_change_indices.deinit(allocator);
+        self.each_replacement_mount_indices.deinit(allocator);
+        self.replacement_target_scopes.deinit(allocator);
+        self.dirty_active_records.deinit(allocator);
+        self.dirty_changed_record_ids.deinit(allocator);
+        self.dirty_changed_record_id_set.deinit(allocator);
+        self.selector_dirty_roots.deinit(allocator);
+        self.elem_owned_removal.deinit(allocator);
+        if (self.cache_overlay) |*storage| storage.deinit(allocator);
+        self.* = .{};
+    }
+};
+
+test "engine scratch deinit resets retained scratch storage" {
+    const allocator = std.testing.allocator;
+    var scratch = Scratch{};
+
+    try scratch.debug_seen_render_nodes.append(allocator, true);
+    try scratch.debug_expected_children.append(allocator, 42);
+    try scratch.stream_direct_children.append(allocator, 43);
+    try scratch.each_keys.append(allocator, retained_values.HostValue.fromRaw(7));
+    try scratch.each_key_hashes.append(allocator, 99);
+    try scratch.each_next_hash_heads.put(allocator, 5, 0);
+    try scratch.each_next_hash_links.append(allocator, 1);
+    try scratch.each_matched_existing.append(allocator, false);
+    try scratch.each_row_ranges.put(allocator, ids.ScopeId.fromRaw(7), .{ .scope_id = ids.ScopeId.fromRaw(7), .start = 0, .len = 1 });
+    try scratch.each_removed_elem_ids.append(allocator, 11);
+    try scratch.each_touched_parent_ids.append(allocator, 12);
+    try scratch.each_replacement_elem_ids.append(allocator, 13);
+    try scratch.each_moved_event_elem_ids.append(allocator, 14);
+    try scratch.each_replacement_on_change_indices.append(allocator, 15);
+    try scratch.each_replacement_mount_indices.append(allocator, 16);
+    try scratch.replacement_target_scopes.append(allocator, true);
+    try scratch.dirty_changed_record_ids.append(allocator, 17);
+    try scratch.dirty_changed_record_id_set.put(allocator, 17, {});
+    try scratch.selector_dirty_roots.append(allocator, 18);
+    scratch.cache_overlay = .{};
+    try scratch.cache_overlay.?.updates.ensureTotalCapacity(allocator, 4);
+    try scratch.cache_overlay.?.indexes.ensureTotalCapacity(allocator, 4);
+
+    scratch.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), scratch.debug_seen_render_nodes.items.len);
+    try std.testing.expectEqual(@as(usize, 0), scratch.debug_expected_children.items.len);
+    try std.testing.expectEqual(@as(usize, 0), scratch.stream_direct_children.items.len);
+    try std.testing.expectEqual(@as(usize, 0), scratch.each_keys.items.len);
+    try std.testing.expectEqual(@as(usize, 0), scratch.each_key_hashes.items.len);
+    try std.testing.expectEqual(@as(usize, 0), scratch.each_next_hash_heads.count());
+    try std.testing.expectEqual(@as(usize, 0), scratch.each_next_hash_links.items.len);
+    try std.testing.expectEqual(@as(usize, 0), scratch.each_matched_existing.items.len);
+    try std.testing.expectEqual(@as(usize, 0), scratch.each_row_ranges.count());
+    try std.testing.expectEqual(@as(usize, 0), scratch.each_removed_elem_ids.items.len);
+    try std.testing.expectEqual(@as(usize, 0), scratch.each_touched_parent_ids.items.len);
+    try std.testing.expectEqual(@as(usize, 0), scratch.each_replacement_elem_ids.items.len);
+    try std.testing.expectEqual(@as(usize, 0), scratch.each_moved_event_elem_ids.items.len);
+    try std.testing.expectEqual(@as(usize, 0), scratch.each_replacement_on_change_indices.items.len);
+    try std.testing.expectEqual(@as(usize, 0), scratch.each_replacement_mount_indices.items.len);
+    try std.testing.expectEqual(@as(usize, 0), scratch.replacement_target_scopes.items.len);
+    try std.testing.expectEqual(@as(usize, 0), scratch.dirty_active_records.pending_record_ids.items.len);
+    try std.testing.expectEqual(@as(usize, 0), scratch.dirty_changed_record_ids.items.len);
+    try std.testing.expectEqual(@as(usize, 0), scratch.dirty_changed_record_id_set.count());
+    try std.testing.expectEqual(@as(usize, 0), scratch.selector_dirty_roots.items.len);
+    try std.testing.expect(scratch.cache_overlay == null);
+}

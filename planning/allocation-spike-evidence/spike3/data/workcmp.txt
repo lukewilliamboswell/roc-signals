@@ -1,0 +1,45 @@
+== update_10k.scm ('fullbase', 'full_cand')
+derived_calls_into_roc              1002      1002
+each_key_compares                      0         0
+rows_order_links_touched               0         0
+rows_render_roots_moved                0         0
+rows_created                           0         0
+rows_removed                           0         0
+scopes_created                         0         0
+scopes_disposed                        0         0
+stream_nodes_scanned                   0         0
+active_graph_records_rebuilt           0         0
+move_before                            0         0
+patches_emitted                     1000      1000
+set_text                            1000      1000
+allocs_this_event                  51466     51466
+== select_1k.scm ('fullbase', 'full_cand')
+derived_calls_into_roc                 2         2
+each_key_compares                      0         0
+rows_order_links_touched               0         0
+rows_render_roots_moved                0         0
+rows_created                           0         0
+rows_removed                           0         0
+scopes_created                         0         0
+scopes_disposed                        0         0
+stream_nodes_scanned                   0         0
+active_graph_records_rebuilt           0         0
+move_before                            0         0
+patches_emitted                        2         2
+set_text                               0         0
+allocs_this_event                    101       101
+== swap_1k.scm ('fullbase', 'full_cand', 'static_key', 'static_tpl')
+derived_calls_into_roc                 2         2         1         1
+each_key_compares                      0         0         0         0
+rows_order_links_touched               6         6         6         6
+rows_render_roots_moved                2         2         2         2
+rows_created                           0         0         0         0
+rows_removed                           0         0         0         0
+scopes_created                         0         0         0         0
+scopes_disposed                        0         0         0         0
+stream_nodes_scanned                   0         0         0         0
+active_graph_records_rebuilt           0         0         0         0
+move_before                            2         2         2         2
+patches_emitted                        2         2         2         2
+set_text                               0         0         0         0
+allocs_this_event                    628       628       615       615

@@ -1,0 +1,5 @@
+
+    t
+build 9.95 s, 562868 KB
+check: p2-each: baseline_changed; baseline changed; examples 6; exploration skipped (attempted 0, accepted 0, rejected 0) Report: check/report.json 
+explore: p2-each: passed; baseline not_checked; examples 0; exploration passed (attempted 2630, accepted 2364, rejected 266) Report: explore/report.json 

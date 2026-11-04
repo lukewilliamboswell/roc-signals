@@ -1,0 +1,13 @@
+mount                    allocs=3 deallocs=0 bytes=4666 reallocs=5 live=3 live_bytes=2596 cmd_bytes=1935 pages=135
+jfb-create-10k           allocs=10016 deallocs=23 bytes=4365878 reallocs=646 live=9996 live_bytes=2122424 cmd_bytes=439072 pages=211
+jfb-update-every-10th    allocs=1002 deallocs=1000 bytes=53977 reallocs=406 live=9998 live_bytes=2134158 cmd_bytes=31999 pages=212
+jfb-select               allocs=1 deallocs=1 bytes=264 reallocs=0 live=9998 live_bytes=2134158 cmd_bytes=7 pages=212
+jfb-select-other         allocs=1 deallocs=1 bytes=264 reallocs=0 live=9998 live_bytes=2134158 cmd_bytes=14 pages=212
+jfb-swap                 allocs=1 deallocs=1 bytes=264 reallocs=0 live=9998 live_bytes=2134158 cmd_bytes=18 pages=212
+jfb-remove               allocs=2 deallocs=2 bytes=332 reallocs=0 live=9998 live_bytes=2134200 cmd_bytes=5 pages=212
+jfb-append-1k            allocs=1001 deallocs=1 bytes=29144 reallocs=60 live=10998 live_bytes=2161520 cmd_bytes=45097 pages=212
+jfb-clear                allocs=1 deallocs=10996 bytes=264 reallocs=0 live=3 live_bytes=674560 cmd_bytes=9 pages=212
+jfb-create-1k            allocs=1018 deallocs=15 bytes=323634 reallocs=68 live=1006 live_bytes=811956 cmd_bytes=44851 pages=213
+jfb-replace-1k           allocs=1019 deallocs=1018 bytes=324140 reallocs=78 live=1007 live_bytes=812202 cmd_bytes=45056 pages=213
+jfb-clear-1k             allocs=1 deallocs=1005 bytes=264 reallocs=0 live=3 live_bytes=674560 cmd_bytes=9 pages=213
+drop                     allocs=0 deallocs=3 bytes=0 reallocs=0 live=0 live_bytes=0 cmd_bytes=0 pages=213

@@ -1,0 +1,7 @@
+0 errors and 0 warnings found in 1m 22s while successfully building:
+build exit 1
+4237290 /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_tpl.out/wasm-benchmark/js-framework-diagnostic.wasm
+4193698 /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_tpl.out/wasm-benchmark/js-framework-production.wasm
+create_1k exit 0
+{"identical":true,"batches":[8,8],"commands":429094,"sha256":"5b336829abeb7b8141f7606bc22c803c26c1c04136cbd1165d7f01e3772c4896"}
+cmp exit 0

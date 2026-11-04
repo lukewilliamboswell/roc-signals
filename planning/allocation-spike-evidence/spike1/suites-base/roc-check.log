@@ -1,0 +1,190 @@
+Test output: /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469
+
+==> zig build build-test-hosts
+Shared platform copies match (SHA-256).
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/onboarding-wizard/main.roc
+No errors found in 62ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/onboarding-wizard/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/availability-picker/main.roc
+No errors found in 19ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/availability-picker/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/field-notes/main.roc
+No errors found in 20ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/field-notes/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/support-inbox/main.roc
+No errors found in 22ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/support-inbox/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/dependency-scheduler/main.roc
+No errors found in 23ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/dependency-scheduler/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/recipe-scaler/main.roc
+No errors found in 20ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/recipe-scaler/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/query-builder/main.roc
+No errors found in 21ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/query-builder/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/token-editor/main.roc
+No errors found in 23ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/token-editor/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/package-explorer/main.roc
+No errors found in 19ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/package-explorer/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/loan-comparator/main.roc
+No errors found in 20ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/loan-comparator/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/data-grid/main.roc
+No errors found in 18ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/data-grid/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/pomodoro-tracker/main.roc
+No errors found in 18ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/pomodoro-tracker/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/form-builder/main.roc
+No errors found in 19ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/form-builder/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/status-page/main.roc
+No errors found in 20ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/status-page/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/flight-search/main.roc
+No errors found in 18ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/flight-search/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/kanban-board/main.roc
+No errors found in 21ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/kanban-board/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/spreadsheet-lite/main.roc
+No errors found in 22ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/spreadsheet-lite/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/split-the-bill/main.roc
+No errors found in 20ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/split-the-bill/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/markdown-editor/main.roc
+No errors found in 19ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/markdown-editor/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/log-viewer/main.roc
+No errors found in 18ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/log-viewer/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/conduit/main.roc
+No errors found in 147ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/conduit/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/each-duplicate-key/main.roc
+No errors found in 31ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/each-duplicate-key/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/task-latest-wins/main.roc
+No errors found in 35ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/task-latest-wins/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/location-source/main.roc
+No errors found in 23ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/location-source/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/location-navigation/main.roc
+No errors found in 23ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/location-navigation/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/location-canonical-branch/main.roc
+No errors found in 36ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/location-canonical-branch/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/storage-commands/main.roc
+No errors found in 29ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/storage-commands/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/on-change-initial/main.roc
+No errors found in 39ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/on-change-initial/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/state-commands/main.roc
+No errors found in 30ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/state-commands/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/svg/main.roc
+No errors found in 42ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/svg/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/coordinated-writes/main.roc
+No errors found in 22ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/coordinated-writes/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/event-actions/main.roc
+No errors found in 25ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/event-actions/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/state-reads/main.roc
+No errors found in 17ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/state-reads/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/markdown-elem/main.roc
+No errors found in 206ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/markdown-elem/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/task-to-utf8-lifetime/main.roc
+No errors found in 53ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/task-to-utf8-lifetime/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/controlled-input-contract/main.roc
+No errors found in 58ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/controlled-input-contract/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/select-control/main.roc
+No errors found in 36ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/select-control/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/textarea-control/main.roc
+No errors found in 32ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/textarea-control/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/radio-group-control/main.roc
+No errors found in 24ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/radio-group-control/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/number-input-control/main.roc
+No errors found in 26ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/number-input-control/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/form-validation-pattern/main.roc
+No errors found in 82ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/form-validation-pattern/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/signal-record-builder/main.roc
+No errors found in 65ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/signal-record-builder/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/callable-signal-identity/main.roc
+No errors found in 20ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/callable-signal-identity/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/optional-text-attr/main.roc
+No errors found in 48ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/optional-text-attr/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/submit-button-default/main.roc
+No errors found in 31ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/submit-button-default/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/form-reset-default/main.roc
+No errors found in 29ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/form-reset-default/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/checkbox-real-click/main.roc
+No errors found in 30ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/checkbox-real-click/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/large-each-08/main.roc
+No errors found in 56ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/large-each-08/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/large-each-64/main.roc
+No errors found in 50ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/large-each-64/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/js-framework-benchmark/main.roc
+No errors found in 214ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/js-framework-benchmark/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/signal-combine-caps/main.roc
+No errors found in 23ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/signal-combine-caps/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/signal-select-128/main.roc
+No errors found in 65ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/signal-select-128/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/keyed-selector-churn/main.roc
+No errors found in 220ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/keyed-selector-churn/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/metric-semantics/main.roc
+No errors found in 25ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/metric-semantics/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/when-each-dispose/main.roc
+No errors found in 46ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/when-each-dispose/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/recursive-switch/main.roc
+No errors found in 21ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/recursive-switch/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/keyboard-events/main.roc
+No errors found in 45ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/keyboard-events/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/custom-events/main.roc
+No errors found in 26ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/custom-events/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/branch-replacement/main.roc
+No errors found in 24ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/branch-replacement/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/keyed-row-edits/main.roc
+No errors found in 114ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/keyed-row-edits/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/rows-direct-delta-locality/main.roc
+No errors found in 127ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/rows-direct-delta-locality/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc check /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/two-row-types/main.roc
+No errors found in 655ms for ../suites-base/out-roc-check-1793599469/roc-check-source/examples-web/_fixtures/two-row-types/main.roc

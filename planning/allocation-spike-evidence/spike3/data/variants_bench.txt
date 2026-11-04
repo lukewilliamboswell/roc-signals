@@ -1,0 +1,20 @@
+create_1k median total ms [min..max] roc apply n
+_full                       119.33 [  104.48..  130.12] roc    21.65 apply    99.45 n=7
+_no_each                     26.44 [   23.54..   42.12] roc    25.92 apply     0.15 n=7
+_no_events                  139.80 [  111.68..  260.81] roc    25.52 apply   106.77 n=7
+_no_label                   117.41 [  110.35..  154.46] roc    25.75 apply    92.15 n=7
+_no_select                  135.89 [  121.17..  168.17] roc    24.43 apply   108.69 n=7
+_no_static_attrs            120.50 [  115.14..  169.54] roc    23.59 apply    96.49 n=7
+_one_elem                    59.98 [   55.87..   81.74] roc    24.59 apply    34.15 n=7
+_static_bare                 91.16 [   85.91..   98.79] roc    23.15 apply    65.16 n=7
+_static_key                 103.32 [   95.74..  110.33] roc    25.73 apply    77.53 n=7
+create_10k median total ms [min..max] roc apply n
+_full                      2096.80 [ 1978.94.. 2200.34] roc   370.52 apply  1724.05 n=5
+_no_each                    364.27 [  327.25..  377.24] roc   363.63 apply     0.16 n=5
+_no_events                 1720.01 [ 1644.43.. 2087.50] roc   335.65 apply  1382.89 n=5
+_no_label                  1819.82 [ 1737.23.. 1881.80] roc   371.86 apply  1426.72 n=5
+_no_select                 1866.19 [ 1718.69.. 2221.47] roc   408.59 apply  1457.06 n=5
+_no_static_attrs           1843.32 [ 1624.83.. 2078.24] roc   367.80 apply  1463.71 n=5
+_one_elem                   890.35 [  818.85..  963.69] roc   371.79 apply   518.07 n=5
+_static_bare               1289.27 [ 1196.10.. 1403.95] roc   330.98 apply   926.77 n=5
+_static_key                1321.29 [ 1279.44.. 1483.63] roc   359.10 apply   984.88 n=5

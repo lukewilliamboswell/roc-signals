@@ -1,0 +1,197 @@
+## The js-framework-benchmark application on the Phase 0a engine core, plus a
+## second site with a different row type (todos) in the same State.
+import Engine
+
+Bench := [].{
+	Item : { id : U64, label : Str, clicks : U64 }
+
+	Todo : { id : U64, title : Str, done : Bool }
+
+	Msg : [
+		Run(U64),
+		Add(U64),
+		UpdateEvery10,
+		UpdateOne(U64),
+		Select(U64),
+		Deselect,
+		SwapRows,
+		Swap(U64, U64),
+		Remove(U64),
+		Clear,
+		Touch(U64),
+		Relabel(U64, Str),
+		AddTodo(Str),
+		ToggleTodo(U64),
+		RemoveTodo(U64),
+		RenameTodo(U64, Str),
+		ClearAll,
+	]
+
+	Model : { next_id : U64, seed : U64, next_todo : U64 }
+
+	Sites : Engine.Both(Engine.EachSite(Item, Msg), Engine.EachSite(Todo, Msg))
+
+	App : Engine.State(Model, Sites, Msg)
+
+	Tx : Engine.Tx(Model, Sites)
+
+	adjectives : List(Str)
+	adjectives = ["pretty", "large", "big", "small", "tall", "short", "long", "handsome", "plain", "quaint", "clean", "elegant", "easy", "angry", "crazy", "helpful", "mushy", "odd", "unsightly", "adorable", "important", "inexpensive", "cheap", "expensive", "fancy"]
+
+	colours : List(Str)
+	colours = ["red", "yellow", "blue", "green", "pink", "brown", "purple", "brown", "white", "black", "orange"]
+
+	nouns : List(Str)
+	nouns = ["table", "chair", "house", "bbq", "desk", "car", "pony", "cookie", "sandwich", "burger", "pizza", "mouse", "keyboard"]
+
+	next_seed : U64 -> U64
+	next_seed = |s| s.times_wrap(6364136223846793005).plus_wrap(1442695040888963407)
+
+	pick : List(Str), U64 -> Str
+	pick = |words, s| words.get(s.shr_zf_wrap(33) % words.len()) ?? ""
+
+	## The benchmark's random "adjective colour noun" label.
+	gen_label : U64 -> { label : Str, seed : U64 }
+	gen_label = |seed| {
+		s1 = Bench.next_seed(seed)
+		s2 = Bench.next_seed(s1)
+		s3 = Bench.next_seed(s2)
+		{ label: "${Bench.pick(Bench.adjectives, s1)} ${Bench.pick(Bench.colours, s2)} ${Bench.pick(Bench.nouns, s3)}", seed: s3 }
+	}
+
+	bench_desc : Engine.RowDesc(Item, Msg)
+	bench_desc = {
+		key: |item| item.id,
+		label: |item| item.label,
+		class: |_item, selected| if selected 1 else 0,
+		on_select: |key| Select(key),
+		on_remove: |key| Remove(key),
+	}
+
+	todo_desc : Engine.RowDesc(Todo, Msg)
+	todo_desc = {
+		key: |t| t.id,
+		label: |t| t.title,
+		class: |t, _selected| if t.done 2 else 0,
+		on_select: |key| ToggleTodo(key),
+		on_remove: |key| RemoveTodo(key),
+	}
+
+	init : Bool -> App
+	init = |tracing| {
+		sites = Engine.Both.new(Engine.EachSite.new(1, 1, Bench.bench_desc), Engine.EachSite.new(2, 2, Bench.todo_desc))
+		Engine.State.init({ next_id: 1, seed: 42, next_todo: 1 }, sites, Bench.update, tracing)
+	}
+
+	add_rows : Engine.EachSite(Item, Msg), Model, Engine.Ctx, U64 -> { site : Engine.EachSite(Item, Msg), model : Model, ctx : Engine.Ctx }
+	add_rows = |site, model, ctx, n| {
+		var $site = site
+		var $ctx = ctx
+		var $id = model.next_id
+		var $seed = model.seed
+		var $i = 0.U64
+		while $i < n {
+			g = Bench.gen_label($seed)
+			$seed = g.seed
+			(next_site, next_ctx) = $site.push({ id: $id, label: g.label, clicks: 0 }, $ctx)
+			$site = next_site
+			$ctx = next_ctx
+			$id = $id + 1
+			$i = $i + 1
+		}
+		{ site: $site, model: { next_id: $id, seed: $seed, next_todo: model.next_todo }, ctx: $ctx }
+	}
+
+	update : Tx, Msg -> Tx
+	update = |tx, msg| {
+		{ model, sites, ctx } = tx
+		{ left, right } = sites
+		match msg {
+			Run(n) => {
+				(cleared, c1) = if left.len() > 0 left.clear(ctx) else (left, ctx)
+				r = Bench.add_rows(cleared, model, c1, n)
+				{ model: r.model, sites: Engine.Both.new(r.site, right), ctx: r.ctx }
+			}
+			Add(n) => {
+				r = Bench.add_rows(left, model, ctx, n)
+				{ model: r.model, sites: Engine.Both.new(r.site, right), ctx: r.ctx }
+			}
+			UpdateEvery10 => {
+				var $site = left
+				var $ctx = ctx
+				var $pos = 0.U64
+				while $pos < $site.len() {
+					key = $site.key_at($pos) ?? crash "position"
+					item = $site.get(key) ?? crash "key"
+					(s, c) = $site.set(key, { id: item.id, label: "${item.label} !!!", clicks: item.clicks }, $ctx)
+					$site = s
+					$ctx = c
+					$pos = $pos + 10
+				}
+				{ model, sites: Engine.Both.new($site, right), ctx: $ctx }
+			}
+			UpdateOne(key) => {
+				item = left.get(key) ?? crash "key"
+				(s, c) = left.set(key, { id: item.id, label: "${item.label} !!!", clicks: item.clicks }, ctx)
+				{ model, sites: Engine.Both.new(s, right), ctx: c }
+			}
+			Touch(key) => {
+				item = left.get(key) ?? crash "key"
+				(s, c) = left.set(key, { id: item.id, label: item.label, clicks: item.clicks + 1 }, ctx)
+				{ model, sites: Engine.Both.new(s, right), ctx: c }
+			}
+			Relabel(key, label) => {
+				item = left.get(key) ?? crash "key"
+				(s, c) = left.set(key, { id: item.id, label, clicks: item.clicks }, ctx)
+				{ model, sites: Engine.Both.new(s, right), ctx: c }
+			}
+			Select(key) => {
+				(s, c) = left.select(Ok(key), ctx)
+				{ model, sites: Engine.Both.new(s, right), ctx: c }
+			}
+			Deselect => {
+				(s, c) = left.select(Err(None), ctx)
+				{ model, sites: Engine.Both.new(s, right), ctx: c }
+			}
+			SwapRows => {
+				(s, c) = if left.len() > 998 left.swap_positions(1, 998, ctx) else (left, ctx)
+				{ model, sites: Engine.Both.new(s, right), ctx: c }
+			}
+			Swap(i, j) => {
+				(s, c) = left.swap_positions(i, j, ctx)
+				{ model, sites: Engine.Both.new(s, right), ctx: c }
+			}
+			Remove(key) => {
+				(s, c) = left.remove(key, ctx)
+				{ model, sites: Engine.Both.new(s, right), ctx: c }
+			}
+			Clear => {
+				(s, c) = left.clear(ctx)
+				{ model, sites: Engine.Both.new(s, right), ctx: c }
+			}
+			AddTodo(title) => {
+				(s, c) = right.push({ id: model.next_todo, title, done: False }, ctx)
+				{ model: { next_id: model.next_id, seed: model.seed, next_todo: model.next_todo + 1 }, sites: Engine.Both.new(left, s), ctx: c }
+			}
+			ToggleTodo(key) => {
+				t = right.get(key) ?? crash "todo"
+				(s, c) = right.set(key, { id: t.id, title: t.title, done: !t.done }, ctx)
+				{ model, sites: Engine.Both.new(left, s), ctx: c }
+			}
+			RenameTodo(key, title) => {
+				t = right.get(key) ?? crash "todo"
+				(s, c) = right.set(key, { id: t.id, title, done: t.done }, ctx)
+				{ model, sites: Engine.Both.new(left, s), ctx: c }
+			}
+			RemoveTodo(key) => {
+				(s, c) = right.remove(key, ctx)
+				{ model, sites: Engine.Both.new(left, s), ctx: c }
+			}
+			ClearAll => {
+				(l, c1) = left.clear(ctx)
+				(r, c2) = right.clear(c1)
+				{ model, sites: Engine.Both.new(l, r), ctx: c2 }
+			}
+		}
+	}
+}

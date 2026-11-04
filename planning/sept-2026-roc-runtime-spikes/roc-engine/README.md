@@ -1,0 +1,101 @@
+# Roc-owned scheduler experiment
+
+Temporary, ignored spike; not a production engine replacement. This deliberately
+explores an alternative to design.md's current Zig mutable-runtime boundary.
+No public API or authoritative architecture has been changed.
+
+## Reproduce
+
+From the repository root:
+
+```sh
+bash .test-out/roc-engine/reproduce.sh
+```
+
+Defaults to `/home/lbw/roc_nightly-linux_x86_64-2026-09-12-220fd47/roc`,
+not the different `roc` on PATH. Uses Roc `--opt=speed`, Zig ReleaseFast,
+Wasm and Node. `ROC_BIN` can explicitly override the compiler.
+
+## What runs
+
+One opaque Box(State) is exclusively owned by Zig between calls. Zig moves it
+into Roc and receives the replacement owner. Zig never interprets graph state.
+Roc owns nodes, edges, a dirty queue, command data, equality pruning and row
+retirement. Each independent row contains four nodes: source -> floor(source/2)
+and floor(source/3) -> sum. Node IDs are topologically ordered. The sum emits
+one settled Set command; row retirement emits Remove. Commands are checked in
+Roc, not yet delivered to a renderer or exported command protocol.
+
+State storage initially consists of three allocations: outer box, contiguous
+node list and contiguous adjacency list. This is one ownership handle, not
+literally one allocation containing every nested buffer.
+
+## Measurements on pinned nightly
+
+Requested allocation bytes per operation, excluding validation:
+
+| Operation | 1,000 rows | 10,000 rows | 100,000 rows | Allocation calls |
+| --- | ---: | ---: | ---: | ---: |
+| Source update through diamond | 392 | 392 | 392 | 9 |
+| Equal source | 88 | 88 | 88 | 1 |
+| Both intermediate values equal | 256 | 256 | 256 | 5 |
+| Retire one row | 144 | 144 | 144 | 2 |
+
+There are four nodes per row. Construction allocates `224 * rows + 104` bytes
+in three requests. Clearing the remaining 999 rows after one removal takes 13
+allocations and 15 frees, requesting 87,304 bytes, including command-list growth;
+dropping the resulting state frees its remaining two allocations. All successful
+scenarios finish with zero live requested allocations and bytes.
+
+These counts are not comparable functionality to the production clear1k
+benchmark: no DOM, arbitrary closures, retained string payloads, effects, tasks,
+scope tree or existing engine protocol is implemented.
+
+### Ownership shape mattered
+
+The initial record-update implementation allocated four entire node buffers for
+one diamond turn: `768 * rows + 424` requested bytes. Replacing updates of the
+form `{ ..state, nodes: state.nodes.set(...) }` with a helper that destructures
+the consumed State and reconstructs it from its fields eliminated those
+graph-sized allocations. The same adjustment removed one full node-list copy
+from row retirement. This is observed allocation behavior, not a diagnosis of
+compiler internals or proof that every invisible memory copy is absent.
+
+No compiler change, unsafe value access or explicit mutable Roc state was used.
+Unique ownership permits the compiler/runtime to reuse list storage underneath
+the value-level Roc API. Sharing the model for a snapshot would change that
+assumption; the preceding boxed-graph spike demonstrates the COW cost.
+
+## Checks
+
+- Fixed diamond, source equality, derived equality cutoff, one-branch change,
+  unrelated row preservation, row retirement, survivor updates and clear.
+- Exact derived-call, equality-prune and command counts; settled command values.
+- Three deterministic seeds, 2,000 turns each, against a separate JavaScript
+  numeric model, checking every surviving row after every turn.
+- Sparse operations must request at most 512 bytes, across all tested sizes.
+- Disposed writes, repeated retirement and invalid operation codes trap.
+- Mutation check: disabling dirty-queue deduplication caused the first diamond
+  semantic check to trap, despite remaining within the allocation budget.
+  Restored implementation was rebuilt and all tests passed.
+
+## Limits and next discriminating experiment
+
+This is a closed numeric operator set, not arbitrary application values or
+capturing closures. It does not establish that the existing public API can be
+implemented with the same storage economy. That heterogeneous representation
+is the next important question, ahead of optimizing this toy scheduler.
+
+The queue scans and sorts its frontier; these independent diamonds have only two
+pending nodes. Individual removal marks slots dead but retains holes and edges;
+clear scans historical row capacity. No insertion, generation reuse, dependency
+rewiring, full scope disposal, rollback, allocation-failure recovery, command
+publication or host effects are modeled. Allocation failures and contract
+violations terminate the Wasm instance. Invalid-case instances are discarded,
+not presented as successful teardown tests.
+
+Allocator instrumentation counts requested bytes and allocator-driven realloc
+copies, not every copy generated by Roc. Its realloc always allocates/copies,
+and raw backing memory can remain reserved after all requested allocations are
+freed. It is not a timing benchmark or a new perf profile, and establishes no
+speed ratio versus the Zig engine or SolidJS.

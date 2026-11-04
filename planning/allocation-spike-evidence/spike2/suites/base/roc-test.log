@@ -1,0 +1,83 @@
+Test output: /tmp/claude-1000/s2/suites/base/out-roc-test-3652512
+
+==> zig build build-test-hosts
+Shared platform copies match (SHA-256).
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/base/out-roc-test-3652512/roc-test-source/examples-web/onboarding-wizard/main.roc
+All (58) tests passed in 269.4 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/base/out-roc-test-3652512/roc-test-source/examples-web/availability-picker/main.roc
+All (55) tests passed in 204.4 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/base/out-roc-test-3652512/roc-test-source/examples-web/field-notes/main.roc
+All (52) tests passed in 129.1 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/base/out-roc-test-3652512/roc-test-source/examples-web/support-inbox/main.roc
+All (51) tests passed in 196.1 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/base/out-roc-test-3652512/roc-test-source/examples-web/dependency-scheduler/main.roc
+All (45) tests passed in 290.4 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/base/out-roc-test-3652512/roc-test-source/examples-web/recipe-scaler/main.roc
+All (68) tests passed in 99.4 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/base/out-roc-test-3652512/roc-test-source/examples-web/query-builder/main.roc
+All (45) tests passed in 143.1 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/base/out-roc-test-3652512/roc-test-source/examples-web/token-editor/main.roc
+All (59) tests passed in 83.9 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/base/out-roc-test-3652512/roc-test-source/examples-web/package-explorer/main.roc
+All (60) tests passed in 103.1 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/base/out-roc-test-3652512/roc-test-source/examples-web/loan-comparator/main.roc
+All (62) tests passed in 136.6 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/base/out-roc-test-3652512/roc-test-source/examples-web/data-grid/main.roc
+All (53) tests passed in 90.3 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/base/out-roc-test-3652512/roc-test-source/examples-web/pomodoro-tracker/main.roc
+All (46) tests passed in 101.6 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/base/out-roc-test-3652512/roc-test-source/examples-web/form-builder/main.roc
+All (60) tests passed in 77.1 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/base/out-roc-test-3652512/roc-test-source/examples-web/status-page/main.roc
+All (61) tests passed in 146.3 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/base/out-roc-test-3652512/roc-test-source/examples-web/flight-search/main.roc
+All (51) tests passed in 132.0 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/base/out-roc-test-3652512/roc-test-source/examples-web/kanban-board/main.roc
+All (63) tests passed in 150.0 ms. (cached)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/base/out-roc-test-3652512/roc-test-source/examples-web/spreadsheet-lite/main.roc
+
+Segmentation fault (SIGSEGV) in the Roc compiler.
+Fault address: 0x0
+
+No compiler work was recorded on thread 3660806 (main).
+
+Reproduce with:
+  ../../../../../../../../home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc test --opt=dev /tmp/claude-1000/s2/suites/base/out-roc-test-3652512/roc-test-source/examples-web/spreadsheet-lite/main.roc
+
+Stack trace:
+Cannot print stack trace: stack tracing is disabled
+
+Please report this issue at: https://github.com/roc-lang/roc/issues
+
+Traceback (most recent call last):
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/basetree/scripts/test.py", line 1132, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/basetree/scripts/test.py", line 1045, in main
+    run_local_roc_tests(roc_bin, examples)
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/basetree/scripts/test.py", line 853, in run_local_roc_tests
+    run_roc_tests(roc_bin, examples, source_root=source_root)
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/basetree/scripts/test.py", line 387, in run_roc_tests
+    run([roc_bin, "test", "--opt=dev", source_root / example.source])
+  File "/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike2/basetree/scripts/test.py", line 233, in run
+    subprocess.run([str(part) for part in command], cwd=cwd, env=env, check=True)
+  File "/usr/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['/home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc', 'test', '--opt=dev', '/tmp/claude-1000/s2/suites/base/out-roc-test-3652512/roc-test-source/examples-web/spreadsheet-lite/main.roc']' returned non-zero exit status 139.

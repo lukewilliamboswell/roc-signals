@@ -1,0 +1,859 @@
+Test output: /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721
+
+==> zig build build-test-hosts
+Shared platform copies match (SHA-256).
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-onboarding-wizard /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/onboarding-wizard/main.roc
+0 errors and 0 warnings found in 507ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-onboarding-wizard
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-onboarding-wizard /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/onboarding-wizard/specs
+[PASS] an-invalid-step-blocks-navigation.scm (10.7 ms)
+[PASS] a-later-field-whose-options-depend-on-an-earlier-answer.scm (15.1 ms)
+[PASS] editing-step-2-does-not-re-render-step-1-s-fields.scm (10.6 ms)
+[PASS] changing-the-earlier-answer-resets-the-dependent-field.scm (22.9 ms)
+[PASS] fix-the-step-and-move-on.scm (13.4 ms)
+[PASS] jump-backwards-to-a-step-answers-preserved.scm (9.5 ms)
+[PASS] back-to-step-1-editing-one-field-leaves-the-other-alone.scm (34.4 ms)
+[PASS] restored-initial-state.scm (7.4 ms)
+[PASS] progress-navigation-availability.scm (9.6 ms)
+[PASS] per-field-validation-on-the-invite-list.scm (16.5 ms)
+[PASS] forward-again-answers-preserved.scm (24.1 ms)
+[PASS] submitting-pending-supersede-stale-success-failure.scm (28.9 ms)
+[PASS] start-over-the-empty-initial-state.scm (36.5 ms)
+
+13 passed, 0 failed, 13 total (0.24s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-availability-picker /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/availability-picker/main.roc
+0 errors and 0 warnings found in 408ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-availability-picker
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-availability-picker /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/availability-picker/specs
+[PASS] half-hour-offset-zone.scm (12.6 ms)
+[PASS] draft-validation.scm (13.1 ms)
+[PASS] initial-mount.scm (5.6 ms)
+[PASS] adding-a-slot-one-new-row-and-the-draft-clears-via-state-set-cmd.scm (20.3 ms)
+[PASS] marking-it-busy-creates-an-overlapping-commitment-conflict.scm (7.1 ms)
+[PASS] marking-one-slot-available-leaves-its-siblings-alone.scm (6.3 ms)
+[PASS] boundary-times-exactly-midnight-and-exactly-23-30.scm (31.9 ms)
+[PASS] negative-offset-pushes-a-slot-backwards-past-the-week-boundary.scm (11.6 ms)
+[PASS] resolving-the-conflict.scm (9.3 ms)
+[PASS] removal-down-to-a-day-with-no-availability-at-all.scm (23.7 ms)
+[PASS] reorder-keeps-every-row-scope.scm (18.5 ms)
+[PASS] the-headline-one-timezone-change-reprojects-every-rendered-slot.scm (8.5 ms)
+[PASS] single-item-then-the-empty-list.scm (25.1 ms)
+[PASS] total-hours-summary-tracks-a-per-row-edit.scm (17.0 ms)
+
+14 passed, 0 failed, 14 total (0.21s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-field-notes /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/field-notes/main.roc
+0 errors and 0 warnings found in 441ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-field-notes
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-field-notes /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/field-notes/specs
+[PASS] going-offline-mid-sync-then-a-stale-result-arriving-late.scm (8.4 ms)
+[PASS] capturing-while-offline.scm (8.5 ms)
+[PASS] initial-mount.scm (4.2 ms)
+[PASS] filtering-hides-synced-rows-without-touching-the-others.scm (14.1 ms)
+[PASS] pausing-auto-sync-then-deleting-a-queued-note.scm (14.8 ms)
+[PASS] editing-an-already-synced-note-re-queues-it.scm (25.8 ms)
+[PASS] queueing-while-offline.scm (10.6 ms)
+[PASS] reorder-promoting-a-note-changes-the-drain-order.scm (12.7 ms)
+[PASS] the-connection-returns-and-the-outbox-drains-one-at-a-time.scm (18.8 ms)
+[PASS] retrying-the-failed-note.scm (21.5 ms)
+[PASS] persistence.scm (42.3 ms)
+
+11 passed, 0 failed, 11 total (0.18s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-support-inbox /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/support-inbox/main.roc
+0 errors and 0 warnings found in 538ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-support-inbox
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-support-inbox /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/support-inbox/specs
+[PASS] a-conversation-with-no-messages.scm (7.6 ms)
+[PASS] a-newer-read-supersedes-the-older-result.scm (10.6 ms)
+[PASS] a-failed-sync.scm (13.3 ms)
+[PASS] a-send-fails-and-rolls-back.scm (15.9 ms)
+[PASS] empty-inbox-edge.scm (11.4 ms)
+[PASS] initial-mount.scm (3.7 ms)
+[PASS] first-snapshot-arrives.scm (6.3 ms)
+[PASS] filter-meets-selection.scm (12.3 ms)
+[PASS] poll-acknowledges-before-send-completes.scm (9.0 ms)
+[PASS] pausing-and-resuming-polling.scm (9.7 ms)
+[PASS] optimistic-sending.scm (11.5 ms)
+[PASS] selecting-a-conversation.scm (8.4 ms)
+[PASS] the-key-budget.scm (9.8 ms)
+[PASS] the-server-reorders-rows.scm (9.8 ms)
+[PASS] unread-clears-when-the-thread-is-read.scm (9.1 ms)
+
+15 passed, 0 failed, 15 total (0.15s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-dependency-scheduler /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/dependency-scheduler/main.roc
+0 errors and 0 warnings found in 448ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-dependency-scheduler
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-dependency-scheduler /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/dependency-scheduler/specs
+[PASS] a-zero-duration-milestone.scm (31.2 ms)
+[PASS] adding-and-removing-a-dependency-edge.scm (36.7 ms)
+[PASS] a-dependency-cycle-is-reported-not-hung-on.scm (42.7 ms)
+[PASS] initial-render.scm (12.5 ms)
+[PASS] filtering-the-list-to-the-critical-path.scm (50.1 ms)
+[PASS] moving-a-leaf-task-changes-only-that-leaf.scm (24.6 ms)
+[PASS] the-critical-path-moves-when-a-parallel-branch-grows-long-enough.scm (33.0 ms)
+[PASS] reordering-the-list-keeps-every-row-scope.scm (51.4 ms)
+[PASS] write-spec-is-the-head-of-spec-api-sync-qa-launch-so-delaying-it.scm (16.4 ms)
+[PASS] the-focus-readout-is-an-independent-source-feeding-the-same-solv.scm (46.7 ms)
+[PASS] the-empty-list.scm (74.9 ms)
+
+11 passed, 0 failed, 11 total (0.42s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-recipe-scaler /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/recipe-scaler/main.roc
+0 errors and 0 warnings found in 478ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-recipe-scaler
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-recipe-scaler /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/recipe-scaler/specs
+[PASS] initial-mount.scm (4.3 ms)
+[PASS] building-the-shopping-list.scm (9.5 ms)
+[PASS] exactly-the-14-quantity-sinks-effective-servings-scale-note-and.scm (10.0 ms)
+[PASS] scaling-by-pan-size-instead-of-servings.scm (16.1 ms)
+[PASS] removing-recipes-from-the-shopping-list.scm (23.3 ms)
+[PASS] scaling-down-rounding-and-the-boundaries.scm (12.4 ms)
+[PASS] switching-recipe-this-is-structural.scm (17.9 ms)
+[PASS] the-unit-system-toggle-changes-every-convertible-quantity.scm (12.9 ms)
+
+8 passed, 0 failed, 8 total (0.11s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-query-builder /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/query-builder/main.roc
+0 errors and 0 warnings found in 466ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-query-builder
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-query-builder /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/query-builder/specs
+[PASS] and-or-on-a-group.scm (37.8 ms)
+[PASS] edge-case-empty-leaf-value.scm (6.7 ms)
+[PASS] deleting-a-nested-group.scm (51.0 ms)
+[PASS] deleting-a-leaf-sibling.scm (53.5 ms)
+[PASS] back-to-a-single-condition.scm (63.9 ms)
+[PASS] initial-state.scm (3.6 ms)
+[PASS] every-operator.scm (20.5 ms)
+[PASS] editing-a-leaf-three-levels-deep-does-not-recreate-its-siblings.scm (48.7 ms)
+[PASS] nesting-a-group-inside-a-group.scm (30.0 ms)
+[PASS] empty-root-group.scm (66.3 ms)
+[PASS] second-independent-source-fan-in.scm (21.6 ms)
+[PASS] negating-the-root.scm (55.8 ms)
+[PASS] three-levels-of-nesting.scm (46.0 ms)
+
+13 passed, 0 failed, 13 total (0.51s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-token-editor /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/token-editor/main.roc
+0 errors and 0 warnings found in 442ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-token-editor
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-token-editor /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/token-editor/specs
+[PASS] initial-state.scm (5.5 ms)
+[PASS] a-second-pair-crossing-aa-independently.scm (8.0 ms)
+[PASS] invalid-hex.scm (9.6 ms)
+[PASS] boundary-a-spacing-token-of-zero.scm (12.2 ms)
+[PASS] one-colour-edit-reaches-every-dependent-binding-without-rebuildi.scm (5.1 ms)
+[PASS] the-aa-flag-crosses-4-5-1-in-both-directions.scm (5.8 ms)
+[PASS] radius-md-appears-only-in-the-stylesheet-so-editing-it-must-not.scm (12.7 ms)
+[PASS] several-tokens-invalid-at-once.scm (15.9 ms)
+[PASS] uppercase-hex-normalises-through-every-binding.scm (16.2 ms)
+
+9 passed, 0 failed, 9 total (0.09s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-package-explorer /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/package-explorer/main.roc
+0 errors and 0 warnings found in 567ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-package-explorer
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-package-explorer /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/package-explorer/specs
+[PASS] a-deep-link.scm (3.3 ms)
+[PASS] c-the-search-page-s-own-loading-loaded-transition.scm (3.5 ms)
+[PASS] b-navigating-away-retires-panel-state.scm (5.1 ms)
+[PASS] d-latest-wins-search-and-a-stale-result.scm (7.4 ms)
+[PASS] h-unknown-address.scm (3.2 ms)
+[PASS] f-opening-a-package-three-panels-settle-independently.scm (9.2 ms)
+[PASS] e-keyed-row-budgets-and-per-row-edits.scm (11.0 ms)
+[PASS] g-back-and-forward.scm (18.6 ms)
+
+8 passed, 0 failed, 8 total (0.06s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-loan-comparator /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/loan-comparator/main.roc
+0 errors and 0 warnings found in 446ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-loan-comparator
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-loan-comparator /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/loan-comparator/specs
+[PASS] an-extra-payment-large-enough-to-shorten-the-schedule.scm (20.2 ms)
+[PASS] a-rate-of-zero.scm (26.0 ms)
+[PASS] a-term-of-one-month.scm (28.8 ms)
+[PASS] a-principal-of-zero-an-empty-schedule-that-still-clears.scm (31.3 ms)
+[PASS] editing-scenario-a-s-rate-derived-figures-follow-siblings-do-n.scm (16.7 ms)
+[PASS] initial-mounted-state.scm (13.4 ms)
+[PASS] back-to-the-baseline-scenario-a.scm (38.4 ms)
+[PASS] switching-the-compared-pair.scm (13.3 ms)
+[PASS] editing-scenario-c-does-not-disturb-a-or-b.scm (53.5 ms)
+[PASS] zero-extra-payment-restores-the-full-term.scm (22.0 ms)
+[PASS] invalid-input.scm (48.7 ms)
+
+11 passed, 0 failed, 11 total (0.31s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-data-grid /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/data-grid/main.roc
+0 errors and 0 warnings found in 453ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-data-grid
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-data-grid /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/data-grid/specs
+[PASS] initial-mount.scm (32.0 ms)
+[PASS] inline-editing.scm (1937.9 ms)
+[PASS] empty-filter-result.scm (2390.2 ms)
+[PASS] filtering.scm (2488.6 ms)
+[PASS] paging-past-the-end.scm (2754.8 ms)
+[PASS] paging.scm (2034.7 ms)
+[PASS] per-row-selection.scm (2028.6 ms)
+[PASS] sorting.scm (1855.7 ms)
+[PASS] single-row-filter-result.scm (2210.5 ms)
+
+9 passed, 0 failed, 9 total (17.73s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-pomodoro-tracker /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/pomodoro-tracker/main.roc
+0 errors and 0 warnings found in 421ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-pomodoro-tracker
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-pomodoro-tracker /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/pomodoro-tracker/specs
+[PASS] initial-render-restored-from-storage.scm (3.3 ms)
+[PASS] attaching-a-different-project-mid-session.scm (7.9 ms)
+[PASS] pause-voids-the-block-in-progress.scm (10.9 ms)
+[PASS] reset-returns-to-idle.scm (18.5 ms)
+[PASS] logging-the-block-writes-the-ledger-and-rewinds-the-clock.scm (29.0 ms)
+[PASS] resume-starts-a-fresh-block.scm (14.7 ms)
+[PASS] start-the-running-branch-mounts-the-interval.scm (6.9 ms)
+[PASS] a-project-with-no-logged-time-is-still-fully-usable.scm (39.7 ms)
+[PASS] run-a-whole-cycle-to-the-work-break-boundary.scm (22.7 ms)
+
+9 passed, 0 failed, 9 total (0.15s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-form-builder /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/form-builder/main.roc
+0 errors and 0 warnings found in 448ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-form-builder
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-form-builder /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/form-builder/specs
+[PASS] adding-a-number-field.scm (24.7 ms)
+[PASS] adding-a-select-field.scm (33.0 ms)
+[PASS] adding-a-checkbox-field.scm (39.0 ms)
+[PASS] answering-the-generated-form.scm (6.8 ms)
+[PASS] a-single-field-form.scm (72.0 ms)
+[PASS] adding-the-remaining-field-types.scm (45.6 ms)
+[PASS] initial-mount.scm (5.1 ms)
+[PASS] editing-one-field-s-label-fine-grained.scm (12.7 ms)
+[PASS] clearing-the-preview-answers.scm (56.3 ms)
+[PASS] deleting-a-field-that-holds-invalid-input.scm (55.5 ms)
+[PASS] the-key-cross-level-assertion.scm (9.2 ms)
+[PASS] reordering.scm (49.3 ms)
+[PASS] the-empty-form.scm (68.0 ms)
+
+13 passed, 0 failed, 13 total (0.48s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-status-page /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/status-page/main.roc
+0 errors and 0 warnings found in 438ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-status-page
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-status-page /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/status-page/specs
+[PASS] a-stale-check-result-arriving-after-a-newer-request-is-ignored.scm (7.0 ms)
+[PASS] first-incident-arrives-with-three-updates-in-publish-order.scm (8.1 ms)
+[PASS] empty-incident-feed-disposes-the-timeline.scm (9.0 ms)
+[PASS] first-results-everything-healthy-empty-incident-timeline.scm (5.2 ms)
+[PASS] a-real-outage-keeps-the-page-at-major-outage.scm (13.5 ms)
+[PASS] initial-mount.scm (4.1 ms)
+[PASS] hiding-the-page-stops-polling.scm (7.4 ms)
+[PASS] one-refresh-fails-while-the-others-succeed.scm (6.4 ms)
+[PASS] one-service-degrades-the-rollup-follows.scm (6.2 ms)
+[PASS] returning-to-visible-resumes-polling.scm (10.1 ms)
+[PASS] recovery-and-reordering-the-timeline.scm (15.0 ms)
+[PASS] several-services-degrade-the-rollup-escalates-to-a-major-outage.scm (10.4 ms)
+
+12 passed, 0 failed, 12 total (0.10s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-flight-search /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/flight-search/main.roc
+0 errors and 0 warnings found in 461ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-flight-search
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-flight-search /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/flight-search/specs
+[PASS] a-filter-is-an-effect-trigger.scm (11.7 ms)
+[PASS] a-filter-that-excludes-every-returned-flight.scm (28.2 ms)
+[PASS] an-empty-result-set-from-the-backend.scm (29.1 ms)
+[PASS] failure.scm (29.9 ms)
+[PASS] initial-mount.scm (4.1 ms)
+[PASS] fan-in-two-filters-combined.scm (25.7 ms)
+[PASS] sorting-is-local-no-refetch-and-the-rows-are-reused-not-recreate.scm (7.1 ms)
+[PASS] success.scm (5.5 ms)
+[PASS] sorting-while-a-request-is-in-flight.scm (17.0 ms)
+[PASS] sorting-an-empty-set-still-does-not-refetch.scm (27.4 ms)
+[PASS] latest-wins-a-superseded-response-is-ignored.scm (31.5 ms)
+[PASS] widen-back-to-every-flight-then-a-final-re-sort-over-four-rows.scm (46.9 ms)
+
+12 passed, 0 failed, 12 total (0.26s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-kanban-board /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/kanban-board/main.roc
+0 errors and 0 warnings found in 397ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-kanban-board
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-kanban-board /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/kanban-board/specs
+[PASS] cross-column-move.scm (10.5 ms)
+[PASS] delete-the-card-that-currently-matches-the-filter.scm (28.8 ms)
+[PASS] filter-fans-in-with-column-membership.scm (19.6 ms)
+[PASS] adding-cards-empty-duplicate-valid.scm (38.4 ms)
+[PASS] initial-render.scm (7.7 ms)
+[PASS] empty-a-whole-column.scm (43.2 ms)
+[PASS] reorder-inside-a-column.scm (11.8 ms)
+[PASS] per-row-edit-does-not-disturb-siblings.scm (12.8 ms)
+[PASS] move-the-only-card-out-of-a-column-leaving-it-empty.scm (32.5 ms)
+[PASS] wip-limit-crosses-and-un-crosses.scm (33.8 ms)
+
+10 passed, 0 failed, 10 total (0.24s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-spreadsheet-lite /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/spreadsheet-lite/main.roc
+0 errors and 0 warnings found in 423ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-spreadsheet-lite
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-spreadsheet-lite /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/spreadsheet-lite/specs
+[PASS] b2-d2-d5-d6-d7-d8-and-b2-b5-f5-d5-already-covered.scm (70.5 ms)
+[PASS] editing-a-cell-nothing-depends-on.scm (81.9 ms)
+[PASS] empty-cell-references.scm (211.6 ms)
+[PASS] initial-mount.scm (25.6 ms)
+[PASS] error-paths.scm (198.0 ms)
+[PASS] editing-survives-every-reorder.scm (332.2 ms)
+[PASS] grid-mode-toggle.scm (291.6 ms)
+[PASS] selection-and-the-bar.scm (51.2 ms)
+[PASS] precedence-and-unary-minus.scm (241.4 ms)
+[PASS] keyed-row-add-remove.scm (293.5 ms)
+[PASS] them.scm (61.6 ms)
+[PASS] row-reorder.scm (296.0 ms)
+[PASS] the-new-dependent-updates-with-it.scm (376.9 ms)
+
+13 passed, 0 failed, 13 total (2.53s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-split-the-bill /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/split-the-bill/main.roc
+0 errors and 0 warnings found in 495ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-split-the-bill
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-split-the-bill /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/split-the-bill/specs
+[PASS] editing-one-expense-reuses-every-row.scm (10.2 ms)
+[PASS] initial-render.scm (8.5 ms)
+[PASS] changing-who-shares-an-expense.scm (32.4 ms)
+[PASS] adding-a-person-re-splits-every-expense.scm (38.9 ms)
+[PASS] invalid-amounts.scm (18.6 ms)
+[PASS] adding-an-expense.scm (54.8 ms)
+[PASS] rounding-that-does-not-divide-evenly.scm (11.8 ms)
+[PASS] removing-a-person.scm (43.6 ms)
+[PASS] removing-expenses.scm (83.4 ms)
+[PASS] one-person-then-none.scm (96.9 ms)
+
+10 passed, 0 failed, 10 total (0.40s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-markdown-editor /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/markdown-editor/main.roc
+0 errors and 0 warnings found in 496ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-markdown-editor
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-markdown-editor /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/markdown-editor/specs
+[PASS] contrast-adding-a-heading-does-rebuild-the-outline-by-exactly.scm (28.6 ms)
+[PASS] edge-case-a-document-with-no-headings-at-all.scm (50.9 ms)
+[PASS] edge-case-an-empty-document-all-four-views-stay-locatable.scm (54.8 ms)
+[PASS] initial-render-every-region-heading-and-derived-value.scm (13.4 ms)
+[PASS] back-to-the-sample-document-the-whole-graph-restores.scm (101.5 ms)
+[PASS] edge-case-markdown-special-characters-and-text-that-looks-like.scm (66.1 ms)
+[PASS] edge-case-every-heading-level-one-demotion-at-a-time-the-outl.scm (87.6 ms)
+[PASS] list-behaviour-add-remove-reorder-and-per-row-edits-in-the-out.scm (47.0 ms)
+[PASS] numbering-toggle-a-fan-in-of-the-heading-spine-and-a-boolean.scm (15.9 ms)
+[PASS] reading-speed-a-fan-in-of-the-counts-and-the-selected-words-pe.scm (16.0 ms)
+[PASS] the-teaching-point-a-paragraph-edit-updates-the-statistics-and.scm (19.4 ms)
+
+11 passed, 0 failed, 11 total (0.50s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-log-viewer /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/log-viewer/main.roc
+0 errors and 0 warnings found in 398ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-log-viewer
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-log-viewer /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/log-viewer/specs
+[PASS] fanning-into-one-visible-set-signal-follow-tail-toggling-newest.scm (2.4 ms)
+[PASS] a-query-that-matches-nothing.scm (9.1 ms)
+[PASS] filters-and-query-fan-in-to-one-visible-set-the-debug-row-is-the.scm (12.1 ms)
+[PASS] clearing-while-a-level-filter-and-a-query-are-active-keeps-the-c.scm (16.9 ms)
+[PASS] follow-tail-toggles-while-lines-keep-arriving.scm (14.3 ms)
+[PASS] level-filter-removes-only-its-own-rows.scm (7.1 ms)
+[PASS] one-line-the-single-item-boundary.scm (6.3 ms)
+[PASS] query-highlights-matches-inside-the-level-filtered-set.scm (7.7 ms)
+[PASS] appending-line-41-to-a-40-line-buffer-must-reuse-every-existing.scm (211.9 ms)
+[PASS] one-more-append-to-show-the-budget-is-flat-per-line-rather-than.scm (208.2 ms)
+[PASS] hiding-a-level-removes-only-that-level-s-rows-from-a-42-line-buf.scm (220.2 ms)
+[PASS] reordering-the-buffer-moves-rows-without-creating-or-removing-an.scm (240.7 ms)
+[PASS] restore-a-wide-open-view-for-the-granularity-measurement.scm (169.2 ms)
+[PASS] typing-a-query-re-marks-the-existing-rows-without-recreating-any.scm (193.0 ms)
+
+14 passed, 0 failed, 14 total (1.32s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-conduit /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/conduit/main.roc
+0 errors and 0 warnings found in 1.0s while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-conduit
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-conduit /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/conduit/specs
+[PASS] editor-older-success-cannot-override-newer-rejection.scm (6.0 ms)
+[PASS] deep-link-cold-mounts-the-article-page-loading-then-content.scm (10.4 ms)
+[PASS] empty-state.scm (6.6 ms)
+[PASS] error-state-renders-in-app.scm (4.5 ms)
+[PASS] back-forward-stay-in-sync-across-live-pages.scm (19.5 ms)
+[PASS] favoriting-and-unfavoriting-a-feed-article.scm (7.9 ms)
+[PASS] guarded-routes-redirect-anonymous-visitors-to-sign-in.scm (8.3 ms)
+[PASS] home-both-fetches-pending-then-tags-and-feed-render.scm (10.5 ms)
+[PASS] login-older-success-cannot-replace-a-newer-rejection.scm (4.7 ms)
+[PASS] login-422-envelope-renders-success-persists-the-session.scm (9.6 ms)
+[PASS] network-failure-article.scm (5.1 ms)
+[PASS] network-failure-editor-load.scm (4.8 ms)
+[PASS] network-failure-comments.scm (7.5 ms)
+[PASS] article-writes-editor-create-edit-comments-and-delete.scm (47.4 ms)
+[PASS] network-failure-home.scm (5.1 ms)
+[PASS] network-failure-profile-articles.scm (6.1 ms)
+[PASS] network-failure-profile.scm (5.3 ms)
+[PASS] published-example-urls-mount-the-app-home-under-any-site-base-pa.scm (5.2 ms)
+[PASS] register-422-envelope-renders-all-required-fields.scm (4.7 ms)
+[PASS] pagination-23-articles-two-pages-page-switch-swaps-the-list.scm (15.7 ms)
+[PASS] settings-response-after-sign-out-does-not-restore-session.scm (6.6 ms)
+[PASS] profile-page-profile-card-plus-author-articles-then-favorites-ta.scm (19.6 ms)
+[PASS] settings-authed-update-then-sign-out-clears-the-namespaced-keys.scm (8.2 ms)
+[PASS] tag-switching-ignores-an-older-response.scm (8.5 ms)
+[PASS] your-feed-tab-drives-the-authenticated-feed-endpoint.scm (8.8 ms)
+
+25 passed, 0 failed, 25 total (0.25s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-task-latest-wins /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/task-latest-wins/main.roc
+0 errors and 0 warnings found in 172ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-task-latest-wins
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-task-latest-wins /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/task-latest-wins/specs
+[PASS] cancel.scm (1.4 ms)
+[PASS] main.scm (1.9 ms)
+
+2 passed, 0 failed, 2 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-location-source /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/location-source/main.roc
+0 errors and 0 warnings found in 157ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-location-source
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-location-source /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/location-source/specs
+[PASS] main.scm (1.1 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-location-navigation /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/location-navigation/main.roc
+0 errors and 0 warnings found in 159ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-location-navigation
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-location-navigation /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/location-navigation/specs
+[PASS] main.scm (0.8 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-location-canonical-branch /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/location-canonical-branch/main.roc
+0 errors and 0 warnings found in 157ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-location-canonical-branch
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-location-canonical-branch /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/location-canonical-branch/specs
+[PASS] direct-main.scm (1.2 ms)
+[PASS] main.scm (1.2 ms)
+
+2 passed, 0 failed, 2 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-storage-commands /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/storage-commands/main.roc
+0 errors and 0 warnings found in 154ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-storage-commands
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-storage-commands /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/storage-commands/specs
+[PASS] main.scm (0.9 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-on-change-initial /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/on-change-initial/main.roc
+0 errors and 0 warnings found in 161ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-on-change-initial
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-on-change-initial /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/on-change-initial/specs
+[PASS] main.scm (1.2 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-state-commands /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/state-commands/main.roc
+0 errors and 0 warnings found in 176ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-state-commands
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-state-commands /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/state-commands/specs
+[PASS] main.scm (1.4 ms)
+[PASS] retained-history.scm (2.3 ms)
+
+2 passed, 0 failed, 2 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-svg /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/svg/main.roc
+0 errors and 0 warnings found in 155ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-svg
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-svg /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/svg/specs
+[PASS] svg.scm (1.9 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-coordinated-writes /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/coordinated-writes/main.roc
+0 errors and 0 warnings found in 167ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-coordinated-writes
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-coordinated-writes /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/coordinated-writes/specs
+[PASS] coordinated-writes.scm (2.9 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-event-actions /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/event-actions/main.roc
+0 errors and 0 warnings found in 183ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-event-actions
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-event-actions /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/event-actions/specs
+[PASS] event-actions-typed.scm (2.0 ms)
+[PASS] event-actions-loading-disposal.scm (3.5 ms)
+[PASS] event-actions.scm (5.8 ms)
+
+3 passed, 0 failed, 3 total (0.01s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-state-reads /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/state-reads/main.roc
+0 errors and 0 warnings found in 156ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-state-reads
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-state-reads /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/state-reads/specs
+[PASS] main.scm (1.0 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-markdown-elem /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/markdown-elem/main.roc
+0 errors and 0 warnings found in 430ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-markdown-elem
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-markdown-elem /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/markdown-elem/specs
+[PASS] main.scm (9.4 ms)
+
+1 passed, 0 failed, 1 total (0.01s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-task-to-utf8-lifetime /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/task-to-utf8-lifetime/main.roc
+0 errors and 0 warnings found in 165ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-task-to-utf8-lifetime
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-task-to-utf8-lifetime /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/task-to-utf8-lifetime/specs
+[PASS] main.scm (1.2 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-controlled-input-contract /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/controlled-input-contract/main.roc
+0 errors and 0 warnings found in 173ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-controlled-input-contract
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-controlled-input-contract /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/controlled-input-contract/specs
+[PASS] main.scm (2.3 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-select-control /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/select-control/main.roc
+0 errors and 0 warnings found in 166ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-select-control
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-select-control /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/select-control/specs
+[PASS] main.scm (1.4 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-textarea-control /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/textarea-control/main.roc
+0 errors and 0 warnings found in 157ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-textarea-control
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-textarea-control /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/textarea-control/specs
+[PASS] main.scm (1.4 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-radio-group-control /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/radio-group-control/main.roc
+0 errors and 0 warnings found in 160ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-radio-group-control
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-radio-group-control /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/radio-group-control/specs
+[PASS] main.scm (1.3 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-number-input-control /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/number-input-control/main.roc
+0 errors and 0 warnings found in 160ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-number-input-control
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-number-input-control /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/number-input-control/specs
+[PASS] main.scm (1.5 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-form-validation-pattern /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/form-validation-pattern/main.roc
+0 errors and 0 warnings found in 189ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-form-validation-pattern
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-form-validation-pattern /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/form-validation-pattern/specs
+[PASS] main.scm (2.7 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-signal-record-builder /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/signal-record-builder/main.roc
+0 errors and 0 warnings found in 174ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-signal-record-builder
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-signal-record-builder /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/signal-record-builder/specs
+[PASS] main.scm (1.8 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-callable-signal-identity /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/callable-signal-identity/main.roc
+0 errors and 0 warnings found in 155ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-callable-signal-identity
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-callable-signal-identity /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/callable-signal-identity/specs
+[PASS] main.scm (1.3 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-optional-text-attr /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/optional-text-attr/main.roc
+0 errors and 0 warnings found in 167ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-optional-text-attr
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-optional-text-attr /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/optional-text-attr/specs
+[PASS] main.scm (1.0 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-submit-button-default /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/submit-button-default/main.roc
+0 errors and 0 warnings found in 161ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-submit-button-default
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-submit-button-default /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/submit-button-default/specs
+[PASS] main.scm (1.3 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-form-reset-default /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/form-reset-default/main.roc
+0 errors and 0 warnings found in 171ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-form-reset-default
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-form-reset-default /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/form-reset-default/specs
+[PASS] main.scm (1.4 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-checkbox-real-click /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/checkbox-real-click/main.roc
+0 errors and 0 warnings found in 158ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-checkbox-real-click
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-checkbox-real-click /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/checkbox-real-click/specs
+[PASS] main.scm (1.1 ms)
+
+1 passed, 0 failed, 1 total (0.00s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-large-each-08 /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/large-each-08/main.roc
+0 errors and 0 warnings found in 393ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-large-each-08
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-large-each-08 /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/large-each-08/specs
+[PASS] main.scm (10.6 ms)
+
+1 passed, 0 failed, 1 total (0.01s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-large-each-64 /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/large-each-64/main.roc
+0 errors and 0 warnings found in 368ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-large-each-64
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-large-each-64 /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/large-each-64/specs
+[PASS] main.scm (75.4 ms)
+
+1 passed, 0 failed, 1 total (0.08s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-js-framework-benchmark /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/js-framework-benchmark/main.roc
+0 errors and 0 warnings found in 522ms while successfully building:
+
+    ../../../../../../../../tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-js-framework-benchmark
+
+==> /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-js-framework-benchmark /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/js-framework-benchmark/specs
+[PASS] create_1k.scm (579.7 ms)
+[PASS] remove_1k.scm (582.2 ms)
+[PASS] append_1k_to_empty.scm (1306.7 ms)
+[PASS] select_1k.scm (814.8 ms)
+[PASS] swap_1k.scm (800.7 ms)
+[PASS] replace_1k.scm (2158.1 ms)
+[PASS] append_1k_to_10k.scm (7842.1 ms)
+[PASS] clear_10k.scm (8466.8 ms)
+[PASS] create_10k.scm (6220.6 ms)
+[PASS] update_10k.scm (6664.7 ms)
+
+10 passed, 0 failed, 10 total (35.44s worker time)
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-signal-combine-caps /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/signal-combine-caps/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-signal-select-128 /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/signal-select-128/main.roc
+── ✗ unreported error ──────────────────────────────────────────────────────────
+
+The compiler stopped with the error NativeCompilationFailed but did not say why.
+
+This is a bug in the compiler: whatever failed should have explained itself.
+Please report it at https://github.com/roc-lang/roc/issues, including the
+command you ran.
+
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-keyed-selector-churn /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/keyed-selector-churn/main.roc
+── ✗ unreported error ──────────────────────────────────────────────────────────
+
+The compiler stopped with the error NativeCompilationFailed but did not say why.
+
+This is a bug in the compiler: whatever failed should have explained itself.
+Please report it at https://github.com/roc-lang/roc/issues, including the
+command you ran.
+
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-metric-semantics /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/metric-semantics/main.roc
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-when-each-dispose /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/when-each-dispose/main.roc
+── ✗ unreported error ──────────────────────────────────────────────────────────
+
+The compiler stopped with the error BuiltinsExtractionFailed but did not say
+why.
+
+This is a bug in the compiler: whatever failed should have explained itself.
+Please report it at https://github.com/roc-lang/roc/issues, including the
+command you ran.
+
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-recursive-switch /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/recursive-switch/main.roc
+── ✗ unreported error ──────────────────────────────────────────────────────────
+
+The compiler stopped with the error BuiltinsExtractionFailed but did not say
+why.
+
+This is a bug in the compiler: whatever failed should have explained itself.
+Please report it at https://github.com/roc-lang/roc/issues, including the
+command you ran.
+
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-keyboard-events /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/keyboard-events/main.roc
+── ✗ unreported error ──────────────────────────────────────────────────────────
+
+The compiler stopped with the error BuiltinsExtractionFailed but did not say
+why.
+
+This is a bug in the compiler: whatever failed should have explained itself.
+Please report it at https://github.com/roc-lang/roc/issues, including the
+command you ran.
+
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-custom-events /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/custom-events/main.roc
+── ✗ unreported error ──────────────────────────────────────────────────────────
+
+The compiler stopped with the error BuiltinsExtractionFailed but did not say
+why.
+
+This is a bug in the compiler: whatever failed should have explained itself.
+Please report it at https://github.com/roc-lang/roc/issues, including the
+command you ran.
+
+
+==> /home/lbw/roc_nightly-linux_x86_64-2026-11-01-48d3369/roc build --target=x64musl --opt=dev --no-cache --output=/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/bin/signals-rows-direct-delta-locality /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike1/suites-final/out-native-1793608721/native-source/examples-web/_fixtures/rows-direct-delta-locality/main.roc
+── ✗ unreported error ──────────────────────────────────────────────────────────
+
+The compiler stopped with the error NativeCompilationFailed but did not say why.
+
+This is a bug in the compiler: whatever failed should have explained itself.
+Please report it at https://github.com/roc-lang/roc/issues, including the
+command you ran.
+
+
+=== known-failure ratchet (/home/lbw/Documents/Github/roc-signals/.claude/worktrees/agent-a7f367a813cf0c931/test/known-failures.txt) ===
+293 passed, 0 known failing, 0 fixed, 37 regressed, 330 total
+  REGRESSION  native signal-combine-caps/main.scm — roc build exited with -7
+  REGRESSION  native signal-select-128/selector.scm — roc build exited with 1
+  REGRESSION  native keyed-selector-churn/append_one_10k.scm — roc build exited with 1
+  REGRESSION  native keyed-selector-churn/append_one_1k.scm — roc build exited with 1
+  REGRESSION  native keyed-selector-churn/dispose_remount_footprint.scm — roc build exited with 1
+  REGRESSION  native keyed-selector-churn/key_movement.scm — roc build exited with 1
+  REGRESSION  native keyed-selector-churn/multiple_selectors.scm — roc build exited with 1
+  REGRESSION  native keyed-selector-churn/nested_disposal.scm — roc build exited with 1
+  REGRESSION  native keyed-selector-churn/remove_one_10k.scm — roc build exited with 1
+  REGRESSION  native keyed-selector-churn/remove_one_1k.scm — roc build exited with 1
+  REGRESSION  native keyed-selector-churn/repeated_churn.scm — roc build exited with 1
+  REGRESSION  native keyed-selector-churn/selected_row_retirement.scm — roc build exited with 1
+  REGRESSION  native keyed-selector-churn/small_churn.scm — roc build exited with 1
+  REGRESSION  native metric-semantics/main.scm — roc build exited with -7
+  REGRESSION  native when-each-dispose/main.scm — roc build exited with 1
+  REGRESSION  native recursive-switch/main.scm — roc build exited with 1
+  REGRESSION  native keyboard-events/main.scm — roc build exited with 1
+  REGRESSION  native custom-events/main.scm — roc build exited with 1
+  REGRESSION  native rows-direct-delta-locality/append_one_10k.scm — roc build exited with 1
+  REGRESSION  native rows-direct-delta-locality/append_one_1k.scm — roc build exited with 1
+  REGRESSION  native rows-direct-delta-locality/mixed_batch_1k.scm — roc build exited with 1
+  REGRESSION  native rows-direct-delta-locality/move_one_10k.scm — roc build exited with 1
+  REGRESSION  native rows-direct-delta-locality/move_one_1k.scm — roc build exited with 1
+  REGRESSION  native rows-direct-delta-locality/nested_lineage.scm — roc build exited with 1
+  REGRESSION  native rows-direct-delta-locality/nested_locality_1000.scm — roc build exited with 1
+  REGRESSION  native rows-direct-delta-locality/nested_locality_10000.scm — roc build exited with 1
+  REGRESSION  native rows-direct-delta-locality/remove_one_10k.scm — roc build exited with 1
+  REGRESSION  native rows-direct-delta-locality/remove_one_1k.scm — roc build exited with 1
+  REGRESSION  native rows-direct-delta-locality/remove_reinsert_churn_1k.scm — roc build exited with 1
+  REGRESSION  native rows-direct-delta-locality/rollback_then_direct_1k.scm — roc build exited with 1
+  REGRESSION  native rows-direct-delta-locality/stale_sibling_then_direct_1k.scm — roc build exited with 1
+  REGRESSION  native rows-direct-delta-locality/steady_append_one_10k.scm — roc build exited with 1
+  REGRESSION  native rows-direct-delta-locality/steady_append_one_1k.scm — roc build exited with 1
+  REGRESSION  native rows-direct-delta-locality/steady_move_one_10k.scm — roc build exited with 1
+  REGRESSION  native rows-direct-delta-locality/steady_move_one_1k.scm — roc build exited with 1
+  REGRESSION  native rows-direct-delta-locality/steady_remove_one_10k.scm — roc build exited with 1
+  REGRESSION  native rows-direct-delta-locality/steady_remove_one_1k.scm — roc build exited with 1
+
+Regressions must be fixed. Accepting one means adding its line to /home/lbw/Documents/Github/roc-signals/.claude/worktrees/agent-a7f367a813cf0c931/test/known-failures.txt by hand, with a comment explaining why.
+blueprint: task test exited with code 1

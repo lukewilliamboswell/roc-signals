@@ -1,0 +1,30 @@
+$ zig build build-fuzz
+
+=== propagation: 45 input(s) ===
+  all passed
+
+=== keyed-scopes: 44 input(s) ===
+  all passed
+
+=== rows-transitions: 26 input(s) ===
+  all passed
+
+=== structural: 405 input(s) ===
+  all passed
+
+=== selectors: 7 input(s) ===
+  all passed
+
+=== sparse-rows: 15 input(s) ===
+  all passed
+
+=== transactions: 7 input(s) ===
+  all passed
+
+=== ownership: 44 input(s) ===
+  all passed
+
+=== boundary: 45 input(s) ===
+  all passed
+
+replayed 638 input(s); 0 regressed, 0 known failing, 0 fixed

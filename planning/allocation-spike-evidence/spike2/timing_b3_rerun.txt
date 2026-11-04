@@ -1,0 +1,2 @@
+update_10k | dispatch_apply_ns: base 23.63 [15.58-46.73] cand 23.65 [17.67-140.65] ms | dispatch_roc_ns: base 38.86 [32.77-51.76] cand 38.39 [33.99-58.63] ms | total_ns: base 65.19 [49.20-89.06] cand 62.24 [53.83-199.66] ms
+clear_10k | dispatch_apply_ns: base 482.47 [391.14-630.79] cand 556.67 [400.58-686.44] ms | dispatch_roc_ns: base 5.31 [4.07-7.28] cand 4.69 [3.95-7.25] ms | total_ns: base 487.26 [395.63-638.08] cand 564.20 [405.12-693.93] ms

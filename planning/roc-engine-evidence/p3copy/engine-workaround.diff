@@ -1,0 +1,258 @@
+--- src/Engine.orig.roc	2026-11-04 19:07:02.275236954 +1100
++++ src/Engine.roc	2026-11-04 19:46:01.584066426 +1100
+@@ -207,6 +207,12 @@
+ 
+ 	Route := [NoRoute, Route(List(U32), U32)]
+ 
++	## Storage captured by a site closure. Wrapping a site's captures in a
++	## single-tag nominal and unwrapping them inside the closure body keeps
++	## --opt=speed/size from treating them as borrowed and copying every list
++	## they hold on each update (roc-lang/roc#12846).
++	Held(a) := [Held(a)]
++
+ 	Tx : {
+ 		cmds : List(U8),
+ 		next : U32,
+@@ -453,29 +459,42 @@
+ 
+ 	## Route an event down the site path; the owning block runs the handler.
+ 	## The environment always comes back up (Pending with mask 0 if untouched).
+-	fire_block : Block(ctx), ctx, List(U32), U64, U32, Tx -> (Block(ctx), Out(ctx), Tx)
+-	fire_block = |block, env, path, pos, h, tx| {
++	##
++	## The three cases are separate functions and every site closure returns
++	## from each case directly: a block that is passed through unchanged on one
++	## path and rebuilt on another must never meet in one value, or
++	## --opt=speed/size treats the captured block as borrowed and copies the
++	## lists of every site below it (roc-lang/roc#12846).
++	fire_target : Block(ctx), List(U32), U64 -> [Leaf, Kid, Miss]
++	fire_target = |block, path, pos| {
+ 		if pos >= path.len() {
+-			match block.handlers.get(h.to_u64()) {
+-				Ok(handler) => {
+-					next_env = (handler.run)(env)
+-					(block, Pending(next_env, handler.mask), tx)
+-				}
+-				Err(_) => (block, Pending(env, 0), tx)
+-			}
++			Leaf
++		} else if (path.get(pos) ?? 0).to_u64() < block.children.len() {
++			Kid
+ 		} else {
+-			k = (path.get(pos) ?? 0).to_u64()
+-			{ holes, handlers, children, child_reads, child_top, nodes, tops, reads } = block
+-			match children.replace(k, Engine.noop({})) {
+-				Ok({ list, prev }) => {
+-					(next, out, tx1) = Engine.call(prev, env, Fire(path, pos + 1, h), tx)
+-					({ holes, handlers, children: list.set(k, next) ?? crash "child", child_reads, child_top, nodes, tops, reads }, out, tx1)
+-				}
+-				Err(_) => ({ holes, handlers, children, child_reads, child_top, nodes, tops, reads }, Pending(env, 0), tx)
+-			}
++			Miss
+ 		}
+ 	}
+ 
++	## Run handler `h` of this block (the event's target is this block).
++	fire_leaf : Block(ctx), ctx, U32 -> Out(ctx)
++	fire_leaf = |block, env, h| {
++		match block.handlers.get(h.to_u64()) {
++			Ok(handler) => Pending((handler.run)(env), handler.mask)
++			Err(_) => Pending(env, 0)
++		}
++	}
++
++	## Forward the event to child `path[pos]`, which must exist.
++	fire_kid : Block(ctx), ctx, List(U32), U64, U32, Tx -> (Block(ctx), Out(ctx), Tx)
++	fire_kid = |block, env, path, pos, h, tx| {
++		k = (path.get(pos) ?? 0).to_u64()
++		{ holes, handlers, children, child_reads, child_top, nodes, tops, reads } = block
++		{ list, prev } = children.replace(k, Engine.noop({})) ?? crash "child"
++		(next, out, tx1) = Engine.call(prev, env, Fire(path, pos + 1, h), tx)
++		({ holes, handlers, children: list.set(k, next) ?? crash "child", child_reads, child_top, nodes, tops, reads }, out, tx1)
++	}
++
+ 	dispose_block : Block(ctx), ctx, Bool, Tx -> Tx
+ 	dispose_block = |{ holes: _, handlers: _, children, child_reads: _, child_top, nodes, tops, reads: _ }, env, remove, tx| {
+ 		var $tx = tx
+@@ -500,41 +519,58 @@
+ 	## ------------------------------------------------------------------
+ 	## Site kinds.
+ 
++	## After an event below a state site: take this layer's value back from
++	## the environment and refresh the block if this layer changed.
++	state_settle : Block(In(ctx, s)), U64, Out(In(ctx, s)), Tx -> (Inst(ctx), Out(ctx), Tx)
++	state_settle = |block, depth, out, tx| {
++		match out {
++			Done => crash "fire must hand the environment back"
++			Pending(next_inner, mask) => {
++				{ outer: next_outer, value: s2 } = next_inner
++				own = Engine.bit(depth)
++				above = mask.bitwise_and(own - 1)
++				if above != 0 or mask.bitwise_and(own) == 0 {
++					# An outer layer changed (it will refresh us), or the change
++					# was handled below.
++					(Engine.state_inst(s2, block, depth), Pending(next_outer, mask), tx)
++				} else {
++					(b3, t3) = Engine.refresh(block, In.{ outer: next_outer, value: s2 }, own, tx)
++					(Engine.state_inst(s2, b3, depth), Pending(next_outer, 0), t3)
++				}
++			}
++		}
++	}
++
+ 	## A state site: `s` is this layer's value at absolute depth `depth`.
+ 	state_inst : s, Block(In(ctx, s)), U64 -> Inst(ctx)
+-	state_inst = |s, block, depth| Inst(|env, msg, tx| {
+-		match msg {
+-			Changed(mask) => {
+-				(b2, t2) = Engine.refresh(block, In.{ outer: env, value: s }, mask, tx)
+-				(Engine.state_inst(s, b2, depth), Done, t2)
+-			}
+-			Fire(path, pos, h) => {
+-				# `s` moves into the environment here and is never used again on
+-				# this path, so a reducer below sees it uniquely owned.
+-				(b2, out, t2) = Engine.fire_block(block, In.{ outer: env, value: s }, path, pos, h, tx)
+-				match out {
+-					Done => crash "fire must hand the environment back"
+-					Pending(next_inner, mask) => {
+-						{ outer: next_outer, value: s2 } = next_inner
+-						own = Engine.bit(depth)
+-						above = mask.bitwise_and(own - 1)
+-						if above != 0 or mask.bitwise_and(own) == 0 {
+-							# An outer layer changed (it will refresh us), or the change
+-							# was handled below.
+-							(Engine.state_inst(s2, b2, depth), Pending(next_outer, mask), t2)
+-						} else {
+-							(b3, t3) = Engine.refresh(b2, In.{ outer: next_outer, value: s2 }, own, t2)
+-							(Engine.state_inst(s2, b3, depth), Pending(next_outer, 0), t3)
++	state_inst = |s0, block0, depth0| {
++		held = Held({ s: s0, block: block0, depth: depth0 })
++		Inst(|env, msg, tx| {
++			Held({ s, block, depth }) = held
++			match msg {
++				Changed(mask) => {
++					(b2, t2) = Engine.refresh(block, In.{ outer: env, value: s }, mask, tx)
++					(Engine.state_inst(s, b2, depth), Done, t2)
++				}
++				Fire(path, pos, h) => {
++					# `s` moves into the environment here and is never used again on
++					# this path, so a reducer below sees it uniquely owned.
++					match Engine.fire_target(block, path, pos) {
++						Leaf => Engine.state_settle(block, depth, Engine.fire_leaf(block, In.{ outer: env, value: s }, h), tx)
++						Kid => {
++							(b2, out, t2) = Engine.fire_kid(block, In.{ outer: env, value: s }, path, pos, h, tx)
++							Engine.state_settle(b2, depth, out, t2)
+ 						}
++						Miss => Engine.state_settle(block, depth, Pending(In.{ outer: env, value: s }, 0), tx)
+ 					}
+ 				}
++				Dispose(remove) => {
++					t2 = Engine.dispose_block(block, In.{ outer: env, value: s }, remove, tx)
++					(Engine.noop({}), Done, t2)
++				}
+ 			}
+-			Dispose(remove) => {
+-				t2 = Engine.dispose_block(block, In.{ outer: env, value: s }, remove, tx)
+-				(Engine.noop({}), Done, t2)
+-			}
+-		}
+-	})
++		})
++	}
+ 
+ 	## A conditional site. The branch is rebuilt when the condition changes.
+ 	When(ctx) : { cond : Val(ctx, Bool), yes : (() -> Elem(ctx)), no : (() -> Elem(ctx)), anchor : U32, depth : U64, path : List(U32) }
+@@ -562,8 +598,17 @@
+ 				}
+ 			}
+ 			Fire(path, pos, h) => {
+-				(b2, out, t2) = Engine.fire_block(block, env, path, pos, h, tx)
+-				(Engine.when_inst(w, cur, b2), out, t2)
++				match Engine.fire_target(block, path, pos) {
++					Leaf => {
++						out = Engine.fire_leaf(block, env, h)
++						(Engine.when_inst(w, cur, block), out, tx)
++					}
++					Kid => {
++						(b2, out, t2) = Engine.fire_kid(block, env, path, pos, h, tx)
++						(Engine.when_inst(w, cur, b2), out, t2)
++					}
++					Miss => (Engine.when_inst(w, cur, block), Pending(env, 0), tx)
++				}
+ 			}
+ 			Dispose(remove) => {
+ 				t1 = Engine.dispose_block(block, env, remove, tx)
+@@ -582,8 +627,17 @@
+ 				(Engine.block_inst(b2), Done, t2)
+ 			}
+ 			Fire(path, pos, h) => {
+-				(b2, out, t2) = Engine.fire_block(block, env, path, pos, h, tx)
+-				(Engine.block_inst(b2), out, t2)
++				match Engine.fire_target(block, path, pos) {
++					Leaf => {
++						out = Engine.fire_leaf(block, env, h)
++						(Engine.block_inst(block), out, tx)
++					}
++					Kid => {
++						(b2, out, t2) = Engine.fire_kid(block, env, path, pos, h, tx)
++						(Engine.block_inst(b2), out, t2)
++					}
++					Miss => (Engine.block_inst(block), Pending(env, 0), tx)
++				}
+ 			}
+ 			Dispose(remove) => (Engine.noop({}), Done, Engine.dispose_block(block, env, remove, tx))
+ 		}
+@@ -1501,8 +1555,13 @@
+ 					if pos + 1 >= path.len() {
+ 						match cfg.plan.handlers.get(h.to_u64()) {
+ 							Ok(handler) => {
++								# Rebuild the site before running the row handler: with the
++								# handler call first, --opt=speed/size treated the captured
++								# columns as borrowed and every later write copied them
++								# (roc-lang/roc#12846).
++								next = Engine.each_inst(cfg, rows, cols)
+ 								{ outer, key: _, item: _ } = (handler.run)(row_env)
+-								(Engine.each_inst(cfg, rows, cols), Pending(outer, handler.mask), tx)
++								(next, Pending(outer, handler.mask), tx)
+ 							}
+ 							Err(_) => {
+ 								{ outer, key: _, item: _ } = row_env
+@@ -1513,24 +1572,22 @@
+ 						j = (path.get(pos + 1) ?? 0).to_u64()
+ 						{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask } = cols
+ 						{ list: kl, prev: row_kids } = kids.replace(si, []) ?? crash "kids"
+-						match row_kids.replace(j, Engine.noop({})) {
+-							Ok({ list: rl, prev: kid }) => {
+-								(k2, out, t2) = Engine.call(kid, row_env, Fire(path, pos + 2, h), tx)
+-								kids2 = kl.set(si, rl.set(j, k2) ?? crash "kid") ?? crash "kids"
+-								cols2 = { items, keys, order, free, index, lasts, kids: kids2, binds, pend, dirty, sels, known, kid_mask }
+-								match out {
+-									Pending(e2, m) => {
+-										{ outer, key: _, item: _ } = e2
+-										(Engine.each_inst(cfg, rows, cols2), Pending(outer, m), t2)
+-									}
+-									Done => crash "fire must hand the environment back"
++						if j < row_kids.len() {
++							{ list: rl, prev: kid } = row_kids.replace(j, Engine.noop({})) ?? crash "kid"
++							(k2, out, t2) = Engine.call(kid, row_env, Fire(path, pos + 2, h), tx)
++							kids2 = kl.set(si, rl.set(j, k2) ?? crash "kid") ?? crash "kids"
++							cols2 = { items, keys, order, free, index, lasts, kids: kids2, binds, pend, dirty, sels, known, kid_mask }
++							match out {
++								Pending(e2, m) => {
++									{ outer, key: _, item: _ } = e2
++									(Engine.each_inst(cfg, rows, cols2), Pending(outer, m), t2)
+ 								}
++								Done => crash "fire must hand the environment back"
+ 							}
+-							Err(_) => {
+-								cols2 = { items, keys, order, free, index, lasts, kids: kl.set(si, row_kids) ?? crash "kids", binds, pend, dirty, sels, known, kid_mask }
+-								{ outer, key: _, item: _ } = row_env
+-								(Engine.each_inst(cfg, rows, cols2), Pending(outer, 0), tx)
+-							}
++						} else {
++							cols2 = { items, keys, order, free, index, lasts, kids: kl.set(si, row_kids) ?? crash "kids", binds, pend, dirty, sels, known, kid_mask }
++							{ outer, key: _, item: _ } = row_env
++							(Engine.each_inst(cfg, rows, cols2), Pending(outer, 0), tx)
+ 						}
+ 					}
+ 				}

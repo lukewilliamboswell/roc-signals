@@ -1,0 +1,9 @@
+zig exit=1
+roc-check exit=1
+roc-test exit=1
+native exit=0
+wasm exit=0
+browser exit=0
+fuzz exit=0
+fault exit=0
+DONE

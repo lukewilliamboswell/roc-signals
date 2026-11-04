@@ -1,0 +1,5 @@
+zig exit=0 seconds=27
+native exit=1 seconds=35
+fault exit=0 seconds=39
+fuzz exit=0 seconds=37
+native exit=1 seconds=69
