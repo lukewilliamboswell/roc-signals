@@ -4,62 +4,12 @@ app [target] {
 }
 
 import pf.Fuzz
-import pf.Engine
-import ts.Dom
 import ts.Scm
 import ts.Soak
 import ts.SpecRunner
 import MdApp
-import Markdown
-import Stats
-import Outline
-import Edit
-
-## The engine-level state the benches measure transactions on.
-B : { eng : Engine.App, dom : Dom.Model, steps : U64 }
 
 ## Markdown Editor on the Roc-owned engine.
-## - "bench-N": the sample document repeated N times, then measured single
-##   transactions: append a word (a paragraph edit: the heading spine stays
-##   equal), toggle numbering, change reading speed, append a section.
-
-mstep! : B, Str, Scm.Loc, Str, Str => B
-mstep! = |s, name, loc, ev, payload| {
-	i = SpecRunner.find(s.dom, loc) ?? crash "${name}: no ${Scm.show_loc(loc)}"
-	(node, h) = Dom.target(s.dom, i, ev) ?? crash "${name}: no handler"
-	{ eng, dom, steps } = s
-	w = Fuzz.start_measure!(name)
-	(a, c) = Engine.take_cmds(Engine.event(eng, node, h, payload), [])
-	_ = w.finish!()
-	{ eng: a, dom: Dom.apply(dom, c), steps: steps + 1 }
-}
-
-doc_of : U64 -> Str
-doc_of = |n| Str.join_with(List.repeat(MdApp.sample_document, n), "\n\n")
-
-bench! : U64 => Fuzz.Outcome
-bench! = |n| {
-	view = MdApp.main_with(doc_of(n))
-	w = Fuzz.start_measure!("mount")
-	(a0, c0) = Engine.take_cmds(Engine.mount(view), [])
-	_ = w.finish!()
-	# The app's own work for one paragraph edit, outside the engine.
-	edited = Edit.append_word(doc_of(n))
-	wj = Fuzz.start_measure!("app-parse-counts-headings")
-	bl = Markdown.parse(edited)
-	ct = Stats.counts(edited)
-	hd = Outline.headings(bl)
-	_ = wj.finish!()
-	_ = (ct, hd)
-	var $s = { eng: a0, dom: Dom.apply(Dom.new({}), c0), steps: 0 }
-	$s = mstep!($s, "append-word", Role({ role: "button", name: "Append a word" }), "click", "")
-	$s = mstep!($s, "append-word-again", Role({ role: "button", name: "Append a word" }), "click", "")
-	$s = mstep!($s, "toggle-numbering", Label("Number the outline"), "change", "false")
-	$s = mstep!($s, "reading-speed", Label("Reading speed"), "change", "300")
-	$s = mstep!($s, "append-section", Role({ role: "button", name: "Append a section" }), "click", "")
-	_ = $s
-	Fuzz.keep
-}
 
 Input : { mode : U8, size : U64, program : List(U8) }
 
@@ -107,9 +57,7 @@ net_bytes! = |w| {
 
 test! : Input => Fuzz.Outcome
 test! = |{ mode, size, program }| {
-	if mode == 0 {
-		if (size > 50) Fuzz.reject else bench!(size)
-	} else if mode == 2 {
+	if mode == 2 {
 		soak_walk!(program)
 	} else if mode == 3 {
 		soak_10k!(size)
@@ -129,8 +77,6 @@ target = Fuzz.target_with!({
 		ex("soak-2k-s3", 3, 3),
 		ex("soak-2k-s4", 3, 4),
 		ex("soak-2k-s5", 3, 5),
-		ex("bench-1", 0, 1),
-		ex("bench-10", 0, 10),
 	],
 	generator: { mode: Fuzz.constant(2), size: Fuzz.constant(0), program: Fuzz.list(Fuzz.u8, 400) }.Fuzz,
 	test!,

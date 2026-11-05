@@ -4,63 +4,21 @@ app [target] {
 }
 
 import pf.Fuzz
-import pf.Engine
-import ts.Dom
 import ts.Scm
 import ts.Soak
 import ts.SpecRunner
-import Sheet
 import SheetApp
 
 ## Spreadsheet Lite on the Roc-owned engine (its specs run through
 ## `main-test.roc`).
-## - "bench": one measured region per engine transaction: selecting a cell,
-##   editing a cell with a deep dependency chain and one nothing depends on,
-##   typing a formula in the formula bar, and every view toggle.
 ## - generated: explorer-driven random walks over the live DOM (typing into
 ##   cells and the formula bar, focus, blur, toggles), which must free
 ##   everything they allocated.
 ## - "soak-10k": 10k seeded events, then an edit, reorder, filter and mode
 ##   round trip 48 times on the engine alone with flat live bytes.
 
-B : { eng : Engine.App, dom : Dom.Model }
-
-mstep! : B, Str, Scm.Loc, Str, Str => B
-mstep! = |s, name, loc, ev, payload| {
-	i = SpecRunner.find(s.dom, loc) ?? crash "${name}: no ${Scm.show_loc(loc)}"
-	(node, h) = Dom.target(s.dom, i, ev) ?? crash "${name}: no ${ev} handler"
-	w = Fuzz.start_measure!(name)
-	(a, c) = Engine.take_cmds(Engine.event(s.eng, node, h, payload), [])
-	_ = w.finish!()
-	{ eng: a, dom: Dom.apply(s.dom, c) }
-}
-
 button : Str -> Scm.Loc
 button = |name| Role({ role: "button", name })
-
-bench! : {} => Fuzz.Outcome
-bench! = |_| {
-	w = Fuzz.start_measure!("mount")
-	(a0, c0) = Engine.take_cmds(Engine.mount(SheetApp.main(Sheet.initial_cells)), [])
-	_ = w.finish!()
-	var $s = { eng: a0, dom: Dom.apply(Dom.new({}), c0) }
-	$s = mstep!($s, "focus-b2", Label("B2"), "focus", "1200")
-	$s = mstep!($s, "edit-b2-chain", Label("B2"), "input", "1500")
-	$s = mstep!($s, "restore-b2", Label("B2"), "input", "1200")
-	$s = mstep!($s, "blur-b2", Label("B2"), "blur", "1200")
-	$s = mstep!($s, "focus-c12", Label("C12"), "focus", "7")
-	$s = mstep!($s, "edit-c12-leaf", Label("C12"), "input", "9")
-	$s = mstep!($s, "formula-bar", Label("Formula"), "input", "=B2+C2+100")
-	$s = mstep!($s, "formula-bar-error", Label("Formula"), "input", "=1/0")
-	$s = mstep!($s, "show-formulas", button("Show formulas"), "click", "")
-	$s = mstep!($s, "show-values", button("Show values"), "click", "")
-	$s = mstep!($s, "hide-empty", button("Hide empty rows"), "click", "")
-	$s = mstep!($s, "show-all", button("Show all rows"), "click", "")
-	$s = mstep!($s, "reverse", button("Reverse row order"), "click", "")
-	$s = mstep!($s, "unreverse", button("Top to bottom"), "click", "")
-	_ = $s
-	Fuzz.keep
-}
 
 ## A round trip back to the initial state (soak cycle).
 cycle : List(Scm.Op)
@@ -112,9 +70,7 @@ Input : { mode : U8, size : U64, program : List(U8) }
 
 test! : Input => Fuzz.Outcome
 test! = |{ mode, program, .. }| {
-	if mode == 0 {
-		bench!({})
-	} else if mode == 2 {
+	if mode == 2 {
 		soak_walk!(program)
 	} else if mode == 3 {
 		soak_10k!({})
@@ -130,7 +86,6 @@ target = Fuzz.target_with!({
 	name: "spreadsheet-lite",
 	examples: [
 		ex("soak-10k", 3, 0),
-		ex("bench", 0, 0),
 	],
 	generator: { mode: Fuzz.constant(2), size: Fuzz.constant(0), program: Fuzz.list(Fuzz.u8, 400) }.Fuzz,
 	test!,

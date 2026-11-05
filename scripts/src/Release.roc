@@ -26,7 +26,7 @@ Release := [].{
 	## The examples archive omits the native test and fuzz entry points and
 	## the modules only they use.
 	is_archived : Str -> Bool
-	is_archived = |file| !(file.ends_with("/main-test.roc") or file.ends_with("/main-fuzz.roc") or file.ends_with("/Bench.roc"))
+	is_archived = |file| !(file.ends_with("/main-test.roc") or file.ends_with("/main-fuzz.roc"))
 
 	## An example's browser entry point with the working-tree platform path
 	## replaced by the released bundle.
@@ -151,4 +151,4 @@ expect Release.released_main("app [main] { pf: platform \"https://y\" }", "u") =
 expect Release.json_str("a\"b\nc") == "\"a\\\"b\\nc\""
 
 ## Only the browser entry point and its modules are archived.
-expect [Release.is_archived("e/main-web.roc"), Release.is_archived("e/main-test.roc"), Release.is_archived("e/Bench.roc"), Release.is_archived("e/Api.roc")] == [True, False, False, True]
+expect [Release.is_archived("e/main-web.roc"), Release.is_archived("e/main-test.roc"), Release.is_archived("e/main-fuzz.roc"), Release.is_archived("e/Api.roc")] == [True, False, False, True]

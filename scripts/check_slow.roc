@@ -9,8 +9,7 @@ import src/Slow
 
 ## The `check-slow` task: what takes too long for every pull request, the
 ## soak: every fuzz target's declared examples (leak-checked native soak
-## walks with flat round trips, and the bench transactions), and a long
-## session of every app in Chrome.
+## walks with flat round trips), and a long session of every app in Chrome.
 main! = |_args| {
 	o = Checks.options!({ filter: "*" })?
 	problems = Slow.soak!(o)?

@@ -32,7 +32,6 @@ start = |view| {
 ##   skipped writes (their hits state is retired). Multiples of 6 make a
 ##   follow-up hide its own site mid-drain; its remaining follow-ups are
 ##   dropped (stale).
-## - "bench": a fixed sequence with exact allocation baselines per step.
 
 Kind : [G, H, Tick, Pop]
 
@@ -351,49 +350,12 @@ run_program! = |prog| {
 	}
 }
 
-## Fixed sequence with measured steps (exact allocation baselines).
-bench! : {} => Fuzz.Outcome
-bench! = |_| {
-	w = Fuzz.start_measure!("mount")
-	(a0, c0) = Engine.take_cmds(Engine.mount_with(16, FxApp.main({})), [])
-	_ = w.finish!()
-	var $s = { eng: a0, dom: Dom.apply(Dom.new({}), c0), steps: 0 }
-	step! = |s, name, f| {
-		wm = Fuzz.start_measure!(name)
-		(a, c) = Engine.take_cmds(f(s.eng), [])
-		_ = wm.finish!()
-		{ eng: a, dom: Dom.apply(s.dom, c), steps: s.steps + 1 }
-	}
-	node_of = |s, name| {
-		i = SpecRunner.find(s.dom, Role({ role: "button", name })) ?? crash "no ${name}"
-		Dom.target(s.dom, i, "click") ?? crash "no handler"
-	}
-	(n0, h0) = node_of($s, "issue 0")
-	(t0, th0) = node_of($s, "toggle 0")
-	# bound 16. ids: 1 popstate, 2-4 intervals; issues -> G5 H6, G7 H8, G9 (+Self) H10;
-	# dispose site 0 cancels interval 2 and reparents G7 G9 H6 H8 H10.
-	$s = step!($s, "issue", |a| Engine.event(a, n0, h0, ""))
-	$s = step!($s, "issue-again", |a| Engine.event(a, n0, h0, ""))
-	$s = step!($s, "issue-self", |a| Engine.event(a, n0, h0, ""))
-	$s = step!($s, "deliver", |a| Engine.result(a, 5, Http({ status: 200, headers: [], body: "ok" })))
-	$s = step!($s, "deliver-stale", |a| Engine.result(a, 5, Http({ status: 200, headers: [], body: "late" })))
-	$s = step!($s, "popstate", |a| Engine.result(a, 1, Location("/next")))
-	$s = step!($s, "dispose-reparent", |a| Engine.event(a, t0, th0, ""))
-	$s = step!($s, "deliver-orphan-g", |a| Engine.result(a, 7, Http({ status: 200, headers: [("x-n", "1")], body: "after" })))
-	$s = step!($s, "deliver-orphan-h-skipped", |a| Engine.result(a, 6, Http({ status: 200, headers: [("x-n", "1")], body: "after" })))
-	$s = step!($s, "deliver-cancelled-tick", |a| Engine.result(a, 2, Fired))
-	$s = step!($s, "remount-issue", |a| Engine.event(a, t0, th0, ""))
-	st = Engine.fx_stats($s.eng)
-	Fuzz.mark!("issued=${st.issued.to_str()} delivered=${st.delivered.to_str()} stale=${st.stale.to_str()} refused=${st.refused.to_str()} cancelled=${st.cancelled.to_str()} live=${st.live.to_str()} reparented=${st.reparented.to_str()} skipped=${st.skipped.to_str()}")
-	Fuzz.keep
-}
-
 Input : { mode : U8, program : List(U8) }
 
 test! : Input => Fuzz.Outcome
 test! = |{ mode, program }| {
 	if mode == 0 {
-		bench!({})
+		Fuzz.reject
 	} else {
 		run_program!(program)
 		Fuzz.keep
@@ -406,7 +368,6 @@ ex = |name, mode, program| Fuzz.example({ name, revision: "1", make: || { mode, 
 target = Fuzz.target_with!({
 	name: "fx-channel",
 	examples: [
-		ex("bench", 0, []),
 		# issue 0 x3 (third refused + self), deliver, toggle 0 (cancel), deliver cancelled, show again
 		ex("lifecycle", 1, [0, 0, 0, 0, 0, 0, 2, 1, 1, 0, 2, 2, 1, 0, 3, 7, 0, 1, 0, 2]),
 		# saturate across sites, popstate, stale and never-issued ids

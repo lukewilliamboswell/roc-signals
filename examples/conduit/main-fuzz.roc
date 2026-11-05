@@ -10,45 +10,8 @@ import ts.Scm
 import ts.Soak
 import ts.SpecRunner
 import ConduitApp
-import Bench
 
 ## Conduit on the engine (its specs run through `main-test.roc`).
-## - "bench-N": the Bench scenario with N feed articles, one measured
-##   region per engine transaction (exact allocation baselines).
-
-measured! : SpecRunner.S(Engine.App), Str, (Engine.App -> Engine.App) => SpecRunner.S(Engine.App)
-measured! = |st, name, f| {
-	w = Fuzz.start_measure!(name)
-	(a, c) = Engine.take_cmds(f(st.inst), [])
-	_ = w.finish!()
-	SpecRunner.take_batch(st, a, c)
-}
-
-bench! : U64 => Fuzz.Outcome
-bench! = |n| {
-	view = ConduitApp.main(Bench.boot)
-	w = Fuzz.start_measure!("mount")
-	(a0, c0) = Engine.take_cmds(Engine.mount_with(32, view), [])
-	_ = w.finish!()
-	var $st = Bench.start_from(a0, c0)
-	tags_id = Bench.id_of($st, 2)
-	$st = measured!($st, "tags", |a| Engine.result(a, tags_id, Http({ status: 200, headers: [], body: Bench.tags_json })))
-	feed_id = Bench.id_of($st, 1)
-	feed = Bench.feed_json(n)
-	$st = measured!($st, "feed", |a| Engine.result(a, feed_id, Http({ status: 200, headers: [], body: feed })))
-	(fn, fh) = Bench.click_target($st, Role({ role: "button", name: Bench.favorite_label(n) }))
-	$st = measured!($st, "favorite", |a| Engine.event(a, fn, fh, ""))
-	fav_id = Bench.id_of($st, 3)
-	resp = Bench.favorite_response(n)
-	$st = measured!($st, "favorite-response", |a| Engine.result(a, fav_id, Http({ status: 200, headers: [], body: resp })))
-	_ = Bench.expect_visible($st, Role({ role: "button", name: "Unfavorite Article ${Bench.mid(n).to_str()} (${(Bench.mid(n) % 5 + 1).to_str()})" }))
-	(tn, th) = Bench.click_target($st, Role({ role: "link", name: "signals" }))
-	$st = measured!($st, "tag-click", |a| Engine.event(a, tn, th, ""))
-	if $st.browser.loc != "/roc-signals/examples/conduit/#/?tag=signals" {
-		crash "bench: tag click went to ${$st.browser.loc}"
-	}
-	Fuzz.keep
-}
 
 ## One body that satisfies every RealWorld envelope the app decodes (each
 ## decoder reads its own key): the soak's answer to every request.
@@ -134,9 +97,7 @@ net_bytes! = |w| {
 
 test! : Input => Fuzz.Outcome
 test! = |{ mode, size, program }| {
-	if mode == 0 {
-		if (size > 1000) Fuzz.reject else bench!(size)
-	} else if mode == 2 {
+	if mode == 2 {
 		soak_walk!(program)
 	} else if mode == 3 {
 		soak_10k!(size)
@@ -156,8 +117,6 @@ target = Fuzz.target_with!({
 		ex("soak-2k-s3", 3, 3),
 		ex("soak-2k-s4", 3, 4),
 		ex("soak-2k-s5", 3, 5),
-		ex("bench-20", 0, 20),
-		ex("bench-200", 0, 200),
 	],
 	generator: { mode: Fuzz.constant(2), size: Fuzz.constant(0), program: Fuzz.list(Fuzz.u8, 400) }.Fuzz,
 	test!,

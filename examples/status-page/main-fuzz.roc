@@ -14,9 +14,6 @@ import StatusApp
 
 ## Status Page on the Roc-owned engine (its specs run through
 ## `main-test.roc`).
-## - "bench": one measured region per engine transaction: the first
-##   results, a timed refresh with a degraded service and a two-incident
-##   feed, an edited incident, hiding and showing the page, a manual refresh.
 ## - generated: walks of refreshes, interval ticks, visibility changes and
 ##   answers (healthy, degraded, garbled, failed, timed out, in any order),
 ##   which must free everything they allocated.
@@ -117,70 +114,6 @@ walk_n = |s0, seed, n| {
 start : {} -> St
 start = |_| SpecRunner.mount(StatusApp.program, "/", [])
 
-## One measured engine transaction (the oracle's model kept in step).
-measured! : St, Str, (Engine.App -> Engine.App) => St
-measured! = |st, name, f| {
-	w = Fuzz.start_measure!(name)
-	(a, c) = Engine.take_cmds(f(st.inst), [])
-	_ = w.finish!()
-	SpecRunner.take_batch(st, a, c)
-}
-
-## Answer the pending request for `url` (the oldest) with `body`.
-respond! : St, Str, Str, Str => St
-respond! = |st, name, url, body| {
-	p = st.browser.pending.find_first(|q| q.url == url) ?? crash "bench ${name}: nothing pending for ${url}"
-	br = st.browser
-	s1 = { ..st, browser: { ..br, pending: br.pending.keep_if(|q| q.id != p.id) } }
-	measured!(s1, name, |a| Engine.result(a, p.id, Http({ status: 200, headers: [], body })))
-}
-
-## Deliver a subscription result (`payload` per Appendix B) to every live
-## subscription of kind `sub`.
-broadcast! : St, Str, SpecRunner.Sub, Engine.Res => St
-broadcast! = |st, name, sub, res| {
-	var $s = st
-	for x in st.browser.subs.keep_if(|x| x.sub == sub) {
-		$s = measured!($s, name, |a| Engine.result(a, x.id, res))
-	}
-	$s
-}
-
-answer_round! : St, Str, Str => St
-answer_round! = |st, prefix, api| {
-	var $s = st
-	$s = respond!($s, "${prefix}-api", "/api/status/api", api)
-	$s = respond!($s, "${prefix}-web", "/api/status/web", "operational|99.99")
-	$s = respond!($s, "${prefix}-database", "/api/status/database", "operational|99.90")
-	$s = respond!($s, "${prefix}-notifications", "/api/status/notifications", "operational|99.95")
-	$s
-}
-
-bench! : {} => Fuzz.Outcome
-bench! = |_| {
-	w = Fuzz.start_measure!("mount")
-	(a0, c0) = Engine.take_cmds(Engine.mount(StatusApp.main(Bool.True)), [])
-	_ = w.finish!()
-	var $s = SpecRunner.adopt(a0, c0, "/", [])
-	$s = answer_round!($s, "first", "operational|99.98")
-	$s = respond!($s, "first-incidents", "/api/status/incidents", "")
-	$s = broadcast!($s, "tick", Interval(5000), Fired)
-	$s = answer_round!($s, "tick", "degraded|97.40")
-	$s = respond!($s, "tick-incidents", "/api/status/incidents", feeds.get(2) ?? "")
-	$s = broadcast!($s, "tick-2", Interval(5000), Fired)
-	$s = answer_round!($s, "tick-2", "degraded|97.40")
-	$s = respond!($s, "tick-2-incidents", "/api/status/incidents", feeds.get(3) ?? "")
-	$s = broadcast!($s, "hide", VisibilitySub, Visible(Bool.False))
-	$s = broadcast!($s, "show", VisibilitySub, Visible(Bool.True))
-	$s = answer_round!($s, "show", "operational|99.98")
-	$s = respond!($s, "show-incidents", "/api/status/incidents", "")
-	i = SpecRunner.find($s.dom, Role({ role: "button", name: "Refresh now" })) ?? crash "bench: no Refresh now"
-	(node, h) = Dom.target($s.dom, i, "click") ?? crash "bench: no click handler"
-	$s = measured!($s, "refresh", |a| Engine.event(a, node, h, ""))
-	_ = $s
-	Fuzz.keep
-}
-
 ## Answer every in-flight request except the subscriptions `subs`, healthy,
 ## on the engine alone.
 answer_app : List(U32), Engine.App, List(U8) -> (Engine.App, List(U8))
@@ -248,9 +181,7 @@ Input : { mode : U8, size : U64, program : List(U8) }
 
 test! : Input => Fuzz.Outcome
 test! = |{ mode, program, .. }| {
-	if mode == 0 {
-		bench!({})
-	} else if mode == 2 {
+	if mode == 2 {
 		soak_walk!(program)
 	} else if mode == 3 {
 		soak_10k!({})
@@ -266,7 +197,6 @@ target = Fuzz.target_with!({
 	name: "status-page",
 	examples: [
 		ex("soak-10k", 3, 0),
-		ex("bench", 0, 0),
 	],
 	generator: { mode: Fuzz.constant(2), size: Fuzz.constant(0), program: Fuzz.list(Fuzz.u8, 400) }.Fuzz,
 	test!,

@@ -120,13 +120,12 @@ every later replay keeps it fixed.
 ## Performance
 
 Measure the build that ships: `--opt=size` for the browser, as the site and
-the soak build it. Each app's fuzz target has `bench-N` examples that mount N
-items and measure single transactions with allocation counters; compare a 10×
-larger N before optimizing anything, since scaling problems dwarf constant
-factors. Browser timing comes from the js-framework-benchmark adapter in
-`benchmarks/`. Validate every change with the specs and the soaks. There are
-no exact allocation baselines in the gates; allocation regressions show up as
-soak growth or scaling.
+the soak build it. Test how a cost scales with a 10× larger input before
+optimizing anything, since scaling problems dwarf constant factors. Browser
+timing comes from the js-framework-benchmark adapter in `benchmarks/`.
+Validate every change with the specs and the soaks. There are no exact
+allocation baselines in the gates; allocation regressions show up as soak
+growth or scaling.
 
 ## The compiler pin
 

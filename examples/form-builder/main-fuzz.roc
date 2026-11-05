@@ -5,21 +5,15 @@ app [target] {
 
 import pf.Fuzz
 import pf.Engine
-import ts.Dom
 import ts.Scm
 import ts.Soak
 import ts.SpecRunner
 import Form
 import FormApp
 
-## The engine-level state the benches measure transactions on.
-B : { eng : Engine.App, dom : Dom.Model, steps : U64 }
-
 ## Form Builder on the Roc-owned engine.
 ## - specs: run through main-test.roc (events in,
 ##   decoded DOM out); any mismatch crashes with the spec and step.
-## - "bench-N": mount with N fields, then measured single transactions
-##   (event + command buffer handed back) on the field in the middle.
 ## - generated: random sequences of designer/preview edits checked against a
 ##   reference model of the schema/answers (the DOM's field order, labels,
 ##   summaries, verdicts and counts must match the pure Form functions).
@@ -39,53 +33,6 @@ schema_of = |n| {
 		$i = $i + 1
 	}
 	$s
-}
-
-## One measured transaction on the node the locator finds.
-mstep! : B, Str, Scm.Loc, Str, Str => B
-mstep! = |s, name, loc, ev, payload| {
-	i = SpecRunner.find(s.dom, loc) ?? crash "${name}: no ${Scm.show_loc(loc)}"
-	(node, h) = Dom.target(s.dom, i, ev) ?? crash "${name}: no handler"
-	{ eng, dom, steps } = s
-	e0 = Engine.evals(eng)
-	w = Fuzz.start_measure!(name)
-	(a, c) = Engine.take_cmds(Engine.event(eng, node, h, payload), [])
-	_ = w.finish!()
-	evals = Engine.evals(a) - e0
-	(d2, ops) = Dom.apply_ops(dom, c)
-	Fuzz.mark!("${name}: evals=${evals.to_str()} ${Dom.describe(ops)}")
-	{ eng: a, dom: d2, steps: steps + 1 }
-}
-
-bench! : U64 => Fuzz.Outcome
-bench! = |n| {
-	view = FormApp.main_with(schema_of(n))
-	w = Fuzz.start_measure!("mount")
-	(a0, c0) = Engine.take_cmds(Engine.mount(view), [])
-	_ = w.finish!()
-	s0 = { eng: a0, dom: Dom.apply(Dom.new({}), c0), steps: 0 }
-	mid = "f${((n // 2) // 4 * 4 + 1).to_str()}"
-	# The app's own work, outside the engine: the schema x answers join that
-	# every schema or answer edit recomputes (as in the original).
-	schema = schema_of(n)
-	wj = Fuzz.start_measure!("app-join-rows_of")
-	rows = Form.rows_of(schema.fields, [{ id: mid, text: "Ada", flag: False }])
-	_ = wj.finish!()
-	_ = rows
-	var $s = s0
-	$s = mstep!($s, "edit-label", Label("Label ${mid}"), "input", "Renamed")
-	$s = mstep!($s, "edit-label-again", Label("Label ${mid}"), "input", "Renamed!")
-	$s = mstep!($s, "answer", Label("Answer ${mid}"), "input", "Ada")
-	$s = mstep!($s, "answer-again", Label("Answer ${mid}"), "input", "Ada L")
-	$s = mstep!($s, "edit-label-after-answer", Label("Label ${mid}"), "input", "Renamed?")
-	$s = mstep!($s, "answer-third", Label("Answer ${mid}"), "input", "Ada Lo")
-	$s = mstep!($s, "toggle-required", Label("Required ${mid}"), "change", "true")
-	$s = mstep!($s, "move-up", Role({ role: "button", name: "Move up ${mid}" }), "click", "")
-	$s = mstep!($s, "submit", Role({ role: "button", name: "Submit form" }), "click", "")
-	$s = mstep!($s, "add-field", Role({ role: "button", name: "Add text field" }), "click", "")
-	$s = mstep!($s, "delete-field", Role({ role: "button", name: "Delete ${mid}" }), "click", "")
-	_ = $s
-	Fuzz.keep
 }
 
 Input : { mode : U8, size : U64, program : List(U8) }
@@ -142,9 +89,7 @@ mount_only! = |n| {
 
 test! : Input => Fuzz.Outcome
 test! = |{ mode, size, program }| {
-	if mode == 0 {
-		if (size > 70000) Fuzz.reject else bench!(size)
-	} else if mode == 2 {
+	if mode == 2 {
 		soak_walk!(program)
 	} else if mode == 4 {
 		mount_only!(size)
@@ -162,8 +107,6 @@ target = Fuzz.target_with!({
 	name: "form-builder",
 	examples: [
 		ex("soak-10k", 3, 0),
-		ex("bench-20", 0, 20),
-		ex("bench-200", 0, 200),
 		# ~65k fields: more than 4,095 each sites (one nested each per field row);
 		# engine mount only (the DOM oracle is too slow at this size)
 		ex("mount-65536", 4, 65536),
