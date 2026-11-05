@@ -7,7 +7,10 @@ import PlatformTest
 ## The steps `check_all.roc` and `spec.roc` share.
 Checks := [].{
 
-	## The pinned tools are the ones Blueprint.roc puts on PATH.
+	## The tools Blueprint.roc puts on PATH, and the package compiler: `roc`, the
+	## latest Roc nightly, which the environment expects on PATH and never pins
+	## (roc-automation's model). `roc-stable`, pinned in Blueprint.roc, runs and
+	## checks the scripts only.
 	options! : { filter : Str } => Try(SpecSuite.Options, _)
 	options! = |{ filter }| {
 		root = Path.display(Env.cwd!()?)
@@ -16,7 +19,7 @@ Checks := [].{
 			Ok(dir) => "${root}/${dir}"
 			Err(_) => "${root}/.build"
 		}
-		Ok({ root, build_dir, compiler: "roc-stable", zig: "zig", node: "node", chrome: "google-chrome", filter })
+		Ok({ root, build_dir, compiler: "roc", tooling: "roc-stable", zig: "zig", node: "node", chrome: "google-chrome", filter })
 	}
 
 	prepare_platform! : SpecSuite.Options => Try({}, _)

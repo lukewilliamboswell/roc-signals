@@ -15,10 +15,13 @@ browser, and run it as WebAssembly.
 Roc Signals has no published release yet, so you work in a checkout of
 [the repository](https://github.com/lukewilliamboswell/roc-signals).
 
-The repository pins every tool it uses with
-[Blueprint](https://github.com/lukewilliamboswell/roc-blueprint): a Roc
-nightly (`roc-stable`), Zig and Node. Install the `blueprint` release that
-`Blueprint.roc` names, then open a shell with the pinned tools on `PATH`:
+You need the current Roc nightly installed as `roc` (from
+[roc-lang/nightlies](https://github.com/roc-lang/nightlies/releases)): the
+platform is always tested against the latest nightly. Every other tool is
+pinned with [Blueprint](https://github.com/lukewilliamboswell/roc-blueprint):
+Zig, Node and the scripts' own Roc (`roc-stable`). Install the `blueprint`
+release that `Blueprint.roc` names, then open a shell with the pinned tools
+on `PATH`:
 
 ```sh
 blueprint shell
@@ -76,7 +79,7 @@ The test build names the test platform and the spec runner from
 Type-check the app:
 
 ```sh
-roc-stable check www/samples/counter/main-web.roc
+roc check www/samples/counter/main-web.roc
 ```
 
 ## Test it natively
@@ -90,7 +93,7 @@ Prepare the test platform once, then build the runner and run the specs:
 
 ```sh
 blueprint run platform-test
-roc-stable build www/samples/counter/main-test.roc --output=counter-specs
+roc build www/samples/counter/main-test.roc --output=counter-specs
 ./counter-specs spec www/samples/counter/specs/*.scm
 ```
 
@@ -111,7 +114,7 @@ one directory and serve it:
 blueprint run bundle
 mkdir -p counter-site
 cp www/samples/counter/index.html platform/runtime.mjs counter-site/
-roc-stable build --target=wasm32 www/samples/counter/main-web.roc --output=counter-site/app.wasm
+roc build --target=wasm32 www/samples/counter/main-web.roc --output=counter-site/app.wasm
 blueprint run serve -- counter-site
 ```
 

@@ -29,14 +29,15 @@ main! = |_args| {
 	$problems = $problems.concat(script_pins!()?)
 
 	Proc.note!("== formatting")
-	$problems = $problems.concat(check!({ program: o.compiler, args: ["fmt", "--check", "scripts", "platform", "test-support", "examples", "tests/apps", "fuzz", "www/samples", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"], cwd: "." }, "roc fmt --check")?)
+	$problems = $problems.concat(check!({ program: o.compiler, args: ["fmt", "--check", "platform", "test-support", "examples", "tests/apps", "fuzz", "www/samples", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"], cwd: "." }, "roc fmt --check")?)
+	$problems = $problems.concat(check!({ program: o.tooling, args: ["fmt", "--check", "scripts"], cwd: "." }, "roc-stable fmt --check scripts")?)
 
 	Proc.note!("== API docs")
 	$problems = $problems.concat(ApiDocs.check!({})?)
 
 	Proc.note!("== roc test")
 	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "test-support/main.roc"], cwd: "." }, "roc test test-support")?)
-	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "scripts/check_all.roc"], cwd: "." }, "roc test scripts")?)
+	$problems = $problems.concat(check!({ program: o.tooling, args: ["test", "scripts/check_all.roc"], cwd: "." }, "roc-stable test scripts")?)
 
 	Proc.note!("== platform-test")
 	Checks.prepare_platform!(o)?
@@ -97,7 +98,10 @@ check! = |job, label| {
 	Ok(if (code == 0) [] else ["${label} failed (exit ${code.to_str()})"])
 }
 
-## Every script under `scripts/` names the tooling compiler Blueprint.roc pins.
+## Every script under `scripts/` names the tooling compiler Blueprint.roc pins,
+## and nothing else pins a compiler: no `.roc-version`, and no `roc` header
+## field in any Roc file outside `scripts/` (roc-automation's model; the
+## package compiler floats).
 script_pins! : () => Try(List(Str), _)
 script_pins! = || {
 	blueprint = Path.read_utf8!(Path.utf8("Blueprint.roc"))?
@@ -114,6 +118,17 @@ script_pins! = || {
 		text = Path.read_utf8!(Path.utf8(s))?
 		if !text.contains("roc: \"${tag}\"") {
 			$out = $out.append("${s} does not pin roc: \"${tag}\"")
+		}
+	}
+	if Path.exists!(Path.utf8(".roc-version"))? {
+		$out = $out.append(".roc-version pins a compiler; only scripts/ may")
+	}
+	for dir in ["platform", "test-support", "examples", "tests", "fuzz", "www/samples", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"] {
+		for f in SpecSuite.files_under!(dir, ".roc")? {
+			header = Path.read_utf8!(Path.utf8(f))?.split_on("\n").take_first(6)
+			if header.any(|l| l.trim().starts_with("roc: \"")) {
+				$out = $out.append("${f} pins a compiler in its header; only scripts/ may")
+			}
 		}
 	}
 	Ok($out)

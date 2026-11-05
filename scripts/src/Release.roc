@@ -102,7 +102,8 @@ Release := [].{
 		Proc.run!({ program: "zip", args: ["-q", "-r", "-X", "${out}/${name}.zip", name], cwd: stage })?
 
 		compiler = Str.from_utf8_lossy(Proc.capture!({ program: o.compiler, args: ["version"], cwd: o.root })?).trim()
-		Path.write_utf8!(Path.utf8("${out}/release-notes.md"), Release.notes(version, bundle_url, compiler))?
+		tooling = Str.from_utf8_lossy(Proc.capture!({ program: o.tooling, args: ["version"], cwd: o.root })?).trim()
+		Path.write_utf8!(Path.utf8("${out}/release-notes.md"), Release.notes(version, bundle_url, { compiler, tooling }))?
 		Proc.note!("release ${version}: ${out}")
 		Ok($problems)
 	}
@@ -118,9 +119,9 @@ Release := [].{
 		\\nightly workflow runs against the latest Roc nightly.
 
 	## The draft release body. The maintainer writes the narrative on GitHub
-	## before publishing; the compiler and the platform URL are filled in here.
-	notes : Str, Str, Str -> Str
-	notes = |version, bundle_url, compiler|
+	## before publishing; both compilers and the platform URL are filled in here.
+	notes : Str, Str, { compiler : Str, tooling : Str } -> Str
+	notes = |version, bundle_url, { compiler, tooling }|
 		\\# Roc Signals ${version}
 		\\
 		\\<!-- What changed, for app authors. Write this on GitHub before publishing. -->
@@ -135,7 +136,9 @@ Release := [].{
 		\\
 		\\## Compilers
 		\\
-		\\- Built and tested with `${compiler}`.
+		\\- Built and tested with `${compiler}`, the latest Roc nightly when the release
+		\\  was built.
+		\\- Release tooling ran on `${tooling}` (`roc-stable`).
 }
 
 ## Examples name the released bundle instead of the working tree.

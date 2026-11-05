@@ -32,7 +32,7 @@ SpecSuite := [].{
 	empty_tally = { passed: 0, failed: 0, problems: [] }
 
 	## `root` and `build_dir` are absolute.
-	Options : { root : Str, build_dir : Str, compiler : Str, zig : Str, node : Str, chrome : Str, filter : Str }
+	Options : { root : Str, build_dir : Str, compiler : Str, tooling : Str, zig : Str, node : Str, chrome : Str, filter : Str }
 
 	# -------------------------------------------------------------- files
 
@@ -56,6 +56,21 @@ SpecSuite := [].{
 		entries = Path.list!(Path.utf8(dir))?
 		names = entries.keep_oks(|p| Path.filename(p).map_ok(Path.display)).keep_if(|n| n.ends_with(suffix))
 		Ok(names.sort_with(|a, b| SpecSuite.compare_str(a, b)).map(|n| "${dir}/${n}"))
+	}
+
+	## Every file ending in `suffix` under `dir`, at any depth.
+	files_under! : Str, Str => Try(List(Str), _)
+	files_under! = |dir, suffix| {
+		var $out = []
+		for entry in Path.list!(Path.utf8(dir))? {
+			name = Path.display(entry)
+			if Path.is_dir!(entry)? {
+				$out = $out.concat(SpecSuite.files_under!(name, suffix)?)
+			} else if name.ends_with(suffix) {
+				$out = $out.append(name)
+			}
+		}
+		Ok($out)
 	}
 
 	compare_str : Str, Str -> [Before, Same, After]

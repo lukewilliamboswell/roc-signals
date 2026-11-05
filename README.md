@@ -15,8 +15,9 @@ replay in headless Chrome.
 
 ## Try it
 
-Install [Blueprint](https://github.com/lukewilliamboswell/roc-blueprint), which
-provides the pinned Roc nightly, Zig and Node, then:
+Install the current Roc nightly as `roc` and
+[Blueprint](https://github.com/lukewilliamboswell/roc-blueprint), which
+provides the pinned tooling (Zig, Node and the scripts' `roc-stable`), then:
 
 ```sh
 blueprint run spec -- --browser kanban-board   # one example's specs, natively and in Chrome
@@ -31,7 +32,7 @@ walks through writing, testing and running a first app.
 
 | Path | Contents |
 |---|---|
-| `platform/` | The engine (`Engine.roc`), the `Html` vocabulary, the Wasm host, the browser runtime, and the native test platform |
+| `platform/` | The engine (`Core.roc`), its authoring API (`Engine.roc`), the `Html` vocabulary, the Wasm host, the browser runtime, and the native test platform |
 | `examples/` | Eight example apps, each with its specs |
 | `test-support/`, `tests/`, `fuzz/` | The spec parser and native runner, browser contract tests, fuzz targets |
 | `www/` | The documentation site |

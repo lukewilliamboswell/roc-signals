@@ -1016,9 +1016,12 @@ loads; seeding storage in the same setup is a spec error in both runners.
 Tooling follows the roc-automation model. Only the parts that shape the
 architecture are recorded here:
 
-- **Pinned environment.** `Blueprint.roc` and its lock pin the Roc nightly,
-  Zig, Node and Chrome. No script, platform or example carries its own pin or
-  an absolute path.
+- **Pinned tooling, floating compiler.** `Blueprint.roc` and its lock pin the
+  scripts' Roc nightly (`roc-stable`), Zig, Node and Chrome. The platform,
+  the examples and the tests are built with `roc`, the latest Roc nightly,
+  which is never pinned: each pull request answers whether the change works
+  with the compiler users install today. No platform or example file names a
+  compiler or carries an absolute path.
 - **Roc scripts.** Automation is Roc scripts under `scripts/`; one `check`
   task runs formatting, `roc test`, every example's specs natively and in
   Chrome, fuzz corpus replay, size budgets, and the host
@@ -1029,8 +1032,7 @@ architecture are recorded here:
   runtime), `runtime.mjs`, an examples archive naming that bundle, and the
   generated API docs; `check` builds the same assets as a dry run. The shared
   roc-automation nightly runner builds the latest release's examples with the
-  latest Roc nightly. Changing the pinned nightly is a maintainer's pull
-  request.
+  latest Roc nightly. Changing `roc-stable` is a maintainer's pull request.
 - **Docs samples compile.** Every Roc sample in the documentation is a file
   that `check` type-checks, and a sample app's specs run in both runners.
 - **Documentation stays on the site.** Contributor and user documentation live
@@ -1039,9 +1041,9 @@ architecture are recorded here:
 
 ## Compiler Limitations
 
-These are upstream defects in the pinned Roc compiler. Each workaround is
-narrow, carries a link to its issue beside the code, and is removed once the
-pinned compiler contains the fix. None of them is platform semantics.
+These are upstream defects in the Roc nightly. Each workaround is narrow,
+carries a link to its issue beside the code, and is removed once the nightly
+contains the fix. None of them is platform semantics.
 
 | Issue | Defect | Effect on the engine |
 |---|---|---|

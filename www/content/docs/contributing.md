@@ -1,6 +1,6 @@
 +++
 title = "Contributing"
-description = "Working on the platform itself: tools, tasks, tests, docs, performance, the compiler pin and releases."
+description = "Working on the platform itself: tools, tasks, tests, docs, performance, compilers and releases."
 weight = 12
 template = "page.html"
 +++
@@ -16,11 +16,12 @@ repository-wide review guidelines are in `AGENTS.md`, and Roc conventions in
 ## Tools
 
 [Blueprint](https://github.com/lukewilliamboswell/roc-blueprint) provides
-every tool. `Blueprint.roc` declares the pinned Roc nightly (`roc-stable`),
-Zig, Node, Zola, Tailwind and roc-docs, and the tasks below; `Blueprint.lock`
-records the SHA-256 of every download. Install the `blueprint` release that
-`Blueprint.roc` names; no Nix is needed. `blueprint shell` opens a shell with
-the tools on `PATH`.
+every tool but the package compiler. `Blueprint.roc` declares the scripts'
+Roc nightly (`roc-stable`), Zig, Node, Zola, Tailwind and roc-docs, and the
+tasks below; `Blueprint.lock` records the SHA-256 of every download. Install
+the `blueprint` release that `Blueprint.roc` names (no Nix is needed) and the
+current Roc nightly as `roc` (see [Compilers](#compilers)). `blueprint shell`
+opens a shell with the tools on `PATH`.
 
 Chrome is the machine's `google-chrome` for now, because blueprint cannot yet
 unpack Chrome for Testing's zip archives; `Blueprint.roc` has the pinned
@@ -65,7 +66,8 @@ for example to run two tasks at once.
 
 ## What `check` runs
 
-1. Every script names the `roc-stable` nightly that `Blueprint.roc` pins.
+1. Every script names the `roc-stable` nightly that `Blueprint.roc` pins, and
+   no other Roc file names a compiler.
 2. `roc fmt --check` over every Roc source, and `roc test` on the test support
    and the scripts.
 3. The test platform, and the `scm-parse` fuzz target's examples.
@@ -128,23 +130,35 @@ Validate every change with the specs and the soaks. There are no exact
 allocation baselines in the gates; allocation regressions show up as soak
 growth or scaling.
 
-## The compiler pin
+## Compilers
 
-The repository pins one Roc nightly, `roc-stable`, and builds everything with
-it: scripts, the platform, the examples and the tests. To move to a newer
-nightly, in one pull request:
+The repository follows roc-automation's three-compiler model:
+
+| Compiler | Selected by | Used for |
+|---|---|---|
+| Blueprint's own | The `blueprint` release `Blueprint.roc` names | Evaluating `Blueprint.roc` |
+| `roc-stable` | The nightly tag in `Blueprint.roc` | Running and checking the scripts under `scripts/` |
+| `roc`, the latest Roc nightly | Nothing: whatever `roc-lang/nightlies` published last | Checking, building and testing the platform, the examples, the tests and the docs samples |
+
+The platform floats on purpose: the question each pull request answers is
+whether it works with the compiler users install today. CI resolves the
+latest nightly once per run and installs it as `roc` with
+`roc-lang/setup-roc`; locally, install the current nightly as `roc`. No Roc
+file outside `scripts/` names a compiler, and `check` fails if one does.
+
+To move `roc-stable`, in one pull request:
 
 1. Change the `Recipes.roc_nightly(...)` tag in `Blueprint.roc`.
 2. Change the `roc` field of every script under `scripts/` to the same tag;
    `check` fails until they match.
 3. Run `blueprint update` and commit `Blueprint.lock`.
-4. Run `blueprint run check` and `blueprint run check-slow`, and fix what the
-   new compiler breaks.
-5. Remove any workaround whose upstream issue the new nightly fixes, and its
-   row in `design.md`'s compiler limitations.
+4. Run `blueprint run check`.
 
-The nightly-compatibility workflow tells you when a release stops building on
-the latest nightly; it never changes the pin itself.
+When a new nightly breaks the platform, CI says so on the next pull request;
+fix it there, and remove any workaround whose upstream issue the nightly
+fixes, with its row in `design.md`'s compiler limitations. The
+nightly-compatibility workflow separately tests the latest release against
+the latest nightly every day.
 
 ## Compiler workarounds
 
@@ -163,8 +177,9 @@ assets with `blueprint run release` and creates a draft GitHub release with:
 - `roc-signals-examples-<version>.zip`, the examples naming that bundle, with
   the compatibility suite;
 - `roc-signals-docs-<version>.zip`, the API docs;
-- notes stating the compiler used, to which the maintainer adds the narrative
-  on GitHub before publishing.
+- notes stating both compilers (the `roc` nightly that built and tested it,
+  and `roc-stable`), to which the maintainer adds the narrative on GitHub
+  before publishing.
 
 After a release, `nightly-compatibility.yml` builds the released examples with
 the latest Roc nightly every day, using roc-automation's shared runner, and
@@ -179,11 +194,6 @@ with these deliberate exceptions:
 - **Documentation lives on this site**, built with Zola, not in
   `docs/*.adoc`; roc-docs generates only the API reference. The site is the
   product's documentation surface.
-- **One pinned compiler for everything.** The engine's speed and code size
-  depend on specific compiler behaviour (see `design.md`'s compiler
-  limitations), so the platform and examples are tested with `roc-stable`,
-  not the latest nightly. The nightly workflow covers the latest nightly
-  against releases.
 - **Specs, not `tests/spec.json`, test the working tree.** The examples are
   browser apps; `.scm` specs run in both runners. The examples archive
   carries a `spec.json` only for the shared nightly runner.

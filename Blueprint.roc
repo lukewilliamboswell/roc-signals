@@ -8,9 +8,12 @@
 #     blueprint tasks                      # list every task
 #     blueprint update                     # refresh Blueprint.lock
 #
-# Every pinned tool is a fetched release, so no environment starts Nix. The
-# one Roc compiler is `roc-stable`: it builds the scripts, the platform, the
-# examples and the tests alike.
+# Every pinned tool is a fetched release, so no environment starts Nix. Two
+# Roc compilers have two jobs (roc-automation's model): `roc-stable`, pinned
+# below, runs the scripts; `roc`, the latest Roc nightly, checks, builds and
+# tests the platform, the examples and the tests. `roc` is never pinned: CI
+# installs it with roc-lang/setup-roc, and a contributor installs the current
+# nightly as `roc`, so the environments expect it on PATH.
 app [config] { pf: platform "https://github.com/lukewilliamboswell/roc-blueprint/releases/download/0.8.0/FbJymjYdCxx9vqMcau7r4tQfeAbnVGqqJoYrLGqPCqKu.tar.zst" }
 
 import pf.Config
@@ -26,9 +29,9 @@ node_program = Fetch("node", node)
 # The roc-automation documentation renderer, which generates the API docs.
 roc_docs_program = Fetch("roc-docs", Recipes.file("https://github.com/lukewilliamboswell/roc-automation/releases/download/tools-0.10.0/roc-docs-{system}"))
 
-# The Roc nightly the Roc-owned engine is built and tested with. It is also
-# the scripts' tooling compiler (`roc-stable`), so every script's `roc` header
-# field names the same release. roc-overlay packages it as
+# The scripts' tooling compiler (`roc-stable`): every script's `roc` header
+# field names this release, and `check` fails until they match. Nothing else
+# is pinned to it. roc-overlay packages it as
 # `nix#rocpkgs.nightly-2026-11-03-34bd006`; it is fetched directly here so no
 # environment starts Nix.
 roc_stable_program = Fetch("roc-stable", Recipes.roc_nightly("nightly-2026-11-03-34bd006"))
@@ -46,11 +49,11 @@ config = [
 	# with `tar -xf`, which GNU tar cannot read; the pinned recipe is ready
 	# below as `chrome` and replaces this Expect once blueprint unpacks zips on
 	# Linux.
-	Environment("engine", [Programs([roc_stable_program, zig_program, node_program]), Expect(["curl", "tar", "zstd", "sha256sum", "getconf", "google-chrome", "zip"])]),
+	Environment("engine", [Programs([roc_stable_program, zig_program, node_program]), Expect(["roc", "curl", "tar", "zstd", "sha256sum", "getconf", "google-chrome", "zip"])]),
 	# Building the documentation site, its API docs and its live examples.
-	Environment("site", [Programs([roc_stable_program, zig_program, zola_program, roc_docs_program, Fetch("tailwindcss", tailwind)])]),
+	Environment("site", [Programs([roc_stable_program, zig_program, zola_program, roc_docs_program, Fetch("tailwindcss", tailwind)]), Expect(["roc"])]),
 	# Building the release assets, API docs included.
-	Environment("release", [Programs([roc_stable_program, zig_program, node_program, roc_docs_program]), Expect(["zip"])]),
+	Environment("release", [Programs([roc_stable_program, zig_program, node_program, roc_docs_program]), Expect(["roc", "zip"])]),
 	Shell("default", [Use("engine")]),
 	# The per-pull-request gate: formatting, roc test, the docs samples, every
 	# app's specs natively and in Chrome, the broken-spec self-check, the

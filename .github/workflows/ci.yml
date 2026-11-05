@@ -18,8 +18,25 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # The latest Roc nightly, resolved once so every job of this run tests
+  # with the same `roc` (roc-automation's model: the package compiler floats;
+  # only the scripts' `roc-stable` is pinned in Blueprint.roc).
+  nightly:
+    name: Resolve the Roc nightly
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.nightly.outputs.tag }}
+    steps:
+      - id: nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "tag=$(gh api repos/roc-lang/nightlies/releases/latest --jq .tag_name)" >> "$GITHUB_OUTPUT"
+
   check:
     name: Check
+    needs: nightly
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -32,11 +49,16 @@ jobs:
         with:
           cache: 'true'
           cache-workload: engine
+      - uses: roc-lang/setup-roc@f5a74bf90aa694b43ab4a7cbfdb19273bc6aa697
+        with:
+          version: nightly-new-compiler
+          nightly-tag: ${{ needs.nightly.outputs.tag }}
       - run: blueprint check
       - run: blueprint run check
 
   site:
     name: Site
+    needs: nightly
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -49,4 +71,8 @@ jobs:
         with:
           cache: 'true'
           cache-workload: site
+      - uses: roc-lang/setup-roc@f5a74bf90aa694b43ab4a7cbfdb19273bc6aa697
+        with:
+          version: nightly-new-compiler
+          nightly-tag: ${{ needs.nightly.outputs.tag }}
       - run: blueprint run site
