@@ -1049,10 +1049,11 @@ Chrome:
   0.82–0.90× Solid's, against 2.98× for the previous engine.
 - **Memory:** about 10 MB (dominated by the Wasm linear-memory baseline),
   against 88–115 MB for the previous engine.
-- **Real apps:** form-builder, kanban-board, data-grid, markdown-editor and
-  Conduit, ported with their original specs, pass natively and replay in
-  Chrome, with flat soak runs and per-event costs a small fraction of the
-  previous engine's.
+- **Real apps:** all eight kept examples — form-builder, kanban-board,
+  data-grid, markdown-editor, Conduit, field-notes, status-page and
+  spreadsheet-lite — were ported with their original specs. Every spec passes
+  natively and replays in Chrome, with flat soak runs and per-event costs a
+  small fraction of the previous engine's.
 
 The decisive change was representation, not location: an earlier experiment
 that moved the old API into Roc without removing per-edge erasure kept the old
