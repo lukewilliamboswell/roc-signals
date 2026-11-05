@@ -3,6 +3,7 @@ app [target] {
 	ts: "../../../test-support/main.roc",
 }
 
+import pf.Core
 import pf.Fuzz
 import pf.Engine
 import ts.Dom
@@ -11,11 +12,11 @@ import ts.SpecRunner
 import FxApp
 
 ## The engine and the oracle's DOM, driven through the engine directly.
-S : { eng : Engine.App, dom : Dom.Model, steps : U64 }
+S : { eng : Core.App, dom : Dom.Model, steps : U64 }
 
 start : Engine.Elem(Engine.Root) -> S
 start = |view| {
-	(a, c) = Engine.take_cmds(Engine.mount(view), [])
+	(a, c) = Core.take_cmds(Core.mount(view), [])
 	{ eng: a, dom: Dom.apply(Dom.new({}), c), steps: 0 }
 }
 
@@ -211,11 +212,11 @@ E : { s : S, fx : List(Dom.FxCmd) }
 
 ## Apply one batch to the oracle. The engine's per-opcode work counters must
 ## have moved by exactly the commands the oracle decoded from it.
-apply! : S, Engine.App, List(U8) => E
+apply! : S, Core.App, List(U8) => E
 apply! = |s, a, c| {
 	(d2, ops, fx) = Dom.apply_fx(s.dom, c)
-	before = Engine.work_counters(s.eng)
-	after = Engine.work_counters(a)
+	before = Core.work_counters(s.eng)
+	after = Core.work_counters(a)
 	var $op = 1.U64
 	while $op <= 18 {
 		moved = (after.get($op) ?? 0) - (before.get($op) ?? 0)
@@ -232,7 +233,7 @@ click! : S, Str => E
 click! = |s, name| {
 	i = SpecRunner.find(s.dom, Role({ role: "button", name })) ?? crash "no button ${name}"
 	(node, h) = Dom.target(s.dom, i, "click") ?? crash "no handler"
-	(a, c) = Engine.take_cmds(Engine.event(s.eng, node, h, ""), [])
+	(a, c) = Core.take_cmds(Core.event(s.eng, node, h, ""), [])
 	apply!(s, a, c)
 }
 
@@ -240,7 +241,7 @@ click! = |s, name| {
 ## decoder there (the round trip is part of what the model checks).
 deliver! : S, U32, Engine.Res => E
 deliver! = |s, id, res| {
-	(a, c) = Engine.take_cmds(Engine.result(s.eng, id, Engine.decode_res(encode_res(res))), [])
+	(a, c) = Core.take_cmds(Core.result(s.eng, id, Core.decode_res(encode_res(res))), [])
 	apply!(s, a, c)
 }
 
@@ -281,7 +282,7 @@ check! = |what, e, m| {
 	if log != want {
 		crash "${what}: log \"${log}\", model \"${want}\""
 	}
-	st = Engine.fx_stats(e.s.eng)
+	st = Core.fx_stats(e.s.eng)
 	got = [st.issued, st.delivered, st.stale, st.refused, st.cancelled, st.live, st.reparented, st.skipped]
 	exp = [m.issued, m.delivered, m.stale, m.refused, m.cancelled, m.live.len(), m.reparented, m.skipped]
 	if got != exp {
@@ -301,19 +302,19 @@ check! = |what, e, m| {
 	}
 	# The FX and CANCEL work counters are the model's issued and cancelled
 	# requests: every admitted request is one FX, every stop one CANCEL.
-	w = Engine.work_counters(e.s.eng)
+	w = Core.work_counters(e.s.eng)
 	if (w.get(13) ?? 0) != m.issued or (w.get(14) ?? 0) != m.cancelled {
 		crash "${what}: FX/CANCEL work counters ${(w.get(13) ?? 0).to_str()}/${(w.get(14) ?? 0).to_str()}, model issued/cancelled ${m.issued.to_str()}/${m.cancelled.to_str()}"
 	}
-	if Engine.fx_live(e.s.eng) != m.live.map(|l| l.id) {
-		crash "${what}: live ids ${Str.inspect(Engine.fx_live(e.s.eng))}, model ${Str.inspect(m.live.map(|l| l.id))}"
+	if Core.fx_live(e.s.eng) != m.live.map(|l| l.id) {
+		crash "${what}: live ids ${Str.inspect(Core.fx_live(e.s.eng))}, model ${Str.inspect(m.live.map(|l| l.id))}"
 	}
 }
 
 run_program! : List(U8) => {}
 run_program! = |prog| {
 	max = 5
-	(a0, c0) = Engine.take_cmds(Engine.mount_with(max, FxApp.main({})), [])
+	(a0, c0) = Core.take_cmds(Core.mount_with(max, FxApp.main({})), [])
 	(d0, _, fx0) = Dom.apply_fx(Dom.new({}), c0)
 	var $s = { eng: a0, dom: d0, steps: 0 }
 	var $m = model_new(max)

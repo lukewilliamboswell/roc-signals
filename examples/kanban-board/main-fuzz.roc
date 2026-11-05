@@ -3,6 +3,7 @@ app [target] {
 	ts: "../../test-support/main.roc",
 }
 
+import pf.Core
 import pf.Fuzz
 import ts.Scm
 import ts.Soak
@@ -21,7 +22,7 @@ cycle = [Fill(Label("New card title"), "Soak card"), Click(Role({ role: "button"
 ## fresh mount, which must free everything it allocated.
 soak_walk! : List(U8) => Fuzz.Outcome
 soak_walk! = |program| {
-	Fuzz.expect_no_leaks!(|| Soak.walk(KanbanApp.program, SpecRunner.mount(KanbanApp.program, "/", []), program, |s| s))
+	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(KanbanApp.program), SpecRunner.mount(Core.driver(KanbanApp.program), "/", []), program, |s| s))
 	Fuzz.keep
 }
 
@@ -29,9 +30,9 @@ soak_walk! = |program| {
 ## 48 times on the engine alone: live allocations flat after 2 warm-up cycles.
 soak_10k! : {} => Fuzz.Outcome
 soak_10k! = |_| {
-	Fuzz.expect_no_leaks!(|| Soak.walk_n(KanbanApp.program, SpecRunner.mount(KanbanApp.program, "/", []), 7, 10000, |s| s))
-	(s1, evs) = Soak.triples(KanbanApp.program, SpecRunner.mount(KanbanApp.program, "/", []), cycle, |s| s)
-	counts = Soak.replay!(KanbanApp.program, s1.inst, evs, 48, |a, b| (a, b), begin!, net_bytes!)
+	Fuzz.expect_no_leaks!(|| Soak.walk_n(Core.driver(KanbanApp.program), SpecRunner.mount(Core.driver(KanbanApp.program), "/", []), 7, 10000, |s| s))
+	(s1, evs) = Soak.triples(Core.driver(KanbanApp.program), SpecRunner.mount(Core.driver(KanbanApp.program), "/", []), cycle, |s| s)
+	counts = Soak.replay!(Core.driver(KanbanApp.program), s1.inst, evs, 48, |a, b| (a, b), begin!, net_bytes!)
 	match Soak.flat(counts, 2) {
 		Ok(_) => {}
 		Err(m) => crash m

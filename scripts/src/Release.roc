@@ -128,7 +128,7 @@ Release := [].{
 		\\## Use this release
 		\\
 		\\```roc
-		\\app [Instance, main] { pf: platform "${bundle_url}" }
+		\\app [main] { pf: platform "${bundle_url}" }
 		\\```
 		\\
 		\\Load apps with this release's `runtime.mjs`.
@@ -140,8 +140,8 @@ Release := [].{
 
 ## Examples name the released bundle instead of the working tree.
 expect {
-	source = "app [Instance, main] { pf: platform \"../../platform/main.roc\" }\n"
-	Release.released_main(source, "https://x/1.0.0/h.tar.zst") == Ok("app [Instance, main] { pf: platform \"https://x/1.0.0/h.tar.zst\" }\n")
+	source = "app [main] { pf: platform \"../../platform/main.roc\" }\n"
+	Release.released_main(source, "https://x/1.0.0/h.tar.zst") == Ok("app [main] { pf: platform \"https://x/1.0.0/h.tar.zst\" }\n")
 }
 
 ## An entry point that does not name the working-tree platform is refused.

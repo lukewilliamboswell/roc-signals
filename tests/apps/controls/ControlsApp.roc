@@ -72,7 +72,7 @@ ControlsApp := [].{
 
 	## The program both hosts run: the web platform (`main-web.roc`) and the
 	## test platform (`main-test.roc`, `main-fuzz.roc`).
-	program : Engine.Program(Engine.App)
+	program : Engine.Program
 	program = Engine.program(|| ControlsApp.main({}))
 
 	main : {} -> Elem(Root)

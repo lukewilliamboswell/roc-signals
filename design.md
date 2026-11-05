@@ -217,9 +217,9 @@ state is row state — is the documented pattern that keeps app work local.
 
 ```mermaid
 flowchart LR
-    App["app: App.roc<br/>Elem tree of typed sites"] --> Engine["platform/Engine.roc<br/>pure engine: sites, layers, each columns,<br/>effects, command encoding"]
+    App["app: App.roc<br/>Elem tree of typed sites"] --> Engine["platform/Core.roc (internal) behind Engine.roc (authoring API)<br/>pure engine: sites, layers, each columns,<br/>effects, command encoding"]
     Engine --> Main["platform/main.roc<br/>keys · init · event · drop"]
-    Main --> Host["platform/host/host.zig<br/>allocator · Box(Instance) · cmd buffer ·<br/>staged payload · fault class"]
+    Main --> Host["platform/host/host.zig<br/>allocator · Box(Core.App) · cmd buffer ·<br/>staged payload · fault class"]
     Host --> Wire["command bytes in linear memory"]
     Wire --> JS["platform/runtime.mjs<br/>apply commands · perform effects ·<br/>delegate events · contain faults"]
     JS --> DOM["browser DOM and services"]
@@ -234,7 +234,7 @@ flowchart LR
 ```
 
 The repository has one platform (`platform/`), web only. The same
-`Engine.roc` runs in two places:
+`Core.roc` runs in two places:
 
 - **The web platform** compiles the app and engine to Wasm with the thin host.
   It is the product.
@@ -792,7 +792,7 @@ mid-text edits, a CDP IME composition) do.
 
 The Zig host (`platform/host/host.zig`) owns exactly:
 
-- **one opaque `Box(Instance)`** — the engine state between calls;
+- **one opaque `Box(Core.App)`** — the engine state between calls;
 - **the command buffer** — the last call's `List(U8)`;
 - **one staged payload** — a Roc `List(U8)` allocated by `payload_reserve`;
 - **the allocator** — `roc_alloc`/`roc_dealloc`/`roc_realloc` over the Wasm page
@@ -907,7 +907,7 @@ The grammar has **one parser, written in Roc** (`test-support/Scm.roc`), which
 produces a typed list of steps. Both runners consume it:
 
 - the **native runner** (`SpecRunner.roc`, built by each app's `main-test.roc` on the test platform) drives
-  `Engine.roc` directly and asserts against the `Dom.roc` model;
+  the engine directly and asserts against the `Dom.roc` model;
 - the **browser runner** replays the same steps, emitted as data by the same
   parser, against the real runtime in headless Chrome.
 
@@ -945,7 +945,7 @@ with the parser's form tables (`replay.mjs --check-grammar`).
 ### The `Dom.roc` oracle
 
 `Dom.roc` decodes the command stream into a small DOM model, independently of
-the engine: it shares no code with `Engine.roc`. Every native assertion reads
+the engine: it shares no code with `Core.roc`. Every native assertion reads
 that model, never engine state. It mirrors the runtime's delegated dispatch
 (nearest handler, then nearest engine id) and decodes effect commands in
 stream order, so specs can model a browser — location and history, title,
@@ -1060,7 +1060,7 @@ Code size is the main open cost of the architecture and is tracked against
 ## Measures of Effectiveness
 
 1. **One engine, thin host.** All reactive and structural logic is in
-   `Engine.roc`. `host.zig` and `runtime.mjs` contain no reactive decision.
+   `Core.roc`. `host.zig` and `runtime.mjs` contain no reactive decision.
    *Holds when:* the same engine runs under the web and test platforms with
    the same command stream.
 2. **App semantics agree natively and in the browser.** Every maintained app's
@@ -1120,17 +1120,26 @@ These are unresolved mechanism choices within the contracts above.
 
 ## Appendix A: API Surface
 
-The engine API as it stands (`Engine.roc`). Types are abbreviated; `ctx` is
+The authoring API as it stands (`Engine.roc`). Types are abbreviated; `ctx` is
 the context a value or handler is used in.
+
+**The authoring API is the whole public surface.** Every `Engine` type is
+opaque: `Val`, `State`, `Handler` and `RowRef` are opaque wrappers whose
+methods are documented here, and the contexts, `Elem`, `Attr`, `Keyed`,
+`Sink`, `Reaction` and `Program` are aliases of opaque types in the internal
+`Core` module, which holds the implementation. `Core` is not exposed, so an
+app can neither name a representation nor call the interfaces only hosts and
+harnesses use (`Core.driver`, `mount`, `event`, `result`, `take_cmds`, the
+effect and work counters); the generated API docs list the authoring API and
+nothing else. `Req`, `Res`, `HttpError` and `Boot` are plain data and stay
+structural.
 
 ```roc
 # Program entry
-program : (() -> Elem(Root)) -> Program(App)
-program_boot : { storage_keys : List(Str), max_inflight : U64 }, (Boot -> Elem(Root)) -> Program(App)
+program : (() -> Elem(Root)) -> Program
+program_boot : { storage_keys : List(Str), max_inflight : U64 }, (Boot -> Elem(Root)) -> Program
 Boot : { url : Str, storage : List((Str, Str)), online : Bool, visible : Bool, storage_available : Bool }
-Program(state) : { version : U32, keys : () -> List(U8),
-                   init : List(U8) -> (state, List(U8), List(U8)),
-                   event : state, List(U8), List(U8), U32, U32, List(U8) -> (state, List(U8), List(U8)) }
+Program                                       # opaque; the app binds it as `main`
 
 # Values
 const : a -> Val(ctx, a)
@@ -1172,6 +1181,7 @@ ref : Str -> Attr(ctx)                        # named focus reference
 component : Val(ctx, p), Sink(ctx, a), (Val(Comp(p, a), p), State(Comp(p, a), List(a)) -> Elem(Comp(p, a))) -> Elem(ctx)
 State.push, State.push_by, State.push_value_by   # append an outward action
 sink : State(ctx, s), (s, a -> s) -> Sink(ctx, a)
+discard : {} -> Sink(ctx, a)
 split : Sink(ctx, a), Sink(ctx, b), (c -> [L(a), R(b)]) -> Sink(ctx, c)
 
 # Effects
@@ -1226,8 +1236,8 @@ The platform provides (`platform/main.roc`):
 | `roc_engine_version` | `() -> u32` | The protocol version (3) |
 | `roc_engine_keys` | `() -> List(U8)` | Declared storage keys: `count:u32 (key:str)*` |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
-| `roc_engine_event` | `Box(Instance), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One transaction: state, recycled command buffer, recycled work buffer, node, handler, payload |
-| `roc_engine_drop` | `Box(Instance), List(U8), List(U8) -> {}` | Teardown |
+| `roc_engine_event` | `Box(Core.App), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One transaction: state, recycled command buffer, recycled work buffer, node, handler, payload |
+| `roc_engine_drop` | `Box(Core.App), List(U8), List(U8) -> {}` | Teardown |
 
 The host provides `roc_alloc`, `roc_dealloc`, `roc_realloc`, `roc_dbg`,
 `roc_expect_failed` and `roc_crashed`. The result record's three fields are

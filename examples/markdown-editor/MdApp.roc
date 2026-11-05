@@ -272,7 +272,7 @@ MdApp := [].{
 								),
 							],
 						),
-						Engine.component(blocks, { run: |e, _| (e, 0) }, MdApp.preview),
+						Engine.component(blocks, Engine.discard({}), MdApp.preview),
 					],
 				),
 				Engine.component(rows.map2(hs.numbered.val(), |r, n| { rows: r, numbered: n }), Engine.sink(hs.numbered, |_, v| v), MdApp.outline),
@@ -282,7 +282,7 @@ MdApp := [].{
 
 	## The program both hosts run: the web platform (`main-web.roc`) and the
 	## test platform (`main-test.roc`, `main-fuzz.roc`).
-	program : Engine.Program(Engine.App)
+	program : Engine.Program
 	program = Engine.program(|| MdApp.main({}))
 
 	main : {} -> Elem(Root)

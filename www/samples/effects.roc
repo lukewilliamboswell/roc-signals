@@ -1,14 +1,12 @@
-app [Instance, main] { pf: platform "../../platform/main.roc" }
+app [main] { pf: platform "../../platform/main.roc" }
 
 import pf.Engine exposing [Elem, In, Root, State]
 import pf.Html
 
-Instance : Engine.App
-
 # region boot
 ## Declared storage keys are read before mount and arrive in `Boot`, with the
 ## URL and whether the browser is online and the page visible.
-main : Engine.Program(Instance)
+main : Engine.Program
 main = Engine.program_boot(
 	{ storage_keys: ["query"], max_inflight: 32 },
 	|boot| Engine.state(initial(boot), page),

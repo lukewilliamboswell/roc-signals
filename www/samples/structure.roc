@@ -1,11 +1,9 @@
-app [Instance, main] { pf: platform "../../platform/main.roc" }
+app [main] { pf: platform "../../platform/main.roc" }
 
 import pf.Engine exposing [Comp, Elem, In, Root, Row, RowRef, State, Val]
 import pf.Html
 
-Instance : Engine.App
-
-main : Engine.Program(Instance)
+main : Engine.Program
 main = Engine.program(|| Engine.state(initial, page))
 
 # region model

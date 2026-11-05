@@ -64,7 +64,7 @@ import JsonOut
 ## naming the element that holds it. The first match in document order wins.
 SpecRunner := [].{
 
-	## An app as its host sees it (`Engine.Program`, structurally).
+	## An app as its host sees it: `Core.driver` of its `Engine.Program`.
 	Program(state) : {
 		version : U32,
 		keys : () -> List(U8),

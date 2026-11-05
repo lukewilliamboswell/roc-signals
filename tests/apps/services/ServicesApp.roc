@@ -186,7 +186,7 @@ ServicesApp := [].{
 	}
 
 	## The program both hosts run.
-	program : Engine.Program(Engine.App)
+	program : Engine.Program
 	program = Engine.program_boot(
 		{ storage_keys: [], max_inflight: 8 },
 		|boot|

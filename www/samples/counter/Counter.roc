@@ -10,7 +10,7 @@ Counter := [].{
 	Ctx : In(Root, I64)
 
 	## The program both platforms run.
-	program : Engine.Program(Engine.App)
+	program : Engine.Program
 	program = Engine.program(|| Engine.state(0, Counter.view))
 
 	view : State(Ctx, I64) -> Elem(Ctx)

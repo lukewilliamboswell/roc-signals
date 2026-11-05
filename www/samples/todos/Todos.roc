@@ -61,7 +61,7 @@ Todos := [].{
 				},
 		)
 
-	program : Engine.Program(Engine.App)
+	program : Engine.Program
 	program = Engine.program_boot(
 		{ storage_keys: ["todos"], max_inflight: 32 },
 		|boot| {

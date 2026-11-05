@@ -14,7 +14,7 @@ Search := [].{
 	Ctx : In(Root, S)
 
 	## The program both platforms run.
-	program : Engine.Program(Engine.App)
+	program : Engine.Program
 	program = Engine.program(|| Engine.state({ draft: "", query: "", round: 0, live: Bool.False, status: Idle }, Search.view))
 
 	# region requests

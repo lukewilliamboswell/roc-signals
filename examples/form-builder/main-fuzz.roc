@@ -3,8 +3,8 @@ app [target] {
 	ts: "../../test-support/main.roc",
 }
 
+import pf.Core
 import pf.Fuzz
-import pf.Engine
 import ts.Scm
 import ts.Soak
 import ts.SpecRunner
@@ -45,7 +45,7 @@ cycle = [Fill(Label("Answer f1"), "Ada"), Fill(Label("Answer f1"), ""), Click(Ro
 ## fresh mount, which must free everything it allocated.
 soak_walk! : List(U8) => Fuzz.Outcome
 soak_walk! = |program| {
-	Fuzz.expect_no_leaks!(|| Soak.walk(FormApp.program, SpecRunner.mount(FormApp.program, "/", []), program, |s| s))
+	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(FormApp.program), SpecRunner.mount(Core.driver(FormApp.program), "/", []), program, |s| s))
 	Fuzz.keep
 }
 
@@ -53,9 +53,9 @@ soak_walk! = |program| {
 ## 48 times on the engine alone: live allocations flat after 2 warm-up cycles.
 soak_10k! : {} => Fuzz.Outcome
 soak_10k! = |_| {
-	Fuzz.expect_no_leaks!(|| Soak.walk_n(FormApp.program, SpecRunner.mount(FormApp.program, "/", []), 7, 10000, |s| s))
-	(s1, evs) = Soak.triples(FormApp.program, SpecRunner.mount(FormApp.program, "/", []), cycle, |s| s)
-	counts = Soak.replay!(FormApp.program, s1.inst, evs, 48, |a, b| (a, b), begin!, net_bytes!)
+	Fuzz.expect_no_leaks!(|| Soak.walk_n(Core.driver(FormApp.program), SpecRunner.mount(Core.driver(FormApp.program), "/", []), 7, 10000, |s| s))
+	(s1, evs) = Soak.triples(Core.driver(FormApp.program), SpecRunner.mount(Core.driver(FormApp.program), "/", []), cycle, |s| s)
+	counts = Soak.replay!(Core.driver(FormApp.program), s1.inst, evs, 48, |a, b| (a, b), begin!, net_bytes!)
 	match Soak.flat(counts, 2) {
 		Ok(_) => {}
 		Err(m) => crash m
@@ -79,7 +79,7 @@ mount_only! : U64 => Fuzz.Outcome
 mount_only! = |n| {
 	view = FormApp.main_with(schema_of(n))
 	w = Fuzz.start_measure!("mount")
-	(_, c) = Engine.take_cmds(Engine.mount(view), [])
+	(_, c) = Core.take_cmds(Core.mount(view), [])
 	_ = w.finish!()
 	if c.len() < n {
 		crash "mount produced too few commands"

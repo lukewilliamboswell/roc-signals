@@ -314,7 +314,7 @@ StatusApp := [].{
 
 	## The program both hosts run: the web platform (`main-web.roc`) and the
 	## test platform (`main-test.roc`, `main-fuzz.roc`).
-	program : Engine.Program(Engine.App)
+	program : Engine.Program
 	program = Engine.program_boot({ storage_keys: [], max_inflight: 32 }, |boot| StatusApp.main(boot.visible))
 
 	main : Bool -> Elem(Root)

@@ -4,6 +4,7 @@ app [target] {
 	ts: "../../test-support/main.roc",
 }
 
+import pf.Core
 import pf.Cli
 import pf.Target
 import ts.SpecRunner
@@ -11,7 +12,7 @@ import StatusApp
 
 ## Status Page, native spec runner: `main-test spec [--filter GLOB]
 ## [--emit-steps] specs/*.scm`.
-target = Target.cli({ name: "status-page-specs", main!: |args| SpecRunner.main!(StatusApp.program, io, args) })
+target = Target.cli({ name: "status-page-specs", main!: |args| SpecRunner.main!(Core.driver(StatusApp.program), io, args) })
 
 io : SpecRunner.Io
 io = { read_file!: Cli.read_file!, stdout!: Cli.stdout!, stderr!: Cli.stderr!, now_ns!: Cli.now_ns! }

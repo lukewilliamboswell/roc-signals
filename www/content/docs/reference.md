@@ -8,14 +8,16 @@ template = "page.html"
 # Reference
 
 The [API documentation](../../api/api/) is generated from the platform's source
-and documents every public symbol of `Engine` and `Html`. This page is the map
-of it. The spec language is in [Testing](@/docs/testing.md).
+and documents every public symbol of `Engine` and `Html`: the authoring API,
+and nothing else. Every `Engine` type is opaque; the engine's implementation
+and the interfaces its hosts and test harnesses use live in the platform's
+internal `Core` module, which apps cannot import. This page is the map of it. The spec language is in [Testing](@/docs/testing.md).
 
 ## Engine
 
 | Area | Symbols |
 |---|---|
-| Programs | `program`, `program_boot`, `Program`, `Boot`, `boot_storage`, `App` |
+| Programs | `program`, `program_boot`, `Program`, `Boot`, `boot_storage` |
 | Contexts | `Root`, `In(outer, s)`, `Row(outer, item)`, `Comp(p, a)` |
 | Values | `Val`, `const`, `Val.map`, `Val.map2`, `Val.lift`, `Val.lift_row` |
 | State | `state`, `State`, `State.val`, `State.lift`, `State.lift_row` |
@@ -26,7 +28,6 @@ of it. The spec language is in [Testing](@/docs/testing.md).
 | Events | `on` (event name, optionally `:prevent`), `on_click` |
 | Components | `component`, `State.push`, `State.push_by`, `State.push_value_by`, `sink`, `split` |
 | Effects | `watch`, `on_change`, `State.on_result`, `ignore`, `on_cleanup`, `cleanup`, `Req`, `Res`, `HttpError`, `http_text` |
-| Test drivers | `mount`, `event`, `result`, `take_cmds`, and the work and effect counters, used by the test platform |
 
 ## Html
 

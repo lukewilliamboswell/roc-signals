@@ -3,6 +3,7 @@ app [target] {
 	ts: "../../test-support/main.roc",
 }
 
+import pf.Core
 import pf.Fuzz
 import ts.Scm
 import ts.Soak
@@ -21,7 +22,7 @@ cycle = [Fill(Label("Filter"), "Node-0007"), Fill(Label("Filter"), ""), Click(Ro
 ## fresh mount, which must free everything it allocated.
 soak_walk! : List(U8) => Fuzz.Outcome
 soak_walk! = |program| {
-	Fuzz.expect_no_leaks!(|| Soak.walk(GridApp.program, SpecRunner.mount(GridApp.program, "/", []), program, |s| s))
+	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(GridApp.program), SpecRunner.mount(Core.driver(GridApp.program), "/", []), program, |s| s))
 	Fuzz.keep
 }
 
@@ -29,9 +30,9 @@ soak_walk! = |program| {
 ## 48 times on the engine alone: live allocations flat after 2 warm-up cycles.
 soak_10k! : {} => Fuzz.Outcome
 soak_10k! = |_| {
-	Fuzz.expect_no_leaks!(|| Soak.walk_n(GridApp.program, SpecRunner.mount(GridApp.program, "/", []), 7, 10000, |s| s))
-	(s1, evs) = Soak.triples(GridApp.program, SpecRunner.mount(GridApp.program, "/", []), cycle, |s| s)
-	counts = Soak.replay!(GridApp.program, s1.inst, evs, 48, |a, b| (a, b), begin!, net_bytes!)
+	Fuzz.expect_no_leaks!(|| Soak.walk_n(Core.driver(GridApp.program), SpecRunner.mount(Core.driver(GridApp.program), "/", []), 7, 10000, |s| s))
+	(s1, evs) = Soak.triples(Core.driver(GridApp.program), SpecRunner.mount(Core.driver(GridApp.program), "/", []), cycle, |s| s)
+	counts = Soak.replay!(Core.driver(GridApp.program), s1.inst, evs, 48, |a, b| (a, b), begin!, net_bytes!)
 	match Soak.flat(counts, 2) {
 		Ok(_) => {}
 		Err(m) => crash m

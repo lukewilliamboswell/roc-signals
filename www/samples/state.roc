@@ -1,11 +1,9 @@
-app [Instance, main] { pf: platform "../../platform/main.roc" }
+app [main] { pf: platform "../../platform/main.roc" }
 
 import pf.Engine exposing [Elem, In, Root, State, Val]
 import pf.Html
 
-Instance : Engine.App
-
-main : Engine.Program(Instance)
+main : Engine.Program
 main = Engine.program(signup)
 
 # region contexts

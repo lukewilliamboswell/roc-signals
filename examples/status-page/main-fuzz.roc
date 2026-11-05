@@ -4,8 +4,8 @@ app [target] {
 	ts: "../../test-support/main.roc",
 }
 
+import pf.Core
 import pf.Fuzz
-import pf.Engine
 import ts.Dom
 import ts.Scm
 import ts.Soak
@@ -20,7 +20,7 @@ import StatusApp
 ## - "soak-10k": 10k seeded steps, then "Refresh now" answered healthy 48
 ##   times on the engine alone with flat live bytes.
 
-St : SpecRunner.S(Engine.App)
+St : SpecRunner.S(Core.App)
 
 checks : List(Str)
 checks = ["operational|99.98", "degraded|97.40", "outage|10.00", "garbled", ""]
@@ -49,12 +49,12 @@ answer_one = |s, p, b| {
 			SpecRunner.encode_http(200, [], pick(if (p.url.ends_with("incidents")) feeds else checks, b))
 		}
 	br = s.browser
-	SpecRunner.deliver(StatusApp.program, { ..s, browser: { ..br, pending: br.pending.keep_if(|q| q.id != p.id) } }, p.id, payload)
+	SpecRunner.deliver(Core.driver(StatusApp.program), { ..s, browser: { ..br, pending: br.pending.keep_if(|q| q.id != p.id) } }, p.id, payload)
 }
 
 step : St, Scm.Op -> St
 step = |s, op|
-	match SpecRunner.one(StatusApp.program, s, op) {
+	match SpecRunner.one(Core.driver(StatusApp.program), s, op) {
 		Ok(s2) => s2
 		Err(e) => crash "status walk: ${Str.inspect(e)}"
 	}
@@ -112,16 +112,16 @@ walk_n = |s0, seed, n| {
 }
 
 start : {} -> St
-start = |_| SpecRunner.mount(StatusApp.program, "/", [])
+start = |_| SpecRunner.mount(Core.driver(StatusApp.program), "/", [])
 
 ## Answer every in-flight request except the subscriptions `subs`, healthy,
 ## on the engine alone.
-answer_app : List(U32), Engine.App, List(U8) -> (Engine.App, List(U8))
+answer_app : List(U32), Core.App, List(U8) -> (Core.App, List(U8))
 answer_app = |subs, a0, b0| {
 	var $a = a0
 	var $b = b0
-	for id in Engine.fx_live(a0).keep_if(|id| !subs.contains(id)) {
-		(a1, b1) = Engine.take_cmds(Engine.result($a, id, Http({ status: 200, headers: [], body: "operational|99.99" })), $b)
+	for id in Core.fx_live(a0).keep_if(|id| !subs.contains(id)) {
+		(a1, b1) = Core.take_cmds(Core.result($a, id, Http({ status: 200, headers: [], body: "operational|99.99" })), $b)
 		$a = a1
 		$b = b1
 	}
@@ -152,10 +152,10 @@ soak_10k! : {} => Fuzz.Outcome
 soak_10k! = |_| {
 	Fuzz.expect_no_leaks!(|| walk_n(start({}), 7, 10000))
 	s0 = answer_all(start({}))
-	subs = Engine.fx_live(s0.inst)
+	subs = Core.fx_live(s0.inst)
 	i = SpecRunner.find(s0.dom, Role({ role: "button", name: "Refresh now" })) ?? crash "soak: no Refresh now"
 	(node, h) = Dom.target(s0.dom, i, "click") ?? crash "soak: no click handler"
-	counts = Soak.replay!(StatusApp.program, s0.inst, [(node, h, [])], 48, |a, b| answer_app(subs, a, b), begin!, net_bytes!)
+	counts = Soak.replay!(Core.driver(StatusApp.program), s0.inst, [(node, h, [])], 48, |a, b| answer_app(subs, a, b), begin!, net_bytes!)
 	# Three warm-up cycles: the first changes the board (every request now
 	# answers "operational|99.99", which the feed parses as one incident)
 	# and the next two settle the buffers that change grew.

@@ -3,8 +3,8 @@ app [target] {
 	ts: "../../test-support/main.roc",
 }
 
+import pf.Core
 import pf.Fuzz
-import pf.Engine
 import ts.Scm
 import ts.Soak
 import ts.SpecRunner
@@ -18,14 +18,14 @@ import NotesApp
 ## - "soak-10k": 10k seeded events, then a draft, filter and reorder round
 ##   trip 48 times on the engine alone with flat live bytes.
 
-St : SpecRunner.S(Engine.App)
+St : SpecRunner.S(Core.App)
 
 ## Two restored notes: one queued, one draft.
 storage : List({ key : Str, value : Str })
 storage = [{ key: Notes.notes_key, value: "n0|0|1|r7|Generator hours;n1|1|0|r7|Fence line check" }]
 
 start : {} -> St
-start = |_| SpecRunner.mount(NotesApp.program, "/", storage)
+start = |_| SpecRunner.mount(Core.driver(NotesApp.program), "/", storage)
 
 ## Answer every pending sync request as the server would (it echoes the
 ## token), a few rounds deep: a settled sync starts the next one.
@@ -36,7 +36,7 @@ answer = |s0| {
 	while $round < 4 {
 		for p in $s.browser.pending {
 			b = $s.browser
-			$s = SpecRunner.deliver(NotesApp.program, { ..$s, browser: { ..b, pending: b.pending.keep_if(|q| q.id != p.id) } }, p.id, SpecRunner.encode_http(200, [], p.body))
+			$s = SpecRunner.deliver(Core.driver(NotesApp.program), { ..$s, browser: { ..b, pending: b.pending.keep_if(|q| q.id != p.id) } }, p.id, SpecRunner.encode_http(200, [], p.body))
 		}
 		$round = $round + 1
 	}
@@ -58,7 +58,7 @@ cycle = [
 ## fresh mount, which must free everything it allocated.
 soak_walk! : List(U8) => Fuzz.Outcome
 soak_walk! = |program| {
-	Fuzz.expect_no_leaks!(|| Soak.walk(NotesApp.program, answer(start({})), program, answer))
+	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(NotesApp.program), answer(start({})), program, answer))
 	Fuzz.keep
 }
 
@@ -66,9 +66,9 @@ soak_walk! = |program| {
 ## 48 times on the engine alone: live allocations flat after 2 warm-up cycles.
 soak_10k! : {} => Fuzz.Outcome
 soak_10k! = |_| {
-	Fuzz.expect_no_leaks!(|| Soak.walk_n(NotesApp.program, answer(start({})), 7, 10000, answer))
-	(s1, evs) = Soak.triples(NotesApp.program, answer(start({})), cycle, |s| s)
-	counts = Soak.replay!(NotesApp.program, s1.inst, evs, 48, |a, b| (a, b), begin!, net_bytes!)
+	Fuzz.expect_no_leaks!(|| Soak.walk_n(Core.driver(NotesApp.program), answer(start({})), 7, 10000, answer))
+	(s1, evs) = Soak.triples(Core.driver(NotesApp.program), answer(start({})), cycle, |s| s)
+	counts = Soak.replay!(Core.driver(NotesApp.program), s1.inst, evs, 48, |a, b| (a, b), begin!, net_bytes!)
 	match Soak.flat(counts, 2) {
 		Ok(_) => {}
 		Err(m) => crash m

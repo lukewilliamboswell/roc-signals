@@ -1,7 +1,9 @@
 ## The native test platform for roc-signals: the second root of `platform/`.
 ##
-## It shares `Engine.roc` and `Html.roc` with the web platform (`main.roc`), so
-## an app's modules (`import pf.Engine`) compile unchanged under both: its
+## It shares `Core.roc`, `Engine.roc` and `Html.roc` with the web platform
+## (`main.roc`), so an app's modules (`import pf.Engine`) compile unchanged
+## under both; it also exposes the internal `Core`, which the spec runner and
+## fuzz targets drive directly: its
 ## `main-web.roc` names `main.roc` and its `main-test.roc` and `main-fuzz.roc`
 ## name this file. Everything else here is the roc-fuzz 0.5.0 platform (https://github.com/lukewilliamboswell/roc-fuzz,
 ## MIT, see LICENSE-roc-fuzz) with one addition: an executable whose target was
@@ -19,7 +21,7 @@ platform "roc-signals-test"
 	requires {
 		target : Target
 	}
-	exposes [Arbitrary, Cli, Engine, Fuzz, Html, Target]
+	exposes [Arbitrary, Cli, Core, Engine, Fuzz, Html, Target]
 	packages {}
 	provides {
 		"roc_fuzz_example": example_for_host,
@@ -56,6 +58,7 @@ platform "roc-signals-test"
 
 import Arbitrary
 import Cli
+import Core
 import Engine
 import Fuzz
 import Html

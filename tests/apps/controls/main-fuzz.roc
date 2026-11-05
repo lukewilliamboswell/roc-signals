@@ -3,6 +3,7 @@ app [target] {
 	ts: "../../../test-support/main.roc",
 }
 
+import pf.Core
 import pf.Fuzz
 import pf.Engine
 import ts.Dom
@@ -12,11 +13,11 @@ import ControlsApp
 import ManyApp
 
 ## The engine and the oracle's DOM, driven through the engine directly.
-S : { eng : Engine.App, dom : Dom.Model, steps : U64 }
+S : { eng : Core.App, dom : Dom.Model, steps : U64 }
 
 start : Engine.Elem(Engine.Root) -> S
 start = |view| {
-	(a, c) = Engine.take_cmds(Engine.mount(view), [])
+	(a, c) = Core.take_cmds(Core.mount(view), [])
 	{ eng: a, dom: Dom.apply(Dom.new({}), c), steps: 0 }
 }
 
@@ -30,7 +31,7 @@ fire! : S, Scm.Loc, Str, Str => (S, List(Dom.FxCmd))
 fire! = |s, loc, ev, payload| {
 	i = SpecRunner.find(s.dom, loc) ?? crash "no ${Scm.show_loc(loc)}"
 	(node, h) = Dom.target(s.dom, i, ev) ?? crash "no ${ev} handler on ${Scm.show_loc(loc)}"
-	(a, c) = Engine.take_cmds(Engine.event(s.eng, node, h, payload), [])
+	(a, c) = Core.take_cmds(Core.event(s.eng, node, h, payload), [])
 	(d2, _, fx) = Dom.apply_fx(s.dom, c)
 	({ eng: a, dom: d2, steps: s.steps + 1 }, fx)
 }
@@ -56,10 +57,10 @@ focus! = |_| {
 	expect_fx!("select plain", f2, [Focus(3, plain)])
 	(s3, f3) = fire!(s2, Role({ role: "button", name: "Blur plain" }), "click", "")
 	expect_fx!("blur plain", f3, [Focus(2, plain)])
-	stale0 = Engine.fx_stats(s3.eng).stale
+	stale0 = Core.fx_stats(s3.eng).stale
 	(s4, f4) = fire!(s3, Role({ role: "button", name: "Focus missing" }), "click", "")
 	expect_fx!("missing ref", f4, [])
-	if Engine.fx_stats(s4.eng).stale != stale0 + 1 {
+	if Core.fx_stats(s4.eng).stale != stale0 + 1 {
 		crash "missing ref not counted stale"
 	}
 	(s5, _) = fire!(s4, Label("Plain"), "focus", "hello world")

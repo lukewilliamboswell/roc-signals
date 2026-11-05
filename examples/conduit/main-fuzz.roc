@@ -3,8 +3,8 @@ app [target] {
 	ts: "../../test-support/main.roc",
 }
 
+import pf.Core
 import pf.Fuzz
-import pf.Engine
 import ts.Dom
 import ts.Scm
 import ts.Soak
@@ -20,15 +20,15 @@ universal = "{\"articles\":[{\"slug\":\"soak-a\",\"title\":\"Soak A\",\"descript
 
 ## Answer every in-flight request (id 1 is the popstate subscription), a few
 ## rounds deep (an answer may issue more requests).
-answer_app : Engine.App, List(U8) -> (Engine.App, List(U8))
+answer_app : Core.App, List(U8) -> (Core.App, List(U8))
 answer_app = |a0, b0| {
 	var $a = a0
 	var $b = b0
 	var $round = 0.U64
 	while $round < 4 {
-		ids = Engine.fx_live($a).keep_if(|id| id != 1)
+		ids = Core.fx_live($a).keep_if(|id| id != 1)
 		for id in ids {
-			(a1, b1) = Engine.take_cmds(Engine.result($a, id, Http({ status: 200, headers: [], body: universal })), $b)
+			(a1, b1) = Core.take_cmds(Core.result($a, id, Http({ status: 200, headers: [], body: universal })), $b)
 			$a = a1
 			$b = b1
 		}
@@ -38,14 +38,14 @@ answer_app = |a0, b0| {
 }
 
 ## The same, keeping the DOM model in step.
-answer : SpecRunner.S(Engine.App) -> SpecRunner.S(Engine.App)
+answer : SpecRunner.S(Core.App) -> SpecRunner.S(Core.App)
 answer = |s0| {
 	var $s = s0
 	var $round = 0.U64
 	while $round < 4 {
-		ids = Engine.fx_live($s.inst).keep_if(|id| id != 1)
+		ids = Core.fx_live($s.inst).keep_if(|id| id != 1)
 		for id in ids {
-			(a1, c) = Engine.take_cmds(Engine.result($s.inst, id, Http({ status: 200, headers: [], body: universal })), [])
+			(a1, c) = Core.take_cmds(Core.result($s.inst, id, Http({ status: 200, headers: [], body: universal })), [])
 			$s = SpecRunner.take_batch($s, a1, c)
 		}
 		$round = $round + 1
@@ -62,7 +62,7 @@ cycle = [Click(Role({ role: "link", name: "Sign in" })), Click(Role({ role: "lin
 ## Soak, mode 2: explorer-driven walk with every request answered; leak-free.
 soak_walk! : List(U8) => Fuzz.Outcome
 soak_walk! = |program| {
-	Fuzz.expect_no_leaks!(|| Soak.walk(ConduitApp.program, answer(SpecRunner.mount(ConduitApp.program, home, [])), program, answer))
+	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(ConduitApp.program), answer(SpecRunner.mount(Core.driver(ConduitApp.program), home, [])), program, answer))
 	Fuzz.keep
 }
 
@@ -72,9 +72,9 @@ soak_walk! = |program| {
 ## engine alone: live allocations flat.
 soak_10k! : U64 => Fuzz.Outcome
 soak_10k! = |seed| {
-	Fuzz.expect_no_leaks!(|| Soak.walk_n(ConduitApp.program, answer(SpecRunner.mount(ConduitApp.program, home, [])), seed, 2000, answer))
-	(s1, evs) = Soak.triples(ConduitApp.program, answer(SpecRunner.mount(ConduitApp.program, home, [])), cycle, answer)
-	counts = Soak.replay!(ConduitApp.program, s1.inst, evs, 48, answer_app, begin!, net_bytes!)
+	Fuzz.expect_no_leaks!(|| Soak.walk_n(Core.driver(ConduitApp.program), answer(SpecRunner.mount(Core.driver(ConduitApp.program), home, [])), seed, 2000, answer))
+	(s1, evs) = Soak.triples(Core.driver(ConduitApp.program), answer(SpecRunner.mount(Core.driver(ConduitApp.program), home, [])), cycle, answer)
+	counts = Soak.replay!(Core.driver(ConduitApp.program), s1.inst, evs, 48, answer_app, begin!, net_bytes!)
 	match Soak.flat(counts, 2) {
 		Ok(_) => {}
 		Err(m) => crash m

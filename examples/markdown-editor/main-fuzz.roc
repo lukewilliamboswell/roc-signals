@@ -3,6 +3,7 @@ app [target] {
 	ts: "../../test-support/main.roc",
 }
 
+import pf.Core
 import pf.Fuzz
 import ts.Scm
 import ts.Soak
@@ -24,7 +25,7 @@ cycle = [Click(Role({ role: "button", name: "Load heading drill" })), Click(Role
 ## fresh mount, which must free everything it allocated.
 soak_walk! : List(U8) => Fuzz.Outcome
 soak_walk! = |program| {
-	Fuzz.expect_no_leaks!(|| Soak.walk(MdApp.program, SpecRunner.mount(MdApp.program, "/", []), program, |s| s))
+	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(MdApp.program), SpecRunner.mount(Core.driver(MdApp.program), "/", []), program, |s| s))
 	Fuzz.keep
 }
 
@@ -34,9 +35,9 @@ soak_walk! = |program| {
 ## the engine alone: live allocations flat after 2 warm-up cycles.
 soak_10k! : U64 => Fuzz.Outcome
 soak_10k! = |seed| {
-	Fuzz.expect_no_leaks!(|| Soak.walk_n(MdApp.program, SpecRunner.mount(MdApp.program, "/", []), seed, 2000, |s| s))
-	(s1, evs) = Soak.triples(MdApp.program, SpecRunner.mount(MdApp.program, "/", []), cycle, |s| s)
-	counts = Soak.replay!(MdApp.program, s1.inst, evs, 48, |a, b| (a, b), begin!, net_bytes!)
+	Fuzz.expect_no_leaks!(|| Soak.walk_n(Core.driver(MdApp.program), SpecRunner.mount(Core.driver(MdApp.program), "/", []), seed, 2000, |s| s))
+	(s1, evs) = Soak.triples(Core.driver(MdApp.program), SpecRunner.mount(Core.driver(MdApp.program), "/", []), cycle, |s| s)
+	counts = Soak.replay!(Core.driver(MdApp.program), s1.inst, evs, 48, |a, b| (a, b), begin!, net_bytes!)
 	match Soak.flat(counts, 2) {
 		Ok(_) => {}
 		Err(m) => crash m
