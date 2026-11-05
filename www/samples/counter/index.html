@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Counter</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import { mountRocEngineApp } from "./runtime.mjs";
+
+      await mountRocEngineApp({
+        wasmUrl: "app.wasm",
+        root: document.getElementById("app"),
+        onFault: (fault) => console.error(`${fault.class}: ${fault.message}`),
+      });
+    </script>
+  </body>
+</html>

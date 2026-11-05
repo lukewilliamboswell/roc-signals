@@ -1,110 +1,54 @@
 +++
 title = "Guide"
-description = "Learn the model, build an app, or find help with a specific task."
+description = "What Roc Signals is, and where to start reading."
 weight = 1
 template = "page.html"
 +++
 
 # Roc Signals
 
-Roc Signals is a Roc platform for building interactive browser interfaces.
-You describe elements, state, and the computations that connect them. The
-runtime stores the current values and updates the affected parts of the page
-when an event changes state.
+Roc Signals is a Roc platform for interactive browser applications. You write
+the whole UI in pure Roc: elements, the state they read, the handlers that
+change it, and the effects it asks for. The platform compiles your app and its
+reactive engine to WebAssembly. A small JavaScript runtime applies the DOM
+commands the engine emits and performs the effects it requests.
 
-You can use ordinary HTML and CSS, including your existing stylesheets. The
-examples on this site use Tailwind classes, but the platform does not require
-Tailwind or a component library.
+There is no virtual DOM. When an event changes a piece of state, the engine
+re-evaluates only the text, attributes and structure that read that state, and
+skips any value that comes out equal to what is already on the page.
 
-## Start here
+Every behaviour you care about can be tested without a browser. Specs written
+in a small `.scm` language run natively against the same engine in
+milliseconds, and the same specs replay in headless Chrome.
 
-If you want to run an app first, follow [Getting Started](@/docs/getting-started.md).
-It covers the compiler, platform, native tests, and browser setup.
+Use ordinary HTML and CSS. The examples on this site use Tailwind classes, but
+the platform does not depend on any CSS framework.
 
-If signals are new to you, [Thinking in Signals](@/docs/thinking-in-signals.md)
-explains how state and derived values fit together. It introduces the terms used
-throughout these guides; experience with another UI framework is not required.
+## Where to start
 
-The [Tutorial](@/docs/tutorial.md) builds a reading list with inputs, filtering,
-keyed rows, and tests. Use it when you want to see those pieces in one app.
-The code assumes some familiarity with Roc functions, records, and tag unions;
-the [Roc tutorial](https://www.roc-lang.org/tutorial) covers the language itself.
+- **[Getting Started](@/docs/getting-started.md)** sets up the tools, builds a
+  counter, tests it and runs it in a browser.
+- **[Thinking in Signals](@/docs/thinking-in-signals.md)** explains the model:
+  sites, values, layers and turns. Read it before the topic guides.
+- **[Tutorial](@/docs/tutorial.md)** builds a todo list with a keyed list, a
+  form and local storage, and tests it.
 
-## A small example
+## Topic guides
 
-Inside a checkout of this repository, save this as `examples-web/hello/main.roc`:
+- [State, Events, and Forms](@/docs/state-and-events.md): state, handlers,
+  controlled inputs, derived values.
+- [Lists, Conditionals, and Components](@/docs/dynamic-structure.md): `when`,
+  `switch`, `each`, row identity and components.
+- [Effects and the Browser](@/docs/effects-and-browser.md): HTTP, storage,
+  timers, navigation, focus and cleanup.
+- [Structuring an App](@/docs/app-architecture.md): modules, context types and
+  keeping updates local.
+- [Testing](@/docs/testing.md): the spec language and its two runners.
+- [Reference](@/docs/reference.md): the API at a glance and the platform's
+  limits.
+- [Under the Hood](@/docs/under-the-hood.md): how an event becomes DOM commands.
+- [Contributing](@/docs/contributing.md): working on the platform itself.
 
-```roc
-app [main] { pf: platform "../../platform-web/main.roc" }
-
-import pf.Elem
-import pf.Html
-import pf.Ui
-
-main : () -> Elem
-main = ||
-    Ui.state(
-        0.I64,
-        |count| {
-            label = count.signal().map(|n| "Count: ${n.to_str()}")
-
-            Html.section(
-                "Counter",
-                [],
-                [
-                    Html.paragraph_s_attrs(label, [Html.test_id("count")]),
-                    Html.button("Increment", count.update(|n| n + 1)),
-                ],
-            )
-        },
-    )
-```
-
-`Ui.state` declares a state value starting at zero. `count.signal()` refers to
-its current value, and `map` describes how to turn that value into display text.
-The button's reducer, `|n| n + 1`, computes the next count.
-
-On a click, the runtime calls the reducer, evaluates the dependent text
-transform, and updates the paragraph. It does not call `main` again. If a
-recomputed value compares equal to its previous value, propagation stops at
-that edge. New conditional branches and list rows can still call builders to
-create their UI when they become live.
-
-[Getting Started](@/docs/getting-started.md) has the commands to check, test,
-and run this kind of app. A standalone app can use a released platform archive
-instead of the checkout-relative path shown here.
-
-## Find a topic
-
-| I want to… | Read |
-| --- | --- |
-| Handle input, validate a form, or coordinate state changes | [State, Events, and Forms](@/docs/state-and-events.md) |
-| Render lists, choose branches, or reuse a component | [Lists, Conditionals, and Components](@/docs/dynamic-structure.md) |
-| Make HTTP requests, use timers, navigate, or store a draft | [Effects, HTTP, and the Browser](@/docs/effects-and-browser.md) |
-| Split an app into modules and decide where state belongs | [Structuring an App](@/docs/app-architecture.md) |
-| Test interactions, task results, cleanup, and update work | [Testing](@/docs/testing.md) |
-| Understand runtime ownership and update costs | [Under the Hood](@/docs/under-the-hood.md) |
-| Look up a function or supported browser feature | [Reference](@/docs/reference.md) |
-| Change or test the platform itself | [Contributing](@/docs/contributing.md) |
-
-The [examples](@/examples/_index.md) include browser apps, Roc source, and native
-specs. Pick one with a similar problem to yours: a form, a routed app, an editor,
-or a table.
-
-## Before choosing it for a project
-
-Roc Signals and Roc are still evolving. Use the compiler version named by your
-platform release, keep the browser runtime and platform compatible, and read the
-[release notes](https://github.com/lukewilliamboswell/roc-signals/releases)
-when upgrading.
-
-The platform runs on the client. It does not provide server rendering or
-hydration. Routing is application code over `Browser.location()`. HTML and SVG
-are supported, while some browser capabilities require a JavaScript behaviour
-or are unavailable through the current API. Check the
-[browser limits](@/docs/reference.md#deliberately-absent) before depending on one.
-
-Native specs exercise the same reactive engine as the browser build. They are
-useful for state, ordering, and lifecycle tests, but they do not establish CSS
-layout, real keyboard behaviour, or accessibility in a browser. Test those
-interactions in a browser as well.
+The [examples](@/examples/_index.md) are complete apps, each with its specs.
+The code assumes you know Roc functions, records and tag unions; the
+[Roc tutorial](https://www.roc-lang.org/tutorial) covers the language.
