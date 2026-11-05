@@ -47,7 +47,6 @@ Checks := [].{
 	add = |a, b| {
 		passed: a.passed + b.passed,
 		failed: a.failed + b.failed,
-		xfail: a.xfail + b.xfail,
 		problems: a.problems.concat(b.problems),
 	}
 
@@ -76,5 +75,21 @@ Checks := [].{
 				.concat(if (rejected(native)) [] else ["broken-spec self-check: the native runner did not reject the broken spec"])
 				.concat(if (rejected(in_browser)) [] else ["broken-spec self-check: the browser runner did not reject the broken spec"]),
 		)
+	}
+
+	## The browser runner has a handler for every step and setup form of the
+	## grammar, and for nothing else: the native runner prints the grammar
+	## (`spec --grammar`, from the parser's form tables) and
+	## `replay.mjs --check-grammar` compares it with its handler tables. The
+	## native runner's own coverage is its exhaustive `match`.
+	grammar! : SpecSuite.Options, Str => Try(List(Str), _)
+	grammar! = |o, runner| {
+		dir = "${o.build_dir}/grammar"
+		SpecSuite.fresh_dir!(dir)?
+		grammar = Proc.capture!({ program: runner, args: ["spec", "--grammar"], cwd: "." })?
+		Path.write_bytes!(Path.utf8("${dir}/grammar.json"), grammar)?
+		# replay.mjs names each mismatch on stderr, which reaches the log.
+		{ code, .. } = Proc.output!({ program: o.node, args: ["tests/browser/replay.mjs", "--check-grammar", "${dir}/grammar.json"], cwd: "." })?
+		if (code == 0) Ok([]) else Ok(["grammar coverage: replay.mjs and the grammar disagree (see above)"])
 	}
 }

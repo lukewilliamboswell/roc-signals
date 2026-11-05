@@ -32,14 +32,12 @@
     (expect-attr (role region :name "In Progress") data-wip "over")
     (expect-text (test-id "board-over") "1")
     (expect-visible (text "Rebalance the board: at least one column is over its WIP limit."))
-    ; invalid input falls back to "unlimited"
-    (fill (label "WIP limit") "abc")
+    ; a cleared limit falls back to "unlimited" (a number input holds only
+    ; numbers, so clearing it is the only way to make it not one)
+    (fill (label "WIP limit") "")
     (expect-text (test-id "wip-progress") "No WIP limit")
     (expect-text (test-id "wip-review") "No WIP limit")
     (expect-attr (role region :name "In Progress") data-wip "unlimited")
-    (expect-text (test-id "board-over") "0")
-    (fill (label "WIP limit") "")
-    (expect-text (test-id "wip-progress") "No WIP limit")
     (expect-text (test-id "board-over") "0")
     (fill (label "WIP limit") "3")
     (expect-text (test-id "wip-progress") "WIP 2/3")

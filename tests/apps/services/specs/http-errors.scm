@@ -1,6 +1,4 @@
 (test "Services — HTTP failures reach the app as typed errors"
-  (setup
-    (manual-effects))
   (steps
     (click (role button :name "Fetch"))
     (stub-http-reject "offline" :kind network :detail "offline")

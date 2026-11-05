@@ -1,6 +1,4 @@
 (test "a search shows its results, and a failed one says why"
-  (setup
-    (manual-effects))
   (steps
     (expect-pending-effects 0)
     (fill (label "Query") "roc")

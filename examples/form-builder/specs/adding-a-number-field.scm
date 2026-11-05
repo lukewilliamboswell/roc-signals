@@ -35,9 +35,6 @@
     (expect-attr (label "Minimum f3") aria-invalid "true")
     (expect-attr (label "Maximum f3") aria-invalid "true")
     (expect-text (test-id "submittable-state") "Not ready")
-    ; a non-numeric bound is its own rule error
-    (fill (label "Minimum f3") "2x")
-    (expect-text (test-id "preview-f3-verdict") "Rule error: minimum is not a number")
     (fill (label "Maximum f3") "50")
     (fill (label "Minimum f3") "20")
     (expect-no-attr (label "Minimum f3") aria-invalid)

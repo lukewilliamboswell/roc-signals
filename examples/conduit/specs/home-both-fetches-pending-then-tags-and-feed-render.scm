@@ -1,6 +1,5 @@
 (test "Conduit — Home: both fetches pending, then tags and feed render"
   (setup
-    (manual-effects)
     ; Seeded session restores before first render (namespaced keys)
     (local-storage "conduit.jwt" "jwt.conduit.kim")
     (local-storage "conduit.username" "kim")

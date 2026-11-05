@@ -1,6 +1,5 @@
 (test "Field notes — without local storage"
   (setup
-    (manual-effects)
     ; A browser with site data disabled: every access to local storage throws.
     ; The board starts empty, still captures notes, and says plainly that
     ; nothing will survive a reload.

@@ -13,25 +13,42 @@ import JsonOut
 ## browser consumes.
 ##
 ## Beside the DOM, the runner models the browser services the engine drives
-## through effect commands: the location and history stack, the title, local
-## storage, connectivity and page visibility, pending awaited requests, live
-## subscriptions, and which element has focus.
+## through effect commands: the location, the history stack and the document
+## behind each entry, the title, local storage, connectivity and page
+## visibility, pending awaited requests, live subscriptions, and which element
+## has focus. The browser is the reference: every step means what the browser
+## runner (`tests/browser/replay.mjs`) does in Chrome (design.md, "The `.scm`
+## spec language"), and `one` matches every step of the grammar.
 ##
-## - `run-effect N` answers the N-th awaited non-subscription request the app
-##   issued (issue order). It must still be pending. Its answer is the first
-##   queued stub whose URL equals the request's; a reject stub matches any.
+## - Effects are always manual. `stub-http` stages one answer; `run-effect N`
+##   answers the N-th awaited HTTP request or timer the current document
+##   issued (issue order), which must still be pending: a timer fires, and an
+##   HTTP request takes the staged answer, whose URL must be the request's (a
+##   reject answers any). Storage reads answer by themselves, from storage, in
+##   the turn after the call that issued them.
 ## - A rejected request becomes `Timeout`, or `Network(detail)`.
-## - `navigate` and `history-back`/`history-forward` move the location as a
-##   user would and deliver the new URL to every live popstate subscription.
-##   App pushes and replaces move it without a popstate, as browsers do.
+## - A navigation to a URL that differs from the current one only in its
+##   fragment stays in the document: a new history entry, and the URL goes to
+##   every live popstate subscription. Any other navigation loads a new
+##   document: the app mounts afresh at that URL with the same local storage.
+##   `history-back`/`history-forward` move within the document, and refuse to
+##   cross into another. App pushes and replaces move the location without a
+##   popstate, as browsers do.
 ## - `tick-interval MS` delivers `Fired` to every live interval of period MS
 ##   (and fails when there is none); `set-online` and `set-visibility` change
 ##   the modelled browser and deliver the new value to every live
 ##   subscription of that kind.
-## - Focus moves as Chrome moves it: `fill`, `focus` and a click on a
-##   focusable control focus it, a click elsewhere or `blur` blurs, and each
-##   move delivers `blur` to the element losing focus and `focus` to the one
-##   gaining it when a handler listens.
+## - A click is a real mouse click: `mousedown`, focus moves to the nearest
+##   focusable element (or away), `mouseup`, `click`, then the default action
+##   unless the dispatched click handler prevented it: a checkbox toggles, a
+##   radio checks (each with `input` and `change`), a submit button submits
+##   its form if the form's controls are valid, and a link navigates.
+## - Focus moves as Chrome moves it, and each move delivers `change` to a text
+##   control the user changed since it gained focus, then `blur` to the
+##   element losing focus and `focus` to the one gaining it, when handlers
+##   listen.
+## - `fill` is Playwright's: it types into an enabled text input or textarea
+##   that can hold the value, as one `input` event.
 ## - Work assertions (design.md, "Work assertions") read the engine's work
 ##   counters (`Scm.metric_names`); at every one the runner also checks that
 ##   the engine's per-opcode counters agree with the commands the oracle
@@ -39,12 +56,12 @@ import JsonOut
 ##   later `ATTR`, `HATTR`, `SETTEXT` or `TEXT` that wrote it or a text node
 ##   directly inside it.
 ##
-## Locators follow the original simulated DOM: `label` is `aria-label`,
+## Locators follow the browser runner's `locate.js`: `label` is `aria-label`,
 ## `test-id` is `data-testid`, `role` is the explicit `role` attribute or the
 ## implicit role (button, a → link, section → region, form, dialog,
 ## h1–h6 → heading) with the accessible name (`aria-label`, else the text
-## content), and `text` is a text node whose content is exactly the string.
-## The first match in document order wins.
+## content), and `text` is a text node whose content is exactly the string,
+## naming the element that holds it. The first match in document order wins.
 SpecRunner := [].{
 
 	## An app as its host sees it (`Engine.Program`, structurally).
@@ -57,28 +74,39 @@ SpecRunner := [].{
 
 	Sub : [Interval(U32), Pop, OnlineSub, VisibilitySub]
 
-	## The modelled browser around the DOM.
+	## A history entry: its URL and the document it belongs to.
+	Entry : { url : Str, doc : U64 }
+
+	## An awaited request still waiting for `run-effect`: an HTTP request (its
+	## URL and body) or a timer.
+	Pending : { id : U32, url : Str, body : Str, timer : Bool }
+
+	## The modelled browser around the DOM. `doc` numbers the current document;
+	## a cross-document navigation mounts the app afresh in the next one.
 	Browser : {
 		loc : Str,
-		back : List(Str),
-		fwd : List(Str),
+		doc : U64,
+		back : List(Entry),
+		fwd : List(Entry),
 		title : Str,
 		storage : List({ key : Str, value : Str }),
 		online : Bool,
 		visible : Bool,
 		storage_available : Bool,
-		pending : List({ id : U32, url : Str, body : Str }),
+		pending : List(Pending),
 		issued : List(U32),
+		gets : List({ id : U32, key : Str }),
 		subs : List({ id : U32, sub : Sub }),
-		stubs : List(Scm.Stub),
+		stub : [NoStub, Staged(Scm.Stub)],
 	}
 
 	## The runner's state: the instance and the buffers it lends back, the
 	## oracle's DOM and browser models, the latest work record, the oracle's
 	## own opcode counts, per-node write counts (`expect-updates`), the work
 	## counters at the last `mark-metrics`, the focused node (index + 1, 0
-	## for none), and the value the engine wrote to the focused control that
-	## the controlled-input rule holds back until blur.
+	## for none) and the value it showed when it gained focus, and the value
+	## the engine wrote to the focused control that the controlled-input rule
+	## holds back until blur.
 	S(state) : {
 		inst : state,
 		buf : List(U8),
@@ -90,6 +118,7 @@ SpecRunner := [].{
 		writes : List(U64),
 		mark : List(U64),
 		focused : U64,
+		focus_value : Str,
 		deferred : Deferred,
 	}
 
@@ -100,10 +129,8 @@ SpecRunner := [].{
 	## How a spec ended.
 	Outcome : [
 		Passed,
-		Failed({ step : U64, at : Scm.Step, kind : FailKind, message : Str }),
+		Failed({ step : U64, at : Scm.Step, message : Str }),
 	]
-
-	FailKind : [Assertion, Unsupported]
 
 	## The effect node of the wire protocol (design.md, Appendix B).
 	fx_node : U32
@@ -254,10 +281,33 @@ SpecRunner := [].{
 	## that calls the engine directly), at `url` with `storage`.
 	adopt : state, List(U8), Str, List({ key : Str, value : Str }) -> S(state)
 	adopt = |inst, cmds, url, storage| {
-		browser = { loc: url, back: [], fwd: [], title: "", storage, online: Bool.True, visible: Bool.True, storage_available: Bool.True, pending: [], issued: [], subs: [], stubs: [] }
-		s0 = { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 19), writes: [], mark: [], focused: 0, deferred: NoValue }
+		browser = SpecRunner.fresh_browser({ url, storage, online: Bool.True, visible: Bool.True, storage_available: Bool.True })
+		s0 = SpecRunner.fresh(inst, browser)
 		SpecRunner.take_batch(s0, inst, cmds)
 	}
+
+	## The modelled browser of a fresh document at `url`.
+	fresh_browser : { url : Str, storage : List({ key : Str, value : Str }), online : Bool, visible : Bool, storage_available : Bool } -> Browser
+	fresh_browser = |{ url, storage, online, visible, storage_available }| {
+		loc: url,
+		doc: 0,
+		back: [],
+		fwd: [],
+		title: "",
+		storage,
+		online,
+		visible,
+		storage_available,
+		pending: [],
+		issued: [],
+		gets: [],
+		subs: [],
+		stub: NoStub,
+	}
+
+	## A runner state for instance `inst` before its first batch.
+	fresh : state, Browser -> S(state)
+	fresh = |inst, browser| { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 19), writes: [], mark: [], focused: 0, focus_value: "", deferred: NoValue }
 
 	set_store : List({ key : Str, value : Str }), Str, Str -> List({ key : Str, value : Str })
 	set_store = |l, key, value| l.keep_if(|kv| kv.key != key).append({ key, value })
@@ -269,16 +319,16 @@ SpecRunner := [].{
 		for c in fx {
 			b = $b
 			$b = match c {
-				Http(id, _, url, _, body, _) => { ..b, pending: b.pending.append({ id, url, body }), issued: b.issued.append(id) }
-				Get(id, key) => { ..b, pending: b.pending.append({ id, url: "storage:${key}", body: "" }), issued: b.issued.append(id) }
-				Timer(id, _) => { ..b, pending: b.pending.append({ id, url: "timer", body: "" }), issued: b.issued.append(id) }
+				Http(id, _, url, _, body, _) => { ..b, pending: b.pending.append({ id, url, body, timer: Bool.False }), issued: b.issued.append(id) }
+				Get(id, key) => { ..b, gets: b.gets.append({ id, key }) }
+				Timer(id, _) => { ..b, pending: b.pending.append({ id, url: "timer", body: "", timer: Bool.True }), issued: b.issued.append(id) }
 				Interval(id, ms) => { ..b, subs: b.subs.append({ id, sub: Interval(ms) }) }
 				Pop(id) => { ..b, subs: b.subs.append({ id, sub: Pop }) }
 				OnlineSub(id) => { ..b, subs: b.subs.append({ id, sub: OnlineSub }) }
 				VisibilitySub(id) => { ..b, subs: b.subs.append({ id, sub: VisibilitySub }) }
 				Cancel(id) => { ..b, pending: b.pending.keep_if(|p| p.id != id), subs: b.subs.keep_if(|x| x.id != id) }
-				Push(url) => { ..b, back: b.back.append(b.loc), loc: url, fwd: [] }
-				Replace(url) => { ..b, loc: url }
+				Push(url) => { ..b, back: b.back.append({ url: b.loc, doc: b.doc }), loc: SpecRunner.resolve_in_document(b.loc, url), fwd: [] }
+				Replace(url) => { ..b, loc: SpecRunner.resolve_in_document(b.loc, url) }
 				# Writes to unavailable storage fail in the browser and persist nothing.
 				Set(k, v) => if (b.storage_available) { ..b, storage: SpecRunner.set_store(b.storage, k, v) } else b
 				Remove(k) => if (b.storage_available) { ..b, storage: b.storage.keep_if(|kv| kv.key != k) } else b
@@ -302,7 +352,6 @@ SpecRunner := [].{
 		var $storage_available = Bool.True
 		for entry in spec.setup {
 			match entry.item {
-				ManualEffects => {}
 				InitialLocation(url) => {
 					$url = url
 				}
@@ -318,7 +367,6 @@ SpecRunner := [].{
 				LocalStorageUnavailable => {
 					$storage_available = Bool.False
 				}
-				other => return Err("unsupported in this engine: setup ${Str.inspect(other)}")
 			}
 		}
 		if !$storage_available and !$storage.is_empty() {
@@ -336,10 +384,9 @@ SpecRunner := [].{
 	mount_in = |program, { url, storage, online, visible, storage_available }| {
 		declared = SpecRunner.decode_keys((program.keys)())
 		boot_kvs = declared.keep_oks(|k| storage.find_first(|kv| kv.key == k))
-		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_boot(url, boot_kvs, { online, visible, storage_available }))
-		browser = { loc: url, back: [], fwd: [], title: "", storage, online, visible, storage_available, pending: [], issued: [], subs: [], stubs: [] }
-		s0 = { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 19), writes: [], mark: [], focused: 0, deferred: NoValue }
-		SpecRunner.take(s0, inst, cmds, wbuf)
+		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_boot(url, if (storage_available) boot_kvs else [], { online, visible, storage_available }))
+		s0 = SpecRunner.fresh(inst, SpecRunner.fresh_browser({ url, storage, online, visible, storage_available }))
+		SpecRunner.answer_gets(program, SpecRunner.take(s0, inst, cmds, wbuf))
 	}
 
 	## Dispatch event `ev` with `payload` from DOM node index `i`, as the
@@ -355,11 +402,30 @@ SpecRunner := [].{
 	fire_if : Program(state), S(state), U64, Str, Str -> S(state)
 	fire_if = |program, s, i, ev, payload| SpecRunner.fire(program, s, i, ev, payload) ?? s
 
-	## One host call.
+	## One host call, then the storage reads it issued, each answered in a turn
+	## of its own as the runtime answers them.
 	send : Program(state), S(state), U32, U32, List(U8) -> S(state)
 	send = |program, s, node, h, payload| {
 		(inst, cmds, wbuf) = (program.event)(s.inst, s.buf, s.wbuf, node, h, payload)
-		SpecRunner.take(s, inst, cmds, wbuf)
+		SpecRunner.answer_gets(program, SpecRunner.take(s, inst, cmds, wbuf))
+	}
+
+	## Answer every storage read waiting for its turn: the stored value, or
+	## `Missing` when there is none or storage is unavailable.
+	answer_gets : Program(state), S(state) -> S(state)
+	answer_gets = |program, s0| {
+		var $s = s0
+		while !$s.browser.gets.is_empty() {
+			b = $s.browser
+			g = b.gets.first() ?? crash "SpecRunner.answer_gets: not empty"
+			found = if (b.storage_available) b.storage.find_first(|kv| kv.key == g.key) else Err(NotFound)
+			payload = match found {
+				Ok(kv) => [3].concat(kv.value.to_utf8())
+				Err(_) => [4]
+			}
+			$s = SpecRunner.deliver(program, { ..$s, browser: { ..b, gets: b.gets.drop_first(1) } }, g.id, payload)
+		}
+		$s
 	}
 
 	## Deliver an effect result to request `id`.
@@ -381,25 +447,30 @@ SpecRunner := [].{
 	popstate : Program(state), S(state) -> S(state)
 	popstate = |program, s| SpecRunner.broadcast(program, s, |x| x.sub == Pop, SpecRunner.encode_location(s.browser.loc))
 
+	## `run-effect N`: a timer fires; an HTTP request takes the staged answer.
 	run_effect : Program(state), S(state), U64 -> Try(S(state), Str)
 	run_effect = |program, s, n| {
 		b = s.browser
 		id = b.issued.get(n - 1) ? |_| "effect occurrence ${n.to_str()} was never issued (${b.issued.len().to_str()} issued)"
 		p = b.pending.find_first(|q| q.id == id) ? |_| "effect occurrence ${n.to_str()} is not pending (cancelled or done)"
-		k = b.stubs.find_first_index(
-			|stub|
-				match stub {
-					Reply(r) => r.url == p.url
-					Reject(_) => Bool.True
-				},
-		) ? |_| "no spec stub for ${p.url}"
-		stub = b.stubs.get(k) ?? crash "SpecRunner.run_effect: the index was just found"
+		rest = b.pending.keep_if(|q| q.id != id)
+		if p.timer {
+			return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, [5]))
+		}
+		stub = match b.stub {
+			Staged(st) => st
+			NoStub => return Err("run-effect ${n.to_str()} answers ${p.url} without a staged stub")
+		}
 		payload = match stub {
-			Reply({ status, headers, body, .. }) => SpecRunner.encode_http(status, if (headers.is_empty()) [{ name: "content-type", value: "application/json" }] else headers, body)
+			Reply({ url, status, headers, body }) => {
+				if url != p.url {
+					return Err("no spec stub for ${p.url} (stub is for ${url})")
+				}
+				SpecRunner.encode_http(status, if (headers.is_empty()) [{ name: "content-type", value: "application/json" }] else headers, body)
+			}
 			Reject({ kind, detail }) => SpecRunner.encode_reject(kind, detail)
 		}
-		s1 = { ..s, browser: { ..b, stubs: b.stubs.drop_at(k), pending: b.pending.keep_if(|q| q.id != id) } }
-		Ok(SpecRunner.deliver(program, s1, id, payload))
+		Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, stub: NoStub, pending: rest } }, id, payload))
 	}
 
 	## Fire one tick of every live interval of period `ms`.
@@ -411,37 +482,73 @@ SpecRunner := [].{
 
 	# ---------------------------------------------------------------- focus
 
-	## Whether Chrome focuses node `i` when it is clicked or `.focus()`ed.
+	## A boolean attribute (`disabled`, `hidden`, ...) is present for any value
+	## other than "" and "false", as the runtime sets it.
+	flag_on : Dom.DNode, Str -> Bool
+	flag_on = |n, name| {
+		v = Dom.attr_of(n, name)
+		v != "" and v != "false"
+	}
+
+	disabled : Dom.DNode -> Bool
+	disabled = |n| SpecRunner.flag_on(n, "disabled")
+
+	## Whether Chrome focuses node `n` when it is clicked or `.focus()`ed.
 	focusable : Dom.DNode -> Bool
 	focusable = |n| {
 		tag_ok = n.tag == "button" or n.tag == "input" or n.tag == "select" or n.tag == "textarea" or (n.tag == "a" and Dom.attr_of(n, "href") != "") or Dom.attr_of(n, "tabindex") != ""
-		tag_ok and Dom.attr_of(n, "disabled") != "true"
+		tag_ok and !SpecRunner.disabled(n)
 	}
 
-	## Move focus to node index `to` (+1; 0 blurs), delivering `blur` to the
-	## element losing it and `focus` to the one gaining it, each with the
-	## element's value, when a handler listens. No events when focus stays.
-	## A value held back on the control losing focus lands first, before its
-	## `blur` handler runs (the runtime applies it in a capturing listener).
+	## The node a press on node `i` focuses (index + 1): the nearest focusable
+	## element at or above it, or 0 (focus leaves the focused element).
+	focus_target : Dom.Model, U64 -> U64
+	focus_target = |dom, i| {
+		n = Dom.node(dom, i)
+		if SpecRunner.focusable(n) {
+			i + 1
+		} else if n.parent == 0 {
+			0
+		} else {
+			SpecRunner.focus_target(dom, n.parent - 1)
+		}
+	}
+
+	## A control whose edits fire `change` when it loses focus.
+	text_control : Dom.DNode -> Bool
+	text_control = |n| n.tag == "textarea" or (n.tag == "input" and SpecRunner.fillable.contains(Dom.attr_of(n, "type")))
+
+	## The input types `fill` types into, as Playwright's `fill` allows.
+	fillable : List(Str)
+	fillable = ["", "text", "password", "email", "search", "tel", "url", "number"]
+
+	## Move focus to node index `to` (+1; 0 blurs). The control losing focus
+	## first gets `change` if the user changed its value since it gained focus,
+	## then a value held back on it lands (the runtime applies it in a
+	## capturing listener), then it gets `blur`, and the element gaining focus
+	## gets `focus`; each event carries the element's value and is delivered
+	## only when a handler listens. Nothing happens when focus stays.
 	move_focus : Program(state), S(state), U64 -> S(state)
 	move_focus = |program, s0, to| {
 		if s0.focused == to {
 			s0
 		} else {
 			from = s0.focused
-			landed = match s0.deferred {
-				Held(v) if from != 0 => SpecRunner.set_attr(s0, from - 1, "value", v)
-				_ => s0
+			changed = if from != 0 and SpecRunner.text_control(Dom.node(s0.dom, from - 1)) {
+				shown = Dom.attr_of(Dom.node(s0.dom, from - 1), "value")
+				if (shown != s0.focus_value) SpecRunner.fire_if(program, s0, from - 1, "change", shown) else s0
+			} else {
+				s0
 			}
-			s1 = { ..landed, focused: to, deferred: NoValue }
+			landed = match changed.deferred {
+				Held(v) if from != 0 => SpecRunner.set_attr(changed, from - 1, "value", v)
+				_ => changed
+			}
+			s1 = { ..landed, focused: to, deferred: NoValue, focus_value: if (to == 0) "" else Dom.attr_of(Dom.node(landed.dom, to - 1), "value") }
 			s2 = if (from == 0) s1 else SpecRunner.fire_if(program, s1, from - 1, "blur", Dom.attr_of(Dom.node(s1.dom, from - 1), "value"))
 			if (to == 0) s2 else SpecRunner.fire_if(program, s2, to - 1, "focus", Dom.attr_of(Dom.node(s2.dom, to - 1), "value"))
 		}
 	}
-
-	## A mouse click moves focus to the control under it, or away.
-	click_focus : Program(state), S(state), U64 -> S(state)
-	click_focus = |program, s, i| SpecRunner.move_focus(program, s, if (SpecRunner.focusable(Dom.node(s.dom, i))) i + 1 else 0)
 
 	# ------------------------------------------------------------- locators
 
@@ -478,8 +585,14 @@ SpecRunner := [].{
 			Text(x) => n.tag == "" and n.text == x
 		}
 
+	## The element a locator names (a `text` locator names the element holding
+	## the text node).
 	find : Dom.Model, Scm.Loc -> Try(U64, [NotFound])
-	find = |dom, loc| Dom.find(dom, dom.root, |n| SpecRunner.matches(dom, n, loc))
+	find = |dom, loc| {
+		i = Dom.find(dom, dom.root, |n| SpecRunner.matches(dom, n, loc))?
+		n = Dom.node(dom, i)
+		if (n.tag == "" and n.parent != 0) Ok(n.parent - 1) else Ok(i)
+	}
 
 	need : Dom.Model, Scm.Loc -> Try(U64, Str)
 	need = |dom, loc| SpecRunner.find(dom, loc).map_err(|_| "no element ${Scm.show_loc(loc)}")
@@ -489,6 +602,48 @@ SpecRunner := [].{
 
 	set_attr : S(state), U64, Str, Str -> S(state)
 	set_attr = |s, i, name, v| { ..s, dom: Dom.set_attr_on(s.dom, i, name, v) }
+
+	## A control's live value: a `<select>` shows the value only when one of
+	## its options has it.
+	value_of : Dom.Model, U64 -> Str
+	value_of = |dom, i| {
+		n = Dom.node(dom, i)
+		v = Dom.attr_of(n, "value")
+		if n.tag == "select" and Dom.find(dom, i, |o| o.tag == "option" and Dom.attr_of(o, "value") == v).is_err() {
+			""
+		} else {
+			v
+		}
+	}
+
+	## What `expect-attr` reads, as the browser runner reads it: `checked` and
+	## `disabled` as "true"/"false" from the live state, `value` as the live
+	## value, a boolean attribute as "" when present, `class` as set, and any
+	## other attribute as set unless the engine set it to "" (which removes it).
+	attr_value : Dom.Model, U64, Str -> Try(Str, [Absent])
+	attr_value = |dom, i, name| {
+		n = Dom.node(dom, i)
+		raw = Dom.attr_of(n, name)
+		if name == "checked" {
+			Ok(SpecRunner.bool_str(raw == "true"))
+		} else if name == "disabled" {
+			Ok(SpecRunner.bool_str(SpecRunner.disabled(n)))
+		} else if name == "value" {
+			Ok(SpecRunner.value_of(dom, i))
+		} else if SpecRunner.bool_attrs.contains(name) {
+			if (SpecRunner.flag_on(n, name)) Ok("") else Err(Absent)
+		} else if name == "class" {
+			if (n.attrs.any(|(k, _)| k == "class")) Ok(raw) else Err(Absent)
+		} else if raw == "" {
+			Err(Absent)
+		} else {
+			Ok(raw)
+		}
+	}
+
+	## The attributes the runtime treats as boolean (design.md, Appendix B).
+	bool_attrs : List(Str)
+	bool_attrs = ["selected", "readonly", "required", "hidden", "multiple", "open"]
 
 	# ----------------------------------------------------------------- steps
 
@@ -530,116 +685,99 @@ SpecRunner := [].{
 		Ok({})
 	}
 
-	## Run one step. `Err(Unsupported(_))` is a step this runner cannot honour;
-	## it is never skipped silently.
-	one : Program(state), S(state), Scm.Op -> Try(S(state), [Assertion(Str), Unsupported(Str)])
+	## Run one step; `Err` is the step's failure. Every step of the grammar
+	## has a case here (the match has no catch-all).
+	one : Program(state), S(state), Scm.Op -> Try(S(state), Str)
 	one = |program, s, op| {
 		dom = s.dom
 		b = s.browser
-		need_el = |loc| SpecRunner.need(dom, loc).map_err(|m| Assertion(m))
-		check = |ok, msg| if (ok) Ok(s) else Err(Assertion(msg))
-		fire_ev = |st, i, ev, payload| SpecRunner.fire(program, st, i, ev, payload).map_err(|m| Assertion(m))
-		disabled = |i| Dom.attr_of(Dom.node(dom, i), "disabled") == "true"
+		check = |ok, msg| if (ok) Ok(s) else Err(msg)
 		match op {
 			Click(loc) => {
-				i = need_el(loc)?
+				i = SpecRunner.need(dom, loc)?
 				# A browser delivers no click to a disabled control.
-				if disabled(i) {
-					Ok(s)
-				} else {
-					fire_ev(SpecRunner.click_focus(program, s, i), i, "click", "")
-				}
+				if (SpecRunner.disabled(Dom.node(dom, i))) Ok(s) else SpecRunner.mouse_click(program, s, i)
 			}
 			RealClick(loc) => {
-				i = need_el(loc)?
-				if disabled(i) {
-					return Err(Assertion("${Scm.show_loc(loc)} is disabled"))
-				}
-				SpecRunner.real_click(program, s, i).map_err(|m| Assertion(m))
+				i = SpecRunner.need(dom, loc)?
+				if (SpecRunner.disabled(Dom.node(dom, i))) Err("${Scm.show_loc(loc)} is disabled") else SpecRunner.mouse_click(program, s, i)
 			}
-			Fill(loc, v) => {
-				i = need_el(loc)?
-				s1 = SpecRunner.move_focus(program, s, i + 1)
-				# An input that echoes the held value makes it moot.
-				s2 = if (s1.deferred == Held(v)) { ..s1, deferred: NoValue } else s1
-				fire_ev(SpecRunner.set_attr(s2, i, "value", v), i, "input", v)
+			Fill(loc, v) => SpecRunner.fill(program, s, loc, v)
+			Focus(loc) => {
+				i = SpecRunner.need(dom, loc)?
+				if (SpecRunner.focusable(Dom.node(dom, i))) Ok(SpecRunner.move_focus(program, s, i + 1)) else Ok(s)
 			}
-			Focus(loc) => Ok(SpecRunner.move_focus(program, s, need_el(loc)? + 1))
 			Blur(loc) => {
-				i = need_el(loc)?
+				i = SpecRunner.need(dom, loc)?
 				if (s.focused == i + 1) Ok(SpecRunner.move_focus(program, s, 0)) else Ok(s)
 			}
-			Check(loc) => {
-				i = need_el(loc)?
-				SpecRunner.set_checked(program, SpecRunner.click_focus(program, s, i), i, Bool.True).map_err(|m| Assertion(m))
-			}
-			Uncheck(loc) => {
-				i = need_el(loc)?
-				SpecRunner.set_checked(program, SpecRunner.click_focus(program, s, i), i, Bool.False).map_err(|m| Assertion(m))
-			}
+			Check(loc) => SpecRunner.set_checked(program, s, loc, Bool.True)
+			Uncheck(loc) => SpecRunner.set_checked(program, s, loc, Bool.False)
 			SelectOption(loc, v) => {
-				i = need_el(loc)?
+				i = SpecRunner.need(dom, loc)?
 				n = Dom.node(dom, i)
 				if n.tag != "select" {
-					return Err(Assertion("${Scm.show_loc(loc)} is not a <select>"))
+					return Err("${Scm.show_loc(loc)} is not a <select>")
 				}
-				has_option = Dom.find(dom, i, |o| o.tag == "option" and Dom.attr_of(o, "value") == v).is_ok()
-				if !has_option {
-					return Err(Assertion("${Scm.show_loc(loc)} has no option ${JsonOut.quote(v)}"))
+				if Dom.find(dom, i, |o| o.tag == "option" and Dom.attr_of(o, "value") == v).is_err() {
+					return Err("${Scm.show_loc(loc)} has no option ${JsonOut.quote(v)}")
 				}
-				fire_ev(SpecRunner.set_attr(s, i, "value", v), i, "change", v)
+				s1 = SpecRunner.fire_if(program, SpecRunner.set_attr(s, i, "value", v), i, "input", v)
+				Ok(SpecRunner.fire_if(program, s1, i, "change", v))
 			}
 			Change(loc, v) => {
-				i = need_el(loc)?
+				i = SpecRunner.need(dom, loc)?
 				n = Dom.node(dom, i)
 				kind = Dom.attr_of(n, "type")
 				if n.tag == "input" and (kind == "radio" or kind == "checkbox") {
 					if Dom.attr_of(n, "value") != v {
-						return Err(Assertion("${Scm.show_loc(loc)} has value ${JsonOut.quote(Dom.attr_of(n, "value"))}, not ${JsonOut.quote(v)}"))
+						return Err("${Scm.show_loc(loc)} has value ${JsonOut.quote(Dom.attr_of(n, "value"))}, not ${JsonOut.quote(v)}")
 					}
-					fire_ev(SpecRunner.check_on(s, i), i, "change", "true")
+					Ok(SpecRunner.fire_if(program, SpecRunner.check_on(s, i), i, "change", "true"))
 				} else {
-					fire_ev(SpecRunner.set_attr(s, i, "value", v), i, "change", v)
+					Ok(SpecRunner.fire_if(program, SpecRunner.set_attr(s, i, "value", v), i, "change", v))
 				}
 			}
 			Submit(loc) => {
-				i = need_el(loc)?
+				i = SpecRunner.need(dom, loc)?
 				if Dom.node(dom, i).tag != "form" {
-					return Err(Assertion("${Scm.show_loc(loc)} is not a <form>"))
+					return Err("${Scm.show_loc(loc)} is not a <form>")
 				}
-				fire_ev(s, i, "submit", "")
+				Ok(SpecRunner.submit_form(program, s, i))
 			}
 			ExpectText(loc, want) => {
-				got = Dom.text_of(dom, need_el(loc)?)
+				got = Dom.text_of(dom, SpecRunner.need(dom, loc)?)
 				check(got == want, "${Scm.show_loc(loc)} text ${JsonOut.quote(got)}, expected ${JsonOut.quote(want)}")
 			}
 			ExpectValue(loc, want) => {
-				got = Dom.attr_of(Dom.node(dom, need_el(loc)?), "value")
+				got = SpecRunner.value_of(dom, SpecRunner.need(dom, loc)?)
 				check(got == want, "${Scm.show_loc(loc)} value ${JsonOut.quote(got)}, expected ${JsonOut.quote(want)}")
 			}
 			ExpectChecked(loc, want) => {
-				got = Dom.attr_of(Dom.node(dom, need_el(loc)?), "checked") == "true"
+				got = Dom.attr_of(Dom.node(dom, SpecRunner.need(dom, loc)?), "checked") == "true"
 				check(got == want, "${Scm.show_loc(loc)} checked ${SpecRunner.bool_str(got)}, expected ${SpecRunner.bool_str(want)}")
 			}
 			ExpectDisabled(loc, want) => {
-				got = Dom.attr_of(Dom.node(dom, need_el(loc)?), "disabled") == "true"
+				got = SpecRunner.disabled(Dom.node(dom, SpecRunner.need(dom, loc)?))
 				check(got == want, "${Scm.show_loc(loc)} disabled ${SpecRunner.bool_str(got)}, expected ${SpecRunner.bool_str(want)}")
 			}
 			ExpectVisible(loc) => {
-				_ = need_el(loc)?
+				_ = SpecRunner.need(dom, loc)?
 				Ok(s)
 			}
 			ExpectAbsent(loc) => check(SpecRunner.find(dom, loc).is_err(), "${Scm.show_loc(loc)} is present")
-			ExpectAttr({ target, name, value }) => {
-				got = Dom.attr_of(Dom.node(dom, need_el(target)?), name)
-				check(got == value, "${Scm.show_loc(target)} ${name}=${JsonOut.quote(got)}, expected ${JsonOut.quote(value)}")
-			}
-			ExpectNoAttr({ target, name }) => {
-				got = Dom.attr_of(Dom.node(dom, need_el(target)?), name)
-				check(got == "", "${Scm.show_loc(target)} has ${name}=${JsonOut.quote(got)}")
-			}
+			ExpectAttr({ target, name, value }) =>
+				match SpecRunner.attr_value(dom, SpecRunner.need(dom, target)?, name) {
+					Ok(got) => check(got == value, "${Scm.show_loc(target)} ${name}=${JsonOut.quote(got)}, expected ${JsonOut.quote(value)}")
+					Err(Absent) => Err("${Scm.show_loc(target)} has no ${name} attribute, expected ${JsonOut.quote(value)}")
+				}
+			ExpectNoAttr({ target, name }) =>
+				match SpecRunner.attr_value(dom, SpecRunner.need(dom, target)?, name) {
+					Ok(got) => Err("${Scm.show_loc(target)} has ${name}=${JsonOut.quote(got)}")
+					Err(Absent) => Ok(s)
+				}
 			ExpectUpdates(loc, n) => {
-				i = need_el(loc)?
+				i = SpecRunner.need(dom, loc)?
 				got = 1 + (s.writes.get(i) ?? 0)
 				check(got == n, "${Scm.show_loc(loc)} was written ${got.to_str()} times (its creation and every later update), expected ${n.to_str()}")
 			}
@@ -651,22 +789,28 @@ SpecRunner := [].{
 			}
 			ExpectNoLocalStorage(key) => check(!b.storage.any(|kv| kv.key == key), "local storage ${key} is present")
 			ExpectPendingEffects(n) => check(b.pending.len() == n, "expected ${n.to_str()} pending effects, got ${b.pending.len().to_str()}")
-			RunEffect(n) => SpecRunner.run_effect(program, s, n).map_err(|m| Assertion(m))
-			StubHttp({ stub, .. }) => Ok({ ..s, browser: { ..b, stubs: b.stubs.append(stub) } })
-			Navigate(url) => Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, back: b.back.append(b.loc), loc: url, fwd: [] } }))
+			RunEffect(n) => SpecRunner.run_effect(program, s, n)
+			StubHttp({ stub, .. }) =>
+				match b.stub {
+					NoStub => Ok({ ..s, browser: { ..b, stub: Staged(stub) } })
+					Staged(_) => Err("a stub is already staged; run-effect answers one at a time")
+				}
+			Navigate(url) => SpecRunner.navigate(program, s, url)
 			HistoryBack =>
 				match b.back.last() {
-					Ok(prev) => Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, back: b.back.drop_last(1), fwd: [b.loc].concat(b.fwd), loc: prev } }))
-					Err(_) => Err(Assertion("history-back with no history"))
+					Ok(prev) if prev.doc != b.doc => Err("history-back crosses documents, which specs do not model")
+					Ok(prev) => Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, back: b.back.drop_last(1), fwd: [{ url: b.loc, doc: b.doc }].concat(b.fwd), loc: prev.url } }))
+					Err(_) => Err("history-back with no history")
 				}
 			HistoryForward =>
 				match b.fwd.first() {
-					Ok(next) => Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, fwd: b.fwd.drop_first(1), back: b.back.append(b.loc), loc: next } }))
-					Err(_) => Err(Assertion("history-forward with no forward entry"))
+					Ok(next) if next.doc != b.doc => Err("history-forward crosses documents, which specs do not model")
+					Ok(next) => Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, fwd: b.fwd.drop_first(1), back: b.back.append({ url: b.loc, doc: b.doc }), loc: next.url } }))
+					Err(_) => Err("history-forward with no forward entry")
 				}
 			TickInterval(ms) =>
 				if SpecRunner.live_intervals(s, ms) == 0 {
-					Err(Assertion("no live interval with period ${ms.to_str()} ms"))
+					Err("no live interval with period ${ms.to_str()} ms")
 				} else {
 					Ok(SpecRunner.tick(program, s, ms))
 				}
@@ -699,15 +843,88 @@ SpecRunner := [].{
 			}
 			MarkMetrics => Ok({ ..s, mark: s.work.counters })
 			ExpectMetricDelta({ metric, delta }) => {
-				got = SpecRunner.metric_delta(s, metric).map_err(|m| Assertion(m))?
+				got = SpecRunner.metric_delta(s, metric)?
 				check(got == delta, "${metric} changed by ${got.to_str()}, expected ${delta.to_str()}")
 			}
 			ExpectMetricDeltaAtMost({ metric, delta }) => {
-				got = SpecRunner.metric_delta(s, metric).map_err(|m| Assertion(m))?
+				got = SpecRunner.metric_delta(s, metric)?
 				check(got <= delta, "${metric} changed by ${got.to_str()}, expected at most ${delta.to_str()}")
 			}
-			other => Err(Unsupported(Scm.op_name(other)))
 		}
+	}
+
+	## `fill`, as Playwright's: the control must be an enabled text input or
+	## textarea that can hold the value (an `<input type=number>` holds only a
+	## valid floating-point number or ""). Focus moves to it, and the whole
+	## value arrives as one `input` event; filling an empty control with ""
+	## deletes nothing and sends none.
+	fill : Program(state), S(state), Scm.Loc, Str -> Try(S(state), Str)
+	fill = |program, s, loc, v| {
+		i = SpecRunner.need(s.dom, loc)?
+		n = Dom.node(s.dom, i)
+		kind = Dom.attr_of(n, "type")
+		if !(n.tag == "textarea" or (n.tag == "input" and SpecRunner.fillable.contains(kind))) {
+			return Err("${Scm.show_loc(loc)} cannot be filled")
+		}
+		if SpecRunner.disabled(n) {
+			return Err("${Scm.show_loc(loc)} is disabled")
+		}
+		if kind == "number" and v != "" and !SpecRunner.is_float(v) {
+			return Err("${Scm.show_loc(loc)} cannot hold ${JsonOut.quote(v)}")
+		}
+		s1 = SpecRunner.move_focus(program, s, i + 1)
+		if v == "" and Dom.attr_of(Dom.node(s1.dom, i), "value") == "" {
+			return Ok(s1)
+		}
+		# An input that echoes the held value makes it moot.
+		s2 = if (s1.deferred == Held(v)) { ..s1, deferred: NoValue } else s1
+		Ok(SpecRunner.fire_if(program, SpecRunner.set_attr(s2, i, "value", v), i, "input", v))
+	}
+
+	## A valid floating-point number (HTML): `-? (D+ (. D+)? | . D+) ([eE] [+-]? D+)?`.
+	is_float : Str -> Bool
+	is_float = |v| {
+		digits = |bs| !bs.is_empty() and bs.all(|c| c >= '0' and c <= '9')
+		bytes = v.to_utf8()
+		body = if (bytes.first() == Ok('-')) bytes.drop_first(1) else bytes
+		(mantissa, exponent) = match body.find_first_index(|c| c == 'e' or c == 'E') {
+			Ok(k) => (body.sublist({ start: 0, len: k }), Ok(body.drop_first(k + 1)))
+			Err(_) => (body, Err(None))
+		}
+		mantissa_ok = match mantissa.find_first_index(|c| c == '.') {
+			Ok(k) => {
+				whole = mantissa.sublist({ start: 0, len: k })
+				frac = mantissa.drop_first(k + 1)
+				digits(frac) and (whole.is_empty() or digits(whole))
+			}
+			Err(_) => digits(mantissa)
+		}
+		exponent_ok = match exponent {
+			Ok(e) => digits(if (e.first() == Ok('+') or e.first() == Ok('-')) e.drop_first(1) else e)
+			Err(_) => Bool.True
+		}
+		mantissa_ok and exponent_ok
+	}
+
+	## `check`/`uncheck`: a click on a checkbox or radio that is not in the
+	## wanted state, which must then be in it.
+	set_checked : Program(state), S(state), Scm.Loc, Bool -> Try(S(state), Str)
+	set_checked = |program, s, loc, want| {
+		i = SpecRunner.need(s.dom, loc)?
+		n = Dom.node(s.dom, i)
+		kind = if (n.tag == "input") Dom.attr_of(n, "type") else ""
+		if kind != "checkbox" and kind != "radio" {
+			return Err("${Scm.show_loc(loc)} is not a checkbox or radio button")
+		}
+		if kind == "radio" and !want {
+			return Err("${Scm.show_loc(loc)} is a radio button, which cannot be unchecked")
+		}
+		if (Dom.attr_of(n, "checked") == "true") == want {
+			return Ok(s)
+		}
+		s1 = if (SpecRunner.disabled(n)) s else SpecRunner.mouse_click(program, s, i)?
+		now = SpecRunner.find(s1.dom, loc).map_ok(|k| Dom.attr_of(Dom.node(s1.dom, k), "checked") == "true") ?? !want
+		if (now == want) Ok(s1) else Err("clicking ${Scm.show_loc(loc)} did not ${if (want) "check" else "uncheck"} it")
 	}
 
 	## Mark node `i` checked; a radio unchecks the other radios of its group
@@ -733,60 +950,171 @@ SpecRunner := [].{
 		SpecRunner.set_attr(s1, i, "checked", "true")
 	}
 
-	## Check or uncheck a control as a click would: no event when it already
-	## has the wanted state.
-	set_checked : Program(state), S(state), U64, Bool -> Try(S(state), Str)
-	set_checked = |program, s, i, want|
-		if (Dom.attr_of(Dom.node(s.dom, i), "checked") == "true") == want {
-			Ok(s)
-		} else {
-			SpecRunner.fire(program, SpecRunner.set_attr(s, i, "checked", SpecRunner.bool_str(want)), i, "change", SpecRunner.bool_str(want))
-		}
-
-	## A real mouse click, in Chrome's order (design.md, "The `.scm` spec
-	## language"): `mousedown`, then focus moves (the default action of the
-	## press), then `mouseup` and `click`,
-	## then the browser's default action: a checkbox toggles and a radio
-	## checks (each with `change`), and a submit button submits its form. A
-	## click that reaches no handler and has no default action fails.
-	real_click : Program(state), S(state), U64 -> Try(S(state), Str)
-	real_click = |program, s0, i| {
-		n = Dom.node(s0.dom, i)
-		kind = Dom.attr_of(n, "type")
+	## A real mouse click on node `i`, in Chrome's order: `mousedown`, then
+	## focus moves (the default action of the press), then `mouseup` and
+	## `click`, then the click's default action unless the dispatched click
+	## handler prevented it (design.md, "The `.scm` spec language").
+	mouse_click : Program(state), S(state), U64 -> Try(S(state), Str)
+	mouse_click = |program, s0, i| {
 		s1 = SpecRunner.fire_if(program, s0, i, "mousedown", "")
-		s2 = SpecRunner.click_focus(program, s1, i)
+		s2 = SpecRunner.move_focus(program, s1, SpecRunner.focus_target(s1.dom, i))
 		s3 = SpecRunner.fire_if(program, s2, i, "mouseup", "")
-		clicked = Dom.target(s3.dom, i, "click").is_ok()
+		prevented = Dom.prevents(s3.dom, i, "click")
 		s4 = SpecRunner.fire_if(program, s3, i, "click", "")
+		if (prevented) Ok(s4) else SpecRunner.default_action(program, s4, i)
+	}
+
+	## The browser's default action for a click on node `i`: a checkbox
+	## toggles and a radio checks (each with `input` then `change`), a submit
+	## button submits its form, and a link navigates.
+	default_action : Program(state), S(state), U64 -> Try(S(state), Str)
+	default_action = |program, s, i| {
+		n = Dom.node(s.dom, i)
+		kind = Dom.attr_of(n, "type")
+		on_value = if (Dom.attr_of(n, "value") == "") "on" else Dom.attr_of(n, "value")
 		if n.tag == "input" and kind == "checkbox" {
-			want = Dom.attr_of(Dom.node(s4.dom, i), "checked") != "true"
-			Ok(SpecRunner.fire_if(program, SpecRunner.set_attr(s4, i, "checked", SpecRunner.bool_str(want)), i, "change", SpecRunner.bool_str(want)))
+			want = Dom.attr_of(n, "checked") != "true"
+			s1 = SpecRunner.fire_if(program, SpecRunner.set_attr(s, i, "checked", SpecRunner.bool_str(want)), i, "input", on_value)
+			Ok(SpecRunner.fire_if(program, s1, i, "change", SpecRunner.bool_str(want)))
 		} else if n.tag == "input" and kind == "radio" {
-			if Dom.attr_of(Dom.node(s4.dom, i), "checked") == "true" {
-				Ok(s4)
+			if Dom.attr_of(n, "checked") == "true" {
+				Ok(s)
 			} else {
-				Ok(SpecRunner.fire_if(program, SpecRunner.check_on(s4, i), i, "change", "true"))
+				s1 = SpecRunner.fire_if(program, SpecRunner.check_on(s, i), i, "input", on_value)
+				Ok(SpecRunner.fire_if(program, s1, i, "change", "true"))
 			}
-		} else if n.tag == "button" and (kind == "" or kind == "submit") and SpecRunner.form_of(s4.dom, i).is_ok() {
-			form = SpecRunner.form_of(s4.dom, i) ?? 0
-			Ok(SpecRunner.fire_if(program, s4, form, "submit", ""))
-		} else if clicked {
-			Ok(s4)
+		} else if (n.tag == "button" and (kind == "" or kind == "submit")) or (n.tag == "input" and kind == "submit") {
+			match SpecRunner.ancestor(s.dom, i, |m| m.tag == "form") {
+				Ok(form) => Ok(SpecRunner.submit_form(program, s, form))
+				Err(_) => Ok(s)
+			}
 		} else {
-			Err("no click handler and no default action for this element")
+			match SpecRunner.ancestor(s.dom, i, |m| m.tag == "a" and Dom.attr_of(m, "href") != "") {
+				Ok(a) => {
+					href = Dom.attr_of(Dom.node(s.dom, a), "href")
+					url = SpecRunner.resolve(s.browser.loc, href) ? |_| "the click navigates to ${href}, which leaves the app"
+					SpecRunner.navigate(program, s, url)
+				}
+				Err(_) => Ok(s)
+			}
 		}
 	}
 
-	## The nearest `<form>` at or above node `i`.
-	form_of : Dom.Model, U64 -> Try(U64, [NoForm])
-	form_of = |dom, i| {
+	## The nearest node at or above node `i` that satisfies `pred`.
+	ancestor : Dom.Model, U64, (Dom.DNode -> Bool) -> Try(U64, [NotFound])
+	ancestor = |dom, i, pred| {
 		n = Dom.node(dom, i)
-		if n.tag == "form" {
+		if pred(n) {
 			Ok(i)
 		} else if n.parent == 0 {
-			Err(NoForm)
+			Err(NotFound)
 		} else {
-			SpecRunner.form_of(dom, n.parent - 1)
+			SpecRunner.ancestor(dom, n.parent - 1, pred)
+		}
+	}
+
+	## Submit form `i` as `requestSubmit` does: a form whose controls are not
+	## all valid fires no `submit`.
+	submit_form : Program(state), S(state), U64 -> S(state)
+	submit_form = |program, s, i| if (SpecRunner.form_valid(s.dom, i)) SpecRunner.fire_if(program, s, i, "submit", "") else s
+
+	## Constraint validation over the enabled controls inside form `i`: a
+	## `required` control must have a value (a checkbox must be checked), an
+	## email field a valid address, and a number field a value within its
+	## `min` and `max`.
+	form_valid : Dom.Model, U64 -> Bool
+	form_valid = |dom, i| Dom.find(dom, i, |n| SpecRunner.invalid(n)).is_err()
+
+	invalid : Dom.DNode -> Bool
+	invalid = |n| {
+		control = n.tag == "input" or n.tag == "textarea" or n.tag == "select"
+		if !control or SpecRunner.disabled(n) {
+			Bool.False
+		} else {
+			kind = Dom.attr_of(n, "type")
+			v = Dom.attr_of(n, "value")
+			missing = if (kind == "checkbox" or kind == "radio") Dom.attr_of(n, "checked") != "true" else v == ""
+			bound = |name, out_of_range|
+				match (F64.from_str(Dom.attr_of(n, name)), F64.from_str(v)) {
+					(Ok(limit), Ok(x)) => out_of_range(x, limit)
+					_ => Bool.False
+				}
+			(SpecRunner.flag_on(n, "required") and missing)
+				or (kind == "email" and v != "" and !SpecRunner.is_email(v))
+				or (kind == "number" and v != "" and (bound("min", |x, m| x < m) or bound("max", |x, m| x > m)))
+		}
+	}
+
+	## A valid e-mail address (HTML): a local part of letters, digits and
+	## ``.!#$%&'*+/=?^_`{|}~-``, `@`, and dot-separated labels of letters,
+	## digits and inner hyphens.
+	is_email : Str -> Bool
+	is_email = |v|
+		match v.split_on("@") {
+			[local, domain] => {
+				local_ok = !local.is_empty() and local.to_utf8().all(|c| SpecRunner.alnum(c) or ".!#$%&'*+/=?^_`{|}~-".to_utf8().contains(c))
+				label_ok = |l| {
+					bs = l.to_utf8()
+					!bs.is_empty() and bs.len() <= 63 and bs.all(|c| SpecRunner.alnum(c) or c == '-') and bs.first() != Ok('-') and bs.last() != Ok('-')
+				}
+				local_ok and domain.split_on(".").all(label_ok)
+			}
+			_ => Bool.False
+		}
+
+	alnum : U8 -> Bool
+	alnum = |c| (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9')
+
+	## `url` resolved against `base`, both path-absolute: a fragment, a query or
+	## an absolute path; a relative path resolves against `base`'s directory.
+	## A URL with a scheme or an authority leaves the app.
+	resolve : Str, Str -> Try(Str, [External])
+	resolve = |base, url| {
+		path_q = SpecRunner.before(base, "#")
+		path = SpecRunner.before(path_q, "?")
+		if url.contains("://") or url.starts_with("//") {
+			Err(External)
+		} else if url.starts_with("#") {
+			Ok("${path_q}${url}")
+		} else if url.starts_with("?") {
+			Ok("${path}${url}")
+		} else if url.starts_with("/") {
+			Ok(url)
+		} else {
+			dir = match path.split_on("/").drop_last(1) {
+				[] => ""
+				parts => Str.join_with(parts, "/")
+			}
+			Ok("${dir}/${url}")
+		}
+	}
+
+	## A history URL the app pushed or replaced: it stays in the document.
+	resolve_in_document : Str, Str -> Str
+	resolve_in_document = |base, url| SpecRunner.resolve(base, url) ?? crash "contract: the app pushed ${url}, which leaves the app"
+
+	## The part of `s` before the first `sep`.
+	before : Str, Str -> Str
+	before = |s, sep| s.split_on(sep).first() ?? s
+
+	## The HTML same-document rule: `to` has a fragment and differs from
+	## `from` only in it.
+	same_document : Str, Str -> Bool
+	same_document = |from, to| to.contains("#") and SpecRunner.before(from, "#") == SpecRunner.before(to, "#")
+
+	## Navigate to `url` as a user would: within the document, a new history
+	## entry and a popstate; otherwise the app mounts afresh at `url` in a new
+	## document, with the same local storage, connectivity and visibility.
+	navigate : Program(state), S(state), Str -> Try(S(state), Str)
+	navigate = |program, s, url| {
+		b = s.browser
+		entry = { url: b.loc, doc: b.doc }
+		if SpecRunner.same_document(b.loc, url) {
+			Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, back: b.back.append(entry), loc: url, fwd: [] } }))
+		} else {
+			s1 = SpecRunner.mount_in(program, { url, storage: b.storage, online: b.online, visible: b.visible, storage_available: b.storage_available })
+			b1 = s1.browser
+			Ok({ ..s1, mark: s.mark, browser: { ..b1, doc: b.doc + 1, back: b.back.append(entry), fwd: [] } })
 		}
 	}
 
@@ -795,7 +1123,7 @@ SpecRunner := [].{
 	run = |program, spec| {
 		var $s = match SpecRunner.start(program, spec) {
 			Ok(s) => s
-			Err(message) => return Failed({ step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", kind: Unsupported, message })
+			Err(message) => return Failed({ step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message })
 		}
 		var $i = 0.U64
 		for step in spec.steps {
@@ -803,8 +1131,7 @@ SpecRunner := [].{
 				Ok(s2) => {
 					$s = s2
 				}
-				Err(Assertion(message)) => return Failed({ step: $i, at: step, kind: Assertion, message })
-				Err(Unsupported(name)) => return Failed({ step: $i, at: step, kind: Unsupported, message: "${name}: unsupported in this runner" })
+				Err(message) => return Failed({ step: $i, at: step, message })
 			}
 			$i = $i + 1
 		}
@@ -817,14 +1144,14 @@ SpecRunner := [].{
 	## program (the test platform's `Cli`), so this package stays pure.
 	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64 }
 
-	Options : { filter : Str, emit_steps : Bool, files : List(Str) }
+	Options : { filter : Str, emit_steps : Bool, grammar : Bool, files : List(Str) }
 
 	usage : Str
-	usage = "usage: TARGET spec [--filter GLOB] [--emit-steps] FILE.scm...\n"
+	usage = "usage: TARGET spec [--filter GLOB] [--emit-steps] FILE.scm...\n       TARGET spec --grammar\n"
 
 	parse_args : List(Str) -> Try(Options, Str)
 	parse_args = |args| {
-		var $o = { filter: "*", emit_steps: Bool.False, files: [] }
+		var $o = { filter: "*", emit_steps: Bool.False, grammar: Bool.False, files: [] }
 		var $i = 0.U64
 		while $i < args.len() {
 			a = args.get($i) ?? ""
@@ -834,6 +1161,9 @@ SpecRunner := [].{
 			} else if a == "--emit-steps" {
 				$o = { ..$o, emit_steps: Bool.True }
 				$i = $i + 1
+			} else if a == "--grammar" {
+				$o = { ..$o, grammar: Bool.True }
+				$i = $i + 1
 			} else if a.starts_with("--") {
 				return Err("unknown option ${a}")
 			} else {
@@ -841,7 +1171,13 @@ SpecRunner := [].{
 				$i = $i + 1
 			}
 		}
-		if ($o.files.is_empty()) Err("no spec files given") else Ok($o)
+		if $o.grammar {
+			if ($o.files.is_empty() and !$o.emit_steps) Ok($o) else Err("--grammar takes no other arguments")
+		} else if $o.files.is_empty() {
+			Err("no spec files given")
+		} else {
+			Ok($o)
+		}
 	}
 
 	## A spec's id: its file name without the directory or `.scm`.
@@ -890,7 +1226,9 @@ SpecRunner := [].{
 
 	## The `spec` command: parse every file, then either emit the parsed steps
 	## as JSON lines (`--emit-steps`) or run each spec and print one
-	## `spec-result` JSON line per spec. Exit 0 when nothing failed.
+	## `spec-result` JSON line per spec. Exit 0 when nothing failed. `--grammar`
+	## prints the grammar's form names instead (`Scm.grammar_json`), for the
+	## browser runner's `--check-grammar`.
 	main! : Program(state), Io, List(Str) => I32
 	main! = |program, io, args| {
 		opts = match SpecRunner.parse_args(args) {
@@ -899,6 +1237,10 @@ SpecRunner := [].{
 				(io.stderr!)("${msg}\n${SpecRunner.usage}")
 				return 2
 			}
+		}
+		if opts.grammar {
+			(io.stdout!)("${JsonOut.render(Scm.grammar_json)}\n")
+			return 0
 		}
 		var $counts = { passed: 0.U64, failed: 0.U64, error: 0.U64 }
 		for path in opts.files {
@@ -924,11 +1266,10 @@ SpecRunner := [].{
 								$counts = { ..$counts, passed: $counts.passed + 1 }
 								SpecRunner.result_line({ id, name: spec.name, status: "passed", duration_ns: dt, failure: Null })
 							}
-							Failed({ step, at, kind, message }) => {
+							Failed({ step, at, message }) => {
 								$counts = { ..$counts, failed: $counts.failed + 1 }
-								kind_name = if (kind == Unsupported) "unsupported" else "assertion"
 								full = "${path}:${at.pos.line.to_str()}:${at.pos.column.to_str()}: ${Scm.op_name(at.op)}: ${message}"
-								SpecRunner.result_line({ id, name: spec.name, status: "failed", duration_ns: dt, failure: SpecRunner.failure_json("step", kind_name, full, step, at.pos) })
+								SpecRunner.result_line({ id, name: spec.name, status: "failed", duration_ns: dt, failure: SpecRunner.failure_json("step", "assertion", full, step, at.pos) })
 							}
 						}
 						(io.stdout!)("${line}\n")
@@ -966,6 +1307,28 @@ expect {
 ## Options parse; unknown options (the retired `--pending-phase3` among them)
 ## and empty file lists are refused.
 expect {
-	o = SpecRunner.parse_args(["--filter", "a*", "x.scm"]) ?? { filter: "", emit_steps: Bool.False, files: [] }
-	o.filter == "a*" and o.files == ["x.scm"] and SpecRunner.parse_args(["--pending-phase3", "x.scm"]).is_err() and SpecRunner.parse_args([]).is_err()
+	o = SpecRunner.parse_args(["--filter", "a*", "x.scm"]) ?? { filter: "", emit_steps: Bool.False, grammar: Bool.False, files: [] }
+	o.filter == "a*" and o.files == ["x.scm"] and SpecRunner.parse_args(["--pending-phase3", "x.scm"]).is_err() and SpecRunner.parse_args([]).is_err() and SpecRunner.parse_args(["--grammar"]).is_ok() and SpecRunner.parse_args(["--grammar", "x.scm"]).is_err()
+}
+
+## Same-document navigations differ only in a fragment; relative URLs resolve
+## against the current path.
+expect {
+	actual = [
+		SpecRunner.same_document("/a/#/x", "/a/#/y"),
+		SpecRunner.same_document("/a/#/x", "/a/"),
+		SpecRunner.same_document("/a/", "/b/#x"),
+		SpecRunner.resolve("/a/b?q#h", "#t") == Ok("/a/b?q#t"),
+		SpecRunner.resolve("/a/b?q#h", "?r") == Ok("/a/b?r"),
+		SpecRunner.resolve("/a/b", "c") == Ok("/a/c"),
+		SpecRunner.resolve("/a/b", "https://example.test/") == Err(External),
+	]
+	actual == [Bool.True, Bool.False, Bool.False, Bool.True, Bool.True, Bool.True, Bool.True]
+}
+
+## Number inputs hold HTML's valid floating-point numbers only; email fields
+## want one @ and well-formed labels.
+expect {
+	actual = ["2", "-2.5", ".5", "1e3", "2x", "1.", "+2", "-"].map(SpecRunner.is_float).concat(["a@b", "a.b@c.d", "a@", "@b", "a@b..c", "a@-b"].map(SpecRunner.is_email))
+	actual == [Bool.True, Bool.True, Bool.True, Bool.True, Bool.False, Bool.False, Bool.False, Bool.False, Bool.True, Bool.True, Bool.False, Bool.False, Bool.False, Bool.False]
 }

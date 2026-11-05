@@ -1,6 +1,5 @@
 (test "Conduit — Your Feed tab drives the authenticated feed endpoint"
   (setup
-    (manual-effects)
     (local-storage "conduit.jwt" "jwt.conduit.kim")
     (local-storage "conduit.username" "kim")
     (initial-location "/roc-signals/examples/conduit/#/")

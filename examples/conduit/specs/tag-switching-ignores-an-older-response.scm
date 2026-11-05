@@ -1,6 +1,5 @@
 (test "Conduit — two tag requests run independently and only the newest publishes"
   (setup
-    (manual-effects)
     (initial-location "/roc-signals/examples/conduit/#/")
   )
   (steps

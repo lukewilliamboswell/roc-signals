@@ -1,6 +1,5 @@
 (test "Conduit — Profile page: profile card plus author articles, then favorites tab"
   (setup
-    (manual-effects)
     (local-storage "conduit.jwt" "jwt.conduit.kim")
     (local-storage "conduit.username" "kim")
     (initial-location "/roc-signals/examples/conduit/#/profile/anna")

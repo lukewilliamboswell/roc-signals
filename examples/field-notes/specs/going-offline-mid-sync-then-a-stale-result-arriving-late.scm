@@ -1,6 +1,5 @@
 (test "Field notes — going offline mid sync, then a stale result arriving late"
   (setup
-    (manual-effects)
     ; One draft note is enough to exercise an offline/reconnect overlap.
     (local-storage "field-notes:notes" "n1|1|0|r7|Fence line check")
   )

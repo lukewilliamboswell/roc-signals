@@ -16,7 +16,6 @@
     (fill (label "Answer f3") "42")
     (fill (label "Maximum f3") "10")
     (fill (label "Minimum f3") "20")
-    (fill (label "Minimum f3") "2x")
     (fill (label "Maximum f3") "50")
     (fill (label "Minimum f3") "20")
     (fill (label "Answer f3") "5")

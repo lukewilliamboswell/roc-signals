@@ -648,6 +648,34 @@ Dom := [].{
 		}
 	}
 
+	## Whether the handler event `ev` dispatches from node index i asks the
+	## browser to prevent the event's default action (a `:prevent` suffix), as
+	## the runtime decides it when it dispatches (design.md, "Browser events
+	## and policies"). An event that reaches no handler prevents nothing.
+	prevents : Model, U64, Str -> Bool
+	prevents = |dom, i, ev| {
+		var $n = i
+		var $name = ""
+		while True {
+			n = Dom.node(dom, $n)
+			if $name == "" {
+				match n.hs.find_first(|(e, _)| e == ev or e.starts_with("${ev}:")) {
+					Ok((e, _)) => {
+						$name = e
+					}
+					Err(_) => {}
+				}
+			}
+			if n.rn != 0 and $name != "" {
+				return $name.ends_with(":prevent")
+			}
+			if n.parent == 0 {
+				return Bool.False
+			}
+			$n = n.parent - 1
+		}
+	}
+
 	render : Model, U64 -> Str
 	render = |dom, i| {
 		n = Dom.node(dom, i)

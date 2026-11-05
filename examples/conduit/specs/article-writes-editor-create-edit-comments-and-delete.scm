@@ -1,6 +1,5 @@
 (test "Conduit — Article writes: editor create/edit, comments, and delete"
   (setup
-    (manual-effects)
     (local-storage "conduit.jwt" "jwt.conduit.kim")
     (local-storage "conduit.username" "kim")
     (initial-location "/roc-signals/examples/conduit/#/editor/keyed-lists-without-tears")

@@ -38,7 +38,7 @@ pick = |pool, b| pool.get(b.to_u64() % pool.len()) ?? ""
 
 ## Answer pending request `p` with the `b`-th answer for its URL: a body
 ## from the pools, or (every seventh) a 503 or a timeout.
-answer_one : St, { id : U32, url : Str, body : Str }, U8 -> St
+answer_one : St, SpecRunner.Pending, U8 -> St
 answer_one = |s, p, b| {
 	payload =
 		if b % 7 == 5 {

@@ -1,6 +1,4 @@
 (test "a result rewrites one text node and nothing else"
-  (setup
-    (manual-effects))
   (steps
     (fill (label "Query") "roc")
     (submit (role form :name "Search"))

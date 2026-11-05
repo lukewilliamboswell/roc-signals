@@ -1,5 +1,4 @@
 (test "Status page — Hiding the page stops polling"
-  (setup (manual-effects))
   (steps
     ; Establish a healthy board; mount effects 1–5 each answer once.
     (stub-http "api" :url "/api/status/api" :status 200 :body "operational|99.98")

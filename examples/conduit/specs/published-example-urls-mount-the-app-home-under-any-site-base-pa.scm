@@ -1,6 +1,5 @@
 (test "Conduit — Published example URLs mount the app home under any site base path"
   (setup
-    (manual-effects)
     (initial-location "/roc-signals/examples/conduit/#/login")
   )
   (steps

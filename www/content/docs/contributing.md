@@ -70,7 +70,8 @@ for example to run two tasks at once.
    and the scripts.
 3. The test platform, and the `scm-parse` fuzz target's examples.
 4. The docs samples (below).
-5. Every app's specs natively and in Chrome, then a deliberately broken spec
+5. Every app's specs natively and in Chrome, the check that the browser
+   runner handles every form of the grammar, then a deliberately broken spec
    that both runners must reject.
 6. The runtime contract tests in Chrome: effects, controlled inputs, and the
    Conduit journey against its scripted backend.
@@ -78,14 +79,14 @@ for example to run two tasks at once.
 8. The release dry run: the bundle, `runtime.mjs`, the examples archive with
    every app mounted by its check helper, and the release notes.
 
-An expected failure is listed with its reason in `scripts/src/SpecSuite.roc`
-and must keep failing; one that starts passing fails the suite.
+Every spec must pass in both runners; there are no expected failures.
 
 ## Specs and contract tests
 
 Application-visible behaviour is specified in `.scm` files beside each app and
 runs in both runners from one parser, `test-support/Scm.roc`. An unknown step
-is a parse error; a runner that cannot honour a step fails it. The language is
+is a parse error, and both runners implement every step, with Chrome as the
+reference for what it means. The language is
 documented in [Testing](@/docs/testing.md).
 
 A change to the wire protocol changes the engine's encoder,

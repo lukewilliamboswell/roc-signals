@@ -1,6 +1,5 @@
 (test "Field notes — pausing auto sync, then deleting a queued note"
   (setup
-    (manual-effects)
     (initial-online online)
     ; Drain three notes, leaving room for one new note while sync is paused.
     (local-storage "field-notes:notes" "n0|0|1|r7|Generator hours;n1|1|1|r7|Fence line check;n2|2|1|r7|Pump pressure log")

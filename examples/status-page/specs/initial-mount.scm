@@ -1,5 +1,4 @@
 (test "Status page — Initial mount"
-  (setup (manual-effects))
   (steps
     ; Initial mount
 

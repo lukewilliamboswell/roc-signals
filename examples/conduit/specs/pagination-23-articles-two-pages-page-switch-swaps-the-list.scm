@@ -1,6 +1,5 @@
 (test "Conduit — Pagination: 23 articles > two pages; page switch swaps the list"
   (setup
-    (manual-effects)
     (local-storage "conduit.jwt" "jwt.conduit.kim")
     (local-storage "conduit.username" "kim")
     (initial-location "/roc-signals/examples/conduit/#/")

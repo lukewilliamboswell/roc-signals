@@ -1,5 +1,4 @@
 (test "Status page — First results: everything healthy, empty incident timeline"
-  (setup (manual-effects))
   (steps
     ; First results: everything healthy, empty incident timeline
 

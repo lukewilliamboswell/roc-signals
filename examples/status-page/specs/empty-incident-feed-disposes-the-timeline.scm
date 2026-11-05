@@ -1,5 +1,4 @@
 (test "Status page — Empty incident feed disposes the timeline"
-  (setup (manual-effects))
   (steps
     ; The initial incident effect is fifth; service checks stay queued.
     (stub-http "two incidents with five updates" :url "/api/status/incidents" :status 200 :body "inc-42~major~Elevated API error rate~10:02@Investigating elevated 5xx responses^10:20@Identified a bad deploy^10:45@Monitoring after rollback#inc-51~major~Delayed notification delivery~11:10@Investigating a backlog^11:40@Identified queue saturation")

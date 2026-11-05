@@ -1,5 +1,4 @@
 (test "Status page — One refresh fails while the others succeed"
-  (setup (manual-effects))
   (steps
     ; Start with all four services healthy.
     (stub-http "api" :url "/api/status/api" :status 200 :body "operational|99.98")

@@ -1,6 +1,5 @@
 (test "Field notes — editing an already synced note re queues it"
   (setup
-    (manual-effects)
     ; Field Notes: offline capture, outbox drain, rollback, and restore.
     ;
     ; Storage format is "id|slot|queued|rev|body" per note, notes joined by ";".

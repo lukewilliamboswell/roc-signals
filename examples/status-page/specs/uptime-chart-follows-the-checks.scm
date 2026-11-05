@@ -1,5 +1,4 @@
 (test "Status page — The uptime chart follows the checks"
-  (setup (manual-effects))
   (steps
     ; The chart is a `plume-chart` element whose `data-figure` attribute is
     ; the Plotly figure Plume built. Before any check reports, every bar is

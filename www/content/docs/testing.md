@@ -43,8 +43,10 @@ JavaScript runtime or real event dispatch; the browser runner is too slow
 for long random walks and reads the engine's counters only through its
 exports. Run both before you trust a change.
 
-A spec that uses a step a runner cannot honour **fails** in that runner;
-nothing is ever skipped or weakened.
+Both runners implement every step of the language with the same meaning,
+and a check fails the build if the grammar gains a step the browser runner
+has no handler for. Nothing is ever skipped or weakened, and no spec is
+allowed to pass in one runner and fail in the other.
 
 A sample app needs only its module and two small entry points. This one
 searches over HTTP, with an optional auto-refresh interval:
@@ -68,8 +70,8 @@ which hands the same `program` to `SpecRunner`:
 A spec file holds exactly one `(test "name" ...)` form:
 
 - `(setup ...)` is optional and comes first. It holds declarative state
-  applied before the app mounts: initial location, storage, connectivity,
-  visibility, and `manual-effects`.
+  applied before the app mounts: initial location, storage, connectivity
+  and visibility.
 - `(steps ...)` is required and holds at least one step, run in order from
   a fresh mount.
 - `;` starts a comment that runs to the end of the line. Strings accept the
@@ -88,7 +90,7 @@ CSS selector or DOM position. The first match in document order wins.
 |---|---|
 | `(role button :name "Save")` | An element whose explicit `role`, or implicit role, is `button` and whose accessible name is `Save` |
 | `(label "Email")` | An element whose `aria-label` is `Email` |
-| `(text "Loading")` | A text node whose content is exactly `Loading` |
+| `(text "Loading")` | The element holding a text node whose content is exactly `Loading` |
 | `(test-id "status")` | An element whose `data-testid` is `status` |
 
 The implicit roles are `button`, `link` (`a`), `region` (`section`),
@@ -100,44 +102,42 @@ on a `test-id` with `Engine.test_id`.
 
 ## Step reference
 
-This is every form the parser accepts. `LOC` is a locator, `"…"` a string,
-`N` a non-negative integer, `BOOL` is `true` or `false`.
+This is every form the parser accepts, and both runners implement every
+one: Chrome is the reference for what a step does, and the native runner
+models it. `LOC` is a locator, `"…"` a string, `N` a non-negative integer,
+`BOOL` is `true` or `false`.
 
 ### Setup forms
 
 | Form | Effect |
 |---|---|
-| `(manual-effects)` | Awaited requests wait for `run-effect` instead of running. Declare it in any spec whose app issues HTTP: the native runner always holds requests, but in Chrome without it they reach the real network |
-| `(initial-location "/path?q#h")` | The URL the app boots at; must start with `/` |
+| `(initial-location "/path?q#h")` | The URL the app boots at; must start with `/`. Without it, `/` |
 | `(initial-online online)` | Boot connectivity, `online` or `offline` |
 | `(initial-visibility hidden)` | Boot page visibility, `visible` or `hidden` |
 | `(local-storage "key" "value")` | Seed local storage before mount |
 | `(local-storage-unavailable)` | Every local-storage access throws, as with site data disabled. Seeding storage in the same setup is a spec error |
 
-Intervals never fire on their own in either runner, with or without
-`manual-effects`: only `tick-interval` fires them.
+Effects never run on their own in a spec: HTTP requests and timers wait for
+`run-effect`, and intervals for `tick-interval`. Storage reads answer by
+themselves, from storage.
 
 ### Actions
 
 | Step | What happens |
 |---|---|
-| `(click LOC)` | Click the element; focus moves to it if it is focusable. A disabled control gets no click |
-| `(real-click LOC)` | Chrome's full click: `mousedown`, focus moves, `mouseup`, `click`, then the default action — a checkbox toggles, a radio checks, a submit button submits its form. Fails on a disabled control, or when nothing handles the click and there is no default action |
-| `(fill LOC "text")` | Playwright's `fill`: focus the control and deliver the whole value as one `input` event |
+| `(click LOC)` | A real mouse click: `mousedown`, focus moves to the nearest focusable element (or away), `mouseup`, `click`, then the default action unless the click handler prevented it — a checkbox toggles and a radio checks (each with `input` and `change`), a submit button submits its form if the form's controls are valid, a link navigates. A disabled control gets no click |
+| `(real-click LOC)` | The same click, but a disabled control fails the step |
+| `(fill LOC "text")` | Playwright's `fill`: focus an enabled text input or textarea and deliver the whole value as one `input` event. A value the control cannot hold (`"2x"` in an `<input type=number>`) fails the step |
 | `(change LOC "value")` | Set the value and fire `change`; on a radio or checkbox the value must equal the control's `value`, and it becomes checked |
-| `(select-option LOC "value")` | Choose an option of a `<select>`; the option must exist |
-| `(check LOC)` / `(uncheck LOC)` | Set a checkbox and fire `change` with `true`/`false`; nothing happens if it is already in that state |
-| `(submit LOC)` | Submit a `<form>` |
-| `(focus LOC)` / `(blur LOC)` | Move focus, delivering `blur` and `focus` to handlers that listen |
+| `(select-option LOC "value")` | Choose an option of a `<select>`, firing `input` and `change`; the option must exist |
+| `(check LOC)` / `(uncheck LOC)` | Click a checkbox or radio that is not in that state; it must then be in it. A radio cannot be unchecked |
+| `(submit LOC)` | Submit a `<form>` as `requestSubmit` does: nothing is submitted while a control is invalid |
+| `(focus LOC)` / `(blur LOC)` | Move focus, delivering `blur` and `focus` to handlers that listen. Focusing an element that cannot take focus does nothing |
 
-Natively, `click` dispatches only `click`, with no default action; use
-`real-click` whenever the default action matters, such as a submit button.
-Focus follows Chrome in both runners, so a controlled input's rewritten
-value waits for blur while it has focus.
-
-The parser also accepts `key-down`, `pointer-down`, `pointer-up`,
-`pointer-enter`, `pointer-leave`, `composition-start`, `composition-end` and
-`custom-event`, but no runner honours them yet: a spec that uses one fails.
+Focus follows Chrome in both runners: a text control the user changed gets
+`change` when it loses focus, and a controlled input's rewritten value waits
+for blur while it has focus. A handler with no listener for its event is not
+an error: the event simply reaches nothing, as in a browser.
 
 ### Assertions
 
@@ -147,8 +147,8 @@ The parser also accepts `key-down`, `pointer-down`, `pointer-up`,
 | `(expect-value LOC "value")` | The control's value is `value` |
 | `(expect-checked LOC BOOL)` | The control's checked state is `BOOL` |
 | `(expect-disabled LOC BOOL)` | The control's disabled state is `BOOL` |
-| `(expect-attr LOC name "value")` | The attribute `name` has that value |
-| `(expect-no-attr LOC name)` | The attribute `name` is absent or empty |
+| `(expect-attr LOC name "value")` | The attribute `name` is present with that value; `checked` and `disabled` read `"true"`/`"false"` and `value` the live value |
+| `(expect-no-attr LOC name)` | The attribute `name` is absent. `checked`, `disabled` and `value` are live state, asserted with their own steps |
 | `(expect-visible LOC)` | The locator matches an element in the document |
 | `(expect-absent LOC)` | The locator matches nothing |
 
@@ -156,26 +156,24 @@ The parser also accepts `key-down`, `pointer-down`, `pointer-up`,
 
 | Step | Meaning |
 |---|---|
-| `(navigate "/path")` | The user goes to a URL: a new history entry, and every live `Popstate` subscription hears it. Keep it within the app's hash routes: in Chrome, a URL without a `#` is a page load that mounts the app afresh |
-| `(history-back)` / `(history-forward)` | The browser's back and forward buttons; fails with no entry to move to |
-| `(expect-current-location "/path")` | Path, query and hash equal this (`assert-current-location` is an alias) |
+| `(navigate "/path")` | The user goes to a URL. One that differs from the current URL only in its `#fragment` stays in the document: a new history entry, and every live `Popstate` subscription hears it. Any other URL loads a new document, where the app mounts afresh with the same local storage |
+| `(history-back)` / `(history-forward)` | The browser's back and forward buttons within the document; fails with no entry to move to, or when the entry belongs to another document |
+| `(expect-current-location "/path")` | Path, query and hash equal this |
 | `(expect-document-title "Title")` | The document title |
 | `(expect-local-storage "key" "value")` | Local storage holds `value` at `key` |
 | `(expect-no-local-storage "key")` | Local storage has no `key` |
 
 App `Push` and `Replace` requests move the location without a popstate, as
-browsers do. Session storage (`session-storage` in setup,
-`expect-session-storage`, `expect-no-session-storage`) parses but is not
-yet a platform service, so those specs fail.
+browsers do.
 
 ### Effects
 
 | Step | Meaning |
 |---|---|
-| `(stub-http "label" :url "/api/x" :status 200 :body "…")` | Stage an HTTP answer; optional `:headers (("name" "value") …)`, default `content-type: application/json`. `:status` is 100–999 |
+| `(stub-http "label" :url "/api/x" :status 200 :body "…")` | Stage an HTTP answer; optional `:headers (("name" "value") …)`, default `content-type: application/json`. `:status` is 100–999. Staging a second answer before one is used fails |
 | `(stub-http-reject "label" :kind network :detail "offline")` | Stage a failure: `network` with the browser's message, or `timeout` with an empty `:detail` |
-| `(run-effect N)` | Answer the N-th awaited request the app issued (1-based, in issue order, subscriptions not counted) with the staged answer. It must still be pending, and a reply's `:url` must equal the request's |
-| `(expect-pending-effects N)` | Exactly N awaited requests are in flight |
+| `(run-effect N)` | Answer the N-th HTTP request or timer the current document issued (1-based, in issue order; subscriptions and storage reads not counted). It must still be pending. A timer fires; an HTTP request takes the staged answer, and a reply's `:url` must equal the request's |
+| `(expect-pending-effects N)` | Exactly N HTTP requests and timers are waiting for `run-effect` |
 | `(tick-interval MS)` | Deliver one tick to every live `Interval(MS)`; fails when none is live |
 | `(tick-interval-if-active MS)` | The same, but a no-op when none is live |
 | `(expect-interval MS N)` | Exactly N `Interval(MS)` subscriptions are live |
@@ -183,12 +181,12 @@ yet a platform service, so those specs fail.
 | `(set-visibility hidden)` | Change page visibility and notify `VisibilityChanges` subscribers |
 | `(expect-cleanup "name" N)` | The `on_cleanup` site named `name` has run N times |
 
-Stage exactly one answer immediately before each `run-effect`: the browser
-runner holds a single staged answer, which the next `run-effect` consumes.
-A request that is answered after its owner was disposed is still delivered
-to the surviving owner (see [Effects and the browser](@/docs/effects-and-browser.md)),
+Stage one answer immediately before each `run-effect` that answers an HTTP
+request: both runners hold a single staged answer, which that `run-effect`
+consumes. A request that is answered after its owner was disposed is still
+delivered to the surviving owner (see [Effects and the browser](@/docs/effects-and-browser.md)),
 and a request the app never issued, or that is already answered, fails the
-step. There is no step yet that fires a one-shot `Timer`.
+step.
 
 In Chrome, `set-online` and `set-visibility` override `navigator.onLine` and
 `document.visibilityState` and dispatch the browser's own events, so the

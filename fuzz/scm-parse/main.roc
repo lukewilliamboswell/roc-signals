@@ -25,7 +25,7 @@ test = |text| {
 target = Fuzz.target_with({
 	examples: [
 		Fuzz.example({ name: "minimal", revision: "1", make: || "(test \"t\" (steps (click (text \"a\"))))" }),
-		Fuzz.example({ name: "setup-and-stub", revision: "1", make: || "(test \"t\" (setup (manual-effects) (initial-location \"/x\")) (steps (stub-http \"s\" :url \"/a\" :status 200 :body \"{}\") (run-effect 1)))" }),
+		Fuzz.example({ name: "setup-and-stub", revision: "2", make: || "(test \"t\" (setup (initial-location \"/x\")) (steps (stub-http \"s\" :url \"/a\" :status 200 :body \"{}\") (run-effect 1)))" }),
 		Fuzz.example({ name: "unterminated", revision: "1", make: || "(test \"t\" (steps" }),
 	],
 	name: "scm-parse",

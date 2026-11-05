@@ -1,6 +1,5 @@
 (test "Conduit — guarded routes redirect anonymous visitors to sign in"
   (setup
-    (manual-effects)
     (initial-location "/roc-signals/examples/conduit/#/login")
   )
   (steps

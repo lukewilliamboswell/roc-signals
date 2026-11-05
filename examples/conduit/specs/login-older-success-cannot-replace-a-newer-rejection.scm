@@ -1,6 +1,5 @@
 (test "Conduit — an older login success cannot replace a newer rejection"
   (setup
-    (manual-effects)
     (initial-location "/roc-signals/examples/conduit/#/login")
   )
   (steps

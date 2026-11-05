@@ -22,7 +22,6 @@
     (click (role button :name "Move left: Audit billing events"))
     (fill (label "WIP limit") "2")
     (fill (label "WIP limit") "1")
-    (fill (label "WIP limit") "abc")
     (fill (label "WIP limit") "")
     (fill (label "WIP limit") "3")
     (fill (label "New card title") "   ")

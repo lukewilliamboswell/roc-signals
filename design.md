@@ -884,21 +884,21 @@ assert it.
 
 `.scm` specs are the platform's Playwright-style test language and the single
 source of truth for application-visible behaviour. A spec names a test, an
-optional setup (initial location, local and session storage, effect mode, HTTP
-stubs), and a list of steps written against the rendered UI:
+optional setup (initial location, local storage and its availability,
+connectivity, visibility), and a list of steps written against the rendered
+UI:
 
 - **Locators** — `role` (implicit or explicit role plus accessible name),
-  `label` (`aria-label`), `text`, `test-id` (`data-testid`).
+  `label` (`aria-label`), `text` (the element holding a text node),
+  `test-id` (`data-testid`).
 - **Actions** — click and real-click, fill, change, select an option, check
-  and uncheck, submit, focus and blur, key presses, composition start and end,
-  pointer events, navigation and history back/forward.
+  and uncheck, submit, focus and blur, navigation and history back/forward.
 - **Assertions** — text, value, checked, disabled, attribute presence and
-  value, visibility and absence, location, document title, storage contents,
+  value, visibility and absence, location, document title, local storage,
   pending effects.
-- **Effects** — `manual-effects`, `stub-http` and `run-effect N` (answer the
-  N-th awaited non-subscription request in issue order), interval ticks,
-  `set-visibility`, `set-online`; in setup, `initial-online`,
-  `initial-visibility`, `local-storage` and `local-storage-unavailable`.
+- **Effects** — `stub-http` and `run-effect N` (answer the N-th awaited HTTP
+  request or timer in issue order), interval ticks, `set-visibility`,
+  `set-online`.
 - **Work** — `mark-metrics`, `expect-metric-delta`,
   `expect-metric-delta-at-most`, `expect-updates`, `expect-cleanup`,
   `expect-interval`.
@@ -911,10 +911,36 @@ produces a typed list of steps. Both runners consume it:
 - the **browser runner** replays the same steps, emitted as data by the same
   parser, against the real runtime in headless Chrome.
 
-An unknown step is a hard parse error in both runners. Neither runner may
-weaken a step it cannot honour; it fails. Steps whose underlying service is
-marked **Target** in this document fail until it lands; they are never
-skipped.
+**Both runners implement every step, and the browser is the reference.** A
+step means what it does in Chrome; the native runner models that against the
+oracle and never defines a meaning of its own. In particular:
+
+- effects are always manual: HTTP requests and timers wait for `run-effect`,
+  which fires a timer and answers an HTTP request with the one staged answer;
+  storage reads answer by themselves in the following turn, as the runtime
+  answers them;
+- a click is a real mouse click with the browser's default actions (a
+  checkbox toggles and a radio checks, each with `input` and `change`; a
+  submit button submits its form if the form's controls are valid; a link
+  navigates) unless the dispatched handler's `:prevent` policy prevented
+  them; `real-click` differs only in failing on a disabled control;
+- focus moves as in Chrome, and a text control the user changed gets
+  `change` when it loses focus;
+- `fill` is Playwright's: it refuses a control that cannot hold the value;
+- a navigation to a URL that differs from the current one only in its
+  fragment stays in the document; any other mounts the app afresh in a new
+  document. History traversal across documents is refused, because a
+  browser may restore a cached page rather than mount afresh;
+- a spec without `initial-location` starts at `/`.
+
+There are no native-only or Chrome-only steps. Inputs no runner implements —
+pointer, keyboard, composition and custom events, and session storage — are
+not part of the grammar: IME composition is covered by the runtime's
+contract tests, and session storage is a **Target** service. An unknown step
+is a hard parse error in both runners, and neither runner may weaken a step;
+it fails. Coverage is checked: the native runner's step dispatch is an
+exhaustive `match`, and `check` compares the browser runner's handler table
+with the parser's form tables (`replay.mjs --check-grammar`).
 
 ### The `Dom.roc` oracle
 
@@ -968,11 +994,6 @@ overriding `navigator.onLine` and `document.visibilityState` and dispatching
 the browser's own events, so the runtime's real listeners are exercised.
 `local-storage-unavailable` makes `window.localStorage` throw before the app
 loads; seeding storage in the same setup is a spec error in both runners.
-`fill` is Playwright's `fill`: the whole value arrives as one `input` event in
-both runners. `real-click` is Chrome's click: `mousedown`, focus moves (the
-press's default action), `mouseup`, `click`, then the default action — a
-checkbox toggles, a radio checks, a submit button submits its form — and a
-real click on a disabled control fails.
 
 ### Fuzzing, soak and contract tests
 

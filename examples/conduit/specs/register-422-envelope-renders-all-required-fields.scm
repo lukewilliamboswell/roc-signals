@@ -1,6 +1,5 @@
 (test "Conduit — Register: 422 envelope renders all required fields"
   (setup
-    (manual-effects)
     (initial-location "/roc-signals/examples/conduit/#/register")
   )
   (steps

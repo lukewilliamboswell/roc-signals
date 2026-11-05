@@ -1,6 +1,4 @@
 (test "auto-refresh refetches on its interval and stops when unchecked"
-  (setup
-    (manual-effects))
   (steps
     (fill (label "Query") "roc")
     (submit (role form :name "Search"))

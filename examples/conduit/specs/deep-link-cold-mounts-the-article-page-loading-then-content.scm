@@ -1,6 +1,5 @@
 (test "Conduit — Deep link cold mounts the article page: loading, then content"
   (setup
-    (manual-effects)
     ; Seeded session restores before first render (namespaced keys)
     (local-storage "conduit.jwt" "jwt.conduit.kim")
     (local-storage "conduit.username" "kim")

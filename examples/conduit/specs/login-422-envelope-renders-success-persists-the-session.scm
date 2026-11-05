@@ -1,6 +1,5 @@
 (test "Conduit — Login: 422 envelope renders, success persists the session"
   (setup
-    (manual-effects)
     (initial-location "/roc-signals/examples/conduit/#/login")
   )
   (steps

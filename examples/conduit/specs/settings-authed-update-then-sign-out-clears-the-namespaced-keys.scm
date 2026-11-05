@@ -1,6 +1,5 @@
 (test "Conduit — Settings: authed update, then sign out clears the namespaced keys"
   (setup
-    (manual-effects)
     (local-storage "conduit.jwt" "jwt.conduit.kim")
     (local-storage "conduit.username" "kim")
     (initial-location "/roc-signals/examples/conduit/#/settings")

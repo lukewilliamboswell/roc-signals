@@ -14,6 +14,10 @@ import pf.Html
 ##   or as its inspected `Engine.HttpError`.
 ## - A text box that trims what is typed into it: its rewritten value waits
 ##   for blur while it has focus (controlled inputs).
+## - Default actions: a link without a handler navigates and one whose
+##   handler prevents it does not; an email field in the form blocks its
+##   submission while invalid; a box that commits on `change` hears it when
+##   it loses focus; and a one-shot timer.
 ServicesApp := [].{
 	S : {
 		online : Bool,
@@ -32,6 +36,11 @@ ServicesApp := [].{
 		fetches : U64,
 		fetched : Str,
 		trimmed : Str,
+		email : Str,
+		committed : Str,
+		delays : U64,
+		delayed : Str,
+		prevented : U64,
 	}
 
 	Ctx : In(Root, S)
@@ -54,6 +63,11 @@ ServicesApp := [].{
 		fetches: 0,
 		fetched: "",
 		trimmed: "",
+		email: "",
+		committed: "",
+		delays: 0,
+		delayed: "",
+		prevented: 0,
 	}
 
 	press : State(Ctx, S), Str -> Engine.Attr(Ctx)
@@ -130,6 +144,7 @@ ServicesApp := [].{
 					[Html.on_submit(st.update(|s| { ..s, submitted: s.submitted + 1 }))],
 					[
 						Html.text_input(Engine.const("Note"), "text", v.map(|s| s.note), [], st.set_value(|s, t| { ..s, note: t })),
+						Html.text_input(Engine.const("Email"), "email", v.map(|s| s.email), [], st.set_value(|s, t| { ..s, email: t })),
 						Html.submit_button("Place order", []),
 					],
 				),
@@ -157,6 +172,15 @@ ServicesApp := [].{
 				# the rewrite waits for blur while the control has focus.
 				Html.text_input(Engine.const("Trimmed"), "text", v.map(|s| s.trimmed), [], st.set_value(|s, t| { ..s, trimmed: t.trim() })),
 				Html.p_v(v.map(|s| s.trimmed), [Engine.test_id("trimmed")]),
+				# Default actions
+				Html.link("Jump", "#jump", []),
+				Engine.element("a", [Engine.attr("href", "#stay"), Engine.on("click:prevent", st.update(|s| { ..s, prevented: s.prevented + 1 }))], [Engine.text("Stay")]),
+				Html.p_v(v.map(|s| s.prevented.to_str()), [Engine.test_id("prevented")]),
+				Engine.element("input", [Html.aria_label("Commit"), Engine.attr("type", "text"), Html.on_change(st.set_value(|s, t| { ..s, committed: t }))], []),
+				Html.p_v(v.map(|s| s.committed), [Engine.test_id("committed")]),
+				Html.button("Delay", [], st.update(|s| { ..s, delays: s.delays + 1 })),
+				Engine.on_change(v.map(|s| s.delays), |_| [Timer(1000)], st.on_result(|s, _, r| { ..s, delayed: Str.inspect(r) })),
+				Html.p_v(v.map(|s| s.delayed), [Engine.test_id("delayed")]),
 			],
 		)
 	}

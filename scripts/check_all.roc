@@ -61,6 +61,9 @@ main! = |_args| {
 	}
 	$problems = $problems.concat($native.problems).concat($browser.problems)
 
+	Proc.note!("== grammar coverage")
+	$problems = $problems.concat(Checks.grammar!(o, $kanban.runner)?)
+
 	Proc.note!("== broken-spec self-check")
 	$problems = $problems.concat(Checks.broken_spec!(o, $kanban.runner, $kanban.wasm)?)
 
@@ -76,9 +79,6 @@ main! = |_args| {
 	Proc.note!("")
 	Proc.note!(SpecSuite.summary("all apps", Native, $native))
 	Proc.note!(SpecSuite.summary("all apps", Browser, $browser))
-	for x in SpecSuite.expected_failures {
-		Proc.note!("expected failure: ${x.example} ${Str.inspect(x.runner)} ${x.id}: ${x.reason}")
-	}
 	if $problems.is_empty() {
 		Proc.note!("check: passed")
 		Ok({})

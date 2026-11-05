@@ -1,6 +1,5 @@
 (test "Conduit — Feed error state renders in app"
   (setup
-    (manual-effects)
     (initial-location "/roc-signals/examples/conduit/#/")
   )
   (steps

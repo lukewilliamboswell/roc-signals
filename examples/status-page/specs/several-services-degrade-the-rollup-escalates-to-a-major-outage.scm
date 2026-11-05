@@ -1,5 +1,4 @@
 (test "Status page — Several services degrade: the rollup escalates to a major outage"
-  (setup (manual-effects))
   (steps
     ; Given the state established by earlier scenarios
     (stub-http "api" :url "/api/status/api" :status 200 :body "operational|99.98")

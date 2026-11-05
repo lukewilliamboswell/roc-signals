@@ -1,6 +1,5 @@
 (test "Conduit — profile network failure"
   (setup
-    (manual-effects)
     (local-storage "conduit.jwt" "jwt.conduit.kim")
     (local-storage "conduit.username" "kim")
     (initial-location "/roc-signals/examples/conduit/#/profile/profile-network-failure")

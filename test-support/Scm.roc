@@ -55,7 +55,6 @@ Scm := [].{
 
 	## Declarative state applied before the app mounts.
 	Setup : [
-		ManualEffects,
 		InitialLocation(Str),
 		InitialVisibility(Visibility),
 		InitialOnline(Online),
@@ -64,29 +63,22 @@ Scm := [].{
 		## Local storage cannot be used at all: every access throws, as in a
 		## browser with site data disabled.
 		LocalStorageUnavailable,
-		SessionStorage({ key : Str, value : Str }),
-		SeedHttp({ label : Str, stub : Stub }),
 	]
 
-	## A step a test takes, in order.
+	## A step a test takes, in order. Both runners implement every step
+	## (design.md, "The `.scm` spec language"): the native runner's `one` matches
+	## every variant, and the browser runner's handler table is checked against
+	## `step_forms` by `replay.mjs --check-grammar`.
 	##
 	## A metric step names one of `metric_names` (design.md's work-assertion
 	## table); any other name is a parse error.
 	Op : [
 		Click(Loc),
 		RealClick(Loc),
-		PointerDown(Loc),
-		PointerUp(Loc),
-		PointerEnter(Loc),
-		PointerLeave(Loc),
-		KeyDown({ target : Loc, key : Str, shift : Bool }),
 		Focus(Loc),
 		Blur(Loc),
 		Change(Loc, Str),
 		SelectOption(Loc, Str),
-		CompositionStart(Loc),
-		CompositionEnd(Loc),
-		CustomEvent({ target : Loc, name : Str, detail : Str }),
 		Submit(Loc),
 		Fill(Loc, Str),
 		Check(Loc),
@@ -115,9 +107,7 @@ Scm := [].{
 		ExpectLocation(Str),
 		ExpectTitle(Str),
 		ExpectLocalStorage({ key : Str, value : Str }),
-		ExpectSessionStorage({ key : Str, value : Str }),
 		ExpectNoLocalStorage(Str),
-		ExpectNoSessionStorage(Str),
 		MarkMetrics,
 		ExpectMetricDelta({ metric : Str, delta : I64 }),
 		ExpectMetricDeltaAtMost({ metric : Str, delta : I64 }),
@@ -492,30 +482,28 @@ Scm := [].{
 			_ => Err(Scm.bad(form, "expected a step form, got ${Scm.show(form)}"))
 		}
 
+	## Every setup form, by its spelling, with its argument parser. The parser
+	## accepts exactly these; anything else is an unknown setup form.
+	setup_forms : List({ name : Str, parse : (Sx, List(Sx) -> Try(Setup, Problem)) })
+	setup_forms = [
+		{ name: "initial-location", parse: |form, args| Ok(InitialLocation(Scm.location(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
+		{ name: "initial-visibility", parse: |form, args| Ok(InitialVisibility(Scm.visibility(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
+		{ name: "initial-online", parse: |form, args| Ok(InitialOnline(Scm.online(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
+		{ name: "local-storage", parse: |form, args| Ok(LocalStorage(Scm.key_value(form, args)?)) },
+		{
+			name: "local-storage-unavailable",
+			parse: |form, args| {
+				_ = Scm.arity(form, args, 0)?
+				Ok(LocalStorageUnavailable)
+			},
+		},
+	]
+
 	setup_form : Sx -> Try({ item : Setup, pos : Pos }, Problem)
 	setup_form = |form| {
 		(head, args, pos) = Scm.split_form(form)?
-		item = if head == "manual-effects" {
-			_ = Scm.arity(form, args, 0)?
-			ManualEffects
-		} else if head == "initial-location" {
-			InitialLocation(Scm.location(Scm.arg(Scm.arity(form, args, 1)?, 0))?)
-		} else if head == "initial-visibility" {
-			InitialVisibility(Scm.visibility(Scm.arg(Scm.arity(form, args, 1)?, 0))?)
-		} else if head == "initial-online" {
-			InitialOnline(Scm.online(Scm.arg(Scm.arity(form, args, 1)?, 0))?)
-		} else if head == "local-storage" {
-			LocalStorage(Scm.key_value(form, args)?)
-		} else if head == "local-storage-unavailable" {
-			_ = Scm.arity(form, args, 0)?
-			LocalStorageUnavailable
-		} else if head == "session-storage" {
-			SessionStorage(Scm.key_value(form, args)?)
-		} else if head == "stub-http" or head == "stub-http-reject" {
-			SeedHttp(Scm.http_fixture(form, head, args)?)
-		} else {
-			return Err(Scm.bad(form, "unknown setup form ${head}"))
-		}
+		entry = Scm.setup_forms.find_first(|f| f.name == head) ? |_| Scm.bad(form, "unknown setup form ${head}")
+		item = (entry.parse)(form, args)?
 		Ok({ item, pos })
 	}
 
@@ -625,134 +613,131 @@ Scm := [].{
 		Ok($out)
 	}
 
+	## Every step form, by its spelling, with its argument parser. The parser
+	## accepts exactly these; anything else is an unknown step.
+	step_forms : List({ name : Str, parse : (Sx, List(Sx) -> Try(Op, Problem)) })
+	step_forms = [
+		{ name: "click", parse: |form, args| Ok(Click(Scm.loc1(form, args)?)) },
+		{ name: "real-click", parse: |form, args| Ok(RealClick(Scm.loc1(form, args)?)) },
+		{ name: "focus", parse: |form, args| Ok(Focus(Scm.loc1(form, args)?)) },
+		{ name: "blur", parse: |form, args| Ok(Blur(Scm.loc1(form, args)?)) },
+		{ name: "submit", parse: |form, args| Ok(Submit(Scm.loc1(form, args)?)) },
+		{ name: "check", parse: |form, args| Ok(Check(Scm.loc1(form, args)?)) },
+		{ name: "uncheck", parse: |form, args| Ok(Uncheck(Scm.loc1(form, args)?)) },
+		{ name: "fill", parse: |form, args| Scm.loc_text(form, args).map_ok(|(l, t)| Fill(l, t)) },
+		{ name: "change", parse: |form, args| Scm.loc_text(form, args).map_ok(|(l, t)| Change(l, t)) },
+		{ name: "select-option", parse: |form, args| Scm.loc_text(form, args).map_ok(|(l, t)| SelectOption(l, t)) },
+		{ name: "expect-text", parse: |form, args| Scm.loc_text(form, args).map_ok(|(l, t)| ExpectText(l, t)) },
+		{ name: "expect-visible", parse: |form, args| Ok(ExpectVisible(Scm.loc1(form, args)?)) },
+		{ name: "expect-absent", parse: |form, args| Ok(ExpectAbsent(Scm.loc1(form, args)?)) },
+		{ name: "expect-value", parse: |form, args| Scm.loc_text(form, args).map_ok(|(l, t)| ExpectValue(l, t)) },
+		{
+			name: "expect-attr",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 3)?
+				Ok(ExpectAttr({ target: Scm.locator(Scm.arg(a, 0))?, name: Scm.attr_name(Scm.arg(a, 1))?, value: Scm.string(Scm.arg(a, 2), "the attribute value")? }))
+			},
+		},
+		{
+			name: "expect-no-attr",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 2)?
+				name_sx = Scm.arg(a, 1)
+				name = Scm.attr_name(name_sx)?
+				match name {
+					"checked" | "disabled" | "value" => Err(Scm.bad(name_sx, "${name} is live control state, not an attribute; assert it with expect-${name}"))
+					_ => Ok(ExpectNoAttr({ target: Scm.locator(Scm.arg(a, 0))?, name }))
+				}
+			},
+		},
+		{ name: "expect-checked", parse: |form, args| Scm.loc_bool(form, args).map_ok(|(l, b)| ExpectChecked(l, b)) },
+		{ name: "expect-disabled", parse: |form, args| Scm.loc_bool(form, args).map_ok(|(l, b)| ExpectDisabled(l, b)) },
+		{
+			name: "expect-updates",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 2)?
+				Ok(ExpectUpdates(Scm.locator(Scm.arg(a, 0))?, Scm.unsigned(Scm.arg(a, 1), "the update count")?))
+			},
+		},
+		{ name: "stub-http", parse: |form, args| Ok(StubHttp(Scm.http_fixture(form, "stub-http", args)?)) },
+		{ name: "stub-http-reject", parse: |form, args| Ok(StubHttp(Scm.http_fixture(form, "stub-http-reject", args)?)) },
+		{ name: "run-effect", parse: |form, args| Ok(RunEffect(Scm.count1(form, args, "the effect occurrence")?)) },
+		{ name: "expect-pending-effects", parse: |form, args| Ok(ExpectPendingEffects(Scm.count1(form, args, "the pending count")?)) },
+		{ name: "tick-interval", parse: |form, args| Ok(TickInterval(Scm.count1(form, args, "the period")?)) },
+		{ name: "tick-interval-if-active", parse: |form, args| Ok(TickIntervalIfActive(Scm.count1(form, args, "the period")?)) },
+		{
+			name: "expect-cleanup",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 2)?
+				Ok(ExpectCleanup({ name: Scm.string(Scm.arg(a, 0), "the cleanup name")?, count: Scm.unsigned(Scm.arg(a, 1), "the count")? }))
+			},
+		},
+		{
+			name: "expect-interval",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 2)?
+				Ok(ExpectInterval({ period_ms: Scm.unsigned(Scm.arg(a, 0), "the period")?, count: Scm.unsigned(Scm.arg(a, 1), "the count")? }))
+			},
+		},
+		{ name: "navigate", parse: |form, args| Ok(Navigate(Scm.location(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
+		{ name: "set-visibility", parse: |form, args| Ok(SetVisibility(Scm.visibility(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
+		{ name: "set-online", parse: |form, args| Ok(SetOnline(Scm.online(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
+		{ name: "history-back", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| HistoryBack) },
+		{ name: "history-forward", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| HistoryForward) },
+		{ name: "expect-current-location", parse: |form, args| Ok(ExpectLocation(Scm.text1(form, args, "the location")?)) },
+		{ name: "expect-document-title", parse: |form, args| Ok(ExpectTitle(Scm.text1(form, args, "the title")?)) },
+		{ name: "expect-local-storage", parse: |form, args| Ok(ExpectLocalStorage(Scm.key_value(form, args)?)) },
+		{ name: "expect-no-local-storage", parse: |form, args| Ok(ExpectNoLocalStorage(Scm.text1(form, args, "the key")?)) },
+		{ name: "mark-metrics", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| MarkMetrics) },
+		{ name: "expect-metric-delta", parse: |form, args| Ok(ExpectMetricDelta(Scm.metric_args(form, args)?)) },
+		{ name: "expect-metric-delta-at-most", parse: |form, args| Ok(ExpectMetricDeltaAtMost(Scm.metric_args(form, args)?)) },
+	]
+
 	step_form : Sx -> Try(Step, Problem)
 	step_form = |form| {
 		(head, args, pos) = Scm.split_form(form)?
-		one = |n| Scm.arity(form, args, n)
-		loc1 = || Scm.locator(Scm.arg(one(1)?, 0))
-		loc_text = || {
-			a = one(2)?
-			Ok((Scm.locator(Scm.arg(a, 0))?, Scm.string(Scm.arg(a, 1), "the text")?))
-		}
-		loc_bool = || {
-			a = one(2)?
-			Ok((Scm.locator(Scm.arg(a, 0))?, Scm.boolean(Scm.arg(a, 1), "the expected value")?))
-		}
-		text1 = |what| Scm.string(Scm.arg(one(1)?, 0), what)
-		count1 = |what| Scm.unsigned(Scm.arg(one(1)?, 0), what)
-		metric = || {
-			a = one(2)?
-			name_sx = Scm.arg(a, 0)
-			name = Scm.symbol(name_sx, "the metric")?
-			_ = Scm.metric_counters(name) ? |_| Scm.bad(name_sx, Scm.unknown_metric(name))
-			Ok({ metric: name, delta: Scm.integer(Scm.arg(a, 1), "the delta")? })
-		}
-		op = match head {
-			"click" => Click(loc1()?)
-			"real-click" => RealClick(loc1()?)
-			"pointer-down" => PointerDown(loc1()?)
-			"pointer-up" => PointerUp(loc1()?)
-			"pointer-enter" => PointerEnter(loc1()?)
-			"pointer-leave" => PointerLeave(loc1()?)
-			"focus" => Focus(loc1()?)
-			"blur" => Blur(loc1()?)
-			"composition-start" => CompositionStart(loc1()?)
-			"composition-end" => CompositionEnd(loc1()?)
-			"submit" => Submit(loc1()?)
-			"check" => Check(loc1()?)
-			"uncheck" => Uncheck(loc1()?)
-			"expect-visible" => ExpectVisible(loc1()?)
-			"expect-absent" => ExpectAbsent(loc1()?)
-			"fill" => {
-				(l, t) = loc_text()?
-				Fill(l, t)
-			}
-			"change" => {
-				(l, t) = loc_text()?
-				Change(l, t)
-			}
-			"select-option" => {
-				(l, t) = loc_text()?
-				SelectOption(l, t)
-			}
-			"expect-text" => {
-				(l, t) = loc_text()?
-				ExpectText(l, t)
-			}
-			"expect-value" => {
-				(l, t) = loc_text()?
-				ExpectValue(l, t)
-			}
-			"expect-checked" => {
-				(l, b) = loc_bool()?
-				ExpectChecked(l, b)
-			}
-			"expect-disabled" => {
-				(l, b) = loc_bool()?
-				ExpectDisabled(l, b)
-			}
-			"expect-updates" => {
-				a = one(2)?
-				ExpectUpdates(Scm.locator(Scm.arg(a, 0))?, Scm.unsigned(Scm.arg(a, 1), "the update count")?)
-			}
-			"key-down" => {
-				a = one(3)?
-				KeyDown({ target: Scm.locator(Scm.arg(a, 0))?, key: Scm.string(Scm.arg(a, 1), "the key")?, shift: Scm.boolean(Scm.arg(a, 2), "shift")? })
-			}
-			"custom-event" => {
-				a = one(3)?
-				CustomEvent({ target: Scm.locator(Scm.arg(a, 0))?, name: Scm.string(Scm.arg(a, 1), "the event name")?, detail: Scm.string(Scm.arg(a, 2), "the detail")? })
-			}
-			"expect-attr" => {
-				a = one(3)?
-				ExpectAttr({ target: Scm.locator(Scm.arg(a, 0))?, name: Scm.attr_name(Scm.arg(a, 1))?, value: Scm.string(Scm.arg(a, 2), "the attribute value")? })
-			}
-			"expect-no-attr" => {
-				a = one(2)?
-				ExpectNoAttr({ target: Scm.locator(Scm.arg(a, 0))?, name: Scm.attr_name(Scm.arg(a, 1))? })
-			}
-			"stub-http" => StubHttp(Scm.http_fixture(form, head, args)?)
-			"stub-http-reject" => StubHttp(Scm.http_fixture(form, head, args)?)
-			"run-effect" => RunEffect(count1("the effect occurrence")?)
-			"expect-pending-effects" => ExpectPendingEffects(count1("the pending count")?)
-			"tick-interval" => TickInterval(count1("the period")?)
-			"tick-interval-if-active" => TickIntervalIfActive(count1("the period")?)
-			"expect-cleanup" => {
-				a = one(2)?
-				ExpectCleanup({ name: Scm.string(Scm.arg(a, 0), "the cleanup name")?, count: Scm.unsigned(Scm.arg(a, 1), "the count")? })
-			}
-			"expect-interval" => {
-				a = one(2)?
-				ExpectInterval({ period_ms: Scm.unsigned(Scm.arg(a, 0), "the period")?, count: Scm.unsigned(Scm.arg(a, 1), "the count")? })
-			}
-			"navigate" => Navigate(Scm.location(Scm.arg(one(1)?, 0))?)
-			"set-visibility" => SetVisibility(Scm.visibility(Scm.arg(one(1)?, 0))?)
-			"set-online" => SetOnline(Scm.online(Scm.arg(one(1)?, 0))?)
-			"history-back" => {
-				_ = one(0)?
-				HistoryBack
-			}
-			"history-forward" => {
-				_ = one(0)?
-				HistoryForward
-			}
-			"expect-current-location" => ExpectLocation(text1("the location")?)
-			"assert-current-location" => ExpectLocation(text1("the location")?)
-			"expect-document-title" => ExpectTitle(text1("the title")?)
-			"expect-local-storage" => ExpectLocalStorage(Scm.key_value(form, args)?)
-			"expect-session-storage" => ExpectSessionStorage(Scm.key_value(form, args)?)
-			"expect-no-local-storage" => ExpectNoLocalStorage(text1("the key")?)
-			"expect-no-session-storage" => ExpectNoSessionStorage(text1("the key")?)
-			"mark-metrics" => {
-				_ = one(0)?
-				MarkMetrics
-			}
-			"expect-metric-delta" => ExpectMetricDelta(metric()?)
-			"expect-metric-delta-at-most" => ExpectMetricDeltaAtMost(metric()?)
-			_ => return Err(Scm.bad(form, "unknown step ${head}"))
-		}
+		entry = Scm.step_forms.find_first(|f| f.name == head) ? |_| Scm.bad(form, "unknown step ${head}")
+		op = (entry.parse)(form, args)?
 		Ok({ op, pos })
 	}
+
+	loc1 : Sx, List(Sx) -> Try(Loc, Problem)
+	loc1 = |form, args| Scm.locator(Scm.arg(Scm.arity(form, args, 1)?, 0))
+
+	loc_text : Sx, List(Sx) -> Try((Loc, Str), Problem)
+	loc_text = |form, args| {
+		a = Scm.arity(form, args, 2)?
+		Ok((Scm.locator(Scm.arg(a, 0))?, Scm.string(Scm.arg(a, 1), "the text")?))
+	}
+
+	loc_bool : Sx, List(Sx) -> Try((Loc, Bool), Problem)
+	loc_bool = |form, args| {
+		a = Scm.arity(form, args, 2)?
+		Ok((Scm.locator(Scm.arg(a, 0))?, Scm.boolean(Scm.arg(a, 1), "the expected value")?))
+	}
+
+	text1 : Sx, List(Sx), Str -> Try(Str, Problem)
+	text1 = |form, args, what| Scm.string(Scm.arg(Scm.arity(form, args, 1)?, 0), what)
+
+	count1 : Sx, List(Sx), Str -> Try(U64, Problem)
+	count1 = |form, args, what| Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), what)
+
+	metric_args : Sx, List(Sx) -> Try({ metric : Str, delta : I64 }, Problem)
+	metric_args = |form, args| {
+		a = Scm.arity(form, args, 2)?
+		name_sx = Scm.arg(a, 0)
+		name = Scm.symbol(name_sx, "the metric")?
+		_ = Scm.metric_counters(name) ? |_| Scm.bad(name_sx, Scm.unknown_metric(name))
+		Ok({ metric: name, delta: Scm.integer(Scm.arg(a, 1), "the delta")? })
+	}
+
+	## The grammar's form names as one JSON object, `{"steps": [...],
+	## "setup": [...]}`, for `replay.mjs --check-grammar`.
+	grammar_json : JsonOut.Value
+	grammar_json = Object([
+		JsonOut.field("steps", Array(Scm.step_forms.map(|f| Text(f.name)))),
+		JsonOut.field("setup", Array(Scm.setup_forms.map(|f| Text(f.name)))),
+	])
 
 	attr_name : Sx -> Try(Str, Problem)
 	attr_name = |sx|
@@ -805,24 +790,16 @@ Scm := [].{
 
 	# ------------------------------------------------------------ properties
 
-	## The step's name as a spec spells it (aliases spell their canonical name).
+	## The step's name as a spec spells it.
 	op_name : Op -> Str
 	op_name = |op|
 		match op {
 			Click(_) => "click"
 			RealClick(_) => "real-click"
-			PointerDown(_) => "pointer-down"
-			PointerUp(_) => "pointer-up"
-			PointerEnter(_) => "pointer-enter"
-			PointerLeave(_) => "pointer-leave"
-			KeyDown(_) => "key-down"
 			Focus(_) => "focus"
 			Blur(_) => "blur"
 			Change(_, _) => "change"
 			SelectOption(_, _) => "select-option"
-			CompositionStart(_) => "composition-start"
-			CompositionEnd(_) => "composition-end"
-			CustomEvent(_) => "custom-event"
 			Submit(_) => "submit"
 			Fill(_, _) => "fill"
 			Check(_) => "check"
@@ -852,9 +829,7 @@ Scm := [].{
 			ExpectLocation(_) => "expect-current-location"
 			ExpectTitle(_) => "expect-document-title"
 			ExpectLocalStorage(_) => "expect-local-storage"
-			ExpectSessionStorage(_) => "expect-session-storage"
 			ExpectNoLocalStorage(_) => "expect-no-local-storage"
-			ExpectNoSessionStorage(_) => "expect-no-session-storage"
 			MarkMetrics => "mark-metrics"
 			ExpectMetricDelta(_) => "expect-metric-delta"
 			ExpectMetricDeltaAtMost(_) => "expect-metric-delta-at-most"
@@ -930,24 +905,14 @@ Scm := [].{
 	setup_json : { item : Setup, pos : Pos } -> JsonOut.Value
 	setup_json = |{ item, pos }| {
 		(op, args) = match item {
-			ManualEffects => ("manual-effects", [])
 			InitialLocation(url) => ("initial-location", [JsonOut.field("text", Text(url))])
 			InitialVisibility(v) => ("initial-visibility", [JsonOut.field("text", Text(Scm.visibility_name(v)))])
 			InitialOnline(o) => ("initial-online", [JsonOut.field("text", Text(Scm.online_name(o)))])
 			LocalStorage({ key, value }) => ("local-storage", [JsonOut.field("key", Text(key)), JsonOut.field("text", Text(value))])
 			LocalStorageUnavailable => ("local-storage-unavailable", [])
-			SessionStorage({ key, value }) => ("session-storage", [JsonOut.field("key", Text(key)), JsonOut.field("text", Text(value))])
-			SeedHttp(fixture) => (if (Scm.is_reject(fixture.stub)) "stub-http-reject" else "stub-http", Scm.stub_fields(fixture))
 		}
 		Object([JsonOut.field("op", Text(op))].concat(Scm.pos_fields(pos)).concat(args))
 	}
-
-	is_reject : Stub -> Bool
-	is_reject = |stub|
-		match stub {
-			Reject(_) => Bool.True
-			Reply(_) => Bool.False
-		}
 
 	counters_json : Str -> JsonOut.Value
 	counters_json = |metric| Array((Scm.metric_counters(metric) ?? []).map(|k| Nat(k)))
@@ -959,18 +924,10 @@ Scm := [].{
 		args = match op {
 			Click(l) => [loc(l)]
 			RealClick(l) => [loc(l)]
-			PointerDown(l) => [loc(l)]
-			PointerUp(l) => [loc(l)]
-			PointerEnter(l) => [loc(l)]
-			PointerLeave(l) => [loc(l)]
-			KeyDown({ target, key, shift }) => [loc(target), JsonOut.field("key", Text(key)), JsonOut.field("shift", Bool(shift))]
 			Focus(l) => [loc(l)]
 			Blur(l) => [loc(l)]
 			Change(l, t) => [loc(l), text(t)]
 			SelectOption(l, t) => [loc(l), text(t)]
-			CompositionStart(l) => [loc(l)]
-			CompositionEnd(l) => [loc(l)]
-			CustomEvent({ target, name, detail }) => [loc(target), JsonOut.field("name", Text(name)), JsonOut.field("detail", Text(detail))]
 			Submit(l) => [loc(l)]
 			Fill(l, t) => [loc(l), text(t)]
 			Check(l) => [loc(l)]
@@ -999,9 +956,7 @@ Scm := [].{
 			ExpectLocation(url) => [text(url)]
 			ExpectTitle(t) => [text(t)]
 			ExpectLocalStorage({ key, value }) => [JsonOut.field("key", Text(key)), text(value)]
-			ExpectSessionStorage({ key, value }) => [JsonOut.field("key", Text(key)), text(value)]
 			ExpectNoLocalStorage(key) => [JsonOut.field("key", Text(key))]
-			ExpectNoSessionStorage(key) => [JsonOut.field("key", Text(key))]
 			MarkMetrics => []
 			ExpectMetricDelta({ metric, delta }) => [JsonOut.field("metric", Text(metric)), JsonOut.field("counters", Scm.counters_json(metric)), JsonOut.field("delta", Int(delta))]
 			ExpectMetricDeltaAtMost({ metric, delta }) => [JsonOut.field("metric", Text(metric)), JsonOut.field("counters", Scm.counters_json(metric)), JsonOut.field("delta", Int(delta))]
@@ -1063,7 +1018,6 @@ expect {
 expect {
 	spec = Scm.parse(
 		\\(test "http"
-		\\  (setup (manual-effects))
 		\\  (steps
 		\\    (stub-http "feed" :url "/api/a" :status 200 :headers (("content-type" "text/plain")) :body "hi λ")
 		\\    (stub-http-reject "x" :kind timeout :detail "")
@@ -1077,7 +1031,44 @@ expect {
 expect problem_of("(test \"t\"\n  (steps\n    (click (label \"a\"))\n    (frobnicate 1)))") == "x.scm:4:5: unknown step frobnicate"
 
 ## Setup vocabulary is not a step, and steps are not setup.
-expect problem_of("(test \"t\" (steps (manual-effects)))") == "x.scm:1:18: unknown step manual-effects"
+expect problem_of("(test \"t\" (steps (local-storage-unavailable)))") == "x.scm:1:18: unknown step local-storage-unavailable"
+
+## Forms neither runner implements are not part of the grammar: each is an
+## unknown step or setup form.
+expect {
+	actual =
+		\\${problem_of("(test \"t\" (steps (pointer-down (label \"a\"))))")}
+		\\${problem_of("(test \"t\" (steps (key-down (label \"a\") \"Enter\" false)))")}
+		\\${problem_of("(test \"t\" (steps (composition-start (label \"a\"))))")}
+		\\${problem_of("(test \"t\" (steps (custom-event (label \"a\") \"x\" \"\")))")}
+		\\${problem_of("(test \"t\" (steps (expect-session-storage \"k\" \"v\")))")}
+		\\${problem_of("(test \"t\" (steps (assert-current-location \"/\")))")}
+		\\${problem_of("(test \"t\" (setup (manual-effects)) (steps (mark-metrics)))")}
+		\\${problem_of("(test \"t\" (setup (session-storage \"k\" \"v\")) (steps (mark-metrics)))")}
+		\\${problem_of("(test \"t\" (setup (stub-http \"f\" :url \"/a\" :status 200 :body \"\")) (steps (mark-metrics)))")}
+	expected =
+		\\x.scm:1:18: unknown step pointer-down
+		\\x.scm:1:18: unknown step key-down
+		\\x.scm:1:18: unknown step composition-start
+		\\x.scm:1:18: unknown step custom-event
+		\\x.scm:1:18: unknown step expect-session-storage
+		\\x.scm:1:18: unknown step assert-current-location
+		\\x.scm:1:18: unknown setup form manual-effects
+		\\x.scm:1:18: unknown setup form session-storage
+		\\x.scm:1:18: unknown setup form stub-http
+	actual == expected
+}
+
+## Live control state is asserted with its own step, not as an attribute.
+expect problem_of("(test \"t\" (steps (expect-no-attr (label \"a\") value)))") == "x.scm:1:46: value is live control state, not an attribute; assert it with expect-value"
+
+## Each form is spelled once, and a parsed step spells its own form.
+expect {
+	names = Scm.step_forms.map(|f| f.name)
+	distinct = names.keep_if(|n| names.count_if(|m| m == n) == 1).len() == names.len()
+	spec = Scm.parse("(test \"n\" (steps (stub-http-reject \"x\" :kind timeout :detail \"\") (expect-current-location \"/\") (mark-metrics)))") ?? { name: "", setup: [], steps: [] }
+	distinct and spec.steps.map(|st| Scm.op_name(st.op)) == ["stub-http-reject", "expect-current-location", "mark-metrics"]
+}
 
 ## Executable steps are refused inside setup.
 expect problem_of("(test \"t\" (setup (click (text \"No\"))) (steps (mark-metrics)))") == "x.scm:1:18: unknown setup form click"

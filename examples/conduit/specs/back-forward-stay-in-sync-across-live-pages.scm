@@ -1,6 +1,5 @@
 (test "Conduit — back and forward restore the profile tab and its requests"
   (setup
-    (manual-effects)
     (initial-location "/roc-signals/examples/conduit/#/profile/anna")
   )
   (steps

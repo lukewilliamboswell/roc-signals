@@ -1,6 +1,5 @@
 (test "Field notes — filtering hides synced rows without touching the others"
   (setup
-    (manual-effects)
     (initial-online online)
     ; Three queued notes will settle; the fourth remains an unsynced draft.
     (local-storage "field-notes:notes" "n0|0|1|r7|Generator hours 128;n1|1|1|r7|Fence line check;n2|2|1|r7|Pump pressure log;n3|3|0|r7|Unsynced draft")

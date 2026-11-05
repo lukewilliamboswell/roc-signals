@@ -1,5 +1,4 @@
 (test "Status page — A real outage keeps the page at major outage"
-  (setup (manual-effects))
   (steps
     ; Given the state established by earlier scenarios
     (stub-http "api" :url "/api/status/api" :status 200 :body "operational|99.98")

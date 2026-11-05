@@ -1,6 +1,5 @@
 (test "Conduit — Empty tag feed"
   (setup
-    (manual-effects)
     (initial-location "/roc-signals/examples/conduit/#/")
   )
   (steps

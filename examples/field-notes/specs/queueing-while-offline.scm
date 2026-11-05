@@ -1,6 +1,5 @@
 (test "Field notes — queueing while offline"
   (setup
-    (manual-effects)
     ; Field Notes: offline capture, outbox drain, rollback, and restore.
     ;
     ; Storage format is "id|slot|queued|rev|body" per note, notes joined by ";".

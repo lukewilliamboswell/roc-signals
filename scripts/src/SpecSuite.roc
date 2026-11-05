@@ -23,23 +23,13 @@ SpecSuite := [].{
 
 	Runner : [Native, Browser]
 
-	## A spec that fails for a reason recorded here and must keep failing
-	## until the reason is resolved: an expected failure that starts passing
-	## fails the suite, so the entry cannot go stale.
-	expected_failures : List({ example : Str, runner : Runner, id : Str, reason : Str })
-	expected_failures = [
-		{
-			example: "form-builder",
-			runner: Browser,
-			id: "adding-a-number-field",
-			reason: "the spec types \"2x\" into an <input type=number>, which a real browser cannot hold; the oracle accepts it (unchanged from the spike's Phase 5b Chrome run, 12/13)",
-		},
-	]
-
-	Tally : { passed : U64, failed : U64, xfail : U64, problems : List(Str) }
+	## Every spec must pass in both runners: there is no list of expected
+	## failures, because the runners agree on every step (design.md, "The
+	## `.scm` spec language").
+	Tally : { passed : U64, failed : U64, problems : List(Str) }
 
 	empty_tally : Tally
-	empty_tally = { passed: 0, failed: 0, xfail: 0, problems: [] }
+	empty_tally = { passed: 0, failed: 0, problems: [] }
 
 	## `root` and `build_dir` are absolute.
 	Options : { root : Str, build_dir : Str, compiler : Str, zig : Str, node : Str, chrome : Str, filter : Str }
@@ -152,23 +142,16 @@ SpecSuite := [].{
 			_ => SpecSuite.json_field(line, "status")
 		}
 
-	is_expected_failure : Str, Runner, Str -> Bool
-	is_expected_failure = |example, runner, id| SpecSuite.expected_failures.any(|x| x.example == example and x.runner == runner and x.id == id)
-
-	## Fold one runner's result lines into the tally, judging expected
-	## failures.
+	## Fold one runner's result lines into the tally.
 	tally : Tally, Str, Runner, List(Str) -> Tally
 	tally = |t0, example, runner, lines| {
 		var $t = t0
 		for line in lines.keep_if(|l| l.starts_with("{")) {
 			id = SpecSuite.json_field(line, "id")
 			status = SpecSuite.json_field(line, "status")
-			xfail = SpecSuite.is_expected_failure(example, runner, id)
 			t = $t
 			$t = match status {
-				"passed" if xfail => { ..t, failed: t.failed + 1, problems: t.problems.append("${example} ${Str.inspect(runner)} ${id}: passed but is listed as an expected failure; remove the entry") }
 				"passed" => { ..t, passed: t.passed + 1 }
-				_ if xfail => { ..t, xfail: t.xfail + 1 }
 				_ => { ..t, failed: t.failed + 1, problems: t.problems.append("${example} ${Str.inspect(runner)} ${id}: ${SpecSuite.json_message(line)}") }
 			}
 		}
@@ -207,24 +190,17 @@ SpecSuite := [].{
 	# --------------------------------------------------------------- report
 
 	summary : Str, Runner, Tally -> Str
-	summary = |example, runner, t| "${example} (${Str.inspect(runner)}): ${t.passed.to_str()} passed, ${t.failed.to_str()} failed, ${t.xfail.to_str()} expected failures"
+	summary = |example, runner, t| "${example} (${Str.inspect(runner)}): ${t.passed.to_str()} passed, ${t.failed.to_str()} failed"
 }
 
-## Result lines are tallied, and expected failures must still fail.
+## Result lines are tallied; anything but a pass is a failure with its message.
 expect {
 	lines = [
 		"{\"protocol\":\"roc-signals/spec-result/v2\",\"id\":\"a\",\"name\":\"A\",\"status\":\"passed\"}",
 		"{\"id\":\"b\",\"status\":\"failed\",\"failure\":{\"message\":\"y\"}}",
-		"{\"id\":\"adding-a-number-field\",\"status\":\"failed\",\"failure\":{\"message\":\"x\"}}",
 		"specs: summary on stderr is ignored",
 	]
 	t = SpecSuite.tally(SpecSuite.empty_tally, "form-builder", Browser, lines)
-	actual = [t.passed, t.xfail, t.failed]
+	actual = [t.passed, t.failed, t.problems.len()]
 	actual == [1, 1, 1]
-}
-
-## An expected failure that passes is itself a failure.
-expect {
-	t = SpecSuite.tally(SpecSuite.empty_tally, "form-builder", Browser, ["{\"id\":\"adding-a-number-field\",\"status\":\"passed\"}"])
-	t.failed == 1 and t.problems.len() == 1
 }
