@@ -3,6 +3,7 @@
 #     blueprint run check                  # the pull-request gate
 #     blueprint run spec -- --browser kanban-board
 #     blueprint run site                   # build the site into dist/
+#     blueprint run serve                  # serve dist/ on localhost
 #     blueprint run fuzz -- --time 600     # a fuzz campaign
 #     blueprint tasks                      # list every task
 #     blueprint update                     # refresh Blueprint.lock
@@ -21,6 +22,9 @@ zig_program = Fetch("zig", zig)
 zola_program = Fetch("zola", zola)
 
 node_program = Fetch("node", node)
+
+# The roc-automation documentation renderer, which generates the API docs.
+roc_docs_program = Fetch("roc-docs", Recipes.file("https://github.com/lukewilliamboswell/roc-automation/releases/download/tools-0.10.0/roc-docs-{system}"))
 
 # The Roc nightly the Roc-owned engine is built and tested with. It is also
 # the scripts' tooling compiler (`roc-stable`), so every script's `roc` header
@@ -42,24 +46,34 @@ config = [
 	# with `tar -xf`, which GNU tar cannot read; the pinned recipe is ready
 	# below as `chrome` and replaces this Expect once blueprint unpacks zips on
 	# Linux.
-	Environment("engine", [Programs([roc_stable_program, zig_program, node_program]), Expect(["curl", "tar", "zstd", "sha256sum", "getconf", "google-chrome"])]),
-	# Building the documentation site and its live examples.
-	Environment("site", [Programs([roc_stable_program, zig_program, zola_program, Fetch("tailwindcss", tailwind)])]),
+	Environment("engine", [Programs([roc_stable_program, zig_program, node_program]), Expect(["curl", "tar", "zstd", "sha256sum", "getconf", "google-chrome", "zip"])]),
+	# Building the documentation site, its API docs and its live examples.
+	Environment("site", [Programs([roc_stable_program, zig_program, zola_program, roc_docs_program, Fetch("tailwindcss", tailwind)])]),
+	# Building the release assets, API docs included.
+	Environment("release", [Programs([roc_stable_program, zig_program, node_program, roc_docs_program]), Expect(["zip"])]),
 	Shell("default", [Use("engine")]),
-	# The per-pull-request gate: formatting, roc test, the test platform,
-	# every ported app's specs natively and in Chrome, the spec mutation
-	# check, the runtime contract tests and the jfb check.
+	# The per-pull-request gate: formatting, roc test, the docs samples, every
+	# app's specs natively and in Chrome, the broken-spec self-check, the
+	# runtime contract tests, the jfb check and the release dry run.
 	Task("check", [Use("engine"), Run(["scripts/check_all.roc"])]),
-	# Too slow for every pull request: the soak.
+	# Too slow for every pull request: every fuzz target's examples and the
+	# leak-checked soaks, natively and in Chrome.
 	Task("check-slow", [Use("engine"), Run(["scripts/check_slow.roc"])]),
 	# One or more apps' specs: `blueprint run spec -- --browser kanban-board`.
 	Task("spec", [Use("engine"), Run(["scripts/spec.roc", "--"])]),
+	# Fetch and build the test platform's host, for building a main-test.roc
+	# by hand.
 	Task("platform-test", [Use("engine"), Run(["scripts/build_platform_test.roc"])]),
-	Task("soak", [Use("engine"), Run(["scripts/soak.roc"])]),
+	# Build the js-framework-benchmark app and check it in Chrome.
 	Task("jfb", [Use("engine"), Run(["scripts/jfb.roc"])]),
 	# A fuzz campaign: `blueprint run fuzz -- --time 600 [TARGET...]`.
 	Task("fuzz", [Use("engine"), Run(["scripts/fuzz.roc", "--"])]),
-	Task("site", [Use("site"), Run(["scripts/site.roc"])]),
+	# The release assets: `blueprint run release -- --version 0.3.0`.
+	Task("release", [Use("release"), Run(["scripts/release.roc", "--"])]),
+	# Build the site into dist/: `-- --base-url http://127.0.0.1:8000/roc-signals` for serve.
+	Task("site", [Use("site"), Run(["scripts/site.roc", "--"])]),
+	# Serve dist/ at 127.0.0.1:8000/roc-signals/, or `-- DIR` at the root (`--port N`).
+	Task("serve", [Use("engine"), Run(["node", "www/serve.mjs", "--"])]),
 ]
 
 zig : System -> Config.Download

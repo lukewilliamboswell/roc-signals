@@ -6,16 +6,21 @@ app [main!] {
 
 import cli.Path
 import src/Checks
+import src/DocSamples
+import src/ApiDocs
+import src/Release
 import src/Proc
 import src/SpecSuite
 import src/Targets
 
-## The `check` task, the per-pull-request gate: the script pins, formatting,
-## `roc test`, the test platform and the `scm-parse` fuzz target, every ported
-## app's original `.scm` specs natively and in Chrome, the broken-spec
-## self-check (both runners reject a spec with one wrong expectation), the runtime contract tests in Chrome
-## (effects, controls, Conduit journey) and the js-framework-benchmark check.
-## The soak runs and the app fuzz targets are `check-slow`.
+## The `check` task, the per-pull-request gate: the script pins,
+## formatting, every public `Engine` and `Html` symbol documented, `roc test`,
+## the test platform and the `scm-parse` fuzz target, the docs samples, every
+## app's `.scm` specs natively and in Chrome, the broken-spec self-check (both
+## runners reject a spec with one wrong expectation), the runtime contract
+## tests in Chrome (effects, controls, Conduit journey), the
+## js-framework-benchmark check, and the release dry run. The soaks and the
+## app fuzz targets are `check-slow`.
 main! = |_args| {
 	o = Checks.options!({ filter: "*" })?
 	var $problems = []
@@ -24,7 +29,10 @@ main! = |_args| {
 	$problems = $problems.concat(script_pins!()?)
 
 	Proc.note!("== formatting")
-	$problems = $problems.concat(check!({ program: o.compiler, args: ["fmt", "--check", "scripts", "platform", "test-support", "examples", "tests/apps", "fuzz", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"], cwd: "." }, "roc fmt --check")?)
+	$problems = $problems.concat(check!({ program: o.compiler, args: ["fmt", "--check", "scripts", "platform", "test-support", "examples", "tests/apps", "fuzz", "www/samples", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"], cwd: "." }, "roc fmt --check")?)
+
+	Proc.note!("== API docs")
+	$problems = $problems.concat(ApiDocs.check!({})?)
 
 	Proc.note!("== roc test")
 	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "test-support/main.roc"], cwd: "." }, "roc test test-support")?)
@@ -33,6 +41,9 @@ main! = |_args| {
 	Proc.note!("== platform-test")
 	Checks.prepare_platform!(o)?
 	$problems = $problems.concat(fuzz_smoke!(o)?)
+
+	Proc.note!("== docs samples")
+	$problems = $problems.concat(DocSamples.check!(o)?)
 
 	Proc.note!("== specs")
 	var $native = SpecSuite.empty_tally
@@ -58,6 +69,9 @@ main! = |_args| {
 
 	Proc.note!("== js-framework-benchmark")
 	$problems = $problems.concat(Targets.jfb!(o)?)
+
+	Proc.note!("== release dry run")
+	$problems = $problems.concat(Release.build!(o, "0.0.1-dryrun", "${o.build_dir}/release")?)
 
 	Proc.note!("")
 	Proc.note!(SpecSuite.summary("all apps", Native, $native))

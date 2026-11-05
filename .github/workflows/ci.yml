@@ -1,8 +1,9 @@
 name: CI
 
 # Every job runs a Blueprint task, so CI and contributors run the same
-# commands: `blueprint run check` is the pull-request gate, and `blueprint run
-# site` builds the documentation site and its live examples.
+# commands: `blueprint run check` is the pull-request gate (the release dry
+# run included), and `blueprint run site` builds the site, its API docs and
+# its live examples.
 
 on:
   workflow_dispatch:
@@ -10,8 +11,7 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
@@ -22,25 +22,30 @@ jobs:
     name: Check
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@7aff4132691ad4fc348abe9df146a57512b49bd6
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@60062e8909dcaf4bf449097132e440e9bc9c9ba6
         with:
           cache: 'true'
           cache-workload: engine
+      - run: blueprint check
       - run: blueprint run check
 
   site:
     name: Site
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@7aff4132691ad4fc348abe9df146a57512b49bd6
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@60062e8909dcaf4bf449097132e440e9bc9c9ba6
         with:
           cache: 'true'
           cache-workload: site

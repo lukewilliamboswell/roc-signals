@@ -50,13 +50,13 @@ recipe ready.
 | `blueprint run jfb` | Build the js-framework-benchmark app and check its operations in Chrome |
 | `blueprint run fuzz -- [--time S] [TARGET...]` | A fuzz campaign |
 | `blueprint run site -- [--base-url URL]` | Build the site, the API docs and the example apps into `dist/` |
-| `blueprint run serve -- [DIR] [--port N]` | Serve `dist/` (or `DIR`) on `127.0.0.1:8000` |
+| `blueprint run serve -- [DIR] [--port N]` | Serve `dist/` at `127.0.0.1:8000/roc-signals/`, its published path, or `DIR` at the root |
 | `blueprint run release -- --version V` | Build the release assets into `dist-release/` |
 
 To browse the site locally:
 
 ```sh
-blueprint run site -- --base-url http://127.0.0.1:8000
+blueprint run site -- --base-url http://127.0.0.1:8000/roc-signals
 blueprint run serve
 ```
 

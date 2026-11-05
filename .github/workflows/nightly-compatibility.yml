@@ -1,0 +1,32 @@
+name: Nightly compatibility
+
+# Does the latest published release work with the latest Roc nightly? The
+# shared roc-automation runner builds every app in the release's examples
+# archive for wasm32 and runs its `runtime/check.mjs` case, and keeps one
+# tracking issue open while it fails. It never changes the compiler pin:
+# that is a maintainer's pull request (see the contributing docs).
+
+on:
+  schedule:
+    - cron: '17 13 * * *'
+  workflow_dispatch:
+    inputs:
+      nightly-tag:
+        type: string
+        default: ''
+      release-tag:
+        type: string
+        default: ''
+
+permissions: {}
+
+jobs:
+  compatibility:
+    permissions:
+      contents: read
+      issues: write
+    uses: lukewilliamboswell/roc-automation/.github/workflows/nightly-compatibility.yml@60062e8909dcaf4bf449097132e440e9bc9c9ba6
+    with:
+      nightly-tag: ${{ inputs.nightly-tag || '' }}
+      release-tag: ${{ inputs.release-tag || '' }}
+      runners: '["ubuntu-24.04"]'

@@ -20,8 +20,8 @@ provides the pinned Roc nightly, Zig and Node, then:
 
 ```sh
 blueprint run spec -- --browser kanban-board   # one example's specs, natively and in Chrome
-blueprint run site -- --base-url http://127.0.0.1:8000
-blueprint run serve                            # the docs and every example at http://127.0.0.1:8000
+blueprint run site -- --base-url http://127.0.0.1:8000/roc-signals
+blueprint run serve                            # the docs and every example at http://127.0.0.1:8000/roc-signals/
 ```
 
 [Getting Started](https://lukewilliamboswell.github.io/roc-signals/docs/getting-started/)
