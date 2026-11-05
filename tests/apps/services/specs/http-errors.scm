@@ -1,0 +1,22 @@
+(test "Services — HTTP failures reach the app as typed errors"
+  (setup
+    (manual-effects))
+  (steps
+    (click (role button :name "Fetch"))
+    (stub-http-reject "offline" :kind network :detail "offline")
+    (run-effect 1)
+    (expect-text (test-id "fetched") "Network(\"offline\")")
+    (click (role button :name "Fetch"))
+    (stub-http-reject "slow" :kind timeout :detail "")
+    (run-effect 2)
+    (expect-text (test-id "fetched") "Timeout")
+    (click (role button :name "Fetch"))
+    (stub-http "down" :url "/api/item/3" :status 503 :body "busy")
+    (run-effect 3)
+    (expect-text (test-id "fetched") "Status(503)")
+    (click (role button :name "Fetch"))
+    (stub-http "item" :url "/api/item/4" :status 200 :body "hi")
+    (run-effect 4)
+    (expect-text (test-id "fetched") "ok:hi")
+  )
+)

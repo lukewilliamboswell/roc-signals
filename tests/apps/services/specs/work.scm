@@ -1,0 +1,26 @@
+(test "Services — work counters: a branch is one scope, a tick writes one text"
+  (steps
+    (mark-metrics)
+    (click (role button :name "Start"))
+    ; The `when` swaps its empty branch for the clock: one scope each way.
+    (expect-metric-delta scopes_created 1)
+    (expect-metric-delta scopes_disposed 1)
+    (expect-metric-delta dirty_source_roots 1)
+    (mark-metrics)
+    (tick-interval 1000)
+    ; One tick changes one state: the ticks text is the only DOM write.
+    (expect-metric-delta set_text 1)
+    (expect-metric-delta patches_emitted 1)
+    (expect-metric-delta create_element 0)
+    (tick-interval 1000)
+    (expect-updates (test-id "ticks") 3)
+    (expect-updates (test-id "polls") 1)
+    (mark-metrics)
+    (click (role button :name "Stop"))
+    (expect-metric-delta scopes_disposed 1)
+    (expect-metric-delta set_metadata 1)
+    (mark-metrics)
+    (select-option (label "Fruit") "pear")
+    (expect-metric-delta set_value 1)
+  )
+)

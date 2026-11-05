@@ -237,16 +237,20 @@ Api := {}.{
 	ResponseState : { status : U16, body : Str, error : Str, ready : Bool }
 
 	## The status and text of an effect result, as page classifiers consume
-	## it. A network failure carries the inspected error text the original
-	## platform reported (`Network("offline")`, `Timeout`).
+	## it: any response (the pages classify 4xx envelopes themselves), or a
+	## failure shown as its inspected `Engine.HttpError` (`Network("offline")`,
+	## `Timeout`, `Refused`).
 	response_of : Engine.Res -> Api.ResponseState
 	response_of = |res| match res {
 		Http({ status, headers: _, body }) => { status, body, error: "", ready: True }
-		Network(message) => { status: 0, body: "", error: message, ready: True }
-		Timeout => { status: 0, body: "", error: "Timeout", ready: True }
-		Refused => { status: 0, body: "", error: "Refused", ready: True }
-		_ => { status: 0, body: "", error: "Unexpected result", ready: True }
+		Network(message) => Api.failure(Network(message))
+		Timeout => Api.failure(Timeout)
+		Refused => Api.failure(Refused)
+		_ => crash "contract: a Conduit request reaction received a result that is not an HTTP result"
 	}
+
+	failure : Engine.HttpError -> Api.ResponseState
+	failure = |err| { status: 0, body: "", error: Str.inspect(err), ready: True }
 
 	## Per-request HTTP timeout (a typed Timeout result when it fires).
 	timeout_ms : U32

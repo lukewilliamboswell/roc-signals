@@ -9,7 +9,7 @@ import ts.SpecRunner
 import MdApp
 
 ## Markdown Editor, native spec runner: `main-test spec [--filter GLOB]
-## [--emit-steps] [--pending-phase3] specs/*.scm`.
+## [--emit-steps] specs/*.scm`.
 target = Target.cli({ name: "markdown-editor-specs", main!: |args| SpecRunner.main!(MdApp.program, io, args) })
 
 io : SpecRunner.Io

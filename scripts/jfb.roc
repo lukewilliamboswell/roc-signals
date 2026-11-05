@@ -13,7 +13,7 @@ import src/Targets
 ## (benchmarks/js-framework-benchmark/roc-signals-keyed/dist) and check its
 ## keyed operations in Chrome.
 main! = |_args| {
-	o = Checks.options!({ pending_phase3: Bool.True, filter: "*" })?
+	o = Checks.options!({ filter: "*" })?
 	SpecSuite.build_web_platform!(o)?
 	Slow.finish!("jfb", Targets.jfb!(o)?)
 }

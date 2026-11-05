@@ -1,0 +1,17 @@
+(test "Services — hiding the page disposes the poll interval; showing it mounts a fresh one"
+  (steps
+    (expect-text (test-id "visible") "visible")
+    (expect-interval 5000 1)
+    (tick-interval 5000)
+    (expect-text (test-id "polls") "1")
+    (set-visibility hidden)
+    (expect-text (test-id "visible") "hidden")
+    (expect-interval 5000 0)
+    (tick-interval-if-active 5000)
+    (expect-text (test-id "polls") "1")
+    (set-visibility visible)
+    (expect-interval 5000 1)
+    (tick-interval 5000)
+    (expect-text (test-id "polls") "2")
+  )
+)

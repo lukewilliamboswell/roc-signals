@@ -1,21 +1,29 @@
 // replay.mjs --wasm APP.wasm --runtime runtime.mjs --steps STEPS.jsonl
-//            [--chrome PATH] [--filter REGEX] [--out RESULTS.json] [--pending-phase3] [--json-lines]
+//            [--chrome PATH] [--filter REGEX] [--out RESULTS.json] [--json-lines]
 //
 // The browser spec runner. It replays specs in real headless Chrome, one
 // fresh browser context (fresh instance, fresh storage) per spec. The steps
 // come from the one `.scm` parser (`test-support/Scm.roc`), emitted as JSON
 // lines by `TARGET spec --emit-steps`; this file never reads `.scm`.
 //
-// User actions are real input: mouse clicks at the element's centre, typing
-// (select all, Backspace, then one key event per character) and <select>
-// choice. Assertions read the live DOM. Effects run in the runtime's manual
+// User actions are real input: mouse clicks at the element's centre, fills
+// (focus, select all, then one `insertText` input event, as Playwright's
+// `fill` does) and <select> choice. Assertions read the live DOM. Effects run in the runtime's manual
 // mode when the spec's setup asks for `manual-effects`: `stub-http` stages an
 // answer and `run-effect N` answers the N-th awaited request the app issued.
 // History, title and storage assertions read the real browser state.
 //
-// Work assertions (`metric_step` in the step JSON) need engine counters that
-// do not exist yet. They fail as unsupported, or with `--pending-phase3` are
-// recorded and the spec reports `pending-phase3`. An unknown step fails.
+// Intervals tick only through `tick-interval` (the runtime's manual
+// intervals), and connectivity and visibility change only through
+// `set-online` and `set-visibility`, which override `navigator.onLine` and
+// `document.visibilityState` and dispatch the browser's own events.
+//
+// Work assertions read the engine's work counters through the `metric` export
+// (each metric step names the counters it sums; the parser emits them), the
+// cleanup runs through the work record, and `expect-updates` counts the DOM
+// mutations a MutationObserver saw: an element's creation plus every later
+// attribute or text write on it or a text node directly inside it. An
+// unknown step fails.
 //
 // Progress goes to stderr. With `--json-lines`, stdout carries one result
 // line per spec in the native runner's `roc-signals/spec-result/v2` shape.
@@ -28,7 +36,7 @@ import { launch } from "./cdp.mjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 function parseArgs(argv) {
-  const o = { chrome: process.env.CHROME ?? "chrome", filter: null, out: null, pending: false, jsonLines: false };
+  const o = { chrome: process.env.CHROME ?? "chrome", filter: null, out: null, jsonLines: false };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     const val = () => {
@@ -42,7 +50,6 @@ function parseArgs(argv) {
     else if (a === "--chrome") o.chrome = val();
     else if (a === "--filter") o.filter = new RegExp(val());
     else if (a === "--out") o.out = val();
-    else if (a === "--pending-phase3") o.pending = true;
     else if (a === "--json-lines") o.jsonLines = true;
     else throw new Error(`unknown option ${a}`);
   }
@@ -95,33 +102,48 @@ const onEl = (page, loc, fn, ...args) =>
     `((loc, args) => { const e = window.__loc(loc); return (${fn})(e, ...args); })(${JSON.stringify(loc)}, ${JSON.stringify(args)})`,
   );
 
-async function click(page, loc) {
+async function click(page, loc, real = false) {
   await need(page, loc);
   const box = await onEl(page, loc, (e) => {
     e.scrollIntoView({ block: "center", inline: "center" });
     const r = e.getBoundingClientRect();
     return { x: r.left + r.width / 2, y: r.top + r.height / 2, disabled: e.disabled === true };
   });
-  // A browser delivers no click to a disabled control.
-  if (box.disabled) return;
+  // A browser delivers no click to a disabled control; a real click on one
+  // is a failed step.
+  if (box.disabled) {
+    if (real) throw new Error(`${showLoc(loc)} is disabled`);
+    return;
+  }
   await page.clickAt(box);
 }
 
+// Sum of the engine work counters `ks` (metric(16 + k)).
+const counters = (page) => page.evaluate(() => window.__rt.workRecord().counters.map((c) => c.toString()));
+const sumOf = (cs, ks) => ks.reduce((n, k) => n + BigInt(cs[k] ?? "0"), 0n);
+
 const stats = { typed: 0, typedFallback: 0, fallbacks: [] };
 
+// `fill` as Playwright defines it: focus the control, select its contents
+// and replace them with the value in one real input event (`insertText`; a
+// Backspace when the value is empty), so the app sees one `input` with the
+// whole value, exactly as the native runner delivers it.
 async function fill(page, loc, v) {
   await need(page, loc);
-  await onEl(page, loc, (e) => e.focus());
-  await page.key("a", { modifiers: 2, commands: ["selectAll"] });
-  await page.key("Backspace");
-  if (v !== "") await page.type(v);
+  await onEl(page, loc, (e) => {
+    e.focus();
+    if (typeof e.select === "function") e.select();
+  });
+  if (v === "") await page.key("Backspace");
+  else await page.insertText(v);
   const got = await onEl(page, loc, (e) => (e ? e.value : null));
   if (got === v) {
     stats.typed += 1;
     return;
   }
-  // The control was replaced or rewritten mid-typing: fall back to one value
-  // assignment and input event, and count it.
+  // The control cannot hold the value (an <input type=number> refuses
+  // "abc") or was replaced mid-edit: fall back to one value assignment and
+  // input event, and count it.
   stats.typedFallback += 1;
   stats.fallbacks.push(`${JSON.stringify(v)} typed as ${JSON.stringify(got)} into ${showLoc(loc)}`);
   await need(page, loc);
@@ -144,8 +166,6 @@ function popstateAfter(page, action) {
   );
 }
 
-// Same texts as the native runner (SpecRunner.encode_reject): the app shows them verbatim.
-const rejectText = { network: "Network", "invalid-request": "InvalidRequest", "too-large": "TooLarge", unavailable: "Unavailable" };
 
 async function step(page, s, state) {
   const loc = s.loc;
@@ -218,7 +238,9 @@ async function step(page, s, state) {
       state.stub = { url: s.url, status: s.status, body: s.body, headers: s.headers.length ? s.headers : [["content-type", "application/json"]] };
       return;
     case "stub-http-reject":
-      state.stub = s.kind === "timeout" ? { timeout: true } : { network: `${rejectText[s.kind]}(${JSON.stringify(s.detail)})` };
+      // As the native runner (SpecRunner.encode_reject): a timeout, or a
+      // network failure whose message is the detail.
+      state.stub = s.kind === "timeout" ? { timeout: true } : { network: s.detail };
       return;
     case "run-effect": {
       if (state.stub === null) throw new Error(`run-effect ${s.count} without a staged answer`);
@@ -240,6 +262,100 @@ async function step(page, s, state) {
       );
       if (r) throw new Error(r);
       return settle(page);
+    }
+    case "real-click":
+      return click(page, loc, true);
+    case "focus":
+      await need(page, loc);
+      await onEl(page, loc, (e) => e.focus());
+      return settle(page);
+    case "blur":
+      await need(page, loc);
+      await onEl(page, loc, (e) => e.blur());
+      return settle(page);
+    case "change": {
+      await need(page, loc);
+      const r = await onEl(
+        page,
+        loc,
+        (e, v) => {
+          if (e.type === "radio" || e.type === "checkbox") {
+            if (e.value !== v) return `has value ${JSON.stringify(e.value)}, not ${JSON.stringify(v)}`;
+            e.checked = true;
+          } else e.value = v;
+          e.dispatchEvent(new Event("change", { bubbles: true }));
+          return null;
+        },
+        s.text,
+      );
+      if (r) throw new Error(`${showLoc(loc)} ${r}`);
+      return settle(page);
+    }
+    case "submit": {
+      await need(page, loc);
+      const r = await onEl(page, loc, (e) => {
+        if (e.tagName !== "FORM") return "is not a <form>";
+        e.requestSubmit();
+        return null;
+      });
+      if (r) throw new Error(`${showLoc(loc)} ${r}`);
+      return settle(page);
+    }
+    case "set-online":
+      await page.evaluate((on) => {
+        Object.defineProperty(navigator, "onLine", { get: () => on, configurable: true });
+        window.dispatchEvent(new Event(on ? "online" : "offline"));
+      }, s.text === "online");
+      return settle(page);
+    case "set-visibility":
+      await page.evaluate((vis) => {
+        Object.defineProperty(document, "visibilityState", { get: () => vis, configurable: true });
+        Object.defineProperty(document, "hidden", { get: () => vis === "hidden", configurable: true });
+        document.dispatchEvent(new Event("visibilitychange"));
+      }, s.text);
+      return settle(page);
+    case "tick-interval":
+    case "tick-interval-if-active": {
+      const n = await page.evaluate((ms) => {
+        const ids = window.__rt.intervals(ms);
+        for (const id of ids) window.__rt.tick(id);
+        return ids.length;
+      }, s.period_ms);
+      if (n === 0 && s.op === "tick-interval") throw new Error(`no live interval with period ${s.period_ms} ms`);
+      return settle(page);
+    }
+    case "expect-interval": {
+      const n = await page.evaluate((ms) => window.__rt.intervals(ms).length, s.period_ms);
+      if (n !== s.count) throw new Error(`${n} live intervals with period ${s.period_ms} ms, expected ${s.count}`);
+      return;
+    }
+    case "expect-cleanup": {
+      const n = await page.evaluate((name) => (window.__rt.workRecord().cleanups.get(name) ?? 0n).toString(), s.name);
+      if (BigInt(n) !== BigInt(s.count)) throw new Error(`cleanup ${JSON.stringify(s.name)} ran ${n} times, expected ${s.count}`);
+      return;
+    }
+    case "expect-updates": {
+      await need(page, loc);
+      const n = await onEl(page, loc, (e) => {
+        window.__mo.flush();
+        return 1 + (e.__w ?? 0);
+      });
+      if (n !== s.count) throw new Error(`${showLoc(loc)} was written ${n} times (its creation and every later update), expected ${s.count}`);
+      return;
+    }
+    case "mark-metrics":
+      state.mark = await counters(page);
+      return;
+    case "expect-metric-delta":
+    case "expect-metric-delta-at-most": {
+      if (state.mark === null) throw new Error("no mark-metrics before this step");
+      const now = await counters(page);
+      const got = sumOf(now, s.counters) - sumOf(state.mark, s.counters);
+      const want = BigInt(s.delta);
+      if (s.op === "expect-metric-delta" ? got !== want : got > want) {
+        throw new Error(`${s.metric} changed by ${got}, expected ${s.op === "expect-metric-delta" ? "" : "at most "}${want}`);
+      }
+      return;
     }
     case "expect-pending-effects": {
       const got = await page.evaluate(() => window.__rt.pendingEffects().map((r) => r.url ?? r.id));
@@ -287,51 +403,90 @@ async function step(page, s, state) {
 }
 
 function setupOf(spec) {
-  const out = { location: "/index.html", storage: [], manual: false };
+  const out = { location: "/index.html", storage: [], manual: false, online: true, visibility: "visible" };
   for (const s of spec.setup) {
     if (s.op === "initial-location") out.location = s.text;
     else if (s.op === "local-storage") out.storage.push([s.key, s.text]);
     else if (s.op === "manual-effects") out.manual = true;
+    else if (s.op === "initial-online") out.online = s.text === "online";
+    else if (s.op === "initial-visibility") out.visibility = s.text;
     else throw new Unsupported(`setup ${s.op}: unsupported in this runner yet`);
   }
   return out;
+}
+
+// The page-side half of `expect-updates`: count, per node, the attribute and
+// text mutations after the callback that inserted it. Installed before the
+// app mounts.
+function observeWrites() {
+  let cb = 0;
+  const born = (n) => {
+    n.__born = cb;
+    for (let c = n.firstChild; c; c = c.nextSibling) born(c);
+  };
+  const take = (records) => {
+    cb += 1;
+    for (const r of records) if (r.type === "childList") for (const n of r.addedNodes) born(n);
+    for (const r of records) {
+      if (r.type === "childList") continue;
+      const t = r.target;
+      if (t.__born === cb) continue;
+      t.__w = (t.__w ?? 0) + 1;
+      if (r.type === "characterData" && t.parentNode && t.parentNode.__born !== cb) t.parentNode.__w = (t.parentNode.__w ?? 0) + 1;
+    }
+  };
+  const mo = new MutationObserver(take);
+  window.__mo = { flush: () => take(mo.takeRecords()) };
+  document.addEventListener("DOMContentLoaded", () => {
+    mo.observe(document.getElementById("app"), { subtree: true, childList: true, attributes: true, characterData: true });
+  });
 }
 
 const browser = await launch({ executablePath: opts.chrome });
 const results = [];
 for (const spec of specs) {
   if (opts.filter && !opts.filter.test(spec.id)) continue;
+  if (spec.status === "error") {
+    // The parser refused the spec (the native runner's error line): it fails
+    // here too, with the parser's message.
+    results.push({ id: spec.id, name: spec.name, status: "failed", ms: 0, failure: spec.failure });
+    console.error(`FAILED         ${spec.id}\n     ${spec.failure.message}`);
+    if (opts.jsonLines) process.stdout.write(`${JSON.stringify({ ...spec, status: "failed" })}\n`);
+    continue;
+  }
   const page = await browser.newPage();
   const t0 = Date.now();
-  const pending = [];
   let failed = null;
   let i = 0;
   try {
     const setup = setupOf(spec);
     await page.evaluateOnNewDocument(fs.readFileSync(files["locate.js"], "utf8"));
     await page.evaluateOnNewDocument(
-      (storage, manual) => {
+      (storage, manual, online, visibility) => {
         if (!sessionStorage.getItem("__seeded")) {
           for (const [k, v] of storage) localStorage.setItem(k, v);
           sessionStorage.setItem("__seeded", "1");
         }
         if (manual) window.__manualFx = true;
+        if (!online) Object.defineProperty(navigator, "onLine", { get: () => false, configurable: true });
+        if (visibility !== "visible") {
+          Object.defineProperty(document, "visibilityState", { get: () => visibility, configurable: true });
+          Object.defineProperty(document, "hidden", { get: () => true, configurable: true });
+        }
       },
       setup.storage,
       setup.manual,
+      setup.online,
+      setup.visibility,
     );
+    await page.evaluateOnNewDocument(observeWrites);
     await page.goto(`http://127.0.0.1:${port}${setup.location}`);
     await page.waitForFunction("window.__ready || window.__error");
     const err = await page.evaluate(() => window.__error ?? null);
     if (err) throw new Error(`mount failed: ${err}`);
-    const state = { stub: null };
+    const state = { stub: null, mark: null };
     for (; i < spec.steps.length; i += 1) {
       const s = spec.steps[i];
-      if (s.metric_step) {
-        if (!opts.pending) throw new Unsupported(`${s.op}: unsupported in this engine yet (work counters, intervals and cleanups land in Phase 3)`);
-        pending.push({ op: s.op, line: s.line });
-        continue;
-      }
       await step(page, s, state);
       if (page.errors.length) throw new Error(`page error: ${page.errors.join("; ")}`);
     }
@@ -350,13 +505,13 @@ for (const spec of specs) {
       step: i,
     };
   }
-  const status = failed ? "failed" : pending.length ? "pending-phase3" : "passed";
+  const status = failed ? "failed" : "passed";
   const ms = Date.now() - t0;
-  results.push({ id: spec.id, name: spec.name, status, ms, failure: failed, pending_steps: pending });
+  results.push({ id: spec.id, name: spec.name, status, ms, failure: failed });
   console.error(`${status.toUpperCase().padEnd(14)} ${spec.id} (${spec.steps.length} steps, ${ms} ms)${failed ? `\n     ${failed.message}` : ""}`);
   if (opts.jsonLines) {
     const failure = failed && { phase: "step", ...failed };
-    const line = { protocol: "roc-signals/spec-result/v2", id: spec.id, name: spec.name, status, duration_ns: ms * 1e6, failure, pending_steps: pending };
+    const line = { protocol: "roc-signals/spec-result/v2", id: spec.id, name: spec.name, status, duration_ns: ms * 1e6, failure };
     process.stdout.write(`${JSON.stringify(line)}\n`);
   }
   await page.close();
@@ -364,10 +519,7 @@ for (const spec of specs) {
 await browser.close();
 server.close();
 const count = (st) => results.filter((r) => r.status === st).length;
-const pendingSteps = results.reduce((n, r) => n + r.pending_steps.length, 0);
-console.error(
-  `== ${count("passed")} passed, ${count("failed")} failed, ${count("pending-phase3")} pending-phase3 (${pendingSteps} work steps pending); fills typed=${stats.typed} fallback=${stats.typedFallback}`,
-);
+console.error(`== ${count("passed")} passed, ${count("failed")} failed; fills typed=${stats.typed} fallback=${stats.typedFallback}`);
 for (const f of stats.fallbacks) console.error(`   fallback: ${f}`);
 if (opts.out) fs.writeFileSync(opts.out, JSON.stringify({ results, stats }, null, 1));
 process.exit(count("failed") === 0 && results.length > 0 ? 0 : 1);

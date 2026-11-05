@@ -5,7 +5,7 @@
 import { mountRocEngineApp } from "./runtime.mjs";
 const params = new URLSearchParams(location.search);
 try {
-  window.__rt = await mountRocEngineApp({ wasmUrl: params.get("wasm") ?? "app.wasm", root: document.getElementById("app"), manualEffects: !!window.__manualFx });
+  window.__rt = await mountRocEngineApp({ wasmUrl: params.get("wasm") ?? "app.wasm", root: document.getElementById("app"), manualEffects: !!window.__manualFx, manualIntervals: true });
   window.__ready = true;
 } catch (e) {
   window.__error = String(e && e.stack || e);

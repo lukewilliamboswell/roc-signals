@@ -12,6 +12,15 @@ SpecSuite := [].{
 	apps : List(Str)
 	apps = ["form-builder", "kanban-board", "data-grid", "markdown-editor", "conduit"]
 
+	## Test apps under `tests/apps/` whose `specs/` run like an app's: the
+	## browser services and work counters the examples do not exercise.
+	test_apps : List(Str)
+	test_apps = ["services"]
+
+	## Every spec-bearing app, examples first.
+	spec_apps : List(Str)
+	spec_apps = SpecSuite.apps.concat(SpecSuite.test_apps)
+
 	Runner : [Native, Browser]
 
 	## A spec that fails for a reason recorded here and must keep failing
@@ -27,13 +36,13 @@ SpecSuite := [].{
 		},
 	]
 
-	Tally : { passed : U64, failed : U64, pending : U64, pending_steps : U64, xfail : U64, problems : List(Str) }
+	Tally : { passed : U64, failed : U64, xfail : U64, problems : List(Str) }
 
 	empty_tally : Tally
-	empty_tally = { passed: 0, failed: 0, pending: 0, pending_steps: 0, xfail: 0, problems: [] }
+	empty_tally = { passed: 0, failed: 0, xfail: 0, problems: [] }
 
 	## `root` and `build_dir` are absolute.
-	Options : { root : Str, build_dir : Str, compiler : Str, zig : Str, node : Str, chrome : Str, pending_phase3 : Bool, filter : Str }
+	Options : { root : Str, build_dir : Str, compiler : Str, zig : Str, node : Str, chrome : Str, filter : Str }
 
 	# -------------------------------------------------------------- files
 
@@ -122,7 +131,7 @@ SpecSuite := [].{
 
 	## Where an app lives.
 	dir_of : Str -> Str
-	dir_of = |example| "examples/${example}"
+	dir_of = |example| if (SpecSuite.test_apps.contains(example)) "tests/apps/${example}" else "examples/${example}"
 
 	spec_files! : Str => Try(List(Str), _)
 	spec_files! = |example| SpecSuite.files_with!("${SpecSuite.dir_of(example)}/specs", ".scm")
@@ -158,9 +167,7 @@ SpecSuite := [].{
 			t = $t
 			$t = match status {
 				"passed" if xfail => { ..t, failed: t.failed + 1, problems: t.problems.append("${example} ${Str.inspect(runner)} ${id}: passed but is listed as an expected failure; remove the entry") }
-				"pending-phase3" if xfail => { ..t, failed: t.failed + 1, problems: t.problems.append("${example} ${Str.inspect(runner)} ${id}: no longer fails but is listed as an expected failure; remove the entry") }
 				"passed" => { ..t, passed: t.passed + 1 }
-				"pending-phase3" => { ..t, pending: t.pending + 1, pending_steps: t.pending_steps + SpecSuite.count_pending(line) }
 				_ if xfail => { ..t, xfail: t.xfail + 1 }
 				_ => { ..t, failed: t.failed + 1, problems: t.problems.append("${example} ${Str.inspect(runner)} ${id}: ${SpecSuite.json_message(line)}") }
 			}
@@ -168,14 +175,10 @@ SpecSuite := [].{
 		$t
 	}
 
-	count_pending : Str -> U64
-	count_pending = |line| line.split_on("\"op\":").len() - 1
-
 	## Run the native specs; returns the result lines.
 	run_native! : Options, Str, List(Str) => Try(List(Str), _)
 	run_native! = |o, runner, specs| {
-		flags = if (o.pending_phase3) ["--pending-phase3"] else []
-		{ stdout, .. } = Proc.output!({ program: runner, args: ["spec", "--filter", o.filter].concat(flags).concat(specs), cwd: "." })?
+		{ stdout, .. } = Proc.output!({ program: runner, args: ["spec", "--filter", o.filter].concat(specs), cwd: "." })?
 		Ok(Str.from_utf8_lossy(stdout).split_on("\n"))
 	}
 
@@ -192,31 +195,32 @@ SpecSuite := [].{
 	## Chrome; returns the replay's result lines.
 	run_browser! : Options, Str, Str, Str, List(Str) => Try(List(Str), _)
 	run_browser! = |o, example, runner, wasm, specs| {
-		steps = Proc.capture!({ program: runner, args: ["spec", "--emit-steps", "--filter", o.filter].concat(specs), cwd: "." })?
+		# A spec the parser refuses is emitted as an error line (and the
+		# command exits 1); the replay reports it as failed.
+		{ stdout: steps, .. } = Proc.output!({ program: runner, args: ["spec", "--emit-steps", "--filter", o.filter].concat(specs), cwd: "." })?
 		steps_file = "${o.build_dir}/wasm/${example}/steps.jsonl"
 		Path.write_bytes!(Path.utf8(steps_file), steps)?
-		flags = if (o.pending_phase3) ["--pending-phase3"] else []
-		{ stdout, .. } = Proc.output!({ program: o.node, args: ["tests/browser/replay.mjs", "--wasm", wasm, "--runtime", SpecSuite.runtime, "--steps", steps_file, "--chrome", o.chrome, "--json-lines"].concat(flags), cwd: "." })?
+		{ stdout, .. } = Proc.output!({ program: o.node, args: ["tests/browser/replay.mjs", "--wasm", wasm, "--runtime", SpecSuite.runtime, "--steps", steps_file, "--chrome", o.chrome, "--json-lines"], cwd: "." })?
 		Ok(Str.from_utf8_lossy(stdout).split_on("\n"))
 	}
 
 	# --------------------------------------------------------------- report
 
 	summary : Str, Runner, Tally -> Str
-	summary = |example, runner, t| "${example} (${Str.inspect(runner)}): ${t.passed.to_str()} passed, ${t.failed.to_str()} failed, ${t.xfail.to_str()} expected failures, ${t.pending.to_str()} pending-phase3 (${t.pending_steps.to_str()} work steps pending)"
+	summary = |example, runner, t| "${example} (${Str.inspect(runner)}): ${t.passed.to_str()} passed, ${t.failed.to_str()} failed, ${t.xfail.to_str()} expected failures"
 }
 
 ## Result lines are tallied, and expected failures must still fail.
 expect {
 	lines = [
 		"{\"protocol\":\"roc-signals/spec-result/v2\",\"id\":\"a\",\"name\":\"A\",\"status\":\"passed\"}",
-		"{\"id\":\"b\",\"status\":\"pending-phase3\",\"pending_steps\":[{\"op\":\"mark-metrics\",\"line\":1},{\"op\":\"expect-metric-delta\",\"line\":2}]}",
+		"{\"id\":\"b\",\"status\":\"failed\",\"failure\":{\"message\":\"y\"}}",
 		"{\"id\":\"adding-a-number-field\",\"status\":\"failed\",\"failure\":{\"message\":\"x\"}}",
 		"specs: summary on stderr is ignored",
 	]
 	t = SpecSuite.tally(SpecSuite.empty_tally, "form-builder", Browser, lines)
-	actual = [t.passed, t.pending, t.pending_steps, t.xfail, t.failed]
-	actual == [1, 1, 2, 1, 0]
+	actual = [t.passed, t.xfail, t.failed]
+	actual == [1, 1, 1]
 }
 
 ## An expected failure that passes is itself a failure.

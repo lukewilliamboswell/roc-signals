@@ -8,15 +8,15 @@ import PlatformTest
 Checks := [].{
 
 	## The pinned tools are the ones Blueprint.roc puts on PATH.
-	options! : { pending_phase3 : Bool, filter : Str } => Try(SpecSuite.Options, _)
-	options! = |{ pending_phase3, filter }| {
+	options! : { filter : Str } => Try(SpecSuite.Options, _)
+	options! = |{ filter }| {
 		root = Path.display(Env.cwd!()?)
 		build_dir = match Env.var_str!("ROC_SIGNALS_BUILD_DIR") {
 			Ok(dir) if dir.starts_with("/") => dir
 			Ok(dir) => "${root}/${dir}"
 			Err(_) => "${root}/.build"
 		}
-		Ok({ root, build_dir, compiler: "roc-stable", zig: "zig", node: "node", chrome: "google-chrome", pending_phase3, filter })
+		Ok({ root, build_dir, compiler: "roc-stable", zig: "zig", node: "node", chrome: "google-chrome", filter })
 	}
 
 	prepare_platform! : SpecSuite.Options => Try({}, _)
@@ -47,8 +47,6 @@ Checks := [].{
 	add = |a, b| {
 		passed: a.passed + b.passed,
 		failed: a.failed + b.failed,
-		pending: a.pending + b.pending,
-		pending_steps: a.pending_steps + b.pending_steps,
 		xfail: a.xfail + b.xfail,
 		problems: a.problems.concat(b.problems),
 	}

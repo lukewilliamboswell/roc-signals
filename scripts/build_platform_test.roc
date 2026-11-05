@@ -8,6 +8,6 @@ import src/Checks
 
 ## Fetch and verify platform-test's roc-fuzz inputs and build its `cli.o`.
 main! = |_args| {
-	o = Checks.options!({ pending_phase3: Bool.True, filter: "*" })?
+	o = Checks.options!({ filter: "*" })?
 	Checks.prepare_platform!(o)
 }

@@ -48,7 +48,11 @@ Scm := [].{
 		Reject({ kind : RejectKind, detail : Str }),
 	]
 
-	RejectKind : [InvalidRequest, Network, Timeout, TooLarge, Unavailable]
+	## How a stubbed request fails: the browser could not reach the server
+	## (`network`, with the browser's message as `:detail`) or the request's
+	## timeout expired (`timeout`). These are the failures the web runtime can
+	## observe (design.md, "The effect channel").
+	RejectKind : [Network, Timeout]
 
 	## Declarative state applied before the app mounts.
 	Setup : [
@@ -63,9 +67,8 @@ Scm := [].{
 
 	## A step a test takes, in order.
 	##
-	## Metric names are kept as written: which counters exist, and what the
-	## old names map to, is defined by design.md's work-assertion table and
-	## enforced by the runner.
+	## A metric step names one of `metric_names` (design.md's work-assertion
+	## table); any other name is a parse error.
 	Op : [
 		Click(Loc),
 		RealClick(Loc),
@@ -534,12 +537,9 @@ Scm := [].{
 			}
 			kind_sx = Scm.required(form, fields, ":kind")?
 			kind = match Scm.symbol(kind_sx, ":kind")? {
-				"invalid-request" => InvalidRequest
 				"network" => Network
 				"timeout" => Timeout
-				"too-large" => TooLarge
-				"unavailable" => Unavailable
-				other => return Err(Scm.bad(kind_sx, "unknown reject kind ${other}"))
+				other => return Err(Scm.bad(kind_sx, "unknown reject kind ${other}; a request fails with network or timeout"))
 			}
 			detail_sx = Scm.required(form, fields, ":detail")?
 			detail = Scm.string(detail_sx, ":detail")?
@@ -636,7 +636,10 @@ Scm := [].{
 		count1 = |what| Scm.unsigned(Scm.arg(one(1)?, 0), what)
 		metric = || {
 			a = one(2)?
-			Ok({ metric: Scm.symbol(Scm.arg(a, 0), "the metric")?, delta: Scm.integer(Scm.arg(a, 1), "the delta")? })
+			name_sx = Scm.arg(a, 0)
+			name = Scm.symbol(name_sx, "the metric")?
+			_ = Scm.metric_counters(name) ? |_| Scm.bad(name_sx, Scm.unknown_metric(name))
+			Ok({ metric: name, delta: Scm.integer(Scm.arg(a, 1), "the delta")? })
 		}
 		op = match head {
 			"click" => Click(loc1()?)
@@ -753,23 +756,48 @@ Scm := [].{
 			_ => Err(Scm.bad(sx, "an attribute name is a bare word or a string"))
 		}
 
-	# ------------------------------------------------------------ properties
+	# --------------------------------------------------------------- metrics
 
-	## Whether a step is a work assertion that needs the engine's counters
-	## (design.md, "Work assertions"), or the interval and cleanup tables.
-	is_metric : Op -> Bool
-	is_metric = |op|
-		match op {
-			MarkMetrics => Bool.True
-			ExpectMetricDelta(_) => Bool.True
-			ExpectMetricDeltaAtMost(_) => Bool.True
-			ExpectUpdates(_, _) => Bool.True
-			ExpectCleanup(_) => Bool.True
-			ExpectInterval(_) => Bool.True
-			TickInterval(_) => Bool.True
-			TickIntervalIfActive(_) => Bool.True
-			_ => Bool.False
+	## The work metrics a spec may name (design.md, "Work assertions"), and
+	## the engine work counters each one sums. Counter `k` is the `k`th entry
+	## of the engine's work record (design.md, Appendix B): 1-18 count
+	## commands by opcode, 19 onwards count engine work.
+	metric_names : List({ name : Str, counters : List(U64) })
+	metric_names = [
+		{ name: "rows_created", counters: [1] },
+		{ name: "rows_removed", counters: [22] },
+		{ name: "rows_reused", counters: [23] },
+		{ name: "rows_moved", counters: [4] },
+		{ name: "create_element", counters: [8] },
+		{ name: "set_text", counters: [2, 12] },
+		{ name: "set_value", counters: [19] },
+		{ name: "set_checked", counters: [20] },
+		{ name: "bind_event", counters: [11] },
+		{ name: "set_metadata", counters: [17] },
+		{ name: "patches_emitted", counters: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
+		{ name: "derived_calls_into_roc", counters: [21] },
+		{ name: "scopes_created", counters: [25] },
+		{ name: "scopes_disposed", counters: [26] },
+		{ name: "dirty_source_roots", counters: [27] },
+		{ name: "each_key_hashes", counters: [28] },
+		{ name: "each_key_compares", counters: [29] },
+	]
+
+	## The counters a metric name sums.
+	metric_counters : Str -> Try(List(U64), [UnknownMetric])
+	metric_counters = |name|
+		match Scm.metric_names.find_first(|m| m.name == name) {
+			Ok(m) => Ok(m.counters)
+			Err(_) => Err(UnknownMetric)
 		}
+
+	## Metrics of the deleted Zig engine with no meaning in this one
+	## (design.md, "Work assertions"): a spec asserts the property they stood
+	## for through soak plateaus or the counters above instead.
+	unknown_metric : Str -> Str
+	unknown_metric = |name| "unknown metric ${name}; the metrics are ${Str.join_with(Scm.metric_names.map(|m| m.name), ", ")}"
+
+	# ------------------------------------------------------------ properties
 
 	## The step's name as a spec spells it (aliases spell their canonical name).
 	op_name : Op -> Str
@@ -880,11 +908,8 @@ Scm := [].{
 	reject_kind_name : RejectKind -> Str
 	reject_kind_name = |kind|
 		match kind {
-			InvalidRequest => "invalid-request"
 			Network => "network"
 			Timeout => "timeout"
-			TooLarge => "too-large"
-			Unavailable => "unavailable"
 		}
 
 	visibility_name : Visibility -> Str
@@ -916,6 +941,9 @@ Scm := [].{
 			Reject(_) => Bool.True
 			Reply(_) => Bool.False
 		}
+
+	counters_json : Str -> JsonOut.Value
+	counters_json = |metric| Array((Scm.metric_counters(metric) ?? []).map(|k| Nat(k)))
 
 	step_json : Step -> JsonOut.Value
 	step_json = |{ op, pos }| {
@@ -968,10 +996,10 @@ Scm := [].{
 			ExpectNoLocalStorage(key) => [JsonOut.field("key", Text(key))]
 			ExpectNoSessionStorage(key) => [JsonOut.field("key", Text(key))]
 			MarkMetrics => []
-			ExpectMetricDelta({ metric, delta }) => [JsonOut.field("metric", Text(metric)), JsonOut.field("delta", Int(delta))]
-			ExpectMetricDeltaAtMost({ metric, delta }) => [JsonOut.field("metric", Text(metric)), JsonOut.field("delta", Int(delta))]
+			ExpectMetricDelta({ metric, delta }) => [JsonOut.field("metric", Text(metric)), JsonOut.field("counters", Scm.counters_json(metric)), JsonOut.field("delta", Int(delta))]
+			ExpectMetricDeltaAtMost({ metric, delta }) => [JsonOut.field("metric", Text(metric)), JsonOut.field("counters", Scm.counters_json(metric)), JsonOut.field("delta", Int(delta))]
 		}
-		Object([JsonOut.field("op", Text(Scm.op_name(op))), JsonOut.field("metric_step", Bool(Scm.is_metric(op)))].concat(Scm.pos_fields(pos)).concat(args))
+		Object([JsonOut.field("op", Text(Scm.op_name(op)))].concat(Scm.pos_fields(pos)).concat(args))
 	}
 }
 
@@ -1092,21 +1120,28 @@ expect {
 		\\x.scm:1:46: the expected value must be true or false, got yes
 		\\x.scm:1:25: a role locator is (role ROLE :name "NAME")
 		\\x.scm:1:25: unknown locator kind css; expected role, label, text or test-id
-		\\x.scm:1:46: unknown reject kind invented
+		\\x.scm:1:46: unknown reject kind invented; a request fails with network or timeout
 		\\x.scm:1:51: :status must be 100 to 999
 		\\x.scm:1:28: a location starts with /, got "nope"
 	actual == expected
-}
-
-## Metric steps are recognised as such; ordinary steps are not.
-expect {
-	spec = Scm.parse("(test \"t\" (steps (mark-metrics) (click (text \"a\")) (expect-metric-delta-at-most rows_created 3) (tick-interval 100)))")?
-	spec.steps.map(|s| Scm.is_metric(s.op)) == [Bool.True, Bool.False, Bool.True, Bool.True]
 }
 
 ## The emitted JSON names the op, its position and its arguments.
 expect {
 	spec = Scm.parse("(test \"j\" (setup (local-storage \"k\" \"v\")) (steps (expect-checked (role checkbox :name \"A\") true)))")?
 	actual = JsonOut.render(Scm.to_json("j-file", spec))
-	actual == "{\"id\":\"j-file\",\"name\":\"j\",\"setup\":[{\"op\":\"local-storage\",\"line\":1,\"column\":18,\"key\":\"k\",\"text\":\"v\"}],\"steps\":[{\"op\":\"expect-checked\",\"metric_step\":false,\"line\":1,\"column\":50,\"loc\":{\"kind\":\"role\",\"role\":\"checkbox\",\"name\":\"A\"},\"value\":true}]}"
+	actual == "{\"id\":\"j-file\",\"name\":\"j\",\"setup\":[{\"op\":\"local-storage\",\"line\":1,\"column\":18,\"key\":\"k\",\"text\":\"v\"}],\"steps\":[{\"op\":\"expect-checked\",\"line\":1,\"column\":50,\"loc\":{\"kind\":\"role\",\"role\":\"checkbox\",\"name\":\"A\"},\"value\":true}]}"
+}
+
+## Metric names are checked: an old engine-only metric is a parse error, and a
+## known one emits the counters it sums.
+expect {
+	spec = Scm.parse("(test \"m\" (steps (mark-metrics) (expect-metric-delta set_text 2)))")?
+	actual =
+		\\${problem_of("(test \"t\" (steps (expect-metric-delta-at-most active_graph_records_rebuilt 0)))")}
+		\\${JsonOut.render(Scm.to_json("m", spec))}
+	expected =
+		\\x.scm:1:47: unknown metric active_graph_records_rebuilt; the metrics are rows_created, rows_removed, rows_reused, rows_moved, create_element, set_text, set_value, set_checked, bind_event, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares
+		\\{"id":"m","name":"m","setup":[],"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
+	actual == expected
 }

@@ -37,14 +37,10 @@ Bench := [].{
 	storage = [{ key: "conduit.jwt", value: "jwt.conduit.kim" }, { key: "conduit.username", value: "kim" }]
 
 	boot : Engine.Boot
-	boot = { url: Bench.url, storage: Bench.storage.map(|{ key, value }| (key, value)) }
+	boot = { url: Bench.url, storage: Bench.storage.map(|{ key, value }| (key, value)), online: Bool.True, visible: Bool.True }
 
 	start_from : Engine.App, List(U8) -> SpecRunner.S(Engine.App)
-	start_from = |a, c| {
-		b0 = { loc: Bench.url, back: [], fwd: [], title: "", storage: Bench.storage, pending: [], issued: [], subs: [], stubs: [] }
-		(d, _, fx) = Dom.apply_fx(Dom.new({}), c)
-		{ inst: a, buf: c, dom: d, browser: SpecRunner.absorb(b0, fx) }
-	}
+	start_from = |a, c| SpecRunner.adopt(a, c, Bench.url, Bench.storage)
 
 	## The engine id of spec ordinal n.
 	id_of : SpecRunner.S(Engine.App), U64 -> U32

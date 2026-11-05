@@ -16,12 +16,8 @@ import src/Targets
 ## self-check (both runners reject a spec with one wrong expectation), the runtime contract tests in Chrome
 ## (effects, controls, Conduit journey) and the js-framework-benchmark check.
 ## The soak runs and the app fuzz targets' baselines are `check-slow`.
-##
-## Work assertions cannot run until Phase 3 adds the engine's counters, so the
-## suite runs with `--pending-phase3`: they are counted and reported, never
-## passed. `scripts/spec.roc -- --strict` shows the failures they become.
 main! = |_args| {
-	o = Checks.options!({ pending_phase3: Bool.True, filter: "*" })?
+	o = Checks.options!({ filter: "*" })?
 	var $problems = []
 
 	Proc.note!("== script pins")
@@ -43,8 +39,8 @@ main! = |_args| {
 	var $browser = SpecSuite.empty_tally
 	var $kanban = { runner: "", wasm: "" }
 	SpecSuite.build_web_platform!(o)?
-	SpecSuite.build!(o, SpecSuite.apps, SpecSuite.apps.concat(["tests/apps/effects", "tests/apps/controls"]))?
-	for example in SpecSuite.apps {
+	SpecSuite.build!(o, SpecSuite.spec_apps, SpecSuite.apps.concat(["tests/apps/effects", "tests/apps/controls", "tests/apps/services"]))?
+	for example in SpecSuite.spec_apps {
 		r = Checks.run_app!(o, example, Bool.True)?
 		$native = Checks.add($native, r.native)
 		$browser = Checks.add($browser, r.browser)

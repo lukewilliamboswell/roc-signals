@@ -18,7 +18,7 @@ main! = |args| {
 		[name, ..] => name
 		_ => ""
 	}
-	o = Checks.options!({ pending_phase3: Bool.True, filter: "*" })?
+	o = Checks.options!({ filter: "*" })?
 	Checks.prepare_platform!(o)?
 	for t in Targets.fuzz_targets.keep_if(|t| only == "" or t.name == only) {
 		exe = Targets.build_fuzz!(o, t)?

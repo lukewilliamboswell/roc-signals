@@ -9,15 +9,11 @@ import src/Checks
 import src/Proc
 import src/SpecSuite
 
-## Run ported apps' `.scm` specs: `spec.roc -- [--browser] [--strict]
-## [--filter GLOB] [APP...]` (default: every ported example, natively).
-##
-## `--strict` runs work assertions as the failures they are until Phase 3
-## adds the engine's counters; by default they are counted as pending-phase3.
+## Run ported apps' `.scm` specs: `spec.roc -- [--browser] [--filter GLOB]
+## [APP...]` (default: every ported example, natively).
 main! = |raw_args| {
 	args = raw_args.map(OsStr.display).drop_if(|a| a == "--")
 	var $browser = Bool.False
-	var $strict = Bool.False
 	var $filter = "*"
 	var $apps = []
 	var $i = 0.U64
@@ -25,21 +21,19 @@ main! = |raw_args| {
 		a = args.get($i) ?? ""
 		if a == "--browser" {
 			$browser = Bool.True
-		} else if a == "--strict" {
-			$strict = Bool.True
 		} else if a == "--filter" {
 			$i = $i + 1
 			$filter = args.get($i) ?? "*"
-		} else if SpecSuite.apps.contains(a) {
+		} else if SpecSuite.spec_apps.contains(a) {
 			$apps = $apps.append(a)
 		} else {
-			Proc.warn!("unknown argument ${a}; apps are ${Str.join_with(SpecSuite.apps, ", ")}")
+			Proc.warn!("unknown argument ${a}; apps are ${Str.join_with(SpecSuite.spec_apps, ", ")}")
 			return Err(Exit(2))
 		}
 		$i = $i + 1
 	}
-	apps = if ($apps.is_empty()) SpecSuite.apps else $apps
-	o = Checks.options!({ pending_phase3: !$strict, filter: $filter })?
+	apps = if ($apps.is_empty()) SpecSuite.spec_apps else $apps
+	o = Checks.options!({ filter: $filter })?
 	Checks.prepare_platform!(o)?
 	if $browser {
 		SpecSuite.build_web_platform!(o)?

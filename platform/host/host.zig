@@ -1,11 +1,13 @@
 //! The Wasm host of the web platform for the pure Roc engine (`platform/Engine.roc`).
 //!
-//! The host owns exactly two things between calls: one opaque `Box(Instance)`
-//! and the command byte list of the last transaction. It never interprets
-//! either. Each call moves both into Roc (clearing the slots first, so a trap
-//! mid-call cannot leave a dangling owner) and stores the replacements Roc
-//! returns. JavaScript reads the command bytes straight from linear memory via
-//! `cmd_ptr`/`cmd_len`; they stay valid until the next `event` or `drop`.
+//! The host owns exactly three things between calls: one opaque
+//! `Box(Instance)`, the command byte list of the last transaction and the
+//! engine's work record. It never interprets the state or the commands. Each
+//! call moves all three into Roc (clearing the slots first, so a trap mid-call
+//! cannot leave a dangling owner) and stores the replacements Roc returns.
+//! JavaScript reads the command bytes and the work record straight from linear
+//! memory via `cmd_ptr`/`cmd_len` and `work_ptr`/`work_len`; they stay valid
+//! until the next `event` or `drop`.
 //! Running out of memory or a Roc crash traps the instance (no recovery).
 const std = @import("std");
 
@@ -17,20 +19,26 @@ const RocList = extern struct {
     const empty: RocList = .{ .ptr = null, .len = 0, .cap = 0 };
 };
 
-/// Roc lays out `{ cmds : List(U8), state : Box(Instance) }` by alignment and
-/// then field name: both are pointer-aligned here, so `cmds` comes first.
+/// Roc lays out `{ cmds : List(U8), state : Box(Instance), work : List(U8) }`
+/// by alignment and then field name: all three are pointer-aligned here, so
+/// the order is alphabetical.
 const Step = extern struct {
     cmds: RocList,
     state: *anyopaque,
+    work: RocList,
 };
 
+extern fn roc_engine_version() callconv(.c) u32;
 extern fn roc_engine_keys() callconv(.c) RocList;
 extern fn roc_engine_init(boot: RocList) callconv(.c) Step;
-extern fn roc_engine_event(state: *anyopaque, buf: RocList, node: u32, handler: u32, payload: RocList) callconv(.c) Step;
-extern fn roc_engine_drop(state: *anyopaque, buf: RocList) callconv(.c) void;
+extern fn roc_engine_event(state: *anyopaque, buf: RocList, wbuf: RocList, node: u32, handler: u32, payload: RocList) callconv(.c) Step;
+extern fn roc_engine_drop(state: *anyopaque, buf: RocList, wbuf: RocList) callconv(.c) void;
 
 var state: ?*anyopaque = null;
 var cmds: RocList = RocList.empty;
+/// The engine's work record after the last call (design.md, Appendix B):
+/// `count:u32 (counter:u64)*count`, then the cleanup runs by name.
+var work: RocList = RocList.empty;
 
 // ---------------------------------------------------------------------------
 // Allocator: the same inline-header scheme as the production Wasm host, over
@@ -133,6 +141,7 @@ fn poison(class: u32) noreturn {
     // Staged (unpublished) commands are never observed; nothing is freed:
     // the Roc heap may be mid-mutation, so it is abandoned with the instance.
     cmds = RocList.empty;
+    work = RocList.empty;
     pending_payload = RocList.empty;
     state = null;
     @trap();
@@ -165,6 +174,15 @@ export fn fault() callconv(.c) u32 {
     return fault_class;
 }
 
+/// The wire protocol version of the engine linked into this module. The
+/// runtime reads it before anything else and refuses to mount a module whose
+/// version it does not implement, so a stale `runtime.mjs` never misreads a
+/// newer command stream. Pure: it allocates nothing and answers even when the
+/// instance is poisoned.
+export fn protocol_version() callconv(.c) u32 {
+    return roc_engine_version();
+}
+
 fn refuseIfPoisoned() void {
     if (fault_class != 0) @trap();
 }
@@ -194,6 +212,7 @@ export fn init() callconv(.c) void {
     const step = roc_engine_init(boot);
     state = step.state;
     cmds = step.cmds;
+    work = step.work;
     releaseList(keys);
 }
 
@@ -246,13 +265,16 @@ export fn event(node: u32, handler: u32) callconv(.c) void {
     refuseIfPoisoned();
     const owned = state orelse @trap();
     const buf = cmds;
+    const wbuf = work;
     const payload = pending_payload;
     state = null;
     cmds = RocList.empty;
+    work = RocList.empty;
     pending_payload = RocList.empty;
-    const step = roc_engine_event(owned, buf, node, handler, payload);
+    const step = roc_engine_event(owned, buf, wbuf, node, handler, payload);
     state = step.state;
     cmds = step.cmds;
+    work = step.work;
 }
 
 /// Release the instance and the command buffer (teardown).
@@ -263,9 +285,11 @@ export fn drop() callconv(.c) void {
     dropPending();
     const owned = state orelse @trap();
     const buf = cmds;
+    const wbuf = work;
     state = null;
     cmds = RocList.empty;
-    roc_engine_drop(owned, buf);
+    work = RocList.empty;
+    roc_engine_drop(owned, buf, wbuf);
 }
 
 export fn cmd_ptr() callconv(.c) usize {
@@ -276,9 +300,38 @@ export fn cmd_len() callconv(.c) usize {
     return cmds.len;
 }
 
+/// The engine's work record after the last call, readable until the next
+/// `event` or `drop` (0 and 0 before mount).
+export fn work_ptr() callconv(.c) usize {
+    return if (work.ptr) |p| @intFromPtr(p) else 0;
+}
+
+export fn work_len() callconv(.c) usize {
+    return work.len;
+}
+
+/// Base of the engine's work counters in `metric`.
+const work_base: u32 = 16;
+
+/// Allocator counters (0-5), the engine's work counters (`16 + k` reads
+/// counter `k` of the work record; 0 past its end), and the spike's
+/// first-allocation sizes probe (100-131). The work counters are copied out
+/// of the record the engine returned with the last call; the host does not
+/// compute them.
 export fn metric(index: u32) callconv(.c) u64 {
     if (index >= 100 and index < 132) return sizes[index - 100];
+    if (index >= work_base and index < 100) return workCounter(index - work_base);
     return if (index < counters.len) counters[index] else 0;
+}
+
+fn workCounter(k: u32) u64 {
+    const p = work.ptr orelse return 0;
+    if (work.len < 4) return 0;
+    const count = std.mem.readInt(u32, p[0..4], .little);
+    if (k >= count) return 0;
+    const at = 4 + @as(usize, k) * 8;
+    if (at + 8 > work.len) return 0;
+    return std.mem.readInt(u64, p[at..][0..8], .little);
 }
 
 export fn reset_metrics() callconv(.c) void {

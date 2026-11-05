@@ -78,7 +78,11 @@ Soak := [].{
 				s
 			}
 			match SpecRunner.fire(program, s1, i, ev, payload) {
-				Ok(s2) => s2
+				Ok(s2) =>
+					match SpecRunner.check_counters(s2) {
+						Ok(_) => s2
+						Err(msg) => crash "soak: work counters: ${msg}"
+					}
 				Err(msg) => crash "soak: ${msg}"
 			}
 		}
@@ -145,15 +149,17 @@ Soak := [].{
 	replay! = |program, inst0, evs, k, after, begin!, end!| {
 		var $a = inst0
 		var $buf = []
+		var $wbuf = []
 		var $counts = []
 		var $c = 0.U64
 		while $c < k {
 			m = begin!({})
 			for (node, h, payload) in evs {
-				(a1, b1) = (program.event)($a, $buf, node, h, payload)
+				(a1, b1, w1) = (program.event)($a, $buf, $wbuf, node, h, payload)
 				(a2, b2) = after(a1, b1)
 				$a = a2
 				$buf = b2
+				$wbuf = w1
 			}
 			$counts = $counts.append(end!(m))
 			$c = $c + 1

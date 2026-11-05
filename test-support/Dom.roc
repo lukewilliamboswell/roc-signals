@@ -2,6 +2,13 @@
 ## DOM model, used as the test and fuzz oracle. It shares no code with the
 ## engine. Nodes live in one list; engine ids map to node indices (+1).
 Dom := [].{
+
+	## The wire protocol version this oracle decodes (design.md, Appendix B).
+	## It is spelled here independently of the engine; the spec runner
+	## refuses a program that speaks another.
+	protocol_version : U32
+	protocol_version = 2
+
 	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List((Str, U32)), ht : List(U64) }
 
 	THole : { kind : U8, path : List(U8), name : Str, handler : U8 }
@@ -323,6 +330,8 @@ Dom := [].{
 		Timer(U32, U32),
 		Interval(U32, U32),
 		Pop(U32),
+		OnlineSub(U32),
+		VisibilitySub(U32),
 		Cancel(U32),
 		Push(Str),
 		Replace(Str),
@@ -343,6 +352,18 @@ Dom := [].{
 	## stream order.
 	apply_fx : Model, List(U8) -> (Model, List(U8), List(FxCmd))
 	apply_fx = |dom0, b| {
+		r = Dom.apply_full(dom0, b)
+		(r.dom, r.ops, r.fx)
+	}
+
+	## Apply one batch; also return its opcodes, its effect commands in
+	## stream order, and the node indices each `ATTR`, `HATTR`, `SETTEXT` or
+	## `TEXT` wrote (one entry per command, in order). Node indices only grow,
+	## so a node created by this batch has an index at or above the model's
+	## node count before it.
+	apply_full : Model, List(U8) -> { dom : Model, ops : List(U8), fx : List(FxCmd), written : List(U64) }
+	apply_full = |dom0, b| {
+		var $written = []
 		var $fx = []
 		var $d = dom0
 		var $at = 0.U64
@@ -399,6 +420,7 @@ Dom := [].{
 				tpl = $d.tpls.get(Dom.site_of($d, nid) ?? crash "TEXT/HATTR on a non-row node") ?? crash "unknown template"
 				hole = tpl.holes.get(h) ?? crash "unknown hole"
 				target = Dom.node($d, row).ht.get(h) ?? crash "hole target"
+				$written = $written.append(target)
 				$d = if (op == 2) Dom.set_text_on($d, target, v) else Dom.set_attr_on($d, target, hole.name, v)
 			} else if op == 4 {
 				i = Dom.lookup($d, Dom.u32(b, $at))
@@ -458,6 +480,7 @@ Dom := [].{
 				(name, n1) = Dom.str(b, $at + 4)
 				(value, n2) = Dom.str(b, n1)
 				$at = n2
+				$written = $written.append(i)
 				$d = Dom.set_attr_on($d, i, name, value)
 			} else if op == 11 {
 				id = Dom.u32(b, $at)
@@ -471,6 +494,7 @@ Dom := [].{
 				i = Dom.lookup($d, Dom.u32(b, $at))
 				(t, next) = Dom.str(b, $at + 4)
 				$at = next
+				$written = $written.append(i)
 				$d = Dom.set_text_on($d, i, t)
 			} else if op == 13 {
 				id = Dom.u32(b, $at)
@@ -506,6 +530,10 @@ Dom := [].{
 					$at = $at + 4
 				} else if kind == 5 {
 					$fx = $fx.append(Pop(id))
+				} else if kind == 6 {
+					$fx = $fx.append(OnlineSub(id))
+				} else if kind == 7 {
+					$fx = $fx.append(VisibilitySub(id))
 				} else {
 					crash "unknown effect kind ${kind.to_str()}"
 				}
@@ -541,8 +569,43 @@ Dom := [].{
 				crash "unknown command ${op.to_str()}"
 			}
 		}
-		($d, $ops, $fx)
+		{ dom: $d, ops: $ops, fx: $fx, written: $written }
 	}
+
+	## The engine's work record (design.md, Appendix B): `count:u32
+	## (counter:u64)*count`, then `n:u32 (name:str runs:u64)*`. Decoded here,
+	## independently of the engine that wrote it.
+	Work : { counters : List(U64), cleanups : List((Str, U64)) }
+
+	decode_work : List(U8) -> Work
+	decode_work = |b| {
+		n = Dom.u32(b, 0).to_u64()
+		var $at = 4.U64
+		var $cs = []
+		var $i = 0.U64
+		while $i < n {
+			$cs = $cs.append(Dom.u64(b, $at))
+			$at = $at + 8
+			$i = $i + 1
+		}
+		m = Dom.u32(b, $at).to_u64()
+		$at = $at + 4
+		var $runs = []
+		$i = 0
+		while $i < m {
+			(name, a1) = Dom.str(b, $at)
+			$runs = $runs.append((name, Dom.u64(b, a1)))
+			$at = a1 + 8
+			$i = $i + 1
+		}
+		if $at != b.len() {
+			crash "work record length mismatch"
+		}
+		{ counters: $cs, cleanups: $runs }
+	}
+
+	u64 : List(U8), U64 -> U64
+	u64 = |b, at| Dom.u32(b, at).to_u64() + Dom.u32(b, at + 4).to_u64().shl_wrap(32)
 
 	## The (node, handler) pair an event `ev` on node index i dispatches, as
 	## the browser runtime computes it: the nearest handler for `ev` walking

@@ -21,7 +21,7 @@ measured! = |st, name, f| {
 	w = Fuzz.start_measure!(name)
 	(a, c) = Engine.take_cmds(f(st.inst), [])
 	_ = w.finish!()
-	SpecRunner.take(st, a, c)
+	SpecRunner.take_batch(st, a, c)
 }
 
 bench! : U64 => Fuzz.Outcome
@@ -83,7 +83,7 @@ answer = |s0| {
 		ids = Engine.fx_live($s.inst).keep_if(|id| id != 1)
 		for id in ids {
 			(a1, c) = Engine.take_cmds(Engine.result($s.inst, id, Http({ status: 200, headers: [], body: universal })), [])
-			$s = SpecRunner.take($s, a1, c)
+			$s = SpecRunner.take_batch($s, a1, c)
 		}
 		$round = $round + 1
 	}

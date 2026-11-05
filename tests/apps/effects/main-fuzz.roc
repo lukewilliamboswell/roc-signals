@@ -210,9 +210,22 @@ model_deliver = |m, id, res| {
 
 E : { s : S, fx : List(Dom.FxCmd) }
 
+## Apply one batch to the oracle. The engine's per-opcode work counters must
+## have moved by exactly the commands the oracle decoded from it.
 apply! : S, Engine.App, List(U8) => E
 apply! = |s, a, c| {
-	(d2, _, fx) = Dom.apply_fx(s.dom, c)
+	(d2, ops, fx) = Dom.apply_fx(s.dom, c)
+	before = Engine.work_counters(s.eng)
+	after = Engine.work_counters(a)
+	var $op = 1.U64
+	while $op <= 18 {
+		moved = (after.get($op) ?? 0) - (before.get($op) ?? 0)
+		seen = ops.count_if(|o| o.to_u64() == $op)
+		if moved != seen {
+			crash "work counter for ${Dom.op_name($op.to_u8_wrap())} moved by ${moved.to_str()}, the batch holds ${seen.to_str()}"
+		}
+		$op = $op + 1
+	}
 	{ s: { eng: a, dom: d2, steps: s.steps + 1 }, fx }
 }
 
@@ -286,6 +299,12 @@ check! = |what, e, m| {
 			crash "${what}: site ${$k.to_str()} hits ${Str.inspect(shown_hits)}, model ${Str.inspect(want_hits)}"
 		}
 		$k = $k + 1
+	}
+	# The FX and CANCEL work counters are the model's issued and cancelled
+	# requests: every admitted request is one FX, every stop one CANCEL.
+	w = Engine.work_counters(e.s.eng)
+	if (w.get(13) ?? 0) != m.issued or (w.get(14) ?? 0) != m.cancelled {
+		crash "${what}: FX/CANCEL work counters ${(w.get(13) ?? 0).to_str()}/${(w.get(14) ?? 0).to_str()}, model issued/cancelled ${m.issued.to_str()}/${m.cancelled.to_str()}"
 	}
 	if Engine.fx_live(e.s.eng) != m.live.map(|l| l.id) {
 		crash "${what}: live ids ${Str.inspect(Engine.fx_live(e.s.eng))}, model ${Str.inspect(m.live.map(|l| l.id))}"

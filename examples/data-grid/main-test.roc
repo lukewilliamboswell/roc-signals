@@ -9,7 +9,7 @@ import ts.SpecRunner
 import GridApp
 
 ## Data Grid, native spec runner: `main-test spec [--filter GLOB]
-## [--emit-steps] [--pending-phase3] specs/*.scm`.
+## [--emit-steps] specs/*.scm`.
 target = Target.cli({ name: "data-grid-specs", main!: |args| SpecRunner.main!(GridApp.program, io, args) })
 
 io : SpecRunner.Io

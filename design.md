@@ -298,9 +298,9 @@ A component resets depth: inside `Comp(p, a)` the prop is layer 0 and inner
 layers count from there, so masks are bounded by the nesting depth within one
 component, not by the depth of the whole app.
 
-**Target:** masks are 64-bit, so a component body may nest at most 63 layers.
-Exceeding that must be a `resource_limit` diagnostic at mount; today the shift
-wraps silently, which is a defect against Constraint 2.
+Masks are 64-bit, so a component body may nest at most 63 layers below its
+prop. A deeper `state`, `derive` or `each` is a `resource_limit` diagnostic at
+mount naming the construction site; a layer bit never wraps.
 
 ### Blocks and holes
 
@@ -481,10 +481,14 @@ and effect handles by id, and the commands above release both.
 shape, live allocations, live effect ids and Wasm pages return to a plateau.
 Soak runs assert it natively and in Chrome.
 
-**Target:** `on_cleanup(name, …)` runs a named, pure cleanup reaction when its
-scope is disposed, in the disposing turn, with the scope's last environment.
-Its effects follow the ordinary command rules (commands only; it cannot await
-results). Cleanup runs are counted per name so specs can assert them.
+`on_cleanup(name, value, plan)` is a site that renders nothing and reads
+nothing while it is live. When its scope is disposed it reads `value` in the
+scope's last environment and turns it into requests with `plan`, in the
+disposing turn. Only commands are allowed (history, title, storage writes,
+focus): a request that awaits a result would outlive its owner, so asking for
+one is a `contract` error. Cleanup runs are counted per name in the engine's
+work record (Appendix B) so specs assert them (`expect-cleanup`); `cleanup(name)`
+is the form that only counts.
 
 ## Propagation: Turns, Ordering, and Pruning
 
@@ -542,9 +546,10 @@ Synchronous browser callbacks raised while JavaScript applies a batch, or
 while Wasm runs, never re-enter the engine. They are queued and delivered as
 their own turns after the current batch.
 
-**Target:** the runtime's ingress queue is bounded. Overflow is a classified
-refusal reported as a diagnostic, never silently dropped work. Today the queue
-is unbounded.
+The runtime's ingress queue is bounded at 4096 events. Only a feedback loop
+between the DOM and the engine fills it, so overflow is not refused event by
+event (that would drop non-lossy input or strand an in-flight id): it poisons
+the runtime with class `resource_limit`, reported like any other fault.
 
 ### Complexity budget
 
@@ -660,9 +665,13 @@ for and its result.
   `stale`. The owning site also checks that it holds the id, so a successor
   site at the same path never receives its predecessor's results.
 - Results are typed: `Http({ status, headers, body })`, `Network(message)`,
-  `Timeout`, `Value`, `Missing`, `Fired`, `Location`, `Now`, `Refused`.
-  Application failures are values; contract violations are diagnostics, never
-  fabricated results.
+  `Timeout`, `Value`, `Missing`, `Fired`, `Location`, `Online(Bool)`,
+  `Visible(Bool)`, `Now`, `Refused`. Application failures are values;
+  contract violations are diagnostics, never fabricated results.
+- `http_text` reads an HTTP result as the body of a 2xx response or a typed
+  `HttpError`: `Network(message)` (the browser could not reach the server),
+  `Timeout`, `Status(code)` (any other status) or `Refused` (the in-flight
+  bound). Apps that classify statuses themselves match on `Http` directly.
 
 ### Bounds
 
@@ -703,15 +712,22 @@ The engine counts `issued`, `delivered`, `stale`, `refused`, `cancelled`,
 `reparented` and `skipped`, and exposes the live ids. Specs and fuzz models
 assert them exactly.
 
+### Connectivity and visibility
+
+Whether the browser is online and the page visible is part of the boot bytes
+(`Boot.online`, `Boot.visible`), and the `OnlineChanges` and
+`VisibilityChanges` subscriptions deliver every later change as
+`Online(Bool)` or `Visible(Bool)` from the browser's `online`/`offline` and
+`visibilitychange` events. Like every subscription they are scoped: disposing
+their site stops them.
+
 ### Target effects
 
-**Target:** the browser services the ported apps need, each as a request kind
-or subscription in this channel with an Appendix B entry and a runtime
-contract test:
+**Target:** further browser services, each as a request kind or subscription
+in this channel with an Appendix B entry and a runtime contract test, when a
+ported app needs it:
 
 - session storage alongside local storage, declared at boot the same way;
-- `visibilitychange` and `online`/`offline` as subscriptions whose current
-  value is also part of the boot bytes;
 - an entropy seed in the boot bytes;
 - sampled time, if an app needs wall-clock values rather than timer ticks.
 
@@ -744,8 +760,9 @@ A `value` attribute is a guarded update, not a blind assignment:
 
 This applies to text-like controls (text inputs, number-input draft strings,
 textarea). `checked` is set as a property. A `<select>`'s value is re-applied
-when its options are inserted after it. Submit and reset are app-managed events
-with a static prevent-default policy.
+when an option is inserted below it or an option's value changes. Forms are
+app-managed: the runtime prevents the default of every `submit` that reaches
+the mount root, so a submit never navigates the page.
 
 Focus is an explicit command on a named reference (`ref(name)` on an element;
 `Focus`/`Blur`/`SelectText` requests). A reference that is not mounted at the
@@ -812,18 +829,21 @@ applying a command) is contained the same way with class `executor`.
 `recover()` mounts a fresh instance from the same module; it never resumes a
 poisoned one. External effects already performed are not undone.
 
-**Contract errors the engine raises today:** duplicate key; switch value not in
-its cases; row template not a single element; focus reference inside a row
-template; effect follow-up budget exceeded; event payload not UTF-8; unknown
-effect result tag. **Resource limits:** node ids (2³² − 2 live nodes).
+**Contract errors the engine raises:** duplicate key; switch value not in its
+cases; row template not a single element; focus reference inside a row
+template; effect follow-up budget exceeded; a cleanup asking for an awaited
+request; `http_text` given a non-HTTP result; event payload not UTF-8; boot
+bytes or an effect result that do not follow Appendix B (truncated, trailing
+bytes, unknown tag, flags other than 0 or 1, text that is not UTF-8).
+**Resource limits:** node ids (2³² − 2 live nodes); more than 63 nested layers
+in one component; any count the template encoding carries in one byte —
+static attributes, children, holes, hole path depth, row handlers — above 255.
+Each is checked before it could wrap. The runtime adds `resource_limit` for
+ingress-queue overflow and refuses a module of another protocol version
+before running it.
 
-**Target:** malformed boot bytes and a non-UTF-8 effect result are `contract`
-errors (today they crash unclassified and report as `app_crash`); the
-diagnostic names the construction path for every contract error (some messages
-lack it today); and every caller-controlled count that the
-wire encodes in a narrow field — template attributes, children, holes, hole
-path depth, row handlers (all `u8`) — is checked and reported as
-`resource_limit` instead of wrapping.
+**Target:** the diagnostic names the construction path for every contract
+error (some messages lack it).
 
 ## Boundedness
 
@@ -838,7 +858,7 @@ bound and a declared behaviour at the bound:
 | Staged payloads | 1 | Previous one freed |
 | Diagnostic text | 512 bytes | Truncated |
 | Live node ids (rows included) | 2³² − 2 | `resource_limit` poison |
-| Runtime ingress queue | **Target:** bounded | **Target:** classified refusal |
+| Runtime ingress queue | 4096 queued events | `resource_limit` poison |
 
 Wasm memory growth is an allocator mechanism, not a resource policy. Persistent
 columns and free lists must plateau under repeated valid activity; soak runs
@@ -855,9 +875,9 @@ stubs), and a list of steps written against the rendered UI:
 
 - **Locators** — `role` (implicit or explicit role plus accessible name),
   `label` (`aria-label`), `text`, `test-id` (`data-testid`).
-- **Actions** — click, fill, change, select an option, check and uncheck,
-  submit, focus and blur, key presses, composition start and end, pointer
-  events, navigation and history back/forward.
+- **Actions** — click and real-click, fill, change, select an option, check
+  and uncheck, submit, focus and blur, key presses, composition start and end,
+  pointer events, navigation and history back/forward.
 - **Assertions** — text, value, checked, disabled, attribute presence and
   value, visibility and absence, location, document title, storage contents,
   pending effects.
@@ -877,9 +897,9 @@ produces a typed list of steps. Both runners consume it:
   parser, against the real runtime in headless Chrome.
 
 An unknown step is a hard parse error in both runners. Neither runner may
-weaken a step it cannot honour; it fails. Steps whose underlying service or
-counter is marked **Target** in this document fail until it lands; they are
-never skipped.
+weaken a step it cannot honour; it fails. Steps whose underlying service is
+marked **Target** in this document fail until it lands; they are never
+skipped.
 
 ### The `Dom.roc` oracle
 
@@ -894,33 +914,48 @@ exercises the same protocol the browser runtime consumes.
 
 ### Work assertions
 
-Work assertions keep their meaning by mapping onto observable quantities of
-the new engine. **Target:** each metric step has the definition below, applied
-identically by both runners where the quantity is observable in the browser,
-and natively only where it is not. A metric name with no definition here is a
-parse error, and any spec edit that reinterprets a step is recorded in its
-commit.
+Work assertions read the engine's own counters. The engine keeps one
+cumulative counter list in its transaction accumulator — commands emitted by
+opcode, and the named counters below — and returns it with every host call as
+the work record (Appendix B). Both runners read that record: natively through
+the program's call results, in Chrome through the `metric` export and
+`workRecord()`. The native runner also checks, at every work step, that the
+per-opcode counters agree with the commands the `Dom.roc` oracle decoded, and
+the soak walks and the effect-channel fuzz target check it after every batch.
+A metric name not in this table is a parse error; metrics of the deleted Zig
+engine (`active_graph_records_rebuilt`, closure retain/release counts, host
+retained bytes) have no meaning here, and their property is asserted through
+soak plateaus instead.
 
 | Step or metric | Definition |
 |---|---|
-| `mark-metrics` | Snapshot every counter below |
-| `rows_created` / `rows_removed` | `INST` commands / row nodes removed (`REMOVE` of a row node, rows cleared by `CLEAR`) since the mark |
-| `rows_reused` | Rows kept by an `each` reconciliation (engine counter) |
-| `create_element`, `set_text`, `set_value`, `set_checked`, `bind_event`, `set_metadata` | Commands since the mark: `ELEM`; `SETTEXT` and `TEXT`; `ATTR`/`HATTR` named `value`; named `checked`; `LISTEN`; `TITLE` |
-| `patches_emitted` | DOM commands since the mark (opcodes 1–12) |
-| `derived_calls_into_roc` | The engine's evaluation counter (holes, conditions, list reads, `derive` inputs) |
-| `scopes_created` / `scopes_disposed` | Sites mounted / disposed (engine counters) |
-| `dirty_source_roots` | State layers written by the turns since the mark (engine counter) |
-| `each_key_hashes` / `each_key_compares` | Key-index hash and full-key comparison counts (engine counters) |
-| `expect-updates loc n` | `SETTEXT`, `TEXT`, `ATTR` and `HATTR` commands targeting the located element since mount |
-| `expect-interval ms n` | Live `INTERVAL` effects with period `ms` (issued and not cancelled) |
-| `tick-interval ms` | Deliver `Fired` to every live interval with period `ms`; `tick-interval-if-active` is a no-op when none is live |
-| `expect-cleanup name n` | Runs of `on_cleanup` hooks named `name` |
+| `mark-metrics` | Snapshot every counter |
+| `rows_created` | `INST` commands: rows created by mount or reconciliation |
+| `rows_removed` | Rows a reconciliation removed (a row disposed with its whole `each` site is a disposed scope, not a removed row) |
+| `rows_reused` | Old rows a reconciliation kept. A reconciliation whose list is equal to the old one (nothing created, removed, moved or changed) counts nothing |
+| `rows_moved` | `MOVE` commands |
+| `create_element`, `bind_event`, `set_metadata` | `ELEM`, `LISTEN` and `TITLE` commands |
+| `set_text` | `SETTEXT` and `TEXT` commands |
+| `set_value`, `set_checked` | Control state the engine set: `ATTR` and `HATTR` named `value` / `checked`, and `INST` attribute holes with those names |
+| `patches_emitted` | DOM commands (opcodes 1–12) |
+| `derived_calls_into_roc` | Evaluations of app closures: holes, conditions, list reads, `derive` inputs, prop reads, watched values, cleanup values |
+| `scopes_created` / `scopes_disposed` | Scopes mounted / disposed: `when` and `switch` branches, components and `each` rows |
+| `dirty_source_roots` | State layers written: per turn, the layers a row or component settled locally plus the layers in the root's Changed mask |
+| `each_key_hashes` / `each_key_compares` | Keys hashed and full-key comparisons made by keyed reconciliation (lookups and inserts; a key hashed for a lookup is not hashed again to insert it, and a removal uses the stored hash) |
+| `expect-updates loc n` | The located element's creation plus every later `ATTR`, `HATTR`, `SETTEXT` or `TEXT` that wrote it or a text node directly inside it; natively from the oracle, in Chrome from a MutationObserver |
+| `expect-interval ms n` | Live `INTERVAL` subscriptions with period `ms` |
+| `tick-interval ms` | Deliver `Fired` to every live interval with period `ms`; a step with none live fails. `tick-interval-if-active` is a no-op when none is live |
+| `expect-cleanup name n` | Runs of `on_cleanup` sites named `name` |
 
-Metrics whose old meaning was a property of the deleted Zig engine
-(`active_graph_records_rebuilt`, closure retain/release counts, host retained
-bytes) have no definition; specs that used them assert the equivalent property
-through allocation plateaus in soak runs instead.
+The browser runner holds intervals for `tick-interval` (they never fire on
+their own during a replay) and drives `set-online` and `set-visibility` by
+overriding `navigator.onLine` and `document.visibilityState` and dispatching
+the browser's own events, so the runtime's real listeners are exercised.
+`fill` is Playwright's `fill`: the whole value arrives as one `input` event in
+both runners. `real-click` is Chrome's click: `mousedown`, focus moves (the
+press's default action), `mouseup`, `click`, then the default action — a
+checkbox toggles, a radio checks, a submit button submits its form — and a
+real click on a disabled control fails.
 
 ### Fuzzing, soak and contract tests
 
@@ -1046,7 +1081,10 @@ the context a value or handler is used in.
 # Program entry
 program : (() -> Elem(Root)) -> Program(App)
 program_boot : { storage_keys : List(Str), max_inflight : U64 }, (Boot -> Elem(Root)) -> Program(App)
-Boot : { url : Str, storage : List((Str, Str)) }
+Boot : { url : Str, storage : List((Str, Str)), online : Bool, visible : Bool }
+Program(state) : { version : U32, keys : () -> List(U8),
+                   init : List(U8) -> (state, List(U8), List(U8)),
+                   event : state, List(U8), List(U8), U32, U32, List(U8) -> (state, List(U8), List(U8)) }
 
 # Values
 const : a -> Val(ctx, a)
@@ -1094,19 +1132,30 @@ split : Sink(ctx, a), Sink(ctx, b), (c -> [L(a), R(b)]) -> Sink(ctx, c)
 watch : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
 on_change : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
 ignore : {} -> Reaction(ctx, a)
+on_cleanup : Str, Val(ctx, a), (a -> List(Req)) -> Elem(ctx)   # commands only
+cleanup : Str -> Elem(ctx)
 Req : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Timer(U32),
-       Interval(U32), Popstate, Self, Push(Str), Replace(Str), Title(Str),
-       Focus(Str), Blur(Str), SelectText(Str), StorageSet(Str, Str), StorageRemove(Str)]
+       Interval(U32), Popstate, OnlineChanges, VisibilityChanges, Self, Push(Str),
+       Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str),
+       StorageSet(Str, Str), StorageRemove(Str)]
 Res : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
-       Fired, Location(Str), Now, Refused]
+       Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused]
+HttpError : [Network(Str), Timeout, Status(U16), Refused]
+http_text : Res -> Try(Str, HttpError)
 ```
 
-**Target vocabulary.** Apps write against typed `Html` and `Svg` modules
-(elements, a typed attribute and style API, event helpers with their payload
-types), grown from the spike's `H.roc`, with `Engine` underneath. Also target:
-callback and non-`Str` component props, `on_cleanup`, event policies beyond
-`:prevent`, session storage, visibility and online subscriptions, an entropy
-seed, and handler-level request occurrences. Each lands with an engine change,
+`Html` (`platform/Html.roc`) is the typed element vocabulary above `Engine`:
+structure (`div`, `section`, `p`, `h1`–`h3`, `ul`/`li`, `pre_v`, `link`),
+controls (`button`, `action_button`, `text_input`, `number_input`,
+`textarea`, `checkbox`, `radio`, `select`/`option`, `form`, `submit_button`),
+accessibility attributes (`aria_label`, `aria_invalid`, `aria_describedby`)
+and event helpers (`on_input`, `on_change`, `on_focus`, `on_blur`,
+`on_keydown`, `on_submit`). Accessible names go in `aria-label`, which the
+spec locators match.
+
+**Target vocabulary.** An `Svg` module and a typed style API, callback and
+non-`Str` component props, event policies beyond `:prevent`, session storage,
+an entropy seed, and handler-level request occurrences. Each lands with an engine change,
 a native spec, a runtime contract test and, where it touches the wire, an
 Appendix B entry.
 
@@ -1115,11 +1164,12 @@ Appendix B entry.
 All integers are little-endian. `u32` ids. `str` is `u32` byte length followed
 by UTF-8 bytes. `rest` is the remaining bytes of a payload as UTF-8.
 
-**Target:** the protocol carries a version. The host exports
-`protocol_version() -> u32` and the runtime refuses to mount an instance whose
-version it does not implement. Any change below bumps the version and updates
-the encoder, `Dom.roc`, `runtime.mjs`, the contract tests and this appendix
-together.
+This appendix is protocol version **2**. The engine declares it
+(`Engine.protocol_version`), the host exports it (`protocol_version()`), the
+runtime refuses to mount a module of another version before running it, and
+the native spec runner refuses a program whose version differs from the one
+`Dom.roc` decodes. Any change below bumps the version and updates the encoder,
+`Dom.roc`, `runtime.mjs`, the contract tests and this appendix together.
 
 ### Roc ↔ host
 
@@ -1127,14 +1177,17 @@ The platform provides (`platform/main.roc`):
 
 | Symbol | Signature | Meaning |
 |---|---|---|
+| `roc_engine_version` | `() -> u32` | The protocol version (2) |
 | `roc_engine_keys` | `() -> List(U8)` | Declared storage keys: `count:u32 (key:str)*` |
-| `roc_engine_init` | `List(U8) -> { cmds, state }` | Mount with the boot bytes |
-| `roc_engine_event` | `Box(Instance), List(U8), u32, u32, List(U8) -> { cmds, state }` | One transaction: state, recycled buffer, node, handler, payload |
-| `roc_engine_drop` | `Box(Instance), List(U8) -> {}` | Teardown |
+| `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
+| `roc_engine_event` | `Box(Instance), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One transaction: state, recycled command buffer, recycled work buffer, node, handler, payload |
+| `roc_engine_drop` | `Box(Instance), List(U8), List(U8) -> {}` | Teardown |
 
 The host provides `roc_alloc`, `roc_dealloc`, `roc_realloc`, `roc_dbg`,
-`roc_expect_failed` and `roc_crashed`. The result record is laid out with
-`cmds` before `state`.
+`roc_expect_failed` and `roc_crashed`. The result record's three fields are
+pointer-aligned, so Roc lays them out alphabetically: `cmds`, `state`,
+`work`. The host owns both lists between calls and lends them back, so after
+warm-up neither allocates.
 
 ### Host exports to JavaScript
 
@@ -1144,11 +1197,13 @@ The host provides `roc_alloc`, `roc_dealloc`, `roc_realloc`, `roc_dbg`,
 | `payload_reserve(len) -> ptr` | Allocate the next call's payload (`0` for `len = 0`); JS writes `len` bytes at `ptr` after refreshing its memory view |
 | `init()` | Mount with the staged boot bytes; mount commands become readable |
 | `event(node, handler)` | One transaction with the staged payload; its commands become readable |
+| `protocol_version() -> u32` | The engine's protocol version; answers before mount and when poisoned |
 | `cmd_ptr()`, `cmd_len()` | The current command batch, valid until the next `event` or `drop` |
+| `work_ptr()`, `work_len()` | The work record returned with the last call, valid until the next `event` or `drop` |
 | `drop()` | Teardown; no-op when poisoned or already dropped |
 | `fault() -> u32` | `0` healthy, `1` contract, `2` resource_limit, `3` out_of_memory, `4` app_crash, `5` expect_failed |
 | `err_ptr()`, `err_len()` | Diagnostic text (≤ 512 bytes) |
-| `metric(i) -> u64` | Allocator counters: `0` allocations, `1` deallocations, `2` requested bytes, `3` reallocations, `4` live allocations, `5` live bytes |
+| `metric(i) -> u64` | Allocator counters: `0` allocations, `1` deallocations, `2` requested bytes, `3` reallocations, `4` live allocations, `5` live bytes. `16 + k`: counter `k` of the work record (0 past its end) |
 | `reset_metrics()` | Reset counters 0–3 |
 | `memory` | Linear memory |
 
@@ -1159,9 +1214,38 @@ allocations since reset; that is a measurement probe, not protocol.
 
 1. `boot_keys()`; read `count:u32 (key:str)*`.
 2. Read each key from storage; stage the boot bytes with `payload_reserve`:
-   `url:str count:u32 (key:str value:str)*`, listing only keys that exist.
-   `url` is `pathname + search + hash`. Empty boot bytes mean no boot data.
+   `url:str count:u32 (key:str value:str)* online:u8 visible:u8`, listing
+   only keys that exist. `url` is `pathname + search + hash`; `online` is
+   `navigator.onLine` and `visible` is `document.visibilityState !=
+   "hidden"`, each `0` or `1`. Empty boot bytes mean no boot data (online and
+   visible). Anything else that does not follow this layout is a `contract`
+   fault.
 3. `init()`; apply the mount batch.
+
+### Work record
+
+Returned with every call (`work_ptr`/`work_len`):
+`count:u32 (counter:u64)*count n:u32 (name:str runs:u64)*n`. The counters are
+cumulative over the instance; the trailing table lists each `on_cleanup` name
+that has run, in first-run order, with its run count.
+
+| Index | Counter |
+|---|---|
+| 1–18 | Commands emitted, by opcode (`1` is `INST`, `4` `MOVE`, …) |
+| 19 | `set_value`: control values set (`ATTR`/`HATTR` named `value`, `INST` value holes) |
+| 20 | `set_checked`: the same for `checked` |
+| 21 | Evaluations of app closures (`derived_calls_into_roc`) |
+| 22 | Rows removed by reconciliation |
+| 23 | Rows reused by a reconciliation that changed something |
+| 24 | Kept rows whose item changed |
+| 25, 26 | Scopes created, disposed |
+| 27 | State layers written (`dirty_source_roots`) |
+| 28, 29 | Key hashes, full-key comparisons in reconciliation |
+| 30 | Turns |
+| 31 | Cleanup runs, all names |
+
+Index 0 is unused. The metric names the spec language accepts map onto these
+indices (`test-support/Scm.roc`, `metric_names`).
 
 ### Event records
 
@@ -1169,8 +1253,9 @@ An event is `event(node, handler)` with the payload staged first:
 
 - **DOM events:** `node` is the nearest engine node id at or above the handler
   element, `handler` the handler number from `LISTEN` or the template's event
-  hole. Payload (UTF-8): `click`/`submit` → empty; `input` → the target's
-  value; `change` → `"true"`/`"false"` for a checkbox or radio, else the value;
+  hole. Payload (UTF-8): `click`/`submit` → empty (and the runtime prevents
+  the default of every `submit` that reaches the mount root); `input` → the
+  target's value; `change` → `"true"`/`"false"` for a checkbox or radio, else the value;
   `keydown`/`keyup` → the key; `focus`/`blur` (listened as
   `focusin`/`focusout`) → the target's value.
 - **Effect results:** `node = 0xffffffff`, `handler` = request id. Payload:
@@ -1184,6 +1269,12 @@ An event is `event(node, handler)` with the payload staged first:
 | 5 | — | `Fired` (timer or interval) |
 | 6 | `url:rest` | `Location` (popstate) |
 | 7 | — | `Timeout` |
+| 8 | `online:u8` | `Online(Bool)` (connectivity change) |
+| 9 | `visible:u8` | `Visible(Bool)` (visibility change) |
+
+A result payload that does not follow this table (unknown tag, bytes after a
+bare tag, a flag other than `0`/`1`, a truncated HTTP record, text that is not
+UTF-8) is a `contract` fault.
 
 ### Node ids
 
@@ -1242,6 +1333,8 @@ the batch is applied and performed after it.
 | 3 | `ms:u32` | Timer |
 | 4 | `ms:u32` | Interval (subscription) |
 | 5 | — | Popstate (subscription) |
+| 6 | — | Connectivity (subscription; `online`/`offline` events) |
+| 7 | — | Visibility (subscription; `visibilitychange` events) |
 
 **Template encoding** (`TEMPLATE` bytes): a node tree, then a hole table.
 

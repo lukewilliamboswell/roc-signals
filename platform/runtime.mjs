@@ -4,11 +4,23 @@
 // Commands are read straight out of Wasm linear memory after each call; views
 // are re-created per apply (a call may grow memory).
 //
-// Encoding: see the command stream header in platform/Engine.roc.
+// Encoding: design.md, Appendix B, protocol version PROTOCOL_VERSION. A module
+// whose `protocol_version()` differs is refused at mount.
 //
 // Event payloads (UTF-8, staged with `payload_reserve` and moved into Roc by
 // `event`): click/submit "", input: the target's value, change: "true"/"false"
 // for a checkbox or radio, else the target's value, keydown/keyup: the key.
+// A `submit` event that reaches the mount root is always default-prevented:
+// forms are app-managed and never navigate the page.
+//
+// Boot bytes carry the URL, the declared storage values, and whether the
+// browser is online and the page visible; the `OnlineChanges` and
+// `VisibilityChanges` subscriptions (FX kinds 6 and 7) report later changes.
+//
+// Ingress: events raised while a batch is applied are queued, at most
+// MAX_QUEUED of them. Exceeding the bound poisons the runtime with class
+// `resource_limit` (a feedback loop between the DOM and the engine); queued
+// work is never dropped silently.
 //
 // Effects (see "Effects" in Engine.roc): the engine emits FX requests with
 // ids, CANCEL, NAV, STORE and TITLE commands. They are collected while a
@@ -29,6 +41,16 @@
 // as properties (the live control state), boolean attributes (disabled,
 // selected, readonly, required, hidden, multiple) are present for any value
 // other than "" and "false".
+
+// The wire protocol version this runtime implements (design.md, Appendix B).
+export const PROTOCOL_VERSION = 2;
+
+// The most events queued behind a running batch (see "Ingress" above).
+export const MAX_QUEUED = 4096;
+
+// The engine's work counters start at this `metric` index (design.md,
+// Appendix B); `workRecord()` decodes the whole record.
+export const WORK_METRIC_BASE = 16;
 
 const OP_INST = 1;
 const OP_TEXT = 2;
@@ -59,6 +81,8 @@ const RES_MISSING = 4;
 const RES_FIRED = 5;
 const RES_LOCATION = 6;
 const RES_TIMEOUT = 7;
+const RES_ONLINE = 8;
+const RES_VISIBLE = 9;
 
 const HOLE_TEXT = 1;
 const HOLE_ATTR = 2;
@@ -147,6 +171,8 @@ function setAttr(el, name, value) {
     if (el.tagName === "SELECT") el.__v = value;
     if (value === "") el.removeAttribute("value");
     else el.setAttribute("value", value);
+    // An option whose value changes may now be the one its select wants.
+    if (el.tagName === "OPTION") settleSelect(el.parentNode);
   } else if (name === "checked") {
     el.checked = value === "true";
     if (el.checked) el.setAttribute("checked", "");
@@ -242,6 +268,8 @@ export class RocEngineRuntime {
     this.onFault = options.onFault ?? null;
     this.module = options.module ?? null;
     this.manual = options.manualEffects ?? false;
+    // Intervals tick only through tick(id) (spec replays control time).
+    this.manualIntervals = options.manualIntervals ?? false;
     // Armed HTTP timeout timers (for tests: must return to 0).
     this.timers = 0;
     this.fxOut = [];
@@ -259,9 +287,15 @@ export class RocEngineRuntime {
     })();
   }
 
-  // Boot: read the app's declared storage keys, stage the URL and their
-  // values, then mount.
+  // Boot: check the protocol version, read the app's declared storage keys,
+  // stage the URL, their values and the online and visibility flags, then
+  // mount. A module that speaks another protocol is refused before anything
+  // runs: the runtime throws and never applies a command it cannot read.
   mount() {
+    const version = typeof this.x.protocol_version === "function" ? this.x.protocol_version() : 0;
+    if (version !== PROTOCOL_VERSION) {
+      throw new Error(`roc engine protocol ${version} is not the protocol ${PROTOCOL_VERSION} this runtime implements`);
+    }
     this.guard(() => this.mountInner());
     this.drainQueue();
   }
@@ -294,6 +328,7 @@ export class RocEngineRuntime {
     const url = loc ? loc.pathname + loc.search + loc.hash : "";
     const parts = [encStr(url), u32(pairs.length)];
     for (const [k, v] of pairs) parts.push(encStr(k), encStr(v));
+    parts.push(new Uint8Array([this.isOnline() ? 1 : 0, this.isVisible() ? 1 : 0]));
     this.stage(concat(parts));
     this.busy = true;
     try {
@@ -326,16 +361,23 @@ export class RocEngineRuntime {
     }
   }
 
-  contain(error) {
+  // `klass` names a fault the runtime itself classifies (the ingress bound);
+  // otherwise the instance's fault class decides, and a trap the instance
+  // did not classify is an executor failure.
+  contain(error, klass = null) {
     if (this.poisoned) return;
     const CLASSES = ["executor", "contract", "resource_limit", "out_of_memory", "app_crash", "expect_failed"];
     let code = 0;
     let message = String(error && error.message ? error.message : error);
-    try {
-      code = this.x.fault();
-      if (code !== 0) message = new TextDecoder().decode(new Uint8Array(this.x.memory.buffer, this.x.err_ptr(), this.x.err_len()));
-    } catch (_) {
-      code = 0;
+    if (klass !== null) {
+      code = CLASSES.indexOf(klass);
+    } else {
+      try {
+        code = this.x.fault();
+        if (code !== 0) message = new TextDecoder().decode(new Uint8Array(this.x.memory.buffer, this.x.err_ptr(), this.x.err_len()));
+      } catch (_) {
+        code = 0;
+      }
     }
     this.poisoned = { class: CLASSES[code] ?? "unknown", code, message, trap: String(error) };
     for (const [type, fn] of this.listening) this.root.removeEventListener(type, fn);
@@ -431,6 +473,9 @@ export class RocEngineRuntime {
   // (bubbling), then the nearest node carrying an engine id.
   handle(event) {
     const type = APP_EVENT[event.type] ?? event.type;
+    // Forms are app-managed: a submit never navigates (design.md,
+    // "Controlled inputs").
+    if (event.type === "submit") event.preventDefault();
     let node = event.target;
     // Handler numbers are stored as -1 - h when the handler asks for
     // preventDefault.
@@ -462,6 +507,10 @@ export class RocEngineRuntime {
       return;
     }
     if (this.busy) {
+      if (this.queue.length >= MAX_QUEUED) {
+        this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} events queued behind one batch (an event feedback loop)`), "resource_limit");
+        return;
+      }
       this.queue.push([node, handler, payload, el]);
       return;
     }
@@ -769,6 +818,10 @@ export class RocEngineRuntime {
             at += 4;
           } else if (kind === 5) {
             this.fxOut.push({ op: "popstate", id });
+          } else if (kind === 6) {
+            this.fxOut.push({ op: "online", id });
+          } else if (kind === 7) {
+            this.fxOut.push({ op: "visibility", id });
           } else throw new Error(`unknown effect kind ${kind}`);
           break;
         }
@@ -866,14 +919,35 @@ export class RocEngineRuntime {
         this.live.set(fx.id, { kind: "sub", cancel: () => w.removeEventListener("popstate", fn) });
         return;
       }
+      case "online": {
+        const fn = () => this.result(fx.id, new Uint8Array([RES_ONLINE, this.isOnline() ? 1 : 0]));
+        w.addEventListener("online", fn);
+        w.addEventListener("offline", fn);
+        this.live.set(fx.id, {
+          kind: "sub",
+          req: fx,
+          cancel: () => {
+            w.removeEventListener("online", fn);
+            w.removeEventListener("offline", fn);
+          },
+        });
+        return;
+      }
+      case "visibility": {
+        const doc = this.doc;
+        const fn = () => this.result(fx.id, new Uint8Array([RES_VISIBLE, this.isVisible() ? 1 : 0]));
+        doc.addEventListener("visibilitychange", fn);
+        this.live.set(fx.id, { kind: "sub", req: fx, cancel: () => doc.removeEventListener("visibilitychange", fn) });
+        return;
+      }
       case "interval": {
-        if (this.manual) {
+        if (this.manual || this.manualIntervals) {
           // Manual mode: ticks only through tick(id).
           this.live.set(fx.id, { kind: "sub", req: fx, cancel: () => {} });
           return;
         }
         const h = setInterval(() => this.result(fx.id, new Uint8Array([RES_FIRED])), fx.ms);
-        this.live.set(fx.id, { kind: "sub", cancel: () => clearInterval(h) });
+        this.live.set(fx.id, { kind: "sub", req: fx, cancel: () => clearInterval(h) });
         return;
       }
       case "get": {
@@ -999,6 +1073,48 @@ export class RocEngineRuntime {
 
   liveRows(site = 1) {
     return (this.sites[site] ?? new Set()).size;
+  }
+
+  isOnline() {
+    const nav = this.win ? this.win.navigator : null;
+    return nav ? nav.onLine !== false : true;
+  }
+
+  isVisible() {
+    return !this.doc || this.doc.visibilityState !== "hidden";
+  }
+
+  // Live interval subscriptions with period `ms`, in issue order.
+  intervals(ms) {
+    const out = [];
+    for (const [id, e] of this.live) if (e.kind === "sub" && e.req && e.req.op === "interval" && e.req.ms === ms) out.push(id);
+    return out;
+  }
+
+  // The engine's work record after the last call (design.md, Appendix B):
+  // { counters: [BigInt...], cleanups: Map(name -> BigInt) }.
+  workRecord() {
+    const x = this.x;
+    const len = x.work_len();
+    const out = { counters: [], cleanups: new Map() };
+    if (len === 0) return out;
+    const dv = new DataView(x.memory.buffer, x.work_ptr(), len);
+    const u8 = new Uint8Array(x.memory.buffer, x.work_ptr(), len);
+    let at = 4;
+    for (let i = dv.getUint32(0, true); i > 0; i -= 1) {
+      out.counters.push(dv.getBigUint64(at, true));
+      at += 8;
+    }
+    let n = dv.getUint32(at, true);
+    at += 4;
+    for (; n > 0; n -= 1) {
+      const k = dv.getUint32(at, true);
+      const name = readStr(u8, at + 4, k);
+      at += 4 + k;
+      out.cleanups.set(name, dv.getBigUint64(at, true));
+      at += 8;
+    }
+    return out;
   }
 }
 

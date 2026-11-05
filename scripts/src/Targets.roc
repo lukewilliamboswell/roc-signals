@@ -104,9 +104,11 @@ Targets := [].{
 	browser_contracts! = |o, conduit_wasm| {
 		fx = SpecSuite.wasm_of(o, "effects")
 		controls = SpecSuite.wasm_of(o, "controls")
+		services = SpecSuite.wasm_of(o, "services")
 		Ok(
 			Targets.browser!(o, "fx-browser.mjs", ["--wasm", fx])?
 				.concat(Targets.browser!(o, "controls-browser.mjs", ["--wasm", controls])?)
+				.concat(Targets.browser!(o, "services-browser.mjs", ["--wasm", services])?)
 				.concat(Targets.browser!(o, "conduit-journey.mjs", ["--wasm", conduit_wasm])?),
 		)
 	}

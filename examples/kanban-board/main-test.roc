@@ -9,7 +9,7 @@ import ts.SpecRunner
 import KanbanApp
 
 ## Kanban Board, native spec runner: `main-test spec [--filter GLOB]
-## [--emit-steps] [--pending-phase3] specs/*.scm`.
+## [--emit-steps] specs/*.scm`.
 target = Target.cli({ name: "kanban-board-specs", main!: |args| SpecRunner.main!(KanbanApp.program, io, args) })
 
 io : SpecRunner.Io

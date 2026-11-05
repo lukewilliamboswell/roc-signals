@@ -314,11 +314,58 @@ Engine := [].{
 		next : U32,
 		free : List(U32),
 		routes : List(Route),
-		evals : U64,
+		work : List(U64),
 		paths : List(List(U32)),
 		site_free : List(U32),
 		fx : Fx,
 	}
+
+	## Work counters (design.md, "Work assertions"): one `List(U64)` in the
+	## transaction accumulator, cumulative over the instance. Indices 1-18
+	## count the commands emitted, by opcode (`INST` is a row created, `MOVE`
+	## a row moved); the named indices below count engine work.
+	w_set_value : U64
+	w_set_value = 19
+
+	w_set_checked : U64
+	w_set_checked = 20
+
+	w_evals : U64
+	w_evals = 21
+
+	w_rows_removed : U64
+	w_rows_removed = 22
+
+	w_rows_reused : U64
+	w_rows_reused = 23
+
+	w_rows_updated : U64
+	w_rows_updated = 24
+
+	w_scopes_created : U64
+	w_scopes_created = 25
+
+	w_scopes_disposed : U64
+	w_scopes_disposed = 26
+
+	w_dirty_roots : U64
+	w_dirty_roots = 27
+
+	w_key_hashes : U64
+	w_key_hashes = 28
+
+	w_key_compares : U64
+	w_key_compares = 29
+
+	w_turns : U64
+	w_turns = 30
+
+	w_cleanups : U64
+	w_cleanups = 31
+
+	## The number of work counters.
+	w_count : U64
+	w_count = 32
 
 	Hole(ctx) : { node : U32, mask : U64, attr : Str, read : (ctx -> Str), last : Str }
 
@@ -347,75 +394,178 @@ Engine := [].{
 		$b
 	}
 
-	emit : Tx, (List(U8) -> List(U8)) -> Tx
-	emit = |{ cmds, next, free, routes, evals, paths, site_free, fx }, write| { cmds: write(cmds), next, free, routes, evals, paths, site_free, fx }
+	## Append one command: its opcode, then the operands `write` adds. The
+	## opcode is counted in the work counters (design.md, "Work assertions").
+	emit_op : Tx, U8, (List(U8) -> List(U8)) -> Tx
+	emit_op = |{ cmds, next, free, routes, work, paths, site_free, fx }, op, write| { cmds: write(cmds.append(op)), next, free, routes, work: Engine.add_at(work, op.to_u64(), 1), paths, site_free, fx }
 
+	## Add `n` to work counter `i`.
+	bump : Tx, U64, U64 -> Tx
+	bump = |{ cmds, next, free, routes, work, paths, site_free, fx }, i, n| { cmds, next, free, routes, work: Engine.add_at(work, i, n), paths, site_free, fx }
+
+	add_at : List(U64), U64, U64 -> List(U64)
+	add_at = |list, i, n| match list.get(i) {
+		Ok(v) => list.set(i, v + n) ?? crash "internal: work counter"
+		Err(_) => crash "internal: work counter ${i.to_str()}"
+	}
+
+	## One evaluation of an app closure (a hole, a condition, a list read, a
+	## `derive` input, a prop read, an effect site's watched value).
 	count_evals : Tx, U64 -> Tx
-	count_evals = |{ cmds, next, free, routes, evals, paths, site_free, fx }, n| { cmds, next, free, routes, evals: evals + n, paths, site_free, fx }
+	count_evals = |tx, n| Engine.bump(tx, Engine.w_evals, n)
+
+	## An attribute command (`ATTR` or `HATTR`) that sets a control's live
+	## state is also counted by name.
+	count_attr : Tx, Str -> Tx
+	count_attr = |tx, name| Engine.bump(tx, Engine.ctl_of(name), 1)
+
+	## The work counter an attribute name counts in besides its opcode: 0
+	## (the unused counter, so the accumulator is always rebuilt the same
+	## way, roc-lang/roc#12846) when it names no control state.
+	ctl_of : Str -> U64
+	ctl_of = |name| if (name == "value") Engine.w_set_value else if (name == "checked") Engine.w_set_checked else 0
 
 	## Allocate a static node id, reusing a freed one first.
 	alloc_id : Tx -> (U32, Tx)
-	alloc_id = |{ cmds, next, free, routes, evals, paths, site_free, fx }| {
+	alloc_id = |{ cmds, next, free, routes, work, paths, site_free, fx }| {
 		match free.last() {
-			Ok(id) => (id, { cmds, next, free: free.drop_last(1), routes, evals, paths, site_free, fx })
+			Ok(id) => (id, { cmds, next, free: free.drop_last(1), routes, work, paths, site_free, fx })
 			Err(_) => {
 				if next >= 4294967294 {
 					crash "resource_limit: node ids exhausted (4294967294 live nodes)"
 				}
-				(next, { cmds, next: next + 1, free, routes, evals, paths, site_free, fx })
+				(next, { cmds, next: next + 1, free, routes, work, paths, site_free, fx })
 			}
 		}
 	}
 
 	## Release a static node id and its route.
 	free_id : Tx, U32 -> Tx
-	free_id = |{ cmds, next, free, routes, evals, paths, site_free, fx }, id| {
+	free_id = |{ cmds, next, free, routes, work, paths, site_free, fx }, id| {
 		routes2 = if (id.to_u64() < routes.len()) routes.set(id.to_u64(), NoRoute) ?? routes else routes
-		fx2 = if (fx.refs.any(|(_, i)| i == id)) { ..fx, refs: fx.refs.keep_if(|(_, i)| i != id) } else fx
-		{ cmds, next, free: free.append(id), routes: routes2, evals, paths, site_free, fx: fx2 }
+		fx2 = if ((fx.ref_pos.get(id.to_u64()) ?? 0) == 0) fx else Engine.drop_ref(fx, id)
+		{ cmds, next, free: free.append(id), routes: routes2, work, paths, site_free, fx: fx2 }
+	}
+
+	## Name `node` as focus reference `name`; a reference of the same name
+	## on another live node moves here (the later mount wins).
+	add_ref : Fx, Str, U32 -> Fx
+	add_ref = |fx, name, node| Engine.with_refs(
+		fx,
+		|refs, ref_pos| {
+			var $at = ref_pos
+			while $at.len() <= node.to_u64() {
+				$at = $at.append(0)
+			}
+			match refs.find_first_index(|(n, _)| n == name) {
+				Ok(i) => {
+					(_, old) = refs.get(i) ?? crash "internal: ref"
+					at2 = $at.set(old.to_u64(), 0) ?? crash "internal: ref"
+					(refs.set(i, (name, node)) ?? crash "internal: ref", at2.set(node.to_u64(), (i + 1).to_u32_wrap()) ?? crash "internal: ref")
+				}
+				Err(_) => {
+					n = refs.len() + 1
+					(refs.append((name, node)), $at.set(node.to_u64(), n.to_u32_wrap()) ?? crash "internal: ref")
+				}
+			}
+		},
+	)
+
+	## Forget the reference `node` carries: swap-remove it from `refs` and
+	## re-point the entry that moved.
+	drop_ref : Fx, U32 -> Fx
+	drop_ref = |fx, node| Engine.with_refs(
+		fx,
+		|refs, ref_pos| {
+			pos = (ref_pos.get(node.to_u64()) ?? 0).to_u64()
+			last = refs.len()
+			at1 = ref_pos.set(node.to_u64(), 0) ?? crash "internal: ref"
+			if pos == last {
+				(refs.drop_last(1), at1)
+			} else {
+				(lname, lnode) = refs.get(last - 1) ?? crash "internal: ref"
+				refs2 = (refs.set(pos - 1, (lname, lnode)) ?? crash "internal: ref").drop_last(1)
+				(refs2, at1.set(lnode.to_u64(), pos.to_u32_wrap()) ?? crash "internal: ref")
+			}
+		},
+	)
+
+	## Update the reference table with both lists moved out of `fx`, so
+	## they stay uniquely owned and update in place.
+	with_refs : Fx, (List((Str, U32)), List(U32) -> (List((Str, U32)), List(U32))) -> Fx
+	with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups }, f| {
+		(refs2, at2) = f(refs, ref_pos)
+		{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs: refs2, focus, ref_pos: at2, cleanups }
 	}
 
 	set_route : Tx, U32, List(U32), U32 -> Tx
-	set_route = |{ cmds, next, free, routes, evals, paths, site_free, fx }, id, path, handler| {
+	set_route = |{ cmds, next, free, routes, work, paths, site_free, fx }, id, path, handler| {
 		var $r = routes
 		while $r.len() <= id.to_u64() {
 			$r = $r.append(NoRoute)
 		}
-		{ cmds, next, free, routes: $r.set(id.to_u64(), Route(path, handler)) ?? $r, evals, paths, site_free, fx }
+		{ cmds, next, free, routes: $r.set(id.to_u64(), Route(path, handler)) ?? $r, work, paths, site_free, fx }
 	}
 
 	set_row_route : Tx, U32, U32, U32 -> Tx
-	set_row_route = |{ cmds, next, free, routes, evals, paths, site_free, fx }, id, site, slot| {
+	set_row_route = |{ cmds, next, free, routes, work, paths, site_free, fx }, id, site, slot| {
 		var $r = routes
 		while $r.len() <= id.to_u64() {
 			$r = $r.append(NoRoute)
 		}
-		{ cmds, next, free, routes: $r.set(id.to_u64(), RowOf(site, slot)) ?? $r, evals, paths, site_free, fx }
+		{ cmds, next, free, routes: $r.set(id.to_u64(), RowOf(site, slot)) ?? $r, work, paths, site_free, fx }
 	}
 
 	## Allocate an each-site id (template id).
 	alloc_site : Tx, List(U32) -> (U32, Tx)
-	alloc_site = |{ cmds, next, free, routes, evals, paths, site_free, fx }, path| {
+	alloc_site = |{ cmds, next, free, routes, work, paths, site_free, fx }, path| {
 		match site_free.last() {
-			Ok(s) => (s, { cmds, next, free, routes, evals, paths: paths.set(s.to_u64(), path) ?? crash "site", site_free: site_free.drop_last(1), fx })
+			Ok(s) => (s, { cmds, next, free, routes, work, paths: paths.set(s.to_u64(), path) ?? crash "site", site_free: site_free.drop_last(1), fx })
 			Err(_) => {
 				s = paths.len().to_u32_wrap()
-				(s, { cmds, next, free, routes, evals, paths: paths.append(path), site_free, fx })
+				(s, { cmds, next, free, routes, work, paths: paths.append(path), site_free, fx })
 			}
 		}
 	}
 
 	free_site : Tx, U32 -> Tx
-	free_site = |{ cmds, next, free, routes, evals, paths, site_free, fx }, s| {
-		{ cmds, next, free, routes, evals, paths: paths.set(s.to_u64(), []) ?? paths, site_free: site_free.append(s), fx }
+	free_site = |{ cmds, next, free, routes, work, paths, site_free, fx }, s| {
+		{ cmds, next, free, routes, work, paths: paths.set(s.to_u64(), []) ?? paths, site_free: site_free.append(s), fx }
 	}
 
+	## The deepest layer a mask can name: a component body nests at most 63
+	## layers below its prop (design.md, "Contexts and layers").
+	max_depth : U64
+	max_depth = 63
+
+	## A layer's bit in a read mask. Every layer is created through `layer`,
+	## which refuses a depth beyond `max_depth`, so this never wraps.
 	bit : U64 -> U64
 	bit = |depth| (1.U64).shl_wrap(depth.to_u8_wrap())
 
+	## The depth of a new layer below `depth`, at construction site `path`.
+	## Nesting deeper than `max_depth` is a resource limit, never a wrap.
+	layer : U64, List(U32) -> U64
+	layer = |depth, path| {
+		if depth >= Engine.max_depth {
+			crash "resource_limit: more than ${Engine.max_depth.to_str()} nested state, derive or each layers in one component at site ${Engine.show_path(path)}"
+		}
+		depth + 1
+	}
+
+	## The read-mask depth of a layer below `depth` (static reads, computed
+	## before mounting; the mount reports the same limit with its path).
+	layer_reads : U64 -> U64
+	layer_reads = |depth| {
+		if depth >= Engine.max_depth {
+			crash "resource_limit: more than ${Engine.max_depth.to_str()} nested state, derive or each layers in one component"
+		}
+		depth + 1
+	}
+
 	## All layers at or above `depth`.
 	upto : U64 -> U64
-	upto = |depth| Engine.bit(depth).shl_wrap(1) - 1
+	upto = |depth| if (depth >= 63) 0xFFFF_FFFF_FFFF_FFFF else Engine.bit(depth).shl_wrap(1) - 1
 
 	## ------------------------------------------------------------------
 	## Blocks: the static content of one non-each site, flattened at mount.
@@ -428,7 +578,7 @@ Engine := [].{
 		match elem {
 			Element(tag, attrs, kids) => {
 				(id, tx1) = Engine.alloc_id(tx)
-				tx2 = Engine.emit(tx1, |c| Engine.put_str(Engine.put_u32(Engine.put_u32(Engine.put_u32(c.append(8), id), parent), at), tag))
+				tx2 = Engine.emit_op(tx1, 8, |c| Engine.put_str(Engine.put_u32(Engine.put_u32(Engine.put_u32(c, id), parent), at), tag))
 				var $b = Engine.add_node(block, id, top)
 				var $t = tx2
 				for attr in attrs {
@@ -446,14 +596,14 @@ Engine := [].{
 			}
 			Text(s) => {
 				(id, tx1) = Engine.alloc_id(tx)
-				tx2 = Engine.emit(tx1, |c| Engine.put_str(Engine.put_u32(Engine.put_u32(Engine.put_u32(c.append(10), id), parent), at), s))
+				tx2 = Engine.emit_op(tx1, 10, |c| Engine.put_str(Engine.put_u32(Engine.put_u32(Engine.put_u32(c, id), parent), at), s))
 				(Engine.add_node(block, id, top), tx2)
 			}
 			TextV(v) => {
 				(id, tx1) = Engine.alloc_id(tx)
 				read = v.read
 				s = read(env)
-				tx2 = Engine.emit(Engine.count_evals(tx1, 1), |c| Engine.put_str(Engine.put_u32(Engine.put_u32(Engine.put_u32(c.append(10), id), parent), at), s))
+				tx2 = Engine.emit_op(Engine.count_evals(tx1, 1), 10, |c| Engine.put_str(Engine.put_u32(Engine.put_u32(Engine.put_u32(c, id), parent), at), s))
 				b1 = Engine.add_node(block, id, top)
 				(Engine.add_hole(b1, { node: id, mask: Engine.eff_mask(v), attr: "", read, last: s }), tx2)
 			}
@@ -468,19 +618,19 @@ Engine := [].{
 	mount_attr : Block(ctx), ctx, Attr(ctx), U32, List(U32), Tx -> (Block(ctx), Tx)
 	mount_attr = |block, env, attr, id, path, tx| {
 		match attr {
-			Static(name, value) => (block, Engine.emit(tx, |c| Engine.put_str(Engine.put_str(Engine.put_u32(c.append(9), id), name), value)))
+			Static(name, value) => (block, Engine.emit_op(Engine.count_attr(tx, name), 9, |c| Engine.put_str(Engine.put_str(Engine.put_u32(c, id), name), value)))
 			Dyn(name, v) => {
 				read = v.read
 				value = read(env)
-				tx1 = Engine.emit(Engine.count_evals(tx, 1), |c| Engine.put_str(Engine.put_str(Engine.put_u32(c.append(9), id), name), value))
+				tx1 = Engine.emit_op(Engine.count_attr(Engine.count_evals(tx, 1), name), 9, |c| Engine.put_str(Engine.put_str(Engine.put_u32(c, id), name), value))
 				(Engine.add_hole(block, { node: id, mask: Engine.eff_mask(v), attr: name, read, last: value }), tx1)
 			}
 			On(ev, handler) => {
 				h = block.handlers.len().to_u32_wrap()
-				tx1 = Engine.emit(tx, |c| Engine.put_str(Engine.put_u32(Engine.put_u32(c.append(11), id), h), ev))
+				tx1 = Engine.emit_op(tx, 11, |c| Engine.put_str(Engine.put_u32(Engine.put_u32(c, id), h), ev))
 				(Engine.add_handler(block, handler), Engine.set_route(tx1, id, path, h))
 			}
-			Ref(name) => (block, Engine.with_fx(tx, |fx| { ..fx, refs: fx.refs.keep_if(|(n, _)| n != name).append((name, id)) }))
+			Ref(name) => (block, Engine.with_fx(tx, |fx| Engine.add_ref(fx, name, id)))
 		}
 	}
 
@@ -540,9 +690,9 @@ Engine := [].{
 					$tx = t1
 				} else {
 					$tx = if attr.is_empty() {
-						Engine.emit(t1, |c| Engine.put_str(Engine.put_u32(c.append(12), node), v))
+						Engine.emit_op(t1, 12, |c| Engine.put_str(Engine.put_u32(c, node), v))
 					} else {
-						Engine.emit(t1, |c| Engine.put_str(Engine.put_str(Engine.put_u32(c.append(9), node), attr), v))
+						Engine.emit_op(Engine.count_attr(t1, attr), 9, |c| Engine.put_str(Engine.put_str(Engine.put_u32(c, node), attr), v))
 					}
 					$holes = list.set($i, { node, mask: m, attr, read, last: v }) ?? crash "hole"
 				}
@@ -621,7 +771,7 @@ Engine := [].{
 		}
 		if remove {
 			for id in tops {
-				$tx = Engine.emit($tx, |c| Engine.put_u32(c.append(5), id))
+				$tx = Engine.emit_op($tx, 5, |c| Engine.put_u32(c, id))
 			}
 		}
 		for id in nodes {
@@ -649,7 +799,7 @@ Engine := [].{
 					# changed) runs the Changed pass once the event has unwound.
 					(Engine.state_inst(s2, block, depth, local), Pending(next_outer, mask), tx)
 				} else {
-					(b3, t3) = Engine.refresh(block, In.{ outer: next_outer, value: s2 }, own, tx)
+					(b3, t3) = Engine.refresh(block, In.{ outer: next_outer, value: s2 }, own, Engine.bump(tx, Engine.w_dirty_roots, 1))
 					(Engine.state_inst(s2, b3, depth, local), Pending(next_outer, 0), t3)
 				}
 			}
@@ -710,7 +860,7 @@ Engine := [].{
 								(b2, t2) = Engine.refresh(block, env, mask, t1)
 								(Engine.when_inst(w, cur, adopted, b2), Done, t2)
 							} else {
-								(orph, t2) = Engine.dispose_block(block, env, True, t1)
+								(orph, t2) = Engine.dispose_block(block, env, True, Engine.bump(Engine.bump(t1, Engine.w_scopes_disposed, 1), Engine.w_scopes_created, 1))
 								elem = if (c) (w.yes)() else (w.no)()
 								(b3, t3) = Engine.mount_block(env, elem, w.depth, w.path, 0, w.anchor, { cap: w.cap, local: w.local }, Engine.fx_adopt(t2, w.path, orph))
 								(Engine.when_inst(w, c, adopted.concat(orph), b3), Done, t3)
@@ -742,8 +892,8 @@ Engine := [].{
 						}
 					}
 					Dispose(remove) => {
-						(orph, t1) = Engine.dispose_block(block, env, remove, tx)
-						t2 = if (remove) Engine.emit(t1, |c| Engine.put_u32(c.append(5), w.anchor)) else t1
+						(orph, t1) = Engine.dispose_block(block, env, remove, Engine.bump(tx, Engine.w_scopes_disposed, 1))
+						t2 = if (remove) Engine.emit_op(t1, 5, |c| Engine.put_u32(c, w.anchor)) else t1
 						(Engine.noop({}), Orphaned(adopted.concat(orph)), Engine.free_id(t2, w.anchor))
 					}
 				}
@@ -789,10 +939,12 @@ Engine := [].{
 	## Key index: open addressing Str key -> slot (linear probing, backward
 	## shift delete). `hs` holds the key hash, `vals` slot + 1 (0 = empty);
 	## keys are compared against the site's key column. Load factor <= 1/2.
-	KeyIndex : { hs : List(U64), vals : List(U32), count : U64, bits : U8 }
+	## `by_slot[slot]` is the hash of the key the slot holds, so removing a
+	## row never hashes its key again.
+	KeyIndex : { hs : List(U64), vals : List(U32), count : U64, bits : U8, by_slot : List(U64) }
 
 	index_empty : KeyIndex
-	index_empty = { hs: [], vals: [], count: 0, bits: 0 }
+	index_empty = { hs: [], vals: [], count: 0, bits: 0, by_slot: [] }
 
 	hash_str : Str -> U64
 	hash_str = |s| {
@@ -807,19 +959,28 @@ Engine := [].{
 	bucket = |h, bits| h.times_wrap(11400714819323198485).shr_zf_wrap(64 - bits)
 
 	index_find : KeyIndex, List(Str), Str, U64 -> Try(U32, [Missing])
-	index_find = |index, keys, key, h| {
+	index_find = |index, keys, key, h| Engine.index_probe(index, keys, key, h).found
+
+	## A lookup that also reports how many stored keys it compared with the
+	## probe in full (only entries whose hash matches are compared).
+	index_probe : KeyIndex, List(Str), Str, U64 -> { found : Try(U32, [Missing]), compares : U64 }
+	index_probe = |index, keys, key, h| {
 		if index.count == 0 {
-			return Err(Missing)
+			return { found: Err(Missing), compares: 0 }
 		}
 		mask = ((1.U64).shl_wrap(index.bits)) - 1
 		var $b = Engine.bucket(h, index.bits)
+		var $n = 0.U64
 		while True {
 			v = index.vals.get($b) ?? 0
 			if v == 0 {
-				return Err(Missing)
+				return { found: Err(Missing), compares: $n }
 			}
-			if (index.hs.get($b) ?? 0) == h and (keys.get((v - 1).to_u64()) ?? "") == key {
-				return Ok(v - 1)
+			if (index.hs.get($b) ?? 0) == h {
+				$n = $n + 1
+				if (keys.get((v - 1).to_u64()) ?? "") == key {
+					return { found: Ok(v - 1), compares: $n }
+				}
 			}
 			$b = ($b + 1).bitwise_and(mask)
 		}
@@ -836,7 +997,7 @@ Engine := [].{
 	}
 
 	grow : KeyIndex -> KeyIndex
-	grow = |{ hs, vals, count, bits }| {
+	grow = |{ hs, vals, count, bits, by_slot }| {
 		new_bits = if (bits == 0) 4 else bits + 1
 		size = (1.U64).shl_wrap(new_bits)
 		var $h = List.repeat(0.U64, size)
@@ -851,31 +1012,32 @@ Engine := [].{
 			}
 			$i = $i + 1
 		}
-		{ hs: $h, vals: $v, count, bits: new_bits }
+		{ hs: $h, vals: $v, count, bits: new_bits, by_slot }
 	}
 
-	## Insert a fresh key (the key column must already hold it at `slot`).
-	## A duplicate key is a contract error, never an alias.
-	index_insert : KeyIndex, List(Str), Str, U32, List(U32) -> KeyIndex
-	index_insert = |index, keys, key, slot, path| {
-		h = Engine.hash_str(key)
-		match Engine.index_find(index, keys, key, h) {
+	## Insert a fresh key (the key column must already hold it at `slot`)
+	## whose hash is `h`. A duplicate key is a contract error, never an
+	## alias. Also returns the full-key comparisons the duplicate check made.
+	index_insert : KeyIndex, List(Str), Str, U64, U32, List(U32) -> (KeyIndex, U64)
+	index_insert = |index, keys, key, h, slot, path| {
+		probe = Engine.index_probe(index, keys, key, h)
+		match probe.found {
 			Ok(_) => crash Engine.dup_key(path, key)
 			Err(Missing) => {}
 		}
 		grown = if ((index.count + 1) * 2 > (1.U64).shl_wrap(index.bits)) Engine.grow(index) else index
-		{ hs, vals, count, bits } = grown
+		{ hs, vals, count, bits, by_slot } = grown
 		r = Engine.raw_insert(hs, vals, bits, h, slot)
-		{ hs: r.hs, vals: r.vals, count: count + 1, bits }
+		({ hs: r.hs, vals: r.vals, count: count + 1, bits, by_slot: Engine.put_at(by_slot, slot.to_u64(), h) }, probe.compares)
 	}
 
-	index_remove : KeyIndex, U32, Str -> KeyIndex
-	index_remove = |{ hs, vals, count, bits }, slot, key| {
+	index_remove : KeyIndex, U32 -> KeyIndex
+	index_remove = |{ hs, vals, count, bits, by_slot }, slot| {
 		if count == 0 {
 			crash "internal: remove of missing key"
 		}
 		mask = ((1.U64).shl_wrap(bits)) - 1
-		h = Engine.hash_str(key)
+		h = by_slot.get(slot.to_u64()) ?? crash "internal: remove of missing key"
 		var $b = Engine.bucket(h, bits)
 		while (vals.get($b) ?? 0) != slot + 1 {
 			if (vals.get($b) ?? 0) == 0 {
@@ -900,7 +1062,7 @@ Engine := [].{
 			$j = ($j + 1).bitwise_and(mask)
 		}
 		$v = $v.set($hole, 0) ?? crash "index"
-		{ hs: $h, vals: $v, count: count - 1, bits }
+		{ hs: $h, vals: $v, count: count - 1, bits, by_slot }
 	}
 
 	## ------------------------------------------------------------------
@@ -913,7 +1075,9 @@ Engine := [].{
 	## site). `col` is the value column for text/attr holes whose value can
 	## change (none for row-constant holes), the handler index for clicks and
 	## the mount index for binds.
-	RHole(ctx) : { kind : U8, mask : U64, smask : U64, skey : (ctx -> Str), read : (ctx -> Str), col : U64, live : Bool }
+	## `ctl`: the work counter an attribute hole's updates also count in
+	## (`w_set_value`, `w_set_checked`), or 0.
+	RHole(ctx) : { kind : U8, mask : U64, smask : U64, skey : (ctx -> Str), read : (ctx -> Str), col : U64, live : Bool, ctl : U64 }
 
 	Plan(ctx) : {
 		tree : List(U8),
@@ -929,17 +1093,22 @@ Engine := [].{
 	plan_empty = |_| { tree: [], htab: [], holes: [], handlers: [], mounts: [], ncols: 0, kreads: 0 }
 
 	put_path : List(U8), U8, List(U8) -> List(U8)
-	put_path = |buf, kind, path| buf.append(kind).append(path.len().to_u8_wrap()).concat(path)
+	put_path = |buf, kind, path| buf.append(kind).append(Engine.narrow(path.len(), "nesting depth of a hole")).concat(path)
 
-	val_hole : Plan(ctx), U8, Val(ctx, Str), List(U8) -> Plan(ctx)
-	val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads }, kind, v, extra| {
+	## A count the template encoding carries in one byte (design.md, Appendix
+	## B). Beyond 255 it is a resource limit, never a wrap.
+	narrow : U64, Str -> U8
+	narrow = |n, what| if (n > 255) crash "resource_limit: a row template's ${what} is ${n.to_str()}; the template encoding allows at most 255" else n.to_u8_wrap()
+
+	val_hole : Plan(ctx), U8, Str, Val(ctx, Str), List(U8) -> Plan(ctx)
+	val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads }, kind, name, v, extra| {
 		{ mask, read, sel } = v
 		(smask, skey) = match sel {
 			NoSel => (0, |_| "")
 			Sel(m, k) => (m, k)
 		}
 		live = mask.bitwise_or(smask) != 0
-		hole = { kind, mask, smask, skey, read, col: if (live) ncols else 0, live }
+		hole = { kind, mask, smask, skey, read, col: if (live) ncols else 0, live, ctl: Engine.ctl_of(name) }
 		{ tree, htab: htab.concat(extra), holes: holes.append(hole), handlers, mounts, ncols: if (live) ncols + 1 else ncols, kreads }
 	}
 
@@ -959,7 +1128,7 @@ Engine := [].{
 				nstatic = $nstatic
 				var $p = plan
 				{ tree, htab, holes, handlers, mounts, ncols, kreads } = $p
-				var $tree = Engine.put_str(tree.append(1), tag).append(nstatic.to_u8_wrap())
+				var $tree = Engine.put_str(tree.append(1), tag).append(Engine.narrow(nstatic, "static attributes on one element"))
 				var $htab = htab
 				var $holes = holes
 				var $handlers = handlers
@@ -970,20 +1139,20 @@ Engine := [].{
 							$tree = Engine.put_str(Engine.put_str($tree, name), value)
 						}
 						Dyn(name, v) => {
-							r = Engine.val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, 2, v, Engine.put_str(Engine.put_path([], 2, path), name))
+							r = Engine.val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, 2, name, v, Engine.put_str(Engine.put_path([], 2, path), name))
 							$htab = $htab.concat(r.htab)
 							$holes = r.holes
 							$ncols = r.ncols
 						}
 						On(ev, handler) => {
-							$htab = Engine.put_str(Engine.put_path($htab, 3, path).append($handlers.len().to_u8_wrap()), ev)
-							$holes = $holes.append({ kind: 3, mask: 0, smask: 0, skey: |_| "", read: |_| "", col: $handlers.len(), live: False })
+							$htab = Engine.put_str(Engine.put_path($htab, 3, path).append(Engine.narrow($handlers.len(), "event handler count")), ev)
+							$holes = $holes.append({ kind: 3, mask: 0, smask: 0, skey: |_| "", read: |_| "", col: $handlers.len(), live: False, ctl: 0 })
 							$handlers = $handlers.append(handler)
 						}
 						Ref(_) => crash "contract: focus refs are not supported inside each rows (use one in a nested site)"
 					}
 				}
-				$tree = $tree.append(kids.len().to_u8_wrap())
+				$tree = $tree.append(Engine.narrow(kids.len(), "children of one element"))
 				$p = { tree: $tree, htab: $htab, holes: $holes, handlers: $handlers, mounts, ncols: $ncols, kreads }
 				var $i = 0.U8
 				for kid in kids {
@@ -999,11 +1168,11 @@ Engine := [].{
 			TextV(v) => {
 				{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
 				t2 = Engine.put_str(tree.append(2), "")
-				Engine.val_hole({ tree: t2, htab, holes, handlers, mounts, ncols, kreads }, 1, v, Engine.put_path([], 1, path))
+				Engine.val_hole({ tree: t2, htab, holes, handlers, mounts, ncols, kreads }, 1, "", v, Engine.put_path([], 1, path))
 			}
 			Site(m, rf) => {
 				{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
-				hole = { kind: 4, mask: 0, smask: 0, skey: |_| "", read: |_| "", col: mounts.len(), live: False }
+				hole = { kind: 4, mask: 0, smask: 0, skey: |_| "", read: |_| "", col: mounts.len(), live: False, ctl: 0 }
 				{ tree: Engine.put_str(tree.append(2), ""), htab: Engine.put_path(htab, 4, path), holes: holes.append(hole), handlers, mounts: mounts.append(m), ncols, kreads: kreads.bitwise_or(rf(depth)) }
 			}
 		}
@@ -1018,7 +1187,7 @@ Engine := [].{
 	}
 
 	template_bytes : Plan(ctx) -> List(U8)
-	template_bytes = |plan| plan.tree.append(plan.holes.len().to_u8_wrap()).concat(plan.htab)
+	template_bytes = |plan| plan.tree.append(Engine.narrow(plan.holes.len(), "hole count")).concat(plan.htab)
 
 	## ------------------------------------------------------------------
 	## The each site.
@@ -1103,7 +1272,12 @@ Engine := [].{
 	## mount its nested sites. Returns the slot.
 	create_row : EachCfg(r, item), Cols(r, item), (Str, item -> r), item, U32, Tx -> (Cols(r, item), U32, Tx)
 		where [item.is_eq : item, item -> Bool]
-	create_row = |cfg, cols, env, item, before, tx| {
+	create_row = |cfg, cols, env, item, before, tx| Engine.create_row_h(cfg, cols, env, item, before, Err(Unhashed), tx)
+
+	## `create_row` given the key's hash when a lookup already computed it.
+	create_row_h : EachCfg(r, item), Cols(r, item), (Str, item -> r), item, U32, Try(U64, [Unhashed]), Tx -> (Cols(r, item), U32, Tx)
+		where [item.is_eq : item, item -> Bool]
+	create_row_h = |cfg, cols, env, item, before, known_hash, tx| {
 		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes } = cols
 		key = (cfg.key)(item)
 		(slot, free2) = match free.last() {
@@ -1112,24 +1286,37 @@ Engine := [].{
 		}
 		si = slot.to_u64()
 		keys2 = Engine.put_at(keys, si, key)
-		index2 = Engine.index_insert(index, keys2, key, slot, cfg.path)
+		(h, hashed) = match known_hash {
+			Ok(kh) => (kh, 0)
+			Err(Unhashed) => (Engine.hash_str(key), 1)
+		}
+		(index2, key_compares) = Engine.index_insert(index, keys2, key, h, slot, cfg.path)
 		items2 = Engine.put_at(items, si, item)
 		pend2 = Engine.put_at(pend, si, 0)
 		(node, tx0) = Engine.alloc_id(tx)
 		rnodes2 = Engine.put_at(rnodes, si, node)
 		row_env = env(key, item)
-		{ cmds, next, free: idfree, routes, evals, paths, site_free, fx } = Engine.set_row_route(tx0, node, cfg.site, slot)
+		{ cmds, next, free: idfree, routes, work, paths, site_free, fx } = Engine.set_row_route(tx0, node, cfg.site, slot)
 		var $c = Engine.put_u32(Engine.put_u32(Engine.put_u32(Engine.put_u32(cmds.append(1), node), cfg.parent), before), cfg.site)
 		var $lasts = lasts
 		var $sels = sels
 		var $ev = 0.U64
-		var $t = { cmds: [], next, free: idfree, routes, evals, paths, site_free, fx }
+		# Control state carried by INST (attribute holes named value or
+		# checked) counts as set, like an ATTR would.
+		var $set_value = 0.U64
+		var $set_checked = 0.U64
+		var $t = { cmds: [], next, free: idfree, routes, work, paths, site_free, fx }
 		var $bound = []
 		var $hi = 0.U64
 		for hole in cfg.plan.holes {
 			if hole.kind == 1 or hole.kind == 2 {
 				v = (hole.read)(row_env)
 				$ev = $ev + 1
+				if hole.ctl == Engine.w_set_value {
+					$set_value = $set_value + 1
+				} else if hole.ctl == Engine.w_set_checked {
+					$set_checked = $set_checked + 1
+				}
 				$c = Engine.put_str($c, v)
 				if hole.live {
 					{ list, prev } = $lasts.replace(hole.col, []) ?? crash "lasts"
@@ -1147,8 +1334,11 @@ Engine := [].{
 			$hi = $hi + 1
 		}
 		known2 = known or cfg.sel_mask != 0
-		{ cmds: _, next: n3, free: f3, routes: r3, evals: e3, paths: p3, site_free: sf3, fx: fx3 } = $t
-		var $tx = { cmds: $c, next: n3, free: f3, routes: r3, evals: e3 + $ev, paths: p3, site_free: sf3, fx: fx3 }
+		{ cmds: _, next: n3, free: f3, routes: r3, work: w3, paths: p3, site_free: sf3, fx: fx3 } = $t
+		# One INST (a row and its scope created), its hole evaluations and the
+		# key hash of the index insert.
+		w4 = Engine.add_at(Engine.add_at(Engine.add_at(Engine.add_at(Engine.add_at(Engine.add_at(Engine.add_at(w3, 1, 1), Engine.w_evals, $ev), Engine.w_scopes_created, 1), Engine.w_key_hashes, hashed), Engine.w_key_compares, key_compares), Engine.w_set_value, $set_value), Engine.w_set_checked, $set_checked)
+		var $tx = { cmds: $c, next: n3, free: f3, routes: r3, work: w4, paths: p3, site_free: sf3, fx: fx3 }
 		if cfg.dynamic {
 			var $insts = []
 			var $km = kid_mask
@@ -1178,11 +1368,12 @@ Engine := [].{
 		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes } = cols
 		si = slot.to_u64()
 		key = keys.get(si) ?? crash "key"
-		index2 = Engine.index_remove(index, slot, key)
+		index2 = Engine.index_remove(index, slot)
 		pend2 = pend.set(si, 0) ?? pend
 		node = rnodes.get(si) ?? crash "internal: row node"
-		t0 = if (remove) Engine.emit(tx, |c| Engine.put_u32(c.append(5), node)) else tx
-		t1 = Engine.free_id(t0, node)
+		t0 = if (remove) Engine.emit_op(tx, 5, |c| Engine.put_u32(c, node)) else tx
+		# A row removed by reconciliation: its scope is disposed.
+		t1 = Engine.bump(Engine.bump(Engine.free_id(t0, node), Engine.w_rows_removed, 1), Engine.w_scopes_disposed, 1)
 		if cfg.dynamic {
 			{ list: kl, prev: row_kids } = kids.replace(si, []) ?? crash "kids"
 			{ list: bl, prev: row_binds } = binds.replace(si, []) ?? crash "binds"
@@ -1229,19 +1420,32 @@ Engine := [].{
 	}
 
 	## A kept row whose new item may differ: equal items are pruned here.
-	keep_row : Cols(r, item), U32, item, U64 -> Cols(r, item)
+	## Also counts the row in `rows_updated` when its item changed.
+	keep_row_tx : Cols(r, item), U32, item, U64, Tx -> (Cols(r, item), Tx)
 		where [item.is_eq : item, item -> Bool]
-	keep_row = |cols, slot, item, row_bit| {
+	keep_row_tx = |cols, slot, item, row_bit, tx| {
+		# Both the columns and the accumulator are rebuilt on every path: a
+		# value passed through unchanged on one path and rebuilt on another
+		# is treated as borrowed and copied (roc-lang/roc#12846).
+		(c2, updated) = Engine.keep_row_n(cols, slot, item, row_bit)
+		(c2, Engine.bump(tx, Engine.w_rows_updated, updated))
+	}
+
+	## A kept row whose new item may differ: equal items are pruned here.
+	## Returns 1 when the item changed (the row is marked dirty).
+	keep_row_n : Cols(r, item), U32, item, U64 -> (Cols(r, item), U64)
+		where [item.is_eq : item, item -> Bool]
+	keep_row_n = |cols, slot, item, row_bit| {
 		si = slot.to_u64()
 		same = match cols.items.get(si) {
 			Ok(old) => old == item
 			Err(_) => crash "item"
 		}
 		if same {
-			cols
+			(cols, 0)
 		} else {
 			{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes } = cols
-			Engine.mark({ items: items.set(si, item) ?? crash "item", keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes }, slot, row_bit)
+			(Engine.mark({ items: items.set(si, item) ?? crash "item", keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes }, slot, row_bit), 1)
 		}
 	}
 
@@ -1280,7 +1484,7 @@ Engine := [].{
 	## Release every live row's node id (the DOM goes with its parent).
 	free_rows : Cols(r, item), Tx -> Tx
 	free_rows = |cols, tx| {
-		var $tx = tx
+		var $tx = Engine.bump(tx, Engine.w_scopes_disposed, cols.order.len())
 		for slot in cols.order {
 			$tx = Engine.free_id($tx, Engine.node_of(cols, slot))
 		}
@@ -1290,15 +1494,15 @@ Engine := [].{
 	## Remove every row.
 	clear_rows : EachCfg(r, item), Cols(r, item), (Str, item -> r), Bool, Tx -> (Cols(r, item), Tx)
 	clear_rows = |cfg, cols, env, dom, tx| {
-		var $tx = tx
+		var $tx = Engine.bump(tx, Engine.w_scopes_disposed, cols.order.len())
 		var $dropped = []
 		if !dom {
 			{}
 		} else if cfg.sole {
-			$tx = Engine.emit($tx, |c| Engine.put_u32(Engine.put_u32(c.append(6), cfg.parent), cfg.site))
+			$tx = Engine.emit_op($tx, 6, |c| Engine.put_u32(Engine.put_u32(c, cfg.parent), cfg.site))
 		} else {
 			for slot in cols.order {
-				$tx = Engine.emit($tx, |c| Engine.put_u32(c.append(5), Engine.node_of(cols, slot)))
+				$tx = Engine.emit_op($tx, 5, |c| Engine.put_u32(c, Engine.node_of(cols, slot)))
 			}
 		}
 		for slot in cols.order {
@@ -1372,14 +1576,40 @@ Engine := [].{
 	## Keyed reconciliation of the site's rows against `list`. Fast paths:
 	## common prefix and suffix, swapped ends, pure insertion and pure
 	## removal; anything else falls back to a keyed move with an LIS.
+	## Reconcile and count the rows kept (`rows_reused`): the old rows that
+	## were not removed. Every reconciliation counts, including one whose new
+	## list is equal to the old: the engine keeps no previous list to prune
+	## by (design.md, "In-place ownership").
 	reconcile : EachCfg(r, item), Cols(r, item), (Str, item -> r), List(item), Tx -> (Cols(r, item), Tx)
 		where [item.is_eq : item, item -> Bool]
 	reconcile = |cfg, cols, env, list, tx| {
 		n_old = cols.order.len()
+		w0 = Engine.change_marks(tx)
+		(c2, t2) = Engine.reconcile_rows(cfg, cols, env, list, tx)
+		w2 = Engine.change_marks(t2)
+		# An equal new list (nothing created, moved, removed or changed)
+		# reconciled nothing and reuses nothing. The accumulator is rebuilt
+		# on both paths (roc-lang/roc#12846).
+		reused = if (w2 == w0) 0 else n_old - (w2.removed - w0.removed)
+		(c2, Engine.bump(t2, Engine.w_rows_reused, reused))
+	}
+
+	## The counters a reconciliation moves when the list changed: rows
+	## created, moved, removed, or kept with a changed item.
+	change_marks : Tx -> { created : U64, moved : U64, removed : U64, updated : U64 }
+	change_marks = |tx| {
+		w = tx.work
+		{ created: w.get(1) ?? 0, moved: w.get(4) ?? 0, removed: w.get(Engine.w_rows_removed) ?? 0, updated: w.get(Engine.w_rows_updated) ?? 0 }
+	}
+
+	reconcile_rows : EachCfg(r, item), Cols(r, item), (Str, item -> r), List(item), Tx -> (Cols(r, item), Tx)
+		where [item.is_eq : item, item -> Bool]
+	reconcile_rows = |cfg, cols, env, list, tx| {
+		n_old = cols.order.len()
 		n_new = list.len()
 		row_bit = Engine.bit(cfg.depth)
 		if n_new == 0 {
-			if (n_old == 0) (cols, tx) else Engine.clear_rows(cfg, cols, env, True, tx)
+			if (n_old == 0) (cols, tx) else Engine.clear_rows(cfg, cols, env, True, Engine.bump(tx, Engine.w_rows_removed, n_old))
 		} else if n_old == 0 {
 			Engine.append_rows(cfg, cols, env, list, 0, tx)
 		} else {
@@ -1396,7 +1626,9 @@ Engine := [].{
 					slot = $cols.order.get($i) ?? crash "order"
 					item = list.get($i) ?? crash "row"
 					if Engine.same_row(cfg, $cols, slot, item) {
-						$cols = Engine.keep_row($cols, slot, item, row_bit)
+						(c2, t2) = Engine.keep_row_tx($cols, slot, item, row_bit, $tx)
+						$cols = c2
+						$tx = t2
 						$i = $i + 1
 					} else {
 						$p = False
@@ -1408,7 +1640,9 @@ Engine := [].{
 					slot = $cols.order.get($oe - 1) ?? crash "order"
 					item = list.get($ne - 1) ?? crash "row"
 					if Engine.same_row(cfg, $cols, slot, item) {
-						$cols = Engine.keep_row($cols, slot, item, row_bit)
+						(c2, t2) = Engine.keep_row_tx($cols, slot, item, row_bit, $tx)
+						$cols = c2
+						$tx = t2
 						$oe = $oe - 1
 						$ne = $ne - 1
 					} else {
@@ -1426,8 +1660,11 @@ Engine := [].{
 						na = Engine.node_of($cols, a)
 						nb = Engine.node_of($cols, b)
 						after = Engine.ref_at(cfg, $cols, $oe)
-						$tx = Engine.emit($tx, |c| Engine.put_u32(Engine.put_u32(Engine.put_u32(Engine.put_u32(c.append(4), nb), na).append(4), na), after))
-						$cols = Engine.keep_row(Engine.keep_row($cols, b, first, row_bit), a, last, row_bit)
+						$tx = Engine.emit_op(Engine.emit_op($tx, 4, |c| Engine.put_u32(Engine.put_u32(c, nb), na)), 4, |c| Engine.put_u32(Engine.put_u32(c, na), after))
+						(c3, t3) = Engine.keep_row_tx($cols, b, first, row_bit, $tx)
+						(c4, t4) = Engine.keep_row_tx(c3, a, last, row_bit, t3)
+						$cols = c4
+						$tx = t4
 						(c2, order) = Engine.take_order($cols)
 						$cols = Engine.set_order(c2, order.swap($i, $oe - 1) ?? crash "order")
 						$i = $i + 1
@@ -1496,11 +1733,17 @@ Engine := [].{
 		# match new middle keys to existing slots
 		var $found = []
 		var $seen = List.repeat(False, nslots)
+		var $compares = 0.U64
+		var $hashes = []
 		$k = i
 		while $k < ne {
 			item = list.get($k) ?? crash "row"
 			key = (cfg.key)(item)
-			r = match Engine.index_find(cols.index, cols.keys, key, Engine.hash_str(key)) {
+			h = Engine.hash_str(key)
+			$hashes = $hashes.append(h)
+			probe = Engine.index_probe(cols.index, cols.keys, key, h)
+			$compares = $compares + probe.compares
+			r = match probe.found {
 				Ok(s) => {
 					if ($oldpos.get(s.to_u64()) ?? 0) == 0 {
 						crash Engine.dup_key(cfg.path, key)
@@ -1518,7 +1761,7 @@ Engine := [].{
 		}
 		# drop old middle rows that are gone
 		var $cols = cols
-		var $tx = tx
+		var $tx = Engine.bump(Engine.bump(tx, Engine.w_key_hashes, ne - i), Engine.w_key_compares, $compares)
 		$k = i
 		while $k < oe {
 			s = cols.order.get($k) ?? crash "order"
@@ -1545,7 +1788,7 @@ Engine := [].{
 			item = list.get($p) ?? crash "row"
 			f = $found.get(idx) ?? 0
 			if f == 0 {
-				(c2, slot, t2) = Engine.create_row(cfg, $cols, env, item, $ref, $tx)
+				(c2, slot, t2) = Engine.create_row_h(cfg, $cols, env, item, $ref, Ok($hashes.get(idx) ?? crash "internal: hash"), $tx)
 				$cols = c2
 				$tx = t2
 				$slots = $slots.set(idx, slot) ?? $slots
@@ -1555,9 +1798,11 @@ Engine := [].{
 				node = Engine.node_of($cols, slot)
 				if !(stable.get(idx) ?? False) {
 					r = $ref
-					$tx = Engine.emit($tx, |c| Engine.put_u32(Engine.put_u32(c.append(4), node), r))
+					$tx = Engine.emit_op($tx, 4, |c| Engine.put_u32(Engine.put_u32(c, node), r))
 				}
-				$cols = Engine.keep_row($cols, slot, item, row_bit)
+				(c4, t4) = Engine.keep_row_tx($cols, slot, item, row_bit, $tx)
+				$cols = c4
+				$tx = t4
 				$slots = $slots.set(idx, slot) ?? $slots
 				$ref = node
 			}
@@ -1637,7 +1882,7 @@ Engine := [].{
 					} else {
 						op = if (hole.kind == 1) 2 else 3
 						hidx = $hi.to_u8_wrap()
-						$tx = Engine.emit($tx, |c| Engine.put_str(Engine.put_u32(c.append(op), node).append(hidx), v))
+						$tx = Engine.emit_op(Engine.bump($tx, hole.ctl, 1), op, |c| Engine.put_str(Engine.put_u32(c, node).append(hidx), v))
 						$lasts = list.set(hole.col, prev.set(si, v) ?? crash "lasts") ?? crash "lasts"
 					}
 				}
@@ -1822,7 +2067,7 @@ Engine := [].{
 						(c1, t1) = if (remove or cfg.dynamic) Engine.clear_rows(cfg, cols, mk, remove, tx) else (cols, Engine.free_rows(cols, tx))
 						(_, orph) = Engine.take_dropped(c1, cfg.depth)
 						t2 = if !cfg.sole {
-							if (remove) Engine.free_id(Engine.emit(t1, |c| Engine.put_u32(c.append(5), cfg.anchor)), cfg.anchor) else Engine.free_id(t1, cfg.anchor)
+							if (remove) Engine.free_id(Engine.emit_op(t1, 5, |c| Engine.put_u32(c, cfg.anchor)), cfg.anchor) else Engine.free_id(t1, cfg.anchor)
 						} else t1
 						(Engine.noop({}), Orphaned(adopted.concat(orph)), Engine.free_site(t2, cfg.site))
 					}
@@ -1874,14 +2119,17 @@ Engine := [].{
 	state = |init, body| Site(
 		Mount(
 			|env, args, tx| {
-				depth = args.depth + 1
+				depth = Engine.layer(args.depth, args.path)
 				elem = body(Engine.state_handle(depth))
 				(block, tx1) = Engine.mount_block(In.{ outer: env, value: init }, elem, depth, args.path, args.parent, args.before, { cap: args.cap, local: args.local }, tx)
 				reads = block.reads
 				(Engine.state_inst(init, block, depth, args.local), reads, tx1)
 			},
 		),
-		|d| Engine.elem_reads(body(Engine.state_handle(d + 1)), d + 1).bitwise_and(Engine.bit(d + 1) - 1),
+		|d| {
+			d1 = Engine.layer_reads(d)
+			Engine.elem_reads(body(Engine.state_handle(d1)), d1).bitwise_and(Engine.bit(d1) - 1)
+		},
 	)
 
 	## A keyed list. The template runs once per site; rows are typed columns.
@@ -1890,18 +2138,18 @@ Engine := [].{
 	each = |rows, key, template| Site(
 		Mount(
 			|env, args, tx| {
-				depth = args.depth + 1
+				depth = Engine.layer(args.depth, args.path)
 				row_bit = Engine.bit(depth)
 				plan = Engine.compile(template(RowRef.{ depth }), depth)
 				(site, tx1) = Engine.alloc_site(tx, args.path)
 				tpl = Engine.template_bytes(plan)
-				tx2 = Engine.emit(tx1, |c| Engine.put_u32(Engine.put_u32(c.append(7), site), tpl.len().to_u32_wrap()).concat(tpl))
+				tx2 = Engine.emit_op(tx1, 7, |c| Engine.put_u32(Engine.put_u32(c, site), tpl.len().to_u32_wrap()).concat(tpl))
 				(anchor, tx3) = if args.sole {
 					(0, tx2)
 				} else {
 					(a, t) = Engine.alloc_id(tx2)
 					before = args.before
-					(a, Engine.emit(t, |c| Engine.put_str(Engine.put_u32(Engine.put_u32(Engine.put_u32(c.append(10), a), args.parent), before), "")))
+					(a, Engine.emit_op(t, 10, |c| Engine.put_str(Engine.put_u32(Engine.put_u32(Engine.put_u32(c, a), args.parent), before), "")))
 				}
 				var $om = 0.U64
 				var $sm = 0.U64
@@ -1923,7 +2171,10 @@ Engine := [].{
 				(Engine.each_inst(cfg, rows, [], cols), reads, tx4)
 			},
 		),
-		|d| Engine.eff_mask(rows).bitwise_or(Engine.elem_reads(template(RowRef.{ depth: d + 1 }), d + 1).bitwise_and(Engine.bit(d + 1) - 1)),
+		|d| {
+			d1 = Engine.layer_reads(d)
+			Engine.eff_mask(rows).bitwise_or(Engine.elem_reads(template(RowRef.{ depth: d1 }), d1).bitwise_and(Engine.bit(d1) - 1))
+		},
 	)
 
 	when : Val(ctx, Bool), (() -> Elem(ctx)), (() -> Elem(ctx)) -> Elem(ctx)
@@ -1932,10 +2183,10 @@ Engine := [].{
 			|env, args, tx| {
 				(anchor, tx1) = Engine.alloc_id(tx)
 				before = args.before
-				tx2 = Engine.emit(tx1, |c| Engine.put_str(Engine.put_u32(Engine.put_u32(Engine.put_u32(c.append(10), anchor), args.parent), before), ""))
+				tx2 = Engine.emit_op(tx1, 10, |c| Engine.put_str(Engine.put_u32(Engine.put_u32(Engine.put_u32(c, anchor), args.parent), before), ""))
 				c = (cond.read)(env)
 				elem = if (c) yes() else no()
-				(block, tx3) = Engine.mount_block(env, elem, args.depth, args.path, 0, anchor, { cap: args.cap, local: args.local }, Engine.count_evals(tx2, 1))
+				(block, tx3) = Engine.mount_block(env, elem, args.depth, args.path, 0, anchor, { cap: args.cap, local: args.local }, Engine.bump(Engine.count_evals(tx2, 1), Engine.w_scopes_created, 1))
 				# Listen to the condition, this branch, and what the other branch
 				# would read once mounted (or the cap, when the parent knows it).
 				reads = if args.cap != 0 {
@@ -1974,9 +2225,9 @@ Engine := [].{
 			|env, args, tx| {
 				(anchor, tx1) = Engine.alloc_id(tx)
 				before = args.before
-				tx2 = Engine.emit(tx1, |c| Engine.put_str(Engine.put_u32(Engine.put_u32(Engine.put_u32(c.append(10), anchor), args.parent), before), ""))
+				tx2 = Engine.emit_op(tx1, 10, |c| Engine.put_str(Engine.put_u32(Engine.put_u32(Engine.put_u32(c, anchor), args.parent), before), ""))
 				k = Engine.switch_value(sel, cases, env, args.path)
-				(block, tx3) = Engine.mount_block(env, body(k), args.depth, args.path, 0, anchor, { cap: args.cap, local: args.local }, Engine.count_evals(tx2, 1))
+				(block, tx3) = Engine.mount_block(env, body(k), args.depth, args.path, 0, anchor, { cap: args.cap, local: args.local }, Engine.bump(Engine.count_evals(tx2, 1), Engine.w_scopes_created, 1))
 				reads = if (args.cap != 0) args.cap else Engine.switch_reads(sel, cases, body, args.depth)
 				w = { sel, cases, body, anchor, depth: args.depth, path: args.path, cap: args.cap, local: args.local }
 				(Engine.switch_inst(w, k, [], block), reads, tx3)
@@ -2008,7 +2259,7 @@ Engine := [].{
 								(b2, t2) = Engine.refresh(block, env, mask, t1)
 								(Engine.switch_inst(w, cur, adopted, b2), Done, t2)
 							} else {
-								(orph, t2) = Engine.dispose_block(block, env, True, t1)
+								(orph, t2) = Engine.dispose_block(block, env, True, Engine.bump(Engine.bump(t1, Engine.w_scopes_disposed, 1), Engine.w_scopes_created, 1))
 								(b3, t3) = Engine.mount_block(env, (w.body)(k), w.depth, w.path, 0, w.anchor, { cap: w.cap, local: w.local }, Engine.fx_adopt(t2, w.path, orph))
 								(Engine.switch_inst(w, k, adopted.concat(orph), b3), Done, t3)
 							}
@@ -2039,8 +2290,8 @@ Engine := [].{
 						}
 					}
 					Dispose(remove) => {
-						(orph, t1) = Engine.dispose_block(block, env, remove, tx)
-						t2 = if (remove) Engine.emit(t1, |c| Engine.put_u32(c.append(5), w.anchor)) else t1
+						(orph, t1) = Engine.dispose_block(block, env, remove, Engine.bump(tx, Engine.w_scopes_disposed, 1))
+						t2 = if (remove) Engine.emit_op(t1, 5, |c| Engine.put_u32(c, w.anchor)) else t1
 						(Engine.noop({}), Orphaned(adopted.concat(orph)), Engine.free_id(t2, w.anchor))
 					}
 				}
@@ -2059,7 +2310,7 @@ Engine := [].{
 	derive = |input, body| Site(
 		Mount(
 			|env, args, tx| {
-				depth = args.depth + 1
+				depth = Engine.layer(args.depth, args.path)
 				v = (input.read)(env)
 				elem = body({ mask: Engine.bit(depth), read: |e| e.value, sel: NoSel })
 				(block, tx1) = Engine.mount_block(In.{ outer: env, value: v }, elem, depth, args.path, args.parent, args.before, { cap: args.cap, local: args.local }, Engine.count_evals(tx, 1))
@@ -2067,7 +2318,10 @@ Engine := [].{
 				(Engine.derive_inst(input, v, block, depth), reads, tx1)
 			},
 		),
-		|d| Engine.eff_mask(input).bitwise_or(Engine.elem_reads(body({ mask: Engine.bit(d + 1), read: |e| e.value, sel: NoSel }), d + 1).bitwise_and(Engine.bit(d + 1) - 1)),
+		|d| {
+			d1 = Engine.layer_reads(d)
+			Engine.eff_mask(input).bitwise_or(Engine.elem_reads(body({ mask: Engine.bit(d1), read: |e| e.value, sel: NoSel }), d1).bitwise_and(Engine.bit(d1) - 1))
+		},
 	)
 
 	derive_inst : Val(ctx, a), a, Block(In(ctx, a)), U64 -> Inst(ctx)
@@ -2185,7 +2439,7 @@ Engine := [].{
 					},
 				}
 				elem = body({ mask: 1, read: |e| e.prop, sel: NoSel }, out_handle)
-				(block, tx1) = Engine.mount_block(Comp.{ prop: v, out: [] }, elem, 0, args.path, args.parent, args.before, { cap: 0, local: True }, Engine.count_evals(tx, 1))
+				(block, tx1) = Engine.mount_block(Comp.{ prop: v, out: [] }, elem, 0, args.path, args.parent, args.before, { cap: 0, local: True }, Engine.bump(Engine.count_evals(tx, 1), Engine.w_scopes_created, 1))
 				(Engine.comp_inst(prop, snk, block), Engine.eff_mask(prop), tx1)
 			},
 		),
@@ -2223,7 +2477,7 @@ Engine := [].{
 						}
 					}
 					Dispose(remove) => {
-						(orph, t2) = Engine.dispose_block(block, Comp.{ prop: (prop.read)(env), out: [] }, remove, tx)
+						(orph, t2) = Engine.dispose_block(block, Comp.{ prop: (prop.read)(env), out: [] }, remove, Engine.bump(tx, Engine.w_scopes_disposed, 1))
 						(Engine.noop({}), Orphaned(Engine.lower_comp(orph, prop, snk)), t2)
 					}
 				}
@@ -2329,6 +2583,12 @@ Engine := [].{
 		Timer(U32),
 		Interval(U32),
 		Popstate,
+
+		## Subscriptions to the browser's connectivity (`online`/`offline`)
+		## and page visibility (`visibilitychange`). Each change delivers
+		## `Online(Bool)` or `Visible(Bool)`; the value at mount is in `Boot`.
+		OnlineChanges,
+		VisibilityChanges,
 		Self,
 		Push(Str),
 		Replace(Str),
@@ -2340,7 +2600,26 @@ Engine := [].{
 		StorageRemove(Str),
 	]
 
-	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Now, Refused]
+	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused]
+
+	## Why an HTTP request did not produce a successful response, as
+	## `http_text` reports it: the browser could not reach the server
+	## (`Network`, with the browser's message), the request's `timeout_ms`
+	## expired (`Timeout`), the server answered outside 2xx (`Status`), or
+	## the in-flight bound refused the request (`Refused`).
+	HttpError : [Network(Str), Timeout, Status(U16), Refused]
+
+	## An HTTP result as the body of a 2xx response or a typed failure.
+	## Any other result kind is a contract error: only an HTTP request's
+	## reaction receives HTTP results.
+	http_text : Res -> Try(Str, HttpError)
+	http_text = |res| match res {
+		Http({ status, body, .. }) => if (status >= 200 and status < 300) Ok(body) else Err(Status(status))
+		Network(message) => Err(Network(message))
+		Timeout => Err(Timeout)
+		Refused => Err(Refused)
+		_ => crash "contract: http_text was given a result that is not an HTTP result"
+	}
 
 	## Largest per-request HTTP timeout the host will arm (10 minutes).
 	max_timeout_ms : U32
@@ -2368,10 +2647,17 @@ Engine := [].{
 		## of the turn (op 1 focus, 2 blur, 3 select, ref name).
 		refs : List((Str, U32)),
 		focus : List((U8, Str)),
+
+		## `ref_pos[node]`: the node's position in `refs` plus one (0: the node
+		## carries no reference), so freeing a node id is O(1).
+		ref_pos : List(U32),
+
+		## `on_cleanup` runs, by name, in first-run order.
+		cleanups : List((Str, U64)),
 	}
 
 	fx_empty : Fx
-	fx_empty = { next: 1, inner: 2147483648, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, refs: [], focus: [] }
+	fx_empty = { next: 1, inner: 2147483648, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, refs: [], focus: [], ref_pos: [], cleanups: [] }
 
 	## The host node id that marks an event as an effect result.
 	fx_node : U32
@@ -2396,7 +2682,7 @@ Engine := [].{
 	EffectCfg(ctx, a) : { v : Val(ctx, a), plan : (a -> List(Req)), react : Reaction(ctx, a), path : List(U32) }
 
 	with_fx : Tx, (Fx -> Fx) -> Tx
-	with_fx = |{ cmds, next, free, routes, evals, paths, site_free, fx }, f| { cmds, next, free, routes, evals, paths, site_free, fx: f(fx) }
+	with_fx = |{ cmds, next, free, routes, work, paths, site_free, fx }, f| { cmds, next, free, routes, work, paths, site_free, fx: f(fx) }
 
 	fx_count : Tx, [Delivered, Stale] -> Tx
 	fx_count = |tx, k| Engine.with_fx(
@@ -2411,6 +2697,8 @@ Engine := [].{
 	is_sub = |req| match req {
 		Interval(_) => True
 		Popstate => True
+		OnlineChanges => True
+		VisibilityChanges => True
 		_ => False
 	}
 
@@ -2442,20 +2730,22 @@ Engine := [].{
 			Timer(ms) => Engine.put_u32(head.append(3), ms)
 			Interval(ms) => Engine.put_u32(head.append(4), ms)
 			Popstate => head.append(5)
+			OnlineChanges => head.append(6)
+			VisibilityChanges => head.append(7)
 			_ => crash "not an awaited request"
 		}
 	}
 
 	## Admit an awaited request (or refuse it when the table is full).
 	fx_admit : Tx, List(U32), Req -> (U32, Tx)
-	fx_admit = |{ cmds, next, free, routes, evals, paths, site_free, fx }, path, req| {
-		{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs, focus } = fx
+	fx_admit = |{ cmds, next, free, routes, work, paths, site_free, fx }, path, req| {
+		{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups } = fx
 		if live.len() >= max {
-			fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, refs, focus }
-			(id, { cmds, next, free, routes, evals, paths, site_free, fx: fx2 })
+			fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups }
+			(id, { cmds, next, free, routes, work, paths, site_free, fx: fx2 })
 		} else {
-			fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: Engine.is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, refs, focus }
-			(id, { cmds: Engine.put_req(cmds, id, req), next, free, routes, evals, paths, site_free, fx: fx2 })
+			fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: Engine.is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups }
+			(id, { cmds: Engine.put_req(cmds, id, req), next, free, routes, work: Engine.add_at(work, 13, 1), paths, site_free, fx: fx2 })
 		}
 	}
 
@@ -2474,10 +2764,10 @@ Engine := [].{
 		for req in reqs {
 			match req {
 				Push(url) => {
-					$tx = Engine.emit($tx, |c| Engine.put_str(c.append(15).append(1), url))
+					$tx = Engine.emit_op($tx, 15, |c| Engine.put_str(c.append(1), url))
 				}
 				Replace(url) => {
-					$tx = Engine.emit($tx, |c| Engine.put_str(c.append(15).append(2), url))
+					$tx = Engine.emit_op($tx, 15, |c| Engine.put_str(c.append(2), url))
 				}
 				Focus(n) => {
 					$tx = Engine.with_fx($tx, |fx| { ..fx, focus: fx.focus.append((1, n)) })
@@ -2489,13 +2779,13 @@ Engine := [].{
 					$tx = Engine.with_fx($tx, |fx| { ..fx, focus: fx.focus.append((3, n)) })
 				}
 				Title(t) => {
-					$tx = Engine.emit($tx, |c| Engine.put_str(c.append(17), t))
+					$tx = Engine.emit_op($tx, 17, |c| Engine.put_str(c, t))
 				}
 				StorageSet(k, v) => {
-					$tx = Engine.emit($tx, |c| Engine.put_str(Engine.put_str(c.append(16).append(1), k), v))
+					$tx = Engine.emit_op($tx, 16, |c| Engine.put_str(Engine.put_str(c.append(1), k), v))
 				}
 				StorageRemove(k) => {
-					$tx = Engine.emit($tx, |c| Engine.put_str(c.append(16).append(2), k))
+					$tx = Engine.emit_op($tx, 16, |c| Engine.put_str(c.append(2), k))
 				}
 				Self => {
 					(id, t1) = Engine.fx_follow($tx, path, Now)
@@ -2531,7 +2821,7 @@ Engine := [].{
 					$orph = $orph.append({ id, run: |e, r| (run(e, a, r), mask, 0) })
 				} else {
 					t1 = Engine.with_fx($tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id), cancelled: fx.cancelled + 1 })
-					$tx = Engine.emit(t1, |c| Engine.put_u32(c.append(14), id))
+					$tx = Engine.emit_op(t1, 14, |c| Engine.put_u32(c, id))
 				}
 			} else if $tx.fx.queue.any(|q| q.id == id) {
 				$tx = Engine.with_fx($tx, |fx| { ..fx, queue: fx.queue.keep_if(|q| q.id != id), stale: fx.stale + 1 })
@@ -2691,6 +2981,62 @@ Engine := [].{
 		|_| Engine.eff_mask(v),
 	)
 
+	## A named cleanup: when the scope this site is mounted in is disposed,
+	## `plan` turns the value `v` reads in that scope's last environment into
+	## requests, in the disposing turn. Only commands are allowed (history,
+	## title, storage writes, focus): a request that awaits a result would
+	## outlive its owner, so it is a contract error. Each run is counted by
+	## name (`expect-cleanup`). The site renders nothing and reads nothing
+	## while it is live.
+	on_cleanup : Str, Val(ctx, a), (a -> List(Req)) -> Elem(ctx)
+	on_cleanup = |name, v, plan| Site(
+		Mount(|_env, _args, tx| (Engine.cleanup_inst(name, v, plan), 0, tx)),
+		|_| 0,
+	)
+
+	## A cleanup that only counts its runs.
+	cleanup : Str -> Elem(ctx)
+	cleanup = |name| Engine.on_cleanup(name, Engine.const({}), |_| [])
+
+	cleanup_inst : Str, Val(ctx, a), (a -> List(Req)) -> Inst(ctx)
+	cleanup_inst = |name, v, plan| Inst(
+		|env, msg, tx| {
+			match msg {
+				Changed(_) => (Engine.cleanup_inst(name, v, plan), Done, tx)
+				Fire(_, _, _, _) => (Engine.cleanup_inst(name, v, plan), Pending(env, 0), tx)
+				Dispose(_) => {
+					reqs = plan((v.read)(env))
+					var $tx = Engine.bump(Engine.count_evals(tx, 1), Engine.w_cleanups, 1)
+					for req in reqs {
+						if Engine.is_command(req) {
+							(t2, _) = Engine.issue($tx, [], [req], {}, [])
+							$tx = t2
+						} else {
+							crash "contract: cleanup \"${name}\" asked for a request that awaits a result; a cleanup may only issue commands"
+						}
+					}
+					(Engine.noop({}), Orphaned([]), Engine.with_fx($tx, |fx| { ..fx, cleanups: Engine.count_name(fx.cleanups, name) }))
+				}
+			}
+		},
+	)
+
+	## Requests that are emitted and forgotten.
+	is_command : Req -> Bool
+	is_command = |req| match req {
+		Push(_) | Replace(_) | Title(_) | Focus(_) | Blur(_) | SelectText(_) | StorageSet(_, _) | StorageRemove(_) => True
+		_ => False
+	}
+
+	count_name : List((Str, U64)), Str -> List((Str, U64))
+	count_name = |runs, name| match runs.find_first_index(|(n, _)| n == name) {
+		Ok(i) => {
+			(_, k) = runs.get(i) ?? crash "internal: cleanup"
+			runs.set(i, (name, k + 1)) ?? crash "internal: cleanup"
+		}
+		Err(_) => runs.append((name, 1))
+	}
+
 	## Issue for the value at mount and on every change.
 	watch : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
@@ -2768,84 +3114,113 @@ Engine := [].{
 	fx_live : App -> List(U32)
 	fx_live = |a| a.tx.fx.live.map(|l| l.id)
 
-	## Decode a host result payload (see the command stream additions).
+	## Decode a host result payload (design.md, Appendix B). A payload that
+	## does not follow the encoding (unknown tag, truncated, trailing bytes,
+	## text that is not UTF-8) is a contract error: the host broke the
+	## protocol, and nothing is guessed.
 	decode_res : List(U8) -> Res
 	decode_res = |b| {
-		tag = b.first() ?? 0
-		text = |n| Str.from_utf8(b.drop_first(n)) ?? crash "effect result is not UTF-8"
+		tag = b.first() ?? crash "contract: empty effect result"
+		text = |n| Str.from_utf8(b.drop_first(n)) ?? crash "contract: effect result text is not UTF-8"
+		bare = |r| if (b.len() == 1) r else crash "contract: effect result tag ${tag.to_str()} carries unexpected bytes"
+		flag = || match b {
+			[_, 0] => Bool.False
+			[_, 1] => Bool.True
+			_ => crash "contract: effect result tag ${tag.to_str()} needs one byte 0 or 1"
+		}
 		if tag == 1 {
+			if b.len() < 7 {
+				crash "contract: truncated HTTP effect result"
+			}
 			status = (b.get(1) ?? 0).to_u16() + (b.get(2) ?? 0).to_u16().shl_wrap(8)
-			n = Engine.get_u32(b, 3).to_u64()
+			n = Engine.get_u32(b, 3, "HTTP effect result").to_u64()
 			var $at = 7.U64
 			var $hs = []
 			var $i = 0.U64
 			while $i < n {
-				(k, a1) = Engine.get_str(b, $at)
-				(v, a2) = Engine.get_str(b, a1)
+				(k, a1) = Engine.get_str(b, $at, "HTTP effect result")
+				(v, a2) = Engine.get_str(b, a1, "HTTP effect result")
 				$hs = $hs.append((k, v))
 				$at = a2
 				$i = $i + 1
 			}
 			Http({ status, headers: $hs, body: text($at) })
 		} else if tag == 7 {
-			Timeout
+			bare(Timeout)
 		} else if tag == 2 {
 			Network(text(1))
 		} else if tag == 3 {
 			Value(text(1))
 		} else if tag == 4 {
-			Missing
+			bare(Missing)
 		} else if tag == 5 {
-			Fired
+			bare(Fired)
 		} else if tag == 6 {
 			Location(text(1))
+		} else if tag == 8 {
+			Online(flag())
+		} else if tag == 9 {
+			Visible(flag())
 		} else {
-			crash "contract: unknown effect result tag"
+			crash "contract: unknown effect result tag ${tag.to_str()}"
 		}
 	}
 
-	## What the host knows before the first render: the URL and the declared
-	## storage keys' values (missing keys are absent).
-	Boot : { url : Str, storage : List((Str, Str)) }
+	## What the host knows before the first render: the URL, the declared
+	## storage keys' values (missing keys are absent), and whether the
+	## browser is online and the page visible.
+	Boot : { url : Str, storage : List((Str, Str)), online : Bool, visible : Bool }
 
-	get_u32 : List(U8), U64 -> U32
-	get_u32 = |b, at| {
-		b0 = (b.get(at) ?? crash "short boot").to_u32()
-		b1 = (b.get(at + 1) ?? crash "short boot").to_u32()
-		b2 = (b.get(at + 2) ?? crash "short boot").to_u32()
-		b3 = (b.get(at + 3) ?? crash "short boot").to_u32()
+	get_u32 : List(U8), U64, Str -> U32
+	get_u32 = |b, at, what| {
+		b0 = (b.get(at) ?? crash "contract: truncated ${what}").to_u32()
+		b1 = (b.get(at + 1) ?? crash "contract: truncated ${what}").to_u32()
+		b2 = (b.get(at + 2) ?? crash "contract: truncated ${what}").to_u32()
+		b3 = (b.get(at + 3) ?? crash "contract: truncated ${what}").to_u32()
 		b0 + b1.shl_wrap(8) + b2.shl_wrap(16) + b3.shl_wrap(24)
 	}
 
-	get_str : List(U8), U64 -> (Str, U64)
-	get_str = |b, at| {
-		n = Engine.get_u32(b, at).to_u64()
+	get_str : List(U8), U64, Str -> (Str, U64)
+	get_str = |b, at, what| {
+		n = Engine.get_u32(b, at, what).to_u64()
 		bytes = b.sublist({ start: at + 4, len: n })
 		if bytes.len() != n {
-			crash "short boot"
+			crash "contract: truncated ${what}"
 		}
-		(Str.from_utf8(bytes) ?? crash "boot is not UTF-8", at + 4 + n)
+		(Str.from_utf8(bytes) ?? crash "contract: ${what} text is not UTF-8", at + 4 + n)
 	}
 
-	## Boot bytes: url:str count:u32 (key:str value:str)*. Empty = no boot.
+	## Boot bytes: `url:str count:u32 (key:str value:str)* online:u8
+	## visible:u8`. Empty bytes mean no boot data (online and visible).
+	## Anything else that does not follow the encoding is a contract error.
 	decode_boot : List(U8) -> Boot
 	decode_boot = |b| {
 		if b.is_empty() {
-			{ url: "", storage: [] }
+			{ url: "", storage: [], online: Bool.True, visible: Bool.True }
 		} else {
-			(url, a1) = Engine.get_str(b, 0)
-			n = Engine.get_u32(b, a1).to_u64()
+			(url, a1) = Engine.get_str(b, 0, "boot bytes")
+			n = Engine.get_u32(b, a1, "boot bytes").to_u64()
 			var $at = a1 + 4
 			var $kv = []
 			var $i = 0.U64
 			while $i < n {
-				(k, a2) = Engine.get_str(b, $at)
-				(v, a3) = Engine.get_str(b, a2)
+				(k, a2) = Engine.get_str(b, $at, "boot bytes")
+				(v, a3) = Engine.get_str(b, a2, "boot bytes")
 				$kv = $kv.append((k, v))
 				$at = a3
 				$i = $i + 1
 			}
-			{ url, storage: $kv }
+			flag = |at| match b.get(at) {
+				Ok(0) => Bool.False
+				Ok(1) => Bool.True
+				_ => crash "contract: boot bytes end without online and visible flags (0 or 1)"
+			}
+			online = flag($at)
+			visible = flag($at + 1)
+			if b.len() != $at + 2 {
+				crash "contract: boot bytes carry ${(b.len() - $at - 2).to_str()} unexpected trailing bytes"
+			}
+			{ url, storage: $kv, online, visible }
 		}
 	}
 
@@ -2901,7 +3276,7 @@ Engine := [].{
 	App := { root : Inst(Root), tx : Tx }
 
 	new_tx : List(U8) -> Tx
-	new_tx = |cmds| { cmds, next: 1, free: [], routes: [], evals: 0, paths: [[]], site_free: [], fx: Engine.fx_empty }
+	new_tx = |cmds| { cmds, next: 1, free: [], routes: [], work: List.repeat(0, Engine.w_count), paths: [[]], site_free: [], fx: Engine.fx_empty }
 
 	## Mount the application under host node 0 (default effect bound).
 	mount : Elem(Root) -> App
@@ -2911,8 +3286,8 @@ Engine := [].{
 	## mount queued.
 	mount_with : U64, Elem(Root) -> App
 	mount_with = |max, elem| {
-		{ cmds, next, free, routes, evals, paths, site_free, fx } = Engine.new_tx([])
-		tx0 = { cmds, next, free, routes, evals, paths, site_free, fx: { ..fx, max } }
+		{ cmds, next, free, routes, work, paths, site_free, fx } = Engine.new_tx([])
+		tx0 = { cmds, next, free, routes, work, paths, site_free, fx: { ..fx, max } }
 		(block, tx) = Engine.mount_block(Root, elem, 0, [], 0, 0, { cap: 0, local: False }, tx0)
 		Engine.drain({ root: Engine.block_inst(block), tx: Engine.flush_focus(tx) })
 	}
@@ -2922,12 +3297,12 @@ Engine := [].{
 	## the same turn is found; a missing one is counted stale).
 	turn : App, List(U32), U32, Payload -> App
 	turn = |{ root, tx }, path, h, payload| {
-		(root2, out, tx2) = Engine.call(root, Root, Fire(path, 0, h, payload), tx)
+		(root2, out, tx2) = Engine.call(root, Root, Fire(path, 0, h, payload), Engine.bump(tx, Engine.w_turns, 1))
 		mask = Engine.out_mask(out)
 		if mask == 0 {
 			{ root: root2, tx: Engine.flush_focus(tx2) }
 		} else {
-			(root3, _, tx3) = Engine.call(root2, Root, Changed(mask), tx2)
+			(root3, _, tx3) = Engine.call(root2, Root, Changed(mask), Engine.bump(tx2, Engine.w_dirty_roots, Engine.popcount(mask)))
 			{ root: root3, tx: Engine.flush_focus(tx3) }
 		}
 	}
@@ -2943,7 +3318,7 @@ Engine := [].{
 			for (op, name) in reqs {
 				match $tx.fx.refs.find_first(|(n, _)| n == name) {
 					Ok((_, node)) => {
-						$tx = Engine.emit($tx, |c| Engine.put_u32(c.append(18).append(op), node))
+						$tx = Engine.emit_op($tx, 18, |c| Engine.put_u32(c.append(op), node))
 					}
 					Err(_) => {
 						$tx = Engine.with_fx($tx, |fx| { ..fx, stale: fx.stale + 1 })
@@ -3010,6 +3385,17 @@ Engine := [].{
 		}
 	}
 
+	popcount : U64 -> U64
+	popcount = |m| {
+		var $m = m
+		var $n = 0.U64
+		while $m != 0 {
+			$m = $m.bitwise_and($m - 1)
+			$n = $n + 1
+		}
+		$n
+	}
+
 	out_mask : Out(Root) -> U64
 	out_mask = |out| match out {
 		Pending(_, m) => m
@@ -3019,20 +3405,37 @@ Engine := [].{
 	## Hand the accumulated commands to the host and take a buffer back.
 	take_cmds : App, List(U8) -> (App, List(U8))
 	take_cmds = |{ root, tx }, buf| {
-		{ cmds, next, free, routes, evals, paths, site_free, fx } = tx
-		({ root, tx: { cmds: buf.clear(), next, free, routes, evals, paths, site_free, fx } }, cmds)
+		{ cmds, next, free, routes, work, paths, site_free, fx } = tx
+		({ root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, fx } }, cmds)
 	}
 
+	## Evaluations of app closures so far (work counter `w_evals`).
 	evals : App -> U64
-	evals = |a| a.tx.evals
+	evals = |a| a.tx.work.get(Engine.w_evals) ?? 0
 
-	## The host-facing program: the declared storage keys (read by the host
-	## before mount), mount once with the boot bytes, then one transaction
-	## per event or effect result.
+	## The work counters so far (design.md, "Work assertions"), indexed as
+	## the `w_` constants and opcodes describe.
+	work_counters : App -> List(U64)
+	work_counters = |a| a.tx.work
+
+	## The wire protocol version this engine speaks (design.md, Appendix B).
+	## The host exports it, the runtime refuses an instance whose version it
+	## does not implement, and the test oracle checks it too.
+	protocol_version : U32
+	protocol_version = 2
+
+	## The host-facing program: the protocol version, the declared storage
+	## keys (read by the host before mount), mount once with the boot bytes,
+	## then one transaction per event or effect result.
+	##
+	## Each call returns the state, the command batch and the work record
+	## (`work_bytes`). The caller lends both buffers back on the next call so
+	## they are reused in place.
 	Program(state) : {
+		version : U32,
 		keys : () -> List(U8),
-		init : List(U8) -> (state, List(U8)),
-		event : state, List(U8), U32, U32, List(U8) -> (state, List(U8)),
+		init : List(U8) -> (state, List(U8), List(U8)),
+		event : state, List(U8), List(U8), U32, U32, List(U8) -> (state, List(U8), List(U8)),
 	}
 
 	program : (() -> Elem(Root)) -> Program(App)
@@ -3040,6 +3443,7 @@ Engine := [].{
 
 	program_boot : { storage_keys : List(Str), max_inflight : U64 }, (Boot -> Elem(Root)) -> Program(App)
 	program_boot = |cfg, view| {
+		version: Engine.protocol_version,
 		keys: || {
 			var $b = Engine.put_u32([], cfg.storage_keys.len().to_u32_wrap())
 			for k in cfg.storage_keys {
@@ -3047,16 +3451,46 @@ Engine := [].{
 			}
 			$b
 		},
-		init: |boot| Engine.take_cmds(Engine.mount_with(cfg.max_inflight, view(Engine.decode_boot(boot))), []),
-		event: |inst, buf, node, handler, payload| {
+		init: |boot| Engine.finish(Engine.mount_with(cfg.max_inflight, view(Engine.decode_boot(boot))), [], []),
+		event: |inst, buf, wbuf, node, handler, payload| {
 			{ root, tx } = inst
-			{ cmds: _, next, free, routes, evals: ev, paths, site_free, fx } = tx
-			fresh = { root, tx: { cmds: buf.clear(), next, free, routes, evals: ev, paths, site_free, fx } }
+			{ cmds: _, next, free, routes, work, paths, site_free, fx } = tx
+			fresh = { root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, fx } }
 			if node == Engine.fx_node {
-				Engine.take_cmds(Engine.result(fresh, handler, Engine.decode_res(payload)), [])
+				Engine.finish(Engine.result(fresh, handler, Engine.decode_res(payload)), [], wbuf)
 			} else {
-				Engine.take_cmds(Engine.event(fresh, node, handler, Str.from_utf8(payload) ?? crash "contract: event payload is not UTF-8"), [])
+				Engine.finish(Engine.event(fresh, node, handler, Str.from_utf8(payload) ?? crash "contract: event payload is not UTF-8"), [], wbuf)
 			}
 		},
 	}
+
+	## Hand over the command batch (taking `buf` in its place) and write the
+	## work record into `wbuf`.
+	finish : App, List(U8), List(U8) -> (App, List(U8), List(U8))
+	finish = |inst, buf, wbuf| {
+		w = Engine.work_bytes(inst, wbuf)
+		(a2, cmds) = Engine.take_cmds(inst, buf)
+		(a2, cmds, w)
+	}
+
+	## The work record (design.md, Appendix B): `count:u32 (counter:u64)*`
+	## in `w_` index order, then `n:u32 (name:str runs:u64)*` for the
+	## cleanups that have run. Written into `buf`, which is cleared first.
+	work_bytes : App, List(U8) -> List(U8)
+	work_bytes = |inst, buf| {
+		counters = inst.tx.work
+		var $b = Engine.put_u32(buf.clear(), counters.len().to_u32_wrap())
+		for v in counters {
+			$b = Engine.put_u64($b, v)
+		}
+		runs = inst.tx.fx.cleanups
+		$b = Engine.put_u32($b, runs.len().to_u32_wrap())
+		for (name, k) in runs {
+			$b = Engine.put_u64(Engine.put_str($b, name), k)
+		}
+		$b
+	}
+
+	put_u64 : List(U8), U64 -> List(U8)
+	put_u64 = |buf, v| Engine.put_u32(Engine.put_u32(buf, v.to_u32_wrap()), v.shr_zf_wrap(32).to_u32_wrap())
 }

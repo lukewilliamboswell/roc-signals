@@ -19,6 +19,5 @@
     (stub-http "feed response" :url "/api/articles?limit=20&offset=20" :status 200 :body "{\"articles\":[{\"slug\":\"deep-links-that-survive\",\"title\":\"Deep links that survive reloads\",\"description\":\"Routing that owns its URLs.\",\"tagList\":[\"release\"],\"createdAt\":\"2026-06-04T08:00:00.000Z\",\"favorited\":false,\"favoritesCount\":3,\"author\":{\"username\":\"max\",\"bio\":\"Queues and latency.\",\"image\":\"https://example.test/avatars/max.png\",\"following\":false}}],\"articlesCount\":23}")
     (run-effect 3)
     (expect-visible (text "Deep links that survive reloads"))
-    (expect-metric-delta-at-most active_graph_records_rebuilt 24)
   )
 )

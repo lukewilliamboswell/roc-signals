@@ -9,7 +9,7 @@ import ts.SpecRunner
 import ConduitApp
 
 ## Conduit, native spec runner: `main-test spec [--filter GLOB]
-## [--emit-steps] [--pending-phase3] specs/*.scm`.
+## [--emit-steps] specs/*.scm`.
 target = Target.cli({ name: "conduit-specs", main!: |args| SpecRunner.main!(ConduitApp.program, io, args) })
 
 io : SpecRunner.Io

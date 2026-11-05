@@ -430,6 +430,12 @@ class Page {
     return this.keyboard.type(text);
   }
 
+  // Replace the focused control's selection with `text` as one real input
+  // event (`insertText`), as Playwright's `fill` does.
+  insertText(text) {
+    return this.send("Input.insertText", { text });
+  }
+
   async closeTarget() {
     this.conn.off(this.sessionId);
     await this.conn.send("Target.closeTarget", { targetId: this.targetId });

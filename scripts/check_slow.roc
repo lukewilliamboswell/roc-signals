@@ -12,7 +12,7 @@ import src/Slow
 ## allocation baseline (the native soak walks and the bench transactions),
 ## and a long session of every app in Chrome.
 main! = |_args| {
-	o = Checks.options!({ pending_phase3: Bool.True, filter: "*" })?
+	o = Checks.options!({ filter: "*" })?
 	problems = Slow.soak!(o)?
 	Slow.finish!("check-slow", problems)
 }
