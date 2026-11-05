@@ -12,6 +12,9 @@
 // mode when the spec's setup asks for `manual-effects`: `stub-http` stages an
 // answer and `run-effect N` answers the N-th awaited request the app issued.
 // History, title and storage assertions read the real browser state.
+// `local-storage-unavailable` makes `window.localStorage` throw, as a browser
+// with site data disabled does; storage assertions then read the real store
+// underneath, so they confirm nothing was written.
 //
 // Intervals tick only through `tick-interval` (the runtime's manual
 // intervals), and connectivity and visibility change only through
@@ -373,12 +376,12 @@ async function step(page, s, state) {
       return;
     }
     case "expect-local-storage": {
-      const got = await page.evaluate((k) => localStorage.getItem(k), s.key);
+      const got = await page.evaluate((k) => (window.__localStorage ?? localStorage).getItem(k), s.key);
       if (got !== s.text) throw new Error(`local storage ${s.key} = ${JSON.stringify(got)}, expected ${JSON.stringify(s.text)}`);
       return;
     }
     case "expect-no-local-storage": {
-      const got = await page.evaluate((k) => localStorage.getItem(k), s.key);
+      const got = await page.evaluate((k) => (window.__localStorage ?? localStorage).getItem(k), s.key);
       if (got !== null) throw new Error(`local storage ${s.key} is present`);
       return;
     }
@@ -403,15 +406,17 @@ async function step(page, s, state) {
 }
 
 function setupOf(spec) {
-  const out = { location: "/index.html", storage: [], manual: false, online: true, visibility: "visible" };
+  const out = { location: "/index.html", storage: [], storageAvailable: true, manual: false, online: true, visibility: "visible" };
   for (const s of spec.setup) {
     if (s.op === "initial-location") out.location = s.text;
     else if (s.op === "local-storage") out.storage.push([s.key, s.text]);
+    else if (s.op === "local-storage-unavailable") out.storageAvailable = false;
     else if (s.op === "manual-effects") out.manual = true;
     else if (s.op === "initial-online") out.online = s.text === "online";
     else if (s.op === "initial-visibility") out.visibility = s.text;
     else throw new Unsupported(`setup ${s.op}: unsupported in this runner yet`);
   }
+  if (!out.storageAvailable && out.storage.length) throw new Error("local-storage seeds storage that local-storage-unavailable says the app cannot read");
   return out;
 }
 
@@ -462,10 +467,19 @@ for (const spec of specs) {
     const setup = setupOf(spec);
     await page.evaluateOnNewDocument(fs.readFileSync(files["locate.js"], "utf8"));
     await page.evaluateOnNewDocument(
-      (storage, manual, online, visibility) => {
+      (storage, storageAvailable, manual, online, visibility) => {
         if (!sessionStorage.getItem("__seeded")) {
           for (const [k, v] of storage) localStorage.setItem(k, v);
           sessionStorage.setItem("__seeded", "1");
+        }
+        if (!storageAvailable) {
+          window.__localStorage = localStorage;
+          Object.defineProperty(window, "localStorage", {
+            get: () => {
+              throw new DOMException("The operation is insecure.", "SecurityError");
+            },
+            configurable: true,
+          });
         }
         if (manual) window.__manualFx = true;
         if (!online) Object.defineProperty(navigator, "onLine", { get: () => false, configurable: true });
@@ -475,6 +489,7 @@ for (const spec of specs) {
         }
       },
       setup.storage,
+      setup.storageAvailable,
       setup.manual,
       setup.online,
       setup.visibility,

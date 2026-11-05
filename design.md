@@ -720,6 +720,15 @@ Whether the browser is online and the page visible is part of the boot bytes
 `visibilitychange` events. Like every subscription they are scoped: disposing
 their site stops them.
 
+### Storage availability
+
+Whether local storage can be used at all is part of the boot bytes too
+(`Boot.storage_available`). The runtime reports it unavailable when there is
+no `localStorage`, reaching it throws, or reading a declared key throws (as in
+a browser with site data disabled); the boot storage is then empty rather than
+partial, and storage writes persist nothing. Availability is fixed for the
+instance, so an app that promises reloads survive can say when they will not.
+
 ### Target effects
 
 **Target:** further browser services, each as a request kind or subscription
@@ -882,7 +891,8 @@ stubs), and a list of steps written against the rendered UI:
   pending effects.
 - **Effects** — `manual-effects`, `stub-http` and `run-effect N` (answer the
   N-th awaited non-subscription request in issue order), interval ticks,
-  `set-visibility`, `set-online`.
+  `set-visibility`, `set-online`; in setup, `initial-online`,
+  `initial-visibility`, `local-storage` and `local-storage-unavailable`.
 - **Work** — `mark-metrics`, `expect-metric-delta`,
   `expect-metric-delta-at-most`, `expect-updates`, `expect-cleanup`,
   `expect-interval`.
@@ -950,6 +960,8 @@ The browser runner holds intervals for `tick-interval` (they never fire on
 their own during a replay) and drives `set-online` and `set-visibility` by
 overriding `navigator.onLine` and `document.visibilityState` and dispatching
 the browser's own events, so the runtime's real listeners are exercised.
+`local-storage-unavailable` makes `window.localStorage` throw before the app
+loads; seeding storage in the same setup is a spec error in both runners.
 `fill` is Playwright's `fill`: the whole value arrives as one `input` event in
 both runners. `real-click` is Chrome's click: `mousedown`, focus moves (the
 press's default action), `mouseup`, `click`, then the default action — a
@@ -1078,7 +1090,7 @@ the context a value or handler is used in.
 # Program entry
 program : (() -> Elem(Root)) -> Program(App)
 program_boot : { storage_keys : List(Str), max_inflight : U64 }, (Boot -> Elem(Root)) -> Program(App)
-Boot : { url : Str, storage : List((Str, Str)), online : Bool, visible : Bool }
+Boot : { url : Str, storage : List((Str, Str)), online : Bool, visible : Bool, storage_available : Bool }
 Program(state) : { version : U32, keys : () -> List(U8),
                    init : List(U8) -> (state, List(U8), List(U8)),
                    event : state, List(U8), List(U8), U32, U32, List(U8) -> (state, List(U8), List(U8)) }
@@ -1161,7 +1173,7 @@ Appendix B entry.
 All integers are little-endian. `u32` ids. `str` is `u32` byte length followed
 by UTF-8 bytes. `rest` is the remaining bytes of a payload as UTF-8.
 
-This appendix is protocol version **2**. The engine declares it
+This appendix is protocol version **3**. The engine declares it
 (`Engine.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
@@ -1174,7 +1186,7 @@ The platform provides (`platform/main.roc`):
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (2) |
+| `roc_engine_version` | `() -> u32` | The protocol version (3) |
 | `roc_engine_keys` | `() -> List(U8)` | Declared storage keys: `count:u32 (key:str)*` |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Box(Instance), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One transaction: state, recycled command buffer, recycled work buffer, node, handler, payload |
@@ -1211,12 +1223,13 @@ allocations since reset; that is a measurement probe, not protocol.
 
 1. `boot_keys()`; read `count:u32 (key:str)*`.
 2. Read each key from storage; stage the boot bytes with `payload_reserve`:
-   `url:str count:u32 (key:str value:str)* online:u8 visible:u8`, listing
-   only keys that exist. `url` is `pathname + search + hash`; `online` is
-   `navigator.onLine` and `visible` is `document.visibilityState !=
-   "hidden"`, each `0` or `1`. Empty boot bytes mean no boot data (online and
-   visible). Anything else that does not follow this layout is a `contract`
-   fault.
+   `url:str count:u32 (key:str value:str)* online:u8 visible:u8
+   storage:u8`, listing only keys that exist. `url` is `pathname + search +
+   hash`; `online` is `navigator.onLine`, `visible` is
+   `document.visibilityState != "hidden"`, and `storage` is whether local
+   storage is available (no key/value pairs when it is not), each `0` or `1`.
+   Empty boot bytes mean no boot data (online, visible, storage available).
+   Anything else that does not follow this layout is a `contract` fault.
 3. `init()`; apply the mount batch.
 
 ### Work record

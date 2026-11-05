@@ -37,7 +37,7 @@ Bench := [].{
 	storage = [{ key: "conduit.jwt", value: "jwt.conduit.kim" }, { key: "conduit.username", value: "kim" }]
 
 	boot : Engine.Boot
-	boot = { url: Bench.url, storage: Bench.storage.map(|{ key, value }| (key, value)), online: Bool.True, visible: Bool.True }
+	boot = { url: Bench.url, storage: Bench.storage.map(|{ key, value }| (key, value)), online: Bool.True, visible: Bool.True, storage_available: Bool.True }
 
 	start_from : Engine.App, List(U8) -> SpecRunner.S(Engine.App)
 	start_from = |a, c| SpecRunner.adopt(a, c, Bench.url, Bench.storage)

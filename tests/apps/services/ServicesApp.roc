@@ -6,7 +6,8 @@ import pf.Html
 ## - A running clock (`when`) owns a 1 s interval and a named cleanup whose
 ##   run sets the document title.
 ## - While the page is visible a 5 s poll interval is live; connectivity and
-##   visibility are shown from boot and kept current by subscriptions.
+##   visibility are shown from boot and kept current by subscriptions, and
+##   whether local storage is available is shown from boot.
 ## - A radio group, a checkbox and a button that logs mouse and focus events
 ##   (real clicks); a form whose submit counts; two selects, one with
 ##   options mounted by an `each`; and a fetch whose result is shown as text
@@ -17,6 +18,7 @@ ServicesApp := [].{
 	S : {
 		online : Bool,
 		visible : Bool,
+		storage_available : Bool,
 		running : Bool,
 		ticks : U64,
 		polls : U64,
@@ -38,6 +40,7 @@ ServicesApp := [].{
 	initial = |boot| {
 		online: boot.online,
 		visible: boot.visible,
+		storage_available: boot.storage_available,
 		running: False,
 		ticks: 0,
 		polls: 0,
@@ -90,6 +93,7 @@ ServicesApp := [].{
 				),
 				Html.p_v(v.map(|s| if (s.online) "online" else "offline"), [Engine.test_id("online")]),
 				Html.p_v(v.map(|s| if (s.visible) "visible" else "hidden"), [Engine.test_id("visible")]),
+				Html.p_v(v.map(|s| if (s.storage_available) "storage available" else "storage unavailable"), [Engine.test_id("storage")]),
 				Engine.when(
 					v.map(|s| s.visible),
 					|| Engine.element("span", [], [Engine.watch(Engine.const({}), |_| [Interval(5000)], st.on_result(|s, _, _| { ..s, polls: s.polls + 1 }))]),

@@ -72,7 +72,7 @@ sync! = |st, name, body| {
 
 bench! : {} => Fuzz.Outcome
 bench! = |_| {
-	view = NotesApp.main_with(Notes.initial(Notes.stored_notes(storage.map(|{ key, value }| (key, value))), Bool.True))
+	view = NotesApp.main_with(Notes.initial(Notes.stored_notes(storage.map(|{ key, value }| (key, value))), Bool.True), Bool.True)
 	w = Fuzz.start_measure!("mount")
 	(a0, c0) = Engine.take_cmds(Engine.mount(view), [])
 	_ = w.finish!()

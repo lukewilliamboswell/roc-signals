@@ -243,6 +243,16 @@ Notes := {}.{
 			Err(_) => []
 		}
 
+	## The hint under the toolbar: whether notes survive a reload depends on
+	## the browser letting the app use local storage at all.
+	storage_notice : Bool -> Str
+	storage_notice = |available|
+		if available {
+			"Notes are restored from local storage on reload"
+		} else {
+			"Local storage is unavailable, so nothing survives a reload"
+		}
+
 	## --- transitions ---
 	free_slot : List(Note), U64 -> U64
 	free_slot = |notes, candidate|
@@ -499,6 +509,10 @@ Notes := {}.{
 
 	## An empty outbox still reads as a plural count rather than a special sentence.
 	expect Notes.outbox_text([]) == "0 notes waiting to sync"
+
+	## The storage hint tells the truth about reloads either way.
+	expect Notes.storage_notice(True) == "Notes are restored from local storage on reload"
+	expect Notes.storage_notice(False) == "Local storage is unavailable, so nothing survives a reload"
 
 	count_status : List(Row), Notes.Status -> U64
 	count_status = |rows, status| rows.keep_if(|row| row.status == status).len()

@@ -13,8 +13,9 @@
 // A `submit` event that reaches the mount root is always default-prevented:
 // forms are app-managed and never navigate the page.
 //
-// Boot bytes carry the URL, the declared storage values, and whether the
-// browser is online and the page visible; the `OnlineChanges` and
+// Boot bytes carry the URL, the declared storage values, whether the browser
+// is online and the page visible, and whether local storage is available at
+// all (it is not when reaching or reading it throws); the `OnlineChanges` and
 // `VisibilityChanges` subscriptions (FX kinds 6 and 7) report later changes.
 //
 // Ingress: events raised while a batch is applied are queued, at most
@@ -43,7 +44,7 @@
 // other than "" and "false".
 
 // The wire protocol version this runtime implements (design.md, Appendix B).
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
@@ -288,7 +289,8 @@ export class RocEngineRuntime {
   }
 
   // Boot: check the protocol version, read the app's declared storage keys,
-  // stage the URL, their values and the online and visibility flags, then
+  // stage the URL, their values and the online, visibility and storage
+  // flags, then
   // mount. A module that speaks another protocol is refused before anything
   // runs: the runtime throws and never applies a command it cannot read.
   mount() {
@@ -314,21 +316,25 @@ export class RocEngineRuntime {
       keys.push(readStr(u8, at + 4, n));
       at += 4 + n;
     }
+    // Storage is unavailable when there is none or any read throws; then
+    // the app boots with no stored values rather than some of them.
+    let storageOk = !!this.storage && typeof this.storage.getItem === "function";
     const pairs = [];
     for (const k of keys) {
-      let v = null;
+      if (!storageOk) break;
       try {
-        v = this.storage ? this.storage.getItem(k) : null;
+        const v = this.storage.getItem(k);
+        if (v !== null) pairs.push([k, v]);
       } catch (_) {
-        v = null;
+        storageOk = false;
       }
-      if (v !== null) pairs.push([k, v]);
     }
+    if (!storageOk) pairs.length = 0;
     const loc = this.win ? this.win.location : null;
     const url = loc ? loc.pathname + loc.search + loc.hash : "";
     const parts = [encStr(url), u32(pairs.length)];
     for (const [k, v] of pairs) parts.push(encStr(k), encStr(v));
-    parts.push(new Uint8Array([this.isOnline() ? 1 : 0, this.isVisible() ? 1 : 0]));
+    parts.push(new Uint8Array([this.isOnline() ? 1 : 0, this.isVisible() ? 1 : 0, storageOk ? 1 : 0]));
     this.stage(concat(parts));
     this.busy = true;
     try {

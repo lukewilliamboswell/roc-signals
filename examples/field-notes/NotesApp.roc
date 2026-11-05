@@ -135,8 +135,8 @@ NotesApp := [].{
 		),
 	)
 
-	page : State(C3, Notes.Board), State(C3, Bool), Val(C3, List(Notes.Row)) -> Elem(C3)
-	page = |board, hide_synced, rows| {
+	page : Bool, State(C3, Notes.Board), State(C3, Bool), Val(C3, List(Notes.Row)) -> Elem(C3)
+	page = |storage_available, board, hide_synced, rows| {
 		bv = board.val()
 		online = bv.map(|b| b.online)
 		auto = bv.map(|b| b.auto)
@@ -187,7 +187,7 @@ NotesApp := [].{
 								),
 							],
 						),
-						Html.p_attrs("Notes are restored from local storage on reload", [Engine.class("hint"), Engine.test_id("storage-notice")]),
+						Html.p_attrs(Notes.storage_notice(storage_available), [Engine.class("hint"), Engine.test_id("storage-notice")]),
 					],
 				),
 				Html.section(
@@ -259,16 +259,18 @@ NotesApp := [].{
 	program = Engine.program_boot({ storage_keys: [Notes.notes_key], max_inflight: 32 }, NotesApp.main)
 
 	main : Engine.Boot -> Elem(Root)
-	main = |boot| NotesApp.main_with(Notes.initial(Notes.stored_notes(boot.storage), boot.online))
+	main = |boot| NotesApp.main_with(Notes.initial(Notes.stored_notes(boot.storage), boot.online), boot.storage_available)
 
-	main_with : Notes.Board -> Elem(Root)
-	main_with = |board0| Engine.state(
+	## The page over a board at mount, and whether local storage is available
+	## (fixed for the session: the browser reports it at boot).
+	main_with : Notes.Board, Bool -> Elem(Root)
+	main_with = |board0, storage_available| Engine.state(
 		board0,
 		|board| Engine.state(
 			False,
 			|hide| {
 				b = board.lift()
-				Engine.derive(b.val().map(Notes.board_rows), |rows| NotesApp.page(b.lift(), hide.lift(), rows))
+				Engine.derive(b.val().map(Notes.board_rows), |rows| NotesApp.page(storage_available, b.lift(), hide.lift(), rows))
 			},
 		),
 	)

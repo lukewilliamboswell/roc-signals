@@ -1,6 +1,6 @@
 // services-browser.mjs --wasm services.wasm --runtime runtime.mjs --chrome PATH
-// -- runtime and host contract cases for the protocol additions of version 2
-// with tests/apps/services in headless Chrome:
+// -- runtime and host contract cases for the protocol additions of versions 2
+// and 3 with tests/apps/services in headless Chrome:
 // - the protocol version: the host reports it and the runtime refuses any
 //   other version before running anything;
 // - malformed boot bytes and a non-UTF-8 effect result poison the instance
@@ -10,6 +10,8 @@
 // - a submit is default-prevented (no navigation);
 // - the boot bytes carry connectivity and visibility, and the subscriptions
 //   follow the browser's `online`/`offline` and `visibilitychange` events;
+// - the boot bytes say whether local storage is available: a page whose
+//   `localStorage` throws boots with the storage flag clear;
 // - a <select> re-applies its value when options are inserted or change;
 // - the work record: `metric(16 + k)` and `workRecord()` agree, and count
 //   the commands the batch applied.
@@ -86,7 +88,7 @@ async function open(prelude = "") {
     } catch (_) {
       out.boot = [x1.fault(), text(x1).split(" ").slice(0, 3).join(" ")];
     }
-    // Boot bytes without the online and visible flags.
+    // Boot bytes without the online, visible and storage flags.
     const x2 = await fresh();
     x2.boot_keys();
     const p2 = x2.payload_reserve(8);
@@ -114,10 +116,10 @@ async function open(prelude = "") {
     const x4 = await fresh();
     x4.boot_keys();
     const url = new TextEncoder().encode("/#limit-children");
-    const boot = new Uint8Array(4 + url.length + 4 + 2);
+    const boot = new Uint8Array(4 + url.length + 4 + 3);
     new DataView(boot.buffer).setUint32(0, url.length, true);
     boot.set(url, 4);
-    boot.set([1, 1], boot.length - 2);
+    boot.set([1, 1, 1], boot.length - 3);
     const p4 = x4.payload_reserve(boot.length);
     new Uint8Array(x4.memory.buffer, p4, boot.length).set(boot);
     try {
@@ -131,9 +133,17 @@ async function open(prelude = "") {
   check("host reports the protocol version the runtime implements", raw.version[0], raw.version[1]);
   check("a module of another protocol is refused before it runs", raw.refused, [true, 0]);
   check("truncated boot bytes: contract fault", raw.boot, [1, "contract: truncated boot"]);
-  check("boot bytes without flags: contract fault", raw.flags, [1, "contract: boot bytes end without online and visible flags (0 or 1)"]);
+  check("boot bytes without flags: contract fault", raw.flags, [1, "contract: boot bytes end without online, visible and storage flags (0 or 1)"]);
   check("non-UTF-8 effect result: contract fault", raw.utf8, [1, "contract: effect result text is not UTF-8"]);
   check("a row template with 256 children: resource_limit fault", raw.wide, [2, "resource_limit: a row template's children of one element is 256; the template encoding allows at most 255"]);
+  await ctx.close();
+}
+
+// A page whose localStorage throws, as with site data disabled.
+{
+  const { page, ctx } = await open("Object.defineProperty(window, 'localStorage', { get: () => { throw new DOMException('denied', 'SecurityError'); }, configurable: true })");
+  const got = await page.evaluate(() => document.querySelector('[data-testid="storage"]').textContent);
+  check("boot carries storage availability (localStorage throws)", got, "storage unavailable");
   await ctx.close();
 }
 
@@ -157,6 +167,7 @@ async function open(prelude = "") {
   const { page, ctx } = await open("Object.defineProperty(navigator, 'onLine', { get: () => false, configurable: true })");
   const text = (id) => page.evaluate((id) => document.querySelector(`[data-testid="${id}"]`).textContent, id);
   check("boot carries connectivity (booted offline)", await text("online"), "offline");
+  check("boot carries storage availability (available)", await text("storage"), "storage available");
   await page.evaluate(() => {
     Object.defineProperty(navigator, "onLine", { get: () => true, configurable: true });
     window.dispatchEvent(new Event("online"));

@@ -3245,9 +3245,12 @@ Engine := [].{
 	}
 
 	## What the host knows before the first render: the URL, the declared
-	## storage keys' values (missing keys are absent), and whether the
-	## browser is online and the page visible.
-	Boot : { url : Str, storage : List((Str, Str)), online : Bool, visible : Bool }
+	## storage keys' values (missing keys are absent), whether the browser is
+	## online and the page visible, and whether local storage is available at
+	## all. When it is not (storage disabled, or every access throws), the
+	## storage list is empty and `StorageSet`/`StorageRemove` do not persist,
+	## so an app that relies on reloads surviving can say so.
+	Boot : { url : Str, storage : List((Str, Str)), online : Bool, visible : Bool, storage_available : Bool }
 
 	get_u32 : List(U8), U64, Str -> U32
 	get_u32 = |b, at, what| {
@@ -3269,12 +3272,13 @@ Engine := [].{
 	}
 
 	## Boot bytes: `url:str count:u32 (key:str value:str)* online:u8
-	## visible:u8`. Empty bytes mean no boot data (online and visible).
-	## Anything else that does not follow the encoding is a contract error.
+	## visible:u8 storage:u8`. Empty bytes mean no boot data (online, visible,
+	## storage available). Anything else that does not follow the encoding is
+	## a contract error.
 	decode_boot : List(U8) -> Boot
 	decode_boot = |b| {
 		if b.is_empty() {
-			{ url: "", storage: [], online: Bool.True, visible: Bool.True }
+			{ url: "", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }
 		} else {
 			(url, a1) = Engine.get_str(b, 0, "boot bytes")
 			n = Engine.get_u32(b, a1, "boot bytes").to_u64()
@@ -3291,14 +3295,15 @@ Engine := [].{
 			flag = |at| match b.get(at) {
 				Ok(0) => Bool.False
 				Ok(1) => Bool.True
-				_ => crash "contract: boot bytes end without online and visible flags (0 or 1)"
+				_ => crash "contract: boot bytes end without online, visible and storage flags (0 or 1)"
 			}
 			online = flag($at)
 			visible = flag($at + 1)
-			if b.len() != $at + 2 {
-				crash "contract: boot bytes carry ${(b.len() - $at - 2).to_str()} unexpected trailing bytes"
+			storage_available = flag($at + 2)
+			if b.len() != $at + 3 {
+				crash "contract: boot bytes carry ${(b.len() - $at - 3).to_str()} unexpected trailing bytes"
 			}
-			{ url, storage: $kv, online, visible }
+			{ url, storage: $kv, online, visible, storage_available }
 		}
 	}
 
@@ -3508,7 +3513,7 @@ Engine := [].{
 	## The host exports it, the runtime refuses an instance whose version it
 	## does not implement, and the test oracle checks it too.
 	protocol_version : U32
-	protocol_version = 2
+	protocol_version = 3
 
 	## The host-facing program: the protocol version, the declared storage
 	## keys (read by the host before mount), mount once with the boot bytes,

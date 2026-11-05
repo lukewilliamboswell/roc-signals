@@ -61,6 +61,10 @@ Scm := [].{
 		InitialVisibility(Visibility),
 		InitialOnline(Online),
 		LocalStorage({ key : Str, value : Str }),
+
+		## Local storage cannot be used at all: every access throws, as in a
+		## browser with site data disabled.
+		LocalStorageUnavailable,
 		SessionStorage({ key : Str, value : Str }),
 		SeedHttp({ label : Str, stub : Stub }),
 	]
@@ -503,6 +507,9 @@ Scm := [].{
 			InitialOnline(Scm.online(Scm.arg(Scm.arity(form, args, 1)?, 0))?)
 		} else if head == "local-storage" {
 			LocalStorage(Scm.key_value(form, args)?)
+		} else if head == "local-storage-unavailable" {
+			_ = Scm.arity(form, args, 0)?
+			LocalStorageUnavailable
 		} else if head == "session-storage" {
 			SessionStorage(Scm.key_value(form, args)?)
 		} else if head == "stub-http" or head == "stub-http-reject" {
@@ -929,6 +936,7 @@ Scm := [].{
 			InitialVisibility(v) => ("initial-visibility", [JsonOut.field("text", Text(Scm.visibility_name(v)))])
 			InitialOnline(o) => ("initial-online", [JsonOut.field("text", Text(Scm.online_name(o)))])
 			LocalStorage({ key, value }) => ("local-storage", [JsonOut.field("key", Text(key)), JsonOut.field("text", Text(value))])
+			LocalStorageUnavailable => ("local-storage-unavailable", [])
 			SessionStorage({ key, value }) => ("session-storage", [JsonOut.field("key", Text(key)), JsonOut.field("text", Text(value))])
 			SeedHttp(fixture) => (if (Scm.is_reject(fixture.stub)) "stub-http-reject" else "stub-http", Scm.stub_fields(fixture))
 		}
@@ -1037,6 +1045,13 @@ expect {
 		\\steps: [Fill(Label("Email"), "a@example.com"), RealClick(Role({ name: "Save", role: "button" })), ExpectText(TestId("status"), "Saved"), ExpectMetricDelta({ delta: 2, metric: "rows_reused" })]
 		\\first step at: { column: 5, line: 8 }
 	actual == expected
+}
+
+## `local-storage-unavailable` takes no arguments.
+expect {
+	spec = Scm.parse("(test \"s\" (setup (local-storage-unavailable)) (steps (expect-visible (text \"x\"))))")?
+	bad = Scm.parse("(test \"s\" (setup (local-storage-unavailable \"k\")) (steps (expect-visible (text \"x\"))))")
+	spec.setup.map(|s| s.item) == [LocalStorageUnavailable] and bad.is_err()
 }
 
 ## Escapes decode, and quotes and backslashes may appear in names.

@@ -66,6 +66,7 @@ SpecRunner := [].{
 		storage : List({ key : Str, value : Str }),
 		online : Bool,
 		visible : Bool,
+		storage_available : Bool,
 		pending : List({ id : U32, url : Str, body : Str }),
 		issued : List(U32),
 		subs : List({ id : U32, sub : Sub }),
@@ -149,14 +150,14 @@ SpecRunner := [].{
 	flag_byte = |b| if (b) 1 else 0
 
 	## Boot bytes: `url:str count:u32 (key:str value:str)* online:u8
-	## visible:u8`, declared keys that hold a value only.
-	encode_boot : Str, List({ key : Str, value : Str }), Bool, Bool -> List(U8)
-	encode_boot = |url, kvs, online, visible| {
+	## visible:u8 storage:u8`, declared keys that hold a value only.
+	encode_boot : Str, List({ key : Str, value : Str }), { online : Bool, visible : Bool, storage_available : Bool } -> List(U8)
+	encode_boot = |url, kvs, { online, visible, storage_available }| {
 		var $b = SpecRunner.put_u32(SpecRunner.put_str([], url), kvs.len().to_u32_wrap())
 		for { key, value } in kvs {
 			$b = SpecRunner.put_str(SpecRunner.put_str($b, key), value)
 		}
-		$b.append(SpecRunner.flag_byte(online)).append(SpecRunner.flag_byte(visible))
+		$b.append(SpecRunner.flag_byte(online)).append(SpecRunner.flag_byte(visible)).append(SpecRunner.flag_byte(storage_available))
 	}
 
 	## An HTTP result payload: tag 1, `status:u16 n:u32 (name:str value:str)* body:rest`.
@@ -253,7 +254,7 @@ SpecRunner := [].{
 	## that calls the engine directly), at `url` with `storage`.
 	adopt : state, List(U8), Str, List({ key : Str, value : Str }) -> S(state)
 	adopt = |inst, cmds, url, storage| {
-		browser = { loc: url, back: [], fwd: [], title: "", storage, online: Bool.True, visible: Bool.True, pending: [], issued: [], subs: [], stubs: [] }
+		browser = { loc: url, back: [], fwd: [], title: "", storage, online: Bool.True, visible: Bool.True, storage_available: Bool.True, pending: [], issued: [], subs: [], stubs: [] }
 		s0 = { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 19), writes: [], mark: [], focused: 0, deferred: NoValue }
 		SpecRunner.take_batch(s0, inst, cmds)
 	}
@@ -278,8 +279,9 @@ SpecRunner := [].{
 				Cancel(id) => { ..b, pending: b.pending.keep_if(|p| p.id != id), subs: b.subs.keep_if(|x| x.id != id) }
 				Push(url) => { ..b, back: b.back.append(b.loc), loc: url, fwd: [] }
 				Replace(url) => { ..b, loc: url }
-				Set(k, v) => { ..b, storage: SpecRunner.set_store(b.storage, k, v) }
-				Remove(k) => { ..b, storage: b.storage.keep_if(|kv| kv.key != k) }
+				# Writes to unavailable storage fail in the browser and persist nothing.
+				Set(k, v) => if (b.storage_available) { ..b, storage: SpecRunner.set_store(b.storage, k, v) } else b
+				Remove(k) => if (b.storage_available) { ..b, storage: b.storage.keep_if(|kv| kv.key != k) } else b
 				Title(t) => { ..b, title: t }
 				Focus(_, _) => b
 			}
@@ -297,6 +299,7 @@ SpecRunner := [].{
 		var $storage = []
 		var $online = Bool.True
 		var $visible = Bool.True
+		var $storage_available = Bool.True
 		for entry in spec.setup {
 			match entry.item {
 				ManualEffects => {}
@@ -312,23 +315,29 @@ SpecRunner := [].{
 				InitialVisibility(v) => {
 					$visible = v == Visible
 				}
+				LocalStorageUnavailable => {
+					$storage_available = Bool.False
+				}
 				other => return Err("unsupported in this engine: setup ${Str.inspect(other)}")
 			}
 		}
-		Ok(SpecRunner.mount_in(program, { url: $url, storage: $storage, online: $online, visible: $visible }))
+		if !$storage_available and !$storage.is_empty() {
+			return Err("local-storage seeds storage that local-storage-unavailable says the app cannot read")
+		}
+		Ok(SpecRunner.mount_in(program, { url: $url, storage: $storage, online: $online, visible: $visible, storage_available: $storage_available }))
 	}
 
 	## Mount the app at `url` with `storage` as local storage; the app's
 	## declared keys that hold a value become its boot storage.
 	mount : Program(state), Str, List({ key : Str, value : Str }) -> S(state)
-	mount = |program, url, storage| SpecRunner.mount_in(program, { url, storage, online: Bool.True, visible: Bool.True })
+	mount = |program, url, storage| SpecRunner.mount_in(program, { url, storage, online: Bool.True, visible: Bool.True, storage_available: Bool.True })
 
-	mount_in : Program(state), { url : Str, storage : List({ key : Str, value : Str }), online : Bool, visible : Bool } -> S(state)
-	mount_in = |program, { url, storage, online, visible }| {
+	mount_in : Program(state), { url : Str, storage : List({ key : Str, value : Str }), online : Bool, visible : Bool, storage_available : Bool } -> S(state)
+	mount_in = |program, { url, storage, online, visible, storage_available }| {
 		declared = SpecRunner.decode_keys((program.keys)())
 		boot_kvs = declared.keep_oks(|k| storage.find_first(|kv| kv.key == k))
-		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_boot(url, boot_kvs, online, visible))
-		browser = { loc: url, back: [], fwd: [], title: "", storage, online, visible, pending: [], issued: [], subs: [], stubs: [] }
+		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_boot(url, boot_kvs, { online, visible, storage_available }))
+		browser = { loc: url, back: [], fwd: [], title: "", storage, online, visible, storage_available, pending: [], issued: [], subs: [], stubs: [] }
 		s0 = { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 19), writes: [], mark: [], focused: 0, deferred: NoValue }
 		SpecRunner.take(s0, inst, cmds, wbuf)
 	}
@@ -936,8 +945,8 @@ SpecRunner := [].{
 }
 
 ## Wire encoding: strings are length-prefixed, integers little-endian, and
-## the boot bytes end with the online and visible flags.
-expect SpecRunner.encode_boot("/a", [{ key: "k", value: "v" }], Bool.False, Bool.True) == [2, 0, 0, 0, '/', 'a', 1, 0, 0, 0, 1, 0, 0, 0, 'k', 1, 0, 0, 0, 'v', 0, 1]
+## the boot bytes end with the online, visible and storage flags.
+expect SpecRunner.encode_boot("/a", [{ key: "k", value: "v" }], { online: Bool.False, visible: Bool.True, storage_available: Bool.False }) == [2, 0, 0, 0, '/', 'a', 1, 0, 0, 0, 1, 0, 0, 0, 'k', 1, 0, 0, 0, 'v', 0, 1, 0]
 
 ## An HTTP result carries status, headers and the body as the rest.
 expect SpecRunner.encode_http(422, [{ name: "a", value: "b" }], "x") == [1, 0xA6, 0x01, 1, 0, 0, 0, 1, 0, 0, 0, 'a', 1, 0, 0, 0, 'b', 'x']
