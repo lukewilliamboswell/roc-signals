@@ -31,7 +31,7 @@ Bench := [].{
 	tags_json : Str
 	tags_json = "{\"tags\":[\"signals\",\"roc\",\"webdev\"]}"
 
-	url = "/roc-signals/examples-web/conduit/#/"
+	url = "/roc-signals/examples/conduit/#/"
 
 	storage : List({ key : Str, value : Str })
 	storage = [{ key: "conduit.jwt", value: "jwt.conduit.kim" }, { key: "conduit.username", value: "kim" }]

@@ -44,7 +44,7 @@ bench! = |n| {
 	_ = Bench.expect_visible($st, Role({ role: "button", name: "Unfavorite Article ${Bench.mid(n).to_str()} (${(Bench.mid(n) % 5 + 1).to_str()})" }))
 	(tn, th) = Bench.click_target($st, Role({ role: "link", name: "signals" }))
 	$st = measured!($st, "tag-click", |a| Engine.event(a, tn, th, ""))
-	if $st.browser.loc != "/roc-signals/examples-web/conduit/#/?tag=signals" {
+	if $st.browser.loc != "/roc-signals/examples/conduit/#/?tag=signals" {
 		crash "bench: tag click went to ${$st.browser.loc}"
 	}
 	Fuzz.keep
@@ -91,7 +91,7 @@ answer = |s0| {
 }
 
 home : Str
-home = "/roc-signals/examples-web/conduit/#/"
+home = "/roc-signals/examples/conduit/#/"
 
 cycle : List(Scm.Op)
 cycle = [Click(Role({ role: "link", name: "Sign in" })), Click(Role({ role: "link", name: "Home" }))]

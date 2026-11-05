@@ -3,7 +3,7 @@
     (manual-effects)
     (local-storage "conduit.jwt" "jwt.conduit.kim")
     (local-storage "conduit.username" "kim")
-    (initial-location "/roc-signals/examples-web/conduit/#/profile/anna")
+    (initial-location "/roc-signals/examples/conduit/#/profile/anna")
   )
   (steps
     ; Profile page: profile card plus author articles, then favorites tab
@@ -38,7 +38,7 @@
     (expect-visible (text "Keyed lists without tears"))
     (expect-visible (text "Latest-wins request replacement"))
     (click (role link :name "Favorited Articles"))
-    (expect-current-location "/roc-signals/examples-web/conduit/#/profile/anna/favorites")
+    (expect-current-location "/roc-signals/examples/conduit/#/profile/anna/favorites")
     (expect-document-title "@anna favorites - Conduit")
     (expect-pending-effects 2)
     (expect-pending-effects 2)

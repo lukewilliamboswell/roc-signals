@@ -3,7 +3,7 @@
     (manual-effects)
     (local-storage "conduit.jwt" "jwt.conduit.kim")
     (local-storage "conduit.username" "kim")
-    (initial-location "/roc-signals/examples-web/conduit/#/settings")
+    (initial-location "/roc-signals/examples/conduit/#/settings")
   )
   (steps
     ; Settings: authed update, then sign out clears the namespaced keys
@@ -25,7 +25,7 @@
     (click (role button :name "Sign out"))
     (expect-no-local-storage "conduit.jwt")
     (expect-no-local-storage "conduit.username")
-    (expect-current-location "/roc-signals/examples-web/conduit/#/login")
+    (expect-current-location "/roc-signals/examples/conduit/#/login")
     (expect-visible (role link :name "Sign in"))
     (expect-absent (role link :name "Settings"))
   )

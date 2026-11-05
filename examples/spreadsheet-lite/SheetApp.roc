@@ -4,9 +4,9 @@ import Cells
 import Formula
 import Sheet
 
-## Spreadsheet Lite on the Roc-owned engine: a port of
-## examples-web/spreadsheet-lite, a quarterly budget on an 8 by 12 sheet
-## where every formula is a dependency edge.
+## Spreadsheet Lite on the Roc-owned engine, ported from the previous engine:
+## a quarterly budget on an 8 by 12 sheet where every formula is a dependency
+## edge.
 ##
 ## Five sources, each its own state layer: the sheet's sources, the cursor
 ## (where the caret is and whether that cell is being edited) and three view

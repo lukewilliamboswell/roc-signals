@@ -279,6 +279,10 @@ export class RocEngineRuntime {
     // Manual mode: awaited non-subscription requests in issue order.
     this.issued = [];
     this.win = options.window ?? globalThis.window;
+    // HTTP requests go through options.fetch when one is given (an embedding
+    // page's scripted backend; it may answer synchronously), else the
+    // global fetch.
+    this.fetch = options.fetch ?? null;
     this.storage = options.storage ?? (() => {
       try {
         return this.win.localStorage;
@@ -1017,7 +1021,8 @@ export class RocEngineRuntime {
         });
         const init = { method: fx.method, headers: fx.headers, signal: ctl.signal };
         if (fx.method !== "GET" && fx.method !== "HEAD" && fx.body !== "") init.body = fx.body;
-        (this.fetch ?? globalThis.fetch)(fx.url, init)
+        const send = this.fetch ?? globalThis.fetch;
+        new Promise((resolve) => resolve(send(fx.url, init)))
           .then(async (r) => {
             const body = await r.text();
             if (!this.live.has(fx.id)) return;

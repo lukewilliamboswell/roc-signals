@@ -1,23 +1,24 @@
-# Scheduled fuzzing campaigns.
+# Fuzzing campaigns.
 #
-# The pull-request job in ci.yml only replays the committed regression corpus,
-# which is fast but finds nothing new by construction. Finding new inputs needs
-# a campaign, and a campaign is too slow and too variable to gate a pull request
-# on, so it runs here on a schedule and reports what it found.
+# `check` on every pull request replays each target's declared examples and
+# saved regressions, which is fast but finds nothing new by construction.
+# Finding new inputs needs a campaign, which is too slow and too variable to
+# gate a pull request on, so it runs here on a schedule or on dispatch and
+# reports what it found. The corpora live in the Actions cache between runs.
 name: Fuzz
 
 on:
   workflow_dispatch:
     inputs:
-      duration:
-        description: "Total budget across the targets, split by weight, e.g. 1h, 3h"
-        default: "2h"
+      seconds:
+        description: "Seconds of exploration per target"
+        default: "600"
       targets:
-        description: "Target names, or 'all'"
-        default: "all"
+        description: "Space-separated target names; empty for every target"
+        default: ""
   schedule:
-    # Nightly, well away from the hour so it does not queue behind everything
-    # else scheduled on the hour.
+    # Nightly, away from the hour so it does not queue behind everything else
+    # scheduled on the hour.
     - cron: "37 4 * * *"
 
 permissions:
@@ -25,55 +26,43 @@ permissions:
 
 jobs:
   campaign:
-    name: Fuzz ${{ github.event.inputs.targets || 'all' }}
+    name: Fuzz campaign
     runs-on: ubuntu-24.04
-    # The default 2h campaign, plus builds, with room for the dispatch input to
-    # ask for longer without the job being killed mid-run.
-    timeout-minutes: 240
+    # Eleven targets at the default 600 s, plus builds, with room for a
+    # longer dispatched campaign.
+    timeout-minutes: 300
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install Blueprint
-        uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@7aff4132691ad4fc348abe9df146a57512b49bd6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@7aff4132691ad4fc348abe9df146a57512b49bd6
         with:
           cache: 'true'
-          cache-workload: fuzz
-
-      - name: Install AFL++
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y afl++
-
-      # AFL++ refuses to start when the CPU governor looks wrong or a core-dump
-      # handler is installed, neither of which is under our control on a runner.
-      - name: Configure the system for AFL++
-        run: sudo afl-system-config || true
-
-      # `campaign` splits one budget by weight rather than giving each target
-      # the same time, since the subsystem targets saturate in minutes and the
-      # full-engine `structural` target needs hours; see scripts/fuzz.py.
-      - name: Fuzz
-        run: |
-          blueprint run fuzz -- campaign ${{ github.event.inputs.targets || 'all' }} \
-            --time "${{ github.event.inputs.duration || '2h' }}" \
-            -j 2
-
-      - name: Report
-        if: always()
-        run: blueprint run fuzz -- status
-
-      # The crashing inputs are the whole product of the run, and they are gone
-      # with the runner unless they are uploaded. Corpora go too: they are the
-      # cheapest way to give the next campaign a running start.
-      - name: Upload crashes and corpora
-        if: always()
-        uses: actions/upload-artifact@v7
+          cache-workload: engine
+      - name: Restore corpora
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          name: fuzz-findings
-          path: |
-            .fuzz-out/*/out/*/crashes/
-            .fuzz-out/*/out/*/queue/
-            .fuzz-out/*/afl-*.log
+          path: .fuzz-out/*/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+      - name: Fuzz
+        env:
+          SECONDS_PER_TARGET: ${{ github.event.inputs.seconds || '600' }}
+          TARGETS: ${{ github.event.inputs.targets || '' }}
+        run: blueprint run fuzz -- --time "$SECONDS_PER_TARGET" $TARGETS
+      - name: Save corpora
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .fuzz-out/*/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+      # The findings are the product of the run, and they are gone with the
+      # runner unless they are uploaded.
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: fuzz-reports
+          path: .fuzz-out/*/report/
           include-hidden-files: true
-          if-no-files-found: error
+          if-no-files-found: warn

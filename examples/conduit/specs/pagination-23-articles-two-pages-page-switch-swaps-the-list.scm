@@ -3,7 +3,7 @@
     (manual-effects)
     (local-storage "conduit.jwt" "jwt.conduit.kim")
     (local-storage "conduit.username" "kim")
-    (initial-location "/roc-signals/examples-web/conduit/#/")
+    (initial-location "/roc-signals/examples/conduit/#/")
   )
   (steps
     (stub-http "tags" :url "/api/tags" :status 200 :body "{\"tags\":[]}")
@@ -14,7 +14,7 @@
     (expect-visible (role link :name "2"))
     (mark-metrics)
     (click (role link :name "2"))
-    (expect-current-location "/roc-signals/examples-web/conduit/#/?page=2")
+    (expect-current-location "/roc-signals/examples/conduit/#/?page=2")
     (expect-pending-effects 1)
     (stub-http "feed response" :url "/api/articles?limit=20&offset=20" :status 200 :body "{\"articles\":[{\"slug\":\"deep-links-that-survive\",\"title\":\"Deep links that survive reloads\",\"description\":\"Routing that owns its URLs.\",\"tagList\":[\"release\"],\"createdAt\":\"2026-06-04T08:00:00.000Z\",\"favorited\":false,\"favoritesCount\":3,\"author\":{\"username\":\"max\",\"bio\":\"Queues and latency.\",\"image\":\"https://example.test/avatars/max.png\",\"following\":false}}],\"articlesCount\":23}")
     (run-effect 3)

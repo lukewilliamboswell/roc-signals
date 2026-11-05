@@ -1,7 +1,7 @@
 (test "Conduit — back and forward restore the profile tab and its requests"
   (setup
     (manual-effects)
-    (initial-location "/roc-signals/examples-web/conduit/#/profile/anna")
+    (initial-location "/roc-signals/examples/conduit/#/profile/anna")
   )
   (steps
     (stub-http "profile" :url "/api/profiles/anna" :status 200 :body "{\"profile\":{\"username\":\"anna\",\"bio\":\"Signals platform notes.\",\"image\":\"https://example.test/avatars/anna.png\",\"following\":false}}")
@@ -15,7 +15,7 @@
     (run-effect 4)
 
     (history-back)
-    (expect-current-location "/roc-signals/examples-web/conduit/#/profile/anna")
+    (expect-current-location "/roc-signals/examples/conduit/#/profile/anna")
     (expect-document-title "@anna - Conduit")
     (expect-pending-effects 2)
     (stub-http "restored profile" :url "/api/profiles/anna" :status 200 :body "{\"profile\":{\"username\":\"anna\",\"bio\":\"Signals platform notes.\",\"image\":\"https://example.test/avatars/anna.png\",\"following\":false}}")
@@ -24,7 +24,7 @@
     (run-effect 6)
     (expect-visible (text "Keyed lists without tears"))
     (history-forward)
-    (expect-current-location "/roc-signals/examples-web/conduit/#/profile/anna/favorites")
+    (expect-current-location "/roc-signals/examples/conduit/#/profile/anna/favorites")
     (expect-document-title "@anna favorites - Conduit")
     (expect-pending-effects 2)
   )

@@ -3,7 +3,7 @@
     (manual-effects)
     (local-storage "conduit.jwt" "jwt.conduit.kim")
     (local-storage "conduit.username" "kim")
-    (initial-location "/roc-signals/examples-web/conduit/#/article/article-network-failure")
+    (initial-location "/roc-signals/examples/conduit/#/article/article-network-failure")
   )
   (steps
     (stub-http-reject "article unavailable" :kind network :detail "offline")

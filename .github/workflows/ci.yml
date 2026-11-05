@@ -1,14 +1,11 @@
 name: CI
 
-# Runner intent and build modes: www/content/docs/contributing.md#ci-intent-and-runner-matrix
+# Every job runs a Blueprint task, so CI and contributors run the same
+# commands: `blueprint run check` is the pull-request gate, and `blueprint run
+# site` builds the documentation site and its live examples.
 
 on:
   workflow_dispatch:
-    inputs:
-      nightly_validation:
-        description: Validate a compiler candidate without publication or deployment
-        type: boolean
-        default: false
   pull_request:
   push:
     branches: [main]
@@ -16,34 +13,13 @@ on:
 permissions:
   contents: read
 
-env:
-  GH_TOKEN: ${{ github.token }}
-
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  changes:
-    name: Select affected checks
-    runs-on: ubuntu-24.04
-    outputs:
-      source: ${{ steps.select.outputs.source }}
-      site: ${{ steps.select.outputs.site }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@7aff4132691ad4fc348abe9df146a57512b49bd6
-      - run: blueprint run selection
-      - id: select
-        run: blueprint run ci-changes
-
-  source:
-    needs: changes
-    if: needs.changes.outputs.source == 'true'
-    name: Hosted source tests
+  check:
+    name: Check
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -53,33 +29,19 @@ jobs:
       - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@7aff4132691ad4fc348abe9df146a57512b49bd6
         with:
           cache: 'true'
-          cache-workload: dev
-      - uses: ./.github/actions/setup-roc
-      - run: blueprint run hosted
-
-  platform-source:
-    name: Platform source
-    needs: [changes, source, site]
-    if: always()
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - name: Require every selected job
-        env:
-          RESULTS: ${{ toJSON(needs) }}
-        run: python3 scripts/ci_changes.py --verify-results
+          cache-workload: engine
+      - run: blueprint run check
 
   site:
-    name: Documentation and site
-    needs: changes
-    if: needs.changes.outputs.site == 'true'
+    name: Site
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@7aff4132691ad4fc348abe9df146a57512b49bd6
-      - name: Check documentation and templates
-        run: blueprint run site
+        with:
+          cache: 'true'
+          cache-workload: site
+      - run: blueprint run site

@@ -5,10 +5,10 @@
     (local-storage "conduit.jwt" "jwt.conduit.kim")
     (local-storage "conduit.username" "kim")
     ; Deep link cold mounts the article page: loading, then content
-    (initial-location "/roc-signals/examples-web/conduit/#/article/keyed-lists-without-tears")
+    (initial-location "/roc-signals/examples/conduit/#/article/keyed-lists-without-tears")
   )
   (steps
-    (expect-current-location "/roc-signals/examples-web/conduit/#/article/keyed-lists-without-tears")
+    (expect-current-location "/roc-signals/examples/conduit/#/article/keyed-lists-without-tears")
     (expect-document-title "keyed-lists-without-tears - Conduit")
     (expect-pending-effects 2)
     (expect-visible (text "Loading article..."))

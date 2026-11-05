@@ -6,7 +6,7 @@ import Format
 import Markdown
 import Styles
 
-## Conduit (RealWorld) on the pure Roc engine: a port of examples-web/conduit.
+## Conduit (RealWorld) on the pure Roc engine: ported from the previous engine with its original specs.
 ##
 ## One root state holds the location, the session and every page's model;
 ## changing the route's kind resets the page models (the original remounted

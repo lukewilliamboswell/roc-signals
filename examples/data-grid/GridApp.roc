@@ -2,7 +2,7 @@ import pf.Engine exposing [Elem, In, Root, Row, RowRef, State, Val]
 import pf.Html
 import GridData
 
-## Data Grid on the Roc-owned engine: a port of examples-web/data-grid.
+## Data Grid on the Roc-owned engine: ported from the previous engine.
 ##
 ## Five sources as in the original (sort, page, notes, filter query,
 ## selection), each its own state layer, then a chain of four memoised

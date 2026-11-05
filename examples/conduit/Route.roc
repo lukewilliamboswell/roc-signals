@@ -144,7 +144,7 @@ Route := [
 	default_feed = { page: 1, tag: AllTags, source: Global }
 
 	demo_base_path : Str
-	demo_base_path = "/roc-signals/examples-web/conduit/"
+	demo_base_path = "/roc-signals/examples/conduit/"
 
 	home : Route
 	home = Home(default_feed)

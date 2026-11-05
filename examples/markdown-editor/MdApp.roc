@@ -5,7 +5,7 @@ import Outline
 import Stats
 import Edit
 
-## Markdown Editor on the Roc-owned engine: a port of examples-web/markdown-editor.
+## Markdown Editor on the Roc-owned engine: ported from the previous engine.
 ##
 ## Three sources (source text, outline numbering, reading speed) and four
 ## memoised derivations (blocks, counts, headings, outline rows), so an edit

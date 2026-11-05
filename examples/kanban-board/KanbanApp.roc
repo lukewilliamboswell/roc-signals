@@ -2,7 +2,7 @@ import pf.Engine exposing [Comp, Elem, In, Root, Row, RowRef, State, Val]
 import pf.Html
 import Kanban
 
-## Kanban Board on the Roc-owned engine: a port of examples-web/kanban-board.
+## Kanban Board on the Roc-owned engine: ported from the previous engine.
 ##
 ## Three sources as in the original (board, filter text, WIP limit text),
 ## each its own state layer. One memoised `derive` computes all four columns'

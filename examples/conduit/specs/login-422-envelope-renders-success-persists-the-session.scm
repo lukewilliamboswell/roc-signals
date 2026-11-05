@@ -1,7 +1,7 @@
 (test "Conduit — Login: 422 envelope renders, success persists the session"
   (setup
     (manual-effects)
-    (initial-location "/roc-signals/examples-web/conduit/#/login")
+    (initial-location "/roc-signals/examples/conduit/#/login")
   )
   (steps
     ; Login: 422 envelope renders, success persists the session
@@ -19,7 +19,7 @@
     (run-effect 2)
     (expect-local-storage "conduit.jwt" "jwt.conduit.kim")
     (expect-local-storage "conduit.username" "kim")
-    (expect-current-location "/roc-signals/examples-web/conduit/#/")
+    (expect-current-location "/roc-signals/examples/conduit/#/")
     (expect-visible (role link :name "kim"))
     (expect-visible (role link :name "Your Feed"))
     ; Login currently admits two feed generations and the tags request.

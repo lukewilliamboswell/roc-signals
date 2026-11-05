@@ -1,11 +1,11 @@
 (test "Conduit — Register: 422 envelope renders all required fields"
   (setup
     (manual-effects)
-    (initial-location "/roc-signals/examples-web/conduit/#/register")
+    (initial-location "/roc-signals/examples/conduit/#/register")
   )
   (steps
     ; Register: 422 envelope renders all required fields
-    (navigate "/roc-signals/examples-web/conduit/#/register")
+    (navigate "/roc-signals/examples/conduit/#/register")
     (expect-document-title "Sign up - Conduit")
     (expect-visible (role heading :name "Sign up"))
     (click (role button :name "Sign up"))

@@ -2,7 +2,7 @@ import pf.Engine exposing [Elem, In, Root, Row, RowRef, State, Val]
 import pf.Html
 import Status
 
-## Status Page on the Roc-owned engine: a port of examples-web/status-page.
+## Status Page on the Roc-owned engine: ported from the previous engine.
 ## Four independent service checks fan in to one rollup.
 ##
 ## Each refresh issues one HTTP check per service plus the incident feed.

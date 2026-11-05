@@ -3,7 +3,7 @@
     (manual-effects)
     (local-storage "conduit.jwt" "jwt.conduit.kim")
     (local-storage "conduit.username" "kim")
-    (initial-location "/roc-signals/examples-web/conduit/#/profile/anna")
+    (initial-location "/roc-signals/examples/conduit/#/profile/anna")
   )
   (steps
     (stub-http "profile" :url "/api/profiles/anna" :status 200 :body "{\"profile\":{\"username\":\"anna\",\"bio\":\"Signals platform notes.\",\"image\":\"https://example.test/avatars/anna.png\",\"following\":false}}")

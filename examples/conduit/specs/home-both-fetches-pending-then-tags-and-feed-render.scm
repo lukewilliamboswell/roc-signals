@@ -4,12 +4,12 @@
     ; Seeded session restores before first render (namespaced keys)
     (local-storage "conduit.jwt" "jwt.conduit.kim")
     (local-storage "conduit.username" "kim")
-    (initial-location "/roc-signals/examples-web/conduit/#/")
+    (initial-location "/roc-signals/examples/conduit/#/")
   )
   (steps
 
     ; Home: both fetches pending, then tags and feed render
-    (expect-current-location "/roc-signals/examples-web/conduit/#/")
+    (expect-current-location "/roc-signals/examples/conduit/#/")
     (expect-document-title "Conduit")
     (expect-pending-effects 2)
     (expect-visible (text "Loading articles..."))

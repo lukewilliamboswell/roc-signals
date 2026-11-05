@@ -1,6 +1,6 @@
 import { createPublicExampleFetch } from "./example_tasks.mjs";
-import { serviceOpsBehaviors } from "./service_ops_charts.mjs";
-import { mountSignalsApp } from "./signals.mjs";
+// The browser runtime, copied from platform/runtime.mjs by scripts/site.roc.
+import { mountRocEngineApp } from "./runtime.mjs";
 
 let uploadedRuntime = null;
 let uploadedObjectUrl = null;
@@ -24,13 +24,11 @@ async function mountInto(root, wasmUrl, title, errorTarget = null) {
   }
 
   try {
-    const runtime = await mountSignalsApp({
+    const runtime = await mountRocEngineApp({
       wasmUrl,
       root,
-      fetchImpl: createPublicExampleFetch(),
-      onError: (err) => showError(errorTarget, err),
-      telemetry: true,
-      behaviors: serviceOpsBehaviors,
+      fetch: createPublicExampleFetch(),
+      onFault: (fault) => showError(errorTarget, new Error(`${fault.class}: ${fault.message}`)),
     });
     return runtime;
   } catch (err) {

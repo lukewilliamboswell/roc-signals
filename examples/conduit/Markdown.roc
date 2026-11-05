@@ -1,9 +1,9 @@
 ## Markdown parsing (the view lives in ConduitApp) for article bodies: headings, paragraphs,
 ## quotes, fenced code blocks, one-level nested lists, bold, inline code,
 ## links, and images. Links and image sources pass a scheme allowlist;
-## anything else degrades to plain text. Adapted from the
-## examples-web/_fixtures/markdown-elem parser (the proven app-land path; no
-## roc-parser package exists yet).
+## anything else degrades to plain text. Adapted from the previous engine's
+## markdown-elem test fixture (the proven app-land path; no roc-parser package
+## exists yet).
 
 Markdown := {}.{
 	ListItem : { key : Str, text : Str, children : List(Str) }

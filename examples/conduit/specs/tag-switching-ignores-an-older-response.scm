@@ -1,7 +1,7 @@
 (test "Conduit — two tag requests run independently and only the newest publishes"
   (setup
     (manual-effects)
-    (initial-location "/roc-signals/examples-web/conduit/#/")
+    (initial-location "/roc-signals/examples/conduit/#/")
   )
   (steps
     (stub-http "tags" :url "/api/tags" :status 200 :body "{\"tags\":[\"signals\",\"roc\"]}")
@@ -10,12 +10,12 @@
     (run-effect 1)
 
     (click (role link :name "signals"))
-    (expect-current-location "/roc-signals/examples-web/conduit/#/?tag=signals")
+    (expect-current-location "/roc-signals/examples/conduit/#/?tag=signals")
     (expect-document-title "Conduit")
     (expect-visible (text "Tag: signals"))
     (expect-pending-effects 1)
     (click (role link :name "roc"))
-    (expect-current-location "/roc-signals/examples-web/conduit/#/?tag=roc")
+    (expect-current-location "/roc-signals/examples/conduit/#/?tag=roc")
     (expect-pending-effects 2)
 
     ; The newer response wins even though the older request is still queued.
@@ -25,7 +25,7 @@
     (stub-http "older signals feed" :url "/api/articles?limit=20&offset=0&tag=signals" :status 200 :body "{\"articles\":[],\"articlesCount\":0}")
     (run-effect 3)
     (expect-pending-effects 0)
-    (expect-current-location "/roc-signals/examples-web/conduit/#/?tag=roc")
+    (expect-current-location "/roc-signals/examples/conduit/#/?tag=roc")
     (expect-visible (text "Latest-wins request replacement"))
     (expect-absent (text "No articles are here... yet."))
   )

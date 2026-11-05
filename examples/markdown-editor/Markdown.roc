@@ -2,7 +2,7 @@
 ## quotes, fenced code blocks, one-level nested lists, bold, inline code,
 ## links, and images. Links and image sources pass a scheme allowlist;
 ## anything else degrades to plain text, and nothing is ever injected as raw
-## HTML. Adapted from `examples-web/conduit/Markdown.roc`, with heading levels
+## HTML. Adapted from Conduit's `Markdown.roc`, with heading levels
 ## carried in the block key so the outline can be derived from parsed blocks
 ## rather than re-scanning the raw source.
 

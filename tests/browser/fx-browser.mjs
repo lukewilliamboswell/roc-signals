@@ -1,8 +1,9 @@
 // fx-browser.mjs --wasm APP.wasm --runtime runtime.mjs --chrome PATH -- browser contract
 // test of the effect channel with tests/apps/effects in headless Chrome: manual mode (pending list, answer, cancel
 // on dispose, injected stale result dropped, saturation refusal, popstate
-// subscription, follow-up self-dispose) and automatic mode (real fetch
-// against this server, including an aborted in-flight request).
+// subscription, follow-up self-dispose), automatic mode (real fetch
+// against this server, including an aborted in-flight request), and an
+// embedder's `fetch` option, which may answer synchronously.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -129,6 +130,31 @@ const stats = (page) => page.evaluate(() => ({ live: [...window.__rt.live.keys()
   await click(page, "issue 0");
   await page.waitForFunction(() => document.querySelector("[data-testid=log]").textContent.includes("srv0.2"));
   check("completed request clears its timeout timer", await page.evaluate(() => window.__rt.timers), 0);
+  await ctx.close();
+}
+{
+  const { page, ctx } = await open(false);
+  const got = await page.evaluate(async () => {
+    const { mountRocEngineApp } = await import("./runtime.mjs");
+    const root = document.createElement("div");
+    document.body.append(root);
+    const seen = [];
+    const rt = await mountRocEngineApp({
+      wasmUrl: "app.wasm",
+      root,
+      fetch: (url, init) => {
+        seen.push(`${init.method} ${url}`);
+        return new Response("scripted", { status: 200 });
+      },
+    });
+    [...root.querySelectorAll("button")].find((b) => b.textContent === "issue 0").click();
+    const log = () => root.querySelector("[data-testid=log]")?.textContent ?? "";
+    for (let i = 0; i < 50 && !log(); i += 1) await new Promise((r) => setTimeout(r, 10));
+    const shown = log();
+    rt.unmount();
+    return [seen[0], shown.startsWith("0:1:200:scripted:")];
+  });
+  check("the fetch option answers HTTP requests, synchronously too", got, ["GET /s0/1", true]);
   await ctx.close();
 }
 await browser.close();

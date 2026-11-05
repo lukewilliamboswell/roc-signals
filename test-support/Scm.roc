@@ -16,9 +16,8 @@ import JsonOut
 ## the typed steps; `to_json` emits them for the browser runner, so the grammar
 ## is implemented once.
 ##
-## The grammar is the web subset of the original native host's
-## (`src/spec/spec_parser.zig`, `src/spec/sexpr.zig`): the GUI `scenario` form
-## and its window steps are not part of it.
+## The grammar is the web subset of the previous engine's spec grammar: the
+## GUI `scenario` form and its window steps are not part of it.
 Scm := [].{
 
 	## A source position, one-based.

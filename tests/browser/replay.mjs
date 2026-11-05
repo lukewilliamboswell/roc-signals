@@ -75,7 +75,7 @@ const files = {
 };
 const types = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm" };
 // Files are served by basename under any path (apps mount under a base path,
-// e.g. /roc-signals/examples-web/conduit/), and a directory as index.html.
+// e.g. /roc-signals/examples/conduit/), and a directory as index.html.
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, "http://x");
   const f = u.pathname.endsWith("/") ? files["index.html"] : files[path.basename(u.pathname)];

@@ -2,7 +2,7 @@ import pf.Engine exposing [Comp, Elem, In, Root, Row, RowRef, State, Val]
 import pf.Html
 import Form
 
-## Form Builder on the Roc-owned engine: a port of examples-web/form-builder.
+## Form Builder on the Roc-owned engine: ported from the previous engine.
 ##
 ## Same graph as the original: two independent sources (the schema and the
 ## answers) plus a submission counter, each its own state layer. The join of

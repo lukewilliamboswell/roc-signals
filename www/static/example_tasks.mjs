@@ -323,7 +323,7 @@ function stage(script, index) {
 // GET /api/status/{api,web,database,notifications,incidents}. A per-service
 // counter advances each script independently; each fetch is a new occurrence.
 //
-// Wire formats (see parse_check / parse_feed in examples-web/status-page/main.roc):
+// Wire formats (see parse_check and parse_feed in examples/status-page/Status.roc):
 //   check      "operational|99.98"          health | uptime percent
 //   incidents  "id~severity~title~hh:mm@body^hh:mm@body#…"   "#" separates incidents
 //

@@ -2,8 +2,8 @@ import pf.Engine exposing [Elem, In, Root, Row, RowRef, State, Val]
 import pf.Html
 import Notes
 
-## Field Notes on the Roc-owned engine: a port of examples-web/field-notes,
-## an offline-first note capture tool.
+## Field Notes on the Roc-owned engine, ported from the previous engine: an
+## offline-first note capture tool.
 ##
 ## Notes are captured while the browser is offline, queued in an outbox, and
 ## synced one at a time when the connection returns. Local storage is the

@@ -3,7 +3,7 @@
     (manual-effects)
     (local-storage "conduit.jwt" "jwt.conduit.kim")
     (local-storage "conduit.username" "kim")
-    (initial-location "/roc-signals/examples-web/conduit/#/editor/network-matrix")
+    (initial-location "/roc-signals/examples/conduit/#/editor/network-matrix")
   )
   (steps
     (expect-document-title "Edit article - Conduit")

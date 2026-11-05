@@ -48,7 +48,7 @@ const server = http.createServer(async (req, res) => {
   res.end(fs.readFileSync(f));
 });
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
-const base = `http://127.0.0.1:${server.address().port}/roc-signals/examples-web/conduit/`;
+const base = `http://127.0.0.1:${server.address().port}/roc-signals/examples/conduit/`;
 const browser = await launch({ executablePath: opts.chrome });
 const page = await browser.newPage();
 const errors = [];
