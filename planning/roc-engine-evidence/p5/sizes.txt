@@ -14,3 +14,4 @@ conduit              5274106     5188529     1500677 |     3080902     2949310  
 # build of these: the examples-web originals pin the 0.2.0 release platform):
 field-notes           950532      944775      299334 |           -           -           - |       -
 status-page          1169364     1164080      354364 |           -           -           - |       -
+spreadsheet-lite     1113314     1105615      339822 |           -           -           - |       -

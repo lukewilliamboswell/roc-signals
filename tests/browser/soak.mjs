@@ -164,6 +164,14 @@ const CYCLES = {
     ["click", ["label", "Sync automatically"]],
     ["click", ["label", "Sync automatically"]],
   ],
+  "spreadsheet-lite": [
+    ["fill", ["label", "B2"], "1500"],
+    ["fill", ["label", "B2"], "1200"],
+    ["click", ["role", "button", "Reverse row order"]],
+    ["click", ["role", "button", "Top to bottom"]],
+    ["click", ["role", "button", "Hide empty rows"]],
+    ["click", ["role", "button", "Show all rows"]],
+  ],
   // Every check answered by the backend stand-in.
   "status-page": [["click", ["role", "button", "Refresh now"]]],
 };

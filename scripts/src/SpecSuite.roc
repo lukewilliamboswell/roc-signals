@@ -10,7 +10,7 @@ SpecSuite := [].{
 
 	## The apps ported to the engine, with their original specs.
 	apps : List(Str)
-	apps = ["form-builder", "kanban-board", "data-grid", "markdown-editor", "conduit", "field-notes", "status-page"]
+	apps = ["form-builder", "kanban-board", "data-grid", "markdown-editor", "conduit", "field-notes", "status-page", "spreadsheet-lite"]
 
 	## Test apps under `tests/apps/` whose `specs/` run like an app's: the
 	## browser services and work counters the examples do not exercise.
