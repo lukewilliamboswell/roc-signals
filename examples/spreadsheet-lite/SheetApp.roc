@@ -388,8 +388,8 @@ SheetApp := [].{
 		)
 	}
 
-	## The program both hosts run: the web platform (`main-web.roc`) and the
-	## test platform (`main-test.roc`, `main-fuzz.roc`).
+	## The program `main.roc` binds for the browser module and the native spec
+	## runner, and `main-fuzz.roc` drives on the fuzz platform.
 	program : Engine.Program
 	program = Engine.program(|| SheetApp.main(Sheet.initial_cells))
 

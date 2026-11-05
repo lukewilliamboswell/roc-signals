@@ -68,7 +68,7 @@ Checks := [].{
 		broken = "${dir}/initial-render-broken.scm"
 		Path.write_utf8!(Path.utf8(broken), original.replace_each(good, "(expect-text (test-id \"board-total\") \"6\")"))?
 		native = SpecSuite.run_native!({ ..o, filter: "*" }, runner, [broken])?
-		steps = Proc.capture!({ program: runner, args: ["spec", "--emit-steps", broken], cwd: "." })?
+		steps = Proc.capture!({ program: runner, args: ["--emit-steps", broken], cwd: "." })?
 		Path.write_bytes!(Path.utf8("${dir}/steps.jsonl"), steps)?
 		{ stdout, .. } = Proc.output!({ program: o.node, args: ["tests/browser/replay.mjs", "--wasm", wasm, "--runtime", SpecSuite.runtime, "--steps", "${dir}/steps.jsonl", "--chrome", o.chrome, "--json-lines"], cwd: "." })?
 		in_browser = Str.from_utf8_lossy(stdout).split_on("\n")
@@ -82,14 +82,14 @@ Checks := [].{
 
 	## The browser runner has a handler for every step and setup form of the
 	## grammar, and for nothing else: the native runner prints the grammar
-	## (`spec --grammar`, from the parser's form tables) and
+	## (`--grammar`, from the parser's form tables) and
 	## `replay.mjs --check-grammar` compares it with its handler tables. The
 	## native runner's own coverage is its exhaustive `match`.
 	grammar! : SpecSuite.Options, Str => Try(List(Str), _)
 	grammar! = |o, runner| {
 		dir = "${o.build_dir}/grammar"
 		SpecSuite.fresh_dir!(dir)?
-		grammar = Proc.capture!({ program: runner, args: ["spec", "--grammar"], cwd: "." })?
+		grammar = Proc.capture!({ program: runner, args: ["--grammar"], cwd: "." })?
 		Path.write_bytes!(Path.utf8("${dir}/grammar.json"), grammar)?
 		# replay.mjs names each mismatch on stderr, which reaches the log.
 		{ code, .. } = Proc.output!({ program: o.node, args: ["tests/browser/replay.mjs", "--check-grammar", "${dir}/grammar.json"], cwd: "." })?

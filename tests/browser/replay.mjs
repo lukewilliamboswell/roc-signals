@@ -4,14 +4,14 @@
 //
 // The browser spec runner. It replays specs in real headless Chrome, one
 // fresh browser context (fresh instance, fresh storage) per spec. The steps
-// come from the one `.scm` parser (`test-support/Scm.roc`), emitted as JSON
-// lines by `TARGET spec --emit-steps`; this file never reads `.scm`.
+// come from the one `.scm` parser (`platform/Scm.roc`), emitted as JSON
+// lines by the app's native runner (`RUNNER --emit-steps`); this file never reads `.scm`.
 //
 // Every step and setup form of the grammar has exactly one handler in the
 // STEPS and SETUP tables below. `--check-grammar` compares those tables with
-// the grammar the parser prints (`TARGET spec --grammar`) and fails on any
+// the grammar the parser prints (`RUNNER --grammar`) and fails on any
 // difference, so a form the parser accepts can never reach this runner
-// without a handler. The native runner (`test-support/SpecRunner.roc`)
+// without a handler. The native runner (`platform/SpecRunner.roc`)
 // implements the same semantics against the `Dom.roc` oracle; the browser is
 // the reference for what each step means (design.md, "The `.scm` spec
 // language").

@@ -1,11 +1,10 @@
-## Host services for command-line targets (`Target.cli`): the spec runner
-## reads `.scm` files and reports one JSON line per spec.
+## Host services for the native spec runner (`roc build --target=x64musl`
+## of an app): it reads `.scm` files and reports one JSON line per spec.
 ##
-## These are a roc-signals addition to the roc-fuzz platform. They are served
-## by `host/cli.zig`, which is linked into every executable built against this
-## platform, fuzz targets included. A failed read or write ends the process
-## with a message: a runner that cannot read its input or report its result
-## has nothing correct left to do.
+## They are served by the native host, `host/spec.zig`. The browser module
+## never calls them, and the Wasm link drops them. A failed read or write ends
+## the process with a message: a runner that cannot read its input or report
+## its result has nothing correct left to do.
 Cli := [].{
 
 	## The bytes of the file at `path`. A file that cannot be read ends the

@@ -1,13 +1,10 @@
-app [target] {
-	pf: platform "../../platform/test.roc",
-	ts: "../../test-support/main.roc",
-}
+app [target] { pf: platform "../../platform/fuzz.roc" }
 
 import pf.Core
 import pf.Fuzz
-import ts.Scm
-import ts.Soak
-import ts.SpecRunner
+import pf.Scm
+import pf.Soak
+import pf.SpecRunner
 import KanbanApp
 
 ## Kanban Board on the Roc-owned engine.

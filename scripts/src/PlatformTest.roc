@@ -1,23 +1,34 @@
 import cli.Path
 import Proc
 
-## The inputs the test platform (`platform/test.roc`) links against, none of them committed:
+## The platform's link inputs, none of them committed:
 ##
-## - the roc-fuzz host and its linker inputs, taken from the roc-fuzz 0.5.0
-##   release bundle and checked against the SHA-256 recorded here;
-## - `cli.o`, built from `platform/host/cli.zig` with the pinned Zig.
+## - for the browser module (`platform/main.roc`, `targets/wasm32/`):
+##   `host.wasm`, built from `platform/host/host.zig` with the pinned Zig;
+## - for the native spec runner (`platform/main.roc`, `targets/x64musl/`):
+##   `spec.o`, built from `platform/host/spec.zig` with the pinned Zig, and
+##   musl's `crt1.o` and `libc.a`, Zig's `libzigc.a` and `libcompiler_rt.a`,
+##   taken from the roc-fuzz 0.5.0 release bundle;
+## - for the fuzz platform (`platform/fuzz.roc`, `fuzz-targets/x64musl/`):
+##   the roc-fuzz host and its linker inputs from the same bundle.
 ##
-## The bundle is downloaded once into the build directory; every run checks
-## its digest before unpacking it.
+## The bundle is checked against the SHA-256 recorded here; it is downloaded
+## once into the build directory, and every run checks its digest before
+## unpacking it.
 PlatformTest := [].{
 	bundle_url = "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.5.0/9WT86CuwM7ZJBSs8iTd1jLyrUFTTiGp5hcJE63TwswGE.tar.zst"
 	bundle_sha256 = "aed4032105af1cc910604949f43636b7bff6aec4a82184631213153b8e2dd23f"
 
-	## The linker inputs `platform/test.roc` lists for x64musl, from the bundle.
+	## The linker inputs `platform/fuzz.roc` lists for x64musl, from the bundle.
 	bundle_inputs : List(Str)
 	bundle_inputs = ["crt1.o", "libhost.a", "libfuzzer.a", "libc++.a", "libc++abi.a", "libunwind.a", "libc.a", "libzigc.a", "libcompiler_rt.a"]
 
-	## Fetch, verify and unpack the roc-fuzz inputs, then build `cli.o`.
+	## The inputs `platform/main.roc` lists for x64musl, from the bundle.
+	native_inputs : List(Str)
+	native_inputs = ["crt1.o", "libc.a", "libzigc.a", "libcompiler_rt.a"]
+
+	## Fetch, verify and unpack the roc-fuzz inputs, then build `host.wasm` and
+	## `spec.o`.
 	prepare! : { root : Str, build_dir : Str, zig : Str } => Try({}, _)
 	prepare! = |{ root, build_dir, zig }| {
 		downloads = "${build_dir}/downloads"
@@ -37,11 +48,18 @@ PlatformTest := [].{
 		}
 		Path.create_all!(Path.utf8(unpacked))?
 		Proc.run!({ program: "tar", args: ["--zstd", "-xf", bundle, "-C", unpacked, "targets/x64musl"], cwd: root })?
-		target_dir = "${root}/platform/test-targets/x64musl"
-		Path.create_all!(Path.utf8(target_dir))?
+		fuzz_dir = "${root}/platform/fuzz-targets/x64musl"
+		Path.create_all!(Path.utf8(fuzz_dir))?
 		for name in PlatformTest.bundle_inputs {
-			Path.copy!(Path.utf8("${unpacked}/targets/x64musl/${name}"), Path.utf8("${target_dir}/${name}"))?
+			Path.copy!(Path.utf8("${unpacked}/targets/x64musl/${name}"), Path.utf8("${fuzz_dir}/${name}"))?
 		}
-		Proc.run!({ program: zig, args: ["build-obj", "host/cli.zig", "-target", "x86_64-linux-musl", "-O", "ReleaseFast", "-fstrip", "-fPIC", "-femit-bin=test-targets/x64musl/cli.o"], cwd: "${root}/platform" })
+		native_dir = "${root}/platform/targets/x64musl"
+		Path.create_all!(Path.utf8(native_dir))?
+		for name in PlatformTest.native_inputs {
+			Path.copy!(Path.utf8("${unpacked}/targets/x64musl/${name}"), Path.utf8("${native_dir}/${name}"))?
+		}
+		Path.create_all!(Path.utf8("${root}/platform/targets/wasm32"))?
+		Proc.run!({ program: zig, args: ["build-obj", "host/host.zig", "-target", "wasm32-freestanding", "-O", "ReleaseSmall", "-fstrip", "-femit-bin=targets/wasm32/host.wasm"], cwd: "${root}/platform" })?
+		Proc.run!({ program: zig, args: ["build-obj", "host/spec.zig", "-target", "x86_64-linux-musl", "-O", "ReleaseFast", "-fstrip", "-fPIC", "-femit-bin=targets/x64musl/spec.o"], cwd: "${root}/platform" })
 	}
 }

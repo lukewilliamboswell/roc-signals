@@ -1,34 +1,37 @@
 import cli.Path
+import PlatformTest
 import Proc
 import SpecSuite
 
 ## What a release publishes, built the same way for a dry run (in `check`)
 ## and for the release workflow:
 ##
-## - the platform bundle, `<hash>.tar.zst`: `platform/main.roc`, `Engine.roc`,
-##   `Html.roc`, the Wasm host and `runtime.mjs`;
+## - the platform bundle, `<hash>.tar.zst`: one platform for both targets,
+##   `platform/main.roc` with every module it uses, the Wasm host, the native
+##   spec runner's link inputs for x64musl and `runtime.mjs`;
 ## - `runtime.mjs` on its own, for pages that load an app;
 ## - the examples archive, `roc-signals-examples-<version>.zip`, which the
 ##   shared nightly-compatibility runner builds with the latest Roc nightly:
-##   each example's browser build naming the bundle's release URL, a
-##   `spec.json` and the `runtime/check.mjs` helper that mounts each app;
+##   each example's `main.roc` naming the bundle's release URL, with its
+##   specs, a `spec.json` and the `runtime/check.mjs` helper that mounts each
+##   app;
 ## - `release-notes.md`, the draft release's body.
 Release := [].{
 	repo_url = "https://github.com/lukewilliamboswell/roc-signals"
 
 	## The platform files a bundle carries, relative to `platform/`.
 	bundle_files : List(Str)
-	bundle_files = ["main.roc", "Engine.roc", "Html.roc", "targets/wasm32/host.wasm", "runtime.mjs"]
+	bundle_files = ["main.roc", "Engine.roc", "Html.roc", "Core.roc", "Cli.roc", "SpecRunner.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "targets/wasm32/host.wasm", "targets/x64musl/spec.o", "targets/x64musl/crt1.o", "targets/x64musl/libc.a", "targets/x64musl/libzigc.a", "targets/x64musl/libcompiler_rt.a", "runtime.mjs"]
 
 	archive_name : Str -> Str
 	archive_name = |version| "roc-signals-examples-${version}"
 
-	## The examples archive omits the native test and fuzz entry points and
-	## the modules only they use.
+	## The examples archive omits the fuzz entry points, which need the
+	## repository's fuzz platform.
 	is_archived : Str -> Bool
-	is_archived = |file| !(file.ends_with("/main-test.roc") or file.ends_with("/main-fuzz.roc"))
+	is_archived = |file| !file.ends_with("/main-fuzz.roc")
 
-	## An example's browser entry point with the working-tree platform path
+	## An example's entry point with the working-tree platform path
 	## replaced by the released bundle.
 	released_main : Str, Str -> Try(Str, [NoPlatformPath])
 	released_main = |source, bundle_url| {
@@ -49,7 +52,7 @@ Release := [].{
 	spec_json = |version, bundle_url, apps| {
 		entries = apps.map(
 			|{ example, stdout }|
-				"    {\"path\": ${Release.json_str("examples/${example}/main-web.roc")}, \"target\": \"wasm32\", \"run\": [\"node\", \"{suite}/runtime/check.mjs\", \"{executable}\"], \"cases\": [{\"name\": \"mount\", \"args\": [], \"stdin\": \"\", \"stdout\": ${Release.json_str(stdout)}, \"stderr\": \"\", \"exit_code\": 0}]}",
+				"    {\"path\": ${Release.json_str("examples/${example}/main.roc")}, \"target\": \"wasm32\", \"run\": [\"node\", \"{suite}/runtime/check.mjs\", \"{executable}\"], \"cases\": [{\"name\": \"mount\", \"args\": [], \"stdin\": \"\", \"stdout\": ${Release.json_str(stdout)}, \"stderr\": \"\", \"exit_code\": 0}]}",
 		)
 		"{\n  \"schema_version\": 1,\n  \"release\": ${Release.json_str(version)},\n  \"dependencies\": [${Release.json_str(bundle_url)}],\n  \"apps\": [\n${Str.join_with(entries, ",\n")}\n  ]\n}\n"
 	}
@@ -61,6 +64,7 @@ Release := [].{
 	build! = |o, version, out| {
 		SpecSuite.fresh_dir!(out)?
 		SpecSuite.build_web_platform!(o)?
+		PlatformTest.prepare!({ root: o.root, build_dir: o.build_dir, zig: o.zig })?
 		Proc.run!({ program: o.compiler, args: ["bundle"].concat(Release.bundle_files).concat(["--output-dir", out]), cwd: "${o.root}/platform" })?
 		bundle = match SpecSuite.files_with!(out, ".tar.zst")? {
 			[one] => one.split_on("/").last() ?? one
@@ -83,13 +87,17 @@ Release := [].{
 			Path.create_all!(Path.utf8(dir))?
 			for file in SpecSuite.roc_files!("examples/${example}")?.keep_if(Release.is_archived) {
 				target = "${dir}/${file.split_on("/").last() ?? file}"
-				if file.ends_with("/main-web.roc") {
+				if file.ends_with("/main.roc") {
 					source = Path.read_utf8!(Path.utf8(file))?
 					released = Release.released_main(source, bundle_url) ? |_| NoPlatformPath(file)
 					Path.write_utf8!(Path.utf8(target), released)?
 				} else {
 					Path.copy!(Path.utf8(file), Path.utf8(target))?
 				}
+			}
+			Path.create_all!(Path.utf8("${dir}/specs"))?
+			for spec in SpecSuite.files_with!("examples/${example}/specs", ".scm")? {
+				Path.copy!(Path.utf8(spec), Path.utf8("${dir}/specs/${spec.split_on("/").last() ?? spec}"))?
 			}
 			{ code, stdout } = Proc.output!({ program: o.node, args: ["tests/release/check.mjs", SpecSuite.wasm_of(o, example)], cwd: o.root })?
 			if code != 0 {
@@ -114,7 +122,9 @@ Release := [].{
 		\\
 		\\The examples of Roc Signals ${version}, each naming that release's platform
 		\\bundle. Build one for the browser with
-		\\`roc build --target=wasm32 examples/<app>/main-web.roc`.
+		\\`roc build --target=wasm32 examples/<app>/main.roc`, or its native spec
+		\\runner with `roc build --target=x64musl examples/<app>/main.roc` and run
+		\\it on `examples/<app>/specs/*.scm`.
 		\\`spec.json` and `runtime/check.mjs` are the compatibility suite the
 		\\nightly workflow runs against the latest Roc nightly.
 
@@ -153,5 +163,5 @@ expect Release.released_main("app [main] { pf: platform \"https://y\" }", "u") =
 ## Recorded output is escaped as JSON.
 expect Release.json_str("a\"b\nc") == "\"a\\\"b\\nc\""
 
-## Only the browser entry point and its modules are archived.
-expect [Release.is_archived("e/main-web.roc"), Release.is_archived("e/main-test.roc"), Release.is_archived("e/main-fuzz.roc"), Release.is_archived("e/Api.roc")] == [True, False, False, True]
+## The entry point and its modules are archived; the fuzz entry is not.
+expect [Release.is_archived("e/main.roc"), Release.is_archived("e/main-fuzz.roc"), Release.is_archived("e/Api.roc")] == [True, False, True]

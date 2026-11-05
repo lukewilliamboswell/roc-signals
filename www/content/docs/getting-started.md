@@ -32,14 +32,13 @@ Running specs in a browser also needs Google Chrome installed as
 
 ## The files of an app
 
-An app is a directory with one module that describes the UI and two thin
-entry points, one per platform:
+An app is a directory with one module that describes the UI and one thin
+entry point:
 
 | File | Purpose |
 |---|---|
 | `Counter.roc` | The app: its state, view and `program` |
-| `main-web.roc` | The browser build, on `platform/main.roc` |
-| `main-test.roc` | The native spec runner, on `platform/test.roc` |
+| `main.roc` | The entry point, on `platform/main.roc`: it builds for the browser and as the native spec runner |
 | `specs/*.scm` | Specs, run by both runners |
 
 This page's counter lives in `www/samples/counter/`. Put your own app in a new
@@ -63,23 +62,20 @@ directory beside `examples/`, and adjust the relative platform paths to match.
 - `Html.aria_label` gives each button an accessible name, which is also how
   specs find it.
 
-`program` is the one value both entry points use.
+`program` is the value the entry point binds.
 
-## The entry points
+## The entry point
 
-The browser build names the web platform:
+`main.roc` names the platform and binds the app's `program` as `main`:
 
-{{ sample(file="counter/main-web.roc") }}
+{{ sample(file="counter/main.roc") }}
 
-The test build names the test platform and the spec runner from
-`test-support/`:
-
-{{ sample(file="counter/main-test.roc") }}
-
-Type-check the app:
+The platform builds this one file for two targets: `--target=wasm32` gives
+the module the browser runs, and `--target=x64musl` gives the app's native
+spec runner. Type-check the app:
 
 ```sh
-roc check www/samples/counter/main-web.roc
+roc check www/samples/counter/main.roc
 ```
 
 ## Test it natively
@@ -89,12 +85,13 @@ would find things:
 
 {{ sample(file="counter/specs/counter.scm", syntax="scheme") }}
 
-Prepare the test platform once, then build the runner and run the specs:
+Prepare the platform's link inputs once, then build the runner and run the
+specs:
 
 ```sh
-blueprint run platform-test
-roc build www/samples/counter/main-test.roc --output=counter-specs
-./counter-specs spec www/samples/counter/specs/*.scm
+blueprint run platform
+roc build --target=x64musl www/samples/counter/main.roc --output=counter-specs
+./counter-specs www/samples/counter/specs/*.scm
 ```
 
 Each spec reports one JSON line, and a summary follows. The runner drives the
@@ -107,14 +104,13 @@ A page loads the app with the platform's runtime, `platform/runtime.mjs`:
 
 {{ sample(file="counter/index.html", syntax="html") }}
 
-Build the platform's Wasm host, then put the page, the runtime and the app in
-one directory and serve it:
+Build the same entry for the browser, then put the page, the runtime and the
+app in one directory and serve it:
 
 ```sh
-blueprint run bundle
 mkdir -p counter-site
 cp www/samples/counter/index.html platform/runtime.mjs counter-site/
-roc build --target=wasm32 www/samples/counter/main-web.roc --output=counter-site/app.wasm
+roc build --target=wasm32 www/samples/counter/main.roc --output=counter-site/app.wasm
 blueprint run serve -- counter-site
 ```
 

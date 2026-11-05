@@ -2,9 +2,9 @@ import cli.Path
 import Proc
 
 ## Builds the ported apps for the native and the browser spec runners and runs
-## their `.scm` specs. Each app's `main-test.roc` (test platform) and
-## `main-web.roc` (web platform) are built in place; both platforms are roots
-## of `platform/` and share its `Engine.roc`.
+## their `.scm` specs. Each app's one entry, `main.roc`, is built twice from
+## the one platform: `--target=x64musl` gives its native spec runner and
+## `--target=wasm32` its browser module.
 SpecSuite := [].{
 	runtime = "platform/runtime.mjs"
 
@@ -87,6 +87,9 @@ SpecSuite := [].{
 
 	# ------------------------------------------------------------- native
 
+	## The target the platform's native spec runner builds for.
+	native_target = "x64musl"
+
 	## The native spec runner of `example` (built by `build!`).
 	runner_of : Options, Str -> Str
 	runner_of = |o, example| "${o.build_dir}/native/${example}/runner"
@@ -95,12 +98,11 @@ SpecSuite := [].{
 	wasm_of : Options, Str -> Str
 	wasm_of = |o, name| "${o.build_dir}/wasm/${name}/app.wasm"
 
-	## A build of the app or test app `main` (`main-test.roc` or
-	## `main-web.roc`) at optimisation level `opt`.
+	## A build of an app's `main.roc` for `target` at optimisation level `opt`.
 	build_job : Options, Str, Str, Str, Str -> Proc.Job
 	build_job = |o, opt, main, target, output| {
 		program: o.compiler,
-		args: ["build", "--opt=${opt}"].concat(if (target == "") [] else ["--target=${target}"]).concat([main, "--output=${output}"]),
+		args: ["build", "--opt=${opt}", "--target=${target}", main, "--output=${output}"],
 		cwd: o.root,
 	}
 
@@ -118,13 +120,13 @@ SpecSuite := [].{
 		var $jobs = []
 		for example in natives {
 			Path.create_all!(Path.utf8("${o.build_dir}/native/${example}"))?
-			$jobs = $jobs.append(SpecSuite.build_job(o, "dev", "${SpecSuite.dir_of(example)}/main-test.roc", "", SpecSuite.runner_of(o, example)))
+			$jobs = $jobs.append(SpecSuite.build_job(o, "dev", "${SpecSuite.dir_of(example)}/main.roc", SpecSuite.native_target, SpecSuite.runner_of(o, example)))
 		}
 		for w in webs {
 			name = w.split_on("/").last() ?? w
 			dir = if (w.starts_with("tests/apps/")) w else SpecSuite.dir_of(w)
 			Path.create_all!(Path.utf8("${o.build_dir}/wasm/${name}"))?
-			$jobs = $jobs.append(SpecSuite.build_job(o, web_opt, "${dir}/main-web.roc", "wasm32", SpecSuite.wasm_of(o, name)))
+			$jobs = $jobs.append(SpecSuite.build_job(o, web_opt, "${dir}/main.roc", "wasm32", SpecSuite.wasm_of(o, name)))
 		}
 		results = Proc.parallel!($jobs, Proc.cpus!())?
 		failed = List.map2($jobs, results, |job, r| (job, r.code)).keep_if(|(_, code)| code != 0)
@@ -176,7 +178,7 @@ SpecSuite := [].{
 	## Run the native specs; returns the result lines.
 	run_native! : Options, Str, List(Str) => Try(List(Str), _)
 	run_native! = |o, runner, specs| {
-		{ stdout, .. } = Proc.output!({ program: runner, args: ["spec", "--filter", o.filter].concat(specs), cwd: "." })?
+		{ stdout, .. } = Proc.output!({ program: runner, args: ["--filter", o.filter].concat(specs), cwd: "." })?
 		Ok(Str.from_utf8_lossy(stdout).split_on("\n"))
 	}
 
@@ -195,7 +197,7 @@ SpecSuite := [].{
 	run_browser! = |o, example, runner, wasm, specs| {
 		# A spec the parser refuses is emitted as an error line (and the
 		# command exits 1); the replay reports it as failed.
-		{ stdout: steps, .. } = Proc.output!({ program: runner, args: ["spec", "--emit-steps", "--filter", o.filter].concat(specs), cwd: "." })?
+		{ stdout: steps, .. } = Proc.output!({ program: runner, args: ["--emit-steps", "--filter", o.filter].concat(specs), cwd: "." })?
 		steps_file = "${o.build_dir}/wasm/${example}/steps.jsonl"
 		Path.write_bytes!(Path.utf8(steps_file), steps)?
 		{ stdout, .. } = Proc.output!({ program: o.node, args: ["tests/browser/replay.mjs", "--wasm", wasm, "--runtime", SpecSuite.runtime, "--steps", steps_file, "--chrome", o.chrome, "--json-lines"], cwd: "." })?

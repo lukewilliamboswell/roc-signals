@@ -1,10 +1,7 @@
-app [target] {
-	pf: platform "../../platform/test.roc",
-	ts: "../../test-support/main.roc",
-}
+app [target] { pf: platform "../../platform/fuzz.roc" }
 
 import pf.Fuzz
-import ts.Scm
+import pf.Scm
 
 ## The `.scm` parser is total: any text either parses or is refused with a
 ## position inside the text. A parsed spec has a name, at least one step, and

@@ -15,7 +15,7 @@ import src/Targets
 
 ## The `check` task, the per-pull-request gate: the script pins,
 ## formatting, every public `Engine` and `Html` symbol documented, `roc test`,
-## the test platform and the `scm-parse` fuzz target, the docs samples, every
+## the platform inputs and the `scm-parse` fuzz target, the docs samples, every
 ## app's `.scm` specs natively and in Chrome, the broken-spec self-check (both
 ## runners reject a spec with one wrong expectation), the runtime contract
 ## tests in Chrome (effects, controls, Conduit journey), the
@@ -29,17 +29,18 @@ main! = |_args| {
 	$problems = $problems.concat(script_pins!()?)
 
 	Proc.note!("== formatting")
-	$problems = $problems.concat(check!({ program: o.compiler, args: ["fmt", "--check", "platform", "test-support", "examples", "tests/apps", "fuzz", "www/samples", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"], cwd: "." }, "roc fmt --check")?)
+	$problems = $problems.concat(check!({ program: o.compiler, args: ["fmt", "--check", "platform", "examples", "tests/apps", "fuzz", "www/samples", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"], cwd: "." }, "roc fmt --check")?)
 	$problems = $problems.concat(check!({ program: o.tooling, args: ["fmt", "--check", "scripts"], cwd: "." }, "roc-stable fmt --check scripts")?)
 
 	Proc.note!("== API docs")
 	$problems = $problems.concat(ApiDocs.check!({})?)
 
 	Proc.note!("== roc test")
-	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "test-support/main.roc"], cwd: "." }, "roc test test-support")?)
+	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "platform/main.roc"], cwd: "." }, "roc test platform/main.roc")?)
+	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "platform/fuzz.roc"], cwd: "." }, "roc test platform/fuzz.roc")?)
 	$problems = $problems.concat(check!({ program: o.tooling, args: ["test", "scripts/check_all.roc"], cwd: "." }, "roc-stable test scripts")?)
 
-	Proc.note!("== platform-test")
+	Proc.note!("== platform inputs")
 	Checks.prepare_platform!(o)?
 	$problems = $problems.concat(fuzz_smoke!(o)?)
 
@@ -123,7 +124,7 @@ script_pins! = || {
 	if Path.exists!(Path.utf8(".roc-version"))? {
 		$out = $out.append(".roc-version pins a compiler; only scripts/ may")
 	}
-	for dir in ["platform", "test-support", "examples", "tests", "fuzz", "www/samples", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"] {
+	for dir in ["platform", "examples", "tests", "fuzz", "www/samples", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"] {
 		for f in SpecSuite.files_under!(dir, ".roc")? {
 			header = Path.read_utf8!(Path.utf8(f))?.split_on("\n").take_first(6)
 			if header.any(|l| l.trim().starts_with("roc: \"")) {

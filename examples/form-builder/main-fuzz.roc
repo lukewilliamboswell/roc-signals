@@ -1,18 +1,15 @@
-app [target] {
-	pf: platform "../../platform/test.roc",
-	ts: "../../test-support/main.roc",
-}
+app [target] { pf: platform "../../platform/fuzz.roc" }
 
 import pf.Core
 import pf.Fuzz
-import ts.Scm
-import ts.Soak
-import ts.SpecRunner
+import pf.Scm
+import pf.Soak
+import pf.SpecRunner
 import Form
 import FormApp
 
 ## Form Builder on the Roc-owned engine.
-## - specs: run through main-test.roc (events in,
+## - specs: run through main.roc (events in,
 ##   decoded DOM out); any mismatch crashes with the spec and step.
 ## - generated: random sequences of designer/preview edits checked against a
 ##   reference model of the schema/answers (the DOM's field order, labels,

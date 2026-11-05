@@ -21,11 +21,12 @@ test instead of slipping through.
 ## How specs run
 
 Specs live in `<app>/specs/*.scm`, one test per file. They are read by one
-parser, written in Roc (`test-support/Scm.roc`), which turns the text into a
+parser, written in Roc (`platform/Scm.roc`), which turns the text into a
 typed list of steps. Two runners consume that list:
 
-- **The native runner.** The app's `main-test.roc`, built on the test
-  platform, mounts the app's `Program` and drives it with the same bytes
+- **The native runner.** The app's `main.roc` built with
+  `--target=x64musl`: the platform bundles the runner, which mounts the
+  app's `Program` and drives it with the same bytes
   the browser runtime would send: boot data, DOM events and effect results.
   Every assertion reads `Dom.roc`, an oracle that decodes the engine's
   command stream into a small DOM model and shares no code with the engine.
@@ -58,10 +59,11 @@ typed result:
 
 {{ sample(file="search/Search.roc", region="requests") }}
 
-`main-web.roc` is the browser build; `main-test.roc` is the native runner,
-which hands the same `program` to `SpecRunner`:
+Its one entry point, `main.roc`, binds that `program` as `main`; built for
+`wasm32` it is the browser module, and built for `x64musl` it is the native
+spec runner:
 
-{{ sample(file="search/main-test.roc") }}
+{{ sample(file="search/main.roc") }}
 
 ## Anatomy of a spec
 
@@ -255,28 +257,32 @@ The project's tasks run the registered apps' specs:
 | `blueprint run spec -- --filter 'add*' kanban-board` | Only specs whose file name matches the glob |
 | `blueprint run check` | The pull-request gate: every app's specs in both runners, the documentation samples' specs, and the rest of the suite |
 
-For an app of your own, build its test entry point and pass it spec files:
+For an app of your own, build its entry point for the native target and pass
+the runner spec files:
 
-- `roc build main-test.roc --output=build/app-specs`
-- `build/app-specs spec specs/*.scm` runs them and prints one JSON result
-  line per spec, with the failing step's file, line and column;
-  `--filter GLOB` selects by file name.
-- `build/app-specs spec --emit-steps specs/*.scm` prints the parsed steps
-  that the browser runner (`tests/browser/replay.mjs`) replays.
+- `roc build --target=x64musl main.roc --output=build/app-specs`
+- `build/app-specs specs/*.scm` runs them and prints one JSON result line
+  per spec, with the failing step's file, line and column; `--filter GLOB`
+  selects by file name.
+- `build/app-specs --emit-steps specs/*.scm` prints the parsed steps that
+  the browser runner (`tests/browser/replay.mjs`) replays.
 
 ## Fuzzing and soak
 
 Specs check the paths you thought of. For sequences you did not, an app can
-add a `main-fuzz.roc` beside its modules: a roc-fuzz target that decodes
+add a `main-fuzz.roc` beside its modules, built with `roc build --fuzz` on the
+repository's fuzz platform (`platform/fuzz.roc`, which needs roc-fuzz's own
+entry and host, so it cannot share the app's `main.roc`): a roc-fuzz target that decodes
 arbitrary bytes into a valid session — random events found by exploring the
 live DOM — and checks it against an oracle, with every session leak-checked.
 The same file declares the app's soak runs: long random walks whose live
 allocations must stay flat across repeated round trips.
 
-- `blueprint run check` replays every target's saved examples.
+- `blueprint run check` replays the parser target's saved examples, and
+  `blueprint run check-slow` every target's.
 - `blueprint run fuzz -- --time 600 kanban-board` runs a fuzz campaign.
-- `blueprint run soak` runs the leak-checked native soaks and a long session
-  of every app in Chrome.
+- `blueprint run check-slow` also runs a long session of every app in
+  Chrome.
 
 When a campaign finds a failure, reduce it to a saved example beside the
 target so `check` keeps it fixed. See

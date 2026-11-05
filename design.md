@@ -226,23 +226,36 @@ flowchart LR
     DOM -->|"event (node, handler, payload)"| JS
     JS -->|"payload_reserve + event"| Host
 
-    Engine --> Test["platform/test.roc<br/>native test platform"]
-    Test --> Oracle["test-support/Dom.roc<br/>independent command-stream oracle"]
-    Scm["examples/*/specs/*.scm"] --> Parser["test-support/Scm.roc<br/>one parser"]
+    Engine --> Test["platform/SpecRunner.roc<br/>native spec runner (x64musl)"]
+    Test --> Oracle["platform/Dom.roc<br/>independent command-stream oracle"]
+    Scm["examples/*/specs/*.scm"] --> Parser["platform/Scm.roc<br/>one parser"]
     Parser --> Native["SpecRunner.roc (native)"]
     Parser -->|"emitted steps"| Browser["replay in Chrome"]
 ```
 
-The repository has one platform (`platform/`), web only. The same
-`Core.roc` runs in two places:
+The repository has one platform (`platform/main.roc`), web only, shipped as
+one release bundle. An app has one entry, `main.roc`, binding its `program`
+as `main`, and the platform builds it for two targets with per-target link
+inputs:
 
-- **The web platform** compiles the app and engine to Wasm with the thin host.
-  It is the product.
-- **The native test platform** (`platform/test.roc`, a second root of
-  `platform/`) runs the same engine
-  natively for specs, soak runs and roc-fuzz targets. Because the engine is
-  pure, a test drives it by calling its transaction functions and decoding the
-  command stream; there is no simulated host with its own semantics.
+- **`--target=wasm32`** compiles the app and engine to Wasm with the thin
+  host. It is the product.
+- **`--target=x64musl`** gives the app's native `.scm` spec runner: the
+  platform's `SpecRunner.roc` drives the same `main` against the `Dom.roc`
+  oracle, linked with a small native host (`host/spec.zig`: entry point,
+  allocator, file and output services). The Wasm link drops the runner, so
+  the browser module does not grow. Because the engine is pure, the runner
+  drives it by calling its transaction functions and decoding the command
+  stream; there is no simulated host with its own semantics.
+
+Fuzz targets cannot share that entry: roc-fuzz requires a `target : Target`
+value and links its own libFuzzer host, and a platform has one `requires`.
+They stay a separate entry, each app's `main-fuzz.roc`, built with
+`roc build --fuzz` on a second root, `platform/fuzz.roc`: a vendored roc-fuzz
+platform that shares the platform's modules and also exposes the internal
+`Core`, the runner, the oracle and the soak walk. It is repository-only and
+not in the release bundle. The leak-checked soaks live there too, because
+they rely on roc-fuzz's allocation scopes.
 
 There is no native semantic host and no shared Zig engine. Observability that
 the old native host provided (work counters, effect tables, allocation
@@ -903,10 +916,10 @@ UI:
   `expect-metric-delta-at-most`, `expect-updates`, `expect-cleanup`,
   `expect-interval`.
 
-The grammar has **one parser, written in Roc** (`test-support/Scm.roc`), which
+The grammar has **one parser, written in Roc** (`platform/Scm.roc`), which
 produces a typed list of steps. Both runners consume it:
 
-- the **native runner** (`SpecRunner.roc`, built by each app's `main-test.roc` on the test platform) drives
+- the **native runner** (`SpecRunner.roc`, which the platform bundles: each app's `main.roc` built for `x64musl`) drives
   the engine directly and asserts against the `Dom.roc` model;
 - the **browser runner** replays the same steps, emitted as data by the same
   parser, against the real runtime in headless Chrome.
@@ -1028,8 +1041,9 @@ architecture are recorded here:
   and runtime contract tests. CI calls Blueprint tasks, never script paths.
 - **Fuzzing.** Short corpus replays run in pull-request CI; long campaigns
   run on a schedule.
-- **Releases.** A release publishes the platform bundle (engine, host and
-  runtime), `runtime.mjs`, an examples archive naming that bundle, and the
+- **Releases.** A release publishes the one platform bundle (engine, Wasm
+  host and runtime, and the native spec runner with its x64musl link
+  inputs), `runtime.mjs`, an examples archive naming that bundle, and the
   generated API docs; `check` builds the same assets as a dry run. The shared
   roc-automation nightly runner builds the latest release's examples with the
   latest Roc nightly. Changing `roc-stable` is a maintainer's pull request.
@@ -1063,7 +1077,7 @@ Code size is the main open cost of the architecture and is tracked against
 
 1. **One engine, thin host.** All reactive and structural logic is in
    `Core.roc`. `host.zig` and `runtime.mjs` contain no reactive decision.
-   *Holds when:* the same engine runs under the web and test platforms with
+   *Holds when:* the same engine runs in the browser module and the native spec runner with
    the same command stream.
 2. **App semantics agree natively and in the browser.** Every maintained app's
    specs pass under both runners from one parser.
@@ -1304,7 +1318,7 @@ that has run, in first-run order, with its run count.
 | 31 | Cleanup runs, all names |
 
 Index 0 is unused. The metric names the spec language accepts map onto these
-indices (`test-support/Scm.roc`, `metric_names`).
+indices (`platform/Scm.roc`, `metric_names`).
 
 ### Event records
 

@@ -1,17 +1,14 @@
-app [target] {
-	pf: platform "../../platform/test.roc",
-	ts: "../../test-support/main.roc",
-}
+app [target] { pf: platform "../../platform/fuzz.roc" }
 
 import pf.Core
 import pf.Fuzz
-import ts.Scm
-import ts.Soak
-import ts.SpecRunner
+import pf.Scm
+import pf.Soak
+import pf.SpecRunner
 import SheetApp
 
 ## Spreadsheet Lite on the Roc-owned engine (its specs run through
-## `main-test.roc`).
+## `main.roc`).
 ## - generated: explorer-driven random walks over the live DOM (typing into
 ##   cells and the formula bar, focus, blur, toggles), which must free
 ##   everything they allocated.

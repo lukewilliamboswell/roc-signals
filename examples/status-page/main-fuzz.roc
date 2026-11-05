@@ -1,19 +1,18 @@
 app [target] {
-	pf: platform "../../platform/test.roc",
+	pf: platform "../../platform/fuzz.roc",
 	plume: "https://github.com/lukewilliamboswell/plume/releases/download/0.5.0/UstpTQVssohnU8U6Q5WpwfGxKuYZF8uWzjddwKMbTcp.tar.zst",
-	ts: "../../test-support/main.roc",
 }
 
 import pf.Core
 import pf.Fuzz
-import ts.Dom
-import ts.Scm
-import ts.Soak
-import ts.SpecRunner
+import pf.Dom
+import pf.Scm
+import pf.Soak
+import pf.SpecRunner
 import StatusApp
 
 ## Status Page on the Roc-owned engine (its specs run through
-## `main-test.roc`).
+## `main.roc`).
 ## - generated: walks of refreshes, interval ticks, visibility changes and
 ##   answers (healthy, degraded, garbled, failed, timed out, in any order),
 ##   which must free everything they allocated.

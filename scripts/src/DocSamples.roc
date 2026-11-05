@@ -5,7 +5,7 @@ import SpecSuite
 ## The documentation's code samples. Every Roc sample in `www/content` comes
 ## from a file under `www/samples/` through the `sample` shortcode, so the
 ## `check` task can compile it: each sample app is `roc check`ed, and a sample
-## directory with a `main-test.roc` has its `specs/*.scm` run natively.
+## directory with `specs/` has them run natively and in Chrome.
 DocSamples := [].{
 	samples_dir = "www/samples"
 
@@ -52,7 +52,7 @@ DocSamples := [].{
 
 	## Check the docs pages and samples: every page's sample references
 	## resolve, every sample app type-checks, and every sample with a
-	## `main-test.roc` passes its specs. A failure is a reported problem.
+	## `specs/` directory passes its specs. A failure is a reported problem.
 	check! : SpecSuite.Options => Try(List(Str), _)
 	check! = |o| {
 		var $problems = []
@@ -76,15 +76,15 @@ DocSamples := [].{
 			}
 		}
 		for dir in DocSamples.dirs!()? {
-			if Path.exists!(Path.utf8("${dir}/main-test.roc"))? {
+			if Path.exists!(Path.utf8("${dir}/specs"))? {
 				out = "${o.build_dir}/docs/${dir}"
 				runner = "${out}/runner"
 				wasm = "${out}/app.wasm"
 				name = "docs-${dir.split_on("/").last() ?? dir}"
 				Path.create_all!(Path.utf8(out))?
 				Path.create_all!(Path.utf8("${o.build_dir}/wasm/${name}"))?
-				native = Proc.output!(SpecSuite.build_job(o, "dev", "${dir}/main-test.roc", "", runner))?
-				web = Proc.output!(SpecSuite.build_job(o, "dev", "${dir}/main-web.roc", "wasm32", wasm))?
+				native = Proc.output!(SpecSuite.build_job(o, "dev", "${dir}/main.roc", SpecSuite.native_target, runner))?
+				web = Proc.output!(SpecSuite.build_job(o, "dev", "${dir}/main.roc", "wasm32", wasm))?
 				if native.code != 0 or web.code != 0 {
 					$problems = $problems.append("docs sample ${dir} does not build")
 				} else {
@@ -115,12 +115,12 @@ DocSamples := [].{
 	}
 
 	## Every sample application: single-file samples and each directory's
-	## `main-*.roc`.
+	## `main.roc`.
 	apps! : () => Try(List(Str), _)
 	apps! = || {
 		var $out = SpecSuite.roc_files!(DocSamples.samples_dir)?
 		for dir in DocSamples.dirs!()? {
-			$out = $out.concat(SpecSuite.roc_files!(dir)?.keep_if(|f| f.contains("/main-")))
+			$out = $out.concat(SpecSuite.roc_files!(dir)?.keep_if(|f| f.ends_with("/main.roc")))
 		}
 		Ok($out)
 	}

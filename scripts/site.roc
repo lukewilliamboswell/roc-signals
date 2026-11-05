@@ -17,7 +17,7 @@ import src/SpecSuite
 ## writes `www/static/signals.css` (ignored), Zola checks the internal links
 ## and builds `www/`,
 ## roc-docs generates the API docs into `dist/api/`, and every example's
-## `main-web.roc` is built (`--opt=size`, as it ships) to
+## `main.roc` is built for wasm32 (`--opt=size`, as it ships) to
 ## `dist/examples/<slug>/app.wasm` beside `dist/runtime.mjs`, which the
 ## site's `site.mjs` mounts it with. The status page's `plume-chart.mjs` is
 ## copied beside its app.

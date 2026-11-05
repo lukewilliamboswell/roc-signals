@@ -1,17 +1,14 @@
-app [target] {
-	pf: platform "../../platform/test.roc",
-	ts: "../../test-support/main.roc",
-}
+app [target] { pf: platform "../../platform/fuzz.roc" }
 
 import pf.Core
 import pf.Fuzz
-import ts.Dom
-import ts.Scm
-import ts.Soak
-import ts.SpecRunner
+import pf.Dom
+import pf.Scm
+import pf.Soak
+import pf.SpecRunner
 import ConduitApp
 
-## Conduit on the engine (its specs run through `main-test.roc`).
+## Conduit on the engine (its specs run through `main.roc`).
 
 ## One body that satisfies every RealWorld envelope the app decodes (each
 ## decoder reads its own key): the soak's answer to every request.

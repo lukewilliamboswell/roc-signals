@@ -6,6 +6,7 @@ app [main] {
 import pf.Engine
 import StatusApp
 
-## Status Page, browser build.
+## Status Page: `roc build --target=wasm32` gives the browser module and
+## `roc build --target=x64musl` its native spec runner.
 main : Engine.Program
 main = StatusApp.program

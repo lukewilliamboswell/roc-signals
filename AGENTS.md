@@ -85,18 +85,18 @@
 ## Preserve one engine and honest boundaries
 
 - Put scheduling, reconciliation, identity, effect lifecycle and containment
-  policy in `platform/Engine.roc` and the platform's Roc modules. The host and
+  policy in `platform/Core.roc` and the platform's Roc modules. The host and
   `runtime.mjs` adapt the engine to the browser; they do not implement its
-  semantics. The test platform drives the same engine; it does not simulate a
+  semantics. The native spec runner drives the same engine; it does not simulate a
   different one.
 - Treat the command stream, event records, effect payloads, boot bytes and Wasm
   exports as one versioned protocol. Change the Roc encoder and decoders,
-  `test-support/Dom.roc`, `runtime.mjs`, the contract tests in `tests/` and
+  `platform/Dom.roc`, `runtime.mjs`, the contract tests in `tests/` and
   Appendix B of `design.md` together.
-- Keep `test-support/Dom.roc` independent of the engine. It is the oracle; code
-  shared with `Engine.roc` would let one bug pass its own test.
+- Keep `platform/Dom.roc` independent of the engine. It is the oracle; code
+  shared with `Core.roc` would let one bug pass its own test.
 - Keep `.scm` specs the single source of truth for application-visible
-  behavior, parsed by the one Roc parser in `test-support/`. Unknown steps are
+  behavior, parsed by the one Roc parser in `platform/Scm.roc`. Unknown steps are
   hard errors in every runner. Do not weaken, skip or reinterpret a step to make
   it pass; a reinterpretation is a design change recorded in `design.md` and in
   the commit.
@@ -104,7 +104,7 @@
 ## Complete changes across affected layers
 
 - Trace boundary and public API changes through the engine, the typed view
-  modules, `platform/main.roc`, `host.zig`, `runtime.mjs`, the test platform and
+  modules, `platform/main.roc`, `host.zig`, `runtime.mjs`, the native spec runner and
   oracle, specs, examples, generated or bundled artifacts, and maintained
   documentation wherever each layer is affected.
 - Read `style.md` before editing Roc. Follow the conventions there for types,

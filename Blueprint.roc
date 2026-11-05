@@ -39,10 +39,10 @@ roc_stable_program = Fetch("roc-stable", Recipes.roc_nightly("nightly-2026-11-03
 config = [
 	Name("roc-signals"),
 	Systems(["x86_64-linux", "aarch64-linux", "aarch64-darwin"]),
-	# The Roc-owned engine: native and browser spec runs, the test platform's
-	# fetched inputs, and the scripts that drive them. curl, tar, zstd and
+	# The Roc-owned engine: native and browser spec runs, the platform's
+	# fetched native inputs, and the scripts that drive them. curl, tar, zstd and
 	# sha256sum fetch and verify the roc-fuzz release inputs of
-	# platform-test.
+	# the `platform` task.
 	#
 	# Chrome is the machine's `google-chrome` for now. Chrome for Testing ships
 	# only zip archives, and blueprint 0.8.0 (and 0.9.0) unpacks a Zip download
@@ -64,9 +64,10 @@ config = [
 	Task("check-slow", [Use("engine"), Run(["scripts/check_slow.roc"])]),
 	# One or more apps' specs: `blueprint run spec -- --browser kanban-board`.
 	Task("spec", [Use("engine"), Run(["scripts/spec.roc", "--"])]),
-	# Fetch and build the test platform's host, for building a main-test.roc
-	# by hand.
-	Task("platform-test", [Use("engine"), Run(["scripts/build_platform_test.roc"])]),
+	# Fetch and build the platform's native inputs (the spec runner's host and
+	# libc, the fuzz platform's roc-fuzz host), for building an app's native
+	# spec runner or fuzz target by hand.
+	Task("platform", [Use("engine"), Run(["scripts/build_platform.roc"])]),
 	# Build the js-framework-benchmark app and check it in Chrome.
 	Task("jfb", [Use("engine"), Run(["scripts/jfb.roc"])]),
 	# A fuzz campaign: `blueprint run fuzz -- --time 600 [TARGET...]`.

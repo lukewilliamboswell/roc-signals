@@ -95,9 +95,9 @@ classes are listed in the [Reference](@/docs/reference.md#errors).
 
 ## Natively
 
-The test platform (`platform/test.roc`) runs the same `Engine.roc` as native
-code. A spec runner calls the engine's transaction functions directly and feeds
-the command bytes to `test-support/Dom.roc`, an independent decoder that builds
+An app's `main.roc` built for `x64musl` runs the same engine as native code:
+the platform's spec runner calls the engine's transaction functions directly
+and feeds the command bytes to `platform/Dom.roc`, an independent decoder that builds
 a model of the DOM. Specs assert against that model. Because it reads only the
 command stream, a spec that passes natively has exercised the same protocol
 the browser runtime consumes.

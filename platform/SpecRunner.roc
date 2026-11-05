@@ -1147,7 +1147,7 @@ SpecRunner := [].{
 	Options : { filter : Str, emit_steps : Bool, grammar : Bool, files : List(Str) }
 
 	usage : Str
-	usage = "usage: TARGET spec [--filter GLOB] [--emit-steps] FILE.scm...\n       TARGET spec --grammar\n"
+	usage = "usage: RUNNER [--filter GLOB] [--emit-steps] FILE.scm...\n       RUNNER --grammar\n"
 
 	parse_args : List(Str) -> Try(Options, Str)
 	parse_args = |args| {

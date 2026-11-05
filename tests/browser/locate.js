@@ -1,4 +1,4 @@
-// In-page locator semantics shared with test-support/SpecRunner.roc: `label` is aria-label,
+// In-page locator semantics shared with platform/SpecRunner.roc: `label` is aria-label,
 // `test-id` is data-testid, `role` is the explicit role or the implicit one
 // (button, a -> link, section -> region, form, dialog, h1-h6 -> heading) matched with
 // the accessible name (aria-label, else text content), `text` is a text node

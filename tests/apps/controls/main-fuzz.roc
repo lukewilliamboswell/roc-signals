@@ -1,14 +1,11 @@
-app [target] {
-	pf: platform "../../../platform/test.roc",
-	ts: "../../../test-support/main.roc",
-}
+app [target] { pf: platform "../../../platform/fuzz.roc" }
 
 import pf.Core
 import pf.Fuzz
 import pf.Engine
-import ts.Dom
-import ts.Scm
-import ts.SpecRunner
+import pf.Dom
+import pf.Scm
+import pf.SpecRunner
 import ControlsApp
 import ManyApp
 

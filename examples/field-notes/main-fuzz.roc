@@ -1,18 +1,15 @@
-app [target] {
-	pf: platform "../../platform/test.roc",
-	ts: "../../test-support/main.roc",
-}
+app [target] { pf: platform "../../platform/fuzz.roc" }
 
 import pf.Core
 import pf.Fuzz
-import ts.Scm
-import ts.Soak
-import ts.SpecRunner
+import pf.Scm
+import pf.Soak
+import pf.SpecRunner
 import Notes
 import NotesApp
 
 ## Field Notes on the Roc-owned engine (its specs run through
-## `main-test.roc`).
+## `main.roc`).
 ## - generated: explorer-driven random walks over the live DOM, with every
 ##   sync request answered, which must free everything they allocated.
 ## - "soak-10k": 10k seeded events, then a draft, filter and reorder round

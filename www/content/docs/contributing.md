@@ -31,8 +31,7 @@ recipe ready.
 
 | Path | Contents |
 |---|---|
-| `platform/` | The web platform (`main.roc`, `Engine.roc`, `Html.roc`, `host/host.zig`, `runtime.mjs`) and the native test platform (`test.roc` and the roc-fuzz modules) |
-| `test-support/` | The `.scm` parser (`Scm.roc`), the native spec runner, the `Dom.roc` oracle and the soak walk |
+| `platform/` | The platform (`main.roc`): the engine (`Core.roc`), the authoring API (`Engine.roc`, `Html.roc`), the Wasm host (`host/host.zig`) and `runtime.mjs`, and the native spec runner (`SpecRunner.roc`, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig`). Also the fuzz platform (`fuzz.roc`, the vendored roc-fuzz modules and the soak walk) |
 | `tests/` | Browser contract tests and the apps they drive, the Chrome spec replay, and the release check helper |
 | `fuzz/` | Fuzz targets of the shared support; each app's own target is its `main-fuzz.roc` |
 | `examples/` | The example apps, each with its specs |
@@ -47,7 +46,7 @@ recipe ready.
 | `blueprint run check` | The pull-request gate (below) |
 | `blueprint run check-slow` | Every fuzz target's declared examples, the leak-checked native soaks with flat round trips, and a long Chrome session per app |
 | `blueprint run spec -- [--browser] [--filter GLOB] [APP...]` | Some apps' specs, natively and optionally in Chrome |
-| `blueprint run platform-test` | Fetch and build the test platform's host, to build a `main-test.roc` by hand |
+| `blueprint run platform` | Fetch and build the platform's link inputs, to build an app's `main.roc` or `main-fuzz.roc` by hand |
 | `blueprint run jfb` | Build the js-framework-benchmark app and check its operations in Chrome |
 | `blueprint run fuzz -- [--time S] [TARGET...]` | A fuzz campaign |
 | `blueprint run site -- [--base-url URL]` | Build the site, the API docs and the example apps into `dist/` |
@@ -86,13 +85,13 @@ Every spec must pass in both runners; there are no expected failures.
 ## Specs and contract tests
 
 Application-visible behaviour is specified in `.scm` files beside each app and
-runs in both runners from one parser, `test-support/Scm.roc`. An unknown step
+runs in both runners from one parser, `platform/Scm.roc`. An unknown step
 is a parse error, and both runners implement every step, with Chrome as the
 reference for what it means. The language is
 documented in [Testing](@/docs/testing.md).
 
 A change to the wire protocol changes the engine's encoder,
-`test-support/Dom.roc`, `platform/runtime.mjs`, the contract tests under
+`platform/Dom.roc`, `platform/runtime.mjs`, the contract tests under
 `tests/` and Appendix B of `design.md` together, and bumps the protocol
 version.
 
@@ -107,8 +106,8 @@ shown with the `sample` shortcode:
 
 A region is the lines between `# region NAME` and `# endregion NAME`. `check`
 fails on an inline Roc block in a docs page, a missing sample or region, a
-sample that does not type-check, and a sample directory with a `main-test.roc`
-whose specs fail natively or in Chrome.
+sample that does not type-check, and a sample directory with `specs/` whose
+specs fail natively or in Chrome.
 
 ## Fuzzing
 
@@ -172,10 +171,12 @@ reproduction lives in the issue, not in this repository.
 A maintainer dispatches the `Release` workflow with a version. It builds the
 assets with `blueprint run release` and creates a draft GitHub release with:
 
-- the platform bundle, `<hash>.tar.zst`, which apps name as their platform;
+- the platform bundle, `<hash>.tar.zst`, which apps name as their platform:
+  one platform whose `main.roc` builds for `wasm32` (the browser module) and
+  `x64musl` (the native spec runner), with the link inputs of both;
 - `runtime.mjs`;
-- `roc-signals-examples-<version>.zip`, the examples naming that bundle, with
-  the compatibility suite;
+- `roc-signals-examples-<version>.zip`, each example's `main.roc` naming that
+  bundle with its modules and specs, and the compatibility suite;
 - `roc-signals-docs-<version>.zip`, the API docs;
 - notes stating both compilers (the `roc` nightly that built and tested it,
   and `roc-stable`), to which the maintainer adds the narrative on GitHub
@@ -197,9 +198,10 @@ with these deliberate exceptions:
 - **Specs, not `tests/spec.json`, test the working tree.** The examples are
   browser apps; `.scm` specs run in both runners. The examples archive
   carries a `spec.json` only for the shared nightly runner.
-- **Examples are directories** with `main-web.roc`, `main-test.roc` and
-  `main-fuzz.roc`, not a single `main.roc`, because each app builds for two
-  platforms.
+- **Examples are directories** with a `main.roc`, which builds for the
+  browser and as the native spec runner, its specs, and a `main-fuzz.roc` on
+  the repository's fuzz platform (roc-fuzz's entry cannot share the app's).
+  The examples archive carries `main.roc` and the specs.
 - **The release workflow is hand-written** and publishes a draft whose notes
   are written on GitHub, rather than the shared package release workflow and
   notes under `docs/releases/`.

@@ -32,9 +32,9 @@ walks through writing, testing and running a first app.
 
 | Path | Contents |
 |---|---|
-| `platform/` | The engine (`Core.roc`), its authoring API (`Engine.roc`), the `Html` vocabulary, the Wasm host, the browser runtime, and the native test platform |
+| `platform/` | The engine (`Core.roc`), its authoring API (`Engine.roc`), the `Html` vocabulary, the Wasm host, the browser runtime, the native spec runner, and the fuzz platform |
 | `examples/` | Eight example apps, each with its specs |
-| `test-support/`, `tests/`, `fuzz/` | The spec parser and native runner, browser contract tests, fuzz targets |
+| `tests/`, `fuzz/` | Browser contract tests, the Chrome spec replay, fuzz targets of the shared support |
 | `www/` | The documentation site |
 | `scripts/` | The Roc scripts behind the Blueprint tasks |
 
@@ -43,5 +43,6 @@ walks through writing, testing and running a first app.
 
 ## License
 
-[UPL-1.0](LICENSE). The native test platform adapts roc-fuzz; see
+[UPL-1.0](LICENSE). The fuzz platform vendors roc-fuzz, and the native spec runner links musl
+and Zig runtime archives from its release; see
 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).

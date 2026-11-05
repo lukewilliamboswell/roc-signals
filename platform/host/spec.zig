@@ -1,31 +1,21 @@
-//! roc-signals addition to the roc-fuzz host: the process entry point and the
-//! `Cli` services of `platform-test`.
+//! The native host of the roc-signals platform: `roc build --target=x64musl`
+//! of an app gives its `.scm` spec runner.
 //!
-//! The roc-fuzz host (`libhost.a`, from the roc-fuzz 0.5.0 release) provides
-//! the allocator, crash reporting and the libFuzzer callbacks. libFuzzer
-//! normally supplies `main` from its own archive member; this object defines
-//! `main` first, so the linker never pulls that member, and hands every
-//! invocation except `spec` to `LLVMFuzzerRunDriver` exactly as libFuzzer's
-//! own `main` does. Fuzz targets therefore behave as on roc-fuzz.
-//!
-//! `TARGET spec ARGS...` instead calls the target's `Target.cli` entry with
-//! ARGS and exits with its result. Roc owns every value it receives: the
-//! argument list is allocated with `roc_alloc`, hosted arguments are released
-//! here, and the file contents returned by `roc_test_read_file` are a fresh
-//! Roc list whose single reference passes to Roc.
+//! It owns the process entry point, the allocator, crash reporting and the
+//! `Cli` services the runner uses (`platform/Cli.roc`), and hands the
+//! command-line arguments to the platform's `roc_spec_main` (the
+//! `SpecRunner.main!` of the app's `main`), exiting with its result. Roc owns
+//! every value it receives: the argument list is allocated with `roc_alloc`,
+//! hosted arguments are released here, and the file contents returned by
+//! `roc_test_read_file` are a fresh Roc list whose single reference passes to
+//! Roc. A Roc crash or a failed `expect` prints its message to stderr and
+//! exits with status 70 and 71: a runner whose state may be incoherent has
+//! nothing correct left to report.
 
 const std = @import("std");
 
-// Runtime symbols exported by the roc-fuzz host.
-extern fn roc_alloc(length: usize, alignment: usize) callconv(.c) *anyopaque;
-extern fn roc_dealloc(ptr: *anyopaque, alignment: usize) callconv(.c) void;
-
-// libFuzzer and the roc-fuzz host.
-extern fn LLVMFuzzerRunDriver(argc: *c_int, argv: *[*][*:0]u8, callback: *const fn (?[*]const u8, usize) callconv(.c) c_int) callconv(.c) c_int;
-extern fn LLVMFuzzerTestOneInput(data: ?[*]const u8, size: usize) callconv(.c) c_int;
-
-// The command-line entry the platform provides (`Target.cli!`).
-extern fn roc_test_cli(args: RocList) callconv(.c) i32;
+// The command-line entry the platform provides (`SpecRunner.main!`).
+extern fn roc_spec_main(args: RocList) callconv(.c) i32;
 
 // musl libc.
 extern fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
@@ -34,6 +24,7 @@ extern fn read(fd: c_int, buf: [*]u8, len: usize) isize;
 extern fn write(fd: c_int, buf: [*]const u8, len: usize) isize;
 extern fn malloc(len: usize) ?*anyopaque;
 extern fn free(ptr: ?*anyopaque) void;
+extern fn aligned_alloc(alignment: usize, len: usize) ?*anyopaque;
 extern fn clock_gettime(clock: c_int, ts: *Timespec) c_int;
 extern fn exit(code: c_int) noreturn;
 
@@ -131,6 +122,60 @@ fn writeAll(fd: c_int, bytes: []const u8) void {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The allocator and crash reporting Roc calls. Each allocation carries a
+// header before the pointer Roc sees, holding the requested size, so
+// `roc_realloc` knows how much to copy.
+
+const header_size: usize = 16;
+
+fn alignment(align_arg: usize) usize {
+    return @max(align_arg, header_size);
+}
+
+export fn roc_alloc(size: usize, align_arg: usize) callconv(.c) *anyopaque {
+    const a = alignment(align_arg);
+    const total = std.mem.alignForward(usize, a + size, a);
+    const base: [*]u8 = @ptrCast(aligned_alloc(a, total) orelse fail("out of memory", ""));
+    const user = base + a;
+    @as(*usize, @ptrCast(@alignCast(user - header_size))).* = size;
+    return user;
+}
+
+export fn roc_dealloc(ptr: *anyopaque, align_arg: usize) callconv(.c) void {
+    const user: [*]u8 = @ptrCast(ptr);
+    free(user - alignment(align_arg));
+}
+
+export fn roc_realloc(ptr: *anyopaque, size: usize, align_arg: usize) callconv(.c) *anyopaque {
+    const user: [*]u8 = @ptrCast(ptr);
+    const old = @as(*const usize, @ptrCast(@alignCast(user - header_size))).*;
+    const next = roc_alloc(size, align_arg);
+    @memcpy(@as([*]u8, @ptrCast(next))[0..@min(old, size)], user[0..@min(old, size)]);
+    roc_dealloc(ptr, align_arg);
+    return next;
+}
+
+export fn roc_dbg(bytes: [*]const u8, len: usize) callconv(.c) void {
+    writeAll(2, "[dbg] ");
+    writeAll(2, bytes[0..len]);
+    writeAll(2, "\n");
+}
+
+export fn roc_expect_failed(bytes: [*]const u8, len: usize) callconv(.c) void {
+    writeAll(2, "expect failed: ");
+    writeAll(2, bytes[0..len]);
+    writeAll(2, "\n");
+    exit(71);
+}
+
+export fn roc_crashed(bytes: [*]const u8, len: usize) callconv(.c) void {
+    writeAll(2, "crashed: ");
+    writeAll(2, bytes[0..len]);
+    writeAll(2, "\n");
+    exit(70);
+}
+
 fn fail(comptime prefix: []const u8, detail: []const u8) noreturn {
     writeAll(2, prefix);
     writeAll(2, detail);
@@ -219,12 +264,6 @@ comptime {
 }
 
 fn cMain(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
-    if (argc >= 2 and std.mem.eql(u8, std.mem.span(argv[1]), "spec")) {
-        const count: usize = @intCast(argc);
-        const code = roc_test_cli(argsList(argv[2..count]));
-        return code;
-    }
-    var count = argc;
-    var args = argv;
-    return LLVMFuzzerRunDriver(&count, &args, &LLVMFuzzerTestOneInput);
+    const count: usize = @intCast(argc);
+    return roc_spec_main(argsList(argv[1..count]));
 }
