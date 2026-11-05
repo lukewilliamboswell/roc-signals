@@ -1,70 +1,89 @@
 import Engine exposing [Attr, Elem, Handler, Val]
 
-## Small HTML vocabulary over the engine (the ported apps share it). Every
-## helper is generic in the context, so it is specialised once per context
-## type that uses it. Accessible names go in aria-label, as the original
-## platform's Html module does, so the specs locate the same nodes.
+## Typed helpers for common HTML elements, attributes and events, built on
+## `Engine.element`, `Engine.attr` and `Engine.on`.
+##
+## Every helper is generic in the context `ctx`, so it works at the top level,
+## inside a `state` or `derive` body, in an `each` row or in a component.
+## Controls take their accessible name as `aria-label`, which spec `label` and
+## `role` locators match. Values (`Val`) keep the DOM in step with state; plain
+## `Str` arguments are static.
 Html := [].{
+
+	## A `div` with a static class.
 	div : Str, List(Elem(ctx)) -> Elem(ctx)
 	div = |cls, kids| Engine.element("div", [Engine.class(cls)], kids)
 
-	## A named region.
+	## `section(name, class, children)`: a region whose accessible name is `name`.
 	section : Str, Str, List(Elem(ctx)) -> Elem(ctx)
 	section = |name, cls, kids| Engine.element("section", [Engine.attr("aria-label", name), Engine.class(cls)], kids)
 
-	## A region whose name depends on the context (a row key).
+	## A region whose accessible name follows a value (such as a row key).
 	section_v : Val(ctx, Str), Str, List(Elem(ctx)) -> Elem(ctx)
 	section_v = |name, cls, kids| Engine.element("section", [Engine.attr_v("aria-label", name), Engine.class(cls)], kids)
 
+	## `h1(text, class)`: a top-level heading with static text.
 	h1 : Str, Str -> Elem(ctx)
 	h1 = |t, cls| Engine.element("h1", [Engine.class(cls)], [Engine.text(t)])
 
+	## `h2(text, class)`: a second-level heading with static text.
 	h2 : Str, Str -> Elem(ctx)
 	h2 = |t, cls| Engine.element("h2", [Engine.class(cls)], [Engine.text(t)])
 
+	## `p(text, class)`: a paragraph of static text.
 	p : Str, Str -> Elem(ctx)
 	p = |t, cls| Engine.element("p", [Engine.class(cls)], [Engine.text(t)])
 
+	## A paragraph whose text follows a value.
 	p_v : Val(ctx, Str), List(Attr(ctx)) -> Elem(ctx)
 	p_v = |v, attrs| Engine.element("p", attrs, [Engine.text_v(v)])
 
+	## A `span` whose text follows a value.
 	span_v : Val(ctx, Str), List(Attr(ctx)) -> Elem(ctx)
 	span_v = |v, attrs| Engine.element("span", attrs, [Engine.text_v(v)])
 
-	bool_str : Bool -> Str
-	bool_str = |b| if (b) "true" else "false"
-
-	## A boolean attribute rendered "true"/"false" (disabled, checked,
-	## aria-invalid, aria-pressed).
+	## A boolean attribute rendered `"true"` or `"false"` (such as `checked` or
+	## `aria-pressed`).
 	flag : Str, Val(ctx, Bool) -> Attr(ctx)
-	flag = |name, v| Engine.attr_v(name, v.map(Html.bool_str))
+	flag = |name, v| Engine.attr_v(name, v.map(bool_str))
 
-	## "true" or absent ("" removes the attribute), as `aria_invalid_s` does.
+	## An attribute that is `"true"` while the value is true and absent otherwise
+	## (such as `aria-invalid`).
 	flag_maybe : Str, Val(ctx, Bool) -> Attr(ctx)
 	flag_maybe = |name, v| Engine.attr_v(name, v.map(|b| if (b) "true" else ""))
 
+	## `button(label, attrs, handler)`: a button with a static label that runs
+	## `handler` on click.
 	button : Str, List(Attr(ctx)), Handler(ctx) -> Elem(ctx)
 	button = |label, attrs, h| Engine.element("button", attrs.append(Engine.on_click(h)), [Engine.text(label)])
 
-	## A glyph button whose accessible name is `name`.
+	## `icon_button(glyph, name, class, handler)`: a button showing `glyph`
+	## whose accessible name follows `name`, for icon-only actions.
 	icon_button : Str, Val(ctx, Str), Str, Handler(ctx) -> Elem(ctx)
 	icon_button = |glyph, name, cls, h| Engine.element("button", [Engine.attr_v("aria-label", name), Engine.attr("type", "button"), Engine.class(cls), Engine.on_click(h)], [Engine.text(glyph)])
 
-	## A text box: `input` fires with the new value as payload.
+	## `text_input(name, type, value, attrs, handler)`: an `input` of the given
+	## `type` whose value follows `value`. `handler` receives the new text on every
+	## `input` event. While the input is focused, the user's draft wins over a
+	## differing `value`; it is applied on blur.
 	text_input : Val(ctx, Str), Str, Val(ctx, Str), List(Attr(ctx)), Handler(ctx) -> Elem(ctx)
 	text_input = |name, kind, v, attrs, h| Engine.element("input", [Engine.attr_v("aria-label", name), Engine.attr("type", kind), Engine.attr_v("value", v), Engine.on("input", h)].concat(attrs), [])
 
-	## A checkbox: `change` fires with "true"/"false".
+	## `checkbox(name, checked, attrs, handler)`: a checkbox that follows
+	## `checked`. `handler` receives `"true"` or `"false"` on `change`.
 	checkbox : Val(ctx, Str), Val(ctx, Bool), List(Attr(ctx)), Handler(ctx) -> Elem(ctx)
 	checkbox = |name, v, attrs, h| Engine.element("input", [Engine.attr_v("aria-label", name), Engine.attr("type", "checkbox"), Html.flag("checked", v), Engine.on("change", h)].concat(attrs), [])
 
-	## A select: `change` fires with the chosen option's value.
+	## `select(name, value, attrs, options, handler)`: a drop-down that shows
+	## `value`. `handler` receives the chosen option's value on `change`.
 	select : Val(ctx, Str), Val(ctx, Str), List(Attr(ctx)), List(Elem(ctx)), Handler(ctx) -> Elem(ctx)
 	select = |name, v, attrs, opts, h| Engine.element("select", [Engine.attr_v("aria-label", name), Engine.attr_v("value", v), Engine.on("change", h)].concat(attrs), opts)
 
+	## `option(value, label)`: an option for `select`.
 	option : Str, Str -> Elem(ctx)
 	option = |value, label| Engine.element("option", [Engine.attr("value", value)], [Engine.text(label)])
 
+	## An option whose value and label both follow a value.
 	option_v : Val(ctx, Str) -> Elem(ctx)
 	option_v = |v| Engine.element("option", [Engine.attr_v("value", v)], [Engine.text_v(v)])
 
@@ -74,7 +93,7 @@ Html := [].{
 	div_attrs : List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
 	div_attrs = |attrs, kids| Engine.element("div", attrs, kids)
 
-	## A `div` whose class depends on the context.
+	## A `div` whose class follows a value.
 	div_v : Val(ctx, Str), List(Elem(ctx)) -> Elem(ctx)
 	div_v = |cls, kids| Engine.element("div", [Engine.class_v(cls)], kids)
 
@@ -86,42 +105,46 @@ Html := [].{
 	p_attrs : Str, List(Attr(ctx)) -> Elem(ctx)
 	p_attrs = |t, attrs| Engine.element("p", attrs, [Engine.text(t)])
 
-	## Preformatted text that depends on the context.
+	## Preformatted text that follows a value.
 	pre_v : Val(ctx, Str), List(Attr(ctx)) -> Elem(ctx)
 	pre_v = |v, attrs| Engine.element("pre", attrs, [Engine.text_v(v)])
 
-	## A heading (role `heading`) whose text depends on the context.
+	## A second-level heading whose text follows a value.
 	h2_v : Val(ctx, Str), List(Attr(ctx)) -> Elem(ctx)
 	h2_v = |v, attrs| Engine.element("h2", attrs, [Engine.text_v(v)])
 
+	## `h3(text, class)`: a third-level heading with static text.
 	h3 : Str, Str -> Elem(ctx)
 	h3 = |t, cls| Engine.element("h3", [Engine.class(cls)], [Engine.text(t)])
 
-	## An unordered list and its items.
+	## An unordered list; its children are usually `li` elements or an `each`.
 	ul : List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
 	ul = |attrs, kids| Engine.element("ul", attrs, kids)
 
+	## A list item.
 	li : List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
 	li = |attrs, kids| Engine.element("li", attrs, kids)
 
-	## A link (role `link`) to `href` whose accessible name is its text.
+	## `link(label, href, attrs)`: a link to `href` whose accessible name is its
+	## label. Following it is ordinary browser navigation.
 	link : Str, Str, List(Attr(ctx)) -> Elem(ctx)
 	link = |label, href, attrs| Engine.element("a", [Engine.attr("href", href)].concat(attrs), [Engine.text(label)])
 
-	## A caption for the control named `for_id`.
+	## `label_for(text, for_id, attrs)`: a caption for the control whose `id` is `for_id`.
 	label_for : Str, Str, List(Attr(ctx)) -> Elem(ctx)
 	label_for = |t, for_id, attrs| Engine.element("label", [Engine.attr("for", for_id)].concat(attrs), [Engine.text(t)])
 
 	# ---------------------------------------------------------- attributes
 
-	## The accessible name (`aria-label`), which `label` and `role` locators
-	## match.
+	## The accessible name (`aria-label`), which `label` and `role` locators match.
 	aria_label : Str -> Attr(ctx)
 	aria_label = |name| Engine.attr("aria-label", name)
 
+	## An accessible name that follows a value.
 	aria_label_v : Val(ctx, Str) -> Attr(ctx)
 	aria_label_v = |v| Engine.attr_v("aria-label", v)
 
+	## Points at the `id` of the element that describes this one (such as an error message).
 	aria_describedby : Str -> Attr(ctx)
 	aria_describedby = |id| Engine.attr("aria-describedby", id)
 
@@ -129,65 +152,74 @@ Html := [].{
 	aria_invalid : Val(ctx, Bool) -> Attr(ctx)
 	aria_invalid = |v| Html.flag_maybe("aria-invalid", v)
 
-	## Present (`disabled`) while the value is true.
+	## Disables the control while the value is true.
 	disabled : Val(ctx, Bool) -> Attr(ctx)
 	disabled = |v| Html.flag("disabled", v)
 
 	# --------------------------------------------------------------- events
 
-	## `focus` and `blur` handlers receive the control's value.
+	## Runs `handler` when the element or a descendant gains focus; the payload
+	## is the control's value.
 	on_focus : Handler(ctx) -> Attr(ctx)
 	on_focus = |h| Engine.on("focus", h)
 
+	## Runs `handler` when the element or a descendant loses focus; the payload
+	## is the control's value.
 	on_blur : Handler(ctx) -> Attr(ctx)
 	on_blur = |h| Engine.on("blur", h)
 
-	## `input` receives the control's new value.
+	## Runs `handler` on every `input` event; the payload is the control's new value.
 	on_input : Handler(ctx) -> Attr(ctx)
 	on_input = |h| Engine.on("input", h)
 
-	## `change` receives "true"/"false" for a checkbox or radio, else the
-	## control's value.
+	## Runs `handler` on `change`; the payload is `"true"`/`"false"` for a checkbox
+	## or radio, otherwise the control's value.
 	on_change : Handler(ctx) -> Attr(ctx)
 	on_change = |h| Engine.on("change", h)
 
-	## `keydown` receives the key.
+	## Runs `handler` on `keydown`; the payload is the key's name (such as `"Enter"`).
 	on_keydown : Handler(ctx) -> Attr(ctx)
 	on_keydown = |h| Engine.on("keydown", h)
 
-	## A form's `submit`. The runtime always prevents the browser's default
-	## (forms are app-managed), so the page never navigates.
+	## Runs `handler` when the form is submitted. Forms are app-managed: the
+	## runtime always prevents the browser's default, so the page never navigates.
 	on_submit : Handler(ctx) -> Attr(ctx)
 	on_submit = |h| Engine.on("submit", h)
 
 	# ------------------------------------------------------------- controls
 
-	## A form (role `form`) named `name`.
+	## `form(name, attrs, children)`: a form whose accessible name is `name`;
+	## pair it with `on_submit`.
 	form : Str, List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
 	form = |name, attrs, kids| Engine.element("form", [Engine.attr("aria-label", name)].concat(attrs), kids)
 
-	## A button whose label depends on the context.
+	## A button whose label follows a value.
 	button_v : Val(ctx, Str), List(Attr(ctx)), Handler(ctx) -> Elem(ctx)
 	button_v = |label, attrs, h| Engine.element("button", attrs.append(Engine.on_click(h)), [Engine.text_v(label)])
 
-	## A button with a dynamic label that is disabled while `off` is true.
+	## `action_button(label, disabled, attrs, handler)`: a button whose label
+	## follows a value and that is disabled while `disabled` is true.
 	action_button : Val(ctx, Str), Val(ctx, Bool), List(Attr(ctx)), Handler(ctx) -> Elem(ctx)
 	action_button = |label, off, attrs, h| Engine.element("button", [Html.disabled(off)].concat(attrs).append(Engine.on_click(h)), [Engine.text_v(label)])
 
-	## A form's submit button (its click submits the form).
+	## A button that submits its enclosing form (handle it with `on_submit`).
 	submit_button : Str, List(Attr(ctx)) -> Elem(ctx)
 	submit_button = |label, attrs| Engine.element("button", [Engine.attr("type", "submit")].concat(attrs), [Engine.text(label)])
 
-	## A multi-line text box: `input` fires with the new value.
+	## `textarea(name, value, attrs, handler)`: a multi-line text box; behaves like
+	## `text_input`.
 	textarea : Val(ctx, Str), Val(ctx, Str), List(Attr(ctx)), Handler(ctx) -> Elem(ctx)
 	textarea = |name, v, attrs, h| Engine.element("textarea", [Engine.attr_v("aria-label", name), Engine.attr_v("value", v), Engine.on("input", h)].concat(attrs), [])
 
-	## A number box: `input` fires with the draft text (the app parses it).
+	## `number_input(name, value, attrs, handler)`: a number box. `handler`
+	## receives the draft text on every `input`; the app parses it, so a partial
+	## entry like `"-"` is kept rather than rejected.
 	number_input : Val(ctx, Str), Val(ctx, Str), List(Attr(ctx)), Handler(ctx) -> Elem(ctx)
 	number_input = |name, v, attrs, h| Html.text_input(name, "number", v, attrs, h)
 
-	## One radio of group `group`, checked while `selected` equals `value`.
-	## Its `change` handler fires when the user picks it (payload "true").
+	## `radio(name, group, value, selected, attrs, handler)`: one radio of `group`,
+	## checked while `selected` equals `value`. `handler` runs (payload `"true"`)
+	## when the user picks it.
 	radio : Str, Str, Str, Val(ctx, Str), List(Attr(ctx)), Handler(ctx) -> Elem(ctx)
 	radio = |name, group, value, selected, attrs, h| Engine.element(
 		"input",
@@ -206,3 +238,6 @@ Html := [].{
 	option_attrs : Str, Str, List(Attr(ctx)) -> Elem(ctx)
 	option_attrs = |value, label, attrs| Engine.element("option", [Engine.attr("value", value)].concat(attrs), [Engine.text(label)])
 }
+
+bool_str : Bool -> Str
+bool_str = |b| if (b) "true" else "false"
