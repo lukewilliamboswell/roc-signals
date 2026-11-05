@@ -357,13 +357,16 @@ Dom := [].{
 	}
 
 	## Apply one batch; also return its opcodes, its effect commands in
-	## stream order, and the node indices each `ATTR`, `HATTR`, `SETTEXT` or
-	## `TEXT` wrote (one entry per command, in order). Node indices only grow,
-	## so a node created by this batch has an index at or above the model's
-	## node count before it.
-	apply_full : Model, List(U8) -> { dom : Model, ops : List(U8), fx : List(FxCmd), written : List(U64) }
+	## stream order, the node indices each `ATTR`, `HATTR`, `SETTEXT` or
+	## `TEXT` wrote (one entry per command, in order), and the `value`
+	## writes of `ATTR` and `HATTR` (node index and value, in order: the
+	## spec runner defers them on a focused control as the runtime does).
+	## Node indices only grow, so a node created by this batch has an index
+	## at or above the model's node count before it.
+	apply_full : Model, List(U8) -> { dom : Model, ops : List(U8), fx : List(FxCmd), written : List(U64), values : List((U64, Str)) }
 	apply_full = |dom0, b| {
 		var $written = []
+		var $values = []
 		var $fx = []
 		var $d = dom0
 		var $at = 0.U64
@@ -421,6 +424,9 @@ Dom := [].{
 				hole = tpl.holes.get(h) ?? crash "unknown hole"
 				target = Dom.node($d, row).ht.get(h) ?? crash "hole target"
 				$written = $written.append(target)
+				if op == 3 and hole.name == "value" {
+					$values = $values.append((target, v))
+				}
 				$d = if (op == 2) Dom.set_text_on($d, target, v) else Dom.set_attr_on($d, target, hole.name, v)
 			} else if op == 4 {
 				i = Dom.lookup($d, Dom.u32(b, $at))
@@ -465,7 +471,11 @@ Dom := [].{
 				while $r.len() <= tpl {
 					$r = $r.append([])
 				}
-				$d = { nodes, statics, rows: $r, tpls: $t.set(tpl, t) ?? $t, root }
+				# A TEMPLATE starts a new lifetime of this site id (ids are
+				# recycled): rows of an earlier site that was disposed with an
+				# ancestor are forgotten, as the runtime does, or its next CLEAR
+				# would unbind node ids reused since.
+				$d = { nodes, statics, rows: $r.set(tpl, []) ?? $r, tpls: $t.set(tpl, t) ?? $t, root }
 			} else if op == 8 or op == 10 {
 				nid = Dom.u32(b, $at)
 				parent = Dom.u32(b, $at + 4)
@@ -481,6 +491,9 @@ Dom := [].{
 				(value, n2) = Dom.str(b, n1)
 				$at = n2
 				$written = $written.append(i)
+				if name == "value" {
+					$values = $values.append((i, value))
+				}
 				$d = Dom.set_attr_on($d, i, name, value)
 			} else if op == 11 {
 				id = Dom.u32(b, $at)
@@ -569,7 +582,7 @@ Dom := [].{
 				crash "unknown command ${op.to_str()}"
 			}
 		}
-		{ dom: $d, ops: $ops, fx: $fx, written: $written }
+		{ dom: $d, ops: $ops, fx: $fx, written: $written, values: $values }
 	}
 
 	## The engine's work record (design.md, Appendix B): `count:u32
@@ -683,4 +696,26 @@ Dom := [].{
 
 	button_with_text : Model, Str -> Try(U64, [NotFound])
 	button_with_text = |dom, t| Dom.find(dom, dom.root, |n| n.tag == "button" and n.kids.len() == 1 and (Dom.node(dom, n.kids.get(0) ?? 0)).text == t)
+
+	## A recycled `each` site id starts empty: rows of the site disposed with
+	## an ancestor are not unbound by the next site's CLEAR, even when their
+	## node ids were reused for static nodes meanwhile.
+	expect {
+		le32 = |n| [n.bitwise_and(0xFF).to_u8_wrap(), n.shr_zf_wrap(8).bitwise_and(0xFF).to_u8_wrap(), 0, 0]
+		lstr = |t| le32(t.to_utf8().len().to_u32_wrap()).concat(t.to_utf8())
+		elem = |id, tag| [8.U8].concat(le32(id)).concat(le32(0.U32)).concat(le32(0.U32)).concat(lstr(tag))
+		tpl_bytes = [1.U8].concat(lstr("li")).concat([0, 0, 0])
+		template = [7.U8].concat(le32(0.U32)).concat(le32(tpl_bytes.len().to_u32_wrap())).concat(tpl_bytes)
+		cmds =
+			elem(1.U32, "ul")
+				.concat(template)
+				.concat([1.U8].concat(le32(2.U32)).concat(le32(1.U32)).concat(le32(0.U32)).concat(le32(0.U32)))
+				.concat([5.U8].concat(le32(1.U32)))
+				.concat(elem(2.U32, "p"))
+				.concat(elem(3.U32, "ul"))
+				.concat(template)
+				.concat([6.U8].concat(le32(3.U32)).concat(le32(0.U32)))
+		dom = Dom.apply(Dom.new({}), cmds)
+		(dom.statics.get(2) ?? 0) != 0
+	}
 }

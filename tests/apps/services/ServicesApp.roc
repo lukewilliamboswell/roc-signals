@@ -11,6 +11,8 @@ import pf.Html
 ##   (real clicks); a form whose submit counts; two selects, one with
 ##   options mounted by an `each`; and a fetch whose result is shown as text
 ##   or as its inspected `Engine.HttpError`.
+## - A text box that trims what is typed into it: its rewritten value waits
+##   for blur while it has focus (controlled inputs).
 ServicesApp := [].{
 	S : {
 		online : Bool,
@@ -27,6 +29,7 @@ ServicesApp := [].{
 		shade : Str,
 		fetches : U64,
 		fetched : Str,
+		trimmed : Str,
 	}
 
 	Ctx : In(Root, S)
@@ -47,6 +50,7 @@ ServicesApp := [].{
 		shade: "teal",
 		fetches: 0,
 		fetched: "",
+		trimmed: "",
 	}
 
 	press : State(Ctx, S), Str -> Engine.Attr(Ctx)
@@ -145,6 +149,10 @@ ServicesApp := [].{
 					st.on_result(|s, _, r| { ..s, fetched: ServicesApp.shown(r) }),
 				),
 				Html.p_v(v.map(|s| s.fetched), [Engine.test_id("fetched")]),
+				# A controlled input whose value the app rewrites (trimmed):
+				# the rewrite waits for blur while the control has focus.
+				Html.text_input(Engine.const("Trimmed"), "text", v.map(|s| s.trimmed), [], st.set_value(|s, t| { ..s, trimmed: t.trim() })),
+				Html.p_v(v.map(|s| s.trimmed), [Engine.test_id("trimmed")]),
 			],
 		)
 	}

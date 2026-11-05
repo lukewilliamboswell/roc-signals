@@ -66,7 +66,7 @@ SpecRunner := [].{
 		storage : List({ key : Str, value : Str }),
 		online : Bool,
 		visible : Bool,
-		pending : List({ id : U32, url : Str }),
+		pending : List({ id : U32, url : Str, body : Str }),
 		issued : List(U32),
 		subs : List({ id : U32, sub : Sub }),
 		stubs : List(Scm.Stub),
@@ -75,8 +75,9 @@ SpecRunner := [].{
 	## The runner's state: the instance and the buffers it lends back, the
 	## oracle's DOM and browser models, the latest work record, the oracle's
 	## own opcode counts, per-node write counts (`expect-updates`), the work
-	## counters at the last `mark-metrics`, and the focused node (index + 1,
-	## 0 for none).
+	## counters at the last `mark-metrics`, the focused node (index + 1, 0
+	## for none), and the value the engine wrote to the focused control that
+	## the controlled-input rule holds back until blur.
 	S(state) : {
 		inst : state,
 		buf : List(U8),
@@ -88,7 +89,12 @@ SpecRunner := [].{
 		writes : List(U64),
 		mark : List(U64),
 		focused : U64,
+		deferred : Deferred,
 	}
+
+	## A control value held back while its control has focus (design.md,
+	## "Controlled inputs").
+	Deferred : [NoValue, Held(Str)]
 
 	## How a spec ended.
 	Outcome : [
@@ -213,7 +219,34 @@ SpecRunner := [].{
 				}
 			}
 		}
-		{ ..s, inst, buf: cmds, dom: r.dom, browser: SpecRunner.absorb(s.browser, r.fx), ops: $ops, writes: $w }
+		held = SpecRunner.hold_focused(s, r.dom, r.values)
+		{ ..s, inst, buf: cmds, dom: held.dom, deferred: held.deferred, browser: SpecRunner.absorb(s.browser, r.fx), ops: $ops, writes: $w }
+	}
+
+	## The controlled-input rule, as the runtime applies it: a `value` write
+	## to the focused control (not a `<select>`) that equals what it shows is
+	## a no-op and drops any held value; a differing one is held back, and the
+	## control keeps showing what the user typed until blur.
+	hold_focused : S(state), Dom.Model, List((U64, Str)) -> { dom : Dom.Model, deferred : Deferred }
+	hold_focused = |s, dom, values| {
+		if s.focused == 0 or Dom.node(s.dom, s.focused - 1).tag == "select" {
+			return { dom, deferred: s.deferred }
+		}
+		i = s.focused - 1
+		shown = Dom.attr_of(Dom.node(s.dom, i), "value")
+		var $deferred = s.deferred
+		var $wrote = Bool.False
+		for (node, v) in values {
+			if node == i {
+				$wrote = Bool.True
+				$deferred = if (v == shown) NoValue else Held(v)
+			}
+		}
+		if $wrote {
+			{ dom: Dom.set_attr_on(dom, i, "value", shown), deferred: $deferred }
+		} else {
+			{ dom, deferred: $deferred }
+		}
 	}
 
 	## A runner state for an instance mounted outside `mount` (by a driver
@@ -221,7 +254,7 @@ SpecRunner := [].{
 	adopt : state, List(U8), Str, List({ key : Str, value : Str }) -> S(state)
 	adopt = |inst, cmds, url, storage| {
 		browser = { loc: url, back: [], fwd: [], title: "", storage, online: Bool.True, visible: Bool.True, pending: [], issued: [], subs: [], stubs: [] }
-		s0 = { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 19), writes: [], mark: [], focused: 0 }
+		s0 = { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 19), writes: [], mark: [], focused: 0, deferred: NoValue }
 		SpecRunner.take_batch(s0, inst, cmds)
 	}
 
@@ -235,9 +268,9 @@ SpecRunner := [].{
 		for c in fx {
 			b = $b
 			$b = match c {
-				Http(id, _, url, _, _, _) => { ..b, pending: b.pending.append({ id, url }), issued: b.issued.append(id) }
-				Get(id, key) => { ..b, pending: b.pending.append({ id, url: "storage:${key}" }), issued: b.issued.append(id) }
-				Timer(id, _) => { ..b, pending: b.pending.append({ id, url: "timer" }), issued: b.issued.append(id) }
+				Http(id, _, url, _, body, _) => { ..b, pending: b.pending.append({ id, url, body }), issued: b.issued.append(id) }
+				Get(id, key) => { ..b, pending: b.pending.append({ id, url: "storage:${key}", body: "" }), issued: b.issued.append(id) }
+				Timer(id, _) => { ..b, pending: b.pending.append({ id, url: "timer", body: "" }), issued: b.issued.append(id) }
 				Interval(id, ms) => { ..b, subs: b.subs.append({ id, sub: Interval(ms) }) }
 				Pop(id) => { ..b, subs: b.subs.append({ id, sub: Pop }) }
 				OnlineSub(id) => { ..b, subs: b.subs.append({ id, sub: OnlineSub }) }
@@ -296,7 +329,7 @@ SpecRunner := [].{
 		boot_kvs = declared.keep_oks(|k| storage.find_first(|kv| kv.key == k))
 		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_boot(url, boot_kvs, online, visible))
 		browser = { loc: url, back: [], fwd: [], title: "", storage, online, visible, pending: [], issued: [], subs: [], stubs: [] }
-		s0 = { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 19), writes: [], mark: [], focused: 0 }
+		s0 = { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 19), writes: [], mark: [], focused: 0, deferred: NoValue }
 		SpecRunner.take(s0, inst, cmds, wbuf)
 	}
 
@@ -379,13 +412,19 @@ SpecRunner := [].{
 	## Move focus to node index `to` (+1; 0 blurs), delivering `blur` to the
 	## element losing it and `focus` to the one gaining it, each with the
 	## element's value, when a handler listens. No events when focus stays.
+	## A value held back on the control losing focus lands first, before its
+	## `blur` handler runs (the runtime applies it in a capturing listener).
 	move_focus : Program(state), S(state), U64 -> S(state)
 	move_focus = |program, s0, to| {
 		if s0.focused == to {
 			s0
 		} else {
 			from = s0.focused
-			s1 = { ..s0, focused: to }
+			landed = match s0.deferred {
+				Held(v) if from != 0 => SpecRunner.set_attr(s0, from - 1, "value", v)
+				_ => s0
+			}
+			s1 = { ..landed, focused: to, deferred: NoValue }
 			s2 = if (from == 0) s1 else SpecRunner.fire_if(program, s1, from - 1, "blur", Dom.attr_of(Dom.node(s1.dom, from - 1), "value"))
 			if (to == 0) s2 else SpecRunner.fire_if(program, s2, to - 1, "focus", Dom.attr_of(Dom.node(s2.dom, to - 1), "value"))
 		}
@@ -512,7 +551,9 @@ SpecRunner := [].{
 			Fill(loc, v) => {
 				i = need_el(loc)?
 				s1 = SpecRunner.move_focus(program, s, i + 1)
-				fire_ev(SpecRunner.set_attr(s1, i, "value", v), i, "input", v)
+				# An input that echoes the held value makes it moot.
+				s2 = if (s1.deferred == Held(v)) { ..s1, deferred: NoValue } else s1
+				fire_ev(SpecRunner.set_attr(s2, i, "value", v), i, "input", v)
 			}
 			Focus(loc) => Ok(SpecRunner.move_focus(program, s, need_el(loc)? + 1))
 			Blur(loc) => {
