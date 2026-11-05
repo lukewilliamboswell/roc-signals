@@ -21,8 +21,15 @@ const opts = parseArgs(process.argv.slice(2), ["app", "events", "cycles"]);
 const app = opts.app;
 const EVENTS = Number(opts.events ?? 3000);
 const conduit = app === "conduit";
-let handle = null;
+// Apps with effects run against a backend: Conduit's RealWorld mock, and a
+// small stand-in for the field-notes sync endpoint (it echoes the token, a
+// successful sync).
+const BACKENDS = {
+  "field-notes": async (req) => (req.uri === "/api/notes/sync" ? { status: 200, body: req.body } : null),
+};
+let handle = BACKENDS[app] ?? null;
 if (conduit) handle = (await import(path.join(repo, "www/static/conduit_backend.mjs"))).createConduitHandler({});
+const served = handle !== null;
 
 const files = {
   "index.html": path.join(here, "index.html"),
@@ -85,7 +92,7 @@ const check = (name, ok, detail = "") => {
 {
   const { ctx, page, errors } = await open();
   const t0 = Date.now();
-  const done = await page.evaluate(async (n, conduit) => {
+  const done = await page.evaluate(async (n, served) => {
     const POOL = ["", "a", "Ada", "10", "-3", "2x", "x@y.z", "Lorem ipsum dolor", "Node-0007", "# Title", "Renamed"];
     let seed = 7n;
     const rnd = () => {
@@ -125,11 +132,11 @@ const check = (name, ok, detail = "") => {
         continue;
       }
       fired += 1;
-      if (conduit && i % 10 === 9) await new Promise((r) => setTimeout(r, 0));
+      if (served && i % 10 === 9) await new Promise((r) => setTimeout(r, 0));
     }
     return { fired, fault: rt.poisoned };
-  }, EVENTS, conduit);
-  if (conduit) await settle(page);
+  }, EVENTS, served);
+  if (served) await settle(page);
   const fault = await page.evaluate(() => window.__rt.poisoned);
   check(`random walk: ${done.fired} events in ${Date.now() - t0} ms, no fault`, done.fired >= Math.min(EVENTS, 1000) && fault === null && errors.length === 0, JSON.stringify({ fault, errors: errors.slice(0, 3) }));
   const stats = await page.evaluate(() => ({ pages: window.__rt.x.memory.buffer.byteLength / 65536, live: Number(window.__rt.x.metric(4)) }));
@@ -146,10 +153,18 @@ const CYCLES = {
   // trailing newline per trip): load two fixed documents instead.
   "markdown-editor": [["click", ["role", "button", "Load heading drill"]], ["click", ["role", "button", "Load document without headings"]]],
   conduit: [["click", ["role", "link", "Sign in"]], ["click", ["role", "link", "Home"]]],
+  "field-notes": [
+    ["fill", ["label", "Note body"], "Soak note"],
+    ["fill", ["label", "Note body"], ""],
+    ["click", ["label", "Hide synced notes"]],
+    ["click", ["label", "Hide synced notes"]],
+    ["click", ["label", "Sync automatically"]],
+    ["click", ["label", "Sync automatically"]],
+  ],
 };
 {
   const { ctx, page } = await open();
-  if (conduit) await settle(page);
+  if (served) await settle(page);
   const cycle = CYCLES[app];
   const NCYC = Number(opts.cycles ?? 30);
   const samples = [];
@@ -166,7 +181,7 @@ const CYCLES = {
         return null;
       }, op, loc, v);
       if (r) throw new Error(r);
-      if (conduit) await settle(page);
+      if (served) await settle(page);
     }
     samples.push(await page.evaluate(() => [window.__rt.x.memory.buffer.byteLength / 65536, Number(window.__rt.x.metric(4)), Number(window.__rt.x.metric(5))]));
   }
