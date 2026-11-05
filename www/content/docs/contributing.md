@@ -193,4 +193,5 @@ with these deliberate exceptions:
 - **The release workflow is hand-written** and publishes a draft whose notes
   are written on GitHub, rather than the shared package release workflow and
   notes under `docs/releases/`.
-- **No SBOM yet.** Release SBOMs are tracked as an issue.
+- **No SBOM yet.** Release SBOMs are tracked in
+  [#171](https://github.com/lukewilliamboswell/roc-signals/issues/171).
