@@ -130,11 +130,13 @@
   disposal and reparenting, allocation balance over a long history. Targets are
   generators that decode arbitrary bytes into a valid program and check it
   against a reference model, so their oracles, not their inputs, carry the
-  value. When a target catches a bug, minimize the input and commit it to the
-  target's corpus so CI replays it and the fix stays fixed.
+  value. When a campaign (`blueprint run fuzz`) catches a bug, minimize the
+  input and add it to the target's examples with `Fuzz.saved`, so every
+  replay keeps the fix fixed.
 - Judge a fuzz target by its properties: state the rules the engine must keep
   over generated sequences and check them against a reference model.
-- For performance work, follow `docs/profiling.md`: measure optimized builds,
+- For performance work, follow the performance section of the contributing
+  docs: measure optimized builds,
   test scaling before micro-optimizing, keep allocator counters honest, and
   validate semantics and counters after the change. Do not trade correctness,
   bounded memory or architectural clarity for a local benchmark win.
@@ -146,7 +148,8 @@
 
 - Keep public behavior consistent across `platform/`, maintained docs under
   `www/content/docs/`, examples, and specs. Documentation examples are part of
-  the product surface and must compile.
+  the product surface: every Roc sample is a file under `www/samples/` that
+  `check` compiles, never an inline block.
 - Put stable architecture and rationale in `design.md`, current contributor
   workflow in the contributing docs, detailed Roc conventions in `style.md`,
   public behavior in reference or module documentation, and local invariants

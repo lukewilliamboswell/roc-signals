@@ -1,4 +1,0 @@
-mutation hole-no-update: [roc crashed] spec a-single-field-form: step 47: (test-id "designer-status") text "2", expected "1" == specs failed 
-mutation derive-stuck: [roc crashed] spec a-single-field-form: step 11: no element (label "Answer f3") == specs failed 
-mutation no-root-settle: [roc crashed] spec a-single-field-form: step 11: no element (label "Answer f3") == specs failed 
-mutation row-kids-skip: [roc crashed] spec adding-a-number-field: step 28: (label "Minimum f3") aria-invalid="", expected "true" in <div class="grid gap-3 sm:grid-cols-2"><div class="field"><p class="field-label">Minimum</p><input aria-label="Minimum f3" type="number" value="20" class="input" placeholder="2" aria-invalid=""></input></div><div class="field"><p class="field-label">Maximum</p><input aria-label="Maximum f3" type="number" value="10" class="input" placeholder="40" aria-invalid=""></input></div></div> == specs failed 

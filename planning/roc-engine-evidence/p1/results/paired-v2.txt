@@ -1,5 +1,0 @@
- 16:10:00  up 9 days  0:16,  2 users,  load average: 2.95, 2.77, 3.20
-create_1k         current 123.273 [80.462-269.097] ms (wasm 107.410, js 15.649) | new 3.486 [1.262-9.300] ms (wasm 1.714, js 1.777) | ratio 2.8% n=11
-replace_1k        current 189.343 [166.930-243.631] ms (wasm 165.418, js 19.723) | new 1.317 [1.132-1.933] ms (wasm 0.369, js 0.967) | ratio 0.7% n=11
-Terminated                 node --expose-gc benchmarks/js-framework-benchmark/roc-engine-keyed/test/paired_bench.mjs --current /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/roc-engine/p1/current/current.wasm --new /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/roc-engine/p1/new/app.wasm --json /tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/roc-engine/p1/paired-v2.json --iterations 11 --warmups 2
- 17:38:41  up 9 days  1:44,  2 users,  load average: 10.59, 10.61, 7.98

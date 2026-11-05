@@ -1,7 +1,0 @@
-zig exit=1 seconds=48
-roc-check exit=1 seconds=31
-native exit=1 seconds=169
-wasm exit=0 seconds=697
-browser exit=0 seconds=34
-fault exit=0 seconds=40
-fuzz exit=0 seconds=34

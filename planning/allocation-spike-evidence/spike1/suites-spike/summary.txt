@@ -1,3 +1,0 @@
-zig exit=0 seconds=33
-native exit=0 seconds=126
-fuzz exit=0 seconds=55

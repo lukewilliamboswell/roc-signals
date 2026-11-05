@@ -31,9 +31,9 @@ architectural laws; a column layout, a hash-table probe sequence or a node-id
 encoding is an engineering choice. Neither an optimization nor a compiler
 workaround may change application meaning.
 
-Current setup and gates belong in [contributing](www/content/docs/contributing.md);
-measurement procedure belongs in [profiling](docs/profiling.md); numeric
-baselines, implementation gaps and delivery plans belong in issues.
+Current setup, gates and measurement practice belong in
+[contributing](www/content/docs/contributing.md); numeric baselines,
+implementation gaps and delivery plans belong in issues.
 
 ## Thesis
 
@@ -380,6 +380,12 @@ Patterns that hold this law against current compiler behaviour (wrapping a
 site's captures in a single-tag `Held`, returning a rebuilt site from each
 branch directly) are workarounds for upstream issues and are marked as such in
 the code. They are not semantics.
+
+The same law constrains apps. Ports found three patterns that silently copy
+on every update: filtering or mapping a list that another reader still holds,
+keeping a large state below smaller ones instead of outermost, and deriving
+projections that retain the whole state. Soak plateaus and per-event
+allocation counts are how such a copy is caught.
 
 Memory is reclaimed deterministically by reference counting: disposing a site
 drops its closure, which releases everything it captured. The structure is a
@@ -998,6 +1004,14 @@ architecture are recorded here:
   and runtime contract tests. CI calls Blueprint tasks, never script paths.
 - **Fuzzing.** Short corpus replays run in pull-request CI; long campaigns
   run on a schedule.
+- **Releases.** A release publishes the platform bundle (engine, host and
+  runtime), `runtime.mjs`, an examples archive naming that bundle, and the
+  generated API docs; `check` builds the same assets as a dry run. The shared
+  roc-automation nightly runner builds the latest release's examples with the
+  latest Roc nightly. Changing the pinned nightly is a maintainer's pull
+  request.
+- **Docs samples compile.** Every Roc sample in the documentation is a file
+  that `check` type-checks, and a sample app's specs run in both runners.
 - **Documentation stays on the site.** Contributor and user documentation live
   under `www/content/docs/`, not `docs/*.adoc` — a deliberate departure from
   the model, because the site is the product's documentation surface.
@@ -1016,6 +1030,7 @@ pinned compiler contains the fix. None of them is platform semantics.
 | [roc-lang/roc#12848](https://github.com/roc-lang/roc/issues/12848) | Every proc gets `inlinehint`; `--opt=size` emits no `minsize` | Code size of larger apps |
 | [roc-lang/roc#12851](https://github.com/roc-lang/roc/issues/12851) | An undeclared type in a `provides` annotation segfaults monotype | Platform header discipline |
 | [roc-lang/roc#12835](https://github.com/roc-lang/roc/issues/12835) | Annotated polymorphic recursion hangs `roc test`/`roc check` under `--specialize=yes` | Recursive site types annotated with care |
+| [roc-lang/roc#12869](https://github.com/roc-lang/roc/issues/12869) | An unused closure capturing a function passed to a branching self-recursive closure makes monotype lowering exponential | A Kanban Board helper is a top-level function instead of a local closure |
 | [roc-lang/roc#12836](https://github.com/roc-lang/roc/issues/12836) | `Box.box` of a capture-free callable allocates on every call | Extra allocations per call |
 
 Code size is the main open cost of the architecture and is tracked against

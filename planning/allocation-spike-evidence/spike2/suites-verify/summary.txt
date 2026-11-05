@@ -1,2 +1,0 @@
-roc-check exit=1 seconds=13
-roc-test exit=1 seconds=8

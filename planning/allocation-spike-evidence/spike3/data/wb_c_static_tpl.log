@@ -1,4 +1,0 @@
-Error: ENOENT: no such file or directory, open '/tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_static_tpl.out/wasm-benchmark/js-framework-diagnostic.wasm'
-    at async open (node:internal/fs/promises:634:25)
-    at async readFile (node:internal/fs/promises:1238:14)
-    at async main (file:///tmp/claude-1000/-home-lbw-Documents-Github-roc-signals/3be5123c-58c0-43c7-9279-7606a00fb469/scratchpad/spike-results/spike3/wb/c_static_tpl/scripts/browser/run_wasm_benchmarks.mjs:213:59)

@@ -1,1 +1,0 @@
-{"framework":"roc-d-each-v0.0.1-keyed","keyed":true,"benchmark":"25_run-clear-memory","type":"memory","values":{"DEFAULT":{"min":9.781355857849121,"max":9.781355857849121,"median":9.781355857849121,"mean":9.781355857849121,"stddev":null,"values":[9.781355857849121]}}}

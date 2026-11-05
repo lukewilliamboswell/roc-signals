@@ -1,5 +1,0 @@
-total 4 allocs, kept past window 0, 264 bytes; windows=[2104, 4, 4, 0]
-      1 kept=     0         56  engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.PreparedStateWrites.prepare@engine.zig:15954 < engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.prepareStates@engine.zig:16314
-      1 kept=     0          8  engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.PreparedStateWrites.prepare@engine.zig:15955 < engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.prepareStates@engine.zig:16314
-      1 kept=     0         40  engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.PreparedStateWrites.prepare@engine.zig:15956 < engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.prepareStates@engine.zig:16314
-      1 kept=     0        160  engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.PreparedStateWrites.prepare@engine.zig:15957 < engine.Engine(native_host.NativeCtx).PreparedSourceTransaction.prepareStates@engine.zig:16314

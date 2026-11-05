@@ -1,5 +1,0 @@
-lens-f0 raw=856953 oz=854490 ozgz=232664
-lens-f0a raw=541619 oz=539156 ozgz=153254
-lens-fsel raw=539412 oz=537107 ozgz=152421
-lens-fa0 raw=850271 oz=843823 ozgz=228337
-lens-fa1 raw=855549 oz=853086 ozgz=232228

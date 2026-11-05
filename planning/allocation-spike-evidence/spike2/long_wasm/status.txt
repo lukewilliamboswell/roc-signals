@@ -1,8 +1,0 @@
-basetree build rc=0
--rw-rw-r-- 1 lbw lbw 4236619 Nov  2 21:27 /tmp/claude-1000/s2/long_wasm/out-basetree/wasm-benchmark/js-framework-diagnostic.wasm
--rw-rw-r-- 1 lbw lbw 4193159 Nov  2 21:26 /tmp/claude-1000/s2/long_wasm/out-basetree/wasm-benchmark/js-framework-production.wasm
-snap-b5 build rc=0
--rw-rw-r-- 1 lbw lbw 4236692 Nov  2 21:29 /tmp/claude-1000/s2/long_wasm/out-snap-b5/wasm-benchmark/js-framework-diagnostic.wasm
--rw-rw-r-- 1 lbw lbw 4193218 Nov  2 21:28 /tmp/claude-1000/s2/long_wasm/out-snap-b5/wasm-benchmark/js-framework-production.wasm
-BUILD-DONE
-RUN-DONE

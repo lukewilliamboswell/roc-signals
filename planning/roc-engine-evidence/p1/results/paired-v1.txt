@@ -1,3 +1,0 @@
- 15:11:52  up 8 days 23:18,  2 users,  load average: 21.81, 12.31, 8.30
-create_1k         current 144.131 [90.980-233.573] ms (wasm 126.549, js 17.021) | new 3.600 [1.280-6.991] ms (wasm 1.786, js 1.949) | ratio 2.5% n=15
-replace_1k        current 204.763 [178.186-222.325] ms (wasm 179.468, js 22.787) | new 1.488 [1.151-1.886] ms (wasm 0.366, js 1.095) | ratio 0.7% n=15

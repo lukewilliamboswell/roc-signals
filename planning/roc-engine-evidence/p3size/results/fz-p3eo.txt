@@ -1,5 +1,0 @@
-
-    t
-build 11.33 s, 509728 KB
-check: p2-each: baseline_changed; baseline changed; examples 6; exploration skipped (attempted 0, accepted 0, rejected 0) Report: check/report.json 
-explore: p2-each: passed; baseline not_checked; examples 0; exploration passed (attempted 5796, accepted 5417, rejected 379) Report: explore/report.json 
