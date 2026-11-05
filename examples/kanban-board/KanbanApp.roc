@@ -101,8 +101,8 @@ KanbanApp := [].{
 	## Compiler workaround: a local closure here that captures `cp` (in a
 	## component body with an `each` over a record item) makes monotype
 	## lowering take ~100 s and 6 GB. A top-level function capturing nothing
-	## does not. Repro: repro/monotype-closure-capture/main.roc (not yet filed
-	## upstream). Remove once the pinned compiler is fixed.
+	## does not. https://github.com/roc-lang/roc/issues/12869 (repro:
+	## repro/monotype-closure-capture/). Remove once the pinned compiler is fixed.
 	slug_of : Val(CC, ColumnProp), Str -> Val(CC, Str)
 	slug_of = |cp, prefix| cp.map(|p| "${prefix}-${Kanban.Column.slug(p.column)}")
 
