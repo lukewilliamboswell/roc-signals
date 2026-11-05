@@ -914,10 +914,10 @@ exercises the same protocol the browser runtime consumes.
 
 ### Work assertions
 
-Work assertions read the engine's own counters. The engine keeps one
-cumulative counter list in its transaction accumulator — commands emitted by
-opcode, and the named counters below — and returns it with every host call as
-the work record (Appendix B). Both runners read that record: natively through
+Work assertions read the engine's own counters. The engine keeps them as
+plain fields of one record in its transaction accumulator — commands emitted
+by opcode, and the named counters below — so counting never allocates, and
+returns them with every host call as the work record (Appendix B). Both runners read that record: natively through
 the program's call results, in Chrome through the `metric` export and
 `workRecord()`. The native runner also checks, at every work step, that the
 per-opcode counters agree with the commands the `Dom.roc` oracle decoded, and

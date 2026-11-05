@@ -314,13 +314,13 @@ Engine := [].{
 		next : U32,
 		free : List(U32),
 		routes : List(Route),
-		work : List(U64),
+		work : Work,
 		paths : List(List(U32)),
 		site_free : List(U32),
 		fx : Fx,
 	}
 
-	## Work counters (design.md, "Work assertions"): one `List(U64)` in the
+	## Work counters (design.md, "Work assertions"): one `Work` record in the
 	## transaction accumulator, cumulative over the instance. Indices 1-18
 	## count the commands emitted, by opcode (`INST` is a row created, `MOVE`
 	## a row moved); the named indices below count engine work.
@@ -363,9 +363,92 @@ Engine := [].{
 	w_cleanups : U64
 	w_cleanups = 31
 
-	## The number of work counters.
+	## The number of work counters (index 0 is unused).
 	w_count : U64
 	w_count = 32
+
+	## The work counters as plain fields (`c01` is counter 1): bumping one
+	## updates a value in the accumulator and never allocates, so counting
+	## cannot cost an allocation or a copy on any path.
+	Work : { c01 : U64, c02 : U64, c03 : U64, c04 : U64, c05 : U64, c06 : U64, c07 : U64, c08 : U64, c09 : U64, c10 : U64, c11 : U64, c12 : U64, c13 : U64, c14 : U64, c15 : U64, c16 : U64, c17 : U64, c18 : U64, c19 : U64, c20 : U64, c21 : U64, c22 : U64, c23 : U64, c24 : U64, c25 : U64, c26 : U64, c27 : U64, c28 : U64, c29 : U64, c30 : U64, c31 : U64 }
+
+	work_zero : Work
+	work_zero = { c01: 0, c02: 0, c03: 0, c04: 0, c05: 0, c06: 0, c07: 0, c08: 0, c09: 0, c10: 0, c11: 0, c12: 0, c13: 0, c14: 0, c15: 0, c16: 0, c17: 0, c18: 0, c19: 0, c20: 0, c21: 0, c22: 0, c23: 0, c24: 0, c25: 0, c26: 0, c27: 0, c28: 0, c29: 0, c30: 0, c31: 0 }
+
+	## Add `n` to counter `i`; counter 0 (and any index past the last) is the
+	## unused sink.
+	add_work : Work, U64, U64 -> Work
+	add_work = |w, i, n| match i {
+		1 => { ..w, c01: w.c01 + n }
+		2 => { ..w, c02: w.c02 + n }
+		3 => { ..w, c03: w.c03 + n }
+		4 => { ..w, c04: w.c04 + n }
+		5 => { ..w, c05: w.c05 + n }
+		6 => { ..w, c06: w.c06 + n }
+		7 => { ..w, c07: w.c07 + n }
+		8 => { ..w, c08: w.c08 + n }
+		9 => { ..w, c09: w.c09 + n }
+		10 => { ..w, c10: w.c10 + n }
+		11 => { ..w, c11: w.c11 + n }
+		12 => { ..w, c12: w.c12 + n }
+		13 => { ..w, c13: w.c13 + n }
+		14 => { ..w, c14: w.c14 + n }
+		15 => { ..w, c15: w.c15 + n }
+		16 => { ..w, c16: w.c16 + n }
+		17 => { ..w, c17: w.c17 + n }
+		18 => { ..w, c18: w.c18 + n }
+		19 => { ..w, c19: w.c19 + n }
+		20 => { ..w, c20: w.c20 + n }
+		21 => { ..w, c21: w.c21 + n }
+		22 => { ..w, c22: w.c22 + n }
+		23 => { ..w, c23: w.c23 + n }
+		24 => { ..w, c24: w.c24 + n }
+		25 => { ..w, c25: w.c25 + n }
+		26 => { ..w, c26: w.c26 + n }
+		27 => { ..w, c27: w.c27 + n }
+		28 => { ..w, c28: w.c28 + n }
+		29 => { ..w, c29: w.c29 + n }
+		30 => { ..w, c30: w.c30 + n }
+		31 => { ..w, c31: w.c31 + n }
+		_ => w
+	}
+
+	## Counter `i` (0 for the unused index 0).
+	work_get : Work, U64 -> U64
+	work_get = |w, i| match i {
+		1 => w.c01
+		2 => w.c02
+		3 => w.c03
+		4 => w.c04
+		5 => w.c05
+		6 => w.c06
+		7 => w.c07
+		8 => w.c08
+		9 => w.c09
+		10 => w.c10
+		11 => w.c11
+		12 => w.c12
+		13 => w.c13
+		14 => w.c14
+		15 => w.c15
+		16 => w.c16
+		17 => w.c17
+		18 => w.c18
+		19 => w.c19
+		20 => w.c20
+		21 => w.c21
+		22 => w.c22
+		23 => w.c23
+		24 => w.c24
+		25 => w.c25
+		26 => w.c26
+		27 => w.c27
+		28 => w.c28
+		29 => w.c29
+		30 => w.c30
+		31 => w.c31
+		_ => 0
+	}
 
 	Hole(ctx) : { node : U32, mask : U64, attr : Str, read : (ctx -> Str), last : Str }
 
@@ -397,17 +480,11 @@ Engine := [].{
 	## Append one command: its opcode, then the operands `write` adds. The
 	## opcode is counted in the work counters (design.md, "Work assertions").
 	emit_op : Tx, U8, (List(U8) -> List(U8)) -> Tx
-	emit_op = |{ cmds, next, free, routes, work, paths, site_free, fx }, op, write| { cmds: write(cmds.append(op)), next, free, routes, work: Engine.add_at(work, op.to_u64(), 1), paths, site_free, fx }
+	emit_op = |{ cmds, next, free, routes, work, paths, site_free, fx }, op, write| { cmds: write(cmds.append(op)), next, free, routes, work: Engine.add_work(work, op.to_u64(), 1), paths, site_free, fx }
 
 	## Add `n` to work counter `i`.
 	bump : Tx, U64, U64 -> Tx
-	bump = |{ cmds, next, free, routes, work, paths, site_free, fx }, i, n| { cmds, next, free, routes, work: Engine.add_at(work, i, n), paths, site_free, fx }
-
-	add_at : List(U64), U64, U64 -> List(U64)
-	add_at = |list, i, n| match list.get(i) {
-		Ok(v) => list.set(i, v + n) ?? crash "internal: work counter"
-		Err(_) => crash "internal: work counter ${i.to_str()}"
-	}
+	bump = |{ cmds, next, free, routes, work, paths, site_free, fx }, i, n| { cmds, next, free, routes, work: Engine.add_work(work, i, n), paths, site_free, fx }
 
 	## One evaluation of an app closure (a hole, a condition, a list read, a
 	## `derive` input, a prop read, an effect site's watched value).
@@ -996,8 +1073,12 @@ Engine := [].{
 		{ hs: hs.set($b, h) ?? crash "index bucket", vals: vals.set($b, slot + 1) ?? crash "index bucket" }
 	}
 
-	grow : KeyIndex -> KeyIndex
-	grow = |{ hs, vals, count, bits, by_slot }| {
+	## The table at the next size (`by_slot` is not part of it: it stays out
+	## of this branch so it is never treated as borrowed, roc-lang/roc#12846).
+	Table : { hs : List(U64), vals : List(U32), count : U64, bits : U8 }
+
+	grow : Table -> Table
+	grow = |{ hs, vals, count, bits }| {
 		new_bits = if (bits == 0) 4 else bits + 1
 		size = (1.U64).shl_wrap(new_bits)
 		var $h = List.repeat(0.U64, size)
@@ -1012,7 +1093,7 @@ Engine := [].{
 			}
 			$i = $i + 1
 		}
-		{ hs: $h, vals: $v, count, bits: new_bits, by_slot }
+		{ hs: $h, vals: $v, count, bits: new_bits }
 	}
 
 	## Insert a fresh key (the key column must already hold it at `slot`)
@@ -1025,8 +1106,10 @@ Engine := [].{
 			Ok(_) => crash Engine.dup_key(path, key)
 			Err(Missing) => {}
 		}
-		grown = if ((index.count + 1) * 2 > (1.U64).shl_wrap(index.bits)) Engine.grow(index) else index
-		{ hs, vals, count, bits, by_slot } = grown
+		{ hs: hs0, vals: vals0, count: count0, bits: bits0, by_slot } = index
+		table = { hs: hs0, vals: vals0, count: count0, bits: bits0 }
+		grown = if ((count0 + 1) * 2 > (1.U64).shl_wrap(bits0)) Engine.grow(table) else table
+		{ hs, vals, count, bits } = grown
 		r = Engine.raw_insert(hs, vals, bits, h, slot)
 		({ hs: r.hs, vals: r.vals, count: count + 1, bits, by_slot: Engine.put_at(by_slot, slot.to_u64(), h) }, probe.compares)
 	}
@@ -1337,7 +1420,7 @@ Engine := [].{
 		{ cmds: _, next: n3, free: f3, routes: r3, work: w3, paths: p3, site_free: sf3, fx: fx3 } = $t
 		# One INST (a row and its scope created), its hole evaluations and the
 		# key hash of the index insert.
-		w4 = Engine.add_at(Engine.add_at(Engine.add_at(Engine.add_at(Engine.add_at(Engine.add_at(Engine.add_at(w3, 1, 1), Engine.w_evals, $ev), Engine.w_scopes_created, 1), Engine.w_key_hashes, hashed), Engine.w_key_compares, key_compares), Engine.w_set_value, $set_value), Engine.w_set_checked, $set_checked)
+		w4 = Engine.add_work(Engine.add_work(Engine.add_work(Engine.add_work(Engine.add_work(Engine.add_work(Engine.add_work(w3, 1, 1), Engine.w_evals, $ev), Engine.w_scopes_created, 1), Engine.w_key_hashes, hashed), Engine.w_key_compares, key_compares), Engine.w_set_value, $set_value), Engine.w_set_checked, $set_checked)
 		var $tx = { cmds: $c, next: n3, free: f3, routes: r3, work: w4, paths: p3, site_free: sf3, fx: fx3 }
 		if cfg.dynamic {
 			var $insts = []
@@ -1417,18 +1500,6 @@ Engine := [].{
 		p = pend.get(si) ?? 0
 		dirty2 = if (p == 0) dirty.append(slot) else dirty
 		{ items, keys, order, free, index, lasts, kids, binds, pend: pend.set(si, p.bitwise_or(m)) ?? pend, dirty: dirty2, sels, known, kid_mask, dropped, rnodes }
-	}
-
-	## A kept row whose new item may differ: equal items are pruned here.
-	## Also counts the row in `rows_updated` when its item changed.
-	keep_row_tx : Cols(r, item), U32, item, U64, Tx -> (Cols(r, item), Tx)
-		where [item.is_eq : item, item -> Bool]
-	keep_row_tx = |cols, slot, item, row_bit, tx| {
-		# Both the columns and the accumulator are rebuilt on every path: a
-		# value passed through unchanged on one path and rebuilt on another
-		# is treated as borrowed and copied (roc-lang/roc#12846).
-		(c2, updated) = Engine.keep_row_n(cols, slot, item, row_bit)
-		(c2, Engine.bump(tx, Engine.w_rows_updated, updated))
 	}
 
 	## A kept row whose new item may differ: equal items are pruned here.
@@ -1599,7 +1670,7 @@ Engine := [].{
 	change_marks : Tx -> { created : U64, moved : U64, removed : U64, updated : U64 }
 	change_marks = |tx| {
 		w = tx.work
-		{ created: w.get(1) ?? 0, moved: w.get(4) ?? 0, removed: w.get(Engine.w_rows_removed) ?? 0, updated: w.get(Engine.w_rows_updated) ?? 0 }
+		{ created: w.c01, moved: w.c04, removed: Engine.work_get(w, Engine.w_rows_removed), updated: Engine.work_get(w, Engine.w_rows_updated) }
 	}
 
 	reconcile_rows : EachCfg(r, item), Cols(r, item), (Str, item -> r), List(item), Tx -> (Cols(r, item), Tx)
@@ -1615,6 +1686,9 @@ Engine := [].{
 		} else {
 			var $cols = cols
 			var $tx = tx
+			# Kept rows whose item changed, counted once after the loops so the
+			# accumulator is not threaded through every kept row.
+			var $updated = 0.U64
 			var $i = 0.U64
 			var $oe = n_old
 			var $ne = n_new
@@ -1626,9 +1700,9 @@ Engine := [].{
 					slot = $cols.order.get($i) ?? crash "order"
 					item = list.get($i) ?? crash "row"
 					if Engine.same_row(cfg, $cols, slot, item) {
-						(c2, t2) = Engine.keep_row_tx($cols, slot, item, row_bit, $tx)
+						(c2, u) = Engine.keep_row_n($cols, slot, item, row_bit)
 						$cols = c2
-						$tx = t2
+						$updated = $updated + u
 						$i = $i + 1
 					} else {
 						$p = False
@@ -1640,9 +1714,9 @@ Engine := [].{
 					slot = $cols.order.get($oe - 1) ?? crash "order"
 					item = list.get($ne - 1) ?? crash "row"
 					if Engine.same_row(cfg, $cols, slot, item) {
-						(c2, t2) = Engine.keep_row_tx($cols, slot, item, row_bit, $tx)
+						(c2, u) = Engine.keep_row_n($cols, slot, item, row_bit)
 						$cols = c2
-						$tx = t2
+						$updated = $updated + u
 						$oe = $oe - 1
 						$ne = $ne - 1
 					} else {
@@ -1661,10 +1735,10 @@ Engine := [].{
 						nb = Engine.node_of($cols, b)
 						after = Engine.ref_at(cfg, $cols, $oe)
 						$tx = Engine.emit_op(Engine.emit_op($tx, 4, |c| Engine.put_u32(Engine.put_u32(c, nb), na)), 4, |c| Engine.put_u32(Engine.put_u32(c, na), after))
-						(c3, t3) = Engine.keep_row_tx($cols, b, first, row_bit, $tx)
-						(c4, t4) = Engine.keep_row_tx(c3, a, last, row_bit, t3)
+						(c3, u3) = Engine.keep_row_n($cols, b, first, row_bit)
+						(c4, u4) = Engine.keep_row_n(c3, a, last, row_bit)
 						$cols = c4
-						$tx = t4
+						$updated = $updated + u3 + u4
 						(c2, order) = Engine.take_order($cols)
 						$cols = Engine.set_order(c2, order.swap($i, $oe - 1) ?? crash "order")
 						$i = $i + 1
@@ -1674,6 +1748,7 @@ Engine := [].{
 					}
 				}
 			}
+			$tx = Engine.bump($tx, Engine.w_rows_updated, $updated)
 			if $i == $oe and $i == $ne {
 				($cols, $tx)
 			} else if $i == $oe {
@@ -1780,6 +1855,7 @@ Engine := [].{
 		stable = Engine.lis_mark($seq)
 		# place from the end
 		var $slots = List.repeat(0.U32, ne - i)
+		var $updated = 0.U64
 		var $ref = Engine.ref_at(cfg, $cols, oe)
 		var $p = ne
 		while $p > i {
@@ -1800,16 +1876,16 @@ Engine := [].{
 					r = $ref
 					$tx = Engine.emit_op($tx, 4, |c| Engine.put_u32(Engine.put_u32(c, node), r))
 				}
-				(c4, t4) = Engine.keep_row_tx($cols, slot, item, row_bit, $tx)
+				(c4, u4) = Engine.keep_row_n($cols, slot, item, row_bit)
 				$cols = c4
-				$tx = t4
+				$updated = $updated + u4
 				$slots = $slots.set(idx, slot) ?? $slots
 				$ref = node
 			}
 		}
 		(c3, order) = Engine.take_order($cols)
 		merged = order.sublist({ start: 0, len: i }).concat($slots).concat(order.sublist({ start: oe, len: order.len() - oe }))
-		(Engine.set_order(c3, merged), $tx)
+		(Engine.set_order(c3, merged), Engine.bump($tx, Engine.w_rows_updated, $updated))
 	}
 
 	## Mark the members of one longest strictly increasing subsequence of the
@@ -1862,6 +1938,8 @@ Engine := [].{
 		var $pend = pend
 		var $kids = kids
 		var $tx = tx
+		# Hole evaluations, counted once after the loop.
+		var $evals = 0.U64
 		for slot in dirty {
 			si = slot.to_u64()
 			m = $pend.get(si) ?? 0
@@ -1876,7 +1954,7 @@ Engine := [].{
 					v = (hole.read)(row_env)
 					{ list, prev } = $lasts.replace(hole.col, []) ?? crash "lasts"
 					old = prev.get(si) ?? ""
-					$tx = Engine.count_evals($tx, 1)
+					$evals = $evals + 1
 					if v == old {
 						$lasts = list.set(hole.col, prev) ?? crash "lasts"
 					} else {
@@ -1902,7 +1980,7 @@ Engine := [].{
 				$kids = kl.set(si, $rk) ?? crash "kids"
 			}
 		}
-		({ items, keys, order, free, index, lasts: $lasts, kids: $kids, binds, pend: $pend, dirty: dirty.clear(), sels, known, kid_mask, dropped, rnodes }, $tx)
+		({ items, keys, order, free, index, lasts: $lasts, kids: $kids, binds, pend: $pend, dirty: dirty.clear(), sels, known, kid_mask, dropped, rnodes }, Engine.count_evals($tx, $evals))
 	}
 
 	## Selection changed: mark only the previously and newly selected rows.
@@ -2745,7 +2823,7 @@ Engine := [].{
 			(id, { cmds, next, free, routes, work, paths, site_free, fx: fx2 })
 		} else {
 			fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: Engine.is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups }
-			(id, { cmds: Engine.put_req(cmds, id, req), next, free, routes, work: Engine.add_at(work, 13, 1), paths, site_free, fx: fx2 })
+			(id, { cmds: Engine.put_req(cmds, id, req), next, free, routes, work: Engine.add_work(work, 13, 1), paths, site_free, fx: fx2 })
 		}
 	}
 
@@ -3276,7 +3354,7 @@ Engine := [].{
 	App := { root : Inst(Root), tx : Tx }
 
 	new_tx : List(U8) -> Tx
-	new_tx = |cmds| { cmds, next: 1, free: [], routes: [], work: List.repeat(0, Engine.w_count), paths: [[]], site_free: [], fx: Engine.fx_empty }
+	new_tx = |cmds| { cmds, next: 1, free: [], routes: [], work: Engine.work_zero, paths: [[]], site_free: [], fx: Engine.fx_empty }
 
 	## Mount the application under host node 0 (default effect bound).
 	mount : Elem(Root) -> App
@@ -3411,12 +3489,20 @@ Engine := [].{
 
 	## Evaluations of app closures so far (work counter `w_evals`).
 	evals : App -> U64
-	evals = |a| a.tx.work.get(Engine.w_evals) ?? 0
+	evals = |a| Engine.work_get(a.tx.work, Engine.w_evals)
 
 	## The work counters so far (design.md, "Work assertions"), indexed as
 	## the `w_` constants and opcodes describe.
 	work_counters : App -> List(U64)
-	work_counters = |a| a.tx.work
+	work_counters = |a| {
+		var $out = []
+		var $i = 0.U64
+		while $i < Engine.w_count {
+			$out = $out.append(Engine.work_get(a.tx.work, $i))
+			$i = $i + 1
+		}
+		$out
+	}
 
 	## The wire protocol version this engine speaks (design.md, Appendix B).
 	## The host exports it, the runtime refuses an instance whose version it
@@ -3479,9 +3565,11 @@ Engine := [].{
 	work_bytes : App, List(U8) -> List(U8)
 	work_bytes = |inst, buf| {
 		counters = inst.tx.work
-		var $b = Engine.put_u32(buf.clear(), counters.len().to_u32_wrap())
-		for v in counters {
-			$b = Engine.put_u64($b, v)
+		var $b = Engine.put_u32(buf.clear(), Engine.w_count.to_u32_wrap())
+		var $i = 0.U64
+		while $i < Engine.w_count {
+			$b = Engine.put_u64($b, Engine.work_get(counters, $i))
+			$i = $i + 1
 		}
 		runs = inst.tx.fx.cleanups
 		$b = Engine.put_u32($b, runs.len().to_u32_wrap())
