@@ -1,200 +1,97 @@
 +++
 title = "Structuring an App"
-description = "Organize modules, choose state lifetimes, and separate user actions from derived values."
+description = "Lay out modules, name contexts, keep updates local, and use components to bound code size."
 weight = 8
 template = "page.html"
 +++
 
 # Structuring an App
 
-As an app grows, decide where each piece of state belongs and how long it needs
-to live. Module boundaries help you find the code; scope boundaries determine
-when the runtime releases its state and effects. They serve different purposes.
+Two kinds of boundary shape an app. Module boundaries help people find code.
+State and scope boundaries decide how much work an update does and how long
+things live. This page is about choosing both. [Conduit](@/examples/conduit.md)
+is the largest example and worth reading alongside it.
 
-[Conduit](@/examples/conduit.md) is a useful example to read alongside this
-page. It has routed pages, feeds, authentication, article editing, and comments.
-Its source includes older patterns as well as newer APIs; the guidance below
-explains which patterns to use in new code.
+## Modules
 
-## Module layout
+Every example follows the same layout:
 
-Conduit separates its application code into these groups:
+| File | Contents |
+|---|---|
+| `<Domain>.roc` | Pure domain types and functions: parsing, validation, reducers. No platform imports, tested with `expect`. |
+| `<Name>App.roc` | The UI: context aliases, the view, effect sites and `program`. |
+| `main.roc` | The one entry point: `main = <Name>App.program`. Built for `wasm32` it is the browser module; for `x64musl`, the native spec runner. |
+| `main-fuzz.roc` | Optional fuzz and soak target for the app, on the repository's fuzz platform. |
+| `specs/*.scm` | Specs, run natively and in Chrome. |
 
-| Modules | Responsibility |
-| --- | --- |
-| `main.roc` | Page selection, header, navigation, guards, document title |
-| `Route.roc`, `Nav.roc` | Parse locations, construct links, request navigation |
-| `Api.roc` | Request construction, response decoding, API data types |
-| `Session.roc` | Read and update the stored session |
-| `Home.roc`, `Article.roc`, `Editor.roc`, `Profile.roc`, `Settings.roc`, `Auth.roc` | Page state, requests, and rendering |
-| `Feed.roc`, `Markdown.roc`, `Format.roc` | Shared list rendering, rich text, and display formatting |
-| `Styles.roc` | Shared CSS class strings |
-| `specs/` | Native tests of application behavior |
+Conduit splits its domain further — `Api.roc` (wire formats), `Route.roc`
+(URL parsing), `Markdown.roc`, `Format.roc` — but the rule is the same: the
+more of the app that is plain Roc data and functions, the less of it depends
+on the engine, and the easier it is to test.
 
-Start with a module per feature or page. Extract shared code when callers need
-the same behavior. A request helper belongs with API code; a repeated article
-card belongs with UI code. You do not need a separate module for every function
-or element.
+## Name your contexts
 
-## The shell
+Annotations get long without names. Give each state layer an alias once, at
+the top of the UI module, and use the aliases everywhere:
 
-The shell owns values that several pages need, such as the current route and
-session. Conduit derives both from browser sources:
+{{ sample(file="state.roc", region="contexts") }}
 
-```roc
-location : Signal.Signal(Browser.Location)
-location = Browser.location()
+A helper that works in any context can stay generic, as the `Html` helpers do:
+`stat : Str, Val(ctx, Str) -> Elem(ctx)`.
 
-route : Signal.Signal(Route)
-route = location.map(Route.from_location)
+## Keep updates local
 
-session : Signal.Signal(Session)
-session = Session.current()
+The engine re-evaluates what reads a changed state, so the shape of your state
+is the shape of your update cost:
 
-Ui.on_change_initial(route.map(Route.title), Browser.set_title)
-```
+- **Separate concerns, separate states.** A filter box, a selection and the
+  data they act on change independently. As fields of one record, every
+  keystroke in the filter re-evaluates everything that reads the record. As
+  three states, it re-evaluates only what reads the filter.
+- **One transition, one state.** Fields that one event must change together
+  belong in one state, because a handler writes one state.
+- **Compute once with `derive`.** A view that many holes read — the visible
+  rows after filtering and sorting, a summary over the whole data set — should
+  be a `derive` layer. Its readers do no work when it comes out equal.
+- **Row-local state lives in the row.** An "editing" flag per row belongs in
+  a `state` inside the row template, not in a map in the root model.
+- **Keyed selection for "the selected one".** Use `keyed` and `row.select`, so
+  moving the selection touches two rows.
 
-These are fragments from the shell's setup: the lifecycle sink must be included
-in the returned element tree. `on_change_initial` sets the title for the initial
-URL as well as later navigation.
+The work counters make this measurable: a spec can assert how many elements,
+text updates and evaluations an event caused. See
+[Testing](@/docs/testing.md#work-budgets).
 
-Keep URL parsing in ordinary Roc functions. The UI can then derive navigation
-links, selected tabs, and page content from the parsed route. Authentication
-guards can derive a redirect and issue `Browser.replace_state`; use
-`Browser.push_state` for navigation that should create a Back-button entry.
-See [routing](@/docs/effects-and-browser.md#routing) for the browser boundary.
+## Lifetimes
 
-## Layering
+Ask how long each piece of state must live, and put it in the scope that
+lives exactly that long:
 
-Decode external data before rendering it. For example, `Api.roc` can turn an
-HTTP response into article data or a domain error, while a page decides how to
-show that error and whether to offer a retry. This keeps status-code and JSON
-handling out of individual text and button helpers.
+- State that survives page changes (the session, a cache keyed by id) lives at
+  the root.
+- State that should reset when the user leaves a page lives inside that page's
+  `switch` branch.
+- State per item lives in the row.
 
-CSS classes may be local to a component or shared through a module. Share a
-class constant when several views should change together; keeping all CSS
-strings in one file is not required by Signals.
+When a page needs to keep a draft across navigation, store it above the page,
+keyed by the page's own identity; the engine never keeps a disposed scope
+alive for you.
 
-### Container and presentational
+## Components and code size
 
-A rendering helper can accept signals and event messages without owning state.
-A component that needs its own lifetime wraps its body in `Ui.component`.
-Functions and modules alone do not establish a runtime scope.
+Every distinct context type a piece of UI is used in compiles another copy of
+it. A component's body is typed only by its prop and action types, so it
+compiles once however many places use it. When the same panel, card or form
+appears in several places, or a large app's Wasm grows, make it a component
+and pass it what it needs as its prop.
+[Lists, Conditionals, and Components](@/docs/dynamic-structure.md#components)
+shows the API.
 
-Prefer a named record of signals when inputs change independently. A header's
-unread count and display name need not become one shared dependency. Use a
-single `Signal(Props)` when consumers need a coherent record that changes as a
-unit. Combine inputs with `{ first: first, second: second }.Signal` at the place
-that actually needs both.
+## Effects belong to the state they change
 
-This choice affects recomputation: a transform depending on a combined record
-runs when any field changes, even if it reads only one field. Its output may
-then compare equal and stop further propagation.
-
-### Choose state lifetimes
-
-Place state in the smallest scope that covers everyone who needs it, for as
-long as they need it:
-
-- A disclosure's open flag can belong to its component.
-- An article draft that must survive switching pages belongs above the route
-  switch, or in explicit persistent storage.
-- A row's temporary editing flag can belong inside `Ui.each` if removing the
-  row should discard it.
-- Edits that must survive filtering or pagination need an owner outside the
-  rendered row scopes, indexed by the domain key.
-
-A surviving key preserves row-local state during reorder and same-key item
-updates. Removing that key disposes the row. Reintroducing it later creates a
-new lifetime; reusing the key does not restore its old state.
-
-Use `Ui.switch` to select a page from a route value or route kind. Switching on
-the whole route rebuilds the page scope when any unequal route value arrives.
-Switching on the route kind keeps that scope alive for parameter changes within
-the same kind; pass the route signal into the page so its requests and content
-can follow those parameters. Choose based on whether local page state should
-survive that navigation. Conduit's existing shell uses `Ui.when` branches;
-new code can express the same choice with `Ui.switch`.
-
-## Remote data
-
-A remote-data type makes request states explicit:
-
-```roc
-Remote(a) : [Loading, Ready(a), Failed(Str)]
-```
-
-Map effect results into this type near the request code, then render loading,
-success, and failure states. An exhaustive `match` checks those three cases.
-An empty list is still `Ready([])`, so decide separately how an empty result
-should appear. The type does not automatically supply an empty-state view.
-
-Own the result state at the lifetime the UI needs. An admitted effect survives
-removal of its initiating control, but its returned writes cannot recreate
-state destinations whose scopes have been disposed.
-
-## Server-confirmed mutations
-
-Separate a value that should stay synchronized from an action a user requests.
-Filters can drive a fetch through `Action.on_change_initial`. A Favorite or
-Submit button should use `Action.run`, which runs once per accepted event even
-when its declared reads equal those from the previous event.
-
-The handler returns `Action.then(changes, effect!)`. The effect sends the
-request with `Http.send!`, decodes the response, and returns an
-`Action.update` containing state reducers. Changing the article signal alone
-does not run the event handler. No serial counter is needed merely to make
-identical clicks distinct.
-
-Race policy is separate from event identity. Every admitted effect runs
-independently. If newer requests supersede older ones, record a generation in
-state and check it in the result reducer against the current value. If every
-result matters, reduce every result instead. Neither policy can undo a write
-the server has already performed.
-
-When one action needs to replace several state sources together, return
-`Action.update` with each state's `write` proposal. Derived values and
-observers then see the complete replacement. Do not use a chain of change
-observers to repair intermediate combinations of state.
-
-## Sessions
-
-`Session.roc` combines declared storage sources for the JWT and username into a
-session signal. Storage is read before the first render, so the shell can render
-from the saved session immediately. A missing or unavailable value becomes an
-anonymous session in this example.
-
-That is local UI state, not server-side verification of the saved token. Handle
-an expired or rejected token in response handling. Keep storage decoding and
-session policy in one module so pages use the same rules.
-
-Namespace keys such as `conduit.jwt` because applications on the same origin
-share local storage. See [storage](@/docs/effects-and-browser.md#storage) for
-unavailable stores and write failures.
-
-## Rich text without raw HTML
-
-`Markdown.roc` renders parsed text as `Elem` structure, using `Html.text` leaves
-for user-controlled strings. This avoids interpreting those strings as HTML.
-It also checks link schemes before constructing links.
-
-Keep those checks when adapting the renderer. Text nodes do not make arbitrary
-URLs, attributes, or JavaScript integrations safe; each external-data boundary
-still needs an appropriate policy.
-
-## Testing at this scale
-
-Conduit's native specs cover feeds, navigation, session restoration, errors,
-stale responses, and mutations without starting a server. Use that layer for
-request sequencing and state lifetimes: retry the same input, navigate while a
-request is pending, and remove and restore a keyed row.
-
-Use browser tests for browser behavior, including actual link navigation,
-keyboard interaction, focus, storage access, and integrations. The native host
-shares the reactive engine, but its simulated DOM does not establish those
-browser properties.
-
-## Next
-
-[Testing](@/docs/testing.md) explains how to write native semantic specs and
-assert the work an interaction performs.
+Put an effect site next to the state its reaction writes, and watch the
+smallest value that should trigger it. Conduit keeps its routing effects
+(popstate, history push, title) at the root, and each page's loads inside the
+page, so leaving a page cancels its subscriptions while requests in flight
+still deliver to the root. A request that must be repeatable for an equal
+value carries a counter in the watched value.

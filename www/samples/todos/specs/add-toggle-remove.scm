@@ -1,0 +1,16 @@
+(test "add, complete and remove todos"
+  (steps
+    (expect-visible (text "Nothing to do."))
+    (fill (label "Title") "Water the plants")
+    (submit (role form :name "New todo"))
+    (fill (label "Title") "Buy milk")
+    (submit (role form :name "New todo"))
+    (expect-absent (text "Nothing to do."))
+    (blur (label "Title"))
+    (expect-value (label "Title") "")
+    (expect-text (test-id "remaining") "2 items left")
+    (check (label "Done: Buy milk"))
+    (expect-text (test-id "remaining") "1 item left")
+    (expect-local-storage "todos" "-Water the plants\n+Buy milk")
+    (click (role button :name "Remove Water the plants"))
+    (expect-text (test-id "remaining") "0 items left")))

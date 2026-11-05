@@ -1,12 +1,12 @@
-import { mountSignalsApp } from "./signals.mjs";
+import { mountRocEngineApp } from "./runtime.mjs";
 
 const root = document.getElementById("main");
 
 if (root === null) {
-  throw new Error("Roc Signals benchmark requires a #main mount element");
+  throw new Error("Roc engine benchmark requires a #main mount element");
 }
 
-await mountSignalsApp({
+await mountRocEngineApp({
   wasmUrl: new URL("./app.wasm", import.meta.url),
   root,
 });

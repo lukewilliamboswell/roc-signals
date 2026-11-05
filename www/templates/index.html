@@ -11,8 +11,8 @@
       {% if config.extra.release_version | default(value="") %}
       <p>Supported platform: <a href="{{ config.extra.github_url }}/releases/tag/{{ config.extra.release_version }}">{{ config.extra.release_version }}</a></p>
       {% endif %}
-      <h1 class="max-w-4xl text-4xl font-semibold tracking-normal text-zinc-950 sm:text-5xl">Signal-based UI apps in Roc, running in the browser.</h1>
-      <p class="max-w-3xl text-lg leading-8 text-zinc-700">Roc Signals keeps app descriptions pure while the host owns retained state, events, tasks, and DOM patches. Explore the examples, read the guide, or drop in your own wasm build.</p>
+      <h1 class="max-w-4xl text-4xl font-semibold tracking-normal text-zinc-950 sm:text-5xl">Interactive browser apps in pure Roc.</h1>
+      <p class="max-w-3xl text-lg leading-8 text-zinc-700">A reactive engine written in Roc updates exactly the DOM that depends on what changed, with no virtual DOM, and every behaviour is testable natively. Explore the examples, read the guide, or drop in your own wasm build.</p>
       <div class="flex flex-wrap gap-3">
         <a class="button-primary" href="{{ get_url(path='docs/guide/', trailing_slash=true) }}">Read the guide</a>
         <a class="button" href="{{ get_url(path='examples/', trailing_slash=true) }}">Browse examples</a>
