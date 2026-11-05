@@ -1,34 +1,30 @@
-.zig-cache/
-.claude/
+# Tooling state.
 .blueprint/
-roc-cache/
-dist/
-benchmarks/js-framework-benchmark/roc-signals-keyed/dist/
-
-*.a
-*.lib
-*.o
-*.obj
-*.wasm
-*.exe
-*.pdb
-*.dylib
-*.so
-*.tar.zst
-
-# Built by `blueprint run site`.
-www/static/signals.css
+.claude/
+.zig-cache/
 .DS_Store
 
-.test-out/
+# Build output: scripts build under .build/ (or $ROC_SIGNALS_BUILD_DIR),
+# the site under dist/, release assets under dist-release/.
+.build/
+.build-*/
+.docs-out/
+dist/
+dist-release/
+benchmarks/js-framework-benchmark/roc-signals-keyed/dist/
+www/static/signals.css
+
+# Fuzzing campaigns.
 .fuzz-out/
-plan.md
-*.mdtodo
+.roc-fuzz/
 
-
-/main
-
-# Phase 2 test tooling: fetched roc-fuzz inputs and the built cli.o; local build trees.
+# Fetched and built platform inputs.
 platform/targets/
 platform/test-targets/
-.build/
+
+# Never written by this repository's tooling, kept out of commits anyway.
+.test-out/
+*.a
+*.o
+*.wasm
+*.tar.zst

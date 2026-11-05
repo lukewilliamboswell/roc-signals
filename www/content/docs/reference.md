@@ -7,7 +7,7 @@ template = "page.html"
 
 # Reference
 
-The [API documentation](../../api/) is generated from the platform's source
+The [API documentation](../../api/api/) is generated from the platform's source
 and documents every public symbol of `Engine` and `Html`. This page is the map
 of it. The spec language is in [Testing](@/docs/testing.md).
 

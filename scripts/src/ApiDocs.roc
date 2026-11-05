@@ -15,12 +15,14 @@ ApiDocs := [].{
 	build! : SpecSuite.Options, Str => Try(Str, _)
 	build! = |o, version| {
 		out = "${o.build_dir}/api-docs"
+		# roc-docs takes its output directory relative to the workspace.
+		relative = if (out.starts_with("${o.root}/")) out.drop_prefix("${o.root}/") else return Err(BuildDirOutsideWorkspace(out))
 		if Path.exists!(Path.utf8(out))? {
 			Path.delete_all!(Path.utf8(out))?
 		}
 		Proc.run!({
 			program: "roc-docs",
-			args: ["build", "--workspace", ".", "--docs-directory", "www/api", "--entrypoint", "index.md", "--output-directory", out, "--api-entrypoint", "platform/main.roc", "--roc-command", o.compiler, "--pdf-filename", "roc-signals-api.pdf", "--docs-version", version, "--title", "Roc Signals API"],
+			args: ["build", "--workspace", ".", "--docs-directory", "www/api", "--entrypoint", "index.md", "--output-directory", relative, "--api-entrypoint", "platform/main.roc", "--roc-command", o.compiler, "--pdf-filename", "roc-signals-api.pdf", "--docs-version", version, "--title", "Roc Signals API", "--site-url", "https://lukewilliamboswell.github.io/roc-signals/api/"],
 			cwd: o.root,
 		})?
 		Ok("${out}/site")
