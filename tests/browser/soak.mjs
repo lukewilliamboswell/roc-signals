@@ -21,11 +21,14 @@ const opts = parseArgs(process.argv.slice(2), ["app", "events", "cycles"]);
 const app = opts.app;
 const EVENTS = Number(opts.events ?? 3000);
 const conduit = app === "conduit";
-// Apps with effects run against a backend: Conduit's RealWorld mock, and a
-// small stand-in for the field-notes sync endpoint (it echoes the token, a
-// successful sync).
+// Apps with effects run against a backend: Conduit's RealWorld mock, and
+// small stand-ins for the field-notes sync endpoint (it echoes the token, a
+// successful sync) and the status-page checks (every service operational, no
+// incidents).
 const BACKENDS = {
   "field-notes": async (req) => (req.uri === "/api/notes/sync" ? { status: 200, body: req.body } : null),
+  "status-page": async (req) =>
+    req.uri === "/api/status/incidents" ? { status: 200, body: "" } : req.uri.startsWith("/api/status/") ? { status: 200, body: "operational|99.99" } : null,
 };
 let handle = BACKENDS[app] ?? null;
 if (conduit) handle = (await import(path.join(repo, "www/static/conduit_backend.mjs"))).createConduitHandler({});
@@ -161,6 +164,8 @@ const CYCLES = {
     ["click", ["label", "Sync automatically"]],
     ["click", ["label", "Sync automatically"]],
   ],
+  // Every check answered by the backend stand-in.
+  "status-page": [["click", ["role", "button", "Refresh now"]]],
 };
 {
   const { ctx, page } = await open();

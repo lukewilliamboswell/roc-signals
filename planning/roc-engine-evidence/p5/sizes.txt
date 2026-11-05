@@ -10,6 +10,7 @@ markdown-editor      3147438     3077711      938822 |     1677918     1592851  
 conduit              5274106     5188529     1500677 |     3080902     2949310      940416 |    160%
 # Phase 4 spike -Oz gz for reference (before payloads/effects/focus/containment): form 394,136; kanban 301,501;
 # grid 203,353; markdown 671,205 (planning/roc-engine-evidence/p4apps/results/sizes.txt).
-# Phase 4 port, 2026-11-05 (engine/v2 after protocol 2; same build and measurement; no current-engine
-# build of it: the examples-web original pins the 0.2.0 release platform):
+# Phase 4 ports, 2026-11-05 (engine/v2 after protocol 2; same build and measurement; no current-engine
+# build of these: the examples-web originals pin the 0.2.0 release platform):
 field-notes           950532      944775      299334 |           -           -           - |       -
+status-page          1169364     1164080      354364 |           -           -           - |       -
