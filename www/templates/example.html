@@ -28,6 +28,15 @@
     </div>
     <div data-signals-wasm="{{ get_url(path='examples/' ~ example.slug ~ '/app.wasm') }}" data-signals-title="{{ example.title }}"></div>
   </section>
+  {# Deferred, so they run in document order after parsing and before
+     site.mjs (a module script, also deferred) mounts the app. #}
+  {% for script in example.scripts | default(value=[]) %}
+  {% if script.src is starting_with("https://") %}
+  <script defer src="{{ script.src | safe }}" integrity="{{ script.integrity | safe }}" crossorigin="anonymous"></script>
+  {% else %}
+  <script {% if script.module | default(value=false) %}type="module"{% else %}defer{% endif %} src="{{ get_url(path='examples/' ~ example.slug ~ '/' ~ script.src) }}"></script>
+  {% endif %}
+  {% endfor %}
   {% endif %}
   {% endfor %}
 </main>

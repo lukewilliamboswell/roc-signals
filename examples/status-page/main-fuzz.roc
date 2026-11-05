@@ -1,5 +1,6 @@
 app [target] {
 	pf: platform "../../platform/test.roc",
+	plume: "https://github.com/lukewilliamboswell/plume/releases/download/0.5.0/UstpTQVssohnU8U6Q5WpwfGxKuYZF8uWzjddwKMbTcp.tar.zst",
 	ts: "../../test-support/main.roc",
 }
 

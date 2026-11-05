@@ -1,5 +1,12 @@
 import pf.Engine exposing [Elem, In, Root, Row, RowRef, State, Val]
 import pf.Html
+import plume.Axis
+import plume.Bar
+import plume.Chart
+import plume.Color
+import plume.Coordinate
+import plume.Layout
+import plume.Title
 import Status
 
 ## Status Page on the Roc-owned engine: ported from the previous engine.
@@ -18,6 +25,11 @@ import Status
 ## page can never show "All systems operational" beside a red component.
 ## The incident feed is a fifth result rendered as a timeline: incidents are
 ## keyed rows, each with its keyed updates.
+##
+## The uptime chart is a `plume-chart` custom element (defined by the
+## example's `plume-chart.mjs`) whose `data-figure` attribute carries a Plotly
+## figure built with Plume. To the engine it is an ordinary element with an
+## ordinary attribute.
 StatusApp := [].{
 	Board : {
 		serial : U64,
@@ -103,6 +115,50 @@ StatusApp := [].{
 			),
 		],
 	)
+
+	## A service's uptime as a bar height, in percent. A service that has not
+	## reported draws no bar rather than a guessed one.
+	reported_uptime : Status.Check -> F64
+	reported_uptime = |check|
+		match check.health {
+			Unknown => 0
+			CheckFailed(_) => 0
+			_ => check.uptime_bps.to_f64() / 100
+		}
+
+	## A bar's fill, in the tone of the service's status badge.
+	health_color : Status.Health -> Color
+	health_color = |health|
+		match health {
+			Operational => Color.rgb({ red: 5, green: 150, blue: 105 })
+			Degraded => Color.rgb({ red: 217, green: 119, blue: 6 })
+			Outage => Color.rgb({ red: 220, green: 38, blue: 38 })
+			Unknown => Color.rgb({ red: 161, green: 161, blue: 170 })
+			CheckFailed(_) => Color.rgb({ red: 217, green: 119, blue: 6 })
+		}
+
+	## Uptime per service as one bar trace on a 0-100% axis, each bar in its
+	## service's health tone.
+	uptime_chart : Board -> Try(Chart, _)
+	uptime_chart = |b| {
+		var $points = []
+		for { name, check } in [{ name: "API", check: b.api }, { name: "Web app", check: b.web }, { name: "Database", check: b.database }, { name: "Notifications", check: b.notifications }] {
+			$points = $points.append({ x: Coordinate.from_text(name), y: Coordinate.from_number(StatusApp.reported_uptime(check))?, color: StatusApp.health_color(check.health) })
+		}
+		bars = Bar.new({ data: $points, name: "Uptime" })?
+		uptime_axis = Axis.new({ title: Title.new({ text: "Uptime (%)" }), type: Linear, range: Bounds({ min: 0, max: 100 }) })?
+		Ok(Chart.new({ traces: [Bar(bars)], layout: Layout.new({ y_axis: uptime_axis }) }))
+	}
+
+	## The chart's Plotly figure JSON. Uptimes are finite and the bar width is
+	## Plume's default, so construction cannot fail; were it ever to, the
+	## attribute is empty and the element draws nothing.
+	uptime_figure : Board -> Str
+	uptime_figure = |b|
+		match StatusApp.uptime_chart(b) {
+			Ok(chart) => chart.to_json()
+			Err(_) => ""
+		}
 
 	render_update : RowRef(Row(C2, Status.Incident), Status.Update) -> Elem(Row(Row(C2, Status.Incident), Status.Update))
 	render_update = |row| {
@@ -225,6 +281,7 @@ StatusApp := [].{
 						StatusApp.service_card({ id: "web", name: "Web app", detail: "app.acme.cloud — dashboard and console" }, bv.map(|b| b.web)),
 						StatusApp.service_card({ id: "database", name: "Database", detail: "Primary Postgres cluster, eu-west-1" }, bv.map(|b| b.database)),
 						StatusApp.service_card({ id: "notifications", name: "Notifications", detail: "Email, SMS and outbound webhooks" }, bv.map(|b| b.notifications)),
+						Engine.element("plume-chart", [Engine.class("block"), Engine.attr("role", "img"), Html.aria_label("Uptime by service"), Engine.test_id("uptime-chart"), Engine.attr_v("data-figure", bv.map(StatusApp.uptime_figure))], []),
 					],
 				),
 				StatusApp.incidents_panel(bv.map(|b| b.feed)),

@@ -1,5 +1,6 @@
 # The examples the site shows, in index order. Each runs on the web
-# platform from its `main-web.roc`; its specs run natively and in Chrome.
+# platform from its `main-web.roc`; its specs run natively and in Chrome. An
+# example may list `scripts` its page loads before the app mounts.
 
 [[examples]]
 slug = "field-notes"
@@ -28,10 +29,22 @@ public = true
 [[examples]]
 slug = "status-page"
 title = "Status Page"
-description = "A public status page rolling four independent service checks into one derived status, with visibility-gated polling and an incident timeline."
+description = "A public status page rolling four independent service checks into one derived status, with visibility-gated polling, a Plume uptime chart and an incident timeline."
 source = "examples/status-page/main-web.roc"
 specs = "examples/status-page/specs"
 public = true
+
+# The uptime chart: Plotly from its pinned CDN URL (the version Plume 0.5.0
+# pins), then the example's `plume-chart` element. Both are deferred, so they
+# run in this order before the app mounts. A relative `src` is a file in
+# examples/status-page/ that scripts/site.roc copies beside app.wasm.
+[[examples.scripts]]
+src = "https://cdn.plot.ly/plotly-4.2.0.min.js"
+integrity = "sha384-F4AdcRk3NYRZZUZ7qARRp/wPkwvdta756IMuHDAZcmtM5nuHKykTbDJd7N9h+Qff"
+
+[[examples.scripts]]
+src = "plume-chart.mjs"
+module = true
 
 [[examples]]
 slug = "kanban-board"
