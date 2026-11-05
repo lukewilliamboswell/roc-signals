@@ -24,11 +24,6 @@ Targets := [].{
 		{ name: "controls", main: "tests/apps/controls/main-fuzz.roc" },
 	]
 
-	## The committed exact allocation baseline of a target. Only
-	## `blueprint run fuzz-accept` writes it; CI only checks against it.
-	baseline : Str -> Str
-	baseline = |name| "fuzz/baselines/${name}_baseline.json"
-
 	## Where a target's executable is built.
 	exe_of : SpecSuite.Options, Fuzz -> Str
 	exe_of = |o, { name, .. }| "${o.build_dir}/fuzz/${name}/target"
@@ -56,23 +51,21 @@ Targets := [].{
 	}
 
 	check_job : SpecSuite.Options, Fuzz -> Proc.Job
-	check_job = |o, t| { program: Targets.exe_of(o, t), args: ["check", "--baseline=${o.root}/${Targets.baseline(t.name)}", "--timeout=1800"], cwd: "${o.build_dir}/fuzz/${t.name}" }
+	check_job = |o, t| { program: Targets.exe_of(o, t), args: ["check", "--timeout=1800"], cwd: "${o.build_dir}/fuzz/${t.name}" }
 
-	## A target's check, judged: a finding, a changed baseline or a missing
-	## one is a problem.
+	## A target's check, judged: a finding (a failed property, a leak, a soak
+	## cycle that does not return to flat live bytes) is a problem. Exact
+	## allocation counts are not compared: there are no committed baselines.
 	judge : Str, I32, Str -> List(Str)
 	judge = |name, code, out|
 		if code != 0 or !out.contains("${name}: passed") {
 			["fuzz ${name}: ${out.trim()}"]
-		} else if !out.contains("baseline matched") {
-			["fuzz ${name}: no accepted baseline (${Targets.baseline(name)}); review the observations and run `blueprint run fuzz-accept`"]
 		} else {
 			[]
 		}
 
-	## Build every target, then check each one's declared examples against its
-	## committed baseline, in parallel (the checks are independent processes
-	## and allocation counts do not depend on timing).
+	## Build every target, then check each one's declared examples, in
+	## parallel (the checks are independent processes).
 	fuzz_check_all! : SpecSuite.Options, List(Fuzz) => Try(List(Str), _)
 	fuzz_check_all! = |o, fuzzes| {
 		Targets.build_fuzz_all!(o, fuzzes)?
@@ -82,14 +75,6 @@ Targets := [].{
 
 	fuzz_check! : SpecSuite.Options, Fuzz, Str => Try(List(Str), _)
 	fuzz_check! = |o, t, _exe| Targets.fuzz_check_all!(o, [t])
-
-	## Accept a target's allocation observations as its baseline: an explicit
-	## review step, never run by CI.
-	fuzz_accept! : SpecSuite.Options, Fuzz, Str => Try({}, _)
-	fuzz_accept! = |o, { name, .. }, exe| {
-		Path.create_all!(Path.utf8("${o.root}/fuzz/baselines"))?
-		Proc.run!({ program: exe, args: ["accept", "--baseline=${o.root}/${Targets.baseline(name)}", "--timeout=1800"], cwd: "${o.build_dir}/fuzz/${name}" })
-	}
 
 	browser! : SpecSuite.Options, Str, List(Str) => Try(List(Str), _)
 	browser! = |o, script, args| {

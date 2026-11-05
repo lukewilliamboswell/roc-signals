@@ -6,12 +6,12 @@ import Targets
 ## The slow suite: soak.
 Slow := [].{
 
-	## Every fuzz target against its baseline, then every app's browser soak.
+	## Every fuzz target's examples, then every app's browser soak.
 	soak! : SpecSuite.Options => Try(List(Str), _)
 	soak! = |o| {
 		Checks.prepare_platform!(o)?
 		SpecSuite.build_web_platform!(o)?
-		Proc.note!("== fuzz targets against their baselines")
+		Proc.note!("== fuzz targets")
 		var $problems = Targets.fuzz_check_all!(o, Targets.fuzz_targets)?
 		SpecSuite.build_with!(o, [], SpecSuite.apps, "size")?
 		for example in SpecSuite.apps {

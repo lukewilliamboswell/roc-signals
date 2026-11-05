@@ -15,7 +15,7 @@ import src/Targets
 ## app's original `.scm` specs natively and in Chrome, the broken-spec
 ## self-check (both runners reject a spec with one wrong expectation), the runtime contract tests in Chrome
 ## (effects, controls, Conduit journey) and the js-framework-benchmark check.
-## The soak runs and the app fuzz targets' baselines are `check-slow`.
+## The soak runs and the app fuzz targets are `check-slow`.
 main! = |_args| {
 	o = Checks.options!({ filter: "*" })?
 	var $problems = []
@@ -105,8 +105,8 @@ script_pins! = || {
 	Ok($out)
 }
 
-## The parser's fuzz target builds with `--fuzz` and passes its examples and
-## baseline; the app targets, which take minutes, are `check-slow`.
+## The parser's fuzz target builds with `--fuzz` and passes its examples;
+## the app targets, which take minutes, are `check-slow`.
 fuzz_smoke! : SpecSuite.Options => Try(List(Str), _)
 fuzz_smoke! = |o| {
 	target = { name: "scm-parse", main: "fuzz/scm-parse/main.roc" }

@@ -7,9 +7,9 @@ app [main!] {
 import src/Checks
 import src/Slow
 
-## The `soak` task: every fuzz target's declared examples against its
-## committed allocation baseline (native soak walks, round-trip plateaus and
-## bench transactions), then a long session of every app in Chrome.
+## The `soak` task: every fuzz target's declared examples (leak-checked
+## native soak walks, round-trip plateaus and bench transactions), then a
+## long session of every app in Chrome.
 main! = |_args| {
 	o = Checks.options!({ filter: "*" })?
 	Slow.finish!("soak", Slow.soak!(o)?)

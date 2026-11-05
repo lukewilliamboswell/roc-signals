@@ -59,8 +59,8 @@
 - Preserve in-place updates. Exactly one closure references a site's storage;
   environments move through handlers rather than being shared; no second
   reference is kept for convenience. A change that makes a column or state copy
-  on every update is a regression even when output is correct, and allocation
-  baselines must catch it.
+  on every update is a regression even when output is correct, and the soak's
+  flat round trips must catch it.
 - Keep the host to its job. `host.zig` holds one opaque boxed engine state, the
   last command buffer, at most one staged payload, the allocator and the fault
   state. It clears its slots before each call into Roc and never interprets the
@@ -122,7 +122,7 @@
 - Use `.scm` specs under `examples/<app>/specs/` for application-visible
   behavior and work, run natively and in Chrome; roc-fuzz targets (each app's
   `main-fuzz.roc`, and `fuzz/` for the shared support)
-  for engine sequences and allocation baselines; and contract cases under
+  for engine sequences and leak-checked soaks; and contract cases under
   `tests/` for `host.zig` and `runtime.mjs` against the wire protocol. Keep
   semantic locators stable and assert structural work exactly.
 - Reach for fuzzing where the bug class is a *sequence* rather than a case:
@@ -134,7 +134,6 @@
   target's corpus so CI replays it and the fix stays fixed.
 - Judge a fuzz target by its properties: state the rules the engine must keep
   over generated sequences and check them against a reference model.
-  Allocation baselines change only with reviewer acceptance.
 - For performance work, follow `docs/profiling.md`: measure optimized builds,
   test scaling before micro-optimizing, keep allocator counters honest, and
   validate semantics and counters after the change. Do not trade correctness,

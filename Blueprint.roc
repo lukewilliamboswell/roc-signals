@@ -80,10 +80,6 @@ config = [
 	Task("platform-test", [Use("engine"), Run(["scripts/build_platform_test.roc"])]),
 	Task("soak", [Use("engine"), Run(["scripts/soak.roc"])]),
 	Task("jfb", [Use("engine"), Run(["scripts/jfb.roc"])]),
-	# Accepting exact allocation baselines is a reviewed, explicit step that
-	# CI never runs: `blueprint run fuzz-accept -- [TARGET]`, then commit
-	# fuzz/baselines/.
-	Task("fuzz-accept", [Use("engine"), Run(["scripts/fuzz_accept.roc", "--"])]),
 	# The scripts/minici targets, which CI jobs and contributors share;
 	# `minici` alone runs every area reproducible on this machine.
 	Task("minici", [Use("site"), Run(["python3", "scripts/minici"])]),

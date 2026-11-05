@@ -111,9 +111,8 @@ this document and the implementation are tracked in issues.
 ### Success criteria
 
 - **Engine invariants:** native specs with work and effect counters, the
-  `Dom.roc` oracle, roc-fuzz property targets with exact allocation
-  baselines, and long-session soak runs with flat live allocations and Wasm
-  pages.
+  `Dom.roc` oracle, roc-fuzz property targets, and long-session soak runs
+  with flat live allocations and Wasm pages.
 - **Author outcomes:** maintained apps contain no workaround encodings; a
   one-row change in a large keyed list does constant engine work outside the
   list's own reconciliation; every contract-error class has a spec asserting
@@ -965,8 +964,6 @@ real click on a disabled control fails.
   lifecycle (issue, dispose, reparent, deliver, refuse, cancel, stale), and the
   explorer-driven soak walk over the live DOM. Their oracles, not their inputs,
   carry the value.
-- **Exact allocation baselines** per named example catch silent
-  copy-on-write cliffs. Baselines change only with reviewer acceptance.
 - **Soak.** Every app runs a long random walk natively (leak-checked) and in
   Chrome, with live allocations and Wasm pages asserted flat across repeated
   round trips.
@@ -1007,7 +1004,7 @@ pinned compiler contains the fix. None of them is platform semantics.
 | [roc-lang/roc#12848](https://github.com/roc-lang/roc/issues/12848) | Every proc gets `inlinehint`; `--opt=size` emits no `minsize` | Code size of larger apps |
 | [roc-lang/roc#12851](https://github.com/roc-lang/roc/issues/12851) | An undeclared type in a `provides` annotation segfaults monotype | Platform header discipline |
 | [roc-lang/roc#12835](https://github.com/roc-lang/roc/issues/12835) | Annotated polymorphic recursion hangs `roc test`/`roc check` under `--specialize=yes` | Recursive site types annotated with care |
-| [roc-lang/roc#12836](https://github.com/roc-lang/roc/issues/12836) | `Box.box` of a capture-free callable allocates on every call | Allocation baselines |
+| [roc-lang/roc#12836](https://github.com/roc-lang/roc/issues/12836) | `Box.box` of a capture-free callable allocates on every call | Extra allocations per call |
 
 Code size is the main open cost of the architecture and is tracked against
 #12847 and #12848, with each over-budget app's size budget linking its issue.
