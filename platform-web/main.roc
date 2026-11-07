@@ -4,7 +4,7 @@ platform ""
 	}
 	exposes [Elem, Event, Action, Signal, Html, Svg, Ui, Http, Browser, Rows]
 	packages {
-		roc: "nightly-2026-10-23-18478ff",
+		roc: "nightly-2026-11-07-ad3a5d2",
 		http: "https://github.com/roc-lang/http/releases/download/0.1/6LcdNq2r7xTBwj972ecYWUkMWobJr94yL2NyJpHRAXap.tar.zst",
 	}
 	provides { "roc_ui_init": ui_init, "roc_prepare_effect": prepare_effect!, "roc_run_effect": run_effect! }
