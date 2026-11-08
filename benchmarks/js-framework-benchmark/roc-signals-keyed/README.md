@@ -22,3 +22,8 @@ For an upstream comparison, copy this directory with its built `dist/` to
 `frameworks/keyed/roc-signals` in a `krausest/js-framework-benchmark`
 checkout. `npm run build-prod` there only checks that `dist/` is present: the
 engine, platform and host live in this repository.
+
+`package-lock.json` has no dependencies but must stay: the upstream server
+lists only framework directories that have both `package.json` and
+`package-lock.json`, and skips the others without an error. Regenerate it
+with `npm install --package-lock-only` when `package.json` changes.
