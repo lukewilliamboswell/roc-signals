@@ -58,7 +58,8 @@ Release := [].{
 	}
 
 	## Build every release asset into `out` (emptied first) for `version`.
-	## The examples' browser builds must already exist (`SpecSuite.build!`).
+	## The examples' browser builds must already exist (`SpecSuite.build!`),
+	## so the caller prepares the platform inputs before building them.
 	## Returns problems found while testing the assets.
 	build! : SpecSuite.Options, Str, Str => Try(List(Str), _)
 	build! = |o, version, out| {
