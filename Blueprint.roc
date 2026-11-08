@@ -32,9 +32,9 @@ roc_docs_program = Fetch("roc-docs", Recipes.file("https://github.com/lukewillia
 # The scripts' tooling compiler (`roc-stable`): every script's `roc` header
 # field names this release, and `check` fails until they match. Nothing else
 # is pinned to it. roc-overlay packages it as
-# `nix#rocpkgs.nightly-2026-11-03-34bd006`; it is fetched directly here so no
+# `nix#rocpkgs.nightly-2026-11-07-ad3a5d2`; it is fetched directly here so no
 # environment starts Nix.
-roc_stable_program = Fetch("roc-stable", Recipes.roc_nightly("nightly-2026-11-03-34bd006"))
+roc_stable_program = Fetch("roc-stable", Recipes.roc_nightly("nightly-2026-11-07-ad3a5d2"))
 
 config = [
 	Name("roc-signals"),
@@ -82,11 +82,11 @@ config = [
 
 zig : System -> Config.Download
 zig = |system| {
-	base = "https://ziglang.org/download/0.16.0"
+	base = "https://ziglang.org/download/0.17.1"
 	match system {
-		"x86_64-linux" => Archive("${base}/zig-x86_64-linux-0.16.0.tar.xz", TarXz, "zig-x86_64-linux-0.16.0/zig")
-		"aarch64-linux" => Archive("${base}/zig-aarch64-linux-0.16.0.tar.xz", TarXz, "zig-aarch64-linux-0.16.0/zig")
-		"aarch64-darwin" => Archive("${base}/zig-aarch64-macos-0.16.0.tar.xz", TarXz, "zig-aarch64-macos-0.16.0/zig")
+		"x86_64-linux" => Archive("${base}/zig-x86_64-linux-0.17.1.tar.xz", TarXz, "zig-x86_64-linux-0.17.1/zig")
+		"aarch64-linux" => Archive("${base}/zig-aarch64-linux-0.17.1.tar.xz", TarXz, "zig-aarch64-linux-0.17.1/zig")
+		"aarch64-darwin" => Archive("${base}/zig-aarch64-macos-0.17.1.tar.xz", TarXz, "zig-aarch64-macos-0.17.1/zig")
 		_ => Unavailable
 	}
 }
