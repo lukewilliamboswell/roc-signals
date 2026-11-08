@@ -1,128 +1,100 @@
-name: Platform release
+name: Release
+
+# Dispatched by a maintainer with a version. The build job runs
+# `blueprint run release`, the same task `check` runs as its dry run, and
+# uploads the assets. The publish job, which runs no repository code,
+# creates a *draft* GitHub release with those exact files and the generated
+# notes; the maintainer writes the release narrative on GitHub and publishes
+# it. Release notes live on GitHub releases, not in the repository.
 
 on:
   workflow_dispatch:
     inputs:
-      release_tag:
-        description: New SemVer release or prerelease, without a v prefix
+      version:
+        description: "Version to release, such as 0.3.0"
         type: string
         required: true
-        default: 0.2.0
-      validate_only:
-        description: Build and smoke-test exact assets without publishing
-        type: boolean
-        default: true
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
-  group: platform-release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
-  bundle:
-    name: Bundle the web platform from immutable inputs
+  # The latest Roc nightly, resolved once so every job of this run tests
+  # with the same `roc` (roc-automation's model: the package compiler floats;
+  # only the scripts' `roc-stable` is pinned in Blueprint.roc).
+  nightly:
+    name: Resolve the Roc nightly
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.nightly.outputs.tag }}
     steps:
+      - id: nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "tag=$(gh api repos/roc-lang/nightlies/releases/latest --jq .tag_name)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build
+    needs: nightly
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Validate
+        env:
+          VERSION: ${{ inputs.version }}
+          REF: ${{ github.ref }}
+          DEFAULT: refs/heads/${{ github.event.repository.default_branch }}
+        run: |
+          [ "$REF" = "$DEFAULT" ] || { echo "release from $DEFAULT only, not $REF"; exit 1; }
+          echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' || { echo "bad version $VERSION"; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
-        with:
-          python-version: '3.12'
-      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@7aff4132691ad4fc348abe9df146a57512b49bd6
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@60062e8909dcaf4bf449097132e440e9bc9c9ba6
         with:
           cache: 'true'
           cache-workload: release
-      - uses: ./.github/actions/setup-roc
-      - name: Validate release policy
-        if: ${{ !inputs.validate_only }}
-        uses: lukewilliamboswell/roc-automation/actions/check-release@7aff4132691ad4fc348abe9df146a57512b49bd6
+      - uses: roc-lang/setup-roc@f5a74bf90aa694b43ab4a7cbfdb19273bc6aa697
         with:
-          version: ${{ inputs.release_tag }}
-          compiler-root: platform-web/main.roc
-          allow-default-branch: 'true'
-          allow-nightly-bootstrap: 'true'
-      - name: Download, hash-verify, and bundle exact inputs
-        env:
-          RELEASE_VERSION: ${{ inputs.release_tag }}
-        run: blueprint run release -- prepare --version "$RELEASE_VERSION" --directory "$RUNNER_TEMP/release"
-      - name: Verify exact release inventory
-        run: blueprint run release -- verify --directory "$RUNNER_TEMP/release"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+          version: nightly-new-compiler
+          nightly-tag: ${{ needs.nightly.outputs.tag }}
+      - env:
+          VERSION: ${{ inputs.version }}
+        run: blueprint run release -- --version "$VERSION" --output-dir dist-release
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: platform-release
-          path: ${{ runner.temp }}/release/
-          retention-days: 30
+          name: release-candidate
+          path: dist-release/
           if-no-files-found: error
 
-  smoke:
-    name: Serve and smoke the release (${{ matrix.name }})
-    needs: bundle
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Linux x64
-            os: ubuntu-24.04
-          - name: macOS arm64
-            os: macos-15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
-        with:
-          python-version: '3.12'
-      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@7aff4132691ad4fc348abe9df146a57512b49bd6
-        with:
-          cache: 'true'
-          cache-workload: release-smoke
-      - uses: ./.github/actions/setup-roc
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-        with:
-          name: platform-release
-          path: ${{ runner.temp }}/release
-      - name: Serve the exact package and run all example smoke tests
-        run: blueprint run release -- check --directory "$RUNNER_TEMP/release"
-
   publish:
-    name: Publish the exact tested release
-    if: ${{ !inputs.validate_only && github.ref == 'refs/heads/main' && github.repository == 'lukewilliamboswell/roc-signals' }}
-    needs: smoke
+    name: Publish draft
+    needs: build
     runs-on: ubuntu-24.04
+    environment: release
     permissions:
       contents: write
-      id-token: write
-      attestations: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
-        with:
-          python-version: '3.12'
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
-          name: platform-release
-          path: ${{ runner.temp }}/release
-      - name: Verify the exact tested bytes
-        run: python3 scripts/release.py verify --directory "$RUNNER_TEMP/release"
-      - name: Attest optional external provenance
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
-        with:
-          subject-path: |
-            ${{ runner.temp }}/release/*.tar.zst
-            ${{ runner.temp }}/release/signals-examples.zip
-            ${{ runner.temp }}/release/signals-release.json
-      - name: Publish one immutable release
-        env:
+          name: release-candidate
+          path: candidate
+      - env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/release.py publish --directory "$RUNNER_TEMP/release"
+          VERSION: ${{ inputs.version }}
+          REPO: ${{ github.repository }}
+          TARGET: ${{ github.sha }}
+        run: |
+          if gh release view "$VERSION" -R "$REPO" >/dev/null 2>&1; then
+            echo "release $VERSION already exists"; exit 1
+          fi
+          gh release create "$VERSION" -R "$REPO" --draft --target "$TARGET" \
+            --title "Roc Signals $VERSION" --notes-file candidate/release-notes.md \
+            candidate/*.tar.zst candidate/runtime.mjs candidate/*.zip

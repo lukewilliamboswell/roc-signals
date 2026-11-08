@@ -16,7 +16,7 @@
         <p class="truncate text-sm text-zinc-600"><strong class="font-medium text-zinc-900">{{ example.title }}</strong></p>
       </div>
       <div class="flex flex-wrap items-center gap-2">
-        <a class="button" href="{{ get_url(path='examples/' ~ example.slug ~ '/source/main.roc') }}">Source</a>
+        <a class="button" href="{{ config.extra.github_url }}/tree/{{ config.extra.release_version | default(value='main') }}/examples/{{ example.slug }}">Source</a>
         {% if config.extra.release_starters_url | default(value="") %}
         <a class="button" href="{{ config.extra.release_starters_url }}">Complete starters</a>
         {% endif %}
@@ -28,6 +28,15 @@
     </div>
     <div data-signals-wasm="{{ get_url(path='examples/' ~ example.slug ~ '/app.wasm') }}" data-signals-title="{{ example.title }}"></div>
   </section>
+  {# Deferred, so they run in document order after parsing and before
+     site.mjs (a module script, also deferred) mounts the app. #}
+  {% for script in example.scripts | default(value=[]) %}
+  {% if script.src is starting_with("https://") %}
+  <script defer src="{{ script.src | safe }}" integrity="{{ script.integrity | safe }}" crossorigin="anonymous"></script>
+  {% else %}
+  <script {% if script.module | default(value=false) %}type="module"{% else %}defer{% endif %} src="{{ get_url(path='examples/' ~ example.slug ~ '/' ~ script.src) }}"></script>
+  {% endif %}
+  {% endfor %}
   {% endif %}
   {% endfor %}
 </main>

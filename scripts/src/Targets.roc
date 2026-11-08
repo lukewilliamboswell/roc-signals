@@ -1,0 +1,123 @@
+import cli.Path
+import Proc
+import SpecSuite
+
+## The roc-fuzz targets, the browser contract tests, the soak runs and the
+## js-framework-benchmark check.
+##
+## An app's fuzz target is its `main-fuzz.roc`, beside its modules: Roc
+## resolves an app's sibling modules from the directory of its main file, so a
+## target that drives an app's own modules lives with the app. Targets that
+## test only the shared support live under `fuzz/`.
+Targets := [].{
+	Fuzz : { name : Str, main : Str }
+
+	fuzz_targets : List(Fuzz)
+	fuzz_targets = [
+		{ name: "scm-parse", main: "fuzz/scm-parse/main.roc" },
+		{ name: "form-builder", main: "examples/form-builder/main-fuzz.roc" },
+		{ name: "kanban-board", main: "examples/kanban-board/main-fuzz.roc" },
+		{ name: "data-grid", main: "examples/data-grid/main-fuzz.roc" },
+		{ name: "markdown-editor", main: "examples/markdown-editor/main-fuzz.roc" },
+		{ name: "conduit", main: "examples/conduit/main-fuzz.roc" },
+		{ name: "field-notes", main: "examples/field-notes/main-fuzz.roc" },
+		{ name: "status-page", main: "examples/status-page/main-fuzz.roc" },
+		{ name: "spreadsheet-lite", main: "examples/spreadsheet-lite/main-fuzz.roc" },
+		{ name: "fx-channel", main: "tests/apps/effects/main-fuzz.roc" },
+		{ name: "controls", main: "tests/apps/controls/main-fuzz.roc" },
+	]
+
+	## Where a target's executable is built.
+	exe_of : SpecSuite.Options, Fuzz -> Str
+	exe_of = |o, { name, .. }| "${o.build_dir}/fuzz/${name}/target"
+
+	## Build fuzz targets in parallel. `--fuzz` needs the LLVM backend, so
+	## these builds use `--opt=speed` (the compiler refuses `--opt=dev`).
+	build_fuzz_all! : SpecSuite.Options, List(Fuzz) => Try({}, _)
+	build_fuzz_all! = |o, fuzzes| {
+		var $jobs = []
+		for t in fuzzes {
+			SpecSuite.fresh_dir!("${o.build_dir}/fuzz/${t.name}")?
+			$jobs = $jobs.append({ program: o.compiler, args: ["build", "--fuzz", "--opt=speed", t.main, "--output=${Targets.exe_of(o, t)}"], cwd: o.root })
+		}
+		results = Proc.parallel!($jobs, Proc.cpus!())?
+		match List.map2(fuzzes, results, |t, r| (t, r.code)).keep_if(|(_, c)| c != 0).first() {
+			Ok((t, c)) => Err(BuildFailed("fuzz ${t.name}: build exited with ${c.to_str()}"))
+			Err(_) => Ok({})
+		}
+	}
+
+	build_fuzz! : SpecSuite.Options, Fuzz => Try(Str, _)
+	build_fuzz! = |o, t| {
+		Targets.build_fuzz_all!(o, [t])?
+		Ok(Targets.exe_of(o, t))
+	}
+
+	check_job : SpecSuite.Options, Fuzz -> Proc.Job
+	check_job = |o, t| { program: Targets.exe_of(o, t), args: ["check", "--timeout=1800"], cwd: "${o.build_dir}/fuzz/${t.name}" }
+
+	## A target's check, judged: a finding (a failed property, a leak, a soak
+	## cycle that does not return to flat live bytes) is a problem. Exact
+	## allocation counts are not compared: there are no committed baselines.
+	judge : Str, I32, Str -> List(Str)
+	judge = |name, code, out|
+		if code != 0 or !out.contains("${name}: passed") {
+			["fuzz ${name}: ${out.trim()}"]
+		} else {
+			[]
+		}
+
+	## Build every target, then check each one's declared examples, in
+	## parallel (the checks are independent processes).
+	fuzz_check_all! : SpecSuite.Options, List(Fuzz) => Try(List(Str), _)
+	fuzz_check_all! = |o, fuzzes| {
+		Targets.build_fuzz_all!(o, fuzzes)?
+		results = Proc.parallel!(fuzzes.map(|t| Targets.check_job(o, t)), Proc.cpus!())?
+		Ok(List.map2(fuzzes, results, |t, r| Targets.judge(t.name, r.code, r.output)).join())
+	}
+
+	fuzz_check! : SpecSuite.Options, Fuzz, Str => Try(List(Str), _)
+	fuzz_check! = |o, t, _exe| Targets.fuzz_check_all!(o, [t])
+
+	browser! : SpecSuite.Options, Str, List(Str) => Try(List(Str), _)
+	browser! = |o, script, args| {
+		code = Proc.status!({ program: o.node, args: ["tests/browser/${script}", "--runtime", SpecSuite.runtime, "--chrome", o.chrome].concat(args), cwd: o.root })?
+		Ok(if (code == 0) [] else ["${script} ${Str.join_with(args, " ")} failed (exit ${code.to_str()})"])
+	}
+
+	## The runtime contract tests in Chrome (test apps built by `SpecSuite.build!`): the effect channel (tests/apps/effects),
+	## controlled inputs, focus and containment (tests/apps/controls), and
+	## Conduit's user journey against the RealWorld mock backend.
+	browser_contracts! : SpecSuite.Options, Str => Try(List(Str), _)
+	browser_contracts! = |o, conduit_wasm| {
+		fx = SpecSuite.wasm_of(o, "effects")
+		controls = SpecSuite.wasm_of(o, "controls")
+		services = SpecSuite.wasm_of(o, "services")
+		Ok(
+			Targets.browser!(o, "fx-browser.mjs", ["--wasm", fx])?
+				.concat(Targets.browser!(o, "controls-browser.mjs", ["--wasm", controls])?)
+				.concat(Targets.browser!(o, "services-browser.mjs", ["--wasm", services])?)
+				.concat(Targets.browser!(o, "conduit-journey.mjs", ["--wasm", conduit_wasm])?),
+		)
+	}
+
+	## A long session of one app in Chrome: a seeded random walk without a
+	## fault, then 30 round trips with flat Wasm pages and live allocations.
+	browser_soak! : SpecSuite.Options, Str, Str => Try(List(Str), _)
+	browser_soak! = |o, example, wasm| Targets.browser!(o, "soak.mjs", ["--wasm", wasm, "--app", example])
+
+	jfb_dir = "benchmarks/js-framework-benchmark/roc-signals-keyed"
+
+	## Build the js-framework-benchmark app into its `dist/` (`--opt=speed`,
+	## as the benchmark measures it) and run the keyed-operation checks.
+	jfb! : SpecSuite.Options => Try(List(Str), _)
+	jfb! = |o| {
+		dist = "${o.root}/${Targets.jfb_dir}/dist"
+		Path.create_all!(Path.utf8(dist))?
+		Proc.run!({ program: o.compiler, args: ["build", "--target=wasm32", "--opt=speed", "${Targets.jfb_dir}/app/main.roc", "--output=${dist}/app.wasm"], cwd: o.root })?
+		Path.copy!(Path.utf8("${o.root}/${SpecSuite.runtime}"), Path.utf8("${dist}/runtime.mjs"))?
+		Path.copy!(Path.utf8("${o.root}/${Targets.jfb_dir}/src/main.mjs"), Path.utf8("${dist}/main.mjs"))?
+		code = Proc.status!({ program: o.node, args: ["tests/browser/jfb-check.mjs", "--dist", dist, "--chrome", o.chrome], cwd: o.root })?
+		Ok(if (code == 0) [] else ["jfb-check failed (exit ${code.to_str()})"])
+	}
+}

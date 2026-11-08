@@ -1,50 +1,29 @@
 # Roc Signals keyed browser benchmark adapter
 
-This directory is the repository-native form of the Roc Signals entry for the
-official [`js-framework-benchmark`](https://github.com/krausest/js-framework-benchmark).
-It mounts the ordinary Roc fixture through the production Wasm host and
-`signals.mjs`; JavaScript only instantiates the app and executes the shared
-engine's already-decided DOM command stream.
+The Roc Signals entry for the official
+[`js-framework-benchmark`](https://github.com/krausest/js-framework-benchmark).
+`app/` is an ordinary app on the web platform (`platform/main.roc`, by
+relative path): one keyed `each` with a state for the rows and one for the
+selected key. `src/main.mjs` mounts it with `platform/runtime.mjs`, which only
+applies the engine's command stream.
 
-Build from this directory with:
-
-```sh
-npm ci
-ROC_BIN=/path/to/roc npm run build-prod
-npm run verify
-```
-
-The build uses a `ReleaseFast` host and Roc `--opt=speed`, so CPU results measure
-the speed-optimized browser artifact. It writes `dist/app.wasm`, `dist/main.mjs`,
-and the production runtime modules. Serve the repository root, then open
-`/benchmarks/js-framework-benchmark/roc-signals-keyed/`.
-
-For an upstream comparison, copy this directory to
-`frameworks/keyed/roc-signals` in a checkout of `krausest/js-framework-benchmark`.
-Because the canonical fixture, platform, host, and runtime remain owned by this
-repository, point the copied adapter back to this checkout when building:
+Build and check it from the repository root:
 
 ```sh
-ROC_SIGNALS_ROOT=/path/to/roc-signals ROC_BIN=/path/to/roc npm run build-prod
+blueprint run jfb      # dist/: app.wasm (--opt=speed), runtime.mjs, main.mjs, then the DOM checks
 ```
 
-Then run the official driver's `isKeyed` and benchmark commands against
-`keyed/roc-signals`. This adapter is intentionally an integration artifact, not
-yet a standalone upstream submission: producing a self-contained upstream
-folder requires a pinned Roc Signals release artifact and toolchain policy.
+`jfb` builds the Wasm host, compiles `app/main.roc` with `--opt=speed`, writes
+`dist/` here, and runs `tests/browser/jfb-check.mjs` in headless Chrome: run,
+update every 10th row, select, swap, remove, clear, run lots, add, and keyed
+row identity across update and swap.
 
-The benchmark UI and rows are rendered by
-`examples-web/_fixtures/js-framework-benchmark/main.roc`. Its stable string keys
-back `Rows`, so replacement creates new row nodes, removal detaches the
-identified node, and swaps move the existing keyed nodes.
+For an upstream comparison, copy this directory with its built `dist/` to
+`frameworks/keyed/roc-signals` in a `krausest/js-framework-benchmark`
+checkout. `npm run build-prod` there only checks that `dist/` is present: the
+engine, platform and host live in this repository.
 
-The current upstream structural checker accepts the fixture's accessibility and
-semantic-test attributes (`aria-label`, `data-testid`, and `data-row-id`); it
-checks descendant tags, table-cell classes, the remove icon, and keyed node
-movement/removal. Those extra attributes remain part of the measured render
-cost. Labels use upstream's adjective/colour/noun vocabulary but choose entries
-from a pure PCG stream seeded once per browser mount. The fixture pins
-[`roc-random` 0.9.3](https://github.com/kili-ilo/roc-random/releases/tag/0.9.3),
-licensed UPL-1.0; JavaScript supplies only the initial seed and row generation
-remains in Roc. Confirm the extra semantic-test attributes with upstream before
-presenting this directory as a submission-ready implementation.
+`package-lock.json` has no dependencies but must stay: the upstream server
+lists only framework directories that have both `package.json` and
+`package-lock.json`, and skips the others without an error. Regenerate it
+with `npm install --package-lock-only` when `package.json` changes.
