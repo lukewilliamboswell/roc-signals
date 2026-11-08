@@ -25,6 +25,10 @@ main! = |raw_args| {
 		Ok(dir) => "${o.root}/${dir}"
 		Err(_) => "${o.root}/dist-release"
 	}
+	# The examples compile against `platform/targets`, which a fresh checkout
+	# does not have; prepare both targets' inputs first, as `check` does.
+	Checks.prepare_platform!(o)?
+	SpecSuite.build_web_platform!(o)?
 	SpecSuite.build!(o, [], SpecSuite.apps)?
 	problems = Release.build!(o, version, out)?
 	site = ApiDocs.build!(o, version)?
