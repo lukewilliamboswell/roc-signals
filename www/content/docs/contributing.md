@@ -60,6 +60,9 @@ blueprint run site -- --base-url http://127.0.0.1:8000/roc-signals
 blueprint run serve
 ```
 
+The published site is main: every push to main that passes `check` deploys
+CI's `blueprint run site` build to GitHub Pages.
+
 Builds go to `.build/`; set `ROC_SIGNALS_BUILD_DIR` to use another directory,
 for example to run two tasks at once.
 
