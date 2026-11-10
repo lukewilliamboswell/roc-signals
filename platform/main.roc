@@ -20,11 +20,14 @@ platform ""
 	exposes [Engine, Html, Wire, Worker]
 	packages {}
 	provides {
+		"roc_engine_ask": ask_for_host,
 		"roc_engine_drop": drop_for_host,
 		"roc_engine_event": event_for_host,
 		"roc_engine_files": files_for_host,
+		"roc_engine_forget": forget_for_host,
 		"roc_engine_init": init_for_host,
 		"roc_engine_keys": keys_for_host,
+		"roc_engine_prepare": prepare_for_host,
 		"roc_engine_version": version_for_host,
 		"roc_engine_work": work_for_host,
 		"roc_spec_main": spec_main_for_host!,
@@ -44,7 +47,7 @@ platform ""
 		inputs_dir: "targets/",
 		wasm32: {
 			inputs: ["host.wasm", app],
-			exports: ["protocol_version", "fault", "boot_keys", "init", "event", "event_files", "files_stage", "files_tokens", "files_released", "drop", "payload_reserve", "bytes_reserve", "bytes_clear", "work", "cmd_ptr", "cmd_len", "work_ptr", "work_len", "metric", "reset_metrics", "err_ptr", "err_len"],
+			exports: ["protocol_version", "fault", "boot_keys", "init", "event", "event_files", "files_stage", "files_tokens", "files_released", "drop", "payload_reserve", "bytes_reserve", "bytes_clear", "work", "prepare", "ask", "forget", "cmd_ptr", "cmd_len", "work_ptr", "work_len", "metric", "reset_metrics", "err_ptr", "err_len"],
 		},
 		x64musl: { inputs: ["crt1.o", "spec.o", app, "libc.a", "libzigc.a", "libcompiler_rt.a"] },
 	}
@@ -99,6 +102,25 @@ files_for_host = |boxed, buf, wbuf, node, handler, record, blobs| {
 ## host keeps readable until the next call. A worker instance never mounts.
 work_for_host : List(U8), List(List(U8)) -> List(U8)
 work_for_host = |payload, files| (Core.driver(main).work)(payload, files)
+
+## A worker instance's preparation (design.md, "Prepared programs"): run
+## the preparation named in `prep:str init:rest` and return the state the
+## instance keeps, which the host owns until it asks a query or forgets it.
+prepare_for_host : List(U8), List(List(U8)) -> Box(Core.Kept)
+prepare_for_host = |payload, files| Box.box(Core.work_prepare(main, payload, files))
+
+## A query on the held state: the state moves in and back out with the
+## query's output bytes, so the host owns it again after the call.
+ask_for_host : Box(Core.Kept), List(U8), List(List(U8)) -> { held : Box(Core.Kept), out : List(U8) }
+ask_for_host = |boxed, payload, files| {
+	state = Box.unbox(boxed)
+	out = Core.work_ask(state, payload, files)
+	{ held: Box.box(state), out }
+}
+
+## Let go of the held state: the instance evicts it or prepares another.
+forget_for_host : Box(Core.Kept) -> {}
+forget_for_host = |_boxed| {}
 
 ## Teardown: the state and both buffers are released with the call.
 drop_for_host : Box(Core.App), List(U8), List(U8) -> {}

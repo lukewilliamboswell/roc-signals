@@ -55,7 +55,7 @@ function make(options = {}, env = {}) {
   m.turn(FX_NODE, 1, 41, 41.5, 42, 9);
   const r = m.snapshot().recent[0];
   check("timeline converted to the page clock", [r.t.recv, r.t.begin, r.t.call, r.t.ret, r.t.sent, r.t.reply, r.t.turnStart, r.t.turnEnd], [11, 21, 22, 35, 36, 40, 41, 42]);
-  check("spans of a cold job", r.ms, { held: 0, queue: 1, toWorker: null, cold: 10, stage: 1, compute: 13, copyOut: 1, fromWorker: 4, resultWait: 1, resultTurn: 1, total: 32 });
+  check("spans of a cold job", r.ms, { held: 0, queue: 1, toWorker: null, cold: 10, stage: 1, compute: 13, copyOut: 1, fromWorker: 4, resultWait: 1, resultTurn: 1, total: 32, prepare: null });
   check("record facts", [r.outcome, r.cold, r.firstJobOnInstance, r.inputBytes, r.outputBytes, r.thread, r.instance], ["done", true, true, 7, 3, "worker", seq]);
   check("no bytes in the record", Object.values(r).some((v) => v instanceof Uint8Array), false);
   check("event order", events.map((e) => e.kind), ["runtime", "job-issue", "instance-spawn", "job-start", "instance-ready", "job-end"]);

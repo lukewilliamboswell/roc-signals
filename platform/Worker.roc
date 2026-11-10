@@ -167,8 +167,11 @@ Worker := [].{
 	## so a run that failed (`Refused`, say) is asked for again only when the
 	## input changes. Disposing the site stops its run. Readers of the layer do
 	## no work while it is unchanged.
-	derive : Program(input, output), Val(ctx, input), (Val(In(ctx, Remote(output)), Remote(output)) -> Elem(In(ctx, Remote(output)))) -> Elem(ctx)
-		where [input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool]
+	##
+	## `program` is a [Program] or a prepared [Query]: anything with
+	## `request` and `result`.
+	derive : program, Val(ctx, input), (Val(In(ctx, Remote(output)), Remote(output)) -> Elem(In(ctx, Remote(output)))) -> Elem(ctx)
+		where [program.request : program, input -> Engine.Req, program.result : program, Engine.Res -> Try(output, Error), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool]
 	derive = |program, input, body| Engine.resource(
 		input,
 		{
@@ -183,8 +186,8 @@ Worker := [].{
 	## Like `derive`, for an input that is sometimes not a question: `Run(i)`
 	## asks for a run on `i`, and `Skip` stops any run and clears the answer
 	## (an empty search box, a form that is not valid yet).
-	derive_when : Program(input, output), Val(ctx, [Run(input), Skip]), (Val(In(ctx, Remote(output)), Remote(output)) -> Elem(In(ctx, Remote(output)))) -> Elem(ctx)
-		where [input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool]
+	derive_when : program, Val(ctx, [Run(input), Skip]), (Val(In(ctx, Remote(output)), Remote(output)) -> Elem(In(ctx, Remote(output)))) -> Elem(ctx)
+		where [program.request : program, input -> Engine.Req, program.result : program, Engine.Res -> Try(output, Error), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool]
 	derive_when = |program, input, body| Engine.resource(
 		input,
 		{
@@ -201,6 +204,197 @@ Worker := [].{
 		},
 		body,
 	)
+
+	# -- Prepared programs ----------------------------------------------------
+
+	## A preparation: a pure, possibly expensive step from an input of type
+	## `init` (a parsed document, an index) to a `state` that several typed
+	## queries read. Make one with `prepared`, build its queries with
+	## `query` or `fallible_query`, and register it once with
+	## `registration`, listing the queries it answers.
+	##
+	## A query is still a pure function of the preparation's input and its
+	## own: its answer is exactly what preparing afresh and asking would
+	## give. Keeping the state is an optimisation the runtime may or may not
+	## achieve: a worker that prepared an input may keep the state and
+	## answer later queries over the same input from it, so they cost a
+	## query, not the preparation. It shows in time and in the monitor,
+	## never in an answer. The state never crosses to the page and need not
+	## be `Wire.Sendable`.
+	Prepared(init, state) :: {
+		name : Str,
+		build : (List(U8), List(List(U8)) -> state),
+		send : (init -> { bytes : List(U8), files : List(Engine.File) }),
+	}.{
+
+		## `document.query(name, ask)`: the query `name`, which answers
+		## `ask(state, q)` from the state the preparation built. Both `q` and
+		## the answer must be `Wire.Sendable`. Names share the catalogue's
+		## namespace with programs and preparations.
+		query : Prepared(init, state), Str, (state, q -> out) -> Query(init, state, q, out)
+			where [q.Wire.Sendable, out.Wire.Sendable]
+		query = |p, name, ask| {
+			name,
+			prep: p.name,
+			deadline_ms: 0,
+			policy: Stop,
+			send_init: p.send,
+			send_query: |q| sent(q),
+			receive: |bytes| match Wire.decode(bytes) {
+				Ok(output) => output
+				Err(_) => crash "contract: worker program \"${name}\" answered with bytes that are not its output type"
+			},
+			answer: {
+				name,
+				run: |state, bytes, files| match Wire.decode_with_files(bytes, files) {
+					Ok(q) => payload_of(name, ask(state, q))
+					Err(_) => crash "contract: worker program \"${name}\" was sent bytes that are not its query type"
+				},
+			},
+		}
+
+		## Like `query`, for a query that can fail, as `fallible` is to
+		## `pure`: the query's output is its `Try`.
+		fallible_query : Prepared(init, state), Str, (state, q -> Try(ok, err)) -> Query(init, state, q, Try(ok, err))
+			where [q.Wire.Sendable, ok.Wire.Sendable, err.Wire.Sendable]
+		fallible_query = |p, name, ask| {
+			name,
+			prep: p.name,
+			deadline_ms: 0,
+			policy: Stop,
+			send_init: p.send,
+			send_query: |q| sent(q),
+			receive: |bytes| received_try(name, bytes),
+			answer: {
+				name,
+				run: |state, bytes, files| match Wire.decode_with_files(bytes, files) {
+					Ok(q) => match ask(state, q) {
+						Ok(value) => payload_of(name, value).append(0)
+						Err(error) => payload_of(name, error).append(1)
+					}
+					Err(_) => crash "contract: worker program \"${name}\" was sent bytes that are not its query type"
+				},
+			},
+		}
+
+		## The preparation's entry for `Program.with_workers`, with the
+		## queries it answers (each query's `answers()`). It registers the
+		## preparation's name and each query's name; a name registered twice
+		## is a contract error when the app mounts, and asking a preparation
+		## a query it does not list is a contract error in the worker.
+		registration : Prepared(init, state), List(Answer(state)) -> Engine.Registration
+		registration = |p, answers| {
+			name = p.name
+			build = p.build
+			Core.registration_prepared(
+				name,
+				answers.map(|a| a.name),
+				|bytes, files| {
+					state = build(bytes, files)
+					Core.kept(
+						name,
+						|q, qbytes, qfiles| match answers.find_first(|a| a.name == q) {
+							Ok(a) => (a.run)(state, qbytes, qfiles)
+							Err(_) => crash "contract: worker program \"${q}\" is not a query of the preparation \"${name}\""
+						},
+					)
+				},
+			)
+		}
+	}
+
+	## `prepared(name, prepare)`: the preparation `name`, which turns its
+	## input into the state its queries read with `prepare`. The input must
+	## be `Wire.Sendable`; the state need not be.
+	##
+	## Whether a worker holds the state for an input is decided by the
+	## input's exact bytes: a query over an equal input in a worker that
+	## kept the state reuses it. Comparing those bytes costs the page time
+	## proportional to the input on each query, so a large input should be
+	## a `File` (or a slice of one), whose identity is its handle and range,
+	## not its bytes; a worker reads a file's bytes once, when it prepares.
+	prepared : Str, (init -> state) -> Prepared(init, state)
+		where [init.Wire.Sendable]
+	prepared = |name, prepare| {
+		name,
+		build: |bytes, files| match Wire.decode_with_files(bytes, files) {
+			Ok(init) => prepare(init)
+			Err(_) => crash "contract: worker program \"${name}\" was sent bytes that are not its preparation's input type"
+		},
+		send: |init| sent(init),
+	}
+
+	## What a query is asked about: the preparation's `input` and the
+	## query's own `query`.
+	Asked(init, q) : { input : init, query : q }
+
+	## What happens to a run of a query when its request is cancelled (its
+	## site disposed, or a `latest` or `derive` site moving on) while it
+	## runs. `Stop`, the default, ends the worker running it, as for any
+	## program, and the state that worker held goes with it. `Finish` lets
+	## the run complete and drops its answer, so the worker keeps the state
+	## for the next query. Either way the app never sees the cancelled
+	## run's answer. A deadline always stops the run.
+	Cancel : [Stop, Finish]
+
+	## A query's entry for its preparation's `registration`: the query's
+	## name and how it answers from the typed state.
+	Answer(state) :: { name : Str, run : (state, List(U8), List(List(U8)) -> List(U8)) }
+
+	## A typed query of a preparation, from an `Asked(init, q)` to `out`.
+	## Use it as a [Program] is used: `request` and `result` in an effect
+	## site, or `Worker.derive` and `Worker.derive_when`.
+	Query(init, state, q, out) :: {
+		name : Str,
+		prep : Str,
+		deadline_ms : U32,
+		policy : Cancel,
+		send_init : (init -> { bytes : List(U8), files : List(Engine.File) }),
+		send_query : (q -> { bytes : List(U8), files : List(Engine.File) }),
+		receive : (List(U8) -> out),
+		answer : Answer(state),
+	}.{
+
+		## As `Program.with_deadline_ms`. The deadline includes the time a
+		## worker spends preparing.
+		with_deadline_ms : Query(init, state, q, out), U32 -> Query(init, state, q, out)
+		with_deadline_ms = |p, ms| { ..p, deadline_ms: ms }
+
+		## What a cancelled run does (see [Cancel]); `Stop` by default.
+		with_cancel : Query(init, state, q, out), Cancel -> Query(init, state, q, out)
+		with_cancel = |p, policy| { ..p, policy }
+
+		## The query's entry for its preparation's `registration`.
+		answers : Query(init, state, q, out) -> Answer(state)
+		answers = |p| p.answer
+
+		## A request to answer `query` over the preparation's `input`, for an
+		## effect site's plan. Both are snapshots, encoded when the request
+		## is issued.
+		request : Query(init, state, q, out), Asked(init, q) -> Engine.Req
+		request = |p, { input, query }| {
+			init = (p.send_init)(input)
+			asked = (p.send_query)(query)
+			policy = match p.policy {
+				Stop => 1
+				Finish => 2
+			}
+			prep = p.prep.to_utf8()
+			header = le32(le32(le32([], prep.len().to_u32_wrap()).concat(prep), init.bytes.len().to_u32_wrap()), init.files.len().to_u32_wrap()).append(policy)
+			Ask({ program: p.name, input: header.concat(init.bytes).concat(asked.bytes), files: init.files.concat(asked.files), deadline_ms: p.deadline_ms })
+		}
+
+		## The answer to a `request`, as `Program.result`.
+		result : Query(init, state, q, out), Engine.Res -> Try(out, Error)
+		result = |p, res| match res {
+			Work(bytes) => Ok((p.receive)(bytes))
+			FileFailed(reason) => Err(FileFailed(reason))
+			WorkLost(fault) => Err(Lost(fault))
+			Timeout => Err(Timeout)
+			Refused => Err(Refused)
+			_ => crash "contract: Worker.result was given a result that is not from a worker request"
+		}
+	}
 }
 
 ## A request's payload and the files it refers to. A page input nested too
@@ -219,6 +413,27 @@ payload_of = |name, output| match Wire.try_encode(output) {
 	Ok(bytes) => bytes
 	Err(TooDeep) => crash "contract: worker program \"${name}\" returned a value nested deeper than 512 containers, which the page cannot decode"
 }
+
+## A fallible answer: the value or the error, then `0` or `1`.
+received_try : Str, List(U8) -> Try(ok, err) where [ok.Wire.Sendable, err.Wire.Sendable]
+received_try = |name, bytes| {
+	body = bytes.drop_last(1)
+	match bytes.last() {
+		Ok(0) => match Wire.decode(body) {
+			Ok(value) => Ok(value)
+			Err(_) => crash "contract: worker program \"${name}\" answered with bytes that are not its output type"
+		}
+		Ok(1) => match Wire.decode(body) {
+			Ok(error) => Err(error)
+			Err(_) => crash "contract: worker program \"${name}\" answered with bytes that are not its error type"
+		}
+		_ => crash "contract: worker program \"${name}\" answered without saying whether it succeeded"
+	}
+}
+
+## `v` appended to `buf` as four little-endian bytes.
+le32 : List(U8), U32 -> List(U8)
+le32 = |buf, v| buf.append(v.to_u8_wrap()).append(v.shr_zf_wrap(8).to_u8_wrap()).append(v.shr_zf_wrap(16).to_u8_wrap()).append(v.shr_zf_wrap(24).to_u8_wrap())
 
 ## A settled layer for one answer.
 answered : Try(output, Worker.Error) -> Worker.Remote(output)

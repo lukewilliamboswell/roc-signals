@@ -725,6 +725,14 @@ Core := [].{
 		Upload({ method : Str, url : Str, headers : List((Str, Str)), body : File, timeout_ms : U32 }),
 		Sha256(File),
 		ObjectUrl(File),
+
+		## A query of a prepared program (design.md, "Prepared programs"): a
+		## `Work` request whose input is a query input, `prep:str
+		## init_len:u32 init_files:u32 policy:u8`, then the preparation's
+		## input and the query's. It delivers what `Work` delivers and is
+		## scoped like it. `Worker` builds it; an input without that header is
+		## a contract error.
+		Ask({ program : Str, input : List(U8), files : List(File), deadline_ms : U32 }),
 	]
 
 	## The result of an awaited request: an HTTP response (`Http`, with any status),
@@ -1241,19 +1249,43 @@ Core := [].{
 	## A worker program: a namespaced name (`"example.org/search/filter"`) and a
 	## pure function from input bytes to output bytes. Make one with
 	## `registration` and list it in `with_workers`.
-	Registration :: { name : Str, run : (List(U8), List(List(U8)) -> List(U8)) }
+	##
+	## A preparation registers under its own name with the names of the
+	## queries it answers (`queries`), and `prepare` builds the [Kept] value
+	## those queries read; an ordinary program has no queries.
+	Registration :: { name : Str, run : (List(U8), List(List(U8)) -> List(U8)), queries : List(Str), prepare : (List(U8), List(List(U8)) -> Kept) }
 
 	## `registration(name, run)`: the worker program `name`, which turns a `Work`
 	## request's input bytes into its output bytes with `run`. `run` must be pure:
 	## it runs in a separate instance of the same module that shares nothing with
 	## the page's instance but the bytes it is given.
 	registration : Str, (List(U8) -> List(U8)) -> Registration
-	registration = |name, run| { name, run: |input, _| run(input) }
+	registration = |name, run| { name, run: |input, _| run(input), queries: [], prepare: not_prepared }
 
 	## For the worker layer: a program that also reads the files its request
 	## named, each the bytes of its range, read into the worker's memory.
 	registration_with_files : Str, (List(U8), List(List(U8)) -> List(U8)) -> Registration
-	registration_with_files = |name, run| { name, run }
+	registration_with_files = |name, run| { name, run, queries: [], prepare: not_prepared }
+
+	## For the worker layer: the preparation `name`, which answers the
+	## queries `queries`. `prepare` turns the preparation's input bytes and
+	## files into the [Kept] value a worker instance may keep between jobs;
+	## it must be pure, and every answer must be what preparing afresh and
+	## asking would give.
+	registration_prepared : Str, List(Str), (List(U8), List(List(U8)) -> Kept) -> Registration
+	registration_prepared = |name, queries, prepare| { name, run: |_, _| crash "contract: worker program \"${name}\" is a preparation; ask one of its queries", queries, prepare }
+
+	## A prepared program's state as a worker instance holds it between jobs
+	## (design.md, "Prepared programs"): the preparation's name and `ask`,
+	## a closure over the typed state that answers one of its queries,
+	## `ask(query, query_bytes, query_files)`. The state never crosses a
+	## boundary; the worker's host keeps one `Box(Kept)` as the page's host
+	## keeps `Box(App)`, and every answer is what preparing afresh would give.
+	Kept :: { prep : Str, ask : (Str, List(U8), List(List(U8)) -> List(U8)) }
+
+	## For the worker layer: the kept state of the preparation `prep`.
+	kept : Str, (Str, List(U8), List(List(U8)) -> List(U8)) -> Kept
+	kept = |prep, ask| { prep, ask }
 
 	## What the host drives: the protocol version, the declared storage keys (read
 	## before mount), mount once with the boot bytes, then one transaction per
@@ -1304,6 +1336,18 @@ Core := [].{
 		}
 	}
 
+	## For the platform's hosts: a worker instance's preparation entry
+	## (design.md, "Prepared programs"). It runs the preparation named in
+	## `prep:str init:rest` on the input and the preparation's files and
+	## returns the state the instance keeps.
+	work_prepare : Program, List(U8), List(List(U8)) -> Kept
+	work_prepare = |p, payload, files| run_prepare(p.workers, payload, files)
+
+	## For the platform's hosts: a query, `query:str input:rest`, on the
+	## state an instance keeps, returning the query's output bytes.
+	work_ask : Kept, List(U8), List(List(U8)) -> List(U8)
+	work_ask = |kept_state, payload, files| run_ask(kept_state, payload, files)
+
 	## For test platforms and harnesses: the catalogue rule `with_workers`
 	## enforces, as a value: the registered names in order, or the contract
 	## diagnostic for a duplicate name or more than 64 registrations.
@@ -1311,14 +1355,15 @@ Core := [].{
 	catalogue = |registrations| {
 		var $names = []
 		for r in registrations {
-			name = r.name
-			if $names.len() >= max_programs {
-				return Err("contract: with_workers registers more than ${max_programs.to_str()} worker programs (program \"${name}\" is over the bound)")
+			for name in [r.name].concat(r.queries) {
+				if $names.len() >= max_programs {
+					return Err("contract: with_workers registers more than ${max_programs.to_str()} worker programs (program \"${name}\" is over the bound)")
+				}
+				if $names.contains(name) {
+					return Err("contract: worker program \"${name}\" is registered twice in with_workers")
+				}
+				$names = $names.append(name)
 			}
-			if $names.contains(name) {
-				return Err("contract: worker program \"${name}\" is registered twice in with_workers")
-			}
-			$names = $names.append(name)
 		}
 		Ok($names)
 	}
@@ -3725,15 +3770,85 @@ catalogue_names = |registrations| match Core.catalogue(registrations) {
 ## worker instance only.
 run_work : List(Registration), List(U8), List(List(U8)) -> List(U8)
 run_work = |registrations, payload, files| {
-	names = catalogue_names(registrations)
+	_ = catalogue_names(registrations)
 	(name, at) = get_str(payload, 0, "work payload")
-	match names.find_first_index(|n| n == name) {
-		Ok(i) => {
-			r = registrations.get(i) ?? crash "internal: catalogue"
-			owned_bytes((r.run)(payload.drop_first(at), files))
-		}
-		Err(_) => crash "contract: worker program \"${name}\" is not registered in this module"
+	match registrations.find_first(|r| r.name == name) {
+		Ok(r) => owned_bytes((r.run)(payload.drop_first(at), files))
+		Err(_) =>
+			match registrations.find_first(|r| r.queries.contains(name)) {
+				# A query run afresh: prepare, ask, and keep nothing.
+				Ok(r) => {
+					input = payload.drop_first(at)
+					q = query_header(input, name)
+					state = (r.prepare)(input.sublist({ start: q.init_at, len: q.init_len }), files.take_first(q.init_files))
+					owned_bytes((state.ask)(name, input.drop_first(q.init_at + q.init_len), files.drop_first(q.init_files)))
+				}
+				Err(_) => crash "contract: worker program \"${name}\" is not registered in this module"
+			}
 	}
+}
+
+## A placeholder `prepare` for a registration that is not a preparation;
+## nothing calls it, because only a preparation's name is prepared.
+not_prepared : List(U8), List(List(U8)) -> Kept
+not_prepared = |_, _| crash "internal: a program that is not a preparation was prepared"
+
+## A query input's header (design.md, Appendix B): `prep:str init_len:u32
+## init_files:u32 policy:u8`, then the preparation's input of `init_len`
+## bytes and the query's input. `init_at` is where the preparation's input
+## starts. Anything else is a contract error naming the program.
+query_header : List(U8), Str -> { prep : Str, init_at : U64, init_len : U64, init_files : U64, policy : U8 }
+query_header = |input, program| {
+	what = "query input of worker program \"${program}\""
+	(prep, a1) = get_str(input, 0, what)
+	init_len = get_u32(input, a1, what).to_u64()
+	init_files = get_u32(input, a1 + 4, what).to_u64()
+	policy = input.get(a1 + 8) ?? crash "contract: truncated ${what}"
+	init_at = a1 + 9
+	if init_at + init_len > input.len() or policy < 1 or policy > 2 {
+		crash "contract: malformed ${what}"
+	}
+	{ prep, init_at, init_len, init_files, policy }
+}
+
+## An `Ask` request's `FX` (design.md, Appendix B): kind 8 as for `Work`,
+## then `1 prep:str init_at:u32 init_len:u32 init_files:u32 policy:u8`,
+## read from the query input's header, so the runtime knows which
+## preparation answers it without reading the input itself.
+put_ask : List(U8), Str, List(U8), List(File), U32 -> List(U8)
+put_ask = |head, program, input, files, deadline_ms| {
+	q = query_header(input, program)
+	if q.init_files > files.len() {
+		crash "contract: the query input of worker program \"${program}\" names more files than its request carries"
+	}
+	var $b = put_u32(put_u32(put_str(head.append(8), program), input.len().to_u32_wrap()).concat(input), files.len().to_u32_wrap())
+	for file in files {
+		{ token, start, len } = file_ref(file)
+		$b = put_u64(put_u64(put_u64($b, token), start), len)
+	}
+	$b = put_str(put_u32($b, min_u32(deadline_ms, max_timeout_ms)).append(1), q.prep)
+	put_u32(put_u32(put_u32($b, q.init_at.to_u32_wrap()), q.init_len.to_u32_wrap()), q.init_files.to_u32_wrap()).append(q.policy)
+}
+
+## A worker instance's preparation: `prep:str init:rest` and the
+## preparation's files in, the [Kept] value out. A name that is not a
+## preparation is a contract error that poisons this worker instance only.
+run_prepare : List(Registration), List(U8), List(List(U8)) -> Kept
+run_prepare = |registrations, payload, files| {
+	_ = catalogue_names(registrations)
+	(prep, at) = get_str(payload, 0, "prepare payload")
+	match registrations.find_first(|r| r.name == prep and !r.queries.is_empty()) {
+		Ok(r) => (r.prepare)(payload.drop_first(at), files)
+		Err(_) => crash "contract: worker program \"${prep}\" is not a preparation registered in this module"
+	}
+}
+
+## A query on the state an instance holds: `query:str input:rest` and the
+## query's files in, the output out (a list of its own, as for `run_work`).
+run_ask : Kept, List(U8), List(List(U8)) -> List(U8)
+run_ask = |state, payload, files| {
+	(query, at) = get_str(payload, 0, "ask payload")
+	owned_bytes((state.ask)(query, payload.drop_first(at), files))
 }
 
 ## A file's handle and range, for a request that names it. Only a page's
@@ -3913,7 +4028,7 @@ put_req = |c, id, req| {
 				{ token, start, len } = file_ref(file)
 				$b = put_u64(put_u64(put_u64($b, token), start), len)
 			}
-			put_u32($b, min_u32(deadline_ms, max_timeout_ms))
+			put_u32($b, min_u32(deadline_ms, max_timeout_ms)).append(0)
 		}
 		ReadBytes(f) => put_file(head.append(11).append(1), f)
 		ReadUtf8(f) => put_file(head.append(11).append(2), f)
@@ -3929,6 +4044,7 @@ put_req = |c, id, req| {
 		}
 		Sha256(f) => put_file(head.append(13).append(1), f)
 		ObjectUrl(f) => put_file(head.append(14), f)
+		Ask({ program, input, files, deadline_ms }) => put_ask(head, program, input, files, deadline_ms)
 		_ => crash "not an awaited request"
 	}
 }
@@ -3990,6 +4106,12 @@ issue = |tx, path, reqs, a, owned| {
 				$owned = $owned.append({ id, sub: False, keep: False, a })
 			}
 			Work({ program, .. }) => {
+				t0 = with_fx($tx, |fx| { ..fx, focus: fx.focus.append(CheckProgram(program, path)) })
+				(id, t1) = fx_admit(t0, path, req)
+				$tx = t1
+				$owned = $owned.append({ id, sub: False, keep: False, a })
+			}
+			Ask({ program, .. }) => {
 				t0 = with_fx($tx, |fx| { ..fx, focus: fx.focus.append(CheckProgram(program, path)) })
 				(id, t1) = fx_admit(t0, path, req)
 				$tx = t1

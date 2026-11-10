@@ -594,7 +594,25 @@ Dom := [].{
 					if !$refs.is_empty() {
 						$fx = $fx.append(WorkFiles(id, $refs))
 					}
-					$at = $r + 4
+					# A prepared query names its preparation and where the
+					# preparation's input lies in `input`. The native runner
+					# prepares afresh for every job, so the oracle only
+					# checks that the operands describe the request.
+					flag = b.get($r + 4) ?? crash "truncated work request"
+					$at = $r + 5
+					if flag == 1 {
+						(_, a3) = Dom.str(b, $at)
+						init_at = Dom.u32(b, a3).to_u64()
+						init_len = Dom.u32(b, a3 + 4).to_u64()
+						init_files = Dom.u32(b, a3 + 8).to_u64()
+						policy = b.get(a3 + 12) ?? crash "truncated work request"
+						if init_at + init_len > input.len() or init_files > n or policy < 1 or policy > 2 {
+							crash "malformed prepared query for worker program \"${program}\""
+						}
+						$at = a3 + 13
+					} else if flag != 0 {
+						crash "work request flag ${flag.to_str()} is not 0 or 1"
+					}
 				} else if kind == 11 {
 					mode = Dom.byte(b, $at)
 					if mode != 1 and mode != 2 {

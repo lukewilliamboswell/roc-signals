@@ -357,6 +357,13 @@ Engine := [].{
 		Upload({ method : Str, url : Str, headers : List((Str, Str)), body : File, timeout_ms : U32 }),
 		Sha256(File),
 		ObjectUrl(File),
+
+		## A query of a prepared program: `Work` whose input also says which
+		## preparation answers it, so a worker that already holds that
+		## preparation can reuse it. `Worker` builds it (see
+		## `Worker.prepared`); it delivers what `Work` delivers and is scoped
+		## like it.
+		Ask({ program : Str, input : List(U8), files : List(File), deadline_ms : U32 }),
 	]
 
 	## The result of an awaited request: an HTTP response (`Http`, with any status),

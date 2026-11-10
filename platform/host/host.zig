@@ -237,6 +237,7 @@ fn poison(class: u32) noreturn {
     buffers.abandon(nothing);
     staged_count = 0;
     state = null;
+    held = null;
     @trap();
 }
 
@@ -497,6 +498,85 @@ comptime {
 }
 
 // ---------------------------------------------------------------------------
+// Prepared programs (design.md, "Prepared programs"). A worker instance may
+// keep one prepared state between jobs: an opaque `Box(Kept)` the host owns
+// exactly as a page's host owns `Box(App)`. It never interprets it. Each call
+// clears the slot before moving the box into Roc, so a trap mid-call
+// abandons it with the heap and nothing dangles.
+
+const Held = extern struct {
+    held: *anyopaque,
+    out: RocList,
+};
+
+extern fn roc_engine_prepare(payload: RocList, files: RocList) callconv(.c) *anyopaque;
+extern fn roc_engine_ask(held: *anyopaque, payload: RocList, files: RocList) callconv(.c) Held;
+extern fn roc_engine_forget(held: *anyopaque) callconv(.c) void;
+
+/// The prepared state this worker instance keeps, if any (at most one).
+var held: ?*anyopaque = null;
+
+/// Let Roc drop the held state, if there is one.
+fn forgetHeld() void {
+    const owned = held orelse return;
+    held = null;
+    roc_engine_forget(owned);
+}
+
+/// Prepare and keep a state (design.md, Appendix B): the state held before
+/// is released first, so an instance never holds two, then the staged
+/// payload, `prep:str init:rest`, and the staged files move into Roc, which
+/// runs that preparation and returns the state the host keeps. The previous
+/// job's output is released too; a prepare has none. Traps like `work` when
+/// an engine state is mounted or the instance is poisoned; a crash in the
+/// preparation poisons this instance, and the slot was already empty.
+export fn prepare() callconv(.c) void {
+    refuseIfPoisoned();
+    if (state != null) @trap();
+    forgetHeld();
+    const previous = cmds;
+    cmds = RocList.empty;
+    releaseList(previous);
+    const payload = pending_payload;
+    pending_payload = RocList.empty;
+    const files = stagedFiles();
+    held = roc_engine_prepare(payload, files);
+}
+
+/// Ask a query of the held state: the staged payload, `query:str
+/// input:rest`, and the staged files move into Roc with the state, which
+/// comes back with the query's output; the output is readable through
+/// `cmd_ptr`/`cmd_len` until the next call, as for `work`. Traps when no
+/// state is held: the runtime asks only an instance it prepared.
+export fn ask() callconv(.c) void {
+    refuseIfPoisoned();
+    if (state != null) @trap();
+    const owned = held orelse @trap();
+    held = null;
+    const previous = cmds;
+    cmds = RocList.empty;
+    releaseList(previous);
+    const payload = pending_payload;
+    pending_payload = RocList.empty;
+    const files = stagedFiles();
+    const step = roc_engine_ask(owned, payload, files);
+    held = step.held;
+    cmds = step.out;
+}
+
+/// Release the held state (eviction, or before the instance prepares
+/// another); a no-op when none is held or the instance is poisoned. The
+/// last job's output is released with it, so afterwards the instance holds
+/// nothing a job left behind.
+export fn forget() callconv(.c) void {
+    if (fault_class != 0) return;
+    forgetHeld();
+    const previous = cmds;
+    cmds = RocList.empty;
+    releaseList(previous);
+}
+
+// ---------------------------------------------------------------------------
 // File handles (design.md, "Files"). The runtime holds each browser `Blob`
 // under a token; the host mints a `Box(U64)` holding that token in its blob
 // heap, and Roc's reference count decides when the app is done with it. A
@@ -622,7 +702,8 @@ export fn work_len() callconv(.c) usize {
 /// Base of the engine's work counters in `metric`.
 const work_base: u32 = 16;
 
-/// Allocator counters (0-5), the live file handles (6), the engine's work counters (`16 + k` reads
+/// Allocator counters (0-5), the live file handles (6), whether a prepared
+/// state is held (8: 1 or 0), the engine's work counters (`16 + k` reads
 /// counter `k` of the work record; 0 past its end), and the spike's
 /// first-allocation sizes probe (100-131). The work counters are copied out
 /// of the record the engine returned with the last call; the host does not
@@ -630,6 +711,7 @@ const work_base: u32 = 16;
 export fn metric(index: u32) callconv(.c) u64 {
     if (index >= 100 and index < 132) return sizes[index - 100];
     if (index == 6) return blobs.live_count;
+    if (index == 8) return @intFromBool(held != null);
     if (index >= work_base and index < 100) return workCounter(index - work_base);
     return if (index < counters.len) counters[index] else 0;
 }

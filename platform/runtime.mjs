@@ -427,7 +427,10 @@ export const MONITOR_LIMITS = Object.freeze({ history: 1024, retired: 16, progra
 const ENGINE_FX_FIRST = 32;
 const ENGINE_FX_NAMES = ["issued", "delivered", "stale", "refused", "cancelled", "reparented", "skipped", "live"];
 
-const END_CAUSES = ["cancel", "deadline", "fault", "executor", "unmount", "contained"];
+// Why an instance let go of its prepared state (see stateEvicted).
+const EVICT_CAUSES = ["replaced", "files", "released"];
+
+const END_CAUSES = ["cancel", "deadline", "fault", "executor", "unmount", "contained", "retired"];
 
 function newHist() {
   return { counts: new Array(MONITOR_EDGES.length + 1).fill(0), n: 0, sum: 0, min: null, max: null };
@@ -531,12 +534,13 @@ export class WorkMonitor {
   reset() {
     this.tick();
     this.since = this.lastAt;
-    this.count = { issued: 0, done: 0, lost: 0, timeout: 0, cancelled: 0, unavailable: 0, lateReplies: 0, wastedMs: 0, inputBytes: 0, outputBytes: 0 };
+    this.count = { issued: 0, done: 0, lost: 0, timeout: 0, cancelled: 0, unavailable: 0, lateReplies: 0, wastedMs: 0, inputBytes: 0, outputBytes: 0, prepared: 0, reused: 0, prepareMs: 0 };
+    this.evictions = Object.fromEntries(EVICT_CAUSES.map((c) => [c, 0]));
     this.spawns = 0;
     this.ended = Object.fromEntries(END_CAUSES.map((c) => [c, 0]));
     this.peak = { instances: this.gauge.instances, busy: this.gauge.busy, queued: this.gauge.queued };
     this.integral = { busyMs: 0, aliveMs: 0, queuedMs: 0 };
-    this.hist = { queue: newHist(), cold: newHist(), compute: newHist(), total: newHist(), resultTurn: newHist() };
+    this.hist = { queue: newHist(), cold: newHist(), compute: newHist(), total: newHist(), resultTurn: newHist(), prepare: newHist() };
     this.programs = new Map();
     this.recent.clear();
     this.retired.clear();
@@ -584,6 +588,7 @@ export class WorkMonitor {
         spawns: this.spawns,
         respawns: Math.max(0, this.spawns - this.peak.instances),
         ended: { ...this.ended },
+        evicted: { ...this.evictions },
         live: [...this.insts.values()].map((i) => this.instRecord(i)),
         retired: this.retired.list(),
         retiredDropped: this.retired.dropped,
@@ -774,7 +779,10 @@ export class WorkMonitor {
   }
 
   // The pool posted the job to instance `seq` (ready or still starting).
-  jobPosted(id, seq) {
+  // `mode` is "work", or for a prepared query "prepare" (the instance
+  // prepares the state of preparation `prep` first) or "ask" (it reuses the
+  // state it holds).
+  jobPosted(id, seq, mode = "work", prep = null) {
     const job = this.jobs.get(id);
     const inst = this.insts.get(seq);
     if (job === undefined || inst === undefined || !this.live()) return;
@@ -786,6 +794,8 @@ export class WorkMonitor {
     job.cold = !inst.ready;
     job.firstJobOnInstance = inst.jobs === 0;
     job.phase = inst.ready ? "running" : "starting";
+    job.prepared = mode === "prepare" ? "prepare" : mode === "ask" ? "reuse" : null;
+    if (mode === "prepare") inst.held = prep;
     inst.job = id;
     inst.postAt = at;
     this.move("busy", 1);
@@ -810,6 +820,9 @@ export class WorkMonitor {
     // reading them took (within `stage`).
     if (reply && typeof reply.fileBytes === "number") job.fileBytes = reply.fileBytes;
     if (reply && typeof reply.read === "number") job.readMs = reply.read;
+    // A prepared query: how long preparing took (null when it reused).
+    if (reply && typeof reply.prepareMs === "number") job.prepareMs = reply.prepareMs;
+    if (reply && reply.held === false) inst.held = null;
     if (reply && Array.isArray(reply.mem)) this.memory(inst, reply.mem);
     this.release(inst, at);
     inst.jobs += 1;
@@ -829,11 +842,48 @@ export class WorkMonitor {
     this.answered.add(id);
   }
 
-  // The job was cancelled (CANCEL, or the runtime's teardown).
-  jobCancelled(id) {
+  // The job was cancelled (CANCEL, or the runtime's teardown). `finishing`:
+  // a prepared query whose policy is Finish runs on to completion, so its
+  // instance stays busy until instanceFinished.
+  jobCancelled(id, finishing = false) {
     const job = this.jobs.get(id);
     if (job === undefined || !this.live()) return;
+    job.finishing = finishing;
     this.cancelJob(job);
+  }
+
+  // A cancelled run that was finishing completed; its answer was dropped.
+  instanceFinished(seq, mem) {
+    const inst = this.insts.get(seq);
+    if (inst === undefined || !this.live()) return;
+    const at = this.tick();
+    if (Array.isArray(mem)) this.memory(inst, mem);
+    if (inst.job !== null) {
+      inst.job = null;
+      inst.busyMs += at - inst.postAt;
+      this.move("busy", -1);
+    }
+    inst.jobs += 1;
+  }
+
+  // New memory figures for an instance (after it let go of its state).
+  instanceMemory(seq, mem) {
+    const inst = this.insts.get(seq);
+    if (inst === undefined || !this.live() || !Array.isArray(mem)) return;
+    this.memory(inst, mem);
+  }
+
+  // The instance let go of its prepared state: `cause` is replaced (it
+  // prepared another), files (a job needed the buffers it may keep) or
+  // released (the file it was prepared from was released).
+  stateEvicted(seq, cause) {
+    const inst = this.insts.get(seq);
+    if (inst === undefined || !this.live()) return;
+    const at = this.tick();
+    const prep = inst.held;
+    inst.held = null;
+    this.evictions[cause] += 1;
+    this.emit({ kind: "state-evict", instance: seq, prep, cause, at });
   }
 
   // A reply arrived for a job the pool no longer holds.
@@ -856,7 +906,7 @@ export class WorkMonitor {
   // compute thrown away when it was running.
   leave(job) {
     if (job.phase === "queued") this.move("queued", -1);
-    if ((job.phase === "running" || job.phase === "starting") && job.t.reply === null) {
+    if ((job.phase === "running" || job.phase === "starting") && job.t.reply === null && !job.finishing) {
       this.waste(job, this.lastAt);
       const inst = this.insts.get(job.instance);
       if (inst !== undefined && inst.job === job.id) this.release(inst, this.lastAt);
@@ -893,6 +943,7 @@ export class WorkMonitor {
       resultWait: span(t.reply, t.turnStart),
       resultTurn: span(t.turnStart, t.turnEnd),
       total: span(t.issue, t.end),
+      prepare: job.prepareMs ?? null,
     };
     const outcome = job.outcome;
     this.count[outcome] += 1;
@@ -900,6 +951,12 @@ export class WorkMonitor {
     const p = this.program(job.program);
     p[outcome] += 1;
     if (job.outputBytes !== null) p.outputBytes += job.outputBytes;
+    if (job.prepared === "prepare" && outcome !== "cancelled") this.count.prepared += 1;
+    if (job.prepared === "reuse" && outcome !== "cancelled") this.count.reused += 1;
+    if (typeof job.prepareMs === "number") {
+      this.count.prepareMs += job.prepareMs;
+      addHist(this.hist.prepare, job.prepareMs);
+    }
     if (outcome !== "cancelled") {
       addHist(this.hist.queue, ms.queue);
       addHist(p.hist.queue, ms.queue);
@@ -925,6 +982,9 @@ export class WorkMonitor {
       outputBytes: job.outputBytes,
       fileBytes: job.fileBytes ?? 0,
       readMs: job.readMs ?? null,
+      prepared: job.prepared ?? null,
+      prepareMs: job.prepareMs ?? null,
+      finished: !!job.finishing,
       deadlineMs: job.deadlineMs,
       t: { ...t },
       ms,
@@ -962,6 +1022,7 @@ export class WorkMonitor {
       peakMemBytes: null,
       liveAllocs: null,
       liveBytes: null,
+      held: null,
     });
     this.spawns += 1;
     this.move("instances", 1);
@@ -981,14 +1042,14 @@ export class WorkMonitor {
     inst.scriptAt = inst.thread === "worker" ? inst.off : null;
     inst.readyAt = at;
     inst.instantiateMs = ready.instEnd - ready.instStart;
-    this.memory(inst, [ready.memBytes, null, null]);
+    this.memory(inst, [ready.memBytes, ready.liveAllocs ?? null, ready.liveBytes ?? null]);
     this.move("spawning", -1);
     if (inst.job !== null) {
       const job = this.jobs.get(inst.job);
       if (job !== undefined && job.phase === "starting") job.phase = "running";
     }
     if (this.userTiming) this.measure(`roc:worker ${seq} spawn`, inst.spawnAt, at, { instance: seq, instantiateMs: inst.instantiateMs }, `worker ${seq}`);
-    this.emit({ kind: "instance-ready", instance: seq, at, scriptAt: inst.scriptAt, instantiateMs: inst.instantiateMs, memBytes: inst.memBytes });
+    this.emit({ kind: "instance-ready", instance: seq, at, scriptAt: inst.scriptAt, instantiateMs: inst.instantiateMs, memBytes: inst.memBytes, liveAllocs: inst.liveAllocs });
   }
 
   // The pool discarded the instance. `cause` is cancel, deadline, fault,
@@ -1040,6 +1101,7 @@ export class WorkMonitor {
       peakMemBytes: i.peakMemBytes,
       liveAllocs: i.liveAllocs,
       liveBytes: i.liveBytes,
+      held: i.held,
       endedAt: null,
       endedBy: null,
       fault: null,
@@ -1056,6 +1118,7 @@ export class WorkMonitor {
     if (r.cold && t.begin !== null) this.measure("roc:work.cold", t.post, t.begin, { id: r.id, instance: r.instance }, lane);
     if (t.post !== null && t.reply !== null) this.measure("roc:work.run", t.post, t.reply, { id: r.id, instance: r.instance }, lane);
     if (t.reply !== null && t.turnEnd !== null) this.measure("roc:work.result", t.reply, t.turnEnd, { id: r.id }, "jobs");
+    if (r.prepareMs !== null && t.call !== null) this.measure("roc:work.prepare", t.call - r.prepareMs, t.call, { id: r.id, instance: r.instance }, lane);
   }
 
   measure(name, start, end, detail, track) {
@@ -1080,8 +1143,18 @@ export class WorkMonitor {
 // `{ output }` or `{ lost, message }`, unless the job is cancelled first.
 // It reports each transition to the monitor once it has acted: the job's
 // id and program are only for that report.
+//
+// Prepared programs (design.md, "Prepared programs"): a worker may hold one
+// prepared state, under the key it was prepared for (the preparation's
+// name, its input's exact bytes and the handles and ranges of its files). A
+// query whose key a worker holds runs there, waiting behind it if it is
+// busy; any other query prepares on a free worker, preferring one that
+// holds nothing, then a new one, then the least recently used holder. A
+// worker that is lost, stopped or retired takes its state with it, and the
+// next query prepares again. Placement never changes an answer: a query's
+// answer is what preparing afresh would give.
 class WorkPool {
-  constructor({ module, url, max, inline, Worker: W, monitor }) {
+  constructor({ module, url, max, inline, Worker: W, monitor, maxBytes = Infinity, live = () => true }) {
     this.module = module;
     this.url = url;
     this.max = Math.max(1, max);
@@ -1093,16 +1166,27 @@ class WorkPool {
     this.terminated = 0;
     this.instance = null;
     this.inlineSeq = 0;
+    // Inline mode: the key of the state the page-thread instance holds.
+    this.inlineKey = null;
     this.running = false;
     this.closed = false;
     this.pumpQueued = false;
     this.monitor = monitor;
+    // A worker whose linear memory exceeds this after a job is retired.
+    this.maxBytes = maxBytes;
+    // Whether the runtime still holds a file token (a state prepared from a
+    // released file is let go).
+    this.live = live;
+    // Use order, for choosing which holder to evict.
+    this.clock = 0;
   }
 
   // Returns the job's stop function: `stop("cancel")` for CANCEL,
-  // `stop("deadline")` when its deadline expired.
-  submit(payload, done, id, program, files = []) {
-    const job = { payload, done, slot: null, settled: false, timer: null, id, program, files };
+  // `stop("deadline")` when its deadline expired. `prepared`, for a prepared
+  // query, is { key, prepare, prepareFiles, finish }: `payload` is then the
+  // query (`query:str input:rest`) and `files` the query's files.
+  submit(payload, done, id, program, files = [], prepared = null) {
+    const job = { payload, done, slot: null, settled: false, timer: null, id, program, files, prepared, finishing: false };
     if (!this.module || (!this.inline && typeof this.W !== "function")) {
       const message = this.module ? "this browser has no Worker" : "the runtime was mounted without its compiled module";
       job.timer = setTimeout(() => this.settle(job, { lost: LOST_UNAVAILABLE, message }), 0);
@@ -1119,14 +1203,20 @@ class WorkPool {
     job.done(outcome);
   }
 
+  // A cancelled running query whose policy is `Finish` completes and keeps
+  // its worker's state; its answer is dropped. Anything else running is
+  // stopped by terminating its worker. A deadline always stops.
   cancel(job, cause = "cancel") {
     if (job.settled) return;
     job.settled = true;
     if (job.timer !== null) clearTimeout(job.timer);
     const q = this.queue.indexOf(job);
     if (q >= 0) this.queue.splice(q, 1);
-    if (job.slot !== null) this.discard(job.slot, cause);
-    if (cause === "cancel") this.monitor.jobCancelled(job.id);
+    if (job.slot !== null) {
+      if (cause === "cancel" && job.prepared !== null && job.prepared.finish) job.finishing = true;
+      else this.discard(job.slot, cause);
+    }
+    if (cause === "cancel") this.monitor.jobCancelled(job.id, job.finishing);
     this.pumpSoon();
   }
 
@@ -1145,29 +1235,83 @@ class WorkPool {
     });
   }
 
+  // The worker holding `key`'s state, or null.
+  holder(key) {
+    for (const s of this.slots) if (s.key !== null && sameKey(s.key, key)) return s;
+    return null;
+  }
+
+  // A worker for a job that no worker holds the state of: an idle one that
+  // holds nothing, else a new one while the pool has room, else the idle
+  // holder used least recently. Null when every worker is busy.
+  free() {
+    let lru = null;
+    for (const s of this.slots) {
+      if (s.job !== null) continue;
+      if (s.key === null) return s;
+      if (lru === null || s.used < lru.used) lru = s;
+    }
+    if (this.slots.length < this.max) return this.spawn();
+    return lru;
+  }
+
   pump() {
     if (this.closed) return;
     if (this.inline) {
       if (this.queue.length > 0 && !this.running) this.runInline();
       return;
     }
-    while (this.queue.length > 0) {
-      let slot = this.slots.find((s) => s.job === null);
-      if (!slot) {
-        if (this.slots.length >= this.max) return;
-        slot = this.spawn();
-        if (slot === null) return;
-      }
-      const job = this.queue.shift();
-      slot.job = job;
-      job.slot = slot;
-      const m = { type: "job", payload: job.payload.buffer };
-      // The browser's Blobs travel by reference: posting one copies no bytes.
-      if (job.files.length > 0) m.files = job.files;
-      if (this.monitor.userTiming) m.program = job.program;
-      slot.worker.postMessage(m, [job.payload.buffer]);
-      this.monitor.jobPosted(job.id, slot.seq);
+    // First the queries whose state a worker holds: each runs there, or
+    // waits behind it, so a busy pool never prepares a state again that
+    // it already holds.
+    for (let i = 0; i < this.queue.length; ) {
+      const job = this.queue[i];
+      const holder = job.prepared === null ? null : this.holder(job.prepared.key);
+      if (holder !== null && holder.job === null) {
+        this.queue.splice(i, 1);
+        this.post(holder, job, "ask");
+      } else i += 1;
     }
+    // Then the rest in order, each on a free worker.
+    for (let i = 0; i < this.queue.length; ) {
+      const job = this.queue[i];
+      if (job.prepared !== null && this.holder(job.prepared.key) !== null) {
+        i += 1;
+        continue;
+      }
+      const slot = this.free();
+      if (slot === null) return;
+      // A worker that could not be started has lost every queued job.
+      if (this.queue[i] !== job) return;
+      this.queue.splice(i, 1);
+      this.post(slot, job, job.prepared === null ? "work" : "prepare");
+    }
+  }
+
+  post(slot, job, mode) {
+    slot.job = job;
+    job.slot = slot;
+    this.clock += 1;
+    slot.used = this.clock;
+    const m = { type: "job", mode, payload: job.payload.buffer };
+    const transfer = [job.payload.buffer];
+    // The browser's Blobs travel by reference: posting one copies no bytes.
+    if (job.files.length > 0) m.files = job.files;
+    if (mode === "prepare") {
+      m.prepare = job.prepared.prepare.buffer;
+      transfer.push(m.prepare);
+      if (job.prepared.prepareFiles.length > 0) m.prepareFiles = job.prepared.prepareFiles;
+      if (slot.key !== null) this.monitor.stateEvicted(slot.seq, "replaced");
+      slot.key = job.prepared.key;
+    } else if (mode === "work" && slot.key !== null && job.files.length > 0) {
+      // The held state may keep file buffers this job needs.
+      m.forget = true;
+      slot.key = null;
+      this.monitor.stateEvicted(slot.seq, "files");
+    }
+    if (this.monitor.userTiming) m.program = job.program;
+    slot.worker.postMessage(m, transfer);
+    this.monitor.jobPosted(job.id, slot.seq, mode, job.prepared === null ? null : job.prepared.key.name);
   }
 
   spawn() {
@@ -1179,7 +1323,7 @@ class WorkPool {
       for (const job of this.queue.splice(0)) this.settle(job, { lost: LOST_EXECUTOR, message: `worker could not start: ${e}` });
       return null;
     }
-    const slot = { worker, job: null, seq: this.monitor.instanceSpawned("worker") };
+    const slot = { worker, job: null, seq: this.monitor.instanceSpawned("worker"), key: null, used: 0 };
     this.created += 1;
     worker.onmessage = (event) => this.answer(slot, event.data);
     worker.onerror = (event) => {
@@ -1192,9 +1336,41 @@ class WorkPool {
     return slot;
   }
 
+  // Let go of `slot`'s state: it is idle, so the message runs before any
+  // job posted after it.
+  evict(slot, cause) {
+    if (slot.key === null) return;
+    slot.key = null;
+    slot.worker.postMessage({ type: "forget" });
+    this.monitor.stateEvicted(slot.seq, cause);
+  }
+
+  // The runtime let go of these file tokens: no state prepared from one of
+  // them may outlive it. A busy holder is checked when its job replies.
+  released(tokens) {
+    if (this.inline) {
+      if (this.inlineKey !== null && !this.running && tokens.some((t) => keyNames(this.inlineKey, t))) this.forgetInline("released");
+      return;
+    }
+    for (const slot of [...this.slots]) {
+      if (slot.key !== null && slot.job === null && tokens.some((t) => keyNames(slot.key, t))) this.evict(slot, "released");
+    }
+  }
+
+  // After a job: a state keyed on a file the runtime no longer holds is let
+  // go, and a worker grown past `maxBytes` is retired.
+  afterJob(slot, mem) {
+    if (slot.key !== null && !keyLive(slot.key, this.live)) this.evict(slot, "released");
+    if (Array.isArray(mem) && mem[0] > this.maxBytes) this.discard(slot, "retired");
+  }
+
   answer(slot, m) {
     if (m.type === "ready") {
       if (this.slots.includes(slot)) this.monitor.instanceReady(slot.seq, m);
+      return;
+    }
+    if (m.type === "forgot") {
+      if (this.slots.includes(slot)) this.monitor.instanceMemory(slot.seq, m.mem);
       return;
     }
     const job = slot.job;
@@ -1202,18 +1378,20 @@ class WorkPool {
       this.monitor.lateReply();
       return;
     }
-    if (m.type === "done") {
+    if (m.type === "done" || m.type === "filefail") {
       slot.job = null;
       job.slot = null;
-      this.monitor.jobReplied(job.id, slot.seq, { t: m.t, mem: m.mem, outputBytes: m.output.byteLength, read: m.read, fileBytes: m.fileBytes });
-      this.settle(job, { output: new Uint8Array(m.output) });
-      this.pump();
-    } else if (m.type === "filefail") {
-      // The worker is sound; only this job's files could not be read.
-      slot.job = null;
-      job.slot = null;
-      this.monitor.jobReplied(job.id, slot.seq, {});
-      this.settle(job, { filefail: m.reason });
+      if (!m.held) slot.key = null;
+      if (job.finishing) this.monitor.instanceFinished(slot.seq, m.mem ?? null);
+      else if (m.type === "done") {
+        this.monitor.jobReplied(job.id, slot.seq, { t: m.t, mem: m.mem, outputBytes: m.output.byteLength, read: m.read, fileBytes: m.fileBytes, prepareMs: m.prepareMs, held: m.held });
+        this.settle(job, { output: new Uint8Array(m.output) });
+      } else {
+        // The worker is sound; only this job's files could not be read.
+        this.monitor.jobReplied(job.id, slot.seq, { held: m.held });
+        this.settle(job, { filefail: m.reason });
+      }
+      this.afterJob(slot, m.mem);
       this.pump();
     } else {
       this.lose(slot, m.code >= 1 && m.code <= 5 ? m.code : LOST_EXECUTOR, m.message);
@@ -1231,7 +1409,8 @@ class WorkPool {
     this.pump();
   }
 
-  // `cause`: cancel, deadline, fault, executor or shutdown (for the monitor).
+  // `cause`: cancel, deadline, fault, executor, retired or shutdown (for
+  // the monitor). The worker's state, if any, goes with it.
   discard(slot, cause, fault = null) {
     const i = this.slots.indexOf(slot);
     if (i < 0) return;
@@ -1240,11 +1419,19 @@ class WorkPool {
     this.terminated += 1;
     if (slot.job !== null) slot.job.slot = null;
     slot.job = null;
+    slot.key = null;
     this.monitor.instanceEnded(slot.seq, cause, fault);
   }
 
+  forgetInline(cause) {
+    if (this.instance !== null) this.instance.exports.forget();
+    this.inlineKey = null;
+    this.monitor.stateEvicted(this.inlineSeq, cause);
+  }
+
   // Inline mode: a second instance of the module on this thread, one job at
-  // a time, each in a task of its own.
+  // a time, each in a task of its own. It keeps a prepared state as a
+  // worker does.
   async runInline() {
     this.running = true;
     try {
@@ -1253,46 +1440,74 @@ class WorkPool {
         const job = this.queue.shift();
         if (job === undefined || job.settled || this.closed) continue;
         const mon = this.monitor;
+        const p = job.prepared;
+        const mode = p === null ? "work" : this.inlineKey !== null && sameKey(this.inlineKey, p.key) ? "ask" : "prepare";
         let x = null;
         try {
           if (this.instance === null) {
             this.inlineSeq = mon.instanceSpawned("page");
-            mon.jobPosted(job.id, this.inlineSeq);
+            mon.jobPosted(job.id, this.inlineSeq, mode, p === null ? null : p.key.name);
             const instStart = mon.now();
             this.instance = await WebAssembly.instantiate(this.module, { env: {} });
             this.created += 1;
             if (this.closed) continue;
             mon.instanceReady(this.inlineSeq, { origin: mon.origin, instStart, instEnd: mon.now(), memBytes: this.instance.exports.memory.buffer.byteLength });
-          } else mon.jobPosted(job.id, this.inlineSeq);
+          } else mon.jobPosted(job.id, this.inlineSeq, mode, p === null ? null : p.key.name);
           if (job.settled || this.closed) continue;
           x = this.instance.exports;
           const begin = mon.now();
           let fileBytes = 0;
-          if (job.files.length > 0) {
-            try {
-              fileBytes = await readFiles(x, job.files);
-            } catch (e) {
-              if (!(e && (e.reason === 1 || e.reason === 2))) throw e;
-              x.bytes_clear();
-              this.settle(job, { filefail: e.reason });
-              continue;
-            }
-            if (job.settled || this.closed) {
-              x.bytes_clear();
-              continue;
-            }
+          let prepareMs = null;
+          if (mode === "prepare" || (mode === "work" && this.inlineKey !== null && job.files.length > 0)) {
+            if (this.inlineKey !== null) mon.stateEvicted(this.inlineSeq, mode === "prepare" ? "replaced" : "files");
+            x.forget();
+            this.inlineKey = null;
           }
-          const read = mon.now() - begin;
+          try {
+            if (mode === "prepare") {
+              if (p.prepareFiles.length > 0) fileBytes += await readFiles(x, p.prepareFiles);
+              if (job.settled || this.closed) {
+                x.bytes_clear();
+                continue;
+              }
+              const ptr = x.payload_reserve(p.prepare.length);
+              if (p.prepare.length > 0) new Uint8Array(x.memory.buffer, ptr, p.prepare.length).set(p.prepare);
+              const t = mon.now();
+              x.prepare();
+              prepareMs = mon.now() - t;
+              this.inlineKey = p.key;
+            }
+            if (job.files.length > 0) fileBytes += await readFiles(x, job.files);
+          } catch (e) {
+            if (!(e && (e.reason === 1 || e.reason === 2))) throw e;
+            x.bytes_clear();
+            this.settle(job, { filefail: e.reason });
+            continue;
+          }
+          if (this.closed || job.settled) {
+            x.bytes_clear();
+            continue;
+          }
+          const read = fileBytes > 0 ? mon.now() - begin - (prepareMs ?? 0) : 0;
           const ptr = x.payload_reserve(job.payload.length);
           if (job.payload.length > 0) new Uint8Array(x.memory.buffer, ptr, job.payload.length).set(job.payload);
           const call = mon.now();
-          x.work();
+          if (mode === "work") x.work();
+          else x.ask();
           const ret = mon.now();
           const output = new Uint8Array(x.memory.buffer, x.cmd_ptr(), x.cmd_len()).slice();
           const sent = mon.now();
+          const mem = [x.memory.buffer.byteLength, Number(x.metric(4)), Number(x.metric(5))];
           if (mon.userTiming) mon.measure(`roc:work.compute ${job.program}`, call, ret, { id: job.id }, `worker ${this.inlineSeq}`);
-          mon.jobReplied(job.id, this.inlineSeq, { t: [begin, begin, call, ret, sent], mem: [x.memory.buffer.byteLength, Number(x.metric(4)), Number(x.metric(5))], outputBytes: output.length, read, fileBytes });
+          mon.jobReplied(job.id, this.inlineSeq, { t: [begin, begin, call, ret, sent], mem, outputBytes: output.length, read, fileBytes, prepareMs, held: this.inlineKey !== null });
           this.settle(job, { output });
+          if (this.inlineKey !== null && !keyLive(this.inlineKey, this.live)) this.forgetInline("released");
+          if (mem[0] > this.maxBytes) {
+            this.instance = null;
+            this.inlineKey = null;
+            this.terminated += 1;
+            mon.instanceEnded(this.inlineSeq, "retired");
+          }
         } catch (e) {
           let code = 0;
           let message = String(e && e.message ? e.message : e);
@@ -1305,6 +1520,7 @@ class WorkPool {
           // A faulted instance is never called again.
           const lost = code >= 1 && code <= 5 ? code : LOST_EXECUTOR;
           this.instance = null;
+          this.inlineKey = null;
           this.terminated += 1;
           mon.instanceEnded(this.inlineSeq, lost === LOST_EXECUTOR ? "executor" : "fault", { class: LOST_CLASSES[lost], message });
           this.settle(job, { lost, message });
@@ -1325,7 +1541,31 @@ class WorkPool {
     }
     if (this.instance !== null) this.monitor.instanceEnded(this.inlineSeq, "shutdown");
     this.instance = null;
+    this.inlineKey = null;
   }
+}
+
+// Whether two prepared-state keys are the same: one preparation, the same
+// input bytes and the same file handles and ranges. Compared exactly; the
+// cost is the input's length.
+function sameKey(a, b) {
+  if (a === b) return true;
+  if (a.name !== b.name || a.init.length !== b.init.length || a.ranges.length !== b.ranges.length) return false;
+  for (let i = 0; i < a.ranges.length; i += 1) if (a.ranges[i] !== b.ranges[i]) return false;
+  for (let i = 0; i < a.init.length; i += 1) if (a.init[i] !== b.init[i]) return false;
+  return true;
+}
+
+// Whether a key's files include the handle `token`.
+function keyNames(key, token) {
+  for (let i = 0; i < key.ranges.length; i += 3) if (key.ranges[i] === token) return true;
+  return false;
+}
+
+// Whether every file a key names is still held by the runtime.
+function keyLive(key, live) {
+  for (let i = 0; i < key.ranges.length; i += 3) if (!live(key.ranges[i])) return false;
+  return true;
 }
 
 function httpResult(status, body, headers = []) {
@@ -1389,6 +1629,10 @@ export class RocEngineRuntime {
     // The most bytes one read of a file into the page takes; a larger range
     // is answered FileFailed(TooLarge) without reading it.
     this.maxReadBytes = options.maxReadBytes ?? 8 * 1024 * 1024;
+    // A worker whose linear memory has grown past this many bytes is retired
+    // after its job (memory never shrinks, and a prepared state may keep
+    // it): the next job that needs a worker starts a fresh one.
+    this.maxWorkerBytes = options.maxWorkerBytes ?? 128 * 1024 * 1024;
     // Observation of jobs, workers and turns (options.monitor; see "The
     // monitor" above). It never changes what this runtime does.
     this.monitor = new WorkMonitor(options.monitor ?? {}, {
@@ -1715,6 +1959,7 @@ export class RocEngineRuntime {
     const n = this.x.files_released();
     if (n === 0) return;
     const tokens = new DataView(this.x.memory.buffer, this.x.files_tokens(), 8 * n);
+    const released = [];
     for (let i = 0; i < n; i += 1) {
       const token = tokenAt(tokens, i);
       this.files.delete(token);
@@ -1723,7 +1968,10 @@ export class RocEngineRuntime {
         this.urls.delete(token);
         for (const url of urls.values()) this.urlApi().revokeObjectURL(url);
       }
+      released.push(token);
     }
+    // No prepared state outlives the file it was prepared from.
+    if (this.pool !== null) this.pool.released(released);
   }
 
   // Revoke every object URL made for a file (poisoning, recovery, unmount).
@@ -2049,6 +2297,7 @@ export class RocEngineRuntime {
             const refs = dv.getUint32(at, true);
             at += 4;
             const files = [];
+            const ranges = [];
             for (let i = 0; i < refs; i += 1) {
               const token = tokenAt(dv, 0, at);
               const start = tokenAt(dv, 0, at + 8);
@@ -2056,11 +2305,27 @@ export class RocEngineRuntime {
               const file = this.files.get(token);
               if (file === undefined) throw new Error(`a work request names file handle ${token}, which this runtime does not hold`);
               files.push(file.slice(start, start + len));
+              ranges.push(token, start, len);
               at += 24;
             }
             const deadline = dv.getUint32(at, true);
             at += 4;
-            this.fxOut.push({ op: "work", id, program, input, files, deadline });
+            // A prepared query (design.md, "Prepared programs"): which
+            // preparation answers it, and where its input lies in `input`.
+            const flag = u8[at];
+            at += 1;
+            let prep = null;
+            if (flag === 1) {
+              const name = str();
+              const initAt = dv.getUint32(at, true);
+              const initLen = dv.getUint32(at + 4, true);
+              const initFiles = dv.getUint32(at + 8, true);
+              const policy = u8[at + 12];
+              at += 13;
+              if (initAt + initLen > input.length || initFiles > refs || (policy !== 1 && policy !== 2)) throw new Error(`malformed prepared query ${program}`);
+              prep = { name, initAt, initLen, initFiles, finish: policy === 2, ranges: ranges.slice(0, 3 * initFiles) };
+            } else if (flag !== 0) throw new Error(`work request flag ${flag} is not 0 or 1`);
+            this.fxOut.push({ op: "work", id, program, input, files, deadline, prep });
           } else if (kind === 11) {
             const mode = u8[at];
             if (mode !== 1 && mode !== 2) throw new Error(`unknown file read mode ${mode}`);
@@ -2464,7 +2729,25 @@ export class RocEngineRuntime {
       setTimeout(() => finish(new Uint8Array([RES_FILE_FAILED, 2]), "lost", "too_large"), 0);
       return;
     }
-    stop = this.workPool().submit(concat([encStr(fx.program), fx.input]), (outcome) => {
+    // A prepared query carries both ways to run it: preparing from the
+    // preparation's input, or asking a worker that already holds the state
+    // for exactly that input (`key`). The pool picks one; the answer is the
+    // same either way.
+    let prepared = null;
+    let payload;
+    if (fx.prep !== null) {
+      const p = fx.prep;
+      const init = fx.input.subarray(p.initAt, p.initAt + p.initLen);
+      prepared = {
+        key: { name: p.name, init, ranges: p.ranges },
+        prepare: concat([encStr(p.name), init]),
+        prepareFiles: fx.files.slice(0, p.initFiles),
+        finish: p.finish,
+      };
+      payload = concat([encStr(fx.program), fx.input.subarray(p.initAt + p.initLen)]);
+    } else payload = concat([encStr(fx.program), fx.input]);
+    const jobFiles = fx.prep !== null ? fx.files.slice(fx.prep.initFiles) : fx.files;
+    stop = this.workPool().submit(payload, (outcome) => {
       if (outcome.filefail !== undefined) {
         finish(new Uint8Array([RES_FILE_FAILED, outcome.filefail]), "lost", outcome.filefail === 1 ? "unreadable" : "too_large");
         return;
@@ -2475,7 +2758,7 @@ export class RocEngineRuntime {
       }
       const klass = this.reportLost(fx, outcome.lost, outcome.message);
       finish(new Uint8Array([RES_WORK_LOST, outcome.lost]), outcome.lost === LOST_UNAVAILABLE ? "unavailable" : "lost", klass);
-    }, fx.id, fx.program, fx.files);
+    }, fx.id, fx.program, jobFiles, prepared);
   }
 
   // Report a lost job and return its class name. The `roc worker fault
@@ -2491,7 +2774,7 @@ export class RocEngineRuntime {
   workPool() {
     if (this.pool === null) {
       const W = (this.win && this.win.Worker) ?? globalThis.Worker;
-      this.pool = new WorkPool({ module: this.module, url: this.workerUrl, max: this.maxWorkers, inline: this.workerMode === "inline", Worker: W, monitor: this.monitor });
+      this.pool = new WorkPool({ module: this.module, url: this.workerUrl, max: this.maxWorkers, inline: this.workerMode === "inline", Worker: W, monitor: this.monitor, maxBytes: this.maxWorkerBytes, live: (token) => this.files.has(token) });
     }
     return this.pool;
   }

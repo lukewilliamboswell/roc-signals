@@ -143,9 +143,12 @@ reconsidered.
   Roc data updated in place, and a Roc call has no failure-and-unwind channel.
   Reconsidered only if Roc gains one.
 - **Host-held Roc values.** The host never holds, clones, compares or drops a
-  Roc value other than the one boxed engine state and the byte lists it
-  exchanges with Roc. There are no capabilities, retained cells or
-  split-and-replace rules because there is nothing for them to govern. The
+  Roc value other than the one boxed engine state, a worker instance's one
+  boxed prepared state (see [Prepared programs](#prepared-programs)), and
+  the byte lists it exchanges with Roc. There are no capabilities, retained
+  cells or split-and-replace rules because there is nothing for them to
+  govern: each box is opaque, moves whole into one Roc call and back out of
+  it, and is dropped only by Roc. The
   converse is allowed: Roc may hold a host resource, a handle whose
   allocation is a slot in a typed host heap (see [Files](#files)). The host
   mints it, Roc's reference count is its lifetime, and the host learns of
@@ -170,7 +173,8 @@ reconsidered.
 4. **The engine is pure Roc; the host only allocates, stages and classifies.**
    All reactive scheduling, structural reconciliation, identity, effect
    lifecycle and ownership policy live in the platform's Roc engine. The Zig
-   host owns the allocator, the boxed engine state between calls, the command
+   host owns the allocator, the boxed engine state between calls (in a worker
+   instance, at most one boxed prepared state instead), the command
    buffer, one staged payload, the typed heaps behind resource handles, and
    fault classification. JavaScript applies
    commands and performs effects. Reactive or structural logic in either is a
@@ -714,9 +718,70 @@ instead of a state write.
   not, which the compiler rejects. `Worker.derive` is a `resource` whose
   requests are runs of one program: a layer holding the program's answer for
   an input, where a newer input stops the run of an older one.
+- **`Ask`** is `Work` for a query of a prepared program (below): the same
+  results, scope and counters, with an input that also names the
+  preparation and where the preparation's own input lies in it.
 - **`Self`** asks for a follow-up turn whose result is `Now`: how an effect
   site changes state in response to its value changing without writing during
   the turn that is evaluating.
+
+### Prepared programs
+
+Some programs share an expensive first step: three views of a document each
+parse it, a search and a facet count each index the same records. A
+**prepared program** is a preparation `prepare : init -> state` and any
+number of typed queries `ask : state, q -> out` over it, registered together
+(`Worker.prepared`, `Prepared.query`, `Prepared.registration`).
+
+**It is still a pure function, and keeping the state is never observable in
+an answer.** A query's answer is exactly `ask(prepare(init), q)`: what
+preparing afresh and asking would give. A worker instance that prepared a
+state may keep it and answer later queries over the same input from it, so
+they cost a query rather than the preparation, but whether it does is an
+optimisation the runtime may or may not achieve. It shows in time and in
+the monitor, never in a result, and the native spec runner simply prepares
+afresh for every job. That is what keeps programs pure, specs deterministic
+and the engine unchanged: to the engine an `Ask` is a `Work` request.
+
+- **Identity.** A kept state answers a query only for the same preparation
+  and the same input: the preparation's name, the exact bytes of its
+  encoded input, and the handle token and range of each file the input
+  names. Nothing is hashed; the runtime compares the bytes, so its cost is
+  the input's size per query, and a large input belongs in a `File`, whose
+  identity is its handle and range. Tokens are generation-tagged and never
+  alias. A comparison that is conservative only costs a preparation.
+- **Holding.** The registration erases the typed state into a closure
+  (`Core.Kept`) that answers the preparation's queries by name. A worker's
+  host holds at most one `Box(Kept)`, exactly as a page's host holds
+  `Box(App)`: `prepare` builds it, `ask` moves it into one call and back
+  out with the output, and `forget` hands it to Roc to drop. The state never
+  crosses to the page, so it need not be `Wire.Sendable`.
+- **Placement** is the runtime's and decides nothing about answers. A query
+  runs on the worker holding its key, waiting behind it while it is busy;
+  otherwise it prepares on an idle worker holding nothing, a new worker
+  while the pool has room, or the least recently used idle holder, whose
+  state it replaces. A job that reads files on a holder lets the state go
+  first, because the state may keep file buffers the job needs.
+- **Read-only.** A query cannot change the state: a state-threading query
+  would make an answer depend on which queries ran before it on that
+  worker, and a lost worker would need a replay log to recover it.
+- **Release.** No kept state outlives its file: when the page releases a
+  handle, every state keyed on it is let go (at once on an idle worker,
+  after its job on a busy one). A worker whose linear memory has grown past
+  the `maxWorkerBytes` mount option is retired after its job, its state with
+  it, since linear memory never shrinks.
+- **Cancellation.** A query's cancel policy is `Stop` (the default): a
+  cancelled running query stops its worker, as any job does, and the state
+  goes with it. `Finish` is opt-in: on `CANCEL` the engine forgets the id as
+  always (counted `cancelled`, a late answer stale), but the runtime lets the
+  run complete and drops its answer, so the worker keeps the state for the
+  next query. At most one such run per worker, so the pool bounds them. A
+  deadline always stops the worker, and a query's deadline includes its
+  preparation.
+- **Failure.** A crash in a preparation or a query poisons that worker only:
+  the query is `WorkLost` with the fault class, the state is gone, and the
+  next query prepares again elsewhere. Queries waiting for a lost holder
+  are placed again, so none waits forever.
 
 ### Ids, results and staleness
 
@@ -775,7 +840,11 @@ instead of a state write.
   time, reusing idle workers. Jobs beyond the pool wait in a FIFO queue,
   which the in-flight cap bounds. Stopping a job — cancel or deadline — is
   terminating its worker, which is replaced when the next job needs one;
-  there are no cooperative checkpoints.
+  there are no cooperative checkpoints. A worker whose linear memory has
+  grown past `maxWorkerBytes` (a mount option, default 128 MiB) is retired
+  after its job.
+- **Prepared states.** At most one per worker, so at most `maxWorkers`;
+  each is bounded with its worker by `maxWorkerBytes`.
 - **Catalogue.** At most 64 programs, each name once. A duplicate or a 65th
   is a `contract` error when the catalogue is built, naming the program;
   issuing work for a name the catalogue does not hold is a `contract` error
@@ -1082,6 +1151,9 @@ The Zig host (`platform/host/host.zig`) owns exactly:
 - **the fault state** — a class and a bounded diagnostic buffer reserved
   statically.
 
+- **in a worker instance, at most one opaque `Box(Kept)`** — a prepared
+  program's state between jobs (see [Prepared programs](#prepared-programs)).
+
 It never interprets the state or the commands. Each engine call clears the
 host's slots *before* moving the state, buffer and payload into Roc, then
 stores what Roc returns, so a trap mid-call cannot leave a dangling owner.
@@ -1119,6 +1191,16 @@ entry and keeps the returned bytes in the command buffer's slot until the next
 call, releasing the previous output first. It never mounts, so it holds no
 engine state, and `work` refuses to run in an instance that has one. The
 engine hands the host a list of its own, never a slice of the input.
+
+A worker instance has three more entries for prepared programs. `prepare`
+first hands any kept state to `roc_engine_forget`, then moves the staged
+payload and files into `roc_engine_prepare` and keeps the `Box(Kept)` it
+returns. `ask` clears the slot, moves the box, the staged payload and files
+into `roc_engine_ask`, and stores the box and output it returns. `forget`
+hands the box to Roc to drop. Ownership is therefore always single: before a
+call the host owns the box; during it Roc does; after it the host owns what
+Roc returned; on a trap the box is abandoned with the heap, as the engine
+state is; and a terminated worker abandons it with its memory.
 
 A worker's host also keeps a **buffer heap** for the files a job reads:
 `bytes_reserve` allocates a buffer and a slot for each, the worker script
@@ -1164,6 +1246,8 @@ program poisons that instance only. The runtime discards the worker, answers
 its job with `WorkLost` carrying the instance's class (`executor` when the
 worker script itself failed, `unavailable` when the browser has no workers),
 and reports the diagnostic to the console; the page's instance is untouched.
+A prepared state the worker kept is gone with it, and the next query over
+that input prepares again.
 
 **Contract errors the engine raises:** duplicate key; switch value not in its
 cases; row template not a single element; focus reference inside a row
@@ -1199,6 +1283,8 @@ bound and a declared behaviour at the bound:
 | HTTP timeout, work deadline | 600 s | Capped |
 | Worker catalogue | 64 programs | `contract` poison |
 | Workers per runtime | `maxWorkers` (default: core count, at most 8) | Jobs queue |
+| Prepared states | One per worker | The least recently used idle holder's is replaced |
+| A worker's linear memory | `maxWorkerBytes` (default 128 MiB), checked after each job | The worker is retired, its state with it |
 | Queued and running jobs | The in-flight cap | Typed `Refused` follow-up |
 | Worker output held by the host | 1 | Previous one freed |
 | Staged payloads | 1 | Previous one freed |
@@ -1280,7 +1366,10 @@ oracle and never defines a meaning of its own. In particular:
   in a worker. A job that has not finished after 30 s fails the step in both
   runners. A spec's time is manual: a job's deadline never expires on its
   own — the runtime's manual mode arms no deadline timer — and
-  `time-out-work` expires it. Storage reads answer by themselves in the
+  `time-out-work` expires it. A prepared query runs the same way: the
+  native child prepares afresh and asks, which purity makes equal to any
+  reuse the browser achieves, so a spec observes answers, never whether a
+  worker kept a state. Storage reads answer by themselves in the
   following turn, as the runtime answers them. An operation on a file is
   performed on the setup file's bytes: a read or a URL by the native runner
   itself (its URL names the handle and range, so a spec asserts what the
@@ -1624,7 +1713,8 @@ Req : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Timer(
        Interval(U32), Popstate, OnlineChanges, VisibilityChanges, Self, Push(Str),
        Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str),
        StorageSet(Str, Str), StorageRemove(Str), ReadBytes(File), ReadUtf8(File),
-       Upload({ method, url, headers, body : File, timeout_ms }), Sha256(File), ObjectUrl(File)]
+       Upload({ method, url, headers, body : File, timeout_ms }), Sha256(File), ObjectUrl(File),
+       Ask({ program : Str, input : List(U8), files : List(File), deadline_ms : U32 })]
 Res : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
        Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused,
        Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError),
@@ -1647,10 +1737,21 @@ Program.registration : Program(input, output) -> Registration
 Program.request : Program(input, output), input -> Req
 Program.result : Program(input, output), Res -> Try(output, Worker.Error)
 Worker.Error : [Timeout, Refused, Lost(WorkFault), FileFailed(FileError)]
+Worker.prepared : Str, (init -> state) -> Prepared(init, state)   where [init.Wire.Sendable]
+Prepared.query : Prepared(init, state), Str, (state, q -> out) -> Query(init, state, q, out)
+Prepared.fallible_query : Prepared(init, state), Str, (state, q -> Try(ok, err)) -> Query(init, state, q, Try(ok, err))
+Prepared.registration : Prepared(init, state), List(Answer(state)) -> Registration
+Query.answers : Query(init, state, q, out) -> Answer(state)
+Query.with_deadline_ms : Query(init, state, q, out), U32 -> Query(init, state, q, out)
+Query.with_cancel : Query(init, state, q, out), Cancel -> Query(init, state, q, out)
+Query.request : Query(init, state, q, out), Asked(init, q) -> Req      # an Ask
+Query.result : Query(init, state, q, out), Res -> Try(out, Worker.Error)
+Worker.Asked(init, q) : { input : init, query : q }
+Worker.Cancel : [Stop, Finish]
 Worker.Remote(output) : { running : Bool, answer : [Nothing, Done(output), Failed(Worker.Error)] }
-Worker.derive : Program(input, output), Val(ctx, input),
+Worker.derive : program, Val(ctx, input),          # a Program or a Query
     (Val(In(ctx, Remote(output)), Remote(output)) -> Elem(In(ctx, Remote(output)))) -> Elem(ctx)
-Worker.derive_when : Program(input, output), Val(ctx, [Run(input), Skip]), ... -> Elem(ctx)
+Worker.derive_when : program, Val(ctx, [Run(input), Skip]), ... -> Elem(ctx)
 Wire.encode : a -> List(U8)                    where [a.Wire.Sendable]
 Wire.try_encode : a -> Try(List(U8), [TooDeep]) where [a.Wire.Sendable]   # refuses what decode would
 Wire.decode : List(U8) -> Try(a, Wire.Error)   where [a.Wire.Sendable]
@@ -1697,7 +1798,10 @@ The platform provides (`platform/main.roc`):
 | `roc_engine_event` | `Box(Core.App), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One transaction: state, recycled command buffer, recycled work buffer, node, handler, payload |
 | `roc_engine_files` | `Box(Core.App), List(U8), List(U8), u32, u32, List(U8), List(Box(U64)) -> { cmds, state, work }` | A `:files` event: as `roc_engine_event`, with the file record as the payload and the handles the host minted for it, in the record's order; a record that does not match them is a `contract` crash |
 | `roc_engine_drop` | `Box(Core.App), List(U8), List(U8) -> {}` | Teardown |
-| `roc_engine_work` | `List(U8), List(List(U8)) -> List(U8)` | A worker instance's job: payload `name:str input:rest` and the bytes of the files the request named, in its order; returns the program's output bytes as a list of its own. A name the catalogue does not hold, or a payload without a name, is a `contract` crash (it poisons that worker instance only) |
+| `roc_engine_work` | `List(U8), List(List(U8)) -> List(U8)` | A worker instance's job: payload `name:str input:rest` and the bytes of the files the request named, in its order; returns the program's output bytes as a list of its own. `name` is a `str` (a `u32` length), while `input` is a `Wire` payload whose counts are LEB128, so a harness meets both encodings in one buffer. For a prepared query `input` is its whole `Ask` input (see `FX` kind 8), and the query is answered by preparing afresh. A name the catalogue does not hold, or a payload without a name, is a `contract` crash (it poisons that worker instance only) |
+| `roc_engine_prepare` | `List(U8), List(List(U8)) -> Box(Core.Kept)` | Prepare a state to keep: payload `prep:str init:rest` (the preparation's name and its own input) and the preparation's files; returns the state. A name that is not a preparation is a `contract` crash |
+| `roc_engine_ask` | `Box(Core.Kept), List(U8), List(List(U8)) -> { held, out }` | A query on the kept state: payload `query:str input:rest` (the query's own input) and the query's files; returns the state (`held`) and the output (`out`, a list of its own). A query the state's preparation does not answer is a `contract` crash |
+| `roc_engine_forget` | `Box(Core.Kept) -> {}` | Drop the kept state |
 
 The host provides `roc_alloc`, `roc_dealloc`, `roc_realloc`, `roc_dbg`,
 `roc_expect_failed` and `roc_crashed`. The result record's three fields are
@@ -1720,13 +1824,16 @@ warm-up neither allocates.
 | `bytes_reserve(len) -> ptr` | In a worker instance: a buffer of `len` bytes for the next job's next file, where JavaScript writes it (`1` for an empty file); `0` when the job already has 16 files. Re-read `memory.buffer` after it |
 | `bytes_clear()` | Free the files staged for a job that will not run |
 | `work()` | A worker instance's job: moves the staged payload, and the staged files as owning seamless lists, into `roc_engine_work` and keeps the output readable through `cmd_ptr`/`cmd_len` until the next call, releasing the previous output. Traps when an engine state is mounted in this instance or the instance is poisoned |
+| `prepare()` | In a worker instance: release the kept state, if any, and the previous output, then prepare a new state from the staged payload and files (`roc_engine_prepare`) and keep it. Traps like `work()` |
+| `ask()` | In a worker instance: run the staged query payload and files on the kept state (`roc_engine_ask`); the output is readable as for `work()`. Traps when no state is kept, and like `work()` |
+| `forget()` | In a worker instance: release the kept state, if any, and the previous output. No-op when poisoned |
 | `protocol_version() -> u32` | The engine's protocol version; answers before mount and when poisoned |
 | `cmd_ptr()`, `cmd_len()` | The current command batch (in a worker instance, the last job's output), valid until the next `event`, `work` or `drop` |
 | `work_ptr()`, `work_len()` | The work record returned with the last call, valid until the next `event` or `drop` |
 | `drop()` | Teardown; no-op when poisoned or already dropped |
 | `fault() -> u32` | `0` healthy, `1` contract, `2` resource_limit, `3` out_of_memory, `4` app_crash, `5` expect_failed |
 | `err_ptr()`, `err_len()` | Diagnostic text (≤ 512 bytes) |
-| `metric(i) -> u64` | Allocator counters: `0` allocations, `1` deallocations, `2` requested bytes, `3` reallocations, `4` live allocations, `5` live bytes; `6` live file handles (retired ones included until drained). `16 + k`: counter `k` of the work record (0 past its end) |
+| `metric(i) -> u64` | Allocator counters: `0` allocations, `1` deallocations, `2` requested bytes, `3` reallocations, `4` live allocations, `5` live bytes; `6` live file handles (retired ones included until drained); `8` whether a prepared state is kept (`1` or `0`). `16 + k`: counter `k` of the work record (0 past its end) |
 | `reset_metrics()` | Reset counters 0–3 |
 | `memory` | Linear memory |
 
@@ -1877,7 +1984,7 @@ the batch is applied and performed after it.
 | 5 | — | Popstate (subscription) |
 | 6 | — | Connectivity (subscription; `online`/`offline` events) |
 | 7 | — | Visibility (subscription; `visibilitychange` events) |
-| 8 | `program:str input:u32+bytes n:u32 (token:u64 start:u64 len:u64)*n deadline_ms:u32` | Work: `input` is a `u32` length and raw bytes, not necessarily UTF-8; then the files the input refers to, each a handle's token and a range of its file; `deadline_ms` 0 = none, capped at 600 000 |
+| 8 | `program:str input:u32+bytes n:u32 (token:u64 start:u64 len:u64)*n deadline_ms:u32 prepared:u8 [prep:str init_at:u32 init_len:u32 init_files:u32 policy:u8]` | Work: `input` is a `u32` length and raw bytes, not necessarily UTF-8; then the files the input refers to, each a handle's token and a range of its file; `deadline_ms` 0 = none, capped at 600 000. `prepared` is `0` for `Work` and `1` for `Ask`, which then names its preparation, where the preparation's input lies in `input` (`init_len` bytes at `init_at`; the query's own input is the rest), how many of the files are the preparation's (the first `init_files`), and its cancel policy (`1` stop, `2` finish). An `Ask` input is `prep:str init_len:u32 init_files:u32 policy:u8`, then the preparation's input, then the query's; the engine copies the operands from it, and an input that does not follow it is a `contract` crash. Any other flag or inconsistent operands are a `contract` fault |
 | 11 | `mode:u8 token:u64 start:u64 len:u64` | Read a file's range into the page: `mode` `1` bytes (answered tag 16), `2` text (tag 17) |
 | 12 | `method:str url:str n:u32 (name:str value:str)* token:u64 start:u64 len:u64 timeout_ms:u32` | HTTP with a file's range as the body (answered as kind 1); a method of `GET` or `HEAD` is a `contract` error in the engine |
 | 13 | `algorithm:u8 token:u64 start:u64 len:u64` | Digest of a file's range: `algorithm` `1` SHA-256 (tag 18) |
