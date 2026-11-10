@@ -15,6 +15,8 @@ Html := [].{
 	div = |cls, kids| Engine.element("div", [Engine.class(cls)], kids)
 
 	## `section(name, class, children)`: a region whose accessible name is `name`.
+	## The name is set as `aria-label` and is not shown: for a visible title, put
+	## a heading among the children.
 	section : Str, Str, List(Elem(ctx)) -> Elem(ctx)
 	section = |name, cls, kids| Engine.element("section", [Engine.attr("aria-label", name), Engine.class(cls)], kids)
 

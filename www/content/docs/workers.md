@@ -57,6 +57,12 @@ A program receives only its input. It keeps nothing between runs, so data it
 needs every time, such as the text it searches, is sent and copied with every
 run. There is no long-lived worker that holds data between requests.
 
+The page and its workers run one module, so a program's code is part of the
+module the page downloads and compiles, although the page never runs it. A
+program that brings in a large library makes the app's module larger by
+about that library's size, and its build longer. The types a program sends
+and returns add code too, usually far less than the program itself.
+
 ## Programs and registration
 
 A program is a `Worker.Program(input, output)`: a name and a pure function.
@@ -125,6 +131,11 @@ an empty search box or a form that is not valid yet:
 
 The search's input includes the text, so editing the text while a word is
 in the box runs the search again.
+
+A layer's body can be a named function, as `found` is. Give it a generic
+context, `Val(ctx, Worker.Remote(…)) -> Elem(ctx)`, and it fits any site:
+inside the layer the context is `In(Ctx, Worker.Remote(…))`, and a named
+body never needs to write that out.
 
 ## Starting and cancelling from a button
 

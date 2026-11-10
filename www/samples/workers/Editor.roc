@@ -108,11 +108,17 @@ Editor := [].{
 				Worker.derive_when(
 					Words.find,
 					v.map(|s| if (s.query == "") Skip else Run({ text: s.text, word: s.query })),
-					|found| Html.p_v(found.map(Editor.show_lines), [Engine.test_id("found")]),
+					Editor.found,
 				),
 			],
 		)
 	}
+
+	## The body of the search's layer, as a named function. Its context is
+	## left generic: inside the layer it is `In(Ctx, Worker.Remote(List(U64)))`,
+	## which a named body has no need to spell out.
+	found : Val(ctx, Worker.Remote(List(U64))) -> Elem(ctx)
+	found = |remote| Html.p_v(remote.map(Editor.show_lines), [Engine.test_id("found")])
 
 	show_lines : Worker.Remote(List(U64)) -> Str
 	show_lines = |{ running, answer }|
