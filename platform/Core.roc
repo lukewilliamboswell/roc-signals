@@ -1572,13 +1572,15 @@ Core := [].{
 	## closure over the typed state that runs one of its tasks,
 	## `ask!(task, input_bytes, handles)`, and answers as a task's entry
 	## does. The state never crosses a boundary; the worker's host keeps one
-	## `Box(Kept)` as the page's host keeps `Box(App)`, and every answer is
-	## what preparing afresh would give.
-	Kept :: { prep : Str, ask! : (Str, List(U8), List(Box(U64)) => List(U8)) }
+	## `Box(Kept)` as the page's host keeps the engine state, and every answer
+	## is what preparing afresh would give. `ask!` is boxed on its own because
+	## the host boundary admits a function only as the direct contents of a
+	## `Box`; the tasks only read the state it captures, so it is never copied.
+	Kept :: { prep : Str, ask! : Box((Str, List(U8), List(Box(U64)) => List(U8))) }
 
 	## For the worker layer: the kept state of the preparation `prep`.
 	kept : Str, (Str, List(U8), List(Box(U64)) => List(U8)) -> Kept
-	kept = |prep, ask!| { prep, ask! }
+	kept = |prep, ask!| { prep, ask!: Box.box(ask!) }
 
 	## What the host drives: the protocol version, the declared storage keys (read
 	## before mount), mount once with the boot bytes, then one transaction per
@@ -1706,7 +1708,7 @@ Core := [].{
 	work_ask! : Kept, List(U8), List(Box(U64)) => List(U8)
 	work_ask! = |held, payload, handles| {
 		(task, at) = get_str(payload, 0, "job payload")
-		ask! = held.ask!
+		ask! = Box.unbox(held.ask!)
 		owned_bytes(ask!(task, payload.drop_first(at), handles))
 	}
 
