@@ -174,6 +174,7 @@ const CYCLES = {
   ],
   // Every check answered by the backend stand-in.
   "status-page": [["click", ["role", "button", "Refresh now"]]],
+  "worker-lab": [["click", ["role", "button", "Start"]], ["click", ["role", "button", "Reset"]]],
 };
 {
   const { ctx, page } = await open();
