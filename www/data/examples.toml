@@ -1,6 +1,8 @@
 # The examples the site shows, in index order. Each runs on the web
 # platform from its `main-web.roc`; its specs run natively and in Chrome. An
-# example may list `scripts` its page loads before the app mounts.
+# example may list `scripts` its page loads before the app mounts, and name
+# its port handlers' module in `ports` (a file beside its app.wasm whose
+# default export site.mjs passes as the `ports` mount option).
 
 [[examples]]
 slug = "field-notes"

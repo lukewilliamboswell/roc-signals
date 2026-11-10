@@ -95,7 +95,10 @@
 - Bound host-retained and in-flight work. Define the bound and the behavior at
   the bound — typed refusal, classified diagnostic, cancellation, teardown —
   before adding a queue, table, request kind, timer class or runtime registry.
-  Never silently drop non-lossy work.
+  Never silently drop non-lossy work. Input from page JavaScript is external
+  input too: a port's answers and messages have a size bound with a typed
+  failure, and a subscription declares how its undelivered messages wait and
+  what happens beyond that.
 - Reject programmer and contract errors at the narrowest trustworthy boundary
   with a classified diagnostic that names the rule and the construction site.
   Do not repair invalid input, substitute values, or continue after state may
@@ -122,9 +125,17 @@
   contain nothing specific to an app, an example or the site. JavaScript that
   mounts an app or integrates it with a page lives with that app, example or
   site, and reaches the runtime only through `mountRocEngineApp` and its
-  options.
+  options. That includes port handlers: the JavaScript an app's ports need is
+  written with the app and passed at mount. A port is a named request kind
+  of the effect channel, not a way around it: its JavaScript performs one
+  request and answers with data, checked against the type the app declared;
+  it never decides reactive meaning, never touches the DOM the engine owns,
+  and never calls into Roc or holds a Roc value. A service the platform
+  models (HTTP, storage, timers, history, focus, workers, files) is not a
+  port's business.
 - Treat the command stream, event records, effect payloads, worker payloads,
-  boot bytes and Wasm exports as one versioned protocol. Change the Roc encoder
+  port messages, boot bytes (with the port table after the storage keys) and
+  Wasm exports as one versioned protocol. Change the Roc encoder
   and decoders, `platform/Dom.roc`, both hosts (`host.zig`, `spec.zig`),
   `runtime.mjs`, `worker.mjs`, the contract tests in `tests/` and Appendix B of
   `design.md` together.

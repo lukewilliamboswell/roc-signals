@@ -31,8 +31,8 @@ recipe ready.
 
 | Path | Contents |
 |---|---|
-| `platform/` | The platform (`main.roc`): the engine (`Core.roc`), the authoring API (`Engine.roc`, `Html.roc`, and `Worker.roc` with its payload format `Wire.roc`), the Wasm host (`host/host.zig`, with the typed heaps behind resource handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig`). Also the fuzz platform (`fuzz.roc`, the vendored roc-fuzz modules and the soak walk) |
-| `tests/` | Browser contract tests and the apps they drive (`tests/apps/`, for example `files` for file handles and `file-effects` for operations on files), the Chrome spec replay, and the release check helper |
+| `platform/` | The platform (`main.roc`): the engine (`Core.roc`), the authoring API (`Engine.roc`, `Html.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the Wasm host (`host/host.zig`, with the typed heaps behind resource handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig`). Also the fuzz platform (`fuzz.roc`, the vendored roc-fuzz modules and the soak walk) |
+| `tests/` | Browser contract tests and the apps they drive (`tests/apps/`, for example `files` for file handles `file-effects` for operations on files and `ports` for ports), the Chrome spec replay, and the release check helper |
 | `fuzz/` | Fuzz targets of the shared support; each app's own target is its `main-fuzz.roc` |
 | `examples/` | The example apps, each with its specs |
 | `benchmarks/` | The js-framework-benchmark adapter |
@@ -82,7 +82,7 @@ for example to run two tasks at once.
 2. `roc fmt --check` over every Roc source, and `roc test` on the test support
    and the scripts.
 3. The test platform, and the examples of the fuzz targets in `fuzz/` (the
-   `.scm` parser, the worker wire format and generated site trees).
+   `.scm` parser, the worker wire format, the port message format and generated site trees).
 4. The docs samples (below).
 5. Every app's specs natively and in Chrome, the check that the browser
    runner handles every form of the grammar, then a deliberately broken spec
@@ -94,8 +94,10 @@ for example to run two tasks at once.
    timing ratios), file handles and their release, operations on files
    (page reads, uploads to a local server, digests and file URLs, with their
    bounds, failures and lifetimes), prepared programs and the pool's
-   placement of their queries, and the Conduit journey against its
-   scripted backend.
+   placement of their queries, ports with real handlers
+   (`ports-browser.mjs`: the mount check, delivery policies, the payload
+   bound, bytes and files both ways, containment), and the Conduit journey
+   against its scripted backend.
 7. The js-framework-benchmark check.
 8. The release dry run: the bundle, `runtime.mjs` and `worker.mjs`, the examples archive with
    every app mounted by its check helper, and the release notes.
@@ -136,7 +138,9 @@ target on the repository's fuzz platform (`platform/fuzz.roc`: roc-fuzz's
 own modules, vendored unchanged, with the engine's modules exposed beside
 them). Targets decode arbitrary bytes into valid sessions and check them
 against a model: keyed reconciliation, the effect channel's lifecycle
-including worker jobs, the worker wire format's decoder, and each app's
+including worker jobs and port calls and subscriptions (`fx-channel`), the
+worker wire format's decoder, the port message format's decoder
+(`port-json`), and each app's
 leak-checked random walk (the supersede test app's included). Every target
 that drives the engine also runs the settle check after every step: no
 reader of a written layer may be left stale (see

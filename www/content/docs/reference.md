@@ -1,6 +1,6 @@
 +++
 title = "Reference"
-description = "The Engine, Html, Worker and Wire APIs at a glance, the platform's limits, and its error classes."
+description = "The Engine, Html, Worker, Wire, Port and PortJson APIs at a glance, the platform's limits, and its error classes."
 weight = 13
 template = "page.html"
 +++
@@ -8,7 +8,7 @@ template = "page.html"
 # Reference
 
 The [API documentation](../../api/api/) is generated from the platform's source
-and documents every public symbol of `Engine`, `Html`, `Worker` and `Wire`:
+and documents every public symbol of `Engine`, `Html`, `Worker`, `Wire`, `Port` and `PortJson`:
 the authoring API, and nothing else. Every `Engine` type is opaque; the engine's implementation
 and the interfaces its hosts and test harnesses use live in the platform's
 internal `Core` module, which apps cannot import. This page is the map of it. The spec language is in [Testing](@/docs/testing.md).
@@ -17,7 +17,7 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 
 | Area | Symbols |
 |---|---|
-| Programs | `program`, `program_boot`, `Program`, `Program.with_workers`, `registration`, `Registration`, `Boot`, `boot_storage` |
+| Programs | `program`, `program_boot`, `Program`, `Program.with_workers`, `registration`, `Registration`, `Program.with_ports`, `PortDecl`, `Boot`, `boot_storage` |
 | Contexts | `Root`, `In(outer, s)`, `Row(outer, item)`, `Comp(p, a)` |
 | Values | `Val`, `const`, `Val.map`, `Val.map2`, `Val.lift`, `Val.lift_row` |
 | State | `state`, `State`, `State.val`, `State.lift`, `State.lift_row` |
@@ -69,6 +69,27 @@ program's types decide what is sent.
 | Bulk bytes | `Bytes`, `Bytes.from_list`, `Bytes.to_list` |
 | Derivation | `Format`, `State`: the hooks the compiler's codec derivation calls; apps never use them |
 
+## Port
+
+`Port` reaches services the page's JavaScript supplies; see
+[Ports](@/docs/ports.md).
+
+| Area | Symbols |
+|---|---|
+| Declaring | `command`, `call`, `subscription`, `Delivery` (`Latest`, `Every(n)`), `Call.with_timeout_ms`, and each shape's `declaration` for `Program.with_ports` |
+| From an effect site | `Command.send`, `Call.request`, `Call.result`, `Subscription.subscribe`, `Subscription.message`, `Error` (`Refused`, `Timeout`, `Threw(message)`, `TooLarge`, `Closed`, `Undecodable(why)`) |
+| Layers | `fetch`, `Remote(output)` |
+
+## PortJson
+
+`PortJson` is the JSON format of port messages, derived from their types,
+with bytes and files carried beside the text.
+
+| Area | Symbols |
+|---|---|
+| Messages | `Sendable`, `encode`, `decode`, `describe`, `Message`, `Error` |
+| Derivation | `Format`, `Out`, `State`, `Entries`: the hooks the compiler's codec derivation calls; apps never use them |
+
 ## Event payloads
 
 | Event | Payload |
@@ -109,6 +130,10 @@ guarded while the control has focus. `checked` is a property set from
 | Bytes one page read takes | `maxReadBytes` (default 8 MiB) | `FileFailed(TooLarge)`, unread |
 | Bytes one digest reads | `maxFileBytes` (default 256 MiB) | `FileFailed(TooLarge)`, unread |
 | URLs one file gives | 16 ranges, revoked when the file is let go | `FileFailed(TooLarge)` |
+| Ports a program declares | 64, names 1 to 128 bytes | Contract error at mount |
+| A port's answer or message | `maxPayloadBytes` (default 4 MiB, at most 64 MiB) | `TooLarge` |
+| Undelivered messages per port subscription | 1 (`Latest`) or n ≤ 1024 (`Every(n)`) | `Latest` keeps the newest; `Every` refuses the JavaScript's `emit` |
+| Port call timeout | 600 s | Capped |
 | Payload nesting | 512 containers | The run is `Lost(Contract)`: an input fails to decode in the worker, an output is refused there before it is sent |
 
 ## Errors
@@ -121,7 +146,7 @@ construction site, for example `contract: duplicate key "r0" in each at site
 
 | Class | Cause |
 |---|---|
-| `contract` | A rule of the API was broken: a duplicate key, a `switch` value outside its cases, a row template that is not a single element, a cleanup asking for a result, an effect feedback loop, a worker program registered twice or asked for without being registered, malformed boot or result bytes |
+| `contract` | A rule of the API was broken: a duplicate key, a `switch` value outside its cases, a row template that is not a single element, a cleanup asking for a result, an effect feedback loop, a worker program registered twice or asked for without being registered, a port declared twice or used without being declared or as another shape, malformed boot or result bytes |
 | `resource_limit` | A bound in the table above |
 | `out_of_memory` | The Wasm heap could not grow |
 | `app_crash` | `crash` in app code, or a Roc runtime error |
@@ -135,6 +160,12 @@ A fault inside a worker program stops only that worker. Its run answers
 goes to the console and `onWorkerFault`, and the page keeps working.
 `WorkLost` also reports `unavailable` (the browser has no workers) and
 `executor` (the worker script itself failed).
+
+Nothing a port's JavaScript does stops the app. A call whose handler throws,
+rejects or answers something that is not JSON data answers `Threw`; a
+command handler's failure goes to the console and `onPortFault`. A page
+whose `ports` option does not match the app's declarations is refused before
+it mounts.
 
 ## Protocol
 

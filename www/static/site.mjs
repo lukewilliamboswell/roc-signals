@@ -36,6 +36,18 @@ function workerOptions(root) {
   return options;
 }
 
+// The handlers of an example's ports (design.md, "Request kinds"): the
+// default export of the module the mount element's `data-signals-ports`
+// names (set from the example's `ports` in www/data/examples.toml, a file
+// scripts/site.roc copies beside app.wasm). The handlers are the example's
+// own JavaScript; this file only loads them, the same way for every example.
+async function portsOption(root) {
+  const url = root.dataset.signalsPorts;
+  if (!url) return {};
+  const module = await import(new URL(url, document.baseURI).href);
+  return { ports: module.default };
+}
+
 // Resolves once the document is parsed, so every deferred and module script
 // of the page has run.
 const parsed = new Promise((resolve) => {
@@ -67,6 +79,7 @@ async function mountInto(root, wasmUrl, title, errorTarget = null) {
       fetch: createPublicExampleFetch(),
       onFault: (fault) => showError(errorTarget, new Error(`${fault.class}: ${fault.message}`)),
       ...workerOptions(root),
+      ...(await portsOption(root)),
     });
     await announce(root, runtime);
     return runtime;
