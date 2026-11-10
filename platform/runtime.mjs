@@ -52,7 +52,8 @@
 // second instance of the module instead, one at a time (a deadline then
 // only stops a job that has not started). Poisoning or unmounting this
 // runtime terminates every worker. In manual mode a job waits in `pending`
-// until runEffect(id) runs it.
+// until runEffect(id) runs it, loseEffect(id, class) answers it lost or
+// expireEffect(id) expires its deadline, which never fires on its own.
 //
 // Monitor: `runtime.monitor` (options.monitor) observes jobs, worker
 // instances and turns: a pull snapshot, push events and optional User
@@ -2052,7 +2053,9 @@ export class RocEngineRuntime {
       this.result(fx.id, bytes);
       if (settled) settled();
     };
-    if (fx.deadline > 0) {
+    // In manual mode a spec's time is manual too: a deadline never fires on
+    // its own, and expireEffect(id) expires it instead.
+    if (fx.deadline > 0 && !this.manual) {
       this.timers += 1;
       timer = setTimeout(() => {
         timer = null;
@@ -2066,11 +2069,19 @@ export class RocEngineRuntime {
         finish(concat([new Uint8Array([RES_WORK]), outcome.output]), "done", null, outcome.output);
         return;
       }
-      const klass = LOST_CLASSES[outcome.lost] ?? "executor";
-      console.error(`roc worker fault [${klass}] in program "${fx.program}": ${outcome.message}`);
-      if (this.onWorkerFault) this.onWorkerFault({ id: fx.id, program: fx.program, class: klass, message: outcome.message });
+      const klass = this.reportLost(fx, outcome.lost, outcome.message);
       finish(new Uint8Array([RES_WORK_LOST, outcome.lost]), outcome.lost === LOST_UNAVAILABLE ? "unavailable" : "lost", klass);
     }, fx.id, fx.program);
+  }
+
+  // Report a lost job and return its class name. The `roc worker fault
+  // [CLASS]` prefix is stable: the browser spec runner tells these reports
+  // from page errors by it.
+  reportLost(fx, code, message) {
+    const klass = LOST_CLASSES[code] ?? "executor";
+    console.error(`roc worker fault [${klass}] in program "${fx.program}": ${message}`);
+    if (this.onWorkerFault) this.onWorkerFault({ id: fx.id, program: fx.program, class: klass, message });
+    return klass;
   }
 
   workPool() {
@@ -2120,6 +2131,33 @@ export class RocEngineRuntime {
     else if (answer.network !== undefined) this.result(id, concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(answer.network)]));
     else if (answer.status !== undefined) this.result(id, httpResult(answer.status, answer.body ?? "", answer.headers ?? []));
     else this.result(id, new Uint8Array([RES_FIRED]));
+    return true;
+  }
+
+  // Manual mode: answer pending work job `id` as lost with fault class
+  // `klass` ("contract" ... "executor", the names of LOST_CLASSES) without
+  // running it, reported as a real loss is. Returns false when `id` is not a
+  // pending job or `klass` is not a class.
+  loseEffect(id, klass) {
+    const e = this.live.get(id);
+    const code = LOST_CLASSES.indexOf(klass);
+    if (this.poisoned || e === undefined || e.kind !== "work" || e.running || code < 1) return false;
+    this.live.delete(id);
+    const reported = this.reportLost(e.req, code, "lost by the spec");
+    this.monitor.jobAnswered(id, code === LOST_UNAVAILABLE ? "unavailable" : "lost", reported, null);
+    this.result(id, new Uint8Array([RES_WORK_LOST, code]));
+    return true;
+  }
+
+  // Manual mode: expire the deadline of pending work job `id`, which answers
+  // it `Timeout` as a real expiry does (a pending job has no worker to stop).
+  // Returns false when `id` is not a pending job or has no deadline.
+  expireEffect(id) {
+    const e = this.live.get(id);
+    if (this.poisoned || e === undefined || e.kind !== "work" || e.running || !(e.req.deadline > 0)) return false;
+    this.live.delete(id);
+    this.monitor.jobAnswered(id, "timeout", null, null);
+    this.result(id, new Uint8Array([RES_TIMEOUT]));
     return true;
   }
 

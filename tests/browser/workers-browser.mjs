@@ -9,7 +9,9 @@
 // gives the same results, a missing worker script is `WorkLost(Executor)`
 // and no Worker is `WorkLost(Unavailable)`, an unregistered program is a
 // contract fault that also stops the workers, and a protocol mismatch is
-// refused by the runtime and by the worker script. It prints one-run smoke
+// refused by the runtime and by the worker script. In manual mode a job's
+// deadline never fires on its own, and the spec hooks answer a pending job
+// Timeout or WorkLost. It prints one-run smoke
 // timings (`measure` lines); they are not asserted.
 import http from "node:http";
 import fs from "node:fs";
@@ -341,6 +343,46 @@ async function results(options) {
   check("the diagnostic names the program, the rule and the site", /^contract: worker program "test\.roc-signals\/missing" is not registered; add its registration to with_workers \(site \/[0-9/]+\)$/.test(r.message), true);
   console.log(`     ${r.message}`);
   check("poisoning the page terminated its workers", [r.after.workers, r.live], [0, 0]);
+  await ctx.close();
+}
+
+// Manual mode (spec replays): a job waits until the spec acts, and its
+// deadline never fires on its own. runEffect runs it to completion past its
+// deadline, expireEffect answers Timeout, loseEffect answers WorkLost with
+// the class it names, each reported with the stable `roc worker fault [`
+// prefix; none of them answers a job that is not pending or a request that
+// is not a job.
+{
+  const { page, ctx } = await open({ manualEffects: true });
+  const errors = [];
+  page.on("console", (m) => {
+    if (m.type() === "error") errors.push(m.text());
+  });
+  const r = await page.evaluate(async (rounds) => {
+    const rt = window.__rt;
+    window.__rounds(rounds);
+    window.__click("Slow");
+    await new Promise((res) => setTimeout(res, 300));
+    const waited = { log: window.__log(), pending: rt.pendingEffects().map((q) => [q.op, q.program, q.deadline]), timers: rt.timers };
+    const [slow] = rt.issued;
+    const t0 = performance.now();
+    await rt.runEffect(slow);
+    const ran = { elapsed: performance.now() - t0, log: window.__log(), timers: rt.timers };
+    window.__click("Slow");
+    window.__click("Upper");
+    window.__click("Crash");
+    const [, second, upper, crash] = rt.issued;
+    const refused = [rt.expireEffect(upper), rt.loseEffect(upper, "invented"), rt.expireEffect(slow), rt.loseEffect(slow, "app_crash")];
+    const answered = [rt.expireEffect(second), rt.loseEffect(crash, "out_of_memory"), rt.loseEffect(upper, "executor")];
+    return { waited, ran, refused, answered, entries: window.__entries(), faults: window.__faults.map((f) => [f.program, f.class]), pending: rt.pendingEffects().length };
+  }, long);
+  check("manual mode: a job with a deadline waits, with no timer armed", [r.waited.log, r.waited.pending, r.waited.timers], ["", [["work", "test.roc-signals/spin", 50]], 0]);
+  check("runEffect runs it to completion past its deadline", [r.ran.log.startsWith("slow:spun "), r.ran.elapsed > 50, r.ran.timers], [true, true, 0]);
+  check("expireEffect and loseEffect refuse a job without a deadline, an unknown class, and a job already answered", r.refused, [false, false, false, false]);
+  check("expireEffect answers Timeout, loseEffect the class it names", [r.answered, r.entries.slice(1)], [[true, true, true], ["slow:timeout", "crash:lost OutOfMemory", "upper:lost Executor"]]);
+  check("each lost job reaches onWorkerFault with its class", r.faults, [["test.roc-signals/crash", "out_of_memory"], ["test.roc-signals/upper", "executor"]]);
+  check("and the console with the stable prefix", errors.map((e) => e.slice(0, e.indexOf("]") + 1)), ["roc worker fault [out_of_memory]", "roc worker fault [executor]"]);
+  check("nothing is left pending", r.pending, 0);
   await ctx.close();
 }
 
