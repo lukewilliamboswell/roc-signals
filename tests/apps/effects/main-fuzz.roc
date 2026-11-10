@@ -46,6 +46,8 @@ start = |view| {
 ##   independent follow-up one chain deep, so the call completes and every
 ##   refusal reaches the log; a budget that counted every follow-up turn of
 ##   the call would poison the instance here.
+## - Every batch must leave the engine settled: a pass over every layer emits
+##   nothing (`Core.settled`).
 
 Kind : [G, H, Tick, Pop, Lh, Li, Rh, Rt, Ri, Rw, Ft]
 
@@ -404,8 +406,18 @@ apply! = |s, a, c| {
 		}
 		$op = $op + 1
 	}
+	settle!(a, d2)
 	{ s: { eng: a, dom: d2, steps: s.steps + 1 }, fx }
 }
+
+## The settle check: a pass over every layer of the engine (on a discarded
+## copy) must emit nothing, or the batch left a reader stale.
+settle! : Core.App, Dom.Model => {}
+settle! = |a, dom|
+	match Core.settled(a) {
+		Ok(_) => {}
+		Err({ cmds, note }) => crash "a reader was left stale: a settle pass over every layer emitted ${Dom.describe(Dom.apply_ops(dom, cmds).1)} ${note}"
+	}
 
 click! : S, Str => E
 click! = |s, name| {
@@ -514,6 +526,7 @@ run_program! = |prog| {
 	(d0, _, fx0) = Dom.apply_fx(Dom.new({}), c0)
 	var $s = { eng: a0, dom: d0, steps: 0 }
 	var $m = model_new(max)
+	settle!(a0, d0)
 	check!("mount", { s: $s, fx: fx0 }, $m)
 	var $i = 0.U64
 	while $i + 1 < prog.len() {

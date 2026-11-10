@@ -15,7 +15,8 @@ import StatusApp
 ## `main.roc`).
 ## - generated: walks of refreshes, interval ticks, visibility changes and
 ##   answers (healthy, degraded, garbled, failed, timed out, in any order),
-##   which must free everything they allocated.
+##   which must leave the engine settled at every step and free everything
+##   they allocated.
 ## - "soak-10k": 10k seeded steps, then "Refresh now" answered healthy 48
 ##   times on the engine alone with flat live bytes.
 
@@ -79,12 +80,16 @@ walk_step = |s, op, b|
 		}
 	}
 
+## The settle check after every step (`Soak.settled`).
+settled : St -> St
+settled = Soak.settled(Core.driver(StatusApp.program))
+
 walk : St, List(U8) -> St
 walk = |s0, bytes| {
 	var $s = s0
 	var $i = 0.U64
 	while $i + 1 < bytes.len() {
-		$s = walk_step($s, bytes.get($i) ?? 0, bytes.get($i + 1) ?? 0)
+		$s = settled(walk_step($s, bytes.get($i) ?? 0, bytes.get($i + 1) ?? 0))
 		match SpecRunner.check_counters($s) {
 			Ok(_) => {}
 			Err(m) => crash "status walk: work counters: ${m}"
@@ -104,7 +109,7 @@ walk_n = |s0, seed, n| {
 	var $i = 0.U64
 	while $i < n {
 		$x = prng($x)
-		$s = walk_step($s, $x.shr_zf_wrap(40).to_u8_wrap(), $x.shr_zf_wrap(24).to_u8_wrap())
+		$s = settled(walk_step($s, $x.shr_zf_wrap(40).to_u8_wrap(), $x.shr_zf_wrap(24).to_u8_wrap()))
 		$i = $i + 1
 	}
 	$s
@@ -144,9 +149,9 @@ soak_walk! = |program| {
 	Fuzz.keep
 }
 
-## Soak, mode 3: 10k seeded steps (leak-checked), then "Refresh now" with
-## every check answered, 48 times on the engine alone: live allocations flat
-## after 3 warm-up cycles.
+## Soak, mode 3: 10k seeded steps (settle-checked and leak-checked), then
+## "Refresh now" with every check answered, 48 times on the engine alone:
+## live allocations flat after 3 warm-up cycles.
 soak_10k! : {} => Fuzz.Outcome
 soak_10k! = |_| {
 	Fuzz.expect_no_leaks!(|| walk_n(start({}), 7, 10000))

@@ -15,14 +15,25 @@ S : { eng : Core.App, dom : Dom.Model, steps : U64 }
 start : Engine.Elem(Engine.Root) -> S
 start = |view| {
 	(a, c) = Core.take_cmds(Core.mount(view), [])
-	{ eng: a, dom: Dom.apply(Dom.new({}), c), steps: 0 }
+	dom = Dom.apply(Dom.new({}), c)
+	settled(a, dom, { eng: a, dom, steps: 0 })
 }
+
+## The settle check: a pass over every layer of the engine (on a discarded
+## copy) must emit nothing, or the last call left a reader stale.
+settled : Core.App, Dom.Model, a -> a
+settled = |eng, dom, value|
+	match Core.settled(eng) {
+		Ok(_) => value
+		Err({ cmds, note }) => crash "a reader was left stale: a settle pass over every layer emitted ${Dom.describe(Dom.apply_ops(dom, cmds).1)} ${note}"
+	}
 
 ## Native tests of focus references and focus/blur events (apps/controls):
 ## Focus/SelectText/Blur effects resolve their reference at the end of the
 ## turn into one FOCUS command naming the referenced element; a missing
 ## reference emits nothing and is counted stale; focus/blur handlers receive
-## the control's value as payload.
+## the control's value as payload. Every call must leave the engine settled:
+## a pass over every layer emits nothing (`Core.settled`).
 
 fire! : S, Scm.Loc, Str, Str => (S, List(Dom.FxCmd))
 fire! = |s, loc, ev, payload| {
@@ -30,7 +41,7 @@ fire! = |s, loc, ev, payload| {
 	(node, h) = Dom.target(s.dom, i, ev) ?? crash "no ${ev} handler on ${Scm.show_loc(loc)}"
 	(a, c) = Core.take_cmds(Core.event(s.eng, node, h, payload), [])
 	(d2, _, fx) = Dom.apply_fx(s.dom, c)
-	({ eng: a, dom: d2, steps: s.steps + 1 }, fx)
+	settled(a, d2, ({ eng: a, dom: d2, steps: s.steps + 1 }, fx))
 }
 
 node_of : S, Scm.Loc -> U32

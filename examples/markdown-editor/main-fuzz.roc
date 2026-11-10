@@ -19,21 +19,22 @@ cycle : List(Scm.Op)
 cycle = [Click(Role({ role: "button", name: "Load heading drill" })), Click(Role({ role: "button", name: "Load document without headings" }))]
 
 ## Soak, mode 2: an explorer-driven random walk (two bytes per event) from a
-## fresh mount, which must free everything it allocated.
+## fresh mount, settled after every event, which must free everything it
+## allocated.
 soak_walk! : List(U8) => Fuzz.Outcome
 soak_walk! = |program| {
-	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(MdApp.program), SpecRunner.mount(Core.driver(MdApp.program), "/", []), program, |s| s))
+	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(MdApp.program), SpecRunner.mount(Core.driver(MdApp.program), "/", []), program, Soak.settled(Core.driver(MdApp.program))))
 	Fuzz.keep
 }
 
 ## Soak, mode 3: 2,000 seeded random events per example (five examples,
 ## seeds 1-5: 10k events; the DOM oracle makes one 10k walk exceed the
-## per-input timeout here), leak-checked, then the round trip 48 times on
+## per-input timeout here), settle-checked and leak-checked, then the round trip 48 times on
 ## the engine alone: live allocations flat after 2 warm-up cycles.
 soak_10k! : U64 => Fuzz.Outcome
 soak_10k! = |seed| {
-	Fuzz.expect_no_leaks!(|| Soak.walk_n(Core.driver(MdApp.program), SpecRunner.mount(Core.driver(MdApp.program), "/", []), seed, 2000, |s| s))
-	(s1, evs) = Soak.triples(Core.driver(MdApp.program), SpecRunner.mount(Core.driver(MdApp.program), "/", []), cycle, |s| s)
+	Fuzz.expect_no_leaks!(|| Soak.walk_n(Core.driver(MdApp.program), SpecRunner.mount(Core.driver(MdApp.program), "/", []), seed, 2000, Soak.settled(Core.driver(MdApp.program))))
+	(s1, evs) = Soak.triples(Core.driver(MdApp.program), SpecRunner.mount(Core.driver(MdApp.program), "/", []), cycle, Soak.settled(Core.driver(MdApp.program)))
 	counts = Soak.replay!(Core.driver(MdApp.program), s1.inst, evs, 48, |a, b| (a, b), begin!, net_bytes!)
 	match Soak.flat(counts, 2) {
 		Ok(_) => {}

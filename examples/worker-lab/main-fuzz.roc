@@ -15,7 +15,8 @@ import LabApp
 ## lose the job with a fault class, time it out, or leave it pending, so every
 ## prime and tile program runs inside the leak check.
 ## - generated: explorer-driven walks of starts, cancels, resets, parameter
-##   edits (restarts) and answers, which must free everything they allocated.
+##   edits (restarts) and answers, settled after every step, which must free
+##   everything they allocated.
 ## - "soak-10k": 10k seeded steps, then a run started, every job answered and
 ##   the run reset, 48 times on the engine alone: live bytes flat.
 ##
@@ -78,6 +79,10 @@ steer = |s0| {
 start : {} -> St
 start = |_| SpecRunner.mount(program, "/", [])
 
+## A walk's `after` hook: steer, then the settle check (`Soak.settled`).
+steered : St -> St
+steered = |s| Soak.settled(program)(steer(s))
+
 ## A round trip back to the initial state: a run of the initial parameters
 ## started, its jobs answered, and the run reset.
 cycle : List(Scm.Op)
@@ -115,23 +120,23 @@ answer_jobs = |subs, answers, a0, b0| {
 ## mount, which must free everything it allocated.
 soak_walk! : List(U8) => Fuzz.Outcome
 soak_walk! = |bytes| {
-	Fuzz.expect_no_leaks!(|| Soak.walk(program, start({}), bytes, steer))
+	Fuzz.expect_no_leaks!(|| Soak.walk(program, start({}), bytes, steered))
 	Fuzz.keep
 }
 
-## Soak, mode 3: 10k seeded steps (leak-checked), then the round trip 48
+## Soak, mode 3: 10k seeded steps (settle-checked and leak-checked), then the round trip 48
 ## times on the engine alone: live allocations flat after 3 warm-up cycles.
 soak_10k! : {} => Fuzz.Outcome
 soak_10k! = |_| {
-	Fuzz.expect_no_leaks!(|| Soak.walk_n(program, start({}), 7, 10000, steer))
+	Fuzz.expect_no_leaks!(|| Soak.walk_n(program, start({}), 7, 10000, steered))
 	# What the same walk reached, outside the leak check.
-	walked = Soak.walk_n(program, start({}), 7, 10000, steer)
+	walked = Soak.walk_n(program, start({}), 7, 10000, steered)
 	shown = |id| SpecRunner.find(walked.dom, TestId(id)).map_ok(|i| Dom.text_of(walked.dom, i)) ?? "?"
 	Fuzz.mark!("soak walk: ${walked.browser.issued.len().to_str()} effects issued; last run ${shown("progress")}; refused and retried ${shown("refused")}")
 	s0 = start({})
 	subs = Core.fx_live(s0.inst)
 	answers = answers_for({})
-	(s1, evs) = Soak.triples(program, s0, cycle, |s| s)
+	(s1, evs) = Soak.triples(program, s0, cycle, Soak.settled(program))
 	counts = Soak.replay!(program, s1.inst, evs, 48, |a, b| answer_jobs(subs, answers, a, b), begin!, net_bytes!)
 	match Soak.flat(counts, 3) {
 		Ok(_) => {}

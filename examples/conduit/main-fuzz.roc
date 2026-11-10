@@ -50,6 +50,10 @@ answer = |s0| {
 	$s
 }
 
+## A walk's `after` hook: answer what is pending, then the settle check.
+answered : SpecRunner.S(Core.App) -> SpecRunner.S(Core.App)
+answered = |s| Soak.settled(Core.driver(ConduitApp.program))(answer(s))
+
 home : Str
 home = "/roc-signals/examples/conduit/#/"
 
@@ -59,18 +63,18 @@ cycle = [Click(Role({ role: "link", name: "Sign in" })), Click(Role({ role: "lin
 ## Soak, mode 2: explorer-driven walk with every request answered; leak-free.
 soak_walk! : List(U8) => Fuzz.Outcome
 soak_walk! = |program| {
-	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(ConduitApp.program), answer(SpecRunner.mount(Core.driver(ConduitApp.program), home, [])), program, answer))
+	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(ConduitApp.program), answer(SpecRunner.mount(Core.driver(ConduitApp.program), home, [])), program, answered))
 	Fuzz.keep
 }
 
 ## Soak, mode 3: 2,000 seeded events per example (five examples, seeds 1-5:
 ## 10k events; one 10k walk exceeds the per-input timeout through the DOM
-## oracle), leak-checked, then Home -> Sign in -> Home 48 times on the
+## oracle), settle-checked and leak-checked, then Home -> Sign in -> Home 48 times on the
 ## engine alone: live allocations flat.
 soak_10k! : U64 => Fuzz.Outcome
 soak_10k! = |seed| {
-	Fuzz.expect_no_leaks!(|| Soak.walk_n(Core.driver(ConduitApp.program), answer(SpecRunner.mount(Core.driver(ConduitApp.program), home, [])), seed, 2000, answer))
-	(s1, evs) = Soak.triples(Core.driver(ConduitApp.program), answer(SpecRunner.mount(Core.driver(ConduitApp.program), home, [])), cycle, answer)
+	Fuzz.expect_no_leaks!(|| Soak.walk_n(Core.driver(ConduitApp.program), answer(SpecRunner.mount(Core.driver(ConduitApp.program), home, [])), seed, 2000, answered))
+	(s1, evs) = Soak.triples(Core.driver(ConduitApp.program), answer(SpecRunner.mount(Core.driver(ConduitApp.program), home, [])), cycle, answered)
 	counts = Soak.replay!(Core.driver(ConduitApp.program), s1.inst, evs, 48, answer_app, begin!, net_bytes!)
 	match Soak.flat(counts, 2) {
 		Ok(_) => {}

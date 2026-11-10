@@ -40,6 +40,10 @@ answer = |s0| {
 	$s
 }
 
+## A walk's `after` hook: answer what is pending, then the settle check.
+answered : St -> St
+answered = |s| Soak.settled(Core.driver(NotesApp.program))(answer(s))
+
 ## A round trip back to the initial state (soak cycle).
 cycle : List(Scm.Op)
 cycle = [
@@ -52,19 +56,20 @@ cycle = [
 ]
 
 ## Soak, mode 2: an explorer-driven random walk (two bytes per event) from a
-## fresh mount, which must free everything it allocated.
+## fresh mount, settled after every event, which must free everything it
+## allocated.
 soak_walk! : List(U8) => Fuzz.Outcome
 soak_walk! = |program| {
-	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(NotesApp.program), answer(start({})), program, answer))
+	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(NotesApp.program), answer(start({})), program, answered))
 	Fuzz.keep
 }
 
-## Soak, mode 3: 10k seeded random events (leak-checked), then the round trip
+## Soak, mode 3: 10k seeded random events (settle-checked and leak-checked), then the round trip
 ## 48 times on the engine alone: live allocations flat after 2 warm-up cycles.
 soak_10k! : {} => Fuzz.Outcome
 soak_10k! = |_| {
-	Fuzz.expect_no_leaks!(|| Soak.walk_n(Core.driver(NotesApp.program), answer(start({})), 7, 10000, answer))
-	(s1, evs) = Soak.triples(Core.driver(NotesApp.program), answer(start({})), cycle, |s| s)
+	Fuzz.expect_no_leaks!(|| Soak.walk_n(Core.driver(NotesApp.program), answer(start({})), 7, 10000, answered))
+	(s1, evs) = Soak.triples(Core.driver(NotesApp.program), answer(start({})), cycle, Soak.settled(Core.driver(NotesApp.program)))
 	counts = Soak.replay!(Core.driver(NotesApp.program), s1.inst, evs, 48, |a, b| (a, b), begin!, net_bytes!)
 	match Soak.flat(counts, 2) {
 		Ok(_) => {}

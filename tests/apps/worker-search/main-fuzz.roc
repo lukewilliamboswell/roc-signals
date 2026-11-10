@@ -12,8 +12,8 @@ import SearchApp
 ## process, lost with a fault class, timed out, or left pending), so every
 ## program runs inside the leak check, and a program that crashes on an
 ## input the UI produced is a finding.
-## - generated: explorer-driven walks, which must free everything they
-##   allocated.
+## - generated: explorer-driven walks, settled after every step (a job's
+##   answer included), which must free everything they allocated.
 ## - "soak-10k": 10k seeded steps, then a search, a cleared query and the
 ##   report opened and closed, 48 times on the engine alone with every job
 ##   answered: live bytes flat.
@@ -47,16 +47,16 @@ start = |_| SpecRunner.mount(Core.driver(SearchApp.program), "/", [])
 ## fresh mount, which must free everything it allocated.
 soak_walk! : List(U8) => Fuzz.Outcome
 soak_walk! = |program| {
-	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(SearchApp.program), start({}), program, |s| s))
+	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(SearchApp.program), start({}), program, Soak.settled(Core.driver(SearchApp.program))))
 	Fuzz.keep
 }
 
-## Soak, mode 3: 10k seeded random events (leak-checked), then the round trip
+## Soak, mode 3: 10k seeded random events (settle-checked and leak-checked), then the round trip
 ## 48 times on the engine alone: live allocations flat after 2 warm-up cycles.
 soak_10k! : {} => Fuzz.Outcome
 soak_10k! = |_| {
-	Fuzz.expect_no_leaks!(|| Soak.walk_n(Core.driver(SearchApp.program), start({}), 7, 10000, |s| s))
-	(s1, evs) = Soak.triples(Core.driver(SearchApp.program), start({}), cycle, |s| s)
+	Fuzz.expect_no_leaks!(|| Soak.walk_n(Core.driver(SearchApp.program), start({}), 7, 10000, Soak.settled(Core.driver(SearchApp.program))))
+	(s1, evs) = Soak.triples(Core.driver(SearchApp.program), start({}), cycle, Soak.settled(Core.driver(SearchApp.program)))
 	counts = Soak.replay!(Core.driver(SearchApp.program), s1.inst, evs, 48, answer_all, begin!, net_bytes!)
 	match Soak.flat(counts, 2) {
 		Ok(_) => {}

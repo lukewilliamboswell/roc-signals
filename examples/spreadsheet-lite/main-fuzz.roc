@@ -32,19 +32,20 @@ cycle = [
 ]
 
 ## Soak, mode 2: an explorer-driven random walk (two bytes per event) from a
-## fresh mount, which must free everything it allocated.
+## fresh mount, settled after every event, which must free everything it
+## allocated.
 soak_walk! : List(U8) => Fuzz.Outcome
 soak_walk! = |program| {
-	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(SheetApp.program), SpecRunner.mount(Core.driver(SheetApp.program), "/", []), program, |s| s))
+	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(SheetApp.program), SpecRunner.mount(Core.driver(SheetApp.program), "/", []), program, Soak.settled(Core.driver(SheetApp.program))))
 	Fuzz.keep
 }
 
-## Soak, mode 3: 10k seeded random events (leak-checked), then the round trip
+## Soak, mode 3: 10k seeded random events (settle-checked and leak-checked), then the round trip
 ## 48 times on the engine alone: live allocations flat after 2 warm-up cycles.
 soak_10k! : {} => Fuzz.Outcome
 soak_10k! = |_| {
-	Fuzz.expect_no_leaks!(|| Soak.walk_n(Core.driver(SheetApp.program), SpecRunner.mount(Core.driver(SheetApp.program), "/", []), 7, 10000, |s| s))
-	(s1, evs) = Soak.triples(Core.driver(SheetApp.program), SpecRunner.mount(Core.driver(SheetApp.program), "/", []), cycle, |s| s)
+	Fuzz.expect_no_leaks!(|| Soak.walk_n(Core.driver(SheetApp.program), SpecRunner.mount(Core.driver(SheetApp.program), "/", []), 7, 10000, Soak.settled(Core.driver(SheetApp.program))))
+	(s1, evs) = Soak.triples(Core.driver(SheetApp.program), SpecRunner.mount(Core.driver(SheetApp.program), "/", []), cycle, Soak.settled(Core.driver(SheetApp.program)))
 	counts = Soak.replay!(Core.driver(SheetApp.program), s1.inst, evs, 48, |a, b| (a, b), begin!, net_bytes!)
 	match Soak.flat(counts, 2) {
 		Ok(_) => {}
