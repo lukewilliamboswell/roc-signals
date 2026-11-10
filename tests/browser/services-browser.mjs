@@ -199,7 +199,7 @@ async function open(prelude = "") {
     const viaMetric = rt.x.metric(16 + 12);
     return [after.length, String(after[12] - before[12]), String(viaMetric) === String(after[12]), String(after[1])];
   });
-  check("work record: one SETTEXT for one click; metric(16 + k) reads counter k", work, [32, "1", true, "3"]);
+  check("work record: 40 counters (work, then the effect counters); one SETTEXT for one click; metric(16 + k) reads counter k", work, [40, "1", true, "3"]);
   await ctx.close();
 }
 

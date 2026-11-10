@@ -459,6 +459,12 @@ check! = |what, e, m| {
 	if (w.get(13) ?? 0) != m.issued or (w.get(14) ?? 0) != m.cancelled {
 		crash "${what}: FX/CANCEL work counters ${(w.get(13) ?? 0).to_str()}/${(w.get(14) ?? 0).to_str()}, model issued/cancelled ${m.issued.to_str()}/${m.cancelled.to_str()}"
 	}
+	# The work record carries the effect counters too (design.md, Appendix B,
+	# indices 32-39), so both spec runners can read them.
+	recorded = [m.issued, m.delivered, m.stale, m.refused, m.cancelled, m.reparented, m.skipped, m.live.len()]
+	if w.drop_first(32) != recorded {
+		crash "${what}: work-record effect counters ${Str.inspect(w.drop_first(32))} (issued delivered stale refused cancelled reparented skipped live), model ${Str.inspect(recorded)}"
+	}
 	if Core.fx_live(e.s.eng) != m.live.map(|l| l.id) {
 		crash "${what}: live ids ${Str.inspect(Core.fx_live(e.s.eng))}, model ${Str.inspect(m.live.map(|l| l.id))}"
 	}

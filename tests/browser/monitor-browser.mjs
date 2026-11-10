@@ -174,19 +174,20 @@ function ordered(events) {
   const inst = r.s.instances.live[0];
   check("instance facts", [inst.thread, inst.state, inst.jobs, inst.memBytes > 0, inst.liveAllocs > 0, inst.instantiateMs >= 0, inst.scriptAt > 0], ["worker", "idle", 2, true, true, true, true]);
   check("histograms counted both", [r.s.hist.total.n, r.s.hist.compute.n, r.s.hist.cold.n, r.s.programs["test.roc-signals/upper"].done], [2, 2, 1, 2]);
-  check("mode, generation, engine counters absent from a 32-counter record", [r.s.mode, r.s.generation, r.s.state, r.s.engine, r.s.page.turns > 0], ["workers", 1, "mounted", null, true]);
+  check("mode, generation, and the engine's effect counters from the work record", [r.s.mode, r.s.generation, r.s.state, r.s.engine, r.s.page.turns > 0], ["workers", 1, "mounted", { issued: 2, delivered: 2, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, live: 0 }, true]);
   check("no late replies", r.s.jobs.lateReplies, 0);
   check("no User Timing entries by default", await page.evaluate(() => window.__measures.length), 0);
   check("no bytes anywhere by default", await page.evaluate(() => window.__hasBytes(window.__events) || window.__hasBytes(window.__rt.monitor.snapshot())), false);
 
-  // The engine counters, from a record that carries them (synthesised: the
-  // engine appends indices 32-39 when it does).
+  // The engine counters are read from indices 32-39, whatever they hold
+  // (synthesised values, so each index is told apart).
   const e = await page.evaluate(() => {
     const real = window.__rt.workRecord.bind(window.__rt);
     window.__rt.workRecord = () => {
       const r = real();
       const counters = [...r.counters];
       while (counters.length < 32) counters.push(0n);
+      counters.length = 32;
       for (let i = 0; i < 8; i += 1) counters.push(BigInt(100 + i));
       return { counters, cleanups: r.cleanups };
     };

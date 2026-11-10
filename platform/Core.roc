@@ -908,7 +908,7 @@ Core := [].{
 			$out = $out.append(work_get(a.tx.work, $i))
 			$i = $i + 1
 		}
-		$out
+		$out.concat(fx_counters(a))
 	}
 
 	## The wire protocol version this engine speaks (design.md, Appendix B). The
@@ -1170,6 +1170,22 @@ w_cleanups = 31
 ## The number of work counters (index 0 is unused).
 w_count : U64
 w_count = 32
+
+## The effect counters follow the work counters in the work record, at
+## indices 32-39 (design.md, Appendix B): issued, delivered, stale, refused,
+## cancelled, reparented, skipped, and the live ids (a gauge, not a count).
+## They are read from the effect table when the record is written, so the
+## accumulator keeps no second copy.
+fx_counters : App -> List(U64)
+fx_counters = |a| {
+	fx = a.tx.fx
+	[fx.issued, fx.delivered, fx.stale, fx.refused, fx.cancelled, fx.reparented, fx.skipped, fx.live.len()]
+}
+
+## The number of counters in the work record: the work counters, then the
+## eight effect counters.
+w_record_count : U64
+w_record_count = w_count + 8
 
 ## The work counters as plain fields (`c01` is counter 1): bumping one
 ## updates a value in the accumulator and never allocates, so counting
@@ -4169,17 +4185,21 @@ finish = |inst, buf, wbuf| {
 }
 
 ## The work record (design.md, Appendix B): `count:u32 (counter:u64)*`
-## in `w_` index order, then `n:u32 (name:str runs:u64)*` for the
-## cleanups that have run. Written into `buf`, which is cleared first.
+## in `w_` index order followed by the effect counters (`fx_counters`),
+## then `n:u32 (name:str runs:u64)*` for the cleanups that have run.
+## Written into `buf`, which is cleared first.
 work_bytes : App, List(U8) -> List(U8)
 work_bytes = |inst, buf| {
 	counters = inst.tx.work
-	var $b = put_u32(buf.clear(), w_count.to_u32_wrap())
+	var $b = put_u32(buf.clear(), w_record_count.to_u32_wrap())
 	var $i = 0.U64
 	while $i < w_count {
 		$b = put_u64($b, work_get(counters, $i))
 		$i = $i + 1
 	}
+	fx = inst.tx.fx
+	$b = put_u64(put_u64(put_u64(put_u64($b, fx.issued), fx.delivered), fx.stale), fx.refused)
+	$b = put_u64(put_u64(put_u64(put_u64($b, fx.cancelled), fx.reparented), fx.skipped), fx.live.len())
 	runs = inst.tx.fx.cleanups
 	$b = put_u32($b, runs.len().to_u32_wrap())
 	for (name, k) in runs {

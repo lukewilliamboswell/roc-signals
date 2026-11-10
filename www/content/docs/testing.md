@@ -230,6 +230,13 @@ does not fail your spec.
 | `scopes_created` / `scopes_disposed` | `when` and `switch` branches, components and `each` rows mounted / disposed |
 | `dirty_source_roots` | State layers written |
 | `each_key_hashes` / `each_key_compares` | Keys hashed and full-key comparisons in keyed reconciliation |
+| `effects_issued` | Awaited requests issued (HTTP, timers, storage reads, subscriptions, worker jobs); a refused request is not issued |
+| `effects_delivered` | Results delivered to a reaction, a `Refused` answer included |
+| `effects_stale` | Results dropped because their request was no longer in flight |
+| `effects_refused` | Requests refused because the in-flight table was full |
+| `effects_cancelled` | Requests stopped because their site was disposed or superseded |
+| `effects_reparented` | Admitted requests handed to a surviving ancestor when their site was disposed |
+| `effects_skipped` | Writes a reparented result made to state that no longer exists |
 
 Any other metric name is a parse error. Two more steps measure work on one
 element or service:
@@ -242,8 +249,9 @@ element or service:
   that a disposed scope released its subscriptions and ran its cleanups.
 
 Natively, every work step also checks that the engine's per-command
-counters agree with the commands the oracle decoded, so the counters cannot
-drift from what was emitted.
+counters agree with the commands the oracle decoded, and that every issued
+request was one `FX` command and every cancelled one a `CANCEL`, so the
+counters cannot drift from what was emitted.
 
 ## Running specs
 

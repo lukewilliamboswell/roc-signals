@@ -820,8 +820,11 @@ according to whether it has an external effect worth preserving.
 
 The engine counts `issued`, `delivered`, `stale`, `refused`, `cancelled`
 (stopped by disposal or supersession), `reparented` and `skipped`, and exposes
-the live ids. Specs and fuzz models
-assert them exactly.
+the live ids. They are part of the work record (Appendix B, indices 32–39),
+so both spec runners read them: specs assert the cumulative ones as the
+`effects_*` metrics; the live gauge is not a metric, and specs assert what is
+outstanding with `expect-pending-effects` and `expect-interval` instead. The
+effect-channel fuzz model asserts all of them exactly after every step.
 
 ### Observation
 
@@ -1107,12 +1110,14 @@ exercises the same protocol the browser runtime consumes.
 
 Work assertions read the engine's own counters. The engine keeps them as
 plain fields of one record in its transaction accumulator — commands emitted
-by opcode, and the named counters below — so counting never allocates, and
+by opcode, and the named counters below — and the effect counters in its
+effect table, so counting never allocates, and
 returns them with every host call as the work record (Appendix B). Both runners read that record: natively through
 the program's call results, in Chrome through the `metric` export and
 `workRecord()`. The native runner also checks, at every work step, that the
-per-opcode counters agree with the commands the `Dom.roc` oracle decoded, and
-the soak walks and the effect-channel fuzz target check it after every batch.
+per-opcode counters agree with the commands the `Dom.roc` oracle decoded
+(and the issued and cancelled effect counters with its `FX` and `CANCEL`
+commands), and the soak walks and the effect-channel fuzz target check it after every batch.
 A metric name not in this table is a parse error; metrics of the deleted Zig
 engine (`active_graph_records_rebuilt`, closure retain/release counts, host
 retained bytes) have no meaning here, and their property is asserted through
@@ -1133,6 +1138,7 @@ soak plateaus instead.
 | `scopes_created` / `scopes_disposed` | Scopes mounted / disposed: `when` and `switch` branches, components and `each` rows |
 | `dirty_source_roots` | State and asynchronous layers written: per turn, the layers a row or component settled locally plus the layers in the root's Changed mask (a `resource` answer that folds to an equal value writes none) |
 | `each_key_hashes` / `each_key_compares` | Keys hashed and full-key comparisons made by keyed reconciliation (lookups and inserts; a key hashed for a lookup is not hashed again to insert it, and a removal uses the stored hash) |
+| `effects_issued`, `effects_delivered`, `effects_stale`, `effects_refused`, `effects_cancelled`, `effects_reparented`, `effects_skipped` | The engine's effect counters (The Effect Channel, "Counters"): awaited requests issued (one `FX` each), results delivered to a reaction, stale results dropped, requests refused at the in-flight cap, requests cancelled (one `CANCEL` each), requests reparented to a surviving ancestor, and reparented writes skipped because their state was retired |
 | `expect-updates loc n` | The located element's creation plus every later `ATTR`, `HATTR`, `SETTEXT` or `TEXT` that wrote it or a text node directly inside it; natively from the oracle, in Chrome from a MutationObserver |
 | `expect-interval ms n` | Live `INTERVAL` subscriptions with period `ms` |
 | `tick-interval ms` | Deliver `Fired` to every live interval with period `ms`; a step with none live fails. `tick-interval-if-active` is a no-op when none is live |
@@ -1485,6 +1491,8 @@ that has run, in first-run order, with its run count.
 | 28, 29 | Key hashes, full-key comparisons in reconciliation |
 | 30 | Turns |
 | 31 | Cleanup runs, all names |
+| 32–38 | Effect counters (The Effect Channel, "Counters"): requests issued, results delivered, stale results, requests refused at the in-flight cap, requests cancelled, requests reparented, writes skipped |
+| 39 | Live awaited ids now (a gauge, not cumulative) |
 
 Index 0 is unused. The metric names the spec language accepts map onto these
 indices (`platform/Scm.roc`, `metric_names`).

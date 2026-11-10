@@ -686,8 +686,9 @@ SpecRunner := [].{
 		Ok(now - then)
 	}
 
-	## The engine's per-opcode work counters agree with the commands the
-	## oracle decoded from every batch so far.
+	## The engine's per-opcode work counters, and its issued and cancelled
+	## effect counters, agree with the commands the oracle decoded from every
+	## batch so far.
 	check_counters : S(state) -> Try({}, Str)
 	check_counters = |s| {
 		var $op = 1.U64
@@ -698,6 +699,16 @@ SpecRunner := [].{
 				return Err("the engine counted ${engine.to_str()} ${Dom.op_name($op.to_u8_wrap())} commands but emitted ${oracle.to_str()}")
 			}
 			$op = $op + 1
+		}
+		# Every issued request is one FX command and every cancelled one a
+		# CANCEL (design.md, "Counters"), so the effect counters must agree
+		# with the commands too.
+		for (counter, op, what) in [(32.U64, 13.U64, "issued"), (36, 14, "cancelled")] {
+			engine = s.work.counters.get(counter) ?? 0
+			oracle = s.ops.get(op) ?? 0
+			if engine != oracle {
+				return Err("the engine counted ${engine.to_str()} effects ${what} but emitted ${oracle.to_str()} ${Dom.op_name(op.to_u8_wrap())} commands")
+			}
 		}
 		Ok({})
 	}

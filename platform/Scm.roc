@@ -752,7 +752,9 @@ Scm := [].{
 	## The work metrics a spec may name (design.md, "Work assertions"), and
 	## the engine work counters each one sums. Counter `k` is the `k`th entry
 	## of the engine's work record (design.md, Appendix B): 1-18 count
-	## commands by opcode, 19 onwards count engine work.
+	## commands by opcode, 19-31 count engine work, and 32-38 are the effect
+	## counters. Counter 39, the live ids, is a gauge rather than a count and
+	## has no metric name.
 	metric_names : List({ name : Str, counters : List(U64) })
 	metric_names = [
 		{ name: "rows_created", counters: [1] },
@@ -772,6 +774,13 @@ Scm := [].{
 		{ name: "dirty_source_roots", counters: [27] },
 		{ name: "each_key_hashes", counters: [28] },
 		{ name: "each_key_compares", counters: [29] },
+		{ name: "effects_issued", counters: [32] },
+		{ name: "effects_delivered", counters: [33] },
+		{ name: "effects_stale", counters: [34] },
+		{ name: "effects_refused", counters: [35] },
+		{ name: "effects_cancelled", counters: [36] },
+		{ name: "effects_reparented", counters: [37] },
+		{ name: "effects_skipped", counters: [38] },
 	]
 
 	## The counters a metric name sums.
@@ -1146,7 +1155,7 @@ expect {
 		\\${problem_of("(test \"t\" (steps (expect-metric-delta-at-most active_graph_records_rebuilt 0)))")}
 		\\${JsonOut.render(Scm.to_json("m", spec))}
 	expected =
-		\\x.scm:1:47: unknown metric active_graph_records_rebuilt; the metrics are rows_created, rows_removed, rows_reused, rows_moved, create_element, set_text, set_value, set_checked, bind_event, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares
+		\\x.scm:1:47: unknown metric active_graph_records_rebuilt; the metrics are rows_created, rows_removed, rows_reused, rows_moved, create_element, set_text, set_value, set_checked, bind_event, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares, effects_issued, effects_delivered, effects_stale, effects_refused, effects_cancelled, effects_reparented, effects_skipped
 		\\{"id":"m","name":"m","setup":[],"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
 	actual == expected
 }
