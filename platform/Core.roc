@@ -267,7 +267,7 @@ Core := [].{
 	Attr(ctx) :: [Static(Str, Str), Dyn(Str, Val(ctx, Str)), On(Str, Handler(ctx)), Ref(Str)]
 
 	## A piece of UI in context `ctx`: an element, a text node or a dynamic site
-	## (`state`, `derive`, `when`, `switch`, `each`, `component` or an effect site).
+	## (`state`, `derive`, `resource`, `when`, `switch`, `each`, `component` or an effect site).
 	## An `Elem` is a description; the engine mounts it once and afterwards updates
 	## only what reads a changed layer.
 	Elem(ctx) :: [
@@ -615,6 +615,62 @@ Core := [].{
 	on_change : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
 	on_change = |v, plan, react| effect(v, False, plan, react)
+
+	## `latest(v, plan, react)` issues like `watch`, under one more rule: the site
+	## owns only the requests of its current value. Before it issues for a new
+	## value it cancels every awaited request it still holds from earlier values
+	## (`CANCEL`, counted `cancelled`), whatever its kind, and drops their queued
+	## follow-ups and refusals (counted `stale`), so a late answer for an earlier
+	## value never reaches `react`. A `plan` that returns `[]` makes a change a
+	## pure cancel. Disposal follows `watch`'s rules.
+	latest : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
+		where [a.is_eq : a, a -> Bool]
+	latest = |v, plan, react| Site(
+		Mount(
+			|env, args, tx| {
+				a = (v.read)(env)
+				cfg = { v, plan, react, path: args.path }
+				(t1, owned) = issue(count_evals(tx, 1), args.path, plan(a), a, [])
+				(latest_inst(cfg, a, owned), eff_mask(v), t1)
+			},
+		),
+		|_| eff_mask(v),
+	)
+
+	## `resource(input, cfg, body)` is an asynchronous `derive`: a layer whose
+	## value follows the answers to the requests issued for `input`. At mount the
+	## layer starts at `cfg.begin(cfg.init, a)` and `cfg.plan(a)` is issued; when
+	## `input` changes to an unequal value the site supersedes its requests as
+	## `latest` does, sets the layer to `cfg.begin(s, a)` in the same pass (before
+	## anything below reads it) and issues again. Each result for a request the
+	## site owns sets the layer to `cfg.fold(s, a, res)`, where `a` is the value
+	## the request was issued for. Readers inside `body` do no work while the
+	## layer is equal to its previous value. Disposal follows `watch`'s rules; a
+	## reparented answer's write to the retired layer is skipped and counted.
+	resource : Val(ctx, a), { init : s, begin : (s, a -> s), plan : (a -> List(Req)), fold : (s, a, Res -> s) }, (Val(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
+		where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
+	resource = |input, cfg, body| Site(
+		Mount(
+			|env, args, tx| {
+				depth = layer(args.depth, args.path)
+				a = (input.read)(env)
+				s = (cfg.begin)(cfg.init, a)
+				(t1, owned) = issue(count_evals(tx, 1), args.path, (cfg.plan)(a), a, [])
+				elem = body({ mask: bit(depth), read: |e| e.value, sel: NoSel })
+				(block, t2) = mount_block(In.{ outer: env, value: s }, elem, depth, args.path, args.parent, args.before, { cap: args.cap, local: args.local }, t1)
+				# The site listens to its own layer too: outside a row or a
+				# component an answer reports the layer upward, and the root's
+				# Changed pass must find its way back here.
+				reads = block.reads.bitwise_and(bit(depth) - 1).bitwise_or(eff_mask(input)).bitwise_or(bit(depth))
+				rc = { input, begin: cfg.begin, plan: cfg.plan, fold: cfg.fold, path: args.path, depth, local: args.local }
+				(resource_inst(rc, a, s, owned, block), reads, t2)
+			},
+		),
+		|d| {
+			d1 = layer_reads(d)
+			eff_mask(input).bitwise_or(bit(d1)).bitwise_or(elem_reads(body({ mask: bit(d1), read: |e| e.value, sel: NoSel }), d1).bitwise_and(bit(d1) - 1))
+		},
+	)
 
 	## For test platforms and harnesses: the instance's effect counters (issued,
 	## delivered, stale, refused, cancelled, reparented, skipped) and the number
@@ -3740,6 +3796,214 @@ effect_deliver = |cfg, last, owned, env, id, res, tx| {
 			(next, Pending((react.run)(env, entry.a, res), react.mask), fx_count(tx, Delivered))
 		}
 		Err(_) => (effect_inst(cfg, last, owned), Pending(env, 0), fx_count(tx, Stale))
+	}
+}
+
+# Supersession (design.md, "Supersession and asynchronous layers").
+#
+# A `latest` or `resource` site owns only the requests of its current
+# value. Before it issues for a new value it gives up everything it still
+# owns: an awaited request still in flight, of any kind, is stopped
+# (CANCEL id), leaves the in-flight table and counts `cancelled`, so its
+# late result is stale like any other; a follow-up still queued for it (a
+# `Self` or a refusal) is dropped and counts `stale`. Owned entries already
+# answered are not in either table and cost nothing. The work is
+# O(owned x in-flight), bounded by the in-flight cap.
+
+## Give up every request a superseding site owns (the list is then empty).
+fx_supersede : Tx, List(Owned(a)) -> Tx
+fx_supersede = |tx, owned| {
+	var $tx = tx
+	for o in owned {
+		id = o.id
+		if $tx.fx.live.any(|l| l.id == id) {
+			t1 = with_fx($tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id), cancelled: fx.cancelled + 1 })
+			$tx = emit_op(t1, 14, |c| put_u32(c, id))
+		} else if $tx.fx.queue.any(|q| q.id == id) {
+			$tx = with_fx($tx, |fx| { ..fx, queue: fx.queue.keep_if(|q| q.id != id), stale: fx.stale + 1 })
+		}
+	}
+	$tx
+}
+
+## A `latest` site: an effect site that supersedes its requests whenever
+## its watched value changes. Results and disposal are an effect site's.
+latest_inst : EffectCfg(ctx, a), a, List(Owned(a)) -> Inst(ctx)
+	where [a.is_eq : a, a -> Bool]
+latest_inst = |cfg0, last0, owned0| {
+	held = Held({ cfg: cfg0, last: last0, owned: owned0 })
+	Inst(
+		|env, msg, tx| {
+			Held({ cfg, last, owned }) = held
+			match msg {
+				Changed(mask) => {
+					if eff_mask(cfg.v).bitwise_and(mask) == 0 {
+						(latest_inst(cfg, last, owned), Done, tx)
+					} else {
+						a = (cfg.v.read)(env)
+						t1 = count_evals(tx, 1)
+						if a == last {
+							(latest_inst(cfg, last, owned), Done, t1)
+						} else {
+							(t2, owned2) = issue(fx_supersede(t1, owned), cfg.path, (cfg.plan)(a), a, [])
+							(latest_inst(cfg, a, owned2), Done, t2)
+						}
+					}
+				}
+				Fire(path, pos, h, payload) => {
+					match leaf_fx(path, pos, payload) {
+						Ok(res) => latest_deliver(cfg, last, owned, env, h, res, tx)
+						Err(_) => (latest_inst(cfg, last, owned), Pending(env, 0), tx)
+					}
+				}
+				Dispose(_) => {
+					(orph, t2) = fx_dispose(tx, cfg.react, owned)
+					(noop({}), Orphaned(orph), t2)
+				}
+			}
+		},
+	)
+}
+
+latest_deliver : EffectCfg(ctx, a), a, List(Owned(a)), ctx, U32, Res, Tx -> (Inst(ctx), Out(ctx), Tx)
+	where [a.is_eq : a, a -> Bool]
+latest_deliver = |cfg, last, owned, env, id, res, tx| {
+	match owned.find_first_index(|o| o.id == id) {
+		Ok(i) => {
+			entry = owned.get(i) ?? crash "owned"
+			kept = if (entry.sub) owned else owned.drop_at(i)
+			react = cfg.react
+			next = latest_inst(cfg, last, kept)
+			(next, Pending((react.run)(env, entry.a, res), react.mask), fx_count(tx, Delivered))
+		}
+		Err(_) => (latest_inst(cfg, last, owned), Pending(env, 0), fx_count(tx, Stale))
+	}
+}
+
+## Fixed per `resource` site.
+ResourceCfg(ctx, a, s) : {
+	input : Val(ctx, a),
+	begin : (s, a -> s),
+	plan : (a -> List(Req)),
+	fold : (s, a, Res -> s),
+	path : List(U32),
+	depth : U64,
+	local : Bool,
+}
+
+## A `resource` site: `last` is the input its requests were issued for, `s`
+## the layer's value at absolute depth `rc.depth`. The layer keeps its
+## previous value only while its replacement is compared with it, so
+## `begin` and `fold` receive it shared: they should build a fresh value
+## rather than update a large one in place.
+resource_inst : ResourceCfg(ctx, a, s), a, s, List(Owned(a)), Block(In(ctx, s)) -> Inst(ctx)
+	where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
+resource_inst = |rc0, last0, s0, owned0, block0| {
+	held = Held({ rc: rc0, last: last0, s: s0, owned: owned0, block: block0 })
+	Inst(
+		|env, msg, tx| {
+			Held({ rc, last, s, owned, block }) = held
+			match msg {
+				Changed(mask) => {
+					if eff_mask(rc.input).bitwise_and(mask) == 0 {
+						(b2, t2) = refresh(block, In.{ outer: env, value: s }, mask, tx)
+						(resource_inst(rc, last, s, owned, b2), Done, t2)
+					} else {
+						a = (rc.input.read)(env)
+						t1 = count_evals(tx, 1)
+						if a == last {
+							(b2, t2) = refresh(block, In.{ outer: env, value: s }, mask, t1)
+							(resource_inst(rc, last, s, owned, b2), Done, t2)
+						} else {
+							# Supersede, start the layer for the new input and issue,
+							# all before the block below reads the layer.
+							s2 = (rc.begin)(s, a)
+							(t2, owned2) = issue(fx_supersede(t1, owned), rc.path, (rc.plan)(a), a, [])
+							if s2 == s {
+								(b3, t3) = refresh(block, In.{ outer: env, value: s2 }, mask, t2)
+								(resource_inst(rc, a, s2, owned2, b3), Done, t3)
+							} else {
+								(b3, t3) = refresh(block, In.{ outer: env, value: s2 }, mask.bitwise_or(bit(rc.depth)), t2)
+								(resource_inst(rc, a, s2, owned2, b3), Done, t3)
+							}
+						}
+					}
+				}
+				Fire(path, pos, h, payload) => {
+					match leaf_fx(path, pos, payload) {
+						Ok(res) => resource_deliver(rc, last, s, owned, block, env, h, res, tx)
+						Err(_) => {
+							match fire_target(block, path, pos) {
+								Leaf => resource_settle(rc, last, owned, block, fire_leaf(block, In.{ outer: env, value: s }, h, payload), tx)
+								Kid => {
+									(b2, out, t2) = fire_kid(block, In.{ outer: env, value: s }, path, pos, h, payload, tx)
+									resource_settle(rc, last, owned, b2, out, t2)
+								}
+								Miss => (resource_inst(rc, last, s, owned, block), Pending(env, 0), tx)
+							}
+						}
+					}
+				}
+				Dispose(remove) => {
+					# The site's own requests follow the per-kind rules; an admitted
+					# one becomes an orphan whose fold writes the retired layer, a
+					# snapshot whose write `lower_in` skips and counts.
+					fold = rc.fold
+					react = {
+						mask: bit(rc.depth),
+						run: |e, a, r| {
+							{ outer, value } = e
+							In.{ outer, value: fold(value, a, r) }
+						},
+					}
+					(mine, t1) = fx_dispose(tx, react, owned)
+					(orph, t2) = dispose_block(block, In.{ outer: env, value: s }, remove, t1)
+					(noop({}), Orphaned(lower_in(mine.concat(orph), s, rc.depth)), t2)
+				}
+			}
+		},
+	)
+}
+
+## A result for a request the site owns folds into the layer. An equal
+## fold changes nothing. Otherwise, inside a row or a component the site
+## refreshes its own subtree now (the root's Changed pass cannot reach its
+## layer by mask there); elsewhere it reports its layer upward.
+resource_deliver : ResourceCfg(ctx, a, s), a, s, List(Owned(a)), Block(In(ctx, s)), ctx, U32, Res, Tx -> (Inst(ctx), Out(ctx), Tx)
+	where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
+resource_deliver = |rc, last, s, owned, block, env, id, res, tx| {
+	match owned.find_first_index(|o| o.id == id) {
+		Ok(i) => {
+			entry = owned.get(i) ?? crash "owned"
+			kept = if (entry.sub) owned else owned.drop_at(i)
+			s2 = (rc.fold)(s, entry.a, res)
+			t1 = fx_count(tx, Delivered)
+			if s2 == s {
+				(resource_inst(rc, last, s2, kept, block), Pending(env, 0), t1)
+			} else if rc.local {
+				own = bit(rc.depth)
+				(b2, t2) = refresh(block, In.{ outer: env, value: s2 }, own, bump(t1, w_dirty_roots, 1))
+				(resource_inst(rc, last, s2, kept, b2), Pending(env, 0), t2)
+			} else {
+				(resource_inst(rc, last, s2, kept, block), Pending(env, bit(rc.depth)), t1)
+			}
+		}
+		Err(_) => (resource_inst(rc, last, s, owned, block), Pending(env, 0), fx_count(tx, Stale))
+	}
+}
+
+## An asynchronous layer has no write handle, so an event below it can only
+## have changed an outer layer (which will refresh this site) or nothing.
+resource_settle : ResourceCfg(ctx, a, s), a, List(Owned(a)), Block(In(ctx, s)), Out(In(ctx, s)), Tx -> (Inst(ctx), Out(ctx), Tx)
+	where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
+resource_settle = |rc, last, owned, block, out, tx| {
+	match out {
+		Done => crash "internal: fire must hand the environment back"
+		Orphaned(_) => crash "internal: fire must hand the environment back"
+		Pending(next_inner, mask) => {
+			{ outer, value } = next_inner
+			(resource_inst(rc, last, value, owned, block), Pending(outer, mask), tx)
+		}
 	}
 }
 

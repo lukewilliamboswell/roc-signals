@@ -32,8 +32,10 @@
 // tick only through tick(); the engine, not this file, decides staleness: a
 // result for a cancelled subscription or timer is never sent because CANCEL
 // forgets it here, and anything late is dropped by the engine and counted.
-// Admitted requests are never cancelled by the engine (they reparent when
-// their site is disposed), so their results are always delivered.
+// The engine cancels an admitted HTTP request only when a superseding site
+// (`latest`, `resource`) moves to a new value: CANCEL aborts the fetch and
+// clears its timeout timer. Disposal never cancels one (it reparents), so
+// a request that is not superseded is always answered.
 //
 // Work (FX kind 8): a pure program of the app's catalogue runs on bytes in a
 // Web Worker that instantiates this same compiled module (`worker.mjs`,

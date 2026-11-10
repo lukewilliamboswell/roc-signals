@@ -10,7 +10,7 @@ import Core
 ## the text, attributes, rows and sites that read a changed layer are
 ## re-evaluated, emitting DOM commands for values that actually changed.
 ##
-## Every dynamic site (`state`, `derive`, `when`, `switch`, `each`,
+## Every dynamic site (`state`, `derive`, `resource`, `when`, `switch`, `each`,
 ## `component`, effect sites) is one closure that owns its typed storage, so
 ## updates happen in place. `design.md` ("Representation D") describes the
 ## model; Appendix B specifies the command stream and the host protocol.
@@ -195,7 +195,7 @@ Engine := [].{
 	Attr(ctx) : Core.Attr(ctx)
 
 	## A piece of UI in context `ctx`: an element, a text node or a dynamic site
-	## (`state`, `derive`, `when`, `switch`, `each`, `component` or an effect site).
+	## (`state`, `derive`, `resource`, `when`, `switch`, `each`, `component` or an effect site).
 	## An `Elem` is a description; the engine mounts it once and afterwards updates
 	## only what reads a changed layer.
 	Elem(ctx) : Core.Elem(ctx)
@@ -386,6 +386,52 @@ Engine := [].{
 	on_change : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
 	on_change = |v, plan, react| Core.on_change(v.v, plan, react)
+
+	## `latest(v, plan, react)` issues like `watch` (at mount, and whenever `v`
+	## changes to an unequal value) but keeps only the requests of the current
+	## value: the latest value wins. Before it issues for a new value, every
+	## awaited request it still owns from earlier ones is cancelled, whatever its
+	## kind (an `Http` request is aborted, a subscription stops, a timer is
+	## cleared), and follow-ups or refusals still queued for it are dropped, all
+	## counted (`cancelled`, `stale`). A late answer for a superseded value never
+	## reaches `react`, so a search box or a selected item needs no request
+	## serial in its state. A `plan` that returns `[]` makes a change a pure
+	## cancel.
+	##
+	## Supersession is this site's explicit policy; `watch` and `on_change` never
+	## cancel what they issued. Disposal follows `watch`: subscriptions and timers
+	## stop, and admitted `Http` and `StorageGet` requests of the current value
+	## are delivered to the nearest surviving ancestor. A change costs one read of
+	## `v` plus work linear in the requests the site owns.
+	latest : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
+		where [a.is_eq : a, a -> Bool]
+	latest = |v, plan, react| Core.latest(v.v, plan, react)
+
+	## `resource(input, cfg, body)` is an asynchronous `derive`: it gives `body` a
+	## layer whose value follows the answers to the requests issued for `input`.
+	##
+	## At mount the layer starts at `cfg.begin(cfg.init, a)` for the input's value
+	## `a`, and `cfg.plan(a)` is issued. When `input` changes to an unequal value,
+	## the site supersedes its requests exactly as `latest` does, sets the layer to
+	## `cfg.begin(s, a)` and issues `cfg.plan(a)`, in the same pass and before
+	## anything in `body` reads the layer, so `body` shows the start of the new
+	## request in the turn that changed the input (a loading state that keeps the
+	## previous answer, say). Each result for a request the site owns sets the
+	## layer to `cfg.fold(s, a, res)`, with the value `a` it was issued for.
+	##
+	## The layer prunes like `derive`: readers inside `body` that read only the
+	## layer do no work when `begin` or `fold` returns a value equal to the
+	## previous one. To compare, the site holds the previous value while `begin`
+	## and `fold` run, so they receive it shared; keep the layer small, or build a
+	## fresh value rather than update a large one in place. The layer lives as
+	## long as the site's scope, like a `state`: disposal drops it, stops the
+	## site's subscriptions and timers, and delivers its admitted requests to the
+	## nearest surviving ancestor, where their write to the retired layer is
+	## skipped and counted (`skipped`). Values from the enclosing context enter
+	## `body` with `lift`.
+	resource : Val(ctx, a), { init : s, begin : (s, a -> s), plan : (a -> List(Req)), fold : (s, a, Res -> s) }, (Val(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
+		where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
+	resource = |input, cfg, body| Core.resource(input.v, cfg, |v| body({ v: v }))
 
 	## What the host knows before the first render: the URL, the declared storage
 	## keys' values (missing keys are absent), whether the browser is online and
