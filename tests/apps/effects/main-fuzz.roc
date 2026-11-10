@@ -38,8 +38,11 @@ start = |view| {
 ##   is the model's fold of the answers it owns; hiding R disposes it: its
 ##   timer and interval stop, its HTTP request reparents to the `when` and
 ##   its answer is then a skipped write.
+## - Work is scoped: R's worker job (with its interval, `r % 3 == 0`) is
+##   cancelled by supersession and by disposal alike, never reparented, and
+##   its output, a lost job or its timeout fold into R's layer.
 
-Kind : [G, H, Tick, Pop, Lh, Li, Rh, Rt, Ri]
+Kind : [G, H, Tick, Pop, Lh, Li, Rh, Rt, Ri, Rw]
 
 Live : { id : U32, k : U64, c : U64, kind : Kind, orphan : Bool }
 
@@ -215,7 +218,8 @@ issue_r = |m, r| {
 		m1 = admit_x(m, k_r, r, Rh, |id| Http(id, "GET", url, [], "", 0), RefR)
 		admit_x(m1, k_r, r, Rt, |id| Timer(id, 100), RefR)
 	} else {
-		admit_x(m, k_r, r, Ri, |id| Interval(id, 700), RefR)
+		m1 = admit_x(m, k_r, r, Ri, |id| Interval(id, 700), RefR)
+		admit_x(m1, k_r, r, Rw, |id| Work(id, FxApp.echo_name, [r.to_u8_wrap()], 100), RefR)
 	}
 }
 
@@ -345,7 +349,7 @@ model_deliver = |m, id, res| {
 			m1 = { ..m, live, delivered: m.delivered + 1 }
 			match l.kind {
 				H => if (l.orphan) { ..m1, skipped: m1.skipped + 1 } else { ..m1, hits: m1.hits.update(l.k, |h| h + 1) ?? m1.hits }
-				Rh | Rt | Ri => if (l.orphan) { ..m1, skipped: m1.skipped + 1 } else { ..m1, rl: FxApp.fold_r(m1.rl, l.c, res) }
+				Rh | Rt | Ri | Rw => if (l.orphan) { ..m1, skipped: m1.skipped + 1 } else { ..m1, rl: FxApp.fold_r(m1.rl, l.c, res) }
 				_ => { ..m1, log: m1.log.append(FxApp.describe(l.k, l.c, res)) }
 			}
 		}
@@ -411,6 +415,8 @@ encode_res = |res| match res {
 	Missing => [4]
 	Fired => [5]
 	Location(u) => [6].concat(Str.to_utf8(u))
+	Work(out) => [10].concat(out)
+	WorkLost(AppCrash) => [11, 4]
 	_ => crash "not a host result"
 }
 
@@ -473,7 +479,9 @@ check! = |what, e, m| {
 run_program! : List(U8) => {}
 run_program! = |prog| {
 	max = 5
-	(a0, c0) = Core.take_cmds(Core.mount_with(max, FxApp.main({})), [])
+	# The app's view with its worker catalogue, mounted as a host mounts it.
+	program = Engine.program_boot({ storage_keys: [], max_inflight: max }, |_| FxApp.main({})).with_workers(FxApp.workers)
+	(a0, c0, _) = (Core.driver(program).init)([])
 	(d0, _, fx0) = Dom.apply_fx(Dom.new({}), c0)
 	var $s = { eng: a0, dom: d0, steps: 0 }
 	var $m = model_new(max)
@@ -509,9 +517,11 @@ run_program! = |prog| {
 		} else if op == 6 {
 			(click!($s, "toggle r"), model_toggle_r(m0), "toggle r")
 		} else {
-			# A tick for an arbitrary id: an equal fold for R, "other" for logs.
+			# A tick, a job's output or a lost job for an arbitrary id: a tick
+			# is an equal fold for R and "other" for logs.
 			id = (arg.to_u32() % $m.next) + 1
-			(deliver!($s, id, Fired), model_deliver(m0, id, Fired), "tick ${id.to_str()}")
+			res = if (arg % 4 == 1) Work([arg]) else if (arg % 4 == 3) WorkLost(AppCrash) else Fired
+			(deliver!($s, id, res), model_deliver(m0, id, res), "result ${id.to_str()}")
 		}
 		check!("step ${($i // 2).to_str()} ${what}", e, m2)
 		$s = e.s
@@ -554,6 +564,10 @@ target = Fuzz.target_with!({
 		# at the in-flight bound: L's and R's refusals are queued follow-ups that
 		# a later value supersedes or a disposal drops
 		ex("supersede-queued", 1, [0, 0, 4, 0, 4, 0, 4, 0, 4, 0, 1, 2, 4, 0, 4, 0, 4, 0, 6, 0, 5, 0, 5, 0, 6, 0, 5, 0, 6, 0]),
+		# R's third input issues an interval and a worker job: deliver the job's
+		# output, then issue again, supersede the next job, and hide R with one
+		# in flight (cancelled, not reparented), then lose one after showing R
+		ex("work", 1, [1, 0, 1, 1, 5, 0, 5, 0, 5, 0, 7, 9, 5, 0, 5, 0, 5, 0, 5, 0, 5, 0, 5, 0, 6, 0, 6, 0, 7, 15, 7, 17]),
 	],
 	generator: { mode: Fuzz.constant(1), program: Fuzz.list(Fuzz.u8, 64) }.Fuzz,
 	test!,

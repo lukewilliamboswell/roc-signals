@@ -20,8 +20,9 @@ import pf.Html
 ##   (the first bumps `q`, superseding the second), or nothing, by `q % 4`.
 ##   Its reaction appends to the root log.
 ## - R, a `resource` over the counter `r`, shown or hidden by a `when`: an
-##   HTTP request, a request and a timer, or an interval, by `r % 3`. Its
-##   layer folds answers and is shown as `input|answer|faults`.
+##   HTTP request, a request and a timer, or an interval and a worker job
+##   (the echo program, with a deadline), by `r % 3`. Its layer folds
+##   answers and is shown as `input|answer|faults`.
 FxApp := [].{
 	S : { counts : List(U64), shown : List(Bool), log : List(Str), q : U64, r : U64, rshown : Bool }
 
@@ -57,6 +58,8 @@ FxApp := [].{
 		head = "${k.to_str()}:${c.to_str()}"
 		match r {
 			Http({ status, headers, body }) => "${head}:${status.to_str()}:${body}:${Str.join_with(headers.map(|(n, v)| "${n}=${v}"), ",")}"
+			Work(out) => "${head}:work:${Str.inspect(out)}"
+			WorkLost(fault) => "${head}:lost:${Str.inspect(fault)}"
 			Timeout => "${head}:timeout"
 			Network(m) => "${head}:net:${m}"
 			Refused => "${head}:refused"
@@ -112,9 +115,16 @@ FxApp := [].{
 		} else if r % 3 == 2 {
 			[Http({ method: "GET", url: "/r/${r.to_str()}", headers: [], body: "", timeout_ms: 0 }), Timer(100)]
 		} else {
-			[Interval(700)]
+			[Interval(700), Work({ program: FxApp.echo_name, input: [r.to_u8_wrap()], deadline_ms: 100 })]
 		}
 	}
+
+	## R's worker program: its input back.
+	echo_name = "test.roc-signals/fx/echo"
+
+	## The worker catalogue: R's echo program.
+	workers : List(Engine.Registration)
+	workers = [Engine.registration(FxApp.echo_name, |b| b)]
 
 	load0 : Load
 	load0 = { input: 0, answer: "", faults: 0 }
@@ -122,12 +132,14 @@ FxApp := [].{
 	begin_r : Load, U64 -> Load
 	begin_r = |l, r| { ..l, input: r }
 
-	## An HTTP answer replaces the answer, a timeout counts, a refusal is
-	## shown; anything else (a tick) is an equal fold.
+	## An HTTP answer or a job's output replaces the answer, a timeout or a
+	## lost job counts as a fault, a refusal is shown; anything else (a tick)
+	## is an equal fold.
 	fold_r : Load, U64, Engine.Res -> Load
 	fold_r = |l, r, res| match res {
 		Http({ status, body, .. }) => { ..l, answer: "${r.to_str()}:${status.to_str()}:${body}" }
-		Timeout => { ..l, faults: l.faults + 1 }
+		Work(out) => { ..l, answer: "${r.to_str()}:work:${Str.inspect(out)}" }
+		Timeout | WorkLost(_) => { ..l, faults: l.faults + 1 }
 		Refused => { ..l, answer: "${r.to_str()}:refused" }
 		_ => l
 	}
@@ -229,7 +241,7 @@ FxApp := [].{
 	## The program `main.roc` binds for the browser module and the native spec
 	## runner, and `main-fuzz.roc` drives on the fuzz platform.
 	program : Engine.Program
-	program = Engine.program_boot({ storage_keys: [], max_inflight: 8 }, |_| FxApp.main({}))
+	program = Engine.program_boot({ storage_keys: [], max_inflight: 8 }, |_| FxApp.main({})).with_workers(FxApp.workers)
 
 	main : {} -> Elem(Root)
 	main = |_| FxApp.main_with([True, True, True])
