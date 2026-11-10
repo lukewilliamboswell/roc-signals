@@ -177,7 +177,7 @@ Port := [].{
 
 	## `derive(call, input, body)` gives `body` a layer holding the call's
 	## answer for `input`, an `Engine.Remote(output, Port.Error)`, as
-	## `Worker.derive` does for a worker program: the call for the first input
+	## `Worker.derive` does for a worker task: the call for the first input
 	## is made at mount, and when `input` changes to an unequal value the
 	## older call is stopped (its `AbortSignal` aborts) and one for the new
 	## value is made in the same turn, so an answer for an old input is never

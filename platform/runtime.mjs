@@ -469,7 +469,7 @@ const ENGINE_FX_FIRST = 32;
 const ENGINE_FX_NAMES = ["issued", "delivered", "stale", "refused", "cancelled", "reparented", "skipped", "live"];
 
 // Why an instance let go of its prepared state (see stateEvicted).
-const EVICT_CAUSES = ["replaced", "files", "released"];
+const EVICT_CAUSES = ["replaced", "released"];
 
 const END_CAUSES = ["cancel", "deadline", "fault", "executor", "unmount", "contained", "retired"];
 
@@ -914,8 +914,7 @@ export class WorkMonitor {
   }
 
   // The instance let go of its prepared state: `cause` is replaced (it
-  // prepared another), files (a job needed the buffers it may keep) or
-  // released (the file it was prepared from was released).
+  // prepared another) or released (the file it was prepared from was released).
   stateEvicted(seq, cause) {
     const inst = this.insts.get(seq);
     if (inst === undefined || !this.live()) return;

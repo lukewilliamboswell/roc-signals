@@ -1,4 +1,4 @@
-## The hosted functions a worker task calls (design.md, "Tasks"): the
+## The hosted functions a worker task calls (design.md, "Workers"): the
 ## platform's closed vocabulary of synchronous effects on handles. They are
 ## not an app-extensible import table, and apps never call them directly:
 ## `File` and `Builder` wrap them as `!` methods, and decide every verdict
@@ -9,9 +9,12 @@
 ## browser objects behind the tokens, and the native spec host
 ## (`host/spec.zig`) performs it in a job's child process against the files
 ## a spec declares. A module that never reaches them imports nothing. Both
-## hosts refuse every one of them outside a task's job, with a classified
-## contract error: page code is pure and cannot call them, and a prepared
-## program or a pure program never reaches them.
+## hosts refuse every one of them outside a job (a task's `run!`, or a
+## preparation's `prepare!`), with a classified contract error: page code
+## is pure and cannot call them. The `append!`, `append_file!` and
+## `finish!` statuses are 0 done, 1 over the job's output bound (`append!`
+## only), 2 not an open builder, and 3 a builder the call that opened it
+## has left behind.
 ##
 ## A token names a handle in the instance's own heap; it is read from a
 ## `Box(U64)` the caller holds for the length of the call, so the handle
@@ -40,7 +43,8 @@ Hosted := [].{
 
 	## Append a copy of `bytes` to the builder `token`. Answers 0 when it
 	## did, 1 when the job's output would exceed its bound (nothing was
-	## appended), 2 when `token` is not an open builder.
+	## appended), 2 when `token` is not an open builder, 3 when the call that
+	## opened it has returned.
 	append! : U64, List(U8) => U8
 
 	## Append the range `start`, `len` of the file behind `file` to the
@@ -48,7 +52,8 @@ Hosted := [].{
 	append_file! : U64, U64, U64, U64 => U8
 
 	## Finish the builder `token` into an immutable file behind the fresh
-	## handle `file` (from `mint!`). Answers 0, or 2 when `token` is not an
-	## open builder. A finished builder takes nothing more.
+	## handle `file` (from `mint!`). Answers 0, 2 when `token` is not an
+	## open builder, or 3 when the call that opened it has returned. A
+	## finished builder takes nothing more.
 	finish! : U64, U64 => U8
 }
