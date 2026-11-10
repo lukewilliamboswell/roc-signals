@@ -385,6 +385,22 @@ Engine := [].{
 		PortCommand({ port : Str, message : PortMessage }),
 		PortCall({ port : Str, message : PortMessage, timeout_ms : U32 }),
 		PortSubscribe({ port : Str, message : PortMessage }),
+
+		## A task's job: the registered task `program` run on `input` in a
+		## worker, where it may read the `files` its input holds through
+		## effects and answer with files of its own (`Answered`). Without an
+		## answer it delivers what `Work` does. `on_dispose` says whether
+		## disposing its site stops it (`Stop`) or keeps it, delivering its
+		## answer to the nearest surviving ancestor (`Keep`). `Worker.task`
+		## builds it.
+		Task({ program : Str, input : List(U8), files : List(File), deadline_ms : U32, on_dispose : [Stop, Keep] }),
+
+		## A command that saves a file's range as a download (`File.save`).
+		Save({ file : File, name : Str }),
+
+		## An HTTP request whose response body becomes a file
+		## (`File.fetch`), answered `Fetched`; kept like `Http`.
+		Fetch({ method : Str, url : Str, headers : List((Str, Str)), timeout_ms : U32 }),
 	]
 
 	## The result of an awaited request: an HTTP response (`Http`, with any status),
@@ -398,8 +414,10 @@ Engine := [].{
 	## (`FileBytes`, `FileText`), a file's SHA-256 digest (`Digest`) or a URL
 	## that shows it (`FileUrl`), or why an operation on a file produced
 	## nothing (`FileFailed`), or a port's answer or message (`PortReply`)
-	## or why there is none (`PortFailed`).
-	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortReply(PortMessage), PortFailed(PortFailure)]
+	## or why there is none (`PortFailed`), or a task's answer with the
+	## files it holds, handles the page now owns (`Answered`; `Worker`
+	## decodes it), or a response whose body is a file (`Fetched`).
+	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortReply(PortMessage), PortFailed(PortFailure), Answered({ output : List(U8), files : List(File) }), Fetched({ status : U16, headers : List((Str, Str)), body : File })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name and the files its `{"$file":N}` markers
@@ -485,6 +503,22 @@ Engine := [].{
 	## is not from an HTTP request is a contract error.
 	http_text : Res -> Try(Str, HttpError)
 	http_text = |res| Core.http_text(res)
+
+	## Why a `File.fetch` produced no file: `Network`, `Timeout`, a status
+	## outside 2xx (`Status`), a body over the `maxFileBytes` mount option
+	## (`TooLarge`), or the in-flight bound (`Refused`).
+	FetchError : Core.FetchError
+
+	## A `File.fetch` result as the body of a 2xx response, a file the page
+	## holds, or a typed [FetchError]. To read the status or the headers,
+	## match on `Fetched` instead. Any other result is a contract error.
+	fetched : Res -> Try(File, FetchError)
+	fetched = |res| Core.fetched(res)
+
+	## A file a task's job is writing: make one with `File.build!`, append
+	## to it with `append!` and `append_file!`, and `finish!` it into a
+	## [File]. It lives only in the job that opened it.
+	Builder : Core.Builder
 
 	## What an effect site does with a result: a write to a state given the value
 	## the request was issued for and the [Res]. Make one with `State.on_result`,

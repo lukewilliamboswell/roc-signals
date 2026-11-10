@@ -8,6 +8,8 @@
 ## `take_cmds`, `fx_stats`, ...). `design.md` ("Representation D") describes
 ## the model; Appendix B specifies the command stream and the host protocol.
 
+import Hosted
+
 Core := [].{
 
 	## The context at the top of the application: the context of the [Elem] that
@@ -208,6 +210,131 @@ Core := [].{
 			_ => Bool.False
 		}
 
+		# -- Tasks: effects on a file, and saving and fetching ----------------
+
+		## In a task's job (`Worker.task`): `len` bytes at `start` of the file
+		## (relative to this file or range), read from the browser into the
+		## job's memory, or `Unreadable` when the browser can no longer read the
+		## file (the user's file changed or went away). One read copies the
+		## bytes once; reading a large file in chunks keeps the job's memory to
+		## a chunk. A range that does not lie within the file is a contract
+		## error. Outside a task's job a file has no reader: page code cannot
+		## call an effect, and the host refuses one anywhere else.
+		read! : File, { start : U64, len : U64 } => Try(List(U8), FileError)
+		read! = |f, { start, len }| {
+			if start > f.len or len > f.len - start {
+				crash "contract: File.read! of ${start.to_str()}+${len.to_str()} bytes lies outside \"${f.name}\" (${f.len.to_str()} bytes)"
+			}
+			match f.at {
+				Worker(bytes) => Ok(bytes.sublist({ start, len }))
+				Page(blob) => {
+					bytes = Hosted.read!(blob.token(), f.start + start, len)
+					if (bytes.len() == len) Ok(bytes) else Err(Unreadable)
+				}
+			}
+		}
+
+		## In a task's job: the whole file, or range, as `read!` reads it.
+		## For a file larger than a job should hold at once, read it in chunks
+		## with `read!`.
+		contents! : File => Try(List(U8), FileError)
+		contents! = |f| File.read!(f, { start: 0, len: f.len })
+
+		## In a task's job: the whole file as text, `InvalidUtf8` when its
+		## bytes are not UTF-8 (a byte-order mark is kept), or `Unreadable`.
+		contents_utf8! : File => Try(Str, FileError)
+		contents_utf8! = |f| {
+			bytes = File.contents!(f)?
+			Str.from_utf8(bytes).map_err(|_| InvalidUtf8)
+		}
+
+		## How a task's [Builder] starts: the new file's `name`, its media
+		## `mime` type (`Auto`: the type of the file it starts from, or none),
+		## and what it starts with: nothing (`Empty`), or the bytes of a file
+		## the job holds (`From(file)`), by reference, without copying them.
+		BuildProps := { name : Str, mime : [Auto, Mime(Str)] ?? Auto, start_from : [Empty, From(File)] ?? Empty }
+
+		## In a task's job: a new [Builder] for a file the job writes. Append
+		## to it with `append!` and `append_file!`, then `finish!` it into an
+		## immutable file the job can return in its answer. The bytes it holds
+		## are private to the job until its answer is delivered: a job that is
+		## stopped, times out or fails leaves nothing anyone can see.
+		##
+		## To append to the output of an earlier job, start from it:
+		## `File.build!({ name, start_from: From(previous) })` gives a new file
+		## that is the previous one followed by what this job appends, and the
+		## previous file is unchanged whatever happens to this job.
+		build! : BuildProps => Builder
+		build! = |props| {
+			{ name: called, mime: wanted, start_from } = props
+			type = match (wanted, start_from) {
+				(Mime(m), _) => m
+				(Auto, From(source)) => source.mime
+				(Auto, Empty) => ""
+			}
+			handle = Hosted.mint!()
+			token = Box.unbox(handle)
+			status = match start_from {
+				Empty => Hosted.open!(token, called.to_utf8(), type.to_utf8(), 0, 0, 0)
+				From(source) => {
+					{ token: from, start, len } = held_ref(source, "File.build!")
+					Hosted.open!(token, called.to_utf8(), type.to_utf8(), from, start, len)
+				}
+			}
+			if status != 0 {
+				crash "internal: the host could not open a builder (status ${status.to_str()})"
+			}
+			{ handle, name: called, mime: type }
+		}
+
+		## How a file is saved: under its own name (`Same`) or another
+		## (`Named(name)`).
+		SaveProps := { name : [Same, Named(Str)] ?? Same }
+
+		## A command that saves the file, or its range, to the user's disk as
+		## a download, for an effect site's plan. The browser decides where it
+		## goes (usually the downloads folder, without asking). It is emitted
+		## and forgotten: there is no result, and the app learns nothing of
+		## whether the user kept it.
+		##
+		## A save issued in the turn of a click runs inside that click, and
+		## browsers allow it. Issued later (from a task's answer, say) it runs
+		## without the user's gesture, and a browser may hold back a second
+		## automatic download from the page or ask the user first: give the
+		## user a button to press when the file is ready instead.
+		save : File, SaveProps -> Req
+		save = |f, props| {
+			chosen = match props.name {
+				Same => f.name
+				Named(n) => n
+			}
+			Save({ file: f, name: chosen })
+		}
+
+		## How a download into a file is asked for: the URL, the method, the
+		## request headers, and a timeout (`Unlimited` by default; capped at
+		## ten minutes).
+		FetchProps := { url : Str, method : Str ?? "GET", headers : List((Str, Str)) ?? [], timeout : [Unlimited, Ms(U32)] ?? Unlimited }
+
+		## A request for an HTTP response whose body becomes a [File], for an
+		## effect site's plan: the body stays in the browser and never enters
+		## the page's memory, and the file can be read, digested, shown,
+		## uploaded, saved or sent to a task like any other. It is answered
+		## `Fetched({ status, headers, body })` for any status, or as an HTTP
+		## request fails (`Network`, `Timeout`), or `FileFailed(TooLarge)` for
+		## a body over the `maxFileBytes` mount option; read it with
+		## `fetched`. Like an HTTP request it is kept when its site is
+		## disposed and answered to the nearest surviving ancestor.
+		fetch : FetchProps -> Req
+		fetch = |props| {
+			{ url, method, headers, timeout } = props
+			timeout_ms = match timeout {
+				Unlimited => 0
+				Ms(ms) => ms
+			}
+			Fetch({ method, url, headers, timeout_ms })
+		}
+
 		## Write the file with the format's `encode_file`: in a worker request
 		## the handle and range travel beside the payload, which refers to them.
 		encoder_for : encoding -> (File, state -> Try(state, err))
@@ -225,6 +352,52 @@ Core := [].{
 			## The format's type, named so its methods can be called.
 			Encoding : encoding
 			|state| Encoding.parse_file(encoding, state)
+		}
+	}
+
+	## A file a task's job is writing (`File.build!`): private to the job,
+	## which appends to it and then finishes it into an immutable [File]. It
+	## cannot be sent anywhere: only the file it finishes into can be in an
+	## answer. The builder's parts go when the job ends, whether or not it
+	## finished.
+	Builder :: { handle : Box(U64), name : Str, mime : Str }.{
+
+		## Append a copy of `bytes`. `TooLarge` when the bytes this job has
+		## appended to its builders would exceed the `maxOutputBytes` mount
+		## option (256 MiB by default): nothing is appended, and the job
+		## decides what to do. Appending to a builder after `finish!` is a
+		## contract error.
+		append! : Builder, List(U8) => Try({}, FileError)
+		append! = |b, bytes| match Hosted.append!(Box.unbox(b.handle), bytes) {
+			0 => Ok({})
+			1 => Err(TooLarge)
+			_ => crash "contract: Builder.append! on \"${b.name}\" after it was finished"
+		}
+
+		## Append a file the job holds, or a range of one, by reference: the
+		## bytes are not copied and do not count against `maxOutputBytes`.
+		## Appending to a builder after `finish!` is a contract error.
+		append_file! : Builder, File => {}
+		append_file! = |b, f| {
+			{ token, start, len } = held_ref(f, "Builder.append_file!")
+			match Hosted.append_file!(Box.unbox(b.handle), token, start, len) {
+				0 => {}
+				_ => crash "contract: Builder.append_file! on \"${b.name}\" after it was finished"
+			}
+		}
+
+		## Finish the builder into an immutable file holding everything
+		## appended, in order. Finishing twice is a contract error.
+		finish! : Builder => File
+		finish! = |b| {
+			handle = Hosted.mint!()
+			token = Box.unbox(handle)
+			match Hosted.finish!(Box.unbox(b.handle), token) {
+				0 => {}
+				_ => crash "contract: Builder.finish! on \"${b.name}\" after it was finished"
+			}
+			size = Hosted.size!(token)
+			{ at: Page(Blob.(handle)), name: b.name, mime: b.mime, size, start: 0, len: size }
 		}
 	}
 
@@ -776,6 +949,24 @@ Core := [].{
 		PortCommand({ port : Str, message : PortMessage }),
 		PortCall({ port : Str, message : PortMessage, timeout_ms : U32 }),
 		PortSubscribe({ port : Str, message : PortMessage }),
+
+		## A task's job (design.md, "Tasks"): the registered task `program`
+		## run on `input` in a worker, which may read the `files` it names
+		## through effects and answer with files of its own. It delivers
+		## `Answered`, or what a `Work` request delivers when there is no
+		## answer. `on_dispose` says whether disposing its site stops it
+		## (`Stop`, like `Work`) or keeps it and delivers its answer to the
+		## nearest surviving ancestor (`Keep`, like `Http`). `Worker` builds it.
+		Task({ program : Str, input : List(U8), files : List(File), deadline_ms : U32, on_dispose : [Stop, Keep] }),
+
+		## A command that saves `file` (its range) as a download named `name`
+		## (`File.save`).
+		Save({ file : File, name : Str }),
+
+		## An HTTP request whose response body becomes a file
+		## (`File.fetch`), delivering `Fetched`. `timeout_ms` 0 = none, capped
+		## at 10 minutes; kept like `Http`.
+		Fetch({ method : Str, url : Str, headers : List((Str, Str)), timeout_ms : U32 }),
 	]
 
 	## The result of an awaited request: an HTTP response (`Http`, with any status),
@@ -788,8 +979,9 @@ Core := [].{
 	## `FileText`), a file's digest (`Digest`) or a URL that shows it
 	## (`FileUrl`), or why an operation on a file produced nothing
 	## (`FileFailed`), or a port's answer or message (`PortReply`) or why
-	## there is none (`PortFailed`).
-	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortReply(PortMessage), PortFailed(PortFailure)]
+	## there is none (`PortFailed`), or a task's answer with the files it
+	## holds (`Answered`), or a response whose body is a file (`Fetched`).
+	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortReply(PortMessage), PortFailed(PortFailure), Answered({ output : List(U8), files : List(File) }), Fetched({ status : U16, headers : List((Str, Str)), body : File })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name, and the files its `{"$file":N}` markers
@@ -926,6 +1118,26 @@ Core := [].{
 		Timeout => Err(Timeout)
 		Refused => Err(Refused)
 		_ => crash "contract: http_text was given a result that is not an HTTP result"
+	}
+
+	## Why a `File.fetch` produced no file, as `fetched` reports it: the
+	## browser could not reach the server (`Network`), the request's timeout
+	## expired (`Timeout`), the server answered outside 2xx (`Status`), the
+	## body is more than the `maxFileBytes` mount option allows (`TooLarge`),
+	## or the in-flight bound refused the request (`Refused`).
+	FetchError : [Network(Str), Timeout, Status(U16), TooLarge, Refused]
+
+	## A `File.fetch` result as the body of a 2xx response, or a typed
+	## [FetchError]. Apps that read the status or headers themselves match on
+	## `Fetched` directly. Any other result is a contract error.
+	fetched : Res -> Try(File, FetchError)
+	fetched = |res| match res {
+		Fetched({ status, body, .. }) => if (status >= 200 and status < 300) Ok(body) else Err(Status(status))
+		Network(message) => Err(Network(message))
+		Timeout => Err(Timeout)
+		FileFailed(_) => Err(TooLarge)
+		Refused => Err(Refused)
+		_ => crash "contract: fetched was given a result that is not from File.fetch"
 	}
 
 	## What an effect site does with a result: a write to a state given the value
@@ -1083,6 +1295,27 @@ Core := [].{
 	## the bytes of its range.
 	worker_file : List(U8), { name : Str, mime : Str, size : U64, start : U64, len : U64 } -> File
 	worker_file = |bytes, { name, mime, size, start, len }| { at: Worker(bytes), name, mime, size, start, len }
+
+	## For the wire format: a file a task's job was sent, as the worker's
+	## host minted its handle; decoding the payload gives it its name, type
+	## and range (`placed_file`).
+	held_file : Box(U64) -> File
+	held_file = |handle| { at: Page(Blob.(handle)), name: "", mime: "", size: 0, start: 0, len: 0 }
+
+	## For the wire format: the file that arrived beside a payload at a
+	## file's place (its bytes, or its handle), with the name, type, size
+	## and range the payload gives it. Bytes that are not the range's
+	## length, or a range outside the size, are `Malformed`.
+	placed_file : File, { name : Str, mime : Str, size : U64, start : U64, len : U64 } -> Try(File, [Malformed])
+	placed_file = |source, { name, mime, size, start, len }| {
+		if start > size or len > size - start {
+			return Err(Malformed)
+		}
+		match source.at {
+			Worker(bytes) => if (bytes.len() == len) Ok({ at: Worker(bytes), name, mime, size, start, len }) else Err(Malformed)
+			Page(blob) => Ok({ at: Page(blob), name, mime, size, start, len })
+		}
+	}
 
 	## For test platforms and harnesses: decode an effect result payload as the
 	## host encodes it (design.md, Appendix B). A payload that does not follow the
@@ -1352,19 +1585,24 @@ Core := [].{
 	## A preparation registers under its own name with the names of the
 	## queries it answers (`queries`), and `prepare` builds the [Kept] value
 	## those queries read; an ordinary program has no queries.
-	Registration :: { name : Str, run : (List(U8), List(List(U8)) -> List(U8)), queries : List(Str), prepare : (List(U8), List(List(U8)) -> Kept) }
+	##
+	## A task (design.md, "Tasks") registers `task!`, its effectful entry
+	## from input bytes and the handles the worker's host minted for the
+	## job's files to its answer, `n:u32 (token:u64)* output:rest`; a
+	## program's `task!` and a task's `run` are contract errors.
+	Registration :: { name : Str, run : (List(U8), List(List(U8)) -> List(U8)), queries : List(Str), prepare : (List(U8), List(List(U8)) -> Kept), task! : (List(U8), List(Box(U64)) => List(U8)) }
 
 	## `registration(name, run)`: the worker program `name`, which turns a `Work`
 	## request's input bytes into its output bytes with `run`. `run` must be pure:
 	## it runs in a separate instance of the same module that shares nothing with
 	## the page's instance but the bytes it is given.
 	registration : Str, (List(U8) -> List(U8)) -> Registration
-	registration = |name, run| { name, run: |input, _| run(input), queries: [], prepare: not_prepared }
+	registration = |name, run| { name, run: |input, _| run(input), queries: [], prepare: not_prepared, task!: not_task(name) }
 
 	## For the worker layer: a program that also reads the files its request
 	## named, each the bytes of its range, read into the worker's memory.
 	registration_with_files : Str, (List(U8), List(List(U8)) -> List(U8)) -> Registration
-	registration_with_files = |name, run| { name, run, queries: [], prepare: not_prepared }
+	registration_with_files = |name, run| { name, run, queries: [], prepare: not_prepared, task!: not_task(name) }
 
 	## For the worker layer: the preparation `name`, which answers the
 	## queries `queries`. `prepare` turns the preparation's input bytes and
@@ -1372,7 +1610,15 @@ Core := [].{
 	## it must be pure, and every answer must be what preparing afresh and
 	## asking would give.
 	registration_prepared : Str, List(Str), (List(U8), List(List(U8)) -> Kept) -> Registration
-	registration_prepared = |name, queries, prepare| { name, run: |_, _| crash "contract: worker program \"${name}\" is a preparation; ask one of its queries", queries, prepare }
+	registration_prepared = |name, queries, prepare| { name, run: |_, _| crash "contract: worker program \"${name}\" is a preparation; ask one of its queries", queries, prepare, task!: not_task(name) }
+
+	## For the worker layer: the task `name` (design.md, "Tasks"), whose
+	## effectful entry `task!` turns a `Task` request's input bytes and the
+	## handles of its files into its answer, `n:u32 (token:u64)*
+	## output:rest`. It runs in a worker instance, where it may call the
+	## platform's hosted effects on those handles and on builders it opens.
+	registration_task : Str, (List(U8), List(Box(U64)) => List(U8)) -> Registration
+	registration_task = |name, task!| { name, run: |_, _| crash "contract: worker program \"${name}\" is a task; request it with a Task request", queries: [], prepare: not_prepared, task! }
 
 	## A prepared program's state as a worker instance holds it between jobs
 	## (design.md, "Prepared programs"): the preparation's name and `ask`,
@@ -1442,8 +1688,13 @@ Core := [].{
 				fresh = { root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, fx }, programs }
 				handles = blobs.map(|b| Blob.(b))
 				if node == fx_node {
-					# A port's answer that carries files (result tag 14).
-					finish(Core.result(fresh, handler, (programs.ports.decode)(record, handles)), [], wbuf)
+					# A result that carries files: a port's answer (result
+					# tag 14), a task's answer (20) or a fetched body (21).
+					res = match record {
+						[20, ..] | [21, ..] => decode_held_res(record, handles)
+						_ => (programs.ports.decode)(record, handles)
+					}
+					finish(Core.result(fresh, handler, res), [], wbuf)
 				} else {
 					finish(Core.event_files(fresh, node, handler, record, handles), [], wbuf)
 				}
@@ -1464,6 +1715,40 @@ Core := [].{
 	## state an instance keeps, returning the query's output bytes.
 	work_ask : Kept, List(U8), List(List(U8)) -> List(U8)
 	work_ask = |kept_state, payload, files| run_ask(kept_state, payload, files)
+
+	## For the platform's hosts: a worker instance's task entry (design.md,
+	## "Tasks"). It runs the task named in `name:str input:rest` with the
+	## handles the instance's host minted for the job's files, in the
+	## request's order, and returns its answer, `n:u32 (token:u64)*
+	## output:rest`: the instance's tokens of the files the answer holds,
+	## then the answer's bytes. A name that is not a task registered in this
+	## module is a contract error that poisons this worker instance only.
+	work_task! : Program, List(U8), List(Box(U64)) => List(U8)
+	work_task! = |p, payload, handles| {
+		registrations = p.workers
+		_ = catalogue_names(registrations)
+		(name, at) = get_str(payload, 0, "task payload")
+		match registrations.find_first(|r| r.name == name) {
+			Ok(r) => {
+				run! = r.task!
+				owned_bytes(run!(payload.drop_first(at), handles))
+			}
+			Err(_) => crash "contract: worker program \"${name}\" is not registered in this module"
+		}
+	}
+
+	## For the worker layer: a task's answer as its entry returns it,
+	## `n:u32 (token:u64)* output:rest`, from the answer's bytes and the
+	## files it holds, in the order the bytes refer to them. Each must be a
+	## handle the job holds.
+	task_answer : List(U8), List(File) -> List(U8)
+	task_answer = |bytes, files| {
+		var $b = put_u32(List.with_capacity(4 + 8 * files.len() + bytes.len()), files.len().to_u32_wrap())
+		for f in files {
+			$b = put_u64($b, held_ref(f, "a task's answer").token)
+		}
+		$b.concat(bytes)
+	}
 
 	## For test platforms and harnesses: the catalogue rule `with_workers`
 	## enforces, as a value: the registered names in order, or the contract
@@ -3825,20 +4110,26 @@ comp_settle = |prop, snk, block, env, out, tx| {
 #                            11 READ mode:u8 token:u64 start:u64 len:u64 max_bytes:u64 (a file's range)
 #                            12 UPLOAD method:str url:str n:u32 (name:str value:str)* token start len timeout_ms:u32
 #                            13 DIGEST algorithm:u8 token start len   14 URL token start len
+#                            15 FETCH method:str url:str n:u32 (name:str value:str)* timeout_ms:u32
+#             (kind 8's flag after its deadline: 0 a program, 1 a prepared
+#             query with its operands, 2 a task)
 #  14 CANCEL  id
 #  15 NAV     mode:u8 (1 push, 2 replace) url:str
 #  16 STORE   op:u8 (1 set: key:str value:str, 2 remove: key:str)
 #  17 TITLE   text:str
 #  18 FOCUS   op:u8 (1 focus, 2 blur, 3 select text) node   (end of turn)
 #  19 PORT    port:str message (a port command; design.md, Appendix B)
+#  20 SAVE    token:u64 start:u64 len:u64 name:str (save a file's range)
 # Results come back as an event on node `fx_node` with handler = id and
 # payload bytes: 1 status:u16 n:u32 (name:str value:str)* body (HTTP
 # response with its headers), 7 (HTTP timeout), 2 message (network
 # failure), 3 value (storage value), 4 (storage missing), 5 (timer
 # fired), 6 url (location), 8 online:u8, 9 visible:u8, 10 output (work
 # result bytes), 11 class:u8 (work lost), 13 reason:u8 (file failure),
-# 14 message (port reply), 15 class:u8 [text] (port failure; design.md,
-# Appendix B).
+# 14 message (port reply), 15 class:u8 [text] (port failure), 20 n:u32
+# (size name type)* output (a task's answer, with n staged handles), 21
+# status:u16 headers size name type (a fetched body, one staged handle;
+# design.md, Appendix B).
 
 ## Largest per-request HTTP timeout or work deadline the host will arm (10
 ## minutes).
@@ -3917,6 +4208,19 @@ run_work = |registrations, payload, files| {
 				Err(_) => crash "contract: worker program \"${name}\" is not registered in this module"
 			}
 	}
+}
+
+## The `task!` of a registration that is not a task: a `Task` request for
+## it is a contract error in the worker that runs it.
+not_task : Str -> (List(U8), List(Box(U64)) => List(U8))
+not_task = |name| |_, _| crash "contract: worker program \"${name}\" is not a task; request it with a Work request"
+
+## A file's handle and range for an effect on it in a task's job, which
+## `what` names. A file whose bytes a pure program was sent has no handle.
+held_ref : File, Str -> { token : U64, start : U64, len : U64 }
+held_ref = |f, what| match f.at {
+	Page(blob) => { token: blob.token(), start: f.start, len: f.len }
+	Worker(_) => crash "contract: ${what} was given \"${f.name}\", whose bytes a pure program was sent; only a task holds files as handles"
 }
 
 ## A placeholder `prepare` for a registration that is not a preparation;
@@ -4150,8 +4454,63 @@ decode_res_with = |b, port_res| {
 		FileUrl(text(1))
 	} else if tag == 14 or tag == 15 {
 		port_res(b, [])
+	} else if tag == 20 or tag == 21 {
+		decode_held_res(b, [])
 	} else {
 		crash "contract: unknown effect result tag ${tag.to_str()}"
+	}
+}
+
+## Result tags 20 and 21 (design.md, Appendix B), paired in order with the
+## handles the host minted for their files: a task's answer, `n:u32
+## (size:u64 name:str type:str)*n output:rest`, and a response whose body
+## is a file, `status:u16 n:u32 (name:str value:str)*n size:u64 name:str
+## type:str` with exactly one handle. Anything else is a contract error.
+decode_held_res : List(U8), List(Blob) -> Res
+decode_held_res = |b, handles| {
+	what = "effect result tag ${(b.first() ?? 0).to_str()}"
+	files_at = |at0, count| {
+		if count != handles.len() {
+			crash "contract: an ${what} lists ${count.to_str()} files but the host minted ${handles.len().to_str()} handles"
+		}
+		var $at = at0
+		var $files = List.with_capacity(count)
+		for blob in handles {
+			size = get_u64(b, $at, what)
+			(name, a1) = get_str(b, $at + 8, what)
+			(mime, a2) = get_str(b, a1, what)
+			$files = $files.append({ at: Page(blob), name, mime, size, start: 0, len: size })
+			$at = a2
+		}
+		($files, $at)
+	}
+	match b {
+		[20, ..] => {
+			count = get_u32(b, 1, what).to_u64()
+			(files, at) = files_at(5, count)
+			Answered({ output: b.drop_first(at), files })
+		}
+		[21, s0, s1, ..] => {
+			status = s0.to_u16() + s1.to_u16().shl_wrap(8)
+			n = get_u32(b, 3, what).to_u64()
+			var $at = 7.U64
+			var $headers = []
+			while $headers.len() < n {
+				(k, a1) = get_str(b, $at, what)
+				(v, a2) = get_str(b, a1, what)
+				$headers = $headers.append((k, v))
+				$at = a2
+			}
+			(files, end) = files_at($at, 1)
+			if end != b.len() {
+				crash "contract: an ${what} carries ${(b.len() - end).to_str()} unexpected trailing bytes"
+			}
+			match files {
+				[body] => Fetched({ status, headers: $headers, body })
+				_ => crash "contract: an ${what} needs exactly one file"
+			}
+		}
+		_ => crash "contract: an ${what} carries file handles it cannot hold"
 	}
 }
 
@@ -4454,6 +4813,7 @@ is_kept = |req| match req {
 	Upload(_) => True
 	StorageGet(_) => True
 	PortCall(_) => True
+	Fetch(_) => True
 	_ => False
 }
 
@@ -4501,6 +4861,14 @@ put_fx = |c, id, req| {
 		Sha256(f) => put_file(head.append(13).append(1), f)
 		ObjectUrl(f) => put_file(head.append(14), f)
 		Ask({ program, input, files, deadline_ms }) => put_ask(head, program, input, files, deadline_ms)
+		Task({ program, input, files, deadline_ms, .. }) => put_work(head, program, input, files, deadline_ms).append(2)
+		Fetch({ method, url, headers, timeout_ms }) => {
+			var $b = put_u32(put_str(put_str(head.append(15), method), url), headers.len().to_u32_wrap())
+			for (k, v) in headers {
+				$b = put_str(put_str($b, k), v)
+			}
+			put_u32($b, min_u32(timeout_ms, max_timeout_ms))
+		}
 		_ => crash "not an awaited request"
 	}
 }
@@ -4593,6 +4961,19 @@ issue = |tx, path, reqs, a, owned| {
 				(id, t1) = fx_admit(t0, path, req)
 				$tx = t1
 				$owned = $owned.append({ id, sub: False, keep: False, a })
+			}
+			Task({ program, on_dispose, .. }) => {
+				t0 = with_fx($tx, |fx| { ..fx, focus: fx.focus.append(CheckProgram(program, path)) })
+				(id, t1) = fx_admit(t0, path, req)
+				$tx = t1
+				$owned = $owned.append({ id, sub: False, keep: on_dispose == Keep, a })
+			}
+			Save({ file, name }) => {
+				# Opcode 20 is not counted by opcode: index 20 of the work
+				# record is `set_checked`.
+				{ token, start, len } = file_ref(file)
+				{ cmds, next, free, routes, work, paths, site_free, fx } = $tx
+				$tx = { cmds: put_str(put_u64(put_u64(put_u64(cmds.append(20), token), start), len), name), next, free, routes, work, paths, site_free, fx }
 			}
 			_ => {
 				(id, t1) = fx_admit($tx, path, req)
@@ -4809,7 +5190,7 @@ cleanup_inst = |name, v, plan| Inst(
 ## Requests that are emitted and forgotten.
 is_command : Req -> Bool
 is_command = |req| match req {
-	Push(_) | Replace(_) | Title(_) | Focus(_) | Blur(_) | SelectText(_) | StorageSet(_, _) | StorageRemove(_) | PortCommand(_) => True
+	Push(_) | Replace(_) | Title(_) | Focus(_) | Blur(_) | SelectText(_) | StorageSet(_, _) | StorageRemove(_) | PortCommand(_) | Save(_) => True
 	_ => False
 }
 

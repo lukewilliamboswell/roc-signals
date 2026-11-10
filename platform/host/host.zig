@@ -666,6 +666,166 @@ export fn files_released() callconv(.c) u32 {
     return @intCast(n);
 }
 
+// ---------------------------------------------------------------------------
+// Tasks (design.md, "Tasks"). A worker instance runs a task's job with
+// `task()`: the job's files are handles the worker script staged with
+// `files_stage`, in the request's order, and the task calls the platform's
+// hosted effects on them (`roc_task_*`, below). Each hosted effect is
+// performed by an import of the worker script, which holds the browser
+// objects behind the tokens; the host only checks that a job is running,
+// moves bytes in and out of linear memory, and mints handles. Builders
+// and their parts live in the worker script, named by a token of this
+// instance's blob heap, never here.
+
+extern fn roc_engine_task(payload: RocList, handles: RocList) callconv(.c) RocList;
+
+/// The worker script's halves of the hosted effects. A page instance
+/// supplies stubs that throw; the host never calls one outside a job.
+extern "env" fn js_file_read(token: u64, start: u64, len: u64, dst: usize) u32;
+extern "env" fn js_file_size(token: u64) u64;
+extern "env" fn js_builder_open(token: u64, name: usize, name_len: usize, mime: usize, mime_len: usize, from: u64, start: u64, len: u64) u32;
+extern "env" fn js_builder_append(token: u64, src: usize, len: usize) u32;
+extern "env" fn js_builder_append_file(token: u64, file: u64, start: u64, len: u64) u32;
+extern "env" fn js_builder_finish(token: u64, file: u64) u32;
+
+/// Whether a task's job is running: the hosted effects refuse to act
+/// otherwise. Set only for the length of `task()`.
+var in_task: bool = false;
+
+/// A hosted effect reached outside a task's job: a contract fault of this
+/// instance, classified like any other, rather than a JavaScript exception
+/// unwinding through Wasm.
+fn outsideTask(comptime effect: []const u8) noreturn {
+    const msg = "contract: " ++ effect ++ " is a task effect and ran outside a task's job; only a worker task (Worker.task) may call it";
+    keepError(msg.ptr, msg.len);
+    poison(1);
+}
+
+/// Run one task job (design.md, Appendix B). The staged payload,
+/// `name:str input:rest`, and the handles `files_stage` minted for the
+/// job's files move into Roc, which runs the task of that name; its answer,
+/// `n:u32 (token:u64)* output:rest`, takes the command buffer's slot as
+/// `work()`'s output does, and the previous call's output is released
+/// first. Ownership: the payload and the handle list belong to Roc from
+/// the call on; the answer belongs to the host until the next call; the
+/// handles the answer names are released by Roc when the call returns
+/// (retired, not freed), so their tokens still resolve until the worker
+/// script drains `files_released`. A mounted instance (the page's) is
+/// never a task's instance: calling it there is a contract fault.
+fn runTask() callconv(.c) void {
+    refuseIfPoisoned();
+    if (state != null) {
+        const msg = "contract: task() was called on the page's instance; a task's job runs only in a worker instance";
+        keepError(msg.ptr, msg.len);
+        poison(1);
+    }
+    const payload = pending_payload;
+    const handles = pending_blobs;
+    const previous = cmds;
+    pending_payload = RocList.empty;
+    pending_blobs = RocList.empty;
+    cmds = RocList.empty;
+    releaseList(previous);
+    in_task = true;
+    cmds = roc_engine_task(payload, handles);
+    in_task = false;
+}
+
+/// Release one reference to a `List(U8)` a hosted function was given
+/// (hosted functions own their arguments). A seamless slice keeps its
+/// allocation's address, tagged in the low bit, in place of the capacity.
+fn releaseArg(list: RocList) void {
+    const alloc_ptr: [*]u8 = if (list.cap & 1 != 0) @ptrFromInt(list.cap & ~@as(usize, 1)) else (list.ptr orelse return);
+    const rc: *isize = @ptrCast(@alignCast(alloc_ptr - @sizeOf(usize)));
+    if (rc.* == 0) return;
+    if (rc.* == 1) {
+        roc_dealloc(alloc_ptr - @sizeOf(usize), @alignOf(usize));
+    } else rc.* -= 1;
+}
+
+/// `Hosted.read!`: `len` bytes at `start` of the file behind `token`, read
+/// by the worker script straight into a fresh Roc list the host allocates
+/// (one copy). The list's single reference passes to Roc. When the browser
+/// cannot read the file the list is freed and an empty one returned, which
+/// Roc reads as `Unreadable` (it asked for `len` bytes).
+fn hostedRead(token: u64, start: u64, len: u64) callconv(.c) RocList {
+    if (!in_task) outsideTask("File.read!");
+    if (len == 0) return RocList.empty;
+    const n: usize = std.math.cast(usize, len) orelse outOfMemory(std.math.maxInt(usize));
+    const base: [*]u8 = @ptrCast(allocRaw(n + @sizeOf(usize), @alignOf(usize)));
+    @as(*isize, @ptrCast(@alignCast(base))).* = 1;
+    const data = base + @sizeOf(usize);
+    if (js_file_read(token, start, len, @intFromPtr(data)) == 0) {
+        _ = freeRaw(base, @alignOf(usize));
+        return RocList.empty;
+    }
+    return .{ .ptr = data, .len = n, .cap = n << 1 };
+}
+
+/// `Hosted.size!`: the size of the file behind `token`.
+fn hostedSize(token: u64) callconv(.c) u64 {
+    if (!in_task) outsideTask("Builder.finish!");
+    return js_file_size(token);
+}
+
+/// `Hosted.mint!`: a fresh handle in this instance's blob heap, refcount 1,
+/// owned by Roc. Its last release retires the slot; the worker script lets
+/// go of the object behind it when it drains `files_released` after the
+/// job. A job that holds more handles than the heap has is a
+/// resource-limit fault.
+fn hostedMint() callconv(.c) *u64 {
+    if (!in_task) outsideTask("File.build!");
+    return blobs.mint({}) orelse {
+        const msg = "resource_limit: a task's job holds more than 64 files and builders at once";
+        keepError(msg.ptr, msg.len);
+        poison(2);
+    };
+}
+
+/// `Hosted.open!`: make `token` a builder. The name and type lists are
+/// read in place and released here.
+fn hostedOpen(token: u64, name: RocList, mime: RocList, from: u64, start: u64, len: u64) callconv(.c) u8 {
+    if (!in_task) outsideTask("File.build!");
+    const status = js_builder_open(token, if (name.ptr) |p| @intFromPtr(p) else 0, name.len, if (mime.ptr) |p| @intFromPtr(p) else 0, mime.len, from, start, len);
+    releaseArg(name);
+    releaseArg(mime);
+    return @intCast(status);
+}
+
+/// `Hosted.append!`: the worker script copies `bytes` out of linear memory
+/// into a part of its own (the one copy of a written byte), then the list
+/// is released here.
+fn hostedAppend(token: u64, bytes: RocList) callconv(.c) u8 {
+    if (!in_task) outsideTask("Builder.append!");
+    const status = js_builder_append(token, if (bytes.ptr) |p| @intFromPtr(p) else 0, bytes.len);
+    releaseArg(bytes);
+    return @intCast(status);
+}
+
+/// `Hosted.append_file!`: a range of a file, by reference.
+fn hostedAppendFile(token: u64, file: u64, start: u64, len: u64) callconv(.c) u8 {
+    if (!in_task) outsideTask("Builder.append_file!");
+    return @intCast(js_builder_append_file(token, file, start, len));
+}
+
+/// `Hosted.finish!`: the worker script composes the builder's parts into
+/// one immutable object behind the fresh handle `file`.
+fn hostedFinish(token: u64, file: u64) callconv(.c) u8 {
+    if (!in_task) outsideTask("Builder.finish!");
+    return @intCast(js_builder_finish(token, file));
+}
+
+comptime {
+    @export(&runTask, .{ .name = "task" });
+    @export(&hostedRead, .{ .name = "roc_task_read" });
+    @export(&hostedSize, .{ .name = "roc_task_size" });
+    @export(&hostedMint, .{ .name = "roc_task_mint" });
+    @export(&hostedOpen, .{ .name = "roc_task_open" });
+    @export(&hostedAppend, .{ .name = "roc_task_append" });
+    @export(&hostedAppendFile, .{ .name = "roc_task_append_file" });
+    @export(&hostedFinish, .{ .name = "roc_task_finish" });
+}
+
 /// Release the instance and the command buffer (teardown).
 /// Teardown. Idempotent at the containment boundary: a poisoned instance
 /// (or one already dropped) does nothing.

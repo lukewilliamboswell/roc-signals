@@ -148,7 +148,17 @@ Wire := [].{
 	## list. A file the payload refers to that is not there, or whose bytes
 	## are not its length, is `Malformed`.
 	decode_with_files : List(U8), List(List(U8)) -> Try(a, Error) where [a.Sendable]
-	decode_with_files = |bytes, files| {
+	decode_with_files = |bytes, contents| {
+		empty = { name: "", mime: "", size: 0, start: 0, len: 0 }
+		Wire.decode_with_held(bytes, contents.map(|c| Core.worker_file(c, empty)))
+	}
+
+	## For the worker layer: decode a payload whose files arrived beside it
+	## as the files at their places: handles a task's job or the page holds
+	## (`Core.held_file`, or a task's answer's files), or bytes. Each takes
+	## the name, type, size and range the payload gives it.
+	decode_with_held : List(U8), List(Core.File) -> Try(a, Error) where [a.Sendable]
+	decode_with_held = |bytes, files| {
 		## The caller's type, named so its derived codec can be asked for.
 		Shape : a
 		parse_shape = Shape.parser_for(Format.Default)
@@ -216,7 +226,7 @@ Wire := [].{
 	## The decoder's cursor: the input, the position, the open container and
 	## those around it, and the field names positional records have cached.
 	## Applications never construct one.
-	State := { bytes : List(U8), pos : U64, top : Frame, outer : List(Frame), names : List(Str), files : List(List(U8)) }
+	State := { bytes : List(U8), pos : U64, top : Frame, outer : List(Frame), names : List(Str), files : List(Core.File) }
 
 	## The format marker the compiler dispatches on. Its methods are the
 	## derivation hooks; applications call `encode` and `decode` instead.
@@ -750,8 +760,9 @@ Wire := [].{
 			Ok({ bytes: written, depth, deep, files: files.append(file) })
 		}
 
-		## A file, holding the bytes that arrived beside the payload at its
-		## place, which must be as many as its range.
+		## A file: what arrived beside the payload at its place (its bytes,
+		## which must be as many as its range, or its handle), with the name,
+		## type, size and range the payload gives it.
 		parse_file : Format, State -> Try({ value : Core.File, rest : State }, Error)
 		parse_file = |_, state| {
 			index = read_count(state, 0)?
@@ -760,11 +771,9 @@ Wire := [].{
 			size = read_count(mime.rest, 0)?
 			start = read_count(size.rest, 0)?
 			len = read_count(start.rest, 0)?
-			contents = state.files.get(index.value) ? |_| Malformed
-			if contents.len() != len.value or start.value > size.value or len.value > size.value - start.value {
-				return Err(Malformed)
-			}
-			Ok({ value: Core.worker_file(contents, { name: name.value, mime: mime.value, size: size.value, start: start.value, len: len.value }), rest: len.rest })
+			source = state.files.get(index.value) ? |_| Malformed
+			file = Core.placed_file(source, { name: name.value, mime: mime.value, size: size.value, start: start.value, len: len.value })?
+			Ok({ value: file, rest: len.rest })
 		}
 
 		## `Bytes`: a count, then the bytes, shared with the input.

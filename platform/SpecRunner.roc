@@ -119,12 +119,33 @@ SpecRunner := [].{
 
 		## A call on a port, answered with `answer-port`.
 		PortRequest({ port : Str, json : Str, timeout_ms : U32 }),
+
+		## A task's job (design.md, "Tasks"): its task, input, deadline,
+		## and the handles and ranges of the files it names. The `spec`
+		## command runs it in a child process (`Io.task!`), which serves
+		## its hosted effects.
+		TaskRequest({ program : Str, input : List(U8), deadline_ms : U32, files : List({ token : U64, start : U64, len : U64 }) }),
+
+		## An HTTP request whose body becomes a file (`File.fetch`):
+		## `run-effect` answers it with the staged stub, its body as the
+		## file, through a handle the host mints.
+		FetchRequest,
 	]
 
 	## The most bytes a digest or a page read reads: the runtime's default
 	## `maxFileBytes`.
 	max_digest_bytes : U64
 	max_digest_bytes = 256 * 1024 * 1024
+
+	## The most bytes a task's job appends to its builders when a spec does
+	## not say: the runtime's default `maxOutputBytes` (design.md, "Tasks").
+	max_output_bytes : U64
+	max_output_bytes = 256 * 1024 * 1024
+
+	## The most bytes a fetched body may hold: the runtime's default
+	## `maxFileBytes`.
+	max_fetch_bytes : U64
+	max_fetch_bytes = 256 * 1024 * 1024
 
 	## The modelled browser around the DOM. `doc` numbers the current document;
 	## a cross-document navigation mounts the app afresh in the next one.
@@ -151,6 +172,14 @@ SpecRunner := [].{
 
 		## The port commands the app sent in this document, in order.
 		port_log : List({ port : Str, json : Str }),
+
+		## The files the app saved in this document (`SAVE`), in order: the
+		## name and the bytes of the range, read when the batch was applied.
+		saves : List({ name : Str, bytes : List(U8) }),
+
+		## The most bytes a task's job may append to its builders (the
+		## `max-output-bytes` setup, else the runtime's default).
+		max_output : U64,
 	}
 
 	## A setup file: its name, media type and contents.
@@ -213,6 +242,24 @@ SpecRunner := [].{
 		b2 = b.get(at + 2) ? |_| Short
 		b3 = b.get(at + 3) ? |_| Short
 		Ok(b0.to_u32() + b1.to_u32().shl_wrap(8) + b2.to_u32().shl_wrap(16) + b3.to_u32().shl_wrap(24))
+	}
+
+	## A `u64` at `at` of a record the runner's own host wrote; a
+	## truncated one is the host's bug.
+	get_u64 : List(U8), U64 -> U64
+	get_u64 = |b, at| {
+		lo = SpecRunner.get_u32(b, at) ?? crash "SpecRunner.get_u64: a host record is truncated"
+		hi = SpecRunner.get_u32(b, at + 4) ?? crash "SpecRunner.get_u64: a host record is truncated"
+		lo.to_u64() + hi.to_u64().shl_wrap(32)
+	}
+
+	## A string (`len:u32 bytes`) at `at` of a record the runner's own host
+	## wrote, and where it ends.
+	get_str : List(U8), U64 -> (Str, U64)
+	get_str = |b, at| {
+		len = (SpecRunner.get_u32(b, at) ?? crash "SpecRunner.get_str: a host record is truncated").to_u64()
+		text = Str.from_utf8(b.sublist({ start: at + 4, len })) ?? crash "SpecRunner.get_str: a host record's text is not UTF-8"
+		(text, at + 4 + len)
 	}
 
 	## The declared storage keys: `count:u32 (key:str)*`.
@@ -285,6 +332,8 @@ SpecRunner := [].{
 		p = b.pending.find_first(|q| q.id == id) ? |_| "effect occurrence ${n.to_str()} is not pending (cancelled or done)"
 		match p.kind {
 			WorkRequest({ deadline_ms, .. }) => Ok({ id, deadline_ms })
+			TaskRequest({ deadline_ms, .. }) => Ok({ id, deadline_ms })
+			FetchRequest => Err("effect occurrence ${n.to_str()} is a fetch, not a worker job")
 			HttpRequest => Err("effect occurrence ${n.to_str()} is an HTTP request, not a worker job")
 			TimerRequest => Err("effect occurrence ${n.to_str()} is a timer, not a worker job")
 			ReadRequest(_) => Err("effect occurrence ${n.to_str()} is a file read, not a worker job")
@@ -401,6 +450,8 @@ SpecRunner := [].{
 		files: [],
 		given: [],
 		port_log: [],
+		saves: [],
+		max_output: SpecRunner.max_output_bytes,
 	}
 
 	## A runner state for instance `inst` before its first batch.
@@ -450,6 +501,20 @@ SpecRunner := [].{
 				PortSend(port, msg) => { ..b, port_log: b.port_log.append({ port, json: msg.json }) }
 				PortCall(id, port, msg, timeout_ms) => { ..b, pending: b.pending.append({ id, url: "port", body: "", kind: PortRequest({ port, json: msg.json, timeout_ms }) }), issued: b.issued.append(id) }
 				PortListen(id, port, msg) => { ..b, subs: b.subs.append({ id, sub: PortSub(port, msg.json) }) }
+				WorkTask(id) => {
+					as_task = |p| if (p.id == id) {
+						..p,
+						kind: match p.kind {
+							WorkRequest({ program, input, deadline_ms, files }) => TaskRequest({ program, input, deadline_ms, files })
+							other => other
+						},
+					} else p
+					{ ..b, pending: b.pending.map(as_task) }
+				}
+				Fetch(id, _, url, _, _) => { ..b, pending: b.pending.append({ id, url, body: "", kind: FetchRequest }), issued: b.issued.append(id) }
+				# The runtime resolves a save's file when it applies the batch,
+				# while a handle the batch released still names its file.
+				Save(file, name) => { ..b, saves: b.saves.append({ name, bytes: SpecRunner.file_bytes(b, file) }) }
 			}
 		}
 		$b
@@ -467,6 +532,7 @@ SpecRunner := [].{
 		var $visible = Bool.True
 		var $storage_available = Bool.True
 		var $files = []
+		var $max_output = SpecRunner.max_output_bytes
 		for entry in spec.setup {
 			match entry.item {
 				InitialLocation(url) => {
@@ -490,6 +556,9 @@ SpecRunner := [].{
 					}
 					$files = $files.append({ name, mime, bytes: List.repeat(text.to_utf8(), repeat).join() })
 				}
+				MaxOutputBytes(n) => {
+					$max_output = n
+				}
 			}
 		}
 		if !$storage_available and !$storage.is_empty() {
@@ -497,7 +566,7 @@ SpecRunner := [].{
 		}
 		s0 = SpecRunner.mount_in(program, { url: $url, storage: $storage, online: $online, visible: $visible, storage_available: $storage_available })
 		b0 = s0.browser
-		Ok({ ..s0, browser: { ..b0, files: $files } })
+		Ok({ ..s0, browser: { ..b0, files: $files, max_output: $max_output } })
 	}
 
 	## Mount the app at `url` with `storage` as local storage; the app's
@@ -691,6 +760,8 @@ SpecRunner := [].{
 			UrlRequest(file) => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, SpecRunner.url_result(file)))
 			DigestRequest(_) => return Err("run-effect ${n.to_str()} answers a digest, which the spec command's host computes; fuzz targets and soak walks do not have one")
 			PortRequest({ port, .. }) => return Err("effect occurrence ${n.to_str()} is a call on port ${JsonOut.quote(port)}; answer it with answer-port")
+			TaskRequest(_) => return Err("run-effect ${n.to_str()} runs a task's job, which needs the spec command's host for its effects; fuzz targets and soak walks do not have one")
+			FetchRequest => return Err("run-effect ${n.to_str()} answers a fetch, whose body the spec command's host holds as a file; fuzz targets and soak walks do not have one")
 			HttpRequest => {}
 			UploadRequest(_) => {}
 		}
@@ -1101,6 +1172,7 @@ SpecRunner := [].{
 					|q|
 						match q.kind {
 							WorkRequest(w) => w.program == name
+							TaskRequest(t) => t.program == name
 							_ => Bool.False
 						},
 				)
@@ -1218,6 +1290,15 @@ SpecRunner := [].{
 				got = SpecRunner.port_subscriptions(s, port)
 				check(got == count, "${got.to_str()} live subscriptions on port ${JsonOut.quote(port)}, expected ${count.to_str()}")
 			}
+			ExpectSaved({ index, name, text }) =>
+				match b.saves.get(index - 1) {
+					Ok(saved) => {
+						got = Str.from_utf8(saved.bytes) ?? "<${saved.bytes.len().to_str()} bytes that are not UTF-8>"
+						check(saved.name == name and got == text, "save ${index.to_str()} was ${JsonOut.quote(saved.name)} holding ${JsonOut.quote(got)}, expected ${JsonOut.quote(name)} holding ${JsonOut.quote(text)}")
+					}
+					Err(_) => Err("the app saved ${b.saves.len().to_str()} files, so there is no save ${index.to_str()}")
+				}
+			ExpectSaves(n) => check(b.saves.len() == n, "the app saved ${b.saves.len().to_str()} files, expected ${n.to_str()}")
 		}
 	}
 
@@ -1525,7 +1606,7 @@ SpecRunner := [].{
 		} else {
 			s1 = SpecRunner.mount_in(program, { url, storage: b.storage, online: b.online, visible: b.visible, storage_available: b.storage_available })
 			b1 = s1.browser
-			Ok({ ..s1, mark: s.mark, browser: { ..b1, doc: b.doc + 1, back: b.back.append(entry), fwd: [], files: b.files, given: b.given } })
+			Ok({ ..s1, mark: s.mark, browser: { ..b1, doc: b.doc + 1, back: b.back.append(entry), fwd: [], files: b.files, given: b.given, max_output: b.max_output } })
 		}
 	}
 
@@ -1604,9 +1685,153 @@ SpecRunner := [].{
 		Ok(SpecRunner.answer_gets(program, SpecRunner.take(s1, inst, cmds, wbuf)))
 	}
 
-	## The host services a replay uses: running a worker job in a child
-	## process, and minting and counting file handles in the host's heap.
-	Host : { work! : List(U8), List(List(U8)) => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8) }
+	## The pending task job or fetch that step `op` answers, when `op` is a
+	## `run-effect` on one: a task job's request id, payload, the whole
+	## files its entries name, and its output bound; or a fetch's id and the
+	## staged stub, which `run-effect` consumes. The `spec` command runs a
+	## task job in a child process (`Io.task!`) and mints a fetched body's
+	## handle (`Io.mint_files!`); every other step goes through `one`.
+	held_of : S(state), Scm.Op -> Try([TaskJob({ id : U32, payload : List(U8), files : List(List(U8)), max_output : U64 }), FetchAnswer({ id : U32, stub : Scm.Stub })], Str)
+	held_of = |s, op|
+		match op {
+			RunEffect(n) => {
+				b = s.browser
+				id = b.issued.get(n - 1) ? |_| "not held"
+				p = b.pending.find_first(|q| q.id == id) ? |_| "not held"
+				match p.kind {
+					TaskRequest({ program: name, input, files, .. }) => {
+						whole = files.map(|r| SpecRunner.whole_file(b, r.token))
+						Ok(TaskJob({ id, payload: SpecRunner.put_str([], name).concat(input), files: whole, max_output: b.max_output }))
+					}
+					FetchRequest =>
+						match b.stub {
+							Staged(stub) => Ok(FetchAnswer({ id, stub }))
+							NoStub => Err("run-effect ${n.to_str()} answers ${p.url} without a staged stub")
+						}
+					_ => Err("not held")
+				}
+			}
+			_ => Err("not held")
+		}
+
+	## The bytes of the whole file a handle was given for: a task's job is
+	## sent the file, not its range, and reads the range itself.
+	whole_file : Browser, U64 -> List(U8)
+	whole_file = |b, token| {
+		name = (b.given.find_first(|g| g.token == token) ?? { token, name: "" }).name
+		(b.files.find_first(|f| f.name == name) ?? { name, mime: "", bytes: [] }).bytes
+	}
+
+	## Deliver a task job's answer from the runner's record of it
+	## (`Cli.task!`): tag 20's files are minted as the page's handles
+	## (`handles`, which `mint!` gave) and kept as files the runner can read
+	## back, named `#N` beside the spec's own files, and the answer goes to
+	## the app through the effect node with those handles, as the runtime
+	## delivers it. Tags 11 and 13 pass through. An empty record is a job
+	## that did not finish within the runner's bound. When the host had too
+	## few slots, the answer is `FileFailed(TooLarge)` and the handles it
+	## minted go unused, as the runtime does.
+	deliver_task! : Program(state), S(state), U32, List(U8), (U64 => List(Box(U64))) => Try(S(state), Str)
+	deliver_task! = |program, s, id, record, mint!| {
+		b = s.browser
+		rest = { ..s, browser: { ..b, pending: b.pending.keep_if(|q| q.id != id) } }
+		match record {
+			[] => Err("the task's job did not finish within 30 s; a spec expires a job's deadline with time-out-work")
+			[20, ..] => {
+				n = (SpecRunner.get_u32(record, 1) ?? 0).to_u64()
+				var $at = 5.U64
+				var $metas = []
+				while $metas.len() < n {
+					size = SpecRunner.get_u64(record, $at)
+					(name, a1) = SpecRunner.get_str(record, $at + 8)
+					(mime, a2) = SpecRunner.get_str(record, a1)
+					$metas = $metas.append({ size, name, mime })
+					$at = a2
+				}
+				out_len = SpecRunner.get_u64(record, $at)
+				output = record.sublist({ start: $at + 8, len: out_len })
+				$at = $at + 8 + out_len
+				handles = mint!(n)
+				if handles.len() < n {
+					return Ok(SpecRunner.deliver(program, rest, id, [13, 2]))
+				}
+				var $payload = SpecRunner.put_u32([20], n.to_u32_wrap())
+				var $files = rest.browser.files
+				var $given = rest.browser.given
+				var $k = 0
+				for meta in $metas {
+					handle = handles.get($k) ?? crash "SpecRunner.deliver_task!: minted"
+					bytes = record.sublist({ start: $at, len: meta.size })
+					$at = $at + meta.size
+					key = "#${(rest.browser.files.len() + $k).to_str()}"
+					$files = $files.append({ name: key, mime: meta.mime, bytes })
+					$given = $given.append({ token: Box.unbox(handle), name: key })
+					$payload = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u64($payload, meta.size), meta.name), meta.mime)
+					$k = $k + 1
+				}
+				rb = rest.browser
+				s1 = { ..rest, browser: { ..rb, files: $files, given: $given } }
+				(inst, cmds, wbuf) = (program.files)(s1.inst, s1.buf, s1.wbuf, SpecRunner.fx_node, id, $payload.concat(output), handles)
+				Ok(SpecRunner.answer_gets(program, SpecRunner.take(s1, inst, cmds, wbuf)))
+			}
+			_ => Ok(SpecRunner.deliver(program, rest, id, record))
+		}
+	}
+
+	## Answer a fetch with the staged stub (design.md, "Tasks"): a reply's
+	## body becomes a file the page holds, through a handle `mint!` gives,
+	## delivered as result tag 21 with the status and headers; a reject is
+	## `Timeout` or `Network` as for an HTTP request; a body over the
+	## runtime's `maxFileBytes` is `FileFailed(TooLarge)`. The stub's URL
+	## must be the request's.
+	deliver_fetch! : Program(state), S(state), U32, Scm.Stub, (U64 => List(Box(U64))) => Try(S(state), Str)
+	deliver_fetch! = |program, s, id, stub, mint!| {
+		b = s.browser
+		p = b.pending.find_first(|q| q.id == id) ? |_| "the fetch is not pending"
+		rest = { ..s, browser: { ..b, stub: NoStub, pending: b.pending.keep_if(|q| q.id != id) } }
+		match stub {
+			Reject({ kind, detail }) => Ok(SpecRunner.deliver(program, rest, id, SpecRunner.encode_reject(kind, detail)))
+			Reply({ url, status, headers, body }) => {
+				if url != p.url {
+					return Err("no spec stub for ${p.url} (stub is for ${url})")
+				}
+				bytes = body.to_utf8()
+				if bytes.len() > SpecRunner.max_fetch_bytes {
+					return Ok(SpecRunner.deliver(program, rest, id, [13, 2]))
+				}
+				handles = mint!(1)
+				handle = handles.first() ? |_| "the host had no slot for the fetched file"
+				mime = (headers.find_first(|h| h.name == "content-type") ?? { name: "", value: "" }).value
+				name = SpecRunner.url_file_name(url)
+				key = "#${b.files.len().to_str()}"
+				var $record = SpecRunner.put_u32([21, status.bitwise_and(0xFF).to_u8_wrap(), status.shr_zf_wrap(8).to_u8_wrap()], headers.len().to_u32_wrap())
+				for h in headers {
+					$record = SpecRunner.put_str(SpecRunner.put_str($record, h.name), h.value)
+				}
+				record = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u64($record, bytes.len()), name), mime)
+				rb = rest.browser
+				s1 = { ..rest, browser: { ..rb, files: rb.files.append({ name: key, mime, bytes }), given: rb.given.append({ token: Box.unbox(handle), name: key }) } }
+				(inst, cmds, wbuf) = (program.files)(s1.inst, s1.buf, s1.wbuf, SpecRunner.fx_node, id, record, handles)
+				Ok(SpecRunner.answer_gets(program, SpecRunner.take(s1, inst, cmds, wbuf)))
+			}
+		}
+	}
+
+	## The name a fetched body gets: the last segment of the URL's path,
+	## without its query or fragment, or `download` when that is empty, as
+	## the runtime names it.
+	url_file_name : Str -> Str
+	url_file_name = |url| {
+		path = url.split_on("?").first() ?? url
+		bare = path.split_on("#").first() ?? path
+		last = bare.split_on("/").last() ?? ""
+		if (last.is_empty()) "download" else last
+	}
+
+	## The host services a replay uses: running a worker job or a task job
+	## in a child process, and minting and counting file handles in the
+	## host's heap.
+	Host : { work! : List(U8), List(List(U8)) => List(U8), task! : List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8) }
 
 	## Replay one spec from a fresh mount, running each worker job with
 	## `work!` (the `spec` command's child process, `Io.work!`), and giving
@@ -1634,10 +1859,13 @@ SpecRunner := [].{
 					if (live == n) Ok($s) else Err("expected ${n.to_str()} live file handles, found ${live.to_str()}")
 				}
 				_ =>
-					match SpecRunner.digest_of($s, step.op) {
-						Ok({ id, bytes: Digest(bytes) }) => Ok(SpecRunner.deliver_digest(program, $s, id, [18].concat((host.sha256!)(bytes))))
-						Ok({ id, bytes: TooLarge }) => Ok(SpecRunner.deliver_digest(program, $s, id, [13, 2]))
-						Err(NoDigest) => SpecRunner.one(program, $s, step.op)
+					match (SpecRunner.held_of($s, step.op), SpecRunner.digest_of($s, step.op)) {
+						(Ok(TaskJob(job)), _) => SpecRunner.deliver_task!(program, $s, job.id, (host.task!)(job.payload, job.files, job.max_output), host.mint_files!)
+						(Ok(FetchAnswer({ id, stub })), _) => SpecRunner.deliver_fetch!(program, $s, id, stub, host.mint_files!)
+						(Err(message), _) if message != "not held" => Err(message)
+						(_, Ok({ id, bytes: Digest(bytes) })) => Ok(SpecRunner.deliver_digest(program, $s, id, [18].concat((host.sha256!)(bytes))))
+						(_, Ok({ id, bytes: TooLarge })) => Ok(SpecRunner.deliver_digest(program, $s, id, [13, 2]))
+						(_, Err(NoDigest)) => SpecRunner.one(program, $s, step.op)
 					}
 			}
 			match done {
@@ -1659,7 +1887,7 @@ SpecRunner := [].{
 
 	## The host services the `spec` command uses, passed in by the test
 	## program (the test platform's `Cli`), so this package stays pure.
-	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64, work! : List(U8), List(List(U8)) => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8) }
+	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64, work! : List(U8), List(List(U8)) => List(U8), task! : List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8) }
 
 	Options : { filter : Str, emit_steps : Bool, grammar : Bool, files : List(Str) }
 
@@ -1776,7 +2004,7 @@ SpecRunner := [].{
 						(io.stdout!)("${JsonOut.render(Scm.to_json(id, spec))}\n")
 					}
 					Ok(spec) => {
-						outcome = SpecRunner.run!(program, { work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256! }, spec)
+						outcome = SpecRunner.run!(program, { work!: io.work!, task!: io.task!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256! }, spec)
 						dt = (io.now_ns!)() - t0
 						line = match outcome {
 							Passed => {

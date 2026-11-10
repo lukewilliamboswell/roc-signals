@@ -387,6 +387,166 @@ Worker := [].{
 			_ => crash "contract: Worker.result was given a result that is not from a worker request"
 		}
 	}
+
+	# -- Tasks ----------------------------------------------------------------
+
+	## How a task is declared (see [Task]): its namespaced `name`, the
+	## effectful function `run!` its jobs run, a `deadline` after which a
+	## job that has not answered is stopped and answered `Timeout`
+	## (`Unlimited` by default; capped at ten minutes, and the time a job
+	## waits for a worker counts), and what disposing the site that asked
+	## for a job does to it: `Stop` it (the default), or `Keep` it running
+	## and deliver its answer to the nearest surviving ancestor, for a job
+	## whose work must not be lost when a panel closes.
+	TaskProps(input, output) := { name : Str, run! : input => output, deadline : [Unlimited, Ms(U32)] ?? Unlimited, on_dispose : [Stop, Keep] ?? Stop }
+
+	## A task: a registered effectful function from `input` to `output`
+	## that runs in a worker. Where a [Program] is a pure calculation on the
+	## bytes it is sent, a task's job reads the files its input holds
+	## through effects (`file.read!`), as much as it needs and no more, and
+	## writes new files with builders (`File.build!`), which its answer may
+	## hold. Make one with `task` or `fallible_task`, register it once with
+	## `registration`, and use it as a program is used: `request` and
+	## `result` in an effect site, or `derive` and `derive_when`.
+	##
+	## The page and the job share nothing but the input and the answer: a
+	## file crosses as a handle, never as its bytes, and the page holds the
+	## files of an answer as handles of its own. A job's effects are
+	## synchronous and act only on files; a job cannot wait for a timer, an
+	## event or a network response, and it reports nothing until it
+	## answers. A job that is stopped, times out or fails leaves nothing the
+	## page can see: the files it was building go with it.
+	Task(input, output) :: {
+		name : Str,
+		deadline_ms : U32,
+		on_dispose : [Stop, Keep],
+		send : (input -> { bytes : List(U8), files : List(Engine.File) }),
+		receive : (List(U8), List(Engine.File) -> output),
+		entry! : (List(U8), List(Box(U64)) => List(U8)),
+	}.{
+
+		## The task's entry for `Program.with_workers`, which it shares with
+		## programs: register each task once, and a name registered twice is
+		## a contract error when the app mounts.
+		registration : Task(input, output) -> Engine.Registration
+		registration = |t| Core.registration_task(t.name, t.entry!)
+
+		## A request for a job of the task on `input`, for an effect site's
+		## plan. The input is a snapshot, encoded when the request is issued;
+		## the files it holds travel as handles.
+		request : Task(input, output), input -> Engine.Req
+		request = |t, input| {
+			{ bytes, files } = (t.send)(input)
+			Task({ program: t.name, input: bytes, files, deadline_ms: t.deadline_ms, on_dispose: t.on_dispose })
+		}
+
+		## The answer to a `request`, for an effect site's reaction: the
+		## task's output, whose files are now handles the page holds, or why
+		## there is none (as `Program.result`; `FileFailed(TooLarge)` also
+		## when the answer holds more files than a job may return or than the
+		## page has room for). A result that is not from a task request is a
+		## contract error.
+		result : Task(input, output), Engine.Res -> Try(output, Error)
+		result = |t, res| match res {
+			Answered({ output, files }) => Ok((t.receive)(output, files))
+			FileFailed(reason) => Err(FileFailed(reason))
+			WorkLost(fault) => Err(Lost(fault))
+			Timeout => Err(Timeout)
+			Refused => Err(Refused)
+			_ => crash "contract: Worker.result was given a result that is not from a task request"
+		}
+	}
+
+	## `task(props)`: the task `props.name`, whose jobs run `props.run!` on
+	## the input they are sent and answer with what it returns. Both types
+	## must be `Wire.Sendable`; a file in either crosses as a handle. Names
+	## share the catalogue's namespace with programs.
+	task : TaskProps(input, output) -> Task(input, output)
+		where [input.Wire.Sendable, output.Wire.Sendable]
+	task = |props| {
+		{ name, run!, deadline, on_dispose } = props
+		{
+			name,
+			deadline_ms: deadline_ms_of(deadline),
+			on_dispose,
+			send: |input| sent(input),
+			receive: |bytes, files| match Wire.decode_with_held(bytes, files) {
+				Ok(output) => output
+				Err(_) => crash "contract: worker task \"${name}\" answered with bytes that are not its output type"
+			},
+			entry!: |bytes, handles| {
+				input = held_input(name, bytes, handles)
+				answer_of(name, run!(input), [])
+			},
+		}
+	}
+
+	## Like `task`, for a job that can fail in ways the app expects (a
+	## builder over its bound, a file the browser can no longer read, input
+	## that does not parse): the task's output is `run!`'s `Try`, so
+	## `result` gives `Ok(Ok(value))` or `Ok(Err(error))` for an answer and
+	## `Err(...)` for a job that gave none. A crash in a job is `Lost`, not
+	## an `Err` the app chose.
+	fallible_task : TaskProps(input, Try(ok, err)) -> Task(input, Try(ok, err))
+		where [input.Wire.Sendable, ok.Wire.Sendable, err.Wire.Sendable]
+	fallible_task = |props| {
+		{ name, run!, deadline, on_dispose } = props
+		{
+			name,
+			deadline_ms: deadline_ms_of(deadline),
+			on_dispose,
+			send: |input| sent(input),
+			receive: |bytes, files| {
+				body = bytes.drop_last(1)
+				match bytes.last() {
+					Ok(0) => match Wire.decode_with_held(body, files) {
+						Ok(value) => Ok(value)
+						Err(_) => crash "contract: worker task \"${name}\" answered with bytes that are not its output type"
+					}
+					Ok(1) => match Wire.decode_with_held(body, files) {
+						Ok(error) => Err(error)
+						Err(_) => crash "contract: worker task \"${name}\" answered with bytes that are not its error type"
+					}
+					_ => crash "contract: worker task \"${name}\" answered without saying whether it succeeded"
+				}
+			},
+			entry!: |bytes, handles| {
+				input = held_input(name, bytes, handles)
+				match run!(input) {
+					Ok(value) => answer_of(name, value, [0])
+					Err(error) => answer_of(name, error, [1])
+				}
+			},
+		}
+	}
+}
+
+## A task job's input, decoded with the handles its worker's host minted
+## for the job's files, in the request's order.
+held_input : Str, List(U8), List(Box(U64)) -> input where [input.Wire.Sendable]
+held_input = |name, bytes, handles| match Wire.decode_with_held(bytes, handles.map(Core.held_file)) {
+	Ok(input) => input
+	Err(_) => crash "contract: worker task \"${name}\" was sent bytes that are not its input type"
+}
+
+## A task's answer as its entry returns it: the tokens of the files it
+## holds, then its bytes and `flag` (a fallible task's success byte). An
+## answer nesting containers deeper than the page decodes is a contract
+## error here, in the worker, where it is contained.
+answer_of : Str, output, List(U8) -> List(U8) where [output.Wire.Sendable]
+answer_of = |name, output, flag| {
+	{ bytes, files, deep } = Wire.encode_with_files(output)
+	if deep {
+		crash "contract: worker task \"${name}\" returned a value nested deeper than 512 containers, which the page cannot decode"
+	}
+	Core.task_answer(bytes.concat(flag), files)
+}
+
+## A deadline as the request carries it, in milliseconds (0: none).
+deadline_ms_of : [Unlimited, Ms(U32)] -> U32
+deadline_ms_of = |deadline| match deadline {
+	Unlimited => 0
+	Ms(ms) => ms
 }
 
 ## A request's payload and the files it refers to. A page input nested too

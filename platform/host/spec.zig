@@ -278,8 +278,23 @@ fn hostedStderr(text: RocStr) callconv(.c) void {
 
 /// The native spec host's copy of the page's file handles (design.md,
 /// "Files"): the same heap the Wasm host mints them in, so a spec observes
-/// their release as the page's runtime does. Its bound is the page's.
-var blobs: resources.Heap(.blob, 64, void) = .{};
+/// their release as the page's runtime does. Its bound is the page's. In a
+/// task job's child process the same heap is the worker instance's, and
+/// each slot carries what the worker script would hold for its token: a
+/// file's bytes, or a builder's (see "Tasks" below). The runner's own
+/// process never fills one in.
+var blobs: resources.Heap(.blob, 64, Held) = .{};
+
+/// What a task job's child holds behind a token, as the worker script
+/// holds a `Blob` or a builder's parts: nothing (a page handle), a file's
+/// bytes, an open builder, or a builder that was finished.
+const Held = struct {
+    kind: enum { none, file, builder, finished } = .none,
+    bytes: []u8 = &.{},
+    cap: usize = 0,
+    name: []const u8 = "",
+    mime: []const u8 = "",
+};
 
 fn nothing(_: anytype) void {}
 
@@ -296,7 +311,7 @@ fn hostedMintFiles(n: u64) callconv(.c) RocList {
     words[0] = want;
     words[1] = 1;
     const elems: [*]usize = words + 2;
-    for (0..want) |i| elems[i] = @intFromPtr(blobs.mint({}) orelse unreachable);
+    for (0..want) |i| elems[i] = @intFromPtr(blobs.mint(.{}) orelse unreachable);
     return .{ .elements = @ptrCast(elems), .length = want, .capacity_or_alloc_ptr = want << 1 };
 }
 
@@ -430,33 +445,53 @@ fn hostedWork(payload: RocList, files: RocList) callconv(.c) RocList {
     if (pid == 0) {
         in_job = true;
         _ = close(fds[0]);
-        if (payload.elements) |e| {
-            const bytes = @as([*]const u8, @ptrCast(e))[0..payload.length];
-            if (bytes.len >= 4) {
-                const n = @min(std.mem.readInt(u32, bytes[0..4], .little), bytes.len - 4, job_name_buf.len);
-                @memcpy(job_name_buf[0..n], bytes[4..][0..n]);
-                job_name = job_name_buf[0..n];
-            }
-        }
+        nameJob(payload);
         const out = roc_engine_work(payload, files);
-        const bytes: []const u8 = if (out.elements) |e| @as([*]const u8, @ptrCast(e))[0..out.length] else &.{};
-        var rest = bytes;
-        while (rest.len > 0) {
-            const n = write(fds[1], rest.ptr, rest.len);
-            if (n <= 0) _exit(job_fault_base + 7);
-            rest = rest[@intCast(n)..];
-        }
+        childWrite(fds[1], if (out.elements) |e| @as([*]const u8, @ptrCast(e))[0..out.length] else &.{});
         _exit(0);
     }
     releaseBytes(payload);
     releaseFiles(files);
     _ = close(fds[1]);
-    defer _ = close(fds[0]);
+    return awaitJob(pid, fds[0], 10);
+}
+
+/// In a job's child: keep the program's name for its fault report (at most
+/// 256 bytes, copied before the payload moves into Roc).
+fn nameJob(payload: RocList) void {
+    const e = payload.elements orelse return;
+    const bytes = @as([*]const u8, @ptrCast(e))[0..payload.length];
+    if (bytes.len < 4) return;
+    const n = @min(std.mem.readInt(u32, bytes[0..4], .little), bytes.len - 4, job_name_buf.len);
+    @memcpy(job_name_buf[0..n], bytes[4..][0..n]);
+    job_name = job_name_buf[0..n];
+}
+
+/// In a job's child: write `bytes` to the parent's pipe, or end as an
+/// executor fault when the pipe is gone.
+fn childWrite(fd: c_int, bytes: []const u8) void {
+    var rest = bytes;
+    while (rest.len > 0) {
+        const n = write(fd, rest.ptr, rest.len);
+        if (n <= 0) _exit(job_fault_base + 7);
+        rest = rest[@intCast(n)..];
+    }
+}
+
+/// In the runner: read job `pid`'s pipe `fd` to its end and wait for the
+/// child, returning what it wrote after the byte `tag` (none when `tag` is
+/// 0), or tag 11 and the fault class when the child faulted, or an empty
+/// list when it did not finish within `job_bound_ms` (it is killed). The
+/// pipe is read before waiting, so a large output cannot block the child,
+/// and closed here.
+fn awaitJob(pid: c_int, fd: c_int, tag: u8) RocList {
+    defer _ = close(fd);
     var cap: usize = 1 << 12;
-    var len: usize = 1;
+    var len: usize = if (tag == 0) 0 else 1;
     var buf: [*]u8 = @ptrCast(malloc(cap) orelse fail("out of memory reading a worker job", ""));
     defer free(buf);
-    buf[0] = 10;
+    buf[0] = tag;
+    const fds = [2]c_int{ fd, -1 };
     const start = nowMs();
     while (true) {
         const left = job_bound_ms - (nowMs() - start);
@@ -490,6 +525,227 @@ fn hostedWork(payload: RocList, files: RocList) callconv(.c) RocList {
     const class: u8 = if (!signalled and code > job_fault_base and code <= job_fault_base + 5) @intCast(code - job_fault_base) else 7;
     if (class == 7) writeAll(2, "roc worker fault [executor]: the job's process died without a fault class\n");
     return bytesList(&[_]u8{ 11, class });
+}
+
+// ---------------------------------------------------------------------------
+// Tasks (design.md, "Tasks"). A task job runs in a child process like a
+// program's, through the platform's `roc_engine_task`, and its hosted
+// effects (`roc_task_*`) are served here from the heap's slots: each file
+// the job was sent holds its bytes, a builder collects copies of what is
+// appended, and finishing one moves its bytes behind a fresh handle. This
+// is what the worker script does with `Blob`s, so a spec's task answers
+// the same natively and in Chrome. Everything lives in the child and goes
+// with it; the runner's own process never runs a task.
+
+// A worker instance's task entry (`task_for_host!` in `platform/main.roc`).
+extern fn roc_engine_task(payload: RocList, handles: RocList) callconv(.c) RocList;
+
+/// Set in a task job's child while its task runs: the hosted effects refuse
+/// to act otherwise, as the Wasm host's do.
+var in_task: bool = false;
+
+/// The bytes a task job may still append to its builders (`maxOutputBytes`,
+/// as the spec gives it).
+var output_left: u64 = 0;
+
+/// The most files a task's answer may hold (design.md, "Boundedness").
+const max_answer_files: usize = 16;
+
+fn outsideTask(comptime effect: []const u8) noreturn {
+    const msg = "contract: " ++ effect ++ " is a task effect and ran outside a task's job; only a worker task (Worker.task) may call it";
+    roc_crashed(msg.ptr, msg.len);
+    unreachable;
+}
+
+/// A copy of `bytes` in memory of its own (the child's; never freed).
+fn copyOf(bytes: []const u8) []u8 {
+    if (bytes.len == 0) return &.{};
+    const p: [*]u8 = @ptrCast(malloc(bytes.len) orelse fail("out of memory in a task job", ""));
+    @memcpy(p[0..bytes.len], bytes);
+    return p[0..bytes.len];
+}
+
+/// Append `bytes` to builder `b`, growing its buffer by doubling.
+fn grow(b: *Held, bytes: []const u8) void {
+    if (bytes.len == 0) return;
+    const need = b.bytes.len + bytes.len;
+    if (need > b.cap) {
+        const cap = @max(need, b.cap * 2, 4096);
+        const p: [*]u8 = @ptrCast(malloc(cap) orelse fail("out of memory in a task job", ""));
+        @memcpy(p[0..b.bytes.len], b.bytes);
+        b.bytes = p[0..b.bytes.len];
+        b.cap = cap;
+    }
+    const p = b.bytes.ptr;
+    @memcpy(p[b.bytes.len..need], bytes);
+    b.bytes = p[0..need];
+}
+
+/// The bytes of the file behind `token`'s range, or null when there is no
+/// such file or the range does not lie within it.
+fn heldRange(token: u64, start: u64, len: u64) ?[]const u8 {
+    const h = blobs.get(token) orelse return null;
+    if (h.kind != .file) return null;
+    if (start > h.bytes.len or len > h.bytes.len - start) return null;
+    return h.bytes[@intCast(start)..][0..@intCast(len)];
+}
+
+/// The bytes of a `List(U8)` argument, read in place.
+fn listBytes(list: RocList) []const u8 {
+    return if (list.elements) |e| @as([*]const u8, @ptrCast(e))[0..list.length] else &.{};
+}
+
+fn hostedTaskRead(token: u64, start: u64, len: u64) callconv(.c) RocList {
+    if (!in_task) outsideTask("File.read!");
+    const range = heldRange(token, start, len) orelse return .{ .elements = null, .length = 0, .capacity_or_alloc_ptr = 0 };
+    return bytesList(range);
+}
+
+fn hostedTaskSize(token: u64) callconv(.c) u64 {
+    if (!in_task) outsideTask("Builder.finish!");
+    const h = blobs.get(token) orelse return 0;
+    return h.bytes.len;
+}
+
+fn hostedTaskMint() callconv(.c) *u64 {
+    if (!in_task) outsideTask("File.build!");
+    return blobs.mint(.{}) orelse jobFault(2, "resource_limit: a task's job holds more than 64 files and builders at once");
+}
+
+fn hostedTaskOpen(token: u64, name: RocList, mime: RocList, from: u64, start: u64, len: u64) callconv(.c) u8 {
+    if (!in_task) outsideTask("File.build!");
+    defer releaseBytes(name);
+    defer releaseBytes(mime);
+    const b = blobs.get(token) orelse return 2;
+    b.* = .{ .kind = .builder, .name = copyOf(listBytes(name)), .mime = copyOf(listBytes(mime)) };
+    if (from != 0) grow(b, heldRange(from, start, len) orelse return 2);
+    return 0;
+}
+
+fn hostedTaskAppend(token: u64, bytes: RocList) callconv(.c) u8 {
+    if (!in_task) outsideTask("Builder.append!");
+    defer releaseBytes(bytes);
+    const b = blobs.get(token) orelse return 2;
+    if (b.kind != .builder) return 2;
+    if (bytes.length > output_left) return 1;
+    output_left -= bytes.length;
+    grow(b, listBytes(bytes));
+    return 0;
+}
+
+fn hostedTaskAppendFile(token: u64, file: u64, start: u64, len: u64) callconv(.c) u8 {
+    if (!in_task) outsideTask("Builder.append_file!");
+    const b = blobs.get(token) orelse return 2;
+    if (b.kind != .builder) return 2;
+    grow(b, heldRange(file, start, len) orelse return 2);
+    return 0;
+}
+
+fn hostedTaskFinish(token: u64, file: u64) callconv(.c) u8 {
+    if (!in_task) outsideTask("Builder.finish!");
+    const b = blobs.get(token) orelse return 2;
+    if (b.kind != .builder) return 2;
+    const f = blobs.get(file) orelse return 2;
+    f.* = .{ .kind = .file, .bytes = b.bytes, .cap = b.cap, .name = b.name, .mime = b.mime };
+    b.kind = .finished;
+    return 0;
+}
+
+/// `Cli.task!`: run one task job in a child process and return the
+/// runner's record of its answer (see `Cli.task!`): the child mints a
+/// handle for each of `files` (the whole file each request entry names),
+/// runs the task, and writes tag 20, the answer's files' sizes, names and
+/// types, the output, and each file's bytes, so the runner can mint the
+/// page's handles and serve the files' bytes afterwards. Ownership is as
+/// for `Cli.work!`: the parent releases its references after the fork, and
+/// the child moves its copies into Roc.
+fn hostedTask(payload: RocList, files: RocList, max_output: u64) callconv(.c) RocList {
+    var fds: [2]c_int = undefined;
+    if (pipe(&fds) != 0) fail("cannot create a pipe for a task job", "");
+    const pid = fork();
+    if (pid < 0) fail("cannot fork a task job", "");
+    if (pid == 0) {
+        in_job = true;
+        _ = close(fds[0]);
+        nameJob(payload);
+        output_left = max_output;
+        // The job's handles, as a Roc `List(Box(U64))`: its length, then its
+        // refcount (1), then each handle's payload address. Its single
+        // reference, and each handle's, pass to Roc.
+        const contents: [*]const RocList = if (files.elements) |e| @ptrCast(@alignCast(e)) else undefined;
+        const count = files.length;
+        var handles: RocList = .{ .elements = null, .length = 0, .capacity_or_alloc_ptr = 0 };
+        if (count > 0) {
+            const base: [*]u8 = @ptrCast(roc_alloc(@sizeOf(usize) * (count + 2), @alignOf(usize)));
+            const words: [*]usize = @ptrCast(@alignCast(base));
+            words[0] = count;
+            words[1] = 1;
+            const elems: [*]usize = words + 2;
+            for (0..count) |i| {
+                const p = blobs.mint(.{ .kind = .file, .bytes = copyOf(listBytes(contents[i])) }) orelse jobFault(2, "resource_limit: a task's job was sent more files than its instance holds");
+                elems[i] = @intFromPtr(p);
+            }
+            handles = .{ .elements = @ptrCast(elems), .length = count, .capacity_or_alloc_ptr = count << 1 };
+        }
+        releaseFiles(files);
+        in_task = true;
+        const out = roc_engine_task(payload, handles);
+        in_task = false;
+        const answer = listBytes(out);
+        if (answer.len < 4) jobFault(1, "contract: a task's entry returned an answer without its file count");
+        const n = std.mem.readInt(u32, answer[0..4], .little);
+        if (n > max_answer_files) {
+            childWrite(fds[1], &[_]u8{ 13, 2 });
+            _exit(0);
+        }
+        if (answer.len < 4 + 8 * @as(usize, n)) jobFault(1, "contract: a task's entry returned a truncated answer");
+        var head: [5]u8 = undefined;
+        head[0] = 20;
+        std.mem.writeInt(u32, head[1..5], n, .little);
+        childWrite(fds[1], &head);
+        var held: [max_answer_files]*Held = undefined;
+        for (0..n) |i| {
+            const token = std.mem.readInt(u64, answer[4 + 8 * i ..][0..8], .little);
+            const h = blobs.get(token) orelse jobFault(1, "contract: a task's answer names a handle its instance does not hold");
+            if (h.kind != .file) jobFault(1, "contract: a task's answer names a builder; only a finished file can be in an answer");
+            held[i] = h;
+            var size: [8]u8 = undefined;
+            std.mem.writeInt(u64, &size, h.bytes.len, .little);
+            childWrite(fds[1], &size);
+            childStr(fds[1], h.name);
+            childStr(fds[1], h.mime);
+        }
+        const output = answer[4 + 8 * @as(usize, n) ..];
+        var size: [8]u8 = undefined;
+        std.mem.writeInt(u64, &size, output.len, .little);
+        childWrite(fds[1], &size);
+        childWrite(fds[1], output);
+        for (held[0..n]) |h| childWrite(fds[1], h.bytes);
+        _exit(0);
+    }
+    releaseBytes(payload);
+    releaseFiles(files);
+    _ = close(fds[1]);
+    return awaitJob(pid, fds[0], 0);
+}
+
+/// In a task job's child: a string as the wire writes one, `len:u32 bytes`.
+fn childStr(fd: c_int, bytes: []const u8) void {
+    var len: [4]u8 = undefined;
+    std.mem.writeInt(u32, &len, @intCast(bytes.len), .little);
+    childWrite(fd, &len);
+    childWrite(fd, bytes);
+}
+
+comptime {
+    @export(&hostedTask, .{ .name = "roc_test_task" });
+    @export(&hostedTaskRead, .{ .name = "roc_task_read" });
+    @export(&hostedTaskSize, .{ .name = "roc_task_size" });
+    @export(&hostedTaskMint, .{ .name = "roc_task_mint" });
+    @export(&hostedTaskOpen, .{ .name = "roc_task_open" });
+    @export(&hostedTaskAppend, .{ .name = "roc_task_append" });
+    @export(&hostedTaskAppendFile, .{ .name = "roc_task_append_file" });
+    @export(&hostedTaskFinish, .{ .name = "roc_task_finish" });
 }
 
 comptime {

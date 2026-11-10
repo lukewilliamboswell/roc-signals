@@ -34,6 +34,19 @@ Cli := [].{
 	## passes beside the payload, as a worker's host passes the files it read.
 	work! : List(U8), List(List(U8)) => List(U8)
 
+	## Run one task job (`name:str input:rest`) in a child process, as a
+	## browser runs it in a Web Worker (design.md, "Tasks"): the child
+	## mints a handle for each file in `files` (each the whole file the
+	## request names), runs the task, and performs its hosted effects
+	## against those bytes and builders of its own, which may append at most
+	## `max_output` bytes. The result is the runner's own record of the
+	## answer: tag 20, `n:u32 (size:u64 name:str type:str)*`, the output's
+	## length (`u64`) and bytes, then each answer file's bytes in order; or
+	## tag 13 with reason 2 for an answer holding more than 16 files; or
+	## tag 11 and the fault class when the job's instance faulted; or empty
+	## when the job did not finish within the runner's bound (30 s).
+	task! : List(U8), List(List(U8)), U64 => List(U8)
+
 	## Mint up to `n` file handles in the host's handle heap, as the page's
 	## host does for an event's files: fewer when the heap is nearly full.
 	## Each is a `Box(U64)` whose last release the host observes.

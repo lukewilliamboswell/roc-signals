@@ -317,14 +317,14 @@ Dom := [].{
 	apply = |dom0, b| Dom.apply_ops(dom0, b).0
 
 	op_name : U8 -> Str
-	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORE", "TITLE", "FOCUS", "PORT"].get(op.to_u64()) ?? "?"
+	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORE", "TITLE", "FOCUS", "PORT", "SAVE"].get(op.to_u64()) ?? "?"
 
 	## Opcode histogram of a batch, e.g. "SETTEXT=1 ATTR=1".
 	describe : List(U8) -> Str
 	describe = |ops| {
 		var $parts = []
 		var $op = 1.U8
-		while $op <= 19 {
+		while $op <= 20 {
 			n = ops.count_if(|o| o == $op)
 			if n > 0 {
 				$parts = $parts.append("${Dom.op_name($op)}=${n.to_str()}")
@@ -382,6 +382,18 @@ Dom := [].{
 
 		## A port subscription (`FX` kind 10): id, port and message.
 		PortListen(U32, Str, PortMsg),
+
+		## The worker job with this id is a task's (`FX` kind 8's flag 2).
+		## Decoded after the job's `Work` and `WorkFiles`.
+		WorkTask(U32),
+
+		## An HTTP request whose body becomes a file (`FX` kind 15): id,
+		## method, URL, headers and timeout (ms, 0 none).
+		Fetch(U32, Str, Str, List((Str, Str)), U32),
+
+		## A file's range saved as a download (`SAVE`), and the name it is
+		## saved under.
+		Save({ token : U64, start : U64, len : U64 }, Str),
 	]
 
 	## A port message as the wire carries it: JSON text, the byte blocks its
@@ -648,8 +660,12 @@ Dom := [].{
 							crash "malformed prepared query for worker program \"${program}\""
 						}
 						$at = a3 + 13
+					} else if flag == 2 {
+						# A task's job: its files are handles the worker
+						# reads through effects, not bytes read before it.
+						$fx = $fx.append(WorkTask(id))
 					} else if flag != 0 {
-						crash "work request flag ${flag.to_str()} is not 0 or 1"
+						crash "work request flag ${flag.to_str()} is not 0, 1 or 2"
 					}
 				} else if kind == 11 {
 					mode = Dom.byte(b, $at)
@@ -692,6 +708,20 @@ Dom := [].{
 					(msg, a2) = Dom.port_msg(b, a1)
 					$fx = $fx.append(PortListen(id, port, msg))
 					$at = a2
+				} else if kind == 15 {
+					(method, a1) = Dom.str(b, $at)
+					(url, a2) = Dom.str(b, a1)
+					n = Dom.u32(b, a2).to_u64()
+					var $hs = []
+					var $a = a2 + 4
+					while $hs.len() < n {
+						(hk, h1) = Dom.str(b, $a)
+						(hv, h2) = Dom.str(b, h1)
+						$hs = $hs.append((hk, hv))
+						$a = h2
+					}
+					$fx = $fx.append(Fetch(id, method, url, $hs, Dom.u32(b, $a)))
+					$at = $a + 4
 				} else {
 					crash "unknown effect kind ${kind.to_str()}"
 				}
@@ -728,6 +758,11 @@ Dom := [].{
 				(msg, a2) = Dom.port_msg(b, a1)
 				$at = a2
 				$fx = $fx.append(PortSend(port, msg))
+			} else if op == 20 {
+				file = Dom.file_ref(b, $at)
+				(name, a1) = Dom.str(b, $at + 24)
+				$at = a1
+				$fx = $fx.append(Save(file, name))
 			} else {
 				crash "unknown command ${op.to_str()}"
 			}

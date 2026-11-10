@@ -75,6 +75,11 @@ Scm := [].{
 		## A file the spec's file steps can give the app: its name, its media
 		## type, and its contents, `text` repeated `repeat` times.
 		File({ name : Str, mime : Str, text : Str, repeat : U64 }),
+
+		## The most bytes a task's job may append to its builders, the
+		## runtime's `maxOutputBytes` mount option (256 MiB when a spec does
+		## not say).
+		MaxOutputBytes(U64),
 	]
 
 	## A step a test takes, in order. Both runners implement every step
@@ -178,6 +183,13 @@ Scm := [].{
 
 		## Exactly `count` subscriptions on `port` are live.
 		ExpectPortSubscriptions({ port : Str, count : U64 }),
+
+		## The `index`-th file (from 1) the app saved in this document
+		## (`File.save`) was named `name` and held exactly `text`.
+		ExpectSaved({ index : U64, name : Str, text : Str }),
+
+		## Exactly `count` files were saved in this document.
+		ExpectSaves(U64),
 	]
 
 	## How a spec answers a pending port call: JSON text (delivered as it is
@@ -584,6 +596,7 @@ Scm := [].{
 				Ok(File({ name, mime: Scm.string(Scm.arg(args, 1), "the media type")?, text: Scm.string(Scm.arg(args, 2), "the contents")?, repeat }))
 			},
 		},
+		{ name: "max-output-bytes", parse: |form, args| Ok(MaxOutputBytes(Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the byte count")?)) },
 	]
 
 	## A locator and one or more setup file names.
@@ -871,6 +884,19 @@ Scm := [].{
 				Ok(ExpectPortSubscriptions({ port: Scm.port_name(Scm.arg(a, 0))?, count: Scm.unsigned(Scm.arg(a, 1), "the count")? }))
 			},
 		},
+		{
+			name: "expect-saved",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 3)?
+				index_sx = Scm.arg(a, 0)
+				index = Scm.unsigned(index_sx, "the save's place")?
+				if index == 0 {
+					return Err(Scm.bad(index_sx, "saves are counted from 1"))
+				}
+				Ok(ExpectSaved({ index, name: Scm.string(Scm.arg(a, 1), "the saved file's name")?, text: Scm.string(Scm.arg(a, 2), "the saved file's contents")? }))
+			},
+		},
+		{ name: "expect-saves", parse: |form, args| Ok(ExpectSaves(Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the save count")?)) },
 	]
 
 	## A port name: a non-empty string.
@@ -1078,6 +1104,8 @@ Scm := [].{
 			ClosePort(_) => "close-port"
 			FailPort(_) => "fail-port"
 			ExpectPortSubscriptions(_) => "expect-port-subscriptions"
+			ExpectSaved(_) => "expect-saved"
+			ExpectSaves(_) => "expect-saves"
 		}
 
 	## A locator as a spec spells it.
@@ -1156,6 +1184,7 @@ Scm := [].{
 			LocalStorage({ key, value }) => ("local-storage", [JsonOut.field("key", Text(key)), JsonOut.field("text", Text(value))])
 			LocalStorageUnavailable => ("local-storage-unavailable", [])
 			File({ name, mime, text, repeat }) => ("file", [JsonOut.field("name", Text(name)), JsonOut.field("type", Text(mime)), JsonOut.field("text", Text(text)), JsonOut.field("count", Nat(repeat))])
+			MaxOutputBytes(n) => ("max-output-bytes", [JsonOut.field("count", Nat(n))])
 		}
 		Object([JsonOut.field("op", Text(op))].concat(Scm.pos_fields(pos)).concat(args))
 	}
@@ -1230,6 +1259,8 @@ Scm := [].{
 			ClosePort(port) => [JsonOut.field("port", Text(port))]
 			FailPort({ port, message }) => [JsonOut.field("port", Text(port)), text(message)]
 			ExpectPortSubscriptions({ port, count }) => [JsonOut.field("port", Text(port)), JsonOut.field("count", Nat(count))]
+			ExpectSaved({ index, name, text: contents }) => [JsonOut.field("index", Nat(index)), JsonOut.field("name", Text(name)), text(contents)]
+			ExpectSaves(n) => [JsonOut.field("count", Nat(n))]
 		}
 		Object([JsonOut.field("op", Text(Scm.op_name(op)))].concat(Scm.pos_fields(pos)).concat(args))
 	}
@@ -1476,4 +1507,21 @@ expect {
 	bad_name = problem_of("(test \"t\" (setup (file \"d/a.txt\" \"text/plain\" \"\")) (steps (expect-files 0)))")
 	no_files = problem_of("(test \"t\" (steps (drop-files (test-id \"z\"))))")
 	bad_name.contains("without a directory") and no_files.contains("at least one file name")
+}
+
+## A spec bounds a task's output with `max-output-bytes`, and asserts what
+## the app saved with `expect-saved` and `expect-saves`; saves are counted
+## from 1.
+expect {
+	spec = Scm.parse("(test \"s\" (setup (max-output-bytes 8)) (steps (expect-saved 1 \"out.txt\" \"AB\") (expect-saves 1)))")?
+	zero = problem_of("(test \"s\" (steps (expect-saved 0 \"out.txt\" \"\")))")
+	actual =
+		\\setup: ${Str.inspect(spec.setup.map(|s| s.item))}
+		\\steps: ${Str.inspect(spec.steps.map(|s| s.op))}
+		\\zero: ${zero}
+	expected =
+		\\setup: [MaxOutputBytes(8)]
+		\\steps: [ExpectSaved({ index: 1, name: "out.txt", text: "AB" }), ExpectSaves(1)]
+		\\zero: x.scm:1:32: saves are counted from 1
+	actual == expected
 }

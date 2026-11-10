@@ -30,11 +30,19 @@ platform ""
 		"roc_engine_init": init_for_host,
 		"roc_engine_keys": keys_for_host,
 		"roc_engine_prepare": prepare_for_host,
+		"roc_engine_task": task_for_host!,
 		"roc_engine_version": version_for_host,
 		"roc_engine_work": work_for_host,
 		"roc_spec_main": spec_main_for_host!,
 	}
 	hosted {
+		"roc_task_append": Hosted.append!,
+		"roc_task_append_file": Hosted.append_file!,
+		"roc_task_finish": Hosted.finish!,
+		"roc_task_mint": Hosted.mint!,
+		"roc_task_open": Hosted.open!,
+		"roc_task_read": Hosted.read!,
+		"roc_task_size": Hosted.size!,
 		"roc_test_file_exists": Cli.file_exists!,
 		"roc_test_live_files": Cli.live_files!,
 		"roc_test_mint_files": Cli.mint_files!,
@@ -43,13 +51,14 @@ platform ""
 		"roc_test_sha256": Cli.sha256!,
 		"roc_test_stderr": Cli.stderr!,
 		"roc_test_stdout": Cli.stdout!,
+		"roc_test_task": Cli.task!,
 		"roc_test_work": Cli.work!,
 	}
 	targets: {
 		inputs_dir: "targets/",
 		wasm32: {
 			inputs: ["host.wasm", app],
-			exports: ["protocol_version", "fault", "boot_keys", "init", "event", "event_files", "files_stage", "files_tokens", "files_released", "drop", "payload_reserve", "bytes_reserve", "bytes_clear", "work", "prepare", "ask", "forget", "cmd_ptr", "cmd_len", "work_ptr", "work_len", "metric", "reset_metrics", "err_ptr", "err_len"],
+			exports: ["protocol_version", "fault", "boot_keys", "init", "event", "event_files", "files_stage", "files_tokens", "files_released", "drop", "payload_reserve", "bytes_reserve", "bytes_clear", "work", "task", "prepare", "ask", "forget", "cmd_ptr", "cmd_len", "work_ptr", "work_len", "metric", "reset_metrics", "err_ptr", "err_len"],
 		},
 		x64musl: { inputs: ["crt1.o", "spec.o", app, "libc.a", "libzigc.a", "libcompiler_rt.a"] },
 	}
@@ -57,6 +66,7 @@ platform ""
 import Cli
 import Core
 import Engine
+import Hosted
 import Html
 import Port
 import PortJson
@@ -122,6 +132,15 @@ ask_for_host = |boxed, payload, files| {
 	{ held: Box.box(state), out }
 }
 
+## A worker instance's task job (design.md, "Tasks"): run the task named in
+## the payload (`name:str input:rest`) with the handles the host minted for
+## the job's files, which move into Roc with the call, and return its
+## answer, `n:u32 (token:u64)* output:rest`, which the host keeps readable
+## until the next call. The task may call the platform's hosted effects;
+## nothing else that runs in an instance can.
+task_for_host! : List(U8), List(Box(U64)) => List(U8)
+task_for_host! = |payload, handles| Core.work_task!(main, payload, handles)
+
 ## Let go of the held state: the instance evicts it or prepares another.
 forget_for_host : Box(Core.Kept) -> {}
 forget_for_host = |_boxed| {}
@@ -133,4 +152,4 @@ drop_for_host = |_boxed, _buf, _wbuf| {}
 ## The native spec runner: `SpecRunner.main!` over this app's `main`, with
 ## the native host's file and output services.
 spec_main_for_host! : List(Str) => I32
-spec_main_for_host! = |args| SpecRunner.main!(Core.driver(main), { read_file!: Cli.read_file!, stdout!: Cli.stdout!, stderr!: Cli.stderr!, now_ns!: Cli.now_ns!, work!: Cli.work!, mint_files!: Cli.mint_files!, live_files!: Cli.live_files!, sha256!: Cli.sha256! }, args)
+spec_main_for_host! = |args| SpecRunner.main!(Core.driver(main), { read_file!: Cli.read_file!, stdout!: Cli.stdout!, stderr!: Cli.stderr!, now_ns!: Cli.now_ns!, work!: Cli.work!, task!: Cli.task!, mint_files!: Cli.mint_files!, live_files!: Cli.live_files!, sha256!: Cli.sha256! }, args)

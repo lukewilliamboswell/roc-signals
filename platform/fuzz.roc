@@ -10,6 +10,12 @@
 ## oracle, the `.scm` parser, the soak walk, the worker wire format and the
 ## port message format.
 ##
+## The engine's modules reach the hosted functions a task calls
+## (`Hosted.roc`), so this root binds them too (`roc_task_*`). The
+## libFuzzer host does not define them, and no fuzz target may run a task:
+## a target that reached one would fail to link, which is the point. A
+## target checks tasks through the native spec runner instead.
+##
 ## Everything else here is a vendored copy of the roc-fuzz 0.5.0 platform
 ## (https://github.com/lukewilliamboswell/roc-fuzz, MIT, see
 ## LICENSE-roc-fuzz), unchanged; its host and linker inputs come from the
@@ -44,6 +50,13 @@ platform "roc-signals-fuzz"
 		"roc_fuzz_scope_finish": Fuzz.scope_finish!,
 		"roc_fuzz_scope_finish_return": Fuzz.scope_finish_return!,
 		"roc_fuzz_scope_start": Fuzz.scope_start!,
+		"roc_task_append": Hosted.append!,
+		"roc_task_append_file": Hosted.append_file!,
+		"roc_task_finish": Hosted.finish!,
+		"roc_task_mint": Hosted.mint!,
+		"roc_task_open": Hosted.open!,
+		"roc_task_read": Hosted.read!,
+		"roc_task_size": Hosted.size!,
 	}
 	targets: {
 		inputs_dir: "fuzz-targets/",
@@ -55,6 +68,7 @@ import Core
 import Dom
 import Engine
 import Fuzz
+import Hosted
 import Html
 import JsonOut
 import Port
