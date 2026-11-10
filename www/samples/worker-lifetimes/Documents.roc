@@ -3,7 +3,7 @@ import pf.Html
 import pf.Worker
 
 ## A list of documents, each counting its words in a worker, with a
-## statistics panel and an export that outlives the panel.
+## statistics panel and an export whose job outlives the panel.
 Documents := [].{
 
 	Doc : { id : Str, text : Str }
@@ -30,11 +30,18 @@ Documents := [].{
 		run!: |texts| Ok({ words: texts.map(Documents.word_count).sum(), documents: texts.len() }),
 	})
 
+	# region keep
+	## A report on every document. The user asked for it, so its job is kept
+	## when the site that asked for it is disposed, and it gives up after a
+	## minute.
 	report : Worker.Task(List(Doc), Str, Worker.Never)
 	report = Worker.task({
 		name: "example.org/documents/report",
 		run!: |docs| Ok(Str.join_with(docs.map(|d| "${d.id}: ${Documents.word_count(d.text).to_str()} words"), "; ")),
+		deadline: Ms(60000),
+		on_dispose: Keep,
 	})
+	# endregion keep
 
 	# region bound
 	## At most three jobs are in flight at once, kept low here so the specs
@@ -68,7 +75,6 @@ Documents := [].{
 				Html.button("Add document", [], st.update(Documents.add)),
 				Html.button("Statistics", [], st.update(|s| { ..s, panel: !s.panel })),
 				Documents.panel(st),
-				Documents.export(st),
 				Html.p_v(v.map(|s| s.report), [Engine.test_id("report")]),
 			],
 		)
@@ -126,7 +132,9 @@ Documents := [].{
 
 	# region panel
 	## The panel's totals belong to the panel: closing it stops their job.
-	## Its "Export" button only asks; the export site is outside the panel.
+	## The export it starts is a job of a kept task: closing the panel leaves
+	## it running, and its answer is written to the page's state, which
+	## outlives the panel.
 	panel : State(Ctx, S) -> Elem(Ctx)
 	panel = |st| {
 		v = st.val()
@@ -154,31 +162,28 @@ Documents := [].{
 								},
 							),
 						),
+						# Asks for a report each time "Export" is pressed,
+						# never for the value the panel was opened with.
+						Engine.on_change(
+							v.map(|s| s.ask),
+							|ask|
+								match ask {
+									Idle => []
+									Export({ docs, .. }) => [Documents.report.request(docs)]
+								},
+							st.on_result(
+								|s, _, res|
+									match Documents.report.result(res) {
+										Ok(text) => { ..s, report: text }
+										Err(error) => { ..s, report: Documents.problem(error) }
+									},
+							),
+						),
 					],
 				),
 			|| Engine.text(""),
 		)
 	}
-
-	## The export site lives as long as the page, so an export started in the
-	## panel finishes after the panel is closed.
-	export : State(Ctx, S) -> Elem(Ctx)
-	export = |st|
-		Engine.latest(
-			st.val().map(|s| s.ask),
-			|ask|
-				match ask {
-					Idle => []
-					Export({ docs, .. }) => [Documents.report.request(docs)]
-				},
-			st.on_result(
-				|s, _, res|
-					match Documents.report.result(res) {
-						Ok(text) => { ..s, report: text }
-						Err(error) => { ..s, report: Documents.problem(error) }
-					},
-			),
-		)
 	# endregion panel
 
 	show_totals : Engine.Remote({ words : U64, documents : U64 }, Worker.Error(Worker.Never)) -> Str
