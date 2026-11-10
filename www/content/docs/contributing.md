@@ -11,7 +11,7 @@ This page is for people changing the platform, its tests, the examples or this
 site. The architecture and its rules are in
 [design.md](https://github.com/lukewilliamboswell/roc-signals/blob/main/design.md);
 repository-wide review guidelines are in `AGENTS.md`, and Roc conventions in
-`style.md`.
+the [Roc Style Guide](https://gist.github.com/lukewilliamboswell/241a4e8adb7c89c7e0e02f1d303a8fa1).
 
 ## Tools
 

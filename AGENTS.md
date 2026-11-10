@@ -143,9 +143,11 @@
   `runtime.mjs`, `worker.mjs`, the native spec runner and oracle, specs,
   examples, generated or bundled artifacts, and maintained documentation
   wherever each layer is affected.
-- Read `style.md` before editing Roc. Follow the conventions there for types,
-  static-dispatch hooks, builders, errors, strings, and top-level `expect`
-  tests; do not duplicate those detailed rules here.
+- Read the [Roc Style Guide](https://gist.github.com/lukewilliamboswell/241a4e8adb7c89c7e0e02f1d303a8fa1)
+  before editing Roc. Follow it for naming, types, props records, function
+  shape, errors, text, the host boundary and top-level `expect` tests; do not
+  duplicate those detailed rules here. It is shared across Roc projects, so
+  this repository keeps no style document of its own.
 - Follow `www/content/docs/contributing.md` for current setup, tasks, test
   commands, bundles, site builds, releases and spec mechanics. Commands and tool
   versions belong there and in `Blueprint.roc`, because they change
@@ -194,7 +196,8 @@
   the product surface: every Roc sample is a file under `www/samples/` that
   `check` compiles, never an inline block.
 - Put stable architecture and rationale in `design.md`, current contributor
-  workflow in the contributing docs, detailed Roc conventions in `style.md`,
+  workflow in the contributing docs, detailed Roc conventions in the Roc Style
+  Guide,
   public behavior in reference or module documentation, and local invariants
   beside the code they constrain.
 - Review documentation as part of every pull request, including every added or
