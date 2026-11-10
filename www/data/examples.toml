@@ -1,14 +1,14 @@
 # The examples the site shows, in index order. Each runs on the web
-# platform from its `main-web.roc`; its specs run natively and in Chrome. An
-# example may list `scripts` its page loads before the app mounts, and name
-# its port handlers' module in `ports` (a file beside its app.wasm whose
-# default export site.mjs passes as the `ports` mount option).
+# platform from the entry point `source` names; its specs run natively and
+# in Chrome. An example may list `scripts` its page loads before the app
+# mounts, and name its port handlers' module in `ports` (a file beside its
+# app.wasm whose default export site.mjs passes as the `ports` mount option).
 
 [[examples]]
 slug = "field-notes"
 title = "Field Notes"
 description = "Offline-first note capture with an outbox that drains on reconnect, per-note sync status, optimistic writes and rollback."
-source = "examples/field-notes/main-web.roc"
+source = "examples/field-notes/main.roc"
 specs = "examples/field-notes/specs"
 public = true
 
@@ -16,7 +16,7 @@ public = true
 slug = "data-grid"
 title = "Data Grid"
 description = "A 1200-row sortable, filterable, editable grid that renders one page at a time while a summary row aggregates the full dataset."
-source = "examples/data-grid/main-web.roc"
+source = "examples/data-grid/main.roc"
 specs = "examples/data-grid/specs"
 public = true
 
@@ -24,7 +24,7 @@ public = true
 slug = "form-builder"
 title = "Form Builder"
 description = "A field designer beside a live preview that validates as you type, where tightening a rule in the designer invalidates preview input across two levels of signal graph."
-source = "examples/form-builder/main-web.roc"
+source = "examples/form-builder/main.roc"
 specs = "examples/form-builder/specs"
 public = true
 
@@ -32,7 +32,7 @@ public = true
 slug = "status-page"
 title = "Status Page"
 description = "A public status page rolling four independent service checks into one derived status, with visibility-gated polling, a Plume uptime chart and an incident timeline."
-source = "examples/status-page/main-web.roc"
+source = "examples/status-page/main.roc"
 specs = "examples/status-page/specs"
 public = true
 
@@ -52,7 +52,7 @@ module = true
 slug = "kanban-board"
 title = "Kanban Board"
 description = "A four-column board with cross-column moves, within-column reorder, per-column WIP limits, and derived counts over keyed rows."
-source = "examples/kanban-board/main-web.roc"
+source = "examples/kanban-board/main.roc"
 specs = "examples/kanban-board/specs"
 public = true
 
@@ -60,7 +60,7 @@ public = true
 slug = "spreadsheet-lite"
 title = "Spreadsheet Lite"
 description = "An 8x12 formula grid with cell references, precedence, SUM ranges, error propagation, and cycle detection over fixed-point arithmetic."
-source = "examples/spreadsheet-lite/main-web.roc"
+source = "examples/spreadsheet-lite/main.roc"
 specs = "examples/spreadsheet-lite/specs"
 public = true
 
@@ -68,7 +68,7 @@ public = true
 slug = "markdown-editor"
 title = "Markdown Editor"
 description = "One markdown source string feeding four independently derived views: preview, outline, statistics, and reading time."
-source = "examples/markdown-editor/main-web.roc"
+source = "examples/markdown-editor/main.roc"
 specs = "examples/markdown-editor/specs"
 public = true
 
@@ -76,7 +76,7 @@ public = true
 slug = "conduit"
 title = "Conduit"
 description = "RealWorld (Conduit) demo: hash-routed feeds, sessions, profiles, markdown articles, comments, favorites, follows, and server-confirmed write paths."
-source = "examples/conduit/main-web.roc"
+source = "examples/conduit/main.roc"
 specs = "examples/conduit/specs"
 public = true
 
