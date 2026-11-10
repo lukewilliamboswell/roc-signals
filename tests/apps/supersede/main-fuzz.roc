@@ -33,6 +33,10 @@ answer = |s, b| {
 			payload = match p.kind {
 				TimerRequest => [5]
 				WorkRequest(_) => crash "the supersede app issues no worker jobs"
+				ReadRequest(_) => crash "the supersede app reads no files"
+				UploadRequest(_) => crash "the supersede app uploads no files"
+				DigestRequest(_) => crash "the supersede app digests no files"
+				UrlRequest(_) => crash "the supersede app asks for no file URLs"
 				HttpRequest =>
 					if b % 5 == 3 {
 						SpecRunner.encode_http(503, [], "unavailable")
