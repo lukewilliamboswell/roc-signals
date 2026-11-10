@@ -1,7 +1,7 @@
 (test "File effects — a read reports bytes that are not UTF-8, and a file larger than a read takes, as typed failures"
   (setup
     (file "a.txt" "text/plain" "héllo")
-    ; 8 MiB and 8 bytes: one range more than the default maxReadBytes.
+    ; 8 MiB and 8 bytes: one range more than a read accepts by default.
     (file "big.bin" "application/octet-stream" "abcdefgh" 1048577))
   (steps
     (choose-files (label "Upload") "a.txt")

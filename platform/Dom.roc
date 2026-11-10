@@ -361,7 +361,7 @@ Dom := [].{
 
 		## A read of a file into the page: id, mode (1 bytes, 2 text) and the
 		## file's handle token and range.
-		FileRead(U32, U8, { token : U64, start : U64, len : U64 }),
+		FileRead(U32, U8, { token : U64, start : U64, len : U64 }, U64),
 
 		## An HTTP request whose body is a file's range: id, method, URL,
 		## headers, the file and the timeout (ms, 0 none).
@@ -656,8 +656,8 @@ Dom := [].{
 					if mode != 1 and mode != 2 {
 						crash "unknown file read mode ${mode.to_str()}"
 					}
-					$fx = $fx.append(FileRead(id, mode, Dom.file_ref(b, $at + 1)))
-					$at = $at + 25
+					$fx = $fx.append(FileRead(id, mode, Dom.file_ref(b, $at + 1), Dom.u64(b, $at + 25)))
+					$at = $at + 33
 				} else if kind == 12 {
 					(method, a1) = Dom.str(b, $at)
 					(url, a2) = Dom.str(b, a1)

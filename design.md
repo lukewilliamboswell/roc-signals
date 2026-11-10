@@ -1073,9 +1073,13 @@ runtime reads the file's range into a buffer of its own on the page's thread
 and copies it once into the instance's memory as the result; the engine
 checks text is UTF-8 and answers `FileFailed(InvalidUtf8)` when it is not,
 since that is a fact about the file, not a broken protocol. A range over the
-`maxReadBytes` mount option (8 MiB by default) is `FileFailed(TooLarge)`,
-unread: the bound is deliberately modest, because each read in flight holds
-a whole copy on the page, and larger files belong in a worker. A read
+read's own `max_bytes` (`File.read_bytes({ max_bytes })`, 8 MiB unless the
+app says otherwise), or over the page's `maxFileBytes` ceiling whatever the
+app asks, is `FileFailed(TooLarge)`, unread. How much a read accepts is the
+app's decision, made in Roc and carried on the request; what a deployment
+allows is the mount's. The default is deliberately modest, because each
+read in flight holds a whole copy on the page, and larger files belong in a
+worker. A read
 belongs to its site like a timer: disposal or supersession cancels it, and
 the bytes the browser was reading are dropped. In a worker program the bytes
 are already there, so the same choice is a plain value: `File.contents`, and
@@ -1356,7 +1360,7 @@ bound and a declared behaviour at the bound:
 | File handles live in one instance | 64 | The event's further files are not delivered and are counted in `Received.refused` |
 | Files one work run reads | 16 | Typed `FileFailed(TooLarge)`, unread |
 | Bytes of files one work run reads | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)`, unread |
-| Bytes one read of a file into the page takes | `maxReadBytes` (default 8 MiB); reads in flight are bounded by the in-flight cap | Typed `FileFailed(TooLarge)`, unread |
+| Bytes one read of a file into the page takes | The read's `max_bytes` (default 8 MiB), at most `maxFileBytes`; reads in flight are bounded by the in-flight cap | Typed `FileFailed(TooLarge)`, unread |
 | Bytes one digest reads | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)`, unread |
 | Object URLs of one file handle | 16 ranges, revoked with the handle | Typed `FileFailed(TooLarge)` |
 | Live node ids (rows included) | 2³² − 2 | `resource_limit` poison |
@@ -1762,8 +1766,11 @@ File.size : File -> U64                       # bytes in this file or range
 File.slice : File, { start : U64, len : U64 } -> File   # contract error outside the file
 File.contents : File -> List(U8)              # in a worker program; contract error on the page
 File.contents_utf8 : File -> Try(Str, [InvalidUtf8])   # likewise
-File.read_bytes, File.read_utf8 : File -> Req # awaited reads into the page
-File.upload : File, { method, url, headers, timeout_ms } -> Req   # the file as an HTTP body
+File.read_bytes, File.read_utf8 : File, ReadProps -> Req   # awaited reads into the page
+ReadProps := { max_bytes : U64 ?? 8388608 }    # under the page's maxFileBytes
+File.upload : File, UploadProps -> Req        # the file as an HTTP body
+UploadProps := { url : Str, method : Str ?? "POST", headers : List((Str, Str)) ?? [],
+                 timeout : [Unlimited, Ms(U32)] ?? Unlimited }
 File.sha256 : File -> Req                     # answered Digest(32 bytes)
 File.object_url : File -> Req                 # answered FileUrl(url), valid while the handle lives
 file_bytes, file_digest : Res -> Try(List(U8), FileError)
@@ -1790,7 +1797,8 @@ Req : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Timer(
        Work({ program : Str, input : List(U8), files : List(File), deadline_ms : U32 }),
        Interval(U32), Popstate, OnlineChanges, VisibilityChanges, Self, Push(Str),
        Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str),
-       StorageSet(Str, Str), StorageRemove(Str), ReadBytes(File), ReadUtf8(File),
+       StorageSet(Str, Str), StorageRemove(Str), ReadBytes({ file, max_bytes }),
+       ReadUtf8({ file, max_bytes }),
        Upload({ method, url, headers, body : File, timeout_ms }), Sha256(File), ObjectUrl(File),
        Ask({ program : Str, input : List(U8), files : List(File), deadline_ms : U32 }),
        PortCommand({ port, message }), PortCall({ port, message, timeout_ms }),
@@ -2099,7 +2107,7 @@ the batch is applied and performed after it, as is 19.
 | 8 | `program:str input:u32+bytes n:u32 (token:u64 start:u64 len:u64)*n deadline_ms:u32 prepared:u8 [prep:str init_at:u32 init_len:u32 init_files:u32 policy:u8]` | Work: `input` is a `u32` length and raw bytes, not necessarily UTF-8; then the files the input refers to, each a handle's token and a range of its file; `deadline_ms` 0 = none, capped at 600 000. `prepared` is `0` for `Work` and `1` for `Ask`, which then names its preparation, where the preparation's input lies in `input` (`init_len` bytes at `init_at`; the query's own input is the rest), how many of the files are the preparation's (the first `init_files`), and its cancel policy (`1` stop, `2` finish). An `Ask` input is `prep:str init_len:u32 init_files:u32 policy:u8`, then the preparation's input, then the query's; the engine copies the operands from it, and an input that does not follow it is a `contract` crash. Any other flag or inconsistent operands are a `contract` fault |
 | 9 | `port:str message timeout_ms:u32` | Port call (`message` as for `PORT`); `timeout_ms` 0 = none, capped at 600 000 |
 | 10 | `port:str message` | Port subscription |
-| 11 | `mode:u8 token:u64 start:u64 len:u64` | Read a file's range into the page: `mode` `1` bytes (answered tag 16), `2` text (tag 17) |
+| 11 | `mode:u8 token:u64 start:u64 len:u64 max_bytes:u64` | Read a file's range into the page: `mode` `1` bytes (answered tag 16), `2` text (tag 17); a range longer than `max_bytes`, or than the runtime's `maxFileBytes`, is answered tag 13 `TooLarge` unread |
 | 12 | `method:str url:str n:u32 (name:str value:str)* token:u64 start:u64 len:u64 timeout_ms:u32` | HTTP with a file's range as the body (answered as kind 1); a method of `GET` or `HEAD` is a `contract` error in the engine |
 | 13 | `algorithm:u8 token:u64 start:u64 len:u64` | Digest of a file's range: `algorithm` `1` SHA-256 (tag 18) |
 | 14 | `token:u64 start:u64 len:u64` | A URL that shows a file's range (tag 19) |

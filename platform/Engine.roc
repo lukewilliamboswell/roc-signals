@@ -97,14 +97,24 @@ Engine := [].{
 	## with its `name`, `size` and `mime` type, never its bytes on the page. Send
 	## it to a worker program in the program's input, and read its bytes there
 	## with `contents`: they are read once into the worker's memory and handed to
-	## the program without a copy. For a small file, `read_bytes` and
-	## `read_utf8` ask for its bytes on the page instead. A file stays available
+	## the program without a copy. For a small file, `read_bytes({})` and
+	## `read_utf8({})` ask for its bytes on the page instead. A file stays available
 	## while any value holds it, and is released when nothing does.
 	File : Core.File
 
 	## The files one event delivered, and how many more it carried than the
 	## instance could hold (they were not delivered).
 	Received : Core.Received
+
+	## How much a read of a file into the page accepts: `max_bytes`, 8 MiB
+	## unless the app says otherwise (`file.read_bytes({ max_bytes: n })`),
+	## under the page's `maxFileBytes` ceiling.
+	ReadProps : Core.ReadProps
+
+	## How `File.upload` sends a file: `url` (required), `method` (`"POST"`
+	## by default), `headers` (none by default) and `timeout` (`Unlimited`
+	## by default, or `Ms(ms)`).
+	UploadProps : Core.UploadProps
 
 	## A handle on one `state` layer holding an `s`, usable in context `ctx`.
 	##
@@ -352,8 +362,8 @@ Engine := [].{
 		SelectText(Str),
 		StorageSet(Str, Str),
 		StorageRemove(Str),
-		ReadBytes(File),
-		ReadUtf8(File),
+		ReadBytes({ file : File, max_bytes : U64 }),
+		ReadUtf8({ file : File, max_bytes : U64 }),
 		Upload({ method : Str, url : Str, headers : List((Str, Str)), body : File, timeout_ms : U32 }),
 		Sha256(File),
 		ObjectUrl(File),
@@ -418,7 +428,8 @@ Engine := [].{
 	## - `Unreadable`: the user's file changed or went away since it was given;
 	## - `TooLarge`: it is more than the operation reads (a worker run reads 16
 	##   files and `maxFileBytes` bytes, a digest `maxFileBytes`, a page read
-	##   `maxReadBytes`; a file gives 16 ranges URLs);
+	##   its `max_bytes` and at most `maxFileBytes`; a file gives 16 ranges
+	##   URLs);
 	## - `InvalidUtf8`: text was asked for and the bytes are not UTF-8;
 	## - `Unavailable`: the browser cannot perform the operation (a digest
 	##   without WebCrypto, which a page served over plain HTTP from another

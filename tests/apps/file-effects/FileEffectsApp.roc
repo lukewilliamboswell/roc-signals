@@ -4,9 +4,11 @@ import pf.Html
 ## File effects test app: operations on a file the user gave the app, run
 ## where the file lives, and reads that bring its bytes into the page.
 ## - "Upload" is a file input that takes several files; "Clear" lets them go.
-## - "Read text" and "Read bytes" read the first file into the page; "Read
-##   tail" reads the second half of it as bytes, and "Read cut" its second
-##   byte alone as text (which cuts a two-byte character in two). The answer
+## - "Read text" and "Read bytes" read the first file into the page,
+##   accepting the default 8 MiB; "Read large" reads it as bytes accepting
+##   64 MiB; "Read tail" reads the second half of it as bytes, and "Read
+##   cut" its second byte alone as text (which cuts a two-byte character in
+##   two). The answer
 ##   is shown in `test-id "read"`: the text, or the byte count and byte sum,
 ##   or the typed failure. "Forget" gives the read up.
 ## - "Panel" mounts a section that reads the first file's text as it mounts;
@@ -23,8 +25,8 @@ FileEffectsApp := [].{
 	S : { files : List(File), read : Ask, panel : Bool, send : Pick, send_panel : Bool, panel_sent : Str, digest : Pick, show : Pick }
 
 	## What the page was last asked to read: nothing, or a file as text or
-	## as bytes.
-	Ask : [Skip, Bytes(File), Text(File)]
+	## as bytes, or as bytes accepting a large file.
+	Ask : [Skip, Bytes(File), Text(File), Large(File)]
 
 	## A file an operation was last asked for, or none.
 	Pick : [Skip, Run(File)]
@@ -116,12 +118,13 @@ FileEffectsApp := [].{
 					_ => Reading
 				},
 				plan: |a| match a {
-					Bytes(f) => [f.read_bytes()]
-					Text(f) => [f.read_utf8()]
+					Bytes(f) => [f.read_bytes({})]
+					Text(f) => [f.read_utf8({})]
+					Large(f) => [f.read_bytes({ max_bytes: 64 * 1024 * 1024 })]
 					Skip => []
 				},
 				resolve: |_, a, res| match a {
-					Bytes(_) => GotBytes(Engine.file_bytes(res))
+					Bytes(_) | Large(_) => GotBytes(Engine.file_bytes(res))
 					Text(_) => GotText(Engine.file_text(res))
 					Skip => NotRead
 				},
@@ -151,7 +154,7 @@ FileEffectsApp := [].{
 		)
 
 	upload : File -> Engine.Req
-	upload = |f| f.upload({ method: "POST", url: "/upload", headers: [("x-name", f.name())], timeout_ms: 0 })
+	upload = |f| f.upload({ url: "/upload", headers: [("x-name", f.name())] })
 
 	digested : Res -> Str
 	digested = |res| match Engine.file_digest(res) {
@@ -194,6 +197,7 @@ FileEffectsApp := [].{
 				Html.button("Clear", [], st.update(|s| { ..s, files: [] })),
 				Html.button("Read text", [], st.update(|s| FileEffectsApp.ask_first(s, |f| Text(f)))),
 				Html.button("Read bytes", [], st.update(|s| FileEffectsApp.ask_first(s, |f| Bytes(f)))),
+				Html.button("Read large", [], st.update(|s| FileEffectsApp.ask_first(s, |f| Large(f)))),
 				Html.button("Read tail", [], st.update(|s| FileEffectsApp.ask_first(s, |f| Bytes(FileEffectsApp.tail_of(f))))),
 				Html.button("Read cut", [], st.update(|s| FileEffectsApp.ask_first(s, |f| Text(f.slice({ start: 1, len: 1 }))))),
 				Html.button("Forget", [], st.update(|s| { ..s, read: Skip })),

@@ -23,7 +23,7 @@ its own memory, so the program gets those bytes without a copy.
 |---|---|---|
 | Upload it, digest it, or preview it in an `<img>` or `<video>` | An operation on the file: `File.upload`, `File.sha256`, `File.object_url` | Never enter the page's memory |
 | Process it: parse, convert, search, count | A [worker program](#reading-a-file-in-a-worker) that is sent the file and calls `File.contents` | Read once into the worker, off the page's thread |
-| Read a small file in a simple app | A page read: `File.read_bytes`, `File.read_utf8` | Read on the page's thread and copied into the page's memory |
+| Read a small file in a simple app | A page read: `file.read_bytes({})`, `file.read_utf8({})` | Read on the page's thread and copied into the page's memory |
 
 This answers two older workarounds. Getting a file's bytes into Roc used to
 mean a custom element that read the file, base64-encoded it into an input's
@@ -98,9 +98,10 @@ other, which the runtime performs on the browser's own file:
 
 {{ sample(file="file-tools/Tools.roc", region="requests") }}
 
-- `File.upload(file, { method, url, headers, timeout_ms })` sends the file,
-  or a range of it, as an HTTP request's body. The browser streams it from
-  the file. Read the answer with `http_text`, as for any HTTP request; like
+- `file.upload({ url })` sends the file, or a range of it, as an HTTP
+  request's body. `method` (`"POST"` unless you say), `headers` (none) and
+  `timeout` (`Unlimited`, or `Ms(ms)`) are optional. The browser streams it
+  from the file. Read the answer with `http_text`, as for any HTTP request; like
   one, it is still answered when the site that made it is disposed. A file
   the browser can no longer read fails it as a network failure.
 - `File.sha256(file)` answers the SHA-256 digest, 32 bytes, with
@@ -124,14 +125,19 @@ cancelled when their site is disposed; an upload is kept.
 ## Reading a file on the page
 
 For a small file in a simple app, bringing its bytes into the page is
-acceptable: ask for them with `File.read_bytes` or `File.read_utf8`, and read
-the answer with `file_bytes` or `file_text`. It is a request, not a value,
-because the bytes are not on the page until the browser has read them. Its
-cost is honest: the browser reads the file into a buffer on the page's
-thread, and the bytes are copied once into the page's memory, where they
-stay while the app keeps them. A range over `maxReadBytes` (8 MiB unless the
-mount sets it, as `mountRocEngineApp({ ..., maxReadBytes: 1 << 20 })`) is
-`TooLarge` and is not read; send larger files to a worker.
+acceptable: ask for them with `file.read_bytes({})` or `file.read_utf8({})`,
+and read the answer with `file_bytes` or `file_text`. It is a request, not a
+value, because the bytes are not on the page until the browser has read
+them. Its cost is honest: the browser reads the file into a buffer on the
+page's thread, and the bytes are copied once into the page's memory, where
+they stay while the app keeps them.
+
+A read accepts 8 MiB unless the app says otherwise:
+`file.read_bytes({ max_bytes: 32 * 1024 * 1024 })`. A larger file or range is
+`TooLarge` and is not read. The page's `maxFileBytes` mount option (256 MiB
+by default) caps every read whatever it asks, so a deployment can keep the
+page's memory smaller than an app would like; send larger files to a
+worker.
 
 | What happened | `FileError` |
 |---|---|

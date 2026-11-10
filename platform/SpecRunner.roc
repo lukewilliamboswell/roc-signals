@@ -105,7 +105,7 @@ SpecRunner := [].{
 		WorkRequest({ program : Str, input : List(U8), deadline_ms : U32, files : List({ token : U64, start : U64, len : U64 }) }),
 
 		## A read of a file into the page: mode 1 bytes, 2 text.
-		ReadRequest({ mode : U8, file : { token : U64, start : U64, len : U64 } }),
+		ReadRequest({ mode : U8, file : { token : U64, start : U64, len : U64 }, max_bytes : U64 }),
 
 		## An HTTP request whose body is a file's range; `run-effect` answers
 		## it with the staged stub, as an HTTP request.
@@ -121,14 +121,10 @@ SpecRunner := [].{
 		PortRequest({ port : Str, json : Str, timeout_ms : U32 }),
 	]
 
-	## The most bytes a digest reads: the runtime's default `maxFileBytes`.
+	## The most bytes a digest or a page read reads: the runtime's default
+	## `maxFileBytes`.
 	max_digest_bytes : U64
 	max_digest_bytes = 256 * 1024 * 1024
-
-	## The most bytes a page read takes: the runtime's default `maxReadBytes`
-	## (design.md, "Files"), which a spec cannot change.
-	max_read_bytes : U64
-	max_read_bytes = 8 * 1024 * 1024
 
 	## The modelled browser around the DOM. `doc` numbers the current document;
 	## a cross-document navigation mounts the app afresh in the next one.
@@ -447,7 +443,7 @@ SpecRunner := [].{
 				Remove(k) => if (b.storage_available) { ..b, storage: b.storage.keep_if(|kv| kv.key != k) } else b
 				Title(t) => { ..b, title: t }
 				Focus(_, _) => b
-				FileRead(id, mode, file) => { ..b, pending: b.pending.append({ id, url: "read", body: "", kind: ReadRequest({ mode, file }) }), issued: b.issued.append(id) }
+				FileRead(id, mode, file, max_bytes) => { ..b, pending: b.pending.append({ id, url: "read", body: "", kind: ReadRequest({ mode, file, max_bytes }) }), issued: b.issued.append(id) }
 				Upload(id, _, url, _, file, _) => { ..b, pending: b.pending.append({ id, url, body: "", kind: UploadRequest(file) }), issued: b.issued.append(id) }
 				Digest(id, _, file) => { ..b, pending: b.pending.append({ id, url: "digest", body: "", kind: DigestRequest(file) }), issued: b.issued.append(id) }
 				FileUrl(id, file) => { ..b, pending: b.pending.append({ id, url: "url", body: "", kind: UrlRequest(file) }), issued: b.issued.append(id) }
@@ -597,10 +593,11 @@ SpecRunner := [].{
 	## The result payload of a page read, as the runtime answers it
 	## (design.md, Appendix B): tag 16 with the bytes, 17 with the bytes as
 	## text (the engine checks they are UTF-8), or 13 with reason 2 when the
-	## range is more than a read takes.
-	read_result : Browser, U8, { token : U64, start : U64, len : U64 } -> List(U8)
-	read_result = |b, mode, file|
-		if file.len > SpecRunner.max_read_bytes {
+	## range is more than the read's `max_bytes` or the runtime's default
+	## `maxFileBytes`, which a spec cannot change.
+	read_result : Browser, U8, { token : U64, start : U64, len : U64 }, U64 -> List(U8)
+	read_result = |b, mode, file, max_bytes|
+		if file.len > max_bytes or file.len > SpecRunner.max_digest_bytes {
 			[13, 2]
 		} else {
 			[if (mode == 1) 16 else 17].concat(SpecRunner.file_bytes(b, file))
@@ -690,7 +687,7 @@ SpecRunner := [].{
 				output = (program.work)(SpecRunner.put_str([], name).concat(input), SpecRunner.job_files(b, files))
 				return SpecRunner.deliver_job(program, s, { id, payload: [], files: [] }, [10].concat(output))
 			}
-			ReadRequest({ mode, file }) => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, SpecRunner.read_result(b, mode, file)))
+			ReadRequest({ mode, file, max_bytes }) => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, SpecRunner.read_result(b, mode, file, max_bytes)))
 			UrlRequest(file) => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, SpecRunner.url_result(file)))
 			DigestRequest(_) => return Err("run-effect ${n.to_str()} answers a digest, which the spec command's host computes; fuzz targets and soak walks do not have one")
 			PortRequest({ port, .. }) => return Err("effect occurrence ${n.to_str()} is a call on port ${JsonOut.quote(port)}; answer it with answer-port")

@@ -29,10 +29,10 @@ Tools := [].{
 	## into the page.
 	plan : Doing -> List(Engine.Req)
 	plan = |doing| match doing {
-		Uploading(file) => [file.upload({ method: "PUT", url: "/files/${file.name()}", headers: [("content-type", file.mime())], timeout_ms: 60000 })]
+		Uploading(file) => [file.upload({ url: "/files/${file.name()}", method: "PUT", headers: [("content-type", file.mime())], timeout: Ms(60000) })]
 		Digesting(file) => [file.sha256()]
 		Previewing(file) => [file.object_url()]
-		Reading(file) => [file.read_utf8()]
+		Reading(file) => [file.read_utf8({})]
 		Nothing => []
 	}
 	# endregion requests

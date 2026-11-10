@@ -141,33 +141,42 @@ Core := [].{
 		contents_utf8 = |f| Str.from_utf8(File.contents(f)).map_err(|_| InvalidUtf8)
 
 		## A request to read the file's bytes into the page, for an effect
-		## site's plan. Its result is `FileBytes(bytes)`, or `FileFailed` with
-		## `TooLarge` (more than the `maxReadBytes` mount option allows, 8 MiB by
-		## default) or `Unreadable` (the user's file changed or went away); read
-		## it with `file_bytes`. The browser reads the file on the page's thread
-		## into a buffer of its own and the bytes are copied once into the
-		## page's memory, so keep it for small files and send large ones to a
-		## worker program. The request holds the file until it is answered, and
-		## disposing its site cancels it.
-		read_bytes : File -> Req
-		read_bytes = |f| ReadBytes(f)
+		## site's plan: `file.read_bytes({})`, or `file.read_bytes({ max_bytes })`
+		## to change how much the app accepts (see [ReadProps]). Its result is
+		## `FileBytes(bytes)`, or `FileFailed` with `TooLarge` (more than
+		## `max_bytes`, or than the page's `maxFileBytes` mount option allows;
+		## nothing is read) or `Unreadable` (the user's file changed or went
+		## away); read it with `file_bytes`. The browser reads the file on the
+		## page's thread into a buffer of its own and the bytes are copied once
+		## into the page's memory, so keep it for small files and send large
+		## ones to a worker program. The request holds the file until it is
+		## answered, and disposing its site cancels it.
+		read_bytes : File, ReadProps -> Req
+		read_bytes = |f, ReadProps.({ max_bytes })| ReadBytes({ file: f, max_bytes })
 
 		## A request to read the file into the page as text: as `read_bytes`,
 		## answered `FileText(text)`, or `FileFailed(InvalidUtf8)` when the bytes
 		## are not UTF-8. A byte-order mark is kept. Read it with `file_text`.
-		read_utf8 : File -> Req
-		read_utf8 = |f| ReadUtf8(f)
+		read_utf8 : File, ReadProps -> Req
+		read_utf8 = |f, ReadProps.({ max_bytes })| ReadUtf8({ file: f, max_bytes })
 
 		## A request that sends the file, or its range, as the body of an HTTP
-		## request, for an effect site's plan. The browser streams it from the
-		## file: its bytes never enter the page's memory. It is answered as any
-		## HTTP request is (`Http`, `Network`, `Timeout`; read it with
-		## `http_text`), and like one it is kept when its site is disposed and
-		## answered to the nearest surviving ancestor. A file the browser can no
-		## longer read fails the request, which the browser reports as a network
-		## failure. `timeout_ms` 0 means no timeout; it is capped at 10 minutes.
-		upload : File, { method : Str, url : Str, headers : List((Str, Str)), timeout_ms : U32 } -> Req
-		upload = |f, { method, url, headers, timeout_ms }| Upload({ method, url, headers, body: f, timeout_ms })
+		## request, for an effect site's plan:
+		## `file.upload({ url: "/upload" })` (see [UploadProps]). The browser
+		## streams it from the file: its bytes never enter the page's memory.
+		## It is answered as any HTTP request is (`Http`, `Network`, `Timeout`;
+		## read it with `http_text`), and like one it is kept when its site is
+		## disposed and answered to the nearest surviving ancestor. A file the
+		## browser can no longer read fails the request, which the browser
+		## reports as a network failure.
+		upload : File, UploadProps -> Req
+		upload = |f, UploadProps.({ url, method, headers, timeout })| {
+			timeout_ms = match timeout {
+				Unlimited => 0
+				Ms(ms) => ms
+			}
+			Upload({ method, url, headers, body: f, timeout_ms })
+		}
 
 		## A request for the SHA-256 digest of the file, or its range: answered
 		## `Digest(bytes)` with its 32 bytes, read with `file_digest`. The
@@ -222,6 +231,30 @@ Core := [].{
 	## The files one event delivered, and how many more it carried than the
 	## instance could take.
 	Received : { files : List(File), refused : U64 }
+
+	## How much a read of a file into the page accepts (`File.read_bytes`,
+	## `File.read_utf8`): `max_bytes`, 8 MiB unless the app says otherwise.
+	## A larger file or range is answered `FileFailed(TooLarge)` without
+	## being read. The page's `maxFileBytes` mount option (256 MiB by
+	## default) caps it whatever the app asks: what the app means is decided
+	## here, what a deployment allows is the mount's.
+	ReadProps := { max_bytes : U64 ?? 8388608 }
+
+	## How to send a file as an HTTP body (`File.upload`):
+	##
+	## - `url`: where to send it; required.
+	## - `method`: `"POST"` unless the app says otherwise. A method that
+	##   carries no body (`GET`, `HEAD`) is a contract error.
+	## - `headers`: none by default; given as `(name, value)` pairs, as an
+	##   `Http` request's are.
+	## - `timeout`: `Ms(ms)` answers `Timeout` when the server has not
+	##   answered in time, capped at ten minutes; `Unlimited` by default.
+	UploadProps := {
+		url : Str,
+		method : Str ?? "POST",
+		headers : List((Str, Str)) ?? [],
+		timeout : [Unlimited, Ms(U32)] ?? Unlimited,
+	}
 
 	## A handler for the files an event carries; make one with
 	## `State.on_files` and attach it with `on_files`.
@@ -720,8 +753,8 @@ Core := [].{
 		SelectText(Str),
 		StorageSet(Str, Str),
 		StorageRemove(Str),
-		ReadBytes(File),
-		ReadUtf8(File),
+		ReadBytes({ file : File, max_bytes : U64 }),
+		ReadUtf8({ file : File, max_bytes : U64 }),
 		Upload({ method : Str, url : Str, headers : List((Str, Str)), body : File, timeout_ms : U32 }),
 		Sha256(File),
 		ObjectUrl(File),
@@ -3789,7 +3822,7 @@ comp_settle = |prop, snk, block, env, out, tx| {
 #                            2 STORAGE_GET key:str  3 TIMER ms:u32  4 INTERVAL ms:u32  5 POPSTATE
 #                            6 ONLINE  7 VISIBILITY
 #                            8 WORK program:str input:(u32 len, raw bytes) deadline_ms:u32
-#                            11 READ mode:u8 token:u64 start:u64 len:u64 (a file's range)
+#                            11 READ mode:u8 token:u64 start:u64 len:u64 max_bytes:u64 (a file's range)
 #                            12 UPLOAD method:str url:str n:u32 (name:str value:str)* token start len timeout_ms:u32
 #                            13 DIGEST algorithm:u8 token start len   14 URL token start len
 #  14 CANCEL  id
@@ -4453,8 +4486,8 @@ put_fx = |c, id, req| {
 		OnlineChanges => head.append(6)
 		VisibilityChanges => head.append(7)
 		Work({ program, input, files, deadline_ms }) => put_work(head, program, input, files, deadline_ms).append(0)
-		ReadBytes(f) => put_file(head.append(11).append(1), f)
-		ReadUtf8(f) => put_file(head.append(11).append(2), f)
+		ReadBytes({ file, max_bytes }) => put_u64(put_file(head.append(11).append(1), file), max_bytes)
+		ReadUtf8({ file, max_bytes }) => put_u64(put_file(head.append(11).append(2), file), max_bytes)
 		Upload({ method, url, headers, body, timeout_ms }) => {
 			if method == "GET" or method == "HEAD" {
 				crash "contract: File.upload of \"${body.name}\" to ${url} uses ${method}, which carries no body"

@@ -9,7 +9,8 @@
 //
 // Page reads: a read copies the file's range into the page's memory once, as
 // the result, and the bytes are freed when the app lets them go; a range
-// over `maxReadBytes` is refused unread; a file that can no longer be read
+// over the read's `max_bytes` or the page's `maxFileBytes` is refused
+// unread; a file that can no longer be read
 // is `Unreadable`; a read cancelled while the browser reads is dropped, with
 // no stale turn; a read in flight when the instance is poisoned delivers
 // nothing.
@@ -138,18 +139,31 @@ async function open(options = {}) {
   await ctx.close();
 }
 
-// A range over maxReadBytes is refused before anything is read.
+// A range over maxFileBytes is refused before anything is read, whatever
+// the read accepts; a smaller range of the file reads.
 {
-  const { page, ctx } = await open({ maxReadBytes: 2 });
+  const { page, ctx } = await open({ maxFileBytes: 2 });
   const r = await page.evaluate(async () => {
     window.__choose([["three.bin", 3]]);
-    window.__click("Read bytes");
+    window.__click("Read large");
     const big = await window.__until("read", (t) => t.startsWith("failed"));
     window.__click("Read tail");
     const tail = await window.__until("read", (t) => t.startsWith("bytes"));
     return { big, tail };
   });
-  check("a range over maxReadBytes is TooLarge, a smaller range of the file reads", r, { big: "failed TooLarge", tail: "bytes 2 sum 2" });
+  check("a range over maxFileBytes is TooLarge whatever the read accepts, a smaller range of the file reads", r, { big: "failed TooLarge", tail: "bytes 2 sum 2" });
+  await ctx.close();
+}
+
+// A range over the read's max_bytes is refused before anything is read.
+{
+  const { page, ctx } = await open();
+  const r = await page.evaluate(async () => {
+    window.__choose([["nine.bin", (8 << 20) + 1]]);
+    window.__click("Read bytes");
+    return window.__until("read", (t) => t.startsWith("failed"));
+  });
+  check("a range over the read's max_bytes is TooLarge", r, "failed TooLarge");
   await ctx.close();
 }
 
@@ -174,12 +188,12 @@ async function open(options = {}) {
 // A read given up while the browser reads is dropped: no stale turn, and
 // the next read answers with its own file.
 {
-  const { page, ctx } = await open({ maxReadBytes: 64 << 20 });
+  const { page, ctx } = await open();
   const r = await page.evaluate(async () => {
     window.__choose([["big.bin", 32 << 20]]);
     const stale = window.__counter(34);
     const turns = window.__counter(30);
-    window.__click("Read bytes");
+    window.__click("Read large");
     window.__click("Forget");
     await new Promise((r) => setTimeout(r, 300));
     const quiet = window.__counter(30) - turns;
@@ -195,10 +209,10 @@ async function open(options = {}) {
 
 // A read in flight when the instance is poisoned delivers nothing.
 {
-  const { page, ctx } = await open({ maxReadBytes: 64 << 20 });
+  const { page, ctx } = await open();
   const r = await page.evaluate(async () => {
     window.__choose([["big.bin", 32 << 20]]);
-    window.__click("Read bytes");
+    window.__click("Read large");
     try {
       window.__rt.x.event(0xffffffff, 0);
     } catch (e) {

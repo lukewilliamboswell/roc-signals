@@ -88,8 +88,9 @@
 // applied and holds until it is answered. A page read (kind 11) reads the
 // file's range into a buffer of its own and copies it once into the
 // instance's memory as the result (tag 16 bytes, 17 text, which the engine
-// checks is UTF-8); a range over options.maxReadBytes (default 8 MiB) is
-// FileFailed(TooLarge) unread. A digest (kind 13) reads the range into a
+// checks is UTF-8); a range over the request's max_bytes, or over
+// options.maxFileBytes whatever the request asks, is FileFailed(TooLarge)
+// unread. A digest (kind 13) reads the range into a
 // buffer of its own and digests it with WebCrypto (tag 18): a range over
 // options.maxFileBytes is TooLarge, and a browser without WebCrypto (a page
 // not in a secure context) answers FileFailed(Unavailable). A file URL (kind
@@ -1663,12 +1664,10 @@ export class RocEngineRuntime {
     const nav = this.win ? this.win.navigator : globalThis.navigator;
     this.maxWorkers = options.maxWorkers ?? Math.min((nav && nav.hardwareConcurrency) || 4, 8);
     this.onWorkerFault = options.onWorkerFault ?? null;
-    // The most bytes of files one work job reads into a worker; a job that
-    // names more is answered FileFailed(TooLarge) without running.
+    // The most bytes of files one work job reads into a worker, one digest
+    // reads and one read into the page takes whatever its max_bytes asks; a
+    // request over it is answered FileFailed(TooLarge) without reading.
     this.maxFileBytes = options.maxFileBytes ?? 256 * 1024 * 1024;
-    // The most bytes one read of a file into the page takes; a larger range
-    // is answered FileFailed(TooLarge) without reading it.
-    this.maxReadBytes = options.maxReadBytes ?? 8 * 1024 * 1024;
     // A worker whose linear memory has grown past this many bytes is retired
     // after its job (memory never shrinks, and a prepared state may keep
     // it): the next job that needs a worker starts a fresh one.
@@ -2394,8 +2393,9 @@ export class RocEngineRuntime {
           } else if (kind === 11) {
             const mode = u8[at];
             if (mode !== 1 && mode !== 2) throw new Error(`unknown file read mode ${mode}`);
-            this.fxOut.push({ op: "read", id, mode, ...this.fileRef(dv, at + 1) });
-            at += 25;
+            const maxBytes = tokenAt(dv, 0, at + 25);
+            this.fxOut.push({ op: "read", id, mode, maxBytes, ...this.fileRef(dv, at + 1) });
+            at += 33;
           } else if (kind === 12) {
             const method = str();
             const url = str();
@@ -2529,7 +2529,7 @@ export class RocEngineRuntime {
   async fileAnswer(fx) {
     const failed = (reason) => new Uint8Array([RES_FILE_FAILED, reason]);
     if (fx.op === "read") {
-      if (fx.len > this.maxReadBytes) return failed(FILE_TOO_LARGE);
+      if (fx.len > fx.maxBytes || fx.len > this.maxFileBytes) return failed(FILE_TOO_LARGE);
       const buf = await fx.blob.arrayBuffer();
       if (buf.byteLength !== fx.len) return failed(FILE_UNREADABLE);
       return { parts: [new Uint8Array([fx.mode === 1 ? RES_FILE_BYTES : RES_FILE_TEXT]), new Uint8Array(buf)] };
