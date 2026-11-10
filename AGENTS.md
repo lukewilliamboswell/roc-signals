@@ -13,7 +13,7 @@
 - Preserve the non-negotiable constraints in `design.md`: no Roc compiler
   changes, no guessing or recovery that changes meaning, work proportional to
   the changed set rather than total tree size, a pure Roc engine behind a host
-  that only allocates, stages payloads, backs resource handles and classifies
+  that only allocates, stages payloads, backs handles and classifies
   faults (and, in a worker instance, performs a job's hosted effects on
   handles), typed site storage with no host-held Roc values beyond the opaque
   boxes `design.md` names (the page's engine state, and one prepared state in
@@ -68,7 +68,7 @@
 - Keep the host to its job. `host.zig` holds one opaque boxed engine state (in
   a worker instance, at most one opaque boxed prepared state instead), the
   last command buffer, at most one staged payload, the typed heaps behind
-  resource handles, the allocator and the fault state, and in a worker
+  handles, the allocator and the fault state, and in a worker
   instance the flag that says a job (or a preparation) is running. It clears
   its slots before each call into Roc and never interprets the state, the
   commands or any Roc value. A job's hosted effects are the platform's closed
@@ -77,18 +77,19 @@
   the host itself holds no builder, part or browser object. A box moves whole into one Roc call and back out of it, and only
   Roc drops it; a trap abandons it with the heap. Lay out staged lists exactly
   as Roc expects and never hold a seamless slice.
-- Keep host resources as handles Roc owns. Something the browser holds, such
-  as a user's file, reaches Roc as a handle the host mints in a typed heap.
-  Roc's reference count is the handle's lifetime: the host learns of the last
-  release when Roc frees it, never holds a handle itself, and lets JavaScript
-  release the resource only after the call's batch and effects, which may
-  still name it. Do not replace this with tokens an app must release, a
-  registry the host scans, or bytes copied through the page to avoid a handle.
-  Operations on a resource are requests that take its handle and act where
-  the resource lives; its contents cross into Wasm only through a read the
-  app asks for. A request resolves the resource when its batch is applied and
-  holds it until it is answered or cancelled, and anything the runtime makes
-  from a resource (an object URL) lives exactly as long as its handle.
+- Keep browser objects behind handles Roc owns. Something the browser holds,
+  such as a user's file, reaches Roc as a handle the host mints in a typed
+  heap. Roc's reference count is the handle's lifetime: the host learns of
+  the last release when Roc frees it, never holds a handle itself, and lets
+  JavaScript release the browser object only after the call's batch and
+  effects, which may still name it. Do not replace this with tokens an app
+  must release, a registry the host scans, or bytes copied through the page
+  to avoid a handle. Operations on a handle are requests that take it and
+  act where the browser object lives; its contents cross into Wasm only
+  through a read the app asks for. A request resolves the handle to its
+  browser object when its batch is applied and holds it until it is
+  answered or cancelled, and anything the runtime makes from one (an object
+  URL) lives exactly as long as its handle.
   Handles cross between instances by token: each instance mints its own box
   for the browser object, so either side letting go cannot invalidate the
   other's. A file a job builds is immutable once finished, and its builder
@@ -111,6 +112,11 @@
   input too: a port's answers and messages have a size bound with a typed
   failure, and a subscription declares how its undelivered messages wait and
   what happens beyond that.
+- Decide meaning in Roc and limits at mount. What an app means by a request
+  (a job's deadline, a call's timeout, how much a read accepts) is decided in
+  its Roc code and carried on the request; what a deployment allows is a
+  `max…` mount option that caps whatever a request asks for. Do not move an
+  app's meaning into a mount option, or a deployment's limit into app code.
 - Reject programmer and contract errors at the narrowest trustworthy boundary
   with a classified diagnostic that names the rule and the construction site.
   Do not repair invalid input, substitute values, or continue after state may
@@ -151,6 +157,11 @@
   and never calls into Roc or holds a Roc value. A service the platform
   models (HTTP, storage, timers, history, focus, workers, files) is not a
   port's business.
+- Keep observation passive. The runtime's monitor reports what the runtime
+  and its pool did after they acted and never decides scheduling, a result
+  or an order; everything it keeps is bounded, and an observer that
+  misbehaves is dropped rather than obeyed. Meet a measurement need by
+  observing more, never by letting an observer steer.
 - Treat the command stream, event records, effect payloads, worker payloads,
   port messages, boot bytes (with the port table after the storage keys) and
   Wasm exports as one versioned protocol. Change the Roc encoder
@@ -190,7 +201,7 @@
   refusal at the in-flight bound, stale results, cancellation and
   supersession, lost and timed-out work, a task's own failure, eviction and
   the loss of a worker holding state, a builder kept past its call,
-  resource release, a resource the browser can no longer
+  the release of a handle, a file the browser can no longer
   read, follow-up bounds, containment and recovery, and protocol rejection
   as applicable.
 - Use `.scm` specs beside each app (`examples/<app>/specs/`,
