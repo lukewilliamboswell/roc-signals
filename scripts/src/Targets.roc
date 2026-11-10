@@ -26,6 +26,7 @@ Targets := [].{
 		{ name: "spreadsheet-lite", main: "examples/spreadsheet-lite/main-fuzz.roc" },
 		{ name: "fx-channel", main: "tests/apps/effects/main-fuzz.roc" },
 		{ name: "controls", main: "tests/apps/controls/main-fuzz.roc" },
+		{ name: "worker-search", main: "tests/apps/worker-search/main-fuzz.roc" },
 	]
 
 	## Where a target's executable is built.

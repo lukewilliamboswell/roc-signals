@@ -62,11 +62,62 @@ Soak := [].{
 		}
 	}
 
-	## One random event (none when nothing is interactive).
+	## The fault classes a walk loses a worker job to, in the order a byte
+	## picks them.
+	faults : List(Scm.WorkFault)
+	faults = [Contract, ResourceLimit, OutOfMemory, AppCrash, ExpectFailed, Unavailable, Executor]
+
+	## Answer the oldest pending worker job, chosen by `b`: usually run its
+	## program in process (`Work`), sometimes lose it with a fault class, time
+	## it out when it has a deadline, or leave it pending (so disposal can
+	## still cancel it). A crash in the program ends the walk: the UI produced
+	## an input the program cannot handle, which is a finding.
+	answer_work : SpecRunner.Program(state), SpecRunner.S(state), U8 -> SpecRunner.S(state)
+	answer_work = |program, s, b| {
+		match s.browser.pending.find_first(|p| Soak.is_work(p)) {
+			Ok(p) if b % 8 != 7 => {
+				n = (s.browser.issued.find_first_index(|id| id == p.id) ?? crash "soak: a pending job was issued") + 1
+				op = match b % 8 {
+					5 => LoseWork({ occurrence: n, fault: Soak.faults.get((b.to_u64() / 8) % Soak.faults.len()) ?? Executor })
+					6 if Soak.deadline_of(p) > 0 => TimeOutWork(n)
+					_ => RunEffect(n)
+				}
+				match SpecRunner.one(program, s, op) {
+					Ok(s2) =>
+						match SpecRunner.check_counters(s2) {
+							Ok(_) => s2
+							Err(msg) => crash "soak: work counters: ${msg}"
+						}
+					Err(msg) => crash "soak: answering worker job ${n.to_str()}: ${msg}"
+				}
+			}
+			_ => s
+		}
+	}
+
+	is_work : SpecRunner.Pending -> Bool
+	is_work = |p|
+		match p.kind {
+			WorkRequest(_) => Bool.True
+			_ => Bool.False
+		}
+
+	deadline_of : SpecRunner.Pending -> U32
+	deadline_of = |p|
+		match p.kind {
+			WorkRequest(w) => w.deadline_ms
+			_ => 0
+		}
+
+	## One random event (none when nothing is interactive). While a worker job
+	## is pending, a pick byte of 0xC0 or more answers one (`answer_work`)
+	## instead; a walk of an app that issues no work is unchanged.
 	step : SpecRunner.Program(state), SpecRunner.S(state), U8, U8 -> SpecRunner.S(state)
 	step = |program, s, pick, b| {
 		cs = Soak.candidates(s.dom)
-		if cs.is_empty() {
+		if pick >= 0xC0 and s.browser.pending.any(|p| Soak.is_work(p)) {
+			Soak.answer_work(program, s, b)
+		} else if cs.is_empty() {
 			s
 		} else {
 			(i, ev) = cs.get(pick.to_u64() % cs.len()) ?? crash "candidate"

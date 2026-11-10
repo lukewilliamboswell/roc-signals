@@ -1169,7 +1169,11 @@ loads; seeding storage in the same setup is a spec error in both runners.
   carry the value.
 - **Soak.** Every app runs a long random walk natively (leak-checked) and in
   Chrome, with live allocations and Wasm pages asserted flat across repeated
-  round trips.
+  round trips. The native walk answers pending worker jobs from its bytes —
+  most run their program in process, inside the leak check, the rest are
+  lost with a fault class, timed out or left for disposal to cancel — so a
+  worker app's walk terminates, stays deterministic, and exercises its
+  programs and their failure paths.
 - **Contract tests** (`tests/`) cover the host (`host.zig` tests: staging,
   containment, refusal after poison) and the runtime (`runtime.mjs` against the
   wire protocol: every opcode, payload encoding, effect performance and

@@ -297,7 +297,11 @@ entry and host, so it cannot share the app's `main.roc`): a roc-fuzz target that
 arbitrary bytes into a valid session — random events found by exploring the
 live DOM — and checks it against an oracle, with every session leak-checked.
 The same file declares the app's soak runs: long random walks whose live
-allocations must stay flat across repeated round trips.
+allocations must stay flat across repeated round trips. While a worker
+job is pending, the walk also answers it now and then: usually by running
+its program in process, so the program runs inside the leak check (and one
+that crashes on an input the UI produced is a finding), sometimes by losing
+it, timing it out or leaving it pending for disposal to cancel.
 
 - `blueprint run check` replays the parser target's saved examples, and
   `blueprint run check-slow` every target's.

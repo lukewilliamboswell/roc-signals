@@ -1,0 +1,15 @@
+(test "Worker search — a report that is lost or times out says so and can be retried"
+  (steps
+    (click (role button :name "Report"))
+    (lose-work 1 out_of_memory)
+    (expect-text (test-id "summary") "The report lost (OutOfMemory)")
+    (click (role button :name "Retry"))
+    (expect-text (test-id "summary") "Computing…")
+    (time-out-work 2)
+    (expect-text (test-id "summary") "The report took too long")
+    (click (role button :name "Retry"))
+    (run-effect 3)
+    (expect-text (test-id "summary") "8 entries, longest basic-webserver")
+    (expect-pending-effects 0)
+  )
+)
