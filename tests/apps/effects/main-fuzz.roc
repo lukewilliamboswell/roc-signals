@@ -30,13 +30,29 @@ start = |view| {
 ##   skipped writes (their hits state is retired). Multiples of 6 make a
 ##   follow-up hide its own site mid-drain; its remaining follow-ups are
 ##   dropped (stale).
+## - Supersession: L (a `latest` site, `k` 7) and R (a `resource`, `k` 8)
+##   own only their current value's requests. A new value cancels every
+##   request still in flight (CANCEL, `cancelled`), HTTP included, and drops
+##   queued follow-ups and refusals (`stale`), before issuing again. L's first
+##   follow-up bumps the query, superseding its second mid-drain. R's layer
+##   is the model's fold of the answers it owns; hiding R disposes it: its
+##   timer and interval stop, its HTTP request reparents to the `when` and
+##   its answer is then a skipped write.
 
-Kind : [G, H, Tick, Pop]
+Kind : [G, H, Tick, Pop, Lh, Li, Rh, Rt, Ri]
 
 Live : { id : U32, k : U64, c : U64, kind : Kind, orphan : Bool }
 
-## A queued follow-up: a refusal for G or H, or a Self (first or second).
-Follow : { k : U64, c : U64, what : [RefG, RefH, RefT, Self1, Self2] }
+## A queued follow-up: a refusal for G, H, an interval, L or R, or a Self
+## (G's first or second, or L's).
+Follow : { k : U64, c : U64, what : [RefG, RefH, RefT, Self1, Self2, RefL, SelfL, RefR] }
+
+## L's and R's `k`.
+k_l : U64
+k_l = 7
+
+k_r : U64
+k_r = 8
 
 M : {
 	counts : List(U64),
@@ -55,6 +71,10 @@ M : {
 	skipped : U64,
 	max : U64,
 	fx : List(Dom.FxCmd),
+	q : U64,
+	r : U64,
+	rshown : Bool,
+	rl : FxApp.Load,
 }
 
 model_new : U64 -> M
@@ -76,6 +96,10 @@ model_new = |max| {
 		skipped: 0,
 		max,
 		fx: [Pop(1)],
+		q: 0,
+		r: 0,
+		rshown: True,
+		rl: FxApp.begin_r(FxApp.load0, 0),
 	}
 	# each shown branch mounts its interval (counts are 0: no G/H)
 	tick(tick(tick(m0, 0), 1), 2)
@@ -128,6 +152,81 @@ request = |m, k, c| {
 	}
 }
 
+## Admit (or refuse, queueing `refusal`) one awaited request of L or R:
+## `cmd` is its effect command given the id.
+admit_x : M, U64, U64, Kind, (U32 -> Dom.FxCmd), [RefL, RefR] -> M
+admit_x = |m, k, c, kind, cmd, refusal| {
+	id = m.next
+	if m.live.len() >= m.max {
+		what = if (refusal == RefL) RefL else RefR
+		{ ..m, next: id + 1, refused: m.refused + 1, queue: m.queue.append({ k, c, what }) }
+	} else {
+		{ ..m, next: id + 1, issued: m.issued + 1, live: m.live.append({ id, k, c, kind, orphan: False }), fx: m.fx.append(cmd(id)) }
+	}
+}
+
+## Site `k` gives up what it owns before issuing for a new value: every
+## live request it still owns is cancelled in issue order, and its queued
+## follow-ups are dropped as stale.
+supersede : M, U64 -> M
+supersede = |m, k| {
+	var $m = m
+	for l in m.live {
+		if l.k == k and !l.orphan {
+			$m = { ..$m, fx: $m.fx.append(Cancel(l.id)), cancelled: $m.cancelled + 1 }
+		}
+	}
+	purged = $m.queue.count_if(|f| f.k == k)
+	{
+		..$m,
+		live: $m.live.keep_if(|l| !(l.k == k and !l.orphan)),
+		queue: $m.queue.keep_if(|f| f.k != k),
+		stale: $m.stale + purged,
+	}
+}
+
+## L's requests for query `q` (FxApp.plan_l), in plan order.
+issue_l : M, U64 -> M
+issue_l = |m, q| {
+	url = "/l/${q.to_str()}"
+	if q == 0 {
+		m
+	} else if q % 4 == 1 {
+		admit_x(m, k_l, q, Lh, |id| Http(id, "GET", url, [], "", 5000), RefL)
+	} else if q % 4 == 2 {
+		admit_x(m, k_l, q, Li, |id| Interval(id, 500), RefL)
+	} else if q % 4 == 3 {
+		m1 = admit_x(m, k_l, q, Lh, |id| Http(id, "GET", url, [], "", 0), RefL)
+		{ ..m1, queue: m1.queue.concat([{ k: k_l, c: q, what: SelfL }, { k: k_l, c: q, what: SelfL }]) }
+	} else {
+		m
+	}
+}
+
+## R's requests for input `r` (FxApp.plan_r), in plan order.
+issue_r : M, U64 -> M
+issue_r = |m, r| {
+	url = "/r/${r.to_str()}"
+	if r == 0 {
+		m
+	} else if r % 3 == 1 {
+		admit_x(m, k_r, r, Rh, |id| Http(id, "GET", url, [], "", 0), RefR)
+	} else if r % 3 == 2 {
+		m1 = admit_x(m, k_r, r, Rh, |id| Http(id, "GET", url, [], "", 0), RefR)
+		admit_x(m1, k_r, r, Rt, |id| Timer(id, 100), RefR)
+	} else {
+		admit_x(m, k_r, r, Ri, |id| Interval(id, 700), RefR)
+	}
+}
+
+## The query changes (a click or L's own follow-up): L supersedes, then
+## issues for the new value.
+bump_q : M -> M
+bump_q = |m| {
+	q = m.q + 1
+	issue_l(supersede({ ..m, q }, k_l), q)
+}
+
 ## Run queued follow-ups in order (after the turn).
 drain : M -> M
 drain = |m0| {
@@ -143,6 +242,9 @@ drain = |m0| {
 				m1 = { ..m, log: m.log.append(FxApp.describe(f.k, f.c, Now)), delivered: m.delivered + 1 }
 				if (f.c % 6 == 0) hide(m1, f.k) else m1
 			}
+			RefL => { ..m, log: m.log.append(FxApp.describe(k_l, f.c, Refused)), delivered: m.delivered + 1 }
+			SelfL => bump_q({ ..m, log: m.log.append(FxApp.describe(k_l, f.c, Now)), delivered: m.delivered + 1 })
+			RefR => { ..m, rl: FxApp.fold_r(m.rl, f.c, Refused), delivered: m.delivered + 1 }
 		}
 	}
 	$m
@@ -189,15 +291,61 @@ model_toggle = |m, k| {
 	}
 }
 
+## A click on "query": L supersedes and issues for the next query.
+model_query : M -> M
+model_query = |m| drain(bump_q(m))
+
+## A click on "rquery": a shown R supersedes, begins its layer for the new
+## input and issues; a hidden R only sees the counter move.
+model_rquery : M -> M
+model_rquery = |m| {
+	r = m.r + 1
+	if m.rshown {
+		m1 = supersede({ ..m, r }, k_r)
+		drain(issue_r({ ..m1, rl: FxApp.begin_r(m1.rl, r) }, r))
+	} else {
+		{ ..m, r }
+	}
+}
+
+## A click on "toggle r": hiding disposes R (its timer and interval stop,
+## its HTTP request reparents, its queued follow-ups are dropped); showing
+## mounts it afresh.
+model_toggle_r : M -> M
+model_toggle_r = |m| {
+	if m.rshown {
+		var $m = { ..m, rshown: False }
+		for l in m.live {
+			if l.k == k_r and !l.orphan {
+				if l.kind == Rh {
+					$m = { ..$m, reparented: $m.reparented + 1 }
+				} else {
+					$m = { ..$m, fx: $m.fx.append(Cancel(l.id)), cancelled: $m.cancelled + 1 }
+				}
+			}
+		}
+		purged = $m.queue.count_if(|f| f.k == k_r)
+		{
+			..$m,
+			live: $m.live.keep_if(|l| !(l.k == k_r and !l.orphan and l.kind != Rh)).map(|l| if (l.k == k_r) { ..l, orphan: True } else l),
+			queue: $m.queue.keep_if(|f| f.k != k_r),
+			stale: $m.stale + purged,
+		}
+	} else {
+		drain(issue_r({ ..m, rshown: True, rl: FxApp.begin_r(FxApp.load0, m.r) }, m.r))
+	}
+}
+
 model_deliver : M, U32, Engine.Res -> M
 model_deliver = |m, id, res| {
 	match m.live.find_first(|l| l.id == id) {
 		Ok(l) => {
-			sub = l.kind == Tick or l.kind == Pop
+			sub = l.kind == Tick or l.kind == Pop or l.kind == Li or l.kind == Ri
 			live = if (sub) m.live else m.live.keep_if(|x| x.id != id)
 			m1 = { ..m, live, delivered: m.delivered + 1 }
 			match l.kind {
 				H => if (l.orphan) { ..m1, skipped: m1.skipped + 1 } else { ..m1, hits: m1.hits.update(l.k, |h| h + 1) ?? m1.hits }
+				Rh | Rt | Ri => if (l.orphan) { ..m1, skipped: m1.skipped + 1 } else { ..m1, rl: FxApp.fold_r(m1.rl, l.c, res) }
 				_ => { ..m1, log: m1.log.append(FxApp.describe(l.k, l.c, res)) }
 			}
 		}
@@ -297,6 +445,14 @@ check! = |what, e, m| {
 		}
 		$k = $k + 1
 	}
+	shown_res = match SpecRunner.find(e.s.dom, TestId("res")) {
+		Ok(i) => Ok(Dom.text_of(e.s.dom, i))
+		Err(_) => Err(Hidden)
+	}
+	want_res = if (m.rshown) Ok(FxApp.show_r(m.rl)) else Err(Hidden)
+	if shown_res != want_res {
+		crash "${what}: resource ${Str.inspect(shown_res)}, model ${Str.inspect(want_res)}"
+	}
 	# The FX and CANCEL work counters are the model's issued and cancelled
 	# requests: every admitted request is one FX, every stop one CANCEL.
 	w = Core.work_counters(e.s.eng)
@@ -318,7 +474,7 @@ run_program! = |prog| {
 	check!("mount", { s: $s, fx: fx0 }, $m)
 	var $i = 0.U64
 	while $i + 1 < prog.len() {
-		op = (prog.get($i) ?? 0) % 4
+		op = (prog.get($i) ?? 0) % 8
 		arg = prog.get($i + 1) ?? 0
 		k = arg.to_u64() % 3
 		m0 = { ..$m, fx: [] }
@@ -337,9 +493,19 @@ run_program! = |prog| {
 				Timeout
 			}
 			(deliver!($s, id, res), model_deliver(m0, id, res), "deliver ${id.to_str()}")
-		} else {
+		} else if op == 3 {
 			url = "/u${arg.to_str()}"
 			(deliver!($s, 1, Location(url)), model_deliver(m0, 1, Location(url)), "popstate ${url}")
+		} else if op == 4 {
+			(click!($s, "query"), model_query(m0), "query")
+		} else if op == 5 {
+			(click!($s, "rquery"), model_rquery(m0), "rquery")
+		} else if op == 6 {
+			(click!($s, "toggle r"), model_toggle_r(m0), "toggle r")
+		} else {
+			# A tick for an arbitrary id: an equal fold for R, "other" for logs.
+			id = (arg.to_u32() % $m.next) + 1
+			(deliver!($s, id, Fired), model_deliver(m0, id, Fired), "tick ${id.to_str()}")
 		}
 		check!("step ${($i // 2).to_str()} ${what}", e, m2)
 		$s = e.s
@@ -372,6 +538,16 @@ target = Fuzz.target_with!({
 		ex("saturate", 1, [0, 0, 0, 1, 0, 2, 2, 3, 2, 4, 3, 5, 0, 1, 1, 1, 2, 9, 2, 255]),
 		# six issues on site 1: the sixth's first follow-up hides the site mid-drain
 		ex("self-dispose", 1, [0, 1, 2, 2, 0, 1, 2, 3, 0, 1, 0, 1, 2, 5, 0, 1, 0, 1, 1, 1, 0, 1]),
+		# free two slots, then walk L through a request, an interval, a request
+		# with follow-ups (the first supersedes the second) and a pure cancel
+		ex("latest", 1, [1, 0, 1, 1, 4, 0, 2, 6, 4, 0, 7, 7, 4, 0, 4, 0, 4, 0, 2, 9, 7, 3, 4, 0, 2, 12]),
+		# R: supersede a request, a request and a timer; hide with both in
+		# flight (the timer stops, the request reparents and is skipped); show
+		# again; an interval whose ticks are equal folds
+		ex("resource", 1, [1, 0, 1, 1, 5, 0, 5, 0, 2, 3, 6, 0, 2, 4, 2, 5, 6, 0, 5, 0, 7, 8, 5, 0, 7, 9, 5, 0, 2, 13]),
+		# at the in-flight bound: L's and R's refusals are queued follow-ups that
+		# a later value supersedes or a disposal drops
+		ex("supersede-queued", 1, [0, 0, 4, 0, 4, 0, 4, 0, 4, 0, 1, 2, 4, 0, 4, 0, 4, 0, 6, 0, 5, 0, 5, 0, 6, 0, 5, 0, 6, 0]),
 	],
 	generator: { mode: Fuzz.constant(1), program: Fuzz.list(Fuzz.u8, 64) }.Fuzz,
 	test!,

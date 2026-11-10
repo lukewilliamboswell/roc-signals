@@ -2,8 +2,10 @@
 // test of the effect channel with tests/apps/effects in headless Chrome: manual mode (pending list, answer, cancel
 // on dispose, injected stale result dropped, saturation refusal, popstate
 // subscription, follow-up self-dispose), automatic mode (real fetch
-// against this server, including an aborted in-flight request), and an
-// embedder's `fetch` option, which may answer synchronously.
+// against this server, including an aborted in-flight request), a `latest`
+// site superseding a real fetch (aborted, its timeout timer released) and
+// an interval, and an embedder's `fetch` option, which may answer
+// synchronously.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -19,8 +21,19 @@ const files = {
   "app.wasm": opts.wasm,
 };
 let slowRelease = null;
+// /l/* requests (the `latest` site's) are never answered: the test watches
+// whether the browser aborts them.
+const held = new Map();
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, "http://x");
+  if (u.pathname.startsWith("/l/")) {
+    const rec = { aborted: false };
+    held.set(u.pathname, rec);
+    res.on("close", () => {
+      if (!res.writableFinished) rec.aborted = true;
+    });
+    return;
+  }
   const m = /^\/s(\d)\/(\d+)$/.exec(u.pathname);
   if (m) {
     const send = () => {
@@ -130,6 +143,33 @@ const stats = (page) => page.evaluate(() => ({ live: [...window.__rt.live.keys()
   await click(page, "issue 0");
   await page.waitForFunction(() => document.querySelector("[data-testid=log]").textContent.includes("srv0.2"));
   check("completed request clears its timeout timer", await page.evaluate(() => window.__rt.timers), 0);
+  await ctx.close();
+}
+{
+  // Supersession through the real runtime: the `latest` site's first query
+  // fetches with a 5 s timeout; the next query cancels it before issuing.
+  const { page, ctx } = await open(false);
+  const until = async (f, ms = 3000) => {
+    for (let t = 0; t < ms && !f(); t += 20) await new Promise((r) => setTimeout(r, 20));
+    return f();
+  };
+  await click(page, "query");
+  check("latest: the first query's fetch reaches the server", await until(() => held.has("/l/1")), true);
+  check("latest: in flight with its timeout timer armed", [(await stats(page)).live.includes(5), await page.evaluate(() => window.__rt.timers)], [true, 1]);
+  await click(page, "query");
+  check("latest: the superseded fetch is really aborted", await until(() => held.get("/l/1").aborted), true);
+  check("latest: its id leaves the runtime and its timeout timer is released", [(await stats(page)).live.includes(5), await page.evaluate(() => window.__rt.timers)], [false, 0]);
+  // Intervals tick only through tick(id) on this page (manualIntervals).
+  check("latest: the second query's interval ticks", [await page.evaluate(() => window.__rt.tick(6)), (await log(page)).endsWith("7:2:other")], [true, true]);
+  await click(page, "query");
+  // The third query's fetch has two follow-ups: the first bumps the query,
+  // which supersedes the fetch and drops the second follow-up.
+  const l3 = (await log(page)).split("|");
+  check("latest: the superseded interval stops; one follow-up ran", [(await stats(page)).live.includes(6), (await stats(page)).live.includes(7), l3.filter((x) => x === "7:3:self").length, await page.evaluate(() => window.__rt.timers)], [false, false, 1, 0]);
+  check("latest: no tick after supersession", await page.evaluate(() => window.__rt.tick(6)), false);
+  const before = await log(page);
+  await page.evaluate(() => window.__rt.injectResult(5, 200, "late"));
+  check("latest: a late result for the cancelled id is dropped", await log(page), before);
   await ctx.close();
 }
 {

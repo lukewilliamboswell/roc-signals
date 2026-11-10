@@ -13,8 +13,21 @@ import pf.Html
 ## Disposal stops the interval and reparents G and H requests to the `when`:
 ## G results still reach the log, H results are skipped writes.
 ## A popstate subscription at the root appends to the log too.
+##
+## Two superseding sites follow root counters:
+## - L, a `latest` site over the query counter `q`: an HTTP request (with
+##   a timeout), an interval, an HTTP request with two `Self` follow-ups
+##   (the first bumps `q`, superseding the second), or nothing, by `q % 4`.
+##   Its reaction appends to the root log.
+## - R, a `resource` over the counter `r`, shown or hidden by a `when`: an
+##   HTTP request, a request and a timer, or an interval, by `r % 3`. Its
+##   layer folds answers and is shown as `input|answer|faults`.
 FxApp := [].{
-	S : { counts : List(U64), shown : List(Bool), log : List(Str) }
+	S : { counts : List(U64), shown : List(Bool), log : List(Str), q : U64, r : U64, rshown : Bool }
+
+	## The resource's layer: the input it was begun for, the last answer, and
+	## the timeouts seen.
+	Load : { input : U64, answer : Str, faults : U64 }
 
 	Ctx : In(Root, S)
 
@@ -54,13 +67,73 @@ FxApp := [].{
 	}
 
 	log_line : S, Str -> S
-	log_line = |{ counts, shown, log }, line| { counts, shown, log: log.append(line) }
+	log_line = |{ counts, shown, log, q, r, rshown }, line| { counts, shown, log: log.append(line), q, r, rshown }
 
 	bump : S, U64 -> S
-	bump = |{ counts, shown, log }, k| { counts: counts.update(k, |c| c + 1) ?? counts, shown, log }
+	bump = |{ counts, shown, log, q, r, rshown }, k| { counts: counts.update(k, |c| c + 1) ?? counts, shown, log, q, r, rshown }
 
 	toggle : S, U64 -> S
-	toggle = |{ counts, shown, log }, k| { counts, shown: shown.update(k, |b| !b) ?? shown, log }
+	toggle = |{ counts, shown, log, q, r, rshown }, k| { counts, shown: shown.update(k, |b| !b) ?? shown, log, q, r, rshown }
+
+	## L's requests for query `q`.
+	plan_l : U64 -> List(Engine.Req)
+	plan_l = |q| {
+		if q == 0 {
+			[]
+		} else if q % 4 == 1 {
+			[Http({ method: "GET", url: "/l/${q.to_str()}", headers: [], body: "", timeout_ms: 5000 })]
+		} else if q % 4 == 2 {
+			[Interval(500)]
+		} else if q % 4 == 3 {
+			[Http({ method: "GET", url: "/l/${q.to_str()}", headers: [], body: "", timeout_ms: 0 }), Self, Self]
+		} else {
+			[]
+		}
+	}
+
+	## L logs every result; a follow-up also bumps `q`, which supersedes
+	## whatever L still owns (the second follow-up among it).
+	react_l : S, U64, Engine.Res -> S
+	react_l = |s, q, r| {
+		s1 = FxApp.log_line(s, FxApp.describe(7, q, r))
+		match r {
+			Now => { ..s1, q: s1.q + 1 }
+			_ => s1
+		}
+	}
+
+	## R's requests for input `r`.
+	plan_r : U64 -> List(Engine.Req)
+	plan_r = |r| {
+		if r == 0 {
+			[]
+		} else if r % 3 == 1 {
+			[Http({ method: "GET", url: "/r/${r.to_str()}", headers: [], body: "", timeout_ms: 0 })]
+		} else if r % 3 == 2 {
+			[Http({ method: "GET", url: "/r/${r.to_str()}", headers: [], body: "", timeout_ms: 0 }), Timer(100)]
+		} else {
+			[Interval(700)]
+		}
+	}
+
+	load0 : Load
+	load0 = { input: 0, answer: "", faults: 0 }
+
+	begin_r : Load, U64 -> Load
+	begin_r = |l, r| { ..l, input: r }
+
+	## An HTTP answer replaces the answer, a timeout counts, a refusal is
+	## shown; anything else (a tick) is an equal fold.
+	fold_r : Load, U64, Engine.Res -> Load
+	fold_r = |l, r, res| match res {
+		Http({ status, body, .. }) => { ..l, answer: "${r.to_str()}:${status.to_str()}:${body}" }
+		Timeout => { ..l, faults: l.faults + 1 }
+		Refused => { ..l, answer: "${r.to_str()}:refused" }
+		_ => l
+	}
+
+	show_r : Load -> Str
+	show_r = |l| "${l.input.to_str()}|${l.answer}|${l.faults.to_str()}"
 
 	react : S, U64, U64, Engine.Res -> S
 	react = |s, k, c, r| {
@@ -118,7 +191,7 @@ FxApp := [].{
 
 	main_with : List(Bool) -> Elem(Root)
 	main_with = |shown| Engine.state(
-		{ counts: List.repeat(0, FxApp.nsites), shown, log: [] },
+		{ counts: List.repeat(0, FxApp.nsites), shown, log: [], q: 0, r: 0, rshown: True },
 		|st| Engine.element(
 			"div",
 			[],
@@ -135,6 +208,19 @@ FxApp := [].{
 					[
 						Engine.element("circle", [Engine.attr("r", "4"), Engine.attr("cx", "5"), Engine.attr("cy", "5"), Engine.class_v(st.val().map(|s| if (s.log.is_empty()) "idle" else "busy"))], []),
 					],
+				),
+				Html.button("query", [], st.update(|s| { ..s, q: s.q + 1 })),
+				Engine.latest(st.val().map(|s| s.q), FxApp.plan_l, st.on_result(|s, q, r| FxApp.react_l(s, q, r))),
+				Html.button("rquery", [], st.update(|s| { ..s, r: s.r + 1 })),
+				Html.button("toggle r", [], st.update(|s| { ..s, rshown: !s.rshown })),
+				Engine.when(
+					st.val().map(|s| s.rshown),
+					|| Engine.resource(
+						st.val().map(|s| s.r),
+						{ init: FxApp.load0, begin: FxApp.begin_r, plan: FxApp.plan_r, fold: FxApp.fold_r },
+						|l| Html.p_v(l.map(FxApp.show_r), [Engine.test_id("res")]),
+					),
+					|| Engine.text(""),
 				),
 			],
 		),
