@@ -11,11 +11,11 @@
 //     liveBytes }: its clock's `performance.timeOrigin`, when instantiation
 //     started and ended, the instance's linear memory and its live
 //     allocations before any job, for the page's monitor.
-//   { type: "job", mode, payload, objects, maxOutputBytes, program } — one
+//   { type: "job", mode, payload, objects, maxOutputBytes, task } — one
 //     job. `payload` (a transferred ArrayBuffer) is `name:str input:rest`;
 //     `objects` are the browser's Blobs or Files the request names (whole,
 //     by reference), and `maxOutputBytes` bounds what the job appends to
-//     its builders; `program` (the task's name) is sent only when
+//     its builders; `task` (the task's name) is sent only when
 //     `userTiming` asked for a `roc:work.compute` measure here. The worker
 //     mints a handle for each object in its instance (`files_stage`),
 //     stages the payload and calls the instance's `work()` export, during
@@ -271,12 +271,12 @@ function taskImportsFor(module) {
 
 const memOf = (x) => [x.memory.buffer.byteLength, Number(x.metric(4)), Number(x.metric(5))];
 
-function measure(program, start, end) {
+function measure(task, start, end) {
   if (measures >= 1024) {
     performance.clearMeasures();
     measures = 0;
   }
-  performance.measure(`roc:work.compute ${program}`, { start, end, detail: { devtools: { dataType: "track-entry", track: "compute", trackGroup: "roc workers", color: "primary" } } });
+  performance.measure(`roc:work.compute ${task}`, { start, end, detail: { devtools: { dataType: "track-entry", track: "compute", trackGroup: "roc workers", color: "primary" } } });
   measures += 1;
 }
 
@@ -331,7 +331,7 @@ self.onmessage = async (event) => {
     self.postMessage(faultOf(x, e));
     return;
   }
-  if (userTiming && typeof m.program === "string") measure(m.program, r.call, r.ret);
+  if (userTiming && typeof m.task === "string") measure(m.task, r.call, r.ret);
   const output = r.output;
   self.postMessage({ type: "done", output: output.buffer, objects: r.objects, t: [recv, begin, r.call, r.ret, performance.now()], mem: memOf(x), prepareMs: r.prepareMs, held: x.metric(8) === 1n, handles: Number(x.metric(6)) }, [output.buffer]);
 };

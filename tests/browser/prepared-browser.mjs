@@ -101,12 +101,12 @@ function install() {
       tick();
     });
   window.__answer = (id, prefix) => window.__until(() => (window.__text(id) ?? "").startsWith(prefix) && window.__text(id), `${id} ${prefix}`);
-  // The finished jobs, in order: [program, prepared or reused, instance].
+  // The finished jobs, in order: [task, prepared or reused, instance].
   window.__jobs = () =>
     window.__rt.monitor
       .snapshot()
       .recent.filter((r) => r.outcome !== "cancelled")
-      .map((r) => [r.program.split("/").pop(), r.prepared, r.instance]);
+      .map((r) => [r.task.split("/").pop(), r.prepared, r.instance]);
 }
 
 async function open(options = {}) {

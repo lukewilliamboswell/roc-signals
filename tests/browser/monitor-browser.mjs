@@ -160,7 +160,7 @@ function ordered(events) {
   check("both ran off the page's thread on instance 1", [cold.thread, warm.thread, cold.instance, warm.instance], ["worker", "worker", 1, 1]);
   // A payload is the task's Wire encoding: `Wire.Bytes` is a one-byte count
   // and the bytes, and an answer ends with its `Ok` flag.
-  check("sizes, not bytes", [cold.program, cold.inputBytes, cold.outputBytes, r.s.jobs.inputBytes, r.s.jobs.outputBytes], ["test.roc-signals/upper", 6, 7, 12, 14]);
+  check("sizes, not bytes", [cold.task, cold.inputBytes, cold.outputBytes, r.s.jobs.inputBytes, r.s.jobs.outputBytes], ["test.roc-signals/upper", 6, 7, 12, 14]);
   const t = warm.t;
   const seq = [t.issue, t.submit, t.post, t.reply, t.turnStart, t.turnEnd];
   check("the page's stamps are in order", seq.every((v, i) => i === 0 || v >= seq[i - 1]), true);
@@ -175,7 +175,7 @@ function ordered(events) {
   check("pool after: one idle instance", [r.s.pool.instances, r.s.pool.idle, r.s.pool.busy, r.s.pool.queued, r.s.pool.peak.busy], [1, 1, 0, 0, 1]);
   const inst = r.s.instances.live[0];
   check("instance facts", [inst.thread, inst.state, inst.jobs, inst.memBytes > 0, inst.liveAllocs > 0, inst.instantiateMs >= 0, inst.scriptAt > 0], ["worker", "idle", 2, true, true, true, true]);
-  check("histograms counted both", [r.s.hist.total.n, r.s.hist.compute.n, r.s.hist.cold.n, r.s.programs["test.roc-signals/upper"].done], [2, 2, 1, 2]);
+  check("histograms counted both", [r.s.hist.total.n, r.s.hist.compute.n, r.s.hist.cold.n, r.s.tasks["test.roc-signals/upper"].done], [2, 2, 1, 2]);
   check("mode, generation, and the engine's effect counters from the work record", [r.s.mode, r.s.generation, r.s.state, r.s.engine, r.s.page.turns > 0], ["workers", 1, "mounted", { issued: 2, delivered: 2, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, live: 0 }, true]);
   check("no late replies", r.s.jobs.lateReplies, 0);
   check("no User Timing entries by default", await page.evaluate(() => window.__measures.length), 0);

@@ -1125,7 +1125,7 @@ SpecRunner := [].{
 				}
 				SpecRunner.deliver_job(program, s, job.id, [7])
 			}
-			ExpectPendingWork({ program: name, count }) => {
+			ExpectPendingWork({ task: name, count }) => {
 				got = b.pending.count_if(
 					|q|
 						match q.kind {

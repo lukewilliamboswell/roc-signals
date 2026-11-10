@@ -456,12 +456,12 @@ export const MONITOR_EDGES = Object.freeze([0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 
 
 // history: the most job records `snapshot().recent` keeps (the option's
 // maximum; oldest overwritten, counted in recentDropped). retired: ended
-// instances kept (oldest overwritten, counted in retiredDropped). programs:
-// per-program aggregates (the catalogue's bound; any further name is
+// instances kept (oldest overwritten, counted in retiredDropped). tasks:
+// per-task aggregates (the catalogue's bound; any further name is
 // aggregated under "*"). subscribers: a further subscribe throws. timeline:
 // roc entries held in the performance timeline; reaching it clears them
 // (observers and DevTools traces have already seen them).
-export const MONITOR_LIMITS = Object.freeze({ history: 1024, retired: 16, programs: 64, subscribers: 16, timeline: 1024 });
+export const MONITOR_LIMITS = Object.freeze({ history: 1024, retired: 16, tasks: 64, subscribers: 16, timeline: 1024 });
 
 // The engine's effect counters in the work record (design.md, Appendix B),
 // present when the record carries at least `ENGINE_FX_FIRST + 8` counters.
@@ -570,7 +570,7 @@ export class WorkMonitor {
 
   // -- Pull ---------------------------------------------------------------
 
-  // Zero the aggregates (counts, peaks, integrals, histograms, per-program
+  // Zero the aggregates (counts, peaks, integrals, histograms, per-task
   // figures and the job history) and start a new measurement window at
   // `snapshot().since`. Live jobs and instances are still tracked; peaks
   // restart from the current gauges.
@@ -584,7 +584,7 @@ export class WorkMonitor {
     this.peak = { instances: this.gauge.instances, busy: this.gauge.busy, queued: this.gauge.queued };
     this.integral = { busyMs: 0, aliveMs: 0, queuedMs: 0 };
     this.hist = { queue: newHist(), cold: newHist(), compute: newHist(), total: newHist(), resultTurn: newHist(), prepare: newHist() };
-    this.programs = new Map();
+    this.tasks = new Map();
     this.recent.clear();
     this.retired.clear();
   }
@@ -592,13 +592,13 @@ export class WorkMonitor {
   // Plain serialisable data (no BigInt, no bytes) describing the pool, its
   // jobs and instances since the last reset; see the worker-monitoring
   // documentation for every field. Cost: proportional to the history,
-  // the retired instances and the programs held; nothing is computed until
+  // the retired instances and the tasks held; nothing is computed until
   // it is called.
   snapshot() {
     this.tick();
-    const programs = {};
-    for (const [name, p] of this.programs) {
-      programs[name] = { ...p, hist: { queue: copyHist(p.hist.queue), compute: copyHist(p.hist.compute), total: copyHist(p.hist.total) } };
+    const tasks = {};
+    for (const [name, p] of this.tasks) {
+      tasks[name] = { ...p, hist: { queue: copyHist(p.hist.queue), compute: copyHist(p.hist.compute), total: copyHist(p.hist.total) } };
     }
     let page = null;
     let engine = null;
@@ -637,7 +637,7 @@ export class WorkMonitor {
         retiredDropped: this.retired.dropped,
       },
       hist: Object.fromEntries(Object.entries(this.hist).map(([k, h]) => [k, copyHist(h)])),
-      programs,
+      tasks,
       recent: this.recent.list(),
       recentDropped: this.recent.dropped,
       page,
@@ -713,12 +713,12 @@ export class WorkMonitor {
     return this.state === "mounted";
   }
 
-  program(name) {
-    let p = this.programs.get(name);
+  perTask(name) {
+    let p = this.tasks.get(name);
     if (p === undefined) {
-      if (name !== "*" && this.programs.size >= MONITOR_LIMITS.programs) return this.program("*");
+      if (name !== "*" && this.tasks.size >= MONITOR_LIMITS.tasks) return this.perTask("*");
       p = { jobs: 0, done: 0, lost: 0, timeout: 0, cancelled: 0, unavailable: 0, inputBytes: 0, outputBytes: 0, hist: { queue: newHist(), compute: newHist(), total: newHist() } };
-      this.programs.set(name, p);
+      this.tasks.set(name, p);
     }
     return p;
   }
@@ -781,12 +781,12 @@ export class WorkMonitor {
 
   // A work request was performed (`held`: manual mode keeps it pending until
   // runEffect). `input` is only kept for the event when payloads are on.
-  jobIssued(id, program, input, deadlineMs, held) {
+  jobIssued(id, task, input, deadlineMs, held) {
     if (!this.live()) return;
     const at = this.tick();
     const job = {
       id,
-      program,
+      task,
       instance: null,
       thread: null,
       outcome: null,
@@ -805,10 +805,10 @@ export class WorkMonitor {
     this.jobs.set(id, job);
     this.count.issued += 1;
     this.count.inputBytes += input.length;
-    const p = this.program(program);
+    const p = this.perTask(task);
     p.jobs += 1;
     p.inputBytes += input.length;
-    const event = { kind: "job-issue", id, program, inputBytes: input.length, deadlineMs, at, held: !!held };
+    const event = { kind: "job-issue", id, task, inputBytes: input.length, deadlineMs, at, held: !!held };
     if (this.payloads) event.input = input.slice();
     this.emit(event);
   }
@@ -987,7 +987,7 @@ export class WorkMonitor {
     const outcome = job.outcome;
     this.count[outcome] += 1;
     if (job.outputBytes !== null) this.count.outputBytes += job.outputBytes;
-    const p = this.program(job.program);
+    const p = this.perTask(job.task);
     p[outcome] += 1;
     if (job.outputBytes !== null) p.outputBytes += job.outputBytes;
     if (job.prepared === "prepare" && outcome !== "cancelled") this.count.prepared += 1;
@@ -1008,7 +1008,7 @@ export class WorkMonitor {
     }
     const record = {
       id: job.id,
-      program: job.program,
+      task: job.task,
       instance: job.instance,
       thread: job.thread,
       outcome,
@@ -1028,7 +1028,7 @@ export class WorkMonitor {
     };
     this.recent.push(record);
     if (this.userTiming) this.measureJob(record);
-    const event = { kind: "job-end", id: job.id, program: job.program, outcome, at, record };
+    const event = { kind: "job-end", id: job.id, task: job.task, outcome, at, record };
     if (this.payloads && job.output !== null) event.output = job.output;
     this.emit(event);
   }
@@ -1150,7 +1150,7 @@ export class WorkMonitor {
   measureJob(r) {
     const t = r.t;
     const lane = r.instance === null ? "jobs" : `worker ${r.instance}`;
-    this.measure(`roc:work ${r.program}`, t.issue, t.end, { id: r.id, instance: r.instance, outcome: r.outcome, inputBytes: r.inputBytes, outputBytes: r.outputBytes }, "jobs");
+    this.measure(`roc:work ${r.task}`, t.issue, t.end, { id: r.id, instance: r.instance, outcome: r.outcome, inputBytes: r.inputBytes, outputBytes: r.outputBytes }, "jobs");
     if (t.submit !== null && t.post !== null) this.measure("roc:work.queue", t.submit, t.post, { id: r.id }, "jobs");
     if (r.cold && t.begin !== null) this.measure("roc:work.cold", t.post, t.begin, { id: r.id, instance: r.instance }, lane);
     if (t.post !== null && t.reply !== null) this.measure("roc:work.run", t.post, t.reply, { id: r.id, instance: r.instance }, lane);
@@ -1228,8 +1228,8 @@ class WorkPool {
   // and `prepare` the preparation's (`prep:str init:rest`). `finish` says
   // that a cancelled running job completes (its answer dropped) instead of
   // ending its worker; `maxOutput` bounds what it appends to builders.
-  submit(payload, done, { id, program, objects = [], prepared = null, finish = false, maxOutput = 0 }) {
-    const job = { payload, done, slot: null, settled: false, timer: null, id, program, objects, prepared, finish, finishing: false, maxOutput };
+  submit(payload, done, { id, task, objects = [], prepared = null, finish = false, maxOutput = 0 }) {
+    const job = { payload, done, slot: null, settled: false, timer: null, id, task, objects, prepared, finish, finishing: false, maxOutput };
     if (!this.module || (!this.inline && typeof this.W !== "function")) {
       const message = this.module ? "this browser has no Worker" : "the runtime was mounted without its compiled module";
       job.timer = setTimeout(() => this.settle(job, { lost: LOST_UNAVAILABLE, message }), 0);
@@ -1349,7 +1349,7 @@ class WorkPool {
       if (slot.key !== null) this.monitor.stateEvicted(slot.seq, "replaced");
       slot.key = job.prepared.key;
     }
-    if (this.monitor.userTiming) m.program = job.program;
+    if (this.monitor.userTiming) m.task = job.task;
     slot.worker.postMessage(m, transfer);
     this.monitor.jobPosted(job.id, slot.seq, mode, job.prepared === null ? null : job.prepared.key.name);
   }
@@ -1552,7 +1552,7 @@ class WorkPool {
           this.drainInline(x);
           const sent = mon.now();
           const mem = [x.memory.buffer.byteLength, Number(x.metric(4)), Number(x.metric(5))];
-          if (mon.userTiming) mon.measure(`roc:work.compute ${job.program}`, call, ret, { id: job.id }, `worker ${this.inlineSeq}`);
+          if (mon.userTiming) mon.measure(`roc:work.compute ${job.task}`, call, ret, { id: job.id }, `worker ${this.inlineSeq}`);
           mon.jobReplied(job.id, this.inlineSeq, { t: [begin, begin, call, ret, sent], mem, outputBytes: output.length, prepareMs, held: this.inlineKey !== null });
           this.settle(job, { output, objects });
           if (this.inlineKey !== null && !keyLive(this.inlineKey, this.live)) this.forgetInline("released");
@@ -2390,7 +2390,7 @@ export class RocEngineRuntime {
           } else if (kind === 7) {
             this.fxOut.push({ op: "visibility", id });
           } else if (kind === 8) {
-            const program = str();
+            const task = str();
             const n = dv.getUint32(at, true);
             // Copied out: linear memory may move before the job is posted.
             const input = u8.slice(at + 4, at + 4 + n);
@@ -2426,10 +2426,10 @@ export class RocEngineRuntime {
               const initLen = dv.getUint32(at, true);
               const initFiles = dv.getUint32(at + 4, true);
               at += 8;
-              if (initLen > input.length || initFiles > refs) throw new Error(`malformed preparation operands for worker task ${program}`);
+              if (initLen > input.length || initFiles > refs) throw new Error(`malformed preparation operands for worker task ${task}`);
               prep = { name, initLen, initFiles, ranges: ranges.slice(0, 3 * initFiles) };
             } else if (flag !== 0) throw new Error(`work request flag ${flag} is not 0 or 1`);
-            this.fxOut.push({ op: "work", id, program, input, files, deadline, finish: cancel === 2, prep });
+            this.fxOut.push({ op: "work", id, task, input, files, deadline, finish: cancel === 2, prep });
           } else if (kind === 11) {
             const mode = u8[at];
             if (mode !== 1 && mode !== 2) throw new Error(`unknown file read mode ${mode}`);
@@ -2718,7 +2718,7 @@ export class RocEngineRuntime {
       }
       case "work": {
         const held = this.manual || this.manualWork;
-        this.monitor.jobIssued(fx.id, fx.program, fx.input, fx.deadline, held);
+        this.monitor.jobIssued(fx.id, fx.task, fx.input, fx.deadline, held);
         if (held) {
           this.live.set(fx.id, { kind: "work", req: fx, cancel: () => this.monitor.jobCancelled(fx.id) });
           this.issued.push(fx.id);
@@ -3379,8 +3379,8 @@ export class RocEngineRuntime {
         prepare: concat([encStr(p.name), init]),
         prepareObjects: fx.files.slice(0, p.initFiles),
       };
-      payload = concat([encStr(fx.program), fx.input.subarray(p.initLen)]);
-    } else payload = concat([encStr(fx.program), fx.input]);
+      payload = concat([encStr(fx.task), fx.input.subarray(p.initLen)]);
+    } else payload = concat([encStr(fx.task), fx.input]);
     const objects = fx.prep !== null ? fx.files.slice(fx.prep.initFiles) : fx.files;
     const done = (outcome) => {
       if (outcome.output !== undefined) {
@@ -3395,7 +3395,7 @@ export class RocEngineRuntime {
       const klass = this.reportLost(fx, outcome.lost, outcome.message);
       finish(new Uint8Array([RES_WORK_LOST, outcome.lost]), outcome.lost === LOST_UNAVAILABLE ? "unavailable" : "lost", klass);
     };
-    stop = this.workPool().submit(payload, done, { id: fx.id, program: fx.program, objects, prepared, finish: fx.finish, maxOutput: this.maxOutputBytes });
+    stop = this.workPool().submit(payload, done, { id: fx.id, task: fx.task, objects, prepared, finish: fx.finish, maxOutput: this.maxOutputBytes });
   }
 
   // Report a lost job and return its class name. The `roc worker fault
@@ -3403,8 +3403,8 @@ export class RocEngineRuntime {
   // from page errors by it.
   reportLost(fx, code, message) {
     const klass = LOST_CLASSES[code] ?? "executor";
-    console.error(`roc worker fault [${klass}] in task "${fx.program}": ${message}`);
-    if (this.onWorkerFault) this.onWorkerFault({ id: fx.id, program: fx.program, class: klass, message });
+    console.error(`roc worker fault [${klass}] in task "${fx.task}": ${message}`);
+    if (this.onWorkerFault) this.onWorkerFault({ id: fx.id, task: fx.task, class: klass, message });
     return klass;
   }
 

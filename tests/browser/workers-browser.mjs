@@ -288,7 +288,7 @@ async function liveness(options) {
     return { entries: window.__entries(), faults: window.__faults, poisoned: window.__rt.poisoned };
   });
   check("a crashing task is WorkLost(AppCrash)", c.entries.find((e) => e.startsWith("crash:")), "crash:lost AppCrash");
-  check("its diagnostic reaches onWorkerFault, not the result", c.faults.map((f) => [f.program, f.class, f.message]), [["test.roc-signals/crash", "app_crash", "the crash task crashed, as it always does"]]);
+  check("its diagnostic reaches onWorkerFault, not the result", c.faults.map((f) => [f.task, f.class, f.message]), [["test.roc-signals/crash", "app_crash", "the crash task crashed, as it always does"]]);
   check("the page keeps working after a worker crash", [c.poisoned, c.entries.filter((e) => e.startsWith("tail:")).sort(), c.entries.includes("upper:JOB 2")], [null, ["tail:tail 1", "tail:tail 2"], true]);
   await ctx.close();
 }
@@ -369,11 +369,11 @@ async function results(options) {
     window.__click("Slow");
     window.__click("Upper");
     await new Promise((res) => setTimeout(res, 300));
-    const waited = { log: window.__log(), pending: rt.pendingEffects().map((q) => q.program), timers: rt.timers, manual: rt.manual };
+    const waited = { log: window.__log(), pending: rt.pendingEffects().map((q) => q.task), timers: rt.timers, manual: rt.manual };
     const [slow, upper] = rt.issued;
     await rt.runEffect(slow);
     await rt.runEffect(upper);
-    const recent = rt.monitor.snapshot().recent.map((j) => [j.program, j.outcome, j.ms.held > 0]);
+    const recent = rt.monitor.snapshot().recent.map((j) => [j.task, j.outcome, j.ms.held > 0]);
     return { waited, log: window.__entries().map((e) => e.split(" ")[0]), recent, pool: rt.monitor.snapshot().pool.instances };
   }, long);
   check("manualWork: jobs wait without a deadline timer, the rest is not manual", [r.waited.log, r.waited.pending, r.waited.timers, r.waited.manual], ["", ["test.roc-signals/slow", "test.roc-signals/upper"], 0, false]);
@@ -400,7 +400,7 @@ async function results(options) {
     window.__rounds(rounds);
     window.__click("Slow");
     await new Promise((res) => setTimeout(res, 300));
-    const waited = { log: window.__log(), pending: rt.pendingEffects().map((q) => [q.op, q.program, q.deadline]), timers: rt.timers };
+    const waited = { log: window.__log(), pending: rt.pendingEffects().map((q) => [q.op, q.task, q.deadline]), timers: rt.timers };
     const [slow] = rt.issued;
     const t0 = performance.now();
     await rt.runEffect(slow);
@@ -411,7 +411,7 @@ async function results(options) {
     const [, second, upper, crash] = rt.issued;
     const refused = [rt.expireEffect(upper), rt.loseEffect(upper, "invented"), rt.expireEffect(slow), rt.loseEffect(slow, "app_crash")];
     const answered = [rt.expireEffect(second), rt.loseEffect(crash, "out_of_memory"), rt.loseEffect(upper, "executor")];
-    return { waited, ran, refused, answered, entries: window.__entries(), faults: window.__faults.map((f) => [f.program, f.class]), pending: rt.pendingEffects().length };
+    return { waited, ran, refused, answered, entries: window.__entries(), faults: window.__faults.map((f) => [f.task, f.class]), pending: rt.pendingEffects().length };
   }, long);
   check("manual mode: a job with a deadline waits, with no timer armed", [r.waited.log, r.waited.pending, r.waited.timers], ["", [["work", "test.roc-signals/slow", 50]], 0]);
   check("runEffect runs it to completion past its deadline", [r.ran.log.startsWith("slow:spun "), r.ran.elapsed > 50, r.ran.timers], [true, true, 0]);

@@ -544,7 +544,7 @@ await mountRocEngineApp({
   workers: "inline",           // run jobs on the page's thread instead (below)
   maxWorkerBytes: 64 << 20,    // retire a worker grown past this; default 128 MiB
   maxOutputBytes: 64 << 20,    // most bytes a job appends to builders; default 256 MiB
-  onWorkerFault: (f) => console.warn(f.program, f.class, f.message),
+  onWorkerFault: (f) => console.warn(f.task, f.class, f.message),
 });
 ```
 
@@ -561,7 +561,7 @@ await mountRocEngineApp({
   job, since a worker's memory never shrinks.
 - `maxOutputBytes` bounds what one job copies into its builders (see
   [Files in Tasks](@/docs/files-in-tasks.md#limits)).
-- `onWorkerFault` receives `{ id, program, class, message }` when a job is
+- `onWorkerFault` receives `{ id, task, class, message }` when a job is
   `Lost`, in addition to the console message; `program` is the task's name.
   The diagnostic never reaches the app.
 

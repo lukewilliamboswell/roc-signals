@@ -44,7 +44,7 @@ const STYLE = `
 
 const ms = (v) => (v == null || !Number.isFinite(v) ? "–" : v < 10 ? v.toFixed(1) : Math.round(v).toString());
 const pct = (v) => (Number.isFinite(v) ? `${Math.round(v * 100)}%` : "–");
-const shortName = (program) => program.split("/").pop();
+const shortName = (task) => task.split("/").pop();
 
 class WorkerPoolPanel extends HTMLElement {
   #runtime = null;
@@ -161,7 +161,7 @@ class WorkerPoolPanel extends HTMLElement {
     const rows = s.recent
       .slice(-RECENT)
       .reverse()
-      .map((j) => `<tr><td>${j.id}</td><td>${shortName(j.program)}</td><td>${j.outcome ?? "…"}</td><td class="n">${ms(j.ms.queue)}</td><td class="n">${ms(j.ms.compute)}</td><td class="n">${ms(j.ms.total)}</td></tr>`)
+      .map((j) => `<tr><td>${j.id}</td><td>${shortName(j.task)}</td><td>${j.outcome ?? "…"}</td><td class="n">${ms(j.ms.queue)}</td><td class="n">${ms(j.ms.compute)}</td><td class="n">${ms(j.ms.total)}</td></tr>`)
       .join("");
     body.innerHTML = `
       <div class="head"><h2>Worker pool</h2><span class="muted">${s.mode === "inline" ? "inline, on the page's thread" : `${s.mode}, up to ${s.maxWorkers} workers`} ·measured over ${ms(span / 1000)} s</span></div>
@@ -177,7 +177,7 @@ class WorkerPoolPanel extends HTMLElement {
         ${stat("Longest frame gap", `${ms(this.#longestGap())} ms`, "the page's longest pause between animation frames over the last 5 s")}
       </div>
       <div class="bar" title="utilisation"><i style="width:${Number.isFinite(util) ? Math.min(100, util * 100) : 0}%"></i></div>
-      <table><thead><tr><th>Job</th><th>Program</th><th>Outcome</th><th class="n">Queue ms</th><th class="n">Compute ms</th><th class="n">Total ms</th></tr></thead><tbody>${rows}</tbody></table>`;
+      <table><thead><tr><th>Job</th><th>Task</th><th>Outcome</th><th class="n">Queue ms</th><th class="n">Compute ms</th><th class="n">Total ms</th></tr></thead><tbody>${rows}</tbody></table>`;
     body.append(this.#links());
   }
 }

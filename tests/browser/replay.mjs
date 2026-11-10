@@ -594,8 +594,8 @@ const STEPS = {
   "lose-work": (page, s) => answerJob(page, s.count, "lose", s.fault),
   "time-out-work": (page, s) => answerJob(page, s.count, "expire", null),
   "expect-pending-work": async (page, s) => {
-    const got = await page.evaluate((program) => window.__rt.pendingEffects().filter((r) => r.op === "work" && r.program === program).length, s.program);
-    if (got !== s.count) throw new Error(`expected ${s.count} pending worker jobs for ${JSON.stringify(s.program)}, got ${got}`);
+    const got = await page.evaluate((task) => window.__rt.pendingEffects().filter((r) => r.op === "work" && r.task === task).length, s.task);
+    if (got !== s.count) throw new Error(`expected ${s.count} pending worker jobs for ${JSON.stringify(s.task)}, got ${got}`);
   },
   // The N-th effect occurrence is a pending upload whose body is the range
   // of the chosen setup file: what the runtime holds to send, the browser's

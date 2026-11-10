@@ -91,7 +91,7 @@ and one shorter than the resolution may read 0 or even slightly negative.
 
 ```js
 const s = runtime.monitor.snapshot();
-console.table(s.recent.map((j) => ({ id: j.id, program: j.program, outcome: j.outcome, ...j.ms })));
+console.table(s.recent.map((j) => ({ id: j.id, task: j.task, outcome: j.outcome, ...j.ms })));
 ```
 
 | Field | Meaning |
@@ -101,7 +101,7 @@ console.table(s.recent.map((j) => ({ id: j.id, program: j.program, outcome: j.ou
 | `jobs` | Counts by outcome (`done`, `lost`, `timeout`, `cancelled`, `unavailable`); `inFlight`; `wastedMs` (time on instances by jobs that never delivered output); input and output bytes; `lateReplies` (always 0 in a healthy pool); for preparations' tasks, `prepared` (jobs that prepared a state), `reused` (jobs run on a kept state) and `prepareMs` (total preparation time) |
 | `instances` | `spawns`, `respawns` (spawns beyond the most instances ever live at once), `ended` by cause (`cancel`, `deadline`, `fault`, `executor`, `unmount`, `contained`, and `retired` for a worker over `maxWorkerBytes`), `evicted`: prepared states let go by cause (`replaced` by another preparation, `released` with their file), and the `live` and `retired` instances: thread, state, spawn and ready times, instantiation time, jobs served, busy time, linear memory and its peak, the host's live allocations and bytes, and `held`, the name of the preparation whose state it keeps (or `null`) |
 | `hist` | Histograms of `queue`, `cold`, `compute`, `total`, `resultTurn` and `prepare`, in fixed 1-2-5 millisecond buckets (`edges`, `counts`, `n`, `sum`, `min`, `max`) |
-| `programs` | Per task, by name: jobs, outcomes, bytes, and `queue`, `compute` and `total` histograms (job records name their task in `program`) |
+| `tasks` | Per task, by name: jobs, outcomes, bytes, and `queue`, `compute` and `total` histograms (job records name their task in `task`) |
 | `recent` | The last `history` job records, with every stamp (`t`) and span (`ms`). The record of a preparation's task's job says whether it `prepared` (`"prepare"`) or reused a kept state (`"reuse"`; `null` for other tasks), and `prepareMs`, how long preparing took (also `ms.prepare`; `null` when it reused); `compute` is then the task alone. `finished` is true for a cancelled job whose task's `on_cancel: Finish` let it complete |
 | `page` | The page instance's linear memory, live allocations and bytes, and turns |
 | `engine` | The engine's effect counters, when the engine's work record carries them; otherwise `null` |
@@ -130,9 +130,9 @@ const stop = runtime.monitor.subscribe((e) => console.log(e.kind, e));
 
 | Kind | Fields |
 |---|---|
-| `job-issue` | `id`, `program`, `inputBytes`, `deadlineMs`, `held`, `at` (and `input` with `payloads`) |
+| `job-issue` | `id`, `task`, `inputBytes`, `deadlineMs`, `held`, `at` (and `input` with `payloads`) |
 | `job-start` | `id`, `instance`, `cold`, `at` |
-| `job-end` | `id`, `program`, `outcome`, `at`, `record` (the full job record; and `output` with `payloads`) |
+| `job-end` | `id`, `task`, `outcome`, `at`, `record` (the full job record; and `output` with `payloads`) |
 | `instance-spawn` | `instance`, `thread` (`"worker"` or `"page"`), `at` |
 | `instance-ready` | `instance`, `scriptAt`, `instantiateMs`, `memBytes`, `liveAllocs` (before any job), `at` |
 | `instance-end` | `instance`, `cause`, `fault` (`{ class, message }` or `null`), `jobs`, `busyMs`, `memBytes`, `at` |

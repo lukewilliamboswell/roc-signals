@@ -2,7 +2,7 @@
 // synthetic transitions on a fake clock: the job timeline and its spans,
 // clock conversion, histograms, gauges, peaks and integrals, outcomes and
 // teardown, the engine counters' decoding, and every bound (history ring,
-// retired instances, programs, subscribers, timeline entries).
+// retired instances, tasks, subscribers, timeline entries).
 // Usage: node tests/runtime/monitor-unit.mjs
 import { WorkMonitor, MONITOR_EDGES, MONITOR_LIMITS } from "../../platform/runtime.mjs";
 
@@ -63,7 +63,7 @@ function make(options = {}, env = {}) {
   check("instance facts", [s.instances.live[0].state, s.instances.live[0].jobs, s.instances.live[0].memBytes, s.instances.live[0].peakMemBytes, s.instances.live[0].liveAllocs, s.instances.live[0].instantiateMs, s.instances.live[0].scriptAt], ["idle", 1, 131072, 131072, 4, 1, 5]);
   check("busy and alive integrals", [s.pool.busyMs, s.pool.aliveMs], [29, 31]);
   check("histograms count the job", [s.hist.compute.n, s.hist.compute.sum, s.hist.cold.n, s.hist.total.counts[MONITOR_EDGES.indexOf(50)]], [1, 13, 1, 1]);
-  check("per program", [s.programs["p/a"].jobs, s.programs["p/a"].done, s.programs["p/a"].inputBytes, s.programs["p/a"].outputBytes], [1, 1, 7, 3]);
+  check("per task", [s.tasks["p/a"].jobs, s.tasks["p/a"].done, s.tasks["p/a"].inputBytes, s.tasks["p/a"].outputBytes], [1, 1, 7, 3]);
 
   // A second job is warm and goes straight to running.
   clock.t = 50;
@@ -194,8 +194,8 @@ function make(options = {}, env = {}) {
     m.jobIssued(id, `q${id}`, new Uint8Array(0), 0, true);
     m.jobCancelled(id);
   }
-  const names = Object.keys(m.snapshot().programs);
-  check("programs bounded; the rest under *", [names.length, names.includes("*")], [MONITOR_LIMITS.programs + 1, true]);
+  const names = Object.keys(m.snapshot().tasks);
+  check("tasks bounded; the rest under *", [names.length, names.includes("*")], [MONITOR_LIMITS.tasks + 1, true]);
   let threw = false;
   try {
     for (let i = 0; i < MONITOR_LIMITS.subscribers; i += 1) m.subscribe(() => {});

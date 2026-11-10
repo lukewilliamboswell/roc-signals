@@ -53,7 +53,7 @@ Scm := [].{
 	## observe (design.md, "The effect channel").
 	RejectKind : [Network, Timeout]
 
-	## Why a worker job was lost: the fault class of the program's instance
+	## Why a worker job was lost: the fault class of the instance that ran it
 	## (`contract`, `resource_limit`, `out_of_memory`, `app_crash`,
 	## `expect_failed`), no Web Worker support (`unavailable`), or the worker
 	## script failing (`executor`), as `Engine.WorkFault` has them (design.md,
@@ -121,8 +121,8 @@ Scm := [].{
 		## job with a deadline: it is answered `Timeout`.
 		TimeOutWork(U64),
 
-		## Exactly `count` worker jobs for `program` are pending.
-		ExpectPendingWork({ program : Str, count : U64 }),
+		## Exactly `count` worker jobs of the task named `task` are pending.
+		ExpectPendingWork({ task : Str, count : U64 }),
 
 		## The user chooses the named setup files in a file input.
 		ChooseFiles(Loc, List(Str)),
@@ -792,12 +792,12 @@ Scm := [].{
 			name: "expect-pending-work",
 			parse: |form, args| {
 				a = Scm.arity(form, args, 2)?
-				program_sx = Scm.arg(a, 0)
-				program = Scm.string(program_sx, "the program name")?
-				if program == "" {
-					return Err(Scm.bad(program_sx, "the program name must not be empty"))
+				task_sx = Scm.arg(a, 0)
+				task = Scm.string(task_sx, "the task name")?
+				if task == "" {
+					return Err(Scm.bad(task_sx, "the task name must not be empty"))
 				}
-				Ok(ExpectPendingWork({ program, count: Scm.unsigned(Scm.arg(a, 1), "the pending count")? }))
+				Ok(ExpectPendingWork({ task, count: Scm.unsigned(Scm.arg(a, 1), "the pending count")? }))
 			},
 		},
 		{ name: "tick-interval", parse: |form, args| Ok(TickInterval(Scm.count1(form, args, "the period")?)) },
@@ -1221,7 +1221,7 @@ Scm := [].{
 			ExpectPendingEffects(n) => [JsonOut.field("count", Nat(n))]
 			LoseWork({ occurrence, fault }) => [JsonOut.field("count", Nat(occurrence)), JsonOut.field("fault", Text(Scm.work_fault_name(fault)))]
 			TimeOutWork(n) => [JsonOut.field("count", Nat(n))]
-			ExpectPendingWork({ program, count }) => [JsonOut.field("program", Text(program)), JsonOut.field("count", Nat(count))]
+			ExpectPendingWork({ task, count }) => [JsonOut.field("task", Text(task)), JsonOut.field("count", Nat(count))]
 			ChooseFiles(l, names) => [loc(l), JsonOut.field("files", Array(names.map(|n| Text(n))))]
 			DropFiles(l, names) => [loc(l), JsonOut.field("files", Array(names.map(|n| Text(n))))]
 			PasteFiles(l, names) => [loc(l), JsonOut.field("files", Array(names.map(|n| Text(n))))]
@@ -1329,7 +1329,7 @@ expect {
 }
 
 ## Worker steps: a job lost with a fault class, a deadline expired, and the
-## pending jobs of a program; each emits its arguments for the browser runner.
+## pending jobs of a task; each emits its arguments for the browser runner.
 expect {
 	spec = Scm.parse(
 		\\(test "work"
@@ -1342,8 +1342,8 @@ expect {
 		\\${Str.inspect(spec.steps.map(|s| s.op))}
 		\\${JsonOut.render(Scm.to_json("w", spec))}
 	expected =
-		\\[LoseWork({ fault: AppCrash, occurrence: 1 }), TimeOutWork(2), ExpectPendingWork({ count: 3, program: "example.org/search/filter" })]
-		\\{"id":"w","name":"work","setup":[],"steps":[{"op":"lose-work","line":3,"column":5,"count":1,"fault":"app_crash"},{"op":"time-out-work","line":4,"column":5,"count":2},{"op":"expect-pending-work","line":5,"column":5,"program":"example.org/search/filter","count":3}]}
+		\\[LoseWork({ fault: AppCrash, occurrence: 1 }), TimeOutWork(2), ExpectPendingWork({ count: 3, task: "example.org/search/filter" })]
+		\\{"id":"w","name":"work","setup":[],"steps":[{"op":"lose-work","line":3,"column":5,"count":1,"fault":"app_crash"},{"op":"time-out-work","line":4,"column":5,"count":2},{"op":"expect-pending-work","line":5,"column":5,"task":"example.org/search/filter","count":3}]}
 	actual == expected
 }
 
@@ -1364,8 +1364,8 @@ expect {
 		\\x.scm:1:31: the work fault must be a bare word, got "app_crash"
 		\\x.scm:1:18: lose-work takes 2 argument(s), got 1
 		\\x.scm:1:33: the effect occurrence must be a non-negative integer, got -1
-		\\x.scm:1:39: the program name must not be empty
-		\\x.scm:1:39: the program name must be a string, got filter
+		\\x.scm:1:39: the task name must not be empty
+		\\x.scm:1:39: the task name must be a string, got filter
 	actual == expected
 }
 
