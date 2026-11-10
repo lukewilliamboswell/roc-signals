@@ -1,0 +1,22 @@
+(test "Outbox — nothing is sent at mount, each post is one request, and each answer arrives with its own note"
+  (steps
+    (expect-pending-effects 0)
+    (fill (label "Note") "a")
+    (mark-metrics)
+    (click (role button :name "Send"))
+    (expect-metric-delta effects_issued 1)
+    (expect-pending-effects 1)
+    (fill (label "Note") "b")
+    (click (role button :name "Send"))
+    ; The second post sends without cancelling the first.
+    (expect-pending-effects 2)
+    (expect-metric-delta effects_cancelled 0)
+    (stub-http "b" :url "/notes/b" :status 200 :body "B")
+    (run-effect 2)
+    (expect-text (test-id "log") "b:B")
+    (stub-http "a" :url "/notes/a" :status 200 :body "A")
+    (run-effect 1)
+    (expect-text (test-id "log") "b:B | a:A")
+    (expect-pending-effects 0)
+  )
+)

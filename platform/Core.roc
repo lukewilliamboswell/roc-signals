@@ -1143,13 +1143,13 @@ Core := [].{
 	## with `Refused`.
 	watch : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
-	watch = |v, plan, react| effect(v, True, plan, react)
+	watch = |v, plan, react| effect(v, True, plan, replanned(plan), react)
 
 	## Like `watch`, but issues only when `v` changes after mount, never for its
 	## initial value.
 	on_change : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
-	on_change = |v, plan, react| effect(v, False, plan, react)
+	on_change = |v, plan, react| effect(v, False, plan, replanned(plan), react)
 
 	## `latest(v, plan, react)` issues like `watch`, under one more rule: the site
 	## owns only the requests of its current value. Before it issues for a new
@@ -1164,7 +1164,7 @@ Core := [].{
 		Mount(
 			|env, args, tx| {
 				a = (v.read)(env)
-				cfg = { v, plan, react, path: args.path }
+				cfg = { v, plan, step: replanned(plan), react, path: args.path }
 				(t1, owned) = issue(count_evals(tx, 1), args.path, plan(a), a, [])
 				(latest_inst(cfg, a, owned), eff_mask(v), t1)
 			},
@@ -1268,6 +1268,39 @@ Core := [].{
 			{ all: gathered_all(gathered.all, jobs), jobs }
 		},
 	}
+
+	## An outbox: the latest thing a handler posted, numbered, for
+	## `on_post` to send. It lives in the app's state, so the reducer that
+	## changes the state also decides what is sent.
+	Outbox(a) :: { serial : U64, posted : [Unposted, Posted(a)] }.{
+
+		## Two outboxes are equal when they hold the same post: a post is
+		## never equal to the one before it, even with an equal item, so
+		## each post is sent and comparing costs nothing.
+		is_eq : Outbox(a), Outbox(a) -> Bool
+		is_eq = |x, y| x.serial == y.serial
+
+		## Post `item`: the `on_post` site watching this outbox sends it in
+		## the turn that posted it.
+		post : Outbox(a), a -> Outbox(a)
+		post = |box, item| { serial: box.serial + 1, posted: Posted(item) }
+
+		## The latest post, or `Unposted`: for tests of the reducer.
+		last : Outbox(a) -> [Unposted, Posted(a)]
+		last = |box| box.posted
+	}
+
+	## An outbox with nothing posted.
+	outbox : {} -> Outbox(a)
+	outbox = |_| { serial: 0, posted: Unposted }
+
+	## `on_post(v, plan, react)`: in the turn a handler posts `item` to the
+	## outbox `v`, issue `plan(item)`; each result reaches `react` with the
+	## item. Nothing is issued at mount and nothing is cancelled, as with
+	## `on_change`. Two posts to one outbox in one turn are a contract
+	## error, since the first would never be sent.
+	on_post : Val(ctx, Outbox(item)), (item -> List(Req)), Reaction(ctx, item) -> Elem(ctx)
+	on_post = |v, plan, react| effect(v, False, |_| [], posted_step(plan), posted_reaction(react))
 
 	## The `resource` configuration of a layer that follows the answer to one
 	## request for its input, for anything with `request` and `result` (a
@@ -4748,7 +4781,15 @@ max_breadth = |inflight| max_turns * (if (inflight > max_turns) inflight else ma
 ## the list of requests issued for that value.
 Owned(a) : { id : U32, sub : Bool, keep : Bool, a : a, at : U64 }
 
-EffectCfg(ctx, a) : { v : Val(ctx, a), plan : (a -> List(Req)), react : Reaction(ctx, a), path : List(U32) }
+## Fixed per effect site: `plan` gives the requests for the value at
+## mount, and `step` those for a change from the value last seen to a new
+## one at the site's path (`plan` of the new value, except for `on_post`,
+## which checks the change).
+EffectCfg(ctx, a) : { v : Val(ctx, a), plan : (a -> List(Req)), step : (a, a, List(U32) -> List(Req)), react : Reaction(ctx, a), path : List(U32) }
+
+## The `step` of a site that issues `plan` of each new value.
+replanned : (a -> List(Req)) -> (a, a, List(U32) -> List(Req))
+replanned = |plan| |_, a, _| plan(a)
 
 with_fx : Tx, (Fx -> Fx) -> Tx
 with_fx = |{ cmds, next, free, routes, work, paths, site_free, fx }, f| { cmds, next, free, routes, work, paths, site_free, fx: f(fx) }
@@ -5104,13 +5145,13 @@ take_dropped = |cols, depth| {
 }
 
 ## An effect site. `initial`: also issue for the value at mount.
-effect : Val(ctx, a), Bool, (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
+effect : Val(ctx, a), Bool, (a -> List(Req)), (a, a, List(U32) -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
 	where [a.is_eq : a, a -> Bool]
-effect = |v, initial, plan, react| Site(
+effect = |v, initial, plan, step, react| Site(
 	Mount(
 		|env, args, tx| {
 			a = (v.read)(env)
-			cfg = { v, plan, react, path: args.path }
+			cfg = { v, plan, step, react, path: args.path }
 			t1 = count_evals(tx, 1)
 			if initial {
 				(t2, owned) = issue(t1, args.path, plan(a), a, [])
@@ -5179,7 +5220,7 @@ effect_inst = |cfg0, last0, owned0| {
 						if a == last {
 							(effect_inst(cfg, last, owned), Done, t1)
 						} else {
-							(t2, owned2) = issue(t1, cfg.path, (cfg.plan)(a), a, owned)
+							(t2, owned2) = issue(t1, cfg.path, (cfg.step)(last, a, cfg.path), a, owned)
 							(effect_inst(cfg, a, owned2), Done, t2)
 						}
 					}
@@ -5322,6 +5363,36 @@ gathered_all = |all, jobs| {
 	match $failed {
 		[error, ..] => { request: Idle, answer: Failed(error) }
 		[] => { request: Idle, answer: Answered($outputs) }
+	}
+}
+
+## What `on_post` issues when its outbox changes from `last` to `box`: the
+## requests for the new post. The serial moves by one for each post, so a
+## jump of more than one means a handler posted again before the site saw
+## the first post, which would never be sent: a contract error.
+posted_step : (item -> List(Req)) -> (Core.Outbox(item), Core.Outbox(item), List(U32) -> List(Req))
+posted_step = |plan| |last, box, path| {
+	{ serial: was, posted: _ } = last
+	{ serial, posted } = box
+	if serial > was + 1 {
+		crash "contract: on_post's outbox was posted ${(serial - was).to_str()} times in one turn, so only the last post would be sent; post a list to send several things at once (site ${show_path(path)})"
+	}
+	match posted {
+		Posted(item) => plan(item)
+		Unposted => []
+	}
+}
+
+## A reaction to a post's results, given the item posted.
+posted_reaction : Core.Reaction(ctx, item) -> Core.Reaction(ctx, Core.Outbox(item))
+posted_reaction = |react| {
+	run = react.run
+	{
+		mask: react.mask,
+		run: |env, box, res| match box.last() {
+			Posted(item) => run(env, item, res)
+			Unposted => env
+		},
 	}
 }
 

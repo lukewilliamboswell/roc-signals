@@ -647,6 +647,37 @@ Engine := [].{
 		where [asker.request : asker, input -> Req, asker.result : asker, Res -> Try(output, error), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool, error.is_eq : error, error -> Bool]
 	gather = |asker, inputs, body| Core.resource_at(inputs.v, Core.gather(asker), |v| body({ v: v }))
 
+	## An outbox in the app's state: the latest thing a handler posted for
+	## an `on_post` site to send. A handler posts with `box.post(item)`,
+	## and a test reads the latest post with `box.last()` (`Unposted` or
+	## `Posted(item)`). Two outboxes are equal only when they hold the same
+	## post, so posting an item equal to the last one still sends it.
+	##
+	## Post at most once per turn to one outbox: a change that sends
+	## several things posts a list (`Outbox(List(Write))`). A second post
+	## in the same turn is a contract error, since the first would never
+	## be sent.
+	Outbox(a) : Core.Outbox(a)
+
+	## An outbox with nothing posted, for an app's initial state.
+	outbox : {} -> Outbox(a)
+	outbox = |_| Core.outbox({})
+
+	## `on_post(box, plan, react)` sends what a handler posts: in the turn a
+	## handler posts `item` to the outbox `box`, it issues `plan(item)`,
+	## and each result reaches `react` with the item it was posted with,
+	## so several posts can be in flight and each answer knows its own.
+	## Nothing is issued at mount, and nothing is ever cancelled for a
+	## later post: like `on_change`, every request is kept, and disposal
+	## follows `watch` (an HTTP request or a port call is delivered to the
+	## nearest surviving ancestor).
+	##
+	## Use it for a request the user's action asks for: a save, an add, a
+	## write to a store. The reducer that changes the state posts in the
+	## same step, so an `expect` sees both.
+	on_post : Val(ctx, Outbox(a)), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
+	on_post = |box, plan, react| Core.on_post(box.v, plan, react)
+
 	## What the host knows before the first render: the URL, the declared storage
 	## keys' values (missing keys are absent), whether the browser is online and
 	## the page visible, and whether local storage is available at all. When it is

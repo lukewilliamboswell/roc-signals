@@ -102,7 +102,8 @@ Targets := [].{
 	}
 
 	## The runtime contract tests in Chrome (test apps built by `SpecSuite.build!`): the effect channel (tests/apps/effects),
-	## controlled inputs, focus and containment (tests/apps/controls), worker
+	## controlled inputs, focus and containment (tests/apps/controls), an
+	## outbox posted twice in one turn (tests/apps/outbox), worker
 	## jobs in real Web Workers and the work monitor (tests/apps/workers), the
 	## worker scaling smoke (the Worker Lab), file handles (tests/apps/files),
 	## operations on files (tests/apps/file-effects), preparations and
@@ -123,6 +124,7 @@ Targets := [].{
 		Ok(
 			Targets.browser!(o, "fx-browser.mjs", ["--wasm", fx])?
 				.concat(Targets.browser!(o, "controls-browser.mjs", ["--wasm", controls])?)
+				.concat(Targets.browser!(o, "outbox-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "outbox")])?)
 				.concat(Targets.browser!(o, "services-browser.mjs", ["--wasm", services])?)
 				.concat(Targets.browser!(o, "workers-browser.mjs", ["--wasm", workers])?)
 				.concat(Targets.browser!(o, "monitor-browser.mjs", ["--wasm", workers])?)
