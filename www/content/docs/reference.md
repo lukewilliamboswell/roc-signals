@@ -17,7 +17,7 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 
 | Area | Symbols |
 |---|---|
-| Programs | `program`, `program_boot`, `Program`, `Program.with_workers`, `registration`, `Registration`, `Program.with_ports`, `PortRegistration`, `Boot`, `boot_storage` |
+| Programs | `program`, `program_boot`, `Program`, `Program.with_workers`, `Registration` (made by a `Worker` task's or preparation's `registration`), `Program.with_ports`, `PortRegistration`, `Boot`, `boot_storage` |
 | Contexts | `Root`, `In(outer, s)`, `Row(outer, item)`, `Comp(p, a)` |
 | Values | `Val`, `const`, `Val.map`, `Val.map2`, `Val.lift`, `Val.lift_row` |
 | State | `state`, `State`, `State.val`, `State.lift`, `State.lift_row` |
@@ -26,10 +26,10 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 | Lists | `each`, `RowRef.key`, `RowRef.field`, `RowRef.select`, `keyed` |
 | Attributes | `attr`, `attr_v`, `class`, `class_v`, `test_id`, `test_id_v`, `ref` |
 | Events | `on` (event name, optionally `:prevent`), `on_click` |
-| Files | `File`, `File.name`, `File.size`, `File.mime`, `File.slice`, `File.contents`, `File.contents_utf8` (in a worker program), `Received`, `FilesHandler`, `State.on_files`, `on_files` |
+| Files | `File`, `File.name`, `File.size`, `File.mime`, `File.slice`, `Received`, `FilesHandler`, `State.on_files`, `on_files` |
 | Operations on files | `File.upload` (`UploadProps`: `url`, `method ?? "POST"`, `headers ?? []`, `timeout ?? Unlimited`), `File.sha256`, `File.object_url` (acting where the browser keeps the file), `File.read_bytes`, `File.read_utf8` (reading it into the page; `ReadProps`: `max_bytes ?? 8388608`), `file_bytes`, `file_text`, `file_digest`, `file_url`, `FileError` (`Unreadable`, `TooLarge`, `InvalidUtf8`, `Unavailable`, `Refused`) |
 | Saving and downloading | `File.save` (a download command; `SaveProps`: `name : [Same, Named(Str)]`), `File.fetch` (`FetchProps`: `url`, `method`, `headers`, `timeout : [Unlimited, Ms(U32)]`), `fetched`, `FetchError` (`Network`, `Timeout`, `Status`, `TooLarge`, `Refused`) |
-| Effects in a task's job | `File.read!`, `File.contents!`, `File.contents_utf8!`, `File.build!` (`BuildProps`: `name`, `mime : [Auto, Mime(Str)]`, `start_from : [Empty, From(File)]`), `Builder`, `Builder.append!`, `Builder.append_file!`, `Builder.finish!` (see [Files in Tasks](@/docs/files-in-tasks.md)) |
+| Effects in a worker job | `File.read!` (`{ start, len }`), `File.contents!`, `File.contents_utf8!`, each answering a `Try` with a `FileError`; `File.build!` (`BuildProps`: `name`, `mime : [Auto, Mime(Str)] ?? Auto`, `start_from : [Empty, From(File)] ?? Empty`), `Builder`, `Builder.append!`, `Builder.append_file!`, `Builder.finish!` (see [Files in Tasks](@/docs/files-in-tasks.md)) |
 | Components | `component`, `State.push`, `State.push_by`, `State.push_value_by`, `sink`, `split` |
 | Effects | `watch`, `on_change`, `latest`, `State.on_result`, `ignore`, `on_cleanup`, `cleanup`, `Req`, `Res`, `HttpError`, `http_text`, `WorkFault`, `FileError` |
 
@@ -50,21 +50,21 @@ Anything else is `Engine.element(tag, attrs, children)`.
 
 ## Worker
 
-`Worker` runs pure Roc functions in Web Workers; see
+`Worker` runs registered Roc functions, tasks, in Web Workers; see
 [Workers](@/docs/workers.md).
 
 | Area | Symbols |
 |---|---|
-| Programs | `Program(input, output)`, `program`, `fallible`, `ProgramProps(input, output)` (`name`, `run`, `deadline : [Unlimited, Ms(U32)] ?? Unlimited`), `Program.registration` |
-| Jobs from an effect site | `Program.request`, `Program.result`, `Error` (`Timeout`, `Refused`, `Lost(WorkFault)`, `FileFailed(FileError)`) |
-| Layers | `derive`, `derive_when` (for a program or a query), holding an `Engine.Remote(output, Error)` |
-| Tasks | `task`, `fallible_task`, `TaskProps(input, output)` (`name`, `run!`, `deadline : [Unlimited, Ms(U32)]`, `on_dispose : [Stop, Keep]`), `Task(input, output)`, `Task.registration`, `Task.request`, `Task.result` |
-| Prepared programs | `prepared`, `PreparedProps(init, state)` (`name`, `prepare`), `Prepared(init, state)`, `Prepared.query`, `Prepared.fallible_query`, `QueryProps(state, q, out)` (`name`, `run`, `deadline`, `on_cancel : Cancel ?? Stop`), `Prepared.registration`, `Query(init, state, q, out)`, `Query.registration`, `QueryRegistration(state)`, `Query.request`, `Query.result`, `Question(init, q)` (`input`, `query`), `Cancel` (`Stop`, `Finish`) |
+| Tasks | `task`, `TaskProps(input, output, error)` (`name`, `run! : input => Try(output, error)`, `deadline : [Unlimited, Ms(U32)] ?? Unlimited`, `on_dispose : [Stop, Keep] ?? Stop`, `on_cancel : [Stop, Finish] ?? Stop`), `Task(input, output, error)`, `Task.registration` |
+| Jobs from an effect site | `Task.request`, `Task.result` (a `Try(output, Error(error))`), `Error(error)` (`Failed(error)`, `Timeout`, `Refused`, `Lost(WorkFault)`), `Never` (the error of a task that cannot fail) |
+| Layers | `derive`, `derive_when` (for a task or a preparation's task), holding an `Engine.Remote(output, Error(error))` |
+| Preparations | `prepared`, `PreparationProps(init, state, error)` (`name`, `prepare! : init => Try(state, error)`), `Preparation(init, state, error)`, `Preparation.task`, `PreparedTaskProps(state, query, output, error)` (`name`, `run! : state, query => Try(output, error)`, `deadline`, `on_dispose`, `on_cancel`, as a task's), `Preparation.registration` (given its tasks' registrations), `PreparedTask(init, state, query, output, error)`, `PreparedTask.registration`, `PreparedTaskEntry(state)`, `PreparedTask.request`, `PreparedTask.result`, `Question(init, query)` (`input`, `query`) |
+| For fuzz targets and soak walks | `Task.stand_in`, `PreparedTask.stand_in`: a job's answer from a pure function, where there is no worker to run it |
 
 ## Wire
 
 `Wire` is the binary format of worker payloads. Apps rarely call it: a
-program's types decide what is sent.
+task's types decide what is sent.
 
 | Area | Symbols |
 |---|---|
@@ -123,13 +123,12 @@ guarded while the control has focus. `checked` is a property set from
 | Static attributes, children or holes per row template element | 255 | Resource limit |
 | Live DOM nodes | 2³² − 2 | Resource limit |
 | Events queued while a batch applies | 4096 | Resource limit |
-| Worker programs in a catalogue | 64 names: programs, preparations and their queries | Contract error at mount |
+| Names in a worker catalogue | 64: tasks, preparations and each preparation's tasks | Contract error at mount |
 | Work deadline | 600 s | Capped |
 | Workers alive at once | `maxWorkers` (default the core count, at most 8) | Jobs wait in order for a free worker |
 | Prepared states | One per worker | A new input replaces the least recently used idle worker's |
 | A worker's memory | `maxWorkerBytes` (default 128 MiB), checked after each job | The worker is ended after the job, its prepared state with it |
 | Files an app holds at once | 64 | Further files are not delivered; `Received.refused` counts them |
-| Files one worker job reads | 16, and `maxFileBytes` bytes (default 256 MiB) | The job fails unread: `FileFailed(TooLarge)` |
 | Bytes one page read takes | Its `max_bytes` (default 8 MiB), at most `maxFileBytes` (default 256 MiB) | `FileFailed(TooLarge)`, unread |
 | Bytes one digest reads | `maxFileBytes` (default 256 MiB) | `FileFailed(TooLarge)`, unread |
 | URLs one file gives | 16 ranges, revoked when the file is let go | `FileFailed(TooLarge)` |
@@ -137,10 +136,11 @@ guarded while the control has focus. `checked` is a property set from
 | A port's answer or message | `maxPortBytes` (default 4 MiB, at most 64 MiB) | `TooLarge` |
 | Undelivered messages per port subscription | 1 (`Latest`) or n ≤ 1024 (`Every(n)`) | `Latest` keeps the newest; `Every` refuses the JavaScript's `emit` |
 | Port call timeout | 600 s | Capped |
-| Payload nesting | 512 containers | The job is `Lost(Contract)`: an input fails to decode in the worker, an output is refused there before it is sent |
-| Bytes a task's job appends to its builders | `maxOutputBytes` (default 256 MiB); files appended by reference do not count | `append!` answers `Err(TooLarge)` |
-| Files in one task's answer | 16, and room among the 64 the page holds | `FileFailed(TooLarge)`, nothing delivered |
-| Files and builders one task's job holds at once | 64 | The job is `Lost(ResourceLimit)` |
+| Payload nesting | 512 containers | The job is `Lost(Contract)`: an input fails to decode in the worker, an answer is refused there before it is sent |
+| Bytes a job appends to its builders | `maxOutputBytes` (default 256 MiB); files appended by reference do not count | `append!` answers `Err(TooLarge)` |
+| Files in one job's answer | 16 | The job is `Lost(Contract)`, nothing delivered |
+| Room on the page for an answer's files | The page's free slots among its 64 | The job is `Lost(ResourceLimit)`, nothing delivered |
+| Files and builders one job holds at once | 64 | The job is `Lost(ResourceLimit)` |
 | A fetched body | `maxFileBytes` (default 256 MiB) | `FileFailed(TooLarge)`, read by `fetched` as `Err(TooLarge)` |
 
 ## Errors
@@ -153,7 +153,7 @@ construction site, for example `contract: duplicate key "r0" in each at site
 
 | Class | Cause |
 |---|---|
-| `contract` | A rule of the API was broken: a duplicate key, a `switch` value outside its cases, a row template that is not a single element, a cleanup asking for a result, an effect feedback loop, a worker program registered twice or asked for without being registered, a port declared twice or used without being declared or as another shape, a task's effect outside its job, a builder used after `finish!`, malformed boot or result bytes |
+| `contract` | A rule of the API was broken: a duplicate key, a `switch` value outside its cases, a row template that is not a single element, a cleanup asking for a result, an effect feedback loop, a worker task registered twice or asked for without being registered, a port declared twice or used without being declared or as another shape, a worker effect outside a job, a builder used after `finish!` or after the call that opened it returned, an answer holding more than 16 files, malformed boot or result bytes |
 | `resource_limit` | A bound in the table above |
 | `out_of_memory` | The Wasm heap could not grow |
 | `app_crash` | `crash` in app code, or a Roc runtime error |
@@ -162,11 +162,14 @@ construction site, for example `contract: duplicate key "r0" in each at site
 
 `recover()` on the runtime mounts a fresh instance from the same module.
 
-A fault inside a worker program stops only that worker. Its job answers
+A fault inside a worker job stops only that worker. Its job answers
 `WorkLost` with the class (`Lost(fault)` in `Worker.Error`), the diagnostic
 goes to the console and `onWorkerFault`, and the page keeps working.
-`WorkLost` also reports `unavailable` (the browser has no workers) and
-`executor` (the worker script itself failed).
+`WorkLost` also reports `unavailable` (the browser has no workers, or a job
+running on the page's thread with `workers: "inline"` reached an effect
+only a worker has) and `executor` (the worker script itself failed). A
+failure the task chose, `Err(error)` from its `run!`, is not a fault: it is
+the job's answer, read as `Failed(error)`.
 
 Nothing a port's JavaScript does stops the app. A call whose handler throws,
 rejects or answers something that is not JSON data answers `Threw`; a
