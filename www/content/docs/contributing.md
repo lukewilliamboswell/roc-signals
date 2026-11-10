@@ -72,7 +72,7 @@ These are the development environment's Blueprint tasks, not an app's
 | Task | What it does |
 |---|---|
 | `blueprint run check` | The pull-request gate (below) |
-| `blueprint run check-slow` | Every fuzz target's declared examples, the leak-checked native soaks with flat round trips, and a long Chrome session per app |
+| `blueprint run check-slow` | Every fuzz target's declared examples, the native soak of each app's round-trip spec (`RUNNER --soak 48`, flat live allocations and bytes), and a long Chrome session per app |
 | `blueprint run spec -- [--browser] [--filter GLOB] [APP...]` | Some apps' specs, natively and optionally in Chrome |
 | `blueprint run platform` | Fetch and build the platform's link inputs, to build an app's `main.roc` or `main-fuzz.roc` by hand |
 | `blueprint run jfb` | Build the js-framework-benchmark app and check its operations in Chrome |
