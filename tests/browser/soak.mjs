@@ -43,7 +43,7 @@ const BACKENDS = {
 };
 let handle = BACKENDS[app] ?? null;
 // Apps whose effects include worker jobs.
-const WORKER_APPS = ["worker-search", "csv-converter"];
+const WORKER_APPS = ["worker-search", "csv-converter", "log-explorer"];
 // Apps where a response that arrives while a held job runs may supersede
 // it (the converter's sample, fetched during the walk, replaces the file
 // being converted): stopping a running job ends its worker, so the walk
@@ -246,6 +246,9 @@ const CYCLES = {
   // The sample downloaded into a file, converted in the task's worker and
   // previewed: each answer replaces the last, whose files are let go.
   "csv-converter": [["click", ["role", "button", "Load the sample"]]],
+  // A sample log written by its task, then prepared for the overview: each
+  // new log replaces the last, whose file and prepared state are let go.
+  "log-explorer": [["fill", ["label", "Entries"], "300"], ["click", ["role", "button", "Generate a sample log"]]],
   // A book added (the store answers it) and removed (a command), each write
   // followed by the store's copy.
   "reading-list": [["fill", ["label", "Title"], "Soak book"], ["click", ["role", "button", "Add book"]], ["click", ["role", "button", "Remove Soak book"]]],

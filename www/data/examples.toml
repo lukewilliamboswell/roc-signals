@@ -115,3 +115,11 @@ public = true
 # The app's port handlers (IndexedDB and a BroadcastChannel), its own
 # JavaScript, which site.mjs passes as the `ports` mount option.
 ports = "ports.mjs"
+
+[[examples]]
+slug = "log-explorer"
+title = "Log Explorer"
+description = "Open a log of any size, or generate one: a worker indexes it once and keeps the index and the file, not its text, and an overview, a search and a viewer each ask that prepared index their own questions, reading only the lines they show."
+source = "examples/log-explorer/main.roc"
+specs = "examples/log-explorer/specs"
+public = true
