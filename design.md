@@ -1884,7 +1884,8 @@ Port.derive_when : Call(input, output), Val(ctx, [Run(input), Skip]), ... -> Ele
 structure (`div`, `section`, `p`, `h1`–`h3`, `ul`/`li`, `pre_v`, `link`),
 controls (`button`, `action_button`, `text_input`, `number_input`,
 `textarea`, `checkbox`, `radio`, `select`/`option`, `form`, `submit_button`,
-`file_input`),
+`file_input`, whose props are
+`FileInputProps := { selection : [Single, Multiple] ?? Single, accept : [Any, Types(Str)] ?? Any }`),
 accessibility attributes (`aria_label`, `aria_invalid`, `aria_describedby`)
 and event helpers (`on_input`, `on_change`, `on_focus`, `on_blur`,
 `on_keydown`, `on_submit`, `on_drop_files`, `on_paste_files`). Accessible names go in `aria-label`, which the
