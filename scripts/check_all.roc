@@ -17,8 +17,9 @@ import src/Targets
 ## formatting, every public `Engine` and `Html` symbol documented, `roc test`,
 ## the platform inputs and the `scm-parse` and `wire` fuzz targets, the docs samples, every
 ## app's `.scm` specs natively and in Chrome, the broken-spec self-check (both
-## runners reject a spec with one wrong expectation), the runtime contract
-## tests in Chrome (effects, controls, Conduit journey), the
+## runners reject a spec with one wrong expectation), the runtime's
+## unit tests in Node and contract tests in Chrome (effects, controls,
+## workers, Conduit journey), the
 ## js-framework-benchmark check, and the release dry run. The soaks and the
 ## app fuzz targets are `check-slow`.
 main! = |_args| {
@@ -68,6 +69,9 @@ main! = |_args| {
 
 	Proc.note!("== broken-spec self-check")
 	$problems = $problems.concat(Checks.broken_spec!(o, $kanban.runner, $kanban.wasm)?)
+
+	Proc.note!("== runtime unit tests")
+	$problems = $problems.concat(Targets.runtime_unit!(o)?)
 
 	Proc.note!("== runtime contracts in Chrome")
 	$problems = $problems.concat(Targets.browser_contracts!(o, "${o.build_dir}/wasm/conduit/app.wasm")?)

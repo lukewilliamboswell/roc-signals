@@ -86,6 +86,14 @@ Targets := [].{
 		Ok(if (code == 0) [] else ["${script} ${Str.join_with(args, " ")} failed (exit ${code.to_str()})"])
 	}
 
+	## The runtime's pure parts in Node: the work monitor's aggregation and
+	## bounds (tests/runtime/monitor-unit.mjs), driven on a fake clock.
+	runtime_unit! : SpecSuite.Options => Try(List(Str), _)
+	runtime_unit! = |o| {
+		code = Proc.status!({ program: o.node, args: ["tests/runtime/monitor-unit.mjs"], cwd: o.root })?
+		Ok(if (code == 0) [] else ["monitor-unit.mjs failed (exit ${code.to_str()})"])
+	}
+
 	## The runtime contract tests in Chrome (test apps built by `SpecSuite.build!`): the effect channel (tests/apps/effects),
 	## controlled inputs, focus and containment (tests/apps/controls), worker
 	## jobs in real Web Workers (tests/apps/workers), and Conduit's user

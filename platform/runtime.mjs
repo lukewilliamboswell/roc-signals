@@ -269,6 +269,683 @@ function concat(parts) {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// The monitor: observation of work jobs, worker instances and turns
+// (design.md, "Observation"). It never decides anything: the pool and the
+// runtime call it at each transition, after they have acted, and it keeps
+// bounded aggregates, a bounded history and optional User Timing entries.
+//
+// Clocks: every time it reports is this page's `performance.now()` in ms. A
+// worker stamps with its own clock and reports its `performance.timeOrigin`
+// once, when its instance is ready; the monitor converts its stamps by
+// adding `workerOrigin - pageOrigin`. Each stamp carries the browser's timer
+// coarsening (0.1 ms when the page is not cross-origin isolated), so a span
+// between two threads is good to about ±0.2 ms; spans are reported raw,
+// never clamped, and one shorter than the resolution may read 0 or slightly
+// negative.
+//
+// Bounds: live jobs are bounded by the engine's in-flight cap and live
+// instances by `maxWorkers`; the rest is MONITOR_LIMITS (see each field).
+
+// Histogram bucket edges in ms (1-2-5 series). Bucket i counts values below
+// edges[i] and at least edges[i - 1]; the last bucket counts the rest.
+export const MONITOR_EDGES = Object.freeze([0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000]);
+
+// history: the most job records `snapshot().recent` keeps (the option's
+// maximum; oldest overwritten, counted in recentDropped). retired: ended
+// instances kept (oldest overwritten, counted in retiredDropped). programs:
+// per-program aggregates (the catalogue's bound; any further name is
+// aggregated under "*"). subscribers: a further subscribe throws. timeline:
+// roc entries held in the performance timeline; reaching it clears them
+// (observers and DevTools traces have already seen them).
+export const MONITOR_LIMITS = Object.freeze({ history: 1024, retired: 16, programs: 64, subscribers: 16, timeline: 1024 });
+
+// The engine's effect counters in the work record (design.md, Appendix B),
+// present when the record carries at least `ENGINE_FX_FIRST + 8` counters.
+const ENGINE_FX_FIRST = 32;
+const ENGINE_FX_NAMES = ["issued", "delivered", "stale", "refused", "cancelled", "reparented", "skipped", "live"];
+
+const END_CAUSES = ["cancel", "deadline", "fault", "executor", "unmount", "contained"];
+
+function newHist() {
+  return { counts: new Array(MONITOR_EDGES.length + 1).fill(0), n: 0, sum: 0, min: null, max: null };
+}
+
+function addHist(h, v) {
+  if (v === null || !Number.isFinite(v)) return;
+  let i = 0;
+  while (i < MONITOR_EDGES.length && v >= MONITOR_EDGES[i]) i += 1;
+  h.counts[i] += 1;
+  h.n += 1;
+  h.sum += v;
+  if (h.min === null || v < h.min) h.min = v;
+  if (h.max === null || v > h.max) h.max = v;
+}
+
+function copyHist(h) {
+  return { edges: MONITOR_EDGES, counts: [...h.counts], n: h.n, sum: h.sum, min: h.min, max: h.max };
+}
+
+const span = (a, b) => (a === null || b === null ? null : b - a);
+
+// A ring of at most `cap` items, oldest first.
+class Ring {
+  constructor(cap) {
+    this.cap = cap;
+    this.items = [];
+    this.at = 0;
+    this.dropped = 0;
+  }
+
+  push(v) {
+    if (this.cap === 0) {
+      this.dropped += 1;
+      return;
+    }
+    if (this.items.length < this.cap) this.items.push(v);
+    else {
+      this.items[this.at] = v;
+      this.at = (this.at + 1) % this.cap;
+      this.dropped += 1;
+    }
+  }
+
+  list() {
+    return this.items.slice(this.at).concat(this.items.slice(0, this.at));
+  }
+
+  clear() {
+    this.items = [];
+    this.at = 0;
+    this.dropped = 0;
+  }
+}
+
+export class WorkMonitor {
+  // `options` is the `monitor` mount option: { history = 128 (0 to
+  // MONITOR_LIMITS.history), userTiming = false, payloads = false }. `env`
+  // adapts it to its runtime: `now()` and `performance` (a clock and User
+  // Timing; default the global `performance`), `page()` (the page
+  // instance's figures for a snapshot), `mode()` and `maxWorkers`.
+  // A history outside its range is a programmer error and throws.
+  constructor(options = {}, env = {}) {
+    const history = options.history ?? 128;
+    if (!Number.isInteger(history) || history < 0 || history > MONITOR_LIMITS.history) {
+      throw new Error(`monitor.history must be an integer from 0 to ${MONITOR_LIMITS.history} (got ${history})`);
+    }
+    this.perf = env.performance ?? globalThis.performance ?? null;
+    const perf = this.perf;
+    this.now = env.now ?? (() => perf.now());
+    this.origin = perf && typeof perf.timeOrigin === "number" ? perf.timeOrigin : 0;
+    this.page = env.page ?? (() => null);
+    this.mode = env.mode ?? (() => "workers");
+    this.maxWorkers = env.maxWorkers ?? 0;
+    this.userTiming = !!options.userTiming && !!perf && typeof perf.measure === "function";
+    this.payloads = !!options.payloads;
+    this.subs = [];
+    this.turnSubs = 0;
+    this.jobs = new Map();
+    this.answered = new Set();
+    this.insts = new Map();
+    this.seq = 0;
+    this.generation = 0;
+    this.state = "new";
+    this.ending = null;
+    this.timeline = 0;
+    this.timelineNames = new Set();
+    this.recent = new Ring(history);
+    this.retired = new Ring(MONITOR_LIMITS.retired);
+    this.gauge = { instances: 0, spawning: 0, busy: 0, queued: 0 };
+    this.lastAt = this.now();
+    this.reset();
+  }
+
+  // -- Pull ---------------------------------------------------------------
+
+  // Zero the aggregates (counts, peaks, integrals, histograms, per-program
+  // figures and the job history) and start a new measurement window at
+  // `snapshot().since`. Live jobs and instances are still tracked; peaks
+  // restart from the current gauges.
+  reset() {
+    this.tick();
+    this.since = this.lastAt;
+    this.count = { issued: 0, done: 0, lost: 0, timeout: 0, cancelled: 0, unavailable: 0, lateReplies: 0, wastedMs: 0, inputBytes: 0, outputBytes: 0 };
+    this.spawns = 0;
+    this.ended = Object.fromEntries(END_CAUSES.map((c) => [c, 0]));
+    this.peak = { instances: this.gauge.instances, busy: this.gauge.busy, queued: this.gauge.queued };
+    this.integral = { busyMs: 0, aliveMs: 0, queuedMs: 0 };
+    this.hist = { queue: newHist(), cold: newHist(), compute: newHist(), total: newHist(), resultTurn: newHist() };
+    this.programs = new Map();
+    this.recent.clear();
+    this.retired.clear();
+  }
+
+  // Plain serialisable data (no BigInt, no bytes) describing the pool, its
+  // jobs and instances since the last reset; see the worker-monitoring
+  // documentation for every field. Cost: proportional to the history,
+  // the retired instances and the programs held; nothing is computed until
+  // it is called.
+  snapshot() {
+    this.tick();
+    const programs = {};
+    for (const [name, p] of this.programs) {
+      programs[name] = { ...p, hist: { queue: copyHist(p.hist.queue), compute: copyHist(p.hist.compute), total: copyHist(p.hist.total) } };
+    }
+    let page = null;
+    let engine = null;
+    try {
+      const pg = this.page();
+      if (pg !== null) {
+        const counters = pg.counters ?? [];
+        page = { memBytes: pg.memBytes, liveAllocs: pg.liveAllocs, liveBytes: pg.liveBytes, turns: counters.length > 30 ? Number(counters[30]) : 0 };
+        if (counters.length >= ENGINE_FX_FIRST + ENGINE_FX_NAMES.length) {
+          engine = Object.fromEntries(ENGINE_FX_NAMES.map((n, i) => [n, Number(counters[ENGINE_FX_FIRST + i])]));
+        }
+      }
+    } catch (_) {
+      page = null;
+      engine = null;
+    }
+    const g = this.gauge;
+    return {
+      version: 1,
+      at: this.lastAt,
+      since: this.since,
+      generation: this.generation,
+      state: this.state,
+      mode: this.mode(),
+      maxWorkers: this.maxWorkers,
+      crossOriginIsolated: !!globalThis.crossOriginIsolated,
+      pool: { instances: g.instances, spawning: g.spawning, idle: this.idle(), busy: g.busy, queued: g.queued, peak: { ...this.peak }, ...this.integral },
+      jobs: { ...this.count, inFlight: this.jobs.size },
+      instances: {
+        spawns: this.spawns,
+        respawns: Math.max(0, this.spawns - this.peak.instances),
+        ended: { ...this.ended },
+        live: [...this.insts.values()].map((i) => this.instRecord(i)),
+        retired: this.retired.list(),
+        retiredDropped: this.retired.dropped,
+      },
+      hist: Object.fromEntries(Object.entries(this.hist).map(([k, h]) => [k, copyHist(h)])),
+      programs,
+      recent: this.recent.list(),
+      recentDropped: this.recent.dropped,
+      page,
+      engine,
+    };
+  }
+
+  // -- Push ---------------------------------------------------------------
+
+  // Call `listener(event)` synchronously at every lifecycle transition (the
+  // event kinds are in the worker-monitoring documentation); with
+  // `{ turns: true }` also once per turn (`turn` events). Returns the
+  // function that unsubscribes. A listener must only observe: it may call
+  // snapshot(), and one that throws is reported and unsubscribed. More than
+  // MONITOR_LIMITS.subscribers listeners is a programmer error and throws.
+  subscribe(listener, { turns = false } = {}) {
+    if (typeof listener !== "function") throw new Error("monitor.subscribe needs a function");
+    if (this.subs.length >= MONITOR_LIMITS.subscribers) throw new Error(`monitor: more than ${MONITOR_LIMITS.subscribers} subscribers`);
+    const sub = { listener, turns: !!turns };
+    this.subs.push(sub);
+    if (sub.turns) this.turnSubs += 1;
+    return () => this.unsubscribe(sub);
+  }
+
+  unsubscribe(sub) {
+    const i = this.subs.indexOf(sub);
+    if (i < 0) return;
+    this.subs.splice(i, 1);
+    if (sub.turns) this.turnSubs -= 1;
+  }
+
+  emit(event, turn = false) {
+    if (this.subs.length === 0) return;
+    for (const sub of [...this.subs]) {
+      if (turn && !sub.turns) continue;
+      try {
+        sub.listener(event);
+      } catch (e) {
+        console.error(`roc monitor: a listener threw and was unsubscribed: ${e && e.stack ? e.stack : e}`);
+        this.unsubscribe(sub);
+      }
+    }
+  }
+
+  // -- Gauges -------------------------------------------------------------
+
+  tick() {
+    const now = this.now();
+    const dt = now - this.lastAt;
+    if (dt > 0 && this.integral) {
+      this.integral.aliveMs += dt * this.gauge.instances;
+      this.integral.busyMs += dt * this.gauge.busy;
+      this.integral.queuedMs += dt * this.gauge.queued;
+    }
+    this.lastAt = now;
+    return now;
+  }
+
+  move(name, delta) {
+    this.gauge[name] += delta;
+    if (this.peak[name] !== undefined && this.gauge[name] > this.peak[name]) this.peak[name] = this.gauge[name];
+  }
+
+  // Ready instances holding no job (at most maxWorkers to count).
+  idle() {
+    let n = 0;
+    for (const i of this.insts.values()) if (i.ready && i.job === null) n += 1;
+    return n;
+  }
+
+  live() {
+    return this.state === "mounted";
+  }
+
+  program(name) {
+    let p = this.programs.get(name);
+    if (p === undefined) {
+      if (name !== "*" && this.programs.size >= MONITOR_LIMITS.programs) return this.program("*");
+      p = { jobs: 0, done: 0, lost: 0, timeout: 0, cancelled: 0, unavailable: 0, inputBytes: 0, outputBytes: 0, hist: { queue: newHist(), compute: newHist(), total: newHist() } };
+      this.programs.set(name, p);
+    }
+    return p;
+  }
+
+  // -- Runtime transitions (called by RocEngineRuntime) ---------------------
+
+  // The runtime mounted (or recovered into) a fresh instance.
+  runtimeMounted() {
+    this.generation += 1;
+    this.state = "mounted";
+    this.ending = null;
+    this.emit({ kind: "runtime", state: "mounted", at: this.tick(), generation: this.generation });
+  }
+
+  // The runtime is about to tear down (`contained` or `unmount`): cancels and
+  // terminations reported until runtimeEnded are attributed to it.
+  runtimeEnding(cause) {
+    if (this.live()) this.ending = cause;
+  }
+
+  // Teardown is complete: every job and instance still tracked ends with
+  // the teardown's cause, then the `runtime` event; nothing more is
+  // reported until the runtime mounts again.
+  runtimeEnded(state, fault = null) {
+    if (this.state !== "mounted") {
+      this.state = state;
+      return;
+    }
+    if (this.ending === null) this.ending = state === "poisoned" ? "contained" : "unmount";
+    for (const job of [...this.jobs.values()]) this.cancelJob(job);
+    for (const inst of [...this.insts.values()]) this.endInstance(inst, this.ending, null);
+    this.state = state;
+    const event = { kind: "runtime", state, at: this.tick(), generation: this.generation };
+    if (fault !== null) event.fault = { class: fault.class, message: fault.message };
+    this.emit(event);
+  }
+
+  // Whether the turn about to run is timed: always for a job's result turn,
+  // and for every turn while a subscriber asked for turns.
+  timesTurn(node, handler) {
+    return this.turnSubs > 0 || (node === FX_NODE && this.answered.has(handler));
+  }
+
+  // One timed turn: t0 before staging its payload, t1 after `event`, t2 after
+  // the batch was applied and its effects performed.
+  turn(node, handler, t0, t1, t2, bytes) {
+    const job = node === FX_NODE && this.answered.has(handler) ? this.jobs.get(handler) : undefined;
+    if (this.turnSubs > 0) {
+      this.emit({ kind: "turn", node, handler, fx: job ? job.id : null, at: t2, eventMs: t1 - t0, applyMs: t2 - t1, bytes }, true);
+    }
+    if (job !== undefined) {
+      job.t.turnStart = t0;
+      job.t.turnEnd = t2;
+      this.answered.delete(job.id);
+      this.endJob(job, t2);
+    }
+  }
+
+  // -- Job transitions ----------------------------------------------------
+
+  // A work request was performed (`held`: manual mode keeps it pending until
+  // runEffect). `input` is only kept for the event when payloads are on.
+  jobIssued(id, program, input, deadlineMs, held) {
+    if (!this.live()) return;
+    const at = this.tick();
+    const job = {
+      id,
+      program,
+      instance: null,
+      thread: null,
+      outcome: null,
+      fault: null,
+      cancelledBy: null,
+      phase: held ? "held" : "issued",
+      cold: false,
+      firstJobOnInstance: false,
+      inputBytes: input.length,
+      outputBytes: null,
+      deadlineMs,
+      wasted: false,
+      output: null,
+      t: { issue: at, submit: null, post: null, recv: null, begin: null, call: null, ret: null, sent: null, reply: null, turnStart: null, turnEnd: null, end: null },
+    };
+    this.jobs.set(id, job);
+    this.count.issued += 1;
+    this.count.inputBytes += input.length;
+    const p = this.program(program);
+    p.jobs += 1;
+    p.inputBytes += input.length;
+    const event = { kind: "job-issue", id, program, inputBytes: input.length, deadlineMs, at, held: !!held };
+    if (this.payloads) event.input = input.slice();
+    this.emit(event);
+  }
+
+  // The job was handed to the pool (its deadline starts now).
+  jobSubmitted(id) {
+    const job = this.jobs.get(id);
+    if (job === undefined || !this.live()) return;
+    job.t.submit = this.tick();
+    job.phase = "queued";
+    this.move("queued", 1);
+  }
+
+  // The pool posted the job to instance `seq` (ready or still starting).
+  jobPosted(id, seq) {
+    const job = this.jobs.get(id);
+    const inst = this.insts.get(seq);
+    if (job === undefined || inst === undefined || !this.live()) return;
+    const at = this.tick();
+    if (job.phase === "queued") this.move("queued", -1);
+    job.t.post = at;
+    job.instance = seq;
+    job.thread = inst.thread;
+    job.cold = !inst.ready;
+    job.firstJobOnInstance = inst.jobs === 0;
+    job.phase = inst.ready ? "running" : "starting";
+    inst.job = id;
+    inst.postAt = at;
+    this.move("busy", 1);
+    this.emit({ kind: "job-start", id, instance: seq, at, cold: job.cold });
+  }
+
+  // The instance answered the job. `reply` is { t: [recv, begin, call, ret,
+  // sent], mem: [memBytes, liveAllocs, liveBytes], outputBytes } in the
+  // instance's clock.
+  jobReplied(id, seq, reply) {
+    const job = this.jobs.get(id);
+    const inst = this.insts.get(seq);
+    if (job === undefined || inst === undefined || !this.live()) return;
+    const at = this.tick();
+    job.t.reply = at;
+    if (reply && Array.isArray(reply.t) && reply.t.length === 5) {
+      const [recv, begin, call, ret, sent] = reply.t.map((v) => v + inst.off);
+      Object.assign(job.t, { recv, begin, call, ret, sent });
+    }
+    if (reply && typeof reply.outputBytes === "number") job.outputBytes = reply.outputBytes;
+    if (reply && Array.isArray(reply.mem)) this.memory(inst, reply.mem);
+    this.release(inst, at);
+    inst.jobs += 1;
+  }
+
+  // The runtime decided the job's result and is delivering it as a turn:
+  // `outcome` is done, lost, timeout or unavailable.
+  jobAnswered(id, outcome, faultClass, output) {
+    const job = this.jobs.get(id);
+    if (job === undefined || !this.live()) return;
+    this.tick();
+    this.leave(job);
+    job.outcome = outcome;
+    job.fault = faultClass ?? null;
+    if (this.payloads && output) job.output = output.slice();
+    job.phase = "answered";
+    this.answered.add(id);
+  }
+
+  // The job was cancelled (CANCEL, or the runtime's teardown).
+  jobCancelled(id) {
+    const job = this.jobs.get(id);
+    if (job === undefined || !this.live()) return;
+    this.cancelJob(job);
+  }
+
+  // A reply arrived for a job the pool no longer holds.
+  lateReply() {
+    this.count.lateReplies += 1;
+  }
+
+  cancelJob(job) {
+    const at = this.tick();
+    const phase = job.phase;
+    this.leave(job);
+    this.answered.delete(job.id);
+    job.outcome = "cancelled";
+    job.cancelledBy = this.ending ?? "engine";
+    job.phase = phase === "issued" ? "queued" : phase;
+    this.endJob(job, at);
+  }
+
+  // Take the job out of the queue gauge and off its instance, counting
+  // compute thrown away when it was running.
+  leave(job) {
+    if (job.phase === "queued") this.move("queued", -1);
+    if ((job.phase === "running" || job.phase === "starting") && job.t.reply === null) {
+      this.waste(job, this.lastAt);
+      const inst = this.insts.get(job.instance);
+      if (inst !== undefined && inst.job === job.id) this.release(inst, this.lastAt);
+    }
+  }
+
+  // A started job that will never reply: its time on the instance is lost.
+  waste(job, at) {
+    if (job.wasted || job.t.post === null || job.t.reply !== null) return;
+    job.wasted = true;
+    this.count.wastedMs += at - job.t.post;
+  }
+
+  release(inst, at) {
+    if (inst.job === null) return;
+    inst.job = null;
+    inst.busyMs += at - inst.postAt;
+    this.move("busy", -1);
+  }
+
+  endJob(job, at) {
+    this.jobs.delete(job.id);
+    job.t.end = at;
+    const t = job.t;
+    const ms = {
+      held: span(t.issue, t.submit),
+      queue: span(t.submit, t.post),
+      toWorker: job.cold ? null : span(t.post, t.recv),
+      cold: job.cold ? span(t.post, t.begin) : t.post === null ? null : 0,
+      stage: span(t.begin, t.call),
+      compute: span(t.call, t.ret),
+      copyOut: span(t.ret, t.sent),
+      fromWorker: span(t.sent, t.reply),
+      resultWait: span(t.reply, t.turnStart),
+      resultTurn: span(t.turnStart, t.turnEnd),
+      total: span(t.issue, t.end),
+    };
+    const outcome = job.outcome;
+    this.count[outcome] += 1;
+    if (job.outputBytes !== null) this.count.outputBytes += job.outputBytes;
+    const p = this.program(job.program);
+    p[outcome] += 1;
+    if (job.outputBytes !== null) p.outputBytes += job.outputBytes;
+    if (outcome !== "cancelled") {
+      addHist(this.hist.queue, ms.queue);
+      addHist(p.hist.queue, ms.queue);
+      if (job.cold) addHist(this.hist.cold, ms.cold);
+      addHist(this.hist.compute, ms.compute);
+      addHist(p.hist.compute, ms.compute);
+      addHist(this.hist.total, ms.total);
+      addHist(p.hist.total, ms.total);
+      addHist(this.hist.resultTurn, ms.resultTurn);
+    }
+    const record = {
+      id: job.id,
+      program: job.program,
+      instance: job.instance,
+      thread: job.thread,
+      outcome,
+      fault: job.fault,
+      cancelledBy: job.cancelledBy,
+      phase: outcome === "cancelled" ? job.phase : null,
+      cold: job.cold,
+      firstJobOnInstance: job.firstJobOnInstance,
+      inputBytes: job.inputBytes,
+      outputBytes: job.outputBytes,
+      deadlineMs: job.deadlineMs,
+      t: { ...t },
+      ms,
+    };
+    this.recent.push(record);
+    if (this.userTiming) this.measureJob(record);
+    const event = { kind: "job-end", id: job.id, program: job.program, outcome, at, record };
+    if (this.payloads && job.output !== null) event.output = job.output;
+    this.emit(event);
+  }
+
+  // -- Instance transitions -----------------------------------------------
+
+  // The pool created an instance (`thread`: "worker" or "page"); returns
+  // its sequence number, unique over the monitor's life.
+  instanceSpawned(thread) {
+    this.seq += 1;
+    const seq = this.seq;
+    if (!this.live()) return seq;
+    const at = this.tick();
+    this.insts.set(seq, {
+      seq,
+      thread,
+      ready: false,
+      job: null,
+      postAt: 0,
+      off: 0,
+      spawnAt: at,
+      scriptAt: null,
+      readyAt: null,
+      instantiateMs: null,
+      jobs: 0,
+      busyMs: 0,
+      memBytes: null,
+      peakMemBytes: null,
+      liveAllocs: null,
+      liveBytes: null,
+    });
+    this.spawns += 1;
+    this.move("instances", 1);
+    this.move("spawning", 1);
+    this.emit({ kind: "instance-spawn", instance: seq, thread, at });
+    return seq;
+  }
+
+  // The instance is instantiated. `ready` is { origin, instStart, instEnd,
+  // memBytes } in the instance's clock (`origin` its performance.timeOrigin).
+  instanceReady(seq, ready) {
+    const inst = this.insts.get(seq);
+    if (inst === undefined || inst.ready || !this.live()) return;
+    const at = this.tick();
+    inst.ready = true;
+    inst.off = typeof ready.origin === "number" ? ready.origin - this.origin : 0;
+    inst.scriptAt = inst.thread === "worker" ? inst.off : null;
+    inst.readyAt = at;
+    inst.instantiateMs = ready.instEnd - ready.instStart;
+    this.memory(inst, [ready.memBytes, null, null]);
+    this.move("spawning", -1);
+    if (inst.job !== null) {
+      const job = this.jobs.get(inst.job);
+      if (job !== undefined && job.phase === "starting") job.phase = "running";
+    }
+    if (this.userTiming) this.measure(`roc:worker ${seq} spawn`, inst.spawnAt, at, { instance: seq, instantiateMs: inst.instantiateMs }, `worker ${seq}`);
+    this.emit({ kind: "instance-ready", instance: seq, at, scriptAt: inst.scriptAt, instantiateMs: inst.instantiateMs, memBytes: inst.memBytes });
+  }
+
+  // The pool discarded the instance. `cause` is cancel, deadline, fault,
+  // executor or shutdown; during the runtime's teardown it is the
+  // teardown's cause. `fault` is { class, message } or null.
+  instanceEnded(seq, cause, fault = null) {
+    const inst = this.insts.get(seq);
+    if (inst === undefined || !this.live()) return;
+    this.endInstance(inst, this.ending ?? (cause === "shutdown" ? "unmount" : cause), fault);
+  }
+
+  endInstance(inst, cause, fault) {
+    const at = this.tick();
+    if (inst.job !== null) {
+      const job = this.jobs.get(inst.job);
+      if (job !== undefined) this.waste(job, at);
+      this.release(inst, at);
+    }
+    if (!inst.ready) this.move("spawning", -1);
+    this.insts.delete(inst.seq);
+    this.move("instances", -1);
+    this.ended[cause] += 1;
+    const record = { ...this.instRecord(inst), state: "ended", endedAt: at, endedBy: cause, fault };
+    this.retired.push(record);
+    this.emit({ kind: "instance-end", instance: inst.seq, at, cause, fault, jobs: inst.jobs, busyMs: inst.busyMs, memBytes: inst.memBytes });
+  }
+
+  memory(inst, [memBytes, liveAllocs, liveBytes]) {
+    if (typeof memBytes === "number") {
+      inst.memBytes = memBytes;
+      if (inst.peakMemBytes === null || memBytes > inst.peakMemBytes) inst.peakMemBytes = memBytes;
+    }
+    if (typeof liveAllocs === "number") inst.liveAllocs = liveAllocs;
+    if (typeof liveBytes === "number") inst.liveBytes = liveBytes;
+  }
+
+  instRecord(i) {
+    return {
+      seq: i.seq,
+      thread: i.thread,
+      state: !i.ready ? "spawning" : i.job !== null ? "busy" : "idle",
+      spawnAt: i.spawnAt,
+      scriptAt: i.scriptAt,
+      readyAt: i.readyAt,
+      instantiateMs: i.instantiateMs,
+      jobs: i.jobs,
+      busyMs: i.busyMs,
+      memBytes: i.memBytes,
+      peakMemBytes: i.peakMemBytes,
+      liveAllocs: i.liveAllocs,
+      liveBytes: i.liveBytes,
+      endedAt: null,
+      endedBy: null,
+      fault: null,
+    };
+  }
+
+  // -- User Timing ----------------------------------------------------------
+
+  measureJob(r) {
+    const t = r.t;
+    const lane = r.instance === null ? "jobs" : `worker ${r.instance}`;
+    this.measure(`roc:work ${r.program}`, t.issue, t.end, { id: r.id, instance: r.instance, outcome: r.outcome, inputBytes: r.inputBytes, outputBytes: r.outputBytes }, "jobs");
+    if (t.submit !== null && t.post !== null) this.measure("roc:work.queue", t.submit, t.post, { id: r.id }, "jobs");
+    if (r.cold && t.begin !== null) this.measure("roc:work.cold", t.post, t.begin, { id: r.id, instance: r.instance }, lane);
+    if (t.post !== null && t.reply !== null) this.measure("roc:work.run", t.post, t.reply, { id: r.id, instance: r.instance }, lane);
+    if (t.reply !== null && t.turnEnd !== null) this.measure("roc:work.result", t.reply, t.turnEnd, { id: r.id }, "jobs");
+  }
+
+  measure(name, start, end, detail, track) {
+    if (this.timeline >= MONITOR_LIMITS.timeline) {
+      for (const n of this.timelineNames) this.perf.clearMeasures(n);
+      this.timelineNames.clear();
+      this.timeline = 0;
+    }
+    try {
+      this.perf.measure(name, { start, end, detail: { ...detail, devtools: { dataType: "track-entry", track, trackGroup: "roc workers", color: "primary" } } });
+      this.timeline += 1;
+      this.timelineNames.add(name);
+    } catch (_) {
+      // A timeline that refuses an entry loses only that entry.
+    }
+  }
+}
+
 // The bounded pool that runs work jobs (see "Work" above). It knows nothing
 // about ids, results or the engine: `submit` takes a payload
 // (`name:str input:rest`) and a callback that receives exactly one outcome,

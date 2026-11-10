@@ -77,9 +77,10 @@ for example to run two tasks at once.
 5. Every app's specs natively and in Chrome, the check that the browser
    runner handles every form of the grammar, then a deliberately broken spec
    that both runners must reject.
-6. The runtime contract tests in Chrome: effects, controlled inputs, worker
-   jobs, and the
-   Conduit journey against its scripted backend.
+6. The runtime's unit tests in Node (the work monitor's aggregation and
+   bounds, `tests/runtime/`), then its contract tests in Chrome: effects,
+   controlled inputs, worker jobs, the work monitor, and the Conduit journey
+   against its scripted backend.
 7. The js-framework-benchmark check.
 8. The release dry run: the bundle, `runtime.mjs` and `worker.mjs`, the examples archive with
    every app mounted by its check helper, and the release notes.
