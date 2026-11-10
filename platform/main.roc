@@ -1,7 +1,9 @@
 ## The roc-signals platform. The reactive engine is pure Roc: `Core.roc`
 ## implements it, `Engine.roc` is the authoring API apps see, `Html.roc` is
 ## the typed vocabulary above that, and `Worker.roc` is the typed layer for
-## pure programs run in Web Workers, whose payloads `Wire.roc` derives. An app
+## pure programs run in Web Workers, whose payloads `Wire.roc` derives;
+## `Port.roc` is the typed layer for services the page's JavaScript supplies,
+## whose messages `PortJson.roc` derives. An app
 ## binds a `program` as `main`, and one entry file builds for two targets:
 ##
 ## - `roc build --target=wasm32` gives the module the browser runs. The Zig
@@ -17,7 +19,7 @@ platform ""
 	requires {
 		main : Engine.Program
 	}
-	exposes [Engine, Html, Wire, Worker]
+	exposes [Engine, Html, Port, PortJson, Wire, Worker]
 	packages {}
 	provides {
 		"roc_engine_ask": ask_for_host,
@@ -56,6 +58,8 @@ import Cli
 import Core
 import Engine
 import Html
+import Port
+import PortJson
 import SpecRunner
 import Wire
 import Worker

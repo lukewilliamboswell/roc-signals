@@ -21,7 +21,7 @@ platform "roc-signals-fuzz"
 	requires {
 		target : Target
 	}
-	exposes [Arbitrary, Core, Dom, Engine, Fuzz, Html, JsonOut, PortJson, Scm, Soak, SpecRunner, Target, Wire, Worker]
+	exposes [Arbitrary, Core, Dom, Engine, Fuzz, Html, JsonOut, Port, PortJson, Scm, Soak, SpecRunner, Target, Wire, Worker]
 	packages {}
 	provides {
 		"roc_fuzz_example": example_for_host,
@@ -57,6 +57,7 @@ import Engine
 import Fuzz
 import Html
 import JsonOut
+import Port
 import PortJson
 import Scm
 import Soak

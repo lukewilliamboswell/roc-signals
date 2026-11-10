@@ -1,3 +1,4 @@
+import Core
 import Wire
 
 ## The format of port messages: JSON text for JavaScript the platform did not
@@ -52,6 +53,11 @@ import Wire
 ## - `Wire.Bytes` is the marker `{"$bytes":N}`. A plain `List(U8)` is an
 ##   array of numbers like any other list, so send bulk bytes as
 ##   `Wire.Bytes`.
+## - A file (`Engine.File`) is the marker `{"$file":N}`, where `N` is its
+##   index in the message's file list; the runtime hands JavaScript the
+##   browser's own `File` (sliced to the range the value holds) where the
+##   marker stood, and turns a `File` or `Blob` in an answer back into a
+##   marker and a file handle. A file's bytes never cross.
 ##
 ## Encoding cannot fail. Decoding is total: input that does not follow the
 ## grammar of RFC 8259 or does not fit the type is an `Err`, never a crash,
@@ -70,12 +76,15 @@ PortJson := [].{
 	## - `MissingRequiredField(name)`: a required record field is absent.
 	## - `NoSuchBlob(n)`: a bytes marker names a blob the message does not
 	##   carry.
+	## - `NoSuchFile(n)`: a file marker names a file the message does not
+	##   carry.
 	## - `TooDeep`: containers nested more than 512 deep.
 	## - `Trailing(at)`: text after the value.
-	Error : [Syntax(U64), Expected(Str, U64), OutOfRange(U64), UnknownTag(Str), MissingRequiredField(Str), NoSuchBlob(U64), TooDeep, Trailing(U64)]
+	Error : [Syntax(U64), Expected(Str, U64), OutOfRange(U64), UnknownTag(Str), MissingRequiredField(Str), NoSuchBlob(U64), NoSuchFile(U64), TooDeep, Trailing(U64)]
 
-	## A message: the JSON text and the blobs its bytes markers index.
-	Message : { json : Str, blobs : List(List(U8)) }
+	## A message: the JSON text, the blobs its bytes markers index and the
+	## files its file markers index. It is `Engine.PortMessage`.
+	Message : { json : Str, blobs : List(List(U8)), files : List(Core.File) }
 
 	## A type whose values can be sent to and received from JavaScript:
 	## everything derivation covers, and nominal types that declare
@@ -98,8 +107,8 @@ PortJson := [].{
 		## The caller's type, named so its derived codec can be asked for.
 		Shape : a
 		encode_shape = Shape.encoder_for(Format.Default)
-		match encode_shape(value, Out.{ text: [], blobs: [] }) {
-			Ok(out) => { json: Str.from_utf8(out.text) ?? crash "internal: PortJson wrote text that is not UTF-8", blobs: out.blobs }
+		match encode_shape(value, Out.{ text: [], blobs: [], files: [] }) {
+			Ok(out) => { json: Str.from_utf8(out.text) ?? crash "internal: PortJson wrote text that is not UTF-8", blobs: out.blobs, files: out.files }
 		}
 	}
 
@@ -107,12 +116,12 @@ PortJson := [].{
 	## must hold exactly one value, with nothing but whitespace after it.
 	## Decoded `Wire.Bytes` share the blob they name instead of copying it.
 	decode : Message -> Try(a, Error) where [a.Sendable]
-	decode = |{ json, blobs }| {
+	decode = |{ json, blobs, files }| {
 		## The caller's type, named so its derived codec can be asked for.
 		Shape : a
 		parse_shape = Shape.parser_for(Format.Default)
 		text = Str.to_utf8(json)
-		read = parse_shape(State.{ text, pos: 0, blobs, depth: 0, null_record: False })?
+		read = parse_shape(State.{ text, pos: 0, blobs, files, depth: 0, null_record: False })?
 		end = skip_ws(read.rest)
 		if (end.pos == text.len()) Ok(read.value) else Err(Trailing(end.pos))
 	}
@@ -128,18 +137,19 @@ PortJson := [].{
 			UnknownTag(name) => "unknown tag \"${name}\""
 			MissingRequiredField(name) => "missing field \"${name}\""
 			NoSuchBlob(n) => "bytes marker names blob ${n.to_str()}, which the message does not carry"
+			NoSuchFile(n) => "file marker names file ${n.to_str()}, which the message does not carry"
 			TooDeep => "containers nested more than ${max_depth.to_str()} deep"
 			Trailing(at) => "text after the value at byte ${at.to_str()}"
 		}
 
 	## The encoder's output: JSON text so far, and the blobs it has written.
 	## Applications never construct one.
-	Out := { text : List(U8), blobs : List(List(U8)) }
+	Out := { text : List(U8), blobs : List(List(U8)), files : List(Core.File) }
 
 	## The decoder's cursor: the text, the position, the message's blobs, how
 	## deep the open containers are, and whether a `null` is standing in for
 	## the record being read. Applications never construct one.
-	State := { text : List(U8), pos : U64, blobs : List(List(U8)), depth : U64, null_record : Bool }
+	State := { text : List(U8), pos : U64, blobs : List(List(U8)), files : List(Core.File), depth : U64, null_record : Bool }
 
 	## The format marker the compiler dispatches on. Its methods are the
 	## derivation hooks; applications call `encode` and `decode` instead.
@@ -492,13 +502,13 @@ PortJson := [].{
 		## An object of the entries, sorted by key so equal dictionaries agree.
 		encode_dict : Out, U64, (Entries, (Entries, (Out -> Try(Out, err)), (Out -> Try(Out, err)) -> Try(Entries, err)) -> Try(Entries, err)) -> Try(Out, err)
 		encode_dict = |out, count, write_entries| {
-			start = Entries.{ items: List.with_capacity(count), blobs: out.blobs }
+			start = Entries.{ items: List.with_capacity(count), blobs: out.blobs, files: out.files }
 			collected = write_entries(
 				start,
 				|current, write_key, write_value| {
-					key = write_key(Out.{ text: [], blobs: current.blobs })?
-					value = write_value(Out.{ text: [], blobs: key.blobs })?
-					Ok(Entries.{ items: current.items.append((key.text, value.text)), blobs: value.blobs })
+					key = write_key(Out.{ text: [], blobs: current.blobs, files: current.files })?
+					value = write_value(Out.{ text: [], blobs: key.blobs, files: key.files })?
+					Ok(Entries.{ items: current.items.append((key.text, value.text)), blobs: value.blobs, files: value.files })
 				},
 			)?
 			var $text = out.text.append(open_curly)
@@ -508,7 +518,7 @@ PortJson := [].{
 				}
 				$text = $text.concat(key).append(colon).concat(value)
 			}
-			Ok(Out.{ text: $text.append(close_curly), blobs: collected.blobs })
+			Ok(Out.{ text: $text.append(close_curly), blobs: collected.blobs, files: collected.files })
 		}
 
 		## Open a dictionary's object.
@@ -685,7 +695,7 @@ PortJson := [].{
 		encode_bytes = |_, bytes, out| {
 			index = out.blobs.len()
 			text = out.text.concat(Str.to_utf8("{\"$bytes\":${index.to_str()}}"))
-			Ok(Out.{ text, blobs: out.blobs.append(bytes) })
+			Ok(Out.{ text, blobs: out.blobs.append(bytes), files: out.files })
 		}
 
 		## `Wire.Bytes`: the blob a marker names, shared, not copied.
@@ -705,11 +715,38 @@ PortJson := [].{
 			blob = s.blobs.get(index.value) ? |_| NoSuchBlob(index.value)
 			Ok({ value: blob, rest: end })
 		}
+
+		## A file: a marker naming its place in the message's file list,
+		## which travels beside the text.
+		encode_file : Format, Core.File, Out -> Try(Out, [])
+		encode_file = |_, file, out| {
+			index = out.files.len()
+			text = out.text.concat(Str.to_utf8("{\"$file\":${index.to_str()}}"))
+			Ok(Out.{ text, blobs: out.blobs, files: out.files.append(file) })
+		}
+
+		## A file: the one a marker names.
+		parse_file : Format, State -> Try({ value : Core.File, rest : State }, Error)
+		parse_file = |_, state| {
+			s = skip_ws(state)
+			if byte_at(s) != open_curly {
+				return Err(Expected("a file marker", s.pos))
+			}
+			key = read_string(skip_ws(advance(s, 1)))?
+			if key.value != "$file" {
+				return Err(Expected("a file marker", s.pos))
+			}
+			index_at = skip_ws(expect_byte(key.rest, colon)?)
+			index = parse_int(index_at, Narrow, U64.from_str)?
+			end = expect_byte(index.rest, close_curly)?
+			file = s.files.get(index.value) ? |_| NoSuchFile(index.value)
+			Ok({ value: file, rest: end })
+		}
 	}
 
 	## A dictionary being encoded: each entry's key and value text, and the
 	## blobs written so far. Applications never construct one.
-	Entries := { items : List((List(U8), List(U8))), blobs : List(List(U8)) }
+	Entries := { items : List((List(U8), List(U8))), blobs : List(List(U8)), files : List(Core.File) }
 }
 
 ## How deep containers may nest in a decoded message: the bound on the
@@ -753,13 +790,13 @@ byte_at : PortJson.State -> U8
 byte_at = |state| state.text.get(state.pos) ?? 0
 
 advance : PortJson.State, U64 -> PortJson.State
-advance = |state, width| PortJson.State.{ text: state.text, pos: state.pos + width, blobs: state.blobs, depth: state.depth, null_record: state.null_record }
+advance = |state, width| PortJson.State.{ text: state.text, pos: state.pos + width, blobs: state.blobs, files: state.files, depth: state.depth, null_record: state.null_record }
 
 move_to : PortJson.State, U64 -> PortJson.State
-move_to = |state, pos| PortJson.State.{ text: state.text, pos, blobs: state.blobs, depth: state.depth, null_record: state.null_record }
+move_to = |state, pos| PortJson.State.{ text: state.text, pos, blobs: state.blobs, files: state.files, depth: state.depth, null_record: state.null_record }
 
 with_null : PortJson.State, Bool -> PortJson.State
-with_null = |state, null_record| PortJson.State.{ text: state.text, pos: state.pos, blobs: state.blobs, depth: state.depth, null_record }
+with_null = |state, null_record| PortJson.State.{ text: state.text, pos: state.pos, blobs: state.blobs, files: state.files, depth: state.depth, null_record }
 
 ## Open a container, refusing one past the nesting bound.
 deeper : PortJson.State -> Try(PortJson.State, PortJson.Error)
@@ -767,11 +804,11 @@ deeper = |state| {
 	if state.depth >= max_depth {
 		return Err(TooDeep)
 	}
-	Ok(PortJson.State.{ text: state.text, pos: state.pos, blobs: state.blobs, depth: state.depth + 1, null_record: state.null_record })
+	Ok(PortJson.State.{ text: state.text, pos: state.pos, blobs: state.blobs, files: state.files, depth: state.depth + 1, null_record: state.null_record })
 }
 
 shallower : PortJson.State -> PortJson.State
-shallower = |state| PortJson.State.{ text: state.text, pos: state.pos, blobs: state.blobs, depth: state.depth - 1, null_record: state.null_record }
+shallower = |state| PortJson.State.{ text: state.text, pos: state.pos, blobs: state.blobs, files: state.files, depth: state.depth - 1, null_record: state.null_record }
 
 ## Skip JSON whitespace: space, tab, line feed, carriage return.
 skip_ws : PortJson.State -> PortJson.State
@@ -1148,7 +1185,7 @@ skip_value = |state| {
 
 ## Apply `f` to the encoder's text.
 write : PortJson.Out, (List(U8) -> List(U8)) -> PortJson.Out
-write = |out, f| PortJson.Out.{ text: f(out.text), blobs: out.blobs }
+write = |out, f| PortJson.Out.{ text: f(out.text), blobs: out.blobs, files: out.files }
 
 ## A comma, unless the container was just opened with `open`.
 separate : PortJson.Out, U8 -> PortJson.Out
@@ -1233,7 +1270,7 @@ round_trips = |value|
 
 ## Decode text that carries no blobs.
 from_text : Str -> Try(a, PortJson.Error) where [a.PortJson.Sendable]
-from_text = |json| PortJson.decode({ json, blobs: [] })
+from_text = |json| PortJson.decode({ json, blobs: [], files: [] })
 
 Profile : { name : Str, nick : Try(Str, [Missing]), age : Try(U8, [Missing]) }
 
@@ -1406,9 +1443,9 @@ expect {
 ## may be spaced like any JSON.
 expect {
 	absent : Try(Wire.Bytes, PortJson.Error)
-	absent = PortJson.decode({ json: "{\"$bytes\":1}", blobs: [[1]] })
+	absent = PortJson.decode({ json: "{\"$bytes\":1}", blobs: [[1]], files: [] })
 	spaced : Try(Wire.Bytes, PortJson.Error)
-	spaced = PortJson.decode({ json: " { \"$bytes\" : 0 } ", blobs: [[7]] })
+	spaced = PortJson.decode({ json: " { \"$bytes\" : 0 } ", blobs: [[7]], files: [] })
 	absent == Err(NoSuchBlob(1)) and spaced.map_ok(|b| b.to_list()) == Ok([7])
 }
 
@@ -1441,11 +1478,24 @@ expect {
 	var $len = 0
 	while $len < bytes.len() {
 		decoded : Try({ shapes : List(Shape), words : List(Str), n : U64 }, PortJson.Error)
-		decoded = PortJson.decode({ json: Str.from_utf8_lossy(bytes.take_first($len)), blobs: [] })
+		decoded = PortJson.decode({ json: Str.from_utf8_lossy(bytes.take_first($len)), blobs: [], files: [] })
 		if decoded.is_ok() {
 			$all = False
 		}
 		$len = $len + 1
 	}
 	$all
+}
+
+## A file travels beside the text as a marker naming its place in the file
+## list, and decodes to the file it names; a marker naming no file is an
+## error, not a crash.
+expect {
+	file = Core.worker_file([1, 2], { name: "a.txt", mime: "text/plain", size: 2, start: 0, len: 2 })
+	message = PortJson.encode({ doc: file, name: "a" })
+	back : Try({ doc : Core.File, name : Str }, PortJson.Error)
+	back = PortJson.decode(message)
+	missing : Try({ doc : Core.File }, PortJson.Error)
+	missing = PortJson.decode({ json: "{\"doc\":{\"$file\":3}}", blobs: [], files: [file] })
+	message.json == "{\"doc\":{\"$file\":0},\"name\":\"a\"}" and message.files == [file] and back == Ok({ doc: file, name: "a" }) and missing == Err(NoSuchFile(3))
 }

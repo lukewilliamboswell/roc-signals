@@ -78,7 +78,7 @@ fixed_bytes : U64
 fixed_bytes = 262144
 
 message : List(U8) -> PortJson.Message
-message = |input| { json: Str.from_utf8_lossy(input), blobs }
+message = |input| { json: Str.from_utf8_lossy(input), blobs, files: [] }
 
 decode_rich : List(U8) -> Try(Rich, PortJson.Error)
 decode_rich = |input| PortJson.decode(message(input))
