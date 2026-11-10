@@ -96,7 +96,8 @@ Targets := [].{
 
 	## The runtime contract tests in Chrome (test apps built by `SpecSuite.build!`): the effect channel (tests/apps/effects),
 	## controlled inputs, focus and containment (tests/apps/controls), worker
-	## jobs in real Web Workers (tests/apps/workers), and Conduit's user
+	## jobs in real Web Workers and the work monitor (tests/apps/workers), and
+	## Conduit's user
 	## journey against the RealWorld mock backend.
 	browser_contracts! : SpecSuite.Options, Str => Try(List(Str), _)
 	browser_contracts! = |o, conduit_wasm| {
@@ -109,6 +110,7 @@ Targets := [].{
 				.concat(Targets.browser!(o, "controls-browser.mjs", ["--wasm", controls])?)
 				.concat(Targets.browser!(o, "services-browser.mjs", ["--wasm", services])?)
 				.concat(Targets.browser!(o, "workers-browser.mjs", ["--wasm", workers])?)
+				.concat(Targets.browser!(o, "monitor-browser.mjs", ["--wasm", workers])?)
 				.concat(Targets.browser!(o, "conduit-journey.mjs", ["--wasm", conduit_wasm])?),
 		)
 	}
