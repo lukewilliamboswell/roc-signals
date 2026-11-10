@@ -35,6 +35,7 @@
 // pull request.
 import http from "node:http";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { launch } from "./cdp.mjs";
 import { parseArgs, runtimeFiles } from "./args.mjs";
@@ -242,6 +243,7 @@ function verify(name, shown, params) {
   return want;
 }
 
+const loadavg = () => os.loadavg().map((l) => l.toFixed(1)).join(", ");
 const cores = await (async () => {
   const { page, ctx } = await open({});
   const n = await page.evaluate(() => navigator.hardwareConcurrency || 1);
@@ -250,7 +252,7 @@ const cores = await (async () => {
 })();
 const POOLS = FULL ? [1, 2, 4, 8] : [1, 2];
 const REPEAT = FULL ? 3 : 1;
-console.log(`== workers scaling (${MODE}, ${LABEL}): ${cores} cores reported by navigator.hardwareConcurrency`);
+console.log(`== workers scaling (${MODE}, ${LABEL}): ${cores} cores reported by navigator.hardwareConcurrency; load average ${loadavg()}`);
 
 // Job sets. A prime job's weight sets its compute: in the size-optimised
 // build a job of weight 128 takes some tens of milliseconds (more for the
@@ -309,10 +311,19 @@ for (const mode of [...POOLS.map((n) => ({ maxWorkers: n })), { workers: "inline
   // admission window keeps 8 workers fed; the tail of the last jobs and
   // the logical-core count reported by the browser are the slack). A pool
   // that serialises its jobs reaches about 1 and fails every case.
+  //
+  // The same jobs cost the same CPU time on any pool size, unless the
+  // machine is not giving the workers their cores (other processes, power
+  // limits). So when the run's summed compute exceeds 1.6 times the
+  // one-worker run's, the machine was contended and a speedup says nothing
+  // about the pool: the assertion is skipped, naming the inflation and the
+  // load average, rather than failed or passed.
   for (const s of scaling.filter((x) => x.workers && x.workers > 1)) {
     const want = 0.55 * s.workers;
+    const inflation = s.computeSum / one.computeSum;
     if (!FULL) skip(`speedup with ${s.name}`, "smoke mode asserts no timing ratio");
     else if (cores < s.workers + 1) skip(`speedup with ${s.name} >= ${f2(want)}`, `the machine reports ${cores} cores; ${s.workers} workers and the page need ${s.workers + 1}`);
+    else if (inflation > 1.6) skip(`speedup with ${s.name} >= ${f2(want)} (got ${f2(one.wall / s.wall)})`, `the machine was contended: the same jobs took ${f2(inflation)} times the one-worker run's compute (load average ${loadavg()})`);
     else check(`speedup with ${s.name} >= ${f2(want)}`, one.wall / s.wall >= want, `got ${f2(one.wall / s.wall)}`);
   }
 }
