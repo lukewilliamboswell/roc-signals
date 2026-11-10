@@ -112,8 +112,9 @@ for example to run two tasks at once.
    that reaches no worker effect answers and one that does is unavailable
    without poisoning the page, downloads into files and real saves), the
    Reading List's own port handlers against real IndexedDB in two tabs
-   (`reading-list-journey.mjs`), and the Conduit journey against its scripted
-   backend.
+   (`reading-list-journey.mjs`), the Log Explorer's preparation over a
+   generated 64 MiB log, with its times and memory (`log-explorer-journey.mjs`),
+   and the Conduit journey against its scripted backend.
 7. The js-framework-benchmark check.
 8. The release dry run: the bundle, `runtime.mjs` and `worker.mjs`, the examples archive with
    every app mounted by its check helper, and the release notes.
