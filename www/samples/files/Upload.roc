@@ -32,11 +32,11 @@ Upload := [].{
 	)
 	# endregion program
 
-	show : Worker.Remote(Counts) -> Str
-	show = |{ running, answer }| match answer {
-		Done({ name, lines, words }) => "${name}: ${lines.to_str()} lines, ${words.to_str()} words"
+	show : Engine.Remote(Counts, Worker.Error) -> Str
+	show = |{ request, answer }| match answer {
+		Answered({ name, lines, words }) => "${name}: ${lines.to_str()} lines, ${words.to_str()} words"
 		Failed(_) => "The file could not be read."
-		Nothing => if (running) "Counting…" else "Choose a file."
+		Unanswered => if (request == Pending) "Counting…" else "Choose a file."
 	}
 
 	latest : List(File) -> [Run(File), Skip]

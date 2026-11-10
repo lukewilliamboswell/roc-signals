@@ -52,23 +52,23 @@ TypedApp := [].{
 		FileFailed(_) => "unread"
 	}
 
-	show_matches : Worker.Remote(List(Str)) -> Str
-	show_matches = |{ running, answer }| {
-		head = if (running) "searching" else "idle"
+	show_matches : Engine.Remote(List(Str), Worker.Error) -> Str
+	show_matches = |{ request, answer }| {
+		head = if (request == Pending) "searching" else "idle"
 		shown = match answer {
-			Nothing => "no answer"
-			Done(matches) => if (matches.is_empty()) "no matches" else Str.join_with(matches, ",")
+			Unanswered => "no answer"
+			Answered(matches) => if (matches.is_empty()) "no matches" else Str.join_with(matches, ",")
 			Failed(error) => TypedApp.show_error(error)
 		}
 		"${head}; ${shown}"
 	}
 
-	show_measure : Worker.Remote({ bytes : U64, kind : [Empty, Short, Long] }) -> Str
-	show_measure = |{ running, answer }| {
-		head = if (running) "measuring" else "measured"
+	show_measure : Engine.Remote({ bytes : U64, kind : [Empty, Short, Long] }, Worker.Error) -> Str
+	show_measure = |{ request, answer }| {
+		head = if (request == Pending) "measuring" else "measured"
 		shown = match answer {
-			Nothing => "nothing yet"
-			Done({ bytes, kind }) => "${bytes.to_str()} bytes, ${Str.inspect(kind)}"
+			Unanswered => "nothing yet"
+			Answered({ bytes, kind }) => "${bytes.to_str()} bytes, ${Str.inspect(kind)}"
 			Failed(error) => TypedApp.show_error(error)
 		}
 		"${head}; ${shown}"

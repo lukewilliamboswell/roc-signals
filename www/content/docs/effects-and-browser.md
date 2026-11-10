@@ -47,12 +47,13 @@ superseding site instead of filtering answers in the reaction:
   ones: the fetch is aborted, a subscription stops, a timer is cleared, and a
   late answer never reaches the reaction. A `plan` that returns `[]` makes a
   change a pure cancel.
-- `Engine.resource(input, { init, begin, plan, fold }, body)` keeps the
-  answers in a layer that `body` reads like a `derive` value. `begin(s, a)`
+- `Engine.resource(input, { init, pending, plan, resolve }, body)` keeps the
+  answers in a layer that `body` reads like a `derive` value. `pending(s, a)`
   sets the layer when the input changes, in the same turn (a loading state
-  that still holds the previous answer, say); `fold(s, a, res)` folds each
-  answer for the current input into it. Readers below do no work when either
-  returns an equal value.
+  that still holds the previous answer, say); `resolve(s, a, res)` sets it
+  from each answer for the current input. Readers below do no work when
+  either returns an equal value. `Worker.derive` and `Port.derive` are
+  resources that follow one answer, held as an `Engine.Remote`.
 
 Both cancel only on a new value. Disposing them follows the same rules as any
 effect site: subscriptions and timers stop, and an admitted request still

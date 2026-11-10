@@ -156,14 +156,14 @@ FxApp := [].{
 	load0 : Load
 	load0 = { input: 0, answer: "", faults: 0 }
 
-	begin_r : Load, U64 -> Load
-	begin_r = |l, r| { ..l, input: r }
+	pending_r : Load, U64 -> Load
+	pending_r = |l, r| { ..l, input: r }
 
 	## An HTTP answer or a job's output replaces the answer, a timeout or a
 	## lost job counts as a fault, a refusal is shown; anything else (a tick)
 	## is an equal fold.
-	fold_r : Load, U64, Engine.Res -> Load
-	fold_r = |l, r, res| match res {
+	resolve_r : Load, U64, Engine.Res -> Load
+	resolve_r = |l, r, res| match res {
 		Http({ status, body, .. }) => { ..l, answer: "${r.to_str()}:${status.to_str()}:${body}" }
 		Work(out) => { ..l, answer: "${r.to_str()}:work:${Str.inspect(out)}" }
 		Timeout | WorkLost(_) => { ..l, faults: l.faults + 1 }
@@ -274,7 +274,7 @@ FxApp := [].{
 					st.val().map(|s| s.rshown),
 					|| Engine.resource(
 						st.val().map(|s| s.r),
-						{ init: FxApp.load0, begin: FxApp.begin_r, plan: FxApp.plan_r, fold: FxApp.fold_r },
+						{ init: FxApp.load0, pending: FxApp.pending_r, plan: FxApp.plan_r, resolve: FxApp.resolve_r },
 						|l| Html.p_v(l.map(FxApp.show_r), [Engine.test_id("res")]),
 					),
 					|| Engine.text(""),

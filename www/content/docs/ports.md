@@ -47,9 +47,10 @@ And use them from effect sites, like any other request:
 
 {{ sample(file="ports/Notes.roc", region="view") }}
 
-`Port.fetch` is to a call what `Worker.derive` is to a worker program: a
-layer holding the answer for an input, where a newer input stops the older
-call.
+`Port.derive` is to a call what `Worker.derive` is to a worker program: a
+layer holding the answer for an input, an `Engine.Remote`, where a newer
+input stops the older call. `Port.derive_when` takes `[Run(input), Skip]`
+for an input that is sometimes not a question.
 
 ## The JavaScript side
 
@@ -104,7 +105,7 @@ What each handler can count on:
 - **Every handler may be synchronous or `async`.** An answer is always
   delivered as a turn of its own, after the turn that sent the request.
 - **A call's `signal` aborts** when the app no longer wants the answer: a
-  `latest` or `fetch` site moved on to a newer value (`AbortError`), the
+  `latest` or `derive` site moved on to a newer value (`AbortError`), the
   call's timeout expired (`TimeoutError`), or the app stopped. Disposing
   the site that made the call does not abort it: a call usually has an
   effect worth finishing (a write), so, like an HTTP request, it is answered

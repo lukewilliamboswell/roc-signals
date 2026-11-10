@@ -57,10 +57,10 @@ FilesApp := [].{
 		},
 	)
 
-	show_counts : Worker.Remote(List({ name : Str, bytes : U64, sum : U64 })) -> Str
-	show_counts = |{ running, answer }| match answer {
-		Nothing => if (running) "counting" else "not counted"
-		Done(counts) => Str.join_with(counts.map(|c| "${c.name}:${c.bytes.to_str()}:${c.sum.to_str()}"), "|")
+	show_counts : Engine.Remote(List({ name : Str, bytes : U64, sum : U64 }), Worker.Error) -> Str
+	show_counts = |{ request, answer }| match answer {
+		Unanswered => if (request == Pending) "counting" else "not counted"
+		Answered(counts) => Str.join_with(counts.map(|c| "${c.name}:${c.bytes.to_str()}:${c.sum.to_str()}"), "|")
 		Failed(Lost(fault)) => "lost ${Str.inspect(fault)}"
 		Failed(FileFailed(reason)) => "unread ${Str.inspect(reason)}"
 		Failed(_) => "failed"
@@ -129,7 +129,7 @@ FilesApp := [].{
 					|r| Html.p_v(
 						r.map(
 							|{ answer, .. }| match answer {
-								Done(ok) => if (ok) "probe ok" else "probe failed"
+								Answered(ok) => if (ok) "probe ok" else "probe failed"
 								_ => "no probe"
 							},
 						),

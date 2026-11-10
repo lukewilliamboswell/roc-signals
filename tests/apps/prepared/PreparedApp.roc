@@ -109,10 +109,10 @@ PreparedApp := [].{
 
 	Ctx : In(Root, S)
 
-	show : Worker.Remote(a), (a -> Str) -> Str
-	show = |{ running, answer }, f| match answer {
-		Nothing => if (running) "working" else "nothing"
-		Done(value) => if (running) "working" else f(value)
+	show : Engine.Remote(a, Worker.Error), (a -> Str) -> Str
+	show = |{ request, answer }, f| match answer {
+		Unanswered => if (request == Pending) "working" else "nothing"
+		Answered(value) => if (request == Pending) "working" else f(value)
 		Failed(Lost(fault)) => "lost ${Str.inspect(fault)}"
 		Failed(Timeout) => "timed out"
 		Failed(Refused) => "refused"

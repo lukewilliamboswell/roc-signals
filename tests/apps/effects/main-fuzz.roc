@@ -126,7 +126,7 @@ model_new = |max| {
 		q: 0,
 		r: 0,
 		rshown: True,
-		rl: FxApp.begin_r(FxApp.load0, 0),
+		rl: FxApp.pending_r(FxApp.load0, 0),
 		f: 0,
 		p: 0,
 		pshown: True,
@@ -328,7 +328,7 @@ drain = |m0| {
 			}
 			RefL => { ..m, log: m.log.append(FxApp.describe(k_l, f.c, Refused)), delivered: m.delivered + 1 }
 			SelfL => bump_q({ ..m, log: m.log.append(FxApp.describe(k_l, f.c, Now)), delivered: m.delivered + 1 })
-			RefR => { ..m, rl: FxApp.fold_r(m.rl, f.c, Refused), delivered: m.delivered + 1 }
+			RefR => { ..m, rl: FxApp.resolve_r(m.rl, f.c, Refused), delivered: m.delivered + 1 }
 			RefF => { ..m, log: m.log.append(FxApp.describe(k_f, f.c, Refused)), delivered: m.delivered + 1 }
 			RefP => { ..m, log: m.log.append(FxApp.describe(k_p, f.c, Refused)), delivered: m.delivered + 1 }
 		}
@@ -401,7 +401,7 @@ model_rquery = |m| {
 	r = m.r + 1
 	if m.rshown {
 		m1 = supersede({ ..m, r }, k_r)
-		drain(issue_r({ ..m1, rl: FxApp.begin_r(m1.rl, r) }, r))
+		drain(issue_r({ ..m1, rl: FxApp.pending_r(m1.rl, r) }, r))
 	} else {
 		{ ..m, r }
 	}
@@ -431,7 +431,7 @@ model_toggle_r = |m| {
 			stale: $m.stale + purged,
 		}
 	} else {
-		drain(issue_r({ ..m, rshown: True, rl: FxApp.begin_r(FxApp.load0, m.r) }, m.r))
+		drain(issue_r({ ..m, rshown: True, rl: FxApp.pending_r(FxApp.load0, m.r) }, m.r))
 	}
 }
 
@@ -450,7 +450,7 @@ model_deliver = |m, id, res| {
 			m1 = { ..m, live, delivered: m.delivered + 1 }
 			match l.kind {
 				H => if (l.orphan) { ..m1, skipped: m1.skipped + 1 } else { ..m1, hits: m1.hits.update(l.k, |h| h + 1) ?? m1.hits }
-				Rh | Rt | Ri | Rw => if (l.orphan) { ..m1, skipped: m1.skipped + 1 } else { ..m1, rl: FxApp.fold_r(m1.rl, l.c, res) }
+				Rh | Rt | Ri | Rw => if (l.orphan) { ..m1, skipped: m1.skipped + 1 } else { ..m1, rl: FxApp.resolve_r(m1.rl, l.c, res) }
 				_ => { ..m1, log: m1.log.append(FxApp.describe(l.k, l.c, res)) }
 			}
 		}

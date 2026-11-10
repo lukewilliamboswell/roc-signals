@@ -19,7 +19,7 @@ import pf.Soak
 ## - `When(i, yes, no)` on a layer's parity and `Switch(i, a, b, c)` on it
 ##   modulo 3;
 ## - `Layer(kind, i, body)`: a `state`, a `derive` of a layer, a `resource`
-##   whose `begin` follows its input, a `resource` that issues a timer and
+##   whose `pending` follows its input, a `resource` that issues a timer and
 ##   counts its answers, or a `resource` that issues a worker job for its
 ##   input and folds its output, its loss or its timeout; each shows its own
 ##   value and a `state` gets a button of its own;
@@ -253,9 +253,9 @@ flat = |n, g, inner| match n {
 		} else if k == 1 {
 			Core.derive(v.map(|x| x * 2 + 1), |d| Core.element("p", [], [show(d), layer(body, { vals: lifted.append(d), wrs: lwrs, pure })]))
 		} else if k == 2 or pure {
-			Core.resource(v, { init: 0.U64, begin: |_, a| a + 7, plan: |_| [], fold: |s, _, _| s }, |r| Core.element("p", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
+			Core.resource(v, { init: 0.U64, pending: |_, a| a + 7, plan: |_| [], resolve: |s, _, _| s }, |r| Core.element("p", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
 		} else if k == 3 {
-			Core.resource(v, { init: 0.U64, begin: |_, a| a * 10, plan: |_| [Timer(10)], fold: |s, _, _| s + 1 }, |r| Core.element("p", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
+			Core.resource(v, { init: 0.U64, pending: |_, a| a * 10, plan: |_| [Timer(10)], resolve: |s, _, _| s + 1 }, |r| Core.element("p", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
 		} else {
 			Core.resource(v, job_cfg, |r| Core.element("p", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
 		}
@@ -303,12 +303,12 @@ triple_name = "roc-signals.test/structure/triple"
 
 ## A layer that follows a worker job for its input: the output's byte sum,
 ## or a marker for a lost or timed-out job.
-job_cfg : { init : U64, begin : (U64, U64 -> U64), plan : (U64 -> List(Core.Req)), fold : (U64, U64, Core.Res -> U64) }
+job_cfg : { init : U64, pending : (U64, U64 -> U64), plan : (U64 -> List(Core.Req)), resolve : (U64, U64, Core.Res -> U64) }
 job_cfg = {
 	init: 0,
-	begin: |_, a| a + 3,
+	pending: |_, a| a + 3,
 	plan: |a| [Work({ program: triple_name, input: [a.to_u8_wrap(), 1], files: [], deadline_ms: 0 })],
-	fold: |s, _, res| match res {
+	resolve: |s, _, res| match res {
 		Work(out) => out.fold(0, |acc, x| acc + x.to_u64())
 		WorkLost(_) => s + 1000
 		Timeout => s + 2000

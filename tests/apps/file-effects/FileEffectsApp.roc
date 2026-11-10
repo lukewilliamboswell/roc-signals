@@ -111,7 +111,7 @@ FileEffectsApp := [].{
 			ask,
 			{
 				init: NotRead,
-				begin: |_, a| match a {
+				pending: |_, a| match a {
 					Skip => NotRead
 					_ => Reading
 				},
@@ -120,7 +120,7 @@ FileEffectsApp := [].{
 					Text(f) => [f.read_utf8()]
 					Skip => []
 				},
-				fold: |_, a, res| match a {
+				resolve: |_, a, res| match a {
 					Bytes(_) => GotBytes(Engine.file_bytes(res))
 					Text(_) => GotText(Engine.file_text(res))
 					Skip => NotRead
@@ -137,7 +137,7 @@ FileEffectsApp := [].{
 			pick,
 			{
 				init: Idle,
-				begin: |_, p| match p {
+				pending: |_, p| match p {
 					Skip => Idle
 					Run(_) => Waiting
 				},
@@ -145,7 +145,7 @@ FileEffectsApp := [].{
 					Run(f) => [request(f)]
 					Skip => []
 				},
-				fold: |_, _, res| Answered(answer(res)),
+				resolve: |_, _, res| Answered(answer(res)),
 			},
 			body,
 		)

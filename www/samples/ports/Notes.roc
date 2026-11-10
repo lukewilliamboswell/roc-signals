@@ -35,12 +35,12 @@ Notes := [].{
 		{ ..s, saves, save: { id: "n${saves.to_str()}", title: s.draft, saved_ms: 0 }, draft: "" }
 	}
 
-	shown : Port.Remote(List(Note)) -> Str
-	shown = |{ running, answer }| match answer {
-		Done(notes) => if (notes.is_empty()) "No notes." else Str.join_with(notes.map(|n| n.title), ", ")
+	shown : Engine.Remote(List(Note), Port.Error) -> Str
+	shown = |{ request, answer }| match answer {
+		Answered(notes) => if (notes.is_empty()) "No notes." else Str.join_with(notes.map(|n| n.title), ", ")
 		Failed(Timeout) => "The store did not answer."
 		Failed(_) => "The notes could not be read."
-		Nothing => if (running) "Loading…" else ""
+		Unanswered => if (request == Pending) "Loading…" else ""
 	}
 
 	# region view
@@ -76,7 +76,7 @@ Notes := [].{
 				),
 				Html.text_input(Engine.const("Filter"), "text", v.map(|s| s.prefix), [], st.set_value(|s, t| { ..s, prefix: t })),
 				# A newer filter or revision stops the older listing.
-				Port.fetch(Notes.list, v.map(|s| { prefix: s.prefix, revision: s.revision }), |r| Html.p_v(r.map(Notes.shown), [Engine.test_id("notes")])),
+				Port.derive(Notes.list, v.map(|s| { prefix: s.prefix, revision: s.revision }), |r| Html.p_v(r.map(Notes.shown), [Engine.test_id("notes")])),
 				Html.p_v(v.map(|s| s.error), [Engine.test_id("error")]),
 			],
 		)

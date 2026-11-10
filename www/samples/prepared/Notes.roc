@@ -69,11 +69,11 @@ Notes := [].{
 	}
 	# endregion asked
 
-	show : Worker.Remote(a), (a -> Str) -> Str
-	show = |{ running, answer }, f| match answer {
-		Done(value) => if (running) "working" else f(value)
+	show : Engine.Remote(a, Worker.Error), (a -> Str) -> Str
+	show = |{ request, answer }, f| match answer {
+		Answered(value) => if (request == Pending) "working" else f(value)
 		Failed(_) => "failed"
-		Nothing => if (running) "working" else "choose a file"
+		Unanswered => if (request == Pending) "working" else "choose a file"
 	}
 
 	# region tabs

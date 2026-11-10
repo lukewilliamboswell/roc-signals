@@ -960,22 +960,22 @@ Core := [].{
 
 	## `resource(input, cfg, body)` is an asynchronous `derive`: a layer whose
 	## value follows the answers to the requests issued for `input`. At mount the
-	## layer starts at `cfg.begin(cfg.init, a)` and `cfg.plan(a)` is issued; when
+	## layer starts at `cfg.pending(cfg.init, a)` and `cfg.plan(a)` is issued; when
 	## `input` changes to an unequal value the site supersedes its requests as
-	## `latest` does, sets the layer to `cfg.begin(s, a)` in the same pass (before
+	## `latest` does, sets the layer to `cfg.pending(s, a)` in the same pass (before
 	## anything below reads it) and issues again. Each result for a request the
-	## site owns sets the layer to `cfg.fold(s, a, res)`, where `a` is the value
+	## site owns sets the layer to `cfg.resolve(s, a, res)`, where `a` is the value
 	## the request was issued for. Readers inside `body` do no work while the
 	## layer is equal to its previous value. Disposal follows `watch`'s rules; a
 	## reparented answer's write to the retired layer is skipped and counted.
-	resource : Val(ctx, a), { init : s, begin : (s, a -> s), plan : (a -> List(Req)), fold : (s, a, Res -> s) }, (Val(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
+	resource : Val(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Req)), resolve : (s, a, Res -> s) }, (Val(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
 	resource = |input, cfg, body| Site(
 		Mount(
 			|env, args, tx| {
 				depth = layer(args.depth, args.path)
 				a = (input.read)(env)
-				s = (cfg.begin)(cfg.init, a)
+				s = (cfg.pending)(cfg.init, a)
 				(t1, owned) = issue(count_evals(tx, 1), args.path, (cfg.plan)(a), a, [])
 				elem = body({ mask: bit(depth), read: |e| e.value, sel: NoSel })
 				(block, t2) = mount_block(In.{ outer: env, value: s }, elem, depth, args.path, args.parent, args.before, { cap: args.cap, local: args.local }, t1)
@@ -983,7 +983,7 @@ Core := [].{
 				# it: outside a row or a component an answer reports the layer
 				# upward, and the root's Changed pass must find its way back here.
 				reads = block.reads.bitwise_or(eff_mask(input))
-				rc = { input, begin: cfg.begin, plan: cfg.plan, fold: cfg.fold, path: args.path, depth, local: args.local }
+				rc = { input, pending: cfg.pending, plan: cfg.plan, resolve: cfg.resolve, path: args.path, depth, local: args.local }
 				(resource_inst(rc, a, s, owned, block), reads, t2)
 			},
 		),
@@ -992,6 +992,42 @@ Core := [].{
 			eff_mask(input).bitwise_or(elem_reads(body({ mask: bit(d1), read: |e| e.value, sel: NoSel }), d1))
 		},
 	)
+
+	## What a layer following one answer holds (`Engine.Remote`): whether a
+	## request for the current input is in flight, and the latest answer.
+	Remote(output, error) : { request : [Idle, Pending], answer : [Unanswered, Answered(output), Failed(error)] }
+
+	## The `resource` configuration of a layer that follows the answer to one
+	## request for its input, for anything with `request` and `result` (a
+	## worker program, a prepared program's query, a port call). A new input
+	## marks the layer `Pending` and keeps the previous answer; each result
+	## settles it as `Answered` or `Failed`. `Worker.derive` and `Port.derive`
+	## are this, so the policy has one home.
+	follow : asker -> { init : Remote(output, error), pending : (Remote(output, error), input -> Remote(output, error)), plan : (input -> List(Req)), resolve : (Remote(output, error), input, Res -> Remote(output, error)) }
+		where [asker.request : asker, input -> Req, asker.result : asker, Res -> Try(output, error)]
+	follow = |asker| {
+		init: { request: Idle, answer: Unanswered },
+		pending: |remote, _| { ..remote, request: Pending },
+		plan: |input| [asker.request(input)],
+		resolve: |_, _, res| settled_remote(asker.result(res)),
+	}
+
+	## Like `follow`, for an input that is sometimes not a question: `Run(i)`
+	## asks about `i`, and `Skip` asks nothing and clears the answer.
+	follow_when : asker -> { init : Remote(output, error), pending : (Remote(output, error), [Run(input), Skip] -> Remote(output, error)), plan : ([Run(input), Skip] -> List(Req)), resolve : (Remote(output, error), [Run(input), Skip], Res -> Remote(output, error)) }
+		where [asker.request : asker, input -> Req, asker.result : asker, Res -> Try(output, error)]
+	follow_when = |asker| {
+		init: { request: Idle, answer: Unanswered },
+		pending: |remote, want| match want {
+			Run(_) => { ..remote, request: Pending }
+			Skip => { request: Idle, answer: Unanswered }
+		},
+		plan: |want| match want {
+			Run(input) => [asker.request(input)]
+			Skip => []
+		},
+		resolve: |_, _, res| settled_remote(asker.result(res)),
+	}
 
 	## For test platforms and harnesses: the instance's effect counters (issued,
 	## delivered, stale, refused, cancelled, reparented, skipped) and the number
@@ -4890,12 +4926,19 @@ latest_deliver = |cfg, last, owned, env, id, res, tx| {
 	}
 }
 
+## A `follow` layer settled by one result.
+settled_remote : Try(output, error) -> Core.Remote(output, error)
+settled_remote = |outcome| match outcome {
+	Ok(output) => { request: Idle, answer: Answered(output) }
+	Err(error) => { request: Idle, answer: Failed(error) }
+}
+
 ## Fixed per `resource` site.
 ResourceCfg(ctx, a, s) : {
 	input : Val(ctx, a),
-	begin : (s, a -> s),
+	pending : (s, a -> s),
 	plan : (a -> List(Req)),
-	fold : (s, a, Res -> s),
+	resolve : (s, a, Res -> s),
 	path : List(U32),
 	depth : U64,
 	local : Bool,
@@ -4904,7 +4947,7 @@ ResourceCfg(ctx, a, s) : {
 ## A `resource` site: `last` is the input its requests were issued for, `s`
 ## the layer's value at absolute depth `rc.depth`. The layer keeps its
 ## previous value only while its replacement is compared with it, so
-## `begin` and `fold` receive it shared: they should build a fresh value
+## `pending` and `resolve` receive it shared: they should build a fresh value
 ## rather than update a large one in place.
 resource_inst : ResourceCfg(ctx, a, s), a, s, List(Owned(a)), Block(In(ctx, s)) -> Inst(ctx)
 	where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
@@ -4927,7 +4970,7 @@ resource_inst = |rc0, last0, s0, owned0, block0| {
 						} else {
 							# Supersede, start the layer for the new input and issue,
 							# all before the block below reads the layer.
-							s2 = (rc.begin)(s, a)
+							s2 = (rc.pending)(s, a)
 							(t2, owned2) = issue(fx_supersede(t1, owned), rc.path, (rc.plan)(a), a, [])
 							if s2 == s {
 								(b3, t3) = refresh(block, In.{ outer: env, value: s2 }, mask, t2)
@@ -4956,14 +4999,14 @@ resource_inst = |rc0, last0, s0, owned0, block0| {
 				}
 				Dispose(remove) => {
 					# The site's own requests follow the per-kind rules; an admitted
-					# one becomes an orphan whose fold writes the retired layer, a
+					# one becomes an orphan whose resolve writes the retired layer, a
 					# snapshot whose write `lower_in` skips and counts.
-					fold = rc.fold
+					resolve = rc.resolve
 					react = {
 						mask: bit(rc.depth),
 						run: |e, a, r| {
 							{ outer, value } = e
-							In.{ outer, value: fold(value, a, r) }
+							In.{ outer, value: resolve(value, a, r) }
 						},
 					}
 					(mine, t1) = fx_dispose(tx, react, owned)
@@ -4975,8 +5018,8 @@ resource_inst = |rc0, last0, s0, owned0, block0| {
 	)
 }
 
-## A result for a request the site owns folds into the layer. An equal
-## fold changes nothing. Otherwise, inside a row or a component the site
+## A result for a request the site owns resolves the layer. An equal
+## value changes nothing. Otherwise, inside a row or a component the site
 ## refreshes its own subtree now (the root's Changed pass cannot reach its
 ## layer by mask there); elsewhere it reports its layer upward.
 resource_deliver : ResourceCfg(ctx, a, s), a, s, List(Owned(a)), Block(In(ctx, s)), ctx, U32, Res, Tx -> (Inst(ctx), Out(ctx), Tx)
@@ -4986,7 +5029,7 @@ resource_deliver = |rc, last, s, owned, block, env, id, res, tx| {
 		Ok(i) => {
 			entry = owned.get(i) ?? crash "owned"
 			kept = if (entry.sub) owned else owned.drop_at(i)
-			s2 = (rc.fold)(s, entry.a, res)
+			s2 = (rc.resolve)(s, entry.a, res)
 			t1 = fx_count(tx, Delivered)
 			if s2 == s {
 				(resource_inst(rc, last, s2, kept, block), Pending(env, 0), t1)

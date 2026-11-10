@@ -22,7 +22,7 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 | Values | `Val`, `const`, `Val.map`, `Val.map2`, `Val.lift`, `Val.lift_row` |
 | State | `state`, `State`, `State.val`, `State.lift`, `State.lift_row` |
 | Handlers | `Handler`, `State.update`, `State.update_by`, `State.set_value`, `State.set_value_by` |
-| Structure | `element`, `text`, `text_v`, `when`, `switch`, `derive`, `resource` |
+| Structure | `element`, `text`, `text_v`, `when`, `switch`, `derive`, `resource`, `Remote(output, error)` (`request`: `Idle`, `Pending`; `answer`: `Unanswered`, `Answered(output)`, `Failed(error)`) |
 | Lists | `each`, `RowRef.key`, `RowRef.field`, `RowRef.select`, `keyed` |
 | Attributes | `attr`, `attr_v`, `class`, `class_v`, `test_id`, `test_id_v`, `ref` |
 | Events | `on` (event name, optionally `:prevent`), `on_click` |
@@ -55,7 +55,7 @@ Anything else is `Engine.element(tag, attrs, children)`.
 |---|---|
 | Programs | `Program(input, output)`, `pure`, `fallible`, `Program.with_deadline_ms`, `Program.registration` |
 | Runs from an effect site | `Program.request`, `Program.result`, `Error` (`Timeout`, `Refused`, `Lost(WorkFault)`, `FileFailed(FileError)`) |
-| Layers | `derive`, `derive_when` (for a program or a query), `Remote(output)` (`running`, `answer`: `Nothing`, `Done(output)`, `Failed(Error)`) |
+| Layers | `derive`, `derive_when` (for a program or a query), holding an `Engine.Remote(output, Error)` |
 | Prepared programs | `prepared`, `Prepared(init, state)`, `Prepared.query`, `Prepared.fallible_query`, `Prepared.registration`, `Query(init, state, q, out)`, `Query.answers`, `Query.request`, `Query.result`, `Query.with_deadline_ms`, `Query.with_cancel`, `Asked(init, q)` (`input`, `query`), `Cancel` (`Stop`, `Finish`), `Answer(state)` |
 
 ## Wire
@@ -78,7 +78,7 @@ program's types decide what is sent.
 |---|---|
 | Declaring | `command`, `call`, `subscription`, `Delivery` (`Latest`, `Every(n)`), `Call.with_timeout_ms`, and each shape's `declaration` for `Program.with_ports` |
 | From an effect site | `Command.send`, `Call.request`, `Call.result`, `Subscription.subscribe`, `Subscription.message`, `Error` (`Refused`, `Timeout`, `Threw(message)`, `TooLarge`, `Closed`, `Undecodable(why)`) |
-| Layers | `fetch`, `Remote(output)` |
+| Layers | `derive`, `derive_when` (for a call), holding an `Engine.Remote(output, Error)` |
 
 ## PortJson
 

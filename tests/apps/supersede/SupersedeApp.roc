@@ -63,12 +63,12 @@ SupersedeApp := [].{
 	## The resource configuration every item view uses: a request and a 2 s
 	## slow-answer timer per item. The timer's tick after the answer changes
 	## nothing, so its fold returns the layer unchanged and readers prune.
-	item_cfg : { init : Load, begin : (Load, Str -> Load), plan : (Str -> List(Engine.Req)), fold : (Load, Str, Engine.Res -> Load) }
+	item_cfg : { init : Load, pending : (Load, Str -> Load), plan : (Str -> List(Engine.Req)), resolve : (Load, Str, Engine.Res -> Load) }
 	item_cfg = {
 		init: SupersedeApp.idle,
-		begin: |s, id| { ..s, pending: id, slow: False },
+		pending: |s, id| { ..s, pending: id, slow: False },
 		plan: |id| if (id == "") [] else [Http({ method: "GET", url: "/item/${id}", headers: [], body: "", timeout_ms: 1000 }), Timer(2000)],
-		fold: |s, id, res| match res {
+		resolve: |s, id, res| match res {
 			Fired => if (s.pending == "") s else { ..s, slow: True }
 			_ => { pending: "", answer: SupersedeApp.answer_of(id, res), previous: s.answer, slow: False }
 		},
@@ -99,9 +99,9 @@ SupersedeApp := [].{
 				key.map2(ver.val(), |k, v| (k, v)),
 				{
 					init: "",
-					begin: |_, (k, v)| "loading ${k}/${v.to_str()}",
+					pending: |_, (k, v)| "loading ${k}/${v.to_str()}",
 					plan: |(k, v)| [Http({ method: "GET", url: "/row/${k}/${v.to_str()}", headers: [], body: "", timeout_ms: 0 })],
-					fold: |_, (k, v), res| SupersedeApp.answer_of("${k}/${v.to_str()}", res),
+					resolve: |_, (k, v), res| SupersedeApp.answer_of("${k}/${v.to_str()}", res),
 				},
 				|l| Html.span_v(l, [Engine.test_id_v(key.lift().map(|k| "row ${k}"))]),
 			),
@@ -148,7 +148,7 @@ SupersedeApp := [].{
 			Engine.derive(Engine.const(2.U64), |_| SupersedeApp.counter("derived")),
 			Engine.resource(
 				Engine.const("r"),
-				{ init: 0.U64, begin: |n, _| n, plan: |_| [Timer(50)], fold: |n, _, _| n + 1 },
+				{ init: 0.U64, pending: |n, _| n, plan: |_| [Timer(50)], resolve: |n, _, _| n + 1 },
 				|l| Engine.element(
 					"div",
 					[],
@@ -244,7 +244,7 @@ SupersedeApp := [].{
 				Html.button("Pick 2", [], st.update(|s| { ..s, picked: "2" })),
 				# A state below a derive and below a resource, mounted with the page.
 				Engine.derive(Engine.const(1.U64), |_| SupersedeApp.counter("early derived")),
-				Engine.resource(Engine.const("e"), { init: 0.U64, begin: |n, _| n, plan: |_| [], fold: |n, _, _| n }, |_| SupersedeApp.counter("early resource")),
+				Engine.resource(Engine.const("e"), { init: 0.U64, pending: |n, _| n, plan: |_| [], resolve: |n, _, _| n }, |_| SupersedeApp.counter("early resource")),
 				# Layers mounted only in a later branch.
 				# A flood of rows fetching at mount.
 				Html.button("Flood", [], st.update(|s| { ..s, flood: SupersedeApp.flood_keys(100) })),

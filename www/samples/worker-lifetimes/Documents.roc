@@ -99,11 +99,11 @@ Documents := [].{
 	}
 	# endregion rows
 
-	show_count : Worker.Remote(U64) -> Str
+	show_count : Engine.Remote(U64, Worker.Error) -> Str
 	show_count = |{ answer, .. }|
 		match answer {
-			Nothing => "Counting…"
-			Done(n) => "${n.to_str()} words"
+			Unanswered => "Counting…"
+			Answered(n) => "${n.to_str()} words"
 			Failed(error) => Documents.problem(error)
 		}
 
@@ -162,11 +162,11 @@ Documents := [].{
 		)
 	# endregion panel
 
-	show_totals : Worker.Remote({ words : U64, documents : U64 }) -> Str
+	show_totals : Engine.Remote({ words : U64, documents : U64 }, Worker.Error) -> Str
 	show_totals = |{ answer, .. }|
 		match answer {
-			Nothing => "Counting…"
-			Done({ words, documents }) => "${words.to_str()} words in ${documents.to_str()} documents"
+			Unanswered => "Counting…"
+			Answered({ words, documents }) => "${words.to_str()} words in ${documents.to_str()} documents"
 			Failed(error) => Documents.problem(error)
 		}
 }

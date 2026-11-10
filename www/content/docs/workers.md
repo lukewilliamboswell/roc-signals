@@ -97,17 +97,18 @@ duplicate list key does (see [Reference](@/docs/reference.md#errors)):
 ## Showing a computed value
 
 `Worker.derive(program, input, body)` is `Engine.derive` computed in a worker.
-It gives `body` a value of type `Worker.Remote(output)`:
+It gives `body` a value of type `Engine.Remote(output, Worker.Error)`:
 
-- `running` is true while the answer for the current input is still wanted;
-- `answer` is `Nothing` before the first answer, `Done(output)` once there
-  is one, or `Failed(error)` when a run produced no answer (see
+- `request` is `Pending` while the answer for the current input is still
+  wanted, and `Idle` otherwise;
+- `answer` is `Unanswered` before the first answer, `Answered(output)` once
+  there is one, or `Failed(error)` when a run produced no answer (see
   [Calculations that can fail](#calculations-that-can-fail)).
 
 What you see:
 
 - The run for the first input starts when the site mounts.
-- When the input changes to an unequal value, `running` becomes true in the
+- When the input changes to an unequal value, `request` becomes `Pending` in the
   same turn and `answer` keeps the previous answer, so the view can go on
   showing it, as `show_summary` does.
 - A newer input stops the run for the older one before it starts its own. An
@@ -127,7 +128,7 @@ it answers: there is no progress.
 
 `Worker.derive_when(program, input, body)` takes an input of type
 `[Run(i), Skip]`. `Run(i)` asks for a run on `i`; `Skip` stops any run and
-clears the answer, so `answer` is `Nothing` and `running` is false. Use it for
+clears the answer, so `answer` is `Unanswered` and `request` is `Idle`. Use it for
 an empty search box or a form that is not valid yet:
 
 {{ sample(file="workers/Editor.roc", region="derive-when") }}
@@ -136,8 +137,8 @@ The search's input includes the text, so editing the text while a word is
 in the box runs the search again.
 
 A layer's body can be a named function, as `found` is. Give it a generic
-context, `Val(ctx, Worker.Remote(…)) -> Elem(ctx)`, and it fits any site:
-inside the layer the context is `In(Ctx, Worker.Remote(…))`, and a named
+context, `Val(ctx, Engine.Remote(…)) -> Elem(ctx)`, and it fits any site:
+inside the layer the context is `In(Ctx, Engine.Remote(…))`, and a named
 body never needs to write that out.
 
 ## Starting and cancelling from a button
@@ -182,7 +183,7 @@ output is that `Try`:
 | `Lost(fault)` | The run crashed, or no worker could run it (see [Programs are pure](#programs-are-pure)) |
 | `FileFailed(error)` | The files its input holds could not be read into the worker, so it never started (see [Files](@/docs/files.md)) |
 
-With `derive`, a program's own error is an answer, `Done(Err(...))`, and a
+With `derive`, a program's own error is an answer, `Answered(Err(...))`, and a
 missing answer is `Failed(...)`. Matching both gives every case:
 
 {{ sample(file="workers/Editor.roc", region="fallible-view") }}

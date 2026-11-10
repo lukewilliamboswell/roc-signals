@@ -536,29 +536,44 @@ Engine := [].{
 
 	## `resource(input, cfg, body)` is an asynchronous `derive`: it gives `body` a
 	## layer whose value follows the answers to the requests issued for `input`.
+	## `Worker.derive` and `Port.derive` are resources that follow one answer;
+	## reach for `resource` itself when the layer is something else (a count of
+	## answers, a list built from several).
 	##
-	## At mount the layer starts at `cfg.begin(cfg.init, a)` for the input's value
-	## `a`, and `cfg.plan(a)` is issued. When `input` changes to an unequal value,
-	## the site supersedes its requests exactly as `latest` does, sets the layer to
-	## `cfg.begin(s, a)` and issues `cfg.plan(a)`, in the same pass and before
-	## anything in `body` reads the layer, so `body` shows the start of the new
-	## request in the turn that changed the input (a loading state that keeps the
-	## previous answer, say). Each result for a request the site owns sets the
-	## layer to `cfg.fold(s, a, res)`, with the value `a` it was issued for.
+	## At mount the layer starts at `cfg.pending(cfg.init, a)` for the input's
+	## value `a`, and `cfg.plan(a)` is issued. When `input` changes to an unequal
+	## value, the site supersedes its requests exactly as `latest` does, sets the
+	## layer to `cfg.pending(s, a)` and issues `cfg.plan(a)`, in the same pass and
+	## before anything in `body` reads the layer, so `body` shows the start of the
+	## new request in the turn that changed the input (a loading state that keeps
+	## the previous answer, say). Each result for a request the site owns sets the
+	## layer to `cfg.resolve(s, a, res)`, with the value `a` it was issued for.
 	##
 	## The layer prunes like `derive`: readers inside `body` that read only the
-	## layer do no work when `begin` or `fold` returns a value equal to the
-	## previous one. To compare, the site holds the previous value while `begin`
-	## and `fold` run, so they receive it shared; keep the layer small, or build a
-	## fresh value rather than update a large one in place. The layer lives as
+	## layer do no work when `pending` or `resolve` returns a value equal to the
+	## previous one. To compare, the site holds the previous value while `pending`
+	## and `resolve` run, so they receive it shared; keep the layer small, or build
+	## a fresh value rather than update a large one in place. The layer lives as
 	## long as the site's scope, like a `state`: disposal drops it, stops the
 	## site's subscriptions and timers, and delivers its admitted requests to the
 	## nearest surviving ancestor, where their write to the retired layer is
 	## skipped and counted (`skipped`). Values from the enclosing context enter
 	## `body` with `lift`.
-	resource : Val(ctx, a), { init : s, begin : (s, a -> s), plan : (a -> List(Req)), fold : (s, a, Res -> s) }, (Val(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
+	resource : Val(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Req)), resolve : (s, a, Res -> s) }, (Val(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
 	resource = |input, cfg, body| Core.resource(input.v, cfg, |v| body({ v: v }))
+
+	## What a layer that follows one answer holds (`Worker.derive`,
+	## `Port.derive`): whether a request for the current input is in flight,
+	## and the latest answer.
+	##
+	## - `request` is `Pending` from the turn the input changes until its
+	##   answer arrives, and `Idle` otherwise.
+	## - `answer` is `Unanswered` before the first answer, `Answered(output)`
+	##   once there is one, or `Failed(error)` when a request produced none.
+	##   A new input keeps the previous answer, so a view can go on showing it
+	##   while the next one is wanted.
+	Remote(output, error) : Core.Remote(output, error)
 
 	## What the host knows before the first render: the URL, the declared storage
 	## keys' values (missing keys are absent), whether the browser is online and

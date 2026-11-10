@@ -595,8 +595,8 @@ Pruning happens at observation points:
 - every hole compares its new value to the last emitted value;
 - `each` compares a kept row's new item to its old item;
 - `derive` compares its recomputation to its last value;
-- `resource` compares its layer after each `begin` and `fold` to its previous
-  value;
+- `resource` compares its layer after each `pending` and `resolve` to its
+  previous value;
 - `when`/`switch` compare the selected branch;
 - effect sites compare their watched value.
 
@@ -939,16 +939,16 @@ inference:
   cancelled id is then stale like any other. A `plan` that returns `[]` makes a
   change a pure cancel. Disposal keeps the per-kind rules above: supersession
   is about a value being replaced, disposal about an owner going away.
-- **`resource(input, { init, begin, plan, fold }, body)`** is a layer whose
+- **`resource(input, { init, pending, plan, resolve }, body)`** is a layer whose
   value follows the answers to requests issued for its input. At mount the
-  layer is `begin(init, a)` and `plan(a)` is issued. When the input changes to
+  layer is `pending(init, a)` and `plan(a)` is issued. When the input changes to
   an unequal value, the site supersedes exactly as `latest` does, sets the
-  layer to `begin(s, a)` and issues `plan(a)`, all in the Changed pass before
+  layer to `pending(s, a)` and issues `plan(a)`, all in the Changed pass before
   anything below reads the layer, so the turn that changes the input already
   renders the start of the new request. A result for a request the site owns
-  sets the layer to `fold(s, a, res)` with the value `a` it was issued for.
+  sets the layer to `resolve(s, a, res)` with the value `a` it was issued for.
   The layer prunes like `derive`, which means the site holds the previous
-  value while `begin` and `fold` run; they receive it shared, so a large layer
+  value while `pending` and `resolve` run; they receive it shared, so a large layer
   should be rebuilt rather than updated in place. Inside a row or a component
   an answer refreshes the site's own subtree at once, since the root's Changed
   pass cannot reach the layer by mask there; elsewhere the site reports its
@@ -1738,8 +1738,10 @@ text_v : Val(ctx, Str) -> Elem(ctx)
 when : Val(ctx, Bool), (() -> Elem(ctx)), (() -> Elem(ctx)) -> Elem(ctx)
 switch : Val(ctx, k), List(k), (k -> Elem(ctx)) -> Elem(ctx)
 derive : Val(ctx, a), (Val(In(ctx, a), a) -> Elem(In(ctx, a))) -> Elem(ctx)
-resource : Val(ctx, a), { init : s, begin : (s, a -> s), plan : (a -> List(Req)), fold : (s, a, Res -> s) },
+resource : Val(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Req)), resolve : (s, a, Res -> s) },
            (Val(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
+Remote(output, error) : { request : [Idle, Pending],                  # what Worker.derive and
+                          answer : [Unanswered, Answered(output), Failed(error)] }   # Port.derive hold
 each : Val(ctx, List(item)), (item -> Str), (RowRef(ctx, item) -> Elem(Row(ctx, item))) -> Elem(ctx)
 RowRef.key : RowRef(o, item) -> Val(Row(o, item), Str)
 RowRef.field : RowRef(o, item), (item -> a) -> Val(Row(o, item), a)
@@ -1829,9 +1831,8 @@ Query.request : Query(init, state, q, out), Asked(init, q) -> Req      # an Ask
 Query.result : Query(init, state, q, out), Res -> Try(out, Worker.Error)
 Worker.Asked(init, q) : { input : init, query : q }
 Worker.Cancel : [Stop, Finish]
-Worker.Remote(output) : { running : Bool, answer : [Nothing, Done(output), Failed(Worker.Error)] }
 Worker.derive : program, Val(ctx, input),          # a Program or a Query
-    (Val(In(ctx, Remote(output)), Remote(output)) -> Elem(In(ctx, Remote(output)))) -> Elem(ctx)
+    (Val(In(ctx, Remote(output, Worker.Error)), Remote(output, Worker.Error)) -> Elem(...)) -> Elem(ctx)
 Worker.derive_when : program, Val(ctx, [Run(input), Skip]), ... -> Elem(ctx)
 Wire.encode : a -> List(U8)                    where [a.Wire.Sendable]
 Wire.try_encode : a -> Try(List(U8), [TooDeep]) where [a.Wire.Sendable]   # refuses what decode would

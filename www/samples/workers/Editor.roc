@@ -75,13 +75,13 @@ Editor := [].{
 
 	## While a run is wanted, the previous answer stays and says it is being
 	## updated.
-	show_summary : Worker.Remote(Words.Summary) -> Str
-	show_summary = |{ running, answer }|
+	show_summary : Engine.Remote(Words.Summary, Worker.Error) -> Str
+	show_summary = |{ request, answer }|
 		match answer {
-			Nothing => if (running) "Analysing…" else ""
-			Done({ distinct, top }) => {
+			Unanswered => if (request == Pending) "Analysing…" else ""
+			Answered({ distinct, top }) => {
 				shown = "${distinct.to_str()} different words; most used: ${top}"
-				if (running) "${shown} (analysing…)" else shown
+				if (request == Pending) "${shown} (analysing…)" else shown
 			}
 			Failed(error) => Editor.problem(error)
 		}
@@ -116,17 +116,17 @@ Editor := [].{
 	}
 
 	## The body of the search's layer, as a named function. Its context is
-	## left generic: inside the layer it is `In(Ctx, Worker.Remote(List(U64)))`,
+	## left generic: inside the layer it is `In(Ctx, Engine.Remote(List(U64), Worker.Error))`,
 	## which a named body has no need to spell out.
-	found : Val(ctx, Worker.Remote(List(U64))) -> Elem(ctx)
+	found : Val(ctx, Engine.Remote(List(U64), Worker.Error)) -> Elem(ctx)
 	found = |remote| Html.p_v(remote.map(Editor.show_lines), [Engine.test_id("found")])
 
-	show_lines : Worker.Remote(List(U64)) -> Str
-	show_lines = |{ running, answer }|
+	show_lines : Engine.Remote(List(U64), Worker.Error) -> Str
+	show_lines = |{ request, answer }|
 		match answer {
-			Nothing => if (running) "Searching…" else ""
-			Done([]) => "Not found"
-			Done(lines) => "Lines ${Str.join_with(lines.map(|n| n.to_str()), ", ")}"
+			Unanswered => if (request == Pending) "Searching…" else ""
+			Answered([]) => "Not found"
+			Answered(lines) => "Lines ${Str.join_with(lines.map(|n| n.to_str()), ", ")}"
 			Failed(error) => Editor.problem(error)
 		}
 	# endregion derive-when
@@ -196,14 +196,14 @@ Editor := [].{
 		)
 	}
 
-	## The program's own error is an answer (`Done(Err(...))`); a run that
+	## The program's own error is an answer (`Answered(Err(...))`); a run that
 	## produced no answer is `Failed`.
-	show_total : Worker.Remote(Try(U64, [NotANumber(Str)])) -> Str
+	show_total : Engine.Remote(Try(U64, [NotANumber(Str)]), Worker.Error) -> Str
 	show_total = |{ answer, .. }|
 		match answer {
-			Nothing => "Adding…"
-			Done(Ok(sum)) => "Total ${sum.to_str()}"
-			Done(Err(NotANumber(word))) => "\"${word}\" is not a number"
+			Unanswered => "Adding…"
+			Answered(Ok(sum)) => "Total ${sum.to_str()}"
+			Answered(Err(NotANumber(word))) => "\"${word}\" is not a number"
 			Failed(Timeout) => "Adding took too long."
 			Failed(Refused) => "Too much is running; edit the numbers to try again."
 			Failed(Lost(_)) => "Adding failed."

@@ -112,9 +112,9 @@ Tools := [].{
 					v.map(|s| s.doing),
 					{
 						init: Idle,
-						begin: |_, doing| if (doing == Nothing) Idle else Busy,
+						pending: |_, doing| if (doing == Nothing) Idle else Busy,
 						plan: Tools.plan,
-						fold: |_, doing, res| Tools.answer(doing, res),
+						resolve: |_, doing, res| Tools.answer(doing, res),
 					},
 					|shown| Html.div(
 						"result",

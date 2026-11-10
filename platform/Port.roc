@@ -146,33 +146,23 @@ Port := [].{
 	subscription : Str, Delivery -> Subscription(arg, msg) where [arg.PortJson.Sendable, msg.PortJson.Sendable]
 	subscription = |name, delivery| { name, delivery, encode: |value| PortJson.encode(value), decode: |message| PortJson.decode(message).map_err(PortJson.describe) }
 
-	## What a `fetch` layer holds: whether a call for the current input is
-	## still wanted (`running`), and the latest answer: `Nothing` before the
-	## first, `Done(output)`, or `Failed(error)`. A new input sets `running`
-	## and keeps the previous answer, so a view can go on showing it.
-	Remote(output) : { running : Bool, answer : [Nothing, Done(output), Failed(Error)] }
-
-	## `fetch(call, input, body)` gives `body` a layer holding the call's
-	## answer for `input`, as `Worker.derive` does for a worker program: the
-	## call for the first input is made at mount, and when `input` changes to
-	## an unequal value the older call is stopped (its `AbortSignal` aborts)
-	## and one for the new value is made in the same turn, so an answer for
-	## an old input is never shown and the app keeps no request serial.
-	fetch : Call(input, output), Val(ctx, input), (Val(In(ctx, Remote(output)), Remote(output)) -> Elem(In(ctx, Remote(output)))) -> Elem(ctx)
+	## `derive(call, input, body)` gives `body` a layer holding the call's
+	## answer for `input`, an `Engine.Remote(output, Port.Error)`, as
+	## `Worker.derive` does for a worker program: the call for the first input
+	## is made at mount, and when `input` changes to an unequal value the
+	## older call is stopped (its `AbortSignal` aborts) and one for the new
+	## value is made in the same turn, so an answer for an old input is never
+	## shown and the app keeps no request serial.
+	derive : Call(input, output), Val(ctx, input), (Val(In(ctx, Engine.Remote(output, Error)), Engine.Remote(output, Error)) -> Elem(In(ctx, Engine.Remote(output, Error)))) -> Elem(ctx)
 		where [input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool]
-	fetch = |port, input, body| Engine.resource(
-		input,
-		{
-			init: { running: Bool.False, answer: Nothing },
-			begin: |remote, _| { ..remote, running: Bool.True },
-			plan: |value| [port.request(value)],
-			fold: |_, _, res| match port.result(res) {
-				Ok(output) => { running: Bool.False, answer: Done(output) }
-				Err(error) => { running: Bool.False, answer: Failed(error) }
-			},
-		},
-		body,
-	)
+	derive = |port, input, body| Engine.resource(input, Core.follow(port), body)
+
+	## Like `derive`, for an input that is sometimes not a question: `Run(i)`
+	## makes the call with `i`, and `Skip` stops any call and clears the
+	## answer.
+	derive_when : Call(input, output), Val(ctx, [Run(input), Skip]), (Val(In(ctx, Engine.Remote(output, Error)), Engine.Remote(output, Error)) -> Elem(In(ctx, Engine.Remote(output, Error)))) -> Elem(ctx)
+		where [input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool]
+	derive_when = |port, input, body| Engine.resource(input, Core.follow_when(port), body)
 }
 
 ## A port result as the app's type, or why there is none.

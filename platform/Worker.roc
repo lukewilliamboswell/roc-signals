@@ -122,7 +122,7 @@ Worker := [].{
 	## `Wire.Sendable`, so this sends the calculation's `Try` itself: the
 	## program's output is that `Try`, `result` gives `Ok(Ok(value))` or
 	## `Ok(Err(error))` for an answer and `Err(...)` for a run that produced
-	## none, and a `derive` layer holds `Done(Ok(value))` or `Done(Err(error))`.
+	## none, and a `derive` layer holds `Answered(Ok(value))` or `Answered(Err(error))`.
 	## Use it for failures the app expects (input that does not parse, say); a
 	## crash in a program is `Lost`, not an `Err` the app chose.
 	fallible : Str, (input -> Try(ok, err)) -> Program(input, Try(ok, err))
@@ -154,61 +154,31 @@ Worker := [].{
 		},
 	}
 
-	## What a `derive` layer holds: whether a run for the current input is
-	## still wanted (`running`), and the latest answer: `Nothing` before the
-	## first, `Done(output)`, or `Failed(error)` for a run that produced none.
-	## A new input sets `running` and keeps the previous answer, so a view can
-	## go on showing it while the next one is computed; `derive_when`'s `Skip`
-	## clears it.
-	Remote(output) : { running : Bool, answer : [Nothing, Done(output), Failed(Error)] }
-
 	## `derive(program, input, body)` is `Engine.derive` computed in a worker:
-	## it gives `body` a layer holding the program's answer for `input`.
+	## it gives `body` a layer holding the program's answer for `input`, an
+	## `Engine.Remote(output, Worker.Error)`.
 	##
-	## The run for the first input starts at mount. When `input` changes to an
-	## unequal value, the run for the old one is stopped and one for the new
+	## The job for the first input starts at mount. When `input` changes to an
+	## unequal value, the job for the old one is stopped and one for the new
 	## value starts, in the same turn, so no answer for an old input is ever
-	## shown and the app keeps no request serial. An equal input asks nothing,
-	## so a run that failed (`Refused`, say) is asked for again only when the
-	## input changes. Disposing the site stops its run. Readers of the layer do
+	## shown and the app keeps no request serial. Meanwhile the layer is
+	## `Pending` and keeps the previous answer. An equal input asks nothing,
+	## so a job that failed (`Refused`, say) is asked for again only when the
+	## input changes. Disposing the site stops its job. Readers of the layer do
 	## no work while it is unchanged.
 	##
 	## `program` is a [Program] or a prepared [Query]: anything with
 	## `request` and `result`.
-	derive : program, Val(ctx, input), (Val(In(ctx, Remote(output)), Remote(output)) -> Elem(In(ctx, Remote(output)))) -> Elem(ctx)
-		where [program.request : program, input -> Engine.Req, program.result : program, Engine.Res -> Try(output, Error), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool]
-	derive = |program, input, body| Engine.resource(
-		input,
-		{
-			init: { running: Bool.False, answer: Nothing },
-			begin: |remote, _| { ..remote, running: Bool.True },
-			plan: |value| [program.request(value)],
-			fold: |_, _, res| answered(program.result(res)),
-		},
-		body,
-	)
+	derive : work, Val(ctx, input), (Val(In(ctx, Engine.Remote(output, Error)), Engine.Remote(output, Error)) -> Elem(In(ctx, Engine.Remote(output, Error)))) -> Elem(ctx)
+		where [work.request : work, input -> Engine.Req, work.result : work, Engine.Res -> Try(output, Error), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool]
+	derive = |work, input, body| Engine.resource(input, Core.follow(work), body)
 
 	## Like `derive`, for an input that is sometimes not a question: `Run(i)`
-	## asks for a run on `i`, and `Skip` stops any run and clears the answer
+	## asks for a job on `i`, and `Skip` stops any job and clears the answer
 	## (an empty search box, a form that is not valid yet).
-	derive_when : program, Val(ctx, [Run(input), Skip]), (Val(In(ctx, Remote(output)), Remote(output)) -> Elem(In(ctx, Remote(output)))) -> Elem(ctx)
-		where [program.request : program, input -> Engine.Req, program.result : program, Engine.Res -> Try(output, Error), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool]
-	derive_when = |program, input, body| Engine.resource(
-		input,
-		{
-			init: { running: Bool.False, answer: Nothing },
-			begin: |remote, want| match want {
-				Run(_) => { ..remote, running: Bool.True }
-				Skip => { running: Bool.False, answer: Nothing }
-			},
-			plan: |want| match want {
-				Run(value) => [program.request(value)]
-				Skip => []
-			},
-			fold: |_, _, res| answered(program.result(res)),
-		},
-		body,
-	)
+	derive_when : work, Val(ctx, [Run(input), Skip]), (Val(In(ctx, Engine.Remote(output, Error)), Engine.Remote(output, Error)) -> Elem(In(ctx, Engine.Remote(output, Error)))) -> Elem(ctx)
+		where [work.request : work, input -> Engine.Req, work.result : work, Engine.Res -> Try(output, Error), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool]
+	derive_when = |work, input, body| Engine.resource(input, Core.follow_when(work), body)
 
 	# -- Prepared programs ----------------------------------------------------
 
@@ -439,13 +409,6 @@ received_try = |name, bytes| {
 ## `v` appended to `buf` as four little-endian bytes.
 le32 : List(U8), U32 -> List(U8)
 le32 = |buf, v| buf.append(v.to_u8_wrap()).append(v.shr_zf_wrap(8).to_u8_wrap()).append(v.shr_zf_wrap(16).to_u8_wrap()).append(v.shr_zf_wrap(24).to_u8_wrap())
-
-## A settled layer for one answer.
-answered : Try(output, Worker.Error) -> Worker.Remote(output)
-answered = |outcome| match outcome {
-	Ok(output) => { running: Bool.False, answer: Done(output) }
-	Err(error) => { running: Bool.False, answer: Failed(error) }
-}
 
 ## A program's entry runs the calculation on what `send` encoded, and
 ## `receive` reads what it returned.
