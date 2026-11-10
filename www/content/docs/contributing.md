@@ -34,7 +34,7 @@ recipe ready.
 | `platform/` | The platform (`main.roc`): the engine (`Core.roc`), the authoring API (`Engine.roc`, `Html.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the hosted effects a worker job calls (`Hosted.roc`, bound in both hosts), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig`). Also the fuzz platform (`fuzz.roc`, the vendored roc-fuzz modules and the soak walk) |
 | `tests/` | Browser contract tests and the apps they drive (`tests/apps/`, for example `files` for file handles, `file-effects` for operations on files, `ports` for ports, `worker-typed` for the task API, `prepared` for preparations and `tasks` for jobs that read and build files), the Chrome spec replay, and the release check helper |
 | `fuzz/` | Fuzz targets of the shared support; each app's own target is its `main-fuzz.roc` |
-| `examples/` | The example apps, each with its specs, and with any JavaScript of its own beside it (the Reading List's port handlers, `ports.mjs`) |
+| `examples/` | The example apps, each with its specs, and with any JavaScript of its own beside it (the Reading List's port handlers, `ports.mjs`; the simulated service of Conduit, Field Notes and the Status Page, `backend.mjs`); `examples/shared/` holds the JavaScript several examples load (the `plume-chart` and `worker-pool-panel` elements) |
 | `benchmarks/` | The js-framework-benchmark adapter |
 | `scripts/` | Roc scripts behind the tasks; shared modules in `scripts/src/` |
 | `www/` | This site; `www/samples/` holds every code sample the docs show |
@@ -49,11 +49,19 @@ browser test reads.
 
 An example is listed in `SpecSuite.apps`, so `check`, the release check
 and the browser soak cover it, and in `www/data/examples.toml` with a page
-under `www/content/examples/`. A file its page loads (a script, or the
-module of port handlers its `ports` names) is copied beside its app by
-`scripts/site.roc`. The soak's tables in `tests/browser/soak.mjs` give it a
-round trip, and, for an app with ports, the module of its handlers. Its
-fuzz target, if it has one, is listed in `Targets.fuzz_targets`.
+under `www/content/examples/`. Its entry there gives its section of the
+examples index, its feature chips and, where it helps, a line saying what
+to try, and names every file its page loads: its scripts, the module of
+port handlers (`ports`), its simulated service (`backend`) and the data it
+downloads (`data`), each a file in its own directory, or a script in
+`examples/shared/` (`shared`). `scripts/site.roc` copies exactly the files
+named there. An example that talks to a service brings that service as its
+own `backend.mjs`, whose default export returns a request handler; the
+site turns it into the mount's `fetch`, and the soak and journeys serve
+the same file over HTTP rather than a copy. The soak's tables in
+`tests/browser/soak.mjs` give it a round trip and, for an app with ports
+or a backend, the module that answers them. Its fuzz target, if it has
+one, is listed in `Targets.fuzz_targets`.
 
 ## Tasks
 
@@ -89,7 +97,8 @@ for example to run two tasks at once.
 ## What `check` runs
 
 1. Every script names the `roc-stable` nightly that `Blueprint.roc` pins, and
-   no other Roc file names a compiler.
+   no other Roc file names a compiler; every file `www/data/examples.toml`
+   names exists, and every example is in a section of the examples index.
 2. `roc fmt --check` over every Roc source, and `roc test` on the test support
    and the scripts.
 3. The test platform, and the examples of the fuzz targets in `fuzz/` (the
@@ -117,7 +126,8 @@ for example to run two tasks at once.
    Reading List's own port handlers against real IndexedDB in two tabs
    (`reading-list-journey.mjs`), the Log Explorer's preparation over a
    generated 64 MiB log, with its times and memory (`log-explorer-journey.mjs`),
-   and the Conduit journey against its scripted backend.
+   and the Conduit journey against the example's own simulated backend
+   (`examples/conduit/backend.mjs`).
 7. The js-framework-benchmark check.
 8. The release dry run: the bundle, `runtime.mjs` and `worker.mjs`, the examples archive with
    every app mounted by its check helper, and the release notes.

@@ -150,7 +150,12 @@
   mounts an app or integrates it with a page lives with that app, example or
   site, and reaches the runtime only through `mountRocEngineApp` and its
   options. That includes port handlers: the JavaScript an app's ports need is
-  written with the app and passed at mount. A port is a named request kind
+  written with the app and passed at mount. It also includes an example's
+  simulated service: the backend an example talks to is that example's own
+  JavaScript, kept in its directory and named in `www/data/examples.toml`,
+  and the site and the tests load that one file rather than knowing the
+  example or keeping a copy. JavaScript several examples load lives in
+  `examples/shared/`, never in the platform. A port is a named request kind
   of the effect channel, not a way around it: its JavaScript performs one
   request and answers with data, checked against the type the app declared;
   it never decides reactive meaning, never touches the DOM the engine owns,
