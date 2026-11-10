@@ -1,5 +1,6 @@
 import pf.Engine exposing [Elem, File, In, Root, State]
 import pf.Html
+import pf.Worker
 
 ## Files test app: the files a user gives the app arrive as handles, and live
 ## as long as a value holds them.
@@ -12,8 +13,76 @@ import pf.Html
 ## - "Panel" mounts a section with a file input of its own, whose state keeps
 ##   what it receives; closing the panel disposes that state, and its files go
 ##   with it.
+## - "Count" sends the kept files to a worker program, which reads each one's
+##   bytes there and answers its size and byte sum (`test-id "counts"`);
+##   "Count tail" sends the last half of the first file only. "Probe" checks,
+##   in the worker, that a file's bytes behave as an ordinary list: two reads
+##   agree, a slice and a UTF-8 view see the same bytes, and changing one
+##   read leaves the other alone (`test-id "probe"`).
 FilesApp := [].{
-	S : { files : List(File), refused : U64, panel : Bool }
+	S : { files : List(File), refused : U64, panel : Bool, ask : Ask }
+
+	## What the worker was last asked: nothing yet, to count the kept files,
+	## to count the tail of the first, or to probe the first.
+	Ask : [Nothing, Count(List(File)), Tail(List(File)), Probe(List(File))]
+
+	## Each file's name, size and byte sum, read in the worker.
+	count : Worker.Program(List(File), List({ name : Str, bytes : U64, sum : U64 }))
+	count = Worker.pure(
+		"test.roc-signals/files/count",
+		|files| files.map(
+			|f| {
+				contents = f.contents()
+				var $sum = 0.U64
+				for b in contents {
+					$sum = $sum + b.to_u64()
+				}
+				{ name: f.name(), bytes: contents.len(), sum: $sum }
+			},
+		),
+	)
+
+	## The spike's ownership probe, on a file's bytes in the worker.
+	probe : Worker.Program(File, Bool)
+	probe = Worker.pure(
+		"test.roc-signals/files/probe",
+		|f| {
+			bytes = f.contents()
+			other = f.contents()
+			before = bytes.get(0) ?? 0
+			text = Str.from_utf8(bytes) ?? "invalid"
+			part = bytes.sublist({ start: 1, len: 3 })
+			changed = bytes.set(0, 0) ?? []
+			changed.get(0) == Ok(0) and other.get(0) == Ok(before) and part == other.sublist({ start: 1, len: 3 }) and text.count_utf8_bytes() == other.len()
+		},
+	)
+
+	show_counts : Worker.Remote(List({ name : Str, bytes : U64, sum : U64 })) -> Str
+	show_counts = |{ running, answer }| match answer {
+		Nothing => if (running) "counting" else "not counted"
+		Done(counts) => Str.join_with(counts.map(|c| "${c.name}:${c.bytes.to_str()}:${c.sum.to_str()}"), "|")
+		Failed(Lost(fault)) => "lost ${Str.inspect(fault)}"
+		Failed(_) => "failed"
+	}
+
+	asked : Ask -> [Run(List(File)), Skip]
+	asked = |a| match a {
+		Count(files) => Run(files)
+		Tail(files) => Run(files)
+		_ => Skip
+	}
+
+	probed : Ask -> [Run(File), Skip]
+	probed = |a| match a {
+		Probe([first, ..]) => Run(first)
+		_ => Skip
+	}
+
+	tail_of : List(File) -> List(File)
+	tail_of = |files| match files {
+		[first, ..] => [first.slice({ start: first.size() / 2, len: first.size() - first.size() / 2 })]
+		[] => []
+	}
 
 	Ctx : In(Root, S)
 
@@ -48,6 +117,24 @@ FilesApp := [].{
 				Html.button("Clear", [], st.update(|s| { ..s, files: [] })),
 				Html.p_v(v.map(|s| FilesApp.listing(s.files)), [Engine.test_id("files")]),
 				Html.p_v(v.map(|s| "refused ${s.refused.to_str()}"), [Engine.test_id("refused")]),
+				Html.button("Count", [], st.update(|s| { ..s, ask: Count(s.files) })),
+				Html.button("Count tail", [], st.update(|s| { ..s, ask: Tail(FilesApp.tail_of(s.files)) })),
+				Html.button("Probe", [], st.update(|s| { ..s, ask: Probe(FilesApp.first_only(s.files)) })),
+				Html.button("Forget", [], st.update(|s| { ..s, ask: Nothing })),
+				Worker.derive_when(FilesApp.count, v.map(|s| FilesApp.asked(s.ask)), |r| Html.p_v(r.map(FilesApp.show_counts), [Engine.test_id("counts")])),
+				Worker.derive_when(
+					FilesApp.probe,
+					v.map(|s| FilesApp.probed(s.ask)),
+					|r| Html.p_v(
+						r.map(
+							|{ answer, .. }| match answer {
+								Done(ok) => if (ok) "probe ok" else "probe failed"
+								_ => "no probe"
+							},
+						),
+						[Engine.test_id("probe")],
+					),
+				),
 				Html.button("Panel", [], st.update(|s| { ..s, panel: !s.panel })),
 				Engine.when(
 					v.map(|s| s.panel),
@@ -69,5 +156,7 @@ FilesApp := [].{
 	}
 
 	program : Engine.Program
-	program = Engine.program(|| Engine.state({ files: [], refused: 0, panel: Bool.False }, |st| FilesApp.view(st)))
+	program =
+		Engine.program(|| Engine.state({ files: [], refused: 0, panel: Bool.False, ask: Nothing }, |st| FilesApp.view(st)))
+			.with_workers([FilesApp.count.registration(), FilesApp.probe.registration()])
 }

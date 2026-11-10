@@ -346,6 +346,11 @@ Dom := [].{
 
 		## A worker job: id, program name, input bytes and deadline (ms, 0 none).
 		Work(U32, Str, List(U8), U32),
+
+		## The files the worker job with this id names, each a handle's token and
+		## a range of its file. Decoded after the job's `Work`, for a job that
+		## names any.
+		WorkFiles(U32, List({ token : U64, start : U64, len : U64 })),
 		Cancel(U32),
 		Push(Str),
 		Replace(Str),
@@ -564,8 +569,18 @@ Dom := [].{
 				} else if kind == 8 {
 					(program, a1) = Dom.str(b, $at)
 					(input, a2) = Dom.raw(b, a1)
-					$fx = $fx.append(Work(id, program, input, Dom.u32(b, a2)))
-					$at = a2 + 4
+					n = Dom.u32(b, a2).to_u64()
+					var $refs = []
+					var $r = a2 + 4
+					while $refs.len() < n {
+						$refs = $refs.append({ token: Dom.u64(b, $r), start: Dom.u64(b, $r + 8), len: Dom.u64(b, $r + 16) })
+						$r = $r + 24
+					}
+					$fx = $fx.append(Work(id, program, input, Dom.u32(b, $r)))
+					if !$refs.is_empty() {
+						$fx = $fx.append(WorkFiles(id, $refs))
+					}
+					$at = $r + 4
 				} else {
 					crash "unknown effect kind ${kind.to_str()}"
 				}

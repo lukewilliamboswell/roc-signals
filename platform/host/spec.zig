@@ -27,7 +27,7 @@ extern fn roc_spec_main(args: RocList) callconv(.c) i32;
 // A worker instance's entry (`work_for_host` in `platform/main.roc`):
 // `name:str input:rest` to the program's output bytes. Only a job's child
 // process calls it.
-extern fn roc_engine_work(payload: RocList) callconv(.c) RocList;
+extern fn roc_engine_work(payload: RocList, files: RocList) callconv(.c) RocList;
 
 // musl libc.
 extern fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
@@ -377,6 +377,20 @@ fn releaseBytes(list: RocList) void {
     if (rc.* == 0) roc_dealloc(@ptrFromInt(alloc_addr - @sizeOf(usize)), @alignOf(usize));
 }
 
+/// Release a hosted `List(List(U8))` argument: the outer list's reference,
+/// and each inner list's when the outer one goes.
+fn releaseFiles(list: RocList) void {
+    const elems = list.elements orelse return;
+    const alloc_addr: usize = if ((list.capacity_or_alloc_ptr & 1) != 0) list.capacity_or_alloc_ptr & ~@as(usize, 1) else @intFromPtr(elems);
+    const rc: *isize = @ptrFromInt(alloc_addr - @sizeOf(isize));
+    if (rc.* == 0) return;
+    rc.* -= 1;
+    if (rc.* != 0) return;
+    const inner: [*]const RocList = @ptrCast(@alignCast(elems));
+    for (inner[0..list.length]) |l| releaseBytes(l);
+    roc_dealloc(@ptrFromInt(alloc_addr - @sizeOf(usize)), @alignOf(usize));
+}
+
 /// `Cli.work!`: run one worker job, `payload` being `name:str input:rest`,
 /// in a child process, and return the result payload the browser runtime
 /// would deliver for it (design.md, Appendix B): tag 10 and the output, or
@@ -389,7 +403,7 @@ fn releaseBytes(list: RocList) void {
 /// moves its copy into `roc_engine_work`, writes the output to a pipe and
 /// exits without running any exit handlers. The parent reads the pipe to its
 /// end before waiting, so a large output cannot block the child.
-fn hostedWork(payload: RocList) callconv(.c) RocList {
+fn hostedWork(payload: RocList, files: RocList) callconv(.c) RocList {
     var fds: [2]c_int = undefined;
     if (pipe(&fds) != 0) fail("cannot create a pipe for a worker job", "");
     const pid = fork();
@@ -405,7 +419,7 @@ fn hostedWork(payload: RocList) callconv(.c) RocList {
                 job_name = job_name_buf[0..n];
             }
         }
-        const out = roc_engine_work(payload);
+        const out = roc_engine_work(payload, files);
         const bytes: []const u8 = if (out.elements) |e| @as([*]const u8, @ptrCast(e))[0..out.length] else &.{};
         var rest = bytes;
         while (rest.len > 0) {
@@ -416,6 +430,7 @@ fn hostedWork(payload: RocList) callconv(.c) RocList {
         _exit(0);
     }
     releaseBytes(payload);
+    releaseFiles(files);
     _ = close(fds[1]);
     defer _ = close(fds[0]);
     var cap: usize = 1 << 12;

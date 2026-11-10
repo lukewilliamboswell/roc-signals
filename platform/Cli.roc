@@ -29,7 +29,10 @@ Cli := [].{
 	## output, or tag 11 and the fault class when the program's instance
 	## faulted. The child's crash ends only the child. An empty list means the
 	## job did not finish within the runner's bound (30 s) and was killed.
-	work! : List(U8) => List(U8)
+	##
+	## `files` are the bytes of the files the job names, which the child
+	## passes beside the payload, as a worker's host passes the files it read.
+	work! : List(U8), List(List(U8)) => List(U8)
 
 	## Mint up to `n` file handles in the host's handle heap, as the page's
 	## host does for an event's files: fewer when the heap is nearly full.

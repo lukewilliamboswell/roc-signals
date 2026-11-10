@@ -317,13 +317,15 @@ Engine := [].{
 	## `Work(output)` or `WorkLost(fault)`. Like a timer it belongs to its site:
 	## disposing the site cancels it. `deadline_ms` 0 means no deadline; it is
 	## capped at 10 minutes and delivers `Timeout` when it expires. Issuing work
-	## for a program that is not registered is a contract error.
+	## for a program that is not registered is a contract error. `files` are the
+	## files the input refers to, read into the worker's memory for the run
+	## (`[]` for a program that takes bytes alone; `Worker` fills it in).
 	Req : [
 		## `timeout_ms` 0 = no timeout; capped at `max_timeout_ms`.
 		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32 }),
 		StorageGet(Str),
 		Timer(U32),
-		Work({ program : Str, input : List(U8), deadline_ms : U32 }),
+		Work({ program : Str, input : List(U8), files : List(File), deadline_ms : U32 }),
 		Interval(U32),
 		Popstate,
 
@@ -349,8 +351,15 @@ Engine := [].{
 	## connectivity or visibility change (`Online`, `Visible`), a `Self` follow-up
 	## (`Now`), `Refused` when the in-flight bound turned the request away, or a
 	## worker program's output (`Work`) or the reason it produced none
-	## (`WorkLost`).
-	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault)]
+	## (`WorkLost`, or `FileFailed` when the files it was sent could not be
+	## read into the worker).
+	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileFailure)]
+
+	## Why a worker request that names files produced no output: a file could
+	## not be read (`Unreadable`: the user's file changed or went away since
+	## it was given), or the files are more than the runtime reads for one run
+	## (`TooLarge`, see the `maxFileBytes` mount option).
+	FileFailure : [Unreadable, TooLarge]
 
 	## Why a `Work` request produced no output: the worker's instance faulted
 	## running the program (`Contract`, `ResourceLimit`, `OutOfMemory`,

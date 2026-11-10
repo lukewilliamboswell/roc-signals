@@ -1,3 +1,5 @@
+import Core
+
 ## The binary format for values a page and its workers send each other.
 ##
 ## Both ends of a worker message are the same compiled module, so both know
@@ -84,7 +86,13 @@ Wire := [].{
 	## nesting containers deeper than `decode` accepts still encodes, and its
 	## payload is refused with `TooDeep`; `try_encode` refuses it instead.
 	encode : a -> List(U8) where [a.Sendable]
-	encode = |value| Wire.encode_state(value).bytes
+	encode = |value| {
+		state = Wire.encode_state(value)
+		if !state.files.is_empty() {
+			crash "contract: Wire.encode was given a value holding a File; a file crosses only in a worker program's input or output"
+		}
+		state.bytes
+	}
 
 	## Encode a value as a payload, or `Err(TooDeep)` when it nests containers
 	## deeper than `decode` accepts, so the side that built the value learns
@@ -92,7 +100,19 @@ Wire := [].{
 	try_encode : a -> Try(List(U8), [TooDeep]) where [a.Sendable]
 	try_encode = |value| {
 		state = Wire.encode_state(value)
+		if !state.files.is_empty() {
+			crash "contract: Wire.try_encode was given a value holding a File; a file crosses only in a worker program's input or output"
+		}
 		if (state.deep) Err(TooDeep) else Ok(state.bytes)
+	}
+
+	## For the worker layer: encode a value that may hold files. The payload
+	## refers to each file by its place in `files`, which travel beside it
+	## (design.md, Appendix B).
+	encode_with_files : a -> { bytes : List(U8), files : List(Core.File), deep : Bool } where [a.Sendable]
+	encode_with_files = |value| {
+		{ bytes, depth: _, deep, files } = Wire.encode_state(value)
+		{ bytes, files, deep }
 	}
 
 	## The encoder's final state for a value: its bytes and whether it nested
@@ -102,7 +122,7 @@ Wire := [].{
 		## The caller's type, named so its derived codec can be asked for.
 		Shape : a
 		encode_shape = Shape.encoder_for(Format.Default)
-		match encode_shape(value, { bytes: [], depth: 0, deep: Bool.False }) {
+		match encode_shape(value, { bytes: [], depth: 0, deep: Bool.False, files: [] }) {
 			Ok(state) => state
 		}
 	}
@@ -119,7 +139,20 @@ Wire := [].{
 		## The caller's type, named so its derived codec can be asked for.
 		Shape : a
 		parse_shape = Shape.parser_for(Format.Default)
-		read = parse_shape(State.{ bytes, pos: 0, top: empty_frame, outer: [], names: [] })?
+		read = parse_shape(State.{ bytes, pos: 0, top: empty_frame, outer: [], names: [], files: [] })?
+		if (read.rest.pos == bytes.len()) Ok(read.value) else Err(TrailingBytes)
+	}
+
+	## For the worker layer: decode a payload whose files arrived beside it,
+	## each the bytes of the file or range at its place in the payload's file
+	## list. A file the payload refers to that is not there, or whose bytes
+	## are not its length, is `Malformed`.
+	decode_with_files : List(U8), List(List(U8)) -> Try(a, Error) where [a.Sendable]
+	decode_with_files = |bytes, files| {
+		## The caller's type, named so its derived codec can be asked for.
+		Shape : a
+		parse_shape = Shape.parser_for(Format.Default)
+		read = parse_shape(State.{ bytes, pos: 0, top: empty_frame, outer: [], names: [], files })?
 		if (read.rest.pos == bytes.len()) Ok(read.value) else Err(TrailingBytes)
 	}
 
@@ -164,7 +197,7 @@ Wire := [].{
 
 	## A dictionary's entries as they are written, and whether any nested too
 	## deep.
-	Entries : { entries : List(List(U8)), deep : Bool }
+	Entries : { entries : List(List(U8)), deep : Bool, files : List(Core.File) }
 
 	## One open container in the decoder: how many entries remain, and
 	## per-kind bookkeeping (a record's field count and cached names, or a
@@ -177,12 +210,13 @@ Wire := [].{
 	## The encoder's state: the bytes so far, how many containers are open
 	## around the value being written, and whether that ever exceeded the
 	## depth `decode` accepts. Applications never construct one.
-	Enc : { bytes : List(U8), depth : U64, deep : Bool }
+	## The files the value holds, in the order the payload refers to them.
+	Enc : { bytes : List(U8), depth : U64, deep : Bool, files : List(Core.File) }
 
 	## The decoder's cursor: the input, the position, the open container and
 	## those around it, and the field names positional records have cached.
 	## Applications never construct one.
-	State := { bytes : List(U8), pos : U64, top : Frame, outer : List(Frame), names : List(Str) }
+	State := { bytes : List(U8), pos : U64, top : Frame, outer : List(Frame), names : List(Str), files : List(List(U8)) }
 
 	## The format marker the compiler dispatches on. Its methods are the
 	## derivation hooks; applications call `encode` and `decode` instead.
@@ -515,21 +549,21 @@ Wire := [].{
 		## whether it nested too deep.
 		encode_dict : Enc, U64, (Entries, (Entries, (Enc -> Try(Enc, err)), (Enc -> Try(Enc, err)) -> Try(Entries, err)) -> Try(Entries, err)) -> Try(Enc, err)
 		encode_dict = |state, count, write_entries| {
-			depth = state.depth + 1
+			{ bytes, depth: outer, deep, files } = state
+			depth = outer + 1
 			written = write_entries(
-				{ entries: List.with_capacity(count), deep: state.deep or depth > max_depth },
+				{ entries: List.with_capacity(count), deep: deep or depth > max_depth, files },
 				|current, write_key, write_value| {
-					key = write_key({ bytes: [], depth, deep: current.deep })?
+					key = write_key({ bytes: [], depth, deep: current.deep, files: current.files })?
 					entry = write_value(key)?
-					Ok({ entries: current.entries.append(entry.bytes), deep: entry.deep })
+					Ok({ entries: current.entries.append(entry.bytes), deep: entry.deep, files: entry.files })
 				},
 			)?
-			{ bytes, depth: outer, deep: _ } = state
 			var $out = write_count(bytes, count)
 			for entry in written.entries.sort_with(compare_bytes) {
 				$out = $out.concat(entry)
 			}
-			Ok({ bytes: $out, depth: outer, deep: written.deep })
+			Ok({ bytes: $out, depth: outer, deep: written.deep, files: written.files })
 		}
 
 		## Open a dictionary after checking its count against the input.
@@ -706,6 +740,33 @@ Wire := [].{
 		encode_bytes : Format, List(U8), Enc -> Try(Enc, [])
 		encode_bytes = |_, value, state| Ok(put(state, |b| write_count(b, value.len()).concat(value)))
 
+		## A file: its place in the payload's file list, then its name, type,
+		## size, and the range of it the value holds. The file itself travels
+		## beside the payload.
+		encode_file : Format, Core.File, Enc -> Try(Enc, [])
+		encode_file = |_, file, { bytes, depth, deep, files }| {
+			{ name, mime, size, start, len } = Core.file_parts(file)
+			written = write_count(write_count(write_count(write_str(write_str(write_count(bytes, files.len()), name), mime), size), start), len)
+			Ok({ bytes: written, depth, deep, files: files.append(file) })
+		}
+
+		## A file, holding the bytes that arrived beside the payload at its
+		## place, which must be as many as its range.
+		parse_file : Format, State -> Try({ value : Core.File, rest : State }, Error)
+		parse_file = |_, state| {
+			index = read_count(state, 0)?
+			name = read_str(index.rest)?
+			mime = read_str(name.rest)?
+			size = read_count(mime.rest, 0)?
+			start = read_count(size.rest, 0)?
+			len = read_count(start.rest, 0)?
+			contents = state.files.get(index.value) ? |_| Malformed
+			if contents.len() != len.value or start.value > size.value or len.value > size.value - start.value {
+				return Err(Malformed)
+			}
+			Ok({ value: Core.worker_file(contents, { name: name.value, mime: mime.value, size: size.value, start: start.value, len: len.value }), rest: len.rest })
+		}
+
 		## `Bytes`: a count, then the bytes, shared with the input.
 		parse_bytes : Format, State -> Try({ value : List(U8), rest : State }, Error)
 		parse_bytes = |_, state| {
@@ -723,15 +784,15 @@ max_depth = 512
 ## The encoder's state with `write` applied to its bytes. The state is taken
 ## apart first so the bytes are written in place.
 put : Wire.Enc, (List(U8) -> List(U8)) -> Wire.Enc
-put = |{ bytes, depth, deep }, write| { bytes: write(bytes), depth, deep }
+put = |{ bytes, depth, deep, files }, write| { bytes: write(bytes), depth, deep, files }
 
 ## Open a container in the encoder, noting a depth `decode` would refuse.
 enter : Wire.Enc -> Wire.Enc
-enter = |{ bytes, depth, deep }| { bytes, depth: depth + 1, deep: deep or depth >= max_depth }
+enter = |{ bytes, depth, deep, files }| { bytes, depth: depth + 1, deep: deep or depth >= max_depth, files }
 
 ## Close a container in the encoder.
 leave : Wire.Enc -> Wire.Enc
-leave = |{ bytes, depth, deep }| { bytes, depth: depth - 1, deep }
+leave = |{ bytes, depth, deep, files }| { bytes, depth: depth - 1, deep, files }
 
 ## A record frame whose first field event has not yet counted the type.
 unknown_total : U64
@@ -748,16 +809,16 @@ slice : Wire.State, U64, U64 -> List(U8)
 slice = |state, start, end| state.bytes.sublist({ start, len: end - start })
 
 advance : Wire.State, U64 -> Wire.State
-advance = |state, width| Wire.State.{ bytes: state.bytes, pos: state.pos + width, top: state.top, outer: state.outer, names: state.names }
+advance = |state, width| Wire.State.{ bytes: state.bytes, pos: state.pos + width, top: state.top, outer: state.outer, names: state.names, files: state.files }
 
 top : Wire.State -> Wire.Frame
 top = |state| state.top
 
 set_top : Wire.State, Wire.Frame -> Wire.State
-set_top = |state, frame| Wire.State.{ bytes: state.bytes, pos: state.pos, top: frame, outer: state.outer, names: state.names }
+set_top = |state, frame| Wire.State.{ bytes: state.bytes, pos: state.pos, top: frame, outer: state.outer, names: state.names, files: state.files }
 
 with_names : Wire.State, List(Str) -> Wire.State
-with_names = |state, names| Wire.State.{ bytes: state.bytes, pos: state.pos, top: state.top, outer: state.outer, names }
+with_names = |state, names| Wire.State.{ bytes: state.bytes, pos: state.pos, top: state.top, outer: state.outer, names, files: state.files }
 
 ## Open a container holding `remaining` entries. The open frame lives in the
 ## state itself, so per-entry updates never touch the stack of outer frames.
@@ -766,11 +827,11 @@ push = |state, remaining| {
 	if state.outer.len() >= max_depth {
 		return Err(TooDeep)
 	}
-	Ok(Wire.State.{ bytes: state.bytes, pos: state.pos, top: { ..empty_frame, remaining }, outer: state.outer.append(state.top), names: state.names })
+	Ok(Wire.State.{ bytes: state.bytes, pos: state.pos, top: { ..empty_frame, remaining }, outer: state.outer.append(state.top), names: state.names, files: state.files })
 }
 
 pop : Wire.State -> Wire.State
-pop = |state| Wire.State.{ bytes: state.bytes, pos: state.pos, top: state.outer.last() ?? empty_frame, outer: state.outer.drop_last(1), names: state.names }
+pop = |state| Wire.State.{ bytes: state.bytes, pos: state.pos, top: state.outer.last() ?? empty_frame, outer: state.outer.drop_last(1), names: state.names, files: state.files }
 
 ## The next field event of the open record, whose form is settled.
 next_field : Wire.State, Wire.Frame -> Try([Field(_field), TryField({ name : Str, rest : Wire.State }), TryFieldCaseless({ name : Str, rest : Wire.State }), Continue(Wire.State), Done(Wire.State)], Wire.Error)
@@ -858,7 +919,9 @@ write_count = |state, value| {
 }
 
 ## Read a count of entries that each take at least `min_size` bytes, refusing
-## a count the rest of the input cannot hold before anything is allocated.
+## a count the rest of the input cannot hold before anything is allocated. A
+## `min_size` of 0 reads a number that counts nothing in the input (a file's
+## size), which is not bounded by it.
 read_count : Wire.State, U64 -> Try({ value : U64, rest : Wire.State }, Wire.Error)
 read_count = |state, min_size| {
 	var $value = 0
@@ -880,10 +943,10 @@ read_count = |state, min_size| {
 			$shift = $shift + 7
 		}
 	}
-	if $value > (state.bytes.len() - $pos) / min_size {
+	if min_size > 0 and $value > (state.bytes.len() - $pos) / min_size {
 		return Err(Truncated)
 	}
-	Ok({ value: $value, rest: Wire.State.{ bytes: state.bytes, pos: $pos, top: state.top, outer: state.outer, names: state.names } })
+	Ok({ value: $value, rest: Wire.State.{ bytes: state.bytes, pos: $pos, top: state.top, outer: state.outer, names: state.names, files: state.files } })
 }
 
 write_str : List(U8), Str -> List(U8)
@@ -1274,4 +1337,21 @@ expect {
 	}
 	wrapped = wrapped_agree(509) and wrapped_agree(510) and wrapped_agree(511) and Wire.try_encode({ inner: left_spine(511) }).is_err()
 	edge and refused and lists and wrapped
+}
+
+## Files travel beside the payload: decoding with the file list gives each
+## file the bytes at its place, and a payload naming a file that is not
+## there, or whose bytes are not its range, is refused.
+expect {
+	a = Core.worker_file([1, 2, 3], { name: "a.bin", mime: "", size: 10, start: 4, len: 3 })
+	b = Core.worker_file([], { name: "b.txt", mime: "text/plain", size: 0, start: 0, len: 0 })
+	sent = Wire.encode_with_files({ note: "x", docs: [a, b] })
+	contents = sent.files.map(|f| f.contents())
+	back : Try({ note : Str, docs : List(Core.File) }, Wire.Error)
+	back = Wire.decode_with_files(sent.bytes, contents)
+	missing : Try({ note : Str, docs : List(Core.File) }, Wire.Error)
+	missing = Wire.decode_with_files(sent.bytes, contents.take_first(1))
+	short : Try({ note : Str, docs : List(Core.File) }, Wire.Error)
+	short = Wire.decode_with_files(sent.bytes, [[1, 2], []])
+	back == Ok({ note: "x", docs: [a, b] }) and missing == Err(Malformed) and short == Err(Malformed) and contents == [[1, 2, 3], []]
 }

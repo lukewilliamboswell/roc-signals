@@ -37,7 +37,7 @@ extern fn roc_engine_init(boot: RocList) callconv(.c) Step;
 extern fn roc_engine_event(state: *anyopaque, buf: RocList, wbuf: RocList, node: u32, handler: u32, payload: RocList) callconv(.c) Step;
 extern fn roc_engine_drop(state: *anyopaque, buf: RocList, wbuf: RocList) callconv(.c) void;
 extern fn roc_engine_files(state: *anyopaque, buf: RocList, wbuf: RocList, node: u32, handler: u32, record: RocList, blobs: RocList) callconv(.c) Step;
-extern fn roc_engine_work(payload: RocList) callconv(.c) RocList;
+extern fn roc_engine_work(payload: RocList, files: RocList) callconv(.c) RocList;
 
 var state: ?*anyopaque = null;
 var cmds: RocList = RocList.empty;
@@ -168,14 +168,23 @@ export fn roc_alloc(size: usize, align_arg: usize) callconv(.c) *anyopaque {
 
 export fn roc_dealloc(ptr: *anyopaque, align_arg: usize) callconv(.c) void {
     switch (blobs.route(ptr)) {
+        .not_owned => {},
+        .retired => return,
+        .corrupt => corruptHandle(),
+    }
+    switch (buffers.route(ptr)) {
         .not_owned => _ = freeRaw(ptr, align_arg),
-        .retired => {},
+        // Nothing outside the host refers to a buffer: free it at once.
+        .retired => {
+            var token: u64 = 0;
+            while (buffers.releaseOne(&token, freeBuffer)) {}
+        },
         .corrupt => corruptHandle(),
     }
 }
 
 export fn roc_realloc(ptr: *anyopaque, size: usize, align_arg: usize) callconv(.c) *anyopaque {
-    if (blobs.contains(ptr)) corruptHandle();
+    if (blobs.contains(ptr) or buffers.contains(ptr)) corruptHandle();
     const user: [*]u8 = @ptrCast(ptr);
     const header: *const Header = @ptrFromInt(@intFromPtr(user) - @sizeOf(Header));
     const copied = @min(header.requested, size);
@@ -225,6 +234,8 @@ fn poison(class: u32) noreturn {
     pending_payload = RocList.empty;
     pending_blobs = RocList.empty;
     blobs.abandon(nothing);
+    buffers.abandon(nothing);
+    staged_count = 0;
     state = null;
     @trap();
 }
@@ -390,7 +401,85 @@ fn runWork() callconv(.c) void {
     pending_payload = RocList.empty;
     cmds = RocList.empty;
     releaseList(previous);
-    cmds = roc_engine_work(payload);
+    const files = stagedFiles();
+    cmds = roc_engine_work(payload, files);
+}
+
+// ---------------------------------------------------------------------------
+// A worker's file contents (design.md, "Files"). The worker script reads
+// each file a job names straight into a buffer the host allocates
+// (`bytes_reserve`), and `work` hands the buffers to Roc as owning seamless
+// `List(U8)`s whose allocation pointer is a slot of the buffer heap: when
+// Roc releases a list's last reference, the slot is retired and its buffer
+// freed. The bytes are read once and never copied to reach the program.
+
+/// The most files one job reads (design.md, "Boundedness").
+const max_job_files: usize = 16;
+
+const Buffer = struct { ptr: ?[*]u8, len: usize };
+
+var buffers: resources.Heap(.bytes, max_job_files, Buffer) = .{};
+
+fn freeBuffer(b: *Buffer) void {
+    if (b.ptr) |p| _ = freeRaw(p, 1);
+    b.* = .{ .ptr = null, .len = 0 };
+}
+
+/// The files staged for the next `work`, in the job's order: each a slot's
+/// payload (null for an empty file, which needs none).
+var job_files: [max_job_files]?*u64 = @splat(null);
+var staged_count: usize = 0;
+
+/// Reserve `len` bytes for the next file of the next job and return where
+/// JavaScript writes them, or 0 when the job already has `max_job_files`
+/// files or every buffer slot is taken (the runtime refuses such a job
+/// before reading anything). An empty file returns 1 and takes no buffer.
+/// JavaScript must re-read `memory.buffer` after this call.
+export fn bytes_reserve(len: usize) callconv(.c) usize {
+    refuseIfPoisoned();
+    if (state != null) @trap();
+    if (staged_count == max_job_files) return 0;
+    if (len == 0) {
+        job_files[staged_count] = null;
+        staged_count += 1;
+        return 1;
+    }
+    if (buffers.live_count == max_job_files) return 0;
+    const data: [*]u8 = @ptrCast(allocRaw(len, 1));
+    const payload = buffers.mint(.{ .ptr = data, .len = len }) orelse unreachable;
+    job_files[staged_count] = payload;
+    staged_count += 1;
+    return @intFromPtr(data);
+}
+
+/// Free the files staged for a job that will not run (it was cancelled
+/// while they were read): nothing in Roc refers to them yet.
+export fn bytes_clear() callconv(.c) void {
+    if (fault_class != 0) return;
+    for (job_files[0..staged_count]) |slot| if (slot) |payload| {
+        _ = buffers.route(@ptrFromInt(@intFromPtr(payload) - @sizeOf(usize)));
+    };
+    staged_count = 0;
+    var token: u64 = 0;
+    while (buffers.releaseOne(&token, freeBuffer)) {}
+}
+
+/// The staged files as a Roc `List(List(U8))` whose single reference passes
+/// to Roc, each element an owning seamless list over its buffer.
+fn stagedFiles() RocList {
+    const n = staged_count;
+    staged_count = 0;
+    if (n == 0) return RocList.empty;
+    const base: [*]u8 = @ptrCast(allocRaw(n * @sizeOf(RocList) + @sizeOf(usize), @alignOf(usize)));
+    @as(*isize, @ptrCast(@alignCast(base))).* = 1;
+    const elems: [*]RocList = @ptrCast(@alignCast(base + @sizeOf(usize)));
+    for (0..n) |i| {
+        elems[i] = if (job_files[i]) |payload| blk: {
+            const b = buffers.get(payload.*) orelse unreachable;
+            break :blk .{ .ptr = b.ptr, .len = b.len, .cap = @intFromPtr(payload) | 1 };
+        } else RocList.empty;
+    }
+    return .{ .ptr = base + @sizeOf(usize), .len = n, .cap = n << 1 };
 }
 
 comptime {

@@ -1,3 +1,4 @@
+import Core
 import Engine exposing [Elem, In, Val]
 import Wire
 
@@ -35,6 +36,11 @@ Worker := [].{
 	## (`Timeout`), the in-flight bound turned the request away (`Refused`), or
 	## the worker could not run it or failed running it (`Lost`, with the fault
 	## class; the diagnostic goes to the page's console).
+	## A run whose input holds files is also `Lost` when the worker could not
+	## read them: `Lost(ResourceLimit)` when they are more than the runtime
+	## reads for one run, `Lost(Unavailable)` when a file could not be read
+	## (the user's file changed or went away since it was given). The raw
+	## result, `FileFailed`, says which.
 	Error : [Timeout, Refused, Lost(Engine.WorkFault)]
 
 	## A worker program from `input` to `output`. Make one with `pure` or
@@ -44,9 +50,9 @@ Worker := [].{
 	Program(input, output) :: {
 		name : Str,
 		deadline_ms : U32,
-		send : (input -> List(U8)),
+		send : (input -> { bytes : List(U8), files : List(Engine.File) }),
 		receive : (List(U8) -> output),
-		run : (List(U8) -> List(U8)),
+		run : (List(U8), List(List(U8)) -> List(U8)),
 	}.{
 
 		## Stop a run that has not answered `ms` milliseconds after it was
@@ -61,13 +67,16 @@ Worker := [].{
 		## is a contract error when the app mounts, and a request for a program
 		## that is not registered is a contract error naming it and the site.
 		registration : Program(input, output) -> Engine.Registration
-		registration = |p| Engine.registration(p.name, p.run)
+		registration = |p| Core.registration_with_files(p.name, p.run)
 
 		## A request to run the program on `input`, for an effect site's plan.
 		## The input is a snapshot: it is encoded when the request is issued, and
 		## later changes to the state it came from do not reach the run.
 		request : Program(input, output), input -> Engine.Req
-		request = |p, input| Work({ program: p.name, input: (p.send)(input), deadline_ms: p.deadline_ms })
+		request = |p, input| {
+			{ bytes, files } = (p.send)(input)
+			Work({ program: p.name, input: bytes, files, deadline_ms: p.deadline_ms })
+		}
 
 		## The answer to a `request`, for an effect site's reaction: the
 		## program's output, or why there is none. A result that is not from a
@@ -75,6 +84,8 @@ Worker := [].{
 		result : Program(input, output), Engine.Res -> Try(output, Error)
 		result = |p, res| match res {
 			Work(bytes) => Ok((p.receive)(bytes))
+			FileFailed(TooLarge) => Err(Lost(ResourceLimit))
+			FileFailed(Unreadable) => Err(Lost(Unavailable))
 			WorkLost(fault) => Err(Lost(fault))
 			Timeout => Err(Timeout)
 			Refused => Err(Refused)
@@ -93,12 +104,12 @@ Worker := [].{
 	pure = |name, calculate| {
 		name,
 		deadline_ms: 0,
-		send: |input| Wire.encode(input),
+		send: |input| sent(input),
 		receive: |bytes| match Wire.decode(bytes) {
 			Ok(output) => output
 			Err(_) => crash "contract: worker program \"${name}\" answered with bytes that are not its output type"
 		},
-		run: |bytes| match Wire.decode(bytes) {
+		run: |bytes, files| match Wire.decode_with_files(bytes, files) {
 			Ok(input) => payload_of(name, calculate(input))
 			Err(_) => crash "contract: worker program \"${name}\" was sent bytes that are not its input type"
 		},
@@ -116,7 +127,7 @@ Worker := [].{
 	fallible = |name, calculate| {
 		name,
 		deadline_ms: 0,
-		send: |input| Wire.encode(input),
+		send: |input| sent(input),
 		receive: |bytes| {
 			body = bytes.drop_last(1)
 			match bytes.last() {
@@ -131,7 +142,7 @@ Worker := [].{
 				_ => crash "contract: worker program \"${name}\" answered without saying whether it succeeded"
 			}
 		},
-		run: |bytes| match Wire.decode(bytes) {
+		run: |bytes, files| match Wire.decode_with_files(bytes, files) {
 			Ok(input) => match calculate(input) {
 				Ok(value) => payload_of(name, value).append(0)
 				Err(error) => payload_of(name, error).append(1)
@@ -194,6 +205,14 @@ Worker := [].{
 	)
 }
 
+## A request's payload and the files it refers to. A page input nested too
+## deep is sent anyway and refused in the worker, where that is contained.
+sent : input -> { bytes : List(U8), files : List(Engine.File) } where [input.Wire.Sendable]
+sent = |input| {
+	{ bytes, files, deep: _ } = Wire.encode_with_files(input)
+	{ bytes, files }
+}
+
 ## A program's answer as its payload. An answer nesting containers deeper
 ## than `Wire.decode` accepts would be refused by the page, so it is a
 ## contract error here, in the worker instance, where it is contained.
@@ -214,7 +233,7 @@ answered = |outcome| match outcome {
 ## `receive` reads what it returned.
 expect {
 	double = Worker.pure("test/double", |n| n * 2.U64)
-	(double.receive)((double.run)((double.send)(21))) == 42
+	(double.receive)((double.run)((double.send)(21).bytes, [])) == 42
 }
 
 ## A record in and a list out need no codec, and a deadline is carried on the
@@ -223,7 +242,7 @@ expect {
 	names = Worker.pure("test/names", |{ prefix, suffixes }| suffixes.map(|suffix| "${prefix}${suffix}")).with_deadline_ms(250)
 	request = names.request({ prefix: "n", suffixes: ["0", "1", "2"] })
 	answer = match request {
-		Work({ program, input, deadline_ms }) => (program, (names.receive)((names.run)(input)), deadline_ms)
+		Work({ program, input, files: _, deadline_ms }) => (program, (names.receive)((names.run)(input, [])), deadline_ms)
 		_ => ("", [], 0)
 	}
 	answer == ("test/names", ["n0", "n1", "n2"], 250)
@@ -234,7 +253,7 @@ expect {
 expect {
 	parse = Worker.fallible("test/parse", |text| U64.from_str(text).map_err(|_| NotANumber(text)))
 	run : Str -> Engine.Res
-	run = |text| Work((parse.run)((parse.send)(text)))
+	run = |text| Work((parse.run)((parse.send)(text).bytes, []))
 	good = parse.result(run("7"))
 	bad = parse.result(run("seven"))
 	late = parse.result(Timeout)

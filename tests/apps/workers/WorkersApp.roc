@@ -114,7 +114,7 @@ WorkersApp := [].{
 	}
 
 	job : Str, List(U8), U32 -> Engine.Req
-	job = |program, input, deadline_ms| Work({ program, input, deadline_ms })
+	job = |program, input, deadline_ms| Work({ program, input, files: [], deadline_ms })
 
 	describe : Engine.Res -> Str
 	describe = |r| match r {

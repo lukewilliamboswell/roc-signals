@@ -626,13 +626,15 @@ Core := [].{
 	## `Work(output)` or `WorkLost(fault)`. Like a timer it belongs to its site:
 	## disposing the site cancels it. `deadline_ms` 0 means no deadline; it is
 	## capped at 10 minutes and delivers `Timeout` when it expires. Issuing work
-	## for a program that is not registered is a contract error.
+	## for a program that is not registered is a contract error. `files` are the
+	## files the input refers to, read into the worker's memory for the run
+	## (`[]` for a program that takes bytes alone; `Worker` fills it in).
 	Req : [
 		## `timeout_ms` 0 = no timeout; capped at `max_timeout_ms`.
 		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32 }),
 		StorageGet(Str),
 		Timer(U32),
-		Work({ program : Str, input : List(U8), deadline_ms : U32 }),
+		Work({ program : Str, input : List(U8), files : List(File), deadline_ms : U32 }),
 		Interval(U32),
 		Popstate,
 
@@ -659,7 +661,13 @@ Core := [].{
 	## (`Now`), `Refused` when the in-flight bound turned the request away, or a
 	## worker program's output (`Work`) or the reason it produced none
 	## (`WorkLost`).
-	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault)]
+	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileFailure)]
+
+	## Why a worker request that names files produced no output: a file could
+	## not be read (`Unreadable`: the user's file changed or went away since
+	## it was given), or the files are more than the runtime reads for one
+	## run (`TooLarge`).
+	FileFailure : [Unreadable, TooLarge]
 
 	## Why a `Work` request produced no output: the worker's instance faulted
 	## running the program (`Contract`, `ResourceLimit`, `OutOfMemory`,
@@ -799,6 +807,15 @@ Core := [].{
 	fx_live : App -> List(U32)
 	fx_live = |a| a.tx.fx.live.map(|l| l.id)
 
+	## For the wire format: what a file's encoding carries beside its handle.
+	file_parts : File -> { name : Str, mime : Str, size : U64, start : U64, len : U64 }
+	file_parts = |f| { name: f.name, mime: f.mime, size: f.size, start: f.start, len: f.len }
+
+	## For the wire format: a file as a worker program receives it, holding
+	## the bytes of its range.
+	worker_file : List(U8), { name : Str, mime : Str, size : U64, start : U64, len : U64 } -> File
+	worker_file = |bytes, { name, mime, size, start, len }| { at: Worker(bytes), name, mime, size, start, len }
+
 	## For test platforms and harnesses: decode an effect result payload as the
 	## host encodes it (design.md, Appendix B). A payload that does not follow the
 	## encoding (unknown tag, truncated, trailing bytes, text that is not UTF-8) is
@@ -852,6 +869,12 @@ Core := [].{
 			match b {
 				[_, class] => WorkLost(work_fault(class))
 				_ => crash "contract: effect result tag 11 needs one fault class byte"
+			}
+		} else if tag == 13 {
+			match b {
+				[_, 1] => FileFailed(Unreadable)
+				[_, 2] => FileFailed(TooLarge)
+				_ => crash "contract: effect result tag 13 needs one reason byte, 1 or 2"
 			}
 		} else {
 			crash "contract: unknown effect result tag ${tag.to_str()}"
@@ -1049,14 +1072,19 @@ Core := [].{
 	## A worker program: a namespaced name (`"example.org/search/filter"`) and a
 	## pure function from input bytes to output bytes. Make one with
 	## `registration` and list it in `with_workers`.
-	Registration :: { name : Str, run : (List(U8) -> List(U8)) }
+	Registration :: { name : Str, run : (List(U8), List(List(U8)) -> List(U8)) }
 
 	## `registration(name, run)`: the worker program `name`, which turns a `Work`
 	## request's input bytes into its output bytes with `run`. `run` must be pure:
 	## it runs in a separate instance of the same module that shares nothing with
 	## the page's instance but the bytes it is given.
 	registration : Str, (List(U8) -> List(U8)) -> Registration
-	registration = |name, run| { name, run }
+	registration = |name, run| { name, run: |input, _| run(input) }
+
+	## For the worker layer: a program that also reads the files its request
+	## named, each the bytes of its range, read into the worker's memory.
+	registration_with_files : Str, (List(U8), List(List(U8)) -> List(U8)) -> Registration
+	registration_with_files = |name, run| { name, run }
 
 	## What the host drives: the protocol version, the declared storage keys (read
 	## before mount), mount once with the boot bytes, then one transaction per
@@ -1086,7 +1114,7 @@ Core := [].{
 	## [Program], as the host calls them. `work` is a worker instance's only
 	## entry: it runs the catalogue's program named in `name:str input:rest` on
 	## the input and returns the output bytes.
-	driver : Program -> { version : U32, keys : () -> List(U8), init : List(U8) -> (App, List(U8), List(U8)), event : App, List(U8), List(U8), U32, U32, List(U8) -> (App, List(U8), List(U8)), files : App, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (App, List(U8), List(U8)), work : List(U8) -> List(U8) }
+	driver : Program -> { version : U32, keys : () -> List(U8), init : List(U8) -> (App, List(U8), List(U8)), event : App, List(U8), List(U8), U32, U32, List(U8) -> (App, List(U8), List(U8)), files : App, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (App, List(U8), List(U8)), work : List(U8), List(List(U8)) -> List(U8) }
 	driver = |p| {
 		init = p.init
 		workers = p.workers
@@ -1101,7 +1129,7 @@ Core := [].{
 				fresh = { root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, fx }, programs }
 				finish(Core.event_files(fresh, node, handler, record, blobs.map(|b| Blob.(b))), [], wbuf)
 			},
-			work: |payload| run_work(workers, payload),
+			work: |payload, files| run_work(workers, payload, files),
 		}
 	}
 
@@ -1424,6 +1452,9 @@ Block(ctx) : {
 ## Command encoding.
 put_u32 : List(U8), U32 -> List(U8)
 put_u32 = |buf, v| buf.append(v.to_u8_wrap()).append(v.shr_zf_wrap(8).to_u8_wrap()).append(v.shr_zf_wrap(16).to_u8_wrap()).append(v.shr_zf_wrap(24).to_u8_wrap())
+
+put_u64 : List(U8), U64 -> List(U8)
+put_u64 = |buf, v| put_u32(put_u32(buf, v.to_u32_wrap()), v.shr_zf_wrap(32).to_u32_wrap())
 
 put_str : List(U8), Str -> List(U8)
 put_str = |buf, s| {
@@ -3493,17 +3524,26 @@ catalogue_names = |registrations| match Core.catalogue(registrations) {
 ## output out. The catalogue is checked as it is at mount, and a name it does
 ## not hold (or a payload without one) is a contract error that poisons this
 ## worker instance only.
-run_work : List(Registration), List(U8) -> List(U8)
-run_work = |registrations, payload| {
+run_work : List(Registration), List(U8), List(List(U8)) -> List(U8)
+run_work = |registrations, payload, files| {
 	names = catalogue_names(registrations)
 	(name, at) = get_str(payload, 0, "work payload")
 	match names.find_first_index(|n| n == name) {
 		Ok(i) => {
 			r = registrations.get(i) ?? crash "internal: catalogue"
-			owned_bytes((r.run)(payload.drop_first(at)))
+			owned_bytes((r.run)(payload.drop_first(at), files))
 		}
 		Err(_) => crash "contract: worker program \"${name}\" is not registered in this module"
 	}
+}
+
+## A file's handle and range, for a worker request's file list. Only a
+## page's file has a handle; a worker's file in a request is a contract
+## error.
+file_ref : File -> { token : U64, start : U64, len : U64 }
+file_ref = |f| match f.at {
+	Page(blob) => { token: blob.token(), start: f.start, len: f.len }
+	Worker(_) => crash "contract: a worker request names a file a worker program made; only the page's files can be sent"
 }
 
 ## `out` as a list of its own. The host keeps the output between calls and
@@ -3660,7 +3700,14 @@ put_req = |c, id, req| {
 		Popstate => head.append(5)
 		OnlineChanges => head.append(6)
 		VisibilityChanges => head.append(7)
-		Work({ program, input, deadline_ms }) => put_u32(put_u32(put_str(head.append(8), program), input.len().to_u32_wrap()).concat(input), min_u32(deadline_ms, max_timeout_ms))
+		Work({ program, input, files, deadline_ms }) => {
+			var $b = put_u32(put_u32(put_str(head.append(8), program), input.len().to_u32_wrap()).concat(input), files.len().to_u32_wrap())
+			for file in files {
+				{ token, start, len } = file_ref(file)
+				$b = put_u64(put_u64(put_u64($b, token), start), len)
+			}
+			put_u32($b, min_u32(deadline_ms, max_timeout_ms))
+		}
 		_ => crash "not an awaited request"
 	}
 }
@@ -4430,9 +4477,6 @@ work_bytes = |inst, buf| {
 	$b
 }
 
-put_u64 : List(U8), U64 -> List(U8)
-put_u64 = |buf, v| put_u32(put_u32(buf, v.to_u32_wrap()), v.shr_zf_wrap(32).to_u32_wrap())
-
 ## The worker catalogue lists its names in order, and a duplicate name or a
 ## 65th registration is the contract error that names the program.
 expect {
@@ -4462,7 +4506,7 @@ expect {
 ## output is a list of its own even when the program returns a slice.
 expect {
 	p = Core.program(|| Core.text("")).with_workers([Core.registration("t/tail", |b| b.drop_first(1))])
-	(Core.driver(p).work)(put_str([], "t/tail").concat([1, 2, 3])) == [2, 3]
+	(Core.driver(p).work)(put_str([], "t/tail").concat([1, 2, 3]), []) == [2, 3]
 }
 
 ## Work is scoped: when the site that issued it is disposed it is cancelled
@@ -4475,7 +4519,7 @@ expect {
 				"div",
 				[],
 				[
-					Core.when(st.val(), || Core.watch(Core.const({}), |_| [Work({ program: "t/echo", input: [1], deadline_ms: 0 })], Core.ignore({})), || Core.text("")),
+					Core.when(st.val(), || Core.watch(Core.const({}), |_| [Work({ program: "t/echo", input: [1], files: [], deadline_ms: 0 })], Core.ignore({})), || Core.text("")),
 					Core.watch(Core.const({}), |_| [Self], st.on_result(|_, _, _| Bool.False)),
 				],
 			),

@@ -89,7 +89,7 @@ SearchApp := [].{
 			[
 				Engine.watch(
 					st.val().map(|s| s.attempt),
-					|_| [Work({ program: SearchApp.summarise_name, input: [], deadline_ms: 2000 })],
+					|_| [Work({ program: SearchApp.summarise_name, input: [], files: [], deadline_ms: 2000 })],
 					st.on_result(
 						|s, _, r| {
 							..s,
@@ -114,7 +114,7 @@ SearchApp := [].{
 				Html.text_input(Engine.const("Search"), "search", v.map(|s| s.query), [], st.set_value(|s, t| { ..s, query: t })),
 				Engine.latest(
 					v.map(|s| s.query),
-					|q| if (q == "") [] else [Work({ program: SearchApp.filter_name, input: q.to_utf8(), deadline_ms: 0 })],
+					|q| if (q == "") [] else [Work({ program: SearchApp.filter_name, input: q.to_utf8(), files: [], deadline_ms: 0 })],
 					st.on_result(
 						|s, q, r|
 							match SearchApp.outcome(r) {

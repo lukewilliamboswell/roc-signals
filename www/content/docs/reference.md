@@ -1,7 +1,7 @@
 +++
 title = "Reference"
 description = "The Engine, Html, Worker and Wire APIs at a glance, the platform's limits, and its error classes."
-weight = 12
+weight = 13
 template = "page.html"
 +++
 
@@ -26,8 +26,9 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 | Lists | `each`, `RowRef.key`, `RowRef.field`, `RowRef.select`, `keyed` |
 | Attributes | `attr`, `attr_v`, `class`, `class_v`, `test_id`, `test_id_v`, `ref` |
 | Events | `on` (event name, optionally `:prevent`), `on_click` |
+| Files | `File`, `File.name`, `File.size`, `File.mime`, `File.slice`, `File.contents`, `Received`, `FilesHandler`, `State.on_files`, `on_files` |
 | Components | `component`, `State.push`, `State.push_by`, `State.push_value_by`, `sink`, `split` |
-| Effects | `watch`, `on_change`, `latest`, `State.on_result`, `ignore`, `on_cleanup`, `cleanup`, `Req`, `Res`, `HttpError`, `http_text`, `WorkFault` |
+| Effects | `watch`, `on_change`, `latest`, `State.on_result`, `ignore`, `on_cleanup`, `cleanup`, `Req`, `Res`, `HttpError`, `http_text`, `WorkFault`, `FileFailure` |
 
 ## Html
 
@@ -38,9 +39,9 @@ match.
 | Area | Helpers |
 |---|---|
 | Structure | `div`, `div_v`, `div_attrs`, `section`, `section_v`, `section_attrs`, `h1`, `h2`, `h2_v`, `h3`, `p`, `p_v`, `p_attrs`, `span_v`, `pre_v`, `ul`, `li`, `link`, `label_for` |
-| Controls | `button`, `button_v`, `icon_button`, `action_button`, `submit_button`, `text_input`, `number_input`, `textarea`, `checkbox`, `radio`, `select`, `option`, `option_v`, `option_attrs`, `form` |
+| Controls | `button`, `button_v`, `icon_button`, `action_button`, `submit_button`, `text_input`, `number_input`, `textarea`, `checkbox`, `radio`, `select`, `option`, `option_v`, `option_attrs`, `form`, `file_input` |
 | Attributes | `aria_label`, `aria_label_v`, `aria_describedby`, `aria_invalid`, `disabled`, `flag`, `flag_maybe` |
-| Events | `on_input`, `on_change`, `on_focus`, `on_blur`, `on_keydown`, `on_submit` |
+| Events | `on_input`, `on_change`, `on_focus`, `on_blur`, `on_keydown`, `on_submit`, `on_drop_files`, `on_paste_files` |
 
 Anything else is `Engine.element(tag, attrs, children)`.
 
@@ -62,7 +63,7 @@ program's types decide what is sent.
 
 | Area | Symbols |
 |---|---|
-| Payloads | `Sendable`, `encode`, `decode`, `Error` |
+| Payloads | `Sendable`, `encode`, `try_encode`, `decode`, `Error` |
 | Bulk bytes | `Bytes`, `Bytes.from_list`, `Bytes.to_list` |
 | Derivation | `Format`, `State`: the hooks the compiler's codec derivation calls; apps never use them |
 
@@ -75,6 +76,7 @@ program's types decide what is sent.
 | `change` | `"true"` or `"false"` for a checkbox or radio, else the value |
 | `keydown`, `keyup` | the key |
 | `focus`, `blur` | the control's value |
+| `change` on a file input, `drop`, `paste`, with `on_files` | the files, as `Received` (see [Files](@/docs/files.md)) |
 
 ## Attribute values
 
@@ -98,6 +100,8 @@ guarded while the control has focus. `checked` is a property set from
 | Worker programs in a catalogue | 64 | Contract error at mount |
 | Work deadline | 600 s | Capped |
 | Workers alive at once | `maxWorkers` (default the core count, at most 8) | Runs wait in order for a free worker |
+| Files an app holds at once | 64 | Further files are not delivered; `Received.refused` counts them |
+| Files one worker run reads | 16, and `maxFileBytes` bytes (default 256 MiB) | The run fails unread: `FileFailed(TooLarge)`, `Lost(ResourceLimit)` |
 | Payload nesting | 512 containers | The run is `Lost(Contract)`: an input fails to decode in the worker, an output is refused there before it is sent |
 
 ## Errors

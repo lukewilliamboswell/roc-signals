@@ -22,6 +22,13 @@
 //     the instance's fault class, 0 when it recorded none) or could not be
 //     used. A faulted instance is never called again: the page discards
 //     this worker.
+//   A job whose request names files carries them as `files` (the browser's
+//   `Blob`s, sliced to their ranges, sent by reference): they are read into
+//   the instance's memory before the program runs, and a file that cannot
+//   be read, or that the instance has no room for, is answered
+//   { type: "filefail", reason } (Appendix B, result tag 13: 1 unreadable,
+//   2 too large) without running the program. `t` then also counts the
+//   read: `read` is how long it took and `fileBytes` how much it read.
 // The page runs one job per worker at a time, and stops a job by
 // terminating the worker.
 
@@ -41,6 +48,38 @@ async function start(module, version) {
   if (typeof x.work !== "function") throw new Error("the module has no work export");
   self.postMessage({ type: "ready", origin: performance.timeOrigin, instStart, instEnd, memBytes: x.memory.buffer.byteLength });
   return x;
+}
+
+// Read the files a job names into an instance of the module, each into a
+// buffer the instance's host reserves (`bytes_reserve`), streaming it so
+// that no copy of the whole file exists outside linear memory. Throws
+// { reason: 1 } when a file cannot be read and { reason: 2 } when the host
+// has no room for one; `work()` then hands the buffers to the program.
+async function readFiles(x, blobs) {
+  let bytes = 0;
+  for (const blob of blobs) {
+    const ptr = x.bytes_reserve(blob.size);
+    if (ptr === 0) throw { reason: 2 };
+    if (blob.size === 0) continue;
+    let at = ptr;
+    try {
+      const reader = blob.stream().getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (at + value.length > ptr + blob.size) throw new Error("the file grew while it was read");
+        // A fresh view per chunk: nothing between them can grow memory, but
+        // no view is ever held across an await.
+        new Uint8Array(x.memory.buffer, at, value.length).set(value);
+        at += value.length;
+      }
+    } catch (_) {
+      throw { reason: 1 };
+    }
+    if (at !== ptr + blob.size) throw { reason: 1 };
+    bytes += blob.size;
+  }
+  return bytes;
 }
 
 // Returns the output and the stamps after staging and after `work()`.
@@ -95,6 +134,20 @@ self.onmessage = async (event) => {
     return;
   }
   const begin = performance.now();
+  let fileBytes = 0;
+  let read = 0;
+  if (m.files && m.files.length > 0) {
+    try {
+      fileBytes = await readFiles(x, m.files);
+    } catch (e) {
+      if (e && (e.reason === 1 || e.reason === 2)) {
+        x.bytes_clear();
+        self.postMessage({ type: "filefail", reason: e.reason });
+      } else self.postMessage(faultOf(x, e));
+      return;
+    }
+    read = performance.now() - begin;
+  }
   let run;
   try {
     run = runJob(x, m.payload);
@@ -105,5 +158,5 @@ self.onmessage = async (event) => {
   if (userTiming && typeof m.program === "string") measure(m.program, run.call, run.ret);
   const mem = [x.memory.buffer.byteLength, Number(x.metric(4)), Number(x.metric(5))];
   const output = run.output;
-  self.postMessage({ type: "done", output: output.buffer, t: [recv, begin, run.call, run.ret, performance.now()], mem }, [output.buffer]);
+  self.postMessage({ type: "done", output: output.buffer, t: [recv, begin, run.call, run.ret, performance.now()], mem, read, fileBytes }, [output.buffer]);
 };

@@ -120,7 +120,7 @@ FxApp := [].{
 		} else if r % 3 == 2 {
 			[Http({ method: "GET", url: "/r/${r.to_str()}", headers: [], body: "", timeout_ms: 0 }), Timer(100)]
 		} else {
-			[Interval(700), Work({ program: FxApp.echo_name, input: [r.to_u8_wrap()], deadline_ms: 100 })]
+			[Interval(700), Work({ program: FxApp.echo_name, input: [r.to_u8_wrap()], files: [], deadline_ms: 100 })]
 		}
 	}
 

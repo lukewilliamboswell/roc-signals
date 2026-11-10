@@ -82,7 +82,7 @@ SpecRunner := [].{
 
 		## A worker instance's entry: `name:str input:rest` to output bytes.
 		## Programs are pure, so the runner runs a job in process.
-		work : List(U8) -> List(U8),
+		work : List(U8), List(List(U8)) -> List(U8),
 	}
 
 	Sub : [Interval(U32), Pop, OnlineSub, VisibilitySub]
@@ -95,7 +95,7 @@ SpecRunner := [].{
 	Pending : { id : U32, url : Str, body : Str, kind : PendingKind }
 
 	## What `run-effect` does for a pending request.
-	PendingKind : [HttpRequest, TimerRequest, WorkRequest({ program : Str, input : List(U8), deadline_ms : U32 })]
+	PendingKind : [HttpRequest, TimerRequest, WorkRequest({ program : Str, input : List(U8), deadline_ms : U32, files : List({ token : U64, start : U64, len : U64 }) })]
 
 	## The modelled browser around the DOM. `doc` numbers the current document;
 	## a cross-document navigation mounts the app afresh in the next one.
@@ -382,7 +382,17 @@ SpecRunner := [].{
 				Http(id, _, url, _, body, _) => { ..b, pending: b.pending.append({ id, url, body, kind: HttpRequest }), issued: b.issued.append(id) }
 				Get(id, key) => { ..b, gets: b.gets.append({ id, key }) }
 				Timer(id, _) => { ..b, pending: b.pending.append({ id, url: "timer", body: "", kind: TimerRequest }), issued: b.issued.append(id) }
-				Work(id, program, input, deadline_ms) => { ..b, pending: b.pending.append({ id, url: "work", body: "", kind: WorkRequest({ program, input, deadline_ms }) }), issued: b.issued.append(id) }
+				Work(id, program, input, deadline_ms) => { ..b, pending: b.pending.append({ id, url: "work", body: "", kind: WorkRequest({ program, input, deadline_ms, files: [] }) }), issued: b.issued.append(id) }
+				WorkFiles(id, files) => {
+					attach = |p| if (p.id == id) {
+						..p,
+						kind: match p.kind {
+							WorkRequest(w) => WorkRequest({ ..w, files })
+							other => other
+						},
+					} else p
+					{ ..b, pending: b.pending.map(attach) }
+				}
 				Interval(id, ms) => { ..b, subs: b.subs.append({ id, sub: Interval(ms) }) }
 				Pop(id) => { ..b, subs: b.subs.append({ id, sub: Pop }) }
 				OnlineSub(id) => { ..b, subs: b.subs.append({ id, sub: OnlineSub }) }
@@ -519,7 +529,20 @@ SpecRunner := [].{
 
 	## A worker job a step runs: its request id and its payload,
 	## `name:str input:rest`, as a worker instance receives it.
-	Job : { id : U32, payload : List(U8) }
+	Job : { id : U32, payload : List(U8), files : List(List(U8)) }
+
+	## The bytes of the files a job names, from the setup files given under
+	## their tokens: what a worker reads into its memory. A token no setup
+	## file was given under (a handle minted without the host) reads empty.
+	job_files : Browser, List({ token : U64, start : U64, len : U64 }) -> List(List(U8))
+	job_files = |b, refs|
+		refs.map(
+			|{ token, start: from, len }| {
+				name = (b.given.find_first(|g| g.token == token) ?? { token, name: "" }).name
+				bytes = (b.files.find_first(|f| f.name == name) ?? { name, mime: "", bytes: [] }).bytes
+				bytes.sublist({ start: from, len })
+			},
+		)
 
 	## The pending worker job that step `op` runs, when `op` is a `run-effect`
 	## on one. The `spec` command runs such a job in a child process
@@ -533,7 +556,7 @@ SpecRunner := [].{
 				id = b.issued.get(n - 1) ? |_| NoJob
 				p = b.pending.find_first(|q| q.id == id) ? |_| NoJob
 				match p.kind {
-					WorkRequest({ program: name, input, .. }) => Ok({ id, payload: SpecRunner.put_str([], name).concat(input) })
+					WorkRequest({ program: name, input, files, .. }) => Ok({ id, payload: SpecRunner.put_str([], name).concat(input), files: SpecRunner.job_files(b, files) })
 					_ => Err(NoJob)
 				}
 			}
@@ -567,9 +590,9 @@ SpecRunner := [].{
 		rest = b.pending.keep_if(|q| q.id != id)
 		match p.kind {
 			TimerRequest => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, [5]))
-			WorkRequest({ program: name, input, .. }) => {
-				output = (program.work)(SpecRunner.put_str([], name).concat(input))
-				return SpecRunner.deliver_job(program, s, { id, payload: [] }, [10].concat(output))
+			WorkRequest({ program: name, input, files, .. }) => {
+				output = (program.work)(SpecRunner.put_str([], name).concat(input), SpecRunner.job_files(b, files))
+				return SpecRunner.deliver_job(program, s, { id, payload: [], files: [] }, [10].concat(output))
 			}
 			HttpRequest => {}
 		}
@@ -923,14 +946,14 @@ SpecRunner := [].{
 			RunEffect(n) => SpecRunner.run_effect(program, s, n)
 			LoseWork({ occurrence, fault }) => {
 				job = SpecRunner.pending_job(s, occurrence)?
-				SpecRunner.deliver_job(program, s, { id: job.id, payload: [] }, SpecRunner.encode_lost(fault))
+				SpecRunner.deliver_job(program, s, { id: job.id, payload: [], files: [] }, SpecRunner.encode_lost(fault))
 			}
 			TimeOutWork(n) => {
 				job = SpecRunner.pending_job(s, n)?
 				if job.deadline_ms == 0 {
 					return Err("worker job ${n.to_str()} has no deadline, so it cannot time out")
 				}
-				SpecRunner.deliver_job(program, s, { id: job.id, payload: [] }, [7])
+				SpecRunner.deliver_job(program, s, { id: job.id, payload: [], files: [] }, [7])
 			}
 			ExpectPendingWork({ program: name, count }) => {
 				got = b.pending.count_if(
@@ -1347,7 +1370,7 @@ SpecRunner := [].{
 
 	## The host services a replay uses: running a worker job in a child
 	## process, and minting and counting file handles in the host's heap.
-	Host : { work! : List(U8) => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64 }
+	Host : { work! : List(U8), List(List(U8)) => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64 }
 
 	## Replay one spec from a fresh mount, running each worker job with
 	## `work!` (the `spec` command's child process, `Io.work!`), and giving
@@ -1361,7 +1384,7 @@ SpecRunner := [].{
 		var $i = 0.U64
 		for step in spec.steps {
 			done = match (SpecRunner.job_of($s, step.op), SpecRunner.file_count(step.op), step.op) {
-				(Ok(job), _, _) => SpecRunner.deliver_job(program, $s, job, (host.work!)(job.payload))
+				(Ok(job), _, _) => SpecRunner.deliver_job(program, $s, job, (host.work!)(job.payload, job.files))
 				(_, Ok(n), _) => SpecRunner.give_files(program, $s, step.op, (host.mint_files!)(n))
 				(_, _, ExpectFiles(n)) => {
 					live = (host.live_files!)()
@@ -1384,7 +1407,7 @@ SpecRunner := [].{
 
 	## The host services the `spec` command uses, passed in by the test
 	## program (the test platform's `Cli`), so this package stays pure.
-	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64, work! : List(U8) => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64 }
+	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64, work! : List(U8), List(List(U8)) => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64 }
 
 	Options : { filter : Str, emit_steps : Bool, grammar : Bool, files : List(Str) }
 

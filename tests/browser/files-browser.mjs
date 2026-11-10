@@ -7,9 +7,15 @@
 // at the handle bound; a drop that carries no files dispatches nothing; a
 // handle released in a call keeps its file until that call's effects are
 // performed; poisoning and unmounting let go of every file the runtime holds.
+// For files sent to a worker program: a file read once into the worker is
+// freed there when the program's lists go; a file that cannot be read (its
+// disk file was deleted) and files over `maxFileBytes` fail the run without
+// losing the worker; a run cancelled while its files are read is dropped;
+// and the page's heap never holds a file's bytes.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { launch } from "./cdp.mjs";
 import { parseArgs, runtimeFiles } from "./args.mjs";
 
@@ -43,12 +49,12 @@ const check = (name, got, want) => {
 };
 
 function install() {
-  window.__mount = async () => {
+  window.__mount = async (options = {}) => {
     const { mountRocEngineApp } = await import("/runtime.mjs");
     const root = document.createElement("div");
     document.body.append(root);
     window.__root = root;
-    window.__rt = await mountRocEngineApp({ wasmUrl: "/app.wasm", root, onFault: () => {} });
+    window.__rt = await mountRocEngineApp({ wasmUrl: "/app.wasm", root, onFault: () => {}, ...options });
     return true;
   };
   window.__live = () => Number(window.__rt.x.metric(6));
@@ -62,16 +68,106 @@ function install() {
     el.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
   };
   window.__click = (label) => [...window.__root.querySelectorAll("button")].find((b) => b.textContent === label).click();
+  window.__text = (id) => window.__root.querySelector(`[data-testid=${id}]`).textContent;
+  window.__until = (id, pred) =>
+    new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error(`timed out: ${window.__text(id)}`)), 20000);
+      const tick = () => {
+        if (pred(window.__text(id))) {
+          clearTimeout(t);
+          resolve(window.__text(id));
+        } else setTimeout(tick, 5);
+      };
+      tick();
+    });
+  window.__dropBytes = (label, name, size) => {
+    const dt = new DataTransfer();
+    dt.items.add(new File([new Uint8Array(size).fill(1)], name, { type: "application/octet-stream" }));
+    const el = window.__root.querySelector(`[aria-label="${label}"]`);
+    el.dispatchEvent(new DragEvent("dragover", { dataTransfer: dt, bubbles: true, cancelable: true }));
+    el.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
+  };
 }
 
-async function open() {
+async function open(options = {}) {
   const ctx = await browser.createBrowserContext();
   const page = await ctx.newPage();
   page.on("pageerror", (e) => console.log("pageerror", String(e)));
   await page.evaluateOnNewDocument(install);
   await page.goto(`${base}/`);
-  await page.evaluate(() => window.__mount());
+  await page.evaluate((o) => window.__mount(o), options);
   return { page, ctx };
+}
+
+// A worker reads an 8 MiB file into its own memory once and frees it when
+// the program is done; the page's heap never holds it.
+{
+  const { page, ctx } = await open();
+  const r = await page.evaluate(async () => {
+    const pageLive = Number(window.__rt.x.metric(5));
+    window.__dropBytes("Drop", "big.bin", 8 << 20);
+    window.__click("Count");
+    const text = await window.__until("counts", (t) => t.startsWith("big"));
+    const snap = window.__rt.monitor.snapshot();
+    const inst = snap.instances.live[0];
+    const job = snap.jobs;
+    return { text, pageGrew: Number(window.__rt.x.metric(5)) - pageLive < 65536, workerLive: inst.liveBytes < 65536, read: inst.peakMemBytes >= 8 << 20 };
+  });
+  check("a file is read once into the worker and freed there", r, { text: `big.bin:${8 << 20}:${8 << 20}`, pageGrew: true, workerLive: true, read: true });
+  await ctx.close();
+}
+
+// A file that can no longer be read fails the run, typed, and the worker
+// goes on serving: the chosen file is deleted from disk before the run.
+{
+  const { page, ctx } = await open();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "roc-signals-files-"));
+  const file = path.join(dir, "gone.txt");
+  fs.writeFileSync(file, "soon gone");
+  const input = await page.evaluateHandle(() => window.__root.querySelector('[aria-label="Upload"]'));
+  await page.send("DOM.setFileInputFiles", { files: [file], objectId: input.objectId });
+  fs.rmSync(dir, { recursive: true, force: true });
+  const r = await page.evaluate(async () => {
+    window.__click("Count");
+    const failed = await window.__until("counts", (t) => t.startsWith("lost"));
+    window.__click("Clear");
+    window.__dropBytes("Drop", "ok.bin", 3);
+    window.__click("Count");
+    const after = await window.__until("counts", (t) => t.startsWith("ok"));
+    return { failed, after, spawns: window.__rt.monitor.snapshot().instances.spawns };
+  });
+  check("an unreadable file fails the run and the worker survives", r, { failed: "lost Unavailable", after: "ok.bin:3:3", spawns: 1 });
+  await ctx.close();
+}
+
+// Files over maxFileBytes are refused before anything is read.
+{
+  const { page, ctx } = await open({ maxFileBytes: 2 });
+  const r = await page.evaluate(async () => {
+    window.__dropBytes("Drop", "three.bin", 3);
+    window.__click("Count");
+    const text = await window.__until("counts", (t) => t.startsWith("lost"));
+    return { text, spawns: window.__rt.monitor.snapshot().instances.spawns };
+  });
+  check("files over maxFileBytes are refused unread", r, { text: "lost ResourceLimit", spawns: 0 });
+  await ctx.close();
+}
+
+// A run cancelled while its files are read is dropped, inline and in a
+// worker, and the next run reads only its own files.
+for (const workers of ["inline", "worker"]) {
+  const { page, ctx } = await open({ workers });
+  const r = await page.evaluate(async () => {
+    window.__dropBytes("Drop", "big.bin", 32 << 20);
+    window.__click("Count");
+    window.__click("Forget");
+    window.__click("Clear");
+    window.__dropBytes("Drop", "small.bin", 2);
+    window.__click("Count");
+    return window.__until("counts", (t) => t.startsWith("small"));
+  });
+  check(`a run cancelled while reading is dropped (${workers})`, r, "small.bin:2:2");
+  await ctx.close();
 }
 
 // Handles minted for an event that reaches no node go with the event: Roc

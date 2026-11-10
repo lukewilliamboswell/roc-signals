@@ -1,5 +1,7 @@
 app [target] { pf: platform "../../platform/fuzz.roc" }
 
+import pf.Core
+import pf.Engine
 import pf.Fuzz
 import pf.Wire
 
@@ -15,6 +17,13 @@ import pf.Wire
 ## must also be strict: an input it accepts is exactly the encoding of the
 ## value it decodes to, so a lax rule (a non-minimal count, unsorted keys, a
 ## field out of order) is caught as soon as mutation reaches it.
+##
+## Every input is also decoded as `Filed`, a value holding files, against a
+## file table cut from the input itself: decoding stays within the bound,
+## every decoded file holds exactly the table entry its payload names, as
+## many bytes as its range, and
+## a decoded value re-encodes to a payload and file list that decode back
+## to it.
 Shape : [Dot, Circle(F64), Rect({ w : U32, h : U32 }), Path(List((I16, I16)))]
 
 Kind : [A, B(U16, Str), C({ x : I8 })]
@@ -43,6 +52,17 @@ Rich : {
 	tree : Node,
 	note : Try(Str, [Missing]),
 }
+
+## A value holding files, as a worker program's input does.
+Filed : { title : Str, docs : List(Engine.File), extra : Try(Engine.File, [Missing]) }
+
+## The file table an input's `Filed` decoding reads: an empty file, and the
+## input itself.
+table_of : List(U8) -> List(List(U8))
+table_of = |input| [[], input]
+
+decode_filed : List(U8), List(List(U8)) -> Try(Filed, Wire.Error)
+decode_filed = |input, table| Wire.decode_with_files(input, table)
 
 Canon : {
 	id : U64,
@@ -135,6 +155,31 @@ test! = |input| {
 		}
 		Err(_) => {}
 	}
+	table = table_of(input)
+	filed = Fuzz.measure!("Filed", || decode_filed(input, table))
+	check_bound!("Filed", input, filed.stats)
+	match filed.value {
+		Ok(value) => {
+			all = match value.extra {
+				Ok(f) => value.docs.append(f)
+				Err(_) => value.docs
+			}
+			if !all.all(|f| table.contains(f.contents())) {
+				crash "a decoded file holds bytes no table entry has"
+			}
+			if !all.all(|f| f.contents().len() == f.size()) {
+				crash "a decoded file holds a different number of bytes than its range"
+			}
+			again = Wire.encode_with_files(value)
+			contents = again.files.map(|f| f.contents())
+			match decode_filed(again.bytes, contents) {
+				Ok(back) if back == value => {}
+				Ok(_) => crash "a re-encoded Filed decodes to a different value"
+				Err(problem) => crash "a re-encoded Filed is refused: ${Str.inspect(problem)}"
+			}
+		}
+		Err(_) => {}
+	}
 	# Small types are valid for far more inputs than the large ones, so the
 	# strictness of each rule is reached by mutation, not only by the seeds.
 	canonical!("Canon", input, decode_canon)
@@ -183,6 +228,13 @@ sample_canon = {
 	note: Ok("note"),
 }
 
+## A `Filed` payload naming the table's empty file.
+sample_filed : List(U8)
+sample_filed = {
+	empty = Core.worker_file([], { name: "e.txt", mime: "text/plain", size: 0, start: 0, len: 0 })
+	Wire.encode_with_files({ title: "t", docs: [empty], extra: Err(Missing) }).bytes
+}
+
 target = Fuzz.target_with!({
 	examples: [
 		Fuzz.example({ name: "rich", revision: "1", make: || Wire.encode(sample_rich) }),
@@ -190,6 +242,7 @@ target = Fuzz.target_with!({
 		Fuzz.example({ name: "rich-truncated", revision: "1", make: || Wire.encode(sample_rich).drop_last(1) }),
 		Fuzz.example({ name: "canon-trailing", revision: "1", make: || Wire.encode(sample_canon).append(0) }),
 		Fuzz.example({ name: "empty", revision: "1", make: || [] }),
+		Fuzz.example({ name: "filed", revision: "1", make: || sample_filed }),
 	],
 	name: "wire",
 	generator: Fuzz.raw_bytes,

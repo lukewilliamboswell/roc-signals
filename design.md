@@ -730,7 +730,8 @@ instead of a state write.
   site at the same path never receives its predecessor's results.
 - Results are typed: `Http({ status, headers, body })`, `Network(message)`,
   `Timeout`, `Value`, `Missing`, `Fired`, `Location`, `Online(Bool)`,
-  `Visible(Bool)`, `Now`, `Refused`, `Work(bytes)` and `WorkLost(fault)`.
+  `Visible(Bool)`, `Now`, `Refused`, `Work(bytes)`, `WorkLost(fault)` and
+  `FileFailed(reason)`.
   Application failures are values; contract violations are diagnostics,
   never fabricated results. A worker's diagnostic text goes to the page's
   console, never into its result.
@@ -913,6 +914,31 @@ An instance holds at most 64 handles at once. An event that carries more
 files than there are free slots delivers the ones that fit and counts the
 rest in `Received.refused`; nothing is minted for them.
 
+**Reading a file is delegation to a worker.** A program's input may hold
+files: `File` is `Wire.Sendable`, and its encoding is its place in the
+request's file list plus its name, type, size and range, while the handles
+and ranges travel beside the payload in the `FX` (Appendix B). Programs stay
+pure — the bytes arrive as data, never through an effect. When the runtime
+performs the request it resolves each handle to its `File`, sliced to the
+range, while the batch's released handles still name their files, and posts
+the slices with the job: a `Blob` crosses to the worker by reference, so no
+byte is copied on the page. The worker reads each slice once, streaming it
+into a buffer its host reserves, and the host hands the buffers to the
+program as owning seamless lists over a heap slot of its own, so the
+decoded `File` holds its bytes in place (`File.contents`) and the buffer is
+freed when the program's last list goes. The page's heap never holds a
+file's bytes, and a file's bytes are never copied between reading and the
+program. On the page a file has no bytes, and asking for them there is a
+contract error that says to read them in a worker.
+
+A file that can no longer be read (the user's file changed or went away)
+and files beyond what a run reads — more than 16, or more bytes than the
+`maxFileBytes` mount option allows — fail the run before it starts with the
+typed `FileFailed(Unreadable)` or `FileFailed(TooLarge)`; the worker is not
+lost. The typed layer reports them as `Lost(Unavailable)` and
+`Lost(ResourceLimit)`. A run cancelled while its files are read is dropped
+as any other.
+
 ### Target effects
 
 **Target:** further browser services, each as a request kind or subscription
@@ -1027,6 +1053,13 @@ call, releasing the previous output first. It never mounts, so it holds no
 engine state, and `work` refuses to run in an instance that has one. The
 engine hands the host a list of its own, never a slice of the input.
 
+A worker's host also keeps a **buffer heap** for the files a job reads:
+`bytes_reserve` allocates a buffer and a slot for each, the worker script
+streams the file into the buffer, and `work` hands the staged buffers to Roc
+as owning seamless lists whose allocation pointer is the slot. Nothing
+outside the host refers to a buffer, so the slot's last release frees it at
+once; `bytes_clear` frees the buffers of a job that will not run.
+
 ## Error Containment
 
 A Roc crash, a failed `expect`, or an allocation failure **poisons** the
@@ -1102,6 +1135,8 @@ bound and a declared behaviour at the bound:
 | Staged payloads | 1 | Previous one freed |
 | Diagnostic text | 512 bytes | Truncated |
 | File handles live in one instance | 64 | The event's further files are not delivered and are counted in `Received.refused` |
+| Files one work run reads | 16 | Typed `FileFailed(TooLarge)`, unread |
+| Bytes of files one work run reads | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)`, unread |
 | Live node ids (rows included) | 2³² − 2 | `resource_limit` poison |
 | Runtime ingress queue | 4096 queued events | `resource_limit` poison |
 | Monitor job history | `history` option (default 128, at most 1024) | Oldest overwritten, counted |
@@ -1473,13 +1508,14 @@ ignore : {} -> Reaction(ctx, a)
 on_cleanup : Str, Val(ctx, a), (a -> List(Req)) -> Elem(ctx)   # commands only
 cleanup : Str -> Elem(ctx)
 Req : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Timer(U32),
-       Work({ program : Str, input : List(U8), deadline_ms : U32 }),
+       Work({ program : Str, input : List(U8), files : List(File), deadline_ms : U32 }),
        Interval(U32), Popstate, OnlineChanges, VisibilityChanges, Self, Push(Str),
        Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str),
        StorageSet(Str, Str), StorageRemove(Str)]
 Res : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
        Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused,
-       Work(List(U8)), WorkLost(WorkFault)]
+       Work(List(U8)), WorkLost(WorkFault), FileFailed(FileFailure)]
+FileFailure : [Unreadable, TooLarge]
 WorkFault : [Contract, ResourceLimit, OutOfMemory, AppCrash, ExpectFailed, Unavailable, Executor]
 HttpError : [Network(Str), Timeout, Status(U16), Refused]
 http_text : Res -> Try(Str, HttpError)
@@ -1547,7 +1583,7 @@ The platform provides (`platform/main.roc`):
 | `roc_engine_event` | `Box(Core.App), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One transaction: state, recycled command buffer, recycled work buffer, node, handler, payload |
 | `roc_engine_files` | `Box(Core.App), List(U8), List(U8), u32, u32, List(U8), List(Box(U64)) -> { cmds, state, work }` | A `:files` event: as `roc_engine_event`, with the file record as the payload and the handles the host minted for it, in the record's order; a record that does not match them is a `contract` crash |
 | `roc_engine_drop` | `Box(Core.App), List(U8), List(U8) -> {}` | Teardown |
-| `roc_engine_work` | `List(U8) -> List(U8)` | A worker instance's job: payload `name:str input:rest`, returns the program's output bytes as a list of its own. A name the catalogue does not hold, or a payload without a name, is a `contract` crash (it poisons that worker instance only) |
+| `roc_engine_work` | `List(U8), List(List(U8)) -> List(U8)` | A worker instance's job: payload `name:str input:rest` and the bytes of the files the request named, in its order; returns the program's output bytes as a list of its own. A name the catalogue does not hold, or a payload without a name, is a `contract` crash (it poisons that worker instance only) |
 
 The host provides `roc_alloc`, `roc_dealloc`, `roc_realloc`, `roc_dbg`,
 `roc_expect_failed` and `roc_crashed`. The result record's three fields are
@@ -1567,7 +1603,9 @@ warm-up neither allocates.
 | `event_files(node, handler)` | A `:files` event: the staged payload (its file record) and the staged handles move into `roc_engine_files` |
 | `files_released() -> u32` | After a batch is applied and its effects performed: free the slots of the handles Roc released since the last drain and return how many; their tokens are readable at `files_tokens()`, and the runtime lets their files go. `0` when poisoned |
 | `files_tokens() -> ptr` | The tokens `files_stage` or `files_released` left |
-| `work()` | A worker instance's job: moves the staged payload into `roc_engine_work` and keeps the output readable through `cmd_ptr`/`cmd_len` until the next call, releasing the previous output. Traps when an engine state is mounted in this instance or the instance is poisoned |
+| `bytes_reserve(len) -> ptr` | In a worker instance: a buffer of `len` bytes for the next job's next file, where JavaScript writes it (`1` for an empty file); `0` when the job already has 16 files. Re-read `memory.buffer` after it |
+| `bytes_clear()` | Free the files staged for a job that will not run |
+| `work()` | A worker instance's job: moves the staged payload, and the staged files as owning seamless lists, into `roc_engine_work` and keeps the output readable through `cmd_ptr`/`cmd_len` until the next call, releasing the previous output. Traps when an engine state is mounted in this instance or the instance is poisoned |
 | `protocol_version() -> u32` | The engine's protocol version; answers before mount and when poisoned |
 | `cmd_ptr()`, `cmd_len()` | The current command batch (in a worker instance, the last job's output), valid until the next `event`, `work` or `drop` |
 | `work_ptr()`, `work_len()` | The work record returned with the last call, valid until the next `event` or `drop` |
@@ -1656,9 +1694,10 @@ An event is `event(node, handler)` with the payload staged first:
 | 10 | `output:bytes` (the rest, raw) | `Work(List(U8))` |
 | 11 | `class:u8` | `WorkLost(fault)`: `1` contract, `2` resource_limit, `3` out_of_memory, `4` app_crash, `5` expect_failed (the worker instance's fault class), `6` unavailable (no `Worker`), `7` executor (the worker script failed) |
 | 12 | — | Reserved |
+| 13 | `reason:u8` | `FileFailed(reason)`: `1` unreadable (a file the request named could not be read), `2` too_large (more files or bytes than a run reads) |
 
 A result payload that does not follow this table (unknown tag, bytes after a
-bare tag, a flag other than `0`/`1`, a fault class outside `1`–`7`, a
+bare tag, a flag other than `0`/`1`, a fault class outside `1`–`7`, a file failure other than `1` or `2`, a
 truncated HTTP record, text that is not UTF-8) is a `contract` fault.
 
 ### Node ids
@@ -1720,7 +1759,7 @@ the batch is applied and performed after it.
 | 5 | — | Popstate (subscription) |
 | 6 | — | Connectivity (subscription; `online`/`offline` events) |
 | 7 | — | Visibility (subscription; `visibilitychange` events) |
-| 8 | `program:str input:u32+bytes deadline_ms:u32` | Work: `input` is a `u32` length and raw bytes, not necessarily UTF-8; `deadline_ms` 0 = none, capped at 600 000 |
+| 8 | `program:str input:u32+bytes n:u32 (token:u64 start:u64 len:u64)*n deadline_ms:u32` | Work: `input` is a `u32` length and raw bytes, not necessarily UTF-8; then the files the input refers to, each a handle's token and a range of its file; `deadline_ms` 0 = none, capped at 600 000 |
 
 **Template encoding** (`TEMPLATE` bytes): a node tree, then a hole table.
 

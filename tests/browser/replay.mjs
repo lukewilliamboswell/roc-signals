@@ -252,6 +252,12 @@ function setupFiles(state, names) {
   });
 }
 
+// The directories chosen files were written to, removed when the replay ends.
+const chosenDirs = [];
+process.on("exit", () => {
+  for (const d of chosenDirs) fs.rmSync(d, { recursive: true, force: true });
+});
+
 // `choose-files`: the files are written to disk, each under its own name,
 // and set on the file input through DevTools, as a user's choice in the
 // browser's own chooser sets them, which fires `input` and `change`. The
@@ -277,7 +283,9 @@ async function chooseFiles(page, s, state) {
   const input = await page.evaluateHandle((loc) => window.__loc(loc), s.loc);
   await page.send("DOM.setFileInputFiles", { files: paths, objectId: input.objectId });
   await settle(page);
-  fs.rmSync(dir, { recursive: true, force: true });
+  // A chosen file is read from disk when a worker reads it, so it stays
+  // until the replay ends.
+  chosenDirs.push(dir);
   const types = await onEl(page, s.loc, (e) => Array.from(e.files).map((f) => f.type));
   files.forEach((f, i) => {
     if (types[i] !== f.type) throw new Error(`Chrome gives ${f.name} the type ${JSON.stringify(types[i])}, not the declared ${JSON.stringify(f.type)}`);

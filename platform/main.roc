@@ -43,7 +43,7 @@ platform ""
 		inputs_dir: "targets/",
 		wasm32: {
 			inputs: ["host.wasm", app],
-			exports: ["protocol_version", "fault", "boot_keys", "init", "event", "event_files", "files_stage", "files_tokens", "files_released", "drop", "payload_reserve", "work", "cmd_ptr", "cmd_len", "work_ptr", "work_len", "metric", "reset_metrics", "err_ptr", "err_len"],
+			exports: ["protocol_version", "fault", "boot_keys", "init", "event", "event_files", "files_stage", "files_tokens", "files_released", "drop", "payload_reserve", "bytes_reserve", "bytes_clear", "work", "cmd_ptr", "cmd_len", "work_ptr", "work_len", "metric", "reset_metrics", "err_ptr", "err_len"],
 		},
 		x64musl: { inputs: ["crt1.o", "spec.o", app, "libc.a", "libzigc.a", "libcompiler_rt.a"] },
 	}
@@ -96,8 +96,8 @@ files_for_host = |boxed, buf, wbuf, node, handler, record, blobs| {
 ## A worker instance's one call: run the catalogue program named in the
 ## payload (`name:str input:rest`) and return its output bytes, which the
 ## host keeps readable until the next call. A worker instance never mounts.
-work_for_host : List(U8) -> List(U8)
-work_for_host = |payload| (Core.driver(main).work)(payload)
+work_for_host : List(U8), List(List(U8)) -> List(U8)
+work_for_host = |payload, files| (Core.driver(main).work)(payload, files)
 
 ## Teardown: the state and both buffers are released with the call.
 drop_for_host : Box(Core.App), List(U8), List(U8) -> {}

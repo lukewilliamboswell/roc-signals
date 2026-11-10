@@ -75,6 +75,13 @@
 // after every call whose batch the runtime applied and whose effects it
 // performed, `files_released` lists the handles Roc let go, and the runtime
 // lets go of their files. Poisoning or unmounting lets go of all of them.
+// A work request names the files its input holds (FX kind 8): the runtime
+// resolves them while the batch's released handles still name their files,
+// slices them to their ranges and posts the Blobs with the job; the worker
+// script streams each into a buffer of its instance (`bytes_reserve`)
+// before the program runs. A job naming more than 16 files or more than
+// options.maxFileBytes bytes (default 256 MiB), or a file that cannot be
+// read, is answered FileFailed (result tag 13) without running.
 //
 // Attribute values: "" removes the attribute. `value` and `checked` are set
 // as properties (the live control state), boolean attributes (disabled,
@@ -124,6 +131,11 @@ const RES_ONLINE = 8;
 const RES_VISIBLE = 9;
 const RES_WORK = 10;
 const RES_WORK_LOST = 11;
+const RES_FILE_FAILED = 13;
+
+// The most files one job reads (the host's `bytes_reserve` bound).
+const MAX_JOB_FILES = 16;
+
 
 // Result tag 11's class byte: an instance's fault code (1-5) is its class.
 const LOST_UNAVAILABLE = 6;
@@ -292,10 +304,44 @@ function u64le(v) {
   return b;
 }
 
-// Token `i` of a host token array, as a Number (tokens stay below 2^53).
-function tokenAt(dv, i) {
-  return dv.getUint32(8 * i, true) + dv.getUint32(8 * i + 4, true) * 0x100000000;
+// The u64 at `8 * i + at` of a view, as a Number (tokens, sizes and offsets
+// stay below 2^53).
+function tokenAt(dv, i, at = 0) {
+  return dv.getUint32(at + 8 * i, true) + dv.getUint32(at + 8 * i + 4, true) * 0x100000000;
 }
+
+// Read the files a job names into an instance of the module, each into a
+// buffer the instance's host reserves (`bytes_reserve`), streaming it so
+// that no copy of the whole file exists outside linear memory. Throws
+// { reason: 1 } when a file cannot be read and { reason: 2 } when the host
+// has no room for one; `work()` then hands the buffers to the program.
+async function readFiles(x, blobs) {
+  let bytes = 0;
+  for (const blob of blobs) {
+    const ptr = x.bytes_reserve(blob.size);
+    if (ptr === 0) throw { reason: 2 };
+    if (blob.size === 0) continue;
+    let at = ptr;
+    try {
+      const reader = blob.stream().getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (at + value.length > ptr + blob.size) throw new Error("the file grew while it was read");
+        // A fresh view per chunk: nothing between them can grow memory, but
+        // no view is ever held across an await.
+        new Uint8Array(x.memory.buffer, at, value.length).set(value);
+        at += value.length;
+      }
+    } catch (_) {
+      throw { reason: 1 };
+    }
+    if (at !== ptr + blob.size) throw { reason: 1 };
+    bytes += blob.size;
+  }
+  return bytes;
+}
+
 
 function encStr(s) {
   const b = utf8enc.encode(s);
@@ -729,6 +775,10 @@ export class WorkMonitor {
       Object.assign(job.t, { recv, begin, call, ret, sent });
     }
     if (reply && typeof reply.outputBytes === "number") job.outputBytes = reply.outputBytes;
+    // A job that names files: the bytes read into the instance and how long
+    // reading them took (within `stage`).
+    if (reply && typeof reply.fileBytes === "number") job.fileBytes = reply.fileBytes;
+    if (reply && typeof reply.read === "number") job.readMs = reply.read;
     if (reply && Array.isArray(reply.mem)) this.memory(inst, reply.mem);
     this.release(inst, at);
     inst.jobs += 1;
@@ -842,6 +892,8 @@ export class WorkMonitor {
       firstJobOnInstance: job.firstJobOnInstance,
       inputBytes: job.inputBytes,
       outputBytes: job.outputBytes,
+      fileBytes: job.fileBytes ?? 0,
+      readMs: job.readMs ?? null,
       deadlineMs: job.deadlineMs,
       t: { ...t },
       ms,
@@ -1018,8 +1070,8 @@ class WorkPool {
 
   // Returns the job's stop function: `stop("cancel")` for CANCEL,
   // `stop("deadline")` when its deadline expired.
-  submit(payload, done, id, program) {
-    const job = { payload, done, slot: null, settled: false, timer: null, id, program };
+  submit(payload, done, id, program, files = []) {
+    const job = { payload, done, slot: null, settled: false, timer: null, id, program, files };
     if (!this.module || (!this.inline && typeof this.W !== "function")) {
       const message = this.module ? "this browser has no Worker" : "the runtime was mounted without its compiled module";
       job.timer = setTimeout(() => this.settle(job, { lost: LOST_UNAVAILABLE, message }), 0);
@@ -1079,6 +1131,8 @@ class WorkPool {
       slot.job = job;
       job.slot = slot;
       const m = { type: "job", payload: job.payload.buffer };
+      // The browser's Blobs travel by reference: posting one copies no bytes.
+      if (job.files.length > 0) m.files = job.files;
       if (this.monitor.userTiming) m.program = job.program;
       slot.worker.postMessage(m, [job.payload.buffer]);
       this.monitor.jobPosted(job.id, slot.seq);
@@ -1120,8 +1174,15 @@ class WorkPool {
     if (m.type === "done") {
       slot.job = null;
       job.slot = null;
-      this.monitor.jobReplied(job.id, slot.seq, { t: m.t, mem: m.mem, outputBytes: m.output.byteLength });
+      this.monitor.jobReplied(job.id, slot.seq, { t: m.t, mem: m.mem, outputBytes: m.output.byteLength, read: m.read, fileBytes: m.fileBytes });
       this.settle(job, { output: new Uint8Array(m.output) });
+      this.pump();
+    } else if (m.type === "filefail") {
+      // The worker is sound; only this job's files could not be read.
+      slot.job = null;
+      job.slot = null;
+      this.monitor.jobReplied(job.id, slot.seq, {});
+      this.settle(job, { filefail: m.reason });
       this.pump();
     } else {
       this.lose(slot, m.code >= 1 && m.code <= 5 ? m.code : LOST_EXECUTOR, m.message);
@@ -1175,6 +1236,22 @@ class WorkPool {
           if (job.settled || this.closed) continue;
           x = this.instance.exports;
           const begin = mon.now();
+          let fileBytes = 0;
+          if (job.files.length > 0) {
+            try {
+              fileBytes = await readFiles(x, job.files);
+            } catch (e) {
+              if (!(e && (e.reason === 1 || e.reason === 2))) throw e;
+              x.bytes_clear();
+              this.settle(job, { filefail: e.reason });
+              continue;
+            }
+            if (job.settled || this.closed) {
+              x.bytes_clear();
+              continue;
+            }
+          }
+          const read = mon.now() - begin;
           const ptr = x.payload_reserve(job.payload.length);
           if (job.payload.length > 0) new Uint8Array(x.memory.buffer, ptr, job.payload.length).set(job.payload);
           const call = mon.now();
@@ -1183,7 +1260,7 @@ class WorkPool {
           const output = new Uint8Array(x.memory.buffer, x.cmd_ptr(), x.cmd_len()).slice();
           const sent = mon.now();
           if (mon.userTiming) mon.measure(`roc:work.compute ${job.program}`, call, ret, { id: job.id }, `worker ${this.inlineSeq}`);
-          mon.jobReplied(job.id, this.inlineSeq, { t: [begin, begin, call, ret, sent], mem: [x.memory.buffer.byteLength, Number(x.metric(4)), Number(x.metric(5))], outputBytes: output.length });
+          mon.jobReplied(job.id, this.inlineSeq, { t: [begin, begin, call, ret, sent], mem: [x.memory.buffer.byteLength, Number(x.metric(4)), Number(x.metric(5))], outputBytes: output.length, read, fileBytes });
           this.settle(job, { output });
         } catch (e) {
           let code = 0;
@@ -1272,6 +1349,9 @@ export class RocEngineRuntime {
     const nav = this.win ? this.win.navigator : globalThis.navigator;
     this.maxWorkers = options.maxWorkers ?? Math.min((nav && nav.hardwareConcurrency) || 4, 8);
     this.onWorkerFault = options.onWorkerFault ?? null;
+    // The most bytes of files one work job reads into a worker; a job that
+    // names more is answered FileFailed(TooLarge) without running.
+    this.maxFileBytes = options.maxFileBytes ?? 256 * 1024 * 1024;
     // Observation of jobs, workers and turns (options.monitor; see "The
     // monitor" above). It never changes what this runtime does.
     this.monitor = new WorkMonitor(options.monitor ?? {}, {
@@ -1892,9 +1972,24 @@ export class RocEngineRuntime {
             const n = dv.getUint32(at, true);
             // Copied out: linear memory may move before the job is posted.
             const input = u8.slice(at + 4, at + 4 + n);
-            const deadline = dv.getUint32(at + 4 + n, true);
-            at += 8 + n;
-            this.fxOut.push({ op: "work", id, program, input, deadline });
+            at += 4 + n;
+            // The files the job names, resolved now, while the handles the
+            // batch released still name their files (see "Files").
+            const refs = dv.getUint32(at, true);
+            at += 4;
+            const files = [];
+            for (let i = 0; i < refs; i += 1) {
+              const token = tokenAt(dv, 0, at);
+              const start = tokenAt(dv, 0, at + 8);
+              const len = tokenAt(dv, 0, at + 16);
+              const file = this.files.get(token);
+              if (file === undefined) throw new Error(`a work request names file handle ${token}, which this runtime does not hold`);
+              files.push(file.slice(start, start + len));
+              at += 24;
+            }
+            const deadline = dv.getUint32(at, true);
+            at += 4;
+            this.fxOut.push({ op: "work", id, program, input, files, deadline });
           } else throw new Error(`unknown effect kind ${kind}`);
           break;
         }
@@ -2174,14 +2269,25 @@ export class RocEngineRuntime {
         finish(new Uint8Array([RES_TIMEOUT]), "timeout");
       }, fx.deadline);
     }
+    const fileBytes = fx.files.reduce((n, f) => n + f.size, 0);
+    if (fx.files.length > MAX_JOB_FILES || fileBytes > this.maxFileBytes) {
+      // More than a run reads: refused before anything is read, as one
+      // result turn after this batch.
+      setTimeout(() => finish(new Uint8Array([RES_FILE_FAILED, 2]), "lost", "too_large"), 0);
+      return;
+    }
     stop = this.workPool().submit(concat([encStr(fx.program), fx.input]), (outcome) => {
+      if (outcome.filefail !== undefined) {
+        finish(new Uint8Array([RES_FILE_FAILED, outcome.filefail]), "lost", outcome.filefail === 1 ? "unreadable" : "too_large");
+        return;
+      }
       if (outcome.output !== undefined) {
         finish(concat([new Uint8Array([RES_WORK]), outcome.output]), "done", null, outcome.output);
         return;
       }
       const klass = this.reportLost(fx, outcome.lost, outcome.message);
       finish(new Uint8Array([RES_WORK_LOST, outcome.lost]), outcome.lost === LOST_UNAVAILABLE ? "unavailable" : "lost", klass);
-    }, fx.id, fx.program);
+    }, fx.id, fx.program, fx.files);
   }
 
   // Report a lost job and return its class name. The `roc worker fault

@@ -332,6 +332,7 @@ await mountRocEngineApp({
   maxWorkers: 4,            // most workers at once; default min(cores, 8)
   workerUrl: "/js/worker.mjs", // when worker.mjs is not beside runtime.mjs
   workers: "inline",        // run jobs on the page's thread instead (below)
+  maxFileBytes: 64 << 20,   // most bytes of files one run reads; default 256 MiB
   onWorkerFault: (f) => console.warn(f.program, f.class, f.message),
 });
 ```
@@ -339,6 +340,8 @@ await mountRocEngineApp({
 - `maxWorkers` bounds the workers alive at once. Each runs one program at a
   time; further runs wait in order.
 - `workerUrl` locates `worker.mjs` when you serve it elsewhere.
+- `maxFileBytes` bounds the bytes of [files](@/docs/files.md) one run reads
+  into its worker; a run over it fails unread.
 - `workers: "inline"` runs every job in a second instance of the module on
   the page's own thread, one at a time, with the same answers. The page
   waits while a job runs, and a deadline can only stop a job that has not

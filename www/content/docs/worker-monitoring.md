@@ -1,7 +1,7 @@
 +++
 title = "Monitoring Workers"
 description = "Where a worker job's time goes, how busy the pool is, and what workers cost, from the runtime's monitor."
-weight = 11
+weight = 12
 template = "page.html"
 +++
 
@@ -54,7 +54,7 @@ result, and turns those stamps into spans. The spans add up to the job's
 | `queue` | handed to the pool → posted | Waiting for a free worker |
 | `cold` | posted → instance ready | Starting a worker: its script and its instance. 0 for a warm worker |
 | `toWorker` | posted → received | The message reaching a warm worker (`null` when cold) |
-| `stage` | ready → staged | Copying the input into the worker's instance |
+| `stage` | ready → staged | Copying the input into the worker's instance, and reading the [files](@/docs/files.md) it names |
 | `compute` | staged → returned | The program itself (`work()`) |
 | `copyOut` | returned → posted back | Copying the output out of the instance |
 | `fromWorker` | posted back → received by the page | The message coming back |
@@ -65,6 +65,11 @@ A job's deadline runs from the moment the request is performed, so it covers
 queueing and cold start as well as compute. A held job (manual mode, or the
 `manualWork` mount option) has no deadline timer: a spec's time is manual,
 and `expireEffect(id)` expires it instead.
+
+For a job whose input holds files, the record's `readMs` is the part of
+`stage` spent reading them into the instance, and its `fileBytes` how many
+bytes that was; `inputBytes` counts the payload alone, which refers to the files
+but does not carry them.
 
 `firstJobOnInstance` marks a worker's first job. That job's `compute` also
 pays for the browser compiling the program's code the first time it runs, so
