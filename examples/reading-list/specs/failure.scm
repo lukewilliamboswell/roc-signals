@@ -1,0 +1,20 @@
+(test "Reading List — a store that does not answer, answers what the app does not understand, or refuses a book"
+  (steps
+    (answer-port 1 timeout)
+    (expect-text (test-id "status") "Your shelf could not be read: the store did not answer in time.")
+    (expect-disabled (role button :name "Add book") true)
+    ; A new document asks again: the books live in the store, not the page.
+    (navigate "/?again")
+    (expect-text (test-id "status") "Opening your shelf…")
+    (expect-port-call 1 "roc-signals.example/reading-list/load" "{}")
+    (answer-port 1 reply "[{\"id\":\"b1\",\"title\":\"Dune\",\"author\":\"\",\"shelf\":\"Abandoned\",\"added_ms\":\"10\"}]")
+    (expect-text (test-id "status") "Your shelf could not be read: it holds something this app does not understand (port \"roc-signals.example/reading-list/load\": unknown tag \"Abandoned\").")
+    (navigate "/?third")
+    (answer-port 1 reply "[]")
+    (fill (label "Title") "Piranesi")
+    (click (role button :name "Add book"))
+    (answer-port 2 throw "QuotaExceededError")
+    (expect-text (test-id "note") "\"Piranesi\" was not added: the store said \"QuotaExceededError\".")
+    (expect-text (test-id "status") "No books yet. Add the first one above.")
+  )
+)

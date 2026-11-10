@@ -104,3 +104,14 @@ description = "Drop a CSV of any size and convert it to TSV or JSON lines in a w
 source = "examples/csv-converter/main.roc"
 specs = "examples/csv-converter/specs"
 public = true
+
+[[examples]]
+slug = "reading-list"
+title = "Reading List"
+description = "A reading list kept in the browser's IndexedDB through ports: the books survive a reload, a change in one tab shows in every other, and the only JavaScript the app brings is its port handlers."
+source = "examples/reading-list/main.roc"
+specs = "examples/reading-list/specs"
+public = true
+# The app's port handlers (IndexedDB and a BroadcastChannel), its own
+# JavaScript, which site.mjs passes as the `ports` mount option.
+ports = "ports.mjs"
