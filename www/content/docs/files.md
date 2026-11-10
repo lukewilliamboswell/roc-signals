@@ -1,6 +1,6 @@
 +++
 title = "Files"
-description = "Take a file the user chooses, drops or pastes, keep it as a handle, act on it where the browser keeps it, and read its bytes in a worker or, for a small file, on the page."
+description = "Take a file the user chooses, drops or pastes, keep it as a handle, act on it where the browser keeps it, and read its bytes in a worker task's job or, for a small file, on the page."
 weight = 11
 template = "page.html"
 +++
@@ -14,26 +14,26 @@ browser keeps the file, and the app decides what crosses into its memory.
 
 That is what makes a large file practical. A 64 MiB document never enters the
 page's memory unless the app asks for it there: the app can upload it, digest
-it or show it where the browser keeps it, and a worker reads it once into
-its own memory, so the program gets those bytes without a copy.
+it or show it where the browser keeps it, and a worker task's job reads the
+ranges it needs straight into the worker's memory.
 
 ## Which tool
 
 | You want to | Use | The bytes |
 |---|---|---|
 | Upload it, digest it, or preview it in an `<img>` or `<video>` | An operation on the file: `File.upload`, `File.sha256`, `File.object_url` | Never enter the page's memory |
-| Process it: parse, convert, search, count | A [worker program](#reading-a-file-in-a-worker) that is sent the file and calls `File.contents` | Read once into the worker, off the page's thread |
+| Process it: parse, convert, search, count | A [worker task](#reading-a-file-in-a-worker) that is sent the file and reads it with `file.contents!` or `file.read!` | Read into the worker, off the page's thread, as much as the job asks for |
 | Read a small file in a simple app | A page read: `file.read_bytes({})`, `file.read_utf8({})` | Read on the page's thread and copied into the page's memory |
-| Read a large file a chunk at a time, or produce a new file to save or send on | A [task](@/docs/files-in-tasks.md): `file.read!` and `File.build!` in a worker | Read range by range into the worker; a new file never enters the page's memory |
+| Produce a new file to save or send on | A task whose job writes it with `File.build!` (see [Files in Tasks](@/docs/files-in-tasks.md)) | Built in the worker; the new file never enters the page's memory |
 | Download a file, or save one | [`File.fetch`](@/docs/files-in-tasks.md#downloading-into-a-file) and [`File.save`](@/docs/files-in-tasks.md#saving) | Stay in the browser |
 
 This answers two older workarounds. Getting a file's bytes into Roc used to
 mean a custom element that read the file, base64-encoded it into an input's
 value and dispatched `change`, so the page decoded megabytes of base64 in a
-handler; now the file arrives as a handle, a worker reads its bytes, and a
-small one can be read on the page as bytes, not text. Sending a file on used
-to mean building a `data:` URL; an upload now sends the file itself, and a
-preview is an object URL the browser serves from the file.
+handler; now the file arrives as a handle, a job in a worker reads its
+bytes, and a small one can be read on the page as bytes, not text. Sending
+a file on used to mean building a `data:` URL; an upload now sends the file
+itself, and a preview is an object URL the browser serves from the file.
 
 ## Receiving files
 
@@ -67,34 +67,44 @@ Two things hold a file longer than you might expect:
   list's files alive. To keep some files and let the rest go, build a new
   list of the ones you keep.
 - A `derive` or `Worker.derive` layer keeps its last input, so a file it was
-  asked about stays until its input changes.
+  asked about stays until its input changes. A request kept in state for an
+  effect site holds its files the same way, until the state is written
+  without it.
 
-An app holds at most 64 files at once. Files an event carries beyond that are
-not delivered; `refused` counts them, so the app can say so.
+An app holds at most 64 files at once, counting the files a job answered
+with and downloaded ones. Files an event carries beyond that are not
+delivered; `refused` counts them, so the app can say so.
 
 ## Reading a file in a worker
 
-A worker program's input can hold files, like any other value. In the
-program, `File.contents` gives the bytes of the file or of its range:
+A [worker task](@/docs/workers.md)'s input can hold files, like any other
+value. The page sends only the file's handle: the runtime hands the
+browser's file to the worker, and nothing is read until the job asks. In
+the job, reading is an effect:
 
-{{ sample(file="files/Upload.roc", region="program") }}
+{{ sample(file="files/Upload.roc", region="task") }}
 
-The page sends only the file's handle. The runtime hands the browser's file
-to the worker, which reads it into its own memory before the program runs.
-For text, `File.contents_utf8` gives `Err(InvalidUtf8)` when the bytes are
-not UTF-8. Calling `File.contents` on the page is a contract error: there
-are no bytes there until the app asks for them with a read.
+`file.contents_utf8!()` reads the whole file, or the whole range of a
+slice, as text; `file.contents!()` gives its bytes, and
+`file.read!({ start, len })` reads one range, so a job can go through a
+large file a chunk at a time and keep its memory to a chunk. These are
+effects, written with `!`, so they exist only in a job: page code is pure
+and the compiler refuses one there. On the page there are no bytes until
+the app asks for them with a page read (below).
 
-A job whose files cannot be read fails before the program starts, and the
-worker survives:
+Each read answers a `Try`, and its error is the task's to pass on:
 
-| What happened | `Worker.Error` |
-|---|---|
-| The file changed or was deleted since the user chose it | `FileFailed(Unreadable)` |
-| More than 16 files, or more bytes than `maxFileBytes` (256 MiB unless the mount sets it) | `FileFailed(TooLarge)` |
+| What happened | The effect answers | The page sees |
+|---|---|---|
+| The file changed or was deleted since the user chose it | `Err(Unreadable)` | `Failed(Unreadable)` when the task passes it on with `?` |
+| Text was asked for and the bytes are not UTF-8 | `Err(InvalidUtf8)` | `Failed(InvalidUtf8)` |
 
-To read part of a large file, send a range: `file.slice({ start, len })`
-reads only those bytes.
+The worker survives either way, and the job decides what to do: answer the
+error, as the sample does, or try something else. Nothing is read before a
+job starts, so no file is too large to send; how much a job holds at once
+is up to the job. [Files in Tasks](@/docs/files-in-tasks.md) covers the
+rest: building a new file, appending to one across jobs, saving and
+downloading.
 
 ## Acting on a file where it lives
 
@@ -140,9 +150,10 @@ they stay while the app keeps them.
 A read accepts 8 MiB unless the app says otherwise:
 `file.read_bytes({ max_bytes: 32 * 1024 * 1024 })`. A larger file or range is
 `TooLarge` and is not read. The page's `maxFileBytes` mount option (256 MiB
-by default) caps every read whatever it asks, so a deployment can keep the
-page's memory smaller than an app would like; send larger files to a
-worker.
+by default) caps every page read whatever it asks, so a deployment can keep
+the page's memory smaller than an app would like; send larger files to a
+worker task. `maxFileBytes` is the page's ceiling only: it also bounds a
+digest and a downloaded body, and never what a job reads in a worker.
 
 | What happened | `FileError` |
 |---|---|
@@ -151,6 +162,10 @@ worker.
 | Text was asked for and the bytes are not UTF-8 | `InvalidUtf8` |
 | The browser cannot do it (a digest without WebCrypto) | `Unavailable` |
 | Too many requests were in flight | `Refused` |
+
+`FileError` is also the error of the effects a job calls on a file
+(`Unreadable` and `InvalidUtf8` from a read, `TooLarge` from a builder over
+its bound), so a task that passes them on can name it as its own error.
 
 ## Testing
 
