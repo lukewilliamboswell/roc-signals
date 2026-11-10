@@ -43,7 +43,7 @@ Port := [].{
 	## - `Timeout`: the call's `timeout` expired.
 	## - `Threw(message)`: the JavaScript threw or rejected, or answered with
 	##   something that is not JSON data (a `Map`, a function, a cycle).
-	## - `TooLarge`: the answer was larger than the page's `maxPayloadBytes`,
+	## - `TooLarge`: the answer was larger than the page's `maxPortBytes`,
 	##   or carried more files than the instance can hold.
 	## - `Closed`: the JavaScript ended the subscription.
 	## - `Undecodable(why)`: the answer is JSON data, but not of the type the

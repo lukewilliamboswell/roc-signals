@@ -336,9 +336,9 @@ async function open(options = {}, mountWith = null) {
   await ctx.close();
 }
 
-// The payload bound: an answer larger than maxPayloadBytes is TooLarge.
+// The payload bound: an answer larger than maxPortBytes is TooLarge.
 {
-  const { page, ctx } = await open({ maxPayloadBytes: 1000 });
+  const { page, ctx } = await open({ maxPortBytes: 1000 });
   const r = await page.evaluate(async () => {
     window.__fill("Size", "900");
     window.__click("Echo");
@@ -347,16 +347,16 @@ async function open(options = {}, mountWith = null) {
     window.__click("Echo");
     return window.__until((t) => t.includes("too large"));
   });
-  check("an answer over maxPayloadBytes is TooLarge", r, "echo:900 1 132|echo:too large");
-  const bad = await page.evaluate(() => window.__mount({ maxPayloadBytes: 65 * 1024 * 1024 }));
-  check("maxPayloadBytes above 64 MiB is refused", bad, "maxPayloadBytes: 68157440 is not a whole number of bytes from 1 to 67108864");
+  check("an answer over maxPortBytes is TooLarge", r, "echo:900 1 132|echo:too large");
+  const bad = await page.evaluate(() => window.__mount({ maxPortBytes: 65 * 1024 * 1024 }));
+  check("maxPortBytes above 64 MiB is refused", bad, "maxPortBytes: 68157440 is not a whole number of bytes from 1 to 67108864");
   await ctx.close();
 }
 
 // 8 MiB each way: the handler gets a Uint8Array and the app the same bytes
 // back, with no base64 and no growth of the page's heap beyond the bytes.
 {
-  const { page, ctx } = await open({ maxPayloadBytes: 16 << 20 });
+  const { page, ctx } = await open({ maxPortBytes: 16 << 20 });
   const r = await page.evaluate(async () => {
     const n = 8 << 20;
     window.__fill("Size", String(n));

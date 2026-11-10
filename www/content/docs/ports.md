@@ -67,6 +67,9 @@ import ports from "./notes-ports.mjs";
 await mountRocEngineApp({ wasmUrl: "app.wasm", root: document.getElementById("app"), ports });
 ```
 
+`maxPortBytes` (4 MiB unless the mount sets it, at most 64 MiB) bounds one
+answer or message; see [Errors and bounds](#errors-and-bounds).
+
 A handler is an object with one function, named after the port's shape:
 
 ```js
@@ -170,7 +173,7 @@ of `Port.Error`:
 | `Refused` | The app had too many requests in flight (see `max_inflight`) |
 | `Timeout` | The call's `timeout` expired |
 | `Threw(message)` | The JavaScript threw, rejected, or answered something that is not JSON data |
-| `TooLarge` | The answer was larger than the page's `maxPayloadBytes` (default 4 MiB, at most 64 MiB), or carried more files than the app can hold |
+| `TooLarge` | The answer was larger than the page's `maxPortBytes` (default 4 MiB, at most 64 MiB), or carried more files than the app can hold |
 | `Closed` | The JavaScript ended the subscription |
 | `Undecodable(why)` | The answer is not of the type the port declares |
 

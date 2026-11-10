@@ -124,7 +124,7 @@
 // Uint8Array/ArrayBuffer as bytes, File/Blob as a file handle, Date as its
 // JSON text). An answer that is not such data, a throw or a rejection
 // answers the request PortFailed(Threw); an answer larger than
-// options.maxPayloadBytes (default 4 MiB, at most 64 MiB) PortFailed
+// options.maxPortBytes (default 4 MiB, at most 64 MiB) PortFailed
 // (TooLarge). A command handler's or an unsubscribe function's failure goes
 // to console.error and options.onPortFault. Nothing a handler does poisons
 // the instance. Poisoning and unmounting abort every call's signal and
@@ -198,9 +198,9 @@ const RES_PORT_REPLY = 14;
 const RES_PORT_FAILED = 15;
 
 // The default and largest bound on one port answer or message, JSON text
-// and bytes together (options.maxPayloadBytes).
-export const DEFAULT_PAYLOAD_BYTES = 4 * 1024 * 1024;
-export const MAX_PAYLOAD_BYTES = 64 * 1024 * 1024;
+// and bytes together (options.maxPortBytes).
+export const DEFAULT_PORT_BYTES = 4 * 1024 * 1024;
+export const MAX_PORT_BYTES = 64 * 1024 * 1024;
 
 // The most files one job reads (the host's `bytes_reserve` bound).
 const MAX_JOB_FILES = 16;
@@ -1676,9 +1676,9 @@ export class RocEngineRuntime {
     // ports (read at mount), push subscriptions by port, the command log of
     // manual mode, and per-port counters for the monitor.
     this.ports = options.ports ?? null;
-    this.maxPayloadBytes = options.maxPayloadBytes ?? DEFAULT_PAYLOAD_BYTES;
-    if (!Number.isInteger(this.maxPayloadBytes) || this.maxPayloadBytes < 1 || this.maxPayloadBytes > MAX_PAYLOAD_BYTES) {
-      throw new Error(`maxPayloadBytes: ${this.maxPayloadBytes} is not a whole number of bytes from 1 to ${MAX_PAYLOAD_BYTES}`);
+    this.maxPortBytes = options.maxPortBytes ?? DEFAULT_PORT_BYTES;
+    if (!Number.isInteger(this.maxPortBytes) || this.maxPortBytes < 1 || this.maxPortBytes > MAX_PORT_BYTES) {
+      throw new Error(`maxPortBytes: ${this.maxPortBytes} is not a whole number of bytes from 1 to ${MAX_PORT_BYTES}`);
     }
     this.onPortFault = options.onPortFault ?? null;
     this.portDecls = new Map();
@@ -2853,7 +2853,7 @@ export class RocEngineRuntime {
       return portFailed(1, `the answer is not JSON data: ${e.message}`);
     }
     const payload = portReplyPayload(data);
-    if (payload.size > this.maxPayloadBytes) {
+    if (payload.size > this.maxPortBytes) {
       this.portCount(port, "tooLarge");
       return portFailed(2);
     }
@@ -2986,7 +2986,7 @@ export class RocEngineRuntime {
       if (e instanceof PortDataError) throw new TypeError(`port "${sub.port}": emit was given something that is not JSON data: ${e.message}`);
       throw e;
     }
-    if (payload.size > this.maxPayloadBytes) {
+    if (payload.size > this.maxPortBytes) {
       this.portCount(sub.port, "tooLarge");
       payload = portFailed(2);
     }

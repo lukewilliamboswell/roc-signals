@@ -847,6 +847,12 @@ and the engine unchanged: to the engine an `Ask` is a `Work` request.
 
 ### Bounds
 
+What an app means is decided in Roc and carried on its requests: a job's
+deadline, a call's timeout, how much a read of a file accepts. What a
+deployment allows is a mount option, named `max…Bytes` or `maxWorkers`
+(`maxWorkers`, `maxWorkerBytes`, `maxFileBytes`, `maxPortBytes`), which caps
+what any request asks for.
+
 - **In-flight cap.** The in-flight table holds at most 32 awaited requests by
   default (configurable per program). A request beyond it is not issued: it is
   refused, counted, and its owner receives a typed `Refused` result in a
@@ -886,7 +892,7 @@ and the engine unchanged: to the engine an `Ask` is a `Work` request.
   is a `contract` error when the catalogue is built, naming the program;
   issuing work for a name the catalogue does not hold is a `contract` error
   naming the program and the issuing site.
-- **Port messages.** A port's answer or message is at most `maxPayloadBytes`
+- **Port messages.** A port's answer or message is at most `maxPortBytes`
   (a mount option, default 4 MiB, at most 64 MiB) of JSON text and bytes
   together, else `PortFailed(TooLarge)`. Each subscription declares how its
   undelivered messages wait: `Latest` keeps one and a newer one replaces it;
@@ -1347,7 +1353,7 @@ bound and a declared behaviour at the bound:
 | HTTP timeout, work deadline | 600 s | Capped |
 | Worker catalogue | 64 programs | `contract` poison |
 | Port catalogue | 64 ports, names 1–128 bytes | `contract` poison |
-| A port answer or message | `maxPayloadBytes` (default 4 MiB, at most 64 MiB) | Typed `PortFailed(TooLarge)` |
+| A port answer or message | `maxPortBytes` (default 4 MiB, at most 64 MiB) | Typed `PortFailed(TooLarge)` |
 | Undelivered messages per port subscription | 1 (`Latest`) or n ≤ 1024 (`Every(n)`) | `Latest` replaces; `Every` refuses `emit` |
 | Port messages in the ingress queue | 1 per subscription | The next waits for its turn |
 | Workers per runtime | `maxWorkers` (default: core count, at most 8) | Jobs queue |

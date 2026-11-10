@@ -131,7 +131,7 @@ guarded while the control has focus. `checked` is a property set from
 | Bytes one digest reads | `maxFileBytes` (default 256 MiB) | `FileFailed(TooLarge)`, unread |
 | URLs one file gives | 16 ranges, revoked when the file is let go | `FileFailed(TooLarge)` |
 | Ports a program declares | 64, names 1 to 128 bytes | Contract error at mount |
-| A port's answer or message | `maxPayloadBytes` (default 4 MiB, at most 64 MiB) | `TooLarge` |
+| A port's answer or message | `maxPortBytes` (default 4 MiB, at most 64 MiB) | `TooLarge` |
 | Undelivered messages per port subscription | 1 (`Latest`) or n ≤ 1024 (`Every(n)`) | `Latest` keeps the newest; `Every` refuses the JavaScript's `emit` |
 | Port call timeout | 600 s | Capped |
 | Payload nesting | 512 containers | The run is `Lost(Contract)`: an input fails to decode in the worker, an output is refused there before it is sent |
