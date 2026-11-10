@@ -45,6 +45,9 @@ Attach it to a file input with `Html.file_input`, to a drop target with
 
 {{ sample(file="files/Upload.roc", region="view") }}
 
+`Html.file_input` takes a props record: `{}` for one file of any type,
+`selection: Multiple` to let the user choose several at once, and
+`accept: Types(".txt,text/plain")` for the types its chooser offers first.
 The browser opens its own chooser when the user clicks the file input, so
 there is nothing to set up for permissions. A drop target lets a dropped
 file land there instead of the browser opening it.

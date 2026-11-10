@@ -161,7 +161,7 @@ PreparedApp := [].{
 			[
 				Html.file_input(
 					Engine.const("Document"),
-					{ accept: "", multiple: Bool.False },
+					{},
 					st.on_files(
 						|s, { files, refused: _ }| match files {
 							[first, ..] => { ..s, doc: Loaded(first) }

@@ -111,7 +111,7 @@ FilesApp := [].{
 		Html.div(
 			"files",
 			[
-				Html.file_input(Engine.const("Upload"), { accept: "", multiple: Bool.True }, st.on_files(FilesApp.received)),
+				Html.file_input(Engine.const("Upload"), { selection: Multiple }, st.on_files(FilesApp.received)),
 				Engine.element("section", [Html.aria_label("Drop"), Html.on_drop_files(st.on_files(FilesApp.received))], [Engine.text("drop here")]),
 				Engine.element("section", [Html.aria_label("Paste"), Html.on_paste_files(st.on_files(FilesApp.received))], [Engine.text("paste here")]),
 				Html.button("Keep first", [], st.update(|s| { ..s, files: FilesApp.first_only(s.files) })),
@@ -145,7 +145,7 @@ FilesApp := [].{
 							"section",
 							[Html.aria_label("panel")],
 							[
-								Html.file_input(Engine.const("Panel upload"), { accept: ".txt", multiple: Bool.False }, inner.on_files(|kept, { files, refused: _ }| kept.concat(files))),
+								Html.file_input(Engine.const("Panel upload"), { accept: Types(".txt") }, inner.on_files(|kept, { files, refused: _ }| kept.concat(files))),
 								Html.p_v(inner.val().map(FilesApp.listing), [Engine.test_id("panel-files")]),
 							],
 						),

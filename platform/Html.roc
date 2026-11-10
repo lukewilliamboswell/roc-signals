@@ -71,16 +71,36 @@ Html := [].{
 	text_input : Val(ctx, Str), Str, Val(ctx, Str), List(Attr(ctx)), Handler(ctx) -> Elem(ctx)
 	text_input = |name, kind, v, attrs, h| Engine.element("input", [Engine.attr_v("aria-label", name), Engine.attr("type", kind), Engine.attr_v("value", v), Engine.on("input", h)].concat(attrs), [])
 
-	## `file_input(name, { accept, multiple }, handler)`: a file picker. The
-	## browser opens its own chooser when the user activates it; `handler`
-	## (`State.on_files`) receives the chosen files as handles. `accept` is the
-	## browser's list of types (`".docx,application/pdf"`, `""` for any) and
-	## `multiple` whether more than one may be chosen at once.
-	file_input : Val(ctx, Str), { accept : Str, multiple : Bool }, FilesHandler(ctx) -> Elem(ctx)
-	file_input = |name, { accept, multiple }, h| {
+	## What a file input lets the user choose.
+	##
+	## - `selection`: one file at a time (`Single`, the default) or several
+	##   (`Multiple`).
+	## - `accept`: any file (`Any`, the default), or the browser's list of
+	##   types (`Types(".docx,application/pdf")`), which its chooser offers
+	##   first. It is a hint to the chooser, not a check: a dropped or pasted
+	##   file, or one the user picks with "all files", can be of any type.
+	FileInputProps := {
+		selection : [Single, Multiple] ?? Single,
+		accept : [Any, Types(Str)] ?? Any,
+	}
+
+	## `file_input(name, props, handler)`: a file picker whose accessible name
+	## is `name`, as `file_input(Engine.const("Document"), {}, handler)` or
+	## `file_input(name, { selection: Multiple }, handler)`. The browser opens
+	## its own chooser when the user activates it; `handler`
+	## (`State.on_files`) receives the chosen files as handles.
+	file_input : Val(ctx, Str), FileInputProps, FilesHandler(ctx) -> Elem(ctx)
+	file_input = |name, FileInputProps.({ selection, accept }), h| {
 		attrs = [Engine.attr_v("aria-label", name), Engine.attr("type", "file"), Engine.on_files("change", h)]
-		with_accept = if (accept == "") attrs else attrs.append(Engine.attr("accept", accept))
-		Engine.element("input", if (multiple) with_accept.append(Engine.attr("multiple", "true")) else with_accept, [])
+		with_accept = match accept {
+			Any => attrs
+			Types(types) => attrs.append(Engine.attr("accept", types))
+		}
+		with_selection = match selection {
+			Single => with_accept
+			Multiple => with_accept.append(Engine.attr("multiple", "true"))
+		}
+		Engine.element("input", with_selection, [])
 	}
 
 	## Make the element a drop target for files: `handler` (`State.on_files`)

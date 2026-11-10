@@ -58,7 +58,7 @@ Upload := [].{
 		Html.div(
 			"upload",
 			[
-				Html.file_input(Engine.const("Text file"), { accept: ".txt,text/plain", multiple: Bool.False }, st.on_files(Upload.received)),
+				Html.file_input(Engine.const("Text file"), { accept: Types(".txt,text/plain") }, st.on_files(Upload.received)),
 				Engine.element("section", [Html.aria_label("Drop a file"), Html.on_drop_files(st.on_files(Upload.received))], [Engine.text("or drop one here")]),
 				Worker.derive_when(Upload.count, v.map(|s| Upload.latest(s.files)), |r| Html.p_v(r.map(Upload.show), [Engine.test_id("counts")])),
 				Html.button("Forget files", [], st.update(|s| { ..s, files: [] })),

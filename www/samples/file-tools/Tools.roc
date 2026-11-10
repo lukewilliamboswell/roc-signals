@@ -103,7 +103,7 @@ Tools := [].{
 		Html.div(
 			"tools",
 			[
-				Html.file_input(Engine.const("File"), { accept: "", multiple: Bool.False }, st.on_files(Tools.chosen)),
+				Html.file_input(Engine.const("File"), {}, st.on_files(Tools.chosen)),
 				Html.button("Upload", [], st.update(|s| Tools.do(s, |f| Uploading(f)))),
 				Html.button("Digest", [], st.update(|s| Tools.do(s, |f| Digesting(f)))),
 				Html.button("Preview", [], st.update(|s| Tools.do(s, |f| Previewing(f)))),
