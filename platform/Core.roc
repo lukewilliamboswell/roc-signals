@@ -1184,7 +1184,17 @@ Core := [].{
 	## reparented answer's write to the retired layer is skipped and counted.
 	resource : Val(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Req)), resolve : (s, a, Res -> s) }, (Val(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
-	resource = |input, cfg, body| Site(
+	resource = |input, cfg, body| {
+		resolve = cfg.resolve
+		Core.resource_at(input, { init: cfg.init, pending: cfg.pending, plan: cfg.plan, resolve: |s, a, _at, res| resolve(s, a, res) }, body)
+	}
+
+	## `resource` whose `resolve` is also told the position, in the list
+	## `plan(a)` returned, of the request a result answers: how a `gather`
+	## layer knows which job answered.
+	resource_at : Val(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Req)), resolve : (s, a, U64, Res -> s) }, (Val(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
+		where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
+	resource_at = |input, cfg, body| Site(
 		Mount(
 			|env, args, tx| {
 				depth = layer(args.depth, args.path)
@@ -1219,6 +1229,44 @@ Core := [].{
 			Answered(output) => Ok(output)
 			_ => Err(NoAnswer)
 		}
+	}
+
+	## One job of a gathered question: still working, answered, or failed.
+	JobState(output, error) : [Working, Answered(output), Failed(error)]
+
+	## What a layer gathering the answers of several jobs holds: the
+	## current question's jobs in input order, and `all`, a [Remote] of the
+	## whole list, answered once every job has answered and kept while the
+	## next question is pending.
+	Gathered(output, error) : { all : Remote(List(output), error), jobs : List(JobState(output, error)) }
+
+	## The `resource_at` configuration of a layer that asks one request per
+	## input and gathers the answers (`Engine.gather`). A new list marks
+	## every job `Working` and `all` `Pending`, keeping its answer; each
+	## result settles the job at its position, and once none is working
+	## `all` settles too. An empty list is answered at once with `[]`.
+	gather : asker -> { init : Gathered(output, error), pending : (Gathered(output, error), List(input) -> Gathered(output, error)), plan : (List(input) -> List(Req)), resolve : (Gathered(output, error), List(input), U64, Res -> Gathered(output, error)) }
+		where [asker.request : asker, input -> Req, asker.result : asker, Res -> Try(output, error)]
+	gather = |asker| {
+		init: { all: { request: Idle, answer: Unanswered }, jobs: [] },
+		pending: |gathered, inputs|
+			if inputs.is_empty() {
+				{ all: { request: Idle, answer: Answered([]) }, jobs: [] }
+			} else {
+				{ all: { ..gathered.all, request: Pending }, jobs: inputs.map(|_| Working) }
+			},
+		plan: |inputs| inputs.map(|input| asker.request(input)),
+		resolve: |gathered, _inputs, at, res| {
+			job = match asker.result(res) {
+				Ok(output) => Answered(output)
+				Err(error) => Failed(error)
+			}
+			jobs = match gathered.jobs.set(at, job) {
+				Ok(updated) => updated
+				Err(_) => crash "internal: a gathered answer for job ${at.to_str()} of ${gathered.jobs.len().to_str()}"
+			}
+			{ all: gathered_all(gathered.all, jobs), jobs }
+		},
 	}
 
 	## The `resource` configuration of a layer that follows the answer to one
@@ -4695,9 +4743,10 @@ max_turns = 64
 max_breadth : U64 -> U64
 max_breadth = |inflight| max_turns * (if (inflight > max_turns) inflight else max_turns)
 
-## A request the site owns: its id, whether it is a subscription, and the
-## value it was issued for.
-Owned(a) : { id : U32, sub : Bool, keep : Bool, a : a }
+## A request the site owns: its id, whether it is a subscription, whether
+## it is kept on disposal, the value it was issued for, and its position in
+## the list of requests issued for that value.
+Owned(a) : { id : U32, sub : Bool, keep : Bool, a : a, at : U64 }
 
 EffectCfg(ctx, a) : { v : Val(ctx, a), plan : (a -> List(Req)), react : Reaction(ctx, a), path : List(U32) }
 
@@ -4843,7 +4892,10 @@ issue : Tx, List(U32), List(Req), a, List(Owned(a)) -> (Tx, List(Owned(a)))
 issue = |tx, path, reqs, a, owned| {
 	var $tx = tx
 	var $owned = owned
+	var $at = 0
 	for req in reqs {
+		at = $at
+		$at = $at + 1
 		match req {
 			Push(url) => {
 				$tx = emit_op($tx, 15, |c| put_str(c.append(1), url))
@@ -4867,13 +4919,13 @@ issue = |tx, path, reqs, a, owned| {
 			Self => {
 				(id, t1) = fx_follow($tx, path, Now)
 				$tx = t1
-				$owned = $owned.append({ id, sub: False, keep: False, a })
+				$owned = $owned.append({ id, sub: False, keep: False, a, at })
 			}
 			Work({ task, on_dispose, .. }) => {
 				t0 = with_fx($tx, |fx| { ..fx, focus: fx.focus.append(CheckTask(task, path)) })
 				(id, t1) = fx_admit(t0, path, req)
 				$tx = t1
-				$owned = $owned.append({ id, sub: False, keep: on_dispose == Keep, a })
+				$owned = $owned.append({ id, sub: False, keep: on_dispose == Keep, a, at })
 			}
 			Save({ file, name }) => {
 				# Opcode 20 is not counted by opcode: index 20 of the work
@@ -4885,7 +4937,7 @@ issue = |tx, path, reqs, a, owned| {
 			_ => {
 				(id, t1) = fx_admit($tx, path, req)
 				$tx = t1
-				$owned = $owned.append({ id, sub: is_sub(req), keep: is_kept(req), a })
+				$owned = $owned.append({ id, sub: is_sub(req), keep: is_kept(req), a, at })
 			}
 		}
 	}
@@ -5247,6 +5299,32 @@ latest_deliver = |cfg, last, owned, env, id, res, tx| {
 	}
 }
 
+## The whole answer of a gathered question once no job is working: every
+## output in input order, or the first failure in input order. While any
+## job works, `all` stays as it is (`Pending`, with the previous answer).
+gathered_all : Core.Remote(List(output), error), List(Core.JobState(output, error)) -> Core.Remote(List(output), error)
+gathered_all = |all, jobs| {
+	var $outputs = []
+	var $failed = []
+	for job in jobs {
+		match job {
+			Working => {
+				return all
+			}
+			Answered(output) => {
+				$outputs = $outputs.append(output)
+			}
+			Failed(error) => {
+				$failed = $failed.append(error)
+			}
+		}
+	}
+	match $failed {
+		[error, ..] => { request: Idle, answer: Failed(error) }
+		[] => { request: Idle, answer: Answered($outputs) }
+	}
+}
+
 ## A `follow` layer settled by one result.
 settled_remote : Try(output, error) -> Core.Remote(output, error)
 settled_remote = |outcome| match outcome {
@@ -5259,7 +5337,7 @@ ResourceCfg(ctx, a, s) : {
 	input : Val(ctx, a),
 	pending : (s, a -> s),
 	plan : (a -> List(Req)),
-	resolve : (s, a, Res -> s),
+	resolve : (s, a, U64, Res -> s),
 	path : List(U32),
 	depth : U64,
 	local : Bool,
@@ -5325,12 +5403,12 @@ resource_inst = |rc0, last0, s0, owned0, block0| {
 					resolve = rc.resolve
 					react = {
 						mask: bit(rc.depth),
-						run: |e, a, r| {
+						run: |e, (a, at), r| {
 							{ outer, value } = e
-							In.{ outer, value: resolve(value, a, r) }
+							In.{ outer, value: resolve(value, a, at, r) }
 						},
 					}
-					(mine, t1) = fx_dispose(tx, react, owned)
+					(mine, t1) = fx_dispose(tx, react, owned.map(|o| { id: o.id, sub: o.sub, keep: o.keep, a: (o.a, o.at), at: o.at }))
 					(orph, t2) = dispose_block(block, In.{ outer: env, value: s }, remove, t1)
 					(noop({}), Orphaned(lower_in(mine.concat(orph), s, rc.depth)), t2)
 				}
@@ -5350,7 +5428,7 @@ resource_deliver = |rc, last, s, owned, block, env, id, res, tx| {
 		Ok(i) => {
 			entry = owned.get(i) ?? crash "owned"
 			kept = if (entry.sub) owned else owned.drop_at(i)
-			s2 = (rc.resolve)(s, entry.a, res)
+			s2 = (rc.resolve)(s, entry.a, entry.at, res)
 			t1 = fx_count(tx, Delivered)
 			if s2 == s {
 				(resource_inst(rc, last, s2, kept, block), Pending(env, 0), t1)

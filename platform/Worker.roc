@@ -211,6 +211,19 @@ Worker := [].{
 		where [work.request : work, input -> Engine.Req, work.result : work, Engine.Res -> Try(output, Error(error)), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool, error.is_eq : error, error -> Bool]
 	derive_when = |work, input, body| Engine.resource(input, Core.follow_when(work), body)
 
+	## `gather(task, inputs, body)` asks the task one job per input (the
+	## shards, ranges or batches of one question, which the pool spreads
+	## over its workers) and gives `body` an `Engine.Gathered` layer: each
+	## job's state as it settles, and the whole list in input order once
+	## every job has answered. A new list of inputs stops the old
+	## question's jobs, as `derive` does; with `on_cancel: Finish` a worker
+	## keeps its prepared state. Each job takes a slot of the in-flight
+	## bound, so split a question into no more parts than it allows; the
+	## pool queues the jobs beyond `maxWorkers` by itself.
+	gather : work, Val(ctx, List(input)), (Val(In(ctx, Engine.Gathered(output, Error(error))), Engine.Gathered(output, Error(error))) -> Elem(In(ctx, Engine.Gathered(output, Error(error))))) -> Elem(ctx)
+		where [work.request : work, input -> Engine.Req, work.result : work, Engine.Res -> Try(output, Error(error)), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool, error.is_eq : error, error -> Bool]
+	gather = |work, inputs, body| Engine.gather(work, inputs, body)
+
 	## How a layer that follows a task stands, in one match: no job asked
 	## for yet (`Unasked`), a job `Working`, its answer, or why there is
 	## none: the task's own error (`Failed`) beside the platform's.
@@ -606,6 +619,48 @@ expect {
 		\\refused: Refused
 		\\lost: Lost(AppCrash)
 		\\inspect: { answer: Answered(2), request: Pending }
+	actual == expected
+}
+
+## A gathered layer settles each job at its position, in any order, keeps
+## the previous whole answer while a question works, answers every output
+## in input order once none works, fails with the first failure in input
+## order, and answers an empty question at once.
+expect {
+	double : Worker.Task(U64, U64, [Odd])
+	double = Worker.task({ name: "test/double-even", run!: |n| if (n % 2 == 0) Ok(n * 2) else Err(Odd) })
+	gather = Core.gather(double)
+	answer : U64 -> Engine.Res
+	answer = |n| Work({ output: Wire.encode(n).append(0), files: [] })
+	odd = Work({ output: Wire.encode(Odd).append(1), files: [] })
+	asked = (gather.pending)(gather.init, [2, 4, 6])
+	last = (gather.resolve)(asked, [2, 4, 6], 2, answer(12))
+	first = (gather.resolve)(last, [2, 4, 6], 0, answer(4))
+	all = (gather.resolve)(first, [2, 4, 6], 1, answer(8))
+	again = (gather.pending)(all, [1, 2])
+	one = (gather.resolve)(again, [1, 2], 1, answer(4))
+	failed = (gather.resolve)(one, [1, 2], 0, odd)
+	refused = (gather.resolve)((gather.pending)(failed, [2, 4]), [2, 4], 1, Refused)
+	show : Engine.Gathered(U64, Worker.Error([Odd])) -> Str
+	show = |g| "${Str.inspect(g.jobs)} ${Str.inspect(g.all)}"
+	actual =
+		\\asked: ${show(asked)} ${(gather.plan)([2, 4, 6]).len().to_str()} requests
+		\\last: ${show(last)}
+		\\first: ${show(first)}
+		\\all: ${show(all)}
+		\\again: ${show(again)}
+		\\failed: ${show(failed)}
+		\\refused: ${show(refused)}
+		\\empty: ${show((gather.pending)(all, []))} ${(gather.plan)([]).len().to_str()} requests
+	expected =
+		\\asked: [Working, Working, Working] { answer: Unanswered, request: Pending } 3 requests
+		\\last: [Working, Working, Answered(12)] { answer: Unanswered, request: Pending }
+		\\first: [Answered(4), Working, Answered(12)] { answer: Unanswered, request: Pending }
+		\\all: [Answered(4), Answered(8), Answered(12)] { answer: Answered([4, 8, 12]), request: Idle }
+		\\again: [Working, Working] { answer: Answered([4, 8, 12]), request: Pending }
+		\\failed: [Failed(Failed(Odd)), Answered(4)] { answer: Failed(Failed(Odd)), request: Idle }
+		\\refused: [Working, Failed(Refused)] { answer: Failed(Failed(Odd)), request: Pending }
+		\\empty: [] { answer: Answered([]), request: Idle } 0 requests
 	actual == expected
 }
 

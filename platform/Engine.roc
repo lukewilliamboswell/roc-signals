@@ -619,6 +619,34 @@ Engine := [].{
 	## and is `Err(NoAnswer)` before the first answer and after a failure.
 	Remote(output, error) : Core.Remote(output, error)
 
+	## One job of a gathered question: `Working`, `Answered(output)` or
+	## `Failed(error)`.
+	JobState(output, error) : Core.JobState(output, error)
+
+	## What a `gather` layer holds: `jobs`, the current question's jobs in
+	## input order, each shown as it settles, and `all`, the whole list as a
+	## [Remote]: `Pending` while any job works, `Answered(outputs)` in input
+	## order once every job has answered, `Failed(error)` (the first in
+	## input order) once none works and one failed, and the previous
+	## question's answer meanwhile.
+	Gathered(output, error) : Core.Gathered(output, error)
+
+	## `gather(asker, inputs, body)` asks one request per input, all at
+	## once, and gives `body` a layer gathering the answers (see
+	## [Gathered]): a worker task's jobs over shards of one question, or a
+	## port call per item. `asker` is anything with `request` and `result`
+	## (`Worker.gather` is this for tasks). An empty list is answered at
+	## once with `[]`.
+	##
+	## A new, unequal list stops every request of the old one and asks
+	## again, as `resource` does; an equal list asks nothing. Each request
+	## takes a slot of the in-flight bound, and one refused there is its
+	## job's `Failed`, so split a question into no more parts than the bound
+	## allows (32 by default). Disposal follows `resource`.
+	gather : asker, Val(ctx, List(input)), (Val(In(ctx, Gathered(output, error)), Gathered(output, error)) -> Elem(In(ctx, Gathered(output, error)))) -> Elem(ctx)
+		where [asker.request : asker, input -> Req, asker.result : asker, Res -> Try(output, error), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool, error.is_eq : error, error -> Bool]
+	gather = |asker, inputs, body| Core.resource_at(inputs.v, Core.gather(asker), |v| body({ v: v }))
+
 	## What the host knows before the first render: the URL, the declared storage
 	## keys' values (missing keys are absent), whether the browser is online and
 	## the page visible, and whether local storage is available at all. When it is
