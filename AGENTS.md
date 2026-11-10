@@ -14,8 +14,9 @@
   changes, no guessing or recovery that changes meaning, work proportional to
   the changed set rather than total tree size, a pure Roc engine behind a host
   that only allocates, stages payloads, backs resource handles and classifies
-  faults, typed site storage with no host-held Roc values, and the command
-  stream as the only output.
+  faults, typed site storage with no host-held Roc values beyond the opaque
+  boxes `design.md` names (the page's engine state, and one prepared state in
+  a worker instance), and the command stream as the only output.
 - If requested work conflicts with the design, identify the conflict explicitly.
   Do not conceal it in compatibility glue, a special case, logic in the host or
   runtime, or an undocumented boundary convention.
@@ -62,12 +63,14 @@
   reference is kept for convenience. A change that makes a column or state copy
   on every update is a regression even when output is correct, and the soak's
   flat round trips must catch it.
-- Keep the host to its job. `host.zig` holds one opaque boxed engine state, the
+- Keep the host to its job. `host.zig` holds one opaque boxed engine state (in
+  a worker instance, at most one opaque boxed prepared state instead), the
   last command buffer, at most one staged payload, the typed heaps behind
   resource handles, the allocator and the fault state. It clears its slots
   before each call into Roc and never interprets the state, the commands or any
-  Roc value. Lay out staged lists exactly as Roc expects and never hold a
-  seamless slice.
+  Roc value. A box moves whole into one Roc call and back out of it, and only
+  Roc drops it; a trap abandons it with the heap. Lay out staged lists exactly
+  as Roc expects and never hold a seamless slice.
 - Keep host resources as handles Roc owns. Something the browser holds, such
   as a user's file, reaches Roc as a handle the host mints in a typed heap.
   Roc's reference count is the handle's lifetime: the host learns of the last
@@ -109,7 +112,11 @@
   A worker runs a registered pure Roc function in another instance of the same
   module, and its request and answer are an ordinary request and result in the
   effect channel. The runtime's pool places, bounds and stops jobs; it never
-  changes an answer or decides anything that belongs to the engine. Both spec
+  changes an answer or decides anything that belongs to the engine. A worker
+  may keep a prepared program's state between jobs, but only as an
+  optimisation that is never observable in an answer: a query's answer is
+  what preparing afresh and asking would give, queries never change the
+  state, and placement, eviction or a lost worker cost only time. Both spec
   runners run a job's program, so a spec means the same in each.
 - Keep the platform's JavaScript generic. `runtime.mjs` and `worker.mjs`
   contain nothing specific to an app, an example or the site. JavaScript that
@@ -150,9 +157,10 @@
   a change to propagation must keep that check meaningful. Cover
   ordering, equality cutoffs, identity reuse, scope disposal, reparenting,
   refusal at the in-flight bound, stale results, cancellation and
-  supersession, lost and timed-out work, resource release, a resource the
-  browser can no longer read, follow-up bounds, containment and recovery, and
-  protocol rejection as applicable.
+  supersession, lost and timed-out work, eviction and the loss of a worker
+  holding state, resource release, a resource the browser can no longer
+  read, follow-up bounds, containment and recovery, and protocol rejection
+  as applicable.
 - Use `.scm` specs beside each app (`examples/<app>/specs/`,
   `tests/apps/<app>/specs/`) for application-visible behavior and work, run
   natively and in Chrome; roc-fuzz targets (each app's `main-fuzz.roc`, and

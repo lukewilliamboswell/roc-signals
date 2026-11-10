@@ -93,7 +93,8 @@ for example to run two tasks at once.
    scaling measurement (correctness, robustness sequences and memory; no
    timing ratios), file handles and their release, operations on files
    (page reads, uploads to a local server, digests and file URLs, with their
-   bounds, failures and lifetimes), and the Conduit journey against its
+   bounds, failures and lifetimes), prepared programs and the pool's
+   placement of their queries, and the Conduit journey against its
    scripted backend.
 7. The js-framework-benchmark check.
 8. The release dry run: the bundle, `runtime.mjs` and `worker.mjs`, the examples archive with
