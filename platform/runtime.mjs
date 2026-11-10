@@ -1147,7 +1147,6 @@ export class RocEngineRuntime {
     this.listening = new Map();
     this.internal = [];
     this.onEvent = (event) => this.handle(event);
-    this.timing = options.timing ?? null;
     this.busy = false;
     this.queue = [];
     this.poisoned = null;
@@ -1177,6 +1176,13 @@ export class RocEngineRuntime {
     const nav = this.win ? this.win.navigator : globalThis.navigator;
     this.maxWorkers = options.maxWorkers ?? Math.min((nav && nav.hardwareConcurrency) || 4, 8);
     this.onWorkerFault = options.onWorkerFault ?? null;
+    // Observation of jobs, workers and turns (options.monitor; see "The
+    // monitor" above). It never changes what this runtime does.
+    this.monitor = new WorkMonitor(options.monitor ?? {}, {
+      page: () => this.pageStats(),
+      mode: () => this.workMode(),
+      maxWorkers: this.maxWorkers,
+    });
     this.storage = options.storage ?? (() => {
       try {
         return this.win.localStorage;
@@ -1196,6 +1202,7 @@ export class RocEngineRuntime {
     if (version !== PROTOCOL_VERSION) {
       throw new Error(`roc engine protocol ${version} is not the protocol ${PROTOCOL_VERSION} this runtime implements`);
     }
+    this.monitor.runtimeMounted();
     this.guard(() => this.mountInner());
     this.drainQueue();
   }
@@ -1288,6 +1295,7 @@ export class RocEngineRuntime {
     this.listening.clear();
     for (const [type, fn] of this.internal) this.root.removeEventListener(type, fn, true);
     this.internal = [];
+    this.monitor.runtimeEnding("contained");
     for (const e of this.live.values()) {
       try {
         e.cancel();
@@ -1299,6 +1307,7 @@ export class RocEngineRuntime {
     this.stopWorkers();
     this.queue = [];
     this.fxOut = [];
+    this.monitor.runtimeEnded("poisoned", this.poisoned);
     console.error(`roc engine fault [${this.poisoned.class}]: ${message}`);
     if (this.onFault) this.onFault(this.poisoned);
   }
@@ -1323,8 +1332,10 @@ export class RocEngineRuntime {
   }
 
   unmount() {
+    this.monitor.runtimeEnding("unmount");
     for (const id of [...this.live.keys()]) this.cancel(id);
     this.stopWorkers();
+    this.monitor.runtimeEnded("unmounted");
     for (const [type, fn] of this.listening) this.root.removeEventListener(type, fn);
     this.listening.clear();
     for (const [type, fn] of this.internal) this.root.removeEventListener(type, fn, true);
@@ -1452,21 +1463,25 @@ export class RocEngineRuntime {
     new Uint8Array(this.x.memory.buffer, ptr, bytes.length).set(bytes);
   }
 
+  // One turn. It is timed (staging, `event`, then the batch applied and its
+  // effects performed) only when the monitor wants it: a job's result turn,
+  // or every turn while a subscriber asked for `turn` events.
   deliver(node, handler, payload) {
     if (globalThis.__trace) console.log("event", node, handler, JSON.stringify(payload));
-    const t = this.timing;
-    this.stage(payload);
-    if (t === null) {
+    const m = this.monitor;
+    if (!m.timesTurn(node, handler)) {
+      this.stage(payload);
       this.x.event(node, handler);
       this.apply();
       return;
     }
-    const t0 = t.clock();
+    const t0 = m.now();
+    this.stage(payload);
     this.x.event(node, handler);
-    const t1 = t.clock();
+    const t1 = m.now();
     const bytes = this.apply();
-    const t2 = t.clock();
-    t.record(t1 - t0, t2 - t1, bytes);
+    const t2 = m.now();
+    m.turn(node, handler, t0, t1, t2, bytes);
   }
 
   // One dense node id space (rows included); rows also carry their site
@@ -2103,6 +2118,22 @@ export class RocEngineRuntime {
     const out = [];
     for (const [id, e] of this.live) if (e.kind === "sub" && e.req && e.req.op === "interval" && e.req.ms === ms) out.push(id);
     return out;
+  }
+
+  // The page instance's figures for a monitor snapshot: linear memory, the
+  // host's live allocations and bytes (metric 4, 5) and the work record's
+  // counters.
+  pageStats() {
+    const x = this.x;
+    return { memBytes: x.memory.buffer.byteLength, liveAllocs: Number(x.metric(4)), liveBytes: Number(x.metric(5)), counters: this.workRecord().counters };
+  }
+
+  // How work runs here: "inline", "workers", or "unavailable" (no Worker
+  // constructor, or no compiled module to give one).
+  workMode() {
+    if (this.workerMode === "inline") return "inline";
+    const W = (this.win && this.win.Worker) ?? globalThis.Worker;
+    return this.module && typeof W === "function" ? "workers" : "unavailable";
   }
 
   // The engine's work record after the last call (design.md, Appendix B):
