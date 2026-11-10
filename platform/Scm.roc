@@ -150,7 +150,40 @@ Scm := [].{
 		## The N-th effect occurrence is a pending upload whose body is `len`
 		## bytes from `start` of the setup file `file`.
 		ExpectUpload({ occurrence : U64, file : Str, start : U64, len : U64 }),
+
+		## The N-th effect occurrence is a pending call on `port` whose
+		## message is exactly `json`.
+		ExpectPortCall({ occurrence : U64, port : Str, json : Str }),
+
+		## Answer the N-th effect occurrence, a pending port call.
+		AnswerPort({ occurrence : U64, answer : PortAnswer }),
+
+		## The `index`-th command (from 1) sent on `port` in this document
+		## carried exactly `json`.
+		ExpectPortSent({ port : Str, index : U64, json : Str }),
+
+		## Exactly `count` commands were sent on `port` in this document.
+		ExpectPortSends({ port : Str, count : U64 }),
+
+		## Deliver `json` to every live subscription on `port`; a step with
+		## none live fails.
+		EmitPort({ port : Str, json : Str }),
+
+		## The JavaScript ends every live subscription on `port` (`Closed`).
+		ClosePort(Str),
+
+		## The JavaScript fails every live subscription on `port` with a
+		## message (`Threw`), which ends it.
+		FailPort({ port : Str, message : Str }),
+
+		## Exactly `count` subscriptions on `port` are live.
+		ExpectPortSubscriptions({ port : Str, count : U64 }),
 	]
+
+	## How a spec answers a pending port call: JSON text (delivered as it is
+	## written, so a spec can answer what the app's type does not accept), a
+	## throw with its message, an answer too large, or its timeout expiring.
+	PortAnswer : [Reply(Str), Throw(Str), TooLarge, Timeout]
 
 	## A step with the position of its form.
 	Step : { op : Op, pos : Pos }
@@ -794,7 +827,74 @@ Scm := [].{
 				Ok(ExpectUpload({ occurrence: Scm.unsigned(Scm.arg(a, 0), "the effect occurrence")?, file, start: Scm.unsigned(Scm.arg(a, 2), "the range's start")?, len: Scm.unsigned(Scm.arg(a, 3), "the range's length")? }))
 			},
 		},
+		{
+			name: "expect-port-call",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 3)?
+				Ok(ExpectPortCall({ occurrence: Scm.unsigned(Scm.arg(a, 0), "the effect occurrence")?, port: Scm.port_name(Scm.arg(a, 1))?, json: Scm.string(Scm.arg(a, 2), "the message JSON")? }))
+			},
+		},
+		{ name: "answer-port", parse: |form, args| Scm.port_answer(form, args) },
+		{
+			name: "expect-port-sent",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 3)?
+				Ok(ExpectPortSent({ port: Scm.port_name(Scm.arg(a, 0))?, index: Scm.unsigned(Scm.arg(a, 1), "the command's place")?, json: Scm.string(Scm.arg(a, 2), "the message JSON")? }))
+			},
+		},
+		{
+			name: "expect-port-sends",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 2)?
+				Ok(ExpectPortSends({ port: Scm.port_name(Scm.arg(a, 0))?, count: Scm.unsigned(Scm.arg(a, 1), "the count")? }))
+			},
+		},
+		{
+			name: "emit-port",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 2)?
+				Ok(EmitPort({ port: Scm.port_name(Scm.arg(a, 0))?, json: Scm.string(Scm.arg(a, 1), "the message JSON")? }))
+			},
+		},
+		{ name: "close-port", parse: |form, args| Ok(ClosePort(Scm.port_name(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
+		{
+			name: "fail-port",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 2)?
+				Ok(FailPort({ port: Scm.port_name(Scm.arg(a, 0))?, message: Scm.string(Scm.arg(a, 1), "the message")? }))
+			},
+		},
+		{
+			name: "expect-port-subscriptions",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 2)?
+				Ok(ExpectPortSubscriptions({ port: Scm.port_name(Scm.arg(a, 0))?, count: Scm.unsigned(Scm.arg(a, 1), "the count")? }))
+			},
+		},
 	]
+
+	## A port name: a non-empty string.
+	port_name : Sx -> Try(Str, Problem)
+	port_name = |sx| {
+		name = Scm.string(sx, "the port name")?
+		if (name == "") Err(Scm.bad(sx, "the port name must not be empty")) else Ok(name)
+	}
+
+	## `(answer-port N reply "json")`, `(answer-port N throw "message")`,
+	## `(answer-port N too-large)` or `(answer-port N timeout)`.
+	port_answer : Sx, List(Sx) -> Try(Op, Problem)
+	port_answer = |form, args| {
+		occurrence = Scm.unsigned(args.get(0) ? |_| Scm.bad(form, "answer-port needs the effect occurrence"), "the effect occurrence")?
+		kind_sx = args.get(1) ? |_| Scm.bad(form, "answer-port needs how to answer: reply, throw, too-large or timeout")
+		answer = match Scm.symbol(kind_sx, "the answer")? {
+			"reply" => Reply(Scm.string(Scm.arg(Scm.arity(form, args, 3)?, 2), "the reply JSON")?)
+			"throw" => Throw(Scm.string(Scm.arg(Scm.arity(form, args, 3)?, 2), "the thrown message")?)
+			"too-large" => Scm.arity(form, args, 2).map_ok(|_| TooLarge)?
+			"timeout" => Scm.arity(form, args, 2).map_ok(|_| Timeout)?
+			other => return Err(Scm.bad(kind_sx, "unknown answer ${other}; a port call is answered with reply, throw, too-large or timeout"))
+		}
+		Ok(AnswerPort({ occurrence, answer }))
+	}
 
 	step_form : Sx -> Try(Step, Problem)
 	step_form = |form| {
@@ -970,6 +1070,14 @@ Scm := [].{
 			ExpectMetricDelta(_) => "expect-metric-delta"
 			ExpectMetricDeltaAtMost(_) => "expect-metric-delta-at-most"
 			ExpectUpload(_) => "expect-upload"
+			ExpectPortCall(_) => "expect-port-call"
+			AnswerPort(_) => "answer-port"
+			ExpectPortSent(_) => "expect-port-sent"
+			ExpectPortSends(_) => "expect-port-sends"
+			EmitPort(_) => "emit-port"
+			ClosePort(_) => "close-port"
+			FailPort(_) => "fail-port"
+			ExpectPortSubscriptions(_) => "expect-port-subscriptions"
 		}
 
 	## A locator as a spec spells it.
@@ -1106,6 +1214,22 @@ Scm := [].{
 			ExpectMetricDelta({ metric, delta }) => [JsonOut.field("metric", Text(metric)), JsonOut.field("counters", Scm.counters_json(metric)), JsonOut.field("delta", Int(delta))]
 			ExpectMetricDeltaAtMost({ metric, delta }) => [JsonOut.field("metric", Text(metric)), JsonOut.field("counters", Scm.counters_json(metric)), JsonOut.field("delta", Int(delta))]
 			ExpectUpload({ occurrence, file, start, len }) => [JsonOut.field("count", Nat(occurrence)), JsonOut.field("file", Text(file)), JsonOut.field("start", Nat(start)), JsonOut.field("len", Nat(len))]
+			ExpectPortCall({ occurrence, port, json }) => [JsonOut.field("count", Nat(occurrence)), JsonOut.field("port", Text(port)), JsonOut.field("json", Text(json))]
+			AnswerPort({ occurrence, answer }) =>
+				[JsonOut.field("count", Nat(occurrence))].concat(
+					match answer {
+						Reply(json) => [JsonOut.field("answer", Text("reply")), JsonOut.field("json", Text(json))]
+						Throw(message) => [JsonOut.field("answer", Text("throw")), text(message)]
+						TooLarge => [JsonOut.field("answer", Text("too-large"))]
+						Timeout => [JsonOut.field("answer", Text("timeout"))]
+					},
+				)
+			ExpectPortSent({ port, index, json }) => [JsonOut.field("port", Text(port)), JsonOut.field("index", Nat(index)), JsonOut.field("json", Text(json))]
+			ExpectPortSends({ port, count }) => [JsonOut.field("port", Text(port)), JsonOut.field("count", Nat(count))]
+			EmitPort({ port, json }) => [JsonOut.field("port", Text(port)), JsonOut.field("json", Text(json))]
+			ClosePort(port) => [JsonOut.field("port", Text(port))]
+			FailPort({ port, message }) => [JsonOut.field("port", Text(port)), text(message)]
+			ExpectPortSubscriptions({ port, count }) => [JsonOut.field("port", Text(port)), JsonOut.field("count", Nat(count))]
 		}
 		Object([JsonOut.field("op", Text(Scm.op_name(op)))].concat(Scm.pos_fields(pos)).concat(args))
 	}

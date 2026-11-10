@@ -101,6 +101,35 @@
 // until runEffect(id) performs them. An upload (kind 12) is an HTTP request
 // whose body is the range, which the browser streams from the file; it is
 // performed, held and answered as an HTTP request (kind 1) is.
+// Ports (design.md, "Request kinds"): services the page's own JavaScript
+// supplies, passed as options.ports, one entry per port the app declares:
+// { command(value, { port }) }, { call(value, { signal, port }) },
+// { subscribe(arg, { emit, close, signal, port }) } returning an optional
+// unsubscribe function, or { push: true } for a subscription fed by
+// runtime.emitPort(name, value). The engine lists the app's declarations
+// after its storage keys; the runtime refuses to mount (it throws) when a
+// declared port has no handler of its shape or a handler names a port the
+// app does not declare. A command (opcode 19 PORT) is performed after the
+// batch like NAV; a call (FX kind 9) is answered once (result tag 14 or
+// 15), aborted on CANCEL or at its timeout (Timeout); a subscription (FX
+// kind 10) delivers each emitted message as its own turn, never
+// synchronously, with at most one message per subscription in the ingress
+// queue: `Latest` keeps the newest undelivered message, `Every(n)` keeps n
+// and `emit` returns false beyond them. close() ends it with Closed,
+// close(error) with Threw. Messages are PortJson text with `{"$bytes":N}`
+// and `{"$file":N}` markers, revived into Uint8Arrays and Files for the
+// handler; an answer is serialised strictly (null, booleans, finite
+// numbers, strings, BigInt as decimal text, arrays, plain objects,
+// Uint8Array/ArrayBuffer as bytes, File/Blob as a file handle, Date as its
+// JSON text). An answer that is not such data, a throw or a rejection
+// answers the request PortFailed(Threw); an answer larger than
+// options.maxPayloadBytes (default 4 MiB, at most 64 MiB) PortFailed
+// (TooLarge). A command handler's or an unsubscribe function's failure goes
+// to console.error and options.onPortFault. Nothing a handler does poisons
+// the instance. Poisoning and unmounting abort every call's signal and
+// unsubscribe every subscription. In manual mode handlers are optional and
+// never called: calls wait for answerPort(), subscriptions for
+// messagePort(), and commands are logged in portLog.
 //
 // Attribute values: "" removes the attribute. `value` and `checked` are set
 // as properties (the live control state), boolean attributes (disabled,
@@ -136,6 +165,7 @@ const OP_NAV = 15;
 const OP_STORE = 16;
 const OP_TITLE = 17;
 const OP_FOCUS = 18;
+const OP_PORT = 19;
 
 // Effect results are events on this node; the handler number is the id.
 const FX_NODE = 0xffffffff;
@@ -163,6 +193,13 @@ const FILE_UNAVAILABLE = 3;
 
 // The most ranges of one file handle that have an object URL at once.
 const MAX_URLS_PER_FILE = 16;
+const RES_PORT_REPLY = 14;
+const RES_PORT_FAILED = 15;
+
+// The default and largest bound on one port answer or message, JSON text
+// and bytes together (options.maxPayloadBytes).
+export const DEFAULT_PAYLOAD_BYTES = 4 * 1024 * 1024;
+export const MAX_PAYLOAD_BYTES = 64 * 1024 * 1024;
 
 // The most files one job reads (the host's `bytes_reserve` bound).
 const MAX_JOB_FILES = 16;
@@ -1633,6 +1670,20 @@ export class RocEngineRuntime {
     // after its job (memory never shrinks, and a prepared state may keep
     // it): the next job that needs a worker starts a fresh one.
     this.maxWorkerBytes = options.maxWorkerBytes ?? 128 * 1024 * 1024;
+    // Ports (see "Ports" above): the page's handlers, the app's declared
+    // ports (read at mount), push subscriptions by port, the command log of
+    // manual mode, and per-port counters for the monitor.
+    this.ports = options.ports ?? null;
+    this.maxPayloadBytes = options.maxPayloadBytes ?? DEFAULT_PAYLOAD_BYTES;
+    if (!Number.isInteger(this.maxPayloadBytes) || this.maxPayloadBytes < 1 || this.maxPayloadBytes > MAX_PAYLOAD_BYTES) {
+      throw new Error(`maxPayloadBytes: ${this.maxPayloadBytes} is not a whole number of bytes from 1 to ${MAX_PAYLOAD_BYTES}`);
+    }
+    this.onPortFault = options.onPortFault ?? null;
+    this.portDecls = new Map();
+    this.pushSubs = new Map();
+    this.portLog = [];
+    this.portCounts = new Map();
+    this.ending = null;
     // Observation of jobs, workers and turns (options.monitor; see "The
     // monitor" above). It never changes what this runtime does.
     this.monitor = new WorkMonitor(options.monitor ?? {}, {
@@ -1659,6 +1710,13 @@ export class RocEngineRuntime {
     if (version !== PROTOCOL_VERSION) {
       throw new Error(`roc engine protocol ${version} is not the protocol ${PROTOCOL_VERSION} this runtime implements`);
     }
+    // The app's port declarations, checked against options.ports before
+    // anything mounts: a mismatch throws, and nothing runs.
+    const boot = this.guard(() => readBootKeys(this.x));
+    if (this.poisoned) return;
+    this.bootKeys = boot.keys;
+    this.portDecls = new Map(boot.decls.map((d) => [d.name, d]));
+    checkPortHandlers(boot.decls, this.ports, this.manual);
     this.monitor.runtimeMounted();
     this.guard(() => this.mountInner());
     this.drainQueue();
@@ -1668,16 +1726,8 @@ export class RocEngineRuntime {
     this.controlListeners();
     this.listen("click");
     const x = this.x;
-    x.boot_keys();
-    const u8 = new Uint8Array(x.memory.buffer, x.cmd_ptr(), x.cmd_len());
-    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
-    const keys = [];
-    let at = 4;
-    for (let i = dv.getUint32(0, true); i > 0; i -= 1) {
-      const n = dv.getUint32(at, true);
-      keys.push(readStr(u8, at + 4, n));
-      at += 4 + n;
-    }
+    // Read before mount with the port table (see mount()).
+    const keys = this.bootKeys;
     // Storage is unavailable when there is none or any read throws; then
     // the app boots with no stored values rather than some of them.
     let storageOk = !!this.storage && typeof this.storage.getItem === "function";
@@ -1753,6 +1803,7 @@ export class RocEngineRuntime {
     for (const [type, fn] of this.internal) this.root.removeEventListener(type, fn, true);
     this.internal = [];
     this.monitor.runtimeEnding("contained");
+    this.ending = "poisoned";
     for (const e of this.live.values()) {
       try {
         e.cancel();
@@ -1761,6 +1812,7 @@ export class RocEngineRuntime {
       }
     }
     this.live.clear();
+    this.pushSubs.clear();
     this.stopWorkers();
     this.files.clear();
     this.revokeUrls();
@@ -1788,13 +1840,18 @@ export class RocEngineRuntime {
     this.fxOut = [];
     this.busy = false;
     this.poisoned = null;
+    this.ending = null;
+    this.pushSubs = new Map();
+    this.portLog = [];
     this.mount();
     return this;
   }
 
   unmount() {
     this.monitor.runtimeEnding("unmount");
+    this.ending = "unmounted";
     for (const id of [...this.live.keys()]) this.cancel(id);
+    this.pushSubs.clear();
     this.stopWorkers();
     this.monitor.runtimeEnded("unmounted");
     for (const [type, fn] of this.listening) this.root.removeEventListener(type, fn);
@@ -1934,6 +1991,10 @@ export class RocEngineRuntime {
   // One engine call for an event: a `:files` event stages its handles and
   // file record (design.md, Appendix B), anything else its text.
   call(node, handler, payload) {
+    if (payload !== null && typeof payload === "object" && payload.parts !== undefined) {
+      this.callPort(node, handler, payload);
+      return;
+    }
     if (payload === null || typeof payload !== "object" || payload.files === undefined) {
       this.stage(payload);
       this.x.event(node, handler);
@@ -2350,6 +2411,18 @@ export class RocEngineRuntime {
           } else if (kind === 14) {
             this.fxOut.push({ op: "url", id, ...this.fileRef(dv, at) });
             at += 24;
+          } else if (kind === 9) {
+            const port = str();
+            const m = this.readPortMessage(u8, dv, at);
+            at = m.at;
+            const timeout = dv.getUint32(at, true);
+            at += 4;
+            this.fxOut.push({ op: "portcall", id, port, msg: m.msg, timeout });
+          } else if (kind === 10) {
+            const port = str();
+            const m = this.readPortMessage(u8, dv, at);
+            at = m.at;
+            this.fxOut.push({ op: "portsub", id, port, msg: m.msg });
           } else throw new Error(`unknown effect kind ${kind}`);
           break;
         }
@@ -2385,6 +2458,14 @@ export class RocEngineRuntime {
           const n = dv.getUint32(at, true);
           this.fxOut.push({ op: "title", text: readStr(u8, at + 4, n) });
           at += 4 + n;
+          break;
+        }
+        case OP_PORT: {
+          const n = dv.getUint32(at, true);
+          const port = readStr(u8, at + 4, n);
+          const m = this.readPortMessage(u8, dv, at + 4 + n);
+          at = m.at;
+          this.fxOut.push({ op: "port", port, msg: m.msg });
           break;
         }
         default:
@@ -2660,9 +2741,392 @@ export class RocEngineRuntime {
           });
         return;
       }
+      case "port":
+        this.performPortCommand(fx);
+        return;
+      case "portcall":
+        this.performPortCall(fx);
+        return;
+      case "portsub":
+        this.performPortSub(fx);
+        return;
       default:
         throw new Error(`unknown effect ${fx.op}`);
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // Ports (see "Ports" above).
+
+  // A port message at `at` in a batch: `json:str nblobs:u32 (len:u32
+  // bytes)* nfiles:u32 (token:u64 start:u64 len:u64)*`. The blobs are
+  // copied out of linear memory (it may move before the handler runs) and
+  // the files resolved now, while the handles the batch released still name
+  // their files.
+  readPortMessage(u8, dv, at0) {
+    let at = at0;
+    const n = dv.getUint32(at, true);
+    const json = readStr(u8, at + 4, n);
+    at += 4 + n;
+    const blobs = [];
+    const nblobs = dv.getUint32(at, true);
+    at += 4;
+    for (let i = 0; i < nblobs; i += 1) {
+      const len = dv.getUint32(at, true);
+      blobs.push(u8.slice(at + 4, at + 4 + len));
+      at += 4 + len;
+    }
+    const files = [];
+    const nfiles = dv.getUint32(at, true);
+    at += 4;
+    for (let i = 0; i < nfiles; i += 1) {
+      const token = tokenAt(dv, 0, at);
+      const start = tokenAt(dv, 0, at + 8);
+      const len = tokenAt(dv, 0, at + 16);
+      const file = this.files.get(token);
+      if (file === undefined) throw new Error(`a port message names file handle ${token}, which this runtime does not hold`);
+      files.push(start === 0 && len === file.size ? file : new File([file.slice(start, start + len)], file.name ?? "", { type: file.type }));
+      at += 24;
+    }
+    return { msg: { json, blobs, files }, at };
+  }
+
+  portHandler(port) {
+    return this.ports ? this.ports[port] : undefined;
+  }
+
+  portCount(port, key, n = 1) {
+    let c = this.portCounts.get(port);
+    if (c === undefined) {
+      c = { sent: 0, calls: 0, answered: 0, threw: 0, timedOut: 0, cancelled: 0, subscribed: 0, messages: 0, coalesced: 0, refusedEmits: 0, tooLarge: 0, closed: 0, faults: 0 };
+      this.portCounts.set(port, c);
+    }
+    c[key] += n;
+  }
+
+  // A failure the app cannot be told of: a command handler's, or an
+  // unsubscribe function's. Reported, never delivered, never poisoning.
+  portFault(port, kind, error) {
+    const message = String(error && error.message !== undefined ? error.message : error);
+    this.portCount(port, "faults");
+    console.error(`roc port fault [${kind}] "${port}": ${message}`);
+    if (this.onPortFault) {
+      try {
+        this.onPortFault({ port, kind, message });
+      } catch (_) {
+        // an observer that throws changes nothing
+      }
+    }
+  }
+
+  abortReason() {
+    return new DOMException(this.ending ?? "cancelled", "AbortError");
+  }
+
+  performPortCommand(fx) {
+    this.portCount(fx.port, "sent");
+    if (this.manual) {
+      this.portLog.push({ port: fx.port, json: fx.msg.json });
+      return;
+    }
+    const h = this.portHandler(fx.port);
+    try {
+      const r = h.command(portValue(fx.msg), { port: fx.port });
+      if (r !== null && typeof r === "object" && typeof r.then === "function") r.then(undefined, (e) => this.portFault(fx.port, "command", e));
+    } catch (e) {
+      this.portFault(fx.port, "command", e);
+    }
+  }
+
+  // An answer as the payload of its result turn, or the failure it is.
+  portAnswer(port, value) {
+    let data;
+    try {
+      data = portData(value);
+    } catch (e) {
+      if (!(e instanceof PortDataError)) throw e;
+      this.portCount(port, "threw");
+      return portFailed(1, `the answer is not JSON data: ${e.message}`);
+    }
+    const payload = portReplyPayload(data);
+    if (payload.size > this.maxPayloadBytes) {
+      this.portCount(port, "tooLarge");
+      return portFailed(2);
+    }
+    return payload;
+  }
+
+  performPortCall(fx) {
+    this.portCount(fx.port, "calls");
+    if (this.manual) {
+      this.live.set(fx.id, { kind: "portcall", req: fx, cancel: () => this.portCount(fx.port, "cancelled") });
+      this.issued.push(fx.id);
+      return;
+    }
+    const ctl = new AbortController();
+    let timer = null;
+    const clear = () => {
+      if (timer === null) return;
+      clearTimeout(timer);
+      timer = null;
+      this.timers -= 1;
+    };
+    const entry = {
+      kind: "portcall",
+      req: fx,
+      cancel: () => {
+        clear();
+        this.portCount(fx.port, "cancelled");
+        ctl.abort(this.abortReason());
+      },
+    };
+    this.live.set(fx.id, entry);
+    const settle = (payload) => {
+      if (this.live.get(fx.id) !== entry) return; // cancelled or timed out
+      this.live.delete(fx.id);
+      clear();
+      this.result(fx.id, payload);
+    };
+    if (fx.timeout > 0) {
+      this.timers += 1;
+      timer = setTimeout(() => {
+        timer = null;
+        this.timers -= 1;
+        if (this.live.get(fx.id) !== entry) return;
+        this.live.delete(fx.id);
+        this.portCount(fx.port, "timedOut");
+        ctl.abort(new DOMException("timed out", "TimeoutError"));
+        this.result(fx.id, { parts: [new Uint8Array([RES_TIMEOUT])], files: [] });
+      }, fx.timeout);
+    }
+    const threw = (e) => {
+      this.portCount(fx.port, "threw");
+      return portFailed(1, String(e && e.message !== undefined ? e.message : e));
+    };
+    let r;
+    try {
+      r = this.portHandler(fx.port).call(portValue(fx.msg), { signal: ctl.signal, port: fx.port });
+    } catch (e) {
+      // Delivered as its own turn, never inside this batch.
+      Promise.resolve().then(() => settle(threw(e)));
+      return;
+    }
+    Promise.resolve(r).then(
+      (v) => {
+        if (this.live.get(fx.id) !== entry) return;
+        const payload = this.portAnswer(fx.port, v);
+        if (payload.parts[0][0] === RES_PORT_REPLY) this.portCount(fx.port, "answered");
+        settle(payload);
+      },
+      (e) => settle(threw(e)),
+    );
+  }
+
+  performPortSub(fx) {
+    this.portCount(fx.port, "subscribed");
+    if (this.manual) {
+      this.live.set(fx.id, { kind: "portsub", req: fx, cancel: () => this.portCount(fx.port, "cancelled") });
+      return;
+    }
+    const decl = this.portDecls.get(fx.port);
+    const ctl = new AbortController();
+    const sub = { id: fx.id, port: fx.port, latest: decl.delivery === 2, bound: decl.bound, queue: [], waiting: false, ended: false, unsubscribe: null, entry: null };
+    sub.entry = {
+      kind: "portsub",
+      req: fx,
+      cancel: () => {
+        sub.ended = true;
+        sub.queue = [];
+        this.portCount(fx.port, "cancelled");
+        this.dropPushSub(sub);
+        ctl.abort(this.abortReason());
+        if (sub.unsubscribe) {
+          try {
+            sub.unsubscribe();
+          } catch (e) {
+            this.portFault(fx.port, "unsubscribe", e);
+          }
+        }
+      },
+    };
+    this.live.set(fx.id, sub.entry);
+    const h = this.portHandler(fx.port);
+    if (h.push) {
+      if (!this.pushSubs.has(fx.port)) this.pushSubs.set(fx.port, new Set());
+      this.pushSubs.get(fx.port).add(sub);
+      return;
+    }
+    const ctx = { emit: (v) => this.portEmit(sub, v), close: (error) => this.portClose(sub, error, error !== undefined), signal: ctl.signal, port: fx.port };
+    try {
+      const u = h.subscribe(portValue(fx.msg), ctx);
+      if (typeof u === "function") sub.unsubscribe = u;
+    } catch (e) {
+      this.portClose(sub, e, true);
+    }
+  }
+
+  dropPushSub(sub) {
+    const set = this.pushSubs.get(sub.port);
+    if (set !== undefined) set.delete(sub);
+  }
+
+  // One message from the JavaScript: kept as the subscription's delivery
+  // policy says and delivered as its own turn. A value that is not JSON
+  // data is the emitter's error, thrown back to it.
+  portEmit(sub, value) {
+    if (sub.ended || this.live.get(sub.id) !== sub.entry) return false;
+    let payload;
+    try {
+      payload = portReplyPayload(portData(value));
+    } catch (e) {
+      if (e instanceof PortDataError) throw new TypeError(`port "${sub.port}": emit was given something that is not JSON data: ${e.message}`);
+      throw e;
+    }
+    if (payload.size > this.maxPayloadBytes) {
+      this.portCount(sub.port, "tooLarge");
+      payload = portFailed(2);
+    }
+    if (sub.latest) {
+      if (sub.queue.length > 0) {
+        sub.queue[0] = { payload, terminal: false };
+        this.portCount(sub.port, "coalesced");
+      } else sub.queue.push({ payload, terminal: false });
+    } else {
+      if (sub.queue.length >= sub.bound) {
+        this.portCount(sub.port, "refusedEmits");
+        return false;
+      }
+      sub.queue.push({ payload, terminal: false });
+    }
+    this.portPump(sub);
+    return true;
+  }
+
+  // The JavaScript ends the subscription, after its buffered messages.
+  portClose(sub, error, threw) {
+    if (sub.ended || this.live.get(sub.id) !== sub.entry) return;
+    sub.ended = true;
+    this.portCount(sub.port, threw ? "threw" : "closed");
+    const payload = threw ? portFailed(1, String(error && error.message !== undefined ? error.message : error)) : portFailed(3);
+    sub.queue.push({ payload, terminal: true });
+    this.portPump(sub);
+  }
+
+  // Deliver the subscription's next message as its own turn, never inside
+  // the caller; the next waits until this one has reached the engine.
+  portPump(sub) {
+    if (sub.waiting || sub.queue.length === 0) return;
+    sub.waiting = true;
+    queueMicrotask(() => {
+      if (this.live.get(sub.id) !== sub.entry || this.poisoned) return;
+      const { payload, terminal } = sub.queue.shift();
+      if (terminal) {
+        this.live.delete(sub.id);
+        this.dropPushSub(sub);
+      } else if (payload.parts[0][0] === RES_PORT_REPLY) this.portCount(sub.port, "messages");
+      this.result(sub.id, {
+        ...payload,
+        after: () => {
+          sub.waiting = false;
+          this.portPump(sub);
+        },
+      });
+    });
+  }
+
+  // A port result turn: its parts staged straight into linear memory (one
+  // copy of any bytes), and the files of a reply minted as handles first.
+  // When the heap has no slots for all of them the reply is TooLarge and
+  // the handles minted for it are released at once.
+  callPort(node, handler, payload) {
+    const x = this.x;
+    try {
+      // Results of operations on files are staged from parts too, without
+      // files of their own.
+      const files = payload.files ?? [];
+      if (files.length === 0) {
+        this.stageParts(payload.parts);
+        x.event(node, handler);
+        return;
+      }
+      const minted = x.files_stage(files.length);
+      if (minted < files.length) {
+        x.files_stage(0);
+        this.stageParts([new Uint8Array([RES_PORT_FAILED, 2])]);
+        x.event(node, handler);
+        return;
+      }
+      const tokens = new DataView(x.memory.buffer, x.files_tokens(), 8 * minted);
+      const parts = payload.parts.slice();
+      for (let i = 0; i < minted; i += 1) {
+        const f = files[i];
+        this.files.set(tokenAt(tokens, i), f);
+        parts.push(u64le(f.size), encStr(f.name ?? ""), encStr(f.type ?? ""));
+      }
+      this.stageParts(parts);
+      x.event_files(node, handler);
+    } finally {
+      if (payload.after) payload.after();
+    }
+  }
+
+  stageParts(parts) {
+    let total = 0;
+    for (const p of parts) total += p.length;
+    const ptr = this.x.payload_reserve(total);
+    if (total === 0) return;
+    const view = new Uint8Array(this.x.memory.buffer, ptr, total);
+    let at = 0;
+    for (const p of parts) {
+      view.set(p, at);
+      at += p.length;
+    }
+  }
+
+  // A message from the page's own JavaScript to every live subscription on
+  // `port`, a `push` port: returns how many took it.
+  emitPort(port, value) {
+    if (this.poisoned) throw new Error(`roc engine is poisoned; port "${port}" takes no messages`);
+    const d = this.portDecls.get(port);
+    const h = this.portHandler(port);
+    if (d === undefined || d.kind !== 3 || !h || !h.push) throw new Error(`emitPort: port "${port}" is not a subscription port with a push handler`);
+    let n = 0;
+    for (const sub of [...(this.pushSubs.get(port) ?? [])]) if (this.portEmit(sub, value)) n += 1;
+    return n;
+  }
+
+  // Manual mode: answer pending call `id` with JSON text (verbatim, so a
+  // spec can answer malformed text), a throw, TooLarge or, for a call with
+  // a timeout, Timeout. Returns false when `id` is not a pending call.
+  answerPort(id, answer) {
+    const e = this.live.get(id);
+    if (this.poisoned || e === undefined || e.kind !== "portcall") return false;
+    if (answer.timeout && !(e.req.timeout > 0)) return false;
+    this.live.delete(id);
+    this.result(id, manualPortPayload(answer));
+    return true;
+  }
+
+  // Manual mode: deliver `answer` (as for answerPort, or { closed: true })
+  // to every live subscription on `port`, or only those whose argument text
+  // is `arg`. Returns how many received it.
+  messagePort(port, answer, arg) {
+    if (this.poisoned) return 0;
+    let n = 0;
+    for (const [id, e] of [...this.live]) {
+      if (e.kind !== "portsub" || e.req.port !== port || (arg !== undefined && e.req.msg.json !== arg)) continue;
+      if (answer.closed || answer.threw !== undefined) this.live.delete(id);
+      this.result(id, manualPortPayload(answer));
+      n += 1;
+    }
+    return n;
+  }
+
+  // Live subscriptions on `port`.
+  portSubscriptions(port) {
+    let n = 0;
+    for (const e of this.live.values()) if (e.kind === "portsub" && e.req.port === port) n += 1;
+    return n;
   }
 
   // Hand job `fx` to the pool. Its one result (output, WorkLost or, at the
@@ -2808,7 +3272,7 @@ export class RocEngineRuntime {
   runEffect(id, answer = {}) {
     if (this.poisoned || !this.live.has(id)) return false;
     const e = this.live.get(id);
-    if (e.running) return false;
+    if (e.running || e.kind === "portcall") return false;
     if (e.kind === "work") {
       this.live.delete(id);
       return new Promise((resolve) => this.startWork(e.req, () => resolve(true)));
@@ -2929,6 +3393,184 @@ export class RocEngineRuntime {
     }
     return out;
   }
+}
+
+// ---------------------------------------------------------------------
+// Port data (see "Ports" above).
+
+// The app's declared storage keys and, after them, its port declarations
+// (design.md, Appendix B): { keys, decls }.
+function readBootKeys(x) {
+  x.boot_keys();
+  const u8 = new Uint8Array(x.memory.buffer, x.cmd_ptr(), x.cmd_len());
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  const keys = [];
+  let at = 4;
+  for (let i = dv.getUint32(0, true); i > 0; i -= 1) {
+    const n = dv.getUint32(at, true);
+    keys.push(readStr(u8, at + 4, n));
+    at += 4 + n;
+  }
+  const decls = [];
+  let n = dv.getUint32(at, true);
+  at += 4;
+  for (; n > 0; n -= 1) {
+    const len = dv.getUint32(at, true);
+    const name = readStr(u8, at + 4, len);
+    at += 4 + len;
+    decls.push({ name, kind: u8[at], delivery: u8[at + 1], bound: dv.getUint32(at + 2, true) });
+    at += 6;
+  }
+  return { keys, decls };
+}
+
+const PORT_SHAPES = ["", "command", "call", "subscription"];
+const PORT_HANDLERS = ["command", "call", "subscribe", "push"];
+
+// Every declared port has a handler of its shape and every handler names a
+// declared port, or the page is refused before it mounts. In manual mode
+// (specs) handlers are optional, and only those given are checked.
+export function checkPortHandlers(decls, ports, manual) {
+  if (ports === null || ports === undefined) {
+    if (manual || decls.length === 0) return;
+    throw new Error(`the app declares ${decls.length} port${decls.length === 1 ? "" : "s"} (${decls.map((d) => `"${d.name}"`).join(", ")}), but options.ports is not given`);
+  }
+  if (typeof ports !== "object") throw new Error("options.ports must be an object of port handlers by port name");
+  const byName = new Map(decls.map((d) => [d.name, d]));
+  for (const name of Object.keys(ports)) {
+    const d = byName.get(name);
+    if (d === undefined) throw new Error(`options.ports has a handler for port "${name}", which the app does not declare in with_ports`);
+    const entry = ports[name];
+    const has = entry !== null && typeof entry === "object" ? PORT_HANDLERS.filter((k) => (k === "push" ? entry.push === true : typeof entry[k] === "function")) : [];
+    if (has.length !== 1) throw new Error(`options.ports["${name}"] must have exactly one of command, call, subscribe (functions) or push: true`);
+    const want = d.kind === 1 ? ["command"] : d.kind === 2 ? ["call"] : ["subscribe", "push"];
+    if (!want.includes(has[0])) throw new Error(`port "${name}" is declared by the app as a ${PORT_SHAPES[d.kind]}, but options.ports["${name}"] is a ${has[0]} handler`);
+  }
+  if (manual) return;
+  for (const d of decls) {
+    if (ports[d.name] === undefined) throw new Error(`port "${d.name}" is declared by the app as a ${PORT_SHAPES[d.kind]}, but options.ports has no ${d.kind === 3 ? "subscribe or push" : PORT_SHAPES[d.kind]} handler for it`);
+  }
+}
+
+// A value that is not JSON data, found while serialising an answer.
+class PortDataError extends Error {}
+
+function describeValue(v) {
+  if (typeof v !== "object") return `a ${typeof v}`;
+  const c = Object.getPrototypeOf(v)?.constructor;
+  return `a ${c && c.name ? c.name : "object"}`;
+}
+
+// Serialise a handler's answer strictly: { json, blobs, files }. Anything
+// JSON.stringify would silently change or drop (NaN, a Map, a function, a
+// cycle) is a PortDataError naming where it is.
+export function portData(value) {
+  const blobs = [];
+  const files = [];
+  const open = new Set();
+  const at = (path) => (path === "" ? "the top" : path);
+  const enc = (v, path, depth) => {
+    if (v === null || v === undefined) return "null";
+    switch (typeof v) {
+      case "boolean":
+        return v ? "true" : "false";
+      case "number":
+        if (!Number.isFinite(v)) throw new PortDataError(`${v} at ${at(path)}`);
+        return JSON.stringify(v);
+      case "string":
+        return JSON.stringify(v);
+      case "bigint":
+        return `"${v}"`;
+      case "object":
+        break;
+      default:
+        throw new PortDataError(`${describeValue(v)} at ${at(path)}`);
+    }
+    if (depth >= 512) throw new PortDataError(`containers nested more than 512 deep at ${at(path)}`);
+    if (v instanceof Uint8Array) {
+      blobs.push(v);
+      return `{"$bytes":${blobs.length - 1}}`;
+    }
+    if (v instanceof ArrayBuffer) {
+      blobs.push(new Uint8Array(v));
+      return `{"$bytes":${blobs.length - 1}}`;
+    }
+    if (ArrayBuffer.isView(v)) {
+      blobs.push(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
+      return `{"$bytes":${blobs.length - 1}}`;
+    }
+    if (typeof Blob !== "undefined" && v instanceof Blob) {
+      files.push(v);
+      return `{"$file":${files.length - 1}}`;
+    }
+    if (v instanceof Date) return JSON.stringify(v.toJSON());
+    if (open.has(v)) throw new PortDataError(`a cycle at ${at(path)}`);
+    open.add(v);
+    let out;
+    if (Array.isArray(v)) {
+      out = `[${v.map((x, i) => enc(x, `${path}[${i}]`, depth + 1)).join(",")}]`;
+    } else {
+      const proto = Object.getPrototypeOf(v);
+      if (proto !== Object.prototype && proto !== null) throw new PortDataError(`${describeValue(v)} at ${at(path)}`);
+      const fields = [];
+      for (const k of Object.keys(v)) {
+        if (v[k] === undefined) continue;
+        fields.push(`${JSON.stringify(k.startsWith("$") ? `$${k}` : k)}:${enc(v[k], `${path}.${k}`, depth + 1)}`);
+      }
+      out = `{${fields.join(",")}}`;
+    }
+    open.delete(v);
+    return out;
+  };
+  return { json: enc(value, "", 0), blobs, files };
+}
+
+// A message as the handler sees it: the JSON with every bytes marker a
+// Uint8Array, every file marker the File, and dictionary keys unescaped.
+export function portValue({ json, blobs, files }) {
+  const revive = (v) => {
+    if (Array.isArray(v)) return v.map(revive);
+    if (v === null || typeof v !== "object") return v;
+    const keys = Object.keys(v);
+    if (keys.length === 1 && keys[0] === "$bytes") return blobs[v.$bytes];
+    if (keys.length === 1 && keys[0] === "$file") return files[v.$file];
+    const out = {};
+    for (const k of keys) Object.defineProperty(out, k.startsWith("$") ? k.slice(1) : k, { value: revive(v[k]), enumerable: true, writable: true, configurable: true });
+    return out;
+  };
+  return revive(JSON.parse(json));
+}
+
+// Result tag 14 for `{ json, blobs, files }`: its parts (the file records
+// are added when the handles are minted) and its size against the bound.
+function portReplyPayload({ json, blobs, files }) {
+  const text = utf8enc.encode(json);
+  const parts = [new Uint8Array([RES_PORT_REPLY]), u32(text.length), text, u32(blobs.length)];
+  let size = text.length;
+  for (const b of blobs) {
+    parts.push(u32(b.length), b);
+    size += b.length;
+  }
+  parts.push(u32(files.length));
+  return { parts, files, size };
+}
+
+// Result tag 15: 1 threw (with text), 2 too large, 3 closed.
+function portFailed(klass, text = "") {
+  const parts = [new Uint8Array([RES_PORT_FAILED, klass])];
+  if (klass === 1) parts.push(utf8enc.encode(text));
+  return { parts, files: [] };
+}
+
+// A spec's answer: JSON text verbatim, a throw, TooLarge, Timeout or
+// Closed.
+function manualPortPayload(answer) {
+  if (answer.timeout) return { parts: [new Uint8Array([RES_TIMEOUT])], files: [] };
+  if (answer.tooLarge) return portFailed(2);
+  if (answer.closed) return portFailed(3);
+  if (answer.threw !== undefined) return portFailed(1, answer.threw);
+  const p = portReplyPayload({ json: answer.json, blobs: [], files: [] });
+  return { parts: p.parts, files: [] };
 }
 
 export async function mountRocEngineApp({ wasmUrl, root, ...options }) {

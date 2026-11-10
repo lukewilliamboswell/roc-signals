@@ -1179,7 +1179,92 @@ SpecRunner := [].{
 				name = (b.given.find_first(|g| g.token == body.token) ?? { token: body.token, name: "" }).name
 				check(name == file and body.start == from and body.len == len, "upload ${occurrence.to_str()} sends ${JsonOut.quote(name)} ${body.start.to_str()}+${body.len.to_str()}, expected ${JsonOut.quote(file)} ${from.to_str()}+${len.to_str()}")
 			}
+			ExpectPortCall({ occurrence, port, json }) => {
+				call = SpecRunner.pending_port_call(s, occurrence)?
+				check(call.port == port and call.json == json, "effect occurrence ${occurrence.to_str()} is a call on port ${JsonOut.quote(call.port)} with ${JsonOut.quote(call.json)}, expected port ${JsonOut.quote(port)} with ${JsonOut.quote(json)}")
+			}
+			AnswerPort({ occurrence, answer }) => {
+				call = SpecRunner.pending_port_call(s, occurrence)?
+				payload = match answer {
+					Reply(json) => SpecRunner.encode_port_reply(json)
+					Throw(message) => [15, 1].concat(message.to_utf8())
+					TooLarge => [15, 2]
+					Timeout =>
+						if call.timeout_ms == 0 {
+							return Err("the call on port ${JsonOut.quote(call.port)} has no timeout, so it cannot time out")
+						} else {
+							[7]
+						}
+				}
+				Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: b.pending.keep_if(|q| q.id != call.id) } }, call.id, payload))
+			}
+			ExpectPortSent({ port, index, json }) => {
+				sent = b.port_log.keep_if(|c| c.port == port)
+				match sent.get(index - 1) {
+					Ok(c) => check(c.json == json, "command ${index.to_str()} on port ${JsonOut.quote(port)} carried ${JsonOut.quote(c.json)}, expected ${JsonOut.quote(json)}")
+					Err(_) => Err("port ${JsonOut.quote(port)} was sent ${sent.len().to_str()} commands, so there is no command ${index.to_str()}")
+				}
+			}
+			ExpectPortSends({ port, count }) => {
+				got = b.port_log.count_if(|c| c.port == port)
+				check(got == count, "port ${JsonOut.quote(port)} was sent ${got.to_str()} commands, expected ${count.to_str()}")
+			}
+			EmitPort({ port, json }) =>
+				if SpecRunner.port_subscriptions(s, port) == 0 {
+					Err("no live subscription on port ${JsonOut.quote(port)}")
+				} else {
+					Ok(SpecRunner.broadcast(program, s, |x| SpecRunner.on_port(x.sub, port), SpecRunner.encode_port_reply(json)))
+				}
+			ClosePort(port) => SpecRunner.end_port(program, s, port, [15, 3])
+			FailPort({ port, message }) => SpecRunner.end_port(program, s, port, [15, 1].concat(message.to_utf8()))
+			ExpectPortSubscriptions({ port, count }) => {
+				got = SpecRunner.port_subscriptions(s, port)
+				check(got == count, "${got.to_str()} live subscriptions on port ${JsonOut.quote(port)}, expected ${count.to_str()}")
+			}
 		}
+	}
+
+	## The pending port call that is the N-th effect occurrence.
+	pending_port_call : S(state), U64 -> Try({ id : U32, port : Str, json : Str, timeout_ms : U32 }, Str)
+	pending_port_call = |s, n| {
+		b = s.browser
+		id = b.issued.get(n - 1) ? |_| "effect occurrence ${n.to_str()} was never issued (${b.issued.len().to_str()} issued)"
+		p = b.pending.find_first(|q| q.id == id) ? |_| "effect occurrence ${n.to_str()} is not pending (cancelled or done)"
+		match p.kind {
+			PortRequest({ port, json, timeout_ms }) => Ok({ id, port, json, timeout_ms })
+			_ => Err("effect occurrence ${n.to_str()} is not a port call")
+		}
+	}
+
+	## A port reply's payload (result tag 14) carrying `json` and no bytes
+	## or files.
+	encode_port_reply : Str -> List(U8)
+	encode_port_reply = |json| SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_str([14], json), 0), 0)
+
+	on_port : Sub, Str -> Bool
+	on_port = |sub, port| match sub {
+		PortSub(p, _) => p == port
+		_ => Bool.False
+	}
+
+	port_subscriptions : S(state), Str -> U64
+	port_subscriptions = |s, port| s.browser.subs.count_if(|x| SpecRunner.on_port(x.sub, port))
+
+	## The JavaScript ends every live subscription on `port` with the
+	## terminal `payload`: each leaves the browser's live set, as the runtime
+	## forgets it, and receives it as its last turn.
+	end_port : Program(state), S(state), Str, List(U8) -> Try(S(state), Str)
+	end_port = |program, s, port, payload| {
+		b = s.browser
+		ending = b.subs.keep_if(|x| SpecRunner.on_port(x.sub, port))
+		if ending.is_empty() {
+			return Err("no live subscription on port ${JsonOut.quote(port)}")
+		}
+		var $s = { ..s, browser: { ..b, subs: b.subs.keep_if(|x| !SpecRunner.on_port(x.sub, port)) } }
+		for x in ending {
+			$s = SpecRunner.deliver(program, $s, x.id, payload)
+		}
+		Ok($s)
 	}
 
 	## `fill`, as Playwright's: the control must be an enabled text input or

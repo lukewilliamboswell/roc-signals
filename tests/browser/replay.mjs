@@ -331,6 +331,7 @@ async function answerJob(page, n, how, fault) {
       if (id === undefined) return `effect occurrence ${n} was never issued (${rt.issued.length} issued)`;
       const e = rt.live.get(id);
       if (e === undefined || e.running) return `effect occurrence ${n} is not pending (cancelled or done)`;
+      if (e.kind === "portcall") return `effect occurrence ${n} is a call on port ${JSON.stringify(e.req.port)}, not a worker job`;
       if (e.kind !== "work") return `effect occurrence ${n} is ${e.kind === "timer" ? "a timer" : e.kind === "file" ? "an operation on a file" : "an HTTP request"}, not a worker job`;
       if (how === "expire") {
         if (!(e.req.deadline > 0)) return `worker job ${n} has no deadline, so it cannot time out`;
@@ -343,6 +344,62 @@ async function answerJob(page, n, how, fault) {
     fault,
   );
   if (r) throw new Error(r);
+  return settle(page);
+}
+
+// The pending port call that is the N-th effect occurrence, as the native
+// runner's `pending_port_call` finds it: { id, port, json, timeout } or
+// { error }.
+function pendingPortCall(n) {
+  const rt = window.__rt;
+  const id = rt.issued[n - 1];
+  if (id === undefined) return { error: `effect occurrence ${n} was never issued (${rt.issued.length} issued)` };
+  const e = rt.live.get(id);
+  if (e === undefined || e.running) return { error: `effect occurrence ${n} is not pending (cancelled or done)` };
+  if (e.kind !== "portcall") return { error: `effect occurrence ${n} is not a port call` };
+  return { id, port: e.req.port, json: e.req.msg.json, timeout: e.req.timeout };
+}
+
+// The port steps, through the runtime's manual-mode hooks: a call waits
+// for `answer-port`, subscriptions for `emit-port`, `close-port` and
+// `fail-port`, and commands are logged.
+const PORT_STEPS = {
+  "expect-port-call": async (page, s) => {
+    const c = await page.evaluate(`(${pendingPortCall})(${s.count})`);
+    if (c.error) throw new Error(c.error);
+    if (c.port !== s.port || c.json !== s.json) throw new Error(`effect occurrence ${s.count} is a call on port ${JSON.stringify(c.port)} with ${JSON.stringify(c.json)}, expected port ${JSON.stringify(s.port)} with ${JSON.stringify(s.json)}`);
+  },
+  "answer-port": async (page, s) => {
+    const c = await page.evaluate(`(${pendingPortCall})(${s.count})`);
+    if (c.error) throw new Error(c.error);
+    if (s.answer === "timeout" && !(c.timeout > 0)) throw new Error(`the call on port ${JSON.stringify(c.port)} has no timeout, so it cannot time out`);
+    const answer = s.answer === "reply" ? { json: s.json } : s.answer === "throw" ? { threw: s.text } : s.answer === "too-large" ? { tooLarge: true } : { timeout: true };
+    const ok = await page.evaluate((id, answer) => window.__rt.answerPort(id, answer), c.id, answer);
+    if (!ok) throw new Error(`the call on port ${JSON.stringify(c.port)} could not be answered`);
+    return settle(page);
+  },
+  "expect-port-sent": async (page, s) => {
+    const sent = await page.evaluate((port) => window.__rt.portLog.filter((c) => c.port === port).map((c) => c.json), s.port);
+    if (s.index < 1 || s.index > sent.length) throw new Error(`port ${JSON.stringify(s.port)} was sent ${sent.length} commands, so there is no command ${s.index}`);
+    const got = sent[s.index - 1];
+    if (got !== s.json) throw new Error(`command ${s.index} on port ${JSON.stringify(s.port)} carried ${JSON.stringify(got)}, expected ${JSON.stringify(s.json)}`);
+  },
+  "expect-port-sends": async (page, s) => {
+    const got = await page.evaluate((port) => window.__rt.portLog.filter((c) => c.port === port).length, s.port);
+    if (got !== s.count) throw new Error(`port ${JSON.stringify(s.port)} was sent ${got} commands, expected ${s.count}`);
+  },
+  "emit-port": (page, s) => portMessage(page, s.port, { json: s.json }),
+  "close-port": (page, s) => portMessage(page, s.port, { closed: true }),
+  "fail-port": (page, s) => portMessage(page, s.port, { threw: s.text }),
+  "expect-port-subscriptions": async (page, s) => {
+    const got = await page.evaluate((port) => window.__rt.portSubscriptions(port), s.port);
+    if (got !== s.count) throw new Error(`${got} live subscriptions on port ${JSON.stringify(s.port)}, expected ${s.count}`);
+  },
+};
+
+async function portMessage(page, port, answer) {
+  const n = await page.evaluate((port, answer) => window.__rt.messagePort(port, answer), port, answer);
+  if (n === 0) throw new Error(`no live subscription on port ${JSON.stringify(port)}`);
   return settle(page);
 }
 
@@ -390,6 +447,7 @@ const sameDocument = (from, to) => to.includes("#") && from.split("#")[0] === to
 
 // One handler per step form of the grammar (`Scm.step_forms`).
 const STEPS = {
+  ...PORT_STEPS,
   click: (page, s, state) => click(page, state, s.loc, false),
   "real-click": (page, s, state) => click(page, state, s.loc, true),
   fill: (page, s) => fill(page, s.loc, s.text),
@@ -494,6 +552,7 @@ const STEPS = {
         if (id === undefined) return { error: `effect occurrence ${n} was never issued (${rt.issued.length} issued)` };
         const e = rt.live.get(id);
         if (e === undefined) return { error: `effect occurrence ${n} is not pending (cancelled or done)` };
+        if (e.kind === "portcall") return { error: `effect occurrence ${n} is a call on port ${JSON.stringify(e.req.port)}; answer it with answer-port` };
         // A timer fires; it takes no staged answer.
         if (e.kind === "timer") {
           rt.runEffect(id, {});

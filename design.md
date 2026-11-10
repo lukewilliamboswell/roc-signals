@@ -1404,6 +1404,16 @@ of steps written against the rendered UI:
   `time-out-work` (answer a pending worker job `WorkLost` with a fault class,
   or `Timeout`, without running it), `expect-pending-work`, interval ticks,
   `set-visibility`, `set-online`.
+- **Ports** — neither runner calls the page's port handlers; port traffic
+  is stubbed as HTTP is. A port call shares `run-effect`'s occurrence
+  numbering: `expect-port-call N port json` checks its message and
+  `answer-port N reply|throw|too-large|timeout` answers it (a reply's JSON
+  is delivered as written, so a spec can answer what the app's type does
+  not accept). Subscriptions are addressed by port: `emit-port`,
+  `close-port`, `fail-port` and `expect-port-subscriptions`. Commands are
+  logged per document: `expect-port-sent port K json` and
+  `expect-port-sends port n`. Delivery policies are runtime behaviour,
+  covered by its contract test.
 - **Work** — `mark-metrics`, `expect-metric-delta`,
   `expect-metric-delta-at-most`, `expect-updates`, `expect-cleanup`,
   `expect-interval`.
