@@ -7,24 +7,17 @@ template = "page.html"
 
 # Tasks
 
-A **task** is a function that runs in a worker and acts on files. Where a
-[worker program](@/docs/workers.md) is a pure calculation on the bytes it is
-sent, a task's job receives files as *handles* and calls effects on them: it
-reads the ranges it needs, a chunk at a time, and writes new files with a
-*builder*. The files it returns reach the page as handles the page holds,
-which the app can show, save, upload or send to another job. No file's bytes
-pass through the page's memory on the way.
+A **task** is a function that runs in a worker. Its job receives the files
+in its input as *handles* and calls effects on them: it reads the ranges it
+needs, a chunk at a time, and writes new files with a *builder*. The files
+it returns reach the page as handles the page holds, which the app can show,
+save, upload or send to another job. No file's bytes pass through the page's
+memory on the way.
 
-| You want to | Use |
-|---|---|
-| Compute a value from values, off the page's thread | A [program](@/docs/workers.md) (`Worker.program`, today `Worker.pure`) |
-| Ask several questions of one expensive preparation | A [prepared program](@/docs/workers.md#prepared-programs-one-preparation-several-questions) |
-| Read a file a chunk at a time, or produce a file | A task (`Worker.task`, `Worker.fallible_task`) |
-| Upload, digest or preview a file without reading it | An [operation on the file](@/docs/files.md#acting-on-a-file-where-it-lives) |
-
-A program can read a file too: its bytes are read into the worker before
-it runs, all of them, and it returns values. Use a task when the file is
-large, when only part of it matters, or when the answer is a file.
+A [worker program](@/docs/workers.md) is the pure form of the same idea: its
+files are read into the worker before it runs, all of them, and it returns
+values. Reach for a task when the file is large, when only part of it
+matters, or when the answer is a file.
 
 ## A task
 
@@ -45,17 +38,18 @@ gave no answer at all is a separate `Err` (below).
 
 The name is namespaced and unversioned, as a program's is: every worker runs
 the same compiled module, so a name means one function. Write `run!` as a
-named top-level function, as here; with the pinned compiler an anonymous
-function written inside the record is checked as a pure one and is refused.
+named function annotated with `=>`, as here: with the pinned compiler, an
+anonymous function written inside the record that opens a builder and uses
+`?` is checked as a pure one and refused.
 
 ## Asking for a job
 
-Register the task beside your programs, in `with_workers`:
+Register the task once, in `with_workers`:
 
 {{ sample(file="tasks/Convert.roc", region="register") }}
 
-A task has `request` and `result`, so everything that takes a program takes
-a task. Here `Worker.derive_when` follows the chosen file: when a file is
+A task has `request` and `result`, so it is used from any effect site, and
+`Worker.derive_when` gives a layer that follows it. Here `Worker.derive_when` follows the chosen file: when a file is
 chosen it issues a job (the layer is *pending*, `running` is true), and when
 the answer arrives the layer *resolves* to it. A newer file stops the job
 for the older one.
