@@ -1572,10 +1572,12 @@ Core := [].{
 	## closure over the typed state that runs one of its tasks,
 	## `ask!(task, input_bytes, handles)`, and answers as a task's entry
 	## does. The state never crosses a boundary; the worker's host keeps one
-	## `Box(Kept)` as the page's host keeps the engine state, and every answer
-	## is what preparing afresh would give. `ask!` is boxed on its own because
-	## the host boundary admits a function only as the direct contents of a
-	## `Box`; the tasks only read the state it captures, so it is never copied.
+	## `Box(Kept)` as the page's host keeps `Box(App)`, and every answer
+	## is what preparing afresh would give. Compiler workaround
+	## (https://github.com/roc-lang/roc/issues/12953): the host boundary
+	## rejects `Box(Kept)` while `ask!` is a bare function, so `ask!` is boxed
+	## on its own (`kept` boxes it, `work_ask!` unboxes it) until the plain
+	## box is accepted again.
 	Kept :: { prep : Str, ask! : Box((Str, List(U8), List(Box(U64)) => List(U8))) }
 
 	## For the worker layer: the kept state of the preparation `prep`.

@@ -1,7 +1,8 @@
 //! The Wasm host of the web platform for the pure Roc engine (`platform/Engine.roc`).
 //!
-//! The host owns exactly three things between calls: one opaque engine
-//! handle (`Box(Iter(App))`), the command byte list of the last transaction and the
+//! The host owns exactly three things between calls: one opaque
+//! `Box(App)` (wrapped as `Box(Iter(App))` until roc-lang/roc#12953 is
+//! resolved), the command byte list of the last transaction and the
 //! engine's work record. It never interprets the state or the commands. Each
 //! call moves all three into Roc (clearing the slots first, so a trap mid-call
 //! cannot leave a dangling owner) and stores the replacements Roc returns.
@@ -433,7 +434,7 @@ comptime {
 // ---------------------------------------------------------------------------
 // Prepared state (design.md, "Prepared state"). A worker instance may keep
 // one prepared state between jobs: an opaque `Box(Kept)` the host owns
-// exactly as a page's host owns its engine handle. It never interprets it. Each call
+// exactly as a page's host owns `Box(App)`. It never interprets it. Each call
 // clears the slot before moving the box into Roc, so a trap mid-call
 // abandons it with the heap and nothing dangles. Both calls may perform the
 // hosted effects, as a job does; the files a state keeps are handles it

@@ -7,7 +7,7 @@
 ## binds a `program` as `main`, and one entry file builds for two targets:
 ##
 ## - `roc build --target=wasm32` gives the module the browser runs. The Zig
-##   host (`host/host.zig`) holds exactly one opaque engine handle and the
+##   host (`host/host.zig`) holds exactly one opaque `Box(Core.App)` and the
 ##   command buffer between calls; JavaScript (`runtime.mjs`) reads the buffer
 ##   straight from linear memory.
 ## - `roc build --target=x64musl` gives the app's native `.scm` spec runner:
@@ -77,13 +77,15 @@ import Worker
 ## by the host, lent to JS, and passed back into the next call for reuse).
 Step : { cmds : List(U8), state : Handle, work : List(U8) }
 
-## The engine state as the host holds it between calls: an opaque handle
-## whose contents only Roc reads. The host boundary admits a function only
-## as the direct contents of a `Box`, and the engine's state holds
-## functions throughout, so it cannot cross as `Box(Core.App)`; a boxed
-## `Iter` is the boundary's opaque handle, and this one yields the state
-## exactly once. Stepping a unique handle moves the state out, so the
-## engine still updates it in place.
+## The engine state as the host holds it between calls. By design this is
+## `Box(Core.App)`; compiler workaround
+## (https://github.com/roc-lang/roc/issues/12953): the host boundary rejects
+## a box of a state that holds functions but accepts a boxed `Iter`, so the
+## state crosses wrapped in a one-item `Iter`. `hold` is the one place that
+## wraps it and `release` the one place that unwraps it; all three go, and
+## `Step.state` becomes `Box(Core.App)` again, once the plain box is
+## accepted. Stepping the unique handle moves the state out, so the engine
+## still updates it in place.
 Handle : Box(Iter(Core.App))
 
 ## The handle over the state the host keeps until its next call.

@@ -264,7 +264,7 @@ state is row state — is the documented pattern that keeps app work local.
 flowchart LR
     App["app: App.roc<br/>Elem tree of typed sites"] --> Engine["platform/Core.roc (internal) behind Engine.roc (authoring API)<br/>pure engine: sites, layers, each columns,<br/>effects, command encoding"]
     Engine --> Main["platform/main.roc<br/>keys · init · event · files · drop ·<br/>work · prepare · ask · forget"]
-    Main --> Host["platform/host/host.zig<br/>allocator · the engine handle or, in a worker, one Box(Kept) ·<br/>cmd buffer · staged payload · handle heaps · fault class"]
+    Main --> Host["platform/host/host.zig<br/>allocator · Box(Core.App), today wrapped as Box(Iter(Core.App)) (roc-lang/roc#12953 workaround), or, in a worker, one Box(Kept) ·<br/>cmd buffer · staged payload · handle heaps · fault class"]
     Host --> Wire["command bytes in linear memory"]
     Wire --> JS["platform/runtime.mjs (and worker.mjs in each worker)<br/>apply commands · perform effects ·<br/>delegate events · contain faults"]
     JS --> DOM["browser DOM and services"]
@@ -955,7 +955,7 @@ are all of that kind.
   alias. A comparison that is conservative only costs a preparation.
 - **Holding.** The registration erases the typed state into a closure
   (`Core.Kept`) that runs the preparation's tasks by name. A worker's host
-  holds at most one `Box(Kept)`, exactly as a page's host holds its engine handle:
+  holds at most one `Box(Kept)`, exactly as a page's host holds `Box(App)`:
   `prepare` builds it, `ask` moves it into one call and back out with the
   answer, and `forget` hands it to Roc to drop. The state never crosses to
   the page, so it need not be `Wire.Sendable`. The files it holds are
@@ -1398,8 +1398,10 @@ mid-text edits, a CDP IME composition) do.
 
 The Zig host (`platform/host/host.zig`) owns exactly:
 
-- **one opaque engine handle** — the engine state between calls, as
-  `Box(Iter(Core.App))` (below);
+- **one opaque `Box(Core.App)`** — the engine state between calls. Until
+  roc-lang/roc#12953 is resolved, the box crosses the boundary wrapped in a
+  one-item `Iter`, as `Box(Iter(Core.App))`, still one pointer to the host
+  (see [Compiler Limitations](#compiler-limitations));
 - **the command buffer** — the last call's `List(U8)`;
 - **one staged payload** — a Roc `List(U8)` allocated by `payload_reserve`;
 - **the allocator** — `roc_alloc`/`roc_dealloc`/`roc_realloc` over the Wasm page
@@ -1418,15 +1420,6 @@ The Zig host (`platform/host/host.zig`) owns exactly:
 It never interprets the state or the commands. Each engine call clears the
 host's slots *before* moving the state, buffer and payload into Roc, then
 stores what Roc returns, so a trap mid-call cannot leave a dangling owner.
-
-Roc admits a function, an `Iter` or a `Stream` at the host boundary only as
-the direct contents of its own `Box`, and looks through records and nominal
-types to find one. The engine state holds site closures throughout, so
-`platform/main.roc` hands it to the host as a boxed `Iter` that yields the
-state exactly once: a boxed `Iter` is the boundary's opaque handle, the
-host holds it as one pointer, and stepping the unique handle at the next
-call moves the state out, so the engine still updates it in place. A
-prepared state's closure is boxed on its own instead (`Core.Kept`).
 
 Payload staging lays out a Roc `List(U8)` exactly as Roc expects: one
 refcount word (1) before the elements, capacity stored shifted left by one
@@ -1881,6 +1874,7 @@ contains the fix. None of them is platform semantics.
 | [roc-lang/roc#12835](https://github.com/roc-lang/roc/issues/12835) | Annotated polymorphic recursion hangs `roc test`/`roc check` under `--specialize=yes` | Recursive site types annotated with care |
 | [roc-lang/roc#12869](https://github.com/roc-lang/roc/issues/12869) | An unused closure capturing a function passed to a branching self-recursive closure makes monotype lowering exponential | A Kanban Board helper is a top-level function instead of a local closure |
 | [roc-lang/roc#12836](https://github.com/roc-lang/roc/issues/12836) | `Box.box` of a capture-free callable allocates on every call | Extra allocations per call |
+| [roc-lang/roc#12953](https://github.com/roc-lang/roc/issues/12953) | Since roc-lang/roc#12887, the host boundary rejects an opaque `Box` of a value that contains functions, though it accepts the same value as `Box(Iter(...))` | The engine state crosses as `Box(Iter(Core.App))`, wrapped and unwrapped in `platform/main.roc`; `Core.Kept` holds its task runner as a `Box` of its own |
 | [roc-lang/roc#12945](https://github.com/roc-lang/roc/issues/12945) | Under `--specialize=no`, a derived record decode leaks on every call | Worker instances grow per job in that build, so the scaling task's memory checks fail for it |
 | [roc-lang/roc#12951](https://github.com/roc-lang/roc/issues/12951) | A lambda passed to a generic function is rejected when its body uses `?` on a method of its own parameter and then `?` again | A task whose `run!` reads a file and then uses `?` again is written as a named function, not a lambda in the props record; the Workers guide says so |
 
@@ -2189,7 +2183,10 @@ appendix together.
 
 ### Roc ↔ host
 
-The platform provides (`platform/main.roc`):
+The platform provides (`platform/main.roc`). The engine state is
+`Box(Core.App)` by design; the signatures below show it as it crosses
+today, wrapped as `Box(Iter(Core.App))`, a workaround for
+roc-lang/roc#12953 (see [Compiler Limitations](#compiler-limitations)).
 
 | Symbol | Signature | Meaning |
 |---|---|---|
