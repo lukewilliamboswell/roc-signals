@@ -1,0 +1,15 @@
+(test "Workers — several jobs in flight complete in any order and render"
+  (steps
+    (click (role button :name "Batch"))
+    (click (role button :name "Upper"))
+    (expect-pending-effects 5)
+    (run-effect 3)
+    (run-effect 5)
+    (run-effect 1)
+    (expect-pending-effects 2)
+    (run-effect 4)
+    (run-effect 2)
+    (expect-pending-effects 0)
+    (expect-text (test-id "log") "batch:B1-3|upper:JOB 1|batch:B1-1|batch:B1-4|batch:B1-2")
+  )
+)
