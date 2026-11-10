@@ -29,19 +29,21 @@ const repo = path.resolve(here, "../..");
 const opts = parseArgs(process.argv.slice(2), ["app", "events", "cycles"]);
 const app = opts.app;
 const EVENTS = Number(opts.events ?? 3000);
-const conduit = app === "conduit";
-// Apps with effects run against a backend: Conduit's RealWorld mock, and
-// small stand-ins for the field-notes sync endpoint (it echoes the token, a
-// successful sync) and the status-page checks (every service operational, no
-// incidents).
+// Apps with a simulated service run against the example's own module (its
+// `backend` in www/data/examples.toml), served over HTTP below: Conduit's
+// RealWorld API, Field Notes' sync endpoint (every third sync fails) and the
+// status page's scripted checks and incidents (an outage, a failed check,
+// recovery).
 const BACKENDS = {
-  "field-notes": async (req) => (req.uri === "/api/notes/sync" ? { status: 200, body: req.body } : null),
-  "status-page": async (req) =>
-    req.uri === "/api/status/incidents" ? { status: 200, body: "" } : req.uri.startsWith("/api/status/") ? { status: 200, body: "operational|99.99" } : null,
-  // The converter's only request is its sample, a static file served below.
-  "csv-converter": async () => null,
+  conduit: "examples/conduit/backend.mjs",
+  "field-notes": "examples/field-notes/backend.mjs",
+  "status-page": "examples/status-page/backend.mjs",
 };
-let handle = BACKENDS[app] ?? null;
+// Apps whose only requests are for static files served below (the
+// converter's sample).
+const FETCHES_FILES = ["csv-converter"];
+const backendModule = BACKENDS[app] ?? null;
+const handle = backendModule ? (await import(path.join(repo, backendModule))).default() : null;
 // Apps whose effects include worker jobs.
 const WORKER_APPS = ["worker-search", "csv-converter", "log-explorer"];
 // Apps where a response that arrives while a held job runs may supersede
@@ -54,8 +56,7 @@ const workers = WORKER_APPS.includes(app);
 // answers and messages arrive on their own time, like a backend's.
 const PORT_APPS = { "reading-list": "examples/reading-list/ports.mjs" };
 const portsModule = PORT_APPS[app] ?? null;
-if (conduit) handle = (await import(path.join(repo, "www/static/conduit_backend.mjs"))).createConduitHandler({});
-const served = handle !== null || portsModule !== null;
+const served = handle !== null || portsModule !== null || FETCHES_FILES.includes(app);
 
 const files = {
   "index.html": path.join(here, "index.html"),
@@ -71,8 +72,15 @@ const server = http.createServer(async (req, res) => {
   if (handle && u.pathname.startsWith("/api/")) {
     let body = "";
     for await (const c of req) body += c;
-    const r = await handle({ method: req.method, uri: u.pathname + u.search, headers: req.headers, body });
-    res.writeHead(r ? r.status : 404, { "content-type": "application/json" });
+    let r;
+    try {
+      r = await handle({ method: req.method, uri: u.pathname + u.search, headers: req.headers, body });
+    } catch {
+      // The service's network failure: the browser's fetch rejects.
+      req.socket.destroy();
+      return;
+    }
+    res.writeHead(r ? r.status : 404, { "content-type": r?.headers?.["content-type"] ?? "text/plain" });
     res.end(r ? r.body : "");
     return;
   }
@@ -237,7 +245,8 @@ const CYCLES = {
     ["click", ["role", "button", "Hide empty rows"]],
     ["click", ["role", "button", "Show all rows"]],
   ],
-  // Every check answered by the backend stand-in.
+  // Every check answered by the example's service, which settles on a
+  // healthy board after its scripted incident.
   "status-page": [["click", ["role", "button", "Refresh now"]]],
   "worker-lab": [["click", ["role", "button", "Start"]], ["click", ["role", "button", "Reset"]]],
   // A search run in the worker, a cleared query (a pure cancel), and the
