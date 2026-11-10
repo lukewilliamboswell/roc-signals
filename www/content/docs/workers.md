@@ -55,7 +55,10 @@ copying and starting is better done on the page.
 
 A program receives only its input. It keeps nothing between runs, so data it
 needs every time, such as the text it searches, is sent and copied with every
-run. There is no long-lived worker that holds data between requests.
+run. When the cost is not sending the data but preparing it (parsing a
+document, building an index), a [prepared program](#prepared-programs-one-preparation-several-questions)
+lets a worker keep the prepared state between runs without changing any
+answer.
 
 The page and its workers run one module, so a program's code is part of the
 module the page downloads and compiles, although the page never runs it. A

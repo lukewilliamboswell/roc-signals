@@ -27,9 +27,14 @@ import Wire
 ## ran other jobs before. A run is stopped when its site is disposed, when a
 ## `latest` or `derive` site moves on to a newer input, or when its deadline
 ## expires: a run still waiting for a worker is dropped, and a running one is
-## stopped by ending its instance, so the next run starts a new one. There is
-## no way to stop a run and keep its instance, and a run reports nothing
+## stopped by ending its instance, so the next run starts a new one; only a
+## prepared program's query may instead finish a stopped run so that its
+## instance keeps its state (`with_cancel(Finish)`). A run reports nothing
 ## until it answers.
+##
+## A [Prepared] program is a preparation and several typed queries over its
+## state; a worker may keep that state between jobs, which changes how long
+## an answer takes and never what it is.
 Worker := [].{
 
 	## Why a run produced no output: its deadline expired and it was stopped
