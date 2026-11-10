@@ -55,6 +55,8 @@ the platform does not depend on any CSS framework.
   jobs, downloading into a file, and saving.
 - [Monitoring Workers](@/docs/worker-monitoring.md): where a worker job's time
   goes, how busy the pool is, and what workers cost.
+- [Ports](@/docs/ports.md): reaching a browser service the platform does not
+  model, through typed messages to JavaScript your page supplies.
 - [Reference](@/docs/reference.md): the API at a glance and the platform's
   limits.
 - [Under the Hood](@/docs/under-the-hood.md): how an event becomes DOM commands.
