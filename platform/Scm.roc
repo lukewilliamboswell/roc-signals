@@ -53,6 +53,14 @@ Scm := [].{
 	## observe (design.md, "The effect channel").
 	RejectKind : [Network, Timeout]
 
+	## Why a worker job was lost: the fault class of the program's instance
+	## (`contract`, `resource_limit`, `out_of_memory`, `app_crash`,
+	## `expect_failed`), no Web Worker support (`unavailable`), or the worker
+	## script failing (`executor`), as `Engine.WorkFault` has them (design.md,
+	## Appendix B, result tag 11). Spelled as design.md and the runtime spell
+	## the classes.
+	WorkFault : [Contract, ResourceLimit, OutOfMemory, AppCrash, ExpectFailed, Unavailable, Executor]
+
 	## Declarative state applied before the app mounts.
 	Setup : [
 		InitialLocation(Str),
@@ -95,6 +103,17 @@ Scm := [].{
 		StubHttp({ label : Str, stub : Stub }),
 		RunEffect(U64),
 		ExpectPendingEffects(U64),
+
+		## Answer the N-th effect occurrence, a pending worker job, as lost
+		## with a fault class, without running it.
+		LoseWork({ occurrence : U64, fault : WorkFault }),
+
+		## Expire the deadline of the N-th effect occurrence, a pending worker
+		## job with a deadline: it is answered `Timeout`.
+		TimeOutWork(U64),
+
+		## Exactly `count` worker jobs for `program` are pending.
+		ExpectPendingWork({ program : Str, count : U64 }),
 		TickInterval(U64),
 		TickIntervalIfActive(U64),
 		ExpectCleanup({ name : Str, count : U64 }),
@@ -663,6 +682,26 @@ Scm := [].{
 		{ name: "stub-http-reject", parse: |form, args| Ok(StubHttp(Scm.http_fixture(form, "stub-http-reject", args)?)) },
 		{ name: "run-effect", parse: |form, args| Ok(RunEffect(Scm.count1(form, args, "the effect occurrence")?)) },
 		{ name: "expect-pending-effects", parse: |form, args| Ok(ExpectPendingEffects(Scm.count1(form, args, "the pending count")?)) },
+		{
+			name: "lose-work",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 2)?
+				Ok(LoseWork({ occurrence: Scm.unsigned(Scm.arg(a, 0), "the effect occurrence")?, fault: Scm.work_fault(Scm.arg(a, 1))? }))
+			},
+		},
+		{ name: "time-out-work", parse: |form, args| Ok(TimeOutWork(Scm.count1(form, args, "the effect occurrence")?)) },
+		{
+			name: "expect-pending-work",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 2)?
+				program_sx = Scm.arg(a, 0)
+				program = Scm.string(program_sx, "the program name")?
+				if program == "" {
+					return Err(Scm.bad(program_sx, "the program name must not be empty"))
+				}
+				Ok(ExpectPendingWork({ program, count: Scm.unsigned(Scm.arg(a, 1), "the pending count")? }))
+			},
+		},
 		{ name: "tick-interval", parse: |form, args| Ok(TickInterval(Scm.count1(form, args, "the period")?)) },
 		{ name: "tick-interval-if-active", parse: |form, args| Ok(TickIntervalIfActive(Scm.count1(form, args, "the period")?)) },
 		{
@@ -738,6 +777,23 @@ Scm := [].{
 		JsonOut.field("steps", Array(Scm.step_forms.map(|f| Text(f.name)))),
 		JsonOut.field("setup", Array(Scm.setup_forms.map(|f| Text(f.name)))),
 	])
+
+	## Every work fault by its spelling.
+	work_faults : List((Str, WorkFault))
+	work_faults = [("contract", Contract), ("resource_limit", ResourceLimit), ("out_of_memory", OutOfMemory), ("app_crash", AppCrash), ("expect_failed", ExpectFailed), ("unavailable", Unavailable), ("executor", Executor)]
+
+	work_fault : Sx -> Try(WorkFault, Problem)
+	work_fault = |sx| {
+		name = Scm.symbol(sx, "the work fault")?
+		match Scm.work_faults.find_first(|(n, _)| n == name) {
+			Ok((_, f)) => Ok(f)
+			Err(_) => Err(Scm.bad(sx, "unknown work fault ${name}; a job is lost to ${Str.join_with(Scm.work_faults.map(|(n, _)| n), ", ")}"))
+		}
+	}
+
+	## A work fault as a spec spells it.
+	work_fault_name : WorkFault -> Str
+	work_fault_name = |fault| Scm.work_faults.find_first(|(_, f)| f == fault).map_ok(|(n, _)| n) ?? crash "Scm.work_faults names every fault"
 
 	attr_name : Sx -> Try(Str, Problem)
 	attr_name = |sx|
@@ -826,6 +882,9 @@ Scm := [].{
 			StubHttp({ stub: Reject(_), .. }) => "stub-http-reject"
 			RunEffect(_) => "run-effect"
 			ExpectPendingEffects(_) => "expect-pending-effects"
+			LoseWork(_) => "lose-work"
+			TimeOutWork(_) => "time-out-work"
+			ExpectPendingWork(_) => "expect-pending-work"
 			TickInterval(_) => "tick-interval"
 			TickIntervalIfActive(_) => "tick-interval-if-active"
 			ExpectCleanup(_) => "expect-cleanup"
@@ -953,6 +1012,9 @@ Scm := [].{
 			StubHttp(fixture) => Scm.stub_fields(fixture)
 			RunEffect(n) => [JsonOut.field("count", Nat(n))]
 			ExpectPendingEffects(n) => [JsonOut.field("count", Nat(n))]
+			LoseWork({ occurrence, fault }) => [JsonOut.field("count", Nat(occurrence)), JsonOut.field("fault", Text(Scm.work_fault_name(fault)))]
+			TimeOutWork(n) => [JsonOut.field("count", Nat(n))]
+			ExpectPendingWork({ program, count }) => [JsonOut.field("program", Text(program)), JsonOut.field("count", Nat(count))]
 			TickInterval(ms) => [JsonOut.field("period_ms", Nat(ms))]
 			TickIntervalIfActive(ms) => [JsonOut.field("period_ms", Nat(ms))]
 			ExpectCleanup({ name, count }) => [JsonOut.field("name", Text(name)), JsonOut.field("count", Nat(count))]
@@ -1034,6 +1096,47 @@ expect {
 		\\    (expect-pending-effects 0)))
 	)?
 	Str.inspect(spec.steps.map(|s| s.op)) == "[StubHttp({ label: \"feed\", stub: Reply({ body: \"hi λ\", headers: [{ name: \"content-type\", value: \"text/plain\" }], status: 200, url: \"/api/a\" }) }), StubHttp({ label: \"x\", stub: Reject({ detail: \"\", kind: Timeout }) }), RunEffect(2), ExpectPendingEffects(0)]"
+}
+
+## Worker steps: a job lost with a fault class, a deadline expired, and the
+## pending jobs of a program; each emits its arguments for the browser runner.
+expect {
+	spec = Scm.parse(
+		\\(test "work"
+		\\  (steps
+		\\    (lose-work 1 app_crash)
+		\\    (time-out-work 2)
+		\\    (expect-pending-work "example.org/search/filter" 3)))
+	)?
+	actual =
+		\\${Str.inspect(spec.steps.map(|s| s.op))}
+		\\${JsonOut.render(Scm.to_json("w", spec))}
+	expected =
+		\\[LoseWork({ fault: AppCrash, occurrence: 1 }), TimeOutWork(2), ExpectPendingWork({ count: 3, program: "example.org/search/filter" })]
+		\\{"id":"w","name":"work","setup":[],"steps":[{"op":"lose-work","line":3,"column":5,"count":1,"fault":"app_crash"},{"op":"time-out-work","line":4,"column":5,"count":2},{"op":"expect-pending-work","line":5,"column":5,"program":"example.org/search/filter","count":3}]}
+	actual == expected
+}
+
+## Every work fault parses and is spelled back as it was written.
+expect Scm.work_faults.all(|(name, fault)| Scm.parse("(test \"t\" (steps (lose-work 1 ${name})))").map_ok(|spec| spec.steps.map(|s| s.op)) == Ok([LoseWork({ occurrence: 1, fault })]) and Scm.work_fault_name(fault) == name)
+
+## Worker steps check their arguments.
+expect {
+	actual =
+		\\${problem_of("(test \"t\" (steps (lose-work 1 crashed)))")}
+		\\${problem_of("(test \"t\" (steps (lose-work 1 \"app_crash\")))")}
+		\\${problem_of("(test \"t\" (steps (lose-work 1)))")}
+		\\${problem_of("(test \"t\" (steps (time-out-work -1)))")}
+		\\${problem_of("(test \"t\" (steps (expect-pending-work \"\" 1)))")}
+		\\${problem_of("(test \"t\" (steps (expect-pending-work filter 1)))")}
+	expected =
+		\\x.scm:1:31: unknown work fault crashed; a job is lost to contract, resource_limit, out_of_memory, app_crash, expect_failed, unavailable, executor
+		\\x.scm:1:31: the work fault must be a bare word, got "app_crash"
+		\\x.scm:1:18: lose-work takes 2 argument(s), got 1
+		\\x.scm:1:33: the effect occurrence must be a non-negative integer, got -1
+		\\x.scm:1:39: the program name must not be empty
+		\\x.scm:1:39: the program name must be a string, got filter
+	actual == expected
 }
 
 ## An unknown step is a hard error naming its line and column.

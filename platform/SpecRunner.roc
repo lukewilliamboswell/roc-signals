@@ -30,6 +30,9 @@ import JsonOut
 ##   reject answers any). Storage reads answer by themselves, from storage, in
 ##   the turn after the call that issued them.
 ## - A rejected request becomes `Timeout`, or `Network(detail)`.
+## - A spec's time is manual: a worker job's deadline expires only through
+##   `time-out-work`, and `lose-work` answers a pending job lost with a fault
+##   class without running it.
 ## - A navigation to a URL that differs from the current one only in its
 ##   fragment stays in the document: a new history entry, and the URL goes to
 ##   every live popstate subscription. Any other navigation loads a new
@@ -89,7 +92,7 @@ SpecRunner := [].{
 	Pending : { id : U32, url : Str, body : Str, kind : PendingKind }
 
 	## What `run-effect` does for a pending request.
-	PendingKind : [HttpRequest, TimerRequest, WorkRequest({ program : Str, input : List(U8) })]
+	PendingKind : [HttpRequest, TimerRequest, WorkRequest({ program : Str, input : List(U8), deadline_ms : U32 })]
 
 	## The modelled browser around the DOM. `doc` numbers the current document;
 	## a cross-document navigation mounts the app afresh in the next one.
@@ -210,6 +213,37 @@ SpecRunner := [].{
 
 	## A rejected request's result payload: `Timeout` (tag 7) or `Network`
 	## (tag 2) with the detail as the browser's message.
+	## A lost worker job's result payload: tag 11 and the fault class, as the
+	## runtime numbers it (design.md, Appendix B).
+	encode_lost : Scm.WorkFault -> List(U8)
+	encode_lost = |fault|
+		[
+			11,
+			match fault {
+				Contract => 1
+				ResourceLimit => 2
+				OutOfMemory => 3
+				AppCrash => 4
+				ExpectFailed => 5
+				Unavailable => 6
+				Executor => 7
+			},
+		]
+
+	## The pending worker job that is the N-th effect occurrence, for
+	## `lose-work` and `time-out-work`.
+	pending_job : S(state), U64 -> Try({ id : U32, deadline_ms : U32 }, Str)
+	pending_job = |s, n| {
+		b = s.browser
+		id = b.issued.get(n - 1) ? |_| "effect occurrence ${n.to_str()} was never issued (${b.issued.len().to_str()} issued)"
+		p = b.pending.find_first(|q| q.id == id) ? |_| "effect occurrence ${n.to_str()} is not pending (cancelled or done)"
+		match p.kind {
+			WorkRequest({ deadline_ms, .. }) => Ok({ id, deadline_ms })
+			HttpRequest => Err("effect occurrence ${n.to_str()} is an HTTP request, not a worker job")
+			TimerRequest => Err("effect occurrence ${n.to_str()} is a timer, not a worker job")
+		}
+	}
+
 	encode_reject : Scm.RejectKind, Str -> List(U8)
 	encode_reject = |kind, detail|
 		match kind {
@@ -332,7 +366,7 @@ SpecRunner := [].{
 				Http(id, _, url, _, body, _) => { ..b, pending: b.pending.append({ id, url, body, kind: HttpRequest }), issued: b.issued.append(id) }
 				Get(id, key) => { ..b, gets: b.gets.append({ id, key }) }
 				Timer(id, _) => { ..b, pending: b.pending.append({ id, url: "timer", body: "", kind: TimerRequest }), issued: b.issued.append(id) }
-				Work(id, program, input, _) => { ..b, pending: b.pending.append({ id, url: "work", body: "", kind: WorkRequest({ program, input }) }), issued: b.issued.append(id) }
+				Work(id, program, input, deadline_ms) => { ..b, pending: b.pending.append({ id, url: "work", body: "", kind: WorkRequest({ program, input, deadline_ms }) }), issued: b.issued.append(id) }
 				Interval(id, ms) => { ..b, subs: b.subs.append({ id, sub: Interval(ms) }) }
 				Pop(id) => { ..b, subs: b.subs.append({ id, sub: Pop }) }
 				OnlineSub(id) => { ..b, subs: b.subs.append({ id, sub: OnlineSub }) }
@@ -474,7 +508,7 @@ SpecRunner := [].{
 				id = b.issued.get(n - 1) ? |_| NoJob
 				p = b.pending.find_first(|q| q.id == id) ? |_| NoJob
 				match p.kind {
-					WorkRequest({ program: name, input }) => Ok({ id, payload: SpecRunner.put_str([], name).concat(input) })
+					WorkRequest({ program: name, input, .. }) => Ok({ id, payload: SpecRunner.put_str([], name).concat(input) })
 					_ => Err(NoJob)
 				}
 			}
@@ -508,7 +542,7 @@ SpecRunner := [].{
 		rest = b.pending.keep_if(|q| q.id != id)
 		match p.kind {
 			TimerRequest => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, [5]))
-			WorkRequest({ program: name, input }) => {
+			WorkRequest({ program: name, input, .. }) => {
 				output = (program.work)(SpecRunner.put_str([], name).concat(input))
 				return SpecRunner.deliver_job(program, s, { id, payload: [] }, [10].concat(output))
 			}
@@ -858,6 +892,27 @@ SpecRunner := [].{
 			ExpectNoLocalStorage(key) => check(!b.storage.any(|kv| kv.key == key), "local storage ${key} is present")
 			ExpectPendingEffects(n) => check(b.pending.len() == n, "expected ${n.to_str()} pending effects, got ${b.pending.len().to_str()}")
 			RunEffect(n) => SpecRunner.run_effect(program, s, n)
+			LoseWork({ occurrence, fault }) => {
+				job = SpecRunner.pending_job(s, occurrence)?
+				SpecRunner.deliver_job(program, s, { id: job.id, payload: [] }, SpecRunner.encode_lost(fault))
+			}
+			TimeOutWork(n) => {
+				job = SpecRunner.pending_job(s, n)?
+				if job.deadline_ms == 0 {
+					return Err("worker job ${n.to_str()} has no deadline, so it cannot time out")
+				}
+				SpecRunner.deliver_job(program, s, { id: job.id, payload: [] }, [7])
+			}
+			ExpectPendingWork({ program: name, count }) => {
+				got = b.pending.count_if(
+					|q|
+						match q.kind {
+							WorkRequest(w) => w.program == name
+							_ => Bool.False
+						},
+				)
+				check(got == count, "expected ${count.to_str()} pending worker jobs for ${JsonOut.quote(name)}, got ${got.to_str()}")
+			}
 			StubHttp({ stub, .. }) =>
 				match b.stub {
 					NoStub => Ok({ ..s, browser: { ..b, stub: Staged(stub) } })
@@ -1405,3 +1460,6 @@ expect {
 	actual = ["2", "-2.5", ".5", "1e3", "2x", "1.", "+2", "-"].map(SpecRunner.is_float).concat(["a@b", "a.b@c.d", "a@", "@b", "a@b..c", "a@-b"].map(SpecRunner.is_email))
 	actual == [Bool.True, Bool.True, Bool.True, Bool.True, Bool.False, Bool.False, Bool.False, Bool.False, Bool.True, Bool.True, Bool.False, Bool.False, Bool.False, Bool.False]
 }
+
+## A lost job carries its fault class as the runtime numbers it.
+expect [AppCrash, Unavailable, Executor].map(SpecRunner.encode_lost) == [[11, 4], [11, 6], [11, 7]]

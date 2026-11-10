@@ -119,9 +119,10 @@ models it. `LOC` is a locator, `"…"` a string, `N` a non-negative integer,
 | `(local-storage "key" "value")` | Seed local storage before mount |
 | `(local-storage-unavailable)` | Every local-storage access throws, as with site data disabled. Seeding storage in the same setup is a spec error |
 
-Effects never run on their own in a spec: HTTP requests and timers wait for
-`run-effect`, and intervals for `tick-interval`. Storage reads answer by
-themselves, from storage.
+Effects never run on their own in a spec: HTTP requests, timers and worker
+jobs wait for `run-effect`, and intervals for `tick-interval`. A worker
+job's deadline never expires on its own either: `time-out-work` expires it.
+Storage reads answer by themselves, from storage.
 
 ### Actions
 
@@ -176,6 +177,9 @@ browsers do.
 | `(stub-http-reject "label" :kind network :detail "offline")` | Stage a failure: `network` with the browser's message, or `timeout` with an empty `:detail` |
 | `(run-effect N)` | Answer the N-th HTTP request, timer or worker job the current document issued (1-based, in issue order; subscriptions and storage reads not counted). It must still be pending. A timer fires; a worker job runs its program (in Chrome in a real worker, natively in a child process, the step waiting for its result: a program that crashes loses its job with the crash's fault class, and one that has not finished after 30 s fails the step); an HTTP request takes the staged answer, and a reply's `:url` must equal the request's |
 | `(expect-pending-effects N)` | Exactly N HTTP requests, timers and worker jobs are waiting for `run-effect` |
+| `(expect-pending-work "program" N)` | Exactly N worker jobs for the program of that name are waiting |
+| `(lose-work N FAULT)` | Answer the N-th effect occurrence, a pending worker job, as `WorkLost(FAULT)` without running it. `FAULT` is `contract`, `resource_limit`, `out_of_memory`, `app_crash`, `expect_failed`, `unavailable` or `executor` |
+| `(time-out-work N)` | Expire the deadline of the N-th effect occurrence, a pending worker job: it is answered `Timeout` without running. A job without a deadline fails the step |
 | `(tick-interval MS)` | Deliver one tick to every live `Interval(MS)`; fails when none is live |
 | `(tick-interval-if-active MS)` | The same, but a no-op when none is live |
 | `(expect-interval MS N)` | Exactly N `Interval(MS)` subscriptions are live |
@@ -189,6 +193,15 @@ consumes. A request that is answered after its owner was disposed is still
 delivered to the surviving owner (see [Effects and the browser](@/docs/effects-and-browser.md)),
 and a request the app never issued, or that is already answered, fails the
 step.
+
+A worker job is numbered with the HTTP requests and timers, in issue order,
+so the order of the steps is the order the jobs finish: `(run-effect 2)`
+then `(run-effect 1)` says the newer job finishes first. `lose-work` and
+`time-out-work` let a spec state how the app handles a job that fails
+without writing a program that fails; a program that really crashes on some
+input loses its job under `run-effect`, with the class `app_crash`, in both
+runners. A job cancelled by disposing its site is no longer pending, and the
+`effects_cancelled` metric below counts it.
 
 In Chrome, `set-online` and `set-visibility` override `navigator.onLine` and
 `document.visibilityState` and dispatch the browser's own events, so the

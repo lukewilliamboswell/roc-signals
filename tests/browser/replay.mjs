@@ -25,7 +25,9 @@
 // `run-effect N` answers the N-th awaited HTTP request, timer or worker job
 // the current document issued (a job really runs in a worker, and the step
 // waits for its result turn); storage reads answer by themselves from storage. History,
-// title and storage assertions read the real browser state.
+// title and storage assertions read the real browser state. A worker job's
+// deadline never fires on its own: `time-out-work` expires it and
+// `lose-work` answers it lost, through the runtime's manual-mode hooks.
 // `local-storage-unavailable` makes `window.localStorage` throw, as a browser
 // with site data disabled does; storage assertions then read the real store
 // underneath, so they confirm nothing was written.
@@ -245,6 +247,32 @@ async function stage(state, answer) {
   state.stub = answer;
 }
 
+// `lose-work` and `time-out-work`: the N-th effect occurrence must be a
+// pending worker job; the runtime's manual-mode hooks answer it, without
+// running it, `WorkLost(fault)` or (for a job with a deadline) `Timeout`.
+async function answerJob(page, n, how, fault) {
+  const r = await page.evaluate(
+    (n, how, fault) => {
+      const rt = window.__rt;
+      const id = rt.issued[n - 1];
+      if (id === undefined) return `effect occurrence ${n} was never issued (${rt.issued.length} issued)`;
+      const e = rt.live.get(id);
+      if (e === undefined || e.running) return `effect occurrence ${n} is not pending (cancelled or done)`;
+      if (e.kind !== "work") return `effect occurrence ${n} is ${e.kind === "timer" ? "a timer" : "an HTTP request"}, not a worker job`;
+      if (how === "expire") {
+        if (!(e.req.deadline > 0)) return `worker job ${n} has no deadline, so it cannot time out`;
+        return rt.expireEffect(id) ? null : `worker job ${n} could not be expired`;
+      }
+      return rt.loseEffect(id, fault) ? null : `worker job ${n} could not be lost to ${fault}`;
+    },
+    n,
+    how,
+    fault,
+  );
+  if (r) throw new Error(r);
+  return settle(page);
+}
+
 async function tick(page, s) {
   const n = await page.evaluate((ms) => {
     const ids = window.__rt.intervals(ms);
@@ -425,6 +453,12 @@ const STEPS = {
   "expect-pending-effects": async (page, s) => {
     const got = await page.evaluate(() => window.__rt.pendingEffects().map((r) => r.url ?? r.op));
     if (got.length !== s.count) throw new Error(`expected ${s.count} pending effects, got ${got.length} ${JSON.stringify(got)}`);
+  },
+  "lose-work": (page, s) => answerJob(page, s.count, "lose", s.fault),
+  "time-out-work": (page, s) => answerJob(page, s.count, "expire", null),
+  "expect-pending-work": async (page, s) => {
+    const got = await page.evaluate((program) => window.__rt.pendingEffects().filter((r) => r.op === "work" && r.program === program).length, s.program);
+    if (got !== s.count) throw new Error(`expected ${s.count} pending worker jobs for ${JSON.stringify(s.program)}, got ${got}`);
   },
   "tick-interval": tick,
   "tick-interval-if-active": tick,

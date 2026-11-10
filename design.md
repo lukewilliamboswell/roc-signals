@@ -1048,8 +1048,10 @@ UI:
   value, visibility and absence, location, document title, local storage,
   pending effects.
 - **Effects** — `stub-http` and `run-effect N` (answer the N-th awaited HTTP
-  request, timer or worker job in issue order), interval ticks, `set-visibility`,
-  `set-online`.
+  request, timer or worker job in issue order), `lose-work` and
+  `time-out-work` (answer a pending worker job `WorkLost` with a fault class,
+  or `Timeout`, without running it), `expect-pending-work`, interval ticks,
+  `set-visibility`, `set-online`.
 - **Work** — `mark-metrics`, `expect-metric-delta`,
   `expect-metric-delta-at-most`, `expect-updates`, `expect-cleanup`,
   `expect-interval`.
@@ -1073,8 +1075,10 @@ oracle and never defines a meaning of its own. In particular:
   which calls the same `work` entry a worker instance calls, so a program
   that crashes loses only its job, with the crash's fault class, as it does
   in a worker. A job that has not finished after 30 s fails the step in both
-  runners. Storage reads answer by themselves in the following turn, as the
-  runtime answers them;
+  runners. A spec's time is manual: a job's deadline never expires on its
+  own — the runtime's manual mode arms no deadline timer — and
+  `time-out-work` expires it. Storage reads answer by themselves in the
+  following turn, as the runtime answers them;
 - a click is a real mouse click with the browser's default actions (a
   checkbox toggles and a radio checks, each with `input` and `change`; a
   submit button submits its form if the form's controls are valid; a link
