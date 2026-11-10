@@ -1777,7 +1777,8 @@ loads; seeding storage in the same setup is a spec error in both runners.
   Chrome, with live allocations and Wasm pages asserted flat across repeated
   round trips. A walk has no host to run a job's effects on, so a worker
   app's target answers its jobs with a stand-in made from the app's pure
-  function (`Task.stand_in`, delivered by `SpecRunner.answer_work`, walked
+  function (`Task.stand_in`, framed by `SpecRunner.encode_answer` and
+  delivered by `SpecRunner.answer_work`, walked
   with `Soak.walk_with`); a walk of an app that issues no work uses
   `Soak.walk`, where a job is a finding. The native walk answers pending
   worker jobs from its bytes — most through the stand-in, inside the leak
@@ -2053,6 +2054,7 @@ Worker.TaskProps(input, output, error) := { name : Str, run! : input => Try(outp
     deadline : [Unlimited, Ms(U32)] ?? Unlimited, on_dispose : [Stop, Keep] ?? Stop,
     on_cancel : [Stop, Finish] ?? Stop }
 Task.registration : Task(input, output, error) -> Registration
+Task.name : Task(input, output, error) -> Str                            # what requests and the monitor name its jobs by
 Task.request : Task(input, output, error), input -> Req                 # a Work request
 Task.result : Task(input, output, error), Res -> Try(output, Worker.Error(error))
 Task.stand_in : Task(input, output, error), (input -> Try(output, error))
@@ -2070,6 +2072,7 @@ Worker.PreparedTaskProps(state, query, output, error) := { name : Str,
     on_dispose ?? Stop, on_cancel ?? Stop }    # as TaskProps
 Preparation.registration : Preparation(init, state, error), List(PreparedTaskEntry(state)) -> Registration
 PreparedTask.registration : PreparedTask(init, state, query, output, error) -> PreparedTaskEntry(state)
+PreparedTask.name : PreparedTask(init, state, query, output, error) -> Str
 PreparedTask.request : PreparedTask(init, state, query, output, error), Question(init, query) -> Req
 PreparedTask.result : PreparedTask(init, state, query, output, error), Res -> Try(output, Worker.Error(error))
 PreparedTask.stand_in : PreparedTask(init, state, query, output, error), (init, query -> Try(output, error))
