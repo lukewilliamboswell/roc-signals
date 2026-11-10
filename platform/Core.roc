@@ -126,6 +126,26 @@ Core := [].{
 			{ ..f, start: f.start + start, len }
 		}
 
+		## The ranges of `chunk` bytes, in order, that cover the file or range
+		## (the last one shorter, none for an empty file), each one an argument
+		## for `read!`: a job reads a large file a chunk at a time with
+		## `for span in file.spans(n) { bytes = file.read!(span)? ... }`. A
+		## chunk of 0 bytes is a contract error.
+		spans : File, U64 -> List({ start : U64, len : U64 })
+		spans = |f, chunk| {
+			if chunk == 0 {
+				crash "contract: File.spans of \"${f.name}\" asked for spans of 0 bytes"
+			}
+			var $spans = []
+			var $at = 0
+			while $at < f.len {
+				len = (f.len - $at).min(chunk)
+				$spans = $spans.append({ start: $at, len })
+				$at = $at + len
+			}
+			$spans
+		}
+
 		## A request to read the file's bytes into the page, for an effect
 		## site's plan: `file.read_bytes({})`, or `file.read_bytes({ max_bytes })`
 		## to change how much the app accepts (see [ReadProps]). Its result is
@@ -5787,6 +5807,28 @@ expect {
 		"True",
 		"Err(\"contract: with_workers registers more than 64 worker tasks (task \\\"p64\\\" is over the bound)\")",
 	]
+	actual == expected
+}
+
+## A file's spans cover it in order, the last one shorter, and a range's
+## spans are relative to the range, as `read!` reads them.
+expect {
+	file = |len| match Core.placed_file(Core.held_file(Box.box(1)), { name: "log", mime: "", size: 10, start: 0, len }) {
+		Ok(placed) => placed
+		Err(Malformed) => crash "spans expect: the file lies within its size"
+	}
+	actual =
+		\\ten by four: ${Str.inspect(file(10).spans(4))}
+		\\ten by ten: ${Str.inspect(file(10).spans(10))}
+		\\ten by twenty: ${Str.inspect(file(10).spans(20))}
+		\\empty: ${Str.inspect(file(0).spans(4))}
+		\\range: ${Str.inspect(file(10).slice({ start: 3, len: 5 }).spans(2))}
+	expected =
+		\\ten by four: [{ len: 4, start: 0 }, { len: 4, start: 4 }, { len: 2, start: 8 }]
+		\\ten by ten: [{ len: 10, start: 0 }]
+		\\ten by twenty: [{ len: 10, start: 0 }]
+		\\empty: []
+		\\range: [{ len: 2, start: 0 }, { len: 2, start: 2 }, { len: 1, start: 4 }]
 	actual == expected
 }
 
