@@ -310,6 +310,84 @@ changes, so tell the user, as the rows do, or ask again from a button.
 Runs beyond the number of workers wait for a free one. The pool's size is
 the page's `maxWorkers` option (below).
 
+## Prepared programs: one preparation, several questions
+
+Some apps ask several questions of one expensive intermediate result: an
+explorer parses a document and then shows its outline, its search results and
+its statistics. With plain programs each question parses the document again.
+A **prepared program** names that first step once. `Worker.prepared` declares
+the preparation, a pure function from its input to a state; the state can be
+any type, since it never leaves the worker:
+
+{{ sample(file="prepared/Notes.roc", region="prepare") }}
+
+Each question is a typed **query** over the state, with its own name, input
+type and output type, so no request or reply union with impossible arms is
+needed:
+
+{{ sample(file="prepared/Notes.roc", region="queries") }}
+
+The preparation is registered once, listing the queries it answers:
+
+{{ sample(file="prepared/Notes.roc", region="register") }}
+
+A query is used like a program: `Worker.derive`, `Worker.derive_when`, or
+`request` and `result` in an `Engine.latest` site. What it is asked is a
+`Worker.Asked(init, q)`, the preparation's `input` and the query's own
+`query`:
+
+{{ sample(file="prepared/Notes.roc", region="asked") }}
+
+**Answers never depend on whether the state was kept.** A query's answer is
+exactly what preparing afresh and asking would give. A worker that prepared a
+state keeps it, and a later query over the same input runs on that worker and
+costs a query instead of the preparation; the monitor shows which jobs
+prepared and which reused (see [Monitoring Workers](@/docs/worker-monitoring.md)).
+But keeping it is an optimisation the platform may or may not achieve, never
+a promise: specs see only answers, and the native spec runner prepares every
+time.
+
+- **The same input is the same bytes.** A worker reuses a state only for an
+  input whose encoding is identical. Comparing costs the page time in
+  proportion to the input on every query, so pass a large input as a
+  `File` (or a slice of one): a file's identity is its handle and range,
+  which cost nothing to compare, and the worker reads its bytes once, when it
+  prepares. A changed input prepares again, on another worker if one is
+  free, so going back to an earlier input can still find its state.
+- **One state per worker.** The pool's workers each keep at most one. A query
+  waits for the worker that holds its state if that worker is busy; a new
+  input prepares on a worker holding nothing, a new worker, or the one used
+  least recently, whose state it replaces. A worker whose memory has grown
+  past the `maxWorkerBytes` mount option (128 MiB by default) is ended after
+  its job, its state with it.
+- **A file's state goes with the file.** When the app lets go of a file, every
+  state prepared from it is let go too.
+- **Queries are read-only.** A query cannot change the state, so an answer
+  never depends on which queries ran before it on that worker, and a lost
+  worker loses nothing an answer needs.
+- **Failure costs a preparation, never an answer.** A crash in the
+  preparation or a query ends that worker: the query answers `Lost(fault)`,
+  the state is gone, and the next query prepares again elsewhere. A deadline
+  counts the preparation's time.
+- **Cancelling.** By default a query stopped while it runs ends its worker,
+  as any run does, and its state goes with it (`Stop`). A query declared
+  `.with_cancel(Finish)` lets a stopped run complete and drops its answer, so
+  its worker keeps the state for the next question; the cost is a worker busy
+  for the rest of that run. A deadline always ends the worker.
+
+**Tabs.** The sample's queries live inside their tabs, so switching away
+disposes a tab's site and coming back asks again. With plain programs every
+revisit pays the whole calculation; with a prepared program it pays one query,
+because the worker kept the lines:
+
+{{ sample(file="prepared/Notes.roc", region="tabs") }}
+
+That is usually enough. Hoist a site out of the tab, next to the state its
+answer belongs with, when even the query is slow or the answer must survive
+the tab: a hoisted site asks once per input and keeps its answer, but it runs
+while its tab is hidden. `Finish` suits a tab whose query the user often
+leaves mid-run, so the worker is still warm when they come back.
+
 ## Programs are pure
 
 A program shares nothing with the page. It receives its input and returns
@@ -418,4 +496,6 @@ the in-flight bound turned away (see
 | A run that must not take too long | `with_deadline_ms` |
 | Bulk bytes in a payload | `Wire.Bytes` |
 | A result that survives the panel that asked for it | A site in a longer-lived scope |
+| Several questions over one slow preparation | `Worker.prepared` and its queries |
+| A cancelled query that should keep its worker's state | `.with_cancel(Finish)` |
 | Where a run's time goes | [Monitoring Workers](@/docs/worker-monitoring.md) |

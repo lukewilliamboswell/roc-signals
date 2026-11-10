@@ -99,11 +99,11 @@ console.table(s.recent.map((j) => ({ id: j.id, program: j.program, outcome: j.ou
 |---|---|
 | `mode` | `"workers"`, `"inline"` (the page's thread) or `"unavailable"` (no `Worker`) |
 | `pool` | `instances`, `spawning`, `idle`, `busy` (holding a job, starting ones included) and `queued`, now; their `peak`; and the time integrals `busyMs`, `aliveMs`, `queuedMs` |
-| `jobs` | Counts by outcome (`done`, `lost`, `timeout`, `cancelled`, `unavailable`); `inFlight`; `wastedMs` (time on instances by jobs that never delivered output); input and output bytes; `lateReplies` (always 0 in a healthy pool) |
-| `instances` | `spawns`, `respawns` (spawns beyond the most instances ever live at once), `ended` by cause (`cancel`, `deadline`, `fault`, `executor`, `unmount`, `contained`), and the `live` and `retired` instances: thread, state, spawn and ready times, instantiation time, jobs served, busy time, linear memory and its peak, and the host's live allocations and bytes |
-| `hist` | Histograms of `queue`, `cold`, `compute`, `total` and `resultTurn`, in fixed 1-2-5 millisecond buckets (`edges`, `counts`, `n`, `sum`, `min`, `max`) |
+| `jobs` | Counts by outcome (`done`, `lost`, `timeout`, `cancelled`, `unavailable`); `inFlight`; `wastedMs` (time on instances by jobs that never delivered output); input and output bytes; `lateReplies` (always 0 in a healthy pool); for prepared programs, `prepared` (queries that prepared a state), `reused` (queries answered from a kept state) and `prepareMs` (total preparation time) |
+| `instances` | `spawns`, `respawns` (spawns beyond the most instances ever live at once), `ended` by cause (`cancel`, `deadline`, `fault`, `executor`, `unmount`, `contained`, and `retired` for a worker over `maxWorkerBytes`), `evicted`: prepared states let go by cause (`replaced` by another preparation, `files` before a job that reads files, `released` with their file), and the `live` and `retired` instances: thread, state, spawn and ready times, instantiation time, jobs served, busy time, linear memory and its peak, the host's live allocations and bytes, and `held`, the name of the preparation whose state it keeps (or `null`) |
+| `hist` | Histograms of `queue`, `cold`, `compute`, `total`, `resultTurn` and `prepare`, in fixed 1-2-5 millisecond buckets (`edges`, `counts`, `n`, `sum`, `min`, `max`) |
 | `programs` | Per program: jobs, outcomes, bytes, and `queue`, `compute` and `total` histograms |
-| `recent` | The last `history` job records, with every stamp (`t`) and span (`ms`) |
+| `recent` | The last `history` job records, with every stamp (`t`) and span (`ms`). A prepared query's record says whether it `prepared` (`"prepare"`) or reused a kept state (`"reuse"`; `null` for other programs), and `prepareMs`, how long preparing took (also `ms.prepare`; `null` when it reused); `compute` is then the query alone. `finished` is true for a cancelled query whose `Finish` policy let it complete |
 | `page` | The page instance's linear memory, live allocations and bytes, and turns |
 | `engine` | The engine's effect counters, when the engine's work record carries them; otherwise `null` |
 
@@ -134,8 +134,9 @@ const stop = runtime.monitor.subscribe((e) => console.log(e.kind, e));
 | `job-start` | `id`, `instance`, `cold`, `at` |
 | `job-end` | `id`, `program`, `outcome`, `at`, `record` (the full job record; and `output` with `payloads`) |
 | `instance-spawn` | `instance`, `thread` (`"worker"` or `"page"`), `at` |
-| `instance-ready` | `instance`, `scriptAt`, `instantiateMs`, `memBytes`, `at` |
+| `instance-ready` | `instance`, `scriptAt`, `instantiateMs`, `memBytes`, `liveAllocs` (before any job), `at` |
 | `instance-end` | `instance`, `cause`, `fault` (`{ class, message }` or `null`), `jobs`, `busyMs`, `memBytes`, `at` |
+| `state-evict` | `instance`, `prep` (the preparation's name), `cause` (`replaced`, `files`, `released`), `at` |
 | `turn` | `node`, `handler`, `fx` (the job id for a job's result turn), `eventMs`, `applyMs`, `bytes`, `at`. Only for subscribers that pass `{ turns: true }` |
 | `runtime` | `state` (`mounted`, `poisoned`, `unmounted`), `generation`, `fault`, `at` |
 
@@ -151,6 +152,9 @@ What a listener can rely on:
   ends after its result turn has been applied. A cancelled job ends when it
   is cancelled, with `record.phase` (`held`, `queued`, `starting`,
   `running`) and `record.cancelledBy` (`engine`, `unmount`, `contained`).
+- A cancelled query whose policy is `Finish` ends at once as `cancelled`
+  with `record.finished`, but its instance stays busy until the run
+  completes.
 - When stopping a job terminates its worker (cancel, deadline, fault), the
   `instance-end` comes before that job's `job-end`.
 - When the page's runtime is poisoned or unmounted, every job and instance
@@ -171,6 +175,10 @@ jobs show up in the DevTools Performance panel and in any
   carries the id, instance, outcome and byte sizes.
 - `roc:work.queue`, `roc:work.cold`, `roc:work.run` (posted until the reply
   arrives) and `roc:work.result`: the job's phases.
+- `roc:work.prepare`: a prepared query's preparation, drawn with the length
+  the worker measured, ending where the query's own call starts. When the
+  query reads files of its own, the preparation really ran before that
+  reading, so the entry is drawn that much late.
 - `roc:worker <n> spawn`: a worker starting.
 - `roc:work.compute <program>`: added by the worker itself, on its own
   thread.

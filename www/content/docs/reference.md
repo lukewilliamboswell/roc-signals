@@ -55,7 +55,8 @@ Anything else is `Engine.element(tag, attrs, children)`.
 |---|---|
 | Programs | `Program(input, output)`, `pure`, `fallible`, `Program.with_deadline_ms`, `Program.registration` |
 | Runs from an effect site | `Program.request`, `Program.result`, `Error` (`Timeout`, `Refused`, `Lost(WorkFault)`, `FileFailed(FileError)`) |
-| Layers | `derive`, `derive_when`, `Remote(output)` (`running`, `answer`: `Nothing`, `Done(output)`, `Failed(Error)`) |
+| Layers | `derive`, `derive_when` (for a program or a query), `Remote(output)` (`running`, `answer`: `Nothing`, `Done(output)`, `Failed(Error)`) |
+| Prepared programs | `prepared`, `Prepared(init, state)`, `Prepared.query`, `Prepared.fallible_query`, `Prepared.registration`, `Query(init, state, q, out)`, `Query.answers`, `Query.request`, `Query.result`, `Query.with_deadline_ms`, `Query.with_cancel`, `Asked(init, q)` (`input`, `query`), `Cancel` (`Stop`, `Finish`), `Answer(state)` |
 
 ## Wire
 
@@ -98,9 +99,11 @@ guarded while the control has focus. `checked` is a property set from
 | Static attributes, children or holes per row template element | 255 | Resource limit |
 | Live DOM nodes | 2³² − 2 | Resource limit |
 | Events queued while a batch applies | 4096 | Resource limit |
-| Worker programs in a catalogue | 64 | Contract error at mount |
+| Worker programs in a catalogue | 64 names: programs, preparations and their queries | Contract error at mount |
 | Work deadline | 600 s | Capped |
 | Workers alive at once | `maxWorkers` (default the core count, at most 8) | Runs wait in order for a free worker |
+| Prepared states | One per worker | A new input replaces the least recently used idle worker's |
+| A worker's memory | `maxWorkerBytes` (default 128 MiB), checked after each run | The worker is ended after the run, its prepared state with it |
 | Files an app holds at once | 64 | Further files are not delivered; `Received.refused` counts them |
 | Files one worker run reads | 16, and `maxFileBytes` bytes (default 256 MiB) | The run fails unread: `FileFailed(TooLarge)` |
 | Bytes one page read takes | `maxReadBytes` (default 8 MiB) | `FileFailed(TooLarge)`, unread |
