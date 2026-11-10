@@ -13,6 +13,8 @@ import pf.Html
 ## - "Crash" runs a program that crashes, "Tail" one that returns a slice of
 ##   its input, and "Missing" issues work for a program nobody registered (a
 ##   contract error at issue time).
+## - "Grow" runs a program that allocates 16 MiB, growing its instance's
+##   memory (the monitor's per-instance memory figures).
 WorkersApp := [].{
 	S : {
 		upper : U64,
@@ -24,6 +26,7 @@ WorkersApp := [].{
 		crashes : U64,
 		tails : U64,
 		missing : U64,
+		grows : U64,
 		log : List(Str),
 	}
 
@@ -34,7 +37,7 @@ WorkersApp := [].{
 	Ctx : In(Root, S)
 
 	initial : S
-	initial = { upper: 0, batch: 0, panel: False, rounds: "1000", spin: { n: 0, rounds: "" }, slow: { n: 0, rounds: "" }, crashes: 0, tails: 0, missing: 0, log: [] }
+	initial = { upper: 0, batch: 0, panel: False, rounds: "1000", spin: { n: 0, rounds: "" }, slow: { n: 0, rounds: "" }, crashes: 0, tails: 0, missing: 0, grows: 0, log: [] }
 
 	pressed : Press, Str -> Press
 	pressed = |{ n, rounds: _ }, rounds| { n: n + 1, rounds }
@@ -46,6 +49,8 @@ WorkersApp := [].{
 	crash_name = "test.roc-signals/crash"
 
 	tail_name = "test.roc-signals/tail"
+
+	grow_name = "test.roc-signals/grow"
 
 	## ASCII letters to upper case; every other byte unchanged.
 	upper : List(U8) -> List(U8)
@@ -73,6 +78,14 @@ WorkersApp := [].{
 	## The input without its first byte: a slice of the input.
 	tail : List(U8) -> List(U8)
 	tail = |input| input.drop_first(1)
+
+	## Memory: the decimal number of bytes in; a list that long is allocated
+	## and its length comes out.
+	grow : List(U8) -> List(U8)
+	grow = |input| {
+		n = U64.from_str(Str.from_utf8(input) ?? "0") ?? 0
+		List.repeat(1.U8, n).len().to_str().to_utf8()
+	}
 
 	job : Str, List(U8), U32 -> Engine.Req
 	job = |program, input, deadline_ms| Work({ program, input, deadline_ms })
@@ -130,6 +143,8 @@ WorkersApp := [].{
 				Engine.on_change(v.map(|s| s.tails), |n| [WorkersApp.job(WorkersApp.tail_name, "xtail ${n.to_str()}".to_utf8(), 0)], WorkersApp.logs(st, "tail")),
 				Html.button("Missing", [], st.update(|s| { ..s, missing: s.missing + 1 })),
 				Engine.on_change(v.map(|s| s.missing), |_| [WorkersApp.job("test.roc-signals/missing", [], 0)], WorkersApp.logs(st, "missing")),
+				Html.button("Grow", [], st.update(|s| { ..s, grows: s.grows + 1 })),
+				Engine.on_change(v.map(|s| s.grows), |_| [WorkersApp.job(WorkersApp.grow_name, "16777216".to_utf8(), 0)], WorkersApp.logs(st, "grow")),
 				Html.p_v(v.map(|s| Str.join_with(s.log, "|")), [Engine.test_id("log")]),
 			],
 		)
@@ -144,5 +159,6 @@ WorkersApp := [].{
 				Engine.registration(WorkersApp.spin_name, WorkersApp.spin),
 				Engine.registration(WorkersApp.crash_name, WorkersApp.crasher),
 				Engine.registration(WorkersApp.tail_name, WorkersApp.tail),
+				Engine.registration(WorkersApp.grow_name, WorkersApp.grow),
 			])
 }
