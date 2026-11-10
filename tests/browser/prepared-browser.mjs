@@ -1,0 +1,382 @@
+// prepared-browser.mjs --wasm APP.wasm --runtime runtime.mjs --chrome PATH --
+// browser contract test of prepared programs with tests/apps/prepared in
+// headless Chrome (design.md, "Prepared programs"). Through the app's own
+// controls and `runtime.monitor` it shows that one preparation backs three
+// typed queries (one prepare, then reuses on the same worker, answers equal
+// to an independent count), and covers the pool's transitions: a changed
+// input prepares on another worker and the first state is reused when the
+// input comes back; a query waits behind the worker preparing its state
+// rather than preparing again; a cancelled query under `Stop` ends its
+// worker and under `Finish` completes and leaves the state for the next
+// query; a holder lost while a query waits for it sends that query to
+// prepare elsewhere; releasing the file lets the state go and the worker's
+// live allocations return to what they were before its first job;
+// `maxWorkers: 1` replaces states; a worker over `maxWorkerBytes` is
+// retired after its job; unmounting ends workers that hold states; and
+// `workers: "inline"` gives the same answers. It prints the timings the
+// pull request reports (prepare once against every time, cancel policies).
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { launch } from "./cdp.mjs";
+import { parseArgs, runtimeFiles } from "./args.mjs";
+
+const opts = parseArgs(process.argv.slice(2));
+const files = { ...runtimeFiles(opts.runtime), "app.wasm": opts.wasm };
+const server = http.createServer((req, res) => {
+  const u = new URL(req.url, "http://x");
+  if (u.pathname === "/") {
+    res.writeHead(200, { "content-type": "text/html" });
+    res.end('<!doctype html><html><head><meta charset="utf-8"><title>prepared</title></head><body></body></html>');
+    return;
+  }
+  const f = files[path.basename(u.pathname)];
+  if (!f || !fs.existsSync(f)) {
+    res.writeHead(404);
+    res.end();
+    return;
+  }
+  res.writeHead(200, { "content-type": f.endsWith(".wasm") ? "application/wasm" : "text/javascript" });
+  res.end(fs.readFileSync(f));
+});
+await new Promise((r) => server.listen(0, "127.0.0.1", r));
+const base = `http://127.0.0.1:${server.address().port}`;
+const browser = await launch({ executablePath: opts.chrome });
+
+let failures = 0;
+const check = (name, got, want) => {
+  const ok = JSON.stringify(got) === JSON.stringify(want);
+  if (!ok) failures += 1;
+  console.log(`${ok ? "ok  " : "FAIL"} ${name}${ok ? "" : `: got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`}`);
+};
+const timings = [];
+
+function install() {
+  window.__mount = async (options = {}) => {
+    const { mountRocEngineApp } = await import("/runtime.mjs");
+    const root = document.createElement("div");
+    document.body.append(root);
+    window.__root = root;
+    window.__events = [];
+    window.__rt = await mountRocEngineApp({ wasmUrl: "/app.wasm", root, onFault: () => {}, ...options });
+    window.__rt.monitor.subscribe((e) => window.__events.push(e));
+    return true;
+  };
+  // A document of `n` copies of two lines: three words, then two.
+  window.__doc = (n) => "alpha beta gamma\nBeta alpha\n".repeat(n);
+  window.__choose = (text) => {
+    const dt = new DataTransfer();
+    dt.items.add(new File([text], "doc.txt", { type: "text/plain" }));
+    const el = window.__root.querySelector('[aria-label="Document"]');
+    el.files = dt.files;
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  window.__click = (label) => [...window.__root.querySelectorAll("button")].find((b) => b.textContent === label).click();
+  window.__toggle = (label) => window.__root.querySelector(`[aria-label="${label}"]`).click();
+  window.__type = (text) => {
+    const el = window.__root.querySelector('[aria-label="Word"]');
+    el.value = text;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+  window.__text = (id) => {
+    const el = window.__root.querySelector(`[data-testid=${id}]`);
+    return el ? el.textContent : null;
+  };
+  window.__until = (pred, what) =>
+    new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error(`timed out waiting for ${what}`)), 30000);
+      const tick = () => {
+        const v = pred();
+        if (v) {
+          clearTimeout(t);
+          resolve(v);
+        } else setTimeout(tick, 2);
+      };
+      tick();
+    });
+  window.__answer = (id, prefix) => window.__until(() => (window.__text(id) ?? "").startsWith(prefix) && window.__text(id), `${id} ${prefix}`);
+  // The finished jobs, in order: [program, prepared or reused, instance].
+  window.__jobs = () =>
+    window.__rt.monitor
+      .snapshot()
+      .recent.filter((r) => r.outcome !== "cancelled")
+      .map((r) => [r.program.split("/").pop(), r.prepared, r.instance]);
+}
+
+async function open(options = {}) {
+  const ctx = await browser.createBrowserContext();
+  const page = await ctx.newPage();
+  page.on("pageerror", (e) => console.log("pageerror", String(e)));
+  await page.evaluateOnNewDocument(install);
+  await page.goto(`${base}/`);
+  await page.evaluate((o) => window.__mount(o), options);
+  return { page, ctx };
+}
+
+// The same three queries and a revisit, in a fresh page: one preparation,
+// four reuses on one worker, and the answers an independent count gives.
+async function threeQueries(page, n) {
+  return page.evaluate(async (n) => {
+    window.__choose(window.__doc(n));
+    const stats = await window.__answer("stats", `${2 * n} lines`);
+    window.__click("Top");
+    const top = await window.__answer("top", "alpha");
+    window.__click("Lookup");
+    await window.__answer("lookup", "0 at");
+    window.__type("gamma");
+    const lookup = await window.__answer("lookup", `${n} at`);
+    window.__click("Stats");
+    await window.__answer("stats", `${2 * n} lines`);
+    const s = window.__rt.monitor.snapshot();
+    const rec = s.recent.filter((r) => r.outcome === "done");
+    return {
+      answers: [stats, top, lookup],
+      jobs: window.__jobs(),
+      counts: [s.jobs.prepared, s.jobs.reused, s.instances.spawns],
+      prepareMs: rec[0].prepareMs,
+      firstComputeMs: rec[0].ms.compute,
+      reuseComputeMs: rec.slice(1).map((r) => r.ms.compute),
+      reuseTotalMs: rec.slice(1).map((r) => r.ms.total),
+      firstTotalMs: rec[0].ms.total,
+    };
+  }, n);
+}
+
+const N = 12000; // about 330 KB of text, 60,000 words
+const wantAnswers = [`${2 * N} lines, ${5 * N} words, 4 distinct`, `alpha:${2 * N} Beta:${N} beta:${N}`, `${N} at 1,3,5`];
+
+{
+  const { page, ctx } = await open();
+  const r = await threeQueries(page, N);
+  check("three queries over one preparation answer as a fresh count does", r.answers, wantAnswers);
+  check("one prepare, then every query reuses it on the same worker", r.jobs, [
+    ["stats", "prepare", 1],
+    ["top", "reuse", 1],
+    ["lookup", "reuse", 1],
+    ["lookup", "reuse", 1],
+    ["stats", "reuse", 1],
+  ]);
+  check("the monitor counts one preparation and four reuses", r.counts, [1, 4, 1]);
+  check("the preparation's time is recorded", typeof r.prepareMs === "number" && r.prepareMs > 0, true);
+  timings.push(["prepare (first query)", r.prepareMs], ["first query total", r.firstTotalMs], ["reused query compute", Math.max(...r.reuseComputeMs)], ["reused query total (max)", Math.max(...r.reuseTotalMs)]);
+
+  // A changed input prepares on a second worker; the first input's state
+  // is still held and answers when the input comes back.
+  const c = await page.evaluate(async (n) => {
+    window.__toggle("Ignore case");
+    const folded = await window.__answer("stats", `${2 * n} lines, ${5 * n} words, 3`);
+    window.__toggle("Ignore case");
+    const back = await window.__answer("stats", `${2 * n} lines, ${5 * n} words, 4`);
+    return { folded, back, jobs: window.__jobs().slice(5), spawns: window.__rt.monitor.snapshot().instances.spawns };
+  }, N);
+  check("a changed input prepares on another worker, and the first state answers again", c, {
+    folded: `${2 * N} lines, ${5 * N} words, 3 distinct`,
+    back: wantAnswers[0],
+    jobs: [
+      ["stats", "prepare", 2],
+      ["stats", "reuse", 1],
+    ],
+    spawns: 2,
+  });
+  await ctx.close();
+}
+
+// Two sites asking the same preparation in one turn: the second waits for
+// the worker preparing it instead of preparing again elsewhere.
+{
+  const { page, ctx } = await open();
+  const r = await page.evaluate(async (n) => {
+    window.__toggle("Summary");
+    window.__choose(window.__doc(n));
+    await window.__answer("stats", `${2 * n} lines`);
+    const summary = await window.__answer("summary", `${2 * n} lines`);
+    return { summary, jobs: window.__jobs(), spawns: window.__rt.monitor.snapshot().instances.spawns };
+  }, N);
+  check("a query waits behind the worker preparing its state", r, {
+    summary: `${2 * N} lines`,
+    jobs: [
+      ["stats", "prepare", 1],
+      ["stats", "reuse", 1],
+    ],
+    spawns: 1,
+  });
+  await ctx.close();
+}
+
+// Cancel policies, on a document large enough that preparing takes a
+// while: `Stop` (Stats) ends the worker, and the next query prepares again
+// on a new one; `Finish` (Top) lets the run complete, and the next query
+// reuses its state.
+const BIG = 100000;
+{
+  const { page, ctx } = await open();
+  const r = await page.evaluate(async (n) => {
+    window.__choose(window.__doc(n));
+    await new Promise((r) => setTimeout(r, 20));
+    const t0 = performance.now();
+    window.__click("Top");
+    const top = await window.__answer("top", "alpha");
+    const ms = performance.now() - t0;
+    const s = window.__rt.monitor.snapshot();
+    return { top, ended: s.instances.ended.cancel, spawns: s.instances.spawns, jobs: window.__jobs(), ms };
+  }, BIG);
+  check("Stop: a cancelled query ends its worker and the next prepares again", { top: r.top, ended: r.ended, spawns: r.spawns, jobs: r.jobs }, {
+    top: `alpha:${2 * BIG} Beta:${BIG} beta:${BIG}`,
+    ended: 1,
+    spawns: 2,
+    jobs: [["top", "prepare", 2]],
+  });
+  timings.push(["Stop: cancel during preparation, next answer after", r.ms]);
+  await ctx.close();
+}
+{
+  const { page, ctx } = await open();
+  const r = await page.evaluate(async (n) => {
+    window.__click("Top");
+    window.__choose(window.__doc(n));
+    await new Promise((r) => setTimeout(r, 20));
+    const t0 = performance.now();
+    window.__click("Stats");
+    const stats = await window.__answer("stats", `${2 * n} lines`);
+    const ms = performance.now() - t0;
+    const s = window.__rt.monitor.snapshot();
+    const cancelled = s.recent.find((x) => x.outcome === "cancelled");
+    return { stats, ended: s.instances.ended.cancel, spawns: s.instances.spawns, jobs: window.__jobs(), finished: cancelled.finished, busy: s.pool.busy, ms };
+  }, BIG);
+  check("Finish: a cancelled query completes and the next reuses its state", { stats: r.stats, ended: r.ended, spawns: r.spawns, jobs: r.jobs, finished: r.finished, busy: r.busy }, {
+    stats: `${2 * BIG} lines, ${5 * BIG} words, 4 distinct`,
+    ended: 0,
+    spawns: 1,
+    jobs: [["stats", "reuse", 1]],
+    finished: true,
+    busy: 0,
+  });
+  timings.push(["Finish: cancel during preparation, next answer after", r.ms]);
+  await ctx.close();
+}
+
+// A holder lost while a query waits for it: the lookup crashes the worker
+// that prepared the state, and the summary that waited behind it prepares
+// again on another worker.
+{
+  const { page, ctx } = await open();
+  const r = await page.evaluate(async (n) => {
+    window.__click("Lookup");
+    window.__type("!crash");
+    window.__toggle("Summary");
+    window.__choose(window.__doc(n));
+    const lookup = await window.__answer("lookup", "lost");
+    const summary = await window.__answer("summary", `${2 * n} lines`);
+    const s = window.__rt.monitor.snapshot();
+    return { lookup, summary, fault: s.instances.ended.fault, jobs: window.__jobs() };
+  }, N);
+  check("a lost holder's waiting query prepares elsewhere", r, {
+    lookup: "lost AppCrash",
+    summary: `${2 * N} lines`,
+    fault: 1,
+    jobs: [
+      ["lookup", "prepare", 1],
+      ["stats", "prepare", 2],
+    ],
+  });
+  await ctx.close();
+}
+
+// Releasing the file lets the state go: the worker's live allocations
+// return to what they were before its first job.
+{
+  const { page, ctx } = await open();
+  const r = await page.evaluate(async (n) => {
+    window.__choose(window.__doc(n));
+    await window.__answer("stats", `${2 * n} lines`);
+    const ready = window.__events.find((e) => e.kind === "instance-ready");
+    const held = window.__rt.monitor.snapshot().instances.live[0];
+    window.__click("Forget");
+    await window.__until(() => window.__rt.monitor.snapshot().instances.evicted.released === 1, "eviction");
+    const live = await window.__until(() => {
+      const i = window.__rt.monitor.snapshot().instances.live[0];
+      return i.liveAllocs === ready.liveAllocs && i;
+    }, "the worker's allocations to return");
+    return { heldBefore: held.held, heldAfter: live.held, grewWhileHeld: held.liveAllocs > ready.liveAllocs, files: Number(window.__rt.x.metric(6)) };
+  }, N);
+  check("releasing the file evicts the state and the worker returns to its baseline", r, { heldBefore: "test.roc-signals/prepared/document", heldAfter: null, grewWhileHeld: true, files: 0 });
+  await ctx.close();
+}
+
+// One worker: each new input replaces the state it holds.
+{
+  const { page, ctx } = await open({ maxWorkers: 1 });
+  const r = await page.evaluate(async (n) => {
+    window.__choose(window.__doc(n));
+    await window.__answer("stats", `${2 * n} lines, ${5 * n} words, 4`);
+    window.__toggle("Ignore case");
+    await window.__answer("stats", `${2 * n} lines, ${5 * n} words, 3`);
+    window.__toggle("Ignore case");
+    const back = await window.__answer("stats", `${2 * n} lines, ${5 * n} words, 4`);
+    const s = window.__rt.monitor.snapshot();
+    return { back, jobs: window.__jobs(), replaced: s.instances.evicted.replaced, spawns: s.instances.spawns };
+  }, N);
+  check("maxWorkers 1: a new input replaces the held state", r, {
+    back: wantAnswers[0],
+    jobs: [
+      ["stats", "prepare", 1],
+      ["stats", "prepare", 1],
+      ["stats", "prepare", 1],
+    ],
+    replaced: 2,
+    spawns: 1,
+  });
+  await ctx.close();
+}
+
+// A worker grown past maxWorkerBytes is retired after its job, its state
+// with it: every query prepares on a fresh worker, with the same answers.
+{
+  const { page, ctx } = await open({ maxWorkerBytes: 1 });
+  const r = await page.evaluate(async (n) => {
+    window.__choose(window.__doc(n));
+    const stats = await window.__answer("stats", `${2 * n} lines`);
+    window.__click("Top");
+    const top = await window.__answer("top", "alpha");
+    const s = window.__rt.monitor.snapshot();
+    return { stats, top, jobs: window.__jobs(), retired: s.instances.ended.retired };
+  }, N);
+  check("a worker over maxWorkerBytes is retired after its job", r, {
+    stats: wantAnswers[0],
+    top: wantAnswers[1],
+    jobs: [
+      ["stats", "prepare", 1],
+      ["top", "prepare", 2],
+    ],
+    retired: 2,
+  });
+  await ctx.close();
+}
+
+// Unmounting ends workers that hold states.
+{
+  const { page, ctx } = await open();
+  const r = await page.evaluate(async (n) => {
+    window.__toggle("Ignore case");
+    window.__choose(window.__doc(n));
+    await window.__answer("stats", `${2 * n} lines`);
+    window.__rt.unmount();
+    return window.__events.filter((e) => e.kind === "instance-end").map((e) => e.cause);
+  }, N);
+  check("unmounting ends a worker holding a state", r, ["unmount"]);
+  await ctx.close();
+}
+
+// Inline mode keeps a state on the page's thread and gives the same answers.
+{
+  const { page, ctx } = await open({ workers: "inline" });
+  const r = await threeQueries(page, N);
+  check("inline: the same answers, one preparation", [r.answers, r.counts], [wantAnswers, [1, 4, 1]]);
+  await ctx.close();
+}
+
+for (const [name, ms] of timings) console.log(`time ${name}: ${ms.toFixed(1)} ms`);
+await browser.close();
+server.close();
+console.log(failures === 0 ? "prepared-browser: passed" : `prepared-browser: ${failures} failed`);
+process.exit(failures === 0 ? 0 : 1);
