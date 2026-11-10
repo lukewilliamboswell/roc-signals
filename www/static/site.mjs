@@ -16,6 +16,43 @@ function setupExamplePage() {
   });
 }
 
+// How a mount runs its worker jobs, the same for every example: the mount
+// element's `data-signals-max-workers` and `data-signals-workers` (set from
+// the example's `max_workers` and `workers` in www/data/examples.toml), each
+// overridden by the page URL's `maxWorkers` and `workers` query parameters,
+// so any example can be tried with another pool size or with
+// `?workers=inline`. Absent, the runtime's defaults apply.
+function workerOptions(root) {
+  const query = new URLSearchParams(window.location.search);
+  const options = {};
+  const max = query.get("maxWorkers") ?? root.dataset.signalsMaxWorkers;
+  if (max !== undefined && max !== null && max !== "") {
+    const n = Number(max);
+    if (!Number.isInteger(n) || n < 1) throw new Error(`maxWorkers must be a whole number of at least 1 (got ${JSON.stringify(max)})`);
+    options.maxWorkers = n;
+  }
+  const workers = query.get("workers") ?? root.dataset.signalsWorkers;
+  if (workers) options.workers = workers;
+  return options;
+}
+
+// Resolves once the document is parsed, so every deferred and module script
+// of the page has run.
+const parsed = new Promise((resolve) => {
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", resolve, { once: true });
+  else resolve();
+});
+
+// Tell the page's own scripts which runtime is mounted where: a
+// `roc-signals:runtime` event, dispatched on the mount root once per mount,
+// bubbling, with the runtime as `detail.runtime`. It fires after the app's
+// first render and after every script of the page has run, so a script (an
+// example's custom element, say) needs only to listen for it.
+async function announce(root, runtime) {
+  await parsed;
+  root.dispatchEvent(new CustomEvent("roc-signals:runtime", { bubbles: true, detail: { runtime } }));
+}
+
 async function mountInto(root, wasmUrl, title, errorTarget = null) {
   root.replaceChildren();
   if (errorTarget) {
@@ -29,7 +66,9 @@ async function mountInto(root, wasmUrl, title, errorTarget = null) {
       root,
       fetch: createPublicExampleFetch(),
       onFault: (fault) => showError(errorTarget, new Error(`${fault.class}: ${fault.message}`)),
+      ...workerOptions(root),
     });
+    await announce(root, runtime);
     return runtime;
   } catch (err) {
     showError(errorTarget, err);
