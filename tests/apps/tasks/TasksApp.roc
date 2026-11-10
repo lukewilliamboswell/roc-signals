@@ -7,8 +7,9 @@ import pf.Worker
 ## previews, saves and sends on.
 ##
 ## - "Upload" gives the app files. "Upper" upper-cases the first one in a
-##   worker, four bytes at a time, into a new file; "Overflow" copies it
-##   three times, which a small `max-output-bytes` refuses; "Many" answers
+##   worker, four bytes at a time (or 1 MiB, "Upper in 1 MiB chunks"),
+##   into a new file; "Overflow" copies it three times, which a small
+##   `max-output-bytes` refuses; "Many" answers
 ##   with 17 files, one more than a job may return.
 ## - "Add batch" appends a line to a log across jobs: each job starts a
 ##   builder from the previous log, by reference, and the log in state is
@@ -38,7 +39,7 @@ TasksApp := [].{
 	}
 
 	## The job the app wants now; a new value cancels the job of the old.
-	Run : [Idle, Upper(File), Append({ previous : List(File), lines : List(Str) }), Count(File), Overflow(File), Crash(File), Twice(U64), Many(U64), Timed(File)]
+	Run : [Idle, Upper({ source : File, chunk : U64 }), Append({ previous : List(File), lines : List(Str) }), Count({ file : File, chunk : U64 }), Overflow(File), Crash(File), Twice(U64), Many(U64), Timed(File)]
 
 	Outcome(a) : Try(a, Worker.Error)
 
@@ -76,16 +77,16 @@ TasksApp := [].{
 		Ok(out.finish!())
 	}
 
-	count_lines : Worker.Task(File, Try(U64, Engine.FileError))
+	count_lines : Worker.Task({ file : File, chunk : U64 }, Try(U64, Engine.FileError))
 	count_lines = Worker.fallible_task({ name: "test.roc-signals/tasks/count-lines", run!: TasksApp.count_lines! })
 
-	## The number of newlines in `file`, read three bytes at a time.
-	count_lines! : File => Try(U64, Engine.FileError)
-	count_lines! = |file| {
+	## The number of newlines in `file`, read `chunk` bytes at a time.
+	count_lines! : { file : File, chunk : U64 } => Try(U64, Engine.FileError)
+	count_lines! = |{ file, chunk }| {
 		var $lines = 0.U64
 		var $at = 0.U64
 		while $at < file.size() {
-			len = if (file.size() - $at < 3) file.size() - $at else 3
+			len = if (file.size() - $at < chunk) file.size() - $at else chunk
 			bytes = file.read!({ start: $at, len })?
 			$lines = $lines + bytes.count_if(|b| b == '\n')
 			$at = $at + len
@@ -170,12 +171,19 @@ TasksApp := [].{
 		[] => s
 	}
 
+	## Count the fetched file's lines, `chunk` bytes at a time.
+	count_fetched : U64 -> (S -> S)
+	count_fetched = |chunk| |s| match s.fetched {
+		[file] => { ..s, run: Count({ file, chunk }), outcome: "running" }
+		_ => s
+	}
+
 	plan : Run -> List(Engine.Req)
 	plan = |run| match run {
 		Idle => []
-		Upper(source) => [TasksApp.upper.request({ source, chunk: 4 })]
+		Upper(input) => [TasksApp.upper.request(input)]
 		Append(input) => [TasksApp.append.request(input)]
-		Count(file) => [TasksApp.count_lines.request(file)]
+		Count(input) => [TasksApp.count_lines.request(input)]
 		Overflow(file) => [TasksApp.overflow.request(file)]
 		Crash(file) => [TasksApp.crashes.request(file)]
 		Twice(n) => [TasksApp.twice.request(n)]
@@ -249,7 +257,8 @@ TasksApp := [].{
 			"tasks",
 			[
 				Html.file_input(Engine.const("Upload"), { accept: "", multiple: Bool.True }, st.on_files(TasksApp.received)),
-				Html.button("Upper", [], st.update(TasksApp.ask(|f| Upper(f)))),
+				Html.button("Upper", [], st.update(TasksApp.ask(|f| Upper({ source: f, chunk: 4 })))),
+				Html.button("Upper in 1 MiB chunks", [], st.update(TasksApp.ask(|f| Upper({ source: f, chunk: 1048576 })))),
 				Html.button("Overflow", [], st.update(TasksApp.ask(|f| Overflow(f)))),
 				Html.button("Crash", [], st.update(TasksApp.ask(|f| Crash(f)))),
 				Html.button("Timed", [], st.update(TasksApp.ask(|f| Timed(f)))),
@@ -262,16 +271,8 @@ TasksApp := [].{
 					st.update(|s| { ..s, batch: s.batch + 1, run: Append({ previous: s.log, lines: ["batch ${(s.batch + 1).to_str()}"] }), outcome: "running" }),
 				),
 				Html.button("Fetch", [], st.update(|s| { ..s, fetching: Get("/data.csv") })),
-				Html.button(
-					"Count lines",
-					[],
-					st.update(
-						|s| match s.fetched {
-							[f] => { ..s, run: Count(f), outcome: "running" }
-							_ => s
-						},
-					),
-				),
+				Html.button("Count lines", [], st.update(TasksApp.count_fetched(3))),
+				Html.button("Count lines in 1 MiB chunks", [], st.update(TasksApp.count_fetched(1048576))),
 				Html.button("Save", [], st.update(|s| TasksApp.save_first(s, s.built, ""))),
 				Html.button("Save log", [], st.update(|s| TasksApp.save_first(s, s.log, "log-copy.txt"))),
 				Html.button("Panel", [], st.update(|s| { ..s, panel: !s.panel })),

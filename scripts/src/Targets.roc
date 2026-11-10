@@ -105,7 +105,8 @@ Targets := [].{
 	## worker scaling smoke (the Worker Lab), file handles (tests/apps/files),
 	## operations on files (tests/apps/file-effects), prepared programs and
 	## the pool's placement (tests/apps/prepared), ports with real handlers
-	## (tests/apps/ports), and Conduit's user
+	## (tests/apps/ports), worker tasks, their handles and the page's
+	## stubs (tests/apps/tasks), and Conduit's user
 	## journey against the RealWorld mock backend.
 	browser_contracts! : SpecSuite.Options, Str => Try(List(Str), _)
 	browser_contracts! = |o, conduit_wasm| {
@@ -127,6 +128,7 @@ Targets := [].{
 				.concat(Targets.browser!(o, "file-effects-browser.mjs", ["--wasm", file_effects])?)
 				.concat(Targets.browser!(o, "prepared-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "prepared")])?)
 				.concat(Targets.browser!(o, "ports-browser.mjs", ["--wasm", ports])?)
+				.concat(Targets.browser!(o, "tasks-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "tasks")])?)
 				.concat(Targets.browser!(o, "conduit-journey.mjs", ["--wasm", conduit_wasm])?),
 		)
 	}
