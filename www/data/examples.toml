@@ -83,7 +83,7 @@ public = true
 [[examples]]
 slug = "worker-lab"
 title = "Worker Lab"
-description = "Pure Roc programs counting primes and drawing Mandelbrot tiles in Web Workers: a job grid with cancel and supersession, an in-flight bound you can see, a heartbeat that never stalls, and a live pool panel."
+description = "Roc tasks counting primes and drawing Mandelbrot tiles in Web Workers: a job grid with cancel and supersession, an in-flight bound you can see, a heartbeat that never stalls, and a live pool panel."
 source = "examples/worker-lab/main.roc"
 specs = "examples/worker-lab/specs"
 public = true

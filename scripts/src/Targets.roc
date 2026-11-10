@@ -104,7 +104,7 @@ Targets := [].{
 	## controlled inputs, focus and containment (tests/apps/controls), worker
 	## jobs in real Web Workers and the work monitor (tests/apps/workers), the
 	## worker scaling smoke (the Worker Lab), file handles (tests/apps/files),
-	## operations on files (tests/apps/file-effects), prepared programs and
+	## operations on files (tests/apps/file-effects), preparations and
 	## the pool's placement (tests/apps/prepared), ports with real handlers
 	## (tests/apps/ports), worker tasks, their handles and the page's
 	## stubs (tests/apps/tasks), the Reading List's own port handlers against

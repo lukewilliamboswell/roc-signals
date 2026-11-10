@@ -12,7 +12,7 @@
     (run-effect 2)
     (expect-text (test-id "status") "Found")
     (expect-text (test-id "results") "roc-signals, roc-fuzz, roc-automation, rocket")
-    ; Case does not matter to the program, and no match is an answer too.
+    ; Case does not matter to the task, and no match is an answer too.
     (fill (label "Search") "POCKET")
     (run-effect 3)
     (expect-text (test-id "results") "pocket")

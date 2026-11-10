@@ -61,7 +61,7 @@ Checks := [].{
 	## The broken specs `check` runs: one expected text changed in
 	## kanban-board's initial render, and a crashing worker job expected to
 	## be lost to the wrong fault class (the native runner's child process and
-	## the browser's worker must both report the class the program's crash
+	## the browser's worker must both report the class the task's crash
 	## has).
 	broken_specs : List(Broken)
 	broken_specs = [

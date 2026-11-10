@@ -1063,7 +1063,7 @@ Core := [].{
 	}
 
 	## Why a `Work` request produced no output: the worker's instance faulted
-	## running the program (`Contract`, `ResourceLimit`, `OutOfMemory`,
+	## running the job (`Contract`, `ResourceLimit`, `OutOfMemory`,
 	## `AppCrash` and `ExpectFailed`, the fault classes of an instance), the
 	## browser has no workers (`Unavailable`), or the worker itself failed
 	## (`Executor`). The diagnostic goes to the page's console, never into the
@@ -1735,8 +1735,8 @@ Core := [].{
 		var $names = []
 		for r in registrations {
 			for name in [r.name].concat(r.tasks) {
-				if $names.len() >= max_programs {
-					return Err("contract: with_workers registers more than ${max_programs.to_str()} worker tasks (task \"${name}\" is over the bound)")
+				if $names.len() >= max_tasks {
+					return Err("contract: with_workers registers more than ${max_tasks.to_str()} worker tasks (task \"${name}\" is over the bound)")
 				}
 				if $names.contains(name) {
 					return Err("contract: worker task \"${name}\" is registered twice in with_workers")
@@ -4115,8 +4115,8 @@ max_timeout_ms : U32
 max_timeout_ms = 600000
 
 ## The most names one worker catalogue registers (design.md, "Boundedness").
-max_programs : U64
-max_programs = 64
+max_tasks : U64
+max_tasks = 64
 
 ## The most files a job's answer holds (design.md, "Boundedness").
 max_answer_files : U64
@@ -4224,7 +4224,7 @@ put_file = |buf, f| {
 }
 
 ## `out` as a list of its own. The host keeps the output between calls and
-## never holds a seamless slice, and a program may well return a slice of
+## never holds a seamless slice, and a job may well answer with a slice of
 ## its input. `concat` onto an empty list hands back its argument, slice and
 ## all, so the first byte goes into a fresh list sized for the whole output
 ## first: `concat` then copies the rest into that list's own allocation in
@@ -4638,7 +4638,7 @@ Fx : {
 ## What the end of a turn settles, in issue order: a focus command on a named
 ## reference (op 1 focus, 2 blur, 3 select text), resolved then so a reference
 ## mounted later in the turn is found; and the work requests the turn issued,
-## each checked against the worker catalogue with its program and site path.
+## each checked against the worker catalogue with its task and site path.
 ##
 ## The catalogue lives in [App], not in `Fx`: every site rebuilds `Fx` as it
 ## threads the transaction, and with the pinned compiler each inline field of
