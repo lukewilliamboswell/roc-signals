@@ -23,10 +23,12 @@ import JsonOut
 ## - Effects are always manual. `stub-http` stages one answer; `run-effect N`
 ##   answers the N-th awaited HTTP request, timer or worker job the current
 ##   document issued (issue order), which must still be pending: a timer
-##   fires, a worker job runs its program (the `spec` command runs it in a
-##   child process, `Io.work!`, so a crash loses only the job, as in a
-##   worker; `one` runs it in process), and an HTTP request takes the staged
-##   answer, whose URL must be the request's (a
+##   fires, a worker job runs its task (the `spec` command runs it in a
+##   child process, `Io.work!`, which serves the job's hosted effects, so a
+##   crash loses only the job, as in a worker; fuzz targets and soak walks,
+##   which have no such host, answer jobs with a stand-in, `answer_work`),
+##   and an HTTP request takes the staged answer, whose URL must be the
+##   request's (a
 ##   reject answers any). Storage reads answer by themselves, from storage, in
 ##   the turn after the call that issued them.
 ## - A rejected request becomes `Timeout`, or `Network(detail)`.
@@ -80,10 +82,6 @@ SpecRunner := [].{
 		## A `:files` event: its file record and the handles minted for it.
 		files : state, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (state, List(U8), List(U8)),
 
-		## A worker instance's entry: `name:str input:rest` to output bytes.
-		## Programs are pure, so the runner runs a job in process.
-		work : List(U8), List(List(U8)) -> List(U8),
-
 		## The engine's settle check (`Core.settled`): `Err` holds the
 		## commands a pass over every layer emitted on a discarded copy.
 		settled : state -> Try({}, { cmds : List(U8), note : Str }),
@@ -95,14 +93,18 @@ SpecRunner := [].{
 	Entry : { url : Str, doc : U64 }
 
 	## An awaited request still waiting for `run-effect`: an HTTP request (its
-	## URL and body), a timer, or a worker job (its program and input).
+	## URL and body), a timer, or a worker job (its task and input).
 	Pending : { id : U32, url : Str, body : Str, kind : PendingKind }
 
 	## What `run-effect` does for a pending request.
 	PendingKind : [
 		HttpRequest,
 		TimerRequest,
-		WorkRequest({ program : Str, input : List(U8), deadline_ms : U32, files : List({ token : U64, start : U64, len : U64 }) }),
+
+		## A worker job, as its request describes it. The `spec` command runs
+		## it in a child process (`Io.work!`), which serves its hosted
+		## effects.
+		WorkRequest(Dom.WorkJob),
 
 		## A read of a file into the page: mode 1 bytes, 2 text.
 		ReadRequest({ mode : U8, file : { token : U64, start : U64, len : U64 }, max_bytes : U64 }),
@@ -120,12 +122,6 @@ SpecRunner := [].{
 		## A call on a port, answered with `answer-port`.
 		PortRequest({ port : Str, json : Str, timeout_ms : U32 }),
 
-		## A task's job (design.md, "Tasks"): its task, input, deadline,
-		## and the handles and ranges of the files it names. The `spec`
-		## command runs it in a child process (`Io.task!`), which serves
-		## its hosted effects.
-		TaskRequest({ program : Str, input : List(U8), deadline_ms : U32, files : List({ token : U64, start : U64, len : U64 }) }),
-
 		## An HTTP request whose body becomes a file (`File.fetch`):
 		## `run-effect` answers it with the staged stub, its body as the
 		## file, through a handle the host mints.
@@ -137,8 +133,8 @@ SpecRunner := [].{
 	max_digest_bytes : U64
 	max_digest_bytes = 256 * 1024 * 1024
 
-	## The most bytes a task's job appends to its builders when a spec does
-	## not say: the runtime's default `maxOutputBytes` (design.md, "Tasks").
+	## The most bytes a job appends to its builders when a spec does not
+	## say: the runtime's default `maxOutputBytes` (design.md, "Workers").
 	max_output_bytes : U64
 	max_output_bytes = 256 * 1024 * 1024
 
@@ -332,7 +328,6 @@ SpecRunner := [].{
 		p = b.pending.find_first(|q| q.id == id) ? |_| "effect occurrence ${n.to_str()} is not pending (cancelled or done)"
 		match p.kind {
 			WorkRequest({ deadline_ms, .. }) => Ok({ id, deadline_ms })
-			TaskRequest({ deadline_ms, .. }) => Ok({ id, deadline_ms })
 			FetchRequest => Err("effect occurrence ${n.to_str()} is a fetch, not a worker job")
 			HttpRequest => Err("effect occurrence ${n.to_str()} is an HTTP request, not a worker job")
 			TimerRequest => Err("effect occurrence ${n.to_str()} is a timer, not a worker job")
@@ -471,17 +466,7 @@ SpecRunner := [].{
 				Http(id, _, url, _, body, _) => { ..b, pending: b.pending.append({ id, url, body, kind: HttpRequest }), issued: b.issued.append(id) }
 				Get(id, key) => { ..b, gets: b.gets.append({ id, key }) }
 				Timer(id, _) => { ..b, pending: b.pending.append({ id, url: "timer", body: "", kind: TimerRequest }), issued: b.issued.append(id) }
-				Work(id, program, input, deadline_ms) => { ..b, pending: b.pending.append({ id, url: "work", body: "", kind: WorkRequest({ program, input, deadline_ms, files: [] }) }), issued: b.issued.append(id) }
-				WorkFiles(id, files) => {
-					attach = |p| if (p.id == id) {
-						..p,
-						kind: match p.kind {
-							WorkRequest(w) => WorkRequest({ ..w, files })
-							other => other
-						},
-					} else p
-					{ ..b, pending: b.pending.map(attach) }
-				}
+				Work(id, job) => { ..b, pending: b.pending.append({ id, url: "work", body: "", kind: WorkRequest(job) }), issued: b.issued.append(id) }
 				Interval(id, ms) => { ..b, subs: b.subs.append({ id, sub: Interval(ms) }) }
 				Pop(id) => { ..b, subs: b.subs.append({ id, sub: Pop }) }
 				OnlineSub(id) => { ..b, subs: b.subs.append({ id, sub: OnlineSub }) }
@@ -501,16 +486,6 @@ SpecRunner := [].{
 				PortSend(port, msg) => { ..b, port_log: b.port_log.append({ port, json: msg.json }) }
 				PortCall(id, port, msg, timeout_ms) => { ..b, pending: b.pending.append({ id, url: "port", body: "", kind: PortRequest({ port, json: msg.json, timeout_ms }) }), issued: b.issued.append(id) }
 				PortListen(id, port, msg) => { ..b, subs: b.subs.append({ id, sub: PortSub(port, msg.json) }) }
-				WorkTask(id) => {
-					as_task = |p| if (p.id == id) {
-						..p,
-						kind: match p.kind {
-							WorkRequest({ program, input, deadline_ms, files }) => TaskRequest({ program, input, deadline_ms, files })
-							other => other
-						},
-					} else p
-					{ ..b, pending: b.pending.map(as_task) }
-				}
 				Fetch(id, _, url, _, _) => { ..b, pending: b.pending.append({ id, url, body: "", kind: FetchRequest }), issued: b.issued.append(id) }
 				# The runtime resolves a save's file when it applies the batch,
 				# while a handle the batch released still names its file.
@@ -641,16 +616,6 @@ SpecRunner := [].{
 	popstate : Program(state), S(state) -> S(state)
 	popstate = |program, s| SpecRunner.broadcast(program, s, |x| x.sub == Pop, SpecRunner.encode_location(s.browser.loc))
 
-	## A worker job a step runs: its request id and its payload,
-	## `name:str input:rest`, as a worker instance receives it.
-	Job : { id : U32, payload : List(U8), files : List(List(U8)) }
-
-	## The bytes of the files a job names, from the setup files given under
-	## their tokens: what a worker reads into its memory. A token no setup
-	## file was given under (a handle minted without the host) reads empty.
-	job_files : Browser, List({ token : U64, start : U64, len : U64 }) -> List(List(U8))
-	job_files = |b, refs| refs.map(|r| SpecRunner.file_bytes(b, r))
-
 	## The bytes of a handle's range, from the setup file it was given under.
 	file_bytes : Browser, { token : U64, start : U64, len : U64 } -> List(U8)
 	file_bytes = |b, { token, start: from, len }| {
@@ -706,44 +671,41 @@ SpecRunner := [].{
 		SpecRunner.deliver(program, { ..s, browser: { ..b, pending: b.pending.keep_if(|q| q.id != id) } }, id, payload)
 	}
 
-	## The pending worker job that step `op` runs, when `op` is a `run-effect`
-	## on one. The `spec` command runs such a job in a child process
-	## (`Io.work!`) and hands the result to `deliver_job`; every other step,
-	## and every step a fuzz target or soak walk takes, goes through `one`.
-	job_of : S(state), Scm.Op -> Try(Job, [NoJob])
-	job_of = |s, op|
-		match op {
-			RunEffect(n) => {
-				b = s.browser
-				id = b.issued.get(n - 1) ? |_| NoJob
-				p = b.pending.find_first(|q| q.id == id) ? |_| NoJob
-				match p.kind {
-					WorkRequest({ program: name, input, files, .. }) => Ok({ id, payload: SpecRunner.put_str([], name).concat(input), files: SpecRunner.job_files(b, files) })
-					_ => Err(NoJob)
-				}
-			}
-			_ => Err(NoJob)
-		}
-
-	## Deliver the result payload of job `job` (Appendix B: tag 10 with the
-	## output, or tag 11 with a fault class). An empty result is a job that
-	## did not finish within the runner's bound, which fails the step: a
-	## spec's time is manual, and a job's deadline expires only when the spec
-	## says so.
-	deliver_job : Program(state), S(state), Job, List(U8) -> Try(S(state), Str)
-	deliver_job = |program, s, job, result| {
-		if result.is_empty() {
-			return Err("the worker job did not finish within 30 s; a spec expires a job's deadline with time-out-work")
-		}
+	## Deliver result `payload` to the pending worker job `id` without
+	## running it: a fault class (tag 11) or its deadline (tag 7).
+	deliver_job : Program(state), S(state), U32, List(U8) -> Try(S(state), Str)
+	deliver_job = |program, s, id, payload| {
 		b = s.browser
-		Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: b.pending.keep_if(|q| q.id != job.id) } }, job.id, result))
+		Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: b.pending.keep_if(|q| q.id != id) } }, id, payload))
 	}
 
-	## `run-effect N`: a timer fires; a worker job runs its program in process
-	## through the program's `work` entry, as a worker instance of the same
-	## module would, and delivers `Work(output)` (a crash in the program ends
-	## the process: fuzz targets and soak walks run jobs here, where that is a
-	## finding); an HTTP request takes the staged answer.
+	## For fuzz targets and soak walks, which have no host to run a job on:
+	## answer the pending worker job that is the N-th effect occurrence
+	## with what `stand_in` gives for its task's name, its preparation's
+	## input bytes (none for a task of its own) and its own input bytes: the
+	## answer's bytes as a job's entry returns them after its file list
+	## (`Worker`'s `stand_in` makes one from a pure function). The answer
+	## holds no files.
+	answer_work : Program(state), S(state), U64, (Str, List(U8), List(U8) -> List(U8)) -> Try(S(state), Str)
+	answer_work = |program, s, n, stand_in| {
+		b = s.browser
+		id = b.issued.get(n - 1) ? |_| "effect occurrence ${n.to_str()} was never issued (${b.issued.len().to_str()} issued)"
+		p = b.pending.find_first(|q| q.id == id) ? |_| "effect occurrence ${n.to_str()} is not pending (cancelled or done)"
+		match p.kind {
+			WorkRequest(job) => {
+				(prep, own) = match job.prepared {
+					Unprepared => ([], job.input)
+					Prepared({ input_len, .. }) => (job.input.take_first(input_len), job.input.drop_first(input_len))
+				}
+				SpecRunner.deliver_job(program, s, id, [10, 0, 0, 0, 0].concat(stand_in(job.task, prep, own)))
+			}
+			_ => Err("effect occurrence ${n.to_str()} is not a worker job")
+		}
+	}
+
+	## `run-effect N`: a timer fires; an HTTP request takes the staged answer.
+	## A worker job runs only where the `spec` command's host can run it
+	## (`run!`); fuzz targets and soak walks answer one with `answer_work`.
 	run_effect : Program(state), S(state), U64 -> Try(S(state), Str)
 	run_effect = |program, s, n| {
 		b = s.browser
@@ -752,15 +714,11 @@ SpecRunner := [].{
 		rest = b.pending.keep_if(|q| q.id != id)
 		match p.kind {
 			TimerRequest => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, [5]))
-			WorkRequest({ program: name, input, files, .. }) => {
-				output = (program.work)(SpecRunner.put_str([], name).concat(input), SpecRunner.job_files(b, files))
-				return SpecRunner.deliver_job(program, s, { id, payload: [], files: [] }, [10].concat(output))
-			}
+			WorkRequest(_) => return Err("run-effect ${n.to_str()} runs a worker job, which needs the spec command's host for its effects; fuzz targets and soak walks answer one with SpecRunner.answer_work")
 			ReadRequest({ mode, file, max_bytes }) => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, SpecRunner.read_result(b, mode, file, max_bytes)))
 			UrlRequest(file) => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, SpecRunner.url_result(file)))
 			DigestRequest(_) => return Err("run-effect ${n.to_str()} answers a digest, which the spec command's host computes; fuzz targets and soak walks do not have one")
 			PortRequest({ port, .. }) => return Err("effect occurrence ${n.to_str()} is a call on port ${JsonOut.quote(port)}; answer it with answer-port")
-			TaskRequest(_) => return Err("run-effect ${n.to_str()} runs a task's job, which needs the spec command's host for its effects; fuzz targets and soak walks do not have one")
 			FetchRequest => return Err("run-effect ${n.to_str()} answers a fetch, whose body the spec command's host holds as a file; fuzz targets and soak walks do not have one")
 			HttpRequest => {}
 			UploadRequest(_) => {}
@@ -1158,21 +1116,20 @@ SpecRunner := [].{
 			RunEffect(n) => SpecRunner.run_effect(program, s, n)
 			LoseWork({ occurrence, fault }) => {
 				job = SpecRunner.pending_job(s, occurrence)?
-				SpecRunner.deliver_job(program, s, { id: job.id, payload: [], files: [] }, SpecRunner.encode_lost(fault))
+				SpecRunner.deliver_job(program, s, job.id, SpecRunner.encode_lost(fault))
 			}
 			TimeOutWork(n) => {
 				job = SpecRunner.pending_job(s, n)?
 				if job.deadline_ms == 0 {
 					return Err("worker job ${n.to_str()} has no deadline, so it cannot time out")
 				}
-				SpecRunner.deliver_job(program, s, { id: job.id, payload: [], files: [] }, [7])
+				SpecRunner.deliver_job(program, s, job.id, [7])
 			}
 			ExpectPendingWork({ program: name, count }) => {
 				got = b.pending.count_if(
 					|q|
 						match q.kind {
-							WorkRequest(w) => w.program == name
-							TaskRequest(t) => t.program == name
+							WorkRequest(w) => w.task == name
 							_ => Bool.False
 						},
 				)
@@ -1685,13 +1642,15 @@ SpecRunner := [].{
 		Ok(SpecRunner.answer_gets(program, SpecRunner.take(s1, inst, cmds, wbuf)))
 	}
 
-	## The pending task job or fetch that step `op` answers, when `op` is a
-	## `run-effect` on one: a task job's request id, payload, the whole
-	## files its entries name, and its output bound; or a fetch's id and the
+	## The pending worker job or fetch that step `op` answers, when `op` is
+	## a `run-effect` on one: a job's request id, its payload and the whole
+	## files its entries name, split as the runtime splits a preparation's
+	## task into the preparation's call and the task's (`prepare` empty for
+	## a task of its own), and its output bound; or a fetch's id and the
 	## staged stub, which `run-effect` consumes. The `spec` command runs a
-	## task job in a child process (`Io.task!`) and mints a fetched body's
-	## handle (`Io.mint_files!`); every other step goes through `one`.
-	held_of : S(state), Scm.Op -> Try([TaskJob({ id : U32, payload : List(U8), files : List(List(U8)), max_output : U64 }), FetchAnswer({ id : U32, stub : Scm.Stub })], Str)
+	## job in a child process (`Io.work!`) and mints a fetched body's handle
+	## (`Io.mint_files!`); every other step goes through `one`.
+	held_of : S(state), Scm.Op -> Try([WorkJob({ id : U32, payload : List(U8), files : List(List(U8)), prepare : List(U8), prepare_files : List(List(U8)), max_output : U64 }), FetchAnswer({ id : U32, stub : Scm.Stub })], Str)
 	held_of = |s, op|
 		match op {
 			RunEffect(n) => {
@@ -1699,9 +1658,20 @@ SpecRunner := [].{
 				id = b.issued.get(n - 1) ? |_| "not held"
 				p = b.pending.find_first(|q| q.id == id) ? |_| "not held"
 				match p.kind {
-					TaskRequest({ program: name, input, files, .. }) => {
+					WorkRequest({ task: name, input, files, prepared, .. }) => {
 						whole = files.map(|r| SpecRunner.whole_file(b, r.token))
-						Ok(TaskJob({ id, payload: SpecRunner.put_str([], name).concat(input), files: whole, max_output: b.max_output }))
+						job = match prepared {
+							Unprepared => { id, payload: SpecRunner.put_str([], name).concat(input), files: whole, prepare: [], prepare_files: [], max_output: b.max_output }
+							Prepared({ name: prep, input_len, input_files }) => {
+								id,
+								payload: SpecRunner.put_str([], name).concat(input.drop_first(input_len)),
+								files: whole.drop_first(input_files),
+								prepare: SpecRunner.put_str([], prep).concat(input.take_first(input_len)),
+								prepare_files: whole.take_first(input_files),
+								max_output: b.max_output,
+							}
+						}
+						Ok(WorkJob(job))
 					}
 					FetchRequest =>
 						match b.stub {
@@ -1714,30 +1684,31 @@ SpecRunner := [].{
 			_ => Err("not held")
 		}
 
-	## The bytes of the whole file a handle was given for: a task's job is
-	## sent the file, not its range, and reads the range itself.
+	## The bytes of the whole file a handle was given for: a job is sent the
+	## file, not its range, and reads the range itself.
 	whole_file : Browser, U64 -> List(U8)
 	whole_file = |b, token| {
 		name = (b.given.find_first(|g| g.token == token) ?? { token, name: "" }).name
 		(b.files.find_first(|f| f.name == name) ?? { name, mime: "", bytes: [] }).bytes
 	}
 
-	## Deliver a task job's answer from the runner's record of it
-	## (`Cli.task!`): tag 20's files are minted as the page's handles
-	## (`handles`, which `mint!` gave) and kept as files the runner can read
-	## back, named `#N` beside the spec's own files, and the answer goes to
-	## the app through the effect node with those handles, as the runtime
-	## delivers it. Tags 11 and 13 pass through. An empty record is a job
-	## that did not finish within the runner's bound. When the host had too
-	## few slots, the answer is `FileFailed(TooLarge)` and the handles it
-	## minted go unused, as the runtime does.
-	deliver_task! : Program(state), S(state), U32, List(U8), (U64 => List(Box(U64))) => Try(S(state), Str)
-	deliver_task! = |program, s, id, record, mint!| {
+	## Deliver a job's answer from the runner's record of it (`Cli.work!`):
+	## tag 10's files are minted as the page's handles (`handles`, which
+	## `mint!` gave) and kept as files the runner can read back, named `#N`
+	## beside the spec's own files, and the answer goes to the app through
+	## the effect node with those handles, as the runtime delivers it. Tag 11
+	## passes through. An empty record is a job that did not finish within
+	## the runner's bound, which fails the step: a spec's time is manual, and
+	## a job's deadline expires only when the spec says so. When the host had
+	## too few slots, the answer is `WorkLost(ResourceLimit)` and the handles
+	## it minted go unused, as the runtime does.
+	deliver_work! : Program(state), S(state), U32, List(U8), (U64 => List(Box(U64))) => Try(S(state), Str)
+	deliver_work! = |program, s, id, record, mint!| {
 		b = s.browser
 		rest = { ..s, browser: { ..b, pending: b.pending.keep_if(|q| q.id != id) } }
 		match record {
-			[] => Err("the task's job did not finish within 30 s; a spec expires a job's deadline with time-out-work")
-			[20, ..] => {
+			[] => Err("the worker job did not finish within 30 s; a spec expires a job's deadline with time-out-work")
+			[10, ..] => {
 				n = (SpecRunner.get_u32(record, 1) ?? 0).to_u64()
 				var $at = 5.U64
 				var $metas = []
@@ -1753,14 +1724,14 @@ SpecRunner := [].{
 				$at = $at + 8 + out_len
 				handles = mint!(n)
 				if handles.len() < n {
-					return Ok(SpecRunner.deliver(program, rest, id, [13, 2]))
+					return Ok(SpecRunner.deliver(program, rest, id, [11, 2]))
 				}
-				var $payload = SpecRunner.put_u32([20], n.to_u32_wrap())
+				var $payload = SpecRunner.put_u32([10], n.to_u32_wrap())
 				var $files = rest.browser.files
 				var $given = rest.browser.given
 				var $k = 0
 				for meta in $metas {
-					handle = handles.get($k) ?? crash "SpecRunner.deliver_task!: minted"
+					handle = handles.get($k) ?? crash "SpecRunner.deliver_work!: minted"
 					bytes = record.sublist({ start: $at, len: meta.size })
 					$at = $at + meta.size
 					key = "#${(rest.browser.files.len() + $k).to_str()}"
@@ -1830,10 +1801,10 @@ SpecRunner := [].{
 		if (last.is_empty()) "download" else last
 	}
 
-	## The host services a replay uses: running a worker job or a task job
-	## in a child process, and minting and counting file handles in the
-	## host's heap.
-	Host : { work! : List(U8), List(List(U8)) => List(U8), task! : List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8) }
+	## The host services a replay uses: running a worker job in a child
+	## process, minting and counting file handles in the host's heap, and
+	## digesting bytes.
+	Host : { work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8) }
 
 	## Replay one spec from a fresh mount, running each worker job with
 	## `work!` (the `spec` command's child process, `Io.work!`), and giving
@@ -1853,16 +1824,15 @@ SpecRunner := [].{
 			# Every step, a worker job's answer and a file handed over
 			# included, must also leave the engine settled: an oracle on the
 			# engine, not a step, so the browser runner has no equivalent.
-			done = match (SpecRunner.job_of($s, step.op), SpecRunner.file_count(step.op), step.op) {
-				(Ok(job), _, _) => SpecRunner.deliver_job(program, $s, job, (host.work!)(job.payload, job.files))
-				(_, Ok(n), _) => SpecRunner.give_files(program, $s, step.op, (host.mint_files!)(n))
-				(_, _, ExpectFiles(n)) => {
+			done = match (SpecRunner.file_count(step.op), step.op) {
+				(Ok(n), _) => SpecRunner.give_files(program, $s, step.op, (host.mint_files!)(n))
+				(_, ExpectFiles(n)) => {
 					live = (host.live_files!)()
 					if (live == n) Ok($s) else Err("expected ${n.to_str()} live file handles, found ${live.to_str()}")
 				}
 				_ =>
 					match (SpecRunner.held_of($s, step.op), SpecRunner.digest_of($s, step.op)) {
-						(Ok(TaskJob(job)), _) => SpecRunner.deliver_task!(program, $s, job.id, (host.task!)(job.payload, job.files, job.max_output), host.mint_files!)
+						(Ok(WorkJob(job)), _) => SpecRunner.deliver_work!(program, $s, job.id, (host.work!)(job.payload, job.files, job.prepare, job.prepare_files, job.max_output), host.mint_files!)
 						(Ok(FetchAnswer({ id, stub })), _) => SpecRunner.deliver_fetch!(program, $s, id, stub, host.mint_files!)
 						(Err(message), _) if message != "not held" => Err(message)
 						(_, Ok({ id, bytes: Digest(bytes) })) => Ok(SpecRunner.deliver_digest(program, $s, id, [18].concat((host.sha256!)(bytes))))
@@ -1889,7 +1859,7 @@ SpecRunner := [].{
 
 	## The host services the `spec` command uses, passed in by the test
 	## program (the test platform's `Cli`), so this package stays pure.
-	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64, work! : List(U8), List(List(U8)) => List(U8), task! : List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8) }
+	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64, work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8) }
 
 	Options : { filter : Str, emit_steps : Bool, grammar : Bool, files : List(Str) }
 
@@ -2006,7 +1976,7 @@ SpecRunner := [].{
 						(io.stdout!)("${JsonOut.render(Scm.to_json(id, spec))}\n")
 					}
 					Ok(spec) => {
-						outcome = SpecRunner.run!(program, { work!: io.work!, task!: io.task!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256! }, spec)
+						outcome = SpecRunner.run!(program, { work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256! }, spec)
 						dt = (io.now_ns!)() - t0
 						line = match outcome {
 							Passed => {

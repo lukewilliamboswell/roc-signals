@@ -344,13 +344,11 @@ Dom := [].{
 		OnlineSub(U32),
 		VisibilitySub(U32),
 
-		## A worker job: id, program name, input bytes and deadline (ms, 0 none).
-		Work(U32, Str, List(U8), U32),
-
-		## The files the worker job with this id names, each a handle's token and
-		## a range of its file. Decoded after the job's `Work`, for a job that
-		## names any.
-		WorkFiles(U32, List({ token : U64, start : U64, len : U64 })),
+		## A worker job (`FX` kind 8): its id, then its task's name, input
+		## bytes, the files it names (each a handle's token and a range of its
+		## file), deadline (ms, 0 none), cancel policy (1 stop, 2 finish) and,
+		## for a preparation's task, the preparation and where its input lies.
+		Work(U32, WorkJob),
 		Cancel(U32),
 		Push(Str),
 		Replace(Str),
@@ -383,10 +381,6 @@ Dom := [].{
 		## A port subscription (`FX` kind 10): id, port and message.
 		PortListen(U32, Str, PortMsg),
 
-		## The worker job with this id is a task's (`FX` kind 8's flag 2).
-		## Decoded after the job's `Work` and `WorkFiles`.
-		WorkTask(U32),
-
 		## An HTTP request whose body becomes a file (`FX` kind 15): id,
 		## method, URL, headers and timeout (ms, 0 none).
 		Fetch(U32, Str, Str, List((Str, Str)), U32),
@@ -400,6 +394,9 @@ Dom := [].{
 	## bytes markers name, and the handles and ranges of the files its file
 	## markers name.
 	PortMsg : { json : Str, blobs : List(List(U8)), files : List({ token : U64, start : U64, len : U64 }) }
+
+	## A worker job as `FX` kind 8 describes it (see [FxCmd]'s `Work`).
+	WorkJob : { task : Str, input : List(U8), files : List({ token : U64, start : U64, len : U64 }), deadline_ms : U32, cancel : U8, prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] }
 
 	## A port message at `at`: `json:str nblobs:u32 (len:u32 bytes)* nfiles:u32
 	## (token:u64 start:u64 len:u64)*`, and where it ends.
@@ -631,7 +628,7 @@ Dom := [].{
 				} else if kind == 7 {
 					$fx = $fx.append(VisibilitySub(id))
 				} else if kind == 8 {
-					(program, a1) = Dom.str(b, $at)
+					(task, a1) = Dom.str(b, $at)
 					(input, a2) = Dom.raw(b, a1)
 					n = Dom.u32(b, a2).to_u64()
 					var $refs = []
@@ -640,33 +637,30 @@ Dom := [].{
 						$refs = $refs.append({ token: Dom.u64(b, $r), start: Dom.u64(b, $r + 8), len: Dom.u64(b, $r + 16) })
 						$r = $r + 24
 					}
-					$fx = $fx.append(Work(id, program, input, Dom.u32(b, $r)))
-					if !$refs.is_empty() {
-						$fx = $fx.append(WorkFiles(id, $refs))
+					deadline_ms = Dom.u32(b, $r)
+					cancel = b.get($r + 4) ?? crash "truncated work request"
+					flag = b.get($r + 5) ?? crash "truncated work request"
+					if cancel < 1 or cancel > 2 {
+						crash "work request cancel policy ${cancel.to_str()} is not 1 or 2"
 					}
-					# A prepared query names its preparation and where the
-					# preparation's input lies in `input`. The native runner
-					# prepares afresh for every job, so the oracle only
-					# checks that the operands describe the request.
-					flag = b.get($r + 4) ?? crash "truncated work request"
-					$at = $r + 5
-					if flag == 1 {
-						(_, a3) = Dom.str(b, $at)
-						init_at = Dom.u32(b, a3).to_u64()
-						init_len = Dom.u32(b, a3 + 4).to_u64()
-						init_files = Dom.u32(b, a3 + 8).to_u64()
-						policy = b.get(a3 + 12) ?? crash "truncated work request"
-						if init_at + init_len > input.len() or init_files > n or policy < 1 or policy > 2 {
-							crash "malformed prepared query for worker program \"${program}\""
+					$at = $r + 6
+					# A preparation's task names its preparation and where the
+					# preparation's input lies at the start of `input`.
+					prepared = if flag == 1 {
+						(name, a3) = Dom.str(b, $at)
+						input_len = Dom.u32(b, a3).to_u64()
+						input_files = Dom.u32(b, a3 + 4).to_u64()
+						if input_len > input.len() or input_files > n {
+							crash "malformed preparation operands for worker task \"${task}\""
 						}
-						$at = a3 + 13
-					} else if flag == 2 {
-						# A task's job: its files are handles the worker
-						# reads through effects, not bytes read before it.
-						$fx = $fx.append(WorkTask(id))
-					} else if flag != 0 {
-						crash "work request flag ${flag.to_str()} is not 0, 1 or 2"
+						$at = a3 + 8
+						Prepared({ name, input_len, input_files })
+					} else if flag == 0 {
+						Unprepared
+					} else {
+						crash "work request flag ${flag.to_str()} is not 0 or 1"
 					}
+					$fx = $fx.append(Work(id, { task, input, files: $refs, deadline_ms, cancel, prepared }))
 				} else if kind == 11 {
 					mode = Dom.byte(b, $at)
 					if mode != 1 and mode != 2 {

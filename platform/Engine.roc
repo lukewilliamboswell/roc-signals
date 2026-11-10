@@ -95,11 +95,11 @@ Engine := [].{
 
 	## A file the user gave the app, or a range of one (`File.slice`): a handle
 	## with its `name`, `size` and `mime` type, never its bytes on the page. Send
-	## it to a worker program in the program's input, and read its bytes there
-	## with `contents`: they are read once into the worker's memory and handed to
-	## the program without a copy. For a small file, `read_bytes({})` and
-	## `read_utf8({})` ask for its bytes on the page instead. A file stays available
-	## while any value holds it, and is released when nothing does.
+	## it to a worker task in the task's input, and read its bytes in the job
+	## with `read!` or `contents!`, which bring across exactly what the job asks
+	## for. For a small file, `read_bytes({})` and `read_utf8({})` ask for its
+	## bytes on the page instead. A file stays available while any value holds
+	## it, and is released when nothing does.
 	File : Core.File
 
 	## The files one event delivered, and how many more it carried than the
@@ -323,14 +323,19 @@ Engine := [].{
 	## result is `Now`, so a site can write state in response to its value changing.
 	## `Http`'s `timeout_ms` of 0 means no timeout; it is capped at 10 minutes.
 	##
-	## `Work` runs the pure program registered under `program` (see
-	## `Program.with_workers`) on `input`, off the page's thread, and delivers one
-	## `Work(output)` or `WorkLost(fault)`. Like a timer it belongs to its site:
-	## disposing the site cancels it. `deadline_ms` 0 means no deadline; it is
-	## capped at 10 minutes and delivers `Timeout` when it expires. Issuing work
-	## for a program that is not registered is a contract error. `files` are the
-	## files the input refers to, read into the worker's memory for the job
-	## (`[]` for a program that takes bytes alone; `Worker` fills it in).
+	## `Work` runs a job of the worker task registered under `task` (see
+	## `Program.with_workers`) on `input`, off the page's thread, where it may
+	## read the `files` its input holds through effects and answer with files
+	## of its own; it delivers one `Work` answer or `WorkLost(fault)`.
+	## `deadline_ms` 0 means no deadline; it is capped at 10 minutes and
+	## delivers `Timeout` when it expires. `on_dispose` says whether disposing
+	## its site stops the job (`Stop`, like a timer) or keeps it, delivering
+	## its answer to the nearest surviving ancestor (`Keep`); `on_cancel`
+	## whether a cancelled running job ends its worker (`Stop`) or completes
+	## with its answer dropped (`Finish`). A preparation's task is `Prepared`,
+	## its input led by the preparation's. Issuing work for a task that is not
+	## registered is a contract error. Apps use the typed layer, `Worker`,
+	## which builds it.
 	##
 	## `ReadBytes` and `ReadUtf8` read a file into the page (`File.read_bytes`,
 	## `File.read_utf8`) and deliver one `FileBytes`, `FileText` or
@@ -344,7 +349,7 @@ Engine := [].{
 		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32 }),
 		StorageGet(Str),
 		Timer(U32),
-		Work({ program : Str, input : List(U8), files : List(File), deadline_ms : U32 }),
+		Work({ task : Str, input : List(U8), files : List(File), deadline_ms : U32, on_dispose : [Stop, Keep], on_cancel : [Stop, Finish], prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] }),
 		Interval(U32),
 		Popstate,
 
@@ -368,13 +373,6 @@ Engine := [].{
 		Sha256(File),
 		ObjectUrl(File),
 
-		## A query of a prepared program: `Work` whose input also says which
-		## preparation answers it, so a worker that already holds that
-		## preparation can reuse it. `Worker` builds it (see
-		## `Worker.prepared`); it delivers what `Work` delivers and is scoped
-		## like it.
-		Ask({ program : Str, input : List(U8), files : List(File), deadline_ms : U32 }),
-
 		## Ports: a message to the page's JavaScript for a declared port (see
 		## `PortRegistration`; apps use the typed layer, `Port`). `PortCommand` is
 		## emitted and forgotten; `PortCall` awaits one `PortReply` or
@@ -385,15 +383,6 @@ Engine := [].{
 		PortCommand({ port : Str, message : PortMessage }),
 		PortCall({ port : Str, message : PortMessage, timeout_ms : U32 }),
 		PortSubscribe({ port : Str, message : PortMessage }),
-
-		## A task's job: the registered task `program` run on `input` in a
-		## worker, where it may read the `files` its input holds through
-		## effects and answer with files of its own (`Answered`). Without an
-		## answer it delivers what `Work` does. `on_dispose` says whether
-		## disposing its site stops it (`Stop`) or keeps it, delivering its
-		## answer to the nearest surviving ancestor (`Keep`). `Worker.task`
-		## builds it.
-		Task({ program : Str, input : List(U8), files : List(File), deadline_ms : U32, on_dispose : [Stop, Keep] }),
 
 		## A command that saves a file's range as a download (`File.save`).
 		Save({ file : File, name : Str }),
@@ -408,16 +397,15 @@ Engine := [].{
 	## timer or interval tick (`Fired`), the URL after `Popstate` (`Location`), a
 	## connectivity or visibility change (`Online`, `Visible`), a `Self` follow-up
 	## (`Now`), `Refused` when the in-flight bound turned the request away, or a
-	## worker program's output (`Work`) or the reason it produced none
-	## (`WorkLost`, or `FileFailed` when the files it was sent could not be
-	## read into the worker), a file's bytes or text read into the page
-	## (`FileBytes`, `FileText`), a file's SHA-256 digest (`Digest`) or a URL
-	## that shows it (`FileUrl`), or why an operation on a file produced
-	## nothing (`FileFailed`), or a port's answer or message (`PortReply`)
-	## or why there is none (`PortFailed`), or a task's answer with the
-	## files it holds, handles the page now owns (`Answered`; `Worker`
-	## decodes it), or a response whose body is a file (`Fetched`).
-	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortReply(PortMessage), PortFailed(PortFailure), Answered({ output : List(U8), files : List(File) }), Fetched({ status : U16, headers : List((Str, Str)), body : File })]
+	## worker job's answer with the files it holds, handles the page now owns
+	## (`Work`; `Worker` decodes it) or the reason it produced none
+	## (`WorkLost`), a file's bytes or text read into the page (`FileBytes`,
+	## `FileText`), a file's SHA-256 digest (`Digest`) or a URL that shows it
+	## (`FileUrl`), or why an operation on a file produced nothing
+	## (`FileFailed`), or a port's answer or message (`PortReply`) or why
+	## there is none (`PortFailed`), or a response whose body is a file
+	## (`Fetched`).
+	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortReply(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name and the files its `{"$file":N}` markers
@@ -456,7 +444,8 @@ Engine := [].{
 	##   readers (`file_bytes`, `file_text`, `file_digest`, `file_url`) report
 	##   it (a raw result is `Refused` itself).
 	##
-	## A worker run reports it as `Worker.Error`'s `FileFailed`.
+	## A task's job reads files with effects that answer it too, and a task
+	## that passes it on answers `Worker.Error`'s `Failed`.
 	FileError : [Unreadable, TooLarge, InvalidUtf8, Unavailable, Refused]
 
 	## A `File.read_bytes` result as the file's bytes or a typed [FileError]:
@@ -483,10 +472,12 @@ Engine := [].{
 	file_url : Res -> Try(Str, FileError)
 	file_url = |res| Core.file_url(res)
 
-	## Why a `Work` request produced no output: the worker's instance faulted
-	## running the program (`Contract`, `ResourceLimit`, `OutOfMemory`,
-	## `AppCrash` and `ExpectFailed`, the fault classes of an instance), the
-	## browser has no workers (`Unavailable`), or the worker itself failed
+	## Why a `Work` request produced no answer: the worker's instance faulted
+	## running the job (`Contract`, `ResourceLimit`, `OutOfMemory`, `AppCrash`
+	## and `ExpectFailed`, the fault classes of an instance; `ResourceLimit`
+	## also when the page has no room for the files of an answer), the
+	## browser has no workers or a job running on the page's thread reached a
+	## worker-only effect (`Unavailable`), or the worker itself failed
 	## (`Executor`). The diagnostic goes to the page's console, never into the
 	## result.
 	WorkFault : [Contract, ResourceLimit, OutOfMemory, AppCrash, ExpectFailed, Unavailable, Executor]
@@ -705,23 +696,14 @@ Engine := [].{
 	## What the host drives: an app built with `program` or `program_boot`, bound
 	## as the app's `main`. The platform mounts it with the boot data and runs one
 	## transaction per DOM event or effect result. `with_workers` adds the worker
-	## programs its `Work` requests may name:
-	## `Engine.program(view).with_workers([Engine.registration("example.org/x", run)])`,
-	## and `with_ports` the ports the page's JavaScript supplies.
+	## tasks its `Work` requests may name:
+	## `Engine.program(view).with_workers([count.registration()])` for a
+	## `Worker.task`, and `with_ports` the ports the page's JavaScript supplies.
 	Program : Core.Program
 
-	## A worker program for `Program.with_workers`. Make one with `registration`.
+	## A worker task or preparation for `Program.with_workers`. Make one with
+	## a typed task's or preparation's `registration` (see `Worker`).
 	Registration : Core.Registration
-
-	## `registration(name, run)`: the worker program `name`, which turns a `Work`
-	## request's input bytes into its output bytes with `run`. Names are
-	## namespaced and unversioned (`"example.org/search/filter"`): every instance
-	## runs the same compiled module, so a name means one function. `run` must be
-	## pure; it runs in a separate instance that shares nothing with the page but
-	## the bytes it is given, and a crash there poisons that worker instance only
-	## and is delivered as `WorkLost`.
-	registration : Str, (List(U8) -> List(U8)) -> Registration
-	registration = |name, run| Core.registration(name, run)
 
 	## The [Program] for an app that needs no boot data: mount `view()` with the
 	## default in-flight bound of 32.

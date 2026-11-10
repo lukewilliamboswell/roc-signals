@@ -91,16 +91,16 @@ Core := [].{
 
 	## A file the user gave the app, or a range of one: a handle with its name,
 	## size and type, never its bytes on the page. Read its bytes in a worker
-	## program, where the file's range arrives as a list of its own (`contents`),
-	## read once into the worker's memory and handed over without a copy; or
-	## ask for them on the page with an awaited request (`read_bytes`,
-	## `read_utf8`) when bringing them into the page's memory is acceptable.
+	## task's job, with effects that bring across exactly the range the job
+	## asks for (`read!`, `contents!`); or ask for them on the page with an
+	## awaited request (`read_bytes`, `read_utf8`) when bringing them into the
+	## page's memory is acceptable.
 	##
 	## A file stays available while any value holds it: keep it in a state for
 	## as long as the app needs it, and it is released when nothing refers to it
 	## any more. Two files are equal when they are the same range of the same
 	## file.
-	File :: { at : [Page(Blob), Worker(List(U8))], name : Str, mime : Str, size : U64, start : U64, len : U64 }.{
+	File :: { blob : Blob, name : Str, mime : Str, size : U64, start : U64, len : U64 }.{
 
 		## The file's name, as the browser reports it (no directory).
 		name : File -> Str
@@ -126,22 +126,6 @@ Core := [].{
 			{ ..f, start: f.start + start, len }
 		}
 
-		## The file's bytes, in a worker program that was sent it. On the page a
-		## file has no bytes: calling it there is a contract error; ask for them
-		## with `read_bytes`, or send the file to a worker program and read them
-		## there.
-		contents : File -> List(U8)
-		contents = |f| match f.at {
-			Worker(bytes) => bytes
-			Page(_) => crash "contract: File.contents of \"${f.name}\" on the page: a file's bytes are not on the page; request them with File.read_bytes or File.read_utf8, or send the file in a worker program's input and call contents there"
-		}
-
-		## The file's bytes as text, in a worker program that was sent it, or
-		## `InvalidUtf8` when they are not UTF-8. A byte-order mark is kept. On the
-		## page it is a contract error, as `contents` is; ask with `read_utf8`.
-		contents_utf8 : File -> Try(Str, [InvalidUtf8])
-		contents_utf8 = |f| Str.from_utf8(File.contents(f)).map_err(|_| InvalidUtf8)
-
 		## A request to read the file's bytes into the page, for an effect
 		## site's plan: `file.read_bytes({})`, or `file.read_bytes({ max_bytes })`
 		## to change how much the app accepts (see [ReadProps]). Its result is
@@ -151,7 +135,7 @@ Core := [].{
 		## away); read it with `file_bytes`. The browser reads the file on the
 		## page's thread into a buffer of its own and the bytes are copied once
 		## into the page's memory, so keep it for small files and send large
-		## ones to a worker program. The request holds the file until it is
+		## ones to a worker task. The request holds the file until it is
 		## answered, and disposing its site cancels it.
 		read_bytes : File, ReadProps -> Req
 		read_bytes = |f, ReadProps.({ max_bytes })| ReadBytes({ file: f, max_bytes })
@@ -204,34 +188,26 @@ Core := [].{
 
 		## Equal when they are the same range of the same file.
 		is_eq : File, File -> Bool
-		is_eq = |a, b| a.start == b.start and a.len == b.len and a.name == b.name and match (a.at, b.at) {
-			(Page(x), Page(y)) => x.token() == y.token()
-			(Worker(x), Worker(y)) => x == y
-			_ => Bool.False
-		}
+		is_eq = |a, b| a.start == b.start and a.len == b.len and a.name == b.name and a.blob.token() == b.blob.token()
 
 		# -- Tasks: effects on a file, and saving and fetching ----------------
 
-		## In a task's job (`Worker.task`): `len` bytes at `start` of the file
-		## (relative to this file or range), read from the browser into the
-		## job's memory, or `Unreadable` when the browser can no longer read the
-		## file (the user's file changed or went away). One read copies the
-		## bytes once; reading a large file in chunks keeps the job's memory to
-		## a chunk. A range that does not lie within the file is a contract
-		## error. Outside a task's job a file has no reader: page code cannot
-		## call an effect, and the host refuses one anywhere else.
+		## In a task's job (`Worker.task`, or a preparation's `prepare!`): `len`
+		## bytes at `start` of the file (relative to this file or range), read
+		## from the browser into the job's memory, or `Unreadable` when the
+		## browser can no longer read the file (the user's file changed or went
+		## away). One read copies the bytes once; reading a large file in chunks
+		## keeps the job's memory to a chunk. A range that does not lie within
+		## the file is a contract error. Outside a job a file has no reader:
+		## page code cannot call an effect, and the host refuses one anywhere
+		## else.
 		read! : File, { start : U64, len : U64 } => Try(List(U8), FileError)
 		read! = |f, { start, len }| {
 			if start > f.len or len > f.len - start {
 				crash "contract: File.read! of ${start.to_str()}+${len.to_str()} bytes lies outside \"${f.name}\" (${f.len.to_str()} bytes)"
 			}
-			match f.at {
-				Worker(bytes) => Ok(bytes.sublist({ start, len }))
-				Page(blob) => {
-					bytes = Hosted.read!(blob.token(), f.start + start, len)
-					if (bytes.len() == len) Ok(bytes) else Err(Unreadable)
-				}
-			}
+			bytes = Hosted.read!(f.blob.token(), f.start + start, len)
+			if (bytes.len() == len) Ok(bytes) else Err(Unreadable)
 		}
 
 		## In a task's job: the whole file, or range, as `read!` reads it.
@@ -258,7 +234,10 @@ Core := [].{
 		## to it with `append!` and `append_file!`, then `finish!` it into an
 		## immutable file the job can return in its answer. The bytes it holds
 		## are private to the job until its answer is delivered: a job that is
-		## stopped, times out or fails leaves nothing anyone can see.
+		## stopped, times out or fails leaves nothing anyone can see. A builder
+		## never outlives the call that opened it (a job, or a preparation's
+		## `prepare!`): one kept in a prepared state and used later is a
+		## contract error. Keep the file it finishes instead.
 		##
 		## To append to the output of an earlier job, start from it:
 		## `File.build!({ name, start_from: From(previous) })` gives a new file
@@ -277,7 +256,7 @@ Core := [].{
 			status = match start_from {
 				Empty => Hosted.open!(token, called.to_utf8(), type.to_utf8(), 0, 0, 0)
 				From(source) => {
-					{ token: from, start, len } = held_ref(source, "File.build!")
+					{ token: from, start, len } = file_ref(source)
 					Hosted.open!(token, called.to_utf8(), type.to_utf8(), from, start, len)
 				}
 			}
@@ -359,7 +338,8 @@ Core := [].{
 	## which appends to it and then finishes it into an immutable [File]. It
 	## cannot be sent anywhere: only the file it finishes into can be in an
 	## answer. The builder's parts go when the job ends, whether or not it
-	## finished.
+	## finished, and a builder used after the call that opened it has ended
+	## is a contract error.
 	Builder :: { handle : Box(U64), name : Str, mime : Str }.{
 
 		## Append a copy of `bytes`. `TooLarge` when the bytes this job has
@@ -371,7 +351,7 @@ Core := [].{
 		append! = |b, bytes| match Hosted.append!(Box.unbox(b.handle), bytes) {
 			0 => Ok({})
 			1 => Err(TooLarge)
-			_ => crash "contract: Builder.append! on \"${b.name}\" after it was finished"
+			status => builder_refused(b, "append!", status)
 		}
 
 		## Append a file the job holds, or a range of one, by reference: the
@@ -379,10 +359,10 @@ Core := [].{
 		## Appending to a builder after `finish!` is a contract error.
 		append_file! : Builder, File => {}
 		append_file! = |b, f| {
-			{ token, start, len } = held_ref(f, "Builder.append_file!")
+			{ token, start, len } = file_ref(f)
 			match Hosted.append_file!(Box.unbox(b.handle), token, start, len) {
 				0 => {}
-				_ => crash "contract: Builder.append_file! on \"${b.name}\" after it was finished"
+				status => builder_refused(b, "append_file!", status)
 			}
 		}
 
@@ -394,10 +374,10 @@ Core := [].{
 			token = Box.unbox(handle)
 			match Hosted.finish!(Box.unbox(b.handle), token) {
 				0 => {}
-				_ => crash "contract: Builder.finish! on \"${b.name}\" after it was finished"
+				status => builder_refused(b, "finish!", status)
 			}
 			size = Hosted.size!(token)
-			{ at: Page(Blob.(handle)), name: b.name, mime: b.mime, size, start: 0, len: size }
+			{ blob: Blob.(handle), name: b.name, mime: b.mime, size, start: 0, len: size }
 		}
 	}
 
@@ -887,14 +867,20 @@ Core := [].{
 	## result is `Now`, so a site can write state in response to its value changing.
 	## `Http`'s `timeout_ms` of 0 means no timeout; it is capped at 10 minutes.
 	##
-	## `Work` runs the pure program registered under `program` (see
-	## `with_workers`) on `input`, off the page's thread, and delivers one
-	## `Work(output)` or `WorkLost(fault)`. Like a timer it belongs to its site:
-	## disposing the site cancels it. `deadline_ms` 0 means no deadline; it is
-	## capped at 10 minutes and delivers `Timeout` when it expires. Issuing work
-	## for a program that is not registered is a contract error. `files` are the
-	## files the input refers to, read into the worker's memory for the job
-	## (`[]` for a program that takes bytes alone; `Worker` fills it in).
+	## `Work` runs a job of the task registered under `task` (see
+	## `with_workers`) on `input` in a worker, which may read the `files` the
+	## input refers to through effects and answer with files of its own; it
+	## delivers one `Work` answer or `WorkLost(fault)`. `deadline_ms` 0 means
+	## no deadline; it is capped at 10 minutes and delivers `Timeout` when it
+	## expires. `on_dispose` says whether disposing its site stops the job
+	## (`Stop`, like a timer) or keeps it and delivers its answer to the
+	## nearest surviving ancestor (`Keep`, like `Http`); `on_cancel` whether a
+	## running job that is cancelled ends its worker (`Stop`) or completes
+	## with its answer dropped (`Finish`). A task of a preparation is
+	## `Prepared`: `input` then starts with the preparation's input
+	## (`input_len` bytes, referring to the first `input_files` files), which
+	## a worker that already prepared it may skip. Issuing work for a task
+	## that is not registered is a contract error. `Worker` builds it.
 	##
 	## `ReadBytes` and `ReadUtf8` read a file into the page (`File.read_bytes`,
 	## `File.read_utf8`) and deliver one `FileBytes`, `FileText` or
@@ -908,7 +894,7 @@ Core := [].{
 		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32 }),
 		StorageGet(Str),
 		Timer(U32),
-		Work({ program : Str, input : List(U8), files : List(File), deadline_ms : U32 }),
+		Work({ task : Str, input : List(U8), files : List(File), deadline_ms : U32, on_dispose : [Stop, Keep], on_cancel : [Stop, Finish], prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] }),
 		Interval(U32),
 		Popstate,
 
@@ -932,14 +918,6 @@ Core := [].{
 		Sha256(File),
 		ObjectUrl(File),
 
-		## A query of a prepared program (design.md, "Prepared programs"): a
-		## `Work` request whose input is a query input, `prep:str
-		## init_len:u32 init_files:u32 policy:u8`, then the preparation's
-		## input and the query's. It delivers what `Work` delivers and is
-		## scoped like it. `Worker` builds it; an input without that header is
-		## a contract error.
-		Ask({ program : Str, input : List(U8), files : List(File), deadline_ms : U32 }),
-
 		## Ports (see [PortDecl]): a message to the page's JavaScript for the
 		## port named `port`. `PortCommand` is emitted and forgotten;
 		## `PortCall` awaits one `PortReply` or `PortFailed` and, like `Http`,
@@ -949,15 +927,6 @@ Core := [].{
 		PortCommand({ port : Str, message : PortMessage }),
 		PortCall({ port : Str, message : PortMessage, timeout_ms : U32 }),
 		PortSubscribe({ port : Str, message : PortMessage }),
-
-		## A task's job (design.md, "Tasks"): the registered task `program`
-		## run on `input` in a worker, which may read the `files` it names
-		## through effects and answer with files of its own. It delivers
-		## `Answered`, or what a `Work` request delivers when there is no
-		## answer. `on_dispose` says whether disposing its site stops it
-		## (`Stop`, like `Work`) or keeps it and delivers its answer to the
-		## nearest surviving ancestor (`Keep`, like `Http`). `Worker` builds it.
-		Task({ program : Str, input : List(U8), files : List(File), deadline_ms : U32, on_dispose : [Stop, Keep] }),
 
 		## A command that saves `file` (its range) as a download named `name`
 		## (`File.save`).
@@ -974,14 +943,14 @@ Core := [].{
 	## timer or interval tick (`Fired`), the URL after `Popstate` (`Location`), a
 	## connectivity or visibility change (`Online`, `Visible`), a `Self` follow-up
 	## (`Now`), `Refused` when the in-flight bound turned the request away, or a
-	## worker program's output (`Work`) or the reason it produced none
-	## (`WorkLost`), a file's bytes or text read into the page (`FileBytes`,
-	## `FileText`), a file's digest (`Digest`) or a URL that shows it
-	## (`FileUrl`), or why an operation on a file produced nothing
+	## task job's answer with the files it holds (`Work`) or the reason it
+	## produced none (`WorkLost`), a file's bytes or text read into the page
+	## (`FileBytes`, `FileText`), a file's digest (`Digest`) or a URL that
+	## shows it (`FileUrl`), or why an operation on a file produced nothing
 	## (`FileFailed`), or a port's answer or message (`PortReply`) or why
-	## there is none (`PortFailed`), or a task's answer with the files it
-	## holds (`Answered`), or a response whose body is a file (`Fetched`).
-	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortReply(PortMessage), PortFailed(PortFailure), Answered({ output : List(U8), files : List(File) }), Fetched({ status : U16, headers : List((Str, Str)), body : File })]
+	## there is none (`PortFailed`), or a response whose body is a file
+	## (`Fetched`).
+	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortReply(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name, and the files its `{"$file":N}` markers
@@ -1244,7 +1213,7 @@ Core := [].{
 
 	## The `resource` configuration of a layer that follows the answer to one
 	## request for its input, for anything with `request` and `result` (a
-	## worker program, a prepared program's query, a port call). A new input
+	## worker task, a preparation's task, a port call). A new input
 	## marks the layer `Pending` and keeps the previous answer; each result
 	## settles it as `Answered` or `Failed`. `Worker.derive` and `Port.derive`
 	## are this, so the policy has one home.
@@ -1291,30 +1260,21 @@ Core := [].{
 	file_parts : File -> { name : Str, mime : Str, size : U64, start : U64, len : U64 }
 	file_parts = |f| { name: f.name, mime: f.mime, size: f.size, start: f.start, len: f.len }
 
-	## For the wire format: a file as a worker program receives it, holding
-	## the bytes of its range.
-	worker_file : List(U8), { name : Str, mime : Str, size : U64, start : U64, len : U64 } -> File
-	worker_file = |bytes, { name, mime, size, start, len }| { at: Worker(bytes), name, mime, size, start, len }
-
-	## For the wire format: a file a task's job was sent, as the worker's
-	## host minted its handle; decoding the payload gives it its name, type
-	## and range (`placed_file`).
+	## For the wire format: a file a job was sent, as the worker's host
+	## minted its handle; decoding the payload gives it its name, type and
+	## range (`placed_file`).
 	held_file : Box(U64) -> File
-	held_file = |handle| { at: Page(Blob.(handle)), name: "", mime: "", size: 0, start: 0, len: 0 }
+	held_file = |handle| { blob: Blob.(handle), name: "", mime: "", size: 0, start: 0, len: 0 }
 
-	## For the wire format: the file that arrived beside a payload at a
-	## file's place (its bytes, or its handle), with the name, type, size
-	## and range the payload gives it. Bytes that are not the range's
-	## length, or a range outside the size, are `Malformed`.
+	## For the wire format: the handle that arrived beside a payload at a
+	## file's place, with the name, type, size and range the payload gives
+	## it. A range outside the size is `Malformed`.
 	placed_file : File, { name : Str, mime : Str, size : U64, start : U64, len : U64 } -> Try(File, [Malformed])
 	placed_file = |source, { name, mime, size, start, len }| {
 		if start > size or len > size - start {
 			return Err(Malformed)
 		}
-		match source.at {
-			Worker(bytes) => if (bytes.len() == len) Ok({ at: Worker(bytes), name, mime, size, start, len }) else Err(Malformed)
-			Page(blob) => Ok({ at: Page(blob), name, mime, size, start, len })
-		}
+		Ok({ blob: source.blob, name, mime, size, start, len })
 	}
 
 	## For test platforms and harnesses: decode an effect result payload as the
@@ -1412,7 +1372,7 @@ Core := [].{
 	## A mounted engine instance: the site tree and the transaction state. The host
 	## holds it between calls through [Program]; test platforms and harnesses drive
 	## it directly with `mount`, `event`, `result` and `take_cmds`. `programs`
-	## is the program's catalogue: its worker programs' names and its ports.
+	## is the program's catalogue: its worker tasks' names and its ports.
 	App :: { root : Inst(Root), tx : Tx, programs : Catalogue }
 
 	## What a program declares beside its view, kept beside the engine root
@@ -1578,66 +1538,54 @@ Core := [].{
 	protocol_version : U32
 	protocol_version = 4
 
-	## A worker program: a namespaced name (`"example.org/search/filter"`) and a
-	## pure function from input bytes to output bytes. Make one with
-	## `registration` and list it in `with_workers`.
+	## A worker task as the catalogue holds it (design.md, "Workers"): a
+	## namespaced name (`"example.org/search/filter"`) and its effectful
+	## entry `run!`, from input bytes and the handles the worker's host minted
+	## for the job's files to its answer, `n:u32 (token:u64)* output:rest`.
+	## `Worker` makes one from a typed task; apps list it in `with_workers`.
 	##
 	## A preparation registers under its own name with the names of the
-	## queries it answers (`queries`), and `prepare` builds the [Kept] value
-	## those queries read; an ordinary program has no queries.
-	##
-	## A task (design.md, "Tasks") registers `task!`, its effectful entry
-	## from input bytes and the handles the worker's host minted for the
-	## job's files to its answer, `n:u32 (token:u64)* output:rest`; a
-	## program's `task!` and a task's `run` are contract errors.
-	Registration :: { name : Str, run : (List(U8), List(List(U8)) -> List(U8)), queries : List(Str), prepare : (List(U8), List(List(U8)) -> Kept), task! : (List(U8), List(Box(U64)) => List(U8)) }
+	## tasks that read its state (`tasks`), and `prepare!` builds the [Kept]
+	## value those tasks read; a task that is not a preparation's has no
+	## `tasks`. A preparation's `run!`, and a task's `prepare!`, are contract
+	## errors.
+	Registration :: { name : Str, tasks : List(Str), run! : (List(U8), List(Box(U64)) => List(U8)), prepare! : (List(U8), List(Box(U64)) => Kept) }
 
-	## `registration(name, run)`: the worker program `name`, which turns a `Work`
-	## request's input bytes into its output bytes with `run`. `run` must be pure:
-	## it runs in a separate instance of the same module that shares nothing with
-	## the page's instance but the bytes it is given.
-	registration : Str, (List(U8) -> List(U8)) -> Registration
-	registration = |name, run| { name, run: |input, _| run(input), queries: [], prepare: not_prepared, task!: not_task(name) }
+	## For the worker layer: the task `name`, whose effectful entry `run!`
+	## turns a request's input bytes and the handles of its files into its
+	## answer, `n:u32 (token:u64)* output:rest`. It runs in a worker
+	## instance, where it may call the platform's hosted effects on those
+	## handles and on builders it opens.
+	registration : Str, (List(U8), List(Box(U64)) => List(U8)) -> Registration
+	registration = |name, run!| { name, tasks: [], run!, prepare!: not_prepared }
 
-	## For the worker layer: a program that also reads the files its request
-	## named, each the bytes of its range, read into the worker's memory.
-	registration_with_files : Str, (List(U8), List(List(U8)) -> List(U8)) -> Registration
-	registration_with_files = |name, run| { name, run, queries: [], prepare: not_prepared, task!: not_task(name) }
+	## For the worker layer: the preparation `name`, whose state the tasks
+	## `tasks` read. `prepare!` turns the preparation's input bytes and the
+	## handles of its files into the [Kept] value a worker instance may keep
+	## between jobs; every answer must be what preparing afresh and asking
+	## would give.
+	registration_prepared : Str, List(Str), (List(U8), List(Box(U64)) => Kept) -> Registration
+	registration_prepared = |name, tasks, prepare!| { name, tasks, run!: |_, _| crash "contract: worker task \"${name}\" is a preparation; ask one of its tasks", prepare! }
 
-	## For the worker layer: the preparation `name`, which answers the
-	## queries `queries`. `prepare` turns the preparation's input bytes and
-	## files into the [Kept] value a worker instance may keep between jobs;
-	## it must be pure, and every answer must be what preparing afresh and
-	## asking would give.
-	registration_prepared : Str, List(Str), (List(U8), List(List(U8)) -> Kept) -> Registration
-	registration_prepared = |name, queries, prepare| { name, run: |_, _| crash "contract: worker program \"${name}\" is a preparation; ask one of its queries", queries, prepare, task!: not_task(name) }
-
-	## For the worker layer: the task `name` (design.md, "Tasks"), whose
-	## effectful entry `task!` turns a `Task` request's input bytes and the
-	## handles of its files into its answer, `n:u32 (token:u64)*
-	## output:rest`. It runs in a worker instance, where it may call the
-	## platform's hosted effects on those handles and on builders it opens.
-	registration_task : Str, (List(U8), List(Box(U64)) => List(U8)) -> Registration
-	registration_task = |name, task!| { name, run: |_, _| crash "contract: worker program \"${name}\" is a task; request it with a Task request", queries: [], prepare: not_prepared, task! }
-
-	## A prepared program's state as a worker instance holds it between jobs
-	## (design.md, "Prepared programs"): the preparation's name and `ask`,
-	## a closure over the typed state that answers one of its queries,
-	## `ask(query, query_bytes, query_files)`. The state never crosses a
-	## boundary; the worker's host keeps one `Box(Kept)` as the page's host
-	## keeps `Box(App)`, and every answer is what preparing afresh would give.
-	Kept :: { prep : Str, ask : (Str, List(U8), List(List(U8)) -> List(U8)) }
+	## A preparation's state as a worker instance holds it between jobs
+	## (design.md, "Prepared state"): the preparation's name and `ask!`, a
+	## closure over the typed state that runs one of its tasks,
+	## `ask!(task, input_bytes, handles)`, and answers as a task's entry
+	## does. The state never crosses a boundary; the worker's host keeps one
+	## `Box(Kept)` as the page's host keeps `Box(App)`, and every answer is
+	## what preparing afresh would give.
+	Kept :: { prep : Str, ask! : (Str, List(U8), List(Box(U64)) => List(U8)) }
 
 	## For the worker layer: the kept state of the preparation `prep`.
-	kept : Str, (Str, List(U8), List(List(U8)) -> List(U8)) -> Kept
-	kept = |prep, ask| { prep, ask }
+	kept : Str, (Str, List(U8), List(Box(U64)) => List(U8)) -> Kept
+	kept = |prep, ask!| { prep, ask! }
 
 	## What the host drives: the protocol version, the declared storage keys (read
 	## before mount), mount once with the boot bytes, then one transaction per
 	## event or effect result. Each call returns the state, the command batch and
 	## the work record, and the host lends both buffers back on the next call so
 	## they are reused in place. A worker instance of the same module never
-	## mounts; it only runs the catalogue's programs. Apps build one with
+	## mounts; it only runs the catalogue's tasks. Apps build one with
 	## `program` or `program_boot` and bind it as `main`.
 	Program :: {
 		version : U32,
@@ -1657,21 +1605,21 @@ Core := [].{
 		with_ports : Program, List(PortDecl) -> Program
 		with_ports = |p, decls| { ..p, ports: ports_of(p.ports.decls.concat(decls)) }
 
-		## Add worker programs to the program's catalogue, so its effect sites can
+		## Add worker tasks to the program's catalogue, so its effect sites can
 		## issue `Work` requests for them. The page's instance and every worker
-		## instance evaluate the same `main`, so both see the same catalogue. At most
-		## 64 programs may be registered and each name once; anything else is a
-		## contract error when the catalogue is built.
+		## instance evaluate the same `main`, so both see the same catalogue. At
+		## most 64 names may be registered (a preparation's and its tasks' each
+		## count) and each name once; anything else is a contract error when the
+		## catalogue is built.
 		with_workers : Program, List(Registration) -> Program
 		with_workers = |p, registrations| { ..p, workers: p.workers.concat(registrations) }
 	}
 
 	## For the platform's hosts and test harnesses: the entry points of a
-	## [Program], as the host calls them. `work` is a worker instance's only
-	## entry: it runs the catalogue's program named in `name:str input:rest` on
-	## the input and returns the output bytes. `settled` is the settle check
-	## (`Core.settled`), which only harnesses call.
-	driver : Program -> { version : U32, keys : () -> List(U8), init : List(U8) -> (App, List(U8), List(U8)), event : App, List(U8), List(U8), U32, U32, List(U8) -> (App, List(U8), List(U8)), files : App, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (App, List(U8), List(U8)), work : List(U8), List(List(U8)) -> List(U8), settled : App -> Try({}, { cmds : List(U8), note : Str }) }
+	## [Program], as the page's host calls them. A worker instance's entries
+	## are `work!`, `work_prepare!` and `work_ask!`. `settled` is the settle
+	## check (`Core.settled`), which only harnesses call.
+	driver : Program -> { version : U32, keys : () -> List(U8), init : List(U8) -> (App, List(U8), List(U8)), event : App, List(U8), List(U8), U32, U32, List(U8) -> (App, List(U8), List(U8)), files : App, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (App, List(U8), List(U8)), settled : App -> Try({}, { cmds : List(U8), note : Str }) }
 	driver = |p| {
 		init = p.init
 		workers = p.workers
@@ -1689,9 +1637,9 @@ Core := [].{
 				handles = blobs.map(|b| Blob.(b))
 				if node == fx_node {
 					# A result that carries files: a port's answer (result
-					# tag 14), a task's answer (20) or a fetched body (21).
+					# tag 14), a job's answer (10) or a fetched body (21).
 					res = match record {
-						[20, ..] | [21, ..] => decode_held_res(record, handles)
+						[10, ..] | [21, ..] => decode_held_res(record, handles)
 						_ => (programs.ports.decode)(record, handles)
 					}
 					finish(Core.result(fresh, handler, res), [], wbuf)
@@ -1699,53 +1647,82 @@ Core := [].{
 					finish(Core.event_files(fresh, node, handler, record, handles), [], wbuf)
 				}
 			},
-			work: |payload, files| run_work(workers, payload, files),
 			settled: Core.settled,
 		}
 	}
 
-	## For the platform's hosts: a worker instance's preparation entry
-	## (design.md, "Prepared programs"). It runs the preparation named in
-	## `prep:str init:rest` on the input and the preparation's files and
-	## returns the state the instance keeps.
-	work_prepare : Program, List(U8), List(List(U8)) -> Kept
-	work_prepare = |p, payload, files| run_prepare(p.workers, payload, files)
-
-	## For the platform's hosts: a query, `query:str input:rest`, on the
-	## state an instance keeps, returning the query's output bytes.
-	work_ask : Kept, List(U8), List(List(U8)) -> List(U8)
-	work_ask = |kept_state, payload, files| run_ask(kept_state, payload, files)
-
-	## For the platform's hosts: a worker instance's task entry (design.md,
-	## "Tasks"). It runs the task named in `name:str input:rest` with the
+	## For the platform's hosts: a worker instance's job entry (design.md,
+	## "Workers"). It runs the task named in `name:str input:rest` with the
 	## handles the instance's host minted for the job's files, in the
 	## request's order, and returns its answer, `n:u32 (token:u64)*
 	## output:rest`: the instance's tokens of the files the answer holds,
 	## then the answer's bytes. A name that is not a task registered in this
-	## module is a contract error that poisons this worker instance only.
-	work_task! : Program, List(U8), List(Box(U64)) => List(U8)
-	work_task! = |p, payload, handles| {
+	## module, or the name of a preparation's task (those run through
+	## `work_prepare!` and `work_ask!`), is a contract error that poisons this
+	## worker instance only.
+	work! : Program, List(U8), List(Box(U64)) => List(U8)
+	work! = |p, payload, handles| {
 		registrations = p.workers
 		_ = catalogue_names(registrations)
-		(name, at) = get_str(payload, 0, "task payload")
+		(name, at) = get_str(payload, 0, "job payload")
 		match registrations.find_first(|r| r.name == name) {
-			Ok(r) => {
-				run! = r.task!
+			Ok(r) if r.tasks.is_empty() => {
+				run! = r.run!
 				owned_bytes(run!(payload.drop_first(at), handles))
 			}
-			Err(_) => crash "contract: worker program \"${name}\" is not registered in this module"
+			Ok(_) => crash "contract: worker task \"${name}\" is a preparation; ask one of its tasks"
+			Err(_) =>
+				if registrations.any(|r| r.tasks.contains(name)) {
+					crash "contract: worker task \"${name}\" belongs to a preparation; its jobs run through the preparation"
+				} else {
+					crash "contract: worker task \"${name}\" is not registered in this module"
+				}
 		}
 	}
 
-	## For the worker layer: a task's answer as its entry returns it,
+	## For the platform's hosts: a worker instance's preparation entry
+	## (design.md, "Prepared state"). It runs the preparation named in
+	## `prep:str init:rest` on that input and the handles of the
+	## preparation's files and returns the state the instance keeps. A name
+	## that is not a preparation registered in this module is a contract
+	## error that poisons this worker instance only.
+	work_prepare! : Program, List(U8), List(Box(U64)) => Kept
+	work_prepare! = |p, payload, handles| {
+		registrations = p.workers
+		_ = catalogue_names(registrations)
+		(prep, at) = get_str(payload, 0, "prepare payload")
+		match registrations.find_first(|r| r.name == prep and !r.tasks.is_empty()) {
+			Ok(r) => {
+				prepare! = r.prepare!
+				prepare!(payload.drop_first(at), handles)
+			}
+			Err(_) => crash "contract: worker task \"${prep}\" is not a preparation registered in this module"
+		}
+	}
+
+	## For the platform's hosts: a job of a preparation's task on the state an
+	## instance keeps, `task:str input:rest` with the handles of the task's
+	## own files, answering as `work!` does.
+	work_ask! : Kept, List(U8), List(Box(U64)) => List(U8)
+	work_ask! = |held, payload, handles| {
+		(task, at) = get_str(payload, 0, "job payload")
+		ask! = held.ask!
+		owned_bytes(ask!(task, payload.drop_first(at), handles))
+	}
+
+	## For the worker layer: a job's answer as its entry returns it,
 	## `n:u32 (token:u64)* output:rest`, from the answer's bytes and the
 	## files it holds, in the order the bytes refer to them. Each must be a
-	## handle the job holds.
-	task_answer : List(U8), List(File) -> List(U8)
-	task_answer = |bytes, files| {
+	## handle the job holds. An answer may hold at most 16 files
+	## (design.md, "Boundedness"); more is a contract error in the worker.
+	task_answer : Str, List(U8), List(File) -> List(U8)
+	task_answer = |name, bytes, files| {
+		if files.len() > max_answer_files {
+			crash "contract: worker task \"${name}\" answered with ${files.len().to_str()} files; an answer holds at most ${max_answer_files.to_str()}"
+		}
 		var $b = put_u32(List.with_capacity(4 + 8 * files.len() + bytes.len()), files.len().to_u32_wrap())
 		for f in files {
-			$b = put_u64($b, held_ref(f, "a task's answer").token)
+			$b = put_u64($b, file_ref(f).token)
 		}
 		$b.concat(bytes)
 	}
@@ -1757,12 +1734,12 @@ Core := [].{
 	catalogue = |registrations| {
 		var $names = []
 		for r in registrations {
-			for name in [r.name].concat(r.queries) {
+			for name in [r.name].concat(r.tasks) {
 				if $names.len() >= max_programs {
-					return Err("contract: with_workers registers more than ${max_programs.to_str()} worker programs (program \"${name}\" is over the bound)")
+					return Err("contract: with_workers registers more than ${max_programs.to_str()} worker tasks (task \"${name}\" is over the bound)")
 				}
 				if $names.contains(name) {
-					return Err("contract: worker program \"${name}\" is registered twice in with_workers")
+					return Err("contract: worker task \"${name}\" is registered twice in with_workers")
 				}
 				$names = $names.append(name)
 			}
@@ -4106,13 +4083,14 @@ comp_settle = |prop, snk, block, env, out, tx| {
 #  13 FX      id kind:u8 ... 1 HTTP method:str url:str n:u32 (name:str value:str)* body:str timeout_ms:u32
 #                            2 STORAGE_GET key:str  3 TIMER ms:u32  4 INTERVAL ms:u32  5 POPSTATE
 #                            6 ONLINE  7 VISIBILITY
-#                            8 WORK program:str input:(u32 len, raw bytes) deadline_ms:u32
+#                            8 WORK task:str input:(u32 len, raw bytes) n:u32 (token start len)*n
+#                                   deadline_ms:u32 cancel:u8 prepared:u8 [prep:str input_len:u32 input_files:u32]
 #                            11 READ mode:u8 token:u64 start:u64 len:u64 max_bytes:u64 (a file's range)
 #                            12 UPLOAD method:str url:str n:u32 (name:str value:str)* token start len timeout_ms:u32
 #                            13 DIGEST algorithm:u8 token start len   14 URL token start len
 #                            15 FETCH method:str url:str n:u32 (name:str value:str)* timeout_ms:u32
-#             (kind 8's flag after its deadline: 0 a program, 1 a prepared
-#             query with its operands, 2 a task)
+#             (kind 8's cancel: 1 stop, 2 finish; prepared: 0 none, 1 a
+#             preparation's task with its operands)
 #  14 CANCEL  id
 #  15 NAV     mode:u8 (1 push, 2 replace) url:str
 #  16 STORE   op:u8 (1 set: key:str value:str, 2 remove: key:str)
@@ -4124,10 +4102,10 @@ comp_settle = |prop, snk, block, env, out, tx| {
 # payload bytes: 1 status:u16 n:u32 (name:str value:str)* body (HTTP
 # response with its headers), 7 (HTTP timeout), 2 message (network
 # failure), 3 value (storage value), 4 (storage missing), 5 (timer
-# fired), 6 url (location), 8 online:u8, 9 visible:u8, 10 output (work
-# result bytes), 11 class:u8 (work lost), 13 reason:u8 (file failure),
-# 14 message (port reply), 15 class:u8 [text] (port failure), 20 n:u32
-# (size name type)* output (a task's answer, with n staged handles), 21
+# fired), 6 url (location), 8 online:u8, 9 visible:u8, 10 n:u32 (size
+# name type)* output (a job's answer, with n staged handles), 11
+# class:u8 (work lost), 13 reason:u8 (file failure), 14 message (port
+# reply), 15 class:u8 [text] (port failure), 21
 # status:u16 headers size name type (a fetched body, one staged handle;
 # design.md, Appendix B).
 
@@ -4136,9 +4114,13 @@ comp_settle = |prop, snk, block, env, out, tx| {
 max_timeout_ms : U32
 max_timeout_ms = 600000
 
-## The most worker programs one catalogue registers (design.md, "Boundedness").
+## The most names one worker catalogue registers (design.md, "Boundedness").
 max_programs : U64
 max_programs = 64
+
+## The most files a job's answer holds (design.md, "Boundedness").
+max_answer_files : U64
+max_answer_files = 16
 
 ## Mount `elem` with the in-flight bound `max` and the program's catalogue,
 ## running any follow-up turns the mount queued.
@@ -4167,7 +4149,7 @@ decode_files = |record, blobs| {
 		size = get_u64(record, $at, "file record")
 		(name, a1) = get_str(record, $at + 8, "file record")
 		(mime, a2) = get_str(record, a1, "file record")
-		$files = $files.append({ at: Page(blob), name, mime, size, start: 0, len: size })
+		$files = $files.append({ blob, name, mime, size, start: 0, len: size })
 		$at = a2
 	}
 	if $at != record.len() {
@@ -4183,124 +4165,56 @@ catalogue_names = |registrations| match Core.catalogue(registrations) {
 	Err(message) => crash message
 }
 
-## A worker instance's one call: `name:str input:rest` in, the program's
-## output out. The catalogue is checked as it is at mount, and a name it does
-## not hold (or a payload without one) is a contract error that poisons this
-## worker instance only.
-run_work : List(Registration), List(U8), List(List(U8)) -> List(U8)
-run_work = |registrations, payload, files| {
-	_ = catalogue_names(registrations)
-	(name, at) = get_str(payload, 0, "work payload")
-	match registrations.find_first(|r| r.name == name) {
-		Ok(r) => owned_bytes((r.run)(payload.drop_first(at), files))
-		Err(_) =>
-			match registrations.find_first(|r| r.queries.contains(name)) {
-				# A query run afresh: prepare, ask, and keep nothing.
-				Ok(r) => {
-					input = payload.drop_first(at)
-					q = query_header(input, name)
-					if q.prep != r.name {
-						crash "contract: worker program \"${name}\" was asked of the preparation \"${q.prep}\", but with_workers registers it with \"${r.name}\""
-					}
-					state = (r.prepare)(input.sublist({ start: q.init_at, len: q.init_len }), files.take_first(q.init_files))
-					owned_bytes((state.ask)(name, input.drop_first(q.init_at + q.init_len), files.drop_first(q.init_files)))
-				}
-				Err(_) => crash "contract: worker program \"${name}\" is not registered in this module"
-			}
+## The contract error a builder effect answered with `status`: 2 when
+## the builder was finished, 3 when the call that opened it has ended (a
+## builder kept in a prepared state and used by a later job).
+builder_refused : Builder, Str, U8 -> a
+builder_refused = |b, what, status| {
+	if status == 3 {
+		crash "contract: Builder.${what} on \"${b.name}\", a builder that outlived the call that opened it; a builder never leaves its job, so keep the file it finishes instead"
 	}
+	crash "contract: Builder.${what} on \"${b.name}\" after it was finished"
 }
 
-## The `task!` of a registration that is not a task: a `Task` request for
-## it is a contract error in the worker that runs it.
-not_task : Str -> (List(U8), List(Box(U64)) => List(U8))
-not_task = |name| |_, _| crash "contract: worker program \"${name}\" is not a task; request it with a Work request"
-
-## A file's handle and range for an effect on it in a task's job, which
-## `what` names. A file whose bytes a pure program was sent has no handle.
-held_ref : File, Str -> { token : U64, start : U64, len : U64 }
-held_ref = |f, what| match f.at {
-	Page(blob) => { token: blob.token(), start: f.start, len: f.len }
-	Worker(_) => crash "contract: ${what} was given \"${f.name}\", whose bytes a pure program was sent; only a task holds files as handles"
-}
-
-## A placeholder `prepare` for a registration that is not a preparation;
+## A placeholder `prepare!` for a registration that is not a preparation;
 ## nothing calls it, because only a preparation's name is prepared.
-not_prepared : List(U8), List(List(U8)) -> Kept
-not_prepared = |_, _| crash "internal: a program that is not a preparation was prepared"
+not_prepared : List(U8), List(Box(U64)) => Kept
+not_prepared = |_, _| crash "internal: a task that is not a preparation was prepared"
 
-## A query input's header (design.md, Appendix B): `prep:str init_len:u32
-## init_files:u32 policy:u8`, then the preparation's input of `init_len`
-## bytes and the query's input. `init_at` is where the preparation's input
-## starts. Anything else is a contract error naming the program.
-query_header : List(U8), Str -> { prep : Str, init_at : U64, init_len : U64, init_files : U64, policy : U8 }
-query_header = |input, program| {
-	what = "query input of worker program \"${program}\""
-	(prep, a1) = get_str(input, 0, what)
-	init_len = get_u32(input, a1, what).to_u64()
-	init_files = get_u32(input, a1 + 4, what).to_u64()
-	policy = input.get(a1 + 8) ?? crash "contract: truncated ${what}"
-	init_at = a1 + 9
-	if init_at + init_len > input.len() or policy < 1 or policy > 2 {
-		crash "contract: malformed ${what}"
-	}
-	{ prep, init_at, init_len, init_files, policy }
-}
-
-## An `Ask` request's `FX` (design.md, Appendix B): kind 8 as for `Work`,
-## then `1 prep:str init_at:u32 init_len:u32 init_files:u32 policy:u8`,
-## read from the query input's header, so the runtime knows which
-## preparation answers it without reading the input itself.
-put_ask : List(U8), Str, List(U8), List(File), U32 -> List(U8)
-put_ask = |head, program, input, files, deadline_ms| {
-	q = query_header(input, program)
-	if q.init_files > files.len() {
-		crash "contract: the query input of worker program \"${program}\" names more files than its request carries"
-	}
-	b = put_str(put_work(head, program, input, files, deadline_ms).append(1), q.prep)
-	put_u32(put_u32(put_u32(b, q.init_at.to_u32_wrap()), q.init_len.to_u32_wrap()), q.init_files.to_u32_wrap()).append(q.policy)
-}
-
-## FX kind 8 up to its deadline (design.md, Appendix B): what `Work` and
-## `Ask` requests share, before the flag that tells them apart.
-put_work : List(U8), Str, List(U8), List(File), U32 -> List(U8)
-put_work = |head, program, input, files, deadline_ms| {
-	var $b = put_u32(put_u32(put_str(head.append(8), program), input.len().to_u32_wrap()).concat(input), files.len().to_u32_wrap())
+## A `Work` request's `FX` (design.md, Appendix B): kind 8, `task:str
+## input:(u32 len, raw bytes) n:u32 (token start len)*n deadline_ms:u32
+## cancel:u8 prepared:u8`, then for a preparation's task `prep:str
+## input_len:u32 input_files:u32`, so the runtime knows which preparation
+## answers it, and where its input lies, without reading the input itself.
+## A preparation's input that does not lie within the request's is a
+## contract error naming the task.
+put_work : List(U8), Str, List(U8), List(File), U32, [Stop, Finish], [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] -> List(U8)
+put_work = |head, task, input, files, deadline_ms, on_cancel, prepared| {
+	var $b = put_u32(put_u32(put_str(head.append(8), task), input.len().to_u32_wrap()).concat(input), files.len().to_u32_wrap())
 	for file in files {
 		{ token, start, len } = file_ref(file)
 		$b = put_u64(put_u64(put_u64($b, token), start), len)
 	}
-	put_u32($b, min_u32(deadline_ms, max_timeout_ms))
-}
-
-## A worker instance's preparation: `prep:str init:rest` and the
-## preparation's files in, the [Kept] value out. A name that is not a
-## preparation is a contract error that poisons this worker instance only.
-run_prepare : List(Registration), List(U8), List(List(U8)) -> Kept
-run_prepare = |registrations, payload, files| {
-	_ = catalogue_names(registrations)
-	(prep, at) = get_str(payload, 0, "prepare payload")
-	match registrations.find_first(|r| r.name == prep and !r.queries.is_empty()) {
-		Ok(r) => (r.prepare)(payload.drop_first(at), files)
-		Err(_) => crash "contract: worker program \"${prep}\" is not a preparation registered in this module"
+	cancel : U8
+	cancel = match on_cancel {
+		Stop => 1
+		Finish => 2
+	}
+	b = put_u32($b, min_u32(deadline_ms, max_timeout_ms)).append(cancel)
+	match prepared {
+		Unprepared => b.append(0)
+		Prepared({ name, input_len, input_files }) => {
+			if input_len > input.len() or input_files > files.len() {
+				crash "contract: the request for worker task \"${task}\" says its preparation's input is longer than the request's"
+			}
+			put_u32(put_u32(put_str(b.append(1), name), input_len.to_u32_wrap()), input_files.to_u32_wrap())
+		}
 	}
 }
 
-## A query on the state an instance holds: `query:str input:rest` and the
-## query's files in, the output out (a list of its own, as for `run_work`).
-run_ask : Kept, List(U8), List(List(U8)) -> List(U8)
-run_ask = |state, payload, files| {
-	(query, at) = get_str(payload, 0, "ask payload")
-	owned_bytes((state.ask)(query, payload.drop_first(at), files))
-}
-
-## A file's handle and range, for a request that names it. Only a page's
-## file has a handle; a worker program's file in a request is a contract
-## error.
+## A file's handle and range, for a request or an effect that names it.
 file_ref : File -> { token : U64, start : U64, len : U64 }
-file_ref = |f| match f.at {
-	Page(blob) => { token: blob.token(), start: f.start, len: f.len }
-	Worker(_) => crash "contract: a request names \"${f.name}\", a file a worker program was sent; only the page's files can be named in a request"
-}
+file_ref = |f| { token: f.blob.token(), start: f.start, len: f.len }
 
 ## A file's handle and range on the wire: `token:u64 start:u64 len:u64`.
 put_file : List(U8), File -> List(U8)
@@ -4422,8 +4336,6 @@ decode_res_with = |b, port_res| {
 		Online(flag())
 	} else if tag == 9 {
 		Visible(flag())
-	} else if tag == 10 {
-		Work(b.drop_first(1))
 	} else if tag == 11 {
 		match b {
 			[_, class] => WorkLost(work_fault(class))
@@ -4454,15 +4366,15 @@ decode_res_with = |b, port_res| {
 		FileUrl(text(1))
 	} else if tag == 14 or tag == 15 {
 		port_res(b, [])
-	} else if tag == 20 or tag == 21 {
+	} else if tag == 10 or tag == 21 {
 		decode_held_res(b, [])
 	} else {
 		crash "contract: unknown effect result tag ${tag.to_str()}"
 	}
 }
 
-## Result tags 20 and 21 (design.md, Appendix B), paired in order with the
-## handles the host minted for their files: a task's answer, `n:u32
+## Result tags 10 and 21 (design.md, Appendix B), paired in order with the
+## handles the host minted for their files: a job's answer, `n:u32
 ## (size:u64 name:str type:str)*n output:rest`, and a response whose body
 ## is a file, `status:u16 n:u32 (name:str value:str)*n size:u64 name:str
 ## type:str` with exactly one handle. Anything else is a contract error.
@@ -4479,16 +4391,16 @@ decode_held_res = |b, handles| {
 			size = get_u64(b, $at, what)
 			(name, a1) = get_str(b, $at + 8, what)
 			(mime, a2) = get_str(b, a1, what)
-			$files = $files.append({ at: Page(blob), name, mime, size, start: 0, len: size })
+			$files = $files.append({ blob, name, mime, size, start: 0, len: size })
 			$at = a2
 		}
 		($files, $at)
 	}
 	match b {
-		[20, ..] => {
+		[10, ..] => {
 			count = get_u32(b, 1, what).to_u64()
 			(files, at) = files_at(5, count)
-			Answered({ output: b.drop_first(at), files })
+			Work({ output: b.drop_first(at), files })
 		}
 		[21, s0, s1, ..] => {
 			status = s0.to_u16() + s1.to_u16().shl_wrap(8)
@@ -4662,7 +4574,7 @@ decode_port_message = |b, handles| {
 		size = get_u64(b, $at, "port reply")
 		(name, f1) = get_str(b, $at + 8, "port reply")
 		(mime, f2) = get_str(b, f1, "port reply")
-		$files = $files.append({ at: Page(blob), name, mime, size, start: 0, len: size })
+		$files = $files.append({ blob, name, mime, size, start: 0, len: size })
 		$at = f2
 	}
 	if $at != b.len() {
@@ -4845,7 +4757,7 @@ put_fx = |c, id, req| {
 		Popstate => head.append(5)
 		OnlineChanges => head.append(6)
 		VisibilityChanges => head.append(7)
-		Work({ program, input, files, deadline_ms }) => put_work(head, program, input, files, deadline_ms).append(0)
+		Work({ task, input, files, deadline_ms, on_cancel, prepared, .. }) => put_work(head, task, input, files, deadline_ms, on_cancel, prepared)
 		ReadBytes({ file, max_bytes }) => put_u64(put_file(head.append(11).append(1), file), max_bytes)
 		ReadUtf8({ file, max_bytes }) => put_u64(put_file(head.append(11).append(2), file), max_bytes)
 		Upload({ method, url, headers, body, timeout_ms }) => {
@@ -4860,8 +4772,6 @@ put_fx = |c, id, req| {
 		}
 		Sha256(f) => put_file(head.append(13).append(1), f)
 		ObjectUrl(f) => put_file(head.append(14), f)
-		Ask({ program, input, files, deadline_ms }) => put_ask(head, program, input, files, deadline_ms)
-		Task({ program, input, files, deadline_ms, .. }) => put_work(head, program, input, files, deadline_ms).append(2)
 		Fetch({ method, url, headers, timeout_ms }) => {
 			var $b = put_u32(put_str(put_str(head.append(15), method), url), headers.len().to_u32_wrap())
 			for (k, v) in headers {
@@ -4950,20 +4860,8 @@ issue = |tx, path, reqs, a, owned| {
 				$tx = t1
 				$owned = $owned.append({ id, sub: False, keep: False, a })
 			}
-			Work({ program, .. }) => {
-				t0 = with_fx($tx, |fx| { ..fx, focus: fx.focus.append(CheckProgram(program, path)) })
-				(id, t1) = fx_admit(t0, path, req)
-				$tx = t1
-				$owned = $owned.append({ id, sub: False, keep: False, a })
-			}
-			Ask({ program, .. }) => {
-				t0 = with_fx($tx, |fx| { ..fx, focus: fx.focus.append(CheckProgram(program, path)) })
-				(id, t1) = fx_admit(t0, path, req)
-				$tx = t1
-				$owned = $owned.append({ id, sub: False, keep: False, a })
-			}
-			Task({ program, on_dispose, .. }) => {
-				t0 = with_fx($tx, |fx| { ..fx, focus: fx.focus.append(CheckProgram(program, path)) })
+			Work({ task, on_dispose, .. }) => {
+				t0 = with_fx($tx, |fx| { ..fx, focus: fx.focus.append(CheckProgram(task, path)) })
 				(id, t1) = fx_admit(t0, path, req)
 				$tx = t1
 				$owned = $owned.append({ id, sub: False, keep: on_dispose == Keep, a })
@@ -5574,7 +5472,7 @@ flush_turn = |tx, programs| {
 					}
 				CheckProgram(program, path) =>
 					if !programs.workers.contains(program) {
-						crash "contract: worker program \"${program}\" is not registered; add its registration to with_workers (site ${show_path(path)})"
+						crash "contract: worker task \"${program}\" is not registered; add its registration to with_workers (site ${show_path(path)})"
 					}
 				Port(at) => (programs.ports.check)(programs.ports.decls, at)
 			}
@@ -5710,9 +5608,9 @@ settle_note = |a, b| {
 }
 
 ## The worker catalogue lists its names in order, and a duplicate name or a
-## 65th registration is the contract error that names the program.
+## 65th registration is the contract error that names the task.
 expect {
-	reg = |name| Core.registration(name, |b| b)
+	reg = |name| Core.registration(name, |b, _| b)
 	var $many = []
 	var $i = 0.U64
 	while $i < 65 {
@@ -5727,18 +5625,29 @@ expect {
 	]
 	expected = [
 		"Ok([\"a\", \"b\"])",
-		"Err(\"contract: worker program \\\"a\\\" is registered twice in with_workers\")",
+		"Err(\"contract: worker task \\\"a\\\" is registered twice in with_workers\")",
 		"True",
-		"Err(\"contract: with_workers registers more than 64 worker programs (program \\\"p64\\\" is over the bound)\")",
+		"Err(\"contract: with_workers registers more than 64 worker tasks (task \\\"p64\\\" is over the bound)\")",
 	]
 	actual == expected
 }
 
-## A worker entry runs the named program on the input after the name, and its
-## output is a list of its own even when the program returns a slice.
+## A job's answer as the worker writes it holds no files when its output
+## holds none, and the page reads it back as result tag 10.
 expect {
-	p = Core.program(|| Core.text("")).with_workers([Core.registration("t/tail", |b| b.drop_first(1))])
-	(Core.driver(p).work)(put_str([], "t/tail").concat([1, 2, 3]), []) == [2, 3]
+	answer = Core.task_answer("t/echo", [7, 8], [])
+	page = Core.decode_res([10].concat(answer))
+	(answer, page) == ([0, 0, 0, 0, 7, 8], Work({ output: [7, 8], files: [] }))
+}
+
+## A request for a preparation's task carries its cancel policy and where
+## the preparation's input lies; one for a task of its own carries neither
+## operand.
+expect {
+	alone = put_work([], "t/a", [1, 2], [], 0, Finish, Unprepared)
+	asked = put_work([], "t/b", [1, 2, 3], [], 5, Stop, Prepared({ name: "t/p", input_len: 2, input_files: 0 }))
+	actual = (alone.drop_first(1 + 4 + 3 + 4 + 2 + 4 + 4), asked.drop_first(1 + 4 + 3 + 4 + 3 + 4 + 4))
+	actual == ([2, 0], [1, 1, 3, 0, 0, 0, 116, 47, 112, 2, 0, 0, 0, 0, 0, 0, 0])
 }
 
 ## Work is scoped: when the site that issued it is disposed it is cancelled
@@ -5751,7 +5660,7 @@ expect {
 				"div",
 				[],
 				[
-					Core.when(st.val(), || Core.watch(Core.const({}), |_| [Work({ program: "t/echo", input: [1], files: [], deadline_ms: 0 })], Core.ignore({})), || Core.text("")),
+					Core.when(st.val(), || Core.watch(Core.const({}), |_| [Work({ task: "t/echo", input: [1], files: [], deadline_ms: 0, on_dispose: Stop, on_cancel: Stop, prepared: Unprepared })], Core.ignore({})), || Core.text("")),
 					Core.watch(Core.const({}), |_| [Self], st.on_result(|_, _, _| Bool.False)),
 				],
 			),

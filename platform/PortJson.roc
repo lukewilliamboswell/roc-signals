@@ -1491,7 +1491,10 @@ expect {
 ## list, and decodes to the file it names; a marker naming no file is an
 ## error, not a crash.
 expect {
-	file = Core.worker_file([1, 2], { name: "a.txt", mime: "text/plain", size: 2, start: 0, len: 2 })
+	file = match Core.placed_file(Core.held_file(Box.box(1)), { name: "a.txt", mime: "text/plain", size: 2, start: 0, len: 2 }) {
+		Ok(f) => f
+		Err(_) => crash "a range outside its file"
+	}
 	message = PortJson.encode({ doc: file, name: "a" })
 	back : Try({ doc : Core.File, name : Str }, PortJson.Error)
 	back = PortJson.decode(message)

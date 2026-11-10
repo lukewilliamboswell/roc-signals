@@ -67,22 +67,34 @@ Soak := [].{
 	faults : List(Scm.WorkFault)
 	faults = [Contract, ResourceLimit, OutOfMemory, AppCrash, ExpectFailed, Unavailable, Executor]
 
-	## Answer the oldest pending worker job, chosen by `b`: usually run its
-	## program in process (`Work`), sometimes lose it with a fault class, time
-	## it out when it has a deadline, or leave it pending (so disposal can
-	## still cancel it). A crash in the program ends the walk: the UI produced
-	## an input the program cannot handle, which is a finding.
-	answer_work : SpecRunner.Program(state), SpecRunner.S(state), U8 -> SpecRunner.S(state)
-	answer_work = |program, s, b| {
+	## A walk's stand-in for a worker: the answer a job of the task named
+	## first gives for the input bytes second, as `SpecRunner.answer_work`
+	## takes it. A walk has no host to run a job's effects on, so a target
+	## whose app issues work answers with the app's pure function, through
+	## `Worker`'s `stand_in`.
+	StandIn : Str, List(U8), List(U8) -> List(U8)
+
+	## The stand-in of a walk over an app that issues no worker jobs: any job
+	## is a finding.
+	no_jobs : Str, List(U8), List(U8) -> List(U8)
+	no_jobs = |task, _, _| crash "soak: the app issued a job of worker task \"${task}\"; walk it with walk_with and a stand-in"
+
+	## Answer the oldest pending worker job, chosen by `b`: usually answer it
+	## with `stand_in`, sometimes lose it with a fault class, time it out when
+	## it has a deadline, or leave it pending (so disposal can still cancel
+	## it). A crash in the stand-in ends the walk: the UI produced an input
+	## the app's function cannot handle, which is a finding.
+	answer_work : SpecRunner.Program(state), SpecRunner.S(state), U8, StandIn -> SpecRunner.S(state)
+	answer_work = |program, s, b, stand_in| {
 		match s.browser.pending.find_first(|p| Soak.is_work(p)) {
 			Ok(p) if b % 8 != 7 => {
 				n = (s.browser.issued.find_first_index(|id| id == p.id) ?? crash "soak: a pending job was issued") + 1
-				op = match b % 8 {
-					5 => LoseWork({ occurrence: n, fault: Soak.faults.get((b.to_u64() / 8) % Soak.faults.len()) ?? Executor })
-					6 if Soak.deadline_of(p) > 0 => TimeOutWork(n)
-					_ => RunEffect(n)
+				answered = match b % 8 {
+					5 => SpecRunner.one(program, s, LoseWork({ occurrence: n, fault: Soak.faults.get((b.to_u64() / 8) % Soak.faults.len()) ?? Executor }))
+					6 if Soak.deadline_of(p) > 0 => SpecRunner.one(program, s, TimeOutWork(n))
+					_ => SpecRunner.answer_work(program, s, n, stand_in)
 				}
-				match SpecRunner.one(program, s, op) {
+				match answered {
 					Ok(s2) =>
 						match SpecRunner.check_counters(s2) {
 							Ok(_) => s2
@@ -112,11 +124,11 @@ Soak := [].{
 	## One random event (none when nothing is interactive). While a worker job
 	## is pending, a pick byte of 0xC0 or more answers one (`answer_work`)
 	## instead; a walk of an app that issues no work is unchanged.
-	step : SpecRunner.Program(state), SpecRunner.S(state), U8, U8 -> SpecRunner.S(state)
-	step = |program, s, pick, b| {
+	step : SpecRunner.Program(state), SpecRunner.S(state), U8, U8, StandIn -> SpecRunner.S(state)
+	step = |program, s, pick, b, stand_in| {
 		cs = Soak.candidates(s.dom)
 		if pick >= 0xC0 and s.browser.pending.any(|p| Soak.is_work(p)) {
-			Soak.answer_work(program, s, b)
+			Soak.answer_work(program, s, b, stand_in)
 		} else if cs.is_empty() {
 			s
 		} else {
@@ -139,13 +151,18 @@ Soak := [].{
 		}
 	}
 
-	## A walk driven by explorer bytes (two per event).
+	## A walk driven by explorer bytes (two per event), of an app that
+	## issues no worker jobs.
 	walk : SpecRunner.Program(state), SpecRunner.S(state), List(U8), (SpecRunner.S(state) -> SpecRunner.S(state)) -> SpecRunner.S(state)
-	walk = |program, s0, bytes, after| {
+	walk = |program, s0, bytes, after| Soak.walk_with(program, s0, bytes, Soak.no_jobs, after)
+
+	## Like `walk`, answering the app's worker jobs with `stand_in`.
+	walk_with : SpecRunner.Program(state), SpecRunner.S(state), List(U8), StandIn, (SpecRunner.S(state) -> SpecRunner.S(state)) -> SpecRunner.S(state)
+	walk_with = |program, s0, bytes, stand_in, after| {
 		var $s = s0
 		var $i = 0.U64
 		while $i + 1 < bytes.len() {
-			$s = after(Soak.step(program, $s, bytes.get($i) ?? 0, bytes.get($i + 1) ?? 0))
+			$s = after(Soak.step(program, $s, bytes.get($i) ?? 0, bytes.get($i + 1) ?? 0, stand_in))
 			$i = $i + 2
 		}
 		$s
@@ -154,15 +171,19 @@ Soak := [].{
 	prng : U64 -> U64
 	prng = |x| x.times_wrap(6364136223846793005).plus_wrap(1442695040888963407)
 
-	## A seeded walk of `n` events.
+	## A seeded walk of `n` events, of an app that issues no worker jobs.
 	walk_n : SpecRunner.Program(state), SpecRunner.S(state), U64, U64, (SpecRunner.S(state) -> SpecRunner.S(state)) -> SpecRunner.S(state)
-	walk_n = |program, s0, seed, n, after| {
+	walk_n = |program, s0, seed, n, after| Soak.walk_n_with(program, s0, seed, n, Soak.no_jobs, after)
+
+	## Like `walk_n`, answering the app's worker jobs with `stand_in`.
+	walk_n_with : SpecRunner.Program(state), SpecRunner.S(state), U64, U64, StandIn, (SpecRunner.S(state) -> SpecRunner.S(state)) -> SpecRunner.S(state)
+	walk_n_with = |program, s0, seed, n, stand_in, after| {
 		var $s = s0
 		var $x = seed
 		var $i = 0.U64
 		while $i < n {
 			$x = Soak.prng($x)
-			$s = after(Soak.step(program, $s, $x.shr_zf_wrap(40).to_u8_wrap(), $x.shr_zf_wrap(24).to_u8_wrap()))
+			$s = after(Soak.step(program, $s, $x.shr_zf_wrap(40).to_u8_wrap(), $x.shr_zf_wrap(24).to_u8_wrap(), stand_in))
 			$i = $i + 1
 		}
 		$s

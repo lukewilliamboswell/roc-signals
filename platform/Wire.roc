@@ -89,7 +89,7 @@ Wire := [].{
 	encode = |value| {
 		state = Wire.encode_state(value)
 		if !state.files.is_empty() {
-			crash "contract: Wire.encode was given a value holding a File; a file crosses only in a worker program's input or output"
+			crash "contract: Wire.encode was given a value holding a File; a file crosses only in a worker task's input or answer"
 		}
 		state.bytes
 	}
@@ -101,7 +101,7 @@ Wire := [].{
 	try_encode = |value| {
 		state = Wire.encode_state(value)
 		if !state.files.is_empty() {
-			crash "contract: Wire.try_encode was given a value holding a File; a file crosses only in a worker program's input or output"
+			crash "contract: Wire.try_encode was given a value holding a File; a file crosses only in a worker task's input or answer"
 		}
 		if (state.deep) Err(TooDeep) else Ok(state.bytes)
 	}
@@ -143,20 +143,10 @@ Wire := [].{
 		if (read.rest.pos == bytes.len()) Ok(read.value) else Err(TrailingBytes)
 	}
 
-	## For the worker layer: decode a payload whose files arrived beside it,
-	## each the bytes of the file or range at its place in the payload's file
-	## list. A file the payload refers to that is not there, or whose bytes
-	## are not its length, is `Malformed`.
-	decode_with_files : List(U8), List(List(U8)) -> Try(a, Error) where [a.Sendable]
-	decode_with_files = |bytes, contents| {
-		empty = { name: "", mime: "", size: 0, start: 0, len: 0 }
-		Wire.decode_with_held(bytes, contents.map(|c| Core.worker_file(c, empty)))
-	}
-
 	## For the worker layer: decode a payload whose files arrived beside it
-	## as the files at their places: handles a task's job or the page holds
-	## (`Core.held_file`, or a task's answer's files), or bytes. Each takes
-	## the name, type, size and range the payload gives it.
+	## as the handles at their places: handles a job or the page holds
+	## (`Core.held_file`, or an answer's files). Each takes the name, type,
+	## size and range the payload gives it.
 	decode_with_held : List(U8), List(Core.File) -> Try(a, Error) where [a.Sendable]
 	decode_with_held = |bytes, files| {
 		## The caller's type, named so its derived codec can be asked for.
@@ -1348,19 +1338,22 @@ expect {
 	edge and refused and lists and wrapped
 }
 
-## Files travel beside the payload: decoding with the file list gives each
-## file the bytes at its place, and a payload naming a file that is not
-## there, or whose bytes are not its range, is refused.
+## Files travel beside the payload as handles: decoding with the handle list
+## gives each file the handle at its place with the name, type and range the
+## payload carries, and a payload naming a file that is not there, or a
+## range outside its file, is refused.
 expect {
-	a = Core.worker_file([1, 2, 3], { name: "a.bin", mime: "", size: 10, start: 4, len: 3 })
-	b = Core.worker_file([], { name: "b.txt", mime: "text/plain", size: 0, start: 0, len: 0 })
+	file = |token, parts| match Core.placed_file(Core.held_file(Box.box(token)), parts) {
+		Ok(f) => f
+		Err(_) => crash "a range outside its file"
+	}
+	a = file(1, { name: "a.bin", mime: "", size: 10, start: 4, len: 3 })
+	b = file(2, { name: "b.txt", mime: "text/plain", size: 0, start: 0, len: 0 })
 	sent = Wire.encode_with_files({ note: "x", docs: [a, b] })
-	contents = sent.files.map(|f| f.contents())
 	back : Try({ note : Str, docs : List(Core.File) }, Wire.Error)
-	back = Wire.decode_with_files(sent.bytes, contents)
+	back = Wire.decode_with_held(sent.bytes, sent.files)
 	missing : Try({ note : Str, docs : List(Core.File) }, Wire.Error)
-	missing = Wire.decode_with_files(sent.bytes, contents.take_first(1))
-	short : Try({ note : Str, docs : List(Core.File) }, Wire.Error)
-	short = Wire.decode_with_files(sent.bytes, [[1, 2], []])
-	back == Ok({ note: "x", docs: [a, b] }) and missing == Err(Malformed) and short == Err(Malformed) and contents == [[1, 2, 3], []]
+	missing = Wire.decode_with_held(sent.bytes, sent.files.take_first(1))
+	outside = Core.placed_file(Core.held_file(Box.box(3)), { name: "c", mime: "", size: 4, start: 2, len: 3 })
+	back == Ok({ note: "x", docs: [a, b] }) and missing == Err(Malformed) and outside.is_err()
 }

@@ -1,7 +1,7 @@
 ## The roc-signals platform. The reactive engine is pure Roc: `Core.roc`
 ## implements it, `Engine.roc` is the authoring API apps see, `Html.roc` is
 ## the typed vocabulary above that, and `Worker.roc` is the typed layer for
-## pure programs run in Web Workers, whose payloads `Wire.roc` derives;
+## tasks run in Web Workers, whose payloads `Wire.roc` derives;
 ## `Port.roc` is the typed layer for services the page's JavaScript supplies,
 ## whose messages `PortJson.roc` derives. An app
 ## binds a `program` as `main`, and one entry file builds for two targets:
@@ -22,17 +22,16 @@ platform ""
 	exposes [Engine, Html, Port, PortJson, Wire, Worker]
 	packages {}
 	provides {
-		"roc_engine_ask": ask_for_host,
+		"roc_engine_ask": ask_for_host!,
 		"roc_engine_drop": drop_for_host,
 		"roc_engine_event": event_for_host,
 		"roc_engine_files": files_for_host,
 		"roc_engine_forget": forget_for_host,
 		"roc_engine_init": init_for_host,
 		"roc_engine_keys": keys_for_host,
-		"roc_engine_prepare": prepare_for_host,
-		"roc_engine_task": task_for_host!,
+		"roc_engine_prepare": prepare_for_host!,
 		"roc_engine_version": version_for_host,
-		"roc_engine_work": work_for_host,
+		"roc_engine_work": work_for_host!,
 		"roc_spec_main": spec_main_for_host!,
 	}
 	hosted {
@@ -51,14 +50,13 @@ platform ""
 		"roc_test_sha256": Cli.sha256!,
 		"roc_test_stderr": Cli.stderr!,
 		"roc_test_stdout": Cli.stdout!,
-		"roc_test_task": Cli.task!,
 		"roc_test_work": Cli.work!,
 	}
 	targets: {
 		inputs_dir: "targets/",
 		wasm32: {
 			inputs: ["host.wasm", app],
-			exports: ["protocol_version", "fault", "boot_keys", "init", "event", "event_files", "files_stage", "files_tokens", "files_released", "drop", "payload_reserve", "bytes_reserve", "bytes_clear", "work", "task", "prepare", "ask", "forget", "cmd_ptr", "cmd_len", "work_ptr", "work_len", "metric", "reset_metrics", "err_ptr", "err_len"],
+			exports: ["protocol_version", "fault", "boot_keys", "init", "event", "event_files", "files_stage", "files_tokens", "files_released", "drop", "payload_reserve", "work", "prepare", "ask", "forget", "cmd_ptr", "cmd_len", "work_ptr", "work_len", "metric", "reset_metrics", "err_ptr", "err_len"],
 		},
 		x64musl: { inputs: ["crt1.o", "spec.o", app, "libc.a", "libzigc.a", "libcompiler_rt.a"] },
 	}
@@ -111,35 +109,31 @@ files_for_host = |boxed, buf, wbuf, node, handler, record, blobs| {
 	{ cmds, state: Box.box(next), work }
 }
 
-## A worker instance's one call: run the catalogue program named in the
-## payload (`name:str input:rest`) and return its output bytes, which the
-## host keeps readable until the next call. A worker instance never mounts.
-work_for_host : List(U8), List(List(U8)) -> List(U8)
-work_for_host = |payload, files| (Core.driver(main).work)(payload, files)
-
-## A worker instance's preparation (design.md, "Prepared programs"): run
-## the preparation named in `prep:str init:rest` and return the state the
-## instance keeps, which the host owns until it asks a query or forgets it.
-prepare_for_host : List(U8), List(List(U8)) -> Box(Core.Kept)
-prepare_for_host = |payload, files| Box.box(Core.work_prepare(main, payload, files))
-
-## A query on the held state: the state moves in and back out with the
-## query's output bytes, so the host owns it again after the call.
-ask_for_host : Box(Core.Kept), List(U8), List(List(U8)) -> { held : Box(Core.Kept), out : List(U8) }
-ask_for_host = |boxed, payload, files| {
-	state = Box.unbox(boxed)
-	out = Core.work_ask(state, payload, files)
-	{ held: Box.box(state), out }
-}
-
-## A worker instance's task job (design.md, "Tasks"): run the task named in
+## A worker instance's job (design.md, "Workers"): run the task named in
 ## the payload (`name:str input:rest`) with the handles the host minted for
 ## the job's files, which move into Roc with the call, and return its
 ## answer, `n:u32 (token:u64)* output:rest`, which the host keeps readable
 ## until the next call. The task may call the platform's hosted effects;
-## nothing else that runs in an instance can.
-task_for_host! : List(U8), List(Box(U64)) => List(U8)
-task_for_host! = |payload, handles| Core.work_task!(main, payload, handles)
+## nothing else that runs in an instance can. A worker instance never
+## mounts.
+work_for_host! : List(U8), List(Box(U64)) => List(U8)
+work_for_host! = |payload, handles| Core.work!(main, payload, handles)
+
+## A worker instance's preparation (design.md, "Prepared state"): run the
+## preparation named in `prep:str init:rest` with the handles of its files
+## and return the state the instance keeps, which the host owns until a
+## job runs a task on it or the instance forgets it.
+prepare_for_host! : List(U8), List(Box(U64)) => Box(Core.Kept)
+prepare_for_host! = |payload, handles| Box.box(Core.work_prepare!(main, payload, handles))
+
+## A job of a preparation's task on the held state: the state moves in and
+## back out with the job's answer, so the host owns it again after the call.
+ask_for_host! : Box(Core.Kept), List(U8), List(Box(U64)) => { held : Box(Core.Kept), out : List(U8) }
+ask_for_host! = |boxed, payload, handles| {
+	state = Box.unbox(boxed)
+	out = Core.work_ask!(state, payload, handles)
+	{ held: Box.box(state), out }
+}
 
 ## Let go of the held state: the instance evicts it or prepares another.
 forget_for_host : Box(Core.Kept) -> {}
@@ -152,4 +146,4 @@ drop_for_host = |_boxed, _buf, _wbuf| {}
 ## The native spec runner: `SpecRunner.main!` over this app's `main`, with
 ## the native host's file and output services.
 spec_main_for_host! : List(Str) => I32
-spec_main_for_host! = |args| SpecRunner.main!(Core.driver(main), { read_file!: Cli.read_file!, stdout!: Cli.stdout!, stderr!: Cli.stderr!, now_ns!: Cli.now_ns!, work!: Cli.work!, task!: Cli.task!, mint_files!: Cli.mint_files!, live_files!: Cli.live_files!, sha256!: Cli.sha256! }, args)
+spec_main_for_host! = |args| SpecRunner.main!(Core.driver(main), { read_file!: Cli.read_file!, stdout!: Cli.stdout!, stderr!: Cli.stderr!, now_ns!: Cli.now_ns!, work!: Cli.work!, mint_files!: Cli.mint_files!, live_files!: Cli.live_files!, sha256!: Cli.sha256! }, args)

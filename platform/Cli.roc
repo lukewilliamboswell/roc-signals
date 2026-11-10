@@ -23,29 +23,24 @@ Cli := [].{
 	## Monotonic time in nanoseconds, for the `duration_ns` of a result.
 	now_ns! : () => U64
 
-	## Run one worker job (`name:str input:rest`) in a child process, as a
-	## browser runs it in a Web Worker, and return the result payload the
-	## runtime would deliver (design.md, Appendix B): tag 10 and the program's
-	## output, or tag 11 and the fault class when the program's instance
-	## faulted. The child's crash ends only the child. An empty list means the
-	## job did not finish within the runner's bound (30 s) and was killed.
+	## Run one worker job in a child process, as a browser runs it in a Web
+	## Worker (design.md, "Workers"). The child mints a handle for each file
+	## of `prepare_files` and runs the preparation `prepare` (`prep:str
+	## init:rest`) on them when it is not empty, then mints a handle for each
+	## file of `files` and runs the job `payload` (`name:str input:rest`):
+	## on the prepared state, or as a task of its own when there is none.
+	## Each file is the whole file the request names, and the child performs
+	## the job's hosted effects against those bytes and builders of its own,
+	## which may append at most `max_output` bytes. A builder the preparation
+	## opened is closed when it returns, as in the browser.
 	##
-	## `files` are the bytes of the files the job names, which the child
-	## passes beside the payload, as a worker's host passes the files it read.
-	work! : List(U8), List(List(U8)) => List(U8)
-
-	## Run one task job (`name:str input:rest`) in a child process, as a
-	## browser runs it in a Web Worker (design.md, "Tasks"): the child
-	## mints a handle for each file in `files` (each the whole file the
-	## request names), runs the task, and performs its hosted effects
-	## against those bytes and builders of its own, which may append at most
-	## `max_output` bytes. The result is the runner's own record of the
-	## answer: tag 20, `n:u32 (size:u64 name:str type:str)*`, the output's
-	## length (`u64`) and bytes, then each answer file's bytes in order; or
-	## tag 13 with reason 2 for an answer holding more than 16 files; or
-	## tag 11 and the fault class when the job's instance faulted; or empty
-	## when the job did not finish within the runner's bound (30 s).
-	task! : List(U8), List(List(U8)), U64 => List(U8)
+	## The result is the runner's own record of the answer: tag 10, `n:u32
+	## (size:u64 name:str type:str)*`, the output's length (`u64`) and bytes,
+	## then each answer file's bytes in order; or tag 11 and the fault class
+	## when the job's instance faulted; or empty when the job did not finish
+	## within the runner's bound (30 s). The child's crash ends only the
+	## child.
+	work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8)
 
 	## Mint up to `n` file handles in the host's handle heap, as the page's
 	## host does for an event's files: fewer when the heap is nearly full.

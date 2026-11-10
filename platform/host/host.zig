@@ -8,8 +8,9 @@
 //! JavaScript reads the command bytes and the work record straight from linear
 //! memory via `cmd_ptr`/`cmd_len` and `work_ptr`/`work_len`; they stay valid
 //! until the next `event` or `drop`.
-//! An instance a Web Worker runs never mounts: its only engine call is
-//! `work`, whose output bytes occupy the command buffer's slot.
+//! An instance a Web Worker runs never mounts: its engine calls are a
+//! job's (`work`, or `prepare` and `ask` for a preparation's task), whose
+//! answer occupies the command buffer's slot.
 //! Running out of memory or a Roc crash traps the instance (no recovery).
 const std = @import("std");
 const resources = @import("resources.zig");
@@ -37,7 +38,7 @@ extern fn roc_engine_init(boot: RocList) callconv(.c) Step;
 extern fn roc_engine_event(state: *anyopaque, buf: RocList, wbuf: RocList, node: u32, handler: u32, payload: RocList) callconv(.c) Step;
 extern fn roc_engine_drop(state: *anyopaque, buf: RocList, wbuf: RocList) callconv(.c) void;
 extern fn roc_engine_files(state: *anyopaque, buf: RocList, wbuf: RocList, node: u32, handler: u32, record: RocList, blobs: RocList) callconv(.c) Step;
-extern fn roc_engine_work(payload: RocList, files: RocList) callconv(.c) RocList;
+extern fn roc_engine_work(payload: RocList, handles: RocList) callconv(.c) RocList;
 
 var state: ?*anyopaque = null;
 var cmds: RocList = RocList.empty;
@@ -168,23 +169,14 @@ export fn roc_alloc(size: usize, align_arg: usize) callconv(.c) *anyopaque {
 
 export fn roc_dealloc(ptr: *anyopaque, align_arg: usize) callconv(.c) void {
     switch (blobs.route(ptr)) {
-        .not_owned => {},
-        .retired => return,
-        .corrupt => corruptHandle(),
-    }
-    switch (buffers.route(ptr)) {
         .not_owned => _ = freeRaw(ptr, align_arg),
-        // Nothing outside the host refers to a buffer: free it at once.
-        .retired => {
-            var token: u64 = 0;
-            while (buffers.releaseOne(&token, freeBuffer)) {}
-        },
+        .retired => return,
         .corrupt => corruptHandle(),
     }
 }
 
 export fn roc_realloc(ptr: *anyopaque, size: usize, align_arg: usize) callconv(.c) *anyopaque {
-    if (blobs.contains(ptr) or buffers.contains(ptr)) corruptHandle();
+    if (blobs.contains(ptr)) corruptHandle();
     const user: [*]u8 = @ptrCast(ptr);
     const header: *const Header = @ptrFromInt(@intFromPtr(user) - @sizeOf(Header));
     const copied = @min(header.requested, size);
@@ -234,8 +226,6 @@ fn poison(class: u32) noreturn {
     pending_payload = RocList.empty;
     pending_blobs = RocList.empty;
     blobs.abandon(nothing);
-    buffers.abandon(nothing);
-    staged_count = 0;
     state = null;
     held = null;
     @trap();
@@ -381,104 +371,47 @@ export fn event(node: u32, handler: u32) callconv(.c) void {
     work = step.work;
 }
 
-/// Run one worker job (design.md, Appendix B): the staged payload,
-/// `name:str input:rest`, moves into Roc, which runs the catalogue program
-/// of that name and owns and frees the payload. The program's output bytes
-/// take the command buffer's slot and stay readable through
-/// `cmd_ptr`/`cmd_len` until the next call; the previous call's output is
-/// released before this one runs, so a worker instance holds at most one
-/// output. This is a worker instance's only engine call: it traps when an
-/// engine state is mounted in this instance (a page's instance never runs
-/// jobs) and when the instance is poisoned. A Roc crash in the program (an
-/// unknown name or an undecodable payload is a `contract:` crash) poisons
-/// this instance like any other call, and the slots were cleared before the
-/// call, so nothing dangles. Exported as `work` (the name `work` here is the
-/// work record's slot).
+/// Run one worker job (design.md, "Workers" and Appendix B). The staged
+/// payload, `name:str input:rest`, and the handles `files_stage` minted for
+/// the job's files, in the request's order, move into Roc, which runs the
+/// catalogue's task of that name; its answer, `n:u32 (token:u64)*
+/// output:rest`, takes the command buffer's slot and stays readable through
+/// `cmd_ptr`/`cmd_len` until the next call, and the previous call's answer
+/// is released first, so a worker instance holds at most one. Ownership:
+/// the payload and the handle list belong to Roc from the call on; the
+/// answer belongs to the host until the next call; the handles the answer
+/// names are released by Roc when the call returns (retired, not freed), so
+/// their tokens still resolve until the worker script drains
+/// `files_released`. The task may call the hosted effects below for the
+/// length of the call. A mounted instance (the page's) never runs a job:
+/// calling it there is a contract fault, and so is a crash in the job (an
+/// unknown name or an undecodable payload is a `contract:` crash), which
+/// poisons this instance like any other call; the slots were cleared
+/// before the call, so nothing dangles. Exported as `work` (the name
+/// `work` here is the work record's slot).
 fn runWork() callconv(.c) void {
-    refuseIfPoisoned();
-    if (state != null) @trap();
+    refuseIfWorkOnPage("work");
     const payload = pending_payload;
+    const handles = pending_blobs;
     const previous = cmds;
     pending_payload = RocList.empty;
+    pending_blobs = RocList.empty;
     cmds = RocList.empty;
     releaseList(previous);
-    const files = stagedFiles();
-    cmds = roc_engine_work(payload, files);
+    in_task = true;
+    cmds = roc_engine_work(payload, handles);
+    in_task = false;
 }
 
-// ---------------------------------------------------------------------------
-// A worker's file contents (design.md, "Files"). The worker script reads
-// each file a job names straight into a buffer the host allocates
-// (`bytes_reserve`), and `work` hands the buffers to Roc as owning seamless
-// `List(U8)`s whose allocation pointer is a slot of the buffer heap: when
-// Roc releases a list's last reference, the slot is retired and its buffer
-// freed. The bytes are read once and never copied to reach the program.
-
-/// The most files one job reads (design.md, "Boundedness").
-const max_job_files: usize = 16;
-
-const Buffer = struct { ptr: ?[*]u8, len: usize };
-
-var buffers: resources.Heap(.bytes, max_job_files, Buffer) = .{};
-
-fn freeBuffer(b: *Buffer) void {
-    if (b.ptr) |p| _ = freeRaw(p, 1);
-    b.* = .{ .ptr = null, .len = 0 };
-}
-
-/// The files staged for the next `work`, in the job's order: each a slot's
-/// payload (null for an empty file, which needs none).
-var job_files: [max_job_files]?*u64 = @splat(null);
-var staged_count: usize = 0;
-
-/// Reserve `len` bytes for the next file of the next job and return where
-/// JavaScript writes them, or 0 when the job already has `max_job_files`
-/// files or every buffer slot is taken (the runtime refuses such a job
-/// before reading anything). An empty file returns 1 and takes no buffer.
-/// JavaScript must re-read `memory.buffer` after this call.
-export fn bytes_reserve(len: usize) callconv(.c) usize {
+/// A job's entry called on a poisoned instance traps; one called on the
+/// page's mounted instance is a contract fault of that instance.
+fn refuseIfWorkOnPage(comptime entry: []const u8) void {
     refuseIfPoisoned();
-    if (state != null) @trap();
-    if (staged_count == max_job_files) return 0;
-    if (len == 0) {
-        job_files[staged_count] = null;
-        staged_count += 1;
-        return 1;
+    if (state != null) {
+        const msg = "contract: " ++ entry ++ "() was called on the page's instance; a job runs only in a worker instance";
+        keepError(msg.ptr, msg.len);
+        poison(1);
     }
-    if (buffers.live_count == max_job_files) return 0;
-    const data: [*]u8 = @ptrCast(allocRaw(len, 1));
-    const payload = buffers.mint(.{ .ptr = data, .len = len }) orelse unreachable;
-    job_files[staged_count] = payload;
-    staged_count += 1;
-    return @intFromPtr(data);
-}
-
-/// Free the files staged for a job that will not run (it was cancelled
-/// while they were read): nothing in Roc refers to them yet.
-export fn bytes_clear() callconv(.c) void {
-    if (fault_class != 0) return;
-    for (job_files[0..staged_count]) |slot| if (slot) |payload| {
-        _ = buffers.route(@ptrFromInt(@intFromPtr(payload) - @sizeOf(usize)));
-    };
-    staged_count = 0;
-    var token: u64 = 0;
-    while (buffers.releaseOne(&token, freeBuffer)) {}
-}
-
-/// The staged files as a Roc `List(List(U8))` whose single reference passes
-/// to Roc, each element an owning seamless list over its buffer.
-fn stagedFiles() RocList {
-    const n = staged_count;
-    staged_count = 0;
-    if (n == 0) return RocList.empty;
-    const elems: [*]RocList = @ptrCast(@alignCast(refcountedList(n, @sizeOf(RocList))));
-    for (0..n) |i| {
-        elems[i] = if (job_files[i]) |payload| blk: {
-            const b = buffers.get(payload.*) orelse unreachable;
-            break :blk .{ .ptr = b.ptr, .len = b.len, .cap = @intFromPtr(payload) | 1 };
-        } else RocList.empty;
-    }
-    return .{ .ptr = @ptrCast(elems), .len = n, .cap = n << 1 };
 }
 
 /// The elements of a fresh Roc list of `n` refcounted elements of `size`
@@ -498,19 +431,22 @@ comptime {
 }
 
 // ---------------------------------------------------------------------------
-// Prepared programs (design.md, "Prepared programs"). A worker instance may
-// keep one prepared state between jobs: an opaque `Box(Kept)` the host owns
+// Prepared state (design.md, "Prepared state"). A worker instance may keep
+// one prepared state between jobs: an opaque `Box(Kept)` the host owns
 // exactly as a page's host owns `Box(App)`. It never interprets it. Each call
 // clears the slot before moving the box into Roc, so a trap mid-call
-// abandons it with the heap and nothing dangles.
+// abandons it with the heap and nothing dangles. Both calls may perform the
+// hosted effects, as a job does; the files a state keeps are handles it
+// holds, which stay live (and their objects in the worker script) for as
+// long as the state does.
 
 const Held = extern struct {
     held: *anyopaque,
     out: RocList,
 };
 
-extern fn roc_engine_prepare(payload: RocList, files: RocList) callconv(.c) *anyopaque;
-extern fn roc_engine_ask(held: *anyopaque, payload: RocList, files: RocList) callconv(.c) Held;
+extern fn roc_engine_prepare(payload: RocList, handles: RocList) callconv(.c) *anyopaque;
+extern fn roc_engine_ask(held: *anyopaque, payload: RocList, handles: RocList) callconv(.c) Held;
 extern fn roc_engine_forget(held: *anyopaque) callconv(.c) void;
 
 /// The prepared state this worker instance keeps, if any (at most one).
@@ -525,41 +461,49 @@ fn forgetHeld() void {
 
 /// Prepare and keep a state (design.md, Appendix B): the state held before
 /// is released first, so an instance never holds two, then the staged
-/// payload, `prep:str init:rest`, and the staged files move into Roc, which
-/// runs that preparation and returns the state the host keeps. The previous
-/// job's output is released too; a prepare has none. Traps like `work` when
-/// an engine state is mounted or the instance is poisoned; a crash in the
-/// preparation poisons this instance, and the slot was already empty.
+/// payload, `prep:str init:rest`, and the handles `files_stage` minted for
+/// the preparation's files move into Roc, which runs that preparation and
+/// returns the state the host keeps. The previous job's answer is released
+/// too; a prepare has none. Refuses like `work` when an engine state is
+/// mounted or the instance is poisoned; a crash in the preparation poisons
+/// this instance, and the slot was already empty. The worker script closes
+/// every builder the preparation opened when it returns, so a builder the
+/// state keeps is refused to every later job.
 export fn prepare() callconv(.c) void {
-    refuseIfPoisoned();
-    if (state != null) @trap();
+    refuseIfWorkOnPage("prepare");
     forgetHeld();
     const previous = cmds;
     cmds = RocList.empty;
     releaseList(previous);
     const payload = pending_payload;
+    const handles = pending_blobs;
     pending_payload = RocList.empty;
-    const files = stagedFiles();
-    held = roc_engine_prepare(payload, files);
+    pending_blobs = RocList.empty;
+    in_task = true;
+    held = roc_engine_prepare(payload, handles);
+    in_task = false;
 }
 
-/// Ask a query of the held state: the staged payload, `query:str
-/// input:rest`, and the staged files move into Roc with the state, which
-/// comes back with the query's output; the output is readable through
-/// `cmd_ptr`/`cmd_len` until the next call, as for `work`. Traps when no
-/// state is held: the runtime asks only an instance it prepared.
+/// Run a preparation's task on the held state: the staged payload,
+/// `task:str input:rest`, and the handles minted for the job's own files
+/// move into Roc with the state, which comes back with the job's answer;
+/// the answer is readable through `cmd_ptr`/`cmd_len` until the next call,
+/// as for `work`. Traps when no state is held: the runtime asks only an
+/// instance it prepared.
 export fn ask() callconv(.c) void {
-    refuseIfPoisoned();
-    if (state != null) @trap();
+    refuseIfWorkOnPage("ask");
     const owned = held orelse @trap();
     held = null;
     const previous = cmds;
     cmds = RocList.empty;
     releaseList(previous);
     const payload = pending_payload;
+    const handles = pending_blobs;
     pending_payload = RocList.empty;
-    const files = stagedFiles();
-    const step = roc_engine_ask(owned, payload, files);
+    pending_blobs = RocList.empty;
+    in_task = true;
+    const step = roc_engine_ask(owned, payload, handles);
+    in_task = false;
     held = step.held;
     cmds = step.out;
 }
@@ -667,17 +611,15 @@ export fn files_released() callconv(.c) u32 {
 }
 
 // ---------------------------------------------------------------------------
-// Tasks (design.md, "Tasks"). A worker instance runs a task's job with
-// `task()`: the job's files are handles the worker script staged with
-// `files_stage`, in the request's order, and the task calls the platform's
-// hosted effects on them (`roc_task_*`, below). Each hosted effect is
-// performed by an import of the worker script, which holds the browser
-// objects behind the tokens; the host only checks that a job is running,
-// moves bytes in and out of linear memory, and mints handles. Builders
-// and their parts live in the worker script, named by a token of this
-// instance's blob heap, never here.
-
-extern fn roc_engine_task(payload: RocList, handles: RocList) callconv(.c) RocList;
+// Hosted effects (design.md, "Workers"). A worker instance runs a job with
+// `work()` (or `prepare()` and `ask()`): the job's files are handles the
+// worker script staged with `files_stage`, in the request's order, and the
+// task calls the platform's hosted effects on them (`roc_task_*`, below).
+// Each hosted effect is performed by an import of the worker script, which
+// holds the browser objects behind the tokens; the host only checks that a
+// job is running, moves bytes in and out of linear memory, and mints
+// handles. Builders and their parts live in the worker script, named by a
+// token of this instance's blob heap, never here.
 
 /// The worker script's halves of the hosted effects. A page instance
 /// supplies stubs that throw; the host never calls one outside a job.
@@ -688,47 +630,18 @@ extern "env" fn js_builder_append(token: u64, src: usize, len: usize) u32;
 extern "env" fn js_builder_append_file(token: u64, file: u64, start: u64, len: u64) u32;
 extern "env" fn js_builder_finish(token: u64, file: u64) u32;
 
-/// Whether a task's job is running: the hosted effects refuse to act
-/// otherwise. Set only for the length of `task()`.
+/// Whether a job (or a preparation) is running: the hosted effects refuse
+/// to act otherwise. Set only for the length of `work()`, `prepare()` and
+/// `ask()`.
 var in_task: bool = false;
 
-/// A hosted effect reached outside a task's job: a contract fault of this
+/// A hosted effect reached outside a job: a contract fault of this
 /// instance, classified like any other, rather than a JavaScript exception
 /// unwinding through Wasm.
 fn outsideTask(comptime effect: []const u8) noreturn {
-    const msg = "contract: " ++ effect ++ " is a task effect and ran outside a task's job; only a worker task (Worker.task) may call it";
+    const msg = "contract: " ++ effect ++ " is a worker effect and ran outside a job; only a worker task's job (Worker.task) may call it";
     keepError(msg.ptr, msg.len);
     poison(1);
-}
-
-/// Run one task job (design.md, Appendix B). The staged payload,
-/// `name:str input:rest`, and the handles `files_stage` minted for the
-/// job's files move into Roc, which runs the task of that name; its answer,
-/// `n:u32 (token:u64)* output:rest`, takes the command buffer's slot as
-/// `work()`'s output does, and the previous call's output is released
-/// first. Ownership: the payload and the handle list belong to Roc from
-/// the call on; the answer belongs to the host until the next call; the
-/// handles the answer names are released by Roc when the call returns
-/// (retired, not freed), so their tokens still resolve until the worker
-/// script drains `files_released`. A mounted instance (the page's) is
-/// never a task's instance: calling it there is a contract fault.
-fn runTask() callconv(.c) void {
-    refuseIfPoisoned();
-    if (state != null) {
-        const msg = "contract: task() was called on the page's instance; a task's job runs only in a worker instance";
-        keepError(msg.ptr, msg.len);
-        poison(1);
-    }
-    const payload = pending_payload;
-    const handles = pending_blobs;
-    const previous = cmds;
-    pending_payload = RocList.empty;
-    pending_blobs = RocList.empty;
-    cmds = RocList.empty;
-    releaseList(previous);
-    in_task = true;
-    cmds = roc_engine_task(payload, handles);
-    in_task = false;
 }
 
 /// Release one reference to a `List(U8)` a hosted function was given
@@ -816,7 +729,6 @@ fn hostedFinish(token: u64, file: u64) callconv(.c) u8 {
 }
 
 comptime {
-    @export(&runTask, .{ .name = "task" });
     @export(&hostedRead, .{ .name = "roc_task_read" });
     @export(&hostedSize, .{ .name = "roc_task_size" });
     @export(&hostedMint, .{ .name = "roc_task_mint" });

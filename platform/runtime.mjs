@@ -37,8 +37,8 @@
 // clears its timeout timer. Disposal never cancels one (it reparents), so
 // a request that is not superseded is always answered.
 //
-// Work (FX kind 8): a pure program of the app's catalogue runs on bytes in a
-// Web Worker that instantiates this same compiled module (`worker.mjs`,
+// Work (FX kind 8): a job of a task of the app's catalogue runs in a Web
+// Worker that instantiates this same compiled module (`worker.mjs`,
 // beside this file or at options.workerUrl). The pool holds at most
 // options.maxWorkers workers (default min(hardwareConcurrency, 8)), one job
 // each at a time; idle workers are reused and jobs beyond the pool wait in a
@@ -50,7 +50,12 @@
 // the result. Without a Worker constructor every job is `WorkLost
 // (unavailable)`. options.workers === "inline" runs jobs on this thread in a
 // second instance of the module instead, one at a time (a deadline then
-// only stops a job that has not started). Poisoning or unmounting this
+// only stops a job that has not started). The hosted effects a job may
+// call (reading a file, building one) exist only in a worker, so a job
+// that reaches one there is answered `WorkLost(unavailable)`, and the
+// inline instance it left mid-call is replaced for the next job, as a
+// faulted worker is; a job that reaches none answers as in a worker.
+// Poisoning or unmounting this
 // runtime terminates every worker. In manual mode a job waits in `pending`
 // until runEffect(id) runs it, loseEffect(id, class) answers it lost or
 // expireEffect(id) expires its deadline, which never fires on its own.
@@ -76,12 +81,13 @@
 // performed, `files_released` lists the handles Roc let go, and the runtime
 // lets go of their files. Poisoning or unmounting lets go of all of them.
 // A work request names the files its input holds (FX kind 8): the runtime
-// resolves them while the batch's released handles still name their files,
-// slices them to their ranges and posts the Blobs with the job; the worker
-// script streams each into a buffer of its instance (`bytes_reserve`)
-// before the program runs. A job naming more than 16 files or more than
-// options.maxFileBytes bytes (default 256 MiB), or a file that cannot be
-// read, is answered FileFailed (result tag 13) without running.
+// resolves them while the batch's released handles still name their files
+// and posts the whole files with the job, by reference; the worker mints a
+// handle for each in its instance, and the job reads the ranges it needs
+// through effects. Nothing is read before a job runs. The files of a job's
+// answer (result tag 10) come back the same way and become the page's
+// handles; when the page has no slots for all of them the job is answered
+// WorkLost(resource_limit).
 //
 // Operations on a file the app holds (FX kinds 11 and up) are performed here,
 // on the browser's own `File`, which each request resolves when the batch is
@@ -188,6 +194,9 @@ const RES_FILE_TEXT = 17;
 const RES_DIGEST = 18;
 const RES_FILE_URL = 19;
 
+// Result tag 11's class byte for a resource limit.
+const LOST_RESOURCE_LIMIT = 2;
+
 // Result tag 13's reasons.
 const FILE_UNREADABLE = 1;
 const FILE_TOO_LARGE = 2;
@@ -197,16 +206,12 @@ const FILE_UNAVAILABLE = 3;
 const MAX_URLS_PER_FILE = 16;
 const RES_PORT_REPLY = 14;
 const RES_PORT_FAILED = 15;
-const RES_ANSWERED = 20;
 const RES_FETCHED = 21;
 
 // The default and largest bound on one port answer or message, JSON text
 // and bytes together (options.maxPortBytes).
 export const DEFAULT_PORT_BYTES = 4 * 1024 * 1024;
 export const MAX_PORT_BYTES = 64 * 1024 * 1024;
-
-// The most files one job reads (the host's `bytes_reserve` bound).
-const MAX_JOB_FILES = 16;
 
 
 // Result tag 11's class byte: an instance's fault code (1-5) is its class.
@@ -226,21 +231,26 @@ export async function instantiateEngineBytes(bytes) {
   return { module, instance };
 }
 
-// The imports of an instance that is not a task's worker (design.md,
-// "Tasks"): the page's own instance and the inline instance. A module imports
-// exactly the hosted effects its tasks call (`env.js_*`), and only a worker
-// instance can perform them (`worker.mjs`). Elsewhere each is a stub that
-// throws a contract error naming it. The host never reaches one: page code
-// is pure, so it cannot call an effect, and the host refuses an effect
-// outside a task's job with a classified contract fault before calling its
-// import. A stub is only a backstop that keeps such an instance from
-// unwinding through Wasm with an unnamed JavaScript error.
+// Thrown by an effect stub of an instance that is not a worker's: a job
+// running inline reached a hosted effect only a worker can perform.
+class EffectUnavailable extends Error {}
+
+// The imports of an instance that is not a worker's (design.md,
+// "Workers"): the page's own instance and the inline instance. A module
+// imports exactly the hosted effects its tasks call (`env.js_*`), and only a
+// worker instance can perform them (`worker.mjs`). Elsewhere each is a stub
+// that throws, naming it. The page's host never reaches one: page code is
+// pure, so it cannot call an effect, and the host refuses an effect outside
+// a job with a classified contract fault before calling its import. The
+// inline instance does reach one when a job running there calls an effect:
+// the stub's throw unwinds that instance's call, and the pool answers the
+// job WorkLost(unavailable) and replaces the instance (see "Work").
 export function pageImports(module) {
   const env = {};
   for (const imp of WebAssembly.Module.imports(module)) {
     if (imp.module !== "env" || imp.kind !== "function") continue;
     env[imp.name] = () => {
-      throw new Error(`contract: ${imp.name} is a task effect; it is performed only in a worker instance running a task's job`);
+      throw new EffectUnavailable(`${imp.name} is a worker effect; it is performed only in a worker instance, and this job runs on the page's thread`);
     };
   }
   return { env };
@@ -402,38 +412,6 @@ function u64le(v) {
 // stay below 2^53).
 function tokenAt(dv, i, at = 0) {
   return dv.getUint32(at + 8 * i, true) + dv.getUint32(at + 8 * i + 4, true) * 0x100000000;
-}
-
-// Read the files a job names into an instance of the module, each into a
-// buffer the instance's host reserves (`bytes_reserve`), streaming it so
-// that no copy of the whole file exists outside linear memory. Throws
-// { reason: 1 } when a file cannot be read and { reason: 2 } when the host
-// has no room for one; `work()` then hands the buffers to the program.
-async function readFiles(x, blobs) {
-  let bytes = 0;
-  for (const blob of blobs) {
-    const ptr = x.bytes_reserve(blob.size);
-    if (ptr === 0) throw { reason: 2 };
-    if (blob.size === 0) continue;
-    let at = ptr;
-    try {
-      const reader = blob.stream().getReader();
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (at + value.length > ptr + blob.size) throw new Error("the file grew while it was read");
-        // A fresh view per chunk: nothing between them can grow memory, but
-        // no view is ever held across an await.
-        new Uint8Array(x.memory.buffer, at, value.length).set(value);
-        at += value.length;
-      }
-    } catch (_) {
-      throw { reason: 1 };
-    }
-    if (at !== ptr + blob.size) throw { reason: 1 };
-    bytes += blob.size;
-  }
-  return bytes;
 }
 
 
@@ -845,7 +823,7 @@ export class WorkMonitor {
   }
 
   // The pool posted the job to instance `seq` (ready or still starting).
-  // `mode` is "work", or for a prepared query "prepare" (the instance
+  // `mode` is "work", or for a preparation's task "prepare" (the instance
   // prepares the state of preparation `prep` first) or "ask" (it reuses the
   // state it holds).
   jobPosted(id, seq, mode = "work", prep = null) {
@@ -882,11 +860,7 @@ export class WorkMonitor {
       Object.assign(job.t, { recv, begin, call, ret, sent });
     }
     if (reply && typeof reply.outputBytes === "number") job.outputBytes = reply.outputBytes;
-    // A job that names files: the bytes read into the instance and how long
-    // reading them took (within `stage`).
-    if (reply && typeof reply.fileBytes === "number") job.fileBytes = reply.fileBytes;
-    if (reply && typeof reply.read === "number") job.readMs = reply.read;
-    // A prepared query: how long preparing took (null when it reused).
+    // A preparation's task: how long preparing took (null when it reused).
     if (reply && typeof reply.prepareMs === "number") job.prepareMs = reply.prepareMs;
     if (reply && reply.held === false) inst.held = null;
     if (reply && Array.isArray(reply.mem)) this.memory(inst, reply.mem);
@@ -1046,8 +1020,6 @@ export class WorkMonitor {
       firstJobOnInstance: job.firstJobOnInstance,
       inputBytes: job.inputBytes,
       outputBytes: job.outputBytes,
-      fileBytes: job.fileBytes ?? 0,
-      readMs: job.readMs ?? null,
       prepared: job.prepared ?? null,
       prepareMs: job.prepareMs ?? null,
       finished: !!job.finishing,
@@ -1205,20 +1177,21 @@ export class WorkMonitor {
 
 // The bounded pool that runs work jobs (see "Work" above). It knows nothing
 // about ids, results or the engine: `submit` takes a payload
-// (`name:str input:rest`) and a callback that receives exactly one outcome,
-// `{ output }` or `{ lost, message }`, unless the job is cancelled first.
-// It reports each transition to the monitor once it has acted: the job's
-// id and program are only for that report.
+// (`name:str input:rest`), the browser objects the job's files are, and a
+// callback that receives exactly one outcome, `{ output, objects }` or
+// `{ lost, message }`, unless the job is cancelled first. It reports each
+// transition to the monitor once it has acted: the job's id and task are
+// only for that report.
 //
-// Prepared programs (design.md, "Prepared programs"): a worker may hold one
+// Prepared state (design.md, "Prepared state"): a worker may hold one
 // prepared state, under the key it was prepared for (the preparation's
 // name, its input's exact bytes and the handles and ranges of its files). A
-// query whose key a worker holds runs there, waiting behind it if it is
-// busy; any other query prepares on a free worker, preferring one that
-// holds nothing, then a new one, then the least recently used holder. A
-// worker that is lost, stopped or retired takes its state with it, and the
-// next query prepares again. Placement never changes an answer: a query's
-// answer is what preparing afresh would give.
+// job of a preparation's task whose key a worker holds runs there, waiting
+// behind it if it is busy; any other prepares on a free worker, preferring
+// one that holds nothing, then a new one, then the least recently used
+// holder. A worker that is lost, stopped or retired takes its state with
+// it, and the next job prepares again. Placement never changes an answer:
+// a job's answer is what preparing afresh would give.
 class WorkPool {
   constructor({ module, url, max, inline, Worker: W, monitor, maxBytes = Infinity, live = () => true }) {
     this.module = module;
@@ -1232,8 +1205,10 @@ class WorkPool {
     this.terminated = 0;
     this.instance = null;
     this.inlineSeq = 0;
-    // Inline mode: the key of the state the page-thread instance holds.
+    // Inline mode: the key of the state the page-thread instance holds, and
+    // what its handles name, by token, as a worker script holds them.
     this.inlineKey = null;
+    this.inlineHeld = new Map();
     this.running = false;
     this.closed = false;
     this.pumpQueued = false;
@@ -1248,11 +1223,14 @@ class WorkPool {
   }
 
   // Returns the job's stop function: `stop("cancel")` for CANCEL,
-  // `stop("deadline")` when its deadline expired. `prepared`, for a prepared
-  // query, is { key, prepare, prepareFiles, finish }: `payload` is then the
-  // query (`query:str input:rest`) and `files` the query's files.
-  submit(payload, done, id, program, files = [], prepared = null, output = null) {
-    const job = { payload, done, slot: null, settled: false, timer: null, id, program, files, prepared, finishing: false, task: output !== null, maxOutput: output };
+  // `stop("deadline")` when its deadline expired. `objects` are the job's
+  // own files; `prepared`, for a preparation's task, is { key, prepare,
+  // prepareObjects }: `payload` is then the task's (`task:str input:rest`)
+  // and `prepare` the preparation's (`prep:str init:rest`). `finish` says
+  // that a cancelled running job completes (its answer dropped) instead of
+  // ending its worker; `maxOutput` bounds what it appends to builders.
+  submit(payload, done, { id, program, objects = [], prepared = null, finish = false, maxOutput = 0 }) {
+    const job = { payload, done, slot: null, settled: false, timer: null, id, program, objects, prepared, finish, finishing: false, maxOutput };
     if (!this.module || (!this.inline && typeof this.W !== "function")) {
       const message = this.module ? "this browser has no Worker" : "the runtime was mounted without its compiled module";
       job.timer = setTimeout(() => this.settle(job, { lost: LOST_UNAVAILABLE, message }), 0);
@@ -1269,9 +1247,10 @@ class WorkPool {
     job.done(outcome);
   }
 
-  // A cancelled running query whose policy is `Finish` completes and keeps
-  // its worker's state; its answer is dropped. Anything else running is
-  // stopped by terminating its worker. A deadline always stops.
+  // A cancelled running job whose task says `Finish` completes and keeps
+  // its worker, and any state it holds; its answer is dropped. Anything
+  // else running is stopped by terminating its worker. A deadline always
+  // stops.
   cancel(job, cause = "cancel") {
     if (job.settled) return;
     job.settled = true;
@@ -1279,7 +1258,7 @@ class WorkPool {
     const q = this.queue.indexOf(job);
     if (q >= 0) this.queue.splice(q, 1);
     if (job.slot !== null) {
-      if (cause === "cancel" && job.prepared !== null && job.prepared.finish) job.finishing = true;
+      if (cause === "cancel" && job.finish) job.finishing = true;
       else this.discard(job.slot, cause);
     }
     if (cause === "cancel") this.monitor.jobCancelled(job.id, job.finishing);
@@ -1327,9 +1306,9 @@ class WorkPool {
       if (this.queue.length > 0 && !this.running) this.runInline();
       return;
     }
-    // First the queries whose state a worker holds: each runs there, or
-    // waits behind it, so a busy pool never prepares a state again that
-    // it already holds.
+    // First the jobs whose state a worker holds: each runs there, or waits
+    // behind it, so a busy pool never prepares a state again that it
+    // already holds.
     for (let i = 0; i < this.queue.length; ) {
       const job = this.queue[i];
       const holder = job.prepared === null ? null : this.holder(job.prepared.key);
@@ -1350,7 +1329,7 @@ class WorkPool {
       // A worker that could not be started has lost every queued job.
       if (this.queue[i] !== job) return;
       this.queue.splice(i, 1);
-      this.post(slot, job, job.task ? "task" : job.prepared === null ? "work" : "prepare");
+      this.post(slot, job, job.prepared === null ? "work" : "prepare");
     }
   }
 
@@ -1359,26 +1338,17 @@ class WorkPool {
     job.slot = slot;
     this.clock += 1;
     slot.used = this.clock;
-    const m = { type: "job", mode, payload: job.payload.buffer };
-    const transfer = [job.payload.buffer];
     // The browser's Blobs travel by reference: posting one copies no bytes.
-    if (mode === "task") {
-      // A task's files, whole, by reference: the worker mints a handle for
-      // each and the job reads what it needs (design.md, "Tasks").
-      m.objects = job.files;
-      m.maxOutputBytes = job.maxOutput;
-    } else if (job.files.length > 0) m.files = job.files;
+    // The job's files go whole; it reads the ranges it needs (design.md,
+    // "Workers").
+    const m = { type: "job", mode, payload: job.payload.buffer, objects: job.objects, maxOutputBytes: job.maxOutput };
+    const transfer = [job.payload.buffer];
     if (mode === "prepare") {
       m.prepare = job.prepared.prepare.buffer;
+      m.prepareObjects = job.prepared.prepareObjects;
       transfer.push(m.prepare);
-      if (job.prepared.prepareFiles.length > 0) m.prepareFiles = job.prepared.prepareFiles;
       if (slot.key !== null) this.monitor.stateEvicted(slot.seq, "replaced");
       slot.key = job.prepared.key;
-    } else if (mode === "work" && slot.key !== null && job.files.length > 0) {
-      // The held state may keep file buffers this job needs.
-      m.forget = true;
-      slot.key = null;
-      this.monitor.stateEvicted(slot.seq, "files");
     }
     if (this.monitor.userTiming) m.program = job.program;
     slot.worker.postMessage(m, transfer);
@@ -1449,18 +1419,14 @@ class WorkPool {
       this.monitor.lateReply();
       return;
     }
-    if (m.type === "done" || m.type === "filefail") {
+    if (m.type === "done") {
       slot.job = null;
       job.slot = null;
       if (!m.held) slot.key = null;
       if (job.finishing) this.monitor.instanceFinished(slot.seq, m.mem ?? null);
-      else if (m.type === "done") {
-        this.monitor.jobReplied(job.id, slot.seq, { t: m.t, mem: m.mem, outputBytes: m.output.byteLength, read: m.read, fileBytes: m.fileBytes, prepareMs: m.prepareMs, held: m.held });
-        this.settle(job, m.objects !== undefined ? { output: new Uint8Array(m.output), objects: m.objects } : { output: new Uint8Array(m.output) });
-      } else {
-        // The worker is sound; only this job's files could not be read.
-        this.monitor.jobReplied(job.id, slot.seq, { held: m.held });
-        this.settle(job, { filefail: m.reason });
+      else {
+        this.monitor.jobReplied(job.id, slot.seq, { t: m.t, mem: m.mem, outputBytes: m.output.byteLength, prepareMs: m.prepareMs, held: m.held });
+        this.settle(job, { output: new Uint8Array(m.output), objects: m.objects ?? [] });
       }
       this.afterJob(slot, m.mem);
       this.pump();
@@ -1495,14 +1461,38 @@ class WorkPool {
   }
 
   forgetInline(cause) {
-    if (this.instance !== null) this.instance.exports.forget();
+    if (this.instance !== null) {
+      this.instance.exports.forget();
+      this.drainInline(this.instance.exports);
+    }
     this.inlineKey = null;
     this.monitor.stateEvicted(this.inlineSeq, cause);
   }
 
+  // Inline mode: mint a handle for each object in the page-thread
+  // instance, as a worker script does.
+  stageInline(x, objects) {
+    const n = x.files_stage(objects.length);
+    if (n < objects.length) {
+      x.files_stage(0);
+      throw { lost: LOST_RESOURCE_LIMIT, message: `resource_limit: a job was sent ${objects.length} files and its instance has room for ${n}` };
+    }
+    const tokens = new DataView(x.memory.buffer, x.files_tokens(), 8 * n);
+    for (let i = 0; i < n; i += 1) this.inlineHeld.set(tokenAt(tokens, i), objects[i]);
+  }
+
+  // Inline mode: let go of what the instance's host released.
+  drainInline(x) {
+    const n = x.files_released();
+    if (n === 0) return;
+    const dv = new DataView(x.memory.buffer, x.files_tokens(), 8 * n);
+    for (let i = 0; i < n; i += 1) this.inlineHeld.delete(tokenAt(dv, i));
+  }
+
   // Inline mode: a second instance of the module on this thread, one job at
   // a time, each in a task of its own. It keeps a prepared state as a
-  // worker does.
+  // worker does. A job that reaches a hosted effect is answered
+  // unavailable, and the instance it left mid-call is replaced.
   async runInline() {
     this.running = true;
     try {
@@ -1520,6 +1510,7 @@ class WorkPool {
             mon.jobPosted(job.id, this.inlineSeq, mode, p === null ? null : p.key.name);
             const instStart = mon.now();
             this.instance = await WebAssembly.instantiate(this.module, pageImports(this.module));
+            this.inlineHeld.clear();
             this.created += 1;
             if (this.closed) continue;
             mon.instanceReady(this.inlineSeq, { origin: mon.origin, instStart, instEnd: mon.now(), memBytes: this.instance.exports.memory.buffer.byteLength });
@@ -1527,51 +1518,44 @@ class WorkPool {
           if (job.settled || this.closed) continue;
           x = this.instance.exports;
           const begin = mon.now();
-          let fileBytes = 0;
           let prepareMs = null;
-          if (mode === "prepare" || (mode === "work" && this.inlineKey !== null && job.files.length > 0)) {
-            if (this.inlineKey !== null) mon.stateEvicted(this.inlineSeq, mode === "prepare" ? "replaced" : "files");
+          if (mode === "prepare") {
+            if (this.inlineKey !== null) mon.stateEvicted(this.inlineSeq, "replaced");
             x.forget();
+            this.drainInline(x);
             this.inlineKey = null;
+            this.stageInline(x, p.prepareObjects);
+            const ptr = x.payload_reserve(p.prepare.length);
+            if (p.prepare.length > 0) new Uint8Array(x.memory.buffer, ptr, p.prepare.length).set(p.prepare);
+            const t = mon.now();
+            x.prepare();
+            prepareMs = mon.now() - t;
+            this.inlineKey = p.key;
+            this.drainInline(x);
           }
-          try {
-            if (mode === "prepare") {
-              if (p.prepareFiles.length > 0) fileBytes += await readFiles(x, p.prepareFiles);
-              if (job.settled || this.closed) {
-                x.bytes_clear();
-                continue;
-              }
-              const ptr = x.payload_reserve(p.prepare.length);
-              if (p.prepare.length > 0) new Uint8Array(x.memory.buffer, ptr, p.prepare.length).set(p.prepare);
-              const t = mon.now();
-              x.prepare();
-              prepareMs = mon.now() - t;
-              this.inlineKey = p.key;
-            }
-            if (job.files.length > 0) fileBytes += await readFiles(x, job.files);
-          } catch (e) {
-            if (!(e && (e.reason === 1 || e.reason === 2))) throw e;
-            x.bytes_clear();
-            this.settle(job, { filefail: e.reason });
-            continue;
-          }
-          if (this.closed || job.settled) {
-            x.bytes_clear();
-            continue;
-          }
-          const read = fileBytes > 0 ? mon.now() - begin - (prepareMs ?? 0) : 0;
+          this.stageInline(x, job.objects);
           const ptr = x.payload_reserve(job.payload.length);
           if (job.payload.length > 0) new Uint8Array(x.memory.buffer, ptr, job.payload.length).set(job.payload);
           const call = mon.now();
           if (mode === "work") x.work();
           else x.ask();
           const ret = mon.now();
-          const output = new Uint8Array(x.memory.buffer, x.cmd_ptr(), x.cmd_len()).slice();
+          const answer = new Uint8Array(x.memory.buffer, x.cmd_ptr(), x.cmd_len());
+          const dv = new DataView(answer.buffer, answer.byteOffset, answer.byteLength);
+          const count = dv.getUint32(0, true);
+          const objects = [];
+          for (let i = 0; i < count; i += 1) {
+            const o = this.inlineHeld.get(tokenAt(dv, i, 4));
+            if (o === undefined) throw new Error("a job's answer names a handle that is not a file");
+            objects.push({ blob: o, name: o.name ?? "", type: o.type ?? "" });
+          }
+          const output = answer.slice(4 + 8 * count);
+          this.drainInline(x);
           const sent = mon.now();
           const mem = [x.memory.buffer.byteLength, Number(x.metric(4)), Number(x.metric(5))];
           if (mon.userTiming) mon.measure(`roc:work.compute ${job.program}`, call, ret, { id: job.id }, `worker ${this.inlineSeq}`);
-          mon.jobReplied(job.id, this.inlineSeq, { t: [begin, begin, call, ret, sent], mem, outputBytes: output.length, read, fileBytes, prepareMs, held: this.inlineKey !== null });
-          this.settle(job, { output });
+          mon.jobReplied(job.id, this.inlineSeq, { t: [begin, begin, call, ret, sent], mem, outputBytes: output.length, prepareMs, held: this.inlineKey !== null });
+          this.settle(job, { output, objects });
           if (this.inlineKey !== null && !keyLive(this.inlineKey, this.live)) this.forgetInline("released");
           if (mem[0] > this.maxBytes) {
             this.instance = null;
@@ -1580,18 +1564,25 @@ class WorkPool {
             mon.instanceEnded(this.inlineSeq, "retired");
           }
         } catch (e) {
-          let code = 0;
+          let lost;
           let message = String(e && e.message ? e.message : e);
-          try {
-            code = x ? x.fault() : 0;
-            if (code !== 0) message = new TextDecoder().decode(new Uint8Array(x.memory.buffer, x.err_ptr(), x.err_len()));
-          } catch (_) {
-            code = 0;
+          if (e instanceof EffectUnavailable) lost = LOST_UNAVAILABLE;
+          else if (e && typeof e.lost === "number") lost = e.lost;
+          else {
+            let code = 0;
+            try {
+              code = x ? x.fault() : 0;
+              if (code !== 0) message = new TextDecoder().decode(new Uint8Array(x.memory.buffer, x.err_ptr(), x.err_len()));
+            } catch (_) {
+              code = 0;
+            }
+            lost = code >= 1 && code <= 5 ? code : LOST_EXECUTOR;
           }
-          // A faulted instance is never called again.
-          const lost = code >= 1 && code <= 5 ? code : LOST_EXECUTOR;
+          // An instance a call left mid-way, faulted or not, is never called
+          // again: the next job gets a fresh one.
           this.instance = null;
           this.inlineKey = null;
+          this.inlineHeld.clear();
           this.terminated += 1;
           mon.instanceEnded(this.inlineSeq, lost === LOST_EXECUTOR ? "executor" : "fault", { class: LOST_CLASSES[lost], message });
           this.settle(job, { lost, message });
@@ -1613,6 +1604,7 @@ class WorkPool {
     if (this.instance !== null) this.monitor.instanceEnded(this.inlineSeq, "shutdown");
     this.instance = null;
     this.inlineKey = null;
+    this.inlineHeld.clear();
   }
 }
 
@@ -2406,46 +2398,39 @@ export class RocEngineRuntime {
             at += 4 + n;
             // The files the job names, resolved now, while the handles the
             // batch released still name their files (see "Files").
+            // Its files cross whole, as handles the worker mints, and the job
+            // reads their ranges itself; nothing is read before it runs.
             const refs = dv.getUint32(at, true);
             at += 4;
             const files = [];
             const ranges = [];
-            const whole = [];
             for (let i = 0; i < refs; i += 1) {
               const token = tokenAt(dv, 0, at);
               const start = tokenAt(dv, 0, at + 8);
               const len = tokenAt(dv, 0, at + 16);
               const file = this.files.get(token);
               if (file === undefined) throw new Error(`a work request names file handle ${token}, which this runtime does not hold`);
-              files.push(file.slice(start, start + len));
-              whole.push(file);
+              files.push(file);
               ranges.push(token, start, len);
               at += 24;
             }
             const deadline = dv.getUint32(at, true);
-            at += 4;
-            // A prepared query (design.md, "Prepared programs"): which
+            const cancel = u8[at + 4];
+            const flag = u8[at + 5];
+            at += 6;
+            if (cancel !== 1 && cancel !== 2) throw new Error(`work request cancel policy ${cancel} is not 1 or 2`);
+            // A preparation's task (design.md, "Prepared state"): which
             // preparation answers it, and where its input lies in `input`.
-            const flag = u8[at];
-            at += 1;
             let prep = null;
             if (flag === 1) {
               const name = str();
-              const initAt = dv.getUint32(at, true);
-              const initLen = dv.getUint32(at + 4, true);
-              const initFiles = dv.getUint32(at + 8, true);
-              const policy = u8[at + 12];
-              at += 13;
-              if (initAt + initLen > input.length || initFiles > refs || (policy !== 1 && policy !== 2)) throw new Error(`malformed prepared query ${program}`);
-              prep = { name, initAt, initLen, initFiles, finish: policy === 2, ranges: ranges.slice(0, 3 * initFiles) };
-            } else if (flag === 2) {
-              // A task's job (design.md, "Tasks"): its files cross whole, as
-              // handles the worker mints, and the job reads their ranges
-              // itself; nothing is read before it runs.
-              this.fxOut.push({ op: "work", id, program, input, files: whole, deadline, prep: null, task: true });
-              break;
-            } else if (flag !== 0) throw new Error(`work request flag ${flag} is not 0, 1 or 2`);
-            this.fxOut.push({ op: "work", id, program, input, files, deadline, prep, task: false });
+              const initLen = dv.getUint32(at, true);
+              const initFiles = dv.getUint32(at + 4, true);
+              at += 8;
+              if (initLen > input.length || initFiles > refs) throw new Error(`malformed preparation operands for worker task ${program}`);
+              prep = { name, initLen, initFiles, ranges: ranges.slice(0, 3 * initFiles) };
+            } else if (flag !== 0) throw new Error(`work request flag ${flag} is not 0 or 1`);
+            this.fxOut.push({ op: "work", id, program, input, files, deadline, finish: cancel === 2, prep });
           } else if (kind === 11) {
             const mode = u8[at];
             if (mode !== 1 && mode !== 2) throw new Error(`unknown file read mode ${mode}`);
@@ -3221,10 +3206,11 @@ export class RocEngineRuntime {
 
   // A result turn staged from parts straight into linear memory (one copy
   // of any bytes), with the files it carries minted as handles first: a
-  // port's reply (tag 14), a task's answer (tag 20) or a fetched body (tag
+  // port's reply (tag 14), a job's answer (tag 10) or a fetched body (tag
   // 21). Each file's `size name type` follows `parts`, then `tail` (a
-  // task's output). When the heap has no slots for all of them the result
-  // is `overflow` (a port's TooLarge, or FileFailed(TooLarge)) and the
+  // job's output). When the heap has no slots for all of them the result
+  // is `overflow` (a port's TooLarge, a job lost to a resource limit, or
+  // FileFailed(TooLarge)) and the
   // handles minted for it are released at once. Ownership: the runtime
   // holds each file under its new token from here, until the engine
   // releases the handle; the staged bytes belong to the host until the
@@ -3378,25 +3364,7 @@ export class RocEngineRuntime {
         finish(new Uint8Array([RES_TIMEOUT]), "timeout");
       }, fx.deadline);
     }
-    if (fx.task && this.workerMode === "inline") {
-      // A task's effects are synchronous browser APIs that exist only in a
-      // worker (FileReaderSync); the page's thread cannot run one.
-      setTimeout(() => {
-        const klass = this.reportLost(fx, LOST_UNAVAILABLE, "a task's job needs a worker, and workers are inline");
-        finish(new Uint8Array([RES_WORK_LOST, LOST_UNAVAILABLE]), "unavailable", klass);
-      }, 0);
-      return;
-    }
-    // A task's files cross by reference and are read on demand, so only
-    // their number is bounded; a program's are read before it runs.
-    const fileBytes = fx.task ? 0 : fx.files.reduce((n, f) => n + f.size, 0);
-    if (fx.files.length > MAX_JOB_FILES || fileBytes > this.maxFileBytes) {
-      // More than a job reads: refused before anything is read, as one
-      // result turn after this batch.
-      setTimeout(() => finish(new Uint8Array([RES_FILE_FAILED, 2]), "lost", "too_large"), 0);
-      return;
-    }
-    // A prepared query carries both ways to run it: preparing from the
+    // A preparation's task carries both ways to run it: preparing from the
     // preparation's input, or asking a worker that already holds the state
     // for exactly that input (`key`). The pool picks one; the answer is the
     // same either way.
@@ -3404,36 +3372,29 @@ export class RocEngineRuntime {
     let payload;
     if (fx.prep !== null) {
       const p = fx.prep;
-      const init = fx.input.subarray(p.initAt, p.initAt + p.initLen);
+      const init = fx.input.subarray(0, p.initLen);
       prepared = {
         key: { name: p.name, init, ranges: p.ranges },
         prepare: concat([encStr(p.name), init]),
-        prepareFiles: fx.files.slice(0, p.initFiles),
-        finish: p.finish,
+        prepareObjects: fx.files.slice(0, p.initFiles),
       };
-      payload = concat([encStr(fx.program), fx.input.subarray(p.initAt + p.initLen)]);
+      payload = concat([encStr(fx.program), fx.input.subarray(p.initLen)]);
     } else payload = concat([encStr(fx.program), fx.input]);
-    const jobFiles = fx.prep !== null ? fx.files.slice(fx.prep.initFiles) : fx.files;
-    stop = this.workPool().submit(payload, (outcome) => {
-      if (outcome.filefail !== undefined) {
-        finish(new Uint8Array([RES_FILE_FAILED, outcome.filefail]), "lost", outcome.filefail === 1 ? "unreadable" : "too_large");
-        return;
-      }
-      if (outcome.objects !== undefined) {
-        // A task's answer (result tag 20): the files it holds become the
-        // page's handles when the turn is delivered, each the worker's
-        // Blob (posted by reference) as a File of its name and type.
-        const files = outcome.objects.map((o) => new File([o.blob], o.name, { type: o.type }));
-        finish({ parts: [new Uint8Array([RES_ANSWERED]), u32(files.length)], files, tail: [outcome.output], overflow: new Uint8Array([RES_FILE_FAILED, FILE_TOO_LARGE]) }, "done", null, outcome.output);
-        return;
-      }
+    const objects = fx.prep !== null ? fx.files.slice(fx.prep.initFiles) : fx.files;
+    const done = (outcome) => {
       if (outcome.output !== undefined) {
-        finish(concat([new Uint8Array([RES_WORK]), outcome.output]), "done", null, outcome.output);
+        // A job's answer (result tag 10): the files it holds become the
+        // page's handles when the turn is delivered, each the worker's Blob
+        // (posted by reference) as a File of its name and type. When the
+        // page has no room for them the job is lost to a resource limit.
+        const files = outcome.objects.map((o) => new File([o.blob], o.name, { type: o.type }));
+        finish({ parts: [new Uint8Array([RES_WORK]), u32(files.length)], files, tail: [outcome.output], overflow: new Uint8Array([RES_WORK_LOST, LOST_RESOURCE_LIMIT]) }, "done", null, outcome.output);
         return;
       }
       const klass = this.reportLost(fx, outcome.lost, outcome.message);
       finish(new Uint8Array([RES_WORK_LOST, outcome.lost]), outcome.lost === LOST_UNAVAILABLE ? "unavailable" : "lost", klass);
-    }, fx.id, fx.program, jobFiles, prepared, fx.task ? this.maxOutputBytes : null);
+    };
+    stop = this.workPool().submit(payload, done, { id: fx.id, program: fx.program, objects, prepared, finish: fx.finish, maxOutput: this.maxOutputBytes });
   }
 
   // Report a lost job and return its class name. The `roc worker fault
@@ -3441,7 +3402,7 @@ export class RocEngineRuntime {
   // from page errors by it.
   reportLost(fx, code, message) {
     const klass = LOST_CLASSES[code] ?? "executor";
-    console.error(`roc worker fault [${klass}] in program "${fx.program}": ${message}`);
+    console.error(`roc worker fault [${klass}] in task "${fx.program}": ${message}`);
     if (this.onWorkerFault) this.onWorkerFault({ id: fx.id, program: fx.program, class: klass, message });
     return klass;
   }
