@@ -1042,7 +1042,10 @@ it, so its token stays valid until the runtime has performed the call's
 effects, which may still name it, and then drains the released tokens with
 `files_released`. A drop inside a Roc call therefore never reaches
 JavaScript. Handles for an event are staged like its payload: at most one
-staged set, released by the host itself if no call takes it. A freed or
+staged set, released by the host itself if no call takes it. The host lays
+the set out as Roc lays out a list of refcounted values, with the list's
+length and then its refcount before the elements, as it does the list of a
+worker's file buffers; a list of plain bytes has only the refcount. A freed or
 resized address inside the heap that is not a handle's last release is an
 incoherent instance and poisons it.
 

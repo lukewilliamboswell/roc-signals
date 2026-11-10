@@ -289,11 +289,15 @@ fn nothing(_: anytype) void {}
 fn hostedMintFiles(n: u64) callconv(.c) RocList {
     const want: usize = @min(@as(usize, @intCast(n)), 64 - blobs.live_count);
     if (want == 0) return .{ .elements = null, .length = 0, .capacity_or_alloc_ptr = 0 };
-    const base: [*]u8 = @ptrCast(roc_alloc(@sizeOf(usize) * (want + 1), @alignOf(usize)));
-    @as(*isize, @ptrCast(@alignCast(base))).* = 1;
-    const elems: [*]usize = @ptrCast(@alignCast(base + @sizeOf(usize)));
+    // A list of refcounted elements, laid out as Roc lays one out: its
+    // original length, then its refcount (1), then the elements.
+    const base: [*]u8 = @ptrCast(roc_alloc(@sizeOf(usize) * (want + 2), @alignOf(usize)));
+    const words: [*]usize = @ptrCast(@alignCast(base));
+    words[0] = want;
+    words[1] = 1;
+    const elems: [*]usize = words + 2;
     for (0..want) |i| elems[i] = @intFromPtr(blobs.mint({}) orelse unreachable);
-    return .{ .elements = base + @sizeOf(usize), .length = want, .capacity_or_alloc_ptr = want << 1 };
+    return .{ .elements = @ptrCast(elems), .length = want, .capacity_or_alloc_ptr = want << 1 };
 }
 
 /// `Cli.live_files!`: free the slots of the handles Roc released, as the
@@ -388,7 +392,8 @@ fn releaseFiles(list: RocList) void {
     if (rc.* != 0) return;
     const inner: [*]const RocList = @ptrCast(@alignCast(elems));
     for (inner[0..list.length]) |l| releaseBytes(l);
-    roc_dealloc(@ptrFromInt(alloc_addr - @sizeOf(usize)), @alignOf(usize));
+    // A list of refcounted elements keeps its length before its refcount.
+    roc_dealloc(@ptrFromInt(alloc_addr - 2 * @sizeOf(usize)), @alignOf(usize));
 }
 
 /// `Cli.work!`: run one worker job, `payload` being `name:str input:rest`,

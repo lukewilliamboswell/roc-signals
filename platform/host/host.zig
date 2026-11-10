@@ -470,16 +470,26 @@ fn stagedFiles() RocList {
     const n = staged_count;
     staged_count = 0;
     if (n == 0) return RocList.empty;
-    const base: [*]u8 = @ptrCast(allocRaw(n * @sizeOf(RocList) + @sizeOf(usize), @alignOf(usize)));
-    @as(*isize, @ptrCast(@alignCast(base))).* = 1;
-    const elems: [*]RocList = @ptrCast(@alignCast(base + @sizeOf(usize)));
+    const elems: [*]RocList = @ptrCast(@alignCast(refcountedList(n, @sizeOf(RocList))));
     for (0..n) |i| {
         elems[i] = if (job_files[i]) |payload| blk: {
             const b = buffers.get(payload.*) orelse unreachable;
             break :blk .{ .ptr = b.ptr, .len = b.len, .cap = @intFromPtr(payload) | 1 };
         } else RocList.empty;
     }
-    return .{ .ptr = base + @sizeOf(usize), .len = n, .cap = n << 1 };
+    return .{ .ptr = @ptrCast(elems), .len = n, .cap = n << 1 };
+}
+
+/// The elements of a fresh Roc list of `n` refcounted elements of `size`
+/// bytes, laid out as Roc lays one out: the list's original length, then
+/// its refcount (1), each a `usize`, then the elements. Roc frees it two
+/// `usize`s before the elements.
+fn refcountedList(n: usize, size: usize) [*]u8 {
+    const base: [*]u8 = @ptrCast(allocRaw(n * size + 2 * @sizeOf(usize), @alignOf(usize)));
+    const words: [*]usize = @ptrCast(@alignCast(base));
+    words[0] = n;
+    words[1] = 1;
+    return base + 2 * @sizeOf(usize);
 }
 
 comptime {
@@ -518,17 +528,14 @@ export fn files_stage(n: u32) callconv(.c) u32 {
     dropPendingBlobs();
     const want = @min(@as(usize, n), max_files - blobs.live_count);
     if (want == 0) return 0;
-    // A list of box pointers, laid out as Roc expects: one refcount word
-    // before the elements, each element the address of a handle's payload.
-    const base: [*]u8 = @ptrCast(allocRaw(want * @sizeOf(usize) + @sizeOf(usize), @alignOf(usize)));
-    @as(*isize, @ptrCast(@alignCast(base))).* = 1;
-    const elems: [*]usize = @ptrCast(@alignCast(base + @sizeOf(usize)));
+    // A list of box pointers, each element the address of a handle's payload.
+    const elems: [*]usize = @ptrCast(@alignCast(refcountedList(want, @sizeOf(usize))));
     for (0..want) |i| {
         const payload = blobs.mint({}) orelse unreachable;
         elems[i] = @intFromPtr(payload);
         tokens[i] = payload.*;
     }
-    pending_blobs = .{ .ptr = base + @sizeOf(usize), .len = want, .cap = want << 1 };
+    pending_blobs = .{ .ptr = @ptrCast(elems), .len = want, .cap = want << 1 };
     return @intCast(want);
 }
 
@@ -538,7 +545,7 @@ fn dropPendingBlobs() void {
     const p = pending_blobs.ptr orelse return;
     const elems: [*]usize = @ptrCast(@alignCast(p));
     for (0..pending_blobs.len) |i| _ = blobs.route(@ptrFromInt(elems[i] - 8));
-    _ = freeRaw(p - @sizeOf(usize), @alignOf(usize));
+    _ = freeRaw(p - 2 * @sizeOf(usize), @alignOf(usize));
     pending_blobs = RocList.empty;
 }
 

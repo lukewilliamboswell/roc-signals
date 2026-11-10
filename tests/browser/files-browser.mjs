@@ -177,6 +177,10 @@ for (const workers of ["inline", "worker"]) {
   const { page, ctx } = await open();
   const r = await page.evaluate(() => {
     const x = window.__rt.x;
+    // Live bytes and allocations before: the host lays out the handle list
+    // as Roc lays out a list of refcounted values, so Roc frees exactly what
+    // the host allocated.
+    const before = [Number(x.metric(4)), Number(x.metric(5))];
     const minted = x.files_stage(2);
     const staged = window.__live();
     // A record for two files, delivered to a node id nothing holds.
@@ -188,14 +192,16 @@ for (const workers of ["inline", "worker"]) {
     const retired = window.__live();
     const released = x.files_released();
     const after = window.__live();
+    const balance = [Number(x.metric(4)), Number(x.metric(5))];
     const again = x.files_stage(3);
     const restaged = x.files_stage(1);
     const freed = x.files_released();
     x.files_stage(0);
     const last = x.files_released();
-    return { minted, staged, retired, released, after, again, restaged, freed, last, end: window.__live() };
+    return { minted, staged, retired, released, after, again, restaged, freed, last, end: window.__live(), balanced: JSON.stringify(balance) === JSON.stringify(before) };
   });
   check("an event for no node releases its handles", [r.minted, r.staged, r.retired, r.released, r.after], [2, 2, 2, 2, 0]);
+  check("the handle list and the record are freed exactly", r.balanced, true);
   check("staging again releases the undelivered set", [r.again, r.restaged, r.freed, r.last, r.end], [3, 1, 3, 1, 0]);
   await ctx.close();
 }
