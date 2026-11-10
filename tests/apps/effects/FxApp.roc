@@ -92,10 +92,10 @@ FxApp := [].{
 
 	## P's ports: a call and a subscription, each sent `p`.
 	port_call : Port.Call(U64, Str)
-	port_call = Port.call("test.roc-signals/fx-call")
+	port_call = Port.call({ name: "test.roc-signals/fx-call" })
 
 	port_feed : Port.Subscription(U64, Str)
-	port_feed = Port.subscription("test.roc-signals/fx-feed", Every(8))
+	port_feed = Port.subscription({ name: "test.roc-signals/fx-feed", delivery: Every(8) })
 
 	## P's requests for `p`.
 	plan_p : U64 -> List(Engine.Req)
@@ -296,8 +296,8 @@ FxApp := [].{
 	program = Engine.program_boot({ storage_keys: [], max_inflight: 8 }, |_| FxApp.main({})).with_workers(FxApp.workers).with_ports(FxApp.ports)
 
 	## The ports P uses.
-	ports : List(Engine.PortDecl)
-	ports = [FxApp.port_call.declaration(), FxApp.port_feed.declaration()]
+	ports : List(Engine.PortRegistration)
+	ports = [FxApp.port_call.registration(), FxApp.port_feed.registration()]
 
 	main : {} -> Elem(Root)
 	main = |_| FxApp.main_with([True, True, True])

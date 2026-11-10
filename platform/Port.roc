@@ -13,11 +13,12 @@ import PortJson
 ## - a [Subscription] sends an argument and receives any number of messages
 ##   until its site is disposed or the JavaScript ends it.
 ##
-## Make each port once, list its `declaration` in `Program.with_ports`, and
-## use the same value wherever the app sends on it, so a request can only
-## carry the port's own types. The page passes one handler per declared port
-## in the `ports` option of `mountRocEngineApp`, and the runtime refuses to
-## mount a page whose handlers do not match the declarations.
+## Make each port once from a props record (`Port.call({ name })`), list its
+## `registration` in `Program.with_ports`, and use the same value wherever
+## the app sends on it, so a request can only carry the port's own types.
+## The page passes one handler per registered port in the `ports` option of
+## `mountRocEngineApp`, and the runtime refuses to mount a page whose
+## handlers do not match the registrations.
 ##
 ## Values cross as JSON in the `PortJson` format, derived from their types:
 ## the JavaScript receives and answers plain data (objects, arrays, strings,
@@ -39,7 +40,7 @@ Port := [].{
 	## Why a port request has no value for the app.
 	##
 	## - `Refused`: the in-flight bound turned the request away.
-	## - `Timeout`: the call's timeout expired (see `with_timeout_ms`).
+	## - `Timeout`: the call's `timeout` expired.
 	## - `Threw(message)`: the JavaScript threw or rejected, or answered with
 	##   something that is not JSON data (a `Map`, a function, a cycle).
 	## - `TooLarge`: the answer was larger than the page's `maxPayloadBytes`,
@@ -59,7 +60,7 @@ Port := [].{
 	## `false` and takes nothing beyond them.
 	Delivery : Engine.PortDelivery
 
-	## A port that sends an `out` to JavaScript and expects nothing back.
+	## A port that sends an `output` to JavaScript and expects nothing back.
 	## Make one with `command`.
 	Command(output) :: { name : Str, encode : (output -> Engine.PortMessage) }.{
 
@@ -72,20 +73,13 @@ Port := [].{
 		send = |p, value| PortCommand({ port: p.name, message: (p.encode)(value) })
 
 		## The port's entry for `Program.with_ports`.
-		declaration : Command(output) -> Engine.PortDecl
-		declaration = |p| Core.port_declaration(p.name, Command)
+		registration : Command(output) -> Engine.PortRegistration
+		registration = |p| Core.port_declaration(p.name, Command)
 	}
 
-	## A port that sends an `in` to JavaScript and awaits one `out`. Make one
-	## with `call`.
+	## A port that sends an `input` to JavaScript and awaits one `output`.
+	## Make one with `call`.
 	Call(input, output) :: { name : Str, timeout_ms : U32, encode : (input -> Engine.PortMessage), decode : (Engine.PortMessage -> Try(output, Str)) }.{
-
-		## Answer `Timeout` when the JavaScript has not answered `ms`
-		## milliseconds after the request was performed, and abort its
-		## `AbortSignal`. `0`, the default, means no timeout; the platform
-		## caps it at ten minutes.
-		with_timeout_ms : Call(input, output), U32 -> Call(input, output)
-		with_timeout_ms = |p, ms| { ..p, timeout_ms: ms }
 
 		## A request that calls the JavaScript with `value`, for an effect
 		## site's plan. The value is a snapshot, encoded when the request is
@@ -94,14 +88,14 @@ Port := [].{
 		request = |p, value| PortCall({ port: p.name, message: (p.encode)(value), timeout_ms: p.timeout_ms })
 
 		## The answer to a `request`, for an effect site's reaction: the
-		## JavaScript's answer as an `out`, or why there is none. A result
+		## JavaScript's answer as an `output`, or why there is none. A result
 		## that is not from a port request is a contract error.
 		result : Call(input, output), Engine.Res -> Try(output, Error)
 		result = |p, res| answer_of(p.name, p.decode, res)
 
 		## The port's entry for `Program.with_ports`.
-		declaration : Call(input, output) -> Engine.PortDecl
-		declaration = |p| Core.port_declaration(p.name, Call)
+		registration : Call(input, output) -> Engine.PortRegistration
+		registration = |p| Core.port_declaration(p.name, Call)
 	}
 
 	## A port that sends an `arg` to JavaScript once and receives any number
@@ -123,28 +117,63 @@ Port := [].{
 		message = |p, res| answer_of(p.name, p.decode, res)
 
 		## The port's entry for `Program.with_ports`.
-		declaration : Subscription(arg, msg) -> Engine.PortDecl
-		declaration = |p| Core.port_declaration(p.name, Subscription(p.delivery))
+		registration : Subscription(arg, msg) -> Engine.PortRegistration
+		registration = |p| Core.port_declaration(p.name, Subscription(p.delivery))
 	}
 
-	## `command(name)`: the command port `name`. Its value type must be
-	## `PortJson.Sendable`, which records, tag unions, lists, numbers,
+	## What `command` is told about a command port: its `name`, namespaced
+	## (`"example.org/notes/log"`) and unique among the program's ports.
+	CommandProps := { name : Str }
+
+	## The command port a props record describes:
+	## `Port.command({ name: "example.org/notes/log" })`. Its value type must
+	## be `PortJson.Sendable`, which records, tag unions, lists, numbers,
 	## strings, `Bool`, `Wire.Bytes` and `Engine.File` are.
-	command : Str -> Command(output) where [output.PortJson.Sendable]
-	command = |name| { name, encode: |value| PortJson.encode(value) }
+	command : CommandProps -> Command(output) where [output.PortJson.Sendable]
+	command = |CommandProps.({ name })| { name, encode: |value| PortJson.encode(value) }
 
-	## `call(name)`: the call port `name`, which sends an `in` and answers an
-	## `out`. A call whose JavaScript answers nothing useful (it stores a
-	## value, say) declares `{}` as its answer, which `undefined` and `null`
-	## both decode to.
-	call : Str -> Call(input, output) where [input.PortJson.Sendable, output.PortJson.Sendable]
-	call = |name| { name, timeout_ms: 0, encode: |value| PortJson.encode(value), decode: |message| PortJson.decode(message).map_err(PortJson.describe) }
+	## What `call` is told about a call port.
+	##
+	## - `name`: namespaced and unique among the program's ports.
+	## - `timeout`: `Ms(ms)` answers `Timeout` when the JavaScript has not
+	##   answered `ms` milliseconds after the request was performed, and
+	##   aborts its `AbortSignal`; the platform caps it at ten minutes.
+	##   `Unlimited`, the default, waits for the JavaScript.
+	CallProps := {
+		name : Str,
+		timeout : [Unlimited, Ms(U32)] ?? Unlimited,
+	}
 
-	## `subscription(name, delivery)`: the subscription port `name`, which
-	## sends an `arg` when it subscribes and receives `msg`s, kept while the
-	## app is busy as `delivery` says.
-	subscription : Str, Delivery -> Subscription(arg, msg) where [arg.PortJson.Sendable, msg.PortJson.Sendable]
-	subscription = |name, delivery| { name, delivery, encode: |value| PortJson.encode(value), decode: |message| PortJson.decode(message).map_err(PortJson.describe) }
+	## The call port a props record describes:
+	## `Port.call({ name: "example.org/notes/list", timeout: Ms(5000) })`,
+	## which sends an `input` and answers an `output`. A call whose
+	## JavaScript answers nothing useful (it stores a value, say) declares
+	## `{}` as its answer, which `undefined` and `null` both decode to.
+	call : CallProps -> Call(input, output) where [input.PortJson.Sendable, output.PortJson.Sendable]
+	call = |CallProps.({ name, timeout })| {
+		name,
+		timeout_ms: match timeout {
+			Unlimited => 0
+			Ms(ms) => ms
+		},
+		encode: |value| PortJson.encode(value),
+		decode: |message| PortJson.decode(message).map_err(PortJson.describe),
+	}
+
+	## What `subscription` is told about a subscription port: its `name`,
+	## and how its messages wait while the app is busy (`delivery`, see
+	## [Delivery]). Both are required: a subscription always says how much
+	## it lets wait.
+	SubscriptionProps := {
+		name : Str,
+		delivery : Delivery,
+	}
+
+	## The subscription port a props record describes:
+	## `Port.subscription({ name: "example.org/notes/changed", delivery: Latest })`,
+	## which sends an `arg` when it subscribes and receives `msg`s.
+	subscription : SubscriptionProps -> Subscription(arg, msg) where [arg.PortJson.Sendable, msg.PortJson.Sendable]
+	subscription = |SubscriptionProps.({ name, delivery })| { name, delivery, encode: |value| PortJson.encode(value), decode: |message| PortJson.decode(message).map_err(PortJson.describe) }
 
 	## `derive(call, input, body)` gives `body` a layer holding the call's
 	## answer for `input`, an `Engine.Remote(output, Port.Error)`, as
@@ -177,13 +206,13 @@ answer_of = |name, decode, res| match res {
 	_ => crash "contract: port \"${name}\" was given a result that is not from a port request"
 }
 
-## A call sends its value's JSON and reads its answer's, and a malformed
-## answer is a typed error naming the port.
+## A call sends its value's JSON and its timeout, reads its answer's, and a
+## malformed answer is a typed error naming the port.
 expect {
-	get = Port.call("test/get")
+	get = Port.call({ name: "test/get", timeout: Ms(1000) })
 	sent = match get.request({ id: "n1" }) {
-		PortCall({ port, message, timeout_ms }) => (port, message.json, timeout_ms)
-		_ => ("", "", 1)
+		PortCall({ port, message, timeout_ms }) => "${port} ${message.json} ${timeout_ms.to_str()}"
+		_ => "not a call"
 	}
 	good : Try({ title : Str }, Port.Error)
 	good = get.result(PortReply({ json: "{\"title\":\"a\",\"extra\":1}", blobs: [], files: [] }))
@@ -191,18 +220,48 @@ expect {
 	bad = get.result(PortReply({ json: "{\"title\":5}", blobs: [], files: [] }))
 	threw : Try({ title : Str }, Port.Error)
 	threw = get.result(PortFailed(Threw("no store")))
-	sent == ("test/get", "{\"id\":\"n1\"}", 0) and good == Ok({ title: "a" }) and bad == Err(Undecodable("port \"test/get\": expected a string at byte 9")) and threw == Err(Threw("no store"))
+	actual =
+		\\sent: ${sent}
+		\\good: ${Str.inspect(good)}
+		\\bad names the port: ${Str.inspect(bad == Err(Undecodable("port \"test/get\": expected a string at byte 9")))}
+		\\threw: ${Str.inspect(threw)}
+	expected =
+		\\sent: test/get {"id":"n1"} 1000
+		\\good: Ok({ title: "a" })
+		\\bad names the port: True
+		\\threw: Err(Threw("no store"))
+	actual == expected
 }
 
-## A subscription carries its argument and its delivery policy into its
-## declaration, and `Closed` and `Refused` are errors of a message.
+## A call without a timeout asks for none.
+expect {
+	put : Port.Call({ id : Str }, {})
+	put = Port.call({ name: "test/put" })
+	timeout = match put.request({ id: "n1" }) {
+		PortCall({ timeout_ms, .. }) => timeout_ms
+		_ => 1
+	}
+	timeout == 0
+}
+
+## A subscription carries its argument, and `Closed` and `Refused` are
+## errors of a message.
 expect {
 	ticks : Port.Subscription({ every_ms : U32 }, U64)
-	ticks = Port.subscription("test/ticks", Every(8))
+	ticks = Port.subscription({ name: "test/ticks", delivery: Every(8) })
 	sent = match ticks.subscribe({ every_ms: 50 }) {
-		PortSubscribe({ port, message }) => (port, message.json)
-		_ => ("", "")
+		PortSubscribe({ port, message }) => "${port} ${message.json}"
+		_ => "not a subscription"
 	}
-	one = ticks.message(PortReply({ json: "\"18446744073709551615\"", blobs: [], files: [] }))
-	sent == ("test/ticks", "{\"every_ms\":50}") and one == Ok(18446744073709551615) and ticks.message(PortFailed(Closed)) == Err(Closed) and ticks.message(Refused) == Err(Refused)
+	actual =
+		\\sent: ${sent}
+		\\one: ${Str.inspect(ticks.message(PortReply({ json: "\"18446744073709551615\"", blobs: [], files: [] })))}
+		\\closed: ${Str.inspect(ticks.message(PortFailed(Closed)))}
+		\\refused: ${Str.inspect(ticks.message(Refused))}
+	expected =
+		\\sent: test/ticks {"every_ms":50}
+		\\one: Ok(18446744073709551615)
+		\\closed: Err(Closed)
+		\\refused: Err(Refused)
+	actual == expected
 }

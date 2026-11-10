@@ -45,25 +45,25 @@ PortsApp := [].{
 	initial = { sends: 0, gets: 0, panel: False, feed: False, size: "4", echoes: { n: 0, size: "" }, inspects: 0, makes: 0, chosen: [], made: [], undeclared: 0, wrong: 0, log: [] }
 
 	log : Port.Command({ text : Str })
-	log = Port.command("test.roc-signals/log")
+	log = Port.command({ name: "test.roc-signals/log" })
 
 	get : Port.Call({ key : Str }, { value : Str })
-	get = Port.call("test.roc-signals/get").with_timeout_ms(1000)
+	get = Port.call({ name: "test.roc-signals/get", timeout: Ms(1000) })
 
 	echo : Port.Call(Wire.Bytes, Wire.Bytes)
-	echo = Port.call("test.roc-signals/echo")
+	echo = Port.call({ name: "test.roc-signals/echo" })
 
 	inspect : Port.Call(Engine.File, { name : Str, size : U64 })
-	inspect = Port.call("test.roc-signals/inspect")
+	inspect = Port.call({ name: "test.roc-signals/inspect" })
 
 	make : Port.Call(Str, Engine.File)
-	make = Port.call("test.roc-signals/make")
+	make = Port.call({ name: "test.roc-signals/make" })
 
 	ticks : Port.Subscription({}, U64)
-	ticks = Port.subscription("test.roc-signals/ticks", Latest)
+	ticks = Port.subscription({ name: "test.roc-signals/ticks", delivery: Latest })
 
 	feed : Port.Subscription(Str, Str)
-	feed = Port.subscription("test.roc-signals/feed", Every(4))
+	feed = Port.subscription({ name: "test.roc-signals/feed", delivery: Every(4) })
 
 	error : Port.Error -> Str
 	error = |e| match e {
@@ -179,12 +179,12 @@ PortsApp := [].{
 	program =
 		Engine.program(|| Engine.state(PortsApp.initial, |st| PortsApp.view(st)))
 			.with_ports([
-				PortsApp.log.declaration(),
-				PortsApp.get.declaration(),
-				PortsApp.echo.declaration(),
-				PortsApp.inspect.declaration(),
-				PortsApp.make.declaration(),
-				PortsApp.ticks.declaration(),
-				PortsApp.feed.declaration(),
+				PortsApp.log.registration(),
+				PortsApp.get.registration(),
+				PortsApp.echo.registration(),
+				PortsApp.inspect.registration(),
+				PortsApp.make.registration(),
+				PortsApp.ticks.registration(),
+				PortsApp.feed.registration(),
 			])
 }

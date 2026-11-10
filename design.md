@@ -1712,8 +1712,8 @@ Boot : { url : Str, storage : List((Str, Str)), online : Bool, visible : Bool, s
 Program                                       # opaque; the app binds it as `main`
 Program.with_workers : Program, List(Registration) -> Program   # the worker catalogue
 registration : Str, (List(U8) -> List(U8)) -> Registration      # opaque: name and pure program
-Program.with_ports : Program, List(PortDecl) -> Program         # the ports the page supplies
-PortDecl                                      # opaque: a port's name and shape; Port makes one
+Program.with_ports : Program, List(PortRegistration) -> Program # the ports the page supplies
+PortRegistration                              # opaque: a port's name and shape; Port makes one
 
 # Values
 const : a -> Val(ctx, a)
@@ -1841,6 +1841,29 @@ Wire.encode : a -> List(U8)                    where [a.Wire.Sendable]
 Wire.try_encode : a -> Try(List(U8), [TooDeep]) where [a.Wire.Sendable]   # refuses what decode would
 Wire.decode : List(U8) -> Try(a, Wire.Error)   where [a.Wire.Sendable]
 Wire.Bytes                                     # a byte payload that crosses as one block
+```
+
+`Port` (`platform/Port.roc`) is the typed layer over the port requests, and
+`PortJson` (`platform/PortJson.roc`) the message format it derives:
+
+```roc
+Port.command : CommandProps -> Command(output)          where [output.PortJson.Sendable]
+Port.CommandProps := { name : Str }
+Port.call : CallProps -> Call(input, output)            where [input.PortJson.Sendable, output.PortJson.Sendable]
+Port.CallProps := { name : Str, timeout : [Unlimited, Ms(U32)] ?? Unlimited }
+Port.subscription : SubscriptionProps -> Subscription(arg, msg)   where [arg.PortJson.Sendable, msg.PortJson.Sendable]
+Port.SubscriptionProps := { name : Str, delivery : Delivery }
+Command.registration, Call.registration, Subscription.registration : ... -> PortRegistration
+Command.send : Command(output), output -> Req          # a PortCommand
+Call.request : Call(input, output), input -> Req       # a PortCall
+Call.result : Call(input, output), Res -> Try(output, Port.Error)
+Subscription.subscribe : Subscription(arg, msg), arg -> Req   # a PortSubscribe
+Subscription.message : Subscription(arg, msg), Res -> Try(msg, Port.Error)
+Port.Error : [Refused, Timeout, Threw(Str), TooLarge, Closed, Undecodable(Str)]
+Port.Delivery : [Latest, Every(U32)]
+Port.derive : Call(input, output), Val(ctx, input),
+    (Val(In(ctx, Remote(output, Port.Error)), Remote(output, Port.Error)) -> Elem(...)) -> Elem(ctx)
+Port.derive_when : Call(input, output), Val(ctx, [Run(input), Skip]), ... -> Elem(ctx)
 ```
 
 `Html` (`platform/Html.roc`) is the typed element vocabulary above `Engine`:

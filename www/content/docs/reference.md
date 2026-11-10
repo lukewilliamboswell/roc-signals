@@ -17,7 +17,7 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 
 | Area | Symbols |
 |---|---|
-| Programs | `program`, `program_boot`, `Program`, `Program.with_workers`, `registration`, `Registration`, `Program.with_ports`, `PortDecl`, `Boot`, `boot_storage` |
+| Programs | `program`, `program_boot`, `Program`, `Program.with_workers`, `registration`, `Registration`, `Program.with_ports`, `PortRegistration`, `Boot`, `boot_storage` |
 | Contexts | `Root`, `In(outer, s)`, `Row(outer, item)`, `Comp(p, a)` |
 | Values | `Val`, `const`, `Val.map`, `Val.map2`, `Val.lift`, `Val.lift_row` |
 | State | `state`, `State`, `State.val`, `State.lift`, `State.lift_row` |
@@ -76,7 +76,7 @@ program's types decide what is sent.
 
 | Area | Symbols |
 |---|---|
-| Declaring | `command`, `call`, `subscription`, `Delivery` (`Latest`, `Every(n)`), `Call.with_timeout_ms`, and each shape's `declaration` for `Program.with_ports` |
+| Declaring | `command` (`CommandProps`: `name`), `call` (`CallProps`: `name`, `timeout : [Unlimited, Ms(U32)] ?? Unlimited`), `subscription` (`SubscriptionProps`: `name`, `delivery`), `Delivery` (`Latest`, `Every(n)`), and each shape's `registration` for `Program.with_ports` |
 | From an effect site | `Command.send`, `Call.request`, `Call.result`, `Subscription.subscribe`, `Subscription.message`, `Error` (`Refused`, `Timeout`, `Threw(message)`, `TooLarge`, `Closed`, `Undecodable(why)`) |
 | Layers | `derive`, `derive_when` (for a call), holding an `Engine.Remote(output, Error)` |
 

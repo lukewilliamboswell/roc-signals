@@ -34,12 +34,15 @@ A port has one of three shapes, chosen when you declare it:
   messages until the site that asked for it goes away: messages from a
   socket, changes another tab made to a store.
 
-Declare each port once, in a module, with the types it carries:
+Declare each port once, in a module, with the types it carries. A port is
+made from a props record: `Port.command({ name })`,
+`Port.call({ name, timeout })` (the `timeout` is optional) and
+`Port.subscription({ name, delivery })`:
 
 {{ sample(file="ports/Notes.roc", region="ports") }}
 
 Port names are global strings, so namespace them (`"example.org/notes/list"`).
-List every port's declaration in the program:
+List every port's `registration()` in the program:
 
 {{ sample(file="ports/Notes.roc", region="program") }}
 
@@ -165,7 +168,7 @@ of `Port.Error`:
 | Error | Means |
 |---|---|
 | `Refused` | The app had too many requests in flight (see `max_inflight`) |
-| `Timeout` | The call's `with_timeout_ms` expired |
+| `Timeout` | The call's `timeout` expired |
 | `Threw(message)` | The JavaScript threw, rejected, or answered something that is not JSON data |
 | `TooLarge` | The answer was larger than the page's `maxPayloadBytes` (default 4 MiB, at most 64 MiB), or carried more files than the app can hold |
 | `Closed` | The JavaScript ended the subscription |

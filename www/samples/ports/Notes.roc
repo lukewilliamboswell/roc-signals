@@ -15,15 +15,15 @@ Notes := [].{
 
 	## Every note whose title starts with `prefix`, at `revision`.
 	list : Port.Call({ prefix : Str, revision : U64 }, List(Note))
-	list = Port.call("example.org/notes/list").with_timeout_ms(5000)
+	list = Port.call({ name: "example.org/notes/list", timeout: Ms(5000) })
 
 	## Store a note; JavaScript answers nothing (`undefined`).
 	put : Port.Call(Note, {})
-	put = Port.call("example.org/notes/put")
+	put = Port.call({ name: "example.org/notes/put" })
 
 	## The store's revision, whenever it changes. Only the newest matters.
 	changed : Port.Subscription({}, U64)
-	changed = Port.subscription("example.org/notes/changed", Latest)
+	changed = Port.subscription({ name: "example.org/notes/changed", delivery: Latest })
 	# endregion ports
 
 	S : { prefix : Str, draft : Str, revision : U64, saves : U64, save : Note, error : Str }
@@ -87,6 +87,6 @@ Notes := [].{
 	program : Engine.Program
 	program =
 		Engine.program(|| Engine.state({ prefix: "", draft: "", revision: 0, saves: 0, save: { id: "", title: "", saved_ms: 0 }, error: "" }, Notes.view))
-			.with_ports([Notes.list.declaration(), Notes.put.declaration(), Notes.changed.declaration()])
+			.with_ports([Notes.list.registration(), Notes.put.registration(), Notes.changed.registration()])
 	# endregion program
 }

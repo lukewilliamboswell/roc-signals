@@ -366,7 +366,7 @@ Engine := [].{
 		Ask({ program : Str, input : List(U8), files : List(File), deadline_ms : U32 }),
 
 		## Ports: a message to the page's JavaScript for a declared port (see
-		## `PortDecl`; apps use the typed layer, `Port`). `PortCommand` is
+		## `PortRegistration`; apps use the typed layer, `Port`). `PortCommand` is
 		## emitted and forgotten; `PortCall` awaits one `PortReply` or
 		## `PortFailed` and, like `Http`, survives its site's disposal
 		## (`timeout_ms` 0 = none, capped at 10 minutes); `PortSubscribe`
@@ -408,9 +408,9 @@ Engine := [].{
 	## the JavaScript's `emit` beyond them.
 	PortDelivery : Core.PortDelivery
 
-	## A port the program declares with `Program.with_ports`: its name and
-	## shape. `Port` makes one for each typed port (`declaration`).
-	PortDecl : Core.PortDecl
+	## A port the program registers with `Program.with_ports`: its name and
+	## shape. Each typed port makes its own (`registration`).
+	PortRegistration : Core.PortDecl
 
 	## Why an operation on a file produced nothing. One closed type for every
 	## operation on a file, each of which says which arms it can produce:
