@@ -22,7 +22,7 @@
 // cannot hold); <select> choice with `input` and `change`. Assertions read the
 // live DOM. A worker job the runtime reports lost (`roc worker fault [...]`
 // on the console) is a result, not a page error. Effects are always manual: `stub-http` stages one answer and
-// `run-effect N` answers the N-th awaited HTTP request, timer or worker job
+// `run-effect N` answers the N-th awaited HTTP request or upload, timer, worker job or operation on a file
 // the current document issued (a job really runs in a worker, and the step
 // waits for its result turn); storage reads answer by themselves from storage. History,
 // title and storage assertions read the real browser state. A worker job's

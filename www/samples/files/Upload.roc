@@ -16,14 +16,15 @@ Upload := [].{
 
 	# region program
 	## A file's line and word counts, read in a worker. The program receives
-	## the file itself, and reads its bytes with `contents`.
+	## the file itself, and reads its bytes as text with `contents_utf8`
+	## (`contents` gives the bytes); a file that is not text counts as empty.
 	Counts : { name : Str, lines : U64, words : U64 }
 
 	count : Worker.Program(File, Counts)
 	count = Worker.pure(
 		"example.org/upload/count",
 		|file| {
-			text = Str.from_utf8_lossy(file.contents())
+			text = file.contents_utf8() ?? ""
 			lines = text.split_on("\n").len()
 			words = text.split_on("\n").map(|l| l.split_on(" ").keep_if(|w| w != "").len()).sum()
 			{ name: file.name(), lines, words }

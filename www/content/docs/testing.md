@@ -176,8 +176,8 @@ browsers do.
 |---|---|
 | `(stub-http "label" :url "/api/x" :status 200 :body "…")` | Stage an HTTP answer; optional `:headers (("name" "value") …)`, default `content-type: application/json`. `:status` is 100–999. Staging a second answer before one is used fails |
 | `(stub-http-reject "label" :kind network :detail "offline")` | Stage a failure: `network` with the browser's message, or `timeout` with an empty `:detail` |
-| `(run-effect N)` | Answer the N-th HTTP request, timer or worker job the current document issued (1-based, in issue order; subscriptions and storage reads not counted). It must still be pending. A timer fires; a worker job runs its program (in Chrome in a real worker, natively in a child process, the step waiting for its result: a program that crashes loses its job with the crash's fault class, and one that has not finished after 30 s fails the step); an HTTP request takes the staged answer, and a reply's `:url` must equal the request's |
-| `(expect-pending-effects N)` | Exactly N HTTP requests, timers and worker jobs are waiting for `run-effect` |
+| `(run-effect N)` | Answer the N-th HTTP request, upload, timer, worker job or operation on a file the current document issued (1-based, in issue order; subscriptions and storage reads not counted). It must still be pending. A timer fires; a worker job runs its program (in Chrome in a real worker, natively in a child process, the step waiting for its result: a program that crashes loses its job with the crash's fault class, and one that has not finished after 30 s fails the step); an HTTP request or an upload takes the staged answer, and a reply's `:url` must equal the request's; a page read, a digest or a file URL is performed on the setup file (see [Files](#files)) |
+| `(expect-pending-effects N)` | Exactly N HTTP requests, uploads, timers, worker jobs and operations on files are waiting for `run-effect` |
 | `(expect-pending-work "program" N)` | Exactly N worker jobs for the program of that name are waiting |
 | `(lose-work N FAULT)` | Answer the N-th effect occurrence, a pending worker job, as `WorkLost(FAULT)` without running it. `FAULT` is `contract`, `resource_limit`, `out_of_memory`, `app_crash`, `expect_failed`, `unavailable` or `executor` |
 | `(time-out-work N)` | Expire the deadline of the N-th effect occurrence, a pending worker job: it is answered `Timeout` without running. A job without a deadline fails the step |
@@ -222,6 +222,7 @@ ticks, answers the refetch, and is gone when unchecked.
 | `(drop-files LOC "name" …)` | The user drops the named setup files on the element |
 | `(paste-files LOC "name" …)` | The user pastes the named setup files into the element |
 | `(expect-files N)` | The app holds exactly N [file handles](@/docs/files.md) |
+| `(expect-upload N "name" START LEN)` | The N-th effect occurrence is a pending upload whose body is `LEN` bytes from `START` of the setup file `name` |
 
 A spec writes out the contents of the files it uses, so both runners give
 the app the same bytes; a step that names a file no `file` form declares
@@ -231,6 +232,15 @@ after the state that held it is written without it, or its scope is
 disposed. In Chrome a chosen file gets its type from its name, and the step
 fails if that is not the type the spec declares. See
 [Files](@/docs/files.md#testing) for a sample.
+
+Operations on a file wait for `run-effect` like any awaited request, and
+are then performed on the setup file's bytes: a page read answers them (or
+`TooLarge` over the default 8 MiB), a digest is computed for real (natively
+by the runner's host, in Chrome by WebCrypto), so a spec asserts the same
+digest in both runners, and a file URL is answered with a URL of the
+runner's own making, so a spec asserts what the app does with it rather
+than its text. An upload is an HTTP request: `expect-upload` checks which
+file and range it sends, and `run-effect` answers it with the staged reply.
 
 ## Work assertions {#work-budgets}
 

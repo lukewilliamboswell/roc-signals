@@ -75,10 +75,16 @@
   release the resource only after the call's batch and effects, which may
   still name it. Do not replace this with tokens an app must release, a
   registry the host scans, or bytes copied through the page to avoid a handle.
+  Operations on a resource are requests that take its handle and act where
+  the resource lives; its contents cross into Wasm only through a read the
+  app asks for. A request resolves the resource when its batch is applied and
+  holds it until it is answered or cancelled, and anything the runtime makes
+  from a resource (an object URL) lives exactly as long as its handle.
 - Make ownership explicit at the boundary. For each list that crosses it (boot
   bytes, payloads, command buffers, key lists, handle lists, a worker's input,
-  output and file buffers), establish who owns it before the call, after it,
-  and when the instance is poisoned or dropped.
+  output and file buffers, a file read into the page as a result), establish
+  who owns it before the call, after it, and when the instance is poisoned or
+  dropped.
 - Publish atomically. A command batch becomes visible only when its call
   returns; a trap discards it. JavaScript reads command bytes only after the
   call, refreshes memory views after every call that can allocate, and applies
@@ -141,8 +147,9 @@
 - Test invariants and failure paths, not only successful output. Cover
   ordering, equality cutoffs, identity reuse, scope disposal, reparenting,
   refusal at the in-flight bound, stale results, cancellation and
-  supersession, lost and timed-out work, resource release, follow-up bounds,
-  containment and recovery, and protocol rejection as applicable.
+  supersession, lost and timed-out work, resource release, a resource the
+  browser can no longer read, follow-up bounds, containment and recovery, and
+  protocol rejection as applicable.
 - Use `.scm` specs beside each app (`examples/<app>/specs/`,
   `tests/apps/<app>/specs/`) for application-visible behavior and work, run
   natively and in Chrome; roc-fuzz targets (each app's `main-fuzz.roc`, and

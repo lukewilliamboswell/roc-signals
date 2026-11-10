@@ -71,6 +71,9 @@ layer is skipped.
 | `OnlineChanges` | `Online(Bool)` on every change |
 | `VisibilityChanges` | `Visible(Bool)` on every change |
 | `Work({ program, input, deadline_ms })` | `Work(output)`, `WorkLost(fault)` or `Timeout`: a registered pure program run on bytes in a Web Worker. Apps use the typed `Worker` module instead; see [Workers](@/docs/workers.md) |
+| `ReadBytes(file)`, `ReadUtf8(file)` | `FileBytes(bytes)` or `FileText(text)`, or `FileFailed(error)`: a file read into the page. Made with `File.read_bytes` and `File.read_utf8`; see [Files](@/docs/files.md) |
+| `Upload({ method, url, headers, body, timeout_ms })` | As `Http`, with a [file](@/docs/files.md) as the body; made with `File.upload` |
+| `Sha256(file)`, `ObjectUrl(file)` | `Digest(bytes)` or `FileUrl(url)`, or `FileFailed(error)`: made with `File.sha256` and `File.object_url`; see [Files](@/docs/files.md) |
 | `Self` | `Now`, in a follow-up turn |
 | `Push(url)`, `Replace(url)`, `Title(text)`, `StorageSet(key, value)`, `StorageRemove(key)`, `Focus(ref)`, `Blur(ref)`, `SelectText(ref)` | None: commands |
 

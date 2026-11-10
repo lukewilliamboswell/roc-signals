@@ -1006,7 +1006,11 @@ ported app needs it:
 
 - session storage alongside local storage, declared at boot the same way;
 - an entropy seed in the boot bytes;
-- sampled time, if an app needs wall-clock values rather than timer ticks.
+- sampled time, if an app needs wall-clock values rather than timer ticks;
+- saving a file to the user's disk (a download of an object URL), once a
+  worker program can produce a file for the app to save. Chrome starts a
+  first programmatic download outside a user gesture but holds back a second
+  one at once, so its contract is decided with it.
 
 ## Browser Events and Policies
 

@@ -1,6 +1,6 @@
 +++
 title = "Files"
-description = "Take a file the user chooses, drops or pastes, keep it as a handle, and read its bytes in a worker without ever copying them through the page."
+description = "Take a file the user chooses, drops or pastes, keep it as a handle, act on it where the browser keeps it, and read its bytes in a worker or, for a small file, on the page."
 weight = 11
 template = "page.html"
 +++
@@ -9,14 +9,29 @@ template = "page.html"
 
 A user gives your app a file by choosing it in a file input, dropping it on
 the page or pasting it. The app receives a `File`: a handle with the file's
-name, size and type. It never receives the bytes on the page. To read them,
-send the file to a [worker](@/docs/workers.md) program, which reads them
-there.
+name, size and type. It does not receive the bytes on the page: the
+browser keeps the file, and the app decides what crosses into its memory.
 
 That is what makes a large file practical. A 64 MiB document never enters the
-page's memory: the browser keeps the file, the worker reads it once into its
-own memory, and the program gets those bytes without a copy. The page stays
-responsive while the worker reads.
+page's memory unless the app asks for it there: the app can upload it, digest
+it or show it where the browser keeps it, and a worker reads it once into
+its own memory, so the program gets those bytes without a copy.
+
+## Which tool
+
+| You want to | Use | The bytes |
+|---|---|---|
+| Upload it, digest it, or preview it in an `<img>` or `<video>` | An operation on the file: `File.upload`, `File.sha256`, `File.object_url` | Never enter the page's memory |
+| Process it: parse, convert, search, count | A [worker program](#reading-a-file-in-a-worker) that is sent the file and calls `File.contents` | Read once into the worker, off the page's thread |
+| Read a small file in a simple app | A page read: `File.read_bytes`, `File.read_utf8` | Read on the page's thread and copied into the page's memory |
+
+This answers two older workarounds. Getting a file's bytes into Roc used to
+mean a custom element that read the file, base64-encoded it into an input's
+value and dispatched `change`, so the page decoded megabytes of base64 in a
+handler; now the file arrives as a handle, a worker reads its bytes, and a
+small one can be read on the page as bytes, not text. Sending a file on used
+to mean building a `data:` URL; an upload now sends the file itself, and a
+preview is an object URL the browser serves from the file.
 
 ## Receiving files
 
@@ -61,8 +76,9 @@ program, `File.contents` gives the bytes of the file or of its range:
 
 The page sends only the file's handle. The runtime hands the browser's file
 to the worker, which reads it into its own memory before the program runs.
-Reading a file's contents on the page is a contract error: there are no
-bytes there.
+For text, `File.contents_utf8` gives `Err(InvalidUtf8)` when the bytes are
+not UTF-8. Calling `File.contents` on the page is a contract error: there
+are no bytes there until the app asks for them with a read.
 
 A run whose files cannot be read fails before the program starts, and the
 worker survives:
@@ -74,6 +90,56 @@ worker survives:
 
 To read part of a large file, send a range: `file.slice({ start, len })`
 reads only those bytes.
+
+## Acting on a file where it lives
+
+An operation on a file is a request, made in an effect site's plan like any
+other, which the runtime performs on the browser's own file:
+
+{{ sample(file="file-tools/Tools.roc", region="requests") }}
+
+- `File.upload(file, { method, url, headers, timeout_ms })` sends the file,
+  or a range of it, as an HTTP request's body. The browser streams it from
+  the file. Read the answer with `http_text`, as for any HTTP request; like
+  one, it is still answered when the site that made it is disposed. A file
+  the browser can no longer read fails it as a network failure.
+- `File.sha256(file)` answers the SHA-256 digest, 32 bytes, with
+  `file_digest`. The browser reads the range into a buffer of its own, not
+  the page's memory; more than `maxFileBytes` is `TooLarge`, and a page
+  outside a secure context (plain HTTP from another host than localhost)
+  has no WebCrypto and answers `Unavailable`.
+- `File.object_url(file)` answers a URL for an `<img>`'s or a `<video>`'s
+  `src`, with `file_url`. The URL works exactly as long as some value holds
+  the file: keep the file beside the URL. Asking again for the same range
+  answers the same URL; one file gives at most 16 ranges URLs.
+
+Each answer is typed:
+
+{{ sample(file="file-tools/Tools.roc", region="answers") }}
+
+A request holds the browser's file until it is answered, so letting the
+file go while a request is in flight is safe. Digests, URLs and reads are
+cancelled when their site is disposed; an upload is kept.
+
+## Reading a file on the page
+
+For a small file in a simple app, bringing its bytes into the page is
+acceptable: ask for them with `File.read_bytes` or `File.read_utf8`, and read
+the answer with `file_bytes` or `file_text`. It is a request, not a value,
+because the bytes are not on the page until the browser has read them. Its
+cost is honest: the browser reads the file into a buffer on the page's
+thread, and the bytes are copied once into the page's memory, where they
+stay while the app keeps them. A range over `maxReadBytes` (8 MiB unless the
+mount sets it, as `mountRocEngineApp({ ..., maxReadBytes: 1 << 20 })`) is
+`TooLarge` and is not read; send larger files to a worker.
+
+| What happened | `FileError` |
+|---|---|
+| The file changed or was deleted since the user chose it | `Unreadable` |
+| More bytes than the operation reads | `TooLarge` |
+| Text was asked for and the bytes are not UTF-8 | `InvalidUtf8` |
+| The browser cannot do it (a digest without WebCrypto) | `Unavailable` |
+| Too many requests were in flight | `Refused` |
 
 ## Testing
 
@@ -87,3 +153,9 @@ repeated; `choose-files`, `drop-files` and `paste-files` give the app named
 files; `expect-files N` checks how many files the app holds. In Chrome a
 chosen file must get the type the spec declares, which the browser decides
 from the file's name.
+
+Operations on a file wait for `run-effect`. `expect-upload N NAME START LEN`
+checks which file and range an upload sends, and a digest is computed for
+real in both runners, so a spec asserts the digest itself:
+
+{{ sample(file="file-tools/specs/tools.scm", syntax="scheme") }}

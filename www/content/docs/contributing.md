@@ -32,7 +32,7 @@ recipe ready.
 | Path | Contents |
 |---|---|
 | `platform/` | The platform (`main.roc`): the engine (`Core.roc`), the authoring API (`Engine.roc`, `Html.roc`, and `Worker.roc` with its payload format `Wire.roc`), the Wasm host (`host/host.zig`, with the typed heaps behind resource handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig`). Also the fuzz platform (`fuzz.roc`, the vendored roc-fuzz modules and the soak walk) |
-| `tests/` | Browser contract tests and the apps they drive, the Chrome spec replay, and the release check helper |
+| `tests/` | Browser contract tests and the apps they drive (`tests/apps/`, for example `files` for file handles and `file-effects` for operations on files), the Chrome spec replay, and the release check helper |
 | `fuzz/` | Fuzz targets of the shared support; each app's own target is its `main-fuzz.roc` |
 | `examples/` | The example apps, each with its specs |
 | `benchmarks/` | The js-framework-benchmark adapter |
@@ -91,8 +91,10 @@ for example to run two tasks at once.
    bounds, `tests/runtime/`), then its contract tests in Chrome: effects,
    controlled inputs, worker jobs, the work monitor, a smoke of the worker
    scaling measurement (correctness, robustness sequences and memory; no
-   timing ratios), file handles and their release, and the Conduit journey
-   against its scripted backend.
+   timing ratios), file handles and their release, operations on files
+   (page reads, uploads to a local server, digests and file URLs, with their
+   bounds, failures and lifetimes), and the Conduit journey against its
+   scripted backend.
 7. The js-framework-benchmark check.
 8. The release dry run: the bundle, `runtime.mjs` and `worker.mjs`, the examples archive with
    every app mounted by its check helper, and the release notes.
