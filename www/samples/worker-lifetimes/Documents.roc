@@ -18,22 +18,22 @@ Documents := [].{
 
 	Line : Row(Ctx, Doc)
 
-	count : Worker.Program(Str, U64)
-	count = Worker.program({
+	count : Worker.Task(Str, U64, Worker.Never)
+	count = Worker.task({
 		name: "example.org/documents/count",
-		run: |text| Documents.word_count(text),
+		run!: |text| Ok(Documents.word_count(text)),
 	})
 
-	tally : Worker.Program(List(Str), { words : U64, documents : U64 })
-	tally = Worker.program({
+	tally : Worker.Task(List(Str), { words : U64, documents : U64 }, Worker.Never)
+	tally = Worker.task({
 		name: "example.org/documents/tally",
-		run: |texts| { words: texts.map(Documents.word_count).sum(), documents: texts.len() },
+		run!: |texts| Ok({ words: texts.map(Documents.word_count).sum(), documents: texts.len() }),
 	})
 
-	report : Worker.Program(List(Doc), Str)
-	report = Worker.program({
+	report : Worker.Task(List(Doc), Str, Worker.Never)
+	report = Worker.task({
 		name: "example.org/documents/report",
-		run: |docs| Str.join_with(docs.map(|d| "${d.id}: ${Documents.word_count(d.text).to_str()} words"), "; "),
+		run!: |docs| Ok(Str.join_with(docs.map(|d| "${d.id}: ${Documents.word_count(d.text).to_str()} words"), "; ")),
 	})
 
 	# region bound
@@ -108,7 +108,7 @@ Documents := [].{
 	}
 	# endregion rows
 
-	show_count : Engine.Remote(U64, Worker.Error) -> Str
+	show_count : Engine.Remote(U64, Worker.Error(Worker.Never)) -> Str
 	show_count = |{ answer, .. }|
 		match answer {
 			Unanswered => "Counting…"
@@ -116,13 +116,12 @@ Documents := [].{
 			Failed(error) => Documents.problem(error)
 		}
 
-	problem : Worker.Error -> Str
+	problem : Worker.Error(Worker.Never) -> Str
 	problem = |error|
 		match error {
 			Timeout => "This took too long."
 			Refused => "Too much is running."
 			Lost(_) => "Counting failed."
-			FileFailed(_) => "The file could not be read."
 		}
 
 	# region panel
@@ -182,7 +181,7 @@ Documents := [].{
 		)
 	# endregion panel
 
-	show_totals : Engine.Remote({ words : U64, documents : U64 }, Worker.Error) -> Str
+	show_totals : Engine.Remote({ words : U64, documents : U64 }, Worker.Error(Worker.Never)) -> Str
 	show_totals = |{ answer, .. }|
 		match answer {
 			Unanswered => "Counting…"

@@ -1,42 +1,45 @@
 import pf.Worker
 
-## Text analysis, as worker programs. This module only declares them; the app
-## that uses them registers them and asks for runs.
+## Text analysis, as worker tasks. This module only declares them; the app
+## that uses them registers them and asks for jobs.
 Words := [].{
 
-	# region programs
+	# region tasks
 	## The words of a text that differ, and the one used most.
 	Summary : { distinct : U64, top : Str }
 
 	## How often a word is used.
 	Frequency : { word : Str, count : U64 }
 
-	summary : Worker.Program(Str, Summary)
-	summary = Worker.program({ name: "example.org/words/summary", run: Words.summarise })
+	## A task that cannot fail: its error is `Worker.Never`, and `run!` is a
+	## plain calculation that always answers `Ok`.
+	summary : Worker.Task(Str, Summary, Worker.Never)
+	summary = Worker.task({ name: "example.org/words/summary", run!: |text| Ok(Words.summarise(text)) })
 
 	## The numbers of the lines, from 1, that contain `word`.
-	find : Worker.Program({ text : Str, word : Str }, List(U64))
-	find = Worker.program({
+	find : Worker.Task({ text : Str, word : Str }, List(U64), Worker.Never)
+	find = Worker.task({
 		name: "example.org/words/find",
-		run: |{ text, word }| Words.lines_with(text, word),
+		run!: |{ text, word }| Ok(Words.lines_with(text, word)),
 	})
-	# endregion programs
+	# endregion tasks
 
 	# region deadline
 	## The three most used words. A job that has not answered five seconds
 	## after it was asked for is stopped and answers `Timeout`.
-	frequencies : Worker.Program(Str, List(Frequency))
-	frequencies = Worker.program({
+	frequencies : Worker.Task(Str, List(Frequency), Worker.Never)
+	frequencies = Worker.task({
 		name: "example.org/words/frequencies",
-		run: |text| Words.most_used(text, 3),
+		run!: |text| Ok(Words.most_used(text, 3)),
 		deadline: Ms(5000),
 	})
 	# endregion deadline
 
-	# region fallible
-	## The sum of the numbers in a text, or the first word that is not one.
-	total : Worker.Program(Str, Try(U64, [NotANumber(Str)]))
-	total = Worker.fallible({ name: "example.org/words/total", run: Words.add_up })
+	# region failing
+	## The sum of the numbers in a text, or the first word that is not one:
+	## a task's own error, which reaches the page as `Failed(NotANumber(word))`.
+	total : Worker.Task(Str, U64, [NotANumber(Str)])
+	total = Worker.task({ name: "example.org/words/total", run!: |text| Words.add_up(text) })
 
 	add_up : Str -> Try(U64, [NotANumber(Str)])
 	add_up = |text|
@@ -48,7 +51,7 @@ Words := [].{
 					Err(_) => Err(NotANumber(word))
 				},
 		)
-	# endregion fallible
+	# endregion failing
 
 	## The words of a text: the pieces between spaces and line breaks.
 	split : Str -> List(Str)

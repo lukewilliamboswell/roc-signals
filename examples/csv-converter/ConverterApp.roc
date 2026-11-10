@@ -24,8 +24,8 @@ ConverterApp := [].{
 	## (`TooLarge`), or the file has no header line (`Empty`).
 	Problem : [Unreadable, TooLarge, InvalidUtf8, Unavailable, Refused, Empty]
 
-	convert : Worker.Task(Job, Try(Converted, Problem))
-	convert = Worker.fallible_task({ name: "roc-signals.example/csv-converter/convert", run!: ConverterApp.convert! })
+	convert : Worker.Task(Job, Converted, Problem)
+	convert = Worker.task({ name: "roc-signals.example/csv-converter/convert", run!: ConverterApp.convert! })
 
 	## How much of the source one read brings into the job's memory.
 	chunk_bytes : U64
@@ -122,11 +122,11 @@ ConverterApp := [].{
 
 	## What the conversion shows: its progress, its answer, or why there is
 	## none.
-	status : Engine.Remote(Try(Converted, Problem), Worker.Error) -> Str
+	status : Engine.Remote(Converted, Worker.Error(Problem)) -> Str
 	status = |{ request, answer }| match (request, answer) {
 		(Pending, _) => "converting…"
-		(Idle, Answered(Ok(c))) => "${c.rows.to_str()} rows, ${c.columns.to_str()} columns${ConverterApp.ragged_note(c.ragged)} → ${c.output.name()} (${ConverterApp.size_text(c.output.size())})"
-		(Idle, Answered(Err(problem))) => "could not convert: ${ConverterApp.explain(problem)}"
+		(Idle, Answered(c)) => "${c.rows.to_str()} rows, ${c.columns.to_str()} columns${ConverterApp.ragged_note(c.ragged)} → ${c.output.name()} (${ConverterApp.size_text(c.output.size())})"
+		(Idle, Failed(Failed(problem))) => "could not convert: ${ConverterApp.explain(problem)}"
 		(Idle, Failed(error)) => "the conversion stopped: ${Str.inspect(error)}"
 		(Idle, Unanswered) => "drop a CSV file, or load the sample"
 	}
@@ -155,9 +155,9 @@ ConverterApp := [].{
 		}
 
 	## The converted file in a remote layer, when there is one.
-	output_of : Engine.Remote(Try(Converted, Problem), Worker.Error) -> List(File)
+	output_of : Engine.Remote(Converted, Worker.Error(Problem)) -> List(File)
 	output_of = |{ answer, .. }| match answer {
-		Answered(Ok(c)) => [c.output]
+		Answered(c) => [c.output]
 		_ => []
 	}
 

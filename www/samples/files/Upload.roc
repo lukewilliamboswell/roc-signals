@@ -3,7 +3,7 @@ import pf.Html
 import pf.Worker
 
 ## A text file the user chooses or drops, read in a worker: the page keeps the
-## file's handle, and a worker program counts the file's lines and words.
+## file's handle, and a worker task counts the file's lines and words.
 Upload := [].{
 
 	# region state
@@ -14,25 +14,27 @@ Upload := [].{
 	received = |s, { files, refused }| { ..s, files: s.files.concat(files), refused: s.refused + refused }
 	# endregion state
 
-	# region program
-	## A file's line and word counts, read in a worker. The program receives
-	## the file itself, and reads its bytes as text with `contents_utf8`
-	## (`contents` gives the bytes); a file that is not text counts as empty.
+	# region task
+	## A file's line and word counts, read in a worker. The task receives the
+	## file's handle, and its job reads the bytes as text with the effect
+	## `contents_utf8!` (`contents!` gives the bytes, `read!` a range); a file
+	## that is not text, or that the browser can no longer read, is the
+	## task's error.
 	Counts : { name : Str, lines : U64, words : U64 }
 
-	count : Worker.Program(File, Counts)
-	count = Worker.program({
+	count : Worker.Task(File, Counts, Engine.FileError)
+	count = Worker.task({
 		name: "example.org/upload/count",
-		run: |file| {
-			text = file.contents_utf8() ?? ""
+		run!: |file| {
+			text = file.contents_utf8!()?
 			lines = text.split_on("\n").len()
 			words = text.split_on("\n").map(|l| l.split_on(" ").keep_if(|w| w != "").len()).sum()
-			{ name: file.name(), lines, words }
+			Ok({ name: file.name(), lines, words })
 		},
 	})
-	# endregion program
+	# endregion task
 
-	show : Engine.Remote(Counts, Worker.Error) -> Str
+	show : Engine.Remote(Counts, Worker.Error(Engine.FileError)) -> Str
 	show = |{ request, answer }| match answer {
 		Answered(
 			{
@@ -41,6 +43,7 @@ Upload := [].{
 				words,
 			},
 		) => "${name}: ${lines.to_str()} lines, ${words.to_str()} words"
+		Failed(Failed(InvalidUtf8)) => "The file is not text."
 		Failed(_) => "The file could not be read."
 		Unanswered => if (request == Pending) "Counting…" else "Choose a file."
 	}

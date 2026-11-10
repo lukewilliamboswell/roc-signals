@@ -4,10 +4,10 @@
     (fill (label "Jobs") "4")
     (fill (label "Weight") "1")
     (click (role button :name "Start"))
-    ; Every fourth job goes to the program that always crashes.
+    ; Every fourth job goes to the task that always crashes.
     (expect-pending-work "roc-signals.example/worker-lab/primes" 3)
     (expect-pending-work "roc-signals.example/worker-lab/crash" 1)
-    (expect-visible (text "primes in [1006000, 1008000), crashing program"))
+    (expect-visible (text "primes in [1006000, 1008000), crashing task"))
     ; It really runs and crashes, in an instance of its own; the others
     ; still answer.
     (run-effect 4)

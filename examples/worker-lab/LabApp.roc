@@ -4,7 +4,7 @@ import pf.Worker
 import pf.Wire
 import Lab
 
-## Worker Lab: a run of CPU-bound jobs, each computed by a pure Roc program
+## Worker Lab: a run of CPU-bound jobs, each computed by a Roc task
 ## in a Web Worker while the page stays responsive.
 ##
 ## Each row of the job grid owns its job: the row's `Engine.latest` site
@@ -26,29 +26,29 @@ LabApp := [].{
 	Ctx : In(Root, Lab.S)
 
 	## Counts the primes in a range. The lab's deadline is a parameter of
-	## each run, so each program is made with the deadline its jobs ask for;
+	## each run, so each task is made with the deadline its jobs ask for;
 	## the name and function, and so the registration, are the same for all.
-	primes : [Unlimited, Ms(U32)] -> Worker.Program(Lab.Span, U64)
-	primes = |deadline| Worker.program({
+	primes : [Unlimited, Ms(U32)] -> Worker.Task(Lab.Span, U64, Worker.Never)
+	primes = |deadline| Worker.task({
 		name: "roc-signals.example/worker-lab/primes",
-		run: Lab.count_primes,
+		run!: |span| Ok(Lab.count_primes(span)),
 		deadline,
 	})
 
 	## Draws one tile; its pixels come back as one block of bytes.
-	tiles : [Unlimited, Ms(U32)] -> Worker.Program(Lab.TileSpec, Wire.Bytes)
-	tiles = |deadline| Worker.program({
+	tiles : [Unlimited, Ms(U32)] -> Worker.Task(Lab.TileSpec, Wire.Bytes, Worker.Never)
+	tiles = |deadline| Worker.task({
 		name: "roc-signals.example/worker-lab/tile",
-		run: |spec| Wire.Bytes.from_list(Lab.tile(spec)),
+		run!: |spec| Ok(Wire.Bytes.from_list(Lab.tile(spec))),
 		deadline,
 	})
 
-	## A program that always crashes, for the faulty workload; its message
+	## A task that always crashes, for the faulty workload; its message
 	## names the range it was given.
-	crasher : [Unlimited, Ms(U32)] -> Worker.Program(Lab.Span, U64)
-	crasher = |deadline| Worker.program({
+	crasher : [Unlimited, Ms(U32)] -> Worker.Task(Lab.Span, U64, Worker.Never)
+	crasher = |deadline| Worker.task({
 		name: "roc-signals.example/worker-lab/crash",
-		run: |{ lo, hi }| crash "the worker lab's crash program crashed on [${lo.to_str()}, ${hi.to_str()}), as it always does",
+		run!: |{ lo, hi }| crash "the worker lab's crash task crashed on [${lo.to_str()}, ${hi.to_str()}), as it always does",
 		deadline,
 	})
 
@@ -72,7 +72,7 @@ LabApp := [].{
 				}
 		}
 
-	## A row's result: decode it with the program that ran, and finish the job.
+	## A row's result: decode it with the task that ran, and finish the job.
 	react : Lab.S, Lab.Want, Engine.Res -> Lab.S
 	react = |s, want, res|
 		match want {
@@ -243,7 +243,7 @@ LabApp := [].{
 					"app-header",
 					[
 						Engine.element("h1", [Engine.class("app-title")], [Engine.text("Worker Lab")]),
-						Html.p("Pure Roc programs counting primes and drawing tiles of the Mandelbrot set in Web Workers, while the page keeps its heartbeat.", "app-subtitle"),
+						Html.p("Roc tasks counting primes and drawing tiles of the Mandelbrot set in Web Workers, while the page keeps its heartbeat.", "app-subtitle"),
 					],
 				),
 				LabApp.controls(st),

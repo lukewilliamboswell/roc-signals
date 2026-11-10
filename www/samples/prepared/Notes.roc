@@ -11,27 +11,31 @@ Notes := [].{
 
 	# region prepare
 	## The expensive step: read the file and split it into lines, once per
-	## file in a worker that keeps the result.
-	document : Worker.Prepared(File, List(Str))
+	## file in a worker that keeps the result. A file that is not text is the
+	## preparation's error, which every task of it shares.
+	document : Worker.Preparation(File, List(Str), Engine.FileError)
 	document = Worker.prepared({
 		name: "example.org/notes/document",
-		prepare: |file| Str.from_utf8_lossy(file.contents()).split_on("\n"),
+		prepare!: |file| {
+			text = file.contents_utf8!()?
+			Ok(text.split_on("\n"))
+		},
 	})
 	# endregion prepare
 
-	# region queries
+	# region tasks
 	## Three typed questions over the same lines, each with its own input and
-	## output type.
-	summary : Worker.Query(File, List(Str), {}, { lines : U64, chars : U64 })
-	summary = Notes.document.query({
+	## output type. A preparation's task reads the state beside its own input.
+	summary : Worker.PreparedTask(File, List(Str), {}, { lines : U64, chars : U64 }, Engine.FileError)
+	summary = Notes.document.task({
 		name: "example.org/notes/summary",
-		run: |lines, {}| { lines: lines.len(), chars: lines.fold(0, |n, l| n + l.count_utf8_bytes()) },
+		run!: |lines, {}| Ok({ lines: lines.len(), chars: lines.fold(0, |n, l| n + l.count_utf8_bytes()) }),
 	})
 
-	search : Worker.Query(File, List(Str), Str, List(U64))
-	search = Notes.document.query({
+	search : Worker.PreparedTask(File, List(Str), Str, List(U64), Engine.FileError)
+	search = Notes.document.task({
 		name: "example.org/notes/search",
-		run: |lines, word| {
+		run!: |lines, word| {
 			var $found = []
 			var $at = 1.U64
 			for line in lines {
@@ -40,17 +44,19 @@ Notes := [].{
 				}
 				$at = $at + 1
 			}
-			$found
+			Ok($found)
 		},
 	})
 
-	longest : Worker.Query(File, List(Str), {}, Str)
-	longest = Notes.document.query({
+	## A cancelled job of this task finishes, its answer dropped, so the
+	## worker keeps the lines for the next question.
+	longest : Worker.PreparedTask(File, List(Str), {}, Str, Engine.FileError)
+	longest = Notes.document.task({
 		name: "example.org/notes/longest",
-		run: |lines, {}| lines.fold("", |best, l| if (l.count_utf8_bytes() > best.count_utf8_bytes()) l else best),
+		run!: |lines, {}| Ok(lines.fold("", |best, l| if (l.count_utf8_bytes() > best.count_utf8_bytes()) l else best)),
 		on_cancel: Finish,
 	})
-	# endregion queries
+	# endregion tasks
 
 	# region register
 	program : Engine.Program
@@ -70,7 +76,7 @@ Notes := [].{
 	}
 	# endregion asked
 
-	show : Engine.Remote(a, Worker.Error), (a -> Str) -> Str
+	show : Engine.Remote(a, Worker.Error(Engine.FileError)), (a -> Str) -> Str
 	show = |{ request, answer }, f| match answer {
 		Answered(value) => if (request == Pending) "working" else f(value)
 		Failed(_) => "failed"
@@ -79,7 +85,7 @@ Notes := [].{
 
 	# region tabs
 	## Each tab's site lives in its branch: a revisit asks again, and the
-	## worker that kept the lines answers with a query, not a new split.
+	## worker that kept the lines runs only the task, not a new split.
 	panel : State(Ctx, S), Tab -> Elem(Ctx)
 	panel = |st, tab| {
 		v = st.val()

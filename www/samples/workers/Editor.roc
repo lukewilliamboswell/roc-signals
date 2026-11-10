@@ -14,7 +14,7 @@ Editor := [].{
 	Ask : [Idle, Count({ press : U64, text : Str })]
 
 	## What the count shows.
-	Counted : [NotCounted, Counting, Cancelled, Counted(List(Words.Frequency)), CountFailed(Worker.Error)]
+	Counted : [NotCounted, Counting, Cancelled, Counted(List(Words.Frequency)), CountFailed(Worker.Error(Worker.Never))]
 
 	S : { text : Str, query : Str, numbers : Str, presses : U64, ask : Ask, counted : Counted }
 
@@ -22,7 +22,7 @@ Editor := [].{
 	# endregion model
 
 	# region register
-	## The program both platforms run, with every worker program it asks for.
+	## The program both platforms run, with every worker task it asks for.
 	program : Engine.Program
 	program =
 		Engine.program(|| Engine.state(Editor.initial, Editor.view))
@@ -75,7 +75,7 @@ Editor := [].{
 
 	## While a job is wanted, the previous answer stays and says it is being
 	## updated.
-	show_summary : Engine.Remote(Words.Summary, Worker.Error) -> Str
+	show_summary : Engine.Remote(Words.Summary, Worker.Error(Worker.Never)) -> Str
 	show_summary = |{ request, answer }|
 		match answer {
 			Unanswered => if (request == Pending) "Analysing…" else ""
@@ -87,14 +87,14 @@ Editor := [].{
 		}
 	# endregion derive
 
-	## What to tell the user when a job produced no answer.
-	problem : Worker.Error -> Str
+	## What to tell the user when a job produced no answer. These tasks
+	## cannot fail, so there is no `Failed` to match.
+	problem : Worker.Error(Worker.Never) -> Str
 	problem = |error|
 		match error {
 			Timeout => "This took too long."
 			Refused => "Too much is running; edit the text to try again."
 			Lost(_) => "The analysis failed."
-			FileFailed(_) => "The file could not be read."
 		}
 
 	# region derive-when
@@ -116,12 +116,13 @@ Editor := [].{
 	}
 
 	## The body of the search's layer, as a named function. Its context is
-	## left generic: inside the layer it is `In(Ctx, Engine.Remote(List(U64), Worker.Error))`,
-	## which a named body has no need to spell out.
-	found : Val(ctx, Engine.Remote(List(U64), Worker.Error)) -> Elem(ctx)
+	## left generic: inside the layer it is
+	## `In(Ctx, Engine.Remote(List(U64), Worker.Error(Worker.Never)))`, which
+	## a named body has no need to spell out.
+	found : Val(ctx, Engine.Remote(List(U64), Worker.Error(Worker.Never))) -> Elem(ctx)
 	found = |remote| Html.p_v(remote.map(Editor.show_lines), [Engine.test_id("found")])
 
-	show_lines : Engine.Remote(List(U64), Worker.Error) -> Str
+	show_lines : Engine.Remote(List(U64), Worker.Error(Worker.Never)) -> Str
 	show_lines = |{ request, answer }|
 		match answer {
 			Unanswered => if (request == Pending) "Searching…" else ""
@@ -156,7 +157,7 @@ Editor := [].{
 		)
 	}
 
-	counted : Try(List(Words.Frequency), Worker.Error) -> Counted
+	counted : Try(List(Words.Frequency), Worker.Error(Worker.Never)) -> Counted
 	counted = |outcome|
 		match outcome {
 			Ok(top) => Counted(top)
@@ -196,18 +197,17 @@ Editor := [].{
 		)
 	}
 
-	## The program's own error is an answer (`Answered(Err(...))`); a job that
-	## produced no answer is `Failed`.
-	show_total : Engine.Remote(Try(U64, [NotANumber(Str)]), Worker.Error) -> Str
+	## The task's own error is `Failed(Failed(...))`, beside the ways a job
+	## can produce no answer at all.
+	show_total : Engine.Remote(U64, Worker.Error([NotANumber(Str)])) -> Str
 	show_total = |{ answer, .. }|
 		match answer {
 			Unanswered => "Adding…"
-			Answered(Ok(sum)) => "Total ${sum.to_str()}"
-			Answered(Err(NotANumber(word))) => "\"${word}\" is not a number"
+			Answered(sum) => "Total ${sum.to_str()}"
+			Failed(Failed(NotANumber(word))) => "\"${word}\" is not a number"
 			Failed(Timeout) => "Adding took too long."
 			Failed(Refused) => "Too much is running; edit the numbers to try again."
 			Failed(Lost(_)) => "Adding failed."
-			Failed(FileFailed(_)) => "The file could not be read."
 		}
 	# endregion fallible-view
 }

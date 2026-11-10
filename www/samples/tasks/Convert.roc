@@ -2,16 +2,16 @@ import pf.Engine exposing [Elem, File, In, Root, State]
 import pf.Html
 import pf.Worker
 
-## The Tasks guide's sample: convert a CSV the user chooses into a TSV in a
-## worker, a chunk at a time, keep a log that each job appends to, download
-## a file into a handle and measure it in a task, and save the results.
+## Files in tasks: convert a CSV the user chooses into a TSV in a worker, a
+## chunk at a time, keep a log that each job appends to, download a file
+## into a handle and measure it in a task, and save the results.
 Convert := [].{
 
 	# region transform
 	## Convert a CSV file to TSV in a worker, 64 KiB at a time: the job's
 	## memory holds a chunk, never the file.
-	to_tsv : Worker.Task(File, Try(File, Engine.FileError))
-	to_tsv = Worker.fallible_task({ name: "example.org/convert/tsv", run!: Convert.to_tsv! })
+	to_tsv : Worker.Task(File, File, Engine.FileError)
+	to_tsv = Worker.task({ name: "example.org/convert/tsv", run!: Convert.to_tsv! })
 
 	to_tsv! : File => Try(File, Engine.FileError)
 	to_tsv! = |source| {
@@ -32,16 +32,16 @@ Convert := [].{
 	## The same conversion for a file the user asked to export: it finishes
 	## even if the panel that asked for it closes, and gives up after a
 	## minute.
-	export : Worker.Task(File, Try(File, Engine.FileError))
-	export = Worker.fallible_task({ name: "example.org/convert/export", run!: Convert.to_tsv!, deadline: Ms(60000), on_dispose: Keep })
+	export : Worker.Task(File, File, Engine.FileError)
+	export = Worker.task({ name: "example.org/convert/export", run!: Convert.to_tsv!, deadline: Ms(60000), on_dispose: Keep })
 	# endregion policies
 
 	# region append
 	## Append a line to the log the last job built. The builder starts from
 	## that file by reference, and the old log is unchanged unless the new
 	## one is delivered.
-	log_line : Worker.Task({ log : List(File), line : Str }, Try(File, Engine.FileError))
-	log_line = Worker.fallible_task({ name: "example.org/convert/log", run!: Convert.log_line! })
+	log_line : Worker.Task({ log : List(File), line : Str }, File, Engine.FileError)
+	log_line = Worker.task({ name: "example.org/convert/log", run!: Convert.log_line! })
 
 	log_line! : { log : List(File), line : Str } => Try(File, Engine.FileError)
 	log_line! = |{ log, line }| {
@@ -57,8 +57,8 @@ Convert := [].{
 
 	# region measure
 	## The number of lines in a file, read 1 MiB at a time.
-	count_lines : Worker.Task(File, Try(U64, Engine.FileError))
-	count_lines = Worker.fallible_task({ name: "example.org/convert/lines", run!: Convert.count_lines! })
+	count_lines : Worker.Task(File, U64, Engine.FileError)
+	count_lines = Worker.task({ name: "example.org/convert/lines", run!: Convert.count_lines! })
 
 	count_lines! : File => Try(U64, Engine.FileError)
 	count_lines! = |file| {
@@ -139,8 +139,8 @@ Convert := [].{
 								r.map(
 									|{ request, answer }| match (request, answer) {
 										(Pending, _) => "converting"
-										(Idle, Answered(Ok(f))) => "converted ${f.name()} (${f.size().to_str()} bytes)"
-										(Idle, Answered(Err(e))) => "conversion failed: ${Str.inspect(e)}"
+										(Idle, Answered(f)) => "converted ${f.name()} (${f.size().to_str()} bytes)"
+										(Idle, Failed(Failed(e))) => "conversion failed: ${Str.inspect(e)}"
 										(Idle, Failed(e)) => "no answer: ${Str.inspect(e)}"
 										(Idle, Unanswered) => "choose a CSV file"
 									},
@@ -155,7 +155,7 @@ Convert := [].{
 								st.lift().update_by(
 									r,
 									|s, remote| match remote.answer {
-										Answered(Ok(f)) => Convert.save_first(s, [f])
+										Answered(f) => Convert.save_first(s, [f])
 										_ => s
 									},
 								),
@@ -177,8 +177,8 @@ Convert := [].{
 					},
 					st.on_result(
 						|s, _, res| match Convert.log_line.result(res) {
-							Ok(Ok(log)) => { ..s, log: [log], logging: Idle }
-							Ok(Err(e)) => { ..s, status: "log failed: ${Str.inspect(e)}", logging: Idle }
+							Ok(log) => { ..s, log: [log], logging: Idle }
+							Err(Failed(e)) => { ..s, status: "log failed: ${Str.inspect(e)}", logging: Idle }
 							Err(e) => { ..s, status: "log lost: ${Str.inspect(e)}", logging: Idle }
 						},
 					),
@@ -214,7 +214,7 @@ Convert := [].{
 					|r| Html.p_v(
 						r.map(
 							|{ answer, .. }| match answer {
-								Answered(Ok(n)) => "${n.to_str()} lines downloaded"
+								Answered(n) => "${n.to_str()} lines downloaded"
 								_ => "nothing downloaded"
 							},
 						),

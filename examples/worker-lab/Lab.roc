@@ -42,7 +42,7 @@ Lab := [].{
 	max_deadline_ms = 600000
 
 	## The workloads a run can be made of. `Faulty` is `Primes` with every
-	## fourth job sent to a program that always crashes, to show that a
+	## fourth job sent to a task that always crashes, to show that a
 	## crashed worker loses only its own job.
 	Workload : [Primes, Tiles, Faulty]
 
@@ -377,7 +377,7 @@ Lab := [].{
 	## A job's request came back. A refusal sends the job back to waiting
 	## for another attempt; anything else finishes it and admits the next
 	## waiting job.
-	finish : S, { run : U64, index : U64, attempt : U64 }, Try(Answer, Worker.Error) -> S
+	finish : S, { run : U64, index : U64, attempt : U64 }, Try(Answer, Worker.Error(Worker.Never)) -> S
 	finish = |s, { run, index, attempt }, outcome|
 		match s.jobs.get(index) {
 			Ok(job) if job.run == run and job.attempt == attempt and Lab.is_running(job) => {
@@ -387,7 +387,6 @@ Lab := [].{
 						Err(Timeout) => ({ ..job, phase: TimedOut }, 0)
 						Err(Lost(fault)) => ({ ..job, phase: Lost(fault) }, 0)
 						Err(Refused) => ({ ..job, phase: Waiting, attempt: attempt + 1 }, 1)
-						Err(FileFailed(_)) => crash "internal: a Worker Lab job sends no files, so none can fail to be read"
 					}
 				{ ..s, jobs: Lab.admit(s.jobs.set(index, next) ?? s.jobs), refused: s.refused + refused }
 			}
@@ -463,7 +462,7 @@ Lab := [].{
 	describe = |task|
 		match task {
 			Count({ lo, hi }) => "primes in [${lo.to_str()}, ${hi.to_str()})"
-			Crash({ lo, hi }) => "primes in [${lo.to_str()}, ${hi.to_str()}), crashing program"
+			Crash({ lo, hi }) => "primes in [${lo.to_str()}, ${hi.to_str()}), crashing task"
 			Tile({ side, .. }) => "tile of ${side.to_str()} by ${side.to_str()} pixels"
 		}
 

@@ -19,7 +19,7 @@
 //    spans.
 // 5. Robustness, as sequences with the monitor's guarantees as the oracle:
 //    a seeded random walk of starts, cancels, resets and parameter changes
-//    over primes, tiles, deadlines and the crashing program; then a storm
+//    over primes, tiles, deadlines and the crashing task; then a storm
 //    of starts and cancels. Afterwards every issued job has exactly one end,
 //    live instances never exceeded the pool, no reply came late, the page
 //    never faulted, a clean run is correct, and unmounting terminates every
@@ -544,7 +544,7 @@ const robustness = [];
   check(`walk: ${steps} steps (${JSON.stringify(walk.ops)}) without a page fault`, walk.poisoned === null && errors.length === 0, JSON.stringify({ poisoned: walk.poisoned, errors }));
   check(`walk: every one of ${seq.jobs} issued jobs has exactly one end; at most ${max} instances live`, seq.problems.length === 0 && inFlight === 0, seq.problems.join("; "));
   check("walk: no late replies, and the pool's peak within its bound", s.jobs.lateReplies === 0 && s.pool.peak.instances <= max, JSON.stringify({ late: s.jobs.lateReplies, peak: s.pool.peak }));
-  check("walk: every lost job is a crash of the crash program, reported once", after.faults.length === s.jobs.lost && after.faults.every((c) => c === "app_crash"), JSON.stringify({ faults: after.faults.length, lost: s.jobs.lost }));
+  check("walk: every lost job is a crash of the crash task, reported once", after.faults.length === s.jobs.lost && after.faults.every((c) => c === "app_crash"), JSON.stringify({ faults: after.faults.length, lost: s.jobs.lost }));
   // The oracles above mean something only if the walk reached every
   // outcome; the full walk is long enough to.
   if (FULL) check("walk: it reached answers, deadlines, crashes and cancellations", s.jobs.done > 0 && s.jobs.timeout > 0 && s.jobs.lost > 0 && s.jobs.cancelled > 0, JSON.stringify(s.jobs));

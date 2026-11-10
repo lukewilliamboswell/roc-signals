@@ -11,18 +11,19 @@ import Lab
 import LabApp
 
 ## Worker Lab on the fuzz platform (its specs run through `main.roc`). The
-## walks answer pending jobs as `Soak.step` does: run the program in process,
-## lose the job with a fault class, time it out, or leave it pending, so every
-## prime and tile program runs inside the leak check.
+## walks answer pending jobs as `Soak.step` does: answer it with the task's
+## pure function standing in for its worker (`stand_in`), lose the job with
+## a fault class, time it out, or leave it pending, so every prime and tile
+## calculation runs inside the leak check.
 ## - generated: explorer-driven walks of starts, cancels, resets, parameter
 ##   edits (restarts) and answers, settled after every step, which must free
 ##   everything they allocated.
 ## - "soak-10k": 10k seeded steps, then a run started, every job answered and
 ##   the run reset, 48 times on the engine alone: live bytes flat.
 ##
-## The walk keeps away from the faulty workload. Its crash program crashes on
-## every input by design, and a walk runs programs in process, where a crash
-## ends the walk as a finding; that program's behaviour is specified instead
+## The walk keeps away from the faulty workload. Its crash task crashes on
+## every input by design, and a walk answers jobs in process, where a crash
+## ends the walk as a finding; that task's behaviour is specified instead
 ## (specs/a-failed-job-loses-only-itself.scm, natively in a child process and
 ## in Chrome in a worker) and soaked in Chrome. So after any step that leaves
 ## "faulty" selected, the walk selects "primes" again in the same step, which
@@ -79,6 +80,18 @@ steer = |s0| {
 start : {} -> St
 start = |_| SpecRunner.mount(program, "/", [])
 
+## The walk's stand-in for a worker: each task's answer from the pure
+## function its `run!` wraps.
+stand_in : Str, List(U8), List(U8) -> List(U8)
+stand_in = |task, prep, input|
+	if task == "roc-signals.example/worker-lab/primes" {
+		LabApp.primes(Unlimited).stand_in(|span| Ok(Lab.count_primes(span)))(prep, input)
+	} else if task == "roc-signals.example/worker-lab/tile" {
+		LabApp.tiles(Unlimited).stand_in(|spec| Ok(Wire.Bytes.from_list(Lab.tile(spec))))(prep, input)
+	} else {
+		crash "lab walk: the walk keeps away from worker task \"${task}\""
+	}
+
 ## A walk's `after` hook: steer, then the settle check (`Soak.settled`).
 steered : St -> St
 steered = |s| Soak.settled(program)(steer(s))
@@ -90,12 +103,12 @@ cycle = [Click(Role({ role: "button", name: "Start" })), Click(Role({ role: "but
 
 ## What each job of a run with the initial parameters answers, in job order,
 ## computed as a worker instance would compute it (at run time, not as a
-## compile-time constant).
+## compile-time constant): the answer's bytes and its success byte.
 answers_for : {} -> List(List(U8))
 answers_for = |_|
 	Lab.start(Lab.initial).jobs.map(
 		|job| match job.task {
-			Count(span) => Wire.encode(Lab.count_primes(span))
+			Count(span) => Wire.encode(Lab.count_primes(span)).append(0)
 			_ => crash "lab soak: the initial workload counts primes"
 		},
 	)
@@ -108,7 +121,8 @@ answer_jobs = |subs, answers, a0, b0| {
 	var $b = b0
 	var $k = 0.U64
 	for id in Core.fx_live(a0).keep_if(|id| !subs.contains(id)) {
-		(a1, b1) = Core.take_cmds(Core.result($a, id, Work(answers.get($k) ?? crash "lab soak: more jobs than the run has")), $b)
+		output = answers.get($k) ?? crash "lab soak: more jobs than the run has"
+		(a1, b1) = Core.take_cmds(Core.result($a, id, Work({ output, files: [] })), $b)
 		$a = a1
 		$b = b1
 		$k = $k + 1
@@ -120,7 +134,7 @@ answer_jobs = |subs, answers, a0, b0| {
 ## mount, which must free everything it allocated.
 soak_walk! : List(U8) => Fuzz.Outcome
 soak_walk! = |bytes| {
-	Fuzz.expect_no_leaks!(|| Soak.walk(program, start({}), bytes, steered))
+	Fuzz.expect_no_leaks!(|| Soak.walk_with(program, start({}), bytes, stand_in, steered))
 	Fuzz.keep
 }
 
@@ -128,9 +142,9 @@ soak_walk! = |bytes| {
 ## times on the engine alone: live allocations flat after 3 warm-up cycles.
 soak_10k! : {} => Fuzz.Outcome
 soak_10k! = |_| {
-	Fuzz.expect_no_leaks!(|| Soak.walk_n(program, start({}), 7, 10000, steered))
+	Fuzz.expect_no_leaks!(|| Soak.walk_n_with(program, start({}), 7, 10000, stand_in, steered))
 	# What the same walk reached, outside the leak check.
-	walked = Soak.walk_n(program, start({}), 7, 10000, steered)
+	walked = Soak.walk_n_with(program, start({}), 7, 10000, stand_in, steered)
 	shown = |id| SpecRunner.find(walked.dom, TestId(id)).map_ok(|i| Dom.text_of(walked.dom, i)) ?? "?"
 	Fuzz.mark!("soak walk: ${walked.browser.issued.len().to_str()} effects issued; last run ${shown("progress")}; refused and retried ${shown("refused")}")
 	s0 = start({})

@@ -14,19 +14,21 @@ main =
 ## Records, tag unions, lists, numbers and strings cross as they are.
 Shape : [Circle({ radius : F64 }), Rect({ width : F64, height : F64 })]
 
-area : Worker.Program(List(Shape), F64)
-area = Worker.program({
+area : Worker.Task(List(Shape), F64, Worker.Never)
+area = Worker.task({
 	name: "example.org/shapes/area",
-	run: |shapes|
-		shapes
-			.map(
-				|shape|
-					match shape {
-						Circle({ radius }) => 3.141592653589793 * radius * radius
-						Rect({ width, height }) => width * height
-					},
-			)
-			.sum(),
+	run!: |shapes|
+		Ok(
+			shapes
+				.map(
+					|shape|
+						match shape {
+							Circle({ radius }) => 3.141592653589793 * radius * radius
+							Rect({ width, height }) => width * height
+						},
+				)
+				.sum(),
+		),
 })
 
 # endregion structural
@@ -44,10 +46,11 @@ Celsius := { degrees : F64 }.{
 	degrees = |c| c.degrees
 }
 
-warmest : Worker.Program(List(Celsius), Try(Celsius, [Empty]))
-warmest = Worker.fallible({
+## Its error, `[Empty]`, crosses as any tag union does.
+warmest : Worker.Task(List(Celsius), Celsius, [Empty])
+warmest = Worker.task({
 	name: "example.org/weather/warmest",
-	run: |readings|
+	run!: |readings|
 		readings.fold(
 			Err(Empty),
 			|best, reading|
@@ -62,14 +65,16 @@ warmest = Worker.fallible({
 
 # region bytes
 ## Bulk bytes cross as one block when wrapped in `Wire.Bytes`.
-checksum : Worker.Program(Wire.Bytes, U32)
-checksum = Worker.program({
+checksum : Worker.Task(Wire.Bytes, U32, Worker.Never)
+checksum = Worker.task({
 	name: "example.org/files/checksum",
-	run: |bytes| Wire.Bytes.to_list(bytes).fold(0, |sum, byte| sum + byte.to_u32()),
+	run!: |bytes| Ok(Wire.Bytes.to_list(bytes).fold(0, |sum, byte| sum + byte.to_u32())),
 })
 
-## A request for a file's bytes, wrapped for sending.
-check_file : List(U8) -> Engine.Req
-check_file = |contents| checksum.request(Wire.Bytes.from_list(contents))
+## A request for a checksum of bytes the page holds, wrapped for sending.
+## (A file the page holds is sent as its handle instead, and read in the
+## job.)
+check_bytes : List(U8) -> Engine.Req
+check_bytes = |contents| checksum.request(Wire.Bytes.from_list(contents))
 
 # endregion bytes

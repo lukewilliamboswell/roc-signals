@@ -1,4 +1,4 @@
-(test "Notes — three queries over one prepared file, and a revisit asks again"
+(test "Notes — three tasks over one prepared file, and a revisit asks again"
   (setup
     (file "notes.txt" "text/plain" "first line\nsecond, longer line\nthird\n"))
   (steps
