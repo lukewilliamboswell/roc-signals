@@ -93,35 +93,35 @@ Api := {}.{
 
 	decode_feed : Str -> Api.Remote(Api.FeedPage)
 	decode_feed = |body| {
-		parse : Str -> Try(Api.FeedPage, [InvalidJson(Str), MissingRequiredField(Str)])
+		parse : Str -> Try(Api.FeedPage, [InvalidJson(Str)])
 		parse = Json.parser_camel()
 		to_remote(parse(shield_escapes(body)).map_ok(|page| { ..page, articles: page.articles.map(restore_summary) }))
 	}
 
 	decode_article : Str -> Api.Remote(Api.Article)
 	decode_article = |body| {
-		parse : Str -> Try({ article : Api.Article }, [InvalidJson(Str), MissingRequiredField(Str)])
+		parse : Str -> Try({ article : Api.Article }, [InvalidJson(Str)])
 		parse = Json.parser_camel()
 		to_remote(parse(shield_escapes(body)).map_ok(|envelope| restore_article(envelope.article)))
 	}
 
 	decode_profile : Str -> Api.Remote(Api.Profile)
 	decode_profile = |body| {
-		parse : Str -> Try({ profile : Api.Profile }, [InvalidJson(Str), MissingRequiredField(Str)])
+		parse : Str -> Try({ profile : Api.Profile }, [InvalidJson(Str)])
 		parse = Json.parser_camel()
 		to_remote(parse(shield_escapes(body)).map_ok(|envelope| { ..envelope.profile, bio: restore_text(envelope.profile.bio) }))
 	}
 
 	decode_comments : Str -> Api.Remote(List(Api.Comment))
 	decode_comments = |body| {
-		parse : Str -> Try({ comments : List(Api.Comment) }, [InvalidJson(Str), MissingRequiredField(Str)])
+		parse : Str -> Try({ comments : List(Api.Comment) }, [InvalidJson(Str)])
 		parse = Json.parser_camel()
 		to_remote(parse(shield_escapes(body)).map_ok(|envelope| envelope.comments.map(restore_comment)))
 	}
 
 	decode_tags : Str -> Api.Remote(List(Str))
 	decode_tags = |body| {
-		parse : Str -> Try({ tags : List(Str) }, [InvalidJson(Str), MissingRequiredField(Str)])
+		parse : Str -> Try({ tags : List(Str) }, [InvalidJson(Str)])
 		parse = Json.parser_camel()
 		to_remote(parse(shield_escapes(body)).map_ok(|envelope| envelope.tags))
 	}
@@ -218,11 +218,10 @@ Api := {}.{
 			_ => ""
 		}
 
-	to_remote : Try(a, [InvalidJson(Str), MissingRequiredField(Str)]) -> Api.Remote(a)
+	to_remote : Try(a, [InvalidJson(Str)]) -> Api.Remote(a)
 	to_remote = |result|
 		match result {
 			Ok(value) => Ready(value)
-			Err(MissingRequiredField(name)) => Failed("Response was missing ${name}")
 			Err(InvalidJson(_)) => Failed("Response was not valid JSON")
 		}
 
@@ -324,7 +323,7 @@ Api := {}.{
 		} else if !response.error.is_empty() {
 			AuthErrored("Request failed: ${response.error}")
 		} else if response.status == 200 {
-			parse : Str -> Try({ user : Api.User }, [InvalidJson(Str), MissingRequiredField(Str)])
+			parse : Str -> Try({ user : Api.User }, [InvalidJson(Str)])
 			parse = Json.parser_camel()
 			match parse(shield_escapes(response.body)) {
 				Ok(envelope) => AuthAccepted(envelope.user)

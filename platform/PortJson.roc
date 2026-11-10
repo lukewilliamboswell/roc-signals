@@ -160,8 +160,8 @@ PortJson := [].{
 		invalid_value = |_, state| Expected("a known tag", state.pos)
 
 		## A record lacked a required field.
-		missing_record_field : Format, Str, State -> Error
-		missing_record_field = |_, name, _| MissingRequiredField(name)
+		missing_field : Format, Str -> Error
+		missing_field = |_, name| MissingRequiredField(name)
 
 		## Field names are used as they are written in Roc.
 		rename_field : Format, Str -> Str
@@ -461,7 +461,7 @@ PortJson := [].{
 		}
 
 		## A tag in either form; `UnknownTag` when the type has no such tag.
-		parse_tag_union : Format, Encoding.ParseTagUnionSpec(a), State -> Try({ value : a, rest : State }, Error)
+		parse_tag_union : Format, Encoding.ParseTagUnionSpec(a, Format, State, Error), State -> Try({ value : a, rest : State }, Error)
 		parse_tag_union = |encoding, spec, state| {
 			s = skip_ws(state)
 			if byte_at(s) == quote {
@@ -683,7 +683,7 @@ PortJson := [].{
 		encode_key_tag = |_, out, name| Ok(write(out, |t| write_string(t, name)))
 
 		## A tag key, by name.
-		parse_key_tag_union : Format, Encoding.ParseTagUnionSpec(a), State -> Try({ value : a, rest : State }, Error)
+		parse_key_tag_union : Format, Encoding.ParseTagUnionSpec(a, Format, State, Error), State -> Try({ value : a, rest : State }, Error)
 		parse_key_tag_union = |encoding, spec, state| {
 			name = read_string(skip_ws(state))?
 			bare_tag(encoding, spec, name.value, name.rest)
@@ -863,7 +863,7 @@ after_entry = |state, close| {
 }
 
 ## A tag written as its name alone: one without payloads.
-bare_tag : PortJson.Format, Encoding.ParseTagUnionSpec(a), Str, PortJson.State -> Try({ value : a, rest : PortJson.State }, PortJson.Error)
+bare_tag : PortJson.Format, Encoding.ParseTagUnionSpec(a, PortJson.Format, PortJson.State, PortJson.Error), Str, PortJson.State -> Try({ value : a, rest : PortJson.State }, PortJson.Error)
 bare_tag = |encoding, spec, tag, state|
 	Encoding.ParseTagUnionSpec.parse(
 		spec,

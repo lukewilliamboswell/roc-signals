@@ -227,8 +227,8 @@ Wire := [].{
 		invalid_value = |_, _| UnknownTag
 
 		## A named-form record lacked a required field.
-		missing_record_field : Format, Str, State -> Error
-		missing_record_field = |_, name, _| MissingRequiredField(name)
+		missing_field : Format, Str -> Error
+		missing_field = |_, name| MissingRequiredField(name)
 
 		## Field names are used as they are.
 		rename_field : Format, Str -> Str
@@ -523,7 +523,7 @@ Wire := [].{
 		}
 
 		## A tag by name; `UnknownTag` when the type has no such tag.
-		parse_tag_union : Format, Encoding.ParseTagUnionSpec(a), State -> Try({ value : a, rest : State }, Error)
+		parse_tag_union : Format, Encoding.ParseTagUnionSpec(a, Format, State, Error), State -> Try({ value : a, rest : State }, Error)
 		parse_tag_union = |encoding, spec, state| {
 			name = read_str(state)?
 			opened = push(name.rest, 0)?
@@ -733,7 +733,7 @@ Wire := [].{
 		encode_key_tag = |_, state, name| Ok(leave(put(enter(state), |b| write_str(b, name))))
 
 		## A tag key, as a tag.
-		parse_key_tag_union : Format, Encoding.ParseTagUnionSpec(a), State -> Try({ value : a, rest : State }, Error)
+		parse_key_tag_union : Format, Encoding.ParseTagUnionSpec(a, Format, State, Error), State -> Try({ value : a, rest : State }, Error)
 		parse_key_tag_union = |encoding, spec, state| Format.parse_tag_union(encoding, spec, state)
 
 		## `Bytes`: a count, then the bytes in one block.
