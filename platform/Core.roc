@@ -158,6 +158,39 @@ Core := [].{
 		read_utf8 : File -> Req
 		read_utf8 = |f| ReadUtf8(f)
 
+		## A request that sends the file, or its range, as the body of an HTTP
+		## request, for an effect site's plan. The browser streams it from the
+		## file: its bytes never enter the page's memory. It is answered as any
+		## HTTP request is (`Http`, `Network`, `Timeout`; read it with
+		## `http_text`), and like one it is kept when its site is disposed and
+		## answered to the nearest surviving ancestor. A file the browser can no
+		## longer read fails the request, which the browser reports as a network
+		## failure. `timeout_ms` 0 means no timeout; it is capped at 10 minutes.
+		upload : File, { method : Str, url : Str, headers : List((Str, Str)), timeout_ms : U32 } -> Req
+		upload = |f, { method, url, headers, timeout_ms }| Upload({ method, url, headers, body: f, timeout_ms })
+
+		## A request for the SHA-256 digest of the file, or its range: answered
+		## `Digest(bytes)` with its 32 bytes, read with `file_digest`. The
+		## browser reads the range into a buffer of its own, off the page's
+		## memory, and digests it with WebCrypto. A range over the
+		## `maxFileBytes` mount option (256 MiB by default) is
+		## `FileFailed(TooLarge)`, a browser without WebCrypto (a page not
+		## served over HTTPS or from localhost) `FileFailed(Unavailable)`. Like a
+		## timer it belongs to its site.
+		sha256 : File -> Req
+		sha256 = |f| Sha256(f)
+
+		## A request for a URL the page can show the file, or its range, by:
+		## an `<img>`'s or a `<video>`'s `src`. Answered `FileUrl(url)`, read with
+		## `file_url`. The URL is valid exactly as long as the file's handle:
+		## when no value holds the file any more, the browser forgets the URL,
+		## so keep the file beside the URL for as long as it is shown. Asking
+		## twice for the same range answers the same URL; a file gives at most
+		## 16 ranges URLs, and a 17th is `FileFailed(TooLarge)`. Like a timer it
+		## belongs to its site.
+		object_url : File -> Req
+		object_url = |f| ObjectUrl(f)
+
 		## Equal when they are the same range of the same file.
 		is_eq : File, File -> Bool
 		is_eq = |a, b| a.start == b.start and a.len == b.len and a.name == b.name and match (a.at, b.at) {
@@ -659,7 +692,11 @@ Core := [].{
 	##
 	## `ReadBytes` and `ReadUtf8` read a file into the page (`File.read_bytes`,
 	## `File.read_utf8`) and deliver one `FileBytes`, `FileText` or
-	## `FileFailed`. Like a timer they belong to their site.
+	## `FileFailed`. `Sha256` digests a file and `ObjectUrl` makes a URL that
+	## shows it (`File.sha256`, `File.object_url`), delivering `Digest`,
+	## `FileUrl` or `FileFailed`. Like a timer these belong to their site.
+	## `Upload` is an HTTP request whose body is a file (`File.upload`): it is
+	## answered and kept as `Http` is.
 	Req : [
 		## `timeout_ms` 0 = no timeout; capped at `max_timeout_ms`.
 		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32 }),
@@ -685,6 +722,9 @@ Core := [].{
 		StorageRemove(Str),
 		ReadBytes(File),
 		ReadUtf8(File),
+		Upload({ method : Str, url : Str, headers : List((Str, Str)), body : File, timeout_ms : U32 }),
+		Sha256(File),
+		ObjectUrl(File),
 	]
 
 	## The result of an awaited request: an HTTP response (`Http`, with any status),
@@ -694,17 +734,19 @@ Core := [].{
 	## (`Now`), `Refused` when the in-flight bound turned the request away, or a
 	## worker program's output (`Work`) or the reason it produced none
 	## (`WorkLost`), a file's bytes or text read into the page (`FileBytes`,
-	## `FileText`), or why an operation on a file produced nothing
+	## `FileText`), a file's digest (`Digest`) or a URL that shows it
+	## (`FileUrl`), or why an operation on a file produced nothing
 	## (`FileFailed`).
-	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str)]
+	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str)]
 
 	## Why an operation on a file produced nothing: a file could not be read
 	## (`Unreadable`: the user's file changed or went away since it was
 	## given), it is more than the operation reads (`TooLarge`), its bytes are
-	## not UTF-8 (`InvalidUtf8`, reading text), or the in-flight bound turned
-	## the request away (`Refused`, as the typed readers report it). One type
-	## for every operation on a file; each says which arms it can produce.
-	FileError : [Unreadable, TooLarge, InvalidUtf8, Refused]
+	## not UTF-8 (`InvalidUtf8`, reading text), the browser cannot perform the
+	## operation (`Unavailable`), or the in-flight bound turned the request
+	## away (`Refused`, as the typed readers report it). One type for every
+	## operation on a file; each says which arms it can produce.
+	FileError : [Unreadable, TooLarge, InvalidUtf8, Unavailable, Refused]
 
 	## A `read_bytes` result as the file's bytes or a typed [FileError]. Any
 	## other result is a contract error.
@@ -724,6 +766,26 @@ Core := [].{
 		FileFailed(e) => Err(e)
 		Refused => Err(Refused)
 		_ => crash "contract: file_text was given a result that is not from File.read_utf8"
+	}
+
+	## A `sha256` result as the digest's 32 bytes or a typed [FileError]. Any
+	## other result is a contract error.
+	file_digest : Res -> Try(List(U8), FileError)
+	file_digest = |res| match res {
+		Digest(bytes) => Ok(bytes)
+		FileFailed(e) => Err(e)
+		Refused => Err(Refused)
+		_ => crash "contract: file_digest was given a result that is not from File.sha256"
+	}
+
+	## An `object_url` result as the URL or a typed [FileError]. Any other
+	## result is a contract error.
+	file_url : Res -> Try(Str, FileError)
+	file_url = |res| match res {
+		FileUrl(url) => Ok(url)
+		FileFailed(e) => Err(e)
+		Refused => Err(Refused)
+		_ => crash "contract: file_url was given a result that is not from File.object_url"
 	}
 
 	## Why a `Work` request produced no output: the worker's instance faulted
@@ -931,7 +993,8 @@ Core := [].{
 			match b {
 				[_, 1] => FileFailed(Unreadable)
 				[_, 2] => FileFailed(TooLarge)
-				_ => crash "contract: effect result tag 13 needs one reason byte, 1 or 2"
+				[_, 3] => FileFailed(Unavailable)
+				_ => crash "contract: effect result tag 13 needs one reason byte, 1, 2 or 3"
 			}
 		} else if tag == 16 {
 			FileBytes(b.drop_first(1))
@@ -942,6 +1005,13 @@ Core := [].{
 				Ok(t) => FileText(t)
 				Err(_) => FileFailed(InvalidUtf8)
 			}
+		} else if tag == 18 {
+			if b.len() != 33 {
+				crash "contract: effect result tag 18 needs a 32-byte SHA-256 digest"
+			}
+			Digest(b.drop_first(1))
+		} else if tag == 19 {
+			FileUrl(text(1))
 		} else {
 			crash "contract: unknown effect result tag ${tag.to_str()}"
 		}
@@ -3523,6 +3593,8 @@ comp_settle = |prop, snk, block, env, out, tx| {
 #                            6 ONLINE  7 VISIBILITY
 #                            8 WORK program:str input:(u32 len, raw bytes) deadline_ms:u32
 #                            11 READ mode:u8 token:u64 start:u64 len:u64 (a file's range)
+#                            12 UPLOAD method:str url:str n:u32 (name:str value:str)* token start len timeout_ms:u32
+#                            13 DIGEST algorithm:u8 token start len   14 URL token start len
 #  14 CANCEL  id
 #  15 NAV     mode:u8 (1 push, 2 replace) url:str
 #  16 STORE   op:u8 (1 set: key:str value:str, 2 remove: key:str)
@@ -3750,6 +3822,7 @@ is_sub = |req| match req {
 is_kept : Req -> Bool
 is_kept = |req| match req {
 	Http(_) => True
+	Upload(_) => True
 	StorageGet(_) => True
 	_ => False
 }
@@ -3784,6 +3857,18 @@ put_req = |c, id, req| {
 		}
 		ReadBytes(f) => put_file(head.append(11).append(1), f)
 		ReadUtf8(f) => put_file(head.append(11).append(2), f)
+		Upload({ method, url, headers, body, timeout_ms }) => {
+			if method == "GET" or method == "HEAD" {
+				crash "contract: File.upload of \"${body.name}\" to ${url} uses ${method}, which carries no body"
+			}
+			var $b = put_u32(put_str(put_str(head.append(12), method), url), headers.len().to_u32_wrap())
+			for (k, v) in headers {
+				$b = put_str(put_str($b, k), v)
+			}
+			put_u32(put_file($b, body), min_u32(timeout_ms, max_timeout_ms))
+		}
+		Sha256(f) => put_file(head.append(13).append(1), f)
+		ObjectUrl(f) => put_file(head.append(14), f)
 		_ => crash "not an awaited request"
 	}
 }
@@ -4612,4 +4697,13 @@ expect {
 	text = Core.decode_res([17, 104, 105])
 	cut = Core.decode_res([17, 0xC3])
 	bytes == FileBytes([1, 2]) and text == FileText("hi") and cut == FileFailed(InvalidUtf8) and Core.file_text(cut) == Err(InvalidUtf8) and Core.file_bytes(Refused) == Err(Refused)
+}
+
+## A digest result is exactly 32 bytes and a URL is text; a browser that
+## cannot digest answers Unavailable.
+expect {
+	digest = Core.decode_res([18].concat(List.repeat(7, 32)))
+	url = Core.decode_res([19].concat("blob:x".to_utf8()))
+	unavailable = Core.decode_res([13, 3])
+	Core.file_digest(digest) == Ok(List.repeat(7, 32)) and Core.file_url(url) == Ok("blob:x") and Core.file_digest(unavailable) == Err(Unavailable)
 }

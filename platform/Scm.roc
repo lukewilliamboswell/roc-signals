@@ -146,6 +146,10 @@ Scm := [].{
 		MarkMetrics,
 		ExpectMetricDelta({ metric : Str, delta : I64 }),
 		ExpectMetricDeltaAtMost({ metric : Str, delta : I64 }),
+
+		## The N-th effect occurrence is a pending upload whose body is `len`
+		## bytes from `start` of the setup file `file`.
+		ExpectUpload({ occurrence : U64, file : Str, start : U64, len : U64 }),
 	]
 
 	## A step with the position of its form.
@@ -778,6 +782,18 @@ Scm := [].{
 		{ name: "mark-metrics", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| MarkMetrics) },
 		{ name: "expect-metric-delta", parse: |form, args| Ok(ExpectMetricDelta(Scm.metric_args(form, args)?)) },
 		{ name: "expect-metric-delta-at-most", parse: |form, args| Ok(ExpectMetricDeltaAtMost(Scm.metric_args(form, args)?)) },
+		{
+			name: "expect-upload",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 4)?
+				file_sx = Scm.arg(a, 1)
+				file = Scm.string(file_sx, "the setup file's name")?
+				if file == "" {
+					return Err(Scm.bad(file_sx, "the setup file's name must not be empty"))
+				}
+				Ok(ExpectUpload({ occurrence: Scm.unsigned(Scm.arg(a, 0), "the effect occurrence")?, file, start: Scm.unsigned(Scm.arg(a, 2), "the range's start")?, len: Scm.unsigned(Scm.arg(a, 3), "the range's length")? }))
+			},
+		},
 	]
 
 	step_form : Sx -> Try(Step, Problem)
@@ -953,6 +969,7 @@ Scm := [].{
 			MarkMetrics => "mark-metrics"
 			ExpectMetricDelta(_) => "expect-metric-delta"
 			ExpectMetricDeltaAtMost(_) => "expect-metric-delta-at-most"
+			ExpectUpload(_) => "expect-upload"
 		}
 
 	## A locator as a spec spells it.
@@ -1088,6 +1105,7 @@ Scm := [].{
 			MarkMetrics => []
 			ExpectMetricDelta({ metric, delta }) => [JsonOut.field("metric", Text(metric)), JsonOut.field("counters", Scm.counters_json(metric)), JsonOut.field("delta", Int(delta))]
 			ExpectMetricDeltaAtMost({ metric, delta }) => [JsonOut.field("metric", Text(metric)), JsonOut.field("counters", Scm.counters_json(metric)), JsonOut.field("delta", Int(delta))]
+			ExpectUpload({ occurrence, file, start, len }) => [JsonOut.field("count", Nat(occurrence)), JsonOut.field("file", Text(file)), JsonOut.field("start", Nat(start)), JsonOut.field("len", Nat(len))]
 		}
 		Object([JsonOut.field("op", Text(Scm.op_name(op)))].concat(Scm.pos_fields(pos)).concat(args))
 	}

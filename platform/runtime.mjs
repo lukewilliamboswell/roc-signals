@@ -89,9 +89,18 @@
 // file's range into a buffer of its own and copies it once into the
 // instance's memory as the result (tag 16 bytes, 17 text, which the engine
 // checks is UTF-8); a range over options.maxReadBytes (default 8 MiB) is
-// FileFailed(TooLarge) unread. Every answer is a turn of its own after the
-// batch that asked; CANCEL forgets the request and its answer is dropped. In
-// manual mode they wait in `pending` until runEffect(id) performs them.
+// FileFailed(TooLarge) unread. A digest (kind 13) reads the range into a
+// buffer of its own and digests it with WebCrypto (tag 18): a range over
+// options.maxFileBytes is TooLarge, and a browser without WebCrypto (a page
+// not in a secure context) answers FileFailed(Unavailable). A file URL (kind
+// 14) is an object URL of the range (tag 19), made once per range of a
+// handle and revoked when the handle is released, at most
+// MAX_URLS_PER_FILE ranges per handle (beyond them TooLarge). Every answer
+// is a turn of its own after the batch that asked; CANCEL forgets the
+// request and its answer is dropped. In manual mode they wait in `pending`
+// until runEffect(id) performs them. An upload (kind 12) is an HTTP request
+// whose body is the range, which the browser streams from the file; it is
+// performed, held and answered as an HTTP request (kind 1) is.
 //
 // Attribute values: "" removes the attribute. `value` and `checked` are set
 // as properties (the live control state), boolean attributes (disabled,
@@ -144,10 +153,16 @@ const RES_WORK_LOST = 11;
 const RES_FILE_FAILED = 13;
 const RES_FILE_BYTES = 16;
 const RES_FILE_TEXT = 17;
+const RES_DIGEST = 18;
+const RES_FILE_URL = 19;
 
 // Result tag 13's reasons.
 const FILE_UNREADABLE = 1;
 const FILE_TOO_LARGE = 2;
+const FILE_UNAVAILABLE = 3;
+
+// The most ranges of one file handle that have an object URL at once.
+const MAX_URLS_PER_FILE = 16;
 
 // The most files one job reads (the host's `bytes_reserve` bound).
 const MAX_JOB_FILES = 16;
@@ -1357,6 +1372,9 @@ export class RocEngineRuntime {
     this.fetch = options.fetch ?? null;
     // token -> File for every file the app holds a handle on (see "Files").
     this.files = new Map();
+    // token -> Map(range -> object URL) for the URLs made for a handle's
+    // ranges, revoked when the handle is released.
+    this.urls = new Map();
     // Work (see "Work" above): the pool is made on the first job.
     this.pool = null;
     this.workerUrl = options.workerUrl ?? new URL("./worker.mjs", import.meta.url);
@@ -1501,6 +1519,7 @@ export class RocEngineRuntime {
     this.live.clear();
     this.stopWorkers();
     this.files.clear();
+    this.revokeUrls();
     this.queue = [];
     this.fxOut = [];
     this.monitor.runtimeEnded("poisoned", this.poisoned);
@@ -1519,6 +1538,7 @@ export class RocEngineRuntime {
     this.templates = [];
     this.live = new Map();
     this.files = new Map();
+    this.revokeUrls();
     this.issued = [];
     this.queue = [];
     this.fxOut = [];
@@ -1539,6 +1559,7 @@ export class RocEngineRuntime {
     this.internal = [];
     this.x.drop();
     this.files.clear();
+    this.revokeUrls();
     this.root.textContent = "";
     this.statics = [];
     this.sites = [];
@@ -1694,7 +1715,25 @@ export class RocEngineRuntime {
     const n = this.x.files_released();
     if (n === 0) return;
     const tokens = new DataView(this.x.memory.buffer, this.x.files_tokens(), 8 * n);
-    for (let i = 0; i < n; i += 1) this.files.delete(tokenAt(tokens, i));
+    for (let i = 0; i < n; i += 1) {
+      const token = tokenAt(tokens, i);
+      this.files.delete(token);
+      const urls = this.urls.get(token);
+      if (urls !== undefined) {
+        this.urls.delete(token);
+        for (const url of urls.values()) this.urlApi().revokeObjectURL(url);
+      }
+    }
+  }
+
+  // Revoke every object URL made for a file (poisoning, recovery, unmount).
+  revokeUrls() {
+    for (const urls of this.urls.values()) for (const url of urls.values()) this.urlApi().revokeObjectURL(url);
+    this.urls.clear();
+  }
+
+  urlApi() {
+    return (this.win && this.win.URL) ?? globalThis.URL;
   }
 
   stage(payload) {
@@ -2027,6 +2066,25 @@ export class RocEngineRuntime {
             if (mode !== 1 && mode !== 2) throw new Error(`unknown file read mode ${mode}`);
             this.fxOut.push({ op: "read", id, mode, ...this.fileRef(dv, at + 1) });
             at += 25;
+          } else if (kind === 12) {
+            const method = str();
+            const url = str();
+            const headers = [];
+            let n = dv.getUint32(at, true);
+            at += 4;
+            for (; n > 0; n -= 1) headers.push([str(), str()]);
+            const ref = this.fileRef(dv, at);
+            const timeout = dv.getUint32(at + 24, true);
+            at += 28;
+            this.fxOut.push({ op: "upload", id, method, url, headers, ...ref, timeout });
+          } else if (kind === 13) {
+            const algorithm = u8[at];
+            if (algorithm !== 1) throw new Error(`unknown digest algorithm ${algorithm}`);
+            this.fxOut.push({ op: "digest", id, algorithm, ...this.fileRef(dv, at + 1) });
+            at += 25;
+          } else if (kind === 14) {
+            this.fxOut.push({ op: "url", id, ...this.fileRef(dv, at) });
+            at += 24;
           } else throw new Error(`unknown effect kind ${kind}`);
           break;
         }
@@ -2093,7 +2151,7 @@ export class RocEngineRuntime {
     return { token, file, start, len, blob };
   }
 
-  // Perform an operation on a file (`fx.op`: read). Its one answer is a
+  // Perform an operation on a file (`fx.op`: read, digest, url). Its one answer is a
   // turn of its own, delivered unless CANCEL forgets the request first;
   // `settled`, when given, is called once either way.
   startFileOp(fx, settled) {
@@ -2125,6 +2183,33 @@ export class RocEngineRuntime {
       const buf = await fx.blob.arrayBuffer();
       if (buf.byteLength !== fx.len) return failed(FILE_UNREADABLE);
       return { parts: [new Uint8Array([fx.mode === 1 ? RES_FILE_BYTES : RES_FILE_TEXT]), new Uint8Array(buf)] };
+    }
+    if (fx.op === "digest") {
+      if (fx.len > this.maxFileBytes) return failed(FILE_TOO_LARGE);
+      const c = (this.win && this.win.crypto) ?? globalThis.crypto;
+      if (!c || !c.subtle || typeof c.subtle.digest !== "function") return failed(FILE_UNAVAILABLE);
+      const buf = await fx.blob.arrayBuffer();
+      if (buf.byteLength !== fx.len) return failed(FILE_UNREADABLE);
+      const digest = await c.subtle.digest("SHA-256", buf);
+      return { parts: [new Uint8Array([RES_DIGEST]), new Uint8Array(digest)] };
+    }
+    if (fx.op === "url") {
+      // One URL per range of a handle, kept until the handle is released.
+      // A handle released while this request waited has no URL to give.
+      if (!this.files.has(fx.token)) return failed(FILE_UNREADABLE);
+      let urls = this.urls.get(fx.token);
+      if (urls === undefined) {
+        urls = new Map();
+        this.urls.set(fx.token, urls);
+      }
+      const key = `${fx.start}+${fx.len}`;
+      let url = urls.get(key);
+      if (url === undefined) {
+        if (urls.size >= MAX_URLS_PER_FILE) return failed(FILE_TOO_LARGE);
+        url = this.urlApi().createObjectURL(fx.blob);
+        urls.set(key, url);
+      }
+      return concat([new Uint8Array([RES_FILE_URL]), utf8enc.encode(url)]);
     }
     throw new Error(`unknown file operation ${fx.op}`);
   }
@@ -2232,7 +2317,9 @@ export class RocEngineRuntime {
         this.startWork(fx, null);
         return;
       }
-      case "read": {
+      case "read":
+      case "digest":
+      case "url": {
         if (this.manual) {
           this.live.set(fx.id, { kind: "file", req: fx, cancel: () => {} });
           this.issued.push(fx.id);
@@ -2242,9 +2329,10 @@ export class RocEngineRuntime {
         return;
       }
       case "timer":
+      case "upload":
       case "http": {
         if (this.manual) {
-          this.live.set(fx.id, { kind: fx.op, req: fx, cancel: () => {} });
+          this.live.set(fx.id, { kind: fx.op === "timer" ? "timer" : "http", req: fx, cancel: () => {} });
           this.issued.push(fx.id);
           return;
         }
@@ -2286,7 +2374,10 @@ export class RocEngineRuntime {
           },
         });
         const init = { method: fx.method, headers: fx.headers, signal: ctl.signal };
-        if (fx.method !== "GET" && fx.method !== "HEAD" && fx.body !== "") init.body = fx.body;
+        // An upload's body is its file's range, which the browser streams
+        // from the file; the request holds the file until it is answered.
+        if (fx.op === "upload") init.body = fx.blob;
+        else if (fx.method !== "GET" && fx.method !== "HEAD" && fx.body !== "") init.body = fx.body;
         const send = this.fetch ?? globalThis.fetch;
         new Promise((resolve) => resolve(send(fx.url, init)))
           .then(async (r) => {

@@ -102,7 +102,21 @@ SpecRunner := [].{
 
 		## A read of a file into the page: mode 1 bytes, 2 text.
 		ReadRequest({ mode : U8, file : { token : U64, start : U64, len : U64 } }),
+
+		## An HTTP request whose body is a file's range; `run-effect` answers
+		## it with the staged stub, as an HTTP request.
+		UploadRequest({ token : U64, start : U64, len : U64 }),
+
+		## A SHA-256 digest of a file's range, which the host computes.
+		DigestRequest({ token : U64, start : U64, len : U64 }),
+
+		## A URL that shows a file's range.
+		UrlRequest({ token : U64, start : U64, len : U64 }),
 	]
+
+	## The most bytes a digest reads: the runtime's default `maxFileBytes`.
+	max_digest_bytes : U64
+	max_digest_bytes = 256 * 1024 * 1024
 
 	## The most bytes a page read takes: the runtime's default `maxReadBytes`
 	## (design.md, "Files"), which a spec cannot change.
@@ -268,6 +282,9 @@ SpecRunner := [].{
 			HttpRequest => Err("effect occurrence ${n.to_str()} is an HTTP request, not a worker job")
 			TimerRequest => Err("effect occurrence ${n.to_str()} is a timer, not a worker job")
 			ReadRequest(_) => Err("effect occurrence ${n.to_str()} is a file read, not a worker job")
+			UploadRequest(_) => Err("effect occurrence ${n.to_str()} is an upload, not a worker job")
+			DigestRequest(_) => Err("effect occurrence ${n.to_str()} is a digest, not a worker job")
+			UrlRequest(_) => Err("effect occurrence ${n.to_str()} is a file URL, not a worker job")
 		}
 	}
 
@@ -419,6 +436,9 @@ SpecRunner := [].{
 				Title(t) => { ..b, title: t }
 				Focus(_, _) => b
 				FileRead(id, mode, file) => { ..b, pending: b.pending.append({ id, url: "read", body: "", kind: ReadRequest({ mode, file }) }), issued: b.issued.append(id) }
+				Upload(id, _, url, _, file, _) => { ..b, pending: b.pending.append({ id, url, body: "", kind: UploadRequest(file) }), issued: b.issued.append(id) }
+				Digest(id, _, file) => { ..b, pending: b.pending.append({ id, url: "digest", body: "", kind: DigestRequest(file) }), issued: b.issued.append(id) }
+				FileUrl(id, file) => { ..b, pending: b.pending.append({ id, url: "url", body: "", kind: UrlRequest(file) }), issued: b.issued.append(id) }
 			}
 		}
 		$b
@@ -571,6 +591,40 @@ SpecRunner := [].{
 			[if (mode == 1) 16 else 17].concat(SpecRunner.file_bytes(b, file))
 		}
 
+	## The result payload of a file URL: tag 19 and a URL naming the handle
+	## and the range. Chrome's is a `blob:` URL of its own making, so a spec
+	## asserts what the app does with one, not its text.
+	url_result : { token : U64, start : U64, len : U64 } -> List(U8)
+	url_result = |{ token, start: from, len }| [19].concat("blob:spec/${token.to_str()}/${from.to_str()}/${len.to_str()}".to_utf8())
+
+	## The pending digest that step `op` answers, when `op` is a `run-effect`
+	## on one: its request id and the bytes to digest. The `spec` command
+	## digests them through its host (`Io.sha256!`); a range over the
+	## runtime's default `maxFileBytes` is answered TooLarge unread, as the
+	## runtime answers it.
+	digest_of : S(state), Scm.Op -> Try({ id : U32, bytes : [Digest(List(U8)), TooLarge] }, [NoDigest])
+	digest_of = |s, op|
+		match op {
+			RunEffect(n) => {
+				b = s.browser
+				id = b.issued.get(n - 1) ? |_| NoDigest
+				p = b.pending.find_first(|q| q.id == id) ? |_| NoDigest
+				match p.kind {
+					DigestRequest(file) => Ok({ id, bytes: if (file.len > SpecRunner.max_digest_bytes) TooLarge else Digest(SpecRunner.file_bytes(b, file)) })
+					_ => Err(NoDigest)
+				}
+			}
+			_ => Err(NoDigest)
+		}
+
+	## Deliver a digest's result payload (tag 18 and the digest, or tag 13
+	## with reason 2) to request `id`.
+	deliver_digest : Program(state), S(state), U32, List(U8) -> S(state)
+	deliver_digest = |program, s, id, payload| {
+		b = s.browser
+		SpecRunner.deliver(program, { ..s, browser: { ..b, pending: b.pending.keep_if(|q| q.id != id) } }, id, payload)
+	}
+
 	## The pending worker job that step `op` runs, when `op` is a `run-effect`
 	## on one. The `spec` command runs such a job in a child process
 	## (`Io.work!`) and hands the result to `deliver_job`; every other step,
@@ -622,7 +676,10 @@ SpecRunner := [].{
 				return SpecRunner.deliver_job(program, s, { id, payload: [], files: [] }, [10].concat(output))
 			}
 			ReadRequest({ mode, file }) => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, SpecRunner.read_result(b, mode, file)))
+			UrlRequest(file) => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, SpecRunner.url_result(file)))
+			DigestRequest(_) => return Err("run-effect ${n.to_str()} answers a digest, which the spec command's host computes; fuzz targets and soak walks do not have one")
 			HttpRequest => {}
+			UploadRequest(_) => {}
 		}
 		stub = match b.stub {
 			Staged(st) => st
@@ -1053,6 +1110,16 @@ SpecRunner := [].{
 				got = SpecRunner.metric_delta(s, metric)?
 				check(got <= delta, "${metric} changed by ${got.to_str()}, expected at most ${delta.to_str()}")
 			}
+			ExpectUpload({ occurrence, file, start: from, len }) => {
+				id = b.issued.get(occurrence - 1) ? |_| "effect occurrence ${occurrence.to_str()} was never issued (${b.issued.len().to_str()} issued)"
+				p = b.pending.find_first(|q| q.id == id) ? |_| "effect occurrence ${occurrence.to_str()} is not pending (cancelled or done)"
+				body = match p.kind {
+					UploadRequest(r) => r
+					_ => return Err("effect occurrence ${occurrence.to_str()} is not an upload")
+				}
+				name = (b.given.find_first(|g| g.token == body.token) ?? { token: body.token, name: "" }).name
+				check(name == file and body.start == from and body.len == len, "upload ${occurrence.to_str()} sends ${JsonOut.quote(name)} ${body.start.to_str()}+${body.len.to_str()}, expected ${JsonOut.quote(file)} ${from.to_str()}+${len.to_str()}")
+			}
 		}
 	}
 
@@ -1398,7 +1465,7 @@ SpecRunner := [].{
 
 	## The host services a replay uses: running a worker job in a child
 	## process, and minting and counting file handles in the host's heap.
-	Host : { work! : List(U8), List(List(U8)) => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64 }
+	Host : { work! : List(U8), List(List(U8)) => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8) }
 
 	## Replay one spec from a fresh mount, running each worker job with
 	## `work!` (the `spec` command's child process, `Io.work!`), and giving
@@ -1418,7 +1485,12 @@ SpecRunner := [].{
 					live = (host.live_files!)()
 					if (live == n) Ok($s) else Err("expected ${n.to_str()} live file handles, found ${live.to_str()}")
 				}
-				_ => SpecRunner.one(program, $s, step.op)
+				_ =>
+					match SpecRunner.digest_of($s, step.op) {
+						Ok({ id, bytes: Digest(bytes) }) => Ok(SpecRunner.deliver_digest(program, $s, id, [18].concat((host.sha256!)(bytes))))
+						Ok({ id, bytes: TooLarge }) => Ok(SpecRunner.deliver_digest(program, $s, id, [13, 2]))
+						Err(NoDigest) => SpecRunner.one(program, $s, step.op)
+					}
 			}
 			match done {
 				Ok(s2) => {
@@ -1435,7 +1507,7 @@ SpecRunner := [].{
 
 	## The host services the `spec` command uses, passed in by the test
 	## program (the test platform's `Cli`), so this package stays pure.
-	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64, work! : List(U8), List(List(U8)) => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64 }
+	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64, work! : List(U8), List(List(U8)) => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8) }
 
 	Options : { filter : Str, emit_steps : Bool, grammar : Bool, files : List(Str) }
 
@@ -1552,7 +1624,7 @@ SpecRunner := [].{
 						(io.stdout!)("${JsonOut.render(Scm.to_json(id, spec))}\n")
 					}
 					Ok(spec) => {
-						outcome = SpecRunner.run!(program, { work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files! }, spec)
+						outcome = SpecRunner.run!(program, { work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256! }, spec)
 						dt = (io.now_ns!)() - t0
 						line = match outcome {
 							Passed => {

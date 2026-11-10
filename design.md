@@ -732,7 +732,8 @@ instead of a state write.
 - Results are typed: `Http({ status, headers, body })`, `Network(message)`,
   `Timeout`, `Value`, `Missing`, `Fired`, `Location`, `Online(Bool)`,
   `Visible(Bool)`, `Now`, `Refused`, `Work(bytes)`, `WorkLost(fault)`,
-  `FileBytes(bytes)`, `FileText(text)` and `FileFailed(reason)`.
+  `FileBytes(bytes)`, `FileText(text)`, `Digest(bytes)`, `FileUrl(url)` and
+  `FileFailed(reason)`.
   Application failures are values; contract violations are diagnostics,
   never fabricated results. A worker's diagnostic text goes to the page's
   console, never into its result.
@@ -790,7 +791,7 @@ rendered the control:
   computation has no external effect to preserve, and computing an answer
   nobody will read is only cost. A job that must outlive a panel is issued
   from a site in a longer-lived scope.
-- **Admitted requests (`Http`, `StorageGet`) reparent** to the nearest surviving
+- **Admitted requests (`Http`, `Upload`, `StorageGet`) reparent** to the nearest surviving
   ancestor site — the `when`/`switch` that changed branch, the `each` that
   removed the row, or the component's caller. When the result arrives, the
   reaction runs in that ancestor's current environment. Disposed layers are
@@ -962,6 +963,33 @@ the bytes the browser was reading are dropped. In a worker program the bytes
 are already there, so the same choice is a plain value: `File.contents`, and
 `File.contents_utf8` for text. `File.contents` on the page stays a contract
 error that names both ways to get the bytes.
+
+**Operations act on a file where it lives.** Most of what an app does with
+a user's file needs none of its bytes in Wasm, so the channel offers it as
+requests that take the handle and are performed on the browser's own file:
+
+- `File.upload` is an HTTP request whose body is the file or its range
+  (`Upload`, FX kind 12). The browser streams it from the file; it is
+  answered as `Http` is, and like `Http` it has an external effect worth
+  preserving, so it is kept when its site is disposed and reparents. A file
+  the browser can no longer read fails it as the browser reports that, a
+  network failure.
+- `File.sha256` digests the range with WebCrypto and answers the 32 bytes
+  (`Digest`). WebCrypto has no incremental digest, so the runtime reads the
+  range into a buffer of its own, outside the instance's memory, bounded by
+  `maxFileBytes`; a browser without WebCrypto (a page outside a secure
+  context) answers `FileFailed(Unavailable)`.
+- `File.object_url` answers a URL that shows the range (`FileUrl`), for an
+  `<img>` or `<video>`. It is a request, not a rendering primitive: the URL
+  is a value the app renders through ordinary attributes, and making it is
+  a service of the browser like any other. Its lifetime is the handle's:
+  the runtime makes one URL per range of a handle, answers the same URL for
+  the same range, and revokes a handle's URLs when it drains the handle's
+  release, so the app keeps the file beside the URL for as long as it shows
+  it. A handle gives at most 16 ranges URLs; a further range is
+  `FileFailed(TooLarge)`.
+
+Digests and URLs are pure in effect, like a read, so they are scoped.
 
 **A request holds its browser file until it is answered.** The runtime
 resolves every handle a request names when it applies the batch, before it
@@ -1137,7 +1165,9 @@ cases; row template not a single element; focus reference inside a row
 template; an effect follow-up chain deeper than 64; a cleanup asking for an awaited
 request; `http_text` given a non-HTTP result; a worker catalogue with a
 duplicate name or more than 64 programs; work issued for a program the
-catalogue does not hold; event payload not UTF-8; boot
+catalogue does not hold; `File.contents` on the page; a request naming a
+file a worker program was sent; an upload whose method is `GET` or `HEAD`;
+event payload not UTF-8; boot
 bytes or an effect result that do not follow Appendix B (truncated, trailing
 bytes, unknown tag, flags other than 0 or 1, text that is not UTF-8).
 **Resource limits:** node ids (2³² − 2 live nodes); more than 63 nested layers
@@ -1172,6 +1202,8 @@ bound and a declared behaviour at the bound:
 | Files one work run reads | 16 | Typed `FileFailed(TooLarge)`, unread |
 | Bytes of files one work run reads | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)`, unread |
 | Bytes one read of a file into the page takes | `maxReadBytes` (default 8 MiB); reads in flight are bounded by the in-flight cap | Typed `FileFailed(TooLarge)`, unread |
+| Bytes one digest reads | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)`, unread |
+| Object URLs of one file handle | 16 ranges, revoked with the handle | Typed `FileFailed(TooLarge)` |
 | Live node ids (rows included) | 2³² − 2 | `resource_limit` poison |
 | Runtime ingress queue | 4096 queued events | `resource_limit` poison |
 | Monitor job history | `history` option (default 128, at most 1024) | Oldest overwritten, counted |
@@ -1211,7 +1243,10 @@ of steps written against the rendered UI:
   value, visibility and absence, location, document title, local storage,
   pending effects.
 - **Effects** — `stub-http` and `run-effect N` (answer the N-th awaited HTTP
-  request, timer or worker job in issue order), `lose-work` and
+  request or upload with the staged answer, fire a timer, run a worker job,
+  or perform an operation on a file, in issue order), `expect-upload N FILE
+  START LEN` (the N-th is a pending upload of that range of a setup file),
+  `lose-work` and
   `time-out-work` (answer a pending worker job `WorkLost` with a fault class,
   or `Timeout`, without running it), `expect-pending-work`, interval ticks,
   `set-visibility`, `set-online`.
@@ -1241,7 +1276,12 @@ oracle and never defines a meaning of its own. In particular:
   runners. A spec's time is manual: a job's deadline never expires on its
   own — the runtime's manual mode arms no deadline timer — and
   `time-out-work` expires it. Storage reads answer by themselves in the
-  following turn, as the runtime answers them;
+  following turn, as the runtime answers them. An operation on a file is
+  performed on the setup file's bytes: a read or a URL by the native runner
+  itself (its URL names the handle and range, so a spec asserts what the
+  app does with a URL rather than its text), a digest through its host,
+  which computes SHA-256 as WebCrypto does, so both runners give the same
+  digest;
 - a click is a real mouse click with the browser's default actions (a
   checkbox toggles and a radio checks, each with `input` and `change`; a
   submit button submits its form if the form's controls are valid; a link
@@ -1526,8 +1566,11 @@ File.slice : File, { start : U64, len : U64 } -> File   # contract error outside
 File.contents : File -> List(U8)              # in a worker program; contract error on the page
 File.contents_utf8 : File -> Try(Str, [InvalidUtf8])   # likewise
 File.read_bytes, File.read_utf8 : File -> Req # awaited reads into the page
-file_bytes : Res -> Try(List(U8), FileError)
-file_text : Res -> Try(Str, FileError)
+File.upload : File, { method, url, headers, timeout_ms } -> Req   # the file as an HTTP body
+File.sha256 : File -> Req                     # answered Digest(32 bytes)
+File.object_url : File -> Req                 # answered FileUrl(url), valid while the handle lives
+file_bytes, file_digest : Res -> Try(List(U8), FileError)
+file_text, file_url : Res -> Try(Str, FileError)
 Received : { files : List(File), refused : U64 }
 State.on_files : State(ctx, s), (s, Received -> s) -> FilesHandler(ctx)
 on_files : Str, FilesHandler(ctx) -> Attr(ctx)   # "change", "drop" or "paste"
@@ -1550,12 +1593,13 @@ Req : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Timer(
        Work({ program : Str, input : List(U8), files : List(File), deadline_ms : U32 }),
        Interval(U32), Popstate, OnlineChanges, VisibilityChanges, Self, Push(Str),
        Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str),
-       StorageSet(Str, Str), StorageRemove(Str), ReadBytes(File), ReadUtf8(File)]
+       StorageSet(Str, Str), StorageRemove(Str), ReadBytes(File), ReadUtf8(File),
+       Upload({ method, url, headers, body : File, timeout_ms }), Sha256(File), ObjectUrl(File)]
 Res : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
        Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused,
        Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError),
-       FileBytes(List(U8)), FileText(Str)]
-FileError : [Unreadable, TooLarge, InvalidUtf8, Refused]
+       FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str)]
+FileError : [Unreadable, TooLarge, InvalidUtf8, Unavailable, Refused]
 WorkFault : [Contract, ResourceLimit, OutOfMemory, AppCrash, ExpectFailed, Unavailable, Executor]
 HttpError : [Network(Str), Timeout, Status(U16), Refused]
 http_text : Res -> Try(Str, HttpError)
@@ -1734,12 +1778,14 @@ An event is `event(node, handler)` with the payload staged first:
 | 10 | `output:bytes` (the rest, raw) | `Work(List(U8))` |
 | 11 | `class:u8` | `WorkLost(fault)`: `1` contract, `2` resource_limit, `3` out_of_memory, `4` app_crash, `5` expect_failed (the worker instance's fault class), `6` unavailable (no `Worker`), `7` executor (the worker script failed) |
 | 12 | — | Reserved |
-| 13 | `reason:u8` | `FileFailed(reason)`: `1` unreadable (a file the request named could not be read), `2` too_large (more files or bytes than the operation reads) |
+| 13 | `reason:u8` | `FileFailed(reason)`: `1` unreadable (a file the request named could not be read), `2` too_large (more files or bytes than the operation reads, or a 17th range given a URL), `3` unavailable (the browser cannot perform the operation) |
 | 16 | `bytes` (the rest, raw) | `FileBytes(List(U8))`: a file's range read into the page |
 | 17 | `bytes` (the rest, raw) | `FileText(Str)`, or `FileFailed(InvalidUtf8)` when the bytes are not UTF-8 |
+| 18 | `digest:32 bytes` | `Digest(List(U8))`: a SHA-256 digest |
+| 19 | `url:rest` | `FileUrl(Str)` |
 
 A result payload that does not follow this table (unknown tag, bytes after a
-bare tag, a flag other than `0`/`1`, a fault class outside `1`–`7`, a file failure other than `1` or `2`, a
+bare tag, a flag other than `0`/`1`, a fault class outside `1`–`7`, a file failure other than `1`–`3`, a digest that is not 32 bytes, a
 truncated HTTP record, text that is not UTF-8) is a `contract` fault.
 
 ### Node ids
@@ -1803,6 +1849,9 @@ the batch is applied and performed after it.
 | 7 | — | Visibility (subscription; `visibilitychange` events) |
 | 8 | `program:str input:u32+bytes n:u32 (token:u64 start:u64 len:u64)*n deadline_ms:u32` | Work: `input` is a `u32` length and raw bytes, not necessarily UTF-8; then the files the input refers to, each a handle's token and a range of its file; `deadline_ms` 0 = none, capped at 600 000 |
 | 11 | `mode:u8 token:u64 start:u64 len:u64` | Read a file's range into the page: `mode` `1` bytes (answered tag 16), `2` text (tag 17) |
+| 12 | `method:str url:str n:u32 (name:str value:str)* token:u64 start:u64 len:u64 timeout_ms:u32` | HTTP with a file's range as the body (answered as kind 1); a method of `GET` or `HEAD` is a `contract` error in the engine |
+| 13 | `algorithm:u8 token:u64 start:u64 len:u64` | Digest of a file's range: `algorithm` `1` SHA-256 (tag 18) |
+| 14 | `token:u64 start:u64 len:u64` | A URL that shows a file's range (tag 19) |
 
 **Template encoding** (`TEMPLATE` bytes): a node tree, then a hole table.
 

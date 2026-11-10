@@ -13,10 +13,19 @@
 // is `Unreadable`; a read cancelled while the browser reads is dropped, with
 // no stale turn; a read in flight when the instance is poisoned delivers
 // nothing.
+//
+// In-place operations: an upload streams exactly the file's range to a real
+// server without the page's memory holding it, and an unreadable file fails
+// it as a network failure; a digest is WebCrypto's SHA-256 of the range,
+// TooLarge over `maxFileBytes` and Unavailable without WebCrypto; a file URL
+// is fetchable while the app holds the file, the same range gives the same
+// URL, a handle gives at most 16 ranges URLs, and releasing the handle or
+// unmounting revokes them.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import crypto from "node:crypto";
 import { launch } from "./cdp.mjs";
 import { parseArgs, runtimeFiles } from "./args.mjs";
 
@@ -24,6 +33,21 @@ const opts = parseArgs(process.argv.slice(2));
 const files = { ...runtimeFiles(opts.runtime), "app.wasm": opts.wasm };
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, "http://x");
+  if (u.pathname === "/upload") {
+    // Answer with what arrived: the body's length and SHA-256, and the
+    // header the app named the file in.
+    const hash = crypto.createHash("sha256");
+    let len = 0;
+    req.on("data", (c) => {
+      len += c.length;
+      hash.update(c);
+    });
+    req.on("end", () => {
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end(`${req.method} ${req.headers["x-name"]} ${len} ${hash.digest("hex")}`);
+    });
+    return;
+  }
   if (u.pathname === "/") {
     res.writeHead(200, { "content-type": "text/html" });
     res.end('<!doctype html><html><head><meta charset="utf-8"><title>file effects</title></head><body></body></html>');
@@ -184,6 +208,142 @@ async function open(options = {}) {
     return { poisoned: !!window.__rt.poisoned, refused: window.__rt.refused, live: window.__rt.live.size, files: window.__rt.files.size };
   });
   check("a read in flight at poisoning delivers nothing", r, { poisoned: true, refused: 0, live: 0, files: 0 });
+  await ctx.close();
+}
+
+const sha = (buf) => crypto.createHash("sha256").update(buf).digest("hex");
+
+// An upload streams the file, or its range, to the server: the server
+// receives exactly those bytes, and the page's memory does not hold them.
+{
+  const { page, ctx } = await open();
+  const size = 8 << 20;
+  const r = await page.evaluate(async (size) => {
+    window.__choose([["up.bin", size]]);
+    const before = window.__liveBytes();
+    window.__click("Send");
+    const whole = await window.__until("sent", (t) => t !== "waiting");
+    const grew = window.__liveBytes() - before;
+    window.__click("Send tail");
+    const tail = await window.__until("sent", (t) => t !== "waiting" && t !== whole);
+    return { whole, tail, small: grew < 65536 };
+  }, size);
+  const ones = (n) => Buffer.alloc(n, 1);
+  check("an upload sends the file's bytes, and a range's", r, { whole: `sent POST up.bin ${size} ${sha(ones(size))}`, tail: `sent POST up.bin ${size / 2} ${sha(ones(size / 2))}`, small: true });
+  await ctx.close();
+}
+
+// An upload of a file the browser can no longer read fails as the browser
+// reports it: a network failure.
+{
+  const { page, ctx } = await open();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "roc-signals-file-effects-"));
+  const file = path.join(dir, "gone.txt");
+  fs.writeFileSync(file, "soon gone");
+  const input = await page.evaluateHandle(() => window.__root.querySelector('[aria-label="Upload"]'));
+  await page.send("DOM.setFileInputFiles", { files: [file], objectId: input.objectId });
+  fs.rmSync(dir, { recursive: true, force: true });
+  const r = await page.evaluate(async () => {
+    window.__click("Send");
+    return window.__until("sent", (t) => t !== "waiting");
+  });
+  check("an upload of an unreadable file is a network failure", r.startsWith("send failed Network("), true);
+  await ctx.close();
+}
+
+// A digest is WebCrypto's SHA-256 of the range; a range over maxFileBytes
+// is TooLarge unread, and a browser without WebCrypto is Unavailable.
+{
+  const { page, ctx } = await open();
+  const r = await page.evaluate(async () => {
+    window.__choose([["d.bin", 3 << 20]]);
+    window.__click("Digest");
+    return window.__until("digest", (t) => t !== "waiting");
+  });
+  check("a digest is the file's SHA-256", r, `sha256 ${sha(Buffer.alloc(3 << 20, 1))}`);
+  await ctx.close();
+}
+{
+  const { page, ctx } = await open({ maxFileBytes: 2 });
+  const r = await page.evaluate(async () => {
+    window.__choose([["d.bin", 3]]);
+    window.__click("Digest");
+    return window.__until("digest", (t) => t !== "waiting");
+  });
+  check("a digest over maxFileBytes is TooLarge", r, "digest failed TooLarge");
+  await ctx.close();
+}
+{
+  const ctx = await browser.createBrowserContext();
+  const page = await ctx.newPage();
+  await page.evaluateOnNewDocument(install);
+  await page.evaluateOnNewDocument(() => Object.defineProperty(window, "crypto", { value: {}, configurable: true }));
+  await page.goto(`${base}/`);
+  await page.evaluate(() => window.__mount({}));
+  const r = await page.evaluate(async () => {
+    window.__choose([["d.bin", 3]]);
+    window.__click("Digest");
+    return window.__until("digest", (t) => t !== "waiting");
+  });
+  check("a digest without WebCrypto is Unavailable", r, "digest failed Unavailable");
+  await ctx.close();
+}
+
+// A file URL shows the file while the app holds it: the same range gives
+// the same URL, a handle gives at most 16 ranges URLs, and releasing the
+// handle (or unmounting) revokes them.
+{
+  const { page, ctx } = await open();
+  const r = await page.evaluate(async () => {
+    window.__choose([["u.txt", 5]]);
+    window.__click("Show");
+    await window.__until("shown", (t) => t === "shown");
+    const url = window.__root.querySelector("[data-testid=preview]").getAttribute("href");
+    const body = await (await fetch(url)).arrayBuffer();
+    window.__click("Hide");
+    window.__click("Show");
+    await window.__until("shown", (t) => t === "shown");
+    const again = window.__root.querySelector("[data-testid=preview]").getAttribute("href");
+    const rt = window.__rt;
+    const token = [...rt.files.keys()][0];
+    const file = rt.files.get(token);
+    const answers = [];
+    for (let i = 0; i < 16; i += 1) {
+      const a = await rt.fileAnswer({ op: "url", token, start: i % 5, len: 1 + Math.floor(i / 5), blob: file.slice(0, 1) });
+      answers.push(a[0]);
+    }
+    const counts = { urls: answers.filter((t) => t === 19).length, refused: answers.filter((t) => t === 13).length };
+    window.__click("Hide");
+    window.__click("Clear");
+    let revoked = false;
+    try {
+      await fetch(url);
+    } catch (_) {
+      revoked = true;
+    }
+    return { size: body.byteLength, same: url === again, counts, revoked, urls: rt.urls.size };
+  });
+  // The whole file's URL is one of the 16; the loop makes 15 more ranges and
+  // the 16th it asks for is refused.
+  check("a file URL lives exactly as long as its handle", r, { size: 5, same: true, counts: { urls: 15, refused: 1 }, revoked: true, urls: 0 });
+  await ctx.close();
+}
+{
+  const { page, ctx } = await open();
+  const r = await page.evaluate(async () => {
+    window.__choose([["u.txt", 5]]);
+    window.__click("Show");
+    await window.__until("shown", (t) => t === "shown");
+    const url = window.__root.querySelector("[data-testid=preview]").getAttribute("href");
+    window.__rt.unmount();
+    try {
+      await fetch(url);
+      return false;
+    } catch (_) {
+      return true;
+    }
+  });
+  check("unmounting revokes every file URL", r, true);
   await ctx.close();
 }
 

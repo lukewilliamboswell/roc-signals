@@ -538,6 +538,27 @@ const STEPS = {
     const got = await page.evaluate((program) => window.__rt.pendingEffects().filter((r) => r.op === "work" && r.program === program).length, s.program);
     if (got !== s.count) throw new Error(`expected ${s.count} pending worker jobs for ${JSON.stringify(s.program)}, got ${got}`);
   },
+  // The N-th effect occurrence is a pending upload whose body is the range
+  // of the chosen setup file: what the runtime holds to send, the browser's
+  // own file (by name) and the range it was sliced to.
+  "expect-upload": async (page, s) => {
+    const r = await page.evaluate(
+      (n) => {
+        const rt = window.__rt;
+        const id = rt.issued[n - 1];
+        if (id === undefined) return { error: `effect occurrence ${n} was never issued (${rt.issued.length} issued)` };
+        const e = rt.live.get(id);
+        if (e === undefined) return { error: `effect occurrence ${n} is not pending (cancelled or done)` };
+        if (e.req.op !== "upload") return { error: `effect occurrence ${n} is not an upload` };
+        return { name: e.req.file.name, start: e.req.start, len: e.req.len, size: e.req.blob.size };
+      },
+      s.count,
+    );
+    if (r.error) throw new Error(r.error);
+    if (r.name !== s.file || r.start !== s.start || r.len !== s.len || r.size !== s.len) {
+      throw new Error(`upload ${s.count} sends ${JSON.stringify(r.name)} ${r.start}+${r.len} (a body of ${r.size} bytes), expected ${JSON.stringify(s.file)} ${s.start}+${s.len}`);
+    }
+  },
   "choose-files": (page, s, state) => chooseFiles(page, s, state),
   "drop-files": (page, s, state) => giveFiles(page, s, state, "drop"),
   "paste-files": (page, s, state) => giveFiles(page, s, state, "paste"),

@@ -308,6 +308,20 @@ fn hostedLiveFiles() callconv(.c) u64 {
     return blobs.live_count;
 }
 
+/// `Cli.sha256!`: the SHA-256 digest of `bytes`, computed with Zig's
+/// standard library, as the browser runtime computes a file's digest with
+/// WebCrypto: the native runner answers a spec's digest request with the
+/// same 32 bytes Chrome would. The argument is released here (a hosted
+/// function owns it) and the digest is a fresh list whose single reference
+/// passes to Roc.
+fn hostedSha256(bytes: RocList) callconv(.c) RocList {
+    defer releaseBytes(bytes);
+    const data: []const u8 = if (bytes.elements) |e| @as([*]const u8, @ptrCast(e))[0..bytes.length] else &.{};
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(data, &digest, .{});
+    return bytesList(&digest);
+}
+
 fn hostedNowNs() callconv(.c) u64 {
     var ts: Timespec = undefined;
     if (clock_gettime(clock_monotonic, &ts) != 0) return 0;
@@ -483,6 +497,7 @@ comptime {
     @export(&hostedMintFiles, .{ .name = "roc_test_mint_files" });
     @export(&hostedLiveFiles, .{ .name = "roc_test_live_files" });
     @export(&hostedReadFile, .{ .name = "roc_test_read_file" });
+    @export(&hostedSha256, .{ .name = "roc_test_sha256" });
     @export(&hostedFileExists, .{ .name = "roc_test_file_exists" });
     @export(&hostedStdout, .{ .name = "roc_test_stdout" });
     @export(&hostedStderr, .{ .name = "roc_test_stderr" });

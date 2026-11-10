@@ -42,4 +42,9 @@ Cli := [].{
 	## How many file handles are live in the host's heap, after letting go of
 	## those Roc has released since the last call.
 	live_files! : () => U64
+
+	## The SHA-256 digest of `bytes` (32 bytes), as the browser's WebCrypto
+	## computes it for a file's digest, so a spec gets the same digest in
+	## both runners.
+	sha256! : List(U8) => List(U8)
 }

@@ -11,15 +11,29 @@ import pf.Html
 ##   or the typed failure. "Forget" gives the read up.
 ## - "Panel" mounts a section that reads the first file's text as it mounts;
 ##   closing the panel disposes the read with it.
+## - "Send" and "Send tail" POST the first file, or its second half, to
+##   `/upload` (`test-id "sent"`); "Send panel" mounts a section that sends
+##   the first file as it mounts, whose answer is kept in the app's state
+##   (`test-id "panel-sent"`) even when the section has been closed.
+## - "Digest" and "Digest tail" show the SHA-256 digest of the first file or
+##   its second half, in hex (`test-id "digest"`).
+## - "Show" asks for a URL that shows the first file and links to it
+##   (`test-id "preview"`, `test-id "shown"`); "Hide" gives it up.
 FileEffectsApp := [].{
-	S : { files : List(File), read : Ask, panel : Bool }
+	S : { files : List(File), read : Ask, panel : Bool, send : Pick, send_panel : Bool, panel_sent : Str, digest : Pick, show : Pick }
 
 	## What the page was last asked to read: nothing, or a file as text or
 	## as bytes.
 	Ask : [Skip, Bytes(File), Text(File)]
 
+	## A file an operation was last asked for, or none.
+	Pick : [Skip, Run(File)]
+
 	## The read's answer, as the page shows it.
 	Shown : [NotRead, Reading, GotBytes(Try(List(U8), Engine.FileError)), GotText(Try(Str, Engine.FileError))]
+
+	## An operation's state: not asked, waiting, or its answer as text.
+	Op : [Idle, Waiting, Answered(Str)]
 
 	Ctx : In(Root, S)
 
@@ -39,11 +53,31 @@ FileEffectsApp := [].{
 		[] => s
 	}
 
+	## The first file, or a range of it, for an operation.
+	pick_first : List(File), (File -> File) -> Pick
+	pick_first = |files, range| match files {
+		[first, ..] => Run(range(first))
+		[] => Skip
+	}
+
+	whole : File -> File
+	whole = |f| f
+
 	tail_of : File -> File
 	tail_of = |f| f.slice({ start: f.size() / 2, len: f.size() - f.size() / 2 })
 
 	sum : List(U8) -> U64
 	sum = |bytes| bytes.fold(0, |acc, b| acc + b.to_u64())
+
+	hex : List(U8) -> Str
+	hex = |bytes| {
+		digits = "0123456789abcdef".to_utf8()
+		var $out = []
+		for b in bytes {
+			$out = $out.append(digits.get(b.shr_zf_wrap(4).to_u64()) ?? 48).append(digits.get(b.bitwise_and(15).to_u64()) ?? 48)
+		}
+		Str.from_utf8($out) ?? ""
+	}
 
 	show : Shown -> Str
 	show = |shown| match shown {
@@ -54,6 +88,21 @@ FileEffectsApp := [].{
 		GotBytes(Err(e)) => "failed ${Str.inspect(e)}"
 		GotText(Err(e)) => "failed ${Str.inspect(e)}"
 	}
+
+	show_op : Op -> Str
+	show_op = |op| match op {
+		Idle => "idle"
+		Waiting => "waiting"
+		Answered(text) => text
+	}
+
+	sent : Res -> Str
+	sent = |res| match Engine.http_text(res) {
+		Ok(body) => "sent ${body}"
+		Err(e) => "send failed ${Str.inspect(e)}"
+	}
+
+	Res : Engine.Res
 
 	## A `resource` that reads what `ask` names into the page.
 	reader : Engine.Val(ctx, Ask), (Engine.Val(In(ctx, Shown), Shown) -> Elem(In(ctx, Shown))) -> Elem(ctx)
@@ -79,6 +128,54 @@ FileEffectsApp := [].{
 			},
 			body,
 		)
+
+	## A `resource` that runs `request` on the file `pick` names and shows its
+	## answer with `answer`.
+	operation : Engine.Val(ctx, Pick), (File -> Engine.Req), (Res -> Str), (Engine.Val(In(ctx, Op), Op) -> Elem(In(ctx, Op))) -> Elem(ctx)
+	operation = |pick, request, answer, body|
+		Engine.resource(
+			pick,
+			{
+				init: Idle,
+				begin: |_, p| match p {
+					Skip => Idle
+					Run(_) => Waiting
+				},
+				plan: |p| match p {
+					Run(f) => [request(f)]
+					Skip => []
+				},
+				fold: |_, _, res| Answered(answer(res)),
+			},
+			body,
+		)
+
+	upload : File -> Engine.Req
+	upload = |f| f.upload({ method: "POST", url: "/upload", headers: [("x-name", f.name())], timeout_ms: 0 })
+
+	digested : Res -> Str
+	digested = |res| match Engine.file_digest(res) {
+		Ok(bytes) => "sha256 ${FileEffectsApp.hex(bytes)}"
+		Err(e) => "digest failed ${Str.inspect(e)}"
+	}
+
+	shown_url : Res -> Str
+	shown_url = |res| match Engine.file_url(res) {
+		Ok(url) => url
+		Err(e) => "failed ${Str.inspect(e)}"
+	}
+
+	url_state : Op -> Str
+	url_state = |op| match op {
+		Answered(url) if url.starts_with("blob:") => "shown"
+		other => FileEffectsApp.show_op(other)
+	}
+
+	url_of : Op -> Str
+	url_of = |op| match op {
+		Answered(url) if url.starts_with("blob:") => url
+		_ => ""
+	}
 
 	first_text : List(File) -> Ask
 	first_text = |files| match files {
@@ -111,10 +208,50 @@ FileEffectsApp := [].{
 					),
 					|| Engine.text(""),
 				),
+				Html.button("Send", [], st.update(|s| { ..s, send: FileEffectsApp.pick_first(s.files, FileEffectsApp.whole) })),
+				Html.button("Send tail", [], st.update(|s| { ..s, send: FileEffectsApp.pick_first(s.files, FileEffectsApp.tail_of) })),
+				FileEffectsApp.operation(v.map(|s| s.send), FileEffectsApp.upload, FileEffectsApp.sent, |r| Html.p_v(r.map(FileEffectsApp.show_op), [Engine.test_id("sent")])),
+				Html.button("Send panel", [], st.update(|s| { ..s, send_panel: !s.send_panel })),
+				Engine.when(
+					v.map(|s| s.send_panel),
+					|| Engine.element(
+						"section",
+						[Html.aria_label("send panel")],
+						[
+							Engine.watch(
+								v.map(|s| FileEffectsApp.pick_first(s.files, FileEffectsApp.whole)),
+								|p| match p {
+									Run(f) => [FileEffectsApp.upload(f)]
+									Skip => []
+								},
+								st.on_result(|s, _, res| { ..s, panel_sent: FileEffectsApp.sent(res) }),
+							),
+						],
+					),
+					|| Engine.text(""),
+				),
+				Html.p_v(v.map(|s| s.panel_sent), [Engine.test_id("panel-sent")]),
+				Html.button("Digest", [], st.update(|s| { ..s, digest: FileEffectsApp.pick_first(s.files, FileEffectsApp.whole) })),
+				Html.button("Digest tail", [], st.update(|s| { ..s, digest: FileEffectsApp.pick_first(s.files, FileEffectsApp.tail_of) })),
+				FileEffectsApp.operation(v.map(|s| s.digest), |f| f.sha256(), FileEffectsApp.digested, |r| Html.p_v(r.map(FileEffectsApp.show_op), [Engine.test_id("digest")])),
+				Html.button("Show", [], st.update(|s| { ..s, show: FileEffectsApp.pick_first(s.files, FileEffectsApp.whole) })),
+				Html.button("Hide", [], st.update(|s| { ..s, show: Skip })),
+				FileEffectsApp.operation(
+					v.map(|s| s.show),
+					|f| f.object_url(),
+					FileEffectsApp.shown_url,
+					|r| Html.div(
+						"preview",
+						[
+							Html.p_v(r.map(FileEffectsApp.url_state), [Engine.test_id("shown")]),
+							Engine.element("a", [Engine.attr_v("href", r.map(FileEffectsApp.url_of)), Engine.test_id("preview")], [Engine.text("preview")]),
+						],
+					),
+				),
 			],
 		)
 	}
 
 	program : Engine.Program
-	program = Engine.program(|| Engine.state({ files: [], read: Skip, panel: Bool.False }, |st| FileEffectsApp.view(st)))
+	program = Engine.program(|| Engine.state({ files: [], read: Skip, panel: Bool.False, send: Skip, send_panel: Bool.False, panel_sent: "nothing sent", digest: Skip, show: Skip }, |st| FileEffectsApp.view(st)))
 }

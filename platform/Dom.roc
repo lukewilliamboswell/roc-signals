@@ -362,6 +362,16 @@ Dom := [].{
 		## A read of a file into the page: id, mode (1 bytes, 2 text) and the
 		## file's handle token and range.
 		FileRead(U32, U8, { token : U64, start : U64, len : U64 }),
+
+		## An HTTP request whose body is a file's range: id, method, URL,
+		## headers, the file and the timeout (ms, 0 none).
+		Upload(U32, Str, Str, List((Str, Str)), { token : U64, start : U64, len : U64 }, U32),
+
+		## A digest of a file's range: id, algorithm (1 SHA-256) and the file.
+		Digest(U32, U8, { token : U64, start : U64, len : U64 }),
+
+		## A URL that shows a file's range: id and the file.
+		FileUrl(U32, { token : U64, start : U64, len : U64 }),
 	]
 
 	## Apply one batch and also return its opcode sequence.
@@ -592,6 +602,30 @@ Dom := [].{
 					}
 					$fx = $fx.append(FileRead(id, mode, Dom.file_ref(b, $at + 1)))
 					$at = $at + 25
+				} else if kind == 12 {
+					(method, a1) = Dom.str(b, $at)
+					(url, a2) = Dom.str(b, a1)
+					n = Dom.u32(b, a2).to_u64()
+					var $hs = []
+					var $a = a2 + 4
+					while $hs.len() < n {
+						(hk, h1) = Dom.str(b, $a)
+						(hv, h2) = Dom.str(b, h1)
+						$hs = $hs.append((hk, hv))
+						$a = h2
+					}
+					$fx = $fx.append(Upload(id, method, url, $hs, Dom.file_ref(b, $a), Dom.u32(b, $a + 24)))
+					$at = $a + 28
+				} else if kind == 13 {
+					algorithm = Dom.byte(b, $at)
+					if algorithm != 1 {
+						crash "unknown digest algorithm ${algorithm.to_str()}"
+					}
+					$fx = $fx.append(Digest(id, algorithm, Dom.file_ref(b, $at + 1)))
+					$at = $at + 25
+				} else if kind == 14 {
+					$fx = $fx.append(FileUrl(id, Dom.file_ref(b, $at)))
+					$at = $at + 24
 				} else {
 					crash "unknown effect kind ${kind.to_str()}"
 				}

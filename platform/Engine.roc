@@ -324,7 +324,11 @@ Engine := [].{
 	##
 	## `ReadBytes` and `ReadUtf8` read a file into the page (`File.read_bytes`,
 	## `File.read_utf8`) and deliver one `FileBytes`, `FileText` or
-	## `FileFailed`. Like a timer they belong to their site.
+	## `FileFailed`. `Sha256` digests a file and `ObjectUrl` makes a URL that
+	## shows it (`File.sha256`, `File.object_url`), delivering `Digest`,
+	## `FileUrl` or `FileFailed`. Like a timer these belong to their site.
+	## `Upload` is an HTTP request whose body is a file (`File.upload`): it is
+	## answered and kept as `Http` is.
 	Req : [
 		## `timeout_ms` 0 = no timeout; capped at `max_timeout_ms`.
 		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32 }),
@@ -350,6 +354,9 @@ Engine := [].{
 		StorageRemove(Str),
 		ReadBytes(File),
 		ReadUtf8(File),
+		Upload({ method : Str, url : Str, headers : List((Str, Str)), body : File, timeout_ms : U32 }),
+		Sha256(File),
+		ObjectUrl(File),
 	]
 
 	## The result of an awaited request: an HTTP response (`Http`, with any status),
@@ -359,22 +366,29 @@ Engine := [].{
 	## (`Now`), `Refused` when the in-flight bound turned the request away, or a
 	## worker program's output (`Work`) or the reason it produced none
 	## (`WorkLost`, or `FileFailed` when the files it was sent could not be
-	## read into the worker), or a file's bytes or text read into the page
-	## (`FileBytes`, `FileText`, or `FileFailed`).
-	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str)]
+	## read into the worker), a file's bytes or text read into the page
+	## (`FileBytes`, `FileText`), a file's SHA-256 digest (`Digest`) or a URL
+	## that shows it (`FileUrl`), or why an operation on a file produced
+	## nothing (`FileFailed`).
+	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str)]
 
 	## Why an operation on a file produced nothing. One closed type for every
 	## operation on a file, each of which says which arms it can produce:
 	##
 	## - `Unreadable`: the user's file changed or went away since it was given;
 	## - `TooLarge`: it is more than the operation reads (a worker run reads 16
-	##   files and `maxFileBytes` bytes, a page read `maxReadBytes`);
+	##   files and `maxFileBytes` bytes, a digest `maxFileBytes`, a page read
+	##   `maxReadBytes`; a file gives 16 ranges URLs);
 	## - `InvalidUtf8`: text was asked for and the bytes are not UTF-8;
-	## - `Refused`: the in-flight bound turned the request away, as `file_bytes`
-	##   and `file_text` report it (a raw result is `Refused` itself).
+	## - `Unavailable`: the browser cannot perform the operation (a digest
+	##   without WebCrypto, which a page served over plain HTTP from another
+	##   host than localhost does not have);
+	## - `Refused`: the in-flight bound turned the request away, as the typed
+	##   readers (`file_bytes`, `file_text`, `file_digest`, `file_url`) report
+	##   it (a raw result is `Refused` itself).
 	##
 	## A worker run reports it as `Worker.Error`'s `FileFailed`.
-	FileError : [Unreadable, TooLarge, InvalidUtf8, Refused]
+	FileError : [Unreadable, TooLarge, InvalidUtf8, Unavailable, Refused]
 
 	## A `File.read_bytes` result as the file's bytes or a typed [FileError]:
 	## `TooLarge`, `Unreadable` or `Refused`. Any other result is a contract
@@ -387,6 +401,18 @@ Engine := [].{
 	## is a contract error.
 	file_text : Res -> Try(Str, FileError)
 	file_text = |res| Core.file_text(res)
+
+	## A `File.sha256` result as the digest's 32 bytes or a typed [FileError]:
+	## `TooLarge`, `Unavailable`, `Unreadable` or `Refused`. Any other result
+	## is a contract error.
+	file_digest : Res -> Try(List(U8), FileError)
+	file_digest = |res| Core.file_digest(res)
+
+	## A `File.object_url` result as the URL or a typed [FileError]: `TooLarge`
+	## (a 17th range of one file) or `Refused`. Any other result is a contract
+	## error.
+	file_url : Res -> Try(Str, FileError)
+	file_url = |res| Core.file_url(res)
 
 	## Why a `Work` request produced no output: the worker's instance faulted
 	## running the program (`Contract`, `ResourceLimit`, `OutOfMemory`,
