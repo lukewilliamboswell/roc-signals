@@ -31,8 +31,8 @@ recipe ready.
 
 | Path | Contents |
 |---|---|
-| `platform/` | The platform (`main.roc`): the engine (`Core.roc`), the authoring API (`Engine.roc`, `Html.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the hosted effects a worker task calls (`Hosted.roc`, bound in both hosts), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig`). Also the fuzz platform (`fuzz.roc`, the vendored roc-fuzz modules and the soak walk) |
-| `tests/` | Browser contract tests and the apps they drive (`tests/apps/`, for example `files` for file handles `file-effects` for operations on files, `ports` for ports and `tasks` for worker tasks), the Chrome spec replay, and the release check helper |
+| `platform/` | The platform (`main.roc`): the engine (`Core.roc`), the authoring API (`Engine.roc`, `Html.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the hosted effects a worker job calls (`Hosted.roc`, bound in both hosts), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig`). Also the fuzz platform (`fuzz.roc`, the vendored roc-fuzz modules and the soak walk) |
+| `tests/` | Browser contract tests and the apps they drive (`tests/apps/`, for example `files` for file handles, `file-effects` for operations on files, `ports` for ports, `worker-typed` for the task API, `prepared` for preparations and `tasks` for jobs that read and build files), the Chrome spec replay, and the release check helper |
 | `fuzz/` | Fuzz targets of the shared support; each app's own target is its `main-fuzz.roc` |
 | `examples/` | The example apps, each with its specs, and with any JavaScript of its own beside it (the Reading List's port handlers, `ports.mjs`) |
 | `benchmarks/` | The js-framework-benchmark adapter |
@@ -101,16 +101,18 @@ for example to run two tasks at once.
    scaling measurement (correctness, robustness sequences and memory; no
    timing ratios), file handles and their release, operations on files
    (page reads, uploads to a local server, digests and file URLs, with their
-   bounds, failures and lifetimes), prepared programs and the pool's
-   placement of their queries, ports with real handlers
+   bounds, failures and lifetimes), preparations and the pool's
+   placement of their tasks' jobs, ports with real handlers
    (`ports-browser.mjs`: the mount check, delivery policies, the payload
-   bound, bytes and files both ways, containment), worker tasks
-   (`tasks-browser.mjs`: the handles each instance holds after a job, a large
-   transform with bounded worker memory, the output bound, termination and
-   unmounting mid-job, the page's import stubs, inline mode, downloads into
-   files and real saves), the Reading List's own port handlers against real
-   IndexedDB in two tabs (`reading-list-journey.mjs`), and the Conduit
-   journey against its scripted backend.
+   bound, bytes and files both ways, containment), jobs that read and build
+   files (`tasks-browser.mjs`: the handles each instance holds after a job, a
+   large transform with bounded worker memory, the output bound, termination
+   and unmounting mid-job, the page's import stubs, inline mode, where a job
+   that reaches no worker effect answers and one that does is unavailable
+   without poisoning the page, downloads into files and real saves), the
+   Reading List's own port handlers against real IndexedDB in two tabs
+   (`reading-list-journey.mjs`), and the Conduit journey against its scripted
+   backend.
 7. The js-framework-benchmark check.
 8. The release dry run: the bundle, `runtime.mjs` and `worker.mjs`, the examples archive with
    every app mounted by its check helper, and the release notes.
@@ -156,7 +158,10 @@ worker wire format's decoder, the port message format's decoder
 (`port-json`), and each app's
 leak-checked random walk (the supersede test app's included; the Reading
 List's plays its port handlers against a model store and checks that the
-page shows what the store holds). Every target
+page shows what the store holds). A walk has no host to run a job's effects,
+so a worker app's target answers its jobs with a stand-in made from the
+app's pure function (`Task.stand_in`, walked with `Soak.walk_with`); its
+tasks' bodies run in the specs. Every target
 that drives the engine also runs the settle check after every step: no
 reader of a written layer may be left stale (see
 [Testing](@/docs/testing.md#the-settle-check)). `fuzz/structure` generates

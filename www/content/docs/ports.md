@@ -57,7 +57,7 @@ And use them from effect sites, like any other request:
 
 {{ sample(file="ports/Notes.roc", region="view") }}
 
-`Port.derive` is to a call what `Worker.derive` is to a worker program: a
+`Port.derive` is to a call what `Worker.derive` is to a worker task: a
 layer holding the answer for an input, an `Engine.Remote`, where a newer
 input stops the older call. `Port.derive_when` takes `[Run(input), Skip]`
 for an input that is sometimes not a question.

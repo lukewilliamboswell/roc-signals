@@ -14,7 +14,7 @@
   changes, no guessing or recovery that changes meaning, work proportional to
   the changed set rather than total tree size, a pure Roc engine behind a host
   that only allocates, stages payloads, backs resource handles and classifies
-  faults (and, in a worker instance, performs a task's hosted effects on
+  faults (and, in a worker instance, performs a job's hosted effects on
   handles), typed site storage with no host-held Roc values beyond the opaque
   boxes `design.md` names (the page's engine state, and one prepared state in
   a worker instance), and the command stream as the page instance's only
@@ -69,11 +69,11 @@
   a worker instance, at most one opaque boxed prepared state instead), the
   last command buffer, at most one staged payload, the typed heaps behind
   resource handles, the allocator and the fault state, and in a worker
-  instance the flag that says a task's job is running. It clears its slots
-  before each call into Roc and never interprets the state, the commands or any
-  Roc value. A task's hosted effects are the platform's closed vocabulary:
-  exported host functions that refuse to act outside a task's job and each
-  call one import of the worker script, which holds the browser objects;
+  instance the flag that says a job (or a preparation) is running. It clears
+  its slots before each call into Roc and never interprets the state, the
+  commands or any Roc value. A job's hosted effects are the platform's closed
+  vocabulary: exported host functions that refuse to act outside a job and
+  each call one import of the worker script, which holds the browser objects;
   the host itself holds no builder, part or browser object. A box moves whole into one Roc call and back out of it, and only
   Roc drops it; a trap abandons it with the heap. Lay out staged lists exactly
   as Roc expects and never hold a seamless slice.
@@ -91,12 +91,13 @@
   from a resource (an object URL) lives exactly as long as its handle.
   Handles cross between instances by token: each instance mints its own box
   for the browser object, so either side letting go cannot invalidate the
-  other's. A file a task builds is immutable once finished, and its builder
-  never leaves the job that opened it, so nothing a stopped or failed job
-  wrote is ever observable.
+  other's. A file a job builds is immutable once finished, and its builder
+  never outlives the call that opened it, so nothing a stopped or failed job
+  wrote is ever observable and no job sees what an earlier one wrote except
+  through a finished file.
 - Make ownership explicit at the boundary. For each list that crosses it (boot
-  bytes, payloads, command buffers, key lists, handle lists, a worker's input,
-  output and file buffers, a file read into the page as a result), establish
+  bytes, payloads, command buffers, key lists, handle lists, a job's input
+  and answer, a file read into the page as a result), establish
   who owns it before the call, after it, and when the instance is poisoned or
   dropped.
 - Publish atomically. A command batch becomes visible only when its call
@@ -123,17 +124,20 @@
   implement its semantics. The native spec runner drives the same engine; it
   does not simulate a different one.
 - Keep page code pure and the compiled module the unit of compatibility.
-  A worker runs a registered Roc function in another instance of the same
-  module, and its request and answer are an ordinary request and result in the
-  effect channel. A program is pure; a task may call the platform's hosted
-  effects on the handles its job was sent or made, and nothing else; a
-  prepared program only reads. The runtime's pool places, bounds and stops
-  jobs; it never changes an answer or decides anything that belongs to the
-  engine. A worker may keep a prepared program's state between jobs, but
-  only as an optimisation that is never observable in an answer: a query's
-  answer is what preparing afresh and asking would give, queries never
-  change the state, and placement, eviction or a lost worker cost only time.
-  Both spec runners run a job's program, and serve a task's hosted effects
+  A worker runs a registered task in another instance of the same module,
+  and its request and answer are an ordinary request and result in the
+  effect channel; there is one kind of worker function and one request
+  kind. A task's `run!` may be a pure calculation or call the platform's
+  hosted effects on the handles its job was sent or made, and nothing
+  else; a preparation's `prepare!` likewise, and its answer must be a
+  function of its input. The runtime's pool places, bounds and stops jobs;
+  it never changes an answer or decides anything that belongs to the
+  engine. A worker may keep a preparation's state between jobs, but only as
+  an optimisation that is never observable in an answer: a job's answer is
+  what preparing afresh and running the task would give, tasks never change
+  the state, and placement, eviction or a lost worker cost only time. A
+  task's own failure is its answer (`Failed`), never confused with a lost
+  job. Both spec runners run a job's task, and serve its hosted effects
   from the same files, so a spec means the same in each.
 - Keep the platform's JavaScript generic. `runtime.mjs` and `worker.mjs`
   contain nothing specific to an app, an example or the site. JavaScript that
@@ -184,8 +188,9 @@
   a change to propagation must keep that check meaningful. Cover
   ordering, equality cutoffs, identity reuse, scope disposal, reparenting,
   refusal at the in-flight bound, stale results, cancellation and
-  supersession, lost and timed-out work, eviction and the loss of a worker
-  holding state, resource release, a resource the browser can no longer
+  supersession, lost and timed-out work, a task's own failure, eviction and
+  the loss of a worker holding state, a builder kept past its call,
+  resource release, a resource the browser can no longer
   read, follow-up bounds, containment and recovery, and protocol rejection
   as applicable.
 - Use `.scm` specs beside each app (`examples/<app>/specs/`,

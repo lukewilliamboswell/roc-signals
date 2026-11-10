@@ -7,8 +7,8 @@ template = "page.html"
 
 # Monitoring Workers
 
-A `Work` request runs a registered pure program in a Web Worker (see
-[Effects and the Browser](@/docs/effects-and-browser.md)). The runtime's
+A `Work` request runs a job of a registered task in a Web Worker (see
+[Workers](@/docs/workers.md)). The runtime's
 **monitor** shows what that costs: where each job's time went, how busy the
 pool is, what cancellations, deadlines and crashes cost, and how much memory
 the worker instances hold. It only observes. Turning it on or subscribing to
@@ -54,8 +54,8 @@ result, and turns those stamps into spans. The spans add up to the job's
 | `queue` | handed to the pool → posted | Waiting for a free worker |
 | `cold` | posted → instance ready | Starting a worker: its script and its instance. 0 for a warm worker |
 | `toWorker` | posted → received | The message reaching a warm worker (`null` when cold) |
-| `stage` | ready → staged | Copying the input into the worker's instance, and reading the [files](@/docs/files.md) it names |
-| `compute` | staged → returned | The program itself (`work()`) |
+| `stage` | ready → staged | Copying the input into the worker's instance and minting handles for the [files](@/docs/files.md) it names (their bytes are read by the job itself, during `compute`) |
+| `compute` | staged → returned | The task itself (`work()`, or `ask()` for a preparation's task), its reads of files included |
 | `copyOut` | returned → posted back | Copying the output out of the instance |
 | `fromWorker` | posted back → received by the page | The message coming back |
 | `resultWait` | received → result turn starts | The page was busy with another turn |
@@ -66,14 +66,13 @@ queueing and cold start as well as compute. A held job (manual mode, or the
 `manualWork` mount option) has no deadline timer: a spec's time is manual,
 and `expireEffect(id)` expires it instead.
 
-For a job whose input holds files, the record's `readMs` is the part of
-`stage` spent reading them into the instance, and its `fileBytes` how many
-bytes that was; `inputBytes` counts the payload alone, which refers to the files
-but does not carry them.
+A job's `inputBytes` counts its payload alone, which refers to the files its
+input holds but does not carry them: the job reads what it needs of them in
+`compute`.
 
 `firstJobOnInstance` marks a worker's first job. That job's `compute` also
-pays for the browser compiling the program's code the first time it runs, so
-compare later jobs when you judge a program's speed.
+pays for the browser compiling the task's code the first time it runs, so
+compare later jobs when you judge a task's speed.
 
 ### Clocks
 
@@ -99,11 +98,11 @@ console.table(s.recent.map((j) => ({ id: j.id, program: j.program, outcome: j.ou
 |---|---|
 | `mode` | `"workers"`, `"inline"` (the page's thread) or `"unavailable"` (no `Worker`) |
 | `pool` | `instances`, `spawning`, `idle`, `busy` (holding a job, starting ones included) and `queued`, now; their `peak`; and the time integrals `busyMs`, `aliveMs`, `queuedMs` |
-| `jobs` | Counts by outcome (`done`, `lost`, `timeout`, `cancelled`, `unavailable`); `inFlight`; `wastedMs` (time on instances by jobs that never delivered output); input and output bytes; `lateReplies` (always 0 in a healthy pool); for prepared programs, `prepared` (queries that prepared a state), `reused` (queries answered from a kept state) and `prepareMs` (total preparation time) |
-| `instances` | `spawns`, `respawns` (spawns beyond the most instances ever live at once), `ended` by cause (`cancel`, `deadline`, `fault`, `executor`, `unmount`, `contained`, and `retired` for a worker over `maxWorkerBytes`), `evicted`: prepared states let go by cause (`replaced` by another preparation, `files` before a job that reads files, `released` with their file), and the `live` and `retired` instances: thread, state, spawn and ready times, instantiation time, jobs served, busy time, linear memory and its peak, the host's live allocations and bytes, and `held`, the name of the preparation whose state it keeps (or `null`) |
+| `jobs` | Counts by outcome (`done`, `lost`, `timeout`, `cancelled`, `unavailable`); `inFlight`; `wastedMs` (time on instances by jobs that never delivered output); input and output bytes; `lateReplies` (always 0 in a healthy pool); for preparations' tasks, `prepared` (jobs that prepared a state), `reused` (jobs run on a kept state) and `prepareMs` (total preparation time) |
+| `instances` | `spawns`, `respawns` (spawns beyond the most instances ever live at once), `ended` by cause (`cancel`, `deadline`, `fault`, `executor`, `unmount`, `contained`, and `retired` for a worker over `maxWorkerBytes`), `evicted`: prepared states let go by cause (`replaced` by another preparation, `released` with their file), and the `live` and `retired` instances: thread, state, spawn and ready times, instantiation time, jobs served, busy time, linear memory and its peak, the host's live allocations and bytes, and `held`, the name of the preparation whose state it keeps (or `null`) |
 | `hist` | Histograms of `queue`, `cold`, `compute`, `total`, `resultTurn` and `prepare`, in fixed 1-2-5 millisecond buckets (`edges`, `counts`, `n`, `sum`, `min`, `max`) |
-| `programs` | Per program: jobs, outcomes, bytes, and `queue`, `compute` and `total` histograms |
-| `recent` | The last `history` job records, with every stamp (`t`) and span (`ms`). A prepared query's record says whether it `prepared` (`"prepare"`) or reused a kept state (`"reuse"`; `null` for other programs), and `prepareMs`, how long preparing took (also `ms.prepare`; `null` when it reused); `compute` is then the query alone. `finished` is true for a cancelled query whose `Finish` policy let it complete |
+| `programs` | Per task, by name: jobs, outcomes, bytes, and `queue`, `compute` and `total` histograms (job records name their task in `program`) |
+| `recent` | The last `history` job records, with every stamp (`t`) and span (`ms`). The record of a preparation's task's job says whether it `prepared` (`"prepare"`) or reused a kept state (`"reuse"`; `null` for other tasks), and `prepareMs`, how long preparing took (also `ms.prepare`; `null` when it reused); `compute` is then the task alone. `finished` is true for a cancelled job whose task's `on_cancel: Finish` let it complete |
 | `page` | The page instance's linear memory, live allocations and bytes, and turns |
 | `engine` | The engine's effect counters, when the engine's work record carries them; otherwise `null` |
 | `ports` | Per [port](@/docs/ports.md) the app used, by name: `sent` (commands), `calls`, `answered`, `threw`, `timedOut`, `cancelled` (stopped by the app or by teardown), `subscribed`, `messages` (delivered to the app), `coalesced` (replaced under `Latest` before delivery), `refusedEmits` (`emit` returned `false` under `Every(n)`), `tooLarge`, `closed` (ended by the JavaScript), and `faults` (failures of command handlers and unsubscribe functions, which the app never sees). Counted by the runtime since mount; at most one entry per declared port, so at most 64 |
@@ -153,7 +152,7 @@ What a listener can rely on:
   ends after its result turn has been applied. A cancelled job ends when it
   is cancelled, with `record.phase` (`held`, `queued`, `starting`,
   `running`) and `record.cancelledBy` (`engine`, `unmount`, `contained`).
-- A cancelled query whose policy is `Finish` ends at once as `cancelled`
+- A cancelled job whose task says `on_cancel: Finish` ends at once as `cancelled`
   with `record.finished`, but its instance stays busy until the job
   completes.
 - When stopping a job terminates its worker (cancel, deadline, fault), the
@@ -172,16 +171,16 @@ With `userTiming: true` the monitor adds `performance.measure` entries, so
 jobs show up in the DevTools Performance panel and in any
 `PerformanceObserver`, with no custom tooling:
 
-- `roc:work <program>`: a job from issue to its applied result. Its `detail`
+- `roc:work <task>`: a job from issue to its applied result. Its `detail`
   carries the id, instance, outcome and byte sizes.
 - `roc:work.queue`, `roc:work.cold`, `roc:work.run` (posted until the reply
   arrives) and `roc:work.result`: the job's phases.
-- `roc:work.prepare`: a prepared query's preparation, drawn with the length
-  the worker measured, ending where the query's own call starts. When the
-  query reads files of its own, the preparation really ran before that
-  reading, so the entry is drawn that much late.
+- `roc:work.prepare`: the preparation of a preparation's task's job, drawn
+  with the length the worker measured, ending where the task's own call
+  starts. The job's own files are staged between the two, so the entry is
+  drawn that much late.
 - `roc:worker <n> spawn`: a worker starting.
-- `roc:work.compute <program>`: added by the worker itself, on its own
+- `roc:work.compute <task>`: added by the worker itself, on its own
   thread.
 
 Each entry's `detail.devtools` asks Chrome to draw it on a "roc workers"
@@ -205,7 +204,7 @@ Everything the monitor keeps has a bound:
 |---|---|---|
 | Job records | `history` (default 128, at most 1024) | Oldest overwritten, counted in `recentDropped` |
 | Retired instances | 16 | Oldest overwritten, counted in `retiredDropped` |
-| Programs | 64, the catalogue's bound | Further names counted under `"*"` |
+| Tasks | 64, the catalogue's bound | Further names counted under `"*"` |
 | Live jobs and instances | The in-flight cap and `maxWorkers` | — |
 | Subscribers | 16 | `subscribe` throws |
 | Timeline entries | 1024 per thread | Cleared |

@@ -119,7 +119,7 @@ models it. `LOC` is a locator, `"…"` a string, `N` a non-negative integer,
 | `(local-storage "key" "value")` | Seed local storage before mount |
 | `(local-storage-unavailable)` | Every local-storage access throws, as with site data disabled. Seeding storage in the same setup is a spec error |
 | `(file "name" "type" "text" [REPEAT])` | Declare a file the steps can give the app: its name, its MIME type, and its contents, `text` repeated `REPEAT` times (once without it) |
-| `(max-output-bytes N)` | The most bytes a [task](@/docs/tasks.md)'s job may append to its builders, the runtime's `maxOutputBytes` mount option (256 MiB without it) |
+| `(max-output-bytes N)` | The most bytes a [task](@/docs/workers.md)'s job may append to its builders, the runtime's `maxOutputBytes` mount option (256 MiB without it) |
 
 Effects never run on their own in a spec: HTTP requests, timers and worker
 jobs wait for `run-effect`, and intervals for `tick-interval`. A worker
@@ -177,9 +177,9 @@ browsers do.
 |---|---|
 | `(stub-http "label" :url "/api/x" :status 200 :body "…")` | Stage an HTTP answer; optional `:headers (("name" "value") …)`, default `content-type: application/json`. `:status` is 100–999. Staging a second answer before one is used fails |
 | `(stub-http-reject "label" :kind network :detail "offline")` | Stage a failure: `network` with the browser's message, or `timeout` with an empty `:detail` |
-| `(run-effect N)` | Answer the N-th HTTP request, upload, timer, worker job or operation on a file the current document issued (1-based, in issue order; subscriptions and storage reads not counted). It must still be pending. A timer fires; a worker job runs its program (in Chrome in a real worker, natively in a child process, the step waiting for its result: a program that crashes loses its job with the crash's fault class, and one that has not finished after 30 s fails the step); an HTTP request or an upload takes the staged answer, and a reply's `:url` must equal the request's; a page read, a digest or a file URL is performed on the setup file (see [Files](#files)) |
+| `(run-effect N)` | Answer the N-th HTTP request, upload, timer, worker job or operation on a file the current document issued (1-based, in issue order; subscriptions and storage reads not counted). It must still be pending. A timer fires; a worker job runs its task (in Chrome in a real worker, natively in a child process that serves the job's effects from the setup files, the step waiting for its result: a task that crashes loses its job with the crash's fault class, and one that has not finished after 30 s fails the step); an HTTP request or an upload takes the staged answer, and a reply's `:url` must equal the request's; a page read, a digest or a file URL is performed on the setup file (see [Files](#files)) |
 | `(expect-pending-effects N)` | Exactly N HTTP requests, uploads, timers, worker jobs and operations on files are waiting for `run-effect` |
-| `(expect-pending-work "program" N)` | Exactly N worker jobs for the program of that name are waiting |
+| `(expect-pending-work "task" N)` | Exactly N worker jobs of the task of that name are waiting |
 | `(lose-work N FAULT)` | Answer the N-th effect occurrence, a pending worker job, as `WorkLost(FAULT)` without running it. `FAULT` is `contract`, `resource_limit`, `out_of_memory`, `app_crash`, `expect_failed`, `unavailable` or `executor` |
 | `(time-out-work N)` | Expire the deadline of the N-th effect occurrence, a pending worker job: it is answered `Timeout` without running. A job without a deadline fails the step |
 | `(tick-interval MS)` | Deliver one tick to every live `Interval(MS)`; fails when none is live |
@@ -200,8 +200,8 @@ A worker job is numbered with the HTTP requests and timers, in issue order,
 so the order of the steps is the order the jobs finish: `(run-effect 2)`
 then `(run-effect 1)` says the newer job finishes first. `lose-work` and
 `time-out-work` let a spec state how the app handles a job that fails
-without writing a program that fails (see [Workers](@/docs/workers.md#testing)
-for a sample); a program that really crashes on some
+without writing a task that fails (see [Workers](@/docs/workers.md#testing)
+for a sample); a task that really crashes on some
 input loses its job under `run-effect`, with the class `app_crash`, in both
 runners. A job cancelled by disposing its site is no longer pending, and the
 `effects_cancelled` metric below counts it.
@@ -245,10 +245,11 @@ runner's own making, so a spec asserts what the app does with it rather
 than its text. An upload is an HTTP request: `expect-upload` checks which
 file and range it sends, and `run-effect` answers it with the staged reply.
 
-A [task](@/docs/tasks.md)'s job is a worker job: `run-effect` runs it, in
-Chrome in a real worker and natively in a child process whose task effects
-read the setup files' bytes, and `lose-work`, `time-out-work` and
-`expect-pending-work` apply to it. The files its answer holds are then
+Every worker job runs the same way, whatever its [task](@/docs/workers.md)'s
+body does: `run-effect` runs it, in Chrome in a real worker and natively in
+a child process whose effects read the setup files' bytes, and a
+preparation's task is prepared afresh for each job natively, which is what
+any reuse in the browser must equal. The files its answer holds are then
 handles the app holds, with the bytes the job built, in both runners, so a
 later read, digest or save of them gives the same bytes. A `File.fetch`
 takes the staged `stub-http` answer, its body becoming the file. Neither
@@ -373,10 +374,13 @@ event, so a generated session that leaves a reader stale fails at the event
 that did it, in any app, with no model of the app. The same file declares the
 app's soak runs: long random walks whose live allocations must stay flat
 across repeated round trips. While a worker job is pending, the walk also
-answers it now and then: usually by running its program in process, so the
-program runs inside the leak check (and one that crashes on an input the UI
-produced is a finding), sometimes by losing it, timing it out or leaving it
-pending for disposal to cancel. The settle check runs on a copy that is freed
+answers it now and then: usually with a stand-in made from the app's own
+pure function (a walk has no host to run a job's effects on, so the target
+passes `task.stand_in(f)` to `Soak.walk_with`, and the answer goes through
+`SpecRunner.answer_work`), so that function runs inside the leak check (and
+one that crashes on an input the UI produced is a finding), sometimes by
+losing it, timing it out or leaving it pending for disposal to cancel. The
+task's real body runs in the specs, in both runners. The settle check runs on a copy that is freed
 before the walk goes on, so it never counts as a leak, and it stays out of
 the measured round trips.
 
