@@ -41,14 +41,23 @@ start = |view| {
 ## - Work is scoped: R's worker job (with its interval, `r % 3 == 0`) is
 ##   cancelled by supersession and by disposal alike, never reparented, and
 ##   its output, a lost job or its timeout fold into R's layer.
+## - Breadth is not depth: F (`k` 6) asks for 70 timers in one turn, so at
+##   the bound of 5 one click queues 65 or more refusals. Each is an
+##   independent follow-up one chain deep, so the call completes and every
+##   refusal reaches the log; a budget that counted every follow-up turn of
+##   the call would poison the instance here.
 
-Kind : [G, H, Tick, Pop, Lh, Li, Rh, Rt, Ri, Rw]
+Kind : [G, H, Tick, Pop, Lh, Li, Rh, Rt, Ri, Rw, Ft]
 
 Live : { id : U32, k : U64, c : U64, kind : Kind, orphan : Bool }
 
-## A queued follow-up: a refusal for G, H, an interval, L or R, or a Self
-## (G's first or second, or L's).
-Follow : { k : U64, c : U64, what : [RefG, RefH, RefT, Self1, Self2, RefL, SelfL, RefR] }
+## A queued follow-up: a refusal for G, H, an interval, L, R or F, or a
+## Self (G's first or second, or L's).
+Follow : { k : U64, c : U64, what : [RefG, RefH, RefT, Self1, Self2, RefL, SelfL, RefR, RefF] }
+
+## F's `k`.
+k_f : U64
+k_f = 6
 
 ## L's and R's `k`.
 k_l : U64
@@ -78,6 +87,7 @@ M : {
 	r : U64,
 	rshown : Bool,
 	rl : FxApp.Load,
+	f : U64,
 }
 
 model_new : U64 -> M
@@ -103,6 +113,7 @@ model_new = |max| {
 		r: 0,
 		rshown: True,
 		rl: FxApp.begin_r(FxApp.load0, 0),
+		f: 0,
 	}
 	# each shown branch mounts its interval (counts are 0: no G/H)
 	tick(tick(tick(m0, 0), 1), 2)
@@ -155,13 +166,17 @@ request = |m, k, c| {
 	}
 }
 
-## Admit (or refuse, queueing `refusal`) one awaited request of L or R:
+## Admit (or refuse, queueing `refusal`) one awaited request of L, R or F:
 ## `cmd` is its effect command given the id.
-admit_x : M, U64, U64, Kind, (U32 -> Dom.FxCmd), [RefL, RefR] -> M
+admit_x : M, U64, U64, Kind, (U32 -> Dom.FxCmd), [RefL, RefR, RefF] -> M
 admit_x = |m, k, c, kind, cmd, refusal| {
 	id = m.next
 	if m.live.len() >= m.max {
-		what = if (refusal == RefL) RefL else RefR
+		what = match refusal {
+			RefL => RefL
+			RefR => RefR
+			RefF => RefF
+		}
 		{ ..m, next: id + 1, refused: m.refused + 1, queue: m.queue.append({ k, c, what }) }
 	} else {
 		{ ..m, next: id + 1, issued: m.issued + 1, live: m.live.append({ id, k, c, kind, orphan: False }), fx: m.fx.append(cmd(id)) }
@@ -249,6 +264,7 @@ drain = |m0| {
 			RefL => { ..m, log: m.log.append(FxApp.describe(k_l, f.c, Refused)), delivered: m.delivered + 1 }
 			SelfL => bump_q({ ..m, log: m.log.append(FxApp.describe(k_l, f.c, Now)), delivered: m.delivered + 1 })
 			RefR => { ..m, rl: FxApp.fold_r(m.rl, f.c, Refused), delivered: m.delivered + 1 }
+			RefF => { ..m, log: m.log.append(FxApp.describe(k_f, f.c, Refused)), delivered: m.delivered + 1 }
 		}
 	}
 	$m
@@ -293,6 +309,19 @@ model_toggle = |m, k| {
 		# mount order: G (+ follow-ups), H, then the interval
 		drain(tick(request(m1, k, m.counts.get(k) ?? 0), k))
 	}
+}
+
+## A click on "flood": F asks for its timers, in plan order.
+model_flood : M -> M
+model_flood = |m0| {
+	f = m0.f + 1
+	var $m = { ..m0, f }
+	var $i = 0.U64
+	while $i < FxApp.flood_size {
+		$m = admit_x($m, k_f, f, Ft, |id| Timer(id, 10), RefF)
+		$i = $i + 1
+	}
+	drain($m)
 }
 
 ## A click on "query": L supersedes and issues for the next query.
@@ -488,7 +517,7 @@ run_program! = |prog| {
 	check!("mount", { s: $s, fx: fx0 }, $m)
 	var $i = 0.U64
 	while $i + 1 < prog.len() {
-		op = (prog.get($i) ?? 0) % 8
+		op = (prog.get($i) ?? 0) % 9
 		arg = prog.get($i + 1) ?? 0
 		k = arg.to_u64() % 3
 		m0 = { ..$m, fx: [] }
@@ -516,6 +545,8 @@ run_program! = |prog| {
 			(click!($s, "rquery"), model_rquery(m0), "rquery")
 		} else if op == 6 {
 			(click!($s, "toggle r"), model_toggle_r(m0), "toggle r")
+		} else if op == 8 {
+			(click!($s, "flood"), model_flood(m0), "flood")
 		} else {
 			# A tick, a job's output or a lost job for an arbitrary id: a tick
 			# is an equal fold for R and "other" for logs.
@@ -568,6 +599,10 @@ target = Fuzz.target_with!({
 		# output, then issue again, supersede the next job, and hide R with one
 		# in flight (cancelled, not reparented), then lose one after showing R
 		ex("work", 1, [1, 0, 1, 1, 5, 0, 5, 0, 5, 0, 7, 9, 5, 0, 5, 0, 5, 0, 5, 0, 5, 0, 5, 0, 6, 0, 6, 0, 7, 15, 7, 17]),
+		# a flood past the bound: 65 or more refusals from one turn, each one
+		# chain deep, then results for some of its timers; free slots and flood
+		# again, with L and R adding their own requests
+		ex("flood", 1, [8, 0, 2, 7, 7, 12, 1, 0, 1, 1, 8, 0, 4, 0, 5, 0, 2, 90, 8, 0, 7, 140]),
 	],
 	generator: { mode: Fuzz.constant(1), program: Fuzz.list(Fuzz.u8, 64) }.Fuzz,
 	test!,

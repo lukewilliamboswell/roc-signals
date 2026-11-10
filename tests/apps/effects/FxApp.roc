@@ -23,8 +23,13 @@ import pf.Html
 ##   HTTP request, a request and a timer, or an interval and a worker job
 ##   (the echo program, with a deadline), by `r % 3`. Its layer folds
 ##   answers and is shown as `input|answer|faults`.
+## - F, an `on_change` site over the flood counter `f`: 70 timers at once,
+##   far past the bound, so one turn refuses dozens of them. Its reaction
+##   appends to the root log.
+## - A follow-up loop that only the browser contract test arms ("loop"): a
+##   refused request whose reaction issues it again.
 FxApp := [].{
-	S : { counts : List(U64), shown : List(Bool), log : List(Str), q : U64, r : U64, rshown : Bool }
+	S : { counts : List(U64), shown : List(Bool), log : List(Str), q : U64, r : U64, rshown : Bool, f : U64, n : U64, looping : Bool }
 
 	## The resource's layer: the input it was begun for, the last answer, and
 	## the timeouts seen.
@@ -70,13 +75,13 @@ FxApp := [].{
 	}
 
 	log_line : S, Str -> S
-	log_line = |{ counts, shown, log, q, r, rshown }, line| { counts, shown, log: log.append(line), q, r, rshown }
+	log_line = |{ counts, shown, log, q, r, rshown, f, n, looping }, line| { counts, shown, log: log.append(line), q, r, rshown, f, n, looping }
 
 	bump : S, U64 -> S
-	bump = |{ counts, shown, log, q, r, rshown }, k| { counts: counts.update(k, |c| c + 1) ?? counts, shown, log, q, r, rshown }
+	bump = |{ counts, shown, log, q, r, rshown, f, n, looping }, k| { counts: counts.update(k, |c| c + 1) ?? counts, shown, log, q, r, rshown, f, n, looping }
 
 	toggle : S, U64 -> S
-	toggle = |{ counts, shown, log, q, r, rshown }, k| { counts, shown: shown.update(k, |b| !b) ?? shown, log, q, r, rshown }
+	toggle = |{ counts, shown, log, q, r, rshown, f, n, looping }, k| { counts, shown: shown.update(k, |b| !b) ?? shown, log, q, r, rshown, f, n, looping }
 
 	## L's requests for query `q`.
 	plan_l : U64 -> List(Engine.Req)
@@ -125,6 +130,10 @@ FxApp := [].{
 	## The worker catalogue: R's echo program.
 	workers : List(Engine.Registration)
 	workers = [Engine.registration(FxApp.echo_name, |b| b)]
+
+	## How many timers one flood asks for.
+	flood_size : U64
+	flood_size = 70
 
 	load0 : Load
 	load0 = { input: 0, answer: "", faults: 0 }
@@ -203,7 +212,7 @@ FxApp := [].{
 
 	main_with : List(Bool) -> Elem(Root)
 	main_with = |shown| Engine.state(
-		{ counts: List.repeat(0, FxApp.nsites), shown, log: [], q: 0, r: 0, rshown: True },
+		{ counts: List.repeat(0, FxApp.nsites), shown, log: [], q: 0, r: 0, rshown: True, f: 0, n: 0, looping: False },
 		|st| Engine.element(
 			"div",
 			[],
@@ -220,6 +229,24 @@ FxApp := [].{
 					[
 						Engine.element("circle", [Engine.attr("r", "4"), Engine.attr("cx", "5"), Engine.attr("cy", "5"), Engine.class_v(st.val().map(|s| if (s.log.is_empty()) "idle" else "busy"))], []),
 					],
+				),
+				# F: each flood asks for 70 timers at once, far past the bound, so one
+				# turn queues dozens of refusals (one follow-up chain deep each).
+				Html.button("flood", [], st.update(|s| { ..s, f: s.f + 1 })),
+				Engine.on_change(st.val().map(|s| s.f), |_| List.repeat(Timer(10), FxApp.flood_size), st.on_result(|s, f, r| FxApp.log_line(s, FxApp.describe(6, f, r)))),
+				# A genuine follow-up loop, never armed by the fuzz model: once
+				# "loop" is pressed, a refusal bumps `n`, which issues again, which
+				# is refused again while the table is full.
+				Html.button("loop", [], st.update(|s| { ..s, looping: True })),
+				Engine.watch(
+					st.val().map(|s| if (s.looping) s.n + 1 else 0),
+					|n| if (n == 0) [] else [Http({ method: "GET", url: "/loop/${n.to_str()}", headers: [], body: "", timeout_ms: 0 })],
+					st.on_result(
+						|s, _, r| match r {
+							Refused => { ..s, n: s.n + 1 }
+							_ => s
+						},
+					),
 				),
 				Html.button("query", [], st.update(|s| { ..s, q: s.q + 1 })),
 				Engine.latest(st.val().map(|s| s.q), FxApp.plan_l, st.on_result(|s, q, r| FxApp.react_l(s, q, r))),

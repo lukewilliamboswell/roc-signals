@@ -12,6 +12,9 @@ import pf.Html
 ## - The same `resource` in each row of an `each` (reloaded through a
 ##   row-local `state`) and inside a component that a `when` opens and
 ##   closes, so its answers settle locally and its disposal is observable.
+## - A flood: 100 rows that each fetch at mount, far past the in-flight
+##   bound of 32, so one turn queues 68 refusals; each reaction counts its
+##   answer at the top level.
 ## - A `state` below a `derive` and below a `resource`, mounted with the
 ##   page, and layers that exist only in a branch mounted after the first
 ##   (two `when`s that start closed, a `switch` that starts on a plain case, and a `when`
@@ -33,6 +36,9 @@ SupersedeApp := [].{
 		late : Bool,
 		inner : Bool,
 		case : Str,
+		flood : List(Str),
+		refused : U64,
+		answered : U64,
 	}
 
 	Ctx : In(Root, S)
@@ -46,7 +52,7 @@ SupersedeApp := [].{
 	idle = { pending: "", answer: "none", previous: "none", slow: False }
 
 	initial : S
-	initial = { query: "", results: "", rate: 0, ticks: 0, item: "", rows: [], panel: False, picked: "1", solo: False, late: False, inner: False, case: "plain" }
+	initial = { query: "", results: "", rate: 0, ticks: 0, item: "", rows: [], panel: False, picked: "1", solo: False, late: False, inner: False, case: "plain", flood: [], refused: 0, answered: 0 }
 
 	answer_of : Str, Engine.Res -> Str
 	answer_of = |id, res| match Engine.http_text(res) {
@@ -175,6 +181,18 @@ SupersedeApp := [].{
 		],
 	)
 
+	## `n` row keys, built at run time.
+	flood_keys : U64 -> List(Str)
+	flood_keys = |n| {
+		var $keys = []
+		var $k = 0.U64
+		while $k < n {
+			$keys = $keys.append("f${$k.to_str()}")
+			$k = $k + 1
+		}
+		$keys
+	}
+
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
 		v = st.val()
@@ -228,6 +246,34 @@ SupersedeApp := [].{
 				Engine.derive(Engine.const(1.U64), |_| SupersedeApp.counter("early derived")),
 				Engine.resource(Engine.const("e"), { init: 0.U64, begin: |n, _| n, plan: |_| [], fold: |n, _, _| n }, |_| SupersedeApp.counter("early resource")),
 				# Layers mounted only in a later branch.
+				# A flood of rows fetching at mount.
+				Html.button("Flood", [], st.update(|s| { ..s, flood: SupersedeApp.flood_keys(100) })),
+				Html.p_v(v.map(|s| "refused ${s.refused.to_str()}, answered ${s.answered.to_str()}"), [Engine.test_id("flood")]),
+				Html.ul(
+					[],
+					[
+						Engine.each(
+							v.map(|s| s.flood),
+							|k| k,
+							|row| Html.li(
+								[],
+								[
+									Engine.watch(
+										row.key(),
+										|k| [Http({ method: "GET", url: "/flood/${k}", headers: [], body: "", timeout_ms: 0 })],
+										st.lift_row().on_result(
+											|s, _, r| match r {
+												Refused => { ..s, refused: s.refused + 1 }
+												_ => { ..s, answered: s.answered + 1 }
+											},
+										),
+									),
+									Engine.text_v(row.key()),
+								],
+							),
+						),
+					],
+				),
 				Html.button("Toggle solo", [], st.update(|s| { ..s, solo: !s.solo })),
 				Engine.when(v.map(|s| s.solo), || SupersedeApp.solo_branch({}), || Engine.text("solo closed")),
 				Html.button("Toggle late", [], st.update(|s| { ..s, late: !s.late })),

@@ -4,8 +4,10 @@
 // subscription, follow-up self-dispose), automatic mode (real fetch
 // against this server, including an aborted in-flight request), a `latest`
 // site superseding a real fetch (aborted, its timeout timer released) and
-// an interval, and an embedder's `fetch` option, which may answer
-// synchronously.
+// an interval, the follow-up budget (a fan-out of 66 refusals from one
+// turn completes; a refusal retried while the table is full is a chain that
+// poisons with class `contract`), and an embedder's `fetch` option, which
+// may answer synchronously.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -143,6 +145,27 @@ const stats = (page) => page.evaluate(() => ({ live: [...window.__rt.live.keys()
   await click(page, "issue 0");
   await page.waitForFunction(() => document.querySelector("[data-testid=log]").textContent.includes("srv0.2"));
   check("completed request clears its timeout timer", await page.evaluate(() => window.__rt.timers), 0);
+  await ctx.close();
+}
+{
+  // Follow-ups are bounded by chain depth, not by how many one turn queues.
+  const { page, ctx } = await open(true);
+  await click(page, "flood");
+  const flood = (await log(page)).split("|");
+  check(
+    "flood: 70 timers at once, 4 admitted and 66 refused in one call, without a fault",
+    [flood.filter((x) => x === "6:1:refused").length, (await pending(page)).length, await page.evaluate(() => window.__rt.poisoned)],
+    [66, 4, null],
+  );
+  await click(page, "loop");
+  check(
+    "loop: a refusal retried while the table is full poisons as a deep chain",
+    await page.evaluate(() => {
+      const p = window.__rt.poisoned;
+      return p && [p.class, p.message.startsWith("contract: an effect follow-up chain reached depth 65 at site /")];
+    }),
+    ["contract", true],
+  );
   await ctx.close();
 }
 {
