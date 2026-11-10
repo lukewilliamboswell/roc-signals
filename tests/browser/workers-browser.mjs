@@ -129,19 +129,20 @@ const CANCEL = 14;
 const TURNS = 30;
 
 // Rounds of the spin program that take about `ms` on this machine, measured
-// with an inline run (the same module, on the page's thread).
+// with an inline run (the same module, on the page's thread) long enough
+// that timer jitter does not dominate it.
 async function calibrate(ms) {
   const { page, ctx } = await open({ workers: "inline" });
   const per = await page.evaluate(async () => {
-    window.__rounds(2000000);
+    window.__rounds(20000000);
     window.__click("Spin");
     const t = await window.__until((l) => l.some((e) => e.startsWith("spin:")));
-    return t / 2000000;
+    return t / 20000000;
   });
   await ctx.close();
   return Math.max(1000, Math.round(ms / Math.max(per, 1e-9)));
 }
-const long = await calibrate(400);
+const long = await calibrate(600);
 
 // Off the page's thread: during a ~400 ms job the page's timers keep firing
 // in worker mode; inline, the same job blocks them.
