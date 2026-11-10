@@ -15,15 +15,16 @@ import SpecSuite
 ## - the examples archive, `roc-signals-examples-<version>.zip`, which the
 ##   shared nightly-compatibility runner builds with the latest Roc nightly:
 ##   each example's `main.roc` naming the bundle's release URL, with its
-##   specs, a `spec.json` and the `runtime/check.mjs` helper that mounts each
-##   app;
+##   modules, its specs and its own files beside them (the JavaScript its
+##   author wrote, a page that mounts it, data it downloads), a `spec.json`
+##   and the `runtime/check.mjs` helper that mounts each app;
 ## - `release-notes.md`, the draft release's body.
 Release := [].{
 	repo_url = "https://github.com/lukewilliamboswell/roc-signals"
 
 	## The platform files a bundle carries, relative to `platform/`.
 	bundle_files : List(Str)
-	bundle_files = ["main.roc", "Engine.roc", "Html.roc", "Worker.roc", "Wire.roc", "Port.roc", "PortJson.roc", "Core.roc", "Cli.roc", "SpecRunner.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "targets/wasm32/host.wasm", "targets/x64musl/spec.o", "targets/x64musl/crt1.o", "targets/x64musl/libc.a", "targets/x64musl/libzigc.a", "targets/x64musl/libcompiler_rt.a"].concat(SpecSuite.runtime_files)
+	bundle_files = ["main.roc", "Engine.roc", "Html.roc", "Worker.roc", "Wire.roc", "Port.roc", "PortJson.roc", "Core.roc", "Hosted.roc", "Cli.roc", "SpecRunner.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "targets/wasm32/host.wasm", "targets/x64musl/spec.o", "targets/x64musl/crt1.o", "targets/x64musl/libc.a", "targets/x64musl/libzigc.a", "targets/x64musl/libcompiler_rt.a"].concat(SpecSuite.runtime_files)
 
 	archive_name : Str -> Str
 	archive_name = |version| "roc-signals-examples-${version}"
@@ -32,6 +33,22 @@ Release := [].{
 	## repository's fuzz platform.
 	is_archived : Str -> Bool
 	is_archived = |file| !file.ends_with("/main-fuzz.roc")
+
+	## An example's own files beside its Roc modules, directly in `dir`: the
+	## JavaScript its author wrote (port handlers, a custom element), a page
+	## that mounts the app with them, data the app downloads. They are the
+	## app's, not the platform's, so they travel with the example.
+	own_files! : Str => Try(List(Str), _)
+	own_files! = |dir| {
+		var $out = []
+		for entry in Path.list!(Path.utf8(dir))? {
+			name = Path.display(entry)
+			if !Path.is_dir!(entry)? and !name.ends_with(".roc") {
+				$out = $out.append(name)
+			}
+		}
+		Ok($out.sort_with(|a, b| SpecSuite.compare_str(a, b)))
+	}
 
 	## An example's entry point with the working-tree platform path
 	## replaced by the released bundle.
@@ -98,6 +115,9 @@ Release := [].{
 					Path.copy!(Path.utf8(file), Path.utf8(target))?
 				}
 			}
+			for file in Release.own_files!("examples/${example}")? {
+				Path.copy!(Path.utf8(file), Path.utf8("${dir}/${file.split_on("/").last() ?? file}"))?
+			}
 			Path.create_all!(Path.utf8("${dir}/specs"))?
 			for spec in SpecSuite.files_with!("examples/${example}/specs", ".scm")? {
 				Path.copy!(Path.utf8(spec), Path.utf8("${dir}/specs/${spec.split_on("/").last() ?? spec}"))?
@@ -128,6 +148,9 @@ Release := [].{
 		\\`roc build --target=wasm32 examples/<app>/main.roc`, or its native spec
 		\\runner with `roc build --target=x64musl examples/<app>/main.roc` and run
 		\\it on `examples/<app>/specs/*.scm`.
+		\\An example's other files are its own: JavaScript its author wrote (port
+		\\handlers, a custom element), a page that mounts it, data it downloads.
+		\\The platform's `runtime.mjs` and `worker.mjs` are separate release assets.
 		\\`spec.json` and `runtime/check.mjs` are the compatibility suite the
 		\\nightly workflow runs against the latest Roc nightly.
 

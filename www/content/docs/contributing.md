@@ -250,7 +250,9 @@ with these deliberate exceptions:
 - **Examples are directories** with a `main.roc`, which builds for the
   browser and as the native spec runner, its specs, and a `main-fuzz.roc` on
   the repository's fuzz platform (roc-fuzz's entry cannot share the app's).
-  The examples archive carries `main.roc` and the specs.
+  The examples archive carries `main.roc`, the example's modules, its specs
+  and its own files beside them: the JavaScript its author wrote (port
+  handlers, a custom element), a page that mounts it, data it downloads.
 - **The release workflow is hand-written** and publishes a draft whose notes
   are written on GitHub, rather than the shared package release workflow and
   notes under `docs/releases/`.
