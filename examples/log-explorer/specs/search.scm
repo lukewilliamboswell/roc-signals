@@ -1,0 +1,45 @@
+(test "Log Explorer — a search answers a page at a time, filters by level, and opens a result in the viewer"
+  (setup
+    (file "app.log" "text/x-log" "2026-11-11T08:00:00.120Z INFO  api: GET /orders/1 answered 200\n2026-11-11T08:00:00.300Z DEBUG db: query took 3 ms\n2026-11-11T08:00:01.004Z ERROR db: connection reset by peer\n    at Pool.acquire (pool.roc:88)\n2026-11-11T08:00:02.000Z WARN  auth: failed sign-in for user 7\n" 40))
+  (steps
+    (choose-files (label "Log file") "app.log")
+    (run-effect 1)
+    (click (role button :name "Search"))
+    ; With no text, every line matches, listed from the index.
+    (expect-pending-work "roc-signals.example/log-explorer/search" 1)
+    (expect-text (test-id "search-status") "Searching…")
+    (run-effect 2)
+    (expect-text (test-id "search-status") "200 matching lines, page 1 of 8.")
+    (expect-text (test-id "line-1") "2026-11-11T08:00:00.120Z INFO  api: GET /orders/1 answered 200")
+    (expect-text (test-id "line-25") "2026-11-11T08:00:02.000Z WARN  auth: failed sign-in for user 7")
+    (expect-absent (test-id "line-26"))
+    ; Text is found in any case.
+    (fill (label "Text to find") "RESET BY")
+    (run-effect 3)
+    (expect-text (test-id "search-status") "40 matching lines, page 1 of 2.")
+    (expect-text (test-id "line-3") "2026-11-11T08:00:01.004Z ERROR db: connection reset by peer")
+    (expect-absent (test-id "line-1"))
+    (click (role button :name "Next page"))
+    (run-effect 4)
+    (expect-text (test-id "search-status") "40 matching lines, page 2 of 2.")
+    (expect-text (test-id "line-128") "2026-11-11T08:00:01.004Z ERROR db: connection reset by peer")
+    (expect-absent (test-id "line-3"))
+    ; There is no third page: nothing is asked.
+    (click (role button :name "Next page"))
+    (expect-pending-effects 0)
+    ; A level, with no text: the entry's stack trace goes with it.
+    (fill (label "Text to find") "")
+    (select-option (label "Level") "ERROR")
+    (expect-pending-work "roc-signals.example/log-explorer/search" 1)
+    (run-effect 6)
+    (expect-text (test-id "search-status") "80 matching lines, page 1 of 4.")
+    (expect-text (test-id "line-4") "    at Pool.acquire (pool.roc:88)")
+    ; A result opens the viewer at its line.
+    (click (role button :name "Show line 4"))
+    (expect-pending-work "roc-signals.example/log-explorer/window" 1)
+    (run-effect 7)
+    (expect-text (test-id "viewer-status") "Lines 4–53 of 200.")
+    (expect-text (test-id "line-4") "    at Pool.acquire (pool.roc:88)")
+    (expect-pending-effects 0)
+  )
+)
