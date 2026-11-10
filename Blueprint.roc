@@ -70,6 +70,9 @@ config = [
 	Task("platform", [Use("engine"), Run(["scripts/build_platform.roc"])]),
 	# Build the js-framework-benchmark app and check it in Chrome.
 	Task("jfb", [Use("engine"), Run(["scripts/jfb.roc"])]),
+	# Measure how worker jobs scale in Chrome, on both candidate shipping
+	# builds of the Worker Lab; prints tables for a pull request.
+	Task("workers-scaling", [Use("engine"), Run(["scripts/workers_scaling.roc"])]),
 	# A fuzz campaign: `blueprint run fuzz -- --time 600 [TARGET...]`.
 	Task("fuzz", [Use("engine"), Run(["scripts/fuzz.roc", "--"])]),
 	# The release assets: `blueprint run release -- --version 0.3.0`.

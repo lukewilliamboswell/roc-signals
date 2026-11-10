@@ -97,8 +97,8 @@ Targets := [].{
 
 	## The runtime contract tests in Chrome (test apps built by `SpecSuite.build!`): the effect channel (tests/apps/effects),
 	## controlled inputs, focus and containment (tests/apps/controls), worker
-	## jobs in real Web Workers and the work monitor (tests/apps/workers), and
-	## Conduit's user
+	## jobs in real Web Workers and the work monitor (tests/apps/workers), the
+	## worker scaling smoke (the Worker Lab), and Conduit's user
 	## journey against the RealWorld mock backend.
 	browser_contracts! : SpecSuite.Options, Str => Try(List(Str), _)
 	browser_contracts! = |o, conduit_wasm| {
@@ -112,8 +112,29 @@ Targets := [].{
 				.concat(Targets.browser!(o, "services-browser.mjs", ["--wasm", services])?)
 				.concat(Targets.browser!(o, "workers-browser.mjs", ["--wasm", workers])?)
 				.concat(Targets.browser!(o, "monitor-browser.mjs", ["--wasm", workers])?)
+				.concat(Targets.browser!(o, "workers-scaling.mjs", ["--wasm", SpecSuite.wasm_of(o, "worker-lab"), "--mode", "smoke"])?)
 				.concat(Targets.browser!(o, "conduit-journey.mjs", ["--wasm", conduit_wasm])?),
 		)
+	}
+
+	## The worker scaling measurement (tests/browser/workers-scaling.mjs) on
+	## the Worker Lab, in full, for each of the two candidate shipping builds:
+	## `--opt=size`, and `--opt=size --specialize=no`. Each run checks
+	## correctness against an independent implementation, speedup by pool
+	## size (where the machine has the cores), responsiveness, payloads,
+	## robustness sequences and memory, and prints tables to paste into a pull
+	## request. `check` runs its smoke on the development build instead.
+	workers_scaling! : SpecSuite.Options => Try(List(Str), _)
+	workers_scaling! = |o| {
+		var $problems = []
+		for build in [{ label: "size", flags: [] }, { label: "size-specialize-no", flags: ["--specialize=no"] }] {
+			dir = "${o.build_dir}/workers-scaling/${build.label}"
+			Path.create_all!(Path.utf8(dir))?
+			Proc.run!({ program: o.compiler, args: ["build", "--opt=size"].concat(build.flags).concat(["--target=wasm32", "examples/worker-lab/main.roc", "--output=${dir}/app.wasm"]), cwd: o.root })?
+			Proc.note!("== workers scaling, ${build.label}")
+			$problems = $problems.concat(Targets.browser!(o, "workers-scaling.mjs", ["--wasm", "${dir}/app.wasm", "--mode", "full", "--label", build.label])?)
+		}
+		Ok($problems)
 	}
 
 	## A long session of one app in Chrome: a seeded random walk without a

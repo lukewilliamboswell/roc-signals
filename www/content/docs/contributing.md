@@ -48,6 +48,7 @@ recipe ready.
 | `blueprint run spec -- [--browser] [--filter GLOB] [APP...]` | Some apps' specs, natively and optionally in Chrome |
 | `blueprint run platform` | Fetch and build the platform's link inputs, to build an app's `main.roc` or `main-fuzz.roc` by hand |
 | `blueprint run jfb` | Build the js-framework-benchmark app and check its operations in Chrome |
+| `blueprint run workers-scaling` | Measure worker jobs in Chrome on both candidate shipping builds of the Worker Lab: correctness, speedup by pool size, responsiveness, payloads, robustness sequences and memory, as tables for a pull request |
 | `blueprint run fuzz -- [--time S] [TARGET...]` | A fuzz campaign |
 | `blueprint run site -- [--base-url URL]` | Build the site, the API docs and the example apps into `dist/` |
 | `blueprint run serve -- [DIR] [--port N]` | Serve `dist/` at `127.0.0.1:8000/roc-signals/`, its published path, or `DIR` at the root |
@@ -79,8 +80,9 @@ for example to run two tasks at once.
    that both runners must reject.
 6. The runtime's unit tests in Node (the work monitor's aggregation and
    bounds, `tests/runtime/`), then its contract tests in Chrome: effects,
-   controlled inputs, worker jobs, the work monitor, and the Conduit journey
-   against its scripted backend.
+   controlled inputs, worker jobs, the work monitor, a smoke of the worker
+   scaling measurement (correctness, robustness sequences and memory; no
+   timing ratios), and the Conduit journey against its scripted backend.
 7. The js-framework-benchmark check.
 8. The release dry run: the bundle, `runtime.mjs` and `worker.mjs`, the examples archive with
    every app mounted by its check helper, and the release notes.
