@@ -45,9 +45,11 @@ job's output, or the task's own error.
   there whatever its body: `run!: |text| Ok(Words.summarise(text))`. A named
   pure function cannot fill the field directly; that is a type mismatch on
   the props record.
-- Annotate every task. A top-level value needs a concrete type, and for a
-  `run!` that only answers `Ok` nothing but the annotation says what its
-  error type is.
+- Annotate every task. A top-level value needs a concrete type. A `run!`
+  that only answers `Ok` says nothing about its error type, so without the
+  annotation the compiler reports that the type never resolved. One whose
+  `run!` answers an error of a known type compiles unannotated, but the
+  annotation is still where a reader finds the task's types.
 
 Names are namespaced and unversioned, like `"example.org/words/summary"`.
 The page and every worker run the same compiled module, so a name always
@@ -562,7 +564,7 @@ await mountRocEngineApp({
 - `maxOutputBytes` bounds what one job copies into its builders (see
   [Files in Tasks](@/docs/files-in-tasks.md#limits)).
 - `onWorkerFault` receives `{ id, task, class, message }` when a job is
-  `Lost`, in addition to the console message; `program` is the task's name.
+  `Lost`, in addition to the console message; `task` is the task's name.
   The diagnostic never reaches the app.
 
 ## Testing
