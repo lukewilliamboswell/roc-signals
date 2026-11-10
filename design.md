@@ -1393,8 +1393,9 @@ loads; seeding storage in the same setup is a spec error in both runners.
   pass copies what it touches; it stays out of measured regions.
 - **Generated structure** (`fuzz/structure`) decodes bytes into a site tree
   over every site kind, bounded in depth and size, and a session of clicks
-  and timer answers over it, so the settle check meets nestings no fixed
-  app contains. When every write goes to the root state, the page is a
+  (one of which can push two actions through a component's sink) and timer
+  and worker-job answers over it, so the settle check meets nestings no
+  fixed app contains. When every write goes to the root state, the page is a
   function of that state, and after every step it must equal a fresh mount
   started at it. The generator stays monomorphic by nesting layers three
   deep per typed level and recursing only through component bodies, whose

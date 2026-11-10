@@ -314,6 +314,10 @@ SETTEXT=1; first write: <p data-testid="late">late 0</p> -> <p
 data-testid="late">late 1</p> (in test-id "late")
 ```
 
+A settle failure is an engine defect, not a spec error: the step did what
+it says, and the engine left a reader showing an old value. Do not change
+the spec to avoid it; reduce it and report it against the engine.
+
 The check needs nothing from the spec, so every spec guards against stale
 readers without asserting them. It is an oracle on the engine, not a step:
 the browser runner has no equivalent and needs none, since it replays the

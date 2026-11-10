@@ -144,7 +144,10 @@
   versions belong there and in `Blueprint.roc`, because they change
   independently of these principles. Automation is Roc scripts under
   `scripts/`, invoked through Blueprint tasks.
-- Test invariants and failure paths, not only successful output. Cover
+- Test invariants and failure paths, not only successful output. Every
+  reader of a layer a turn wrote is refreshed in that turn: the native spec
+  runner and every fuzz walk check it after each step (`Core.settled`), and
+  a change to propagation must keep that check meaningful. Cover
   ordering, equality cutoffs, identity reuse, scope disposal, reparenting,
   refusal at the in-flight bound, stale results, cancellation and
   supersession, lost and timed-out work, resource release, a resource the

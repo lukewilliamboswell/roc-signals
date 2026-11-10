@@ -81,8 +81,8 @@ for example to run two tasks at once.
    no other Roc file names a compiler.
 2. `roc fmt --check` over every Roc source, and `roc test` on the test support
    and the scripts.
-3. The test platform, and the examples of the shared-support fuzz targets in
-   `fuzz/` (the `.scm` parser and the worker wire format).
+3. The test platform, and the examples of the fuzz targets in `fuzz/` (the
+   `.scm` parser, the worker wire format and generated site trees).
 4. The docs samples (below).
 5. Every app's specs natively and in Chrome, the check that the browser
    runner handles every form of the grammar, then a deliberately broken spec
@@ -136,7 +136,13 @@ own modules, vendored unchanged, with the engine's modules exposed beside
 them). Targets decode arbitrary bytes into valid sessions and check them
 against a model: keyed reconciliation, the effect channel's lifecycle
 including worker jobs, the worker wire format's decoder, and each app's
-leak-checked random walk. `check` replays the examples of the targets in
+leak-checked random walk (the supersede test app's included). Every target
+that drives the engine also runs the settle check after every step: no
+reader of a written layer may be left stale (see
+[Testing](@/docs/testing.md#the-settle-check)). `fuzz/structure` generates
+the site trees themselves, so the check meets nestings no app contains, and
+in its pure mode compares the page with a fresh mount. `check` replays the
+examples of the targets in
 `fuzz/`; `check-slow` replays every target's; `fuzz.yml` runs nightly
 campaigns with the corpora in the Actions cache. When a campaign finds a
 failure, reduce it and add it to the target's examples with `Fuzz.saved`, so
