@@ -733,6 +733,7 @@ Core := [].{
 		## scoped like it. `Worker` builds it; an input without that header is
 		## a contract error.
 		Ask({ program : Str, input : List(U8), files : List(File), deadline_ms : U32 }),
+
 		## Ports (see [PortDecl]): a message to the page's JavaScript for the
 		## port named `port`. `PortCommand` is emitted and forgotten;
 		## `PortCall` awaits one `PortReply` or `PortFailed` and, like `Http`,
@@ -1019,91 +1020,7 @@ Core := [].{
 	## encoding (unknown tag, truncated, trailing bytes, text that is not UTF-8) is
 	## a contract error: the host broke the protocol, and nothing is guessed.
 	decode_res : List(U8) -> Res
-	decode_res = |b| {
-		tag = b.first() ?? crash "contract: empty effect result"
-		text = |n| Str.from_utf8(b.drop_first(n)) ?? crash "contract: effect result text is not UTF-8"
-		bare = |r| if (b.len() == 1) r else crash "contract: effect result tag ${tag.to_str()} carries unexpected bytes"
-		flag = || match b {
-			[_, 0] => Bool.False
-			[_, 1] => Bool.True
-			_ => crash "contract: effect result tag ${tag.to_str()} needs one byte 0 or 1"
-		}
-		if tag == 1 {
-			if b.len() < 7 {
-				crash "contract: truncated HTTP effect result"
-			}
-			status = (b.get(1) ?? 0).to_u16() + (b.get(2) ?? 0).to_u16().shl_wrap(8)
-			n = get_u32(b, 3, "HTTP effect result").to_u64()
-			var $at = 7.U64
-			var $hs = []
-			var $i = 0.U64
-			while $i < n {
-				(k, a1) = get_str(b, $at, "HTTP effect result")
-				(v, a2) = get_str(b, a1, "HTTP effect result")
-				$hs = $hs.append((k, v))
-				$at = a2
-				$i = $i + 1
-			}
-			Http({ status, headers: $hs, body: text($at) })
-		} else if tag == 7 {
-			bare(Timeout)
-		} else if tag == 2 {
-			Network(text(1))
-		} else if tag == 3 {
-			Value(text(1))
-		} else if tag == 4 {
-			bare(Missing)
-		} else if tag == 5 {
-			bare(Fired)
-		} else if tag == 6 {
-			Location(text(1))
-		} else if tag == 8 {
-			Online(flag())
-		} else if tag == 9 {
-			Visible(flag())
-		} else if tag == 10 {
-			Work(b.drop_first(1))
-		} else if tag == 11 {
-			match b {
-				[_, class] => WorkLost(work_fault(class))
-				_ => crash "contract: effect result tag 11 needs one fault class byte"
-			}
-		} else if tag == 13 {
-			match b {
-				[_, 1] => FileFailed(Unreadable)
-				[_, 2] => FileFailed(TooLarge)
-				[_, 3] => FileFailed(Unavailable)
-				_ => crash "contract: effect result tag 13 needs one reason byte, 1, 2 or 3"
-			}
-		} else if tag == 16 {
-			FileBytes(b.drop_first(1))
-		} else if tag == 17 {
-			# A file's text is the file's own bytes: not being UTF-8 is an
-			# answer about the file, not the host breaking the protocol.
-			match Str.from_utf8(b.drop_first(1)) {
-				Ok(t) => FileText(t)
-				Err(_) => FileFailed(InvalidUtf8)
-			}
-		} else if tag == 18 {
-			if b.len() != 33 {
-				crash "contract: effect result tag 18 needs a 32-byte SHA-256 digest"
-			}
-			Digest(b.drop_first(1))
-		} else if tag == 19 {
-			FileUrl(text(1))
-		} else if tag == 14 {
-			PortReply(decode_port_message(b, []))
-		} else if tag == 15 {
-			match b {
-				[_, 1, ..] => PortFailed(Threw(text(2)))
-				[_, 2] => PortFailed(TooLarge)
-				[_, 3] => PortFailed(Closed)
-				_ => crash "contract: effect result tag 15 needs a failure class, 1 with text, 2 or 3"
-			}
-		} else {
-			crash "contract: unknown effect result tag ${tag.to_str()}"
-		}
-	}
+	decode_res = |b| decode_res_with(b, decode_port_res)
 
 	## What the host knows before the first render: the URL, the declared storage
 	## keys' values (missing keys are absent), whether the browser is online and
@@ -1199,8 +1116,32 @@ Core := [].{
 	## What a program declares beside its view, kept beside the engine root
 	## (never in the transaction, whose every field costs code at each site
 	## that rebuilds it): the worker catalogue's names and the port
-	## declarations.
-	Catalogue : { workers : List(Str), ports : List(PortDecl) }
+	## declarations with the port code that serves them.
+	Catalogue : { workers : List(Str), ports : Ports }
+
+	## A program's ports: the declarations, and every piece of port code the
+	## engine runs outside the typed layer, reached only through these
+	## closures. `with_ports` installs the real ones; a program that never
+	## calls it holds stubs that write an empty port table and treat any port
+	## request or port result as the contract error it is, so its module
+	## carries no port codec (design.md, "Ports").
+	##
+	## - `ready` applies the catalogue's rules when the program mounts;
+	## - `table` writes the port table after the boot keys;
+	## - `check` is the end-of-turn use check of one request;
+	## - `write` puts a turn's port requests (the `Port` entries of its
+	##   [TurnEnd] list) into its batch, each where it was issued;
+	## - `decode` reads result tags 14 and 15 (and a reply's file handles);
+	## - `ends` says whether a result ends a subscription.
+	Ports : {
+		decls : List(PortDecl),
+		ready : List(PortDecl) -> List(PortDecl),
+		table : List(U8), List(PortDecl) -> List(U8),
+		check : List(PortDecl), PortAt -> {},
+		write : Tx, List(TurnEnd) -> Tx,
+		decode : List(U8), List(Blob) -> Res,
+		ends : Res -> Bool,
+	}
 
 	## For test platforms and harnesses: mount an app under host node 0 with the
 	## default in-flight bound of 32. The mount's commands wait in the instance
@@ -1211,7 +1152,7 @@ Core := [].{
 	## For test platforms and harnesses: mount with an explicit in-flight effect
 	## bound, running any follow-up turns the mount queued.
 	mount_with : U64, Elem(Root) -> App
-	mount_with = |max, elem| mount_in(max, { workers: [], ports: [] }, elem)
+	mount_with = |max, elem| mount_in(max, { workers: [], ports: no_ports }, elem)
 
 	## For test platforms and harnesses: deliver a DOM event to `node` and its
 	## handler number with the event's payload, as one transaction (plus any
@@ -1263,7 +1204,7 @@ Core := [].{
 			Ok(entry) => {
 				# A subscription stays live until it is cancelled, unless its
 				# JavaScript ended it (a port's `Closed` or `Threw`).
-				tx1 = if (entry.sub and !ends_subscription(res)) tx else with_fx(tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id) })
+				tx1 = if (entry.sub and !(programs.ports.ends)(res)) tx else with_fx(tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id) })
 				drain(turn({ root, tx: tx1, programs }, entry.path, id, Fx(res)))
 			}
 		}
@@ -1314,7 +1255,7 @@ Core := [].{
 	## have emitted: `Err` carries the pass's commands (from opcode 1, as the
 	## wire encodes them) and a note naming any change it made to the effect
 	## channel without a command (a follow-up queued, a request refused).
-	## The end of the turn ([TurnEnd]: focus, program checks) is not run and
+	## The end of the turn ([TurnEnd]: focus, program checks, port requests) is not run and
 	## follow-ups do not run; a request the pass queues for it is a change.
 	##
 	## The instance passed in is never changed: while the copy is alive it
@@ -1389,7 +1330,7 @@ Core := [].{
 		init : Catalogue, List(U8) -> (App, List(U8), List(U8)),
 		event : App, List(U8), List(U8), U32, U32, List(U8) -> (App, List(U8), List(U8)),
 		workers : List(Registration),
-		ports : List(PortDecl),
+		ports : Ports,
 	}.{
 
 		## Declare the ports the program's effect sites use (see [PortDecl]):
@@ -1399,7 +1340,7 @@ Core := [].{
 		## here, or for a declared port as another shape, is a contract error
 		## naming the port and the site.
 		with_ports : Program, List(PortDecl) -> Program
-		with_ports = |p, decls| { ..p, ports: p.ports.concat(decls) }
+		with_ports = |p, decls| { ..p, ports: ports_of(p.ports.decls.concat(decls)) }
 
 		## Add worker programs to the program's catalogue, so its effect sites can
 		## issue `Work` requests for them. The page's instance and every worker
@@ -1423,8 +1364,8 @@ Core := [].{
 		keys = p.keys
 		{
 			version: p.version,
-			keys: || put_port_table(keys(), ports_checked(ports)),
-			init: |boot| init({ workers: catalogue_names(workers), ports: ports_checked(ports) }, boot),
+			keys: || (ports.table)(keys(), (ports.ready)(ports.decls)),
+			init: |boot| init({ workers: catalogue_names(workers), ports: { ..ports, decls: (ports.ready)(ports.decls) } }, boot),
 			event: p.event,
 			files: |inst, buf, wbuf, node, handler, record, blobs| {
 				{ root, tx, programs } = inst
@@ -1433,7 +1374,7 @@ Core := [].{
 				handles = blobs.map(|b| Blob.(b))
 				if node == fx_node {
 					# A port's answer that carries files (result tag 14).
-					finish(Core.result(fresh, handler, decode_reply_files(record, handles)), [], wbuf)
+					finish(Core.result(fresh, handler, (programs.ports.decode)(record, handles)), [], wbuf)
 				} else {
 					finish(Core.event_files(fresh, node, handler, record, handles), [], wbuf)
 				}
@@ -1500,13 +1441,13 @@ Core := [].{
 			{ cmds: _, next, free, routes, work, paths, site_free, fx } = tx
 			fresh = { root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, fx }, programs }
 			if node == fx_node {
-				finish(Core.result(fresh, handler, Core.decode_res(payload)), [], wbuf)
+				finish(Core.result(fresh, handler, decode_res_with(payload, programs.ports.decode)), [], wbuf)
 			} else {
 				finish(Core.event(fresh, node, handler, Str.from_utf8(payload) ?? crash "contract: event payload is not UTF-8"), [], wbuf)
 			}
 		},
 		workers: [],
-		ports: [],
+		ports: no_ports,
 	}
 }
 
@@ -4062,31 +4003,189 @@ port_kind_name = |kind| match kind {
 	_ => "a subscription"
 }
 
-## Queue the end-of-turn check of a port request (see [TurnEnd]).
-check_port_later : Tx, Str, U8, List(U32) -> Tx
-check_port_later = |tx, port, kind, path| with_fx(tx, |fx| { ..fx, focus: fx.focus.append(CheckPort(port, kind, path)) })
+## `decode_res` with result tags 14 and 15 read by `port_res`, which is
+## the program's own (see [Ports]): an app that declares no ports
+## carries no port decoder.
+decode_res_with : List(U8), (List(U8), List(Blob) -> Res) -> Res
+decode_res_with = |b, port_res| {
+	tag = b.first() ?? crash "contract: empty effect result"
+	text = |n| Str.from_utf8(b.drop_first(n)) ?? crash "contract: effect result text is not UTF-8"
+	bare = |r| if (b.len() == 1) r else crash "contract: effect result tag ${tag.to_str()} carries unexpected bytes"
+	flag = || match b {
+		[_, 0] => Bool.False
+		[_, 1] => Bool.True
+		_ => crash "contract: effect result tag ${tag.to_str()} needs one byte 0 or 1"
+	}
+	if tag == 1 {
+		if b.len() < 7 {
+			crash "contract: truncated HTTP effect result"
+		}
+		status = (b.get(1) ?? 0).to_u16() + (b.get(2) ?? 0).to_u16().shl_wrap(8)
+		n = get_u32(b, 3, "HTTP effect result").to_u64()
+		var $at = 7.U64
+		var $hs = []
+		var $i = 0.U64
+		while $i < n {
+			(k, a1) = get_str(b, $at, "HTTP effect result")
+			(v, a2) = get_str(b, a1, "HTTP effect result")
+			$hs = $hs.append((k, v))
+			$at = a2
+			$i = $i + 1
+		}
+		Http({ status, headers: $hs, body: text($at) })
+	} else if tag == 7 {
+		bare(Timeout)
+	} else if tag == 2 {
+		Network(text(1))
+	} else if tag == 3 {
+		Value(text(1))
+	} else if tag == 4 {
+		bare(Missing)
+	} else if tag == 5 {
+		bare(Fired)
+	} else if tag == 6 {
+		Location(text(1))
+	} else if tag == 8 {
+		Online(flag())
+	} else if tag == 9 {
+		Visible(flag())
+	} else if tag == 10 {
+		Work(b.drop_first(1))
+	} else if tag == 11 {
+		match b {
+			[_, class] => WorkLost(work_fault(class))
+			_ => crash "contract: effect result tag 11 needs one fault class byte"
+		}
+	} else if tag == 13 {
+		match b {
+			[_, 1] => FileFailed(Unreadable)
+			[_, 2] => FileFailed(TooLarge)
+			[_, 3] => FileFailed(Unavailable)
+			_ => crash "contract: effect result tag 13 needs one reason byte, 1, 2 or 3"
+		}
+	} else if tag == 16 {
+		FileBytes(b.drop_first(1))
+	} else if tag == 17 {
+		# A file's text is the file's own bytes: not being UTF-8 is an
+		# answer about the file, not the host breaking the protocol.
+		match Str.from_utf8(b.drop_first(1)) {
+			Ok(t) => FileText(t)
+			Err(_) => FileFailed(InvalidUtf8)
+		}
+	} else if tag == 18 {
+		if b.len() != 33 {
+			crash "contract: effect result tag 18 needs a 32-byte SHA-256 digest"
+		}
+		Digest(b.drop_first(1))
+	} else if tag == 19 {
+		FileUrl(text(1))
+	} else if tag == 14 or tag == 15 {
+		port_res(b, [])
+	} else {
+		crash "contract: unknown effect result tag ${tag.to_str()}"
+	}
+}
 
-## The end-of-turn check of an awaited port request; any other request
-## needs none. Kept out of `issue`, which is specialized for every effect
-## site's value type, so ports cost an app that uses none almost nothing.
-check_port_request : Tx, List(U32), Req -> Tx
-check_port_request = |tx, path, req| match req {
-	PortCall({ port, .. }) => check_port_later(tx, port, 2, path)
-	PortSubscribe({ port, .. }) => check_port_later(tx, port, 3, path)
-	_ => tx
+## The ports of a program that declares `decls`, with the real port code
+## (see [Ports]). Only `with_ports` and tests reach it.
+ports_of : List(PortDecl) -> Ports
+ports_of = |decls| {
+	decls,
+	ready: ports_checked,
+	table: put_port_table,
+	check: check_port,
+	write: write_ports,
+	decode: decode_port_res,
+	ends: ends_subscription,
+}
+
+## The ports of a program that declares none (see [Ports]): an empty port
+## table, and a contract error for any port request or port result. Each
+## stub is small and names the rule, so the codec is never linked in.
+no_ports : Ports
+no_ports = {
+	decls: [],
+	ready: |decls| decls,
+	table: |keys, _| put_u32(keys, 0),
+	check: |_, { req, path, .. }| crash "contract: port \"${port_name(req)}\" is not declared; add its declaration to with_ports (site ${show_path(path)})",
+	write: |tx, _| tx,
+	decode: |_, _| crash "contract: a port result (effect result tag 14 or 15) reached an app that declares no ports",
+	ends: |_| Bool.False,
+}
+
+## The port a port request names.
+port_name : PortReq -> Str
+port_name = |req| match req {
+	Command(port, _) => port
+	Call(port, _, _) => port
+	Subscribe(port, _) => port
 }
 
 ## A port request names a declared port of its own shape, or it is the
 ## contract error that names the port and the site.
-check_port : List(PortDecl), Str, U8, List(U32) -> {}
-check_port = |decls, port, kind, path| match decls.find_first(|d| d.name == port) {
-	Ok(d) =>
-		if d.kind != kind {
-			crash "contract: port \"${port}\" is declared as ${port_kind_name(d.kind)} but used as ${port_kind_name(kind)} (site ${show_path(path)})"
-		} else {
-			{}
+check_port : List(PortDecl), PortAt -> {}
+check_port = |decls, { req, path, .. }| {
+	port = port_name(req)
+	kind = match req {
+		Command(_, _) => 1
+		Call(_, _, _) => 2
+		Subscribe(_, _) => 3
+	}
+	match decls.find_first(|d| d.name == port) {
+		Ok(d) =>
+			if d.kind != kind {
+				crash "contract: port \"${port}\" is declared as ${port_kind_name(d.kind)} but used as ${port_kind_name(kind)} (site ${show_path(path)})"
+			} else {
+				{}
+			}
+		Err(_) => crash "contract: port \"${port}\" is not declared; add its declaration to with_ports (site ${show_path(path)})"
+	}
+}
+
+## Put a turn's port requests (its `Port` entries) into its batch (see
+## [PortAt]), each at the
+## place in the stream where it was issued, so the batch is exactly what
+## writing it in place would have given: `PORT` (opcode 19) for a command,
+## `FX` kind 9 for a call and kind 10 for a subscription. A refused request
+## writes nothing. Commands are counted at work-record index 40, never by
+## opcode (index 19 is `set_value`).
+##
+## When every request was issued after the turn's last other command, the
+## bytes are appended to the batch in place; otherwise the batch is rebuilt
+## once around them, O(batch + messages).
+write_ports : Tx, List(TurnEnd) -> Tx
+write_ports = |tx, entries| {
+	reqs = entries.keep_oks(
+		|e| match e {
+			Port({ req, slot: At(at, id), .. }) => Ok((req, at, id))
+			_ => Err(NotWritten)
+		},
+	)
+	{ cmds, next, free, routes, work, paths, site_free, fx } = tx
+	first = match reqs.first() {
+		Ok((_, at, _)) => at
+		Err(_) => cmds.len()
+	}
+	in_place = first == cmds.len()
+	var $out = if (in_place) cmds else List.with_capacity(cmds.len() + 64).concat(cmds.sublist({ start: 0, len: first }))
+	var $from = first
+	var $sends = 0.U64
+	for (req, at, id) in reqs {
+		if at > $from {
+			$out = $out.concat(cmds.sublist({ start: $from, len: at - $from }))
+			$from = at
 		}
-	Err(_) => crash "contract: port \"${port}\" is not declared; add its declaration to with_ports (site ${show_path(path)})"
+		$out = match req {
+			Command(port, message) => {
+				$sends = $sends + 1
+				put_port_message(put_str($out.append(19), port), message)
+			}
+			Call(port, message, timeout_ms) => put_u32(put_port_message(put_str(put_u32($out.append(13), id).append(9), port), message), min_u32(timeout_ms, max_timeout_ms))
+			Subscribe(port, message) => put_port_message(put_str(put_u32($out.append(13), id).append(10), port), message)
+		}
+	}
+	out = if (in_place) $out else $out.concat(cmds.sublist({ start: $from, len: cmds.len() - $from }))
+	{ cmds: out, next, free, routes, work: add_work(work, w_port_sends, $sends), paths, site_free, fx }
 }
 
 ## A message as FX kinds 9 and 10 and `PORT` carry it: `json:str
@@ -4103,15 +4202,6 @@ put_port_message = |buf, { json, blobs, files }| {
 		$b = put_u64(put_u64(put_u64($b, token), start), len)
 	}
 	$b
-}
-
-## Command 19 `PORT port:str message`, counted at work-record index 40 and
-## not by opcode (index 19 is `set_value`).
-## The command is checked against the catalogue at the end of the turn.
-emit_port : Tx, Str, PortMessage, List(U32) -> Tx
-emit_port = |tx, port, message, path| {
-	{ cmds, next, free, routes, work, paths, site_free, fx } = check_port_later(tx, port, 1, path)
-	{ cmds: put_port_message(put_str(cmds.append(19), port), message), next, free, routes, work: add_work(work, w_port_sends, 1), paths, site_free, fx }
 }
 
 ## A port reply's message from result tag 14, `json:str nblobs:u32
@@ -4153,11 +4243,16 @@ decode_port_message = |b, handles| {
 	{ json, blobs: $blobs, files: $files }
 }
 
-## The result of a call that carried files: only a port's reply (tag 14)
-## does.
-decode_reply_files : List(U8), List(Blob) -> Res
-decode_reply_files = |b, handles| match b.first() {
-	Ok(14) => PortReply(decode_port_message(b, handles))
+## Result tags 14 and 15, and the file handles a reply carries (only a
+## reply carries any). Anything else is a contract error.
+decode_port_res : List(U8), List(Blob) -> Res
+decode_port_res = |b, handles| match b {
+	[14, ..] => PortReply(decode_port_message(b, handles))
+	[15, ..] if !handles.is_empty() => crash "contract: an effect result that is not a port reply carries file handles"
+	[15, 1, ..] => PortFailed(Threw(Str.from_utf8(b.drop_first(2)) ?? crash "contract: effect result text is not UTF-8"))
+	[15, 2] => PortFailed(TooLarge)
+	[15, 3] => PortFailed(Closed)
+	[15, ..] => crash "contract: effect result tag 15 needs a failure class, 1 with text, 2 or 3"
 	_ => crash "contract: an effect result that is not a port reply carries file handles"
 }
 
@@ -4211,7 +4306,19 @@ Fx : {
 ## every app by about 3%). Checking at the end of the turn is the same
 ## contract error with the same message; nothing the turn did is published,
 ## because the crash poisons the instance before the call returns.
-TurnEnd : [Focus(U8, Str), CheckProgram(Str, List(U32)), CheckPort(Str, U8, List(U32))]
+TurnEnd : [Focus(U8, Str), CheckProgram(Str, List(U32)), Port(PortAt)]
+
+## A port request waiting for the end of its turn (see [Ports]): the
+## request, the site that issued it, and where its bytes go: at offset `at`
+## of the batch with request id `id` (0 for a command), or nowhere when the
+## in-flight bound refused it. Its use is checked like a work request's,
+## and its bytes are written then, through the program's own port code, so
+## an app that declares no ports never links the port encoder.
+PortAt : { req : PortReq, path : List(U32), slot : [At(U64, U32), Refused] }
+
+## A port request as it waits for the end of its turn: a command, a call
+## with its timeout, or a subscription, each with its port and message.
+PortReq : [Command(Str, PortMessage), Call(Str, PortMessage, U32), Subscribe(Str, PortMessage)]
 
 fx_empty : Fx
 fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, refs: [], focus: [], ref_pos: [], cleanups: [] }
@@ -4284,8 +4391,16 @@ is_kept = |req| match req {
 min_u32 : U32, U32 -> U32
 min_u32 = |a, b| if (a < b) a else b
 
+## An admitted request's `FX` command (design.md, Appendix B). A port
+## request's is written at the end of its turn instead (see [PortAt]).
 put_req : List(U8), U32, Req -> List(U8)
-put_req = |c, id, req| {
+put_req = |c, id, req| match req {
+	PortCall(_) | PortSubscribe(_) => c
+	_ => put_fx(c, id, req)
+}
+
+put_fx : List(U8), U32, Req -> List(U8)
+put_fx = |c, id, req| {
 	head = put_u32(c.append(13), id)
 	match req {
 		Http({ method, url, headers, body, timeout_ms }) => {
@@ -4317,15 +4432,15 @@ put_req = |c, id, req| {
 		Sha256(f) => put_file(head.append(13).append(1), f)
 		ObjectUrl(f) => put_file(head.append(14), f)
 		Ask({ program, input, files, deadline_ms }) => put_ask(head, program, input, files, deadline_ms)
-		PortCall({ port, message, timeout_ms }) => put_u32(put_port_message(put_str(head.append(9), port), message), min_u32(timeout_ms, max_timeout_ms))
-		PortSubscribe({ port, message }) => put_port_message(put_str(head.append(10), port), message)
 		_ => crash "not an awaited request"
 	}
 }
 
 ## Admit an awaited request (or refuse it when the table is full).
 fx_admit : Tx, List(U32), Req -> (U32, Tx)
-fx_admit = |{ cmds, next, free, routes, work, paths, site_free, fx }, path, req| {
+fx_admit = |tx, path, req| {
+	# A port request's bytes are written at the end of the turn.
+	{ cmds, next, free, routes, work, paths, site_free, fx } = turn_end_later(tx, path, req)
 	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups } = fx
 	if live.len() >= max {
 		fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups }
@@ -4333,6 +4448,30 @@ fx_admit = |{ cmds, next, free, routes, work, paths, site_free, fx }, path, req|
 	} else {
 		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups }
 		(id, { cmds: put_req(cmds, id, req), next, free, routes, work: add_work(work, 13, 1), paths, site_free, fx: fx2 })
+	}
+}
+
+## Queue what the end of the turn settles for a request (see [TurnEnd]) as
+## it is issued: a focus command on a named reference, or a port request
+## with the place its bytes go (see [PortAt]), which is nowhere when the
+## in-flight bound is about to refuse it. Any other request needs nothing.
+turn_end_later : Tx, List(U32), Req -> Tx
+turn_end_later = |tx, path, req| {
+	at = tx.cmds.len()
+	slot = if (tx.fx.live.len() >= tx.fx.max) Refused else At(at, tx.fx.next)
+	entry = match req {
+		Focus(n) => Focus(1, n)
+		Blur(n) => Focus(2, n)
+		SelectText(n) => Focus(3, n)
+		PortCommand({ port, message }) => Port({ req: Command(port, message), path, slot: At(at, 0) })
+		PortCall({ port, message, timeout_ms }) => Port({ req: Call(port, message, timeout_ms), path, slot })
+		PortSubscribe({ port, message }) => Port({ req: Subscribe(port, message), path, slot })
+		_ => Skip
+	}
+	match entry {
+		Skip => tx
+		Focus(op, n) => with_fx(tx, |fx| { ..fx, focus: fx.focus.append(Focus(op, n)) })
+		Port(p) => with_fx(tx, |fx| { ..fx, focus: fx.focus.append(Port(p)) })
 	}
 }
 
@@ -4356,14 +4495,9 @@ issue = |tx, path, reqs, a, owned| {
 			Replace(url) => {
 				$tx = emit_op($tx, 15, |c| put_str(c.append(2), url))
 			}
-			Focus(n) => {
-				$tx = with_fx($tx, |fx| { ..fx, focus: fx.focus.append(Focus(1, n)) })
-			}
-			Blur(n) => {
-				$tx = with_fx($tx, |fx| { ..fx, focus: fx.focus.append(Focus(2, n)) })
-			}
-			SelectText(n) => {
-				$tx = with_fx($tx, |fx| { ..fx, focus: fx.focus.append(Focus(3, n)) })
+			Focus(_) | Blur(_) | SelectText(_) | PortCommand(_) => {
+				# Settled at the end of the turn (see [TurnEnd]).
+				$tx = turn_end_later($tx, path, req)
 			}
 			Title(t) => {
 				$tx = emit_op($tx, 17, |c| put_str(c, t))
@@ -4391,11 +4525,8 @@ issue = |tx, path, reqs, a, owned| {
 				$tx = t1
 				$owned = $owned.append({ id, sub: False, keep: False, a })
 			}
-			PortCommand({ port, message }) => {
-				$tx = emit_port($tx, port, message, path)
-			}
 			_ => {
-				(id, t1) = fx_admit(check_port_request($tx, path, req), path, req)
+				(id, t1) = fx_admit($tx, path, req)
 				$tx = t1
 				$owned = $owned.append({ id, sub: is_sub(req), keep: is_kept(req), a })
 			}
@@ -4963,8 +5094,9 @@ turn = |{ root, tx, programs }, path, h, payload| {
 }
 
 ## The end of a turn (see [TurnEnd]): command 18 FOCUS op:u8 node:u32 for
-## each focus request, and the catalogue check of each work and port request
-## against the instance's `programs`.
+## each focus request, the catalogue check of each work and port request
+## against the instance's `programs`, in issue order, and then the bytes of
+## the turn's port requests, each where it was issued (see [PortAt]).
 flush_turn : Tx, Catalogue -> Tx
 flush_turn = |tx, programs| {
 	if tx.fx.focus.is_empty() {
@@ -4987,10 +5119,10 @@ flush_turn = |tx, programs| {
 					if !programs.workers.contains(program) {
 						crash "contract: worker program \"${program}\" is not registered; add its registration to with_workers (site ${show_path(path)})"
 					}
-				CheckPort(port, kind, path) => check_port(programs.ports, port, kind, path)
+				Port(at) => (programs.ports.check)(programs.ports.decls, at)
 			}
 		}
-		$tx
+		(programs.ports.write)($tx, reqs)
 	}
 }
 
@@ -5114,7 +5246,7 @@ settle_note = |a, b| {
 		("cancelled", a.cancelled, b.cancelled),
 		("in flight", a.live.len(), b.live.len()),
 		("queued follow-ups", a.queue.len(), b.queue.len()),
-		("end-of-turn focus requests and program checks", a.focus.len(), b.focus.len()),
+		("end-of-turn focus requests, program checks and port requests", a.focus.len(), b.focus.len()),
 	]
 	changed = pairs.keep_if(|(_, x, y)| x != y).map(|(name, x, y)| "${name} ${x.to_str()} -> ${y.to_str()}")
 	Str.join_with(changed, ", ")
@@ -5167,7 +5299,7 @@ expect {
 				],
 			),
 	)
-	mounted = mount_in(32, { workers: ["t/echo"], ports: [] }, elem)
+	mounted = mount_in(32, { workers: ["t/echo"], ports: no_ports }, elem)
 	s = Core.fx_stats(mounted)
 	[s.issued, s.cancelled, s.live, s.reparented] == [1, 1, 0, 0]
 }
@@ -5229,7 +5361,7 @@ expect {
 	msg = { json: "{\"a\":1}", blobs: [[7, 8]], files: [] }
 	ports = [Core.port_declaration("t/c", Command), Core.port_declaration("t/k", Call), Core.port_declaration("t/s", Subscription(Every(4)))]
 	elem = Core.watch(Core.const({}), |_| [PortCommand({ port: "t/c", message: msg }), PortCall({ port: "t/k", message: msg, timeout_ms: 700000 }), PortSubscribe({ port: "t/s", message: msg })], Core.ignore({}))
-	mounted = mount_in(32, { workers: [], ports }, elem)
+	mounted = mount_in(32, { workers: [], ports: ports_of(ports) }, elem)
 	(taken, cmds) = Core.take_cmds(mounted, [])
 	body = put_u32(put_u32(put_u32(put_str([], "{\"a\":1}"), 1), 2).concat([7, 8]), 0)
 	want = put_str([19], "t/c").concat(body).concat(put_u32(put_str(put_u32([13], 1).append(9), "t/k").concat(body), 600000)).concat(put_str(put_u32([13], 2).append(10), "t/s").concat(body))
@@ -5255,8 +5387,8 @@ expect {
 				],
 			),
 	)
-	disposed = Core.fx_stats(mount_in(32, { workers: [], ports }, elem))
-	open = mount_in(32, { workers: [], ports }, Core.watch(Core.const({}), |_| [PortSubscribe({ port: "t/s", message: msg })], Core.ignore({})))
+	disposed = Core.fx_stats(mount_in(32, { workers: [], ports: ports_of(ports) }, elem))
+	open = mount_in(32, { workers: [], ports: ports_of(ports) }, Core.watch(Core.const({}), |_| [PortSubscribe({ port: "t/s", message: msg })], Core.ignore({})))
 	id = Core.fx_live(open).first() ?? 0
 	kept = Core.fx_stats(Core.result(open, id, PortReply(msg)))
 	closed = Core.result(open, id, PortFailed(Closed))
