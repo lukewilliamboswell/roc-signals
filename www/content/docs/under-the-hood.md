@@ -1,7 +1,7 @@
 +++
 title = "Under the Hood"
 description = "Follow an event through the runtime, the Wasm host and the engine, and see where work and failures happen."
-weight = 11
+weight = 12
 template = "page.html"
 +++
 

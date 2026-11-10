@@ -44,6 +44,8 @@ the platform does not depend on any CSS framework.
 - [Structuring an App](@/docs/app-architecture.md): modules, context types and
   keeping updates local.
 - [Testing](@/docs/testing.md): the spec language and its two runners.
+- [Monitoring Workers](@/docs/worker-monitoring.md): where a worker job's time
+  goes, how busy the pool is, and what workers cost.
 - [Reference](@/docs/reference.md): the API at a glance and the platform's
   limits.
 - [Under the Hood](@/docs/under-the-hood.md): how an event becomes DOM commands.

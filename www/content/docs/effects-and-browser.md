@@ -80,6 +80,9 @@ or a typed `HttpError`: `Network(message)`, `Timeout`, `Status(code)` or
 classify statuses yourself. `timeout_ms` of `0` means no timeout; the most the
 runtime will arm is ten minutes.
 
+To see where a worker job's time goes and how busy the pool is, read the
+runtime's monitor; see [Monitoring Workers](@/docs/worker-monitoring.md).
+
 ## Commands
 
 Commands are emitted and forgotten, so their reaction is `Engine.ignore({})`:
