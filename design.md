@@ -823,6 +823,23 @@ The engine counts `issued`, `delivered`, `stale`, `refused`, `cancelled`
 the live ids. Specs and fuzz models
 assert them exactly.
 
+### Observation
+
+How work performs is observed from outside the engine and never decided
+there. The runtime's monitor (`runtime.monitor`) watches work jobs, worker
+instances and turns. The pool and the runtime report each transition to it
+after they have acted, so observing changes no scheduling, result or
+ordering, and an observer that misbehaves is dropped rather than obeyed. It
+offers a snapshot of plain data, synchronous lifecycle events with ordering
+guarantees, and optional User Timing entries that the browser's own tools
+display. Every time it reports is on the page's clock: a worker's stamps
+are converted through that worker's time origin, and spans across threads
+carry the browser's timer coarsening, reported as measured rather than
+corrected. By default it holds sizes, names and times, never payload bytes.
+Its cost is a few clock reads per job, and none for a turn nobody asked to
+see. The engine's own account stays the work record: the monitor reads it
+and adds nothing to it.
+
 ### Connectivity and visibility
 
 Whether the browser is online and the page visible is part of the boot bytes
@@ -999,6 +1016,11 @@ bound and a declared behaviour at the bound:
 | Diagnostic text | 512 bytes | Truncated |
 | Live node ids (rows included) | 2³² − 2 | `resource_limit` poison |
 | Runtime ingress queue | 4096 queued events | `resource_limit` poison |
+| Monitor job history | `history` option (default 128, at most 1024) | Oldest overwritten, counted |
+| Monitor retired instances | 16 | Oldest overwritten, counted |
+| Monitor per-program figures | 64 programs (the catalogue) | Further names under `*` |
+| Monitor subscribers | 16 | A further subscribe throws |
+| Monitor User Timing entries | 1024 per thread | Its own entries cleared |
 
 Wasm memory growth is an allocator mechanism, not a resource policy. Persistent
 columns and free lists must plateau under repeated valid activity; soak runs
