@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, In, Root, State]
+import pf.Engine exposing [Comp, Elem, In, Root, State, Val]
 import pf.Html
 
 ## Browser-services test app: one control per Phase 3 service, each with a
@@ -18,6 +18,8 @@ import pf.Html
 ##   handler prevents it does not; an email field in the form blocks its
 ##   submission while invalid; a box that commits on `change` hears it when
 ##   it loses focus; and a one-shot timer.
+## - Two nested states of a component that one click writes together: a
+##   nested component pushes two actions, and `split` routes them to both.
 ServicesApp := [].{
 	S : {
 		online : Bool,
@@ -181,9 +183,37 @@ ServicesApp := [].{
 				Html.button("Delay", [], st.update(|s| { ..s, delays: s.delays + 1 })),
 				Engine.on_change(v.map(|s| s.delays), |_| [Timer(1000)], st.on_result(|s, _, r| { ..s, delayed: Str.inspect(r) })),
 				Html.p_v(v.map(|s| s.delayed), [Engine.test_id("delayed")]),
+				Engine.component(Engine.const({}), Engine.discard({}), ServicesApp.two_states),
 			],
 		)
 	}
+
+	## Two actions a component pushes in one event.
+	Two : [L(Str), R(Str)]
+
+	## A component body holding two nested states that one click inside a
+	## nested component writes in the same turn: its two actions go through
+	## `split` to the outer state and the inner one.
+	two_states : Val(Comp({}, {}), {}), State(Comp({}, {}), List({})) -> Elem(Comp({}, {}))
+	two_states = |_, _| Engine.state(
+		"-",
+		|s1| Engine.state(
+			"-",
+			|s2| Engine.element(
+				"div",
+				[],
+				[
+					Html.p_v(s1.lift().val().map(|x| "s1=${x}"), [Engine.test_id("s1")]),
+					Html.p_v(s2.val().map(|x| "s2=${x}"), [Engine.test_id("s2")]),
+					Engine.component(
+						Engine.const({}),
+						Engine.split(Engine.sink(s1.lift(), |_, a| a), Engine.sink(s2, |_, b| b), |c| c),
+						|_, out| Html.button("Both", [], out.update(|l| l.append(L("a")).append(R("b")))),
+					),
+				],
+			),
+		),
+	)
 
 	## The program both hosts run.
 	program : Engine.Program

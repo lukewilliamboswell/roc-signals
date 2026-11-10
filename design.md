@@ -541,9 +541,10 @@ Every external input — a DOM event or an effect result — is one *turn*:
    value into the environment; the owning block runs the handler; the
    environment travels back up, and each state layer takes its value back.
 3. **Settle locally.** A layer inside a row or component that is the highest
-   layer the handler changed, or an asynchronous layer that an answer
-   changed, refreshes its own subtree immediately; anything else reports its
-   mask upward. A component hands its pushed actions to the
+   layer the event changed refreshes its own subtree immediately, for itself
+   and every layer written below it (a component's sinks can write several
+   nested layers in one turn), as does an asynchronous layer that an answer
+   changed; anything else reports its mask upward. A component hands its pushed actions to the
    caller's sinks, which become ordinary writes in the caller's context.
 4. **Changed pass.** The root runs one `Changed(mask)` pass with the union of
    every layer written. Each site refreshes the holes that read a changed layer

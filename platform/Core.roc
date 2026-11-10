@@ -2048,7 +2048,12 @@ state_settle = |block, depth, local, out, tx| {
 				# changed) runs the Changed pass once the event has unwound.
 				(state_inst(s2, block, depth, local), Pending(next_outer, mask), tx)
 			} else {
-				(b3, t3) = refresh(block, In.{ outer: next_outer, value: s2 }, own, bump(tx, w_dirty_roots, 1))
+				# Every write of the turn is in place by now, and a component's
+				# sinks can write several nested layers in one turn: refresh
+				# this layer and every written layer below it, which no one
+				# above will see again.
+				written = mask.bitwise_and((own - 1).bitwise_not())
+				(b3, t3) = refresh(block, In.{ outer: next_outer, value: s2 }, written, bump(tx, w_dirty_roots, popcount(written)))
 				(state_inst(s2, b3, depth, local), Pending(next_outer, 0), t3)
 			}
 		}
