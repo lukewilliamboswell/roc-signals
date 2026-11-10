@@ -15,7 +15,7 @@ import src/Targets
 
 ## The `check` task, the per-pull-request gate: the script pins,
 ## formatting, every public `Engine` and `Html` symbol documented, `roc test`,
-## the platform inputs and the `scm-parse` fuzz target, the docs samples, every
+## the platform inputs and the `scm-parse` and `wire` fuzz targets, the docs samples, every
 ## app's `.scm` specs natively and in Chrome, the broken-spec self-check (both
 ## runners reject a spec with one wrong expectation), the runtime contract
 ## tests in Chrome (effects, controls, Conduit journey), the
@@ -135,11 +135,8 @@ script_pins! = || {
 	Ok($out)
 }
 
-## The parser's fuzz target builds with `--fuzz` and passes its examples;
-## the app targets, which take minutes, are `check-slow`.
+## The shared-support fuzz targets (the `.scm` parser and the worker wire
+## format) build with `--fuzz` and pass their examples; the app targets,
+## which take minutes, are `check-slow`.
 fuzz_smoke! : SpecSuite.Options => Try(List(Str), _)
-fuzz_smoke! = |o| {
-	target = { name: "scm-parse", main: "fuzz/scm-parse/main.roc" }
-	exe = Targets.build_fuzz!(o, target)?
-	Targets.fuzz_check!(o, target, exe)
-}
+fuzz_smoke! = |o| Targets.fuzz_check_all!(o, Targets.fuzz_targets.keep_if(|t| t.main.starts_with("fuzz/")))

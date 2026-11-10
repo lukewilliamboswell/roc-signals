@@ -15,6 +15,7 @@ Targets := [].{
 	fuzz_targets : List(Fuzz)
 	fuzz_targets = [
 		{ name: "scm-parse", main: "fuzz/scm-parse/main.roc" },
+		{ name: "wire", main: "fuzz/wire/main.roc" },
 		{ name: "form-builder", main: "examples/form-builder/main-fuzz.roc" },
 		{ name: "kanban-board", main: "examples/kanban-board/main-fuzz.roc" },
 		{ name: "data-grid", main: "examples/data-grid/main-fuzz.roc" },
