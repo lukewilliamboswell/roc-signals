@@ -346,6 +346,32 @@ async function results(options) {
   await ctx.close();
 }
 
+// manualWork (soak walks): work jobs wait for runEffect as in manual mode,
+// with no deadline timer and the monitor's `held` phase, while the rest of
+// the effect channel runs on its own (here an interval subscription and
+// storage reads are not held by it).
+{
+  const { page, ctx } = await open({ manualWork: true, maxWorkers: 1 });
+  const r = await page.evaluate(async (rounds) => {
+    const rt = window.__rt;
+    window.__rounds(rounds);
+    window.__click("Slow");
+    window.__click("Upper");
+    await new Promise((res) => setTimeout(res, 300));
+    const waited = { log: window.__log(), pending: rt.pendingEffects().map((q) => q.program), timers: rt.timers, manual: rt.manual };
+    const [slow, upper] = rt.issued;
+    await rt.runEffect(slow);
+    await rt.runEffect(upper);
+    const recent = rt.monitor.snapshot().recent.map((j) => [j.program, j.outcome, j.ms.held > 0]);
+    return { waited, log: window.__entries().map((e) => e.split(" ")[0]), recent, pool: rt.monitor.snapshot().pool.instances };
+  }, long);
+  check("manualWork: jobs wait without a deadline timer, the rest is not manual", [r.waited.log, r.waited.pending, r.waited.timers, r.waited.manual], ["", ["test.roc-signals/spin", "test.roc-signals/upper"], 0, false]);
+  check("runEffect runs each past its deadline, in the order asked", r.log, ["slow:spun", "upper:JOB"]);
+  check("the monitor saw both held, then answered", r.recent, [["test.roc-signals/spin", "done", true], ["test.roc-signals/upper", "done", true]]);
+  check("one worker ran both", r.pool, 1);
+  await ctx.close();
+}
+
 // Manual mode (spec replays): a job waits until the spec acts, and its
 // deadline never fires on its own. runEffect runs it to completion past its
 // deadline, expireEffect answers Timeout, loseEffect answers WorkLost with

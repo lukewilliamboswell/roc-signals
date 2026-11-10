@@ -50,7 +50,7 @@ result, and turns those stamps into spans. The spans add up to the job's
 
 | Span | From → to | What it is |
 |---|---|---|
-| `held` | issued → handed to the pool | Manual mode only: waiting for `runEffect` |
+| `held` | issued → handed to the pool | Manual mode or `manualWork` only: waiting for `runEffect` |
 | `queue` | handed to the pool → posted | Waiting for a free worker |
 | `cold` | posted → instance ready | Starting a worker: its script and its instance. 0 for a warm worker |
 | `toWorker` | posted → received | The message reaching a warm worker (`null` when cold) |
@@ -61,9 +61,10 @@ result, and turns those stamps into spans. The spans add up to the job's
 | `resultWait` | received → result turn starts | The page was busy with another turn |
 | `resultTurn` | result turn | The app's reaction and the DOM it changed |
 
-A job's deadline runs from the moment the request is performed, or in manual
-mode from `runEffect`, so it covers queueing and cold start as well as
-compute.
+A job's deadline runs from the moment the request is performed, so it covers
+queueing and cold start as well as compute. A held job (manual mode, or the
+`manualWork` mount option) has no deadline timer: a spec's time is manual,
+and `expireEffect(id)` expires it instead.
 
 `firstJobOnInstance` marks a worker's first job. That job's `compute` also
 pays for the browser compiling the program's code the first time it runs, so

@@ -54,6 +54,8 @@
 // runtime terminates every worker. In manual mode a job waits in `pending`
 // until runEffect(id) runs it, loseEffect(id, class) answers it lost or
 // expireEffect(id) expires its deadline, which never fires on its own.
+// options.manualWork holds work jobs the same way while every other effect
+// runs on its own.
 //
 // Monitor: `runtime.monitor` (options.monitor) observes jobs, worker
 // instances and turns: a pull snapshot, push events and optional User
@@ -1192,6 +1194,9 @@ export class RocEngineRuntime {
     this.manual = options.manualEffects ?? false;
     // Intervals tick only through tick(id) (spec replays control time).
     this.manualIntervals = options.manualIntervals ?? false;
+    // Work jobs wait for runEffect(id) while every other effect runs on its
+    // own (soak walks hold workers so results arrive in issue order).
+    this.manualWork = options.manualWork ?? false;
     // Armed HTTP timeout timers (for tests: must return to 0).
     this.timers = 0;
     this.fxOut = [];
@@ -1930,15 +1935,17 @@ export class RocEngineRuntime {
         this.live.set(fx.id, { kind: "get", cancel: () => clearTimeout(h) });
         return;
       }
-      case "work":
-        this.monitor.jobIssued(fx.id, fx.program, fx.input, fx.deadline, this.manual);
-        if (this.manual) {
+      case "work": {
+        const held = this.manual || this.manualWork;
+        this.monitor.jobIssued(fx.id, fx.program, fx.input, fx.deadline, held);
+        if (held) {
           this.live.set(fx.id, { kind: "work", req: fx, cancel: () => this.monitor.jobCancelled(fx.id) });
           this.issued.push(fx.id);
           return;
         }
         this.startWork(fx, null);
         return;
+      }
       case "timer":
       case "http": {
         if (this.manual) {
@@ -2055,7 +2062,7 @@ export class RocEngineRuntime {
     };
     // In manual mode a spec's time is manual too: a deadline never fires on
     // its own, and expireEffect(id) expires it instead.
-    if (fx.deadline > 0 && !this.manual) {
+    if (fx.deadline > 0 && !this.manual && !this.manualWork) {
       this.timers += 1;
       timer = setTimeout(() => {
         timer = null;
