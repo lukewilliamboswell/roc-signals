@@ -936,7 +936,10 @@ The Zig host (`platform/host/host.zig`) owns exactly:
 - **one staged payload** — a Roc `List(U8)` allocated by `payload_reserve`;
 - **the allocator** — `roc_alloc`/`roc_dealloc`/`roc_realloc` over the Wasm page
   allocator with an inline header, and always-on counters (allocations,
-  deallocations, requested bytes, reallocations, live count, live bytes);
+  deallocations, requested bytes, reallocations, live count, live bytes). An
+  allocation of a megabyte or more takes whole Wasm pages rather than the
+  page allocator's power-of-two classes, so a large list costs its own size
+  in linear memory, not up to twice that;
 - **the fault state** — a class and a bounded diagnostic buffer reserved
   statically.
 

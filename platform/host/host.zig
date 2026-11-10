@@ -62,11 +62,80 @@ fn headerOffset(a: std.mem.Alignment) usize {
     return std.mem.alignForward(usize, @sizeOf(Header), a.toByteUnits());
 }
 
+// Large allocations (a megabyte or more) bypass the Zig Wasm allocator, which
+// rounds them up to a power of two of 64 KiB pages: a 64 MiB list would hold
+// 128 MiB of linear memory. They come instead from whole Wasm pages, taken
+// with `memory.grow` and kept, once freed, on a free list of runs sorted by
+// address so that neighbours coalesce. Linear memory never shrinks, so a
+// freed run is only ever reused. Smaller allocations are unchanged.
+
+const wasm_page: usize = 64 * 1024;
+const large_threshold: usize = 1024 * 1024;
+
+/// A free run of whole pages, stored in its own first bytes.
+const FreeRun = struct { pages: usize, next: ?*FreeRun };
+
+/// Free runs in ascending address order.
+var free_runs: ?*FreeRun = null;
+
+fn runAddress(run: *FreeRun) usize {
+    return @intFromPtr(run);
+}
+
+/// `pages` whole pages: the first free run large enough, split from its
+/// front, or new pages from `memory.grow`. Null when memory cannot grow.
+fn largeAlloc(pages: usize) ?[*]u8 {
+    var link: *?*FreeRun = &free_runs;
+    while (link.*) |run| : (link = &run.next) {
+        if (run.pages < pages) continue;
+        if (run.pages == pages) {
+            link.* = run.next;
+        } else {
+            const rest: *FreeRun = @ptrFromInt(runAddress(run) + pages * wasm_page);
+            rest.* = .{ .pages = run.pages - pages, .next = run.next };
+            link.* = rest;
+        }
+        return @ptrCast(run);
+    }
+    const before = @wasmMemoryGrow(0, pages);
+    if (before < 0) return null;
+    return @ptrFromInt(@as(usize, @intCast(before)) * wasm_page);
+}
+
+/// Return `pages` whole pages at `base` to the free list, merging with the
+/// runs on either side.
+fn largeFree(base: [*]u8, pages: usize) void {
+    const address = @intFromPtr(base);
+    var prev: ?*FreeRun = null;
+    var next = free_runs;
+    while (next) |run| : (next = run.next) {
+        if (runAddress(run) > address) break;
+        prev = run;
+    }
+    var run: *FreeRun = @ptrCast(@alignCast(base));
+    run.* = .{ .pages = pages, .next = next };
+    if (next) |n| if (address + pages * wasm_page == runAddress(n)) {
+        run.pages += n.pages;
+        run.next = n.next;
+    };
+    if (prev) |p| {
+        if (runAddress(p) + p.pages * wasm_page == address) {
+            p.pages += run.pages;
+            p.next = run.next;
+            run = p;
+        } else p.next = run;
+    } else free_runs = run;
+}
+
+fn largePages(backing: usize) usize {
+    return (backing + wasm_page - 1) / wasm_page;
+}
+
 fn allocRaw(size: usize, align_arg: usize) *anyopaque {
     const a = alignment(align_arg);
     const offset = headerOffset(a);
     const backing = offset + size;
-    const base = std.heap.wasm_allocator.rawAlloc(backing, a, @returnAddress()) orelse outOfMemory(size);
+    const base = (if (backing >= large_threshold) largeAlloc(largePages(backing)) else std.heap.wasm_allocator.rawAlloc(backing, a, @returnAddress())) orelse outOfMemory(size);
     const user = base + offset;
     const header: *Header = @ptrFromInt(@intFromPtr(user) - @sizeOf(Header));
     header.* = .{ .requested = size, .backing = backing };
@@ -87,7 +156,7 @@ fn freeRaw(ptr: *anyopaque, align_arg: usize) usize {
     counters[4] -= 1;
     counters[5] -= h.requested;
     const base = user - headerOffset(a);
-    std.heap.wasm_allocator.rawFree(base[0..h.backing], a, @returnAddress());
+    if (h.backing >= large_threshold) largeFree(base, largePages(h.backing)) else std.heap.wasm_allocator.rawFree(base[0..h.backing], a, @returnAddress());
     return h.requested;
 }
 
