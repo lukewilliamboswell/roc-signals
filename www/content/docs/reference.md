@@ -30,7 +30,7 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 | Operations on files | `File.upload` (`UploadProps`: `url`, `method ?? "POST"`, `headers ?? []`, `timeout ?? Unlimited`), `File.sha256`, `File.object_url` (acting where the browser keeps the file), `File.read_bytes`, `File.read_utf8` (reading it into the page; `ReadProps`: `max_bytes ?? 8388608`), `file_bytes`, `file_text`, `file_digest`, `file_url`, `FileError` (`Unreadable`, `TooLarge`, `InvalidUtf8`, `Unavailable`, `Refused`) |
 | Saving and downloading | `File.save` (a download command; `SaveProps`: `name : [Same, Named(Str)]`), `File.fetch` (`FetchProps`: `url`, `method`, `headers`, `timeout : [Unlimited, Ms(U32)]`), `fetched`, `FetchError` (`Network`, `Timeout`, `Status`, `TooLarge`, `Refused`) |
 | Effects in a worker job | `File.read!` (`{ start, len }`), `File.contents!`, `File.contents_utf8!`, each answering a `Try` with a `FileError`; `File.build!` (`BuildProps`: `name`, `mime : [Auto, Mime(Str)] ?? Auto`, `start_from : [Empty, From(File)] ?? Empty`), `Builder`, `Builder.append!`, `Builder.append_file!`, `Builder.finish!` (see [Files in Tasks](@/docs/files-in-tasks.md)) |
-| Components | `component`, `State.push`, `State.push_by`, `State.push_value_by`, `sink`, `split` |
+| Components | `component`, `State.push`, `State.push_by`, `State.push_value_by`, `sink`, `discard`, `split` |
 | Effects | `watch`, `on_change`, `latest`, `State.on_result`, `ignore`, `on_cleanup`, `cleanup`, `Req`, `Res`, `HttpError`, `http_text`, `WorkFault`, `FileError` |
 
 ## Html
@@ -111,6 +111,38 @@ guarded while the control has focus. `checked` is a property set from
 `"true"`. `disabled`, `selected`, `readonly`, `required`, `hidden` and
 `multiple` are present for any value other than `""` and `"false"`.
 
+## Mount options
+
+`mountRocEngineApp({ wasmUrl, root, ...options })` fetches and compiles
+`wasmUrl`, mounts the app into the element `root` and returns the runtime.
+What an app means is decided in its Roc code and carried on its requests
+(a job's deadline, a read's `max_bytes`); a `max…` option is what this
+deployment allows, and caps what any request asks for. Every option is
+optional.
+
+| Option | Default | What it sets or bounds | Guide |
+|---|---|---|---|
+| `onFault` | none | Called with the diagnostic when the app breaks a contract and stops | [Getting Started](@/docs/getting-started.md) |
+| `maxWorkers` | the core count, at most 8 | Workers alive at once; further jobs wait in order | [Workers](@/docs/workers.md#serving-the-app) |
+| `workers` | `"worker"` | `"inline"` runs jobs on the page's thread instead, one at a time | [Workers](@/docs/workers.md#serving-the-app) |
+| `workerUrl` | `worker.mjs` beside `runtime.mjs` | Where the worker script is served | [Workers](@/docs/workers.md#serving-the-app) |
+| `maxWorkerBytes` | 128 MiB | A worker whose memory has grown past it is ended after its job, its prepared state with it | [Workers](@/docs/workers.md#serving-the-app) |
+| `maxOutputBytes` | 256 MiB | Bytes one job may append to its builders; beyond it `append!` answers `TooLarge` | [Files in Tasks](@/docs/files-in-tasks.md#limits) |
+| `onWorkerFault` | none | Called with `{ id, task, class, message }` when a job is lost | [Workers](@/docs/workers.md#serving-the-app) |
+| `maxFileBytes` | 256 MiB | Bytes one read into the page takes, whatever its `max_bytes`; bytes one digest reads; bytes of one fetched body. Beyond it `FileFailed(TooLarge)`. A job's reads in a worker are not bounded by it | [Files](@/docs/files.md) |
+| `ports` | none | The page's handlers, one per port the app declares; a missing or extra one refuses the mount | [Ports](@/docs/ports.md) |
+| `maxPortBytes` | 4 MiB (at most 64 MiB) | One port answer or message, JSON text and bytes together; beyond it `TooLarge` | [Ports](@/docs/ports.md) |
+| `onPortFault` | none | Called when a command handler or an unsubscribe function fails | [Ports](@/docs/ports.md) |
+| `monitor` | `{ history: 128, userTiming: false, payloads: false }` | What the work monitor keeps and reports | [Monitoring Workers](@/docs/worker-monitoring.md) |
+| `storage` | the page's `localStorage` | The storage `StorageGet` and `StorageSet` use (an object with `localStorage`'s methods) | [Effects and the Browser](@/docs/effects-and-browser.md) |
+| `fetch` | the global `fetch` | The function HTTP requests go through, for a page that scripts its own backend | [Effects and the Browser](@/docs/effects-and-browser.md) |
+| `manualEffects` | `false` | Requests wait until the caller answers or runs them (`runEffect`); used by the spec runner in Chrome | [Testing](@/docs/testing.md) |
+| `manualWork` | `false` | Only worker jobs wait for `runEffect`; every other effect runs on its own | [Testing](@/docs/testing.md#fuzzing-and-soak) |
+
+The browser tests also pass `manualIntervals` (intervals tick only when the
+test says), `window` and `document`; an app's page has no reason to set
+them.
+
 ## Limits
 
 | Resource | Bound | At the bound |
@@ -125,6 +157,7 @@ guarded while the control has focus. `checked` is a property set from
 | Events queued while a batch applies | 4096 | Resource limit |
 | Names in a worker catalogue | 64: tasks, preparations and each preparation's tasks | Contract error at mount |
 | Work deadline | 600 s | Capped |
+| A cancelled job of a task that says `on_cancel: Finish` | Its deadline, else 600 s after it was asked for | Its worker is ended, its prepared state with it |
 | Workers alive at once | `maxWorkers` (default the core count, at most 8) | Jobs wait in order for a free worker |
 | Prepared states | One per worker | A new input replaces the least recently used idle worker's |
 | A worker's memory | `maxWorkerBytes` (default 128 MiB), checked after each job | The worker is ended after the job, its prepared state with it |
@@ -140,6 +173,7 @@ guarded while the control has focus. `checked` is a property set from
 | Bytes a job appends to its builders | `maxOutputBytes` (default 256 MiB); files appended by reference do not count | `append!` answers `Err(TooLarge)` |
 | Files in one job's answer | 16 | The job is `Lost(Contract)`, nothing delivered |
 | Room on the page for an answer's files | The page's free slots among its 64 | The job is `Lost(ResourceLimit)`, nothing delivered |
+| Room on the page for a port's answer or message with files | The page's free slots among its 64 | `TooLarge`, none of its files kept |
 | Files and builders one job holds at once | 64 | The job is `Lost(ResourceLimit)` |
 | A fetched body | `maxFileBytes` (default 256 MiB) | `FileFailed(TooLarge)`, read by `fetched` as `Err(TooLarge)` |
 

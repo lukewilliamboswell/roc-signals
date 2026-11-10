@@ -17,7 +17,7 @@ or a profile. The architecture and its rules are in
 | Piece | File | Job |
 |---|---|---|
 | Engine | `platform/Engine.roc` | Everything reactive: sites, propagation, lists, effects, identity. Pure Roc. |
-| Host | `platform/host/host.zig` | Allocates memory, keeps the engine state between calls, stages one payload, backs the handles of [files](@/docs/files.md) the app holds, classifies faults. |
+| Host | `platform/host/host.zig` | Allocates memory, keeps the engine state between calls, stages one payload, backs the handles of [files](@/docs/files.md) the app holds, classifies faults. In a worker it holds no engine state: it keeps at most one preparation's state between jobs, and during a job performs the task's file effects through the worker script. |
 | Runtime | `platform/runtime.mjs` | Applies the engine's commands to the DOM, performs effects, delivers events. |
 | Worker script | `platform/worker.mjs` | Runs [worker](@/docs/workers.md) tasks: a Web Worker instantiates the same `app.wasm`, never mounts it, calls its `work` entry (or `prepare` and `ask` for a preparation's task) for each job, and performs the job's file effects. |
 
