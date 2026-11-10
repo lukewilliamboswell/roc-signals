@@ -22,8 +22,10 @@ import pf.Worker
 ##   lines in a task.
 ## - "Crash", "Twice" (finishing a builder twice) and "Timed" (a deadline)
 ##   end their jobs without an answer; "Stop" cancels whatever runs.
-## - "Panel" mounts two jobs on the first file: one that stops when the
-##   panel closes, and one that is kept and answers to the page.
+## - "Panel" mounts three jobs on the first file: one that stops when the
+##   panel closes, one that is kept and answers to the page, and one that is
+##   kept and answers to a state the panel owns, whose write is skipped once
+##   the panel has closed.
 ## - `outcome` shows the last answer, `built` the last built file and
 ##   `preview` its text, read back on the page.
 TasksApp := [].{
@@ -368,6 +370,31 @@ TasksApp := [].{
 										Ok(n) => { ..s, kept: "kept ${n.to_str()}" }
 										Err(e) => { ..s, kept: "kept failed ${Str.inspect(e)}" }
 									},
+								),
+							),
+							# A kept job whose reaction writes to a state the panel
+							# owns: once the panel has closed, that write is skipped.
+							Engine.state(
+								"",
+								|noted| Engine.element(
+									"span",
+									[],
+									[
+										Engine.latest(
+											v.map(|s| s.files.first()).lift(),
+											|first| match first {
+												Ok(f) => [TasksApp.kept.request(f)]
+												Err(_) => []
+											},
+											noted.on_result(
+												|_, _, res| match TasksApp.kept.result(res) {
+													Ok(n) => "noted ${n.to_str()}"
+													Err(e) => "noted failed ${Str.inspect(e)}"
+												},
+											),
+										),
+										Html.p_v(noted.val(), [Engine.test_id("noted")]),
+									],
 								),
 							),
 						],
