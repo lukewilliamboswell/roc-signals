@@ -13,25 +13,25 @@ Notes := [].{
 	## The expensive step: read the file and split it into lines, once per
 	## file in a worker that keeps the result.
 	document : Worker.Prepared(File, List(Str))
-	document = Worker.prepared(
-		"example.org/notes/document",
-		|file| Str.from_utf8_lossy(file.contents()).split_on("\n"),
-	)
+	document = Worker.prepared({
+		name: "example.org/notes/document",
+		prepare: |file| Str.from_utf8_lossy(file.contents()).split_on("\n"),
+	})
 	# endregion prepare
 
 	# region queries
 	## Three typed questions over the same lines, each with its own input and
 	## output type.
 	summary : Worker.Query(File, List(Str), {}, { lines : U64, chars : U64 })
-	summary = Notes.document.query(
-		"example.org/notes/summary",
-		|lines, {}| { lines: lines.len(), chars: lines.fold(0, |n, l| n + l.count_utf8_bytes()) },
-	)
+	summary = Notes.document.query({
+		name: "example.org/notes/summary",
+		run: |lines, {}| { lines: lines.len(), chars: lines.fold(0, |n, l| n + l.count_utf8_bytes()) },
+	})
 
 	search : Worker.Query(File, List(Str), Str, List(U64))
-	search = Notes.document.query(
-		"example.org/notes/search",
-		|lines, word| {
+	search = Notes.document.query({
+		name: "example.org/notes/search",
+		run: |lines, word| {
 			var $found = []
 			var $at = 1.U64
 			for line in lines {
@@ -42,27 +42,28 @@ Notes := [].{
 			}
 			$found
 		},
-	)
+	})
 
 	longest : Worker.Query(File, List(Str), {}, Str)
-	longest = Notes.document.query(
-		"example.org/notes/longest",
-		|lines, {}| lines.fold("", |best, l| if (l.count_utf8_bytes() > best.count_utf8_bytes()) l else best),
-	).with_cancel(Finish)
+	longest = Notes.document.query({
+		name: "example.org/notes/longest",
+		run: |lines, {}| lines.fold("", |best, l| if (l.count_utf8_bytes() > best.count_utf8_bytes()) l else best),
+		on_cancel: Finish,
+	})
 	# endregion queries
 
 	# region register
 	program : Engine.Program
 	program =
 		Engine.program(|| Engine.state({ doc: None, tab: Summary, word: "" }, Notes.view))
-			.with_workers([Notes.document.registration([Notes.summary.answers(), Notes.search.answers(), Notes.longest.answers()])])
+			.with_workers([Notes.document.registration([Notes.summary.registration(), Notes.search.registration(), Notes.longest.registration()])])
 	# endregion register
 
 	Ctx : In(Root, S)
 
 	# region asked
 	## The question for the current file, or none before a file is chosen.
-	asked : S, q -> [Run(Worker.Asked(File, q)), Skip]
+	asked : S, q -> [Run(Worker.Question(File, q)), Skip]
 	asked = |s, query| match s.doc {
 		Loaded(doc) => Run({ input: doc, query })
 		None => Skip

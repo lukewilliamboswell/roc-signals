@@ -16,14 +16,21 @@ Words := [].{
 
 	## The numbers of the lines, from 1, that contain `word`.
 	find : Worker.Program({ text : Str, word : Str }, List(U64))
-	find = Worker.program({ name: "example.org/words/find", run: |{ text, word }| Words.lines_with(text, word) })
+	find = Worker.program({
+		name: "example.org/words/find",
+		run: |{ text, word }| Words.lines_with(text, word),
+	})
 	# endregion programs
 
 	# region deadline
 	## The three most used words. A job that has not answered five seconds
 	## after it was asked for is stopped and answers `Timeout`.
 	frequencies : Worker.Program(Str, List(Frequency))
-	frequencies = Worker.program({ name: "example.org/words/frequencies", run: |text| Words.most_used(text, 3), deadline: Ms(5000) })
+	frequencies = Worker.program({
+		name: "example.org/words/frequencies",
+		run: |text| Words.most_used(text, 3),
+		deadline: Ms(5000),
+	})
 	# endregion deadline
 
 	# region fallible

@@ -762,7 +762,8 @@ Some programs share an expensive first step: three views of a document each
 parse it, a search and a facet count each index the same records. A
 **prepared program** is a preparation `prepare : init -> state` and any
 number of typed queries `ask : state, q -> out` over it, registered together
-(`Worker.prepared`, `Prepared.query`, `Prepared.registration`).
+(`Worker.prepared`, `Prepared.query`, `Prepared.registration`, each query's
+`registration`).
 
 **It is still a pure function, and keeping the state is never observable in
 an answer.** A query's answer is exactly `ask(prepare(init), q)`: what
@@ -1821,16 +1822,17 @@ Program.registration : Program(input, output) -> Registration
 Program.request : Program(input, output), input -> Req
 Program.result : Program(input, output), Res -> Try(output, Worker.Error)
 Worker.Error : [Timeout, Refused, Lost(WorkFault), FileFailed(FileError)]
-Worker.prepared : Str, (init -> state) -> Prepared(init, state)   where [init.Wire.Sendable]
-Prepared.query : Prepared(init, state), Str, (state, q -> out) -> Query(init, state, q, out)
-Prepared.fallible_query : Prepared(init, state), Str, (state, q -> Try(ok, err)) -> Query(init, state, q, Try(ok, err))
-Prepared.registration : Prepared(init, state), List(Answer(state)) -> Registration
-Query.answers : Query(init, state, q, out) -> Answer(state)
-Query.with_deadline_ms : Query(init, state, q, out), U32 -> Query(init, state, q, out)
-Query.with_cancel : Query(init, state, q, out), Cancel -> Query(init, state, q, out)
-Query.request : Query(init, state, q, out), Asked(init, q) -> Req      # an Ask
+Worker.prepared : PreparedProps(init, state) -> Prepared(init, state)   where [init.Wire.Sendable]
+Worker.PreparedProps(init, state) := { name : Str, prepare : init -> state }
+Prepared.query : Prepared(init, state), QueryProps(state, q, out) -> Query(init, state, q, out)
+Prepared.fallible_query : Prepared(init, state), QueryProps(state, q, Try(ok, err)) -> Query(init, state, q, Try(ok, err))
+Worker.QueryProps(state, q, out) := { name : Str, run : (state, q -> out),
+    deadline : [Unlimited, Ms(U32)] ?? Unlimited, on_cancel : Cancel ?? Stop }
+Prepared.registration : Prepared(init, state), List(QueryRegistration(state)) -> Registration
+Query.registration : Query(init, state, q, out) -> QueryRegistration(state)
+Query.request : Query(init, state, q, out), Question(init, q) -> Req      # an Ask
 Query.result : Query(init, state, q, out), Res -> Try(out, Worker.Error)
-Worker.Asked(init, q) : { input : init, query : q }
+Worker.Question(init, q) : { input : init, query : q }
 Worker.Cancel : [Stop, Finish]
 Worker.derive : program, Val(ctx, input),          # a Program or a Query
     (Val(In(ctx, Remote(output, Worker.Error)), Remote(output, Worker.Error)) -> Elem(...)) -> Elem(ctx)

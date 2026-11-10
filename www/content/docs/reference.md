@@ -56,7 +56,7 @@ Anything else is `Engine.element(tag, attrs, children)`.
 | Programs | `Program(input, output)`, `program`, `fallible`, `ProgramProps(input, output)` (`name`, `run`, `deadline : [Unlimited, Ms(U32)] ?? Unlimited`), `Program.registration` |
 | Runs from an effect site | `Program.request`, `Program.result`, `Error` (`Timeout`, `Refused`, `Lost(WorkFault)`, `FileFailed(FileError)`) |
 | Layers | `derive`, `derive_when` (for a program or a query), holding an `Engine.Remote(output, Error)` |
-| Prepared programs | `prepared`, `Prepared(init, state)`, `Prepared.query`, `Prepared.fallible_query`, `Prepared.registration`, `Query(init, state, q, out)`, `Query.answers`, `Query.request`, `Query.result`, `Query.with_deadline_ms`, `Query.with_cancel`, `Asked(init, q)` (`input`, `query`), `Cancel` (`Stop`, `Finish`), `Answer(state)` |
+| Prepared programs | `prepared`, `PreparedProps(init, state)` (`name`, `prepare`), `Prepared(init, state)`, `Prepared.query`, `Prepared.fallible_query`, `QueryProps(state, q, out)` (`name`, `run`, `deadline`, `on_cancel : Cancel ?? Stop`), `Prepared.registration`, `Query(init, state, q, out)`, `Query.registration`, `QueryRegistration(state)`, `Query.request`, `Query.result`, `Question(init, q)` (`input`, `query`), `Cancel` (`Stop`, `Finish`) |
 
 ## Wire
 

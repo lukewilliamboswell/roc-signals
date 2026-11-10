@@ -63,31 +63,39 @@ PreparedApp := [].{
 	}
 
 	document : Worker.Prepared(Source, Index)
-	document = Worker.prepared("test.roc-signals/prepared/document", PreparedApp.index)
+	document = Worker.prepared({
+		name: "test.roc-signals/prepared/document",
+		prepare: PreparedApp.index,
+	})
 
 	stats : Worker.Query(Source, Index, {}, { lines : U64, words : U64, distinct : U64 })
-	stats = PreparedApp.document.query("test.roc-signals/prepared/stats", |ix, {}| { lines: ix.lines, words: ix.words, distinct: ix.at.len() })
+	stats = PreparedApp.document.query({
+		name: "test.roc-signals/prepared/stats",
+		run: |ix, {}| { lines: ix.lines, words: ix.words, distinct: ix.at.len() },
+	})
 
 	lookup : Worker.Query(Source, Index, Str, { count : U64, first : List(U64) })
-	lookup = PreparedApp.document.query(
-		"test.roc-signals/prepared/lookup",
-		|ix, word| {
+	lookup = PreparedApp.document.query({
+		name: "test.roc-signals/prepared/lookup",
+		run: |ix, word| {
 			if word == "!crash" {
 				crash "the prepared test app's lookup was asked to crash"
 			}
 			lines = ix.at.get(word) ?? []
 			{ count: lines.len(), first: lines.take_first(3) }
 		},
-	).with_deadline_ms(30000)
+		deadline: Ms(30000),
+	})
 
 	top : Worker.Query(Source, Index, U64, List({ word : Str, count : U64 }))
-	top = PreparedApp.document.query(
-		"test.roc-signals/prepared/top",
-		|ix, n| {
+	top = PreparedApp.document.query({
+		name: "test.roc-signals/prepared/top",
+		run: |ix, n| {
 			counted = ix.at.to_list().map(|(word, lines)| { word, count: lines.len() })
 			counted.sort_with(|a, b| if (a.count > b.count) Before else if (a.count < b.count) After else PreparedApp.order(a.word.to_utf8(), b.word.to_utf8())).take_first(n)
 		},
-	).with_cancel(Finish)
+		on_cancel: Finish,
+	})
 
 	## Byte order of two words.
 	order : List(U8), List(U8) -> [Before, After, Same]
@@ -105,7 +113,7 @@ PreparedApp := [].{
 	}
 
 	registration : Engine.Registration
-	registration = PreparedApp.document.registration([PreparedApp.stats.answers(), PreparedApp.lookup.answers(), PreparedApp.top.answers()])
+	registration = PreparedApp.document.registration([PreparedApp.stats.registration(), PreparedApp.lookup.registration(), PreparedApp.top.registration()])
 
 	Ctx : In(Root, S)
 
@@ -119,7 +127,7 @@ PreparedApp := [].{
 		Failed(FileFailed(reason)) => "file failed ${Str.inspect(reason)}"
 	}
 
-	asked : S, q -> [Run(Worker.Asked(Source, q)), Skip]
+	asked : S, q -> [Run(Worker.Question(Source, q)), Skip]
 	asked = |s, query| match s.doc {
 		Loaded(doc) => Run({ input: { doc, fold: s.fold }, query })
 		None => Skip

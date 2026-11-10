@@ -19,13 +19,22 @@ Documents := [].{
 	Line : Row(Ctx, Doc)
 
 	count : Worker.Program(Str, U64)
-	count = Worker.program({ name: "example.org/documents/count", run: |text| Documents.word_count(text) })
+	count = Worker.program({
+		name: "example.org/documents/count",
+		run: |text| Documents.word_count(text),
+	})
 
 	tally : Worker.Program(List(Str), { words : U64, documents : U64 })
-	tally = Worker.program({ name: "example.org/documents/tally", run: |texts| { words: texts.map(Documents.word_count).sum(), documents: texts.len() } })
+	tally = Worker.program({
+		name: "example.org/documents/tally",
+		run: |texts| { words: texts.map(Documents.word_count).sum(), documents: texts.len() },
+	})
 
 	report : Worker.Program(List(Doc), Str)
-	report = Worker.program({ name: "example.org/documents/report", run: |docs| Str.join_with(docs.map(|d| "${d.id}: ${Documents.word_count(d.text).to_str()} words"), "; ") })
+	report = Worker.program({
+		name: "example.org/documents/report",
+		run: |docs| Str.join_with(docs.map(|d| "${d.id}: ${Documents.word_count(d.text).to_str()} words"), "; "),
+	})
 
 	# region bound
 	## At most three runs are in flight at once, kept low here so the specs
@@ -134,7 +143,18 @@ Documents := [].{
 							v.map(|s| s.docs.map(|d| d.text)),
 							|remote| Html.p_v(remote.map(Documents.show_totals), [Engine.test_id("totals")]),
 						),
-						Html.button("Export", [], st.update(|s| { ..s, presses: s.presses + 1, ask: Export({ press: s.presses + 1, docs: s.docs }), report: "Exporting…" })),
+						Html.button(
+							"Export",
+							[],
+							st.update(
+								|s| {
+									..s,
+									presses: s.presses + 1,
+									ask: Export({ press: s.presses + 1, docs: s.docs }),
+									report: "Exporting…",
+								},
+							),
+						),
 					],
 				),
 			|| Engine.text(""),
@@ -166,7 +186,12 @@ Documents := [].{
 	show_totals = |{ answer, .. }|
 		match answer {
 			Unanswered => "Counting…"
-			Answered({ words, documents }) => "${words.to_str()} words in ${documents.to_str()} documents"
+			Answered(
+				{
+					words,
+					documents,
+				},
+			) => "${words.to_str()} words in ${documents.to_str()} documents"
 			Failed(error) => Documents.problem(error)
 		}
 }

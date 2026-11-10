@@ -333,13 +333,14 @@ needed:
 
 {{ sample(file="prepared/Notes.roc", region="queries") }}
 
-The preparation is registered once, listing the queries it answers:
+The preparation is registered once, listing the registrations of the
+queries it answers:
 
 {{ sample(file="prepared/Notes.roc", region="register") }}
 
 A query is used like a program: `Worker.derive`, `Worker.derive_when`, or
 `request` and `result` in an `Engine.latest` site. What it is asked is a
-`Worker.Asked(init, q)`, the preparation's `input` and the query's own
+`Worker.Question(init, q)`, the preparation's `input` and the query's own
 `query`:
 
 {{ sample(file="prepared/Notes.roc", region="asked") }}
@@ -373,7 +374,8 @@ time.
   the state (`Worker.Query(File, List(Str), Str, List(U64))`), but
   `Worker.Query(File, _, Str, List(U64))` works too. Listing a query in
   another preparation's registration is a type error when the states'
-  types differ (`Worker.Answer(List(Str))` against `Worker.Answer(U64)`).
+  types differ (`Worker.QueryRegistration(List(Str))` against
+  `Worker.QueryRegistration(U64)`).
   When they are the same type it compiles, and every run of that query is
   a contract error in its worker, answered `Lost(Contract)`.
 - **A file's state goes with the file.** When the app lets go of a file, every
@@ -387,7 +389,7 @@ time.
   counts the preparation's time.
 - **Cancelling.** By default a query stopped while it runs ends its worker,
   as any run does, and its state goes with it (`Stop`). A query declared
-  `.with_cancel(Finish)` lets a stopped run complete and drops its answer, so
+  `on_cancel: Finish` lets a stopped job complete and drops its answer, so
   its worker keeps the state for the next question; the cost is a worker busy
   for the rest of that run. A deadline always ends the worker.
 
@@ -513,5 +515,5 @@ the in-flight bound turned away (see
 | Bulk bytes in a payload | `Wire.Bytes` |
 | A result that survives the panel that asked for it | A site in a longer-lived scope |
 | Several questions over one slow preparation | `Worker.prepared` and its queries |
-| A cancelled query that should keep its worker's state | `.with_cancel(Finish)` |
+| A cancelled query that should keep its worker's state | `on_cancel: Finish` |
 | Where a run's time goes | [Monitoring Workers](@/docs/worker-monitoring.md) |

@@ -34,7 +34,13 @@ Upload := [].{
 
 	show : Engine.Remote(Counts, Worker.Error) -> Str
 	show = |{ request, answer }| match answer {
-		Answered({ name, lines, words }) => "${name}: ${lines.to_str()} lines, ${words.to_str()} words"
+		Answered(
+			{
+				name,
+				lines,
+				words,
+			},
+		) => "${name}: ${lines.to_str()} lines, ${words.to_str()} words"
 		Failed(_) => "The file could not be read."
 		Unanswered => if (request == Pending) "Counting…" else "Choose a file."
 	}

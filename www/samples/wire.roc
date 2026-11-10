@@ -63,7 +63,10 @@ warmest = Worker.fallible({
 # region bytes
 ## Bulk bytes cross as one block when wrapped in `Wire.Bytes`.
 checksum : Worker.Program(Wire.Bytes, U32)
-checksum = Worker.program({ name: "example.org/files/checksum", run: |bytes| Wire.Bytes.to_list(bytes).fold(0, |sum, byte| sum + byte.to_u32()) })
+checksum = Worker.program({
+	name: "example.org/files/checksum",
+	run: |bytes| Wire.Bytes.to_list(bytes).fold(0, |sum, byte| sum + byte.to_u32()),
+})
 
 ## A request for a file's bytes, wrapped for sending.
 check_file : List(U8) -> Engine.Req

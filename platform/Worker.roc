@@ -184,7 +184,7 @@ Worker := [].{
 	## `init` (a parsed document, an index) to a `state` that several typed
 	## queries read. Make one with `prepared`, build its queries with
 	## `query` or `fallible_query`, and register it once with
-	## `registration`, listing the queries it answers.
+	## `registration`, listing its queries' registrations.
 	##
 	## A query is still a pure function of the preparation's input and its
 	## own: its answer is exactly what preparing afresh and asking would
@@ -200,24 +200,25 @@ Worker := [].{
 		send : (init -> { bytes : List(U8), files : List(Engine.File) }),
 	}.{
 
-		## `document.query(name, ask)`: the query `name`, which answers
-		## `ask(state, q)` from the state the preparation built. Both `q` and
-		## the answer must be `Wire.Sendable`. Names share the catalogue's
-		## namespace with programs and preparations.
-		query : Prepared(init, state), Str, (state, q -> out) -> Query(init, state, q, out)
+		## The query a props record describes, over this preparation's
+		## state: `document.query({ name, run })` answers `run(state, q)`
+		## from the state the preparation built. Both `q` and the answer must
+		## be `Wire.Sendable`. Names share the catalogue's namespace with
+		## programs and preparations.
+		query : Prepared(init, state), QueryProps(state, q, out) -> Query(init, state, q, out)
 			where [q.Wire.Sendable, out.Wire.Sendable]
-		query = |p, name, ask| {
+		query = |p, QueryProps.({ name, run: ask, deadline, on_cancel })| {
 			name,
 			prep: p.name,
-			deadline_ms: 0,
-			policy: Stop,
+			deadline_ms: deadline_ms_of(deadline),
+			on_cancel,
 			send_init: p.send,
 			send_query: |q| sent(q),
 			receive: |bytes| match Wire.decode(bytes) {
 				Ok(output) => output
 				Err(_) => crash "contract: worker program \"${name}\" answered with bytes that are not its output type"
 			},
-			answer: {
+			registered: {
 				name,
 				run: |state, bytes, files| match Wire.decode_with_files(bytes, files) {
 					Ok(q) => payload_of(name, ask(state, q))
@@ -227,18 +228,18 @@ Worker := [].{
 		}
 
 		## Like `query`, for a query that can fail, as `fallible` is to
-		## `pure`: the query's output is its `Try`.
-		fallible_query : Prepared(init, state), Str, (state, q -> Try(ok, err)) -> Query(init, state, q, Try(ok, err))
+		## `program`: the query's output is its `Try`.
+		fallible_query : Prepared(init, state), QueryProps(state, q, Try(ok, err)) -> Query(init, state, q, Try(ok, err))
 			where [q.Wire.Sendable, ok.Wire.Sendable, err.Wire.Sendable]
-		fallible_query = |p, name, ask| {
+		fallible_query = |p, QueryProps.({ name, run: ask, deadline, on_cancel })| {
 			name,
 			prep: p.name,
-			deadline_ms: 0,
-			policy: Stop,
+			deadline_ms: deadline_ms_of(deadline),
+			on_cancel,
 			send_init: p.send,
 			send_query: |q| sent(q),
 			receive: |bytes| received_try(name, bytes),
-			answer: {
+			registered: {
 				name,
 				run: |state, bytes, files| match Wire.decode_with_files(bytes, files) {
 					Ok(q) => match ask(state, q) {
@@ -251,22 +252,24 @@ Worker := [].{
 		}
 
 		## The preparation's entry for `Program.with_workers`, with the
-		## queries it answers (each query's `answers()`). It registers the
-		## preparation's name and each query's name; a name registered twice
-		## is a contract error when the app mounts, and asking a preparation
-		## a query it does not list is a contract error in the worker.
-		registration : Prepared(init, state), List(Answer(state)) -> Engine.Registration
-		registration = |p, answers| {
+		## registrations of the queries it answers
+		## (`document.registration([summary.registration(), search.registration()])`).
+		## It registers the preparation's name and each query's name; a name
+		## registered twice is a contract error when the app mounts, and asking
+		## a preparation a query it does not list is a contract error in the
+		## worker.
+		registration : Prepared(init, state), List(QueryRegistration(state)) -> Engine.Registration
+		registration = |p, queries| {
 			name = p.name
 			build = p.build
 			Core.registration_prepared(
 				name,
-				answers.map(|a| a.name),
+				queries.map(|a| a.name),
 				|bytes, files| {
 					state = build(bytes, files)
 					Core.kept(
 						name,
-						|q, qbytes, qfiles| match answers.find_first(|a| a.name == q) {
+						|q, qbytes, qfiles| match queries.find_first(|a| a.name == q) {
 							Ok(a) => (a.run)(state, qbytes, qfiles)
 							Err(_) => crash "contract: worker program \"${q}\" is not a query of the preparation \"${name}\""
 						},
@@ -276,9 +279,17 @@ Worker := [].{
 		}
 	}
 
-	## `prepared(name, prepare)`: the preparation `name`, which turns its
-	## input into the state its queries read with `prepare`. The input must
-	## be `Wire.Sendable`; the state need not be.
+	## What `prepared` is told about a preparation: its `name`, namespaced
+	## like a program's, and the pure function that `prepare`s its input into
+	## the state its queries read. The input must be `Wire.Sendable`; the
+	## state need not be.
+	PreparedProps(init, state) := {
+		name : Str,
+		prepare : init -> state,
+	}
+
+	## The preparation a props record describes:
+	## `Worker.prepared({ name: "example.org/notes/document", prepare: lines_of })`.
 	##
 	## Whether a worker holds the state for an input is decided by the
 	## input's exact bytes: a query over an equal input in a worker that
@@ -286,9 +297,9 @@ Worker := [].{
 	## proportional to the input on each query, so a large input should be
 	## a `File` (or a slice of one), whose identity is its handle and range,
 	## not its bytes; a worker reads a file's bytes once, when it prepares.
-	prepared : Str, (init -> state) -> Prepared(init, state)
+	prepared : PreparedProps(init, state) -> Prepared(init, state)
 		where [init.Wire.Sendable]
-	prepared = |name, prepare| {
+	prepared = |PreparedProps.({ name, prepare })| {
 		name,
 		build: |bytes, files| match Wire.decode_with_files(bytes, files) {
 			Ok(init) => prepare(init)
@@ -297,59 +308,66 @@ Worker := [].{
 		send: |init| sent(init),
 	}
 
-	## What a query is asked about: the preparation's `input` and the
-	## query's own `query`.
-	Asked(init, q) : { input : init, query : q }
+	## What `query` and `fallible_query` are told about a query.
+	##
+	## - `name`: namespaced like a program's.
+	## - `run`: the pure question, from the preparation's state and the
+	##   query's own input to its answer.
+	## - `deadline`: as a program's. It includes the time a worker spends
+	##   preparing; `Unlimited` by default.
+	## - `on_cancel`: what a job of the query does when its request is
+	##   cancelled while it runs (see [Cancel]); `Stop` by default.
+	QueryProps(state, q, out) := {
+		name : Str,
+		run : (state, q -> out),
+		deadline : [Unlimited, Ms(U32)] ?? Unlimited,
+		on_cancel : Cancel ?? Stop,
+	}
 
-	## What happens to a run of a query when its request is cancelled (its
+	## What a query is asked: the preparation's `input` and the query's own
+	## `query`, for `request`, `derive` and `derive_when`.
+	Question(init, q) : { input : init, query : q }
+
+	## What happens to a job of a query when its request is cancelled (its
 	## site disposed, or a `latest` or `derive` site moving on) while it
 	## runs. `Stop`, the default, ends the worker running it, as for any
 	## program, and the state that worker held goes with it. `Finish` lets
-	## the run complete and drops its answer, so the worker keeps the state
+	## the job complete and drops its answer, so the worker keeps the state
 	## for the next query. Either way the app never sees the cancelled
-	## run's answer. A deadline always stops the run.
+	## job's answer. A deadline always stops the job.
 	Cancel : [Stop, Finish]
 
-	## A query's entry for its preparation's `registration`: the query's
-	## name and how it answers from the typed state.
-	Answer(state) :: { name : Str, run : (state, List(U8), List(List(U8)) -> List(U8)) }
+	## A query's entry for its preparation's `registration`, from the query's
+	## `registration()`: the query's name and how it answers from the typed
+	## state.
+	QueryRegistration(state) :: { name : Str, run : (state, List(U8), List(List(U8)) -> List(U8)) }
 
-	## A typed query of a preparation, from an `Asked(init, q)` to `out`.
+	## A typed query of a preparation, from a `Question(init, q)` to `out`.
 	## Use it as a [Program] is used: `request` and `result` in an effect
 	## site, or `Worker.derive` and `Worker.derive_when`.
 	Query(init, state, q, out) :: {
 		name : Str,
 		prep : Str,
 		deadline_ms : U32,
-		policy : Cancel,
+		on_cancel : Cancel,
 		send_init : (init -> { bytes : List(U8), files : List(Engine.File) }),
 		send_query : (q -> { bytes : List(U8), files : List(Engine.File) }),
 		receive : (List(U8) -> out),
-		answer : Answer(state),
+		registered : QueryRegistration(state),
 	}.{
 
-		## Stop a job that has not answered `ms` milliseconds after it was
-		## requested, and answer `Timeout`. The deadline includes the time a
-		## worker spends preparing.
-		with_deadline_ms : Query(init, state, q, out), U32 -> Query(init, state, q, out)
-		with_deadline_ms = |p, ms| { ..p, deadline_ms: ms }
-
-		## What a cancelled run does (see [Cancel]); `Stop` by default.
-		with_cancel : Query(init, state, q, out), Cancel -> Query(init, state, q, out)
-		with_cancel = |p, policy| { ..p, policy }
-
 		## The query's entry for its preparation's `registration`.
-		answers : Query(init, state, q, out) -> Answer(state)
-		answers = |p| p.answer
+		registration : Query(init, state, q, out) -> QueryRegistration(state)
+		registration = |p| p.registered
 
 		## A request to answer `query` over the preparation's `input`, for an
 		## effect site's plan. Both are snapshots, encoded when the request
 		## is issued.
-		request : Query(init, state, q, out), Asked(init, q) -> Engine.Req
+		request : Query(init, state, q, out), Question(init, q) -> Engine.Req
 		request = |p, { input, query }| {
 			init = (p.send_init)(input)
 			asked = (p.send_query)(query)
-			policy = match p.policy {
+			policy = match p.on_cancel {
 				Stop => 1
 				Finish => 2
 			}
@@ -484,5 +502,27 @@ expect {
 		\\failed: { answer: Failed(Refused), request: Idle }
 		\\skipped: { answer: Unanswered, request: Idle }
 		\\plans: [0, 1]
+	actual == expected
+}
+
+## A query carries its preparation, its deadline and its cancel policy on
+## the request, and answers from the state the preparation built.
+expect {
+	lines = Worker.prepared({ name: "test/lines", prepare: |text| Str.split_on(text, "\n") })
+	count = lines.query({ name: "test/lines/count", run: |all, {}| all.len() })
+	nth = lines.query({ name: "test/lines/nth", run: |all, n| all.get(n) ?? "", deadline: Ms(40), on_cancel: Finish })
+	shape = |req| match req {
+		Ask({ program, input, deadline_ms, .. }) => "${program} ${deadline_ms.to_str()} policy ${Str.inspect(input.get(4 + 10 + 8))}"
+		_ => "not an ask"
+	}
+	answered = (nth.registration().run)(["a", "b"], (Wire.encode(1.U64)), [])
+	actual =
+		\\count: ${shape(count.request({ input: "a\nb", query: {} }))}
+		\\nth: ${shape(nth.request({ input: "a\nb", query: 1 }))}
+		\\answer: ${Str.inspect(nth.result(Work(answered)))}
+	expected =
+		\\count: test/lines/count 0 policy Ok(1)
+		\\nth: test/lines/nth 40 policy Ok(2)
+		\\answer: Ok("b")
 	actual == expected
 }

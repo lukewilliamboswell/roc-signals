@@ -29,16 +29,28 @@ LabApp := [].{
 	## each run, so each program is made with the deadline its jobs ask for;
 	## the name and function, and so the registration, are the same for all.
 	primes : [Unlimited, Ms(U32)] -> Worker.Program(Lab.Span, U64)
-	primes = |deadline| Worker.program({ name: "roc-signals.example/worker-lab/primes", run: Lab.count_primes, deadline })
+	primes = |deadline| Worker.program({
+		name: "roc-signals.example/worker-lab/primes",
+		run: Lab.count_primes,
+		deadline,
+	})
 
 	## Draws one tile; its pixels come back as one block of bytes.
 	tiles : [Unlimited, Ms(U32)] -> Worker.Program(Lab.TileSpec, Wire.Bytes)
-	tiles = |deadline| Worker.program({ name: "roc-signals.example/worker-lab/tile", run: |spec| Wire.Bytes.from_list(Lab.tile(spec)), deadline })
+	tiles = |deadline| Worker.program({
+		name: "roc-signals.example/worker-lab/tile",
+		run: |spec| Wire.Bytes.from_list(Lab.tile(spec)),
+		deadline,
+	})
 
 	## A program that always crashes, for the faulty workload; its message
 	## names the range it was given.
 	crasher : [Unlimited, Ms(U32)] -> Worker.Program(Lab.Span, U64)
-	crasher = |deadline| Worker.program({ name: "roc-signals.example/worker-lab/crash", run: |{ lo, hi }| crash "the worker lab's crash program crashed on [${lo.to_str()}, ${hi.to_str()}), as it always does", deadline })
+	crasher = |deadline| Worker.program({
+		name: "roc-signals.example/worker-lab/crash",
+		run: |{ lo, hi }| crash "the worker lab's crash program crashed on [${lo.to_str()}, ${hi.to_str()}), as it always does",
+		deadline,
+	})
 
 	program : Engine.Program
 	program = Engine.program_boot({ storage_keys: [], max_inflight: Lab.max_inflight }, |_| LabApp.main({}))
@@ -125,13 +137,45 @@ LabApp := [].{
 									v.map(|s| Lab.workload_to_str(s.workload)),
 									[Engine.class("input")],
 									[Html.option("primes", "Count primes"), Html.option("tiles", "Draw tiles"), Html.option("faulty", "Count primes, every fourth job crashing")],
-									st.set_value(|s, text| Lab.edited({ ..s, workload: Lab.workload_from_str(text) })),
+									st.set_value(
+										|s, text| Lab.edited({
+											..s,
+											workload: Lab.workload_from_str(text),
+										}),
+									),
 								),
 							],
 						),
-						LabApp.field("Jobs", v.map(|s| s.jobs_text), st.set_value(|s, text| Lab.edited({ ..s, jobs_text: text }))),
-						LabApp.field("Weight", v.map(|s| s.weight_text), st.set_value(|s, text| Lab.edited({ ..s, weight_text: text }))),
-						LabApp.field("Deadline (ms)", v.map(|s| s.deadline_text), st.set_value(|s, text| Lab.edited({ ..s, deadline_text: text }))),
+						LabApp.field(
+							"Jobs",
+							v.map(|s| s.jobs_text),
+							st.set_value(
+								|s, text| Lab.edited({
+									..s,
+									jobs_text: text,
+								}),
+							),
+						),
+						LabApp.field(
+							"Weight",
+							v.map(|s| s.weight_text),
+							st.set_value(
+								|s, text| Lab.edited({
+									..s,
+									weight_text: text,
+								}),
+							),
+						),
+						LabApp.field(
+							"Deadline (ms)",
+							v.map(|s| s.deadline_text),
+							st.set_value(
+								|s, text| Lab.edited({
+									..s,
+									deadline_text: text,
+								}),
+							),
+						),
 					],
 				),
 				Html.p_v(v.map(Lab.problem), [Engine.class("hint text-red-700"), Engine.test_id("problem")]),
