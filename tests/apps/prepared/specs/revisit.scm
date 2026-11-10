@@ -1,4 +1,4 @@
-(test "Prepared — a tab's query site asks again on every visit"
+(test "Prepared — a tab's task site asks again on every visit"
   (setup
     (file "doc.txt" "text/plain" "alpha beta gamma\nBeta alpha\n" 600))
   (steps

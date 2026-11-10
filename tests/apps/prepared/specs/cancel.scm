@@ -1,4 +1,4 @@
-(test "Prepared — a query cancelled under Stop and one cancelled under Finish both drop their answers"
+(test "Prepared — a job cancelled under Stop and one cancelled under Finish both drop their answers"
   (setup
     (file "doc.txt" "text/plain" "alpha beta gamma\nBeta alpha\n" 600))
   (steps

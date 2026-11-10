@@ -1,4 +1,4 @@
-(test "Prepared — a query's deadline covers its preparation"
+(test "Prepared — a task's deadline covers its preparation"
   (setup
     (file "doc.txt" "text/plain" "alpha beta gamma\nBeta alpha\n" 600))
   (steps

@@ -1,20 +1,21 @@
 // prepared-browser.mjs --wasm APP.wasm --runtime runtime.mjs --chrome PATH --
-// browser contract test of prepared programs with tests/apps/prepared in
-// headless Chrome (design.md, "Prepared programs"). Through the app's own
+// browser contract test of prepared state with tests/apps/prepared in
+// headless Chrome (design.md, "Prepared state"). Through the app's own
 // controls and `runtime.monitor` it shows that one preparation backs three
-// typed queries (one prepare, then reuses on the same worker, answers equal
-// to an independent count), and covers the pool's transitions: a changed
-// input prepares on another worker and the first state is reused when the
-// input comes back; a query waits behind the worker preparing its state
-// rather than preparing again; a cancelled query under `Stop` ends its
-// worker and under `Finish` completes and leaves the state for the next
-// query; a holder lost while a query waits for it sends that query to
-// prepare elsewhere; releasing the file lets the state go and the worker's
-// live allocations return to what they were before its first job;
-// `maxWorkers: 1` replaces states; a worker over `maxWorkerBytes` is
-// retired after its job; unmounting ends workers that hold states; and
-// `workers: "inline"` gives the same answers. It prints the measurements the
-// pull request reports (prepare once against every time, cancel policies).
+// tasks (one prepare, then reuses on the same worker, answers equal to an
+// independent count), and covers the pool's transitions: a changed input
+// prepares on another worker and the first state is reused when the input
+// comes back; a job waits behind the worker preparing its state rather than
+// preparing again; a cancelled job under `Stop` ends its worker and under
+// `Finish` completes and leaves the state for the next job; a holder lost
+// while a job waits for it sends that job to prepare elsewhere; releasing
+// the file lets the state go and the worker's live allocations return to
+// what they were before its first job; `maxWorkers: 1` replaces states; a
+// worker over `maxWorkerBytes` is retired after its job; unmounting ends
+// workers that hold states; and with `workers: "inline"` a preparation that
+// reads its file is unavailable and the page goes on. It prints the
+// measurements the pull request reports (prepare once against every time,
+// cancel policies).
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -118,7 +119,7 @@ async function open(options = {}) {
   return { page, ctx };
 }
 
-// The same three queries and a revisit, in a fresh page: one preparation,
+// The same three tasks and a revisit, in a fresh page: one preparation,
 // four reuses on one worker, and the answers an independent count gives.
 async function threeQueries(page, n) {
   return page.evaluate(async (n) => {
@@ -155,8 +156,8 @@ const wantAnswers = [`${2 * N} lines, ${5 * N} words, 4 distinct`, `alpha:${2 * 
 {
   const { page, ctx } = await open();
   const r = await threeQueries(page, N);
-  check("three queries over one preparation answer as a fresh count does", r.answers, wantAnswers);
-  check("one prepare, then every query reuses it on the same worker", r.jobs, [
+  check("three tasks over one preparation answer as a fresh count does", r.answers, wantAnswers);
+  check("one prepare, then every job reuses it on the same worker", r.jobs, [
     ["stats", "prepare", 1],
     ["top", "reuse", 1],
     ["lookup", "reuse", 1],
@@ -165,7 +166,7 @@ const wantAnswers = [`${2 * N} lines, ${5 * N} words, 4 distinct`, `alpha:${2 * 
   ]);
   check("the monitor counts one preparation and four reuses", r.counts, [1, 4, 1]);
   check("the preparation's time is recorded", typeof r.prepareMs === "number" && r.prepareMs > 0, true);
-  timings.push(["prepare, first query (ms)", r.prepareMs], ["first query total (ms)", r.firstTotalMs], ["reused query compute (ms)", Math.max(...r.reuseComputeMs)], ["reused query total, max (ms)", Math.max(...r.reuseTotalMs)], ["holder linear memory (MiB)", r.memMB], ["holder live bytes (MiB)", r.liveMB]);
+  timings.push(["prepare, first job (ms)", r.prepareMs], ["first job total (ms)", r.firstTotalMs], ["reused job compute (ms)", Math.max(...r.reuseComputeMs)], ["reused job total, max (ms)", Math.max(...r.reuseTotalMs)], ["holder linear memory (MiB)", r.memMB], ["holder live bytes (MiB)", r.liveMB]);
 
   // A changed input prepares on a second worker; the first input's state
   // is still held and answers when the input comes back.
@@ -199,7 +200,7 @@ const wantAnswers = [`${2 * N} lines, ${5 * N} words, 4 distinct`, `alpha:${2 * 
     const summary = await window.__answer("summary", `${2 * n} lines`);
     return { summary, jobs: window.__jobs(), spawns: window.__rt.monitor.snapshot().instances.spawns };
   }, N);
-  check("a query waits behind the worker preparing its state", r, {
+  check("a job waits behind the worker preparing its state", r, {
     summary: `${2 * N} lines`,
     jobs: [
       ["stats", "prepare", 1],
@@ -211,8 +212,8 @@ const wantAnswers = [`${2 * N} lines, ${5 * N} words, 4 distinct`, `alpha:${2 * 
 }
 
 // Cancel policies, on a document large enough that preparing takes a
-// while: `Stop` (Stats) ends the worker, and the next query prepares again
-// on a new one; `Finish` (Top) lets the run complete, and the next query
+// while: `Stop` (Stats) ends the worker, and the next job prepares again
+// on a new one; `Finish` (Top) lets the run complete, and the next job
 // reuses its state.
 const BIG = 100000;
 {
@@ -227,7 +228,7 @@ const BIG = 100000;
     const s = window.__rt.monitor.snapshot();
     return { top, ended: s.instances.ended.cancel, spawns: s.instances.spawns, jobs: window.__jobs(), ms, spawn: s.instances.live.map((i) => [i.readyAt - i.spawnAt, i.instantiateMs])[0] };
   }, BIG);
-  check("Stop: a cancelled query ends its worker and the next prepares again", { top: r.top, ended: r.ended, spawns: r.spawns, jobs: r.jobs }, {
+  check("Stop: a cancelled job ends its worker and the next prepares again", { top: r.top, ended: r.ended, spawns: r.spawns, jobs: r.jobs }, {
     top: `alpha:${2 * BIG} Beta:${BIG} beta:${BIG}`,
     ended: 1,
     spawns: 2,
@@ -250,7 +251,7 @@ const BIG = 100000;
     const cancelled = s.recent.find((x) => x.outcome === "cancelled");
     return { stats, ended: s.instances.ended.cancel, spawns: s.instances.spawns, jobs: window.__jobs(), finished: cancelled.finished, busy: s.pool.busy, ms };
   }, BIG);
-  check("Finish: a cancelled query completes and the next reuses its state", { stats: r.stats, ended: r.ended, spawns: r.spawns, jobs: r.jobs, finished: r.finished, busy: r.busy }, {
+  check("Finish: a cancelled job completes and the next reuses its state", { stats: r.stats, ended: r.ended, spawns: r.spawns, jobs: r.jobs, finished: r.finished, busy: r.busy }, {
     stats: `${2 * BIG} lines, ${5 * BIG} words, 4 distinct`,
     ended: 0,
     spawns: 1,
@@ -262,7 +263,7 @@ const BIG = 100000;
   await ctx.close();
 }
 
-// A holder lost while a query waits for it: the lookup crashes the worker
+// A holder lost while a job waits for it: the lookup crashes the worker
 // that prepared the state, and the summary that waited behind it prepares
 // again on another worker.
 {
@@ -277,7 +278,7 @@ const BIG = 100000;
     const s = window.__rt.monitor.snapshot();
     return { lookup, summary, fault: s.instances.ended.fault, jobs: window.__jobs() };
   }, N);
-  check("a lost holder's waiting query prepares elsewhere", r, {
+  check("a lost holder's waiting job prepares elsewhere", r, {
     lookup: "lost AppCrash",
     summary: `${2 * N} lines`,
     fault: 1,
@@ -337,7 +338,7 @@ const BIG = 100000;
 }
 
 // A worker grown past maxWorkerBytes is retired after its job, its state
-// with it: every query prepares on a fresh worker, with the same answers.
+// with it: every job prepares on a fresh worker, with the same answers.
 {
   const { page, ctx } = await open({ maxWorkerBytes: 1 });
   const r = await page.evaluate(async (n) => {
@@ -374,11 +375,20 @@ const BIG = 100000;
   await ctx.close();
 }
 
-// Inline mode keeps a state on the page's thread and gives the same answers.
+// Inline, the preparation reads its file through a worker effect the
+// page's thread does not have: each job is lost as unavailable, the inline
+// instance it left is replaced, and the page goes on.
 {
   const { page, ctx } = await open({ workers: "inline" });
-  const r = await threeQueries(page, N);
-  check("inline: the same answers, one preparation", [r.answers, r.counts], [wantAnswers, [1, 4, 1]]);
+  const r = await page.evaluate(async (n) => {
+    window.__choose(window.__doc(n));
+    const stats = await window.__answer("stats", "lost");
+    window.__click("Top");
+    const top = await window.__answer("top", "lost");
+    const s = window.__rt.monitor.snapshot();
+    return { stats, top, poisoned: !!window.__rt.poisoned, spawns: s.instances.spawns };
+  }, N);
+  check("inline: a preparation that reads its file is unavailable", r, { stats: "lost Unavailable", top: "lost Unavailable", poisoned: false, spawns: 2 });
   await ctx.close();
 }
 

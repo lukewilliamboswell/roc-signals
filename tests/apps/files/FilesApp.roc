@@ -13,12 +13,12 @@ import pf.Worker
 ## - "Panel" mounts a section with a file input of its own, whose state keeps
 ##   what it receives; closing the panel disposes that state, and its files go
 ##   with it.
-## - "Count" sends the kept files to a worker program, which reads each one's
-##   bytes there and answers its size and byte sum (`test-id "counts"`);
-##   "Count tail" sends the last half of the first file only. "Probe" checks,
-##   in the worker, that a file's bytes behave as an ordinary list: two reads
-##   agree, a slice and a UTF-8 view see the same bytes, and changing one
-##   read leaves the other alone (`test-id "probe"`).
+## - "Count" sends the kept files to a worker task, whose job reads each
+##   one's bytes there and answers its size and byte sum (`test-id
+##   "counts"`); "Count tail" sends the last half of the first file only.
+##   "Probe" checks, in the job, that a file's bytes behave as an ordinary
+##   list: two reads agree, a slice and a UTF-8 view see the same bytes, and
+##   changing one read leaves the other alone (`test-id "probe"`).
 FilesApp := [].{
 	S : { files : List(File), refused : U64, panel : Bool, ask : Ask }
 
@@ -27,42 +27,46 @@ FilesApp := [].{
 	Ask : [Nothing, Count(List(File)), Tail(List(File)), Probe(List(File))]
 
 	## Each file's name, size and byte sum, read in the worker.
-	count : Worker.Program(List(File), List({ name : Str, bytes : U64, sum : U64 }))
-	count = Worker.program({
-		name: "test.roc-signals/files/count",
-		run: |files| files.map(
-			|f| {
-				contents = f.contents()
-				var $sum = 0.U64
-				for b in contents {
-					$sum = $sum + b.to_u64()
-				}
-				{ name: f.name(), bytes: contents.len(), sum: $sum }
-			},
-		),
-	})
+	count : Worker.Task(List(File), List({ name : Str, bytes : U64, sum : U64 }), Engine.FileError)
+	count = Worker.task({ name: "test.roc-signals/files/count", run!: FilesApp.count! })
+
+	## Read each file whole and sum its bytes.
+	count! : List(File) => Try(List({ name : Str, bytes : U64, sum : U64 }), Engine.FileError)
+	count! = |files| {
+		var $counts = []
+		for f in files {
+			contents = f.contents!()?
+			var $sum = 0.U64
+			for b in contents {
+				$sum = $sum + b.to_u64()
+			}
+			$counts = $counts.append({ name: f.name(), bytes: contents.len(), sum: $sum })
+		}
+		Ok($counts)
+	}
 
 	## The spike's ownership probe, on a file's bytes in the worker.
-	probe : Worker.Program(File, Bool)
-	probe = Worker.program({
-		name: "test.roc-signals/files/probe",
-		run: |f| {
-			bytes = f.contents()
-			other = f.contents()
-			before = bytes.get(0) ?? 0
-			text = Str.from_utf8(bytes) ?? "invalid"
-			part = bytes.sublist({ start: 1, len: 3 })
-			changed = bytes.set(0, 0) ?? []
-			changed.get(0) == Ok(0) and other.get(0) == Ok(before) and part == other.sublist({ start: 1, len: 3 }) and text.count_utf8_bytes() == other.len()
-		},
-	})
+	probe : Worker.Task(File, Bool, Engine.FileError)
+	probe = Worker.task({ name: "test.roc-signals/files/probe", run!: FilesApp.probe! })
 
-	show_counts : Engine.Remote(List({ name : Str, bytes : U64, sum : U64 }), Worker.Error) -> Str
+	## Two reads of one file, compared after changing one.
+	probe! : File => Try(Bool, Engine.FileError)
+	probe! = |f| {
+		bytes = f.contents!()?
+		other = f.contents!()?
+		before = bytes.get(0) ?? 0
+		text = Str.from_utf8(bytes) ?? "invalid"
+		part = bytes.sublist({ start: 1, len: 3 })
+		changed = bytes.set(0, 0) ?? []
+		Ok(changed.get(0) == Ok(0) and other.get(0) == Ok(before) and part == other.sublist({ start: 1, len: 3 }) and text.count_utf8_bytes() == other.len())
+	}
+
+	show_counts : Engine.Remote(List({ name : Str, bytes : U64, sum : U64 }), Worker.Error(Engine.FileError)) -> Str
 	show_counts = |{ request, answer }| match answer {
 		Unanswered => if (request == Pending) "counting" else "not counted"
 		Answered(counts) => Str.join_with(counts.map(|c| "${c.name}:${c.bytes.to_str()}:${c.sum.to_str()}"), "|")
 		Failed(Lost(fault)) => "lost ${Str.inspect(fault)}"
-		Failed(FileFailed(reason)) => "unread ${Str.inspect(reason)}"
+		Failed(Failed(reason)) => "unread ${Str.inspect(reason)}"
 		Failed(_) => "failed"
 	}
 

@@ -10,7 +10,11 @@ import pf.Worker
 ##   worker, four bytes at a time (or 1 MiB, "Upper in 1 MiB chunks"),
 ##   into a new file; "Overflow" copies it three times, which a small
 ##   `max-output-bytes` refuses; "Many" answers
-##   with 17 files, one more than a job may return.
+##   with 17 files, one more than a job may return, which is a contract
+##   error in the job's worker; "Few" answers with three, which a page
+##   holding 62 files has no room for.
+## - "Square" squares a number and calls no effect, so it answers even
+##   where a job's effects are unavailable (`workers: "inline"`).
 ## - "Add batch" appends a line to a log across jobs: each job starts a
 ##   builder from the previous log, by reference, and the log in state is
 ##   replaced only by a delivered answer. "Save log" saves it.
@@ -39,12 +43,16 @@ TasksApp := [].{
 	}
 
 	## The job the app wants now; a new value cancels the job of the old.
-	Run : [Idle, Upper({ source : File, chunk : U64 }), Append({ previous : List(File), lines : List(Str) }), Count({ file : File, chunk : U64 }), Overflow(File), Crash(File), Twice(U64), Many(U64), Timed(File)]
+	Run : [Idle, Upper({ source : File, chunk : U64 }), Append({ previous : List(File), lines : List(Str) }), Count({ file : File, chunk : U64 }), Overflow(File), Crash(File), Twice(U64), Many(U64), Timed(File), Square(U64)]
 
-	Outcome(a) : Try(a, Worker.Error)
+	## A task that calls no effect.
+	square : Worker.Task(U64, U64, Engine.FileError)
+	square = Worker.task({ name: "test.roc-signals/tasks/square", run!: |n| Ok(n * n) })
 
-	upper : Worker.Task({ source : File, chunk : U64 }, Try(File, Engine.FileError))
-	upper = Worker.fallible_task({ name: "test.roc-signals/tasks/upper", run!: TasksApp.upper! })
+	Outcome(a) : Try(a, Worker.Error(Engine.FileError))
+
+	upper : Worker.Task({ source : File, chunk : U64 }, File, Engine.FileError)
+	upper = Worker.task({ name: "test.roc-signals/tasks/upper", run!: TasksApp.upper! })
 
 	## Upper-case `source` into a new file, `chunk` bytes at a time.
 	upper! : { source : File, chunk : U64 } => Try(File, Engine.FileError)
@@ -60,8 +68,8 @@ TasksApp := [].{
 		Ok(out.finish!())
 	}
 
-	append : Worker.Task({ previous : List(File), lines : List(Str) }, Try(File, Engine.FileError))
-	append = Worker.fallible_task({ name: "test.roc-signals/tasks/append", run!: TasksApp.append! })
+	append : Worker.Task({ previous : List(File), lines : List(Str) }, File, Engine.FileError)
+	append = Worker.task({ name: "test.roc-signals/tasks/append", run!: TasksApp.append! })
 
 	## The previous log, by reference, followed by `lines`.
 	append! : { previous : List(File), lines : List(Str) } => Try(File, Engine.FileError)
@@ -77,8 +85,8 @@ TasksApp := [].{
 		Ok(out.finish!())
 	}
 
-	count_lines : Worker.Task({ file : File, chunk : U64 }, Try(U64, Engine.FileError))
-	count_lines = Worker.fallible_task({ name: "test.roc-signals/tasks/count-lines", run!: TasksApp.count_lines! })
+	count_lines : Worker.Task({ file : File, chunk : U64 }, U64, Engine.FileError)
+	count_lines = Worker.task({ name: "test.roc-signals/tasks/count-lines", run!: TasksApp.count_lines! })
 
 	## The number of newlines in `file`, read `chunk` bytes at a time.
 	count_lines! : { file : File, chunk : U64 } => Try(U64, Engine.FileError)
@@ -94,8 +102,8 @@ TasksApp := [].{
 		Ok($lines)
 	}
 
-	overflow : Worker.Task(File, Try(File, Engine.FileError))
-	overflow = Worker.fallible_task({ name: "test.roc-signals/tasks/overflow", run!: TasksApp.overflow! })
+	overflow : Worker.Task(File, File, Engine.FileError)
+	overflow = Worker.task({ name: "test.roc-signals/tasks/overflow", run!: TasksApp.overflow! })
 
 	## Three copies of `source`, copied through the job's memory.
 	overflow! : File => Try(File, Engine.FileError)
@@ -108,30 +116,30 @@ TasksApp := [].{
 		Ok(out.finish!())
 	}
 
-	crashes : Worker.Task(File, U64)
+	crashes : Worker.Task(File, U64, Engine.FileError)
 	crashes = Worker.task({ name: "test.roc-signals/tasks/crash", run!: TasksApp.crashes! })
 
 	## Read the file, then crash.
-	crashes! : File => U64
+	crashes! : File => Try(U64, Engine.FileError)
 	crashes! = |file| {
 		size = file.contents!().map_ok(|bytes| bytes.len()) ?? 0
 		crash "the crash task gives up after reading ${size.to_str()} bytes"
 	}
 
-	twice : Worker.Task(U64, U64)
+	twice : Worker.Task(U64, U64, Engine.FileError)
 	twice = Worker.task({ name: "test.roc-signals/tasks/twice", run!: TasksApp.twice! })
 
 	## Finish a builder twice, which is a contract error.
-	twice! : U64 => U64
+	twice! : U64 => Try(U64, Engine.FileError)
 	twice! = |n| {
 		out = File.build!({ name: "twice.txt" })
 		first = out.finish!()
 		second = out.finish!()
-		first.size() + second.size() + n
+		Ok(first.size() + second.size() + n)
 	}
 
-	many : Worker.Task(U64, Try(List(File), Engine.FileError))
-	many = Worker.fallible_task({ name: "test.roc-signals/tasks/many", run!: TasksApp.many! })
+	many : Worker.Task(U64, List(File), Engine.FileError)
+	many = Worker.task({ name: "test.roc-signals/tasks/many", run!: TasksApp.many! })
 
 	## `n` one-byte files.
 	many! : U64 => Try(List(File), Engine.FileError)
@@ -147,16 +155,16 @@ TasksApp := [].{
 
 	## The size of a file, as a job reads it: the panel's two jobs and the
 	## timed one.
-	size! : File => U64
-	size! = |file| file.contents!().map_ok(|bytes| bytes.len()) ?? 0
+	size! : File => Try(U64, Engine.FileError)
+	size! = |file| file.contents!().map_ok(|bytes| bytes.len())
 
-	timed : Worker.Task(File, U64)
+	timed : Worker.Task(File, U64, Engine.FileError)
 	timed = Worker.task({ name: "test.roc-signals/tasks/timed", run!: TasksApp.size!, deadline: Ms(5000) })
 
-	stopped : Worker.Task(File, U64)
+	stopped : Worker.Task(File, U64, Engine.FileError)
 	stopped = Worker.task({ name: "test.roc-signals/tasks/stopped", run!: TasksApp.size! })
 
-	kept : Worker.Task(File, U64)
+	kept : Worker.Task(File, U64, Engine.FileError)
 	kept = Worker.task({ name: "test.roc-signals/tasks/kept", run!: TasksApp.size!, on_dispose: Keep })
 
 	Ctx : In(Root, S)
@@ -188,6 +196,7 @@ TasksApp := [].{
 		Crash(file) => [TasksApp.crashes.request(file)]
 		Twice(n) => [TasksApp.twice.request(n)]
 		Many(n) => [TasksApp.many.request(n)]
+		Square(n) => [TasksApp.square.request(n)]
 		Timed(file) => [TasksApp.timed.request(file)]
 	}
 
@@ -211,31 +220,33 @@ TasksApp := [].{
 		Overflow(_) => TasksApp.took_file(s, TasksApp.overflow.result(res), |f| { ..s, built: [f] })
 		Count(_) =>
 			match TasksApp.count_lines.result(res) {
-				Ok(Ok(n)) => { ..s, outcome: "lines ${n.to_str()}" }
-				Ok(Err(e)) => { ..s, outcome: "error ${Str.inspect(e)}" }
+				Ok(n) => { ..s, outcome: "lines ${n.to_str()}" }
+				Err(Failed(e)) => { ..s, outcome: "error ${Str.inspect(e)}" }
 				Err(e) => { ..s, outcome: "failed ${Str.inspect(e)}" }
 			}
 		Crash(_) => TasksApp.took_size(s, TasksApp.crashes.result(res))
 		Twice(_) => TasksApp.took_size(s, TasksApp.twice.result(res))
 		Timed(_) => TasksApp.took_size(s, TasksApp.timed.result(res))
+		Square(_) => TasksApp.took_size(s, TasksApp.square.result(res))
 		Many(_) =>
 			match TasksApp.many.result(res) {
-				Ok(Ok(files)) => { ..s, outcome: "files ${files.len().to_str()}" }
-				Ok(Err(e)) => { ..s, outcome: "error ${Str.inspect(e)}" }
+				Ok(files) => { ..s, outcome: "files ${files.len().to_str()}" }
+				Err(Failed(e)) => { ..s, outcome: "error ${Str.inspect(e)}" }
 				Err(e) => { ..s, outcome: "failed ${Str.inspect(e)}" }
 			}
 	}
 
-	took_file : S, Outcome(Try(File, Engine.FileError)), (File -> S) -> S
+	took_file : S, Outcome(File), (File -> S) -> S
 	took_file = |s, outcome, keep| match outcome {
-		Ok(Ok(f)) => { ..keep(f), outcome: "built ${TasksApp.describe(f)}" }
-		Ok(Err(e)) => { ..s, outcome: "error ${Str.inspect(e)}" }
+		Ok(f) => { ..keep(f), outcome: "built ${TasksApp.describe(f)}" }
+		Err(Failed(e)) => { ..s, outcome: "error ${Str.inspect(e)}" }
 		Err(e) => { ..s, outcome: "failed ${Str.inspect(e)}" }
 	}
 
 	took_size : S, Outcome(U64) -> S
 	took_size = |s, outcome| match outcome {
 		Ok(n) => { ..s, outcome: "size ${n.to_str()}" }
+		Err(Failed(e)) => { ..s, outcome: "error ${Str.inspect(e)}" }
 		Err(e) => { ..s, outcome: "failed ${Str.inspect(e)}" }
 	}
 
@@ -264,6 +275,8 @@ TasksApp := [].{
 				Html.button("Timed", [], st.update(TasksApp.ask(|f| Timed(f)))),
 				Html.button("Twice", [], st.update(|s| { ..s, run: Twice(s.batch), outcome: "running" })),
 				Html.button("Many", [], st.update(|s| { ..s, run: Many(17), outcome: "running" })),
+				Html.button("Few", [], st.update(|s| { ..s, run: Many(3), outcome: "running" })),
+				Html.button("Square", [], st.update(|s| { ..s, run: Square(7), outcome: "running" })),
 				Html.button("Stop", [], st.update(|s| { ..s, run: Idle, outcome: "stopped" })),
 				Html.button(
 					"Add batch",
@@ -376,6 +389,7 @@ TasksApp := [].{
 				TasksApp.crashes.registration(),
 				TasksApp.twice.registration(),
 				TasksApp.many.registration(),
+				TasksApp.square.registration(),
 				TasksApp.timed.registration(),
 				TasksApp.stopped.registration(),
 				TasksApp.kept.registration(),

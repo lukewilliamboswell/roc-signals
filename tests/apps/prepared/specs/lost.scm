@@ -1,4 +1,4 @@
-(test "Prepared — a lost worker loses only its query, and the next one prepares again"
+(test "Prepared — a lost worker loses only its job, and the next one prepares again"
   (setup
     (file "doc.txt" "text/plain" "alpha beta gamma\nBeta alpha\n" 600))
   (steps

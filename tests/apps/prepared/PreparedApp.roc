@@ -2,13 +2,15 @@ import pf.Engine exposing [Elem, File, In, Root, State]
 import pf.Html
 import pf.Worker
 
-## Prepared programs test app, in the shape of a document explorer: one
-## preparation and three typed queries over it.
+## Prepared state test app, in the shape of a document explorer: one
+## preparation and three tasks over it.
 ## - "Document" is a file input; the file and the "Ignore case" checkbox are
-##   the preparation's input. The preparation reads the file in a worker and
-##   indexes its words: each word's line numbers, built at run time from
-##   the file's bytes.
-## - Three tabs, each with its query site inside its branch, so leaving a
+##   the preparation's input. The preparation reads the file in a worker
+##   (`contents!`) and indexes its words: each word's line numbers, built at
+##   run time from the file's bytes. An empty file cannot be indexed: the
+##   preparation fails with `Empty`, and every task over it answers
+##   `Failed(Empty)`.
+## - Three tabs, each with its task's site inside its branch, so leaving a
 ##   tab disposes its site and coming back asks again: "Stats" (lines, words
 ##   and distinct words, `test-id "stats"`), "Lookup" (the count and first
 ##   lines of the word typed in "Word", `test-id "lookup"`, with a deadline)
@@ -19,9 +21,15 @@ import pf.Worker
 ## - "Summary" shows the stats again below the tabs (`test-id "summary"`),
 ##   a second site asking the same preparation at the same time as a tab.
 ## - Looking up the word "!crash" (which no word in a file can be) crashes
-##   the query in its worker, for the contract tests of a lost holder.
+##   the task in its worker, for the contract tests of a lost holder.
+## - A second preparation, "scratch", over the same file opens a builder and
+##   finishes a copy of the file, and keeps both in its state. "Write
+##   scratch" runs a task that appends to the kept builder, which outlived
+##   the preparation's call: a contract error, so the job is lost
+##   (`test-id "write"`). "Keep copy" runs a task that answers with the kept
+##   finished file, which is fine (`test-id "copy"`).
 PreparedApp := [].{
-	S : { doc : [None, Loaded(File)], fold : Bool, tab : Tab, word : Str, summary : Bool }
+	S : { doc : [None, Loaded(File)], fold : Bool, tab : Tab, word : Str, summary : Bool, scratch : [Idle, Write, Keep] }
 
 	Tab : [Stats, Lookup, Top]
 
@@ -31,16 +39,24 @@ PreparedApp := [].{
 	## The prepared state: each word's line numbers, and the line count.
 	Index : { lines : U64, words : U64, at : Dict(Str, List(U64)) }
 
+	## Why the document has no index: its file could not be read, or it is
+	## empty.
+	Problem : [Unread(Engine.FileError), Empty]
+
 	## Index the file's words, one line at a time. A word is a run of ASCII
 	## letters and digits; with `fold` it is lower-cased first. Every line
 	## ends with a newline (a last line without one is not counted).
-	index : Source -> Index
-	index = |{ doc, fold }| {
+	index! : Source => Try(Index, Problem)
+	index! = |{ doc, fold }| {
+		bytes = doc.contents!().map_err(|e| Unread(e))?
+		if bytes.is_empty() {
+			return Err(Empty)
+		}
 		var $at = Dict.empty()
 		var $line = 1.U64
 		var $words = 0.U64
 		var $word = []
-		for b in doc.contents() {
+		for b in bytes {
 			c = if (fold and b >= 65 and b <= 90) b + 32 else b
 			alnum = (c >= 48 and c <= 57) or (c >= 65 and c <= 90) or (c >= 97 and c <= 122)
 			if alnum {
@@ -59,43 +75,72 @@ PreparedApp := [].{
 				}
 			}
 		}
-		{ lines: $line - 1, words: $words, at: $at }
+		Ok({ lines: $line - 1, words: $words, at: $at })
 	}
 
-	document : Worker.Prepared(Source, Index)
+	document : Worker.Preparation(Source, Index, Problem)
 	document = Worker.prepared({
 		name: "test.roc-signals/prepared/document",
-		prepare: PreparedApp.index,
+		prepare!: PreparedApp.index!,
 	})
 
-	stats : Worker.Query(Source, Index, {}, { lines : U64, words : U64, distinct : U64 })
-	stats = PreparedApp.document.query({
+	stats : Worker.PreparedTask(Source, Index, {}, { lines : U64, words : U64, distinct : U64 }, Problem)
+	stats = PreparedApp.document.task({
 		name: "test.roc-signals/prepared/stats",
-		run: |ix, {}| { lines: ix.lines, words: ix.words, distinct: ix.at.len() },
+		run!: |ix, {}| Ok({ lines: ix.lines, words: ix.words, distinct: ix.at.len() }),
 	})
 
-	lookup : Worker.Query(Source, Index, Str, { count : U64, first : List(U64) })
-	lookup = PreparedApp.document.query({
+	lookup : Worker.PreparedTask(Source, Index, Str, { count : U64, first : List(U64) }, Problem)
+	lookup = PreparedApp.document.task({
 		name: "test.roc-signals/prepared/lookup",
-		run: |ix, word| {
+		run!: |ix, word| {
 			if word == "!crash" {
 				crash "the prepared test app's lookup was asked to crash"
 			}
 			lines = ix.at.get(word) ?? []
-			{ count: lines.len(), first: lines.take_first(3) }
+			Ok({ count: lines.len(), first: lines.take_first(3) })
 		},
 		deadline: Ms(30000),
 	})
 
-	top : Worker.Query(Source, Index, U64, List({ word : Str, count : U64 }))
-	top = PreparedApp.document.query({
+	top : Worker.PreparedTask(Source, Index, U64, List({ word : Str, count : U64 }), Problem)
+	top = PreparedApp.document.task({
 		name: "test.roc-signals/prepared/top",
-		run: |ix, n| {
+		run!: |ix, n| {
 			counted = ix.at.to_list().map(|(word, lines)| { word, count: lines.len() })
-			counted.sort_with(|a, b| if (a.count > b.count) Before else if (a.count < b.count) After else PreparedApp.order(a.word.to_utf8(), b.word.to_utf8())).take_first(n)
+			Ok(counted.sort_with(|a, b| if (a.count > b.count) Before else if (a.count < b.count) After else PreparedApp.order(a.word.to_utf8(), b.word.to_utf8())).take_first(n))
 		},
 		on_cancel: Finish,
 	})
+
+	## What the scratch preparation keeps: a builder it opened (which a later
+	## task may not use) and a file it finished (which a later task may).
+	Scratch : { open : Engine.Builder, copy : File }
+
+	## Open a builder and finish a copy of `doc`, both kept in the state.
+	scratch! : File => Try(Scratch, Engine.FileError)
+	scratch! = |doc| {
+		open = File.build!({ name: "scratch.txt" })
+		copier = File.build!({ name: "copy.txt", start_from: From(doc) })
+		Ok({ open, copy: copier.finish!() })
+	}
+
+	scratch : Worker.Preparation(File, Scratch, Engine.FileError)
+	scratch = Worker.prepared({ name: "test.roc-signals/prepared/scratch", prepare!: PreparedApp.scratch! })
+
+	## Append to the builder the preparation kept: a contract error.
+	write : Worker.PreparedTask(File, Scratch, {}, {}, Engine.FileError)
+	write = PreparedApp.scratch.task({ name: "test.roc-signals/prepared/scratch/write", run!: PreparedApp.write! })
+
+	write! : Scratch, {} => Try({}, Engine.FileError)
+	write! = |kept, {}| {
+		kept.open.append!("late".to_utf8())?
+		Ok({})
+	}
+
+	## Answer with the file the preparation finished and kept.
+	keep : Worker.PreparedTask(File, Scratch, {}, File, Engine.FileError)
+	keep = PreparedApp.scratch.task({ name: "test.roc-signals/prepared/scratch/keep", run!: |kept, {}| Ok(kept.copy) })
 
 	## Byte order of two words.
 	order : List(U8), List(U8) -> [Before, After, Same]
@@ -112,19 +157,29 @@ PreparedApp := [].{
 		if (a.len() < b.len()) Before else if (a.len() > b.len()) After else Same
 	}
 
-	registration : Engine.Registration
-	registration = PreparedApp.document.registration([PreparedApp.stats.registration(), PreparedApp.lookup.registration(), PreparedApp.top.registration()])
+	registrations : List(Engine.Registration)
+	registrations = [
+		PreparedApp.document.registration([PreparedApp.stats.registration(), PreparedApp.lookup.registration(), PreparedApp.top.registration()]),
+		PreparedApp.scratch.registration([PreparedApp.write.registration(), PreparedApp.keep.registration()]),
+	]
 
 	Ctx : In(Root, S)
 
-	show : Engine.Remote(a, Worker.Error), (a -> Str) -> Str
+	show : Engine.Remote(a, Worker.Error(e)), (a -> Str) -> Str
 	show = |{ request, answer }, f| match answer {
 		Unanswered => if (request == Pending) "working" else "nothing"
 		Answered(value) => if (request == Pending) "working" else f(value)
 		Failed(Lost(fault)) => "lost ${Str.inspect(fault)}"
 		Failed(Timeout) => "timed out"
 		Failed(Refused) => "refused"
-		Failed(FileFailed(reason)) => "file failed ${Str.inspect(reason)}"
+		Failed(Failed(problem)) => "failed ${Str.inspect(problem)}"
+	}
+
+	## The scratch task `want` asks for, over the loaded document.
+	scratched : S, [Idle, Write, Keep] -> [Run(Worker.Question(File, {})), Skip]
+	scratched = |s, want| match s.doc {
+		Loaded(doc) if s.scratch == want => Run({ input: doc, query: {} })
+		_ => Skip
 	}
 
 	asked : S, q -> [Run(Worker.Question(Source, q)), Skip]
@@ -177,10 +232,14 @@ PreparedApp := [].{
 				Engine.switch(v.map(|s| s.tab), [Stats, Lookup, Top], |tab| PreparedApp.panel(st, tab)),
 				Html.checkbox(Engine.const("Summary"), v.map(|s| s.summary), [], st.set_value(|s, x| { ..s, summary: x == "true" })),
 				Worker.derive_when(PreparedApp.stats, v.map(|s| if (s.summary) PreparedApp.asked(s, {}) else Skip), |r| Html.p_v(r.map(|x| PreparedApp.show(x, |a| "${a.lines.to_str()} lines")), [Engine.test_id("summary")])),
+				Html.button("Write scratch", [], st.update(|s| { ..s, scratch: Write })),
+				Html.button("Keep copy", [], st.update(|s| { ..s, scratch: Keep })),
+				Worker.derive_when(PreparedApp.write, v.map(|s| PreparedApp.scratched(s, Write)), |r| Html.p_v(r.map(|x| PreparedApp.show(x, |{}| "written")), [Engine.test_id("write")])),
+				Worker.derive_when(PreparedApp.keep, v.map(|s| PreparedApp.scratched(s, Keep)), |r| Html.p_v(r.map(|x| PreparedApp.show(x, |f| "kept ${f.name()}:${f.size().to_str()}")), [Engine.test_id("copy")])),
 			],
 		)
 	}
 
 	program : Engine.Program
-	program = Engine.program(|| Engine.state({ doc: None, fold: Bool.False, tab: Stats, word: "", summary: Bool.False }, PreparedApp.view)).with_workers([PreparedApp.registration])
+	program = Engine.program(|| Engine.state({ doc: None, fold: Bool.False, tab: Stats, word: "", summary: Bool.False, scratch: Idle }, PreparedApp.view)).with_workers(PreparedApp.registrations)
 }

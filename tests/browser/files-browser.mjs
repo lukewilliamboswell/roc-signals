@@ -7,11 +7,13 @@
 // at the handle bound; a drop that carries no files dispatches nothing; a
 // handle released in a call keeps its file until that call's effects are
 // performed; poisoning and unmounting let go of every file the runtime holds.
-// For files sent to a worker program: a file read once into the worker is
-// freed there when the program's lists go; a file that cannot be read (its
-// disk file was deleted) and files over `maxFileBytes` fail the run without
-// losing the worker; a run cancelled while its files are read is dropped;
-// and the page's heap never holds a file's bytes.
+// For files sent to a worker task: a job reads a file through an effect
+// into the worker's memory, which is freed there when the job ends; a file
+// that cannot be read (its disk file was deleted) is the task's typed error
+// and the worker survives; `maxFileBytes` bounds reads into the page, not a
+// job's; a job stopped while it reads ends its worker, and the next job
+// answers; inline, a job that reads a file is unavailable and the page goes
+// on; and the page's heap never holds a file's bytes.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -99,8 +101,8 @@ async function open(options = {}) {
   return { page, ctx };
 }
 
-// A worker reads an 8 MiB file into its own memory once and frees it when
-// the program is done; the page's heap never holds it.
+// A job reads an 8 MiB file into its worker's memory once and frees it when
+// it is done; the page's heap never holds it.
 {
   const { page, ctx } = await open();
   const r = await page.evaluate(async () => {
@@ -113,12 +115,12 @@ async function open(options = {}) {
     const job = snap.jobs;
     return { text, pageGrew: Number(window.__rt.x.metric(5)) - pageLive < 65536, workerLive: inst.liveBytes < 65536, read: inst.peakMemBytes >= 8 << 20 };
   });
-  check("a file is read once into the worker and freed there", r, { text: `big.bin:${8 << 20}:${8 << 20}`, pageGrew: true, workerLive: true, read: true });
+  check("a job reads a file once into its worker, which frees it", r, { text: `big.bin:${8 << 20}:${8 << 20}`, pageGrew: true, workerLive: true, read: true });
   await ctx.close();
 }
 
-// A file that can no longer be read fails the run, typed, and the worker
-// goes on serving: the chosen file is deleted from disk before the run.
+// A file that can no longer be read is the task's own error, and the worker
+// goes on serving: the chosen file is deleted from disk before the job.
 {
   const { page, ctx } = await open();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "roc-signals-files-"));
@@ -136,27 +138,42 @@ async function open(options = {}) {
     const after = await window.__until("counts", (t) => t.startsWith("ok"));
     return { failed, after, spawns: window.__rt.monitor.snapshot().instances.spawns };
   });
-  check("an unreadable file fails the run and the worker survives", r, { failed: "unread Unreadable", after: "ok.bin:3:3", spawns: 1 });
+  check("an unreadable file is the task's error and the worker survives", r, { failed: "unread Unreadable", after: "ok.bin:3:3", spawns: 1 });
   await ctx.close();
 }
 
-// Files over maxFileBytes are refused before anything is read.
+// maxFileBytes is the page's ceiling for page reads; a job reads what it
+// asks for, through its own effects.
 {
   const { page, ctx } = await open({ maxFileBytes: 2 });
   const r = await page.evaluate(async () => {
     window.__dropBytes("Drop", "three.bin", 3);
     window.__click("Count");
-    const text = await window.__until("counts", (t) => t.startsWith("unread"));
-    return { text, spawns: window.__rt.monitor.snapshot().instances.spawns };
+    return window.__until("counts", (t) => t.startsWith("three"));
   });
-  check("files over maxFileBytes are refused unread", r, { text: "unread TooLarge", spawns: 0 });
+  check("maxFileBytes does not bound a job's reads", r, "three.bin:3:3");
   await ctx.close();
 }
 
-// A run cancelled while its files are read is dropped, inline and in a
-// worker, and the next run reads only its own files.
-for (const workers of ["inline", "worker"]) {
-  const { page, ctx } = await open({ workers });
+// Inline, a job that reads a file reaches a worker effect the page's thread
+// does not have: it is lost as unavailable, and the page goes on.
+{
+  const { page, ctx } = await open({ workers: "inline" });
+  const r = await page.evaluate(async () => {
+    window.__dropBytes("Drop", "small.bin", 2);
+    window.__click("Count");
+    const text = await window.__until("counts", (t) => t.startsWith("lost"));
+    window.__click("Clear");
+    return { text, poisoned: !!window.__rt.poisoned, files: window.__list() };
+  });
+  check("inline, a job that reads a file is unavailable", r, { text: "lost Unavailable", poisoned: false, files: "none" });
+  await ctx.close();
+}
+
+// A job stopped while it reads ends its worker, and the next job answers
+// from a new one, reading only its own files.
+{
+  const { page, ctx } = await open();
   const r = await page.evaluate(async () => {
     window.__dropBytes("Drop", "big.bin", 32 << 20);
     window.__click("Count");
@@ -166,7 +183,7 @@ for (const workers of ["inline", "worker"]) {
     window.__click("Count");
     return window.__until("counts", (t) => t.startsWith("small"));
   });
-  check(`a run cancelled while reading is dropped (${workers})`, r, "small.bin:2:2");
+  check("a job stopped while reading is dropped", r, "small.bin:2:2");
   await ctx.close();
 }
 

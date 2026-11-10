@@ -1,4 +1,4 @@
-(test "Files — a worker program reads the bytes of the files it is sent, and of a range of one"
+(test "Files — a worker task reads the bytes of the files it is sent, and of a range of one"
   (setup
     (file "a.txt" "text/plain" "abc")
     (file "b.bin" "application/octet-stream" "xy" 500))

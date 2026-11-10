@@ -1,6 +1,6 @@
 // tasks-browser.mjs --wasm APP.wasm --runtime runtime.mjs --chrome PATH
 //
-// Browser contract test of worker tasks (design.md, "Tasks"; Appendix B),
+// Browser contract test of worker tasks (design.md, "Workers"; Appendix B),
 // with tests/apps/tasks in headless Chrome, for what specs cannot reach:
 // the handles each side holds, a worker's memory, real downloads and real
 // responses, the instances that must never perform an effect, and tasks
@@ -17,9 +17,12 @@
 //   no answer, no handle on the page, and the next job runs on a fresh one.
 // - Unmounting with a job running terminates it and delivers nothing.
 // - The page's instance never performs an effect: its imports are stubs
-//   that throw a contract error, and `task()` on a mounted instance is a
-//   classified contract fault. In inline mode a task is WorkLost
-//   (Unavailable).
+//   that throw, and `work()` on a mounted instance is a classified contract
+//   fault. In inline mode a task that reaches an effect is WorkLost
+//   (Unavailable), the inline instance is replaced, and a task that reaches
+//   none answers.
+// - An answer whose files the page has no room for is WorkLost
+//   (ResourceLimit), and the page keeps the files it held.
 // - A download becomes a file without the page's memory holding it, and a
 //   task reads it; `File.save` starts a real download.
 import http from "node:http";
@@ -85,7 +88,7 @@ function install() {
       super(url, options);
       this.addEventListener("message", (e) => {
         const m = e.data;
-        if (m && (m.type === "done" || m.type === "filefail")) window.__replies.push({ type: m.type, handles: m.handles, mem: m.mem, objects: (m.objects ?? []).length });
+        if (m && m.type === "done") window.__replies.push({ type: m.type, handles: m.handles, mem: m.mem, objects: (m.objects ?? []).length });
       });
     }
   };
@@ -259,8 +262,8 @@ async function open(options = {}) {
   await ctx.close();
 }
 
-// The page's instance performs no effect: each import is a stub that throws
-// a contract error, and task() on a mounted instance is a contract fault.
+// The page's instance performs no effect: each import is a stub that throws,
+// naming it, and work() on a mounted instance is a contract fault.
 {
   const { page, ctx } = await open();
   const r = await page.evaluate(async () => {
@@ -273,10 +276,10 @@ async function open(options = {}) {
         env[n]();
         return "returned";
       } catch (e) {
-        return e.message.startsWith(`contract: ${n} is a task effect`);
+        return e.message.startsWith(`${n} is a worker effect`);
       }
     });
-    // A second page instance of the module, mounted, asked to run a task.
+    // A second page instance of the module, mounted, asked to run a job.
     const inst = await WebAssembly.instantiate(module, pageImports(module));
     const x = inst.exports;
     x.boot_keys();
@@ -284,14 +287,14 @@ async function open(options = {}) {
     x.init();
     let trapped = false;
     try {
-      x.task();
+      x.work();
     } catch (_) {
       trapped = true;
     }
     const err = new TextDecoder().decode(new Uint8Array(x.memory.buffer, x.err_ptr(), x.err_len()));
-    return { names, thrown, trapped, fault: x.fault(), message: err.startsWith("contract: task() was called on the page's instance") };
+    return { names, thrown, trapped, fault: x.fault(), message: err.startsWith("contract: work() was called on the page's instance") };
   });
-  check("the page's imports are throwing stubs, and task() on a mounted instance is a contract fault", r, {
+  check("the page's imports are throwing stubs, and work() on a mounted instance is a contract fault", r, {
     names: ["js_builder_append", "js_builder_finish", "js_builder_open", "js_file_read", "js_file_size"],
     thrown: [true, true, true, true, true],
     trapped: true,
@@ -301,17 +304,54 @@ async function open(options = {}) {
   await ctx.close();
 }
 
-// Inline mode runs jobs on the page's thread, where a task's effects do not
-// exist: a task is WorkLost(Unavailable).
+// Inline mode runs jobs on the page's thread, where a job's effects do not
+// exist: a task that reaches one is WorkLost(Unavailable) and the inline
+// instance it left mid-call is replaced; a task that reaches none answers,
+// before and after, and the page is never poisoned.
 {
   const { page, ctx } = await open({ workers: "inline" });
   const r = await page.evaluate(async () => {
+    window.__click("Square");
+    const before = await window.__until("outcome", (t) => t !== "running");
     window.__choose("i.txt", 10);
     window.__click("Upper");
-    const outcome = await window.__until("outcome", (t) => t !== "running");
-    return { outcome, faults: window.__faults.map((f) => f.class), page: window.__pageHandles() };
+    const effect = await window.__until("outcome", (t) => t !== "running");
+    window.__click("Square");
+    const after = await window.__until("outcome", (t) => t !== "running");
+    const pool = window.__rt.pool;
+    return { before, effect, after, faults: window.__faults.map((f) => f.class), page: window.__pageHandles(), poisoned: !!window.__rt.poisoned, created: pool.created, replaced: pool.terminated };
   });
-  check("in inline mode a task is WorkLost(Unavailable)", r, { outcome: "failed Lost(Unavailable)", faults: ["unavailable"], page: 1 });
+  check("inline: a task reaching an effect is Unavailable, the next answers on a fresh instance", r, {
+    before: "size 49",
+    effect: "failed Lost(Unavailable)",
+    after: "size 49",
+    faults: ["unavailable"],
+    page: 1,
+    poisoned: false,
+    created: 2,
+    replaced: 1,
+  });
+  await ctx.close();
+}
+
+// An answer whose files the page has no room for: with 62 of the page's 64
+// handles held, a job answering three files is WorkLost(ResourceLimit),
+// reported to onWorkerFault like any lost job, and the page still holds
+// exactly its 62.
+{
+  const { page, ctx } = await open();
+  const r = await page.evaluate(async () => {
+    const dt = new DataTransfer();
+    for (let i = 0; i < 62; i += 1) dt.items.add(new File(["x"], `f${i}.txt`, { type: "text/plain" }));
+    const input = window.__root.querySelector('[aria-label="Upload"]');
+    input.files = dt.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    window.__click("Few");
+    const outcome = await window.__until("outcome", (t) => t !== "running");
+    await new Promise((r) => setTimeout(r, 0));
+    return { outcome, faults: window.__faults.map((f) => f.class), page: window.__pageHandles(), files: window.__rt.files.size };
+  });
+  check("an answer the page has no room for is WorkLost(ResourceLimit)", r, { outcome: "failed Lost(ResourceLimit)", faults: ["resource_limit"], page: 62, files: 62 });
   await ctx.close();
 }
 

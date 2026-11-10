@@ -1,4 +1,4 @@
-(test "Prepared — forgetting the document releases its file, and no query is asked"
+(test "Prepared — forgetting the document releases its file, and no task is asked"
   (setup
     (file "doc.txt" "text/plain" "alpha beta gamma\nBeta alpha\n" 600))
   (steps

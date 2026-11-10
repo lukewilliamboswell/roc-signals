@@ -1,4 +1,4 @@
-(test "Prepared — three typed queries over one prepared document answer as if each prepared afresh"
+(test "Prepared — three tasks over one prepared document answer as if each prepared afresh"
   (setup
     (file "doc.txt" "text/plain" "alpha beta gamma\nBeta alpha\n" 6000))
   (steps
