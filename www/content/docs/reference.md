@@ -22,12 +22,12 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 | Values | `Val`, `const`, `Val.map`, `Val.map2`, `Val.lift`, `Val.lift_row` |
 | State | `state`, `State`, `State.val`, `State.lift`, `State.lift_row` |
 | Handlers | `Handler`, `State.update`, `State.update_by`, `State.set_value`, `State.set_value_by` |
-| Structure | `element`, `text`, `text_v`, `when`, `switch`, `derive` |
+| Structure | `element`, `text`, `text_v`, `when`, `switch`, `derive`, `resource` |
 | Lists | `each`, `RowRef.key`, `RowRef.field`, `RowRef.select`, `keyed` |
 | Attributes | `attr`, `attr_v`, `class`, `class_v`, `test_id`, `test_id_v`, `ref` |
 | Events | `on` (event name, optionally `:prevent`), `on_click` |
 | Components | `component`, `State.push`, `State.push_by`, `State.push_value_by`, `sink`, `split` |
-| Effects | `watch`, `on_change`, `State.on_result`, `ignore`, `on_cleanup`, `cleanup`, `Req`, `Res`, `HttpError`, `http_text` |
+| Effects | `watch`, `on_change`, `latest`, `State.on_result`, `ignore`, `on_cleanup`, `cleanup`, `Req`, `Res`, `HttpError`, `http_text` |
 
 ## Html
 

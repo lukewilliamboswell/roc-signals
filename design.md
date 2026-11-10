@@ -280,8 +280,9 @@ outcome and the accumulator. Messages are:
   nodes when `remove` is set (an ancestor that removes its own DOM passes
   `False` to children).
 
-Every site kind — `state`, `when`, `switch`, `each`, `derive`, `component`,
-effect sites, and the root block — implements these three messages. The engine
+Every site kind — `state`, `when`, `switch`, `each`, `derive`, `resource`,
+`component`, effect sites, and the root block — implements these three
+messages. The engine
 therefore needs no node table, no erased value registry and no type tags: the
 closure's own captures are the typed storage, and the only dispatch is the
 message.
@@ -367,6 +368,9 @@ only its live holes that read the row layer are re-evaluated.
 - `derive(input, body)` evaluates `input` once per change of the layers it
   reads, exposes the result as a new layer, and stops propagation when the
   recomputation is equal. Readers that read only the derived value do no work.
+- `resource(input, cfg, body)` is the asynchronous counterpart of `derive`: a
+  layer whose value is folded from the answers to requests issued for its
+  input (see [Supersession and asynchronous layers](#supersession-and-asynchronous-layers)).
 - `when(cond, yes, no)` and `switch(sel, cases, body)` build only the selected
   branch, as a block anchored by an empty text node, and rebuild it when the
   selected value changes. `switch` lists every case so its static reads are the
@@ -521,8 +525,9 @@ Every external input — a DOM event or an effect result — is one *turn*:
    value into the environment; the owning block runs the handler; the
    environment travels back up, and each state layer takes its value back.
 3. **Settle locally.** A layer inside a row or component that is the highest
-   layer the handler changed refreshes its own subtree immediately; anything
-   else reports its mask upward. A component hands its pushed actions to the
+   layer the handler changed, or an asynchronous layer that an answer
+   changed, refreshes its own subtree immediately; anything else reports its
+   mask upward. A component hands its pushed actions to the
    caller's sinks, which become ordinary writes in the caller's context.
 4. **Changed pass.** The root runs one `Changed(mask)` pass with the union of
    every layer written. Each site refreshes the holes that read a changed layer
@@ -535,7 +540,8 @@ Every external input — a DOM event or an effect result — is one *turn*:
 Because all writes are applied while firing and observation happens only in
 the Changed pass that follows, no hole, branch, row or effect site ever
 observes a partial write set. Order follows nesting: a `derive` layer is
-recomputed before anything below it reads it, a branch decision is made before
+recomputed, and a `resource` layer begun for a changed input, before anything
+below it reads it, a branch decision is made before
 the branch's holes are refreshed, and `each` marks rows for outer-layer and
 selection changes before reconciling its list, so a row created in this turn
 is evaluated exactly once.
@@ -551,6 +557,8 @@ Pruning happens at observation points:
 - every hole compares its new value to the last emitted value;
 - `each` compares a kept row's new item to its old item;
 - `derive` compares its recomputation to its last value;
+- `resource` compares its layer after each `begin` and `fold` to its previous
+  value;
 - `when`/`switch` compare the selected branch;
 - effect sites compare their watched value.
 
@@ -652,10 +660,11 @@ Appendix B, not a decision about application state.
 
 ## The Effect Channel
 
-Effects are data. An effect site watches a value and, at mount (`watch`) or
-only on change (`on_change`), turns it into a list of requests. A site's
-`Reaction` is a reducer over a state given the value the request was issued
-for and its result.
+Effects are data. An effect site watches a value and, at mount (`watch`,
+`latest`) or only on change (`on_change`), turns it into a list of requests.
+A site's `Reaction` is a reducer over a state given the value the request was
+issued for and its result. A `resource` site turns the answers into a layer
+instead of a state write.
 
 ### Request kinds
 
@@ -750,12 +759,53 @@ rendered the control:
 - Only tearing down the instance invalidates delivery.
 
 Equal requests are distinct occurrences once issued. Abandoning an in-flight
-request is application state expressed in what its reaction reads.
+request is application state expressed in what its reaction reads, unless the
+site's explicit policy is supersession.
+
+### Supersession and asynchronous layers
+
+The engine never cancels a request because a newer one exists: `watch` and
+`on_change` keep everything they issued, and which answer wins is the
+reaction's decision. Superseding is a policy a site declares, not an
+inference:
+
+- **`latest(v, plan, react)`** issues like `watch`, but owns only the requests
+  of its current value. Before it issues for a new value it gives up
+  everything it still owns from earlier values: every awaited request still in
+  flight, of any kind (an admitted `Http` request included), gets `CANCEL`,
+  leaves the in-flight table and counts `cancelled`; a follow-up or refusal
+  still queued for it is dropped and counts `stale`. A late answer for a
+  cancelled id is then stale like any other. A `plan` that returns `[]` makes a
+  change a pure cancel. Disposal keeps the per-kind rules above: supersession
+  is about a value being replaced, disposal about an owner going away.
+- **`resource(input, { init, begin, plan, fold }, body)`** is a layer whose
+  value follows the answers to requests issued for its input. At mount the
+  layer is `begin(init, a)` and `plan(a)` is issued. When the input changes to
+  an unequal value, the site supersedes exactly as `latest` does, sets the
+  layer to `begin(s, a)` and issues `plan(a)`, all in the Changed pass before
+  anything below reads the layer, so the turn that changes the input already
+  renders the start of the new request. A result for a request the site owns
+  sets the layer to `fold(s, a, res)` with the value `a` it was issued for.
+  The layer prunes like `derive`, which means the site holds the previous
+  value while `begin` and `fold` run; they receive it shared, so a large layer
+  should be rebuilt rather than updated in place. Inside a row or a component
+  an answer refreshes the site's own subtree at once, since the root's Changed
+  pass cannot reach the layer by mask there; elsewhere the site reports its
+  layer upward, and its static read mask includes its own layer so that pass
+  finds it. The site is a scope: disposing it disposes its body and applies
+  the per-kind rules to its requests, and an admitted answer reparented to a
+  surviving ancestor writes the retired layer, a snapshot, so the write is
+  skipped and counted.
+
+A request kind added to the channel needs no rule of its own here: superseding
+cancels whatever is in flight, and disposal treats the kind as scoped or kept
+according to whether it has an external effect worth preserving.
 
 ### Counters
 
-The engine counts `issued`, `delivered`, `stale`, `refused`, `cancelled`,
-`reparented` and `skipped`, and exposes the live ids. Specs and fuzz models
+The engine counts `issued`, `delivered`, `stale`, `refused`, `cancelled`
+(stopped by disposal or supersession), `reparented` and `skipped`, and exposes
+the live ids. Specs and fuzz models
 assert them exactly.
 
 ### Connectivity and visibility
@@ -1044,7 +1094,7 @@ soak plateaus instead.
 | `patches_emitted` | DOM commands (opcodes 1–12) |
 | `derived_calls_into_roc` | Evaluations of app closures: holes, conditions, list reads, `derive` inputs, prop reads, watched values, cleanup values |
 | `scopes_created` / `scopes_disposed` | Scopes mounted / disposed: `when` and `switch` branches, components and `each` rows |
-| `dirty_source_roots` | State layers written: per turn, the layers a row or component settled locally plus the layers in the root's Changed mask |
+| `dirty_source_roots` | State and asynchronous layers written: per turn, the layers a row or component settled locally plus the layers in the root's Changed mask (a `resource` answer that folds to an equal value writes none) |
 | `each_key_hashes` / `each_key_compares` | Keys hashed and full-key comparisons made by keyed reconciliation (lookups and inserts; a key hashed for a lookup is not hashed again to insert it, and a removal uses the stored hash) |
 | `expect-updates loc n` | The located element's creation plus every later `ATTR`, `HATTR`, `SETTEXT` or `TEXT` that wrote it or a text node directly inside it; natively from the oracle, in Chrome from a MutationObserver |
 | `expect-interval ms n` | Live `INTERVAL` subscriptions with period `ms` |
@@ -1063,7 +1113,8 @@ loads; seeding storage in the same setup is a spec error in both runners.
 - **roc-fuzz targets** (each app's `main-fuzz.roc`, and `fuzz/` for targets of
   the shared support) decode arbitrary bytes into valid programs and
   check the engine against a reference model: keyed reconciliation, effect
-  lifecycle (issue, dispose, reparent, deliver, refuse, cancel, stale), and the
+  lifecycle (issue, supersede, dispose, reparent, deliver, refuse, cancel,
+  stale), and the
   explorer-driven soak walk over the live DOM. Their oracles, not their inputs,
   carry the value.
 - **Soak.** Every app runs a long random walk natively (leak-checked) and in
@@ -1233,6 +1284,8 @@ text_v : Val(ctx, Str) -> Elem(ctx)
 when : Val(ctx, Bool), (() -> Elem(ctx)), (() -> Elem(ctx)) -> Elem(ctx)
 switch : Val(ctx, k), List(k), (k -> Elem(ctx)) -> Elem(ctx)
 derive : Val(ctx, a), (Val(In(ctx, a), a) -> Elem(In(ctx, a))) -> Elem(ctx)
+resource : Val(ctx, a), { init : s, begin : (s, a -> s), plan : (a -> List(Req)), fold : (s, a, Res -> s) },
+           (Val(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
 each : Val(ctx, List(item)), (item -> Str), (RowRef(ctx, item) -> Elem(Row(ctx, item))) -> Elem(ctx)
 RowRef.key : RowRef(o, item) -> Val(Row(o, item), Str)
 RowRef.field : RowRef(o, item), (item -> a) -> Val(Row(o, item), a)
@@ -1255,6 +1308,7 @@ split : Sink(ctx, a), Sink(ctx, b), (c -> [L(a), R(b)]) -> Sink(ctx, c)
 # Effects
 watch : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
 on_change : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
+latest : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)   # supersedes
 ignore : {} -> Reaction(ctx, a)
 on_cleanup : Str, Val(ctx, a), (a -> List(Req)) -> Elem(ctx)   # commands only
 cleanup : Str -> Elem(ctx)

@@ -36,6 +36,29 @@ ordinary Roc.
 Because sites issue on *change*, two equal values in a row issue once. To
 repeat a request for an equal value, include a counter in the watched value.
 
+## Superseding sites
+
+`watch` and `on_change` never cancel what they issued. When only the newest
+value's answer matters — a search box, the selected item — say so with a
+superseding site instead of filtering answers in the reaction:
+
+- `Engine.latest(v, plan, reaction)` issues like `watch`, but before it issues
+  for a new value it cancels everything it still has in flight for earlier
+  ones: the fetch is aborted, a subscription stops, a timer is cleared, and a
+  late answer never reaches the reaction. A `plan` that returns `[]` makes a
+  change a pure cancel.
+- `Engine.resource(input, { init, begin, plan, fold }, body)` keeps the
+  answers in a layer that `body` reads like a `derive` value. `begin(s, a)`
+  sets the layer when the input changes, in the same turn (a loading state
+  that still holds the previous answer, say); `fold(s, a, res)` folds each
+  answer for the current input into it. Readers below do no work when either
+  returns an equal value.
+
+Both cancel only on a new value. Disposing them follows the same rules as any
+effect site: subscriptions and timers stop, and an admitted request still
+completes in the nearest surviving owner, where its write to the disposed
+layer is skipped.
+
 ## Requests
 
 | Request | Result |
