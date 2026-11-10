@@ -54,6 +54,11 @@
 // runtime terminates every worker. In manual mode a job waits in `pending`
 // until runEffect(id) runs it.
 //
+// Monitor: `runtime.monitor` (options.monitor) observes jobs, worker
+// instances and turns: a pull snapshot, push events and optional User
+// Timing entries, all bounded (see "The monitor" below). The pool and this
+// runtime report to it after they act; it decides nothing.
+//
 // Handler event names may carry a policy suffix: "click:prevent" listens to
 // "click" and calls preventDefault when it dispatches (in-app links, forms).
 //
@@ -950,8 +955,10 @@ export class WorkMonitor {
 // about ids, results or the engine: `submit` takes a payload
 // (`name:str input:rest`) and a callback that receives exactly one outcome,
 // `{ output }` or `{ lost, message }`, unless the job is cancelled first.
+// It reports each transition to the monitor once it has acted: the job's
+// id and program are only for that report.
 class WorkPool {
-  constructor({ module, url, max, inline, Worker: W }) {
+  constructor({ module, url, max, inline, Worker: W, monitor }) {
     this.module = module;
     this.url = url;
     this.max = Math.max(1, max);
@@ -962,21 +969,24 @@ class WorkPool {
     this.created = 0;
     this.terminated = 0;
     this.instance = null;
+    this.inlineSeq = 0;
     this.running = false;
     this.closed = false;
+    this.monitor = monitor;
   }
 
-  // Returns the job's cancel function.
-  submit(payload, done) {
-    const job = { payload, done, slot: null, settled: false, timer: null };
+  // Returns the job's stop function: `stop("cancel")` for CANCEL,
+  // `stop("deadline")` when its deadline expired.
+  submit(payload, done, id, program) {
+    const job = { payload, done, slot: null, settled: false, timer: null, id, program };
     if (!this.module || (!this.inline && typeof this.W !== "function")) {
       const message = this.module ? "this browser has no Worker" : "the runtime was mounted without its compiled module";
       job.timer = setTimeout(() => this.settle(job, { lost: LOST_UNAVAILABLE, message }), 0);
-      return () => this.cancel(job);
+      return (cause) => this.cancel(job, cause);
     }
     this.queue.push(job);
     this.pump();
-    return () => this.cancel(job);
+    return (cause) => this.cancel(job, cause);
   }
 
   settle(job, outcome) {
@@ -985,13 +995,14 @@ class WorkPool {
     job.done(outcome);
   }
 
-  cancel(job) {
+  cancel(job, cause = "cancel") {
     if (job.settled) return;
     job.settled = true;
     if (job.timer !== null) clearTimeout(job.timer);
     const q = this.queue.indexOf(job);
     if (q >= 0) this.queue.splice(q, 1);
-    if (job.slot !== null) this.discard(job.slot);
+    if (job.slot !== null) this.discard(job.slot, cause);
+    if (cause === "cancel") this.monitor.jobCancelled(job.id);
     this.pump();
   }
 
@@ -1011,7 +1022,10 @@ class WorkPool {
       const job = this.queue.shift();
       slot.job = job;
       job.slot = slot;
-      slot.worker.postMessage({ type: "job", payload: job.payload.buffer }, [job.payload.buffer]);
+      const m = { type: "job", payload: job.payload.buffer };
+      if (this.monitor.userTiming) m.program = job.program;
+      slot.worker.postMessage(m, [job.payload.buffer]);
+      this.monitor.jobPosted(job.id, slot.seq);
     }
   }
 
@@ -1024,7 +1038,7 @@ class WorkPool {
       for (const job of this.queue.splice(0)) this.settle(job, { lost: LOST_EXECUTOR, message: `worker could not start: ${e}` });
       return null;
     }
-    const slot = { worker, job: null };
+    const slot = { worker, job: null, seq: this.monitor.instanceSpawned("worker") };
     this.created += 1;
     worker.onmessage = (event) => this.answer(slot, event.data);
     worker.onerror = (event) => {
@@ -1032,17 +1046,25 @@ class WorkPool {
       this.lose(slot, LOST_EXECUTOR, `worker script failed: ${event && event.message ? event.message : "error"}`);
     };
     worker.onmessageerror = () => this.lose(slot, LOST_EXECUTOR, "worker message could not be read");
-    worker.postMessage({ type: "init", module: this.module, version: PROTOCOL_VERSION });
+    worker.postMessage({ type: "init", module: this.module, version: PROTOCOL_VERSION, userTiming: this.monitor.userTiming });
     this.slots.push(slot);
     return slot;
   }
 
   answer(slot, m) {
+    if (m.type === "ready") {
+      if (this.slots.includes(slot)) this.monitor.instanceReady(slot.seq, m);
+      return;
+    }
     const job = slot.job;
-    if (job === null || !this.slots.includes(slot)) return;
+    if (job === null || !this.slots.includes(slot)) {
+      this.monitor.lateReply();
+      return;
+    }
     if (m.type === "done") {
       slot.job = null;
       job.slot = null;
+      this.monitor.jobReplied(job.id, slot.seq, { t: m.t, mem: m.mem, outputBytes: m.output.byteLength });
       this.settle(job, { output: new Uint8Array(m.output) });
       this.pump();
     } else {
@@ -1053,7 +1075,7 @@ class WorkPool {
   // The worker can no longer be trusted: discard it and lose its job.
   lose(slot, lost, message) {
     const job = slot.job;
-    this.discard(slot);
+    this.discard(slot, lost === LOST_EXECUTOR ? "executor" : "fault", { class: LOST_CLASSES[lost], message });
     if (job !== null) {
       job.slot = null;
       this.settle(job, { lost, message });
@@ -1061,7 +1083,8 @@ class WorkPool {
     this.pump();
   }
 
-  discard(slot) {
+  // `cause`: cancel, deadline, fault, executor or shutdown (for the monitor).
+  discard(slot, cause, fault = null) {
     const i = this.slots.indexOf(slot);
     if (i < 0) return;
     this.slots.splice(i, 1);
@@ -1069,6 +1092,7 @@ class WorkPool {
     this.terminated += 1;
     if (slot.job !== null) slot.job.slot = null;
     slot.job = null;
+    this.monitor.instanceEnded(slot.seq, cause, fault);
   }
 
   // Inline mode: a second instance of the module on this thread, one job at
@@ -1080,18 +1104,30 @@ class WorkPool {
         await new Promise((r) => setTimeout(r, 0));
         const job = this.queue.shift();
         if (job === undefined || job.settled || this.closed) continue;
+        const mon = this.monitor;
         let x = null;
         try {
           if (this.instance === null) {
+            this.inlineSeq = mon.instanceSpawned("page");
+            mon.jobPosted(job.id, this.inlineSeq);
+            const instStart = mon.now();
             this.instance = await WebAssembly.instantiate(this.module, { env: {} });
             this.created += 1;
-          }
+            if (this.closed) continue;
+            mon.instanceReady(this.inlineSeq, { origin: mon.origin, instStart, instEnd: mon.now(), memBytes: this.instance.exports.memory.buffer.byteLength });
+          } else mon.jobPosted(job.id, this.inlineSeq);
           if (job.settled || this.closed) continue;
           x = this.instance.exports;
+          const begin = mon.now();
           const ptr = x.payload_reserve(job.payload.length);
           if (job.payload.length > 0) new Uint8Array(x.memory.buffer, ptr, job.payload.length).set(job.payload);
+          const call = mon.now();
           x.work();
+          const ret = mon.now();
           const output = new Uint8Array(x.memory.buffer, x.cmd_ptr(), x.cmd_len()).slice();
+          const sent = mon.now();
+          if (mon.userTiming) mon.measure(`roc:work.compute ${job.program}`, call, ret, { id: job.id }, `worker ${this.inlineSeq}`);
+          mon.jobReplied(job.id, this.inlineSeq, { t: [begin, begin, call, ret, sent], mem: [x.memory.buffer.byteLength, Number(x.metric(4)), Number(x.metric(5))], outputBytes: output.length });
           this.settle(job, { output });
         } catch (e) {
           let code = 0;
@@ -1103,18 +1139,16 @@ class WorkPool {
             code = 0;
           }
           // A faulted instance is never called again.
+          const lost = code >= 1 && code <= 5 ? code : LOST_EXECUTOR;
           this.instance = null;
           this.terminated += 1;
-          this.settle(job, { lost: code >= 1 && code <= 5 ? code : LOST_EXECUTOR, message });
+          mon.instanceEnded(this.inlineSeq, lost === LOST_EXECUTOR ? "executor" : "fault", { class: LOST_CLASSES[lost], message });
+          this.settle(job, { lost, message });
         }
       }
     } finally {
       this.running = false;
     }
-  }
-
-  stats() {
-    return { workers: this.slots.length, busy: this.slots.filter((s) => s.job !== null).length, queued: this.queue.length, created: this.created, terminated: this.terminated };
   }
 
   // Containment and unmount: every worker stops and no outcome is delivered.
@@ -1123,8 +1157,9 @@ class WorkPool {
     for (const job of this.queue.splice(0)) job.settled = true;
     for (const slot of [...this.slots]) {
       if (slot.job !== null) slot.job.settled = true;
-      this.discard(slot);
+      this.discard(slot, "shutdown");
     }
+    if (this.instance !== null) this.monitor.instanceEnded(this.inlineSeq, "shutdown");
     this.instance = null;
   }
 }
@@ -1895,8 +1930,9 @@ export class RocEngineRuntime {
         return;
       }
       case "work":
+        this.monitor.jobIssued(fx.id, fx.program, fx.input, fx.deadline, this.manual);
         if (this.manual) {
-          this.live.set(fx.id, { kind: "work", req: fx, cancel: () => {} });
+          this.live.set(fx.id, { kind: "work", req: fx, cancel: () => this.monitor.jobCancelled(fx.id) });
           this.issued.push(fx.id);
           return;
         }
@@ -1972,7 +2008,9 @@ export class RocEngineRuntime {
 
   // Hand job `fx` to the pool. Its one result (output, WorkLost or, at the
   // deadline, Timeout) is delivered as a turn unless CANCEL forgets it
-  // first; `settled`, when given, is called once either way.
+  // first; `settled`, when given, is called once either way. The deadline
+  // runs from here: when the request is performed, or in manual mode when
+  // runEffect runs it.
   startWork(fx, settled) {
     let timer = null;
     let stop = null;
@@ -1993,14 +2031,18 @@ export class RocEngineRuntime {
       req: fx,
       running: true,
       cancel: () => {
-        if (stop) stop();
+        if (stop) stop("cancel");
         close();
       },
     };
     this.live.set(fx.id, entry);
-    const finish = (bytes) => {
+    this.monitor.jobSubmitted(fx.id);
+    // `outcome` (done, lost, timeout or unavailable) and the rest are for
+    // the monitor only.
+    const finish = (bytes, outcome, klass = null, output = null) => {
       if (this.live.get(fx.id) !== entry) return;
       this.live.delete(fx.id);
+      this.monitor.jobAnswered(fx.id, outcome, klass, output);
       open = false;
       if (timer !== null) {
         clearTimeout(timer);
@@ -2015,26 +2057,26 @@ export class RocEngineRuntime {
       timer = setTimeout(() => {
         timer = null;
         this.timers -= 1;
-        if (stop) stop();
-        finish(new Uint8Array([RES_TIMEOUT]));
+        if (stop) stop("deadline");
+        finish(new Uint8Array([RES_TIMEOUT]), "timeout");
       }, fx.deadline);
     }
     stop = this.workPool().submit(concat([encStr(fx.program), fx.input]), (outcome) => {
       if (outcome.output !== undefined) {
-        finish(concat([new Uint8Array([RES_WORK]), outcome.output]));
+        finish(concat([new Uint8Array([RES_WORK]), outcome.output]), "done", null, outcome.output);
         return;
       }
       const klass = LOST_CLASSES[outcome.lost] ?? "executor";
       console.error(`roc worker fault [${klass}] in program "${fx.program}": ${outcome.message}`);
       if (this.onWorkerFault) this.onWorkerFault({ id: fx.id, program: fx.program, class: klass, message: outcome.message });
-      finish(new Uint8Array([RES_WORK_LOST, outcome.lost]));
-    });
+      finish(new Uint8Array([RES_WORK_LOST, outcome.lost]), outcome.lost === LOST_UNAVAILABLE ? "unavailable" : "lost", klass);
+    }, fx.id, fx.program);
   }
 
   workPool() {
     if (this.pool === null) {
       const W = (this.win && this.win.Worker) ?? globalThis.Worker;
-      this.pool = new WorkPool({ module: this.module, url: this.workerUrl, max: this.maxWorkers, inline: this.workerMode === "inline", Worker: W });
+      this.pool = new WorkPool({ module: this.module, url: this.workerUrl, max: this.maxWorkers, inline: this.workerMode === "inline", Worker: W, monitor: this.monitor });
     }
     return this.pool;
   }
@@ -2044,11 +2086,6 @@ export class RocEngineRuntime {
   stopWorkers() {
     if (this.pool !== null) this.pool.shutdown();
     this.pool = null;
-  }
-
-  // The worker pool's size and history, for tests and measurements.
-  workerStats() {
-    return this.pool === null ? { workers: 0, busy: 0, queued: 0, created: 0, terminated: 0 } : this.pool.stats();
   }
 
   cancel(id) {

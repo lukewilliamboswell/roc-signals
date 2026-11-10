@@ -107,6 +107,12 @@ function install() {
     return performance.now() - t0;
   };
   window.__metric = (k) => Number(window.__rt.x.metric(16 + k));
+  // The pool's size and history, from the monitor's snapshot.
+  window.__stats = () => {
+    const s = window.__rt.monitor.snapshot();
+    const terminated = Object.values(s.instances.ended).reduce((a, b) => a + b, 0);
+    return { workers: s.pool.instances, busy: s.pool.busy, queued: s.pool.queued, created: s.instances.spawns, terminated };
+  };
 }
 
 async function open(options, before = null) {
@@ -180,9 +186,9 @@ async function liveness(options) {
     const t1 = window.__metric(30);
     const cold = await window.__until((l) => l.length === 1).then(() => performance.now() - c0);
     const t2 = window.__metric(30);
-    const stats = window.__rt.workerStats();
+    const stats = window.__stats();
     const warm = await window.__timed("Upper", (l) => l.length === 2);
-    return { turns: [t1 - t0, t2 - t1], log: window.__log(), stats, after: window.__rt.workerStats(), cold, warm };
+    return { turns: [t1 - t0, t2 - t1], log: window.__log(), stats, after: window.__stats(), cold, warm };
   });
   check("the click is one turn and the result one more", r.turns, [1, 1]);
   check("the result renders", r.log, "upper:JOB 1|upper:JOB 2");
@@ -208,9 +214,9 @@ async function liveness(options) {
   const { page, ctx } = await open({ maxWorkers: 2 });
   const r = await page.evaluate(async () => {
     window.__click("Batch");
-    const during = window.__rt.workerStats();
+    const during = window.__stats();
     await window.__until((l) => l.length === 4);
-    return { during, after: window.__rt.workerStats(), entries: window.__entries().sort() };
+    return { during, after: window.__stats(), entries: window.__entries().sort() };
   });
   check("maxWorkers 2: two running, two queued", [r.during.workers, r.during.busy, r.during.queued], [2, 2, 2]);
   check("all four complete and render", r.entries, ["batch:B1-1", "batch:B1-2", "batch:B1-3", "batch:B1-4"]);
@@ -225,12 +231,12 @@ async function liveness(options) {
   const r = await page.evaluate(async () => {
     window.__click("Panel");
     await new Promise((res) => setTimeout(res, 50));
-    const running = window.__rt.workerStats();
+    const running = window.__stats();
     const ids = [...window.__rt.live.keys()];
     const c0 = window.__metric(14);
     window.__click("Panel");
     const c1 = window.__metric(14);
-    const after = window.__rt.workerStats();
+    const after = window.__stats();
     const stillLive = ids.some((id) => window.__rt.live.has(id));
     await new Promise((res) => setTimeout(res, 300));
     const logAfter = window.__log();
@@ -238,7 +244,7 @@ async function liveness(options) {
     window.__click("Upper");
     await window.__until((l) => l.includes("upper:JOB 1"));
     const replace = performance.now() - t0;
-    return { running, cancels: c1 - c0, after, stillLive, logAfter, replace, stats: window.__rt.workerStats() };
+    return { running, cancels: c1 - c0, after, stillLive, logAfter, replace, stats: window.__stats() };
   });
   check("panel job running in one worker", [r.running.workers, r.running.busy], [1, 1]);
   check("closing the panel emits one CANCEL", r.cancels, 1);
@@ -249,11 +255,11 @@ async function liveness(options) {
 
   const t = await page.evaluate(async (rounds) => {
     window.__rounds(rounds * 10);
-    const terminated = window.__rt.workerStats().terminated;
+    const terminated = window.__stats().terminated;
     const t0 = performance.now();
     window.__click("Slow");
     await window.__until((l) => l.some((e) => e.startsWith("slow:")));
-    return { elapsed: performance.now() - t0, entry: window.__entries().find((e) => e.startsWith("slow:")), terminated: window.__rt.workerStats().terminated - terminated, timers: window.__rt.timers };
+    return { elapsed: performance.now() - t0, entry: window.__entries().find((e) => e.startsWith("slow:")), terminated: window.__stats().terminated - terminated, timers: window.__rt.timers };
   }, long);
   check("a 50 ms deadline delivers Timeout", t.entry, "slow:timeout");
   check("the deadline stopped the job well before it could finish", t.elapsed < 2000, true);
@@ -325,10 +331,10 @@ async function results(options) {
   const r = await page.evaluate(async () => {
     window.__click("Panel");
     await new Promise((res) => setTimeout(res, 50));
-    const before = window.__rt.workerStats();
+    const before = window.__stats();
     window.__click("Missing");
     const p = window.__rt.poisoned;
-    return { before, cls: p && p.class, message: p && p.message, after: window.__rt.workerStats(), live: window.__rt.live.size };
+    return { before, cls: p && p.class, message: p && p.message, after: window.__stats(), live: window.__rt.live.size };
   });
   check("a busy worker before the fault", r.before.busy, 1);
   check("an unregistered program is a contract fault", r.cls, "contract");
