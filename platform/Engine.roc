@@ -353,13 +353,15 @@ Engine := [].{
 	## worker program's output (`Work`) or the reason it produced none
 	## (`WorkLost`, or `FileFailed` when the files it was sent could not be
 	## read into the worker).
-	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileFailure)]
+	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError)]
 
-	## Why a worker request that names files produced no output: a file could
-	## not be read (`Unreadable`: the user's file changed or went away since
-	## it was given), or the files are more than the runtime reads for one run
-	## (`TooLarge`, see the `maxFileBytes` mount option).
-	FileFailure : [Unreadable, TooLarge]
+	## Why an operation on a file produced nothing: a file could not be read
+	## (`Unreadable`: the user's file changed or went away since it was
+	## given), or it is more than the operation reads (`TooLarge`; for a worker
+	## run, more than 16 files or more bytes than the `maxFileBytes` mount
+	## option allows). One closed type for every operation on a file: a worker
+	## run reports it as `Worker.Error`'s `FileFailed`.
+	FileError : [Unreadable, TooLarge]
 
 	## Why a `Work` request produced no output: the worker's instance faulted
 	## running the program (`Contract`, `ResourceLimit`, `OutOfMemory`,

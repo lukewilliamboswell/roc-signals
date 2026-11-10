@@ -661,13 +661,13 @@ Core := [].{
 	## (`Now`), `Refused` when the in-flight bound turned the request away, or a
 	## worker program's output (`Work`) or the reason it produced none
 	## (`WorkLost`).
-	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileFailure)]
+	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError)]
 
-	## Why a worker request that names files produced no output: a file could
-	## not be read (`Unreadable`: the user's file changed or went away since
-	## it was given), or the files are more than the runtime reads for one
-	## run (`TooLarge`).
-	FileFailure : [Unreadable, TooLarge]
+	## Why an operation on a file produced nothing: a file could not be read
+	## (`Unreadable`: the user's file changed or went away since it was
+	## given), or it is more than the operation reads (`TooLarge`). One type
+	## for every operation on a file; each says which arms it can produce.
+	FileError : [Unreadable, TooLarge]
 
 	## Why a `Work` request produced no output: the worker's instance faulted
 	## running the program (`Contract`, `ResourceLimit`, `OutOfMemory`,

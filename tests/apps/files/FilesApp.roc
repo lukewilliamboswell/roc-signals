@@ -62,6 +62,7 @@ FilesApp := [].{
 		Nothing => if (running) "counting" else "not counted"
 		Done(counts) => Str.join_with(counts.map(|c| "${c.name}:${c.bytes.to_str()}:${c.sum.to_str()}"), "|")
 		Failed(Lost(fault)) => "lost ${Str.inspect(fault)}"
+		Failed(FileFailed(reason)) => "unread ${Str.inspect(reason)}"
 		Failed(_) => "failed"
 	}
 

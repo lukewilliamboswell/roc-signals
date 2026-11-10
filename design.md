@@ -935,9 +935,14 @@ A file that can no longer be read (the user's file changed or went away)
 and files beyond what a run reads — more than 16, or more bytes than the
 `maxFileBytes` mount option allows — fail the run before it starts with the
 typed `FileFailed(Unreadable)` or `FileFailed(TooLarge)`; the worker is not
-lost. The typed layer reports them as `Lost(Unavailable)` and
-`Lost(ResourceLimit)`. A run cancelled while its files are read is dropped
-as any other.
+lost. The typed layer reports them as `Worker.Error`'s own `FileFailed`,
+apart from a lost worker: a file the user changed is not a fault of the
+program or its instance. A run cancelled while its files are read is
+dropped as any other.
+
+`FileError` is one closed type for every operation on a file, so an app
+names a file's failure the same way whichever operation met it; each
+operation states which of its arms it can produce.
 
 ### Target effects
 
@@ -1436,7 +1441,7 @@ methods are documented here, and the contexts, `Elem`, `Attr`, `Keyed`,
 app can neither name a representation nor call the interfaces only hosts and
 harnesses use (`Core.driver`, `mount`, `event`, `result`, `take_cmds`, the
 effect and work counters); the generated API docs list the authoring API and
-nothing else. `Req`, `Res`, `WorkFault`, `HttpError` and `Boot` are plain data and stay
+nothing else. `Req`, `Res`, `WorkFault`, `FileError`, `HttpError` and `Boot` are plain data and stay
 structural.
 
 ```roc
@@ -1517,8 +1522,8 @@ Req : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Timer(
        StorageSet(Str, Str), StorageRemove(Str)]
 Res : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
        Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused,
-       Work(List(U8)), WorkLost(WorkFault), FileFailed(FileFailure)]
-FileFailure : [Unreadable, TooLarge]
+       Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError)]
+FileError : [Unreadable, TooLarge]
 WorkFault : [Contract, ResourceLimit, OutOfMemory, AppCrash, ExpectFailed, Unavailable, Executor]
 HttpError : [Network(Str), Timeout, Status(U16), Refused]
 http_text : Res -> Try(Str, HttpError)
@@ -1535,7 +1540,7 @@ Program.with_deadline_ms : Program(input, output), U32 -> Program(input, output)
 Program.registration : Program(input, output) -> Registration
 Program.request : Program(input, output), input -> Req
 Program.result : Program(input, output), Res -> Try(output, Worker.Error)
-Worker.Error : [Timeout, Refused, Lost(WorkFault)]
+Worker.Error : [Timeout, Refused, Lost(WorkFault), FileFailed(FileError)]
 Worker.Remote(output) : { running : Bool, answer : [Nothing, Done(output), Failed(Worker.Error)] }
 Worker.derive : Program(input, output), Val(ctx, input),
     (Val(In(ctx, Remote(output)), Remote(output)) -> Elem(In(ctx, Remote(output)))) -> Elem(ctx)

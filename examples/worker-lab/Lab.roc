@@ -387,6 +387,7 @@ Lab := [].{
 						Err(Timeout) => ({ ..job, phase: TimedOut }, 0)
 						Err(Lost(fault)) => ({ ..job, phase: Lost(fault) }, 0)
 						Err(Refused) => ({ ..job, phase: Waiting, attempt: attempt + 1 }, 1)
+						Err(FileFailed(_)) => crash "internal: a Worker Lab job sends no files, so none can fail to be read"
 					}
 				{ ..s, jobs: Lab.admit(s.jobs.set(index, next) ?? s.jobs), refused: s.refused + refused }
 			}

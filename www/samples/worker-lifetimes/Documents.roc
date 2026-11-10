@@ -113,6 +113,7 @@ Documents := [].{
 			Timeout => "This took too long."
 			Refused => "Too much is running."
 			Lost(_) => "Counting failed."
+			FileFailed(_) => "The file could not be read."
 		}
 
 	# region panel

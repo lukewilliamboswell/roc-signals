@@ -129,14 +129,14 @@ async function open(options = {}) {
   fs.rmSync(dir, { recursive: true, force: true });
   const r = await page.evaluate(async () => {
     window.__click("Count");
-    const failed = await window.__until("counts", (t) => t.startsWith("lost"));
+    const failed = await window.__until("counts", (t) => t.startsWith("unread"));
     window.__click("Clear");
     window.__dropBytes("Drop", "ok.bin", 3);
     window.__click("Count");
     const after = await window.__until("counts", (t) => t.startsWith("ok"));
     return { failed, after, spawns: window.__rt.monitor.snapshot().instances.spawns };
   });
-  check("an unreadable file fails the run and the worker survives", r, { failed: "lost Unavailable", after: "ok.bin:3:3", spawns: 1 });
+  check("an unreadable file fails the run and the worker survives", r, { failed: "unread Unreadable", after: "ok.bin:3:3", spawns: 1 });
   await ctx.close();
 }
 
@@ -146,10 +146,10 @@ async function open(options = {}) {
   const r = await page.evaluate(async () => {
     window.__dropBytes("Drop", "three.bin", 3);
     window.__click("Count");
-    const text = await window.__until("counts", (t) => t.startsWith("lost"));
+    const text = await window.__until("counts", (t) => t.startsWith("unread"));
     return { text, spawns: window.__rt.monitor.snapshot().instances.spawns };
   });
-  check("files over maxFileBytes are refused unread", r, { text: "lost ResourceLimit", spawns: 0 });
+  check("files over maxFileBytes are refused unread", r, { text: "unread TooLarge", spawns: 0 });
   await ctx.close();
 }
 

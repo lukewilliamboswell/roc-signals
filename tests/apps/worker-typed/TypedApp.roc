@@ -49,6 +49,7 @@ TypedApp := [].{
 		Timeout => "timed out"
 		Refused => "refused"
 		Lost(_) => "lost"
+		FileFailed(_) => "unread"
 	}
 
 	show_matches : Worker.Remote(List(Str)) -> Str

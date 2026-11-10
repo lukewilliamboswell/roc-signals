@@ -94,6 +94,7 @@ Editor := [].{
 			Timeout => "This took too long."
 			Refused => "Too much is running; edit the text to try again."
 			Lost(_) => "The analysis failed."
+			FileFailed(_) => "The file could not be read."
 		}
 
 	# region derive-when
@@ -206,6 +207,7 @@ Editor := [].{
 			Failed(Timeout) => "Adding took too long."
 			Failed(Refused) => "Too much is running; edit the numbers to try again."
 			Failed(Lost(_)) => "Adding failed."
+			Failed(FileFailed(_)) => "The file could not be read."
 		}
 	# endregion fallible-view
 }

@@ -35,13 +35,12 @@ Worker := [].{
 	## Why a run produced no output: its deadline expired and it was stopped
 	## (`Timeout`), the in-flight bound turned the request away (`Refused`), or
 	## the worker could not run it or failed running it (`Lost`, with the fault
-	## class; the diagnostic goes to the page's console).
-	## A run whose input holds files is also `Lost` when the worker could not
-	## read them: `Lost(ResourceLimit)` when they are more than the runtime
-	## reads for one run, `Lost(Unavailable)` when a file could not be read
-	## (the user's file changed or went away since it was given). The raw
-	## result, `FileFailed`, says which.
-	Error : [Timeout, Refused, Lost(Engine.WorkFault)]
+	## class; the diagnostic goes to the page's console), or the files its
+	## input holds could not be read into the worker (`FileFailed`: a file
+	## changed or went away since the user gave it, `Unreadable`, or they are
+	## more than one run reads, `TooLarge`). A run whose files fail is not
+	## started, and its worker is not lost.
+	Error : [Timeout, Refused, Lost(Engine.WorkFault), FileFailed(Engine.FileError)]
 
 	## A worker program from `input` to `output`. Make one with `pure` or
 	## `fallible`, register it once with `registration`, and use the same value
@@ -84,8 +83,7 @@ Worker := [].{
 		result : Program(input, output), Engine.Res -> Try(output, Error)
 		result = |p, res| match res {
 			Work(bytes) => Ok((p.receive)(bytes))
-			FileFailed(TooLarge) => Err(Lost(ResourceLimit))
-			FileFailed(Unreadable) => Err(Lost(Unavailable))
+			FileFailed(reason) => Err(FileFailed(reason))
 			WorkLost(fault) => Err(Lost(fault))
 			Timeout => Err(Timeout)
 			Refused => Err(Refused)
@@ -258,5 +256,6 @@ expect {
 	bad = parse.result(run("seven"))
 	late = parse.result(Timeout)
 	lost = parse.result(WorkLost(AppCrash))
-	good == Ok(Ok(7)) and bad == Ok(Err(NotANumber("seven"))) and late == Err(Timeout) and lost == Err(Lost(AppCrash))
+	unread = parse.result(FileFailed(Unreadable))
+	good == Ok(Ok(7)) and bad == Ok(Err(NotANumber("seven"))) and late == Err(Timeout) and lost == Err(Lost(AppCrash)) and unread == Err(FileFailed(Unreadable))
 }

@@ -67,10 +67,10 @@ bytes there.
 A run whose files cannot be read fails before the program starts, and the
 worker survives:
 
-| What happened | Raw result | `Worker.Error` |
-|---|---|---|
-| The file changed or was deleted since the user chose it | `FileFailed(Unreadable)` | `Lost(Unavailable)` |
-| More than 16 files, or more bytes than `maxFileBytes` (256 MiB unless the mount sets it) | `FileFailed(TooLarge)` | `Lost(ResourceLimit)` |
+| What happened | `Worker.Error` |
+|---|---|
+| The file changed or was deleted since the user chose it | `FileFailed(Unreadable)` |
+| More than 16 files, or more bytes than `maxFileBytes` (256 MiB unless the mount sets it) | `FileFailed(TooLarge)` |
 
 To read part of a large file, send a range: `file.slice({ start, len })`
 reads only those bytes.

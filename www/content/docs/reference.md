@@ -28,7 +28,7 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 | Events | `on` (event name, optionally `:prevent`), `on_click` |
 | Files | `File`, `File.name`, `File.size`, `File.mime`, `File.slice`, `File.contents`, `Received`, `FilesHandler`, `State.on_files`, `on_files` |
 | Components | `component`, `State.push`, `State.push_by`, `State.push_value_by`, `sink`, `split` |
-| Effects | `watch`, `on_change`, `latest`, `State.on_result`, `ignore`, `on_cleanup`, `cleanup`, `Req`, `Res`, `HttpError`, `http_text`, `WorkFault`, `FileFailure` |
+| Effects | `watch`, `on_change`, `latest`, `State.on_result`, `ignore`, `on_cleanup`, `cleanup`, `Req`, `Res`, `HttpError`, `http_text`, `WorkFault`, `FileError` |
 
 ## Html
 
@@ -53,7 +53,7 @@ Anything else is `Engine.element(tag, attrs, children)`.
 | Area | Symbols |
 |---|---|
 | Programs | `Program(input, output)`, `pure`, `fallible`, `Program.with_deadline_ms`, `Program.registration` |
-| Runs from an effect site | `Program.request`, `Program.result`, `Error` (`Timeout`, `Refused`, `Lost(WorkFault)`) |
+| Runs from an effect site | `Program.request`, `Program.result`, `Error` (`Timeout`, `Refused`, `Lost(WorkFault)`, `FileFailed(FileError)`) |
 | Layers | `derive`, `derive_when`, `Remote(output)` (`running`, `answer`: `Nothing`, `Done(output)`, `Failed(Error)`) |
 
 ## Wire
@@ -101,7 +101,7 @@ guarded while the control has focus. `checked` is a property set from
 | Work deadline | 600 s | Capped |
 | Workers alive at once | `maxWorkers` (default the core count, at most 8) | Runs wait in order for a free worker |
 | Files an app holds at once | 64 | Further files are not delivered; `Received.refused` counts them |
-| Files one worker run reads | 16, and `maxFileBytes` bytes (default 256 MiB) | The run fails unread: `FileFailed(TooLarge)`, `Lost(ResourceLimit)` |
+| Files one worker run reads | 16, and `maxFileBytes` bytes (default 256 MiB) | The run fails unread: `FileFailed(TooLarge)` |
 | Payload nesting | 512 containers | The run is `Lost(Contract)`: an input fails to decode in the worker, an output is refused there before it is sent |
 
 ## Errors

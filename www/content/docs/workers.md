@@ -177,6 +177,7 @@ output is that `Try`:
 | `Timeout` | The run's deadline expired, and it was stopped |
 | `Refused` | Too many requests were in flight; the run was never started |
 | `Lost(fault)` | The run crashed, or no worker could run it (see [Programs are pure](#programs-are-pure)) |
+| `FileFailed(error)` | The files its input holds could not be read into the worker, so it never started (see [Files](@/docs/files.md)) |
 
 With `derive`, a program's own error is an answer, `Done(Err(...))`, and a
 missing answer is `Failed(...)`. Matching both gives every case:
@@ -184,7 +185,8 @@ missing answer is `Failed(...)`. Matching both gives every case:
 {{ sample(file="workers/Editor.roc", region="fallible-view") }}
 
 With `request` and `result`, the same cases are `Ok(Ok(value))`,
-`Ok(Err(error))` and `Err(Timeout)`, `Err(Refused)` or `Err(Lost(fault))`.
+`Ok(Err(error))` and `Err(Timeout)`, `Err(Refused)`, `Err(Lost(fault))` or
+`Err(FileFailed(error))`.
 
 Use the program's own error for failures you expect. A `crash` in a program
 is not an error you chose: it is `Lost`. The sample's specs show both: a
