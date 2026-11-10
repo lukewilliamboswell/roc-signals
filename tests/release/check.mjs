@@ -21,7 +21,18 @@ if (!path) {
   console.error("usage: node check.mjs app.wasm");
   process.exit(2);
 }
-const { instance } = await WebAssembly.instantiate(await readFile(path), { env: {} });
+// A module whose tasks call hosted effects imports them (`env.js_*`); the
+// page's instance gets stubs that throw, as runtime.mjs's `pageImports`
+// gives it, and mounting never reaches one.
+const module = await WebAssembly.compile(await readFile(path));
+const env = {};
+for (const imp of WebAssembly.Module.imports(module)) {
+  if (imp.module === "env" && imp.kind === "function")
+    env[imp.name] = () => {
+      throw new Error(`contract: ${imp.name} is a task effect`);
+    };
+}
+const instance = await WebAssembly.instantiate(module, { env });
 const x = instance.exports;
 
 const version = x.protocol_version();

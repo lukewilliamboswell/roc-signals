@@ -49,6 +49,8 @@ main! = |raw_args| {
 	# Scripts an example's page loads beside its app (www/data/examples.toml).
 	Path.copy!(Path.utf8("${o.root}/examples/status-page/plume-chart.mjs"), Path.utf8("${dist}/examples/status-page/plume-chart.mjs"))?
 	Path.copy!(Path.utf8("${o.root}/examples/worker-lab/pool-panel.mjs"), Path.utf8("${dist}/examples/worker-lab/pool-panel.mjs"))?
+	# Data an example downloads at run time.
+	Path.copy!(Path.utf8("${o.root}/examples/csv-converter/sample.csv"), Path.utf8("${dist}/examples/csv-converter/sample.csv"))?
 	SpecSuite.copy_runtime!(o.root, dist)?
 	Proc.note!("site: built ${dist}")
 	Ok({})

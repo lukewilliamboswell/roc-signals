@@ -96,3 +96,11 @@ public = true
 [[examples.scripts]]
 src = "pool-panel.mjs"
 module = true
+
+[[examples]]
+slug = "csv-converter"
+title = "CSV Converter"
+description = "Drop a CSV of any size and convert it to TSV or JSON lines in a worker task, a chunk at a time, without its bytes passing through the page; preview the result, save it, or download a sample into a file first."
+source = "examples/csv-converter/main.roc"
+specs = "examples/csv-converter/specs"
+public = true
