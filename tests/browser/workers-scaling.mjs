@@ -438,6 +438,54 @@ async function unmountChecks(page, name) {
   check(`${name}: after unmount no instance is live, and every spawn has its end`, u.live === 0 && u.spawns === u.ends && u.state === "unmounted", JSON.stringify(u));
 }
 
+// Pool lifecycle on one worker, counted exactly: what one cancelling turn,
+// crashes and deadlines cost in instances. A turn that cancels a whole run
+// stops the running job's worker and drops the queued ones without handing
+// any of them a worker first; a crash replaces its worker only for the job
+// that waits next. Deadlines are not a batch: each expires in a task of its
+// own, and at that moment the next queued job is still wanted, so it gets
+// the replacement worker until its own deadline stops it (three jobs whose
+// deadlines expire together start three workers).
+{
+  const { page, ctx, errors } = await open({ maxWorkers: 1 });
+  const r = await page.evaluate(async () => {
+    const spawns = () => window.__rt.monitor.snapshot().instances.spawns;
+    const out = {};
+    window.__set("Workload", "primes");
+    window.__set("Jobs", 15);
+    window.__set("Weight", 256);
+    window.__set("Deadline (ms)", 0);
+    window.__click("Start");
+    await window.__sleep(30);
+    const before = spawns();
+    window.__click("Cancel");
+    await window.__sleep(30);
+    out.cancel = { before, after: spawns(), queued: window.__rt.monitor.snapshot().pool.queued };
+    // Faulty: jobs 4 and 8 crash; the crash at 4 replaces the worker for
+    // job 5, the crash at 8 has no job waiting.
+    const s0 = spawns();
+    await window.__run({ workload: "faulty", jobs: 8, weight: 1 });
+    out.faulty = { spawns: spawns() - s0, lost: window.__rows().filter((t) => t.startsWith("lost")).length, done: window.__rows().filter((t) => t.startsWith("done")).length };
+    // Three heavy jobs with one deadline: each expires in turn, stopping
+    // the worker the job before it freed.
+    const s1 = spawns();
+    await window.__run({ workload: "primes", jobs: 3, weight: 256, deadline: 20 });
+    out.deadline = { spawns: spawns() - s1, timedOut: window.__rows().filter((t) => t === "timed out").length };
+    // A fresh run after all of it uses one new worker and answers.
+    const s2 = spawns();
+    const run = await window.__run({ workload: "primes", jobs: 4, weight: 1 });
+    out.after = { spawns: spawns() - s2, checksum: run.checksum };
+    return out;
+  });
+  same("one cancelling turn of 15 jobs on 1 worker: no worker beyond the one already running", [r.cancel.before, r.cancel.after, r.cancel.queued], [1, 1, 0]);
+  same("crashes: 2 lost, 6 done, one replacement worker", [r.faulty.lost, r.faulty.done, r.faulty.spawns], [2, 6, 2]);
+  same("deadlines: all 3 time out, each in a worker of its own", [r.deadline.timedOut, r.deadline.spawns], [3, 3]);
+  same("afterwards one worker runs a clean run", [r.after.spawns, r.after.checksum], [1, expectedRun({ workload: "primes", jobs: 4, weight: 1 }).checksum]);
+  const seq = sequenceProblems(await page.evaluate(() => window.__events), 1);
+  check("pool lifecycle: every issued job has one end, at most 1 instance live", seq.problems.length === 0 && errors.length === 0, seq.problems.join("; ") + errors.join("; "));
+  await ctx.close();
+}
+
 const robustness = [];
 {
   const max = 4;

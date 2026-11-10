@@ -975,6 +975,7 @@ class WorkPool {
     this.inlineSeq = 0;
     this.running = false;
     this.closed = false;
+    this.pumpQueued = false;
     this.monitor = monitor;
   }
 
@@ -1006,7 +1007,22 @@ class WorkPool {
     if (q >= 0) this.queue.splice(q, 1);
     if (job.slot !== null) this.discard(job.slot, cause);
     if (cause === "cancel") this.monitor.jobCancelled(job.id);
-    this.pump();
+    this.pumpSoon();
+  }
+
+  // Pump once the current task's other stops have been applied. The engine
+  // cancels a whole batch of jobs in one go (a site disposed, a `latest`
+  // moving on); pumping inside each cancel would hand the next queued job
+  // to a freed slot, or spawn a worker for it, only for the same batch to
+  // cancel that job a moment later and terminate the worker it was given.
+  // A queued job waits at most one microtask longer for a free worker.
+  pumpSoon() {
+    if (this.pumpQueued) return;
+    this.pumpQueued = true;
+    queueMicrotask(() => {
+      this.pumpQueued = false;
+      this.pump();
+    });
   }
 
   pump() {
