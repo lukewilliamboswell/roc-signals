@@ -12,6 +12,13 @@ import pf.Html
 ## - The same `resource` in each row of an `each` (reloaded through a
 ##   row-local `state`) and inside a component that a `when` opens and
 ##   closes, so its answers settle locally and its disposal is observable.
+## - A `state` below a `derive` and below a `resource`, mounted with the
+##   page, and layers that exist only in a branch mounted after the first
+##   (two `when`s that start closed, a `switch` that starts on a plain case, and a `when`
+##   inside that branch): a `state`, a `state` below a `derive` and below a
+##   `resource`, the `resource`'s own answers, and two states nested two
+##   deep. Writes to them, outside any row or component, must still reach
+##   their readers.
 SupersedeApp := [].{
 	S : {
 		query : Str,
@@ -22,6 +29,10 @@ SupersedeApp := [].{
 		rows : List(Str),
 		panel : Bool,
 		picked : Str,
+		solo : Bool,
+		late : Bool,
+		inner : Bool,
+		case : Str,
 	}
 
 	Ctx : In(Root, S)
@@ -35,7 +46,7 @@ SupersedeApp := [].{
 	idle = { pending: "", answer: "none", previous: "none", slow: False }
 
 	initial : S
-	initial = { query: "", results: "", rate: 0, ticks: 0, item: "", rows: [], panel: False, picked: "1" }
+	initial = { query: "", results: "", rate: 0, ticks: 0, item: "", rows: [], panel: False, picked: "1", solo: False, late: False, inner: False, case: "plain" }
 
 	answer_of : Str, Engine.Res -> Str
 	answer_of = |id, res| match Engine.http_text(res) {
@@ -91,6 +102,79 @@ SupersedeApp := [].{
 		],
 	)
 
+	## A counter state with its button and its text, for the late branches.
+	counter : Str -> Elem(ctx)
+	counter = |name| Engine.state(
+		0.U64,
+		|c| Engine.element(
+			"span",
+			[],
+			[
+				Html.button("Inc ${name}", [], c.update(|n| n + 1)),
+				Html.p_v(c.val().map(|n| "${name} ${n.to_str()}"), [Engine.test_id(name)]),
+			],
+		),
+	)
+
+	## The only content of the branch the "solo" `when` mounts second: a
+	## state, its text and an effect site reading it.
+	solo_branch : {} -> Elem(Ctx)
+	solo_branch = |_| Engine.state(
+		0.U64,
+		|c| Engine.element(
+			"span",
+			[],
+			[
+				Html.button("Inc late", [], c.update(|n| n + 1)),
+				Html.p_v(c.val().map(|n| "late ${n.to_str()}"), [Engine.test_id("late")]),
+				Engine.on_change(c.val(), |n| [Title("late ${n.to_str()}")], Engine.ignore({})),
+			],
+		),
+	)
+
+	## The branch the "late" `when` mounts second: every layer here is created
+	## after the `when` reported its reads.
+	late_branch : State(Ctx, S) -> Elem(Ctx)
+	late_branch = |st| Engine.element(
+		"div",
+		[],
+		[
+			Engine.derive(Engine.const(2.U64), |_| SupersedeApp.counter("derived")),
+			Engine.resource(
+				Engine.const("r"),
+				{ init: 0.U64, begin: |n, _| n, plan: |_| [Timer(50)], fold: |n, _, _| n + 1 },
+				|l| Engine.element(
+					"div",
+					[],
+					[
+						Html.p_v(l.map(|n| "answers ${n.to_str()}"), [Engine.test_id("answers")]),
+						SupersedeApp.counter("below resource"),
+					],
+				),
+			),
+			Html.button("Toggle inner", [], st.update(|s| { ..s, inner: !s.inner })),
+			Engine.when(
+				st.val().map(|s| s.inner),
+				|| Engine.state(
+					0.U64,
+					|a| Engine.state(
+						0.U64,
+						|b| Engine.element(
+							"span",
+							[],
+							[
+								Html.button("Inc outer", [], a.lift().update(|n| n + 1)),
+								Html.button("Inc inner", [], b.update(|n| n + 1)),
+								Html.p_v(a.val().lift().map2(b.val(), |x, y| "nested ${x.to_str()}/${y.to_str()}"), [Engine.test_id("nested")]),
+							],
+						),
+					),
+				),
+				|| Engine.text("inner closed"),
+			),
+		],
+	)
+
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
 		v = st.val()
@@ -140,6 +224,20 @@ SupersedeApp := [].{
 				Html.button("Close panel", [], st.update(|s| { ..s, panel: False })),
 				Html.button("Pick 1", [], st.update(|s| { ..s, picked: "1" })),
 				Html.button("Pick 2", [], st.update(|s| { ..s, picked: "2" })),
+				# A state below a derive and below a resource, mounted with the page.
+				Engine.derive(Engine.const(1.U64), |_| SupersedeApp.counter("early derived")),
+				Engine.resource(Engine.const("e"), { init: 0.U64, begin: |n, _| n, plan: |_| [], fold: |n, _, _| n }, |_| SupersedeApp.counter("early resource")),
+				# Layers mounted only in a later branch.
+				Html.button("Toggle solo", [], st.update(|s| { ..s, solo: !s.solo })),
+				Engine.when(v.map(|s| s.solo), || SupersedeApp.solo_branch({}), || Engine.text("solo closed")),
+				Html.button("Toggle late", [], st.update(|s| { ..s, late: !s.late })),
+				Engine.when(v.map(|s| s.late), || SupersedeApp.late_branch(st), || Engine.text("late closed")),
+				Html.button("Counting case", [], st.update(|s| { ..s, case: "counting" })),
+				Engine.switch(
+					v.map(|s| s.case),
+					["plain", "counting"],
+					|k| if (k == "plain") Engine.text("plain case") else SupersedeApp.counter("case"),
+				),
 				Engine.when(
 					v.map(|s| s.panel),
 					|| Engine.component(v.map(|s| s.picked), Engine.discard({}), |picked, _| SupersedeApp.panel(picked)),

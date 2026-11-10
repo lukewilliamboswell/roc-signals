@@ -665,17 +665,17 @@ Core := [].{
 				(t1, owned) = issue(count_evals(tx, 1), args.path, (cfg.plan)(a), a, [])
 				elem = body({ mask: bit(depth), read: |e| e.value, sel: NoSel })
 				(block, t2) = mount_block(In.{ outer: env, value: s }, elem, depth, args.path, args.parent, args.before, { cap: args.cap, local: args.local }, t1)
-				# The site listens to its own layer too: outside a row or a
-				# component an answer reports the layer upward, and the root's
-				# Changed pass must find its way back here.
-				reads = block.reads.bitwise_and(bit(depth) - 1).bitwise_or(eff_mask(input)).bitwise_or(bit(depth))
+				# Like a state's, the reads include this layer and those below
+				# it: outside a row or a component an answer reports the layer
+				# upward, and the root's Changed pass must find its way back here.
+				reads = block.reads.bitwise_or(eff_mask(input))
 				rc = { input, begin: cfg.begin, plan: cfg.plan, fold: cfg.fold, path: args.path, depth, local: args.local }
 				(resource_inst(rc, a, s, owned, block), reads, t2)
 			},
 		),
 		|d| {
 			d1 = layer_reads(d)
-			eff_mask(input).bitwise_or(bit(d1)).bitwise_or(elem_reads(body({ mask: bit(d1), read: |e| e.value, sel: NoSel }), d1).bitwise_and(bit(d1) - 1))
+			eff_mask(input).bitwise_or(elem_reads(body({ mask: bit(d1), read: |e| e.value, sel: NoSel }), d1))
 		},
 	)
 
