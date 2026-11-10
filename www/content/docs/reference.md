@@ -98,7 +98,7 @@ guarded while the control has focus. `checked` is a property set from
 | Worker programs in a catalogue | 64 | Contract error at mount |
 | Work deadline | 600 s | Capped |
 | Workers alive at once | `maxWorkers` (default the core count, at most 8) | Runs wait in order for a free worker |
-| Payload nesting | 512 containers | An input: the run is `Lost`; an output: contract error |
+| Payload nesting | 512 containers | The run is `Lost(Contract)`: an input fails to decode in the worker, an output is refused there before it is sent |
 
 ## Errors
 

@@ -1,5 +1,6 @@
 import pf.Engine exposing [Elem, In, Root, State]
 import pf.Html
+import pf.Worker
 
 ## Worker test app: effect sites that issue `Work` requests for the pure
 ## programs below, each answered as an ordinary effect-result turn. Every
@@ -15,6 +16,8 @@ import pf.Html
 ##   contract error at issue time).
 ## - "Grow" runs a program that allocates 16 MiB, growing its instance's
 ##   memory (the monitor's per-instance memory figures).
+## - "Deep" runs a typed program whose answer nests deeper than the page could
+##   decode: the worker refuses to send it, and only that job is lost.
 WorkersApp := [].{
 	S : {
 		upper : U64,
@@ -27,6 +30,7 @@ WorkersApp := [].{
 		tails : U64,
 		missing : U64,
 		grows : U64,
+		deeps : U64,
 		log : List(Str),
 	}
 
@@ -37,7 +41,7 @@ WorkersApp := [].{
 	Ctx : In(Root, S)
 
 	initial : S
-	initial = { upper: 0, batch: 0, panel: False, rounds: "1000", spin: { n: 0, rounds: "" }, slow: { n: 0, rounds: "" }, crashes: 0, tails: 0, missing: 0, grows: 0, log: [] }
+	initial = { upper: 0, batch: 0, panel: False, rounds: "1000", spin: { n: 0, rounds: "" }, slow: { n: 0, rounds: "" }, crashes: 0, tails: 0, missing: 0, grows: 0, deeps: 0, log: [] }
 
 	pressed : Press, Str -> Press
 	pressed = |{ n, rounds: _ }, rounds| { n: n + 1, rounds }
@@ -51,6 +55,28 @@ WorkersApp := [].{
 	tail_name = "test.roc-signals/tail"
 
 	grow_name = "test.roc-signals/grow"
+
+	## A chain of containers, as deep as the program is asked to build.
+	Chain := [End, Link(Chain)].{
+		parser_for : _
+		encoder_for : _
+	}
+
+	## A chain `depth` links long: more than 512 is deeper than a payload may
+	## nest.
+	deep : Worker.Program(U64, Chain)
+	deep = Worker.pure(
+		"test.roc-signals/deep",
+		|depth| {
+			var $chain = Chain.End
+			var $i = 0.U64
+			while $i < depth {
+				$chain = Chain.Link($chain)
+				$i = $i + 1
+			}
+			$chain
+		},
+	)
 
 	## ASCII letters to upper case; every other byte unchanged.
 	upper : List(U8) -> List(U8)
@@ -145,6 +171,8 @@ WorkersApp := [].{
 				Engine.on_change(v.map(|s| s.missing), |_| [WorkersApp.job("test.roc-signals/missing", [], 0)], WorkersApp.logs(st, "missing")),
 				Html.button("Grow", [], st.update(|s| { ..s, grows: s.grows + 1 })),
 				Engine.on_change(v.map(|s| s.grows), |_| [WorkersApp.job(WorkersApp.grow_name, "16777216".to_utf8(), 0)], WorkersApp.logs(st, "grow")),
+				Html.button("Deep", [], st.update(|s| { ..s, deeps: s.deeps + 1 })),
+				Engine.on_change(v.map(|s| s.deeps), |_| [WorkersApp.deep.request(600)], WorkersApp.logs(st, "deep")),
 				Html.p_v(v.map(|s| Str.join_with(s.log, "|")), [Engine.test_id("log")]),
 			],
 		)
@@ -160,5 +188,6 @@ WorkersApp := [].{
 				Engine.registration(WorkersApp.crash_name, WorkersApp.crasher),
 				Engine.registration(WorkersApp.tail_name, WorkersApp.tail),
 				Engine.registration(WorkersApp.grow_name, WorkersApp.grow),
+				WorkersApp.deep.registration(),
 			])
 }

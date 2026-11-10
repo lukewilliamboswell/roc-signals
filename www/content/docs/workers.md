@@ -249,8 +249,10 @@ byte:
 {{ sample(file="wire.roc", region="bytes") }}
 
 Every payload is decoded strictly. A value nested more than 512 containers
-deep cannot be decoded: as an input its run is `Lost`; as an output it stops
-the app with a contract error. Keep payloads plain: each payload type adds
+deep cannot cross either way, and either way only the run is lost: an input
+that deep fails to decode in the worker, and an output that deep is refused
+in the worker before it is sent, so the run is `Lost(Contract)` and the
+console names the program and the bound. Keep payloads plain: each payload type adds
 code to the module.
 
 ## Lifetimes

@@ -70,7 +70,7 @@ Wire := [].{
 	## `parser_for` methods at the use that needs them.
 	a.Sendable :
 		where [
-			a.encoder_for : Format -> (a, List(U8) -> Try(List(U8), [])),
+			a.encoder_for : Format -> (a, Enc -> Try(Enc, [])),
 			a.parser_for : Format -> (State -> Try({ value : a, rest : State }, Error)),
 		]
 
@@ -82,14 +82,28 @@ Wire := [].{
 	## is its bit pattern, so `0.0` and `-0.0`, which compare equal, differ. A
 	## dictionary's entries are sorted, so equal dictionaries agree. A value
 	## nesting containers deeper than `decode` accepts still encodes, and its
-	## payload is refused with `TooDeep`.
+	## payload is refused with `TooDeep`; `try_encode` refuses it instead.
 	encode : a -> List(U8) where [a.Sendable]
-	encode = |value| {
+	encode = |value| Wire.encode_state(value).bytes
+
+	## Encode a value as a payload, or `Err(TooDeep)` when it nests containers
+	## deeper than `decode` accepts, so the side that built the value learns
+	## that its payload would be refused before sending it.
+	try_encode : a -> Try(List(U8), [TooDeep]) where [a.Sendable]
+	try_encode = |value| {
+		state = Wire.encode_state(value)
+		if (state.deep) Err(TooDeep) else Ok(state.bytes)
+	}
+
+	## The encoder's final state for a value: its bytes and whether it nested
+	## too deep.
+	encode_state : a -> Enc where [a.Sendable]
+	encode_state = |value| {
 		## The caller's type, named so its derived codec can be asked for.
 		Shape : a
 		encode_shape = Shape.encoder_for(Format.Default)
-		match encode_shape(value, []) {
-			Ok(bytes) => bytes
+		match encode_shape(value, { bytes: [], depth: 0, deep: Bool.False }) {
+			Ok(state) => state
 		}
 	}
 
@@ -148,13 +162,22 @@ Wire := [].{
 		}
 	}
 
+	## A dictionary's entries as they are written, and whether any nested too
+	## deep.
+	Entries : { entries : List(List(U8)), deep : Bool }
+
 	## One open container in the decoder: how many entries remain, and
 	## per-kind bookkeeping (a record's field count and cached names, or a
 	## dictionary's current and previous key).
 	Frame : { remaining : U64, total : U64, prev_start : U64, prev_end : U64 }
 
 	## A record being encoded, with how many of its fields were present.
-	Fields : { bytes : List(U8), present : U64 }
+	Fields : { enc : Enc, present : U64 }
+
+	## The encoder's state: the bytes so far, how many containers are open
+	## around the value being written, and whether that ever exceeded the
+	## depth `decode` accepts. Applications never construct one.
+	Enc : { bytes : List(U8), depth : U64, deep : Bool }
 
 	## The decoder's cursor: the input, the position, the open container and
 	## those around it, and the field names positional records have cached.
@@ -178,16 +201,16 @@ Wire := [].{
 		rename_field = |_, name| name
 
 		## A count of UTF-8 bytes, then the bytes.
-		encode_str : Str, List(U8) -> Try(List(U8), [])
-		encode_str = |value, state| Ok(write_str(state, value))
+		encode_str : Str, Enc -> Try(Enc, [])
+		encode_str = |value, state| Ok(put(state, |b| write_str(b, value)))
 
 		## A string; `InvalidUtf8` when the bytes are not UTF-8.
 		parse_str : Format, State -> Try({ value : Str, rest : State }, Error)
 		parse_str = |_, state| read_str(state)
 
 		## One byte, `0` or `1`.
-		encode_bool : Bool, List(U8) -> Try(List(U8), [])
-		encode_bool = |value, state| Ok(state.append(if (value) 1 else 0))
+		encode_bool : Bool, Enc -> Try(Enc, [])
+		encode_bool = |value, state| Ok(put(state, |b| b.append(if (value) 1 else 0)))
 
 		## A `Bool`; any byte but `0` or `1` is `Malformed`.
 		parse_bool : Format, State -> Try({ value : Bool, rest : State }, Error)
@@ -200,8 +223,8 @@ Wire := [].{
 			}
 
 		## One byte.
-		encode_u8 : U8, List(U8) -> Try(List(U8), [])
-		encode_u8 = |value, state| Ok(state.append(value))
+		encode_u8 : U8, Enc -> Try(Enc, [])
+		encode_u8 = |value, state| Ok(put(state, |b| b.append(value)))
 
 		## One byte.
 		parse_u8 : Format, State -> Try({ value : U8, rest : State }, Error)
@@ -212,8 +235,8 @@ Wire := [].{
 			}
 
 		## One byte, two's complement.
-		encode_i8 : I8, List(U8) -> Try(List(U8), [])
-		encode_i8 = |value, state| Ok(state.append(I8.to_u8_wrap(value)))
+		encode_i8 : I8, Enc -> Try(Enc, [])
+		encode_i8 = |value, state| Ok(put(state, |b| b.append(I8.to_u8_wrap(value))))
 
 		## One byte, two's complement.
 		parse_i8 : Format, State -> Try({ value : I8, rest : State }, Error)
@@ -223,8 +246,8 @@ Wire := [].{
 		}
 
 		## Two bytes, little-endian.
-		encode_u16 : U16, List(U8) -> Try(List(U8), [])
-		encode_u16 = |value, state| Ok(write_fixed(state, U16.to_u128(value), 2))
+		encode_u16 : U16, Enc -> Try(Enc, [])
+		encode_u16 = |value, state| Ok(put(state, |b| write_fixed(b, U16.to_u128(value), 2)))
 
 		## Two bytes, little-endian.
 		parse_u16 : Format, State -> Try({ value : U16, rest : State }, Error)
@@ -234,8 +257,8 @@ Wire := [].{
 		}
 
 		## Two bytes, little-endian, two's complement.
-		encode_i16 : I16, List(U8) -> Try(List(U8), [])
-		encode_i16 = |value, state| Ok(write_fixed(state, I16.to_u128_wrap(value), 2))
+		encode_i16 : I16, Enc -> Try(Enc, [])
+		encode_i16 = |value, state| Ok(put(state, |b| write_fixed(b, I16.to_u128_wrap(value), 2)))
 
 		## Two bytes, little-endian, two's complement.
 		parse_i16 : Format, State -> Try({ value : I16, rest : State }, Error)
@@ -245,8 +268,8 @@ Wire := [].{
 		}
 
 		## Four bytes, little-endian.
-		encode_u32 : U32, List(U8) -> Try(List(U8), [])
-		encode_u32 = |value, state| Ok(write_fixed(state, U32.to_u128(value), 4))
+		encode_u32 : U32, Enc -> Try(Enc, [])
+		encode_u32 = |value, state| Ok(put(state, |b| write_fixed(b, U32.to_u128(value), 4)))
 
 		## Four bytes, little-endian.
 		parse_u32 : Format, State -> Try({ value : U32, rest : State }, Error)
@@ -256,8 +279,8 @@ Wire := [].{
 		}
 
 		## Four bytes, little-endian, two's complement.
-		encode_i32 : I32, List(U8) -> Try(List(U8), [])
-		encode_i32 = |value, state| Ok(write_fixed(state, I32.to_u128_wrap(value), 4))
+		encode_i32 : I32, Enc -> Try(Enc, [])
+		encode_i32 = |value, state| Ok(put(state, |b| write_fixed(b, I32.to_u128_wrap(value), 4)))
 
 		## Four bytes, little-endian, two's complement.
 		parse_i32 : Format, State -> Try({ value : I32, rest : State }, Error)
@@ -267,8 +290,8 @@ Wire := [].{
 		}
 
 		## Eight bytes, little-endian.
-		encode_u64 : U64, List(U8) -> Try(List(U8), [])
-		encode_u64 = |value, state| Ok(write_fixed(state, U64.to_u128(value), 8))
+		encode_u64 : U64, Enc -> Try(Enc, [])
+		encode_u64 = |value, state| Ok(put(state, |b| write_fixed(b, U64.to_u128(value), 8)))
 
 		## Eight bytes, little-endian.
 		parse_u64 : Format, State -> Try({ value : U64, rest : State }, Error)
@@ -278,8 +301,8 @@ Wire := [].{
 		}
 
 		## Eight bytes, little-endian, two's complement.
-		encode_i64 : I64, List(U8) -> Try(List(U8), [])
-		encode_i64 = |value, state| Ok(write_fixed(state, I64.to_u128_wrap(value), 8))
+		encode_i64 : I64, Enc -> Try(Enc, [])
+		encode_i64 = |value, state| Ok(put(state, |b| write_fixed(b, I64.to_u128_wrap(value), 8)))
 
 		## Eight bytes, little-endian, two's complement.
 		parse_i64 : Format, State -> Try({ value : I64, rest : State }, Error)
@@ -289,16 +312,16 @@ Wire := [].{
 		}
 
 		## Sixteen bytes, little-endian.
-		encode_u128 : U128, List(U8) -> Try(List(U8), [])
-		encode_u128 = |value, state| Ok(write_fixed(state, value, 16))
+		encode_u128 : U128, Enc -> Try(Enc, [])
+		encode_u128 = |value, state| Ok(put(state, |b| write_fixed(b, value, 16)))
 
 		## Sixteen bytes, little-endian.
 		parse_u128 : Format, State -> Try({ value : U128, rest : State }, Error)
 		parse_u128 = |_, state| read_fixed(state, 16)
 
 		## Sixteen bytes, little-endian, two's complement.
-		encode_i128 : I128, List(U8) -> Try(List(U8), [])
-		encode_i128 = |value, state| Ok(write_fixed(state, I128.to_u128_wrap(value), 16))
+		encode_i128 : I128, Enc -> Try(Enc, [])
+		encode_i128 = |value, state| Ok(put(state, |b| write_fixed(b, I128.to_u128_wrap(value), 16)))
 
 		## Sixteen bytes, little-endian, two's complement.
 		parse_i128 : Format, State -> Try({ value : I128, rest : State }, Error)
@@ -308,8 +331,8 @@ Wire := [].{
 		}
 
 		## The IEEE 754 bit pattern, four bytes, little-endian.
-		encode_f32 : F32, List(U8) -> Try(List(U8), [])
-		encode_f32 = |value, state| Ok(write_fixed(state, U32.to_u128(F32.to_bits(value)), 4))
+		encode_f32 : F32, Enc -> Try(Enc, [])
+		encode_f32 = |value, state| Ok(put(state, |b| write_fixed(b, U32.to_u128(F32.to_bits(value)), 4)))
 
 		## The IEEE 754 bit pattern, four bytes, little-endian.
 		parse_f32 : Format, State -> Try({ value : F32, rest : State }, Error)
@@ -319,8 +342,8 @@ Wire := [].{
 		}
 
 		## The IEEE 754 bit pattern, eight bytes, little-endian.
-		encode_f64 : F64, List(U8) -> Try(List(U8), [])
-		encode_f64 = |value, state| Ok(write_fixed(state, U64.to_u128(F64.to_bits(value)), 8))
+		encode_f64 : F64, Enc -> Try(Enc, [])
+		encode_f64 = |value, state| Ok(put(state, |b| write_fixed(b, U64.to_u128(F64.to_bits(value)), 8)))
 
 		## The IEEE 754 bit pattern, eight bytes, little-endian.
 		parse_f64 : Format, State -> Try({ value : F64, rest : State }, Error)
@@ -330,8 +353,8 @@ Wire := [].{
 		}
 
 		## The attos as sixteen bytes, little-endian, two's complement.
-		encode_dec : Dec, List(U8) -> Try(List(U8), [])
-		encode_dec = |value, state| Ok(write_fixed(state, I128.to_u128_wrap(Dec.to_attos(value)), 16))
+		encode_dec : Dec, Enc -> Try(Enc, [])
+		encode_dec = |value, state| Ok(put(state, |b| write_fixed(b, I128.to_u128_wrap(Dec.to_attos(value)), 16)))
 
 		## The attos as sixteen bytes, little-endian, two's complement.
 		parse_dec : Format, State -> Try({ value : Dec, rest : State }, Error)
@@ -341,9 +364,11 @@ Wire := [].{
 		}
 
 		## A count, then each item.
-		encode_list : List(U8), U64, (List(U8), (List(U8), (List(U8) -> Try(List(U8), err)) -> Try(List(U8), err)) -> Try(List(U8), err)) -> Try(List(U8), err)
-		encode_list = |state, count, write_items|
-			write_items(write_count(state, count), |current, write_value| write_value(current))
+		encode_list : Enc, U64, (Enc, (Enc, (Enc -> Try(Enc, err)) -> Try(Enc, err)) -> Try(Enc, err)) -> Try(Enc, err)
+		encode_list = |state, count, write_items| {
+			inner = write_items(enter(put(state, |b| write_count(b, count))), |current, write_value| write_value(current))?
+			Ok(leave(inner))
+		}
 
 		## Open a list after checking its count against the input. Lists are
 		## driven uncounted, so nothing is preallocated from a claimed count:
@@ -366,22 +391,23 @@ Wire := [].{
 		## A count of present fields, then the fields: values alone when all
 		## are present, otherwise names and values. The positional attempt is
 		## rewound in place when an absent field shows the named form is due.
-		encode_record : List(U8), U64, (Fields, (Fields, Str, (List(U8) -> Try(List(U8), err)) -> Try(Fields, err)) -> Try(Fields, err)) -> Try(List(U8), err)
+		encode_record : Enc, U64, (Fields, (Fields, Str, (Enc -> Try(Enc, err)) -> Try(Fields, err)) -> Try(Fields, err)) -> Try(Enc, err)
 		encode_record = |state, count, write_fields| {
-			start = state.len()
+			start = state.bytes.len()
 			positional = write_fields(
-				{ bytes: write_count(state, count), present: 0 },
-				|current, _, write_value| Ok({ bytes: write_value(current.bytes)?, present: current.present + 1 }),
+				{ enc: enter(put(state, |b| write_count(b, count))), present: 0 },
+				|current, _, write_value| Ok({ enc: write_value(current.enc)?, present: current.present + 1 }),
 			)?
 			if positional.present == count {
-				return Ok(positional.bytes)
+				return Ok(leave(positional.enc))
 			}
-			rewound = positional.bytes.drop_last(positional.bytes.len() - start)
+			present = positional.present
+			rewound = put(positional.enc, |b| b.drop_last(b.len() - start))
 			named = write_fields(
-				{ bytes: write_count(rewound, positional.present), present: 0 },
-				|current, name, write_value| Ok({ bytes: write_value(write_str(current.bytes, name))?, present: current.present + 1 }),
+				{ enc: put(rewound, |b| write_count(b, present)), present: 0 },
+				|current, name, write_value| Ok({ enc: write_value(put(current.enc, |b| write_str(b, name)))?, present: current.present + 1 }),
 			)?
-			Ok(named.bytes)
+			Ok(leave(named.enc))
 		}
 
 		## Open a record after checking its count against the input. Its form
@@ -437,8 +463,11 @@ Wire := [].{
 		skip_record_field = |_, _| Err(Malformed)
 
 		## Each item, with nothing before or between them.
-		encode_tuple : List(U8), U64, (List(U8), (List(U8), (List(U8) -> Try(List(U8), err)) -> Try(List(U8), err)) -> Try(List(U8), err)) -> Try(List(U8), err)
-		encode_tuple = |state, _, write_items| write_items(state, |current, write_value| write_value(current))
+		encode_tuple : Enc, U64, (Enc, (Enc, (Enc -> Try(Enc, err)) -> Try(Enc, err)) -> Try(Enc, err)) -> Try(Enc, err)
+		encode_tuple = |state, _, write_items| {
+			inner = write_items(enter(state), |current, write_value| write_value(current))?
+			Ok(leave(inner))
+		}
 
 		## Open a tuple; its arity is the type's.
 		parse_tuple_start : Format, State, U64 -> Try(State, Error)
@@ -453,9 +482,11 @@ Wire := [].{
 		parse_tuple_end = |_, state, _| Ok(pop(state))
 
 		## The tag's name, then its payloads.
-		encode_tag : List(U8), Str, U64, (List(U8), (List(U8), (List(U8) -> Try(List(U8), err)) -> Try(List(U8), err)) -> Try(List(U8), err)) -> Try(List(U8), err)
-		encode_tag = |state, name, _, write_payloads|
-			write_payloads(write_str(state, name), |current, write_value| write_value(current))
+		encode_tag : Enc, Str, U64, (Enc, (Enc, (Enc -> Try(Enc, err)) -> Try(Enc, err)) -> Try(Enc, err)) -> Try(Enc, err)
+		encode_tag = |state, name, _, write_payloads| {
+			inner = write_payloads(enter(put(state, |b| write_str(b, name))), |current, write_value| write_value(current))?
+			Ok(leave(inner))
+		}
 
 		## A tag by name; `UnknownTag` when the type has no such tag.
 		parse_tag_union : Format, Encoding.ParseTagUnionSpec(a), State -> Try({ value : a, rest : State }, Error)
@@ -480,20 +511,25 @@ Wire := [].{
 		## A count, then each entry as key and value, sorted by the encoded
 		## entry. Encoded keys are distinct and none is a prefix of another,
 		## so this is the order of the encoded keys.
-		encode_dict : List(U8), U64, (List(List(U8)), (List(List(U8)), (List(U8) -> Try(List(U8), err)), (List(U8) -> Try(List(U8), err)) -> Try(List(List(U8)), err)) -> Try(List(List(U8)), err)) -> Try(List(U8), err)
+		## Each entry is written on its own, inside the dictionary, and keeps
+		## whether it nested too deep.
+		encode_dict : Enc, U64, (Entries, (Entries, (Enc -> Try(Enc, err)), (Enc -> Try(Enc, err)) -> Try(Entries, err)) -> Try(Entries, err)) -> Try(Enc, err)
 		encode_dict = |state, count, write_entries| {
-			entries = write_entries(
-				List.with_capacity(count),
+			depth = state.depth + 1
+			written = write_entries(
+				{ entries: List.with_capacity(count), deep: state.deep or depth > max_depth },
 				|current, write_key, write_value| {
-					key = write_key([])?
-					Ok(current.append(write_value(key)?))
+					key = write_key({ bytes: [], depth, deep: current.deep })?
+					entry = write_value(key)?
+					Ok({ entries: current.entries.append(entry.bytes), deep: entry.deep })
 				},
 			)?
-			var $out = write_count(state, count)
-			for entry in entries.sort_with(compare_bytes) {
+			{ bytes, depth: outer, deep: _ } = state
+			var $out = write_count(bytes, count)
+			for entry in written.entries.sort_with(compare_bytes) {
 				$out = $out.concat(entry)
 			}
-			Ok($out)
+			Ok({ bytes: $out, depth: outer, deep: written.deep })
 		}
 
 		## Open a dictionary after checking its count against the input.
@@ -531,7 +567,7 @@ Wire := [].{
 			}
 
 		## A structured key is its own encoding, with nothing before it.
-		encode_key_start : Format, List(U8) -> Try(List(U8), [])
+		encode_key_start : Format, Enc -> Try(Enc, [])
 		encode_key_start = |_, state| Ok(state)
 
 		## A structured key is its own encoding, with nothing before it.
@@ -539,7 +575,7 @@ Wire := [].{
 		parse_key_start = |_, state| Ok(state)
 
 		## A `Str` key, as a `Str`.
-		encode_key_str : Format, Str, List(U8) -> Try(List(U8), [])
+		encode_key_str : Format, Str, Enc -> Try(Enc, [])
 		encode_key_str = |_, value, state| Format.encode_str(value, state)
 
 		## A `Str` key, as a `Str`.
@@ -547,7 +583,7 @@ Wire := [].{
 		parse_key_str = |encoding, state| Format.parse_str(encoding, state)
 
 		## A `Bool` key, as a `Bool`.
-		encode_key_bool : Format, Bool, List(U8) -> Try(List(U8), [])
+		encode_key_bool : Format, Bool, Enc -> Try(Enc, [])
 		encode_key_bool = |_, value, state| Format.encode_bool(value, state)
 
 		## A `Bool` key, as a `Bool`.
@@ -555,7 +591,7 @@ Wire := [].{
 		parse_key_bool = |encoding, state| Format.parse_bool(encoding, state)
 
 		## A `U8` key, as a `U8`.
-		encode_key_u8 : Format, U8, List(U8) -> Try(List(U8), [])
+		encode_key_u8 : Format, U8, Enc -> Try(Enc, [])
 		encode_key_u8 = |_, value, state| Format.encode_u8(value, state)
 
 		## A `U8` key, as a `U8`.
@@ -563,7 +599,7 @@ Wire := [].{
 		parse_key_u8 = |encoding, state| Format.parse_u8(encoding, state)
 
 		## An `I8` key, as an `I8`.
-		encode_key_i8 : Format, I8, List(U8) -> Try(List(U8), [])
+		encode_key_i8 : Format, I8, Enc -> Try(Enc, [])
 		encode_key_i8 = |_, value, state| Format.encode_i8(value, state)
 
 		## An `I8` key, as an `I8`.
@@ -571,7 +607,7 @@ Wire := [].{
 		parse_key_i8 = |encoding, state| Format.parse_i8(encoding, state)
 
 		## A `U16` key, as a `U16`.
-		encode_key_u16 : Format, U16, List(U8) -> Try(List(U8), [])
+		encode_key_u16 : Format, U16, Enc -> Try(Enc, [])
 		encode_key_u16 = |_, value, state| Format.encode_u16(value, state)
 
 		## A `U16` key, as a `U16`.
@@ -579,7 +615,7 @@ Wire := [].{
 		parse_key_u16 = |encoding, state| Format.parse_u16(encoding, state)
 
 		## An `I16` key, as an `I16`.
-		encode_key_i16 : Format, I16, List(U8) -> Try(List(U8), [])
+		encode_key_i16 : Format, I16, Enc -> Try(Enc, [])
 		encode_key_i16 = |_, value, state| Format.encode_i16(value, state)
 
 		## An `I16` key, as an `I16`.
@@ -587,7 +623,7 @@ Wire := [].{
 		parse_key_i16 = |encoding, state| Format.parse_i16(encoding, state)
 
 		## A `U32` key, as a `U32`.
-		encode_key_u32 : Format, U32, List(U8) -> Try(List(U8), [])
+		encode_key_u32 : Format, U32, Enc -> Try(Enc, [])
 		encode_key_u32 = |_, value, state| Format.encode_u32(value, state)
 
 		## A `U32` key, as a `U32`.
@@ -595,7 +631,7 @@ Wire := [].{
 		parse_key_u32 = |encoding, state| Format.parse_u32(encoding, state)
 
 		## An `I32` key, as an `I32`.
-		encode_key_i32 : Format, I32, List(U8) -> Try(List(U8), [])
+		encode_key_i32 : Format, I32, Enc -> Try(Enc, [])
 		encode_key_i32 = |_, value, state| Format.encode_i32(value, state)
 
 		## An `I32` key, as an `I32`.
@@ -603,7 +639,7 @@ Wire := [].{
 		parse_key_i32 = |encoding, state| Format.parse_i32(encoding, state)
 
 		## A `U64` key, as a `U64`.
-		encode_key_u64 : Format, U64, List(U8) -> Try(List(U8), [])
+		encode_key_u64 : Format, U64, Enc -> Try(Enc, [])
 		encode_key_u64 = |_, value, state| Format.encode_u64(value, state)
 
 		## A `U64` key, as a `U64`.
@@ -611,7 +647,7 @@ Wire := [].{
 		parse_key_u64 = |encoding, state| Format.parse_u64(encoding, state)
 
 		## An `I64` key, as an `I64`.
-		encode_key_i64 : Format, I64, List(U8) -> Try(List(U8), [])
+		encode_key_i64 : Format, I64, Enc -> Try(Enc, [])
 		encode_key_i64 = |_, value, state| Format.encode_i64(value, state)
 
 		## An `I64` key, as an `I64`.
@@ -619,7 +655,7 @@ Wire := [].{
 		parse_key_i64 = |encoding, state| Format.parse_i64(encoding, state)
 
 		## A `U128` key, as a `U128`.
-		encode_key_u128 : Format, U128, List(U8) -> Try(List(U8), [])
+		encode_key_u128 : Format, U128, Enc -> Try(Enc, [])
 		encode_key_u128 = |_, value, state| Format.encode_u128(value, state)
 
 		## A `U128` key, as a `U128`.
@@ -627,7 +663,7 @@ Wire := [].{
 		parse_key_u128 = |encoding, state| Format.parse_u128(encoding, state)
 
 		## An `I128` key, as an `I128`.
-		encode_key_i128 : Format, I128, List(U8) -> Try(List(U8), [])
+		encode_key_i128 : Format, I128, Enc -> Try(Enc, [])
 		encode_key_i128 = |_, value, state| Format.encode_i128(value, state)
 
 		## An `I128` key, as an `I128`.
@@ -635,7 +671,7 @@ Wire := [].{
 		parse_key_i128 = |encoding, state| Format.parse_i128(encoding, state)
 
 		## An `F32` key, as an `F32`.
-		encode_key_f32 : Format, F32, List(U8) -> Try(List(U8), [])
+		encode_key_f32 : Format, F32, Enc -> Try(Enc, [])
 		encode_key_f32 = |_, value, state| Format.encode_f32(value, state)
 
 		## An `F32` key, as an `F32`.
@@ -643,7 +679,7 @@ Wire := [].{
 		parse_key_f32 = |encoding, state| Format.parse_f32(encoding, state)
 
 		## An `F64` key, as an `F64`.
-		encode_key_f64 : Format, F64, List(U8) -> Try(List(U8), [])
+		encode_key_f64 : Format, F64, Enc -> Try(Enc, [])
 		encode_key_f64 = |_, value, state| Format.encode_f64(value, state)
 
 		## An `F64` key, as an `F64`.
@@ -651,7 +687,7 @@ Wire := [].{
 		parse_key_f64 = |encoding, state| Format.parse_f64(encoding, state)
 
 		## A `Dec` key, as a `Dec`.
-		encode_key_dec : Format, Dec, List(U8) -> Try(List(U8), [])
+		encode_key_dec : Format, Dec, Enc -> Try(Enc, [])
 		encode_key_dec = |_, value, state| Format.encode_dec(value, state)
 
 		## A `Dec` key, as a `Dec`.
@@ -659,16 +695,16 @@ Wire := [].{
 		parse_key_dec = |encoding, state| Format.parse_dec(encoding, state)
 
 		## A tag key without payloads, as its name.
-		encode_key_tag : Format, List(U8), Str -> Try(List(U8), [])
-		encode_key_tag = |_, state, name| Ok(write_str(state, name))
+		encode_key_tag : Format, Enc, Str -> Try(Enc, [])
+		encode_key_tag = |_, state, name| Ok(leave(put(enter(state), |b| write_str(b, name))))
 
 		## A tag key, as a tag.
 		parse_key_tag_union : Format, Encoding.ParseTagUnionSpec(a), State -> Try({ value : a, rest : State }, Error)
 		parse_key_tag_union = |encoding, spec, state| Format.parse_tag_union(encoding, spec, state)
 
 		## `Bytes`: a count, then the bytes in one block.
-		encode_bytes : Format, List(U8), List(U8) -> Try(List(U8), [])
-		encode_bytes = |_, value, state| Ok(write_count(state, value.len()).concat(value))
+		encode_bytes : Format, List(U8), Enc -> Try(Enc, [])
+		encode_bytes = |_, value, state| Ok(put(state, |b| write_count(b, value.len()).concat(value)))
 
 		## `Bytes`: a count, then the bytes, shared with the input.
 		parse_bytes : Format, State -> Try({ value : List(U8), rest : State }, Error)
@@ -683,6 +719,19 @@ Wire := [].{
 ## decoder's recursion.
 max_depth : U64
 max_depth = 512
+
+## The encoder's state with `write` applied to its bytes. The state is taken
+## apart first so the bytes are written in place.
+put : Wire.Enc, (List(U8) -> List(U8)) -> Wire.Enc
+put = |{ bytes, depth, deep }, write| { bytes: write(bytes), depth, deep }
+
+## Open a container in the encoder, noting a depth `decode` would refuse.
+enter : Wire.Enc -> Wire.Enc
+enter = |{ bytes, depth, deep }| { bytes, depth: depth + 1, deep: deep or depth >= max_depth }
+
+## Close a container in the encoder.
+leave : Wire.Enc -> Wire.Enc
+leave = |{ bytes, depth, deep }| { bytes, depth: depth - 1, deep }
 
 ## A record frame whose first field event has not yet counted the type.
 unknown_total : U64
@@ -1180,4 +1229,49 @@ expect {
 	too_deep_list : Try(Nested, Wire.Error)
 	too_deep_list = Wire.decode(List.repeat([1, 1], 600).join().append(0))
 	deep_tree == Ok(left_spine(511)) and too_deep_tree == Err(TooDeep) and too_deep_list == Err(TooDeep)
+}
+
+## The encoder knows the same bound: `try_encode` accepts exactly the values
+## whose payloads decode, at the edge of the bound and on either side of it,
+## through tags, lists, records and dictionaries alike, and `encode` still
+## encodes the rest.
+expect {
+	decodes = |tree| {
+		decoded : Try(Tree, Wire.Error)
+		decoded = Wire.decode(Wire.encode(tree))
+		decoded.is_ok()
+	}
+	agree = |depth| {
+		tree = left_spine(depth)
+		Wire.try_encode(tree).is_ok() == decodes(tree)
+	}
+	edge = agree(510) and agree(511) and agree(512) and agree(600)
+	refused = Wire.try_encode(left_spine(512)) == Err(TooDeep) and Wire.try_encode(left_spine(511)) == Ok(Wire.encode(left_spine(511)))
+	nest = |depth| {
+		var $value = Nested.{ children: [] }
+		var $level = 1
+		while $level < depth {
+			$value = Nested.{ children: [$value] }
+			$level = $level + 1
+		}
+		$value
+	}
+	nested_agree = |depth| {
+		value = nest(depth)
+		decoded : Try(Nested, Wire.Error)
+		decoded = Wire.decode(Wire.encode(value))
+		Wire.try_encode(value).is_ok() == decoded.is_ok()
+	}
+	lists = nested_agree(255) and nested_agree(256) and nested_agree(257) and Wire.try_encode(nest(256)).is_ok() and Wire.try_encode(nest(257)).is_err()
+	wrapped_agree = |depth| {
+		in_dict = Dict.from_list([("k", left_spine(depth))])
+		dict_decoded : Try(Dict(Str, Tree), Wire.Error)
+		dict_decoded = Wire.decode(Wire.encode(in_dict))
+		in_record = { inner: left_spine(depth) }
+		record_decoded : Try({ inner : Tree }, Wire.Error)
+		record_decoded = Wire.decode(Wire.encode(in_record))
+		Wire.try_encode(in_dict).is_ok() == dict_decoded.is_ok() and Wire.try_encode(in_record).is_ok() == record_decoded.is_ok()
+	}
+	wrapped = wrapped_agree(509) and wrapped_agree(510) and wrapped_agree(511) and Wire.try_encode({ inner: left_spine(511) }).is_err()
+	edge and refused and lists and wrapped
 }

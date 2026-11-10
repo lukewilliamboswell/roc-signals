@@ -99,7 +99,7 @@ Worker := [].{
 			Err(_) => crash "contract: worker program \"${name}\" answered with bytes that are not its output type"
 		},
 		run: |bytes| match Wire.decode(bytes) {
-			Ok(input) => Wire.encode(calculate(input))
+			Ok(input) => payload_of(name, calculate(input))
 			Err(_) => crash "contract: worker program \"${name}\" was sent bytes that are not its input type"
 		},
 	}
@@ -133,8 +133,8 @@ Worker := [].{
 		},
 		run: |bytes| match Wire.decode(bytes) {
 			Ok(input) => match calculate(input) {
-				Ok(value) => Wire.encode(value).append(0)
-				Err(error) => Wire.encode(error).append(1)
+				Ok(value) => payload_of(name, value).append(0)
+				Err(error) => payload_of(name, error).append(1)
 			}
 			Err(_) => crash "contract: worker program \"${name}\" was sent bytes that are not its input type"
 		},
@@ -192,6 +192,15 @@ Worker := [].{
 		},
 		body,
 	)
+}
+
+## A program's answer as its payload. An answer nesting containers deeper
+## than `Wire.decode` accepts would be refused by the page, so it is a
+## contract error here, in the worker instance, where it is contained.
+payload_of : Str, output -> List(U8) where [output.Wire.Sendable]
+payload_of = |name, output| match Wire.try_encode(output) {
+	Ok(bytes) => bytes
+	Err(TooDeep) => crash "contract: worker program \"${name}\" returned a value nested deeper than 512 containers, which the page cannot decode"
 }
 
 ## A settled layer for one answer.

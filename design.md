@@ -1416,6 +1416,7 @@ Worker.derive : Program(input, output), Val(ctx, input),
     (Val(In(ctx, Remote(output)), Remote(output)) -> Elem(In(ctx, Remote(output)))) -> Elem(ctx)
 Worker.derive_when : Program(input, output), Val(ctx, [Run(input), Skip]), ... -> Elem(ctx)
 Wire.encode : a -> List(U8)                    where [a.Wire.Sendable]
+Wire.try_encode : a -> Try(List(U8), [TooDeep]) where [a.Wire.Sendable]   # refuses what decode would
 Wire.decode : List(U8) -> Try(a, Wire.Error)   where [a.Wire.Sendable]
 Wire.Bytes                                     # a byte payload that crosses as one block
 ```
