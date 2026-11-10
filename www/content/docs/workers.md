@@ -18,6 +18,7 @@ code.
 The samples on this page come from `www/samples/workers/`, a text box whose
 analysis runs in workers; `www/samples/files/` and `www/samples/tasks/`,
 which read and convert a file; `www/samples/prepared/`, a notes explorer;
+`www/samples/line-index/`, which indexes a large file's lines;
 and `www/samples/worker-lifetimes/`, a list of documents. All of them have
 specs that run natively and in Chrome.
 
@@ -286,6 +287,11 @@ see only answers, and the native spec runner prepares for every job.
   `prepare!` or in a task ends that worker: the job answers `Lost(fault)`,
   the state is gone, and the next job prepares again elsewhere. A deadline
   counts the preparation's time.
+- **A failed preparation is kept like any other.** When `prepare!` answers
+  `Err(error)`, the worker keeps that answer for the input, and the next
+  job over the same input answers the same `Failed(error)` without
+  preparing again. Trying again needs a new input: for a file the browser
+  could not read, the user choosing the file again.
 
 **Tabs.** The sample's tasks live inside their tabs, so switching away
 disposes a tab's site and coming back asks again. With separate tasks every
@@ -298,6 +304,38 @@ That is usually enough. Hoist a site out of the tab, next to the state its
 answer belongs with, when even the task is slow or the answer must survive
 the tab: a hoisted site asks once per input and keeps its answer, but it
 runs while its tab is hidden.
+
+### Keep the handle, not the text
+
+A preparation's tasks are given its state and their own query, not the
+preparation's input. When a task needs to read the file again, keep the
+`File` in the state: it is a handle, which costs the worker nothing to
+hold, and a task reads from it with `read!` as `prepare!` did. The state
+can then be an index of the file rather than its text. Here `prepare!`
+reads the file 64 KiB at a time and keeps only where each line starts, and
+a task reads one line back with a single read of its bytes:
+
+{{ sample(file="line-index/Lines.roc", region="index") }}
+
+{{ sample(file="line-index/Lines.roc", region="line") }}
+
+The worker holds the index and one chunk, never the whole file, so it can
+prepare a file far larger than you would read whole, let alone bring into
+the page. The [Log Explorer](@/examples/log-explorer.md) is a whole app in
+this shape: its state is a log's handle and an index of its lines, levels
+and sources; its overview is answered from the index alone, and its search
+and its viewer read only the lines they need.
+
+Two costs come with a state like this:
+
+- A question about the whole text, such as a search for a word, reads the
+  file again, a chunk at a time. That is the price of not keeping the text.
+  It is still only the task's cost: the index tells the search where lines
+  start and which lines a filter keeps, so it never parses the file again.
+- The state counts toward `maxWorkerBytes`. A worker grown past it is ended
+  after its job, its state with it, so a state too large for the bound is
+  prepared again for every question. Keep the state compact (positions and
+  small tags rather than strings), or raise the bound.
 
 ## Lifetimes
 
@@ -375,8 +413,11 @@ cancelled job complete and drops its answer, so its worker, and the state
 it holds, is kept for the next job; the cost is a worker busy for the rest
 of that job. Either way the app never sees a cancelled job's answer.
 `Finish` suits a tab whose task the user often leaves mid-job, so the
-worker is still warm when they come back. A deadline always ends the
-worker.
+worker is still warm when they come back, and a task asked again as the
+user types, such as a search over a prepared file: a search the user has
+typed past runs to its end, and the next one waits for the worker that
+holds the state rather than preparing it again on another. A deadline
+always ends the worker.
 
 Whatever stops a job, nothing it wrote can be seen: only a delivered
 answer puts a file on the page.

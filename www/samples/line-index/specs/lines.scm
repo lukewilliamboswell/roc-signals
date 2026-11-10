@@ -1,0 +1,21 @@
+(test "Lines — a kept handle and an index answer a count and any line"
+  (setup
+    (file "big.txt" "text/plain" "alpha\nbeta\ngamma\n" 1000))
+  (steps
+    (expect-text (test-id "count") "choose a file")
+    (choose-files (label "Text file") "big.txt")
+    (run-effect 1)
+    (expect-text (test-id "count") "3000 lines")
+    (run-effect 2)
+    (expect-text (test-id "line") "alpha")
+    (fill (label "Line") "3000")
+    (run-effect 3)
+    (expect-text (test-id "line") "gamma")
+    (fill (label "Line") "3001")
+    (run-effect 4)
+    (expect-text (test-id "line") "past the end")
+    (fill (label "Line") "0")
+    (run-effect 5)
+    (expect-text (test-id "line") "past the end")
+  )
+)

@@ -14,7 +14,8 @@
 //    index, not the text), and the page's thread must stay live.
 // 2. A new file prepares afresh, and the first file's state is let go.
 // 3. A file the browser can no longer read, and a file that is not a log,
-//    each reach the page as the preparation's error, which the app matched.
+//    each reach the page as the preparation's error, which the app matched;
+//    a failed preparation is kept, and the next question reuses it.
 import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
@@ -314,7 +315,8 @@ const BIG = 64 * MIB + 1;
 }
 
 // 3. A file the browser can no longer read: deleted from disk after it
-// was chosen. Then a file that is not a log.
+// was chosen. Then a file that is not a log, whose failed preparation the
+// worker keeps.
 {
   const { page, ctx } = await open();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "roc-signals-log-explorer-"));
@@ -327,13 +329,24 @@ const BIG = 64 * MIB + 1;
     const unreadable = await window.__answer("overview", "The browser");
     const bytes = new Uint8Array(65536);
     for (let i = 0; i < bytes.length; i += 1) bytes[i] = (i * 2654435761) >>> 24;
-    window.__chooseFile(new File([bytes], "photo.log", { type: "text/x-log" }));
+    const photo = new File([bytes], "photo.log", { type: "text/x-log" });
+    window.__chooseFile(photo);
     const binary = await window.__answer("overview", "This does not");
-    return { unreadable, binary, poisoned: !!window.__rt.poisoned, lost: window.__rt.monitor.snapshot().jobs.lost };
+    // A failed preparation is kept like any other: the next question of
+    // the same file answers the same error without preparing again, and
+    // choosing the file again is a new input, which prepares afresh.
+    window.__click("Search");
+    const searched = await window.__answer("search-status", "This does not");
+    const reused = window.__jobs().at(-1).slice(0, 2);
+    window.__chooseFile(photo);
+    await window.__until(() => window.__rt.monitor.snapshot().jobs.done === 4, "the file chosen again");
+    return { unreadable, binary, searched: [searched, reused], again: window.__jobs().at(-1).slice(0, 2), poisoned: !!window.__rt.poisoned, lost: window.__rt.monitor.snapshot().jobs.lost };
   });
   check("an unreadable file and a file that is not a log are errors the app matched, and no job is lost", r, {
     unreadable: "The browser can no longer read this file. Choose it again.",
     binary: "This does not look like a log: no line starts with a timestamp and a level.",
+    searched: ["This does not look like a log: no line starts with a timestamp and a level.", ["search", "reuse"]],
+    again: ["search", "prepare"],
     poisoned: false,
     lost: 0,
   });
