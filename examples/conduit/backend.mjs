@@ -1,4 +1,13 @@
-// Deterministic in-page RealWorld (Conduit) API backend for examples/conduit.
+// Conduit's simulated service: a deterministic, in-memory RealWorld API.
+//
+// This is the example's own JavaScript, not the platform's or the site's.
+// Its default export follows the contract every example backend keeps
+// (www/data/examples.toml, `backend`): `createBackend(options)` returns
+// `handle({ method, uri, headers, body, signal })`, which answers
+// `{ status, body, headers }` (or a promise of one) for a request it serves,
+// rejects for a network failure, and returns null for any other URI so the
+// caller sends that request on to the real network. The site's site.mjs
+// turns it into the mount's `fetch`; the browser tests serve it over HTTP.
 //
 // Response shapes follow the RealWorld API spec
 // (https://docs.realworld.show/specifications/backend/): user/profile/article/
@@ -13,11 +22,10 @@
 // comments, favorites, and follow/unfollow.
 //
 // Everything is seeded and in-memory: no clock, no randomness, so native and
-// JS assertions can rely on exact values. Unknown URIs return null so the
-// public example fetch dispatcher can pass them to its normal fetch fallback.
+// JS assertions can rely on exact values.
 
 function httpJsonResponse(value, { status = 200 } = {}) {
-  return { status, body: JSON.stringify(value) };
+  return { status, body: JSON.stringify(value), headers: { "content-type": "application/json; charset=utf-8" } };
 }
 
 const bodyDecoder = new TextDecoder();
@@ -86,7 +94,7 @@ function slugify(text) {
     .replace(/^-+|-+$/g, "");
 }
 
-export function createConduitBackend() {
+function createConduitBackend() {
   const users = new Map();
   for (const seed of SEED_USERS) {
     users.set(seed.username, {
@@ -691,9 +699,11 @@ function routeConduit(backend, { method, path, query, viewer, bodyText }) {
   return notFound();
 }
 
-// The deterministic service boundary uses ordinary HTTP fields, not task codecs.
-export function createConduitHandler({ backend = createConduitBackend(), latencyMs = 0 } = {}) {
-  return function conduitHandler({ method = "GET", uri, headers = [], body = [], signal }) {
+// The backend contract above: one seeded backend per call, so each mount
+// (or each test server) starts from the same data. `latencyMs` delays every
+// answer, abortably, so a test can see loading states.
+export default function createBackend({ backend = createConduitBackend(), latencyMs = 0 } = {}) {
+  return function conduitHandler({ method = "GET", uri, headers = [], body = "", signal }) {
     const [path, queryText = ""] = String(uri).split("?");
     if (!isConduitPath(path)) return null;
     signal?.throwIfAborted();
@@ -716,18 +726,5 @@ export function createConduitHandler({ backend = createConduitBackend(), latency
       }, latencyMs);
       signal?.addEventListener("abort", abort, { once: true });
     });
-  };
-}
-
-// Return null for unrelated routes so the caller can use its normal fetch.
-export function createConduitFetch(options = {}) {
-  const handle = createConduitHandler(options);
-  return function conduitFetch(uri, request = {}) {
-    const result = handle({ ...request, uri });
-    if (result === null) return null;
-    return Promise.resolve(result).then(({ status, body }) => new Response(body, {
-      status,
-      headers: { "content-type": "application/json; charset=utf-8" },
-    }));
   };
 }

@@ -52,6 +52,10 @@ main! = |raw_args| {
 	Path.copy!(Path.utf8("${o.root}/examples/worker-lab/pool-panel.mjs"), Path.utf8("${dist}/examples/worker-lab/pool-panel.mjs"))?
 	# Port handlers an example's page mounts it with (its `ports`).
 	Path.copy!(Path.utf8("${o.root}/examples/reading-list/ports.mjs"), Path.utf8("${dist}/examples/reading-list/ports.mjs"))?
+	# The simulated service an example's page mounts it with (its `backend`).
+	for example in ["field-notes", "status-page", "conduit"] {
+		Path.copy!(Path.utf8("${o.root}/examples/${example}/backend.mjs"), Path.utf8("${dist}/examples/${example}/backend.mjs"))?
+	}
 	# Data an example downloads at run time.
 	Path.copy!(Path.utf8("${o.root}/examples/csv-converter/sample.csv"), Path.utf8("${dist}/examples/csv-converter/sample.csv"))?
 	SpecSuite.copy_runtime!(o.root, dist)?

@@ -1,8 +1,11 @@
 # The examples the site shows, in index order. Each runs on the web
 # platform from the entry point `source` names; its specs run natively and
 # in Chrome. An example may list `scripts` its page loads before the app
-# mounts, and name its port handlers' module in `ports` (a file beside its
-# app.wasm whose default export site.mjs passes as the `ports` mount option).
+# mounts, name its port handlers' module in `ports` (a file beside its
+# app.wasm whose default export site.mjs passes as the `ports` mount option),
+# and name its simulated service in `backend` (a module beside its app.wasm
+# whose default export, `createBackend()`, returns a request handler that
+# site.mjs turns into the mount's `fetch`; see examples/conduit/backend.mjs).
 
 [[examples]]
 slug = "field-notes"
@@ -11,6 +14,8 @@ description = "Offline-first note capture with an outbox that drains on reconnec
 source = "examples/field-notes/main.roc"
 specs = "examples/field-notes/specs"
 public = true
+# Its simulated sync service, the example's own JavaScript.
+backend = "backend.mjs"
 
 [[examples]]
 slug = "data-grid"
@@ -35,6 +40,8 @@ description = "A public status page rolling four independent service checks into
 source = "examples/status-page/main.roc"
 specs = "examples/status-page/specs"
 public = true
+# Its simulated checks and incident feed, the example's own JavaScript.
+backend = "backend.mjs"
 
 # The uptime chart: Plotly from its pinned CDN URL (the version Plume 0.5.0
 # pins), then the example's `plume-chart` element. Both are deferred, so they
@@ -79,6 +86,8 @@ description = "RealWorld (Conduit) demo: hash-routed feeds, sessions, profiles, 
 source = "examples/conduit/main.roc"
 specs = "examples/conduit/specs"
 public = true
+# Its simulated RealWorld API, the example's own JavaScript.
+backend = "backend.mjs"
 
 [[examples]]
 slug = "worker-lab"

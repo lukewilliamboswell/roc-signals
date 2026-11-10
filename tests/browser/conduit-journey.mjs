@@ -1,7 +1,7 @@
 // conduit-journey.mjs --wasm APP.wasm --runtime runtime.mjs --chrome PATH -- Conduit in headless
 // Chrome with automatic effects: real fetch against the deterministic
-// RealWorld mock backend (www/static/conduit_backend.mjs, run in this Node
-// server), real localStorage, history and popstate. A user journey with
+// RealWorld mock backend (the example's own examples/conduit/backend.mjs,
+// run in this Node server), real localStorage, history and popstate. A user journey with
 // real clicks and typing: browse, sign in, favorite, filter by tag, open an
 // article, comment, go back, sign out.
 import http from "node:http";
@@ -13,9 +13,9 @@ import { parseArgs, runtimeFiles } from "./args.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "../..");
-const { createConduitHandler } = await import(path.join(repo, "www/static/conduit_backend.mjs"));
+const { default: createBackend } = await import(path.join(repo, "examples/conduit/backend.mjs"));
 const opts = parseArgs(process.argv.slice(2));
-const handle = createConduitHandler({ latencyMs: 20 });
+const handle = createBackend({ latencyMs: 20 });
 const files = {
   "index.html": path.join(here, "index.html"),
   ...runtimeFiles(opts.runtime),

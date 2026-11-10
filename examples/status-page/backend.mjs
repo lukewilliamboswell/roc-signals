@@ -1,22 +1,23 @@
-import { createConduitFetch } from "./conduit_backend.mjs";
+// The Status Page's simulated service: four service checks and an incident
+// feed whose answers walk through a scripted outage and recovery.
+//
+// This is the example's own JavaScript, not the platform's or the site's.
+// Its default export follows the contract every example backend keeps
+// (www/data/examples.toml, `backend`): `createBackend()` returns
+// `handle({ method, uri, headers, body, signal })`, which answers
+// `{ status, body, headers }` (or a promise of one) for a request it serves,
+// rejects for a network failure, and returns null for any other URI so the
+// caller sends that request on to the real network. The site's site.mjs
+// turns it into the mount's `fetch`; the browser soak serves it over HTTP.
+//
+// House rules: no `Math.random()`, no wall-clock input. The backend owns a
+// small counter that advances once per request, so successive requests tell
+// the same story every time. Payload formats are copied from the literal
+// payloads in the example's `specs/*.scm`, the ground truth the Roc parse
+// functions were written against.
 
-// --- deterministic HTTP services for the gallery examples -------------------
-//
-// Native specs supply service responses explicitly. In the browser these
-// fetch implementations provide the corresponding scripted examples.
-//
-// House rules: no `Math.random()`, no wall-clock input. Each backend owns a
-// small counter that advances once per request, and the counter indexes a
-// scripted progression so that successive polls tell a story — healthy,
-// degraded, an incident with updates, a failure, recovery — and then settle on
-// a steady final state.
-//
-// Payload wire formats are copied from the literal payloads in each example's
-// `specs/*.scm`, which are the ground truth the Roc parse functions were
-// written against.
-
-// Responses settle after a short delay so loading state is visible. Each
-// occurrence completes independently unless the mount's abort signal fires.
+// Answers settle after a short delay so loading state is visible; an abort
+// (the request cancelled) rejects at once.
 function settle(value, { signal, delayMs = 140 } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -35,6 +36,8 @@ function settle(value, { signal, delayMs = 140 } = {}) {
   });
 }
 
+const plain = (status, body) => ({ status, body, headers: { "content-type": "text/plain; charset=utf-8" } });
+
 function failWith(message, options) {
   return settle(null, options).then(() => {
     throw new Error(message);
@@ -46,12 +49,10 @@ function stage(script, index) {
   return script[Math.min(index, script.length - 1)];
 }
 
-// --- status-page -------------------------------------------------------------
-//
 // GET /api/status/{api,web,database,notifications,incidents}. A per-service
-// counter advances each script independently; each fetch is a new occurrence.
+// counter advances each script independently; each request is a new round.
 //
-// Wire formats (see parse_check and parse_feed in examples/status-page/Status.roc):
+// Wire formats (see parse_check and parse_feed in Status.roc):
 //   check      "operational|99.98"          health | uptime percent
 //   incidents  "id~severity~title~hh:mm@body^hh:mm@body#…"   "#" separates incidents
 //
@@ -112,56 +113,20 @@ const statusFeed = [
   `${statusIncident42}10:02@Investigating elevated 5xx responses^10:20@Identified a bad deploy^10:45@Rolled back the deploy^11:05@Monitoring after rollback^11:30@Resolved, error rates back to baseline#${statusIncident51}11:10@Investigating a notification backlog^11:34@Resolved, backlog drained`,
 ];
 
-function createStatusPageFetch() {
+const PREFIX = "/api/status/";
+
+export default function createBackend() {
   const rounds = new Map();
-  return function statusPageFetch(uri, { method = "GET", signal } = {}) {
-    if (method !== "GET") return new Response("method not allowed", { status: 405 });
-    const name = String(uri).slice("/api/status/".length);
+  return function statusPageHandler({ method = "GET", uri, signal }) {
+    if (!String(uri).startsWith(PREFIX)) return null;
+    if (method !== "GET") return plain(405, "method not allowed");
+    const name = String(uri).slice(PREFIX.length);
     const script = name === "incidents" ? statusFeed : statusChecks[`check:${name}`];
-    if (!script) {
-      return new Response("unknown status service", { status: 404 });
-    }
+    if (!script) return plain(404, "unknown status service");
     const round = rounds.get(name) ?? 0;
     rounds.set(name, Math.min(round + 1, script.length - 1));
     const entry = stage(script, round);
-    if (entry && typeof entry === "object" && entry.fail) {
-      return failWith(entry.fail, { signal });
-    }
-    return settle(new Response(entry), { signal });
-  };
-}
-
-// --- field-notes -------------------------------------------------------------
-//
-// POST /api/notes/sync carries the settlement token, "<id>#<rev>", as text.
-// Success echoes it. The calling effect retains its own token on failure.
-//
-// Every third sync request fails, so the outbox demonstrates a failed row and
-// the Retry button; retrying mints a new revision, which produces a new token
-// and (usually) a clean settlement on the next attempt.
-function createFieldNotesFetch() {
-  let attempts = 0;
-  return async function fieldNotesFetch(uri, options = {}) {
-    if ((options.method ?? "GET") !== "POST") return new Response("method not allowed", { status: 405 });
-    const token = await new Response(options.body).text();
-    const { signal } = options;
-    attempts = (attempts + 1) % 3;
-    if (attempts === 0) return settle(new Response("sync temporarily unavailable", { status: 503 }), { signal });
-    return settle(new Response(token), { signal });
-  };
-}
-
-// Route each request to the scripted backend for its example. Anything else
-// goes to the real network.
-export function createPublicExampleFetch(fetchImpl = globalThis.fetch) {
-  const conduitFetch = createConduitFetch();
-  const statusPageFetch = createStatusPageFetch();
-  const fieldNotesFetch = createFieldNotesFetch();
-  return async function publicExampleFetch(uri, options = {}) {
-    const conduit = conduitFetch(uri, options);
-    if (conduit !== null) return conduit;
-    if (String(uri).startsWith("/api/status/")) return statusPageFetch(uri, options);
-    if (String(uri) === "/api/notes/sync") return fieldNotesFetch(uri, options);
-    return fetchImpl(uri, options);
+    if (entry && typeof entry === "object" && entry.fail) return failWith(entry.fail, { signal });
+    return settle(plain(200, entry), { signal });
   };
 }

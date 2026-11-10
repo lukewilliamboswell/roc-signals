@@ -1,4 +1,3 @@
-import { createPublicExampleFetch } from "./example_tasks.mjs";
 // The browser runtime, copied from platform/runtime.mjs by scripts/site.roc.
 import { mountRocEngineApp } from "./runtime.mjs";
 
@@ -48,6 +47,30 @@ async function portsOption(root) {
   return { ports: module.default };
 }
 
+// An example's simulated service: the default export of the module the mount
+// element's `data-signals-backend` names (set from the example's `backend` in
+// www/data/examples.toml, a file beside its app.wasm). The module is the
+// example's own JavaScript; `createBackend()` returns a handler that answers
+// `{ status, body, headers }` for a request it serves, rejects for a network
+// failure, and returns null for any other request, which goes to the real
+// network. This file only adapts that handler to the mount's `fetch` option,
+// the same way for every example; a mount without a backend uses the
+// browser's own fetch.
+async function backendOption(root) {
+  const url = root.dataset.signalsBackend;
+  if (!url) return {};
+  const module = await import(new URL(url, document.baseURI).href);
+  const handle = module.default();
+  return {
+    fetch: async (uri, init = {}) => {
+      const body = init.body === undefined ? "" : await new Response(init.body).text();
+      const answer = await handle({ method: init.method ?? "GET", uri: String(uri), headers: init.headers ?? [], body, signal: init.signal });
+      if (answer === null) return globalThis.fetch(uri, init);
+      return new Response(answer.body, { status: answer.status, headers: answer.headers ?? {} });
+    },
+  };
+}
+
 // Resolves once the document is parsed, so every deferred and module script
 // of the page has run.
 const parsed = new Promise((resolve) => {
@@ -76,10 +99,10 @@ async function mountInto(root, wasmUrl, title, errorTarget = null) {
     const runtime = await mountRocEngineApp({
       wasmUrl,
       root,
-      fetch: createPublicExampleFetch(),
       onFault: (fault) => showError(errorTarget, new Error(`${fault.class}: ${fault.message}`)),
       ...workerOptions(root),
       ...(await portsOption(root)),
+      ...(await backendOption(root)),
     });
     await announce(root, runtime);
     return runtime;
