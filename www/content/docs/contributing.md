@@ -31,8 +31,8 @@ recipe ready.
 
 | Path | Contents |
 |---|---|
-| `platform/` | The platform (`main.roc`): the engine (`Core.roc`), the authoring API (`Engine.roc`, `Html.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig`). Also the fuzz platform (`fuzz.roc`, the vendored roc-fuzz modules and the soak walk) |
-| `tests/` | Browser contract tests and the apps they drive (`tests/apps/`, for example `files` for file handles `file-effects` for operations on files and `ports` for ports), the Chrome spec replay, and the release check helper |
+| `platform/` | The platform (`main.roc`): the engine (`Core.roc`), the authoring API (`Engine.roc`, `Html.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the hosted effects a worker task calls (`Hosted.roc`, bound in both hosts), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig`). Also the fuzz platform (`fuzz.roc`, the vendored roc-fuzz modules and the soak walk) |
+| `tests/` | Browser contract tests and the apps they drive (`tests/apps/`, for example `files` for file handles `file-effects` for operations on files, `ports` for ports and `tasks` for worker tasks), the Chrome spec replay, and the release check helper |
 | `fuzz/` | Fuzz targets of the shared support; each app's own target is its `main-fuzz.roc` |
 | `examples/` | The example apps, each with its specs |
 | `benchmarks/` | The js-framework-benchmark adapter |
@@ -96,8 +96,12 @@ for example to run two tasks at once.
    bounds, failures and lifetimes), prepared programs and the pool's
    placement of their queries, ports with real handlers
    (`ports-browser.mjs`: the mount check, delivery policies, the payload
-   bound, bytes and files both ways, containment), and the Conduit journey
-   against its scripted backend.
+   bound, bytes and files both ways, containment), worker tasks
+   (`tasks-browser.mjs`: the handles each instance holds after a job, a large
+   transform with bounded worker memory, the output bound, termination and
+   unmounting mid-job, the page's import stubs, inline mode, downloads into
+   files and real saves), and the Conduit journey against its scripted
+   backend.
 7. The js-framework-benchmark check.
 8. The release dry run: the bundle, `runtime.mjs` and `worker.mjs`, the examples archive with
    every app mounted by its check helper, and the release notes.

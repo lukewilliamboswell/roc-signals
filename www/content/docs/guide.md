@@ -48,6 +48,8 @@ the platform does not depend on any CSS framework.
   page's thread.
 - [Files](@/docs/files.md): taking a file the user chooses, drops or pastes
   as a handle, and reading it in a worker.
+- [Tasks](@/docs/tasks.md): jobs in a worker that read files a chunk at a
+  time and write new ones, downloading into a file, and saving.
 - [Monitoring Workers](@/docs/worker-monitoring.md): where a worker job's time
   goes, how busy the pool is, and what workers cost.
 - [Reference](@/docs/reference.md): the API at a glance and the platform's

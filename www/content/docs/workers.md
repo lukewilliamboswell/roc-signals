@@ -411,7 +411,10 @@ leaves mid-job, so the worker is still warm when they come back.
 
 A program shares nothing with the page. It receives its input and returns
 its output; it cannot read the page's state, write it or ask for effects, and
-Roc's types already rule that out. It may run in a worker that ran other
+Roc's types already rule that out. A job that needs to read a file in
+chunks, or to write a file, is a [task](@/docs/tasks.md) instead: a
+registered function that may call the platform's effects on the files it is
+sent. A program may run in a worker that ran other
 jobs before, and nothing from those jobs is visible to it.
 
 A program that fails badly — a `crash`, running out of memory, a failed
@@ -516,5 +519,6 @@ the in-flight bound turned away (see
 | Bulk bytes in a payload | `Wire.Bytes` |
 | A result that survives the panel that asked for it | A site in a longer-lived scope |
 | Several questions over one slow preparation | `Worker.prepared` and its queries |
+| A job that reads a file a chunk at a time or writes a new file | A [task](@/docs/tasks.md) |
 | A cancelled query that should keep its worker's state | `on_cancel: Finish` |
 | Where a job's time goes | [Monitoring Workers](@/docs/worker-monitoring.md) |

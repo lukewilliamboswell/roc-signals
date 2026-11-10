@@ -168,7 +168,10 @@ reconsidered.
   lifetime. A capability the platform models (HTTP, storage, timers, history,
   focus, workers, files) is not a port's business, and nothing that needs a
   synchronous answer (a default to prevent, a layout measurement inside a
-  turn) can be one.
+  turn) can be one. The hosted effects a worker task calls (see
+  [Tasks](#tasks)) are not an FFI either: they are a closed, typed
+  vocabulary of the platform (reading a file, building one), callable only
+  inside a task's job in a worker, never an import table an app extends.
 
 ## Non-Negotiable Constraints
 
@@ -184,7 +187,9 @@ reconsidered.
    emits only the DOM operations those changes imply. A path that is linear in
    the changed set on paper but reaches it by scanning all nodes, all sites or
    the whole DOM is a violation. See [Complexity budget](#complexity-budget).
-4. **The engine is pure Roc; the host only allocates, stages and classifies.**
+4. **The engine is pure Roc; the host only allocates, stages and classifies,
+   and in a worker instance performs the platform's synchronous hosted
+   effects on resource handles through the worker script.**
    All reactive scheduling, structural reconciliation, identity, effect
    lifecycle and ownership policy live in the platform's Roc engine. The Zig
    host owns the allocator, the boxed engine state between calls (in a worker
@@ -203,13 +208,16 @@ reconsidered.
    value or a typed decoding error);
    the only values the host builds for Roc beyond them are freshly minted
    resource handles, each with a single reference.
-6. **The command stream is the only output.** Everything the outside world
+6. **The command stream is the only output of the page's instance.**
+   Everything the outside world
    observes — DOM structure, attributes, listeners, effects, navigation,
    storage, title, focus — is a command in the stream returned by one host
    call. There is no side channel, with one narrow exception: the list of
    resource handles Roc released during a call, which the runtime reads after
    it has applied the call's batch and performed its effects. It decides
-   nothing: it names only resources no Roc value can reach any more.
+   nothing: it names only resources no Roc value can reach any more. A
+   worker task's effects act only on handles its job was sent or made, and
+   reach the page only as its answer, an ordinary result.
 
 ## First Principles, Not Imitation
 
@@ -738,6 +746,11 @@ instead of a state write.
 - **`Ask`** is `Work` for a query of a prepared program (below): the same
   results, scope and counters, with an input that also names the
   preparation and where the preparation's own input lies in it.
+- **`Task`** runs a registered *task* (below): an effectful function whose
+  job, in a worker, reads the files its input holds and builds new ones
+  through the platform's hosted effects, and whose answer may hold files.
+  It is answered `Answered({ output, files })`, or as `Work` is when there
+  is no answer, and is scoped or kept on disposal as its registration says.
 - **`Self`** asks for a follow-up turn whose result is `Now`: how an effect
   site changes state in response to its value changing without writing during
   the turn that is evaluating.
@@ -816,6 +829,94 @@ and the engine unchanged: to the engine an `Ask` is a `Work` request.
   the query is `WorkLost` with the fault class, the state is gone, and the
   next query prepares again elsewhere. Queries waiting for a lost holder
   are placed again, so none waits forever.
+- **Reads only.** A preparation and its queries call no effect: they are
+  pure functions, their files arrive as bytes, and the host refuses every
+  hosted effect outside a task's job.
+
+### Tasks
+
+A **task** is a registered, named function `input => output` whose job runs
+in a worker and may call the platform's hosted effects on the handles its
+input holds (`Worker.task`, `Worker.fallible_task`). It is roc-gui's
+`Action.task` adapted to a separate instance of the module: the body cannot
+be a closure at the call site, because a closure cannot cross to a worker,
+so it is a top-level function registered once, and the context it needs is
+its input. Page code stays pure; tasks are where effects run.
+
+- **Same channel.** A `Task` request takes an id, counts against the
+  in-flight cap, is answered once in a result turn, and is cancelled,
+  superseded and counted as `Work` is. `Worker.derive`, `latest` and
+  `resource` take a task wherever they take a program. To the engine the
+  only differences are the answer's files and the disposal rule.
+- **Handles cross by token.** A file in a task's input is not read before
+  the job runs. The request names its handle and range (FX kind 8, flag 2);
+  the runtime resolves the handle to the browser's `File` when it applies
+  the batch and posts the whole file with the job, by reference; the
+  worker's host mints a handle of its own for each (`files_stage`), in the
+  request's order, and the job's `File` values hold those local handles,
+  with the names and ranges the payload gives them. On the way back the
+  answer names the instance's tokens of the files it holds; the worker
+  script posts their `Blob`s by reference, and the page's runtime mints
+  fresh page handles for them through the result path port replies use
+  (result tag 20, staged with `files_stage` and delivered with
+  `event_files`). Each instance holds its own reference to the browser
+  object, so either side letting go cannot invalidate the other's.
+- **Effects are synchronous and act on handles.** `File.read!` reads a range
+  into the job's memory (`FileReaderSync`), one copy; `contents!` and
+  `contents_utf8!` read the whole range. `File.build!` opens a **builder**,
+  `append!` copies bytes out of the job's memory into a part of it,
+  `append_file!` adds a range of a file the job holds by reference, and
+  `finish!` composes the parts into one immutable file (constant time) the
+  answer may hold. A builder may start from a file (`start_from: From(f)`),
+  which is how a job appends to an earlier job's output without copying
+  it. A task cannot wait: there is no timer, event or response it can block
+  on without JSPI or cross-origin isolation, which the platform does not
+  adopt, and nothing it does can be observed until it answers.
+- **A written file is an immutable value.** A builder exists only inside the
+  job that opened it, holds its parts in the worker script, and cannot be
+  sent anywhere (it is not `Wire.Sendable`, so naming one in an answer does
+  not compile). Its parts go when the job ends, finished or not. A
+  cancelled, timed-out, crashed or lost job therefore leaves nothing the
+  page can see, and "append across jobs" is atomic per job: the previous
+  file is unchanged unless the new one is delivered.
+- **Disposal is the task's choice.** A task registers `on_dispose : [Stop,
+  Keep] ?? Stop`. `Stop` is `Work`'s rule: a computation nobody will read is
+  only cost. `Keep` reparents the request as `Http` does, for a job whose
+  external effect (a file the user asked for) must not be lost when a panel
+  closes; its answer reaches the nearest surviving ancestor.
+- **Where effects can run.** The hosted effects are imports of the one
+  module, linked only when an app's tasks reach them, so a module without
+  tasks imports nothing. The worker script supplies real ones; the page's
+  instance and the inline instance get stubs that throw a contract error.
+  The host never calls one outside `task()`: each hosted function first
+  checks that a task's job is running, and otherwise poisons the instance
+  with `contract: <effect> is a task effect and ran outside a task's job`,
+  and `task()` on a mounted instance is a contract fault too. Page code
+  cannot call an effect at all (the compiler rejects it), and in inline mode
+  a task is answered `WorkLost(Unavailable)`, since `FileReaderSync` exists
+  only in a worker.
+- **Bounds.** A job may append at most `maxOutputBytes` (a mount option,
+  256 MiB by default) to its builders, counting bytes copied out of its
+  memory, not files appended by reference: a builder's parts are in-memory
+  `Blob`s, which the browser does not page to disk, and a larger in-memory
+  `Blob` was measured unreadable. Beyond it `append!` answers `TooLarge` and
+  the job decides. An answer holds at most 16 files, and the page must have
+  slots for them; otherwise the request is answered `FileFailed(TooLarge)`
+  and nothing is minted. A job holds at most 64 handles (files and
+  builders) at once, else it is a `resource_limit` fault of its worker.
+- **The native runner** runs a task's job in a child process as it runs a
+  program's, and serves the same hosted functions from the spec's files:
+  each file the job was sent holds its bytes, a builder collects copies,
+  finishing moves them behind a fresh handle, and the answer's files come
+  back with their bytes, which the runner then holds under the page
+  handles it mints. A spec therefore gives the same answers natively and in
+  Chrome.
+
+**Target:** synchronous HTTP in a task (a `Blob` response from a synchronous
+`XMLHttpRequest`, measured to work in a worker), an origin-private file
+kind with one writer at a time, builders backed by an origin-private file
+for output beyond the in-memory bound, and progress reports. Each changes
+this section when it lands.
 
 ### Ids, results and staleness
 
@@ -888,6 +989,9 @@ what any request asks for.
   after its job.
 - **Prepared states.** At most one per worker, so at most `maxWorkers`;
   each is bounded with its worker by `maxWorkerBytes`.
+- **Task output.** A task's job appends at most `maxOutputBytes` (a mount
+  option, default 256 MiB) to its builders, answers with at most 16 files,
+  and holds at most 64 handles at once (see [Tasks](#tasks)).
 - **Catalogue.** At most 64 programs, each name once. A duplicate or a 65th
   is a `contract` error when the catalogue is built, naming the program;
   issuing work for a name the catalogue does not hold is a `contract` error
@@ -906,14 +1010,16 @@ what any request asks for.
 An admitted effect belongs to the intent that started it, not to the scope that
 rendered the control:
 
-- **Subscriptions (port subscriptions included), intervals, timers and work
-  are scoped.** Disposing their
+- **Subscriptions (port subscriptions included), intervals, timers, work and
+  tasks registered `Stop` are scoped.** Disposing their
   site emits `CANCEL`, counts them `cancelled` and forgets them; a result that
   arrives later is stale. Work is scoped rather than kept because a pure
   computation has no external effect to preserve, and computing an answer
-  nobody will read is only cost. A job that must outlive a panel is issued
-  from a site in a longer-lived scope.
-- **Admitted requests (`Http`, `Upload`, `StorageGet`, port calls) reparent** to the nearest surviving
+  nobody will read is only cost. A task decides for itself, because its
+  job may have an effect worth keeping: one registered `on_dispose: Keep` is
+  kept and reparents like `Http`.
+- **Admitted requests (`Http`, `Upload`, `Fetch`, `StorageGet`, port calls,
+  tasks registered `Keep`) reparent** to the nearest surviving
   ancestor site — the `when`/`switch` that changed branch, the `each` that
   removed the row, or the component's caller. When the result arrives, the
   reaction runs in that ancestor's current environment. Disposed layers are
@@ -1043,8 +1149,10 @@ rest in `Received.refused`; nothing is minted for them.
 **Reading a file is delegation to a worker.** A program's input may hold
 files: `File` is `Wire.Sendable`, and its encoding is its place in the
 request's file list plus its name, type, size and range, while the handles
-and ranges travel beside the payload in the `FX` (Appendix B). Programs stay
-pure — the bytes arrive as data, never through an effect. When the runtime
+and ranges travel beside the payload in the `FX` (Appendix B). A pure
+program receives the bytes as data, read before it runs; a task (see
+[Tasks](#tasks)) receives handles and reads the ranges it needs through
+`File.read!`, and its answer may hold files it built. When the runtime
 performs the request it resolves each handle to its `File`, sliced to the
 range, while the batch's released handles still name their files, and posts
 the slices with the job: a `Blob` crosses to the worker by reference, so no
@@ -1119,6 +1227,31 @@ requests that take the handle and are performed on the browser's own file:
 
 Digests and URLs are pure in effect, like a read, so they are scoped.
 
+**Files leave the app as downloads, and arrive from the network.**
+
+- `File.save` is a command (`SAVE`, opcode 20) that saves the file's range
+  as a download under its own name or another. The runtime resolves the
+  handle when it applies the batch and, after the batch, clicks a link
+  with a `download` attribute over an object URL it revokes a moment
+  later. A save issued in a click's turn runs inside that click's listener,
+  so the browser sees the user's gesture; a save issued later (from a
+  task's answer) runs without one, and Chrome may hold back a second
+  automatic download, which the platform documents rather than hides. The
+  save picker (`showSaveFilePicker`) is not built.
+- `File.fetch` is an HTTP request whose response body becomes a file the
+  page holds (`Fetch`, FX kind 15, answered `Fetched({ status, headers,
+  body })`, result tag 21 with one staged handle). The body is the
+  browser's `Blob` and never enters the instance's memory: a large one
+  stays on disk, measured. A body over `maxFileBytes` is
+  `FileFailed(TooLarge)`; otherwise it fails and is kept on disposal as
+  `Http` is. The file is a file like any other: it can be read, digested,
+  shown, uploaded, saved, or sent to a task.
+
+A pure `File.join` (a file that is several files in order, on the page) was
+weighed and left out: every request kind, the wire format and the native
+runner would need a composite handle, while a task's builder already joins
+files by reference with `append_file!`.
+
 **A request holds its browser file until it is answered.** The runtime
 resolves every handle a request names when it applies the batch, before it
 drains the handles the batch released, and the request keeps that `File`
@@ -1135,10 +1268,8 @@ ported app needs it:
 - session storage alongside local storage, declared at boot the same way;
 - an entropy seed in the boot bytes;
 - sampled time, if an app needs wall-clock values rather than timer ticks;
-- saving a file to the user's disk (a download of an object URL), once a
-  worker program can produce a file for the app to save. Chrome starts a
-  first programmatic download outside a user gesture but holds back a second
-  one at once, so its contract is decided with it.
+- a save destination the user picks (`showSaveFilePicker`, Chromium only and
+  needing a gesture), as a request answering `[Canceled, Chosen(handle)]`.
 
 ## Browser Events and Policies
 
@@ -1267,6 +1398,20 @@ as owning seamless lists whose allocation pointer is the slot. Nothing
 outside the host refers to a buffer, so the slot's last release frees it at
 once; `bytes_clear` frees the buffers of a job that will not run.
 
+A worker instance runs a task's job with one more entry, `task`: it moves the
+staged payload and the handles `files_stage` minted for the job's files into
+`roc_engine_task`, sets a flag for the length of the call, and keeps the
+answer (`n:u32 (token:u64)* output:rest`) in the command buffer's slot like
+`work`'s output. The task's hosted effects are exported Zig functions
+(`roc_task_*`) that refuse to act unless the flag is set, and each calls one
+import of the worker script (`env.js_*`): the host moves bytes in and out of
+linear memory, allocates a read's list, mints handles in the blob heap, and
+releases the lists it was given; it holds no builder, part or `Blob`, which
+live in the worker script under the instance's tokens. When the call
+returns, the job's handles have been released by Roc (retired, not freed),
+so the worker script reads the answer's tokens, posts their objects, and
+then drains `files_released`, leaving the instance holding nothing.
+
 ## Error Containment
 
 A Roc crash, a failed `expect`, or an allocation failure **poisons** the
@@ -1305,7 +1450,8 @@ its job with `WorkLost` carrying the instance's class (`executor` when the
 worker script itself failed, `unavailable` when the browser has no workers),
 and reports the diagnostic to the console; the page's instance is untouched.
 A prepared state the worker kept is gone with it, and the next query over
-that input prepares again.
+that input prepares again. A task's builders and their parts go with a
+discarded worker too: nothing a failed job wrote is ever delivered.
 
 **Contract errors the engine raises:** duplicate key; switch value not in its
 cases; row template not a single element; focus reference inside a row
@@ -1317,7 +1463,11 @@ file a worker program was sent; an upload whose method is `GET` or `HEAD`;
 a port catalogue with a duplicate name, more than
 64 ports, a name that is empty or longer than 128 bytes or an `Every` bound
 outside 1–1024; a request for an undeclared port or for a port of another
-shape; event payload not UTF-8; boot
+shape; a hosted effect reached outside a task's job, or `task()` called on
+the page's instance; `Builder.append!`, `append_file!` or `finish!` on a
+builder that was finished; `File.read!` of a range outside the file; a task
+request for a registration that is not a task, or a work request for one
+that is (in the worker); event payload not UTF-8; boot
 bytes or an effect result that do not follow Appendix B (truncated, trailing
 bytes, unknown tag, flags other than 0 or 1, text that is not UTF-8).
 **Resource limits:** node ids (2³² − 2 live nodes); more than 63 nested layers
@@ -1369,6 +1519,10 @@ bound and a declared behaviour at the bound:
 | Bytes one read of a file into the page takes | The read's `max_bytes` (default 8 MiB), at most `maxFileBytes`; reads in flight are bounded by the in-flight cap | Typed `FileFailed(TooLarge)`, unread |
 | Bytes one digest reads | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)`, unread |
 | Object URLs of one file handle | 16 ranges, revoked with the handle | Typed `FileFailed(TooLarge)` |
+| Bytes one task's job appends to its builders | `maxOutputBytes` (default 256 MiB) | `append!` answers `TooLarge`; the job decides |
+| Files one task's answer holds | 16, and free page slots | Typed `FileFailed(TooLarge)`, nothing minted |
+| Handles one task's job holds at once | 64 (the worker's heap) | `resource_limit` fault of that worker |
+| Bytes of one fetched body | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)` |
 | Live node ids (rows included) | 2³² − 2 | `resource_limit` poison |
 | Runtime ingress queue | 4096 queued events | `resource_limit` poison |
 | Monitor job history | `history` option (default 128, at most 1024) | Oldest overwritten, counted |
@@ -1414,7 +1568,12 @@ of steps written against the rendered UI:
   `lose-work` and
   `time-out-work` (answer a pending worker job `WorkLost` with a fault class,
   or `Timeout`, without running it), `expect-pending-work`, interval ticks,
-  `set-visibility`, `set-online`.
+  `set-visibility`, `set-online`. A task's job runs with `run-effect` like a
+  program's, and a fetch takes the staged `stub-http` answer, its body
+  becoming the file. `(max-output-bytes N)` in the setup is the runtime's
+  `maxOutputBytes`; `expect-saved K NAME TEXT` asserts the K-th file the app
+  saved in this document (its name and contents) and `expect-saves N` how
+  many it saved.
 - **Ports** — neither runner calls the page's port handlers; port traffic
   is stubbed as HTTP is. A port call shares `run-effect`'s occurrence
   numbering: `expect-port-call N port json` checks its message and
@@ -1459,7 +1618,12 @@ oracle and never defines a meaning of its own. In particular:
   itself (its URL names the handle and range, so a spec asserts what the
   app does with a URL rather than its text), a digest through its host,
   which computes SHA-256 as WebCrypto does, so both runners give the same
-  digest;
+  digest. A task's job runs in a child process like a program's, its hosted
+  effects served there from the setup files' bytes and builders of its own
+  (see [Tasks](#tasks)), and the answer's files come back with their bytes,
+  which the runner holds under the handles it mints, so a later read, digest
+  or save of them gives the same bytes in both runners. A save is logged by
+  both runners in manual mode instead of downloading;
 - a click is a real mouse click with the browser's default actions (a
   checkbox toggles and a radio checks, each with `input` and `change`; a
   submit button submits its form if the form's controls are valid; a link
@@ -1781,6 +1945,20 @@ File.sha256 : File -> Req                     # answered Digest(32 bytes)
 File.object_url : File -> Req                 # answered FileUrl(url), valid while the handle lives
 file_bytes, file_digest : Res -> Try(List(U8), FileError)
 file_text, file_url : Res -> Try(Str, FileError)
+File.save : File, { name : [Same, Named(Str)] ?? Same } -> Req   # a command: a download
+File.fetch : { url : Str, method : Str ?? "GET", headers : List((Str, Str)) ?? [],
+               timeout : [Unlimited, Ms(U32)] ?? Unlimited } -> Req   # answered Fetched
+fetched : Res -> Try(File, FetchError)
+FetchError : [Network(Str), Timeout, Status(U16), TooLarge, Refused]
+# In a task's job only (effects):
+File.read! : File, { start : U64, len : U64 } => Try(List(U8), FileError)
+File.contents! : File => Try(List(U8), FileError)
+File.contents_utf8! : File => Try(Str, FileError)
+File.build! : { name : Str, mime : [Auto, Mime(Str)] ?? Auto,
+                start_from : [Empty, From(File)] ?? Empty } => Builder
+Builder.append! : Builder, List(U8) => Try({}, FileError)   # TooLarge past maxOutputBytes
+Builder.append_file! : Builder, File => {}                    # by reference
+Builder.finish! : Builder => File
 Received : { files : List(File), refused : U64 }
 State.on_files : State(ctx, s), (s, Received -> s) -> FilesHandler(ctx)
 on_files : Str, FilesHandler(ctx) -> Attr(ctx)   # "change", "drop" or "paste"
@@ -1808,12 +1986,16 @@ Req : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Timer(
        Upload({ method, url, headers, body : File, timeout_ms }), Sha256(File), ObjectUrl(File),
        Ask({ program : Str, input : List(U8), files : List(File), deadline_ms : U32 }),
        PortCommand({ port, message }), PortCall({ port, message, timeout_ms }),
-       PortSubscribe({ port, message })]
+       PortSubscribe({ port, message }),
+       Task({ program, input, files, deadline_ms, on_dispose : [Stop, Keep] }),
+       Save({ file : File, name : Str }), Fetch({ method, url, headers, timeout_ms })]
 Res : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
        Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused,
        Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError),
        FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str),
-       PortReply(PortMessage), PortFailed(PortFailure)]
+       PortReply(PortMessage), PortFailed(PortFailure),
+       Answered({ output : List(U8), files : List(File) }),
+       Fetched({ status : U16, headers : List((Str, Str)), body : File })]
 FileError : [Unreadable, TooLarge, InvalidUtf8, Unavailable, Refused]
 PortMessage : { json : Str, blobs : List(List(U8)), files : List(File) }
 PortFailure : [Threw(Str), TooLarge, Closed]
@@ -1851,6 +2033,14 @@ Worker.Cancel : [Stop, Finish]
 Worker.derive : program, Val(ctx, input),          # a Program or a Query
     (Val(In(ctx, Remote(output, Worker.Error)), Remote(output, Worker.Error)) -> Elem(...)) -> Elem(ctx)
 Worker.derive_when : program, Val(ctx, [Run(input), Skip]), ... -> Elem(ctx)
+Worker.task : TaskProps(input, output) -> Task(input, output)
+    where [input.Wire.Sendable, output.Wire.Sendable]
+Worker.fallible_task : TaskProps(input, Try(ok, err)) -> Task(input, Try(ok, err))
+Worker.TaskProps(input, output) := { name : Str, run! : input => output,
+    deadline : [Unlimited, Ms(U32)] ?? Unlimited, on_dispose : [Stop, Keep] ?? Stop }
+Task.registration : Task(input, output) -> Registration
+Task.request : Task(input, output), input -> Req                     # a Task
+Task.result : Task(input, output), Res -> Try(output, Worker.Error)
 Wire.encode : a -> List(U8)                    where [a.Wire.Sendable]
 Wire.try_encode : a -> Try(List(U8), [TooDeep]) where [a.Wire.Sendable]   # refuses what decode would
 Wire.decode : List(U8) -> Try(a, Wire.Error)   where [a.Wire.Sendable]
@@ -1925,9 +2115,26 @@ The platform provides (`platform/main.roc`):
 | `roc_engine_prepare` | `List(U8), List(List(U8)) -> Box(Core.Kept)` | Prepare a state to keep: payload `prep:str init:rest` (the preparation's name and its own input) and the preparation's files; returns the state. A name that is not a preparation is a `contract` crash |
 | `roc_engine_ask` | `Box(Core.Kept), List(U8), List(List(U8)) -> { held, out }` | A query on the kept state: payload `query:str input:rest` (the query's own input) and the query's files; returns the state (`held`) and the output (`out`, a list of its own). A query the state's preparation does not answer is a `contract` crash |
 | `roc_engine_forget` | `Box(Core.Kept) -> {}` | Drop the kept state |
+| `roc_engine_task` | `List(U8), List(Box(U64)) => List(U8)` | A worker instance's task job (effectful): payload `name:str input:rest` and the handles the instance's host minted for the files the request named, in its order; returns `n:u32 (token:u64)*n output:rest`, the instance's tokens of the files the answer holds (in the order its payload refers to them), then the answer's bytes. A name that is not a task registered in the module is a `contract` crash |
 
 The host provides `roc_alloc`, `roc_dealloc`, `roc_realloc`, `roc_dbg`,
-`roc_expect_failed` and `roc_crashed`. The result record's three fields are
+`roc_expect_failed` and `roc_crashed`, and the hosted functions a task
+calls, each `roc_task_*` in both hosts (`platform/Hosted.roc`): `read`
+`(token, start, len) -> List(U8)` (exactly `len` bytes, or none when the
+file cannot be read), `size (token) -> u64`, `mint () -> Box(U64)`, `open
+(token, name:List(U8), mime:List(U8), from, start, len) -> u8` (`from` 0:
+empty), `append (token, bytes:List(U8)) -> u8` (`0` appended, `1` over the
+output bound, `2` not an open builder), `append_file (token, file, start,
+len) -> u8` and `finish (token, file) -> u8` (`0`, or `2` not an open
+builder). Each takes tokens as `u64`, owns and releases its list arguments,
+and refuses to act outside `task()`. In the Wasm host each calls one import
+of the worker script: `env.js_file_read(token, start, len, dst) -> u32` (`1`
+read, `0` unreadable), `env.js_file_size(token) -> u64`,
+`env.js_builder_open(token, name, name_len, mime, mime_len, from, start,
+len) -> u32`, `env.js_builder_append(token, src, len) -> u32`,
+`env.js_builder_append_file(token, file, start, len) -> u32` and
+`env.js_builder_finish(token, file) -> u32`. A module imports exactly those
+its tasks reach; the page's instance supplies stubs that throw. The result record's three fields are
 pointer-aligned, so Roc lays them out alphabetically: `cmds`, `state`,
 `work`. The host owns both lists between calls and lends them back, so after
 warm-up neither allocates.
@@ -1950,6 +2157,7 @@ warm-up neither allocates.
 | `prepare()` | In a worker instance: release the kept state, if any, and the previous output, then prepare a new state from the staged payload and files (`roc_engine_prepare`) and keep it. Traps like `work()` |
 | `ask()` | In a worker instance: run the staged query payload and files on the kept state (`roc_engine_ask`); the output is readable as for `work()`. Traps when no state is kept, and like `work()` |
 | `forget()` | In a worker instance: release the kept state, if any, and the previous output. No-op when poisoned |
+| `task()` | In a worker instance: run a task's job: the staged payload and the handles staged with `files_stage` move into `roc_engine_task`, the hosted effects may act for the length of the call, and the answer is readable as for `work()`, the previous one released first. A `contract` fault when an engine state is mounted in this instance (the page's) |
 | `protocol_version() -> u32` | The engine's protocol version; answers before mount and when poisoned |
 | `cmd_ptr()`, `cmd_len()` | The current command batch (in a worker instance, the last job's output), valid until the next `event`, `work` or `drop` |
 | `work_ptr()`, `work_len()` | The work record returned with the last call, valid until the next `event` or `drop` |
@@ -2046,9 +2254,11 @@ An event is `event(node, handler)` with the payload staged first:
 | 17 | `bytes` (the rest, raw) | `FileText(Str)`, or `FileFailed(InvalidUtf8)` when the bytes are not UTF-8 |
 | 18 | `digest:32 bytes` | `Digest(List(U8))`: a SHA-256 digest |
 | 19 | `url:rest` | `FileUrl(Str)` |
+| 20 | `n:u32 (size:u64 name:str type:str)*n output:rest` | `Answered({ output, files })`: a task's answer. With files it is delivered through `event_files` on the effect node, the files being the staged handles in order; `output` is the task's `Wire` payload, which refers to them by their place |
+| 21 | `status:u16 n:u32 (name:str value:str)*n size:u64 name:str type:str` | `Fetched({ status, headers, body })`, delivered through `event_files` with exactly one staged handle, the body |
 
 A result payload that does not follow this table (unknown tag, bytes after a
-bare tag, a flag other than `0`/`1`, a fault class outside `1`–`7`, a file failure other than `1`–`3`, a digest that is not 32 bytes, a port failure other than `1`–`3`, a port reply whose file count is not the handles staged with it, a
+bare tag, a flag other than `0`/`1`, a fault class outside `1`–`7`, a file failure other than `1`–`3`, a digest that is not 32 bytes, a port failure other than `1`–`3`, a port reply, task answer or fetched body whose file count is not the handles staged with it, a
 truncated HTTP record, text that is not UTF-8) is a `contract` fault.
 
 ### Node ids
@@ -2095,10 +2305,12 @@ truncated HTTP record, text that is not UTF-8) is a `contract` fault.
 | 17 | `TITLE` | `text:str` |
 | 18 | `FOCUS` | `op:u8 node` (`1` focus, `2` blur, `3` focus and select text) |
 | 19 | `PORT` | `port:str message` — a port command; `message` is `json:str nblobs:u32 (len:u32 bytes)* nfiles:u32 (token:u64 start:u64 len:u64)*` |
+| 20 | `SAVE` | `token:u64 start:u64 len:u64 name:str` — save a file's range as a download named `name`; not counted by opcode (index 20 of the work record is `set_checked`) |
 
 `before = 0` appends to `parent`; otherwise the node is inserted before
 `before` (and `parent` is that node's parent). Opcodes 13–18 are collected while
-the batch is applied and performed after it, as is 19.
+the batch is applied and performed after it, as are 19 and 20 (a save's
+file is resolved when the batch is applied).
 
 **`FX` kinds:**
 
@@ -2111,13 +2323,14 @@ the batch is applied and performed after it, as is 19.
 | 5 | — | Popstate (subscription) |
 | 6 | — | Connectivity (subscription; `online`/`offline` events) |
 | 7 | — | Visibility (subscription; `visibilitychange` events) |
-| 8 | `program:str input:u32+bytes n:u32 (token:u64 start:u64 len:u64)*n deadline_ms:u32 prepared:u8 [prep:str init_at:u32 init_len:u32 init_files:u32 policy:u8]` | Work: `input` is a `u32` length and raw bytes, not necessarily UTF-8; then the files the input refers to, each a handle's token and a range of its file; `deadline_ms` 0 = none, capped at 600 000. `prepared` is `0` for `Work` and `1` for `Ask`, which then names its preparation, where the preparation's input lies in `input` (`init_len` bytes at `init_at`; the query's own input is the rest), how many of the files are the preparation's (the first `init_files`), and its cancel policy (`1` stop, `2` finish). An `Ask` input is `prep:str init_len:u32 init_files:u32 policy:u8`, then the preparation's input, then the query's; the engine copies the operands from it, and an input that does not follow it is a `contract` crash. Any other flag or inconsistent operands are a `contract` fault |
+| 8 | `program:str input:u32+bytes n:u32 (token:u64 start:u64 len:u64)*n deadline_ms:u32 prepared:u8 [prep:str init_at:u32 init_len:u32 init_files:u32 policy:u8]` | Work: `input` is a `u32` length and raw bytes, not necessarily UTF-8; then the files the input refers to, each a handle's token and a range of its file; `deadline_ms` 0 = none, capped at 600 000. `prepared` is `0` for `Work`, `2` for `Task` (whose files cross whole, as handles a worker mints, and are read by the job) and `1` for `Ask`, which then names its preparation, where the preparation's input lies in `input` (`init_len` bytes at `init_at`; the query's own input is the rest), how many of the files are the preparation's (the first `init_files`), and its cancel policy (`1` stop, `2` finish). An `Ask` input is `prep:str init_len:u32 init_files:u32 policy:u8`, then the preparation's input, then the query's; the engine copies the operands from it, and an input that does not follow it is a `contract` crash. Any other flag or inconsistent operands are a `contract` fault |
 | 9 | `port:str message timeout_ms:u32` | Port call (`message` as for `PORT`); `timeout_ms` 0 = none, capped at 600 000 |
 | 10 | `port:str message` | Port subscription |
 | 11 | `mode:u8 token:u64 start:u64 len:u64 max_bytes:u64` | Read a file's range into the page: `mode` `1` bytes (answered tag 16), `2` text (tag 17); a range longer than `max_bytes`, or than the runtime's `maxFileBytes`, is answered tag 13 `TooLarge` unread |
 | 12 | `method:str url:str n:u32 (name:str value:str)* token:u64 start:u64 len:u64 timeout_ms:u32` | HTTP with a file's range as the body (answered as kind 1); a method of `GET` or `HEAD` is a `contract` error in the engine |
 | 13 | `algorithm:u8 token:u64 start:u64 len:u64` | Digest of a file's range: `algorithm` `1` SHA-256 (tag 18) |
 | 14 | `token:u64 start:u64 len:u64` | A URL that shows a file's range (tag 19) |
+| 15 | `method:str url:str n:u32 (name:str value:str)* timeout_ms:u32` | HTTP whose response body becomes a file (tag 21; failures as kind 1, a body over `maxFileBytes` tag 13 reason 2) |
 
 **Template encoding** (`TEMPLATE` bytes): a node tree, then a hole table.
 

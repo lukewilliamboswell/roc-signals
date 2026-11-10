@@ -28,6 +28,8 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 | Events | `on` (event name, optionally `:prevent`), `on_click` |
 | Files | `File`, `File.name`, `File.size`, `File.mime`, `File.slice`, `File.contents`, `File.contents_utf8` (in a worker program), `Received`, `FilesHandler`, `State.on_files`, `on_files` |
 | Operations on files | `File.upload` (`UploadProps`: `url`, `method ?? "POST"`, `headers ?? []`, `timeout ?? Unlimited`), `File.sha256`, `File.object_url` (acting where the browser keeps the file), `File.read_bytes`, `File.read_utf8` (reading it into the page; `ReadProps`: `max_bytes ?? 8388608`), `file_bytes`, `file_text`, `file_digest`, `file_url`, `FileError` (`Unreadable`, `TooLarge`, `InvalidUtf8`, `Unavailable`, `Refused`) |
+| Saving and downloading | `File.save` (a download command; `SaveProps`: `name : [Same, Named(Str)]`), `File.fetch` (`FetchProps`: `url`, `method`, `headers`, `timeout : [Unlimited, Ms(U32)]`), `fetched`, `FetchError` (`Network`, `Timeout`, `Status`, `TooLarge`, `Refused`) |
+| Effects in a task's job | `File.read!`, `File.contents!`, `File.contents_utf8!`, `File.build!` (`BuildProps`: `name`, `mime : [Auto, Mime(Str)]`, `start_from : [Empty, From(File)]`), `Builder`, `Builder.append!`, `Builder.append_file!`, `Builder.finish!` (see [Tasks](@/docs/tasks.md)) |
 | Components | `component`, `State.push`, `State.push_by`, `State.push_value_by`, `sink`, `split` |
 | Effects | `watch`, `on_change`, `latest`, `State.on_result`, `ignore`, `on_cleanup`, `cleanup`, `Req`, `Res`, `HttpError`, `http_text`, `WorkFault`, `FileError` |
 
@@ -56,6 +58,7 @@ Anything else is `Engine.element(tag, attrs, children)`.
 | Programs | `Program(input, output)`, `program`, `fallible`, `ProgramProps(input, output)` (`name`, `run`, `deadline : [Unlimited, Ms(U32)] ?? Unlimited`), `Program.registration` |
 | Jobs from an effect site | `Program.request`, `Program.result`, `Error` (`Timeout`, `Refused`, `Lost(WorkFault)`, `FileFailed(FileError)`) |
 | Layers | `derive`, `derive_when` (for a program or a query), holding an `Engine.Remote(output, Error)` |
+| Tasks | `task`, `fallible_task`, `TaskProps(input, output)` (`name`, `run!`, `deadline : [Unlimited, Ms(U32)]`, `on_dispose : [Stop, Keep]`), `Task(input, output)`, `Task.registration`, `Task.request`, `Task.result` |
 | Prepared programs | `prepared`, `PreparedProps(init, state)` (`name`, `prepare`), `Prepared(init, state)`, `Prepared.query`, `Prepared.fallible_query`, `QueryProps(state, q, out)` (`name`, `run`, `deadline`, `on_cancel : Cancel ?? Stop`), `Prepared.registration`, `Query(init, state, q, out)`, `Query.registration`, `QueryRegistration(state)`, `Query.request`, `Query.result`, `Question(init, q)` (`input`, `query`), `Cancel` (`Stop`, `Finish`) |
 
 ## Wire
@@ -135,6 +138,10 @@ guarded while the control has focus. `checked` is a property set from
 | Undelivered messages per port subscription | 1 (`Latest`) or n ≤ 1024 (`Every(n)`) | `Latest` keeps the newest; `Every` refuses the JavaScript's `emit` |
 | Port call timeout | 600 s | Capped |
 | Payload nesting | 512 containers | The job is `Lost(Contract)`: an input fails to decode in the worker, an output is refused there before it is sent |
+| Bytes a task's job appends to its builders | `maxOutputBytes` (default 256 MiB); files appended by reference do not count | `append!` answers `Err(TooLarge)` |
+| Files in one task's answer | 16, and room among the 64 the page holds | `FileFailed(TooLarge)`, nothing delivered |
+| Files and builders one task's job holds at once | 64 | The job is `Lost(ResourceLimit)` |
+| A fetched body | `maxFileBytes` (default 256 MiB) | `FileFailed(TooLarge)`, read by `fetched` as `Err(TooLarge)` |
 
 ## Errors
 
@@ -146,7 +153,7 @@ construction site, for example `contract: duplicate key "r0" in each at site
 
 | Class | Cause |
 |---|---|
-| `contract` | A rule of the API was broken: a duplicate key, a `switch` value outside its cases, a row template that is not a single element, a cleanup asking for a result, an effect feedback loop, a worker program registered twice or asked for without being registered, a port declared twice or used without being declared or as another shape, malformed boot or result bytes |
+| `contract` | A rule of the API was broken: a duplicate key, a `switch` value outside its cases, a row template that is not a single element, a cleanup asking for a result, an effect feedback loop, a worker program registered twice or asked for without being registered, a port declared twice or used without being declared or as another shape, a task's effect outside its job, a builder used after `finish!`, malformed boot or result bytes |
 | `resource_limit` | A bound in the table above |
 | `out_of_memory` | The Wasm heap could not grow |
 | `app_crash` | `crash` in app code, or a Roc runtime error |

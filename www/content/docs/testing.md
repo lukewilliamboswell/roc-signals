@@ -119,6 +119,7 @@ models it. `LOC` is a locator, `"…"` a string, `N` a non-negative integer,
 | `(local-storage "key" "value")` | Seed local storage before mount |
 | `(local-storage-unavailable)` | Every local-storage access throws, as with site data disabled. Seeding storage in the same setup is a spec error |
 | `(file "name" "type" "text" [REPEAT])` | Declare a file the steps can give the app: its name, its MIME type, and its contents, `text` repeated `REPEAT` times (once without it) |
+| `(max-output-bytes N)` | The most bytes a [task](@/docs/tasks.md)'s job may append to its builders, the runtime's `maxOutputBytes` mount option (256 MiB without it) |
 
 Effects never run on their own in a spec: HTTP requests, timers and worker
 jobs wait for `run-effect`, and intervals for `tick-interval`. A worker
@@ -223,6 +224,8 @@ ticks, answers the refetch, and is gone when unchecked.
 | `(paste-files LOC "name" …)` | The user pastes the named setup files into the element |
 | `(expect-files N)` | The app holds exactly N [file handles](@/docs/files.md) |
 | `(expect-upload N "name" START LEN)` | The N-th effect occurrence is a pending upload whose body is `LEN` bytes from `START` of the setup file `name` |
+| `(expect-saved K "name" "text")` | The K-th file (from 1) the app saved in this document (`File.save`) was saved under `name` and held exactly `text` |
+| `(expect-saves N)` | The app saved exactly N files in this document |
 
 A spec writes out the contents of the files it uses, so both runners give
 the app the same bytes; a step that names a file no `file` form declares
@@ -241,6 +244,16 @@ digest in both runners, and a file URL is answered with a URL of the
 runner's own making, so a spec asserts what the app does with it rather
 than its text. An upload is an HTTP request: `expect-upload` checks which
 file and range it sends, and `run-effect` answers it with the staged reply.
+
+A [task](@/docs/tasks.md)'s job is a worker job: `run-effect` runs it, in
+Chrome in a real worker and natively in a child process whose task effects
+read the setup files' bytes, and `lose-work`, `time-out-work` and
+`expect-pending-work` apply to it. The files its answer holds are then
+handles the app holds, with the bytes the job built, in both runners, so a
+later read, digest or save of them gives the same bytes. A `File.fetch`
+takes the staged `stub-http` answer, its body becoming the file. Neither
+runner downloads anything: a save is logged, and `expect-saved` reads its
+name and contents.
 
 ## Work assertions {#work-budgets}
 
