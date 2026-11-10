@@ -8,6 +8,8 @@
 // 2. On a fresh page, an app round trip (back to the initial state) 30 times:
 //    Wasm memory pages must be flat and the host's live allocation count and
 //    live bytes (metrics 4, 5) must not grow after 3 warm-up cycles.
+// An app with ports (PORT_APPS) mounts with its own handlers, served beside
+// it, against real browser services (the Reading List's IndexedDB).
 // A worker app (WORKER_APPS) mounts with one worker and `manualWork`: after
 // every event the soak runs each pending job in issue order and waits for
 // its result, so results arrive in a fixed order and no deadline fires. Its
@@ -48,8 +50,12 @@ const WORKER_APPS = ["worker-search", "csv-converter"];
 // allows respawns there. Round trips still require one long-lived worker.
 const ASYNC_SUPERSEDE = ["csv-converter"];
 const workers = WORKER_APPS.includes(app);
+// Apps whose page passes port handlers: the module that holds them. Their
+// answers and messages arrive on their own time, like a backend's.
+const PORT_APPS = { "reading-list": "examples/reading-list/ports.mjs" };
+const portsModule = PORT_APPS[app] ?? null;
 if (conduit) handle = (await import(path.join(repo, "www/static/conduit_backend.mjs"))).createConduitHandler({});
-const served = handle !== null;
+const served = handle !== null || portsModule !== null;
 
 const files = {
   "index.html": path.join(here, "index.html"),
@@ -58,6 +64,7 @@ const files = {
   "app.wasm": opts.wasm,
   // Data an example downloads at run time.
   ...(app === "csv-converter" ? { "sample.csv": path.join(repo, "examples/csv-converter/sample.csv") } : {}),
+  ...(portsModule ? { "ports.mjs": path.join(repo, portsModule) } : {}),
 };
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, "http://x");
@@ -88,6 +95,7 @@ async function open() {
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
   await page.evaluateOnNewDocument(fs.readFileSync(files["locate.js"], "utf8"));
+  if (portsModule) await page.evaluateOnNewDocument(() => (window.__portsModule = "./ports.mjs"));
   if (workers) {
     await page.evaluateOnNewDocument(() => {
       window.__mountOptions = { maxWorkers: 1, manualWork: true };
@@ -110,17 +118,24 @@ async function open() {
   return { ctx, page, errors };
 }
 
-const settle = (page) => page.evaluate(() => new Promise((r) => {
+// Quiet once nothing awaited is in flight and no event waits. A port
+// app's commands and messages are not awaited requests, so it must also
+// stay quiet for QUIET consecutive checks (a write, then the read that
+// reports it).
+const QUIET = portsModule ? 10 : 0;
+const settle = (page) => page.evaluate((quiet) => new Promise((r) => {
   const rt = window.__rt;
   const t0 = performance.now();
+  let calm = 0;
   const tick = () => {
     // A held job is not waited for: the soak runs it (`__runWork`).
-    const busy = [...rt.live.values()].some((e) => e.kind === "http" || e.kind === "fetch" || e.kind === "file" || (e.kind === "work" && e.running));
-    if ((!busy && rt.queue.length === 0) || performance.now() - t0 > 2000) r();
+    const busy = [...rt.live.values()].some((e) => e.kind === "http" || e.kind === "fetch" || e.kind === "file" || e.kind === "portcall" || (e.kind === "work" && e.running));
+    calm = !busy && rt.queue.length === 0 ? calm + 1 : 0;
+    if (calm > quiet || performance.now() - t0 > 2000) r();
     else setTimeout(tick, 5);
   };
   setTimeout(tick, 0);
-}));
+}), QUIET);
 
 let failures = 0;
 const check = (name, ok, detail = "") => {
@@ -231,6 +246,9 @@ const CYCLES = {
   // The sample downloaded into a file, converted in the task's worker and
   // previewed: each answer replaces the last, whose files are let go.
   "csv-converter": [["click", ["role", "button", "Load the sample"]]],
+  // A book added (the store answers it) and removed (a command), each write
+  // followed by the store's copy.
+  "reading-list": [["fill", ["label", "Title"], "Soak book"], ["click", ["role", "button", "Add book"]], ["click", ["role", "button", "Remove Soak book"]]],
 };
 {
   const { ctx, page } = await open();
