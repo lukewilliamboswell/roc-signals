@@ -319,6 +319,14 @@ SpecRunner := [].{
 			},
 		]
 
+	## A worker job's result payload for an answer that holds no files: tag
+	## 10, a file count of zero, then the answer's bytes as a job's entry
+	## gives them after its file list (what `Worker`'s `stand_in` makes).
+	## Stand-ins and fuzz models answer jobs through this, so the framing
+	## has one place (design.md, Appendix B, result tag 10).
+	encode_answer : List(U8) -> List(U8)
+	encode_answer = |answer| SpecRunner.put_u32([10], 0).concat(answer)
+
 	## The pending worker job that is the N-th effect occurrence, for
 	## `lose-work` and `time-out-work`.
 	pending_job : S(state), U64 -> Try({ id : U32, deadline_ms : U32 }, Str)
@@ -697,7 +705,7 @@ SpecRunner := [].{
 					Unprepared => ([], job.input)
 					Prepared({ input_len, .. }) => (job.input.take_first(input_len), job.input.drop_first(input_len))
 				}
-				SpecRunner.deliver_job(program, s, id, [10, 0, 0, 0, 0].concat(stand_in(job.task, prep, own)))
+				SpecRunner.deliver_job(program, s, id, SpecRunner.encode_answer(stand_in(job.task, prep, own)))
 			}
 			_ => Err("effect occurrence ${n.to_str()} is not a worker job")
 		}
@@ -2052,3 +2060,7 @@ expect {
 
 ## A lost job carries its fault class as the runtime numbers it.
 expect [AppCrash, Unavailable, Executor].map(SpecRunner.encode_lost) == [[11, 4], [11, 6], [11, 7]]
+
+## An answer with no files is result tag 10, a zero file count, then the
+## answer's bytes.
+expect SpecRunner.encode_answer([42, 0]) == [10, 0, 0, 0, 0, 42, 0]

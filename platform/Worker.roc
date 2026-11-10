@@ -127,6 +127,12 @@ Worker := [].{
 		registration : Task(input, output, error) -> Engine.Registration
 		registration = |t| Core.registration(t.name, t.entry!)
 
+		## The task's name, as the props record gave it: what a request
+		## carries, what the monitor and a spec's `expect-pending-work` name
+		## the task's jobs by, and what a stand-in dispatches on.
+		name : Task(input, output, error) -> Str
+		name = |t| t.name
+
 		## A request for a job of the task on `input`, for an effect site's
 		## plan. The input is a snapshot: it is encoded when the request is
 		## issued, and later changes to the state it came from do not reach
@@ -360,6 +366,10 @@ Worker := [].{
 		registration : PreparedTask(init, state, query, output, error) -> PreparedTaskEntry(state)
 		registration = |t| t.entry
 
+		## The task's name, as `Task.name` gives a task's.
+		name : PreparedTask(init, state, query, output, error) -> Str
+		name = |t| t.name
+
 		## A request to run the task on `query` over the preparation's
 		## `input`, for an effect site's plan. Both are snapshots, encoded
 		## when the request is issued.
@@ -491,12 +501,14 @@ expect {
 	}
 	answer = |bytes| Work({ output: bytes, files: [] })
 	actual =
+		\\name: ${parse.name()}
 		\\request: ${shape}
 		\\good: ${Str.inspect(parse.result(answer(Wire.encode(7.U64).append(0))))}
 		\\bad: ${Str.inspect(parse.result(answer(Wire.encode(NotANumber("seven")).append(1))))}
 		\\late: ${Str.inspect(parse.result(Timeout))}
 		\\lost: ${Str.inspect(parse.result(WorkLost(AppCrash)))}
 	expected =
+		\\name: test/parse
 		\\request: ("test/parse", 250, Stop, Finish, Unprepared)
 		\\good: Ok(7)
 		\\bad: Err(Failed(NotANumber("seven")))
@@ -558,9 +570,11 @@ expect {
 		_ => "not a work request"
 	}
 	actual =
+		\\name: ${nth.name()}
 		\\request: ${shape}
 		\\answer: ${Str.inspect(nth.result(Work({ output: Wire.encode("b").append(0), files: [] })))}
 	expected =
+		\\name: test/lines/nth
 		\\request: ("test/lines/nth", 12, 40, Finish, Prepared({ input_files: 0, input_len: 4, name: "test/lines" }))
 		\\answer: Ok("b")
 	actual == expected

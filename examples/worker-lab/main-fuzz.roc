@@ -84,9 +84,9 @@ start = |_| SpecRunner.mount(program, "/", [])
 ## function its `run!` wraps.
 stand_in : Str, List(U8), List(U8) -> List(U8)
 stand_in = |task, prep, input|
-	if task == "roc-signals.example/worker-lab/primes" {
+	if task == LabApp.primes(Unlimited).name() {
 		LabApp.primes(Unlimited).stand_in(|span| Ok(Lab.count_primes(span)))(prep, input)
-	} else if task == "roc-signals.example/worker-lab/tile" {
+	} else if task == LabApp.tiles(Unlimited).name() {
 		LabApp.tiles(Unlimited).stand_in(|spec| Ok(Wire.Bytes.from_list(Lab.tile(spec))))(prep, input)
 	} else {
 		crash "lab walk: the walk keeps away from worker task \"${task}\""

@@ -57,24 +57,19 @@ SearchApp := [].{
 		"${SearchApp.catalogue.len().to_str()} entries, longest ${longest}"
 	}
 
-	## The tasks' names, which the fuzz target's stand-in dispatches on.
-	filter_name = "test.roc-signals/search/filter"
-
-	summarise_name = "test.roc-signals/search/summarise"
-
 	filter_task : Worker.Task(Str, Str, Worker.Never)
-	filter_task = Worker.task({ name: SearchApp.filter_name, run!: |query| Ok(SearchApp.filter(query)) })
+	filter_task = Worker.task({ name: "test.roc-signals/search/filter", run!: |query| Ok(SearchApp.filter(query)) })
 
 	summarise_task : Worker.Task({}, Str, Worker.Never)
-	summarise_task = Worker.task({ name: SearchApp.summarise_name, run!: |input| Ok(SearchApp.summarise(input)), deadline: Ms(2000) })
+	summarise_task = Worker.task({ name: "test.roc-signals/search/summarise", run!: |input| Ok(SearchApp.summarise(input)), deadline: Ms(2000) })
 
 	## For the fuzz target, which has no worker: the answer a job of either
 	## task gives, from the pure functions the tasks run.
 	stand_in : Str, List(U8), List(U8) -> List(U8)
 	stand_in = |task, prep, input|
-		if task == SearchApp.filter_name {
+		if task == SearchApp.filter_task.name() {
 			(SearchApp.filter_task.stand_in(|q| Ok(SearchApp.filter(q))))(prep, input)
-		} else if task == SearchApp.summarise_name {
+		} else if task == SearchApp.summarise_task.name() {
 			(SearchApp.summarise_task.stand_in(|x| Ok(SearchApp.summarise(x))))(prep, input)
 		} else {
 			crash "worker search: the app issued a job of an unknown task \"${task}\""

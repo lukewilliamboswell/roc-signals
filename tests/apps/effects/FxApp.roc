@@ -143,12 +143,9 @@ FxApp := [].{
 		}
 	}
 
-	## R's worker task's name.
-	echo_name = "test.roc-signals/fx/echo"
-
 	## R's worker task: its input back, with a 100 ms deadline.
 	echo : Worker.Task(U8, U8, Worker.Never)
-	echo = Worker.task({ name: FxApp.echo_name, run!: |b| Ok(b), deadline: Ms(100) })
+	echo = Worker.task({ name: "test.roc-signals/fx/echo", run!: |b| Ok(b), deadline: Ms(100) })
 
 	## The worker catalogue: R's echo task.
 	workers : List(Engine.Registration)

@@ -253,7 +253,7 @@ issue_r = |m, r| {
 		m1 = admit_x(m, k_r, r, Ri, |id| Interval(id, 700), RefR)
 		# The echo task's input, a `U8`, is one byte on the wire; its 100 ms
 		# deadline and `Stop` cancel policy travel with it.
-		admit_x(m1, k_r, r, Rw, |id| Work(id, { task: FxApp.echo_name, input: [r.to_u8_wrap()], files: [], deadline_ms: 100, cancel: 1, prepared: Unprepared }), RefR)
+		admit_x(m1, k_r, r, Rw, |id| Work(id, { task: FxApp.echo.name(), input: [r.to_u8_wrap()], files: [], deadline_ms: 100, cancel: 1, prepared: Unprepared }), RefR)
 	}
 }
 
@@ -528,7 +528,7 @@ encode_res = |res| match res {
 	Missing => [4]
 	Fired => [5]
 	Location(u) => [6].concat(Str.to_utf8(u))
-	Work({ output, files: [] }) => [10, 0, 0, 0, 0].concat(output)
+	Work({ output, files: [] }) => SpecRunner.encode_answer(output)
 	WorkLost(AppCrash) => [11, 4]
 	PortReply({ json, .. }) => le32(le32(wstr([14], json), 0), 0)
 	PortFailed(Threw(t)) => [15, 1].concat(Str.to_utf8(t))
