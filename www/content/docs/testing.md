@@ -198,7 +198,8 @@ A worker job is numbered with the HTTP requests and timers, in issue order,
 so the order of the steps is the order the jobs finish: `(run-effect 2)`
 then `(run-effect 1)` says the newer job finishes first. `lose-work` and
 `time-out-work` let a spec state how the app handles a job that fails
-without writing a program that fails; a program that really crashes on some
+without writing a program that fails (see [Workers](@/docs/workers.md#testing)
+for a sample); a program that really crashes on some
 input loses its job under `run-effect`, with the class `app_crash`, in both
 runners. A job cancelled by disposing its site is no longer pending, and the
 `effects_cancelled` metric below counts it.

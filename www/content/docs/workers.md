@@ -176,7 +176,9 @@ With `request` and `result`, the same cases are `Ok(Ok(value))`,
 `Ok(Err(error))` and `Err(Timeout)`, `Err(Refused)` or `Err(Lost(fault))`.
 
 Use the program's own error for failures you expect. A `crash` in a program
-is not an error you chose: it is `Lost`.
+is not an error you chose: it is `Lost`. The sample's specs show both: a
+total whose own error is an answer, and a total whose run is lost (see
+[Testing](#testing)).
 
 ## Deadlines
 
@@ -194,6 +196,7 @@ milliseconds after it was asked for, and answers `Timeout`:
 
 A program that never finishes holds its worker until its site stops it. Give
 a program a deadline when its input can make it run for an unreasonable time.
+A spec expires a deadline with `time-out-work` (see [Testing](#testing)).
 
 ## What can cross
 
@@ -349,10 +352,12 @@ timers (see [Testing](@/docs/testing.md#effects)):
 
 - A run waits until `(run-effect N)` runs it, `N` being its place among the
   document's HTTP requests, timers and runs in the order they were asked
-  for. Natively the program runs in process; in Chrome it runs in a real
-  worker, and the step waits for its answer.
+  for. Natively the program runs in a child process of the spec runner; in
+  Chrome it runs in a real worker, and the step waits for its answer. A
+  program that crashes is `Lost` in both, and the next run works.
 - `(expect-pending-effects N)` counts runs still waiting, so a spec can see
-  that a run was stopped.
+  that a run was stopped. `(expect-pending-work "name" N)` counts only the
+  runs of one program, by its name.
 - A run finishes when the spec runs it, so the order of `run-effect` steps
   is the order runs finish. Running a later run first checks the app against
   an earlier, slower one.
@@ -362,8 +367,26 @@ timers (see [Testing](@/docs/testing.md#effects)):
 Here the text and the word are both in the box, so editing the text asks for
 the summary (job 5) and the search (job 6); the spec answers the search first.
 
-A spec cannot yet make a run time out or be lost, so the `Timeout` and
-`Lost` branches of a view are not exercised by specs.
+A spec's time only moves when the spec says so, so a deadline never expires
+by itself, however long the run takes. Two steps answer a waiting run
+without running it:
+
+- `(time-out-work N)` expires its deadline: the run answers `Timeout`. A
+  program without a deadline cannot time out, and the step fails.
+- `(lose-work N FAULT)` answers `Lost(fault)`, as if its worker had
+  crashed (`app_crash`), run out of memory (`out_of_memory`), or there were
+  no worker at all (`unavailable`). See [Testing](@/docs/testing.md#effects)
+  for every fault.
+
+So the failure branches of a view have specs too:
+
+{{ sample(file="workers/specs/failures.scm", syntax="scheme") }}
+
+The work metrics count runs with the other effects: `effects_issued` for
+each run asked for, `effects_cancelled` for each one stopped,
+`effects_delivered` for each answer, and `effects_refused` for each one
+the in-flight bound turned away (see
+[Work assertions](@/docs/testing.md#work-budgets)).
 
 ## Which tool
 
