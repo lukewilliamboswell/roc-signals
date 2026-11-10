@@ -5,8 +5,8 @@ import pf.Worker
 ## Typed worker test app: `Worker` programs whose inputs and outputs cross as
 ## derived payloads, with no codec written here.
 ## - "Query" filters a word list in a worker through `Worker.derive_when`: an
-##   empty query is `Skip`, a newer query supersedes the run of an older one,
-##   and the previous matches stay shown while the next run is wanted.
+##   empty query is `Skip`, a newer query supersedes the job of an older one,
+##   and the previous matches stay shown while the next job is wanted.
 ## - "Text" is measured through `Worker.derive`, which runs for every value,
 ##   the first one included.
 ## - "Parse" submits the text to a fallible program through an `Engine.latest`

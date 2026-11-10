@@ -13,7 +13,7 @@ import pf.Worker
 ##   and distinct words, `test-id "stats"`), "Lookup" (the count and first
 ##   lines of the word typed in "Word", `test-id "lookup"`, with a deadline)
 ##   and "Top" (the three most frequent words, `test-id "top"`, which
-##   finishes a cancelled run instead of stopping it).
+##   finishes a cancelled job instead of stopping it).
 ## - "Forget" drops the file, so its handle is released and no worker keeps
 ##   a state prepared from it.
 ## - "Summary" shows the stats again below the tabs (`test-id "summary"`),

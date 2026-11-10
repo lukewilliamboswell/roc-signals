@@ -73,7 +73,7 @@ Editor := [].{
 			|remote| Html.p_v(remote.map(Editor.show_summary), [Engine.test_id("summary")]),
 		)
 
-	## While a run is wanted, the previous answer stays and says it is being
+	## While a job is wanted, the previous answer stays and says it is being
 	## updated.
 	show_summary : Engine.Remote(Words.Summary, Worker.Error) -> Str
 	show_summary = |{ request, answer }|
@@ -87,7 +87,7 @@ Editor := [].{
 		}
 	# endregion derive
 
-	## What to tell the user when a run produced no answer.
+	## What to tell the user when a job produced no answer.
 	problem : Worker.Error -> Str
 	problem = |error|
 		match error {
@@ -196,7 +196,7 @@ Editor := [].{
 		)
 	}
 
-	## The program's own error is an answer (`Answered(Err(...))`); a run that
+	## The program's own error is an answer (`Answered(Err(...))`); a job that
 	## produced no answer is `Failed`.
 	show_total : Engine.Remote(Try(U64, [NotANumber(Str)]), Worker.Error) -> Str
 	show_total = |{ answer, .. }|

@@ -36,9 +36,9 @@ updated, until the answer for the new text arrives.
 ## When a worker is worth it
 
 A worker is not free. Starting one loads the worker script and instantiates
-the module in a new thread, and every run encodes its input on the page,
+the module in a new thread, and every job encodes its input on the page,
 copies it to the worker, and copies and decodes the answer on the way back.
-A run is also
+A job is also
 asynchronous: its answer arrives in a later turn, so the view has to say what
 it shows meanwhile.
 
@@ -48,16 +48,16 @@ a `derive` gives its answer in the same turn as the keystroke:
 {{ sample(file="workers/Editor.roc", region="cheap") }}
 
 Move a calculation to a worker when you can feel it: when a keystroke or a
-click visibly waits for it. To see where a run's time goes — waiting for a
+click visibly waits for it. To see where a job's time goes — waiting for a
 worker, starting one, computing, copying — read the runtime's monitor; see
-[Monitoring Workers](@/docs/worker-monitoring.md). A run whose time is mostly
+[Monitoring Workers](@/docs/worker-monitoring.md). A job whose time is mostly
 copying and starting is better done on the page.
 
-A program receives only its input. It keeps nothing between runs, so data it
+A program receives only its input. It keeps nothing between jobs, so data it
 needs every time, such as the text it searches, is sent and copied with every
-run. When the cost is not sending the data but preparing it (parsing a
+job. When the cost is not sending the data but preparing it (parsing a
 document, building an index), a [prepared program](#prepared-programs-one-preparation-several-questions)
-lets a worker keep the prepared state between runs without changing any
+lets a worker keep the prepared state between jobs without changing any
 answer.
 
 The page and its workers run one module, so a program's code is part of the
@@ -91,7 +91,7 @@ duplicate list key does (see [Reference](@/docs/reference.md#errors)):
   `contract: worker program "example.org/words/summary" is registered twice in with_workers`.
 - Registering more than 64, when the app mounts:
   `contract: with_workers registers more than 64 worker programs (program "…" is over the bound)`.
-- Asking for a run of a program that is not registered, when the site asks:
+- Asking for a job of a program that is not registered, when the site asks:
   `contract: worker program "example.org/words/summary" is not registered; add its registration to with_workers (site /3/0)`,
   naming the site that asked.
 
@@ -103,32 +103,33 @@ It gives `body` a value of type `Engine.Remote(output, Worker.Error)`:
 - `request` is `Pending` while the answer for the current input is still
   wanted, and `Idle` otherwise;
 - `answer` is `Unanswered` before the first answer, `Answered(output)` once
-  there is one, or `Failed(error)` when a run produced no answer (see
+  there is one, or `Failed(error)` when a job produced no answer (see
   [Calculations that can fail](#calculations-that-can-fail)).
 
 What you see:
 
-- The run for the first input starts when the site mounts.
+- The job for the first input starts when the site mounts.
 - When the input changes to an unequal value, `request` becomes `Pending` in the
   same turn and `answer` keeps the previous answer, so the view can go on
   showing it, as `show_summary` does.
-- A newer input stops the run for the older one before it starts its own. An
+- A newer input stops the job for the older one before it starts its own. An
   answer for an old input is never shown, and you keep no request number in
   your state.
 - An equal input asks nothing.
 
-The input is a snapshot: it is encoded when the run is asked for, and later
-changes reach only the next run. Both the input and the output need equality,
+The input is a snapshot: it is encoded when the job is asked for, and later
+changes reach only the next job. Both the input and the output need equality,
 like any `derive`.
 
-Stopping a run that has started ends its worker; the next run starts a new
-one. A run cannot be stopped and its worker kept. A run reports nothing until
+Stopping a job that has started ends its worker; the next job starts a new
+one. A job cannot be stopped and its worker kept (except a prepared program's
+query, below). A job reports nothing until
 it answers: there is no progress.
 
 ## An input that is sometimes not a question
 
 `Worker.derive_when(program, input, body)` takes an input of type
-`[Run(i), Skip]`. `Run(i)` asks for a run on `i`; `Skip` stops any run and
+`[Run(i), Skip]`. `Run(i)` asks for a job on `i`; `Skip` stops any job and
 clears the answer, so `answer` is `Unanswered` and `request` is `Idle`. Use it for
 an empty search box or a form that is not valid yet:
 
@@ -154,14 +155,14 @@ use `Engine.latest` (see
 
 {{ sample(file="workers/Editor.roc", region="latest") }}
 
-- "Count words" puts a new `Count` in state, and `latest` asks for a run on
+- "Count words" puts a new `Count` in state, and `latest` asks for a job on
   it. The press number makes each press a new value, so pressing again for
   the same text counts again.
-- Pressing it while a count runs stops that run and starts a new one.
+- Pressing it while a count runs stops that job and starts a new one.
 - "Cancel" puts `Idle` in state. Its plan is `[]`, so the change only stops
-  the run that is in flight.
+  the job that is in flight.
 - Editing the text starts nothing: the site watches only `ask`.
-- The answer is written to state by the reaction, so it stays after the run
+- The answer is written to state by the reaction, so it stays after the job
   is over. `latest` never delivers an answer for a request it has stopped,
   so the reaction does not need to check which press it belongs to.
 
@@ -175,13 +176,13 @@ output is that `Try`:
 
 {{ sample(file="workers/Words.roc", region="fallible") }}
 
-**No answer at all.** `Worker.Error` says why a run produced no output:
+**No answer at all.** `Worker.Error` says why a job produced no output:
 
 | Error | Cause |
 |---|---|
-| `Timeout` | The run's deadline expired, and it was stopped |
-| `Refused` | Too many requests were in flight; the run was never started |
-| `Lost(fault)` | The run crashed, or no worker could run it (see [Programs are pure](#programs-are-pure)) |
+| `Timeout` | The job's deadline expired, and it was stopped |
+| `Refused` | Too many requests were in flight; the job was never started |
+| `Lost(fault)` | The job crashed, or no worker could run it (see [Programs are pure](#programs-are-pure)) |
 | `FileFailed(error)` | The files its input holds could not be read into the worker, so it never started (see [Files](@/docs/files.md)) |
 
 With `derive`, a program's own error is an answer, `Answered(Err(...))`, and a
@@ -195,7 +196,7 @@ With `request` and `result`, the same cases are `Ok(Ok(value))`,
 
 Use the program's own error for failures you expect. A `crash` in a program
 is not an error you chose: it is `Lost`. The sample's specs show both: a
-total whose own error is an answer, and a total whose run is lost (see
+total whose own error is an answer, and a total whose job is lost (see
 [Testing](#testing)).
 
 ## Deadlines
@@ -205,9 +206,9 @@ milliseconds after it was asked for, and answers `Timeout`:
 
 {{ sample(file="workers/Words.roc", region="deadline") }}
 
-- The time counts from when the run is asked for, so time spent waiting for
+- The time counts from when the job is asked for, so time spent waiting for
   a free worker and starting one counts too.
-- Expiry stops the run: a run still waiting for a worker is dropped, and a
+- Expiry stops the job: a job still waiting for a worker is dropped, and a
   running one ends its worker. The calculation does not finish in the
   background.
 - `Unlimited`, the default, means no deadline. The longest deadline is ten
@@ -268,25 +269,25 @@ byte:
 {{ sample(file="wire.roc", region="bytes") }}
 
 Every payload is decoded strictly. A value nested more than 512 containers
-deep cannot cross either way, and either way only the run is lost: an input
+deep cannot cross either way, and either way only the job is lost: an input
 that deep fails to decode in the worker, and an output that deep is refused
-in the worker before it is sent, so the run is `Lost(Contract)` and the
+in the worker before it is sent, so the job is `Lost(Contract)` and the
 console names the program and the bound. Keep payloads plain: each payload type adds
 code to the module.
 
 ## Lifetimes
 
-A run belongs to the site that asked for it, and what you see follows from
+A job belongs to the site that asked for it, and what you see follows from
 that.
 
-**Leaving the screen stops the run.** When a site is disposed — its `when`
-branch switched, its row left the list, its panel closed — its run is
+**Leaving the screen stops the job.** When a site is disposed — its `when`
+branch switched, its row left the list, its panel closed — its job is
 stopped, and no answer arrives. The panel below runs its totals in a
 `derive` that lives inside the panel:
 
 {{ sample(file="worker-lifetimes/Documents.roc", region="panel") }}
 
-Closing the panel stops the totals' run.
+Closing the panel stops the totals' job.
 
 **A result that must outlive a panel** needs a site that outlives it. The
 "Export" button above is inside the panel, but it only writes a request into
@@ -296,24 +297,24 @@ leaves the export running, and the report appears when it is done. Put such
 a site in the scope that should own the work, usually next to the state its
 answer goes into.
 
-**Each row can have its own run.** A `derive` in an `each` row runs for that
-row's value. Runs finish in any order, and each row shows its own answer.
-Removing a row stops its run:
+**Each row can have its own job.** A `derive` in an `each` row runs for that
+row's value. Jobs finish in any order, and each row shows its own answer.
+Removing a row stops its job:
 
 {{ sample(file="worker-lifetimes/Documents.roc", region="rows") }}
 
-**Runs share the in-flight bound.** Worker runs count against the same bound
+**Jobs share the in-flight bound.** Worker jobs count against the same bound
 as HTTP requests and timers: 32 awaited requests by default, set with
-`max_inflight` in `Engine.program_boot`. A run beyond the bound is not
+`max_inflight` in `Engine.program_boot`. A job beyond the bound is not
 started; it answers `Refused` straight away, and the others go on. The
 sample sets a bound of three so its spec can reach it:
 
 {{ sample(file="worker-lifetimes/Documents.roc", region="bound") }}
 
-A refused run is not retried. A `derive` asks again only when its input
+A refused job is not retried. A `derive` asks again only when its input
 changes, so tell the user, as the rows do, or ask again from a button.
 
-Runs beyond the number of workers wait for a free one. The pool's size is
+Jobs beyond the number of workers wait for a free one. The pool's size is
 the page's `maxWorkers` option (below).
 
 ## Prepared programs: one preparation, several questions
@@ -366,9 +367,9 @@ time.
   input prepares on a worker holding nothing, a new worker, or the one used
   least recently, whose state it replaces. A worker whose memory has grown
   past the `maxWorkerBytes` mount option (128 MiB by default) is ended after
-  its job, its state with it. A run of an ordinary program that reads files
+  its job, its state with it. A job of an ordinary program that reads files
   on a worker holding a state lets the state go first, since the state may
-  keep file buffers the run needs; a query may carry files of its own and
+  keep file buffers the job needs; a query may carry files of its own and
   still reuse the state it asks.
 - **Leave the state's type to inference if you like.** A query's type names
   the state (`Worker.Query(File, List(Str), Str, List(U64))`), but
@@ -376,7 +377,7 @@ time.
   another preparation's registration is a type error when the states'
   types differ (`Worker.QueryRegistration(List(Str))` against
   `Worker.QueryRegistration(U64)`).
-  When they are the same type it compiles, and every run of that query is
+  When they are the same type it compiles, and every job of that query is
   a contract error in its worker, answered `Lost(Contract)`.
 - **A file's state goes with the file.** When the app lets go of a file, every
   state prepared from it is let go too.
@@ -388,10 +389,10 @@ time.
   the state is gone, and the next query prepares again elsewhere. A deadline
   counts the preparation's time.
 - **Cancelling.** By default a query stopped while it runs ends its worker,
-  as any run does, and its state goes with it (`Stop`). A query declared
+  as any job does, and its state goes with it (`Stop`). A query declared
   `on_cancel: Finish` lets a stopped job complete and drops its answer, so
   its worker keeps the state for the next question; the cost is a worker busy
-  for the rest of that run. A deadline always ends the worker.
+  for the rest of that job. A deadline always ends the worker.
 
 **Tabs.** The sample's queries live inside their tabs, so switching away
 disposes a tab's site and coming back asks again. With plain programs every
@@ -404,21 +405,21 @@ That is usually enough. Hoist a site out of the tab, next to the state its
 answer belongs with, when even the query is slow or the answer must survive
 the tab: a hoisted site asks once per input and keeps its answer, but it runs
 while its tab is hidden. `Finish` suits a tab whose query the user often
-leaves mid-run, so the worker is still warm when they come back.
+leaves mid-job, so the worker is still warm when they come back.
 
 ## Programs are pure
 
 A program shares nothing with the page. It receives its input and returns
 its output; it cannot read the page's state, write it or ask for effects, and
 Roc's types already rule that out. It may run in a worker that ran other
-runs before, and nothing from those runs is visible to it.
+jobs before, and nothing from those jobs is visible to it.
 
 A program that fails badly — a `crash`, running out of memory, a failed
-`expect` in a development build — ends only its worker. The run answers
+`expect` in a development build — ends only its worker. The job answers
 `Lost(fault)`, with the fault's class (`AppCrash`, `OutOfMemory`,
 `ExpectFailed`, …), the diagnostic goes to the browser console, and the page
-keeps working. The next run starts a new worker. In a browser without
-workers, every run answers `Lost(Unavailable)`.
+keeps working. The next job starts a new worker. In a browser without
+workers, every job answers `Lost(Unavailable)`.
 
 ## Serving the app
 
@@ -441,39 +442,39 @@ await mountRocEngineApp({
   maxWorkers: 4,            // most workers at once; default min(cores, 8)
   workerUrl: "/js/worker.mjs", // when worker.mjs is not beside runtime.mjs
   workers: "inline",        // run jobs on the page's thread instead (below)
-  maxFileBytes: 64 << 20,   // most bytes of files one run reads; default 256 MiB
+  maxFileBytes: 64 << 20,   // most bytes of files one job reads; default 256 MiB
   onWorkerFault: (f) => console.warn(f.program, f.class, f.message),
 });
 ```
 
 - `maxWorkers` bounds the workers alive at once. Each runs one program at a
-  time; further runs wait in order.
+  time; further jobs wait in order.
 - `workerUrl` locates `worker.mjs` when you serve it elsewhere.
-- `maxFileBytes` bounds the bytes of [files](@/docs/files.md) one run reads
-  into its worker; a run over it fails unread.
+- `maxFileBytes` bounds the bytes of [files](@/docs/files.md) one job reads
+  into its worker; a job over it fails unread.
 - `workers: "inline"` runs every job in a second instance of the module on
   the page's own thread, one at a time, with the same answers. The page
   waits while a job runs, and a deadline can only stop a job that has not
   started. It gives up what a worker is for; use it to measure or debug.
-- `onWorkerFault` receives `{ id, program, class, message }` when a run is
+- `onWorkerFault` receives `{ id, program, class, message }` when a job is
   `Lost`, in addition to the console message. The diagnostic never reaches
   the app.
 
 ## Testing
 
-Worker runs are effects, and specs control them like HTTP requests and
+Worker jobs are effects, and specs control them like HTTP requests and
 timers (see [Testing](@/docs/testing.md#effects)):
 
-- A run waits until `(run-effect N)` runs it, `N` being its place among the
-  document's HTTP requests, timers and runs in the order they were asked
+- A job waits until `(run-effect N)` runs it, `N` being its place among the
+  document's HTTP requests, timers and jobs in the order they were asked
   for. Natively the program runs in a child process of the spec runner; in
   Chrome it runs in a real worker, and the step waits for its answer. A
-  program that crashes is `Lost` in both, and the next run works.
-- `(expect-pending-effects N)` counts runs still waiting, so a spec can see
-  that a run was stopped. `(expect-pending-work "name" N)` counts only the
-  runs of one program, by its name.
-- A run finishes when the spec runs it, so the order of `run-effect` steps
-  is the order runs finish. Running a later run first checks the app against
+  program that crashes is `Lost` in both, and the next job works.
+- `(expect-pending-effects N)` counts jobs still waiting, so a spec can see
+  that a job was stopped. `(expect-pending-work "name" N)` counts only the
+  jobs of one program, by its name.
+- A job finishes when the spec runs it, so the order of `run-effect` steps
+  is the order jobs finish. Running a later job first checks the app against
   an earlier, slower one.
 
 {{ sample(file="workers/specs/find.scm", syntax="scheme") }}
@@ -482,10 +483,10 @@ Here the text and the word are both in the box, so editing the text asks for
 the summary (job 5) and the search (job 6); the spec answers the search first.
 
 A spec's time only moves when the spec says so, so a deadline never expires
-by itself, however long the run takes. Two steps answer a waiting run
+by itself, however long the job takes. Two steps answer a waiting job
 without running it:
 
-- `(time-out-work N)` expires its deadline: the run answers `Timeout`. A
+- `(time-out-work N)` expires its deadline: the job answers `Timeout`. A
   program without a deadline cannot time out, and the step fails.
 - `(lose-work N FAULT)` answers `Lost(fault)`, as if its worker had
   crashed (`app_crash`), run out of memory (`out_of_memory`), or there were
@@ -496,8 +497,8 @@ So the failure branches of a view have specs too:
 
 {{ sample(file="workers/specs/failures.scm", syntax="scheme") }}
 
-The work metrics count runs with the other effects: `effects_issued` for
-each run asked for, `effects_cancelled` for each one stopped,
+The work metrics count jobs with the other effects: `effects_issued` for
+each job asked for, `effects_cancelled` for each one stopped,
 `effects_delivered` for each answer, and `effects_refused` for each one
 the in-flight bound turned away (see
 [Work assertions](@/docs/testing.md#work-budgets)).
@@ -509,11 +510,11 @@ the in-flight bound turned away (see
 | A cheap value computed from state | `Engine.derive` |
 | A slow value that follows its input | `Worker.derive` |
 | The same, when some inputs ask nothing | `Worker.derive_when` |
-| A run the user starts and cancels, with its answer kept in state | `Engine.latest` with `request` and `result` |
+| A job the user starts and cancels, with its answer kept in state | `Engine.latest` with `request` and `result` |
 | A calculation that fails on some inputs | `Worker.fallible` |
 | A job that must not take too long | `deadline: Ms(ms)` |
 | Bulk bytes in a payload | `Wire.Bytes` |
 | A result that survives the panel that asked for it | A site in a longer-lived scope |
 | Several questions over one slow preparation | `Worker.prepared` and its queries |
 | A cancelled query that should keep its worker's state | `on_cancel: Finish` |
-| Where a run's time goes | [Monitoring Workers](@/docs/worker-monitoring.md) |
+| Where a job's time goes | [Monitoring Workers](@/docs/worker-monitoring.md) |

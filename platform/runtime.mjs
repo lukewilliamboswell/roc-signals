@@ -3192,7 +3192,7 @@ export class RocEngineRuntime {
     }
     const fileBytes = fx.files.reduce((n, f) => n + f.size, 0);
     if (fx.files.length > MAX_JOB_FILES || fileBytes > this.maxFileBytes) {
-      // More than a run reads: refused before anything is read, as one
+      // More than a job reads: refused before anything is read, as one
       // result turn after this batch.
       setTimeout(() => finish(new Uint8Array([RES_FILE_FAILED, 2]), "lost", "too_large"), 0);
       return;

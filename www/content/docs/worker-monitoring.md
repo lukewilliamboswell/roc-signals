@@ -154,7 +154,7 @@ What a listener can rely on:
   is cancelled, with `record.phase` (`held`, `queued`, `starting`,
   `running`) and `record.cancelledBy` (`engine`, `unmount`, `contained`).
 - A cancelled query whose policy is `Finish` ends at once as `cancelled`
-  with `record.finished`, but its instance stays busy until the run
+  with `record.finished`, but its instance stays busy until the job
   completes.
 - When stopping a job terminates its worker (cancel, deadline, fault), the
   `instance-end` comes before that job's `job-end`.

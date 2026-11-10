@@ -31,7 +31,7 @@ recipe ready.
 
 | Path | Contents |
 |---|---|
-| `platform/` | The platform (`main.roc`): the engine (`Core.roc`), the authoring API (`Engine.roc`, `Html.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the Wasm host (`host/host.zig`, with the typed heaps behind resource handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig`). Also the fuzz platform (`fuzz.roc`, the vendored roc-fuzz modules and the soak walk) |
+| `platform/` | The platform (`main.roc`): the engine (`Core.roc`), the authoring API (`Engine.roc`, `Html.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig`). Also the fuzz platform (`fuzz.roc`, the vendored roc-fuzz modules and the soak walk) |
 | `tests/` | Browser contract tests and the apps they drive (`tests/apps/`, for example `files` for file handles `file-effects` for operations on files and `ports` for ports), the Chrome spec replay, and the release check helper |
 | `fuzz/` | Fuzz targets of the shared support; each app's own target is its `main-fuzz.roc` |
 | `examples/` | The example apps, each with its specs |

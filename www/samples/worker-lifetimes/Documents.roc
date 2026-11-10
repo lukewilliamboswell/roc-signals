@@ -37,7 +37,7 @@ Documents := [].{
 	})
 
 	# region bound
-	## At most three runs are in flight at once, kept low here so the specs
+	## At most three jobs are in flight at once, kept low here so the specs
 	## can reach the bound; the default is 32.
 	program : Engine.Program
 	program =
@@ -81,7 +81,7 @@ Documents := [].{
 	}
 
 	# region rows
-	## Each row runs its own count. Removing a row stops its run.
+	## Each row runs its own count. Removing a row stops its job.
 	rows : State(Ctx, S) -> Elem(Ctx)
 	rows = |st|
 		Html.ul(
@@ -126,7 +126,7 @@ Documents := [].{
 		}
 
 	# region panel
-	## The panel's totals belong to the panel: closing it stops their run.
+	## The panel's totals belong to the panel: closing it stops their job.
 	## Its "Export" button only asks; the export site is outside the panel.
 	panel : State(Ctx, S) -> Elem(Ctx)
 	panel = |st| {

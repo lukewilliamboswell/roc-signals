@@ -54,7 +54,7 @@ Anything else is `Engine.element(tag, attrs, children)`.
 | Area | Symbols |
 |---|---|
 | Programs | `Program(input, output)`, `program`, `fallible`, `ProgramProps(input, output)` (`name`, `run`, `deadline : [Unlimited, Ms(U32)] ?? Unlimited`), `Program.registration` |
-| Runs from an effect site | `Program.request`, `Program.result`, `Error` (`Timeout`, `Refused`, `Lost(WorkFault)`, `FileFailed(FileError)`) |
+| Jobs from an effect site | `Program.request`, `Program.result`, `Error` (`Timeout`, `Refused`, `Lost(WorkFault)`, `FileFailed(FileError)`) |
 | Layers | `derive`, `derive_when` (for a program or a query), holding an `Engine.Remote(output, Error)` |
 | Prepared programs | `prepared`, `PreparedProps(init, state)` (`name`, `prepare`), `Prepared(init, state)`, `Prepared.query`, `Prepared.fallible_query`, `QueryProps(state, q, out)` (`name`, `run`, `deadline`, `on_cancel : Cancel ?? Stop`), `Prepared.registration`, `Query(init, state, q, out)`, `Query.registration`, `QueryRegistration(state)`, `Query.request`, `Query.result`, `Question(init, q)` (`input`, `query`), `Cancel` (`Stop`, `Finish`) |
 
@@ -122,11 +122,11 @@ guarded while the control has focus. `checked` is a property set from
 | Events queued while a batch applies | 4096 | Resource limit |
 | Worker programs in a catalogue | 64 names: programs, preparations and their queries | Contract error at mount |
 | Work deadline | 600 s | Capped |
-| Workers alive at once | `maxWorkers` (default the core count, at most 8) | Runs wait in order for a free worker |
+| Workers alive at once | `maxWorkers` (default the core count, at most 8) | Jobs wait in order for a free worker |
 | Prepared states | One per worker | A new input replaces the least recently used idle worker's |
-| A worker's memory | `maxWorkerBytes` (default 128 MiB), checked after each run | The worker is ended after the run, its prepared state with it |
+| A worker's memory | `maxWorkerBytes` (default 128 MiB), checked after each job | The worker is ended after the job, its prepared state with it |
 | Files an app holds at once | 64 | Further files are not delivered; `Received.refused` counts them |
-| Files one worker run reads | 16, and `maxFileBytes` bytes (default 256 MiB) | The run fails unread: `FileFailed(TooLarge)` |
+| Files one worker job reads | 16, and `maxFileBytes` bytes (default 256 MiB) | The job fails unread: `FileFailed(TooLarge)` |
 | Bytes one page read takes | Its `max_bytes` (default 8 MiB), at most `maxFileBytes` (default 256 MiB) | `FileFailed(TooLarge)`, unread |
 | Bytes one digest reads | `maxFileBytes` (default 256 MiB) | `FileFailed(TooLarge)`, unread |
 | URLs one file gives | 16 ranges, revoked when the file is let go | `FileFailed(TooLarge)` |
@@ -134,7 +134,7 @@ guarded while the control has focus. `checked` is a property set from
 | A port's answer or message | `maxPortBytes` (default 4 MiB, at most 64 MiB) | `TooLarge` |
 | Undelivered messages per port subscription | 1 (`Latest`) or n ≤ 1024 (`Every(n)`) | `Latest` keeps the newest; `Every` refuses the JavaScript's `emit` |
 | Port call timeout | 600 s | Capped |
-| Payload nesting | 512 containers | The run is `Lost(Contract)`: an input fails to decode in the worker, an output is refused there before it is sent |
+| Payload nesting | 512 containers | The job is `Lost(Contract)`: an input fails to decode in the worker, an output is refused there before it is sent |
 
 ## Errors
 
@@ -155,7 +155,7 @@ construction site, for example `contract: duplicate key "r0" in each at site
 
 `recover()` on the runtime mounts a fresh instance from the same module.
 
-A fault inside a worker program stops only that worker. Its run answers
+A fault inside a worker program stops only that worker. Its job answers
 `WorkLost` with the class (`Lost(fault)` in `Worker.Error`), the diagnostic
 goes to the console and `onWorkerFault`, and the page keeps working.
 `WorkLost` also reports `unavailable` (the browser has no workers) and

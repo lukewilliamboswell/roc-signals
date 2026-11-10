@@ -83,7 +83,7 @@ For text, `File.contents_utf8` gives `Err(InvalidUtf8)` when the bytes are
 not UTF-8. Calling `File.contents` on the page is a contract error: there
 are no bytes there until the app asks for them with a read.
 
-A run whose files cannot be read fails before the program starts, and the
+A job whose files cannot be read fails before the program starts, and the
 worker survives:
 
 | What happened | `Worker.Error` |

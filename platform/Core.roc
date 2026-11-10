@@ -720,7 +720,7 @@ Core := [].{
 	## disposing the site cancels it. `deadline_ms` 0 means no deadline; it is
 	## capped at 10 minutes and delivers `Timeout` when it expires. Issuing work
 	## for a program that is not registered is a contract error. `files` are the
-	## files the input refers to, read into the worker's memory for the run
+	## files the input refers to, read into the worker's memory for the job
 	## (`[]` for a program that takes bytes alone; `Worker` fills it in).
 	##
 	## `ReadBytes` and `ReadUtf8` read a file into the page (`File.read_bytes`,

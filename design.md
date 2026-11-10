@@ -733,8 +733,8 @@ instead of a state write.
   hooks: numbers, `Bool`, `Str`, lists, records, tuples, tag unions and
   nominal types that opt in; functions, state handles and reactive values do
   not, which the compiler rejects. `Worker.derive` is a `resource` whose
-  requests are runs of one program: a layer holding the program's answer for
-  an input, where a newer input stops the run of an older one.
+  requests are jobs of one program: a layer holding the program's answer for
+  an input, where a newer input stops the job of an older one.
 - **`Ask`** is `Work` for a query of a prepared program (below): the same
   results, scope and counters, with an input that also names the
   preparation and where the preparation's own input lies in it.
@@ -808,8 +808,8 @@ and the engine unchanged: to the engine an `Ask` is a `Work` request.
   cancelled running query stops its worker, as any job does, and the state
   goes with it. `Finish` is opt-in: on `CANCEL` the engine forgets the id as
   always (counted `cancelled`, a late answer stale), but the runtime lets the
-  run complete and drops its answer, so the worker keeps the state for the
-  next query. At most one such run per worker, so the pool bounds them. A
+  job complete and drops its answer, so the worker keeps the state for the
+  next query. At most one such job per worker, so the pool bounds them. A
   deadline always stops the worker, and a query's deadline includes its
   preparation.
 - **Failure.** A crash in a preparation or a query poisons that worker only:
@@ -1058,12 +1058,12 @@ program. On the page a file has no bytes until the app asks for them with a
 request (below).
 
 A file that can no longer be read (the user's file changed or went away)
-and files beyond what a run reads — more than 16, or more bytes than the
-`maxFileBytes` mount option allows — fail the run before it starts with the
+and files beyond what a job reads — more than 16, or more bytes than the
+`maxFileBytes` mount option allows — fail the job before it starts with the
 typed `FileFailed(Unreadable)` or `FileFailed(TooLarge)`; the worker is not
 lost. The typed layer reports them as `Worker.Error`'s own `FileFailed`,
 apart from a lost worker: a file the user changed is not a fault of the
-program or its instance. A run cancelled while its files are read is
+program or its instance. A job cancelled while its files are read is
 dropped as any other.
 
 `FileError` is one closed type for every operation on a file, so an app
@@ -1364,8 +1364,8 @@ bound and a declared behaviour at the bound:
 | Staged payloads | 1 | Previous one freed |
 | Diagnostic text | 512 bytes | Truncated |
 | File handles live in one instance | 64 | The event's further files are not delivered and are counted in `Received.refused` |
-| Files one work run reads | 16 | Typed `FileFailed(TooLarge)`, unread |
-| Bytes of files one work run reads | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)`, unread |
+| Files one work job reads | 16 | Typed `FileFailed(TooLarge)`, unread |
+| Bytes of files one work job reads | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)`, unread |
 | Bytes one read of a file into the page takes | The read's `max_bytes` (default 8 MiB), at most `maxFileBytes`; reads in flight are bounded by the in-flight cap | Typed `FileFailed(TooLarge)`, unread |
 | Bytes one digest reads | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)`, unread |
 | Object URLs of one file handle | 16 ranges, revoked with the handle | Typed `FileFailed(TooLarge)` |
