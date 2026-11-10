@@ -1,11 +1,11 @@
 (test "Workers — a deadline expires only when the spec says so"
   (steps
-    ; "Slow" runs spin with a 50 ms deadline. A spec's time is manual: the
+    ; "Slow" runs spin as a task with a 50 ms deadline. A spec's time is manual: the
     ; job waits, and run-effect runs it to completion however long it takes
     ; (these rounds take far longer than 50 ms).
     (fill (label "Rounds") "100000000")
     (click (role button :name "Slow"))
-    (expect-pending-work "test.roc-signals/spin" 1)
+    (expect-pending-work "test.roc-signals/slow" 1)
     (run-effect 1)
     (expect-text (test-id "log") "slow:spun 100000000 603")
     ; time-out-work expires the next one: Timeout, and it never runs.

@@ -4,6 +4,8 @@ import pf.Core
 import pf.Dom
 import pf.Fuzz
 import pf.Soak
+import pf.Wire
+import pf.Worker
 
 ## Generated structure: bytes decode into a site tree and a session over it,
 ## so the engine meets nestings no fixed app happens to contain.
@@ -36,7 +38,7 @@ import pf.Soak
 ## the typed contexts would need polymorphic recursion (roc-lang/roc#12835).
 ##
 ## The session clicks any live button or answers any live request: a timer
-## fires; a worker job runs its registered program in process, or is lost
+## fires; a worker job is answered by its task's stand-in (`triple`), or is lost
 ## (`WorkLost(AppCrash)`) or times out. Oracles:
 ## - every step leaves the engine settled (`Core.settled`);
 ## - in mode 0 every write goes to the root state (other states stay at
@@ -294,12 +296,18 @@ flat = |n, g, inner| match n {
 	}
 }
 
-## The one worker program: every input byte tripled.
+## Every input byte tripled: the one worker task's calculation.
 triple : List(U8) -> List(U8)
 triple = |bytes| bytes.map(|x| x.times_wrap(3))
 
-triple_name : Str
-triple_name = "roc-signals.test/structure/triple"
+## The one worker task, from bytes to bytes.
+tripler : Worker.Task(Wire.Bytes, Wire.Bytes, Worker.Never)
+tripler = Worker.task({ name: "roc-signals.test/structure/triple", run!: |bytes| Ok(Wire.Bytes.from_list(triple(bytes.to_list()))) })
+
+## A job's answer as the walk gives it, with no worker to run it: the
+## task's stand-in, from `triple`.
+tripled : List(U8) -> List(U8)
+tripled = |input| (tripler.stand_in(|bytes| Ok(Wire.Bytes.from_list(triple(bytes.to_list())))))([], input)
 
 ## A layer that follows a worker job for its input: the output's byte sum,
 ## or a marker for a lost or timed-out job.
@@ -307,9 +315,13 @@ job_cfg : { init : U64, pending : (U64, U64 -> U64), plan : (U64 -> List(Core.Re
 job_cfg = {
 	init: 0,
 	pending: |_, a| a + 3,
-	plan: |a| [Work({ program: triple_name, input: [a.to_u8_wrap(), 1], files: [], deadline_ms: 0 })],
+	plan: |a| [tripler.request(Wire.Bytes.from_list([a.to_u8_wrap(), 1]))],
 	resolve: |s, _, res| match res {
-		Work(out) => out.fold(0, |acc, x| acc + x.to_u64())
+		Work(_) =>
+			match tripler.result(res) {
+				Ok(out) => out.to_list().fold(0, |acc, x| acc + x.to_u64())
+				Err(_) => s + 3000
+			}
 		WorkLost(_) => s + 1000
 		Timeout => s + 2000
 		_ => s
@@ -380,7 +392,7 @@ S : { eng : Core.App, dom : Dom.Model, clicks : U64, jobs : List((U32, List(U8))
 ## a host would see.
 mount : List(Node), Bool, U64 -> S
 mount = |tree, pure, init| {
-	program = Core.program(|| view(tree, pure, init)).with_workers([Core.registration(triple_name, triple)])
+	program = Core.program(|| view(tree, pure, init)).with_workers([tripler.registration()])
 	(a, c, _) = (Core.driver(program).init)([])
 	absorb({ eng: a, dom: Dom.new({}), clicks: 0, jobs: [] }, a, c)
 }
@@ -393,7 +405,7 @@ absorb = |s, a, c| {
 	jobs = fx.fold(
 		s.jobs,
 		|acc, cmd| match cmd {
-			Work(id, _, input, _) => acc.append((id, input))
+			Work(id, job) => acc.append((id, job.input))
 			Cancel(id) => acc.keep_if(|(j, _)| j != id)
 			_ => acc
 		},
@@ -463,7 +475,7 @@ step = |s, op, b| {
 						} else if b % 5 == 1 {
 							(Timeout, "time out job")
 						} else {
-							(Work(triple(input)), "run job")
+							(Work({ output: tripled(input), files: [] }), "run job")
 						}
 					Err(_) => (Fired, "fire timer")
 				}

@@ -1,4 +1,4 @@
-(test "Typed workers — a newer query supersedes the run of an older one, and an empty query asks nothing"
+(test "Typed workers — a newer query supersedes the job of an older one, and an empty query asks nothing"
   (steps
     (run-effect 1)
     (expect-text (test-id "matches") "idle; no answer")
@@ -19,7 +19,7 @@
     (expect-text (test-id "matches") "idle; no matches")
     (fill (label "Query") "pl")
     (expect-pending-effects 1)
-    ; Clearing the query is Skip: the run is cancelled and the answer cleared.
+    ; Clearing the query is Skip: the job is cancelled and the answer cleared.
     (fill (label "Query") "")
     (expect-pending-effects 0)
     (expect-text (test-id "matches") "idle; no answer")

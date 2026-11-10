@@ -1,8 +1,8 @@
-(test "Workers — a program that crashes loses its job, and the page keeps working"
+(test "Workers — a task that crashes loses its job, and the page keeps working"
   (steps
     (click (role button :name "Crash"))
     (expect-pending-effects 1)
-    ; The program crashes in an instance of its own: in Chrome a Web Worker,
+    ; The task crashes in an instance of its own: in Chrome a Web Worker,
     ; natively a child process of the runner. The job is lost with the
     ; crash's fault class, and nothing else is.
     (run-effect 1)

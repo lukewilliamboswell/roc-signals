@@ -1,4 +1,4 @@
-(test "Workers — a program maps input bytes to output bytes, a slice of its input included"
+(test "Workers — a task maps input bytes to output bytes, a slice of its input included"
   (steps
     (fill (label "Rounds") "25")
     (expect-pending-effects 0)

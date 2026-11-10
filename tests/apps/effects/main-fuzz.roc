@@ -251,7 +251,9 @@ issue_r = |m, r| {
 		admit_x(m1, k_r, r, Rt, |id| Timer(id, 100), RefR)
 	} else {
 		m1 = admit_x(m, k_r, r, Ri, |id| Interval(id, 700), RefR)
-		admit_x(m1, k_r, r, Rw, |id| Work(id, FxApp.echo_name, [r.to_u8_wrap()], 100), RefR)
+		# The echo task's input, a `U8`, is one byte on the wire; its 100 ms
+		# deadline and `Stop` cancel policy travel with it.
+		admit_x(m1, k_r, r, Rw, |id| Work(id, { task: FxApp.echo_name, input: [r.to_u8_wrap()], files: [], deadline_ms: 100, cancel: 1, prepared: Unprepared }), RefR)
 	}
 }
 
@@ -526,7 +528,7 @@ encode_res = |res| match res {
 	Missing => [4]
 	Fired => [5]
 	Location(u) => [6].concat(Str.to_utf8(u))
-	Work(out) => [10].concat(out)
+	Work({ output, files: [] }) => [10, 0, 0, 0, 0].concat(output)
 	WorkLost(AppCrash) => [11, 4]
 	PortReply({ json, .. }) => le32(le32(wstr([14], json), 0), 0)
 	PortFailed(Threw(t)) => [15, 1].concat(Str.to_utf8(t))
@@ -646,10 +648,11 @@ run_program! = |prog| {
 			res = if (arg % 3 == 0) PortReply({ json: "\"m${arg.to_str()}\"", blobs: [], files: [] }) else if (arg % 3 == 1) PortFailed(Closed) else PortFailed(Threw("t${arg.to_str()}"))
 			(deliver!($s, id, res), model_deliver(m0, id, res), "port result ${id.to_str()}")
 		} else {
-			# A tick, a job's output or a lost job for an arbitrary id: a tick
-			# is an equal fold for R and "other" for logs.
+			# A tick, a job's answer (the echo task's answer `arg`: the byte
+			# and its `Ok` flag) or a lost job for an arbitrary id: a tick is an
+			# equal fold for R and "other" for logs.
 			id = (arg.to_u32() % $m.next) + 1
-			res = if (arg % 4 == 1) Work([arg]) else if (arg % 4 == 3) WorkLost(AppCrash) else Fired
+			res = if (arg % 4 == 1) Work({ output: [arg, 0], files: [] }) else if (arg % 4 == 3) WorkLost(AppCrash) else Fired
 			(deliver!($s, id, res), model_deliver(m0, id, res), "result ${id.to_str()}")
 		}
 		check!("step ${($i // 2).to_str()} ${what}", e, m2)

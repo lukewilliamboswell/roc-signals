@@ -1,4 +1,4 @@
-(test "Typed workers — a fallible program answers with its own error, through a typed request and result"
+(test "Typed workers — a task that can fail answers with its own error, through a typed request and result"
   (steps
     (run-effect 1)
     (expect-text (test-id "parsed") "")

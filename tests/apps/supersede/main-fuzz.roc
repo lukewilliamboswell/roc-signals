@@ -38,7 +38,6 @@ answer = |s, b| {
 				DigestRequest(_) => crash "the supersede app digests no files"
 				UrlRequest(_) => crash "the supersede app asks for no file URLs"
 				PortRequest(_) => crash "the supersede app declares no ports"
-				TaskRequest(_) => crash "the supersede app runs no tasks"
 				FetchRequest => crash "the supersede app fetches no files"
 				HttpRequest =>
 					if b % 5 == 3 {
@@ -60,7 +59,7 @@ answer = |s, b| {
 walk_step : St, U8, U8 -> St
 walk_step = |s, op, b|
 	match op % 8 {
-		0 | 1 | 2 | 3 | 4 => Soak.step(program, s, b, op)
+		0 | 1 | 2 | 3 | 4 => Soak.step(program, s, b, op, Soak.no_jobs)
 		5 | 6 => answer(s, b)
 		_ => SpecRunner.tick(program, s, if (b % 2 == 0) 100 else 1000)
 	}

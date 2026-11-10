@@ -5,13 +5,15 @@ import pf.Fuzz
 import pf.Scm
 import pf.Soak
 import pf.SpecRunner
+import pf.Wire
 import SearchApp
 
 ## Worker search on the fuzz platform: soaks of an app whose work runs in
-## worker programs. The walks answer pending jobs as `Soak.step` does (run in
-## process, lost with a fault class, timed out, or left pending), so every
-## program runs inside the leak check, and a program that crashes on an
-## input the UI produced is a finding.
+## worker tasks. The walks answer pending jobs as `Soak.step` does (answered
+## by the app's pure functions through the tasks' stand-ins, lost with a
+## fault class, timed out, or left pending), so every answer is computed
+## inside the leak check, and a function that crashes on an input the UI
+## produced is a finding.
 ## - generated: explorer-driven walks, settled after every step (a job's
 ##   answer included), which must free everything they allocated.
 ## - "soak-10k": 10k seeded steps, then a search, a cleared query and the
@@ -27,13 +29,15 @@ cycle : List(Scm.Op)
 cycle = [Fill(Label("Search"), "roc"), Fill(Label("Search"), ""), Click(Role({ role: "button", name: "Report" })), Click(Role({ role: "button", name: "Report" }))]
 
 ## Answer every job in flight on the engine alone, as a worker instance
-## would: the job a cycle event issued runs its program in process.
+## would: the job a cycle event issued is answered by the filter's pure
+## function through the task's stand-in.
 answer_all : Core.App, List(U8) -> (Core.App, List(U8))
 answer_all = |a0, b0| {
 	var $a = a0
 	var $b = b0
 	for id in Core.fx_live(a0) {
-		(a1, b1) = Core.take_cmds(Core.result($a, id, Work(SearchApp.filter("roc".to_utf8()))), $b)
+		answer = (SearchApp.filter_task.stand_in(|q| Ok(SearchApp.filter(q))))([], Wire.encode("roc"))
+		(a1, b1) = Core.take_cmds(Core.result($a, id, Work({ output: answer, files: [] })), $b)
 		$a = a1
 		$b = b1
 	}
@@ -47,7 +51,7 @@ start = |_| SpecRunner.mount(Core.driver(SearchApp.program), "/", [])
 ## fresh mount, which must free everything it allocated.
 soak_walk! : List(U8) => Fuzz.Outcome
 soak_walk! = |program| {
-	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(SearchApp.program), start({}), program, Soak.settled(Core.driver(SearchApp.program))))
+	Fuzz.expect_no_leaks!(|| Soak.walk_with(Core.driver(SearchApp.program), start({}), program, SearchApp.stand_in, Soak.settled(Core.driver(SearchApp.program))))
 	Fuzz.keep
 }
 
@@ -55,7 +59,7 @@ soak_walk! = |program| {
 ## 48 times on the engine alone: live allocations flat after 2 warm-up cycles.
 soak_10k! : {} => Fuzz.Outcome
 soak_10k! = |_| {
-	Fuzz.expect_no_leaks!(|| Soak.walk_n(Core.driver(SearchApp.program), start({}), 7, 10000, Soak.settled(Core.driver(SearchApp.program))))
+	Fuzz.expect_no_leaks!(|| Soak.walk_n_with(Core.driver(SearchApp.program), start({}), 7, 10000, SearchApp.stand_in, Soak.settled(Core.driver(SearchApp.program))))
 	(s1, evs) = Soak.triples(Core.driver(SearchApp.program), start({}), cycle, Soak.settled(Core.driver(SearchApp.program)))
 	counts = Soak.replay!(Core.driver(SearchApp.program), s1.inst, evs, 48, answer_all, begin!, net_bytes!)
 	match Soak.flat(counts, 2) {

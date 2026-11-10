@@ -158,7 +158,9 @@ function ordered(events) {
   const [cold, warm] = r.s.recent;
   check("the first job is cold and first on its instance; the second warm", [cold.cold, cold.firstJobOnInstance, warm.cold, warm.firstJobOnInstance], [true, true, false, false]);
   check("both ran off the page's thread on instance 1", [cold.thread, warm.thread, cold.instance, warm.instance], ["worker", "worker", 1, 1]);
-  check("sizes, not bytes", [cold.program, cold.inputBytes, cold.outputBytes, r.s.jobs.inputBytes, r.s.jobs.outputBytes], ["test.roc-signals/upper", 5, 5, 10, 10]);
+  // A payload is the task's Wire encoding: `Wire.Bytes` is a one-byte count
+  // and the bytes, and an answer ends with its `Ok` flag.
+  check("sizes, not bytes", [cold.program, cold.inputBytes, cold.outputBytes, r.s.jobs.inputBytes, r.s.jobs.outputBytes], ["test.roc-signals/upper", 6, 7, 12, 14]);
   const t = warm.t;
   const seq = [t.issue, t.submit, t.post, t.reply, t.turnStart, t.turnEnd];
   check("the page's stamps are in order", seq.every((v, i) => i === 0 || v >= seq[i - 1]), true);
@@ -367,8 +369,10 @@ function ordered(events) {
     const end = window.__events.find((e) => e.kind === "job-end");
     const s = window.__rt.monitor.snapshot();
     return {
-      input: new TextDecoder().decode(issue.input),
-      output: new TextDecoder().decode(end.output),
+      // The payloads as the task encodes them: a count, the bytes, and for
+      // the answer its `Ok` flag.
+      input: [issue.input[0], new TextDecoder().decode(issue.input.slice(1))],
+      output: [end.output[0], new TextDecoder().decode(end.output.slice(1, -1)), end.output[end.output.length - 1]],
       recordBytes: window.__hasBytes(s),
       errors: errors.filter((e) => e.includes("observer bug")).length,
       log: window.__entries().length,
@@ -377,13 +381,13 @@ function ordered(events) {
       measures: window.__measures,
     };
   });
-  check("payloads: copies in the events only", [r.input, r.output, r.recordBytes], ["job 1", "JOB 1", false]);
+  check("payloads: copies in the events only", [r.input, r.output, r.recordBytes], [[5, "job 1"], [5, "JOB 1", 0], false]);
   check("a throwing listener is reported once and dropped; jobs still delivered", [r.errors, r.log], [1, 5]);
   check("history bound: the last 2 of 5", [r.recent.length, r.dropped], [2, 3]);
   const names = [...new Set(r.measures.map((m) => m.name))].sort();
   check("User Timing spans seen by a PerformanceObserver", names, ["roc:work test.roc-signals/upper", "roc:work.cold", "roc:work.queue", "roc:work.result", "roc:work.run", "roc:worker 1 spawn"]);
   const job = r.measures.find((m) => m.name === "roc:work test.roc-signals/upper");
-  check("a job span carries its detail and DevTools track", [job.detail.outcome, job.detail.inputBytes, job.detail.devtools.trackGroup, job.detail.devtools.track, job.duration > 0], ["done", 5, "roc workers", "jobs", true]);
+  check("a job span carries its detail and DevTools track", [job.detail.outcome, job.detail.inputBytes, job.detail.devtools.trackGroup, job.detail.devtools.track, job.duration > 0], ["done", 6, "roc workers", "jobs", true]);
   await ctx.close();
 }
 

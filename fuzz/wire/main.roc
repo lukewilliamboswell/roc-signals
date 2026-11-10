@@ -19,11 +19,10 @@ import pf.Wire
 ## field out of order) is caught as soon as mutation reaches it.
 ##
 ## Every input is also decoded as `Filed`, a value holding files, against a
-## file table cut from the input itself: decoding stays within the bound,
-## every decoded file holds exactly the table entry its payload names, as
-## many bytes as its range, and
-## a decoded value re-encodes to a payload and file list that decode back
-## to it.
+## table of two handles: decoding stays within the bound, every decoded file
+## is a table entry's handle with the name, type and range its payload
+## gives, a range that lies within its size, and a decoded value re-encodes
+## to a payload and file list that decode back to it.
 Shape : [Dot, Circle(F64), Rect({ w : U32, h : U32 }), Path(List((I16, I16)))]
 
 Kind : [A, B(U16, Str), C({ x : I8 })]
@@ -53,16 +52,16 @@ Rich : {
 	note : Try(Str, [Missing]),
 }
 
-## A value holding files, as a worker program's input does.
+## A value holding files, as a worker task's input does.
 Filed : { title : Str, docs : List(Engine.File), extra : Try(Engine.File, [Missing]) }
 
-## The file table an input's `Filed` decoding reads: an empty file, and the
-## input itself.
-table_of : List(U8) -> List(List(U8))
-table_of = |input| [[], input]
+## The handles an input's `Filed` decoding places files at, as a worker's
+## host mints them for a job.
+table_of : {} -> List(Engine.File)
+table_of = |_| [Core.held_file(Box.box(1)), Core.held_file(Box.box(2))]
 
-decode_filed : List(U8), List(List(U8)) -> Try(Filed, Wire.Error)
-decode_filed = |input, table| Wire.decode_with_files(input, table)
+decode_filed : List(U8), List(Engine.File) -> Try(Filed, Wire.Error)
+decode_filed = |input, table| Wire.decode_with_held(input, table)
 
 Canon : {
 	id : U64,
@@ -155,7 +154,7 @@ test! = |input| {
 		}
 		Err(_) => {}
 	}
-	table = table_of(input)
+	table = table_of({})
 	filed = Fuzz.measure!("Filed", || decode_filed(input, table))
 	check_bound!("Filed", input, filed.stats)
 	match filed.value {
@@ -164,15 +163,14 @@ test! = |input| {
 				Ok(f) => value.docs.append(f)
 				Err(_) => value.docs
 			}
-			if !all.all(|f| table.contains(f.contents())) {
-				crash "a decoded file holds bytes no table entry has"
+			if !all.all(|f| table.any(|t| Core.placed_file(t, Core.file_parts(f)) == Ok(f))) {
+				crash "a decoded file is not a table entry's handle"
 			}
-			if !all.all(|f| f.contents().len() == f.size()) {
-				crash "a decoded file holds a different number of bytes than its range"
+			if !all.all(|f| within(Core.file_parts(f))) {
+				crash "a decoded file's range lies outside its size"
 			}
 			again = Wire.encode_with_files(value)
-			contents = again.files.map(|f| f.contents())
-			match decode_filed(again.bytes, contents) {
+			match decode_filed(again.bytes, again.files) {
 				Ok(back) if back == value => {}
 				Ok(_) => crash "a re-encoded Filed decodes to a different value"
 				Err(problem) => crash "a re-encoded Filed is refused: ${Str.inspect(problem)}"
@@ -228,10 +226,17 @@ sample_canon = {
 	note: Ok("note"),
 }
 
-## A `Filed` payload naming the table's empty file.
+## Whether a file's range lies within its size.
+within : { name : Str, mime : Str, size : U64, start : U64, len : U64 } -> Bool
+within = |{ size, start, len, .. }| start <= size and len <= size - start
+
+## A `Filed` payload naming the table's first handle, an empty file.
 sample_filed : List(U8)
 sample_filed = {
-	empty = Core.worker_file([], { name: "e.txt", mime: "text/plain", size: 0, start: 0, len: 0 })
+	empty = match Core.placed_file(Core.held_file(Box.box(1)), { name: "e.txt", mime: "text/plain", size: 0, start: 0, len: 0 }) {
+		Ok(f) => f
+		Err(_) => crash "an empty range lies within an empty file"
+	}
 	Wire.encode_with_files({ title: "t", docs: [empty], extra: Err(Missing) }).bytes
 }
 

@@ -4,10 +4,10 @@
 // module (`worker.mjs` beside the runtime). It checks that a job runs off the
 // page's thread, its result is one turn, several jobs in flight complete,
 // jobs beyond `maxWorkers` queue, disposing the site cancels (CANCEL) and
-// terminates the worker, a deadline answers Timeout, a crashing program is
+// terminates the worker, a deadline answers Timeout, a crashing task is
 // `WorkLost(AppCrash)` with the page still working, `workers: "inline"`
 // gives the same results, a missing worker script is `WorkLost(Executor)`
-// and no Worker is `WorkLost(Unavailable)`, an unregistered program is a
+// and no Worker is `WorkLost(Unavailable)`, an unregistered task is a
 // contract fault that also stops the workers, and a protocol mismatch is
 // refused by the runtime and by the worker script. In manual mode a job's
 // deadline never fires on its own, and the spec hooks answer a pending job
@@ -130,7 +130,7 @@ async function open(options, before = null) {
 const CANCEL = 14;
 const TURNS = 30;
 
-// Rounds of the spin program that take at least about `ms` on this machine,
+// Rounds of the spin task that take at least about `ms` on this machine,
 // measured with inline runs (the same module, on the page's thread) long
 // enough that timer jitter does not dominate them. The fastest of three runs
 // decides: a run that another process slowed down would choose too few
@@ -287,8 +287,8 @@ async function liveness(options) {
     await window.__until((l) => l.filter((e) => e.startsWith("tail:")).length === 2 && l.includes("upper:JOB 2"));
     return { entries: window.__entries(), faults: window.__faults, poisoned: window.__rt.poisoned };
   });
-  check("a crashing program is WorkLost(AppCrash)", c.entries.find((e) => e.startsWith("crash:")), "crash:lost AppCrash");
-  check("its diagnostic reaches onWorkerFault, not the result", c.faults.map((f) => [f.program, f.class, f.message]), [["test.roc-signals/crash", "app_crash", "the crash program crashed, as it always does"]]);
+  check("a crashing task is WorkLost(AppCrash)", c.entries.find((e) => e.startsWith("crash:")), "crash:lost AppCrash");
+  check("its diagnostic reaches onWorkerFault, not the result", c.faults.map((f) => [f.program, f.class, f.message]), [["test.roc-signals/crash", "app_crash", "the crash task crashed, as it always does"]]);
   check("the page keeps working after a worker crash", [c.poisoned, c.entries.filter((e) => e.startsWith("tail:")).sort(), c.entries.includes("upper:JOB 2")], [null, ["tail:tail 1", "tail:tail 2"], true]);
   await ctx.close();
 }
@@ -337,7 +337,7 @@ async function results(options) {
   await ctx.close();
 }
 
-// An unregistered program is a contract fault at issue time, naming the
+// An unregistered task is a contract fault at issue time, naming the
 // site; poisoning the page's runtime terminates its workers.
 {
   const { page, ctx } = await open({});
@@ -350,8 +350,8 @@ async function results(options) {
     return { before, cls: p && p.class, message: p && p.message, after: window.__stats(), live: window.__rt.live.size };
   });
   check("a busy worker before the fault", r.before.busy, 1);
-  check("an unregistered program is a contract fault", r.cls, "contract");
-  check("the diagnostic names the program, the rule and the site", /^contract: worker program "test\.roc-signals\/missing" is not registered; add its registration to with_workers \(site \/[0-9/]+\)$/.test(r.message), true);
+  check("an unregistered task is a contract fault", r.cls, "contract");
+  check("the diagnostic names the task, the rule and the site", /^contract: worker task "test\.roc-signals\/missing" is not registered; add its registration to with_workers \(site \/[0-9/]+\)$/.test(r.message), true);
   console.log(`     ${r.message}`);
   check("poisoning the page terminated its workers", [r.after.workers, r.live], [0, 0]);
   await ctx.close();
@@ -376,9 +376,9 @@ async function results(options) {
     const recent = rt.monitor.snapshot().recent.map((j) => [j.program, j.outcome, j.ms.held > 0]);
     return { waited, log: window.__entries().map((e) => e.split(" ")[0]), recent, pool: rt.monitor.snapshot().pool.instances };
   }, long);
-  check("manualWork: jobs wait without a deadline timer, the rest is not manual", [r.waited.log, r.waited.pending, r.waited.timers, r.waited.manual], ["", ["test.roc-signals/spin", "test.roc-signals/upper"], 0, false]);
+  check("manualWork: jobs wait without a deadline timer, the rest is not manual", [r.waited.log, r.waited.pending, r.waited.timers, r.waited.manual], ["", ["test.roc-signals/slow", "test.roc-signals/upper"], 0, false]);
   check("runEffect runs each past its deadline, in the order asked", r.log, ["slow:spun", "upper:JOB"]);
-  check("the monitor saw both held, then answered", r.recent, [["test.roc-signals/spin", "done", true], ["test.roc-signals/upper", "done", true]]);
+  check("the monitor saw both held, then answered", r.recent, [["test.roc-signals/slow", "done", true], ["test.roc-signals/upper", "done", true]]);
   check("one worker ran both", r.pool, 1);
   await ctx.close();
 }
@@ -413,7 +413,7 @@ async function results(options) {
     const answered = [rt.expireEffect(second), rt.loseEffect(crash, "out_of_memory"), rt.loseEffect(upper, "executor")];
     return { waited, ran, refused, answered, entries: window.__entries(), faults: window.__faults.map((f) => [f.program, f.class]), pending: rt.pendingEffects().length };
   }, long);
-  check("manual mode: a job with a deadline waits, with no timer armed", [r.waited.log, r.waited.pending, r.waited.timers], ["", [["work", "test.roc-signals/spin", 50]], 0]);
+  check("manual mode: a job with a deadline waits, with no timer armed", [r.waited.log, r.waited.pending, r.waited.timers], ["", [["work", "test.roc-signals/slow", 50]], 0]);
   check("runEffect runs it to completion past its deadline", [r.ran.log.startsWith("slow:spun "), r.ran.elapsed > 50, r.ran.timers], [true, true, 0]);
   check("expireEffect and loseEffect refuse a job without a deadline, an unknown class, and a job already answered", r.refused, [false, false, false, false]);
   check("expireEffect answers Timeout, loseEffect the class it names", [r.answered, r.entries.slice(1)], [[true, true, true], ["slow:timeout", "crash:lost OutOfMemory", "upper:lost Executor"]]);

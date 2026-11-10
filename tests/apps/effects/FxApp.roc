@@ -1,6 +1,7 @@
 import pf.Engine exposing [Elem, In, Root, State]
 import pf.Html
 import pf.Port
+import pf.Worker
 
 ## Effect-channel test app: three sites, each shown or hidden by a `when`
 ## (hiding disposes the branch). Each branch holds:
@@ -22,7 +23,7 @@ import pf.Port
 ##   Its reaction appends to the root log.
 ## - R, a `resource` over the counter `r`, shown or hidden by a `when`: an
 ##   HTTP request, a request and a timer, or an interval and a worker job
-##   (the echo program, with a deadline), by `r % 3`. Its layer folds
+##   (the echo task, with a deadline), by `r % 3`. Its layer folds
 ##   answers and is shown as `input|answer|faults`.
 ## - F, an `on_change` site over the flood counter `f`: 70 timers at once,
 ##   far past the bound, so one turn refuses dozens of them. Its reaction
@@ -68,7 +69,7 @@ FxApp := [].{
 		head = "${k.to_str()}:${c.to_str()}"
 		match r {
 			Http({ status, headers, body }) => "${head}:${status.to_str()}:${body}:${Str.join_with(headers.map(|(n, v)| "${n}=${v}"), ",")}"
-			Work(out) => "${head}:work:${Str.inspect(out)}"
+			Work({ output, .. }) => "${head}:work:${Str.inspect(output)}"
 			WorkLost(fault) => "${head}:lost:${Str.inspect(fault)}"
 			Timeout => "${head}:timeout"
 			Network(m) => "${head}:net:${m}"
@@ -138,16 +139,20 @@ FxApp := [].{
 		} else if r % 3 == 2 {
 			[Http({ method: "GET", url: "/r/${r.to_str()}", headers: [], body: "", timeout_ms: 0 }), Timer(100)]
 		} else {
-			[Interval(700), Work({ program: FxApp.echo_name, input: [r.to_u8_wrap()], files: [], deadline_ms: 100 })]
+			[Interval(700), FxApp.echo.request(r.to_u8_wrap())]
 		}
 	}
 
-	## R's worker program: its input back.
+	## R's worker task's name.
 	echo_name = "test.roc-signals/fx/echo"
 
-	## The worker catalogue: R's echo program.
+	## R's worker task: its input back, with a 100 ms deadline.
+	echo : Worker.Task(U8, U8, Worker.Never)
+	echo = Worker.task({ name: FxApp.echo_name, run!: |b| Ok(b), deadline: Ms(100) })
+
+	## The worker catalogue: R's echo task.
 	workers : List(Engine.Registration)
-	workers = [Engine.registration(FxApp.echo_name, |b| b)]
+	workers = [FxApp.echo.registration()]
 
 	## How many timers one flood asks for.
 	flood_size : U64
@@ -165,7 +170,11 @@ FxApp := [].{
 	resolve_r : Load, U64, Engine.Res -> Load
 	resolve_r = |l, r, res| match res {
 		Http({ status, body, .. }) => { ..l, answer: "${r.to_str()}:${status.to_str()}:${body}" }
-		Work(out) => { ..l, answer: "${r.to_str()}:work:${Str.inspect(out)}" }
+		Work(_) =>
+			match FxApp.echo.result(res) {
+				Ok(b) => { ..l, answer: "${r.to_str()}:work:${Str.inspect([b])}" }
+				Err(_) => { ..l, faults: l.faults + 1 }
+			}
 		Timeout | WorkLost(_) => { ..l, faults: l.faults + 1 }
 		Refused => { ..l, answer: "${r.to_str()}:refused" }
 		_ => l
