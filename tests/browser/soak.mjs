@@ -36,10 +36,17 @@ const BACKENDS = {
   "field-notes": async (req) => (req.uri === "/api/notes/sync" ? { status: 200, body: req.body } : null),
   "status-page": async (req) =>
     req.uri === "/api/status/incidents" ? { status: 200, body: "" } : req.uri.startsWith("/api/status/") ? { status: 200, body: "operational|99.99" } : null,
+  // The converter's only request is its sample, a static file served below.
+  "csv-converter": async () => null,
 };
 let handle = BACKENDS[app] ?? null;
 // Apps whose effects include worker jobs.
-const WORKER_APPS = ["worker-search"];
+const WORKER_APPS = ["worker-search", "csv-converter"];
+// Apps where a response that arrives while a held job runs may supersede
+// it (the converter's sample, fetched during the walk, replaces the file
+// being converted): stopping a running job ends its worker, so the walk
+// allows respawns there. Round trips still require one long-lived worker.
+const ASYNC_SUPERSEDE = ["csv-converter"];
 const workers = WORKER_APPS.includes(app);
 if (conduit) handle = (await import(path.join(repo, "www/static/conduit_backend.mjs"))).createConduitHandler({});
 const served = handle !== null;
@@ -49,6 +56,8 @@ const files = {
   "locate.js": path.join(here, "locate.js"),
   ...runtimeFiles(opts.runtime),
   "app.wasm": opts.wasm,
+  // Data an example downloads at run time.
+  ...(app === "csv-converter" ? { "sample.csv": path.join(repo, "examples/csv-converter/sample.csv") } : {}),
 };
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, "http://x");
@@ -66,7 +75,7 @@ const server = http.createServer(async (req, res) => {
     res.end();
     return;
   }
-  res.writeHead(200, { "content-type": f.endsWith(".wasm") ? "application/wasm" : f.endsWith("html") ? "text/html" : "text/javascript" });
+  res.writeHead(200, { "content-type": f.endsWith(".wasm") ? "application/wasm" : f.endsWith("html") ? "text/html" : f.endsWith(".csv") ? "text/csv" : "text/javascript" });
   res.end(fs.readFileSync(f));
 });
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
@@ -106,7 +115,7 @@ const settle = (page) => page.evaluate(() => new Promise((r) => {
   const t0 = performance.now();
   const tick = () => {
     // A held job is not waited for: the soak runs it (`__runWork`).
-    const busy = [...rt.live.values()].some((e) => e.kind === "http" || (e.kind === "work" && e.running));
+    const busy = [...rt.live.values()].some((e) => e.kind === "http" || e.kind === "fetch" || e.kind === "file" || (e.kind === "work" && e.running));
     if ((!busy && rt.queue.length === 0) || performance.now() - t0 > 2000) r();
     else setTimeout(tick, 5);
   };
@@ -147,6 +156,9 @@ const check = (name, ok, detail = "") => {
       if (cands.length === 0) break;
       const el = cands[rnd() % cands.length];
       const h = el.__h;
+      // A control that takes files (a file input, a drop target) has no
+      // text to type; the walk gives the app none.
+      if ((h.change !== undefined && h.change.files) || (h.drop !== undefined && h.drop.files)) continue;
       if (h.input !== undefined) {
         el.focus();
         el.value = POOL[rnd() % POOL.length];
@@ -170,13 +182,17 @@ const check = (name, ok, detail = "") => {
     return { fired, jobs, fault: rt.poisoned };
   }, EVENTS, served, workers);
   if (served) await settle(page);
+  if (served && workers) {
+    await page.evaluate(() => window.__runWork());
+    await settle(page);
+  }
   const fault = await page.evaluate(() => window.__rt.poisoned);
   check(`random walk: ${done.fired} events in ${Date.now() - t0} ms, no fault`, done.fired >= Math.min(EVENTS, 1000) && fault === null && errors.length === 0, JSON.stringify({ fault, errors: errors.slice(0, 3) }));
   const stats = await page.evaluate(() => ({ pages: window.__rt.x.memory.buffer.byteLength / 65536, live: Number(window.__rt.x.metric(4)) }));
   console.log(`   after walk: ${stats.pages} pages, ${stats.live} live allocations`);
   if (workers) {
     const s = await page.evaluate(() => window.__rt.monitor.snapshot());
-    check(`random walk: ${done.jobs} worker jobs run, every one answered`, done.jobs > 0 && s.jobs.inFlight === 0 && s.pool.instances === 1 && s.instances.respawns === 0, JSON.stringify({ jobs: s.jobs, pool: s.pool, instances: s.instances.live }));
+    check(`random walk: ${done.jobs} worker jobs run, every one answered`, done.jobs > 0 && s.jobs.inFlight === 0 && s.pool.instances === 1 && (s.instances.respawns === 0 || ASYNC_SUPERSEDE.includes(app)), JSON.stringify({ jobs: s.jobs, pool: s.pool, instances: s.instances.live }));
   }
   await ctx.close();
 }
@@ -212,6 +228,9 @@ const CYCLES = {
   // A search run in the worker, a cleared query (a pure cancel), and the
   // report's job run, then its panel closed.
   "worker-search": [["fill", ["label", "Search"], "roc"], ["fill", ["label", "Search"], ""], ["click", ["role", "button", "Report"]], ["click", ["role", "button", "Report"]]],
+  // The sample downloaded into a file, converted in the task's worker and
+  // previewed: each answer replaces the last, whose files are let go.
+  "csv-converter": [["click", ["role", "button", "Load the sample"]]],
 };
 {
   const { ctx, page } = await open();
@@ -233,6 +252,9 @@ const CYCLES = {
         return null;
       }, op, loc, v);
       if (r) throw new Error(r);
+      // A response may issue a job (a fetched file sent to a task), and a
+      // job's answer may issue a request (a read of the file it built).
+      if (served) await settle(page);
       if (workers) await page.evaluate(() => window.__runWork());
       if (served) await settle(page);
     }
