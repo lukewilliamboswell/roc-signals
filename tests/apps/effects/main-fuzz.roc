@@ -54,14 +54,26 @@ start = |view| {
 ##   answer still reaches the log) and cancels the subscription. A message
 ##   leaves a subscription live; `Closed` or `Threw` retires it, and a
 ##   later message for it is stale.
+## - Gathering: X (`k` 11, a `gather` over `g` inside a `when`) asks one
+##   HTTP request per input. Each result, refusal included, settles the job
+##   at the position its request had in the plan, whatever order the
+##   results come in; the whole answer settles once no job is working, and
+##   a new `g` supersedes every job. Hiding X reparents its requests, whose
+##   answers are then skipped writes.
+## - Posting: O (`k` 12, an `on_post` site) sends one request per post, an
+##   equal item included, and never cancels; each result reaches the log
+##   with the item it was posted with.
 
-Kind : [G, H, Tick, Pop, Lh, Li, Rh, Rt, Ri, Rw, Ft, Pc, Ps]
+Kind : [G, H, Tick, Pop, Lh, Li, Rh, Rt, Ri, Rw, Ft, Pc, Ps, Xh, Oh]
 
-Live : { id : U32, k : U64, c : U64, kind : Kind, orphan : Bool }
+## A live request: `at` is its position in the plan it was issued in
+## (X's job).
+Live : { id : U32, k : U64, c : U64, at : U64, kind : Kind, orphan : Bool }
 
-## A queued follow-up: a refusal for G, H, an interval, L, R or F, or a
-## Self (G's first or second, or L's).
-Follow : { k : U64, c : U64, what : [RefG, RefH, RefT, Self1, Self2, RefL, SelfL, RefR, RefF, RefP] }
+## A queued follow-up: a refusal for G, H, an interval, L, R, F, P, X
+## (at its job's position `at`) or O, or a Self (G's first or second, or
+## L's).
+Follow : { k : U64, c : U64, at : U64, what : [RefG, RefH, RefT, Self1, Self2, RefL, SelfL, RefR, RefF, RefP, RefX, RefO] }
 
 ## F's `k`.
 k_f : U64
@@ -77,6 +89,18 @@ k_l = 7
 
 k_r : U64
 k_r = 8
+
+## X's and O's `k`.
+k_x : U64
+k_x = 11
+
+k_o : U64
+k_o = 12
+
+## X's layer: each job, and the whole answer.
+XJob : [W, A(Str), F(Str)]
+
+XAll : { pending : Bool, answer : [Unanswered, Answers(List(Str)), Failure(Str)] }
 
 M : {
 	counts : List(U64),
@@ -102,6 +126,11 @@ M : {
 	f : U64,
 	p : U64,
 	pshown : Bool,
+	g : U64,
+	gshown : Bool,
+	xjobs : List(XJob),
+	xall : XAll,
+	posts : U64,
 }
 
 model_new : U64 -> M
@@ -112,7 +141,7 @@ model_new = |max| {
 		hits: [0, 0, 0],
 		log: [],
 		next: 2,
-		live: [{ id: 1, k: 9, c: 0, kind: Pop, orphan: False }],
+		live: [{ id: 1, k: 9, c: 0, at: 0, kind: Pop, orphan: False }],
 		queue: [],
 		issued: 1,
 		delivered: 0,
@@ -130,6 +159,11 @@ model_new = |max| {
 		f: 0,
 		p: 0,
 		pshown: True,
+		g: 0,
+		gshown: True,
+		xjobs: [],
+		xall: { pending: False, answer: Answers([]) },
+		posts: 0,
 	}
 	# each shown branch mounts its interval (counts are 0: no G/H)
 	tick(tick(tick(m0, 0), 1), 2)
@@ -140,9 +174,9 @@ tick = |m, k| {
 	id = m.next
 	if m.live.len() >= m.max {
 		# a refused interval: its reaction logs the refusal in a follow-up
-		{ ..m, next: id + 1, refused: m.refused + 1, queue: m.queue.append({ k, c: 0, what: RefT }) }
+		{ ..m, next: id + 1, refused: m.refused + 1, queue: m.queue.append({ k, c: 0, at: 0, what: RefT }) }
 	} else {
-		{ ..m, next: id + 1, issued: m.issued + 1, live: m.live.append({ id, k, c: 0, kind: Tick, orphan: False }), fx: m.fx.append(Interval(id, 1000)) }
+		{ ..m, next: id + 1, issued: m.issued + 1, live: m.live.append({ id, k, c: 0, at: 0, kind: Tick, orphan: False }), fx: m.fx.append(Interval(id, 1000)) }
 	}
 }
 
@@ -152,14 +186,14 @@ admit = |m, k, c, kind| {
 	id = m.next
 	if m.live.len() >= m.max {
 		what = if (kind == G) RefG else RefH
-		{ ..m, next: id + 1, refused: m.refused + 1, queue: m.queue.append({ k, c, what }) }
+		{ ..m, next: id + 1, refused: m.refused + 1, queue: m.queue.append({ k, c, at: 0, what }) }
 	} else {
 		url = if (kind == G) FxApp.url_of(k, c) else "/h${k.to_str()}/${c.to_str()}"
 		headers = if (kind == G) [("accept", "text/plain")] else []
 		# G asks for 300 ms (odd c) or c * 250 s, capped at 600 s; H for none
 		asked = if (c % 2 == 1) 300 else c * 250000
 		timeout = if (kind == G) (if (asked > 600000) 600000 else asked.to_u32_wrap()) else 0
-		{ ..m, next: id + 1, issued: m.issued + 1, live: m.live.append({ id, k, c, kind, orphan: False }), fx: m.fx.append(Http(id, "GET", url, headers, "", timeout)) }
+		{ ..m, next: id + 1, issued: m.issued + 1, live: m.live.append({ id, k, c, at: 0, kind, orphan: False }), fx: m.fx.append(Http(id, "GET", url, headers, "", timeout)) }
 	}
 }
 
@@ -172,9 +206,9 @@ request = |m, k, c| {
 	} else {
 		m1 = admit(m, k, c, G)
 		m2 = if c % 6 == 0 {
-			{ ..m1, queue: m1.queue.concat([{ k, c, what: Self1 }, { k, c, what: Self2 }]) }
+			{ ..m1, queue: m1.queue.concat([{ k, c, at: 0, what: Self1 }, { k, c, at: 0, what: Self2 }]) }
 		} else if c % 3 == 0 {
-			{ ..m1, queue: m1.queue.append({ k, c, what: Self1 }) }
+			{ ..m1, queue: m1.queue.append({ k, c, at: 0, what: Self1 }) }
 		} else {
 			m1
 		}
@@ -182,10 +216,14 @@ request = |m, k, c| {
 	}
 }
 
-## Admit (or refuse, queueing `refusal`) one awaited request of L, R or F:
-## `cmd` is its effect command given the id.
-admit_x : M, U64, U64, Kind, (U32 -> Dom.FxCmd), [RefL, RefR, RefF, RefP] -> M
-admit_x = |m, k, c, kind, cmd, refusal| {
+## Admit (or refuse, queueing `refusal`) one awaited request of L, R, F,
+## P or O: `cmd` is its effect command given the id.
+admit_x : M, U64, U64, Kind, (U32 -> Dom.FxCmd), [RefL, RefR, RefF, RefP, RefX, RefO] -> M
+admit_x = |m, k, c, kind, cmd, refusal| admit_at(m, { k, c, at: 0 }, kind, cmd, refusal)
+
+## `admit_x` for a request at position `at` of its plan.
+admit_at : M, { k : U64, c : U64, at : U64 }, Kind, (U32 -> Dom.FxCmd), [RefL, RefR, RefF, RefP, RefX, RefO] -> M
+admit_at = |m, { k, c, at }, kind, cmd, refusal| {
 	id = m.next
 	if m.live.len() >= m.max {
 		what = match refusal {
@@ -193,10 +231,12 @@ admit_x = |m, k, c, kind, cmd, refusal| {
 			RefR => RefR
 			RefF => RefF
 			RefP => RefP
+			RefX => RefX
+			RefO => RefO
 		}
-		{ ..m, next: id + 1, refused: m.refused + 1, queue: m.queue.append({ k, c, what }) }
+		{ ..m, next: id + 1, refused: m.refused + 1, queue: m.queue.append({ k, c, at, what }) }
 	} else {
-		{ ..m, next: id + 1, issued: m.issued + 1, live: m.live.append({ id, k, c, kind, orphan: False }), fx: m.fx.append(cmd(id)) }
+		{ ..m, next: id + 1, issued: m.issued + 1, live: m.live.append({ id, k, c, at, kind, orphan: False }), fx: m.fx.append(cmd(id)) }
 	}
 }
 
@@ -232,7 +272,7 @@ issue_l = |m, q| {
 		admit_x(m, k_l, q, Li, |id| Interval(id, 500), RefL)
 	} else if q % 4 == 3 {
 		m1 = admit_x(m, k_l, q, Lh, |id| Http(id, "GET", url, [], "", 0), RefL)
-		{ ..m1, queue: m1.queue.concat([{ k: k_l, c: q, what: SelfL }, { k: k_l, c: q, what: SelfL }]) }
+		{ ..m1, queue: m1.queue.concat([{ k: k_l, c: q, at: 1, what: SelfL }, { k: k_l, c: q, at: 2, what: SelfL }]) }
 	} else {
 		m
 	}
@@ -305,6 +345,125 @@ model_toggle_p = |m| {
 	}
 }
 
+## X begins a question for `inputs`: an empty one is answered at once,
+## otherwise every job works and the whole answer is pending, keeping the
+## answer it had.
+x_begin : M, List(U64) -> M
+x_begin = |m, inputs|
+	if inputs.is_empty() {
+		{ ..m, xjobs: [], xall: { pending: False, answer: Answers([]) } }
+	} else {
+		{ ..m, xjobs: List.repeat(W, inputs.len()), xall: { ..m.xall, pending: True } }
+	}
+
+## X's requests for `g`, one per input in plan order.
+issue_x : M, U64 -> M
+issue_x = |m, g| {
+	var $m = m
+	var $at = 0
+	for input in FxApp.inputs_x(g) {
+		$m = admit_at($m, { k: k_x, c: g, at: $at }, Xh, |id| Http(id, "GET", "/x/${input.to_str()}", [], "", 0), RefX)
+		$at = $at + 1
+	}
+	$m
+}
+
+## A result settles X's job at `at`; once no job works, the whole answer
+## is every answer in input order, or the first failure.
+x_settle : M, U64, Engine.Res -> M
+x_settle = |m, at, res| {
+	job = match FxApp.Asker.result(FxApp.asker, res) {
+		Ok(a) => A(a)
+		Err(e) => F(e)
+	}
+	jobs = m.xjobs.set(at, job) ?? crash "model: X has no job ${at.to_str()}"
+	if jobs.contains(W) {
+		{ ..m, xjobs: jobs }
+	} else {
+		failures = jobs.keep_oks(
+			|j| match j {
+				F(e) => Ok(e)
+				_ => Err(NotFailed)
+			},
+		)
+		answers = jobs.keep_oks(
+			|j| match j {
+				A(a) => Ok(a)
+				_ => Err(NotAnswered)
+			},
+		)
+		answer = match failures {
+			[first, ..] => Failure(first)
+			[] => Answers(answers)
+		}
+		{ ..m, xjobs: jobs, xall: { pending: False, answer } }
+	}
+}
+
+## X's layer as the page shows it.
+x_text : M -> Str
+x_text = |m| {
+	jobs = m.xjobs.map(
+		|j| match j {
+			W => "w"
+			A(a) => "a:${a}"
+			F(e) => "f:${e}"
+		},
+	)
+	answer = match m.xall.answer {
+		Unanswered => "un"
+		Answers(answers) => "ok:${Str.join_with(answers, "+")}"
+		Failure(e) => "fail:${e}"
+	}
+	"${Str.join_with(jobs, ",")}|${if (m.xall.pending) "P" else "I"}:${answer}"
+}
+
+## A click on "gquery": a shown X supersedes, begins the new question and
+## issues its jobs.
+model_gquery : M -> M
+model_gquery = |m| {
+	g = m.g + 1
+	if m.gshown {
+		inputs = FxApp.inputs_x(g)
+		drain(issue_x(x_begin(supersede({ ..m, g }, k_x), inputs), g))
+	} else {
+		{ ..m, g }
+	}
+}
+
+## A click on "toggle g": hiding disposes X (its requests reparent, its
+## queued refusals are dropped); showing mounts it afresh.
+model_toggle_g : M -> M
+model_toggle_g = |m| {
+	if m.gshown {
+		var $m = { ..m, gshown: False }
+		for l in m.live {
+			if l.k == k_x and !l.orphan {
+				$m = { ..$m, reparented: $m.reparented + 1 }
+			}
+		}
+		purged = $m.queue.count_if(|f| f.k == k_x)
+		{
+			..$m,
+			live: $m.live.map(|l| if (l.k == k_x) { ..l, orphan: True } else l),
+			queue: $m.queue.keep_if(|f| f.k != k_x),
+			stale: $m.stale + purged,
+		}
+	} else {
+		fresh = { ..m, gshown: True, xjobs: [], xall: { pending: False, answer: Unanswered } }
+		drain(issue_x(x_begin(fresh, FxApp.inputs_x(m.g)), m.g))
+	}
+}
+
+## A click on "post": O sends one request for the item posted, never
+## cancelling an earlier one.
+model_post : M -> M
+model_post = |m| {
+	posts = m.posts + 1
+	item = posts // 2
+	drain(admit_x({ ..m, posts }, k_o, item, Oh, |id| Http(id, "GET", "/o/${item.to_str()}", [], "", 0), RefO))
+}
+
 ## The query changes (a click or L's own follow-up): L supersedes, then
 ## issues for the new value.
 bump_q : M -> M
@@ -333,6 +492,8 @@ drain = |m0| {
 			RefR => { ..m, rl: FxApp.resolve_r(m.rl, f.c, Refused), delivered: m.delivered + 1 }
 			RefF => { ..m, log: m.log.append(FxApp.describe(k_f, f.c, Refused)), delivered: m.delivered + 1 }
 			RefP => { ..m, log: m.log.append(FxApp.describe(k_p, f.c, Refused)), delivered: m.delivered + 1 }
+			RefX => x_settle({ ..m, delivered: m.delivered + 1 }, f.at, Refused)
+			RefO => { ..m, log: m.log.append(FxApp.describe(k_o, f.c, Refused)), delivered: m.delivered + 1 }
 		}
 	}
 	$m
@@ -453,6 +614,7 @@ model_deliver = |m, id, res| {
 			match l.kind {
 				H => if (l.orphan) { ..m1, skipped: m1.skipped + 1 } else { ..m1, hits: m1.hits.update(l.k, |h| h + 1) ?? m1.hits }
 				Rh | Rt | Ri | Rw => if (l.orphan) { ..m1, skipped: m1.skipped + 1 } else { ..m1, rl: FxApp.resolve_r(m1.rl, l.c, res) }
+				Xh => if (l.orphan) { ..m1, skipped: m1.skipped + 1 } else x_settle(m1, l.at, res)
 				_ => { ..m1, log: m1.log.append(FxApp.describe(l.k, l.c, res)) }
 			}
 		}
@@ -576,6 +738,14 @@ check! = |what, e, m| {
 	if shown_res != want_res {
 		crash "${what}: resource ${Str.inspect(shown_res)}, model ${Str.inspect(want_res)}"
 	}
+	shown_x = match SpecRunner.find(e.s.dom, TestId("gather")) {
+		Ok(i) => Ok(Dom.text_of(e.s.dom, i))
+		Err(_) => Err(Hidden)
+	}
+	want_x = if (m.gshown) Ok(x_text(m)) else Err(Hidden)
+	if shown_x != want_x {
+		crash "${what}: gather ${Str.inspect(shown_x)}, model ${Str.inspect(want_x)}"
+	}
 	# The FX and CANCEL work counters are the model's issued and cancelled
 	# requests: every admitted request is one FX, every stop one CANCEL.
 	w = Core.work_counters(e.s.eng)
@@ -610,7 +780,7 @@ run_program! = |prog| {
 	check!("mount", { s: $s, fx: fx0 }, $m)
 	var $i = 0.U64
 	while $i + 1 < prog.len() {
-		op = (prog.get($i) ?? 0) % 11
+		op = (prog.get($i) ?? 0) % 13
 		arg = prog.get($i + 1) ?? 0
 		k = arg.to_u64() % 3
 		m0 = { ..$m, fx: [] }
@@ -642,6 +812,10 @@ run_program! = |prog| {
 			(click!($s, "flood"), model_flood(m0), "flood")
 		} else if op == 9 {
 			if (arg % 2 == 0) (click!($s, "pquery"), model_pquery(m0), "pquery") else (click!($s, "toggle p"), model_toggle_p(m0), "toggle p")
+		} else if op == 11 {
+			if (arg % 2 == 0) (click!($s, "gquery"), model_gquery(m0), "gquery") else (click!($s, "toggle g"), model_toggle_g(m0), "toggle g")
+		} else if op == 12 {
+			(click!($s, "post"), model_post(m0), "post")
 		} else if op == 10 {
 			# A port's message, its close or its failure, for an arbitrary id.
 			id = (arg.to_u32() % $m.next) + 1
@@ -709,6 +883,15 @@ target = Fuzz.target_with!({
 		# subscription cancelled, answer the kept call, show P, close its
 		# subscription and message it after
 		ex("ports", 1, [1, 0, 1, 1, 9, 0, 10, 9, 9, 0, 9, 1, 10, 9, 9, 1, 10, 13, 10, 12, 10, 13]),
+		# X: free slots, ask three jobs and answer them last first (the third,
+		# then a failure for the second, then the first), ask again with one
+		# job refused at the bound, supersede it, hide X with jobs in flight
+		# (they reparent and their answers are skipped) and show it again
+		ex("gather", 1, [1, 0, 1, 1, 1, 2, 11, 0, 11, 0, 2, 14, 2, 13, 2, 12, 11, 0, 11, 0, 11, 0, 11, 1, 2, 15, 11, 1, 2, 18]),
+		# O: post an item, post an equal one (both sent), answer the second
+		# first, then post past the bound: the refusal reaches the log with
+		# its item
+		ex("post", 1, [1, 0, 1, 1, 12, 0, 12, 0, 12, 0, 2, 13, 2, 12, 12, 0, 12, 0, 12, 0, 12, 0, 12, 0, 12, 0]),
 	],
 	generator: { mode: Fuzz.constant(1), program: Fuzz.list(Fuzz.u8, 64) }.Fuzz,
 	test!,

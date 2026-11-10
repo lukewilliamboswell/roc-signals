@@ -34,8 +34,16 @@ import pf.Worker
 ##   for a nonzero `p` a port call (kept when P is disposed) and a port
 ##   subscription (scoped, ended by its JavaScript with `Closed` or
 ##   `Threw`). Its reaction appends to the root log.
+## - X, a `gather` over the counter `g`, shown or hidden by a `when`: one
+##   HTTP request per input (one to three, by `g % 3`), each answer settling
+##   the job at its position. Its layer is shown as its jobs and its whole
+##   answer. Hiding X keeps its requests (they reparent) and their answers
+##   are skipped writes to the retired layer.
+## - O, an `on_post` site over the outbox `out`: each "post" posts
+##   `posts / 2` (so items repeat) and sends one HTTP request for it. Its
+##   reaction appends to the root log with the item it was posted with.
 FxApp := [].{
-	S : { counts : List(U64), shown : List(Bool), log : List(Str), q : U64, r : U64, rshown : Bool, f : U64, n : U64, looping : Bool, p : U64, pshown : Bool }
+	S : { counts : List(U64), shown : List(Bool), log : List(Str), q : U64, r : U64, rshown : Bool, f : U64, n : U64, looping : Bool, p : U64, pshown : Bool, g : U64, gshown : Bool, out : Engine.Outbox(U64), posts : U64 }
 
 	## The resource's layer: the input it was begun for, the last answer, and
 	## the timeouts seen.
@@ -83,13 +91,67 @@ FxApp := [].{
 	}
 
 	log_line : S, Str -> S
-	log_line = |{ counts, shown, log, q, r, rshown, f, n, looping, p, pshown }, line| { counts, shown, log: log.append(line), q, r, rshown, f, n, looping, p, pshown }
+	log_line = |{ counts, shown, log, q, r, rshown, f, n, looping, p, pshown, g, gshown, out, posts }, line| { counts, shown, log: log.append(line), q, r, rshown, f, n, looping, p, pshown, g, gshown, out, posts }
 
 	bump : S, U64 -> S
-	bump = |{ counts, shown, log, q, r, rshown, f, n, looping, p, pshown }, k| { counts: counts.update(k, |c| c + 1) ?? counts, shown, log, q, r, rshown, f, n, looping, p, pshown }
+	bump = |{ counts, shown, log, q, r, rshown, f, n, looping, p, pshown, g, gshown, out, posts }, k| { counts: counts.update(k, |c| c + 1) ?? counts, shown, log, q, r, rshown, f, n, looping, p, pshown, g, gshown, out, posts }
 
 	toggle : S, U64 -> S
-	toggle = |{ counts, shown, log, q, r, rshown, f, n, looping, p, pshown }, k| { counts, shown: shown.update(k, |b| !b) ?? shown, log, q, r, rshown, f, n, looping, p, pshown }
+	toggle = |{ counts, shown, log, q, r, rshown, f, n, looping, p, pshown, g, gshown, out, posts }, k| { counts, shown: shown.update(k, |b| !b) ?? shown, log, q, r, rshown, f, n, looping, p, pshown, g, gshown, out, posts }
+
+	## X's inputs for `g`: none for 0, else one to three numbers.
+	inputs_x : U64 -> List(U64)
+	inputs_x = |g| {
+		var $inputs = []
+		if g != 0 {
+			for i in 0..<(g % 3 + 1) {
+				$inputs = $inputs.append(g * 10 + i)
+			}
+		}
+		$inputs
+	}
+
+	## How X asks for an input and reads an answer: any result is an
+	## answer or a failure, so an arbitrary result for one of its ids
+	## settles a job.
+	Asker := [Asker].{
+		request : Asker, U64 -> Engine.Req
+		request = |_, x| Http({ method: "GET", url: "/x/${x.to_str()}", headers: [], body: "", timeout_ms: 0 })
+
+		result : Asker, Engine.Res -> Try(Str, Str)
+		result = |_, res| match res {
+			Http({ status: 200, body, .. }) => Ok(body)
+			Http({ status, .. }) => Err("s${status.to_str()}")
+			Timeout => Err("timeout")
+			Refused => Err("refused")
+			_ => Err("other")
+		}
+	}
+
+	asker : Asker
+	asker = Asker
+
+	## X's layer as text: each job (`w`, `a:answer`, `f:error`), then the
+	## whole answer, `P` or `I` for pending or idle.
+	show_x : Engine.Gathered(Str, Str) -> Str
+	show_x = |{ jobs, all }| {
+		job_text = |job| match job {
+			Working => "w"
+			Answered(a) => "a:${a}"
+			Failed(e) => "f:${e}"
+		}
+		request = if (all.request == Pending) "P" else "I"
+		answer = match all.answer {
+			Unanswered => "un"
+			Answered(answers) => "ok:${Str.join_with(answers, "+")}"
+			Failed(e) => "fail:${e}"
+		}
+		"${Str.join_with(jobs.map(job_text), ",")}|${request}:${answer}"
+	}
+
+	## O's request for the item posted.
+	plan_o : U64 -> List(Engine.Req)
+	plan_o = |item| [Http({ method: "GET", url: "/o/${item.to_str()}", headers: [], body: "", timeout_ms: 0 })]
 
 	## P's ports: a call and a subscription, each sent `p`.
 	port_call : Port.Call(U64, Str)
@@ -236,7 +298,7 @@ FxApp := [].{
 
 	main_with : List(Bool) -> Elem(Root)
 	main_with = |shown| Engine.state(
-		{ counts: List.repeat(0, FxApp.nsites), shown, log: [], q: 0, r: 0, rshown: True, f: 0, n: 0, looping: False, p: 0, pshown: True },
+		{ counts: List.repeat(0, FxApp.nsites), shown, log: [], q: 0, r: 0, rshown: True, f: 0, n: 0, looping: False, p: 0, pshown: True, g: 0, gshown: True, out: Engine.outbox({}), posts: 0 },
 		|st| Engine.element(
 			"div",
 			[],
@@ -292,6 +354,15 @@ FxApp := [].{
 					|| Engine.latest(st.val().map(|s| s.p), FxApp.plan_p, st.on_result(|s, p, r| FxApp.log_line(s, FxApp.describe(10, p, r)))),
 					|| Engine.text(""),
 				),
+				Html.button("gquery", [], st.update(|s| { ..s, g: s.g + 1 })),
+				Html.button("toggle g", [], st.update(|s| { ..s, gshown: !s.gshown })),
+				Engine.when(
+					st.val().map(|s| s.gshown),
+					|| Engine.gather(FxApp.asker, st.val().map(|s| FxApp.inputs_x(s.g)), |x| Html.p_v(x.map(FxApp.show_x), [Engine.test_id("gather")])),
+					|| Engine.text(""),
+				),
+				Html.button("post", [], st.update(|s| { ..s, posts: s.posts + 1, out: s.out.post((s.posts + 1) // 2) })),
+				Engine.on_post(st.val().map(|s| s.out), FxApp.plan_o, st.on_result(|s, item, r| FxApp.log_line(s, FxApp.describe(12, item, r)))),
 			],
 		),
 	)
