@@ -122,12 +122,13 @@ ConverterApp := [].{
 
 	## What the conversion shows: its progress, its answer, or why there is
 	## none.
-	status : Worker.Remote(Try(Converted, Problem)) -> Str
-	status = |{ running, answer }| match answer {
-		Done(Ok(c)) if !running => "${c.rows.to_str()} rows, ${c.columns.to_str()} columns${ConverterApp.ragged_note(c.ragged)} → ${c.output.name()} (${ConverterApp.size_text(c.output.size())})"
-		Done(Err(problem)) if !running => "could not convert: ${ConverterApp.explain(problem)}"
-		Failed(error) if !running => "the conversion stopped: ${Str.inspect(error)}"
-		_ => if (running) "converting…" else "drop a CSV file, or load the sample"
+	status : Engine.Remote(Try(Converted, Problem), Worker.Error) -> Str
+	status = |{ request, answer }| match (request, answer) {
+		(Pending, _) => "converting…"
+		(Idle, Answered(Ok(c))) => "${c.rows.to_str()} rows, ${c.columns.to_str()} columns${ConverterApp.ragged_note(c.ragged)} → ${c.output.name()} (${ConverterApp.size_text(c.output.size())})"
+		(Idle, Answered(Err(problem))) => "could not convert: ${ConverterApp.explain(problem)}"
+		(Idle, Failed(error)) => "the conversion stopped: ${Str.inspect(error)}"
+		(Idle, Unanswered) => "drop a CSV file, or load the sample"
 	}
 
 	ragged_note : U64 -> Str
@@ -154,9 +155,9 @@ ConverterApp := [].{
 		}
 
 	## The converted file in a remote layer, when there is one.
-	output_of : Worker.Remote(Try(Converted, Problem)) -> List(File)
+	output_of : Engine.Remote(Try(Converted, Problem), Worker.Error) -> List(File)
 	output_of = |{ answer, .. }| match answer {
-		Done(Ok(c)) => [c.output]
+		Answered(Ok(c)) => [c.output]
 		_ => []
 	}
 
@@ -174,7 +175,7 @@ ConverterApp := [].{
 					"section",
 					[Html.aria_label("Drop a CSV file"), Html.on_drop_files(st.on_files(ConverterApp.chosen))],
 					[
-						Html.file_input(Engine.const("CSV file"), { accept: ".csv,text/csv", multiple: Bool.False }, st.on_files(ConverterApp.chosen)),
+						Html.file_input(Engine.const("CSV file"), { accept: Types(".csv,text/csv") }, st.on_files(ConverterApp.chosen)),
 						Html.button("Load the sample", [], st.update(|s| { ..s, sample: Loading })),
 					],
 				),
@@ -231,7 +232,7 @@ ConverterApp := [].{
 										Engine.latest(
 											r.map(ConverterApp.output_of).lift(),
 											|outputs| match outputs {
-												[out] => [File.read_bytes(out.slice({ start: 0, len: if (out.size() < 4096) out.size() else 4096 }))]
+												[out] => [out.slice({ start: 0, len: if (out.size() < 4096) out.size() else 4096 }).read_bytes({})]
 												_ => []
 											},
 											preview.on_result(

@@ -124,7 +124,7 @@ Convert := [].{
 		Html.div(
 			"convert",
 			[
-				Html.file_input(Engine.const("CSV file"), { accept: ".csv", multiple: Bool.False }, st.on_files(Convert.chosen)),
+				Html.file_input(Engine.const("CSV file"), { accept: Types(".csv") }, st.on_files(Convert.chosen)),
 				# region derive
 				# The conversion follows the chosen file: a newer file stops
 				# the job for the older one. The answer's file is the page's.
@@ -137,11 +137,12 @@ Convert := [].{
 						[
 							Html.p_v(
 								r.map(
-									|{ answer, running }| match answer {
-										Done(Ok(f)) => "converted ${f.name()} (${f.size().to_str()} bytes)"
-										Done(Err(e)) => "conversion failed: ${Str.inspect(e)}"
-										Failed(e) => "no answer: ${Str.inspect(e)}"
-										Nothing => if (running) "converting" else "choose a CSV file"
+									|{ request, answer }| match (request, answer) {
+										(Pending, _) => "converting"
+										(Idle, Answered(Ok(f))) => "converted ${f.name()} (${f.size().to_str()} bytes)"
+										(Idle, Answered(Err(e))) => "conversion failed: ${Str.inspect(e)}"
+										(Idle, Failed(e)) => "no answer: ${Str.inspect(e)}"
+										(Idle, Unanswered) => "choose a CSV file"
 									},
 								),
 								[Engine.test_id("converted")],
@@ -154,7 +155,7 @@ Convert := [].{
 								st.lift().update_by(
 									r,
 									|s, remote| match remote.answer {
-										Done(Ok(f)) => Convert.save_first(s, [f])
+										Answered(Ok(f)) => Convert.save_first(s, [f])
 										_ => s
 									},
 								),
@@ -213,7 +214,7 @@ Convert := [].{
 					|r| Html.p_v(
 						r.map(
 							|{ answer, .. }| match answer {
-								Done(Ok(n)) => "${n.to_str()} lines downloaded"
+								Answered(Ok(n)) => "${n.to_str()} lines downloaded"
 								_ => "nothing downloaded"
 							},
 						),

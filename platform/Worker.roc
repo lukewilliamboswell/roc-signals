@@ -542,13 +542,6 @@ answer_of = |name, output, flag| {
 	Core.task_answer(bytes.concat(flag), files)
 }
 
-## A deadline as the request carries it, in milliseconds (0: none).
-deadline_ms_of : [Unlimited, Ms(U32)] -> U32
-deadline_ms_of = |deadline| match deadline {
-	Unlimited => 0
-	Ms(ms) => ms
-}
-
 ## A request's payload and the files it refers to. A page input nested too
 ## deep is sent anyway and refused in the worker, where that is contained.
 sent : input -> { bytes : List(U8), files : List(Engine.File) } where [input.Wire.Sendable]

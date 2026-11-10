@@ -256,7 +256,7 @@ TasksApp := [].{
 		Html.div(
 			"tasks",
 			[
-				Html.file_input(Engine.const("Upload"), { accept: "", multiple: Bool.True }, st.on_files(TasksApp.received)),
+				Html.file_input(Engine.const("Upload"), { selection: Multiple }, st.on_files(TasksApp.received)),
 				Html.button("Upper", [], st.update(TasksApp.ask(|f| Upper({ source: f, chunk: 4 })))),
 				Html.button("Upper in 1 MiB chunks", [], st.update(TasksApp.ask(|f| Upper({ source: f, chunk: 1048576 })))),
 				Html.button("Overflow", [], st.update(TasksApp.ask(|f| Overflow(f)))),
@@ -307,7 +307,7 @@ TasksApp := [].{
 							Engine.latest(
 								v.map(|s| s.built).lift(),
 								|built| match built {
-									[f] => [File.read_utf8(f)]
+									[f] => [f.read_utf8({})]
 									_ => []
 								},
 								preview.on_result(
