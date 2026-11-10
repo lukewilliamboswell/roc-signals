@@ -174,8 +174,8 @@ browsers do.
 |---|---|
 | `(stub-http "label" :url "/api/x" :status 200 :body "…")` | Stage an HTTP answer; optional `:headers (("name" "value") …)`, default `content-type: application/json`. `:status` is 100–999. Staging a second answer before one is used fails |
 | `(stub-http-reject "label" :kind network :detail "offline")` | Stage a failure: `network` with the browser's message, or `timeout` with an empty `:detail` |
-| `(run-effect N)` | Answer the N-th HTTP request or timer the current document issued (1-based, in issue order; subscriptions and storage reads not counted). It must still be pending. A timer fires; an HTTP request takes the staged answer, and a reply's `:url` must equal the request's |
-| `(expect-pending-effects N)` | Exactly N HTTP requests and timers are waiting for `run-effect` |
+| `(run-effect N)` | Answer the N-th HTTP request, timer or worker job the current document issued (1-based, in issue order; subscriptions and storage reads not counted). It must still be pending. A timer fires; a worker job runs its program (natively in process, in Chrome in a real worker, the step waiting for its result); an HTTP request takes the staged answer, and a reply's `:url` must equal the request's |
+| `(expect-pending-effects N)` | Exactly N HTTP requests, timers and worker jobs are waiting for `run-effect` |
 | `(tick-interval MS)` | Deliver one tick to every live `Interval(MS)`; fails when none is live |
 | `(tick-interval-if-active MS)` | The same, but a no-op when none is live |
 | `(expect-interval MS N)` | Exactly N `Interval(MS)` subscriptions are live |

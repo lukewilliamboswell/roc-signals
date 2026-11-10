@@ -8,6 +8,10 @@ import Proc
 SpecSuite := [].{
 	runtime = "platform/runtime.mjs"
 
+	## The runtime's worker script, which it loads from beside itself: every
+	## copy of `runtime` carries it.
+	worker = "platform/worker.mjs"
+
 	## The apps ported to the engine, with their original specs.
 	apps : List(Str)
 	apps = ["form-builder", "kanban-board", "data-grid", "markdown-editor", "conduit", "field-notes", "status-page", "spreadsheet-lite"]

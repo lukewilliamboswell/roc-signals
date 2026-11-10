@@ -21,9 +21,10 @@ import JsonOut
 ## spec language"), and `one` matches every step of the grammar.
 ##
 ## - Effects are always manual. `stub-http` stages one answer; `run-effect N`
-##   answers the N-th awaited HTTP request or timer the current document
-##   issued (issue order), which must still be pending: a timer fires, and an
-##   HTTP request takes the staged answer, whose URL must be the request's (a
+##   answers the N-th awaited HTTP request, timer or worker job the current
+##   document issued (issue order), which must still be pending: a timer
+##   fires, a worker job runs its pure program in process, and an HTTP
+##   request takes the staged answer, whose URL must be the request's (a
 ##   reject answers any). Storage reads answer by themselves, from storage, in
 ##   the turn after the call that issued them.
 ## - A rejected request becomes `Timeout`, or `Network(detail)`.
@@ -70,6 +71,10 @@ SpecRunner := [].{
 		keys : () -> List(U8),
 		init : List(U8) -> (state, List(U8), List(U8)),
 		event : state, List(U8), List(U8), U32, U32, List(U8) -> (state, List(U8), List(U8)),
+
+		## A worker instance's entry: `name:str input:rest` to output bytes.
+		## Programs are pure, so the runner runs a job in process.
+		work : List(U8) -> List(U8),
 	}
 
 	Sub : [Interval(U32), Pop, OnlineSub, VisibilitySub]
@@ -78,8 +83,11 @@ SpecRunner := [].{
 	Entry : { url : Str, doc : U64 }
 
 	## An awaited request still waiting for `run-effect`: an HTTP request (its
-	## URL and body) or a timer.
-	Pending : { id : U32, url : Str, body : Str, timer : Bool }
+	## URL and body), a timer, or a worker job (its program and input).
+	Pending : { id : U32, url : Str, body : Str, kind : PendingKind }
+
+	## What `run-effect` does for a pending request.
+	PendingKind : [HttpRequest, TimerRequest, WorkRequest({ program : Str, input : List(U8) })]
 
 	## The modelled browser around the DOM. `doc` numbers the current document;
 	## a cross-document navigation mounts the app afresh in the next one.
@@ -319,9 +327,10 @@ SpecRunner := [].{
 		for c in fx {
 			b = $b
 			$b = match c {
-				Http(id, _, url, _, body, _) => { ..b, pending: b.pending.append({ id, url, body, timer: Bool.False }), issued: b.issued.append(id) }
+				Http(id, _, url, _, body, _) => { ..b, pending: b.pending.append({ id, url, body, kind: HttpRequest }), issued: b.issued.append(id) }
 				Get(id, key) => { ..b, gets: b.gets.append({ id, key }) }
-				Timer(id, _) => { ..b, pending: b.pending.append({ id, url: "timer", body: "", timer: Bool.True }), issued: b.issued.append(id) }
+				Timer(id, _) => { ..b, pending: b.pending.append({ id, url: "timer", body: "", kind: TimerRequest }), issued: b.issued.append(id) }
+				Work(id, program, input, _) => { ..b, pending: b.pending.append({ id, url: "work", body: "", kind: WorkRequest({ program, input }) }), issued: b.issued.append(id) }
 				Interval(id, ms) => { ..b, subs: b.subs.append({ id, sub: Interval(ms) }) }
 				Pop(id) => { ..b, subs: b.subs.append({ id, sub: Pop }) }
 				OnlineSub(id) => { ..b, subs: b.subs.append({ id, sub: OnlineSub }) }
@@ -447,15 +456,23 @@ SpecRunner := [].{
 	popstate : Program(state), S(state) -> S(state)
 	popstate = |program, s| SpecRunner.broadcast(program, s, |x| x.sub == Pop, SpecRunner.encode_location(s.browser.loc))
 
-	## `run-effect N`: a timer fires; an HTTP request takes the staged answer.
+	## `run-effect N`: a timer fires; a worker job runs its program in process
+	## through the program's `work` entry, as a worker instance of the same
+	## module would, and delivers `Work(output)`; an HTTP request takes the
+	## staged answer.
 	run_effect : Program(state), S(state), U64 -> Try(S(state), Str)
 	run_effect = |program, s, n| {
 		b = s.browser
 		id = b.issued.get(n - 1) ? |_| "effect occurrence ${n.to_str()} was never issued (${b.issued.len().to_str()} issued)"
 		p = b.pending.find_first(|q| q.id == id) ? |_| "effect occurrence ${n.to_str()} is not pending (cancelled or done)"
 		rest = b.pending.keep_if(|q| q.id != id)
-		if p.timer {
-			return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, [5]))
+		match p.kind {
+			TimerRequest => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, [5]))
+			WorkRequest({ program: name, input }) => {
+				output = (program.work)(SpecRunner.put_str([], name).concat(input))
+				return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, [10].concat(output)))
+			}
+			HttpRequest => {}
 		}
 		stub = match b.stub {
 			Staged(st) => st

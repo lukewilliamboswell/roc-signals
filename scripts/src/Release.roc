@@ -8,8 +8,10 @@ import SpecSuite
 ##
 ## - the platform bundle, `<hash>.tar.zst`: one platform for both targets,
 ##   `platform/main.roc` with every module it uses, the Wasm host, the native
-##   spec runner's link inputs for x64musl and `runtime.mjs`;
-## - `runtime.mjs` on its own, for pages that load an app;
+##   spec runner's link inputs for x64musl, `runtime.mjs` and its worker
+##   script `worker.mjs`;
+## - `runtime.mjs` and `worker.mjs` on their own, for pages that load an app
+##   (the runtime loads the worker script from beside itself);
 ## - the examples archive, `roc-signals-examples-<version>.zip`, which the
 ##   shared nightly-compatibility runner builds with the latest Roc nightly:
 ##   each example's `main.roc` naming the bundle's release URL, with its
@@ -21,7 +23,7 @@ Release := [].{
 
 	## The platform files a bundle carries, relative to `platform/`.
 	bundle_files : List(Str)
-	bundle_files = ["main.roc", "Engine.roc", "Html.roc", "Core.roc", "Cli.roc", "SpecRunner.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "targets/wasm32/host.wasm", "targets/x64musl/spec.o", "targets/x64musl/crt1.o", "targets/x64musl/libc.a", "targets/x64musl/libzigc.a", "targets/x64musl/libcompiler_rt.a", "runtime.mjs"]
+	bundle_files = ["main.roc", "Engine.roc", "Html.roc", "Core.roc", "Cli.roc", "SpecRunner.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "targets/wasm32/host.wasm", "targets/x64musl/spec.o", "targets/x64musl/crt1.o", "targets/x64musl/libc.a", "targets/x64musl/libzigc.a", "targets/x64musl/libcompiler_rt.a", "runtime.mjs", "worker.mjs"]
 
 	archive_name : Str -> Str
 	archive_name = |version| "roc-signals-examples-${version}"
@@ -72,6 +74,7 @@ Release := [].{
 			found => return Err(BundleNotFound(Str.inspect(found)))
 		}
 		Path.copy!(Path.utf8("${o.root}/${SpecSuite.runtime}"), Path.utf8("${out}/runtime.mjs"))?
+		Path.copy!(Path.utf8("${o.root}/${SpecSuite.worker}"), Path.utf8("${out}/worker.mjs"))?
 		bundle_url = "${Release.repo_url}/releases/download/${version}/${bundle}"
 
 		# The examples archive.
@@ -143,7 +146,7 @@ Release := [].{
 		\\app [main] { pf: platform "${bundle_url}" }
 		\\```
 		\\
-		\\Load apps with this release's `runtime.mjs`.
+		\\Load apps with this release's `runtime.mjs`, served beside its `worker.mjs`.
 		\\
 		\\## Compilers
 		\\

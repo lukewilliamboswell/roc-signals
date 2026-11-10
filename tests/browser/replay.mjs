@@ -21,8 +21,9 @@
 // select all, one `insertText` input event, refused for a value the control
 // cannot hold); <select> choice with `input` and `change`. Assertions read the
 // live DOM. Effects are always manual: `stub-http` stages one answer and
-// `run-effect N` answers the N-th awaited HTTP request or timer the current
-// document issued; storage reads answer by themselves from storage. History,
+// `run-effect N` answers the N-th awaited HTTP request, timer or worker job
+// the current document issued (a job really runs in a worker, and the step
+// waits for its result turn); storage reads answer by themselves from storage. History,
 // title and storage assertions read the real browser state.
 // `local-storage-unavailable` makes `window.localStorage` throw, as a browser
 // with site data disabled does; storage assertions then read the real store
@@ -386,6 +387,9 @@ const STEPS = {
           rt.runEffect(id, {});
           return { used: false };
         }
+        // A worker job really runs in a worker; the step waits for its
+        // result turn.
+        if (e.kind === "work") return Promise.resolve(rt.runEffect(id)).then(() => ({ used: false }));
         if (answer === null) return { error: `run-effect ${n} answers ${e.req.url} without a staged stub` };
         if (answer.url !== undefined && e.req.url !== answer.url) return { error: `no spec stub for ${e.req.url} (stub is for ${answer.url})` };
         rt.runEffect(id, answer);
@@ -562,6 +566,8 @@ const files = {
   "index.html": path.join(here, "index.html"),
   "locate.js": path.join(here, "locate.js"),
   "runtime.mjs": opts.runtime,
+  // The runtime's worker script, which it loads from beside itself.
+  "worker.mjs": path.join(path.dirname(opts.runtime), "worker.mjs"),
   "app.wasm": opts.wasm,
 };
 const types = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm" };

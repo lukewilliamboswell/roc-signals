@@ -8,6 +8,8 @@
 //! JavaScript reads the command bytes and the work record straight from linear
 //! memory via `cmd_ptr`/`cmd_len` and `work_ptr`/`work_len`; they stay valid
 //! until the next `event` or `drop`.
+//! An instance a Web Worker runs never mounts: its only engine call is
+//! `work`, whose output bytes occupy the command buffer's slot.
 //! Running out of memory or a Roc crash traps the instance (no recovery).
 const std = @import("std");
 
@@ -33,6 +35,7 @@ extern fn roc_engine_keys() callconv(.c) RocList;
 extern fn roc_engine_init(boot: RocList) callconv(.c) Step;
 extern fn roc_engine_event(state: *anyopaque, buf: RocList, wbuf: RocList, node: u32, handler: u32, payload: RocList) callconv(.c) Step;
 extern fn roc_engine_drop(state: *anyopaque, buf: RocList, wbuf: RocList) callconv(.c) void;
+extern fn roc_engine_work(payload: RocList) callconv(.c) RocList;
 
 var state: ?*anyopaque = null;
 var cmds: RocList = RocList.empty;
@@ -275,6 +278,34 @@ export fn event(node: u32, handler: u32) callconv(.c) void {
     state = step.state;
     cmds = step.cmds;
     work = step.work;
+}
+
+/// Run one worker job (design.md, Appendix B): the staged payload,
+/// `name:str input:rest`, moves into Roc, which runs the catalogue program
+/// of that name and owns and frees the payload. The program's output bytes
+/// take the command buffer's slot and stay readable through
+/// `cmd_ptr`/`cmd_len` until the next call; the previous call's output is
+/// released before this one runs, so a worker instance holds at most one
+/// output. This is a worker instance's only engine call: it traps when an
+/// engine state is mounted in this instance (a page's instance never runs
+/// jobs) and when the instance is poisoned. A Roc crash in the program (an
+/// unknown name or an undecodable payload is a `contract:` crash) poisons
+/// this instance like any other call, and the slots were cleared before the
+/// call, so nothing dangles. Exported as `work` (the name `work` here is the
+/// work record's slot).
+fn runWork() callconv(.c) void {
+    refuseIfPoisoned();
+    if (state != null) @trap();
+    const payload = pending_payload;
+    const previous = cmds;
+    pending_payload = RocList.empty;
+    cmds = RocList.empty;
+    releaseList(previous);
+    cmds = roc_engine_work(payload);
+}
+
+comptime {
+    @export(&runWork, .{ .name = "work" });
 }
 
 /// Release the instance and the command buffer (teardown).

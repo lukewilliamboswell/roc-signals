@@ -218,7 +218,7 @@ state is row state — is the documented pattern that keeps app work local.
 ```mermaid
 flowchart LR
     App["app: App.roc<br/>Elem tree of typed sites"] --> Engine["platform/Core.roc (internal) behind Engine.roc (authoring API)<br/>pure engine: sites, layers, each columns,<br/>effects, command encoding"]
-    Engine --> Main["platform/main.roc<br/>keys · init · event · drop"]
+    Engine --> Main["platform/main.roc<br/>keys · init · event · work · drop"]
     Main --> Host["platform/host/host.zig<br/>allocator · Box(Core.App) · cmd buffer ·<br/>staged payload · fault class"]
     Host --> Wire["command bytes in linear memory"]
     Wire --> JS["platform/runtime.mjs<br/>apply commands · perform effects ·<br/>delegate events · contain faults"]
@@ -465,7 +465,7 @@ Rules:
 | Reorder a surviving key | Preserve its row state and active work | Move existing nodes |
 | Insert or remove another key | Preserve unaffected rows | Insert or remove only the affected rows |
 | Update an item, same key | Preserve the row; re-evaluate holes that read the row | Update only changed holes |
-| Remove a key | Dispose the row's sites; stop its subscriptions and timers; admitted requests reparent to the `each` site | Remove its node |
+| Remove a key | Dispose the row's sites; stop its subscriptions, timers and work; admitted requests reparent to the `each` site | Remove its node |
 | Reinsert a removed key | A new row lifetime | Build new structure |
 | Change an item's key | End the old row, create a new one | Remove and insert |
 | Move an item between `each` sites | Dispose at the old site, create at the new | No cross-site transfer |
@@ -486,7 +486,7 @@ Every site is a scope. Disposing it:
    removing an ancestor (or `CLEAR` when an `each` site is the sole child of its
    parent);
 3. frees its node ids, routes, focus references and, for `each`, its site id;
-4. stops its subscriptions, intervals and timers (`CANCEL`), and drops queued
+4. stops its subscriptions, intervals, timers and work (`CANCEL`), and drops queued
    follow-ups addressed to it (counted stale);
 5. hands its admitted requests up as orphans (see
    [The effect channel](#the-effect-channel)).
@@ -663,9 +663,18 @@ for and its result.
   `Title` (`TITLE`), `StorageSet`/`StorageRemove` (`STORE`), and
   `Focus`/`Blur`/`SelectText` on a named reference (`FOCUS`, resolved at the
   end of the turn).
-- **Awaited requests** get an id: `Http`, `StorageGet` and `Timer` deliver one
-  result; `Interval` and `Popstate` are subscriptions that deliver any number of
-  results until stopped.
+- **Awaited requests** get an id: `Http`, `StorageGet`, `Timer` and `Work`
+  deliver one result; `Interval` and `Popstate` are subscriptions that deliver
+  any number of results until stopped.
+- **`Work`** runs a pure program from the program's worker catalogue on bytes,
+  in a Web Worker that instantiates the same compiled module. A catalogue entry
+  is a namespaced, unversioned name and a function `List(U8) -> List(U8)`,
+  registered with `with_workers`; the page's instance and every worker
+  instance evaluate the same `main`, so both see the same catalogue, and the
+  module is the compatibility unit. A worker instance never mounts: its only
+  engine call is the host's `work` entry. The job's result is an ordinary
+  result turn: `Work(output)`, or `WorkLost(fault)` when the worker's instance
+  faulted or no worker could run it.
 - **`Self`** asks for a follow-up turn whose result is `Now`: how an effect
   site changes state in response to its value changing without writing during
   the turn that is evaluating.
@@ -684,8 +693,10 @@ for and its result.
   site at the same path never receives its predecessor's results.
 - Results are typed: `Http({ status, headers, body })`, `Network(message)`,
   `Timeout`, `Value`, `Missing`, `Fired`, `Location`, `Online(Bool)`,
-  `Visible(Bool)`, `Now`, `Refused`. Application failures are values;
-  contract violations are diagnostics, never fabricated results.
+  `Visible(Bool)`, `Now`, `Refused`, `Work(bytes)` and `WorkLost(fault)`.
+  Application failures are values; contract violations are diagnostics,
+  never fabricated results. A worker's diagnostic text goes to the page's
+  console, never into its result.
 - `http_text` reads an HTTP result as the body of a 2xx response or a typed
   `HttpError`: `Network(message)` (the browser could not reach the server),
   `Timeout`, `Status(code)` (any other status) or `Refused` (the in-flight
@@ -702,14 +713,31 @@ for and its result.
 - **HTTP timeout.** Each request carries `timeout_ms` (0 = none), capped at
   600 s. A timeout delivers `Timeout`; the runtime arms at most one timer per
   admitted request and clears it on completion, failure, timeout or cancel.
+- **Work deadline.** Each job carries `deadline_ms` (0 = none), capped at
+  600 s like an HTTP timeout. Its expiry stops the job by terminating its
+  worker and delivers `Timeout`.
+- **Worker pool.** The runtime runs at most `maxWorkers` workers (a mount
+  option; by default the browser's core count, at most 8), one job each at a
+  time, reusing idle workers. Jobs beyond the pool wait in a FIFO queue,
+  which the in-flight cap bounds. Stopping a job — cancel or deadline — is
+  terminating its worker, which is replaced when the next job needs one;
+  there are no cooperative checkpoints.
+- **Catalogue.** At most 64 programs, each name once. A duplicate or a 65th
+  is a `contract` error when the catalogue is built, naming the program;
+  issuing work for a name the catalogue does not hold is a `contract` error
+  naming the program and the issuing site.
 
 ### Disposal and reparenting
 
 An admitted effect belongs to the intent that started it, not to the scope that
 rendered the control:
 
-- **Subscriptions, intervals and timers are scoped.** Disposing their site
-  emits `CANCEL` and forgets them.
+- **Subscriptions, intervals, timers and work are scoped.** Disposing their
+  site emits `CANCEL`, counts them `cancelled` and forgets them; a result that
+  arrives later is stale. Work is scoped rather than kept because a pure
+  computation has no external effect to preserve, and computing an answer
+  nobody will read is only cost. A job that must outlive a panel is issued
+  from a site in a longer-lived scope.
 - **Admitted requests (`Http`, `StorageGet`) reparent** to the nearest surviving
   ancestor site — the `when`/`switch` that changed branch, the `each` that
   removed the row, or the component's caller. When the result arrives, the
@@ -824,8 +852,15 @@ refcount word (1) before the elements, capacity stored shifted left by one
 again frees the undelivered one. The host never holds a seamless slice.
 
 There is no other host state. No registry of values, closures, listeners,
-timers or tasks lives in Zig: timers and network requests are performed by the
-runtime from `FX` commands and come back as events.
+timers or tasks lives in Zig: timers, network requests and work are performed
+by the runtime from `FX` commands and come back as events.
+
+A worker instance is the same module with the same host, used through one
+more entry, `work`: it moves the staged payload into the program's catalogue
+entry and keeps the returned bytes in the command buffer's slot until the next
+call, releasing the previous output first. It never mounts, so it holds no
+engine state, and `work` refuses to run in an instance that has one. The
+engine hands the host a list of its own, never a slice of the input.
 
 ## Error Containment
 
@@ -854,12 +889,21 @@ drops queued events and staged effects, keeps the last applied DOM as fallback,
 and refuses later calls without entering Wasm. An executor failure (a bug in
 applying a command) is contained the same way with class `executor`.
 `recover()` mounts a fresh instance from the same module; it never resumes a
-poisoned one. External effects already performed are not undone.
+poisoned one. External effects already performed are not undone. Poisoning
+or unmounting the page's runtime terminates every worker it started.
+
+A worker instance is contained the same way, alone: a fault while it runs a
+program poisons that instance only. The runtime discards the worker, answers
+its job with `WorkLost` carrying the instance's class (`executor` when the
+worker script itself failed, `unavailable` when the browser has no workers),
+and reports the diagnostic to the console; the page's instance is untouched.
 
 **Contract errors the engine raises:** duplicate key; switch value not in its
 cases; row template not a single element; focus reference inside a row
 template; effect follow-up budget exceeded; a cleanup asking for an awaited
-request; `http_text` given a non-HTTP result; event payload not UTF-8; boot
+request; `http_text` given a non-HTTP result; a worker catalogue with a
+duplicate name or more than 64 programs; work issued for a program the
+catalogue does not hold; event payload not UTF-8; boot
 bytes or an effect result that do not follow Appendix B (truncated, trailing
 bytes, unknown tag, flags other than 0 or 1, text that is not UTF-8).
 **Resource limits:** node ids (2³² − 2 live nodes); more than 63 nested layers
@@ -881,7 +925,11 @@ bound and a declared behaviour at the bound:
 |---|---|---|
 | Awaited requests in flight | 32 (per-program setting) | Typed `Refused` follow-up |
 | Follow-up turns per host call | 64 | `contract` poison |
-| HTTP timeout | 600 s | Capped |
+| HTTP timeout, work deadline | 600 s | Capped |
+| Worker catalogue | 64 programs | `contract` poison |
+| Workers per runtime | `maxWorkers` (default: core count, at most 8) | Jobs queue |
+| Queued and running jobs | The in-flight cap | Typed `Refused` follow-up |
+| Worker output held by the host | 1 | Previous one freed |
 | Staged payloads | 1 | Previous one freed |
 | Diagnostic text | 512 bytes | Truncated |
 | Live node ids (rows included) | 2³² − 2 | `resource_limit` poison |
@@ -910,7 +958,7 @@ UI:
   value, visibility and absence, location, document title, local storage,
   pending effects.
 - **Effects** — `stub-http` and `run-effect N` (answer the N-th awaited HTTP
-  request or timer in issue order), interval ticks, `set-visibility`,
+  request, timer or worker job in issue order), interval ticks, `set-visibility`,
   `set-online`.
 - **Work** — `mark-metrics`, `expect-metric-delta`,
   `expect-metric-delta-at-most`, `expect-updates`, `expect-cleanup`,
@@ -928,10 +976,12 @@ produces a typed list of steps. Both runners consume it:
 step means what it does in Chrome; the native runner models that against the
 oracle and never defines a meaning of its own. In particular:
 
-- effects are always manual: HTTP requests and timers wait for `run-effect`,
-  which fires a timer and answers an HTTP request with the one staged answer;
-  storage reads answer by themselves in the following turn, as the runtime
-  answers them;
+- effects are always manual: HTTP requests, timers and worker jobs wait for
+  `run-effect`, which fires a timer, answers an HTTP request with the one
+  staged answer, and runs a worker job — in Chrome in a real worker, the step
+  waiting for its result turn; natively in process through the program's
+  `work` entry, which a pure program makes equivalent; storage reads answer
+  by themselves in the following turn, as the runtime answers them;
 - a click is a real mouse click with the browser's default actions (a
   checkbox toggles and a radio checks, each with `input` and `change`; a
   submit button submits its form if the form's controls are valid; a link
@@ -1142,12 +1192,12 @@ the context a value or handler is used in.
 **The authoring API is the whole public surface.** Every `Engine` type is
 opaque: `Val`, `State`, `Handler` and `RowRef` are opaque wrappers whose
 methods are documented here, and the contexts, `Elem`, `Attr`, `Keyed`,
-`Sink`, `Reaction` and `Program` are aliases of opaque types in the internal
+`Sink`, `Reaction`, `Program` and `Registration` are aliases of opaque types in the internal
 `Core` module, which holds the implementation. `Core` is not exposed, so an
 app can neither name a representation nor call the interfaces only hosts and
 harnesses use (`Core.driver`, `mount`, `event`, `result`, `take_cmds`, the
 effect and work counters); the generated API docs list the authoring API and
-nothing else. `Req`, `Res`, `HttpError` and `Boot` are plain data and stay
+nothing else. `Req`, `Res`, `WorkFault`, `HttpError` and `Boot` are plain data and stay
 structural.
 
 ```roc
@@ -1156,6 +1206,8 @@ program : (() -> Elem(Root)) -> Program
 program_boot : { storage_keys : List(Str), max_inflight : U64 }, (Boot -> Elem(Root)) -> Program
 Boot : { url : Str, storage : List((Str, Str)), online : Bool, visible : Bool, storage_available : Bool }
 Program                                       # opaque; the app binds it as `main`
+Program.with_workers : Program, List(Registration) -> Program   # the worker catalogue
+registration : Str, (List(U8) -> List(U8)) -> Registration      # opaque: name and pure program
 
 # Values
 const : a -> Val(ctx, a)
@@ -1207,11 +1259,14 @@ ignore : {} -> Reaction(ctx, a)
 on_cleanup : Str, Val(ctx, a), (a -> List(Req)) -> Elem(ctx)   # commands only
 cleanup : Str -> Elem(ctx)
 Req : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Timer(U32),
+       Work({ program : Str, input : List(U8), deadline_ms : U32 }),
        Interval(U32), Popstate, OnlineChanges, VisibilityChanges, Self, Push(Str),
        Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str),
        StorageSet(Str, Str), StorageRemove(Str)]
 Res : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
-       Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused]
+       Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused,
+       Work(List(U8)), WorkLost(WorkFault)]
+WorkFault : [Contract, ResourceLimit, OutOfMemory, AppCrash, ExpectFailed, Unavailable, Executor]
 HttpError : [Network(Str), Timeout, Status(U16), Refused]
 http_text : Res -> Try(Str, HttpError)
 ```
@@ -1236,7 +1291,7 @@ Appendix B entry.
 All integers are little-endian. `u32` ids. `str` is `u32` byte length followed
 by UTF-8 bytes. `rest` is the remaining bytes of a payload as UTF-8.
 
-This appendix is protocol version **3**. The engine declares it
+This appendix is protocol version **4**. The engine declares it
 (`Engine.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
@@ -1249,11 +1304,12 @@ The platform provides (`platform/main.roc`):
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (3) |
+| `roc_engine_version` | `() -> u32` | The protocol version (4) |
 | `roc_engine_keys` | `() -> List(U8)` | Declared storage keys: `count:u32 (key:str)*` |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Box(Core.App), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One transaction: state, recycled command buffer, recycled work buffer, node, handler, payload |
 | `roc_engine_drop` | `Box(Core.App), List(U8), List(U8) -> {}` | Teardown |
+| `roc_engine_work` | `List(U8) -> List(U8)` | A worker instance's job: payload `name:str input:rest`, returns the program's output bytes as a list of its own. A name the catalogue does not hold, or a payload without a name, is a `contract` crash (it poisons that worker instance only) |
 
 The host provides `roc_alloc`, `roc_dealloc`, `roc_realloc`, `roc_dbg`,
 `roc_expect_failed` and `roc_crashed`. The result record's three fields are
@@ -1269,8 +1325,9 @@ warm-up neither allocates.
 | `payload_reserve(len) -> ptr` | Allocate the next call's payload (`0` for `len = 0`); JS writes `len` bytes at `ptr` after refreshing its memory view |
 | `init()` | Mount with the staged boot bytes; mount commands become readable |
 | `event(node, handler)` | One transaction with the staged payload; its commands become readable |
+| `work()` | A worker instance's job: moves the staged payload into `roc_engine_work` and keeps the output readable through `cmd_ptr`/`cmd_len` until the next call, releasing the previous output. Traps when an engine state is mounted in this instance or the instance is poisoned |
 | `protocol_version() -> u32` | The engine's protocol version; answers before mount and when poisoned |
-| `cmd_ptr()`, `cmd_len()` | The current command batch, valid until the next `event` or `drop` |
+| `cmd_ptr()`, `cmd_len()` | The current command batch (in a worker instance, the last job's output), valid until the next `event`, `work` or `drop` |
 | `work_ptr()`, `work_len()` | The work record returned with the last call, valid until the next `event` or `drop` |
 | `drop()` | Teardown; no-op when poisoned or already dropped |
 | `fault() -> u32` | `0` healthy, `1` contract, `2` resource_limit, `3` out_of_memory, `4` app_crash, `5` expect_failed |
@@ -1341,13 +1398,16 @@ An event is `event(node, handler)` with the payload staged first:
 | 4 | — | `Missing` (storage miss) |
 | 5 | — | `Fired` (timer or interval) |
 | 6 | `url:rest` | `Location` (popstate) |
-| 7 | — | `Timeout` |
+| 7 | — | `Timeout` (an HTTP timeout, or a work deadline that stopped its worker) |
 | 8 | `online:u8` | `Online(Bool)` (connectivity change) |
 | 9 | `visible:u8` | `Visible(Bool)` (visibility change) |
+| 10 | `output:bytes` (the rest, raw) | `Work(List(U8))` |
+| 11 | `class:u8` | `WorkLost(fault)`: `1` contract, `2` resource_limit, `3` out_of_memory, `4` app_crash, `5` expect_failed (the worker instance's fault class), `6` unavailable (no `Worker`), `7` executor (the worker script failed) |
+| 12 | — | Reserved |
 
 A result payload that does not follow this table (unknown tag, bytes after a
-bare tag, a flag other than `0`/`1`, a truncated HTTP record, text that is not
-UTF-8) is a `contract` fault.
+bare tag, a flag other than `0`/`1`, a fault class outside `1`–`7`, a
+truncated HTTP record, text that is not UTF-8) is a `contract` fault.
 
 ### Node ids
 
@@ -1408,6 +1468,7 @@ the batch is applied and performed after it.
 | 5 | — | Popstate (subscription) |
 | 6 | — | Connectivity (subscription; `online`/`offline` events) |
 | 7 | — | Visibility (subscription; `visibilitychange` events) |
+| 8 | `program:str input:u32+bytes deadline_ms:u32` | Work: `input` is a `u32` length and raw bytes, not necessarily UTF-8; `deadline_ms` 0 = none, capped at 600 000 |
 
 **Template encoding** (`TEMPLATE` bytes): a node tree, then a hole table.
 

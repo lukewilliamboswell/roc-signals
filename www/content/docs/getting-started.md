@@ -104,12 +104,13 @@ A page loads the app with the platform's runtime, `platform/runtime.mjs`:
 
 {{ sample(file="counter/index.html", syntax="html") }}
 
-Build the same entry for the browser, then put the page, the runtime and the
+Build the same entry for the browser, then put the page, the runtime (with its
+worker script, which it loads from beside itself) and the
 app in one directory and serve it:
 
 ```sh
 mkdir -p counter-site
-cp www/samples/counter/index.html platform/runtime.mjs counter-site/
+cp www/samples/counter/index.html platform/runtime.mjs platform/worker.mjs counter-site/
 roc build --target=wasm32 www/samples/counter/main.roc --output=counter-site/app.wasm
 blueprint run serve -- counter-site
 ```

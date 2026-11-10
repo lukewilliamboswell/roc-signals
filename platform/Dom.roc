@@ -7,7 +7,7 @@ Dom := [].{
 	## It is spelled here independently of the engine; the spec runner
 	## refuses a program that speaks another.
 	protocol_version : U32
-	protocol_version = 3
+	protocol_version = 4
 
 	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List((Str, U32)), ht : List(U64) }
 
@@ -37,6 +37,17 @@ Dom := [].{
 			crash "short string"
 		}
 		(Str.from_utf8(bytes) ?? crash "bad utf8", at + 4 + n)
+	}
+
+	## A `u32` length and that many raw bytes (not necessarily UTF-8).
+	raw : List(U8), U64 -> (List(U8), U64)
+	raw = |b, at| {
+		n = Dom.u32(b, at).to_u64()
+		bytes = b.sublist({ start: at + 4, len: n })
+		if bytes.len() != n {
+			crash "short byte string"
+		}
+		(bytes, at + 4 + n)
 	}
 
 	byte : List(U8), U64 -> U8
@@ -332,6 +343,9 @@ Dom := [].{
 		Pop(U32),
 		OnlineSub(U32),
 		VisibilitySub(U32),
+
+		## A worker job: id, program name, input bytes and deadline (ms, 0 none).
+		Work(U32, Str, List(U8), U32),
 		Cancel(U32),
 		Push(Str),
 		Replace(Str),
@@ -547,6 +561,11 @@ Dom := [].{
 					$fx = $fx.append(OnlineSub(id))
 				} else if kind == 7 {
 					$fx = $fx.append(VisibilitySub(id))
+				} else if kind == 8 {
+					(program, a1) = Dom.str(b, $at)
+					(input, a2) = Dom.raw(b, a1)
+					$fx = $fx.append(Work(id, program, input, Dom.u32(b, a2)))
+					$at = a2 + 4
 				} else {
 					crash "unknown effect kind ${kind.to_str()}"
 				}

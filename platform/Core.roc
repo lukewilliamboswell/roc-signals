@@ -506,11 +506,19 @@ Core := [].{
 	## number until their site is disposed. `Self` asks for a follow-up turn whose
 	## result is `Now`, so a site can write state in response to its value changing.
 	## `Http`'s `timeout_ms` of 0 means no timeout; it is capped at 10 minutes.
+	##
+	## `Work` runs the pure program registered under `program` (see
+	## `with_workers`) on `input`, off the page's thread, and delivers one
+	## `Work(output)` or `WorkLost(fault)`. Like a timer it belongs to its site:
+	## disposing the site cancels it. `deadline_ms` 0 means no deadline; it is
+	## capped at 10 minutes and delivers `Timeout` when it expires. Issuing work
+	## for a program that is not registered is a contract error.
 	Req : [
 		## `timeout_ms` 0 = no timeout; capped at `max_timeout_ms`.
 		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32 }),
 		StorageGet(Str),
 		Timer(U32),
+		Work({ program : Str, input : List(U8), deadline_ms : U32 }),
 		Interval(U32),
 		Popstate,
 
@@ -534,8 +542,18 @@ Core := [].{
 	## a network failure (`Network`) or `Timeout`, a storage `Value` or `Missing`, a
 	## timer or interval tick (`Fired`), the URL after `Popstate` (`Location`), a
 	## connectivity or visibility change (`Online`, `Visible`), a `Self` follow-up
-	## (`Now`), or `Refused` when the in-flight bound turned the request away.
-	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused]
+	## (`Now`), `Refused` when the in-flight bound turned the request away, or a
+	## worker program's output (`Work`) or the reason it produced none
+	## (`WorkLost`).
+	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault)]
+
+	## Why a `Work` request produced no output: the worker's instance faulted
+	## running the program (`Contract`, `ResourceLimit`, `OutOfMemory`,
+	## `AppCrash` and `ExpectFailed`, the fault classes of an instance), the
+	## browser has no workers (`Unavailable`), or the worker itself failed
+	## (`Executor`). The diagnostic goes to the page's console, never into the
+	## result.
+	WorkFault : [Contract, ResourceLimit, OutOfMemory, AppCrash, ExpectFailed, Unavailable, Executor]
 
 	## Why an HTTP request did not produce a successful response, as `http_text`
 	## reports it: the browser could not reach the server (`Network`, with the
@@ -583,8 +601,8 @@ Core := [].{
 
 	## `watch(v, plan, react)` issues `plan(v)` when the site mounts and again
 	## whenever `v` changes to an unequal value; results go to `react`. Awaited
-	## requests belong to the site: when it is disposed, its subscriptions and
-	## timers are cancelled, and admitted `Http` and `StorageGet` requests are
+	## requests belong to the site: when it is disposed, its subscriptions, timers
+	## and work are cancelled, and admitted `Http` and `StorageGet` requests are
 	## delivered to the nearest surviving ancestor instead. At most 32 requests are
 	## in flight by default (see `program_boot`); beyond that a request is answered
 	## with `Refused`.
@@ -658,6 +676,13 @@ Core := [].{
 			Online(flag())
 		} else if tag == 9 {
 			Visible(flag())
+		} else if tag == 10 {
+			Work(b.drop_first(1))
+		} else if tag == 11 {
+			match b {
+				[_, class] => WorkLost(work_fault(class))
+				_ => crash "contract: effect result tag 11 needs one fault class byte"
+			}
 		} else {
 			crash "contract: unknown effect result tag ${tag.to_str()}"
 		}
@@ -755,12 +780,7 @@ Core := [].{
 	## For test platforms and harnesses: mount with an explicit in-flight effect
 	## bound, running any follow-up turns the mount queued.
 	mount_with : U64, Elem(Root) -> App
-	mount_with = |max, elem| {
-		{ cmds, next, free, routes, work, paths, site_free, fx } = new_tx([])
-		tx0 = { cmds, next, free, routes, work, paths, site_free, fx: { ..fx, max } }
-		(block, tx) = mount_block(Root, elem, 0, [], 0, 0, { cap: 0, local: False }, tx0)
-		drain({ root: block_inst(block), tx: flush_focus(tx) })
-	}
+	mount_with = |max, elem| mount_in(max, [], elem)
 
 	## For test platforms and harnesses: deliver a DOM event to `node` and its
 	## handler number with the event's payload, as one transaction (plus any
@@ -832,25 +852,79 @@ Core := [].{
 	## host exports it, and the runtime refuses an instance whose version it does
 	## not implement.
 	protocol_version : U32
-	protocol_version = 3
+	protocol_version = 4
+
+	## A worker program: a namespaced name (`"example.org/search/filter"`) and a
+	## pure function from input bytes to output bytes. Make one with
+	## `registration` and list it in `with_workers`.
+	Registration :: { name : Str, run : (List(U8) -> List(U8)) }
+
+	## `registration(name, run)`: the worker program `name`, which turns a `Work`
+	## request's input bytes into its output bytes with `run`. `run` must be pure:
+	## it runs in a separate instance of the same module that shares nothing with
+	## the page's instance but the bytes it is given.
+	registration : Str, (List(U8) -> List(U8)) -> Registration
+	registration = |name, run| { name, run }
 
 	## What the host drives: the protocol version, the declared storage keys (read
 	## before mount), mount once with the boot bytes, then one transaction per
 	## event or effect result. Each call returns the state, the command batch and
 	## the work record, and the host lends both buffers back on the next call so
-	## they are reused in place. Apps build one with `program` or `program_boot`
-	## and bind it as `main`.
+	## they are reused in place. A worker instance of the same module never
+	## mounts; it only runs the catalogue's programs. Apps build one with
+	## `program` or `program_boot` and bind it as `main`.
 	Program :: {
 		version : U32,
 		keys : () -> List(U8),
-		init : List(U8) -> (App, List(U8), List(U8)),
+		init : List(Str), List(U8) -> (App, List(U8), List(U8)),
 		event : App, List(U8), List(U8), U32, U32, List(U8) -> (App, List(U8), List(U8)),
+		workers : List(Registration),
+	}.{
+
+		## Add worker programs to the program's catalogue, so its effect sites can
+		## issue `Work` requests for them. The page's instance and every worker
+		## instance evaluate the same `main`, so both see the same catalogue. At most
+		## 64 programs may be registered and each name once; anything else is a
+		## contract error when the catalogue is built.
+		with_workers : Program, List(Registration) -> Program
+		with_workers = |p, registrations| { ..p, workers: p.workers.concat(registrations) }
 	}
 
-	## For the platform's hosts and test harnesses: the four entry points of a
-	## [Program], as the host calls them.
-	driver : Program -> { version : U32, keys : () -> List(U8), init : List(U8) -> (App, List(U8), List(U8)), event : App, List(U8), List(U8), U32, U32, List(U8) -> (App, List(U8), List(U8)) }
-	driver = |p| { version: p.version, keys: p.keys, init: p.init, event: p.event }
+	## For the platform's hosts and test harnesses: the entry points of a
+	## [Program], as the host calls them. `work` is a worker instance's only
+	## entry: it runs the catalogue's program named in `name:str input:rest` on
+	## the input and returns the output bytes.
+	driver : Program -> { version : U32, keys : () -> List(U8), init : List(U8) -> (App, List(U8), List(U8)), event : App, List(U8), List(U8), U32, U32, List(U8) -> (App, List(U8), List(U8)), work : List(U8) -> List(U8) }
+	driver = |p| {
+		init = p.init
+		workers = p.workers
+		{
+			version: p.version,
+			keys: p.keys,
+			init: |boot| init(catalogue_names(workers), boot),
+			event: p.event,
+			work: |payload| run_work(workers, payload),
+		}
+	}
+
+	## For test platforms and harnesses: the catalogue rule `with_workers`
+	## enforces, as a value: the registered names in order, or the contract
+	## diagnostic for a duplicate name or more than 64 registrations.
+	catalogue : List(Registration) -> Try(List(Str), Str)
+	catalogue = |registrations| {
+		var $names = []
+		for r in registrations {
+			name = r.name
+			if $names.len() >= max_programs {
+				return Err("contract: with_workers registers more than ${max_programs.to_str()} worker programs (program \"${name}\" is over the bound)")
+			}
+			if $names.contains(name) {
+				return Err("contract: worker program \"${name}\" is registered twice in with_workers")
+			}
+			$names = $names.append(name)
+		}
+		Ok($names)
+	}
 
 	## The [Program] for an app that needs no boot data: mount `view()` with the
 	## default in-flight bound of 32.
@@ -871,7 +945,7 @@ Core := [].{
 			}
 			$b
 		},
-		init: |boot| finish(Core.mount_with(cfg.max_inflight, view(decode_boot(boot))), [], []),
+		init: |names, boot| finish(mount_in(cfg.max_inflight, names, view(decode_boot(boot))), [], []),
 		event: |inst, buf, wbuf, node, handler, payload| {
 			{ root, tx } = inst
 			{ cmds: _, next, free, routes, work, paths, site_free, fx } = tx
@@ -882,6 +956,7 @@ Core := [].{
 				finish(Core.event(fresh, node, handler, Str.from_utf8(payload) ?? crash "contract: event payload is not UTF-8"), [], wbuf)
 			}
 		},
+		workers: [],
 	}
 }
 
@@ -1236,9 +1311,9 @@ drop_ref = |fx, node| with_refs(
 ## Update the reference table with both lists moved out of `fx`, so
 ## they stay uniquely owned and update in place.
 with_refs : Fx, (List((Str, U32)), List(U32) -> (List((Str, U32)), List(U32))) -> Fx
-with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups }, f| {
+with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups, programs }, f| {
 	(refs2, at2) = f(refs, ref_pos)
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs: refs2, focus, ref_pos: at2, cleanups }
+	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs: refs2, focus, ref_pos: at2, cleanups, programs }
 }
 
 set_route : Tx, U32, List(U32), U32 -> Tx
@@ -3097,8 +3172,8 @@ comp_settle = |prop, snk, block, env, out, tx| {
 #   site. Interval and Popstate are subscriptions: they stay in flight,
 #   delivering any number of results, until the site is disposed.
 # - Disposal (design.md, "Requests, effects, and cancellation" and the
-#   lifetime table): subscriptions, intervals and timers are stopped
-#   (CANCEL id) and forgotten. Admitted requests (Http, StorageGet) are
+#   lifetime table): subscriptions, intervals, timers and work are stopped
+#   (CANCEL id, counted `cancelled`) and forgotten. Admitted requests (Http, StorageGet) are
 #   not cancelled: they reparent to the nearest surviving ancestor site
 #   (the `when`/`switch` that switched branch, or the `each` that removed
 #   the row), which delivers the result by running the reaction in its
@@ -3128,6 +3203,8 @@ comp_settle = |prop, snk, block, env, out, tx| {
 # Command stream additions:
 #  13 FX      id kind:u8 ... 1 HTTP method:str url:str n:u32 (name:str value:str)* body:str timeout_ms:u32
 #                            2 STORAGE_GET key:str  3 TIMER ms:u32  4 INTERVAL ms:u32  5 POPSTATE
+#                            6 ONLINE  7 VISIBILITY
+#                            8 WORK program:str input:(u32 len, raw bytes) deadline_ms:u32
 #  14 CANCEL  id
 #  15 NAV     mode:u8 (1 push, 2 replace) url:str
 #  16 STORE   op:u8 (1 set: key:str value:str, 2 remove: key:str)
@@ -3137,11 +3214,77 @@ comp_settle = |prop, snk, block, env, out, tx| {
 # payload bytes: 1 status:u16 n:u32 (name:str value:str)* body (HTTP
 # response with its headers), 7 (HTTP timeout), 2 message (network
 # failure), 3 value (storage value), 4 (storage missing), 5 (timer
-# fired), 6 url (location).
+# fired), 6 url (location), 8 online:u8, 9 visible:u8, 10 output (work
+# result bytes), 11 class:u8 (work lost; design.md, Appendix B).
 
-## Largest per-request HTTP timeout the host will arm (10 minutes).
+## Largest per-request HTTP timeout or work deadline the host will arm (10
+## minutes).
 max_timeout_ms : U32
 max_timeout_ms = 600000
+
+## The most worker programs one catalogue registers (design.md, "Boundedness").
+max_programs : U64
+max_programs = 64
+
+## Mount `elem` with the in-flight bound `max` and the catalogue's program
+## names, running any follow-up turns the mount queued.
+mount_in : U64, List(Str), Elem(Root) -> App
+mount_in = |max, programs, elem| {
+	{ cmds, next, free, routes, work, paths, site_free, fx } = new_tx([])
+	tx0 = { cmds, next, free, routes, work, paths, site_free, fx: { ..fx, max, programs } }
+	(block, tx) = mount_block(Root, elem, 0, [], 0, 0, { cap: 0, local: False }, tx0)
+	drain({ root: block_inst(block), tx: flush_focus(tx) })
+}
+
+## The catalogue's names, or the contract error that building it is.
+catalogue_names : List(Registration) -> List(Str)
+catalogue_names = |registrations| match Core.catalogue(registrations) {
+	Ok(names) => names
+	Err(message) => crash message
+}
+
+## A worker instance's one call: `name:str input:rest` in, the program's
+## output out. The catalogue is checked as it is at mount, and a name it does
+## not hold (or a payload without one) is a contract error that poisons this
+## worker instance only.
+run_work : List(Registration), List(U8) -> List(U8)
+run_work = |registrations, payload| {
+	names = catalogue_names(registrations)
+	(name, at) = get_str(payload, 0, "work payload")
+	match names.find_first_index(|n| n == name) {
+		Ok(i) => {
+			r = registrations.get(i) ?? crash "internal: catalogue"
+			owned_bytes((r.run)(payload.drop_first(at)))
+		}
+		Err(_) => crash "contract: worker program \"${name}\" is not registered in this module"
+	}
+}
+
+## `out` as a list of its own. The host keeps the output between calls and
+## never holds a seamless slice, and a program may well return a slice of
+## its input. The bytes are appended one by one: `concat` onto an empty list
+## hands back its argument, slice and all.
+owned_bytes : List(U8) -> List(U8)
+owned_bytes = |out| {
+	var $own = List.with_capacity(out.len())
+	for byte in out {
+		$own = $own.append(byte)
+	}
+	$own
+}
+
+## Result tag 11's fault class byte (design.md, Appendix B).
+work_fault : U8 -> WorkFault
+work_fault = |class| match class {
+	1 => Contract
+	2 => ResourceLimit
+	3 => OutOfMemory
+	4 => AppCrash
+	5 => ExpectFailed
+	6 => Unavailable
+	7 => Executor
+	_ => crash "contract: effect result tag 11 carries unknown fault class ${class.to_str()}"
+}
 
 Live : { id : U32, path : List(U32), sub : Bool }
 
@@ -3172,10 +3315,14 @@ Fx : {
 
 	## `on_cleanup` runs, by name, in first-run order.
 	cleanups : List((Str, U64)),
+
+	## The names in the program's worker catalogue (at most `max_programs`),
+	## fixed at mount: a `Work` request for any other is a contract error.
+	programs : List(Str),
 }
 
 fx_empty : Fx
-fx_empty = { next: 1, inner: 2147483648, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, refs: [], focus: [], ref_pos: [], cleanups: [] }
+fx_empty = { next: 1, inner: 2147483648, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, refs: [], focus: [], ref_pos: [], cleanups: [], programs: [] }
 
 ## The host node id that marks an event as an effect result.
 fx_node : U32
@@ -3213,8 +3360,9 @@ is_sub = |req| match req {
 }
 
 ## Requests that survive their site's disposal (design.md: an admitted
-## effect reparents). Subscriptions, intervals and timers are scoped:
-## disposal stops them.
+## effect reparents). Subscriptions, intervals, timers and work are scoped:
+## disposal stops them (a pure computation has no external effect to keep,
+## and unwanted compute is only cost).
 is_kept : Req -> Bool
 is_kept = |req| match req {
 	Http(_) => True
@@ -3242,6 +3390,7 @@ put_req = |c, id, req| {
 		Popstate => head.append(5)
 		OnlineChanges => head.append(6)
 		VisibilityChanges => head.append(7)
+		Work({ program, input, deadline_ms }) => put_u32(put_u32(put_str(head.append(8), program), input.len().to_u32_wrap()).concat(input), min_u32(deadline_ms, max_timeout_ms))
 		_ => crash "not an awaited request"
 	}
 }
@@ -3249,12 +3398,12 @@ put_req = |c, id, req| {
 ## Admit an awaited request (or refuse it when the table is full).
 fx_admit : Tx, List(U32), Req -> (U32, Tx)
 fx_admit = |{ cmds, next, free, routes, work, paths, site_free, fx }, path, req| {
-	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups } = fx
+	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups, programs } = fx
 	if live.len() >= max {
-		fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups }
+		fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups, programs }
 		(id, { cmds, next, free, routes, work, paths, site_free, fx: fx2 })
 	} else {
-		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups }
+		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups, programs }
 		(id, { cmds: put_req(cmds, id, req), next, free, routes, work: add_work(work, 13, 1), paths, site_free, fx: fx2 })
 	}
 }
@@ -3299,6 +3448,14 @@ issue = |tx, path, reqs, a, owned| {
 			}
 			Self => {
 				(id, t1) = fx_follow($tx, path, Now)
+				$tx = t1
+				$owned = $owned.append({ id, sub: False, keep: False, a })
+			}
+			Work({ program, .. }) => {
+				if !$tx.fx.programs.contains(program) {
+					crash "contract: worker program \"${program}\" is not registered; add its registration to with_workers (site ${show_path(path)})"
+				}
+				(id, t1) = fx_admit($tx, path, req)
 				$tx = t1
 				$owned = $owned.append({ id, sub: False, keep: False, a })
 			}
@@ -3747,3 +3904,55 @@ work_bytes = |inst, buf| {
 
 put_u64 : List(U8), U64 -> List(U8)
 put_u64 = |buf, v| put_u32(put_u32(buf, v.to_u32_wrap()), v.shr_zf_wrap(32).to_u32_wrap())
+
+## The worker catalogue lists its names in order, and a duplicate name or a
+## 65th registration is the contract error that names the program.
+expect {
+	reg = |name| Core.registration(name, |b| b)
+	var $many = []
+	var $i = 0.U64
+	while $i < 65 {
+		$many = $many.append(reg("p${$i.to_str()}"))
+		$i = $i + 1
+	}
+	actual = [
+		Str.inspect(Core.catalogue([reg("a"), reg("b")])),
+		Str.inspect(Core.catalogue([reg("a"), reg("b"), reg("a")])),
+		Str.inspect(Core.catalogue($many.take_first(64)).is_ok()),
+		Str.inspect(Core.catalogue($many)),
+	]
+	expected = [
+		"Ok([\"a\", \"b\"])",
+		"Err(\"contract: worker program \\\"a\\\" is registered twice in with_workers\")",
+		"True",
+		"Err(\"contract: with_workers registers more than 64 worker programs (program \\\"p64\\\" is over the bound)\")",
+	]
+	actual == expected
+}
+
+## A worker entry runs the named program on the input after the name, and its
+## output is a list of its own even when the program returns a slice.
+expect {
+	p = Core.program(|| Core.text("")).with_workers([Core.registration("t/tail", |b| b.drop_first(1))])
+	(Core.driver(p).work)(put_str([], "t/tail").concat([1, 2, 3])) == [2, 3]
+}
+
+## Work is scoped: when the site that issued it is disposed it is cancelled
+## (CANCEL, counted `cancelled`) and leaves the in-flight table, like a timer.
+expect {
+	elem = Core.state(
+		Bool.True,
+		|st|
+			Core.element(
+				"div",
+				[],
+				[
+					Core.when(st.val(), || Core.watch(Core.const({}), |_| [Work({ program: "t/echo", input: [1], deadline_ms: 0 })], Core.ignore({})), || Core.text("")),
+					Core.watch(Core.const({}), |_| [Self], st.on_result(|_, _, _| Bool.False)),
+				],
+			),
+	)
+	mounted = mount_in(32, ["t/echo"], elem)
+	s = Core.fx_stats(mounted)
+	[s.issued, s.cancelled, s.live, s.reparented] == [1, 1, 0, 0]
+}

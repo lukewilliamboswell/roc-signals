@@ -286,11 +286,19 @@ Engine := [].{
 	## number until their site is disposed. `Self` asks for a follow-up turn whose
 	## result is `Now`, so a site can write state in response to its value changing.
 	## `Http`'s `timeout_ms` of 0 means no timeout; it is capped at 10 minutes.
+	##
+	## `Work` runs the pure program registered under `program` (see
+	## `Program.with_workers`) on `input`, off the page's thread, and delivers one
+	## `Work(output)` or `WorkLost(fault)`. Like a timer it belongs to its site:
+	## disposing the site cancels it. `deadline_ms` 0 means no deadline; it is
+	## capped at 10 minutes and delivers `Timeout` when it expires. Issuing work
+	## for a program that is not registered is a contract error.
 	Req : [
 		## `timeout_ms` 0 = no timeout; capped at `max_timeout_ms`.
 		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32 }),
 		StorageGet(Str),
 		Timer(U32),
+		Work({ program : Str, input : List(U8), deadline_ms : U32 }),
 		Interval(U32),
 		Popstate,
 
@@ -314,8 +322,18 @@ Engine := [].{
 	## a network failure (`Network`) or `Timeout`, a storage `Value` or `Missing`, a
 	## timer or interval tick (`Fired`), the URL after `Popstate` (`Location`), a
 	## connectivity or visibility change (`Online`, `Visible`), a `Self` follow-up
-	## (`Now`), or `Refused` when the in-flight bound turned the request away.
-	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused]
+	## (`Now`), `Refused` when the in-flight bound turned the request away, or a
+	## worker program's output (`Work`) or the reason it produced none
+	## (`WorkLost`).
+	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault)]
+
+	## Why a `Work` request produced no output: the worker's instance faulted
+	## running the program (`Contract`, `ResourceLimit`, `OutOfMemory`,
+	## `AppCrash` and `ExpectFailed`, the fault classes of an instance), the
+	## browser has no workers (`Unavailable`), or the worker itself failed
+	## (`Executor`). The diagnostic goes to the page's console, never into the
+	## result.
+	WorkFault : [Contract, ResourceLimit, OutOfMemory, AppCrash, ExpectFailed, Unavailable, Executor]
 
 	## Why an HTTP request did not produce a successful response, as `http_text`
 	## reports it: the browser could not reach the server (`Network`, with the
@@ -354,8 +372,8 @@ Engine := [].{
 
 	## `watch(v, plan, react)` issues `plan(v)` when the site mounts and again
 	## whenever `v` changes to an unequal value; results go to `react`. Awaited
-	## requests belong to the site: when it is disposed, its subscriptions and
-	## timers are cancelled, and admitted `Http` and `StorageGet` requests are
+	## requests belong to the site: when it is disposed, its subscriptions, timers
+	## and work are cancelled, and admitted `Http` and `StorageGet` requests are
 	## delivered to the nearest surviving ancestor instead. At most 32 requests are
 	## in flight by default (see `program_boot`); beyond that a request is answered
 	## with `Refused`.
@@ -446,8 +464,23 @@ Engine := [].{
 
 	## What the host drives: an app built with `program` or `program_boot`, bound
 	## as the app's `main`. The platform mounts it with the boot data and runs one
-	## transaction per DOM event or effect result.
+	## transaction per DOM event or effect result. `with_workers` adds the worker
+	## programs its `Work` requests may name:
+	## `Engine.program(view).with_workers([Engine.registration("example.org/x", run)])`.
 	Program : Core.Program
+
+	## A worker program for `Program.with_workers`. Make one with `registration`.
+	Registration : Core.Registration
+
+	## `registration(name, run)`: the worker program `name`, which turns a `Work`
+	## request's input bytes into its output bytes with `run`. Names are
+	## namespaced and unversioned (`"example.org/search/filter"`): every instance
+	## runs the same compiled module, so a name means one function. `run` must be
+	## pure; it runs in a separate instance that shares nothing with the page but
+	## the bytes it is given, and a crash there poisons that worker instance only
+	## and is delivered as `WorkLost`.
+	registration : Str, (List(U8) -> List(U8)) -> Registration
+	registration = |name, run| Core.registration(name, run)
 
 	## The [Program] for an app that needs no boot data: mount `view()` with the
 	## default in-flight bound of 32.

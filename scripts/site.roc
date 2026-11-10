@@ -18,7 +18,8 @@ import src/SpecSuite
 ## and builds `www/`,
 ## roc-docs generates the API docs into `dist/api/`, and every example's
 ## `main.roc` is built for wasm32 (`--opt=size`, as it ships) to
-## `dist/examples/<slug>/app.wasm` beside `dist/runtime.mjs`, which the
+## `dist/examples/<slug>/app.wasm` beside `dist/runtime.mjs` (and its worker
+## script, `dist/worker.mjs`), which the
 ## site's `site.mjs` mounts it with. The status page's `plume-chart.mjs` is
 ## copied beside its app.
 main! = |raw_args| {
@@ -48,6 +49,7 @@ main! = |raw_args| {
 	# Scripts an example's page loads beside its app (www/data/examples.toml).
 	Path.copy!(Path.utf8("${o.root}/examples/status-page/plume-chart.mjs"), Path.utf8("${dist}/examples/status-page/plume-chart.mjs"))?
 	Path.copy!(Path.utf8("${o.root}/${SpecSuite.runtime}"), Path.utf8("${dist}/runtime.mjs"))?
+	Path.copy!(Path.utf8("${o.root}/${SpecSuite.worker}"), Path.utf8("${dist}/worker.mjs"))?
 	Proc.note!("site: built ${dist}")
 	Ok({})
 }

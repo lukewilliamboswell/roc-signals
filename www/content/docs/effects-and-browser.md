@@ -47,6 +47,7 @@ repeat a request for an equal value, include a counter in the watched value.
 | `Popstate` | `Location(url)` on every back or forward |
 | `OnlineChanges` | `Online(Bool)` on every change |
 | `VisibilityChanges` | `Visible(Bool)` on every change |
+| `Work({ program, input, deadline_ms })` | `Work(output)`, `WorkLost(fault)` or `Timeout`: a registered pure program run on bytes in a Web Worker |
 | `Self` | `Now`, in a follow-up turn |
 | `Push(url)`, `Replace(url)`, `Title(text)`, `StorageSet(key, value)`, `StorageRemove(key)`, `Focus(ref)`, `Blur(ref)`, `SelectText(ref)` | None: commands |
 
@@ -87,8 +88,8 @@ its own.
 
 ## Subscriptions and lifetime
 
-Subscriptions (`Interval`, `Popstate`, `OnlineChanges`, `VisibilityChanges`)
-and timers belong to their site. Disposing the site — because its branch
+Subscriptions (`Interval`, `Popstate`, `OnlineChanges`, `VisibilityChanges`),
+timers and work belong to their site. Disposing the site — because its branch
 switched or its row left a list — cancels them:
 
 {{ sample(file="effects.roc", region="subscriptions") }}
