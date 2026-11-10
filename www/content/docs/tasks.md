@@ -49,7 +49,7 @@ Register the task once, in `with_workers`:
 {{ sample(file="tasks/Convert.roc", region="register") }}
 
 A task has `request` and `result`, so it is used from any effect site, and
-`Worker.derive_when` gives a layer that follows it. Here `Worker.derive_when` follows the chosen file: when a file is
+`Worker.derive_when` gives a layer that follows it. Here it follows the chosen file: when a file is
 chosen it issues a job (the layer is *pending*, `running` is true), and when
 the answer arrives the layer *resolves* to it. A newer file stops the job
 for the older one.
