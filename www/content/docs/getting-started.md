@@ -105,8 +105,8 @@ A page loads the app with the platform's runtime, `platform/runtime.mjs`:
 {{ sample(file="counter/index.html", syntax="html") }}
 
 Build the same entry for the browser, then put the page, the runtime (with its
-worker script, which it loads from beside itself) and the
-app in one directory and serve it:
+worker script, which it loads from beside itself for
+[workers](@/docs/workers.md)) and the app in one directory and serve it:
 
 ```sh
 mkdir -p counter-site

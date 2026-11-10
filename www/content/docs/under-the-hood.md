@@ -1,7 +1,7 @@
 +++
 title = "Under the Hood"
 description = "Follow an event through the runtime, the Wasm host and the engine, and see where work and failures happen."
-weight = 12
+weight = 13
 template = "page.html"
 +++
 
@@ -19,6 +19,7 @@ or a profile. The architecture and its rules are in
 | Engine | `platform/Engine.roc` | Everything reactive: sites, propagation, lists, effects, identity. Pure Roc. |
 | Host | `platform/host/host.zig` | Allocates memory, keeps the engine state between calls, stages one payload, classifies faults. |
 | Runtime | `platform/runtime.mjs` | Applies the engine's commands to the DOM, performs effects, delivers events. |
+| Worker script | `platform/worker.mjs` | Runs [worker](@/docs/workers.md) programs: a Web Worker instantiates the same `app.wasm`, never mounts it, and calls its `work` entry for each job. |
 
 Your app and the engine compile together into one `app.wasm`. The engine's
 state between events is one opaque value the host holds; the host never looks
@@ -91,7 +92,9 @@ class and a diagnostic of up to 512 bytes, and traps. The runtime catches the
 trap, reads the diagnostic, reports it through `onFault`, detaches its
 listeners and cancels its effects, and keeps the last rendered page on screen.
 A poisoned instance never runs again; `recover()` mounts a fresh one. The
-classes are listed in the [Reference](@/docs/reference.md#errors).
+classes are listed in the [Reference](@/docs/reference.md#errors). A worker's
+instance is poisoned the same way, but only that worker is discarded: its job
+answers `WorkLost` with the class, and the page goes on.
 
 ## Natively
 

@@ -70,7 +70,7 @@ layer is skipped.
 | `Popstate` | `Location(url)` on every back or forward |
 | `OnlineChanges` | `Online(Bool)` on every change |
 | `VisibilityChanges` | `Visible(Bool)` on every change |
-| `Work({ program, input, deadline_ms })` | `Work(output)`, `WorkLost(fault)` or `Timeout`: a registered pure program run on bytes in a Web Worker |
+| `Work({ program, input, deadline_ms })` | `Work(output)`, `WorkLost(fault)` or `Timeout`: a registered pure program run on bytes in a Web Worker. Apps use the typed `Worker` module instead; see [Workers](@/docs/workers.md) |
 | `Self` | `Now`, in a follow-up turn |
 | `Push(url)`, `Replace(url)`, `Title(text)`, `StorageSet(key, value)`, `StorageRemove(key)`, `Focus(ref)`, `Blur(ref)`, `SelectText(ref)` | None: commands |
 

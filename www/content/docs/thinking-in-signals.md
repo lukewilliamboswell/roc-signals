@@ -96,8 +96,8 @@ A conditional's branch, a list's row and a component are *scopes*. Everything
 mounted inside one — its state, its rows, its timers and subscriptions — lives
 exactly as long as the scope. When a branch switches or a row's key leaves the
 list, the engine removes its DOM nodes, releases its state and cancels its
-subscriptions. Requests already in flight are not lost: their results go to the
-nearest surviving scope. [Lists, Conditionals, and
+subscriptions, timers and worker runs. HTTP requests and storage reads already
+in flight are not lost: their results go to the nearest surviving scope. [Lists, Conditionals, and
 Components](@/docs/dynamic-structure.md) covers identity and lifetime in
 detail.
 
