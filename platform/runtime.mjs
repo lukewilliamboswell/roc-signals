@@ -3209,7 +3209,8 @@ export class RocEngineRuntime {
   // 21). Each file's `size name type` follows `parts`, then `tail` (a
   // job's output). When the heap has no slots for all of them the result
   // is `overflow` (a port's TooLarge, a job lost to a resource limit, or
-  // FileFailed(TooLarge)) and the
+  // FileFailed(TooLarge)), `overflowed` is told how many files there were
+  // and how many slots, so a lost job is reported like any other, and the
   // handles minted for it are released at once. Ownership: the runtime
   // holds each file under its new token from here, until the engine
   // releases the handle; the staged bytes belong to the host until the
@@ -3229,6 +3230,7 @@ export class RocEngineRuntime {
       const minted = x.files_stage(files.length);
       if (minted < files.length) {
         x.files_stage(0);
+        if (payload.overflowed) payload.overflowed(files.length, minted);
         this.stageParts([payload.overflow ?? new Uint8Array([RES_PORT_FAILED, 2])]);
         x.event(node, handler);
         return;
@@ -3387,7 +3389,7 @@ export class RocEngineRuntime {
         // (posted by reference) as a File of its name and type. When the
         // page has no room for them the job is lost to a resource limit.
         const files = outcome.objects.map((o) => new File([o.blob], o.name, { type: o.type }));
-        finish({ parts: [new Uint8Array([RES_WORK]), u32(files.length)], files, tail: [outcome.output], overflow: new Uint8Array([RES_WORK_LOST, LOST_RESOURCE_LIMIT]) }, "done", null, outcome.output);
+        finish({ parts: [new Uint8Array([RES_WORK]), u32(files.length)], files, tail: [outcome.output], overflow: new Uint8Array([RES_WORK_LOST, LOST_RESOURCE_LIMIT]), overflowed: (n, room) => this.reportLost(fx, LOST_RESOURCE_LIMIT, `resource_limit: the job answered with ${n} files and the page has room for ${room}`) }, "done", null, outcome.output);
         return;
       }
       const klass = this.reportLost(fx, outcome.lost, outcome.message);
