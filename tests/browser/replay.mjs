@@ -20,7 +20,8 @@
 // every default action the browser takes; fills as Playwright's `fill` (focus,
 // select all, one `insertText` input event, refused for a value the control
 // cannot hold); <select> choice with `input` and `change`. Assertions read the
-// live DOM. Effects are always manual: `stub-http` stages one answer and
+// live DOM. A worker job the runtime reports lost (`roc worker fault [...]`
+// on the console) is a result, not a page error. Effects are always manual: `stub-http` stages one answer and
 // `run-effect N` answers the N-th awaited HTTP request, timer or worker job
 // the current document issued (a job really runs in a worker, and the step
 // waits for its result turn); storage reads answer by themselves from storage. History,
@@ -148,6 +149,16 @@ async function click(page, state, loc, real) {
   }
   await navigating(page, state, () => page.clickAt(box));
 }
+
+// How long `run-effect` waits for a worker job, as the native runner does
+// (`spec.zig`, `job_bound_ms`).
+const JOB_BOUND_MS = 30000;
+
+// The runtime reports every lost worker job on the console with this prefix
+// (and the native runner on stderr). A lost job is a result the app sees,
+// not a page error: the spec asserts what the app does with it.
+const WORKER_FAULT = "roc worker fault [";
+const pageErrors = (page) => page.errors.filter((e) => !e.startsWith(WORKER_FAULT));
 
 // Sum of the engine work counters `ks` (metric(16 + k)).
 const counters = (page) => page.evaluate(() => window.__rt.workRecord().counters.map((c) => c.toString()));
@@ -376,7 +387,7 @@ const STEPS = {
   "stub-http-reject": (page, s, state) => stage(state, s.kind === "timeout" ? { timeout: true } : { network: s.detail }),
   "run-effect": async (page, s, state) => {
     const r = await page.evaluate(
-      (n, answer) => {
+      (n, answer, JOB_BOUND_MS) => {
         const rt = window.__rt;
         const id = rt.issued[n - 1];
         if (id === undefined) return { error: `effect occurrence ${n} was never issued (${rt.issued.length} issued)` };
@@ -389,7 +400,15 @@ const STEPS = {
         }
         // A worker job really runs in a worker; the step waits for its
         // result turn.
-        if (e.kind === "work") return Promise.resolve(rt.runEffect(id)).then(() => ({ used: false }));
+        // A spec's time is manual, so the job's own deadline never ends it;
+        // the runner's bound (as the native runner's) fails a job that never
+        // finishes instead of hanging.
+        if (e.kind === "work") {
+          return Promise.race([
+            Promise.resolve(rt.runEffect(id)).then(() => ({ used: false })),
+            new Promise((r) => setTimeout(() => r({ error: "the worker job did not finish within 30 s; a spec expires a job's deadline with time-out-work" }), JOB_BOUND_MS)),
+          ]);
+        }
         if (answer === null) return { error: `run-effect ${n} answers ${e.req.url} without a staged stub` };
         if (answer.url !== undefined && e.req.url !== answer.url) return { error: `no spec stub for ${e.req.url} (stub is for ${answer.url})` };
         rt.runEffect(id, answer);
@@ -397,6 +416,7 @@ const STEPS = {
       },
       s.count,
       state.stub,
+      JOB_BOUND_MS,
     );
     if (r.error) throw new Error(r.error);
     if (r.used) state.stub = null;
@@ -646,7 +666,7 @@ for (const spec of specs) {
       const h = STEPS[s.op];
       if (h === undefined) throw new Error(`${s.op} has no handler in this runner`);
       await h(page, s, state);
-      if (page.errors.length) throw new Error(`page error: ${page.errors.join("; ")}`);
+      if (pageErrors(page).length) throw new Error(`page error: ${pageErrors(page).join("; ")}`);
     }
   } catch (e) {
     const wasmErr = await page

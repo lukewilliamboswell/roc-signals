@@ -1069,9 +1069,12 @@ oracle and never defines a meaning of its own. In particular:
 - effects are always manual: HTTP requests, timers and worker jobs wait for
   `run-effect`, which fires a timer, answers an HTTP request with the one
   staged answer, and runs a worker job — in Chrome in a real worker, the step
-  waiting for its result turn; natively in process through the program's
-  `work` entry, which a pure program makes equivalent; storage reads answer
-  by themselves in the following turn, as the runtime answers them;
+  waiting for its result turn; natively in a child process of the runner,
+  which calls the same `work` entry a worker instance calls, so a program
+  that crashes loses only its job, with the crash's fault class, as it does
+  in a worker. A job that has not finished after 30 s fails the step in both
+  runners. Storage reads answer by themselves in the following turn, as the
+  runtime answers them;
 - a click is a real mouse click with the browser's default actions (a
   checkbox toggles and a radio checks, each with `input` and `change`; a
   submit button submits its form if the form's controls are valid; a link

@@ -23,8 +23,10 @@ import JsonOut
 ## - Effects are always manual. `stub-http` stages one answer; `run-effect N`
 ##   answers the N-th awaited HTTP request, timer or worker job the current
 ##   document issued (issue order), which must still be pending: a timer
-##   fires, a worker job runs its pure program in process, and an HTTP
-##   request takes the staged answer, whose URL must be the request's (a
+##   fires, a worker job runs its program (the `spec` command runs it in a
+##   child process, `Io.work!`, so a crash loses only the job, as in a
+##   worker; `one` runs it in process), and an HTTP request takes the staged
+##   answer, whose URL must be the request's (a
 ##   reject answers any). Storage reads answer by themselves, from storage, in
 ##   the turn after the call that issued them.
 ## - A rejected request becomes `Timeout`, or `Network(detail)`.
@@ -456,10 +458,48 @@ SpecRunner := [].{
 	popstate : Program(state), S(state) -> S(state)
 	popstate = |program, s| SpecRunner.broadcast(program, s, |x| x.sub == Pop, SpecRunner.encode_location(s.browser.loc))
 
+	## A worker job a step runs: its request id and its payload,
+	## `name:str input:rest`, as a worker instance receives it.
+	Job : { id : U32, payload : List(U8) }
+
+	## The pending worker job that step `op` runs, when `op` is a `run-effect`
+	## on one. The `spec` command runs such a job in a child process
+	## (`Io.work!`) and hands the result to `deliver_job`; every other step,
+	## and every step a fuzz target or soak walk takes, goes through `one`.
+	job_of : S(state), Scm.Op -> Try(Job, [NoJob])
+	job_of = |s, op|
+		match op {
+			RunEffect(n) => {
+				b = s.browser
+				id = b.issued.get(n - 1) ? |_| NoJob
+				p = b.pending.find_first(|q| q.id == id) ? |_| NoJob
+				match p.kind {
+					WorkRequest({ program: name, input }) => Ok({ id, payload: SpecRunner.put_str([], name).concat(input) })
+					_ => Err(NoJob)
+				}
+			}
+			_ => Err(NoJob)
+		}
+
+	## Deliver the result payload of job `job` (Appendix B: tag 10 with the
+	## output, or tag 11 with a fault class). An empty result is a job that
+	## did not finish within the runner's bound, which fails the step: a
+	## spec's time is manual, and a job's deadline expires only when the spec
+	## says so.
+	deliver_job : Program(state), S(state), Job, List(U8) -> Try(S(state), Str)
+	deliver_job = |program, s, job, result| {
+		if result.is_empty() {
+			return Err("the worker job did not finish within 30 s; a spec expires a job's deadline with time-out-work")
+		}
+		b = s.browser
+		Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: b.pending.keep_if(|q| q.id != job.id) } }, job.id, result))
+	}
+
 	## `run-effect N`: a timer fires; a worker job runs its program in process
 	## through the program's `work` entry, as a worker instance of the same
-	## module would, and delivers `Work(output)`; an HTTP request takes the
-	## staged answer.
+	## module would, and delivers `Work(output)` (a crash in the program ends
+	## the process: fuzz targets and soak walks run jobs here, where that is a
+	## finding); an HTTP request takes the staged answer.
 	run_effect : Program(state), S(state), U64 -> Try(S(state), Str)
 	run_effect = |program, s, n| {
 		b = s.browser
@@ -470,7 +510,7 @@ SpecRunner := [].{
 			TimerRequest => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, [5]))
 			WorkRequest({ program: name, input }) => {
 				output = (program.work)(SpecRunner.put_str([], name).concat(input))
-				return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, [10].concat(output)))
+				return SpecRunner.deliver_job(program, s, { id, payload: [] }, [10].concat(output))
 			}
 			HttpRequest => {}
 		}
@@ -1146,16 +1186,21 @@ SpecRunner := [].{
 		}
 	}
 
-	## Replay one spec from a fresh mount.
-	run : Program(state), Scm.Spec -> Outcome
-	run = |program, spec| {
+	## Replay one spec from a fresh mount, running each worker job with
+	## `work!` (the `spec` command's child process, `Io.work!`).
+	run! : Program(state), (List(U8) => List(U8)), Scm.Spec => Outcome
+	run! = |program, work!, spec| {
 		var $s = match SpecRunner.start(program, spec) {
 			Ok(s) => s
 			Err(message) => return Failed({ step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message })
 		}
 		var $i = 0.U64
 		for step in spec.steps {
-			match SpecRunner.one(program, $s, step.op) {
+			done = match SpecRunner.job_of($s, step.op) {
+				Ok(job) => SpecRunner.deliver_job(program, $s, job, work!(job.payload))
+				Err(NoJob) => SpecRunner.one(program, $s, step.op)
+			}
+			match done {
 				Ok(s2) => {
 					$s = s2
 				}
@@ -1170,7 +1215,7 @@ SpecRunner := [].{
 
 	## The host services the `spec` command uses, passed in by the test
 	## program (the test platform's `Cli`), so this package stays pure.
-	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64 }
+	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64, work! : List(U8) => List(U8) }
 
 	Options : { filter : Str, emit_steps : Bool, grammar : Bool, files : List(Str) }
 
@@ -1287,7 +1332,7 @@ SpecRunner := [].{
 						(io.stdout!)("${JsonOut.render(Scm.to_json(id, spec))}\n")
 					}
 					Ok(spec) => {
-						outcome = SpecRunner.run(program, spec)
+						outcome = SpecRunner.run!(program, io.work!, spec)
 						dt = (io.now_ns!)() - t0
 						line = match outcome {
 							Passed => {

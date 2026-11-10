@@ -11,11 +11,22 @@
 //! Roc. A Roc crash or a failed `expect` prints its message to stderr and
 //! exits with status 70 and 71: a runner whose state may be incoherent has
 //! nothing correct left to report.
+//!
+//! A worker job is the exception (`roc_test_work`). The runner runs each job
+//! in a child process, as the browser runs it in a Web Worker: the child
+//! calls the platform's `roc_engine_work`, the same entry a worker instance
+//! calls, so a program that crashes poisons only the child, and the runner
+//! receives the lost job's fault class as the page would.
 
 const std = @import("std");
 
 // The command-line entry the platform provides (`SpecRunner.main!`).
 extern fn roc_spec_main(args: RocList) callconv(.c) i32;
+
+// A worker instance's entry (`work_for_host` in `platform/main.roc`):
+// `name:str input:rest` to the program's output bytes. Only a job's child
+// process calls it.
+extern fn roc_engine_work(payload: RocList) callconv(.c) RocList;
 
 // musl libc.
 extern fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
@@ -27,8 +38,17 @@ extern fn free(ptr: ?*anyopaque) void;
 extern fn aligned_alloc(alignment: usize, len: usize) ?*anyopaque;
 extern fn clock_gettime(clock: c_int, ts: *Timespec) c_int;
 extern fn exit(code: c_int) noreturn;
+extern fn _exit(code: c_int) noreturn;
+extern fn fork() c_int;
+extern fn pipe(fds: *[2]c_int) c_int;
+extern fn poll(fds: [*]PollFd, n: c_ulong, timeout_ms: c_int) c_int;
+extern fn waitpid(pid: c_int, status: *c_int, options: c_int) c_int;
+extern fn kill(pid: c_int, sig: c_int) c_int;
 
 const Timespec = extern struct { sec: i64, nsec: i64 };
+const PollFd = extern struct { fd: c_int, events: c_short, revents: c_short };
+const pollin: c_short = 1;
+const sigkill: c_int = 9;
 const clock_monotonic: c_int = 1;
 const o_rdonly: c_int = 0;
 const o_directory: c_int = 0o200000;
@@ -163,6 +183,7 @@ export fn roc_dbg(bytes: [*]const u8, len: usize) callconv(.c) void {
 }
 
 export fn roc_expect_failed(bytes: [*]const u8, len: usize) callconv(.c) void {
+    if (in_job) jobFault(5, bytes[0..len]);
     writeAll(2, "expect failed: ");
     writeAll(2, bytes[0..len]);
     writeAll(2, "\n");
@@ -170,6 +191,7 @@ export fn roc_expect_failed(bytes: [*]const u8, len: usize) callconv(.c) void {
 }
 
 export fn roc_crashed(bytes: [*]const u8, len: usize) callconv(.c) void {
+    if (in_job) jobFault(crashClass(bytes[0..len]), bytes[0..len]);
     writeAll(2, "crashed: ");
     writeAll(2, bytes[0..len]);
     writeAll(2, "\n");
@@ -177,6 +199,7 @@ export fn roc_crashed(bytes: [*]const u8, len: usize) callconv(.c) void {
 }
 
 fn fail(comptime prefix: []const u8, detail: []const u8) noreturn {
+    if (in_job and std.mem.eql(u8, prefix, "out of memory")) jobFault(3, prefix);
     writeAll(2, prefix);
     writeAll(2, detail);
     writeAll(2, "\n");
@@ -252,7 +275,156 @@ fn hostedNowNs() callconv(.c) u64 {
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 
+// ---------------------------------------------------------------------------
+// Worker jobs in child processes.
+
+/// How long a job may run before the runner gives up on it. A spec's time is
+/// manual, so a job's own deadline never ends it; this bound only turns a
+/// program that never finishes into a failed step instead of a hung runner.
+/// The browser runner applies the same bound.
+const job_bound_ms: i64 = 30_000;
+
+/// Set in a job's child process: a crash there ends the child with its
+/// fault class instead of ending the runner.
+var in_job: bool = false;
+
+/// The program a job's child runs, for its fault report (at most 256 bytes
+/// of the name, copied before the payload moves into Roc).
+var job_name_buf: [256]u8 = undefined;
+var job_name: []const u8 = "";
+
+/// The exit status a child uses for fault class `class` (1 contract,
+/// 2 resource_limit, 3 out_of_memory, 4 app_crash, 5 expect_failed).
+const job_fault_base: c_int = 80;
+
+const fault_names = [_][]const u8{ "", "contract", "resource_limit", "out_of_memory", "app_crash", "expect_failed" };
+
+/// The class of a Roc crash message, as the Wasm host classifies it
+/// (`host.zig`, `roc_crashed`): the engine's `contract:` and
+/// `resource_limit:` messages, and anything else is an app crash.
+fn crashClass(msg: []const u8) u8 {
+    if (std.mem.startsWith(u8, msg, "contract:")) return 1;
+    if (std.mem.startsWith(u8, msg, "resource_limit:")) return 2;
+    return 4;
+}
+
+/// In a job's child: report the fault as the browser runtime reports a lost
+/// job (`roc worker fault [class] ...` on stderr) and end the child with
+/// the class in its exit status.
+fn jobFault(class: u8, msg: []const u8) noreturn {
+    writeAll(2, "roc worker fault [");
+    writeAll(2, fault_names[class]);
+    writeAll(2, "] in program \"");
+    writeAll(2, job_name);
+    writeAll(2, "\": ");
+    writeAll(2, msg);
+    writeAll(2, "\n");
+    _exit(job_fault_base + class);
+}
+
+fn nowMs() i64 {
+    var ts: Timespec = undefined;
+    if (clock_gettime(clock_monotonic, &ts) != 0) return 0;
+    return ts.sec * 1000 + @divTrunc(ts.nsec, 1_000_000);
+}
+
+/// Release one reference to a `List(U8)` (a hosted function owns its
+/// argument). A seamless slice keeps its allocation's address, tagged in the
+/// low bit, in place of the capacity.
+fn releaseBytes(list: RocList) void {
+    const alloc_addr: usize = if ((list.capacity_or_alloc_ptr & 1) != 0)
+        list.capacity_or_alloc_ptr & ~@as(usize, 1)
+    else
+        @intFromPtr(list.elements orelse return);
+    const rc: *isize = @ptrFromInt(alloc_addr - @sizeOf(isize));
+    if (rc.* == 0) return; // static data
+    rc.* -= 1;
+    if (rc.* == 0) roc_dealloc(@ptrFromInt(alloc_addr - @sizeOf(usize)), @alignOf(usize));
+}
+
+/// `Cli.work!`: run one worker job, `payload` being `name:str input:rest`,
+/// in a child process, and return the result payload the browser runtime
+/// would deliver for it (design.md, Appendix B): tag 10 and the output, or
+/// tag 11 and the fault class when the program's instance faulted (7,
+/// executor, when the child died without a class, as a worker that traps
+/// with none). An empty list means the job did not finish within
+/// `job_bound_ms`; its child is killed.
+///
+/// The parent releases its reference to `payload` after the fork; the child
+/// moves its copy into `roc_engine_work`, writes the output to a pipe and
+/// exits without running any exit handlers. The parent reads the pipe to its
+/// end before waiting, so a large output cannot block the child.
+fn hostedWork(payload: RocList) callconv(.c) RocList {
+    var fds: [2]c_int = undefined;
+    if (pipe(&fds) != 0) fail("cannot create a pipe for a worker job", "");
+    const pid = fork();
+    if (pid < 0) fail("cannot fork a worker job", "");
+    if (pid == 0) {
+        in_job = true;
+        _ = close(fds[0]);
+        if (payload.elements) |e| {
+            const bytes = @as([*]const u8, @ptrCast(e))[0..payload.length];
+            if (bytes.len >= 4) {
+                const n = @min(std.mem.readInt(u32, bytes[0..4], .little), bytes.len - 4, job_name_buf.len);
+                @memcpy(job_name_buf[0..n], bytes[4..][0..n]);
+                job_name = job_name_buf[0..n];
+            }
+        }
+        const out = roc_engine_work(payload);
+        const bytes: []const u8 = if (out.elements) |e| @as([*]const u8, @ptrCast(e))[0..out.length] else &.{};
+        var rest = bytes;
+        while (rest.len > 0) {
+            const n = write(fds[1], rest.ptr, rest.len);
+            if (n <= 0) _exit(job_fault_base + 7);
+            rest = rest[@intCast(n)..];
+        }
+        _exit(0);
+    }
+    releaseBytes(payload);
+    _ = close(fds[1]);
+    defer _ = close(fds[0]);
+    var cap: usize = 1 << 12;
+    var len: usize = 1;
+    var buf: [*]u8 = @ptrCast(malloc(cap) orelse fail("out of memory reading a worker job", ""));
+    defer free(buf);
+    buf[0] = 10;
+    const start = nowMs();
+    while (true) {
+        const left = job_bound_ms - (nowMs() - start);
+        var pfd = [_]PollFd{.{ .fd = fds[0], .events = pollin, .revents = 0 }};
+        const ready = if (left > 0) poll(&pfd, 1, @intCast(left)) else 0;
+        if (ready == 0) {
+            _ = kill(pid, sigkill);
+            var ignored: c_int = 0;
+            _ = waitpid(pid, &ignored, 0);
+            return .{ .elements = null, .length = 0, .capacity_or_alloc_ptr = 0 };
+        }
+        if (ready < 0) continue;
+        if (len == cap) {
+            const bigger: [*]u8 = @ptrCast(malloc(cap * 2) orelse fail("out of memory reading a worker job", ""));
+            @memcpy(bigger[0..len], buf[0..len]);
+            free(buf);
+            buf = bigger;
+            cap *= 2;
+        }
+        const n = read(fds[0], buf + len, cap - len);
+        if (n < 0) continue;
+        if (n == 0) break;
+        len += @intCast(n);
+    }
+    var status: c_int = 0;
+    while (waitpid(pid, &status, 0) < 0) {}
+    // A normal exit keeps its code in bits 8-15; a signal leaves bits 0-6 set.
+    const signalled = (status & 0x7f) != 0;
+    const code = (status >> 8) & 0xff;
+    if (!signalled and code == 0) return bytesList(buf[0..len]);
+    const class: u8 = if (!signalled and code > job_fault_base and code <= job_fault_base + 5) @intCast(code - job_fault_base) else 7;
+    if (class == 7) writeAll(2, "roc worker fault [executor]: the job's process died without a fault class\n");
+    return bytesList(&[_]u8{ 11, class });
+}
+
 comptime {
+    @export(&hostedWork, .{ .name = "roc_test_work" });
     @export(&hostedReadFile, .{ .name = "roc_test_read_file" });
     @export(&hostedFileExists, .{ .name = "roc_test_file_exists" });
     @export(&hostedStdout, .{ .name = "roc_test_stdout" });

@@ -34,6 +34,7 @@ platform ""
 		"roc_test_read_file": Cli.read_file!,
 		"roc_test_stderr": Cli.stderr!,
 		"roc_test_stdout": Cli.stdout!,
+		"roc_test_work": Cli.work!,
 	}
 	targets: {
 		inputs_dir: "targets/",
@@ -94,4 +95,4 @@ drop_for_host = |_boxed, _buf, _wbuf| {}
 ## The native spec runner: `SpecRunner.main!` over this app's `main`, with
 ## the native host's file and output services.
 spec_main_for_host! : List(Str) => I32
-spec_main_for_host! = |args| SpecRunner.main!(Core.driver(main), { read_file!: Cli.read_file!, stdout!: Cli.stdout!, stderr!: Cli.stderr!, now_ns!: Cli.now_ns! }, args)
+spec_main_for_host! = |args| SpecRunner.main!(Core.driver(main), { read_file!: Cli.read_file!, stdout!: Cli.stdout!, stderr!: Cli.stderr!, now_ns!: Cli.now_ns!, work!: Cli.work! }, args)
