@@ -1,7 +1,7 @@
 #!/usr/bin/env roc-stable
 app [main!] {
 	cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.27.0/9yjxqdGTP4xSpSEmDazwTmRsehfRZzA19pwEKkR6fj1g.tar.zst",
-	roc: "nightly-2026-11-07-ad3a5d2",
+	roc: "nightly-2026-11-09-9e85de7",
 }
 
 import src/Checks
