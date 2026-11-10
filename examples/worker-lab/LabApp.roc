@@ -33,15 +33,10 @@ LabApp := [].{
 	tiles : Worker.Program(Lab.TileSpec, Wire.Bytes)
 	tiles = Worker.pure("roc-signals.example/worker-lab/tile", |spec| Wire.Bytes.from_list(Lab.tile(spec)))
 
-	## A program that crashes on every range the lab sends it (a range always
-	## has `lo < hi`), for the faulty workload; its message names the range.
-	##
-	## Compiler workaround: a lambda whose whole body is a `crash` makes the
-	## pinned nightly's `--specialize=no` lowering segfault on this app once
-	## the app decodes the program's result. A body with a branch that
-	## returns a value does not. Not yet filed upstream.
+	## A program that always crashes, for the faulty workload; its message
+	## names the range it was given.
 	crasher : Worker.Program(Lab.Span, U64)
-	crasher = Worker.pure("roc-signals.example/worker-lab/crash", |{ lo, hi }| if (lo <= hi) crash "the worker lab's crash program crashed on [${lo.to_str()}, ${hi.to_str()}), as it always does" else lo)
+	crasher = Worker.pure("roc-signals.example/worker-lab/crash", |{ lo, hi }| crash "the worker lab's crash program crashed on [${lo.to_str()}, ${hi.to_str()}), as it always does")
 
 	program : Engine.Program
 	program = Engine.program_boot({ storage_keys: [], max_inflight: Lab.max_inflight }, |_| LabApp.main({}))

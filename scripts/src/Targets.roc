@@ -128,7 +128,11 @@ Targets := [].{
 	workers_scaling! : SpecSuite.Options => Try(List(Str), _)
 	workers_scaling! = |o| {
 		var $problems = []
-		for build in [{ label: "size", flags: [] }, { label: "size-specialize-no", flags: ["--specialize=no"] }] {
+		# Compiler workaround (issue #180, the `--specialize=no` build): with
+		# the pinned nightly, a `--specialize=no` build that reuses the
+		# compilation cache a specialized build of the same sources wrote can
+		# segfault in its boxy lowering, so that build skips the cache.
+		for build in [{ label: "size", flags: [] }, { label: "size-specialize-no", flags: ["--specialize=no", "--no-cache"] }] {
 			dir = "${o.build_dir}/workers-scaling/${build.label}"
 			Path.create_all!(Path.utf8(dir))?
 			Proc.run!({ program: o.compiler, args: ["build", "--opt=size"].concat(build.flags).concat(["--target=wasm32", "examples/worker-lab/main.roc", "--output=${dir}/app.wasm"]), cwd: o.root })?
