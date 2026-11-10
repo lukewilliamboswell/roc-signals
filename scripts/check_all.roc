@@ -16,8 +16,9 @@ import src/Targets
 ## The `check` task, the per-pull-request gate: the script pins,
 ## formatting, every public `Engine` and `Html` symbol documented, `roc test`,
 ## the platform inputs and the `scm-parse` and `wire` fuzz targets, the docs samples, every
-## app's `.scm` specs natively and in Chrome, the broken-spec self-check (both
-## runners reject a spec with one wrong expectation), the runtime's
+## app's `.scm` specs natively and in Chrome, the broken-spec self-checks (both
+## runners reject each spec with one wrong expectation, a lost worker job's
+## fault class among them), the runtime's
 ## unit tests in Node and contract tests in Chrome (effects, controls,
 ## workers, Conduit journey), the
 ## js-framework-benchmark check, and the release dry run. The soaks and the
@@ -51,7 +52,7 @@ main! = |_args| {
 	Proc.note!("== specs")
 	var $native = SpecSuite.empty_tally
 	var $browser = SpecSuite.empty_tally
-	var $kanban = { runner: "", wasm: "" }
+	var $kanban = { runner: "" }
 	SpecSuite.build_web_platform!(o)?
 	SpecSuite.build!(o, SpecSuite.spec_apps, SpecSuite.apps.concat(["tests/apps/effects", "tests/apps/controls", "tests/apps/services", "tests/apps/workers", "tests/apps/worker-typed", "tests/apps/supersede"]))?
 	for example in SpecSuite.spec_apps {
@@ -59,7 +60,7 @@ main! = |_args| {
 		$native = Checks.add($native, r.native)
 		$browser = Checks.add($browser, r.browser)
 		if example == "kanban-board" {
-			$kanban = { runner: r.runner, wasm: "${o.build_dir}/wasm/${example}/app.wasm" }
+			$kanban = { runner: r.runner }
 		}
 	}
 	$problems = $problems.concat($native.problems).concat($browser.problems)
@@ -68,7 +69,9 @@ main! = |_args| {
 	$problems = $problems.concat(Checks.grammar!(o, $kanban.runner)?)
 
 	Proc.note!("== broken-spec self-check")
-	$problems = $problems.concat(Checks.broken_spec!(o, $kanban.runner, $kanban.wasm)?)
+	for broken in Checks.broken_specs {
+		$problems = $problems.concat(Checks.broken_spec!(o, broken)?)
+	}
 
 	Proc.note!("== runtime unit tests")
 	$problems = $problems.concat(Targets.runtime_unit!(o)?)
