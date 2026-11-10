@@ -733,6 +733,15 @@ Core := [].{
 		## scoped like it. `Worker` builds it; an input without that header is
 		## a contract error.
 		Ask({ program : Str, input : List(U8), files : List(File), deadline_ms : U32 }),
+		## Ports (see [PortDecl]): a message to the page's JavaScript for the
+		## port named `port`. `PortCommand` is emitted and forgotten;
+		## `PortCall` awaits one `PortReply` or `PortFailed` and, like `Http`,
+		## survives its site's disposal (`timeout_ms` 0 = none, capped at 10
+		## minutes); `PortSubscribe` delivers any number of messages until its
+		## site is disposed or the JavaScript ends it.
+		PortCommand({ port : Str, message : PortMessage }),
+		PortCall({ port : Str, message : PortMessage, timeout_ms : U32 }),
+		PortSubscribe({ port : Str, message : PortMessage }),
 	]
 
 	## The result of an awaited request: an HTTP response (`Http`, with any status),
@@ -744,8 +753,70 @@ Core := [].{
 	## (`WorkLost`), a file's bytes or text read into the page (`FileBytes`,
 	## `FileText`), a file's digest (`Digest`) or a URL that shows it
 	## (`FileUrl`), or why an operation on a file produced nothing
-	## (`FileFailed`).
-	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str)]
+	## (`FileFailed`), or a port's answer or message (`PortReply`) or why
+	## there is none (`PortFailed`).
+	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortReply(PortMessage), PortFailed(PortFailure)]
+
+	## A port message as it crosses: JSON text, the byte blocks its
+	## `{"$bytes":N}` markers name, and the files its `{"$file":N}` markers
+	## name, each by its place in the list (design.md, Appendix B). The typed
+	## layer, `Port`, writes and reads it with `PortJson`.
+	PortMessage : { json : Str, blobs : List(List(U8)), files : List(File) }
+
+	## Why a port request has no answer: the page's JavaScript threw or
+	## rejected, or answered with something that is not JSON data (`Threw`,
+	## with the message), its answer was more than the runtime takes
+	## (`TooLarge`), or it ended a subscription (`Closed`). `Threw` and `Closed` end a
+	## subscription; `TooLarge` reports one message and the subscription goes
+	## on.
+	PortFailure : [Threw(Str), TooLarge, Closed]
+
+	## How a subscription's messages wait for their turns while the app is
+	## busy: `Latest` keeps only the newest undelivered message, for a value
+	## whose newest state is all that matters; `Every(n)` keeps up to `n`
+	## (1 to 1024) in order, and the JavaScript's `emit` is refused beyond them.
+	PortDelivery : [Latest, Every(U32)]
+
+	## A port the program declares (`Program.with_ports`): its name and its
+	## shape. The runtime checks the page's handlers against these before it
+	## mounts, and the engine checks every request against them.
+	PortDecl :: { name : Str, kind : U8, delivery : U8, bound : U32 }
+
+	## The declaration of the port `name` as a command, a call or a
+	## subscription with its delivery policy.
+	port_declaration : Str, [Command, Call, Subscription(PortDelivery)] -> PortDecl
+	port_declaration = |name, shape| match shape {
+		Command => { name, kind: 1, delivery: 0, bound: 0 }
+		Call => { name, kind: 2, delivery: 0, bound: 0 }
+		Subscription(Every(n)) => { name, kind: 3, delivery: 1, bound: n }
+		Subscription(Latest) => { name, kind: 3, delivery: 2, bound: 1 }
+	}
+
+	## For test platforms and harnesses: the rules `with_ports` enforces, as
+	## a value: the declarations, or the contract diagnostic for more than 64
+	## ports, a name declared twice, a name that is empty or longer than 128
+	## bytes, or an `Every` bound outside 1 to 1024.
+	port_catalogue : List(PortDecl) -> Try(List(PortDecl), Str)
+	port_catalogue = |decls| {
+		var $seen = []
+		for d in decls {
+			name = d.name
+			if $seen.len() >= max_ports {
+				return Err("contract: with_ports declares more than ${max_ports.to_str()} ports (port \"${name}\" is over the bound)")
+			}
+			if name.is_empty() or name.count_utf8_bytes() > max_port_name {
+				return Err("contract: with_ports declares a port named \"${name}\"; a port name is 1 to ${max_port_name.to_str()} bytes")
+			}
+			if $seen.contains(name) {
+				return Err("contract: port \"${name}\" is declared twice in with_ports")
+			}
+			if d.delivery == 1 and (d.bound < 1 or d.bound > max_port_every) {
+				return Err("contract: port \"${name}\" delivers Every(${d.bound.to_str()}); a subscription keeps 1 to ${max_port_every.to_str()} undelivered messages")
+			}
+			$seen = $seen.append(name)
+		}
+		Ok(decls)
+	}
 
 	## Why an operation on a file produced nothing: a file could not be read
 	## (`Unreadable`: the user's file changed or went away since it was
@@ -1020,6 +1091,15 @@ Core := [].{
 			Digest(b.drop_first(1))
 		} else if tag == 19 {
 			FileUrl(text(1))
+		} else if tag == 14 {
+			PortReply(decode_port_message(b, []))
+		} else if tag == 15 {
+			match b {
+				[_, 1, ..] => PortFailed(Threw(text(2)))
+				[_, 2] => PortFailed(TooLarge)
+				[_, 3] => PortFailed(Closed)
+				_ => crash "contract: effect result tag 15 needs a failure class, 1 with text, 2 or 3"
+			}
 		} else {
 			crash "contract: unknown effect result tag ${tag.to_str()}"
 		}
@@ -1112,8 +1192,15 @@ Core := [].{
 
 	## A mounted engine instance: the site tree and the transaction state. The host
 	## holds it between calls through [Program]; test platforms and harnesses drive
-	## it directly with `mount`, `event`, `result` and `take_cmds`.
-	App :: { root : Inst(Root), tx : Tx, programs : List(Str) }
+	## it directly with `mount`, `event`, `result` and `take_cmds`. `programs`
+	## is the program's catalogue: its worker programs' names and its ports.
+	App :: { root : Inst(Root), tx : Tx, programs : Catalogue }
+
+	## What a program declares beside its view, kept beside the engine root
+	## (never in the transaction, whose every field costs code at each site
+	## that rebuilds it): the worker catalogue's names and the port
+	## declarations.
+	Catalogue : { workers : List(Str), ports : List(PortDecl) }
 
 	## For test platforms and harnesses: mount an app under host node 0 with the
 	## default in-flight bound of 32. The mount's commands wait in the instance
@@ -1124,7 +1211,7 @@ Core := [].{
 	## For test platforms and harnesses: mount with an explicit in-flight effect
 	## bound, running any follow-up turns the mount queued.
 	mount_with : U64, Elem(Root) -> App
-	mount_with = |max, elem| mount_in(max, [], elem)
+	mount_with = |max, elem| mount_in(max, { workers: [], ports: [] }, elem)
 
 	## For test platforms and harnesses: deliver a DOM event to `node` and its
 	## handler number with the event's payload, as one transaction (plus any
@@ -1174,7 +1261,9 @@ Core := [].{
 		match tx.fx.live.find_first(|l| l.id == id) {
 			Err(_) => { root, tx: fx_count(tx, Stale), programs }
 			Ok(entry) => {
-				tx1 = if (entry.sub) tx else with_fx(tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id) })
+				# A subscription stays live until it is cancelled, unless its
+				# JavaScript ended it (a port's `Closed` or `Threw`).
+				tx1 = if (entry.sub and !ends_subscription(res)) tx else with_fx(tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id) })
 				drain(turn({ root, tx: tx1, programs }, entry.path, id, Fx(res)))
 			}
 		}
@@ -1204,7 +1293,7 @@ Core := [].{
 			$out = $out.append(work_get(a.tx.work, $i))
 			$i = $i + 1
 		}
-		$out.concat(fx_counters(a))
+		$out.concat(fx_counters(a)).append(work_get(a.tx.work, w_port_sends))
 	}
 
 	# ------------------------------------------------------------------
@@ -1297,10 +1386,20 @@ Core := [].{
 	Program :: {
 		version : U32,
 		keys : () -> List(U8),
-		init : List(Str), List(U8) -> (App, List(U8), List(U8)),
+		init : Catalogue, List(U8) -> (App, List(U8), List(U8)),
 		event : App, List(U8), List(U8), U32, U32, List(U8) -> (App, List(U8), List(U8)),
 		workers : List(Registration),
+		ports : List(PortDecl),
 	}.{
+
+		## Declare the ports the program's effect sites use (see [PortDecl]):
+		## the services the page's JavaScript supplies at mount. At most 64,
+		## each name once and 1 to 128 bytes long; anything else is a contract
+		## error when the program mounts. A request for a port not declared
+		## here, or for a declared port as another shape, is a contract error
+		## naming the port and the site.
+		with_ports : Program, List(PortDecl) -> Program
+		with_ports = |p, decls| { ..p, ports: p.ports.concat(decls) }
 
 		## Add worker programs to the program's catalogue, so its effect sites can
 		## issue `Work` requests for them. The page's instance and every worker
@@ -1320,16 +1419,24 @@ Core := [].{
 	driver = |p| {
 		init = p.init
 		workers = p.workers
+		ports = p.ports
+		keys = p.keys
 		{
 			version: p.version,
-			keys: p.keys,
-			init: |boot| init(catalogue_names(workers), boot),
+			keys: || put_port_table(keys(), ports_checked(ports)),
+			init: |boot| init({ workers: catalogue_names(workers), ports: ports_checked(ports) }, boot),
 			event: p.event,
 			files: |inst, buf, wbuf, node, handler, record, blobs| {
 				{ root, tx, programs } = inst
 				{ cmds: _, next, free, routes, work, paths, site_free, fx } = tx
 				fresh = { root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, fx }, programs }
-				finish(Core.event_files(fresh, node, handler, record, blobs.map(|b| Blob.(b))), [], wbuf)
+				handles = blobs.map(|b| Blob.(b))
+				if node == fx_node {
+					# A port's answer that carries files (result tag 14).
+					finish(Core.result(fresh, handler, decode_reply_files(record, handles)), [], wbuf)
+				} else {
+					finish(Core.event_files(fresh, node, handler, record, handles), [], wbuf)
+				}
 			},
 			work: |payload, files| run_work(workers, payload, files),
 			settled: Core.settled,
@@ -1399,6 +1506,7 @@ Core := [].{
 			}
 		},
 		workers: [],
+		ports: [],
 	}
 }
 
@@ -1563,18 +1671,23 @@ fx_counters = |a| {
 	[fx.issued, fx.delivered, fx.stale, fx.refused, fx.cancelled, fx.reparented, fx.skipped, fx.live.len()]
 }
 
-## The number of counters in the work record: the work counters, then the
-## eight effect counters.
+## Port commands sent (`PORT`, opcode 19). Counted here, at index 40 of the
+## work record, never by opcode: index 19 is `set_value`.
+w_port_sends : U64
+w_port_sends = 40
+
+## The number of counters in the work record: the work counters, the eight
+## effect counters, then the port commands sent (index 40).
 w_record_count : U64
-w_record_count = w_count + 8
+w_record_count = w_count + 9
 
 ## The work counters as plain fields (`c01` is counter 1): bumping one
 ## updates a value in the accumulator and never allocates, so counting
 ## cannot cost an allocation or a copy on any path.
-Work : { c01 : U64, c02 : U64, c03 : U64, c04 : U64, c05 : U64, c06 : U64, c07 : U64, c08 : U64, c09 : U64, c10 : U64, c11 : U64, c12 : U64, c13 : U64, c14 : U64, c15 : U64, c16 : U64, c17 : U64, c18 : U64, c19 : U64, c20 : U64, c21 : U64, c22 : U64, c23 : U64, c24 : U64, c25 : U64, c26 : U64, c27 : U64, c28 : U64, c29 : U64, c30 : U64, c31 : U64 }
+Work : { c01 : U64, c02 : U64, c03 : U64, c04 : U64, c05 : U64, c06 : U64, c07 : U64, c08 : U64, c09 : U64, c10 : U64, c11 : U64, c12 : U64, c13 : U64, c14 : U64, c15 : U64, c16 : U64, c17 : U64, c18 : U64, c19 : U64, c20 : U64, c21 : U64, c22 : U64, c23 : U64, c24 : U64, c25 : U64, c26 : U64, c27 : U64, c28 : U64, c29 : U64, c30 : U64, c31 : U64, c40 : U64 }
 
 work_zero : Work
-work_zero = { c01: 0, c02: 0, c03: 0, c04: 0, c05: 0, c06: 0, c07: 0, c08: 0, c09: 0, c10: 0, c11: 0, c12: 0, c13: 0, c14: 0, c15: 0, c16: 0, c17: 0, c18: 0, c19: 0, c20: 0, c21: 0, c22: 0, c23: 0, c24: 0, c25: 0, c26: 0, c27: 0, c28: 0, c29: 0, c30: 0, c31: 0 }
+work_zero = { c01: 0, c02: 0, c03: 0, c04: 0, c05: 0, c06: 0, c07: 0, c08: 0, c09: 0, c10: 0, c11: 0, c12: 0, c13: 0, c14: 0, c15: 0, c16: 0, c17: 0, c18: 0, c19: 0, c20: 0, c21: 0, c22: 0, c23: 0, c24: 0, c25: 0, c26: 0, c27: 0, c28: 0, c29: 0, c30: 0, c31: 0, c40: 0 }
 
 ## Add `n` to counter `i`; counter 0 (and any index past the last) is the
 ## unused sink.
@@ -1611,6 +1724,7 @@ add_work = |w, i, n| match i {
 	29 => { ..w, c29: w.c29 + n }
 	30 => { ..w, c30: w.c30 + n }
 	31 => { ..w, c31: w.c31 + n }
+	40 => { ..w, c40: w.c40 + n }
 	_ => w
 }
 
@@ -1648,6 +1762,7 @@ work_get = |w, i| match i {
 	29 => w.c29
 	30 => w.c30
 	31 => w.c31
+	40 => w.c40
 	_ => 0
 }
 
@@ -3705,12 +3820,15 @@ comp_settle = |prop, snk, block, env, out, tx| {
 #  16 STORE   op:u8 (1 set: key:str value:str, 2 remove: key:str)
 #  17 TITLE   text:str
 #  18 FOCUS   op:u8 (1 focus, 2 blur, 3 select text) node   (end of turn)
+#  19 PORT    port:str message (a port command; design.md, Appendix B)
 # Results come back as an event on node `fx_node` with handler = id and
 # payload bytes: 1 status:u16 n:u32 (name:str value:str)* body (HTTP
 # response with its headers), 7 (HTTP timeout), 2 message (network
 # failure), 3 value (storage value), 4 (storage missing), 5 (timer
 # fired), 6 url (location), 8 online:u8, 9 visible:u8, 10 output (work
-# result bytes), 11 class:u8 (work lost; design.md, Appendix B).
+# result bytes), 11 class:u8 (work lost), 13 reason:u8 (file failure),
+# 14 message (port reply), 15 class:u8 [text] (port failure; design.md,
+# Appendix B).
 
 ## Largest per-request HTTP timeout or work deadline the host will arm (10
 ## minutes).
@@ -3721,9 +3839,9 @@ max_timeout_ms = 600000
 max_programs : U64
 max_programs = 64
 
-## Mount `elem` with the in-flight bound `max` and the catalogue's program
-## names, running any follow-up turns the mount queued.
-mount_in : U64, List(Str), Elem(Root) -> App
+## Mount `elem` with the in-flight bound `max` and the program's catalogue,
+## running any follow-up turns the mount queued.
+mount_in : U64, Catalogue, Elem(Root) -> App
 mount_in = |max, programs, elem| {
 	{ cmds, next, free, routes, work, paths, site_free, fx } = new_tx([])
 	tx0 = { cmds, next, free, routes, work, paths, site_free, fx: { ..fx, max } }
@@ -3902,6 +4020,143 @@ work_fault = |class| match class {
 	_ => crash "contract: effect result tag 11 carries unknown fault class ${class.to_str()}"
 }
 
+# ------------------------------------------------------------------
+# Ports (design.md, "Ports"): the catalogue's rules, the `PORT` command and
+# the message layout of FX kinds 9 and 10 and result tag 14.
+
+## The most ports one program declares (design.md, "Boundedness").
+max_ports : U64
+max_ports = 64
+
+## The longest port name, in UTF-8 bytes.
+max_port_name : U64
+max_port_name = 128
+
+## The largest `Every(n)` bound a subscription declares.
+max_port_every : U32
+max_port_every = 1024
+
+## The declarations, or the contract error that building them is.
+ports_checked : List(PortDecl) -> List(PortDecl)
+ports_checked = |decls| match Core.port_catalogue(decls) {
+	Ok(ok) => ok
+	Err(message) => crash message
+}
+
+## The boot key list followed by the port table (design.md, Appendix B):
+## `nports:u32 (name:str kind:u8 delivery:u8 bound:u32)*`.
+put_port_table : List(U8), List(PortDecl) -> List(U8)
+put_port_table = |keys, decls| {
+	var $b = put_u32(keys, decls.len().to_u32_wrap())
+	for d in decls {
+		$b = put_u32(put_str($b, d.name).append(d.kind).append(d.delivery), d.bound)
+	}
+	$b
+}
+
+## A port's shape as its declaration numbers it.
+port_kind_name : U8 -> Str
+port_kind_name = |kind| match kind {
+	1 => "a command"
+	2 => "a call"
+	_ => "a subscription"
+}
+
+## Queue the end-of-turn check of a port request (see [TurnEnd]).
+check_port_later : Tx, Str, U8, List(U32) -> Tx
+check_port_later = |tx, port, kind, path| with_fx(tx, |fx| { ..fx, focus: fx.focus.append(CheckPort(port, kind, path)) })
+
+## A port request names a declared port of its own shape, or it is the
+## contract error that names the port and the site.
+check_port : List(PortDecl), Str, U8, List(U32) -> {}
+check_port = |decls, port, kind, path| match decls.find_first(|d| d.name == port) {
+	Ok(d) =>
+		if d.kind != kind {
+			crash "contract: port \"${port}\" is declared as ${port_kind_name(d.kind)} but used as ${port_kind_name(kind)} (site ${show_path(path)})"
+		} else {
+			{}
+		}
+	Err(_) => crash "contract: port \"${port}\" is not declared; add its declaration to with_ports (site ${show_path(path)})"
+}
+
+## A message as FX kinds 9 and 10 and `PORT` carry it: `json:str
+## nblobs:u32 (len:u32 bytes)* nfiles:u32 (token:u64 start:u64 len:u64)*`.
+put_port_message : List(U8), PortMessage -> List(U8)
+put_port_message = |buf, { json, blobs, files }| {
+	var $b = put_u32(put_str(buf, json), blobs.len().to_u32_wrap())
+	for blob in blobs {
+		$b = put_u32($b, blob.len().to_u32_wrap()).concat(blob)
+	}
+	$b = put_u32($b, files.len().to_u32_wrap())
+	for file in files {
+		{ token, start, len } = file_ref(file)
+		$b = put_u64(put_u64(put_u64($b, token), start), len)
+	}
+	$b
+}
+
+## Command 19 `PORT port:str message`, counted at work-record index 40 and
+## not by opcode (index 19 is `set_value`).
+emit_port : Tx, Str, PortMessage -> Tx
+emit_port = |{ cmds, next, free, routes, work, paths, site_free, fx }, port, message| {
+	{ cmds: put_port_message(put_str(cmds.append(19), port), message), next, free, routes, work: add_work(work, w_port_sends, 1), paths, site_free, fx }
+}
+
+## A port reply's message from result tag 14, `json:str nblobs:u32
+## (len:u32 bytes)* nfiles:u32 (size:u64 name:str type:str)*`, its files
+## paired in order with the handles the host minted for them. Anything else
+## is a contract error.
+decode_port_message : List(U8), List(Blob) -> PortMessage
+decode_port_message = |b, handles| {
+	(json, a1) = get_str(b, 1, "port reply")
+	nblobs = get_u32(b, a1, "port reply").to_u64()
+	var $at = a1 + 4
+	var $blobs = []
+	var $i = 0.U64
+	while $i < nblobs {
+		len = get_u32(b, $at, "port reply").to_u64()
+		if $at + 4 + len > b.len() {
+			crash "contract: truncated port reply"
+		}
+		$blobs = $blobs.append(b.sublist({ start: $at + 4, len }))
+		$at = $at + 4 + len
+		$i = $i + 1
+	}
+	nfiles = get_u32(b, $at, "port reply").to_u64()
+	if nfiles != handles.len() {
+		crash "contract: a port reply lists ${nfiles.to_str()} files but the host minted ${handles.len().to_str()} handles"
+	}
+	$at = $at + 4
+	var $files = List.with_capacity(nfiles)
+	for blob in handles {
+		size = get_u64(b, $at, "port reply")
+		(name, f1) = get_str(b, $at + 8, "port reply")
+		(mime, f2) = get_str(b, f1, "port reply")
+		$files = $files.append({ at: Page(blob), name, mime, size, start: 0, len: size })
+		$at = f2
+	}
+	if $at != b.len() {
+		crash "contract: a port reply carries ${(b.len() - $at).to_str()} unexpected trailing bytes"
+	}
+	{ json, blobs: $blobs, files: $files }
+}
+
+## The result of a call that carried files: only a port's reply (tag 14)
+## does.
+decode_reply_files : List(U8), List(Blob) -> Res
+decode_reply_files = |b, handles| match b.first() {
+	Ok(14) => PortReply(decode_port_message(b, handles))
+	_ => crash "contract: an effect result that is not a port reply carries file handles"
+}
+
+## A result that ends a subscription: its JavaScript closed it or threw.
+ends_subscription : Res -> Bool
+ends_subscription = |res| match res {
+	PortFailed(Closed) => True
+	PortFailed(Threw(_)) => True
+	_ => False
+}
+
 Live : { id : U32, path : List(U32), sub : Bool }
 
 Queued : { id : U32, path : List(U32), res : Res }
@@ -3944,7 +4199,7 @@ Fx : {
 ## every app by about 3%). Checking at the end of the turn is the same
 ## contract error with the same message; nothing the turn did is published,
 ## because the crash poisons the instance before the call returns.
-TurnEnd : [Focus(U8, Str), CheckProgram(Str, List(U32))]
+TurnEnd : [Focus(U8, Str), CheckProgram(Str, List(U32)), CheckPort(Str, U8, List(U32))]
 
 fx_empty : Fx
 fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, refs: [], focus: [], ref_pos: [], cleanups: [] }
@@ -3997,6 +4252,7 @@ is_sub = |req| match req {
 	Popstate => True
 	OnlineChanges => True
 	VisibilityChanges => True
+	PortSubscribe(_) => True
 	_ => False
 }
 
@@ -4009,6 +4265,7 @@ is_kept = |req| match req {
 	Http(_) => True
 	Upload(_) => True
 	StorageGet(_) => True
+	PortCall(_) => True
 	_ => False
 }
 
@@ -4048,6 +4305,8 @@ put_req = |c, id, req| {
 		Sha256(f) => put_file(head.append(13).append(1), f)
 		ObjectUrl(f) => put_file(head.append(14), f)
 		Ask({ program, input, files, deadline_ms }) => put_ask(head, program, input, files, deadline_ms)
+		PortCall({ port, message, timeout_ms }) => put_u32(put_port_message(put_str(head.append(9), port), message), min_u32(timeout_ms, max_timeout_ms))
+		PortSubscribe({ port, message }) => put_port_message(put_str(head.append(10), port), message)
 		_ => crash "not an awaited request"
 	}
 }
@@ -4119,6 +4378,19 @@ issue = |tx, path, reqs, a, owned| {
 				(id, t1) = fx_admit(t0, path, req)
 				$tx = t1
 				$owned = $owned.append({ id, sub: False, keep: False, a })
+			}
+			PortCommand({ port, message }) => {
+				$tx = emit_port(check_port_later($tx, port, 1, path), port, message)
+			}
+			PortCall({ port, .. }) => {
+				(id, t1) = fx_admit(check_port_later($tx, port, 2, path), path, req)
+				$tx = t1
+				$owned = $owned.append({ id, sub: False, keep: True, a })
+			}
+			PortSubscribe({ port, .. }) => {
+				(id, t1) = fx_admit(check_port_later($tx, port, 3, path), path, req)
+				$tx = t1
+				$owned = $owned.append({ id, sub: True, keep: False, a })
 			}
 			_ => {
 				(id, t1) = fx_admit($tx, path, req)
@@ -4335,7 +4607,7 @@ cleanup_inst = |name, v, plan| Inst(
 ## Requests that are emitted and forgotten.
 is_command : Req -> Bool
 is_command = |req| match req {
-	Push(_) | Replace(_) | Title(_) | Focus(_) | Blur(_) | SelectText(_) | StorageSet(_, _) | StorageRemove(_) => True
+	Push(_) | Replace(_) | Title(_) | Focus(_) | Blur(_) | SelectText(_) | StorageSet(_, _) | StorageRemove(_) | PortCommand(_) => True
 	_ => False
 }
 
@@ -4689,9 +4961,9 @@ turn = |{ root, tx, programs }, path, h, payload| {
 }
 
 ## The end of a turn (see [TurnEnd]): command 18 FOCUS op:u8 node:u32 for
-## each focus request, and the catalogue check of each work request against
-## the instance's `programs`.
-flush_turn : Tx, List(Str) -> Tx
+## each focus request, and the catalogue check of each work and port request
+## against the instance's `programs`.
+flush_turn : Tx, Catalogue -> Tx
 flush_turn = |tx, programs| {
 	if tx.fx.focus.is_empty() {
 		tx
@@ -4710,9 +4982,10 @@ flush_turn = |tx, programs| {
 						}
 					}
 				CheckProgram(program, path) =>
-					if !programs.contains(program) {
+					if !programs.workers.contains(program) {
 						crash "contract: worker program \"${program}\" is not registered; add its registration to with_workers (site ${show_path(path)})"
 					}
+				CheckPort(port, kind, path) => check_port(programs.ports, port, kind, path)
 			}
 		}
 		$tx
@@ -4815,6 +5088,7 @@ work_bytes = |inst, buf| {
 	fx = inst.tx.fx
 	$b = put_u64(put_u64(put_u64(put_u64($b, fx.issued), fx.delivered), fx.stale), fx.refused)
 	$b = put_u64(put_u64(put_u64(put_u64($b, fx.cancelled), fx.reparented), fx.skipped), fx.live.len())
+	$b = put_u64($b, work_get(counters, w_port_sends))
 	runs = inst.tx.fx.cleanups
 	$b = put_u32($b, runs.len().to_u32_wrap())
 	for (name, k) in runs {
@@ -4891,7 +5165,7 @@ expect {
 				],
 			),
 	)
-	mounted = mount_in(32, ["t/echo"], elem)
+	mounted = mount_in(32, { workers: ["t/echo"], ports: [] }, elem)
 	s = Core.fx_stats(mounted)
 	[s.issued, s.cancelled, s.live, s.reparented] == [1, 1, 0, 0]
 }
@@ -4912,4 +5186,78 @@ expect {
 	url = Core.decode_res([19].concat("blob:x".to_utf8()))
 	unavailable = Core.decode_res([13, 3])
 	Core.file_digest(digest) == Ok(List.repeat(7, 32)) and Core.file_url(url) == Ok("blob:x") and Core.file_digest(unavailable) == Err(Unavailable)
+}
+
+## The port catalogue keeps its declarations in order and refuses a name
+## declared twice, a 65th port, an empty name and an `Every` bound outside 1
+## to 1024, each with the contract diagnostic that names the port.
+expect {
+	decl = |name| Core.port_declaration(name, Call)
+	var $many = []
+	var $i = 0.U64
+	while $i < 65 {
+		$many = $many.append(decl("p${$i.to_str()}"))
+		$i = $i + 1
+	}
+	names = |r| r.map_ok(|ds| ds.map(|d| d.name))
+	actual = [
+		Str.inspect(names(Core.port_catalogue([decl("a"), Core.port_declaration("b", Subscription(Latest))]))),
+		Str.inspect(names(Core.port_catalogue([decl("a"), Core.port_declaration("a", Command)]))),
+		Str.inspect(Core.port_catalogue($many.take_first(64)).is_ok()),
+		Str.inspect(names(Core.port_catalogue($many))),
+		Str.inspect(names(Core.port_catalogue([decl("")]))),
+		Str.inspect(names(Core.port_catalogue([Core.port_declaration("s", Subscription(Every(0)))]))),
+		Str.inspect(names(Core.port_catalogue([Core.port_declaration("s", Subscription(Every(1024)))]))),
+	]
+	expected = [
+		"Ok([\"a\", \"b\"])",
+		"Err(\"contract: port \\\"a\\\" is declared twice in with_ports\")",
+		"True",
+		"Err(\"contract: with_ports declares more than 64 ports (port \\\"p64\\\" is over the bound)\")",
+		"Err(\"contract: with_ports declares a port named \\\"\\\"; a port name is 1 to 128 bytes\")",
+		"Err(\"contract: port \\\"s\\\" delivers Every(0); a subscription keeps 1 to 1024 undelivered messages\")",
+		"Ok([\"s\"])",
+	]
+	actual == expected
+}
+
+## A port command is `PORT` (opcode 19) with its message and is counted at
+## index 40, not by opcode; a call is `FX` kind 9 and a subscription kind 10.
+expect {
+	msg = { json: "{\"a\":1}", blobs: [[7, 8]], files: [] }
+	ports = [Core.port_declaration("t/c", Command), Core.port_declaration("t/k", Call), Core.port_declaration("t/s", Subscription(Every(4)))]
+	elem = Core.watch(Core.const({}), |_| [PortCommand({ port: "t/c", message: msg }), PortCall({ port: "t/k", message: msg, timeout_ms: 700000 }), PortSubscribe({ port: "t/s", message: msg })], Core.ignore({}))
+	mounted = mount_in(32, { workers: [], ports }, elem)
+	(taken, cmds) = Core.take_cmds(mounted, [])
+	body = put_u32(put_u32(put_u32(put_str([], "{\"a\":1}"), 1), 2).concat([7, 8]), 0)
+	want = put_str([19], "t/c").concat(body).concat(put_u32(put_str(put_u32([13], 1).append(9), "t/k").concat(body), 600000)).concat(put_str(put_u32([13], 2).append(10), "t/s").concat(body))
+	counters = Core.work_counters(taken)
+	cmds == want and counters.get(19) == Ok(0) and counters.get(40) == Ok(1) and Core.fx_stats(taken).issued == 2
+}
+
+## A call is kept when its site is disposed (it reparents, like HTTP) and a
+## subscription is cancelled; a subscription its JavaScript closes leaves the
+## in-flight table, and a later message for it is stale.
+expect {
+	msg = { json: "null", blobs: [], files: [] }
+	ports = [Core.port_declaration("t/k", Call), Core.port_declaration("t/s", Subscription(Latest))]
+	elem = Core.state(
+		Bool.True,
+		|st|
+			Core.element(
+				"div",
+				[],
+				[
+					Core.when(st.val(), || Core.watch(Core.const({}), |_| [PortCall({ port: "t/k", message: msg, timeout_ms: 0 }), PortSubscribe({ port: "t/s", message: msg })], Core.ignore({})), || Core.text("")),
+					Core.watch(Core.const({}), |_| [Self], st.on_result(|_, _, _| Bool.False)),
+				],
+			),
+	)
+	disposed = Core.fx_stats(mount_in(32, { workers: [], ports }, elem))
+	open = mount_in(32, { workers: [], ports }, Core.watch(Core.const({}), |_| [PortSubscribe({ port: "t/s", message: msg })], Core.ignore({})))
+	id = Core.fx_live(open).first() ?? 0
+	kept = Core.fx_stats(Core.result(open, id, PortReply(msg)))
+	closed = Core.result(open, id, PortFailed(Closed))
+	late = Core.fx_stats(Core.result(closed, id, PortReply(msg)))
+	[disposed.issued, disposed.cancelled, disposed.reparented, disposed.live] == [2, 1, 1, 1] and kept.live == 1 and Core.fx_stats(closed).live == 0 and late.stale == 1
 }

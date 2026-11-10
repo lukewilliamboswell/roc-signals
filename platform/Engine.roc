@@ -364,6 +364,17 @@ Engine := [].{
 		## `Worker.prepared`); it delivers what `Work` delivers and is scoped
 		## like it.
 		Ask({ program : Str, input : List(U8), files : List(File), deadline_ms : U32 }),
+
+		## Ports: a message to the page's JavaScript for a declared port (see
+		## `PortDecl`; apps use the typed layer, `Port`). `PortCommand` is
+		## emitted and forgotten; `PortCall` awaits one `PortReply` or
+		## `PortFailed` and, like `Http`, survives its site's disposal
+		## (`timeout_ms` 0 = none, capped at 10 minutes); `PortSubscribe`
+		## delivers any number of messages until its site is disposed or the
+		## JavaScript ends it.
+		PortCommand({ port : Str, message : PortMessage }),
+		PortCall({ port : Str, message : PortMessage, timeout_ms : U32 }),
+		PortSubscribe({ port : Str, message : PortMessage }),
 	]
 
 	## The result of an awaited request: an HTTP response (`Http`, with any status),
@@ -376,8 +387,30 @@ Engine := [].{
 	## read into the worker), a file's bytes or text read into the page
 	## (`FileBytes`, `FileText`), a file's SHA-256 digest (`Digest`) or a URL
 	## that shows it (`FileUrl`), or why an operation on a file produced
-	## nothing (`FileFailed`).
-	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str)]
+	## nothing (`FileFailed`), or a port's answer or message (`PortReply`)
+	## or why there is none (`PortFailed`).
+	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortReply(PortMessage), PortFailed(PortFailure)]
+
+	## A port message as it crosses: JSON text, the byte blocks its
+	## `{"$bytes":N}` markers name and the files its `{"$file":N}` markers
+	## name. `Port` writes and reads it for an app's own types.
+	PortMessage : Core.PortMessage
+
+	## Why a port request has no answer: the page's JavaScript threw or
+	## rejected, or answered with something that is not JSON data (`Threw`,
+	## with the message), its answer was larger than the runtime takes
+	## (`TooLarge`), or it ended a subscription (`Closed`). `Threw` and `Closed` end a subscription;
+	## `TooLarge` reports one message and the subscription goes on.
+	PortFailure : Core.PortFailure
+
+	## How a subscription's undelivered messages wait: `Latest` keeps only
+	## the newest; `Every(n)` keeps up to `n` (1 to 1024) in order and refuses
+	## the JavaScript's `emit` beyond them.
+	PortDelivery : Core.PortDelivery
+
+	## A port the program declares with `Program.with_ports`: its name and
+	## shape. `Port` makes one for each typed port (`declaration`).
+	PortDecl : Core.PortDecl
 
 	## Why an operation on a file produced nothing. One closed type for every
 	## operation on a file, each of which says which arms it can produce:
@@ -613,7 +646,8 @@ Engine := [].{
 	## as the app's `main`. The platform mounts it with the boot data and runs one
 	## transaction per DOM event or effect result. `with_workers` adds the worker
 	## programs its `Work` requests may name:
-	## `Engine.program(view).with_workers([Engine.registration("example.org/x", run)])`.
+	## `Engine.program(view).with_workers([Engine.registration("example.org/x", run)])`,
+	## and `with_ports` the ports the page's JavaScript supplies.
 	Program : Core.Program
 
 	## A worker program for `Program.with_workers`. Make one with `registration`.

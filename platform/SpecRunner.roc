@@ -89,7 +89,7 @@ SpecRunner := [].{
 		settled : state -> Try({}, { cmds : List(U8), note : Str }),
 	}
 
-	Sub : [Interval(U32), Pop, OnlineSub, VisibilitySub]
+	Sub : [Interval(U32), Pop, OnlineSub, VisibilitySub, PortSub(Str, Str)]
 
 	## A history entry: its URL and the document it belongs to.
 	Entry : { url : Str, doc : U64 }
@@ -116,6 +116,9 @@ SpecRunner := [].{
 
 		## A URL that shows a file's range.
 		UrlRequest({ token : U64, start : U64, len : U64 }),
+
+		## A call on a port, answered with `answer-port`.
+		PortRequest({ port : Str, json : Str, timeout_ms : U32 }),
 	]
 
 	## The most bytes a digest reads: the runtime's default `maxFileBytes`.
@@ -149,6 +152,9 @@ SpecRunner := [].{
 		## was minted under (a file given twice has two handles).
 		files : List(SetupFile),
 		given : List({ token : U64, name : Str }),
+
+		## The port commands the app sent in this document, in order.
+		port_log : List({ port : Str, json : Str }),
 	}
 
 	## A setup file: its name, media type and contents.
@@ -289,6 +295,7 @@ SpecRunner := [].{
 			UploadRequest(_) => Err("effect occurrence ${n.to_str()} is an upload, not a worker job")
 			DigestRequest(_) => Err("effect occurrence ${n.to_str()} is a digest, not a worker job")
 			UrlRequest(_) => Err("effect occurrence ${n.to_str()} is a file URL, not a worker job")
+			PortRequest({ port, .. }) => Err("effect occurrence ${n.to_str()} is a call on port ${JsonOut.quote(port)}, not a worker job")
 		}
 	}
 
@@ -397,11 +404,12 @@ SpecRunner := [].{
 		stub: NoStub,
 		files: [],
 		given: [],
+		port_log: [],
 	}
 
 	## A runner state for instance `inst` before its first batch.
 	fresh : state, Browser -> S(state)
-	fresh = |inst, browser| { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 19), writes: [], mark: [], focused: 0, focus_value: "", deferred: NoValue }
+	fresh = |inst, browser| { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 20), writes: [], mark: [], focused: 0, focus_value: "", deferred: NoValue }
 
 	set_store : List({ key : Str, value : Str }), Str, Str -> List({ key : Str, value : Str })
 	set_store = |l, key, value| l.keep_if(|kv| kv.key != key).append({ key, value })
@@ -443,6 +451,9 @@ SpecRunner := [].{
 				Upload(id, _, url, _, file, _) => { ..b, pending: b.pending.append({ id, url, body: "", kind: UploadRequest(file) }), issued: b.issued.append(id) }
 				Digest(id, _, file) => { ..b, pending: b.pending.append({ id, url: "digest", body: "", kind: DigestRequest(file) }), issued: b.issued.append(id) }
 				FileUrl(id, file) => { ..b, pending: b.pending.append({ id, url: "url", body: "", kind: UrlRequest(file) }), issued: b.issued.append(id) }
+				PortSend(port, msg) => { ..b, port_log: b.port_log.append({ port, json: msg.json }) }
+				PortCall(id, port, msg, timeout_ms) => { ..b, pending: b.pending.append({ id, url: "port", body: "", kind: PortRequest({ port, json: msg.json, timeout_ms }) }), issued: b.issued.append(id) }
+				PortListen(id, port, msg) => { ..b, subs: b.subs.append({ id, sub: PortSub(port, msg.json) }) }
 			}
 		}
 		$b
@@ -682,6 +693,7 @@ SpecRunner := [].{
 			ReadRequest({ mode, file }) => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, SpecRunner.read_result(b, mode, file)))
 			UrlRequest(file) => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, SpecRunner.url_result(file)))
 			DigestRequest(_) => return Err("run-effect ${n.to_str()} answers a digest, which the spec command's host computes; fuzz targets and soak walks do not have one")
+			PortRequest({ port, .. }) => return Err("effect occurrence ${n.to_str()} is a call on port ${JsonOut.quote(port)}; answer it with answer-port")
 			HttpRequest => {}
 			UploadRequest(_) => {}
 		}
@@ -914,7 +926,7 @@ SpecRunner := [].{
 		# Every issued request is one FX command and every cancelled one a
 		# CANCEL (design.md, "Counters"), so the effect counters must agree
 		# with the commands too.
-		for (counter, op, what) in [(32.U64, 13.U64, "issued"), (36, 14, "cancelled")] {
+		for (counter, op, what) in [(32.U64, 13.U64, "issued"), (36, 14, "cancelled"), (40, 19, "port commands sent")] {
 			engine = s.work.counters.get(counter) ?? 0
 			oracle = s.ops.get(op) ?? 0
 			if engine != oracle {

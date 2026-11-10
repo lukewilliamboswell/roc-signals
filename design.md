@@ -89,7 +89,11 @@ this document and the implementation are tracked in issues.
    A bare trap or a silent no-op is never an acceptable way to fail.
 5. **There is exactly one door to the outside.** Events enter, and effects
    leave, through the declared effect channel and the command stream. Apps do
-   not call JavaScript, and the host never exposes its state to an app.
+   not call JavaScript. A service the platform does not model is reached
+   through a *port*: a declared request kind whose messages leave in the
+   command stream and whose answers enter as turns, performed by JavaScript
+   the page supplies at mount. The host never exposes its state to an app,
+   and no JavaScript value enters Roc.
 6. **Cost is visible and bounded.** Payload size, startup, per-event work, and
    memory are measured and budgeted, and in-flight work has fixed caps with
    typed refusal.
@@ -155,6 +159,16 @@ reconsidered.
   its last release when Roc frees it; the host never holds the handle.
 - **A general-purpose JavaScript FFI.** A use the effect channel cannot
   express is a reason to extend its typed vocabulary, not to bypass it.
+  Ports are that extension for services the page supplies, not a bypass. A
+  port is one of three shapes of the effect channel — a command, a call with
+  one reply, or a subscription — under a name the program declares and the
+  page's JavaScript implements. Roc never calls JavaScript synchronously,
+  never holds a JavaScript value, and is never called by it; every message is
+  data in a declared encoding with the channel's id, bound, scope and
+  lifetime. A capability the platform models (HTTP, storage, timers, history,
+  focus, workers, files) is not a port's business, and nothing that needs a
+  synchronous answer (a default to prevent, a layout measurement inside a
+  turn) can be one.
 
 ## Non-Negotiable Constraints
 
@@ -182,8 +196,11 @@ reconsidered.
 5. **Types are never erased across a boundary that can disagree.** A site's
    storage is typed by the site's own closure; dispatch between sites is by
    message, never by a host-interpreted value. The only bytes that cross the
-   Roc boundary are the command stream, event payloads, boot bytes and worker
-   payloads, each with a declared encoding that Roc decodes and validates;
+   Roc boundary are the command stream, event payloads, boot bytes, worker
+   payloads and port messages, each with a declared encoding that Roc decodes
+   and validates (a port message is JSON text in the platform's `PortJson`
+   encoding, with its bytes and files beside it, which Roc turns into a typed
+   value or a typed decoding error);
    the only values the host builds for Roc beyond them are freshly minted
    resource handles, each with a single reference.
 6. **The command stream is the only output.** Everything the outside world
@@ -724,6 +741,20 @@ instead of a state write.
 - **`Self`** asks for a follow-up turn whose result is `Now`: how an effect
   site changes state in response to its value changing without writing during
   the turn that is evaluating.
+- **Ports** reach a service the page's JavaScript supplies. `PortCommand` is
+  a command (`PORT`); `PortCall` is awaited with one result and kept on
+  disposal like `Http`; `PortSubscribe` is a scoped subscription. Each
+  carries a port name and a message: JSON text in the `PortJson` encoding,
+  the byte blocks its `{"$bytes":N}` markers name and the files its
+  `{"$file":N}` markers name, which travel beside the text and are never
+  encoded as text. The program declares each port with `with_ports` (at
+  most 64, each name once, 1 to 128 bytes), and a request for an undeclared
+  port, or for a port of another shape, is a `contract` error naming the port
+  and the site, checked at the end of the turn like a worker program's name.
+  The runtime refuses to mount a page whose `ports` option does not implement
+  every declared port with a handler of its shape, or implements one that is
+  not declared. Apps use the typed layer, `Port`, whose message types are
+  derived like `Wire`'s.
 
 ### Prepared programs
 
@@ -800,8 +831,11 @@ and the engine unchanged: to the engine an `Ask` is a `Work` request.
 - Results are typed: `Http({ status, headers, body })`, `Network(message)`,
   `Timeout`, `Value`, `Missing`, `Fired`, `Location`, `Online(Bool)`,
   `Visible(Bool)`, `Now`, `Refused`, `Work(bytes)`, `WorkLost(fault)`,
-  `FileBytes(bytes)`, `FileText(text)`, `Digest(bytes)`, `FileUrl(url)` and
-  `FileFailed(reason)`.
+  `FileBytes(bytes)`, `FileText(text)`, `Digest(bytes)`, `FileUrl(url)`,
+  `FileFailed(reason)`, `PortReply(message)` and `PortFailed(Threw(text) |
+  TooLarge | Closed)`. A subscription ends at its first `Threw` or `Closed`,
+  which retires its id like a cancel; `TooLarge` reports one message and the
+  subscription goes on.
   Application failures are values; contract violations are diagnostics,
   never fabricated results. A worker's diagnostic text goes to the page's
   console, never into its result.
@@ -851,19 +885,28 @@ and the engine unchanged: to the engine an `Ask` is a `Work` request.
   is a `contract` error when the catalogue is built, naming the program;
   issuing work for a name the catalogue does not hold is a `contract` error
   naming the program and the issuing site.
+- **Port messages.** A port's answer or message is at most `maxPayloadBytes`
+  (a mount option, default 4 MiB, at most 64 MiB) of JSON text and bytes
+  together, else `PortFailed(TooLarge)`. Each subscription declares how its
+  undelivered messages wait: `Latest` keeps one and a newer one replaces it;
+  `Every(n)` keeps up to n ≤ 1024 in order and refuses `emit` beyond them (it
+  returns false and takes nothing). The runtime keeps at most one message per
+  subscription in its ingress queue, so port traffic adds at most the
+  in-flight cap to it. A call's `timeout_ms` is capped at 600 s like HTTP's.
 
 ### Disposal and reparenting
 
 An admitted effect belongs to the intent that started it, not to the scope that
 rendered the control:
 
-- **Subscriptions, intervals, timers and work are scoped.** Disposing their
+- **Subscriptions (port subscriptions included), intervals, timers and work
+  are scoped.** Disposing their
   site emits `CANCEL`, counts them `cancelled` and forgets them; a result that
   arrives later is stale. Work is scoped rather than kept because a pure
   computation has no external effect to preserve, and computing an answer
   nobody will read is only cost. A job that must outlive a panel is issued
   from a site in a longer-lived scope.
-- **Admitted requests (`Http`, `Upload`, `StorageGet`) reparent** to the nearest surviving
+- **Admitted requests (`Http`, `Upload`, `StorageGet`, port calls) reparent** to the nearest surviving
   ancestor site — the `when`/`switch` that changed branch, the `each` that
   removed the row, or the component's caller. When the result arrives, the
   reaction runs in that ancestor's current environment. Disposed layers are
@@ -873,6 +916,8 @@ rendered the control:
 - A reparented orphan retains a snapshot of its retired layers until its
   result arrives; the in-flight cap bounds that retention.
 - Only tearing down the instance invalidates delivery.
+- A superseded call, or one whose timeout expired, aborts its handler's
+  `AbortSignal`; disposal does not, since the call is kept.
 
 Equal requests are distinct occurrences once issued. Abandoning an in-flight
 request is application state expressed in what its reaction reads, unless the
@@ -1258,7 +1303,10 @@ request; `http_text` given a non-HTTP result; a worker catalogue with a
 duplicate name or more than 64 programs; work issued for a program the
 catalogue does not hold; `File.contents` on the page; a request naming a
 file a worker program was sent; an upload whose method is `GET` or `HEAD`;
-event payload not UTF-8; boot
+a port catalogue with a duplicate name, more than
+64 ports, a name that is empty or longer than 128 bytes or an `Every` bound
+outside 1–1024; a request for an undeclared port or for a port of another
+shape; event payload not UTF-8; boot
 bytes or an effect result that do not follow Appendix B (truncated, trailing
 bytes, unknown tag, flags other than 0 or 1, text that is not UTF-8).
 **Resource limits:** node ids (2³² − 2 live nodes); more than 63 nested layers
@@ -1267,7 +1315,16 @@ static attributes, children, holes, hole path depth, row handlers — above 255;
 more follow-up turns in one host call than the breadth backstop allows.
 Each is checked before it could wrap. The runtime adds `resource_limit` for
 ingress-queue overflow and refuses a module of another protocol version
-before running it.
+before running it, and a page whose port handlers do not match the
+program's declarations before mounting it.
+
+A port handler is the page's own JavaScript and is contained like a
+browser service: a handler that throws or rejects, or answers with
+something that is not JSON data (a `Map`, a function, a cycle, a NaN), answers
+its request `PortFailed(Threw(message))`, an answer that is too large answers
+it `PortFailed(TooLarge)`, and a command handler's failure is
+reported to the console and the `onPortFault` mount option. None of them
+poisons the instance.
 
 **Target:** the diagnostic names the construction path for every contract
 error (some messages lack it).
@@ -1284,6 +1341,10 @@ bound and a declared behaviour at the bound:
 | Follow-up turns per host call | 64 per in-flight slot, at least 4096 | `resource_limit` poison |
 | HTTP timeout, work deadline | 600 s | Capped |
 | Worker catalogue | 64 programs | `contract` poison |
+| Port catalogue | 64 ports, names 1–128 bytes | `contract` poison |
+| A port answer or message | `maxPayloadBytes` (default 4 MiB, at most 64 MiB) | Typed `PortFailed(TooLarge)` |
+| Undelivered messages per port subscription | 1 (`Latest`) or n ≤ 1024 (`Every(n)`) | `Latest` replaces; `Every` refuses `emit` |
+| Port messages in the ingress queue | 1 per subscription | The next waits for its turn |
 | Workers per runtime | `maxWorkers` (default: core count, at most 8) | Jobs queue |
 | Prepared states | One per worker | The least recently used idle holder's is replaced |
 | A worker's linear memory | `maxWorkerBytes` (default 128 MiB), checked after each job | The worker is retired, its state with it |
@@ -1640,6 +1701,8 @@ Boot : { url : Str, storage : List((Str, Str)), online : Bool, visible : Bool, s
 Program                                       # opaque; the app binds it as `main`
 Program.with_workers : Program, List(Registration) -> Program   # the worker catalogue
 registration : Str, (List(U8) -> List(U8)) -> Registration      # opaque: name and pure program
+Program.with_ports : Program, List(PortDecl) -> Program         # the ports the page supplies
+PortDecl                                      # opaque: a port's name and shape; Port makes one
 
 # Values
 const : a -> Val(ctx, a)
@@ -1716,12 +1779,18 @@ Req : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Timer(
        Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str),
        StorageSet(Str, Str), StorageRemove(Str), ReadBytes(File), ReadUtf8(File),
        Upload({ method, url, headers, body : File, timeout_ms }), Sha256(File), ObjectUrl(File),
-       Ask({ program : Str, input : List(U8), files : List(File), deadline_ms : U32 })]
+       Ask({ program : Str, input : List(U8), files : List(File), deadline_ms : U32 }),
+       PortCommand({ port, message }), PortCall({ port, message, timeout_ms }),
+       PortSubscribe({ port, message })]
 Res : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
        Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused,
        Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError),
-       FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str)]
+       FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str),
+       PortReply(PortMessage), PortFailed(PortFailure)]
 FileError : [Unreadable, TooLarge, InvalidUtf8, Unavailable, Refused]
+PortMessage : { json : Str, blobs : List(List(U8)), files : List(File) }
+PortFailure : [Threw(Str), TooLarge, Closed]
+PortDelivery : [Latest, Every(U32)]
 WorkFault : [Contract, ResourceLimit, OutOfMemory, AppCrash, ExpectFailed, Unavailable, Executor]
 HttpError : [Network(Str), Timeout, Status(U16), Refused]
 http_text : Res -> Try(Str, HttpError)
@@ -1795,10 +1864,10 @@ The platform provides (`platform/main.roc`):
 | Symbol | Signature | Meaning |
 |---|---|---|
 | `roc_engine_version` | `() -> u32` | The protocol version (4) |
-| `roc_engine_keys` | `() -> List(U8)` | Declared storage keys: `count:u32 (key:str)*` |
+| `roc_engine_keys` | `() -> List(U8)` | Declared storage keys, then the port table: `count:u32 (key:str)* nports:u32 (name:str kind:u8 delivery:u8 bound:u32)*`, where `kind` is `1` command, `2` call, `3` subscription, `delivery` is `0` (not a subscription), `1` every or `2` latest, and `bound` is n for every, `1` for latest, `0` otherwise. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Box(Core.App), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One transaction: state, recycled command buffer, recycled work buffer, node, handler, payload |
-| `roc_engine_files` | `Box(Core.App), List(U8), List(U8), u32, u32, List(U8), List(Box(U64)) -> { cmds, state, work }` | A `:files` event: as `roc_engine_event`, with the file record as the payload and the handles the host minted for it, in the record's order; a record that does not match them is a `contract` crash |
+| `roc_engine_files` | `Box(Core.App), List(U8), List(U8), u32, u32, List(U8), List(Box(U64)) -> { cmds, state, work }` | A `:files` event: as `roc_engine_event`, with the file record as the payload and the handles the host minted for it, in the record's order; a record that does not match them is a `contract` crash. On the effect node it is a port reply (result tag 14) whose files are those handles, in order |
 | `roc_engine_drop` | `Box(Core.App), List(U8), List(U8) -> {}` | Teardown |
 | `roc_engine_work` | `List(U8), List(List(U8)) -> List(U8)` | A worker instance's job: payload `name:str input:rest` and the bytes of the files the request named, in its order; returns the program's output bytes as a list of its own. `name` is a `str` (a `u32` length), while `input` is a `Wire` payload whose counts are LEB128, so a harness meets both encodings in one buffer. For a prepared query `input` is its whole `Ask` input (see `FX` kind 8), and the query is answered by preparing afresh. A name the catalogue does not hold, or a payload without a name, is a `contract` crash (it poisons that worker instance only) |
 | `roc_engine_prepare` | `List(U8), List(List(U8)) -> Box(Core.Kept)` | Prepare a state to keep: payload `prep:str init:rest` (the preparation's name and its own input) and the preparation's files; returns the state. A name that is not a preparation is a `contract` crash |
@@ -1878,6 +1947,7 @@ that has run, in first-run order, with its run count.
 | 31 | Cleanup runs, all names |
 | 32–38 | Effect counters (The Effect Channel, "Counters"): requests issued, results delivered, stale results, requests refused at the in-flight cap, requests cancelled, requests reparented, writes skipped |
 | 39 | Live awaited ids now (a gauge, not cumulative) |
+| 40 | Port commands sent (`PORT`, opcode 19, which is counted here and not at index 19) |
 
 Index 0 is unused. The metric names the spec language accepts map onto these
 indices (`platform/Scm.roc`, `metric_names`).
@@ -1918,13 +1988,15 @@ An event is `event(node, handler)` with the payload staged first:
 | 11 | `class:u8` | `WorkLost(fault)`: `1` contract, `2` resource_limit, `3` out_of_memory, `4` app_crash, `5` expect_failed (the worker instance's fault class), `6` unavailable (no `Worker`), `7` executor (the worker script failed) |
 | 12 | — | Reserved |
 | 13 | `reason:u8` | `FileFailed(reason)`: `1` unreadable (a file the request named could not be read), `2` too_large (more files or bytes than the operation reads, or a 17th range given a URL), `3` unavailable (the browser cannot perform the operation) |
+| 14 | `json:str nblobs:u32 (len:u32 bytes)* nfiles:u32 (size:u64 name:str type:str)*` | `PortReply(message)`: a call's answer or a subscription's message. With files it is delivered through `event_files` on the effect node, and the files are the staged handles in order; otherwise `nfiles` is `0` |
+| 15 | `class:u8 [detail:rest]` | `PortFailed(failure)`: `1` threw (`detail` is the message), `2` too_large, `3` closed |
 | 16 | `bytes` (the rest, raw) | `FileBytes(List(U8))`: a file's range read into the page |
 | 17 | `bytes` (the rest, raw) | `FileText(Str)`, or `FileFailed(InvalidUtf8)` when the bytes are not UTF-8 |
 | 18 | `digest:32 bytes` | `Digest(List(U8))`: a SHA-256 digest |
 | 19 | `url:rest` | `FileUrl(Str)` |
 
 A result payload that does not follow this table (unknown tag, bytes after a
-bare tag, a flag other than `0`/`1`, a fault class outside `1`–`7`, a file failure other than `1`–`3`, a digest that is not 32 bytes, a
+bare tag, a flag other than `0`/`1`, a fault class outside `1`–`7`, a file failure other than `1`–`3`, a digest that is not 32 bytes, a port failure other than `1`–`3`, a port reply whose file count is not the handles staged with it, a
 truncated HTTP record, text that is not UTF-8) is a `contract` fault.
 
 ### Node ids
@@ -1970,10 +2042,11 @@ truncated HTTP record, text that is not UTF-8) is a `contract` fault.
 | 16 | `STORE` | `op:u8 key:str [value:str]` (`1` set with value, `2` remove) |
 | 17 | `TITLE` | `text:str` |
 | 18 | `FOCUS` | `op:u8 node` (`1` focus, `2` blur, `3` focus and select text) |
+| 19 | `PORT` | `port:str message` — a port command; `message` is `json:str nblobs:u32 (len:u32 bytes)* nfiles:u32 (token:u64 start:u64 len:u64)*` |
 
 `before = 0` appends to `parent`; otherwise the node is inserted before
 `before` (and `parent` is that node's parent). Opcodes 13–18 are collected while
-the batch is applied and performed after it.
+the batch is applied and performed after it, as is 19.
 
 **`FX` kinds:**
 
@@ -1987,6 +2060,8 @@ the batch is applied and performed after it.
 | 6 | — | Connectivity (subscription; `online`/`offline` events) |
 | 7 | — | Visibility (subscription; `visibilitychange` events) |
 | 8 | `program:str input:u32+bytes n:u32 (token:u64 start:u64 len:u64)*n deadline_ms:u32 prepared:u8 [prep:str init_at:u32 init_len:u32 init_files:u32 policy:u8]` | Work: `input` is a `u32` length and raw bytes, not necessarily UTF-8; then the files the input refers to, each a handle's token and a range of its file; `deadline_ms` 0 = none, capped at 600 000. `prepared` is `0` for `Work` and `1` for `Ask`, which then names its preparation, where the preparation's input lies in `input` (`init_len` bytes at `init_at`; the query's own input is the rest), how many of the files are the preparation's (the first `init_files`), and its cancel policy (`1` stop, `2` finish). An `Ask` input is `prep:str init_len:u32 init_files:u32 policy:u8`, then the preparation's input, then the query's; the engine copies the operands from it, and an input that does not follow it is a `contract` crash. Any other flag or inconsistent operands are a `contract` fault |
+| 9 | `port:str message timeout_ms:u32` | Port call (`message` as for `PORT`); `timeout_ms` 0 = none, capped at 600 000 |
+| 10 | `port:str message` | Port subscription |
 | 11 | `mode:u8 token:u64 start:u64 len:u64` | Read a file's range into the page: `mode` `1` bytes (answered tag 16), `2` text (tag 17) |
 | 12 | `method:str url:str n:u32 (name:str value:str)* token:u64 start:u64 len:u64 timeout_ms:u32` | HTTP with a file's range as the body (answered as kind 1); a method of `GET` or `HEAD` is a `contract` error in the engine |
 | 13 | `algorithm:u8 token:u64 start:u64 len:u64` | Digest of a file's range: `algorithm` `1` SHA-256 (tag 18) |

@@ -37,6 +37,7 @@ answer = |s, b| {
 				UploadRequest(_) => crash "the supersede app uploads no files"
 				DigestRequest(_) => crash "the supersede app digests no files"
 				UrlRequest(_) => crash "the supersede app asks for no file URLs"
+				PortRequest(_) => crash "the supersede app declares no ports"
 				HttpRequest =>
 					if b % 5 == 3 {
 						SpecRunner.encode_http(503, [], "unavailable")

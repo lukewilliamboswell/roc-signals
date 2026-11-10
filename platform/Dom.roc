@@ -317,14 +317,14 @@ Dom := [].{
 	apply = |dom0, b| Dom.apply_ops(dom0, b).0
 
 	op_name : U8 -> Str
-	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORE", "TITLE", "FOCUS"].get(op.to_u64()) ?? "?"
+	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORE", "TITLE", "FOCUS", "PORT"].get(op.to_u64()) ?? "?"
 
 	## Opcode histogram of a batch, e.g. "SETTEXT=1 ATTR=1".
 	describe : List(U8) -> Str
 	describe = |ops| {
 		var $parts = []
 		var $op = 1.U8
-		while $op <= 18 {
+		while $op <= 19 {
 			n = ops.count_if(|o| o == $op)
 			if n > 0 {
 				$parts = $parts.append("${Dom.op_name($op)}=${n.to_str()}")
@@ -372,7 +372,45 @@ Dom := [].{
 
 		## A URL that shows a file's range: id and the file.
 		FileUrl(U32, { token : U64, start : U64, len : U64 }),
+
+		## A port command (`PORT`): the port and its message.
+		PortSend(Str, PortMsg),
+
+		## A port call (`FX` kind 9): id, port, message and timeout (ms, 0
+		## none).
+		PortCall(U32, Str, PortMsg, U32),
+
+		## A port subscription (`FX` kind 10): id, port and message.
+		PortListen(U32, Str, PortMsg),
 	]
+
+	## A port message as the wire carries it: JSON text, the byte blocks its
+	## bytes markers name, and the handles and ranges of the files its file
+	## markers name.
+	PortMsg : { json : Str, blobs : List(List(U8)), files : List({ token : U64, start : U64, len : U64 }) }
+
+	## A port message at `at`: `json:str nblobs:u32 (len:u32 bytes)* nfiles:u32
+	## (token:u64 start:u64 len:u64)*`, and where it ends.
+	port_msg : List(U8), U64 -> (PortMsg, U64)
+	port_msg = |b, at| {
+		(json, a1) = Dom.str(b, at)
+		nblobs = Dom.u32(b, a1).to_u64()
+		var $a = a1 + 4
+		var $blobs = []
+		while $blobs.len() < nblobs {
+			(blob, next) = Dom.raw(b, $a)
+			$blobs = $blobs.append(blob)
+			$a = next
+		}
+		nfiles = Dom.u32(b, $a).to_u64()
+		$a = $a + 4
+		var $files = []
+		while $files.len() < nfiles {
+			$files = $files.append({ token: Dom.u64(b, $a), start: Dom.u64(b, $a + 8), len: Dom.u64(b, $a + 16) })
+			$a = $a + 24
+		}
+		({ json, blobs: $blobs, files: $files }, $a)
+	}
 
 	## Apply one batch and also return its opcode sequence.
 	apply_ops : Model, List(U8) -> (Model, List(U8))
@@ -644,6 +682,16 @@ Dom := [].{
 				} else if kind == 14 {
 					$fx = $fx.append(FileUrl(id, Dom.file_ref(b, $at)))
 					$at = $at + 24
+				} else if kind == 9 {
+					(port, a1) = Dom.str(b, $at)
+					(msg, a2) = Dom.port_msg(b, a1)
+					$fx = $fx.append(PortCall(id, port, msg, Dom.u32(b, a2)))
+					$at = a2 + 4
+				} else if kind == 10 {
+					(port, a1) = Dom.str(b, $at)
+					(msg, a2) = Dom.port_msg(b, a1)
+					$fx = $fx.append(PortListen(id, port, msg))
+					$at = a2
 				} else {
 					crash "unknown effect kind ${kind.to_str()}"
 				}
@@ -675,6 +723,11 @@ Dom := [].{
 				(t, a1) = Dom.str(b, $at)
 				$at = a1
 				$fx = $fx.append(Title(t))
+			} else if op == 19 {
+				(port, a1) = Dom.str(b, $at)
+				(msg, a2) = Dom.port_msg(b, a1)
+				$at = a2
+				$fx = $fx.append(PortSend(port, msg))
 			} else {
 				crash "unknown command ${op.to_str()}"
 			}
