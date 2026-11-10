@@ -832,7 +832,7 @@ Core := [].{
 	## A mounted engine instance: the site tree and the transaction state. The host
 	## holds it between calls through [Program]; test platforms and harnesses drive
 	## it directly with `mount`, `event`, `result` and `take_cmds`.
-	App :: { root : Inst(Root), tx : Tx }
+	App :: { root : Inst(Root), tx : Tx, programs : List(Str) }
 
 	## For test platforms and harnesses: mount an app under host node 0 with the
 	## default in-flight bound of 32. The mount's commands wait in the instance
@@ -849,7 +849,7 @@ Core := [].{
 	## handler number with the event's payload, as one transaction (plus any
 	## follow-up turns). An event on a node that has since been removed is ignored.
 	event : App, U32, U32, Str -> App
-	event = |{ root, tx }, node, handler, payload| {
+	event = |{ root, tx, programs }, node, handler, payload| {
 		# O(1): the route gives a static node's block path or a row's site and
 		# slot (the site's path + slot). The handler number comes from the host
 		# (LISTEN or the template carried it per event name), so an element
@@ -865,8 +865,8 @@ Core := [].{
 			}
 		}
 		match target {
-			Err(Stale) => { root, tx }
-			Ok((path, h)) => drain(turn({ root, tx }, path, h, Ev(payload)))
+			Err(Stale) => { root, tx, programs }
+			Ok((path, h)) => drain(turn({ root, tx, programs }, path, h, Ev(payload)))
 		}
 	}
 
@@ -874,12 +874,12 @@ Core := [].{
 	## as one transaction exactly like an event. An id that is not in flight is
 	## dropped and counted `stale`.
 	result : App, U32, Res -> App
-	result = |{ root, tx }, id, res| {
+	result = |{ root, tx, programs }, id, res| {
 		match tx.fx.live.find_first(|l| l.id == id) {
-			Err(_) => { root, tx: fx_count(tx, Stale) }
+			Err(_) => { root, tx: fx_count(tx, Stale), programs }
 			Ok(entry) => {
 				tx1 = if (entry.sub) tx else with_fx(tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id) })
-				drain(turn({ root, tx: tx1 }, entry.path, id, Fx(res)))
+				drain(turn({ root, tx: tx1, programs }, entry.path, id, Fx(res)))
 			}
 		}
 	}
@@ -888,9 +888,9 @@ Core := [].{
 	## last call, leaving `buf` (cleared) in the instance to accumulate the next
 	## batch.
 	take_cmds : App, List(U8) -> (App, List(U8))
-	take_cmds = |{ root, tx }, buf| {
+	take_cmds = |{ root, tx, programs }, buf| {
 		{ cmds, next, free, routes, work, paths, site_free, fx } = tx
-		({ root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, fx } }, cmds)
+		({ root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, fx }, programs }, cmds)
 	}
 
 	## For test platforms and harnesses: how many app closures (holes, values,
@@ -1010,9 +1010,9 @@ Core := [].{
 		},
 		init: |names, boot| finish(mount_in(cfg.max_inflight, names, view(decode_boot(boot))), [], []),
 		event: |inst, buf, wbuf, node, handler, payload| {
-			{ root, tx } = inst
+			{ root, tx, programs } = inst
 			{ cmds: _, next, free, routes, work, paths, site_free, fx } = tx
-			fresh = { root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, fx } }
+			fresh = { root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, fx }, programs }
 			if node == fx_node {
 				finish(Core.result(fresh, handler, Core.decode_res(payload)), [], wbuf)
 			} else {
@@ -1374,9 +1374,9 @@ drop_ref = |fx, node| with_refs(
 ## Update the reference table with both lists moved out of `fx`, so
 ## they stay uniquely owned and update in place.
 with_refs : Fx, (List((Str, U32)), List(U32) -> (List((Str, U32)), List(U32))) -> Fx
-with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups, programs }, f| {
+with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups }, f| {
 	(refs2, at2) = f(refs, ref_pos)
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs: refs2, focus, ref_pos: at2, cleanups, programs }
+	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs: refs2, focus, ref_pos: at2, cleanups }
 }
 
 set_route : Tx, U32, List(U32), U32 -> Tx
@@ -3294,9 +3294,9 @@ max_programs = 64
 mount_in : U64, List(Str), Elem(Root) -> App
 mount_in = |max, programs, elem| {
 	{ cmds, next, free, routes, work, paths, site_free, fx } = new_tx([])
-	tx0 = { cmds, next, free, routes, work, paths, site_free, fx: { ..fx, max, programs } }
+	tx0 = { cmds, next, free, routes, work, paths, site_free, fx: { ..fx, max } }
 	(block, tx) = mount_block(Root, elem, 0, [], 0, 0, { cap: 0, local: False }, tx0)
-	drain({ root: block_inst(block), tx: flush_focus(tx) })
+	drain({ root: block_inst(block), tx: flush_turn(tx, programs), programs })
 }
 
 ## The catalogue's names, or the contract error that building it is.
@@ -3367,10 +3367,10 @@ Fx : {
 	reparented : U64,
 	skipped : U64,
 
-	## Focus references (name, node) and focus commands awaiting the end
-	## of the turn (op 1 focus, 2 blur, 3 select, ref name).
+	## Focus references (name, node), and the checks awaiting the end of the
+	## turn (see [TurnEnd]).
 	refs : List((Str, U32)),
-	focus : List((U8, Str)),
+	focus : List(TurnEnd),
 
 	## `ref_pos[node]`: the node's position in `refs` plus one (0: the node
 	## carries no reference), so freeing a node id is O(1).
@@ -3378,14 +3378,23 @@ Fx : {
 
 	## `on_cleanup` runs, by name, in first-run order.
 	cleanups : List((Str, U64)),
-
-	## The names in the program's worker catalogue (at most `max_programs`),
-	## fixed at mount: a `Work` request for any other is a contract error.
-	programs : List(Str),
 }
 
+## What the end of a turn settles, in issue order: a focus command on a named
+## reference (op 1 focus, 2 blur, 3 select text), resolved then so a reference
+## mounted later in the turn is found; and the work requests the turn issued,
+## each checked against the worker catalogue with its program and site path.
+##
+## The catalogue lives in [App], not in `Fx`: every site rebuilds `Fx` as it
+## threads the transaction, and with the pinned compiler each inline field of
+## it costs code at every one of those places (a catalogue field there grew
+## every app by about 3%). Checking at the end of the turn is the same
+## contract error with the same message; nothing the turn did is published,
+## because the crash poisons the instance before the call returns.
+TurnEnd : [Focus(U8, Str), CheckProgram(Str, List(U32))]
+
 fx_empty : Fx
-fx_empty = { next: 1, inner: 2147483648, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, refs: [], focus: [], ref_pos: [], cleanups: [], programs: [] }
+fx_empty = { next: 1, inner: 2147483648, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, refs: [], focus: [], ref_pos: [], cleanups: [] }
 
 ## The host node id that marks an event as an effect result.
 fx_node : U32
@@ -3461,12 +3470,12 @@ put_req = |c, id, req| {
 ## Admit an awaited request (or refuse it when the table is full).
 fx_admit : Tx, List(U32), Req -> (U32, Tx)
 fx_admit = |{ cmds, next, free, routes, work, paths, site_free, fx }, path, req| {
-	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups, programs } = fx
+	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups } = fx
 	if live.len() >= max {
-		fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups, programs }
+		fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups }
 		(id, { cmds, next, free, routes, work, paths, site_free, fx: fx2 })
 	} else {
-		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups, programs }
+		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups }
 		(id, { cmds: put_req(cmds, id, req), next, free, routes, work: add_work(work, 13, 1), paths, site_free, fx: fx2 })
 	}
 }
@@ -3492,13 +3501,13 @@ issue = |tx, path, reqs, a, owned| {
 				$tx = emit_op($tx, 15, |c| put_str(c.append(2), url))
 			}
 			Focus(n) => {
-				$tx = with_fx($tx, |fx| { ..fx, focus: fx.focus.append((1, n)) })
+				$tx = with_fx($tx, |fx| { ..fx, focus: fx.focus.append(Focus(1, n)) })
 			}
 			Blur(n) => {
-				$tx = with_fx($tx, |fx| { ..fx, focus: fx.focus.append((2, n)) })
+				$tx = with_fx($tx, |fx| { ..fx, focus: fx.focus.append(Focus(2, n)) })
 			}
 			SelectText(n) => {
-				$tx = with_fx($tx, |fx| { ..fx, focus: fx.focus.append((3, n)) })
+				$tx = with_fx($tx, |fx| { ..fx, focus: fx.focus.append(Focus(3, n)) })
 			}
 			Title(t) => {
 				$tx = emit_op($tx, 17, |c| put_str(c, t))
@@ -3515,10 +3524,8 @@ issue = |tx, path, reqs, a, owned| {
 				$owned = $owned.append({ id, sub: False, keep: False, a })
 			}
 			Work({ program, .. }) => {
-				if !$tx.fx.programs.contains(program) {
-					crash "contract: worker program \"${program}\" is not registered; add its registration to with_workers (site ${show_path(path)})"
-				}
-				(id, t1) = fx_admit($tx, path, req)
+				t0 = with_fx($tx, |fx| { ..fx, focus: fx.focus.append(CheckProgram(program, path)) })
+				(id, t1) = fx_admit(t0, path, req)
 				$tx = t1
 				$owned = $owned.append({ id, sub: False, keep: False, a })
 			}
@@ -4076,33 +4083,42 @@ new_tx = |cmds| { cmds, next: 1, free: [], routes: [], work: work_zero, paths: [
 ## turn's focus commands (resolved now, so a reference mounted later in
 ## the same turn is found; a missing one is counted stale).
 turn : App, List(U32), U32, Payload -> App
-turn = |{ root, tx }, path, h, payload| {
+turn = |{ root, tx, programs }, path, h, payload| {
 	(root2, out, tx2) = call(root, Root, Fire(path, 0, h, payload), bump(tx, w_turns, 1))
 	mask = out_mask(out)
 	if mask == 0 {
-		{ root: root2, tx: flush_focus(tx2) }
+		{ root: root2, tx: flush_turn(tx2, programs), programs }
 	} else {
 		(root3, _, tx3) = call(root2, Root, Changed(mask), bump(tx2, w_dirty_roots, popcount(mask)))
-		{ root: root3, tx: flush_focus(tx3) }
+		{ root: root3, tx: flush_turn(tx3, programs), programs }
 	}
 }
 
-## Command 18 FOCUS op:u8 node:u32 (1 focus, 2 blur, 3 select text).
-flush_focus : Tx -> Tx
-flush_focus = |tx| {
+## The end of a turn (see [TurnEnd]): command 18 FOCUS op:u8 node:u32 for
+## each focus request, and the catalogue check of each work request against
+## the instance's `programs`.
+flush_turn : Tx, List(Str) -> Tx
+flush_turn = |tx, programs| {
 	if tx.fx.focus.is_empty() {
 		tx
 	} else {
 		reqs = tx.fx.focus
 		var $tx = with_fx(tx, |fx| { ..fx, focus: [] })
-		for (op, name) in reqs {
-			match $tx.fx.refs.find_first(|(n, _)| n == name) {
-				Ok((_, node)) => {
-					$tx = emit_op($tx, 18, |c| put_u32(c.append(op), node))
-				}
-				Err(_) => {
-					$tx = with_fx($tx, |fx| { ..fx, stale: fx.stale + 1 })
-				}
+		for entry in reqs {
+			match entry {
+				Focus(op, name) =>
+					match $tx.fx.refs.find_first(|(n, _)| n == name) {
+						Ok((_, node)) => {
+							$tx = emit_op($tx, 18, |c| put_u32(c.append(op), node))
+						}
+						Err(_) => {
+							$tx = with_fx($tx, |fx| { ..fx, stale: fx.stale + 1 })
+						}
+					}
+				CheckProgram(program, path) =>
+					if !programs.contains(program) {
+						crash "contract: worker program \"${program}\" is not registered; add its registration to with_workers (site ${show_path(path)})"
+					}
 			}
 		}
 		$tx
@@ -4118,10 +4134,10 @@ drain = |app0| {
 		if $turns >= max_turns {
 			crash "contract: effect follow-up turns exceeded the per-call budget of 64 (feedback loop)"
 		}
-		{ root, tx } = $app
+		{ root, tx, programs } = $app
 		q = tx.fx.queue.first() ?? crash "queue"
 		tx1 = with_fx(tx, |fx| { ..fx, queue: fx.queue.drop_first(1) })
-		$app = turn({ root, tx: tx1 }, q.path, q.id, Fx(q.res))
+		$app = turn({ root, tx: tx1, programs }, q.path, q.id, Fx(q.res))
 		$turns = $turns + 1
 	}
 	$app
