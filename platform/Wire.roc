@@ -7,8 +7,10 @@
 ## unions, lists, sets, dictionaries, strings, numbers and `Bool` need no codec
 ## written by hand. A nominal type opts in by declaring `parser_for : _` and
 ## `encoder_for : _`, and is then encoded as its backing type. A type with a
-## function in it, or a nominal type without those declarations, is not
-## `Sendable`, and using it is a compile-time error.
+## function in it, a nominal type without those declarations, or a `Try` is
+## not `Sendable`, and using it is a compile-time error. (A record field of
+## type `Try(a, [Missing])` is the exception: derivation reads it as an
+## optional field, `name ?: a`.)
 ##
 ## Layout, for a second implementation:
 ##
@@ -63,7 +65,9 @@ Wire := [].{
 	## A type whose values can cross between a page and a worker: everything
 	## derivation covers, and nominal types that declare `parser_for : _` and
 	## `encoder_for : _` (or implement them over this format's methods).
-	## Functions, and nominal types without those declarations, are excluded.
+	## Functions, `Try`, and nominal types without those declarations are
+	## excluded; the compiler reports the missing `encoder_for` and
+	## `parser_for` methods at the use that needs them.
 	a.Sendable :
 		where [
 			a.encoder_for : Format -> (a, List(U8) -> Try(List(U8), [])),
