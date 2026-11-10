@@ -127,16 +127,55 @@ ExampleFiles := [].{
 		Ok({})
 	}
 
+	## The examples whose `section` names no `[[sections]]` id, or that have
+	## none: the examples index would leave them out without a word.
+	unsectioned : Str -> List(Str)
+	unsectioned = |text| {
+		var $ids = []
+		var $examples = []
+		var $table = ""
+		var $slug = ""
+		var $section = ""
+		for raw in text.split_on("\n").append("[[end]]") {
+			line = raw.trim()
+			if line.starts_with("[") {
+				if $table == "[[examples]]" {
+					$examples = $examples.append(($slug, $section))
+				}
+				if line != "[[examples.scripts]]" {
+					$table = line
+					$slug = ""
+					$section = ""
+				}
+			} else {
+				parts = line.split_on(" = ")
+				key = (parts.first() ?? "").trim()
+				value = ExampleFiles.string(Str.join_with(parts.drop_first(1), " = ").trim()) ?? ""
+				if $table == "[[sections]]" and key == "id" {
+					$ids = $ids.append(value)
+				} else if $table == "[[examples]]" and key == "slug" {
+					$slug = value
+				} else if $table == "[[examples]]" and key == "section" {
+					$section = value
+				}
+			}
+		}
+		ids = $ids
+		$examples.keep_if(|(_, section)| !ids.contains(section)).map(|(slug, _)| slug)
+	}
+
 	## The `check` task's look at the catalogue: every line that names a file
-	## is readable, and every file it names exists, so a broken name fails a
-	## pull request rather than the next site build.
+	## is readable, every file it names exists, and every example is in a
+	## section of the index, so a broken name fails a pull request rather than
+	## the next site build.
 	check! : Str => Try(List(Str), _)
 	check! = |root| {
 		text = Path.read_utf8!(Path.utf8("${root}/${ExampleFiles.catalog}"))?
+		sections = ExampleFiles.unsectioned(text).map(|slug| "${ExampleFiles.catalog}: example ${slug} names no section of the index")
 		match ExampleFiles.copies(text) {
-			Err(Unreadable(line)) => Ok(["${ExampleFiles.catalog}: cannot read the file this line names: ${line.trim()}"])
+			Err(Unreadable(line)) => Ok(sections.append("${ExampleFiles.catalog}: cannot read the file this line names: ${line.trim()}"))
 			Ok(named) => {
-				var $out = []
+				var $out = sections
 				for { from, .. } in named {
 					if !Path.exists!(Path.utf8("${root}/${from}"))? {
 						$out = $out.append("${ExampleFiles.catalog} names ${from}, which does not exist")
@@ -146,6 +185,28 @@ ExampleFiles := [].{
 			}
 		}
 	}
+}
+
+## An example is in the index only when its section exists.
+expect {
+	text =
+		\\[[sections]]
+		\\id = "basics"
+		\\
+		\\[[examples]]
+		\\slug = "a"
+		\\section = "basics"
+		\\
+		\\[[examples.scripts]]
+		\\shared = "x.mjs"
+		\\
+		\\[[examples]]
+		\\slug = "b"
+		\\section = "advanced"
+		\\
+		\\[[examples]]
+		\\slug = "c"
+	ExampleFiles.unsectioned(text) == ["b", "c"]
 }
 
 ## Each kind of file an example names is copied from its directory to the

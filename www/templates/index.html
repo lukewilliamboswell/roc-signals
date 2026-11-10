@@ -48,10 +48,10 @@
       <a class="button" href="{{ get_url(path='examples/', trailing_slash=true) }}">All examples</a>
     </div>
     {% for example in data.examples %}
-    {% if example.public and example.slug == "conduit" %}
+    {% if example.public and example.featured | default(value=false) %}
     <a class="group relative grid overflow-hidden rounded-2xl border border-emerald-200 bg-emerald-950 p-6 text-white no-underline shadow-sm transition hover:border-emerald-400 hover:no-underline sm:p-8 lg:grid-cols-[1.35fr_0.65fr] lg:items-end" href="{{ get_url(path='examples/' ~ example.slug ~ '/', trailing_slash=true) }}">
       <div class="relative z-10 grid gap-4">
-        <span class="w-fit rounded-full bg-emerald-400/15 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-emerald-200">Featured · RealWorld</span>
+        <span class="w-fit rounded-full bg-emerald-400/15 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-emerald-200">Featured example</span>
         <div>
           <span class="text-3xl font-semibold tracking-normal text-white">{{ example.title }}</span>
           <span class="mt-2 block max-w-3xl leading-7 text-emerald-100">{{ example.description }}</span>
@@ -67,7 +67,7 @@
     {% endfor %}
     <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
       {% for example in data.examples %}
-      {% if example.public and example.slug != "conduit" %}
+      {% if example.public and not example.featured | default(value=false) %}
       <a class="panel grid gap-2 p-4 no-underline transition hover:border-emerald-500" href="{{ get_url(path='examples/' ~ example.slug ~ '/', trailing_slash=true) }}">
         <span class="font-semibold text-zinc-950">{{ example.title }}</span>
         <span class="text-sm leading-6 text-zinc-600">{{ example.description }}</span>

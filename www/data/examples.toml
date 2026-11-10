@@ -1,37 +1,59 @@
-# The examples the site shows, in index order. Each runs on the web
-# platform from the entry point `source` names; its specs run natively and
-# in Chrome. An example may list `scripts` its page loads before the app
-# mounts, name its port handlers' module in `ports` (a file beside its
-# app.wasm whose default export site.mjs passes as the `ports` mount option),
-# and name its simulated service in `backend` (a module beside its app.wasm
-# whose default export, `createBackend()`, returns a request handler that
-# site.mjs turns into the mount's `fetch`; see examples/conduit/backend.mjs),
-# and list the files it downloads at run time in `data`. scripts/site.roc
-# copies every file named here beside the example's app.wasm; each names a
-# file directly in the example's directory.
+# The examples the site shows. Each runs on the web platform from the entry
+# point `source` names; its specs run natively and in Chrome. An example may
+# list `scripts` its page loads before the app mounts, name its port
+# handlers' module in `ports` (a file beside its app.wasm whose default
+# export site.mjs passes as the `ports` mount option), name its simulated
+# service in `backend` (a module beside its app.wasm whose default export,
+# `createBackend()`, returns a request handler that site.mjs turns into the
+# mount's `fetch`; see examples/conduit/backend.mjs), and list the files it
+# downloads at run time in `data`. scripts/site.roc copies every file named
+# here beside the example's app.wasm; each names a file directly in the
+# example's directory.
 #
 # A script's `src` is a URL (with its `integrity`) or a file of the example's
 # own; `shared` in its place names a file in examples/shared/, the JavaScript
 # several examples load (custom elements such as `plume-chart`), which the
 # site serves once at examples/shared/. `module = true` loads it as a module.
+#
+# The examples index shows the `sections` below in order, and in each the
+# examples whose `section` names it, in the order they appear here: a
+# learning path from plain reactive state to workers. Each example's
+# `features` are its chips, drawn from one vocabulary so a reader can follow
+# a feature across examples: Derived values, Keyed lists, Components, Forms,
+# HTTP, Local storage, Intervals, Routing, Custom elements, Ports, Workers,
+# Cancellation, Files, Preparations. `what_to_try` is one line telling a
+# reader what to do to see the point of the example, where that helps;
+# `featured = true` draws an example as its section's wide card.
+
+[[sections]]
+id = "basics"
+title = "Reactive basics"
+blurb = "State, derived values, keyed lists and components. Each change updates exactly what depends on it, and nothing leaves the page."
+
+[[sections]]
+id = "effects"
+title = "Effects and the network"
+blurb = "Requests, timers, storage and the address bar, asked for by the app and answered back into it; each example talks to a simulated service that lives beside it."
+
+[[sections]]
+id = "ports"
+title = "JavaScript through ports"
+blurb = "When an app needs a browser API the platform does not model, its own JavaScript answers typed requests and sends messages, and nothing else."
+
+[[sections]]
+id = "workers"
+title = "Workers and files"
+blurb = "Roc tasks running in Web Workers, and files that never pass through the page: the page stays responsive however long the work takes."
 
 [[examples]]
-slug = "field-notes"
-title = "Field Notes"
-description = "Offline-first note capture with an outbox that drains on reconnect, per-note sync status, optimistic writes and rollback."
-source = "examples/field-notes/main.roc"
-specs = "examples/field-notes/specs"
+slug = "markdown-editor"
+title = "Markdown Editor"
+description = "One markdown source string feeding four independently derived views: preview, outline, statistics, and reading time."
+source = "examples/markdown-editor/main.roc"
+specs = "examples/markdown-editor/specs"
 public = true
-# Its simulated sync service, the example's own JavaScript.
-backend = "backend.mjs"
-
-[[examples]]
-slug = "data-grid"
-title = "Data Grid"
-description = "A 1200-row sortable, filterable, editable grid that renders one page at a time while a summary row aggregates the full dataset."
-source = "examples/data-grid/main.roc"
-specs = "examples/data-grid/specs"
-public = true
+section = "basics"
+features = ["Derived values", "Keyed lists", "Components"]
 
 [[examples]]
 slug = "form-builder"
@@ -40,6 +62,51 @@ description = "A field designer beside a live preview that validates as you type
 source = "examples/form-builder/main.roc"
 specs = "examples/form-builder/specs"
 public = true
+section = "basics"
+features = ["Forms", "Derived values", "Components"]
+
+[[examples]]
+slug = "kanban-board"
+title = "Kanban Board"
+description = "A four-column board with cross-column moves, within-column reorder, per-column WIP limits, and derived counts over keyed rows."
+source = "examples/kanban-board/main.roc"
+specs = "examples/kanban-board/specs"
+public = true
+section = "basics"
+features = ["Keyed lists", "Components", "Derived values"]
+
+[[examples]]
+slug = "spreadsheet-lite"
+title = "Spreadsheet Lite"
+description = "An 8x12 formula grid with cell references, precedence, SUM ranges, error propagation, and cycle detection over fixed-point arithmetic."
+source = "examples/spreadsheet-lite/main.roc"
+specs = "examples/spreadsheet-lite/specs"
+public = true
+section = "basics"
+features = ["Derived values", "Keyed lists"]
+
+[[examples]]
+slug = "data-grid"
+title = "Data Grid"
+description = "A 1200-row sortable, filterable, editable grid that renders one page at a time while a summary row aggregates the full dataset."
+source = "examples/data-grid/main.roc"
+specs = "examples/data-grid/specs"
+public = true
+section = "basics"
+features = ["Keyed lists", "Derived values", "Forms"]
+
+[[examples]]
+slug = "field-notes"
+title = "Field Notes"
+description = "Offline-first note capture with an outbox that drains on reconnect, per-note sync status, optimistic writes and rollback."
+source = "examples/field-notes/main.roc"
+specs = "examples/field-notes/specs"
+public = true
+section = "effects"
+features = ["HTTP", "Local storage", "Keyed lists"]
+what_to_try = "Switch the network to Offline in your browser's developer tools, save and queue a few notes, then go back online and watch the outbox drain; every third sync fails, so you can retry one."
+# Its simulated sync service, the example's own JavaScript.
+backend = "backend.mjs"
 
 [[examples]]
 slug = "status-page"
@@ -48,6 +115,9 @@ description = "A public status page rolling four independent service checks into
 source = "examples/status-page/main.roc"
 specs = "examples/status-page/specs"
 public = true
+section = "effects"
+features = ["HTTP", "Intervals", "Custom elements"]
+what_to_try = "Leave it open for half a minute: the simulated service walks through an outage, a failed check and the recovery. Switch to another tab and back, and polling pauses and resumes."
 # Its simulated checks and incident feed, the example's own JavaScript.
 backend = "backend.mjs"
 
@@ -63,38 +133,32 @@ shared = "plume-chart.mjs"
 module = true
 
 [[examples]]
-slug = "kanban-board"
-title = "Kanban Board"
-description = "A four-column board with cross-column moves, within-column reorder, per-column WIP limits, and derived counts over keyed rows."
-source = "examples/kanban-board/main.roc"
-specs = "examples/kanban-board/specs"
-public = true
-
-[[examples]]
-slug = "spreadsheet-lite"
-title = "Spreadsheet Lite"
-description = "An 8x12 formula grid with cell references, precedence, SUM ranges, error propagation, and cycle detection over fixed-point arithmetic."
-source = "examples/spreadsheet-lite/main.roc"
-specs = "examples/spreadsheet-lite/specs"
-public = true
-
-[[examples]]
-slug = "markdown-editor"
-title = "Markdown Editor"
-description = "One markdown source string feeding four independently derived views: preview, outline, statistics, and reading time."
-source = "examples/markdown-editor/main.roc"
-specs = "examples/markdown-editor/specs"
-public = true
-
-[[examples]]
 slug = "conduit"
 title = "Conduit"
 description = "RealWorld (Conduit) demo: hash-routed feeds, sessions, profiles, markdown articles, comments, favorites, follows, and server-confirmed write paths."
 source = "examples/conduit/main.roc"
 specs = "examples/conduit/specs"
 public = true
+section = "effects"
+featured = true
+features = ["HTTP", "Routing", "Local storage", "Keyed lists"]
+what_to_try = "Sign in as anna@conduit.test with the password secret-anna, then favorite an article, follow an author and leave a comment."
 # Its simulated RealWorld API, the example's own JavaScript.
 backend = "backend.mjs"
+
+[[examples]]
+slug = "reading-list"
+title = "Reading List"
+description = "A reading list kept in the browser's IndexedDB through ports: the books survive a reload, a change in one tab shows in every other, and the only JavaScript the app brings is its port handlers."
+source = "examples/reading-list/main.roc"
+specs = "examples/reading-list/specs"
+public = true
+section = "ports"
+features = ["Ports", "Keyed lists"]
+what_to_try = "Open it in two tabs and add a book in one: it appears in the other, and is still there after a reload."
+# The app's port handlers (IndexedDB and a BroadcastChannel), its own
+# JavaScript, which site.mjs passes as the `ports` mount option.
+ports = "ports.mjs"
 
 [[examples]]
 slug = "worker-lab"
@@ -103,6 +167,9 @@ description = "Roc tasks counting primes and drawing Mandelbrot tiles in Web Wor
 source = "examples/worker-lab/main.roc"
 specs = "examples/worker-lab/specs"
 public = true
+section = "workers"
+features = ["Workers", "Cancellation", "Intervals", "Custom elements"]
+what_to_try = "Add ?workers=inline to the address to run the same jobs on the page's own thread, and watch the heartbeat stall."
 # Optional for any example: `max_workers` and `workers` set the mount's pool
 # (data-signals-max-workers / data-signals-workers); the page URL's
 # `maxWorkers` and `workers` query parameters override them.
@@ -120,19 +187,10 @@ description = "Drop a CSV of any size and convert it to TSV or JSON lines in a w
 source = "examples/csv-converter/main.roc"
 specs = "examples/csv-converter/specs"
 public = true
+section = "workers"
+features = ["Workers", "Files"]
 # The sample its "Load the sample" button downloads.
 data = ["sample.csv"]
-
-[[examples]]
-slug = "reading-list"
-title = "Reading List"
-description = "A reading list kept in the browser's IndexedDB through ports: the books survive a reload, a change in one tab shows in every other, and the only JavaScript the app brings is its port handlers."
-source = "examples/reading-list/main.roc"
-specs = "examples/reading-list/specs"
-public = true
-# The app's port handlers (IndexedDB and a BroadcastChannel), its own
-# JavaScript, which site.mjs passes as the `ports` mount option.
-ports = "ports.mjs"
 
 [[examples]]
 slug = "log-explorer"
@@ -141,3 +199,6 @@ description = "Open a log of any size, or generate one: a worker indexes it once
 source = "examples/log-explorer/main.roc"
 specs = "examples/log-explorer/specs"
 public = true
+section = "workers"
+features = ["Workers", "Preparations", "Files"]
+what_to_try = "Generate a sample log of a few hundred thousand entries, then search it: the index is built once, and each search reads only the lines it shows."
