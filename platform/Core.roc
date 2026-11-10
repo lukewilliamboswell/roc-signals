@@ -3821,13 +3821,20 @@ put_ask = |head, program, input, files, deadline_ms| {
 	if q.init_files > files.len() {
 		crash "contract: the query input of worker program \"${program}\" names more files than its request carries"
 	}
+	b = put_str(put_work(head, program, input, files, deadline_ms).append(1), q.prep)
+	put_u32(put_u32(put_u32(b, q.init_at.to_u32_wrap()), q.init_len.to_u32_wrap()), q.init_files.to_u32_wrap()).append(q.policy)
+}
+
+## FX kind 8 up to its deadline (design.md, Appendix B): what `Work` and
+## `Ask` requests share, before the flag that tells them apart.
+put_work : List(U8), Str, List(U8), List(File), U32 -> List(U8)
+put_work = |head, program, input, files, deadline_ms| {
 	var $b = put_u32(put_u32(put_str(head.append(8), program), input.len().to_u32_wrap()).concat(input), files.len().to_u32_wrap())
 	for file in files {
 		{ token, start, len } = file_ref(file)
 		$b = put_u64(put_u64(put_u64($b, token), start), len)
 	}
-	$b = put_str(put_u32($b, min_u32(deadline_ms, max_timeout_ms)).append(1), q.prep)
-	put_u32(put_u32(put_u32($b, q.init_at.to_u32_wrap()), q.init_len.to_u32_wrap()), q.init_files.to_u32_wrap()).append(q.policy)
+	put_u32($b, min_u32(deadline_ms, max_timeout_ms))
 }
 
 ## A worker instance's preparation: `prep:str init:rest` and the
@@ -4022,14 +4029,7 @@ put_req = |c, id, req| {
 		Popstate => head.append(5)
 		OnlineChanges => head.append(6)
 		VisibilityChanges => head.append(7)
-		Work({ program, input, files, deadline_ms }) => {
-			var $b = put_u32(put_u32(put_str(head.append(8), program), input.len().to_u32_wrap()).concat(input), files.len().to_u32_wrap())
-			for file in files {
-				{ token, start, len } = file_ref(file)
-				$b = put_u64(put_u64(put_u64($b, token), start), len)
-			}
-			put_u32($b, min_u32(deadline_ms, max_timeout_ms)).append(0)
-		}
+		Work({ program, input, files, deadline_ms }) => put_work(head, program, input, files, deadline_ms).append(0)
 		ReadBytes(f) => put_file(head.append(11).append(1), f)
 		ReadUtf8(f) => put_file(head.append(11).append(2), f)
 		Upload({ method, url, headers, body, timeout_ms }) => {
