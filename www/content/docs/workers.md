@@ -201,11 +201,12 @@ Effects exist only inside a job. Page code cannot call one, because the
 compiler refuses an effect in a pure function, and the platform refuses one
 anywhere else with a contract error.
 
-A job's effects are synchronous: each one returns before the job goes on,
-and a job runs from start to answer without pausing. So a task cannot wait
-for anything. There is no timer, page event or network response it can
-block on, and no HTTP request from inside a job: download on the page with
-`File.fetch` and send the file to the task instead.
+A job's effects are synchronous: the job blocks inside each one until it
+returns (a read waits for the browser to read the file), and otherwise runs
+from start to answer without pausing. So a task cannot await anything: no
+timer, page event or network response reaches a running job. The platform
+has no effect yet that makes an HTTP request from inside a job: download on
+the page with `File.fetch` and send the file to the task instead.
 
 ## A preparation and its tasks
 

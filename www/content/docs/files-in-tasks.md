@@ -160,11 +160,12 @@ where these effects do not exist: a job that reaches one is answered
 
 ## Not built yet
 
-A job cannot wait for anything, so a few things are missing:
+These are not built yet:
 
 - an HTTP request from inside a job (download on the page with `File.fetch`
   and send the file to the task instead);
-- progress reports while a job runs: a job says nothing until it answers;
+- progress reports while a job runs: a job cannot await anything, so it
+  says nothing until it answers;
 - a file the app can change in place, kept between sessions (an
   origin-private file);
 - output larger than the output bound, which a builder backed by such a

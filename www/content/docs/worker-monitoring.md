@@ -66,6 +66,11 @@ queueing and cold start as well as compute. A held job (manual mode, or the
 `manualWork` mount option) has no deadline timer: a spec's time is manual,
 and `expireEffect(id)` expires it instead.
 
+`held` means this on a job everywhere it appears (its span, its `phase` and
+the flag on `job-issue`): the job waits for `runEffect`. On an instance,
+`held` is something else, the name of the preparation whose state the
+instance keeps.
+
 A job's `inputBytes` counts its payload alone, which refers to the files its
 input holds but does not carry them: the job reads what it needs of them in
 `compute`.
@@ -130,13 +135,13 @@ const stop = runtime.monitor.subscribe((e) => console.log(e.kind, e));
 
 | Kind | Fields |
 |---|---|
-| `job-issue` | `id`, `task`, `inputBytes`, `deadlineMs`, `held`, `at` (and `input` with `payloads`) |
+| `job-issue` | `id`, `task`, `inputBytes`, `deadlineMs`, `held` (true when manual mode holds the job), `at` (and `input` with `payloads`) |
 | `job-start` | `id`, `instance`, `cold`, `at` |
 | `job-end` | `id`, `task`, `outcome`, `at`, `record` (the full job record; and `output` with `payloads`) |
 | `instance-spawn` | `instance`, `thread` (`"worker"` or `"page"`), `at` |
 | `instance-ready` | `instance`, `scriptAt`, `instantiateMs`, `memBytes`, `liveAllocs` (before any job), `at` |
 | `instance-end` | `instance`, `cause`, `fault` (`{ class, message }` or `null`), `jobs`, `busyMs`, `memBytes`, `at` |
-| `state-evict` | `instance`, `prep` (the preparation's name), `cause` (`replaced`, `files`, `released`), `at` |
+| `state-evict` | `instance`, `prep` (the preparation's name), `cause` (`replaced`, `released`), `at` |
 | `turn` | `node`, `handler`, `fx` (the job id for a job's result turn), `eventMs`, `applyMs`, `bytes`, `at`. Only for subscribers that pass `{ turns: true }` |
 | `runtime` | `state` (`mounted`, `poisoned`, `unmounted`), `generation`, `fault`, `at` |
 

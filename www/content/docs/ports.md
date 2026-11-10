@@ -296,8 +296,9 @@ function it is, for example with `node:test`.
 
 - **The platform models it:** use its effect. HTTP, storage, timers,
   history, focus and files need no JavaScript, and specs model them fully.
-- **A slow pure calculation:** use a [worker](@/docs/workers.md). It runs
-  your own Roc code off the page's thread, with no JavaScript.
+- **Your own Roc code off the page's thread** (a slow calculation, or
+  reading and building files): use a [worker](@/docs/workers.md) task. It
+  needs no JavaScript.
 - **A browser service the platform does not model:** use a port.
 - **Something that needs an answer inside a turn** (preventing a default,
   measuring layout before rendering): neither; a port's answer is always a
@@ -314,14 +315,3 @@ for user activation and object URLs. Use a port for what they do not cover,
 such as `showSaveFilePicker` with a suggested directory: a call carrying the
 bytes as `Wire.Bytes`, or a `File` your app holds, whose handler makes a
 `Blob` and writes it.
-
-## Coming from issue #183
-
-This design supersedes the byte-level escape hatch proposed in issue #183:
-
-| #183 | Ports |
-|---|---|
-| `Emit(name, bytes)` | a command port, `Port.Command(Wire.Bytes)` |
-| `Call(name, bytes)` with `Reply` / `Failed` | a call port, `Port.Call(Wire.Bytes, Wire.Bytes)`; `Ok` / `Err` of `result` |
-| the `effects` mount option | the `ports` mount option |
-| a missing handler failing at perform time | a missing or extra handler refusing the mount |
