@@ -20,14 +20,21 @@ JavaScript never sees your app's state, and your app never holds a
 JavaScript object.
 
 The samples on this page come from `www/samples/ports/`, a list of notes kept
-in IndexedDB. Its spec runs natively and in Chrome.
+in IndexedDB. Its spec runs natively and in Chrome. The
+[Reading List](@/examples/reading-list.md) example is a whole app built the
+same way: books kept in IndexedDB, still there after a reload, and a change
+in one tab shown in every other. Its source shows each side of the line
+between your app and its JavaScript: `Store.roc` declares the ports,
+`ports.mjs` answers them, and `index.html` mounts the app with them.
 
 ## Three shapes
 
 A port has one of three shapes, chosen when you declare it:
 
 - A **command** sends a value and expects nothing back: log an event, show a
-  native notification, write to a socket.
+  native notification, write to a socket, or write to a store when the app
+  learns the store's state another way. A command's failure never reaches
+  the app (see [Keeping the page and a store agreeing](#keeping-the-page-and-a-store-agreeing)).
 - A **call** sends a value and waits for one answer, like an HTTP request:
   read or write a record in IndexedDB, ask for a file name in a picker.
 - A **subscription** sends an argument once and then receives any number of
@@ -55,10 +62,37 @@ layer holding the answer for an input, an `Engine.Remote`, where a newer
 input stops the older call. `Port.derive_when` takes `[Run(input), Skip]`
 for an input that is sometimes not a question.
 
+Give each port its own effect site. A site's reaction receives every
+result of what its plan issued, and a `PortReply` does not say which port
+it came from, so a site that issued a call on one port and a subscription
+on another could not tell their results apart.
+
+### Sending when the user acts
+
+A handler only writes state; requests leave from effect sites. To send a
+command when the user clicks, the click writes what to send into the state,
+and an `Engine.on_change` site over that field sends it. The Reading List
+keeps an outbox, `{ serial : U64, writes : List(Write) }`, that every
+change replaces (`ReadingList.roc`'s `send`), and one site sends its
+writes:
+
+- `on_change` fires only when the value changes, so the `serial` makes two
+  equal changes in a row two sends: moving a book back to the shelf it was
+  on is a write the store needs, even though the outbox held the same
+  write before.
+- `on_change`, not `latest`, for a call such as the Reading List's `add`:
+  `latest` would stop an earlier call when the user asks for the next one,
+  and drop its answer.
+- A record with one field is written with the field named:
+  `remove.send({ id: id })`. `{ id }` is a block holding `id`, not a record.
+
 ## The JavaScript side
 
-The page passes one handler per declared port in the `ports` option of
-`mountRocEngineApp`:
+The platform supplies the runtime, `runtime.mjs` and the `worker.mjs`
+beside it. They are the same for every app and know nothing of your ports.
+You write two things: the handlers, a module of plain functions, and the
+page that mounts your app with them. The page passes one handler per
+declared port in the `ports` option of `mountRocEngineApp`:
 
 ```js
 import { mountRocEngineApp } from "./runtime.mjs";
@@ -97,8 +131,11 @@ export default {
 ```
 
 The sample's complete handlers, IndexedDB included, are
-`www/samples/ports/notes-ports.mjs`. Keep them with your app: they are your
-code, not the platform's.
+`www/samples/ports/notes-ports.mjs`, and the Reading List's are
+`examples/reading-list/ports.mjs`. Keep them with your app: they are your
+code, not the platform's. Store a record exactly as it crosses (a `U64` as
+its string of digits, a tag by its name), so what a handler stores is what
+it answers and no conversion between them can drift.
 
 The runtime checks the handlers against the app's declarations before
 anything runs. A declared port without a handler of its shape, or a handler
@@ -163,6 +200,12 @@ An answer that is not JSON data, such as a `Map`, a function, a cycle or a
 JSON data of the wrong shape is the typed `Undecodable(why)` error: your app
 decides what to show, and `why` names the port and the place.
 
+The type is all that is checked. A rule of your own that the type cannot
+state is yours to check where the value arrives: the Reading List keys its
+rows by book id, and an `Engine.each` given two rows with one key is a
+contract error that stops the app, so it refuses a list of books with an
+id twice as it refuses one of the wrong shape.
+
 ## Errors and bounds
 
 `call.result(res)` and `subscription.message(res)` give `Ok(value)` or one
@@ -191,6 +234,36 @@ Declaring a port twice, more than 64 ports, a request on a port the program
 does not declare, or using a port as another shape than its declaration
 are contract errors that name the port and the site.
 
+## Keeping the page and a store agreeing
+
+An app that keeps its data in a store the JavaScript owns, such as
+IndexedDB, holds a copy of it in its state. The Reading List shows how the
+copy and the store stay in agreement, across a reload and across tabs:
+
+- **The page changes its copy in the turn of the click** and sends the
+  write as a command. It never waits on the store to show a change.
+- **The store's copy comes back as a subscription.** After any write, the
+  handlers read the whole store in a new transaction and emit it on a
+  `Latest` subscription, and the app replaces its copy with it. A write in
+  another tab is announced over a `BroadcastChannel`, and the tabs that
+  hear it read and emit the same way.
+- **A tab's own writes come back too.** A read another tab's write started
+  may still be in flight when this tab writes; delivered after the write,
+  it would undo it on the page. IndexedDB runs the transactions on one
+  store in the order they were made, so the read that follows this tab's
+  write sees it, and the last copy any tab receives is the store as it is.
+- **A failed command is undone by the copy that follows.** The handler
+  emits the store's copy whether or not its write succeeded, so the app
+  never needs to hear of the failure to show the truth. When the user must
+  be told, make the write a call that answers `{}`, and show its `Err`.
+- **The first answer is a call.** `load` answers the store's books at
+  start. A `stored` message that arrives first is newer, so the app takes
+  `load`'s answer only while it is still loading.
+
+The Reading List's fuzz target plays these handlers against a model store
+in every order, and checks that the page shows what the store holds
+whenever it should.
+
 ## Testing
 
 Specs never call your JavaScript: ports are answered by the spec, as HTTP
@@ -207,8 +280,17 @@ counts in the same numbering as `run-effect`:
 | `(expect-port-subscriptions "port" n)` | Exactly `n` subscriptions on `port` are live |
 | `(expect-port-sent "port" k "json")`, `(expect-port-sends "port" n)` | The `k`-th command sent on `port` carried `json`; `n` were sent |
 
-Test the handlers themselves as the plain JavaScript functions they are, for
-example with `node:test` and a fake store.
+Commands are not awaited, so `expect-pending-effects` does not count them.
+To show what a reload does, `(navigate "/elsewhere")` mounts the app in a
+new document: it asks the store again, and its calls are counted from 1.
+
+Specs show what your app does with any answer; they cannot show that your
+JavaScript gives the right ones. Test the handlers in a browser, against
+the real service, with the page that mounts them: the Reading List's test
+opens its own page in two tabs on one IndexedDB, and checks the records
+the handlers wrote, a reload, and each tab seeing the other's changes. A
+handler that needs no browser service can also be tested as the plain
+function it is, for example with `node:test`.
 
 ## A port, an effect or a worker?
 
