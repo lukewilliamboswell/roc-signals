@@ -298,9 +298,13 @@ Core := [].{
 				(state_inst(init, block, depth, args.local), reads, tx1)
 			},
 		),
+		# The static reads are the mounted ones, this layer and those below
+		# it included. Outside a row or a component a write to
+		# them reports its bit upward, so a conditional whose unmounted branch
+		# holds this site must listen to them too.
 		|d| {
 			d1 = layer_reads(d)
-			elem_reads(body(state_handle(d1)), d1).bitwise_and(bit(d1) - 1)
+			elem_reads(body(state_handle(d1)), d1)
 		},
 	)
 
@@ -421,13 +425,16 @@ Core := [].{
 				v = (input.read)(env)
 				elem = body({ mask: bit(depth), read: |e| e.value, sel: NoSel })
 				(block, tx1) = mount_block(In.{ outer: env, value: v }, elem, depth, args.path, args.parent, args.before, { cap: args.cap, local: args.local }, count_evals(tx, 1))
-				reads = block.reads.bitwise_and(bit(depth) - 1).bitwise_or(eff_mask(input))
+				# Everything the body reads except this layer, which only this
+				# site changes (refreshing its block itself): a state below it
+				# reports its bit upward, and the Changed pass must find it here.
+				reads = block.reads.bitwise_and(bit(depth).bitwise_not()).bitwise_or(eff_mask(input))
 				(derive_inst(input, v, block, depth), reads, tx1)
 			},
 		),
 		|d| {
 			d1 = layer_reads(d)
-			eff_mask(input).bitwise_or(elem_reads(body({ mask: bit(d1), read: |e| e.value, sel: NoSel }), d1).bitwise_and(bit(d1) - 1))
+			eff_mask(input).bitwise_or(elem_reads(body({ mask: bit(d1), read: |e| e.value, sel: NoSel }), d1).bitwise_and(bit(d1).bitwise_not()))
 		},
 	)
 

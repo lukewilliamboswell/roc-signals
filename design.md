@@ -330,7 +330,10 @@ emits a command only when the new value differs from the last one, and
 descends only into children whose read mask intersects `m`. A site's read mask
 is computed statically (`elem_reads`) without mounting it, including the reads
 of branches that are not currently mounted, so a conditional listens to
-everything it could need.
+everything it could need. A layer site's reads include the layers below it
+(and its own, for a layer a write or an answer changes): outside a row or a
+component those writes report their bits upward, and the Changed pass can
+only reach them through the masks of the sites above.
 
 ### Keyed lists: templates and typed columns
 
