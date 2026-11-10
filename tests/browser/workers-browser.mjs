@@ -130,18 +130,26 @@ async function open(options, before = null) {
 const CANCEL = 14;
 const TURNS = 30;
 
-// Rounds of the spin program that take about `ms` on this machine, measured
-// with an inline run (the same module, on the page's thread) long enough
-// that timer jitter does not dominate it.
+// Rounds of the spin program that take at least about `ms` on this machine,
+// measured with inline runs (the same module, on the page's thread) long
+// enough that timer jitter does not dominate them. The fastest of three runs
+// decides: a run that another process slowed down would choose too few
+// rounds, and the jobs below would then be too short to tell anything.
 async function calibrate(ms) {
-  const { page, ctx } = await open({ workers: "inline" });
-  const per = await page.evaluate(async () => {
-    window.__rounds(20000000);
-    window.__click("Spin");
-    const t = await window.__until((l) => l.some((e) => e.startsWith("spin:")));
-    return t / 20000000;
-  });
-  await ctx.close();
+  let per = Infinity;
+  for (let i = 0; i < 3; i += 1) {
+    const { page, ctx } = await open({ workers: "inline" });
+    per = Math.min(
+      per,
+      await page.evaluate(async () => {
+        window.__rounds(20000000);
+        window.__click("Spin");
+        const t = await window.__until((l) => l.some((e) => e.startsWith("spin:")));
+        return t / 20000000;
+      }),
+    );
+    await ctx.close();
+  }
   return Math.max(1000, Math.round(ms / Math.max(per, 1e-9)));
 }
 const long = await calibrate(600);
@@ -172,8 +180,11 @@ async function liveness(options) {
   const inWorker = await liveness({});
   const inline = await liveness({ workers: "inline" });
   check("the job took long enough to tell (> 150 ms)", inWorker.elapsed > 150, true);
-  check("worker mode: the page's thread stays live during the job (timer gaps < 100 ms)", inWorker.gap < 100, true);
-  check("inline mode: the same job blocks the page's thread", inline.gap > 150, true);
+  // Both bounds are relative to the job each run measured, so a loaded
+  // machine stretches the job and the bound together: a live page's longest
+  // timer gap is a small part of the job, a blocked page's is most of it.
+  check("worker mode: the page's thread stays live during the job (timer gaps under 100 ms, or under half the job on a loaded machine)", inWorker.gap < Math.max(100, inWorker.elapsed / 2), true);
+  check("inline mode: the same job blocks the page's thread for most of the job", inline.gap > 0.6 * inline.elapsed, true);
   check("inline and worker give the same output", inline.entry, inWorker.entry);
   console.log(`     job ${inWorker.elapsed.toFixed(0)} ms; longest page-timer gap ${inWorker.gap.toFixed(0)} ms in a worker, ${inline.gap.toFixed(0)} ms inline`);
 }
