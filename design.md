@@ -688,9 +688,10 @@ instead of a state write.
   `Title` (`TITLE`), `StorageSet`/`StorageRemove` (`STORE`), and
   `Focus`/`Blur`/`SelectText` on a named reference (`FOCUS`, resolved at the
   end of the turn).
-- **Awaited requests** get an id: `Http`, `StorageGet`, `Timer` and `Work`
-  deliver one result; `Interval` and `Popstate` are subscriptions that deliver
-  any number of results until stopped.
+- **Awaited requests** get an id: `Http`, `StorageGet`, `Timer`, `Work` and
+  the operations on a file the app holds (see [Files](#files)) deliver one
+  result; `Interval` and `Popstate` are subscriptions that deliver any number
+  of results until stopped.
 - **`Work`** runs a pure program from the program's worker catalogue on bytes,
   in a Web Worker that instantiates the same compiled module. A catalogue entry
   is a namespaced, unversioned name and a function `List(U8) -> List(U8)`,
@@ -730,8 +731,8 @@ instead of a state write.
   site at the same path never receives its predecessor's results.
 - Results are typed: `Http({ status, headers, body })`, `Network(message)`,
   `Timeout`, `Value`, `Missing`, `Fired`, `Location`, `Online(Bool)`,
-  `Visible(Bool)`, `Now`, `Refused`, `Work(bytes)`, `WorkLost(fault)` and
-  `FileFailed(reason)`.
+  `Visible(Bool)`, `Now`, `Refused`, `Work(bytes)`, `WorkLost(fault)`,
+  `FileBytes(bytes)`, `FileText(text)` and `FileFailed(reason)`.
   Application failures are values; contract violations are diagnostics,
   never fabricated results. A worker's diagnostic text goes to the page's
   console, never into its result.
@@ -928,8 +929,8 @@ program as owning seamless lists over a heap slot of its own, so the
 decoded `File` holds its bytes in place (`File.contents`) and the buffer is
 freed when the program's last list goes. The page's heap never holds a
 file's bytes, and a file's bytes are never copied between reading and the
-program. On the page a file has no bytes, and asking for them there is a
-contract error that says to read them in a worker.
+program. On the page a file has no bytes until the app asks for them with a
+request (below).
 
 A file that can no longer be read (the user's file changed or went away)
 and files beyond what a run reads — more than 16, or more bytes than the
@@ -943,6 +944,31 @@ dropped as any other.
 `FileError` is one closed type for every operation on a file, so an app
 names a file's failure the same way whichever operation met it; each
 operation states which of its arms it can produce.
+
+**Reading a file on the page is an explicit, awaited request.** For a small
+file, or a simple app, bringing the bytes into the page is acceptable, and
+the author says so: `File.read_bytes` and `File.read_utf8` are requests
+answered by `FileBytes(bytes)` or `FileText(text)`, never pure accessors,
+because the bytes are not on the page until the browser has read them. The
+runtime reads the file's range into a buffer of its own on the page's thread
+and copies it once into the instance's memory as the result; the engine
+checks text is UTF-8 and answers `FileFailed(InvalidUtf8)` when it is not,
+since that is a fact about the file, not a broken protocol. A range over the
+`maxReadBytes` mount option (8 MiB by default) is `FileFailed(TooLarge)`,
+unread: the bound is deliberately modest, because each read in flight holds
+a whole copy on the page, and larger files belong in a worker. A read
+belongs to its site like a timer: disposal or supersession cancels it, and
+the bytes the browser was reading are dropped. In a worker program the bytes
+are already there, so the same choice is a plain value: `File.contents`, and
+`File.contents_utf8` for text. `File.contents` on the page stays a contract
+error that names both ways to get the bytes.
+
+**A request holds its browser file until it is answered.** The runtime
+resolves every handle a request names when it applies the batch, before it
+drains the handles the batch released, and the request keeps that `File`
+(or its slice) until its answer is delivered or it is cancelled. A request
+can therefore name a file whose last handle Roc drops in the same batch, and
+the runtime's handle table holds only the files of live handles.
 
 ### Target effects
 
@@ -1145,6 +1171,7 @@ bound and a declared behaviour at the bound:
 | File handles live in one instance | 64 | The event's further files are not delivered and are counted in `Received.refused` |
 | Files one work run reads | 16 | Typed `FileFailed(TooLarge)`, unread |
 | Bytes of files one work run reads | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)`, unread |
+| Bytes one read of a file into the page takes | `maxReadBytes` (default 8 MiB); reads in flight are bounded by the in-flight cap | Typed `FileFailed(TooLarge)`, unread |
 | Live node ids (rows included) | 2³² − 2 | `resource_limit` poison |
 | Runtime ingress queue | 4096 queued events | `resource_limit` poison |
 | Monitor job history | `history` option (default 128, at most 1024) | Oldest overwritten, counted |
@@ -1497,6 +1524,10 @@ File.name, File.mime : File -> Str
 File.size : File -> U64                       # bytes in this file or range
 File.slice : File, { start : U64, len : U64 } -> File   # contract error outside the file
 File.contents : File -> List(U8)              # in a worker program; contract error on the page
+File.contents_utf8 : File -> Try(Str, [InvalidUtf8])   # likewise
+File.read_bytes, File.read_utf8 : File -> Req # awaited reads into the page
+file_bytes : Res -> Try(List(U8), FileError)
+file_text : Res -> Try(Str, FileError)
 Received : { files : List(File), refused : U64 }
 State.on_files : State(ctx, s), (s, Received -> s) -> FilesHandler(ctx)
 on_files : Str, FilesHandler(ctx) -> Attr(ctx)   # "change", "drop" or "paste"
@@ -1519,11 +1550,12 @@ Req : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Timer(
        Work({ program : Str, input : List(U8), files : List(File), deadline_ms : U32 }),
        Interval(U32), Popstate, OnlineChanges, VisibilityChanges, Self, Push(Str),
        Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str),
-       StorageSet(Str, Str), StorageRemove(Str)]
+       StorageSet(Str, Str), StorageRemove(Str), ReadBytes(File), ReadUtf8(File)]
 Res : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
        Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused,
-       Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError)]
-FileError : [Unreadable, TooLarge]
+       Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError),
+       FileBytes(List(U8)), FileText(Str)]
+FileError : [Unreadable, TooLarge, InvalidUtf8, Refused]
 WorkFault : [Contract, ResourceLimit, OutOfMemory, AppCrash, ExpectFailed, Unavailable, Executor]
 HttpError : [Network(Str), Timeout, Status(U16), Refused]
 http_text : Res -> Try(Str, HttpError)
@@ -1702,7 +1734,9 @@ An event is `event(node, handler)` with the payload staged first:
 | 10 | `output:bytes` (the rest, raw) | `Work(List(U8))` |
 | 11 | `class:u8` | `WorkLost(fault)`: `1` contract, `2` resource_limit, `3` out_of_memory, `4` app_crash, `5` expect_failed (the worker instance's fault class), `6` unavailable (no `Worker`), `7` executor (the worker script failed) |
 | 12 | — | Reserved |
-| 13 | `reason:u8` | `FileFailed(reason)`: `1` unreadable (a file the request named could not be read), `2` too_large (more files or bytes than a run reads) |
+| 13 | `reason:u8` | `FileFailed(reason)`: `1` unreadable (a file the request named could not be read), `2` too_large (more files or bytes than the operation reads) |
+| 16 | `bytes` (the rest, raw) | `FileBytes(List(U8))`: a file's range read into the page |
+| 17 | `bytes` (the rest, raw) | `FileText(Str)`, or `FileFailed(InvalidUtf8)` when the bytes are not UTF-8 |
 
 A result payload that does not follow this table (unknown tag, bytes after a
 bare tag, a flag other than `0`/`1`, a fault class outside `1`–`7`, a file failure other than `1` or `2`, a
@@ -1768,6 +1802,7 @@ the batch is applied and performed after it.
 | 6 | — | Connectivity (subscription; `online`/`offline` events) |
 | 7 | — | Visibility (subscription; `visibilitychange` events) |
 | 8 | `program:str input:u32+bytes n:u32 (token:u64 start:u64 len:u64)*n deadline_ms:u32` | Work: `input` is a `u32` length and raw bytes, not necessarily UTF-8; then the files the input refers to, each a handle's token and a range of its file; `deadline_ms` 0 = none, capped at 600 000 |
+| 11 | `mode:u8 token:u64 start:u64 len:u64` | Read a file's range into the page: `mode` `1` bytes (answered tag 16), `2` text (tag 17) |
 
 **Template encoding** (`TEMPLATE` bytes): a node tree, then a hole table.
 

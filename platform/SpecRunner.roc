@@ -95,7 +95,19 @@ SpecRunner := [].{
 	Pending : { id : U32, url : Str, body : Str, kind : PendingKind }
 
 	## What `run-effect` does for a pending request.
-	PendingKind : [HttpRequest, TimerRequest, WorkRequest({ program : Str, input : List(U8), deadline_ms : U32, files : List({ token : U64, start : U64, len : U64 }) })]
+	PendingKind : [
+		HttpRequest,
+		TimerRequest,
+		WorkRequest({ program : Str, input : List(U8), deadline_ms : U32, files : List({ token : U64, start : U64, len : U64 }) }),
+
+		## A read of a file into the page: mode 1 bytes, 2 text.
+		ReadRequest({ mode : U8, file : { token : U64, start : U64, len : U64 } }),
+	]
+
+	## The most bytes a page read takes: the runtime's default `maxReadBytes`
+	## (design.md, "Files"), which a spec cannot change.
+	max_read_bytes : U64
+	max_read_bytes = 8 * 1024 * 1024
 
 	## The modelled browser around the DOM. `doc` numbers the current document;
 	## a cross-document navigation mounts the app afresh in the next one.
@@ -255,6 +267,7 @@ SpecRunner := [].{
 			WorkRequest({ deadline_ms, .. }) => Ok({ id, deadline_ms })
 			HttpRequest => Err("effect occurrence ${n.to_str()} is an HTTP request, not a worker job")
 			TimerRequest => Err("effect occurrence ${n.to_str()} is a timer, not a worker job")
+			ReadRequest(_) => Err("effect occurrence ${n.to_str()} is a file read, not a worker job")
 		}
 	}
 
@@ -405,6 +418,7 @@ SpecRunner := [].{
 				Remove(k) => if (b.storage_available) { ..b, storage: b.storage.keep_if(|kv| kv.key != k) } else b
 				Title(t) => { ..b, title: t }
 				Focus(_, _) => b
+				FileRead(id, mode, file) => { ..b, pending: b.pending.append({ id, url: "read", body: "", kind: ReadRequest({ mode, file }) }), issued: b.issued.append(id) }
 			}
 		}
 		$b
@@ -535,14 +549,27 @@ SpecRunner := [].{
 	## their tokens: what a worker reads into its memory. A token no setup
 	## file was given under (a handle minted without the host) reads empty.
 	job_files : Browser, List({ token : U64, start : U64, len : U64 }) -> List(List(U8))
-	job_files = |b, refs|
-		refs.map(
-			|{ token, start: from, len }| {
-				name = (b.given.find_first(|g| g.token == token) ?? { token, name: "" }).name
-				bytes = (b.files.find_first(|f| f.name == name) ?? { name, mime: "", bytes: [] }).bytes
-				bytes.sublist({ start: from, len })
-			},
-		)
+	job_files = |b, refs| refs.map(|r| SpecRunner.file_bytes(b, r))
+
+	## The bytes of a handle's range, from the setup file it was given under.
+	file_bytes : Browser, { token : U64, start : U64, len : U64 } -> List(U8)
+	file_bytes = |b, { token, start: from, len }| {
+		name = (b.given.find_first(|g| g.token == token) ?? { token, name: "" }).name
+		bytes = (b.files.find_first(|f| f.name == name) ?? { name, mime: "", bytes: [] }).bytes
+		bytes.sublist({ start: from, len })
+	}
+
+	## The result payload of a page read, as the runtime answers it
+	## (design.md, Appendix B): tag 16 with the bytes, 17 with the bytes as
+	## text (the engine checks they are UTF-8), or 13 with reason 2 when the
+	## range is more than a read takes.
+	read_result : Browser, U8, { token : U64, start : U64, len : U64 } -> List(U8)
+	read_result = |b, mode, file|
+		if file.len > SpecRunner.max_read_bytes {
+			[13, 2]
+		} else {
+			[if (mode == 1) 16 else 17].concat(SpecRunner.file_bytes(b, file))
+		}
 
 	## The pending worker job that step `op` runs, when `op` is a `run-effect`
 	## on one. The `spec` command runs such a job in a child process
@@ -594,6 +621,7 @@ SpecRunner := [].{
 				output = (program.work)(SpecRunner.put_str([], name).concat(input), SpecRunner.job_files(b, files))
 				return SpecRunner.deliver_job(program, s, { id, payload: [], files: [] }, [10].concat(output))
 			}
+			ReadRequest({ mode, file }) => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, SpecRunner.read_result(b, mode, file)))
 			HttpRequest => {}
 		}
 		stub = match b.stub {

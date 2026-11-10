@@ -97,8 +97,9 @@ Engine := [].{
 	## with its `name`, `size` and `mime` type, never its bytes on the page. Send
 	## it to a worker program in the program's input, and read its bytes there
 	## with `contents`: they are read once into the worker's memory and handed to
-	## the program without a copy. A file stays available while any value holds
-	## it, and is released when nothing does.
+	## the program without a copy. For a small file, `read_bytes` and
+	## `read_utf8` ask for its bytes on the page instead. A file stays available
+	## while any value holds it, and is released when nothing does.
 	File : Core.File
 
 	## The files one event delivered, and how many more it carried than the
@@ -320,6 +321,10 @@ Engine := [].{
 	## for a program that is not registered is a contract error. `files` are the
 	## files the input refers to, read into the worker's memory for the run
 	## (`[]` for a program that takes bytes alone; `Worker` fills it in).
+	##
+	## `ReadBytes` and `ReadUtf8` read a file into the page (`File.read_bytes`,
+	## `File.read_utf8`) and deliver one `FileBytes`, `FileText` or
+	## `FileFailed`. Like a timer they belong to their site.
 	Req : [
 		## `timeout_ms` 0 = no timeout; capped at `max_timeout_ms`.
 		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32 }),
@@ -343,6 +348,8 @@ Engine := [].{
 		SelectText(Str),
 		StorageSet(Str, Str),
 		StorageRemove(Str),
+		ReadBytes(File),
+		ReadUtf8(File),
 	]
 
 	## The result of an awaited request: an HTTP response (`Http`, with any status),
@@ -352,16 +359,34 @@ Engine := [].{
 	## (`Now`), `Refused` when the in-flight bound turned the request away, or a
 	## worker program's output (`Work`) or the reason it produced none
 	## (`WorkLost`, or `FileFailed` when the files it was sent could not be
-	## read into the worker).
-	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError)]
+	## read into the worker), or a file's bytes or text read into the page
+	## (`FileBytes`, `FileText`, or `FileFailed`).
+	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str)]
 
-	## Why an operation on a file produced nothing: a file could not be read
-	## (`Unreadable`: the user's file changed or went away since it was
-	## given), or it is more than the operation reads (`TooLarge`; for a worker
-	## run, more than 16 files or more bytes than the `maxFileBytes` mount
-	## option allows). One closed type for every operation on a file: a worker
-	## run reports it as `Worker.Error`'s `FileFailed`.
-	FileError : [Unreadable, TooLarge]
+	## Why an operation on a file produced nothing. One closed type for every
+	## operation on a file, each of which says which arms it can produce:
+	##
+	## - `Unreadable`: the user's file changed or went away since it was given;
+	## - `TooLarge`: it is more than the operation reads (a worker run reads 16
+	##   files and `maxFileBytes` bytes, a page read `maxReadBytes`);
+	## - `InvalidUtf8`: text was asked for and the bytes are not UTF-8;
+	## - `Refused`: the in-flight bound turned the request away, as `file_bytes`
+	##   and `file_text` report it (a raw result is `Refused` itself).
+	##
+	## A worker run reports it as `Worker.Error`'s `FileFailed`.
+	FileError : [Unreadable, TooLarge, InvalidUtf8, Refused]
+
+	## A `File.read_bytes` result as the file's bytes or a typed [FileError]:
+	## `TooLarge`, `Unreadable` or `Refused`. Any other result is a contract
+	## error.
+	file_bytes : Res -> Try(List(U8), FileError)
+	file_bytes = |res| Core.file_bytes(res)
+
+	## A `File.read_utf8` result as the file's text or a typed [FileError]:
+	## `InvalidUtf8`, `TooLarge`, `Unreadable` or `Refused`. Any other result
+	## is a contract error.
+	file_text : Res -> Try(Str, FileError)
+	file_text = |res| Core.file_text(res)
 
 	## Why a `Work` request produced no output: the worker's instance faulted
 	## running the program (`Contract`, `ResourceLimit`, `OutOfMemory`,

@@ -90,7 +90,9 @@ Core := [].{
 	## A file the user gave the app, or a range of one: a handle with its name,
 	## size and type, never its bytes on the page. Read its bytes in a worker
 	## program, where the file's range arrives as a list of its own (`contents`),
-	## read once into the worker's memory and handed over without a copy.
+	## read once into the worker's memory and handed over without a copy; or
+	## ask for them on the page with an awaited request (`read_bytes`,
+	## `read_utf8`) when bringing them into the page's memory is acceptable.
 	##
 	## A file stays available while any value holds it: keep it in a state for
 	## as long as the app needs it, and it is released when nothing refers to it
@@ -123,13 +125,38 @@ Core := [].{
 		}
 
 		## The file's bytes, in a worker program that was sent it. On the page a
-		## file has no bytes: reading them there is a contract error; send the
-		## file to a worker program and read them there.
+		## file has no bytes: calling it there is a contract error; ask for them
+		## with `read_bytes`, or send the file to a worker program and read them
+		## there.
 		contents : File -> List(U8)
 		contents = |f| match f.at {
 			Worker(bytes) => bytes
-			Page(_) => crash "contract: File.contents of \"${f.name}\" on the page: a file's bytes are only read in a worker program; send the file in the program's input and call contents there"
+			Page(_) => crash "contract: File.contents of \"${f.name}\" on the page: a file's bytes are not on the page; request them with File.read_bytes or File.read_utf8, or send the file in a worker program's input and call contents there"
 		}
+
+		## The file's bytes as text, in a worker program that was sent it, or
+		## `InvalidUtf8` when they are not UTF-8. A byte-order mark is kept. On the
+		## page it is a contract error, as `contents` is; ask with `read_utf8`.
+		contents_utf8 : File -> Try(Str, [InvalidUtf8])
+		contents_utf8 = |f| Str.from_utf8(File.contents(f)).map_err(|_| InvalidUtf8)
+
+		## A request to read the file's bytes into the page, for an effect
+		## site's plan. Its result is `FileBytes(bytes)`, or `FileFailed` with
+		## `TooLarge` (more than the `maxReadBytes` mount option allows, 8 MiB by
+		## default) or `Unreadable` (the user's file changed or went away); read
+		## it with `file_bytes`. The browser reads the file on the page's thread
+		## into a buffer of its own and the bytes are copied once into the
+		## page's memory, so keep it for small files and send large ones to a
+		## worker program. The request holds the file until it is answered, and
+		## disposing its site cancels it.
+		read_bytes : File -> Req
+		read_bytes = |f| ReadBytes(f)
+
+		## A request to read the file into the page as text: as `read_bytes`,
+		## answered `FileText(text)`, or `FileFailed(InvalidUtf8)` when the bytes
+		## are not UTF-8. A byte-order mark is kept. Read it with `file_text`.
+		read_utf8 : File -> Req
+		read_utf8 = |f| ReadUtf8(f)
 
 		## Equal when they are the same range of the same file.
 		is_eq : File, File -> Bool
@@ -629,6 +656,10 @@ Core := [].{
 	## for a program that is not registered is a contract error. `files` are the
 	## files the input refers to, read into the worker's memory for the run
 	## (`[]` for a program that takes bytes alone; `Worker` fills it in).
+	##
+	## `ReadBytes` and `ReadUtf8` read a file into the page (`File.read_bytes`,
+	## `File.read_utf8`) and deliver one `FileBytes`, `FileText` or
+	## `FileFailed`. Like a timer they belong to their site.
 	Req : [
 		## `timeout_ms` 0 = no timeout; capped at `max_timeout_ms`.
 		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32 }),
@@ -652,6 +683,8 @@ Core := [].{
 		SelectText(Str),
 		StorageSet(Str, Str),
 		StorageRemove(Str),
+		ReadBytes(File),
+		ReadUtf8(File),
 	]
 
 	## The result of an awaited request: an HTTP response (`Http`, with any status),
@@ -660,14 +693,38 @@ Core := [].{
 	## connectivity or visibility change (`Online`, `Visible`), a `Self` follow-up
 	## (`Now`), `Refused` when the in-flight bound turned the request away, or a
 	## worker program's output (`Work`) or the reason it produced none
-	## (`WorkLost`).
-	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError)]
+	## (`WorkLost`), a file's bytes or text read into the page (`FileBytes`,
+	## `FileText`), or why an operation on a file produced nothing
+	## (`FileFailed`).
+	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work(List(U8)), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str)]
 
 	## Why an operation on a file produced nothing: a file could not be read
 	## (`Unreadable`: the user's file changed or went away since it was
-	## given), or it is more than the operation reads (`TooLarge`). One type
+	## given), it is more than the operation reads (`TooLarge`), its bytes are
+	## not UTF-8 (`InvalidUtf8`, reading text), or the in-flight bound turned
+	## the request away (`Refused`, as the typed readers report it). One type
 	## for every operation on a file; each says which arms it can produce.
-	FileError : [Unreadable, TooLarge]
+	FileError : [Unreadable, TooLarge, InvalidUtf8, Refused]
+
+	## A `read_bytes` result as the file's bytes or a typed [FileError]. Any
+	## other result is a contract error.
+	file_bytes : Res -> Try(List(U8), FileError)
+	file_bytes = |res| match res {
+		FileBytes(bytes) => Ok(bytes)
+		FileFailed(e) => Err(e)
+		Refused => Err(Refused)
+		_ => crash "contract: file_bytes was given a result that is not from File.read_bytes"
+	}
+
+	## A `read_utf8` result as the file's text or a typed [FileError]. Any
+	## other result is a contract error.
+	file_text : Res -> Try(Str, FileError)
+	file_text = |res| match res {
+		FileText(text) => Ok(text)
+		FileFailed(e) => Err(e)
+		Refused => Err(Refused)
+		_ => crash "contract: file_text was given a result that is not from File.read_utf8"
+	}
 
 	## Why a `Work` request produced no output: the worker's instance faulted
 	## running the program (`Contract`, `ResourceLimit`, `OutOfMemory`,
@@ -875,6 +932,15 @@ Core := [].{
 				[_, 1] => FileFailed(Unreadable)
 				[_, 2] => FileFailed(TooLarge)
 				_ => crash "contract: effect result tag 13 needs one reason byte, 1 or 2"
+			}
+		} else if tag == 16 {
+			FileBytes(b.drop_first(1))
+		} else if tag == 17 {
+			# A file's text is the file's own bytes: not being UTF-8 is an
+			# answer about the file, not the host breaking the protocol.
+			match Str.from_utf8(b.drop_first(1)) {
+				Ok(t) => FileText(t)
+				Err(_) => FileFailed(InvalidUtf8)
 			}
 		} else {
 			crash "contract: unknown effect result tag ${tag.to_str()}"
@@ -3456,6 +3522,7 @@ comp_settle = |prop, snk, block, env, out, tx| {
 #                            2 STORAGE_GET key:str  3 TIMER ms:u32  4 INTERVAL ms:u32  5 POPSTATE
 #                            6 ONLINE  7 VISIBILITY
 #                            8 WORK program:str input:(u32 len, raw bytes) deadline_ms:u32
+#                            11 READ mode:u8 token:u64 start:u64 len:u64 (a file's range)
 #  14 CANCEL  id
 #  15 NAV     mode:u8 (1 push, 2 replace) url:str
 #  16 STORE   op:u8 (1 set: key:str value:str, 2 remove: key:str)
@@ -3537,13 +3604,20 @@ run_work = |registrations, payload, files| {
 	}
 }
 
-## A file's handle and range, for a worker request's file list. Only a
-## page's file has a handle; a worker's file in a request is a contract
+## A file's handle and range, for a request that names it. Only a page's
+## file has a handle; a worker program's file in a request is a contract
 ## error.
 file_ref : File -> { token : U64, start : U64, len : U64 }
 file_ref = |f| match f.at {
 	Page(blob) => { token: blob.token(), start: f.start, len: f.len }
-	Worker(_) => crash "contract: a worker request names a file a worker program made; only the page's files can be sent"
+	Worker(_) => crash "contract: a request names \"${f.name}\", a file a worker program was sent; only the page's files can be named in a request"
+}
+
+## A file's handle and range on the wire: `token:u64 start:u64 len:u64`.
+put_file : List(U8), File -> List(U8)
+put_file = |buf, f| {
+	{ token, start, len } = file_ref(f)
+	put_u64(put_u64(put_u64(buf, token), start), len)
 }
 
 ## `out` as a list of its own. The host keeps the output between calls and
@@ -3708,6 +3782,8 @@ put_req = |c, id, req| {
 			}
 			put_u32($b, min_u32(deadline_ms, max_timeout_ms))
 		}
+		ReadBytes(f) => put_file(head.append(11).append(1), f)
+		ReadUtf8(f) => put_file(head.append(11).append(2), f)
 		_ => crash "not an awaited request"
 	}
 }
@@ -4527,4 +4603,13 @@ expect {
 	mounted = mount_in(32, ["t/echo"], elem)
 	s = Core.fx_stats(mounted)
 	[s.issued, s.cancelled, s.live, s.reparented] == [1, 1, 0, 0]
+}
+
+## A page read's result: bytes as they are; text only when it is UTF-8, which
+## is an answer about the file rather than a broken protocol.
+expect {
+	bytes = Core.decode_res([16, 1, 2])
+	text = Core.decode_res([17, 104, 105])
+	cut = Core.decode_res([17, 0xC3])
+	bytes == FileBytes([1, 2]) and text == FileText("hi") and cut == FileFailed(InvalidUtf8) and Core.file_text(cut) == Err(InvalidUtf8) and Core.file_bytes(Refused) == Err(Refused)
 }

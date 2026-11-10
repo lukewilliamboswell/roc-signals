@@ -1,0 +1,27 @@
+(test "File effects — a read belongs to its site: giving it up or disposing its site cancels it"
+  (setup
+    (file "a.txt" "text/plain" "abc"))
+  (steps
+    (choose-files (label "Upload") "a.txt")
+    (mark-metrics)
+    (click (role button :name "Read text"))
+    (expect-pending-effects 1)
+    (click (role button :name "Forget"))
+    (expect-text (test-id "read") "not read")
+    (expect-pending-effects 0)
+    (expect-metric-delta effects_cancelled 1)
+    ; The panel reads as it mounts; closing it disposes the read.
+    (click (role button :name "Panel"))
+    (expect-text (test-id "panel-read") "reading")
+    (expect-pending-effects 1)
+    (click (role button :name "Panel"))
+    (expect-pending-effects 0)
+    (expect-metric-delta effects_cancelled 2)
+    (click (role button :name "Panel"))
+    (run-effect 3)
+    (expect-text (test-id "panel-read") "text abc")
+    (click (role button :name "Panel"))
+    (click (role button :name "Clear"))
+    (expect-files 0)
+  )
+)

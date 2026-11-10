@@ -331,7 +331,7 @@ async function answerJob(page, n, how, fault) {
       if (id === undefined) return `effect occurrence ${n} was never issued (${rt.issued.length} issued)`;
       const e = rt.live.get(id);
       if (e === undefined || e.running) return `effect occurrence ${n} is not pending (cancelled or done)`;
-      if (e.kind !== "work") return `effect occurrence ${n} is ${e.kind === "timer" ? "a timer" : "an HTTP request"}, not a worker job`;
+      if (e.kind !== "work") return `effect occurrence ${n} is ${e.kind === "timer" ? "a timer" : e.kind === "file" ? "an operation on a file" : "an HTTP request"}, not a worker job`;
       if (how === "expire") {
         if (!(e.req.deadline > 0)) return `worker job ${n} has no deadline, so it cannot time out`;
         return rt.expireEffect(id) ? null : `worker job ${n} could not be expired`;
@@ -504,6 +504,11 @@ const STEPS = {
         // A spec's time is manual, so the job's own deadline never ends it;
         // the runner's bound (as the native runner's) fails a job that never
         // finishes instead of hanging.
+        // An operation on a file the app holds is really performed, on the
+        // file Chrome holds; the step waits for its result turn.
+        if (e.kind === "file") {
+          return Promise.resolve(rt.runEffect(id)).then(() => ({ used: false }));
+        }
         if (e.kind === "work") {
           return Promise.race([
             Promise.resolve(rt.runEffect(id)).then(() => ({ used: false })),

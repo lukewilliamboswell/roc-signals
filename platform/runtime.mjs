@@ -83,6 +83,16 @@
 // options.maxFileBytes bytes (default 256 MiB), or a file that cannot be
 // read, is answered FileFailed (result tag 13) without running.
 //
+// Operations on a file the app holds (FX kinds 11 and up) are performed here,
+// on the browser's own `File`, which each request resolves when the batch is
+// applied and holds until it is answered. A page read (kind 11) reads the
+// file's range into a buffer of its own and copies it once into the
+// instance's memory as the result (tag 16 bytes, 17 text, which the engine
+// checks is UTF-8); a range over options.maxReadBytes (default 8 MiB) is
+// FileFailed(TooLarge) unread. Every answer is a turn of its own after the
+// batch that asked; CANCEL forgets the request and its answer is dropped. In
+// manual mode they wait in `pending` until runEffect(id) performs them.
+//
 // Attribute values: "" removes the attribute. `value` and `checked` are set
 // as properties (the live control state), boolean attributes (disabled,
 // selected, readonly, required, hidden, multiple) are present for any value
@@ -132,6 +142,12 @@ const RES_VISIBLE = 9;
 const RES_WORK = 10;
 const RES_WORK_LOST = 11;
 const RES_FILE_FAILED = 13;
+const RES_FILE_BYTES = 16;
+const RES_FILE_TEXT = 17;
+
+// Result tag 13's reasons.
+const FILE_UNREADABLE = 1;
+const FILE_TOO_LARGE = 2;
 
 // The most files one job reads (the host's `bytes_reserve` bound).
 const MAX_JOB_FILES = 16;
@@ -1352,6 +1368,9 @@ export class RocEngineRuntime {
     // The most bytes of files one work job reads into a worker; a job that
     // names more is answered FileFailed(TooLarge) without running.
     this.maxFileBytes = options.maxFileBytes ?? 256 * 1024 * 1024;
+    // The most bytes one read of a file into the page takes; a larger range
+    // is answered FileFailed(TooLarge) without reading it.
+    this.maxReadBytes = options.maxReadBytes ?? 8 * 1024 * 1024;
     // Observation of jobs, workers and turns (options.monitor; see "The
     // monitor" above). It never changes what this runtime does.
     this.monitor = new WorkMonitor(options.monitor ?? {}, {
@@ -1679,6 +1698,19 @@ export class RocEngineRuntime {
   }
 
   stage(payload) {
+    if (payload.parts !== undefined) {
+      // A result built from parts (a tag and a file's bytes) is copied into
+      // the staged list part by part, so the bytes are copied once.
+      const total = payload.parts.reduce((n, p) => n + p.length, 0);
+      const ptr = this.x.payload_reserve(total);
+      const mem = new Uint8Array(this.x.memory.buffer, ptr, total);
+      let at = 0;
+      for (const p of payload.parts) {
+        mem.set(p, at);
+        at += p.length;
+      }
+      return;
+    }
     if (payload === "" || payload.length === 0) {
       this.x.payload_reserve(0);
       return;
@@ -1990,6 +2022,11 @@ export class RocEngineRuntime {
             const deadline = dv.getUint32(at, true);
             at += 4;
             this.fxOut.push({ op: "work", id, program, input, files, deadline });
+          } else if (kind === 11) {
+            const mode = u8[at];
+            if (mode !== 1 && mode !== 2) throw new Error(`unknown file read mode ${mode}`);
+            this.fxOut.push({ op: "read", id, mode, ...this.fileRef(dv, at + 1) });
+            at += 25;
           } else throw new Error(`unknown effect kind ${kind}`);
           break;
         }
@@ -2039,6 +2076,57 @@ export class RocEngineRuntime {
 
   result(id, bytes) {
     this.dispatch(FX_NODE, id, bytes);
+  }
+
+  // A request's file, `token:u64 start:u64 len:u64` at `at`, resolved while
+  // the batch's released handles still name their files (see "Files"): the
+  // browser's `File`, the range, and the range as a Blob of the file's type.
+  // The request holds them, so the file outlives its handle until the
+  // request is answered.
+  fileRef(dv, at) {
+    const token = tokenAt(dv, 0, at);
+    const start = tokenAt(dv, 0, at + 8);
+    const len = tokenAt(dv, 0, at + 16);
+    const file = this.files.get(token);
+    if (file === undefined) throw new Error(`a request names file handle ${token}, which this runtime does not hold`);
+    const blob = start === 0 && len === file.size ? file : file.slice(start, start + len, file.type);
+    return { token, file, start, len, blob };
+  }
+
+  // Perform an operation on a file (`fx.op`: read). Its one answer is a
+  // turn of its own, delivered unless CANCEL forgets the request first;
+  // `settled`, when given, is called once either way.
+  startFileOp(fx, settled) {
+    const entry = {
+      kind: "file",
+      req: fx,
+      running: true,
+      cancel: () => {
+        if (settled) settled();
+      },
+    };
+    this.live.set(fx.id, entry);
+    const finish = (payload) => {
+      if (this.live.get(fx.id) !== entry) return;
+      this.live.delete(fx.id);
+      this.result(fx.id, payload);
+      if (settled) settled();
+    };
+    this.fileAnswer(fx).then(finish, () => finish(new Uint8Array([RES_FILE_FAILED, FILE_UNREADABLE])));
+  }
+
+  // The result payload of an operation on a file. A file the browser can no
+  // longer read (the user's file changed or went away) is FileFailed
+  // (Unreadable).
+  async fileAnswer(fx) {
+    const failed = (reason) => new Uint8Array([RES_FILE_FAILED, reason]);
+    if (fx.op === "read") {
+      if (fx.len > this.maxReadBytes) return failed(FILE_TOO_LARGE);
+      const buf = await fx.blob.arrayBuffer();
+      if (buf.byteLength !== fx.len) return failed(FILE_UNREADABLE);
+      return { parts: [new Uint8Array([fx.mode === 1 ? RES_FILE_BYTES : RES_FILE_TEXT]), new Uint8Array(buf)] };
+    }
+    throw new Error(`unknown file operation ${fx.op}`);
   }
 
   perform(fx) {
@@ -2142,6 +2230,15 @@ export class RocEngineRuntime {
           return;
         }
         this.startWork(fx, null);
+        return;
+      }
+      case "read": {
+        if (this.manual) {
+          this.live.set(fx.id, { kind: "file", req: fx, cancel: () => {} });
+          this.issued.push(fx.id);
+          return;
+        }
+        this.startFileOp(fx, null);
         return;
       }
       case "timer":
@@ -2341,6 +2438,12 @@ export class RocEngineRuntime {
     if (e.kind === "work") {
       this.live.delete(id);
       return new Promise((resolve) => this.startWork(e.req, () => resolve(true)));
+    }
+    // An operation on a file is really performed; the promise resolves once
+    // its result turn has been delivered, or once it was cancelled instead.
+    if (e.kind === "file") {
+      this.live.delete(id);
+      return new Promise((resolve) => this.startFileOp(e.req, () => resolve(true)));
     }
     this.live.delete(id);
     if (answer.timeout) this.result(id, new Uint8Array([RES_TIMEOUT]));

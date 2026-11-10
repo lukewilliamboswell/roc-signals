@@ -358,6 +358,10 @@ Dom := [].{
 		Remove(Str),
 		Title(Str),
 		Focus(U8, U32),
+
+		## A read of a file into the page: id, mode (1 bytes, 2 text) and the
+		## file's handle token and range.
+		FileRead(U32, U8, { token : U64, start : U64, len : U64 }),
 	]
 
 	## Apply one batch and also return its opcode sequence.
@@ -581,6 +585,13 @@ Dom := [].{
 						$fx = $fx.append(WorkFiles(id, $refs))
 					}
 					$at = $r + 4
+				} else if kind == 11 {
+					mode = Dom.byte(b, $at)
+					if mode != 1 and mode != 2 {
+						crash "unknown file read mode ${mode.to_str()}"
+					}
+					$fx = $fx.append(FileRead(id, mode, Dom.file_ref(b, $at + 1)))
+					$at = $at + 25
 				} else {
 					crash "unknown effect kind ${kind.to_str()}"
 				}
@@ -618,6 +629,11 @@ Dom := [].{
 		}
 		{ dom: $d, ops: $ops, fx: $fx, written: $written, values: $values }
 	}
+
+	## A file's handle token and range on the wire, `token:u64 start:u64
+	## len:u64`, at `at`.
+	file_ref : List(U8), U64 -> { token : U64, start : U64, len : U64 }
+	file_ref = |b, at| { token: Dom.u64(b, at), start: Dom.u64(b, at + 8), len: Dom.u64(b, at + 16) }
 
 	## The engine's work record (design.md, Appendix B): `count:u32
 	## (counter:u64)*count`, then `n:u32 (name:str runs:u64)*`. Decoded here,
