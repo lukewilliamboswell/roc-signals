@@ -96,7 +96,9 @@ Worker := [].{
 	##   disposed, or a `latest` or `derive` site moving on) does: `Stop`, the
 	##   default, ends the worker running it; `Finish` lets the job complete
 	##   and drops its answer, so the worker, and any prepared state it
-	##   holds, is kept for the next job. A deadline always stops the job.
+	##   holds, is kept for the next job. A deadline always stops the job, a
+	##   finishing one included, and a finishing job of a task with no
+	##   deadline is stopped ten minutes after it was asked for.
 	TaskProps(input, output, error) := {
 		name : Str,
 		run! : input => Try(output, error),

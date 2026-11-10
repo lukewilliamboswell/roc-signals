@@ -850,7 +850,10 @@ because an error left to inference does not resolve.
   engine forgets the id as always; `Stop` ends the worker running the job,
   while `Finish` lets the job complete and the runtime drops its answer, so
   the worker, and any prepared state it holds, is kept. A deadline always
-  ends the worker.
+  ends the worker, a finishing job's included: a cancelled job that has not
+  completed by its deadline, or ten minutes after it was performed when it
+  has none, has its worker ended as a timed-out job's is, so no job holds a
+  worker for good.
 - **Where effects can run.** The hosted effects are imports of the one
   module, linked only when an app's tasks reach them, so a module without
   them imports nothing. The worker script supplies real ones; the page's
@@ -954,8 +957,10 @@ are all of that kind.
 - **Cancellation.** `on_cancel: Finish` is what keeps a state across a
   superseded job: the job completes, its answer is dropped, and the worker
   keeps the state for the next job. At most one such job per worker, so the
-  pool bounds them. A deadline always stops the worker, and a job's
-  deadline includes its preparation.
+  pool bounds them, and each in time: a finishing job keeps its deadline,
+  and one with none is ended ten minutes after it was performed (the
+  longest deadline a request may carry). A deadline always stops the
+  worker, and a job's deadline includes its preparation.
 - **Faults.** A crash in a preparation or a task poisons that worker only:
   the job is `WorkLost` with the fault class, the state is gone, and the
   next job prepares again elsewhere. Jobs waiting for a lost holder are

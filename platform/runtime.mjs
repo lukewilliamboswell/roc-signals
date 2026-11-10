@@ -43,8 +43,11 @@
 // options.maxWorkers workers (default min(hardwareConcurrency, 8)), one job
 // each at a time; idle workers are reused and jobs beyond the pool wait in a
 // FIFO queue that the engine's in-flight cap bounds. CANCEL removes a
-// queued job and terminates a running job's worker (replaced lazily); a
-// deadline does the same and answers `Timeout`. A worker whose instance
+// queued job and terminates a running job's worker (replaced lazily),
+// unless the task says `Finish`: that job runs on with its answer dropped,
+// until its deadline (ten minutes when it has none), which then terminates
+// its worker. A deadline does the same to a job not cancelled and answers
+// `Timeout`. A worker whose instance
 // faults is discarded and its job answered `WorkLost(class)`; the
 // diagnostic goes to console.error and options.onWorkerFault, never into
 // the result. Without a Worker constructor every job is `WorkLost
@@ -204,6 +207,10 @@ const FILE_UNAVAILABLE = 3;
 
 // The most ranges of one file handle that have an object URL at once.
 const MAX_URLS_PER_FILE = 16;
+
+// The longest deadline a job may have (the engine caps `deadline_ms` at
+// this), and the bound on a cancelled job that finishes and has none.
+const MAX_DEADLINE_MS = 600000;
 const RES_PORT_REPLY = 14;
 const RES_PORT_FAILED = 15;
 const RES_FETCHED = 21;
@@ -1227,9 +1234,11 @@ class WorkPool {
   // prepareObjects }: `payload` is then the task's (`task:str input:rest`)
   // and `prepare` the preparation's (`prep:str init:rest`). `finish` says
   // that a cancelled running job completes (its answer dropped) instead of
-  // ending its worker; `maxOutput` bounds what it appends to builders.
-  submit(payload, done, { id, task, objects = [], prepared = null, finish = false, maxOutput = 0 }) {
-    const job = { payload, done, slot: null, settled: false, timer: null, id, task, objects, prepared, finish, finishing: false, maxOutput };
+  // ending its worker; `deadline` (ms from now, 0 for none) still bounds it
+  // then; `maxOutput` bounds what it appends to builders.
+  submit(payload, done, { id, task, objects = [], prepared = null, finish = false, deadline = 0, maxOutput = 0 }) {
+    const limit = deadline > 0 ? Math.min(deadline, MAX_DEADLINE_MS) : MAX_DEADLINE_MS;
+    const job = { payload, done, slot: null, settled: false, timer: null, id, task, objects, prepared, finish, finishing: false, endBy: Date.now() + limit, maxOutput };
     if (!this.module || (!this.inline && typeof this.W !== "function")) {
       const message = this.module ? "this browser has no Worker" : "the runtime was mounted without its compiled module";
       job.timer = setTimeout(() => this.settle(job, { lost: LOST_UNAVAILABLE, message }), 0);
@@ -1247,21 +1256,36 @@ class WorkPool {
   }
 
   // A cancelled running job whose task says `Finish` completes and keeps
-  // its worker, and any state it holds; its answer is dropped. Anything
-  // else running is stopped by terminating its worker. A deadline always
-  // stops.
+  // its worker, and any state it holds; its answer is dropped. It is still
+  // bounded: if it has not completed by its deadline (ten minutes after it
+  // was performed when it has none), its worker is terminated as a
+  // timed-out job's is, so a job that never ends cannot hold a worker for
+  // good. Anything else running is stopped by terminating its worker. A
+  // deadline always stops.
   cancel(job, cause = "cancel") {
     if (job.settled) return;
     job.settled = true;
     if (job.timer !== null) clearTimeout(job.timer);
+    job.timer = null;
     const q = this.queue.indexOf(job);
     if (q >= 0) this.queue.splice(q, 1);
     if (job.slot !== null) {
-      if (cause === "cancel" && job.finish) job.finishing = true;
-      else this.discard(job.slot, cause);
+      if (cause === "cancel" && job.finish) {
+        job.finishing = true;
+        job.timer = setTimeout(() => this.overran(job), Math.max(0, job.endBy - Date.now()));
+      } else this.discard(job.slot, cause);
     }
     if (cause === "cancel") this.monitor.jobCancelled(job.id, job.finishing);
     this.pumpSoon();
+  }
+
+  // A finishing job reached its deadline: end its worker and give the
+  // worker's place to the queue.
+  overran(job) {
+    job.timer = null;
+    if (!job.finishing || job.slot === null || this.closed) return;
+    this.discard(job.slot, "deadline");
+    this.pump();
   }
 
   // Pump once the current task's other stops have been applied. The engine
@@ -1421,6 +1445,8 @@ class WorkPool {
     if (m.type === "done") {
       slot.job = null;
       job.slot = null;
+      if (job.timer !== null) clearTimeout(job.timer);
+      job.timer = null;
       if (!m.held) slot.key = null;
       if (job.finishing) this.monitor.instanceFinished(slot.seq, m.mem ?? null);
       else {
@@ -1453,7 +1479,10 @@ class WorkPool {
     this.slots.splice(i, 1);
     slot.worker.terminate();
     this.terminated += 1;
-    if (slot.job !== null) slot.job.slot = null;
+    if (slot.job !== null) {
+      slot.job.slot = null;
+      if (slot.job.finishing && slot.job.timer !== null) clearTimeout(slot.job.timer);
+    }
     slot.job = null;
     slot.key = null;
     this.monitor.instanceEnded(slot.seq, cause, fault);
@@ -3395,7 +3424,10 @@ export class RocEngineRuntime {
       const klass = this.reportLost(fx, outcome.lost, outcome.message);
       finish(new Uint8Array([RES_WORK_LOST, outcome.lost]), outcome.lost === LOST_UNAVAILABLE ? "unavailable" : "lost", klass);
     };
-    stop = this.workPool().submit(payload, done, { id: fx.id, task: fx.task, objects, prepared, finish: fx.finish, maxOutput: this.maxOutputBytes });
+    // In manual mode the deadline is not on the clock, so a finishing job
+    // there is bounded by the cap alone.
+    const deadline = this.manual || this.manualWork ? 0 : fx.deadline;
+    stop = this.workPool().submit(payload, done, { id: fx.id, task: fx.task, objects, prepared, finish: fx.finish, deadline, maxOutput: this.maxOutputBytes });
   }
 
   // Report a lost job and return its class name. The `roc worker fault

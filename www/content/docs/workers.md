@@ -400,8 +400,10 @@ answers `Timeout`:
 - `Unlimited`, the default, means no deadline. The longest deadline is ten
   minutes.
 
-A job that never finishes holds its worker until its site stops it. Give a
-task a deadline when its input can make it run for an unreasonable time.
+A job that never finishes holds its worker until its site stops it, or,
+when its task says `on_cancel: Finish` (below), until its deadline, and at
+most ten minutes after it was asked for when it has none. Give a task a
+deadline when its input can make it run for an unreasonable time.
 
 **A cancelled job can be allowed to finish.** A job is cancelled when its
 site is disposed (unless its task says `Keep`) or when a `latest` or
@@ -417,7 +419,10 @@ worker is still warm when they come back, and a task asked again as the
 user types, such as a search over a prepared file: a search the user has
 typed past runs to its end, and the next one waits for the worker that
 holds the state rather than preparing it again on another. A deadline
-always ends the worker.
+always ends the worker, a cancelled job's included: a job that is still
+finishing when its deadline expires has its worker ended there, and one
+whose task has no deadline is ended ten minutes after it was asked for, so
+a job that never ends cannot hold a worker for good.
 
 Whatever stops a job, nothing it wrote can be seen: only a delivered
 answer puts a file on the page.

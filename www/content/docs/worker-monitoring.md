@@ -154,7 +154,8 @@ What a listener can rely on:
   `running`) and `record.cancelledBy` (`engine`, `unmount`, `contained`).
 - A cancelled job whose task says `on_cancel: Finish` ends at once as `cancelled`
   with `record.finished`, but its instance stays busy until the job
-  completes.
+  completes, or until its deadline (ten minutes when it has none), when the
+  instance ends with cause `deadline`.
 - When stopping a job terminates its worker (cancel, deadline, fault), the
   `instance-end` comes before that job's `job-end`.
 - When the page's runtime is poisoned or unmounted, every job and instance

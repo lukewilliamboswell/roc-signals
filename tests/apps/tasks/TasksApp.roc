@@ -22,6 +22,9 @@ import pf.Worker
 ##   lines in a task.
 ## - "Crash", "Twice" (finishing a builder twice) and "Timed" (a deadline)
 ##   end their jobs without an answer; "Stop" cancels whatever runs.
+## - "Linger" counts the first file's lines one byte at a time, with a
+##   short deadline and `on_cancel: Finish`: on a large file a cancelled job
+##   runs on past its deadline unless the platform ends it there.
 ## - "Panel" mounts three jobs on the first file: one that stops when the
 ##   panel closes, one that is kept and answers to the page, and one that is
 ##   kept and answers to a state the panel owns, whose write is skipped once
@@ -45,7 +48,7 @@ TasksApp := [].{
 	}
 
 	## The job the app wants now; a new value cancels the job of the old.
-	Run : [Idle, Upper({ source : File, chunk : U64 }), Append({ previous : List(File), lines : List(Str) }), Count({ file : File, chunk : U64 }), Overflow(File), Crash(File), Twice(U64), Many(U64), Timed(File), Square(U64)]
+	Run : [Idle, Upper({ source : File, chunk : U64 }), Append({ previous : List(File), lines : List(Str) }), Count({ file : File, chunk : U64 }), Overflow(File), Crash(File), Twice(U64), Many(U64), Timed(File), Square(U64), Linger(File)]
 
 	## A task that calls no effect.
 	square : Worker.Task(U64, U64, Engine.FileError)
@@ -163,6 +166,13 @@ TasksApp := [].{
 	timed : Worker.Task(File, U64, Engine.FileError)
 	timed = Worker.task({ name: "test.roc-signals/tasks/timed", run!: TasksApp.size!, deadline: Ms(5000) })
 
+	## The lines of a file, read one byte at a time.
+	linger! : File => Try(U64, Engine.FileError)
+	linger! = |file| TasksApp.count_lines!({ file, chunk: 1 })
+
+	lingering : Worker.Task(File, U64, Engine.FileError)
+	lingering = Worker.task({ name: "test.roc-signals/tasks/lingering", run!: TasksApp.linger!, deadline: Ms(1000), on_cancel: Finish })
+
 	stopped : Worker.Task(File, U64, Engine.FileError)
 	stopped = Worker.task({ name: "test.roc-signals/tasks/stopped", run!: TasksApp.size! })
 
@@ -200,6 +210,7 @@ TasksApp := [].{
 		Many(n) => [TasksApp.many.request(n)]
 		Square(n) => [TasksApp.square.request(n)]
 		Timed(file) => [TasksApp.timed.request(file)]
+		Linger(file) => [TasksApp.lingering.request(file)]
 	}
 
 	describe : File -> Str
@@ -229,6 +240,7 @@ TasksApp := [].{
 		Crash(_) => TasksApp.took_size(s, TasksApp.crashes.result(res))
 		Twice(_) => TasksApp.took_size(s, TasksApp.twice.result(res))
 		Timed(_) => TasksApp.took_size(s, TasksApp.timed.result(res))
+		Linger(_) => TasksApp.took_size(s, TasksApp.lingering.result(res))
 		Square(_) => TasksApp.took_size(s, TasksApp.square.result(res))
 		Many(_) =>
 			match TasksApp.many.result(res) {
@@ -275,6 +287,7 @@ TasksApp := [].{
 				Html.button("Overflow", [], st.update(TasksApp.ask(|f| Overflow(f)))),
 				Html.button("Crash", [], st.update(TasksApp.ask(|f| Crash(f)))),
 				Html.button("Timed", [], st.update(TasksApp.ask(|f| Timed(f)))),
+				Html.button("Linger", [], st.update(TasksApp.ask(|f| Linger(f)))),
 				Html.button("Twice", [], st.update(|s| { ..s, run: Twice(s.batch), outcome: "running" })),
 				Html.button("Many", [], st.update(|s| { ..s, run: Many(17), outcome: "running" })),
 				Html.button("Few", [], st.update(|s| { ..s, run: Many(3), outcome: "running" })),
@@ -418,6 +431,7 @@ TasksApp := [].{
 				TasksApp.many.registration(),
 				TasksApp.square.registration(),
 				TasksApp.timed.registration(),
+				TasksApp.lingering.registration(),
 				TasksApp.stopped.registration(),
 				TasksApp.kept.registration(),
 			])

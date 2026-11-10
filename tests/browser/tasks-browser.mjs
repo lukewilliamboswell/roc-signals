@@ -15,6 +15,8 @@
 // - `maxOutputBytes` refuses an append with TooLarge, and the job decides.
 // - A running job cancelled mid-file is stopped by terminating its worker:
 //   no answer, no handle on the page, and the next job runs on a fresh one.
+// - A cancelled job of a task that says `on_cancel: Finish` runs on only
+//   until its deadline: then its worker is ended with cause `deadline`.
 // - Unmounting with a job running terminates it and delivers nothing.
 // - The page's instance never performs an effect: its imports are stubs
 //   that throw, and `work()` on a mounted instance is a classified contract
@@ -240,6 +242,47 @@ async function open(options = {}) {
     next: "built slow.txt.upper:4194304:text/plain",
     created: 2,
     handles: [0],
+  });
+  await ctx.close();
+}
+
+// A cancelled job of a `Finish` task runs on with its answer dropped, but
+// only until its deadline: a job that overruns it has its worker ended
+// there, as a timed-out job's is, the monitor says why, and the next job
+// runs on a fresh worker. "Linger" reads a 16 MiB file one byte at a time
+// with a deadline of 1000 ms, so it overruns by far.
+{
+  const { page, ctx } = await open();
+  const r = await page.evaluate(async () => {
+    const events = [];
+    window.__rt.monitor.subscribe((e) => events.push(e));
+    window.__choose("long.txt", 16 << 20, "\n");
+    const t0 = performance.now();
+    window.__click("Linger");
+    const busy = () => window.__rt.pool !== null && window.__rt.pool.slots.some((s) => s.job !== null);
+    while (!busy() && performance.now() - t0 < 10000) await new Promise((r) => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 200));
+    window.__click("Stop");
+    await new Promise((r) => setTimeout(r, 100));
+    const finishing = { busy: busy(), terminated: window.__rt.pool.terminated };
+    // The bound is the deadline from when the job was performed; allow the
+    // loaded machine a few seconds past it.
+    while (busy() && performance.now() - t0 < 6000) await new Promise((r) => setTimeout(r, 10));
+    const endedAfterMs = performance.now() - t0;
+    const s = window.__rt.monitor.snapshot();
+    const cancelled = s.recent.find((x) => x.outcome === "cancelled");
+    const ends = events.filter((e) => e.kind === "instance-end").map((e) => e.cause);
+    window.__click("Square");
+    const next = await window.__until("outcome", (t) => t !== "running", 30000);
+    return { finishing, ended: { busy: busy(), deadline: s.instances.ended.deadline, ends, finished: cancelled ? cancelled.finished : null, poolBusy: s.pool.busy }, inTime: endedAfterMs < 6000, next, created: window.__rt.pool.created, replies: window.__replies.length };
+  });
+  check("a cancelled Finish job that overruns its deadline has its worker ended, and the next job runs", r, {
+    finishing: { busy: true, terminated: 0 },
+    ended: { busy: false, deadline: 1, ends: ["deadline"], finished: true, poolBusy: 0 },
+    inTime: true,
+    next: "size 49",
+    created: 2,
+    replies: 1,
   });
   await ctx.close();
 }
