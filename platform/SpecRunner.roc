@@ -83,6 +83,10 @@ SpecRunner := [].{
 		## A worker instance's entry: `name:str input:rest` to output bytes.
 		## Programs are pure, so the runner runs a job in process.
 		work : List(U8), List(List(U8)) -> List(U8),
+
+		## The engine's settle check (`Core.settled`): `Err` holds the
+		## commands a pass over every layer emitted on a discarded copy.
+		settled : state -> Try({}, { cmds : List(U8), note : Str }),
 	}
 
 	Sub : [Interval(U32), Pop, OnlineSub, VisibilitySub]
@@ -920,6 +924,49 @@ SpecRunner := [].{
 		Ok({})
 	}
 
+	## The settle check after a step: the engine's pass over every layer must
+	## emit nothing, or the step left a reader stale. The diagnostic names the
+	## commands that pass emitted and the first element they would change, as
+	## the oracle renders it now and after them.
+	check_settled : Program(state), S(state) -> Try({}, Str)
+	check_settled = |program, s| match (program.settled)(s.inst) {
+		Ok(_) => Ok({})
+		Err({ cmds, note }) => {
+			r = Dom.apply_full(s.dom, cmds)
+			first = match r.written.first() {
+				Ok(i) => {
+					n = Dom.node(r.dom, i)
+					el = if (n.tag == "" and n.parent != 0) n.parent - 1 else i
+					was = if (el < s.dom.nodes.len()) Dom.render(s.dom, el) else "(new)"
+					"; first write: ${was} -> ${Dom.render(r.dom, el)}${SpecRunner.landmark(r.dom, el)}"
+				}
+				Err(_) => if (r.fx.is_empty()) "" else "; first effect: ${Str.inspect(r.fx.first() ?? crash "not empty")}"
+			}
+			effects = if (note.is_empty()) "" else "; effect channel: ${note}"
+			Err("a reader was left stale: a settle pass over every layer emitted ${Dom.describe(r.ops)}${first}${effects}")
+		}
+	}
+
+	## The nearest element at or above node `i` that a spec could locate by
+	## `data-testid` or `aria-label`, for diagnostics ("" when none).
+	landmark : Dom.Model, U64 -> Str
+	landmark = |dom, i| {
+		var $at = i + 1
+		while $at != 0 {
+			n = Dom.node(dom, $at - 1)
+			tid = Dom.attr_of(n, "data-testid")
+			label = Dom.attr_of(n, "aria-label")
+			if tid != "" {
+				return " (in test-id \"${tid}\")"
+			}
+			if label != "" {
+				return " (in label \"${label}\")"
+			}
+			$at = n.parent
+		}
+		""
+	}
+
 	## Run one step; `Err` is the step's failure. Every step of the grammar
 	## has a case here (the match has no catch-all).
 	one : Program(state), S(state), Scm.Op -> Try(S(state), Str)
@@ -1476,8 +1523,15 @@ SpecRunner := [].{
 			Ok(s) => s
 			Err(message) => return Failed({ step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message })
 		}
+		match SpecRunner.check_settled(program, $s) {
+			Ok(_) => {}
+			Err(message) => return Failed({ step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message: "after mount, ${message}" })
+		}
 		var $i = 0.U64
 		for step in spec.steps {
+			# Every step, a worker job's answer and a file handed over
+			# included, must also leave the engine settled: an oracle on the
+			# engine, not a step, so the browser runner has no equivalent.
 			done = match (SpecRunner.job_of($s, step.op), SpecRunner.file_count(step.op), step.op) {
 				(Ok(job), _, _) => SpecRunner.deliver_job(program, $s, job, (host.work!)(job.payload, job.files))
 				(_, Ok(n), _) => SpecRunner.give_files(program, $s, step.op, (host.mint_files!)(n))
@@ -1494,6 +1548,10 @@ SpecRunner := [].{
 			}
 			match done {
 				Ok(s2) => {
+					match SpecRunner.check_settled(program, s2) {
+						Ok(_) => {}
+						Err(message) => return Failed({ step: $i, at: step, message })
+					}
 					$s = s2
 				}
 				Err(message) => return Failed({ step: $i, at: step, message })

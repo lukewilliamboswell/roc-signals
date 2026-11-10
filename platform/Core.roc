@@ -1199,6 +1199,39 @@ Core := [].{
 		$out.concat(fx_counters(a))
 	}
 
+	# ------------------------------------------------------------------
+	# The settle check: a propagation-completeness oracle for harnesses.
+
+	## For test platforms and harnesses: whether every reader in the instance
+	## already shows what its layers imply, which is what a complete turn
+	## leaves behind (design.md, "Fuzzing, soak and contract tests").
+	##
+	## It runs one root `Changed` pass with every layer bit set on a copy of
+	## the instance and discards the copy. That pass re-evaluates every hole,
+	## re-decides every `when` and `switch`, reconciles every `each`, re-reads
+	## every `derive` and `resource` input, every component prop and every
+	## effect site's watched value, and reaches into every row and component
+	## body; each of those prunes against what it last emitted or holds. So on
+	## a settled instance it emits nothing and changes no effect state, and a
+	## reader the last turn missed shows up as the command that turn should
+	## have emitted: `Err` carries the pass's commands (from opcode 1, as the
+	## wire encodes them) and a note naming any change it made to the effect
+	## channel without a command (a follow-up queued, a request refused).
+	## The end of the turn ([TurnEnd]: focus, program checks) is not run and
+	## follow-ups do not run; a request the pass queues for it is a change.
+	##
+	## The instance passed in is never changed: while the copy is alive it
+	## shares the instance's storage, so the pass copies what it touches, and
+	## once the result is dropped the instance owns its storage alone again.
+	## Run it outside any region that measures allocations.
+	settled : App -> Try({}, { cmds : List(U8), note : Str })
+	settled = |{ root, tx, programs: _ }| {
+		before = tx.fx
+		(_, _, after) = call(root, Root, Changed(every_layer), { ..tx, cmds: [] })
+		note = settle_note(before, after.fx)
+		if (after.cmds.is_empty() and note.is_empty()) Ok({}) else Err({ cmds: after.cmds, note })
+	}
+
 	## The wire protocol version this engine speaks (design.md, Appendix B). The
 	## host exports it, and the runtime refuses an instance whose version it does
 	## not implement.
@@ -1249,8 +1282,9 @@ Core := [].{
 	## For the platform's hosts and test harnesses: the entry points of a
 	## [Program], as the host calls them. `work` is a worker instance's only
 	## entry: it runs the catalogue's program named in `name:str input:rest` on
-	## the input and returns the output bytes.
-	driver : Program -> { version : U32, keys : () -> List(U8), init : List(U8) -> (App, List(U8), List(U8)), event : App, List(U8), List(U8), U32, U32, List(U8) -> (App, List(U8), List(U8)), files : App, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (App, List(U8), List(U8)), work : List(U8), List(List(U8)) -> List(U8) }
+	## the input and returns the output bytes. `settled` is the settle check
+	## (`Core.settled`), which only harnesses call.
+	driver : Program -> { version : U32, keys : () -> List(U8), init : List(U8) -> (App, List(U8), List(U8)), event : App, List(U8), List(U8), U32, U32, List(U8) -> (App, List(U8), List(U8)), files : App, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (App, List(U8), List(U8)), work : List(U8), List(List(U8)) -> List(U8), settled : App -> Try({}, { cmds : List(U8), note : Str }) }
 	driver = |p| {
 		init = p.init
 		workers = p.workers
@@ -1266,6 +1300,7 @@ Core := [].{
 				finish(Core.event_files(fresh, node, handler, record, blobs.map(|b| Blob.(b))), [], wbuf)
 			},
 			work: |payload, files| run_work(workers, payload, files),
+			settled: Core.settled,
 		}
 	}
 
@@ -1764,6 +1799,17 @@ layer_reads = |depth| {
 	depth + 1
 }
 
+## Every layer at once: the mask of the settle check (`Core.settled`). A
+## `Changed` with it re-evaluates every hole and descends into every child
+## whatever its read mask, and the sites that settle layers of their own (an
+## `each` row, a component body) pass it inward whole instead of translating
+## it. The root's turn mask never has bit 0 (no layer of the root's context is
+## at depth 0), so a turn never sends it; inside a component only a chain of 63
+## nested `derive`s that all changed at once could build it, and the extra
+## evaluations it then forces are pruned like any other.
+every_layer : U64
+every_layer = 0xFFFF_FFFF_FFFF_FFFF
+
 ## All layers at or above `depth`.
 upto : U64 -> U64
 upto = |depth| if (depth >= 63) 0xFFFF_FFFF_FFFF_FFFF else bit(depth).shl_wrap(1) - 1
@@ -1873,15 +1919,17 @@ call : Inst(ctx), ctx, Msg, Tx -> (Inst(ctx), Out(ctx), Tx)
 call = |Inst(f), env, msg, tx| f(env, msg, tx)
 
 ## Re-evaluate the holes that read a changed layer, then descend into the
-## children whose subtrees read one.
+## children whose subtrees read one. With `every_layer` it re-evaluates every
+## hole and descends into every child, whatever the masks say.
 refresh : Block(ctx), ctx, U64, Tx -> (Block(ctx), Tx)
 refresh = |{ holes, handlers, children, child_reads, child_top, nodes, tops, reads }, env, mask, tx| {
+	all = mask == every_layer
 	var $holes = holes
 	var $tx = tx
 	var $i = 0.U64
 	while $i < $holes.len() {
 		hm = $holes.get($i).map_ok(|h| h.mask) ?? 0
-		if hm.bitwise_and(mask) != 0 {
+		if all or hm.bitwise_and(mask) != 0 {
 			{ list, prev } = $holes.replace($i, { node: 0, mask: 0, attr: "", read: |_| "", last: "" }) ?? crash "hole"
 			{ node, mask: m, attr, read, last } = prev
 			v = read(env)
@@ -1904,7 +1952,7 @@ refresh = |{ holes, handlers, children, child_reads, child_top, nodes, tops, rea
 	var $j = 0.U64
 	while $j < $kids.len() {
 		r = child_reads.get($j) ?? 0
-		if r.bitwise_and(mask) != 0 {
+		if all or r.bitwise_and(mask) != 0 {
 			{ list, prev } = $kids.replace($j, noop({})) ?? crash "child"
 			(next, _, t2) = call(prev, env, Changed(mask), $tx)
 			$kids = list.set($j, next) ?? crash "child"
@@ -3090,7 +3138,7 @@ settle = |cfg, cols, env, tx| {
 			}
 			$hi = $hi + 1
 		}
-		if cfg.dynamic and kid_mask.bitwise_and(m) != 0 {
+		if cfg.dynamic and (m == every_layer or kid_mask.bitwise_and(m) != 0) {
 			{ list: kl, prev: row_kids } = $kids.replace(si, []) ?? crash "kids"
 			var $rk = row_kids
 			var $j = 0.U64
@@ -3212,8 +3260,9 @@ each_inst = |cfg0, rows0, adopted0, cols0| {
 				Changed(mask) => {
 					# Mark existing rows first (outer layers, then the keyed selector),
 					# then reconcile: rows created now are evaluated once, at creation;
-					# rows removed now drop their marks.
-					full = mask.bitwise_and(cfg.outer_mask.bitwise_or(cols.kid_mask)).bitwise_and(bit(cfg.depth) - 1)
+					# rows removed now drop their marks. Rows settle their own layer
+					# locally, so `every_layer` reaches into them whole.
+					full = if (mask == every_layer) every_layer else mask.bitwise_and(cfg.outer_mask.bitwise_or(cols.kid_mask)).bitwise_and(bit(cfg.depth) - 1)
 					c1 = if (full != 0) mark_all(cols, full) else cols
 					c2 = if (cfg.sel_mask.bitwise_and(mask) != 0) select_changed(cfg, c1, mk, mask) else c1
 					rows_mask = eff_mask(rows)
@@ -3475,7 +3524,13 @@ comp_inst = |prop0, snk0, block0| {
 			Held({ prop, snk, block }) = held
 			match msg {
 				Changed(mask) => {
-					if eff_mask(prop).bitwise_and(mask) == 0 {
+					if mask == every_layer {
+						# Layers inside a component number from zero and settle
+						# there, so `every_layer` reaches into the body whole.
+						v = (prop.read)(env)
+						(b2, t2) = refresh(block, Comp.{ prop: v, out: [] }, every_layer, count_evals(tx, 1))
+						(comp_inst(prop, snk, b2), Done, t2)
+					} else if eff_mask(prop).bitwise_and(mask) == 0 {
 						(comp_inst(prop, snk, block), Done, tx)
 					} else {
 						v = (prop.read)(env)
@@ -4636,6 +4691,27 @@ work_bytes = |inst, buf| {
 		$b = put_u64(put_str($b, name), k)
 	}
 	$b
+}
+
+# ------------------------------------------------------------------
+# The settle check (`Core.settled`).
+
+## What a settle pass changed in the effect channel besides commands, or ""
+## when it changed nothing: a request refused at the bound or a follow-up
+## queued emits no command, so the check compares the counters too.
+settle_note : Fx, Fx -> Str
+settle_note = |a, b| {
+	pairs = [
+		("issued", a.issued, b.issued),
+		("refused", a.refused, b.refused),
+		("stale", a.stale, b.stale),
+		("cancelled", a.cancelled, b.cancelled),
+		("in flight", a.live.len(), b.live.len()),
+		("queued follow-ups", a.queue.len(), b.queue.len()),
+		("end-of-turn focus requests and program checks", a.focus.len(), b.focus.len()),
+	]
+	changed = pairs.keep_if(|(_, x, y)| x != y).map(|(name, x, y)| "${name} ${x.to_str()} -> ${y.to_str()}")
+	Str.join_with(changed, ", ")
 }
 
 ## The worker catalogue lists its names in order, and a duplicate name or a

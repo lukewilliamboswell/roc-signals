@@ -218,6 +218,18 @@ Soak := [].{
 		$counts
 	}
 
+	## The settle check as a walk's `after` hook: after every step the engine's
+	## pass over every layer must emit nothing (`SpecRunner.check_settled`), so
+	## a walk that leaves a reader stale fails at the step that did it. The
+	## pass runs on a discarded copy and frees all it allocates before the
+	## walk goes on, so a leak-checked walk measures what it did without it.
+	settled : SpecRunner.Program(state) -> (SpecRunner.S(state) -> SpecRunner.S(state))
+	settled = |program| |s|
+		match SpecRunner.check_settled(program, s) {
+			Ok(_) => s
+			Err(msg) => crash "soak: ${msg}"
+		}
+
 	## After `warm` warm-up cycles every cycle must leave zero net live bytes.
 	flat : List(I64), U64 -> Try({}, Str)
 	flat = |nets, warm| {

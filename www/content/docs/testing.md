@@ -296,6 +296,31 @@ counters agree with the commands the oracle decoded, and that every issued
 request was one `FX` command and every cancelled one a `CANCEL`, so the
 counters cannot drift from what was emitted.
 
+## The settle check
+
+After mount and after every step, the native runner also asks the engine
+whether the step left anything stale. The engine runs one more observation
+pass over a copy of the instance, as if every layer had changed: every text
+and attribute is re-read, every `when` and `switch` decides again, every
+`each` reconciles, every `derive`, `resource`, component prop and effect site
+re-reads its input, and the pass reaches into every row and component. Each
+of those compares with what it last emitted, so after a complete turn the
+pass emits nothing. If a write never reached one of its readers, the pass
+emits the update the turn should have, and the step fails naming it:
+
+```text
+click: a reader was left stale: a settle pass over every layer emitted
+SETTEXT=1; first write: <p data-testid="late">late 0</p> -> <p
+data-testid="late">late 1</p> (in test-id "late")
+```
+
+The check needs nothing from the spec, so every spec guards against stale
+readers without asserting them. It is an oracle on the engine, not a step:
+the browser runner has no equivalent and needs none, since it replays the
+same engine. It sees only propagation. A handler that writes the wrong value,
+or a command the engine encodes wrongly, settles as faithfully as a correct
+one; specs and the fuzz models catch those.
+
 ## Running specs
 
 The project's tasks run the registered apps' specs:
@@ -326,12 +351,17 @@ repository's fuzz platform (`platform/fuzz.roc`, which needs roc-fuzz's own
 entry and host, so it cannot share the app's `main.roc`): a roc-fuzz target that decodes
 arbitrary bytes into a valid session — random events found by exploring the
 live DOM — and checks it against an oracle, with every session leak-checked.
-The same file declares the app's soak runs: long random walks whose live
-allocations must stay flat across repeated round trips. While a worker
-job is pending, the walk also answers it now and then: usually by running
-its program in process, so the program runs inside the leak check (and one
-that crashes on an input the UI produced is a finding), sometimes by losing
-it, timing it out or leaving it pending for disposal to cancel.
+The walk's `after` hook (`Soak.settled`) runs the settle check after every
+event, so a generated session that leaves a reader stale fails at the event
+that did it, in any app, with no model of the app. The same file declares the
+app's soak runs: long random walks whose live allocations must stay flat
+across repeated round trips. While a worker job is pending, the walk also
+answers it now and then: usually by running its program in process, so the
+program runs inside the leak check (and one that crashes on an input the UI
+produced is a finding), sometimes by losing it, timing it out or leaving it
+pending for disposal to cancel. The settle check runs on a copy that is freed
+before the walk goes on, so it never counts as a leak, and it stays out of
+the measured round trips.
 
 - `blueprint run check` replays the parser target's saved examples, and
   `blueprint run check-slow` every target's.

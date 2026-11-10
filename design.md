@@ -1375,6 +1375,21 @@ loads; seeding storage in the same setup is a spec error in both runners.
   stale), and the
   explorer-driven soak walk over the live DOM. Their oracles, not their inputs,
   carry the value.
+- **The settle check** is the oracle every walk shares, and the native spec
+  runner applies it after every step. After a turn, a root `Changed` pass
+  with every layer bit set, run on a copy of the instance that is then
+  dropped, must emit no command and change nothing in the effect channel.
+  That pass re-evaluates every hole and descends into every child whatever
+  the read masks say, and the sites that settle their own layers (rows,
+  component bodies) pass it inward whole. Since every observation point
+  prunes against what it last emitted or holds, a complete turn leaves it
+  nothing to do, and a reader the turn missed (a mask that left out a layer,
+  a site that was not descended into) shows up as the command the turn
+  should have emitted. It needs no model of the app, so every walk checks
+  propagation completeness for free. It sees only propagation: a wrong
+  reducer, a mis-encoded command or a wrong `last` agree with themselves
+  and pass. While the copy lives it shares the instance's storage, so the
+  pass copies what it touches; it stays out of measured regions.
 - **Soak.** Every app runs a long random walk natively (leak-checked) and in
   Chrome, with live allocations and Wasm pages asserted flat across repeated
   round trips. The native walk answers pending worker jobs from its bytes —
