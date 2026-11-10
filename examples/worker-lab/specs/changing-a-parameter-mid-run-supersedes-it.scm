@@ -17,8 +17,14 @@
     ; 5 asked first, while the old requests still held every slot, so the
     ; engine refused them; each refusal sends its job back to waiting, and
     ; the page admits it again at once now that slots are free (31 to 35).
+    (mark-metrics)
     (fill (label "Weight") "2")
     (expect-pending-effects 15)
+    ; The engine's own account: 15 old requests cancelled, 5 refused, and
+    ; 10 + 5 new ones issued.
+    (expect-metric-delta effects_cancelled 15)
+    (expect-metric-delta effects_refused 5)
+    (expect-metric-delta effects_issued 15)
     (expect-text (test-id "refused") "Refused at the in-flight bound and retried: 5")
     (expect-text (test-id "job-1") "running")
     (expect-text (test-id "job-16") "waiting")

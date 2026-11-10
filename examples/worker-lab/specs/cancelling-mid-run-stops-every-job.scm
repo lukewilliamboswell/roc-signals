@@ -11,7 +11,9 @@
     (expect-pending-effects 15)
     (expect-text (test-id "job-17") "running")
     (expect-text (test-id "job-18") "waiting")
+    (mark-metrics)
     (click (role button :name "Cancel"))
+    (expect-metric-delta effects_cancelled 15)
     ; Every job in flight is cancelled, in the workers too: nothing is left
     ; pending and no later answer can land.
     (expect-pending-effects 0)
