@@ -363,6 +363,14 @@ pending for disposal to cancel. The settle check runs on a copy that is freed
 before the walk goes on, so it never counts as a leak, and it stays out of
 the measured round trips.
 
+Fixed apps only exercise the nestings they contain. The `structure` target
+(`fuzz/structure/main.roc`) decodes its bytes into a site tree instead,
+nesting `state`, `derive`, `resource`, `when`, `switch`, `each`, components
+and effect sites, then clicks through it and answers its timers, with the
+settle check after every step. In its pure mode every button writes the root
+state, so the rendered page must also equal a fresh mount started at the
+root's current value.
+
 - `blueprint run check` replays the parser target's saved examples, and
   `blueprint run check-slow` every target's.
 - `blueprint run fuzz -- --time 600 kanban-board` runs a fuzz campaign.

@@ -1391,6 +1391,15 @@ loads; seeding storage in the same setup is a spec error in both runners.
   reducer, a mis-encoded command or a wrong `last` agree with themselves
   and pass. While the copy lives it shares the instance's storage, so the
   pass copies what it touches; it stays out of measured regions.
+- **Generated structure** (`fuzz/structure`) decodes bytes into a site tree
+  over every site kind, bounded in depth and size, and a session of clicks
+  and timer answers over it, so the settle check meets nestings no fixed
+  app contains. When every write goes to the root state, the page is a
+  function of that state, and after every step it must equal a fresh mount
+  started at it. The generator stays monomorphic by nesting layers three
+  deep per typed level and recursing only through component bodies, whose
+  context type is fixed: a generator recursing through `state` would need
+  polymorphic recursion.
 - **Soak.** Every app runs a long random walk natively (leak-checked) and in
   Chrome, with live allocations and Wasm pages asserted flat across repeated
   round trips. The native walk answers pending worker jobs from its bytes —
