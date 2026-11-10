@@ -85,6 +85,11 @@ SpecRunner := [].{
 		## The engine's settle check (`Core.settled`): `Err` holds the
 		## commands a pass over every layer emitted on a discarded copy.
 		settled : state -> Try({}, { cmds : List(U8), note : Str }),
+
+		## The engine's requests in flight, in issue order (`Core.fx_live`):
+		## a soak's replay finds the request a recorded answer goes to by its
+		## place among them.
+		live : state -> List(U32),
 	}
 
 	Sub : [Interval(U32), Pop, OnlineSub, VisibilitySub, PortSub(Str, Str)]
@@ -1812,21 +1817,35 @@ SpecRunner := [].{
 	## The host services a replay uses: running a worker job in a child
 	## process, minting and counting file handles in the host's heap, and
 	## digesting bytes.
-	Host : { work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8) }
+	Host : { work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8), live_allocations! : () => U64, live_bytes! : () => U64 }
+
+	## Where a spec failed: the step's index, the step, and why.
+	Failure : { step : U64, at : Scm.Step, message : Str }
 
 	## Replay one spec from a fresh mount, running each worker job with
 	## `work!` (the `spec` command's child process, `Io.work!`), and giving
 	## the app files through handles the host mints (`Io.mint_files!`).
 	run! : Program(state), Host, Scm.Spec => Outcome
-	run! = |program, host, spec| {
+	run! = |program, host, spec| match SpecRunner.drive!(program, host, spec, { begin: |s| s, after: |s, _| s }) {
+		Ok(_) => Passed
+		Err(failure) => Failed(failure)
+	}
+
+	## Drive one spec from a fresh mount, as `run!` does, and hand back the
+	## runner's state after its last step. `begin` sees the state after the
+	## mount and `after` the state after each step, once the step and its
+	## settle check have passed.
+	drive! : Program(state), Host, Scm.Spec, { begin : S(state) -> S(state), after : S(state), Scm.Op -> S(state) } => Try(S(state), Failure)
+	drive! = |program, host, spec, { begin, after }| {
 		var $s = match SpecRunner.start(program, spec) {
 			Ok(s) => s
-			Err(message) => return Failed({ step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message })
+			Err(message) => return Err({ step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message })
 		}
 		match SpecRunner.check_settled(program, $s) {
 			Ok(_) => {}
-			Err(message) => return Failed({ step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message: "after mount, ${message}" })
+			Err(message) => return Err({ step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message: "after mount, ${message}" })
 		}
+		$s = begin($s)
 		var $i = 0.U64
 		for step in spec.steps {
 			# Every step, a worker job's answer and a file handed over
@@ -1852,31 +1871,183 @@ SpecRunner := [].{
 				Ok(s2) => {
 					match SpecRunner.check_settled(program, s2) {
 						Ok(_) => {}
-						Err(message) => return Failed({ step: $i, at: step, message })
+						Err(message) => return Err({ step: $i, at: step, message })
 					}
-					$s = s2
+					$s = after(s2, step.op)
 				}
-				Err(message) => return Failed({ step: $i, at: step, message })
+				Err(message) => return Err({ step: $i, at: step, message })
 			}
 			$i = $i + 1
 		}
-		Passed
+		Ok($s)
+	}
+
+	# ----------------------------------------------------------------- soak
+
+	## One call a spec made into the engine, as a soak records it: the node
+	## and handler (for a result, the request's place among those in flight,
+	## since a later cycle issues it under a new id), the payload, and the
+	## handles a `:files` call carried.
+	Call : { node : U32, handler : [Handler(U32), InFlight(U64)], payload : List(U8), files : [Event, Files(List(Box(U64)))] }
+
+	## An instance and the calls made into it since the recording began.
+	Recorded(state) : { inst : state, calls : List(Call) }
+
+	## `program`, recording every `event` and `files` call made into it.
+	recording : Program(state) -> Program(Recorded(state))
+	recording = |program| {
+		init = program.init
+		event = program.event
+		files = program.files
+		settled = program.settled
+		live = program.live
+		{
+			version: program.version,
+			keys: program.keys,
+			init: |boot| {
+				(inst, cmds, wbuf) = init(boot)
+				({ inst, calls: [] }, cmds, wbuf)
+			},
+			event: |r, buf, wbuf, node, h, payload| {
+				call = { node, handler: SpecRunner.handler_of(live(r.inst), node, h), payload, files: Event }
+				(inst, cmds, w) = event(r.inst, buf, wbuf, node, h, payload)
+				({ inst, calls: r.calls.append(call) }, cmds, w)
+			},
+			files: |r, buf, wbuf, node, h, record, handles| {
+				call = { node, handler: SpecRunner.handler_of(live(r.inst), node, h), payload: record, files: Files(handles) }
+				(inst, cmds, w) = files(r.inst, buf, wbuf, node, h, record, handles)
+				({ inst, calls: r.calls.append(call) }, cmds, w)
+			},
+			settled: |r| settled(r.inst),
+			live: |r| live(r.inst),
+		}
+	}
+
+	## How a soak names the handler of a call: a result by the place of its
+	## request among those in flight, anything else as it is.
+	handler_of : List(U32), U32, U32 -> [Handler(U32), InFlight(U64)]
+	handler_of = |live, node, h|
+		if node == SpecRunner.fx_node {
+			match live.find_first_index(|id| id == h) {
+				Ok(i) => InFlight(i)
+				Err(_) => Handler(h)
+			}
+		} else {
+			Handler(h)
+		}
+
+	## Replay `calls` `cycles` times on the engine alone (no DOM model, the
+	## command and work buffers lent back as the hosts lend them), and give
+	## each cycle's net live allocations and bytes, read from the host's
+	## counters before and after it. A recorded answer goes to the request
+	## at its recorded place among those in flight; a cycle that has no
+	## request there is not a round trip.
+	replay! : Program(state), { inst : state, buf : List(U8), wbuf : List(U8) }, List(Call), U64, Host => Try(List({ allocations : I64, bytes : I64 }), Str)
+	replay! = |program, { inst, buf, wbuf }, calls, cycles, host| {
+		var $inst = inst
+		var $buf = buf
+		var $wbuf = wbuf
+		var $nets = List.with_capacity(cycles)
+		var $c = 0.U64
+		while $c < cycles {
+			allocations = (host.live_allocations!)()
+			bytes = (host.live_bytes!)()
+			for call in calls {
+				handler = match call.handler {
+					Handler(h) => h
+					InFlight(i) =>
+						match (program.live)($inst).get(i) {
+							Ok(id) => id
+							Err(_) => return Err("cycle ${($c + 1).to_str()} has no request in flight at place ${(i + 1).to_str()}, which the recorded cycle answered: the steps after the last mark-metrics do not return the app to where they started")
+						}
+				}
+				(next, cmds, w) = match call.files {
+					Event => (program.event)($inst, $buf, $wbuf, call.node, handler, call.payload)
+					Files(handles) => (program.files)($inst, $buf, $wbuf, call.node, handler, call.payload, handles)
+				}
+				$inst = next
+				$buf = cmds
+				$wbuf = w
+			}
+			after_allocations = (host.live_allocations!)()
+			after_bytes = (host.live_bytes!)()
+			$nets = $nets.append({ allocations: after_allocations.to_i64_wrap() - allocations.to_i64_wrap(), bytes: after_bytes.to_i64_wrap() - bytes.to_i64_wrap() })
+			$c = $c + 1
+		}
+		Ok($nets)
+	}
+
+	## Every cycle after the first `warm` leaves nothing live behind.
+	flat : List({ allocations : I64, bytes : I64 }), U64 -> Try({}, Str)
+	flat = |nets, warm|
+		if nets.drop_first(warm).all(|n| n.allocations == 0 and n.bytes == 0) {
+			Ok({})
+		} else {
+			Err("round trips leave allocations behind after ${warm.to_str()} warm-up cycles (net allocations/bytes per cycle): ${SpecRunner.show_nets(nets)}")
+		}
+
+	## Net allocations and bytes per cycle, as `allocations/bytes`.
+	show_nets : List({ allocations : I64, bytes : I64 }) -> Str
+	show_nets = |nets| Str.join_with(nets.map(|n| "${n.allocations.to_str()}/${n.bytes.to_str()}"), " ")
+
+	## Soak one spec (`--soak`): run it once as `run!` does, recording the
+	## calls its steps make after the last `mark-metrics` (after the mount
+	## when it has none), which must take the app back to where they began;
+	## then replay them `cycles` times on the engine alone and require every
+	## cycle after the first `warm` to leave no allocation and no byte live.
+	## A leak check, never a baseline: the counts are compared with nothing
+	## but zero.
+	soak! : Program(state), Host, Scm.Spec, { cycles : U64, warm : U64 } => Try(List({ allocations : I64, bytes : I64 }), Failure)
+	soak! = |program, host, spec, { cycles, warm }| {
+		forget = |s| {
+			r = s.inst
+			{ ..s, inst: { ..r, calls: [] } }
+		}
+		ran = SpecRunner.drive!(
+			SpecRunner.recording(program),
+			host,
+			spec,
+			{
+				begin: forget,
+				after: |s, op|
+					match op {
+						MarkMetrics => forget(s)
+						_ => s
+					},
+			},
+		)?
+		last = spec.steps.last() ?? crash "a parsed spec has steps"
+		failed = |message| { step: spec.steps.len() - 1, at: last, message: "soak: ${message}" }
+		if ran.inst.calls.is_empty() {
+			return Err(failed("the steps after the last mark-metrics call nothing in the engine, so there is no round trip to repeat"))
+		}
+		nets = SpecRunner.replay!(program, { inst: ran.inst.inst, buf: ran.buf, wbuf: ran.wbuf }, ran.inst.calls, cycles, host).map_err(failed)?
+		SpecRunner.flat(nets, warm).map_err(failed)?
+		Ok(nets)
 	}
 
 	# ------------------------------------------------------------------ CLI
 
 	## The host services the `spec` command uses, passed in by the test
 	## program (the test platform's `Cli`), so this package stays pure.
-	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64, work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8) }
+	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64, work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8), live_allocations! : () => U64, live_bytes! : () => U64 }
 
-	Options : { filter : Str, emit_steps : Bool, grammar : Bool, files : List(Str) }
+	## The command line: which specs, whether to emit their steps or the
+	## grammar instead, and whether to soak them (`soak` cycles of the round
+	## trip after `warm` warm-up cycles; `NoSoak` runs each spec once).
+	Options : { filter : Str, emit_steps : Bool, grammar : Bool, soak : [NoSoak, Soak({ cycles : U64, warm : U64 })], files : List(Str) }
 
 	usage : Str
-	usage = "usage: RUNNER [--filter GLOB] [--emit-steps] FILE.scm...\n       RUNNER --grammar\n"
+	usage = "usage: RUNNER [--filter GLOB] [--emit-steps] FILE.scm...\n       RUNNER --soak CYCLES [--warm N] FILE.scm...\n       RUNNER --grammar\n"
+
+	## The number after an option, as a count.
+	count_arg : List(Str), U64, Str -> Try(U64, Str)
+	count_arg = |args, i, option| U64.from_str(args.get(i + 1) ?? "").map_err(|_| "${option} needs a count")
 
 	parse_args : List(Str) -> Try(Options, Str)
 	parse_args = |args| {
-		var $o = { filter: "*", emit_steps: Bool.False, grammar: Bool.False, files: [] }
+		var $o = { filter: "*", emit_steps: Bool.False, grammar: Bool.False, soak: NoSoak, files: [] }
+		var $warm = 2.U64
 		var $i = 0.U64
 		while $i < args.len() {
 			a = args.get($i) ?? ""
@@ -1889,6 +2060,13 @@ SpecRunner := [].{
 			} else if a == "--grammar" {
 				$o = { ..$o, grammar: Bool.True }
 				$i = $i + 1
+			} else if a == "--soak" {
+				cycles = SpecRunner.count_arg(args, $i, a)?
+				$o = { ..$o, soak: Soak({ cycles, warm: 0 }) }
+				$i = $i + 2
+			} else if a == "--warm" {
+				$warm = SpecRunner.count_arg(args, $i, a)?
+				$i = $i + 2
 			} else if a.starts_with("--") {
 				return Err("unknown option ${a}")
 			} else {
@@ -1896,8 +2074,17 @@ SpecRunner := [].{
 				$i = $i + 1
 			}
 		}
+		$o = match $o.soak {
+			NoSoak => $o
+			Soak({ cycles, .. }) => {
+				if cycles <= $warm {
+					return Err("--soak needs more cycles than the ${$warm.to_str()} warm-up cycles")
+				}
+				{ ..$o, soak: Soak({ cycles, warm: $warm }) }
+			}
+		}
 		if $o.grammar {
-			if ($o.files.is_empty() and !$o.emit_steps) Ok($o) else Err("--grammar takes no other arguments")
+			if ($o.files.is_empty() and !$o.emit_steps and $o.soak == NoSoak) Ok($o) else Err("--grammar takes no other arguments")
 		} else if $o.files.is_empty() {
 			Err("no spec files given")
 		} else {
@@ -1984,7 +2171,18 @@ SpecRunner := [].{
 						(io.stdout!)("${JsonOut.render(Scm.to_json(id, spec))}\n")
 					}
 					Ok(spec) => {
-						outcome = SpecRunner.run!(program, { work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256! }, spec)
+						host = { work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256!, live_allocations!: io.live_allocations!, live_bytes!: io.live_bytes! }
+						outcome = match opts.soak {
+							NoSoak => SpecRunner.run!(program, host, spec)
+							Soak(soak) =>
+								match SpecRunner.soak!(program, host, spec, soak) {
+									Ok(nets) => {
+										(io.stderr!)("soak ${id}: ${soak.cycles.to_str()} cycles flat after ${soak.warm.to_str()} warm-up cycles (net allocations/bytes per cycle: ${SpecRunner.show_nets(nets.take_first(4))} ...)\n")
+										Passed
+									}
+									Err(failure) => Failed(failure)
+								}
+						}
 						dt = (io.now_ns!)() - t0
 						line = match outcome {
 							Passed => {
@@ -2029,11 +2227,12 @@ expect {
 	actual == [Bool.True, Bool.True, Bool.True, Bool.True, Bool.False]
 }
 
-## Options parse; unknown options (the retired `--pending-phase3` among them)
-## and empty file lists are refused.
+## Options parse; unknown options (the retired `--pending-phase3` among them),
+## empty file lists and a soak no longer than its warm-up are refused.
 expect {
-	o = SpecRunner.parse_args(["--filter", "a*", "x.scm"]) ?? { filter: "", emit_steps: Bool.False, grammar: Bool.False, files: [] }
-	o.filter == "a*" and o.files == ["x.scm"] and SpecRunner.parse_args(["--pending-phase3", "x.scm"]).is_err() and SpecRunner.parse_args([]).is_err() and SpecRunner.parse_args(["--grammar"]).is_ok() and SpecRunner.parse_args(["--grammar", "x.scm"]).is_err()
+	o = SpecRunner.parse_args(["--filter", "a*", "x.scm"]) ?? { filter: "", emit_steps: Bool.False, grammar: Bool.False, soak: NoSoak, files: [] }
+	soaked = SpecRunner.parse_args(["--soak", "48", "--warm", "3", "x.scm"]).map_ok(|p| p.soak)
+	o.filter == "a*" and o.files == ["x.scm"] and soaked == Ok(Soak({ cycles: 48, warm: 3 })) and SpecRunner.parse_args(["--soak", "2", "x.scm"]).is_err() and SpecRunner.parse_args(["--soak", "x.scm"]).is_err() and SpecRunner.parse_args(["--pending-phase3", "x.scm"]).is_err() and SpecRunner.parse_args([]).is_err() and SpecRunner.parse_args(["--grammar"]).is_ok() and SpecRunner.parse_args(["--grammar", "x.scm"]).is_err()
 }
 
 ## Same-document navigations differ only in a fragment; relative URLs resolve

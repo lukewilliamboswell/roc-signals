@@ -1876,8 +1876,14 @@ loads; seeding storage in the same setup is a spec error in both runners.
   context type is fixed: a generator recursing through `state` would need
   polymorphic recursion.
 - **Soak.** Every app runs a long random walk natively (leak-checked) and in
-  Chrome, with live allocations and Wasm pages asserted flat across repeated
-  round trips. A walk has no host to run a job's effects on, so a worker
+  Chrome, with Wasm pages and live allocations asserted flat across repeated
+  round trips in Chrome. Natively, each app's round trip is a spec of its
+  own that the spec runner soaks (`--soak`): it runs the spec once,
+  records the calls its steps make into the engine after the last
+  `mark-metrics`, replays them on the engine alone, and requires the
+  native host's live allocation and byte counters flat after a warm-up. A
+  recorded answer goes to the request at the same place among those in
+  flight, so the soak needs no knowledge of the app. A walk has no host to run a job's effects on, so a worker
   app's target answers its jobs with a stand-in made from the app's pure
   function (`Task.stand_in`, framed by `SpecRunner.encode_answer` and
   delivered by `SpecRunner.answer_work`, walked

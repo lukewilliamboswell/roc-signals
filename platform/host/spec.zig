@@ -133,6 +133,17 @@ fn writeOut(bytes: []const u8) void {
 
 const header_size: usize = 16;
 
+// How many of Roc's allocations are live, and how many bytes they asked
+// for: the runner's soak reads them around each replayed round trip
+// (`Cli.live_allocations!`, `Cli.live_bytes!`) and requires both flat after
+// a warm-up. A handle's box comes from the handle heap, not from here, and
+// is not counted. The counts are this process's: a worker job runs in a
+// child process of its own, whose allocations end with it, and a soak's
+// replay delivers the answer it recorded rather than starting a child, so
+// it measures the runner's engine alone.
+var live_allocations: u64 = 0;
+var live_bytes: u64 = 0;
+
 fn alignment(align_arg: usize) usize {
     return @max(align_arg, header_size);
 }
@@ -143,6 +154,8 @@ export fn roc_alloc(size: usize, align_arg: usize) callconv(.c) *anyopaque {
     const base: [*]u8 = @ptrCast(os.alloc(a, total) orelse fail("out of memory", ""));
     const user = base + a;
     @as(*usize, @ptrCast(@alignCast(user - header_size))).* = size;
+    live_allocations += 1;
+    live_bytes += size;
     return user;
 }
 
@@ -153,6 +166,8 @@ export fn roc_dealloc(ptr: *anyopaque, align_arg: usize) callconv(.c) void {
         .corrupt => fail("internal: a file handle was released twice", ""),
     }
     const user: [*]u8 = @ptrCast(ptr);
+    live_allocations -= 1;
+    live_bytes -= @as(*const usize, @ptrCast(@alignCast(user - header_size))).*;
     os.release(user - alignment(align_arg));
 }
 
@@ -300,6 +315,19 @@ fn hostedSha256(bytes: RocList) callconv(.c) RocList {
     var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(data, &digest, .{});
     return bytesList(&digest);
+}
+
+/// `Cli.live_allocations!`: how many allocations Roc has made and not yet
+/// released in this process. The soak compares it before and after each
+/// replayed round trip; it is a leak check, never a baseline.
+fn hostedLiveAllocations() callconv(.c) u64 {
+    return live_allocations;
+}
+
+/// `Cli.live_bytes!`: the bytes Roc asked for in the allocations still
+/// live, as `roc_alloc` recorded them (alignment padding not counted).
+fn hostedLiveBytes() callconv(.c) u64 {
+    return live_bytes;
 }
 
 fn hostedNowNs() callconv(.c) u64 {
@@ -838,6 +866,8 @@ comptime {
     @export(&hostedStdout, .{ .name = "roc_test_stdout" });
     @export(&hostedStderr, .{ .name = "roc_test_stderr" });
     @export(&hostedNowNs, .{ .name = "roc_test_now_ns" });
+    @export(&hostedLiveAllocations, .{ .name = "roc_test_live_allocations" });
+    @export(&hostedLiveBytes, .{ .name = "roc_test_live_bytes" });
     // The process entry, exported by name rather than declared `pub fn
     // main`, which Zig would treat as its own program entry: `main` for
     // the C runtime (musl's `crt1.o`) or libSystem to call, and on Windows,

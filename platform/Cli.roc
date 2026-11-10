@@ -26,6 +26,13 @@ Cli := [].{
 	## Monotonic time in nanoseconds, for the `duration_ns` of a result.
 	now_ns! : () => U64
 
+	## How many of Roc's allocations are live in this process: the soak's
+	## leak check around each replayed round trip (`--soak`).
+	live_allocations! : () => U64
+
+	## How many bytes the live allocations asked for.
+	live_bytes! : () => U64
+
 	## Run one worker job in a child process, as a browser runs it in a Web
 	## Worker (design.md, "Workers"): a fresh process of the runner's own
 	## executable, which reads the job and writes its answer through pipes,

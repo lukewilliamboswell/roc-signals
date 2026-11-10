@@ -1751,8 +1751,9 @@ Core := [].{
 	## For the platform's hosts and test harnesses: the entry points of a
 	## [Program], as the page's host calls them. A worker instance's entries
 	## are `work!`, `work_prepare!` and `work_ask!`. `settled` is the settle
-	## check (`Core.settled`), which only harnesses call.
-	driver : Program -> { version : U32, keys : () -> List(U8), init : List(U8) -> (App, List(U8), List(U8)), event : App, List(U8), List(U8), U32, U32, List(U8) -> (App, List(U8), List(U8)), files : App, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (App, List(U8), List(U8)), settled : App -> Try({}, { cmds : List(U8), note : Str }) }
+	## check (`Core.settled`) and `live` the requests in flight
+	## (`Core.fx_live`), which only harnesses call.
+	driver : Program -> { version : U32, keys : () -> List(U8), init : List(U8) -> (App, List(U8), List(U8)), event : App, List(U8), List(U8), U32, U32, List(U8) -> (App, List(U8), List(U8)), files : App, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (App, List(U8), List(U8)), settled : App -> Try({}, { cmds : List(U8), note : Str }), live : App -> List(U32) }
 	driver = |p| {
 		init = p.init
 		workers = p.workers
@@ -1781,6 +1782,7 @@ Core := [].{
 				}
 			},
 			settled: Core.settled,
+			live: Core.fx_live,
 		}
 	}
 

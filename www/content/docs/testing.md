@@ -393,6 +393,28 @@ spec files:
 - `build/app-specs --emit-steps specs/*.scm` prints the parsed steps that
   the browser runner (`tests/browser/replay.mjs`) replays.
 
+## Soaking a round trip
+
+A spec that takes the app back to where it started is a round trip, and the
+native runner can soak it: `build/app-specs --soak 48 specs/round-trip.scm`
+runs the spec once, as always, recording every call its steps make into the
+engine after its last `mark-metrics` (after the mount when there is none),
+then replays those calls 48 times on the engine alone and requires every
+cycle after a warm-up (`--warm N`, two by default) to leave no allocation
+and no byte live. The native host counts Roc's live allocations and bytes
+for it. An answer the spec gave (an HTTP stub, a worker job's answer, a
+port reply) is replayed as it was first given, to the request at the same
+place among those in flight; a cycle that leaves no request there is not a
+round trip, and the soak says so. It is a leak check, never a baseline:
+the counts are compared with nothing but zero. Steps before the
+`mark-metrics` set the scene, such as answering the requests the app makes
+at mount:
+
+{{ sample(file="search/specs/round-trip.scm", syntax="scheme") }}
+
+Each app with a soak keeps one round-trip spec, which `check` runs as an
+ordinary spec in both runners and `check-slow` soaks.
+
 ## Fuzzing and soak
 
 Specs check the paths you thought of. For sequences you did not, an app can
