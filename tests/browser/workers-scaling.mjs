@@ -41,11 +41,17 @@ import { launch } from "./cdp.mjs";
 import { parseArgs, runtimeFiles } from "./args.mjs";
 import { expectedRun } from "./worker-lab-reference.mjs";
 
-const opts = parseArgs(process.argv.slice(2), ["mode", "label"]);
+const opts = parseArgs(process.argv.slice(2), ["mode", "label", "known-leak"]);
 const MODE = opts.mode ?? "smoke";
 if (MODE !== "smoke" && MODE !== "full") throw new Error(`--mode must be smoke or full (got ${MODE})`);
 const FULL = MODE === "full";
 const LABEL = opts.label ?? path.basename(path.dirname(path.resolve(opts.wasm)));
+// `--known-leak ISSUE` marks a build whose worker instances are known to leak
+// on every job because of the compiler defect at ISSUE. The instance memory
+// checks are then expected to fail, and are reported as known rather than as
+// failures; the run fails instead if the leak is gone, so the flag cannot
+// outlive the defect.
+const KNOWN_LEAK = opts["known-leak"] ?? null;
 
 const files = { ...runtimeFiles(opts.runtime), "app.wasm": opts.wasm };
 const server = http.createServer((req, res) => {
@@ -601,9 +607,11 @@ console.log("");
   const seqs = (x) => x.insts.map((i) => i.seq).sort().join(",");
   check(`memory: the same ${after[0].insts.length} instances served every run after warm-up`, after.every((x) => seqs(x) === seqs(after[0])), after.map(seqs).join(" | "));
   const flat = (pick) => after.every((x) => x.insts.every((i) => pick(i) === pick(after[0].insts.find((j) => j.seq === i.seq) ?? i)));
-  check("memory: each instance's linear memory is flat after warm-up", flat((i) => i.mem), JSON.stringify(after.map((x) => x.insts.map((i) => i.mem))));
-  check("memory: each instance's live allocations are flat after warm-up", flat((i) => i.allocs), JSON.stringify(after.map((x) => x.insts.map((i) => i.allocs))));
-  check("memory: each instance's live bytes are flat after warm-up", flat((i) => i.bytes), JSON.stringify(after.map((x) => x.insts.map((i) => i.bytes))));
+  const instances = (name, ok, detail) => (KNOWN_LEAK && !ok ? console.log(`known ${name}: ${KNOWN_LEAK}`) : check(name, ok, detail));
+  instances("memory: each instance's linear memory is flat after warm-up", flat((i) => i.mem), JSON.stringify(after.map((x) => x.insts.map((i) => i.mem))));
+  instances("memory: each instance's live allocations are flat after warm-up", flat((i) => i.allocs), JSON.stringify(after.map((x) => x.insts.map((i) => i.allocs))));
+  instances("memory: each instance's live bytes are flat after warm-up", flat((i) => i.bytes), JSON.stringify(after.map((x) => x.insts.map((i) => i.bytes))));
+  if (KNOWN_LEAK) check(`memory: the instances still leak as ${KNOWN_LEAK} describes (when this fails the defect is fixed: drop --known-leak)`, !flat((i) => i.allocs));
   check("memory: the page instance's memory and live allocations are flat after warm-up", after.every((x) => x.page.memBytes === after[0].page.memBytes && x.page.liveAllocs === after[0].page.liveAllocs), JSON.stringify(after.map((x) => [x.page.memBytes, x.page.liveAllocs, x.page.liveBytes])));
   console.log(`\nMemory (${LABEL}; ${runs} identical runs of ${PRIMES.jobs} prime jobs on 4 workers, ${warmup} warm-up):\n`);
   console.log(

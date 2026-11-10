@@ -133,16 +133,17 @@ Targets := [].{
 		# Compiler workaround (https://github.com/roc-lang/roc/issues/12946):
 		# a `--specialize=no` build that reuses the compilation cache a
 		# specialized build of the same sources wrote segfaults in its boxy
-		# lowering, so that build skips the cache. The `--specialize=no` build
-		# also fails this task's memory checks until
-		# https://github.com/roc-lang/roc/issues/12945 is fixed: a derived
-		# record decode leaks on every worker job in that mode.
-		for build in [{ label: "size", flags: [] }, { label: "size-specialize-no", flags: ["--specialize=no", "--no-cache"] }] {
+		# lowering, so that build skips the cache. A derived record decode also
+		# leaks on every worker job in that mode
+		# (https://github.com/roc-lang/roc/issues/12945), so its run is told to
+		# expect its worker instances to grow, and fails once they no longer do.
+		leak = "https://github.com/roc-lang/roc/issues/12945"
+		for build in [{ label: "size", flags: [], known: [] }, { label: "size-specialize-no", flags: ["--specialize=no", "--no-cache"], known: ["--known-leak", leak] }] {
 			dir = "${o.build_dir}/workers-scaling/${build.label}"
 			Path.create_all!(Path.utf8(dir))?
 			Proc.run!({ program: o.compiler, args: ["build", "--opt=size"].concat(build.flags).concat(["--target=wasm32", "examples/worker-lab/main.roc", "--output=${dir}/app.wasm"]), cwd: o.root })?
 			Proc.note!("== workers scaling, ${build.label}")
-			$problems = $problems.concat(Targets.browser!(o, "workers-scaling.mjs", ["--wasm", "${dir}/app.wasm", "--mode", "full", "--label", build.label])?)
+			$problems = $problems.concat(Targets.browser!(o, "workers-scaling.mjs", ["--wasm", "${dir}/app.wasm", "--mode", "full", "--label", build.label].concat(build.known))?)
 		}
 		Ok($problems)
 	}
