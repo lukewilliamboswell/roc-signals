@@ -3275,9 +3275,13 @@ comp_settle = |prop, snk, block, env, out, tx| {
 #   changes state in response to its value changing, without writing
 #   during the turn that is evaluating. Follow-up ids are a separate
 #   space (high bit set) so host-visible ids stay consecutive.
-# - Follow-up turns run after the current turn, in order, at most
-#   `max_turns` per host call; exceeding it is a contract error (an
-#   effect feedback loop) and traps the instance.
+# - Follow-up turns run after the current turn, in order. Each has
+#   its chain depth: a follow-up queued by an external turn (a DOM event,
+#   an effect result, the mount) is depth 1, one queued by a follow-up of
+#   depth d is depth d + 1. A chain deeper than `max_turns` is a contract
+#   error (an effect feedback loop) naming the depth and the site; a turn
+#   that fans out into many independent follow-ups is not. `max_breadth`
+#   bounds the follow-up turns of one host call (see `drain`).
 #
 # Command stream additions:
 #  13 FX      id kind:u8 ... 1 HTTP method:str url:str n:u32 (name:str value:str)* body:str timeout_ms:u32
@@ -3409,15 +3413,31 @@ Fx : {
 TurnEnd : [Focus(U8, Str), CheckProgram(Str, List(U32))]
 
 fx_empty : Fx
-fx_empty = { next: 1, inner: 2147483648, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, refs: [], focus: [], ref_pos: [], cleanups: [] }
+fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, refs: [], focus: [], ref_pos: [], cleanups: [] }
+
+## The first follow-up id: follow-ups are a space of their own, above
+## every request id.
+fx_inner_base : U32
+fx_inner_base = 2147483648
 
 ## The host node id that marks an event as an effect result.
 fx_node : U32
 fx_node = 4294967295
 
-## Follow-up turns allowed per host call.
+## The deepest chain of follow-up turns one host call may run: a
+## follow-up whose turn queues another, and so on. Breadth does not count:
+## one turn may queue any number of independent follow-ups (a refusal for
+## every request past the in-flight bound, say), each at the same depth.
 max_turns : U64
 max_turns = 64
+
+## The most follow-up turns one host call may run: 64 for each in-flight
+## slot, and at least 64 x 64. The depth bound alone stops every chain, but
+## a feedback loop in which each follow-up queues two or more would grow
+## exponentially before reaching it; this backstop stops that while leaving
+## room for any fan-out up to 64 times the app's own `max_inflight`.
+max_breadth : U64 -> U64
+max_breadth = |inflight| max_turns * (if (inflight > max_turns) inflight else max_turns)
 
 ## A request the site owns: its id, whether it is a subscription, and the
 ## value it was issued for.
@@ -4140,17 +4160,53 @@ flush_turn = |tx, programs| {
 	}
 }
 
-## Run queued follow-up turns in order, bounded per host call.
+## Run queued follow-up turns in order, after the external turn that
+## queued the first of them.
+##
+## What is bounded is a chain: a follow-up whose turn queues another, and
+## so on. A follow-up queued by the external turn has depth 1, one queued
+## by a turn of depth d has depth d + 1. Running one deeper than
+## `max_turns` is a contract error, because only a feedback loop (a
+## reaction that issues again what is answered again, a refusal retried
+## while the table is still full) keeps a chain going; a fan-out of
+## independent follow-ups from one turn is any number of depth-one turns.
+##
+## The depth needs no field. The queue only grows at its end, so entries
+## sit in the order they were queued and turns run in non-decreasing
+## depth. Follow-up ids are minted in increasing order, refusals from the
+## request space and `Self` from the follow-up space (high bit set), and
+## only follow-ups are queued. So when the turns of depth d begin, the
+## counters of both spaces are a threshold: the entry run next has depth d
+## if its id is below the threshold of its space, and otherwise was queued
+## by a depth-d turn and opens depth d + 1, whose threshold is the counters
+## at that moment. O(1) per turn.
+##
+## Total work is bounded too: at most `max_breadth(max_inflight)` turns per
+## host call, which a chain-free fan-out reaches only by refusing more than
+## 64 requests for every slot of the in-flight table.
 drain : App -> App
 drain = |app0| {
 	var $app = app0
 	var $turns = 0.U64
+	var $depth = 1.U64
+	var $below_next = app0.tx.fx.next
+	var $below_inner = app0.tx.fx.inner
+	breadth = max_breadth(app0.tx.fx.max)
 	while !$app.tx.fx.queue.is_empty() {
-		if $turns >= max_turns {
-			crash "contract: effect follow-up turns exceeded the per-call budget of 64 (feedback loop)"
-		}
 		{ root, tx, programs } = $app
 		q = tx.fx.queue.first() ?? crash "queue"
+		deeper = if (q.id >= fx_inner_base) q.id >= $below_inner else q.id >= $below_next
+		if deeper {
+			$depth = $depth + 1
+			$below_next = tx.fx.next
+			$below_inner = tx.fx.inner
+			if $depth > max_turns {
+				crash "contract: an effect follow-up chain reached depth 65 at site ${show_path(q.path)}: each follow-up's turn queued another, more than 64 deep in one call (feedback loop)"
+			}
+		}
+		if $turns >= breadth {
+			crash "resource_limit: effect follow-up turns in one call exceeded 64 per in-flight slot (at least 4096); follow-ups are multiplying (feedback loop) or a fan-out is far past the in-flight bound (raise max_inflight)"
+		}
 		tx1 = with_fx(tx, |fx| { ..fx, queue: fx.queue.drop_first(1) })
 		$app = turn({ root, tx: tx1, programs }, q.path, q.id, Fx(q.res))
 		$turns = $turns + 1

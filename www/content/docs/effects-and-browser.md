@@ -164,6 +164,11 @@ nothing app-specific enters the platform. The
 - At most 32 awaited requests are in flight per app (set `max_inflight` in
   `program_boot` to change it). A request beyond the bound is not sent: its
   reaction receives `Refused` in a follow-up turn.
-- At most 64 follow-up turns (`Self` and refusals) run per event. More is
-  treated as a feedback loop and stops the app with a contract error.
+- Follow-up turns (`Self` and refusals) may chain at most 64 deep per event:
+  a follow-up whose reaction leads to another follow-up, and so on. A deeper
+  chain is a feedback loop, such as retrying a refused request while the
+  table is still full, and stops the app with a contract error. How many
+  follow-ups one turn queues does not count: a hundred rows that each fetch
+  at mount, most of them refused, are fine. As a backstop, one event runs at
+  most 64 follow-up turns per in-flight slot (at least 4096).
 - An HTTP timeout is capped at 600 seconds.

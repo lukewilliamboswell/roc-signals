@@ -732,8 +732,21 @@ instead of a state write.
   default (configurable per program). A request beyond it is not issued: it is
   refused, counted, and its owner receives a typed `Refused` result in a
   follow-up turn.
-- **Follow-up cap.** At most 64 follow-up turns run per host call. Exceeding it
-  is a `contract` error (an effect feedback loop) that poisons the instance.
+- **Follow-up depth.** What is bounded is a chain of follow-ups, not their
+  number. A follow-up queued by an external turn (a DOM event, an effect
+  result, the mount) has depth 1; one queued by a follow-up of depth d has
+  depth d + 1. A chain deeper than 64 is a `contract` error (an effect
+  feedback loop, such as a refusal retried while the table is still full)
+  that poisons the instance, naming the depth and the site. One turn may
+  fan out into any number of independent follow-ups, such as a refusal for
+  each of a hundred rows that fetch at mount: they are all depth 1.
+- **Follow-up breadth.** A loop in which each follow-up queues two or more
+  would grow exponentially before it reached depth 64, so one host call runs
+  at most 64 follow-up turns per in-flight slot, and at least 4096. Only a
+  multiplying loop, or a fan-out refusing more than 64 requests per slot of
+  the in-flight table, reaches it; it is a `resource_limit` error. The total
+  is in the app's hands: it is set by `max_inflight` and by how many requests
+  its sites issue in one turn.
 - **HTTP timeout.** Each request carries `timeout_ms` (0 = none), capped at
   600 s. A timeout delivers `Timeout`; the runtime arms at most one timer per
   admitted request and clears it on completion, failure, timeout or cancel.
@@ -985,7 +998,7 @@ and reports the diagnostic to the console; the page's instance is untouched.
 
 **Contract errors the engine raises:** duplicate key; switch value not in its
 cases; row template not a single element; focus reference inside a row
-template; effect follow-up budget exceeded; a cleanup asking for an awaited
+template; an effect follow-up chain deeper than 64; a cleanup asking for an awaited
 request; `http_text` given a non-HTTP result; a worker catalogue with a
 duplicate name or more than 64 programs; work issued for a program the
 catalogue does not hold; event payload not UTF-8; boot
@@ -993,7 +1006,8 @@ bytes or an effect result that do not follow Appendix B (truncated, trailing
 bytes, unknown tag, flags other than 0 or 1, text that is not UTF-8).
 **Resource limits:** node ids (2³² − 2 live nodes); more than 63 nested layers
 in one component; any count the template encoding carries in one byte —
-static attributes, children, holes, hole path depth, row handlers — above 255.
+static attributes, children, holes, hole path depth, row handlers — above 255;
+more follow-up turns in one host call than the breadth backstop allows.
 Each is checked before it could wrap. The runtime adds `resource_limit` for
 ingress-queue overflow and refuses a module of another protocol version
 before running it.
@@ -1009,7 +1023,8 @@ bound and a declared behaviour at the bound:
 | Resource | Bound | At the bound |
 |---|---|---|
 | Awaited requests in flight | 32 (per-program setting) | Typed `Refused` follow-up |
-| Follow-up turns per host call | 64 | `contract` poison |
+| Follow-up chain depth per host call | 64 | `contract` poison |
+| Follow-up turns per host call | 64 per in-flight slot, at least 4096 | `resource_limit` poison |
 | HTTP timeout, work deadline | 600 s | Capped |
 | Worker catalogue | 64 programs | `contract` poison |
 | Workers per runtime | `maxWorkers` (default: core count, at most 8) | Jobs queue |
