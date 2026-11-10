@@ -128,10 +128,13 @@ Targets := [].{
 	workers_scaling! : SpecSuite.Options => Try(List(Str), _)
 	workers_scaling! = |o| {
 		var $problems = []
-		# Compiler workaround (issue #180, the `--specialize=no` build): with
-		# the pinned nightly, a `--specialize=no` build that reuses the
-		# compilation cache a specialized build of the same sources wrote can
-		# segfault in its boxy lowering, so that build skips the cache.
+		# Compiler workaround (https://github.com/roc-lang/roc/issues/12946):
+		# a `--specialize=no` build that reuses the compilation cache a
+		# specialized build of the same sources wrote segfaults in its boxy
+		# lowering, so that build skips the cache. The `--specialize=no` build
+		# also fails this task's memory checks until
+		# https://github.com/roc-lang/roc/issues/12945 is fixed: a derived
+		# record decode leaks on every worker job in that mode.
 		for build in [{ label: "size", flags: [] }, { label: "size-specialize-no", flags: ["--specialize=no", "--no-cache"] }] {
 			dir = "${o.build_dir}/workers-scaling/${build.label}"
 			Path.create_all!(Path.utf8(dir))?

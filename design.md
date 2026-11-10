@@ -1239,6 +1239,8 @@ contains the fix. None of them is platform semantics.
 | [roc-lang/roc#12835](https://github.com/roc-lang/roc/issues/12835) | Annotated polymorphic recursion hangs `roc test`/`roc check` under `--specialize=yes` | Recursive site types annotated with care |
 | [roc-lang/roc#12869](https://github.com/roc-lang/roc/issues/12869) | An unused closure capturing a function passed to a branching self-recursive closure makes monotype lowering exponential | A Kanban Board helper is a top-level function instead of a local closure |
 | [roc-lang/roc#12836](https://github.com/roc-lang/roc/issues/12836) | `Box.box` of a capture-free callable allocates on every call | Extra allocations per call |
+| [roc-lang/roc#12946](https://github.com/roc-lang/roc/issues/12946) | A `--specialize=no` build that reuses cache entries a specialized build wrote segfaults in boxy lowering | The scaling task's `--specialize=no` build skips the cache |
+| [roc-lang/roc#12945](https://github.com/roc-lang/roc/issues/12945) | Under `--specialize=no`, a derived record decode leaks on every call | Worker instances grow per job in that build, so the scaling task's memory checks fail for it |
 
 Code size is the main open cost of the architecture and is tracked against
 #12847 and #12848, with each over-budget app's size budget linking its issue.
