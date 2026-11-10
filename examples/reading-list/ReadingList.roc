@@ -57,9 +57,12 @@ ReadingList := [].{
 	## loading: a `stored` message that came first is newer.
 	loaded : S, Try(List(Store.Book), Port.Error) -> S
 	loaded = |s, answer|
-		match (s.store, answer) {
-			(Loading, Ok(books)) => { ..s, books: newest_first(books), store: Loaded }
-			(Loading, Err(error)) => { ..s, store: Unreadable(explain(error)) }
+		match s.store {
+			Loading =>
+				match checked(answer) {
+					Ok(books) => { ..s, books, store: Loaded }
+					Err(why) => { ..s, store: Unreadable(why) }
+				}
 			_ => s
 		}
 
@@ -68,9 +71,12 @@ ReadingList := [].{
 	restocked : S, Try(List(Store.Book), Port.Error) -> S
 	restocked = |s, message|
 		match message {
-			Ok(books) => { ..s, books: newest_first(books), store: Loaded }
 			Err(Closed) => { ..s, note: "Changes made in other tabs no longer reach this one. Reload to see them." }
-			Err(error) => { ..s, note: "A change made in another tab could not be read: ${explain(error)}" }
+			_ =>
+				match checked(message) {
+					Ok(books) => { ..s, books, store: Loaded }
+					Err(why) => { ..s, note: "A change made in another tab could not be read: ${why}" }
+				}
 		}
 
 	## Whether the form can add the book it holds: the shelf is loaded and
@@ -198,6 +204,22 @@ next_shelf = |shelf|
 		Finished => Reading
 	}
 
+## The store's books as the list shows them, newest first, or why there
+## are none. The port's type guarantees each book's shape, but not that ids
+## are distinct, and the list keys its rows by id: two books under one id
+## would be a contract error there, so they are refused here, at the door.
+checked : Try(List(Store.Book), Port.Error) -> Try(List(Store.Book), Str)
+checked = |answer|
+	match answer {
+		Ok(books) =>
+			if Set.from_list(books.map(|b| b.id)).len() == books.len() {
+				Ok(newest_first(books))
+			} else {
+				Err("it holds two books under one id.")
+			}
+		Err(error) => Err(explain(error))
+	}
+
 ## Newest first; books added in the same millisecond by id, so every tab
 ## orders them alike.
 newest_first : List(Store.Book) -> List(Store.Book)
@@ -255,20 +277,27 @@ dune = { id: "b1", title: "Dune", author: "Frank Herbert", shelf: WantToRead, ad
 piranesi : Store.Book
 piranesi = { id: "b2", title: "Piranesi", author: "Susanna Clarke", shelf: Finished, added_ms: 20 }
 
-## Loading sorts newest first, and a load answer that comes after a `stored`
-## message is older than it, so it is ignored.
+## Loading sorts newest first; a load answer that comes after a `stored`
+## message is older than it, so it is ignored; and two books under one id
+## are refused rather than shown.
 expect {
 	first = ReadingList.loaded(ReadingList.initial, Ok([dune, piranesi]))
 	late = ReadingList.loaded(ReadingList.restocked(ReadingList.initial, Ok([dune])), Ok([dune, piranesi]))
 	failed = ReadingList.loaded(ReadingList.initial, Err(Timeout))
+	twice = ReadingList.loaded(ReadingList.initial, Ok([dune, { ..piranesi, id: "b1" }]))
+	shared = ReadingList.restocked(first, Ok([dune, dune]))
 	actual =
 		\\first: ${Str.inspect(first.books.map(|b| b.title))} ${Str.inspect(first.store)}
 		\\late: ${Str.inspect(late.books.map(|b| b.title))}
 		\\failed: ${ReadingList.status(failed)}
+		\\one id twice: ${ReadingList.status(twice)}
+		\\then: ${shared.books.len().to_str()} ${shared.note}
 	expected =
 		\\first: ["Piranesi", "Dune"] Loaded
 		\\late: ["Dune"]
 		\\failed: Your shelf could not be read: the store did not answer in time.
+		\\one id twice: Your shelf could not be read: it holds two books under one id.
+		\\then: 2 A change made in another tab could not be read: it holds two books under one id.
 	actual == expected
 }
 

@@ -9,6 +9,11 @@
     (expect-port-call 1 "roc-signals.example/reading-list/load" "{}")
     (answer-port 1 reply "[{\"id\":\"b1\",\"title\":\"Dune\",\"author\":\"\",\"shelf\":\"Abandoned\",\"added_ms\":\"10\"}]")
     (expect-text (test-id "status") "Your shelf could not be read: it holds something this app does not understand (port \"roc-signals.example/reading-list/load\": unknown tag \"Abandoned\").")
+    ; The list keys its rows by id, so a shelf with two books under one id is
+    ; refused where it arrives.
+    (navigate "/?twice")
+    (answer-port 1 reply "[{\"id\":\"b1\",\"title\":\"Dune\",\"author\":\"\",\"shelf\":\"Reading\",\"added_ms\":\"10\"},{\"id\":\"b1\",\"title\":\"Piranesi\",\"author\":\"\",\"shelf\":\"Reading\",\"added_ms\":\"20\"}]")
+    (expect-text (test-id "status") "Your shelf could not be read: it holds two books under one id.")
     (navigate "/?third")
     (answer-port 1 reply "[]")
     (fill (label "Title") "Piranesi")
