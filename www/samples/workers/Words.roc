@@ -12,24 +12,24 @@ Words := [].{
 	Frequency : { word : Str, count : U64 }
 
 	summary : Worker.Program(Str, Summary)
-	summary = Worker.pure("example.org/words/summary", Words.summarise)
+	summary = Worker.program({ name: "example.org/words/summary", run: Words.summarise })
 
 	## The numbers of the lines, from 1, that contain `word`.
 	find : Worker.Program({ text : Str, word : Str }, List(U64))
-	find = Worker.pure("example.org/words/find", |{ text, word }| Words.lines_with(text, word))
+	find = Worker.program({ name: "example.org/words/find", run: |{ text, word }| Words.lines_with(text, word) })
 	# endregion programs
 
 	# region deadline
-	## The three most used words. A run that has not answered five seconds
+	## The three most used words. A job that has not answered five seconds
 	## after it was asked for is stopped and answers `Timeout`.
 	frequencies : Worker.Program(Str, List(Frequency))
-	frequencies = Worker.pure("example.org/words/frequencies", |text| Words.most_used(text, 3)).with_deadline_ms(5000)
+	frequencies = Worker.program({ name: "example.org/words/frequencies", run: |text| Words.most_used(text, 3), deadline: Ms(5000) })
 	# endregion deadline
 
 	# region fallible
 	## The sum of the numbers in a text, or the first word that is not one.
 	total : Worker.Program(Str, Try(U64, [NotANumber(Str)]))
-	total = Worker.fallible("example.org/words/total", Words.add_up)
+	total = Worker.fallible({ name: "example.org/words/total", run: Words.add_up })
 
 	add_up : Str -> Try(U64, [NotANumber(Str)])
 	add_up = |text|

@@ -15,9 +15,9 @@ main =
 Shape : [Circle({ radius : F64 }), Rect({ width : F64, height : F64 })]
 
 area : Worker.Program(List(Shape), F64)
-area = Worker.pure(
-	"example.org/shapes/area",
-	|shapes|
+area = Worker.program({
+	name: "example.org/shapes/area",
+	run: |shapes|
 		shapes
 			.map(
 				|shape|
@@ -27,7 +27,7 @@ area = Worker.pure(
 					},
 			)
 			.sum(),
-)
+})
 
 # endregion structural
 
@@ -45,9 +45,9 @@ Celsius := { degrees : F64 }.{
 }
 
 warmest : Worker.Program(List(Celsius), Try(Celsius, [Empty]))
-warmest = Worker.fallible(
-	"example.org/weather/warmest",
-	|readings|
+warmest = Worker.fallible({
+	name: "example.org/weather/warmest",
+	run: |readings|
 		readings.fold(
 			Err(Empty),
 			|best, reading|
@@ -56,14 +56,14 @@ warmest = Worker.fallible(
 					Err(Empty) => Ok(reading)
 				},
 		),
-)
+})
 
 # endregion nominal
 
 # region bytes
 ## Bulk bytes cross as one block when wrapped in `Wire.Bytes`.
 checksum : Worker.Program(Wire.Bytes, U32)
-checksum = Worker.pure("example.org/files/checksum", |bytes| Wire.Bytes.to_list(bytes).fold(0, |sum, byte| sum + byte.to_u32()))
+checksum = Worker.program({ name: "example.org/files/checksum", run: |bytes| Wire.Bytes.to_list(bytes).fold(0, |sum, byte| sum + byte.to_u32()) })
 
 ## A request for a file's bytes, wrapped for sending.
 check_file : List(U8) -> Engine.Req

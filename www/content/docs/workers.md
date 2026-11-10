@@ -69,9 +69,10 @@ and returns add code too, usually far less than the program itself.
 ## Programs and registration
 
 A program is a `Worker.Program(input, output)`: a name and a pure function.
-Make one with `Worker.pure(name, function)`. The types of the function are the
-program's types, so a request can only send the input it expects and its
-answer is already of the output type.
+Make one with `Worker.program({ name, run })`, a props record: `name` and
+`run` are required, and `deadline` (below) is optional. The types of `run`
+are the program's types, so a request can only send the input it expects and
+its answer is already of the output type.
 
 Names are namespaced and unversioned, like `"example.org/words/summary"`.
 The page and every worker run the same compiled module, so a name always
@@ -199,7 +200,7 @@ total whose own error is an answer, and a total whose run is lost (see
 
 ## Deadlines
 
-`program.with_deadline_ms(ms)` stops a run that has not answered `ms`
+A program's `deadline: Ms(ms)` stops a job that has not answered `ms`
 milliseconds after it was asked for, and answers `Timeout`:
 
 {{ sample(file="workers/Words.roc", region="deadline") }}
@@ -209,7 +210,8 @@ milliseconds after it was asked for, and answers `Timeout`:
 - Expiry stops the run: a run still waiting for a worker is dropped, and a
   running one ends its worker. The calculation does not finish in the
   background.
-- `0`, the default, means no deadline. The longest deadline is ten minutes.
+- `Unlimited`, the default, means no deadline. The longest deadline is ten
+  minutes.
 
 A program that never finishes holds its worker until its site stops it. Give
 a program a deadline when its input can make it run for an unreasonable time.
@@ -233,13 +235,13 @@ cross. Using one is a compile error at the program's declaration, naming the
 type that lacks the hooks. Here `Celsius` declares only `is_eq`:
 
 ```text
-── ✗ missing method ───────────────────────────────────────────── main.roc:12:52
+── ✗ missing method ─────────────────────────────────────────────── main.roc:9:8
 
 A where clause requires the encoder_for method here, but the type being used
 doesn't have that method.
 
-warm = Worker.pure("example.org/weather/warm", |c| c.degrees > 20)
-                                                   ^^^^^^^^^
+warm = Worker.program({ name: "example.org/weather/warm", run: |c| c.degrees > 20 })
+       ^^^^^^^^^^^^^^
 
 The value's type, which does not have a method named encoder_for, is:
 
@@ -507,7 +509,7 @@ the in-flight bound turned away (see
 | The same, when some inputs ask nothing | `Worker.derive_when` |
 | A run the user starts and cancels, with its answer kept in state | `Engine.latest` with `request` and `result` |
 | A calculation that fails on some inputs | `Worker.fallible` |
-| A run that must not take too long | `with_deadline_ms` |
+| A job that must not take too long | `deadline: Ms(ms)` |
 | Bulk bytes in a payload | `Wire.Bytes` |
 | A result that survives the panel that asked for it | A site in a longer-lived scope |
 | Several questions over one slow preparation | `Worker.prepared` and its queries |

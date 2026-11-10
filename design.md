@@ -1812,10 +1812,11 @@ http_text : Res -> Try(Str, HttpError)
 `Wire` (`platform/Wire.roc`) the payload format it derives:
 
 ```roc
-Worker.pure : Str, (input -> output) -> Program(input, output)
+Worker.program : ProgramProps(input, output) -> Program(input, output)
     where [input.Wire.Sendable, output.Wire.Sendable]
-Worker.fallible : Str, (input -> Try(ok, err)) -> Program(input, Try(ok, err))
-Program.with_deadline_ms : Program(input, output), U32 -> Program(input, output)
+Worker.fallible : ProgramProps(input, Try(ok, err)) -> Program(input, Try(ok, err))
+Worker.ProgramProps(input, output) := { name : Str, run : input -> output,
+    deadline : [Unlimited, Ms(U32)] ?? Unlimited }
 Program.registration : Program(input, output) -> Registration
 Program.request : Program(input, output), input -> Req
 Program.result : Program(input, output), Res -> Try(output, Worker.Error)

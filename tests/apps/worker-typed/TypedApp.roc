@@ -24,21 +24,21 @@ TypedApp := [].{
 
 	## A record in, a list out.
 	filter : Worker.Program({ query : Str, words : List(Str) }, List(Str))
-	filter = Worker.pure("test.roc-signals/typed/filter", |{ query, words: all }| all.keep_if(|word| word.contains(query)))
+	filter = Worker.program({ name: "test.roc-signals/typed/filter", run: |{ query, words: all }| all.keep_if(|word| word.contains(query)) })
 
 	## A string in, a record with a nominal-free tag union out.
 	measure : Worker.Program(Str, { bytes : U64, kind : [Empty, Short, Long] })
-	measure = Worker.pure(
-		"test.roc-signals/typed/measure",
-		|text| {
+	measure = Worker.program({
+		name: "test.roc-signals/typed/measure",
+		run: |text| {
 			bytes = text.count_utf8_bytes()
 			{ bytes, kind: if (bytes == 0) Empty else if (bytes < 8) Short else Long }
 		},
-	)
+	})
 
 	## A calculation that can fail with an error the app chose.
 	parse : Worker.Program(Str, Try(U64, [NotANumber(Str)]))
-	parse = Worker.fallible("test.roc-signals/typed/parse", |text| U64.from_str(text).map_err(|_| NotANumber(text)))
+	parse = Worker.fallible({ name: "test.roc-signals/typed/parse", run: |text| U64.from_str(text).map_err(|_| NotANumber(text)) })
 
 	program : Engine.Program
 	program = Engine.program(|| Engine.state({ query: "", text: "", submitted: { n: 0, text: "" }, parsed: "" }, TypedApp.view))

@@ -5,12 +5,13 @@ import Wire
 ## Typed worker programs: pure Roc functions an app runs off the page's
 ## thread.
 ##
-## A [Program] is a name and a pure function from an input to an output. The
-## app lists each program's `registration` in `Program.with_workers`, and an
-## effect site asks for a run with `request`; the answer comes back as an
-## ordinary result, read with `result`. `derive` wraps both in a layer that
-## follows the answers for an input, for the common case of showing a value
-## computed from other values.
+## A [Program] is a name and a pure function from an input to an output,
+## made with `program` (or `fallible`) from a props record. The app lists
+## each program's `registration` in `Program.with_workers`, and an effect
+## site asks for a job with `request`; the answer comes back as an ordinary
+## result, read with `result`. `derive` wraps both in a layer that follows
+## the answers for an input, for the common case of showing a value computed
+## from other values.
 ##
 ## The page and each worker run the same compiled module, so both know the
 ## types of every program: inputs and outputs cross as `Wire` payloads the
@@ -22,34 +23,34 @@ import Wire
 ## declaration; a calculation that returns a `Try` is declared with
 ## `fallible`. Send bulk bytes as `Wire.Bytes`, which crosses as one block.
 ##
-## A program is a plain function, so it is pure. It runs in an instance that
-## shares nothing with the page but the input it is sent, possibly one that
-## ran other jobs before. A run is stopped when its site is disposed, when a
-## `latest` or `derive` site moves on to a newer input, or when its deadline
-## expires: a run still waiting for a worker is dropped, and a running one is
-## stopped by ending its instance, so the next run starts a new one; only a
-## prepared program's query may instead finish a stopped run so that its
-## instance keeps its state (`with_cancel(Finish)`). A run reports nothing
-## until it answers.
+## A program is a plain function, so it is pure. One execution of it is a
+## job, and a job runs in an instance that shares nothing with the page but
+## the input it is sent, possibly one that ran other jobs before. A job is
+## stopped when its site is disposed, when a `latest` or `derive` site moves
+## on to a newer input, or when its deadline expires: a job still waiting for
+## a worker is dropped, and a running one is stopped by ending its instance,
+## so the next job starts a new one; only a prepared program's query may
+## instead finish a stopped job so that its instance keeps its state
+## (`on_cancel: Finish`). A job reports nothing until it answers.
 ##
 ## A [Prepared] program is a preparation and several typed queries over its
 ## state; a worker may keep that state between jobs, which changes how long
 ## an answer takes and never what it is.
 Worker := [].{
 
-	## Why a run produced no output: its deadline expired and it was stopped
+	## Why a job produced no output: its deadline expired and it was stopped
 	## (`Timeout`), the in-flight bound turned the request away (`Refused`), or
 	## the worker could not run it or failed running it (`Lost`, with the fault
 	## class; the diagnostic goes to the page's console), or the files its
 	## input holds could not be read into the worker (`FileFailed`: a file
 	## changed or went away since the user gave it, `Unreadable`, or they are
-	## more than one run reads, `TooLarge`). A run whose files fail is not
+	## more than one job reads, `TooLarge`). A job whose files fail is not
 	## started, and its worker is not lost.
 	Error : [Timeout, Refused, Lost(Engine.WorkFault), FileFailed(Engine.FileError)]
 
-	## A worker program from `input` to `output`. Make one with `pure` or
+	## A worker program from `input` to `output`. Make one with `program` or
 	## `fallible`, register it once with `registration`, and use the same value
-	## wherever the app asks for a run, so a request can only name a program
+	## wherever the app asks for a job, so a request can only name a program
 	## with the right types.
 	Program(input, output) :: {
 		name : Str,
@@ -59,13 +60,6 @@ Worker := [].{
 		run : (List(U8), List(List(U8)) -> List(U8)),
 	}.{
 
-		## Stop a run that has not answered `ms` milliseconds after it was
-		## requested, and answer `Timeout` instead. The time a request waits for
-		## a free worker counts. `0`, the default, means no deadline; the
-		## platform caps it at ten minutes.
-		with_deadline_ms : Program(input, output), U32 -> Program(input, output)
-		with_deadline_ms = |p, ms| { ..p, deadline_ms: ms }
-
 		## The program's entry for `Program.with_workers`. Register each program
 		## once, in the `Program` the app binds as `main`: a name registered twice
 		## is a contract error when the app mounts, and a request for a program
@@ -73,9 +67,10 @@ Worker := [].{
 		registration : Program(input, output) -> Engine.Registration
 		registration = |p| Core.registration_with_files(p.name, p.run)
 
-		## A request to run the program on `input`, for an effect site's plan.
-		## The input is a snapshot: it is encoded when the request is issued, and
-		## later changes to the state it came from do not reach the run.
+		## A request for a job of the program on `input`, for an effect site's
+		## plan. The input is a snapshot: it is encoded when the request is
+		## issued, and later changes to the state it came from do not reach the
+		## job.
 		request : Program(input, output), input -> Engine.Req
 		request = |p, input| {
 			{ bytes, files } = (p.send)(input)
@@ -96,17 +91,32 @@ Worker := [].{
 		}
 	}
 
-	## `pure(name, calculate)`: the program `name` that runs `calculate` on the
-	## input it is sent and answers with its result. Both types must be
-	## `Wire.Sendable`. Names are namespaced and unversioned
-	## (`"example.org/search/filter"`); every instance runs the same module, so
-	## a name means one function, and two programs with one name are a
-	## contract error.
-	pure : Str, (input -> output) -> Program(input, output)
+	## What `program` and `fallible` are told about a program.
+	##
+	## - `name`: namespaced and unversioned (`"example.org/search/filter"`).
+	##   Every instance runs the same module, so a name means one function,
+	##   and two programs with one name are a contract error.
+	## - `run`: the pure calculation. Its input and output must be
+	##   `Wire.Sendable`.
+	## - `deadline`: `Ms(ms)` stops a job that has not answered `ms`
+	##   milliseconds after it was requested and answers `Timeout`; the time a
+	##   request waits for a free worker counts, and the platform caps it at
+	##   ten minutes. `Unlimited`, the default, lets a job run until it
+	##   answers or its site stops it.
+	ProgramProps(input, output) := {
+		name : Str,
+		run : input -> output,
+		deadline : [Unlimited, Ms(U32)] ?? Unlimited,
+	}
+
+	## The program a props record describes:
+	## `Worker.program({ name: "example.org/words/count", run: count_words })`.
+	## A job runs `run` on the input it is sent and answers with its result.
+	program : ProgramProps(input, output) -> Program(input, output)
 		where [input.Wire.Sendable, output.Wire.Sendable]
-	pure = |name, calculate| {
+	program = |ProgramProps.({ name, run: calculate, deadline })| {
 		name,
-		deadline_ms: 0,
+		deadline_ms: deadline_ms_of(deadline),
 		send: |input| sent(input),
 		receive: |bytes| match Wire.decode(bytes) {
 			Ok(output) => output
@@ -118,33 +128,21 @@ Worker := [].{
 		},
 	}
 
-	## Like `pure`, for a calculation that can fail. `Try` is not
+	## Like `program`, for a calculation that can fail. `Try` is not
 	## `Wire.Sendable`, so this sends the calculation's `Try` itself: the
 	## program's output is that `Try`, `result` gives `Ok(Ok(value))` or
-	## `Ok(Err(error))` for an answer and `Err(...)` for a run that produced
-	## none, and a `derive` layer holds `Answered(Ok(value))` or `Answered(Err(error))`.
-	## Use it for failures the app expects (input that does not parse, say); a
-	## crash in a program is `Lost`, not an `Err` the app chose.
-	fallible : Str, (input -> Try(ok, err)) -> Program(input, Try(ok, err))
+	## `Ok(Err(error))` for an answer and `Err(...)` for a job that produced
+	## none, and a `derive` layer holds `Answered(Ok(value))` or
+	## `Answered(Err(error))`. Use it for failures the app expects (input that
+	## does not parse, say); a crash in a program is `Lost`, not an `Err` the
+	## app chose.
+	fallible : ProgramProps(input, Try(ok, err)) -> Program(input, Try(ok, err))
 		where [input.Wire.Sendable, ok.Wire.Sendable, err.Wire.Sendable]
-	fallible = |name, calculate| {
+	fallible = |ProgramProps.({ name, run: calculate, deadline })| {
 		name,
-		deadline_ms: 0,
+		deadline_ms: deadline_ms_of(deadline),
 		send: |input| sent(input),
-		receive: |bytes| {
-			body = bytes.drop_last(1)
-			match bytes.last() {
-				Ok(0) => match Wire.decode(body) {
-					Ok(value) => Ok(value)
-					Err(_) => crash "contract: worker program \"${name}\" answered with bytes that are not its output type"
-				}
-				Ok(1) => match Wire.decode(body) {
-					Ok(error) => Err(error)
-					Err(_) => crash "contract: worker program \"${name}\" answered with bytes that are not its error type"
-				}
-				_ => crash "contract: worker program \"${name}\" answered without saying whether it succeeded"
-			}
-		},
+		receive: |bytes| received_try(name, bytes),
 		run: |bytes, files| match Wire.decode_with_files(bytes, files) {
 			Ok(input) => match calculate(input) {
 				Ok(value) => payload_of(name, value).append(0)
@@ -330,7 +328,8 @@ Worker := [].{
 		answer : Answer(state),
 	}.{
 
-		## As `Program.with_deadline_ms`. The deadline includes the time a
+		## Stop a job that has not answered `ms` milliseconds after it was
+		## requested, and answer `Timeout`. The deadline includes the time a
 		## worker spends preparing.
 		with_deadline_ms : Query(init, state, q, out), U32 -> Query(init, state, q, out)
 		with_deadline_ms = |p, ms| { ..p, deadline_ms: ms }
@@ -406,6 +405,13 @@ received_try = |name, bytes| {
 	}
 }
 
+## A deadline as the request carries it: `0` is none.
+deadline_ms_of : [Unlimited, Ms(U32)] -> U32
+deadline_ms_of = |deadline| match deadline {
+	Unlimited => 0
+	Ms(ms) => ms
+}
+
 ## `v` appended to `buf` as four little-endian bytes.
 le32 : List(U8), U32 -> List(U8)
 le32 = |buf, v| buf.append(v.to_u8_wrap()).append(v.shr_zf_wrap(8).to_u8_wrap()).append(v.shr_zf_wrap(16).to_u8_wrap()).append(v.shr_zf_wrap(24).to_u8_wrap())
@@ -413,32 +419,70 @@ le32 = |buf, v| buf.append(v.to_u8_wrap()).append(v.shr_zf_wrap(8).to_u8_wrap())
 ## A program's entry runs the calculation on what `send` encoded, and
 ## `receive` reads what it returned.
 expect {
-	double = Worker.pure("test/double", |n| n * 2.U64)
+	double = Worker.program({ name: "test/double", run: |n| n * 2.U64 })
 	(double.receive)((double.run)((double.send)(21).bytes, [])) == 42
 }
 
 ## A record in and a list out need no codec, and a deadline is carried on the
-## request.
+## request; a program without one asks for none.
 expect {
-	names = Worker.pure("test/names", |{ prefix, suffixes }| suffixes.map(|suffix| "${prefix}${suffix}")).with_deadline_ms(250)
-	request = names.request({ prefix: "n", suffixes: ["0", "1", "2"] })
-	answer = match request {
+	names = Worker.program({ name: "test/names", run: |{ prefix, suffixes }| suffixes.map(|suffix| "${prefix}${suffix}"), deadline: Ms(250) })
+	plain = Worker.program({ name: "test/plain", run: |n| n + 1.U64 })
+	answer = match names.request({ prefix: "n", suffixes: ["0", "1", "2"] }) {
 		Work({ program, input, files: _, deadline_ms }) => (program, (names.receive)((names.run)(input, [])), deadline_ms)
 		_ => ("", [], 0)
 	}
-	answer == ("test/names", ["n0", "n1", "n2"], 250)
+	unlimited = match plain.request(1) {
+		Work({ deadline_ms, .. }) => deadline_ms
+		_ => 1
+	}
+	(answer, unlimited) == (("test/names", ["n0", "n1", "n2"], 250), 0)
 }
 
-## A fallible program's own error is an answer; a deadline, a refusal and a
-## lost worker are not.
+## A fallible program's own error is an answer; a deadline, a refusal, a
+## lost worker and an unread file are not.
 expect {
-	parse = Worker.fallible("test/parse", |text| U64.from_str(text).map_err(|_| NotANumber(text)))
-	run : Str -> Engine.Res
-	run = |text| Work((parse.run)((parse.send)(text).bytes, []))
-	good = parse.result(run("7"))
-	bad = parse.result(run("seven"))
-	late = parse.result(Timeout)
-	lost = parse.result(WorkLost(AppCrash))
-	unread = parse.result(FileFailed(Unreadable))
-	good == Ok(Ok(7)) and bad == Ok(Err(NotANumber("seven"))) and late == Err(Timeout) and lost == Err(Lost(AppCrash)) and unread == Err(FileFailed(Unreadable))
+	parse = Worker.fallible({ name: "test/parse", run: |text| U64.from_str(text).map_err(|_| NotANumber(text)) })
+	job : Str -> Engine.Res
+	job = |text| Work((parse.run)((parse.send)(text).bytes, []))
+	actual =
+		\\good: ${Str.inspect(parse.result(job("7")))}
+		\\bad: ${Str.inspect(parse.result(job("seven")))}
+		\\late: ${Str.inspect(parse.result(Timeout))}
+		\\lost: ${Str.inspect(parse.result(WorkLost(AppCrash)))}
+		\\unread: ${Str.inspect(parse.result(FileFailed(Unreadable)))}
+	expected =
+		\\good: Ok(Ok(7))
+		\\bad: Ok(Err(NotANumber("seven")))
+		\\late: Err(Timeout)
+		\\lost: Err(Lost(AppCrash))
+		\\unread: Err(FileFailed(Unreadable))
+	actual == expected
+}
+
+## A layer that follows a program keeps its previous answer while the next
+## is pending, settles on an answer or a failure, and `Skip` clears it.
+expect {
+	double = Worker.program({ name: "test/double", run: |n| n * 2.U64 })
+	follow = Core.follow_when(double)
+	first = (follow.pending)(follow.init, Run(1))
+	answered = (follow.resolve)(first, Run(1), Work((double.run)((double.send)(1).bytes, [])))
+	again = (follow.pending)(answered, Run(2))
+	failed = (follow.resolve)(again, Run(2), Refused)
+	skipped = (follow.pending)(failed, Skip)
+	actual =
+		\\first: ${Str.inspect(first)}
+		\\answered: ${Str.inspect(answered)}
+		\\again: ${Str.inspect(again)}
+		\\failed: ${Str.inspect(failed)}
+		\\skipped: ${Str.inspect(skipped)}
+		\\plans: ${Str.inspect([(follow.plan)(Skip).len(), (follow.plan)(Run(3)).len()])}
+	expected =
+		\\first: { answer: Unanswered, request: Pending }
+		\\answered: { answer: Answered(2), request: Idle }
+		\\again: { answer: Answered(2), request: Pending }
+		\\failed: { answer: Failed(Refused), request: Idle }
+		\\skipped: { answer: Unanswered, request: Idle }
+		\\plans: [0, 1]
+	actual == expected
 }

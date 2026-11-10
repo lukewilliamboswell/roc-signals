@@ -28,9 +28,9 @@ FilesApp := [].{
 
 	## Each file's name, size and byte sum, read in the worker.
 	count : Worker.Program(List(File), List({ name : Str, bytes : U64, sum : U64 }))
-	count = Worker.pure(
-		"test.roc-signals/files/count",
-		|files| files.map(
+	count = Worker.program({
+		name: "test.roc-signals/files/count",
+		run: |files| files.map(
 			|f| {
 				contents = f.contents()
 				var $sum = 0.U64
@@ -40,13 +40,13 @@ FilesApp := [].{
 				{ name: f.name(), bytes: contents.len(), sum: $sum }
 			},
 		),
-	)
+	})
 
 	## The spike's ownership probe, on a file's bytes in the worker.
 	probe : Worker.Program(File, Bool)
-	probe = Worker.pure(
-		"test.roc-signals/files/probe",
-		|f| {
+	probe = Worker.program({
+		name: "test.roc-signals/files/probe",
+		run: |f| {
 			bytes = f.contents()
 			other = f.contents()
 			before = bytes.get(0) ?? 0
@@ -55,7 +55,7 @@ FilesApp := [].{
 			changed = bytes.set(0, 0) ?? []
 			changed.get(0) == Ok(0) and other.get(0) == Ok(before) and part == other.sublist({ start: 1, len: 3 }) and text.count_utf8_bytes() == other.len()
 		},
-	)
+	})
 
 	show_counts : Engine.Remote(List({ name : Str, bytes : U64, sum : U64 }), Worker.Error) -> Str
 	show_counts = |{ request, answer }| match answer {

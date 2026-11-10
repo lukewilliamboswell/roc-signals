@@ -71,17 +71,17 @@ Lab := [].{
 	## One job of a run. `run` and `attempt` make each request distinct: a new
 	## run, or another attempt after a refusal, is a new value for the row's
 	## effect site, which then issues again.
-	Job : { index : U64, run : U64, attempt : U64, deadline_ms : U32, task : Task, phase : Phase }
+	Job : { index : U64, run : U64, attempt : U64, deadline : [Unlimited, Ms(U32)], task : Task, phase : Phase }
 
 	## The validated parameters of a run.
-	Params : { workload : Workload, jobs : U64, weight : U64, deadline_ms : U32 }
+	Params : { workload : Workload, jobs : U64, weight : U64, deadline : [Unlimited, Ms(U32)] }
 
 	## The page's state: the parameters as typed, the run's serial, its jobs
 	## and the refusals counted since the last reset.
 	S : { workload : Workload, jobs_text : Str, weight_text : Str, deadline_text : Str, run : U64, jobs : List(Job), refused : U64 }
 
 	## What a row's effect site wants: a run of its job's task, or nothing.
-	Want : [Run({ run : U64, index : U64, attempt : U64, deadline_ms : U32, task : Task }), Hold]
+	Want : [Run({ run : U64, index : U64, attempt : U64, deadline : [Unlimited, Ms(U32)], task : Task }), Hold]
 
 	## The totals over a run's jobs.
 	Tally : { total : U64, waiting : U64, running : U64, done : U64, timed_out : U64, lost : U64, cancelled : U64, primes : U64, tile_bytes : U64, checksum : U32 }
@@ -122,7 +122,7 @@ Lab := [].{
 		jobs = Lab.bounded(s.jobs_text, 1, Lab.max_jobs) ? |_| Invalid("Jobs must be a whole number from 1 to ${Lab.max_jobs.to_str()}.")
 		weight = Lab.bounded(s.weight_text, 1, Lab.max_weight) ? |_| Invalid("Weight must be a whole number from 1 to ${Lab.max_weight.to_str()}.")
 		deadline = Lab.bounded(s.deadline_text, 0, Lab.max_deadline_ms) ? |_| Invalid("Deadline must be a number of milliseconds from 0 (none) to ${Lab.max_deadline_ms.to_str()}.")
-		Ok({ workload: s.workload, jobs, weight, deadline_ms: deadline.to_u32_wrap() })
+		Ok({ workload: s.workload, jobs, weight, deadline: if (deadline == 0) Unlimited else Ms(deadline.to_u32_wrap()) })
 	}
 
 	## Why the parameters cannot start a run, or `""`.
@@ -289,7 +289,7 @@ Lab := [].{
 		var $jobs = List.with_capacity(p.jobs)
 		var $i = 0.U64
 		while $i < p.jobs {
-			$jobs = $jobs.append({ index: $i, run, attempt: 0, deadline_ms: p.deadline_ms, task: Lab.task_of(p, $i), phase: Waiting })
+			$jobs = $jobs.append({ index: $i, run, attempt: 0, deadline: p.deadline, task: Lab.task_of(p, $i), phase: Waiting })
 			$i = $i + 1
 		}
 		Lab.admit($jobs)
@@ -370,7 +370,7 @@ Lab := [].{
 	want_of : Job -> Want
 	want_of = |job|
 		match job.phase {
-			Running => Run({ run: job.run, index: job.index, attempt: job.attempt, deadline_ms: job.deadline_ms, task: job.task })
+			Running => Run({ run: job.run, index: job.index, attempt: job.attempt, deadline: job.deadline, task: job.task })
 			_ => Hold
 		}
 

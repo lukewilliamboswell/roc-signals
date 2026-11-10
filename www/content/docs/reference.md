@@ -53,7 +53,7 @@ Anything else is `Engine.element(tag, attrs, children)`.
 
 | Area | Symbols |
 |---|---|
-| Programs | `Program(input, output)`, `pure`, `fallible`, `Program.with_deadline_ms`, `Program.registration` |
+| Programs | `Program(input, output)`, `program`, `fallible`, `ProgramProps(input, output)` (`name`, `run`, `deadline : [Unlimited, Ms(U32)] ?? Unlimited`), `Program.registration` |
 | Runs from an effect site | `Program.request`, `Program.result`, `Error` (`Timeout`, `Refused`, `Lost(WorkFault)`, `FileFailed(FileError)`) |
 | Layers | `derive`, `derive_when` (for a program or a query), holding an `Engine.Remote(output, Error)` |
 | Prepared programs | `prepared`, `Prepared(init, state)`, `Prepared.query`, `Prepared.fallible_query`, `Prepared.registration`, `Query(init, state, q, out)`, `Query.answers`, `Query.request`, `Query.result`, `Query.with_deadline_ms`, `Query.with_cancel`, `Asked(init, q)` (`input`, `query`), `Cancel` (`Stop`, `Finish`), `Answer(state)` |

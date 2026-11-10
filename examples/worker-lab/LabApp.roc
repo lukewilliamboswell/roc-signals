@@ -25,22 +25,24 @@ import Lab
 LabApp := [].{
 	Ctx : In(Root, Lab.S)
 
-	## Counts the primes in a range.
-	primes : Worker.Program(Lab.Span, U64)
-	primes = Worker.pure("roc-signals.example/worker-lab/primes", Lab.count_primes)
+	## Counts the primes in a range. The lab's deadline is a parameter of
+	## each run, so each program is made with the deadline its jobs ask for;
+	## the name and function, and so the registration, are the same for all.
+	primes : [Unlimited, Ms(U32)] -> Worker.Program(Lab.Span, U64)
+	primes = |deadline| Worker.program({ name: "roc-signals.example/worker-lab/primes", run: Lab.count_primes, deadline })
 
 	## Draws one tile; its pixels come back as one block of bytes.
-	tiles : Worker.Program(Lab.TileSpec, Wire.Bytes)
-	tiles = Worker.pure("roc-signals.example/worker-lab/tile", |spec| Wire.Bytes.from_list(Lab.tile(spec)))
+	tiles : [Unlimited, Ms(U32)] -> Worker.Program(Lab.TileSpec, Wire.Bytes)
+	tiles = |deadline| Worker.program({ name: "roc-signals.example/worker-lab/tile", run: |spec| Wire.Bytes.from_list(Lab.tile(spec)), deadline })
 
 	## A program that always crashes, for the faulty workload; its message
 	## names the range it was given.
-	crasher : Worker.Program(Lab.Span, U64)
-	crasher = Worker.pure("roc-signals.example/worker-lab/crash", |{ lo, hi }| crash "the worker lab's crash program crashed on [${lo.to_str()}, ${hi.to_str()}), as it always does")
+	crasher : [Unlimited, Ms(U32)] -> Worker.Program(Lab.Span, U64)
+	crasher = |deadline| Worker.program({ name: "roc-signals.example/worker-lab/crash", run: |{ lo, hi }| crash "the worker lab's crash program crashed on [${lo.to_str()}, ${hi.to_str()}), as it always does", deadline })
 
 	program : Engine.Program
 	program = Engine.program_boot({ storage_keys: [], max_inflight: Lab.max_inflight }, |_| LabApp.main({}))
-		.with_workers([LabApp.primes.registration(), LabApp.tiles.registration(), LabApp.crasher.registration()])
+		.with_workers([LabApp.primes(Unlimited).registration(), LabApp.tiles(Unlimited).registration(), LabApp.crasher(Unlimited).registration()])
 
 	heartbeat_ms : U32
 	heartbeat_ms = 200
@@ -50,11 +52,11 @@ LabApp := [].{
 	plan = |want|
 		match want {
 			Hold => []
-			Run({ task, deadline_ms, .. }) =>
+			Run({ task, deadline, .. }) =>
 				match task {
-					Count(range) => [LabApp.primes.with_deadline_ms(deadline_ms).request(range)]
-					Crash(range) => [LabApp.crasher.with_deadline_ms(deadline_ms).request(range)]
-					Tile(spec) => [LabApp.tiles.with_deadline_ms(deadline_ms).request(spec)]
+					Count(range) => [LabApp.primes(deadline).request(range)]
+					Crash(range) => [LabApp.crasher(deadline).request(range)]
+					Tile(spec) => [LabApp.tiles(deadline).request(spec)]
 				}
 		}
 
@@ -66,9 +68,9 @@ LabApp := [].{
 			Run({ run, index, attempt, task, .. }) => {
 				outcome =
 					match task {
-						Count(_) => LabApp.primes.result(res).map_ok(|n| Primes(n))
-						Crash(_) => LabApp.crasher.result(res).map_ok(|n| Primes(n))
-						Tile(_) => LabApp.tiles.result(res).map_ok(|bytes| Tile(Lab.summarize(bytes.to_list())))
+						Count(_) => LabApp.primes(Unlimited).result(res).map_ok(|n| Primes(n))
+						Crash(_) => LabApp.crasher(Unlimited).result(res).map_ok(|n| Primes(n))
+						Tile(_) => LabApp.tiles(Unlimited).result(res).map_ok(|bytes| Tile(Lab.summarize(bytes.to_list())))
 					}
 				Lab.finish(s, { run, index, attempt }, outcome)
 			}

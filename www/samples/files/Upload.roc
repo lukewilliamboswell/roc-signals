@@ -21,15 +21,15 @@ Upload := [].{
 	Counts : { name : Str, lines : U64, words : U64 }
 
 	count : Worker.Program(File, Counts)
-	count = Worker.pure(
-		"example.org/upload/count",
-		|file| {
+	count = Worker.program({
+		name: "example.org/upload/count",
+		run: |file| {
 			text = file.contents_utf8() ?? ""
 			lines = text.split_on("\n").len()
 			words = text.split_on("\n").map(|l| l.split_on(" ").keep_if(|w| w != "").len()).sum()
 			{ name: file.name(), lines, words }
 		},
-	)
+	})
 	# endregion program
 
 	show : Engine.Remote(Counts, Worker.Error) -> Str

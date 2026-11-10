@@ -65,9 +65,9 @@ WorkersApp := [].{
 	## A chain `depth` links long: more than 512 is deeper than a payload may
 	## nest.
 	deep : Worker.Program(U64, Chain)
-	deep = Worker.pure(
-		"test.roc-signals/deep",
-		|depth| {
+	deep = Worker.program({
+		name: "test.roc-signals/deep",
+		run: |depth| {
 			var $chain = Chain.End
 			var $i = 0.U64
 			while $i < depth {
@@ -76,7 +76,7 @@ WorkersApp := [].{
 			}
 			$chain
 		},
-	)
+	})
 
 	## ASCII letters to upper case; every other byte unchanged.
 	upper : List(U8) -> List(U8)
