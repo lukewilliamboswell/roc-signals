@@ -3325,15 +3325,14 @@ run_work = |registrations, payload| {
 
 ## `out` as a list of its own. The host keeps the output between calls and
 ## never holds a seamless slice, and a program may well return a slice of
-## its input. The bytes are appended one by one: `concat` onto an empty list
-## hands back its argument, slice and all.
+## its input. `concat` onto an empty list hands back its argument, slice and
+## all, so the first byte goes into a fresh list sized for the whole output
+## first: `concat` then copies the rest into that list's own allocation in
+## one move, since it is uniquely owned and already holds the capacity.
 owned_bytes : List(U8) -> List(U8)
-owned_bytes = |out| {
-	var $own = List.with_capacity(out.len())
-	for byte in out {
-		$own = $own.append(byte)
-	}
-	$own
+owned_bytes = |out| match out {
+	[] => []
+	[first, .. as rest] => List.with_capacity(out.len()).append(first).concat(rest)
 }
 
 ## Result tag 11's fault class byte (design.md, Appendix B).
