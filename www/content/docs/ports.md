@@ -1,7 +1,7 @@
 +++
 title = "Ports"
 description = "Reach a browser service the platform does not model, such as IndexedDB or a save-file picker, through typed messages to JavaScript your page supplies."
-weight = 14
+weight = 13
 template = "page.html"
 +++
 

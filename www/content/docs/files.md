@@ -1,7 +1,7 @@
 +++
 title = "Files"
 description = "Take a file the user chooses, drops or pastes, keep it as a handle, act on it where the browser keeps it, and read its bytes in a worker task's job or, for a small file, on the page."
-weight = 11
+weight = 10
 template = "page.html"
 +++
 

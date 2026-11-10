@@ -1,7 +1,7 @@
 +++
 title = "Testing"
 description = "Write .scm specs against the rendered UI, control effects and intervals, and assert how much work an update did, natively and in Chrome."
-weight = 9
+weight = 14
 template = "page.html"
 +++
 

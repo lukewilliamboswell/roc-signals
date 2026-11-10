@@ -1,7 +1,7 @@
 +++
 title = "Workers"
 description = "Run work off the page's thread: declare a task, register it, show its answer like a derived value, read and build files in its jobs, share a preparation between tasks, and handle the ways a job can fail."
-weight = 10
+weight = 9
 template = "page.html"
 +++
 

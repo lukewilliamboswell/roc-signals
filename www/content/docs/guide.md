@@ -43,7 +43,6 @@ the platform does not depend on any CSS framework.
   timers, navigation, focus and cleanup.
 - [Structuring an App](@/docs/app-architecture.md): modules, context types and
   keeping updates local.
-- [Testing](@/docs/testing.md): the spec language and its two runners.
 - [Workers](@/docs/workers.md): running a task off the page's thread, from
   a slow pure calculation to a job that reads and builds files, and
   preparations several tasks share.
@@ -57,6 +56,8 @@ the platform does not depend on any CSS framework.
   goes, how busy the pool is, and what workers cost.
 - [Ports](@/docs/ports.md): reaching a browser service the platform does not
   model, through typed messages to JavaScript your page supplies.
+- [Testing](@/docs/testing.md): the spec language and its two runners, with
+  every step for effects, workers, files and ports.
 - [Reference](@/docs/reference.md): the API at a glance and the platform's
   limits.
 - [Under the Hood](@/docs/under-the-hood.md): how an event becomes DOM commands.
