@@ -8,13 +8,15 @@ import cli.Path
 import src/Checks
 import src/DocSamples
 import src/ApiDocs
+import src/ExampleFiles
 import src/Release
 import src/Proc
 import src/SpecSuite
 import src/Targets
 
 ## The `check` task, the per-pull-request gate: the script pins,
-## formatting, every public `Engine` and `Html` symbol documented, `roc test`,
+## formatting, every file `www/data/examples.toml` names present, every
+## public `Engine` and `Html` symbol documented, `roc test`,
 ## the platform inputs, the host's resource-heap tests, the `scm-parse` and
 ## `wire` fuzz targets, the docs samples, every
 ## app's `.scm` specs natively and in Chrome, the broken-spec self-checks (both
@@ -34,6 +36,9 @@ main! = |_args| {
 	Proc.note!("== formatting")
 	$problems = $problems.concat(check!({ program: o.compiler, args: ["fmt", "--check", "platform", "examples", "tests/apps", "fuzz", "www/samples", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"], cwd: "." }, "roc fmt --check")?)
 	$problems = $problems.concat(check!({ program: o.tooling, args: ["fmt", "--check", "scripts"], cwd: "." }, "roc-stable fmt --check scripts")?)
+
+	Proc.note!("== example files")
+	$problems = $problems.concat(ExampleFiles.check!(o.root)?)
 
 	Proc.note!("== API docs")
 	$problems = $problems.concat(ApiDocs.check!({})?)

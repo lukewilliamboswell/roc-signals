@@ -8,6 +8,7 @@ import cli.OsStr
 import cli.Path
 import src/ApiDocs
 import src/Checks
+import src/ExampleFiles
 import src/Proc
 import src/SpecSuite
 
@@ -20,9 +21,9 @@ import src/SpecSuite
 ## `main.roc` is built for wasm32 (`--opt=size`, as it ships) to
 ## `dist/examples/<slug>/app.wasm` beside `dist/runtime.mjs` (and its worker
 ## script, `dist/worker.mjs`), which the
-## site's `site.mjs` mounts it with. The status page's `plume-chart.mjs` and
-## the worker lab's `pool-panel.mjs` are copied beside their apps, and so is
-## the reading list's `ports.mjs`, its port handlers.
+## site's `site.mjs` mounts it with. Every other file an example's page
+## loads, as `www/data/examples.toml` names it (its scripts, port handlers,
+## simulated service and data), is copied beside its app.
 main! = |raw_args| {
 	args = raw_args.map(OsStr.display).drop_if(|a| a == "--")
 	base_url = match args {
@@ -47,17 +48,7 @@ main! = |raw_args| {
 		Path.create_all!(Path.utf8(dir))?
 		Path.copy!(Path.utf8(SpecSuite.wasm_of(o, example)), Path.utf8("${dir}/app.wasm"))?
 	}
-	# Scripts an example's page loads beside its app (www/data/examples.toml).
-	Path.copy!(Path.utf8("${o.root}/examples/status-page/plume-chart.mjs"), Path.utf8("${dist}/examples/status-page/plume-chart.mjs"))?
-	Path.copy!(Path.utf8("${o.root}/examples/worker-lab/pool-panel.mjs"), Path.utf8("${dist}/examples/worker-lab/pool-panel.mjs"))?
-	# Port handlers an example's page mounts it with (its `ports`).
-	Path.copy!(Path.utf8("${o.root}/examples/reading-list/ports.mjs"), Path.utf8("${dist}/examples/reading-list/ports.mjs"))?
-	# The simulated service an example's page mounts it with (its `backend`).
-	for example in ["field-notes", "status-page", "conduit"] {
-		Path.copy!(Path.utf8("${o.root}/examples/${example}/backend.mjs"), Path.utf8("${dist}/examples/${example}/backend.mjs"))?
-	}
-	# Data an example downloads at run time.
-	Path.copy!(Path.utf8("${o.root}/examples/csv-converter/sample.csv"), Path.utf8("${dist}/examples/csv-converter/sample.csv"))?
+	ExampleFiles.copy_all!(o.root, dist)?
 	SpecSuite.copy_runtime!(o.root, dist)?
 	Proc.note!("site: built ${dist}")
 	Ok({})

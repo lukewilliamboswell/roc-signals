@@ -5,7 +5,10 @@
 # app.wasm whose default export site.mjs passes as the `ports` mount option),
 # and name its simulated service in `backend` (a module beside its app.wasm
 # whose default export, `createBackend()`, returns a request handler that
-# site.mjs turns into the mount's `fetch`; see examples/conduit/backend.mjs).
+# site.mjs turns into the mount's `fetch`; see examples/conduit/backend.mjs),
+# and list the files it downloads at run time in `data`. scripts/site.roc
+# copies every file named here beside the example's app.wasm; each names a
+# file directly in the example's directory.
 
 [[examples]]
 slug = "field-notes"
@@ -113,6 +116,8 @@ description = "Drop a CSV of any size and convert it to TSV or JSON lines in a w
 source = "examples/csv-converter/main.roc"
 specs = "examples/csv-converter/specs"
 public = true
+# The sample its "Load the sample" button downloads.
+data = ["sample.csv"]
 
 [[examples]]
 slug = "reading-list"
