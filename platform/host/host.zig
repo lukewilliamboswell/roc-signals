@@ -688,7 +688,7 @@ fn hostedSize(token: u64) callconv(.c) u64 {
 /// job. A job that holds more handles than the heap has is a
 /// resource-limit fault.
 fn hostedMint() callconv(.c) *u64 {
-    if (!in_task) outsideTask("File.build!");
+    if (!in_task) outsideTask("Files.build!");
     return blobs.mint({}) orelse {
         const msg = "resource_limit: a task's job holds more than 64 files and builders at once";
         keepError(msg.ptr, msg.len);
@@ -699,7 +699,7 @@ fn hostedMint() callconv(.c) *u64 {
 /// `Hosted.open!`: make `token` a builder. The name and type lists are
 /// read in place and released here.
 fn hostedOpen(token: u64, name: RocList, mime: RocList, from: u64, start: u64, len: u64) callconv(.c) u8 {
-    if (!in_task) outsideTask("File.build!");
+    if (!in_task) outsideTask("Files.build!");
     const status = js_builder_open(token, if (name.ptr) |p| @intFromPtr(p) else 0, name.len, if (mime.ptr) |p| @intFromPtr(p) else 0, mime.len, from, start, len);
     releaseArg(name);
     releaseArg(mime);

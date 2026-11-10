@@ -1,4 +1,5 @@
 import pf.Engine exposing [Elem, File, In, Root, State]
+import pf.Files
 import pf.Html
 import pf.Worker
 import Csv
@@ -44,7 +45,7 @@ ConverterApp := [].{
 			Tsv => "text/tab-separated-values"
 			JsonLines => "application/x-ndjson"
 		}
-		out = File.build!({ name: "${ConverterApp.stem(source.name())}.${extension}", mime: Mime(mime) })
+		out = Files.build!({ name: "${ConverterApp.stem(source.name())}.${extension}", mime: Mime(mime) })
 		var $header = []
 		var $rows = 0
 		var $ragged = 0

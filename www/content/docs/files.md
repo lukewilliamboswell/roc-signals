@@ -24,7 +24,7 @@ ranges it needs straight into the worker's memory.
 | Upload it, digest it, or preview it in an `<img>` or `<video>` | An operation on the file: `File.upload`, `File.sha256`, `File.object_url` | Never enter the page's memory |
 | Process it: parse, convert, search, count | A [worker task](#reading-a-file-in-a-worker) that is sent the file and reads it with `file.contents!` or `file.read!` | Read into the worker, off the page's thread, as much as the job asks for |
 | Read a small file in a simple app | A page read: `file.read_bytes({})`, `file.read_utf8({})` | Read on the page's thread and copied into the page's memory |
-| Produce a new file to save or send on | A task whose job writes it with `File.build!` (see [Files in Tasks](@/docs/files-in-tasks.md)) | Built in the worker; the new file never enters the page's memory |
+| Produce a new file to save or send on | A task whose job writes it with `Files.build!` (see [Files in Tasks](@/docs/files-in-tasks.md)) | Built in the worker; the new file never enters the page's memory |
 | Download a file, or save one | [`File.fetch`](@/docs/files-in-tasks.md#downloading-into-a-file) and [`File.save`](@/docs/files-in-tasks.md#saving) | Stay in the browser |
 
 This answers two older workarounds. Getting a file's bytes into Roc used to

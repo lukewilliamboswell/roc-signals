@@ -1,4 +1,5 @@
 import pf.Engine exposing [Elem, File, In, Root, State]
+import pf.Files
 import pf.Html
 import pf.Worker
 
@@ -13,6 +14,8 @@ import pf.Worker
 ##   with 17 files, one more than a job may return, which is a contract
 ##   error in the job's worker; "Few" answers with three, which a page
 ##   holding 62 files has no room for.
+## - "Reread" builds a file from the first one and reads the built file
+##   back in the same job.
 ## - "Square" squares a number and calls no effect, so it answers even
 ##   where a job's effects are unavailable (`workers: "inline"`).
 ## - "Add batch" appends a line to a log across jobs: each job starts a
@@ -48,7 +51,7 @@ TasksApp := [].{
 	}
 
 	## The job the app wants now; a new value cancels the job of the old.
-	Run : [Idle, Upper({ source : File, chunk : U64 }), Append({ previous : List(File), lines : List(Str) }), Count({ file : File, chunk : U64 }), Overflow(File), Crash(File), Twice(U64), Many(U64), Timed(File), Square(U64), Linger(File)]
+	Run : [Idle, Upper({ source : File, chunk : U64 }), Append({ previous : List(File), lines : List(Str) }), Count({ file : File, chunk : U64 }), Overflow(File), Crash(File), Twice(U64), Many(U64), Timed(File), Square(U64), Linger(File), Reread(File)]
 
 	## A task that calls no effect.
 	square : Worker.Task(U64, U64, Engine.FileError)
@@ -62,7 +65,7 @@ TasksApp := [].{
 	## Upper-case `source` into a new file, `chunk` bytes at a time.
 	upper! : { source : File, chunk : U64 } => Try(File, Engine.FileError)
 	upper! = |{ source, chunk }| {
-		out = File.build!({ name: "${source.name()}.upper", mime: Mime("text/plain") })
+		out = Files.build!({ name: "${source.name()}.upper", mime: Mime("text/plain") })
 		var $at = 0.U64
 		while $at < source.size() {
 			len = if (source.size() - $at < chunk) source.size() - $at else chunk
@@ -83,7 +86,7 @@ TasksApp := [].{
 			[log] => From(log)
 			_ => Empty
 		}
-		out = File.build!({ name: "log.txt", mime: Mime("text/plain"), start_from })
+		out = Files.build!({ name: "log.txt", mime: Mime("text/plain"), start_from })
 		for line in lines {
 			out.append!("${line}\n".to_utf8())?
 		}
@@ -114,11 +117,25 @@ TasksApp := [].{
 	overflow! : File => Try(File, Engine.FileError)
 	overflow! = |source| {
 		bytes = source.contents!()?
-		out = File.build!({ name: "copies.txt" })
+		out = Files.build!({ name: "copies.txt" })
 		out.append!(bytes)?
 		out.append!(bytes)?
 		out.append!(bytes)?
 		Ok(out.finish!())
+	}
+
+	reread : Worker.Task(File, Str, Engine.FileError)
+	reread = Worker.task({ name: "test.roc-signals/tasks/reread", run!: TasksApp.reread! })
+
+	## Build a file from `source`, by reference, followed by "!", then read
+	## the built file back in the same job: a file a job finishes carries
+	## the job's effects as the files it was sent do.
+	reread! : File => Try(Str, Engine.FileError)
+	reread! = |source| {
+		out = Files.build!({ name: "echo.txt", start_from: From(source) })
+		out.append!("!".to_utf8())?
+		built = out.finish!()
+		built.contents_utf8!()
 	}
 
 	crashes : Worker.Task(File, U64, Engine.FileError)
@@ -137,7 +154,7 @@ TasksApp := [].{
 	## Finish a builder twice, which is a contract error.
 	twice! : U64 => Try(U64, Engine.FileError)
 	twice! = |n| {
-		out = File.build!({ name: "twice.txt" })
+		out = Files.build!({ name: "twice.txt" })
 		first = out.finish!()
 		second = out.finish!()
 		Ok(first.size() + second.size() + n)
@@ -151,7 +168,7 @@ TasksApp := [].{
 	many! = |n| {
 		var $files = []
 		while $files.len() < n {
-			out = File.build!({ name: "part-${$files.len().to_str()}.txt" })
+			out = Files.build!({ name: "part-${$files.len().to_str()}.txt" })
 			out.append!(['x'])?
 			$files = $files.append(out.finish!())
 		}
@@ -211,6 +228,7 @@ TasksApp := [].{
 		Square(n) => [TasksApp.square.request(n)]
 		Timed(file) => [TasksApp.timed.request(file)]
 		Linger(file) => [TasksApp.lingering.request(file)]
+		Reread(file) => [TasksApp.reread.request(file)]
 	}
 
 	describe : File -> Str
@@ -242,6 +260,12 @@ TasksApp := [].{
 		Timed(_) => TasksApp.took_size(s, TasksApp.timed.result(res))
 		Linger(_) => TasksApp.took_size(s, TasksApp.lingering.result(res))
 		Square(_) => TasksApp.took_size(s, TasksApp.square.result(res))
+		Reread(_) =>
+			match TasksApp.reread.result(res) {
+				Ok(text) => { ..s, outcome: "reread ${text}" }
+				Err(Failed(e)) => { ..s, outcome: "error ${Str.inspect(e)}" }
+				Err(e) => { ..s, outcome: "failed ${Str.inspect(e)}" }
+			}
 		Many(_) =>
 			match TasksApp.many.result(res) {
 				Ok(files) => { ..s, outcome: "files ${files.len().to_str()}" }
@@ -288,6 +312,7 @@ TasksApp := [].{
 				Html.button("Crash", [], st.update(TasksApp.ask(|f| Crash(f)))),
 				Html.button("Timed", [], st.update(TasksApp.ask(|f| Timed(f)))),
 				Html.button("Linger", [], st.update(TasksApp.ask(|f| Linger(f)))),
+				Html.button("Reread", [], st.update(TasksApp.ask(|f| Reread(f)))),
 				Html.button("Twice", [], st.update(|s| { ..s, run: Twice(s.batch), outcome: "running" })),
 				Html.button("Many", [], st.update(|s| { ..s, run: Many(17), outcome: "running" })),
 				Html.button("Few", [], st.update(|s| { ..s, run: Many(3), outcome: "running" })),
@@ -430,6 +455,7 @@ TasksApp := [].{
 				TasksApp.twice.registration(),
 				TasksApp.many.registration(),
 				TasksApp.square.registration(),
+				TasksApp.reread.registration(),
 				TasksApp.timed.registration(),
 				TasksApp.lingering.registration(),
 				TasksApp.stopped.registration(),

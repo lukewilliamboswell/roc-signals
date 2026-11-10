@@ -28,7 +28,8 @@ holds one chunk, never the whole file:
 {{ sample(file="tasks/Convert.roc", region="transform") }}
 
 `run!` reads with `source.read!(...)`, which brings a range of the file into
-the job's memory, and writes with a builder: `File.build!` opens one,
+the job's memory, and writes with a builder: `Files.build!` (from the
+platform's `Files` module, `import pf.Files`) opens one,
 `append!` copies bytes into it, and `finish!` turns it into a new, immutable
 `File`. Reading and appending can fail in ways the app should hear about (a
 file the user changed since choosing it is `Unreadable`, a builder over its
@@ -64,7 +65,7 @@ job can do with one:
 |---|---|
 | `file.read!({ start, len })` | The range's bytes, copied once into the job's memory, or `Err(Unreadable)` |
 | `file.contents!()`, `file.contents_utf8!()` | The whole file or range, as bytes or text (`InvalidUtf8` when it is not UTF-8) |
-| `File.build!({ name, mime, start_from })` | A new builder; `mime` defaults to `Auto` (the type of the file it starts from, or none), `start_from` to `Empty` |
+| `Files.build!({ name, mime, start_from })` | A new builder; `mime` defaults to `Auto` (the type of the file it starts from, or none), `start_from` to `Empty` |
 | `builder.append!(bytes)` | Append a copy of `bytes`; `Err(TooLarge)` past the job's output bound |
 | `builder.append_file!(file)` | Append a file the job holds, or a range of one, by reference: nothing is copied |
 | `builder.finish!()` | The finished file, holding everything appended in order |

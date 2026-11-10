@@ -339,8 +339,8 @@ async function open(options = {}) {
     return { names, thrown, trapped, fault: x.fault(), message: err.startsWith("contract: work() was called on the page's instance") };
   });
   check("the page's imports are throwing stubs, and work() on a mounted instance is a contract fault", r, {
-    names: ["js_builder_append", "js_builder_finish", "js_builder_open", "js_file_read", "js_file_size"],
-    thrown: [true, true, true, true, true],
+    names: ["js_builder_append", "js_builder_append_file", "js_builder_finish", "js_builder_open", "js_file_read", "js_file_size"],
+    thrown: [true, true, true, true, true, true],
     trapped: true,
     fault: 1,
     message: true,

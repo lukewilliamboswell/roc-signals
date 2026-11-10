@@ -3,7 +3,11 @@
 ## the typed vocabulary above that, and `Worker.roc` is the typed layer for
 ## tasks run in Web Workers, whose payloads `Wire.roc` derives;
 ## `Port.roc` is the typed layer for services the page's JavaScript supplies,
-## whose messages `PortJson.roc` derives. An app
+## whose messages `PortJson.roc` derives. A worker job's hosted effects
+## (`Hosted.roc`) are reached only through `Effects.roc`, which this root
+## hands to the engine with each job, and `Files.roc`, whose `build!`
+## opens a builder; every other module is pure, and `engine.roc` is a
+## package root over them for the fuzz targets. An app
 ## binds a `program` as `main`, and one entry file builds for two targets:
 ##
 ## - `roc build --target=wasm32` gives the module the browser runs. The Zig
@@ -20,7 +24,7 @@ platform ""
 	requires {
 		main : Engine.Program
 	}
-	exposes [Engine, Html, Port, PortJson, Wire, Worker]
+	exposes [Engine, Files, Html, Port, PortJson, Wire, Worker]
 	packages {}
 	provides {
 		"roc_engine_ask": ask_for_host!,
@@ -67,7 +71,9 @@ platform ""
 
 import Cli
 import Core
+import Effects
 import Engine
+import Files
 import Hosted
 import Html
 import Port
@@ -151,18 +157,19 @@ files_for_host = |boxed, buf, wbuf, node, handler, record, blobs| {
 ## the payload (`name:str input:rest`) with the handles the host minted for
 ## the job's files, which move into Roc with the call, and return its
 ## answer, `n:u32 (token:u64)* output:rest`, which the host keeps readable
-## until the next call. The task may call the platform's hosted effects;
-## nothing else that runs in an instance can. A worker instance never
+## until the next call. The engine gets the platform's hosted effects with
+## the call (`Effects.job`), and the job's files and builders carry them;
+## nothing else that runs in an instance can reach them. A worker instance never
 ## mounts.
 work_for_host! : List(U8), List(Box(U64)) => List(U8)
-work_for_host! = |payload, handles| Core.work!(main, payload, handles)
+work_for_host! = |payload, handles| Core.work!(main, Effects.job, payload, handles)
 
 ## A worker instance's preparation (design.md, "Prepared state"): run the
 ## preparation named in `prep:str init:rest` with the handles of its files
 ## and return the state the instance keeps, which the host owns until a
 ## job runs a task on it or the instance forgets it.
 prepare_for_host! : List(U8), List(Box(U64)) => Box(Core.Kept)
-prepare_for_host! = |payload, handles| Box.box(Core.work_prepare!(main, payload, handles))
+prepare_for_host! = |payload, handles| Box.box(Core.work_prepare!(main, Effects.job, payload, handles))
 
 ## A job of a preparation's task on the held state: the state moves in and
 ## back out with the job's answer, so the host owns it again after the call.

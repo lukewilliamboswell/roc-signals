@@ -617,12 +617,12 @@ fn hostedTaskSize(token: u64) callconv(.c) u64 {
 }
 
 fn hostedTaskMint() callconv(.c) *u64 {
-    if (!in_task) outsideTask("File.build!");
+    if (!in_task) outsideTask("Files.build!");
     return blobs.mint(.{}) orelse jobFault(2, "resource_limit: a worker job holds more than 64 files and builders at once");
 }
 
 fn hostedTaskOpen(token: u64, name: RocList, mime: RocList, from: u64, start: u64, len: u64) callconv(.c) u8 {
-    if (!in_task) outsideTask("File.build!");
+    if (!in_task) outsideTask("Files.build!");
     defer releaseBytes(name);
     defer releaseBytes(mime);
     const b = blobs.get(token) orelse return 2;

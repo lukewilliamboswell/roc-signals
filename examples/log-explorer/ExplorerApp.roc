@@ -1,4 +1,5 @@
 import pf.Engine exposing [Elem, File, In, Root, Row, RowRef, State, Val]
+import pf.Files
 import pf.Html
 import pf.Worker
 import Log
@@ -107,7 +108,7 @@ ExplorerApp := [].{
 
 	generate! : U64 => Try(File, Engine.FileError)
 	generate! = |entries| {
-		out = File.build!({ name: "sample-${entries.to_str()}.log", mime: Mime("text/plain") })
+		out = Files.build!({ name: "sample-${entries.to_str()}.log", mime: Mime("text/plain") })
 		var $progress = Sample.start
 		var $left = entries
 		while $left > 0 {

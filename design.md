@@ -859,7 +859,7 @@ because an error left to inference does not resolve.
   invalidate the other's.
 - **Effects are synchronous and act on handles.** `File.read!` reads a range
   into the job's memory (`FileReaderSync`), one copy; `contents!` and
-  `contents_utf8!` read the whole range. `File.build!` opens a **builder**,
+  `contents_utf8!` read the whole range. `Files.build!` opens a **builder**,
   `append!` copies bytes out of the job's memory into a part of it,
   `append_file!` adds a range of a file the job holds by reference, and
   `finish!` composes the parts into one immutable file (constant time) the
@@ -872,6 +872,19 @@ because an error left to inference does not resolve.
   does not adopt. Nothing a job does can be observed until it answers. An
   effect that blocks for a response, such as the synchronous request in the
   Target below, fits this rule; there is none yet.
+- **The engine reaches no hosted function; a job's files carry them.** The
+  platform root hands the engine its job effects (`Core.JobEffects`, from
+  `platform/Effects.roc`) when it starts a job, a preparation or a
+  question, and every `File` and `Builder` made in that call carries them,
+  so `file.read!` and `out.append!` are methods while the engine's modules
+  import nothing hosted and build as a package of their own for the fuzz
+  targets (see [Testing Architecture](#testing-architecture)). A file on
+  the page carries none: page code cannot call an effect, and one reached
+  with a page's file is a contract error. Carried effects take no part in
+  a file's equality, inspection or encoding. Opening a builder has no file
+  to carry them, so it is the one effect an app reaches through a
+  platform-only module, `Files.build!`; an app module that imports `Files`
+  builds only on the platform.
 - **A written file is an immutable value.** A builder exists only inside the
   call that opened it (a job, or a preparation's `prepare!`), holds its
   parts in the worker script, and cannot be sent anywhere (it is not
@@ -2091,7 +2104,7 @@ FetchError : [Network(Str), Timeout, Status(U16), TooLarge, Refused]
 File.read! : File, { start : U64, len : U64 } => Try(List(U8), FileError)
 File.contents! : File => Try(List(U8), FileError)
 File.contents_utf8! : File => Try(Str, FileError)
-File.build! : { name : Str, mime : [Auto, Mime(Str)] ?? Auto,
+Files.build! : { name : Str, mime : [Auto, Mime(Str)] ?? Auto,
                 start_from : [Empty, From(File)] ?? Empty } => Builder
 Builder.append! : Builder, List(U8) => Try({}, FileError)   # TooLarge past maxOutputBytes
                                               # a builder used after the call that opened it: contract error
@@ -2271,7 +2284,8 @@ roc-lang/roc#12953 (see [Compiler Limitations](#compiler-limitations)).
 
 The host provides `roc_alloc`, `roc_dealloc`, `roc_realloc`, `roc_dbg`,
 `roc_expect_failed` and `roc_crashed`, and the hosted functions a job
-calls, each `roc_task_*` in both hosts (`platform/Hosted.roc`): `read`
+calls, each `roc_task_*` in both hosts (`platform/Hosted.roc`, reached only
+through `platform/Effects.roc`): `read`
 `(token, start, len) -> List(U8)` (exactly `len` bytes, or none when the
 file cannot be read), `size (token) -> u64`, `mint () -> Box(U64)`, `open
 (token, name:List(U8), mime:List(U8), from, start, len) -> u8` (`from` 0:
@@ -2287,9 +2301,10 @@ read, `0` unreadable), `env.js_file_size(token) -> u64`,
 len) -> u32`, `env.js_builder_append(token, src, len) -> u32`,
 `env.js_builder_append_file(token, file, start, len) -> u32` and
 `env.js_builder_finish(token, file) -> u32`; the worker script closes every
-builder a call opened when the call returns, so a later use answers `3`. A
-module imports exactly those its tasks reach; the page's instance and the
-inline instance supply stubs that throw. The result record's three fields are
+builder a call opened when the call returns, so a later use answers `3`.
+Every module imports all of them, since the platform hands each job the
+whole set; the page's instance and the inline instance supply stubs that
+throw. The result record's three fields are
 pointer-aligned, so Roc lays them out alphabetically: `cmds`, `state`,
 `work`. The host owns both lists between calls and lends them back, so after
 warm-up neither allocates.

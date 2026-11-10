@@ -8,8 +8,6 @@
 ## `take_cmds`, `fx_stats`, ...). `design.md` ("Representation D") describes
 ## the model; Appendix B specifies the command stream and the host protocol.
 
-import Hosted
-
 Core := [].{
 
 	## The context at the top of the application: the context of the [Elem] that
@@ -100,7 +98,11 @@ Core := [].{
 	## as long as the app needs it, and it is released when nothing refers to it
 	## any more. Two files are equal when they are the same range of the same
 	## file.
-	File :: { blob : Blob, name : Str, mime : Str, size : U64, start : U64, len : U64 }.{
+	##
+	## A file in a worker job carries the platform's hosted effects with it,
+	## handed to the engine when the job started, so its effects are methods
+	## (`file.read!(...)`); the engine itself reaches no hosted function.
+	File :: { blob : Blob, name : Str, mime : Str, size : U64, start : U64, len : U64, reach : Reach }.{
 
 		## The file's name, as the browser reports it (no directory).
 		name : File -> Str
@@ -226,7 +228,8 @@ Core := [].{
 			if start > f.len or len > f.len - start {
 				crash "contract: File.read! of ${start.to_str()}+${len.to_str()} bytes lies outside \"${f.name}\" (${f.len.to_str()} bytes)"
 			}
-			bytes = Hosted.read!(f.blob.token(), f.start + start, len)
+			effects = job_effects(f, "File.read!")
+			bytes = (effects.read!)(f.blob.token(), f.start + start, len)
 			if (bytes.len() == len) Ok(bytes) else Err(Unreadable)
 		}
 
@@ -242,48 +245,6 @@ Core := [].{
 		contents_utf8! = |f| {
 			bytes = File.contents!(f)?
 			Str.from_utf8(bytes).map_err(|_| InvalidUtf8)
-		}
-
-		## How a task's [Builder] starts: the new file's `name`, its media
-		## `mime` type (`Auto`: the type of the file it starts from, or none),
-		## and what it starts with: nothing (`Empty`), or the bytes of a file
-		## the job holds (`From(file)`), by reference, without copying them.
-		BuildProps := { name : Str, mime : [Auto, Mime(Str)] ?? Auto, start_from : [Empty, From(File)] ?? Empty }
-
-		## In a task's job: a new [Builder] for a file the job writes. Append
-		## to it with `append!` and `append_file!`, then `finish!` it into an
-		## immutable file the job can return in its answer. The bytes it holds
-		## are private to the job until its answer is delivered: a job that is
-		## stopped, times out or fails leaves nothing anyone can see. A builder
-		## never outlives the call that opened it (a job, or a preparation's
-		## `prepare!`): one kept in a prepared state and used later is a
-		## contract error. Keep the file it finishes instead.
-		##
-		## To append to the output of an earlier job, start from it:
-		## `File.build!({ name, start_from: From(previous) })` gives a new file
-		## that is the previous one followed by what this job appends, and the
-		## previous file is unchanged whatever happens to this job.
-		build! : BuildProps => Builder
-		build! = |props| {
-			{ name: called, mime: wanted, start_from } = props
-			type = match (wanted, start_from) {
-				(Mime(m), _) => m
-				(Auto, From(source)) => source.mime
-				(Auto, Empty) => ""
-			}
-			handle = Hosted.mint!()
-			token = Box.unbox(handle)
-			status = match start_from {
-				Empty => Hosted.open!(token, called.to_utf8(), type.to_utf8(), 0, 0, 0)
-				From(source) => {
-					{ token: from, start, len } = file_ref(source)
-					Hosted.open!(token, called.to_utf8(), type.to_utf8(), from, start, len)
-				}
-			}
-			if status != 0 {
-				crash "internal: the host could not open a builder (status ${status.to_str()})"
-			}
-			{ handle, name: called, mime: type }
 		}
 
 		## How a file is saved: under its own name (`Same`) or another
@@ -354,13 +315,13 @@ Core := [].{
 		}
 	}
 
-	## A file a task's job is writing (`File.build!`): private to the job,
+	## A file a task's job is writing (`Files.build!`): private to the job,
 	## which appends to it and then finishes it into an immutable [File]. It
 	## cannot be sent anywhere: only the file it finishes into can be in an
 	## answer. The builder's parts go when the job ends, whether or not it
 	## finished, and a builder used after the call that opened it has ended
 	## is a contract error.
-	Builder :: { handle : Box(U64), name : Str, mime : Str }.{
+	Builder :: { handle : Box(U64), name : Str, mime : Str, effects : JobEffects }.{
 
 		## Append a copy of `bytes`. `TooLarge` when the bytes this job has
 		## appended to its builders would exceed the `maxOutputBytes` mount
@@ -368,7 +329,7 @@ Core := [].{
 		## decides what to do. Appending to a builder after `finish!` is a
 		## contract error.
 		append! : Builder, List(U8) => Try({}, FileError)
-		append! = |b, bytes| match Hosted.append!(Box.unbox(b.handle), bytes) {
+		append! = |b, bytes| match (b.effects.append!)(Box.unbox(b.handle), bytes) {
 			0 => Ok({})
 			1 => Err(TooLarge)
 			status => builder_refused(b, "append!", status)
@@ -380,7 +341,7 @@ Core := [].{
 		append_file! : Builder, File => {}
 		append_file! = |b, f| {
 			{ token, start, len } = file_ref(f)
-			match Hosted.append_file!(Box.unbox(b.handle), token, start, len) {
+			match (b.effects.append_file!)(Box.unbox(b.handle), token, start, len) {
 				0 => {}
 				status => builder_refused(b, "append_file!", status)
 			}
@@ -390,15 +351,64 @@ Core := [].{
 		## appended, in order. Finishing twice is a contract error.
 		finish! : Builder => File
 		finish! = |b| {
-			handle = Hosted.mint!()
+			handle = (b.effects.mint!)()
 			token = Box.unbox(handle)
-			match Hosted.finish!(Box.unbox(b.handle), token) {
+			match (b.effects.finish!)(Box.unbox(b.handle), token) {
 				0 => {}
 				status => builder_refused(b, "finish!", status)
 			}
-			size = Hosted.size!(token)
-			{ blob: Blob.(handle), name: b.name, mime: b.mime, size, start: 0, len: size }
+			size = (b.effects.size!)(token)
+			{ blob: Blob.(handle), name: b.name, mime: b.mime, size, start: 0, len: size, reach: InJob(b.effects) }
 		}
+	}
+
+	## How a task's [Builder] starts: the new file's `name`, its media
+	## `mime` type (`Auto`: the type of the file it starts from, or none),
+	## and what it starts with: nothing (`Empty`), or the bytes of a file
+	## the job holds (`From(file)`), by reference, without copying them.
+	BuildProps := { name : Str, mime : [Auto, Mime(Str)] ?? Auto, start_from : [Empty, From(File)] ?? Empty }
+
+	## For the platform's `Files.build!`: open a [Builder] with the job's
+	## hosted effects, which the builder and the file it finishes carry.
+	## `build!` has no file to carry the effects to it, so it is the one
+	## effect a task reaches through a platform-only module.
+	open_builder! : JobEffects, BuildProps => Builder
+	open_builder! = |effects, props| {
+		{ name: called, mime: wanted, start_from } = props
+		type = match (wanted, start_from) {
+			(Mime(m), _) => m
+			(Auto, From(source)) => source.mime
+			(Auto, Empty) => ""
+		}
+		handle = (effects.mint!)()
+		token = Box.unbox(handle)
+		status = match start_from {
+			Empty => (effects.open!)(token, called.to_utf8(), type.to_utf8(), 0, 0, 0)
+			From(source) => {
+				{ token: from, start, len } = file_ref(source)
+				(effects.open!)(token, called.to_utf8(), type.to_utf8(), from, start, len)
+			}
+		}
+		if status != 0 {
+			crash "internal: the host could not open a builder (status ${status.to_str()})"
+		}
+		{ handle, name: called, mime: type, effects }
+	}
+
+	## The hosted effects of a worker job (design.md, "Workers"), as the
+	## platform hands them to the engine when it starts a job, a
+	## preparation or a question (`work!`, `work_prepare!`, `work_ask!`).
+	## The engine never reaches a hosted function itself: the files and
+	## builders made in that call carry these, and their methods call them.
+	## Each takes a handle's token as `Hosted.roc` describes it.
+	JobEffects : {
+		read! : U64, U64, U64 => List(U8),
+		size! : U64 => U64,
+		mint! : () => Box(U64),
+		open! : U64, List(U8), List(U8), U64, U64, U64 => U8,
+		append! : U64, List(U8) => U8,
+		append_file! : U64, U64, U64, U64 => U8,
+		finish! : U64, U64 => U8,
 	}
 
 	## The files one event delivered, and how many more it carried than the
@@ -1375,7 +1385,7 @@ Core := [].{
 	## minted its handle; decoding the payload gives it its name, type and
 	## range (`placed_file`).
 	held_file : Box(U64) -> File
-	held_file = |handle| { blob: Blob.(handle), name: "", mime: "", size: 0, start: 0, len: 0 }
+	held_file = |handle| { blob: Blob.(handle), name: "", mime: "", size: 0, start: 0, len: 0, reach: OnPage }
 
 	## For the wire format: the handle that arrived beside a payload at a
 	## file's place, with the name, type, size and range the payload gives
@@ -1385,7 +1395,7 @@ Core := [].{
 		if start > size or len > size - start {
 			return Err(Malformed)
 		}
-		Ok({ blob: source.blob, name, mime, size, start, len })
+		Ok({ blob: source.blob, name, mime, size, start, len, reach: source.reach })
 	}
 
 	## For test platforms and harnesses: decode an effect result payload as the
@@ -1656,44 +1666,52 @@ Core := [].{
 	## `Worker` makes one from a typed task; apps list it in `with_workers`.
 	##
 	## A preparation registers under its own name with the names of the
-	## tasks that read its state (`tasks`), and `prepare!` builds the [Kept]
-	## value those tasks read; a task that is not a preparation's has no
+	## tasks that read its state (`tasks`), and `prepare!` builds the
+	## [Prepared] value those tasks read; a task that is not a preparation's has no
 	## `tasks`. A preparation's `run!`, and a task's `prepare!`, are contract
 	## errors.
-	Registration :: { name : Str, tasks : List(Str), run! : (List(U8), List(Box(U64)) => List(U8)), prepare! : (List(U8), List(Box(U64)) => Kept) }
+	Registration :: { name : Str, tasks : List(Str), run! : (List(U8), List(File) => List(U8)), prepare! : (List(U8), List(File) => Prepared) }
 
 	## For the worker layer: the task `name`, whose effectful entry `run!`
 	## turns a request's input bytes and the handles of its files into its
 	## answer, `n:u32 (token:u64)* output:rest`. It runs in a worker
 	## instance, where it may call the platform's hosted effects on those
 	## handles and on builders it opens.
-	registration : Str, (List(U8), List(Box(U64)) => List(U8)) -> Registration
+	registration : Str, (List(U8), List(File) => List(U8)) -> Registration
 	registration = |name, run!| { name, tasks: [], run!, prepare!: not_prepared }
 
 	## For the worker layer: the preparation `name`, whose state the tasks
-	## `tasks` read. `prepare!` turns the preparation's input bytes and the
-	## handles of its files into the [Kept] value a worker instance may keep
-	## between jobs; every answer must be what preparing afresh and asking
-	## would give.
-	registration_prepared : Str, List(Str), (List(U8), List(Box(U64)) => Kept) -> Registration
+	## `tasks` read. `prepare!` turns the preparation's input bytes and its
+	## files into the [Prepared] value a worker instance may keep between
+	## jobs; every answer must be what preparing afresh and asking would give.
+	registration_prepared : Str, List(Str), (List(U8), List(File) => Prepared) -> Registration
 	registration_prepared = |name, tasks, prepare!| { name, tasks, run!: |_, _| crash "contract: worker task \"${name}\" is a preparation; ask one of its tasks", prepare! }
 
+	## A preparation's state as the worker layer builds it: the
+	## preparation's name and `ask!`, a closure over the typed state that
+	## runs one of its tasks, `ask!(task, input_bytes, files)`, and answers as
+	## a task's entry does. `work_prepare!` turns it into the [Kept] value
+	## the worker's host holds.
+	Prepared :: { prep : Str, ask! : (Str, List(U8), List(File) => List(U8)) }
+
+	## For the worker layer: the prepared state of the preparation `prep`.
+	kept : Str, (Str, List(U8), List(File) => List(U8)) -> Prepared
+	kept = |prep, ask!| { prep, ask! }
+
 	## A preparation's state as a worker instance holds it between jobs
-	## (design.md, "Prepared state"): the preparation's name and `ask!`, a
-	## closure over the typed state that runs one of its tasks,
-	## `ask!(task, input_bytes, handles)`, and answers as a task's entry
-	## does. The state never crosses a boundary; the worker's host keeps one
-	## `Box(Kept)` as the page's host keeps `Box(App)`, and every answer
-	## is what preparing afresh would give. Compiler workaround
+	## (design.md, "Prepared state"): the preparation's name and `ask!`,
+	## which runs one of its tasks on the job's handles, `ask!(task,
+	## input_bytes, handles)`. It takes handles, not files, and captures the
+	## job effects `work_prepare!` was handed, so no function value appears
+	## in its type but the one the host boundary requires boxed. The state
+	## never crosses a boundary; the worker's host keeps one `Box(Kept)` as
+	## the page's host keeps `Box(App)`, and every answer is what preparing
+	## afresh would give. Compiler workaround
 	## (https://github.com/roc-lang/roc/issues/12953): the host boundary
 	## rejects `Box(Kept)` while `ask!` is a bare function, so `ask!` is boxed
-	## on its own (`kept` boxes it, `work_ask!` unboxes it) until the plain
-	## box is accepted again.
+	## on its own (`work_prepare!` boxes it, `work_ask!` unboxes it) until
+	## the plain box is accepted again.
 	Kept :: { prep : Str, ask! : Box((Str, List(U8), List(Box(U64)) => List(U8))) }
-
-	## For the worker layer: the kept state of the preparation `prep`.
-	kept : Str, (Str, List(U8), List(Box(U64)) => List(U8)) -> Kept
-	kept = |prep, ask!| { prep, ask!: Box.box(ask!) }
 
 	## What the host drives: the protocol version, the declared storage keys (read
 	## before mount), mount once with the boot bytes, then one transaction per
@@ -1775,15 +1793,15 @@ Core := [].{
 	## module, or the name of a preparation's task (those run through
 	## `work_prepare!` and `work_ask!`), is a contract error that poisons this
 	## worker instance only.
-	work! : Program, List(U8), List(Box(U64)) => List(U8)
-	work! = |p, payload, handles| {
+	work! : Program, JobEffects, List(U8), List(Box(U64)) => List(U8)
+	work! = |p, effects, payload, handles| {
 		registrations = p.workers
 		_ = catalogue_names(registrations)
 		(name, at) = get_str(payload, 0, "job payload")
 		match registrations.find_first(|r| r.name == name) {
 			Ok(r) if r.tasks.is_empty() => {
 				run! = r.run!
-				owned_bytes(run!(payload.drop_first(at), handles))
+				owned_bytes(run!(payload.drop_first(at), job_files(handles, effects)))
 			}
 			Ok(_) => crash "contract: worker task \"${name}\" is a preparation; ask one of its tasks"
 			Err(_) =>
@@ -1801,15 +1819,17 @@ Core := [].{
 	## preparation's files and returns the state the instance keeps. A name
 	## that is not a preparation registered in this module is a contract
 	## error that poisons this worker instance only.
-	work_prepare! : Program, List(U8), List(Box(U64)) => Kept
-	work_prepare! = |p, payload, handles| {
+	work_prepare! : Program, JobEffects, List(U8), List(Box(U64)) => Kept
+	work_prepare! = |p, effects, payload, handles| {
 		registrations = p.workers
 		_ = catalogue_names(registrations)
 		(prep, at) = get_str(payload, 0, "prepare payload")
 		match registrations.find_first(|r| r.name == prep and !r.tasks.is_empty()) {
 			Ok(r) => {
 				prepare! = r.prepare!
-				prepare!(payload.drop_first(at), handles)
+				prepared = prepare!(payload.drop_first(at), job_files(handles, effects))
+				ask! = prepared.ask!
+				{ prep: prepared.prep, ask!: Box.box(|task, bytes, task_handles| ask!(task, bytes, job_files(task_handles, effects))) }
 			}
 			Err(_) => crash "contract: worker task \"${prep}\" is not a preparation registered in this module"
 		}
@@ -4258,7 +4278,7 @@ decode_files = |record, blobs| {
 		size = get_u64(record, $at, "file record")
 		(name, a1) = get_str(record, $at + 8, "file record")
 		(mime, a2) = get_str(record, a1, "file record")
-		$files = $files.append({ blob, name, mime, size, start: 0, len: size })
+		$files = $files.append({ blob, name, mime, size, start: 0, len: size, reach: OnPage })
 		$at = a2
 	}
 	if $at != record.len() {
@@ -4287,7 +4307,7 @@ builder_refused = |b, what, status| {
 
 ## A placeholder `prepare!` for a registration that is not a preparation;
 ## nothing calls it, because only a preparation's name is prepared.
-not_prepared : List(U8), List(Box(U64)) => Kept
+not_prepared : List(U8), List(File) => Prepared
 not_prepared = |_, _| crash "internal: a task that is not a preparation was prepared"
 
 ## A `Work` request's `FX` (design.md, Appendix B): kind 8, `task:str
@@ -4324,6 +4344,26 @@ put_work = |head, task, input, files, deadline_ms, on_cancel, prepared| {
 ## A file's handle and range, for a request or an effect that names it.
 file_ref : File -> { token : U64, start : U64, len : U64 }
 file_ref = |f| { token: f.blob.token(), start: f.start, len: f.len }
+
+## Where a file can be read: on the page, which has no effects, or in a
+## worker job, whose hosted effects the file carries (design.md,
+## "Workers").
+Reach : [OnPage, InJob(Core.JobEffects)]
+
+## The files a job was sent, as the handles its instance's host minted for
+## them in the request's order, each carrying the job's effects. Decoding
+## the job's input gives each its name, type and range (`placed_file`).
+job_files : List(Box(U64)), Core.JobEffects -> List(File)
+job_files = |handles, effects| handles.map(|handle| { blob: Blob.(handle), name: "", mime: "", size: 0, start: 0, len: 0, reach: InJob(effects) })
+
+## The effects a file's method `what` calls: the job's, which the file
+## carries. A file on the page has none; page code cannot call an effect,
+## so reaching one with a page's file is a contract error.
+job_effects : File, Str -> Core.JobEffects
+job_effects = |f, what| match f.reach {
+	InJob(effects) => effects
+	OnPage => crash "contract: ${what} on \"${f.name}\" outside a worker job; a file's effects run only in a task's job"
+}
 
 ## A file's handle and range on the wire: `token:u64 start:u64 len:u64`.
 put_file : List(U8), File -> List(U8)
@@ -4500,7 +4540,7 @@ decode_held_res = |b, handles| {
 			size = get_u64(b, $at, what)
 			(name, a1) = get_str(b, $at + 8, what)
 			(mime, a2) = get_str(b, a1, what)
-			$files = $files.append({ blob, name, mime, size, start: 0, len: size })
+			$files = $files.append({ blob, name, mime, size, start: 0, len: size, reach: OnPage })
 			$at = a2
 		}
 		($files, $at)
@@ -4683,7 +4723,7 @@ decode_port_message = |b, handles| {
 		size = get_u64(b, $at, "port reply")
 		(name, f1) = get_str(b, $at + 8, "port reply")
 		(mime, f2) = get_str(b, f1, "port reply")
-		$files = $files.append({ blob, name, mime, size, start: 0, len: size })
+		$files = $files.append({ blob, name, mime, size, start: 0, len: size, reach: OnPage })
 		$at = f2
 	}
 	if $at != b.len() {
@@ -5960,4 +6000,26 @@ expect {
 	closed = Core.result(open, id, PortFailed(Closed))
 	late = Core.fx_stats(Core.result(closed, id, PortReply(msg)))
 	[disposed.issued, disposed.cancelled, disposed.reparented, disposed.live] == [2, 1, 1, 1] and kept.live == 1 and Core.fx_stats(closed).live == 0 and late.stale == 1
+}
+
+## A file in a job carries the job's effects, and nothing else about it
+## changes: it equals the page's file of the same range, inspects the same
+## and puts the same bytes on the wire, so carried effects never reach an
+## answer, a comparison or a request.
+expect {
+	effects : Core.JobEffects
+	effects = {
+		read!: |_, _, len| List.repeat(7, len),
+		size!: |_| 0,
+		mint!: || Box.box(0),
+		open!: |_, _, _, _, _, _| 0,
+		append!: |_, _| 0,
+		append_file!: |_, _, _, _| 0,
+		finish!: |_, _| 0,
+	}
+	parts = { name: "a.txt", mime: "text/plain", size: 9, start: 2, len: 5 }
+	in_job = Core.placed_file(job_files([Box.box(3)], effects).first() ?? crash "one file", parts) ?? crash "in range"
+	on_page = Core.placed_file(Core.held_file(Box.box(3)), parts) ?? crash "in range"
+	actual = { equal: in_job == on_page, inspected: Str.inspect(in_job) == Str.inspect(on_page), wire: put_file([], in_job) == put_file([], on_page), parts: Core.file_parts(in_job) == parts }
+	actual == { equal: Bool.True, inspected: Bool.True, wire: Bool.True, parts: Bool.True }
 }

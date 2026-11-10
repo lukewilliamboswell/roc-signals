@@ -243,8 +243,9 @@ export async function instantiateEngineBytes(bytes) {
 class EffectUnavailable extends Error {}
 
 // The imports of an instance that is not a worker's (design.md,
-// "Workers"): the page's own instance and the inline instance. A module
-// imports exactly the hosted effects its tasks call (`env.js_*`), and only a
+// "Workers"): the page's own instance and the inline instance. Every module
+// imports the platform's hosted effects (`env.js_*`), which the platform
+// hands the engine with each job whether or not its tasks call them, and only a
 // worker instance can perform them (`worker.mjs`). Elsewhere each is a stub
 // that throws, naming it. The page's host never reaches one: page code is
 // pure, so it cannot call an effect, and the host refuses an effect outside

@@ -231,7 +231,7 @@ deleted the file since choosing it, so each effect answers a `Try`, and `?`
 passes its error on as the task's own. Here that error is
 `Engine.FileError`.
 
-A job can also write. `File.build!` opens a builder, `append!` copies bytes
+A job can also write. `Files.build!` (from `import pf.Files`) opens a builder, `append!` copies bytes
 into it, and `finish!` turns it into a new, immutable `File` that the
 answer may hold. This task converts a CSV file to TSV, 64 KiB at a time, so
 the job's memory holds one chunk, never the whole file:
@@ -745,7 +745,7 @@ the in-flight bound turned away (see
 | A task that cannot fail | `Worker.Never` as its error |
 | A task that fails on some inputs | An error type of its own, answered `Err(error)` and read as `Failed(error)` |
 | A job that reads a file, or part of one | `file.read!`, `file.contents!`, `file.contents_utf8!` in `run!` |
-| A job that writes a new file | `File.build!` and a builder; see [Files in Tasks](@/docs/files-in-tasks.md) |
+| A job that writes a new file | `Files.build!` and a builder; see [Files in Tasks](@/docs/files-in-tasks.md) |
 | Several tasks over one slow preparation | `Worker.prepared` and its `task` |
 | A job that must not take too long | `deadline: Ms(ms)` |
 | A job that must finish although its panel closed | `on_dispose: Keep`, and a reaction that writes to state outside the panel |

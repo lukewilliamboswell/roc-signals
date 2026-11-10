@@ -15,9 +15,11 @@ import Wire
 ## `run!` may be a plain calculation (`run!: |text| Ok(count_words(text))`)
 ## or it may call the platform's hosted effects on the files its input
 ## holds: read them (`file.read!`, `file.contents!`) and write new files
-## (`File.build!`), which its answer may hold. A job's effects are
-## synchronous and act only on files; a job cannot wait for a timer, an
-## event or a network response, and it reports nothing until it answers.
+## (`Files.build!`, from the platform's `Files` module), which its answer
+## may hold. A job's files carry its effects, which the platform hands the
+## engine when the job starts. A job's effects are synchronous and act
+## only on files; a job cannot wait for a timer, an event or a network
+## response, and it reports nothing until it answers.
 ##
 ## The page and each worker run the same compiled module, so both know the
 ## types of every task: inputs, outputs and errors cross as `Wire` payloads
@@ -118,7 +120,7 @@ Worker := [].{
 		on_cancel : [Stop, Finish],
 		send : (input -> { bytes : List(U8), files : List(Engine.File) }),
 		receive : (List(U8), List(Engine.File) -> Try(output, error)),
-		entry! : (List(U8), List(Box(U64)) => List(U8)),
+		entry! : (List(U8), List(Core.File) => List(U8)),
 	}.{
 
 		## The task's entry for `Program.with_workers`. Register each task
@@ -181,7 +183,7 @@ Worker := [].{
 			on_cancel,
 			send: |input| sent(input),
 			receive: |bytes, files| received(name, bytes, files),
-			entry!: |bytes, handles| answer_of(name, run!(held_input(name, bytes, handles))),
+			entry!: |bytes, files| answer_of(name, run!(held_input(name, bytes, files))),
 		}
 	}
 
@@ -271,7 +273,7 @@ Worker := [].{
 	## jobs `Failed(error)`. The state never crosses to the page.
 	Preparation(init, state, error) :: {
 		name : Str,
-		build! : (List(U8), List(Box(U64)) => Try(state, error)),
+		build! : (List(U8), List(Core.File) => Try(state, error)),
 		send : (init -> { bytes : List(U8), files : List(Engine.File) }),
 		fail : (error -> List(U8)),
 	}.{
@@ -297,7 +299,7 @@ Worker := [].{
 				receive: |bytes, files| received(name, bytes, files),
 				entry: {
 					name,
-					run!: |state, bytes, handles| answer_of(name, run!(state, held_input(name, bytes, handles))),
+					run!: |state, bytes, files| answer_of(name, run!(state, held_input(name, bytes, files))),
 				},
 			}
 		}
@@ -354,7 +356,7 @@ Worker := [].{
 		{ name, prepare! } = props
 		{
 			name,
-			build!: |bytes, handles| prepare!(held_input(name, bytes, handles)),
+			build!: |bytes, files| prepare!(held_input(name, bytes, files)),
 			send: |init| sent(init),
 			fail: |error| encoded_answer(name, error, 1),
 		}
@@ -378,7 +380,7 @@ Worker := [].{
 	## A preparation's task's entry for its preparation's `registration`,
 	## from the task's `registration()`: the task's name and how it runs on
 	## the typed state.
-	PreparedTaskEntry(state) :: { name : Str, run! : (state, List(U8), List(Box(U64)) => List(U8)) }
+	PreparedTaskEntry(state) :: { name : Str, run! : (state, List(U8), List(Core.File) => List(U8)) }
 
 	## A task of a preparation, from a `Question(init, query)` to `output`,
 	## failing with the preparation's `error`. Use it as a [Task] is used:
@@ -427,10 +429,10 @@ Worker := [].{
 	}
 }
 
-## A job's input, decoded with the handles its worker's host minted for
-## the job's files, in the request's order.
-held_input : Str, List(U8), List(Box(U64)) -> input where [input.Wire.Sendable]
-held_input = |name, bytes, handles| match Wire.decode_with_held(bytes, handles.map(Core.held_file)) {
+## A job's input, decoded with the files its worker's host minted handles
+## for, in the request's order, which carry the job's effects.
+held_input : Str, List(U8), List(Core.File) -> input where [input.Wire.Sendable]
+held_input = |name, bytes, files| match Wire.decode_with_held(bytes, files) {
 	Ok(input) => input
 	Err(_) => crash "contract: worker task \"${name}\" was sent bytes that are not its input type"
 }

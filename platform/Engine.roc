@@ -507,7 +507,7 @@ Engine := [].{
 	fetched : Res -> Try(File, FetchError)
 	fetched = |res| Core.fetched(res)
 
-	## A file a task's job is writing: make one with `File.build!`, append
+	## A file a task's job is writing: make one with `Files.build!`, append
 	## to it with `append!` and `append_file!`, and `finish!` it into a
 	## [File]. It lives only in the job that opened it.
 	Builder : Core.Builder

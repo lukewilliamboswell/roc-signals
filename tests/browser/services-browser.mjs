@@ -61,9 +61,11 @@ async function open(prelude = "") {
 {
   const { page, ctx } = await open();
   const raw = await page.evaluate(async () => {
-    const { RocEngineRuntime, PROTOCOL_VERSION } = await import("./runtime.mjs");
-    const bytes = await (await fetch("app.wasm")).arrayBuffer();
-    const fresh = async () => (await WebAssembly.instantiate(bytes, { env: {} })).instance.exports;
+    const { RocEngineRuntime, PROTOCOL_VERSION, pageImports } = await import("./runtime.mjs");
+    const module = await WebAssembly.compile(await (await fetch("app.wasm")).arrayBuffer());
+    // Every module imports the worker effects, which the page's instance
+    // answers with throwing stubs.
+    const fresh = async () => (await WebAssembly.instantiate(module, pageImports(module))).exports;
     const text = (x) => new TextDecoder().decode(new Uint8Array(x.memory.buffer, x.err_ptr(), x.err_len()));
     const out = {};
     // The version.

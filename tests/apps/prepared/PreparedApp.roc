@@ -1,4 +1,5 @@
 import pf.Engine exposing [Elem, File, In, Root, State]
+import pf.Files
 import pf.Html
 import pf.Worker
 
@@ -121,8 +122,8 @@ PreparedApp := [].{
 	## Open a builder and finish a copy of `doc`, both kept in the state.
 	scratch! : File => Try(Scratch, Engine.FileError)
 	scratch! = |doc| {
-		open = File.build!({ name: "scratch.txt" })
-		copier = File.build!({ name: "copy.txt", start_from: From(doc) })
+		open = Files.build!({ name: "scratch.txt" })
+		copier = Files.build!({ name: "copy.txt", start_from: From(doc) })
 		Ok({ open, copy: copier.finish!() })
 	}
 

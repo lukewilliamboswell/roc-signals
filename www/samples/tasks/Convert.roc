@@ -1,4 +1,5 @@
 import pf.Engine exposing [Elem, File, In, Root, State]
+import pf.Files
 import pf.Html
 import pf.Worker
 
@@ -15,7 +16,7 @@ Convert := [].{
 
 	to_tsv! : File => Try(File, Engine.FileError)
 	to_tsv! = |source| {
-		out = File.build!({ name: "${source.name()}.tsv", mime: Mime("text/tab-separated-values") })
+		out = Files.build!({ name: "${source.name()}.tsv", mime: Mime("text/tab-separated-values") })
 		chunk = 65536
 		var $at = 0
 		while $at < source.size() {
@@ -41,7 +42,7 @@ Convert := [].{
 			[previous] => From(previous)
 			_ => Empty
 		}
-		out = File.build!({ name: "convert.log", mime: Mime("text/plain"), start_from })
+		out = Files.build!({ name: "convert.log", mime: Mime("text/plain"), start_from })
 		out.append!("${line}\n".to_utf8())?
 		Ok(out.finish!())
 	}
