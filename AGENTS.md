@@ -13,8 +13,9 @@
 - Preserve the non-negotiable constraints in `design.md`: no Roc compiler
   changes, no guessing or recovery that changes meaning, work proportional to
   the changed set rather than total tree size, a pure Roc engine behind a host
-  that only allocates, stages payloads and classifies faults, typed site storage
-  with no host-held Roc values, and the command stream as the only output.
+  that only allocates, stages payloads, backs resource handles and classifies
+  faults, typed site storage with no host-held Roc values, and the command
+  stream as the only output.
 - If requested work conflicts with the design, identify the conflict explicitly.
   Do not conceal it in compatibility glue, a special case, logic in the host or
   runtime, or an undocumented boundary convention.
@@ -62,13 +63,22 @@
   on every update is a regression even when output is correct, and the soak's
   flat round trips must catch it.
 - Keep the host to its job. `host.zig` holds one opaque boxed engine state, the
-  last command buffer, at most one staged payload, the allocator and the fault
-  state. It clears its slots before each call into Roc and never interprets the
-  state, the commands or any Roc value. Lay out staged lists exactly as Roc
-  expects and never hold a seamless slice.
+  last command buffer, at most one staged payload, the typed heaps behind
+  resource handles, the allocator and the fault state. It clears its slots
+  before each call into Roc and never interprets the state, the commands or any
+  Roc value. Lay out staged lists exactly as Roc expects and never hold a
+  seamless slice.
+- Keep host resources as handles Roc owns. Something the browser holds, such
+  as a user's file, reaches Roc as a handle the host mints in a typed heap.
+  Roc's reference count is the handle's lifetime: the host learns of the last
+  release when Roc frees it, never holds a handle itself, and lets JavaScript
+  release the resource only after the call's batch and effects, which may
+  still name it. Do not replace this with tokens an app must release, a
+  registry the host scans, or bytes copied through the page to avoid a handle.
 - Make ownership explicit at the boundary. For each list that crosses it (boot
-  bytes, payloads, command buffers, key lists), establish who owns it before the
-  call, after it, and when the instance is poisoned or dropped.
+  bytes, payloads, command buffers, key lists, handle lists, a worker's input,
+  output and file buffers), establish who owns it before the call, after it,
+  and when the instance is poisoned or dropped.
 - Publish atomically. A command batch becomes visible only when its call
   returns; a trap discards it. JavaScript reads command bytes only after the
   call, refreshes memory views after every call that can allocate, and applies
@@ -85,14 +95,26 @@
 ## Preserve one engine and honest boundaries
 
 - Put scheduling, reconciliation, identity, effect lifecycle and containment
-  policy in `platform/Core.roc` and the platform's Roc modules. The host and
-  `runtime.mjs` adapt the engine to the browser; they do not implement its
-  semantics. The native spec runner drives the same engine; it does not simulate a
-  different one.
-- Treat the command stream, event records, effect payloads, boot bytes and Wasm
-  exports as one versioned protocol. Change the Roc encoder and decoders,
-  `platform/Dom.roc`, `runtime.mjs`, the contract tests in `tests/` and
-  Appendix B of `design.md` together.
+  policy in `platform/Core.roc` and the platform's Roc modules. The host,
+  `runtime.mjs` and `worker.mjs` adapt the engine to the browser; they do not
+  implement its semantics. The native spec runner drives the same engine; it
+  does not simulate a different one.
+- Keep worker programs pure and the compiled module the unit of compatibility.
+  A worker runs a registered pure Roc function in another instance of the same
+  module, and its request and answer are an ordinary request and result in the
+  effect channel. The runtime's pool places, bounds and stops jobs; it never
+  changes an answer or decides anything that belongs to the engine. Both spec
+  runners run a job's program, so a spec means the same in each.
+- Keep the platform's JavaScript generic. `runtime.mjs` and `worker.mjs`
+  contain nothing specific to an app, an example or the site. JavaScript that
+  mounts an app or integrates it with a page lives with that app, example or
+  site, and reaches the runtime only through `mountRocEngineApp` and its
+  options.
+- Treat the command stream, event records, effect payloads, worker payloads,
+  boot bytes and Wasm exports as one versioned protocol. Change the Roc encoder
+  and decoders, `platform/Dom.roc`, both hosts (`host.zig`, `spec.zig`),
+  `runtime.mjs`, `worker.mjs`, the contract tests in `tests/` and Appendix B of
+  `design.md` together.
 - Keep `platform/Dom.roc` independent of the engine. It is the oracle; code
   shared with `Core.roc` would let one bug pass its own test.
 - Keep `.scm` specs the single source of truth for application-visible
@@ -104,9 +126,10 @@
 ## Complete changes across affected layers
 
 - Trace boundary and public API changes through the engine, the typed view
-  modules, `platform/main.roc`, `host.zig`, `runtime.mjs`, the native spec runner and
-  oracle, specs, examples, generated or bundled artifacts, and maintained
-  documentation wherever each layer is affected.
+  modules, `platform/main.roc` and the fuzz platform root, `host.zig`,
+  `runtime.mjs`, `worker.mjs`, the native spec runner and oracle, specs,
+  examples, generated or bundled artifacts, and maintained documentation
+  wherever each layer is affected.
 - Read `style.md` before editing Roc. Follow the conventions there for types,
   static-dispatch hooks, builders, errors, strings, and top-level `expect`
   tests; do not duplicate those detailed rules here.
@@ -117,14 +140,16 @@
   `scripts/`, invoked through Blueprint tasks.
 - Test invariants and failure paths, not only successful output. Cover
   ordering, equality cutoffs, identity reuse, scope disposal, reparenting,
-  refusal at the in-flight bound, stale results, follow-up bounds, containment
-  and recovery, and protocol rejection as applicable.
-- Use `.scm` specs under `examples/<app>/specs/` for application-visible
-  behavior and work, run natively and in Chrome; roc-fuzz targets (each app's
-  `main-fuzz.roc`, and `fuzz/` for the shared support)
-  for engine sequences and leak-checked soaks; and contract cases under
-  `tests/` for `host.zig` and `runtime.mjs` against the wire protocol. Keep
-  semantic locators stable and assert structural work exactly.
+  refusal at the in-flight bound, stale results, cancellation and
+  supersession, lost and timed-out work, resource release, follow-up bounds,
+  containment and recovery, and protocol rejection as applicable.
+- Use `.scm` specs beside each app (`examples/<app>/specs/`,
+  `tests/apps/<app>/specs/`) for application-visible behavior and work, run
+  natively and in Chrome; roc-fuzz targets (each app's `main-fuzz.roc`, and
+  `fuzz/` for the shared support) for engine sequences and leak-checked soaks;
+  and contract cases under `tests/` for `host.zig`, `runtime.mjs` and
+  `worker.mjs` against the wire protocol. Keep semantic locators stable and
+  assert structural work exactly.
 - Reach for fuzzing where the bug class is a *sequence* rather than a case:
   reconciliation order, identity reuse across disposal, effect lifetime across
   disposal and reparenting, allocation balance over a long history. Targets are

@@ -118,6 +118,7 @@ models it. `LOC` is a locator, `"…"` a string, `N` a non-negative integer,
 | `(initial-visibility hidden)` | Boot page visibility, `visible` or `hidden` |
 | `(local-storage "key" "value")` | Seed local storage before mount |
 | `(local-storage-unavailable)` | Every local-storage access throws, as with site data disabled. Seeding storage in the same setup is a spec error |
+| `(file "name" "type" "text" [REPEAT])` | Declare a file the steps can give the app: its name, its MIME type, and its contents, `text` repeated `REPEAT` times (once without it) |
 
 Effects never run on their own in a spec: HTTP requests, timers and worker
 jobs wait for `run-effect`, and intervals for `tick-interval`. A worker
@@ -212,6 +213,24 @@ This spec checks the auto-refresh interval: it mounts with the checkbox,
 ticks, answers the refetch, and is gone when unchecked.
 
 {{ sample(file="search/specs/auto-refresh.scm", syntax="scheme") }}
+
+### Files
+
+| Step | Meaning |
+|---|---|
+| `(choose-files LOC "name" …)` | The user chooses the named setup files in the file input |
+| `(drop-files LOC "name" …)` | The user drops the named setup files on the element |
+| `(paste-files LOC "name" …)` | The user pastes the named setup files into the element |
+| `(expect-files N)` | The app holds exactly N [file handles](@/docs/files.md) |
+
+A spec writes out the contents of the files it uses, so both runners give
+the app the same bytes; a step that names a file no `file` form declares
+fails.
+`expect-files` counts handles, so it shows when the app lets a file go:
+after the state that held it is written without it, or its scope is
+disposed. In Chrome a chosen file gets its type from its name, and the step
+fails if that is not the type the spec declares. See
+[Files](@/docs/files.md#testing) for a sample.
 
 ## Work assertions {#work-budgets}
 

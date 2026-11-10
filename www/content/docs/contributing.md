@@ -31,13 +31,21 @@ recipe ready.
 
 | Path | Contents |
 |---|---|
-| `platform/` | The platform (`main.roc`): the engine (`Core.roc`), the authoring API (`Engine.roc`, `Html.roc`, and `Worker.roc` with its payload format `Wire.roc`), the Wasm host (`host/host.zig`) and `runtime.mjs`, and the native spec runner (`SpecRunner.roc`, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig`). Also the fuzz platform (`fuzz.roc`, the vendored roc-fuzz modules and the soak walk) |
+| `platform/` | The platform (`main.roc`): the engine (`Core.roc`), the authoring API (`Engine.roc`, `Html.roc`, and `Worker.roc` with its payload format `Wire.roc`), the Wasm host (`host/host.zig`, with the typed heaps behind resource handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig`). Also the fuzz platform (`fuzz.roc`, the vendored roc-fuzz modules and the soak walk) |
 | `tests/` | Browser contract tests and the apps they drive, the Chrome spec replay, and the release check helper |
 | `fuzz/` | Fuzz targets of the shared support; each app's own target is its `main-fuzz.roc` |
 | `examples/` | The example apps, each with its specs |
 | `benchmarks/` | The js-framework-benchmark adapter |
 | `scripts/` | Roc scripts behind the tasks; shared modules in `scripts/src/` |
 | `www/` | This site; `www/samples/` holds every code sample the docs show |
+
+A module added to `platform/` for apps to import is listed in four places:
+`exposes` in `platform/main.roc` and in `platform/fuzz.roc`, the release
+bundle's files in `scripts/src/Release.roc`, and the API reference's modules
+in `scripts/src/ApiDocs.roc`. A file added to the browser runtime is listed
+in `SpecSuite.runtime_files` (`scripts/src/SpecSuite.roc`) and in
+`RUNTIME_FILES` (`tests/browser/args.mjs`), which every copy site and
+browser test reads.
 
 ## Tasks
 
@@ -73,7 +81,8 @@ for example to run two tasks at once.
    no other Roc file names a compiler.
 2. `roc fmt --check` over every Roc source, and `roc test` on the test support
    and the scripts.
-3. The test platform, and the `scm-parse` fuzz target's examples.
+3. The test platform, and the examples of the shared-support fuzz targets in
+   `fuzz/` (the `.scm` parser and the worker wire format).
 4. The docs samples (below).
 5. Every app's specs natively and in Chrome, the check that the browser
    runner handles every form of the grammar, then a deliberately broken spec
@@ -82,7 +91,8 @@ for example to run two tasks at once.
    bounds, `tests/runtime/`), then its contract tests in Chrome: effects,
    controlled inputs, worker jobs, the work monitor, a smoke of the worker
    scaling measurement (correctness, robustness sequences and memory; no
-   timing ratios), and the Conduit journey against its scripted backend.
+   timing ratios), file handles and their release, and the Conduit journey
+   against its scripted backend.
 7. The js-framework-benchmark check.
 8. The release dry run: the bundle, `runtime.mjs` and `worker.mjs`, the examples archive with
    every app mounted by its check helper, and the release notes.
@@ -118,10 +128,14 @@ specs fail natively or in Chrome.
 
 ## Fuzzing
 
-Fuzz targets decode arbitrary bytes into valid sessions and check them
-against a model: keyed reconciliation, the effect channel's lifecycle, and
-each app's leak-checked random walk. `check` replays the parser target's
-examples; `check-slow` replays every target's; `fuzz.yml` runs nightly
+Every fuzz target is a [roc-fuzz](https://github.com/lukewilliamboswell/roc-fuzz)
+target on the repository's fuzz platform (`platform/fuzz.roc`: roc-fuzz's
+own modules, vendored unchanged, with the engine's modules exposed beside
+them). Targets decode arbitrary bytes into valid sessions and check them
+against a model: keyed reconciliation, the effect channel's lifecycle
+including worker jobs, the worker wire format's decoder, and each app's
+leak-checked random walk. `check` replays the examples of the targets in
+`fuzz/`; `check-slow` replays every target's; `fuzz.yml` runs nightly
 campaigns with the corpora in the Actions cache. When a campaign finds a
 failure, reduce it and add it to the target's examples with `Fuzz.saved`, so
 every later replay keeps it fixed.

@@ -4,7 +4,8 @@ A [Roc](https://www.roc-lang.org) platform for interactive browser apps. You
 write the UI in pure Roc; a reactive engine, also in Roc, compiles with your
 app to WebAssembly and updates exactly the DOM that depends on what changed.
 There is no virtual DOM. A small JavaScript runtime applies the engine's
-commands and performs the effects it requests.
+commands and performs the effects it requests. Slow pure calculations run in
+Web Workers that instantiate the same module.
 
 Behaviour is specified in `.scm` specs that run natively in milliseconds and
 replay in headless Chrome.
@@ -32,8 +33,8 @@ walks through writing, testing and running a first app.
 
 | Path | Contents |
 |---|---|
-| `platform/` | The engine (`Core.roc`), its authoring API (`Engine.roc`), the `Html` vocabulary, the Wasm host, the browser runtime, the native spec runner, and the fuzz platform |
-| `examples/` | Eight example apps, each with its specs |
+| `platform/` | The engine (`Core.roc`), its authoring API (`Engine.roc`), the `Html` vocabulary, typed worker programs (`Worker.roc`, `Wire.roc`), the Wasm host, the browser runtime and its worker script, the native spec runner, and the fuzz platform |
+| `examples/` | Nine example apps, each with its specs |
 | `tests/`, `fuzz/` | Browser contract tests, the Chrome spec replay, fuzz targets of the shared support |
 | `www/` | The documentation site |
 | `scripts/` | The Roc scripts behind the Blueprint tasks |

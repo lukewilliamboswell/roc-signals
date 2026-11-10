@@ -46,6 +46,8 @@ the platform does not depend on any CSS framework.
 - [Testing](@/docs/testing.md): the spec language and its two runners.
 - [Workers](@/docs/workers.md): running a slow pure calculation off the
   page's thread.
+- [Files](@/docs/files.md): taking a file the user chooses, drops or pastes
+  as a handle, and reading it in a worker.
 - [Monitoring Workers](@/docs/worker-monitoring.md): where a worker job's time
   goes, how busy the pool is, and what workers cost.
 - [Reference](@/docs/reference.md): the API at a glance and the platform's
