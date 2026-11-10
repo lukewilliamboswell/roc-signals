@@ -1872,12 +1872,6 @@ Inst(ctx) := [Inst((ctx, Msg, Tx -> (Inst(ctx), Out(ctx), Tx)))]
 ## and slot (resolved through the site's current path).
 Route := [NoRoute, Route(List(U32), U32), RowOf(U32, U32)]
 
-## Storage captured by a site closure. Wrapping a site's captures in a
-## single-tag nominal and unwrapping them inside the closure body keeps
-## --opt=speed/size from treating them as borrowed and copying every list
-## they hold on each update (roc-lang/roc#12846).
-Held(a) := [Held(a)]
-
 Tx : {
 	cmds : List(U8),
 	next : U32,
@@ -2499,10 +2493,10 @@ state_settle = |block, depth, local, out, tx| {
 ## A state site: `s` is this layer's value at absolute depth `depth`.
 state_inst : s, Block(In(ctx, s)), U64, Bool -> Inst(ctx)
 state_inst = |s0, block0, depth0, local0| {
-	held = Held({ s: s0, block: block0, depth: depth0, local: local0 })
+	held = { s: s0, block: block0, depth: depth0, local: local0 }
 	Inst(
 		|env, msg, tx| {
-			Held({ s, block, depth, local }) = held
+			{ s, block, depth, local } = held
 			match msg {
 				Changed(mask) => {
 					(b2, t2) = refresh(block, In.{ outer: env, value: s }, mask, tx)
@@ -2536,10 +2530,10 @@ When(ctx) : { cond : Val(ctx, Bool), yes : (() -> Elem(ctx)), no : (() -> Elem(c
 ## left admitted requests behind.
 when_inst : When(ctx), Bool, List(Orphan(ctx)), Block(ctx) -> Inst(ctx)
 when_inst = |w0, cur0, adopted0, block0| {
-	held = Held({ w: w0, cur: cur0, adopted: adopted0, block: block0 })
+	held = { w: w0, cur: cur0, adopted: adopted0, block: block0 }
 	Inst(
 		|env, msg, tx| {
-			Held({ w, cur, adopted, block }) = held
+			{ w, cur, adopted, block } = held
 			match msg {
 				Changed(mask) => {
 					cm = eff_mask(w.cond)
@@ -2594,10 +2588,10 @@ when_inst = |w0, cur0, adopted0, block0| {
 ## A plain block site (the root).
 block_inst : Block(ctx) -> Inst(ctx)
 block_inst = |block0| {
-	held = Held({ block: block0 })
+	held = { block: block0 }
 	Inst(
 		|env, msg, tx| {
-			Held({ block }) = held
+			{ block } = held
 			match msg {
 				Changed(mask) => {
 					(b2, t2) = refresh(block, env, mask, tx)
@@ -3692,10 +3686,10 @@ row_out = |out| match out {
 each_inst : EachCfg(Row(ctx, item), item), Val(ctx, List(item)), List(Orphan(ctx)), Cols(Row(ctx, item), item) -> Inst(ctx)
 	where [item.is_eq : item, item -> Bool]
 each_inst = |cfg0, rows0, adopted0, cols0| {
-	held = Held({ cfg: cfg0, rows: rows0, adopted: adopted0, cols: cols0 })
+	held = { cfg: cfg0, rows: rows0, adopted: adopted0, cols: cols0 }
 	Inst(
 		|env, msg, tx| {
-			Held({ cfg, rows, adopted, cols }) = held
+			{ cfg, rows, adopted, cols } = held
 			mk = |k, it| Row.{ outer: env, key: k, item: it }
 			match msg {
 				Changed(mask) => {
@@ -3829,10 +3823,10 @@ switch_value = |sel, cases, env, path| {
 switch_inst : Switch(ctx, k), k, List(Orphan(ctx)), Block(ctx) -> Inst(ctx)
 	where [k.is_eq : k, k -> Bool]
 switch_inst = |w0, cur0, adopted0, block0| {
-	held = Held({ w: w0, cur: cur0, adopted: adopted0, block: block0 })
+	held = { w: w0, cur: cur0, adopted: adopted0, block: block0 }
 	Inst(
 		|env, msg, tx| {
-			Held({ w, cur, adopted, block }) = held
+			{ w, cur, adopted, block } = held
 			match msg {
 				Changed(mask) => {
 					if eff_mask(w.sel).bitwise_and(mask) != 0 {
@@ -3885,10 +3879,10 @@ switch_inst = |w0, cur0, adopted0, block0| {
 derive_inst : Val(ctx, a), a, Block(In(ctx, a)), U64 -> Inst(ctx)
 	where [a.is_eq : a, a -> Bool]
 derive_inst = |input0, v0, block0, depth0| {
-	held = Held({ input: input0, v: v0, block: block0, depth: depth0 })
+	held = { input: input0, v: v0, block: block0, depth: depth0 }
 	Inst(
 		|env, msg, tx| {
-			Held({ input, v, block, depth }) = held
+			{ input, v, block, depth } = held
 			match msg {
 				Changed(mask) => {
 					if eff_mask(input).bitwise_and(mask) != 0 {
@@ -3959,10 +3953,10 @@ derive_settle = |input, block, depth, out, tx| {
 
 comp_inst : Val(ctx, p), Sink(ctx, a), Block(Comp(p, a)) -> Inst(ctx)
 comp_inst = |prop0, snk0, block0| {
-	held = Held({ prop: prop0, snk: snk0, block: block0 })
+	held = { prop: prop0, snk: snk0, block: block0 }
 	Inst(
 		|env, msg, tx| {
-			Held({ prop, snk, block }) = held
+			{ prop, snk, block } = held
 			match msg {
 				Changed(mask) => {
 					if mask == every_layer {
@@ -5109,10 +5103,10 @@ count_name = |runs, name| match runs.find_first_index(|(n, _)| n == name) {
 effect_inst : EffectCfg(ctx, a), a, List(Owned(a)) -> Inst(ctx)
 	where [a.is_eq : a, a -> Bool]
 effect_inst = |cfg0, last0, owned0| {
-	held = Held({ cfg: cfg0, last: last0, owned: owned0 })
+	held = { cfg: cfg0, last: last0, owned: owned0 }
 	Inst(
 		|env, msg, tx| {
-			Held({ cfg, last, owned }) = held
+			{ cfg, last, owned } = held
 			match msg {
 				Changed(mask) => {
 					if eff_mask(cfg.v).bitwise_and(mask) == 0 {
@@ -5194,10 +5188,10 @@ fx_supersede = |tx, owned| {
 latest_inst : EffectCfg(ctx, a), a, List(Owned(a)) -> Inst(ctx)
 	where [a.is_eq : a, a -> Bool]
 latest_inst = |cfg0, last0, owned0| {
-	held = Held({ cfg: cfg0, last: last0, owned: owned0 })
+	held = { cfg: cfg0, last: last0, owned: owned0 }
 	Inst(
 		|env, msg, tx| {
-			Held({ cfg, last, owned }) = held
+			{ cfg, last, owned } = held
 			match msg {
 				Changed(mask) => {
 					if eff_mask(cfg.v).bitwise_and(mask) == 0 {
@@ -5269,10 +5263,10 @@ ResourceCfg(ctx, a, s) : {
 resource_inst : ResourceCfg(ctx, a, s), a, s, List(Owned(a)), Block(In(ctx, s)) -> Inst(ctx)
 	where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
 resource_inst = |rc0, last0, s0, owned0, block0| {
-	held = Held({ rc: rc0, last: last0, s: s0, owned: owned0, block: block0 })
+	held = { rc: rc0, last: last0, s: s0, owned: owned0, block: block0 }
 	Inst(
 		|env, msg, tx| {
-			Held({ rc, last, s, owned, block }) = held
+			{ rc, last, s, owned, block } = held
 			match msg {
 				Changed(mask) => {
 					if eff_mask(rc.input).bitwise_and(mask) == 0 {
