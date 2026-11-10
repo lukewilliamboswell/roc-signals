@@ -106,6 +106,7 @@ console.table(s.recent.map((j) => ({ id: j.id, program: j.program, outcome: j.ou
 | `recent` | The last `history` job records, with every stamp (`t`) and span (`ms`). A prepared query's record says whether it `prepared` (`"prepare"`) or reused a kept state (`"reuse"`; `null` for other programs), and `prepareMs`, how long preparing took (also `ms.prepare`; `null` when it reused); `compute` is then the query alone. `finished` is true for a cancelled query whose `Finish` policy let it complete |
 | `page` | The page instance's linear memory, live allocations and bytes, and turns |
 | `engine` | The engine's effect counters, when the engine's work record carries them; otherwise `null` |
+| `ports` | Per [port](@/docs/ports.md) the app used, by name: `sent` (commands), `calls`, `answered`, `threw`, `timedOut`, `cancelled` (stopped by the app or by teardown), `subscribed`, `messages` (delivered to the app), `coalesced` (replaced under `Latest` before delivery), `refusedEmits` (`emit` returned `false` under `Every(n)`), `tooLarge`, `closed` (ended by the JavaScript), and `faults` (failures of command handlers and unsubscribe functions, which the app never sees). Counted by the runtime since mount; at most one entry per declared port, so at most 64 |
 
 Some useful figures:
 

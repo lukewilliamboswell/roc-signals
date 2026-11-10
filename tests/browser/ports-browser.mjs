@@ -304,8 +304,10 @@ async function open(options = {}, mountWith = null) {
     window.__feed.close();
     window.__feed.emit("after close");
     const fed = await window.__until((t) => t.includes("closed"));
-    const counts = window.__rt.portCounts.get("test.roc-signals/feed");
-    return { latest, ticksLog, emits: window.__seen.emits, arg: window.__seen.feedArg, fed, live: window.__rt.portSubscriptions("test.roc-signals/feed"), refused: counts.refusedEmits, coalesced: window.__rt.portCounts.get("test.roc-signals/ticks").coalesced };
+    // The monitor's per-port counters see the same.
+    const ports = window.__rt.monitor.snapshot().ports;
+    const feed = ports["test.roc-signals/feed"];
+    return { latest, ticksLog, emits: window.__seen.emits, arg: window.__seen.feedArg, fed, live: window.__rt.portSubscriptions("test.roc-signals/feed"), refused: feed.refusedEmits, coalesced: ports["test.roc-signals/ticks"].coalesced, delivered: [feed.messages, feed.closed] };
   });
   check("Latest replaces, Every(n) refuses beyond n, close ends after the buffered messages", r, {
     latest: "tick:3",
@@ -316,6 +318,7 @@ async function open(options = {}, mountWith = null) {
     live: 0,
     refused: 2,
     coalesced: 2,
+    delivered: [5, 1],
   });
   await ctx.close();
 }

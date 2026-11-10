@@ -541,6 +541,8 @@ export class WorkMonitor {
     this.origin = perf && typeof perf.timeOrigin === "number" ? perf.timeOrigin : 0;
     this.page = env.page ?? (() => null);
     this.mode = env.mode ?? (() => "workers");
+    // Per-port counters, owned by the runtime and copied into snapshots.
+    this.portStats = env.ports ?? (() => ({}));
     this.maxWorkers = env.maxWorkers ?? 0;
     this.userTiming = !!options.userTiming && !!perf && typeof perf.measure === "function";
     this.payloads = !!options.payloads;
@@ -636,6 +638,7 @@ export class WorkMonitor {
       recentDropped: this.recent.dropped,
       page,
       engine,
+      ports: this.portStats(),
     };
   }
 
@@ -1689,6 +1692,7 @@ export class RocEngineRuntime {
     this.monitor = new WorkMonitor(options.monitor ?? {}, {
       page: () => this.pageStats(),
       mode: () => this.workMode(),
+      ports: () => Object.fromEntries([...this.portCounts].map(([name, c]) => [name, { ...c }])),
       maxWorkers: this.maxWorkers,
     });
     this.storage = options.storage ?? (() => {
