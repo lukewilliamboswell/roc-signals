@@ -16,10 +16,10 @@
 ## a target that reached one would fail to link, which is the point. A
 ## target checks tasks through the native spec runner instead.
 ##
-## Everything else here is a vendored copy of the roc-fuzz 0.5.0 platform
+## Everything else here is a vendored copy of the roc-fuzz 0.6.0 platform
 ## (https://github.com/lukewilliamboswell/roc-fuzz, MIT, see
 ## LICENSE-roc-fuzz), unchanged; its host and linker inputs come from the
-## roc-fuzz 0.5.0 release bundle, fetched and verified by
+## roc-fuzz 0.6.0 release bundle, fetched and verified by
 ## `scripts/src/PlatformTest.roc` into `fuzz-targets/`. The copy stays until
 ## roc-fuzz can be embedded instead of vendored:
 ## https://github.com/lukewilliamboswell/roc-fuzz/issues/98.

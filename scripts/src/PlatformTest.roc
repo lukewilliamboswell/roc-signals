@@ -8,7 +8,7 @@ import Proc
 ## - for the native spec runner (`platform/main.roc`, `targets/x64musl/`):
 ##   `spec.o`, built from `platform/host/spec.zig` with the pinned Zig, and
 ##   musl's `crt1.o` and `libc.a`, Zig's `libzigc.a` and `libcompiler_rt.a`,
-##   taken from the roc-fuzz 0.5.0 release bundle;
+##   taken from the roc-fuzz 0.6.0 release bundle;
 ## - for the fuzz platform (`platform/fuzz.roc`, `fuzz-targets/x64musl/`):
 ##   the roc-fuzz host and its linker inputs from the same bundle.
 ##
@@ -16,8 +16,8 @@ import Proc
 ## once into the build directory, and every run checks its digest before
 ## unpacking it.
 PlatformTest := [].{
-	bundle_url = "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.5.0/9WT86CuwM7ZJBSs8iTd1jLyrUFTTiGp5hcJE63TwswGE.tar.zst"
-	bundle_sha256 = "aed4032105af1cc910604949f43636b7bff6aec4a82184631213153b8e2dd23f"
+	bundle_url = "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.0/6uc3YKGydgEnS2nrCimSYWDNfT6drYcgU52VAwqrb6DS.tar.zst"
+	bundle_sha256 = "19720c3b47a6ca37394404c8ea379bddba4d1167984a9221243d9b11226a2039"
 
 	## The linker inputs `platform/fuzz.roc` lists for x64musl, from the bundle.
 	bundle_inputs : List(Str)
@@ -33,7 +33,7 @@ PlatformTest := [].{
 	prepare! = |{ root, build_dir, zig }| {
 		downloads = "${build_dir}/downloads"
 		Path.create_all!(Path.utf8(downloads))?
-		bundle = "${downloads}/roc-fuzz-0.5.0.tar.zst"
+		bundle = "${downloads}/roc-fuzz-0.6.0.tar.zst"
 		if !(Path.exists!(Path.utf8(bundle))?) {
 			Proc.run!({ program: "curl", args: ["-fsSL", "--retry", "3", "-o", "${bundle}.part", PlatformTest.bundle_url], cwd: root })?
 			Path.rename!(Path.utf8("${bundle}.part"), Path.utf8(bundle))?
@@ -42,7 +42,7 @@ PlatformTest := [].{
 		if (sum.split_on(" ").first() ?? "") != PlatformTest.bundle_sha256 {
 			return Err(DigestMismatch("${bundle}: expected sha256 ${PlatformTest.bundle_sha256}, got ${sum}"))
 		}
-		unpacked = "${build_dir}/roc-fuzz-0.5.0"
+		unpacked = "${build_dir}/roc-fuzz-0.6.0"
 		if Path.exists!(Path.utf8(unpacked))? {
 			Path.delete_all!(Path.utf8(unpacked))?
 		}

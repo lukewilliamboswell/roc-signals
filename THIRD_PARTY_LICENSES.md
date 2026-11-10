@@ -10,7 +10,7 @@ Files: `platform/Arbitrary.roc`, `platform/Binary.roc`, `platform/Fuzz.roc`,
 roc-signals modules the fuzz targets drive), and the release inputs fetched
 by `scripts/src/PlatformTest.roc` into `platform/fuzz-targets/*`.
 
-These are the roc-fuzz 0.5.0 platform
+These are the roc-fuzz 0.6.0 platform
 (https://github.com/lukewilliamboswell/roc-fuzz), licensed under the MIT
 License. See [`platform/LICENSE-roc-fuzz`](platform/LICENSE-roc-fuzz) for its
 full text. Its release bundle carries the notices of the LLVM libFuzzer,
@@ -25,6 +25,6 @@ instead: https://github.com/lukewilliamboswell/roc-fuzz/issues/98.
 The native spec runner (`platform/main.roc` built for `x64musl`) links
 `crt1.o` and `libc.a` (musl, MIT License) and `libzigc.a` and
 `libcompiler_rt.a` (Zig, MIT License; compiler-rt under the Apache License
-2.0 with LLVM Exceptions), taken from the same roc-fuzz 0.5.0 release bundle
+2.0 with LLVM Exceptions), taken from the same roc-fuzz 0.6.0 release bundle
 into `platform/targets/x64musl/` and shipped in this platform's release
 bundle. Their notices are those the roc-fuzz release bundle carries.

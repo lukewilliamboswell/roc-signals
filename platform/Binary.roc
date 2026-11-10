@@ -9,8 +9,11 @@ Binary := [].{
 
 	## Compiler-dispatched codec marker; applications never construct codec objects.
 	Format := [Default].{
-		invalid_value : Format, State -> [MalformedInput]
+		invalid_value : Format, State -> [MalformedInput, BudgetExceeded]
 		invalid_value = |_, _| MalformedInput
+
+		missing_field : Format, Str -> [MalformedInput, BudgetExceeded]
+		missing_field = |_, _| MalformedInput
 
 		rename_field : Format, Str -> Str
 		rename_field = |_, name| name
@@ -211,7 +214,9 @@ Binary := [].{
 		encode_tag = |state, name, count, write_payloads|
 			write_payloads(write_count(write_string(List.append(state, 23), name), count), |current, write_value| write_value(current))
 
-		parse_tag_union : Format, Encoding.ParseTagUnionSpec(a), State -> Try({ value : a, rest : State }, [MalformedInput, BudgetExceeded])
+		# Infer the spec from parse so this codec also type-checks with the
+		# compiler that compares the 0.5.0 public API.
+		parse_tag_union : Format, _, State -> Try({ value : a, rest : State }, [MalformedInput, BudgetExceeded])
 		parse_tag_union = |encoding, spec, state| {
 			name = read_string(take_node(state, 23)?)?
 			Encoding.ParseTagUnionSpec.parse(
@@ -349,7 +354,7 @@ Binary := [].{
 		encode_key_tag : Format, List(U8), Str -> Try(List(U8), [])
 		encode_key_tag = |_, state, name| Ok(write_count(write_string(List.append(state, 23), name), 0))
 
-		parse_key_tag_union : Format, Encoding.ParseTagUnionSpec(a), State -> Try({ value : a, rest : State }, [MalformedInput, BudgetExceeded])
+		parse_key_tag_union : Format, _, State -> Try({ value : a, rest : State }, [MalformedInput, BudgetExceeded])
 		parse_key_tag_union = |encoding, spec, state| Format.parse_tag_union(encoding, spec, state)
 	}
 
@@ -565,6 +570,13 @@ expect {
 	decoded : Try({ known : U64 }, _)
 	decoded = Binary.decode(encoded)
 	decoded == Ok({ known: 7 })
+}
+
+expect {
+	encoded = Binary.encode({ other: 7.U64 })
+	decoded : Try({ required : U64 }, _)
+	decoded = Binary.decode(encoded)
+	decoded == Err(MalformedInput)
 }
 
 expect {
