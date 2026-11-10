@@ -21,8 +21,9 @@ import Lab
 ## while the workers compute, and stalls when a computation holds the page's
 ## own thread (mount the app with `workers: "inline"` to see it).
 ##
-## The pool panel is a `worker-pool-panel` element that the example's
-## `pool-panel.mjs` defines and draws from the runtime's monitor. To the
+## The pool panel is a `worker-pool-panel` element that
+## `examples/shared/pool-panel.mjs`, which the page loads, defines and draws
+## from the runtime's monitor. To the
 ## engine it is an ordinary empty element.
 LabApp := [].{
 	Ctx : In(Root, Lab.S)

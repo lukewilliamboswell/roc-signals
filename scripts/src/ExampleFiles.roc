@@ -5,7 +5,9 @@ import cli.Path
 ## (`[[examples.scripts]]` with a relative `src`), its port handlers
 ## (`ports`), its simulated service (`backend`) and the data it downloads
 ## (`data`). The site build copies each beside the app, so the catalogue is
-## the one place an example declares them.
+## the one place an example declares them. A script several examples load
+## (`shared` in place of `src`) lives in `examples/shared/` and is copied
+## there once.
 ##
 ## The catalogue is read line by line, not as general TOML: a table header,
 ## a comment, a blank line or `key = value`. The keys above must hold a
@@ -36,7 +38,7 @@ ExampleFiles := [].{
 				parts = line.split_on(" = ")
 				key = (parts.first() ?? "").trim()
 				value = Str.join_with(parts.drop_first(1), " = ").trim()
-				names_a_file = key == "ports" or key == "backend" or key == "data" or ($table == "[[examples.scripts]]" and key == "src")
+				names_a_file = key == "ports" or key == "backend" or key == "data" or ($table == "[[examples.scripts]]" and (key == "src" or key == "shared"))
 				if names_a_file and $slug == "" {
 					return Err(Unreadable(raw))
 				}
@@ -56,6 +58,12 @@ ExampleFiles := [].{
 						name = ExampleFiles.file_name(value) ? |_| Unreadable(raw)
 						$out = $out.append(ExampleFiles.own($slug, name))
 					}
+				} else if $table == "[[examples.scripts]]" and key == "shared" {
+					name = ExampleFiles.file_name(value) ? |_| Unreadable(raw)
+					copy = ExampleFiles.shared(name)
+					if !$out.contains(copy) {
+						$out = $out.append(copy)
+					}
 				}
 			}
 		}
@@ -65,6 +73,11 @@ ExampleFiles := [].{
 	## A file in the example's own directory, served beside its app.
 	own : Str, Str -> Copy
 	own = |slug, name| { from: "examples/${slug}/${name}", to: "examples/${slug}/${name}" }
+
+	## A script several examples load (`shared` in a script's table): a file
+	## in `examples/shared/`, served once at `examples/shared/` in the site.
+	shared : Str -> Copy
+	shared = |name| { from: "examples/shared/${name}", to: "examples/shared/${name}" }
 
 	## A plain string value: `"text"`, with no quote or backslash inside.
 	string : Str -> Try(Str, [NotAString])
@@ -154,9 +167,16 @@ expect {
 		\\src = "chart.mjs"
 		\\module = true
 		\\
+		\\[[examples.scripts]]
+		\\shared = "panel.mjs"
+		\\
 		\\[[examples]]
 		\\slug = "b"
 		\\data = []
+		\\
+		\\[[examples.scripts]]
+		\\module = true
+		\\shared = "panel.mjs"
 	ExampleFiles.copies(text)
 		== Ok([
 			{ from: "examples/a/ports.mjs", to: "examples/a/ports.mjs" },
@@ -164,6 +184,7 @@ expect {
 			{ from: "examples/a/one.csv", to: "examples/a/one.csv" },
 			{ from: "examples/a/two.json", to: "examples/a/two.json" },
 			{ from: "examples/a/chart.mjs", to: "examples/a/chart.mjs" },
+			{ from: "examples/shared/panel.mjs", to: "examples/shared/panel.mjs" },
 		])
 }
 

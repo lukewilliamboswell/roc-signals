@@ -26,8 +26,8 @@ import Status
 ## The incident feed is a fifth result rendered as a timeline: incidents are
 ## keyed rows, each with its keyed updates.
 ##
-## The uptime chart is a `plume-chart` custom element (defined by the
-## example's `plume-chart.mjs`) whose `data-figure` attribute carries a Plotly
+## The uptime chart is a `plume-chart` custom element (defined by
+## `examples/shared/plume-chart.mjs`, which the page loads) whose `data-figure` attribute carries a Plotly
 ## figure built with Plume. To the engine it is an ordinary element with an
 ## ordinary attribute.
 StatusApp := [].{

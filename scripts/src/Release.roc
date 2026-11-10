@@ -16,7 +16,8 @@ import SpecSuite
 ##   shared nightly-compatibility runner builds with the latest Roc nightly:
 ##   each example's `main.roc` naming the bundle's release URL, with its
 ##   modules, its specs and its own files beside them (the JavaScript its
-##   author wrote, a page that mounts it, data it downloads), a `spec.json`
+##   author wrote, a page that mounts it, data it downloads), the JavaScript
+##   several examples share in `examples/shared/`, a `spec.json`
 ##   and the `runtime/check.mjs` helper that mounts each app;
 ## - `release-notes.md`, the draft release's body.
 Release := [].{
@@ -128,6 +129,11 @@ Release := [].{
 			}
 			$cases = $cases.append({ example, stdout: Str.from_utf8_lossy(stdout) })
 		}
+		# JavaScript several examples load (a custom element), kept once.
+		Path.create_all!(Path.utf8("${root}/examples/shared"))?
+		for file in Release.own_files!("examples/shared")? {
+			Path.copy!(Path.utf8(file), Path.utf8("${root}/examples/shared/${file.split_on("/").last() ?? file}"))?
+		}
 		Path.write_utf8!(Path.utf8("${root}/spec.json"), Release.spec_json(version, bundle_url, $cases))?
 		Path.write_utf8!(Path.utf8("${root}/README.md"), Release.archive_readme(version))?
 		Proc.run!({ program: "zip", args: ["-q", "-r", "-X", "${out}/${name}.zip", name], cwd: stage })?
@@ -149,7 +155,8 @@ Release := [].{
 		\\runner with `roc build --target=x64musl examples/<app>/main.roc` and run
 		\\it on `examples/<app>/specs/*.scm`.
 		\\An example's other files are its own: JavaScript its author wrote (port
-		\\handlers, a custom element), a page that mounts it, data it downloads.
+		\\handlers, a simulated service), a page that mounts it, data it downloads.
+		\\JavaScript several examples load (custom elements) is in `examples/shared/`.
 		\\The platform's `runtime.mjs` and `worker.mjs` are separate release assets.
 		\\`spec.json` and `runtime/check.mjs` are the compatibility suite the
 		\\nightly workflow runs against the latest Roc nightly.

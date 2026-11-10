@@ -9,6 +9,11 @@
 # and list the files it downloads at run time in `data`. scripts/site.roc
 # copies every file named here beside the example's app.wasm; each names a
 # file directly in the example's directory.
+#
+# A script's `src` is a URL (with its `integrity`) or a file of the example's
+# own; `shared` in its place names a file in examples/shared/, the JavaScript
+# several examples load (custom elements such as `plume-chart`), which the
+# site serves once at examples/shared/. `module = true` loads it as a module.
 
 [[examples]]
 slug = "field-notes"
@@ -47,15 +52,14 @@ public = true
 backend = "backend.mjs"
 
 # The uptime chart: Plotly from its pinned CDN URL (the version Plume 0.5.0
-# pins), then the example's `plume-chart` element. Both are deferred, so they
-# run in this order before the app mounts. A relative `src` is a file in
-# examples/status-page/ that scripts/site.roc copies beside app.wasm.
+# pins), then the shared `plume-chart` element. Both are deferred, so they
+# run in this order before the app mounts.
 [[examples.scripts]]
 src = "https://cdn.plot.ly/plotly-4.2.0.min.js"
 integrity = "sha384-F4AdcRk3NYRZZUZ7qARRp/wPkwvdta756IMuHDAZcmtM5nuHKykTbDJd7N9h+Qff"
 
 [[examples.scripts]]
-src = "plume-chart.mjs"
+shared = "plume-chart.mjs"
 module = true
 
 [[examples]]
@@ -103,10 +107,10 @@ public = true
 # (data-signals-max-workers / data-signals-workers); the page URL's
 # `maxWorkers` and `workers` query parameters override them.
 
-# The pool panel, `worker-pool-panel`: drawn from the runtime's monitor once
-# site.mjs announces the runtime (`roc-signals:runtime`).
+# The shared pool panel, `worker-pool-panel`: drawn from the runtime's
+# monitor once site.mjs announces the runtime (`roc-signals:runtime`).
 [[examples.scripts]]
-src = "pool-panel.mjs"
+shared = "pool-panel.mjs"
 module = true
 
 [[examples]]

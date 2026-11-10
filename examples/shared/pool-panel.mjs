@@ -2,8 +2,10 @@
 // the runtime's documented monitor (`runtime.monitor`: `snapshot()`,
 // `subscribe()`, `reset()`; see the "Monitoring Workers" docs page).
 //
-// The Worker Lab renders this as an ordinary empty element; the engine and
-// the runtime know nothing about it. It learns which runtime to watch from
+// Shared example JavaScript: any example's page loads it by naming it as a
+// `shared` script in www/data/examples.toml. An app (the Worker Lab, for
+// one) renders this as an ordinary empty element; the engine and the
+// runtime know nothing about it. It learns which runtime to watch from
 // the `roc-signals:runtime` event that the page mounting the app dispatches
 // on the mount root (its `detail.runtime`), and draws into its own shadow
 // root, so the engine's children of the element stay the engine's. It only
