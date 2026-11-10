@@ -15,7 +15,8 @@ import src/Targets
 
 ## The `check` task, the per-pull-request gate: the script pins,
 ## formatting, every public `Engine` and `Html` symbol documented, `roc test`,
-## the platform inputs and the `scm-parse` and `wire` fuzz targets, the docs samples, every
+## the platform inputs, the host's resource-heap tests, the `scm-parse` and
+## `wire` fuzz targets, the docs samples, every
 ## app's `.scm` specs natively and in Chrome, the broken-spec self-checks (both
 ## runners reject each spec with one wrong expectation, a lost worker job's
 ## fault class among them), the runtime's
@@ -44,6 +45,7 @@ main! = |_args| {
 
 	Proc.note!("== platform inputs")
 	Checks.prepare_platform!(o)?
+	$problems = $problems.concat(check!({ program: o.zig, args: ["test", "platform/host/resources.zig"], cwd: "." }, "zig test platform/host/resources.zig")?)
 	$problems = $problems.concat(fuzz_smoke!(o)?)
 
 	Proc.note!("== docs samples")
