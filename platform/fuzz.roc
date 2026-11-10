@@ -7,7 +7,8 @@
 ## whose one entry builds the browser module and the native spec runner. This
 ## root shares that platform's modules instead, and exposes what the fuzz
 ## targets drive: the engine's internal `Core`, the spec runner, the `Dom`
-## oracle, the `.scm` parser, the soak walk and the worker wire format.
+## oracle, the `.scm` parser, the soak walk, the worker wire format and the
+## port message format.
 ##
 ## Everything else here is a vendored copy of the roc-fuzz 0.5.0 platform
 ## (https://github.com/lukewilliamboswell/roc-fuzz, MIT, see
@@ -20,7 +21,7 @@ platform "roc-signals-fuzz"
 	requires {
 		target : Target
 	}
-	exposes [Arbitrary, Core, Dom, Engine, Fuzz, Html, JsonOut, Scm, Soak, SpecRunner, Target, Wire, Worker]
+	exposes [Arbitrary, Core, Dom, Engine, Fuzz, Html, JsonOut, PortJson, Scm, Soak, SpecRunner, Target, Wire, Worker]
 	packages {}
 	provides {
 		"roc_fuzz_example": example_for_host,
@@ -56,6 +57,7 @@ import Engine
 import Fuzz
 import Html
 import JsonOut
+import PortJson
 import Scm
 import Soak
 import SpecRunner
