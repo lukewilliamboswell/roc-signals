@@ -12,12 +12,15 @@
 // the file lets the state go and the worker's live allocations return to
 // what they were before its first job; `maxWorkers: 1` replaces states; a
 // worker over `maxWorkerBytes` is retired after its job; unmounting ends
-// workers that hold states; and with `workers: "inline"` a preparation that
-// reads its file is unavailable and the page goes on. It prints the
+// workers that hold states; a preparation that fails (a document that is
+// not UTF-8, or one deleted from disk) answers every task with its error;
+// and with `workers: "inline"` a preparation that reads its file is
+// unavailable and the page goes on. It prints the
 // measurements the pull request reports (prepare once against every time,
 // cancel policies).
 import http from "node:http";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { launch } from "./cdp.mjs";
 import { parseArgs, runtimeFiles } from "./args.mjs";
@@ -73,6 +76,14 @@ function install() {
   window.__choose = (text) => {
     const dt = new DataTransfer();
     dt.items.add(new File([text], "doc.txt", { type: "text/plain" }));
+    const el = window.__root.querySelector('[aria-label="Document"]');
+    el.files = dt.files;
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  // A document of raw bytes, which need not be text.
+  window.__chooseBytes = (bytes) => {
+    const dt = new DataTransfer();
+    dt.items.add(new File([new Uint8Array(bytes)], "doc.bin", { type: "application/octet-stream" }));
     const el = window.__root.querySelector('[aria-label="Document"]');
     el.files = dt.files;
     el.dispatchEvent(new Event("change", { bubbles: true }));
@@ -372,6 +383,45 @@ const BIG = 100000;
     return window.__events.filter((e) => e.kind === "instance-end").map((e) => e.cause);
   }, N);
   check("unmounting ends a worker holding a state", r, ["unmount"]);
+  await ctx.close();
+}
+
+// A preparation that fails reaches the page as its error, in every task
+// over it: a file that is not UTF-8 fails `contents_utf8!` with
+// InvalidUtf8, and a file deleted from disk after it was chosen cannot be
+// read at all. Neither is a lost job, and the worker that failed to prepare
+// goes on serving.
+{
+  const { page, ctx } = await open();
+  const r = await page.evaluate(async () => {
+    window.__chooseBytes([0x61, 0x6c, 0x70, 0x68, 0x61, 0xff, 0x0a]);
+    const stats = await window.__answer("stats", "failed");
+    window.__click("Top");
+    const top = await window.__answer("top", "failed");
+    window.__click("Stats");
+    window.__choose(window.__doc(1));
+    const after = await window.__answer("stats", "2 lines");
+    return { stats, top, after, lost: window.__rt.monitor.snapshot().jobs.lost };
+  });
+  check("a document that is not UTF-8 fails every task with the preparation's error", r, { stats: "failed Unread(InvalidUtf8)", top: "failed Unread(InvalidUtf8)", after: "2 lines, 5 words, 4 distinct", lost: 0 });
+  await ctx.close();
+}
+{
+  const { page, ctx } = await open();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "roc-signals-prepared-"));
+  const file = path.join(dir, "gone.txt");
+  fs.writeFileSync(file, "soon gone\n");
+  const input = await page.evaluateHandle(() => window.__root.querySelector('[aria-label="Document"]'));
+  await page.send("DOM.setFileInputFiles", { files: [file], objectId: input.objectId });
+  fs.rmSync(dir, { recursive: true, force: true });
+  const r = await page.evaluate(async () => {
+    const stats = await window.__answer("stats", "failed");
+    window.__click("Top");
+    const top = await window.__answer("top", "failed");
+    const s = window.__rt.monitor.snapshot();
+    return { stats, top, lost: s.jobs.lost, spawns: s.instances.spawns };
+  });
+  check("an unreadable document fails every task with the preparation's error", r, { stats: "failed Unread(Unreadable)", top: "failed Unread(Unreadable)", lost: 0, spawns: 1 });
   await ctx.close();
 }
 

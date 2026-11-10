@@ -102,7 +102,8 @@ for example to run two tasks at once.
    timing ratios), file handles and their release, operations on files
    (page reads, uploads to a local server, digests and file URLs, with their
    bounds, failures and lifetimes), preparations and the pool's
-   placement of their tasks' jobs, ports with real handlers
+   placement of their tasks' jobs, a preparation that fails and what each
+   of its tasks then answers, ports with real handlers
    (`ports-browser.mjs`: the mount check, delivery policies, the payload
    bound, bytes and files both ways, containment), jobs that read and build
    files (`tasks-browser.mjs`: the handles each instance holds after a job, a

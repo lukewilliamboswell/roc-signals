@@ -5,11 +5,12 @@ import pf.Worker
 ## Prepared state test app, in the shape of a document explorer: one
 ## preparation and three tasks over it.
 ## - "Document" is a file input; the file and the "Ignore case" checkbox are
-##   the preparation's input. The preparation reads the file in a worker
-##   (`contents!`) and indexes its words: each word's line numbers, built at
-##   run time from the file's bytes. An empty file cannot be indexed: the
-##   preparation fails with `Empty`, and every task over it answers
-##   `Failed(Empty)`.
+##   the preparation's input. The preparation reads the file as text in a
+##   worker (`contents_utf8!`) and indexes its words: each word's line
+##   numbers, built at run time from the file's bytes. A file that cannot be
+##   read, or is not UTF-8, fails the preparation with `Unread(error)`, and
+##   an empty file with `Empty`; every task over it then answers
+##   `Failed(...)` with that error.
 ## - Three tabs, each with its task's site inside its branch, so leaving a
 ##   tab disposes its site and coming back asks again: "Stats" (lines, words
 ##   and distinct words, `test-id "stats"`), "Lookup" (the count and first
@@ -48,7 +49,7 @@ PreparedApp := [].{
 	## ends with a newline (a last line without one is not counted).
 	index! : Source => Try(Index, Problem)
 	index! = |{ doc, fold }| {
-		bytes = doc.contents!().map_err(|e| Unread(e))?
+		bytes = doc.contents_utf8!().map_err(|e| Unread(e))?.to_utf8()
 		if bytes.is_empty() {
 			return Err(Empty)
 		}
