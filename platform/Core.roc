@@ -3780,6 +3780,9 @@ run_work = |registrations, payload, files| {
 				Ok(r) => {
 					input = payload.drop_first(at)
 					q = query_header(input, name)
+					if q.prep != r.name {
+						crash "contract: worker program \"${name}\" was asked of the preparation \"${q.prep}\", but with_workers registers it with \"${r.name}\""
+					}
 					state = (r.prepare)(input.sublist({ start: q.init_at, len: q.init_len }), files.take_first(q.init_files))
 					owned_bytes((state.ask)(name, input.drop_first(q.init_at + q.init_len), files.drop_first(q.init_files)))
 				}

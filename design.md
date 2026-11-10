@@ -760,8 +760,10 @@ and the engine unchanged: to the engine an `Ask` is a `Work` request.
   runs on the worker holding its key, waiting behind it while it is busy;
   otherwise it prepares on an idle worker holding nothing, a new worker
   while the pool has room, or the least recently used idle holder, whose
-  state it replaces. A job that reads files on a holder lets the state go
-  first, because the state may keep file buffers the job needs.
+  state it replaces. Another program's job that reads files on a holder
+  lets the state go first, because the state may keep file buffers the job
+  needs. A query of the held state never does: its own files fit beside the
+  preparation's, since one request reads at most 16 files in all.
 - **Read-only.** A query cannot change the state: a state-threading query
   would make an answer depend on which queries ran before it on that
   worker, and a lost worker would need a replay log to recover it.

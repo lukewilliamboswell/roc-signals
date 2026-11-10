@@ -362,7 +362,17 @@ time.
   input prepares on a worker holding nothing, a new worker, or the one used
   least recently, whose state it replaces. A worker whose memory has grown
   past the `maxWorkerBytes` mount option (128 MiB by default) is ended after
-  its job, its state with it.
+  its job, its state with it. A run of an ordinary program that reads files
+  on a worker holding a state lets the state go first, since the state may
+  keep file buffers the run needs; a query may carry files of its own and
+  still reuse the state it asks.
+- **Leave the state's type to inference if you like.** A query's type names
+  the state (`Worker.Query(File, List(Str), Str, List(U64))`), but
+  `Worker.Query(File, _, Str, List(U64))` works too. Listing a query in
+  another preparation's registration is a type error when the states'
+  types differ (`Worker.Answer(List(Str))` against `Worker.Answer(U64)`).
+  When they are the same type it compiles, and every run of that query is
+  a contract error in its worker, answered `Lost(Contract)`.
 - **A file's state goes with the file.** When the app lets go of a file, every
   state prepared from it is let go too.
 - **Queries are read-only.** A query cannot change the state, so an answer
