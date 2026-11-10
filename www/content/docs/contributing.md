@@ -160,8 +160,9 @@ worker wire format's decoder, the port message format's decoder
 (`port-json`), and each app's
 leak-checked random walk (the supersede test app's included; the Reading
 List's plays its port handlers against a model store and checks that the
-page shows what the store holds). A walk has no host to run a job's effects,
-so a worker app's target answers its jobs with a stand-in made from the
+page shows what the store holds), and the Log Explorer's index, which a
+worker builds a chunk at a time, against a model that reads the whole
+text. A walk has no host to run a job's effects, so a worker app's target answers its jobs with a stand-in made from the
 app's pure function (`Task.stand_in`, walked with `Soak.walk_with`); its
 tasks' bodies run in the specs. Every target
 that drives the engine also runs the settle check after every step: no
