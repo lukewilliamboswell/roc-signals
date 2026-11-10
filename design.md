@@ -153,7 +153,7 @@ reconsidered.
   cells or split-and-replace rules because there is nothing for them to
   govern: each box is opaque, moves whole into one Roc call and back out of
   it, and is dropped only by Roc. The
-  converse is allowed: Roc may hold a host resource, a handle whose
+  converse is allowed: Roc may hold a handle to a browser object, whose
   allocation is a slot in a typed host heap (see [Files](#files)). The host
   mints it, Roc's reference count is its lifetime, and the host learns of
   its last release when Roc frees it; the host never holds the handle.
@@ -189,33 +189,39 @@ reconsidered.
    the whole DOM is a violation. See [Complexity budget](#complexity-budget).
 4. **The engine is pure Roc; the host only allocates, stages and classifies,
    and in a worker instance performs the platform's synchronous hosted
-   effects on resource handles through the worker script.**
+   effects on handles through the worker script.**
    All reactive scheduling, structural reconciliation, identity, effect
    lifecycle and ownership policy live in the platform's Roc engine. The Zig
    host owns the allocator, the boxed engine state between calls (in a worker
-   instance, at most one boxed prepared state instead), the command
-   buffer, one staged payload, the typed heaps behind resource handles, and
-   fault classification. JavaScript applies
-   commands and performs effects. Reactive or structural logic in either is a
+   instance, at most one boxed prepared state instead), the command buffer,
+   one staged payload, the typed heaps behind the handles an app holds, and
+   fault classification. JavaScript applies commands and performs effects. Reactive or structural logic in either is a
    defect.
 5. **Types are never erased across a boundary that can disagree.** A site's
    storage is typed by the site's own closure; dispatch between sites is by
-   message, never by a host-interpreted value. The only bytes that cross the
-   Roc boundary are the command stream, event payloads, boot bytes, worker
-   payloads and port messages, each with a declared encoding that Roc decodes
-   and validates (a port message is JSON text in the platform's `PortJson`
-   encoding, with its bytes and files beside it, which Roc turns into a typed
-   value or a typed decoding error);
-   the only values the host builds for Roc beyond them are freshly minted
-   resource handles, each with a single reference.
+   message, never by a host-interpreted value. The encoded bytes that cross
+   the Roc boundary are the command stream, event payloads, boot bytes,
+   worker payloads and port messages, each with a declared encoding that Roc
+   decodes and validates (a port message is JSON text in the platform's
+   `PortJson` encoding, with its bytes and files beside it, which Roc turns
+   into a typed value or a typed decoding error). In a worker instance only,
+   and only inside a call that runs a task or a preparation (`work`,
+   `prepare`, `ask`), the hosted effects also move a file's raw bytes, which
+   carry no encoding and no type: a read (`read!`) answers a fresh
+   `List(U8)` that the host allocates, fills from the file and hands to Roc
+   with a single reference, and an append (`append!`) gives the host a list
+   that it lends to the worker script, which copies the bytes out, and then
+   releases. The only other values
+   the host builds for Roc are freshly minted handles, each with a single
+   reference, and the status codes and sizes a hosted effect answers.
 6. **The command stream is the only output of the page's instance.**
    Everything the outside world
    observes — DOM structure, attributes, listeners, effects, navigation,
    storage, title, focus — is a command in the stream returned by one host
    call. There is no side channel, with one narrow exception: the list of
-   resource handles Roc released during a call, which the runtime reads after
-   it has applied the call's batch and performed its effects. It decides
-   nothing: it names only resources no Roc value can reach any more. A
+   handles Roc released during a call, which the runtime reads after it has
+   applied the call's batch and performed its effects. It decides nothing:
+   it names only handles no Roc value can reach any more. A
    worker task's effects act only on handles its job was sent or made, and
    reach the page only as its answer, an ordinary result.
 
@@ -257,10 +263,10 @@ state is row state — is the documented pattern that keeps app work local.
 ```mermaid
 flowchart LR
     App["app: App.roc<br/>Elem tree of typed sites"] --> Engine["platform/Core.roc (internal) behind Engine.roc (authoring API)<br/>pure engine: sites, layers, each columns,<br/>effects, command encoding"]
-    Engine --> Main["platform/main.roc<br/>keys · init · event · work · drop"]
-    Main --> Host["platform/host/host.zig<br/>allocator · Box(Core.App) · cmd buffer ·<br/>staged payload · fault class"]
+    Engine --> Main["platform/main.roc<br/>keys · init · event · files · drop ·<br/>work · prepare · ask · forget"]
+    Main --> Host["platform/host/host.zig<br/>allocator · Box(Core.App) or, in a worker, one Box(Kept) ·<br/>cmd buffer · staged payload · handle heaps · fault class"]
     Host --> Wire["command bytes in linear memory"]
-    Wire --> JS["platform/runtime.mjs<br/>apply commands · perform effects ·<br/>delegate events · contain faults"]
+    Wire --> JS["platform/runtime.mjs (and worker.mjs in each worker)<br/>apply commands · perform effects ·<br/>delegate events · contain faults"]
     JS --> DOM["browser DOM and services"]
     DOM -->|"event (node, handler, payload)"| JS
     JS -->|"payload_reserve + event"| Host
@@ -511,7 +517,7 @@ Rules:
 | Reorder a surviving key | Preserve its row state and active work | Move existing nodes |
 | Insert or remove another key | Preserve unaffected rows | Insert or remove only the affected rows |
 | Update an item, same key | Preserve the row; re-evaluate holes that read the row | Update only changed holes |
-| Remove a key | Dispose the row's sites; stop its subscriptions, timers and work; admitted requests reparent to the `each` site | Remove its node |
+| Remove a key | Dispose the row's sites; stop their scoped effects (subscriptions, timers, operations on files on the page, jobs of tasks that say `on_dispose: Stop`); admitted requests, kept jobs included, reparent to the `each` site | Remove its node |
 | Reinsert a removed key | A new row lifetime | Build new structure |
 | Change an item's key | End the old row, create a new one | Remove and insert |
 | Move an item between `each` sites | Dispose at the old site, create at the new | No cross-site transfer |
@@ -532,10 +538,12 @@ Every site is a scope. Disposing it:
    removing an ancestor (or `CLEAR` when an `each` site is the sole child of its
    parent);
 3. frees its node ids, routes, focus references and, for `each`, its site id;
-4. stops its subscriptions, intervals, timers and work (`CANCEL`), and drops queued
-   follow-ups addressed to it (counted stale);
-5. hands its admitted requests up as orphans (see
-   [The effect channel](#the-effect-channel)).
+4. stops its scoped effects (`CANCEL`): subscriptions, intervals, timers,
+   operations on files on the page and jobs of tasks that say `on_dispose:
+   Stop`, and drops queued follow-ups addressed to it (counted stale);
+5. hands its admitted requests up as orphans, the jobs of tasks that say
+   `on_dispose: Keep` among them (see [Disposal and
+   reparenting](#disposal-and-reparenting)).
 
 Dropping the site's closure releases its storage. Nothing is left registered in
 the host or the runtime for a disposed scope: the runtime holds DOM nodes by id
@@ -784,9 +792,13 @@ that: a `run!` may be a plain
 calculation (`run!: |text| Ok(count_words(text))`) or call the hosted
 effects below, and the compiler accepts either, since a lambda literal may
 fill an effectful field whatever its body. So there is one constructor, one
-request kind (`Work`), one result (`Work({ output, files })`), one worker
-entry in each host and one job path in each spec runner. A job always
-answers a `Try`: the task's own failures (input that does not parse, a file
+request kind (`Work`), one result (`Work({ output, files })`), one entry
+for a job of a task in each host (`work`; a preparation adds `prepare`,
+`ask` and `forget` for its state, below) and one job path in each spec
+runner. (The result's `output` is the answer's raw bytes, the encoded `Ok`
+value or `Err` error and a flag byte; it is not the task's `output` type
+parameter, which `Task.result` decodes it into.) A job always answers a
+`Try`: the task's own failures (input that does not parse, a file
 the browser can no longer read, a builder over its bound) are values the
 app chose, and the typed layer keeps them apart from the platform's:
 `Worker.Error(error) : [Failed(error), Timeout, Refused, Lost(WorkFault)]`.
@@ -826,9 +838,13 @@ because an error left to inference does not resolve.
   `finish!` composes the parts into one immutable file (constant time) the
   answer may hold. A builder may start from a file (`start_from: From(f)`),
   which is how a job appends to an earlier job's output without copying
-  it. A job cannot wait: there is no timer, event or response it can block
-  on without JSPI or cross-origin isolation, which the platform does not
-  adopt, and nothing it does can be observed until it answers.
+  it. Every effect is synchronous: a job may block inside one while the
+  browser does the work (a read waits for the file), but it cannot await
+  anything, since no timer, page event or asynchronous response can reach
+  a running job without JSPI or cross-origin isolation, which the platform
+  does not adopt. Nothing a job does can be observed until it answers. An
+  effect that blocks for a response, such as the synchronous request in the
+  Target below, fits this rule; there is none yet.
 - **A written file is an immutable value.** A builder exists only inside the
   call that opened it (a job, or a preparation's `prepare!`), holds its
   parts in the worker script, and cannot be sent anywhere (it is not
@@ -904,7 +920,11 @@ error)`, registered together (`Worker.prepared`, `Preparation.task`,
 `Preparation.registration` listing each task's `registration()`). A
 preparation's tasks are tasks: the same request kind, policies and result;
 to the engine a job of one is a `Work` request whose input begins with the
-preparation's.
+preparation's. The words: the *preparation* is the registered step and its
+tasks; the *prepared state* is the value `prepare!` returns, which a worker
+instance may keep between jobs (`Core.Kept` boxes it with the closure that
+runs its tasks, and the host holds that box); the monitor names the
+preparation whose state an instance keeps in its `held` field.
 
 **Keeping the state is never observable in an answer.** A job's answer is
 exactly what preparing afresh and running the task would give. A worker
@@ -1000,8 +1020,8 @@ are all of that kind.
 What an app means is decided in Roc and carried on its requests: a job's
 deadline, a call's timeout, how much a read of a file accepts. What a
 deployment allows is a mount option, named `max…Bytes` or `maxWorkers`
-(`maxWorkers`, `maxWorkerBytes`, `maxFileBytes`, `maxPortBytes`), which caps
-what any request asks for.
+(`maxWorkers`, `maxWorkerBytes`, `maxFileBytes`, `maxOutputBytes`,
+`maxPortBytes`), which caps what any request asks for.
 
 - **In-flight cap.** The in-flight table holds at most 32 awaited requests by
   default (configurable per program). A request beyond it is not issued: it is
@@ -1027,13 +1047,16 @@ what any request asks for.
   admitted request and clears it on completion, failure, timeout or cancel.
 - **Work deadline.** Each job carries `deadline_ms` (0 = none), capped at
   600 s like an HTTP timeout. Its expiry stops the job by terminating its
-  worker and delivers `Timeout`.
+  worker and delivers `Timeout`. A cancelled job that finishes (`on_cancel:
+  Finish`) keeps its deadline, and one with none is bounded by the cap, so
+  a cancelled job holds its worker for at most 600 s after it was
+  performed.
 - **Worker pool.** The runtime runs at most `maxWorkers` workers (a mount
   option; by default the browser's core count, at most 8), one job each at a
   time, reusing idle workers. Jobs beyond the pool wait in a FIFO queue,
-  which the in-flight cap bounds. Stopping a job — cancel or deadline — is
-  terminating its worker, which is replaced when the next job needs one;
-  there are no cooperative checkpoints. A worker whose linear memory has
+  which the in-flight cap bounds. Stopping a job — cancel (unless its task
+  says `Finish`) or deadline — is terminating its worker, which is replaced
+  when the next job needs one; there are no cooperative checkpoints. A worker whose linear memory has
   grown past `maxWorkerBytes` (a mount option, default 128 MiB) is retired
   after its job.
 - **Prepared states.** At most one per worker, so at most `maxWorkers`;
@@ -1048,7 +1071,9 @@ what any request asks for.
   issuing site.
 - **Port messages.** A port's answer or message is at most `maxPortBytes`
   (a mount option, default 4 MiB, at most 64 MiB) of JSON text and bytes
-  together, else `PortFailed(TooLarge)`. Each subscription declares how its
+  together, else `PortFailed(TooLarge)`; one that carries more files than
+  the page has free handles for is `PortFailed(TooLarge)` too, and none of
+  its files is kept. Each subscription declares how its
   undelivered messages wait: `Latest` keeps one and a newer one replaces it;
   `Every(n)` keeps up to n ≤ 1024 in order and refuses `emit` beyond them (it
   returns false and takes nothing). The runtime keeps at most one message per
@@ -1060,8 +1085,10 @@ what any request asks for.
 An admitted effect belongs to the intent that started it, not to the scope that
 rendered the control:
 
-- **Subscriptions (port subscriptions included), intervals, timers and jobs
-  of tasks that say `on_dispose: Stop` (the default) are scoped.** Disposing
+- **Subscriptions (port subscriptions included), intervals, timers,
+  operations on files on the page (reading one into the page, a digest, an
+  object URL) and jobs of tasks that say `on_dispose: Stop` (the default)
+  are scoped.** Disposing
   their site emits `CANCEL`, counts them `cancelled` and forgets them; a
   result that arrives later is stale. A job is scoped by default because
   computing an answer nobody will read is only cost. A task decides for
@@ -1193,7 +1220,10 @@ and `expect-files` makes it assertable.
 
 An instance holds at most 64 handles at once. An event that carries more
 files than there are free slots delivers the ones that fit and counts the
-rest in `Received.refused`; nothing is minted for them.
+rest in `Received.refused`; nothing is minted for them. A result that
+carries files is all or nothing: a job's answer with no room for its
+files is `WorkLost(resource_limit)`, a port's answer or message is
+`PortFailed(TooLarge)` and a fetched body `FileFailed(TooLarge)`.
 
 **Reading a file is delegation to a worker.** A task's input may hold
 files: `File` is `Wire.Sendable`, and its encoding is its place in the
@@ -1541,6 +1571,7 @@ bound and a declared behaviour at the bound:
 | Follow-up chain depth per host call | 64 | `contract` poison |
 | Follow-up turns per host call | 64 per in-flight slot, at least 4096 | `resource_limit` poison |
 | HTTP timeout, work deadline | 600 s | Capped |
+| A cancelled job that finishes (`on_cancel: Finish`) | Its deadline, else 600 s after it was performed | Its worker is terminated as at a deadline |
 | Worker catalogue | 64 names (a preparation's and its tasks' each count) | `contract` poison |
 | Port catalogue | 64 ports, names 1–128 bytes | `contract` poison |
 | A port answer or message | `maxPortBytes` (default 4 MiB, at most 64 MiB) | Typed `PortFailed(TooLarge)` |
@@ -1559,7 +1590,7 @@ bound and a declared behaviour at the bound:
 | Object URLs of one file handle | 16 ranges, revoked with the handle | Typed `FileFailed(TooLarge)` |
 | Bytes one job appends to its builders | `maxOutputBytes` (default 256 MiB) | `append!` answers `TooLarge`; the job decides |
 | Files one job's answer holds | 16 | `contract` fault of that worker: `WorkLost(Contract)` |
-| Page slots for an answer's files | The page's free handle slots | `WorkLost(ResourceLimit)`, nothing minted |
+| Page slots for a result's files | The page's free handle slots | A job's answer `WorkLost(ResourceLimit)`, a port's answer or message `PortFailed(TooLarge)`, a fetched body `FileFailed(TooLarge)`; nothing minted |
 | Handles one job holds at once | 64 (the worker's heap) | `resource_limit` fault of that worker |
 | Bytes of one fetched body | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)` |
 | Live node ids (rows included) | 2³² − 2 | `resource_limit` poison |
@@ -2142,8 +2173,10 @@ This appendix is protocol version **4**. The engine declares it
 (`Engine.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
-`Dom.roc` decodes. Any change below bumps the version and updates the encoder,
-`Dom.roc`, `runtime.mjs`, the contract tests and this appendix together.
+`Dom.roc` decodes. Any change below bumps the version and updates the
+engine's encoder and decoders, `Dom.roc`, both hosts (`host.zig`,
+`spec.zig`), `runtime.mjs`, `worker.mjs`, the contract tests and this
+appendix together.
 
 ### Roc ↔ host
 
@@ -2155,7 +2188,7 @@ The platform provides (`platform/main.roc`):
 | `roc_engine_keys` | `() -> List(U8)` | Declared storage keys, then the port table: `count:u32 (key:str)* nports:u32 (name:str kind:u8 delivery:u8 bound:u32)*`, where `kind` is `1` command, `2` call, `3` subscription, `delivery` is `0` (not a subscription), `1` every or `2` latest, and `bound` is n for every, `1` for latest, `0` otherwise. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Box(Core.App), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One transaction: state, recycled command buffer, recycled work buffer, node, handler, payload |
-| `roc_engine_files` | `Box(Core.App), List(U8), List(U8), u32, u32, List(U8), List(Box(U64)) -> { cmds, state, work }` | A `:files` event: as `roc_engine_event`, with the file record as the payload and the handles the host minted for it, in the record's order; a record that does not match them is a `contract` crash. On the effect node it is a port reply (result tag 14) whose files are those handles, in order |
+| `roc_engine_files` | `Box(Core.App), List(U8), List(U8), u32, u32, List(U8), List(Box(U64)) -> { cmds, state, work }` | A `:files` event: as `roc_engine_event`, with the file record as the payload and the handles the host minted for it, in the record's order; a record that does not match them is a `contract` crash. On the effect node it is a result that carries files, whose files are those handles, in order: a job's answer (result tag 10), a port reply (14) or a fetched file (21) |
 | `roc_engine_drop` | `Box(Core.App), List(U8), List(U8) -> {}` | Teardown |
 | `roc_engine_work` | `List(U8), List(Box(U64)) => List(U8)` | A worker instance's job (effectful): payload `name:str input:rest` and the handles the instance's host minted for the files the request named, in its order; returns the answer, `n:u32 (token:u64)*n output:rest`: the instance's tokens of the files the answer holds (in the order its payload refers to them), then the answer's bytes, a list of its own. `name` is a `str` (a `u32` length), while `input` is a `Wire` payload whose counts are LEB128, so a harness meets both encodings in one buffer. `output` is the `Wire` encoding of the job's `Ok` value or `Err` error followed by one byte, `0` or `1`, which the typed layer writes and reads. A name the catalogue does not hold, a preparation's name or a preparation's task's name, a payload without a name, or an answer holding more than 16 files, is a `contract` crash (it poisons that worker instance only) |
 | `roc_engine_prepare` | `List(U8), List(Box(U64)) => Box(Core.Kept)` | Prepare a state to keep (effectful): payload `prep:str init:rest` (the preparation's name and its own input) and the handles of the preparation's files; returns the state. A name that is not a preparation is a `contract` crash |
@@ -2204,7 +2237,7 @@ warm-up neither allocates.
 | `ask()` | In a worker instance: run the staged payload and handles, a job of a preparation's task, on the kept state (`roc_engine_ask`, effects allowed); the answer is readable as for `work()`. Traps when no state is kept, and refuses like `work()` |
 | `forget()` | In a worker instance: release the kept state, if any, and the previous answer. No-op when poisoned |
 | `protocol_version() -> u32` | The engine's protocol version; answers before mount and when poisoned |
-| `cmd_ptr()`, `cmd_len()` | The current command batch (in a worker instance, the last job's answer), valid until the next `event`, `work`, `ask` or `drop` |
+| `cmd_ptr()`, `cmd_len()` | The current command batch (in a worker instance, the last job's answer), valid until the next call of `boot_keys`, `init`, `event`, `event_files`, `work`, `prepare`, `ask`, `forget` or `drop` |
 | `work_ptr()`, `work_len()` | The work record returned with the last call, valid until the next `event` or `drop` |
 | `drop()` | Teardown; no-op when poisoned or already dropped |
 | `fault() -> u32` | `0` healthy, `1` contract, `2` resource_limit, `3` out_of_memory, `4` app_crash, `5` expect_failed |
@@ -2213,7 +2246,7 @@ warm-up neither allocates.
 | `reset_metrics()` | Reset counters 0–3 |
 | `memory` | Linear memory |
 
-The spike host also answers `metric(100..131)` with the sizes of the first 32
+The host also answers `metric(100..131)` with the sizes of the first 32
 allocations since reset; that is a measurement probe, not protocol.
 
 ### Boot
