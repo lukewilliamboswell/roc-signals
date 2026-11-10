@@ -177,8 +177,8 @@ browsers do.
 |---|---|
 | `(stub-http "label" :url "/api/x" :status 200 :body "…")` | Stage an HTTP answer; optional `:headers (("name" "value") …)`, default `content-type: application/json`. `:status` is 100–999. Staging a second answer before one is used fails |
 | `(stub-http-reject "label" :kind network :detail "offline")` | Stage a failure: `network` with the browser's message, or `timeout` with an empty `:detail` |
-| `(run-effect N)` | Answer the N-th HTTP request, upload, timer, worker job or operation on a file the current document issued (1-based, in issue order; subscriptions and storage reads not counted). It must still be pending. A timer fires; a worker job runs its task (in Chrome in a real worker, natively in a child process that serves the job's effects from the setup files, the step waiting for its result: a task that crashes loses its job with the crash's fault class, and one that has not finished after 30 s fails the step); an HTTP request or an upload takes the staged answer, and a reply's `:url` must equal the request's; a page read, a digest or a file URL is performed on the setup file (see [Files](#files)) |
-| `(expect-pending-effects N)` | Exactly N HTTP requests, uploads, timers, worker jobs and operations on files are waiting for `run-effect` |
+| `(run-effect N)` | Answer the N-th HTTP request, upload, fetch, timer, worker job or operation on a file the current document issued (1-based, in issue order; port calls share the numbering but are answered with `answer-port` (see [Ports](#ports)); subscriptions, commands and storage reads not counted). It must still be pending. A timer fires; a worker job runs its task (in Chrome in a real worker, natively in a child process that serves the job's effects from the setup files, the step waiting for its result: a task that crashes loses its job with the crash's fault class, and one that has not finished after 30 s fails the step); an HTTP request or an upload takes the staged answer, and a reply's `:url` must equal the request's; a page read, a digest or a file URL is performed on the setup file (see [Files](#files)) |
+| `(expect-pending-effects N)` | Exactly N HTTP requests, uploads, fetches, timers, worker jobs, operations on files and port calls are waiting to be answered |
 | `(expect-pending-work "task" N)` | Exactly N worker jobs of the task of that name are waiting |
 | `(lose-work N FAULT)` | Answer the N-th effect occurrence, a pending worker job, as `WorkLost(FAULT)` without running it. `FAULT` is `contract`, `resource_limit`, `out_of_memory`, `app_crash`, `expect_failed`, `unavailable` or `executor` |
 | `(time-out-work N)` | Expire the deadline of the N-th effect occurrence, a pending worker job: it is answered `Timeout` without running. A job without a deadline fails the step |
@@ -255,6 +255,28 @@ later read, digest or save of them gives the same bytes. A `File.fetch`
 takes the staged `stub-http` answer, its body becoming the file. Neither
 runner downloads anything: a save is logged, and `expect-saved` reads its
 name and contents.
+
+### Ports
+
+Neither runner calls the page's [port](@/docs/ports.md) handlers: a spec
+answers a port call as it answers an HTTP request, and plays the
+JavaScript's side of a subscription. A call is numbered with the other
+awaited requests.
+
+| Step | Meaning |
+|---|---|
+| `(expect-port-call N "port" "json")` | The N-th effect occurrence is a pending call on `port` whose message is exactly `json` |
+| `(answer-port N reply "json")` | Answer that call with `json`, as written (so a spec can answer what the app's type does not accept) |
+| `(answer-port N throw "message")`, `(answer-port N too-large)`, `(answer-port N timeout)` | Answer it `Threw`, `TooLarge` or, for a call with a timeout, `Timeout` |
+| `(emit-port "port" "json")` | Deliver a message to every live subscription on `port`; fails when none is live |
+| `(close-port "port")`, `(fail-port "port" "message")` | End every live subscription on `port` with `Closed` or `Threw` |
+| `(expect-port-subscriptions "port" N)` | Exactly N subscriptions on `port` are live |
+| `(expect-port-sent "port" K "json")` | The K-th command (from 1) sent on `port` carried exactly `json` |
+| `(expect-port-sends "port" N)` | Exactly N commands were sent on `port` |
+
+`run-effect` on a port call fails and names `answer-port`. Commands are
+not awaited, so `expect-pending-effects` does not count them. See
+[Ports](@/docs/ports.md#testing) for a sample.
 
 ## Work assertions {#work-budgets}
 
@@ -380,7 +402,12 @@ passes `task.stand_in(f)` to `Soak.walk_with`, and the answer goes through
 `SpecRunner.answer_work`), so that function runs inside the leak check (and
 one that crashes on an input the UI produced is a finding), sometimes by
 losing it, timing it out or leaving it pending for disposal to cancel. The
-task's real body runs in the specs, in both runners. The settle check runs on a copy that is freed
+task's real body runs in the specs, in both runners. A stand-in cannot carry
+files: only a worker holds a file's bytes, so a stand-in whose input or
+answer holds a `File` is a contract error. An app whose tasks take or give
+files fuzzes its pure parts instead, as the Log Explorer's target fuzzes
+its index against a model of the whole text, and leaves its tasks to the
+specs and the Chrome tests. The settle check runs on a copy that is freed
 before the walk goes on, so it never counts as a leak, and it stays out of
 the measured round trips.
 

@@ -57,6 +57,9 @@ fuzz target, if it has one, is listed in `Targets.fuzz_targets`.
 
 ## Tasks
 
+These are the development environment's Blueprint tasks, not an app's
+[worker tasks](@/docs/workers.md).
+
 | Task | What it does |
 |---|---|
 | `blueprint run check` | The pull-request gate (below) |
@@ -129,10 +132,11 @@ is a parse error, and both runners implement every step, with Chrome as the
 reference for what it means. The language is
 documented in [Testing](@/docs/testing.md).
 
-A change to the wire protocol changes the engine's encoder,
-`platform/Dom.roc`, `platform/runtime.mjs`, the contract tests under
-`tests/` and Appendix B of `design.md` together, and bumps the protocol
-version.
+A change to the wire protocol changes the engine's encoder and decoders,
+`platform/Dom.roc`, both hosts (`platform/host/host.zig`,
+`platform/host/spec.zig`), `platform/runtime.mjs`, `platform/worker.mjs`,
+the contract tests under `tests/` and Appendix B of `design.md` together,
+and bumps the protocol version.
 
 ## Docs samples
 
@@ -164,7 +168,9 @@ page shows what the store holds), and the Log Explorer's index, which a
 worker builds a chunk at a time, against a model that reads the whole
 text. A walk has no host to run a job's effects, so a worker app's target answers its jobs with a stand-in made from the
 app's pure function (`Task.stand_in`, walked with `Soak.walk_with`); its
-tasks' bodies run in the specs. Every target
+tasks' bodies run in the specs. A stand-in cannot carry files (an input or
+answer that holds a `File` is a contract error), so an app whose tasks take
+or give files fuzzes its pure parts instead. Every target
 that drives the engine also runs the settle check after every step: no
 reader of a written layer may be left stale (see
 [Testing](@/docs/testing.md#the-settle-check)). `fuzz/structure` generates
