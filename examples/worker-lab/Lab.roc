@@ -27,9 +27,11 @@ Lab := [].{
 	window : U64
 	window = Lab.max_inflight - 1
 
-	## The most jobs a run can have.
+	## The most jobs a run can have: enough rows to keep the window busy for
+	## a long while, few enough that the job grid stays readable and each
+	## finished job's admission scan stays cheap.
 	max_jobs : U64
-	max_jobs = 64
+	max_jobs = 256
 
 	## The heaviest weight a job can have.
 	max_weight : U64
@@ -543,6 +545,6 @@ expect {
 
 ## Invalid parameters are explained and start nothing.
 expect {
-	s = { ..Lab.initial, jobs_text: "65" }
-	[Lab.problem(s), Str.inspect(Lab.start(s).run)] == ["Jobs must be a whole number from 1 to 64.", "0"]
+	s = { ..Lab.initial, jobs_text: "257" }
+	[Lab.problem(s), Str.inspect(Lab.start(s).run)] == ["Jobs must be a whole number from 1 to 256.", "0"]
 }
