@@ -432,10 +432,11 @@ Engine := [].{
 	## operation on a file, each of which says which arms it can produce:
 	##
 	## - `Unreadable`: the user's file changed or went away since it was given;
-	## - `TooLarge`: it is more than the operation reads (a worker run reads 16
-	##   files and `maxFileBytes` bytes, a digest `maxFileBytes`, a page read
-	##   its `max_bytes` and at most `maxFileBytes`; a file gives 16 ranges
-	##   URLs);
+	## - `TooLarge`: it is more than the operation accepts: a page read past
+	##   its `max_bytes` or the page's `maxFileBytes` mount option, a digest of
+	##   a range past `maxFileBytes`, a URL for a 17th range of one file, or,
+	##   in a task's job, an `append!` that would take what the job has
+	##   appended past the `maxOutputBytes` mount option;
 	## - `InvalidUtf8`: text was asked for and the bytes are not UTF-8;
 	## - `Unavailable`: the browser cannot perform the operation (a digest
 	##   without WebCrypto, which a page served over plain HTTP from another
@@ -535,9 +536,11 @@ Engine := [].{
 
 	## `watch(v, plan, react)` issues `plan(v)` when the site mounts and again
 	## whenever `v` changes to an unequal value; results go to `react`. Awaited
-	## requests belong to the site: when it is disposed, its subscriptions, timers
-	## and work are cancelled, and admitted `Http` and `StorageGet` requests are
-	## delivered to the nearest surviving ancestor instead. At most 32 requests are
+	## requests belong to the site: when it is disposed, its subscriptions,
+	## timers, operations on files and worker jobs are cancelled, and admitted
+	## `Http`, `Upload`, `Fetch` and `StorageGet` requests, port calls and the
+	## jobs of tasks that say `on_dispose: Keep` are delivered to the nearest
+	## surviving ancestor instead. At most 32 requests are
 	## in flight by default (see `program_boot`); beyond that a request is answered
 	## with `Refused`.
 	watch : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)

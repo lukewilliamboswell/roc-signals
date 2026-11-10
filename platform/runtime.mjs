@@ -890,8 +890,9 @@ export class WorkMonitor {
   }
 
   // The job was cancelled (CANCEL, or the runtime's teardown). `finishing`:
-  // a prepared query whose policy is Finish runs on to completion, so its
-  // instance stays busy until instanceFinished.
+  // a job whose task says `on_cancel: Finish` runs on to completion, or to
+  // its deadline, so its instance stays busy until instanceFinished (or
+  // instanceEnded with cause `deadline`).
   jobCancelled(id, finishing = false) {
     const job = this.jobs.get(id);
     if (job === undefined || !this.live()) return;
@@ -899,7 +900,7 @@ export class WorkMonitor {
     this.cancelJob(job);
   }
 
-  // A cancelled run that was finishing completed; its answer was dropped.
+  // A cancelled job that was finishing completed; its answer was dropped.
   instanceFinished(seq, mem) {
     const inst = this.insts.get(seq);
     if (inst === undefined || !this.live()) return;
@@ -1722,9 +1723,10 @@ export class RocEngineRuntime {
     const nav = this.win ? this.win.navigator : globalThis.navigator;
     this.maxWorkers = options.maxWorkers ?? Math.min((nav && nav.hardwareConcurrency) || 4, 8);
     this.onWorkerFault = options.onWorkerFault ?? null;
-    // The most bytes of files one work job reads into a worker, one digest
-    // reads and one read into the page takes whatever its max_bytes asks; a
-    // request over it is answered FileFailed(TooLarge) without reading.
+    // The most bytes one read into the page takes whatever its max_bytes
+    // asks, one digest reads and one fetched body holds; a request over it
+    // is answered FileFailed(TooLarge) without reading. A job's reads in a
+    // worker are not bounded by it.
     this.maxFileBytes = options.maxFileBytes ?? 256 * 1024 * 1024;
     // A worker whose linear memory has grown past this many bytes is retired
     // after its job (memory never shrinks, and a prepared state may keep

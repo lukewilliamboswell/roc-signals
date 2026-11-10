@@ -5,7 +5,9 @@ import pf.Wire
 import Lab
 
 ## Worker Lab: a run of CPU-bound jobs, each computed by a Roc task
-## in a Web Worker while the page stays responsive.
+## in a Web Worker while the page stays responsive. Here a run is a batch:
+## the jobs one press of "Start" asks for with one set of parameters (one
+## execution of a task is a job, as everywhere else).
 ##
 ## Each row of the job grid owns its job: the row's `Engine.latest` site
 ## issues the typed request for its job while the job is running and gives it

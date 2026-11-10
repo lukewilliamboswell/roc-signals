@@ -4646,7 +4646,7 @@ Fx : {
 ## every app by about 3%). Checking at the end of the turn is the same
 ## contract error with the same message; nothing the turn did is published,
 ## because the crash poisons the instance before the call returns.
-TurnEnd : [Focus(U8, Str), CheckProgram(Str, List(U32)), Port(PortAt)]
+TurnEnd : [Focus(U8, Str), CheckTask(Str, List(U32)), Port(PortAt)]
 
 ## A port request waiting for the end of its turn (see [Ports]): the
 ## request, the site that issued it, and where its bytes go: at offset `at`
@@ -4716,9 +4716,10 @@ is_sub = |req| match req {
 }
 
 ## Requests that survive their site's disposal (design.md: an admitted
-## effect reparents). Subscriptions, intervals, timers and work are scoped:
-## disposal stops them (a pure computation has no external effect to keep,
-## and unwanted compute is only cost).
+## effect reparents). Subscriptions, intervals, timers and operations on
+## files on the page are scoped: disposal stops them. A job is kept or
+## scoped by its task's `on_dispose`, which the caller reads from the
+## request itself.
 is_kept : Req -> Bool
 is_kept = |req| match req {
 	Http(_) => True
@@ -4861,7 +4862,7 @@ issue = |tx, path, reqs, a, owned| {
 				$owned = $owned.append({ id, sub: False, keep: False, a })
 			}
 			Work({ task, on_dispose, .. }) => {
-				t0 = with_fx($tx, |fx| { ..fx, focus: fx.focus.append(CheckProgram(task, path)) })
+				t0 = with_fx($tx, |fx| { ..fx, focus: fx.focus.append(CheckTask(task, path)) })
 				(id, t1) = fx_admit(t0, path, req)
 				$tx = t1
 				$owned = $owned.append({ id, sub: False, keep: on_dispose == Keep, a })
@@ -5470,9 +5471,9 @@ flush_turn = |tx, programs| {
 							$tx = with_fx($tx, |fx| { ..fx, stale: fx.stale + 1 })
 						}
 					}
-				CheckProgram(program, path) =>
-					if !programs.workers.contains(program) {
-						crash "contract: worker task \"${program}\" is not registered; add its registration to with_workers (site ${show_path(path)})"
+				CheckTask(task, path) =>
+					if !programs.workers.contains(task) {
+						crash "contract: worker task \"${task}\" is not registered; add its registration to with_workers (site ${show_path(path)})"
 					}
 				Port(at) => (programs.ports.check)(programs.ports.decls, at)
 			}
