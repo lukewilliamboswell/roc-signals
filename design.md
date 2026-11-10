@@ -145,7 +145,11 @@ reconsidered.
 - **Host-held Roc values.** The host never holds, clones, compares or drops a
   Roc value other than the one boxed engine state and the byte lists it
   exchanges with Roc. There are no capabilities, retained cells or
-  split-and-replace rules because there is nothing for them to govern.
+  split-and-replace rules because there is nothing for them to govern. The
+  converse is allowed: Roc may hold a host resource, a handle whose
+  allocation is a slot in a typed host heap (see [Files](#files)). The host
+  mints it, Roc's reference count is its lifetime, and the host learns of
+  its last release when Roc frees it; the host never holds the handle.
 - **A general-purpose JavaScript FFI.** A use the effect channel cannot
   express is a reason to extend its typed vocabulary, not to bypass it.
 
@@ -167,18 +171,24 @@ reconsidered.
    All reactive scheduling, structural reconciliation, identity, effect
    lifecycle and ownership policy live in the platform's Roc engine. The Zig
    host owns the allocator, the boxed engine state between calls, the command
-   buffer, one staged payload, and fault classification. JavaScript applies
+   buffer, one staged payload, the typed heaps behind resource handles, and
+   fault classification. JavaScript applies
    commands and performs effects. Reactive or structural logic in either is a
    defect.
 5. **Types are never erased across a boundary that can disagree.** A site's
    storage is typed by the site's own closure; dispatch between sites is by
    message, never by a host-interpreted value. The only bytes that cross the
-   Roc boundary are the command stream, event payloads and boot bytes, each
-   with a declared encoding that Roc decodes and validates.
+   Roc boundary are the command stream, event payloads, boot bytes and worker
+   payloads, each with a declared encoding that Roc decodes and validates;
+   the only values the host builds for Roc beyond them are freshly minted
+   resource handles, each with a single reference.
 6. **The command stream is the only output.** Everything the outside world
    observes — DOM structure, attributes, listeners, effects, navigation,
    storage, title, focus — is a command in the stream returned by one host
-   call. There is no side channel.
+   call. There is no side channel, with one narrow exception: the list of
+   resource handles Roc released during a call, which the runtime reads after
+   it has applied the call's batch and performed its effects. It decides
+   nothing: it names only resources no Roc value can reach any more.
 
 ## First Principles, Not Imitation
 
@@ -500,10 +510,13 @@ Every site is a scope. Disposing it:
 
 Dropping the site's closure releases its storage. Nothing is left registered in
 the host or the runtime for a disposed scope: the runtime holds DOM nodes by id
-and effect handles by id, and the commands above release both.
+and effect handles by id, and the commands above release both. A file handle
+the scope's storage held goes when its last reference does, which disposing
+the scope brings about unless a value outside it still holds the handle.
 
 **Leak invariant:** after any sequence of events returns the UI to an earlier
-shape, live allocations, live effect ids and Wasm pages return to a plateau.
+shape, live allocations, live effect ids, live file handles and Wasm pages
+return to a plateau.
 Soak runs assert it natively and in Chrome.
 
 `on_cleanup(name, value, plan)` is a site that renders nothing and reads
@@ -874,6 +887,32 @@ a browser with site data disabled); the boot storage is then empty rather than
 partial, and storage writes persist nothing. Availability is fixed for the
 instance, so an app that promises reloads survive can say when they will not.
 
+### Files
+
+A file the user gives the app — chosen in a file input, dropped or pasted —
+reaches it as a **handle**, never as bytes on the page. The browser keeps
+the file; the runtime holds its `File` under a token; the host mints a
+`Box(U64)` holding the token in its blob heap; and the engine pairs each
+handle with the name, size and type the event's file record carries into a
+`File` value the handler's reducer receives (`State.on_files`). The page's
+heap holds a few dozen bytes per file whatever its size.
+
+A handle's lifetime is Roc's reference count. A `File` is an ordinary value:
+it can be kept in a state, put in a list, compared, sliced
+(`File.slice`, a range of the same file) and sent to a worker program. When
+the last value holding a handle goes — its state is written without it, or
+the scope holding that state is disposed — Roc frees the box, the host
+retires the slot, and after the call the runtime lets the `File` go. No
+handle dangles: nothing can name a file once nothing holds it. What keeps a
+file alive is what keeps any value alive, including the less visible holders
+— a `resource` site's previous value, a reparented request's snapshot, or a
+slice of a list that held it, which keeps the whole list's elements alive —
+and `expect-files` makes it assertable.
+
+An instance holds at most 64 handles at once. An event that carries more
+files than there are free slots delivers the ones that fit and counts the
+rest in `Received.refused`; nothing is minted for them.
+
 ### Target effects
 
 **Target:** further browser services, each as a request kind or subscription
@@ -897,6 +936,16 @@ may carry a policy suffix: `click:prevent` calls `preventDefault` when the
 handler dispatches. The policy is static, fixed at the time the handler is
 declared, because the browser's synchronous response window closes before the
 engine could decide.
+
+A handler declared with the `:files` suffix receives the files the event
+carries instead of text: a file input's `change`, a `drop` and a `paste`
+(see [Files](#files)). The runtime captures them while the event is
+dispatched, because the browser empties a drop's or a paste's file list
+afterwards. A `drop:files` handler also makes the runtime prevent the
+default of `dragover` on its element, without a turn, so the drop happens
+there instead of the browser opening the file. A file input needs no
+policy: the browser opens its chooser on the user's own click, so user
+activation never depends on the engine.
 
 **Target:** `stopPropagation` as a static policy; dynamic `preventDefault`
 expressed as a declared policy over a value the engine has already rendered
@@ -956,6 +1005,21 @@ There is no other host state. No registry of values, closures, listeners,
 timers or tasks lives in Zig: timers, network requests and work are performed
 by the runtime from `FX` commands and come back as events.
 
+The one table the host keeps is the **blob heap** of file handles (see
+[Files](#files)): a fixed array of slots in static storage, each the
+allocation of one `Box(U64)` Roc holds, whose payload is the token the
+runtime knows a browser `Blob` by. It is not a registry of Roc values: the
+host never holds a handle, and Roc's own reference count decides when one
+goes. `roc_dealloc` offers each address to the heap first (two compares, no
+scan); the heap retires a slot whose last reference went instead of freeing
+it, so its token stays valid until the runtime has performed the call's
+effects, which may still name it, and then drains the released tokens with
+`files_released`. A drop inside a Roc call therefore never reaches
+JavaScript. Handles for an event are staged like its payload: at most one
+staged set, released by the host itself if no call takes it. A freed or
+resized address inside the heap that is not a handle's last release is an
+incoherent instance and poisons it.
+
 A worker instance is the same module with the same host, used through one
 more entry, `work`: it moves the staged payload into the program's catalogue
 entry and keeps the returned bytes in the command buffer's slot until the next
@@ -991,7 +1055,9 @@ and refuses later calls without entering Wasm. An executor failure (a bug in
 applying a command) is contained the same way with class `executor`.
 `recover()` mounts a fresh instance from the same module; it never resumes a
 poisoned one. External effects already performed are not undone. Poisoning
-or unmounting the page's runtime terminates every worker it started.
+or unmounting the page's runtime terminates every worker it started and
+lets go of every file the app was given: the heap is abandoned with the
+instance.
 
 A worker instance is contained the same way, alone: a fault while it runs a
 program poisons that instance only. The runtime discards the worker, answers
@@ -1035,6 +1101,7 @@ bound and a declared behaviour at the bound:
 | Worker output held by the host | 1 | Previous one freed |
 | Staged payloads | 1 | Previous one freed |
 | Diagnostic text | 512 bytes | Truncated |
+| File handles live in one instance | 64 | The event's further files are not delivered and are counted in `Received.refused` |
 | Live node ids (rows included) | 2³² − 2 | `resource_limit` poison |
 | Runtime ingress queue | 4096 queued events | `resource_limit` poison |
 | Monitor job history | `history` option (default 128, at most 1024) | Oldest overwritten, counted |
@@ -1054,14 +1121,22 @@ assert it.
 `.scm` specs are the platform's Playwright-style test language and the single
 source of truth for application-visible behaviour. A spec names a test, an
 optional setup (initial location, local storage and its availability,
-connectivity, visibility), and a list of steps written against the rendered
-UI:
+connectivity, visibility, the files the spec can give the app), and a list
+of steps written against the rendered UI:
 
 - **Locators** — `role` (implicit or explicit role plus accessible name),
   `label` (`aria-label`), `text` (the element holding a text node),
   `test-id` (`data-testid`).
 - **Actions** — click and real-click, fill, change, select an option, check
-  and uncheck, submit, focus and blur, navigation and history back/forward.
+  and uncheck, submit, focus and blur, navigation and history back/forward,
+  and giving the app setup files: `choose-files` in a file input,
+  `drop-files` and `paste-files` on an element. A setup file, `(file NAME
+  TYPE TEXT [REPEAT])`, is its contents written in the spec, so both runners
+  give the app the same bytes: the native runner mints the files' handles in
+  its host's heap, and the browser runner sets them on the input through
+  DevTools or carries them in the browser's own drag and clipboard events,
+  and fails if Chrome gives a chosen file another type than the declared
+  one.
 - **Assertions** — text, value, checked, disabled, attribute presence and
   value, visibility and absence, location, document title, local storage,
   pending effects.
@@ -1168,6 +1243,7 @@ soak plateaus instead.
 | `expect-interval ms n` | Live `INTERVAL` subscriptions with period `ms` |
 | `tick-interval ms` | Deliver `Fired` to every live interval with period `ms`; a step with none live fails. `tick-interval-if-active` is a no-op when none is live |
 | `expect-cleanup name n` | Runs of `on_cleanup` sites named `name` |
+| `expect-files n` | File handles live in the app's instance after the last call: natively from the native host's heap, in Chrome from `metric(6)` |
 
 The browser runner holds intervals for `tick-interval` (they never fire on
 their own during a replay) and drives `set-online` and `set-visibility` by
@@ -1372,6 +1448,16 @@ on : Str, Handler(ctx) -> Attr(ctx)          # event name, optional ":prevent"
 on_click : Handler(ctx) -> Attr(ctx)
 ref : Str -> Attr(ctx)                        # named focus reference
 
+# Files
+File                                          # opaque handle: a file, or a range of one
+File.name, File.mime : File -> Str
+File.size : File -> U64                       # bytes in this file or range
+File.slice : File, { start : U64, len : U64 } -> File   # contract error outside the file
+File.contents : File -> List(U8)              # in a worker program; contract error on the page
+Received : { files : List(File), refused : U64 }
+State.on_files : State(ctx, s), (s, Received -> s) -> FilesHandler(ctx)
+on_files : Str, FilesHandler(ctx) -> Attr(ctx)   # "change", "drop" or "paste"
+
 # Components
 component : Val(ctx, p), Sink(ctx, a), (Val(Comp(p, a), p), State(Comp(p, a), List(a)) -> Elem(Comp(p, a))) -> Elem(ctx)
 State.push, State.push_by, State.push_value_by   # append an outward action
@@ -1424,10 +1510,11 @@ Wire.Bytes                                     # a byte payload that crosses as 
 `Html` (`platform/Html.roc`) is the typed element vocabulary above `Engine`:
 structure (`div`, `section`, `p`, `h1`–`h3`, `ul`/`li`, `pre_v`, `link`),
 controls (`button`, `action_button`, `text_input`, `number_input`,
-`textarea`, `checkbox`, `radio`, `select`/`option`, `form`, `submit_button`),
+`textarea`, `checkbox`, `radio`, `select`/`option`, `form`, `submit_button`,
+`file_input`),
 accessibility attributes (`aria_label`, `aria_invalid`, `aria_describedby`)
 and event helpers (`on_input`, `on_change`, `on_focus`, `on_blur`,
-`on_keydown`, `on_submit`). Accessible names go in `aria-label`, which the
+`on_keydown`, `on_submit`, `on_drop_files`, `on_paste_files`). Accessible names go in `aria-label`, which the
 spec locators match.
 
 **Target vocabulary.** An `Svg` module and a typed style API, callback and
@@ -1458,6 +1545,7 @@ The platform provides (`platform/main.roc`):
 | `roc_engine_keys` | `() -> List(U8)` | Declared storage keys: `count:u32 (key:str)*` |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Box(Core.App), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One transaction: state, recycled command buffer, recycled work buffer, node, handler, payload |
+| `roc_engine_files` | `Box(Core.App), List(U8), List(U8), u32, u32, List(U8), List(Box(U64)) -> { cmds, state, work }` | A `:files` event: as `roc_engine_event`, with the file record as the payload and the handles the host minted for it, in the record's order; a record that does not match them is a `contract` crash |
 | `roc_engine_drop` | `Box(Core.App), List(U8), List(U8) -> {}` | Teardown |
 | `roc_engine_work` | `List(U8) -> List(U8)` | A worker instance's job: payload `name:str input:rest`, returns the program's output bytes as a list of its own. A name the catalogue does not hold, or a payload without a name, is a `contract` crash (it poisons that worker instance only) |
 
@@ -1475,6 +1563,10 @@ warm-up neither allocates.
 | `payload_reserve(len) -> ptr` | Allocate the next call's payload (`0` for `len = 0`); JS writes `len` bytes at `ptr` after refreshing its memory view |
 | `init()` | Mount with the staged boot bytes; mount commands become readable |
 | `event(node, handler)` | One transaction with the staged payload; its commands become readable |
+| `files_stage(n) -> u32` | Mint handles for the next `event_files`, as many of `n` as the blob heap has free slots (64 at most live), and return how many; their tokens (`u64` each) are readable at `files_tokens()`. Releases an undelivered staged set first |
+| `event_files(node, handler)` | A `:files` event: the staged payload (its file record) and the staged handles move into `roc_engine_files` |
+| `files_released() -> u32` | After a batch is applied and its effects performed: free the slots of the handles Roc released since the last drain and return how many; their tokens are readable at `files_tokens()`, and the runtime lets their files go. `0` when poisoned |
+| `files_tokens() -> ptr` | The tokens `files_stage` or `files_released` left |
 | `work()` | A worker instance's job: moves the staged payload into `roc_engine_work` and keeps the output readable through `cmd_ptr`/`cmd_len` until the next call, releasing the previous output. Traps when an engine state is mounted in this instance or the instance is poisoned |
 | `protocol_version() -> u32` | The engine's protocol version; answers before mount and when poisoned |
 | `cmd_ptr()`, `cmd_len()` | The current command batch (in a worker instance, the last job's output), valid until the next `event`, `work` or `drop` |
@@ -1482,7 +1574,7 @@ warm-up neither allocates.
 | `drop()` | Teardown; no-op when poisoned or already dropped |
 | `fault() -> u32` | `0` healthy, `1` contract, `2` resource_limit, `3` out_of_memory, `4` app_crash, `5` expect_failed |
 | `err_ptr()`, `err_len()` | Diagnostic text (≤ 512 bytes) |
-| `metric(i) -> u64` | Allocator counters: `0` allocations, `1` deallocations, `2` requested bytes, `3` reallocations, `4` live allocations, `5` live bytes. `16 + k`: counter `k` of the work record (0 past its end) |
+| `metric(i) -> u64` | Allocator counters: `0` allocations, `1` deallocations, `2` requested bytes, `3` reallocations, `4` live allocations, `5` live bytes; `6` live file handles (retired ones included until drained). `16 + k`: counter `k` of the work record (0 past its end) |
 | `reset_metrics()` | Reset counters 0–3 |
 | `memory` | Linear memory |
 
@@ -1540,6 +1632,14 @@ An event is `event(node, handler)` with the payload staged first:
   target's value; `change` → `"true"`/`"false"` for a checkbox or radio, else the value;
   `keydown`/`keyup` → the key; `focus`/`blur` (listened as
   `focusin`/`focusout`) → the target's value.
+- **File events:** a handler declared `change:files`, `drop:prevent:files`
+  or `paste:files` receives the target's `files`, the drop's
+  `dataTransfer.files` or the paste's `clipboardData.files`, captured while
+  the event is dispatched; an event that carries none dispatches nothing.
+  The runtime stages handles with `files_stage`, then the file record
+  `minted:u32 refused:u32 (size:u64 name:str type:str)*minted` (the files
+  in event order, `refused` those the heap had no slot for), and calls
+  `event_files`.
 - **Effect results:** `node = 0xffffffff`, `handler` = request id. Payload:
 
 | Tag | Layout | Result |
@@ -1646,8 +1746,10 @@ control value under the controlled-input rule and mirrored as an attribute;
 `readonly`, `required`, `hidden` and `multiple` are present for any value other
 than `""` and `"false"`. `class` on an SVG element is set as an attribute.
 
-**Event names.** `name[:policy]`; the only policy today is `prevent`.
-`focus` and `blur` are listened as `focusin` and `focusout`.
+**Event names.** `name[:suffix]*`: `prevent` calls `preventDefault` when the
+handler dispatches; `files` makes the payload the event's files (above),
+and on `drop` also makes the runtime prevent `dragover`'s default on the
+element. `focus` and `blur` are listened as `focusin` and `focusout`.
 
 **Namespaces.** `<svg>` and its descendants are created in the SVG namespace; a
 row template first instantiated under an SVG parent is re-created in the SVG

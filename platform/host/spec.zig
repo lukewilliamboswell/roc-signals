@@ -19,6 +19,7 @@
 //! receives the lost job's fault class as the page would.
 
 const std = @import("std");
+const resources = @import("resources.zig");
 
 // The command-line entry the platform provides (`SpecRunner.main!`).
 extern fn roc_spec_main(args: RocList) callconv(.c) i32;
@@ -163,11 +164,17 @@ export fn roc_alloc(size: usize, align_arg: usize) callconv(.c) *anyopaque {
 }
 
 export fn roc_dealloc(ptr: *anyopaque, align_arg: usize) callconv(.c) void {
+    switch (blobs.route(ptr)) {
+        .not_owned => {},
+        .retired => return,
+        .corrupt => fail("internal: a file handle was released twice", ""),
+    }
     const user: [*]u8 = @ptrCast(ptr);
     free(user - alignment(align_arg));
 }
 
 export fn roc_realloc(ptr: *anyopaque, size: usize, align_arg: usize) callconv(.c) *anyopaque {
+    if (blobs.contains(ptr)) fail("internal: a file handle was resized", "");
     const user: [*]u8 = @ptrCast(ptr);
     const old = @as(*const usize, @ptrCast(@alignCast(user - header_size))).*;
     const next = roc_alloc(size, align_arg);
@@ -267,6 +274,34 @@ fn hostedStdout(text: RocStr) callconv(.c) void {
 fn hostedStderr(text: RocStr) callconv(.c) void {
     defer text.decref();
     writeAll(2, text.slice());
+}
+
+/// The native spec host's copy of the page's file handles (design.md,
+/// "Files"): the same heap the Wasm host mints them in, so a spec observes
+/// their release as the page's runtime does. Its bound is the page's.
+var blobs: resources.Heap(.blob, 64, void) = .{};
+
+fn nothing(_: anytype) void {}
+
+/// `Cli.mint_files!`: up to `n` fresh handles (fewer when the heap is
+/// nearly full), as a Roc `List(Box(U64))` whose single reference passes to
+/// Roc, each element the address of a handle's payload with refcount 1.
+fn hostedMintFiles(n: u64) callconv(.c) RocList {
+    const want: usize = @min(@as(usize, @intCast(n)), 64 - blobs.live_count);
+    if (want == 0) return .{ .elements = null, .length = 0, .capacity_or_alloc_ptr = 0 };
+    const base: [*]u8 = @ptrCast(roc_alloc(@sizeOf(usize) * (want + 1), @alignOf(usize)));
+    @as(*isize, @ptrCast(@alignCast(base))).* = 1;
+    const elems: [*]usize = @ptrCast(@alignCast(base + @sizeOf(usize)));
+    for (0..want) |i| elems[i] = @intFromPtr(blobs.mint({}) orelse unreachable);
+    return .{ .elements = base + @sizeOf(usize), .length = want, .capacity_or_alloc_ptr = want << 1 };
+}
+
+/// `Cli.live_files!`: free the slots of the handles Roc released, as the
+/// page's runtime does after each call, and count those still live.
+fn hostedLiveFiles() callconv(.c) u64 {
+    var token: u64 = 0;
+    while (blobs.releaseOne(&token, nothing)) {}
+    return blobs.live_count;
 }
 
 fn hostedNowNs() callconv(.c) u64 {
@@ -425,6 +460,8 @@ fn hostedWork(payload: RocList) callconv(.c) RocList {
 
 comptime {
     @export(&hostedWork, .{ .name = "roc_test_work" });
+    @export(&hostedMintFiles, .{ .name = "roc_test_mint_files" });
+    @export(&hostedLiveFiles, .{ .name = "roc_test_live_files" });
     @export(&hostedReadFile, .{ .name = "roc_test_read_file" });
     @export(&hostedFileExists, .{ .name = "roc_test_file_exists" });
     @export(&hostedStdout, .{ .name = "roc_test_stdout" });

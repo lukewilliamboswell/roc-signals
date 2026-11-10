@@ -62,8 +62,19 @@
 // Timing entries, all bounded (see "The monitor" below). The pool and this
 // runtime report to it after they act; it decides nothing.
 //
-// Handler event names may carry a policy suffix: "click:prevent" listens to
-// "click" and calls preventDefault when it dispatches (in-app links, forms).
+// Handler event names may carry suffixes: "click:prevent" listens to
+// "click" and calls preventDefault when it dispatches (in-app links, forms);
+// ":files" makes the payload the event's files (a file input's `change`, a
+// `drop`, a `paste`) instead of text. A "drop" handler with ":files" also
+// prevents `dragover`'s default on its element, so the browser lets the drop
+// happen there instead of opening the file.
+//
+// Files (design.md, "Files"): the runtime holds each file the app was given
+// as the browser's own `File`, under the token of the handle the host minted
+// for it (`files_stage`). The app's handles live on Roc's reference count;
+// after every call whose batch the runtime applied and whose effects it
+// performed, `files_released` lists the handles Roc let go, and the runtime
+// lets go of their files. Poisoning or unmounting lets go of all of them.
 //
 // Attribute values: "" removes the attribute. `value` and `checked` are set
 // as properties (the live control state), boolean attributes (disabled,
@@ -233,6 +244,18 @@ function settleSelect(parent) {
 const DOM_EVENT = { focus: "focusin", blur: "focusout" };
 const APP_EVENT = { focusin: "focus", focusout: "blur" };
 
+// What a handler declared: its number and its suffixes (see "Handler event
+// names" above).
+function handlerEntry(h, policies) {
+  return { h, prevent: policies.includes("prevent"), files: policies.includes("files") };
+}
+
+// The files a `:files` event carries.
+function filesOf(event) {
+  const list = event.type === "drop" ? event.dataTransfer && event.dataTransfer.files : event.type === "paste" ? event.clipboardData && event.clipboardData.files : event.target.files;
+  return list ? Array.from(list) : [];
+}
+
 function payloadOf(event) {
   const t = event.target;
   switch (event.type) {
@@ -258,6 +281,20 @@ function u32(v) {
   const b = new Uint8Array(4);
   new DataView(b.buffer).setUint32(0, v, true);
   return b;
+}
+
+// A u64 little-endian (sizes stay below 2^53).
+function u64le(v) {
+  const b = new Uint8Array(8);
+  const dv = new DataView(b.buffer);
+  dv.setUint32(0, v % 0x100000000, true);
+  dv.setUint32(4, Math.floor(v / 0x100000000), true);
+  return b;
+}
+
+// Token `i` of a host token array, as a Number (tokens stay below 2^53).
+function tokenAt(dv, i) {
+  return dv.getUint32(8 * i, true) + dv.getUint32(8 * i + 4, true) * 0x100000000;
 }
 
 function encStr(s) {
@@ -1225,6 +1262,8 @@ export class RocEngineRuntime {
     // page's scripted backend; it may answer synchronously), else the
     // global fetch.
     this.fetch = options.fetch ?? null;
+    // token -> File for every file the app holds a handle on (see "Files").
+    this.files = new Map();
     // Work (see "Work" above): the pool is made on the first job.
     this.pool = null;
     this.workerUrl = options.workerUrl ?? new URL("./worker.mjs", import.meta.url);
@@ -1362,6 +1401,7 @@ export class RocEngineRuntime {
     }
     this.live.clear();
     this.stopWorkers();
+    this.files.clear();
     this.queue = [];
     this.fxOut = [];
     this.monitor.runtimeEnded("poisoned", this.poisoned);
@@ -1379,6 +1419,7 @@ export class RocEngineRuntime {
     this.sites = [];
     this.templates = [];
     this.live = new Map();
+    this.files = new Map();
     this.issued = [];
     this.queue = [];
     this.fxOut = [];
@@ -1398,6 +1439,7 @@ export class RocEngineRuntime {
     for (const [type, fn] of this.internal) this.root.removeEventListener(type, fn, true);
     this.internal = [];
     this.x.drop();
+    this.files.clear();
     this.root.textContent = "";
     this.statics = [];
     this.sites = [];
@@ -1441,6 +1483,21 @@ export class RocEngineRuntime {
     if (this.listening.has(dom)) return;
     this.listening.set(dom, this.onEvent);
     this.root.addEventListener(dom, this.onEvent);
+    if (dom === "drop" && !this.listening.has("dragover")) {
+      // A drop target that takes files lets the drop happen (see "Handler
+      // event names" above); dragover reaches no app handler.
+      const over = (event) => {
+        for (let node = event.target; node && node !== this.root; node = node.parentNode) {
+          const h = node.__h && node.__h.drop;
+          if (h !== undefined) {
+            if (h.files) event.preventDefault();
+            return;
+          }
+        }
+      };
+      this.listening.set("dragover", over);
+      this.root.addEventListener("dragover", over);
+    }
   }
 
   // The nearest handler for this event type walking up from the target
@@ -1451,8 +1508,6 @@ export class RocEngineRuntime {
     // "Controlled inputs").
     if (event.type === "submit") event.preventDefault();
     let node = event.target;
-    // Handler numbers are stored as -1 - h when the handler asks for
-    // preventDefault.
     let handler = null;
     while (node && node !== this.root) {
       if (handler === null && node.__h !== undefined) {
@@ -1460,11 +1515,13 @@ export class RocEngineRuntime {
         if (h !== undefined) handler = h;
       }
       if (node.__rn !== undefined && handler !== null) {
-        if (handler < 0) {
-          event.preventDefault();
-          handler = -1 - handler;
-        }
-        this.dispatch(node.__rn, handler, payloadOf(event), node);
+        if (handler.prevent) event.preventDefault();
+        if (handler.files) {
+          // The browser empties a drop's or a paste's file list after the
+          // event, so the files are captured now.
+          const files = filesOf(event);
+          if (files.length > 0) this.dispatch(node.__rn, handler.h, { files }, node);
+        } else this.dispatch(node.__rn, handler.h, payloadOf(event), node);
         return;
       }
       node = node.parentNode;
@@ -1510,6 +1567,37 @@ export class RocEngineRuntime {
     }
   }
 
+  // One engine call for an event: a `:files` event stages its handles and
+  // file record (design.md, Appendix B), anything else its text.
+  call(node, handler, payload) {
+    if (payload === null || typeof payload !== "object" || payload.files === undefined) {
+      this.stage(payload);
+      this.x.event(node, handler);
+      return;
+    }
+    const files = payload.files;
+    const minted = this.x.files_stage(files.length);
+    const tokens = new DataView(this.x.memory.buffer, this.x.files_tokens(), 8 * minted);
+    const parts = [u32(minted), u32(files.length - minted)];
+    for (let i = 0; i < minted; i += 1) {
+      const f = files[i];
+      this.files.set(tokenAt(tokens, i), f);
+      parts.push(u64le(f.size), encStr(f.name), encStr(f.type));
+    }
+    this.stage(concat(parts));
+    this.x.event_files(node, handler);
+  }
+
+  // Let go of the files whose handles Roc released during the last call:
+  // after its batch was applied and its effects performed, so a request in
+  // the batch that named one has already taken its file.
+  releaseFiles() {
+    const n = this.x.files_released();
+    if (n === 0) return;
+    const tokens = new DataView(this.x.memory.buffer, this.x.files_tokens(), 8 * n);
+    for (let i = 0; i < n; i += 1) this.files.delete(tokenAt(tokens, i));
+  }
+
   stage(payload) {
     if (payload === "" || payload.length === 0) {
       this.x.payload_reserve(0);
@@ -1527,14 +1615,12 @@ export class RocEngineRuntime {
     if (globalThis.__trace) console.log("event", node, handler, JSON.stringify(payload));
     const m = this.monitor;
     if (!m.timesTurn(node, handler)) {
-      this.stage(payload);
-      this.x.event(node, handler);
+      this.call(node, handler, payload);
       this.apply();
       return;
     }
     const t0 = m.now();
-    this.stage(payload);
-    this.x.event(node, handler);
+    this.call(node, handler, payload);
     const t1 = m.now();
     const bytes = this.apply();
     const t2 = m.now();
@@ -1610,6 +1696,7 @@ export class RocEngineRuntime {
       this.fxOut = [];
       for (const fx of out) this.perform(fx);
     }
+    this.releaseFiles();
     return n;
   }
 
@@ -1662,8 +1749,8 @@ export class RocEngineRuntime {
               at += 4 + n;
             } else if (hole.kind === HOLE_CLICK) {
               if (target.__h === undefined) target.__h = {};
-              const [type, policy] = hole.name.split(":");
-              target.__h[type] = policy === "prevent" ? -1 - hole.handler : hole.handler;
+              const [type, ...policies] = hole.name.split(":");
+              target.__h[type] = handlerEntry(hole.handler, policies);
             } else {
               this.statics[dv.getUint32(at, true)] = target;
               at += 4;
@@ -1754,9 +1841,9 @@ export class RocEngineRuntime {
           const type = readStr(u8, at + 12, n);
           el.__rn = node;
           if (el.__h === undefined) el.__h = {};
-          const [base, policy] = type.split(":");
+          const [base, ...policies] = type.split(":");
           const h = dv.getUint32(at + 4, true);
-          el.__h[base] = policy === "prevent" ? -1 - h : h;
+          el.__h[base] = handlerEntry(h, policies);
           this.listen(base);
           at += 12 + n;
           break;

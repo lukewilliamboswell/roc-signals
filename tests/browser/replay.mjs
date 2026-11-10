@@ -48,6 +48,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { launch } from "./cdp.mjs";
 
@@ -240,6 +241,70 @@ async function expectProp(page, s, what) {
   await need(page, s.loc);
   const got = await onEl(page, s.loc, (e, w) => (w === "checked" ? e.checked : e.disabled), what);
   if (got !== s.value) throw new Error(`${showLoc(s.loc)} ${what} ${got}, expected ${s.value}`);
+}
+
+// The setup files a file step names, as { name, type, text, count }.
+function setupFiles(state, names) {
+  return names.map((name) => {
+    const f = state.files.get(name);
+    if (f === undefined) throw new Error(`no setup file named ${JSON.stringify(name)}`);
+    return { name, ...f };
+  });
+}
+
+// `choose-files`: the files are written to disk, each under its own name,
+// and set on the file input through DevTools, as a user's choice in the
+// browser's own chooser sets them, which fires `input` and `change`. The
+// browser decides a chosen file's type from its name; it must be the type
+// the spec declares.
+async function chooseFiles(page, s, state) {
+  const files = setupFiles(state, s.files);
+  await need(page, s.loc);
+  const r = await onEl(page, s.loc, (e, n) => {
+    if (e.tagName !== "INPUT" || (e.getAttribute("type") ?? "").toLowerCase() !== "file") return { error: "is not a file input" };
+    if (e.disabled) return { error: "is disabled" };
+    if (n > 1 && !e.multiple) return { error: `takes one file, not ${n}` };
+    return {};
+  }, files.length);
+  if (r.error) throw new Error(`${showLoc(s.loc)} ${r.error}`);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "roc-signals-files-"));
+  const paths = files.map((f, i) => {
+    fs.mkdirSync(path.join(dir, String(i)));
+    const p = path.join(dir, String(i), f.name);
+    fs.writeFileSync(p, f.text.repeat(f.count));
+    return p;
+  });
+  const input = await page.evaluateHandle((loc) => window.__loc(loc), s.loc);
+  await page.send("DOM.setFileInputFiles", { files: paths, objectId: input.objectId });
+  await settle(page);
+  fs.rmSync(dir, { recursive: true, force: true });
+  const types = await onEl(page, s.loc, (e) => Array.from(e.files).map((f) => f.type));
+  files.forEach((f, i) => {
+    if (types[i] !== f.type) throw new Error(`Chrome gives ${f.name} the type ${JSON.stringify(types[i])}, not the declared ${JSON.stringify(f.type)}`);
+  });
+}
+
+// `drop-files` and `paste-files`: a `DataTransfer` of the files, carried by
+// the browser's own `dragover` and `drop` events, or by a `paste` event. A
+// drop needs a `dragover` that the page prevented, as in a real drag.
+async function giveFiles(page, s, state, kind) {
+  const files = setupFiles(state, s.files);
+  await need(page, s.loc);
+  const r = await onEl(page, s.loc, (e, kind, files) => {
+    const dt = new DataTransfer();
+    for (const f of files) dt.items.add(new File([f.text.repeat(f.count)], f.name, { type: f.type }));
+    if (kind === "paste") {
+      e.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+      return {};
+    }
+    const over = new DragEvent("dragover", { dataTransfer: dt, bubbles: true, cancelable: true });
+    e.dispatchEvent(over);
+    if (!over.defaultPrevented) return { error: "does not take a drop" };
+    e.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
+    return {};
+  }, kind, files);
+  if (r.error) throw new Error(`${showLoc(s.loc)} ${r.error}`);
+  return settle(page);
 }
 
 async function stage(state, answer) {
@@ -460,6 +525,13 @@ const STEPS = {
     const got = await page.evaluate((program) => window.__rt.pendingEffects().filter((r) => r.op === "work" && r.program === program).length, s.program);
     if (got !== s.count) throw new Error(`expected ${s.count} pending worker jobs for ${JSON.stringify(s.program)}, got ${got}`);
   },
+  "choose-files": (page, s, state) => chooseFiles(page, s, state),
+  "drop-files": (page, s, state) => giveFiles(page, s, state, "drop"),
+  "paste-files": (page, s, state) => giveFiles(page, s, state, "paste"),
+  "expect-files": async (page, s) => {
+    const n = await page.evaluate(() => Number(window.__rt.x.metric(6)));
+    if (n !== s.count) throw new Error(`expected ${s.count} live file handles, found ${n}`);
+  },
   "tick-interval": tick,
   "tick-interval-if-active": tick,
   "expect-interval": async (page, s) => {
@@ -532,6 +604,10 @@ const SETUP = {
   "initial-visibility": (out, s) => {
     out.visibility = s.text;
   },
+  file: (out, s) => {
+    if (out.files.has(s.name)) throw new Error(`file ${JSON.stringify(s.name)} is declared twice`);
+    out.files.set(s.name, { type: s.type, text: s.text, count: s.count });
+  },
 };
 
 // `--check-grammar`: the handler tables cover exactly the grammar's forms.
@@ -550,7 +626,7 @@ function checkGrammar(file) {
 }
 
 function setupOf(spec) {
-  const out = { location: "/", storage: [], storageAvailable: true, online: true, visibility: "visible" };
+  const out = { location: "/", storage: [], storageAvailable: true, online: true, visibility: "visible", files: new Map() };
   for (const s of spec.setup) {
     const h = SETUP[s.op];
     if (h === undefined) throw new Error(`setup ${s.op} has no handler in this runner`);
@@ -688,7 +764,7 @@ for (const spec of specs) {
       setup.visibility,
     );
     await page.evaluateOnNewDocument(install, attrOf.toString());
-    const state = { stub: null, mark: null, doc: null, loads: 0 };
+    const state = { stub: null, mark: null, doc: null, loads: 0, files: setup.files };
     await page.goto(`http://127.0.0.1:${port}${setup.location}`);
     page.conn.on(page.sessionId, "Page.loadEventFired", () => {
       state.loads += 1;

@@ -77,6 +77,9 @@ SpecRunner := [].{
 		init : List(U8) -> (state, List(U8), List(U8)),
 		event : state, List(U8), List(U8), U32, U32, List(U8) -> (state, List(U8), List(U8)),
 
+		## A `:files` event: its file record and the handles minted for it.
+		files : state, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (state, List(U8), List(U8)),
+
 		## A worker instance's entry: `name:str input:rest` to output bytes.
 		## Programs are pure, so the runner runs a job in process.
 		work : List(U8) -> List(U8),
@@ -111,7 +114,15 @@ SpecRunner := [].{
 		gets : List({ id : U32, key : Str }),
 		subs : List({ id : U32, sub : Sub }),
 		stub : [NoStub, Staged(Scm.Stub)],
+
+		## The spec's setup files, and the handle each file the app was given
+		## was minted under (a file given twice has two handles).
+		files : List(SetupFile),
+		given : List({ token : U64, name : Str }),
 	}
+
+	## A setup file: its name, media type and contents.
+	SetupFile : { name : Str, mime : Str, bytes : List(U8) }
 
 	## The runner's state: the instance and the buffers it lends back, the
 	## oracle's DOM and browser models, the latest work record, the oracle's
@@ -153,6 +164,9 @@ SpecRunner := [].{
 
 	put_u32 : List(U8), U32 -> List(U8)
 	put_u32 = |b, n| b.concat([n.bitwise_and(0xFF).to_u8_wrap(), n.shr_zf_wrap(8).bitwise_and(0xFF).to_u8_wrap(), n.shr_zf_wrap(16).bitwise_and(0xFF).to_u8_wrap(), n.shr_zf_wrap(24).to_u8_wrap()])
+
+	put_u64 : List(U8), U64 -> List(U8)
+	put_u64 = |b, n| SpecRunner.put_u32(SpecRunner.put_u32(b, n.to_u32_wrap()), n.shr_zf_wrap(32).to_u32_wrap())
 
 	put_str : List(U8), Str -> List(U8)
 	put_str = |b, s| {
@@ -347,6 +361,8 @@ SpecRunner := [].{
 		gets: [],
 		subs: [],
 		stub: NoStub,
+		files: [],
+		given: [],
 	}
 
 	## A runner state for instance `inst` before its first batch.
@@ -395,6 +411,7 @@ SpecRunner := [].{
 		var $online = Bool.True
 		var $visible = Bool.True
 		var $storage_available = Bool.True
+		var $files = []
 		for entry in spec.setup {
 			match entry.item {
 				InitialLocation(url) => {
@@ -412,12 +429,20 @@ SpecRunner := [].{
 				LocalStorageUnavailable => {
 					$storage_available = Bool.False
 				}
+				File({ name, mime, text, repeat }) => {
+					if $files.any(|f| f.name == name) {
+						return Err("file \"${name}\" is declared twice")
+					}
+					$files = $files.append({ name, mime, bytes: List.repeat(text.to_utf8(), repeat).join() })
+				}
 			}
 		}
 		if !$storage_available and !$storage.is_empty() {
 			return Err("local-storage seeds storage that local-storage-unavailable says the app cannot read")
 		}
-		Ok(SpecRunner.mount_in(program, { url: $url, storage: $storage, online: $online, visible: $visible, storage_available: $storage_available }))
+		s0 = SpecRunner.mount_in(program, { url: $url, storage: $storage, online: $online, visible: $visible, storage_available: $storage_available })
+		b0 = s0.browser
+		Ok({ ..s0, browser: { ..b0, files: $files } })
 	}
 
 	## Mount the app at `url` with `storage` as local storage; the app's
@@ -805,6 +830,10 @@ SpecRunner := [].{
 				if (SpecRunner.disabled(Dom.node(dom, i))) Err("${Scm.show_loc(loc)} is disabled") else SpecRunner.mouse_click(program, s, i)
 			}
 			Fill(loc, v) => SpecRunner.fill(program, s, loc, v)
+			ChooseFiles(_, names) => SpecRunner.give_files(program, s, op, SpecRunner.plain_handles(s, names.len()))
+			DropFiles(_, names) => SpecRunner.give_files(program, s, op, SpecRunner.plain_handles(s, names.len()))
+			PasteFiles(_, names) => SpecRunner.give_files(program, s, op, SpecRunner.plain_handles(s, names.len()))
+			ExpectFiles(_) => Err("expect-files counts the handles live in the host; the spec command runs it, through its host")
 			Focus(loc) => {
 				i = SpecRunner.need(dom, loc)?
 				if (SpecRunner.focusable(Dom.node(dom, i))) Ok(SpecRunner.move_focus(program, s, i + 1)) else Ok(s)
@@ -1237,23 +1266,108 @@ SpecRunner := [].{
 		} else {
 			s1 = SpecRunner.mount_in(program, { url, storage: b.storage, online: b.online, visible: b.visible, storage_available: b.storage_available })
 			b1 = s1.browser
-			Ok({ ..s1, mark: s.mark, browser: { ..b1, doc: b.doc + 1, back: b.back.append(entry), fwd: [] } })
+			Ok({ ..s1, mark: s.mark, browser: { ..b1, doc: b.doc + 1, back: b.back.append(entry), fwd: [], files: b.files, given: b.given } })
 		}
 	}
 
+	## Handles for `n` files when no host mints them (`one`, for fuzz targets
+	## and soak walks): plain boxes, so their release is not observed.
+	plain_handles : S(state), U64 -> List(Box(U64))
+	plain_handles = |s, n| {
+		base = 0x1000000000000000 + s.browser.given.len()
+		var $out = []
+		var $i = 0
+		while $i < n {
+			$out = $out.append(Box.box(base + $i))
+			$i = $i + 1
+		}
+		$out
+	}
+
+	## How many files a file step gives the app.
+	file_count : Scm.Op -> Try(U64, [NoFiles])
+	file_count = |op|
+		match op {
+			ChooseFiles(_, names) => Ok(names.len())
+			DropFiles(_, names) => Ok(names.len())
+			PasteFiles(_, names) => Ok(names.len())
+			_ => Err(NoFiles)
+		}
+
+	## `choose-files`, `drop-files` and `paste-files`: the user gives the app
+	## the named setup files, as the browser's `change` on a file input,
+	## `drop` or `paste` event (design.md, "Files"). `handles` are the
+	## handles the host minted, as many as it had room for; the rest are
+	## refused, as the record says. The located element (or, for a drop or a
+	## paste, an ancestor) must have a `:files` handler for the event, and a
+	## file input must take as many files as are chosen.
+	give_files : Program(state), S(state), Scm.Op, List(Box(U64)) -> Try(S(state), Str)
+	give_files = |program, s, op, handles| {
+		(loc, ev, names) = match op {
+			ChooseFiles(l, n) => (l, "change", n)
+			DropFiles(l, n) => (l, "drop", n)
+			PasteFiles(l, n) => (l, "paste", n)
+			_ => return Err("not a file step")
+		}
+		dom = s.dom
+		i = SpecRunner.need(dom, loc)?
+		n = Dom.node(dom, i)
+		if ev == "change" {
+			if n.tag != "input" or Dom.attr_of(n, "type") != "file" {
+				return Err("${Scm.show_loc(loc)} is not a file input")
+			}
+			if SpecRunner.disabled(n) {
+				return Err("${Scm.show_loc(loc)} is disabled")
+			}
+			if names.len() > 1 and Dom.attr_of(n, "multiple") == "" {
+				return Err("${Scm.show_loc(loc)} takes one file, not ${names.len().to_str()}")
+			}
+		}
+		(node, h) = Dom.files_target(dom, i, ev) ? |_| "no ${ev} handler that takes files at ${Scm.show_loc(loc)}"
+		var $files = []
+		for name in names {
+			f = s.browser.files.find_first(|g| g.name == name) ? |_| "no setup file named \"${name}\""
+			$files = $files.append(f)
+		}
+		minted = handles.len()
+		var $record = SpecRunner.put_u32(SpecRunner.put_u32([], minted.to_u32_wrap()), (names.len() - minted).to_u32_wrap())
+		var $given = s.browser.given
+		var $k = 0
+		for handle in handles {
+			f = $files.get($k) ?? crash "SpecRunner.give_files: more handles than files"
+			$record = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u64($record, f.bytes.len()), f.name), f.mime)
+			$given = $given.append({ token: Box.unbox(handle), name: f.name })
+			$k = $k + 1
+		}
+		b = s.browser
+		s1 = { ..s, browser: { ..b, given: $given } }
+		(inst, cmds, wbuf) = (program.files)(s1.inst, s1.buf, s1.wbuf, node, h, $record, handles)
+		Ok(SpecRunner.answer_gets(program, SpecRunner.take(s1, inst, cmds, wbuf)))
+	}
+
+	## The host services a replay uses: running a worker job in a child
+	## process, and minting and counting file handles in the host's heap.
+	Host : { work! : List(U8) => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64 }
+
 	## Replay one spec from a fresh mount, running each worker job with
-	## `work!` (the `spec` command's child process, `Io.work!`).
-	run! : Program(state), (List(U8) => List(U8)), Scm.Spec => Outcome
-	run! = |program, work!, spec| {
+	## `work!` (the `spec` command's child process, `Io.work!`), and giving
+	## the app files through handles the host mints (`Io.mint_files!`).
+	run! : Program(state), Host, Scm.Spec => Outcome
+	run! = |program, host, spec| {
 		var $s = match SpecRunner.start(program, spec) {
 			Ok(s) => s
 			Err(message) => return Failed({ step: 0, at: spec.steps.first() ?? crash "a parsed spec has steps", message })
 		}
 		var $i = 0.U64
 		for step in spec.steps {
-			done = match SpecRunner.job_of($s, step.op) {
-				Ok(job) => SpecRunner.deliver_job(program, $s, job, work!(job.payload))
-				Err(NoJob) => SpecRunner.one(program, $s, step.op)
+			done = match (SpecRunner.job_of($s, step.op), SpecRunner.file_count(step.op), step.op) {
+				(Ok(job), _, _) => SpecRunner.deliver_job(program, $s, job, (host.work!)(job.payload))
+				(_, Ok(n), _) => SpecRunner.give_files(program, $s, step.op, (host.mint_files!)(n))
+				(_, _, ExpectFiles(n)) => {
+					live = (host.live_files!)()
+					if (live == n) Ok($s) else Err("expected ${n.to_str()} live file handles, found ${live.to_str()}")
+				}
+				_ => SpecRunner.one(program, $s, step.op)
 			}
 			match done {
 				Ok(s2) => {
@@ -1270,7 +1384,7 @@ SpecRunner := [].{
 
 	## The host services the `spec` command uses, passed in by the test
 	## program (the test platform's `Cli`), so this package stays pure.
-	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64, work! : List(U8) => List(U8) }
+	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64, work! : List(U8) => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64 }
 
 	Options : { filter : Str, emit_steps : Bool, grammar : Bool, files : List(Str) }
 
@@ -1387,7 +1501,7 @@ SpecRunner := [].{
 						(io.stdout!)("${JsonOut.render(Scm.to_json(id, spec))}\n")
 					}
 					Ok(spec) => {
-						outcome = SpecRunner.run!(program, io.work!, spec)
+						outcome = SpecRunner.run!(program, { work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files! }, spec)
 						dt = (io.now_ns!)() - t0
 						line = match outcome {
 							Passed => {

@@ -1,4 +1,4 @@
-import Engine exposing [Attr, Elem, Handler, Val]
+import Engine exposing [Attr, Elem, FilesHandler, Handler, Val]
 
 ## Typed helpers for common HTML elements, attributes and events, built on
 ## `Engine.element`, `Engine.attr` and `Engine.on`.
@@ -68,6 +68,30 @@ Html := [].{
 	## differing `value`; it is applied on blur.
 	text_input : Val(ctx, Str), Str, Val(ctx, Str), List(Attr(ctx)), Handler(ctx) -> Elem(ctx)
 	text_input = |name, kind, v, attrs, h| Engine.element("input", [Engine.attr_v("aria-label", name), Engine.attr("type", kind), Engine.attr_v("value", v), Engine.on("input", h)].concat(attrs), [])
+
+	## `file_input(name, { accept, multiple }, handler)`: a file picker. The
+	## browser opens its own chooser when the user activates it; `handler`
+	## (`State.on_files`) receives the chosen files as handles. `accept` is the
+	## browser's list of types (`".docx,application/pdf"`, `""` for any) and
+	## `multiple` whether more than one may be chosen at once.
+	file_input : Val(ctx, Str), { accept : Str, multiple : Bool }, FilesHandler(ctx) -> Elem(ctx)
+	file_input = |name, { accept, multiple }, h| {
+		attrs = [Engine.attr_v("aria-label", name), Engine.attr("type", "file"), Engine.on_files("change", h)]
+		with_accept = if (accept == "") attrs else attrs.append(Engine.attr("accept", accept))
+		Engine.element("input", if (multiple) with_accept.append(Engine.attr("multiple", "true")) else with_accept, [])
+	}
+
+	## Make the element a drop target for files: `handler` (`State.on_files`)
+	## receives the files dropped on it or a descendant, and the browser does
+	## not open them.
+	on_drop_files : FilesHandler(ctx) -> Attr(ctx)
+	on_drop_files = |h| Engine.on_files("drop", h)
+
+	## `handler` (`State.on_files`) receives the files pasted into the element
+	## or a descendant (an image copied from another app, say). A paste that
+	## carries no files reaches no handler.
+	on_paste_files : FilesHandler(ctx) -> Attr(ctx)
+	on_paste_files = |h| Engine.on_files("paste", h)
 
 	## `checkbox(name, checked, attrs, handler)`: a checkbox that follows
 	## `checked`. `handler` receives `"true"` or `"false"` on `change`.

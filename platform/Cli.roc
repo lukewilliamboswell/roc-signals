@@ -30,4 +30,13 @@ Cli := [].{
 	## faulted. The child's crash ends only the child. An empty list means the
 	## job did not finish within the runner's bound (30 s) and was killed.
 	work! : List(U8) => List(U8)
+
+	## Mint up to `n` file handles in the host's handle heap, as the page's
+	## host does for an event's files: fewer when the heap is nearly full.
+	## Each is a `Box(U64)` whose last release the host observes.
+	mint_files! : U64 => List(Box(U64))
+
+	## How many file handles are live in the host's heap, after letting go of
+	## those Roc has released since the last call.
+	live_files! : () => U64
 }

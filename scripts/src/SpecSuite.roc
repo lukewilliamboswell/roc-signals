@@ -32,7 +32,7 @@ SpecSuite := [].{
 	## browser services, work counters, worker jobs (byte-level and typed) and
 	## superseding effect sites the examples do not exercise.
 	test_apps : List(Str)
-	test_apps = ["services", "workers", "worker-typed", "supersede", "worker-search"]
+	test_apps = ["services", "workers", "worker-typed", "supersede", "worker-search", "files"]
 
 	## Every spec-bearing app, examples first.
 	spec_apps : List(Str)

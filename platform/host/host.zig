@@ -12,6 +12,7 @@
 //! `work`, whose output bytes occupy the command buffer's slot.
 //! Running out of memory or a Roc crash traps the instance (no recovery).
 const std = @import("std");
+const resources = @import("resources.zig");
 
 const RocList = extern struct {
     ptr: ?[*]u8,
@@ -35,6 +36,7 @@ extern fn roc_engine_keys() callconv(.c) RocList;
 extern fn roc_engine_init(boot: RocList) callconv(.c) Step;
 extern fn roc_engine_event(state: *anyopaque, buf: RocList, wbuf: RocList, node: u32, handler: u32, payload: RocList) callconv(.c) Step;
 extern fn roc_engine_drop(state: *anyopaque, buf: RocList, wbuf: RocList) callconv(.c) void;
+extern fn roc_engine_files(state: *anyopaque, buf: RocList, wbuf: RocList, node: u32, handler: u32, record: RocList, blobs: RocList) callconv(.c) Step;
 extern fn roc_engine_work(payload: RocList) callconv(.c) RocList;
 
 var state: ?*anyopaque = null;
@@ -165,10 +167,15 @@ export fn roc_alloc(size: usize, align_arg: usize) callconv(.c) *anyopaque {
 }
 
 export fn roc_dealloc(ptr: *anyopaque, align_arg: usize) callconv(.c) void {
-    _ = freeRaw(ptr, align_arg);
+    switch (blobs.route(ptr)) {
+        .not_owned => _ = freeRaw(ptr, align_arg),
+        .retired => {},
+        .corrupt => corruptHandle(),
+    }
 }
 
 export fn roc_realloc(ptr: *anyopaque, size: usize, align_arg: usize) callconv(.c) *anyopaque {
+    if (blobs.contains(ptr)) corruptHandle();
     const user: [*]u8 = @ptrCast(ptr);
     const header: *const Header = @ptrFromInt(@intFromPtr(user) - @sizeOf(Header));
     const copied = @min(header.requested, size);
@@ -211,12 +218,25 @@ fn startsWith(bytes: [*]const u8, len: usize, prefix: []const u8) bool {
 fn poison(class: u32) noreturn {
     fault_class = class;
     // Staged (unpublished) commands are never observed; nothing is freed:
-    // the Roc heap may be mid-mutation, so it is abandoned with the instance.
+    // the Roc heap may be mid-mutation, so it is abandoned with the instance,
+    // and so are its handles (the runtime lets go of every file it holds).
     cmds = RocList.empty;
     work = RocList.empty;
     pending_payload = RocList.empty;
+    pending_blobs = RocList.empty;
+    blobs.abandon(nothing);
     state = null;
     @trap();
+}
+
+fn nothing(_: anytype) void {}
+
+/// Roc freed or resized an address inside the handle table that is not a
+/// handle's last release: the instance's ownership is incoherent.
+fn corruptHandle() noreturn {
+    const msg = "internal: a file handle was released twice or resized";
+    keepError(msg.ptr, msg.len);
+    poison(4);
 }
 
 fn outOfMemory(size: usize) noreturn {
@@ -377,6 +397,99 @@ comptime {
     @export(&runWork, .{ .name = "work" });
 }
 
+// ---------------------------------------------------------------------------
+// File handles (design.md, "Files"). The runtime holds each browser `Blob`
+// under a token; the host mints a `Box(U64)` holding that token in its blob
+// heap, and Roc's reference count decides when the app is done with it. A
+// handle whose last reference went is retired, not freed: its token stays
+// valid until the runtime has performed the batch's effects (which may still
+// name it) and then drains the released list with `files_released`.
+
+/// The most file handles live at once in one instance (design.md,
+/// "Boundedness"). Files an event carries beyond the free slots are refused.
+const max_files: usize = 64;
+
+var blobs: resources.Heap(.blob, max_files, void) = .{};
+
+/// The handles minted for the next `event_files`, as a Roc
+/// `List(Box(U64))` the host owns until the call moves it into Roc.
+var pending_blobs: RocList = RocList.empty;
+
+/// The tokens of the staged handles, then of the released ones, for
+/// JavaScript to read (`files_tokens`).
+var tokens: [max_files]u64 = @splat(0);
+
+/// Mint up to `n` handles for the next `event_files`, as many as there are
+/// free slots: returns how many, their tokens readable at `files_tokens()`.
+/// Handles staged before and never delivered are released first, so at most
+/// one staged set exists. JavaScript must re-read `memory.buffer` after this
+/// call.
+export fn files_stage(n: u32) callconv(.c) u32 {
+    refuseIfPoisoned();
+    dropPendingBlobs();
+    const want = @min(@as(usize, n), max_files - blobs.live_count);
+    if (want == 0) return 0;
+    // A list of box pointers, laid out as Roc expects: one refcount word
+    // before the elements, each element the address of a handle's payload.
+    const base: [*]u8 = @ptrCast(allocRaw(want * @sizeOf(usize) + @sizeOf(usize), @alignOf(usize)));
+    @as(*isize, @ptrCast(@alignCast(base))).* = 1;
+    const elems: [*]usize = @ptrCast(@alignCast(base + @sizeOf(usize)));
+    for (0..want) |i| {
+        const payload = blobs.mint({}) orelse unreachable;
+        elems[i] = @intFromPtr(payload);
+        tokens[i] = payload.*;
+    }
+    pending_blobs = .{ .ptr = base + @sizeOf(usize), .len = want, .cap = want << 1 };
+    return @intCast(want);
+}
+
+/// Release staged handles no call took: nothing in Roc refers to them yet,
+/// so the host retires them itself.
+fn dropPendingBlobs() void {
+    const p = pending_blobs.ptr orelse return;
+    const elems: [*]usize = @ptrCast(@alignCast(p));
+    for (0..pending_blobs.len) |i| _ = blobs.route(@ptrFromInt(elems[i] - 8));
+    _ = freeRaw(p - @sizeOf(usize), @alignOf(usize));
+    pending_blobs = RocList.empty;
+}
+
+/// Where `files_stage` and `files_released` leave their tokens.
+export fn files_tokens() callconv(.c) usize {
+    return @intFromPtr(&tokens);
+}
+
+/// A `:files` event (design.md, Appendix B): the staged payload is the
+/// event's file record and the staged handles its files, in order; both move
+/// into Roc for one transaction, like `event`.
+export fn event_files(node: u32, handler: u32) callconv(.c) void {
+    refuseIfPoisoned();
+    const owned = state orelse @trap();
+    const buf = cmds;
+    const wbuf = work;
+    const record = pending_payload;
+    const staged = pending_blobs;
+    state = null;
+    cmds = RocList.empty;
+    work = RocList.empty;
+    pending_payload = RocList.empty;
+    pending_blobs = RocList.empty;
+    const step = roc_engine_files(owned, buf, wbuf, node, handler, record, staged);
+    state = step.state;
+    cmds = step.cmds;
+    work = step.work;
+}
+
+/// After JavaScript has applied a batch and performed its effects: free the
+/// slots of the handles Roc released and return how many, their tokens
+/// readable at `files_tokens()`, so the runtime lets their `Blob`s go.
+export fn files_released() callconv(.c) u32 {
+    if (fault_class != 0) return 0;
+    var n: usize = 0;
+    var token: u64 = 0;
+    while (n < max_files and blobs.releaseOne(&token, nothing)) : (n += 1) tokens[n] = token;
+    return @intCast(n);
+}
+
 /// Release the instance and the command buffer (teardown).
 /// Teardown. Idempotent at the containment boundary: a poisoned instance
 /// (or one already dropped) does nothing.
@@ -413,13 +526,14 @@ export fn work_len() callconv(.c) usize {
 /// Base of the engine's work counters in `metric`.
 const work_base: u32 = 16;
 
-/// Allocator counters (0-5), the engine's work counters (`16 + k` reads
+/// Allocator counters (0-5), the live file handles (6), the engine's work counters (`16 + k` reads
 /// counter `k` of the work record; 0 past its end), and the spike's
 /// first-allocation sizes probe (100-131). The work counters are copied out
 /// of the record the engine returned with the last call; the host does not
 /// compute them.
 export fn metric(index: u32) callconv(.c) u64 {
     if (index >= 100 and index < 132) return sizes[index - 100];
+    if (index == 6) return blobs.live_count;
     if (index >= work_base and index < 100) return workCounter(index - work_base);
     return if (index < counters.len) counters[index] else 0;
 }

@@ -89,6 +89,22 @@ Engine := [].{
 		lift_row = |{ h }| { h: h.lift_row() }
 	}
 
+	## A handler for the files an event carries: make one with
+	## `State.on_files`, attach it with `on_files`.
+	FilesHandler(ctx) :: { h : Core.FilesHandler(ctx) }
+
+	## A file the user gave the app, or a range of one (`File.slice`): a handle
+	## with its `name`, `size` and `mime` type, never its bytes on the page. Send
+	## it to a worker program in the program's input, and read its bytes there
+	## with `contents`: they are read once into the worker's memory and handed to
+	## the program without a copy. A file stays available while any value holds
+	## it, and is released when nothing does.
+	File : Core.File
+
+	## The files one event delivered, and how many more it carried than the
+	## instance could hold (they were not delivered).
+	Received : Core.Received
+
 	## A handle on one `state` layer holding an `s`, usable in context `ctx`.
 	##
 	## Read it with `val`; write it only through handlers (`update`, `set_value`,
@@ -146,6 +162,15 @@ Engine := [].{
 		## and the event's payload.
 		push_value_by : State(ctx, List(a)), Val(ctx, b), (b, Str -> a) -> Handler(ctx)
 		push_value_by = |{ s }, b, f| { h: s.push_value_by(b.v, f) }
+
+		## A handler for the files an event carries (attach it with `on_files`,
+		## or use `Html.file_input`): the reducer receives the files the user
+		## chose, dropped or pasted, each a handle with a name, size and type,
+		## and how many more there were than the instance can hold at once. A
+		## file stays available while any value holds it, so keep the ones the
+		## app needs in a state and drop the rest.
+		on_files : State(ctx, s), (s, Received -> s) -> FilesHandler(ctx)
+		on_files = |{ s }, f| { h: s.on_files(f) }
 
 		## Use a state handle from the enclosing context inside a `state` or `derive`
 		## body nested in it.
@@ -507,6 +532,13 @@ Engine := [].{
 	## A `click` listener; its payload is empty.
 	on_click : Handler(ctx) -> Attr(ctx)
 	on_click = |{ h }| Core.on_click(h)
+
+	## `on_files(event, handler)` delivers the files an event carries: `"change"`
+	## on a file input, `"drop"` on a drop target (the runtime prevents the
+	## browser's default for `drop` and `dragover` there, so the file is not
+	## opened) and `"paste"`. See `Html.file_input`.
+	on_files : Str, FilesHandler(ctx) -> Attr(ctx)
+	on_files = |ev, { h }| Core.on_files(ev, h)
 
 	## What the host drives: an app built with `program` or `program_boot`, bound
 	## as the app's `main`. The platform mounts it with the boot data and runs one

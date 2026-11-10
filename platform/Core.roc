@@ -75,12 +75,104 @@ Core := [].{
 		}
 	}
 
+	## The page's handle on a browser `Blob`: a box the host minted in its
+	## resource heap, holding the token the runtime knows the `Blob` by. Roc's
+	## reference count is the handle's lifetime: when the last value holding it
+	## goes, the host lists the token and the runtime lets the `Blob` go. The
+	## platform alone mints one, so an app cannot name a file it was not given.
+	Blob :: Box(U64).{
+
+		## The token the runtime knows the browser `Blob` by.
+		token : Blob -> U64
+		token = |Blob.(b)| Box.unbox(b)
+	}
+
+	## A file the user gave the app, or a range of one: a handle with its name,
+	## size and type, never its bytes on the page. Read its bytes in a worker
+	## program, where the file's range arrives as a list of its own (`contents`),
+	## read once into the worker's memory and handed over without a copy.
+	##
+	## A file stays available while any value holds it: keep it in a state for
+	## as long as the app needs it, and it is released when nothing refers to it
+	## any more. Two files are equal when they are the same range of the same
+	## file.
+	File :: { at : [Page(Blob), Worker(List(U8))], name : Str, mime : Str, size : U64, start : U64, len : U64 }.{
+
+		## The file's name, as the browser reports it (no directory).
+		name : File -> Str
+		name = |f| f.name
+
+		## The file's media type as the browser reports it (`""` when it does not
+		## know one).
+		mime : File -> Str
+		mime = |f| f.mime
+
+		## How many bytes this file, or this range of one, holds.
+		size : File -> U64
+		size = |f| f.len
+
+		## A range of the file, `len` bytes from `start` (relative to this file
+		## or range). A worker reading it reads only those bytes. A range that
+		## does not lie within the file is a contract error.
+		slice : File, { start : U64, len : U64 } -> File
+		slice = |f, { start, len }| {
+			if start > f.len or len > f.len - start {
+				crash "contract: File.slice of ${start.to_str()}+${len.to_str()} bytes lies outside \"${f.name}\" (${f.len.to_str()} bytes)"
+			}
+			{ ..f, start: f.start + start, len }
+		}
+
+		## The file's bytes, in a worker program that was sent it. On the page a
+		## file has no bytes: reading them there is a contract error; send the
+		## file to a worker program and read them there.
+		contents : File -> List(U8)
+		contents = |f| match f.at {
+			Worker(bytes) => bytes
+			Page(_) => crash "contract: File.contents of \"${f.name}\" on the page: a file's bytes are only read in a worker program; send the file in the program's input and call contents there"
+		}
+
+		## Equal when they are the same range of the same file.
+		is_eq : File, File -> Bool
+		is_eq = |a, b| a.start == b.start and a.len == b.len and a.name == b.name and match (a.at, b.at) {
+			(Page(x), Page(y)) => x.token() == y.token()
+			(Worker(x), Worker(y)) => x == y
+			_ => Bool.False
+		}
+
+		## Write the file with the format's `encode_file`: in a worker request
+		## the handle and range travel beside the payload, which refers to them.
+		encoder_for : encoding -> (File, state -> Try(state, err))
+			where [encoding.encode_file : encoding, File, state -> Try(state, err)]
+		encoder_for = |encoding| {
+			## The format's type, named so its methods can be called.
+			Encoding : encoding
+			|file, state| Encoding.encode_file(encoding, file, state)
+		}
+
+		## Read the file with the format's `parse_file`.
+		parser_for : encoding -> (state -> Try({ value : File, rest : state }, err))
+			where [encoding.parse_file : encoding, state -> Try({ value : File, rest : state }, err)]
+		parser_for = |encoding| {
+			## The format's type, named so its methods can be called.
+			Encoding : encoding
+			|state| Encoding.parse_file(encoding, state)
+		}
+	}
+
+	## The files one event delivered, and how many more it carried than the
+	## instance could take.
+	Received : { files : List(File), refused : U64 }
+
+	## A handler for the files an event carries; make one with
+	## `State.on_files` and attach it with `on_files`.
+	FilesHandler(ctx) := { h : Handler(ctx) }
+
 	## An event handler usable in context `ctx`: a write to one state layer that
 	## also receives the event's payload (an input's value, `"true"`/`"false"` for
 	## a checkbox, `""` for a click). Make one with the [State] methods and attach
 	## it with `on`, `on_click` or an `Html` control. A handler runs once per event,
 	## in the transaction that delivers it.
-	Handler(ctx) := { mask : U64, run : (ctx, Str -> ctx) }.{
+	Handler(ctx) := { mask : U64, run : (ctx, Payload -> ctx) }.{
 
 		## Use a handler from the enclosing context inside a `state` or `derive` body
 		## nested in it.
@@ -149,7 +241,7 @@ Core := [].{
 		## A handler whose reducer receives the event's payload, such as an input's
 		## new value or `"true"`/`"false"` from a checkbox.
 		set_value : State(ctx, s), (s, Str -> s) -> Handler(ctx)
-		set_value = |{ mask, get: _, modify }, f| { mask, run: |e, p| modify(e, |s| f(s, p)) }
+		set_value = |{ mask, get: _, modify }, f| { mask, run: |e, p| modify(e, |s| f(s, ev_str(p))) }
 
 		## A handler whose reducer receives both `v`, read when the event fires, and
 		## the event's payload.
@@ -160,7 +252,7 @@ Core := [].{
 				mask,
 				run: |e, p| {
 					b = read(e)
-					modify(e, |s| f(s, b, p))
+					modify(e, |s| f(s, b, ev_str(p)))
 				},
 			}
 		}
@@ -194,9 +286,24 @@ Core := [].{
 				mask,
 				run: |e, p| {
 					b = read(e)
-					modify(e, |l| l.append(f(b, p)))
+					modify(e, |l| l.append(f(b, ev_str(p))))
 				},
 			}
+		}
+
+		## A handler for files the user chose, dropped or pasted: the reducer
+		## receives the files, each a handle with its name, size and type, and
+		## how many more there were than the instance could take. Attach it with
+		## `on_files`. A file stays available while any value holds its handle.
+		on_files : State(ctx, s), (s, Received -> s) -> FilesHandler(ctx)
+		on_files = |{ mask, get: _, modify }, f| {
+			h: {
+				mask,
+				run: |e, p| match p {
+					Files(files, refused) => modify(e, |s| f(s, { files, refused }))
+					_ => e
+				},
+			},
 		}
 
 		## Use a state handle from the enclosing context inside a `state` or `derive`
@@ -829,6 +936,13 @@ Core := [].{
 	on_click : Handler(ctx) -> Attr(ctx)
 	on_click = |h| On("click", h)
 
+	## `on_files(event, handler)` listens for the files an event carries:
+	## `"change"` on a file input, `"drop"` (whose default the runtime
+	## prevents, with `dragover`'s, so the browser does not open the file) and
+	## `"paste"`. The handler receives the files as handles, never their bytes.
+	on_files : Str, FilesHandler(ctx) -> Attr(ctx)
+	on_files = |ev, { h }| On(if (ev == "drop") "drop:prevent:files" else "${ev}:files", h)
+
 	## A mounted engine instance: the site tree and the transaction state. The host
 	## holds it between calls through [Program]; test platforms and harnesses drive
 	## it directly with `mount`, `event`, `result` and `take_cmds`.
@@ -849,7 +963,22 @@ Core := [].{
 	## handler number with the event's payload, as one transaction (plus any
 	## follow-up turns). An event on a node that has since been removed is ignored.
 	event : App, U32, U32, Str -> App
-	event = |{ root, tx, programs }, node, handler, payload| {
+	event = |inst, node, handler, payload| deliver(inst, node, handler, Ev(payload))
+
+	## For test platforms and harnesses: deliver the files a `:files` event
+	## carries, as one transaction like `event`. `record` is the event's file
+	## record (Appendix B) and `blobs` the handles the host minted for it, in
+	## the record's order; a record that does not match them is a contract
+	## error. An event on a removed node is ignored, and its handles go with it.
+	event_files : App, U32, U32, List(U8), List(Blob) -> App
+	event_files = |inst, node, handler, record, blobs| {
+		(files, refused) = decode_files(record, blobs)
+		deliver(inst, node, handler, Files(files, refused))
+	}
+
+	## Route an event's payload to its node's handler.
+	deliver : App, U32, U32, Payload -> App
+	deliver = |{ root, tx, programs }, node, handler, payload| {
 		# O(1): the route gives a static node's block path or a row's site and
 		# slot (the site's path + slot). The handler number comes from the host
 		# (LISTEN or the template carried it per event name), so an element
@@ -866,7 +995,7 @@ Core := [].{
 		}
 		match target {
 			Err(Stale) => { root, tx, programs }
-			Ok((path, h)) => drain(turn({ root, tx, programs }, path, h, Ev(payload)))
+			Ok((path, h)) => drain(turn({ root, tx, programs }, path, h, payload))
 		}
 	}
 
@@ -957,7 +1086,7 @@ Core := [].{
 	## [Program], as the host calls them. `work` is a worker instance's only
 	## entry: it runs the catalogue's program named in `name:str input:rest` on
 	## the input and returns the output bytes.
-	driver : Program -> { version : U32, keys : () -> List(U8), init : List(U8) -> (App, List(U8), List(U8)), event : App, List(U8), List(U8), U32, U32, List(U8) -> (App, List(U8), List(U8)), work : List(U8) -> List(U8) }
+	driver : Program -> { version : U32, keys : () -> List(U8), init : List(U8) -> (App, List(U8), List(U8)), event : App, List(U8), List(U8), U32, U32, List(U8) -> (App, List(U8), List(U8)), files : App, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (App, List(U8), List(U8)), work : List(U8) -> List(U8) }
 	driver = |p| {
 		init = p.init
 		workers = p.workers
@@ -966,6 +1095,12 @@ Core := [].{
 			keys: p.keys,
 			init: |boot| init(catalogue_names(workers), boot),
 			event: p.event,
+			files: |inst, buf, wbuf, node, handler, record, blobs| {
+				{ root, tx, programs } = inst
+				{ cmds: _, next, free, routes, work, paths, site_free, fx } = tx
+				fresh = { root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, fx }, programs }
+				finish(Core.event_files(fresh, node, handler, record, blobs.map(|b| Blob.(b))), [], wbuf)
+			},
 			work: |payload| run_work(workers, payload),
 		}
 	}
@@ -1072,12 +1207,14 @@ Scope : { cap : U64, local : Bool }
 Mount(ctx) := [Mount((ctx, Args, Tx -> (Inst(ctx), U64, Tx)))]
 
 ## An event's payload: a DOM event's value, or an effect result.
-Payload : [Ev(Str), Fx(Res)]
+## What fires a handler: a DOM event's text, the files a `:files` event
+## carries (and how many were refused), or an effect result.
+Payload : [Ev(Str), Files(List(Core.File), U64), Fx(Res)]
 
 ev_str : Payload -> Str
 ev_str = |p| match p {
 	Ev(s) => s
-	Fx(_) => ""
+	_ => ""
 }
 
 Msg := [Fire(List(U32), U64, U32, Payload), Changed(U64), Dispose(Bool)]
@@ -1634,7 +1771,7 @@ fire_target = |block, path, pos| {
 fire_leaf : Block(ctx), ctx, U32, Payload -> Out(ctx)
 fire_leaf = |block, env, h, payload| {
 	match block.handlers.get(h.to_u64()) {
-		Ok(handler) => Pending((handler.run)(env, ev_str(payload)), handler.mask)
+		Ok(handler) => Pending((handler.run)(env, payload), handler.mask)
 		Err(_) => Pending(env, 0)
 	}
 }
@@ -2945,7 +3082,7 @@ each_inst = |cfg0, rows0, adopted0, cols0| {
 									# columns as borrowed and every later write copied them
 									# (roc-lang/roc#12846).
 									next = each_inst(cfg, rows, adopted, cols)
-									{ outer, key: _, item: _ } = (handler.run)(row_env, ev_str(payload))
+									{ outer, key: _, item: _ } = (handler.run)(row_env, payload)
 									(next, Pending(outer, handler.mask), tx)
 								}
 								Err(_) => {
@@ -3319,6 +3456,32 @@ mount_in = |max, programs, elem| {
 	drain({ root: block_inst(block), tx: flush_turn(tx, programs), programs })
 }
 
+## A `:files` event's record (design.md, Appendix B), `count:u32
+## refused:u32 (size:u64 name:str type:str)*count`, paired in order with the
+## handles the host minted for it. Anything else is a contract error: the
+## runtime and the host broke the protocol, and nothing is guessed.
+decode_files : List(U8), List(Blob) -> (List(File), U64)
+decode_files = |record, blobs| {
+	count = get_u32(record, 0, "file record").to_u64()
+	refused = get_u32(record, 4, "file record").to_u64()
+	if count != blobs.len() {
+		crash "contract: a file record lists ${count.to_str()} files but the host minted ${blobs.len().to_str()} handles"
+	}
+	var $at = 8.U64
+	var $files = List.with_capacity(count)
+	for blob in blobs {
+		size = get_u64(record, $at, "file record")
+		(name, a1) = get_str(record, $at + 8, "file record")
+		(mime, a2) = get_str(record, a1, "file record")
+		$files = $files.append({ at: Page(blob), name, mime, size, start: 0, len: size })
+		$at = a2
+	}
+	if $at != record.len() {
+		crash "contract: a file record carries ${(record.len() - $at).to_str()} unexpected trailing bytes"
+	}
+	($files, refused)
+}
+
 ## The catalogue's names, or the contract error that building it is.
 catalogue_names : List(Registration) -> List(Str)
 catalogue_names = |registrations| match Core.catalogue(registrations) {
@@ -3626,7 +3789,7 @@ leaf_fx = |path, pos, payload| {
 	if pos >= path.len() {
 		match payload {
 			Fx(r) => Ok(r)
-			Ev(_) => Err(NotFx)
+			_ => Err(NotFx)
 		}
 	} else {
 		Err(NotFx)
@@ -3819,8 +3982,8 @@ effect_inst = |cfg0, last0, owned0| {
 						(effect_inst(cfg, last, owned), Pending(env, 0), tx)
 					} else {
 						match payload {
-							Ev(_) => (effect_inst(cfg, last, owned), Pending(env, 0), tx)
 							Fx(res) => effect_deliver(cfg, last, owned, env, h, res, tx)
+							_ => (effect_inst(cfg, last, owned), Pending(env, 0), tx)
 						}
 					}
 				}
@@ -4064,6 +4227,9 @@ get_u32 = |b, at, what| {
 	b3 = (b.get(at + 3) ?? crash "contract: truncated ${what}").to_u32()
 	b0 + b1.shl_wrap(8) + b2.shl_wrap(16) + b3.shl_wrap(24)
 }
+
+get_u64 : List(U8), U64, Str -> U64
+get_u64 = |b, at, what| get_u32(b, at, what).to_u64() + get_u32(b, at + 4, what).to_u64().shl_wrap(32)
 
 get_str : List(U8), U64, Str -> (Str, U64)
 get_str = |b, at, what| {

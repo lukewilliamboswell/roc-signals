@@ -71,6 +71,10 @@ Scm := [].{
 		## Local storage cannot be used at all: every access throws, as in a
 		## browser with site data disabled.
 		LocalStorageUnavailable,
+
+		## A file the spec's file steps can give the app: its name, its media
+		## type, and its contents, `text` repeated `repeat` times.
+		File({ name : Str, mime : Str, text : Str, repeat : U64 }),
 	]
 
 	## A step a test takes, in order. Both runners implement every step
@@ -114,6 +118,18 @@ Scm := [].{
 
 		## Exactly `count` worker jobs for `program` are pending.
 		ExpectPendingWork({ program : Str, count : U64 }),
+
+		## The user chooses the named setup files in a file input.
+		ChooseFiles(Loc, List(Str)),
+
+		## The user drops the named setup files on an element.
+		DropFiles(Loc, List(Str)),
+
+		## The user pastes the named setup files into an element.
+		PasteFiles(Loc, List(Str)),
+
+		## Exactly `count` file handles are live in the app's instance.
+		ExpectFiles(U64),
 		TickInterval(U64),
 		TickIntervalIfActive(U64),
 		ExpectCleanup({ name : Str, count : U64 }),
@@ -516,7 +532,35 @@ Scm := [].{
 				Ok(LocalStorageUnavailable)
 			},
 		},
+		{
+			name: "file",
+			parse: |form, args| {
+				if args.len() != 3 and args.len() != 4 {
+					return Err(Scm.bad(form, "file takes a name, a type, the contents and optionally a repeat count"))
+				}
+				name_sx = Scm.arg(args, 0)
+				name = Scm.string(name_sx, "the file name")?
+				if name == "" or name.contains("/") {
+					return Err(Scm.bad(name_sx, "a file name must be a non-empty name without a directory"))
+				}
+				repeat = if (args.len() == 4) Scm.unsigned(Scm.arg(args, 3), "the repeat count")? else 1
+				Ok(File({ name, mime: Scm.string(Scm.arg(args, 1), "the media type")?, text: Scm.string(Scm.arg(args, 2), "the contents")?, repeat }))
+			},
+		},
 	]
+
+	## A locator and one or more setup file names.
+	loc_files : Sx, List(Sx) -> Try((Loc, List(Str)), Problem)
+	loc_files = |form, args| {
+		if args.len() < 2 {
+			return Err(Scm.bad(form, "expected a locator and at least one file name"))
+		}
+		var $names = []
+		for sx in args.drop_first(1) {
+			$names = $names.append(Scm.string(sx, "a file name")?)
+		}
+		Ok((Scm.locator(Scm.arg(args, 0))?, $names))
+	}
 
 	setup_form : Sx -> Try({ item : Setup, pos : Pos }, Problem)
 	setup_form = |form| {
@@ -690,6 +734,10 @@ Scm := [].{
 			},
 		},
 		{ name: "time-out-work", parse: |form, args| Ok(TimeOutWork(Scm.count1(form, args, "the effect occurrence")?)) },
+		{ name: "choose-files", parse: |form, args| Scm.loc_files(form, args).map_ok(|(l, names)| ChooseFiles(l, names)) },
+		{ name: "drop-files", parse: |form, args| Scm.loc_files(form, args).map_ok(|(l, names)| DropFiles(l, names)) },
+		{ name: "paste-files", parse: |form, args| Scm.loc_files(form, args).map_ok(|(l, names)| PasteFiles(l, names)) },
+		{ name: "expect-files", parse: |form, args| Ok(ExpectFiles(Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the file count")?)) },
 		{
 			name: "expect-pending-work",
 			parse: |form, args| {
@@ -885,6 +933,10 @@ Scm := [].{
 			LoseWork(_) => "lose-work"
 			TimeOutWork(_) => "time-out-work"
 			ExpectPendingWork(_) => "expect-pending-work"
+			ChooseFiles(_, _) => "choose-files"
+			DropFiles(_, _) => "drop-files"
+			PasteFiles(_, _) => "paste-files"
+			ExpectFiles(_) => "expect-files"
 			TickInterval(_) => "tick-interval"
 			TickIntervalIfActive(_) => "tick-interval-if-active"
 			ExpectCleanup(_) => "expect-cleanup"
@@ -978,6 +1030,7 @@ Scm := [].{
 			InitialOnline(o) => ("initial-online", [JsonOut.field("text", Text(Scm.online_name(o)))])
 			LocalStorage({ key, value }) => ("local-storage", [JsonOut.field("key", Text(key)), JsonOut.field("text", Text(value))])
 			LocalStorageUnavailable => ("local-storage-unavailable", [])
+			File({ name, mime, text, repeat }) => ("file", [JsonOut.field("name", Text(name)), JsonOut.field("type", Text(mime)), JsonOut.field("text", Text(text)), JsonOut.field("count", Nat(repeat))])
 		}
 		Object([JsonOut.field("op", Text(op))].concat(Scm.pos_fields(pos)).concat(args))
 	}
@@ -1015,6 +1068,10 @@ Scm := [].{
 			LoseWork({ occurrence, fault }) => [JsonOut.field("count", Nat(occurrence)), JsonOut.field("fault", Text(Scm.work_fault_name(fault)))]
 			TimeOutWork(n) => [JsonOut.field("count", Nat(n))]
 			ExpectPendingWork({ program, count }) => [JsonOut.field("program", Text(program)), JsonOut.field("count", Nat(count))]
+			ChooseFiles(l, names) => [loc(l), JsonOut.field("files", Array(names.map(|n| Text(n))))]
+			DropFiles(l, names) => [loc(l), JsonOut.field("files", Array(names.map(|n| Text(n))))]
+			PasteFiles(l, names) => [loc(l), JsonOut.field("files", Array(names.map(|n| Text(n))))]
+			ExpectFiles(n) => [JsonOut.field("count", Nat(n))]
 			TickInterval(ms) => [JsonOut.field("period_ms", Nat(ms))]
 			TickIntervalIfActive(ms) => [JsonOut.field("period_ms", Nat(ms))]
 			ExpectCleanup({ name, count }) => [JsonOut.field("name", Text(name)), JsonOut.field("count", Nat(count))]
@@ -1261,4 +1318,20 @@ expect {
 		\\x.scm:1:47: unknown metric active_graph_records_rebuilt; the metrics are rows_created, rows_removed, rows_reused, rows_moved, create_element, set_text, set_value, set_checked, bind_event, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares, effects_issued, effects_delivered, effects_stale, effects_refused, effects_cancelled, effects_reparented, effects_skipped
 		\\{"id":"m","name":"m","setup":[],"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
 	actual == expected
+}
+
+## File steps name setup files, which carry a name, a type and contents.
+expect {
+	text = "(test \"f\" (setup (file \"a.txt\" \"text/plain\" \"ab\" 3) (file \"b.png\" \"image/png\" \"\")) (steps (choose-files (label \"Up\") \"a.txt\" \"b.png\") (drop-files (test-id \"z\") \"a.txt\") (paste-files (test-id \"z\") \"b.png\") (expect-files 3)))"
+	parsed = Scm.parse(text)
+	setup = parsed.map_ok(|spec| spec.setup.map(|e| e.item))
+	steps = parsed.map_ok(|spec| spec.steps.map(|s| s.op))
+	setup == Ok([File({ name: "a.txt", mime: "text/plain", text: "ab", repeat: 3 }), File({ name: "b.png", mime: "image/png", text: "", repeat: 1 })]) and steps == Ok([ChooseFiles(Label("Up"), ["a.txt", "b.png"]), DropFiles(TestId("z"), ["a.txt"]), PasteFiles(TestId("z"), ["b.png"]), ExpectFiles(3)])
+}
+
+## File steps and setup files check their arguments.
+expect {
+	bad_name = problem_of("(test \"t\" (setup (file \"d/a.txt\" \"text/plain\" \"\")) (steps (expect-files 0)))")
+	no_files = problem_of("(test \"t\" (steps (drop-files (test-id \"z\"))))")
+	bad_name.contains("without a directory") and no_files.contains("at least one file name")
 }

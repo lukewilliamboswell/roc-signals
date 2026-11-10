@@ -667,6 +667,37 @@ Dom := [].{
 		}
 	}
 
+	## The (node, handler) pair a `:files` event `ev` on node index i
+	## dispatches: as `target`, but the nearest handler for `ev` must take
+	## files (a `:files` suffix), as the runtime requires before it hands an
+	## event's files over.
+	files_target : Model, U64, Str -> Try((U32, U32), [NoHandler])
+	files_target = |dom, i, ev| {
+		var $n = i
+		var $h = -1.I64
+		while True {
+			n = Dom.node(dom, $n)
+			if $h < 0 {
+				match n.hs.find_first(|(e, _)| e == ev or e.starts_with("${ev}:")) {
+					Ok((e, hh)) => {
+						if !e.ends_with(":files") {
+							return Err(NoHandler)
+						}
+						$h = hh.to_i64()
+					}
+					Err(_) => {}
+				}
+			}
+			if n.rn != 0 and $h >= 0 {
+				return Ok((n.rn, $h.to_u32_wrap()))
+			}
+			if n.parent == 0 {
+				return Err(NoHandler)
+			}
+			$n = n.parent - 1
+		}
+	}
+
 	## Whether the handler event `ev` dispatches from node index i asks the
 	## browser to prevent the event's default action (a `:prevent` suffix), as
 	## the runtime decides it when it dispatches (design.md, "Browser events
@@ -686,7 +717,7 @@ Dom := [].{
 				}
 			}
 			if n.rn != 0 and $name != "" {
-				return $name.ends_with(":prevent")
+				return $name.ends_with(":prevent") or $name.contains(":prevent:")
 			}
 			if n.parent == 0 {
 				return Bool.False

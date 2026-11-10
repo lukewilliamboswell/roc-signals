@@ -107,6 +107,7 @@ Targets := [].{
 		controls = SpecSuite.wasm_of(o, "controls")
 		services = SpecSuite.wasm_of(o, "services")
 		workers = SpecSuite.wasm_of(o, "workers")
+		files = SpecSuite.wasm_of(o, "files")
 		Ok(
 			Targets.browser!(o, "fx-browser.mjs", ["--wasm", fx])?
 				.concat(Targets.browser!(o, "controls-browser.mjs", ["--wasm", controls])?)
@@ -114,6 +115,7 @@ Targets := [].{
 				.concat(Targets.browser!(o, "workers-browser.mjs", ["--wasm", workers])?)
 				.concat(Targets.browser!(o, "monitor-browser.mjs", ["--wasm", workers])?)
 				.concat(Targets.browser!(o, "workers-scaling.mjs", ["--wasm", SpecSuite.wasm_of(o, "worker-lab"), "--mode", "smoke"])?)
+				.concat(Targets.browser!(o, "files-browser.mjs", ["--wasm", files])?)
 				.concat(Targets.browser!(o, "conduit-journey.mjs", ["--wasm", conduit_wasm])?),
 		)
 	}

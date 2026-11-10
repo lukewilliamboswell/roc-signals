@@ -22,6 +22,7 @@ platform ""
 	provides {
 		"roc_engine_drop": drop_for_host,
 		"roc_engine_event": event_for_host,
+		"roc_engine_files": files_for_host,
 		"roc_engine_init": init_for_host,
 		"roc_engine_keys": keys_for_host,
 		"roc_engine_version": version_for_host,
@@ -30,6 +31,8 @@ platform ""
 	}
 	hosted {
 		"roc_test_file_exists": Cli.file_exists!,
+		"roc_test_live_files": Cli.live_files!,
+		"roc_test_mint_files": Cli.mint_files!,
 		"roc_test_now_ns": Cli.now_ns!,
 		"roc_test_read_file": Cli.read_file!,
 		"roc_test_stderr": Cli.stderr!,
@@ -40,7 +43,7 @@ platform ""
 		inputs_dir: "targets/",
 		wasm32: {
 			inputs: ["host.wasm", app],
-			exports: ["protocol_version", "fault", "boot_keys", "init", "event", "drop", "payload_reserve", "work", "cmd_ptr", "cmd_len", "work_ptr", "work_len", "metric", "reset_metrics", "err_ptr", "err_len"],
+			exports: ["protocol_version", "fault", "boot_keys", "init", "event", "event_files", "files_stage", "files_tokens", "files_released", "drop", "payload_reserve", "work", "cmd_ptr", "cmd_len", "work_ptr", "work_len", "metric", "reset_metrics", "err_ptr", "err_len"],
 		},
 		x64musl: { inputs: ["crt1.o", "spec.o", app, "libc.a", "libzigc.a", "libcompiler_rt.a"] },
 	}
@@ -82,6 +85,14 @@ event_for_host = |boxed, buf, wbuf, node, handler, payload| {
 	{ cmds, state: Box.box(next), work }
 }
 
+## A `:files` event: the file record and the handles the host minted for its
+## files, which move into the engine with the call.
+files_for_host : Box(Core.App), List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> Step
+files_for_host = |boxed, buf, wbuf, node, handler, record, blobs| {
+	(next, cmds, work) = (Core.driver(main).files)(Box.unbox(boxed), buf, wbuf, node, handler, record, blobs)
+	{ cmds, state: Box.box(next), work }
+}
+
 ## A worker instance's one call: run the catalogue program named in the
 ## payload (`name:str input:rest`) and return its output bytes, which the
 ## host keeps readable until the next call. A worker instance never mounts.
@@ -95,4 +106,4 @@ drop_for_host = |_boxed, _buf, _wbuf| {}
 ## The native spec runner: `SpecRunner.main!` over this app's `main`, with
 ## the native host's file and output services.
 spec_main_for_host! : List(Str) => I32
-spec_main_for_host! = |args| SpecRunner.main!(Core.driver(main), { read_file!: Cli.read_file!, stdout!: Cli.stdout!, stderr!: Cli.stderr!, now_ns!: Cli.now_ns!, work!: Cli.work! }, args)
+spec_main_for_host! = |args| SpecRunner.main!(Core.driver(main), { read_file!: Cli.read_file!, stdout!: Cli.stdout!, stderr!: Cli.stderr!, now_ns!: Cli.now_ns!, work!: Cli.work!, mint_files!: Cli.mint_files!, live_files!: Cli.live_files! }, args)
