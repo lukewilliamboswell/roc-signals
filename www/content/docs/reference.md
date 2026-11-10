@@ -128,7 +128,7 @@ guarded while the control has focus. `checked` is a property set from
 | Workers alive at once | `maxWorkers` (default the core count, at most 8) | Jobs wait in order for a free worker |
 | Prepared states | One per worker | A new input replaces the least recently used idle worker's |
 | A worker's memory | `maxWorkerBytes` (default 128 MiB), checked after each job | The worker is ended after the job, its prepared state with it |
-| Files an app holds at once | 64 | Further files are not delivered; `Received.refused` counts them |
+| Files an app holds at once | 64 | Further files an event carries are not delivered (`Received.refused` counts them); a download with no room is `FileFailed(TooLarge)` |
 | Bytes one page read takes | Its `max_bytes` (default 8 MiB), at most `maxFileBytes` (default 256 MiB) | `FileFailed(TooLarge)`, unread |
 | Bytes one digest reads | `maxFileBytes` (default 256 MiB) | `FileFailed(TooLarge)`, unread |
 | URLs one file gives | 16 ranges, revoked when the file is let go | `FileFailed(TooLarge)` |

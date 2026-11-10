@@ -22,7 +22,8 @@
 //   (Unavailable), the inline instance is replaced, and a task that reaches
 //   none answers.
 // - An answer whose files the page has no room for is WorkLost
-//   (ResourceLimit), and the page keeps the files it held.
+//   (ResourceLimit), a download with no room is TooLarge, and the page
+//   keeps the files it held.
 // - A download becomes a file without the page's memory holding it, and a
 //   task reads it; `File.save` starts a real download.
 import http from "node:http";
@@ -352,6 +353,26 @@ async function open(options = {}) {
     return { outcome, faults: window.__faults.map((f) => f.class), page: window.__pageHandles(), files: window.__rt.files.size };
   });
   check("an answer the page has no room for is WorkLost(ResourceLimit)", r, { outcome: "failed Lost(ResourceLimit)", faults: ["resource_limit"], page: 62, files: 62 });
+  await ctx.close();
+}
+
+// A downloaded file counts among the page's 64 too: with all 64 held, a
+// download has no room and is answered TooLarge, and the page still holds
+// exactly its 64.
+{
+  const { page, ctx } = await open();
+  const r = await page.evaluate(async () => {
+    const dt = new DataTransfer();
+    for (let i = 0; i < 64; i += 1) dt.items.add(new File(["x"], `f${i}.txt`, { type: "text/plain" }));
+    const input = window.__root.querySelector('[aria-label="Upload"]');
+    input.files = dt.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    window.__click("Fetch");
+    const outcome = await window.__until("outcome", (t) => t.startsWith("fetch"), 120000);
+    await new Promise((r) => setTimeout(r, 0));
+    return { outcome, fetched: window.__text("fetched"), page: window.__pageHandles(), files: window.__rt.files.size };
+  });
+  check("a download the page has no room for is TooLarge", r, { outcome: "fetch failed TooLarge", fetched: "none", page: 64, files: 64 });
   await ctx.close();
 }
 

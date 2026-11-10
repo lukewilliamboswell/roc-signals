@@ -73,7 +73,10 @@ Two things hold a file longer than you might expect:
 
 An app holds at most 64 files at once, counting the files a job answered
 with and downloaded ones. Files an event carries beyond that are not
-delivered; `refused` counts them, so the app can say so.
+delivered; `refused` counts them, so the app can say so. A job whose answer
+holds more files than the page has room for is `Lost(ResourceLimit)`, and a
+download with no room is answered `TooLarge`; either way the page keeps the
+files it held.
 
 ## Reading a file in a worker
 
