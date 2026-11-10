@@ -20,8 +20,8 @@ import src/SpecSuite
 ## `main.roc` is built for wasm32 (`--opt=size`, as it ships) to
 ## `dist/examples/<slug>/app.wasm` beside `dist/runtime.mjs` (and its worker
 ## script, `dist/worker.mjs`), which the
-## site's `site.mjs` mounts it with. The status page's `plume-chart.mjs` is
-## copied beside its app.
+## site's `site.mjs` mounts it with. The status page's `plume-chart.mjs` and
+## the worker lab's `pool-panel.mjs` are copied beside their apps.
 main! = |raw_args| {
 	args = raw_args.map(OsStr.display).drop_if(|a| a == "--")
 	base_url = match args {
@@ -48,6 +48,7 @@ main! = |raw_args| {
 	}
 	# Scripts an example's page loads beside its app (www/data/examples.toml).
 	Path.copy!(Path.utf8("${o.root}/examples/status-page/plume-chart.mjs"), Path.utf8("${dist}/examples/status-page/plume-chart.mjs"))?
+	Path.copy!(Path.utf8("${o.root}/examples/worker-lab/pool-panel.mjs"), Path.utf8("${dist}/examples/worker-lab/pool-panel.mjs"))?
 	SpecSuite.copy_runtime!(o.root, dist)?
 	Proc.note!("site: built ${dist}")
 	Ok({})

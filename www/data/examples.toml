@@ -77,3 +77,20 @@ description = "RealWorld (Conduit) demo: hash-routed feeds, sessions, profiles, 
 source = "examples/conduit/main-web.roc"
 specs = "examples/conduit/specs"
 public = true
+
+[[examples]]
+slug = "worker-lab"
+title = "Worker Lab"
+description = "Pure Roc programs counting primes and drawing Mandelbrot tiles in Web Workers: a job grid with cancel and supersession, an in-flight bound you can see, a heartbeat that never stalls, and a live pool panel."
+source = "examples/worker-lab/main.roc"
+specs = "examples/worker-lab/specs"
+public = true
+# Optional for any example: `max_workers` and `workers` set the mount's pool
+# (data-signals-max-workers / data-signals-workers); the page URL's
+# `maxWorkers` and `workers` query parameters override them.
+
+# The pool panel, `worker-pool-panel`: drawn from the runtime's monitor once
+# site.mjs announces the runtime (`roc-signals:runtime`).
+[[examples.scripts]]
+src = "pool-panel.mjs"
+module = true
