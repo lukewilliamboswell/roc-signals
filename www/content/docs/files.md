@@ -24,8 +24,8 @@ its own memory, so the program gets those bytes without a copy.
 | Upload it, digest it, or preview it in an `<img>` or `<video>` | An operation on the file: `File.upload`, `File.sha256`, `File.object_url` | Never enter the page's memory |
 | Process it: parse, convert, search, count | A [worker program](#reading-a-file-in-a-worker) that is sent the file and calls `File.contents` | Read once into the worker, off the page's thread |
 | Read a small file in a simple app | A page read: `file.read_bytes({})`, `file.read_utf8({})` | Read on the page's thread and copied into the page's memory |
-| Read a large file a chunk at a time, or produce a new file to save or send on | A [task](@/docs/tasks.md): `file.read!` and `File.build!` in a worker | Read range by range into the worker; a new file never enters the page's memory |
-| Download a file, or save one | [`File.fetch`](@/docs/tasks.md#downloading-into-a-file) and [`File.save`](@/docs/tasks.md#saving) | Stay in the browser |
+| Read a large file a chunk at a time, or produce a new file to save or send on | A [task](@/docs/files-in-tasks.md): `file.read!` and `File.build!` in a worker | Read range by range into the worker; a new file never enters the page's memory |
+| Download a file, or save one | [`File.fetch`](@/docs/files-in-tasks.md#downloading-into-a-file) and [`File.save`](@/docs/files-in-tasks.md#saving) | Stay in the browser |
 
 This answers two older workarounds. Getting a file's bytes into Roc used to
 mean a custom element that read the file, base64-encoded it into an input's

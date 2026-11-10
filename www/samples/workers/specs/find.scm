@@ -21,7 +21,7 @@
     (fill (label "Find") "dog")
     (run-effect 7)
     (expect-text (test-id "found") "Not found")
-    ; Clearing the box stops a run that is still wanted and clears the answer.
+    ; Clearing the box stops a job that is still wanted and clears the answer.
     (fill (label "Find") "cat")
     (expect-pending-effects 1)
     (fill (label "Find") "")

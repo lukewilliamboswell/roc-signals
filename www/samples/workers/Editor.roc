@@ -85,7 +85,6 @@ Editor := [].{
 			}
 			Failed(error) => Editor.problem(error)
 		}
-	# endregion derive
 
 	## What to tell the user when a job produced no answer. These tasks
 	## cannot fail, so there is no `Failed` to match.
@@ -96,6 +95,7 @@ Editor := [].{
 			Refused => "Too much is running; edit the text to try again."
 			Lost(_) => "The analysis failed."
 		}
+	# endregion derive
 
 	# region derive-when
 	## Search the text for a word. An empty box asks nothing.
@@ -183,7 +183,7 @@ Editor := [].{
 			CountFailed(error) => Editor.problem(error)
 		}
 
-	# region fallible-view
+	# region failing-view
 	## Add up the numbers in a box, in a worker.
 	total : State(Ctx, S) -> Elem(Ctx)
 	total = |st| {
@@ -209,5 +209,5 @@ Editor := [].{
 			Failed(Refused) => "Too much is running; edit the numbers to try again."
 			Failed(Lost(_)) => "Adding failed."
 		}
-	# endregion fallible-view
+	# endregion failing-view
 }

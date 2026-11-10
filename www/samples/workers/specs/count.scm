@@ -6,7 +6,7 @@
     (click (role button :name "Count words"))
     (expect-text (test-id "counted") "Counting…")
     (expect-pending-effects 1)
-    ; Cancelling stops the run: nothing is left waiting.
+    ; Cancelling stops the job: nothing is left waiting.
     (click (role button :name "Cancel"))
     (expect-pending-effects 0)
     (expect-text (test-id "counted") "Cancelled")

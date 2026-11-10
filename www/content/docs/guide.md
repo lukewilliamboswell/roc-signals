@@ -44,12 +44,15 @@ the platform does not depend on any CSS framework.
 - [Structuring an App](@/docs/app-architecture.md): modules, context types and
   keeping updates local.
 - [Testing](@/docs/testing.md): the spec language and its two runners.
-- [Workers](@/docs/workers.md): running a slow pure calculation off the
-  page's thread.
+- [Workers](@/docs/workers.md): running a task off the page's thread, from
+  a slow pure calculation to a job that reads and builds files, and
+  preparations several tasks share.
 - [Files](@/docs/files.md): taking a file the user chooses, drops or pastes
-  as a handle, and reading it in a worker.
-- [Tasks](@/docs/tasks.md): jobs in a worker that read files a chunk at a
-  time and write new ones, downloading into a file, and saving.
+  as a handle, acting on it where the browser keeps it, and reading it in a
+  worker.
+- [Files in Tasks](@/docs/files-in-tasks.md): what a task's job does with
+  files: reading a chunk at a time, building new files, appending across
+  jobs, downloading into a file, and saving.
 - [Monitoring Workers](@/docs/worker-monitoring.md): where a worker job's time
   goes, how busy the pool is, and what workers cost.
 - [Reference](@/docs/reference.md): the API at a glance and the platform's

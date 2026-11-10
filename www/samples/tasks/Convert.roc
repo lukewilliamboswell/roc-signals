@@ -28,14 +28,6 @@ Convert := [].{
 	}
 	# endregion transform
 
-	# region policies
-	## The same conversion for a file the user asked to export: it finishes
-	## even if the panel that asked for it closes, and gives up after a
-	## minute.
-	export : Worker.Task(File, File, Engine.FileError)
-	export = Worker.task({ name: "example.org/convert/export", run!: Convert.to_tsv!, deadline: Ms(60000), on_dispose: Keep })
-	# endregion policies
-
 	# region append
 	## Append a line to the log the last job built. The builder starts from
 	## that file by reference, and the old log is unchanged unless the new
@@ -243,6 +235,6 @@ Convert := [].{
 	program : Engine.Program
 	program =
 		Engine.program(|| Engine.state({ source: Nothing, log: [], entries: 0, logging: Idle, download: Idle, downloaded: [], save: Idle, saves: 0, status: "" }, Convert.view))
-			.with_workers([Convert.to_tsv.registration(), Convert.export.registration(), Convert.log_line.registration(), Convert.count_lines.registration()])
+			.with_workers([Convert.to_tsv.registration(), Convert.log_line.registration(), Convert.count_lines.registration()])
 	# endregion register
 }

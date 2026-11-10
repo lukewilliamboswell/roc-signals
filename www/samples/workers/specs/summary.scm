@@ -12,7 +12,7 @@
     (expect-text (test-id "length") "5 words")
     (expect-text (test-id "summary") "4 different words; most used: the (analysing…)")
     (expect-pending-effects 2)
-    ; A newer text stops the run for the older one before its own starts, so
+    ; A newer text stops the job for the older one before its own starts, so
     ; there is still one summary job waiting, besides the total.
     (fill (label "Text") "a rose is a rose is a rose")
     (expect-text (test-id "length") "8 words")

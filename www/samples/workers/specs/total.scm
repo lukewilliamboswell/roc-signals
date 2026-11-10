@@ -1,4 +1,4 @@
-(test "Words — the total's own error is an answer, shown like any other"
+(test "Words — the total's own error reaches the view as the task's failure"
   (steps
     (run-effect 1)
     (expect-text (test-id "total") "Adding…")
