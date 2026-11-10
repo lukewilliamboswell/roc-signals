@@ -1,7 +1,7 @@
 +++
 title = "Files in Tasks"
 description = "What a worker task's job can do with files: read the ranges it needs, build new files that come back to the page as handles, append to a file across jobs, download into a file, and save."
-weight = 11
+weight = 12
 template = "page.html"
 +++
 
@@ -149,9 +149,10 @@ Bytes appended with `append_file!` do not count against `maxOutputBytes`:
 they are referenced, not copied. The bound exists because a builder's parts
 are held in memory, and the browser does not move a large one to disk.
 
-Nothing bounds how much of a file a job reads but the worker's memory:
+The platform sets no bound on how much of a file a job reads:
 `maxFileBytes` limits what the page reads, digests and downloads, not a
-job. Read a large file in chunks, as the conversion does.
+job. Each read is copied into the worker's memory, which only grows, so
+read a large file in chunks, as the conversion does.
 
 With the `workers: "inline"` mount option jobs run on the page's thread,
 where these effects do not exist: a job that reaches one is answered
