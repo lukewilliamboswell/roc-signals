@@ -7,7 +7,7 @@
 ## binds a `program` as `main`, and one entry file builds for two targets:
 ##
 ## - `roc build --target=wasm32` gives the module the browser runs. The Zig
-##   host (`host/host.zig`) holds exactly one opaque `Box(Core.App)` and the
+##   host (`host/host.zig`) holds exactly one opaque engine handle and the
 ##   command buffer between calls; JavaScript (`runtime.mjs`) reads the buffer
 ##   straight from linear memory.
 ## - `roc build --target=x64musl` gives the app's native `.scm` spec runner:
@@ -75,7 +75,39 @@ import Worker
 ## One host call's result: the state (owned by the host until the next call),
 ## this transaction's command bytes and the instance's work record (both owned
 ## by the host, lent to JS, and passed back into the next call for reuse).
-Step : { cmds : List(U8), state : Box(Core.App), work : List(U8) }
+Step : { cmds : List(U8), state : Handle, work : List(U8) }
+
+## The engine state as the host holds it between calls: an opaque handle
+## whose contents only Roc reads. The host boundary admits a function only
+## as the direct contents of a `Box`, and the engine's state holds
+## functions throughout, so it cannot cross as `Box(Core.App)`; a boxed
+## `Iter` is the boundary's opaque handle, and this one yields the state
+## exactly once. Stepping a unique handle moves the state out, so the
+## engine still updates it in place.
+Handle : Box(Iter(Core.App))
+
+## The handle over the state the host keeps until its next call.
+hold : Core.App -> Handle
+hold = |engine|
+	Box.box(
+		Iter.custom(
+			Some(engine),
+			Ok(1),
+			|seed|
+				match seed {
+					Some(state) => Ok((state, None))
+					None => Err(NoMore)
+				},
+		),
+	)
+
+## The state a handle holds; the host passes each handle back once.
+release : Handle -> Core.App
+release = |handle|
+	match Box.unbox(handle).next() {
+		One({ item, rest: _ }) => item
+		_ => crash "internal: the host passed an engine handle whose state was already taken"
+	}
 
 ## The wire protocol version the engine speaks (design.md, Appendix B).
 version_for_host : () -> U32
@@ -90,23 +122,23 @@ keys_for_host = || (Core.driver(main).keys)()
 init_for_host : List(U8) -> Step
 init_for_host = |boot| {
 	(state, cmds, work) = (Core.driver(main).init)(boot)
-	{ cmds, state: Box.box(state), work }
+	{ cmds, state: hold(state), work }
 }
 
 ## Route a DOM event (node id, handler number, payload bytes) through one
 ## transaction, reusing the previous call's command and work buffers.
-event_for_host : Box(Core.App), List(U8), List(U8), U32, U32, List(U8) -> Step
+event_for_host : Handle, List(U8), List(U8), U32, U32, List(U8) -> Step
 event_for_host = |boxed, buf, wbuf, node, handler, payload| {
-	(next, cmds, work) = (Core.driver(main).event)(Box.unbox(boxed), buf, wbuf, node, handler, payload)
-	{ cmds, state: Box.box(next), work }
+	(next, cmds, work) = (Core.driver(main).event)(release(boxed), buf, wbuf, node, handler, payload)
+	{ cmds, state: hold(next), work }
 }
 
 ## A `:files` event: the file record and the handles the host minted for its
 ## files, which move into the engine with the call.
-files_for_host : Box(Core.App), List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> Step
+files_for_host : Handle, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> Step
 files_for_host = |boxed, buf, wbuf, node, handler, record, blobs| {
-	(next, cmds, work) = (Core.driver(main).files)(Box.unbox(boxed), buf, wbuf, node, handler, record, blobs)
-	{ cmds, state: Box.box(next), work }
+	(next, cmds, work) = (Core.driver(main).files)(release(boxed), buf, wbuf, node, handler, record, blobs)
+	{ cmds, state: hold(next), work }
 }
 
 ## A worker instance's job (design.md, "Workers"): run the task named in
@@ -140,7 +172,7 @@ forget_for_host : Box(Core.Kept) -> {}
 forget_for_host = |_boxed| {}
 
 ## Teardown: the state and both buffers are released with the call.
-drop_for_host : Box(Core.App), List(U8), List(U8) -> {}
+drop_for_host : Handle, List(U8), List(U8) -> {}
 drop_for_host = |_boxed, _buf, _wbuf| {}
 
 ## The native spec runner: `SpecRunner.main!` over this app's `main`, with

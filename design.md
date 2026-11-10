@@ -264,7 +264,7 @@ state is row state — is the documented pattern that keeps app work local.
 flowchart LR
     App["app: App.roc<br/>Elem tree of typed sites"] --> Engine["platform/Core.roc (internal) behind Engine.roc (authoring API)<br/>pure engine: sites, layers, each columns,<br/>effects, command encoding"]
     Engine --> Main["platform/main.roc<br/>keys · init · event · files · drop ·<br/>work · prepare · ask · forget"]
-    Main --> Host["platform/host/host.zig<br/>allocator · Box(Core.App) or, in a worker, one Box(Kept) ·<br/>cmd buffer · staged payload · handle heaps · fault class"]
+    Main --> Host["platform/host/host.zig<br/>allocator · the engine handle or, in a worker, one Box(Kept) ·<br/>cmd buffer · staged payload · handle heaps · fault class"]
     Host --> Wire["command bytes in linear memory"]
     Wire --> JS["platform/runtime.mjs (and worker.mjs in each worker)<br/>apply commands · perform effects ·<br/>delegate events · contain faults"]
     JS --> DOM["browser DOM and services"]
@@ -955,7 +955,7 @@ are all of that kind.
   alias. A comparison that is conservative only costs a preparation.
 - **Holding.** The registration erases the typed state into a closure
   (`Core.Kept`) that runs the preparation's tasks by name. A worker's host
-  holds at most one `Box(Kept)`, exactly as a page's host holds `Box(App)`:
+  holds at most one `Box(Kept)`, exactly as a page's host holds its engine handle:
   `prepare` builds it, `ask` moves it into one call and back out with the
   answer, and `forget` hands it to Roc to drop. The state never crosses to
   the page, so it need not be `Wire.Sendable`. The files it holds are
@@ -1398,7 +1398,8 @@ mid-text edits, a CDP IME composition) do.
 
 The Zig host (`platform/host/host.zig`) owns exactly:
 
-- **one opaque `Box(Core.App)`** — the engine state between calls;
+- **one opaque engine handle** — the engine state between calls, as
+  `Box(Iter(Core.App))` (below);
 - **the command buffer** — the last call's `List(U8)`;
 - **one staged payload** — a Roc `List(U8)` allocated by `payload_reserve`;
 - **the allocator** — `roc_alloc`/`roc_dealloc`/`roc_realloc` over the Wasm page
@@ -1417,6 +1418,15 @@ The Zig host (`platform/host/host.zig`) owns exactly:
 It never interprets the state or the commands. Each engine call clears the
 host's slots *before* moving the state, buffer and payload into Roc, then
 stores what Roc returns, so a trap mid-call cannot leave a dangling owner.
+
+Roc admits a function, an `Iter` or a `Stream` at the host boundary only as
+the direct contents of its own `Box`, and looks through records and nominal
+types to find one. The engine state holds site closures throughout, so
+`platform/main.roc` hands it to the host as a boxed `Iter` that yields the
+state exactly once: a boxed `Iter` is the boundary's opaque handle, the
+host holds it as one pointer, and stepping the unique handle at the next
+call moves the state out, so the engine still updates it in place. A
+prepared state's closure is boxed on its own instead (`Core.Kept`).
 
 Payload staging lays out a Roc `List(U8)` exactly as Roc expects: one
 refcount word (1) before the elements, capacity stored shifted left by one
@@ -2188,9 +2198,9 @@ The platform provides (`platform/main.roc`):
 | `roc_engine_version` | `() -> u32` | The protocol version (4) |
 | `roc_engine_keys` | `() -> List(U8)` | Declared storage keys, then the port table: `count:u32 (key:str)* nports:u32 (name:str kind:u8 delivery:u8 bound:u32)*`, where `kind` is `1` command, `2` call, `3` subscription, `delivery` is `0` (not a subscription), `1` every or `2` latest, and `bound` is n for every, `1` for latest, `0` otherwise. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
-| `roc_engine_event` | `Box(Core.App), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One transaction: state, recycled command buffer, recycled work buffer, node, handler, payload |
-| `roc_engine_files` | `Box(Core.App), List(U8), List(U8), u32, u32, List(U8), List(Box(U64)) -> { cmds, state, work }` | A `:files` event: as `roc_engine_event`, with the file record as the payload and the handles the host minted for it, in the record's order; a record that does not match them is a `contract` crash. On the effect node it is a result that carries files, whose files are those handles, in order: a job's answer (result tag 10), a port reply (14) or a fetched file (21) |
-| `roc_engine_drop` | `Box(Core.App), List(U8), List(U8) -> {}` | Teardown |
+| `roc_engine_event` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One transaction: state, recycled command buffer, recycled work buffer, node, handler, payload |
+| `roc_engine_files` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8), List(Box(U64)) -> { cmds, state, work }` | A `:files` event: as `roc_engine_event`, with the file record as the payload and the handles the host minted for it, in the record's order; a record that does not match them is a `contract` crash. On the effect node it is a result that carries files, whose files are those handles, in order: a job's answer (result tag 10), a port reply (14) or a fetched file (21) |
+| `roc_engine_drop` | `Box(Iter(Core.App)), List(U8), List(U8) -> {}` | Teardown |
 | `roc_engine_work` | `List(U8), List(Box(U64)) => List(U8)` | A worker instance's job (effectful): payload `name:str input:rest` and the handles the instance's host minted for the files the request named, in its order; returns the answer, `n:u32 (token:u64)*n output:rest`: the instance's tokens of the files the answer holds (in the order its payload refers to them), then the answer's bytes, a list of its own. `name` is a `str` (a `u32` length), while `input` is a `Wire` payload whose counts are LEB128, so a harness meets both encodings in one buffer. `output` is the `Wire` encoding of the job's `Ok` value or `Err` error followed by one byte, `0` or `1`, which the typed layer writes and reads. A name the catalogue does not hold, a preparation's name or a preparation's task's name, a payload without a name, or an answer holding more than 16 files, is a `contract` crash (it poisons that worker instance only) |
 | `roc_engine_prepare` | `List(U8), List(Box(U64)) => Box(Core.Kept)` | Prepare a state to keep (effectful): payload `prep:str init:rest` (the preparation's name and its own input) and the handles of the preparation's files; returns the state. A name that is not a preparation is a `contract` crash |
 | `roc_engine_ask` | `Box(Core.Kept), List(U8), List(Box(U64)) => { held, out }` | A job of a preparation's task on the kept state (effectful): payload `task:str input:rest` (the task's own input) and the handles of the task's own files; returns the state (`held`) and the answer (`out`, as `roc_engine_work`'s). A task the state's preparation does not list is a `contract` crash |
