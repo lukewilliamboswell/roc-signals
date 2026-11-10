@@ -1791,10 +1791,12 @@ SpecRunner := [].{
 		rest = { ..s, browser: { ..b, stub: NoStub, pending: b.pending.keep_if(|q| q.id != id) } }
 		match stub {
 			Reject({ kind, detail }) => Ok(SpecRunner.deliver(program, rest, id, SpecRunner.encode_reject(kind, detail)))
-			Reply({ url, status, headers, body }) => {
+			Reply({ url, status, headers: given, body }) => {
 				if url != p.url {
 					return Err("no spec stub for ${p.url} (stub is for ${url})")
 				}
+				# A stub without headers answers JSON, as for an HTTP request.
+				headers = if (given.is_empty()) [{ name: "content-type", value: "application/json" }] else given
 				bytes = body.to_utf8()
 				if bytes.len() > SpecRunner.max_fetch_bytes {
 					return Ok(SpecRunner.deliver(program, rest, id, [13, 2]))

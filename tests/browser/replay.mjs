@@ -678,6 +678,22 @@ const STEPS = {
   },
   "expect-metric-delta": (page, s, state) => metricDelta(page, state, s, false),
   "expect-metric-delta-at-most": (page, s, state) => metricDelta(page, state, s, true),
+  // The files the app saved: in manual mode the runtime logs each `SAVE`
+  // with the Blob it would download, read back here as text.
+  "expect-saved": async (page, s) => {
+    const r = await page.evaluate(async (i) => {
+      const log = window.__rt.saveLog;
+      if (i < 1 || i > log.length) return { error: `the app saved ${log.length} files, so there is no save ${i}` };
+      const e = log[i - 1];
+      return { name: e.name, text: await e.blob.text() };
+    }, s.index);
+    if (r.error) throw new Error(r.error);
+    if (r.name !== s.name || r.text !== s.text) throw new Error(`save ${s.index} was ${JSON.stringify(r.name)} holding ${JSON.stringify(r.text)}, expected ${JSON.stringify(s.name)} holding ${JSON.stringify(s.text)}`);
+  },
+  "expect-saves": async (page, s) => {
+    const n = await page.evaluate(() => window.__rt.saveLog.length);
+    if (n !== s.count) throw new Error(`the app saved ${n} files, expected ${s.count}`);
+  },
 };
 
 // One handler per setup form of the grammar (`Scm.setup_forms`).
@@ -701,6 +717,10 @@ const SETUP = {
     if (out.files.has(s.name)) throw new Error(`file ${JSON.stringify(s.name)} is declared twice`);
     out.files.set(s.name, { type: s.type, text: s.text, count: s.count });
   },
+  // The runtime's maxOutputBytes mount option.
+  "max-output-bytes": (out, s) => {
+    out.mount.maxOutputBytes = s.count;
+  },
 };
 
 // `--check-grammar`: the handler tables cover exactly the grammar's forms.
@@ -719,7 +739,7 @@ function checkGrammar(file) {
 }
 
 function setupOf(spec) {
-  const out = { location: "/", storage: [], storageAvailable: true, online: true, visibility: "visible", files: new Map() };
+  const out = { location: "/", storage: [], storageAvailable: true, online: true, visibility: "visible", files: new Map(), mount: {} };
   for (const s of spec.setup) {
     const h = SETUP[s.op];
     if (h === undefined) throw new Error(`setup ${s.op} has no handler in this runner`);
@@ -830,7 +850,8 @@ for (const spec of specs) {
     const setup = setupOf(spec);
     await page.evaluateOnNewDocument(fs.readFileSync(files["locate.js"], "utf8"));
     await page.evaluateOnNewDocument(
-      (storage, storageAvailable, online, visibility) => {
+      (storage, storageAvailable, online, visibility, mount) => {
+        window.__mountOptions = mount;
         if (!sessionStorage.getItem("__seeded")) {
           for (const [k, v] of storage) localStorage.setItem(k, v);
           sessionStorage.setItem("__seeded", "1");
@@ -855,6 +876,7 @@ for (const spec of specs) {
       setup.storageAvailable,
       setup.online,
       setup.visibility,
+      setup.mount,
     );
     await page.evaluateOnNewDocument(install, attrOf.toString());
     const state = { stub: null, mark: null, doc: null, loads: 0, files: setup.files };

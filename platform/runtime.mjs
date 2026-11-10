@@ -167,6 +167,7 @@ const OP_STORE = 16;
 const OP_TITLE = 17;
 const OP_FOCUS = 18;
 const OP_PORT = 19;
+const OP_SAVE = 20;
 
 // Effect results are events on this node; the handler number is the id.
 const FX_NODE = 0xffffffff;
@@ -196,6 +197,8 @@ const FILE_UNAVAILABLE = 3;
 const MAX_URLS_PER_FILE = 16;
 const RES_PORT_REPLY = 14;
 const RES_PORT_FAILED = 15;
+const RES_ANSWERED = 20;
+const RES_FETCHED = 21;
 
 // The default and largest bound on one port answer or message, JSON text
 // and bytes together (options.maxPortBytes).
@@ -218,7 +221,29 @@ const HOLE_BIND = 4;
 
 
 export async function instantiateEngineBytes(bytes) {
-  return WebAssembly.instantiate(bytes, { env: {} });
+  const module = await WebAssembly.compile(bytes);
+  const instance = await WebAssembly.instantiate(module, pageImports(module));
+  return { module, instance };
+}
+
+// The imports of an instance that is not a task's worker (design.md,
+// "Tasks"): the page's own instance and the inline instance. A module imports
+// exactly the hosted effects its tasks call (`env.js_*`), and only a worker
+// instance can perform them (`worker.mjs`). Elsewhere each is a stub that
+// throws a contract error naming it. The host never reaches one: page code
+// is pure, so it cannot call an effect, and the host refuses an effect
+// outside a task's job with a classified contract fault before calling its
+// import. A stub is only a backstop that keeps such an instance from
+// unwinding through Wasm with an unnamed JavaScript error.
+export function pageImports(module) {
+  const env = {};
+  for (const imp of WebAssembly.Module.imports(module)) {
+    if (imp.module !== "env" || imp.kind !== "function") continue;
+    env[imp.name] = () => {
+      throw new Error(`contract: ${imp.name} is a task effect; it is performed only in a worker instance running a task's job`);
+    };
+  }
+  return { env };
 }
 
 export async function instantiateEngineWasm(url) {
@@ -1226,8 +1251,8 @@ class WorkPool {
   // `stop("deadline")` when its deadline expired. `prepared`, for a prepared
   // query, is { key, prepare, prepareFiles, finish }: `payload` is then the
   // query (`query:str input:rest`) and `files` the query's files.
-  submit(payload, done, id, program, files = [], prepared = null) {
-    const job = { payload, done, slot: null, settled: false, timer: null, id, program, files, prepared, finishing: false };
+  submit(payload, done, id, program, files = [], prepared = null, output = null) {
+    const job = { payload, done, slot: null, settled: false, timer: null, id, program, files, prepared, finishing: false, task: output !== null, maxOutput: output };
     if (!this.module || (!this.inline && typeof this.W !== "function")) {
       const message = this.module ? "this browser has no Worker" : "the runtime was mounted without its compiled module";
       job.timer = setTimeout(() => this.settle(job, { lost: LOST_UNAVAILABLE, message }), 0);
@@ -1325,7 +1350,7 @@ class WorkPool {
       // A worker that could not be started has lost every queued job.
       if (this.queue[i] !== job) return;
       this.queue.splice(i, 1);
-      this.post(slot, job, job.prepared === null ? "work" : "prepare");
+      this.post(slot, job, job.task ? "task" : job.prepared === null ? "work" : "prepare");
     }
   }
 
@@ -1337,7 +1362,12 @@ class WorkPool {
     const m = { type: "job", mode, payload: job.payload.buffer };
     const transfer = [job.payload.buffer];
     // The browser's Blobs travel by reference: posting one copies no bytes.
-    if (job.files.length > 0) m.files = job.files;
+    if (mode === "task") {
+      // A task's files, whole, by reference: the worker mints a handle for
+      // each and the job reads what it needs (design.md, "Tasks").
+      m.objects = job.files;
+      m.maxOutputBytes = job.maxOutput;
+    } else if (job.files.length > 0) m.files = job.files;
     if (mode === "prepare") {
       m.prepare = job.prepared.prepare.buffer;
       transfer.push(m.prepare);
@@ -1426,7 +1456,7 @@ class WorkPool {
       if (job.finishing) this.monitor.instanceFinished(slot.seq, m.mem ?? null);
       else if (m.type === "done") {
         this.monitor.jobReplied(job.id, slot.seq, { t: m.t, mem: m.mem, outputBytes: m.output.byteLength, read: m.read, fileBytes: m.fileBytes, prepareMs: m.prepareMs, held: m.held });
-        this.settle(job, { output: new Uint8Array(m.output) });
+        this.settle(job, m.objects !== undefined ? { output: new Uint8Array(m.output), objects: m.objects } : { output: new Uint8Array(m.output) });
       } else {
         // The worker is sound; only this job's files could not be read.
         this.monitor.jobReplied(job.id, slot.seq, { held: m.held });
@@ -1489,7 +1519,7 @@ class WorkPool {
             this.inlineSeq = mon.instanceSpawned("page");
             mon.jobPosted(job.id, this.inlineSeq, mode, p === null ? null : p.key.name);
             const instStart = mon.now();
-            this.instance = await WebAssembly.instantiate(this.module, { env: {} });
+            this.instance = await WebAssembly.instantiate(this.module, pageImports(this.module));
             this.created += 1;
             if (this.closed) continue;
             mon.instanceReady(this.inlineSeq, { origin: mon.origin, instStart, instEnd: mon.now(), memBytes: this.instance.exports.memory.buffer.byteLength });
@@ -1609,6 +1639,14 @@ function keyLive(key, live) {
   return true;
 }
 
+// The name a fetched body's file gets: the last segment of the URL's path,
+// without its query or fragment, or "download" when that is empty (the
+// native spec runner names it the same way).
+function urlFileName(url) {
+  const last = url.split("?")[0].split("#")[0].split("/").pop();
+  return last === "" || last === undefined ? "download" : last;
+}
+
 function httpResult(status, body, headers = []) {
   const parts = [new Uint8Array([RES_HTTP, status & 0xff, (status >>> 8) & 0xff]), u32(headers.length)];
   for (const [k, v] of headers) parts.push(encStr(k), encStr(v));
@@ -1672,6 +1710,15 @@ export class RocEngineRuntime {
     // after its job (memory never shrinks, and a prepared state may keep
     // it): the next job that needs a worker starts a fresh one.
     this.maxWorkerBytes = options.maxWorkerBytes ?? 128 * 1024 * 1024;
+    // The most bytes one task's job may append to its builders (design.md,
+    // "Tasks"): a builder's parts are held in memory, and the browser does
+    // not page a large in-memory Blob to disk. An append beyond it is
+    // refused with TooLarge, which the job sees.
+    this.maxOutputBytes = options.maxOutputBytes ?? 256 * 1024 * 1024;
+    if (!Number.isInteger(this.maxOutputBytes) || this.maxOutputBytes < 0) throw new Error(`maxOutputBytes: ${this.maxOutputBytes} is not a whole number of bytes`);
+    // Manual mode: the files the app saved (`SAVE`), in order, as
+    // { name, blob }, for a spec to read.
+    this.saveLog = [];
     // Ports (see "Ports" above): the page's handlers, the app's declared
     // ports (read at mount), push subscriptions by port, the command log of
     // manual mode, and per-port counters for the monitor.
@@ -1829,7 +1876,7 @@ export class RocEngineRuntime {
   // A fresh instance from the same module; the poisoned one is abandoned.
   async recover() {
     if (!this.module) throw new Error("recover() needs the compiled module (mountRocEngineApp keeps it)");
-    const instance = await WebAssembly.instantiate(this.module, { env: {} });
+    const instance = await WebAssembly.instantiate(this.module, pageImports(this.module));
     this.x = instance.exports;
     this.root.textContent = "";
     this.statics = [];
@@ -1846,6 +1893,7 @@ export class RocEngineRuntime {
     this.ending = null;
     this.pushSubs = new Map();
     this.portLog = [];
+    this.saveLog = [];
     this.mount();
     return this;
   }
@@ -2362,6 +2410,7 @@ export class RocEngineRuntime {
             at += 4;
             const files = [];
             const ranges = [];
+            const whole = [];
             for (let i = 0; i < refs; i += 1) {
               const token = tokenAt(dv, 0, at);
               const start = tokenAt(dv, 0, at + 8);
@@ -2369,6 +2418,7 @@ export class RocEngineRuntime {
               const file = this.files.get(token);
               if (file === undefined) throw new Error(`a work request names file handle ${token}, which this runtime does not hold`);
               files.push(file.slice(start, start + len));
+              whole.push(file);
               ranges.push(token, start, len);
               at += 24;
             }
@@ -2388,8 +2438,14 @@ export class RocEngineRuntime {
               at += 13;
               if (initAt + initLen > input.length || initFiles > refs || (policy !== 1 && policy !== 2)) throw new Error(`malformed prepared query ${program}`);
               prep = { name, initAt, initLen, initFiles, finish: policy === 2, ranges: ranges.slice(0, 3 * initFiles) };
-            } else if (flag !== 0) throw new Error(`work request flag ${flag} is not 0 or 1`);
-            this.fxOut.push({ op: "work", id, program, input, files, deadline, prep });
+            } else if (flag === 2) {
+              // A task's job (design.md, "Tasks"): its files cross whole, as
+              // handles the worker mints, and the job reads their ranges
+              // itself; nothing is read before it runs.
+              this.fxOut.push({ op: "work", id, program, input, files: whole, deadline, prep: null, task: true });
+              break;
+            } else if (flag !== 0) throw new Error(`work request flag ${flag} is not 0, 1 or 2`);
+            this.fxOut.push({ op: "work", id, program, input, files, deadline, prep, task: false });
           } else if (kind === 11) {
             const mode = u8[at];
             if (mode !== 1 && mode !== 2) throw new Error(`unknown file read mode ${mode}`);
@@ -2427,7 +2483,27 @@ export class RocEngineRuntime {
             const m = this.readPortMessage(u8, dv, at);
             at = m.at;
             this.fxOut.push({ op: "portsub", id, port, msg: m.msg });
+          } else if (kind === 15) {
+            const method = str();
+            const url = str();
+            const headers = [];
+            let n = dv.getUint32(at, true);
+            at += 4;
+            for (; n > 0; n -= 1) headers.push([str(), str()]);
+            const timeout = dv.getUint32(at, true);
+            at += 4;
+            this.fxOut.push({ op: "fetch", id, method, url, headers, body: "", timeout });
           } else throw new Error(`unknown effect kind ${kind}`);
+          break;
+        }
+        case OP_SAVE: {
+          // Resolved now, while a handle the batch released still names its
+          // file; the download is made after the batch.
+          const ref = this.fileRef(dv, at);
+          const n = dv.getUint32(at + 24, true);
+          const name = readStr(u8, at + 28, n);
+          at += 28 + n;
+          this.fxOut.push({ op: "save", name, blob: ref.blob, type: ref.file.type });
           break;
         }
         case OP_CANCEL:
@@ -2745,6 +2821,18 @@ export class RocEngineRuntime {
           });
         return;
       }
+      case "save":
+        this.performSave(fx);
+        return;
+      case "fetch": {
+        if (this.manual) {
+          this.live.set(fx.id, { kind: "fetch", req: fx, cancel: () => {} });
+          this.issued.push(fx.id);
+          return;
+        }
+        this.startFetch(fx);
+        return;
+      }
       case "port":
         this.performPortCommand(fx);
         return;
@@ -2757,6 +2845,99 @@ export class RocEngineRuntime {
       default:
         throw new Error(`unknown effect ${fx.op}`);
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // Saving and fetching files (design.md, "Tasks").
+
+  // `SAVE`: a download of the file's range under `fx.name`, made with an
+  // object URL and a link with a `download` attribute, clicked, then
+  // revoked a moment later (the browser has taken the Blob by then). In
+  // manual mode it is logged in `saveLog` instead, for a spec to read. A
+  // save the batch issued in a click's turn runs inside that click's
+  // listener, so the browser sees the user's gesture; one issued later may
+  // be held back by the browser, which this runtime does not hide.
+  performSave(fx) {
+    if (this.manual) {
+      this.saveLog.push({ name: fx.name, blob: fx.blob });
+      return;
+    }
+    const doc = this.doc;
+    const urls = this.urlApi();
+    const url = urls.createObjectURL(fx.blob.type === fx.type ? fx.blob : new Blob([fx.blob], { type: fx.type }));
+    const a = doc.createElement("a");
+    a.href = url;
+    a.download = fx.name;
+    a.style.display = "none";
+    doc.body.appendChild(a);
+    try {
+      a.click();
+    } finally {
+      a.remove();
+      setTimeout(() => urls.revokeObjectURL(url), 1000);
+    }
+  }
+
+  // FX kind 15: an HTTP request whose body becomes a file the page holds
+  // (result tag 21), never entering linear memory: the body is the
+  // browser's `Blob`, which a large response keeps on disk. A body over
+  // options.maxFileBytes is FileFailed(TooLarge); a failure or a timeout is
+  // answered as an HTTP request's. Held, cancelled and timed out as an HTTP
+  // request is.
+  startFetch(fx) {
+    const ctl = new AbortController();
+    let timer = null;
+    const done = () => {
+      if (timer === null) return;
+      clearTimeout(timer);
+      timer = null;
+      this.timers -= 1;
+    };
+    const entry = {
+      kind: "fetch",
+      req: fx,
+      running: true,
+      cancel: () => {
+        done();
+        ctl.abort();
+      },
+    };
+    this.live.set(fx.id, entry);
+    const settle = (payload) => {
+      if (this.live.get(fx.id) !== entry) return;
+      this.live.delete(fx.id);
+      done();
+      this.result(fx.id, payload);
+    };
+    if (fx.timeout > 0) {
+      this.timers += 1;
+      timer = setTimeout(() => {
+        timer = null;
+        this.timers -= 1;
+        if (this.live.get(fx.id) !== entry) return;
+        this.live.delete(fx.id);
+        ctl.abort();
+        this.result(fx.id, new Uint8Array([RES_TIMEOUT]));
+      }, fx.timeout);
+    }
+    const send = this.fetch ?? globalThis.fetch;
+    new Promise((resolve) => resolve(send(fx.url, { method: fx.method, headers: fx.headers, signal: ctl.signal })))
+      .then(async (r) => {
+        const blob = await r.blob();
+        if (this.live.get(fx.id) !== entry) return;
+        settle(this.fetchedPayload(fx.url, r.status, [...r.headers], blob));
+      })
+      .catch((e) => settle(concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(String(e))])));
+  }
+
+  // A fetched body as result tag 21 with its file, or FileFailed(TooLarge).
+  fetchedPayload(url, status, headers, blob) {
+    if (blob.size > this.maxFileBytes) return new Uint8Array([RES_FILE_FAILED, FILE_TOO_LARGE]);
+    const type = (headers.find(([k]) => k.toLowerCase() === "content-type") ?? [null, blob.type])[1];
+    const file = new File([blob], urlFileName(url), { type });
+    const parts = [new Uint8Array([RES_FETCHED, status & 0xff, (status >>> 8) & 0xff]), u32(headers.length)];
+    for (const [k, v] of headers) parts.push(encStr(k), encStr(v));
+    return { parts, files: [file], overflow: new Uint8Array([RES_FILE_FAILED, FILE_TOO_LARGE]) };
   }
 
   // ---------------------------------------------------------------------
@@ -3038,25 +3219,32 @@ export class RocEngineRuntime {
     });
   }
 
-  // A port result turn: its parts staged straight into linear memory (one
-  // copy of any bytes), and the files of a reply minted as handles first.
-  // When the heap has no slots for all of them the reply is TooLarge and
-  // the handles minted for it are released at once.
+  // A result turn staged from parts straight into linear memory (one copy
+  // of any bytes), with the files it carries minted as handles first: a
+  // port's reply (tag 14), a task's answer (tag 20) or a fetched body (tag
+  // 21). Each file's `size name type` follows `parts`, then `tail` (a
+  // task's output). When the heap has no slots for all of them the result
+  // is `overflow` (a port's TooLarge, or FileFailed(TooLarge)) and the
+  // handles minted for it are released at once. Ownership: the runtime
+  // holds each file under its new token from here, until the engine
+  // releases the handle; the staged bytes belong to the host until the
+  // call moves them into Roc.
   callPort(node, handler, payload) {
     const x = this.x;
     try {
       // Results of operations on files are staged from parts too, without
       // files of their own.
       const files = payload.files ?? [];
+      const tail = payload.tail ?? [];
       if (files.length === 0) {
-        this.stageParts(payload.parts);
+        this.stageParts(payload.parts.concat(tail));
         x.event(node, handler);
         return;
       }
       const minted = x.files_stage(files.length);
       if (minted < files.length) {
         x.files_stage(0);
-        this.stageParts([new Uint8Array([RES_PORT_FAILED, 2])]);
+        this.stageParts([payload.overflow ?? new Uint8Array([RES_PORT_FAILED, 2])]);
         x.event(node, handler);
         return;
       }
@@ -3067,7 +3255,7 @@ export class RocEngineRuntime {
         this.files.set(tokenAt(tokens, i), f);
         parts.push(u64le(f.size), encStr(f.name ?? ""), encStr(f.type ?? ""));
       }
-      this.stageParts(parts);
+      this.stageParts(parts.concat(tail));
       x.event_files(node, handler);
     } finally {
       if (payload.after) payload.after();
@@ -3190,7 +3378,18 @@ export class RocEngineRuntime {
         finish(new Uint8Array([RES_TIMEOUT]), "timeout");
       }, fx.deadline);
     }
-    const fileBytes = fx.files.reduce((n, f) => n + f.size, 0);
+    if (fx.task && this.workerMode === "inline") {
+      // A task's effects are synchronous browser APIs that exist only in a
+      // worker (FileReaderSync); the page's thread cannot run one.
+      setTimeout(() => {
+        const klass = this.reportLost(fx, LOST_UNAVAILABLE, "a task's job needs a worker, and workers are inline");
+        finish(new Uint8Array([RES_WORK_LOST, LOST_UNAVAILABLE]), "unavailable", klass);
+      }, 0);
+      return;
+    }
+    // A task's files cross by reference and are read on demand, so only
+    // their number is bounded; a program's are read before it runs.
+    const fileBytes = fx.task ? 0 : fx.files.reduce((n, f) => n + f.size, 0);
     if (fx.files.length > MAX_JOB_FILES || fileBytes > this.maxFileBytes) {
       // More than a job reads: refused before anything is read, as one
       // result turn after this batch.
@@ -3220,13 +3419,21 @@ export class RocEngineRuntime {
         finish(new Uint8Array([RES_FILE_FAILED, outcome.filefail]), "lost", outcome.filefail === 1 ? "unreadable" : "too_large");
         return;
       }
+      if (outcome.objects !== undefined) {
+        // A task's answer (result tag 20): the files it holds become the
+        // page's handles when the turn is delivered, each the worker's
+        // Blob (posted by reference) as a File of its name and type.
+        const files = outcome.objects.map((o) => new File([o.blob], o.name, { type: o.type }));
+        finish({ parts: [new Uint8Array([RES_ANSWERED]), u32(files.length)], files, tail: [outcome.output], overflow: new Uint8Array([RES_FILE_FAILED, FILE_TOO_LARGE]) }, "done", null, outcome.output);
+        return;
+      }
       if (outcome.output !== undefined) {
         finish(concat([new Uint8Array([RES_WORK]), outcome.output]), "done", null, outcome.output);
         return;
       }
       const klass = this.reportLost(fx, outcome.lost, outcome.message);
       finish(new Uint8Array([RES_WORK_LOST, outcome.lost]), outcome.lost === LOST_UNAVAILABLE ? "unavailable" : "lost", klass);
-    }, fx.id, fx.program, jobFiles, prepared);
+    }, fx.id, fx.program, jobFiles, prepared, fx.task ? this.maxOutputBytes : null);
   }
 
   // Report a lost job and return its class name. The `roc worker fault
@@ -3286,6 +3493,13 @@ export class RocEngineRuntime {
     if (e.kind === "file") {
       this.live.delete(id);
       return new Promise((resolve) => this.startFileOp(e.req, () => resolve(true)));
+    }
+    // A fetch answered with a response: its body becomes the file, as a
+    // real response's Blob does.
+    if (e.kind === "fetch" && answer.status !== undefined) {
+      this.live.delete(id);
+      this.result(id, this.fetchedPayload(e.req.url, answer.status, answer.headers ?? [], new Blob([answer.body ?? ""])));
+      return true;
     }
     this.live.delete(id);
     if (answer.timeout) this.result(id, new Uint8Array([RES_TIMEOUT]));
@@ -3581,7 +3795,7 @@ export async function mountRocEngineApp({ wasmUrl, root, ...options }) {
   const response = await fetch(wasmUrl);
   if (!response.ok) throw new Error(`failed to fetch ${wasmUrl}: ${response.status}`);
   const module = await WebAssembly.compile(await response.arrayBuffer());
-  const instance = await WebAssembly.instantiate(module, { env: {} });
+  const instance = await WebAssembly.instantiate(module, pageImports(module));
   const runtime = new RocEngineRuntime(instance.exports, root, { ...options, module });
   runtime.mount();
   return runtime;
