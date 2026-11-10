@@ -52,8 +52,10 @@ superseding site instead of filtering answers in the reaction:
   sets the layer when the input changes, in the same turn (a loading state
   that still holds the previous answer, say); `resolve(s, a, res)` sets it
   from each answer for the current input. Readers below do no work when
-  either returns an equal value. `Worker.derive` and `Port.derive` are
-  resources that follow one answer, held as an `Engine.Remote`.
+  either returns an equal value. `Worker.derive` and `Port.derive` (taught
+  in [Workers](@/docs/workers.md#showing-its-answer) and
+  [Ports](@/docs/ports.md)) are resources that follow one answer, held as
+  an `Engine.Remote`.
 
 Both cancel only on a new value. Disposing them follows the same rules as any
 effect site: subscriptions and timers stop, and an admitted request still
@@ -72,11 +74,14 @@ layer is skipped.
 | `OnlineChanges` | `Online(Bool)` on every change |
 | `VisibilityChanges` | `Visible(Bool)` on every change |
 | `Work({ task, input, files, deadline_ms, on_dispose, on_cancel, prepared })` | `Work({ output, files })`, `WorkLost(fault)` or `Timeout`: a job of a registered task in a Web Worker. Apps use the typed `Worker` module instead; see [Workers](@/docs/workers.md) |
-| `ReadBytes(file)`, `ReadUtf8(file)` | `FileBytes(bytes)` or `FileText(text)`, or `FileFailed(error)`: a file read into the page. Made with `File.read_bytes` and `File.read_utf8`; see [Files](@/docs/files.md) |
+| `ReadBytes({ file, max_bytes })`, `ReadUtf8({ file, max_bytes })` | `FileBytes(bytes)` or `FileText(text)`, or `FileFailed(error)`: a file read into the page. Made with `File.read_bytes` and `File.read_utf8`; see [Files](@/docs/files.md) |
 | `Upload({ method, url, headers, body, timeout_ms })` | As `Http`, with a [file](@/docs/files.md) as the body; made with `File.upload` |
 | `Sha256(file)`, `ObjectUrl(file)` | `Digest(bytes)` or `FileUrl(url)`, or `FileFailed(error)`: made with `File.sha256` and `File.object_url`; see [Files](@/docs/files.md) |
+| `Fetch({ method, url, headers, timeout_ms })` | `Fetched({ status, headers, body })` with the body as a [file](@/docs/files.md), `Network(message)`, `Timeout` or `FileFailed(TooLarge)`: made with `File.fetch`, read with `Engine.fetched`; see [Files in Tasks](@/docs/files-in-tasks.md) |
+| `PortCall({ port, message, timeout_ms })` | `PortReply(message)` or `PortFailed(failure)`, once. Made by a typed [port](@/docs/ports.md) call |
+| `PortSubscribe({ port, message })` | `PortReply(message)` for every message, or `PortFailed(failure)`, until the site is disposed or the JavaScript ends it. Made by a typed port subscription |
 | `Self` | `Now`, in a follow-up turn |
-| `Push(url)`, `Replace(url)`, `Title(text)`, `StorageSet(key, value)`, `StorageRemove(key)`, `Focus(ref)`, `Blur(ref)`, `SelectText(ref)` | None: commands |
+| `Push(url)`, `Replace(url)`, `Title(text)`, `StorageSet(key, value)`, `StorageRemove(key)`, `Focus(ref)`, `Blur(ref)`, `SelectText(ref)`, `Save({ file, name })` (made with `File.save`), `PortCommand({ port, message })` (made by a typed port command) | None: commands |
 
 `Engine.http_text(res)` reads an HTTP result as the body of a 2xx response,
 or a typed `HttpError`: `Network(message)`, `Timeout`, `Status(code)` or
@@ -118,17 +123,21 @@ its own.
 
 ## Subscriptions and lifetime
 
-Subscriptions (`Interval`, `Popstate`, `OnlineChanges`, `VisibilityChanges`),
-timers and work belong to their site. Disposing the site — because its branch
-switched or its row left a list — cancels them:
+Subscriptions (`Interval`, `Popstate`, `OnlineChanges`, `VisibilityChanges`,
+a port subscription), timers, operations on files on the page (`ReadBytes`,
+`ReadUtf8`, `Sha256`, `ObjectUrl`) and worker jobs belong to their site.
+Disposing the site — because its branch switched or its row left a list —
+cancels them:
 
 {{ sample(file="effects.roc", region="subscriptions") }}
 
-Requests that are already in flight (`Http`, `StorageGet`) are not cancelled
-when their site goes. They are handed to the nearest surviving ancestor, and
-the reaction runs there when the answer arrives. Writes to states that were
-disposed with the site are skipped. Only unmounting the whole app abandons
-them.
+Requests whose answer may matter after the site has gone are not cancelled
+when it goes: `Http`, `Upload`, `Fetch`, `StorageGet`, port calls, and the
+jobs of a task that says `on_dispose: Keep` (see
+[Workers](@/docs/workers.md#lifetimes)). They are handed to the nearest
+surviving ancestor, and the reaction runs there when the answer arrives.
+Writes to states that were disposed with the site are skipped. Only
+unmounting the whole app abandons them.
 
 ## Focus
 
