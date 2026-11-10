@@ -1,0 +1,20 @@
+(test "Typed workers — a fallible program answers with its own error, through a typed request and result"
+  (steps
+    (run-effect 1)
+    (expect-text (test-id "parsed") "")
+    (fill (label "Text") "42")
+    (run-effect 2)
+    ; Editing the text alone asks for no parse.
+    (expect-pending-effects 0)
+    (click (role button :name "Parse"))
+    (expect-text (test-id "parsed") "parsing")
+    (run-effect 3)
+    (expect-text (test-id "parsed") "number 42")
+    (fill (label "Text") "forty-two")
+    (run-effect 4)
+    (click (role button :name "Parse"))
+    (run-effect 5)
+    (expect-text (test-id "parsed") "not a number: forty-two")
+    (expect-pending-effects 0)
+  )
+)

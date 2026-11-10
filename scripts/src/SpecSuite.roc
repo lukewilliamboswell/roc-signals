@@ -17,10 +17,10 @@ SpecSuite := [].{
 	apps = ["form-builder", "kanban-board", "data-grid", "markdown-editor", "conduit", "field-notes", "status-page", "spreadsheet-lite"]
 
 	## Test apps under `tests/apps/` whose `specs/` run like an app's: the
-	## browser services, work counters, worker jobs and superseding effect
-	## sites the examples do not exercise.
+	## browser services, work counters, worker jobs (byte-level and typed) and
+	## superseding effect sites the examples do not exercise.
 	test_apps : List(Str)
-	test_apps = ["services", "workers", "supersede"]
+	test_apps = ["services", "workers", "worker-typed", "supersede"]
 
 	## Every spec-bearing app, examples first.
 	spec_apps : List(Str)

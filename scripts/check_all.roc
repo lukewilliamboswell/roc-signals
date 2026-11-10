@@ -52,7 +52,7 @@ main! = |_args| {
 	var $browser = SpecSuite.empty_tally
 	var $kanban = { runner: "", wasm: "" }
 	SpecSuite.build_web_platform!(o)?
-	SpecSuite.build!(o, SpecSuite.spec_apps, SpecSuite.apps.concat(["tests/apps/effects", "tests/apps/controls", "tests/apps/services", "tests/apps/workers", "tests/apps/supersede"]))?
+	SpecSuite.build!(o, SpecSuite.spec_apps, SpecSuite.apps.concat(["tests/apps/effects", "tests/apps/controls", "tests/apps/services", "tests/apps/workers", "tests/apps/worker-typed", "tests/apps/supersede"]))?
 	for example in SpecSuite.spec_apps {
 		r = Checks.run_app!(o, example, Bool.True)?
 		$native = Checks.add($native, r.native)
