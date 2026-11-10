@@ -9,29 +9,19 @@
 //! per heap, no scan), and a heap that owns the address retires the slot
 //! instead of freeing it. The port follows roc-ray's `HostResourceHeap`.
 //!
-//! Two kinds of handle live here:
-//!
-//! - **Blobs** (`BlobHeap`): a page's file handles, Roc `Box(U64)` values
-//!   whose payload is a token naming a browser `Blob` the JavaScript runtime
-//!   holds. The host holds only the token. A slot whose last reference went is
-//!   *retired*: it stays reserved, and its token is listed for the runtime,
-//!   until the runtime has performed the batch's effects and drained the list.
-//!   So a token named by a command in the same batch still resolves, and a
-//!   drop during a Roc call never reaches JavaScript.
-//! - **Byte buffers** (`BytesHeap`): a worker's file contents, an owning
-//!   seamless `List(U8)` whose allocation pointer is the slot's payload, so
-//!   the list's last release reaches the slot and frees the buffer, which the
-//!   host allocated. Nothing outside the host refers to a buffer, so it is
-//!   freed at once.
+//! The handles here are **blobs** (`BlobHeap`): file handles, Roc
+//! `Box(U64)` values whose payload is a token naming a browser `Blob` the
+//! JavaScript runtime holds. The host holds only the token. A slot whose last
+//! reference went is *retired*: it stays reserved, and its token is listed for
+//! the runtime, until the runtime has performed the batch's effects and
+//! drained the list. So a token named by a command in the same batch still
+//! resolves, and a drop during a Roc call never reaches JavaScript.
 //!
 //! A slot is `{ pad, rc, token }`, the token at offset 8 and the refcount in
 //! the `usize` just before it, which is where Roc keeps the refcount of a
-//! `Box(U64)` and of a list whose allocation pointer is the token, on both
-//! wasm32 and x86_64. Roc frees a `Box(U64)` at its payload minus 8 (the
-//! payload's alignment) and a `List(U8)` at its allocation pointer minus one
-//! `usize`, so the two heaps route different offsets of the same layout. The
-//! layout is pinned by the tests below and by the ownership probes the specs
-//! run in both hosts.
+//! `Box(U64)` on both wasm32 and x86_64. Roc frees a `Box(U64)` at its
+//! payload minus 8 (the payload's alignment). The layout is pinned by the
+//! tests below and by the ownership probes the specs run in both hosts.
 const std = @import("std");
 
 const token_index_bits: u6 = 16;
@@ -41,9 +31,10 @@ const token_index_mask: u64 = (@as(u64, 1) << token_index_bits) - 1;
 const token_kind_mask: u64 = (@as(u64, 1) << token_kind_bits) - 1;
 const max_generation: u64 = std.math.maxInt(u64) >> token_generation_shift;
 
-/// The kinds of handle, and the byte their tokens carry. Zero is reserved: it
-/// is never a token.
-pub const Kind = enum(u8) { blob = 1, bytes = 2 };
+/// The kinds of handle, and the byte their tokens carry, so a token of one
+/// kind never resolves in a heap of another. Zero is reserved: it is never a
+/// token.
+pub const Kind = enum(u8) { blob = 1 };
 
 /// What a heap made of an address `roc_dealloc` offered it.
 pub const Route = enum { not_owned, retired, corrupt };
@@ -65,9 +56,6 @@ pub fn deallocOffset(comptime kind: Kind) usize {
     return switch (kind) {
         // A `Box(U64)`: its payload minus the payload's alignment.
         .blob => 0,
-        // A `List(U8)` whose allocation pointer is the token: one `usize`
-        // before it.
-        .bytes => 8 - @sizeOf(usize),
     };
 }
 
@@ -230,20 +218,14 @@ test "routing refuses foreign, misaligned, double and stale addresses" {
     try std.testing.expectEqual(Route.corrupt, heap.route(boxBase(never)));
 }
 
-test "a byte list's allocation pointer is the token and it routes one usize before it" {
-    var heap: Heap(.bytes, 1, u8) = .{};
-    const payload = heap.mint(3).?;
-    const base: *anyopaque = @ptrFromInt(@intFromPtr(payload) - @sizeOf(usize));
-    try std.testing.expectEqual(Route.retired, heap.route(base));
-}
-
-test "a token of one kind does not resolve in a heap of another" {
+test "a token that does not carry its heap's kind does not resolve" {
     var blobs: Heap(.blob, 1, u8) = .{};
-    var bytes: Heap(.bytes, 1, u8) = .{};
     const b = blobs.mint(1).?;
-    const y = bytes.mint(2).?;
-    try std.testing.expect(bytes.get(b.*) == null);
-    try std.testing.expect(blobs.get(y.*) == null);
+    const kind_byte: u64 = @as(u64, token_kind_mask) << token_index_bits;
+    // The same index and generation under another kind byte.
+    const other = (b.* & ~kind_byte) | (@as(u64, 2) << token_index_bits);
+    try std.testing.expect(blobs.get(b.*) != null);
+    try std.testing.expect(blobs.get(other) == null);
     try std.testing.expect(blobs.get(0) == null);
 }
 
