@@ -1,5 +1,6 @@
 import pf.Engine exposing [Elem, In, Root, State]
 import pf.Html
+import pf.Port
 
 ## Effect-channel test app: three sites, each shown or hidden by a `when`
 ## (hiding disposes the branch). Each branch holds:
@@ -28,8 +29,12 @@ import pf.Html
 ##   appends to the root log.
 ## - A follow-up loop that only the browser contract test arms ("loop"): a
 ##   refused request whose reaction issues it again.
+## - P, a `latest` site over the counter `p`, shown or hidden by a `when`:
+##   for a nonzero `p` a port call (kept when P is disposed) and a port
+##   subscription (scoped, ended by its JavaScript with `Closed` or
+##   `Threw`). Its reaction appends to the root log.
 FxApp := [].{
-	S : { counts : List(U64), shown : List(Bool), log : List(Str), q : U64, r : U64, rshown : Bool, f : U64, n : U64, looping : Bool }
+	S : { counts : List(U64), shown : List(Bool), log : List(Str), q : U64, r : U64, rshown : Bool, f : U64, n : U64, looping : Bool, p : U64, pshown : Bool }
 
 	## The resource's layer: the input it was begun for, the last answer, and
 	## the timeouts seen.
@@ -70,18 +75,31 @@ FxApp := [].{
 			Refused => "${head}:refused"
 			Now => "${head}:self"
 			Location(u) => "pop:${u}"
+			PortReply(m) => "${head}:port:${m.json}"
+			PortFailed(failure) => "${head}:portfail:${Str.inspect(failure)}"
 			_ => "${head}:other"
 		}
 	}
 
 	log_line : S, Str -> S
-	log_line = |{ counts, shown, log, q, r, rshown, f, n, looping }, line| { counts, shown, log: log.append(line), q, r, rshown, f, n, looping }
+	log_line = |{ counts, shown, log, q, r, rshown, f, n, looping, p, pshown }, line| { counts, shown, log: log.append(line), q, r, rshown, f, n, looping, p, pshown }
 
 	bump : S, U64 -> S
-	bump = |{ counts, shown, log, q, r, rshown, f, n, looping }, k| { counts: counts.update(k, |c| c + 1) ?? counts, shown, log, q, r, rshown, f, n, looping }
+	bump = |{ counts, shown, log, q, r, rshown, f, n, looping, p, pshown }, k| { counts: counts.update(k, |c| c + 1) ?? counts, shown, log, q, r, rshown, f, n, looping, p, pshown }
 
 	toggle : S, U64 -> S
-	toggle = |{ counts, shown, log, q, r, rshown, f, n, looping }, k| { counts, shown: shown.update(k, |b| !b) ?? shown, log, q, r, rshown, f, n, looping }
+	toggle = |{ counts, shown, log, q, r, rshown, f, n, looping, p, pshown }, k| { counts, shown: shown.update(k, |b| !b) ?? shown, log, q, r, rshown, f, n, looping, p, pshown }
+
+	## P's ports: a call and a subscription, each sent `p`.
+	port_call : Port.Call(U64, Str)
+	port_call = Port.call("test.roc-signals/fx-call")
+
+	port_feed : Port.Subscription(U64, Str)
+	port_feed = Port.subscription("test.roc-signals/fx-feed", Every(8))
+
+	## P's requests for `p`.
+	plan_p : U64 -> List(Engine.Req)
+	plan_p = |p| if (p == 0) [] else [FxApp.port_call.request(p), FxApp.port_feed.subscribe(p)]
 
 	## L's requests for query `q`.
 	plan_l : U64 -> List(Engine.Req)
@@ -212,7 +230,7 @@ FxApp := [].{
 
 	main_with : List(Bool) -> Elem(Root)
 	main_with = |shown| Engine.state(
-		{ counts: List.repeat(0, FxApp.nsites), shown, log: [], q: 0, r: 0, rshown: True, f: 0, n: 0, looping: False },
+		{ counts: List.repeat(0, FxApp.nsites), shown, log: [], q: 0, r: 0, rshown: True, f: 0, n: 0, looping: False, p: 0, pshown: True },
 		|st| Engine.element(
 			"div",
 			[],
@@ -261,6 +279,13 @@ FxApp := [].{
 					),
 					|| Engine.text(""),
 				),
+				Html.button("pquery", [], st.update(|s| { ..s, p: s.p + 1 })),
+				Html.button("toggle p", [], st.update(|s| { ..s, pshown: !s.pshown })),
+				Engine.when(
+					st.val().map(|s| s.pshown),
+					|| Engine.latest(st.val().map(|s| s.p), FxApp.plan_p, st.on_result(|s, p, r| FxApp.log_line(s, FxApp.describe(10, p, r)))),
+					|| Engine.text(""),
+				),
 			],
 		),
 	)
@@ -268,7 +293,11 @@ FxApp := [].{
 	## The program `main.roc` binds for the browser module and the native spec
 	## runner, and `main-fuzz.roc` drives on the fuzz platform.
 	program : Engine.Program
-	program = Engine.program_boot({ storage_keys: [], max_inflight: 8 }, |_| FxApp.main({})).with_workers(FxApp.workers)
+	program = Engine.program_boot({ storage_keys: [], max_inflight: 8 }, |_| FxApp.main({})).with_workers(FxApp.workers).with_ports(FxApp.ports)
+
+	## The ports P uses.
+	ports : List(Engine.PortDecl)
+	ports = [FxApp.port_call.declaration(), FxApp.port_feed.declaration()]
 
 	main : {} -> Elem(Root)
 	main = |_| FxApp.main_with([True, True, True])

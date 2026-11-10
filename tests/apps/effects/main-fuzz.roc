@@ -48,18 +48,28 @@ start = |view| {
 ##   the call would poison the instance here.
 ## - Every batch must leave the engine settled: a pass over every layer emits
 ##   nothing (`Core.settled`).
+## - Ports: P (`k` 10, a `latest` site over `p` inside a `when`) issues a
+##   port call and a port subscription for each nonzero `p`. A new `p`
+##   supersedes both (CANCEL); hiding P keeps the call (it reparents and its
+##   answer still reaches the log) and cancels the subscription. A message
+##   leaves a subscription live; `Closed` or `Threw` retires it, and a
+##   later message for it is stale.
 
-Kind : [G, H, Tick, Pop, Lh, Li, Rh, Rt, Ri, Rw, Ft]
+Kind : [G, H, Tick, Pop, Lh, Li, Rh, Rt, Ri, Rw, Ft, Pc, Ps]
 
 Live : { id : U32, k : U64, c : U64, kind : Kind, orphan : Bool }
 
 ## A queued follow-up: a refusal for G, H, an interval, L, R or F, or a
 ## Self (G's first or second, or L's).
-Follow : { k : U64, c : U64, what : [RefG, RefH, RefT, Self1, Self2, RefL, SelfL, RefR, RefF] }
+Follow : { k : U64, c : U64, what : [RefG, RefH, RefT, Self1, Self2, RefL, SelfL, RefR, RefF, RefP] }
 
 ## F's `k`.
 k_f : U64
 k_f = 6
+
+## P's `k`.
+k_p : U64
+k_p = 10
 
 ## L's and R's `k`.
 k_l : U64
@@ -90,6 +100,8 @@ M : {
 	rshown : Bool,
 	rl : FxApp.Load,
 	f : U64,
+	p : U64,
+	pshown : Bool,
 }
 
 model_new : U64 -> M
@@ -116,6 +128,8 @@ model_new = |max| {
 		rshown: True,
 		rl: FxApp.begin_r(FxApp.load0, 0),
 		f: 0,
+		p: 0,
+		pshown: True,
 	}
 	# each shown branch mounts its interval (counts are 0: no G/H)
 	tick(tick(tick(m0, 0), 1), 2)
@@ -170,7 +184,7 @@ request = |m, k, c| {
 
 ## Admit (or refuse, queueing `refusal`) one awaited request of L, R or F:
 ## `cmd` is its effect command given the id.
-admit_x : M, U64, U64, Kind, (U32 -> Dom.FxCmd), [RefL, RefR, RefF] -> M
+admit_x : M, U64, U64, Kind, (U32 -> Dom.FxCmd), [RefL, RefR, RefF, RefP] -> M
 admit_x = |m, k, c, kind, cmd, refusal| {
 	id = m.next
 	if m.live.len() >= m.max {
@@ -178,6 +192,7 @@ admit_x = |m, k, c, kind, cmd, refusal| {
 			RefL => RefL
 			RefR => RefR
 			RefF => RefF
+			RefP => RefP
 		}
 		{ ..m, next: id + 1, refused: m.refused + 1, queue: m.queue.append({ k, c, what }) }
 	} else {
@@ -240,6 +255,54 @@ issue_r = |m, r| {
 	}
 }
 
+## P's requests for `p` (FxApp.plan_p): a call and a subscription, each
+## sent `p` as PortJson writes a `U64`, a string of its digits.
+issue_p : M, U64 -> M
+issue_p = |m, p| {
+	if p == 0 {
+		m
+	} else {
+		msg = { json: "\"${p.to_str()}\"", blobs: [], files: [] }
+		m1 = admit_x(m, k_p, p, Pc, |id| PortCall(id, "test.roc-signals/fx-call", msg, 0), RefP)
+		admit_x(m1, k_p, p, Ps, |id| PortListen(id, "test.roc-signals/fx-feed", msg), RefP)
+	}
+}
+
+## A click on "pquery": a shown P supersedes and issues for the next `p`.
+model_pquery : M -> M
+model_pquery = |m| {
+	p = m.p + 1
+	if (m.pshown) drain(issue_p(supersede({ ..m, p }, k_p), p)) else { ..m, p }
+}
+
+## A click on "toggle p": hiding disposes P (its call reparents, its
+## subscription is cancelled, its queued refusals are dropped); showing
+## mounts it afresh for the current `p`.
+model_toggle_p : M -> M
+model_toggle_p = |m| {
+	if m.pshown {
+		var $m = { ..m, pshown: False }
+		for l in m.live {
+			if l.k == k_p and !l.orphan {
+				if l.kind == Pc {
+					$m = { ..$m, reparented: $m.reparented + 1 }
+				} else {
+					$m = { ..$m, fx: $m.fx.append(Cancel(l.id)), cancelled: $m.cancelled + 1 }
+				}
+			}
+		}
+		purged = $m.queue.count_if(|f| f.k == k_p)
+		{
+			..$m,
+			live: $m.live.keep_if(|l| !(l.k == k_p and !l.orphan and l.kind == Ps)).map(|l| if (l.k == k_p) { ..l, orphan: True } else l),
+			queue: $m.queue.keep_if(|f| f.k != k_p),
+			stale: $m.stale + purged,
+		}
+	} else {
+		drain(issue_p({ ..m, pshown: True }, m.p))
+	}
+}
+
 ## The query changes (a click or L's own follow-up): L supersedes, then
 ## issues for the new value.
 bump_q : M -> M
@@ -267,6 +330,7 @@ drain = |m0| {
 			SelfL => bump_q({ ..m, log: m.log.append(FxApp.describe(k_l, f.c, Now)), delivered: m.delivered + 1 })
 			RefR => { ..m, rl: FxApp.fold_r(m.rl, f.c, Refused), delivered: m.delivered + 1 }
 			RefF => { ..m, log: m.log.append(FxApp.describe(k_f, f.c, Refused)), delivered: m.delivered + 1 }
+			RefP => { ..m, log: m.log.append(FxApp.describe(k_p, f.c, Refused)), delivered: m.delivered + 1 }
 		}
 	}
 	$m
@@ -375,7 +439,13 @@ model_deliver : M, U32, Engine.Res -> M
 model_deliver = |m, id, res| {
 	match m.live.find_first(|l| l.id == id) {
 		Ok(l) => {
-			sub = l.kind == Tick or l.kind == Pop or l.kind == Li or l.kind == Ri
+			ended = match res {
+				PortFailed(Closed) | PortFailed(Threw(_)) => Bool.True
+				_ => Bool.False
+			}
+			# A terminal port result retires whatever subscription it reaches
+			# (only a port's ever receives one from a well-behaved host).
+			sub = (l.kind == Tick or l.kind == Pop or l.kind == Li or l.kind == Ri or l.kind == Ps) and !ended
 			live = if (sub) m.live else m.live.keep_if(|x| x.id != id)
 			m1 = { ..m, live, delivered: m.delivered + 1 }
 			match l.kind {
@@ -458,6 +528,10 @@ encode_res = |res| match res {
 	Location(u) => [6].concat(Str.to_utf8(u))
 	Work(out) => [10].concat(out)
 	WorkLost(AppCrash) => [11, 4]
+	PortReply({ json, .. }) => le32(le32(wstr([14], json), 0), 0)
+	PortFailed(Threw(t)) => [15, 1].concat(Str.to_utf8(t))
+	PortFailed(TooLarge) => [15, 2]
+	PortFailed(Closed) => [15, 3]
 	_ => crash "not a host result"
 }
 
@@ -509,8 +583,12 @@ check! = |what, e, m| {
 	# The work record carries the effect counters too (design.md, Appendix B,
 	# indices 32-39), so both spec runners can read them.
 	recorded = [m.issued, m.delivered, m.stale, m.refused, m.cancelled, m.reparented, m.skipped, m.live.len()]
-	if w.drop_first(32) != recorded {
-		crash "${what}: work-record effect counters ${Str.inspect(w.drop_first(32))} (issued delivered stale refused cancelled reparented skipped live), model ${Str.inspect(recorded)}"
+	if w.drop_first(32).take_first(8) != recorded {
+		crash "${what}: work-record effect counters ${Str.inspect(w.drop_first(32).take_first(8))} (issued delivered stale refused cancelled reparented skipped live), model ${Str.inspect(recorded)}"
+	}
+	# The app sends no port commands (index 40).
+	if w.get(40) != Ok(0) {
+		crash "${what}: port commands sent ${Str.inspect(w.get(40))}, model 0"
 	}
 	if Core.fx_live(e.s.eng) != m.live.map(|l| l.id) {
 		crash "${what}: live ids ${Str.inspect(Core.fx_live(e.s.eng))}, model ${Str.inspect(m.live.map(|l| l.id))}"
@@ -521,7 +599,7 @@ run_program! : List(U8) => {}
 run_program! = |prog| {
 	max = 5
 	# The app's view with its worker catalogue, mounted as a host mounts it.
-	program = Engine.program_boot({ storage_keys: [], max_inflight: max }, |_| FxApp.main({})).with_workers(FxApp.workers)
+	program = Engine.program_boot({ storage_keys: [], max_inflight: max }, |_| FxApp.main({})).with_workers(FxApp.workers).with_ports(FxApp.ports)
 	(a0, c0, _) = (Core.driver(program).init)([])
 	(d0, _, fx0) = Dom.apply_fx(Dom.new({}), c0)
 	var $s = { eng: a0, dom: d0, steps: 0 }
@@ -530,7 +608,7 @@ run_program! = |prog| {
 	check!("mount", { s: $s, fx: fx0 }, $m)
 	var $i = 0.U64
 	while $i + 1 < prog.len() {
-		op = (prog.get($i) ?? 0) % 9
+		op = (prog.get($i) ?? 0) % 11
 		arg = prog.get($i + 1) ?? 0
 		k = arg.to_u64() % 3
 		m0 = { ..$m, fx: [] }
@@ -560,6 +638,13 @@ run_program! = |prog| {
 			(click!($s, "toggle r"), model_toggle_r(m0), "toggle r")
 		} else if op == 8 {
 			(click!($s, "flood"), model_flood(m0), "flood")
+		} else if op == 9 {
+			if (arg % 2 == 0) (click!($s, "pquery"), model_pquery(m0), "pquery") else (click!($s, "toggle p"), model_toggle_p(m0), "toggle p")
+		} else if op == 10 {
+			# A port's message, its close or its failure, for an arbitrary id.
+			id = (arg.to_u32() % $m.next) + 1
+			res = if (arg % 3 == 0) PortReply({ json: "\"m${arg.to_str()}\"", blobs: [], files: [] }) else if (arg % 3 == 1) PortFailed(Closed) else PortFailed(Threw("t${arg.to_str()}"))
+			(deliver!($s, id, res), model_deliver(m0, id, res), "port result ${id.to_str()}")
 		} else {
 			# A tick, a job's output or a lost job for an arbitrary id: a tick
 			# is an equal fold for R and "other" for logs.
@@ -616,6 +701,11 @@ target = Fuzz.target_with!({
 		# chain deep, then results for some of its timers; free slots and flood
 		# again, with L and R adding their own requests
 		ex("flood", 1, [8, 0, 2, 7, 7, 12, 1, 0, 1, 1, 8, 0, 4, 0, 5, 0, 2, 90, 8, 0, 7, 140]),
+		# P: free slots, issue a call and a subscription, message the
+		# subscription, supersede both, hide P with the call kept and the
+		# subscription cancelled, answer the kept call, show P, close its
+		# subscription and message it after
+		ex("ports", 1, [1, 0, 1, 1, 9, 0, 10, 9, 9, 0, 9, 1, 10, 9, 9, 1, 10, 13, 10, 12, 10, 13]),
 	],
 	generator: { mode: Fuzz.constant(1), program: Fuzz.list(Fuzz.u8, 64) }.Fuzz,
 	test!,

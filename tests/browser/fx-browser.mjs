@@ -67,11 +67,19 @@ const check = (name, got, want) => {
   console.log(`${ok ? "ok  " : "FAIL"} ${name}${ok ? "" : `: got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`}`);
 };
 
+const PORTS = `window.__mountOptions = { ports: {
+  "test.roc-signals/fx-call": { call: (p) => "answer " + p },
+  "test.roc-signals/fx-feed": { subscribe: () => () => {} },
+} };`;
+
 async function open(manual) {
   const ctx = await browser.createBrowserContext();
   const page = await ctx.newPage();
   page.on("pageerror", (e) => console.log("pageerror", String(e)));
   if (manual) await page.evaluateOnNewDocument("window.__manualFx = true");
+  // The app declares two ports (its P site); outside manual mode the page
+  // must supply their handlers.
+  else await page.evaluateOnNewDocument(PORTS);
   await page.goto(`${base}/app/`);
   await page.waitForFunction("window.__ready || window.__error");
   return { page, ctx };
@@ -205,6 +213,7 @@ const stats = (page) => page.evaluate(() => ({ live: [...window.__rt.live.keys()
     const rt = await mountRocEngineApp({
       wasmUrl: "app.wasm",
       root,
+      ports: window.__mountOptions.ports,
       fetch: (url, init) => {
         seen.push(`${init.method} ${url}`);
         return new Response("scripted", { status: 200 });

@@ -4066,6 +4066,16 @@ port_kind_name = |kind| match kind {
 check_port_later : Tx, Str, U8, List(U32) -> Tx
 check_port_later = |tx, port, kind, path| with_fx(tx, |fx| { ..fx, focus: fx.focus.append(CheckPort(port, kind, path)) })
 
+## The end-of-turn check of an awaited port request; any other request
+## needs none. Kept out of `issue`, which is specialized for every effect
+## site's value type, so ports cost an app that uses none almost nothing.
+check_port_request : Tx, List(U32), Req -> Tx
+check_port_request = |tx, path, req| match req {
+	PortCall({ port, .. }) => check_port_later(tx, port, 2, path)
+	PortSubscribe({ port, .. }) => check_port_later(tx, port, 3, path)
+	_ => tx
+}
+
 ## A port request names a declared port of its own shape, or it is the
 ## contract error that names the port and the site.
 check_port : List(PortDecl), Str, U8, List(U32) -> {}
@@ -4097,8 +4107,10 @@ put_port_message = |buf, { json, blobs, files }| {
 
 ## Command 19 `PORT port:str message`, counted at work-record index 40 and
 ## not by opcode (index 19 is `set_value`).
-emit_port : Tx, Str, PortMessage -> Tx
-emit_port = |{ cmds, next, free, routes, work, paths, site_free, fx }, port, message| {
+## The command is checked against the catalogue at the end of the turn.
+emit_port : Tx, Str, PortMessage, List(U32) -> Tx
+emit_port = |tx, port, message, path| {
+	{ cmds, next, free, routes, work, paths, site_free, fx } = check_port_later(tx, port, 1, path)
 	{ cmds: put_port_message(put_str(cmds.append(19), port), message), next, free, routes, work: add_work(work, w_port_sends, 1), paths, site_free, fx }
 }
 
@@ -4380,20 +4392,10 @@ issue = |tx, path, reqs, a, owned| {
 				$owned = $owned.append({ id, sub: False, keep: False, a })
 			}
 			PortCommand({ port, message }) => {
-				$tx = emit_port(check_port_later($tx, port, 1, path), port, message)
-			}
-			PortCall({ port, .. }) => {
-				(id, t1) = fx_admit(check_port_later($tx, port, 2, path), path, req)
-				$tx = t1
-				$owned = $owned.append({ id, sub: False, keep: True, a })
-			}
-			PortSubscribe({ port, .. }) => {
-				(id, t1) = fx_admit(check_port_later($tx, port, 3, path), path, req)
-				$tx = t1
-				$owned = $owned.append({ id, sub: True, keep: False, a })
+				$tx = emit_port($tx, port, message, path)
 			}
 			_ => {
-				(id, t1) = fx_admit($tx, path, req)
+				(id, t1) = fx_admit(check_port_request($tx, path, req), path, req)
 				$tx = t1
 				$owned = $owned.append({ id, sub: is_sub(req), keep: is_kept(req), a })
 			}
