@@ -193,7 +193,8 @@ Write a `run!` like `to_tsv!` as a named function annotated with `=>`, as
 the sample does. With the current compiler, a lambda written in the props
 record is rejected when its body uses `?` on a method of its own parameter
 (`source.read!(...)?`) and then uses `?` again: the error is a type
-mismatch on that method, as if it had to be pure and could not fail. The
+mismatch on that method, as if it had to be pure and could not fail
+([roc-lang/roc#12951](https://github.com/roc-lang/roc/issues/12951)). The
 same body as an annotated function compiles. A lambda with one `?`, like
 `Upload.count`'s, is fine.
 

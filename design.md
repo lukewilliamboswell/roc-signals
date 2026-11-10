@@ -1874,6 +1874,7 @@ contains the fix. None of them is platform semantics.
 | [roc-lang/roc#12836](https://github.com/roc-lang/roc/issues/12836) | `Box.box` of a capture-free callable allocates on every call | Extra allocations per call |
 | [roc-lang/roc#12946](https://github.com/roc-lang/roc/issues/12946) | A `--specialize=no` build that reuses cache entries a specialized build wrote segfaults in boxy lowering | The scaling task's `--specialize=no` build skips the cache |
 | [roc-lang/roc#12945](https://github.com/roc-lang/roc/issues/12945) | Under `--specialize=no`, a derived record decode leaks on every call | Worker instances grow per job in that build, so the scaling task's memory checks fail for it |
+| [roc-lang/roc#12951](https://github.com/roc-lang/roc/issues/12951) | A lambda passed to a generic function is rejected when its body uses `?` on a method of its own parameter and then `?` again | A task whose `run!` reads a file and then uses `?` again is written as a named function, not a lambda in the props record; the Workers guide says so |
 
 Code size is the main open cost of the architecture and is tracked against
 #12847 and #12848, with each over-budget app's size budget linking its issue.
