@@ -1,3 +1,14 @@
+import path from "node:path";
+
+// The runtime's files, which a test serves by basename from beside the
+// `--runtime` path: the same list as `SpecSuite.runtime_files`.
+export const RUNTIME_FILES = ["runtime.mjs", "worker.mjs"];
+
+// The file-map entries for every runtime file beside `runtime`.
+export function runtimeFiles(runtime) {
+  return Object.fromEntries(RUNTIME_FILES.map((f) => [f, path.join(path.dirname(runtime), f)]));
+}
+
 // Command-line options shared by the browser tests:
 // `--wasm APP.wasm --runtime runtime.mjs --chrome PATH [NAME VALUE ...]`.
 export function parseArgs(argv, extra = []) {

@@ -23,7 +23,7 @@ Release := [].{
 
 	## The platform files a bundle carries, relative to `platform/`.
 	bundle_files : List(Str)
-	bundle_files = ["main.roc", "Engine.roc", "Html.roc", "Worker.roc", "Wire.roc", "Core.roc", "Cli.roc", "SpecRunner.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "targets/wasm32/host.wasm", "targets/x64musl/spec.o", "targets/x64musl/crt1.o", "targets/x64musl/libc.a", "targets/x64musl/libzigc.a", "targets/x64musl/libcompiler_rt.a", "runtime.mjs", "worker.mjs"]
+	bundle_files = ["main.roc", "Engine.roc", "Html.roc", "Worker.roc", "Wire.roc", "Core.roc", "Cli.roc", "SpecRunner.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "targets/wasm32/host.wasm", "targets/x64musl/spec.o", "targets/x64musl/crt1.o", "targets/x64musl/libc.a", "targets/x64musl/libzigc.a", "targets/x64musl/libcompiler_rt.a"].concat(SpecSuite.runtime_files)
 
 	archive_name : Str -> Str
 	archive_name = |version| "roc-signals-examples-${version}"
@@ -73,8 +73,7 @@ Release := [].{
 			[one] => one.split_on("/").last() ?? one
 			found => return Err(BundleNotFound(Str.inspect(found)))
 		}
-		Path.copy!(Path.utf8("${o.root}/${SpecSuite.runtime}"), Path.utf8("${out}/runtime.mjs"))?
-		Path.copy!(Path.utf8("${o.root}/${SpecSuite.worker}"), Path.utf8("${out}/worker.mjs"))?
+		SpecSuite.copy_runtime!(o.root, out)?
 		bundle_url = "${Release.repo_url}/releases/download/${version}/${bundle}"
 
 		# The examples archive.

@@ -15,12 +15,11 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { launch } from "./cdp.mjs";
-import { parseArgs } from "./args.mjs";
+import { parseArgs, runtimeFiles } from "./args.mjs";
 
 const opts = parseArgs(process.argv.slice(2));
 const files = {
-  "runtime.mjs": opts.runtime,
-  "worker.mjs": path.join(path.dirname(opts.runtime), "worker.mjs"),
+  ...runtimeFiles(opts.runtime),
   "app.wasm": opts.wasm,
 };
 const server = http.createServer((req, res) => {

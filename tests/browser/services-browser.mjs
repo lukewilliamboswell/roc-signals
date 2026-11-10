@@ -20,11 +20,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { launch } from "./cdp.mjs";
-import { parseArgs } from "./args.mjs";
+import { parseArgs, runtimeFiles } from "./args.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const opts = parseArgs(process.argv.slice(2));
-const files = { "index.html": path.join(here, "index.html"), "runtime.mjs": opts.runtime, "app.wasm": opts.wasm };
+const files = { "index.html": path.join(here, "index.html"), ...runtimeFiles(opts.runtime), "app.wasm": opts.wasm };
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, "http://x");
   const f = u.pathname.endsWith("/") ? files["index.html"] : files[path.basename(u.pathname)];

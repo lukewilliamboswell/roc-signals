@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { launch } from "./cdp.mjs";
-import { parseArgs } from "./args.mjs";
+import { parseArgs, runtimeFiles } from "./args.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "../..");
@@ -18,7 +18,7 @@ const opts = parseArgs(process.argv.slice(2));
 const handle = createConduitHandler({ latencyMs: 20 });
 const files = {
   "index.html": path.join(here, "index.html"),
-  "runtime.mjs": opts.runtime,
+  ...runtimeFiles(opts.runtime),
   "app.wasm": opts.wasm,
 };
 const api = [];

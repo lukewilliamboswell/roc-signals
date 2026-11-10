@@ -8,9 +8,21 @@ import Proc
 SpecSuite := [].{
 	runtime = "platform/runtime.mjs"
 
-	## The runtime's worker script, which it loads from beside itself: every
-	## copy of `runtime` carries it.
-	worker = "platform/worker.mjs"
+	## The runtime's files in `platform/`: the runtime and the worker script
+	## it loads from beside itself. Every place that serves or ships the
+	## runtime copies all of them side by side (`copy_runtime!`); the browser
+	## tests serve the same list (`tests/browser/args.mjs`).
+	runtime_files : List(Str)
+	runtime_files = ["runtime.mjs", "worker.mjs"]
+
+	## Copy every runtime file from `root`'s `platform/` into `dir`.
+	copy_runtime! : Str, Str => Try({}, _)
+	copy_runtime! = |root, dir| {
+		for f in SpecSuite.runtime_files {
+			Path.copy!(Path.utf8("${root}/platform/${f}"), Path.utf8("${dir}/${f}"))?
+		}
+		Ok({})
+	}
 
 	## The apps ported to the engine, with their original specs.
 	apps : List(Str)
