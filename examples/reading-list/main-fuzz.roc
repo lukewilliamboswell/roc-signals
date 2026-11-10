@@ -225,7 +225,7 @@ listed = |showing, store| {
 walk_step : W, U8, U8 -> W
 walk_step = |w, op, b|
 	match op % 8 {
-		0 | 1 | 2 | 3 => { ..w, s: Soak.step(program, w.s, b, op) }
+		0 | 1 | 2 | 3 => { ..w, s: Soak.step(program, w.s, b, op, Soak.no_jobs) }
 		4 | 5 => answer(w, b)
 		6 => publish(w, b)
 		_ =>
@@ -243,7 +243,7 @@ walk_step = |w, op, b|
 					Err(why) => crash "reading-list walk: reload: ${why}"
 				}
 			} else {
-				{ ..w, s: Soak.step(program, w.s, b, op) }
+				{ ..w, s: Soak.step(program, w.s, b, op, Soak.no_jobs) }
 			}
 	}
 
