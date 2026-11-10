@@ -4,12 +4,13 @@ import SpecSuite
 
 ## The platform's generated API documentation, built by roc-docs from
 ## `platform/main.roc` with `www/api/index.md` as its front page, and the
-## check that every public symbol of `Engine` and `Html` is documented.
+## check that every public symbol of `Engine`, `Html`, `Worker` and `Wire` is
+## documented.
 ApiDocs := [].{
 
 	## The modules the web platform exposes.
 	modules : List(Str)
-	modules = ["platform/Engine.roc", "platform/Html.roc"]
+	modules = ["platform/Engine.roc", "platform/Html.roc", "platform/Worker.roc", "platform/Wire.roc"]
 
 	## Build the API docs; the site is `<build_dir>/api-docs/site`.
 	build! : SpecSuite.Options, Str => Try(Str, _)

@@ -687,6 +687,18 @@ instead of a state write.
   engine call is the host's `work` entry. The job's result is an ordinary
   result turn: `Work(output)`, or `WorkLost(fault)` when the worker's instance
   faulted or no worker could run it.
+
+  Apps use the typed layer above it, `Worker`: a `Program(input, output)` is a
+  name and a pure function over the app's own types, and the bytes on the
+  wire are a `Wire` payload the compiler derives from those types, so an app
+  writes no codec and a request can only name a program with matching types.
+  Because the page and every worker are one module, the payload carries no
+  type information or version. A type crosses if it has the derived codec
+  hooks: numbers, `Bool`, `Str`, lists, records, tuples, tag unions and
+  nominal types that opt in; functions, state handles and reactive values do
+  not, which the compiler rejects. `Worker.derive` is a `resource` whose
+  requests are runs of one program: a layer holding the program's answer for
+  an input, where a newer input stops the run of an older one.
 - **`Self`** asks for a follow-up turn whose result is `Now`: how an effect
   site changes state in response to its value changing without writing during
   the turn that is evaluating.
@@ -1326,6 +1338,27 @@ Res : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missi
 WorkFault : [Contract, ResourceLimit, OutOfMemory, AppCrash, ExpectFailed, Unavailable, Executor]
 HttpError : [Network(Str), Timeout, Status(U16), Refused]
 http_text : Res -> Try(Str, HttpError)
+```
+
+`Worker` (`platform/Worker.roc`) is the typed layer over `Work` requests, and
+`Wire` (`platform/Wire.roc`) the payload format it derives:
+
+```roc
+Worker.pure : Str, (input -> output) -> Program(input, output)
+    where [input.Wire.Sendable, output.Wire.Sendable]
+Worker.fallible : Str, (input -> Try(ok, err)) -> Program(input, Try(ok, err))
+Program.with_deadline_ms : Program(input, output), U32 -> Program(input, output)
+Program.registration : Program(input, output) -> Registration
+Program.request : Program(input, output), input -> Req
+Program.result : Program(input, output), Res -> Try(output, Worker.Error)
+Worker.Error : [Timeout, Refused, Lost(WorkFault)]
+Worker.Remote(output) : { running : Bool, answer : [Nothing, Done(output), Failed(Worker.Error)] }
+Worker.derive : Program(input, output), Val(ctx, input),
+    (Val(In(ctx, Remote(output)), Remote(output)) -> Elem(In(ctx, Remote(output)))) -> Elem(ctx)
+Worker.derive_when : Program(input, output), Val(ctx, [Run(input), Skip]), ... -> Elem(ctx)
+Wire.encode : a -> List(U8)                    where [a.Wire.Sendable]
+Wire.decode : List(U8) -> Try(a, Wire.Error)   where [a.Wire.Sendable]
+Wire.Bytes                                     # a byte payload that crosses as one block
 ```
 
 `Html` (`platform/Html.roc`) is the typed element vocabulary above `Engine`:

@@ -1,7 +1,8 @@
 ## The roc-signals platform. The reactive engine is pure Roc: `Core.roc`
-## implements it, `Engine.roc` is the authoring API apps see, and `Html.roc` is
-## the typed vocabulary above that. An app binds a `program` as `main`, and one
-## entry file builds for two targets:
+## implements it, `Engine.roc` is the authoring API apps see, `Html.roc` is
+## the typed vocabulary above that, and `Worker.roc` is the typed layer for
+## pure programs run in Web Workers, whose payloads `Wire.roc` derives. An app
+## binds a `program` as `main`, and one entry file builds for two targets:
 ##
 ## - `roc build --target=wasm32` gives the module the browser runs. The Zig
 ##   host (`host/host.zig`) holds exactly one opaque `Box(Core.App)` and the
@@ -16,7 +17,7 @@ platform ""
 	requires {
 		main : Engine.Program
 	}
-	exposes [Engine, Html]
+	exposes [Engine, Html, Wire, Worker]
 	packages {}
 	provides {
 		"roc_engine_drop": drop_for_host,
@@ -48,6 +49,8 @@ import Core
 import Engine
 import Html
 import SpecRunner
+import Wire
+import Worker
 
 ## One host call's result: the state (owned by the host until the next call),
 ## this transaction's command bytes and the instance's work record (both owned

@@ -20,7 +20,7 @@ platform "roc-signals-fuzz"
 	requires {
 		target : Target
 	}
-	exposes [Arbitrary, Core, Dom, Engine, Fuzz, Html, JsonOut, Scm, Soak, SpecRunner, Target, Wire]
+	exposes [Arbitrary, Core, Dom, Engine, Fuzz, Html, JsonOut, Scm, Soak, SpecRunner, Target, Wire, Worker]
 	packages {}
 	provides {
 		"roc_fuzz_example": example_for_host,
@@ -61,6 +61,7 @@ import Soak
 import SpecRunner
 import Target
 import Wire
+import Worker
 
 name_for_host : () -> Str
 name_for_host = || target.name()

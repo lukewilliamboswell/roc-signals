@@ -81,6 +81,7 @@ Wire := [].{
 	## payload is refused with `TooDeep`.
 	encode : a -> List(U8) where [a.Sendable]
 	encode = |value| {
+		## The caller's type, named so its derived codec can be asked for.
 		Shape : a
 		encode_shape = Shape.encoder_for(Format.Default)
 		match encode_shape(value, []) {
@@ -97,6 +98,7 @@ Wire := [].{
 	## copying it.
 	decode : List(U8) -> Try(a, Error) where [a.Sendable]
 	decode = |bytes| {
+		## The caller's type, named so its derived codec can be asked for.
 		Shape : a
 		parse_shape = Shape.parser_for(Format.Default)
 		read = parse_shape(State.{ bytes, pos: 0, top: empty_frame, outer: [], names: [] })?
@@ -108,6 +110,8 @@ Wire := [].{
 	## as one block instead of byte by byte, and decoding it shares the
 	## input's buffer.
 	Bytes := { list : List(U8) }.{
+
+		## Equal when the wrapped bytes are equal.
 		is_eq : _
 
 		## Wrap bytes for sending.
@@ -122,6 +126,7 @@ Wire := [].{
 		encoder_for : encoding -> (Bytes, state -> Try(state, err))
 			where [encoding.encode_bytes : encoding, List(U8), state -> Try(state, err)]
 		encoder_for = |encoding| {
+			## The format's type, named so its methods can be called.
 			Encoding : encoding
 			|bytes, state| Encoding.encode_bytes(encoding, bytes.list, state)
 		}
@@ -130,6 +135,7 @@ Wire := [].{
 		parser_for : encoding -> (state -> Try({ value : Bytes, rest : state }, err))
 			where [encoding.parse_bytes : encoding, state -> Try({ value : List(U8), rest : state }, err)]
 		parser_for = |encoding| {
+			## The format's type, named so its methods can be called.
 			Encoding : encoding
 			|state| {
 				parsed = Encoding.parse_bytes(encoding, state)?
