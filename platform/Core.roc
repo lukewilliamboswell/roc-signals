@@ -1209,7 +1209,17 @@ Core := [].{
 
 	## What a layer following one answer holds (`Engine.Remote`): whether a
 	## request for the current input is in flight, and the latest answer.
-	Remote(output, error) : { request : [Idle, Pending], answer : [Unanswered, Answered(output), Failed(error)] }
+	Remote(output, error) := { request : [Idle, Pending], answer : [Unanswered, Answered(output), Failed(error)] }.{
+		is_eq : _
+
+		## The latest answer, kept while a newer request is pending, or
+		## `NoAnswer` before the first answer and after a failure.
+		answered : Remote(output, error) -> Try(output, [NoAnswer])
+		answered = |remote| match remote.answer {
+			Answered(output) => Ok(output)
+			_ => Err(NoAnswer)
+		}
+	}
 
 	## The `resource` configuration of a layer that follows the answer to one
 	## request for its input, for anything with `request` and `result` (a

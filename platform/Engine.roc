@@ -612,6 +612,11 @@ Engine := [].{
 	##   once there is one, or `Failed(error)` when a request produced none.
 	##   A new input keeps the previous answer, so a view can go on showing it
 	##   while the next one is wanted.
+	##
+	## `remote.answered()` reads the latest answer as a `Try`: `?? default`
+	## shows a fallback, `.map_ok(f)` picks from it, and a handler matches
+	## `Ok(output)`. It keeps the answer while a newer request is pending,
+	## and is `Err(NoAnswer)` before the first answer and after a failure.
 	Remote(output, error) : Core.Remote(output, error)
 
 	## What the host knows before the first render: the URL, the declared storage

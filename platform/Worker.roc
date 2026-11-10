@@ -211,6 +211,25 @@ Worker := [].{
 		where [work.request : work, input -> Engine.Req, work.result : work, Engine.Res -> Try(output, Error(error)), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool, error.is_eq : error, error -> Bool]
 	derive_when = |work, input, body| Engine.resource(input, Core.follow_when(work), body)
 
+	## How a layer that follows a task stands, in one match: no job asked
+	## for yet (`Unasked`), a job `Working`, its answer, or why there is
+	## none: the task's own error (`Failed`) beside the platform's.
+	Status(output, error) : [Unasked, Working, Answered(output), Failed(error), Timeout, Refused, Lost(Engine.WorkFault)]
+
+	## A worker layer as a [Status], so a view matches one flat union
+	## instead of `Failed(Failed(problem))`. While a newer job is `Working`,
+	## `remote.answered()` still gives the previous answer.
+	status : Engine.Remote(output, Error(error)) -> Status(output, error)
+	status = |remote| match (remote.request, remote.answer) {
+		(Pending, _) => Working
+		(Idle, Answered(output)) => Answered(output)
+		(Idle, Failed(Failed(error))) => Failed(error)
+		(Idle, Failed(Timeout)) => Timeout
+		(Idle, Failed(Refused)) => Refused
+		(Idle, Failed(Lost(fault))) => Lost(fault)
+		(Idle, Unanswered) => Unasked
+	}
+
 	# -- Preparations ---------------------------------------------------------
 
 	## What `prepared` is told about a preparation: its `name`, namespaced
@@ -557,6 +576,36 @@ expect {
 		\\failed: { answer: Failed(Refused), request: Idle }
 		\\skipped: { answer: Unanswered, request: Idle }
 		\\plans: [0, 1]
+	actual == expected
+}
+
+## A layer's status is one flat match over every arm, and `answered` keeps
+## the latest answer while a newer job works but none after a failure.
+expect {
+	done : Engine.Remote(U64, Worker.Error([Unlucky]))
+	done = { request: Idle, answer: Answered(2) }
+	failed : Engine.Remote(U64, Worker.Error([Unlucky]))
+	failed = { request: Idle, answer: Failed(Failed(Unlucky)) }
+	working = { ..done, request: Pending }
+	status = |answer| Str.inspect(Worker.status({ request: Idle, answer }))
+	actual =
+		\\unasked: ${status(Unanswered)}
+		\\working: ${Str.inspect(Worker.status(working))} ${Str.inspect(working.answered())}
+		\\answered: ${Str.inspect(Worker.status(done))} ${Str.inspect(done.answered())}
+		\\failed: ${Str.inspect(Worker.status(failed))} ${Str.inspect(failed.answered())}
+		\\timeout: ${status(Failed(Timeout))}
+		\\refused: ${status(Failed(Refused))}
+		\\lost: ${status(Failed(Lost(AppCrash)))}
+		\\inspect: ${Str.inspect(working)}
+	expected =
+		\\unasked: Unasked
+		\\working: Working Ok(2)
+		\\answered: Answered(2) Ok(2)
+		\\failed: Failed(Unlucky) Err(NoAnswer)
+		\\timeout: Timeout
+		\\refused: Refused
+		\\lost: Lost(AppCrash)
+		\\inspect: { answer: Answered(2), request: Pending }
 	actual == expected
 }
 
