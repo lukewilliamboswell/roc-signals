@@ -20,7 +20,7 @@ Targets := [].{
 		{ name: "wire", main: "fuzz/wire/main.roc" },
 		{ name: "structure", main: "fuzz/structure/main.roc" },
 		{ name: "port-json", main: "fuzz/port-json/main.roc" },
-		{ name: "form-builder", main: "examples/form-builder/main-fuzz.roc" },
+		{ name: "form-builder", main: "examples/form-builder/fuzz-rules.roc" },
 		{ name: "kanban-board", main: "examples/kanban-board/fuzz-board.roc" },
 		{ name: "data-grid", main: "examples/data-grid/fuzz-rows.roc" },
 		{ name: "markdown-editor", main: "examples/markdown-editor/fuzz-sections.roc" },
