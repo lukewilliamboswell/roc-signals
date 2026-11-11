@@ -1,0 +1,31 @@
+; The functions of kernel32.dll the native spec host imports on Windows
+; (`os_windows.zig`), and nothing else: the runner links no C runtime and no
+; other system library. The platform build makes the import library
+; `targets/x64win/kernel32.lib` from this file with `zig dlltool`; keep it in
+; step with the `extern "kernel32"` declarations there.
+LIBRARY kernel32.dll
+EXPORTS
+CloseHandle
+CreateFileW
+CreatePipe
+CreateProcessW
+CreateThread
+DuplicateHandle
+ExitProcess
+GetCommandLineW
+GetCurrentProcess
+GetExitCodeProcess
+GetFileAttributesW
+GetModuleFileNameW
+GetProcessHeap
+GetStdHandle
+HeapAlloc
+HeapFree
+QueryPerformanceCounter
+QueryPerformanceFrequency
+ReadFile
+SetErrorMode
+SetHandleInformation
+TerminateProcess
+WaitForSingleObject
+WriteFile
