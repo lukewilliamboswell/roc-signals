@@ -48,7 +48,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-    # Fifteen targets at the default 600 s, plus builds, with room for a
+    # Sixteen targets at the default 600 s, plus builds, with room for a
     # longer dispatched campaign.
     timeout-minutes: 300
     steps:
