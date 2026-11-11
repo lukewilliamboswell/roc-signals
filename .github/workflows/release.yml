@@ -97,4 +97,4 @@ jobs:
           fi
           gh release create "$VERSION" -R "$REPO" --draft --target "$TARGET" \
             --title "Roc Signals $VERSION" --notes-file candidate/release-notes.md \
-            candidate/*.tar.zst candidate/*.mjs candidate/*.zip
+            candidate/*.tar.zst candidate/*.mjs candidate/*.zip candidate/signals.roc

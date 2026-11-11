@@ -13,7 +13,8 @@ import src/SpecSuite
 
 ## The `release` task: build every release asset into `dist-release/` (or
 ## `--output-dir DIR`) for `--version V` (default `0.0.1-dryrun`): the
-## platform bundle, `runtime.mjs`, the examples archive, the API docs archive
+## platform bundle, `runtime.mjs` and `worker.mjs`, the `signals.roc` tool
+## (its package and app), the examples archive, the API docs archive
 ## and the draft release notes. The release workflow publishes exactly these
 ## files; `check` builds them too, as the dry run.
 main! = |raw_args| {

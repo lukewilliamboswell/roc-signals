@@ -2,6 +2,7 @@ import cli.Path
 import PlatformTest
 import Proc
 import SpecSuite
+import ToolRelease
 
 ## What a release publishes, built the same way for a dry run (in `check`)
 ## and for the release workflow:
@@ -13,6 +14,10 @@ import SpecSuite
 ##   `runtime.mjs` and its worker script `worker.mjs`;
 ## - `runtime.mjs` and `worker.mjs` on their own, for pages that load an app
 ##   (the runtime loads the worker script from beside itself);
+## - the `signals.roc` tool: its package, `signals-<hash>.tar.zst` (`cli/`
+##   with the runtime files, the scaffold and a generated `Bundle.roc`
+##   naming this release), and `signals.roc`, the small app an app's author
+##   downloads to run it;
 ## - the examples archive, `roc-signals-examples-<version>.zip`, which the
 ##   shared nightly-compatibility runner builds with the latest Roc nightly:
 ##   each example's `main.roc` naming the bundle's release URL, with its
@@ -94,6 +99,8 @@ Release := [].{
 		}
 		SpecSuite.copy_runtime!(o.root, out)?
 		bundle_url = "${Release.repo_url}/releases/download/${version}/${bundle}"
+		compiler = Str.from_utf8_lossy(Proc.capture!({ program: o.compiler, args: ["version"], cwd: o.root })?).trim()
+		ToolRelease.build!(o, { version, download_url: "${Release.repo_url}/releases/download/${version}", platform_url: bundle_url, bundle_files: Release.bundle_files, nightly: compiler.split_on(" ").last() ?? compiler }, out)?
 
 		# The examples archive.
 		name = Release.archive_name(version)
@@ -139,7 +146,6 @@ Release := [].{
 		Path.write_utf8!(Path.utf8("${root}/README.md"), Release.archive_readme(version))?
 		Proc.run!({ program: "zip", args: ["-q", "-r", "-X", "${out}/${name}.zip", name], cwd: stage })?
 
-		compiler = Str.from_utf8_lossy(Proc.capture!({ program: o.compiler, args: ["version"], cwd: o.root })?).trim()
 		tooling = Str.from_utf8_lossy(Proc.capture!({ program: o.tooling, args: ["version"], cwd: o.root })?).trim()
 		Path.write_utf8!(Path.utf8("${out}/release-notes.md"), Release.notes(version, bundle_url, { compiler, tooling }))?
 		Proc.note!("release ${version}: ${out}")
@@ -177,6 +183,15 @@ Release := [].{
 		\\```
 		\\
 		\\Load apps with this release's `runtime.mjs`, served beside its `worker.mjs`.
+		\\
+		\\## Start an app
+		\\
+		\\```sh
+		\\curl -LO ${Release.repo_url}/releases/download/${version}/signals.roc
+		\\roc signals.roc init my-app
+		\\```
+		\\
+		\\`signals.roc` creates, serves, builds and tests an app on this release.
 		\\
 		\\## Compilers
 		\\
