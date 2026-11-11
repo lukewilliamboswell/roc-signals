@@ -13,6 +13,7 @@ import src/ExampleFiles
 import src/Release
 import src/Proc
 import src/SpecSuite
+import src/Slow
 import src/Targets
 import src/ToolCheck
 
@@ -20,16 +21,17 @@ import src/ToolCheck
 ## formatting, every file `www/data/examples.toml` names present, every
 ## public `Engine` and `Html` symbol documented, `roc test`,
 ## the platform inputs, the host's resource-heap tests, the spec runner's
-## links for macOS and Windows, the `scm-parse` and
-## `wire` fuzz targets, the docs samples, every
-## app's `.scm` specs natively and in Chrome, the broken-spec self-checks (both
+## links for macOS and Windows, the fuzz targets under `fuzz/` and the
+## examples' own, the docs samples, every
+## app's `.scm` specs natively and in Chrome, a short walk of every app in
+## the native runner, the broken-spec self-checks (both
 ## runners reject each spec with one wrong expectation, a lost worker job's
 ## fault class among them), the runtime's
 ## unit tests in Node and contract tests in Chrome (effects, controls,
 ## workers, Conduit journey), the
 ## js-framework-benchmark check, the release dry run, and the `signals.roc`
-## tool run end to end from the dry run's copy. The soaks and the
-## app fuzz targets are `check-slow`.
+## tool run end to end from the dry run's copy. The long walks, the soaks
+## and the test apps' fuzz targets are `check-slow`.
 main! = |_args| {
 	o = Checks.options!({ filter: "*" })?
 	var $problems = []
@@ -83,6 +85,9 @@ main! = |_args| {
 		}
 	}
 	$problems = $problems.concat($native.problems).concat($browser.problems)
+
+	Proc.note!("== short walks")
+	$problems = $problems.concat(Slow.short_walks!(o)?)
 
 	Proc.note!("== grammar coverage")
 	$problems = $problems.concat(Checks.grammar!(o, $kanban.runner)?)
@@ -226,8 +231,8 @@ cross_links! = |o| {
 	Ok(List.map2(PlatformTest.spec_hosts, results, |host, r| (host.target, r)).keep_if(|(_, r)| r.code != 0).map(|(target, r)| "spec runner for ${target} does not link: ${r.output.trim()}"))
 }
 
-## The shared-support fuzz targets (the `.scm` parser and the worker wire
-## format) build with `--fuzz` and pass their examples; the app targets,
-## which take minutes, are `check-slow`.
+## The fuzz targets under `fuzz/` and the examples' targets of their own
+## logic build with `--fuzz` and pass their examples; the targets beside
+## the test apps, which take minutes, are `check-slow`'s.
 fuzz_smoke! : SpecSuite.Options => Try(List(Str), _)
-fuzz_smoke! = |o| Targets.fuzz_check_all!(o, Targets.fuzz_targets.keep_if(|t| t.main.starts_with("fuzz/")))
+fuzz_smoke! = |o| Targets.fuzz_check_all!(o, Targets.fuzz_targets.keep_if(|t| !t.main.starts_with("tests/")))

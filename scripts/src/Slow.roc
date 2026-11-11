@@ -114,6 +114,26 @@ Slow := [].{
 		Ok(List.map2(Slow.walks, results, |w, r| if (r.code == 0 and r.output.contains("\"status\":\"passed\"")) [] else ["walk ${w.name} seed ${w.seed.to_str()}: ${r.output.trim()}"]).join())
 	}
 
+	## How many steps the pull-request gate walks each app.
+	short_walk_steps : U64
+	short_walk_steps = 300
+
+	## A short walk of every walked app, for `check`: 300 steps from seed 7
+	## on the native spec runner `check` has already built, in parallel. It
+	## catches a walk that fails early (a stale reader, a leak, a job or an
+	## answer the runner cannot deliver) on every pull request; the long
+	## walks are `walks!`.
+	short_walks! : SpecSuite.Options => Try(List(Str), _)
+	short_walks! = |o| {
+		var $jobs = []
+		for name in Slow.walk_apps {
+			files = Slow.walk_files!(name)?
+			$jobs = $jobs.append({ program: SpecSuite.runner_of(o, name), args: ["--walk", Slow.short_walk_steps.to_str(), "--seed", "7"].concat(files), cwd: o.root })
+		}
+		results = Proc.parallel!($jobs, Proc.cpus!())?
+		Ok(List.map2(Slow.walk_apps, results, |name, r| if (r.code == 0 and r.output.contains("\"status\":\"passed\"")) [] else ["short walk ${name}: ${r.output.trim()}"]).join())
+	}
+
 	## Every fuzz target's examples, every app's walk and native soak, then
 	## every app's browser soak.
 	soak! : SpecSuite.Options => Try(List(Str), _)
