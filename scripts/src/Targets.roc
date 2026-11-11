@@ -35,6 +35,7 @@ Targets := [].{
 		{ name: "supersede", main: "tests/apps/supersede/main-fuzz.roc" },
 		{ name: "reading-list", main: "examples/reading-list/main-fuzz.roc" },
 		{ name: "log-explorer", main: "examples/log-explorer/fuzz-index.roc" },
+		{ name: "million-row-explorer-aggregates", main: "examples/million-row-explorer/fuzz-aggregates.roc" },
 	]
 
 	## Where a target's executable is built.
