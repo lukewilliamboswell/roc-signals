@@ -1,8 +1,9 @@
 //! The native spec host's operating-system services on Linux (musl, linked
 //! statically from the platform's `crt1.o` and `libc.a`) and macOS
 //! (libSystem, which the Roc linker supplies). `spec.zig` reaches the system
-//! only through the functions here, so the shared host says what it does
-//! and this file says how the system does it.
+//! only through the functions here and their twins in `os_windows.zig`, so
+//! the shared host says what it does and these files say how each system
+//! does it.
 //!
 //! A worker job runs in a child process that the runner starts from its own
 //! executable (`runJob`): `posix_spawn` with the job's input on the child's

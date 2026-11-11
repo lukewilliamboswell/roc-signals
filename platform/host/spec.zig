@@ -1,5 +1,6 @@
-//! The native host of the roc-signals platform: `roc build --target=x64musl`
-//! of an app gives its `.scm` spec runner.
+//! The native host of the roc-signals platform: `roc build --target=<system>`
+//! of an app gives its `.scm` spec runner, for Linux (`x64musl`), macOS
+//! (`arm64mac`, `x64mac`) and Windows (`x64win`).
 //!
 //! It owns the process entry point, the allocator, crash reporting and the
 //! `Cli` services the runner uses (`platform/Cli.roc`), and hands the
@@ -19,16 +20,18 @@
 //! (or `roc_engine_prepare` and `roc_engine_ask`), the entries a worker
 //! instance calls, serves the job's hosted effects, and writes the answer to
 //! its standard output, so a task that crashes poisons only the child, and
-//! the runner receives the lost job's fault class as the page would. How a
-//! process is started, fed and waited for lives with the rest of the
-//! system's services in `os_posix.zig`.
+//! the runner receives the lost job's fault class as the page would. Every
+//! system takes this one path; only how a process is started, fed and
+//! waited for differs, and that lives with the rest of each system's
+//! services in `os_posix.zig` and `os_windows.zig`.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const resources = @import("resources.zig");
 
 /// The system's services: files, output, time, memory, the process and
 /// its job children.
-const os = @import("os_posix.zig");
+const os = if (builtin.os.tag == .windows) @import("os_windows.zig") else @import("os_posix.zig");
 
 // The command-line entry the platform provides (`SpecRunner.main!`).
 extern fn roc_spec_main(args: RocList) callconv(.c) i32;
@@ -835,9 +838,14 @@ comptime {
     @export(&hostedStdout, .{ .name = "roc_test_stdout" });
     @export(&hostedStderr, .{ .name = "roc_test_stderr" });
     @export(&hostedNowNs, .{ .name = "roc_test_now_ns" });
-    // Exported by name rather than declared `pub fn main`, which Zig would
-    // treat as its own program entry.
-    @export(&cMain, .{ .name = "main" });
+    // The process entry, exported by name rather than declared `pub fn
+    // main`, which Zig would treat as its own program entry: `main` for
+    // the C runtime (musl's `crt1.o`) or libSystem to call, and on Windows,
+    // where the runner links no C runtime, the entry the linker looks for.
+    if (builtin.os.tag == .windows)
+        @export(&windowsMain, .{ .name = "mainCRTStartup" })
+    else
+        @export(&cMain, .{ .name = "main" });
 }
 
 /// Run the spec runner over `args` (the arguments after the program's
@@ -850,4 +858,9 @@ fn runMain(args: []const [*:0]const u8) i32 {
 fn cMain(argc: c_int, argv: [*]const [*:0]const u8) callconv(.c) c_int {
     os.init();
     return runMain(os.argsOf(argc, argv));
+}
+
+fn windowsMain() callconv(.c) noreturn {
+    os.init();
+    os.exitProcess(@truncate(@as(u32, @bitCast(runMain(os.args())))));
 }
