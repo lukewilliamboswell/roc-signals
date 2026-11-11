@@ -21,7 +21,7 @@ Every example follows the same layout:
 | `<Domain>.roc` | Pure domain types and functions: parsing, validation, reducers. No platform imports, tested with `expect`. |
 | `<Name>App.roc` | The UI: context aliases, the view, effect sites and `program`. |
 | `main.roc` | The one entry point: `main = <Name>App.program`. Built for `wasm32` it is the browser module; for `x64musl`, `arm64mac`, `x64mac` or `x64win`, the native spec runner. |
-| `main-fuzz.roc` | Optional fuzz target for the app: a roc-fuzz app on the repository's engine package (`platform/main-fuzz.roc`). |
+| `fuzz-<subject>.roc` | Optional roc-fuzz target of the app's own pure logic, named for what it checks: it imports the domain modules and nothing of the platform ([Testing](@/docs/testing.md#fuzzing-your-own-logic)). |
 | `specs/*.scm` | Specs, run natively and in Chrome. |
 
 Conduit splits its domain further — `Api.roc` (wire formats), `Route.roc`

@@ -63,7 +63,6 @@ Anything else is `Engine.element(tag, attrs, children)`.
 | Jobs from an effect site | `Task.request`, `Task.result` (a `Try(output, Error(error))`), `Error(error)` (`Failed(error)`, `Timeout`, `Refused`, `Lost(WorkFault)`), `Never` (the error of a task that cannot fail) |
 | Layers | `derive`, `derive_when` (for a task or a preparation's task), holding an `Engine.Remote(output, Error(error))`; `gather` (one job per input), holding an `Engine.Gathered(output, Error(error))`; `status`, a layer as one `Status(output, error)`: `Unasked`, `Working`, `Answered(output)`, `Failed(error)`, `Timeout`, `Refused` or `Lost(WorkFault)` |
 | Preparations | `prepared`, `PreparationProps(init, state, error)` (`name`, `prepare! : init => Try(state, error)`), `Preparation(init, state, error)`, `Preparation.task`, `PreparedTaskProps(state, query, output, error)` (`name`, `run! : state, query => Try(output, error)`, `deadline`, `on_dispose`, `on_cancel`, as a task's), `Preparation.registration` (given its tasks' registrations), `PreparedTask(init, state, query, output, error)`, `PreparedTask.registration`, `PreparedTask.name`, `PreparedTaskEntry(state)`, `PreparedTask.request`, `PreparedTask.result`, `Question(init, query)` (`input`, `query`) |
-| For fuzz targets and soak walks | `Task.stand_in`, `PreparedTask.stand_in`: a job's answer from a pure function, where there is no worker to run it |
 
 ## Wire
 
@@ -141,7 +140,7 @@ optional.
 | `storage` | the page's `localStorage` | The storage `StorageGet` and `StorageSet` use (an object with `localStorage`'s methods) | [Effects and the Browser](@/docs/effects-and-browser.md) |
 | `fetch` | the global `fetch` | The function HTTP requests go through, for a page that scripts its own backend | [Effects and the Browser](@/docs/effects-and-browser.md) |
 | `manualEffects` | `false` | Requests wait until the caller answers or runs them (`runEffect`); used by the spec runner in Chrome | [Testing](@/docs/testing.md) |
-| `manualWork` | `false` | Only worker jobs wait for `runEffect`; every other effect runs on its own | [Testing](@/docs/testing.md#fuzzing-and-soak) |
+| `manualWork` | `false` | Only worker jobs wait for `runEffect`; every other effect runs on its own; used by the repository's long sessions in Chrome | [Contributing](@/docs/contributing.md#walks-and-soaks) |
 
 The browser tests also pass `manualIntervals` (intervals tick only when the
 test says), `window` and `document`; an app's page has no reason to set

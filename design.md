@@ -115,8 +115,9 @@ this document and the implementation are tracked in issues.
 ### Success criteria
 
 - **Engine invariants:** native specs with work and effect counters, the
-  `Dom.roc` oracle, roc-fuzz property targets, and long-session soak runs
-  with flat live allocations and Wasm pages.
+  `Dom.roc` oracle, roc-fuzz property targets, long seeded walks of every
+  app in the native spec runner, and soak runs with flat live allocations
+  and Wasm pages.
 - **Author outcomes:** maintained apps contain no workaround encodings; a
   one-row change in a large keyed list does constant engine work outside the
   list's own reconciliation; every contract-error class has a spec asserting
@@ -301,21 +302,29 @@ inputs:
   links no C runtime, only kernel32, so the platform carries no Microsoft
   library and nothing is fetched for that target.
 
+The same runner walks an app (`--walk`): a seeded sequence of user events
+on live controls and of what the browser does around the app, from a fresh
+mount, with every worker job run for real in a child process and every
+other request answered from the replies the app's own specs give. It is
+the platform's test of the engine over long sessions of real apps, built
+from each app's ordinary `main.roc`, so an app carries nothing for it.
+
 Fuzz targets cannot share that entry: roc-fuzz requires a `target : Target`
 value and links its own libFuzzer host, and a platform has one `requires`.
-They stay a separate entry, each app's `main-fuzz.roc`, and each is an
-ordinary roc-fuzz app: a roc-fuzz release is its platform, and the engine
-is a package, `platform/main-fuzz.roc`, a package root beside `main.roc` over
-the same files that exposes the internal `Core`, the runner, the oracle and
-the walk. That works because the engine is pure: no module of the package
-reaches a hosted function (a job's effects arrive as values, see
-[Workers](#workers)), and the modules that do (`Files`, `Effects`,
-`Hosted`, `Cli`) belong to the platform alone. An app module's
-`import pf.Engine` resolves to the platform in `main.roc` and to the
-package in `main-fuzz.roc`, since the shorthand is per app. The package is
-repository-only and not in the release bundle. roc-fuzz's allocation
-counters serve the fuzz targets; the native host counts allocations itself
-for the spec runner's soaks.
+The platform's own targets, under `fuzz/` and beside the test apps that
+drive the engine, are ordinary roc-fuzz apps: a roc-fuzz release is their
+platform, and the engine is a package, `platform/main-fuzz.roc`, a package
+root beside `main.roc` over the same files that exposes the internal
+`Core`, the runner and the oracle. That works because the engine is pure:
+no module of the package reaches a hosted function (a job's effects arrive
+as values, see [Workers](#workers)), and the modules that do (`Files`,
+`Effects`, `Hosted`, `Cli`) belong to the platform alone. The package is
+repository-only and not in the release bundle, and no app uses it: an
+example that fuzzes its own pure logic does so with roc-fuzz alone, in a
+target named for what it checks (`fuzz-<subject>.roc`) that imports
+nothing of the platform. roc-fuzz's allocation counters serve the fuzz
+targets; the native host counts allocations itself for the spec runner's
+walks and soaks.
 
 There is no native semantic host and no shared Zig engine. Observability that
 the old native host provided (work counters, effect tables, allocation
@@ -884,8 +893,8 @@ because an error left to inference does not resolve.
   `platform/Effects.roc`) when it starts a job, a preparation or a
   question, and every `File` and `Builder` made in that call carries them,
   so `file.read!` and `out.append!` are methods while the engine's modules
-  import nothing hosted and build as a package of their own for the fuzz
-  targets (see [Testing Architecture](#testing-architecture)). A file on
+  import nothing hosted and build as a package of their own for the
+  platform's fuzz targets (see [Testing Architecture](#testing-architecture)). A file on
   the page carries none: page code cannot call an effect, and one reached
   with a page's file is a contract error. Carried effects take no part in
   a file's equality, inspection or encoding. Opening a builder has no file
@@ -1813,7 +1822,7 @@ the program's call results, in Chrome through the `metric` export and
 `workRecord()`. The native runner also checks, at every work step, that the
 per-opcode counters agree with the commands the `Dom.roc` oracle decoded
 (and the issued and cancelled effect counters with its `FX` and `CANCEL`
-commands), and the soak walks and the effect-channel fuzz target check it after every batch.
+commands), and the walks and the effect-channel fuzz target check it after every batch.
 A metric name not in this table is a parse error; metrics of the deleted Zig
 engine (`active_graph_records_rebuilt`, closure retain/release counts, host
 retained bytes) have no meaning here, and their property is asserted through
@@ -1848,15 +1857,42 @@ the browser's own events, so the runtime's real listeners are exercised.
 `local-storage-unavailable` makes `window.localStorage` throw before the app
 loads; seeding storage in the same setup is a spec error in both runners.
 
-### Fuzzing, soak and contract tests
+### Fuzzing, walks, soak and contract tests
 
-- **roc-fuzz targets** (each app's `main-fuzz.roc`, and `fuzz/` for targets of
-  the shared support; roc-fuzz apps on the engine package) decode arbitrary bytes into valid programs and
-  check the engine against a reference model: keyed reconciliation, effect
-  lifecycle (issue, supersede, dispose, reparent, deliver, refuse, cancel,
-  stale), and the
-  explorer-driven soak walk over the live DOM. Their oracles, not their inputs,
-  carry the value.
+Each kind of test lives where its subject does. An app's behaviour is its
+`.scm` specs, beside it. The engine's behaviour over long sessions of real
+apps is the spec runner's walk, run by the repository's scripts over every
+app's ordinary `main.roc`. The engine's rules over generated programs are
+the platform's roc-fuzz targets, under `fuzz/` and beside the test apps.
+An example's own pure logic may have roc-fuzz targets of its own, which
+know nothing of the platform.
+
+- **The platform's roc-fuzz targets** (`fuzz/`, and `main-fuzz.roc` beside
+  the effect-channel and controls test apps; roc-fuzz apps on the engine
+  package) decode arbitrary bytes into valid programs and check the engine
+  against a reference model: keyed reconciliation, effect lifecycle (issue,
+  supersede, dispose, reparent, deliver, refuse, cancel, stale), generated
+  site trees, and the spec, wire and port formats. Their oracles, not their
+  inputs, carry the value.
+- **Walks.** The native spec runner walks an app (`RUNNER --walk STEPS
+  --seed N FILE.scm...`) from a fresh mount, mounted as the first spec's
+  setup: each step is a user event on a live control (chosen from the live
+  DOM, disabled controls skipped, typing one of a fixed pool or a value the
+  specs type into that control) or, while there is one, a service of the
+  browser around the app: answering a pending request, ticking a live
+  interval, changing visibility or connectivity for a live subscription,
+  or delivering a message the specs emit on a port. A worker job runs for
+  real in a child process, as a spec runs it, unless the walk loses it with
+  a fault class, times it out or leaves it pending for disposal to cancel.
+  Every other request is answered from the app's own specs: an HTTP request
+  with a reply they give its URL (else its path), a 503 or a timeout; a
+  port call with an answer they give that port, a throw or its timeout.
+  After every step the settle check must pass and the counters must agree
+  with the commands; at the end the walk must leave no allocation, byte or
+  file handle live. A walk needs nothing written for it, so it covers every
+  app with specs. Unlike a fuzz target's, its sequences are not
+  coverage-guided: generated programs (`fuzz/structure`) and the
+  effect-channel model are where coverage guidance meets the engine.
 - **The settle check** is the oracle every walk shares, and the native spec
   runner applies it after every step. After a turn, a root `Changed` pass
   with every layer bit set, run on a copy of the instance that is then
@@ -1882,25 +1918,14 @@ loads; seeding storage in the same setup is a spec error in both runners.
   deep per typed level and recursing only through component bodies, whose
   context type is fixed: a generator recursing through `state` would need
   polymorphic recursion.
-- **Soak.** Every app runs a long random walk natively (leak-checked) and in
-  Chrome, with Wasm pages and live allocations asserted flat across repeated
-  round trips in Chrome. Natively, each app's round trip is a spec of its
-  own that the spec runner soaks (`--soak`): it runs the spec once,
-  records the calls its steps make into the engine after the last
-  `mark-metrics`, replays them on the engine alone, and requires the
-  native host's live allocation and byte counters flat after a warm-up. A
-  recorded answer goes to the request at the same place among those in
-  flight, so the soak needs no knowledge of the app. A walk has no host to run a job's effects on, so a worker
-  app's target answers its jobs with a stand-in made from the app's pure
-  function (`Task.stand_in`, framed by `SpecRunner.encode_answer` and
-  delivered by `SpecRunner.answer_work`, walked
-  with `Soak.walk_with`); a walk of an app that issues no work uses
-  `Soak.walk`, where a job is a finding. The native walk answers pending
-  worker jobs from its bytes — most through the stand-in, inside the leak
-  check, the rest lost with a fault class, timed out or left for disposal to
-  cancel — so a worker app's walk terminates, stays deterministic, and
-  exercises its tasks' answers and their failure paths. The tasks' bodies
-  themselves run in the specs, in both runners.
+- **Soak.** Every app runs a long random walk in Chrome, with Wasm pages
+  and live allocations asserted flat across repeated round trips. Natively,
+  each app's round trip is an ordinary spec that the spec runner also
+  soaks (`--soak`): it runs the spec once, records the calls its steps make
+  into the engine after the last `mark-metrics`, replays them on the engine
+  alone, and requires the native host's live allocation and byte counters
+  flat after a warm-up. A recorded answer goes to the request at the same
+  place among those in flight, so the soak needs no knowledge of the app.
 - **Contract tests** (`tests/`) cover the host (`host.zig` tests: staging,
   containment, refusal after poison) and the runtime (`runtime.mjs` against the
   wire protocol: every opcode, payload encoding, effect performance and
@@ -2186,8 +2211,6 @@ Task.registration : Task(input, output, error) -> Registration
 Task.name : Task(input, output, error) -> Str                            # what requests and the monitor name its jobs by
 Task.request : Task(input, output, error), input -> Req                 # a Work request
 Task.result : Task(input, output, error), Res -> Try(output, Worker.Error(error))
-Task.stand_in : Task(input, output, error), (input -> Try(output, error))
-    -> (List(U8), List(U8) -> List(U8))       # for fuzz targets and soak walks
 Worker.Error(error) : [Failed(error), Timeout, Refused, Lost(WorkFault)]
 Worker.Never := []                             # the error of a task that cannot fail; Wire.Sendable
 Worker.prepared : PreparationProps(init, state, error) -> Preparation(init, state, error)
@@ -2204,8 +2227,6 @@ PreparedTask.registration : PreparedTask(init, state, query, output, error) -> P
 PreparedTask.name : PreparedTask(init, state, query, output, error) -> Str
 PreparedTask.request : PreparedTask(init, state, query, output, error), Question(init, query) -> Req
 PreparedTask.result : PreparedTask(init, state, query, output, error), Res -> Try(output, Worker.Error(error))
-PreparedTask.stand_in : PreparedTask(init, state, query, output, error), (init, query -> Try(output, error))
-    -> (List(U8), List(U8) -> List(U8))
 Worker.PreparedTaskEntry(state)               # opaque: a preparation's task, for its registration
 Worker.Question(init, query) : { input : init, query : query }
 Worker.derive : work, Val(ctx, input),         # a Task or a PreparedTask
