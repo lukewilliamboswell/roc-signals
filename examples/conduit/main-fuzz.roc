@@ -43,6 +43,9 @@ home = "/roc-signals/examples/conduit/#/"
 ## everything it allocated.
 test! : Soak.Session => Fuzz.Outcome
 test! = |session| {
+	if !Soak.walkable(session) {
+		return Fuzz.reject
+	}
 	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(ConduitApp.program), answer(SpecRunner.mount(Core.driver(ConduitApp.program), home, [])), Soak.session_bytes(session), answered))
 	Fuzz.keep
 }

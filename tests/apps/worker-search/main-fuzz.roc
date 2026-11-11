@@ -28,6 +28,9 @@ start = |_| SpecRunner.mount(Core.driver(SearchApp.program), "/", [])
 ## everything it allocated.
 test! : Soak.Session => Fuzz.Outcome
 test! = |session| {
+	if !Soak.walkable(session) {
+		return Fuzz.reject
+	}
 	Fuzz.expect_no_leaks!(|| Soak.walk_with(Core.driver(SearchApp.program), start({}), Soak.session_bytes(session), SearchApp.stand_in, Soak.settled(Core.driver(SearchApp.program))))
 	Fuzz.keep
 }

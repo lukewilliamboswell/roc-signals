@@ -41,6 +41,9 @@ Input : { mode : U8, size : U64, session : Soak.Session }
 
 walk! : Soak.Session => Fuzz.Outcome
 walk! = |session| {
+	if !Soak.walkable(session) {
+		return Fuzz.reject
+	}
 	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(FormApp.program), SpecRunner.mount(Core.driver(FormApp.program), "/", []), Soak.session_bytes(session), Soak.settled(Core.driver(FormApp.program))))
 	Fuzz.keep
 }

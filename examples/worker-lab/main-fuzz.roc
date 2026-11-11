@@ -104,6 +104,9 @@ steered = |s| Soak.settled(program)(steer(s))
 ## everything it allocated.
 test! : Soak.Session => Fuzz.Outcome
 test! = |session| {
+	if !Soak.walkable(session) {
+		return Fuzz.reject
+	}
 	Fuzz.expect_no_leaks!(|| Soak.walk_with(program, start({}), Soak.session_bytes(session), stand_in, steered))
 	Fuzz.keep
 }

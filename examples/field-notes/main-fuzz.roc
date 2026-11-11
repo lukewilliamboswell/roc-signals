@@ -51,6 +51,9 @@ answered = |s| Soak.settled(Core.driver(NotesApp.program))(answer(s))
 ## everything it allocated.
 test! : Soak.Session => Fuzz.Outcome
 test! = |session| {
+	if !Soak.walkable(session) {
+		return Fuzz.reject
+	}
 	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(NotesApp.program), answer(start({})), Soak.session_bytes(session), answered))
 	Fuzz.keep
 }

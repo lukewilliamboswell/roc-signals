@@ -16,6 +16,9 @@ import KanbanApp
 ## (`specs/round-trip-add-and-delete-a-card.scm`).
 test! : Soak.Session => Fuzz.Outcome
 test! = |session| {
+	if !Soak.walkable(session) {
+		return Fuzz.reject
+	}
 	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(KanbanApp.program), SpecRunner.mount(Core.driver(KanbanApp.program), "/", []), Soak.session_bytes(session), Soak.settled(Core.driver(KanbanApp.program))))
 	Fuzz.keep
 }

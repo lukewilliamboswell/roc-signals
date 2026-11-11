@@ -195,6 +195,17 @@ Soak := [].{
 	## hold as explicit bytes (an example decodes at most 4,096 values).
 	Session : { program : List(U8), seed : U64, steps : U64 }
 
+	## The longest seeded walk a session may name. A session decoded from a
+	## mutated corpus entry can name any count; a target rejects one over
+	## this bound rather than allocate its bytes (`walkable`).
+	max_steps : U64
+	max_steps = 10000
+
+	## Whether a target walks `session`: its seeded part is at most
+	## `max_steps` long.
+	walkable : Session -> Bool
+	walkable = |session| session.steps <= Soak.max_steps
+
 	## The bytes of a session's walk: its own, then its seeded ones.
 	session_bytes : Session -> List(U8)
 	session_bytes = |{ program, seed, steps }| program.concat(Soak.seeded(seed, steps))

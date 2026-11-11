@@ -16,6 +16,9 @@ import SheetApp
 ## (`specs/round-trip-edit-reorder-filter-and-mode.scm`).
 test! : Soak.Session => Fuzz.Outcome
 test! = |session| {
+	if !Soak.walkable(session) {
+		return Fuzz.reject
+	}
 	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(SheetApp.program), SpecRunner.mount(Core.driver(SheetApp.program), "/", []), Soak.session_bytes(session), Soak.settled(Core.driver(SheetApp.program))))
 	Fuzz.keep
 }

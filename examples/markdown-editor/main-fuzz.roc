@@ -18,6 +18,9 @@ import MdApp
 ## (`specs/round-trip-load-two-documents.scm`).
 test! : Soak.Session => Fuzz.Outcome
 test! = |session| {
+	if !Soak.walkable(session) {
+		return Fuzz.reject
+	}
 	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(MdApp.program), SpecRunner.mount(Core.driver(MdApp.program), "/", []), Soak.session_bytes(session), Soak.settled(Core.driver(MdApp.program))))
 	Fuzz.keep
 }

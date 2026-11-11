@@ -266,6 +266,9 @@ walk = |w0, bytes| {
 ## everything it allocated.
 test! : Soak.Session => Fuzz.Outcome
 test! = |session| {
+	if !Soak.walkable(session) {
+		return Fuzz.reject
+	}
 	Fuzz.expect_no_leaks!(|| walk(start({}), Soak.session_bytes(session)))
 	Fuzz.keep
 }

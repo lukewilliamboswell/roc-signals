@@ -16,6 +16,9 @@ import GridApp
 ## (`specs/round-trip-filter-and-page.scm`).
 test! : Soak.Session => Fuzz.Outcome
 test! = |session| {
+	if !Soak.walkable(session) {
+		return Fuzz.reject
+	}
 	Fuzz.expect_no_leaks!(|| Soak.walk(Core.driver(GridApp.program), SpecRunner.mount(Core.driver(GridApp.program), "/", []), Soak.session_bytes(session), Soak.settled(Core.driver(GridApp.program))))
 	Fuzz.keep
 }
