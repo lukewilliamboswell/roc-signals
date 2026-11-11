@@ -218,6 +218,19 @@ nothing app-specific enters the platform. The
 [Status Page](@/examples/status-page.md) example draws its chart this way with
 [Plume](https://github.com/lukewilliamboswell/plume).
 
+A widget answers the way a form control does, because an event reaches the
+app only as text: the element sets its own `value` and dispatches a bubbling
+`change` event, and the app hears it with an ordinary handler such as
+`Html.on_change(st.set_value_by(answer, reducer))`, which also reads a value
+of the page (the answer the chart was drawn from) when the event fires. The
+shared `plume-chart` element does this for a click on a point when it has
+`data-click="x"`: its value is the point's x as Plotly gives it, on a date
+axis a time such as `2026-11-11 12:05` (or the date alone at midnight). A
+spec stands in for the widget with `(change LOC "text")`, which sets the
+element's value and fires `change` in both runners. The
+[Log Explorer](@/examples/log-explorer.md) opens its viewer at the minute a
+click on its timeline names this way.
+
 ## Bounds
 
 - At most 32 awaited requests are in flight per app (set `max_inflight` in

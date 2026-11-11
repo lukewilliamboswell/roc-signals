@@ -390,9 +390,10 @@ a task reads one line back with a single read of its bytes:
 The worker holds the index and one chunk, never the whole file, so it can
 prepare a file far larger than you would read whole, let alone bring into
 the page. The [Log Explorer](@/examples/log-explorer.md) is a whole app in
-this shape: its state is a log's handle and an index of its lines, levels
-and sources; its overview is answered from the index alone, and its search
-and its viewer read only the lines they need.
+this shape: its state is a log's handle and an index of its lines, levels,
+sources and a timeline of entries a minute; its overview and its chart are
+answered from the index alone, and its search and its viewer read only the
+lines they need.
 
 Two costs come with a state like this:
 
@@ -404,7 +405,12 @@ Two costs come with a state like this:
   after its job, its state with it, so a state too large for the bound is
   prepared again for every question; the console says so once for each
   preparation it happens to. Keep the state compact (positions and small
-  tags rather than strings), or raise the bound.
+  tags rather than strings), or raise the bound. Give anything that grows
+  with something other than the file's size a bound of its own: the Log
+  Explorer's timeline counts a minute a bucket only while the log spans at
+  most 1,500 minutes, and widens its buckets past that (half an hour for a
+  month, six hours for a year), so it never holds more than 1,500 however
+  long the log runs.
 
 ## Lifetimes
 
