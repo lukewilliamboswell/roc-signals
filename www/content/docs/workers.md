@@ -205,6 +205,27 @@ input and gives `body` an `Engine.Gathered(output, Worker.Error(error))`:
   The pool runs at most `maxWorkers` jobs at once and queues the rest in
   order, so more parts than workers costs nothing but the queue.
 - An empty list is answered at once with `[]`.
+- `all.answered()` keeps the last answer only while the next question
+  works: once a question fails it is `Err(NoAnswer)`, so say in the view
+  what is shown until the next question is answered.
+
+The parts can be a preparation's task, one input per shard of a dataset
+the workers keep: each job's input names its shard (a seed and a size, say,
+or a file and a range), the pool runs each shard's jobs on the worker that
+prepared it, and only the small answers cross to the page. Keep one shard
+per worker of the pool: a worker keeps one state, so with more shards than
+workers every question prepares shards again. The
+[Million-Row Explorer](@/examples/million-row-explorer.md) asks four shards
+of two million generated orders this way, with `on_cancel: Finish` so a
+superseded question never ends a worker and its shard.
+
+A question that changes faster than it is answered, such as a slider being
+dragged, shows nothing until it stops changing: each new question stops the
+previous one's answer from being shown. Ask such a question at most every
+so often instead: keep what the control shows and what was asked apart in
+the state, and copy one to the other when a `Timer(ms)` request fires (the
+explorer samples its sliders every 100 ms, so each question is answered
+while the drag goes on).
 
 `Engine.gather` is the same for anything with `request` and `result`, a
 port call per item for instance. A question with more parts than the
