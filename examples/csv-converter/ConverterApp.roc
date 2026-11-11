@@ -49,10 +49,8 @@ ConverterApp := [].{
 		var $rows = 0
 		var $ragged = 0
 		var $carry = []
-		var $at = 0
-		while $at < source.size() {
-			len = if (source.size() - $at < ConverterApp.chunk_bytes) source.size() - $at else ConverterApp.chunk_bytes
-			bytes = source.read!({ start: $at, len })?
+		for span in source.spans(ConverterApp.chunk_bytes) {
+			bytes = source.read!(span)?
 			{ complete, rest } = Csv.lines($carry.concat(bytes))
 			var $text = ""
 			for line in complete {
@@ -68,7 +66,6 @@ ConverterApp := [].{
 			}
 			out.append!($text.to_utf8())?
 			$carry = rest
-			$at = $at + len
 		}
 		# The last line may have no line break.
 		if !$carry.is_empty() {
@@ -101,8 +98,7 @@ ConverterApp := [].{
 		source : [Nothing, Chosen(File)],
 		format : Csv.Format,
 		sample : [Idle, Loading],
-		save : [Idle, Save(File, U64)],
-		saves : U64,
+		save : Engine.Outbox(File),
 		note : Str,
 	}
 
@@ -123,12 +119,12 @@ ConverterApp := [].{
 	## What the conversion shows: its progress, its answer, or why there is
 	## none.
 	status : Engine.Remote(Converted, Worker.Error(Problem)) -> Str
-	status = |{ request, answer }| match (request, answer) {
-		(Pending, _) => "converting…"
-		(Idle, Answered(c)) => "${c.rows.to_str()} rows, ${c.columns.to_str()} columns${ConverterApp.ragged_note(c.ragged)} → ${c.output.name()} (${ConverterApp.size_text(c.output.size())})"
-		(Idle, Failed(Failed(problem))) => "could not convert: ${ConverterApp.explain(problem)}"
-		(Idle, Failed(error)) => "the conversion stopped: ${Str.inspect(error)}"
-		(Idle, Unanswered) => "drop a CSV file, or load the sample"
+	status = |remote| match Worker.status(remote) {
+		Working => "converting…"
+		Answered(c) => "${c.rows.to_str()} rows, ${c.columns.to_str()} columns${ConverterApp.ragged_note(c.ragged)} → ${c.output.name()} (${ConverterApp.size_text(c.output.size())})"
+		Failed(problem) => "could not convert: ${ConverterApp.explain(problem)}"
+		Unasked => "drop a CSV file, or load the sample"
+		stopped => "the conversion stopped: ${Str.inspect(stopped)}"
 	}
 
 	ragged_note : U64 -> Str
@@ -153,13 +149,6 @@ ConverterApp := [].{
 		} else {
 			"${(n / 1048576).to_str()} MiB"
 		}
-
-	## The converted file in a remote layer, when there is one.
-	output_of : Engine.Remote(Converted, Worker.Error(Problem)) -> List(File)
-	output_of = |{ answer, .. }| match answer {
-		Answered(c) => [c.output]
-		_ => []
-	}
 
 	## The first lines of a preview read, at most `lines` of them.
 	first_lines : List(U8), U64 -> Str
@@ -215,9 +204,9 @@ ConverterApp := [].{
 								[],
 								st.lift().update_by(
 									r,
-									|s, remote| match ConverterApp.output_of(remote) {
-										[out] => { ..s, save: Save(out, s.saves + 1), saves: s.saves + 1 }
-										_ => s
+									|s, remote| match remote.answered() {
+										Ok(c) => { ..s, save: s.save.post(c.output) }
+										Err(NoAnswer) => s
 									},
 								),
 							),
@@ -230,10 +219,10 @@ ConverterApp := [].{
 									[],
 									[
 										Engine.latest(
-											r.map(ConverterApp.output_of).lift(),
-											|outputs| match outputs {
-												[out] => [out.slice({ start: 0, len: if (out.size() < 4096) out.size() else 4096 }).read_bytes({})]
-												_ => []
+											r.map(|remote| remote.answered().map_ok(|c| c.output)).lift(),
+											|output| match output {
+												Ok(out) => [out.slice({ start: 0, len: out.size().min(4096) }).read_bytes({})]
+												Err(NoAnswer) => []
 											},
 											preview.on_result(
 												|_, _, res| match Engine.file_bytes(res) {
@@ -264,14 +253,7 @@ ConverterApp := [].{
 					),
 				),
 				# Saving, in the turn of the click that asked for it.
-				Engine.on_change(
-					v.map(|s| s.save),
-					|save| match save {
-						Save(out, _) => [File.save(out, {})]
-						Idle => []
-					},
-					Engine.ignore({}),
-				),
+				Engine.on_post(v.map(|s| s.save), |out| [File.save(out, {})], Engine.ignore({})),
 				Html.p_v(v.map(|s| s.note), [Engine.test_id("note")]),
 			],
 		)
@@ -279,6 +261,6 @@ ConverterApp := [].{
 
 	program : Engine.Program
 	program =
-		Engine.program(|| Engine.state({ source: Nothing, format: Tsv, sample: Idle, save: Idle, saves: 0, note: "" }, ConverterApp.view))
+		Engine.program(|| Engine.state({ source: Nothing, format: Tsv, sample: Idle, save: Engine.outbox({}), note: "" }, ConverterApp.view))
 			.with_workers([ConverterApp.convert.registration()])
 }
