@@ -10,6 +10,10 @@
 ## A line that does not start that way continues the entry before it (a
 ## stack trace, say). The index keeps where each line starts and what it is,
 ## never the text, so a question that shows lines reads just their bytes.
+## It also keeps a timeline: entries counted by level for each minute of the
+## time the log spans, or for each longer stretch when the log spans more
+## than `most_buckets` minutes, so its size has a bound however long the
+## log runs.
 Log := [].{
 
 	## How severe an entry is, from its level word.
@@ -22,9 +26,23 @@ Log := [].{
 	## Entries counted by level.
 	Tally : { trace : U64, debug : U64, info : U64, warn : U64, error : U64, fatal : U64 }
 
+	## One stretch of the timeline: its entries counted by level, and the
+	## first line (from 0) of an entry in it.
+	Bucket : { tally : Tally, first : [NoEntry, Line(U64)] }
+
+	## Entries over time, a bucket for each `width` minutes. Bucket `n`
+	## counts the entries whose minute `m` (counted as `minute_of` counts)
+	## has `m // width == start + n`. `width` is the narrowest of the
+	## `widths` that keeps the buckets from the earliest entry's to the
+	## latest's within `most_buckets`: one minute for a log of a day, half
+	## an hour for a month, six hours for a year.
+	Timeline : { width : U64, start : U64, buckets : List(Bucket) }
+
 	## What indexing a log keeps: the file's size, where each line starts and
 	## what it is, and the counts the overview shows. Line `n` (from 0) is
 	## the bytes from `starts[n]` to the next line's start, or to the end.
+	## `undated` counts the entries whose timestamp is not a real UTC time
+	## (a 31 June, a 25th hour), which the timeline leaves out.
 	Index : {
 		size : U64,
 		starts : List(U64),
@@ -34,6 +52,8 @@ Log := [].{
 		earliest : Str,
 		latest : Str,
 		sources : Dict(Str, U64),
+		timeline : Timeline,
+		undated : U64,
 	}
 
 	## An index being built a chunk at a time: the index of the lines seen
@@ -54,13 +74,17 @@ Log := [].{
 	## page of them to show.
 	Search : { text : Str, filter : Filter, page : U64 }
 
-	## A search's answer: how many lines match, and the lines of the page
-	## asked for.
-	Found : { matches : U64, lines : List(Line) }
+	## A search's answer: how many lines match, the lines of the page asked
+	## for, and, for a search with text, how many matched in each bucket of
+	## the log's timeline. A listing with no text counts nothing over time:
+	## the timeline's own lines show it.
+	Found : { matches : U64, lines : List(Line), over_time : [NotCounted, Counted(List(U64))] }
 
 	## A search with text, over the lines scanned so far: how many matched,
-	## and those of them on the page asked for.
-	Scan : { matches : U64, lines : List(Line) }
+	## those of them on the page asked for, how many in each bucket of the
+	## timeline, and the bucket of the last entry scanned, which the lines
+	## continuing it share.
+	Scan : { matches : U64, lines : List(Line), per_bucket : List(U64), entry : [Undated, Bucket(U64)] }
 
 	## A page of the viewer: its first line (from 0), the log's line count
 	## and the lines.
@@ -75,6 +99,8 @@ Log := [].{
 		span : [Untimed, Between({ earliest : Str, latest : Str })],
 		sources : List({ source : Str, entries : U64 }),
 		distinct_sources : U64,
+		timeline : Timeline,
+		undated : U64,
 	}
 
 	## How many lines a page of search results holds.
@@ -93,6 +119,130 @@ Log := [].{
 	line_bytes : U64
 	line_bytes = 1000
 
+	## The most buckets a timeline has: a day at one a minute (1,440, and
+	## one more for a log that ends where it began), a month at one each
+	## half hour (at most 1,488) and a year at one each six hours (at most
+	## 1,464). Each costs the index about 64 bytes, so a timeline costs at
+	## most about 96 KB however long the log runs, where counting every
+	## minute would cost 2.8 MB for a month and 34 MB for a year, and draw
+	## more points than a chart should.
+	most_buckets : U64
+	most_buckets = 1500
+
+	## The widths a timeline's buckets may have, in minutes, narrowest
+	## first: each divides the next, so widening a timeline merges whole
+	## buckets. Past the last, a width doubles.
+	widths : List(U64)
+	widths = [1, 5, 15, 30, 60, 180, 360, 720, 1440, 10080]
+
+	## A timeline with no entries, a minute a bucket.
+	no_timeline : Timeline
+	no_timeline = { width: 1, start: 0, buckets: [] }
+
+	## The minute a timestamp names, counted from a fixed day long before
+	## year 1: `YYYY-MM-DD`, then `T` or a space and `hh:mm`, then anything
+	## (seconds, a fraction, a zone, none of which is read: a minute is the
+	## one the log writes). A date alone is its midnight. Only a real
+	## Gregorian date and time of day, in years 1 to 9999, has a minute.
+	minute_of : List(U8) -> Try(U64, [NotATime])
+	minute_of = |bytes| {
+		# Read in place, with no list made: every search reads the minute
+		# of every entry it passes.
+		number = |{ start, len }| {
+			var $n = 0
+			var $i = start
+			while $i < start + len {
+				match bytes.get($i) {
+					Ok(b) if b >= '0' and b <= '9' => {
+						$n = $n * 10 + (b - '0').to_u64()
+					}
+					_ => return Err(NotATime)
+				}
+				$i = $i + 1
+			}
+			Ok($n)
+		}
+		if bytes.get(4) != Ok('-') or bytes.get(7) != Ok('-') {
+			return Err(NotATime)
+		}
+		date = { year: number({ start: 0, len: 4 })?, month: number({ start: 5, len: 2 })?, day: number({ start: 8, len: 2 })? }
+		if bytes.len() == 10 {
+			return Log.minute_at({ year: date.year, month: date.month, day: date.day, hour: 0, minute: 0 })
+		}
+		separated = match bytes.get(10) {
+			Ok(b) => (b == 'T' or b == ' ') and bytes.get(13) == Ok(':')
+			Err(OutOfBounds) => Bool.False
+		}
+		if !separated {
+			return Err(NotATime)
+		}
+		Log.minute_at({ year: date.year, month: date.month, day: date.day, hour: number({ start: 11, len: 2 })?, minute: number({ start: 14, len: 2 })? })
+	}
+
+	## The minute of a date and time of day, counted as `minute_of` counts,
+	## when the date is a real one in years 1 to 9999 and the time a real
+	## time of day.
+	minute_at : { year : U64, month : U64, day : U64, hour : U64, minute : U64 } -> Try(U64, [NotATime])
+	minute_at = |{ year, month, day, hour, minute }|
+		if year < 1 or month < 1 or month > 12 or day < 1 or day > days_in_month({ year, month }) or hour > 23 or minute > 59 {
+			Err(NotATime)
+		} else {
+			Ok(days_from_civil({ year, month, day }) * 1440 + hour * 60 + minute)
+		}
+
+	## The minute of 1970-01-01T00:00, from which Unix and JavaScript count.
+	epoch_minute : U64
+	epoch_minute = days_from_civil({ year: 1970, month: 1, day: 1 }) * 1440
+
+	## The timeline with one more entry, of `level`, at `minute`, on line
+	## `line` (from 0). A minute beyond the buckets' bound widens them first.
+	placed : Timeline, { minute : U64, level : Level, line : U64 } -> Timeline
+	placed = |timeline, { minute, level, line }| {
+		{ width, start, buckets } = timeline
+		at = minute // width
+		if buckets.is_empty() {
+			return { width, start: at, buckets: [{ tally: counted(no_tally, level), first: Line(line) }] }
+		}
+		low = start.min(at)
+		high = (start + buckets.len() - 1).max(at)
+		if high - low + 1 > Log.most_buckets {
+			return Log.placed(widened(timeline), { minute, level, line })
+		}
+		grown =
+			if at < start {
+				List.repeat(empty_bucket, start - at).concat(buckets)
+			} else if at >= start + buckets.len() {
+				buckets.concat(List.repeat(empty_bucket, at + 1 - start - buckets.len()))
+			} else {
+				buckets
+			}
+		counted_in = grown.update(at - low, |bucket| { tally: counted(bucket.tally, level), first: earlier(bucket.first, Line(line)) }) ?? crash "Log.placed: bucket ${(at - low).to_str()} is past the grown timeline"
+		{ width, start: low, buckets: counted_in }
+	}
+
+	## The bucket (from 0) of a timeline that a minute falls in, when it
+	## falls in one.
+	bucket_of : Timeline, U64 -> Try(U64, [OutsideTheTimeline])
+	bucket_of = |{ width, start, buckets }, minute| {
+		at = minute // width
+		if (at >= start and at - start < buckets.len()) Ok(at - start) else Err(OutsideTheTimeline)
+	}
+
+	## The first line (from 0) of an entry in the bucket a minute falls in,
+	## or in the nearest later bucket that has one: where the viewer shows
+	## that time from.
+	first_line_from : Timeline, U64 -> Try(U64, [NoLaterEntry])
+	first_line_from = |timeline, minute| {
+		from = if (minute // timeline.width < timeline.start) 0 else Log.bucket_of(timeline, minute) ?? timeline.buckets.len()
+		for bucket in timeline.buckets.drop_first(from) {
+			match bucket.first {
+				Line(line) => return Ok(line)
+				NoEntry => {}
+			}
+		}
+		Err(NoLaterEntry)
+	}
+
 	## An indexer that has seen nothing.
 	indexer : Indexer
 	indexer = {
@@ -105,6 +255,8 @@ Log := [].{
 			earliest: "",
 			latest: "",
 			sources: Dict.empty(),
+			timeline: Log.no_timeline,
+			undated: 0,
 		},
 		at: 0,
 		line: Between,
@@ -189,6 +341,8 @@ Log := [].{
 			span: if (index.entries == 0) Untimed else Between({ earliest: index.earliest, latest: index.latest }),
 			sources: busiest.take_first(5),
 			distinct_sources: index.sources.len(),
+			timeline: index.timeline,
+			undated: index.undated,
 		}
 	}
 
@@ -269,8 +423,13 @@ Log := [].{
 		{ matches: $matches, page: $page }
 	}
 
+	## A search with text that has scanned nothing of an index yet.
+	unscanned : Index -> Scan
+	unscanned = |index| { matches: 0, lines: [], per_bucket: List.repeat(0, index.timeline.buckets.len()), entry: Undated }
+
 	## A search with text, continued over the next range of lines and the
-	## bytes of their span.
+	## bytes of their span. A match is counted in its entry's bucket, which
+	## the entry's own line gives: the index keeps no time for a line.
 	scan : Scan, { index : Index, search : Search, first : U64, count : U64, bytes : List(U8) } -> Scan
 	scan = |scanned, { index, search, first, count, bytes }| {
 		needle = search.text.to_utf8().map(folded)
@@ -278,22 +437,36 @@ Log := [].{
 		base = index.starts.get(first) ?? index.size
 		var $matches = scanned.matches
 		var $lines = scanned.lines
+		var $per_bucket = scanned.per_bucket
+		var $entry = scanned.entry
 		var $n = first
 		while $n < first + count {
 			mark = mark_of(index, $n)
 			if Log.is_shown(mark, search.filter) {
 				{ start, len } = Log.span(index, { first: $n, count: 1 })
 				line = bytes.sublist({ start: start - base, len })
+				$entry = match mark {
+					Entry(_) =>
+						match Log.minute_of(line.take_first(16)) {
+							Ok(minute) => Log.bucket_of(index.timeline, minute).map_ok(|at| Bucket(at)) ?? Undated
+							Err(NotATime) => Undated
+						}
+					_ => $entry
+				}
 				if has_folded(line, needle) {
 					if $matches >= from and $matches < from + Log.page_lines {
 						$lines = $lines.append({ number: $n + 1, mark, text: text_of(line) })
 					}
 					$matches = $matches + 1
+					$per_bucket = match $entry {
+						Bucket(at) => $per_bucket.update(at, |n| n + 1) ?? crash "Log.scan: bucket ${at.to_str()} is past the timeline"
+						Undated => $per_bucket
+					}
 				}
 			}
 			$n = $n + 1
 		}
-		{ matches: $matches, lines: $lines }
+		{ matches: $matches, lines: $lines, per_bucket: $per_bucket, entry: $entry }
 	}
 
 	## The first line (from 0) of the viewer's page that is `wanted` in a
@@ -336,12 +509,24 @@ Log := [].{
 ## place.
 recorded : Log.Index, U64, List(U8) -> Log.Index
 recorded = |index, start, head| {
-	{ size, starts, marks, entries, tally, earliest, latest, sources } = index
+	{ size, starts, marks, entries, tally, earliest, latest, sources, timeline, undated } = index
 	match Log.header(head) {
 		Headed({ time, level, source }) => {
 			seen = sources.get(source) ?? 0
 			first = entries == 0
+			dated = match Log.minute_of(time) {
+				Ok(minute) => Placed(Log.placed(timeline, { minute, level, line: starts.len() }))
+				Err(NotATime) => Undated
+			}
 			{
+				timeline: match dated {
+					Placed(placed) => placed
+					Undated => timeline
+				},
+				undated: match dated {
+					Placed(_) => undated
+					Undated => undated + 1
+				},
 				size,
 				starts: starts.append(start),
 				marks: marks.append(Entry(level)),
@@ -359,9 +544,68 @@ recorded = |index, start, head| {
 				Ok(Unheaded) => Unheaded
 				Err(ListWasEmpty) => Unheaded
 			}
-			{ size, starts: starts.append(start), marks: marks.append(mark), entries, tally, earliest, latest, sources }
+			{ size, starts: starts.append(start), marks: marks.append(mark), entries, tally, earliest, latest, sources, timeline, undated }
 		}
 	}
+}
+
+no_tally : Log.Tally
+no_tally = { trace: 0, debug: 0, info: 0, warn: 0, error: 0, fatal: 0 }
+
+empty_bucket : Log.Bucket
+empty_bucket = { tally: no_tally, first: NoEntry }
+
+## A timeline with buckets of the next width (the next of `widths`, or
+## twice the last past them): each new bucket merges the old ones it
+## covers, adding their counts and keeping their first line.
+widened : Log.Timeline -> Log.Timeline
+widened = |{ width, start, buckets }| {
+	next = Log.widths.find_first(|w| w > width) ?? width * 2
+	factor = next // width
+	low = start // factor
+	var $merged = []
+	var $at = start
+	for bucket in buckets {
+		slot = $at // factor - low
+		$merged = if slot < $merged.len() {
+			$merged.update(slot, |into| { tally: added(into.tally, bucket.tally), first: earlier(into.first, bucket.first) }) ?? crash "Log.widened: slot ${slot.to_str()} is past the merged buckets"
+		} else {
+			$merged.append(bucket)
+		}
+		$at = $at + 1
+	}
+	{ width: next, start: low, buckets: $merged }
+}
+
+## Two tallies added.
+added : Log.Tally, Log.Tally -> Log.Tally
+added = |a, b| { trace: a.trace + b.trace, debug: a.debug + b.debug, info: a.info + b.info, warn: a.warn + b.warn, error: a.error + b.error, fatal: a.fatal + b.fatal }
+
+## The earlier of two first lines.
+earlier : [NoEntry, Line(U64)], [NoEntry, Line(U64)] -> [NoEntry, Line(U64)]
+earlier = |a, b| match (a, b) {
+	(Line(x), Line(y)) => Line(x.min(y))
+	(Line(x), NoEntry) => Line(x)
+	(NoEntry, other) => other
+}
+
+## Days in a month of a year, by the Gregorian calendar.
+days_in_month : { year : U64, month : U64 } -> U64
+days_in_month = |{ year, month }| match month {
+	2 => if (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)) 29 else 28
+	4 | 6 | 9 | 11 => 30
+	_ => 31
+}
+
+## Days from a fixed day before year 1 to a date: Howard Hinnant's
+## `days_from_civil`, with years shifted by 400 so nothing is negative.
+days_from_civil : { year : U64, month : U64, day : U64 } -> U64
+days_from_civil = |{ year, month, day }| {
+	shifted = if (month <= 2) year + 399 else year + 400
+	era = shifted // 400
+	year_of_era = shifted - era * 400
+	day_of_year = (153 * (if (month > 2) month - 3 else month + 9) + 2) // 5 + day - 1
+	era * 146097 + year_of_era * 365 + year_of_era // 4 - year_of_era // 100 + day_of_year
 }
 
 ## A tally with one more entry of `level`.
@@ -555,14 +799,17 @@ expect {
 expect {
 	index = indexed(sample, 1000)
 	view = Log.overview(index)
+	{ width, start, buckets } = view.timeline
 	actual =
 		\\starts: ${Str.inspect(index.starts)}
 		\\marks: ${Str.inspect(index.marks)}
-		\\overview: ${Str.inspect(view)}
+		\\overview: ${Str.inspect({ ..view, timeline: Log.no_timeline })}
+		\\timeline: ${Str.inspect({ width, starts_at_07_59: Ok(start) == Log.minute_of("2026-11-11T07:59".to_utf8()), buckets })}
 	expected =
 		\\starts: [0, 66, 126, 160, 216]
 		\\marks: [Entry(Info), Entry(Error), Continued(Error), Entry(Warn), Continued(Warn)]
-		\\overview: { distinct_sources: 3, entries: 3, lines: 5, size: 229, sources: [{ entries: 1, source: "api" }, { entries: 1, source: "cache" }, { entries: 1, source: "db" }], span: Between({ earliest: "2026-11-11T07:59:59.000Z", latest: "2026-11-11T08:00:01.004Z" }), tally: { debug: 0, error: 1, fatal: 0, info: 1, trace: 0, warn: 1 } }
+		\\overview: { distinct_sources: 3, entries: 3, lines: 5, size: 229, sources: [{ entries: 1, source: "api" }, { entries: 1, source: "cache" }, { entries: 1, source: "db" }], span: Between({ earliest: "2026-11-11T07:59:59.000Z", latest: "2026-11-11T08:00:01.004Z" }), tally: { debug: 0, error: 1, fatal: 0, info: 1, trace: 0, warn: 1 }, timeline: { buckets: [], start: 0, width: 1 }, undated: 0 }
+		\\timeline: { buckets: [{ first: Line(3), tally: { debug: 0, error: 0, fatal: 0, info: 0, trace: 0, warn: 1 } }, { first: Line(0), tally: { debug: 0, error: 1, fatal: 0, info: 1, trace: 0, warn: 0 } }], starts_at_07_59: True, width: 1 }
 	actual == expected
 }
 
@@ -618,12 +865,13 @@ expect {
 }
 
 ## A search ignores ASCII case and honours the filter; continuations go
-## with their entry's level; a search with no text lists from the index.
+## with their entry's level, and are counted in its minute; a search with
+## no text lists from the index.
 expect {
 	index = indexed(sample, 1000)
 	search = |text, filter| {
-		found = Log.scan({ matches: 0, lines: [] }, { index, search: { text, filter, page: 0 }, first: 0, count: 5, bytes: sample.to_utf8() })
-		"${found.matches.to_str()} ${Str.inspect(found.lines.map(|l| l.number))}"
+		found = Log.scan(Log.unscanned(index), { index, search: { text, filter, page: 0 }, first: 0, count: 5, bytes: sample.to_utf8() })
+		"${found.matches.to_str()} ${Str.inspect(found.lines.map(|l| l.number))} by minute ${Str.inspect(found.per_bucket)}"
 	}
 	listed = |filter| Str.inspect(Log.listed(index, { text: "", filter, page: 0 }))
 	actual =
@@ -634,13 +882,101 @@ expect {
 		\\errors: ${listed(Only(Error))}
 		\\all: ${listed(Everything)}
 	expected =
-		\\pool: 1 [3]
-		\\pool in errors: 1 [3]
-		\\pool in warnings: 0 []
-		\\every 2026: 3 [1, 2, 4]
+		\\pool: 1 [3] by minute [0, 1]
+		\\pool in errors: 1 [3] by minute [0, 1]
+		\\pool in warnings: 0 [] by minute [0, 0]
+		\\every 2026: 3 [1, 2, 4] by minute [1, 2]
 		\\errors: { matches: 2, page: [1, 2] }
 		\\all: { matches: 5, page: [0, 1, 2, 3, 4] }
 	actual == expected
+}
+
+## A minute is read from a timestamp's date, hour and minute, and only a
+## real date and time of day has one; a date alone is its midnight.
+expect {
+	minute = |text| match Log.minute_of(text.to_utf8()) {
+		Ok(m) => (m - Log.epoch_minute).to_str()
+		Err(NotATime) => "not a time"
+	}
+	actual =
+		\\epoch: ${minute("1970-01-01T00:00:00Z")}
+		\\a day on: ${minute("1970-01-02 00:01")}
+		\\leap day: ${minute("2024-02-29T12:00")}
+		\\a date: ${minute("2026-11-11")}
+		\\as written: ${minute("2026-11-11T08:00:59.999+10:00")}
+		\\no leap day: ${minute("2025-02-29T12:00")}
+		\\31 June: ${minute("2026-06-31T00:00")}
+		\\hour 24: ${minute("2026-11-11T24:00")}
+		\\year 0: ${minute("0000-01-01T00:00")}
+		\\cut short: ${minute("2026-11-11T08")}
+	expected =
+		\\epoch: 0
+		\\a day on: 1441
+		\\leap day: 28486800
+		\\a date: 29905920
+		\\as written: 29906400
+		\\no leap day: not a time
+		\\31 June: not a time
+		\\hour 24: not a time
+		\\year 0: not a time
+		\\cut short: not a time
+	actual == expected
+}
+
+## A log that spans more minutes than a timeline holds widens its buckets,
+## merging their counts and keeping each one's first line; a time the log
+## shows from is the first line of its bucket or the next one with entries.
+expect {
+	at = |text| Log.minute_of(text.to_utf8()) ?? 0
+	log =
+		\\2026-11-11T08:00:00Z INFO api: a
+		\\2026-11-11T08:03:00Z WARN api: b
+		\\2026-11-13T08:00:00Z ERROR db: c
+		\\2026-11-11T08:04:00Z INFO api: d
+		\\2026-11-11T25:00:00Z INFO api: undated
+		\\
+	index = indexed(log, 7)
+	{ width, start, buckets } = index.timeline
+	actual =
+		\\width: ${width.to_str()}, buckets: ${buckets.len().to_str()}, from: ${Str.inspect(start * width == at("2026-11-11T08:00"))}, undated: ${index.undated.to_str()}
+		\\first: ${Str.inspect(buckets.first())}
+		\\last: ${Str.inspect(buckets.last())}
+		\\from 08:02: ${Str.inspect(Log.first_line_from(index.timeline, at("2026-11-11T08:02")))}
+		\\from 08:07: ${Str.inspect(Log.first_line_from(index.timeline, at("2026-11-11T08:07")))}
+		\\from before: ${Str.inspect(Log.first_line_from(index.timeline, at("2026-11-10T00:00")))}
+		\\from after: ${Str.inspect(Log.first_line_from(index.timeline, at("2026-11-14T00:00")))}
+	expected =
+		\\width: 5, buckets: 577, from: True, undated: 1
+		\\first: Ok({ first: Line(0), tally: { debug: 0, error: 0, fatal: 0, info: 2, trace: 0, warn: 1 } })
+		\\last: Ok({ first: Line(2), tally: { debug: 0, error: 1, fatal: 0, info: 0, trace: 0, warn: 0 } })
+		\\from 08:02: Ok(0)
+		\\from 08:07: Ok(2)
+		\\from before: Ok(0)
+		\\from after: Err(NoLaterEntry)
+	actual == expected
+}
+
+## However far apart its entries, a timeline stays within its bound and
+## counts every dated entry once: the first and last years a timestamp
+## can name are about 5.3 billion minutes apart.
+expect {
+	far =
+		\\5000-06-15T12:00:00Z ERROR x: y
+		\\0001-01-01T00:00:00Z ERROR x: y
+		\\9999-12-31T23:59:00Z ERROR x: y
+		\\
+	timeline = indexed(far, 3).timeline
+	actual = {
+		within_bound: timeline.buckets.len() <= Log.most_buckets,
+		errors: timeline.buckets.fold(0, |sum, b| sum + b.tally.error),
+		first_lines: timeline.buckets.keep_oks(
+			|b| match b.first {
+				Line(line) => Ok(line)
+				NoEntry => Err(NoEntry)
+			},
+		),
+	}
+	actual == { within_bound: Bool.True, errors: 3, first_lines: [1, 0, 2] }
 }
 
 ## A long line is cut for showing; a CRLF break is not part of the text.

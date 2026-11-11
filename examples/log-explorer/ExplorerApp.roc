@@ -68,7 +68,7 @@ ExplorerApp := [].{
 
 	## With no text, the index says which lines match, and only the page's
 	## lines are read. With text, the whole file is read again a chunk of
-	## whole lines at a time.
+	## whole lines at a time, and the matches are counted over time too.
 	search! : Prepared, Log.Search => Try(Log.Found, Problem)
 	search! = |{ file, index }, query| {
 		if query.text.is_empty() {
@@ -78,14 +78,14 @@ ExplorerApp := [].{
 				bytes = file.read!(Log.span(index, { first: n, count: 1 }))?
 				$lines = $lines.concat(Log.lines_in(index, { first: n, count: 1, bytes }))
 			}
-			Ok({ matches, lines: $lines })
+			Ok({ matches, lines: $lines, over_time: NotCounted })
 		} else {
-			var $scanned = { matches: 0, lines: [] }
+			var $scanned = Log.unscanned(index)
 			for { first, count } in Log.chunks(index, ExplorerApp.chunk_bytes) {
 				bytes = file.read!(Log.span(index, { first, count }))?
 				$scanned = Log.scan($scanned, { index, search: query, first, count, bytes })
 			}
-			Ok({ matches: $scanned.matches, lines: $scanned.lines })
+			Ok({ matches: $scanned.matches, lines: $scanned.lines, over_time: Counted($scanned.per_bucket) })
 		}
 	}
 

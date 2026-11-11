@@ -27,7 +27,13 @@ import Log
 ## - `chunks` covers every line once, in order, each range within the bound
 ##   unless it is one line;
 ## - a search scanned chunk by chunk, and a listing from the index alone,
-##   find exactly the lines the model finds, and the page asked for.
+##   find exactly the lines the model finds, and the page asked for;
+## - the timeline is the model's: the narrowest width that keeps the
+##   entries' minutes within `most_buckets` buckets, each bucket counting
+##   its entries by level and keeping its first line, and the entries
+##   with no real time counted apart; a search counts each match in its
+##   entry's bucket. Timestamps days and years apart make the timeline
+##   widen while it is built, an entry at a time.
 Input : { pieces : List(U8), chunk : U8, question : U8, page : U8 }
 
 ## The pieces a log is made of; an input byte picks one.
@@ -61,6 +67,14 @@ pieces = [
 	"\r\n",
 	"\r",
 	":",
+	"2026-11-11T09:31:00Z",
+	"2026-11-14T00:00:59Z",
+	"2027-03-01T12:00:00Z",
+	"2031-02-28T23:59:00Z",
+	"2400-02-29T00:00:00Z",
+	"2026-02-29T08:00:00Z",
+	"2026-11-11T08:60:00Z",
+	"\n2026-11-11T08:00:00Z ERROR db: reset\n",
 ]
 
 ## What a question searches for; an input byte picks one.
@@ -145,6 +159,73 @@ model_shows = |mark, filter| match filter {
 		}
 }
 
+## Each line's entry minute: for an entry, its own timestamp's; for a line
+## continuing one, its entry's; `NoMinute` before the first entry or for
+## an entry whose time is not a real one.
+model_minutes : List(List(U8)) -> List([NoMinute, Minute({ minute : U64, level : Log.Level, entry : Bool })])
+model_minutes = |lines| {
+	var $out = []
+	var $last = NoMinute
+	for line in lines {
+		match Log.header(unbroken(line).take_first(Log.header_bytes)) {
+			Headed({ time, level, .. }) => {
+				$last = match Log.minute_of(time) {
+					Ok(minute) => Minute({ minute, level, entry: Bool.True })
+					Err(NotATime) => NoMinute
+				}
+				$out = $out.append($last)
+			}
+			Plain => {
+				$out = $out.append(
+					match $last {
+						Minute(m) => Minute({ ..m, entry: Bool.False })
+						NoMinute => NoMinute
+					},
+				)
+			}
+		}
+	}
+	$out
+}
+
+## The timeline of every dated entry at once: the narrowest width whose
+## buckets from the earliest minute to the latest are at most
+## `most_buckets`, trying `widths` in order and then doubling.
+model_timeline : List([NoMinute, Minute({ minute : U64, level : Log.Level, entry : Bool })]) -> Log.Timeline
+model_timeline = |minutes| {
+	dated = minutes.map_with_index(|m, line| (m, line)).keep_oks(
+		|(m, line)| match m {
+			Minute({ minute, level, entry }) if entry => Ok({ minute, level, line })
+			_ => Err(Skip)
+		},
+	)
+	match (dated.map(|d| d.minute).min(), dated.map(|d| d.minute).max()) {
+		(Ok(low), Ok(high)) => {
+			var $width = 1
+			while high // $width - low // $width + 1 > Log.most_buckets {
+				$width = Log.widths.find_first(|w| w > $width) ?? $width * 2
+			}
+			width = $width
+			start = low // width
+			var $buckets = List.repeat({ tally: { trace: 0, debug: 0, info: 0, warn: 0, error: 0, fatal: 0 }, first: NoEntry }, high // width - start + 1)
+			for { minute, level, line } in dated {
+				$buckets = $buckets.update(
+					minute // width - start,
+					|b| {
+						tally: { ..b.tally, trace: b.tally.trace + (if (level == Trace) 1 else 0), debug: b.tally.debug + (if (level == Debug) 1 else 0), info: b.tally.info + (if (level == Info) 1 else 0), warn: b.tally.warn + (if (level == Warn) 1 else 0), error: b.tally.error + (if (level == Error) 1 else 0), fatal: b.tally.fatal + (if (level == Fatal) 1 else 0) },
+						first: match b.first {
+							Line(first) => Line(first)
+							NoEntry => Line(line.to_u64())
+						},
+					},
+				) ?? crash "model_timeline: a minute outside its own span"
+			}
+			{ width, start, buckets: $buckets }
+		}
+		_ => Log.no_timeline
+	}
+}
+
 ## The text indexed in chunks of `size` bytes.
 indexed : List(U8), U64 -> Log.Index
 indexed = |text, size| {
@@ -193,6 +274,13 @@ check = |{ pieces: picks, chunk, question, page }| {
 	if overview.entries != headers.len() or tallied != model_tallied or overview.span != span or overview.distinct_sources != Set.from_list(sources).len() or overview.sources.any(|s| sources.count_if(|x| x == s.source) != s.entries) {
 		return Err("overview ${Str.inspect(overview)}, the model's entries ${headers.len().to_str()}, tally ${Str.inspect(model_tallied)}, span ${Str.inspect(span)}")
 	}
+	# The timeline, built an entry at a time, against one built at once.
+	minutes = model_minutes(lines)
+	timeline = model_timeline(minutes)
+	undated = headers.count_if(|h| Log.minute_of(h.time).is_err())
+	if overview.timeline != timeline or overview.undated != undated or timeline.buckets.len() > Log.most_buckets {
+		return Err("timeline ${Str.inspect({ width: overview.timeline.width, start: overview.timeline.start, buckets: overview.timeline.buckets.len(), undated: overview.undated })}, the model's ${Str.inspect({ width: timeline.width, start: timeline.start, buckets: timeline.buckets.len(), undated })}")
+	}
 	# A page of lines from the bytes of its span.
 	count = lines.len()
 	first = if (count == 0) 0 else page.to_u64() % count
@@ -234,7 +322,7 @@ check = |{ pieces: picks, chunk, question, page }| {
 		.keep_if(|l| model_shows(l.mark, filter) and model_has(unbroken(l.line), needle))
 	on_page = matching.drop_first(search.page * Log.page_lines).take_first(Log.page_lines).map(|l| { number: l.number, mark: l.mark, text: l.text })
 	scanned = ranges.fold(
-		{ matches: 0, lines: [] },
+		Log.unscanned(index),
 		|so_far, r| {
 			range = Log.span(index, r)
 			Log.scan(so_far, { index, search, first: r.first, count: r.count, bytes: text.sublist(range) })
@@ -242,6 +330,18 @@ check = |{ pieces: picks, chunk, question, page }| {
 	)
 	if scanned.matches != matching.len() or scanned.lines != on_page {
 		return Err("search ${Str.inspect(search)} found ${scanned.matches.to_str()}: ${Str.inspect(scanned.lines.map(|l| l.number))}, the model ${matching.len().to_str()}: ${Str.inspect(on_page.map(|l| l.number))}")
+	}
+	var $per_bucket = List.repeat(0, timeline.buckets.len())
+	for l in matching {
+		match minutes.get(l.number - 1) {
+			Ok(Minute({ minute, .. })) => {
+				$per_bucket = $per_bucket.update(minute // timeline.width - timeline.start, |n| n + 1) ?? crash "the model's match is outside its timeline"
+			}
+			_ => {}
+		}
+	}
+	if scanned.per_bucket != $per_bucket {
+		return Err("search ${Str.inspect(search)} counted ${Str.inspect(scanned.per_bucket)} a bucket, the model ${Str.inspect($per_bucket)}")
 	}
 	listing = Log.listed(index, { ..search, text: "" })
 	listed_model = List.map2(lines, marks, |_line, mark| mark).map_with_index(|mark, i| (i, mark)).keep_if(|(_i, mark)| model_shows(mark, filter)).map(|(i, _mark)| i)
@@ -287,6 +387,7 @@ target = Fuzz.target_with!({
 		ex("no-break", { pieces: [1, 4, 10, 4, 15, 21, 21], chunk: 3, question: 3, page: 0 }),
 		ex("empty", { pieces: [], chunk: 9, question: 4, page: 0 }),
 		ex("long-page", { pieces: List.repeat(0, 1).concat(List.repeat(22, 90)), chunk: 200, question: 10, page: 1 }),
+		ex("timeline-widens", { pieces: [0, 4, 7, 22, 28, 4, 10, 22, 29, 4, 8, 22, 30, 4, 11, 22, 31, 4, 12, 22, 32, 4, 7, 22, 33, 4, 7, 22, 34, 4, 7, 22, 35, 26, 21], chunk: 5, question: 1, page: 0 }),
 	],
 	generator: { pieces: Fuzz.list(Fuzz.u8, 300), chunk: Fuzz.u8, question: Fuzz.u8, page: Fuzz.u8 }.Fuzz,
 	test!,
