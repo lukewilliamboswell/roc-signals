@@ -46,7 +46,7 @@ const FETCHES_FILES = ["csv-converter"];
 const backendModule = BACKENDS[app] ?? null;
 const handle = backendModule ? (await import(path.join(repo, backendModule))).default() : null;
 // Apps whose effects include worker jobs.
-const WORKER_APPS = ["worker-search", "csv-converter", "log-explorer"];
+const WORKER_APPS = ["worker-search", "csv-converter", "log-explorer", "million-row-explorer"];
 // Apps where a response that arrives while a held job runs may supersede
 // it (the converter's sample, fetched during the walk, replaces the file
 // being converted): stopping a running job ends its worker, so the walk
@@ -55,7 +55,7 @@ const ASYNC_SUPERSEDE = ["csv-converter"];
 const workers = WORKER_APPS.includes(app);
 // Apps whose page passes port handlers: the module that holds them. Their
 // answers and messages arrive on their own time, like a backend's.
-const PORT_APPS = { "reading-list": "examples/reading-list/ports.mjs", "status-page": "examples/status-page/ports.mjs" };
+const PORT_APPS = { "reading-list": "examples/reading-list/ports.mjs", "status-page": "examples/status-page/ports.mjs", "million-row-explorer": "examples/million-row-explorer/ports.mjs" };
 const portsModule = PORT_APPS[app] ?? null;
 const served = handle !== null || portsModule !== null || FETCHES_FILES.includes(app);
 
@@ -95,7 +95,12 @@ const server = http.createServer(async (req, res) => {
   res.end(fs.readFileSync(f));
 });
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
-const base = `http://127.0.0.1:${server.address().port}/roc-signals/examples/conduit/#/`;
+// The query an app is opened with, where its address sets what it starts
+// with: the explorer generates 1,000 orders, not two million, for a walk on
+// one held worker, and starts with its live feed paused so a round trip
+// returns to where it began (the walk switches the feed on and off).
+const QUERIES = { "million-row-explorer": "?orders=1000&feed=paused" };
+const base = `http://127.0.0.1:${server.address().port}/roc-signals/examples/conduit/${QUERIES[app] ?? ""}#/`;
 const browser = await launch({ executablePath: opts.chrome });
 
 async function open() {
@@ -264,6 +269,8 @@ const CYCLES = {
   // A book added (the store answers it) and removed (a command), each write
   // followed by the store's copy.
   "reading-list": [["fill", ["label", "Title"], "Soak book"], ["click", ["role", "button", "Add book"]], ["click", ["role", "button", "Remove Soak book"]]],
+  // A category cleared and restored, each question answered by every shard, while live orders arrive.
+  "million-row-explorer": [["click", ["label", "Toys"]], ["click", ["label", "Toys"]]],
 };
 // Steps run once before an app's first cycle, to reach a steady state. The
 // Status Page pauses its live feed, whose window would otherwise grow with

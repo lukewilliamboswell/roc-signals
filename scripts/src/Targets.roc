@@ -113,7 +113,8 @@ Targets := [].{
 	## the pool's placement (tests/apps/prepared), ports with real handlers
 	## (tests/apps/ports), worker tasks, their handles and the page's
 	## stubs (tests/apps/tasks), the Reading List's own port handlers against
-	## real IndexedDB in two tabs, the Log Explorer over a 64 MiB log, and
+	## real IndexedDB in two tabs, the Log Explorer over a 64 MiB log, the
+	## Million-Row Explorer at two million orders with its own feed, and
 	## Conduit's user journey against the RealWorld mock backend.
 	browser_contracts! : SpecSuite.Options, Str => Try(List(Str), _)
 	browser_contracts! = |o, conduit_wasm| {
@@ -140,6 +141,7 @@ Targets := [].{
 				.concat(Targets.browser!(o, "reading-list-journey.mjs", ["--wasm", SpecSuite.wasm_of(o, "reading-list")])?)
 				.concat(Targets.browser!(o, "status-page-journey.mjs", ["--wasm", SpecSuite.wasm_of(o, "status-page")])?)
 				.concat(Targets.browser!(o, "log-explorer-journey.mjs", ["--wasm", SpecSuite.wasm_of(o, "log-explorer")])?)
+				.concat(Targets.browser!(o, "million-row-explorer-journey.mjs", ["--wasm", SpecSuite.wasm_of(o, "million-row-explorer")])?)
 				.concat(Targets.browser!(o, "conduit-journey.mjs", ["--wasm", conduit_wasm])?),
 		)
 	}
