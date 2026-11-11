@@ -21,10 +21,10 @@ import Styles
 ## - mutations watch a submission snapshot ({ serial, method, url, body,
 ##   token }) written by the click; a result applies only while its serial is
 ##   the latest (the original serial checks);
-## - the root owns the popstate subscription, history push (watching the
-##   navigation intent), the guard redirect (Replace plus a `Self` follow-up
-##   that moves the location), the document title and the session's storage
-##   keys.
+## - the root owns the popstate subscription, history push (an `on_post`
+##   site sending each navigation the app posts), the guard redirect
+##   (Replace plus a `Self` follow-up that moves the location), the
+##   document title and the session's storage keys.
 ConduitApp := [].{
 	C : In(Root, M)
 
@@ -80,7 +80,7 @@ ConduitApp := [].{
 
 	M : {
 		loc : Str,
-		nav : { serial : U64, url : Str },
+		nav : Engine.Outbox(Str),
 		session : Session,
 
 		## A session accepted by a login, applied in the turn after the
@@ -153,7 +153,7 @@ ConduitApp := [].{
 		}
 		{
 			loc: if (boot.url.is_empty()) ConduitApp.home_url else boot.url,
-			nav: { serial: 0, url: "" },
+			nav: Engine.outbox({}),
 			session,
 			incoming: Anonymous,
 			loads: ConduitApp.empty_loads,
@@ -197,9 +197,9 @@ ConduitApp := [].{
 		}
 	}
 
-	## An in-app navigation: move and record a history push intent.
+	## An in-app navigation: move, and post the URL for a history push.
 	navigate : M, Str -> M
-	navigate = |m, url| ConduitApp.set_loc({ ..m, nav: { serial: m.nav.serial + 1, url } }, url)
+	navigate = |m, url| ConduitApp.set_loc({ ..m, nav: m.nav.post(url) }, url)
 
 	guard_url : M -> Str
 	guard_url = |m| {
@@ -1568,7 +1568,7 @@ ConduitApp := [].{
 						},
 					),
 				),
-				Engine.on_change(mv.map(|m| m.nav), |n| [Push(n.url)], Engine.ignore({})),
+				Engine.on_post(mv.map(|m| m.nav), |url| [Push(url)], Engine.ignore({})),
 				Engine.watch(mv.map(ConduitApp.guard_url), |u| if (u.is_empty()) [] else [Replace(u), Self], st.on_result(|m, u, _| if (!u.is_empty() and ConduitApp.guard_url(m) == u) ConduitApp.set_loc(m, u) else m)),
 				Engine.watch(mv.map(ConduitApp.title_of), |t| [Title(t)], Engine.ignore({})),
 				Engine.on_change(mv.map(|m| m.session), ConduitApp.storage_plan, Engine.ignore({})),
