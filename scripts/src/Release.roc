@@ -37,7 +37,7 @@ Release := [].{
 	archive_name = |version| "roc-signals-examples-${version}"
 
 	## The examples archive omits the fuzz entry points, which depend on the
-	## repository's engine package (`platform/engine.roc`), not on the
+	## repository's engine package (`platform/main-fuzz.roc`), not on the
 	## released platform.
 	is_archived : Str -> Bool
 	is_archived = |file| !file.ends_with("/main-fuzz.roc")

@@ -6,7 +6,7 @@
 ## whose messages `PortJson.roc` derives. A worker job's hosted effects
 ## (`Hosted.roc`) are reached only through `Effects.roc`, which this root
 ## hands to the engine with each job, and `Files.roc`, whose `build!`
-## opens a builder; every other module is pure, and `engine.roc` is a
+## opens a builder; every other module is pure, and `main-fuzz.roc` is a
 ## package root over them for the fuzz targets. An app
 ## binds a `program` as `main`, and one entry file builds for two targets:
 ##

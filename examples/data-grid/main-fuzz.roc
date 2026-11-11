@@ -1,6 +1,6 @@
 app [target] {
 	fz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.0/6uc3YKGydgEnS2nrCimSYWDNfT6drYcgU52VAwqrb6DS.tar.zst",
-	pf: "../../platform/engine.roc",
+	pf: "../../platform/main-fuzz.roc",
 }
 
 import fz.Fuzz

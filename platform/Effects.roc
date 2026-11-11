@@ -7,7 +7,7 @@ import Hosted
 ## it starts a job, a preparation or a question, and to `Files.build!`;
 ## the files and builders made in that call carry it, so their effects are
 ## methods while the engine's modules stay free of hosted functions and can
-## be built as a package (`engine.roc`) for the fuzz targets.
+## be built as a package (`main-fuzz.roc`) for the fuzz targets.
 ##
 ## Not exposed to apps. Each effect is a lambda that calls the hosted
 ## function, so no bare hosted function is stored as a value.

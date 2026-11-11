@@ -10,7 +10,7 @@ import SpecSuite
 ## target that drives an app's own modules lives with the app. Targets that
 ## test only the shared support live under `fuzz/`. Each is an ordinary
 ## roc-fuzz app: its platform is a roc-fuzz release, which the compiler
-## fetches, and its `pf` the engine package, `platform/engine.roc`.
+## fetches, and its `pf` the engine package, `platform/main-fuzz.roc`.
 Targets := [].{
 	Fuzz : { name : Str, main : Str }
 

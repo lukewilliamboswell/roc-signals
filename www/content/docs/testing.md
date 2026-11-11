@@ -420,7 +420,7 @@ ordinary spec in both runners and `check-slow` soaks.
 Specs check the paths you thought of. For sequences you did not, an app can
 add a `main-fuzz.roc` beside its modules, built with `roc build --fuzz`: an
 ordinary roc-fuzz app, whose platform is a roc-fuzz release and whose `pf`
-is the engine package, `platform/engine.roc` (roc-fuzz needs its own entry
+is the engine package, `platform/main-fuzz.roc` (roc-fuzz needs its own entry
 and host, so a target cannot share the app's `main.roc`), and a target that decodes
 arbitrary bytes into a valid session — random events found by exploring the
 live DOM — and checks it against an oracle, with every session leak-checked.

@@ -5,7 +5,7 @@
 ## record of lambdas with each job, and the engine's `File` and `Builder`
 ## methods call them through the files and builders that carry it, and
 ## decide every verdict from the facts these report. The engine itself
-## never imports them, so it builds as a package (`engine.roc`) too.
+## never imports them, so it builds as a package (`main-fuzz.roc`) too.
 ##
 ## Each one is bound in the platform root (`main.roc`) and served by both
 ## hosts: the Wasm host (`host/host.zig`) performs it through an import of

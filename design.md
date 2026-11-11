@@ -305,7 +305,7 @@ Fuzz targets cannot share that entry: roc-fuzz requires a `target : Target`
 value and links its own libFuzzer host, and a platform has one `requires`.
 They stay a separate entry, each app's `main-fuzz.roc`, and each is an
 ordinary roc-fuzz app: a roc-fuzz release is its platform, and the engine
-is a package, `platform/engine.roc`, a package root beside `main.roc` over
+is a package, `platform/main-fuzz.roc`, a package root beside `main.roc` over
 the same files that exposes the internal `Core`, the runner, the oracle and
 the walk. That works because the engine is pure: no module of the package
 reaches a hosted function (a job's effects arrive as values, see

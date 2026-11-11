@@ -31,7 +31,7 @@ recipe ready.
 
 | Path | Contents |
 |---|---|
-| `platform/` | The platform (`main.roc`): the engine (`Core.roc`), the authoring API (`Engine.roc`, `Html.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the hosted effects a worker job calls (`Hosted.roc`, bound in both hosts and reached only through `Effects.roc`, which the platform root hands to the engine with each job, and `Files.roc`, whose `build!` opens a builder), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig` with its system services in `host/os_posix.zig` and `host/os_windows.zig`, and `host/kernel32.def`, the Windows host's imports). Also `engine.roc`, a package root over the same pure modules (all but `Files.roc`, `Effects.roc`, `Hosted.roc` and `Cli.roc`) that the fuzz targets depend on, and the walk they share (`Soak.roc`) |
+| `platform/` | The platform (`main.roc`): the engine (`Core.roc`), the authoring API (`Engine.roc`, `Html.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the hosted effects a worker job calls (`Hosted.roc`, bound in both hosts and reached only through `Effects.roc`, which the platform root hands to the engine with each job, and `Files.roc`, whose `build!` opens a builder), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig` with its system services in `host/os_posix.zig` and `host/os_windows.zig`, and `host/kernel32.def`, the Windows host's imports). Also `main-fuzz.roc`, a package root over the same pure modules (all but `Files.roc`, `Effects.roc`, `Hosted.roc` and `Cli.roc`) that the fuzz targets depend on, and the walk they share (`Soak.roc`) |
 | `tests/` | Browser contract tests and the apps they drive (`tests/apps/`, for example `files` for file handles, `file-effects` for operations on files, `ports` for ports, `worker-typed` for the task API, `prepared` for preparations, `tasks` for jobs that read and build files, `outbox` for posting requests and `gather` for one question split over several jobs), the Chrome spec replay, and the release check helper |
 | `fuzz/` | Fuzz targets of the shared support; each app's own target is its `main-fuzz.roc` |
 | `examples/` | The example apps, each with its specs, and with any JavaScript of its own beside it (the Reading List's port handlers, `ports.mjs`; the simulated service of Conduit, Field Notes and the Status Page, `backend.mjs`); `examples/shared/` holds the JavaScript several examples load (the `plume-chart` and `worker-pool-panel` elements) |
@@ -41,7 +41,7 @@ recipe ready.
 | `www/` | This site; `www/samples/` holds every code sample the docs show |
 
 A module added to `platform/` for apps to import is listed in four places:
-`exposes` in `platform/main.roc`, the package's list in `platform/engine.roc`
+`exposes` in `platform/main.roc`, the package's list in `platform/main-fuzz.roc`
 unless it reaches a hosted function, the release bundle's files in
 `scripts/src/Release.roc`, and the API reference's modules in
 `scripts/src/ApiDocs.roc`. A file added to the browser runtime is listed
@@ -103,7 +103,7 @@ for example to run two tasks at once.
    no other Roc file names a compiler; every file `www/data/examples.toml`
    names exists, and every example is in a section of the examples index.
 2. `roc fmt --check` over every Roc source, `roc test` on the platform, the
-   engine package (`platform/engine.roc`), the tool (`cli/`) and the
+   engine package (`platform/main-fuzz.roc`), the tool (`cli/`) and the
    scripts, and the check that `cli/Bundle.roc` is what the release
    generates for a checkout.
 3. The platform's link inputs for every target, a worker app's spec runner
@@ -200,7 +200,7 @@ specs fail natively or in Chrome.
 
 Every fuzz target is an ordinary [roc-fuzz](https://github.com/lukewilliamboswell/roc-fuzz)
 app: a roc-fuzz release is its platform (`fz`), and the engine package,
-`platform/engine.roc`, is its `pf`. An app's own modules say `import
+`platform/main-fuzz.roc`, is its `pf`. An app's own modules say `import
 pf.Engine`, and the shorthand is per app, so the same module gets the
 platform in the app's `main.roc` and the package in its `main-fuzz.roc`. A
 module that imports `Files` builds only on the platform, so an app whose

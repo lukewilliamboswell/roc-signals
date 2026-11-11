@@ -35,7 +35,7 @@
   No engine module imports a hosted function: a job's effects reach the
   engine as values the platform root hands it, which the files and builders
   of that job carry, so the engine also builds as a package
-  (`platform/engine.roc`) for the fuzz targets. Only the platform-only
+  (`platform/main-fuzz.roc`) for the fuzz targets. Only the platform-only
   modules (`Files`, `Effects`, `Hosted`, `Cli`) reach the hosts.
 - Dependencies are declared by read masks on values, built before anything
   runs. Preserve glitch-free propagation: all writes of a turn are applied
@@ -200,7 +200,7 @@
 
 - Trace boundary and public API changes through the engine, the typed view
   modules, `platform/main.roc` and the engine package root
-  (`platform/engine.roc`), `host.zig`,
+  (`platform/main-fuzz.roc`), `host.zig`,
   `runtime.mjs`, `worker.mjs`, the native spec runner and oracle, specs,
   examples, generated or bundled artifacts, and maintained documentation
   wherever each layer is affected.
