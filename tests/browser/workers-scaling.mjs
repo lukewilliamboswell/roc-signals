@@ -363,10 +363,15 @@ for (const mode of [{ maxWorkers: Math.max(1, Math.min(8, cores - 1)) }, { worke
   console.log("");
   // Inline, each job holds the page's thread for its whole compute, so the
   // longest gap is at least most of one job; in workers the page only
-  // applies result turns, so its longest gap stays below half the inline
-  // one and below one job's compute.
+  // applies result turns, so its longest gap stays below one job's compute.
+  // That it also stays below half the inline run's gap compares two runs,
+  // and a machine with fewer cores than workers does not keep it (the
+  // page's thread waits its turn among them), so only the full mode asserts
+  // that.
   check("inline: the page stalls for most of a job (longest gap >= 0.8 x compute p50)", i.timerGap >= 0.8 * i.fig.computeP50, `gap ${f1(i.timerGap)}, compute ${f1(i.fig.computeP50)}`);
-  check("workers: the page stays responsive (longest gap < 0.5 x the inline gap and < compute p50)", w.timerGap < 0.5 * i.timerGap && w.timerGap < w.fig.computeP50, `workers ${f1(w.timerGap)}, inline ${f1(i.timerGap)}, compute ${f1(w.fig.computeP50)}`);
+  check("workers: the page stays responsive (longest gap < compute p50)", w.timerGap < w.fig.computeP50, `workers ${f1(w.timerGap)}, compute ${f1(w.fig.computeP50)}`);
+  if (FULL) check("workers: the longest gap is under half the inline one", w.timerGap < 0.5 * i.timerGap, `workers ${f1(w.timerGap)}, inline ${f1(i.timerGap)}`);
+  else skip("workers: the longest gap is under half the inline one", "smoke mode asserts no timing ratio");
   check("workers: the heartbeat kept counting", w.beats >= Math.floor(w.fig.wall / 200) - 2, `${w.beats} beats in ${f1(w.fig.wall)} ms`);
 }
 
