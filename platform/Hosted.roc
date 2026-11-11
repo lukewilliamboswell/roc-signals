@@ -1,14 +1,17 @@
 ## The hosted functions a worker task calls (design.md, "Workers"): the
 ## platform's closed vocabulary of synchronous effects on handles. They are
-## not an app-extensible import table, and apps never call them directly:
-## `File` and `Builder` wrap them as `!` methods, and decide every verdict
-## from the facts these report.
+## not an app-extensible import table, and apps never call them directly.
+## Only `Effects.roc` imports this module: it hands them to the engine as a
+## record of lambdas with each job, and the engine's `File` and `Builder`
+## methods call them through the files and builders that carry it, and
+## decide every verdict from the facts these report. The engine itself
+## never imports them, so it builds as a package (`engine.roc`) too.
 ##
-## Each one is bound in both platform roots: the Wasm host (`host/host.zig`)
-## performs it through an import of the worker script, which owns the
-## browser objects behind the tokens, and the native spec host
-## (`host/spec.zig`) performs it in a job's child process against the files
-## a spec declares. A module that never reaches them imports nothing. Both
+## Each one is bound in the platform root (`main.roc`) and served by both
+## hosts: the Wasm host (`host/host.zig`) performs it through an import of
+## the worker script, which owns the browser objects behind the tokens, and
+## the native spec host (`host/spec.zig`) performs it in a job's child
+## process against the files a spec declares. Both
 ## hosts refuse every one of them outside a job (a task's `run!`, or a
 ## preparation's `prepare!`), with a classified contract error: page code
 ## is pure and cannot call them. The `append!`, `append_file!` and
