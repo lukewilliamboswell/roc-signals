@@ -62,7 +62,10 @@ own `backend.mjs`, whose default export returns a request handler; the
 site turns it into the mount's `fetch`, and the soak and journeys serve
 the same file over HTTP rather than a copy. The soak's tables in
 `tests/browser/soak.mjs` give it a round trip and, for an app with ports
-or a backend, the module that answers them. Its native soak, a
+or a backend, the module that answers them, and, for an app that needs
+them to reach a steady state, steps run once before the first cycle
+(`SCENES`: the Status Page pauses its live feed and fills its uptime
+history). Its native soak, a
 round-trip spec under its `specs/`, is listed in `Slow.native_soaks`, and
 its fuzz target, if it has one, in `Targets.fuzz_targets`.
 
@@ -131,7 +134,11 @@ for example to run two tasks at once.
    that reaches no worker effect answers and one that does is unavailable
    without poisoning the page, downloads into files and real saves), the
    Reading List's own port handlers against real IndexedDB in two tabs
-   (`reading-list-journey.mjs`), the Log Explorer's preparation over a
+   (`reading-list-journey.mjs`), the Status Page's seeded latency stream
+   through its port's bound, a stalled page, a dropped connection, pausing
+   and hiding (`status-page-journey.mjs`; with `--plotly FILE
+   --measure-ms N` it also reports the stream's rates, the chart's JSON and
+   the longest frame gap), the Log Explorer's preparation over a
    generated 64 MiB log, its timeline and a click on it, and its own
    timings element, with its times and memory (`log-explorer-journey.mjs`),
    and the Conduit journey against the example's own simulated backend

@@ -9,7 +9,8 @@
 //    Wasm memory pages must be flat and the host's live allocation count and
 //    live bytes (metrics 4, 5) must not grow after 3 warm-up cycles.
 // An app with ports (PORT_APPS) mounts with its own handlers, served beside
-// it, against real browser services (the Reading List's IndexedDB).
+// it, against real browser services (the Reading List's IndexedDB) or a
+// simulation of its own (the Status Page's seeded latency stream).
 // A worker app (WORKER_APPS) mounts with one worker and `manualWork`: after
 // every event the soak runs each pending job in issue order and waits for
 // its result, so results arrive in a fixed order and no deadline fires. Its
@@ -54,7 +55,7 @@ const ASYNC_SUPERSEDE = ["csv-converter"];
 const workers = WORKER_APPS.includes(app);
 // Apps whose page passes port handlers: the module that holds them. Their
 // answers and messages arrive on their own time, like a backend's.
-const PORT_APPS = { "reading-list": "examples/reading-list/ports.mjs" };
+const PORT_APPS = { "reading-list": "examples/reading-list/ports.mjs", "status-page": "examples/status-page/ports.mjs" };
 const portsModule = PORT_APPS[app] ?? null;
 const served = handle !== null || portsModule !== null || FETCHES_FILES.includes(app);
 
@@ -264,6 +265,10 @@ const CYCLES = {
   // followed by the store's copy.
   "reading-list": [["fill", ["label", "Title"], "Soak book"], ["click", ["role", "button", "Add book"]], ["click", ["role", "button", "Remove Soak book"]]],
 };
+// Steps run once before an app's first cycle, to reach a steady state. The
+// Status Page pauses its live feed, whose window would otherwise grow with
+// the clock, and fills its uptime history, which keeps 60 refreshes.
+const SCENES = { "status-page": [["click", ["role", "button", "Pause the feed"]], ...Array(60).fill(["click", ["role", "button", "Refresh now"]])] };
 {
   const { ctx, page } = await open();
   if (served) await settle(page);
@@ -272,7 +277,7 @@ const CYCLES = {
   const samples = [];
   const workerSamples = [];
   for (let c = 0; c < NCYC; c += 1) {
-    for (const [op, loc, v] of cycle) {
+    for (const [op, loc, v] of c === 0 ? (SCENES[app] ?? []).concat(cycle) : cycle) {
       const r = await page.evaluate((op, loc, v) => {
         const el = window.__loc(loc);
         if (!el) return `no element ${JSON.stringify(loc)}`;
