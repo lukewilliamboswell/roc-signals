@@ -10,12 +10,14 @@
 //    `plume-chart` reports a click) are one preparation and reuses on the
 //    worker that holds it; going back to the overview asks nothing. The
 //    answers, and the timeline's lines for errors and for a search's
-//    matches, equal counts made here while generating the log. It prints the
-//    times (the preparation against later questions), the size of the chart's
-//    figure, the page's and the holder's linear memory, and the longest gap in
-//    the page's timers: the page's memory must not grow by the file, the
-//    worker's must stay below the file's size (it keeps the index, not the
-//    text), and the page's thread must stay live.
+//    matches, equal counts made here while generating the log. The
+//    example's own `log-timings` element shows the preparation's time as
+//    the monitor recorded it. It prints the times (the preparation against
+//    later questions), the size of the chart's figure, the page's and the
+//    holder's linear memory, and the longest gap in the page's timers: the
+//    page's memory must not grow by the file, the worker's must stay below
+//    the file's size (it keeps the index, not the text), and the page's
+//    thread must stay live.
 // 2. A new file prepares afresh, and the first file's state is let go.
 // 3. A file the browser can no longer read, and a file that is not a log,
 //    each reach the page as the preparation's error, which the app matched;
@@ -28,7 +30,10 @@ import { launch } from "./cdp.mjs";
 import { parseArgs, runtimeFiles } from "./args.mjs";
 
 const opts = parseArgs(process.argv.slice(2));
-const files = { ...runtimeFiles(opts.runtime), "app.wasm": opts.wasm };
+const here = path.dirname(new URL(import.meta.url).pathname);
+// The example's own element, which the example's page loads.
+const timings = path.resolve(here, "../../examples/log-explorer/timings.mjs");
+const files = { ...runtimeFiles(opts.runtime), "app.wasm": opts.wasm, "timings.mjs": timings };
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, "http://x");
   if (u.pathname === "/") {
@@ -64,12 +69,15 @@ function install() {
   window.__taskOf = (record) => record.task;
   window.__mount = async (options = {}) => {
     const { mountRocEngineApp } = await import("/runtime.mjs");
+    await import("/timings.mjs");
     const root = document.createElement("div");
     document.body.append(root);
     window.__root = root;
     window.__events = [];
     window.__rt = await mountRocEngineApp({ wasmUrl: "/app.wasm", root, onFault: () => {}, ...options });
     window.__rt.monitor.subscribe((e) => window.__events.push(e));
+    // As the site's page does once the app is mounted.
+    root.dispatchEvent(new CustomEvent("roc-signals:runtime", { bubbles: true, detail: { runtime: window.__rt } }));
     return true;
   };
   // The timeline chart's figure, parsed, and its size.
@@ -86,6 +94,7 @@ function install() {
     el.value = x;
     el.dispatchEvent(new Event("change", { bubbles: true }));
   };
+  window.__shadowText = (tag, id) => document.querySelector(tag)?.shadowRoot?.querySelector(`[data-testid=${id}]`)?.textContent ?? null;
   window.__chooseFile = (file) => {
     const dt = new DataTransfer();
     dt.items.add(file);
@@ -222,6 +231,7 @@ const BIG = 64 * MIB + 1;
     // The timeline, from the overview's answer: a line a level.
     const overviewFigure = window.__figure();
     const timeline = { errors: window.__traceSum(overviewFigure.figure, "ERROR"), points: overviewFigure.figure.data[0].x.length, bytes: overviewFigure.bytes };
+    const prepareShown = await window.__until(() => window.__shadowText("log-timings", "prepare-ms"), "the timings element");
     // A listing from the index alone, then a search that reads the file.
     window.__click("Search");
     const listing = await window.__answer("search-status", `${made.lines.toLocaleString("en-US")} matching`);
@@ -269,6 +279,7 @@ const BIG = 64 * MIB + 1;
       timeline,
       matched,
       issuedByPick,
+      prepareShown: { text: prepareShown, ms: rec("overview")[0].prepareMs },
       jobs: window.__jobs(),
       counts: { prepared: s.jobs.prepared, reused: s.jobs.reused, endedByCancel: s.instances.ended.cancel },
       superseded: { outcome: superseded.outcome, finished: superseded.finished },
@@ -308,6 +319,8 @@ const BIG = 64 * MIB + 1;
   ]);
   check("the timeline counts every error a minute, and a search's matches a minute, from the index", [r.timeline.errors, r.timeline.points, r.matched.matches], [made.errors, made.minuteLines, made.resets]);
   check("a click on the timeline opens the viewer at that minute's first line, asking only the viewer's task", [r.answers.picked.split("–")[0], r.issuedByPick], [`Lines ${n(made.line3)}`, 1]);
+  const shownMs = Math.round(r.prepareShown.ms).toLocaleString("en-US");
+  check("the example's timings element shows the preparation's time the monitor recorded", r.prepareShown.text.includes(`${r.prepareShown.ms < 10 ? r.prepareShown.ms.toFixed(1) : shownMs} ms`), true);
   check("the superseded search finished (on_cancel: Finish) and no worker was ended by a cancel", [r.superseded, r.counts], [{ outcome: "cancelled", finished: true }, { prepared: 1, reused: 6, endedByCancel: 0 }]);
   check("the page's memory does not hold the file (grows by less than 4 MiB)", r.page.memAfter - r.page.memBefore < 4 * MIB && r.page.liveAfter - r.page.liveBefore < 4 * MIB, true);
   check("the holder keeps the index, not the text (its memory is below the file's size)", r.worker.peak < made.size, true);

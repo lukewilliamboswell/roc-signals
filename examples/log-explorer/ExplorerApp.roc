@@ -611,6 +611,10 @@ ExplorerApp := [].{
 						],
 					),
 				),
+				# What the preparation and each later question took, from the
+				# runtime's monitor: the example's own element, which draws in
+				# its own shadow root and only reads.
+				Engine.element("log-timings", [Engine.class("block")], []),
 				# The sample, written to a file by a task of its own.
 				Engine.latest(
 					v.map(|s| s.generating),

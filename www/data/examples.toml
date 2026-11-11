@@ -195,7 +195,7 @@ data = ["sample.csv"]
 [[examples]]
 slug = "log-explorer"
 title = "Log Explorer"
-description = "Open a log of any size, or generate one: a worker indexes it once and keeps the index and the file, not its text. A Plume timeline draws entries a minute by level from that index, a search adds its matches to it, and a click on it opens the viewer at that time."
+description = "Open a log of any size, or generate one: a worker indexes it once and keeps the index and the file, not its text. A Plume timeline draws entries a minute by level from that index, a search adds its matches to it, a click on it opens the viewer at that time, and the monitor's times show the preparation against each later question."
 source = "examples/log-explorer/main.roc"
 specs = "examples/log-explorer/specs"
 public = true
@@ -204,11 +204,17 @@ features = ["Workers", "Preparations", "Files", "Custom elements"]
 what_to_try = "Generate a sample of a few hundred thousand entries and find the incident on the timeline around midday; search for checkout to see its matches a minute, and click the peak to read the lines from there."
 
 # The timeline: Plotly from its pinned CDN URL (the version Plume 0.6.0
-# pins), then the shared `plume-chart` element.
+# pins), the shared `plume-chart` element, then the example's own
+# `log-timings` element, drawn from the runtime's monitor once site.mjs
+# announces the runtime (`roc-signals:runtime`).
 [[examples.scripts]]
 src = "https://cdn.plot.ly/plotly-4.2.0.min.js"
 integrity = "sha384-F4AdcRk3NYRZZUZ7qARRp/wPkwvdta756IMuHDAZcmtM5nuHKykTbDJd7N9h+Qff"
 
 [[examples.scripts]]
 shared = "plume-chart.mjs"
+module = true
+
+[[examples.scripts]]
+src = "timings.mjs"
 module = true
