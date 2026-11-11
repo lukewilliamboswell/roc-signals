@@ -61,7 +61,9 @@ main! = |_args| {
 	var $browser = SpecSuite.empty_tally
 	var $kanban = { runner: "" }
 	SpecSuite.build_web_platform!(o)?
-	SpecSuite.build!(o, SpecSuite.spec_apps, SpecSuite.apps.concat(["tests/apps/effects", "tests/apps/controls", "tests/apps/services", "tests/apps/workers", "tests/apps/worker-typed", "tests/apps/supersede", "tests/apps/worker-search", "tests/apps/files", "tests/apps/file-effects", "tests/apps/prepared", "tests/apps/ports", "tests/apps/tasks"]))?
+	# Every spec-bearing app is built for the browser too, from the one list in
+	# SpecSuite, with the two test apps that have contract tests and no specs.
+	SpecSuite.build!(o, SpecSuite.spec_apps, SpecSuite.spec_apps.concat(["tests/apps/effects", "tests/apps/controls"]))?
 	for example in SpecSuite.spec_apps {
 		r = Checks.run_app!(o, example, Bool.True)?
 		$native = Checks.add($native, r.native)
