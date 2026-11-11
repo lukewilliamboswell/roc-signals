@@ -23,7 +23,7 @@ Targets := [].{
 		{ name: "form-builder", main: "examples/form-builder/main-fuzz.roc" },
 		{ name: "kanban-board", main: "examples/kanban-board/fuzz-board.roc" },
 		{ name: "data-grid", main: "examples/data-grid/fuzz-rows.roc" },
-		{ name: "markdown-editor", main: "examples/markdown-editor/main-fuzz.roc" },
+		{ name: "markdown-editor", main: "examples/markdown-editor/fuzz-sections.roc" },
 		{ name: "conduit", main: "examples/conduit/fuzz-routes.roc" },
 		{ name: "field-notes", main: "examples/field-notes/fuzz-outbox.roc" },
 		{ name: "status-page", main: "examples/status-page/main-fuzz.roc" },
