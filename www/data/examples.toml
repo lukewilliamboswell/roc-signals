@@ -227,3 +227,38 @@ module = true
 [[examples.scripts]]
 src = "timings.mjs"
 module = true
+
+[[examples]]
+slug = "million-row-explorer"
+title = "Million-Row Explorer"
+description = "Two million orders generated inside four workers and never sent to the page: every filter asks each shard for a few kilobytes of counts, the page adds them to a live order feed arriving through a port, and four Plume charts draw the sum, with the query times the runtime measured."
+source = "examples/million-row-explorer/main.roc"
+specs = "examples/million-row-explorer/specs"
+public = true
+section = "workers"
+featured = true
+features = ["Workers", "Preparations", "Ports", "Custom elements", "Cancellation"]
+what_to_try = "Drag the value sliders and watch the question time stay in tens of milliseconds; then mount it again with one worker or inline from the pool panel's links, and watch every question generate its shards again."
+# One worker per shard: the database has four shards, and a worker keeps one.
+max_workers = 4
+# The live order feed, the example's own JavaScript.
+ports = "ports.mjs"
+
+# Plotly from its pinned CDN URL (the version Plume 0.6.0 pins), the shared
+# chart and pool elements, and the example's own meter of the runtime's
+# measurements.
+[[examples.scripts]]
+src = "https://cdn.plot.ly/plotly-4.2.0.min.js"
+integrity = "sha384-F4AdcRk3NYRZZUZ7qARRp/wPkwvdta756IMuHDAZcmtM5nuHKykTbDJd7N9h+Qff"
+
+[[examples.scripts]]
+shared = "plume-chart.mjs"
+module = true
+
+[[examples.scripts]]
+shared = "pool-panel.mjs"
+module = true
+
+[[examples.scripts]]
+src = "meter.mjs"
+module = true

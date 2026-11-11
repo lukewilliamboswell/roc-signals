@@ -30,6 +30,7 @@ Slow := [].{
 		{ example: "worker-lab", spec: "round-trip-a-run-answered-and-reset" },
 		{ example: "reading-list", spec: "round-trip-finish-and-read-again" },
 		{ example: "log-explorer", spec: "round-trip-search-on-the-timeline" },
+		{ example: "million-row-explorer", spec: "round-trip-clear-and-restore-a-category" },
 		{ example: "supersede", spec: "round-trip-late-branch" },
 		{ example: "worker-search", spec: "round-trip-search-and-report" },
 	]
