@@ -14,6 +14,7 @@ import src/Release
 import src/Proc
 import src/SpecSuite
 import src/Targets
+import src/ToolCheck
 
 ## The `check` task, the per-pull-request gate: the script pins,
 ## formatting, every file `www/data/examples.toml` names present, every
@@ -26,7 +27,8 @@ import src/Targets
 ## fault class among them), the runtime's
 ## unit tests in Node and contract tests in Chrome (effects, controls,
 ## workers, Conduit journey), the
-## js-framework-benchmark check, and the release dry run. The soaks and the
+## js-framework-benchmark check, the release dry run, and the `signals.roc`
+## tool run end to end from the dry run's copy. The soaks and the
 ## app fuzz targets are `check-slow`.
 main! = |_args| {
 	o = Checks.options!({ filter: "*" })?
@@ -36,7 +38,7 @@ main! = |_args| {
 	$problems = $problems.concat(script_pins!()?)
 
 	Proc.note!("== formatting")
-	$problems = $problems.concat(check!({ program: o.compiler, args: ["fmt", "--check", "platform", "examples", "tests/apps", "fuzz", "www/samples", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"], cwd: "." }, "roc fmt --check")?)
+	$problems = $problems.concat(check!({ program: o.compiler, args: ["fmt", "--check", "platform", "examples", "tests/apps", "fuzz", "www/samples", "cli", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"], cwd: "." }, "roc fmt --check")?)
 	$problems = $problems.concat(check!({ program: o.tooling, args: ["fmt", "--check", "scripts"], cwd: "." }, "roc-stable fmt --check scripts")?)
 
 	Proc.note!("== example files")
@@ -48,6 +50,8 @@ main! = |_args| {
 	Proc.note!("== roc test")
 	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "platform/main.roc"], cwd: "." }, "roc test platform/main.roc")?)
 	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "platform/fuzz.roc"], cwd: "." }, "roc test platform/fuzz.roc")?)
+	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "cli/main.roc"], cwd: "." }, "roc test cli/main.roc")?)
+	$problems = $problems.concat(ToolCheck.bundle_current!(o)?)
 	$problems = $problems.concat(check!({ program: o.tooling, args: ["test", "scripts/check_all.roc"], cwd: "." }, "roc-stable test scripts")?)
 
 	Proc.note!("== platform inputs")
@@ -97,6 +101,9 @@ main! = |_args| {
 	Proc.note!("== release dry run")
 	$problems = $problems.concat(Release.build!(o, "0.0.1-dryrun", "${o.build_dir}/release")?)
 
+	Proc.note!("== signals.roc")
+	$problems = $problems.concat(ToolCheck.run!(o)?)
+
 	Proc.note!("")
 	Proc.note!(SpecSuite.summary("all apps", Native, $native))
 	Proc.note!(SpecSuite.summary("all apps", Browser, $browser))
@@ -143,7 +150,7 @@ script_pins! = || {
 	if Path.exists!(Path.utf8(".roc-version"))? {
 		$out = $out.append(".roc-version pins a compiler; only scripts/ may")
 	}
-	for dir in ["platform", "examples", "tests", "fuzz", "www/samples", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"] {
+	for dir in ["platform", "examples", "tests", "fuzz", "www/samples", "cli", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"] {
 		for f in SpecSuite.files_under!(dir, ".roc")? {
 			header = Path.read_utf8!(Path.utf8(f))?.split_on("\n").take_first(6)
 			if header.any(|l| l.trim().starts_with("roc: \"")) {
