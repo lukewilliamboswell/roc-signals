@@ -27,7 +27,7 @@ Targets := [].{
 		{ name: "conduit", main: "examples/conduit/main-fuzz.roc" },
 		{ name: "field-notes", main: "examples/field-notes/main-fuzz.roc" },
 		{ name: "status-page", main: "examples/status-page/main-fuzz.roc" },
-		{ name: "spreadsheet-lite", main: "examples/spreadsheet-lite/main-fuzz.roc" },
+		{ name: "spreadsheet-lite", main: "examples/spreadsheet-lite/fuzz-formulas.roc" },
 		{ name: "fx-channel", main: "tests/apps/effects/main-fuzz.roc" },
 		{ name: "controls", main: "tests/apps/controls/main-fuzz.roc" },
 		{ name: "worker-search", main: "tests/apps/worker-search/main-fuzz.roc" },
