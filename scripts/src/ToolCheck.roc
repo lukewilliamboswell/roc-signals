@@ -222,3 +222,6 @@ expect ToolCheck.judge({ code: 0, output: "Built. All done.", args: ["build"] },
 
 ## A wrong code and a missing sentence are both reported.
 expect ToolCheck.judge({ code: 1, output: "x", args: ["test"] }, { code: 0, says: ["y"] }) == ["signals.roc test exited with 1, not 0", "signals.roc test did not say: y"]
+
+## The release tells the tool every system its platform builds a spec runner for.
+expect ToolRelease.spec_targets(Release.bundle_files) == ["x64musl", "arm64mac", "x64mac", "x64win"]

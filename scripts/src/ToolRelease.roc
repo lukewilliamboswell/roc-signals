@@ -16,17 +16,22 @@ ToolRelease := [].{
 	## The documentation's counter, which the tool's `init` writes.
 	scaffold_dir = "www/samples/counter"
 
-	## The targets a platform bundle builds a native spec runner for: those
-	## whose spec runner is among its files.
+	## The targets a platform bundle builds a native spec runner for: every
+	## target but `wasm32` with link inputs under `targets/`, once each, in
+	## the bundle's order.
 	spec_targets : List(Str) -> List(Str)
-	spec_targets = |bundle_files|
-		bundle_files.keep_oks(
-			|file|
-				match file.split_on("/") {
-					["targets", target, "spec.o"] => Ok(target)
-					_ => Err(NotASpecRunner)
-				},
-		)
+	spec_targets = |bundle_files| {
+		var $out = []
+		for file in bundle_files {
+			match file.split_on("/") {
+				["targets", target, _] if target != "wasm32" and !$out.contains(target) => {
+					$out = $out.append(target)
+				}
+				_ => {}
+			}
+		}
+		$out
+	}
 
 	## What a release tells the tool: its version and the URL its assets
 	## are downloaded from, its platform bundle's URL and files, and the
@@ -202,7 +207,7 @@ ToolRelease := [].{
 }
 
 ## The tool's spec targets are the spec runners a bundle carries.
-expect ToolRelease.spec_targets(["main.roc", "targets/wasm32/host.wasm", "targets/x64musl/spec.o", "targets/arm64mac/spec.o"]) == ["x64musl", "arm64mac"]
+expect ToolRelease.spec_targets(["main.roc", "targets/wasm32/host.wasm", "targets/x64musl/spec.o", "targets/x64musl/libc.a", "targets/arm64mac/libhost.a", "targets/x64win/host.lib", "targets/x64win/kernel32.lib"]) == ["x64musl", "arm64mac", "x64win"]
 
 ## The tool's app names basic-cli and the tool's package, and pins no
 ## compiler.

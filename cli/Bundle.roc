@@ -27,7 +27,7 @@ Bundle := [].{
 	nightly = "development"
 
 	## The targets the release's platform builds a native spec runner for.
-	spec_targets = ["x64musl"]
+	spec_targets = ["x64musl", "arm64mac", "x64mac", "x64win"]
 
 	## The platform's browser runtime, served beside the app's module.
 	runtime_files : List(File)
