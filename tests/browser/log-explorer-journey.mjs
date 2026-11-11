@@ -5,13 +5,17 @@
 // 1. A generated log of more than 64 MiB is prepared once: the overview, a
 //    listing, two searches (the first superseded while it runs, which its
 //    task's `on_cancel: Finish` lets complete so the worker keeps the
-//    index), the viewer and a revisited overview are one preparation and
-//    reuses on the worker that holds it. The answers equal counts made here
-//    while generating the log. It prints the times (the preparation against
-//    later questions), the page's and the holder's linear memory, and the
-//    longest gap in the page's timers: the page's memory must not grow by
-//    the file, the worker's must stay below the file's size (it keeps the
-//    index, not the text), and the page's thread must stay live.
+//    index), the viewer, and the viewer opened at a minute by the
+//    timeline chart's click (its element's value and change event, as
+//    `plume-chart` reports a click) are one preparation and reuses on the
+//    worker that holds it; going back to the overview asks nothing. The
+//    answers, and the timeline's lines for errors and for a search's
+//    matches, equal counts made here while generating the log. It prints the
+//    times (the preparation against later questions), the size of the chart's
+//    figure, the page's and the holder's linear memory, and the longest gap in
+//    the page's timers: the page's memory must not grow by the file, the
+//    worker's must stay below the file's size (it keeps the index, not the
+//    text), and the page's thread must stay live.
 // 2. A new file prepares afresh, and the first file's state is let go.
 // 3. A file the browser can no longer read, and a file that is not a log,
 //    each reach the page as the preparation's error, which the app matched;
@@ -68,6 +72,20 @@ function install() {
     window.__rt.monitor.subscribe((e) => window.__events.push(e));
     return true;
   };
+  // The timeline chart's figure, parsed, and its size.
+  window.__figure = () => {
+    const text = window.__root.querySelector("[data-testid=timeline]")?.dataset.figure ?? "";
+    return { bytes: text.length, figure: text === "" ? null : JSON.parse(text) };
+  };
+  // A trace's counts, summed.
+  window.__traceSum = (figure, name) => (figure?.data.find((t) => t.name === name)?.y ?? []).reduce((a, b) => a + b, 0);
+  // What `plume-chart` does when a point is clicked: its x as its value,
+  // and a change event.
+  window.__pick = (x) => {
+    const el = window.__root.querySelector("[data-testid=timeline]");
+    el.value = x;
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  };
   window.__chooseFile = (file) => {
     const dt = new DataTransfer();
     dt.items.add(file);
@@ -118,9 +136,12 @@ function install() {
     let errors = 0;
     let resets = 0;
     let x = 12345;
+    // The line (from 1) of the first entry of each minute.
+    const minuteLines = [];
     while (size < bytes) {
       x = (x * 1103515245 + 12345) >>> 0;
       const ms = entries;
+      if (ms % 60000 === 0) minuteLines.push(lines + 1);
       const time = `2026-11-11T${pad(8 + Math.floor(ms / 3600000), 2)}:${pad(Math.floor(ms / 60000) % 60, 2)}:${pad(Math.floor(ms / 1000) % 60, 2)}.${pad(ms % 1000, 3)}Z`;
       let text;
       if (x % 97 === 0) {
@@ -145,7 +166,7 @@ function install() {
       }
     }
     parts.push(part);
-    return { file: new File(parts, "big.log", { type: "text/x-log" }), size, lines, entries, errors, resets };
+    return { file: new File(parts, "big.log", { type: "text/x-log" }), size, lines, entries, errors, resets, minuteLines };
   };
   // The longest gap between the page's 5 ms timer ticks, and the longest
   // long task, since `__watch()`.
@@ -198,6 +219,9 @@ const BIG = 64 * MIB + 1;
     const overview = await window.__answer("overview", `${made.lines.toLocaleString("en-US")} lines`);
     const prepared = performance.now() - at;
     const errors = window.__text("level-error");
+    // The timeline, from the overview's answer: a line a level.
+    const overviewFigure = window.__figure();
+    const timeline = { errors: window.__traceSum(overviewFigure.figure, "ERROR"), points: overviewFigure.figure.data[0].x.length, bytes: overviewFigure.bytes };
     // A listing from the index alone, then a search that reads the file.
     window.__click("Search");
     const listing = await window.__answer("search-status", `${made.lines.toLocaleString("en-US")} matching`);
@@ -215,6 +239,9 @@ const BIG = 64 * MIB + 1;
     }, "the superseded search to start");
     window.__type("reset by peer");
     const again = await window.__answer("search-status", `${made.resets.toLocaleString("en-US")} matching`);
+    // The search's matches, a line on the timeline.
+    const searchFigure = window.__figure();
+    const matched = { matches: window.__traceSum(searchFigure.figure, "Matches"), bytes: searchFigure.bytes };
     // The viewer reads only the lines it shows.
     window.__click("Viewer");
     await window.__answer("viewer-status", "Lines 1–50");
@@ -222,9 +249,14 @@ const BIG = 64 * MIB + 1;
     window.__click("Last");
     const last = await window.__answer("viewer-status", `Lines ${(made.lines - 49).toLocaleString("en-US")}–`);
     const viewed = performance.now() - t;
-    // A revisited tab asks again.
+    // The overview was asked once, above the tabs: going back asks nothing.
+    // A click on its chart opens the viewer at that minute's first line.
     window.__click("Overview");
-    await window.__until(() => window.__rt.monitor.snapshot().jobs.done === 7, "the revisited overview");
+    const issuedBefore = window.__events.filter((e) => e.kind === "job-issue").length;
+    window.__pick("2026-11-11 08:03");
+    const picked = await window.__answer("viewer-status", `Lines ${made.minuteLines[3].toLocaleString("en-US")}–`);
+    const issuedByPick = window.__events.filter((e) => e.kind === "job-issue").length - issuedBefore;
+    await window.__until(() => window.__rt.monitor.snapshot().jobs.done === 7, "the viewer at the picked minute");
     const longest = stop();
     const s = rt.monitor.snapshot();
     const superseded = s.recent.find((x) => x.id === started.id);
@@ -232,8 +264,11 @@ const BIG = 64 * MIB + 1;
     const done = s.recent.filter((x) => x.outcome === "done");
     const rec = (name) => done.filter((x) => window.__taskOf(x) === `${TASK}${name}`);
     return {
-      made: { size: made.size, lines: made.lines, entries: made.entries, errors: made.errors, resets: made.resets },
-      answers: { overview, errors, listing, search, again, last },
+      made: { size: made.size, lines: made.lines, entries: made.entries, errors: made.errors, resets: made.resets, minuteLines: made.minuteLines.length, line3: made.minuteLines[3] },
+      answers: { overview, errors, listing, search, again, last, picked },
+      timeline,
+      matched,
+      issuedByPick,
       jobs: window.__jobs(),
       counts: { prepared: s.jobs.prepared, reused: s.jobs.reused, endedByCancel: s.instances.ended.cancel },
       superseded: { outcome: superseded.outcome, finished: superseded.finished },
@@ -241,7 +276,7 @@ const BIG = 64 * MIB + 1;
         prepareWall: prepared,
         prepare: rec("overview")[0].prepareMs,
         overviewTask: rec("overview")[0].ms.compute,
-        revisitTotal: rec("overview")[1].ms.total,
+        pickTotal: rec("window")[2].ms.total,
         searchWall: searched,
         searchCompute: rec("search")[1].ms.compute,
         viewerWall: viewed,
@@ -269,8 +304,10 @@ const BIG = 64 * MIB + 1;
     ["search", "reuse", holder],
     ["window", "reuse", holder],
     ["window", "reuse", holder],
-    ["overview", "reuse", holder],
+    ["window", "reuse", holder],
   ]);
+  check("the timeline counts every error a minute, and a search's matches a minute, from the index", [r.timeline.errors, r.timeline.points, r.matched.matches], [made.errors, made.minuteLines, made.resets]);
+  check("a click on the timeline opens the viewer at that minute's first line, asking only the viewer's task", [r.answers.picked.split("–")[0], r.issuedByPick], [`Lines ${n(made.line3)}`, 1]);
   check("the superseded search finished (on_cancel: Finish) and no worker was ended by a cancel", [r.superseded, r.counts], [{ outcome: "cancelled", finished: true }, { prepared: 1, reused: 6, endedByCancel: 0 }]);
   check("the page's memory does not hold the file (grows by less than 4 MiB)", r.page.memAfter - r.page.memBefore < 4 * MIB && r.page.liveAfter - r.page.liveBefore < 4 * MIB, true);
   check("the holder keeps the index, not the text (its memory is below the file's size)", r.worker.peak < made.size, true);
@@ -283,7 +320,9 @@ const BIG = 64 * MIB + 1;
     ["choose to overview, wall (ms)", r.ms.prepareWall],
     ["preparation in the worker (ms)", r.ms.prepare],
     ["overview task after preparing (ms)", r.ms.overviewTask],
-    ["revisited overview, total (ms)", r.ms.revisitTotal],
+    ["viewer opened from the timeline, total (ms)", r.ms.pickTotal],
+    ["timeline points a line", r.timeline.points],
+    ["timeline figure, overview / with a search (KiB)", `${(r.timeline.bytes / 1024).toFixed(1)} / ${(r.matched.bytes / 1024).toFixed(1)}`],
     ["search with text, wall (ms)", r.ms.searchWall],
     ["search with text, compute (ms)", r.ms.searchCompute],
     ["viewer page, wall (ms)", r.ms.viewerWall],
@@ -299,6 +338,7 @@ const BIG = 64 * MIB + 1;
   // 2. A new file prepares afresh, and the first file's state goes with
   // the file.
   const c = await page.evaluate(async () => {
+    window.__click("Overview");
     window.__chooseFile(new File(["2026-11-12T09:30:00Z WARN cache: miss for user:7\n".repeat(3)], "small.log", { type: "text/x-log" }));
     const overview = await window.__answer("overview", "3 lines");
     await window.__until(() => window.__rt.monitor.snapshot().instances.evicted.released === 1, "the first file's state to be let go");
@@ -338,6 +378,7 @@ const BIG = 64 * MIB + 1;
     window.__click("Search");
     const searched = await window.__answer("search-status", "This does not");
     const reused = window.__jobs().at(-1).slice(0, 2);
+    window.__click("Overview");
     window.__chooseFile(photo);
     await window.__until(() => window.__rt.monitor.snapshot().jobs.done === 4, "the file chosen again");
     return { unreadable, binary, searched: [searched, reused], again: window.__jobs().at(-1).slice(0, 2), poisoned: !!window.__rt.poisoned, lost: window.__rt.monitor.snapshot().jobs.lost };
@@ -346,7 +387,7 @@ const BIG = 64 * MIB + 1;
     unreadable: "The browser can no longer read this file. Choose it again.",
     binary: "This does not look like a log: no line starts with a timestamp and a level.",
     searched: ["This does not look like a log: no line starts with a timestamp and a level.", ["search", "reuse"]],
-    again: ["search", "prepare"],
+    again: ["overview", "prepare"],
     poisoned: false,
     lost: 0,
   });

@@ -15,6 +15,13 @@
     (expect-text (test-id "search-status") "20 matching lines, page 1 of 1.")
     (expect-text (test-id "line-2") "2026-11-11T08:00:01Z INFO api: order 125 paid")
     (expect-absent (test-id "line-1"))
+    ; The chart draws the overview's timeline, which is still being asked
+    ; for: until it answers there is no chart, and then the matches are
+    ; drawn on it.
+    (expect-text (test-id "timeline-peak") "")
+    (expect-no-attr (test-id "timeline") data-figure)
+    (run-effect 1)
+    (expect-text (test-id "timeline-peak") "Most matches in a minute: 20 matches at 2026-11-11 08:00.")
     (expect-pending-effects 0)
   )
 )

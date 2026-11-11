@@ -4,18 +4,24 @@ import pf.Html
 import pf.Worker
 import Log
 import Sample
+import TimelineChart
 
 ## Log Explorer: open a log file of any size, or generate a sample, and
 ## explore it in three tabs: an overview, a search and a viewer.
 ##
 ## The file never comes into the page. A worker prepares it once: it reads
 ## the file a megabyte at a time and keeps an index (where each line starts,
-## what it is, the counts) and the file's handle, but not its text. Each tab
-## asks its own task of that prepared state, from a site inside the tab: the
-## overview is answered from the index alone, a search reads the file again
-## in chunks (or, with no text, only the lines of its page), and the viewer
-## reads only the lines it shows. Switching tabs, paging and searching again
-## cost the task, not the preparation; a new file is prepared afresh.
+## what it is, the counts, and a timeline of entries by level over time)
+## and the file's handle, but not its text. The overview task is answered
+## from the index alone, once for each log, and every tab reads its answer:
+## the overview shows the counts and the timeline as a chart. The search
+## and the viewer each ask their own task of the prepared state, from a
+## site inside their tab: a search reads the file again in chunks (or,
+## with no text, only the lines of its page) and adds its matches to the
+## chart, and the viewer reads only the lines it shows. Switching tabs,
+## paging and searching again cost the task, not the preparation; a new
+## file is prepared afresh. A click on the chart opens the viewer at that
+## time, from the timeline the page already has.
 ExplorerApp := [].{
 
 	# -- In the worker ------------------------------------------------------
@@ -57,7 +63,8 @@ ExplorerApp := [].{
 	## A task of the log's preparation, asked a `query`, answering `output`.
 	LogTask(query, output) : Worker.PreparedTask(File, Prepared, query, output, Problem)
 
-	## The overview, from the index alone.
+	## The overview, from the index alone: the counts, the busiest sources
+	## and the timeline.
 	overview : LogTask({}, Log.Overview)
 	overview = ExplorerApp.log.task({ name: "roc-signals.example/log-explorer/overview", run!: |prepared, {}| Ok(Log.overview(prepared.index)) })
 
@@ -234,7 +241,10 @@ ExplorerApp := [].{
 		}
 	}
 
-	level_tile : Val(ctx, Engine.Remote(Log.Overview, Worker.Error(Problem))), Log.Level -> Elem(ctx)
+	## The overview task's answer, which every tab reads.
+	OverviewAnswer : Engine.Remote(Log.Overview, Worker.Error(Problem))
+
+	level_tile : Val(ctx, OverviewAnswer), Log.Level -> Elem(ctx)
 	level_tile = |r, level| {
 		name = Log.level_name(level)
 		Html.div(
@@ -249,31 +259,104 @@ ExplorerApp := [].{
 		)
 	}
 
-	overview_panel : State(Ctx, S) -> Elem(Ctx)
-	overview_panel = |st| {
-		v = st.val()
-		Worker.derive_when(
-			ExplorerApp.overview,
-			v.map(|s| ExplorerApp.asked(s, {})),
-			|r| Html.section(
-				"Overview",
-				"grid gap-3",
-				[
-					Html.p_v(r.map(|remote| ExplorerApp.status(remote, "Indexing the log…", ExplorerApp.summary)), [Engine.test_id("overview")]),
-					Html.div("stat-grid", Log.levels.map(|level| ExplorerApp.level_tile(r, level))),
-					Html.p_v(
-						r.map(
-							|remote| match remote.answered() {
-								Ok(o) => "Busiest sources: ${Str.join_with(o.sources.map(|s| "${s.source} ${ExplorerApp.grouped(s.entries)}"), ", ")} (of ${o.distinct_sources.to_str()})"
-								Err(NoAnswer) => ""
-							},
-						),
-						[Engine.class("hint"), Engine.test_id("sources")],
+	overview_panel : State(ctx, S), Val(ctx, OverviewAnswer) -> Elem(ctx)
+	overview_panel = |st, r|
+		Html.section(
+			"Overview",
+			"grid gap-3",
+			[
+				Html.p_v(r.map(|remote| ExplorerApp.status(remote, "Indexing the log…", ExplorerApp.summary)), [Engine.test_id("overview")]),
+				Html.div("stat-grid", Log.levels.map(|level| ExplorerApp.level_tile(r, level))),
+				Html.p_v(
+					r.map(
+						|remote| match remote.answered() {
+							Ok(o) => "Busiest sources: ${Str.join_with(o.sources.map(|s| "${s.source} ${ExplorerApp.grouped(s.entries)}"), ", ")} (of ${o.distinct_sources.to_str()})"
+							Err(NoAnswer) => ""
+						},
 					),
-				],
-			),
+					[Engine.class("hint"), Engine.test_id("sources")],
+				),
+				ExplorerApp.timeline_view(st, r, Engine.const(NotCounted)),
+			],
+		)
+
+	## The timeline chart, with a line under it naming its peak: the
+	## busiest bucket for errors, or for a search's matches. A click on a
+	## point opens the viewer at that time.
+	timeline_view : State(ctx, S), Val(ctx, OverviewAnswer), Val(ctx, [NotCounted, Counted(List(U64))]) -> Elem(ctx)
+	timeline_view = |st, r, matches| {
+		answered = r.map2(matches, |remote, over_time| remote.answered().map_ok(|o| { o, over_time }))
+		Html.div(
+			"grid gap-1",
+			[
+				Engine.element(
+					"plume-chart",
+					[
+						Engine.class("block"),
+						Engine.attr("role", "img"),
+						Engine.test_id("timeline"),
+						# The element reports a click on a point as the point's
+						# time, in its value and a change event.
+						Engine.attr("data-click", "x"),
+						Engine.attr_v("aria-label", answered.map(|a| a.map_ok(|{ o, over_time }| ExplorerApp.timeline_label(o, over_time)) ?? "Timeline")),
+						Engine.attr_v(
+							"data-figure",
+							answered.map(
+								|a| match a {
+									Ok({ o, over_time }) => TimelineChart.figure({ timeline: o.timeline, matches: over_time, revision: "${o.size.to_str()}/${o.lines.to_str()}" })
+									Err(NoAnswer) => ""
+								},
+							),
+						),
+						Html.on_change(st.set_value_by(r, ExplorerApp.shown_from)),
+					],
+					[],
+				),
+				Html.p_v(answered.map(|a| a.map_ok(|{ o, over_time }| ExplorerApp.peak_text(o, over_time)) ?? ""), [Engine.class("hint"), Engine.test_id("timeline-peak")]),
+			],
 		)
 	}
+
+	## What the chart shows, for a reader who cannot see it.
+	timeline_label : Log.Overview, [NotCounted, Counted(List(U64))] -> Str
+	timeline_label = |o, over_time| {
+		per = TimelineChart.width_name(o.timeline.width)
+		match over_time {
+			NotCounted => "Entries per ${per} by level"
+			Counted(_) => "Entries per ${per} by level, and the search's matches"
+		}
+	}
+
+	## Where the timeline peaks: the bucket with the most errors (and fatal
+	## entries), or with a search, the most matches. Entries whose time is
+	## not a real one are not on the timeline, and the line says how many.
+	peak_text : Log.Overview, [NotCounted, Counted(List(U64))] -> Str
+	peak_text = |o, over_time| {
+		per = TimelineChart.width_name(o.timeline.width)
+		{ counts, what } = match over_time {
+			NotCounted => { counts: o.timeline.buckets.map(|b| b.tally.error + b.tally.fatal), what: { one: "error", many: "errors" } }
+			Counted(matches) => { counts: matches, what: { one: "match", many: "matches" } }
+		}
+		peak = match TimelineChart.peak(counts, { timeline: o.timeline }) {
+			Peak({ time, count }) => "Most ${what.many} in a ${per}: ${ExplorerApp.counted(count, what)} at ${time}."
+			NoPeak => "No ${what.many} on the timeline."
+		}
+		if (o.undated == 0) peak else "${peak} Not on the timeline: ${ExplorerApp.counted(o.undated, { one: "entry", many: "entries" })} whose time is not a real one."
+	}
+
+	## The viewer, opened at the time a click on the timeline reports: at
+	## the first line of that bucket, or of the next one with entries. A
+	## time the timeline cannot place changes nothing.
+	shown_from : S, OverviewAnswer, Str -> S
+	shown_from = |s, remote, clicked|
+		match (remote.answered(), Log.minute_of(clicked.to_utf8())) {
+			(Ok(o), Ok(minute)) =>
+				match Log.first_line_from(o.timeline, minute) {
+					Ok(line) => { ..s, tab: Viewer, first: line }
+					Err(NoLaterEntry) => s
+				}
+			_ => s
+		}
 
 	## One line of the log: its number, its level and its text. A search
 	## result also has a button that shows it in the viewer.
@@ -316,8 +399,8 @@ ExplorerApp := [].{
 		Continued(_) | Unheaded => "muted"
 	}
 
-	search_panel : State(Ctx, S) -> Elem(Ctx)
-	search_panel = |st| {
+	search_panel : State(ctx, S), Val(ctx, OverviewAnswer) -> Elem(ctx)
+	search_panel = |st, answer| {
 		v = st.val()
 		Html.section(
 			"Search",
@@ -378,6 +461,9 @@ ExplorerApp := [].{
 									),
 								],
 							),
+							# The overview's timeline, with this search's matches
+							# added once it has counted them.
+							ExplorerApp.timeline_view(st.lift(), answer.lift(), r.map(|remote| remote.answered().map_ok(|found| found.over_time) ?? NotCounted)),
 						],
 					),
 				),
@@ -396,7 +482,7 @@ ExplorerApp := [].{
 		}
 	}
 
-	viewer_panel : State(Ctx, S) -> Elem(Ctx)
+	viewer_panel : State(ctx, S) -> Elem(ctx)
 	viewer_panel = |st| {
 		v = st.val()
 		Worker.derive_when(
@@ -502,22 +588,28 @@ ExplorerApp := [].{
 						ExplorerApp.tab_button(st, "Viewer", Viewer),
 					],
 				),
-				# Each tab's task site lives in its branch: leaving a tab stops
-				# its job and coming back asks again, which the prepared index
-				# makes cheap.
-				Html.div(
-					"panel p-4",
-					[
-						Engine.switch(
-							v.map(|s| s.tab),
-							[Overview, Search, Viewer],
-							|tab| match tab {
-								Overview => ExplorerApp.overview_panel(st)
-								Search => ExplorerApp.search_panel(st)
-								Viewer => ExplorerApp.viewer_panel(st)
-							},
-						),
-					],
+				# The overview's site sits above the tabs: it is asked once for
+				# each log, and every tab reads its answer. The search's and
+				# the viewer's sites live in their branches: leaving a tab
+				# stops its job and coming back asks again, which the prepared
+				# index makes cheap.
+				Worker.derive_when(
+					ExplorerApp.overview,
+					v.map(|s| ExplorerApp.asked(s, {})),
+					|answer| Html.div(
+						"panel p-4",
+						[
+							Engine.switch(
+								v.lift().map(|s| s.tab),
+								[Overview, Search, Viewer],
+								|tab| match tab {
+									Overview => ExplorerApp.overview_panel(st.lift(), answer)
+									Search => ExplorerApp.search_panel(st.lift(), answer)
+									Viewer => ExplorerApp.viewer_panel(st.lift())
+								},
+							),
+						],
+					),
 				),
 				# The sample, written to a file by a task of its own.
 				Engine.latest(

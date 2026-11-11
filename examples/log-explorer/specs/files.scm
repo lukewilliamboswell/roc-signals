@@ -13,11 +13,17 @@
     (fill (label "Text to find") "pool")
     (run-effect 3)
     (expect-text (test-id "search-status") "10 matching lines, page 1 of 1.")
-    ; A revisited tab asks its task again.
+    ; The overview was asked once for the log, above the tabs: going back
+    ; to it asks nothing.
     (click (role button :name "Overview"))
-    (expect-pending-work "roc-signals.example/log-explorer/overview" 1)
-    (run-effect 4)
+    (expect-pending-effects 0)
     (expect-text (test-id "overview") "30 lines, 20 entries, from 2026-11-11T08:00:00.120Z to 2026-11-11T08:00:01.004Z")
+    ; A revisited search asks its task again.
+    (click (role button :name "Search"))
+    (expect-pending-work "roc-signals.example/log-explorer/search" 1)
+    (run-effect 4)
+    (expect-text (test-id "search-status") "10 matching lines, page 1 of 1.")
+    (click (role button :name "Overview"))
     ; Another file: its own answers, and the first file is let go.
     (choose-files (label "Log file") "other.log")
     (expect-text (test-id "log") "other.log, 156 bytes")

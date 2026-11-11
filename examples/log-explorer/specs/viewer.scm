@@ -3,10 +3,13 @@
     (file "app.log" "text/x-log" "2026-11-11T08:00:00.120Z INFO  api: GET /orders/1 answered 200\n2026-11-11T08:00:00.300Z DEBUG db: query took 3 ms\n2026-11-11T08:00:01.004Z ERROR db: connection reset by peer\n    at Pool.acquire (pool.roc:88)\n2026-11-11T08:00:02.000Z WARN  auth: failed sign-in for user 7\n" 40))
   (steps
     (choose-files (label "Log file") "app.log")
-    ; Leaving the overview stops its job before it ran.
+    ; The overview is asked above the tabs, so leaving its tab keeps its
+    ; job; the viewer asks its own beside it.
     (click (role button :name "Viewer"))
-    (expect-pending-work "roc-signals.example/log-explorer/overview" 0)
+    (expect-pending-work "roc-signals.example/log-explorer/overview" 1)
+    (expect-pending-work "roc-signals.example/log-explorer/window" 1)
     (run-effect 2)
+    (run-effect 1)
     (expect-text (test-id "viewer-status") "Lines 1–50 of 200.")
     (expect-text (test-id "line-4") "    at Pool.acquire (pool.roc:88)")
     (expect-text (test-id "line-50") "2026-11-11T08:00:02.000Z WARN  auth: failed sign-in for user 7")
