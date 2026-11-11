@@ -46,11 +46,18 @@ job's output, or the task's own error.
   there whatever its body: `run!: |text| Ok(Words.summarise(text))`. A named
   pure function cannot fill the field directly; that is a type mismatch on
   the props record.
-- Annotate every task. A top-level value needs a concrete type. A `run!`
-  that only answers `Ok` says nothing about its error type, so without the
-  annotation the compiler reports that the type never resolved. One whose
-  `run!` answers an error of a known type compiles unannotated, but the
-  annotation is still where a reader finds the task's types.
+- A task needs an annotation only when its `run!` is a lambda that never
+  says what its error is: one that only answers `Ok`. A top-level value
+  needs a concrete type, and without the annotation the compiler reports
+  that the type never resolved. A task whose `run!` is a named, annotated
+  function (`run!: ConverterApp.convert!`), or a lambda whose error type is
+  known, compiles without one; the function's annotation already gives
+  the task's types.
+- A deadline that varies (one the user picks, say) belongs to the task, so
+  make the task with a function of the deadline,
+  `primes : Deadline -> Worker.Task(...)`, register each task that can be
+  asked for, and ask for the one with the deadline wanted, as the
+  [Worker Lab](@/examples/worker-lab.md) does.
 
 Names are namespaced and unversioned, like `"example.org/words/summary"`.
 The page and every worker run the same compiled module, so a name always
@@ -94,6 +101,16 @@ It gives `body` a value of type `Engine.Remote(output, Worker.Error(error))`:
   a `Worker.Error(error)` (see [Failures](#failures)). These tasks cannot
   fail, so `problem` matches a `Worker.Error(Worker.Never)` and has no arm
   for a failure of the task's own.
+- `remote.answered()` is the latest answer as a `Try`, kept while a newer
+  job works: `remote.answered() ?? default` shows a fallback, and
+  `.map_ok(f)` picks from it. `Worker.status(remote)` is the whole layer as
+  one union, `Unasked`, `Working`, `Answered(output)`, the task's own
+  `Failed(error)`, `Timeout`, `Refused` or `Lost(fault)`, for a view that
+  says something different in each case (see [Failures](#failures)).
+- To show an answer beside state the layer does not hold (the page of
+  results the user is on, say), lift the state in and combine the two:
+  `v.lift().map2(remote, |s, r| ...)`. The task then need not echo its
+  input in its answer.
 
 What you see:
 
@@ -147,7 +164,10 @@ reads its result as `Try(output, Worker.Error(error))`:
 
 - "Count words" puts a new `Count` in state, and `latest` asks for a job on
   it. The press number makes each press a new value, so pressing again for
-  the same text counts again.
+  the same text counts again. (A request that must never be cancelled by a
+  later press, a save say, is posted to an outbox and sent with
+  `Engine.on_post` instead; see
+  [Effects and the Browser](@/docs/effects-and-browser.md#sending-when-the-user-acts).)
 - Pressing it while a count runs stops that job and starts a new one.
 - "Cancel" puts `Idle` in state. Its plan is `[]`, so the change only stops
   the job that is in flight.
@@ -155,6 +175,41 @@ reads its result as `Try(output, Worker.Error(error))`:
 - The answer is written to state by the reaction, so it stays after the job
   is over. `latest` never delivers an answer for a request it has stopped,
   so the reaction does not need to check which press it belongs to.
+
+## One question, several jobs
+
+A question that splits into independent parts (the shards of a range, the
+files of a batch) can be asked as one job per part, which the pool spreads
+over its workers. `Worker.gather(task, inputs, body)` asks one job per
+input and gives `body` an `Engine.Gathered(output, Worker.Error(error))`:
+
+{{ sample(file="gather/Primes.roc", region="task") }}
+
+{{ sample(file="gather/Primes.roc", region="gather") }}
+
+- `jobs` holds each input's job, in input order, as `Working`,
+  `Answered(output)` or `Failed(error)`, so the view can show each part as
+  it arrives, in whatever order the workers finish.
+- `all` is an `Engine.Remote` of the whole list: `Pending` while any job
+  works, `Answered(outputs)` in input order once every job has answered, or
+  the first failure in input order once none works. It keeps the previous
+  question's answer while a new one works, so `all.answered()` still gives
+  the last total.
+- A new, unequal list of inputs stops every job of the old question and
+  asks again, as `derive` does; an equal list asks nothing. With
+  `on_cancel: Finish` a stopped job runs to its end, so a worker keeps its
+  prepared state.
+- Each job takes a slot of the in-flight bound (32 by default), and a job
+  beyond it is refused: its part shows `Failed(Refused)` and the whole
+  answer fails. Split a question into no more parts than the bound allows.
+  The pool runs at most `maxWorkers` jobs at once and queues the rest in
+  order, so more parts than workers costs nothing but the queue.
+- An empty list is answered at once with `[]`.
+
+`Engine.gather` is the same for anything with `request` and `result`, a
+port call per item for instance. A view that shows the queue itself, as
+the [Worker Lab](@/examples/worker-lab.md) does, keeps its own sites per
+row instead.
 
 ## What a task may do
 
@@ -271,7 +326,11 @@ see only answers, and the native spec runner prepares for every job.
 - **Leave the state's type to inference if you like.** A task's type names
   the state and the error
   (`Worker.PreparedTask(File, List(Str), Str, List(U64), Engine.FileError)`),
-  but `Worker.PreparedTask(File, _, Str, List(U64), _)` works too. Listing
+  but `Worker.PreparedTask(File, _, Str, List(U64), _)` works too, and a
+  preparation with several tasks reads best with a local alias for the
+  parts they share:
+  `LogTask(query, output) : Worker.PreparedTask(File, Prepared, query, output, Problem)`,
+  then `search : LogTask(Log.Search, Log.Found)`. Listing
   a task in another preparation's registration is a type error when the
   states' types differ (`Worker.PreparedTaskEntry(List(Str))` against
   `Worker.PreparedTaskEntry(U64)`). When they are the same type it
@@ -449,15 +508,21 @@ error type of its choosing:
 
 {{ sample(file="workers/Words.roc", region="failing") }}
 
-With `derive`, that error is `Failed(Failed(NotANumber(word)))`: the
-layer's `Failed`, holding the `Worker.Error`'s. Matching every arm gives
-every case:
+In the layer, that error is `Failed(Failed(NotANumber(word)))`: the
+layer's `Failed`, holding the `Worker.Error`'s. `Worker.status` flattens
+the two into one union, so a view matches each case once:
 
 {{ sample(file="workers/Editor.roc", region="failing-view") }}
 
 With `request` and `result`, the same cases are `Ok(value)`,
 `Err(Failed(error))`, `Err(Timeout)`, `Err(Refused)` and
 `Err(Lost(fault))`.
+
+**A long job.** A job cannot be stopped from inside: there are no
+checkpoints, and stopping one ends its worker. Split long work into
+shorter jobs (see [One question, several jobs](#one-question-several-jobs))
+and give a task a deadline, so a job that runs too long is stopped and
+answers `Timeout`.
 
 **A lost job.** Use the task's own error for failures you expect. A
 `crash` in a job is not an error you chose: it is `Lost`. A job that fails

@@ -197,17 +197,17 @@ Editor := [].{
 		)
 	}
 
-	## The task's own error is `Failed(Failed(...))`, beside the ways a job
-	## can produce no answer at all.
+	## `Worker.status` reads the layer as one union: the task's own error
+	## (`Failed`) beside the ways a job can produce no answer at all.
 	show_total : Engine.Remote(U64, Worker.Error([NotANumber(Str)])) -> Str
-	show_total = |{ answer, .. }|
-		match answer {
-			Unanswered => "Adding…"
+	show_total = |remote|
+		match Worker.status(remote) {
+			Unasked | Working => "Adding…"
 			Answered(sum) => "Total ${sum.to_str()}"
-			Failed(Failed(NotANumber(word))) => "\"${word}\" is not a number"
-			Failed(Timeout) => "Adding took too long."
-			Failed(Refused) => "Too much is running; edit the numbers to try again."
-			Failed(Lost(_)) => "Adding failed."
+			Failed(NotANumber(word)) => "\"${word}\" is not a number"
+			Timeout => "Adding took too long."
+			Refused => "Too much is running; edit the numbers to try again."
+			Lost(_) => "Adding failed."
 		}
 	# endregion failing-view
 }

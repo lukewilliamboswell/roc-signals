@@ -22,16 +22,16 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 | Values | `Val`, `const`, `Val.map`, `Val.map2`, `Val.lift`, `Val.lift_row` |
 | State | `state`, `State`, `State.val`, `State.lift`, `State.lift_row` |
 | Handlers | `Handler`, `State.update`, `State.update_by`, `State.set_value`, `State.set_value_by` |
-| Structure | `element`, `text`, `text_v`, `when`, `switch`, `derive`, `resource`, `Remote(output, error)` (`request`: `Idle`, `Pending`; `answer`: `Unanswered`, `Answered(output)`, `Failed(error)`) |
+| Structure | `element`, `text`, `text_v`, `when`, `switch`, `derive`, `resource`, `Remote(output, error)` (`request`: `Idle`, `Pending`; `answer`: `Unanswered`, `Answered(output)`, `Failed(error)`; `remote.answered()`, the latest answer as `Try(output, [NoAnswer])`), `gather` (one request per input), `Gathered(output, error)` (`jobs`: a `JobState` per input, `Working`, `Answered(output)` or `Failed(error)`; `all`: a `Remote` of the whole list) |
 | Lists | `each`, `RowRef.key`, `RowRef.field`, `RowRef.select`, `keyed` |
 | Attributes | `attr`, `attr_v`, `class`, `class_v`, `test_id`, `test_id_v`, `ref` |
 | Events | `on` (event name, optionally `:prevent`), `on_click` |
-| Files | `File`, `File.name`, `File.size`, `File.mime`, `File.slice`, `Received`, `FilesHandler`, `State.on_files`, `on_files` |
+| Files | `File`, `File.name`, `File.size`, `File.mime`, `File.slice`, `File.spans` (the `{ start, len }` ranges of `n` bytes that cover a file, for `read!`), `Received`, `FilesHandler`, `State.on_files`, `on_files` |
 | Operations on files | `File.upload` (`UploadProps`: `url`, `method ?? "POST"`, `headers ?? []`, `timeout ?? Unlimited`), `File.sha256`, `File.object_url` (acting where the browser keeps the file), `File.read_bytes`, `File.read_utf8` (reading it into the page; `ReadProps`: `max_bytes ?? 8388608`), `file_bytes`, `file_text`, `file_digest`, `file_url`, `FileError` (`Unreadable`, `TooLarge`, `InvalidUtf8`, `Unavailable`, `Refused`) |
 | Saving and downloading | `File.save` (a download command; `SaveProps`: `name : [Same, Named(Str)]`), `File.fetch` (`FetchProps`: `url`, `method`, `headers`, `timeout : [Unlimited, Ms(U32)]`), `fetched`, `FetchError` (`Network`, `Timeout`, `Status`, `TooLarge`, `Refused`) |
 | Effects in a worker job | `File.read!` (`{ start, len }`), `File.contents!`, `File.contents_utf8!`, each answering a `Try` with a `FileError`; `File.build!` (`BuildProps`: `name`, `mime : [Auto, Mime(Str)] ?? Auto`, `start_from : [Empty, From(File)] ?? Empty`), `Builder`, `Builder.append!`, `Builder.append_file!`, `Builder.finish!` (see [Files in Tasks](@/docs/files-in-tasks.md)) |
 | Components | `component`, `State.push`, `State.push_by`, `State.push_value_by`, `sink`, `discard`, `split` |
-| Effects | `watch`, `on_change`, `latest`, `State.on_result`, `ignore`, `on_cleanup`, `cleanup`, `Req`, `Res`, `HttpError`, `http_text`, `WorkFault`, `FileError` |
+| Effects | `watch`, `on_change`, `latest`, `on_post`, `Outbox(item)` (`outbox({})`, `box.post(item)`, `box.last()`: `Unposted` or `Posted(item)`), `State.on_result`, `ignore`, `on_cleanup`, `cleanup`, `Req`, `Res`, `HttpError`, `http_text`, `WorkFault`, `FileError` |
 
 ## Html
 
@@ -46,6 +46,10 @@ match.
 | Attributes | `aria_label`, `aria_label_v`, `aria_describedby`, `aria_invalid`, `disabled`, `flag`, `flag_maybe` |
 | Events | `on_input`, `on_change`, `on_focus`, `on_blur`, `on_keydown`, `on_submit`, `on_drop_files`, `on_paste_files` |
 
+`section(name, class, children)` names a region for assistive technology
+and the spec locators (`aria-label`); it renders no heading, so put one
+among the children for a visible title.
+
 Anything else is `Engine.element(tag, attrs, children)`.
 
 ## Worker
@@ -57,7 +61,7 @@ Anything else is `Engine.element(tag, attrs, children)`.
 |---|---|
 | Tasks | `task`, `TaskProps(input, output, error)` (`name`, `run! : input => Try(output, error)`, `deadline : [Unlimited, Ms(U32)] ?? Unlimited`, `on_dispose : [Stop, Keep] ?? Stop`, `on_cancel : [Stop, Finish] ?? Stop`), `Task(input, output, error)`, `Task.registration`, `Task.name` |
 | Jobs from an effect site | `Task.request`, `Task.result` (a `Try(output, Error(error))`), `Error(error)` (`Failed(error)`, `Timeout`, `Refused`, `Lost(WorkFault)`), `Never` (the error of a task that cannot fail) |
-| Layers | `derive`, `derive_when` (for a task or a preparation's task), holding an `Engine.Remote(output, Error(error))` |
+| Layers | `derive`, `derive_when` (for a task or a preparation's task), holding an `Engine.Remote(output, Error(error))`; `gather` (one job per input), holding an `Engine.Gathered(output, Error(error))`; `status`, a layer as one `Status(output, error)`: `Unasked`, `Working`, `Answered(output)`, `Failed(error)`, `Timeout`, `Refused` or `Lost(WorkFault)` |
 | Preparations | `prepared`, `PreparationProps(init, state, error)` (`name`, `prepare! : init => Try(state, error)`), `Preparation(init, state, error)`, `Preparation.task`, `PreparedTaskProps(state, query, output, error)` (`name`, `run! : state, query => Try(output, error)`, `deadline`, `on_dispose`, `on_cancel`, as a task's), `Preparation.registration` (given its tasks' registrations), `PreparedTask(init, state, query, output, error)`, `PreparedTask.registration`, `PreparedTask.name`, `PreparedTaskEntry(state)`, `PreparedTask.request`, `PreparedTask.result`, `Question(init, query)` (`input`, `query`) |
 | For fuzz targets and soak walks | `Task.stand_in`, `PreparedTask.stand_in`: a job's answer from a pure function, where there is no worker to run it |
 
@@ -187,7 +191,7 @@ construction site, for example `contract: duplicate key "r0" in each at site
 
 | Class | Cause |
 |---|---|
-| `contract` | A rule of the API was broken: a duplicate key, a `switch` value outside its cases, a row template that is not a single element, a cleanup asking for a result, an effect feedback loop, a worker task registered twice or asked for without being registered, a port declared twice or used without being declared or as another shape, a worker effect outside a job, a builder used after `finish!` or after the call that opened it returned, an answer holding more than 16 files, malformed boot or result bytes |
+| `contract` | A rule of the API was broken: a duplicate key, a `switch` value outside its cases, a row template that is not a single element, a cleanup asking for a result, an effect feedback loop, an outbox posted twice in one turn, a worker task registered twice or asked for without being registered, a port declared twice or used without being declared or as another shape, a worker effect outside a job, a builder used after `finish!` or after the call that opened it returned, an answer holding more than 16 files, malformed boot or result bytes |
 | `resource_limit` | A bound in the table above |
 | `out_of_memory` | The Wasm heap could not grow |
 | `app_crash` | `crash` in app code, or a Roc runtime error |

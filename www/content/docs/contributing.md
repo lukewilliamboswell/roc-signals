@@ -32,7 +32,7 @@ recipe ready.
 | Path | Contents |
 |---|---|
 | `platform/` | The platform (`main.roc`): the engine (`Core.roc`), the authoring API (`Engine.roc`, `Html.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the hosted effects a worker job calls (`Hosted.roc`, bound in both hosts), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig`). Also the fuzz platform (`fuzz.roc`, the vendored roc-fuzz modules and the soak walk) |
-| `tests/` | Browser contract tests and the apps they drive (`tests/apps/`, for example `files` for file handles, `file-effects` for operations on files, `ports` for ports, `worker-typed` for the task API, `prepared` for preparations and `tasks` for jobs that read and build files), the Chrome spec replay, and the release check helper |
+| `tests/` | Browser contract tests and the apps they drive (`tests/apps/`, for example `files` for file handles, `file-effects` for operations on files, `ports` for ports, `worker-typed` for the task API, `prepared` for preparations, `tasks` for jobs that read and build files, `outbox` for posting requests and `gather` for one question split over several jobs), the Chrome spec replay, and the release check helper |
 | `fuzz/` | Fuzz targets of the shared support; each app's own target is its `main-fuzz.roc` |
 | `examples/` | The example apps, each with its specs, and with any JavaScript of its own beside it (the Reading List's port handlers, `ports.mjs`; the simulated service of Conduit, Field Notes and the Status Page, `backend.mjs`); `examples/shared/` holds the JavaScript several examples load (the `plume-chart` and `worker-pool-panel` elements) |
 | `benchmarks/` | The js-framework-benchmark adapter |
@@ -109,7 +109,7 @@ for example to run two tasks at once.
    that both runners must reject.
 6. The runtime's unit tests in Node (the work monitor's aggregation and
    bounds, `tests/runtime/`), then its contract tests in Chrome: effects,
-   controlled inputs, worker jobs, the work monitor, a smoke of the worker
+   controlled inputs, an outbox posted twice in one turn, worker jobs, the work monitor, a smoke of the worker
    scaling measurement (correctness, robustness sequences and memory; no
    timing ratios), file handles and their release, operations on files
    (page reads, uploads to a local server, digests and file URLs, with their
@@ -169,7 +169,8 @@ target on the repository's fuzz platform (`platform/fuzz.roc`: roc-fuzz's
 own modules, vendored unchanged, with the engine's modules exposed beside
 them). Targets decode arbitrary bytes into valid sessions and check them
 against a model: keyed reconciliation, the effect channel's lifecycle
-including worker jobs and port calls and subscriptions (`fx-channel`), the
+including worker jobs, port calls and subscriptions, a gather's jobs
+settling at their positions and an outbox's posts (`fx-channel`), the
 worker wire format's decoder, the port message format's decoder
 (`port-json`), and each app's
 leak-checked random walk (the supersede test app's included; the Reading
