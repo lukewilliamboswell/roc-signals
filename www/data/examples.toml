@@ -111,25 +111,34 @@ backend = "backend.mjs"
 [[examples]]
 slug = "status-page"
 title = "Status Page"
-description = "A public status page rolling four independent service checks into one derived status, with visibility-gated polling, a Plume uptime chart and an incident timeline."
+description = "A public status page rolling four independent service checks into one derived status, with visibility-gated polling, an uptime history and an incident timeline, and a live p95 latency chart streamed through a port with bounded delivery."
 source = "examples/status-page/main.roc"
 specs = "examples/status-page/specs"
 public = true
 section = "effects"
-features = ["HTTP", "Intervals", "Custom elements"]
-what_to_try = "Leave it open for half a minute: the simulated service walks through an outage, a failed check and the recovery. Switch to another tab and back, and polling pauses and resumes."
+features = ["HTTP", "Intervals", "Ports", "Custom elements"]
+what_to_try = "Wait about fifteen seconds for the API's latency to spike past its objective, then drop the connection for 20 s: the feed replays what it buffered at the page's pace and drops the rest, and the monitor counts the emits the page refused. Switch to another tab and back, and polling and the feed pause and resume."
 # Its simulated checks and incident feed, the example's own JavaScript.
 backend = "backend.mjs"
+# Its simulated latency stream (a subscription) and the command that drops
+# its connection, the example's own JavaScript.
+ports = "ports.mjs"
 
-# The uptime chart: Plotly from its pinned CDN URL (the version Plume 0.6.0
-# pins), then the shared `plume-chart` element. Both are deferred, so they
-# run in this order before the app mounts.
+# The charts: Plotly from its pinned CDN URL (the version Plume 0.6.0
+# pins), then the shared `plume-chart` element and the example's own
+# `latency-feed-monitor`, which shows the runtime monitor's record of the
+# feed's port. All are deferred, so they run in this order before the app
+# mounts.
 [[examples.scripts]]
 src = "https://cdn.plot.ly/plotly-4.2.0.min.js"
 integrity = "sha384-F4AdcRk3NYRZZUZ7qARRp/wPkwvdta756IMuHDAZcmtM5nuHKykTbDJd7N9h+Qff"
 
 [[examples.scripts]]
 shared = "plume-chart.mjs"
+module = true
+
+[[examples.scripts]]
+src = "feed-monitor.mjs"
 module = true
 
 [[examples]]

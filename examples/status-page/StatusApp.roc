@@ -1,6 +1,7 @@
 import pf.Engine exposing [Elem, In, Root, Row, RowRef, State, Val]
 import pf.Html
 import Charts
+import Latency
 import Status
 
 ## Status Page on the Roc-owned engine: ported from the previous engine.
@@ -42,7 +43,7 @@ StatusApp := [].{
 	}
 
 	C1 : In(Root, Board)
-	C2 : In(C1, Status.Tally)
+	C2 : In(In(C1, Latency.Live), Status.Tally)
 
 	initial : Bool -> Board
 	initial = |visible| {
@@ -189,8 +190,84 @@ StatusApp := [].{
 		)
 	}
 
-	page : State(C2, Board), Val(C2, Status.Tally) -> Elem(C2)
-	page = |board, totals| {
+	## The live latency panel. The subscription lives in a branch that is
+	## mounted only while the page is visible and the reader follows the
+	## feed, so hiding the page or pausing disposes it, which stops the
+	## feed's JavaScript; showing or resuming subscribes afresh. Each message
+	## is a turn that writes only the `Live` state, so the checks, cards and
+	## uptime history above do no work for it.
+	live_panel : State(C2, Latency.Live), Val(C2, Bool) -> Elem(C2)
+	live_panel = |live, visible| {
+		lv = live.val()
+		following = visible.map2(lv, |shown, l| shown and l.mode == Following)
+		Html.section(
+			"Live latency",
+			StatusApp.panel_class,
+			[
+				Html.div(
+					"flex flex-wrap items-baseline justify-between gap-2",
+					[
+						Html.h2("Live p95 latency", "panel-title"),
+						Html.p_v(lv.map(Latency.status_text), [Engine.class("hint"), Engine.test_id("live-status")]),
+					],
+				),
+				Html.div(
+					"stat-grid",
+					[
+						StatusApp.metric("live-api-p95", "API p95 now", lv.map(Latency.latest_api_text)),
+						StatusApp.metric("live-received", "Readings received", lv.map(|l| l.received.to_str())),
+						StatusApp.metric("live-dropped", "Dropped by the feed", lv.map(|l| l.dropped.to_str())),
+						StatusApp.metric("live-rejected", "Rejected at the door", lv.map(|l| l.rejected.to_str())),
+					],
+				),
+				# The chart reads the drawn copy through a `derive`, so a
+				# reading builds no figure: the redraw tick below does, at
+				# most four times a second however fast readings arrive.
+				Engine.derive(
+					lv.map(|l| l.drawn),
+					|drawn| Engine.element("plume-chart", [Engine.class("block"), Engine.attr("role", "img"), Html.aria_label("Live p95 latency by service"), Engine.test_id("latency-chart"), Engine.attr_v("data-figure", drawn.map(Charts.latency))], []),
+				),
+				Html.div(
+					"toolbar",
+					[
+						Engine.when(
+							lv.map(|l| l.mode == Following),
+							|| Html.button("Pause the feed", [Engine.class("button-secondary")], live.update(Latency.toggle_mode)),
+							|| Html.button("Resume the feed", [Engine.class("button-primary")], live.update(Latency.toggle_mode)),
+						),
+						Html.button("Drop the connection for ${Latency.outage_seconds.to_str()} s", [Engine.class("button-secondary")], live.update(Latency.drop_connection)),
+						Engine.when(
+							lv.map(Latency.has_ended),
+							|| Html.button("Reconnect", [Engine.class("button-primary")], live.update(Latency.reconnect)),
+							|| Html.div("hidden", []),
+						),
+					],
+				),
+				# The runtime's own account of the port, drawn by the
+				# example's `feed-monitor.mjs` from `runtime.monitor`.
+				Engine.element("latency-feed-monitor", [Engine.attr("data-port", Latency.readings_name)], []),
+				Engine.when(
+					following,
+					|| Html.div(
+						"hidden",
+						[
+							Engine.latest(
+								lv.map(|l| l.generation),
+								|_| [Latency.readings.subscribe({ seed: Latency.seed })],
+								live.on_result(|l, _, res| Latency.receive(l, Latency.readings.message(res))),
+							),
+							Engine.watch(Engine.const(Latency.redraw_ms), |ms| [Interval(ms)], live.on_result(|l, _, _| Latency.draw(l))),
+						],
+					),
+					|| Html.div("hidden", []),
+				),
+				Engine.on_post(lv.map(|l| l.outage), |cut| [Latency.disconnect.send(cut)], Engine.ignore({})),
+			],
+		)
+	}
+
+	page : State(C2, Board), State(C2, Latency.Live), Val(C2, Status.Tally) -> Elem(C2)
+	page = |board, live, totals| {
 		bv = board.val()
 		visible = bv.map(|b| b.visible)
 		Html.div(
@@ -259,6 +336,7 @@ StatusApp := [].{
 						),
 					],
 				),
+				StatusApp.live_panel(live, visible),
 				StatusApp.incidents_panel(bv.map(|b| b.feed)),
 				# Polling lives inside the visible branch, so hiding the page
 				# disposes the interval. Already-admitted checks finish.
@@ -290,11 +368,16 @@ StatusApp := [].{
 	## The program `main.roc` binds for the browser module and the native spec
 	## runner, and `main-fuzz.roc` drives as a roc-fuzz target.
 	program : Engine.Program
-	program = Engine.program_boot({ storage_keys: [], max_inflight: 32 }, |boot| StatusApp.main(boot.visible))
+	program = Engine.program_boot({ storage_keys: [], max_inflight: 32 }, |boot| StatusApp.main(boot.visible)).with_ports(Latency.registrations)
 
+	## The checks' state and the live feed's state are separate layers, so
+	## a message of the feed refreshes only what reads the feed.
 	main : Bool -> Elem(Root)
 	main = |visible| Engine.state(
 		StatusApp.initial(visible),
-		|board| Engine.derive(board.val().map(StatusApp.totals_of), |totals| StatusApp.page(board.lift(), totals)),
+		|board| Engine.state(
+			Latency.initial,
+			|live| Engine.derive(board.lift().val().map(StatusApp.totals_of), |totals| StatusApp.page(board.lift().lift(), live.lift(), totals)),
+		),
 	)
 }

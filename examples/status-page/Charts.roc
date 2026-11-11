@@ -4,9 +4,12 @@ import plume.Color
 import plume.Coordinate
 import plume.Layout
 import plume.Line
+import plume.Marker
 import plume.Scatter
+import plume.Shape
 import plume.Size
 import plume.Title
+import Latency
 import Status
 
 ## The Status Page's charts, built with Plume as Plotly figure JSON for the
@@ -50,6 +53,68 @@ Charts := [].{
 			Ok(chart) => chart.to_json()
 			Err(problem) => crash "Charts.uptime_history: Plume refused a figure built from validated parts: ${Str.inspect(problem)}"
 		}
+
+	## The live latency window as a figure: one line per service on a time
+	## axis (UTC), a dashed line at the API's objective, and a shaded band
+	## over each stretch where the API's p95 was above it. A missing reading
+	## breaks every line.
+	latency : List(Latency.Point) -> Str
+	latency = |window|
+		match latency_chart(window) {
+			Ok(chart) => chart.to_json()
+			Err(problem) => crash "Charts.latency: Plume refused a figure built from validated parts: ${Str.inspect(problem)}"
+		}
+}
+
+p95_of : Latency.P95, Status.Service -> U32
+p95_of = |p95, service|
+	match service {
+		Api => p95.api
+		Web => p95.web
+		Database => p95.database
+		Notifications => p95.notifications
+	}
+
+latency_chart : List(Latency.Point) -> Try(Chart, _)
+latency_chart = |window| {
+	var $traces = []
+	for service in services {
+		points = window.map_try(|point| Ok({ x: Coordinate.from_time(point.at), y: Coordinate.from_number(p95_of(point.p95_ms, service).to_f64())?, from_previous: point.from_previous }))?
+		width = match service {
+			Api => 2.5
+			_ => 1.5
+		}
+		line = Line.new({ color: Charts.service_color(service), width })?
+		$traces = $traces.append(Scatter(Scatter.new({ data: points, name: Charts.service_name(service), line })))
+	}
+	objective = Shape.new({
+		placement: HorizontalLine(Coordinate.from_number(Latency.slo_ms.to_f64())?),
+		line: Line.new({ color: Color.rgb({ red: 113, green: 113, blue: 122 }), width: 1, dash: Dash })?,
+		label: "API objective ${Latency.slo_ms.to_str()} ms",
+	})
+	bands = Latency.breaches(window).map(
+		|band| Shape.new({
+			placement: VerticalBand({ start: Coordinate.from_time(band.start), end: Coordinate.from_time(band.end) }),
+			fill: Color.rgba({ red: 220, green: 38, blue: 38, alpha: 38 }),
+			label: "API over objective",
+			layer: Below,
+		}),
+	)
+	Ok(
+		Chart.new({
+			traces: $traces,
+			layout: Layout.new({
+				size: Size.new({ height: Pixels(320), margin: Pixels({ left: 64, right: 16, top: 48, bottom: 48 }) })?,
+				x_axis: Axis.new({ title: Title.new({ text: "Time (UTC)" }), type: Date, tick_format: Pattern("%H:%M:%S") })?,
+				y_axis: Axis.new({ title: Title.new({ text: "p95 latency" }), range: FromZero, tick_suffix: " ms" })?,
+				legend: Shown,
+				legend_position: Above,
+				hover_mode: XUnified,
+				ui_revision: Preserve("live-latency"),
+				shapes: [objective].concat(bands),
+			}),
+		}),
+	)
 }
 
 services : List(Status.Service)
@@ -60,6 +125,8 @@ services = [Api, Web, Database, Notifications]
 uptime_points : List(Status.Round), Status.Service -> Try(List(Scatter.Point), _)
 uptime_points = |history, service| {
 	newest = history.len().to_f64() - 1
+	# Plume gives every marker its own default colour, not the line's.
+	marker = Marker.new({ color: Charts.service_color(service), size: 6 })?
 	var $points = []
 	var $previous = Awaiting
 	var $index = 0.F64
@@ -72,7 +139,7 @@ uptime_points = |history, service| {
 						Measured(_) => Connected
 						_ => Gap
 					}
-				$points = $points.append({ x: Coordinate.from_number($index - newest)?, y: Coordinate.from_number(bps.to_f64() / 100)?, from_previous })
+				$points = $points.append({ x: Coordinate.from_number($index - newest)?, y: Coordinate.from_number(bps.to_f64() / 100)?, marker, from_previous })
 			}
 			_ => {}
 		}

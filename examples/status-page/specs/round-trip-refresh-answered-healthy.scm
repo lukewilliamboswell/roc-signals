@@ -7,7 +7,7 @@
 ; answered healthy. From then on a refresh lets the oldest round go as it
 ; adds its own, and the history, and the chart drawn from it, stay the same
 ; size.
-(test "Status page — round trip: a refresh with every check answered healthy"
+(test "Status page — round trip: the feed paused and resumed, and a refresh with every check answered healthy"
   (steps
     (stub-http "api" :url "/api/status/api" :status 200 :body "operational|99.98")
     (run-effect 1)
@@ -669,6 +669,11 @@
     (stub-http "incidents" :url "/api/status/incidents" :status 200 :body "")
     (run-effect 300)
     (mark-metrics)
+    ; The live feed paused and resumed: its subscription ends and a new one
+    ; begins, and nothing of the old one stays behind.
+    (click (role button :name "Pause the feed"))
+    (click (role button :name "Resume the feed"))
+    (expect-port-subscriptions "roc-signals.example/status-page/latency" 1)
     (click (role button :name "Refresh now"))
     (stub-http "api" :url "/api/status/api" :status 200 :body "operational|99.98")
     (run-effect 301)
