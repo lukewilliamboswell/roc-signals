@@ -25,8 +25,8 @@ import JsonOut
 ##   document issued (issue order), which must still be pending: a timer
 ##   fires, a worker job runs its task (the `spec` command runs it in a
 ##   child process, `Io.work!`, which serves the job's hosted effects, so a
-##   crash loses only the job, as in a worker; fuzz targets and soak walks,
-##   which have no such host, answer jobs with a stand-in, `answer_work`),
+##   crash loses only the job, as in a worker; the same runs a walk's
+##   jobs, `--walk`),
 ##   and an HTTP request takes the staged answer, whose URL must be the
 ##   request's (a
 ##   reject answers any). Storage reads answer by themselves, from storage, in
@@ -326,8 +326,8 @@ SpecRunner := [].{
 
 	## A worker job's result payload for an answer that holds no files: tag
 	## 10, a file count of zero, then the answer's bytes as a job's entry
-	## gives them after its file list (what `Worker`'s `stand_in` makes).
-	## Stand-ins and fuzz models answer jobs through this, so the framing
+	## gives them after its file list. Fuzz models of the effect channel
+	## answer jobs through this, so the framing
 	## has one place (design.md, Appendix B, result tag 10).
 	encode_answer : List(U8) -> List(U8)
 	encode_answer = |answer| SpecRunner.put_u32([10], 0).concat(answer)
@@ -718,7 +718,7 @@ SpecRunner := [].{
 
 	## `run-effect N`: a timer fires; an HTTP request takes the staged answer.
 	## A worker job runs only where the `spec` command's host can run it
-	## (`run!`); fuzz targets and soak walks answer one with `answer_work`.
+	## (`step!`); fuzz targets that drive the engine answer one themselves.
 	run_effect : Program(state), S(state), U64 -> Try(S(state), Str)
 	run_effect = |program, s, n| {
 		b = s.browser
@@ -727,12 +727,12 @@ SpecRunner := [].{
 		rest = b.pending.keep_if(|q| q.id != id)
 		match p.kind {
 			TimerRequest => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, [5]))
-			WorkRequest(_) => return Err("run-effect ${n.to_str()} runs a worker job, which needs the spec command's host for its effects; fuzz targets and soak walks answer one with SpecRunner.answer_work")
+			WorkRequest(_) => return Err("run-effect ${n.to_str()} runs a worker job, which needs the spec command's host for its effects")
 			ReadRequest({ mode, file, max_bytes }) => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, SpecRunner.read_result(b, mode, file, max_bytes)))
 			UrlRequest(file) => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, SpecRunner.url_result(file)))
-			DigestRequest(_) => return Err("run-effect ${n.to_str()} answers a digest, which the spec command's host computes; fuzz targets and soak walks do not have one")
+			DigestRequest(_) => return Err("run-effect ${n.to_str()} answers a digest, which the spec command's host computes")
 			PortRequest({ port, .. }) => return Err("effect occurrence ${n.to_str()} is a call on port ${JsonOut.quote(port)}; answer it with answer-port")
-			FetchRequest => return Err("run-effect ${n.to_str()} answers a fetch, whose body the spec command's host holds as a file; fuzz targets and soak walks do not have one")
+			FetchRequest => return Err("run-effect ${n.to_str()} answers a fetch, whose body the spec command's host holds as a file")
 			HttpRequest => {}
 			UploadRequest(_) => {}
 		}
@@ -1581,7 +1581,8 @@ SpecRunner := [].{
 	}
 
 	## Handles for `n` files when no host mints them (`one`, for fuzz targets
-	## and soak walks): plain boxes, so their release is not observed.
+	## that drive it without a host): plain boxes, so their release is not
+	## observed.
 	plain_handles : S(state), U64 -> List(Box(U64))
 	plain_handles = |s, n| {
 		base = 0x1000000000000000 + s.browser.given.len()
@@ -1851,23 +1852,7 @@ SpecRunner := [].{
 			# Every step, a worker job's answer and a file handed over
 			# included, must also leave the engine settled: an oracle on the
 			# engine, not a step, so the browser runner has no equivalent.
-			done = match (SpecRunner.file_count(step.op), step.op) {
-				(Ok(n), _) => SpecRunner.give_files(program, $s, step.op, (host.mint_files!)(n))
-				(_, ExpectFiles(n)) => {
-					live = (host.live_files!)()
-					if (live == n) Ok($s) else Err("expected ${n.to_str()} live file handles, found ${live.to_str()}")
-				}
-				_ =>
-					match (SpecRunner.held_of($s, step.op), SpecRunner.digest_of($s, step.op)) {
-						(Ok(WorkJob(job)), _) => SpecRunner.deliver_work!(program, $s, job.id, (host.work!)(job.payload, job.files, job.prepare, job.prepare_files, job.max_output), host.mint_files!)
-						(Ok(FetchAnswer({ id, stub })), _) => SpecRunner.deliver_fetch!(program, $s, id, stub, host.mint_files!)
-						(Err(message), _) if message != "not held" => Err(message)
-						(_, Ok({ id, bytes: Digest(bytes) })) => Ok(SpecRunner.deliver_digest(program, $s, id, [18].concat((host.sha256!)(bytes))))
-						(_, Ok({ id, bytes: TooLarge })) => Ok(SpecRunner.deliver_digest(program, $s, id, [13, 2]))
-						(_, Err(NoDigest)) => SpecRunner.one(program, $s, step.op)
-					}
-			}
-			match done {
+			match SpecRunner.step!(program, host, $s, step.op) {
 				Ok(s2) => {
 					match SpecRunner.check_settled(program, s2) {
 						Ok(_) => {}
@@ -1882,7 +1867,363 @@ SpecRunner := [].{
 		Ok($s)
 	}
 
-	# ----------------------------------------------------------------- soak
+	## Take one step as the `spec` command takes it: the steps its host
+	## serves (a worker job run in a child process, a fetched body or a
+	## file given through handles it mints, a digest it computes, the live
+	## handle count) through `host`, every other step through `one`.
+	step! : Program(state), Host, S(state), Scm.Op => Try(S(state), Str)
+	step! = |program, host, s, op|
+		match (SpecRunner.file_count(op), op) {
+			(Ok(n), _) => SpecRunner.give_files(program, s, op, (host.mint_files!)(n))
+			(_, ExpectFiles(n)) => {
+				live = (host.live_files!)()
+				if (live == n) Ok(s) else Err("expected ${n.to_str()} live file handles, found ${live.to_str()}")
+			}
+			_ =>
+				match (SpecRunner.held_of(s, op), SpecRunner.digest_of(s, op)) {
+					(Ok(WorkJob(job)), _) => SpecRunner.deliver_work!(program, s, job.id, (host.work!)(job.payload, job.files, job.prepare, job.prepare_files, job.max_output), host.mint_files!)
+					(Ok(FetchAnswer({ id, stub })), _) => SpecRunner.deliver_fetch!(program, s, id, stub, host.mint_files!)
+					(Err(message), _) if message != "not held" => Err(message)
+					(_, Ok({ id, bytes: Digest(bytes) })) => Ok(SpecRunner.deliver_digest(program, s, id, [18].concat((host.sha256!)(bytes))))
+					(_, Ok({ id, bytes: TooLarge })) => Ok(SpecRunner.deliver_digest(program, s, id, [13, 2]))
+					(_, Err(NoDigest)) => SpecRunner.one(program, s, op)
+				}
+		}
+
+	# ----------------------------------------------------------------- walks
+
+	## What a walk answers the app's requests with, gathered from the app's
+	## own specs, so the walk needs nothing written for it: every HTTP
+	## reply and rejection a spec stages (by URL), every port answer (by the
+	## port a spec's `expect-port-call` names for that occurrence, else for
+	## any port), every message a spec emits on a port, and every value a
+	## spec types or changes into a control (by its locator).
+	Book : {
+		replies : List({ url : Str, stub : Scm.Stub }),
+		rejects : List(Scm.Stub),
+		port_answers : List({ port : Str, answer : Scm.PortAnswer }),
+		loose_answers : List(Scm.PortAnswer),
+		messages : List({ port : Str, json : Str }),
+		typed : List({ loc : Scm.Loc, value : Str }),
+	}
+
+	## The book of a set of specs.
+	book : List(Scm.Spec) -> Book
+	book = |specs| {
+		var $b = { replies: [], rejects: [], port_answers: [], loose_answers: [], messages: [], typed: [] }
+		for spec in specs {
+			for step in spec.steps {
+				$b = match step.op {
+					StubHttp({ stub: Reply(r), .. }) => { ..$b, replies: $b.replies.append({ url: r.url, stub: Reply(r) }) }
+					StubHttp({ stub: Reject(r), .. }) => { ..$b, rejects: $b.rejects.append(Reject(r)) }
+					AnswerPort({ occurrence, answer }) =>
+						match SpecRunner.port_of_call(spec.steps, occurrence) {
+							Ok(port) => { ..$b, port_answers: $b.port_answers.append({ port, answer }) }
+							Err(_) => { ..$b, loose_answers: $b.loose_answers.append(answer) }
+						}
+					EmitPort(m) => { ..$b, messages: $b.messages.append(m) }
+					Fill(loc, value) => { ..$b, typed: $b.typed.append({ loc, value }) }
+					Change(loc, value) => { ..$b, typed: $b.typed.append({ loc, value }) }
+					_ => $b
+				}
+			}
+		}
+		$b
+	}
+
+	## The port a spec's `expect-port-call` names for an occurrence.
+	port_of_call : List(Scm.Step), U64 -> Try(Str, [Unnamed])
+	port_of_call = |steps, occurrence| {
+		for step in steps {
+			match step.op {
+				ExpectPortCall(c) if c.occurrence == occurrence => return Ok(c.port)
+				_ => {}
+			}
+		}
+		Err(Unnamed)
+	}
+
+	## Payloads a walk types into text boxes, beside those the specs type.
+	pool : List(Str)
+	pool = ["", "a", "Ada", "10", "-3", "2x", "x@y.z", "Lorem ipsum dolor", "Node-0007", "# Title", "Renamed"]
+
+	## (node index, event name) for every attached node with a handler,
+	## disabled controls skipped, in document order.
+	candidates : Dom.Model -> List((U64, Str))
+	candidates = |dom| {
+		var $stack = [dom.root]
+		var $out = []
+		while !$stack.is_empty() {
+			i = $stack.last() ?? 0
+			$stack = $stack.drop_last(1)
+			n = Dom.node(dom, i)
+			if Dom.attr_of(n, "disabled") != "true" {
+				for (ev, _) in n.hs {
+					base = ev.split_on(":").first() ?? ev
+					$out = $out.append((i, base))
+				}
+			}
+			var $k = n.kids.len()
+			while $k > 0 {
+				$k = $k - 1
+				$stack = $stack.append(n.kids.get($k) ?? 0)
+			}
+		}
+		$out
+	}
+
+	## The payload a browser would send for event `ev` on node `i`: for
+	## text, one of the walk's pool or of the values the specs typed into a
+	## control the same locator finds.
+	payload_for : Book, Dom.Model, U64, Str, U8 -> Str
+	payload_for = |bk, dom, i, ev, b| {
+		n = Dom.node(dom, i)
+		typed = || SpecRunner.pool.concat(bk.typed.keep_if(|t| SpecRunner.matches(dom, n, t.loc)).map(|t| t.value))
+		pick = |options| options.get(b.to_u64() % options.len()) ?? ""
+		if ev == "input" {
+			pick(typed())
+		} else if ev == "change" {
+			if Dom.attr_of(n, "type") == "checkbox" {
+				if (Dom.attr_of(n, "checked") == "true") "false" else "true"
+			} else if n.tag == "select" {
+				opts = n.kids.map(|k| Dom.attr_of(Dom.node(dom, k), "value"))
+				if (opts.is_empty()) "" else pick(opts)
+			} else {
+				pick(typed())
+			}
+		} else if ev == "focus" or ev == "blur" {
+			Dom.attr_of(n, "value")
+		} else {
+			""
+		}
+	}
+
+	## The fault classes a walk loses a worker job to, in the order a byte
+	## picks them.
+	faults : List(Scm.WorkFault)
+	faults = [Contract, ResourceLimit, OutOfMemory, AppCrash, ExpectFailed, Unavailable, Executor]
+
+	## What the browser around the app can do next, besides the user: answer
+	## a pending request, tick a live interval, change visibility or
+	## connectivity for a live subscription, or deliver a message the specs
+	## emit on a port with a live subscription.
+	Service : [Answer(Pending), Tick(U32), ToggleVisibility, ToggleOnline, Emit(Str)]
+
+	## Every service the browser can do now, in a fixed order.
+	services : Book, S(state) -> List(Service)
+	services = |bk, s| {
+		b = s.browser
+		var $out = b.pending.map(|p| Answer(p))
+		var $ticks = []
+		var $ports = []
+		var $vis = Bool.False
+		var $online = Bool.False
+		for x in b.subs {
+			match x.sub {
+				Interval(ms) if !$ticks.contains(ms) => {
+					$ticks = $ticks.append(ms)
+				}
+				VisibilitySub => {
+					$vis = Bool.True
+				}
+				OnlineSub => {
+					$online = Bool.True
+				}
+				PortSub(port, _) if !$ports.contains(port) and bk.messages.any(|m| m.port == port) => {
+					$ports = $ports.append(port)
+				}
+				_ => {}
+			}
+		}
+		$out = $out.concat($ticks.map(|ms| Tick(ms))).concat($ports.map(|p| Emit(p)))
+		$out = if ($vis) $out.append(ToggleVisibility) else $out
+		if ($online) $out.append(ToggleOnline) else $out
+	}
+
+	## The answer a walk gives an HTTP request (or an upload or a fetch):
+	## by `v`, a 503, a timeout, or a reply the specs give its URL (else
+	## one they give its path with another query, else a network failure).
+	http_answer : Book, Str, U64 -> Scm.Stub
+	http_answer = |bk, url, v|
+		if v % 8 == 6 {
+			Reply({ url, status: 503, headers: [], body: "unavailable" })
+		} else if v % 8 == 7 {
+			Reject({ kind: Timeout, detail: "" })
+		} else {
+			path = |u| u.split_on("?").first() ?? u
+			exact = bk.replies.keep_if(|r| r.url == url)
+			near = if (exact.is_empty()) bk.replies.keep_if(|r| path(r.url) == path(url)) else exact
+			match near.get((v / 8) % near.len().max(1)) {
+				Ok({ stub: Reply(r), .. }) => Reply({ ..r, url })
+				_ => bk.rejects.get((v / 8) % bk.rejects.len().max(1)) ?? Reject({ kind: Network, detail: "no spec answers ${url}" })
+			}
+		}
+
+	## The answer a walk gives a call on `port`: by `v`, a throw, its
+	## timeout when it has one, or an answer the specs give that port (else
+	## any port, else a throw).
+	port_answer : Book, Str, U32, U64 -> Scm.PortAnswer
+	port_answer = |bk, port, timeout_ms, v|
+		if v % 8 == 6 {
+			Throw("the walk's store failed")
+		} else if v % 8 == 7 and timeout_ms > 0 {
+			Timeout
+		} else {
+			named = bk.port_answers.keep_if(|a| a.port == port).map(|a| a.answer)
+			options = if (named.is_empty()) bk.loose_answers else named
+			options.get((v / 8) % options.len().max(1)) ?? Throw("no spec answers port ${port}")
+		}
+
+	## Do service `service`, its variant chosen by `v`, as the spec steps
+	## that would do it; a worker job runs for real in a child process
+	## (`step!`), unless `v` loses it with a fault class, times it out or
+	## leaves it pending. Gives the state and what was done.
+	serve! : Program(state), Host, Book, S(state), Service, U64 => Try((S(state), Did), Str)
+	serve! = |program, host, bk, s, service, v| {
+		b = s.browser
+		match service {
+			Answer(p) => {
+				n = (b.issued.find_first_index(|id| id == p.id) ? |_| "a pending request was never issued") + 1
+				staged = |stub| { ..s, browser: { ..b, stub: Staged(stub) } }
+				(op, at) = match p.kind {
+					WorkRequest(w) =>
+						if v % 8 == 5 {
+							(LoseWork({ occurrence: n, fault: SpecRunner.faults.get((v / 8) % SpecRunner.faults.len()) ?? Executor }), s)
+						} else if v % 8 == 6 and w.deadline_ms > 0 {
+							(TimeOutWork(n), s)
+						} else if v % 8 == 7 {
+							return Ok((s, { what: "leave job ${n.to_str()} (${w.task}) pending", kind: Service }))
+						} else {
+							(RunEffect(n), s)
+						}
+					HttpRequest | UploadRequest(_) | FetchRequest => (RunEffect(n), staged(SpecRunner.http_answer(bk, p.url, v)))
+					PortRequest({ port, timeout_ms, .. }) => (AnswerPort({ occurrence: n, answer: SpecRunner.port_answer(bk, port, timeout_ms, v) }), s)
+					TimerRequest | ReadRequest(_) | UrlRequest(_) | DigestRequest(_) => (RunEffect(n), s)
+				}
+				s2 = SpecRunner.step!(program, host, at, op)?
+				kind = match (p.kind, op) {
+					(WorkRequest(_), RunEffect(_)) => Job
+					_ => Service
+				}
+				Ok((s2, { what: "${Scm.op_name(op)} ${n.to_str()} ${p.url}", kind }))
+			}
+			Tick(ms) => Ok((SpecRunner.one(program, s, TickInterval(ms.to_u64()))?, { what: "tick-interval ${ms.to_str()}", kind: Service }))
+			ToggleVisibility => Ok((SpecRunner.one(program, s, SetVisibility(if (b.visible) Hidden else Visible))?, { what: "set-visibility", kind: Service }))
+			ToggleOnline => Ok((SpecRunner.one(program, s, SetOnline(if (b.online) Offline else Online))?, { what: "set-online", kind: Service }))
+			Emit(port) => {
+				messages = bk.messages.keep_if(|m| m.port == port)
+				json = (messages.get(v % messages.len().max(1)) ?? { port, json: "null" }).json
+				Ok((SpecRunner.one(program, s, EmitPort({ port, json }))?, { what: "emit-port ${port}", kind: Service }))
+			}
+		}
+	}
+
+	## One step of a walk, from two bytes. A pick byte of 0xC0 or more,
+	## while the browser has a service to do, does one (`serve!`); otherwise
+	## the user fires an event on a live control (`candidates`), typing a
+	## value first for `input` and `change`. A page with nothing to do
+	## stays as it is.
+	walk_step! : Program(state), Host, Book, S(state), U8, U8 => Try((S(state), Did), Str)
+	walk_step! = |program, host, bk, s, pick, b| {
+		offered = SpecRunner.services(bk, s)
+		cs = SpecRunner.candidates(s.dom)
+		if pick >= 0xC0 and !offered.is_empty() {
+			x = b.to_u64()
+			service = offered.get(x % offered.len()) ?? crash "SpecRunner.walk_step!: a service"
+			SpecRunner.serve!(program, host, bk, s, service, x / offered.len())
+		} else if cs.is_empty() {
+			Ok((s, { what: "nothing to do", kind: Idle }))
+		} else {
+			(i, ev) = cs.get(pick.to_u64() % cs.len()) ?? crash "SpecRunner.walk_step!: a candidate"
+			payload = SpecRunner.payload_for(bk, s.dom, i, ev, b)
+			s1 = if ev == "input" or ev == "change" {
+				name = if (Dom.attr_of(Dom.node(s.dom, i), "type") == "checkbox") "checked" else "value"
+				SpecRunner.set_attr(s, i, name, payload)
+			} else {
+				s
+			}
+			s2 = SpecRunner.fire(program, s1, i, ev, payload)?
+			Ok((s2, { what: "${ev} ${JsonOut.quote(payload)} on <${Dom.node(s.dom, i).tag}>${SpecRunner.landmark(s.dom, i)}", kind: UserEvent }))
+		}
+	}
+
+	## The step of a linear congruential generator the walks use.
+	prng : U64 -> U64
+	prng = |x| x.times_wrap(6364136223846793005).plus_wrap(1442695040888963407)
+
+	## The bytes of a seeded walk of `n` steps (two bytes each) from `seed`.
+	seeded : U64, U64 -> List(U8)
+	seeded = |seed, n| {
+		var $out = List.with_capacity(2 * n)
+		var $x = seed
+		var $i = 0.U64
+		while $i < n {
+			$x = SpecRunner.prng($x)
+			$out = $out.append($x.shr_zf_wrap(40).to_u8_wrap()).append($x.shr_zf_wrap(24).to_u8_wrap())
+			$i = $i + 1
+		}
+		$out
+	}
+
+	## One thing a walk did: what, for a failure's trail, and its kind.
+	Did : { what : Str, kind : [UserEvent, Service, Job, Idle] }
+
+	## What a walk did, by kind.
+	Tally : { events : U64, served : U64, jobs : U64, idle : U64 }
+
+	## Walk an app (`--walk`): mount it with the first spec's setup, then
+	## take `steps` seeded steps (`walk_step!`), the browser's requests
+	## answered from the book of every spec given (`book`) and worker jobs
+	## run for real. After every step the engine must be settled
+	## (`check_settled`) and its counters must agree with the commands
+	## (`check_counters`). A failure names the step and the last few things
+	## the walk did before it.
+	walk! : Program(state), Host, List(Scm.Spec), { steps : U64, seed : U64 } => Try(Tally, { step : U64, message : Str })
+	walk! = |program, host, specs, { steps, seed }| {
+		first = specs.first() ? |_| { step: 0, message: "a walk needs at least one spec" }
+		var $s = SpecRunner.start(program, { ..first, steps: [] }).map_err(|message| { step: 0, message })?
+		match SpecRunner.check_settled(program, $s) {
+			Ok(_) => {}
+			Err(message) => return Err({ step: 0, message: "after mount, ${message}" })
+		}
+		bk = SpecRunner.book(specs)
+		bytes = SpecRunner.seeded(seed, steps)
+		var $tally = { events: 0, served: 0, jobs: 0, idle: 0 }
+		var $trail = []
+		var $i = 0.U64
+		while $i < steps {
+			pick = bytes.get(2 * $i) ?? 0
+			done = SpecRunner.walk_step!(program, host, bk, $s, pick, bytes.get(2 * $i + 1) ?? 0)
+			failed = |message| Err({ step: $i + 1, message: "${message}\n  after: ${Str.join_with($trail, "\n         ")}" })
+			match done {
+				Ok((s2, { what, kind })) => {
+					match SpecRunner.check_settled(program, s2) {
+						Ok(_) => {}
+						Err(message) => return failed("${what}: ${message}")
+					}
+					match SpecRunner.check_counters(s2) {
+						Ok(_) => {}
+						Err(message) => return failed("${what}: work counters: ${message}")
+					}
+					# Free the slots of the handles the app let go of, as the
+					# runtime does after each call (`Cli.live_files!`), so a long
+					# walk reuses them.
+					_ = (host.live_files!)()
+					$trail = $trail.append(what).take_last(6)
+					$tally = match kind {
+						UserEvent => { ..$tally, events: $tally.events + 1 }
+						Service => { ..$tally, served: $tally.served + 1 }
+						Job => { ..$tally, served: $tally.served + 1, jobs: $tally.jobs + 1 }
+						Idle => { ..$tally, idle: $tally.idle + 1 }
+					}
+					$s = s2
+				}
+				Err(message) => return failed("${message} (${(host.live_files!)().to_str()} file handles live, ${$s.browser.pending.len().to_str()} requests pending)")
+			}
+			$i = $i + 1
+		}
+		Ok($tally)
+	}
 
 	## One call a spec made into the engine, as a soak records it: the node
 	## and handler (for a result, the request's place among those in flight,
@@ -2035,10 +2376,14 @@ SpecRunner := [].{
 	## The command line: which specs, whether to emit their steps or the
 	## grammar instead, and whether to soak them (`soak` cycles of the round
 	## trip after `warm` warm-up cycles; `NoSoak` runs each spec once).
-	Options : { filter : Str, emit_steps : Bool, grammar : Bool, soak : [NoSoak, Soak({ cycles : U64, warm : U64 })], files : List(Str) }
+	##
+	## `walk` walks the app instead (`walk!`): `steps` seeded steps from
+	## `seed`, mounted as the first file's setup and answered from every
+	## file's steps.
+	Options : { filter : Str, emit_steps : Bool, grammar : Bool, soak : [NoSoak, Soak({ cycles : U64, warm : U64 })], walk : [NoWalk, Walk({ steps : U64, seed : U64 })], files : List(Str) }
 
 	usage : Str
-	usage = "usage: RUNNER [--filter GLOB] [--emit-steps] FILE.scm...\n       RUNNER --soak CYCLES [--warm N] FILE.scm...\n       RUNNER --grammar\n"
+	usage = "usage: RUNNER [--filter GLOB] [--emit-steps] FILE.scm...\n       RUNNER --soak CYCLES [--warm N] FILE.scm...\n       RUNNER --walk STEPS [--seed N] FILE.scm...\n       RUNNER --grammar\n"
 
 	## The number after an option, as a count.
 	count_arg : List(Str), U64, Str -> Try(U64, Str)
@@ -2046,8 +2391,9 @@ SpecRunner := [].{
 
 	parse_args : List(Str) -> Try(Options, Str)
 	parse_args = |args| {
-		var $o = { filter: "*", emit_steps: Bool.False, grammar: Bool.False, soak: NoSoak, files: [] }
+		var $o = { filter: "*", emit_steps: Bool.False, grammar: Bool.False, soak: NoSoak, walk: NoWalk, files: [] }
 		var $warm = 2.U64
+		var $seed = 7.U64
 		var $i = 0.U64
 		while $i < args.len() {
 			a = args.get($i) ?? ""
@@ -2063,6 +2409,13 @@ SpecRunner := [].{
 			} else if a == "--soak" {
 				cycles = SpecRunner.count_arg(args, $i, a)?
 				$o = { ..$o, soak: Soak({ cycles, warm: 0 }) }
+				$i = $i + 2
+			} else if a == "--walk" {
+				steps = SpecRunner.count_arg(args, $i, a)?
+				$o = { ..$o, walk: Walk({ steps, seed: 0 }) }
+				$i = $i + 2
+			} else if a == "--seed" {
+				$seed = SpecRunner.count_arg(args, $i, a)?
 				$i = $i + 2
 			} else if a == "--warm" {
 				$warm = SpecRunner.count_arg(args, $i, a)?
@@ -2083,8 +2436,17 @@ SpecRunner := [].{
 				{ ..$o, soak: Soak({ cycles, warm: $warm }) }
 			}
 		}
+		$o = match $o.walk {
+			NoWalk => $o
+			Walk({ steps, .. }) => {
+				if $o.soak != NoSoak or $o.emit_steps {
+					return Err("--walk takes no --soak or --emit-steps")
+				}
+				{ ..$o, walk: Walk({ steps, seed: $seed }) }
+			}
+		}
 		if $o.grammar {
-			if ($o.files.is_empty() and !$o.emit_steps and $o.soak == NoSoak) Ok($o) else Err("--grammar takes no other arguments")
+			if ($o.files.is_empty() and !$o.emit_steps and $o.soak == NoSoak and $o.walk == NoWalk) Ok($o) else Err("--grammar takes no other arguments")
 		} else if $o.files.is_empty() {
 			Err("no spec files given")
 		} else {
@@ -2154,6 +2516,10 @@ SpecRunner := [].{
 			(io.stdout!)("${JsonOut.render(Scm.grammar_json)}\n")
 			return 0
 		}
+		match opts.walk {
+			Walk(walk) => return SpecRunner.walk_main!(program, io, opts.files, walk)
+			NoWalk => {}
+		}
 		var $counts = { passed: 0.U64, failed: 0.U64, error: 0.U64 }
 		for path in opts.files {
 			id = SpecRunner.id_of(path)
@@ -2206,6 +2572,76 @@ SpecRunner := [].{
 		}
 		if (c.failed + c.error == 0) 0 else 1
 	}
+
+	## Every spec file, parsed, or the first problem.
+	parsed! : (Str => List(U8)), List(Str) => Try(List(Scm.Spec), Str)
+	parsed! = |read_file!, paths| {
+		var $specs = []
+		for path in paths {
+			match Scm.parse(Str.from_utf8(read_file!(path)) ?? "") {
+				Ok(spec) => {
+					$specs = $specs.append(spec)
+				}
+				Err(problem) => return Err(Scm.show_problem(path, problem))
+			}
+		}
+		Ok($specs)
+	}
+
+	## Read and parse the walk's spec files and walk the app over them
+	## (`walk!`): everything it allocates is its own.
+	walk_files! : Program(state), Host, (Str => List(U8)), List(Str), { steps : U64, seed : U64 } => Try(Tally, { step : U64, message : Str })
+	walk_files! = |program, host, read_file!, paths, walk| {
+		specs = SpecRunner.parsed!(read_file!, paths).map_err(|message| { step: 0, message })?
+		SpecRunner.walk!(program, host, specs, walk)
+	}
+
+	## The `--walk` command: parse every file, walk the app (`walk!`), and
+	## print one `spec-result` line for the walk. Beside the settle check
+	## after every step, the walk must leave nothing behind: the live
+	## allocations and bytes and the live file handles after it are those
+	## before it, read from the host's counters around a call whose state is
+	## gone when it returns. Exit 0 when the walk passed.
+	walk_main! : Program(state), Io, List(Str), { steps : U64, seed : U64 } => I32
+	walk_main! = |program, io, paths, walk| {
+		# Parse every file first, so a malformed one is reported as such;
+		# the walk parses them again inside its measured call, so what they
+		# hold is allocated and freed within it.
+		match SpecRunner.parsed!(io.read_file!, paths).map_ok(|_| {}) {
+			Ok({}) => {}
+			Err(message) => {
+				(io.stderr!)("${message}\n")
+				return 2
+			}
+		}
+		host = { work!: io.work!, mint_files!: io.mint_files!, live_files!: io.live_files!, sha256!: io.sha256!, live_allocations!: io.live_allocations!, live_bytes!: io.live_bytes! }
+		t0 = (io.now_ns!)()
+		allocations = (host.live_allocations!)()
+		bytes = (host.live_bytes!)()
+		files = (host.live_files!)()
+		walked = SpecRunner.walk_files!(program, host, io.read_file!, paths, walk)
+		left = { allocations: (host.live_allocations!)().to_i64_wrap() - allocations.to_i64_wrap(), bytes: (host.live_bytes!)().to_i64_wrap() - bytes.to_i64_wrap(), files: (host.live_files!)().to_i64_wrap() - files.to_i64_wrap() }
+		id = "walk-${walk.steps.to_str()}-seed-${walk.seed.to_str()}"
+		# The paths are read after the measured call, so their list is not
+		# freed inside it, where it would count as freeing more than the
+		# walk allocated.
+		name = "a walk of ${walk.steps.to_str()} steps from seed ${walk.seed.to_str()} over ${Str.join_with(paths, " ")}"
+		dt = (io.now_ns!)() - t0
+		failure! = |step, message| {
+			(io.stdout!)("${SpecRunner.result_line({ id, name, status: "failed", duration_ns: dt, failure: SpecRunner.failure_json("walk", "assertion", message, step, { line: 0, column: 0 }) })}\n")
+			(io.stderr!)("walk: failed at step ${step.to_str()}: ${message}\n")
+			1
+		}
+		match walked {
+			Err({ step, message }) => failure!(step, message)
+			Ok(_) if left.allocations != 0 or left.bytes != 0 or left.files != 0 => failure!(walk.steps, "the walk left ${left.allocations.to_str()} allocations, ${left.bytes.to_str()} bytes and ${left.files.to_str()} file handles live")
+			Ok(t) => {
+				(io.stdout!)("${SpecRunner.result_line({ id, name, status: "passed", duration_ns: dt, failure: Null })}\n")
+				(io.stderr!)("walk: ${walk.steps.to_str()} steps from seed ${walk.seed.to_str()}: ${t.events.to_str()} user events, ${t.served.to_str()} services (${t.jobs.to_str()} worker jobs run), ${t.idle.to_str()} idle; nothing left live (${(dt // 1_000_000).to_str()} ms)\n")
+				0
+			}
+		}
+	}
 }
 
 ## Wire encoding: strings are length-prefixed, integers little-endian, and
@@ -2230,7 +2666,7 @@ expect {
 ## Options parse; unknown options (the retired `--pending-phase3` among them),
 ## empty file lists and a soak no longer than its warm-up are refused.
 expect {
-	o = SpecRunner.parse_args(["--filter", "a*", "x.scm"]) ?? { filter: "", emit_steps: Bool.False, grammar: Bool.False, soak: NoSoak, files: [] }
+	o = SpecRunner.parse_args(["--filter", "a*", "x.scm"]) ?? { filter: "", emit_steps: Bool.False, grammar: Bool.False, soak: NoSoak, walk: NoWalk, files: [] }
 	soaked = SpecRunner.parse_args(["--soak", "48", "--warm", "3", "x.scm"]).map_ok(|p| p.soak)
 	o.filter == "a*" and o.files == ["x.scm"] and soaked == Ok(Soak({ cycles: 48, warm: 3 })) and SpecRunner.parse_args(["--soak", "2", "x.scm"]).is_err() and SpecRunner.parse_args(["--soak", "x.scm"]).is_err() and SpecRunner.parse_args(["--pending-phase3", "x.scm"]).is_err() and SpecRunner.parse_args([]).is_err() and SpecRunner.parse_args(["--grammar"]).is_ok() and SpecRunner.parse_args(["--grammar", "x.scm"]).is_err()
 }

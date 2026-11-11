@@ -1,9 +1,10 @@
+import cli.Path
 import Checks
 import Proc
 import SpecSuite
 import Targets
 
-## The slow suite: soak.
+## The slow suite: the fuzz targets' examples, the walks and the soaks.
 Slow := [].{
 
 	## The apps soaked in Chrome: every example, and the worker app (soak.mjs
@@ -55,14 +56,74 @@ Slow := [].{
 		Ok(List.map2(Slow.native_soaks, results, |s, r| if (r.code == 0 and r.output.contains("\"status\":\"passed\"")) [] else ["native soak ${s.example} ${s.spec}: ${r.output.trim()}"]).join())
 	}
 
-	## Every fuzz target's examples, every app's native soak, then every
-	## app's browser soak.
+	## The apps walked: every spec app but the three whose pages offer a
+	## contract error on purpose (a job of an unregistered task, a port used
+	## as the wrong kind, an outbox posted twice in a turn), which a walk
+	## reaches within a few hundred steps and which, as it must, poisons
+	## the instance. Their specs and Chrome contract tests cover them.
+	walk_apps : List(Str)
+	walk_apps = SpecSuite.spec_apps.drop_if(|name| ["workers", "ports", "outbox"].contains(name))
+
+	## One walk: an app, how many steps, and from which seed.
+	Walk : { name : Str, steps : U64, seed : U64 }
+
+	## The walks: 10,000 steps from seed 7 for each app, except the
+	## Markdown Editor, whose documents grow as a walk types into them, so
+	## each step costs the DOM oracle more than the last: five walks of 2,000
+	## steps from seeds 1 to 5 instead.
+	walks : List(Walk)
+	walks = Slow.walk_apps.map(|name| if (name == "markdown-editor") [1, 2, 3, 4, 5].map(|seed| { name, steps: 2000, seed }) else [{ name, steps: 10000, seed: 7 }]).join()
+
+	## Where an app's walk runner is built: `--opt=speed`, as the walk is
+	## long and its oracle slow at `--opt=dev`.
+	walker_of : SpecSuite.Options, Str -> Str
+	walker_of = |o, name| "${o.build_dir}/walk/${name}/runner"
+
+	## The spec files an app's walk reads: its round-trip spec first, whose
+	## setup the walk mounts with, then the rest, whose steps answer the
+	## app's requests and give the values it types (`RUNNER --walk`).
+	walk_files! : Str => Try(List(Str), _)
+	walk_files! = |name| {
+		files = SpecSuite.spec_files!(name)?
+		round_trips = files.keep_if(|f| (f.split_on("/").last() ?? f).starts_with("round-trip-"))
+		Ok(round_trips.concat(files.drop_if(|f| round_trips.contains(f))))
+	}
+
+	## Walk every spec app with its native spec runner, in parallel: a
+	## seeded walk of user events and browser services from a fresh mount,
+	## its worker jobs run for real, settled and counter-checked after every
+	## step, which must leave nothing allocated (`RUNNER --walk`).
+	walks! : SpecSuite.Options => Try(List(Str), _)
+	walks! = |o| {
+		var $builds = []
+		for name in Slow.walk_apps {
+			Path.create_all!(Path.utf8("${o.build_dir}/walk/${name}"))?
+			$builds = $builds.append(SpecSuite.build_job(o, "speed", "${SpecSuite.dir_of(name)}/main.roc", SpecSuite.native_target, Slow.walker_of(o, name)))
+		}
+		built = Proc.parallel!($builds, Proc.cpus!())?
+		match List.map2(Slow.walk_apps, built, |name, r| (name, r.code)).keep_if(|(_, c)| c != 0).first() {
+			Ok((name, c)) => return Err(BuildFailed("walk runner ${name}: build exited with ${c.to_str()}"))
+			Err(_) => {}
+		}
+		var $jobs = []
+		for w in Slow.walks {
+			files = Slow.walk_files!(w.name)?
+			$jobs = $jobs.append({ program: Slow.walker_of(o, w.name), args: ["--walk", w.steps.to_str(), "--seed", w.seed.to_str()].concat(files), cwd: o.root })
+		}
+		results = Proc.parallel!($jobs, Proc.cpus!())?
+		Ok(List.map2(Slow.walks, results, |w, r| if (r.code == 0 and r.output.contains("\"status\":\"passed\"")) [] else ["walk ${w.name} seed ${w.seed.to_str()}: ${r.output.trim()}"]).join())
+	}
+
+	## Every fuzz target's examples, every app's walk and native soak, then
+	## every app's browser soak.
 	soak! : SpecSuite.Options => Try(List(Str), _)
 	soak! = |o| {
 		Checks.prepare_platform!(o)?
 		SpecSuite.build_web_platform!(o)?
 		Proc.note!("== fuzz targets")
 		var $problems = Targets.fuzz_check_all!(o, Targets.fuzz_targets)?
+		Proc.note!("== walks")
+		$problems = $problems.concat(Slow.walks!(o)?)
 		Proc.note!("== native soaks")
 		$problems = $problems.concat(Slow.native_soak!(o)?)
 		SpecSuite.build_with!(o, [], Slow.browser_soak_apps, "size")?
