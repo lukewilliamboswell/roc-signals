@@ -223,7 +223,7 @@ Core := [].{
 		## the file is a contract error. Outside a job a file has no reader:
 		## page code cannot call an effect, and the host refuses one anywhere
 		## else.
-		read! : File, { start : U64, len : U64 } => Try(List(U8), FileError)
+		read! : File, { start : U64, len : U64 } => Try(List(U8), [Unreadable])
 		read! = |f, { start, len }| {
 			if start > f.len or len > f.len - start {
 				crash "contract: File.read! of ${start.to_str()}+${len.to_str()} bytes lies outside \"${f.name}\" (${f.len.to_str()} bytes)"
@@ -236,12 +236,12 @@ Core := [].{
 		## In a task's job: the whole file, or range, as `read!` reads it.
 		## For a file larger than a job should hold at once, read it in chunks
 		## with `read!`.
-		contents! : File => Try(List(U8), FileError)
+		contents! : File => Try(List(U8), [Unreadable])
 		contents! = |f| File.read!(f, { start: 0, len: f.len })
 
 		## In a task's job: the whole file as text, `InvalidUtf8` when its
 		## bytes are not UTF-8 (a byte-order mark is kept), or `Unreadable`.
-		contents_utf8! : File => Try(Str, FileError)
+		contents_utf8! : File => Try(Str, [Unreadable, InvalidUtf8])
 		contents_utf8! = |f| {
 			bytes = File.contents!(f)?
 			Str.from_utf8(bytes).map_err(|_| InvalidUtf8)
@@ -328,7 +328,7 @@ Core := [].{
 		## option (256 MiB by default): nothing is appended, and the job
 		## decides what to do. Appending to a builder after `finish!` is a
 		## contract error.
-		append! : Builder, List(U8) => Try({}, FileError)
+		append! : Builder, List(U8) => Try({}, [TooLarge])
 		append! = |b, bytes| match (b.effects.append!)(Box.unbox(b.handle), bytes) {
 			0 => Ok({})
 			1 => Err(TooLarge)

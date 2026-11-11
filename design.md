@@ -2114,12 +2114,12 @@ File.fetch : { url : Str, method : Str ?? "GET", headers : List((Str, Str)) ?? [
 fetched : Res -> Try(File, FetchError)
 FetchError : [Network(Str), Timeout, Status(U16), TooLarge, Refused]
 # In a worker job only (a task's run!, a preparation's prepare!; effects):
-File.read! : File, { start : U64, len : U64 } => Try(List(U8), FileError)
-File.contents! : File => Try(List(U8), FileError)
-File.contents_utf8! : File => Try(Str, FileError)
+File.read! : File, { start : U64, len : U64 } => Try(List(U8), [Unreadable])
+File.contents! : File => Try(List(U8), [Unreadable])
+File.contents_utf8! : File => Try(Str, [Unreadable, InvalidUtf8])
 Files.build! : { name : Str, mime : [Auto, Mime(Str)] ?? Auto,
                 start_from : [Empty, From(File)] ?? Empty } => Builder
-Builder.append! : Builder, List(U8) => Try({}, FileError)   # TooLarge past maxOutputBytes
+Builder.append! : Builder, List(U8) => Try({}, [TooLarge])   # past maxOutputBytes
                                               # a builder used after the call that opened it: contract error
 Builder.append_file! : Builder, File => {}                    # by reference
 Builder.finish! : Builder => File

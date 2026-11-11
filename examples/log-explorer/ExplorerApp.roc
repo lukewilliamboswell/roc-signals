@@ -22,7 +22,7 @@ ExplorerApp := [].{
 
 	## Why a log has no index: the browser could not read the file, it is
 	## empty, or no line of it starts with a timestamp and a level.
-	Problem : [Unread(Engine.FileError), Empty, NotALog]
+	Problem : [Unreadable, Empty, NotALog]
 
 	## The prepared state: the log's handle, kept to read lines from later,
 	## and its index.
@@ -41,7 +41,7 @@ ExplorerApp := [].{
 		}
 		var $indexer = Log.indexer
 		for span in file.spans(ExplorerApp.chunk_bytes) {
-			$indexer = Log.feed($indexer, file.read!(span) ? |problem| Unread(problem))
+			$indexer = Log.feed($indexer, file.read!(span)?)
 		}
 		index = Log.finish($indexer)
 		if index.entries == 0 {
@@ -75,14 +75,14 @@ ExplorerApp := [].{
 			{ matches, page } = Log.listed(index, query)
 			var $lines = []
 			for n in page {
-				bytes = file.read!(Log.span(index, { first: n, count: 1 })) ? |problem| Unread(problem)
+				bytes = file.read!(Log.span(index, { first: n, count: 1 }))?
 				$lines = $lines.concat(Log.lines_in(index, { first: n, count: 1, bytes }))
 			}
 			Ok({ matches, lines: $lines })
 		} else {
 			var $scanned = { matches: 0, lines: [] }
 			for { first, count } in Log.chunks(index, ExplorerApp.chunk_bytes) {
-				bytes = file.read!(Log.span(index, { first, count })) ? |problem| Unread(problem)
+				bytes = file.read!(Log.span(index, { first, count }))?
 				$scanned = Log.scan($scanned, { index, search: query, first, count, bytes })
 			}
 			Ok({ matches: $scanned.matches, lines: $scanned.lines })
@@ -98,7 +98,7 @@ ExplorerApp := [].{
 		total = index.starts.len()
 		first = Log.window_first({ lines: total, wanted })
 		count = (total - first).min(Log.window_lines)
-		bytes = file.read!(Log.span(index, { first, count })) ? |problem| Unread(problem)
+		bytes = file.read!(Log.span(index, { first, count }))?
 		Ok({ first, total, lines: Log.lines_in(index, { first, count, bytes }) })
 	}
 
@@ -176,11 +176,7 @@ ExplorerApp := [].{
 	## What a log that could not be explored says.
 	explain : Problem -> Str
 	explain = |problem| match problem {
-		Unread(Unreadable) => "The browser can no longer read this file. Choose it again."
-		Unread(Unavailable) => "Files cannot be read here."
-		Unread(TooLarge) => "The file is too large to read."
-		Unread(InvalidUtf8) => "The file is not text."
-		Unread(Refused) => "Too many requests at once. Try again."
+		Unreadable => "The browser can no longer read this file. Choose it again."
 		Empty => "The file is empty."
 		NotALog => "This does not look like a log: no line starts with a timestamp and a level."
 	}

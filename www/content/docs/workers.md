@@ -228,8 +228,9 @@ calls the platform's effects on it to read as much as it needs:
 text; `file.contents!()` gives its bytes and `file.read!({ start, len })` a
 range of them. A read can fail, because the user may have changed or
 deleted the file since choosing it, so each effect answers a `Try`, and `?`
-passes its error on as the task's own. Here that error is
-`Engine.FileError`.
+passes its error on as the task's own. A read fails only with
+`Unreadable` (and `InvalidUtf8` when text was asked for), so the task's
+error can be any union that has those tags; here it is `Engine.FileError`.
 
 A job can also write. `Files.build!` (from `import pf.Files`) opens a builder, `append!` copies bytes
 into it, and `finish!` turns it into a new, immutable `File` that the

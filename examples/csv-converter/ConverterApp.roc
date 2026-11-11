@@ -23,7 +23,7 @@ ConverterApp := [].{
 	## Why a conversion has no output: the file could not be read or is not
 	## UTF-8 (`Unreadable`, `InvalidUtf8`), the output is over the bound
 	## (`TooLarge`), or the file has no header line (`Empty`).
-	Problem : [Unreadable, TooLarge, InvalidUtf8, Unavailable, Refused, Empty]
+	Problem : [Unreadable, TooLarge, InvalidUtf8, Empty]
 
 	convert : Worker.Task(Job, Converted, Problem)
 	convert = Worker.task({ name: "roc-signals.example/csv-converter/convert", run!: ConverterApp.convert! })
@@ -137,8 +137,6 @@ ConverterApp := [].{
 		InvalidUtf8 => "the file is not UTF-8 text"
 		TooLarge => "the output is larger than the converter keeps in memory"
 		Unreadable => "the browser can no longer read the file"
-		Unavailable => "the browser cannot read files here"
-		Refused => "too many requests at once"
 	}
 
 	size_text : U64 -> Str

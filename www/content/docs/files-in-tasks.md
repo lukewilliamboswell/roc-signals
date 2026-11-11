@@ -33,9 +33,10 @@ platform's `Files` module, `import pf.Files`) opens one,
 `append!` copies bytes into it, and `finish!` turns it into a new, immutable
 `File`. Reading and appending can fail in ways the app should hear about (a
 file the user changed since choosing it is `Unreadable`, a builder over its
-bound is `TooLarge`), so both answer a `Try` and `?` passes the error on as
-the task's own: the job answers `Ok(file)` or `Err(error)`, and the page
-reads the error as `Failed(error)`.
+bound is `TooLarge`), so both answer a `Try` whose error names only what
+can happen, and `?` widens it into the task's own: the job answers
+`Ok(file)` or `Err(error)`, and the page reads the error as
+`Failed(error)`.
 
 `to_tsv!` is a named function annotated with `=>`, not a lambda in the
 props record. With the current compiler it has to be: see
@@ -64,7 +65,7 @@ job can do with one:
 | Effect | What it does |
 |---|---|
 | `file.read!({ start, len })` | The range's bytes, copied once into the job's memory, or `Err(Unreadable)` |
-| `file.contents!()`, `file.contents_utf8!()` | The whole file or range, as bytes or text (`InvalidUtf8` when it is not UTF-8) |
+| `file.contents!()`, `file.contents_utf8!()` | The whole file or range, as bytes or text; `Err(Unreadable)`, or `Err(InvalidUtf8)` when text was asked for and it is not UTF-8 |
 | `Files.build!({ name, mime, start_from })` | A new builder; `mime` defaults to `Auto` (the type of the file it starts from, or none), `start_from` to `Empty` |
 | `builder.append!(bytes)` | Append a copy of `bytes`; `Err(TooLarge)` past the job's output bound |
 | `builder.append_file!(file)` | Append a file the job holds, or a range of one, by reference: nothing is copied |

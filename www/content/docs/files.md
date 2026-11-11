@@ -173,9 +173,11 @@ digest and a downloaded body, and never what a job reads in a worker.
 | The browser cannot do it (a digest without WebCrypto) | `Unavailable` |
 | Too many requests were in flight | `Refused` |
 
-`FileError` is also the error of the effects a job calls on a file
-(`Unreadable` and `InvalidUtf8` from a read, `TooLarge` from a builder over
-its bound), so a task that passes them on can name it as its own error.
+The effects a job calls on a file answer only what each can produce:
+`read!` and `contents!` fail with `[Unreadable]`, `contents_utf8!` with
+`[Unreadable, InvalidUtf8]`, and a builder's `append!` with `[TooLarge]`.
+`?` widens each into the task's own error, which can be `FileError` or a
+union of the app's own that names just these tags beside its others.
 
 ## Testing
 
