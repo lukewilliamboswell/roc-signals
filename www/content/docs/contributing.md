@@ -35,6 +35,7 @@ recipe ready.
 | `tests/` | Browser contract tests and the apps they drive (`tests/apps/`, for example `files` for file handles, `file-effects` for operations on files, `ports` for ports, `worker-typed` for the task API, `prepared` for preparations, `tasks` for jobs that read and build files, `outbox` for posting requests and `gather` for one question split over several jobs), the Chrome spec replay, and the release check helper |
 | `fuzz/` | Fuzz targets of the shared support; each app's own target is its `main-fuzz.roc` |
 | `examples/` | The example apps, each with its specs, and with any JavaScript of its own beside it (the Reading List's port handlers, `ports.mjs`; the simulated service of Conduit, Field Notes and the Status Page, `backend.mjs`); `examples/shared/` holds the JavaScript several examples load (the `plume-chart` and `worker-pool-panel` elements) |
+| `cli/` | `signals.roc`, the tool app authors run to create, serve, build and test an app (below) |
 | `benchmarks/` | The js-framework-benchmark adapter |
 | `scripts/` | Roc scripts behind the tasks; shared modules in `scripts/src/` |
 | `www/` | This site; `www/samples/` holds every code sample the docs show |
@@ -99,8 +100,9 @@ for example to run two tasks at once.
 1. Every script names the `roc-stable` nightly that `Blueprint.roc` pins, and
    no other Roc file names a compiler; every file `www/data/examples.toml`
    names exists, and every example is in a section of the examples index.
-2. `roc fmt --check` over every Roc source, and `roc test` on the test support
-   and the scripts.
+2. `roc fmt --check` over every Roc source, `roc test` on the test support,
+   the tool (`cli/`) and the scripts, and the check that `cli/Bundle.roc` is
+   what the release generates for a checkout.
 3. The platform's link inputs for every target, a worker app's spec runner
    linked for macOS (`arm64mac`, `x64mac`) and Windows (`x64win`) from them,
    the test platform, and the examples of the fuzz targets in `fuzz/` (the
@@ -131,8 +133,20 @@ for example to run two tasks at once.
    and the Conduit journey against the example's own simulated backend
    (`examples/conduit/backend.mjs`).
 7. The js-framework-benchmark check.
-8. The release dry run: the bundle, `runtime.mjs` and `worker.mjs`, the examples archive with
-   every app mounted by its check helper, and the release notes.
+8. The release dry run: the bundle, `runtime.mjs` and `worker.mjs`, the
+   `signals.roc` tool's package and app, the examples archive with every app
+   mounted by its check helper, and the release notes.
+9. The tool, end to end (`scripts/src/ToolCheck.roc`): the dry run's
+   `signals.roc` run from empty directories as an author runs it, on the
+   counter and on the Worker Lab. `init`, `test` and `build`; every failure
+   it explains, each by its sentence (a misused command line, no
+   `main.roc`, `index.html` or specs, a failing spec, a build error, no
+   `roc` on the PATH, a compiler other than the release's); the built
+   `dist/` mounting from a plain static server in Chrome with jobs running
+   in workers (`tests/browser/tool-dist.mjs`); and `serve` in Chrome
+   (`tests/browser/tool-serve.mjs`: a busy port, content types, the reload
+   script, a reload after an edit, and the overlay for a build error, a
+   mount refusal and an engine fault).
 
 Every spec must pass in both runners; there are no expected failures.
 
@@ -252,6 +266,39 @@ its upstream `roc-lang/roc` issue, and is listed in `design.md`. File the
 issue with a minimal reproduction before adding the workaround; the
 reproduction lives in the issue, not in this repository.
 
+## The `signals.roc` tool
+
+`cli/` is a Roc package on basic-cli; `Signals.roc` reads the command line
+and puts every failure into words, and one module serves each command
+(`Init.roc`, `Serve.roc`, `Dist.roc` for `build`, `Specs.roc` for `test`).
+The page script `serve` adds, `cli/dev-client.js`, is the tool's own: it
+only watches the page, and nothing of it reaches `platform/` or `dist/`.
+
+What a copy of the tool ships with is `cli/Bundle.roc`: the release's
+version, platform URL and compiler, the spec runner's targets, the runtime
+files it serves, and the files `init` writes, which are the documentation's
+counter in `www/samples/counter/` (its region markers removed, and the
+platform path in `main.roc` replaced by the release's URL). The release
+generates its own `Bundle.roc` and bundles it with copies of those files;
+the checked-in one is the development copy, which imports them from the
+working tree, and `check` fails when it is not what the release would
+generate. A new runtime file or scaffold file therefore needs only the
+script's lists and a regenerated `cli/Bundle.roc` (`check` writes the
+expected file beside the build).
+
+The release dry run stages the package in `.build/release-tool/` and writes
+the tool's app to `.build/release/signals.roc`. To run that copy by hand
+against the working tree, as `check` does:
+
+```sh
+roc --replace-dep <the package URL signals.roc names> .build/release-tool/main.roc \
+  path/to/signals.roc serve
+```
+
+with `ROC_SIGNALS_PLATFORM` set to the absolute path of `platform/main.roc`,
+which makes every build the tool runs use the working tree's platform in
+place of the release's.
+
 ## Releases
 
 A maintainer dispatches the `Release` workflow with a version. It builds the
@@ -262,6 +309,9 @@ assets with `blueprint run release` and creates a draft GitHub release with:
   `x64musl`, `arm64mac`, `x64mac` and `x64win` (the native spec runner),
   with the link inputs of each;
 - `runtime.mjs` and its worker script, `worker.mjs`, served beside it;
+- `signals-<hash>.tar.zst`, the `signals.roc` tool's package, and
+  `signals.roc`, the small app an author downloads to run it: it names
+  basic-cli and that package, and pins no compiler;
 - `roc-signals-examples-<version>.zip`, each example's `main.roc` naming that
   bundle with its modules and specs, and the compatibility suite;
 - `roc-signals-docs-<version>.zip`, the API docs;

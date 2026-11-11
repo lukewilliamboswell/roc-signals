@@ -155,7 +155,12 @@
   JavaScript, kept in its directory and named in `www/data/examples.toml`,
   and the site and the tests load that one file rather than knowing the
   example or keeping a copy. JavaScript several examples load lives in
-  `examples/shared/`, never in the platform. A port is a named request kind
+  `examples/shared/`, never in the platform. The script the `signals.roc`
+  tool's development server adds to a page (reload on a rebuild, an overlay
+  for errors) is the tool's own, kept in `cli/`: it only watches what the
+  page and the runtime report, is added as the page is served rather than
+  written into an app's files, and never reaches the platform or a built
+  `dist/`. A port is a named request kind
   of the effect channel, not a way around it: its JavaScript performs one
   request and answers with data, checked against the type the app declared;
   it never decides reactive meaning, never touches the DOM the engine owns,
