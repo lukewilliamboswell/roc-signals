@@ -104,6 +104,18 @@ A request's input is a snapshot, held while the request is in state. Here
 `logging` holds the old log until the answer arrives; setting it back to
 `Idle` then lets the old file go.
 
+## Composing files built by other jobs
+
+`append_file!` takes a range of a file as readily as a whole one, so a job
+can put together files that other jobs built without reading them: the
+[Worker Lab](@/examples/worker-lab.md) draws a picture as strips, each
+strip's job building a small image file of its own that the page shows as
+it arrives, and a last job writes one picture from them, its own header
+followed by each strip's pixels, `strip.slice({ start, len })` past the
+strip's header, appended by reference. That job copies the header and
+nothing else. Every strip it is sent is a file it holds, so a composition
+of more than 63 files meets the bound of 64 files and builders a job holds.
+
 ## Saving
 
 `File.save(file, {})` is a command that saves the file as a download under

@@ -207,9 +207,15 @@ input and gives `body` an `Engine.Gathered(output, Worker.Error(error))`:
 - An empty list is answered at once with `[]`.
 
 `Engine.gather` is the same for anything with `request` and `result`, a
-port call per item for instance. A view that shows the queue itself, as
-the [Worker Lab](@/examples/worker-lab.md) does, keeps its own sites per
-row instead.
+port call per item for instance. A question with more parts than the
+in-flight bound, or one whose parts may each be asked again (a part that
+was lost, retried on its own), does not fit a gather: changing the list
+asks every part again. Keep one site per part instead, each in a row
+of an `each` with its own `latest`, and admit parts from the page's state
+as earlier ones finish, as the [Worker Lab](@/examples/worker-lab.md)
+does for the strips of its picture. Count every request the parts lead
+to: a drawn strip's object URL and an interval take slots of the same
+bound as the jobs.
 
 ## What a task may do
 

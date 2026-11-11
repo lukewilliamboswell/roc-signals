@@ -415,6 +415,12 @@ at mount:
 Each app with a soak keeps one round-trip spec, which `check` runs as an
 ordinary spec in both runners and `check-slow` soaks.
 
+A soak records an answer that carried files with their handles, to replay
+it, so while the spec runs under `--soak` the runner itself holds those
+files. An `expect-files` after such an answer counts them and fails under
+the soak although it passes as an ordinary spec: check that the app lets
+its files go in another spec, not in the round trip.
+
 ## Fuzzing and soak
 
 Specs check the paths you thought of. For sequences you did not, an app can

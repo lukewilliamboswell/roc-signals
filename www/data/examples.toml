@@ -163,13 +163,13 @@ ports = "ports.mjs"
 [[examples]]
 slug = "worker-lab"
 title = "Worker Lab"
-description = "Roc tasks counting primes and drawing Mandelbrot tiles in Web Workers: a job grid with cancel and supersession, an in-flight bound you can see, a heartbeat that never stalls, and a live pool panel."
+description = "Roc tasks counting primes and drawing the Mandelbrot set in Web Workers: a picture that fills in strip by strip as each worker builds its strip's file, composed by reference into one image to save; a job grid with cancel, retry and supersession, an in-flight bound you can see, a heartbeat that never stalls, and a live pool panel."
 source = "examples/worker-lab/main.roc"
 specs = "examples/worker-lab/specs"
 public = true
 section = "workers"
-features = ["Workers", "Cancellation", "Intervals", "Custom elements"]
-what_to_try = "Add ?workers=inline to the address to run the same jobs on the page's own thread, and watch the heartbeat stall."
+features = ["Workers", "Files", "Cancellation", "Intervals", "Custom elements"]
+what_to_try = "Choose \"Draw the Mandelbrot set\" with 32 strips of weight 16, press Start, then mount again with 1, 2, 4 and 8 workers from the pool panel and compare the time and the frame gap; with ?workers=inline no strip can be drawn, since only a worker can build a file."
 # Optional for any example: `max_workers` and `workers` set the mount's pool
 # (data-signals-max-workers / data-signals-workers); the page URL's
 # `maxWorkers` and `workers` query parameters override them.
