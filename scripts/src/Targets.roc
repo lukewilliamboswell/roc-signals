@@ -26,7 +26,6 @@ Targets := [].{
 		{ name: "markdown-editor", main: "examples/markdown-editor/fuzz-sections.roc" },
 		{ name: "conduit", main: "examples/conduit/fuzz-routes.roc" },
 		{ name: "field-notes", main: "examples/field-notes/fuzz-outbox.roc" },
-		{ name: "status-page", main: "examples/status-page/main-fuzz.roc" },
 		{ name: "spreadsheet-lite", main: "examples/spreadsheet-lite/fuzz-formulas.roc" },
 		{ name: "fx-channel", main: "tests/apps/effects/main-fuzz.roc" },
 		{ name: "controls", main: "tests/apps/controls/main-fuzz.roc" },
