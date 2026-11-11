@@ -13,42 +13,25 @@
 //! nothing correct left to report.
 //!
 //! A worker job is the exception (`roc_test_work`). The runner runs each job
-//! in a child process, as the browser runs it in a Web Worker: the child
-//! calls the platform's `roc_engine_work` (or `roc_engine_prepare` and
-//! `roc_engine_ask`), the entries a worker instance calls, and serves the
-//! job's hosted effects, so a task that crashes poisons only the child, and
-//! the runner receives the lost job's fault class as the page would.
+//! in a child process started from its own executable, as the browser runs
+//! it in a Web Worker, a fresh instance of the same module: the child reads
+//! the job from its standard input, calls the platform's `roc_engine_work`
+//! (or `roc_engine_prepare` and `roc_engine_ask`), the entries a worker
+//! instance calls, serves the job's hosted effects, and writes the answer to
+//! its standard output, so a task that crashes poisons only the child, and
+//! the runner receives the lost job's fault class as the page would. How a
+//! process is started, fed and waited for lives with the rest of the
+//! system's services in `os_posix.zig`.
 
 const std = @import("std");
 const resources = @import("resources.zig");
 
+/// The system's services: files, output, time, memory, the process and
+/// its job children.
+const os = @import("os_posix.zig");
+
 // The command-line entry the platform provides (`SpecRunner.main!`).
 extern fn roc_spec_main(args: RocList) callconv(.c) i32;
-
-// musl libc.
-extern fn open(path: [*:0]const u8, flags: c_int, ...) c_int;
-extern fn close(fd: c_int) c_int;
-extern fn read(fd: c_int, buf: [*]u8, len: usize) isize;
-extern fn write(fd: c_int, buf: [*]const u8, len: usize) isize;
-extern fn malloc(len: usize) ?*anyopaque;
-extern fn free(ptr: ?*anyopaque) void;
-extern fn aligned_alloc(alignment: usize, len: usize) ?*anyopaque;
-extern fn clock_gettime(clock: c_int, ts: *Timespec) c_int;
-extern fn exit(code: c_int) noreturn;
-extern fn _exit(code: c_int) noreturn;
-extern fn fork() c_int;
-extern fn pipe(fds: *[2]c_int) c_int;
-extern fn poll(fds: [*]PollFd, n: c_ulong, timeout_ms: c_int) c_int;
-extern fn waitpid(pid: c_int, status: *c_int, options: c_int) c_int;
-extern fn kill(pid: c_int, sig: c_int) c_int;
-
-const Timespec = extern struct { sec: i64, nsec: i64 };
-const PollFd = extern struct { fd: c_int, events: c_short, revents: c_short };
-const pollin: c_short = 1;
-const sigkill: c_int = 9;
-const clock_monotonic: c_int = 1;
-const o_rdonly: c_int = 0;
-const o_directory: c_int = 0o200000;
 
 const RocStr = extern struct {
     bytes: ?[*]u8,
@@ -130,13 +113,14 @@ fn argsList(args: []const [*:0]const u8) RocList {
     return .{ .elements = items, .length = args.len, .capacity_or_alloc_ptr = args.len << 1 };
 }
 
-fn writeAll(fd: c_int, bytes: []const u8) void {
-    var rest = bytes;
-    while (rest.len > 0) {
-        const n = write(fd, rest.ptr, rest.len);
-        if (n <= 0) exit(3);
-        rest = rest[@intCast(n)..];
-    }
+/// Write to standard error or output; a runner that cannot report has
+/// nothing correct left to do, and exits with status 3.
+fn writeErr(bytes: []const u8) void {
+    if (!os.writeAll(.err, bytes)) os.exitProcess(3);
+}
+
+fn writeOut(bytes: []const u8) void {
+    if (!os.writeAll(.out, bytes)) os.exitProcess(3);
 }
 
 // ---------------------------------------------------------------------------
@@ -153,7 +137,7 @@ fn alignment(align_arg: usize) usize {
 export fn roc_alloc(size: usize, align_arg: usize) callconv(.c) *anyopaque {
     const a = alignment(align_arg);
     const total = std.mem.alignForward(usize, a + size, a);
-    const base: [*]u8 = @ptrCast(aligned_alloc(a, total) orelse fail("out of memory", ""));
+    const base: [*]u8 = @ptrCast(os.alloc(a, total) orelse fail("out of memory", ""));
     const user = base + a;
     @as(*usize, @ptrCast(@alignCast(user - header_size))).* = size;
     return user;
@@ -166,7 +150,7 @@ export fn roc_dealloc(ptr: *anyopaque, align_arg: usize) callconv(.c) void {
         .corrupt => fail("internal: a file handle was released twice", ""),
     }
     const user: [*]u8 = @ptrCast(ptr);
-    free(user - alignment(align_arg));
+    os.release(user - alignment(align_arg));
 }
 
 export fn roc_realloc(ptr: *anyopaque, size: usize, align_arg: usize) callconv(.c) *anyopaque {
@@ -180,39 +164,39 @@ export fn roc_realloc(ptr: *anyopaque, size: usize, align_arg: usize) callconv(.
 }
 
 export fn roc_dbg(bytes: [*]const u8, len: usize) callconv(.c) void {
-    writeAll(2, "[dbg] ");
-    writeAll(2, bytes[0..len]);
-    writeAll(2, "\n");
+    writeErr("[dbg] ");
+    writeErr(bytes[0..len]);
+    writeErr("\n");
 }
 
 export fn roc_expect_failed(bytes: [*]const u8, len: usize) callconv(.c) void {
     if (in_job) jobFault(5, bytes[0..len]);
-    writeAll(2, "expect failed: ");
-    writeAll(2, bytes[0..len]);
-    writeAll(2, "\n");
-    exit(71);
+    writeErr("expect failed: ");
+    writeErr(bytes[0..len]);
+    writeErr("\n");
+    os.exitProcess(71);
 }
 
 export fn roc_crashed(bytes: [*]const u8, len: usize) callconv(.c) void {
     if (in_job) jobFault(crashClass(bytes[0..len]), bytes[0..len]);
-    writeAll(2, "crashed: ");
-    writeAll(2, bytes[0..len]);
-    writeAll(2, "\n");
-    exit(70);
+    writeErr("crashed: ");
+    writeErr(bytes[0..len]);
+    writeErr("\n");
+    os.exitProcess(70);
 }
 
 fn fail(comptime prefix: []const u8, detail: []const u8) noreturn {
     if (in_job and std.mem.eql(u8, prefix, "out of memory")) jobFault(3, prefix);
-    writeAll(2, prefix);
-    writeAll(2, detail);
-    writeAll(2, "\n");
-    exit(2);
+    writeErr(prefix);
+    writeErr(detail);
+    writeErr("\n");
+    os.exitProcess(2);
 }
 
 /// A NUL-terminated copy of `path`, or null when it holds a NUL byte.
 fn cPath(path: []const u8) ?[*:0]u8 {
     if (std.mem.indexOfScalar(u8, path, 0) != null) return null;
-    const buf: [*]u8 = @ptrCast(malloc(path.len + 1) orelse fail("out of memory copying a path: ", path));
+    const buf = os.alloc(16, path.len + 1) orelse fail("out of memory copying a path: ", path);
     @memcpy(buf[0..path.len], path);
     buf[path.len] = 0;
     return @ptrCast(buf);
@@ -222,54 +206,35 @@ fn hostedReadFile(path: RocStr) callconv(.c) RocList {
     defer path.decref();
     const name = path.slice();
     const c_name = cPath(name) orelse fail("cannot read a path containing NUL: ", name);
-    defer free(c_name);
-    const fd = open(c_name, o_rdonly);
-    if (fd < 0) fail("cannot open ", name);
-    defer _ = close(fd);
-    var cap: usize = 1 << 16;
-    var len: usize = 0;
-    var buf: [*]u8 = @ptrCast(malloc(cap) orelse fail("out of memory reading ", name));
-    defer free(buf);
+    defer os.release(c_name);
+    const file = os.openFile(c_name) orelse fail("cannot open ", name);
+    defer os.closeFile(file);
+    var buf: Growing = .{};
+    defer buf.deinit();
     while (true) {
-        if (len == cap) {
-            const bigger: [*]u8 = @ptrCast(malloc(cap * 2) orelse fail("out of memory reading ", name));
-            @memcpy(bigger[0..len], buf[0..len]);
-            free(buf);
-            buf = bigger;
-            cap *= 2;
-        }
-        const n = read(fd, buf + len, cap - len);
-        if (n < 0) fail("cannot read ", name);
+        const room = buf.room() orelse fail("out of memory reading ", name);
+        const n = os.readSome(file, room) orelse fail("cannot read ", name);
         if (n == 0) break;
-        len += @intCast(n);
+        buf.len += n;
     }
-    return bytesList(buf[0..len]);
+    return bytesList(buf.bytes());
 }
 
 fn hostedFileExists(path: RocStr) callconv(.c) bool {
     defer path.decref();
     const c_name = cPath(path.slice()) orelse return false;
-    defer free(c_name);
-    // A directory opens read-only too; refuse it so only files count.
-    const dir = open(c_name, o_rdonly | o_directory);
-    if (dir >= 0) {
-        _ = close(dir);
-        return false;
-    }
-    const fd = open(c_name, o_rdonly);
-    if (fd < 0) return false;
-    _ = close(fd);
-    return true;
+    defer os.release(c_name);
+    return os.isFile(c_name);
 }
 
 fn hostedStdout(text: RocStr) callconv(.c) void {
     defer text.decref();
-    writeAll(1, text.slice());
+    writeOut(text.slice());
 }
 
 fn hostedStderr(text: RocStr) callconv(.c) void {
     defer text.decref();
-    writeAll(2, text.slice());
+    writeErr(text.slice());
 }
 
 /// The native spec host's copy of the page's file handles (design.md,
@@ -335,9 +300,7 @@ fn hostedSha256(bytes: RocList) callconv(.c) RocList {
 }
 
 fn hostedNowNs() callconv(.c) u64 {
-    var ts: Timespec = undefined;
-    if (clock_gettime(clock_monotonic, &ts) != 0) return 0;
-    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+    return os.nowNs();
 }
 
 // ---------------------------------------------------------------------------
@@ -347,20 +310,25 @@ fn hostedNowNs() callconv(.c) u64 {
 /// manual, so a job's own deadline never ends it; this bound only turns a
 /// job that never finishes into a failed step instead of a hung runner.
 /// The browser runner applies the same bound.
-const job_bound_ms: i64 = 30_000;
+const job_bound_ms: u32 = 30_000;
+
+/// The one argument that starts the runner's executable as a job's child
+/// (see `runMain`). No spec runner command line takes this form.
+const job_flag = "--roc-signals-worker-job";
 
 /// Set in a job's child process: a crash there ends the child with its
 /// fault class instead of ending the runner.
 var in_job: bool = false;
 
 /// The task a job's child runs, for its fault report (at most 256 bytes
-/// of the name, copied before the payload moves into Roc).
+/// of the name).
 var job_name_buf: [256]u8 = undefined;
 var job_name: []const u8 = "";
 
 /// The exit status a child uses for fault class `class` (1 contract,
-/// 2 resource_limit, 3 out_of_memory, 4 app_crash, 5 expect_failed).
-const job_fault_base: c_int = 80;
+/// 2 resource_limit, 3 out_of_memory, 4 app_crash, 5 expect_failed, and
+/// 7 executor when the child's own process failed the job).
+const job_fault_base: u8 = 80;
 
 const fault_names = [_][]const u8{ "", "contract", "resource_limit", "out_of_memory", "app_crash", "expect_failed" };
 
@@ -377,20 +345,23 @@ fn crashClass(msg: []const u8) u8 {
 /// job (`roc worker fault [class] ...` on stderr) and end the child with
 /// the class in its exit status.
 fn jobFault(class: u8, msg: []const u8) noreturn {
-    writeAll(2, "roc worker fault [");
-    writeAll(2, fault_names[class]);
-    writeAll(2, "] in task \"");
-    writeAll(2, job_name);
-    writeAll(2, "\": ");
-    writeAll(2, msg);
-    writeAll(2, "\n");
-    _exit(job_fault_base + class);
+    writeErr("roc worker fault [");
+    writeErr(fault_names[class]);
+    writeErr("] in task \"");
+    writeErr(job_name);
+    writeErr("\": ");
+    writeErr(msg);
+    writeErr("\n");
+    os.exitProcess(job_fault_base + class);
 }
 
-fn nowMs() i64 {
-    var ts: Timespec = undefined;
-    if (clock_gettime(clock_monotonic, &ts) != 0) return 0;
-    return ts.sec * 1000 + @divTrunc(ts.nsec, 1_000_000);
+/// In a job's child: end as an executor fault, the child's own process
+/// having failed the job (its input unreadable, or its runner gone).
+fn jobLost(msg: []const u8) noreturn {
+    _ = os.writeAll(.err, "roc worker fault [executor]: ");
+    _ = os.writeAll(.err, msg);
+    _ = os.writeAll(.err, "\n");
+    os.exitProcess(job_fault_base + 7);
 }
 
 /// Release one reference to a `List(U8)` (a hosted function owns its
@@ -422,74 +393,118 @@ fn releaseFiles(list: RocList) void {
     roc_dealloc(@ptrFromInt(alloc_addr - 2 * @sizeOf(usize)), @alignOf(usize));
 }
 
-/// In a job's child: keep the task's name for its fault report (at most
-/// 256 bytes, copied before the payload moves into Roc).
-fn nameJob(payload: RocList) void {
-    const e = payload.elements orelse return;
-    const bytes = @as([*]const u8, @ptrCast(e))[0..payload.length];
-    if (bytes.len < 4) return;
-    const n = @min(std.mem.readInt(u32, bytes[0..4], .little), bytes.len - 4, job_name_buf.len);
-    @memcpy(job_name_buf[0..n], bytes[4..][0..n]);
+/// The items of a `List(List(U8))`, read in place.
+fn listItems(list: RocList) []const RocList {
+    return if (list.elements) |e| @as([*]const RocList, @ptrCast(@alignCast(e)))[0..list.length] else &.{};
+}
+
+/// In a job's child: keep the task's name, from its payload (`name:str
+/// input:rest`), for its fault report.
+fn nameJob(payload: []const u8) void {
+    if (payload.len < 4) return;
+    const n = @min(std.mem.readInt(u32, payload[0..4], .little), payload.len - 4, job_name_buf.len);
+    @memcpy(job_name_buf[0..n], payload[4..][0..n]);
     job_name = job_name_buf[0..n];
 }
 
-/// In a job's child: write `bytes` to the parent's pipe, or end as an
-/// executor fault when the pipe is gone.
-fn childWrite(fd: c_int, bytes: []const u8) void {
-    var rest = bytes;
-    while (rest.len > 0) {
-        const n = write(fd, rest.ptr, rest.len);
-        if (n <= 0) _exit(job_fault_base + 7);
-        rest = rest[@intCast(n)..];
+/// In a job's child: write `bytes` of the answer to the runner, or end as
+/// an executor fault when the runner is gone.
+fn childWrite(bytes: []const u8) void {
+    if (!os.writeAll(.out, bytes)) jobLost("the runner stopped reading the job's answer");
+}
+
+/// A buffer in the system's memory that doubles as it fills: a file being
+/// read, a job being written for its child or read by it, a job's answer.
+/// The system services fill it through `room` and `len`.
+const Growing = struct {
+    buf: ?[*]u8 = null,
+    cap: usize = 0,
+    len: usize = 0,
+
+    /// The free space at the end, after growing when there is none; null
+    /// when the system has no memory for it. Filling it is adding to `len`.
+    pub fn room(g: *Growing) ?[]u8 {
+        if (g.len == g.cap) {
+            const cap = @max(g.cap * 2, 1 << 12);
+            const next = os.alloc(16, cap) orelse return null;
+            if (g.buf) |old| {
+                @memcpy(next[0..g.len], old[0..g.len]);
+                os.release(old);
+            }
+            g.buf = next;
+            g.cap = cap;
+        }
+        return g.buf.?[g.len..g.cap];
+    }
+
+    /// Append `data`; a runner with no memory for a job fails.
+    fn append(g: *Growing, data: []const u8) void {
+        var rest = data;
+        while (rest.len > 0) {
+            const space = g.room() orelse fail("out of memory writing a worker job", "");
+            const n = @min(space.len, rest.len);
+            @memcpy(space[0..n], rest[0..n]);
+            g.len += n;
+            rest = rest[n..];
+        }
+    }
+
+    fn appendInt(g: *Growing, comptime T: type, value: T) void {
+        var raw: [@sizeOf(T)]u8 = undefined;
+        std.mem.writeInt(T, &raw, value, .little);
+        g.append(&raw);
+    }
+
+    fn bytes(g: *const Growing) []u8 {
+        return if (g.buf) |b| b[0..g.len] else &.{};
+    }
+
+    fn deinit(g: *Growing) void {
+        if (g.buf) |b| os.release(b);
+        g.* = .{};
+    }
+};
+
+/// The job as the runner writes it to its child's standard input:
+/// `max_output:u64 payload:bytes prepare:bytes n:u32 (file:bytes)* m:u32
+/// (file:bytes)*`, the preparation's files and then the job's, where each
+/// `bytes` is a `u64` length and the bytes.
+fn encodeJob(in: *Growing, payload: RocList, files: RocList, prepare: RocList, prepare_files: RocList, max_output: u64) void {
+    in.appendInt(u64, max_output);
+    for ([_]RocList{ payload, prepare }) |list| {
+        in.appendInt(u64, list.length);
+        in.append(listBytes(list));
+    }
+    for ([_]RocList{ prepare_files, files }) |list| {
+        const items = listItems(list);
+        in.appendInt(u32, @intCast(items.len));
+        for (items) |item| {
+            in.appendInt(u64, item.length);
+            in.append(listBytes(item));
+        }
     }
 }
 
-/// In the runner: read job `pid`'s pipe `fd` to its end and wait for the
-/// child, returning what it wrote, or tag 11 and the fault class when the
-/// child faulted, or an empty list when it did not finish within
-/// `job_bound_ms` (it is killed). The pipe is read before waiting, so a
-/// large answer cannot block the child, and closed here.
-fn awaitJob(pid: c_int, fd: c_int) RocList {
-    defer _ = close(fd);
-    var cap: usize = 1 << 12;
-    var len: usize = 0;
-    var buf: [*]u8 = @ptrCast(malloc(cap) orelse fail("out of memory reading a worker job", ""));
-    defer free(buf);
-    const fds = [2]c_int{ fd, -1 };
-    const start = nowMs();
-    while (true) {
-        const left = job_bound_ms - (nowMs() - start);
-        var pfd = [_]PollFd{.{ .fd = fds[0], .events = pollin, .revents = 0 }};
-        const ready = if (left > 0) poll(&pfd, 1, @intCast(left)) else 0;
-        if (ready == 0) {
-            _ = kill(pid, sigkill);
-            var ignored: c_int = 0;
-            _ = waitpid(pid, &ignored, 0);
-            return .{ .elements = null, .length = 0, .capacity_or_alloc_ptr = 0 };
-        }
-        if (ready < 0) continue;
-        if (len == cap) {
-            const bigger: [*]u8 = @ptrCast(malloc(cap * 2) orelse fail("out of memory reading a worker job", ""));
-            @memcpy(bigger[0..len], buf[0..len]);
-            free(buf);
-            buf = bigger;
-            cap *= 2;
-        }
-        const n = read(fds[0], buf + len, cap - len);
-        if (n < 0) continue;
-        if (n == 0) break;
-        len += @intCast(n);
+/// In a job's child: the job its runner wrote (`encodeJob`), read in place.
+/// A job that ends early is the runner's failure, never the task's.
+const JobInput = struct {
+    rest: []u8,
+
+    fn take(j: *JobInput, n: u64) []u8 {
+        if (n > j.rest.len) jobLost("the runner sent a truncated job");
+        const out = j.rest[0..@intCast(n)];
+        j.rest = j.rest[@intCast(n)..];
+        return out;
     }
-    var status: c_int = 0;
-    while (waitpid(pid, &status, 0) < 0) {}
-    // A normal exit keeps its code in bits 8-15; a signal leaves bits 0-6 set.
-    const signalled = (status & 0x7f) != 0;
-    const code = (status >> 8) & 0xff;
-    if (!signalled and code == 0) return bytesList(buf[0..len]);
-    const class: u8 = if (!signalled and code > job_fault_base and code <= job_fault_base + 5) @intCast(code - job_fault_base) else 7;
-    if (class == 7) writeAll(2, "roc worker fault [executor]: the job's process died without a fault class\n");
-    return bytesList(&[_]u8{ 11, class });
-}
+
+    fn int(j: *JobInput, comptime T: type) T {
+        return std.mem.readInt(T, j.take(@sizeOf(T))[0..@sizeOf(T)], .little);
+    }
+
+    fn bytes(j: *JobInput) []u8 {
+        return j.take(j.int(u64));
+    }
+};
 
 // ---------------------------------------------------------------------------
 // Hosted effects (design.md, "Workers"). A job runs in a child process,
@@ -539,7 +554,7 @@ fn outsideTask(comptime effect: []const u8) noreturn {
 /// A copy of `bytes` in memory of its own (the child's; never freed).
 fn copyOf(bytes: []const u8) []u8 {
     if (bytes.len == 0) return &.{};
-    const p: [*]u8 = @ptrCast(malloc(bytes.len) orelse fail("out of memory in a worker job", ""));
+    const p = os.alloc(16, bytes.len) orelse fail("out of memory in a worker job", "");
     @memcpy(p[0..bytes.len], bytes);
     return p[0..bytes.len];
 }
@@ -550,7 +565,7 @@ fn grow(b: *Held, bytes: []const u8) void {
     const need = b.bytes.len + bytes.len;
     if (need > b.cap) {
         const cap = @max(need, b.cap * 2, 4096);
-        const p: [*]u8 = @ptrCast(malloc(cap) orelse fail("out of memory in a worker job", ""));
+        const p = os.alloc(16, cap) orelse fail("out of memory in a worker job", "");
         @memcpy(p[0..b.bytes.len], b.bytes);
         b.bytes = p[0..b.bytes.len];
         b.cap = cap;
@@ -658,125 +673,146 @@ fn closeOpened() void {
     opened_count = 0;
 }
 
-/// In a job's child: a Roc `List(Box(U64))` of fresh handles, one for each
-/// file of `files` (a `List(List(U8))`, each the whole file), holding its
-/// bytes. Its single reference, and each handle's, pass to Roc; `files`
-/// is released.
-fn handlesFor(files: RocList) RocList {
-    const contents: [*]const RocList = if (files.elements) |e| @ptrCast(@alignCast(e)) else undefined;
-    const count = files.length;
-    var handles: RocList = .{ .elements = null, .length = 0, .capacity_or_alloc_ptr = 0 };
-    if (count > 0) {
-        // A list of refcounted elements, laid out as Roc lays one out: its
-        // original length, then its refcount (1), then the elements.
-        const base: [*]u8 = @ptrCast(roc_alloc(@sizeOf(usize) * (count + 2), @alignOf(usize)));
-        const words: [*]usize = @ptrCast(@alignCast(base));
-        words[0] = count;
-        words[1] = 1;
-        const elems: [*]usize = words + 2;
-        for (0..count) |i| {
-            const p = blobs.mint(.{ .kind = .file, .bytes = copyOf(listBytes(contents[i])) }) orelse jobFault(2, "resource_limit: a worker job was sent more files than its instance holds");
-            elems[i] = @intFromPtr(p);
-        }
-        handles = .{ .elements = @ptrCast(elems), .length = count, .capacity_or_alloc_ptr = count << 1 };
+/// In a job's child: a Roc `List(Box(U64))` of fresh handles for the job's
+/// next `n:u32 (file:bytes)*` files, each holding its file's bytes where
+/// they lie in the job's input (which the child never frees). Its single
+/// reference, and each handle's, pass to Roc.
+fn handlesFor(job: *JobInput) RocList {
+    const count: usize = job.int(u32);
+    if (count == 0) return .{ .elements = null, .length = 0, .capacity_or_alloc_ptr = 0 };
+    // A list of refcounted elements, laid out as Roc lays one out: its
+    // original length, then its refcount (1), then the elements.
+    const base: [*]u8 = @ptrCast(roc_alloc(@sizeOf(usize) * (count + 2), @alignOf(usize)));
+    const words: [*]usize = @ptrCast(@alignCast(base));
+    words[0] = count;
+    words[1] = 1;
+    const elems: [*]usize = words + 2;
+    for (0..count) |i| {
+        const p = blobs.mint(.{ .kind = .file, .bytes = job.bytes() }) orelse jobFault(2, "resource_limit: a worker job was sent more files than its instance holds");
+        elems[i] = @intFromPtr(p);
     }
-    releaseFiles(files);
-    return handles;
+    return .{ .elements = @ptrCast(elems), .length = count, .capacity_or_alloc_ptr = count << 1 };
 }
 
 /// `Cli.work!`: run one worker job in a child process and return the
-/// runner's record of its answer (see `Cli.work!`). When `prepare` is not
-/// empty the child first mints handles for `prepare_files` and runs the
-/// preparation it names, as a worker instance that holds no state does,
-/// closes the builders the preparation opened, and runs the job on the
-/// state; otherwise it runs the job as a task of its own. Either way it
-/// mints a handle for each of `files` (the whole file each request entry
-/// names) first, then writes tag 10, the answer's files' sizes, names and
-/// types, the output, and each file's bytes, so the runner can mint the
-/// page's handles and serve the files' bytes afterwards. A fault in the
-/// child is answered tag 11 with its class, and a child that does not
-/// finish within `job_bound_ms` is killed and answered with an empty list.
+/// runner's record of its answer (see `Cli.work!`). The runner writes the
+/// job to the child (`encodeJob`) and reads back what `jobMain` writes:
+/// tag 10, the answer's files' sizes, names and types, the output, and
+/// each file's bytes, so the runner can mint the page's handles and serve
+/// the files' bytes afterwards. A fault in the child is answered tag 11
+/// with its class (7, executor, when the child ended without one), and a
+/// child that does not finish within `job_bound_ms` is ended and answered
+/// with an empty list.
 ///
-/// Ownership: the parent releases its references to every argument after
-/// the fork; the child moves its copies into Roc (each list's bytes into a
-/// handle's slot, the payloads into the entries), writes the answer to a
-/// pipe and exits without running any exit handlers. The parent reads the
-/// pipe to its end before waiting, so a large answer cannot block the
-/// child.
+/// Ownership: the runner copies every argument into the job's input and
+/// releases its references before the child starts; the child owns its
+/// copy and everything it makes, all of which goes with its process. A
+/// runner that cannot start a child, or has no memory for the job, fails
+/// with exit status 2: it has nothing correct left to report.
 fn hostedWork(payload: RocList, files: RocList, prepare: RocList, prepare_files: RocList, max_output: u64) callconv(.c) RocList {
-    var fds: [2]c_int = undefined;
-    if (pipe(&fds) != 0) fail("cannot create a pipe for a worker job", "");
-    const pid = fork();
-    if (pid < 0) fail("cannot fork a worker job", "");
-    if (pid == 0) {
-        in_job = true;
-        _ = close(fds[0]);
-        nameJob(payload);
-        output_left = max_output;
-        var out: RocList = undefined;
-        if (prepare.length > 0) {
-            const prep_handles = handlesFor(prepare_files);
-            in_task = true;
-            const held = roc_engine_prepare(prepare, prep_handles);
-            in_task = false;
-            closeOpened();
-            const handles = handlesFor(files);
-            in_task = true;
-            const step = roc_engine_ask(held, payload, handles);
-            in_task = false;
-            out = step.out;
-        } else {
-            releaseFiles(prepare_files);
-            releaseBytes(prepare);
-            const handles = handlesFor(files);
-            in_task = true;
-            out = roc_engine_work(payload, handles);
-            in_task = false;
-        }
-        closeOpened();
-        const answer = listBytes(out);
-        if (answer.len < 4) jobFault(1, "contract: a job's entry returned an answer without its file count");
-        const n = std.mem.readInt(u32, answer[0..4], .little);
-        if (n > max_answer_files) jobFault(1, "contract: a job's entry returned more files than an answer holds");
-        if (answer.len < 4 + 8 * @as(usize, n)) jobFault(1, "contract: a job's entry returned a truncated answer");
-        var head: [5]u8 = undefined;
-        head[0] = 10;
-        std.mem.writeInt(u32, head[1..5], n, .little);
-        childWrite(fds[1], &head);
-        var held_files: [max_answer_files]*Held = undefined;
-        for (0..n) |i| {
-            const token = std.mem.readInt(u64, answer[4 + 8 * i ..][0..8], .little);
-            const h = blobs.get(token) orelse jobFault(1, "contract: a job's answer names a handle its instance does not hold");
-            if (h.kind != .file) jobFault(1, "contract: a job's answer names a builder; only a finished file can be in an answer");
-            held_files[i] = h;
-            var size: [8]u8 = undefined;
-            std.mem.writeInt(u64, &size, h.bytes.len, .little);
-            childWrite(fds[1], &size);
-            childStr(fds[1], h.name);
-            childStr(fds[1], h.mime);
-        }
-        const output = answer[4 + 8 * @as(usize, n) ..];
-        var size: [8]u8 = undefined;
-        std.mem.writeInt(u64, &size, output.len, .little);
-        childWrite(fds[1], &size);
-        childWrite(fds[1], output);
-        for (held_files[0..n]) |h| childWrite(fds[1], h.bytes);
-        _exit(0);
-    }
+    var in: Growing = .{};
+    defer in.deinit();
+    encodeJob(&in, payload, files, prepare, prepare_files, max_output);
     releaseBytes(payload);
     releaseFiles(files);
     releaseBytes(prepare);
     releaseFiles(prepare_files);
-    _ = close(fds[1]);
-    return awaitJob(pid, fds[0]);
+    var out: Growing = .{};
+    defer out.deinit();
+    const ended = os.runJob(job_flag, in.bytes(), job_bound_ms, &out) orelse fail("cannot run a worker job in a child process", "");
+    const class: u8 = switch (ended) {
+        .timed_out => return .{ .elements = null, .length = 0, .capacity_or_alloc_ptr = 0 },
+        .exited => |code| if (code == 0)
+            return bytesList(out.bytes())
+        else if (code > job_fault_base and code <= job_fault_base + 5)
+            @intCast(code - job_fault_base)
+        else
+            7,
+        .died => 7,
+    };
+    // A child that reported its own executor fault has said why already.
+    const reported = switch (ended) {
+        .exited => |code| code == job_fault_base + 7,
+        else => false,
+    };
+    if (class == 7 and !reported) writeErr("roc worker fault [executor]: the job's process died without a fault class\n");
+    return bytesList(&[_]u8{ 11, class });
+}
+
+/// A job's child, started by `hostedWork` through `os.runJob`: read the
+/// job, run it as a worker instance would, write the answer and exit. When
+/// the job names a preparation the child first mints handles for the
+/// preparation's files and runs it, as a worker instance that holds no
+/// state does, closes the builders it opened, and runs the job on the
+/// state; otherwise it runs the job as a task of its own. Either way it
+/// mints a handle for each of the job's files first. A fault ends the child
+/// with its class (`jobFault`).
+fn jobMain() noreturn {
+    in_job = true;
+    var input: Growing = .{};
+    if (!os.readJobInput(&input)) jobLost("cannot read the job from the runner");
+    var job: JobInput = .{ .rest = input.bytes() };
+    output_left = job.int(u64);
+    const payload = job.bytes();
+    const prepare = job.bytes();
+    nameJob(payload);
+    var out: RocList = undefined;
+    if (prepare.len > 0) {
+        const prep_handles = handlesFor(&job);
+        in_task = true;
+        const held = roc_engine_prepare(bytesList(prepare), prep_handles);
+        in_task = false;
+        closeOpened();
+        const handles = handlesFor(&job);
+        in_task = true;
+        const step = roc_engine_ask(held, bytesList(payload), handles);
+        in_task = false;
+        out = step.out;
+    } else {
+        // Files sent for no preparation are not the job's.
+        for (0..job.int(u32)) |_| _ = job.bytes();
+        const handles = handlesFor(&job);
+        in_task = true;
+        out = roc_engine_work(bytesList(payload), handles);
+        in_task = false;
+    }
+    closeOpened();
+    const answer = listBytes(out);
+    if (answer.len < 4) jobFault(1, "contract: a job's entry returned an answer without its file count");
+    const n = std.mem.readInt(u32, answer[0..4], .little);
+    if (n > max_answer_files) jobFault(1, "contract: a job's entry returned more files than an answer holds");
+    if (answer.len < 4 + 8 * @as(usize, n)) jobFault(1, "contract: a job's entry returned a truncated answer");
+    var head: [5]u8 = undefined;
+    head[0] = 10;
+    std.mem.writeInt(u32, head[1..5], n, .little);
+    childWrite(&head);
+    var held_files: [max_answer_files]*Held = undefined;
+    for (0..n) |i| {
+        const token = std.mem.readInt(u64, answer[4 + 8 * i ..][0..8], .little);
+        const h = blobs.get(token) orelse jobFault(1, "contract: a job's answer names a handle its instance does not hold");
+        if (h.kind != .file) jobFault(1, "contract: a job's answer names a builder; only a finished file can be in an answer");
+        held_files[i] = h;
+        var size: [8]u8 = undefined;
+        std.mem.writeInt(u64, &size, h.bytes.len, .little);
+        childWrite(&size);
+        childStr(h.name);
+        childStr(h.mime);
+    }
+    const output = answer[4 + 8 * @as(usize, n) ..];
+    var size: [8]u8 = undefined;
+    std.mem.writeInt(u64, &size, output.len, .little);
+    childWrite(&size);
+    childWrite(output);
+    for (held_files[0..n]) |h| childWrite(h.bytes);
+    os.exitProcess(0);
 }
 
 /// In a job's child: a string as the wire writes one, `len:u32 bytes`.
-fn childStr(fd: c_int, bytes: []const u8) void {
+fn childStr(bytes: []const u8) void {
     var len: [4]u8 = undefined;
     std.mem.writeInt(u32, &len, @intCast(bytes.len), .little);
-    childWrite(fd, &len);
-    childWrite(fd, bytes);
+    childWrite(&len);
+    childWrite(bytes);
 }
 
 comptime {
@@ -804,7 +840,14 @@ comptime {
     @export(&cMain, .{ .name = "main" });
 }
 
-fn cMain(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
-    const count: usize = @intCast(argc);
-    return roc_spec_main(argsList(argv[1..count]));
+/// Run the spec runner over `args` (the arguments after the program's
+/// name), or run a job when the runner started this process for one.
+fn runMain(args: []const [*:0]const u8) i32 {
+    if (args.len == 1 and std.mem.eql(u8, std.mem.span(args[0]), job_flag)) jobMain();
+    return roc_spec_main(argsList(args));
+}
+
+fn cMain(argc: c_int, argv: [*]const [*:0]const u8) callconv(.c) c_int {
+    os.init();
+    return runMain(os.argsOf(argc, argv));
 }
