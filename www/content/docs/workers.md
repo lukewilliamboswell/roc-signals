@@ -336,8 +336,9 @@ Two costs come with a state like this:
   start and which lines a filter keeps, so it never parses the file again.
 - The state counts toward `maxWorkerBytes`. A worker grown past it is ended
   after its job, its state with it, so a state too large for the bound is
-  prepared again for every question. Keep the state compact (positions and
-  small tags rather than strings), or raise the bound.
+  prepared again for every question; the console says so once for each
+  preparation it happens to. Keep the state compact (positions and small
+  tags rather than strings), or raise the bound.
 
 ## Lifetimes
 

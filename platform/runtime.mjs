@@ -1227,6 +1227,20 @@ class WorkPool {
     this.live = live;
     // Use order, for choosing which holder to evict.
     this.clock = 0;
+    // The preparations already reported as too large to keep (at most one
+    // entry per catalogue name, so at most 64).
+    this.oversized = new Set();
+  }
+
+  // A worker holding a prepared state grew past `maxBytes`, so it is
+  // retired and the state goes with it: every later question prepares it
+  // again. Say so on the console, once per preparation. Only reported;
+  // nothing is decided from it.
+  reportOversized(name, bytes) {
+    if (this.oversized.has(name)) return;
+    this.oversized.add(name);
+    const mib = (n) => (n / 1048576).toFixed(1);
+    console.warn(`roc worker: the state prepared by "${name}" left its worker at ${mib(bytes)} MiB, past maxWorkerBytes (${mib(this.maxBytes)} MiB), so the worker is retired after each job and the state is prepared again for every question; raise maxWorkerBytes or keep less in the state`);
   }
 
   // Returns the job's stop function: `stop("cancel")` for CANCEL,
@@ -1426,7 +1440,10 @@ class WorkPool {
   // go, and a worker grown past `maxBytes` is retired.
   afterJob(slot, mem) {
     if (slot.key !== null && !keyLive(slot.key, this.live)) this.evict(slot, "released");
-    if (Array.isArray(mem) && mem[0] > this.maxBytes) this.discard(slot, "retired");
+    if (Array.isArray(mem) && mem[0] > this.maxBytes) {
+      if (slot.key !== null) this.reportOversized(slot.key.name, mem[0]);
+      this.discard(slot, "retired");
+    }
   }
 
   answer(slot, m) {
@@ -1587,6 +1604,7 @@ class WorkPool {
           this.settle(job, { output, objects });
           if (this.inlineKey !== null && !keyLive(this.inlineKey, this.live)) this.forgetInline("released");
           if (mem[0] > this.maxBytes) {
+            if (this.inlineKey !== null) this.reportOversized(this.inlineKey.name, mem[0]);
             this.instance = null;
             this.inlineKey = null;
             this.terminated += 1;
@@ -1760,7 +1778,7 @@ export class RocEngineRuntime {
     this.monitor = new WorkMonitor(options.monitor ?? {}, {
       page: () => this.pageStats(),
       mode: () => this.workMode(),
-      ports: () => Object.fromEntries([...this.portCounts].map(([name, c]) => [name, { ...c }])),
+      ports: () => this.portStats(),
       maxWorkers: this.maxWorkers,
     });
     this.storage = options.storage ?? (() => {
@@ -2995,6 +3013,26 @@ export class RocEngineRuntime {
     return this.ports ? this.ports[port] : undefined;
   }
 
+  // The monitor's per-port record: the counts since mount, and what is
+  // outstanding now: calls awaiting an answer (`inFlight`), live
+  // subscriptions, and messages emitted but not yet delivered (`backlog`).
+  // Read only when a snapshot is taken; linear in the requests in flight,
+  // which the in-flight bound caps.
+  portStats() {
+    const stats = Object.fromEntries([...this.portCounts].map(([name, c]) => [name, { ...c, inFlight: 0, subscriptions: 0, backlog: 0 }]));
+    for (const e of this.live.values()) {
+      if (e.kind !== "portcall" && e.kind !== "portsub") continue;
+      const s = stats[e.req.port];
+      if (s === undefined) continue;
+      if (e.kind === "portcall") s.inFlight += 1;
+      else {
+        s.subscriptions += 1;
+        s.backlog += e.backlog ? e.backlog() : 0;
+      }
+    }
+    return stats;
+  }
+
   portCount(port, key, n = 1) {
     let c = this.portCounts.get(port);
     if (c === undefined) {
@@ -3134,6 +3172,7 @@ export class RocEngineRuntime {
     sub.entry = {
       kind: "portsub",
       req: fx,
+      backlog: () => sub.queue.length,
       cancel: () => {
         sub.ended = true;
         sub.queue = [];

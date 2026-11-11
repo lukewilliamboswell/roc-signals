@@ -246,15 +246,17 @@ async function open(options = {}, mountWith = null) {
     window.__click("Get");
     const [first, second] = window.__seen.signals;
     const firstReason = first.aborted ? first.reason.name : "not aborted";
+    const outstanding = window.__rt.monitor.snapshot().ports["test.roc-signals/get"].inFlight;
     window.__pending.get("k1")({ value: "late" });
     window.__pending.get("k2")({ value: "fresh" });
     await window.__until((t) => t.includes("fresh"));
     await window.__turns();
+    const settled = window.__rt.monitor.snapshot().ports["test.roc-signals/get"].inFlight;
     window.__mode.get = "never";
     window.__click("Get");
     const third = window.__seen.signals[2];
     const timedOut = await window.__until((t) => t.includes("timeout"));
-    return { firstReason, secondAborted: second.aborted, log: timedOut, thirdReason: third.reason.name, timers: window.__rt.timers };
+    return { firstReason, secondAborted: second.aborted, log: timedOut, thirdReason: third.reason.name, timers: window.__rt.timers, inFlight: [outstanding, settled] };
   });
   check("supersession aborts the older call and drops its answer; a timeout aborts and answers Timeout", r, {
     firstReason: "AbortError",
@@ -262,6 +264,7 @@ async function open(options = {}, mountWith = null) {
     log: "get k2:fresh|get k3:timeout",
     thirdReason: "TimeoutError",
     timers: 0,
+    inFlight: [1, 0],
   });
   await ctx.close();
 }
@@ -303,11 +306,13 @@ async function open(options = {}, mountWith = null) {
     window.__feed.emit("last");
     window.__feed.close();
     window.__feed.emit("after close");
+    // Emitted and not yet delivered: the message and the close wait.
+    const waiting = window.__rt.monitor.snapshot().ports["test.roc-signals/feed"];
     const fed = await window.__until((t) => t.includes("closed"));
     // The monitor's per-port counters see the same.
     const ports = window.__rt.monitor.snapshot().ports;
     const feed = ports["test.roc-signals/feed"];
-    return { latest, ticksLog, emits: window.__seen.emits, arg: window.__seen.feedArg, fed, live: window.__rt.portSubscriptions("test.roc-signals/feed"), refused: feed.refusedEmits, coalesced: ports["test.roc-signals/ticks"].coalesced, delivered: [feed.messages, feed.closed] };
+    return { latest, ticksLog, emits: window.__seen.emits, arg: window.__seen.feedArg, fed, live: window.__rt.portSubscriptions("test.roc-signals/feed"), refused: feed.refusedEmits, coalesced: ports["test.roc-signals/ticks"].coalesced, delivered: [feed.messages, feed.closed], outstanding: [waiting.subscriptions, waiting.backlog, feed.subscriptions, feed.backlog] };
   });
   check("Latest replaces, Every(n) refuses beyond n, close ends after the buffered messages", r, {
     latest: "tick:3",
@@ -319,6 +324,7 @@ async function open(options = {}, mountWith = null) {
     refused: 2,
     coalesced: 2,
     delivered: [5, 1],
+    outstanding: [1, 2, 0, 0],
   });
   await ctx.close();
 }

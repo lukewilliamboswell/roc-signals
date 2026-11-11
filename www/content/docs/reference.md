@@ -160,7 +160,7 @@ them.
 | A cancelled job of a task that says `on_cancel: Finish` | Its deadline, else 600 s after it was asked for | Its worker is ended, its prepared state with it |
 | Workers alive at once | `maxWorkers` (default the core count, at most 8) | Jobs wait in order for a free worker |
 | Prepared states | One per worker | A new input replaces the least recently used idle worker's |
-| A worker's memory | `maxWorkerBytes` (default 128 MiB), checked after each job | The worker is ended after the job, its prepared state with it |
+| A worker's memory | `maxWorkerBytes` (default 128 MiB), checked after each job | The worker is ended after the job, its prepared state with it; the console warns once per preparation whose state was too large to keep |
 | Files an app holds at once | 64 | Further files an event carries are not delivered (`Received.refused` counts them); a download with no room is `FileFailed(TooLarge)` |
 | Bytes one page read takes | Its `max_bytes` (default 8 MiB), at most `maxFileBytes` (default 256 MiB) | `FileFailed(TooLarge)`, unread |
 | Bytes one digest reads | `maxFileBytes` (default 256 MiB) | `FileFailed(TooLarge)`, unread |

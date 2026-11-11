@@ -124,10 +124,14 @@ async function open(options = {}) {
   const ctx = await browser.createBrowserContext();
   const page = await ctx.newPage();
   page.on("pageerror", (e) => console.log("pageerror", String(e)));
+  const warnings = [];
+  page.on("console", (m) => {
+    if (m.type() === "warning" || m.type() === "warn") warnings.push(m.text());
+  });
   await page.evaluateOnNewDocument(install);
   await page.goto(`${base}/`);
   await page.evaluate((o) => window.__mount(o), options);
-  return { page, ctx };
+  return { page, ctx, warnings };
 }
 
 // The same three tasks and a revisit, in a fresh page: one preparation,
@@ -349,9 +353,10 @@ const BIG = 100000;
 }
 
 // A worker grown past maxWorkerBytes is retired after its job, its state
-// with it: every job prepares on a fresh worker, with the same answers.
+// with it: every job prepares on a fresh worker, with the same answers, and
+// the console says so once for the preparation.
 {
-  const { page, ctx } = await open({ maxWorkerBytes: 1 });
+  const { page, ctx, warnings } = await open({ maxWorkerBytes: 1 });
   const r = await page.evaluate(async (n) => {
     window.__choose(window.__doc(n));
     const stats = await window.__answer("stats", `${2 * n} lines`);
@@ -369,6 +374,8 @@ const BIG = 100000;
     ],
     retired: 2,
   });
+  const oversized = warnings.filter((w) => w.startsWith("roc worker: the state prepared by"));
+  check("an oversized state is reported once, naming its preparation", [oversized.length, oversized.length > 0 && oversized[0].includes('"test.roc-signals/prepared/document"')], [1, true]);
   await ctx.close();
 }
 
