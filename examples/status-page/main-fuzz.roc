@@ -1,7 +1,7 @@
 app [target] {
 	fz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.0/6uc3YKGydgEnS2nrCimSYWDNfT6drYcgU52VAwqrb6DS.tar.zst",
 	pf: "../../platform/main-fuzz.roc",
-	plume: "https://github.com/lukewilliamboswell/plume/releases/download/0.5.0/UstpTQVssohnU8U6Q5WpwfGxKuYZF8uWzjddwKMbTcp.tar.zst",
+	plume: "https://github.com/lukewilliamboswell/plume/releases/download/0.6.0/CQJyEgus7V9Wsoh8JHi5mbHXubm7woVbqFhCYLrd8sch.tar.zst",
 }
 
 import fz.Fuzz

@@ -4,7 +4,7 @@
     ; the Plotly figure Plume built. Before any check reports, every bar is
     ; empty and grey.
     (expect-visible (role img :name "Uptime by service"))
-    (expect-attr (test-id "uptime-chart") data-figure "{\"data\":[{\"type\":\"bar\",\"x\":[\"API\",\"Web app\",\"Database\",\"Notifications\"],\"y\":[0,0,0,0],\"marker\":{\"color\":[\"rgb(161, 161, 170)\",\"rgb(161, 161, 170)\",\"rgb(161, 161, 170)\",\"rgb(161, 161, 170)\"]},\"orientation\":\"v\",\"name\":\"Uptime\",\"width\":0.75}],\"layout\":{\"font\":{},\"title\":{},\"xaxis\":{},\"yaxis\":{\"range\":[0,100],\"type\":\"linear\",\"title\":{\"text\":\"Uptime (%)\",\"font\":{}},\"color\":\"rgb(68, 68, 68)\"},\"showlegend\":false}}")
+    (expect-attr (test-id "uptime-chart") data-figure "{\"data\":[{\"type\":\"bar\",\"x\":[\"API\",\"Web app\",\"Database\",\"Notifications\"],\"y\":[0,0,0,0],\"marker\":{\"color\":\"rgb(161, 161, 170)\"},\"orientation\":\"v\",\"name\":\"Uptime\",\"width\":0.75}],\"layout\":{\"font\":{},\"title\":{},\"xaxis\":{},\"yaxis\":{\"range\":[0,100],\"type\":\"linear\",\"title\":{\"text\":\"Uptime (%)\",\"font\":{}},\"color\":\"rgb(68, 68, 68)\"},\"showlegend\":false}}")
 
     ; The API check arrives: its bar rises to its uptime, in the
     ; operational tone. The others still wait.
