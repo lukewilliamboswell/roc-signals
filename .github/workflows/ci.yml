@@ -152,6 +152,46 @@ jobs:
           fi
           grep -q 'did not finish within 30 s' "$BUILD/bound.jsonl" || { echo "the bound did not end the job:"; cat "$BUILD/bound.jsonl"; failed=1; }
           exit $failed
+      # The signals.roc tool as an author on this system runs it: the
+      # checkout's package (cli/, whose Bundle.roc reads the runtime and the
+      # scaffold from the working tree) in place of a release's, and an app
+      # beside platform/, so the platform path init writes resolves to the
+      # working tree's platform and the link inputs above. init, test (and a
+      # spec that must fail), build, and serve answering with the right
+      # content types.
+      - env:
+          EXE: ${{ matrix.exe }}
+        run: |
+          failed=0
+          root=$(pwd -W 2>/dev/null || pwd)
+          cli_url=$(sed -n 's/.*cli: platform "\(.*\)",/\1/p' cli/main.roc)
+          printf '%s\n' 'app [main!] {' "	cli: platform \"$cli_url\"," "	signals: \"$root/cli/main.roc\"," '}' '' 'import signals.Signals' '' 'main! = |args| Signals.run!(args)' > signals.roc
+          echo "== init"
+          roc signals.roc init tool-app || exit 1
+          cd tool-app
+          echo "== test"
+          roc signals.roc test || failed=1
+          sed 's/"2")/"3")/' specs/counter.scm > specs/wrong.scm
+          if roc signals.roc test > ../wrong.txt; then echo "test passed a failing spec"; failed=1; fi
+          cat ../wrong.txt
+          grep -q 'Of 2 specs, 1 failed, 1 passed.' ../wrong.txt || failed=1
+          rm specs/wrong.scm
+          ls .signals/test/runner$EXE || failed=1
+          echo "== build"
+          roc signals.roc build || failed=1
+          ls dist/index.html dist/assets/*/app.wasm dist/assets/*/runtime.mjs dist/assets/*/worker.mjs || failed=1
+          echo "== serve"
+          roc signals.roc serve --port 8123 > serve.txt 2>&1 &
+          for i in $(seq 1 120); do curl -sf -o /dev/null http://127.0.0.1:8123/ && break; sleep 1; done
+          cat serve.txt
+          for f in "/ text/html" "/runtime.mjs text/javascript" "/app.wasm application/wasm"; do
+            set -- $f
+            type=$(curl -s -o /dev/null -w '%{content_type}' "http://127.0.0.1:8123$1")
+            echo "$1: $type"
+            case "$type" in "$2"*) ;; *) failed=1 ;; esac
+          done
+          curl -s http://127.0.0.1:8123/ | grep -q '__signals/events' || { echo "no reload script in the page"; failed=1; }
+          exit $failed
 
   site:
     name: Site

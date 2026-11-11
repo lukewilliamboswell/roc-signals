@@ -155,7 +155,12 @@ CI proves the native spec runner on the other systems itself: a Linux job
 builds the link inputs, and runners on macOS (Apple silicon and Intel) and
 Windows build a small app's and the worker apps' spec runners with `roc` and
 run their specs, then two specs that must fail (a crash expected with the
-wrong fault class, and a job past the runner's 30 s bound). A change to
+wrong fault class, and a job past the runner's 30 s bound). The same jobs
+run the `signals.roc` tool from the checkout's `cli/` on a new app beside
+`platform/`: `init`, `test` (with a spec that must fail), `build`, and
+`serve` answering with the right content types. A change to `cli/` that
+touches how it names files, starts programs or serves pages waits for those
+jobs too. A change to
 `platform/host/` that touches one system's file (`os_posix.zig` serves
 Linux and macOS, `os_windows.zig` Windows) is tested there and nowhere else,
 so it waits for those jobs.
