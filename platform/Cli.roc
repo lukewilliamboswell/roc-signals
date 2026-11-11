@@ -1,7 +1,10 @@
-## Host services for the native spec runner (`roc build --target=x64musl`
-## of an app): it reads `.scm` files and reports one JSON line per spec.
+## Host services for the native spec runner (`roc build --target=x64musl`,
+## `arm64mac`, `x64mac` or `x64win` of an app): it reads `.scm` files and
+## reports one JSON line per spec.
 ##
-## They are served by the native host, `host/spec.zig`. The browser module
+## They are served by the native host, `host/spec.zig`, alike on every
+## system (its system services are `host/os_posix.zig` and
+## `host/os_windows.zig`). The browser module
 ## never calls them, and the Wasm link drops them. A failed read or write ends
 ## the process with a message: a runner that cannot read its input or report
 ## its result has nothing correct left to do.
@@ -24,7 +27,9 @@ Cli := [].{
 	now_ns! : () => U64
 
 	## Run one worker job in a child process, as a browser runs it in a Web
-	## Worker (design.md, "Workers"). The child mints a handle for each file
+	## Worker (design.md, "Workers"): a fresh process of the runner's own
+	## executable, which reads the job and writes its answer through pipes,
+	## on every system. The child mints a handle for each file
 	## of `prepare_files` and runs the preparation `prepare` (`prep:str
 	## init:rest`) on them when it is not empty, then mints a handle for each
 	## file of `files` and runs the job `payload` (`name:str input:rest`):

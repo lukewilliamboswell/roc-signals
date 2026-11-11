@@ -6,6 +6,7 @@ app [main!] {
 
 import cli.Path
 import src/Checks
+import src/PlatformTest
 import src/DocSamples
 import src/ApiDocs
 import src/ExampleFiles
@@ -17,7 +18,8 @@ import src/Targets
 ## The `check` task, the per-pull-request gate: the script pins,
 ## formatting, every file `www/data/examples.toml` names present, every
 ## public `Engine` and `Html` symbol documented, `roc test`,
-## the platform inputs, the host's resource-heap tests, the `scm-parse` and
+## the platform inputs, the host's resource-heap tests, the spec runner's
+## links for macOS and Windows, the `scm-parse` and
 ## `wire` fuzz targets, the docs samples, every
 ## app's `.scm` specs natively and in Chrome, the broken-spec self-checks (both
 ## runners reject each spec with one wrong expectation, a lost worker job's
@@ -51,6 +53,7 @@ main! = |_args| {
 	Proc.note!("== platform inputs")
 	Checks.prepare_platform!(o)?
 	$problems = $problems.concat(check!({ program: o.zig, args: ["test", "platform/host/resources.zig"], cwd: "." }, "zig test platform/host/resources.zig")?)
+	$problems = $problems.concat(cross_links!(o)?)
 	$problems = $problems.concat(fuzz_smoke!(o)?)
 
 	Proc.note!("== docs samples")
@@ -149,6 +152,22 @@ script_pins! = || {
 		}
 	}
 	Ok($out)
+}
+
+## The spec runner links for every other system it builds for: a worker
+## app's runner built for macOS and Windows from here, with the link inputs
+## `prepare_platform!` made. Building shows a system's inputs are whole; CI
+## runs the specs on each system.
+cross_links! : SpecSuite.Options => Try(List(Str), _)
+cross_links! = |o| {
+	var $jobs = []
+	for host in PlatformTest.spec_hosts {
+		dir = "${o.build_dir}/cross/${host.target}"
+		Path.create_all!(Path.utf8(dir))?
+		$jobs = $jobs.append(SpecSuite.build_job(o, "dev", "tests/apps/tasks/main.roc", host.target, "${dir}/runner"))
+	}
+	results = Proc.parallel!($jobs, Proc.cpus!())?
+	Ok(List.map2(PlatformTest.spec_hosts, results, |host, r| (host.target, r)).keep_if(|(_, r)| r.code != 0).map(|(target, r)| "spec runner for ${target} does not link: ${r.output.trim()}"))
 }
 
 ## The shared-support fuzz targets (the `.scm` parser and the worker wire
