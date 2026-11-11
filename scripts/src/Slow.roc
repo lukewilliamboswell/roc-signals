@@ -29,6 +29,7 @@ Slow := [].{
 		{ example: "spreadsheet-lite", spec: "round-trip-edit-reorder-filter-and-mode" },
 		{ example: "worker-lab", spec: "round-trip-a-run-answered-and-reset" },
 		{ example: "reading-list", spec: "round-trip-finish-and-read-again" },
+		{ example: "log-explorer", spec: "round-trip-search-on-the-timeline" },
 		{ example: "supersede", spec: "round-trip-late-branch" },
 		{ example: "worker-search", spec: "round-trip-search-and-report" },
 	]
