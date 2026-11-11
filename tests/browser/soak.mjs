@@ -248,7 +248,9 @@ const CYCLES = {
   // Every check answered by the example's service, which settles on a
   // healthy board after its scripted incident.
   "status-page": [["click", ["role", "button", "Refresh now"]]],
-  "worker-lab": [["click", ["role", "button", "Start"]], ["click", ["role", "button", "Reset"]]],
+  // A run and a drawing, each started and reset at once, so their jobs are
+  // stopped in the workers; then the initial parameters again.
+  "worker-lab": [["click", ["role", "button", "Start"]], ["click", ["role", "button", "Reset"]], ["fill", ["label", "Workload"], "draw"], ["fill", ["label", "Jobs"], "2"], ["fill", ["label", "Weight"], "1"], ["click", ["role", "button", "Start"]], ["click", ["role", "button", "Reset"]], ["fill", ["label", "Workload"], "primes"], ["fill", ["label", "Jobs"], "8"], ["fill", ["label", "Weight"], "4"]],
   // A search run in the worker, a cleared query (a pure cancel), and the
   // report's job run, then its panel closed.
   "worker-search": [["fill", ["label", "Search"], "roc"], ["fill", ["label", "Search"], ""], ["click", ["role", "button", "Report"]], ["click", ["role", "button", "Report"]]],
@@ -277,7 +279,8 @@ const CYCLES = {
         if (op === "click") el.click();
         else {
           el.value = v;
-          el.dispatchEvent(new Event("input", { bubbles: true }));
+          // A select reports a choice with `change`, a text field with `input`.
+          el.dispatchEvent(new Event(el.tagName === "SELECT" ? "change" : "input", { bubbles: true }));
         }
         return null;
       }, op, loc, v);
