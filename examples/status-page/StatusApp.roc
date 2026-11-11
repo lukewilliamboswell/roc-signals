@@ -15,8 +15,9 @@ import Status
 ## Each refresh issues one HTTP check per service plus the incident feed.
 ## Refreshes are numbered (`serial`): the mount is refresh 0, and every
 ## interval tick, "Refresh now" click and return to visibility starts the
-## next. A result applies only while its refresh is still the latest, so a
-## late answer to a superseded refresh is ignored. The 5 s interval lives
+## next. Each check is a `latest` site on the serial, so a new refresh
+## cancels the checks of the one before it and a late answer to a
+## superseded refresh never arrives. The 5 s interval lives
 ## inside the visible branch, so hiding the page disposes it; requests
 ## already admitted stay in flight.
 ##
@@ -88,13 +89,15 @@ StatusApp := [].{
 	metric : Str, Str, Val(ctx, Str) -> Elem(ctx)
 	metric = |id, label, value| Html.div("stat", [Html.p(label, "stat-label"), Html.p_v(value, [Engine.class("stat-value numeric"), Engine.test_id(id), Html.aria_label(label)])])
 
-	## One service's check: issued for every refresh, applied while that
-	## refresh is the latest.
+	## One service's check, issued for every refresh. A newer refresh
+	## cancels the check still in flight for an older one (`latest` aborts
+	## its fetch), so only the current refresh's answer is ever applied and
+	## a slow service never piles up requests.
 	poll : State(ctx, Board), Str, (Board, Try(Str, Engine.HttpError) -> Board) -> Elem(ctx)
-	poll = |board, url, apply| Engine.watch(
+	poll = |board, url, apply| Engine.latest(
 		board.val().map(|b| b.serial),
 		|_| [Http({ method: "GET", url, headers: [], body: "", timeout_ms: 0 })],
-		board.on_result(|b, serial, res| if (serial == b.serial) apply(b, Engine.http_text(res)) else b),
+		board.on_result(|b, _serial, res| apply(b, Engine.http_text(res))),
 	)
 
 	## One component row: name on the left, uptime and a state badge on the

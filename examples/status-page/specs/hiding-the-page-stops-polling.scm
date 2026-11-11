@@ -25,9 +25,13 @@
     (expect-pending-effects 5)
     (expect-text (test-id "overall-rollup") "All systems operational")
     ; Manual refresh still works while hidden; it is not gated on visibility.
+    ; It supersedes the timed refresh: its checks (effects 11–15) replace
+    ; the five still in flight, which are cancelled.
+    (mark-metrics)
     (click (role button :name "Refresh now"))
     (expect-text (test-id "refresh-count") "Refreshes requested: 1")
-    (expect-pending-effects 10)
+    (expect-metric-delta effects_cancelled 5)
+    (expect-pending-effects 5)
     ; Manual refresh effects 11–15 answer while the timer remains stopped.
     (stub-http "api" :url "/api/status/api" :status 200 :body "degraded|97.40")
     (run-effect 11)
