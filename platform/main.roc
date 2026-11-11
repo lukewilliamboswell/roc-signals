@@ -10,11 +10,12 @@
 ##   host (`host/host.zig`) holds exactly one opaque `Box(Core.App)` and the
 ##   command buffer between calls; JavaScript (`runtime.mjs`) reads the buffer
 ##   straight from linear memory.
-## - `roc build --target=x64musl` gives the app's native `.scm` spec runner:
+## - `roc build --target=x64musl` (Linux), `arm64mac` or `x64mac` (macOS) or
+##   `x64win` (Windows) gives the app's native `.scm` spec runner:
 ##   `SpecRunner.roc` drives the same `main` and checks it against the
-##   `Dom.roc` oracle, and the native host (`host/spec.zig`) supplies `main`,
-##   the allocator and the `Cli` file and output services. Run it as
-##   `RUNNER FILE.scm...`.
+##   `Dom.roc` oracle, and the native host (`host/spec.zig`) supplies the
+##   process entry, the allocator, the `Cli` file and output services and
+##   worker jobs in child processes. Run it as `RUNNER FILE.scm...`.
 platform ""
 	requires {
 		main : Engine.Program
@@ -59,6 +60,9 @@ platform ""
 			exports: ["protocol_version", "fault", "boot_keys", "init", "event", "event_files", "files_stage", "files_tokens", "files_released", "drop", "payload_reserve", "work", "prepare", "ask", "forget", "cmd_ptr", "cmd_len", "work_ptr", "work_len", "metric", "reset_metrics", "err_ptr", "err_len"],
 		},
 		x64musl: { inputs: ["crt1.o", "spec.o", app, "libc.a", "libzigc.a", "libcompiler_rt.a"] },
+		arm64mac: { inputs: ["libhost.a", app] },
+		x64mac: { inputs: ["libhost.a", app] },
+		x64win: { inputs: ["host.lib", app, "kernel32.lib"] },
 	}
 
 import Cli

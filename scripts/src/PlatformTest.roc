@@ -5,10 +5,15 @@ import Proc
 ##
 ## - for the browser module (`platform/main.roc`, `targets/wasm32/`):
 ##   `host.wasm`, built from `platform/host/host.zig` with the pinned Zig;
-## - for the native spec runner (`platform/main.roc`, `targets/x64musl/`):
-##   `spec.o`, built from `platform/host/spec.zig` with the pinned Zig, and
-##   musl's `crt1.o` and `libc.a`, Zig's `libzigc.a` and `libcompiler_rt.a`,
-##   taken from the roc-fuzz 0.6.0 release bundle;
+## - for the native spec runner on Linux (`platform/main.roc`,
+##   `targets/x64musl/`): `spec.o`, built from `platform/host/spec.zig` with
+##   the pinned Zig, and musl's `crt1.o` and `libc.a`, Zig's `libzigc.a` and
+##   `libcompiler_rt.a`, taken from the roc-fuzz 0.6.0 release bundle;
+## - for the native spec runner on macOS and Windows (`targets/arm64mac/`,
+##   `targets/x64mac/`, `targets/x64win/`): the same host as a static
+##   library for each, cross-compiled with the pinned Zig, and for Windows
+##   `kernel32.lib`, made by `zig dlltool` from `platform/host/kernel32.def`
+##   (see `spec_hosts`);
 ## - for the fuzz platform (`platform/fuzz.roc`, `fuzz-targets/x64musl/`):
 ##   the roc-fuzz host and its linker inputs from the same bundle.
 ##
@@ -60,6 +65,32 @@ PlatformTest := [].{
 		}
 		Path.create_all!(Path.utf8("${root}/platform/targets/wasm32"))?
 		Proc.run!({ program: zig, args: ["build-obj", "host/host.zig", "-target", "wasm32-freestanding", "-O", "ReleaseSmall", "-fstrip", "-femit-bin=targets/wasm32/host.wasm"], cwd: "${root}/platform" })?
-		Proc.run!({ program: zig, args: ["build-obj", "host/spec.zig", "-target", "x86_64-linux-musl", "-O", "ReleaseFast", "-fstrip", "-fPIC", "-femit-bin=targets/x64musl/spec.o"], cwd: "${root}/platform" })
+		Proc.run!({ program: zig, args: ["build-obj", "host/spec.zig", "-target", "x86_64-linux-musl", "-O", "ReleaseFast", "-fstrip", "-fPIC", "-femit-bin=targets/x64musl/spec.o"], cwd: "${root}/platform" })?
+		for host in PlatformTest.spec_hosts {
+			Path.create_all!(Path.utf8("${root}/platform/targets/${host.target}"))?
+			Proc.run!({ program: zig, args: ["build-lib", "-static", "host/spec.zig", "-target", host.zig_target, "-O", "ReleaseFast", "-fstrip", "-fcompiler-rt", "-femit-bin=targets/${host.target}/${host.file}"], cwd: "${root}/platform" })?
+		}
+		Proc.run!({ program: zig, args: ["dlltool", "-m", "i386:x86-64", "-d", "host/kernel32.def", "-l", "targets/x64win/kernel32.lib"], cwd: "${root}/platform" })
 	}
+
+	## The spec runner's host for each system besides Linux x86-64, a static
+	## library built from `host/spec.zig` with Zig's compiler-rt inside it
+	## (`memcpy`, the stack probes). The Roc linker supplies libSystem on
+	## macOS. On Windows the host links no C runtime: its only other input
+	## is `kernel32.lib`, the import library `prepare!` makes from
+	## `host/kernel32.def`.
+	spec_hosts : List({ target : Str, zig_target : Str, file : Str })
+	spec_hosts = [
+		{ target: "arm64mac", zig_target: "aarch64-macos", file: "libhost.a" },
+		{ target: "x64mac", zig_target: "x86_64-macos", file: "libhost.a" },
+		{ target: "x64win", zig_target: "x86_64-windows-msvc", file: "host.lib" },
+	]
+
+	## The native spec runner's link inputs for every system, relative to
+	## `platform/`: what the release bundle carries besides the Wasm host.
+	spec_inputs : List(Str)
+	spec_inputs = ["targets/x64musl/spec.o"]
+		.concat(PlatformTest.native_inputs.map(|name| "targets/x64musl/${name}"))
+		.concat(PlatformTest.spec_hosts.map(|h| "targets/${h.target}/${h.file}"))
+		.concat(["targets/x64win/kernel32.lib"])
 }

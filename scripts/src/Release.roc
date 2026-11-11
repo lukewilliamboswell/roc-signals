@@ -8,8 +8,9 @@ import SpecSuite
 ##
 ## - the platform bundle, `<hash>.tar.zst`: one platform for both targets,
 ##   `platform/main.roc` with every module it uses, the Wasm host, the native
-##   spec runner's link inputs for x64musl, `runtime.mjs` and its worker
-##   script `worker.mjs`;
+##   spec runner's link inputs for every system it builds for (Linux
+##   x86-64, macOS on Apple silicon and Intel, Windows x86-64),
+##   `runtime.mjs` and its worker script `worker.mjs`;
 ## - `runtime.mjs` and `worker.mjs` on their own, for pages that load an app
 ##   (the runtime loads the worker script from beside itself);
 ## - the examples archive, `roc-signals-examples-<version>.zip`, which the
@@ -25,7 +26,7 @@ Release := [].{
 
 	## The platform files a bundle carries, relative to `platform/`.
 	bundle_files : List(Str)
-	bundle_files = ["main.roc", "Engine.roc", "Html.roc", "Worker.roc", "Wire.roc", "Port.roc", "PortJson.roc", "Core.roc", "Hosted.roc", "Cli.roc", "SpecRunner.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "targets/wasm32/host.wasm", "targets/x64musl/spec.o", "targets/x64musl/crt1.o", "targets/x64musl/libc.a", "targets/x64musl/libzigc.a", "targets/x64musl/libcompiler_rt.a"].concat(SpecSuite.runtime_files)
+	bundle_files = ["main.roc", "Engine.roc", "Html.roc", "Worker.roc", "Wire.roc", "Port.roc", "PortJson.roc", "Core.roc", "Hosted.roc", "Cli.roc", "SpecRunner.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "targets/wasm32/host.wasm"].concat(PlatformTest.spec_inputs).concat(SpecSuite.runtime_files)
 
 	archive_name : Str -> Str
 	archive_name = |version| "roc-signals-examples-${version}"
@@ -152,8 +153,8 @@ Release := [].{
 		\\The examples of Roc Signals ${version}, each naming that release's platform
 		\\bundle. Build one for the browser with
 		\\`roc build --target=wasm32 examples/<app>/main.roc`, or its native spec
-		\\runner with `roc build --target=x64musl examples/<app>/main.roc` and run
-		\\it on `examples/<app>/specs/*.scm`.
+		\\runner with `roc build --target=x64musl examples/<app>/main.roc` (or
+		\\`arm64mac`, `x64mac`, `x64win`) and run it on `examples/<app>/specs/*.scm`.
 		\\An example's other files are its own: JavaScript its author wrote (port
 		\\handlers, a simulated service), a page that mounts it, data it downloads.
 		\\JavaScript several examples load (custom elements) is in `examples/shared/`.
