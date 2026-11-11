@@ -1972,16 +1972,24 @@ SpecRunner := [].{
 		$out
 	}
 
-	## The payload a browser would send for event `ev` on node `i`: for
-	## text, one of the walk's pool or of the values the specs typed into a
-	## control the same locator finds.
+	## The payload a browser would send for event `ev` on node `i`. For
+	## text, half the time a value the specs typed into a control the same
+	## locator finds, when they typed one, so a form's fields are often
+	## valid together; otherwise one of the walk's pool.
 	payload_for : Book, Dom.Model, U64, Str, U8 -> Str
 	payload_for = |bk, dom, i, ev, b| {
 		n = Dom.node(dom, i)
-		typed = || SpecRunner.pool.concat(bk.typed.keep_if(|t| SpecRunner.matches(dom, n, t.loc)).map(|t| t.value))
 		pick = |options| options.get(b.to_u64() % options.len()) ?? ""
+		typed = || {
+			known = bk.typed.keep_if(|t| SpecRunner.matches(dom, n, t.loc)).map(|t| t.value)
+			if !known.is_empty() and b % 2 == 0 {
+				known.get((b.to_u64() / 2) % known.len()) ?? ""
+			} else {
+				pick(SpecRunner.pool)
+			}
+		}
 		if ev == "input" {
-			pick(typed())
+			typed()
 		} else if ev == "change" {
 			if Dom.attr_of(n, "type") == "checkbox" {
 				if (Dom.attr_of(n, "checked") == "true") "false" else "true"
@@ -1989,7 +1997,7 @@ SpecRunner := [].{
 				opts = n.kids.map(|k| Dom.attr_of(Dom.node(dom, k), "value"))
 				if (opts.is_empty()) "" else pick(opts)
 			} else {
-				pick(typed())
+				typed()
 			}
 		} else if ev == "focus" or ev == "blur" {
 			Dom.attr_of(n, "value")
