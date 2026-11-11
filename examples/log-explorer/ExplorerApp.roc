@@ -109,7 +109,7 @@ ExplorerApp := [].{
 	generate! : U64 => Try(File, Engine.FileError)
 	generate! = |entries| {
 		out = Files.build!({ name: "sample-${entries.to_str()}.log", mime: Mime("text/plain") })
-		var $progress = Sample.start
+		var $progress = Sample.start({ total: entries })
 		var $left = entries
 		while $left > 0 {
 			batch = $left.min(2000)
