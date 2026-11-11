@@ -31,7 +31,7 @@ recipe ready.
 
 | Path | Contents |
 |---|---|
-| `platform/` | The platform (`main.roc`): the engine (`Core.roc`), the authoring API (`Engine.roc`, `Html.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the hosted effects a worker job calls (`Hosted.roc`, bound in both hosts and reached only through `Effects.roc`, which the platform root hands to the engine with each job, and `Files.roc`, whose `build!` opens a builder), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig` with its system services in `host/os_posix.zig` and `host/os_windows.zig`, and `host/kernel32.def`, the Windows host's imports). Also the fuzz platform (`fuzz.roc`, the vendored roc-fuzz modules and the soak walk) |
+| `platform/` | The platform (`main.roc`): the engine (`Core.roc`), the authoring API (`Engine.roc`, `Html.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the hosted effects a worker job calls (`Hosted.roc`, bound in both hosts and reached only through `Effects.roc`, which the platform root hands to the engine with each job, and `Files.roc`, whose `build!` opens a builder), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig` with its system services in `host/os_posix.zig` and `host/os_windows.zig`, and `host/kernel32.def`, the Windows host's imports). Also `engine.roc`, a package root over the same pure modules (all but `Files.roc`, `Effects.roc`, `Hosted.roc` and `Cli.roc`) that the fuzz targets depend on, and the walk they share (`Soak.roc`) |
 | `tests/` | Browser contract tests and the apps they drive (`tests/apps/`, for example `files` for file handles, `file-effects` for operations on files, `ports` for ports, `worker-typed` for the task API, `prepared` for preparations, `tasks` for jobs that read and build files, `outbox` for posting requests and `gather` for one question split over several jobs), the Chrome spec replay, and the release check helper |
 | `fuzz/` | Fuzz targets of the shared support; each app's own target is its `main-fuzz.roc` |
 | `examples/` | The example apps, each with its specs, and with any JavaScript of its own beside it (the Reading List's port handlers, `ports.mjs`; the simulated service of Conduit, Field Notes and the Status Page, `backend.mjs`); `examples/shared/` holds the JavaScript several examples load (the `plume-chart` and `worker-pool-panel` elements) |
@@ -41,9 +41,10 @@ recipe ready.
 | `www/` | This site; `www/samples/` holds every code sample the docs show |
 
 A module added to `platform/` for apps to import is listed in four places:
-`exposes` in `platform/main.roc` and in `platform/fuzz.roc`, the release
-bundle's files in `scripts/src/Release.roc`, and the API reference's modules
-in `scripts/src/ApiDocs.roc`. A file added to the browser runtime is listed
+`exposes` in `platform/main.roc`, the package's list in `platform/engine.roc`
+unless it reaches a hosted function, the release bundle's files in
+`scripts/src/Release.roc`, and the API reference's modules in
+`scripts/src/ApiDocs.roc`. A file added to the browser runtime is listed
 in `SpecSuite.runtime_files` (`scripts/src/SpecSuite.roc`) and in
 `RUNTIME_FILES` (`tests/browser/args.mjs`), which every copy site and
 browser test reads.
@@ -61,8 +62,9 @@ own `backend.mjs`, whose default export returns a request handler; the
 site turns it into the mount's `fetch`, and the soak and journeys serve
 the same file over HTTP rather than a copy. The soak's tables in
 `tests/browser/soak.mjs` give it a round trip and, for an app with ports
-or a backend, the module that answers them. Its fuzz target, if it has
-one, is listed in `Targets.fuzz_targets`.
+or a backend, the module that answers them. Its native soak, a
+round-trip spec under its `specs/`, is listed in `Slow.native_soaks`, and
+its fuzz target, if it has one, in `Targets.fuzz_targets`.
 
 ## Tasks
 
@@ -74,7 +76,7 @@ These are the development environment's Blueprint tasks, not an app's
 | `blueprint run check` | The pull-request gate (below) |
 | `blueprint run check-slow` | Every fuzz target's declared examples, the native soak of each app's round-trip spec (`RUNNER --soak 48`, flat live allocations and bytes), and a long Chrome session per app |
 | `blueprint run spec -- [--browser] [--filter GLOB] [APP...]` | Some apps' specs, natively and optionally in Chrome |
-| `blueprint run platform` | Fetch and build the platform's link inputs, to build an app's `main.roc` or `main-fuzz.roc` by hand |
+| `blueprint run platform` | Fetch and build the platform's link inputs, to build an app's `main.roc` by hand (a `main-fuzz.roc` needs none: `roc build --fuzz` fetches its roc-fuzz release) |
 | `blueprint run jfb` | Build the js-framework-benchmark app and check its operations in Chrome |
 | `blueprint run workers-scaling` | Measure worker jobs in Chrome on both candidate shipping builds of the Worker Lab: correctness, speedup by pool size, responsiveness, payloads, robustness sequences and memory, as tables for a pull request |
 | `blueprint run fuzz -- [--time S] [TARGET...]` | A fuzz campaign |
@@ -100,13 +102,14 @@ for example to run two tasks at once.
 1. Every script names the `roc-stable` nightly that `Blueprint.roc` pins, and
    no other Roc file names a compiler; every file `www/data/examples.toml`
    names exists, and every example is in a section of the examples index.
-2. `roc fmt --check` over every Roc source, `roc test` on the test support,
-   the tool (`cli/`) and the scripts, and the check that `cli/Bundle.roc` is
-   what the release generates for a checkout.
+2. `roc fmt --check` over every Roc source, `roc test` on the platform, the
+   engine package (`platform/engine.roc`), the tool (`cli/`) and the
+   scripts, and the check that `cli/Bundle.roc` is what the release
+   generates for a checkout.
 3. The platform's link inputs for every target, a worker app's spec runner
    linked for macOS (`arm64mac`, `x64mac`) and Windows (`x64win`) from them,
-   the test platform, and the examples of the fuzz targets in `fuzz/` (the
-   `.scm` parser, the worker wire format, the port message format and generated site trees).
+   and the examples of the fuzz targets in `fuzz/` (the `.scm` parser, the
+   worker wire format, the port message format and generated site trees).
 4. The docs samples (below).
 5. Every app's specs natively and in Chrome, the check that the browser
    runner handles every form of the grammar, then a deliberately broken spec
@@ -195,10 +198,13 @@ specs fail natively or in Chrome.
 
 ## Fuzzing
 
-Every fuzz target is a [roc-fuzz](https://github.com/lukewilliamboswell/roc-fuzz)
-target on the repository's fuzz platform (`platform/fuzz.roc`: roc-fuzz's
-own modules, vendored unchanged, with the engine's modules exposed beside
-them). Targets decode arbitrary bytes into valid sessions and check them
+Every fuzz target is an ordinary [roc-fuzz](https://github.com/lukewilliamboswell/roc-fuzz)
+app: a roc-fuzz release is its platform (`fz`), and the engine package,
+`platform/engine.roc`, is its `pf`. An app's own modules say `import
+pf.Engine`, and the shorthand is per app, so the same module gets the
+platform in the app's `main.roc` and the package in its `main-fuzz.roc`. A
+module that imports `Files` builds only on the platform, so an app whose
+modules do fuzzes its pure parts. Targets decode arbitrary bytes into valid sessions and check them
 against a model: keyed reconciliation, the effect channel's lifecycle
 including worker jobs, port calls and subscriptions, a gather's jobs
 settling at their positions and an outbox's posts (`fx-channel`), the
@@ -206,7 +212,8 @@ worker wire format's decoder, the port message format's decoder
 (`port-json`), and each app's
 leak-checked random walk (the supersede test app's included; the Reading
 List's plays its port handlers against a model store and checks that the
-page shows what the store holds), and the Log Explorer's index, which a
+page shows what the store holds), each with a long seeded walk among its
+examples (`Soak.Session`), and the Log Explorer's index, which a
 worker builds a chunk at a time, against a model that reads the whole
 text. A walk has no host to run a job's effects, so a worker app's target answers its jobs with a stand-in made from the
 app's pure function (`Task.stand_in`, walked with `Soak.walk_with`); its
@@ -219,7 +226,9 @@ reader of a written layer may be left stale (see
 the site trees themselves, so the check meets nestings no app contains, and
 in its pure mode compares the page with a fresh mount. `check` replays the
 examples of the targets in
-`fuzz/`; `check-slow` replays every target's; `fuzz.yml` runs nightly
+`fuzz/`; `check-slow` replays every target's, and soaks each app's
+round-trip spec in the native runner (`--soak`, see
+[Testing](@/docs/testing.md#soaking-a-round-trip)); `fuzz.yml` runs nightly
 campaigns with the corpora in the Actions cache. When a campaign finds a
 failure, reduce it and add it to the target's examples with `Fuzz.saved`, so
 every later replay keeps it fixed.
@@ -341,8 +350,9 @@ with these deliberate exceptions:
   browser apps; `.scm` specs run in both runners. The examples archive
   carries a `spec.json` only for the shared nightly runner.
 - **Examples are directories** with a `main.roc`, which builds for the
-  browser and as the native spec runner, its specs, and a `main-fuzz.roc` on
-  the repository's fuzz platform (roc-fuzz's entry cannot share the app's).
+  browser and as the native spec runner, its specs, and a `main-fuzz.roc`,
+  a roc-fuzz app on the engine package (roc-fuzz's entry cannot share the
+  app's).
   The examples archive carries `main.roc`, the example's modules, its specs
   and its own files beside them: the JavaScript its author wrote (port
   handlers, a custom element), a page that mounts it, data it downloads.

@@ -1,6 +1,8 @@
-app [target] { pf: platform "../../platform/fuzz.roc" }
+app [target] {
+	fz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.0/6uc3YKGydgEnS2nrCimSYWDNfT6drYcgU52VAwqrb6DS.tar.zst",
+}
 
-import pf.Fuzz
+import fz.Fuzz
 import Log
 
 ## The Log Explorer's index, against a model that reads the whole text at

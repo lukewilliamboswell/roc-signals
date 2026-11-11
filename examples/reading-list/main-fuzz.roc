@@ -1,9 +1,11 @@
-app [target] { pf: platform "../../platform/fuzz.roc" }
+app [target] {
+	fz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.0/6uc3YKGydgEnS2nrCimSYWDNfT6drYcgU52VAwqrb6DS.tar.zst",
+	pf: "../../platform/engine.roc",
+}
 
+import fz.Fuzz
 import pf.Core
-import pf.Fuzz
 import pf.PortJson
-import pf.Scm
 import pf.Soak
 import pf.SpecRunner
 import ReadingApp
@@ -35,9 +37,9 @@ import Store
 ##
 ## - generated: explorer-driven walks (two bytes per step) from a fresh
 ##   mount.
-## - "soak-10k": 10k seeded steps (checked and leak-checked), then a round
-##   trip through the shelves 48 times on the engine alone with flat live
-##   bytes.
+## - "walk-10k": a seeded walk of 10,000 steps.
+## The flat round trip is a spec the native runner soaks
+## (`specs/round-trip-finish-and-read-again.scm`).
 
 St : SpecRunner.S(Core.App)
 
@@ -260,102 +262,20 @@ walk = |w0, bytes| {
 	$w
 }
 
-walk_n : W, U64, U64 -> W
-walk_n = |w0, seed, n| {
-	check = Soak.settled(program)
-	var $w = { ..w0, s: check(w0.s) }
-	var $x = seed
-	var $i = 0.U64
-	while $i < n {
-		$x = Soak.prng($x)
-		next = walk_step($w, $x.shr_zf_wrap(40).to_u8_wrap(), $x.shr_zf_wrap(24).to_u8_wrap())
-		$w = { ..next, s: check(next.s) }
-		$i = $i + 1
-	}
-	$w
-}
-
-## A shelf of two books, loaded: the round trip's starting point.
-shelved : {} -> St
-shelved = |_| {
-	w = start({})
-	books : List(Store.Book)
-	books = [
-		{ id: "b1", title: "Dune", author: "Frank Herbert", shelf: WantToRead, added_ms: 1 },
-		{ id: "b2", title: "Piranesi", author: "Susanna Clarke", shelf: Reading, added_ms: 2 },
-	]
-	answer({ ..w, store: books }, 0).s
-}
-
-## A round trip back to the same shelves: a book finished and read again,
-## the finished shelf shown and left, and a title typed and cleared. Each
-## move sends a command; none waits for an answer.
-cycle : List(Scm.Op)
-cycle = [
-	Click(Role({ role: "button", name: "Finish Piranesi" })),
-	Click(Role({ role: "button", name: "Finished" })),
-	Click(Role({ role: "button", name: "All" })),
-	Click(Role({ role: "button", name: "Read Piranesi again" })),
-	Fill(Label("Title"), "Soak book"),
-	Fill(Label("Title"), ""),
-]
-
-## Soak, mode 2: an explorer-driven walk from a fresh mount, checked at
-## every step, which must free everything it allocated.
-soak_walk! : List(U8) => Fuzz.Outcome
-soak_walk! = |bytes| {
-	Fuzz.expect_no_leaks!(|| walk(start({}), bytes))
+## A walk from a fresh mount over the session's bytes, which must free
+## everything it allocated.
+test! : Soak.Session => Fuzz.Outcome
+test! = |session| {
+	Fuzz.expect_no_leaks!(|| walk(start({}), Soak.session_bytes(session)))
 	Fuzz.keep
 }
-
-## Soak, mode 3: 10k seeded steps (checked and leak-checked), then the
-## round trip 48 times on the engine alone: live allocations flat after 2
-## warm-up cycles.
-soak_10k! : {} => Fuzz.Outcome
-soak_10k! = |_| {
-	Fuzz.expect_no_leaks!(|| walk_n(start({}), 7, 10000))
-	(s1, evs) = Soak.triples(program, shelved({}), cycle, Soak.settled(program))
-	counts = Soak.replay!(program, s1.inst, evs, 48, |a, b| (a, b), begin!, net_bytes!)
-	match Soak.flat(counts, 2) {
-		Ok(_) => {}
-		Err(m) => crash m
-	}
-	Fuzz.mark!("soak cycle net live bytes ${Str.inspect(counts.sublist({ start: 0, len: 4 }))} ... (${counts.len().to_str()} cycles)")
-	Fuzz.keep
-}
-
-## Soak probes: a measured region around one cycle; its net live bytes.
-begin! : {} => Fuzz.Measurement
-begin! = |_| Fuzz.start_measure!("cycle")
-
-net_bytes! : Fuzz.Measurement => I64
-net_bytes! = |m| {
-	stats = m.finish!()
-	stats.exit_live_bytes.to_i64_wrap() - stats.entry_live_bytes.to_i64_wrap()
-}
-
-Input : { mode : U8, size : U64, program : List(U8) }
-
-test! : Input => Fuzz.Outcome
-test! = |{ mode, program: bytes, .. }| {
-	if mode == 2 {
-		soak_walk!(bytes)
-	} else if mode == 3 {
-		soak_10k!({})
-	} else {
-		Fuzz.reject
-	}
-}
-
-ex : Str, U8, List(U8) -> Fuzz.Example(Input)
-ex = |name, mode, bytes| Fuzz.example({ name, revision: "1", make: || { mode, size: 0, program: bytes } })
 
 target = Fuzz.target_with!({
 	name: "reading-list",
 	examples: [
-		ex("soak-10k", 3, []),
+		Fuzz.example({ name: "walk-10k", revision: "1", make: || { program: [], seed: 7, steps: 10000 } }),
 	],
-	generator: { mode: Fuzz.constant(2), size: Fuzz.constant(0), program: Fuzz.list(Fuzz.u8, 400) }.Fuzz,
+	generator: { program: Fuzz.list(Fuzz.u8, 400), seed: Fuzz.constant(0), steps: Fuzz.constant(0) }.Fuzz,
 	test!,
 	show: Str.inspect,
 })

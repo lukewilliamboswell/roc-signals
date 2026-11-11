@@ -158,7 +158,7 @@ ReadingApp := [].{
 	}
 
 	## The program `main.roc` binds for the browser module and the native
-	## spec runner, and `main-fuzz.roc` drives on the fuzz platform. The
+	## spec runner, and `main-fuzz.roc` drives as a roc-fuzz target. The
 	## page passes `ports.mjs`'s handlers when it mounts it.
 	program : Engine.Program
 	program =

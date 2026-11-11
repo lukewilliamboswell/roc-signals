@@ -1,8 +1,11 @@
-app [target] { pf: platform "../../platform/fuzz.roc" }
+app [target] {
+	fz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.0/6uc3YKGydgEnS2nrCimSYWDNfT6drYcgU52VAwqrb6DS.tar.zst",
+	pf: "../../platform/engine.roc",
+}
 
+import fz.Fuzz
 import pf.Core
 import pf.Dom
-import pf.Fuzz
 import pf.Scm
 import pf.Soak
 import pf.SpecRunner
@@ -10,7 +13,7 @@ import pf.Wire
 import Lab
 import LabApp
 
-## Worker Lab on the fuzz platform (its specs run through `main.roc`). The
+## Worker Lab as a roc-fuzz target (its specs run through `main.roc`). The
 ## walks answer pending jobs as `Soak.step` does: answer it with the task's
 ## pure function standing in for its worker (`stand_in`), lose the job with
 ## a fault class, time it out, or leave it pending, so every prime and tile
@@ -18,8 +21,9 @@ import LabApp
 ## - generated: explorer-driven walks of starts, cancels, resets, parameter
 ##   edits (restarts) and answers, settled after every step, which must free
 ##   everything they allocated.
-## - "soak-10k": 10k seeded steps, then a run started, every job answered and
-##   the run reset, 48 times on the engine alone: live bytes flat.
+## - "walk-10k": a seeded walk of 10,000 steps.
+## The flat round trip is a spec the native runner soaks
+## (`specs/round-trip-a-run-answered-and-reset.scm`).
 ##
 ## The walk keeps away from the faulty workload. Its crash task crashes on
 ## every input by design, and a walk answers jobs in process, where a crash
@@ -96,102 +100,20 @@ stand_in = |task, prep, input|
 steered : St -> St
 steered = |s| Soak.settled(program)(steer(s))
 
-## A round trip back to the initial state: a run of the initial parameters
-## started, its jobs answered, and the run reset.
-cycle : List(Scm.Op)
-cycle = [Click(Role({ role: "button", name: "Start" })), Click(Role({ role: "button", name: "Reset" }))]
-
-## What each job of a run with the initial parameters answers, in job order,
-## computed as a worker instance would compute it (at run time, not as a
-## compile-time constant): the answer's bytes and its success byte.
-answers_for : {} -> List(List(U8))
-answers_for = |_|
-	Lab.start(Lab.initial).jobs.map(
-		|job| match job.task {
-			Count(span) => Wire.encode(Lab.count_primes(span)).append(0)
-			_ => crash "lab soak: the initial workload counts primes"
-		},
-	)
-
-## Answer every job in flight on the engine alone, oldest first, with its
-## job's answer; `subs` (the heartbeat) is left running.
-answer_jobs : List(U32), List(List(U8)), Core.App, List(U8) -> (Core.App, List(U8))
-answer_jobs = |subs, answers, a0, b0| {
-	var $a = a0
-	var $b = b0
-	var $k = 0.U64
-	for id in Core.fx_live(a0).keep_if(|id| !subs.contains(id)) {
-		output = answers.get($k) ?? crash "lab soak: more jobs than the run has"
-		(a1, b1) = Core.take_cmds(Core.result($a, id, Work({ output, files: [] })), $b)
-		$a = a1
-		$b = b1
-		$k = $k + 1
-	}
-	($a, $b)
-}
-
-## Soak, mode 2: an explorer-driven walk (two bytes per event) from a fresh
-## mount, which must free everything it allocated.
-soak_walk! : List(U8) => Fuzz.Outcome
-soak_walk! = |bytes| {
-	Fuzz.expect_no_leaks!(|| Soak.walk_with(program, start({}), bytes, stand_in, steered))
+## A walk from a fresh mount over the session's bytes, which must free
+## everything it allocated.
+test! : Soak.Session => Fuzz.Outcome
+test! = |session| {
+	Fuzz.expect_no_leaks!(|| Soak.walk_with(program, start({}), Soak.session_bytes(session), stand_in, steered))
 	Fuzz.keep
 }
-
-## Soak, mode 3: 10k seeded steps (settle-checked and leak-checked), then the round trip 48
-## times on the engine alone: live allocations flat after 3 warm-up cycles.
-soak_10k! : {} => Fuzz.Outcome
-soak_10k! = |_| {
-	Fuzz.expect_no_leaks!(|| Soak.walk_n_with(program, start({}), 7, 10000, stand_in, steered))
-	# What the same walk reached, outside the leak check.
-	walked = Soak.walk_n_with(program, start({}), 7, 10000, stand_in, steered)
-	shown = |id| SpecRunner.find(walked.dom, TestId(id)).map_ok(|i| Dom.text_of(walked.dom, i)) ?? "?"
-	Fuzz.mark!("soak walk: ${walked.browser.issued.len().to_str()} effects issued; last run ${shown("progress")}; refused and retried ${shown("refused")}")
-	s0 = start({})
-	subs = Core.fx_live(s0.inst)
-	answers = answers_for({})
-	(s1, evs) = Soak.triples(program, s0, cycle, Soak.settled(program))
-	counts = Soak.replay!(program, s1.inst, evs, 48, |a, b| answer_jobs(subs, answers, a, b), begin!, net_bytes!)
-	match Soak.flat(counts, 3) {
-		Ok(_) => {}
-		Err(m) => crash m
-	}
-	Fuzz.mark!("soak cycle net live bytes ${Str.inspect(counts.sublist({ start: 0, len: 4 }))} ... (${counts.len().to_str()} cycles)")
-	Fuzz.keep
-}
-
-## Soak probes: a measured region around one cycle; its net live bytes.
-begin! : {} => Fuzz.Measurement
-begin! = |_| Fuzz.start_measure!("cycle")
-
-net_bytes! : Fuzz.Measurement => I64
-net_bytes! = |w| {
-	stats = w.finish!()
-	stats.exit_live_bytes.to_i64_wrap() - stats.entry_live_bytes.to_i64_wrap()
-}
-
-Input : { mode : U8, size : U64, program : List(U8) }
-
-test! : Input => Fuzz.Outcome
-test! = |{ mode, program: bytes, .. }| {
-	if mode == 2 {
-		soak_walk!(bytes)
-	} else if mode == 3 {
-		soak_10k!({})
-	} else {
-		Fuzz.reject
-	}
-}
-
-ex : Str, U8, U64 -> Fuzz.Example(Input)
-ex = |name, mode, size| Fuzz.example({ name, revision: "1", make: || { mode, size, program: [] } })
 
 target = Fuzz.target_with!({
 	name: "worker-lab",
 	examples: [
-		ex("soak-10k", 3, 0),
+		Fuzz.example({ name: "walk-10k", revision: "1", make: || { program: [], seed: 7, steps: 10000 } }),
 	],
-	generator: { mode: Fuzz.constant(2), size: Fuzz.constant(0), program: Fuzz.list(Fuzz.u8, 400) }.Fuzz,
+	generator: { program: Fuzz.list(Fuzz.u8, 400), seed: Fuzz.constant(0), steps: Fuzz.constant(0) }.Fuzz,
 	test!,
 	show: Str.inspect,
 })

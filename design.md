@@ -303,12 +303,19 @@ inputs:
 
 Fuzz targets cannot share that entry: roc-fuzz requires a `target : Target`
 value and links its own libFuzzer host, and a platform has one `requires`.
-They stay a separate entry, each app's `main-fuzz.roc`, built with
-`roc build --fuzz` on a second root, `platform/fuzz.roc`: a vendored roc-fuzz
-platform that shares the platform's modules and also exposes the internal
-`Core`, the runner, the oracle and the soak walk. It is repository-only and
-not in the release bundle. The leak-checked soaks live there too, because
-they rely on roc-fuzz's allocation scopes.
+They stay a separate entry, each app's `main-fuzz.roc`, and each is an
+ordinary roc-fuzz app: a roc-fuzz release is its platform, and the engine
+is a package, `platform/engine.roc`, a package root beside `main.roc` over
+the same files that exposes the internal `Core`, the runner, the oracle and
+the walk. That works because the engine is pure: no module of the package
+reaches a hosted function (a job's effects arrive as values, see
+[Workers](#workers)), and the modules that do (`Files`, `Effects`,
+`Hosted`, `Cli`) belong to the platform alone. An app module's
+`import pf.Engine` resolves to the platform in `main.roc` and to the
+package in `main-fuzz.roc`, since the shorthand is per app. The package is
+repository-only and not in the release bundle. roc-fuzz's allocation
+counters serve the fuzz targets; the native host counts allocations itself
+for the spec runner's soaks.
 
 There is no native semantic host and no shared Zig engine. Observability that
 the old native host provided (work counters, effect tables, allocation
@@ -1844,7 +1851,7 @@ loads; seeding storage in the same setup is a spec error in both runners.
 ### Fuzzing, soak and contract tests
 
 - **roc-fuzz targets** (each app's `main-fuzz.roc`, and `fuzz/` for targets of
-  the shared support) decode arbitrary bytes into valid programs and
+  the shared support; roc-fuzz apps on the engine package) decode arbitrary bytes into valid programs and
   check the engine against a reference model: keyed reconciliation, effect
   lifecycle (issue, supersede, dispose, reparent, deliver, refuse, cancel,
   stale), and the

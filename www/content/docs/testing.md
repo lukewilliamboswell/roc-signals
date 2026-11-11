@@ -418,16 +418,17 @@ ordinary spec in both runners and `check-slow` soaks.
 ## Fuzzing and soak
 
 Specs check the paths you thought of. For sequences you did not, an app can
-add a `main-fuzz.roc` beside its modules, built with `roc build --fuzz` on the
-repository's fuzz platform (`platform/fuzz.roc`, which needs roc-fuzz's own
-entry and host, so it cannot share the app's `main.roc`): a roc-fuzz target that decodes
+add a `main-fuzz.roc` beside its modules, built with `roc build --fuzz`: an
+ordinary roc-fuzz app, whose platform is a roc-fuzz release and whose `pf`
+is the engine package, `platform/engine.roc` (roc-fuzz needs its own entry
+and host, so a target cannot share the app's `main.roc`), and a target that decodes
 arbitrary bytes into a valid session — random events found by exploring the
 live DOM — and checks it against an oracle, with every session leak-checked.
 The walk's `after` hook (`Soak.settled`) runs the settle check after every
 event, so a generated session that leaves a reader stale fails at the event
-that did it, in any app, with no model of the app. The same file declares the
-app's soak runs: long random walks whose live allocations must stay flat
-across repeated round trips. While a worker job is pending, the walk also
+that did it, in any app, with no model of the app. Among its examples the
+target declares a long seeded walk (a `Soak.Session` whose `seed` and
+`steps` name it), which `check-slow` replays. While a worker job is pending, the walk also
 answers it now and then: usually with a stand-in made from the app's own
 pure function (a walk has no host to run a job's effects on, so the target
 passes `task.stand_in(f)` to `Soak.walk_with`, and the answer goes through
@@ -439,9 +440,10 @@ files: only a worker holds a file's bytes, so a stand-in whose input or
 answer holds a `File` is a contract error. An app whose tasks take or give
 files fuzzes its pure parts instead, as the Log Explorer's target fuzzes
 its index against a model of the whole text, and leaves its tasks to the
-specs and the Chrome tests. The settle check runs on a copy that is freed
-before the walk goes on, so it never counts as a leak, and it stays out of
-the measured round trips.
+specs and the Chrome tests. The same goes for an app module that
+imports `Files`: it builds only on the platform, not into a target. The
+settle check runs on a copy that is freed before the walk goes on, so it
+never counts as a leak.
 
 Fixed apps only exercise the nestings they contain. The `structure` target
 (`fuzz/structure/main.roc`) decodes its bytes into a site tree instead,
@@ -451,8 +453,9 @@ settle check after every step. In its pure mode every button writes the root
 state, so the rendered page must also equal a fresh mount started at the
 root's current value.
 
-- `blueprint run check` replays the parser target's saved examples, and
-  `blueprint run check-slow` every target's.
+- `blueprint run check` replays the examples of the targets in `fuzz/`,
+  and `blueprint run check-slow` every target's, then soaks each app's
+  round-trip spec natively.
 - `blueprint run fuzz -- --time 600 kanban-board` runs a fuzz campaign.
 - `blueprint run check-slow` also runs a long session of every app in
   Chrome.

@@ -2,11 +2,12 @@ import Dom
 import Scm
 import SpecRunner
 
-## Long-session soak over any app: a random walk of real user events chosen
+## Long-session walks over any app: a random walk of real user events chosen
 ## from the live DOM (every attached element with a handler, disabled
-## controls skipped), plus cycle checks that a scripted round trip returns
-## the engine to the same live allocation count. Used by every app's
-## fuzz target (explorer inputs and a seeded 10k-event example).
+## controls skipped), settle-checked at every step. Used by every app's fuzz
+## target, on explorer inputs and on a seeded input (`seeded`) each target
+## declares as an example. The flat round trips are specs the native
+## runner soaks (`--soak`).
 ##
 ## It drives the app's `Program` (as `SpecRunner` does), so it shares no code
 ## with the engine.
@@ -168,76 +169,35 @@ Soak := [].{
 		$s
 	}
 
+	## The step of a linear congruential generator the seeded inputs use.
 	prng : U64 -> U64
 	prng = |x| x.times_wrap(6364136223846793005).plus_wrap(1442695040888963407)
 
-	## A seeded walk of `n` events, of an app that issues no worker jobs.
-	walk_n : SpecRunner.Program(state), SpecRunner.S(state), U64, U64, (SpecRunner.S(state) -> SpecRunner.S(state)) -> SpecRunner.S(state)
-	walk_n = |program, s0, seed, n, after| Soak.walk_n_with(program, s0, seed, n, Soak.no_jobs, after)
-
-	## Like `walk_n`, answering the app's worker jobs with `stand_in`.
-	walk_n_with : SpecRunner.Program(state), SpecRunner.S(state), U64, U64, StandIn, (SpecRunner.S(state) -> SpecRunner.S(state)) -> SpecRunner.S(state)
-	walk_n_with = |program, s0, seed, n, stand_in, after| {
-		var $s = s0
+	## The input of a seeded walk of `n` steps (two bytes each) from `seed`:
+	## a long session a target declares as an example of its walk, so the
+	## same property that explores arbitrary input replays it.
+	seeded : U64, U64 -> List(U8)
+	seeded = |seed, n| {
+		var $out = List.with_capacity(2 * n)
 		var $x = seed
 		var $i = 0.U64
 		while $i < n {
 			$x = Soak.prng($x)
-			$s = after(Soak.step(program, $s, $x.shr_zf_wrap(40).to_u8_wrap(), $x.shr_zf_wrap(24).to_u8_wrap(), stand_in))
+			$out = $out.append($x.shr_zf_wrap(40).to_u8_wrap()).append($x.shr_zf_wrap(24).to_u8_wrap())
 			$i = $i + 1
 		}
-		$s
+		$out
 	}
 
-	## The (node, handler, payload) events of one scripted round trip, found
-	## through the DOM model while applying them.
-	triples : SpecRunner.Program(state), SpecRunner.S(state), List(Scm.Op), (SpecRunner.S(state) -> SpecRunner.S(state)) -> (SpecRunner.S(state), List((U32, U32, List(U8))))
-	triples = |program, s0, steps, after| {
-		var $s = s0
-		var $out = []
-		for st in steps {
-			(loc, ev, payload, attr) = match st {
-				Click(l) => (l, "click", "", "")
-				Fill(l, v) => (l, "input", v, "value")
-				SelectOption(l, v) => (l, "change", v, "value")
-				Check(l) => (l, "change", "true", "checked")
-				Uncheck(l) => (l, "change", "false", "checked")
-				_ => crash "soak cycles take only user actions"
-			}
-			i = SpecRunner.find($s.dom, loc) ?? crash "cycle: no ${Scm.show_loc(loc)}"
-			(node, h) = Dom.target($s.dom, i, ev) ?? crash "cycle: no ${ev} handler"
-			s1 = if (attr == "") $s else SpecRunner.set_attr($s, i, attr, payload)
-			$s = after(SpecRunner.fire(program, s1, i, ev, payload) ?? crash "cycle fire")
-			$out = $out.append((node, h, payload.to_utf8()))
-		}
-		($s, $out)
-	}
+	## A fuzz target's walk input: explorer bytes, then `steps` seeded steps
+	## from `seed`. A target's generator fixes `steps` at 0 and explores the
+	## bytes; its examples name a long seeded walk, which roc-fuzz could not
+	## hold as explicit bytes (an example decodes at most 4,096 values).
+	Session : { program : List(U8), seed : U64, steps : U64 }
 
-	## Replay a round trip on the engine alone (no DOM model, command buffer
-	## reused) `k` times. Each cycle runs inside a measured region (`begin!`,
-	## `end!`); `end!` reports the live bytes the cycle left behind (exit
-	## minus entry), so probes never see their own bookkeeping.
-	replay! : SpecRunner.Program(state), state, List((U32, U32, List(U8))), U64, (state, List(U8) -> (state, List(U8))), ({} => m), (m => I64) => List(I64)
-	replay! = |program, inst0, evs, k, after, begin!, end!| {
-		var $a = inst0
-		var $buf = []
-		var $wbuf = []
-		var $counts = []
-		var $c = 0.U64
-		while $c < k {
-			m = begin!({})
-			for (node, h, payload) in evs {
-				(a1, b1, w1) = (program.event)($a, $buf, $wbuf, node, h, payload)
-				(a2, b2) = after(a1, b1)
-				$a = a2
-				$buf = b2
-				$wbuf = w1
-			}
-			$counts = $counts.append(end!(m))
-			$c = $c + 1
-		}
-		$counts
-	}
+	## The bytes of a session's walk: its own, then its seeded ones.
+	session_bytes : Session -> List(U8)
+	session_bytes = |{ program, seed, steps }| program.concat(Soak.seeded(seed, steps))
 
 	## The settle check as a walk's `after` hook: after every step the engine's
 	## pass over every layer must emit nothing (`SpecRunner.check_settled`), so
@@ -250,11 +210,11 @@ Soak := [].{
 			Ok(_) => s
 			Err(msg) => crash "soak: ${msg}"
 		}
+}
 
-	## After `warm` warm-up cycles every cycle must leave zero net live bytes.
-	flat : List(I64), U64 -> Try({}, Str)
-	flat = |nets, warm| {
-		tail = nets.drop_first(warm)
-		if (!tail.any(|c| c != 0)) Ok({}) else Err("cycles leave live bytes behind (net per cycle): ${Str.inspect(nets)}")
-	}
+## A seeded input holds two bytes per step, taken from the generator as it
+## advances, so a walk over it is the walk the seed names.
+expect {
+	x = Soak.prng(7)
+	Soak.seeded(7, 1) == [x.shr_zf_wrap(40).to_u8_wrap(), x.shr_zf_wrap(24).to_u8_wrap()] and Soak.seeded(7, 3).len() == 6
 }

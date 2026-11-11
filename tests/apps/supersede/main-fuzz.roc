@@ -1,8 +1,10 @@
-app [target] { pf: platform "../../../platform/fuzz.roc" }
+app [target] {
+	fz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.0/6uc3YKGydgEnS2nrCimSYWDNfT6drYcgU52VAwqrb6DS.tar.zst",
+	pf: "../../../platform/engine.roc",
+}
 
+import fz.Fuzz
 import pf.Core
-import pf.Fuzz
-import pf.Scm
 import pf.Soak
 import pf.SpecRunner
 import SupersedeApp
@@ -14,9 +16,9 @@ import SupersedeApp
 ##   request or timer (a body, a 503 or a timeout, in any order) and interval
 ##   ticks, from a fresh mount. Every step must leave the engine settled (the
 ##   soak's settle check), and the walk must free everything it allocated.
-## - "soak-10k": 10k seeded steps (settle-checked and leak-checked), then a
-##   round trip through the late branch 48 times on the engine alone with
-##   flat live bytes.
+## - "walk-10k": a seeded walk of 10,000 steps.
+## The flat round trip is a spec the native runner soaks
+## (`specs/round-trip-late-branch.scm`).
 
 St : SpecRunner.S(Core.App)
 
@@ -76,93 +78,23 @@ walk = |s0, bytes| {
 	$s
 }
 
-walk_n : St, U64, U64 -> St
-walk_n = |s0, seed, n| {
-	check = Soak.settled(program)
-	var $s = check(s0)
-	var $x = seed
-	var $i = 0.U64
-	while $i < n {
-		$x = Soak.prng($x)
-		$s = check(walk_step($s, $x.shr_zf_wrap(40).to_u8_wrap(), $x.shr_zf_wrap(24).to_u8_wrap()))
-		$i = $i + 1
-	}
-	$s
-}
-
 start : {} -> St
 start = |_| SpecRunner.mount(program, "/", [])
 
-## A round trip back to the initial shape: the late branch opened, its
-## nested states written, and closed again.
-cycle : List(Scm.Op)
-cycle = [
-	Click(Role({ role: "button", name: "Toggle late" })),
-	Click(Role({ role: "button", name: "Inc derived" })),
-	Click(Role({ role: "button", name: "Toggle inner" })),
-	Click(Role({ role: "button", name: "Inc inner" })),
-	Click(Role({ role: "button", name: "Toggle inner" })),
-	Click(Role({ role: "button", name: "Toggle late" })),
-]
-
-## Soak, mode 2: an explorer-driven walk (two bytes per step) from a fresh
-## mount, settle-checked at every step, which must free everything it
-## allocated.
-soak_walk! : List(U8) => Fuzz.Outcome
-soak_walk! = |bytes| {
-	Fuzz.expect_no_leaks!(|| walk(start({}), bytes))
+## A walk from a fresh mount over the session's bytes, which must free
+## everything it allocated.
+test! : Soak.Session => Fuzz.Outcome
+test! = |session| {
+	Fuzz.expect_no_leaks!(|| walk(start({}), Soak.session_bytes(session)))
 	Fuzz.keep
 }
-
-## Soak, mode 3: 10k seeded steps (settle-checked, leak-checked), then the
-## late-branch round trip 48 times on the engine alone: live allocations
-## flat after 2 warm-up cycles. The late branch issues a timer each time it
-## opens; closing it cancels the timer, so the cycle needs no answers.
-soak_10k! : {} => Fuzz.Outcome
-soak_10k! = |_| {
-	Fuzz.expect_no_leaks!(|| walk_n(start({}), 7, 10000))
-	(s1, evs) = Soak.triples(program, start({}), cycle, Soak.settled(program))
-	counts = Soak.replay!(program, s1.inst, evs, 48, |a, b| (a, b), begin!, net_bytes!)
-	match Soak.flat(counts, 2) {
-		Ok(_) => {}
-		Err(m) => crash m
-	}
-	Fuzz.mark!("soak cycle net live bytes ${Str.inspect(counts.sublist({ start: 0, len: 4 }))} ... (${counts.len().to_str()} cycles)")
-	Fuzz.keep
-}
-
-## Soak probes: a measured region around one cycle; its net live bytes.
-begin! : {} => Fuzz.Measurement
-begin! = |_| Fuzz.start_measure!("cycle")
-
-net_bytes! : Fuzz.Measurement => I64
-net_bytes! = |w| {
-	stats = w.finish!()
-	stats.exit_live_bytes.to_i64_wrap() - stats.entry_live_bytes.to_i64_wrap()
-}
-
-Input : { mode : U8, size : U64, program : List(U8) }
-
-test! : Input => Fuzz.Outcome
-test! = |{ mode, program: bytes, .. }| {
-	if mode == 2 {
-		soak_walk!(bytes)
-	} else if mode == 3 {
-		soak_10k!({})
-	} else {
-		Fuzz.reject
-	}
-}
-
-ex : Str, U8, List(U8) -> Fuzz.Example(Input)
-ex = |name, mode, bytes| Fuzz.example({ name, revision: "1", make: || { mode, size: 0, program: bytes } })
 
 target = Fuzz.target_with!({
 	name: "supersede",
 	examples: [
-		ex("soak-10k", 3, []),
+		Fuzz.example({ name: "walk-10k", revision: "1", make: || { program: [], seed: 7, steps: 10000 } }),
 	],
-	generator: { mode: Fuzz.constant(2), size: Fuzz.constant(0), program: Fuzz.list(Fuzz.u8, 400) }.Fuzz,
+	generator: { program: Fuzz.list(Fuzz.u8, 400), seed: Fuzz.constant(0), steps: Fuzz.constant(0) }.Fuzz,
 	test!,
 	show: Str.inspect,
 })

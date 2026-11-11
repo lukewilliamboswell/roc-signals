@@ -1,8 +1,11 @@
-app [target] { pf: platform "../../platform/fuzz.roc" }
+app [target] {
+	fz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.0/6uc3YKGydgEnS2nrCimSYWDNfT6drYcgU52VAwqrb6DS.tar.zst",
+	pf: "../../platform/engine.roc",
+}
 
+import fz.Fuzz
 import pf.Core
 import pf.Engine
-import pf.Fuzz
 import pf.Wire
 
 ## The worker wire format is total and canonical over arbitrary bytes.

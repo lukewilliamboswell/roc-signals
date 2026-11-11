@@ -32,6 +32,11 @@
   that owns its typed storage and answers `Fire`, `Changed` and `Dispose`. Do
   not introduce a node table, a value registry, runtime dependency discovery,
   host-side state, or a second reactive mechanism.
+  No engine module imports a hosted function: a job's effects reach the
+  engine as values the platform root hands it, which the files and builders
+  of that job carry, so the engine also builds as a package
+  (`platform/engine.roc`) for the fuzz targets. Only the platform-only
+  modules (`Files`, `Effects`, `Hosted`, `Cli`) reach the hosts.
 - Dependencies are declared by read masks on values, built before anything
   runs. Preserve glitch-free propagation: all writes of a turn are applied
   before the single observation pass, and order follows nesting. Preserve
@@ -194,7 +199,8 @@
 ## Complete changes across affected layers
 
 - Trace boundary and public API changes through the engine, the typed view
-  modules, `platform/main.roc` and the fuzz platform root, `host.zig`,
+  modules, `platform/main.roc` and the engine package root
+  (`platform/engine.roc`), `host.zig`,
   `runtime.mjs`, `worker.mjs`, the native spec runner and oracle, specs,
   examples, generated or bundled artifacts, and maintained documentation
   wherever each layer is affected.
@@ -221,8 +227,10 @@
   as applicable.
 - Use `.scm` specs beside each app (`examples/<app>/specs/`,
   `tests/apps/<app>/specs/`) for application-visible behavior and work, run
-  natively and in Chrome; roc-fuzz targets (each app's `main-fuzz.roc`, and
-  `fuzz/` for the shared support) for engine sequences and leak-checked soaks;
+  natively and in Chrome, with each app's round trip as a spec the native
+  runner soaks (`--soak`); roc-fuzz targets (each app's `main-fuzz.roc`, and
+  `fuzz/` for the shared support), ordinary roc-fuzz apps on the engine
+  package, for engine sequences and leak-checked walks;
   and contract cases under `tests/` for `host.zig`, `runtime.mjs` and
   `worker.mjs` against the wire protocol. Keep semantic locators stable and
   assert structural work exactly.

@@ -49,7 +49,7 @@ main! = |_args| {
 
 	Proc.note!("== roc test")
 	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "platform/main.roc"], cwd: "." }, "roc test platform/main.roc")?)
-	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "platform/fuzz.roc"], cwd: "." }, "roc test platform/fuzz.roc")?)
+	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "platform/engine.roc"], cwd: "." }, "roc test platform/engine.roc")?)
 	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "cli/main.roc"], cwd: "." }, "roc test cli/main.roc")?)
 	$problems = $problems.concat(ToolCheck.bundle_current!(o)?)
 	$problems = $problems.concat(check!({ program: o.tooling, args: ["test", "scripts/check_all.roc"], cwd: "." }, "roc-stable test scripts")?)

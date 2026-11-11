@@ -281,7 +281,7 @@ MdApp := [].{
 	}
 
 	## The program `main.roc` binds for the browser module and the native spec
-	## runner, and `main-fuzz.roc` drives on the fuzz platform.
+	## runner, and `main-fuzz.roc` drives as a roc-fuzz target.
 	program : Engine.Program
 	program = Engine.program(|| MdApp.main({}))
 

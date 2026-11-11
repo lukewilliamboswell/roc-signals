@@ -1,11 +1,11 @@
 app [target] {
-	pf: platform "../../platform/fuzz.roc",
+	fz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.0/6uc3YKGydgEnS2nrCimSYWDNfT6drYcgU52VAwqrb6DS.tar.zst",
+	pf: "../../platform/engine.roc",
 	plume: "https://github.com/lukewilliamboswell/plume/releases/download/0.5.0/UstpTQVssohnU8U6Q5WpwfGxKuYZF8uWzjddwKMbTcp.tar.zst",
 }
 
+import fz.Fuzz
 import pf.Core
-import pf.Fuzz
-import pf.Dom
 import pf.Scm
 import pf.Soak
 import pf.SpecRunner
@@ -17,8 +17,9 @@ import StatusApp
 ##   answers (healthy, degraded, garbled, failed, timed out, in any order),
 ##   which must leave the engine settled at every step and free everything
 ##   they allocated.
-## - "soak-10k": 10k seeded steps, then "Refresh now" answered healthy 48
-##   times on the engine alone with flat live bytes.
+## - "walk-10k": a seeded walk of 10,000 steps.
+## The flat round trip is a spec the native runner soaks
+## (`specs/round-trip-refresh-answered-healthy.scm`).
 
 St : SpecRunner.S(Core.App)
 
@@ -99,110 +100,23 @@ walk = |s0, bytes| {
 	$s
 }
 
-prng : U64 -> U64
-prng = |x| x.times_wrap(6364136223846793005).plus_wrap(1442695040888963407)
-
-walk_n : St, U64, U64 -> St
-walk_n = |s0, seed, n| {
-	var $s = s0
-	var $x = seed
-	var $i = 0.U64
-	while $i < n {
-		$x = prng($x)
-		$s = settled(walk_step($s, $x.shr_zf_wrap(40).to_u8_wrap(), $x.shr_zf_wrap(24).to_u8_wrap()))
-		$i = $i + 1
-	}
-	$s
-}
-
 start : {} -> St
 start = |_| SpecRunner.mount(Core.driver(StatusApp.program), "/", [])
 
-## Answer every in-flight request except the subscriptions `subs`, healthy,
-## on the engine alone.
-answer_app : List(U32), Core.App, List(U8) -> (Core.App, List(U8))
-answer_app = |subs, a0, b0| {
-	var $a = a0
-	var $b = b0
-	for id in Core.fx_live(a0).keep_if(|id| !subs.contains(id)) {
-		(a1, b1) = Core.take_cmds(Core.result($a, id, Http({ status: 200, headers: [], body: "operational|99.99" })), $b)
-		$a = a1
-		$b = b1
-	}
-	($a, $b)
-}
-
-answer_all : St -> St
-answer_all = |s0| {
-	var $s = s0
-	for p in s0.browser.pending {
-		$s = answer_one($s, p, 0)
-	}
-	$s
-}
-
-## Soak, mode 2: an explorer-driven walk (two bytes per step) from a fresh
-## mount, which must free everything it allocated.
-soak_walk! : List(U8) => Fuzz.Outcome
-soak_walk! = |program| {
-	Fuzz.expect_no_leaks!(|| walk(start({}), program))
+## A walk from a fresh mount over the session's bytes, which must free
+## everything it allocated.
+test! : Soak.Session => Fuzz.Outcome
+test! = |session| {
+	Fuzz.expect_no_leaks!(|| walk(start({}), Soak.session_bytes(session)))
 	Fuzz.keep
 }
-
-## Soak, mode 3: 10k seeded steps (settle-checked and leak-checked), then
-## "Refresh now" with every check answered, 48 times on the engine alone:
-## live allocations flat after 3 warm-up cycles.
-soak_10k! : {} => Fuzz.Outcome
-soak_10k! = |_| {
-	Fuzz.expect_no_leaks!(|| walk_n(start({}), 7, 10000))
-	s0 = answer_all(start({}))
-	subs = Core.fx_live(s0.inst)
-	i = SpecRunner.find(s0.dom, Role({ role: "button", name: "Refresh now" })) ?? crash "soak: no Refresh now"
-	(node, h) = Dom.target(s0.dom, i, "click") ?? crash "soak: no click handler"
-	counts = Soak.replay!(Core.driver(StatusApp.program), s0.inst, [(node, h, [])], 48, |a, b| answer_app(subs, a, b), begin!, net_bytes!)
-	# Three warm-up cycles: the first changes the board (every request now
-	# answers "operational|99.99", which the feed parses as one incident)
-	# and the next two settle the buffers that change grew.
-	match Soak.flat(counts, 3) {
-		Ok(_) => {}
-		Err(m) => crash m
-	}
-	Fuzz.mark!("soak cycle net live bytes ${Str.inspect(counts.sublist({ start: 0, len: 4 }))} ... (${counts.len().to_str()} cycles)")
-	Fuzz.keep
-}
-
-## Soak probes: a measured region around one cycle; its net live bytes.
-begin! : {} => Fuzz.Measurement
-begin! = |_| Fuzz.start_measure!("cycle")
-
-net_bytes! : Fuzz.Measurement => I64
-net_bytes! = |w| {
-	stats = w.finish!()
-	stats.exit_live_bytes.to_i64_wrap() - stats.entry_live_bytes.to_i64_wrap()
-}
-
-Input : { mode : U8, size : U64, program : List(U8) }
-
-test! : Input => Fuzz.Outcome
-test! = |{ mode, program, .. }| {
-	if mode == 2 {
-		soak_walk!(program)
-	} else if mode == 3 {
-		soak_10k!({})
-	} else {
-		Fuzz.reject
-	}
-}
-
-ex : Str, U8, U64 -> Fuzz.Example(Input)
-ex = |name, mode, size| Fuzz.example({ name, revision: "1", make: || { mode, size, program: [] } })
 
 target = Fuzz.target_with!({
 	name: "status-page",
 	examples: [
-		ex("soak-10k", 3, 0),
+		Fuzz.example({ name: "walk-10k", revision: "1", make: || { program: [], seed: 7, steps: 10000 } }),
 	],
-	generator: { mode: Fuzz.constant(2), size: Fuzz.constant(0), program: Fuzz.list(Fuzz.u8, 400) }.Fuzz,
+	generator: { program: Fuzz.list(Fuzz.u8, 400), seed: Fuzz.constant(0), steps: Fuzz.constant(0) }.Fuzz,
 	test!,
 	show: Str.inspect,
 })

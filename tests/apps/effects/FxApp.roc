@@ -368,7 +368,7 @@ FxApp := [].{
 	)
 
 	## The program `main.roc` binds for the browser module and the native spec
-	## runner, and `main-fuzz.roc` drives on the fuzz platform.
+	## runner, and `main-fuzz.roc` drives as a roc-fuzz target.
 	program : Engine.Program
 	program = Engine.program_boot({ storage_keys: [], max_inflight: 8 }, |_| FxApp.main({})).with_workers(FxApp.workers).with_ports(FxApp.ports)
 
