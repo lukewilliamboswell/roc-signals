@@ -271,7 +271,7 @@ flowchart LR
     DOM -->|"event (node, handler, payload)"| JS
     JS -->|"payload_reserve + event"| Host
 
-    Engine --> Test["platform/SpecRunner.roc<br/>native spec runner (x64musl)"]
+    Engine --> Test["platform/SpecRunner.roc<br/>native spec runner (Linux, macOS, Windows)"]
     Test --> Oracle["platform/Dom.roc<br/>independent command-stream oracle"]
     Scm["examples/*/specs/*.scm"] --> Parser["platform/Scm.roc<br/>one parser"]
     Parser --> Native["SpecRunner.roc (native)"]
@@ -285,13 +285,21 @@ inputs:
 
 - **`--target=wasm32`** compiles the app and engine to Wasm with the thin
   host. It is the product.
-- **`--target=x64musl`** gives the app's native `.scm` spec runner: the
+- **`--target=x64musl`** (Linux), **`arm64mac`** and **`x64mac`** (macOS)
+  and **`x64win`** (Windows) give the app's native `.scm` spec runner: the
   platform's `SpecRunner.roc` drives the same `main` against the `Dom.roc`
   oracle, linked with a small native host (`host/spec.zig`: entry point,
-  allocator, file and output services). The Wasm link drops the runner, so
-  the browser module does not grow. Because the engine is pure, the runner
-  drives it by calling its transaction functions and decoding the command
-  stream; there is no simulated host with its own semantics.
+  allocator, file and output services, worker jobs in child processes). The
+  Wasm link drops the runner, so the browser module does not grow. Because
+  the engine is pure, the runner drives it by calling its transaction
+  functions and decoding the command stream; there is no simulated host
+  with its own semantics. The host is one file for every system: what
+  differs between systems (how a file is opened, a process started or
+  memory obtained) is a small set of functions in `host/os_posix.zig` and
+  `host/os_windows.zig`, never a difference in what a step means, so a spec
+  means the same on every system the runner builds for. The Windows host
+  links no C runtime, only kernel32, so the platform carries no Microsoft
+  library and nothing is fetched for that target.
 
 Fuzz targets cannot share that entry: roc-fuzz requires a `target : Target`
 value and links its own libFuzzer host, and a platform has one `requires`.
@@ -1704,7 +1712,7 @@ of steps written against the rendered UI:
 The grammar has **one parser, written in Roc** (`platform/Scm.roc`), which
 produces a typed list of steps. Both runners consume it:
 
-- the **native runner** (`SpecRunner.roc`, which the platform bundles: each app's `main.roc` built for `x64musl`) drives
+- the **native runner** (`SpecRunner.roc`, which the platform bundles: each app's `main.roc` built for `x64musl`, `arm64mac`, `x64mac` or `x64win`) drives
   the engine directly and asserts against the `Dom.roc` model;
 - the **browser runner** replays the same steps, emitted as data by the same
   parser, against the real runtime in headless Chrome.
@@ -1716,8 +1724,10 @@ oracle and never defines a meaning of its own. In particular:
 - effects are always manual: HTTP requests, timers and worker jobs wait for
   `run-effect`, which fires a timer, answers an HTTP request with the one
   staged answer, and runs a worker job — in Chrome in a real worker, the step
-  waiting for its result turn; natively in a child process of the runner,
-  which calls the same entries a worker instance calls (`work`, or
+  waiting for its result turn; natively in a child process the runner
+  starts from its own executable on every system, a fresh instance as a
+  worker is, which reads the job through a pipe and calls the same entries
+  a worker instance calls (`work`, or
   `prepare` and `ask`) and serves the job's hosted effects from the setup
   files' bytes and builders of its own (see [Workers](#workers)), so a task
   that crashes loses only its job, with the crash's fault class, as it does
@@ -1884,12 +1894,14 @@ architecture are recorded here:
 - **Roc scripts.** Automation is Roc scripts under `scripts/`; one `check`
   task runs formatting, `roc test`, every example's specs natively and in
   Chrome, fuzz corpus replay, size budgets, and the host
-  and runtime contract tests. CI calls Blueprint tasks, never script paths.
+  and runtime contract tests. CI calls Blueprint tasks, never script paths;
+  on macOS and Windows, where Blueprint does not run, CI builds apps' spec
+  runners with `roc` and runs their specs, as an app author there does.
 - **Fuzzing.** Short corpus replays run in pull-request CI; long campaigns
   run on a schedule.
 - **Releases.** A release publishes the one platform bundle (engine, Wasm
-  host and runtime, and the native spec runner with its x64musl link
-  inputs), `runtime.mjs`, an examples archive naming that bundle, and the
+  host and runtime, and the native spec runner with its link inputs for
+  Linux x86-64, macOS and Windows), `runtime.mjs`, an examples archive naming that bundle, and the
   generated API docs; `check` builds the same assets as a dry run. The shared
   roc-automation nightly runner builds the latest release's examples with the
   latest Roc nightly. Changing `roc-stable` is a maintainer's pull request.

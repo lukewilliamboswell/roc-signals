@@ -98,7 +98,8 @@ answers `WorkLost` with the class, and the page goes on.
 
 ## Natively
 
-An app's `main.roc` built for `x64musl` runs the same engine as native code:
+An app's `main.roc` built for a native target (`x64musl`, `arm64mac`,
+`x64mac` or `x64win`) runs the same engine as native code:
 the platform's spec runner calls the engine's transaction functions directly
 and feeds the command bytes to `platform/Dom.roc`, an independent decoder that builds
 a model of the DOM. Specs assert against that model. Because it reads only the

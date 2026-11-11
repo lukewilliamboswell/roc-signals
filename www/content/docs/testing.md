@@ -25,7 +25,8 @@ parser, written in Roc (`platform/Scm.roc`), which turns the text into a
 typed list of steps. Two runners consume that list:
 
 - **The native runner.** The app's `main.roc` built with
-  `--target=x64musl`: the platform bundles the runner, which mounts the
+  `--target=x64musl` on Linux, `arm64mac` or `x64mac` on macOS, or `x64win`
+  on Windows: the platform bundles the runner, which mounts the
   app's `Program` and drives it with the same bytes
   the browser runtime would send: boot data, DOM events and effect results.
   Every assertion reads `Dom.roc`, an oracle that decodes the engine's
@@ -60,8 +61,8 @@ typed result:
 {{ sample(file="search/Search.roc", region="requests") }}
 
 Its one entry point, `main.roc`, binds that `program` as `main`; built for
-`wasm32` it is the browser module, and built for `x64musl` it is the native
-spec runner:
+`wasm32` it is the browser module, and built for your system's native target
+(`x64musl`, `arm64mac`, `x64mac` or `x64win`) it is the native spec runner:
 
 {{ sample(file="search/main.roc") }}
 
@@ -373,8 +374,11 @@ The project's tasks run the registered apps' specs:
 | `blueprint run spec -- --filter 'add*' kanban-board` | Only specs whose file name matches the glob |
 | `blueprint run check` | The pull-request gate: every app's specs in both runners, the documentation samples' specs, and the rest of the suite |
 
-For an app of your own, build its entry point for the native target and pass
-the runner spec files:
+For an app of your own, build its entry point for your system's target and
+pass the runner spec files. The runner builds and behaves alike on Linux
+x86-64 (`x64musl`), macOS on Apple silicon (`arm64mac`) or Intel (`x64mac`),
+and Windows x86-64 (`x64win`, where the runner is `build/app-specs.exe`); a
+spec means the same on each, and in Chrome:
 
 - `roc build --target=x64musl main.roc --output=build/app-specs`
 - `build/app-specs specs/*.scm` runs them and prints one JSON result line
