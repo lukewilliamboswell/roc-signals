@@ -2,6 +2,7 @@ import cli.Env
 import cli.Path
 import cli.Stdout
 import Bundle
+import Project
 
 ## `init [DIR]`: create an app, the counter of the documentation's Getting
 ## Started page, in `DIR` (by default, this directory). It writes only files
@@ -53,7 +54,7 @@ Init :: [].{
 				CopyOf(source) => Path.copy!(Path.utf8(source), Path.utf8(target))?
 			}
 		}
-		name = if (dir == ".") (Path.display(Env.cwd!()?).split_on("/").last() ?? ".") else dir
+		name = if (dir == ".") (Project.with_slashes(Path.display(Env.cwd!()?)).split_on("/").last() ?? ".") else dir
 		Stdout.line!(Init.summary({ dir, name, paths: steps.map(|step| step.path) }))?
 		Ok({})
 	}

@@ -58,7 +58,7 @@ Compiler :: [].{
 	## goes to a side file that replaces `output` only when it succeeds.
 	build! : Build => Try([Built(Str), Failed(Str)], [RocMissing, BuildIoFailed(Str)])
 	build! = |build| {
-		side = "${build.output}.next"
+		side = Compiler.side_of(build.output)
 		result = Compiler.command!({ ..build, output: side }).run!() ? |_| RocMissing
 		Compiler.finish!(build.output, result.status, result.stdout_bytes)
 	}
@@ -69,7 +69,7 @@ Compiler :: [].{
 		report = Compiler.tidy(Str.from_utf8_lossy(bytes))
 		match Compiler.verdict(status) {
 			Succeeded => {
-				Path.rename!(Path.utf8("${output}.next"), Path.utf8(output)) ? |_| BuildIoFailed(output)
+				Path.rename!(Path.utf8(Compiler.side_of(output)), Path.utf8(output)) ? |_| BuildIoFailed(output)
 				Ok(Built(report))
 			}
 			Failed => Ok(Failed(report))
@@ -85,6 +85,20 @@ Compiler :: [].{
 			[before, _, ..] => "${before}."
 			_ => report
 		}
+
+	## The side file a build writes before it replaces `output`: `.next`
+	## before the extension, so a Windows program keeps its `.exe`.
+	side_of : Str -> Str
+	side_of = |output| {
+		parts = output.split_on("/")
+		name = parts.last() ?? output
+		side_name = match name.split_on(".") {
+			[stem] => "${stem}.next"
+			[stem, .. as rest] => "${stem}.next.${Str.join_with(rest, ".")}"
+			[] => "${name}.next"
+		}
+		Str.join_with(parts.drop_last(1).append(side_name), "/")
+	}
 
 	## The compiler exits 0 for a clean build, 2 when there are only
 	## warnings, and 1 when there are errors.
@@ -130,6 +144,9 @@ expect Compiler.version_of("Roc compiler version nightly-2026-11-10-f7d1f19\n") 
 
 ## Warnings alone are a successful build; errors and signals are not.
 expect [Compiler.verdict(Exited(0)), Compiler.verdict(Exited(2)), Compiler.verdict(Exited(1)), Compiler.verdict(Signaled(9))] == [Succeeded, Succeeded, Failed, Failed]
+
+## A side file keeps its extension, and a program without one gets none.
+expect ["a/app.wasm", ".signals/test/runner", ".signals/test/runner.exe"].map(Compiler.side_of) == ["a/app.next.wasm", ".signals/test/runner.next", ".signals/test/runner.next.exe"]
 
 ## The report's closing line keeps its count and drops the side file.
 expect Compiler.tidy("x\n1 error and 0 warnings found in 9ms while successfully building:\n\n    a.wasm.next\n") == "x\n1 error and 0 warnings found in 9ms."

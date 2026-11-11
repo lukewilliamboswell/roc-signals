@@ -157,7 +157,7 @@ dev_build : Compiler.Build
 dev_build = { target: "wasm32", opt: "dev", output: "${work_dir}/app.wasm" }
 
 side_build : Compiler.Build
-side_build = { ..dev_build, output: "${dev_build.output}.next" }
+side_build = { ..dev_build, output: Compiler.side_of(dev_build.output) }
 
 ## The first free port from `port`, trying ten.
 listen! : U16 => Try({ listener : Tcp.Listener, bound : U16 }, _)

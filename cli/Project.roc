@@ -85,6 +85,11 @@ Project :: [].{
 		$out.sort_with(compare)
 	}
 
+	## A path as the tool writes paths: with `/` between its parts, also on
+	## Windows, where the system lists them with `\`.
+	with_slashes : Str -> Str
+	with_slashes = |path| path.replace_each("\\", "/")
+
 	## Order two paths by their bytes.
 	compare : Str, Str -> [Before, Same, After]
 	compare = |a, b| compare_bytes(a.to_utf8(), b.to_utf8())
@@ -96,7 +101,7 @@ walk! : Str => Try(List(Str), _)
 walk! = |dir| {
 	var $out = []
 	for entry in Path.list!(Path.utf8(dir))? {
-		full = Path.display(entry)
+		full = Project.with_slashes(Path.display(entry))
 		relative = if (full.starts_with("./")) full.drop_prefix("./") else full
 		if Project.role(relative) == Ignored or relative == "dist" {
 			{}
@@ -124,6 +129,9 @@ expect {
 	actual = paths.map(Project.role)
 	actual == [Source, Source, Page, Asset, Asset, Public, Spec, Ignored, Ignored, Ignored, Source]
 }
+
+## Windows separators become slashes.
+expect Project.with_slashes(".\\specs\\counter.scm") == "./specs/counter.scm"
 
 ## A changed, an added and a removed file are all changes; an unchanged one
 ## is not.

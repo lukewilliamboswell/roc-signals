@@ -1,4 +1,5 @@
 import cli.Cmd
+import cli.Env
 import cli.OsStr
 import cli.Path
 import cli.Stdout
@@ -33,14 +34,17 @@ Specs :: [].{
 		version = Compiler.version!()?
 		Path.create_all!(Path.utf8(".signals/test"))?
 		Stdout.line!("Building the app's spec runner...")?
-		runner = ".signals/test/runner"
+		# The runner is a program of this system: `.exe` on Windows. A
+		# program is started by its absolute path.
+		runner = ".signals/test/runner${if (target.ends_with("win")) ".exe" else ""}"
 		match Compiler.build!({ target, opt: "dev", output: runner })? {
 			Built(_) => {}
 			Failed(report) => return Err(BuildFailed({ report, version }))
 		}
 		count = specs.len()
 		Stdout.line!("Running ${count.to_str()} spec${if (count == 1) "" else "s"}:")?
-		output = Cmd.new(OsStr.from_str(runner)).args(specs.map(OsStr.from_str)).stdout(Capture).stderr(Capture).run!() ? |_| RunnerFailed("")
+		program = "${Project.with_slashes(Path.display(Env.cwd!()?))}/${runner}"
+		output = Cmd.new(OsStr.from_str(program)).args(specs.map(OsStr.from_str)).stdout(Capture).stderr(Capture).run!() ? |_| RunnerFailed("")
 		outcomes = Specs.outcomes(Str.from_utf8_lossy(output.stdout_bytes))
 		if outcomes.len() != count {
 			return Err(RunnerFailed(Str.from_utf8_lossy(output.stderr_bytes)))
@@ -134,7 +138,7 @@ spec_files! = || {
 	}
 	var $out = []
 	for entry in Path.list!(Path.utf8("specs"))? {
-		name = Path.display(entry)
+		name = Project.with_slashes(Path.display(entry))
 		if name.ends_with(".scm") {
 			$out = $out.append(name)
 		}
