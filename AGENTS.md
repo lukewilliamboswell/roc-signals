@@ -177,7 +177,12 @@
   shared with `Core.roc` would let one bug pass its own test.
 - Keep `.scm` specs the single source of truth for application-visible
   behavior, parsed by the one Roc parser in `platform/Scm.roc`. Unknown steps are
-  hard errors in every runner. Do not weaken, skip or reinterpret a step to make
+  hard errors in every runner. The native runner builds for several systems
+  and means the same on each: what differs between them is a service of the
+  native host's system files (`platform/host/os_posix.zig`,
+  `platform/host/os_windows.zig`), never a difference in what `spec.zig`
+  or the Roc runner does, and a crashing worker job stays lost work on
+  every system. Do not weaken, skip or reinterpret a step to make
   it pass; a reinterpretation is a design change recorded in `design.md` and in
   the commit.
 

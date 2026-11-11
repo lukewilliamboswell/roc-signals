@@ -31,7 +31,7 @@ recipe ready.
 
 | Path | Contents |
 |---|---|
-| `platform/` | The platform (`main.roc`): the engine (`Core.roc`), the authoring API (`Engine.roc`, `Html.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the hosted effects a worker job calls (`Hosted.roc`, bound in both hosts), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig`). Also the fuzz platform (`fuzz.roc`, the vendored roc-fuzz modules and the soak walk) |
+| `platform/` | The platform (`main.roc`): the engine (`Core.roc`), the authoring API (`Engine.roc`, `Html.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the hosted effects a worker job calls (`Hosted.roc`, bound in both hosts), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig` with its system services in `host/os_posix.zig` and `host/os_windows.zig`, and `host/kernel32.def`, the Windows host's imports). Also the fuzz platform (`fuzz.roc`, the vendored roc-fuzz modules and the soak walk) |
 | `tests/` | Browser contract tests and the apps they drive (`tests/apps/`, for example `files` for file handles, `file-effects` for operations on files, `ports` for ports, `worker-typed` for the task API, `prepared` for preparations, `tasks` for jobs that read and build files, `outbox` for posting requests and `gather` for one question split over several jobs), the Chrome spec replay, and the release check helper |
 | `fuzz/` | Fuzz targets of the shared support; each app's own target is its `main-fuzz.roc` |
 | `examples/` | The example apps, each with its specs, and with any JavaScript of its own beside it (the Reading List's port handlers, `ports.mjs`; the simulated service of Conduit, Field Notes and the Status Page, `backend.mjs`); `examples/shared/` holds the JavaScript several examples load (the `plume-chart` and `worker-pool-panel` elements) |
@@ -101,7 +101,9 @@ for example to run two tasks at once.
    names exists, and every example is in a section of the examples index.
 2. `roc fmt --check` over every Roc source, and `roc test` on the test support
    and the scripts.
-3. The test platform, and the examples of the fuzz targets in `fuzz/` (the
+3. The platform's link inputs for every target, a worker app's spec runner
+   linked for macOS (`arm64mac`, `x64mac`) and Windows (`x64win`) from them,
+   the test platform, and the examples of the fuzz targets in `fuzz/` (the
    `.scm` parser, the worker wire format, the port message format and generated site trees).
 4. The docs samples (below).
 5. Every app's specs natively and in Chrome, the check that the browser
@@ -133,6 +135,16 @@ for example to run two tasks at once.
    every app mounted by its check helper, and the release notes.
 
 Every spec must pass in both runners; there are no expected failures.
+
+`check` runs on Linux. Blueprint does not run on Windows or Intel macOS, so
+CI proves the native spec runner on the other systems itself: a Linux job
+builds the link inputs, and runners on macOS (Apple silicon and Intel) and
+Windows build a small app's and the worker apps' spec runners with `roc` and
+run their specs, then two specs that must fail (a crash expected with the
+wrong fault class, and a job past the runner's 30 s bound). A change to
+`platform/host/` that touches one system's file (`os_posix.zig` serves
+Linux and macOS, `os_windows.zig` Windows) is tested there and nowhere else,
+so it waits for those jobs.
 
 ## Specs and contract tests
 
@@ -247,7 +259,8 @@ assets with `blueprint run release` and creates a draft GitHub release with:
 
 - the platform bundle, `<hash>.tar.zst`, which apps name as their platform:
   one platform whose `main.roc` builds for `wasm32` (the browser module) and
-  `x64musl` (the native spec runner), with the link inputs of both;
+  `x64musl`, `arm64mac`, `x64mac` and `x64win` (the native spec runner),
+  with the link inputs of each;
 - `runtime.mjs` and its worker script, `worker.mjs`, served beside it;
 - `roc-signals-examples-<version>.zip`, each example's `main.roc` naming that
   bundle with its modules and specs, and the compatibility suite;

@@ -70,9 +70,10 @@ directory beside `examples/`, and adjust the relative platform paths to match.
 
 {{ sample(file="counter/main.roc") }}
 
-The platform builds this one file for two targets: `--target=wasm32` gives
-the module the browser runs, and `--target=x64musl` gives the app's native
-spec runner. Type-check the app:
+The platform builds this one file for two kinds of target: `--target=wasm32`
+gives the module the browser runs, and your system's native target gives the
+app's native spec runner: `x64musl` on Linux, `arm64mac` or `x64mac` on
+macOS, `x64win` on Windows. Type-check the app:
 
 ```sh
 roc check www/samples/counter/main.roc
@@ -93,6 +94,11 @@ blueprint run platform
 roc build --target=x64musl www/samples/counter/main.roc --output=counter-specs
 ./counter-specs www/samples/counter/specs/*.scm
 ```
+
+On macOS or Windows, build with `--target=arm64mac`, `x64mac` or `x64win`
+instead (on Windows, name the output `counter-specs.exe`); the specs run the
+same there. A released platform bundle carries every system's link inputs,
+so an app that names a release needs no `blueprint run platform`.
 
 Each spec reports one JSON line, and a summary follows. The runner drives the
 real engine and checks the DOM it would build, so this takes milliseconds.
