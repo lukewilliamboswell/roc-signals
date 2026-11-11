@@ -26,8 +26,8 @@ WorkersApp := [].{
 		batch : U64,
 		panel : Bool,
 		rounds : Str,
-		spin : Press,
-		slow : Press,
+		spin : Engine.Outbox(Str),
+		slow : Engine.Outbox(Str),
 		crashes : U64,
 		tails : U64,
 		missing : U64,
@@ -36,17 +36,10 @@ WorkersApp := [].{
 		log : List(Str),
 	}
 
-	## How many times a button was pressed and the rounds at the last press, so
-	## editing "Rounds" alone issues nothing.
-	Press : { n : U64, rounds : Str }
-
 	Ctx : In(Root, S)
 
 	initial : S
-	initial = { upper: 0, batch: 0, panel: False, rounds: "1000", spin: { n: 0, rounds: "" }, slow: { n: 0, rounds: "" }, crashes: 0, tails: 0, missing: 0, grows: 0, deeps: 0, log: [] }
-
-	pressed : Press, Str -> Press
-	pressed = |{ n, rounds: _ }, rounds| { n: n + 1, rounds }
+	initial = { upper: 0, batch: 0, panel: False, rounds: "1000", spin: Engine.outbox({}), slow: Engine.outbox({}), crashes: 0, tails: 0, missing: 0, grows: 0, deeps: 0, log: [] }
 
 	## A task from bytes to bytes that cannot fail: every task here but
 	## `deep`.
@@ -187,10 +180,12 @@ WorkersApp := [].{
 					|| Engine.text(""),
 				),
 				Html.text_input(Engine.const("Rounds"), "text", v.map(|s| s.rounds), [], st.set_value(|s, t| { ..s, rounds: t })),
-				Html.button("Spin", [], st.update(|s| { ..s, spin: WorkersApp.pressed(s.spin, s.rounds) })),
-				Engine.on_change(v.map(|s| s.spin), |p| [WorkersApp.job(WorkersApp.spin, p.rounds.to_utf8())], WorkersApp.logs_of(st, "spin", WorkersApp.spin)),
-				Html.button("Slow", [], st.update(|s| { ..s, slow: WorkersApp.pressed(s.slow, s.rounds) })),
-				Engine.on_change(v.map(|s| s.slow), |p| [WorkersApp.job(WorkersApp.slow, p.rounds.to_utf8())], WorkersApp.logs_of(st, "slow", WorkersApp.slow)),
+				# Each press posts the rounds it was made with, so editing
+				# "Rounds" alone issues nothing and pressing twice runs twice.
+				Html.button("Spin", [], st.update(|s| { ..s, spin: s.spin.post(s.rounds) })),
+				Engine.on_post(v.map(|s| s.spin), |rounds| [WorkersApp.job(WorkersApp.spin, rounds.to_utf8())], WorkersApp.logs_of(st, "spin", WorkersApp.spin)),
+				Html.button("Slow", [], st.update(|s| { ..s, slow: s.slow.post(s.rounds) })),
+				Engine.on_post(v.map(|s| s.slow), |rounds| [WorkersApp.job(WorkersApp.slow, rounds.to_utf8())], WorkersApp.logs_of(st, "slow", WorkersApp.slow)),
 				Html.button("Crash", [], st.update(|s| { ..s, crashes: s.crashes + 1 })),
 				Engine.on_change(v.map(|s| s.crashes), |_| [WorkersApp.job(WorkersApp.crasher, [])], WorkersApp.logs_of(st, "crash", WorkersApp.crasher)),
 				Html.button("Tail", [], st.update(|s| { ..s, tails: s.tails + 1 })),

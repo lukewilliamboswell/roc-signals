@@ -131,12 +131,7 @@ FilesApp := [].{
 					FilesApp.probe,
 					v.map(|s| FilesApp.probed(s.ask)),
 					|r| Html.p_v(
-						r.map(
-							|{ answer, .. }| match answer {
-								Answered(ok) => if (ok) "probe ok" else "probe failed"
-								_ => "no probe"
-							},
-						),
+						r.map(|remote| remote.answered().map_ok(|ok| if (ok) "probe ok" else "probe failed") ?? "no probe"),
 						[Engine.test_id("probe")],
 					),
 				),

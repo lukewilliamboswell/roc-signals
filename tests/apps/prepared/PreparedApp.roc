@@ -167,13 +167,14 @@ PreparedApp := [].{
 	Ctx : In(Root, S)
 
 	show : Engine.Remote(a, Worker.Error(e)), (a -> Str) -> Str
-	show = |{ request, answer }, f| match answer {
-		Unanswered => if (request == Pending) "working" else "nothing"
-		Answered(value) => if (request == Pending) "working" else f(value)
-		Failed(Lost(fault)) => "lost ${Str.inspect(fault)}"
-		Failed(Timeout) => "timed out"
-		Failed(Refused) => "refused"
-		Failed(Failed(problem)) => "failed ${Str.inspect(problem)}"
+	show = |remote, f| match Worker.status(remote) {
+		Unasked => "nothing"
+		Working => "working"
+		Answered(value) => f(value)
+		Lost(fault) => "lost ${Str.inspect(fault)}"
+		Timeout => "timed out"
+		Refused => "refused"
+		Failed(problem) => "failed ${Str.inspect(problem)}"
 	}
 
 	## The scratch task `want` asks for, over the loaded document.
