@@ -715,10 +715,29 @@ Appendix B, not a decision about application state.
 ## The Effect Channel
 
 Effects are data. An effect site watches a value and, at mount (`watch`,
-`latest`) or only on change (`on_change`), turns it into a list of requests.
-A site's `Reaction` is a reducer over a state given the value the request was
-issued for and its result. A `resource` site turns the answers into a layer
-instead of a state write.
+`latest`) or only on change (`on_change`, `on_post`), turns it into a list of
+requests. A site's `Reaction` is a reducer over a state given the value the
+request was issued for and its result. A `resource` site turns the answers
+into a layer instead of a state write.
+
+**Requests the user's action asks for.** A handler writes state and never
+issues a request: a request issued from a handler would have no site, so no
+owner path, reaction, scope or disposal rule, and would be a second
+mechanism. A request a click asks for (a save, an add, a write to a store) is
+instead *posted*: the app keeps an `Outbox(item)` in its state, the reducer
+that changes the state posts the item in the same step, and an `on_post`
+site over the outbox issues `plan(item)` in that turn, with `on_change`'s
+lifecycle (nothing at mount, nothing cancelled). The outbox carries a serial
+beside its latest post, and two outboxes are equal only when their serials
+are, so posting an item equal to the last is still a change and comparing
+is O(1). Each request's issued-for value is the outbox as the site saw it,
+so its reaction is given its own post's item however many posts are in
+flight. The site sees one value per turn, so a second post to one outbox in
+one turn would replace the first unseen: the site checks that the serial
+moved by at most one since it last looked, and a larger step is a
+`contract` error naming the site. Several things sent at once are one post
+of a list. Because the outbox is ordinary state, a pure `expect` on the
+reducer sees both what changed and what is sent.
 
 ### Request kinds
 
@@ -1114,8 +1133,8 @@ site's explicit policy is supersession.
 
 ### Supersession and asynchronous layers
 
-The engine never cancels a request because a newer one exists: `watch` and
-`on_change` keep everything they issued, and which answer wins is the
+The engine never cancels a request because a newer one exists: `watch`,
+`on_change` and `on_post` keep everything they issued, and which answer wins is the
 reaction's decision. Superseding is a policy a site declares, not an
 inference:
 
@@ -1145,7 +1164,28 @@ inference:
   finds it. The site is a scope: disposing it disposes its body and applies
   the per-kind rules to its requests, and an admitted answer reparented to a
   surviving ancestor writes the retired layer, a snapshot, so the write is
-  skipped and counted.
+  skipped and counted. Each request a site owns records its position in the
+  list `plan(a)` returned, and `resolve` is told it (`resource_at`, the
+  engine's form; `resource` ignores it), so a layer built from several
+  answers knows which request each answers without comparing results.
+- **`gather(asker, inputs, body)`** is a `resource` over a list that asks one
+  request per input and holds a `Gathered` layer: each input's job
+  (`Working`, `Answered(output)`, `Failed(error)`), settled at its position
+  as its result arrives in any order, and `all`, a `Remote` of the outputs in
+  input order once no job works, or the first failure in input order. A new
+  list marks every job working and `all` pending, keeping its answer, and
+  supersedes the old question's requests as `resource` does. It adds no site
+  kind and no rule: each job takes an in-flight slot, a refusal is that
+  job's failure, and disposal is `resource`'s. `Worker.gather` is this for a
+  task's jobs; it neither windows nor retries, so a question is split into
+  no more parts than the in-flight bound, and the pool queues the jobs
+  beyond `maxWorkers`.
+
+`Remote(output, error)`, the layer `follow` and `gather` hold, is a
+transparent nominal type, so its fields, record literals and inspection are
+those of the record, and it has `answered()`, the latest answer as a `Try`
+(kept while a newer request is pending, `NoAnswer` before the first answer
+and after a failure).
 
 A request kind added to the channel needs no rule of its own here: superseding
 cancels whatever is in flight, and disposal treats the kind as scoped or kept
@@ -1950,13 +1990,14 @@ the context a value or handler is used in.
 **The authoring API is the whole public surface.** Every `Engine` type is
 opaque: `Val`, `State`, `Handler` and `RowRef` are opaque wrappers whose
 methods are documented here, and the contexts, `Elem`, `Attr`, `Keyed`,
-`Sink`, `Reaction`, `Program` and `Registration` are aliases of opaque types in the internal
+`Sink`, `Reaction`, `Program`, `Registration` and `Outbox` are aliases of opaque types in the internal
 `Core` module, which holds the implementation. `Core` is not exposed, so an
 app can neither name a representation nor call the interfaces only hosts and
 harnesses use (`Core.driver`, `mount`, `event`, `result`, `take_cmds`, the
 effect and work counters); the generated API docs list the authoring API and
 nothing else. `Req`, `Res`, `WorkFault`, `FileError`, `HttpError` and `Boot` are plain data and stay
-structural.
+structural; `Remote` is a transparent nominal type over a record, so an app
+reads and builds it as the record and calls its methods.
 
 ```roc
 # Program entry
@@ -1995,8 +2036,13 @@ switch : Val(ctx, k), List(k), (k -> Elem(ctx)) -> Elem(ctx)
 derive : Val(ctx, a), (Val(In(ctx, a), a) -> Elem(In(ctx, a))) -> Elem(ctx)
 resource : Val(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Req)), resolve : (s, a, Res -> s) },
            (Val(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
-Remote(output, error) : { request : [Idle, Pending],                  # what Worker.derive and
-                          answer : [Unanswered, Answered(output), Failed(error)] }   # Port.derive hold
+Remote(output, error) := { request : [Idle, Pending],                 # what Worker.derive and
+                           answer : [Unanswered, Answered(output), Failed(error)] }  # Port.derive hold
+Remote.answered : Remote(output, error) -> Try(output, [NoAnswer])      # kept while Pending
+gather : asker, Val(ctx, List(input)),                                  # one request per input
+         (Val(In(ctx, Gathered(output, error)), Gathered(output, error)) -> Elem(...)) -> Elem(ctx)
+Gathered(output, error) : { all : Remote(List(output), error), jobs : List(JobState(output, error)) }
+JobState(output, error) : [Working, Answered(output), Failed(error)]
 each : Val(ctx, List(item)), (item -> Str), (RowRef(ctx, item) -> Elem(Row(ctx, item))) -> Elem(ctx)
 RowRef.key : RowRef(o, item) -> Val(Row(o, item), Str)
 RowRef.field : RowRef(o, item), (item -> a) -> Val(Row(o, item), a)
@@ -2014,6 +2060,7 @@ File                                          # opaque handle: a file, or a rang
 File.name, File.mime : File -> Str
 File.size : File -> U64                       # bytes in this file or range
 File.slice : File, { start : U64, len : U64 } -> File   # contract error outside the file
+File.spans : File, U64 -> List({ start : U64, len : U64 })   # ranges of n bytes covering it, for read!
 File.read_bytes, File.read_utf8 : File, ReadProps -> Req   # awaited reads into the page
 ReadProps := { max_bytes : U64 ?? 8388608 }    # under the page's maxFileBytes
 File.upload : File, UploadProps -> Req        # the file as an HTTP body
@@ -2053,6 +2100,11 @@ split : Sink(ctx, a), Sink(ctx, b), (c -> [L(a), R(b)]) -> Sink(ctx, c)
 watch : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
 on_change : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
 latest : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)   # supersedes
+Outbox(item)                                  # opaque: the latest post and its serial
+outbox : {} -> Outbox(item)
+Outbox.post : Outbox(item), item -> Outbox(item)   # one post per turn; a second is a contract error
+Outbox.last : Outbox(item) -> [Unposted, Posted(item)]
+on_post : Val(ctx, Outbox(item)), (item -> List(Req)), Reaction(ctx, item) -> Elem(ctx)
 ignore : {} -> Reaction(ctx, a)
 on_cleanup : Str, Val(ctx, a), (a -> List(Req)) -> Elem(ctx)   # commands only
 cleanup : Str -> Elem(ctx)
@@ -2121,6 +2173,10 @@ Worker.Question(init, query) : { input : init, query : query }
 Worker.derive : work, Val(ctx, input),         # a Task or a PreparedTask
     (Val(In(ctx, Remote(output, Worker.Error(error))), Remote(output, Worker.Error(error))) -> Elem(...)) -> Elem(ctx)
 Worker.derive_when : work, Val(ctx, [Run(input), Skip]), ... -> Elem(ctx)
+Worker.gather : work, Val(ctx, List(input)),   # one job per input
+    (Val(In(ctx, Gathered(output, Worker.Error(error))), ...) -> Elem(...)) -> Elem(ctx)
+Worker.status : Remote(output, Worker.Error(error)) -> Worker.Status(output, error)
+Worker.Status(output, error) : [Unasked, Working, Answered(output), Failed(error), Timeout, Refused, Lost(WorkFault)]
 Wire.encode : a -> List(U8)                    where [a.Wire.Sendable]
 Wire.try_encode : a -> Try(List(U8), [TooDeep]) where [a.Wire.Sendable]   # refuses what decode would
 Wire.decode : List(U8) -> Try(a, Wire.Error)   where [a.Wire.Sendable]
