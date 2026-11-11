@@ -1,10 +1,10 @@
 (test "Million-Row Explorer — live orders are folded into today's totals, checked at the door, and stop when the feed is paused"
+  (setup (initial-location "/?orders=200000"))
   (steps
-    (select-option (label "Orders in the database") "200000")
-    (run-effect 5)
-    (run-effect 6)
-    (run-effect 7)
-    (run-effect 8)
+    (run-effect 1)
+    (run-effect 2)
+    (run-effect 3)
+    (run-effect 4)
     (expect-text (test-id "orders") "200,000")
     ; The feed was asked for at mount, at 200 orders a second.
     (expect-port-subscriptions "roc-signals.example/million-row-explorer/orders" 1)
@@ -17,16 +17,16 @@
     (expect-text (test-id "orders") "200,002")
     ; Live orders follow the question: without Toys, only the book counts.
     (uncheck (label "Toys"))
+    (run-effect 5)
+    (run-effect 6)
+    (run-effect 7)
+    (run-effect 8)
+    (expect-text (test-id "orders") "181,720")
+    (check (label "Toys"))
     (run-effect 9)
     (run-effect 10)
     (run-effect 11)
     (run-effect 12)
-    (expect-text (test-id "orders") "181,720")
-    (check (label "Toys"))
-    (run-effect 13)
-    (run-effect 14)
-    (run-effect 15)
-    (run-effect 16)
     (expect-text (test-id "orders") "200,002")
     ; A batch with a region the shop does not ship to is refused whole.
     (emit-port "roc-signals.example/million-row-explorer/orders" "{\"sales\":[{\"category\":\"Toys\",\"region\":\"Canada\",\"cents\":100},{\"category\":\"Toys\",\"region\":\"Mars\",\"cents\":100}],\"dropped\":0}")

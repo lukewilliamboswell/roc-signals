@@ -52,9 +52,53 @@ Explorer := [].{
 	seed : U64
 	seed = 2026
 
-	## The sizes the user can choose, in orders.
+	## The sizes the page links to, in orders. The size is part of the
+	## address (`?orders=200000`), so a size can be shared, and choosing one
+	## loads the page afresh.
 	sizes : List(U64)
 	sizes = [200000, 2000000, 8000000]
+
+	## The size without `?orders=` in the address.
+	default_size : U64
+	default_size = 2000000
+
+	## The sizes the address may ask for, from a few orders a shard to what
+	## four workers keep comfortably.
+	smallest : U64
+	smallest = 1000
+
+	largest : U64
+	largest = 8000000
+
+	## The size the address asks for, read at the door: none, a size in
+	## range, or text that is not one.
+	size_of_url : Str -> [Unasked, Size(U64), NotASize(Str)]
+	size_of_url = |url| match query_value(url, "orders") {
+		Err(NotInAddress) => Unasked
+		Ok(text) =>
+			match U64.from_str(text) {
+				Ok(size) if size >= Explorer.smallest and size <= Explorer.largest => Size(size)
+				_ => NotASize(text)
+			}
+	}
+
+	## The state a page starts in, at the address it was opened at: its
+	## size, and the live feed paused when the address says
+	## `feed=paused` (a page to share, or a test that must return to where
+	## it started).
+	starting : Str -> S
+	starting = |url| {
+		flow = if (query_value(url, "feed") == Ok("paused")) Paused else Live
+		sized = Explorer.sized_by(url)
+		{ ..sized, flow }
+	}
+
+	sized_by : Str -> S
+	sized_by = |url| match Explorer.size_of_url(url) {
+		Unasked => Explorer.initial
+		Size(size) => { ..Explorer.initial, size }
+		NotASize(text) => { ..Explorer.initial, note: "\"${text}\" is not a number of orders this page can generate (from ${with_commas(Explorer.smallest)} to ${with_commas(Explorer.largest)}): showing ${with_commas(Explorer.default_size)}." }
+	}
 
 	## The live feed's paces the user can choose, in orders a second.
 	rates : List(U32)
@@ -94,7 +138,7 @@ Explorer := [].{
 
 	initial : S
 	initial = {
-		size: 2000000,
+		size: Explorer.default_size,
 		categories: Orders.categories,
 		lowest: 0,
 		highest: Orders.bins - 1,
@@ -154,13 +198,6 @@ Explorer := [].{
 	highest_set : S, Str -> S
 	highest_set = |s, text| match U64.from_str(text) {
 		Ok(bin) if bin < Orders.bins => { ..s, highest: bin, lowest: s.lowest.min(bin) }
-		_ => s
-	}
-
-	## A size from the menu; anything else is ignored.
-	sized : S, Str -> S
-	sized = |s, text| match U64.from_str(text) {
-		Ok(size) if Explorer.sizes.contains(size) => Explorer.asking({ ..s, size })
 		_ => s
 	}
 
@@ -271,6 +308,17 @@ Explorer := [].{
 	}
 }
 
+## The value of `name` in the address's query (`?name=value&…`).
+query_value : Str, Str -> Try(Str, [NotInAddress])
+query_value = |url, name| {
+	before_hash = url.split_on("#").first() ?? ""
+	query = before_hash.split_on("?").drop_first(1).first() ?? ""
+	match query.split_on("&").find_first(|part| part.starts_with("${name}=")) {
+		Ok(part) => Ok(part.drop_prefix("${name}="))
+		Err(_) => Err(NotInAddress)
+	}
+}
+
 ## A live order at the door: placed today, in a region the shop ships to,
 ## worth between a cent and the most an order can be.
 sale_order : Feed.Sale -> Try(Orders.Order, [UnknownRegion(Str), ValueOutOfRange(U32)])
@@ -341,7 +389,7 @@ expect {
 }
 
 ## The controls: categories keep their order, a range end pushes the other,
-## and values that are not on the menus change nothing.
+## and the address's size is read at the door.
 expect {
 	s = Explorer.initial
 	no_toys = Explorer.toggled(s, Toys, "false")
@@ -354,8 +402,11 @@ expect {
 		\\pushed: ${pushed.lowest.to_str()} ${pushed.highest.to_str()}
 		\\pulled: ${pulled.lowest.to_str()} ${pulled.highest.to_str()}
 		\\past the end: ${Str.inspect(Explorer.lowest_set(s, "40").lowest)}
-		\\not a size: ${Str.inspect(Explorer.sized(s, "12345").size)}
-		\\a size: ${Str.inspect(Explorer.sized(s, "200000").size)}
+		\\no size: ${Str.inspect(Explorer.starting("/examples/x/#/").size)}
+		\\a size: ${Str.inspect(Explorer.starting("/x/?a=1&orders=200000#y").size)}
+		\\not a size: ${Str.inspect(Explorer.size_of_url("/?orders=9000000"))} ${Str.inspect(Explorer.size_of_url("/?orders=lots"))}
+		\\note: ${Explorer.starting("/?orders=12").note}
+		\\paused: ${Str.inspect(Explorer.starting("/?orders=4000&feed=paused#/").flow)} ${Str.inspect(Explorer.starting("/?feed=on").flow)}
 		\\range: ${Explorer.range_text({ ..s, lowest: 2, highest: 4 })}
 	expected =
 		\\no toys: 7
@@ -363,8 +414,11 @@ expect {
 		\\pushed: 9 9
 		\\pulled: 3 3
 		\\past the end: 0
-		\\not a size: 2000000
+		\\no size: 2000000
 		\\a size: 200000
+		\\not a size: NotASize("9000000") NotASize("lots")
+		\\note: "12" is not a number of orders this page can generate (from 1,000 to 8,000,000): showing 2,000,000.
+		\\paused: Paused Live
 		\\range: From $20 to $50
 	actual == expected
 }

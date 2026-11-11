@@ -85,15 +85,10 @@ ExplorerApp := [].{
 				Html.div(
 					"toolbar",
 					[
-						Html.p("Orders", "field-label"),
-						Html.select(
-							Engine.const("Orders in the database"),
-							v.map(|s| s.size.to_str()),
-							[Engine.class("input")],
-							Explorer.sizes.map(|size| Html.option(size.to_str(), Explorer.grouped(size))),
-							st.set_value(Explorer.sized),
-						),
-					],
+						Html.p_v(v.map(|s| "${Explorer.grouped(s.size)} orders. Generate"), [Engine.class("field-label"), Engine.test_id("size")]),
+					]
+						# Each size is a link: the page loads again at that size.
+						.concat(Explorer.sizes.map(|size| Html.link(Explorer.grouped(size), "?orders=${size.to_str()}", [Engine.class("button button-sm")]))),
 				),
 				Html.div(
 					"toolbar",
@@ -222,7 +217,7 @@ ExplorerApp := [].{
 	## spec runner. The page passes `ports.mjs`'s handler for the feed.
 	program : Engine.Program
 	program =
-		Engine.program(|| Engine.state(Explorer.initial, ExplorerApp.view))
+		Engine.program_boot({ storage_keys: [], max_inflight: 32 }, |boot| Engine.state(Explorer.starting(boot.url), ExplorerApp.view))
 			.with_workers([Explorer.shard.registration([Explorer.summary.registration()])])
 			.with_ports(Feed.registrations)
 }

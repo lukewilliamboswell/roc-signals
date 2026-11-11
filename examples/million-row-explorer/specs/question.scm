@@ -1,10 +1,10 @@
 (test "Million-Row Explorer — a click asks at once, a slider asks when its sampling timer fires, and the last complete answer stays until every shard has answered"
+  (setup (initial-location "/?orders=200000"))
   (steps
-    (select-option (label "Orders in the database") "200000")
-    (run-effect 5)
-    (run-effect 6)
-    (run-effect 7)
-    (run-effect 8)
+    (run-effect 1)
+    (run-effect 2)
+    (run-effect 3)
+    (run-effect 4)
     (expect-text (test-id "orders") "200,000")
     ; Clearing a category asks every shard at once.
     (uncheck (label "Electronics"))
@@ -20,19 +20,19 @@
     (expect-pending-effects 5)
     ; The timer fires: the slider's last value is asked, and the four
     ; waiting jobs of the question before it stop.
-    (run-effect 13)
+    (run-effect 9)
     (expect-metric-delta effects_issued 5)
     (expect-metric-delta effects_cancelled 4)
     (expect-pending-work "roc-signals.example/million-row-explorer/summary" 4)
     ; Two shards answer: the totals are still the last complete answer.
-    (run-effect 14)
-    (run-effect 16)
+    (run-effect 10)
+    (run-effect 12)
     (expect-text (test-id "status") "Asking 4 shards… 2 answered; the charts show the last complete answer.")
     (expect-text (test-id "orders") "200,000")
     (expect-text (test-id "shard-1") "20,542 match")
     (expect-text (test-id "shard-2") "asking…")
-    (run-effect 15)
-    (run-effect 17)
+    (run-effect 11)
+    (run-effect 13)
     (expect-text (test-id "status") "4 of 4 shards answered.")
     (expect-text (test-id "orders") "82,281")
     (expect-text (test-id "revenue") "$6,839,487")
