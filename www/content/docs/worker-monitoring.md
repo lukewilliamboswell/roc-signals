@@ -54,7 +54,7 @@ result, and turns those stamps into spans. The spans add up to the job's
 | `queue` | handed to the pool → posted | Waiting for a free worker |
 | `cold` | posted → instance ready | Starting a worker: its script and its instance. 0 for a warm worker |
 | `toWorker` | posted → received | The message reaching a warm worker (`null` when cold) |
-| `stage` | ready → staged | Copying the input into the worker's instance and minting handles for the [files](@/docs/files.md) it names (their bytes are read by the job itself, during `compute`) |
+| `stage` | received (ready, for a cold job) → staged | Copying the input into the worker's instance and minting handles for the [files](@/docs/files.md) it names (their bytes are read by the job itself, during `compute`) |
 | `compute` | staged → returned | The task itself (`work()`, or `ask()` for a preparation's task), its reads of files included |
 | `copyOut` | returned → posted back | Copying the output out of the instance |
 | `fromWorker` | posted back → received by the page | The message coming back |
@@ -91,6 +91,8 @@ Browsers coarsen timers: in Chrome to 0.1 ms when the page is not
 cross-origin isolated. So a span between two threads (`toWorker`,
 `fromWorker`) is good to about ±0.2 ms. Spans are reported raw, never clamped,
 and one shorter than the resolution may read 0 or even slightly negative.
+The page reads its clock for `posted` just before it posts the job, because
+the worker may receive it before the page's thread runs again.
 
 ## The snapshot
 

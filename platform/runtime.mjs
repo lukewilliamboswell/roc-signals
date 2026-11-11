@@ -442,7 +442,9 @@ function concat(parts) {
 // ---------------------------------------------------------------------------
 // The monitor: observation of work jobs, worker instances and turns
 // (design.md, "Observation"). It never decides anything: the pool and the
-// runtime call it at each transition, after they have acted, and it keeps
+// runtime call it at each transition, after they have acted (the pool reads
+// the clock for a post just before posting, since the worker may receive
+// the job before this thread runs again), and it keeps
 // bounded aggregates, a bounded history and optional User Timing entries.
 //
 // Clocks: every time it reports is this page's `performance.now()` in ms. A
@@ -832,12 +834,14 @@ export class WorkMonitor {
   // The pool posted the job to instance `seq` (ready or still starting).
   // `mode` is "work", or for a preparation's task "prepare" (the instance
   // prepares the state of preparation `prep` first) or "ask" (it reuses the
-  // state it holds).
-  jobPosted(id, seq, mode = "work", prep = null) {
+  // state it holds). `at` is the clock as the pool read it just before the
+  // post: a worker may receive the job before the page's thread gets to
+  // report it, so a reading taken here could be later than the worker's
+  // own `recv`.
+  jobPosted(id, seq, mode = "work", prep = null, at = this.tick()) {
     const job = this.jobs.get(id);
     const inst = this.insts.get(seq);
     if (job === undefined || inst === undefined || !this.live()) return;
-    const at = this.tick();
     if (job.phase === "queued") this.move("queued", -1);
     job.t.post = at;
     job.instance = seq;
@@ -983,7 +987,7 @@ export class WorkMonitor {
       queue: span(t.submit, t.post),
       toWorker: job.cold ? null : span(t.post, t.recv),
       cold: job.cold ? span(t.post, t.begin) : t.post === null ? null : 0,
-      stage: span(t.begin, t.call),
+      stage: span(job.cold ? t.begin : t.recv, t.call),
       compute: span(t.call, t.ret),
       copyOut: span(t.ret, t.sent),
       fromWorker: span(t.sent, t.reply),
@@ -1389,8 +1393,12 @@ class WorkPool {
       slot.key = job.prepared.key;
     }
     if (this.monitor.userTiming) m.task = job.task;
+    // The post hands the job to another thread, which may receive it before
+    // this one runs again: the clock is read before the post, and the
+    // monitor is told after it, as for every transition.
+    const postedAt = this.monitor.tick();
     slot.worker.postMessage(m, transfer);
-    this.monitor.jobPosted(job.id, slot.seq, mode, job.prepared === null ? null : job.prepared.key.name);
+    this.monitor.jobPosted(job.id, slot.seq, mode, job.prepared === null ? null : job.prepared.key.name, postedAt);
   }
 
   spawn() {

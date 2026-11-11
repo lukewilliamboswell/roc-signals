@@ -75,6 +75,28 @@ function make(options = {}, env = {}) {
   m.turn(FX_NODE, 2, 50, 50, 50, 0);
   const w = m.snapshot().recent[1];
   check("a warm job: cold 0, transit measured", [w.cold, w.firstJobOnInstance, w.ms.cold, w.ms.toWorker], [false, false, 0, 1]);
+
+  // A warm job on a busy machine: the worker receives it (page time 61)
+  // before the page's thread reports the post (63), and begins a moment
+  // after receiving it (62). The post keeps the reading the pool took
+  // before posting (60), so transit is not negative, and a warm job's stage
+  // starts at receipt, so the spans still add up to the total.
+  clock.t = 60;
+  m.jobIssued(3, "p/a", new Uint8Array(1), 0, false);
+  m.jobSubmitted(3);
+  const postedAt = m.tick();
+  clock.t = 63;
+  m.jobPosted(3, seq, "work", null, postedAt);
+  clock.t = 64;
+  // Worker stamps (worker clock, 5 ms behind): recv 56, begin 57, call 57, ret 58, sent 58.
+  m.jobReplied(3, seq, { t: [56, 57, 57, 58, 58], mem: [131072, 4, 100], outputBytes: 1 });
+  m.jobAnswered(3, "done", null, null);
+  m.turn(FX_NODE, 3, 65, 65, 66, 0);
+  const b = m.snapshot().recent[2];
+  check("a post reported late keeps the pool's reading", [b.t.post, b.t.recv, b.ms.toWorker], [60, 61, 1]);
+  check("a warm job's stage starts when the worker receives it", [b.t.begin, b.ms.stage], [62, 1]);
+  const parts = ["held", "queue", "toWorker", "cold", "stage", "compute", "copyOut", "fromWorker", "resultWait", "resultTurn"].reduce((a, k) => a + (b.ms[k] ?? 0), 0);
+  check("the spans add up to the total", [parts, b.ms.total], [6, 6]);
 }
 
 // Bins: a value on an edge goes to the bucket above it.
