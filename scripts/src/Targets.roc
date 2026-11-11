@@ -5,12 +5,16 @@ import SpecSuite
 ## The roc-fuzz targets, the browser contract tests, the soak runs and the
 ## js-framework-benchmark check.
 ##
-## An app's fuzz target is its `main-fuzz.roc`, beside its modules: Roc
-## resolves an app's sibling modules from the directory of its main file, so a
-## target that drives an app's own modules lives with the app. Targets that
-## test only the shared support live under `fuzz/`. Each is an ordinary
-## roc-fuzz app: its platform is a roc-fuzz release, which the compiler
-## fetches, and its `pf` the engine package, `platform/main-fuzz.roc`.
+## Each target is an ordinary roc-fuzz app, whose platform is a roc-fuzz
+## release the compiler fetches. Roc resolves an app's sibling modules from
+## the directory of its main file, so a target lives beside the modules it
+## imports:
+##
+## - the platform's own targets under `fuzz/` and beside the test apps under
+##   `tests/apps/` (`main-fuzz.roc`), which import the engine package,
+##   `platform/main-fuzz.roc`, as `pf`;
+## - an example's targets of its own pure logic, `fuzz-<subject>.roc`
+##   beside the modules they import, which import nothing of the platform.
 Targets := [].{
 	Fuzz : { name : Str, main : Str }
 
