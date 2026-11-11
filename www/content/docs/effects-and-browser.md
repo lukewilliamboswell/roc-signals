@@ -215,8 +215,12 @@ and a script on the page defines the element with `customElements.define`,
 redrawing when the attribute changes and cleaning up when it is removed. The
 engine and runtime see an ordinary element and an ordinary attribute write, so
 nothing app-specific enters the platform. The
-[Status Page](@/examples/status-page.md) example draws its chart this way with
-[Plume](https://github.com/lukewilliamboswell/plume).
+[Status Page](@/examples/status-page.md) example draws its charts this way with
+[Plume](https://github.com/lukewilliamboswell/plume), each setting the
+layout's `ui_revision: Preserve(name)` so a viewer's zoom survives the
+redraws. Each change of the attribute is a whole redraw: build the figure
+from page state the app keeps bounded, and from a `derive` that changes
+only when the figure should.
 
 A widget answers the way a form control does, because an event reaches the
 app only as text: the element sets its own `value` and dispatches a bubbling

@@ -29,6 +29,10 @@ import Status
 ## `data-figure` attribute carries a Plotly figure built with Plume
 ## (`Charts.roc`). To the engine it is an ordinary element with an ordinary
 ## attribute.
+##
+## Below the services, a live p95 latency chart follows a port
+## subscription (`Latency.roc`, answered by the example's `ports.mjs`):
+## see `live_panel`.
 StatusApp := [].{
 	Board : {
 		serial : U64,

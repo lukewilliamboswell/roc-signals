@@ -244,6 +244,49 @@ Declaring a port twice, more than 64 ports, a request on a port the program
 does not declare, or using a port as another shape than its declaration
 are contract errors that name the port and the site.
 
+## A stream of messages
+
+A subscription that carries a stream (readings of a sensor, metrics,
+prices) has to agree with the page on pace. The
+[Status Page](@/examples/status-page.md) streams a reading of four
+services' p95 latency every 250 ms from its own `ports.mjs`, and shows
+how:
+
+- **Choose `Every(n)` when every message is data.** Each reading is a
+  point of a series, so one replaced before the page saw it would be a hole
+  nobody reports; `Latest` is for a value whose newest state is all that
+  matters. Pick `n` as the backlog worth keeping while the page is busy
+  (the Status Page keeps 16, four seconds of readings).
+- **Each message is a turn, and a backlog drains with no paint between
+  them.** Sixteen waiting readings are sixteen turns in a row before the
+  browser draws again, so keep what one message costs small. Draw an
+  expensive view, such as a chart, from a copy the page brings up to date on
+  an `Interval`, read through a `derive`, rather than from every message:
+  the Status Page's chart follows a 250 ms redraw tick, and a replay of 64
+  readings costs no long frame.
+- **Let the JavaScript set the pace, and listen when `emit` says no.**
+  The handler measures on its own clock and emits one message per reading.
+  When `emit` returns `false` the page is full: it keeps the rest and offers
+  them again on the next animation frame, so a burst reaches the page as
+  fast as the page takes it. What its own bounded buffer cannot hold it
+  drops, and says so in the next message (`dropped`), because the app
+  cannot see what never arrived.
+- **Number the messages, and check the numbers at the door.** A sequence
+  number lets the app tell a gap (draw a break in the line) from a reading
+  that does not belong (refuse and count it). A stream the page joins again
+  after a pause carries on its numbering; one that restarted it would be
+  refused, which is how the Status Page found that its first simulation
+  did.
+- **Stop when the subscription ends.** Mount the subscription's site where
+  it is wanted, inside a branch for a visible page and a reader who has not
+  paused, and return a function from `subscribe` that stops the timer:
+  disposing the branch calls it.
+
+The runtime's monitor counts each port's `messages`, `refusedEmits` and
+`coalesced`, and its `backlog` now (see
+[Monitoring Workers](@/docs/worker-monitoring.md)); the Status Page's
+`feed-monitor.mjs` shows them beside the app's own counts.
+
 ## Keeping the page and a store agreeing
 
 An app that keeps its data in a store the JavaScript owns, such as
