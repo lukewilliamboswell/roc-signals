@@ -98,7 +98,7 @@ timestamp = |ms| {
 pad : U64, U64 -> Str
 pad = |number, width| {
 	digits = number.to_str()
-	short = width - (if (digits.count_utf8_bytes() < width) digits.count_utf8_bytes() else width)
+	short = width - digits.count_utf8_bytes().min(width)
 	"${Str.repeat("0", short)}${digits}"
 }
 

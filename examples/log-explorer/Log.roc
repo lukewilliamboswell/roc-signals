@@ -54,9 +54,9 @@ Log := [].{
 	## page of them to show.
 	Search : { text : Str, filter : Filter, page : U64 }
 
-	## A search's answer: how many lines match, the page asked for (from 0)
-	## and its lines.
-	Found : { matches : U64, page : U64, lines : List(Line) }
+	## A search's answer: how many lines match, and the lines of the page
+	## asked for.
+	Found : { matches : U64, lines : List(Line) }
 
 	## A search with text, over the lines scanned so far: how many matched,
 	## and those of them on the page asked for.
@@ -380,7 +380,7 @@ counted = |tally, level| match level {
 grown : List(U8), List(U8), { start : U64, end : U64 } -> List(U8)
 grown = |head, chunk, { start, end }| {
 	room = if (head.len() >= Log.header_bytes) 0 else Log.header_bytes - head.len()
-	len = if (end - start < room) end - start else room
+	len = (end - start).min(room)
 	if (len == 0) head else head.concat(chunk.sublist({ start, len }))
 }
 

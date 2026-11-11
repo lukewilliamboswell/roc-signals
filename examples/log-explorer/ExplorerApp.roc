@@ -39,12 +39,8 @@ ExplorerApp := [].{
 			return Err(Empty)
 		}
 		var $indexer = Log.indexer
-		var $at = 0
-		while $at < file.size() {
-			len = if (file.size() - $at < ExplorerApp.chunk_bytes) file.size() - $at else ExplorerApp.chunk_bytes
-			bytes = file.read!({ start: $at, len }) ? |problem| Unread(problem)
-			$indexer = Log.feed($indexer, bytes)
-			$at = $at + len
+		for span in file.spans(ExplorerApp.chunk_bytes) {
+			$indexer = Log.feed($indexer, file.read!(span) ? |problem| Unread(problem))
 		}
 		index = Log.finish($indexer)
 		if index.entries == 0 {
@@ -57,13 +53,16 @@ ExplorerApp := [].{
 	log : Worker.Preparation(File, Prepared, Problem)
 	log = Worker.prepared({ name: "roc-signals.example/log-explorer/log", prepare!: ExplorerApp.index! })
 
+	## A task of the log's preparation, asked a `query`, answering `output`.
+	LogTask(query, output) : Worker.PreparedTask(File, Prepared, query, output, Problem)
+
 	## The overview, from the index alone.
-	overview : Worker.PreparedTask(File, Prepared, {}, Log.Overview, Problem)
+	overview : LogTask({}, Log.Overview)
 	overview = ExplorerApp.log.task({ name: "roc-signals.example/log-explorer/overview", run!: |prepared, {}| Ok(Log.overview(prepared.index)) })
 
 	## A page of the lines that match a search. A search the user has typed
 	## past is let finish rather than stopped, so its worker keeps the index.
-	search : Worker.PreparedTask(File, Prepared, Log.Search, Log.Found, Problem)
+	search : LogTask(Log.Search, Log.Found)
 	search = ExplorerApp.log.task({ name: "roc-signals.example/log-explorer/search", run!: ExplorerApp.search!, on_cancel: Finish })
 
 	## With no text, the index says which lines match, and only the page's
@@ -78,26 +77,26 @@ ExplorerApp := [].{
 				bytes = file.read!(Log.span(index, { first: n, count: 1 })) ? |problem| Unread(problem)
 				$lines = $lines.concat(Log.lines_in(index, { first: n, count: 1, bytes }))
 			}
-			Ok({ matches, page: query.page, lines: $lines })
+			Ok({ matches, lines: $lines })
 		} else {
 			var $scanned = { matches: 0, lines: [] }
 			for { first, count } in Log.chunks(index, ExplorerApp.chunk_bytes) {
 				bytes = file.read!(Log.span(index, { first, count })) ? |problem| Unread(problem)
 				$scanned = Log.scan($scanned, { index, search: query, first, count, bytes })
 			}
-			Ok({ matches: $scanned.matches, page: query.page, lines: $scanned.lines })
+			Ok({ matches: $scanned.matches, lines: $scanned.lines })
 		}
 	}
 
 	## The viewer's page from a line (from 0): one read of just its lines.
-	window : Worker.PreparedTask(File, Prepared, U64, Log.Window, Problem)
+	window : LogTask(U64, Log.Window)
 	window = ExplorerApp.log.task({ name: "roc-signals.example/log-explorer/window", run!: ExplorerApp.window! })
 
 	window! : Prepared, U64 => Try(Log.Window, Problem)
 	window! = |{ file, index }, wanted| {
 		total = index.starts.len()
 		first = Log.window_first({ lines: total, wanted })
-		count = if (total - first < Log.window_lines) total - first else Log.window_lines
+		count = (total - first).min(Log.window_lines)
 		bytes = file.read!(Log.span(index, { first, count })) ? |problem| Unread(problem)
 		Ok({ first, total, lines: Log.lines_in(index, { first, count, bytes }) })
 	}
@@ -112,7 +111,7 @@ ExplorerApp := [].{
 		var $progress = Sample.start
 		var $left = entries
 		while $left > 0 {
-			batch = if ($left < 2000) $left else 2000
+			batch = $left.min(2000)
 			{ text, progress } = Sample.entries($progress, batch)
 			out.append!(text.to_utf8())?
 			$progress = progress
@@ -188,22 +187,14 @@ ExplorerApp := [].{
 	## A task's state as one line of text: working, why it failed, or what
 	## `describe` says of its answer.
 	status : Engine.Remote(a, Worker.Error(Problem)), Str, (a -> Str) -> Str
-	status = |{ request, answer }, working, describe| match (request, answer) {
-		(Pending, _) => working
-		(Idle, Answered(value)) => describe(value)
-		(Idle, Failed(Failed(problem))) => ExplorerApp.explain(problem)
-		(Idle, Failed(Lost(fault))) => "The worker stopped (${Str.inspect(fault)}). Open the log again to retry."
-		(Idle, Failed(Timeout)) => "This took too long."
-		(Idle, Failed(Refused)) => "Too many requests at once."
-		(Idle, Unanswered) => "Open a log file, or generate a sample."
-	}
-
-	## The answer in a remote layer, when there is one: a list of what
-	## `pick` takes from it, or none.
-	answered : Engine.Remote(a, e), (a -> List(b)) -> List(b)
-	answered = |{ answer, .. }, pick| match answer {
-		Answered(value) => pick(value)
-		_ => []
+	status = |remote, working, describe| match Worker.status(remote) {
+		Working => working
+		Answered(value) => describe(value)
+		Failed(problem) => ExplorerApp.explain(problem)
+		Lost(fault) => "The worker stopped (${Str.inspect(fault)}). Open the log again to retry."
+		Timeout => "This took too long."
+		Refused => "Too many requests at once."
+		Unasked => "Open a log file, or generate a sample."
 	}
 
 	## A count with thousands separated: `1,234,567`.
@@ -254,7 +245,7 @@ ExplorerApp := [].{
 			[
 				Html.p(name, "stat-label"),
 				Html.p_v(
-					r.map(|remote| ExplorerApp.answered(remote, |o| [ExplorerApp.grouped(Log.tally_of(o.tally, level))]).first() ?? "–"),
+					r.map(|remote| remote.answered().map_ok(|o| ExplorerApp.grouped(Log.tally_of(o.tally, level))) ?? "–"),
 					[Engine.class("stat-value numeric"), Engine.test_id("level-${Str.from_utf8_lossy(name.to_utf8().map(|b| b + 32))}")],
 				),
 			],
@@ -275,9 +266,9 @@ ExplorerApp := [].{
 					Html.div("stat-grid", Log.levels.map(|level| ExplorerApp.level_tile(r, level))),
 					Html.p_v(
 						r.map(
-							|remote| match ExplorerApp.answered(remote, |o| [o]) {
-								[o] => "Busiest sources: ${Str.join_with(o.sources.map(|s| "${s.source} ${ExplorerApp.grouped(s.entries)}"), ", ")} (of ${o.distinct_sources.to_str()})"
-								_ => ""
+							|remote| match remote.answered() {
+								Ok(o) => "Busiest sources: ${Str.join_with(o.sources.map(|s| "${s.source} ${ExplorerApp.grouped(s.entries)}"), ", ")} (of ${o.distinct_sources.to_str()})"
+								Err(NoAnswer) => ""
 							},
 						),
 						[Engine.class("hint"), Engine.test_id("sources")],
@@ -369,10 +360,10 @@ ExplorerApp := [].{
 						"grid gap-2",
 						[
 							Html.p_v(
-								r.map(|remote| ExplorerApp.status(remote, "Searching…", ExplorerApp.found_text)),
+								v.lift().map2(r, |s, remote| ExplorerApp.status(remote, "Searching…", |found| ExplorerApp.found_text(found, s.page))),
 								[Engine.test_id("search-status")],
 							),
-							Engine.element("ol", [Engine.class("grid gap-1"), Html.aria_label("Search results")], [Engine.each(r.map(|remote| ExplorerApp.answered(remote, |found| found.lines)), |line| line.number.to_str(), |row| ExplorerApp.line_row(st.lift(), row, Jump))]),
+							Engine.element("ol", [Engine.class("grid gap-1"), Html.aria_label("Search results")], [Engine.each(r.map(|remote| remote.answered().map_ok(|found| found.lines) ?? []), |line| line.number.to_str(), |row| ExplorerApp.line_row(st.lift(), row, Jump))]),
 							Html.div(
 								"toolbar",
 								[
@@ -382,8 +373,8 @@ ExplorerApp := [].{
 										[Engine.class("button button-sm")],
 										st.lift().update_by(
 											r,
-											|s, remote| match ExplorerApp.answered(remote, |found| [found.matches]) {
-												[matches] if (s.page + 1) * Log.page_lines < matches => { ..s, page: s.page + 1 }
+											|s, remote| match remote.answered() {
+												Ok(found) if (s.page + 1) * Log.page_lines < found.matches => { ..s, page: s.page + 1 }
 												_ => s
 											},
 										),
@@ -398,13 +389,13 @@ ExplorerApp := [].{
 	}
 
 	## How many lines matched, and which page is shown.
-	found_text : Log.Found -> Str
-	found_text = |found| {
+	found_text : Log.Found, U64 -> Str
+	found_text = |found, page| {
 		pages = (found.matches + Log.page_lines - 1) / Log.page_lines
 		match found.matches {
 			0 => "No matching lines."
 			1 => "1 matching line."
-			n => "${ExplorerApp.grouped(n)} matching lines, page ${(found.page + 1).to_str()} of ${ExplorerApp.grouped(pages)}."
+			n => "${ExplorerApp.grouped(n)} matching lines, page ${(page + 1).to_str()} of ${ExplorerApp.grouped(pages)}."
 		}
 	}
 
@@ -415,9 +406,9 @@ ExplorerApp := [].{
 			ExplorerApp.window,
 			v.map(|s| ExplorerApp.asked(s, s.first)),
 			|r| {
-				moved = |s, remote, step| match ExplorerApp.answered(remote, |w| [w]) {
-					[w] => { ..s, first: step(w) }
-					_ => s
+				moved = |s, remote, step| match remote.answered() {
+					Ok(w) => { ..s, first: step(w) }
+					Err(NoAnswer) => s
 				}
 				Html.section(
 					"Viewer",
@@ -453,7 +444,7 @@ ExplorerApp := [].{
 							),
 							[Engine.test_id("viewer-status")],
 						),
-						Engine.element("ol", [Engine.class("grid gap-1"), Html.aria_label("Lines")], [Engine.each(r.map(|remote| ExplorerApp.answered(remote, |w| w.lines)), |line| line.number.to_str(), |row| ExplorerApp.line_row(st.lift(), row, Stay))]),
+						Engine.element("ol", [Engine.class("grid gap-1"), Html.aria_label("Lines")], [Engine.each(r.map(|remote| remote.answered().map_ok(|w| w.lines) ?? []), |line| line.number.to_str(), |row| ExplorerApp.line_row(st.lift(), row, Stay))]),
 					],
 				)
 			},
