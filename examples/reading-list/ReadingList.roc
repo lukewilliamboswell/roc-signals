@@ -7,10 +7,10 @@ import Store
 ##
 ## The app keeps its own copy of the books and changes it in the turn of the
 ## click, so the page never waits on the store. Each change the store must
-## learn of goes in the outbox, which an effect site sends as commands. The
-## store's own copy wins whenever it reports one: once at start (`load`),
-## and after any tab writes (`stored`), so every open tab ends up showing
-## what the store holds.
+## learn of is posted to an outbox, which an `on_post` site sends as
+## commands. The store's own copy wins whenever it reports one: once at
+## start (`load`), and after any tab writes (`stored`), so every open tab
+## ends up showing what the store holds.
 ReadingList := [].{
 
 	## Which books the list shows.
@@ -24,10 +24,8 @@ ReadingList := [].{
 	## - `books`: the app's copy of the shelf, newest first.
 	## - `store`: whether that copy has come from the store yet, or why it
 	##   cannot.
-	## - `adding`: the latest book the user asked to add, numbered so that
-	##   adding the same title twice is two requests.
-	## - `outbox`: the writes of the latest change, numbered for the same
-	##   reason: putting a book back as it was is a write too.
+	## - `adding`: the books the user asks to add, posted for the store.
+	## - `writes`: each change's writes, posted for the store as commands.
 	## - `note`: the latest thing that went wrong, for the user.
 	S : {
 		books : List(Store.Book),
@@ -35,8 +33,8 @@ ReadingList := [].{
 		showing : Showing,
 		title : Str,
 		author : Str,
-		adding : [Idle, Adding({ serial : U64, book : Store.NewBook })],
-		outbox : { serial : U64, writes : List(Write) },
+		adding : Engine.Outbox(Store.NewBook),
+		writes : Engine.Outbox(List(Write)),
 		note : Str,
 	}
 
@@ -48,8 +46,8 @@ ReadingList := [].{
 		showing: Everything,
 		title: "",
 		author: "",
-		adding: Idle,
-		outbox: { serial: 0, writes: [] },
+		adding: Engine.outbox({}),
+		writes: Engine.outbox({}),
 		note: "",
 	}
 
@@ -89,12 +87,8 @@ ReadingList := [].{
 	submit : S -> S
 	submit = |s|
 		if ReadingList.can_add(s) {
-			serial = match s.adding {
-				Idle => 1
-				Adding(previous) => previous.serial + 1
-			}
 			book = { title: s.title.trim(), author: s.author.trim() }
-			{ ..s, adding: Adding({ serial, book }), title: "", author: "", note: "" }
+			{ ..s, adding: s.adding.post(book), title: "", author: "", note: "" }
 		} else {
 			s
 		}
@@ -192,9 +186,10 @@ ReadingList := [].{
 		}
 }
 
-## The change's writes, numbered after the previous change's.
+## Post the change's writes, for the `on_post` site to send. A change
+## posts all its writes at once: an outbox takes one post per turn.
 send : ReadingList.S, List(ReadingList.Write) -> ReadingList.S
-send = |s, writes| { ..s, outbox: { serial: s.outbox.serial + 1, writes } }
+send = |s, writes| { ..s, writes: s.writes.post(writes) }
 
 next_shelf : Store.Shelf -> Store.Shelf
 next_shelf = |shelf|
@@ -308,20 +303,20 @@ expect {
 	once = ReadingList.submit({ ..ready, title: " Dune ", author: "Frank Herbert" })
 	twice = ReadingList.submit({ ..once, title: "Dune", author: "Frank Herbert" })
 	actual =
-		\\loading: ${Str.inspect(ReadingList.submit({ ..ReadingList.initial, title: "Dune" }).adding)}
-		\\blank: ${Str.inspect(ReadingList.submit({ ..ready, title: "  " }).adding)}
-		\\once: ${Str.inspect(once.adding)} "${once.title}"
-		\\twice: ${Str.inspect(twice.adding)}
+		\\loading: ${Str.inspect(ReadingList.submit({ ..ReadingList.initial, title: "Dune" }).adding.last())}
+		\\blank: ${Str.inspect(ReadingList.submit({ ..ready, title: "  " }).adding.last())}
+		\\once: ${Str.inspect(once.adding.last())} "${once.title}"
+		\\twice: ${Str.inspect(twice.adding.last())} ${Str.inspect(twice.adding == once.adding)}
 	expected =
-		\\loading: Idle
-		\\blank: Idle
-		\\once: Adding({ book: { author: "Frank Herbert", title: "Dune" }, serial: 1 }) ""
-		\\twice: Adding({ book: { author: "Frank Herbert", title: "Dune" }, serial: 2 })
+		\\loading: Unposted
+		\\blank: Unposted
+		\\once: Posted({ author: "Frank Herbert", title: "Dune" }) ""
+		\\twice: Posted({ author: "Frank Herbert", title: "Dune" }) False
 	actual == expected
 }
 
-## Moving and deleting change the app's copy at once and put the writes in
-## a newly numbered outbox; moving a book back is a write of its own.
+## Moving and deleting change the app's copy at once and post their writes;
+## moving a book back is a write of its own.
 expect {
 	s = ReadingList.loaded(ReadingList.initial, Ok([dune, piranesi]))
 	started = ReadingList.advance(s, "b1")
@@ -329,14 +324,14 @@ expect {
 	again = ReadingList.advance(finished, "b1")
 	cleared = ReadingList.clear_finished(finished)
 	actual =
-		\\started: ${Str.inspect(started.outbox)}
-		\\again: ${Str.inspect(again.books.map(|b| b.shelf))} ${again.outbox.serial.to_str()}
-		\\cleared: ${Str.inspect(cleared.books)} ${Str.inspect(cleared.outbox.writes)}
+		\\started: ${Str.inspect(started.writes.last())}
+		\\again: ${Str.inspect(again.books.map(|b| b.shelf))} ${Str.inspect(again.writes.last())}
+		\\cleared: ${Str.inspect(cleared.books)} ${Str.inspect(cleared.writes.last())}
 		\\missing: ${Str.inspect(ReadingList.advance(s, "b9") == s)}
 	expected =
-		\\started: { serial: 1, writes: [Put({ added_ms: 10, author: "Frank Herbert", id: "b1", shelf: Reading, title: "Dune" })] }
-		\\again: [Finished, Reading] 3
-		\\cleared: [] [Delete("b2"), Delete("b1")]
+		\\started: Posted([Put({ added_ms: 10, author: "Frank Herbert", id: "b1", shelf: Reading, title: "Dune" })])
+		\\again: [Finished, Reading] Posted([Put({ added_ms: 10, author: "Frank Herbert", id: "b1", shelf: Reading, title: "Dune" })])
+		\\cleared: [] Posted([Delete("b2"), Delete("b1")])
 		\\missing: True
 	actual == expected
 }

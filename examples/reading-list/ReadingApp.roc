@@ -9,8 +9,9 @@ import Store
 ##
 ## The view is one state, `ReadingList.S`. Four effect sites connect it to
 ## the store: one loads the books at start, one listens for the store's copy
-## after any tab writes, one asks the store to add a book, and one sends the
-## outbox's writes as commands. Everything else is ordinary view code.
+## after any tab writes, one asks the store to add each book the user
+## posts, and one sends each change's posted writes as commands. Everything
+## else is ordinary view code.
 ReadingApp := [].{
 	Ctx : In(Root, ReadingList.S)
 
@@ -84,26 +85,12 @@ ReadingApp := [].{
 					|_| [Store.stored.subscribe({})],
 					st.on_result(|s, _, res| ReadingList.restocked(s, Store.stored.message(res))),
 				),
-				# A new book, which the store numbers. `on_change` never stops
+				# A new book, which the store numbers. `on_post` never stops
 				# an earlier add for a later one: each answer arrives.
-				Engine.on_change(
-					v.map(|s| s.adding),
-					|adding|
-						match adding {
-							Adding({ book, .. }) => [Store.add.request(book)]
-							Idle => []
-						},
-					st.on_result(
-						|s, adding, res|
-							match adding {
-								Adding({ book, .. }) => ReadingList.added(s, book, Store.add.result(res))
-								Idle => s
-							},
-					),
-				),
+				Engine.on_post(v.map(|s| s.adding), |book| [Store.add.request(book)], st.on_result(|s, book, res| ReadingList.added(s, book, Store.add.result(res)))),
 				# Every change's writes, sent as commands in the turn of the
 				# click that made them.
-				Engine.on_change(v.map(|s| s.outbox), |outbox| ReadingList.requests(outbox.writes), Engine.ignore({})),
+				Engine.on_post(v.map(|s| s.writes), ReadingList.requests, Engine.ignore({})),
 			],
 		)
 	}
