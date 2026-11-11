@@ -41,8 +41,7 @@ SearchApp := [].{
 	}
 
 	## The filter: a query in, the catalogue names that contain it (ignoring
-	## ASCII case) out, joined by ", ". A pure function, which the task runs
-	## and the fuzz target's walks answer jobs with.
+	## ASCII case) out, joined by ", ". A pure function, which the task runs.
 	filter : Str -> Str
 	filter = |query| {
 		q = SearchApp.lower(query.to_utf8())
@@ -62,18 +61,6 @@ SearchApp := [].{
 
 	summarise_task : Worker.Task({}, Str, Worker.Never)
 	summarise_task = Worker.task({ name: "test.roc-signals/search/summarise", run!: |input| Ok(SearchApp.summarise(input)), deadline: Ms(2000) })
-
-	## For the fuzz target, which has no worker: the answer a job of either
-	## task gives, from the pure functions the tasks run.
-	stand_in : Str, List(U8), List(U8) -> List(U8)
-	stand_in = |task, prep, input|
-		if task == SearchApp.filter_task.name() {
-			(SearchApp.filter_task.stand_in(|q| Ok(SearchApp.filter(q))))(prep, input)
-		} else if task == SearchApp.summarise_task.name() {
-			(SearchApp.summarise_task.stand_in(|x| Ok(SearchApp.summarise(x))))(prep, input)
-		} else {
-			crash "worker search: the app issued a job of an unknown task \"${task}\""
-		}
 
 	## What a finished job says, success or not.
 	outcome : Try(Str, Worker.Error(Worker.Never)) -> Try(Str, Str)

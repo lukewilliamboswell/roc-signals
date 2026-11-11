@@ -692,30 +692,6 @@ SpecRunner := [].{
 		Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: b.pending.keep_if(|q| q.id != id) } }, id, payload))
 	}
 
-	## For fuzz targets and soak walks, which have no host to run a job on:
-	## answer the pending worker job that is the N-th effect occurrence
-	## with what `stand_in` gives for its task's name, its preparation's
-	## input bytes (none for a task of its own) and its own input bytes: the
-	## answer's bytes as a job's entry returns them after its file list
-	## (`Worker`'s `stand_in` makes one from a pure function). The answer
-	## holds no files.
-	answer_work : Program(state), S(state), U64, (Str, List(U8), List(U8) -> List(U8)) -> Try(S(state), Str)
-	answer_work = |program, s, n, stand_in| {
-		b = s.browser
-		id = b.issued.get(n - 1) ? |_| "effect occurrence ${n.to_str()} was never issued (${b.issued.len().to_str()} issued)"
-		p = b.pending.find_first(|q| q.id == id) ? |_| "effect occurrence ${n.to_str()} is not pending (cancelled or done)"
-		match p.kind {
-			WorkRequest(job) => {
-				(prep, own) = match job.prepared {
-					Unprepared => ([], job.input)
-					Prepared({ input_len, .. }) => (job.input.take_first(input_len), job.input.drop_first(input_len))
-				}
-				SpecRunner.deliver_job(program, s, id, SpecRunner.encode_answer(stand_in(job.task, prep, own)))
-			}
-			_ => Err("effect occurrence ${n.to_str()} is not a worker job")
-		}
-	}
-
 	## `run-effect N`: a timer fires; an HTTP request takes the staged answer.
 	## A worker job runs only where the `spec` command's host can run it
 	## (`step!`); fuzz targets that drive the engine answer one themselves.

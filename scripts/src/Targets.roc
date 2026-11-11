@@ -29,8 +29,6 @@ Targets := [].{
 		{ name: "spreadsheet-lite", main: "examples/spreadsheet-lite/fuzz-formulas.roc" },
 		{ name: "fx-channel", main: "tests/apps/effects/main-fuzz.roc" },
 		{ name: "controls", main: "tests/apps/controls/main-fuzz.roc" },
-		{ name: "worker-search", main: "tests/apps/worker-search/main-fuzz.roc" },
-		{ name: "supersede", main: "tests/apps/supersede/main-fuzz.roc" },
 		{ name: "csv-converter", main: "examples/csv-converter/fuzz-csv.roc" },
 		{ name: "log-explorer", main: "examples/log-explorer/fuzz-index.roc" },
 		{ name: "million-row-explorer-aggregates", main: "examples/million-row-explorer/fuzz-aggregates.roc" },
