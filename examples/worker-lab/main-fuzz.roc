@@ -10,8 +10,9 @@ import pf.Scm
 import pf.Soak
 import pf.SpecRunner
 import pf.Wire
+import pf.Worker
 import Lab
-import LabApp
+import LabPage
 
 ## Worker Lab as a roc-fuzz target (its specs run through `main.roc`). The
 ## walks answer pending jobs as `Soak.step` does: answer it with the task's
@@ -34,11 +35,23 @@ import LabApp
 ## restarts a running run and supersedes its crash jobs before any is
 ## answered. The walk also puts a parameter it made invalid back to its
 ## initial value (see `repair`), so it keeps reaching runs.
+##
+## It keeps away from the Draw workload the same way: a picture's tasks
+## build files, which only a host can hold, so `LabPage` is built here
+## with stand-ins for them that are never asked to run.
 
 St : SpecRunner.S(Core.App)
 
 program : SpecRunner.Program(Core.App)
-program = Core.driver(LabApp.program)
+program = Core.driver(LabPage.program(draw))
+
+## Stand-ins for the picture's tasks, under their names: the walk never
+## answers a strip or a composition (see `steer`).
+draw : LabPage.Draw
+draw = {
+	strip: |deadline| Worker.task({ name: Lab.strip_task, run!: |_| crash "lab walk: the walk keeps away from the picture's strips", deadline }),
+	compose: Worker.task({ name: Lab.compose_task, run!: |_| crash "lab walk: the walk keeps away from the picture's composition" }),
+}
 
 workload : Scm.Loc
 workload = Label("Workload")
@@ -71,11 +84,11 @@ repair = |s, { label, lo, hi, initial }|
 		Err(_) => correct(s, Fill(Label(label), initial))
 	}
 
-## After every step: off the faulty workload (see above), and every
+## After every step: off the faulty and draw workloads (see above), and every
 ## parameter valid.
 steer : St -> St
 steer = |s0| {
-	s1 = if (value_of(s0, "Workload") == "faulty") correct(s0, SelectOption(workload, "primes")) else s0
+	s1 = if (value_of(s0, "Workload") == "faulty" or value_of(s0, "Workload") == "draw") correct(s0, SelectOption(workload, "primes")) else s0
 	s2 = repair(s1, { label: "Jobs", lo: 1, hi: Lab.max_jobs, initial: Lab.initial.jobs_text })
 	s3 = repair(s2, { label: "Weight", lo: 1, hi: Lab.max_weight, initial: Lab.initial.weight_text })
 	repair(s3, { label: "Deadline (ms)", lo: 0, hi: Lab.max_deadline_ms, initial: Lab.initial.deadline_text })
@@ -88,10 +101,10 @@ start = |_| SpecRunner.mount(program, "/", [])
 ## function its `run!` wraps.
 stand_in : Str, List(U8), List(U8) -> List(U8)
 stand_in = |task, prep, input|
-	if task == LabApp.primes(Unlimited).name() {
-		LabApp.primes(Unlimited).stand_in(|span| Ok(Lab.count_primes(span)))(prep, input)
-	} else if task == LabApp.tiles(Unlimited).name() {
-		LabApp.tiles(Unlimited).stand_in(|spec| Ok(Wire.Bytes.from_list(Lab.tile(spec))))(prep, input)
+	if task == LabPage.primes(Unlimited).name() {
+		LabPage.primes(Unlimited).stand_in(|span| Ok(Lab.count_primes(span)))(prep, input)
+	} else if task == LabPage.tiles(Unlimited).name() {
+		LabPage.tiles(Unlimited).stand_in(|spec| Ok(Wire.Bytes.from_list(Lab.tile(spec))))(prep, input)
 	} else {
 		crash "lab walk: the walk keeps away from worker task \"${task}\""
 	}
