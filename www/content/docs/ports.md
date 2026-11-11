@@ -65,24 +65,34 @@ for an input that is sometimes not a question.
 Give each port its own effect site. A site's reaction receives every
 result of what its plan issued, and a `PortReply` does not say which port
 it came from, so a site that issued a call on one port and a subscription
-on another could not tell their results apart.
+on another could not tell their results apart. One outbox whose item's tag
+names the port (`[Add(Book), Remove(Str)]`) works too: the reaction is
+given the item, so it knows which port answered.
+
+Decode a port's data into the app's own types at the door, in the
+reaction, and check the app's invariants there (an id that must be unique,
+a list that must be sorted), so nothing deeper takes the raw message on
+trust.
 
 ### Sending when the user acts
 
-A handler only writes state; requests leave from effect sites. To send a
-command when the user clicks, the click writes what to send into the state,
-and an `Engine.on_change` site over that field sends it. The Reading List
-keeps an outbox, `{ serial : U64, writes : List(Write) }`, that every
-change replaces (`ReadingList.roc`'s `send`), and one site sends its
-writes:
+A handler only writes state; requests leave from effect sites. To send
+when the user clicks, the click posts what to send to an `Engine.Outbox`
+in the state, and an `Engine.on_post` site sends it (see
+[Effects and the Browser](@/docs/effects-and-browser.md#sending-when-the-user-acts)).
+The Reading List keeps two: `adding`, the books the user asks to add, sent
+as calls, and `writes`, each change's writes, sent as commands
+(`ReadingList.roc`'s `send`):
 
-- `on_change` fires only when the value changes, so the `serial` makes two
-  equal changes in a row two sends: moving a book back to the shelf it was
-  on is a write the store needs, even though the outbox held the same
-  write before.
-- `on_change`, not `latest`, for a call such as the Reading List's `add`:
-  `latest` would stop an earlier call when the user asks for the next one,
-  and drop its answer.
+- Every post is sent, so moving a book back to the shelf it was on is a
+  write the store gets, even though it equals the write before.
+- `on_post` never stops an earlier call for a later post, so each add's
+  answer arrives, and its reaction is given the book it was posted with.
+- A change that writes several things posts them as one list: an outbox
+  takes one post per turn.
+- A write the app relies on, one whose failure the user must hear of, is
+  a call that answers `{}`, not a command: a command's failure never
+  reaches the app.
 - A record with one field is written with the field named:
   `remove.send({ id: id })`. `{ id }` is a block holding `id`, not a record.
 

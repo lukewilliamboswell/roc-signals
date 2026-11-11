@@ -77,8 +77,7 @@ Convert := [].{
 		logging : [Idle, Append({ log : List(File), line : Str })],
 		download : [Idle, Get(Str)],
 		downloaded : List(File),
-		save : [Idle, Save(File, U64)],
-		saves : U64,
+		save : Engine.Outbox(File),
 		status : Str,
 	}
 	# endregion model
@@ -106,7 +105,7 @@ Convert := [].{
 	## Save the first of `files`, in the turn of the click.
 	save_first : S, List(File) -> S
 	save_first = |s, files| match files {
-		[f, ..] => { ..s, save: Save(f, s.saves + 1), saves: s.saves + 1 }
+		[f, ..] => { ..s, save: s.save.post(f) }
 		[] => s
 	}
 
@@ -129,12 +128,12 @@ Convert := [].{
 						[
 							Html.p_v(
 								r.map(
-									|{ request, answer }| match (request, answer) {
-										(Pending, _) => "converting"
-										(Idle, Answered(f)) => "converted ${f.name()} (${f.size().to_str()} bytes)"
-										(Idle, Failed(Failed(e))) => "conversion failed: ${Str.inspect(e)}"
-										(Idle, Failed(e)) => "no answer: ${Str.inspect(e)}"
-										(Idle, Unanswered) => "choose a CSV file"
+									|remote| match Worker.status(remote) {
+										Working => "converting"
+										Answered(f) => "converted ${f.name()} (${f.size().to_str()} bytes)"
+										Failed(e) => "conversion failed: ${Str.inspect(e)}"
+										Unasked => "choose a CSV file"
+										other => "no answer: ${Str.inspect(other)}"
 									},
 								),
 								[Engine.test_id("converted")],
@@ -146,9 +145,9 @@ Convert := [].{
 								[],
 								st.lift().update_by(
 									r,
-									|s, remote| match remote.answer {
-										Answered(f) => Convert.save_first(s, [f])
-										_ => s
+									|s, remote| match remote.answered() {
+										Ok(f) => Convert.save_first(s, [f])
+										Err(NoAnswer) => s
 									},
 								),
 							),
@@ -204,27 +203,15 @@ Convert := [].{
 						},
 					),
 					|r| Html.p_v(
-						r.map(
-							|{ answer, .. }| match answer {
-								Answered(n) => "${n.to_str()} lines downloaded"
-								_ => "nothing downloaded"
-							},
-						),
+						r.map(|remote| remote.answered().map_ok(|n| "${n.to_str()} lines downloaded") ?? "nothing downloaded"),
 						[Engine.test_id("downloaded")],
 					),
 				),
 				# endregion fetch
 				# region save
 				# The save command, issued in the turn of the click that
-				# asked for it, so the browser sees the user's gesture.
-				Engine.on_change(
-					v.map(|s| s.save),
-					|save| match save {
-						Save(f, _) => [File.save(f, {})]
-						Idle => []
-					},
-					Engine.ignore({}),
-				),
+				# posted the file, so the browser sees the user's gesture.
+				Engine.on_post(v.map(|s| s.save), |f| [File.save(f, {})], Engine.ignore({})),
 				# endregion save
 				Html.p_v(v.map(|s| s.status), [Engine.test_id("status")]),
 			],
@@ -234,7 +221,7 @@ Convert := [].{
 	# region register
 	program : Engine.Program
 	program =
-		Engine.program(|| Engine.state({ source: Nothing, log: [], entries: 0, logging: Idle, download: Idle, downloaded: [], save: Idle, saves: 0, status: "" }, Convert.view))
+		Engine.program(|| Engine.state({ source: Nothing, log: [], entries: 0, logging: Idle, download: Idle, downloaded: [], save: Engine.outbox({}), status: "" }, Convert.view))
 			.with_workers([Convert.to_tsv.registration(), Convert.log_line.registration(), Convert.count_lines.registration()])
 	# endregion register
 }

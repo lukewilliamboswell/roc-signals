@@ -13,17 +13,18 @@ main = Engine.program_boot(
 )
 
 initial : Engine.Boot -> Model
-initial = |boot| { query: Engine.boot_storage(boot, "query") ?? "", results: Idle, url: boot.url, nav: { serial: 0, url: boot.url }, online: boot.online, ticks: 0 }
+initial = |boot| { query: Engine.boot_storage(boot, "query") ?? "", results: Idle, url: boot.url, nav: Engine.outbox({}), saving: Engine.outbox({}), saved: [], online: boot.online, ticks: 0 }
 
 # endregion boot
 
 # region model
 Results : [Idle, Loading, Loaded(Str), Failed(Engine.HttpError)]
 
-## `url` is where the browser is; `nav` is the app's latest request to go
-## somewhere. They are separate so that following the back button does not
-## push a new history entry.
-Model : { query : Str, results : Results, url : Str, nav : { serial : U64, url : Str }, online : Bool, ticks : U64 }
+## `url` is where the browser is; `nav` is an outbox of the places the app
+## asks to go. They are separate so that following the back button does not
+## push a new history entry. `saving` is an outbox of the searches the user
+## asks to save, and `saved` those the server has kept.
+Model : { query : Str, results : Results, url : Str, nav : Engine.Outbox(Str), saving : Engine.Outbox(Str), saved : List(Str), online : Bool, ticks : U64 }
 
 Ctx : In(Root, Model)
 
@@ -53,6 +54,28 @@ search = |model|
 
 # endregion http
 
+# region post
+## The click posts the query to an outbox in the state, and the `on_post`
+## site sends it in the same turn. Saving the same query twice is two
+## requests, and each answer arrives with the query it was posted with.
+save : State(Ctx, Model) -> List(Elem(Ctx))
+save = |model| [
+	Html.button("Save search", [], model.update(|m| { ..m, saving: m.saving.post(m.query) })),
+	Engine.on_post(
+		model.val().map(|m| m.saving),
+		|q| [Http({ method: "POST", url: "/api/saved", headers: [], body: q, timeout_ms: 5000 })],
+		model.on_result(
+			|m, q, res|
+				match Engine.http_text(res) {
+					Ok(_) => { ..m, saved: m.saved.append(q) }
+					Err(_) => m
+				},
+		),
+	),
+]
+
+# endregion post
+
 # region commands
 ## Commands are emitted and forgotten: the title follows the query, and the
 ## query is saved for the next visit.
@@ -71,11 +94,11 @@ commands = |model| {
 ## Navigation is a pair of effects: `Push` when the app navigates, and a
 ## `Popstate` subscription for the back and forward buttons.
 go : Model, Str -> Model
-go = |m, url| { ..m, url, nav: { serial: m.nav.serial + 1, url } }
+go = |m, url| { ..m, url, nav: m.nav.post(url) }
 
 routing : State(Ctx, Model) -> List(Elem(Ctx))
 routing = |model| [
-	Engine.on_change(model.val().map(|m| m.nav), |n| [Push(n.url)], Engine.ignore({})),
+	Engine.on_post(model.val().map(|m| m.nav), |url| [Push(url)], Engine.ignore({})),
 	Html.button("Settings", [], model.update(|m| go(m, "/settings"))),
 	Engine.watch(
 		Engine.const({}),
@@ -157,6 +180,7 @@ page = |model|
 		"search",
 		search_box(model)
 			.concat([search(model), leaving(model), Html.p_v(model.val().map(|m| status(m.results)), [Engine.test_id("results")])])
+			.concat(save(model))
 			.concat(commands(model))
 			.concat(routing(model))
 			.concat(subscriptions(model)),

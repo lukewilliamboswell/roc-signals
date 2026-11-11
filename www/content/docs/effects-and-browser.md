@@ -33,8 +33,33 @@ user typed again before the first answer arrived, the reaction sees an old
 query and ignores the answer. Which answer wins is your decision, made in
 ordinary Roc.
 
-Because sites issue on *change*, two equal values in a row issue once. To
-repeat a request for an equal value, include a counter in the watched value.
+Because sites issue on *change*, two equal values in a row issue once. A
+request the user's action asks for, which must be sent again for an equal
+value, is posted to an outbox instead.
+
+### Sending when the user acts
+
+A save, an add or a write to a store is asked for by a click, not by a value
+changing. Keep an `Engine.Outbox(item)` in the state, made with
+`Engine.outbox({})`; the handler posts to it with `box.post(item)`, and
+`Engine.on_post(box, plan, reaction)` issues `plan(item)` in the turn of the
+post:
+
+{{ sample(file="effects.roc", region="post") }}
+
+- Each post is sent, an item equal to the last one included: two outboxes
+  are equal only when they hold the same post.
+- The reaction is given the item it was posted with, so several posts can be
+  in flight and each answer knows its own.
+- Nothing is sent at mount, and nothing is ever cancelled for a later post,
+  as with `on_change`. Disposing the site follows the usual rules: an HTTP
+  request or a port call still completes, in the nearest surviving owner.
+- The reducer that changes the state posts in the same step, so an `expect`
+  sees both: `box.last()` is `Unposted` or `Posted(item)`.
+- Post at most once per turn to one outbox. A change that sends several
+  things posts a list (`Engine.Outbox(List(Write))`, sent as
+  `|writes| writes.map(request)`). A second post in the same turn would
+  replace the first before the site saw it, so it is a contract error.
 
 ## Superseding sites
 
@@ -57,10 +82,30 @@ superseding site instead of filtering answers in the reaction:
   [Ports](@/docs/ports.md)) are resources that follow one answer, held as
   an `Engine.Remote`.
 
+- `Engine.gather(asker, inputs, body)` asks one request per input, all at
+  once, and keeps the answers in an `Engine.Gathered` layer: `jobs`, each
+  input's job as `Working`, `Answered(output)` or `Failed(error)`, and
+  `all`, an `Engine.Remote` of the whole list in input order once no job is
+  working (or the first failure). `Worker.gather` is this for a task's jobs;
+  see [Workers](@/docs/workers.md#one-question-several-jobs).
+
 Both cancel only on a new value. Disposing them follows the same rules as any
 effect site: subscriptions and timers stop, and an admitted request still
 completes in the nearest surviving owner, where its write to the disposed
 layer is skipped.
+
+A reaction that compares a serial, or the value it was issued for, with the
+state to drop an old answer is asking for `latest`: let the site cancel the
+old request instead. Keep `watch` and such a check only where cancelling an
+in-flight request would be wrong, such as a write the server must finish.
+
+An `Engine.Remote` layer is read with `remote.answered()`, the latest answer
+as a `Try`: `?? default` shows a fallback, `.map_ok(f)` picks from it, and a
+handler matches `Ok(output)`. It keeps the answer while a newer request is
+pending, and is `Err(NoAnswer)` before the first answer and after a
+failure. To combine the answer with state outside the layer (the page a
+list is on, say), lift that state in and map both:
+`v.lift().map2(r, |s, remote| ...)`.
 
 ## Requests
 
@@ -117,7 +162,8 @@ and writes persist nothing, so the app can tell the user.
 
 Keep the app's navigation *intent* separate from the current location, so
 that following the back button updates the location without pushing a new
-entry. Links inside the app should use a handler with the `click:prevent`
+entry: post each place the app asks to go to an outbox, and push what is
+posted. Links inside the app should use a handler with the `click:prevent`
 event (`Engine.on("click:prevent", ...)`) so the browser does not navigate on
 its own.
 
@@ -185,3 +231,4 @@ nothing app-specific enters the platform. The
   at mount, most of them refused, are fine. As a backstop, one event runs at
   most 64 follow-up turns per in-flight slot (at least 4096).
 - An HTTP timeout is capped at 600 seconds.
+- An outbox takes one post per turn; a second is a contract error.

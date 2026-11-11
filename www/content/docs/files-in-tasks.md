@@ -112,8 +112,8 @@ nothing comes back.
 {{ sample(file="tasks/Convert.roc", region="save") }}
 
 Issue a save in the turn of the click that asked for it, as here: the click
-writes what to save into state, and the `on_change` site issues the command
-in that same turn, inside the browser's click listener, so the browser sees
+posts the file to an outbox in the state, and the `on_post` site issues the
+command in that same turn, inside the browser's click listener, so the browser sees
 the user's gesture. A save issued later, from a job's answer for example,
 runs without one: Chrome starts the first such download but may hold back a
 second one, or ask the user first. Let the user press a button when the file

@@ -67,9 +67,11 @@ Two things hold a file longer than you might expect:
   list's files alive. To keep some files and let the rest go, build a new
   list of the ones you keep.
 - A `derive` or `Worker.derive` layer keeps its last input, so a file it was
-  asked about stays until its input changes. A request kept in state for an
+  asked about stays until its input changes, and its answer holds the
+  files it names until the next answer. A request kept in state for an
   effect site holds its files the same way, until the state is written
-  without it.
+  without it, and an outbox holds its last post's files until the next
+  post.
 
 An app holds at most 64 files at once, counting the files a job answered
 with and downloaded ones. Files an event carries beyond that are not
@@ -92,7 +94,10 @@ the job, reading is an effect:
 `file.contents_utf8!()` reads the whole file, or the whole range of a
 slice, as text; `file.contents!()` gives its bytes, and
 `file.read!({ start, len })` reads one range, so a job can go through a
-large file a chunk at a time and keep its memory to a chunk. These are
+large file a chunk at a time and keep its memory to a chunk.
+`file.spans(n)` gives those ranges, `n` bytes each and the last shorter,
+so the loop is `for span in file.spans(n) { bytes = file.read!(span)? ... }`.
+These are
 effects, written with `!`, so they exist only in a job: page code is pure
 and the compiler refuses one there. On the page there are no bytes until
 the app asks for them with a page read (below).
