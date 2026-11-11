@@ -8,6 +8,8 @@
 // 1. Correctness: one prime run and one tile run give the same answers and
 //    checksum as an independent implementation (worker-lab-reference.mjs)
 //    with every pool size and with `workers: "inline"`.
+//    The Draw workload's strips and composed picture equal the
+//    reference's too, and Chrome decodes the picture (section 2b).
 // 2. Scaling: a fixed prime run at each pool size, after a warm-up run on
 //    the same pool: wall time from the first job issued to the last job
 //    ended, speedup against one worker, utilisation, queue-wait
@@ -39,7 +41,8 @@ import os from "node:os";
 import path from "node:path";
 import { launch } from "./cdp.mjs";
 import { parseArgs, runtimeFiles } from "./args.mjs";
-import { expectedRun } from "./worker-lab-reference.mjs";
+import { createHash } from "node:crypto";
+import { expectedPicture, expectedRun, palette } from "./worker-lab-reference.mjs";
 
 const opts = parseArgs(process.argv.slice(2), ["mode", "label", "known-leak"]);
 const MODE = opts.mode ?? "smoke";
@@ -154,6 +157,33 @@ function install() {
     window.__click("Start");
     if (!(await window.__settled())) throw new Error(`run did not settle; progress ${window.__text("progress")}`);
     return { rows: window.__rows(), checksum: window.__text("checksum"), primes: window.__text("primes"), bytes: window.__text("tile-bytes"), events: window.__events.slice(from) };
+  };
+  // Draw a picture; resolve once every strip ended and, when all were
+  // drawn, the composed picture is shown and digested, with what the page
+  // shows, the picture's decoded size and one row of its pixels.
+  window.__draw = async ({ jobs, weight }) => {
+    const from = window.__events.length;
+    const shown = await window.__run({ workload: "draw", jobs, weight });
+    const lost = shown.rows.some((r) => !r.startsWith("done:"));
+    const until = (f) =>
+      new Promise((resolve) => {
+        const tick = () => (f() ? resolve(true) : setTimeout(tick, 5));
+        tick();
+      });
+    let picture = null;
+    if (!lost) {
+      await until(() => window.__text("digest")?.startsWith("SHA-256 ") && window.__root.querySelector("[data-testid=picture-image]"));
+      const img = window.__root.querySelector("[data-testid=picture-image]");
+      await img.decode();
+      const c = document.createElement("canvas");
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      const g = c.getContext("2d");
+      g.drawImage(img, 0, 0);
+      const row = Math.floor(img.naturalHeight / 2);
+      picture = { width: img.naturalWidth, height: img.naturalHeight, row, pixels: [...g.getImageData(0, row, img.naturalWidth, 1).data], composed: window.__text("composed"), digest: window.__text("digest") };
+    }
+    return { ...shown, picture, events: window.__events.slice(from) };
   };
   window.__sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // Gaps on the page's thread while `body` runs: a 1 ms timer loop (Chrome
@@ -332,6 +362,53 @@ for (const mode of [...POOLS.map((n) => ({ maxWorkers: n })), { workers: "inline
     else if (inflation > 1.6) skip(`speedup with ${s.name} >= ${f2(want)} (got ${f2(one.wall / s.wall)})`, `the machine was contended: the same jobs took ${f2(inflation)} times the one-worker run's compute (load average ${loadavg()})`);
     else check(`speedup with ${s.name} >= ${f2(want)}`, one.wall / s.wall >= want, `got ${f2(one.wall / s.wall)}`);
   }
+}
+
+// -- 2b. The picture --------------------------------------------------------
+// The Draw workload at each pool size and inline: every strip's answer and
+// the composed picture's name, size and SHA-256 equal the reference's, the
+// browser decodes the picture to its size, and the middle row's pixels are
+// the reference's palette colours. Inline, a strip's job builds a file,
+// which only a worker can, so every strip is lost and nothing is composed.
+// It prints the time from the first strip asked for to the composed
+// picture's end, and the page's longest frame gap meanwhile.
+const DRAW = FULL ? { jobs: 32, weight: 16 } : { jobs: 4, weight: 1 };
+{
+  const want = expectedPicture(DRAW);
+  const sha = createHash("sha256").update(want.picture).digest("hex");
+  const width = DRAW.weight * 128;
+  const pal = palette();
+  const drawn = [];
+  for (const mode of [...POOLS.map((n) => ({ maxWorkers: n })), { workers: "inline" }]) {
+    const name = mode.workers === "inline" ? "inline" : `${mode.maxWorkers} worker${mode.maxWorkers === 1 ? "" : "s"}`;
+    const { page, ctx, errors } = await open(mode);
+    // A first drawing warms the pool; the second is measured.
+    await page.evaluate((p) => window.__draw(p), DRAW);
+    const g = await page.evaluate((p) => window.__gaps(() => window.__draw(p)), DRAW);
+    const r = g.result;
+    if (mode.workers === "inline") {
+      check(`picture, inline: every strip is lost, for no worker can build its file`, r.rows.length === DRAW.jobs && r.rows.every((x) => x === "lost: no workers") && r.picture === null, JSON.stringify(r.rows.slice(0, 2)));
+    } else {
+      same(`picture, ${name}: each strip's answer`, r.rows, want.strips.map((s) => s.text));
+      const p = r.picture;
+      const h = (want.picture.length - 1078) / width;
+      check(`picture, ${name}: composed as ${want.name}, ${want.picture.length} bytes, SHA-256 ${sha.slice(0, 16)}…`, p.composed === `${want.name}, ${want.picture.length} bytes` && p.digest === `SHA-256 ${sha}`, `${p.composed}; ${p.digest}`);
+      const row = [];
+      for (let x = 0; x < width; x += 1) {
+        const i = want.picture[1078 + p.row * width + x] * 4;
+        row.push(pal[i + 2], pal[i + 1], pal[i], 255);
+      }
+      check(`picture, ${name}: the browser decodes it to ${width} by ${h} and its middle row is the reference's colours`, p.width === width && p.height === h && JSON.stringify(p.pixels) === JSON.stringify(row), `${p.width} by ${p.height}`);
+    }
+    const issues = r.events.filter((e) => e.kind === "job-issue");
+    const ends = r.events.filter((e) => e.kind === "job-end");
+    drawn.push({ name, wall: issues.length && ends.length ? Math.max(...ends.map((e) => e.at)) - Math.min(...issues.map((e) => e.at)) : NaN, frameGap: g.frameGap, beats: g.beats, ticks: await page.evaluate(() => window.__text("draw-ticks")) });
+    check(`picture, ${name}: no page errors`, errors.length === 0, errors.join("; "));
+    await ctx.close();
+  }
+  console.log(`\nPicture (${LABEL}; ${DRAW.jobs} strips, ${DRAW.weight * 128} pixels wide; the second drawing on each pool; inline, every strip is lost after its pixels are computed):\n`);
+  console.log(table(["pool", "first strip asked to picture composed, ms", "longest frame gap ms", "heartbeats", "page clock ticks"], drawn.map((d) => [d.name, f1(d.wall), f1(d.frameGap), String(d.beats), d.ticks])));
+  console.log("");
 }
 
 // -- 3. Responsiveness ------------------------------------------------------
