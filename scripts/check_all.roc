@@ -37,6 +37,9 @@ main! = |_args| {
 	Proc.note!("== script pins")
 	$problems = $problems.concat(script_pins!()?)
 
+	Proc.note!("== file names")
+	$problems = $problems.concat(file_names!()?)
+
 	Proc.note!("== formatting")
 	$problems = $problems.concat(check!({ program: o.compiler, args: ["fmt", "--check", "platform", "examples", "tests/apps", "fuzz", "www/samples", "cli", "benchmarks/js-framework-benchmark/roc-signals-keyed/app"], cwd: "." }, "roc fmt --check")?)
 	$problems = $problems.concat(check!({ program: o.tooling, args: ["fmt", "--check", "scripts"], cwd: "." }, "roc-stable fmt --check scripts")?)
@@ -49,7 +52,7 @@ main! = |_args| {
 
 	Proc.note!("== roc test")
 	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "platform/main.roc"], cwd: "." }, "roc test platform/main.roc")?)
-	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "platform/engine.roc"], cwd: "." }, "roc test platform/engine.roc")?)
+	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "platform/main-fuzz.roc"], cwd: "." }, "roc test platform/main-fuzz.roc")?)
 	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "cli/main.roc"], cwd: "." }, "roc test cli/main.roc")?)
 	$problems = $problems.concat(ToolCheck.bundle_current!(o)?)
 	$problems = $problems.concat(check!({ program: o.tooling, args: ["test", "scripts/check_all.roc"], cwd: "." }, "roc-stable test scripts")?)
@@ -124,6 +127,52 @@ check! = |job, label| {
 	{ code, .. } = Proc.output!(job)?
 	Ok(if (code == 0) [] else ["${label} failed (exit ${code.to_str()})"])
 }
+
+## The source directories whose file names must stay distinct on a file
+## system that ignores letter case.
+source_dirs : List(Str)
+source_dirs = ["platform", "cli", "examples", "tests", "fuzz", "scripts", "www/samples", "www/content", "www/data", "www/static", "www/templates", "benchmarks"]
+
+## No two source files have paths that differ only in letter case. macOS and
+## Windows keep one file for such a pair, so a checkout there silently loses
+## the other (a package root `platform/engine.roc` beside the module
+## `platform/Engine.roc` broke every build on both).
+file_names! : () => Try(List(Str), _)
+file_names! = || {
+	var $files = []
+	for dir in source_dirs {
+		$files = $files.concat(SpecSuite.files_under!(dir, "")?)
+	}
+	Ok(case_collisions($files))
+}
+
+## One problem for each pair of paths that are equal once letter case is
+## ignored.
+case_collisions : List(Str) -> List(Str)
+case_collisions = |paths| {
+	keyed = paths.map(|path| { key: Str.from_utf8_lossy(path.to_utf8().map(|b| if (b >= 'A' and b <= 'Z') b + 32 else b)), path })
+	sorted = keyed.sort_with(
+		|a, b| match SpecSuite.compare_str(a.key, b.key) {
+			Same => SpecSuite.compare_str(a.path, b.path)
+			other => other
+		},
+	)
+	var $out = []
+	var $prev = { key: "", path: "" }
+	for item in sorted {
+		if item.key == $prev.key and item.path != $prev.path {
+			$out = $out.append("${$prev.path} and ${item.path} differ only in letter case, so a checkout on macOS or Windows keeps only one of them")
+		}
+		$prev = item
+	}
+	$out
+}
+
+## Two paths that differ only in case are reported once, in a fixed order.
+expect case_collisions(["platform/engine.roc", "a/b.roc", "platform/Engine.roc"]) == ["platform/Engine.roc and platform/engine.roc differ only in letter case, so a checkout on macOS or Windows keeps only one of them"]
+
+## Paths that differ in more than case, and a path listed twice, are fine.
+expect case_collisions(["a/B.roc", "a/c.roc", "A2/b.roc", "a/c.roc"]) == []
 
 ## Every script under `scripts/` names the tooling compiler Blueprint.roc pins,
 ## and nothing else pins a compiler: no `.roc-version`, and no `roc` header
