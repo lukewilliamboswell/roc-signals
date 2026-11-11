@@ -95,6 +95,61 @@ Status := [].{
 	## One service's latest check: health plus uptime in basis points (9998 = 99.98%).
 	Check : { health : Health, uptime_bps : U64 }
 
+	## The four services the page checks.
+	Service : [Api, Web, Database, Notifications]
+
+	## What one refresh learned of one service's uptime: nothing yet
+	## (`Awaiting`: no answer has arrived, or the refresh was superseded
+	## before one did), a figure in basis points (`Measured`), or no figure
+	## because the check failed or its payload carried none (`Unmeasured`).
+	Uptime : [Awaiting, Measured(U64), Unmeasured]
+
+	## One refresh's uptime for each service: one step of the history.
+	Round : { api : Uptime, web : Uptime, database : Uptime, notifications : Uptime }
+
+	## How many refreshes the uptime history keeps: five minutes at one
+	## refresh every five seconds. A new round beyond it lets the oldest go,
+	## so the history, and the chart drawn from it, stay this size however
+	## long the page is open.
+	history_limit : U64
+	history_limit = 60
+
+	## The history at mount: the mount's own refresh, awaiting its answers.
+	first_history : List(Round)
+	first_history = [awaiting_round]
+
+	## A new refresh starts a round awaiting its answers, letting the oldest
+	## round go beyond `history_limit`.
+	start_round : List(Round) -> List(Round)
+	start_round = |history| {
+		grown = history.append(awaiting_round)
+		if grown.len() > history_limit {
+			grown.drop_first(grown.len() - history_limit)
+		} else {
+			grown
+		}
+	}
+
+	## A check's answer recorded in the current round, the last one. Answers
+	## only ever arrive for the current refresh (each check is a `latest`
+	## site), so an answer never lands in an older round.
+	record_uptime : List(Round), Service, Check -> List(Round)
+	record_uptime = |history, service, check|
+		match history.last() {
+			Ok(round) => history.drop_last(1).append(with_uptime(round, service, uptime_of(check)))
+			Err(_) => crash "Status.record_uptime: the history always holds the current round"
+		}
+
+	## A service's uptime in one round.
+	uptime_in : Round, Service -> Uptime
+	uptime_in = |round, service|
+		match service {
+			Api => round.api
+			Web => round.web
+			Database => round.database
+			Notifications => round.notifications
+		}
+
 	## Fan-in accumulator. Every service contributes one of these; adding them is
 	## associative, so the rollup is a balanced `Signal.map2` tree.
 	Tally : { operational : U64, degraded : U64, outage : U64, unknown : U64, uptime_bps : U64, reporting : U64 }
@@ -458,4 +513,52 @@ Status := [].{
 
 	## A refresh that timed out is reported by its typed error.
 	expect check_detail("", check_of(Err(Timeout))) == "Last refresh failed: Timeout"
+
+	## Each answer lands in the current round as a figure, or as no figure
+	## when the check failed or had nothing to say.
+	expect {
+		api = record_uptime(first_history, Api, parse_check("degraded|97.40"))
+		web = record_uptime(api, Web, check_of(Err(Timeout)))
+		history = record_uptime(web, Database, parse_check("garbled"))
+		expected : List(Round)
+		expected = [{ api: Measured(9740), web: Unmeasured, database: Unmeasured, notifications: Awaiting }]
+		Str.inspect(history) == Str.inspect(expected)
+	}
+
+	## The history keeps the last `history_limit` rounds, newest last, so it
+	## stops growing once full.
+	expect {
+		var $history = record_uptime(first_history, Api, parse_check("operational|99.00"))
+		for _round in 0.U64..<history_limit {
+			$history = start_round($history)
+		}
+		actual =
+			\\length: ${$history.len().to_str()}
+			\\oldest api: ${Str.inspect(($history.first() ?? awaiting_round).api)}
+		expected =
+			\\length: 60
+			\\oldest api: Awaiting
+		actual == expected
+	}
 }
+
+awaiting_round : Status.Round
+awaiting_round = { api: Awaiting, web: Awaiting, database: Awaiting, notifications: Awaiting }
+
+## What a check says of the service's uptime: a figure only when the
+## service reported a health it measured.
+uptime_of : Status.Check -> Status.Uptime
+uptime_of = |check|
+	match check.health {
+		Operational | Degraded | Outage => Measured(check.uptime_bps)
+		Unknown | CheckFailed(_) => Unmeasured
+	}
+
+with_uptime : Status.Round, Status.Service, Status.Uptime -> Status.Round
+with_uptime = |round, service, uptime|
+	match service {
+		Api => { ..round, api: uptime }
+		Web => { ..round, web: uptime }
+		Database => { ..round, database: uptime }
+		Notifications => { ..round, notifications: uptime }
+	}

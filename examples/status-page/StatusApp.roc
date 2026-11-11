@@ -1,12 +1,6 @@
 import pf.Engine exposing [Elem, In, Root, Row, RowRef, State, Val]
 import pf.Html
-import plume.Axis
-import plume.Bar
-import plume.Chart
-import plume.Color
-import plume.Coordinate
-import plume.Layout
-import plume.Title
+import Charts
 import Status
 
 ## Status Page on the Roc-owned engine: ported from the previous engine.
@@ -27,10 +21,13 @@ import Status
 ## The incident feed is a fifth result rendered as a timeline: incidents are
 ## keyed rows, each with its keyed updates.
 ##
-## The uptime chart is a `plume-chart` custom element (defined by
-## `examples/shared/plume-chart.mjs`, which the page loads) whose `data-figure` attribute carries a Plotly
-## figure built with Plume. To the engine it is an ordinary element with an
-## ordinary attribute.
+## Every refresh also starts a round of the uptime history, which the
+## answers fill in, and the page keeps the last `Status.history_limit`
+## rounds. The history is drawn as a `plume-chart` custom element (defined
+## by `examples/shared/plume-chart.mjs`, which the page loads) whose
+## `data-figure` attribute carries a Plotly figure built with Plume
+## (`Charts.roc`). To the engine it is an ordinary element with an ordinary
+## attribute.
 StatusApp := [].{
 	Board : {
 		serial : U64,
@@ -41,6 +38,7 @@ StatusApp := [].{
 		database : Status.Check,
 		notifications : Status.Check,
 		feed : Status.Feed,
+		history : List(Status.Round),
 	}
 
 	C1 : In(Root, Board)
@@ -56,11 +54,25 @@ StatusApp := [].{
 		database: Status.pending_check,
 		notifications: Status.pending_check,
 		feed: Status.loading_feed,
+		history: Status.first_history,
 	}
 
-	## Start the next refresh.
+	## Start the next refresh, and its round of the uptime history.
 	next : Board -> Board
-	next = |b| { ..b, serial: b.serial + 1 }
+	next = |b| { ..b, serial: b.serial + 1, history: Status.start_round(b.history) }
+
+	## A service's check answered: its card shows it, and the current round
+	## of the history records its uptime.
+	record : Board, Status.Service, Status.Check -> Board
+	record = |b, service, check| {
+		recorded = { ..b, history: Status.record_uptime(b.history, service, check) }
+		match service {
+			Api => { ..recorded, api: check }
+			Web => { ..recorded, web: check }
+			Database => { ..recorded, database: check }
+			Notifications => { ..recorded, notifications: check }
+		}
+	}
 
 	## The page's visibility changed; becoming visible refreshes at once.
 	set_visible : Board, Bool -> Board
@@ -118,50 +130,6 @@ StatusApp := [].{
 			),
 		],
 	)
-
-	## A service's uptime as a bar height, in percent. A service that has not
-	## reported draws no bar rather than a guessed one.
-	reported_uptime : Status.Check -> F64
-	reported_uptime = |check|
-		match check.health {
-			Unknown => 0
-			CheckFailed(_) => 0
-			_ => check.uptime_bps.to_f64() / 100
-		}
-
-	## A bar's fill, in the tone of the service's status badge.
-	health_color : Status.Health -> Color
-	health_color = |health|
-		match health {
-			Operational => Color.rgb({ red: 5, green: 150, blue: 105 })
-			Degraded => Color.rgb({ red: 217, green: 119, blue: 6 })
-			Outage => Color.rgb({ red: 220, green: 38, blue: 38 })
-			Unknown => Color.rgb({ red: 161, green: 161, blue: 170 })
-			CheckFailed(_) => Color.rgb({ red: 217, green: 119, blue: 6 })
-		}
-
-	## Uptime per service as one bar trace on a 0-100% axis, each bar in its
-	## service's health tone.
-	uptime_chart : Board -> Try(Chart, _)
-	uptime_chart = |b| {
-		var $points = []
-		for { name, check } in [{ name: "API", check: b.api }, { name: "Web app", check: b.web }, { name: "Database", check: b.database }, { name: "Notifications", check: b.notifications }] {
-			$points = $points.append({ x: Coordinate.from_text(name), y: Coordinate.from_number(StatusApp.reported_uptime(check))?, color: StatusApp.health_color(check.health) })
-		}
-		bars = Bar.new({ data: $points, name: "Uptime" })?
-		uptime_axis = Axis.new({ title: Title.new({ text: "Uptime (%)" }), type: Linear, range: Bounds({ min: 0, max: 100 }) })?
-		Ok(Chart.new({ traces: [Bar(bars)], layout: Layout.new({ y_axis: uptime_axis }) }))
-	}
-
-	## The chart's Plotly figure JSON. Uptimes are finite and the bar width is
-	## Plume's default, so construction cannot fail; were it ever to, the
-	## attribute is empty and the element draws nothing.
-	uptime_figure : Board -> Str
-	uptime_figure = |b|
-		match StatusApp.uptime_chart(b) {
-			Ok(chart) => chart.to_json()
-			Err(_) => ""
-		}
 
 	render_update : RowRef(Row(C2, Status.Incident), Status.Update) -> Elem(Row(Row(C2, Status.Incident), Status.Update))
 	render_update = |row| {
@@ -284,7 +252,11 @@ StatusApp := [].{
 						StatusApp.service_card({ id: "web", name: "Web app", detail: "app.acme.cloud — dashboard and console" }, bv.map(|b| b.web)),
 						StatusApp.service_card({ id: "database", name: "Database", detail: "Primary Postgres cluster, eu-west-1" }, bv.map(|b| b.database)),
 						StatusApp.service_card({ id: "notifications", name: "Notifications", detail: "Email, SMS and outbound webhooks" }, bv.map(|b| b.notifications)),
-						Engine.element("plume-chart", [Engine.class("block"), Engine.attr("role", "img"), Html.aria_label("Uptime by service"), Engine.test_id("uptime-chart"), Engine.attr_v("data-figure", bv.map(StatusApp.uptime_figure))], []),
+						Html.h3("Uptime over the last ${Status.history_limit.to_str()} checks", "panel-title"),
+						Engine.derive(
+							bv.map(|b| b.history),
+							|history| Engine.element("plume-chart", [Engine.class("block"), Engine.attr("role", "img"), Html.aria_label("Uptime history by service"), Engine.test_id("uptime-chart"), Engine.attr_v("data-figure", history.map(Charts.uptime_history))], []),
+						),
 					],
 				),
 				StatusApp.incidents_panel(bv.map(|b| b.feed)),
@@ -295,10 +267,10 @@ StatusApp := [].{
 					|| Html.div("hidden", [Engine.watch(Engine.const({}), |_| [Interval(5000)], board.on_result(|b, _, _| StatusApp.next(b)))]),
 					|| Html.div("hidden", []),
 				),
-				StatusApp.poll(board, "/api/status/api", |b, r| { ..b, api: Status.check_of(r) }),
-				StatusApp.poll(board, "/api/status/web", |b, r| { ..b, web: Status.check_of(r) }),
-				StatusApp.poll(board, "/api/status/database", |b, r| { ..b, database: Status.check_of(r) }),
-				StatusApp.poll(board, "/api/status/notifications", |b, r| { ..b, notifications: Status.check_of(r) }),
+				StatusApp.poll(board, "/api/status/api", |b, r| StatusApp.record(b, Api, Status.check_of(r))),
+				StatusApp.poll(board, "/api/status/web", |b, r| StatusApp.record(b, Web, Status.check_of(r))),
+				StatusApp.poll(board, "/api/status/database", |b, r| StatusApp.record(b, Database, Status.check_of(r))),
+				StatusApp.poll(board, "/api/status/notifications", |b, r| StatusApp.record(b, Notifications, Status.check_of(r))),
 				StatusApp.poll(board, "/api/status/incidents", |b, r| { ..b, feed: Status.feed_of(r) }),
 				Engine.watch(
 					Engine.const({}),
