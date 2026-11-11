@@ -8,14 +8,13 @@ import Proc
 ## - for the native spec runner on Linux (`platform/main.roc`,
 ##   `targets/x64musl/`): `spec.o`, built from `platform/host/spec.zig` with
 ##   the pinned Zig, and musl's `crt1.o` and `libc.a`, Zig's `libzigc.a` and
-##   `libcompiler_rt.a`, taken from the roc-fuzz 0.6.0 release bundle;
+##   `libcompiler_rt.a`, taken from the roc-fuzz 0.6.0 release bundle, the
+##   release the fuzz targets name as their platform;
 ## - for the native spec runner on macOS and Windows (`targets/arm64mac/`,
 ##   `targets/x64mac/`, `targets/x64win/`): the same host as a static
 ##   library for each, cross-compiled with the pinned Zig, and for Windows
 ##   `kernel32.lib`, made by `zig dlltool` from `platform/host/kernel32.def`
-##   (see `spec_hosts`);
-## - for the fuzz platform (`platform/fuzz.roc`, `fuzz-targets/x64musl/`):
-##   the roc-fuzz host and its linker inputs from the same bundle.
+##   (see `spec_hosts`).
 ##
 ## The bundle is checked against the SHA-256 recorded here; it is downloaded
 ## once into the build directory, and every run checks its digest before
@@ -24,16 +23,12 @@ PlatformTest := [].{
 	bundle_url = "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.0/6uc3YKGydgEnS2nrCimSYWDNfT6drYcgU52VAwqrb6DS.tar.zst"
 	bundle_sha256 = "19720c3b47a6ca37394404c8ea379bddba4d1167984a9221243d9b11226a2039"
 
-	## The linker inputs `platform/fuzz.roc` lists for x64musl, from the bundle.
-	bundle_inputs : List(Str)
-	bundle_inputs = ["crt1.o", "libhost.a", "libfuzzer.a", "libc++.a", "libc++abi.a", "libunwind.a", "libc.a", "libzigc.a", "libcompiler_rt.a"]
-
 	## The inputs `platform/main.roc` lists for x64musl, from the bundle.
 	native_inputs : List(Str)
 	native_inputs = ["crt1.o", "libc.a", "libzigc.a", "libcompiler_rt.a"]
 
-	## Fetch, verify and unpack the roc-fuzz inputs, then build `host.wasm` and
-	## `spec.o`.
+	## Fetch, verify and unpack the native runner's libc inputs from the
+	## roc-fuzz bundle, then build `host.wasm` and `spec.o`.
 	prepare! : { root : Str, build_dir : Str, zig : Str } => Try({}, _)
 	prepare! = |{ root, build_dir, zig }| {
 		downloads = "${build_dir}/downloads"
@@ -53,11 +48,6 @@ PlatformTest := [].{
 		}
 		Path.create_all!(Path.utf8(unpacked))?
 		Proc.run!({ program: "tar", args: ["--zstd", "-xf", bundle, "-C", unpacked, "targets/x64musl"], cwd: root })?
-		fuzz_dir = "${root}/platform/fuzz-targets/x64musl"
-		Path.create_all!(Path.utf8(fuzz_dir))?
-		for name in PlatformTest.bundle_inputs {
-			Path.copy!(Path.utf8("${unpacked}/targets/x64musl/${name}"), Path.utf8("${fuzz_dir}/${name}"))?
-		}
 		native_dir = "${root}/platform/targets/x64musl"
 		Path.create_all!(Path.utf8(native_dir))?
 		for name in PlatformTest.native_inputs {

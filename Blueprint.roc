@@ -41,8 +41,8 @@ config = [
 	Systems(["x86_64-linux", "aarch64-linux", "aarch64-darwin"]),
 	# The Roc-owned engine: native and browser spec runs, the platform's
 	# fetched native inputs, and the scripts that drive them. curl, tar, zstd and
-	# sha256sum fetch and verify the roc-fuzz release inputs of
-	# the `platform` task.
+	# sha256sum fetch and verify the native runner's libc inputs of the
+	# `platform` task, from the roc-fuzz release the fuzz targets depend on.
 	#
 	# Chrome is the machine's `google-chrome` for now. Chrome for Testing ships
 	# only zip archives, and blueprint 0.8.0 (and 0.9.0) unpacks a Zip download
@@ -65,8 +65,7 @@ config = [
 	# One or more apps' specs: `blueprint run spec -- --browser kanban-board`.
 	Task("spec", [Use("engine"), Run(["scripts/spec.roc", "--"])]),
 	# Fetch and build the platform's native inputs (the spec runner's host and
-	# libc, the fuzz platform's roc-fuzz host), for building an app's native
-	# spec runner or fuzz target by hand.
+	# libc), for building an app's native spec runner by hand.
 	Task("platform", [Use("engine"), Run(["scripts/build_platform.roc"])]),
 	# Build the js-framework-benchmark app and check it in Chrome.
 	Task("jfb", [Use("engine"), Run(["scripts/jfb.roc"])]),

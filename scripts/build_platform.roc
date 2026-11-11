@@ -7,7 +7,7 @@ app [main!] {
 import src/Checks
 
 ## Fetch and build the platform's native inputs: the spec runner's `spec.o`
-## and libc, and the fuzz platform's roc-fuzz host (see `src/PlatformTest.roc`).
+## and libc (see `src/PlatformTest.roc`).
 main! = |_args| {
 	o = Checks.options!({ filter: "*" })?
 	Checks.prepare_platform!(o)
