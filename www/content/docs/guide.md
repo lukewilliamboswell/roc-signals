@@ -26,8 +26,8 @@ the platform does not depend on any CSS framework.
 
 ## Where to start
 
-- **[Getting Started](@/docs/getting-started.md)** sets up the tools, builds a
-  counter, tests it and runs it in a browser.
+- **[Getting Started](@/docs/getting-started.md)** creates a counter with
+  `signals.roc`, runs it in a browser, tests it and builds it for deployment.
 - **[Thinking in Signals](@/docs/thinking-in-signals.md)** explains the model:
   sites, values, layers and turns. Read it before the topic guides.
 - **[Tutorial](@/docs/tutorial.md)** builds a todo list with a keyed list, a

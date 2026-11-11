@@ -35,6 +35,7 @@ walks through writing, testing and running a first app.
 | Path | Contents |
 |---|---|
 | `platform/` | The engine (`Core.roc`), its authoring API (`Engine.roc`), the `Html` vocabulary, typed worker tasks (`Worker.roc`, `Wire.roc`), ports (`Port.roc`, `PortJson.roc`), the Wasm host, the browser runtime and its worker script, the native spec runner, and the fuzz platform |
+| `cli/` | `signals.roc`, the tool app authors use to create, serve, build and test an app; each release bundles it |
 | `examples/` | Example apps, each with its specs |
 | `tests/`, `fuzz/` | Browser contract tests, the Chrome spec replay, fuzz targets of the shared support |
 | `www/` | The documentation site |

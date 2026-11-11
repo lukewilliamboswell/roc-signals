@@ -374,11 +374,17 @@ The project's tasks run the registered apps' specs:
 | `blueprint run spec -- --filter 'add*' kanban-board` | Only specs whose file name matches the glob |
 | `blueprint run check` | The pull-request gate: every app's specs in both runners, the documentation samples' specs, and the rest of the suite |
 
-For an app of your own, build its entry point for your system's target and
-pass the runner spec files. The runner builds and behaves alike on Linux
-x86-64 (`x64musl`), macOS on Apple silicon (`arm64mac`) or Intel (`x64mac`),
-and Windows x86-64 (`x64win`, where the runner is `build/app-specs.exe`); a
-spec means the same on each, and in Chrome:
+For an app of your own, `roc signals.roc test` in the app's directory
+builds its native spec runner for the system it runs on and runs every spec
+in `specs/`, printing one line per spec and, for a failure, the step that
+did not hold with its file, line and column (see
+[Getting Started](@/docs/getting-started.md#test-it)). It exits with 1 when
+any spec fails, so CI can run it as it is. The runner builds and behaves
+alike on Linux x86-64 (`x64musl`), macOS on Apple silicon (`arm64mac`) or
+Intel (`x64mac`), and Windows x86-64 (`x64win`, where the runner is
+`build/app-specs.exe`); a spec means the same on each, and in Chrome. By
+hand, build the entry point for your system's target and pass the runner
+spec files:
 
 - `roc build --target=x64musl main.roc --output=build/app-specs`
 - `build/app-specs specs/*.scm` runs them and prints one JSON result line

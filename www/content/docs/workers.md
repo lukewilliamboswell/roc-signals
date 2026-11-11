@@ -640,8 +640,12 @@ returns add code too, usually far less than the task itself.
 ## Serving the app
 
 The runtime starts its workers from `worker.mjs`, which it loads from beside
-`runtime.mjs`. Copy both from `platform/` and serve them together, from the
-same origin as the page:
+`runtime.mjs`, so the two are served together, from the same origin as the
+page. `roc signals.roc serve` does this, and `roc signals.roc build` puts
+both beside the app's module in `dist/` (see
+[Getting Started](@/docs/getting-started.md#build-it-for-deployment)).
+Serving the files yourself, copy both from the release, or from `platform/`
+in a checkout:
 
 ```sh
 cp platform/runtime.mjs platform/worker.mjs my-site/
