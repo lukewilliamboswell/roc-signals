@@ -113,15 +113,15 @@ expect {
 		\\		field : Str,
 		\\	}
 		\\
-		\\	Val(a) := { read : a }.{
-		\\		map : Val(a) -> Val(a)
+		\\	Signal(a) := { read : a }.{
+		\\		map : Signal(a) -> Signal(a)
 		\\		map = |v| v
 		\\	}
 		\\}
 		\\
 		\\private : Str
 		\\private = ""
-	ApiDocs.undocumented("Html", source) == ["span : Str -> Elem(ctx)", "Val(a) := { read : a }.{", "map : Val(a) -> Val(a)"]
+	ApiDocs.undocumented("Html", source) == ["span : Str -> Elem(ctx)", "Signal(a) := { read : a }.{", "map : Signal(a) -> Signal(a)"]
 }
 
 ## A type written as a record with its methods after it is scanned from the

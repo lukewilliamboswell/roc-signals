@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, Val]
+import pf.Engine exposing [Elem, Signal]
 import pf.Html
 import pf.Worker
 import Charts
@@ -28,7 +28,7 @@ ExplorerApp := [].{
 
 	view : Explorer.Setup -> Elem(Engine.StoreRoot(_))
 	view = |setup| {
-		cells = Explorer.h
+		cells = Explorer.cells
 		Html.div(
 			"app-shell",
 			[
@@ -43,7 +43,7 @@ ExplorerApp := [].{
 				ExplorerApp.controls(setup.size),
 				Worker.gather(
 					Explorer.summary,
-					cells.asked.val().map(|asked| Explorer.questions(setup.size, asked)),
+					cells.asked.signal().map(|asked| Explorer.questions(setup.size, asked)),
 					|gathered| Engine.derive(Explorer.answering(setup.size).map2(gathered, Explorer.board), ExplorerApp.results),
 				),
 				Html.section(
@@ -62,12 +62,12 @@ ExplorerApp := [].{
 						Waiting => [Timer(Explorer.sample_ms)]
 						Asked => []
 					},
-					Engine.react_by(cells.shown.val(), |shown, _, _| Explorer.sampled(shown)),
+					Engine.react_by(cells.shown.signal(), |shown, _, _| Explorer.sampled(shown)),
 				),
 				# The live feed, for as long as it is on and at the pace
 				# chosen: a new pace or pausing stops the old subscription.
-				Engine.latest(
-					{ flow: cells.flow.val(), rate: cells.rate.val() }.Val,
+				Engine.watch_latest(
+					{ flow: cells.flow.signal(), rate: cells.rate.signal() }.Signal,
 					|{ flow, rate }| match flow {
 						Live => [Feed.orders.subscribe({ per_second: rate })]
 						Paused => []
@@ -83,8 +83,8 @@ ExplorerApp := [].{
 	controls : U64 -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	controls = |size| {
-		cells = Explorer.h
-		shown = cells.shown.val()
+		cells = Explorer.cells
+		shown = cells.shown.signal()
 		Html.section(
 			"Question",
 			"panel grid gap-3 p-4",
@@ -116,7 +116,7 @@ ExplorerApp := [].{
 				Html.div(
 					"toolbar",
 					[
-						Html.p_v(shown.map(Explorer.range_text), [Engine.class("field-label numeric"), Engine.test_id("range")]),
+						Html.p_s(shown.map(Explorer.range_text), [Engine.class("field-label numeric"), Engine.test_id("range")]),
 						ExplorerApp.slider("Lowest value", shown.map(|filter| filter.lowest), Lowest),
 						ExplorerApp.slider("Highest value", shown.map(|filter| filter.highest), Highest),
 					],
@@ -128,21 +128,21 @@ ExplorerApp := [].{
 							"label",
 							[Engine.class("flex items-center gap-1 text-sm")],
 							[
-								Html.checkbox(Engine.const("Live orders"), cells.flow.val().map(|flow| flow == Live), [], Engine.handle(Explorer.switched)),
+								Html.checkbox(Engine.const("Live orders"), cells.flow.signal().map(|flow| flow == Live), [], Engine.handle(Explorer.switched)),
 								Engine.text("Live orders"),
 							],
 						),
 						Html.select(
 							Engine.const("Live orders a second"),
-							cells.rate.val().map(|rate| rate.to_str()),
+							cells.rate.signal().map(|rate| rate.to_str()),
 							[Engine.class("input")],
 							Explorer.rates.map(|rate| Html.option(rate.to_str(), "${Explorer.grouped(rate.to_u64())} a second")),
 							Engine.handle(Explorer.paced),
 						),
-						Html.p_v({ flow: cells.flow.val(), rate: cells.rate.val(), live: cells.live.val() }.Val.map(Explorer.live_text), [Engine.class("hint"), Engine.test_id("live")]),
+						Html.p_s({ flow: cells.flow.signal(), rate: cells.rate.signal(), live: cells.live.signal() }.Signal.map(Explorer.live_text), [Engine.class("hint"), Engine.test_id("live")]),
 					],
 				),
-				Html.p_v(cells.note.val(), [Engine.class("hint"), Engine.test_id("note")]),
+				Html.p_s(cells.note.signal(), [Engine.class("hint"), Engine.test_id("note")]),
 			],
 		)
 	}
@@ -150,7 +150,7 @@ ExplorerApp := [].{
 	## A range slider over the value bins, showing `bin`. It asks on every
 	## `input`, so a drag asks as it goes, and on `change`, which is what a
 	## keyboard or a spec sends.
-	slider : Str, Val(ctx, U64), Explorer.End -> Elem(ctx)
+	slider : Str, Signal(ctx, U64), Explorer.End -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	slider = |name, bin, which| {
 		moved = Engine.handle(|text| Explorer.slid(which, text))
@@ -165,11 +165,11 @@ ExplorerApp := [].{
 
 	## What the question found: the headline figures, each shard's state,
 	## and the four charts.
-	results : Val(ctx, Explorer.Board) -> Elem(ctx)
+	results : Signal(ctx, Explorer.Board) -> Elem(ctx)
 	results = |b| Html.div(
 		"grid gap-3",
 		[
-			Html.p_v(b.map(|board| board.status), [Engine.class("hint"), Engine.test_id("status")]),
+			Html.p_s(b.map(|board| board.status), [Engine.class("hint"), Engine.test_id("status")]),
 			Html.div(
 				"stat-grid",
 				[
@@ -185,7 +185,7 @@ ExplorerApp := [].{
 						"stat",
 						[
 							Html.p("Shard ${(i + 1).to_str()}", "stat-label"),
-							Html.p_v(b.map(|board| board.shards.get(i) ?? ""), [Engine.class("stat-value numeric"), Engine.test_id("shard-${(i + 1).to_str()}")]),
+							Html.p_s(b.map(|board| board.shards.get(i) ?? ""), [Engine.class("stat-value numeric"), Engine.test_id("shard-${(i + 1).to_str()}")]),
 						],
 					),
 				),
@@ -202,22 +202,22 @@ ExplorerApp := [].{
 		],
 	)
 
-	stat : Val(ctx, Explorer.Board), Str, Str, ({ orders : Str, revenue : Str, average : Str } -> Str) -> Elem(ctx)
+	stat : Signal(ctx, Explorer.Board), Str, Str, ({ orders : Str, revenue : Str, average : Str } -> Str) -> Elem(ctx)
 	stat = |b, label, id, pick| Html.div(
 		"stat",
 		[
 			Html.p(label, "stat-label"),
-			Html.p_v(b.map(|board| pick(Explorer.headline(board.summary))), [Engine.class("stat-value numeric"), Engine.test_id(id)]),
+			Html.p_s(b.map(|board| pick(Explorer.headline(board.summary))), [Engine.class("stat-value numeric"), Engine.test_id(id)]),
 		],
 	)
 
 	## A chart: a `plume-chart` element whose figure follows the board. Its
 	## figure is rewritten only when it differs, so the live feed redraws
 	## only the charts its orders change.
-	chart : Val(ctx, Explorer.Board), Str, (Explorer.Board -> Str) -> Elem(ctx)
+	chart : Signal(ctx, Explorer.Board), Str, (Explorer.Board -> Str) -> Elem(ctx)
 	chart = |b, label, draw| Engine.element(
 		"plume-chart",
-		[Engine.class("block panel"), Engine.attr("style", "height: 300px"), Engine.attr("role", "img"), Html.aria_label(label), Engine.attr_v("data-figure", b.map(draw))],
+		[Engine.class("box-content block panel"), Engine.attr("style", "height: 300px"), Engine.attr("role", "img"), Html.aria_label(label), Engine.attr_s("data-figure", b.map(draw))],
 		[],
 	)
 

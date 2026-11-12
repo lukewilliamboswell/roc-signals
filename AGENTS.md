@@ -3,7 +3,7 @@
 ## Follow the architectural authority
 
 - Read `design.md` completely before proposing or changing public APIs, site
-  semantics, state (the store, its tables and their views), identity, scopes,
+  semantics, state (the store, its tables and their table views), identity, scopes,
   propagation, effects, rendering, the host boundary, the wire protocol, the
   spec language, or lifecycle behavior.
 - Treat `design.md` as the authoritative target architecture. The implementation
@@ -44,9 +44,9 @@
   set of layers and cells it wrote, and a table's operations record the rows
   they touched. Do not add a site, a cache or a check on an update path that
   keeps the previous value of a state, a cell or a table to compare against.
-  A table's record of changes is this rule at the grain of rows, not a
-  second reactive mechanism: it says only which rows a turn wrote, its views
-  are reached by the ordinary `Changed` pass, and it lives one turn, cleared
+  A table's changes are this rule at the grain of rows, not a
+  second reactive mechanism: they say only which rows a turn wrote, its table views
+  are reached by the ordinary `Changed` pass, and they live one turn, cleared
   by the root when that pass has run.
 - Dependencies are declared by read signatures on values, the layers and the
   store cells a value reads, built before anything runs. Preserve glitch-free
@@ -58,26 +58,26 @@
   Do not settle two writes of one event in passes of their own: in either
   order some reader sees one new value beside one old one. Preserve
   equality pruning at holes, rows of a list, `derive`, branch selection, a
-  view's query and window, and effect sites; states, cells and tables do
+  table view's query and window, and effect sites; states, cells and tables do
   not prune on write.
-- A turn changes the rows a view draws once. Its site brings the table, the
+- A turn changes the drawn rows of a table view once. Its site brings the table, the
   query and the window up to date and then applies one comparison of the
   rows drawn before with the window after. Do not apply them as separate
   changes of the rows: a row the turn keeps would be disposed and created
   again, and a row the turn never shows would be created, with its state and
   its requests.
 - A DOM event, an effect result and a follow-up enter through the same turn:
-  route, fire, settle, Changed pass, end of turn (the records of the tables
+  route, fire, settle, Changed pass, end of turn (the changes of the tables
   written are cleared, then focus). Do not create a side channel that
   bypasses routing, pruning, scope ownership, the in-flight table or the
   counters.
 - Keep one way to write shared state. A write to a store cell is a value
-  (`put`, `change`); a handler or a reaction over cells is a decision, one
+  (`set`, `update`); a handler or a reaction over cells is a decision, one
   pure function from a reading to a list of writes; and the turn's write set
   is taken from that list. Do not give a handler a static write mask, add a
   per-cell handler or reaction vocabulary beside decisions, or let a decision
   do anything but return its writes. `State` reducers write local state and
-  a view's rows, and `also` composes a local write and a decision into one
+  a table view's rows, and `also` composes a local write and a decision into one
   event.
 - A cell's getter and modifier are generated from its place in the store's
   description, never written. Do not add an API that takes a getter and a
@@ -85,8 +85,8 @@
   through one then leaves a reader of the other stale with nothing in the
   types to catch it.
 - Treat construction-site identity within a scope, exact keys within an
-  `each` site and typed keys within a table and its views as semantic
-  contracts. A view finds its rows by the table's key through the key's own
+  `each` site and typed keys within a table and its table views as semantic
+  contracts. A table view finds its rows by the table's key through the key's own
   equality and hash, never through a text made from it. Do not derive
   identity from content, DOM position, a value's inspected text, or engine
   ids exposed to applications. Duplicate keys are contract errors, not
@@ -97,7 +97,7 @@
   `design.md` specifies. The store is not a scope: a cell lives as long as
   the instance and starts again only by a write.
 - A component is a type module: a type, its pure operations, and a view that
-  is handed the cells it uses and is generic over the store and its scope.
+  is handed the cells it uses and is generic over the store and its context.
   Only a module that composes components imports the store. Do not give a
   component a context of its own, a fixed environment or a channel upward:
   what it must tell the rest of the app is a write to a cell it was handed,
@@ -106,8 +106,8 @@
   algorithms. Event routing, row lookup, refresh and disposal may not hide a
   scan of the whole tree, every site, a whole table or the DOM on a path
   advertised as O(changed). State honestly where an operation is linear, as
-  `each` reconciliation is in its list, a view's rebuild in its table, and a
-  move in the rows a view draws.
+  `each` reconciliation is in its list, a table view's rebuild in its table, and a
+  move in the drawn rows of a table view.
 - Keep rendering a consequence of propagation. The browser runtime applies an
   already-decided command stream and performs requested effects; it must not
   reconstruct reactive meaning, diff application state, or decide anything that
@@ -119,7 +119,7 @@
   closure references a site's storage, the root site alone holds the store,
   and environments move through handlers rather than being shared. No second
   reference is kept for convenience or for comparison; the one earlier state
-  the design allows is a table's record, one earlier row for each row a turn
+  the design allows is a table's changes, one earlier row for each row a turn
   wrote, dropped when the turn ends. A change that makes a column, a state, a
   cell or a table copy on every update is a regression even when output is
   correct, and per-event allocation counts and the soak's flat round trips
@@ -172,7 +172,7 @@
   failure, and a subscription declares how its undelivered messages wait and
   what happens beyond that.
 - Decide meaning in Roc and limits at mount. What an app means by a request
-  (a job's deadline, a call's timeout, how much a read accepts) is decided in
+  (a job's timeout, a call's timeout, how much a read accepts) is decided in
   its Roc code and carried on the request; what a deployment allows is a
   `max…` mount option that caps whatever a request asks for. Do not move an
   app's meaning into a mount option, or a deployment's limit into app code.
@@ -191,7 +191,7 @@
 
 - Put scheduling, reconciliation, identity, effect lifecycle and containment
   policy in `platform/Core.roc` and the platform's Roc modules; a table, its
-  views and their ordered keys are `Table.roc`, `View.roc` and `Seq.roc`. The
+  table views and their ordered keys are `Table.roc`, `View.roc` and `Seq.roc`. The
   host,
   `runtime.mjs` and `worker.mjs` adapt the engine to the browser; they do not
   implement its semantics. The native spec runner drives the same engine; it
@@ -213,14 +213,14 @@
   job. Both spec runners run a job's task, and serve its hosted effects
   from the same files, so a spec means the same in each.
 - Keep the platform's JavaScript generic. `runtime.mjs` and `worker.mjs`
-  contain nothing specific to an app, an example or the site. JavaScript that
+  contain nothing specific to an app, an example or the website. JavaScript that
   mounts an app or integrates it with a page lives with that app, example or
-  site, and reaches the runtime only through `mountRocEngineApp` and its
+  website, and reaches the runtime only through `mountRocEngineApp` and its
   options. That includes port handlers: the JavaScript an app's ports need is
   written with the app and passed at mount. It also includes an example's
   simulated service: the backend an example talks to is that example's own
   JavaScript, kept in its directory and named in `www/data/examples.toml`,
-  and the site and the tests load that one file rather than knowing the
+  and the website and the tests load that one file rather than knowing the
   example or keeping a copy. JavaScript several examples load lives in
   `examples/shared/`, never in the platform. The script the `signals.roc`
   tool's development server adds to a page (reload on a rebuild, an overlay
@@ -272,22 +272,22 @@
   duplicate those detailed rules here. It is shared across Roc projects, so
   this repository keeps no style document of its own.
 - Follow `www/content/docs/contributing.md` for current setup, tasks, test
-  commands, bundles, site builds, releases and spec mechanics. Commands and tool
+  commands, bundles, website builds, releases and spec mechanics. Commands and tool
   versions belong there and in `Blueprint.roc`, because they change
   independently of these principles. Automation is Roc scripts under
   `scripts/`, invoked through Blueprint tasks.
 - Test invariants and failure paths, not only successful output. Every
   reader of a layer or a cell a turn wrote is refreshed in that turn, and
-  every view of a table equals one built from scratch: the native spec
+  every table view equals one built from scratch: the native spec
   runner, its walks and every fuzz target that drives the engine check
   both after each step (`Core.settled`), and a change to propagation, to a
-  table or to a view must keep that check meaningful. Cover
+  table or to a table view must keep that check meaningful. Cover
   ordering, two writes of one event met together by a reader of both (in
   both directions: a `derive` of the outer write, and of the inner one),
   equality cutoffs, identity reuse, scope disposal, reparenting,
   a decision's write set and its same-cell rule, a reset, keyed writes and
-  whole rewrites of a table, changes of a view's query and window, an event
-  that writes several of a view's table, query and window,
+  whole rewrites of a table, changes of a table view's query and window, an event
+  that writes several of a table view's table, query and window,
   refusal at the in-flight bound, stale results, cancellation and
   supersession, lost and timed-out work, a task's own failure, eviction and
   the loss of a worker holding state, a builder kept past its call,
@@ -318,7 +318,7 @@
   so a platform test can drive it, and no public API exists only for one.
 - Reach for fuzzing where the bug class is a *sequence* rather than a case:
   reconciliation order, identity reuse across disposal, effect lifetime across
-  disposal and reparenting, a view kept from a long history of keyed writes,
+  disposal and reparenting, a table view kept from a long history of keyed writes,
   rewrites and window changes, allocation balance over a long history. Targets are
   generators that decode arbitrary bytes into a valid program and check it
   against a reference model, so their oracles, not their inputs, carry the
@@ -337,6 +337,15 @@
   them into an unrequested rewrite.
 
 ## Keep documentation truthful and durable
+
+- Use one vocabulary throughout the public API and maintained prose. A signal
+  declares its reads; a view is UI, and a table's is a table view. A row is
+  table data and a drawn row is its scope on the page. A table keeps a turn's
+  changes; a record is Roc data or a wire record. Cells are cells; handles
+  name browser objects. A context is a type and a scope is a lifetime. Use
+  turn, not transaction; result for any request outcome and answer for one
+  the other side produced. Keep layer and a site's storage as engine terms;
+  user guides say signal, and storage there means the browser's.
 
 - Keep public behavior consistent across `platform/`, maintained docs under
   `www/content/docs/`, examples, and specs. Documentation examples are part of

@@ -5,7 +5,7 @@
 ## `Port.roc` is the typed layer for services the page's JavaScript supplies,
 ## whose messages `PortJson.roc` derives. `Table.roc` is what a table cell
 ## of an app's store holds, rows by key, and `View.roc` and `Seq.roc` keep
-## the filtered, sorted view of it that `Engine.each_view` draws;
+## the filtered, sorted view of it that `Engine.table_view` draws;
 ## `EngineOnly.roc` is the value that keeps a table's bookkeeping the
 ## engine's. A worker
 ## job's hosted effects (`Hosted.roc`) are reached only through `Effects.roc`, which this root
@@ -90,7 +90,7 @@ import Wire
 import Worker
 
 ## One host call's result: the state (owned by the host until the next call),
-## this transaction's command bytes and the instance's work record (both owned
+## this turn's command bytes and the instance's work record (both owned
 ## by the host, lent to JS, and passed back into the next call for reuse).
 Step : { cmds : List(U8), state : Handle, work : List(U8) }
 
@@ -145,7 +145,7 @@ init_for_host = |boot| {
 }
 
 ## Route a DOM event (node id, handler number, payload bytes) through one
-## transaction, reusing the previous call's command and work buffers.
+## turn, reusing the previous call's command and work buffers.
 event_for_host : Handle, List(U8), List(U8), U32, U32, List(U8) -> Step
 event_for_host = |boxed, buf, wbuf, node, handler, payload| {
 	(next, cmds, work) = (Core.driver(main).event)(release(boxed), buf, wbuf, node, handler, payload)

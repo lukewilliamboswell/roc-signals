@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, Row, RowRef, Val]
+import pf.Engine exposing [Elem, Row, RowRef, Signal]
 import pf.Html
 import Charts
 import Latency
@@ -63,8 +63,8 @@ StatusApp := [].{
 	## requests.
 	poll : Str, (Try(Str, Engine.HttpError) -> List(Engine.Write(_))) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	poll = |url, answered| Engine.latest(
-		StatusStore.h.serial.val(),
+	poll = |url, answered| Engine.watch_latest(
+		StatusStore.cells.serial.signal(),
 		|_| [Http({ method: "GET", url, headers: [], body: "", timeout_ms: 0 })],
 		Engine.react(|_serial, res| answered(Engine.http_text(res))),
 	)
@@ -72,17 +72,17 @@ StatusApp := [].{
 	## One component row: name on the left, uptime and a state badge on the
 	## right. Its holes read only its own check, so a neighbour degrading
 	## changes nothing here.
-	service_card : { id : Str, name : Str, detail : Str }, Val(ctx, Status.Check) -> Elem(ctx)
+	service_card : { id : Str, name : Str, detail : Str }, Signal(ctx, Status.Check) -> Elem(ctx)
 	service_card = |{ id, name, detail }, check| Html.section(
 		name,
 		StatusApp.service_row_class,
 		[
-			Html.div("grid min-w-0 gap-0.5", [Html.p(name, "card-title"), Html.p_v(check.map(|c| Status.check_detail(detail, c)), [Engine.class("hint")])]),
+			Html.div("grid min-w-0 gap-0.5", [Html.p(name, "card-title"), Html.p_s(check.map(|c| Status.check_detail(detail, c)), [Engine.class("hint")])]),
 			Html.div(
 				"flex items-center gap-3",
 				[
-					Html.p_v(check.map(Status.uptime_text), [Engine.class("numeric hint"), Engine.test_id("service-${id}-uptime"), Html.aria_label("${name} uptime")]),
-					Html.p_v(check.map(|c| Status.health_text(c.health)), [Engine.class_v(check.map(|c| Status.health_badge_class(c.health))), Engine.test_id("service-${id}-status"), Html.aria_label("${name} status")]),
+					Html.p_s(check.map(Status.uptime_text), [Engine.class("numeric hint"), Engine.test_id("service-${id}-uptime"), Html.aria_label("${name} uptime")]),
+					Html.p_s(check.map(|c| Status.health_text(c.health)), [Engine.class_s(check.map(|c| Status.health_badge_class(c.health))), Engine.test_id("service-${id}-status"), Html.aria_label("${name} status")]),
 				],
 			),
 		],
@@ -91,12 +91,12 @@ StatusApp := [].{
 	render_update : RowRef(ctx, Status.Update) -> Elem(Row(ctx, Status.Update))
 	render_update = |row| {
 		key = row.key()
-		Html.section_v(
+		Html.section_s(
 			key,
 			"flex gap-3 border-l-2 border-zinc-200 pl-3",
 			[
-				Html.p_v(row.field(|u| u.time), [Engine.class("numeric hint w-12 shrink-0")]),
-				Html.p_v(row.field(|u| u.body), [Engine.class("min-w-0 text-sm text-zinc-700"), Engine.test_id_v(key.map(|k| "update-${k}"))]),
+				Html.p_s(row.field(|u| u.time), [Engine.class("numeric hint w-12 shrink-0")]),
+				Html.p_s(row.field(|u| u.body), [Engine.class("min-w-0 text-sm text-zinc-700"), Engine.test_id_s(key.map(|k| "update-${k}"))]),
 			],
 		)
 	}
@@ -105,24 +105,24 @@ StatusApp := [].{
 	render_incident = |row| {
 		key = row.key()
 		severity = row.field(|i| i.severity)
-		Html.section_v(
+		Html.section_s(
 			key.map(|k| "Incident ${k}"),
 			StatusApp.incident_card_class,
 			[
 				Html.div(
 					"flex flex-wrap items-baseline justify-between gap-2",
 					[
-						Html.p_v(row.field(|i| i.title), [Engine.class("card-title min-w-0"), Engine.test_id_v(key.map(|k| "incident-${k}-title"))]),
-						Html.p_v(severity.map(Status.Severity.label), [Engine.class_v(severity.map(Status.severity_badge_class)), Engine.test_id_v(key.map(|k| "incident-${k}-severity")), Html.aria_label("Severity")]),
+						Html.p_s(row.field(|i| i.title), [Engine.class("card-title min-w-0"), Engine.test_id_s(key.map(|k| "incident-${k}-title"))]),
+						Html.p_s(severity.map(Status.Severity.label), [Engine.class_s(severity.map(Status.severity_badge_class)), Engine.test_id_s(key.map(|k| "incident-${k}-severity")), Html.aria_label("Severity")]),
 					],
 				),
-				Html.p_v(row.field(|i| i.latest), [Engine.class("muted"), Engine.test_id_v(key.map(|k| "incident-${k}-latest"))]),
+				Html.p_s(row.field(|i| i.latest), [Engine.class("muted"), Engine.test_id_s(key.map(|k| "incident-${k}-latest"))]),
 				Engine.each(row.field(|i| i.updates), |u| u.key, StatusApp.render_update),
 			],
 		)
 	}
 
-	incidents_panel : Val(ctx, Status.Feed) -> Elem(ctx)
+	incidents_panel : Signal(ctx, Status.Feed) -> Elem(ctx)
 	incidents_panel = |feed| {
 		items = feed.map(|f| f.items)
 		Html.section(
@@ -133,7 +133,7 @@ StatusApp := [].{
 					"flex flex-wrap items-baseline justify-between gap-2",
 					[
 						Html.h2("Incident history", "panel-title"),
-						Html.p_v(feed.map(|f| f.status), [Engine.class("hint"), Engine.test_id("incident-feed-status")]),
+						Html.p_s(feed.map(|f| f.status), [Engine.class("hint"), Engine.test_id("incident-feed-status")]),
 					],
 				),
 				Html.div("stat-grid", [Parts.metric("open-incident-count", "Open incidents", items.map(|l| l.len().to_str()))]),
@@ -148,11 +148,11 @@ StatusApp := [].{
 
 	## The page, under the rollup of the four checks. Everything else it
 	## draws it reads from the store's cells where it draws it.
-	page : Val(ctx, Status.Tally) -> Elem(ctx)
+	page : Signal(ctx, Status.Tally) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	page = |totals| {
-		cells = StatusStore.h
-		visible = cells.visible.val()
+		cells = StatusStore.cells
+		visible = cells.visible.signal()
 		Html.div(
 			StatusApp.page_class,
 			[
@@ -166,11 +166,11 @@ StatusApp := [].{
 				),
 				# The banner is the whole point of a status page: one
 				# unmistakable line, in the tone the rollup earned.
-				Html.div_v(
+				Html.div_s(
 					totals.map(Status.banner_class),
 					[
-						Html.p_v(totals.map(Status.rollup_text), [Engine.class("text-lg font-semibold"), Engine.test_id("overall-rollup")]),
-						Html.p_v(totals.map(Status.reporting_text), [Engine.class("text-sm")]),
+						Html.p_s(totals.map(Status.rollup_text), [Engine.class("text-lg font-semibold"), Engine.test_id("overall-rollup")]),
+						Html.p_s(totals.map(Status.reporting_text), [Engine.class("text-sm")]),
 					],
 				),
 				Html.section(
@@ -194,8 +194,8 @@ StatusApp := [].{
 								Html.div(
 									"grid gap-0.5",
 									[
-										Html.p_v(visible.map(StatusApp.visibility_text), [Engine.class("hint"), Engine.test_id("refresh-mode")]),
-										Html.p_v(cells.requests.val().map(StatusApp.refresh_count_text), [Engine.class("hint numeric"), Engine.test_id("refresh-count")]),
+										Html.p_s(visible.map(StatusApp.visibility_text), [Engine.class("hint"), Engine.test_id("refresh-mode")]),
+										Html.p_s(cells.requests.signal().map(StatusApp.refresh_count_text), [Engine.class("hint numeric"), Engine.test_id("refresh-count")]),
 									],
 								),
 								Html.button("Refresh now", [Engine.class("button-primary")], Engine.does(StatusStore.requested)),
@@ -208,19 +208,19 @@ StatusApp := [].{
 					Parts.panel_class,
 					[
 						Html.h2("Components", "panel-title"),
-						StatusApp.service_card({ id: "api", name: "API", detail: "api.acme.cloud — REST and GraphQL" }, cells.checks.api.val()),
-						StatusApp.service_card({ id: "web", name: "Web app", detail: "app.acme.cloud — dashboard and console" }, cells.checks.web.val()),
-						StatusApp.service_card({ id: "database", name: "Database", detail: "Primary Postgres cluster, eu-west-1" }, cells.checks.database.val()),
-						StatusApp.service_card({ id: "notifications", name: "Notifications", detail: "Email, SMS and outbound webhooks" }, cells.checks.notifications.val()),
+						StatusApp.service_card({ id: "api", name: "API", detail: "api.acme.cloud — REST and GraphQL" }, cells.checks.api.signal()),
+						StatusApp.service_card({ id: "web", name: "Web app", detail: "app.acme.cloud — dashboard and console" }, cells.checks.web.signal()),
+						StatusApp.service_card({ id: "database", name: "Database", detail: "Primary Postgres cluster, eu-west-1" }, cells.checks.database.signal()),
+						StatusApp.service_card({ id: "notifications", name: "Notifications", detail: "Email, SMS and outbound webhooks" }, cells.checks.notifications.signal()),
 						Html.h3("Uptime over the last ${Status.history_limit.to_str()} checks", "panel-title"),
 						Engine.derive(
-							cells.history.val(),
-							|history| Engine.element("plume-chart", [Engine.class("block"), Engine.attr("role", "img"), Html.aria_label("Uptime history by service"), Engine.test_id("uptime-chart"), Engine.attr_v("data-figure", history.map(Charts.uptime_history))], []),
+							cells.history.signal(),
+							|history| Engine.element("plume-chart", [Engine.class("block"), Engine.attr("role", "img"), Html.aria_label("Uptime history by service"), Engine.test_id("uptime-chart"), Engine.attr_s("data-figure", history.map(Charts.uptime_history))], []),
 						),
 					],
 				),
 				Live.view({ visible: cells.visible }),
-				StatusApp.incidents_panel(cells.feed.val()),
+				StatusApp.incidents_panel(cells.feed.signal()),
 				# Polling lives inside the visible branch, so hiding the page
 				# disposes the interval. Already-admitted checks finish.
 				Engine.when(
@@ -232,7 +232,7 @@ StatusApp := [].{
 				StatusApp.poll("/api/status/web", |answer| StatusStore.answered(Web, Status.check_of(answer))),
 				StatusApp.poll("/api/status/database", |answer| StatusStore.answered(Database, Status.check_of(answer))),
 				StatusApp.poll("/api/status/notifications", |answer| StatusStore.answered(Notifications, Status.check_of(answer))),
-				StatusApp.poll("/api/status/incidents", |answer| [cells.feed.put(Status.feed_of(answer))]),
+				StatusApp.poll("/api/status/incidents", |answer| [cells.feed.set(Status.feed_of(answer))]),
 				Engine.watch(
 					Engine.const({}),
 					|_| [VisibilityChanges],

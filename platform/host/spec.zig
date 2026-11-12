@@ -338,7 +338,7 @@ fn hostedNowNs() callconv(.c) u64 {
 // Worker jobs in child processes.
 
 /// How long a job may run before the runner gives up on it. A spec's time is
-/// manual, so a job's own deadline never ends it; this bound only turns a
+/// manual, so a job's own timeout never ends it; this bound only turns a
 /// job that never finishes into a failed step instead of a hung runner.
 /// The browser runner applies the same bound.
 const job_bound_ms: u32 = 30_000;

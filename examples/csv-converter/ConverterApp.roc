@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, File, Val]
+import pf.Engine exposing [Elem, File, Signal]
 import pf.Files
 import pf.Html
 import pf.Worker
@@ -147,30 +147,56 @@ ConverterApp := [].{
 	## The page.
 	view : {} -> Elem(Engine.StoreRoot(_))
 	view = |{}| {
-		source = AppStore.h.source.val()
+		source = AppStore.cells.source.signal()
 		Html.div(
-			"converter",
+			"converter app-shell app-shell-narrow",
 			[
-				chooser({}),
-				Html.select(
-					Engine.const("Format"),
-					AppStore.h.format.val().map(AppStore.option_of),
-					[],
-					[Html.option("tsv", "TSV"), Html.option("jsonl", "JSON lines")],
-					Engine.handle(AppStore.format_picked),
+				Html.section(
+					"CSV Converter",
+					"app-header",
+					[
+						Html.h1("CSV Converter", "app-title"),
+						Html.p("Convert a CSV to TSV or JSON lines. Your file stays in this browser. The first row supplies the column names.", "app-subtitle"),
+					],
 				),
-				Html.p_v(
-					source.map(
-						|s| match s.file {
-							Chosen(f) => "${f.name()}, ${ConverterApp.size_text(f.size())}"
-							Nothing => "no file"
-						},
-					),
-					[Engine.test_id("source")],
+				chooser({}),
+				Html.section(
+					"Conversion settings",
+					"panel grid gap-4 p-4 sm:grid-cols-2",
+					[
+						Html.div(
+							"field",
+							[
+								Html.label_for("Format", "converter-format", [Engine.class("field-label")]),
+								Html.select(
+									Engine.const("Format"),
+									AppStore.cells.format.signal().map(AppStore.option_of),
+									[Engine.class("input"), Engine.attr("id", "converter-format")],
+									[Html.option("tsv", "TSV"), Html.option("jsonl", "JSON lines")],
+									Engine.handle(AppStore.format_picked),
+								),
+							],
+						),
+						Html.div(
+							"field content-start",
+							[
+								Html.p("Selected file", "field-label"),
+								Html.p_s(
+									source.map(
+										|s| match s.file {
+											Chosen(f) => "${f.name()}, ${ConverterApp.size_text(f.size())}"
+											Nothing => "no file"
+										},
+									),
+									[Engine.class("muted break-all"), Engine.test_id("source")],
+								),
+							],
+						),
+					],
 				),
 				result({}),
 				# The sample, downloaded into a file.
-				Engine.latest(
+				Engine.watch_latest(
 					source.map(|s| s.sample),
 					|sample| match sample {
 						Loading => [File.fetch({ url: "sample.csv" })]
@@ -178,7 +204,7 @@ ConverterApp := [].{
 					},
 					Engine.react(|_, res| AppStore.sample_arrived(Engine.fetched(res))),
 				),
-				Html.p_v(source.map(|s| s.note), [Engine.test_id("note")]),
+				Html.p_s(source.map(|s| s.note), [Engine.class("muted"), Engine.test_id("note")]),
 			],
 		)
 	}
@@ -196,24 +222,33 @@ chooser : {} -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 chooser = |{}| Engine.element(
 	"section",
-	[Html.aria_label("Drop a CSV file"), Html.on_drop_files(Engine.handle_files(AppStore.chosen))],
+	[Engine.class("panel grid gap-4 border-dashed p-5"), Html.aria_label("Drop a CSV file"), Html.on_drop_files(Engine.handle_files(AppStore.chosen))],
 	[
-		Html.file_input(Engine.const("CSV file"), { accept: Types(".csv,text/csv") }, Engine.handle_files(AppStore.chosen)),
-		Html.button("Load the sample", [], Engine.does(AppStore.sample_asked)),
+		Html.h2("Choose a CSV", "card-title"),
+		Html.p("Drop a CSV file here, choose one from your device, or load the sample.", "muted"),
+		Engine.element(
+			"label",
+			[Engine.class("field")],
+			[
+				Engine.element("span", [Engine.class("field-label")], [Engine.text("CSV file")]),
+				Html.file_input(Engine.const("CSV file"), { accept: Types(".csv,text/csv") }, Engine.handle_files(AppStore.chosen)),
+			],
+		),
+		Html.div("toolbar", [Html.button("Load the sample", [Engine.class("button")], Engine.does(AppStore.sample_asked))]),
 	],
 )
 
 ## A preview of a converted file: its first 4 KiB, read back on the
 ## page. The lines are this panel's own state, kept until the next
 ## read answers.
-preview : Val(ctx, Try(File, [NoAnswer])) -> Elem(ctx)
+preview : Signal(ctx, Try(File, [NoAnswer])) -> Elem(ctx)
 preview = |output| Engine.state(
 	"",
 	|lines| Engine.element(
 		"section",
-		[],
+		[Engine.class("grid min-w-0 gap-3")],
 		[
-			Engine.latest(
+			Engine.watch_latest(
 				output.lift(),
 				|converted| match converted {
 					Ok(out) => [out.slice({ start: 0, len: out.size().min(4096) }).read_bytes({})]
@@ -226,7 +261,9 @@ preview = |output| Engine.state(
 					},
 				),
 			),
-			Html.pre_v(lines.val(), [Engine.test_id("preview")]),
+			Html.h2("Preview", "card-title"),
+			Html.p("The first six lines of the converted file, up to 4 KiB.", "muted"),
+			Html.pre_s(lines.signal(), [Engine.class("min-h-20 min-w-0 max-w-full overflow-auto bg-zinc-950 p-4 font-mono text-xs leading-6 text-zinc-50"), Engine.test_id("preview")]),
 		],
 	),
 )
@@ -240,21 +277,22 @@ preview = |output| Engine.state(
 ## that saves what is posted beside it.
 result : {} -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
-result = |{}| Worker.derive_when(
+result = |{}| Worker.resource_when(
 	ConverterApp.convert,
-	AppStore.h.source.val().map2(AppStore.h.format.val(), ConverterApp.wanted),
+	AppStore.cells.source.signal().map2(AppStore.cells.format.signal(), ConverterApp.wanted),
 	|answer| Engine.state(
 		Engine.outbox({}),
 		|save| {
 			remote = answer.lift()
 			Engine.element(
 				"section",
-				[Html.aria_label("Result")],
+				[Engine.class("panel grid min-w-0 gap-4 p-4"), Html.aria_label("Result")],
 				[
-					Html.p_v(remote.map(ConverterApp.status), [Engine.test_id("status")]),
+					Html.h2("Converted file", "card-title"),
+					Html.p_s(remote.map(ConverterApp.status), [Engine.class("notice notice-info break-words"), Engine.test_id("status")]),
 					Html.button(
 						"Save",
-						[],
+						[Engine.class("button-primary justify-self-start")],
 						save.update_by(
 							remote,
 							|box, latest| match latest.answered() {
@@ -265,7 +303,7 @@ result = |{}| Worker.derive_when(
 					),
 					preview(remote.map(|latest| latest.answered().map_ok(|c| c.output))),
 					# Saving, in the turn of the click that asked for it.
-					Engine.on_post(save.val(), |out| [File.save(out, {})], Engine.ignore({})),
+					Engine.on_post(save.signal(), |out| [File.save(out, {})], Engine.ignore({})),
 				],
 			)
 		},

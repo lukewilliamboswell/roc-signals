@@ -18,7 +18,7 @@ import Notes
 ## shares and how it changes are read, and tested, without the markup.
 ##
 ## The module's one tag, `FieldNotes`, is the store's name. Nothing spells
-## the store's storage type: an annotation that mentions it says `_`.
+## the store's contents type: an annotation that mentions it says `_`.
 AppStore := [FieldNotes].{
 
 	## The store: its name, and its cells with their starting values: an
@@ -32,17 +32,17 @@ AppStore := [FieldNotes].{
 		}.Engine.Cells,
 	)
 
-	## The handles on the store's cells.
-	h = AppStore.store.handles()
+	## The store's cells.
+	cells = AppStore.store.cells()
 
 	## The store a session starts with: the notes kept in local storage on
 	## a board that knows whether the browser is online.
 	start : Engine.Boot -> Engine.Store(_, _)
-	start = |boot| AppStore.store.with_initial(AppStore.h.board, Notes.initial(Notes.stored_notes(boot.storage), boot.online))
+	start = |boot| AppStore.store.with_initial(AppStore.cells.board, Notes.initial(Notes.stored_notes(boot.storage), boot.online))
 
 	## The reader types in the new note's box.
 	drafted : Str -> List(Engine.Write(_))
-	drafted = |text| [AppStore.h.draft.put(text)]
+	drafted = |text| [AppStore.cells.draft.set(text)]
 
 	## The reader saves `draft`: it joins the board as a note and the box
 	## is cleared, in one transition. A blank draft writes nothing.
@@ -51,62 +51,62 @@ AppStore := [FieldNotes].{
 		if Notes.draft_body(draft) == "" {
 			[]
 		} else {
-			[AppStore.h.board.change(|board| Notes.save_note(board, draft)), AppStore.h.draft.put("")]
+			[AppStore.cells.board.update(|board| Notes.save_note(board, draft)), AppStore.cells.draft.set("")]
 		}
 
 	## The reader edits the body of the note `id`, which queues it again
 	## if it had synced.
 	edited : { id : Str, text : Str } -> List(Engine.Write(_))
-	edited = |{ id, text }| [AppStore.h.board.change(|board| Notes.edit_note(board, id, Notes.sanitize(text)))]
+	edited = |{ id, text }| [AppStore.cells.board.update(|board| Notes.edit_note(board, id, Notes.sanitize(text)))]
 
 	## The reader queues the note `id` for the outbox.
 	queued : Str -> List(Engine.Write(_))
-	queued = |id| [AppStore.h.board.change(|board| Notes.queue_note(board, id))]
+	queued = |id| [AppStore.cells.board.update(|board| Notes.queue_note(board, id))]
 
 	## The reader sends a failed note again.
 	retried : Str -> List(Engine.Write(_))
-	retried = |id| [AppStore.h.board.change(|board| Notes.retry_note(board, id))]
+	retried = |id| [AppStore.cells.board.update(|board| Notes.retry_note(board, id))]
 
 	## The reader moves the note `id` to the front, so it drains first.
 	promoted : Str -> List(Engine.Write(_))
-	promoted = |id| [AppStore.h.board.change(|board| Notes.promote_note(board, id))]
+	promoted = |id| [AppStore.cells.board.update(|board| Notes.promote_note(board, id))]
 
 	## The reader deletes the note `id`.
 	deleted : Str -> List(Engine.Write(_))
-	deleted = |id| [AppStore.h.board.change(|board| Notes.delete_note(board, id))]
+	deleted = |id| [AppStore.cells.board.update(|board| Notes.delete_note(board, id))]
 
 	## The reader pauses or resumes automatic sync.
 	auto_set : Bool -> List(Engine.Write(_))
-	auto_set = |auto| [AppStore.h.board.change(|board| Notes.set_auto(board, auto))]
+	auto_set = |auto| [AppStore.cells.board.update(|board| Notes.set_auto(board, auto))]
 
 	## The browser went offline or came back.
 	connected : Bool -> List(Engine.Write(_))
-	connected = |online| [AppStore.h.board.change(|board| Notes.set_online(board, online))]
+	connected = |online| [AppStore.cells.board.update(|board| Notes.set_online(board, online))]
 
 	## The sync service answered lane `slot`'s send, issued at `issue`:
 	## `accepted` when it echoed the token it was sent.
 	answered : { slot : U64, issue : Notes.Issue, accepted : Bool } -> List(Engine.Write(_))
-	answered = |{ slot, issue, accepted }| [AppStore.h.board.change(|board| Notes.settle_send(board, slot, issue, accepted))]
+	answered = |{ slot, issue, accepted }| [AppStore.cells.board.update(|board| Notes.settle_send(board, slot, issue, accepted))]
 
 	## The reader shows or hides the notes that have synced.
 	synced_hidden : Bool -> List(Engine.Write(_))
-	synced_hidden = |hide| [AppStore.h.hide_synced.put(hide)]
+	synced_hidden = |hide| [AppStore.cells.hide_synced.set(hide)]
 }
 
 ## A board with one queued note in lane 0 and a draft in lane 1, online.
 stored : Engine.Store(_, _)
 stored = AppStore.store.with_initial(
-	AppStore.h.board,
+	AppStore.cells.board,
 	Notes.initial([{ id: "n0", slot: 0, body: "Generator hours", queued: True, rev: "r7" }, { id: "n1", slot: 1, body: "Fence line check", queued: False, rev: "r7" }], True),
 )
 
 ## The ids of a store's notes, in drain order.
 ids : Engine.Store(_, _) -> List(Str)
-ids = |at| at.read(AppStore.h.board).notes.map(|note| note.id)
+ids = |at| at.read(AppStore.cells.board).notes.map(|note| note.id)
 
 ## The status of the note `id` in a store.
 status : Engine.Store(_, _), Str -> Str
-status = |at, id| match Notes.board_rows(at.read(AppStore.h.board)).find_first(|row| row.id == id) {
+status = |at, id| match Notes.board_rows(at.read(AppStore.cells.board)).find_first(|row| row.id == id) {
 	Ok(row) => Notes.status_title(row.status)
 	Err(_) => "no such note"
 }
@@ -115,12 +115,12 @@ status = |at, id| match Notes.board_rows(at.read(AppStore.h.board)).find_first(|
 ## a blank draft writes neither cell.
 expect {
 	typed = stored.after(AppStore.drafted(" Pump | pressure "))
-	saved = typed.after(AppStore.saved(typed.read(AppStore.h.draft)))
+	saved = typed.after(AppStore.saved(typed.read(AppStore.cells.draft)))
 	blank = stored.after(AppStore.drafted("  ;  "))
-	unsaved = blank.after(AppStore.saved(blank.read(AppStore.h.draft)))
+	unsaved = blank.after(AppStore.saved(blank.read(AppStore.cells.draft)))
 	actual =
-		\\saved: ${Str.inspect(ids(saved))} "${saved.read(AppStore.h.draft)}" ${status(saved, "s1")}
-		\\blank: ${Str.inspect(ids(unsaved))} "${unsaved.read(AppStore.h.draft)}"
+		\\saved: ${Str.inspect(ids(saved))} "${saved.read(AppStore.cells.draft)}" ${status(saved, "s1")}
+		\\blank: ${Str.inspect(ids(unsaved))} "${unsaved.read(AppStore.cells.draft)}"
 	expected =
 		\\saved: ["n0", "n1", "s1"] "" Draft
 		\\blank: ["n0", "n1"] "  ;  "
@@ -130,13 +130,13 @@ expect {
 ## A sync that echoes its token settles its note, and an edit of the
 ## synced note queues it again under a new revision.
 expect {
-	issue = Notes.issue_at(stored.read(AppStore.h.board), 0)
+	issue = Notes.issue_at(stored.read(AppStore.cells.board), 0)
 	synced = stored.after(AppStore.answered({ slot: 0, issue, accepted: True }))
 	edited = synced.after(AppStore.edited({ id: "n0", text: "Generator | hours 128" }))
 	actual =
 		\\at mount: ${status(stored, "n0")}
 		\\answered: ${status(synced, "n0")}
-		\\edited: ${status(edited, "n0")} ${Str.inspect(Notes.issue_at(edited.read(AppStore.h.board), 0))}
+		\\edited: ${status(edited, "n0")} ${Str.inspect(Notes.issue_at(edited.read(AppStore.cells.board), 0))}
 	expected =
 		\\at mount: Syncing
 		\\answered: Synced
@@ -147,7 +147,7 @@ expect {
 ## Going offline stops the lanes, and the answer to a send from before
 ## settles nothing once the connection has returned.
 expect {
-	first = Notes.issue_at(stored.read(AppStore.h.board), 0)
+	first = Notes.issue_at(stored.read(AppStore.cells.board), 0)
 	offline = stored.after(AppStore.connected(False))
 	back = offline.after(AppStore.connected(True))
 	late = back.after(AppStore.answered({ slot: 0, issue: first, accepted: True }))
@@ -188,12 +188,12 @@ expect {
 ## A failed sync can be retried, which sends the note again under a new
 ## revision.
 expect {
-	issue = Notes.issue_at(stored.read(AppStore.h.board), 0)
+	issue = Notes.issue_at(stored.read(AppStore.cells.board), 0)
 	failed = stored.after(AppStore.answered({ slot: 0, issue, accepted: False }))
 	retried = failed.after(AppStore.retried("n0"))
 	actual =
 		\\answered: ${status(failed, "n0")}
-		\\retried: ${status(retried, "n0")} ${Str.inspect(Notes.issue_at(retried.read(AppStore.h.board), 0).request)}
+		\\retried: ${status(retried, "n0")} ${Str.inspect(Notes.issue_at(retried.read(AppStore.cells.board), 0).request)}
 	expected =
 		\\answered: Failed
 		\\retried: Syncing Send("n0#n0:1")
@@ -203,5 +203,5 @@ expect {
 ## Hiding the synced notes writes the filter and leaves the board alone.
 expect {
 	hidden = stored.after(AppStore.synced_hidden(True))
-	(hidden.read(AppStore.h.hide_synced), hidden.read(AppStore.h.board) == stored.read(AppStore.h.board)) == (True, True)
+	(hidden.read(AppStore.cells.hide_synced), hidden.read(AppStore.cells.board) == stored.read(AppStore.cells.board)) == (True, True)
 }

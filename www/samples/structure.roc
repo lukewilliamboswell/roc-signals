@@ -1,6 +1,6 @@
 app [main] { pf: platform "../../platform/main.roc" }
 
-import pf.Engine exposing [Elem, In, Root, Row, RowRef, State, Val]
+import pf.Engine exposing [Elem, In, Root, Row, RowRef, Signal, State]
 import pf.Html
 
 main : Engine.Program
@@ -23,7 +23,7 @@ initial = { tab: Inbox, messages: [{ id: "m1", subject: "Welcome", starred: Fals
 # region when
 ## `when` builds only the selected branch, and rebuilds it when the
 ## condition flips. State inside the departing branch is disposed.
-empty_note : Val(Ctx, List(Message)) -> Elem(Ctx)
+empty_note : Signal(Ctx, List(Message)) -> Elem(Ctx)
 empty_note = |messages|
 	Engine.when(
 		messages.map(|l| l.is_empty()),
@@ -39,7 +39,7 @@ empty_note = |messages|
 tabs : State(Ctx, Model) -> Elem(Ctx)
 tabs = |model|
 	Engine.switch(
-		model.val().map(|m| m.tab),
+		model.signal().map(|m| m.tab),
 		[Inbox, Archive],
 		|tab|
 			match tab {
@@ -55,8 +55,8 @@ tabs = |model|
 ## state when the list is reordered; a duplicate key is a contract error.
 inbox : State(Ctx, Model) -> Elem(Ctx)
 inbox = |model| {
-	messages = model.val().map(|m| m.messages)
-	selected = Engine.keyed(model.val().map(|m| m.selected), "selected", "")
+	messages = model.signal().map(|m| m.messages)
+	selected = Engine.keyed(model.signal().map(|m| m.selected), "selected", "")
 	Html.ul(
 		[],
 		[
@@ -77,14 +77,14 @@ Line : Row(Ctx, Message)
 ## The template runs once for the whole list. `row.field` reads the current
 ## row's item; `row.select` is "selected" for exactly one row, so changing the
 ## selection re-evaluates two rows, not all of them.
-message_row : State(Ctx, Model), RowRef(Ctx, Message), Val(Line, Str) -> Elem(Line)
+message_row : State(Ctx, Model), RowRef(Ctx, Message), Signal(Line, Str) -> Elem(Line)
 message_row = |model0, row, is_selected| {
 	model = model0.lift_row()
 	id = row.key()
 	Html.li(
-		[Engine.class_v(is_selected)],
+		[Engine.class_s(is_selected)],
 		[
-			Html.button_v(row.field(|m| m.subject), [], model.update_by(id, |m, k| { ..m, selected: k })),
+			Html.button_s(row.field(|m| m.subject), [], model.update_by(id, |m, k| { ..m, selected: k })),
 			Html.checkbox(row.field(|m| "Star ${m.subject}"), row.field(|m| m.starred), [], model.set_value_by(id, star)),
 		],
 	)
@@ -107,8 +107,8 @@ expandable = |row|
 			Html.div(
 				"message",
 				[
-					Html.button_v(open.val().map(|o| if (o) "Hide" else "Show"), [], open.update(|o| !o)),
-					Engine.when(open.val(), || Html.p_v(subject, []), || Engine.text("")),
+					Html.button_s(open.signal().map(|o| if (o) "Hide" else "Show"), [], open.update(|o| !o)),
+					Engine.when(open.signal(), || Html.p_s(subject, []), || Engine.text("")),
 				],
 			)
 		},
@@ -126,7 +126,7 @@ stars = |rating|
 	Html.div(
 		"stars",
 		[
-			Html.button_v(rating.val().map(|n| "${n.to_str()} of 5"), [], rating.update(|_| 5)),
+			Html.button_s(rating.signal().map(|n| "${n.to_str()} of 5"), [], rating.update(|_| 5)),
 			Html.button("Clear", [], rating.update(|_| 0)),
 		],
 	)
@@ -140,7 +140,7 @@ page = |model|
 		[
 			tabs(model),
 			inbox(model),
-			empty_note(model.val().map(|m| m.messages)),
+			empty_note(model.signal().map(|m| m.messages)),
 			Engine.state(3, stars),
 		],
 	)

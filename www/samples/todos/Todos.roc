@@ -1,5 +1,5 @@
 # region imports
-import pf.Engine exposing [Elem, State, Val]
+import pf.Engine exposing [Elem, Signal, State]
 import pf.Html
 import pf.Table
 # endregion imports
@@ -7,7 +7,9 @@ import pf.Table
 ## The tutorial's to-do list: a table of to-dos and two cells in the app's
 ## store, one decision for adding, a view of the table, and a storage
 ## effect.
+# region module
 Todos := [TodoList].{
+	# endregion module
 	# region store
 	Todo : { title : Str, status : [Open, Done] }
 
@@ -23,8 +25,8 @@ Todos := [TodoList].{
 		}.Engine.Cells,
 	)
 
-	## The handles on the store's cells.
-	h = Todos.store.handles()
+	## The store's cells.
+	cells = Todos.store.cells()
 	# endregion store
 
 	# region add
@@ -34,14 +36,14 @@ Todos := [TodoList].{
 
 	## The form's reading: three cells read together, and mapped to the
 	## three small things the decision needs.
-	adding : {} -> Val(ctx, Adding)
+	adding : {} -> Signal(ctx, Adding)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	adding = |{}|
 		{
-			draft: Todos.h.draft.val(),
-			table: Todos.h.todos.val(),
-			next: Todos.h.next.val(),
-		}.Val.map(|{ draft, table, next }| { title: draft.trim(), listed: Todos.presence(table, draft.trim()), next })
+			draft: Todos.cells.draft.signal(),
+			table: Todos.cells.todos.signal(),
+			next: Todos.cells.next.signal(),
+		}.Signal.map(|{ draft, table, next }| { title: draft.trim(), listed: Todos.presence(table, draft.trim()), next })
 
 	## Whether `table` has a to-do called `title`.
 	presence : Table(U64, Todo), Str -> [Listed, Unlisted]
@@ -56,9 +58,9 @@ Todos := [TodoList].{
 			[]
 		} else {
 			[
-				Todos.h.todos.change(|table| table.insert(next, { title, status: Open })),
-				Todos.h.next.put(next + 1),
-				Todos.h.draft.put(""),
+				Todos.cells.todos.update(|table| table.insert(next, { title, status: Open })),
+				Todos.cells.next.set(next + 1),
+				Todos.cells.draft.set(""),
 			]
 		}
 	# endregion add
@@ -70,7 +72,7 @@ Todos := [TodoList].{
 	## How a choice of `Showing` selects and orders rows: the rows it
 	## keeps, in the order they were added, which is the order of their
 	## keys.
-	plan : Showing -> Engine.Query(U64, Todo, U64)
+	plan : Showing -> Engine.QueryPlan(U64, Todo, U64)
 	plan = |showing| {
 		keep: |_, todo| match showing {
 			All => True
@@ -100,9 +102,9 @@ Todos := [TodoList].{
 					Html.ul(
 						[],
 						[
-							Engine.each_view(
-								Todos.h.todos,
-								{ query: showing.val(), plan: Todos.plan, window: Engine.const(Engine.every_row) },
+							Engine.table_view(
+								Todos.cells.todos,
+								{ query: showing.signal(), plan: Todos.plan, window: Engine.const(Engine.every_row) },
 								|key, todo| Todos.row(key, todo),
 							),
 						],
@@ -116,25 +118,25 @@ Todos := [TodoList].{
 	## One row. `todo` is a `State` of this row of the table: the checkbox
 	## reads and writes this to-do and no other. Removing a row changes the
 	## table itself, so it is a decision over the table's cell.
-	row : Val(r, U64), State(r, Todo) -> Elem(r)
+	row : Signal(r, U64), State(r, Todo) -> Elem(r)
 		where [r.store : () -> Engine.Reach(r, _)]
 	row = |key, todo| {
-		title = todo.val().map(|held| held.title)
+		title = todo.signal().map(|held| held.title)
 		Html.li(
 			[],
 			[
 				Html.checkbox(
 					title.map(|text| "Done: ${text}"),
-					todo.val().map(|held| held.status == Done),
+					todo.signal().map(|held| held.status == Done),
 					[],
 					todo.set_value(|held, checked| { ..held, status: if (checked == "true") Done else Open }),
 				),
-				Engine.text_v(title),
+				Engine.text_s(title),
 				Html.icon_button(
 					"x",
 					title.map(|text| "Remove ${text}"),
 					"remove",
-					Engine.handle_by(key, |id, _| [Todos.h.todos.change(|table| table.remove(id))]),
+					Engine.handle_by(key, |id, _| [Todos.cells.todos.update(|table| table.remove(id))]),
 				),
 			],
 		)
@@ -146,7 +148,7 @@ Todos := [TodoList].{
 	## the count of open to-dos, and the effect that saves the list.
 	view : {} -> Elem(Engine.StoreRoot(_))
 	view = |{}| {
-		todos = Todos.h.todos.val()
+		todos = Todos.cells.todos.signal()
 		Html.div(
 			"todos",
 			[
@@ -154,15 +156,15 @@ Todos := [TodoList].{
 					"New todo",
 					[Html.on_submit(Engine.handle_by(Todos.adding({}), |at, _| Todos.added(at)))],
 					[
-						Html.text_input(Engine.const("Title"), "text", Todos.h.draft.val(), [], Engine.handle(|typed| [Todos.h.draft.put(typed)])),
+						Html.text_input(Engine.const("Title"), "text", Todos.cells.draft.signal(), [], Engine.handle(|typed| [Todos.cells.draft.set(typed)])),
 						Html.submit_button("Add", []),
 					],
 				),
 				Todos.list({}),
 				Engine.when(todos.map(|table| table.len() == 0), || Html.p("Nothing to do.", "empty"), || Engine.text("")),
-				Html.span_v(todos.map(Todos.remaining), [Engine.test_id("remaining")]),
+				Html.span_s(todos.map(Todos.remaining), [Engine.test_id("remaining")]),
 				# region persist
-				Engine.on_change(todos.map(Todos.encode), |text| [StorageSet("todos", text)], Engine.ignore({})),
+				Engine.watch_changes(todos.map(Todos.encode), |text| [StorageSet("todos", text)], Engine.ignore({})),
 				# endregion persist
 			],
 		)
@@ -208,8 +210,8 @@ Todos := [TodoList].{
 		saved = Todos.decode(Engine.boot_storage(boot, "todos") ?? "")
 		rows = saved.map_with_index(|todo, index| { key: index, row: todo })
 		Todos.store
-			.with_initial(Todos.h.todos, Table.from_list(rows))
-			.with_initial(Todos.h.next, saved.len())
+			.with_initial(Todos.cells.todos, Table.from_list(rows))
+			.with_initial(Todos.cells.next, saved.len())
 	}
 
 	program : Engine.Program
@@ -232,13 +234,13 @@ by_key = |a, b|
 ## A new title is added under the next key, and the next key and the draft
 ## move on with it.
 expect {
-	typed = Todos.store.after([Todos.h.draft.put("Buy milk")])
+	typed = Todos.store.after([Todos.cells.draft.set("Buy milk")])
 	after = typed.after(Todos.added({ title: "Buy milk", listed: Unlisted, next: 0 }))
 
 	actual =
-		\\row 0: ${Str.inspect(after.read(Todos.h.todos).get(0))}
-		\\next: ${after.read(Todos.h.next).to_str()}
-		\\draft: "${after.read(Todos.h.draft)}"
+		\\row 0: ${Str.inspect(after.read(Todos.cells.todos).get(0))}
+		\\next: ${after.read(Todos.cells.next).to_str()}
+		\\draft: "${after.read(Todos.cells.draft)}"
 	expected =
 		\\row 0: Ok({ status: Open, title: "Buy milk" })
 		\\next: 1

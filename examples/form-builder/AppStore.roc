@@ -35,17 +35,17 @@ AppStore := [FormBuilder].{
 		}.Engine.Cells,
 	)
 
-	## The handles on the store's cells.
-	h = AppStore.store.handles()
+	## The store's cells.
+	cells = AppStore.store.cells()
 }
 
 ## The store's fields after `writes`, as their numbers in the form's order.
 order_after : List(Engine.Write(_)) -> List(U64)
-order_after = |writes| Form.ordered(AppStore.store.after(writes).read(AppStore.h.schema.fields).to_list())
+order_after = |writes| Form.ordered(AppStore.store.after(writes).read(AppStore.cells.schema.fields).to_list())
 
 ## Adding a field writes it last under the next number, and the number after it as the next one.
 expect {
-	schema = AppStore.h.schema
+	schema = AppStore.cells.schema
 	after = AppStore.store.after(Schema.added(schema, { kind: Form.number_kind, number: 3 }))
 	label = after.read(schema.fields).get(3).map_ok(|field| field.label)
 	actual =
@@ -61,7 +61,7 @@ expect {
 
 ## A move exchanges two fields, a move past either end writes nothing, and the two moves of one event apply in order.
 expect {
-	fields = AppStore.h.schema.fields
+	fields = AppStore.cells.schema.fields
 	up = Schema.moved(fields, { key: 2, toward: Earlier })
 	actual =
 		\\up: ${Str.inspect(order_after(up))}
@@ -78,20 +78,20 @@ expect {
 
 ## Deleting a field removes its row and leaves the next number alone, so the number is never given again.
 expect {
-	schema = AppStore.h.schema
+	schema = AppStore.cells.schema
 	after = AppStore.store.after(Schema.deleted(schema.fields, 1))
 	(Form.ordered(after.read(schema.fields).to_list()), after.read(schema.next)) == ([2], 3)
 }
 
 ## An answer is written under its field's number, and clearing the answers leaves the fields as they were.
 expect {
-	answers = AppStore.h.answers
+	answers = AppStore.cells.answers
 	typed = AppStore.store.after(Preview.answered_text(answers, { key: 1, text: "Ada" }).concat(Preview.answered_flag(answers, { key: 2, flag: True })))
 	cleared = typed.after(Preview.cleared(answers))
 	actual =
 		\\typed: ${Str.inspect(Form.answer_of(typed.read(answers), 1))}, ${Str.inspect(Form.answer_of(typed.read(answers), 2))}
 		\\cleared: ${Str.inspect(Form.answer_of(cleared.read(answers), 1))}
-		\\fields: ${cleared.read(AppStore.h.schema.fields).len().to_str()}
+		\\fields: ${cleared.read(AppStore.cells.schema.fields).len().to_str()}
 	expected =
 		\\typed: { flag: False, text: "Ada" }, { flag: True, text: "" }
 		\\cleared: { flag: False, text: "" }
@@ -101,7 +101,7 @@ expect {
 
 ## Submitting counts a form that can be submitted, and writes nothing for one that cannot.
 expect {
-	submissions = AppStore.h.submissions
+	submissions = AppStore.cells.submissions
 	ready = AppStore.store.after(Preview.submitted(submissions, { fields: 2, problems: 0 }))
 	writes = [Preview.submitted(submissions, { fields: 2, problems: 1 }).len(), Preview.submitted(submissions, Form.empty_totals).len()]
 	(ready.read(submissions), writes) == (1, [0, 0])

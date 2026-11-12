@@ -141,7 +141,7 @@ decode = |bytes| nodes({ bytes, pos: 0, left: 40 }, 5).0
 
 ## What a node can read and write where it is built. `pure`: writes go to the
 ## root only and resources issue nothing (mode 0).
-G(ctx) : { vals : List(Core.Val(ctx, U64)), wrs : List(Core.State(ctx, U64)), pure : Bool }
+G(ctx) : { vals : List(Core.Signal(ctx, U64)), wrs : List(Core.State(ctx, U64)), pure : Bool }
 
 ## How to build what nests below a layer and inside a row, at a level that
 ## has typed levels below it; at the bottom, a layer's or a row's body is
@@ -166,7 +166,7 @@ upto = |n| {
 pick : List(a), U64, a -> a
 pick = |l, i, fallback| l.get(i % l.len().max(1)) ?? fallback
 
-val_of : G(ctx), U64 -> Core.Val(ctx, U64)
+val_of : G(ctx), U64 -> Core.Signal(ctx, U64)
 val_of = |g, i| pick(g.vals, i, Core.const(0))
 
 ## A button whose click adds 1 to writable `i` (none when nothing is
@@ -178,8 +178,8 @@ bump_button = |g, i|
 		Err(_) => Core.text("-")
 	}
 
-show : Core.Val(ctx, U64) -> Core.Elem(ctx)
-show = |v| Core.text_v(v.map(|n| n.to_str()))
+show : Core.Signal(ctx, U64) -> Core.Elem(ctx)
+show = |v| Core.text_s(v.map(|n| n.to_str()))
 
 flat_list : List(Node), G(ctx), Inner(ctx) -> Core.Elem(ctx)
 flat_list = |ns, g, inner| Core.element("div", [], ns.map(|n| flat(n, g, inner)))
@@ -203,7 +203,7 @@ flat = |n, g, inner| match n {
 			|d| {
 				tied = layer_i.lift().map2(d, |x, twice| "${x.to_str()}~${twice.to_str()}")
 				seen = tied.map2(layer_j.lift(), |both, y| "${pair_mark}${both}~${y.to_str()}")
-				Core.element("p", [], [Core.text_v(seen), Core.watch(seen, |text| [Title(text)], Core.ignore({}))])
+				Core.element("p", [], [Core.text_s(seen), Core.watch(seen, |text| [Title(text)], Core.ignore({}))])
 			},
 		)
 	}
@@ -222,8 +222,8 @@ flat = |n, g, inner| match n {
 					0.U64,
 					|st| {
 						own = if (pure) [] else [Core.element("button", [Core.on_click(st.update(|x| x + 1))], [Core.text("+")])]
-						g2 = { vals: lifted.append(st.val()), wrs: if (pure) lwrs else lwrs.append(st), pure }
-						Core.element("p", [], [show(st.val())].concat(own).append(layer(body, g2)))
+						g2 = { vals: lifted.append(st.signal()), wrs: if (pure) lwrs else lwrs.append(st), pure }
+						Core.element("p", [], [show(st.signal())].concat(own).append(layer(body, g2)))
 					},
 				)
 			} else if k == 1 {
@@ -265,9 +265,9 @@ flat = |n, g, inner| match n {
 		if k % 3 == 0 {
 			Core.watch(v, plan, Core.ignore({}))
 		} else if k % 3 == 1 {
-			Core.on_change(v, plan, Core.ignore({}))
+			Core.watch_changes(v, plan, Core.ignore({}))
 		} else {
-			Core.latest(v, plan, Core.ignore({}))
+			Core.watch_latest(v, plan, Core.ignore({}))
 		}
 	}
 }
@@ -309,7 +309,7 @@ tripled = |input| {
 
 ## A layer that follows a worker job for its input: the output's byte sum,
 ## or a marker for a lost or timed-out job.
-job_cfg : { init : U64, pending : (U64, U64 -> U64), plan : (U64 -> List(Core.Req)), resolve : (U64, U64, Core.Res -> U64) }
+job_cfg : { init : U64, pending : (U64, U64 -> U64), plan : (U64 -> List(Core.Request)), resolve : (U64, U64, Core.Result -> U64) }
 job_cfg = {
 	init: 0,
 	pending: |_, a| a + 3,
@@ -389,9 +389,9 @@ view = |tree, pure, init| Core.state(
 		"main",
 		[],
 		[
-			show(st.val()),
+			show(st.signal()),
 			Core.element("button", [Core.on_click(st.update(|x| x + 1))], [Core.text("+")]),
-			flat_list(tree, { vals: [st.val()], wrs: [st], pure }, Below({ layer: root_l2, row: row_1 })),
+			flat_list(tree, { vals: [st.signal()], wrs: [st], pure }, Below({ layer: root_l2, row: row_1 })),
 		],
 	),
 )

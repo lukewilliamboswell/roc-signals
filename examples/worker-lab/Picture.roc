@@ -10,10 +10,10 @@ import Lab
 ## so composing copies nothing but the header.
 Picture := [].{
 
-	## Draws one strip. A deadline the user picks is the task's, as for
-	## the other workloads, so there is a task per deadline.
+	## Draws one strip. A timeout the user picks is the task's, as for
+	## the other workloads, so there is a task per timeout.
 	strip : [Unlimited, Ms(U32)] -> Worker.Task(Lab.StripSpec, Lab.Drawn, [TooLarge])
-	strip = |deadline| Worker.task({ name: Lab.strip_task, run!: Picture.strip!, deadline })
+	strip = |timeout| Worker.task({ name: Lab.strip_task, run!: Picture.strip!, timeout })
 
 	## The strip's pixels, then its file: a header for its own size and
 	## the pixels, which are its escape counts. Its hash and sum come back

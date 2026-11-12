@@ -27,3 +27,6 @@ platform/targets/
 *.o
 *.wasm
 *.tar.zst
+
+# Escaped sample fragments generated before Zola builds.
+www/highlighted/

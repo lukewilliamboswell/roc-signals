@@ -98,16 +98,16 @@ FileEffectsApp := [].{
 		Answered(text) => text
 	}
 
-	sent : Res -> Str
+	sent : Result -> Str
 	sent = |res| match Engine.http_text(res) {
 		Ok(body) => "sent ${body}"
 		Err(e) => "send failed ${Str.inspect(e)}"
 	}
 
-	Res : Engine.Res
+	Result : Engine.Result
 
 	## A `resource` that reads what `ask` names into the page.
-	reader : Engine.Val(ctx, Ask), (Engine.Val(In(ctx, Shown), Shown) -> Elem(In(ctx, Shown))) -> Elem(ctx)
+	reader : Engine.Signal(ctx, Ask), (Engine.Signal(In(ctx, Shown), Shown) -> Elem(In(ctx, Shown))) -> Elem(ctx)
 	reader = |ask, body| {
 		# Compiler workaround (https://github.com/roc-lang/roc/issues/12978):
 		# the nominal defaulted props are not inferred for an empty record in
@@ -140,7 +140,7 @@ FileEffectsApp := [].{
 
 	## A `resource` that runs `request` on the file `pick` names and shows its
 	## answer with `answer`.
-	operation : Engine.Val(ctx, Pick), (File -> Engine.Req), (Res -> Str), (Engine.Val(In(ctx, Op), Op) -> Elem(In(ctx, Op))) -> Elem(ctx)
+	operation : Engine.Signal(ctx, Pick), (File -> Engine.Request), (Result -> Str), (Engine.Signal(In(ctx, Op), Op) -> Elem(In(ctx, Op))) -> Elem(ctx)
 	operation = |pick, request, answer, body|
 		Engine.resource(
 			pick,
@@ -159,16 +159,16 @@ FileEffectsApp := [].{
 			body,
 		)
 
-	upload : File -> Engine.Req
+	upload : File -> Engine.Request
 	upload = |f| f.upload({ url: "/upload", headers: [("x-name", f.name())] })
 
-	digested : Res -> Str
+	digested : Result -> Str
 	digested = |res| match Engine.file_digest(res) {
 		Ok(bytes) => "sha256 ${FileEffectsApp.hex(bytes)}"
 		Err(e) => "digest failed ${Str.inspect(e)}"
 	}
 
-	shown_url : Res -> Str
+	shown_url : Result -> Str
 	shown_url = |res| match Engine.file_url(res) {
 		Ok(url) => url
 		Err(e) => "failed ${Str.inspect(e)}"
@@ -194,12 +194,12 @@ FileEffectsApp := [].{
 
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"file-effects",
 			[
 				Html.file_input(Engine.const("Upload"), { selection: Multiple }, st.on_files(FileEffectsApp.received)),
-				Html.p_v(v.map(|s| FileEffectsApp.listing(s.files)), [Engine.test_id("files")]),
+				Html.p_s(v.map(|s| FileEffectsApp.listing(s.files)), [Engine.test_id("files")]),
 				Html.button("Clear", [], st.update(|s| { ..s, files: [] })),
 				Html.button("Read text", [], st.update(|s| FileEffectsApp.ask_first(s, |f| Text(f)))),
 				Html.button("Read bytes", [], st.update(|s| FileEffectsApp.ask_first(s, |f| Bytes(f)))),
@@ -207,20 +207,20 @@ FileEffectsApp := [].{
 				Html.button("Read tail", [], st.update(|s| FileEffectsApp.ask_first(s, |f| Bytes(FileEffectsApp.tail_of(f))))),
 				Html.button("Read cut", [], st.update(|s| FileEffectsApp.ask_first(s, |f| Text(f.slice({ start: 1, len: 1 }))))),
 				Html.button("Forget", [], st.update(|s| { ..s, read: Skip })),
-				FileEffectsApp.reader(v.map(|s| s.read), |r| Html.p_v(r.map(FileEffectsApp.show), [Engine.test_id("read")])),
+				FileEffectsApp.reader(v.map(|s| s.read), |r| Html.p_s(r.map(FileEffectsApp.show), [Engine.test_id("read")])),
 				Html.button("Panel", [], st.update(|s| { ..s, panel: !s.panel })),
 				Engine.when(
 					v.map(|s| s.panel),
 					|| Engine.element(
 						"section",
 						[Html.aria_label("panel")],
-						[FileEffectsApp.reader(v.map(|s| FileEffectsApp.first_text(s.files)), |r| Html.p_v(r.map(FileEffectsApp.show), [Engine.test_id("panel-read")]))],
+						[FileEffectsApp.reader(v.map(|s| FileEffectsApp.first_text(s.files)), |r| Html.p_s(r.map(FileEffectsApp.show), [Engine.test_id("panel-read")]))],
 					),
 					|| Engine.text(""),
 				),
 				Html.button("Send", [], st.update(|s| { ..s, send: FileEffectsApp.pick_first(s.files, FileEffectsApp.whole) })),
 				Html.button("Send tail", [], st.update(|s| { ..s, send: FileEffectsApp.pick_first(s.files, FileEffectsApp.tail_of) })),
-				FileEffectsApp.operation(v.map(|s| s.send), FileEffectsApp.upload, FileEffectsApp.sent, |r| Html.p_v(r.map(FileEffectsApp.show_op), [Engine.test_id("sent")])),
+				FileEffectsApp.operation(v.map(|s| s.send), FileEffectsApp.upload, FileEffectsApp.sent, |r| Html.p_s(r.map(FileEffectsApp.show_op), [Engine.test_id("sent")])),
 				Html.button("Send panel", [], st.update(|s| { ..s, send_panel: !s.send_panel })),
 				Engine.when(
 					v.map(|s| s.send_panel),
@@ -240,10 +240,10 @@ FileEffectsApp := [].{
 					),
 					|| Engine.text(""),
 				),
-				Html.p_v(v.map(|s| s.panel_sent), [Engine.test_id("panel-sent")]),
+				Html.p_s(v.map(|s| s.panel_sent), [Engine.test_id("panel-sent")]),
 				Html.button("Digest", [], st.update(|s| { ..s, digest: FileEffectsApp.pick_first(s.files, FileEffectsApp.whole) })),
 				Html.button("Digest tail", [], st.update(|s| { ..s, digest: FileEffectsApp.pick_first(s.files, FileEffectsApp.tail_of) })),
-				FileEffectsApp.operation(v.map(|s| s.digest), |f| f.sha256(), FileEffectsApp.digested, |r| Html.p_v(r.map(FileEffectsApp.show_op), [Engine.test_id("digest")])),
+				FileEffectsApp.operation(v.map(|s| s.digest), |f| f.sha256(), FileEffectsApp.digested, |r| Html.p_s(r.map(FileEffectsApp.show_op), [Engine.test_id("digest")])),
 				Html.button("Show", [], st.update(|s| { ..s, show: FileEffectsApp.pick_first(s.files, FileEffectsApp.whole) })),
 				Html.button("Hide", [], st.update(|s| { ..s, show: Skip })),
 				FileEffectsApp.operation(
@@ -253,8 +253,8 @@ FileEffectsApp := [].{
 					|r| Html.div(
 						"preview",
 						[
-							Html.p_v(r.map(FileEffectsApp.url_state), [Engine.test_id("shown")]),
-							Engine.element("a", [Engine.attr_v("href", r.map(FileEffectsApp.url_of)), Engine.test_id("preview")], [Engine.text("preview")]),
+							Html.p_s(r.map(FileEffectsApp.url_state), [Engine.test_id("shown")]),
+							Engine.element("a", [Engine.attr_s("href", r.map(FileEffectsApp.url_of)), Engine.test_id("preview")], [Engine.text("preview")]),
 						],
 					),
 				),

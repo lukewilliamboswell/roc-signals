@@ -27,13 +27,13 @@ The parts that can change are *sites*. A site is one of:
 - a **conditional** (`Engine.when`, `Engine.switch`), which shows one branch,
   or a **remount** (`Engine.remount_on`), which builds its body again when a
   key changes;
-- a **keyed list** (`Engine.each`), which shows one row per item of a list;
-- a **view of a table** (`Engine.each_view`), which shows a sorted, filtered
+- a **keyed list** (`Engine.each`), which shows one drawn row per item of a list;
+- a **table view** (`Engine.table_view`), which shows a sorted, filtered
   window of a table's rows;
-- an **effect** (`Engine.watch`, `Engine.on_change`, `Engine.on_cleanup`),
+- an **effect** (`Engine.watch`, `Engine.watch_changes`, `Engine.on_cleanup`),
   which asks the outside world to do something.
 
-Between them sit *holes*: text and attributes whose content is a value.
+Between them sit *holes*: text and attributes whose content comes from a signal.
 
 Your view function is not called again after mount. There is no second tree
 to compare with the first: the engine knows, from how the description was
@@ -71,7 +71,7 @@ third belongs to one piece of the view.
 | Place | Use it for | Lives | Written by |
 |---|---|---|---|
 | A **cell** of the store | State more than one part of the app cares about: the session, the current location, a page's loaded data | As long as the app | Decisions: pure functions that return a list of writes |
-| A **table**, a cell that holds rows by key | Rows the user edits, and anything drawn sorted, filtered or long | As long as the app | The table's operations on a key, in a decision or through the row a view hands out |
+| A **table**, a cell that holds rows by key | Rows the user edits, and anything drawn sorted, filtered or long | As long as the app | The table's operations on a key, in a decision or through the row a table view hands out |
 | **Local state** | What one piece of the view cares about: whether a menu is open, the text of a draft | As long as that piece is mounted | Reducers on the state |
 
 - The **store** is described once, at the root of the app. Every part of the
@@ -79,9 +79,9 @@ third belongs to one piece of the view.
   down through the levels between a writer and a reader.
   [Shared State](@/docs/shared-state.md) covers it.
 - A **table** is what a list of records becomes once the user edits its rows.
-  Each write names the row it touches, and a *view* draws the rows a query
+  Each write names the row it touches, and a *table view* draws the rows a query
   keeps, in the query's order, inside a window.
-  [Tables and Views](@/docs/tables-and-views.md) covers both.
+  [Tables and Table Views](@/docs/tables-and-views.md) covers both.
 - **Local state** needs no entry in the store, cannot be reached by code that
   has no business with it, and goes by itself when its piece of the view
   goes. [Local State, Events, and Forms](@/docs/state-and-events.md) covers
@@ -91,26 +91,27 @@ When in doubt, start local. Move a piece of state to the store when a second
 part of the app needs it, or when it must outlive the piece of the view that
 shows it.
 
-## Values declare what they read
+## Signals declare what they read
 
-A `Val(ctx, a)` is a value of type `a` that can change. You get one from a
-local state (`count.val()`), from a cell of the store (`cell.val()`), from a
-row (`row.field(...)`) or from a constant (`Engine.const(...)`), and you
-transform it with `map` and `map2`:
+A *signal* is a read-only value that changes over time. `Signal(ctx, a)` is
+a signal of type `a` in the context `ctx`. You get one from local state
+(`count.signal()`), from a store cell (`cell.signal()`), from a drawn row
+(`row.field(...)`) or from a constant (`Engine.const(...)`), and you build
+new ones with `map` and `map2`:
 
 {{ sample(file="state.roc", region="map2") }}
 
-Three or more values combine with Roc's record builder: a record of values
-followed by `.Engine.Val` is one value of the record, and reads what each
+Three or more signals combine with Roc's record builder: a record of signals
+followed by `.Engine.Signal` is one signal of the record, and reads what each
 field reads. The [Tutorial](@/docs/tutorial.md#adding-a-to-do-one-decision)
 reads three cells that way.
 
-A value carries the set of states and cells it reads. The engine never runs
-your code to find out what it depends on: it knows from how the value was
-built. When something is written, the engine re-evaluates exactly the holes
-and sites whose values read it.
+A signal carries the set of states and cells it reads, fixed by how it was
+built. The engine never runs your code to discover its dependencies. When
+something is written, the engine re-evaluates exactly the holes and sites whose
+signals read it.
 
-That knowledge is conservative. A value built from `map2(a, b, ...)` reads both
+That knowledge is conservative. A signal built from `map2(a, b, ...)` reads both
 `a` and `b`, even if your function only looks at `b` when `a` is true. The cost
 is an extra evaluation, never a wrong answer.
 
@@ -143,7 +144,7 @@ the engine runs one *turn*:
 2. It runs the handler. A reducer is applied to the state's current value. A
    decision returns its writes, and they are applied to the store in order.
 3. It refreshes every hole and site that reads something the event wrote,
-   from the outside in, and visits nothing else. A view of a table looks at
+   from the outside in, and visits nothing else. A table view looks at
    the rows that were written, not at the table.
 4. It returns one batch of DOM commands, which the runtime applies.
 
@@ -153,10 +154,11 @@ the same way: it is one turn, running the reaction you gave the request.
 
 ## Contexts
 
-Every value, handler and element is typed by the context it lives in. The top
+A *context* is a type: what a place in the tree can read. Every signal,
+handler and element is typed by its context. The top
 of an app is `Root`, or `StoreRoot(_)` for an app with a store. A local state
-of type `s` introduces the context `In(outer, s)`, and a row of a list or of
-a view introduces `Row(outer, item)`.
+of type `s` introduces the context `In(outer, s)`, and a drawn row of a list or of
+a table view introduces `Row(outer, item)`.
 
 {{ sample(file="state.roc", region="contexts") }}
 
@@ -172,16 +174,15 @@ asking only that the context reaches a store:
 
 ## Scopes
 
-A conditional's branch, a remounted body and a row of a list or of a view are
-*scopes*. Everything mounted inside one — its local state, its rows, its
-timers and subscriptions — lives exactly as long as the scope. When a branch
-switches or a row leaves, the engine removes its DOM nodes, releases its
-state and cancels its subscriptions, timers and worker jobs. Requests already
-in flight that may have an effect worth keeping, such as HTTP requests,
-storage reads and the jobs of a task that says so, are not lost: their
-results go to the nearest surviving scope.
-[Conditionals and Lists](@/docs/dynamic-structure.md) covers identity and
-lifetime in detail.
+A conditional's branch, a remounted body and a drawn row of a list or of a table
+view are *scopes*: lifetimes that end together. Everything mounted inside one —
+its local state, its rows, its timers and subscriptions — lives exactly as long
+as the scope. When a branch switches or a row leaves, the engine removes its DOM
+nodes, releases its state and cancels its subscriptions, timers and worker jobs.
+Requests already in flight that may have an effect worth keeping, such as HTTP
+requests, storage reads and the jobs of a task that says so, are not lost: their
+results go to the nearest surviving scope. [Conditionals and
+Lists](@/docs/dynamic-structure.md) covers identity and lifetime in detail.
 
 The store is not a scope. A cell lives as long as the app and starts again
 only when something writes it, so state in the store that should start fresh

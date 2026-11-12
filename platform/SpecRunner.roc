@@ -32,7 +32,7 @@ import JsonOut
 ##   reject answers any). Storage reads answer by themselves, from storage, in
 ##   the turn after the call that issued them.
 ## - A rejected request becomes `Timeout`, or `Network(detail)`.
-## - A spec's time is manual: a worker job's deadline expires only through
+## - A spec's time is manual: a worker job's timeout expires only through
 ##   `time-out-work`, and `lose-work` answers a pending job lost with a fault
 ##   class without running it.
 ## - A navigation to a URL that differs from the current one only in its
@@ -334,13 +334,13 @@ SpecRunner := [].{
 
 	## The pending worker job that is the N-th effect occurrence, for
 	## `lose-work` and `time-out-work`.
-	pending_job : S(state), U64 -> Try({ id : U32, deadline_ms : U32 }, Str)
+	pending_job : S(state), U64 -> Try({ id : U32, timeout_ms : U32 }, Str)
 	pending_job = |s, n| {
 		b = s.browser
 		id = b.issued.get(n - 1) ? |_| "effect occurrence ${n.to_str()} was never issued (${b.issued.len().to_str()} issued)"
 		p = b.pending.find_first(|q| q.id == id) ? |_| "effect occurrence ${n.to_str()} is not pending (cancelled or done)"
 		match p.kind {
-			WorkRequest({ deadline_ms, .. }) => Ok({ id, deadline_ms })
+			WorkRequest({ timeout_ms, .. }) => Ok({ id, timeout_ms })
 			FetchRequest => Err("effect occurrence ${n.to_str()} is a fetch, not a worker job")
 			HttpRequest => Err("effect occurrence ${n.to_str()} is an HTTP request, not a worker job")
 			TimerRequest => Err("effect occurrence ${n.to_str()} is a timer, not a worker job")
@@ -685,7 +685,7 @@ SpecRunner := [].{
 	}
 
 	## Deliver result `payload` to the pending worker job `id` without
-	## running it: a fault class (tag 11) or its deadline (tag 7).
+	## running it: a fault class (tag 11) or its timeout (tag 7).
 	deliver_job : Program(state), S(state), U32, List(U8) -> Try(S(state), Str)
 	deliver_job = |program, s, id, payload| {
 		b = s.browser
@@ -1109,8 +1109,8 @@ SpecRunner := [].{
 			}
 			TimeOutWork(n) => {
 				job = SpecRunner.pending_job(s, n)?
-				if job.deadline_ms == 0 {
-					return Err("worker job ${n.to_str()} has no deadline, so it cannot time out")
+				if job.timeout_ms == 0 {
+					return Err("worker job ${n.to_str()} has no timeout, so it cannot time out")
 				}
 				SpecRunner.deliver_job(program, s, job.id, [7])
 			}
@@ -1260,7 +1260,7 @@ SpecRunner := [].{
 		}
 	}
 
-	## A port reply's payload (result tag 14) carrying `json` and no bytes
+	## A port answer's payload (result tag 14) carrying `json` and no bytes
 	## or files.
 	encode_port_reply : Str -> List(U8)
 	encode_port_reply = |json| SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_str([14], json), 0), 0)
@@ -1689,7 +1689,7 @@ SpecRunner := [].{
 	## the effect node with those handles, as the runtime delivers it. Tag 11
 	## passes through. An empty record is a job that did not finish within
 	## the runner's bound, which fails the step: a spec's time is manual, and
-	## a job's deadline expires only when the spec says so. When the host had
+	## a job's timeout expires only when the spec says so. When the host had
 	## too few slots, the answer is `WorkLost(ResourceLimit)` and the handles
 	## it minted go unused, as the runtime does.
 	deliver_work! : Program(state), S(state), U32, List(U8), (U64 => List(Box(U64))) => Try(S(state), Str)
@@ -1697,7 +1697,7 @@ SpecRunner := [].{
 		b = s.browser
 		rest = { ..s, browser: { ..b, pending: b.pending.keep_if(|q| q.id != id) } }
 		match record {
-			[] => Err("the worker job did not finish within 30 s; a spec expires a job's deadline with time-out-work")
+			[] => Err("the worker job did not finish within 30 s; a spec expires a job's timeout with time-out-work")
 			[10, ..] => {
 				n = (SpecRunner.get_u32(record, 1) ?? 0).to_u64()
 				var $at = 5.U64
@@ -1739,7 +1739,7 @@ SpecRunner := [].{
 		}
 	}
 
-	## Answer a fetch with the staged stub (design.md, "Files"): a reply's
+	## Answer a fetch with the staged stub (design.md, "Files"): an HTTP response's
 	## body becomes a file the page holds, through a handle `mint!` gives,
 	## delivered as result tag 21 with the status and headers; a reject is
 	## `Timeout` or `Network` as for an HTTP request; a body over the
@@ -1870,7 +1870,7 @@ SpecRunner := [].{
 
 	## What a walk answers the app's requests with, gathered from the app's
 	## own specs, so the walk needs nothing written for it: every HTTP
-	## reply and rejection a spec stages (by URL), every port answer (by the
+	## response and rejection a spec stages (by URL), every port answer (by the
 	## port a spec's `expect-port-call` names for that occurrence, else for
 	## any port), every message a spec emits on a port, and every value a
 	## spec types or changes into a control (by its locator).
@@ -2025,7 +2025,7 @@ SpecRunner := [].{
 	}
 
 	## The answer a walk gives an HTTP request (or an upload or a fetch):
-	## by `v`, a 503, a timeout, or a reply the specs give its URL (else
+	## by `v`, a 503, a timeout, or an HTTP response the specs give its URL (else
 	## one they give its path with another query, else a network failure).
 	http_answer : Book, Str, U64 -> Scm.Stub
 	http_answer = |bk, url, v|
@@ -2073,7 +2073,7 @@ SpecRunner := [].{
 					WorkRequest(w) =>
 						if v % 8 == 5 {
 							(LoseWork({ occurrence: n, fault: SpecRunner.faults.get((v / 8) % SpecRunner.faults.len()) ?? Executor }), s)
-						} else if v % 8 == 6 and w.deadline_ms > 0 {
+						} else if v % 8 == 6 and w.timeout_ms > 0 {
 							(TimeOutWork(n), s)
 						} else if v % 8 == 7 {
 							return Ok((s, { what: "leave job ${n.to_str()} (${w.task}) pending", kind: Service }))

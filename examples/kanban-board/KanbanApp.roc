@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, Val]
+import pf.Engine exposing [Elem, Signal]
 import pf.Html
 import AppStore
 import Board
@@ -28,11 +28,11 @@ KanbanApp := [].{
 
 ## What the board is drawn over: the cells of this app's store that `Board`
 ## reads and writes.
-board = { cards: AppStore.h.cards, filter: AppStore.h.filter, limit: AppStore.h.limit }
+board = { cards: AppStore.cells.cards, filter: AppStore.cells.filter, limit: AppStore.cells.limit }
 
 ## The page under the board's tally: the controls, the summary and the
 ## four columns.
-page : Val(ctx, Kanban.Tally) -> Elem(ctx)
+page : Signal(ctx, Kanban.Tally) -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 page = |sizes| Html.div(
 	"app-shell app-shell-wide",
@@ -61,8 +61,8 @@ controls : {} -> Elem(ctx)
 controls = |{}| Engine.state(
 	"",
 	|draft| {
-		cards = AppStore.h.cards
-		status = draft.val().map2(cards.val(), |text, table| Kanban.add_status(text, |title| table.contains(title)))
+		cards = AppStore.cells.cards
+		status = draft.signal().map2(cards.signal(), |text, table| Kanban.add_status(text, |title| table.contains(title)))
 		Html.section(
 			"Board controls",
 			"panel grid gap-4 p-5",
@@ -75,18 +75,18 @@ controls = |{}| Engine.state(
 							Html.text_input(
 								Engine.const("Filter cards"),
 								"text",
-								AppStore.h.filter.val(),
+								AppStore.cells.filter.signal(),
 								[Engine.class("input"), Engine.attr("placeholder", "Search titles, e.g. billing")],
-								Engine.handle(|text| [AppStore.h.filter.put(text)]),
+								Engine.handle(|text| [AppStore.cells.filter.set(text)]),
 							),
 						),
 						labelled_field(
 							{ label: "WIP limit", look: "w-28 shrink-0" },
 							Html.number_input(
 								Engine.const("WIP limit"),
-								AppStore.h.limit.val(),
+								AppStore.cells.limit.signal(),
 								[Engine.class("input"), Engine.attr("placeholder", "3"), Engine.attr("min", "0")],
-								Engine.handle(|text| [AppStore.h.limit.put(text)]),
+								Engine.handle(|text| [AppStore.cells.limit.set(text)]),
 							),
 						),
 						labelled_field(
@@ -94,7 +94,7 @@ controls = |{}| Engine.state(
 							Html.text_input(
 								Engine.const("New card title"),
 								"text",
-								draft.val(),
+								draft.signal(),
 								[Engine.class("input"), Engine.attr("placeholder", "Write release notes")],
 								draft.set_value(|_, text| text),
 							),
@@ -102,21 +102,21 @@ controls = |{}| Engine.state(
 						Html.button(
 							"Add card",
 							[Engine.attr("type", "button"), Engine.class("button-primary shrink-0"), Html.disabled(status.map(|now| !Kanban.AddStatus.is_ready(now)))],
-							Engine.handle_by(draft.val(), |text, _| Board.added(cards, text)).also(draft.update(|_| "")),
+							Engine.handle_by(draft.signal(), |text, _| Board.added(cards, text)).also(draft.update(|_| "")),
 						),
 					],
 				),
-				Html.p_v(status.map(Kanban.AddStatus.to_str), [Engine.class_v(status.map(Kanban.AddStatus.class)), Engine.test_id("add-status")]),
+				Html.p_s(status.map(Kanban.AddStatus.to_str), [Engine.class_s(status.map(Kanban.AddStatus.class)), Engine.test_id("add-status")]),
 			],
 		)
 	},
 )
 
 ## The board's totals, and a notice while any column is over the limit.
-summary : Val(ctx, Kanban.Tally) -> Elem(ctx)
+summary : Signal(ctx, Kanban.Tally) -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 summary = |sizes| {
-	over = sizes.map2(AppStore.h.limit.val(), |tally, text| Kanban.columns_over(tally, Kanban.Limit.from_str(text)))
+	over = sizes.map2(AppStore.cells.limit.signal(), |tally, text| Kanban.columns_over(tally, Kanban.Limit.from_str(text)))
 	Html.section(
 		"Board summary",
 		"panel grid gap-4 p-5",
@@ -143,5 +143,5 @@ labelled_field : { label : Str, look : Str }, Elem(ctx) -> Elem(ctx)
 labelled_field = |{ label, look }, control| Html.div("field ${look}", [Html.p(label, "field-label"), control])
 
 ## One figure of the summary, under its caption.
-stat_tile : { label : Str, id : Str }, Val(ctx, Str) -> Elem(ctx)
-stat_tile = |{ label, id }, value| Html.div("stat", [Html.p(label, "stat-label"), Html.p_v(value, [Engine.class("stat-value"), Engine.test_id(id)])])
+stat_tile : { label : Str, id : Str }, Signal(ctx, Str) -> Elem(ctx)
+stat_tile = |{ label, id }, value| Html.div("stat", [Html.p(label, "stat-label"), Html.p_s(value, [Engine.class("stat-value"), Engine.test_id(id)])])

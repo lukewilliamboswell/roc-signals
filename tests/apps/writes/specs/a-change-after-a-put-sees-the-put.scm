@@ -1,4 +1,4 @@
-(test "Writes — one cell written twice by one decision: a change after a put is applied to what was put"
+(test "Writes — one cell written twice by one decision: an update after a set is applied to what was set"
   (steps
     (mark-metrics)
     (click (role button :name "Set then add"))

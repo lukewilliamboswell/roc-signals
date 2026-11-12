@@ -44,13 +44,13 @@ in, values out, and reactive semantics that can be checked without a browser.
 
 The application describes its UI once, as a tree of typed sites. Every dynamic
 part of that tree — a piece of local state, a conditional, a keyed list, a
-view of a table, a derived value, an effect — is a *site*: one Roc closure
+table view, a derived signal, an effect — is a *site*: one Roc closure
 that owns its own typed storage. State the whole application shares lives in
 a *store* that the root site holds. The reactive engine is ordinary Roc code
 inside the platform. Each external input (a DOM event or an effect result) is
-one pure transaction over the engine's state that returns the next state and
+one pure turn over the engine's state that returns the next state and
 a byte stream of rendering and effect commands. The engine re-evaluates only
-the sites and holes that read what the transaction wrote, prunes equal values
+the sites and holes that read what the turn wrote, prunes equal values
 at every observation point, and emits only the DOM operations those changes
 imply. There is no virtual DOM and no per-event re-render.
 
@@ -159,8 +159,8 @@ reconsidered.
   cost is unacceptable.
 - **Recovery from allocation failure inside an instance.** Running out of
   memory, a Roc crash or a failed `expect` poisons the instance; recovery is a
-  fresh instance. Prepare/commit transactions and allocation-failure
-  unwinding are deliberately not part of the architecture: the engine state is
+  fresh instance. Separate prepare and commit phases, and allocation-failure unwinding,
+  are deliberately not part of the architecture: the engine state is
   Roc data updated in place, and a Roc call has no failure-and-unwind channel.
   Reconsidered only if Roc gains one.
 - **Host-held Roc values.** The host never holds, clones, compares or drops a
@@ -177,7 +177,7 @@ reconsidered.
   express is a reason to extend its typed vocabulary, not to bypass it.
   Ports are that extension for services the page supplies, not a bypass. A
   port is one of three shapes of the effect channel — a command, a call with
-  one reply, or a subscription — under a name the program declares and the
+  one answer, or a subscription — under a name the program declares and the
   page's JavaScript implements. Roc never calls JavaScript synchronously,
   never holds a JavaScript value, and is never called by it; every message is
   data in a declared encoding with the channel's id, bound, scope and
@@ -259,7 +259,7 @@ observer". Roc cannot observe its own reads, so we cannot copy the mechanism.
 **Incremental / Adapton** are the lineage we can build on: an explicitly
 constructed dependency structure, ordered propagation, and an equality cutoff.
 
-**The reframing for Roc.** Dependencies are *declared*: a `Val(ctx, a)` carries
+**The reframing for Roc.** Dependencies are *declared*: a `Signal(ctx, a)` carries
 a signature of what it reads, the local layers and the store cells, built by
 `map`/`map2` and the state, cell and row accessors before anything runs. The
 engine never runs a closure to find out what it reads. Nesting gives the
@@ -281,7 +281,7 @@ the rows of a list, at `derive`.
 reads `{cond, A, B}` to express `if cond then A else B` is re-evaluated when
 `B` changes even while `cond` selects `A`; equality pruning suppresses the
 output, not the evaluation. Value-dependent structure uses `when`, `switch`,
-`each` and `each_view`, which rebuild a subtree when its shape changes, so
+`each` and `table_view`, which rebuild a subtree when its shape changes, so
 dynamic reactivity and dynamic structure share one mechanism. The same
 conservatism has an app-level consequence: one coarse piece of state with
 many projections wakes every projection on every change. The partitioning
@@ -293,7 +293,7 @@ that row's — is the documented pattern that keeps app work local.
 
 ```mermaid
 flowchart LR
-    App["app: App.roc<br/>Elem tree of typed sites,<br/>a store of cells and tables"] --> Engine["platform/Core.roc (internal) behind Engine.roc (authoring API)<br/>pure engine: sites, layers, the store, each columns,<br/>tables and their views (Table.roc, View.roc, Seq.roc),<br/>effects, command encoding"]
+    App["app: App.roc<br/>Elem tree of typed sites,<br/>a store of cells and tables"] --> Engine["platform/Core.roc (internal) behind Engine.roc (authoring API)<br/>pure engine: sites, layers, the store, each columns,<br/>tables and their table views (Table.roc, View.roc, Seq.roc),<br/>effects, command encoding"]
     Engine --> Main["platform/main.roc<br/>keys · init · event · files · drop ·<br/>work · prepare · ask · forget"]
     Main --> Host["platform/host/host.zig<br/>allocator · Box(Core.App), today wrapped as Box(Iter(Core.App)) (roc-lang/roc#12953 workaround), or, in a worker, one Box(Kept) ·<br/>cmd buffer · staged payload · handle heaps · fault class"]
     Host --> Wire["command bytes in linear memory"]
@@ -310,9 +310,9 @@ flowchart LR
 ```
 
 The engine is `Core.roc` and three modules of its own for tables: `Table.roc`
-(rows by key and the record of the rows a turn changed, which an app imports
+(rows by key and the changes from a turn, which an app imports
 to write a table), `View.roc` (a sorted, filtered, windowed view kept up to
-date from that record) and `Seq.roc` (a view's ordered keys). `Engine.roc` is
+date from those changes) and `Seq.roc` (a table view's ordered keys). `Engine.roc` is
 the authoring API over them. `EngineOnly.roc` holds the one value that lets
 the engine, and no app, call a table's bookkeeping.
 
@@ -329,7 +329,7 @@ inputs:
   oracle, linked with a small native host (`host/spec.zig`: entry point,
   allocator, file and output services, worker jobs in child processes). The
   Wasm link drops the runner, so the browser module does not grow. Because
-  the engine is pure, the runner drives it by calling its transaction
+  the engine is pure, the runner drives it by calling its turn
   functions and decoding the command stream; there is no simulated host
   with its own semantics. The host is one file for every system: what
   differs between systems (how a file is opened, a process started or
@@ -342,7 +342,7 @@ inputs:
 The same runner walks an app (`--walk`): a seeded sequence of user events
 on live controls and of what the browser does around the app, from a fresh
 mount, with every worker job run for real in a child process and every
-other request answered from the replies the app's own specs give. It is
+other request answered from the answers the app's own specs give. It is
 the platform's test of the engine over long sessions of real apps, built
 from each app's ordinary `main.roc`, so an app carries nothing for it.
 
@@ -377,7 +377,7 @@ the root site holds.
 ### Sites and messages
 
 A mounted site is an `Inst(ctx)`: a closure taking the current environment, a
-message and the transaction accumulator, and returning its replacement, an
+message and the turn accumulator, and returning its replacement, an
 outcome and the accumulator. Messages are:
 
 - `Fire(path, pos, handler, payload)` — route an event or effect result down
@@ -388,7 +388,7 @@ outcome and the accumulator. Messages are:
   `False` to children).
 
 Every site kind — `state`, `when`, `switch`, `remount_on`, `each`,
-`each_view`, `derive`, `resource`, effect sites, and the root site, which
+`table_view`, `derive`, `resource`, effect sites, and the root site, which
 holds the store and the view's top block — implements these three messages.
 The engine therefore needs no node table, no erased value registry and no
 type tags: the closure's own captures are the typed storage, and the only
@@ -399,10 +399,10 @@ dispatch is the message.
 A site's environment is a typed context:
 
 - `Root(st)` — the top of the tree. It carries the program's store, whose
-  storage type is `st` (`{}` for a program without one).
+  store type is `st` (`{}` for a program without one).
 - `In(outer, s)` — inside a state, derived or asynchronous layer of type `s`.
 - `Row(outer, item)` — inside one row: of an `each` site (its key and item)
-  or of a view of a table (the table's key).
+  or of a table view (the table's key).
 
 Each `In` or `Row` adds a *layer*, named by its index on the path from the
 root. Values crossing into a nested context are lifted explicitly (`lift`,
@@ -410,15 +410,15 @@ root. Values crossing into a nested context are lifted explicitly (`lift`,
 what it reads: a layer keeps its index.
 
 Every context type also answers one method, `store`, with a
-`Reach(ctx, st)`: how that scope reads the store, and how it returns itself
+`Reach(ctx, st)`: how that context reads the store, and how it returns itself
 with a function applied to the store. `Root` answers from what it carries;
-`In` and `Row` build theirs on the enclosing scope's. A store *cell* is
-therefore read and written in any scope, at any depth, with no `lift`, and
-reaching the store is the one thing a function asks of its scope:
+`In` and `Row` build theirs on the enclosing context's. A store *cell* is
+therefore read and written in any context, at any depth, with no `lift`, and
+reaching the store is the one thing a function asks of its context:
 `where [ctx.store : () -> Engine.Reach(ctx, st)]`. Reading and writing are
 one requirement, not two: a reach holds both.
 
-**Read signatures.** A `Val(ctx, a)` is `{ mask, read, sel }`: a signature of
+**Read signatures.** A `Signal(ctx, a)` is `{ mask, read, sel }`: a signature of
 what it reads, a reader from the environment, and an optional keyed selector.
 A signature has two words. The layers' word has a bit for each layer index
 and the cells' word a bit for each cell's position in the store, each taken
@@ -437,8 +437,9 @@ touch are all read from the set, never from a signature. Only the root
 settles cells, so for them the word is enough: a write to one cell also
 visits the readers of a cell that shares its bit, and they prune.
 
-A `State(ctx, s)` is a lens (`get`, `modify`) with what a read of it listens
-to and what a write through it reports. A `Handler(ctx)` is an environment
+A `State(ctx, s)` is a piece of state as one context sees it, local or
+shared. It is a lens (`get`, `modify`) with what a read of it listens to
+and what a write through it reports. A `Handler(ctx)` is an environment
 transformer that answers what it wrote, `(ctx, payload) -> (ctx, written)`,
 and a `Reaction(ctx, a)` is the same for an effect result. The set is the
 handler's answer, not a property fixed before it runs, so a handler that
@@ -449,10 +450,10 @@ and nothing is declared twice.
 
 State that more than one part of the application cares about (the session,
 the current location, a page's loaded data, the rows of a list) lives in the
-*store*: a set of *cells*, each one piece of state with a handle,
-`Cell(st, a)`, that it is read and written through. In a large application
+*store*: a set of *cells*, each one piece of state read and written through a
+`Cell(st, a)`. In a large application
 the code that writes a piece of state and the code that reads it are often
-far apart; because every scope reaches the store, no level between them has
+far apart; because every context reaches the store, no level between them has
 to carry it.
 
 - **Described once.** An app describes its store with Roc's record builder:
@@ -463,7 +464,7 @@ to carry it.
   storage is the nested pairs of its fields' storage, and each cell's place
   in that nesting is known where the description is built. The builder
   takes two fields or more; a description of one cell is the cell itself,
-  with its handle named by `map`: `Engine.cell(init).map(|c| { c: c })`.
+  named by `map`: `Engine.cell(init).map(|c| { c: c })`.
 - **Lenses are generated, never written.** From its place each cell gets its
   position, which gives its signature bit, and its getter and modifier,
   composed from the pair projections on the way down. Two hand-written
@@ -481,16 +482,16 @@ to carry it.
 - **Named.** `Engine.store(tag, cells)` builds the store, and `tag` is a
   value of a type declared for that store, usually the one tag of the module
   that builds it. The tag is held nowhere. It is part of the storage type,
-  `Stored(tag, st)`, and so of every handle, write and reach of that store:
+  `Stored(tag, st)`, and so of every cell, write and reach of that store:
   a cell of another store is a compile error wherever this one is reached,
   even when the two stores' cells have the same types. It is a value, not a
   phantom type fixed by an annotation, because an annotation can be left
   out.
-- **Started.** `store.handles()` is the record of handles the description
+- **Started.** `store.cells()` is the record of cells the description
   described. `store.with_initial(cell, value)` starts a cell at a value that
   depends on the boot data, and `Engine.program_store(cfg, start, view)`
   mounts the view over the store `start(boot)` gives. A start is not a
-  write: a table started this way has an empty record.
+  write: a table started this way has no changes.
 - **Held at the root.** The root site is the store's one holder. For an
   event it moves the store into the root context and takes it back when the
   event has unwound, exactly as a state site moves its value, so a write at
@@ -500,7 +501,7 @@ to carry it.
 - **Started again by a write.** A cell lives as long as the instance and is
   never disposed, so state that should start fresh, such as a page's form
   once the reader leaves the page, is started again on purpose.
-  `cells.with_reset(|handles, reset| ...)` hands a description's handles out
+  `description.with_reset(|cells, reset| ...)` hands a description's cells out
   together with one write that puts every cell it describes back to the
   value it was described with (not a value `with_initial` gave it). The
   write is generated where the lenses are, so a cell added to the feature
@@ -574,7 +575,7 @@ table drawn through a view.
 ### Tables and views
 
 A *table* is a store cell that holds rows by key, made with
-`Engine.table(rows)`. Its handle is an ordinary `Cell(st, Table(k, v))`; its
+`Engine.table(rows)`. Its cell is an ordinary `Cell(st, Table(k, v))`; its
 value changes only through the table's own operations, and each of them
 names the rows it touches.
 
@@ -584,23 +585,23 @@ names the rows it touches.
   `contains` and `len` read, and so do `fold` and `to_list`, which visit
   every row in no particular order. A table has no order of its own: an
   order the user chooses is a field of the row that a view sorts by.
-- **The record of changes.** Beside its rows a table keeps, for every key
+- **This turn's changes.** Beside its rows a table keeps, for every key
   written in the current turn, the row as it was when the turn began, or the
   fact that it was absent. A key written twice keeps its first entry, so the
-  record is bounded by the distinct keys one turn writes. An operation that
-  replaces every row does not record per key: it marks the record as a whole
-  rewrite. The record is how a keyed write says which rows it touched, and
+  changes are bounded by the distinct keys one turn writes. An operation that
+  replaces every row does not record per key: it marks the changes as a whole
+  rewrite. The changes are how a keyed write says which rows it touched, and
   where each used to sit.
 - **Counted.** A table counts its writes and remembers the count at which its
-  record began. A view remembers the count it is up to date with. A view
-  that has seen exactly the count the record starts from can bring itself up
-  to date from the record; any other has missed writes and builds again.
+  changes began. A view remembers the count it is up to date with. A view
+  that has seen exactly the count the changes start from can bring itself up
+  to date from the changes; any other has missed writes and builds again.
 - **No write can leave a view behind.** A table cell's generated modifier
-  notes the table's identity and where its record began before the function
+  notes the table's identity and where its changes began before the function
   it applies runs. If what comes back is that same table, changed by its own
-  operations, the record stands. If it is any other table (a new one, another
+  operations, the changes stand. If it is any other table (a new one, another
   cell's, one saved in an earlier turn), the cell stores it as a whole
-  rewrite. So a `put` of a new table, a generated reset and a function that
+  rewrite. So a `set` of a new table, a generated reset and a function that
   ignores its argument are all whole rewrites, and none can leave a view
   showing rows the table no longer has.
 
@@ -609,21 +610,21 @@ it as it was, because an earlier write of the same event may have removed
 that row. `Table.insert` of a key already present, and a table built from two
 rows with one key, are `contract` errors.
 
-A *view* draws part of a table: the rows a query keeps, in the query's order,
-and of those only the rows inside a window.
-`Engine.each_view(table, { query, plan, window }, template)` is its site.
+A *table view* (a view in this section) draws part of a table: the rows a query
+keeps, in the query's order, and of those only the rows inside a window.
+`Engine.table_view(table, { query, plan, window }, template)` is its site.
 
-- **The query is data.** `query` is a value the site can compare: the filter
-  and order the user chose, the kind of thing a URL or a saved filter holds.
-  `plan` turns it into the three functions a view needs: `keep` (is this row
-  in the view), `sort` (the value it is ordered by) and `compare` (the order
-  of two sort values). A record of functions cannot be compared, so with the
-  functions as the query the site could not tell a changed query from the
-  same one.
+- **The query is data.** `query` is a value the site can compare: the filter and
+  order the user chose, the kind of thing a URL or a saved filter holds. `plan`
+  turns it into a `QueryPlan(k, v, s)`, the three functions a view needs: `keep`
+  (is this row in the view), `sort` (the value it is ordered by) and `compare`
+  (the order of two sort values). A record of functions cannot be compared, so
+  with the functions as the query the site could not tell a changed query from
+  the same one.
 - **The order is total.** `compare` answers `Same` only for a row's own sort
   value. A view finds a row's entry again by its sort value alone; two rows
   that compare `Same` are a `contract` error at mount, after a write, and
-  between the keyed writes of one event. The site absorbs a record one key
+  between the keyed writes of one event. The site absorbs the changes one key
   at a time, so two rows that trade places in one event tie once the first
   is placed and the second is not, though they never tie before the event
   or after it. A sort value therefore ends with the key, whatever the
@@ -640,9 +641,9 @@ and of those only the rows inside a window.
   reaches past the last row draws the rows there are, and
   `Engine.every_row`, whose count is the largest there is, draws every row
   the query keeps.
-- **Kept from the record.** When its table was written, the site reads the
-  record. For each written key it works out the key's place under the row as
-  it was (from the record) and under the row as it is (from the table). If
+- **Kept from the changes.** When its table was written, the site reads the
+  changes. For each written key it works out the key's place under the row as
+  it was (from the changes) and under the row as it is (from the table). If
   the place is the same, the ordered keys are not touched; otherwise the
   entry is removed and inserted again. The rows drawn are worked out again
   only if a change landed at or before the window's last row.
@@ -675,23 +676,23 @@ and of those only the rows inside a window.
   text of a key to find a row: an inspected value is a debugging
   representation, and two keys that print alike must not become one row.
   Text keys are the contract of `each` alone.
-- **Rebuilt when the record cannot serve.** The site builds its view again,
+- **Rebuilt when the changes cannot serve.** The site builds its view again,
   with a pass over the table to filter and a sort of the rows kept, when it
   has missed writes, when the table was rewritten whole, when the query
-  changed to an unequal value, and when the record is so large next to the
+  changed to an unequal value, and when the changes are so large next to the
   table that absorbing it would cost more. A rebuild costs the table,
-  however few of its rows the view keeps, so the record is weighed against
+  however few of its rows the view keeps, so the changes are weighed against
   the table's size: a view of a few rows of a large table absorbs a write of
   all of them. Rows that are in the window before and after a rebuild are
   kept, not recreated.
-- **A row is handed its own row.** The template receives the row's key, fixed
-  for the row's lifetime, and a `State` of the row. A read is the row at that
-  key in that table; a write is `Table.update` of that key through the
-  table's cell. A component drawn over a `State` therefore draws a table's
-  row unchanged, and a write through the row's handle can reach no other
-  row and no other table. Any other write (remove, insert, a write of
-  several rows) goes through the table's cell. A row read after its key left the table in the
-  same event is a `contract` error naming the site.
+- **A drawn row is handed its row.** The template receives the row's key, fixed
+  for the drawn row's lifetime, and a `State` of the row. A read is the row at
+  that key in that table; a write is `Table.update` of that key through the
+  table's cell. A component drawn over a `State` therefore draws a table's row
+  unchanged, and a write through the row's `State` can reach no other row and no
+  other table. Any other write (remove, insert, a write of several rows) goes
+  through the table's cell. A row read after its key left the table in the same
+  event is a `contract` error naming the site.
 - **Up to date before anything else.** On every `Changed`, whatever it names,
   a view site first brings its view up to date with its table, which is a
   comparison of two counts when nothing was written. The root's pass
@@ -700,24 +701,24 @@ and of those only the rows inside a window.
   site checks all the same: drawing from a view the turn's writes have
   passed would name rows the table no longer has.
 - **Cleared when the turn ends.** After the turn's one `Changed` pass the
-  root site clears the record of each table the turn wrote (see
+  root site clears the changes of each table the turn wrote (see
   [One turn](#one-turn)). Every view of a table, wherever it is mounted,
-  reads the same record in that pass; kept longer, the record would describe
+  reads the same changes in that pass; kept longer, the changes would describe
   rows relative to a state no view remembers, and would go on holding their
   earlier values.
 
-A plain reader of a table cell (`todos.val().map(|t| t.len())`, one row by
+A plain reader of a table cell (`todos.signal().map(|t| t.len())`, one row by
 key) is an ordinary reader of the cell: it is evaluated on every write to the
 table and pruned at its hole. Only a row of a view wakes for its own row
 alone.
 
-`Table.inverse` gives the writes that undo what the record holds, and
+`Table.inverse` gives the writes that undo what the changes hold, and
 `Table.apply` applies such a list, recording each write like any other. The
-record is gone when the turn ends, so an inverse is taken in the event that
-made the writes. `Table.changes` reads the record itself: each written key
+changes are gone when the turn ends, so an inverse is taken in the event that
+made the writes. `Table.changes` reads the changes themselves: each written key
 with its row as it was.
 
-The record's bookkeeping is the engine's alone: clearing it, giving a table
+The changes' bookkeeping is the engine's alone: clearing them, giving a table
 its cell's identity, judging what a write of the cell left, and reading the
 two counts. An app that gave another table the cell's identity would pass
 it off as the cell's own, and every view would go on showing rows the table
@@ -729,7 +730,7 @@ with the type, and an app cannot call them.
 
 **Known limits.**
 
-- A change of query, a whole rewrite of the table, a record large next to
+- A change of query, a whole rewrite of the table, changes large next to
   the table and the mount of a view each cost a pass over the table and a
   sort of the rows kept.
 - A move is linear in the rows drawn: the window's changes are found by
@@ -740,7 +741,7 @@ with the type, and an app cannot call them.
   window's edge. State that must outlive that is a field of the row.
 - Each view of a table pays for each written key, and each plain reader of
   the table is evaluated on each write to it.
-- A table is written with `change`. A `put` of a table built from a reading
+- A table is written with `update`. A `set` of a table built from a reading
   of the same cell is still a keyed write, and copies the table.
 - A write to a key the table does not hold writes nothing and reports no
   error, so a row handler that names another table's cell by mistake is
@@ -766,7 +767,7 @@ with the type, and an app cannot call them.
 - `remount_on(key, body)` builds `body()` and, when `key` changes to an
   unequal value, disposes it and builds it again, as `switch` does when its
   case changes. It is how local state that belongs to one key, such as a
-  reply drafted to the open message, starts again when the key does. The
+  draft for the open message, starts again when the key does. The
   site keeps the key to compare, so a key is small, such as an id.
 
 ### In-place ownership
@@ -781,14 +782,14 @@ ownership law that makes this hold is:
 - **The environment is moved, not shared.** A handler receives the context by
   value and returns it. A state's value moves into the environment for the
   reducer and comes back out, and the store moves into the root context and
-  comes back out, so a reducer or a `change` sees its value uniquely owned.
+  comes back out, so a reducer or an `update` sees its value uniquely owned.
 - **No earlier copy is kept to find a change.** States and cells do not keep
   the previous value for equality pruning, because that copy would be a
   second holder and every write would copy what it changes. What changed
   comes from the write. Pruning happens at holes, rows of a list and
   `derive`, where the values compared are small.
 - **The one earlier state the engine keeps is bounded and brief.** A table's
-  record holds, for each row a turn wrote, that row as it was when the turn
+  changes hold, for each row a turn wrote, that row as it was when the turn
   began. It is one row per row written, never the table, and it is dropped
   when the turn ends. A row that holds a large value and is written in part
   is therefore copied once in a turn that writes it.
@@ -808,9 +809,9 @@ The same law constrains apps. These patterns copy silently on every update:
 - filtering or mapping a list that another reader still holds;
 - keeping a large state below smaller ones instead of outermost;
 - deriving projections that retain the whole state;
-- a `put` of a value built from a reading of the same large cell, or a
-  `change` whose function holds that reading. The reading is a second
-  holder. A `change` by a function of the value alone is in place.
+- a `set` of a value built from a reading of the same large cell, or an
+  `update` whose function holds that reading. The reading is a second
+  holder. An `update` by a function of the value alone is in place.
 
 Per-event allocation counts are how such a copy is caught; a soak's plateau
 shows only what is retained.
@@ -829,7 +830,7 @@ State lives in three places, and each is written in its own way:
 
 | Place | Holds | Lives | Written by |
 |---|---|---|---|
-| Store cell | State more than one part of the app cares about | As long as the instance | A write (`put`, `change`) in a decision's list |
+| Store cell | State more than one part of the app cares about | As long as the instance | A write (`set`, `update`) in a decision's list |
 | Table (a store cell) | Rows edited by key and drawn sorted, filtered or long | As long as the instance | The table's operations, in a write of its cell or through a view row's `State` |
 | Local state (`Engine.state`) | What one piece of the view cares about: whether a menu is open, the text of a draft | As long as that piece is mounted; `remount_on` starts it again | `State` reducers |
 
@@ -838,22 +839,22 @@ State lives in three places, and each is written in its own way:
   writes applied and the set it wrote.
 - **Local state is written by reducers.** `update`, `update_by`, `set_value`,
   `set_value_by`, `on_result` and `on_files` are applied to the value the
-  state holds at that moment. The same `State` API writes a view's row, and
+  state holds at that moment. The same `State` API writes a table view's row, and
   `cell.state()` gives a component written over a `State` a cell to draw
   without knowing it is one.
-- **A write to shared state is a value.** `cell.put(value)` replaces what a
-  cell holds; `cell.change(f)` applies a function to it. Each is a
-  `Write(st)`: which cells, and how. `change` hands `f` the value uniquely
-  owned, which is what a large value needs; `put` is for a value that does
+- **A write to shared state is a value.** `cell.set(value)` replaces what a
+  cell holds; `cell.update(f)` applies a function to it. Each is a
+  `Write(st)`: which cells, and how. `update` hands `f` the value uniquely
+  owned, which is what a large value needs; `set` is for a value that does
   not depend on the old one.
 - **A decision is one pure function from a reading to a list of writes.**
   `Engine.handle(|payload| writes)` makes a handler of one and
-  `Engine.react(|issued_for, res| writes)` a reaction. `handle_by(val, ...)`
-  and `react_by(val, ...)` also give the function a reading of `val`, taken
+  `Engine.react(|issued_for, res| writes)` a reaction. `handle_by(signal, ...)`
+  and `react_by(signal, ...)` also give the function a reading of `signal`, taken
   once, when the event or the answer arrives and before any of the
-  decision's own writes. A reading of several values is one `Val` of a
-  record: `Val.map2` has the shape Roc's record builder calls, so
-  `{ a: va, b: vb }.Engine.Val` reads what both read.
+  decision's own writes. A reading of several values is one `Signal` of a
+  record: `Signal.map2` has the shape Roc's record builder calls, so
+  `{ a: va, b: vb }.Engine.Signal` reads what both read.
   `Engine.does(writes)` is the handler of a list that needs neither the
   payload nor a reading, and `handle_files` and `handle_files_by` make a
   decision of the files an event carries, so a drop or a choice is a
@@ -869,9 +870,9 @@ State lives in three places, and each is written in its own way:
   writes nothing, wakes no one and runs no pass.
 - **Order inside a list.** Writes to different cells are each computed from
   the one reading, so their order cannot matter. Two writes to one cell are
-  applied in order: a `change` after another write of its cell sees that
+  applied in order: an `update` after another write of its cell sees that
   write's result, and a write of one cell after the reset of its group
-  refines the reset ("start again, but with this"). Any other `put` or reset
+  refines the reset ("start again, but with this"). Any other `set` or reset
   over a cell the same list already wrote is a `contract` error: every value
   in the list comes from one reading, so it could only throw the earlier
   write away. The rule is per cell. Inside a table, the row operations of
@@ -882,10 +883,10 @@ State lives in three places, and each is written in its own way:
   both wrote. `Reaction.also` is the same for one result. It is how a local
   write and a decision are one event: a menu that closes itself and records
   the choice in a cell. The same-cell rule above covers one decision's list,
-  not a composition: a `put` composed after another handler's write of that
+  not a composition: a `set` composed after another handler's write of that
   cell replaces it. A decision composed second takes its reading from the
   environment `first` returned:
-  `draft.update(|_| "").also(Engine.handle_by(draft.val(), ..))` reads the
+  `draft.update(|_| "").also(Engine.handle_by(draft.signal(), ..))` reads the
   emptied draft. `FilesHandler.also` is the same for the files of one event.
 - **One event is one atomic transition.** All writes made while an event
   fires are in place before any observation runs.
@@ -897,7 +898,7 @@ State lives in three places, and each is written in its own way:
   list to the store's starting storage as a turn applies it, the same-cell
   rule included, and `read(cell)` reads a cell of the result. A transition
   is checked by a top-level `expect` with no engine and no browser. No turn
-  ends there, so a table keeps its record of the writes, across chained
+  ends there, so a table keeps its changes, across chained
   `after`s too: `read(table).inverse()` tells which rows a transition wrote.
 - **Equality is an observation contract.** A successful `==` lets the engine
   keep the last emitted value and skip every downstream observation. It must
@@ -960,10 +961,10 @@ Rules:
 | Change an item's key | End the old row, create a new one | Remove and insert |
 | Move an item between `each` sites | Dispose at the old site, create at the new | No cross-site transfer |
 | Write a row of a table | Preserve the row in every view whose window holds it before and after; re-evaluate its holes that read the row | Update only changed holes; move its nodes if its place changed |
-| A row leaves a view's window (a scroll, a change of query, a move past the window's edge, removal from the table) | Dispose the row's sites, as for a removed key; its admitted requests reparent to the view site. The table's row is untouched | Remove its node |
-| A row enters a view's window | A new row lifetime. Rows that enter in one turn are created from the first to the last, as an `each` site creates them | Build new structure |
-| One event writes two of a view's table, query and window | A row in the window before the event and after it is preserved; no row is created that the event does not leave drawn | One change of the rows drawn: move, remove and insert as the window after the event requires |
-| Change a view's query, or rewrite its table whole | Rows in the window before and after are preserved; the rest leave or enter | Move, remove and insert as the new window requires |
+| A row leaves a table view's window (a scroll, a change of query, a move past the window's edge, removal from the table) | Dispose the row's sites, as for a removed key; its admitted requests reparent to the table view site. The table's row is untouched | Remove its node |
+| A row enters a table view's window | A new row lifetime. Rows that enter in one turn are created from the first to the last, as an `each` site creates them | Build new structure |
+| One event writes two of a table view's table, query and window | A row in the window before the event and after it is preserved; no row is created that the event does not leave drawn | One change of the rows drawn: move, remove and insert as the window after the event requires |
+| Change a table view's query, or rewrite its table whole | Rows in the window before and after are preserved; the rest leave or enter | Move, remove and insert as the new window requires |
 | Switch a branch or case | Dispose the departing branch; ancestors survive | Mount the selected branch |
 | Change the key of a `remount_on` | Dispose the body; local state inside starts again; admitted requests reparent to the site | Remove the body's nodes and build it again |
 | Hide a region with an attribute or class | Its sites stay live | Nodes stay |
@@ -997,10 +998,10 @@ and effect handles by id, and the commands above release both. A file handle
 the scope's storage held goes when its last reference does, which disposing
 the scope brings about unless a value outside it still holds the handle.
 
-A view site is a scope as an `each` site is, and each row it draws is a
+A table view site is a scope as an `each` site is, and each row it draws is a
 scope. A row is disposed when it leaves the window, whether or not the table
 still holds its key: what was the row's own goes, and the table's row stays.
-A view site that is disposed drops its view; the table and its record are the
+A table view site that is disposed drops its view; the table and its changes are the
 store's and are not touched.
 
 The store is not a scope. Its cells are never disposed while the instance
@@ -1052,7 +1053,7 @@ Every external input — a DOM event or an effect result — is one *turn*:
    something in it and descends only into children that read something in
    it. When the pass reaches the site of a layer that waits, the layer
    joins it: the site adds its own layer to what the pass carries, for its
-   own subtree. A view site reads its table's record here, with its query
+   own subtree. A table view site reads its table's changes here, with its query
    and its window, and changes the rows it draws once. A waiting layer the
    pass did not reach has no reader in common with it, since nothing in its
    subtree reads what the pass carried. The site that started the pass (the
@@ -1060,10 +1061,10 @@ Every external input — a DOM event or an effect result — is one *turn*:
    walk down the event's path, which refreshes each such layer's subtree
    at its own site. A turn that wrote nothing runs no pass.
 5. **End of turn.** When the pass has refreshed every reader, the root site
-   clears the record of each table the pass named. When it named none, that
+   clears the changes of each table the pass named. When it named none, that
    is one test of the pass's signature against the tables' bits. A table
    whose cell shares a bit with another written cell is cleared too; its
-   record is empty already. A table the turn wrote is cleared whether or not
+   changes are empty already. A table the turn wrote is cleared whether or not
    a view draws it. Then focus requests made during the turn are resolved to
    node ids and emitted, and follow-up turns queued by the turn run next, in
    order.
@@ -1079,7 +1080,7 @@ Within a pass, order follows nesting: a `derive` layer is recomputed, and a
 `resource` layer begun for a changed input, before anything below it reads
 it; a branch decision is made before the branch's holes are refreshed; an
 `each` site marks rows for outer-layer and selection changes before
-reconciling its list, and a view site brings its view up to date before it
+reconciling its list, and a table view site brings its view up to date before it
 touches a row, so a row created in this turn is evaluated exactly once.
 
 One pass settles everything an event wrote on its path. When one event
@@ -1124,7 +1125,7 @@ Pruning happens at observation points:
 - `resource` compares its layer after each `pending` and `resolve` to its
   previous value;
 - `when`/`switch` compare the selected branch, and `remount_on` its key;
-- a view site compares its query and its window with the ones it holds;
+- a table view site compares its query and its window with the ones it holds;
 - effect sites compare their watched value.
 
 States and cells do not prune on write: a handler that returns an equal value
@@ -1163,10 +1164,10 @@ keys a turn wrote in a table.
 | `when`/`switch` flip, `remount_on` key change | O(disposed + mounted subtree) | rebuilding siblings |
 | `each` list change | O(L) key and item comparisons, O(K) row evaluations and DOM commands | O(L) row re-evaluation or rebuild; O(L²) planning |
 | Row event | O(1) to find the row (slot from the node id) | key or list scan |
-| Keyed writes to a table, per view | Per written key: two placements with the query, a search of the ordered keys and a move inside one chunk. O(W) more when a change reaches the window. O(J) row evaluations and DOM commands at most | a pass over the table; a comparison of two lists of rows; a copy of the table |
+| Keyed writes to a table, per table view | Per written key: two placements with the query, a search of the ordered keys and a move inside one chunk. O(W) more when a change reaches the window. O(J) row evaluations and DOM commands at most | a pass over the table; a comparison of two lists of rows; a copy of the table |
 | A move of a row within a view | O(W) | O(T) |
-| Change a view's window | O(old window + new window), plus the chunk count to find the position | touching the ordered keys or the table |
-| Change a view's query, rewrite a table whole, write more than a fixed fraction of a table's rows in one turn, mount a view | O(T) to filter, and a sort of the rows kept | — |
+| Change a table view's window | O(old window + new window), plus the chunk count to find the position | touching the ordered keys or the table |
+| Change a table view's query, rewrite a table whole, write more than a fixed fraction of a table's rows in one turn, mount a view | O(T) to filter, and a sort of the rows kept | — |
 | End of turn | One test when no table was written; otherwise O(table cells in the store), clearing those the pass named | visiting a view, or the rows of a table |
 | Dispose a scope | O(scope size) | work outside the scope |
 | Effect result lookup | O(in-flight), bounded by the cap | unbounded tables |
@@ -1177,7 +1178,7 @@ What it must never do is evaluate or rebuild unchanged rows. A list whose
 rows are edited by key at a size where that comparison matters is a table,
 whose writes name their rows.
 
-A view is honest about its costs too: a rebuild is linear in the table, and
+A table view is honest about its costs too: a rebuild is linear in the table, and
 a move is linear in the rows drawn. What it must never do is pay the table's
 size for a keyed write.
 
@@ -1196,11 +1197,11 @@ the elements its view returns and knows nothing else about it.
   `expect`.
 - **The view is handed the cells it uses.** Shared state reaches a component
   as a props record of cells, and the view is generic over the store and
-  over its scope: `view : Props(st) -> Elem(ctx)` with
+  over its context: `view : Props(st) -> Elem(ctx)` with
   `Props(st) : { story : Cell(st, Story), session : Cell(st, Session) }` and
   `where [ctx.store : () -> Engine.Reach(ctx, st)]`. The record says exactly
   which shared state the component reads and writes. Because the view names
-  no store and no scope, it works at any depth, in a row, and in another
+  no store and no fixed context, it works at any depth, in a row, and in another
   application.
 - **Private state stays local.** What only the component cares about is an
   `Engine.state` in its view. It needs no entry in the store, cannot be
@@ -1239,7 +1240,7 @@ test of the transition, not by the compiler.
 ## The Command Stream Is the Only Output
 
 Each host call returns one complete command batch. The engine accumulates
-commands into a `List(U8)` in the transaction accumulator and hands it to the
+commands into a `List(U8)` in the turn accumulator and hands it to the
 host as the call's result; the host keeps it readable through `cmd_ptr` and
 `cmd_len` until the next call, which hands the buffer back to Roc for reuse.
 
@@ -1268,7 +1269,7 @@ Appendix B, not a decision about application state.
 ## The Effect Channel
 
 Effects are data. An effect site watches a value and, at mount (`watch`,
-`latest`) or only on change (`on_change`, `on_post`), turns it into a list of
+`watch_latest`) or only on change (`watch_changes`, `on_post`), turns it into a list of
 requests. A site's `Reaction` is given the value the request was issued for
 and its result, and is a reducer over a local state (`State.on_result`) or a
 decision over store cells (`Engine.react`, `react_by`). A `resource` site
@@ -1281,7 +1282,7 @@ mechanism. A request a click asks for (a save, an add, a write to browser
 storage) is instead *posted*: the app keeps an `Outbox(item)` in its state,
 usually in a store cell, the reducer or decision that changes the state
 posts the item in the same step, and an `on_post`
-site over the outbox issues `plan(item)` in that turn, with `on_change`'s
+site over the outbox issues `plan(item)` in that turn, with `watch_changes`'s
 lifecycle (nothing at mount, nothing cancelled). The outbox carries a serial
 beside its latest post, and two outboxes are equal only when their serials
 are, so posting an item equal to the last is still a change and comparing
@@ -1297,7 +1298,7 @@ reducer or the decision sees both what changed and what is sent.
 ### Request kinds
 
 - **Commands** are emitted and forgotten: history `Push`/`Replace` (`NAV`),
-  `Title` (`TITLE`), `StorageSet`/`StorageRemove` (`STORE`), and
+  `Title` (`TITLE`), `StorageSet`/`StorageRemove` (`STORAGE`), and
   `Focus`/`Blur`/`SelectText` on a named reference (`FOCUS`, resolved at the
   end of the turn).
 - **Awaited requests** get an id: `Http`, `StorageGet`, `Timer`, `Work` and
@@ -1315,7 +1316,7 @@ reducer or the decision sees both what changed and what is sent.
   for a preparation's task). The job's result is an ordinary result turn:
   `Work({ output, files })`, whose files are now the page's handles, or
   `WorkLost(fault)` when the worker's instance faulted or no worker could
-  run it. The request carries the task's deadline, its disposal and cancel
+  run it. The request carries the task's timeout, its disposal and cancel
   policies and, for a preparation's task, where the preparation's input
   lies in its own.
 
@@ -1327,8 +1328,8 @@ reducer or the decision sees both what changed and what is sent.
   carries no type information or version. A type crosses if it has the
   derived codec hooks: numbers, `Bool`, `Str`, lists, records, tuples, tag
   unions, files (as handles) and nominal types that opt in; functions,
-  state handles and reactive values do not, which the compiler rejects.
-  `Worker.derive` is a `resource` whose requests are jobs of one task: a
+  `State` values and signals do not, which the compiler rejects.
+  `Worker.resource` is a `resource` whose requests are jobs of one task: a
   layer holding the task's answer for an input, where a newer input stops
   the job of an older one.
 - **`Self`** asks for a follow-up turn whose result is `Now`: how an effect
@@ -1388,8 +1389,8 @@ because an error left to inference does not resolve.
 
 - **Same channel.** A `Work` request takes an id, counts against the
   in-flight cap, is answered once in a result turn, and is cancelled,
-  superseded and counted as any awaited request is. `Worker.derive`,
-  `latest` and `resource` take a task, or a preparation's task, anywhere
+  superseded and counted as any awaited request is. `Worker.resource`,
+  `watch_latest` and `resource` take a task, or a preparation's task, anywhere
   they take a request.
 - **Handles cross by token.** A file in a job's input is not read before the
   job runs. The request names its handle and range (FX kind 8); the runtime
@@ -1400,7 +1401,7 @@ because an error left to inference does not resolve.
   ranges the payload gives them. On the way back the answer names the
   instance's tokens of the files it holds; the worker script posts their
   `Blob`s by reference, and the page's runtime mints fresh page handles for
-  them through the result path port replies use (result tag 10, staged with
+  them through the result path port answers use (result tag 10, staged with
   `files_stage` and delivered with `event_files`). Each instance holds its
   own reference to the browser object, so either side letting go cannot
   invalidate the other's.
@@ -1449,12 +1450,12 @@ because an error left to inference does not resolve.
   is only cost. `Keep` reparents the request as `Http` does, for a job whose
   external effect (a file the user asked for) must not be lost when a panel
   closes; its answer reaches the nearest surviving ancestor. On `CANCEL`
-  (disposal with `Stop`, or a `latest` or `derive` site moving on) the
+  (disposal with `Stop`, or a `watch_latest` or `resource` site moving on) the
   engine forgets the id as always; `Stop` ends the worker running the job,
   while `Finish` lets the job complete and the runtime drops its answer, so
-  the worker, and any prepared state it holds, is kept. A deadline always
+  the worker, and any prepared state it holds, is kept. A timeout always
   ends the worker, a finishing job's included: a cancelled job that has not
-  completed by its deadline, or ten minutes after it was performed when it
+  completed by its timeout, or ten minutes after it was performed when it
   has none, has its worker ended as a timed-out job's is, so no job holds a
   worker for good.
 - **Where effects can run.** The hosted effects are imports of the one
@@ -1480,7 +1481,7 @@ because an error left to inference does not resolve.
   the job decides. An answer holds at most 16 files, which the worker's
   engine checks (a larger answer is a `contract` error, so the job is
   `Lost(Contract)`); when the page has no free slots for an answer's files
-  nothing is minted and the job is answered `WorkLost(ResourceLimit)`. A
+  nothing is minted and the job receives `WorkLost(ResourceLimit)`. A
   job holds at most 64 handles (files and builders) at once, else it is a
   `resource_limit` fault of its worker.
 - **The native runner** runs a job in a child process and serves the same
@@ -1502,8 +1503,8 @@ this section when it lands.
 Some tasks share an expensive first step: three views of a document each
 parse it, a search and a facet count each index the same records. A
 **preparation** is a step `prepare! : init => Try(state, error)` and any
-number of tasks over its state, `run! : state, query => Try(output,
-error)`, registered together (`Worker.prepared`, `Preparation.task`,
+number of tasks over its state, `run! : state, input => Try(output,
+error)`, registered together (`Worker.preparation`, `Preparation.task`,
 `Preparation.registration` listing each task's `registration()`). A
 preparation's tasks are tasks: the same request kind, policies and result;
 to the engine a job of one is a `Work` request whose input begins with the
@@ -1564,10 +1565,10 @@ are all of that kind.
 - **Cancellation.** `on_cancel: Finish` is what keeps a state across a
   superseded job: the job completes, its answer is dropped, and the worker
   keeps the state for the next job. At most one such job per worker, so the
-  pool bounds them, and each in time: a finishing job keeps its deadline,
+  pool bounds them, and each in time: a finishing job keeps its timeout,
   and one with none is ended ten minutes after it was performed (the
-  longest deadline a request may carry). A deadline always stops the
-  worker, and a job's deadline includes its preparation.
+  longest timeout a request may carry). A timeout always stops the
+  worker, and a job's timeout includes its preparation.
 - **Faults.** A crash in a preparation or a task poisons that worker only:
   the job is `WorkLost` with the fault class, the state is gone, and the
   next job prepares again elsewhere. Jobs waiting for a lost holder are
@@ -1590,7 +1591,7 @@ are all of that kind.
   `Visible(Bool)`, `Now`, `Refused`, `Work({ output, files })`,
   `WorkLost(fault)`, `Fetched({ status, headers, body })`,
   `FileBytes(bytes)`, `FileText(text)`, `Digest(bytes)`, `FileUrl(url)`,
-  `FileFailed(reason)`, `PortReply(message)` and `PortFailed(Threw(text) |
+  `FileFailed(reason)`, `PortAnswer(message)` and `PortFailed(Threw(text) |
   TooLarge | Closed)`. A subscription ends at its first `Threw` or `Closed`,
   which retires its id like a cancel; `TooLarge` reports one message and the
   subscription goes on.
@@ -1605,7 +1606,7 @@ are all of that kind.
 ### Bounds
 
 What an app means is decided in Roc and carried on its requests: a job's
-deadline, a call's timeout, how much a read of a file accepts. What a
+timeout, a call's timeout, how much a read of a file accepts. What a
 deployment allows is a mount option, named `max…Bytes` or `maxWorkers`
 (`maxWorkers`, `maxWorkerBytes`, `maxFileBytes`, `maxOutputBytes`,
 `maxPortBytes`), which caps what any request asks for.
@@ -1632,20 +1633,20 @@ deployment allows is a mount option, named `max…Bytes` or `maxWorkers`
 - **HTTP timeout.** Each request carries `timeout_ms` (0 = none), capped at
   600 s. A timeout delivers `Timeout`; the runtime arms at most one timer per
   admitted request and clears it on completion, failure, timeout or cancel.
-- **Work deadline.** Each job carries `deadline_ms` (0 = none), capped at
+- **Work timeout.** Each job carries `timeout_ms` (0 = none), capped at
   600 s like an HTTP timeout. Its expiry stops the job by terminating its
   worker and delivers `Timeout`. A cancelled job that finishes (`on_cancel:
-  Finish`) keeps its deadline, and one with none is bounded by the cap, so
+  Finish`) keeps its timeout, and one with none is bounded by the cap, so
   a cancelled job holds its worker for at most 600 s after it was
   performed.
 - **Worker pool.** The runtime runs at most `maxWorkers` workers (a mount
   option; by default the browser's core count, at most 8), one job each at a
-  time, reusing idle workers. Jobs beyond the pool wait in a FIFO queue,
-  which the in-flight cap bounds. Stopping a job — cancel (unless its task
-  says `Finish`) or deadline — is terminating its worker, which is replaced
-  when the next job needs one; there are no cooperative checkpoints. A worker whose linear memory has
-  grown past `maxWorkerBytes` (a mount option, default 128 MiB) is retired
-  after its job.
+  time, reusing idle workers. Jobs beyond the pool wait in a FIFO queue, which
+  the in-flight cap bounds. Stopping a job — cancel (unless its task says
+  `Finish`) or timeout — is terminating its worker, which is replaced when the
+  next job needs one; there are no cooperative checkpoints. A worker whose
+  linear memory has grown past `maxWorkerBytes` (a mount option, default 128
+  MiB) is retired after its job.
 - **Prepared states.** At most one per worker, so at most `maxWorkers`;
   each is bounded with its worker by `maxWorkerBytes`.
 - **Job output.** A job appends at most `maxOutputBytes` (a mount option,
@@ -1703,11 +1704,11 @@ site's explicit policy is supersession.
 ### Supersession and asynchronous layers
 
 The engine never cancels a request because a newer one exists: `watch`,
-`on_change` and `on_post` keep everything they issued, and which answer wins is the
+`watch_changes` and `on_post` keep everything they issued, and which answer wins is the
 reaction's decision. Superseding is a policy a site declares, not an
 inference:
 
-- **`latest(v, plan, react)`** issues like `watch`, but owns only the requests
+- **`watch_latest(v, plan, react)`** issues like `watch`, but owns only the requests
   of its current value. Before it issues for a new value it gives up
   everything it still owns from earlier values: every awaited request still in
   flight, of any kind (an admitted `Http` request included), gets `CANCEL`,
@@ -1719,7 +1720,7 @@ inference:
 - **`resource(input, { init, pending, plan, resolve }, body)`** is a layer whose
   value follows the answers to requests issued for its input. At mount the
   layer is `pending(init, a)` and `plan(a)` is issued. When the input changes to
-  an unequal value, the site supersedes exactly as `latest` does, sets the
+  an unequal value, the site supersedes exactly as `watch_latest` does, sets the
   layer to `pending(s, a)` and issues `plan(a)`, all in the Changed pass before
   anything below reads the layer, so the turn that changes the input already
   renders the start of the new request. A result for a request the site owns
@@ -2140,7 +2141,7 @@ whose handler or reaction fired, the cell's position in the store and the
 two writes' places in the list, since the record builder hands the engine
 no field names); `Table.insert` of a key
 already present; a table built from two rows with one key; two rows of a
-view that compare `Same`; a view's row read after its key left the table in
+view that compare `Same`; a table view's row read after its key left the table in
 the same event;
 an effect follow-up chain deeper than 64; a cleanup asking for an awaited
 request; `http_text` given a non-HTTP result; a worker catalogue with a
@@ -2190,8 +2191,8 @@ bound and a declared behaviour at the bound:
 | Awaited requests in flight | 32 (per-program setting) | Typed `Refused` follow-up |
 | Follow-up chain depth per host call | 64 | `contract` poison |
 | Follow-up turns per host call | 64 per in-flight slot, at least 4096 | `resource_limit` poison |
-| HTTP timeout, work deadline | 600 s | Capped |
-| A cancelled job that finishes (`on_cancel: Finish`) | Its deadline, else 600 s after it was performed | Its worker is terminated as at a deadline |
+| HTTP timeout, work timeout | 600 s | Capped |
+| A cancelled job that finishes (`on_cancel: Finish`) | Its timeout, else 600 s after it was performed | Its worker is terminated as at a timeout |
 | Worker catalogue | 64 names (a preparation's and its tasks' each count) | `contract` poison |
 | Port catalogue | 64 ports, names 1–128 bytes | `contract` poison |
 | A port answer or message | `maxPortBytes` (default 4 MiB, at most 64 MiB) | Typed `PortFailed(TooLarge)` |
@@ -2210,11 +2211,11 @@ bound and a declared behaviour at the bound:
 | Object URLs of one file handle | 16 ranges, revoked with the handle | Typed `FileFailed(TooLarge)` |
 | Bytes one job appends to its builders | `maxOutputBytes` (default 256 MiB) | `append!` answers `TooLarge`; the job decides |
 | Files one job's answer holds | 16 | `contract` fault of that worker: `WorkLost(Contract)` |
-| Page slots for a result's files | The page's free handle slots | A job's answer `WorkLost(ResourceLimit)`, a port's answer or message `PortFailed(TooLarge)`, a fetched body `FileFailed(TooLarge)`; nothing minted |
+| Page slots for a result's files | The page's free handle slots | A job's result `WorkLost(ResourceLimit)`, a port's answer or message `PortFailed(TooLarge)`, a fetched body `FileFailed(TooLarge)`; nothing minted |
 | Handles one job holds at once | 64 (the worker's heap) | `resource_limit` fault of that worker |
 | Bytes of one fetched body | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)` |
 | Live node ids (rows included) | 2³² − 2 | `resource_limit` poison |
-| A table's record of changes | One earlier row for each distinct key one turn writes | Cleared when the turn ends |
+| A table's changes | One earlier row for each distinct key one turn writes | Cleared when the turn ends |
 | Runtime ingress queue | 4096 queued events | `resource_limit` poison |
 | Monitor job history | `history` option (default 128, at most 1024) | Oldest overwritten, counted |
 | Monitor retired instances | 16 | Oldest overwritten, counted |
@@ -2268,7 +2269,7 @@ of steps written against the rendered UI:
 - **Ports** — neither runner calls the page's port handlers; port traffic
   is stubbed as HTTP is. A port call shares `run-effect`'s occurrence
   numbering: `expect-port-call N port json` checks its message and
-  `answer-port N reply|throw|too-large|timeout` answers it (a reply's JSON
+  `answer-port N reply|throw|too-large|timeout` answers it (an answer's JSON
   is delivered as written, so a spec can answer what the app's type does
   not accept). Subscriptions are addressed by port: `emit-port`,
   `close-port`, `fail-port` and `expect-port-subscriptions`. Commands are
@@ -2303,8 +2304,8 @@ oracle and never defines a meaning of its own. In particular:
   that crashes loses only its job, with the crash's fault class, as it does
   in a worker. There is one job path in each runner, whatever the task's
   body does. A job that has not finished after 30 s fails the step in both
-  runners. A spec's time is manual: a job's deadline never expires on its
-  own — the runtime's manual mode arms no deadline timer — and
+  runners. A spec's time is manual: a job's timeout never expires on its
+  own — the runtime's manual mode arms no timeout timer — and
   `time-out-work` expires it. A preparation's task runs the same way: the
   native child prepares afresh and asks, which is what keeping a state must
   equal, so a spec observes answers, never whether a worker kept a state.
@@ -2354,24 +2355,24 @@ exercises the same protocol the browser runtime consumes.
 
 ### Work assertions
 
-Work assertions read the engine's own counters. The engine keeps them as
-plain fields of one record in its transaction accumulator — commands emitted
-by opcode, and the named counters below — and the effect counters in its
-effect table, so counting never allocates, and
-returns them with every host call as the work record (Appendix B). Both runners read that record: natively through
-the program's call results, in Chrome through the `metric` export and
+Work assertions read the engine's own counters. The engine keeps them as plain
+fields of one record in its turn accumulator — commands emitted by opcode, and
+the named counters below — and the effect counters in its effect table, so
+counting never allocates, and returns them with every host call as the work
+record (Appendix B). Both runners read that record: natively through the
+program's call results, in Chrome through the `metric` export and
 `workRecord()`. The native runner also checks, at every work step, that the
-per-opcode counters agree with the commands the `Dom.roc` oracle decoded
-(and the issued and cancelled effect counters with its `FX` and `CANCEL`
-commands), and the walks and the effect-channel fuzz target check it after every batch.
-A metric name not in this table is a parse error. What an instance retains
-has no metric: soak plateaus assert it.
+per-opcode counters agree with the commands the `Dom.roc` oracle decoded (and
+the issued and cancelled effect counters with its `FX` and `CANCEL` commands),
+and the walks and the effect-channel fuzz target check it after every batch. A
+metric name not in this table is a parse error. What an instance retains has no
+metric: soak plateaus assert it.
 
 | Step or metric | Definition |
 |---|---|
 | `mark-metrics` | Snapshot every counter |
-| `rows_created` | `INST` commands: rows created by mount, by an `each` reconciliation or by a view's window |
-| `rows_removed` | Rows a reconciliation removed and rows that left a view's window (a row disposed with its whole site is a disposed scope, not a removed row) |
+| `rows_created` | `INST` commands: rows created by mount, by an `each` reconciliation or by a table view's window |
+| `rows_removed` | Rows a reconciliation removed and rows that left a table view's window (a row disposed with its whole site is a disposed scope, not a removed row) |
 | `rows_reused` | Old rows an `each` reconciliation kept. A reconciliation whose list is equal to the old one (nothing created, removed, moved or changed) counts nothing, and a view, which compares no list, counts none |
 | `rows_updated` | Rows kept whose content was written: a row of an `each` site whose item changed, and a row a view draws before and after the turn whose row in the table was written. With `rows_created`, `rows_removed` and `rows_moved` it says exactly what a turn did to the rows a view draws |
 | `rows_moved` | `MOVE` commands |
@@ -2379,8 +2380,8 @@ has no metric: soak plateaus assert it.
 | `set_text` | `SETTEXT` and `TEXT` commands |
 | `set_value`, `set_checked` | Control state the engine set: `ATTR` and `HATTR` named `value` / `checked`, and `INST` attribute holes with those names |
 | `patches_emitted` | DOM commands (opcodes 1–12) |
-| `derived_calls_into_roc` | Evaluations of app closures: holes, conditions, list reads, `derive` inputs, `remount_on` keys, watched values, cleanup values; for a view, each read of its query or its window and each row it places with the query's `keep` and `sort` (two for a written key it absorbs, the row before and after; every row of the table for a mount or a rebuild). A view's comparisons are not counted |
-| `scopes_created` / `scopes_disposed` | Scopes mounted / disposed: `when` and `switch` branches, `remount_on` bodies, and the rows of `each` and view sites |
+| `derived_calls_into_roc` | Evaluations of app closures: holes, conditions, list reads, `derive` inputs, `remount_on` keys, watched values, cleanup values; for a table view, each read of its query or its window and each row it places with the query's `keep` and `sort` (two for a written key it absorbs, the row before and after; every row of the table for a mount or a rebuild). A table view's comparisons are not counted |
+| `scopes_created` / `scopes_disposed` | Scopes mounted / disposed: `when` and `switch` branches, `remount_on` bodies, and the rows of `each` and table view sites |
 | `dirty_source_roots` | What a turn wrote: one for each cell, and one for each layer when its readers are refreshed, whether its site started the pass, joined it or was reached by the walk after it (a layer disposed before then counts none; a `resource` answer that folds to an equal value writes none, and a decision that returns no write counts nothing) |
 | `each_key_hashes` / `each_key_compares` | Keys hashed and full-key comparisons made by keyed reconciliation (lookups and inserts; a key hashed for a lookup is not hashed again to insert it, and a removal uses the stored hash) |
 | `effects_issued`, `effects_delivered`, `effects_stale`, `effects_refused`, `effects_cancelled`, `effects_reparented`, `effects_skipped` | The engine's effect counters (The Effect Channel, "Counters"): awaited requests issued (one `FX` each), results delivered to a reaction, stale results dropped, requests refused at the in-flight cap, requests cancelled (one `CANCEL` each), requests reparented to a surviving ancestor, and reparented writes skipped because their state was retired |
@@ -2403,7 +2404,7 @@ A decision is a pure function, so a transition is tested by a top-level
 `expect` with no engine and no browser: `store.after(writes)` applies a list
 to the store's starting storage as a turn applies it, the same-cell rule
 included, and `read(cell)` reads a cell of the result. No turn ends there,
-so a table read from the result still holds its record, and
+so a table read from the result still holds its changes, and
 `read(table).inverse()` tells which rows the transition wrote. A component's
 operations on its own type are tested the same way. This is the check that
 sees a transition that left out a reset or wrote the wrong cell of the right
@@ -2442,7 +2443,7 @@ know nothing of the platform.
   real in a child process, as a spec runs it, unless the walk loses it with
   a fault class, times it out or leaves it pending for disposal to cancel.
   Every other request is answered from the app's own specs: an HTTP request
-  with a reply they give its URL (else its path), a 503 or a timeout; a
+  with an HTTP response they give its URL (else its path), a 503 or a timeout; a
   port call with an answer they give that port, a throw or its timeout.
   After every step the settle check must pass and the counters must agree
   with the commands; at the end the walk must leave no allocation, byte or
@@ -2463,15 +2464,15 @@ know nothing of the platform.
   up as the command the turn should have emitted. It needs no model of the
   app, so every walk checks propagation completeness for free.
 
-  A view site keeps its storage from its table's record, not by comparing
-  values, so pruning alone would not catch a view a turn left behind. In the
-  same pass each view site therefore also builds its view from scratch, for
+  A table view site keeps its storage from its table's changes, not by comparing
+  values, so pruning alone would not catch a table view a turn left behind. In the
+  same pass each table view site therefore also builds its view from scratch, for
   the query and the window as they read then, and requires the one it holds
   to equal it: the ordered keys of the whole view, the window, the rows
-  drawn, the count of writes it is up to date with, and the table's record
+  drawn, the count of writes it is up to date with, and the table's changes
   cleared. A difference fails the check with the site's path, and the pass
   stops at that site, whose rows may name keys the table no longer has. This
-  second check costs a rebuild of every view at every step.
+  second check costs a rebuild of every table view at every step.
 
   The check sees only propagation: a wrong reducer or decision, a
   mis-encoded command or a wrong `last` agree with themselves and pass.
@@ -2537,17 +2538,18 @@ architecture are recorded here:
 
 ## Compiler Limitations
 
-These are upstream defects and missing features in the Roc nightly. Each
-workaround is narrow, carries a link to its issue beside the code, and is
-removed once the nightly contains the fix. None of them is platform
-semantics.
+These are upstream compiler defects, missing features and observed dependency
+compatibility failures; a reported failure alone does not establish compiler
+cause. Each workaround is narrow, carries a link to its issue beside the
+code, and is removed once the compiler or dependency contains the fix. None
+of them is platform semantics.
 
 | Issue | Defect | Effect on the engine |
 |---|---|---|
 | [roc-lang/roc#12978](https://github.com/roc-lang/roc/issues/12978) | Since `nightly-2026-11-11-7679cc5`, a method's nominal defaulted props reject `{}` inside a callback stored in a record passed to a generic function | The File Effects test app gives its empty read props the explicit `Engine.ReadProps` type before constructing the callback, preserving the default read bound and every spec |
 | [roc-lang/roc#12949](https://github.com/roc-lang/roc/pull/12949) | Native links now require PIC libraries and PIE startup; roc-fuzz 0.6.0's immutable Linux inputs predate that requirement | The platform builds matching PIC musl inputs with its pinned Zig. Fuzz examples and campaigns explicitly report `SKIP` on `nightly-2026-11-11-7679cc5` until roc-fuzz supplies PIC inputs; the next nightly retries, and the engine targets also require the optimizer fix below |
 | [roc-lang/roc#12976](https://github.com/roc-lang/roc/issues/12976) | `nightly-2026-11-11-7679cc5` crashes in `spec_constr` optimizing a function that returns a value beside a closure capturing it; every store example reaches this shape | On that exact nightly the site builds the examples with `--opt=dev`, and optimized walks, browser soaks and worker scaling explicitly report `SKIP`. Ordinary native/browser specs and dev native soaks remain enabled. The next nightly retries optimized builds automatically |
-| [roc-lang/roc#12977](https://github.com/roc-lang/roc/issues/12977) | On Windows, `nightly-2026-11-11-7679cc5` reports compile-time stack overflow evaluating basic-cli's `Locale` literals while building the CLI tool | Only the Windows CLI journey reports `SKIP` on that exact nightly; native specs and worker failure checks still run, and the next nightly retries the journey |
+| [roc-lang/basic-cli#555](https://github.com/roc-lang/basic-cli/issues/555) | Windows CI with `nightly-2026-11-11-7679cc5` reported two `Locale` compile-time stack overflows with basic-cli 0.27 and 0.28; other 0.28 runs reported varying subsets of those and a `Path.roc:739:1` literal overflowing in `Bundle:30:17`. The underlying cause is not established | CI always attempts the current CLI init and prints its retained log. On Windows with that nightly, failed init quarantines the remaining CLI journey only when its diagnostics form a nonempty subset of the three exact captured basic-cli 0.28 failures, each once, and every error, cause and summary agrees; successful init continues it, other failures remain fatal, and native specs still run. Remove the quarantine when basic-cli#555 is resolved; the next nightly retries without it |
 | [roc-lang/roc#12846](https://github.com/roc-lang/roc/issues/12846) | A record captured by one closure is copied on every update under `--opt=speed/size` in some call shapes | Sites return rebuilt closures from each branch; row sites rebuilt before running a handler |
 | [roc-lang/roc#12841](https://github.com/roc-lang/roc/issues/12841) | A list captured by two closures is copied on every update | One closure per site's storage |
 | [roc-lang/roc#12847](https://github.com/roc-lang/roc/issues/12847) | Calling a closure from a borrowed position emits a second copy of its body | Owned child-call loops; code size |
@@ -2563,7 +2565,7 @@ semantics.
 | [roc-lang/roc#12965](https://github.com/roc-lang/roc/issues/12965) | Punned fields in a record builder (`{ x, y }.T`) are reported as unused, which fails `roc check` and `roc test` | A description of cells writes each field out: `{ x: x, y: y }.Engine.Cells` |
 | [roc-lang/roc#12962](https://github.com/roc-lang/roc/issues/12962) | A member of a type's `.{ }` block and a top-level definition of the same name resolve by declaration order: the member binds to itself when the top-level definition comes after the type, so `roc check` passes and `roc test` hangs | A helper in a type module is never given the name of a top-level function |
 | [roc-lang/roc#12971](https://github.com/roc-lang/roc/issues/12971) | Under `--opt=size` and `--opt=speed`, a `while` loop over a `var` holding a record of two `Dict`s, which a table is, copies both on every iteration when the function holding the loop has two or more callers | Many writes to a table in one event are a fold over the keys (`List.fold`), never a loop over a `var` that holds the table |
-| [roc-lang/roc#12970](https://github.com/roc-lang/roc/issues/12970) | `roc check` rejects a function that returns a function whose local helper is called after its parameter meets a `where` clause, such as a function that returns a view's row template | A row template is not returned from a helper. The helper takes the key and the row as arguments, and the site is given a lambda that passes them on with whatever else it needs |
+| [roc-lang/roc#12970](https://github.com/roc-lang/roc/issues/12970) | `roc check` rejects a function that returns a function whose local helper is called after its parameter meets a `where` clause, such as a function that returns a table view's row template | A row template is not returned from a helper. The helper takes the key and the row as arguments, and the site is given a lambda that passes them on with whatever else it needs |
 
 Code size is the main open cost of the architecture and is tracked against
 #12847 and #12848, with each over-budget app's size budget linking its issue.
@@ -2617,19 +2619,19 @@ These are unresolved mechanism choices within the contracts above.
   writes the group: either the event's own writes win over the restart, or a
   group's starting values become functions of the value.
 - **A moved row without the window comparison.** Whether one moved row can be
-  placed without comparing two windows, which would lift the need for a view
+  placed without comparing two windows, which would lift the need for a table view
   to be windowed.
 - **Row state beyond the window.** Whether a row's own state should outlive
   the row's leaving the window, and where it would be held.
-- **Reading a view from a handler.** How a handler reaches what only a view
+- **Reading a table view from a handler.** How a handler reaches what only a table view
   knows (the neighbours of a row, for an order the user chooses by dragging),
-  and how an inverse taken from a table's record reaches the cell that keeps
+  and how an inverse taken from a table's changes reaches the cell that keeps
   a history, without a reading of the table that would copy it.
 - **Row writes that name their row.** Whether a write to a table should say
   which row it writes, so that the same-cell rule can refuse a row replaced
   twice in one decision's list.
 - **Tables outside the store.** Whether a table may live in local state, with
-  a record that some site other than the root clears.
+  changes that some site other than the root clears.
 - **Code-size levers.** How much of the per-state-type, per-context and
   per-`each`-site code cost `derive` and compiler fixes recover, and whether
   a coarser site representation is needed for the largest apps.
@@ -2646,7 +2648,7 @@ The authoring API as it stands (`Engine.roc`). Types are abbreviated; `ctx` is
 the context a value or handler is used in.
 
 **The authoring API is the whole public surface.** Every `Engine` type is
-opaque: `Val`, `State`, `Handler`, `RowRef`, `Cell`, `Cells` and `Store` are
+opaque: `Signal`, `State`, `Handler`, `RowRef`, `Cell`, `Cells` and `Store` are
 opaque wrappers whose methods are documented here, and the contexts, `Elem`,
 `Attr`, `Keyed`, `Write`, `Reach`, `Stored`, `Reaction`, `Program`,
 `Registration` and `Outbox` are aliases of opaque types in the internal
@@ -2654,8 +2656,8 @@ opaque wrappers whose methods are documented here, and the contexts, `Elem`,
 app can neither name a representation nor call the interfaces only hosts and
 harnesses use (`Core.driver`, `mount`, `event`, `result`, `take_cmds`,
 `settled`, the effect and work counters); the generated API docs list the
-authoring API and nothing else. `Req`, `Res`, `WorkFault`, `FileError`,
-`HttpError`, `Boot`, `Query` and `Window` are plain data and stay
+authoring API and nothing else. `Request`, `Result`, `WorkFault`, `FileError`,
+`HttpError`, `Boot`, `QueryPlan` and `Window` are plain data and stay
 structural; `Remote` is a transparent nominal type over a record, so an app
 reads and builds it as the record and calls its methods. `Table` is an
 opaque type in a module of its own, which an app imports to write a table.
@@ -2678,13 +2680,13 @@ Registration                                  # opaque: a task or preparation; W
 Program.with_ports : Program, List(PortRegistration) -> Program # the ports the page supplies
 PortRegistration                              # opaque: a port's name and shape; Port makes one
 
-# Values
-const : a -> Val(ctx, a)
-Val.map : Val(ctx, a), (a -> b) -> Val(ctx, b)
-Val.map2 : Val(ctx, a), Val(ctx, b), (a, b -> c) -> Val(ctx, c)   # what the record builder calls:
-                                              # { a: va, b: vb }.Engine.Val is a Val of the record
-Val.lift : Val(ctx, a) -> Val(In(ctx, s), a)
-Val.lift_row : Val(ctx, a) -> Val(Row(ctx, item), a)
+# Signals
+const : a -> Signal(ctx, a)
+Signal.map : Signal(ctx, a), (a -> b) -> Signal(ctx, b)
+Signal.map2 : Signal(ctx, a), Signal(ctx, b), (a, b -> c) -> Signal(ctx, c)   # what the record builder calls:
+                                              # { a: va, b: vb }.Engine.Signal is a Signal of the record
+Signal.lift : Signal(ctx, a) -> Signal(In(ctx, s), a)
+Signal.lift_row : Signal(ctx, a) -> Signal(Row(ctx, item), a)
 
 # The store: cells, their description and the store built from it
 cell : a -> Cells(whole, a, Cell(whole, a))                       # one cell starting at a value; a store of
@@ -2697,38 +2699,38 @@ Cells.map2 : Cells(whole, a, ha), Cells(whole, b, hb), (ha, hb -> hc)
 Cells.map : Cells(whole, st, h), (h -> k) -> Cells(whole, st, k)
 Cells.with_reset : Cells(whole, st, h), (h, Write(whole) -> k) -> Cells(whole, st, k)
 store : tag, Cells(Stored(tag, st), st, h) -> Store(Stored(tag, st), h)
-Stored(tag, st)                               # opaque: the storage of the store `tag` names
-Store.handles : Store(st, h) -> h
-Store.with_initial : Store(st, h), Cell(st, a), a -> Store(st, h)   # a start: a table's record stays empty
+Stored(tag, st)                               # opaque: the type of the store `tag` names
+Store.cells : Store(st, h) -> h
+Store.with_initial : Store(st, h), Cell(st, a), a -> Store(st, h)   # a start: a table's changes stay empty
 Store.after : Store(st, h), List(Write(st)) -> Store(st, h)      # a decision's writes applied, for a pure expect;
-                                              # no turn ends, so a table keeps its record of them
+                                              # no turn ends, so a table keeps its changes
 Store.read : Store(st, h), Cell(st, a) -> a
-Reach(ctx, st)                                # opaque: how the scope ctx reaches the store
-# Everything below that reads or writes a cell in a scope asks of that scope:
+Reach(ctx, st)                                # opaque: how the context ctx reaches the store
+# Everything below that reads or writes a cell in a context asks of that context:
 #     where [ctx.store : () -> Engine.Reach(ctx, st)]
-Cell.val : Cell(st, a) -> Val(ctx, a)
-Cell.state : Cell(st, a) -> State(ctx, a)     # the cell as a State of the calling scope
-Cell.put : Cell(st, a), a -> Write(st)
-Cell.change : Cell(st, a), (a -> a) -> Write(st)
+Cell.signal : Cell(st, a) -> Signal(ctx, a)
+Cell.state : Cell(st, a) -> State(ctx, a)     # the cell as a State of the calling context
+Cell.set : Cell(st, a), a -> Write(st)
+Cell.update : Cell(st, a), (a -> a) -> Write(st)
 Write(st)                                     # opaque: one write to the store
 
 # Decisions: one pure function from a reading to a list of writes
 handle : (Str -> List(Write(st))) -> Handler(ctx)                # given the event's payload
-handle_by : Val(ctx, b), (b, Str -> List(Write(st))) -> Handler(ctx)   # b read before the decision's own writes
+handle_by : Signal(ctx, b), (b, Str -> List(Write(st))) -> Handler(ctx)   # b read before the decision's own writes
 does : List(Write(st)) -> Handler(ctx)                           # a list that needs neither payload nor reading
 handle_files : (Received -> List(Write(st))) -> FilesHandler(ctx)   # given the files an event carries
-handle_files_by : Val(ctx, b), (b, Received -> List(Write(st))) -> FilesHandler(ctx)
-react : (r, Res -> List(Write(st))) -> Reaction(ctx, r)          # given what the request was issued for
-react_by : Val(ctx, b), (b, r, Res -> List(Write(st))) -> Reaction(ctx, r)
+handle_files_by : Signal(ctx, b), (b, Received -> List(Write(st))) -> FilesHandler(ctx)
+react : (r, Result -> List(Write(st))) -> Reaction(ctx, r)          # given what the request was issued for
+react_by : Signal(ctx, b), (b, r, Result -> List(Write(st))) -> Reaction(ctx, r)
 
 # Local state and handlers
 state : s, (State(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
-State.val : State(ctx, s) -> Val(ctx, s)
+State.signal : State(ctx, s) -> Signal(ctx, s)
 State.update : State(ctx, s), (s -> s) -> Handler(ctx)
-State.update_by : State(ctx, s), Val(ctx, b), (s, b -> s) -> Handler(ctx)
+State.update_by : State(ctx, s), Signal(ctx, b), (s, b -> s) -> Handler(ctx)
 State.set_value : State(ctx, s), (s, Str -> s) -> Handler(ctx)
-State.set_value_by : State(ctx, s), Val(ctx, b), (s, b, Str -> s) -> Handler(ctx)
-State.on_result : State(ctx, s), (s, a, Res -> s) -> Reaction(ctx, a)
+State.set_value_by : State(ctx, s), Signal(ctx, b), (s, b, Str -> s) -> Handler(ctx)
+State.on_result : State(ctx, s), (s, a, Result -> s) -> Reaction(ctx, a)
 State.lift, State.lift_row, Handler.lift, Handler.lift_row
 Handler.also : Handler(ctx), Handler(ctx) -> Handler(ctx)        # both for one event, in order
 Reaction.also : Reaction(ctx, a), Reaction(ctx, a) -> Reaction(ctx, a)
@@ -2736,35 +2738,35 @@ Reaction.also : Reaction(ctx, a), Reaction(ctx, a) -> Reaction(ctx, a)
 # Structure
 element : Str, List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
 text : Str -> Elem(ctx)
-text_v : Val(ctx, Str) -> Elem(ctx)
-when : Val(ctx, Bool), (() -> Elem(ctx)), (() -> Elem(ctx)) -> Elem(ctx)
-switch : Val(ctx, k), List(k), (k -> Elem(ctx)) -> Elem(ctx)
-remount_on : Val(ctx, k), (() -> Elem(ctx)) -> Elem(ctx)         # built again when the key changes; k has is_eq
-derive : Val(ctx, a), (Val(In(ctx, a), a) -> Elem(In(ctx, a))) -> Elem(ctx)
-resource : Val(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Req)), resolve : (s, a, Res -> s) },
-           (Val(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
-Remote(output, error) := { request : [Idle, Pending],                 # what Worker.derive and
-                           answer : [Unanswered, Answered(output), Failed(error)] }  # Port.derive hold
+text_s : Signal(ctx, Str) -> Elem(ctx)
+when : Signal(ctx, Bool), (() -> Elem(ctx)), (() -> Elem(ctx)) -> Elem(ctx)
+switch : Signal(ctx, k), List(k), (k -> Elem(ctx)) -> Elem(ctx)
+remount_on : Signal(ctx, k), (() -> Elem(ctx)) -> Elem(ctx)         # built again when the key changes; k has is_eq
+derive : Signal(ctx, a), (Signal(In(ctx, a), a) -> Elem(In(ctx, a))) -> Elem(ctx)
+resource : Signal(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Request)), resolve : (s, a, Result -> s) },
+           (Signal(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
+Remote(output, error) := { request : [Idle, Pending],                 # what Worker.resource and
+                           answer : [Unanswered, Answered(output), Failed(error)] }  # Port.resource hold
 Remote.answered : Remote(output, error) -> Try(output, [NoAnswer])      # kept while Pending
-gather : asker, Val(ctx, List(input)),                                  # one request per input
-         (Val(In(ctx, Gathered(output, error)), Gathered(output, error)) -> Elem(...)) -> Elem(ctx)
+gather : asker, Signal(ctx, List(input)),                                  # one request per input
+         (Signal(In(ctx, Gathered(output, error)), Gathered(output, error)) -> Elem(...)) -> Elem(ctx)
 Gathered(output, error) : { all : Remote(List(output), error), jobs : List(JobState(output, error)) }
 JobState(output, error) : [Working, Answered(output), Failed(error)]
-each : Val(ctx, List(item)), (item -> Str), (RowRef(ctx, item) -> Elem(Row(ctx, item))) -> Elem(ctx)
-RowRef.key : RowRef(o, item) -> Val(Row(o, item), Str)
-RowRef.field : RowRef(o, item), (item -> a) -> Val(Row(o, item), a)
-RowRef.item : RowRef(o, item) -> Val(Row(o, item), item)         # the whole item
-RowRef.select : RowRef(o, item), Keyed(o, v) -> Val(Row(o, item), v)
-keyed : Val(ctx, Str), v, v -> Keyed(ctx, v)
-each_view : Cell(st, Table(k, v)),
-            { query : Val(ctx, q), plan : (q -> Query(k, v, s)), window : Val(ctx, Window) },
-            (Val(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)   # q has is_eq
-Query(k, v, s) : { keep : k, v -> Bool, sort : k, v -> s, compare : s, s -> [Before, Same, After] }
+each : Signal(ctx, List(item)), (item -> Str), (RowRef(ctx, item) -> Elem(Row(ctx, item))) -> Elem(ctx)
+RowRef.key : RowRef(o, item) -> Signal(Row(o, item), Str)
+RowRef.field : RowRef(o, item), (item -> a) -> Signal(Row(o, item), a)
+RowRef.item : RowRef(o, item) -> Signal(Row(o, item), item)         # the whole item
+RowRef.select : RowRef(o, item), Keyed(o, v) -> Signal(Row(o, item), v)
+keyed : Signal(ctx, Str), v, v -> Keyed(ctx, v)
+TableViewProps(ctx, q, k, v, s) : { query : Signal(ctx, q), plan : (q -> QueryPlan(k, v, s)), window : Signal(ctx, Window) }
+table_view : Cell(st, Table(k, v)), TableViewProps(ctx, q, k, v, s),
+            (Signal(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)   # q has is_eq
+QueryPlan(k, v, s) : { keep : k, v -> Bool, sort : k, v -> s, compare : s, s -> [Before, Same, After] }
 Window : { start : U64, count : U64 }
 every_row : Window                            # the window that draws every row a view keeps
 
 # Attributes and events
-attr, attr_v, class, class_v, test_id, test_id_v
+attr, attr_s, class, class_s, test_id, test_id_s
 on : Str, Handler(ctx) -> Attr(ctx)          # event name, optional ":prevent"
 on_click : Handler(ctx) -> Attr(ctx)
 ref : Str -> Attr(ctx)                        # named focus reference
@@ -2775,19 +2777,19 @@ File.name, File.mime : File -> Str
 File.size : File -> U64                       # bytes in this file or range
 File.slice : File, { start : U64, len : U64 } -> File   # contract error outside the file
 File.spans : File, U64 -> List({ start : U64, len : U64 })   # ranges of n bytes covering it, for read!
-File.read_bytes, File.read_utf8 : File, ReadProps -> Req   # awaited reads into the page
+File.read_bytes, File.read_utf8 : File, ReadProps -> Request   # awaited reads into the page
 ReadProps := { max_bytes : U64 ?? 8388608 }    # under the page's maxFileBytes
-File.upload : File, UploadProps -> Req        # the file as an HTTP body
+File.upload : File, UploadProps -> Request        # the file as an HTTP body
 UploadProps := { url : Str, method : Str ?? "POST", headers : List((Str, Str)) ?? [],
                  timeout : [Unlimited, Ms(U32)] ?? Unlimited }
-File.sha256 : File -> Req                     # answered Digest(32 bytes)
-File.object_url : File -> Req                 # answered FileUrl(url), valid while the handle lives
-file_bytes, file_digest : Res -> Try(List(U8), FileError)
-file_text, file_url : Res -> Try(Str, FileError)
-File.save : File, { name : [Same, Named(Str)] ?? Same } -> Req   # a command: a download
+File.sha256 : File -> Request                     # answered Digest(32 bytes)
+File.object_url : File -> Request                 # answered FileUrl(url), valid while the handle lives
+file_bytes, file_digest : Result -> Try(List(U8), FileError)
+file_text, file_url : Result -> Try(Str, FileError)
+File.save : File, { name : [Same, Named(Str)] ?? Same } -> Request   # a command: a download
 File.fetch : { url : Str, method : Str ?? "GET", headers : List((Str, Str)) ?? [],
-               timeout : [Unlimited, Ms(U32)] ?? Unlimited } -> Req   # answered Fetched
-fetched : Res -> Try(File, FetchError)
+               timeout : [Unlimited, Ms(U32)] ?? Unlimited } -> Request   # answered Fetched
+fetched : Result -> Try(File, FetchError)
 FetchError : [Network(Str), Timeout, Status(U16), TooLarge, Refused]
 # In a worker job only (a task's run!, a preparation's prepare!; effects):
 File.read! : File, { start : U64, len : U64 } => Try(List(U8), [Unreadable])
@@ -2805,19 +2807,19 @@ FilesHandler.also : FilesHandler(ctx), FilesHandler(ctx) -> FilesHandler(ctx)   
 on_files : Str, FilesHandler(ctx) -> Attr(ctx)   # "change", "drop" or "paste"
 
 # Effects
-watch : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
-on_change : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
-latest : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)   # supersedes
+watch : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
+watch_changes : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
+watch_latest : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)   # supersedes
 Outbox(item)                                  # opaque: the latest post and its serial
 outbox : {} -> Outbox(item)
 Outbox.post : Outbox(item), item -> Outbox(item)   # one post per turn; a second is a contract error
 Outbox.last : Outbox(item) -> [Unposted, Posted(item)]
-on_post : Val(ctx, Outbox(item)), (item -> List(Req)), Reaction(ctx, item) -> Elem(ctx)
+on_post : Signal(ctx, Outbox(item)), (item -> List(Request)), Reaction(ctx, item) -> Elem(ctx)
 ignore : {} -> Reaction(ctx, a)
-on_cleanup : Str, Val(ctx, a), (a -> List(Req)) -> Elem(ctx)   # commands only
+on_cleanup : Str, Signal(ctx, a), (a -> List(Request)) -> Elem(ctx)   # commands only
 cleanup : Str -> Elem(ctx)
-Req : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Timer(U32),
-       Work({ task : Str, input : List(U8), files : List(File), deadline_ms : U32,
+Request : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Timer(U32),
+       Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32,
               on_dispose : [Stop, Keep], on_cancel : [Stop, Finish],
               prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] }),
        Interval(U32), Popstate, OnlineChanges, VisibilityChanges, Self, Push(Str),
@@ -2828,11 +2830,11 @@ Req : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Timer(
        PortCommand({ port, message }), PortCall({ port, message, timeout_ms }),
        PortSubscribe({ port, message }),
        Save({ file : File, name : Str }), Fetch({ method, url, headers, timeout_ms })]
-Res : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
+Result : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
        Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused,
        Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError),
        FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str),
-       PortReply(PortMessage), PortFailed(PortFailure),
+       PortAnswer(PortMessage), PortFailed(PortFailure),
        Fetched({ status : U16, headers : List((Str, Str)), body : File })]
 FileError : [Unreadable, TooLarge, InvalidUtf8, Unavailable, Refused]
 PortMessage : { json : Str, blobs : List(List(U8)), files : List(File) }
@@ -2840,14 +2842,14 @@ PortFailure : [Threw(Str), TooLarge, Closed]
 PortDelivery : [Latest, Every(U32)]
 WorkFault : [Contract, ResourceLimit, OutOfMemory, AppCrash, ExpectFailed, Unavailable, Executor]
 HttpError : [Network(Str), Timeout, Status(U16), Refused]
-http_text : Res -> Try(Str, HttpError)
+http_text : Result -> Try(Str, HttpError)
 ```
 
 `Table` (`platform/Table.roc`) is the value a table cell holds. Its key type
 has `is_eq` and `to_hash`:
 
 ```roc
-Table(k, v)                                   # opaque: rows by key and the record of this turn's changes
+Table(k, v)                                   # opaque: rows by key and this turn's changes
 Table.from_list : List({ key : k, row : v }) -> Table(k, v)             # two rows with one key: contract error
 Table.load : Table(k, v), List({ key : k, row : v }) -> Table(k, v)     # replace every row: a whole rewrite
 Table.insert : Table(k, v), k, v -> Table(k, v)                         # a key already present: contract error
@@ -2861,10 +2863,10 @@ Table.contains : Table(k, v), k -> Bool
 Table.len : Table(k, v) -> U64
 Table.fold : Table(k, v), state, (state, k, v -> state) -> state       # in no particular order
 Table.to_list : Table(k, v) -> List({ key : k, row : v })               # in no particular order
-Table.changes : Table(k, v) -> [Keyed(Dict(k, [Absent, Was(v)])), Rewritten]   # this turn's record
+Table.changes : Table(k, v) -> [Keyed(Dict(k, [Absent, Was(v)])), Rewritten]   # this turn's changes
 Table.inverse : Table(k, v) -> Try(List([Put(k, v), Remove(k)]), [Rewritten])   # undoes this turn's writes
 Table.apply : Table(k, v), List([Put(k, v), Remove(k)]) -> Table(k, v)
-# The engine's bookkeeping of the record. An app cannot make an EngineOnly, so it cannot call these:
+# The engine's bookkeeping of the changes. An app cannot make an EngineOnly, so it cannot call these:
 Table.version, Table.changes_start : Table(k, v), EngineOnly -> U64
 Table.clear_changes : Table(k, v), EngineOnly -> Table(k, v)
 Table.with_id : Table(k, v), U64, EngineOnly -> Table(k, v)
@@ -2873,7 +2875,7 @@ Table.kept : Table(k, v), { id : U64, start : U64, version : U64 }, EngineOnly -
 ```
 
 Everything above the last six lines is for apps. `changes`, `inverse` and
-`apply` read and replay the record of the current turn: an undo history
+`apply` read and replay the changes of the current turn: an undo history
 takes an inverse in the event that made the writes, and a pure test reads
 which rows a transition wrote.
 
@@ -2884,35 +2886,35 @@ which rows a transition wrote.
 Worker.task : TaskProps(input, output, error) -> Task(input, output, error)
     where [input.Wire.Sendable, output.Wire.Sendable, error.Wire.Sendable]
 Worker.TaskProps(input, output, error) := { name : Str, run! : input => Try(output, error),
-    deadline : [Unlimited, Ms(U32)] ?? Unlimited, on_dispose : [Stop, Keep] ?? Stop,
+    timeout : [Unlimited, Ms(U32)] ?? Unlimited, on_dispose : [Stop, Keep] ?? Stop,
     on_cancel : [Stop, Finish] ?? Stop }
 Task.registration : Task(input, output, error) -> Registration
 Task.name : Task(input, output, error) -> Str                            # what requests and the monitor name its jobs by
-Task.request : Task(input, output, error), input -> Req                 # a Work request
-Task.result : Task(input, output, error), Res -> Try(output, Worker.Error(error))
+Task.request : Task(input, output, error), input -> Request                 # a Work request
+Task.result : Task(input, output, error), Result -> Try(output, Worker.Error(error))
 Worker.Error(error) : [Failed(error), Timeout, Refused, Lost(WorkFault)]
 Worker.Never := []                             # the error of a task that cannot fail; Wire.Sendable
-Worker.prepared : PreparationProps(init, state, error) -> Preparation(init, state, error)
+Worker.preparation : PreparationProps(init, state, error) -> Preparation(init, state, error)
     where [init.Wire.Sendable, error.Wire.Sendable]
 Worker.PreparationProps(init, state, error) := { name : Str, prepare! : init => Try(state, error) }
-Preparation.task : Preparation(init, state, error), PreparedTaskProps(state, query, output, error)
-    -> PreparedTask(init, state, query, output, error)
-    where [query.Wire.Sendable, output.Wire.Sendable, error.Wire.Sendable]
-Worker.PreparedTaskProps(state, query, output, error) := { name : Str,
-    run! : (state, query => Try(output, error)), deadline ?? Unlimited,
+Preparation.task : Preparation(init, state, error), PreparedTaskProps(state, input, output, error)
+    -> PreparedTask(init, state, input, output, error)
+    where [input.Wire.Sendable, output.Wire.Sendable, error.Wire.Sendable]
+Worker.PreparedTaskProps(state, input, output, error) := { name : Str,
+    run! : (state, input => Try(output, error)), timeout ?? Unlimited,
     on_dispose ?? Stop, on_cancel ?? Stop }    # as TaskProps
 Preparation.registration : Preparation(init, state, error), List(PreparedTaskEntry(state)) -> Registration
-PreparedTask.registration : PreparedTask(init, state, query, output, error) -> PreparedTaskEntry(state)
-PreparedTask.name : PreparedTask(init, state, query, output, error) -> Str
-PreparedTask.request : PreparedTask(init, state, query, output, error), Question(init, query) -> Req
-PreparedTask.result : PreparedTask(init, state, query, output, error), Res -> Try(output, Worker.Error(error))
+PreparedTask.registration : PreparedTask(init, state, input, output, error) -> PreparedTaskEntry(state)
+PreparedTask.name : PreparedTask(init, state, input, output, error) -> Str
+PreparedTask.request : PreparedTask(init, state, input, output, error), Question(init, input) -> Request
+PreparedTask.result : PreparedTask(init, state, input, output, error), Result -> Try(output, Worker.Error(error))
 Worker.PreparedTaskEntry(state)               # opaque: a preparation's task, for its registration
-Worker.Question(init, query) : { input : init, query : query }
-Worker.derive : work, Val(ctx, input),         # a Task or a PreparedTask
-    (Val(In(ctx, Remote(output, Worker.Error(error))), Remote(output, Worker.Error(error))) -> Elem(...)) -> Elem(ctx)
-Worker.derive_when : work, Val(ctx, [Run(input), Skip]), ... -> Elem(ctx)
-Worker.gather : work, Val(ctx, List(input)),   # one job per input
-    (Val(In(ctx, Gathered(output, Worker.Error(error))), ...) -> Elem(...)) -> Elem(ctx)
+Worker.Question(init, input) : { init : init, input : input }
+Worker.resource : work, Signal(ctx, input),         # a Task or a PreparedTask
+    (Signal(In(ctx, Remote(output, Worker.Error(error))), Remote(output, Worker.Error(error))) -> Elem(...)) -> Elem(ctx)
+Worker.resource_when : work, Signal(ctx, [Run(input), Skip]), ... -> Elem(ctx)
+Worker.gather : work, Signal(ctx, List(input)),   # one job per input
+    (Signal(In(ctx, Gathered(output, Worker.Error(error))), ...) -> Elem(...)) -> Elem(ctx)
 Worker.status : Remote(output, Worker.Error(error)) -> Worker.Status(output, error)
 Worker.Status(output, error) : [Unasked, Working, Answered(output), Failed(error), Timeout, Refused, Lost(WorkFault)]
 Wire.encode : a -> List(U8)                    where [a.Wire.Sendable]
@@ -2932,28 +2934,28 @@ Port.CallProps := { name : Str, timeout : [Unlimited, Ms(U32)] ?? Unlimited }
 Port.subscription : SubscriptionProps -> Subscription(arg, msg)   where [arg.PortJson.Sendable, msg.PortJson.Sendable]
 Port.SubscriptionProps := { name : Str, delivery : Delivery }
 Command.registration, Call.registration, Subscription.registration : ... -> PortRegistration
-Command.send : Command(output), output -> Req          # a PortCommand
-Call.request : Call(input, output), input -> Req       # a PortCall
-Call.result : Call(input, output), Res -> Try(output, Port.Error)
-Subscription.subscribe : Subscription(arg, msg), arg -> Req   # a PortSubscribe
-Subscription.message : Subscription(arg, msg), Res -> Try(msg, Port.Error)
+Command.send : Command(output), output -> Request          # a PortCommand
+Call.request : Call(input, output), input -> Request       # a PortCall
+Call.result : Call(input, output), Result -> Try(output, Port.Error)
+Subscription.subscribe : Subscription(arg, msg), arg -> Request   # a PortSubscribe
+Subscription.message : Subscription(arg, msg), Result -> Try(msg, Port.Error)
 Port.Error : [Refused, Timeout, Threw(Str), TooLarge, Closed, Undecodable(Str)]
 Port.Delivery : [Latest, Every(U32)]
-Port.derive : Call(input, output), Val(ctx, input),
-    (Val(In(ctx, Remote(output, Port.Error)), Remote(output, Port.Error)) -> Elem(...)) -> Elem(ctx)
-Port.derive_when : Call(input, output), Val(ctx, [Run(input), Skip]), ... -> Elem(ctx)
+Port.resource : Call(input, output), Signal(ctx, input),
+    (Signal(In(ctx, Remote(output, Port.Error)), Remote(output, Port.Error)) -> Elem(...)) -> Elem(ctx)
+Port.resource_when : Call(input, output), Signal(ctx, [Run(input), Skip]), ... -> Elem(ctx)
 ```
 
 `Html` (`platform/Html.roc`) is the typed element vocabulary above `Engine`:
-structure (`div`, `section`, `p`, `h1`–`h3`, `ul`/`li`, `pre_v`, `link`),
-controls (`button`, `action_button`, `text_input`, `number_input`,
-`textarea`, `checkbox`, `radio`, `select`/`option`, `form`, `submit_button`,
-`file_input`, whose props are
-`FileInputProps := { selection : [Single, Multiple] ?? Single, accept : [Any, Types(Str)] ?? Any }`),
-accessibility attributes (`aria_label`, `aria_invalid`, `aria_describedby`)
-and event helpers (`on_input`, `on_change`, `on_focus`, `on_blur`,
-`on_keydown`, `on_submit`, `on_drop_files`, `on_paste_files`). Accessible names go in `aria-label`, which the
-spec locators match.
+structure (`div`, `section`, `p`, `h1`–`h3`, `ul`/`li`, `pre_s`, `link`),
+controls (`button`, `action_button`, `text_input`, `number_input`, `textarea`,
+`checkbox`, `radio`, `select`/`option`, `form`, `submit_button`, `file_input`,
+whose props are `FileInputProps := { selection : [Single, Multiple] ?? Single,
+accept : [Any, Types(Str)] ?? Any }`), accessibility attributes (`aria_label`,
+`aria_invalid`, `aria_describedby`) and event helpers (`on_input`, `on_change`,
+`on_focus`, `on_blur`, `on_keydown`, `on_submit`, `on_drop_files`,
+`on_paste_files`). Accessible names go in `aria-label`, which the spec locators
+match.
 
 **Target vocabulary.** An `Svg` module and a typed style API, event policies
 beyond `:prevent`, session storage, an entropy seed, and handler-level
@@ -2970,10 +2972,11 @@ This appendix is protocol version **4**. The engine declares it
 (`Engine.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
-`Dom.roc` decodes. Any change below bumps the version and updates the
+`Dom.roc` decodes. A change to the wire bytes below bumps the version and updates the
 engine's encoder and decoders, `Dom.roc`, both hosts (`host.zig`,
 `spec.zig`), `runtime.mjs`, `worker.mjs`, the contract tests and this
-appendix together.
+appendix together. Renaming a label without changing its bytes does not
+change the protocol version.
 
 ### Roc ↔ host
 
@@ -2987,8 +2990,8 @@ roc-lang/roc#12953 (see [Compiler Limitations](#compiler-limitations)).
 | `roc_engine_version` | `() -> u32` | The protocol version (4) |
 | `roc_engine_keys` | `() -> List(U8)` | Declared storage keys, then the port table: `count:u32 (key:str)* nports:u32 (name:str kind:u8 delivery:u8 bound:u32)*`, where `kind` is `1` command, `2` call, `3` subscription, `delivery` is `0` (not a subscription), `1` every or `2` latest, and `bound` is n for every, `1` for latest, `0` otherwise. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
-| `roc_engine_event` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One transaction: state, recycled command buffer, recycled work buffer, node, handler, payload |
-| `roc_engine_files` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8), List(Box(U64)) -> { cmds, state, work }` | A `:files` event: as `roc_engine_event`, with the file record as the payload and the handles the host minted for it, in the record's order; a record that does not match them is a `contract` crash. On the effect node it is a result that carries files, whose files are those handles, in order: a job's answer (result tag 10), a port reply (14) or a fetched file (21) |
+| `roc_engine_event` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
+| `roc_engine_files` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8), List(Box(U64)) -> { cmds, state, work }` | A `:files` event: as `roc_engine_event`, with the file record as the payload and the handles the host minted for it, in the record's order; a record that does not match them is a `contract` crash. On the effect node it is a result that carries files, whose files are those handles, in order: a job's answer (result tag 10), a port answer (14) or a fetched file (21) |
 | `roc_engine_drop` | `Box(Iter(Core.App)), List(U8), List(U8) -> {}` | Teardown |
 | `roc_engine_work` | `List(U8), List(Box(U64)) => List(U8)` | A worker instance's job (effectful): payload `name:str input:rest` and the handles the instance's host minted for the files the request named, in its order; returns the answer, `n:u32 (token:u64)*n output:rest`: the instance's tokens of the files the answer holds (in the order its payload refers to them), then the answer's bytes, a list of its own. `name` is a `str` (a `u32` length), while `input` is a `Wire` payload whose counts are LEB128, so a harness meets both encodings in one buffer. `output` is the `Wire` encoding of the job's `Ok` value or `Err` error followed by one byte, `0` or `1`, which the typed layer writes and reads. A name the catalogue does not hold, a preparation's name or a preparation's task's name, a payload without a name, or an answer holding more than 16 files, is a `contract` crash (it poisons that worker instance only) |
 | `roc_engine_prepare` | `List(U8), List(Box(U64)) => Box(Core.Kept)` | Prepare a state to keep (effectful): payload `prep:str init:rest` (the preparation's name and its own input) and the handles of the preparation's files; returns the state. A name that is not a preparation is a `contract` crash |
@@ -3029,7 +3032,7 @@ warm-up neither allocates.
 | `boot_keys()` | Before mount: make the declared key list readable through `cmd_ptr`/`cmd_len` |
 | `payload_reserve(len) -> ptr` | Allocate the next call's payload (`0` for `len = 0`); JS writes `len` bytes at `ptr` after refreshing its memory view |
 | `init()` | Mount with the staged boot bytes; mount commands become readable |
-| `event(node, handler)` | One transaction with the staged payload; its commands become readable |
+| `event(node, handler)` | One turn with the staged payload; its commands become readable |
 | `files_stage(n) -> u32` | Mint handles for the next `event_files`, as many of `n` as the blob heap has free slots (64 at most live), and return how many; their tokens (`u64` each) are readable at `files_tokens()`. Releases an undelivered staged set first |
 | `event_files(node, handler)` | A `:files` event: the staged payload (its file record) and the staged handles move into `roc_engine_files` |
 | `files_released() -> u32` | After a batch is applied and its effects performed: free the slots of the handles Roc released since the last drain and return how many; their tokens are readable at `files_tokens()`, and the runtime lets their files go. `0` when poisoned |
@@ -3077,7 +3080,7 @@ that has run, in first-run order, with its run count.
 | 19 | `set_value`: control values set (`ATTR`/`HATTR` named `value`, `INST` value holes) |
 | 20 | `set_checked`: the same for `checked` |
 | 21 | Evaluations of app closures (`derived_calls_into_roc`) |
-| 22 | Rows removed by reconciliation, and rows that left a view's window (`rows_removed`) |
+| 22 | Rows removed by reconciliation, and rows that left a table view's window (`rows_removed`) |
 | 23 | Rows reused by a reconciliation that changed something (`rows_reused`) |
 | 24 | Kept rows whose item changed, and rows a view kept whose row in the table was written (`rows_updated`) |
 | 25, 26 | Scopes created, disposed |
@@ -3121,14 +3124,14 @@ An event is `event(node, handler)` with the payload staged first:
 | 4 | — | `Missing` (storage miss) |
 | 5 | — | `Fired` (timer or interval) |
 | 6 | `url:rest` | `Location` (popstate) |
-| 7 | — | `Timeout` (an HTTP timeout, or a work deadline that stopped its worker) |
+| 7 | — | `Timeout` (an HTTP timeout, or a work timeout that stopped its worker) |
 | 8 | `online:u8` | `Online(Bool)` (connectivity change) |
 | 9 | `visible:u8` | `Visible(Bool)` (visibility change) |
 | 10 | `n:u32 (size:u64 name:str type:str)*n output:rest` | `Work({ output, files })`: a job's answer. With files (`n > 0`) it is delivered through `event_files` on the effect node, the files being the staged handles in order; otherwise through `event` with `n` `0`. `output` is the task's `Wire` payload and its `Ok`/`Err` byte, which refers to the files by their place |
 | 11 | `class:u8` | `WorkLost(fault)`: `1` contract, `2` resource_limit (the worker instance's, or the page had no slots for an answer's files), `3` out_of_memory, `4` app_crash, `5` expect_failed (the worker instance's fault class), `6` unavailable (no `Worker`, or an inline job reached a worker effect), `7` executor (the worker script failed) |
 | 12 | — | Reserved |
 | 13 | `reason:u8` | `FileFailed(reason)`, for an operation on a file on the page (never a job): `1` unreadable (a file the request named could not be read), `2` too_large (more bytes than the operation reads, or a 17th range given a URL), `3` unavailable (the browser cannot perform the operation) |
-| 14 | `json:str nblobs:u32 (len:u32 bytes)* nfiles:u32 (size:u64 name:str type:str)*` | `PortReply(message)`: a call's answer or a subscription's message. With files it is delivered through `event_files` on the effect node, and the files are the staged handles in order; otherwise `nfiles` is `0` |
+| 14 | `json:str nblobs:u32 (len:u32 bytes)* nfiles:u32 (size:u64 name:str type:str)*` | `PortAnswer(message)`: a call's answer or a subscription's message. With files it is delivered through `event_files` on the effect node, and the files are the staged handles in order; otherwise `nfiles` is `0` |
 | 15 | `class:u8 [detail:rest]` | `PortFailed(failure)`: `1` threw (`detail` is the message), `2` too_large, `3` closed |
 | 16 | `bytes` (the rest, raw) | `FileBytes(List(U8))`: a file's range read into the page |
 | 17 | `bytes` (the rest, raw) | `FileText(Str)`, or `FileFailed(InvalidUtf8)` when the bytes are not UTF-8 |
@@ -3138,8 +3141,11 @@ An event is `event(node, handler)` with the payload staged first:
 | 21 | `status:u16 n:u32 (name:str value:str)*n size:u64 name:str type:str` | `Fetched({ status, headers, body })`, delivered through `event_files` with exactly one staged handle, the body |
 
 A result payload that does not follow this table (unknown tag, bytes after a
-bare tag, a flag other than `0`/`1`, a fault class outside `1`–`7`, a file failure other than `1`–`3`, a digest that is not 32 bytes, a port failure other than `1`–`3`, a port reply, job answer or fetched body whose file count is not the handles staged with it, a
-truncated HTTP record, text that is not UTF-8) is a `contract` fault.
+bare tag, a flag other than `0`/`1`, a fault class outside `1`–`7`, a file
+failure other than `1`–`3`, a digest that is not 32 bytes, a port failure other
+than `1`–`3`, a port answer, job answer or fetched body whose file count is not
+the handles staged with it, a truncated HTTP record, text that is not UTF-8) is
+a `contract` fault.
 
 ### Node ids
 
@@ -3181,7 +3187,7 @@ truncated HTTP record, text that is not UTF-8) is a `contract` fault.
 | 13 | `FX` | `id kind:u8 …` (below) |
 | 14 | `CANCEL` | `id` |
 | 15 | `NAV` | `mode:u8 url:str` (`1` push, `2` replace) |
-| 16 | `STORE` | `op:u8 key:str [value:str]` (`1` set with value, `2` remove) |
+| 16 | `STORAGE` | `op:u8 key:str [value:str]` (`1` set with value, `2` remove) |
 | 17 | `TITLE` | `text:str` |
 | 18 | `FOCUS` | `op:u8 node` (`1` focus, `2` blur, `3` focus and select text) |
 | 19 | `PORT` | `port:str message` — a port command; `message` is `json:str nblobs:u32 (len:u32 bytes)* nfiles:u32 (token:u64 start:u64 len:u64)*` |
@@ -3203,7 +3209,7 @@ file is resolved when the batch is applied).
 | 5 | — | Popstate (subscription) |
 | 6 | — | Connectivity (subscription; `online`/`offline` events) |
 | 7 | — | Visibility (subscription; `visibilitychange` events) |
-| 8 | `task:str input:u32+bytes n:u32 (token:u64 start:u64 len:u64)*n deadline_ms:u32 cancel:u8 prepared:u8 [prep:str input_len:u32 input_files:u32]` | Work: a job of the task `task`. `input` is a `u32` length and raw bytes, not necessarily UTF-8; then the files the input refers to, each a handle's token and a range of its file, which cross whole, as handles a worker mints, and are read by the job; `deadline_ms` 0 = none, capped at 600 000; `cancel` is the task's cancel policy (`1` stop, `2` finish). `prepared` is `0` for a task of its own and `1` for a preparation's task, which then names its preparation, how many bytes at the start of `input` are the preparation's input (`input_len`; the task's own input is the rest) and how many of the files are the preparation's (the first `input_files`). A disposal policy is the engine's and does not cross. Any other value, or operands that do not lie within the request, are a `contract` fault |
+| 8 | `task:str input:u32+bytes n:u32 (token:u64 start:u64 len:u64)*n timeout_ms:u32 cancel:u8 prepared:u8 [prep:str input_len:u32 input_files:u32]` | Work: a job of the task `task`. `input` is a `u32` length and raw bytes, not necessarily UTF-8; then the files the input refers to, each a handle's token and a range of its file, which cross whole, as handles a worker mints, and are read by the job; `timeout_ms` 0 = none, capped at 600 000; `cancel` is the task's cancel policy (`1` stop, `2` finish). `prepared` is `0` for a task of its own and `1` for a preparation's task, which then names its preparation, how many bytes at the start of `input` are the preparation's input (`input_len`; the task's own input is the rest) and how many of the files are the preparation's (the first `input_files`). A disposal policy is the engine's and does not cross. Any other value, or operands that do not lie within the request, are a `contract` fault |
 | 9 | `port:str message timeout_ms:u32` | Port call (`message` as for `PORT`); `timeout_ms` 0 = none, capped at 600 000 |
 | 10 | `port:str message` | Port subscription |
 | 11 | `mode:u8 token:u64 start:u64 len:u64 max_bytes:u64` | Read a file's range into the page: `mode` `1` bytes (answered tag 16), `2` text (tag 17); a range longer than `max_bytes`, or than the runtime's `maxFileBytes`, is answered tag 13 `TooLarge` unread |

@@ -317,7 +317,7 @@ Dom := [].{
 	apply = |dom0, b| Dom.apply_ops(dom0, b).0
 
 	op_name : U8 -> Str
-	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORE", "TITLE", "FOCUS", "PORT", "SAVE"].get(op.to_u64()) ?? "?"
+	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "FOCUS", "PORT", "SAVE"].get(op.to_u64()) ?? "?"
 
 	## Opcode histogram of a batch, e.g. "SETTEXT=1 ATTR=1".
 	describe : List(U8) -> Str
@@ -346,7 +346,7 @@ Dom := [].{
 
 		## A worker job (`FX` kind 8): its id, then its task's name, input
 		## bytes, the files it names (each a handle's token and a range of its
-		## file), deadline (ms, 0 none), cancel policy (1 stop, 2 finish) and,
+		## file), timeout (ms, 0 none), cancel policy (1 stop, 2 finish) and,
 		## for a preparation's task, the preparation and where its input lies.
 		Work(U32, WorkJob),
 		Cancel(U32),
@@ -396,7 +396,7 @@ Dom := [].{
 	PortMsg : { json : Str, blobs : List(List(U8)), files : List({ token : U64, start : U64, len : U64 }) }
 
 	## A worker job as `FX` kind 8 describes it (see [FxCmd]'s `Work`).
-	WorkJob : { task : Str, input : List(U8), files : List({ token : U64, start : U64, len : U64 }), deadline_ms : U32, cancel : U8, prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] }
+	WorkJob : { task : Str, input : List(U8), files : List({ token : U64, start : U64, len : U64 }), timeout_ms : U32, cancel : U8, prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] }
 
 	## A port message at `at`: `json:str nblobs:u32 (len:u32 bytes)* nfiles:u32
 	## (token:u64 start:u64 len:u64)*`, and where it ends.
@@ -637,7 +637,7 @@ Dom := [].{
 						$refs = $refs.append({ token: Dom.u64(b, $r), start: Dom.u64(b, $r + 8), len: Dom.u64(b, $r + 16) })
 						$r = $r + 24
 					}
-					deadline_ms = Dom.u32(b, $r)
+					timeout_ms = Dom.u32(b, $r)
 					cancel = b.get($r + 4) ?? crash "truncated work request"
 					flag = b.get($r + 5) ?? crash "truncated work request"
 					if cancel < 1 or cancel > 2 {
@@ -660,7 +660,7 @@ Dom := [].{
 					} else {
 						crash "work request flag ${flag.to_str()} is not 0 or 1"
 					}
-					$fx = $fx.append(Work(id, { task, input, files: $refs, deadline_ms, cancel, prepared }))
+					$fx = $fx.append(Work(id, { task, input, files: $refs, timeout_ms, cancel, prepared }))
 				} else if kind == 11 {
 					mode = Dom.byte(b, $at)
 					if mode != 1 and mode != 2 {

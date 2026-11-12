@@ -16,7 +16,7 @@
 // - A running job cancelled mid-file is stopped by terminating its worker:
 //   no answer, no handle on the page, and the next job runs on a fresh one.
 // - A cancelled job of a task that says `on_cancel: Finish` runs on only
-//   until its deadline: then its worker is ended with cause `deadline`.
+//   until its timeout: then its worker is ended with cause `timeout`.
 // - Unmounting with a job running terminates it and delivers nothing.
 // - The page's instance never performs an effect: its imports are stubs
 //   that throw, and `work()` on a mounted instance is a classified contract
@@ -82,16 +82,16 @@ const check = (name, got, want) => {
 };
 
 function install() {
-  // Every reply a worker posts, as the pool sees it: the instance's live
+  // Every answer a worker posts, as the pool sees it: the instance's live
   // handles and memory after each job.
   const W = window.Worker;
-  window.__replies = [];
+  window.__answers = [];
   window.Worker = class extends W {
     constructor(url, options) {
       super(url, options);
       this.addEventListener("message", (e) => {
         const m = e.data;
-        if (m && m.type === "done") window.__replies.push({ type: m.type, handles: m.handles, mem: m.mem, objects: (m.objects ?? []).length });
+        if (m && m.type === "done") window.__answers.push({ type: m.type, handles: m.handles, mem: m.mem, objects: (m.objects ?? []).length });
       });
     }
   };
@@ -161,7 +161,7 @@ async function open(options = {}) {
       held: held - before,
       files,
       text: text === "A".repeat(1000),
-      worker: window.__replies.map((x) => x.handles),
+      worker: window.__answers.map((x) => x.handles),
       after: window.__pageHandles() - before,
       filesAfter: window.__rt.files.size,
     };
@@ -182,15 +182,15 @@ async function open(options = {}) {
     const out = window.__held("big.txt.upper");
     const head = await out.slice(0, 4).text();
     const tail = await out.slice(out.size - 4).text();
-    const reply = window.__replies[0];
+    const answer = window.__answers[0];
     return {
       outcome,
       head,
       tail,
-      workerMemoryUnder16MiB: reply.mem[0] < 16 << 20,
-      workerMemory: reply.mem[0],
+      workerMemoryUnder16MiB: answer.mem[0] < 16 << 20,
+      workerMemory: answer.mem[0],
       pageGrewUnder1MiB: window.__liveBytes() - pageBytes < 1 << 20,
-      handles: reply.handles,
+      handles: answer.handles,
     };
   });
   console.log(`     worker linear memory after a 64 MiB transform: ${(r.workerMemory / (1 << 20)).toFixed(1)} MiB`);
@@ -207,7 +207,7 @@ async function open(options = {}) {
     window.__choose("k.txt", 1000);
     window.__click("Overflow");
     const outcome = await window.__until("outcome", (t) => t !== "running");
-    return { outcome, page: window.__pageHandles(), worker: window.__replies.map((x) => x.handles) };
+    return { outcome, page: window.__pageHandles(), worker: window.__answers.map((x) => x.handles) };
   });
   check("an append past maxOutputBytes is TooLarge, and the job's builder goes with it", r, { outcome: "error TooLarge", page: 1, worker: [0] });
   await ctx.close();
@@ -230,15 +230,15 @@ async function open(options = {}) {
     window.__click("Stop");
     await new Promise((r) => setTimeout(r, 200));
     const pool = window.__rt.pool;
-    const stopped = { outcome: window.__text("outcome"), built: window.__text("built"), page: window.__pageHandles(), replies: window.__replies.length, terminated: pool.terminated };
+    const stopped = { outcome: window.__text("outcome"), built: window.__text("built"), page: window.__pageHandles(), answers: window.__answers.length, terminated: pool.terminated };
     // The next job runs on a fresh worker.
     window.__click("Upper in 1 MiB chunks");
     const next = await window.__until("outcome", (t) => t !== "running", 60000);
-    return { running, stopped, next, created: pool.created, handles: window.__replies.map((x) => x.handles) };
+    return { running, stopped, next, created: pool.created, handles: window.__answers.map((x) => x.handles) };
   });
   check("a running job cancelled mid-file is stopped by terminating its worker, and delivers nothing", r, {
     running: true,
-    stopped: { outcome: "stopped", built: "none", page: 1, replies: 0, terminated: 1 },
+    stopped: { outcome: "stopped", built: "none", page: 1, answers: 0, terminated: 1 },
     next: "built slow.txt.upper:4194304:text/plain",
     created: 2,
     handles: [0],
@@ -247,10 +247,10 @@ async function open(options = {}) {
 }
 
 // A cancelled job of a `Finish` task runs on with its answer dropped, but
-// only until its deadline: a job that overruns it has its worker ended
+// only until its timeout: a job that overruns it has its worker ended
 // there, as a timed-out job's is, the monitor says why, and the next job
 // runs on a fresh worker. "Linger" reads a 16 MiB file one byte at a time
-// with a deadline of 1000 ms, so it overruns by far.
+// with a timeout of 1000 ms, so it overruns by far.
 {
   const { page, ctx } = await open();
   const r = await page.evaluate(async () => {
@@ -265,7 +265,7 @@ async function open(options = {}) {
     window.__click("Stop");
     await new Promise((r) => setTimeout(r, 100));
     const finishing = { busy: busy(), terminated: window.__rt.pool.terminated };
-    // The bound is the deadline from when the job was performed; allow the
+    // The bound is the timeout from when the job was performed; allow the
     // loaded machine a few seconds past it.
     while (busy() && performance.now() - t0 < 6000) await new Promise((r) => setTimeout(r, 10));
     const endedAfterMs = performance.now() - t0;
@@ -274,15 +274,15 @@ async function open(options = {}) {
     const ends = events.filter((e) => e.kind === "instance-end").map((e) => e.cause);
     window.__click("Square");
     const next = await window.__until("outcome", (t) => t !== "running", 30000);
-    return { finishing, ended: { busy: busy(), deadline: s.instances.ended.deadline, ends, finished: cancelled ? cancelled.finished : null, poolBusy: s.pool.busy }, inTime: endedAfterMs < 6000, next, created: window.__rt.pool.created, replies: window.__replies.length };
+    return { finishing, ended: { busy: busy(), timeout: s.instances.ended.timeout, ends, finished: cancelled ? cancelled.finished : null, poolBusy: s.pool.busy }, inTime: endedAfterMs < 6000, next, created: window.__rt.pool.created, answers: window.__answers.length };
   });
-  check("a cancelled Finish job that overruns its deadline has its worker ended, and the next job runs", r, {
+  check("a cancelled Finish job that overruns its timeout has its worker ended, and the next job runs", r, {
     finishing: { busy: true, terminated: 0 },
-    ended: { busy: false, deadline: 1, ends: ["deadline"], finished: true, poolBusy: 0 },
+    ended: { busy: false, timeout: 1, ends: ["timeout"], finished: true, poolBusy: 0 },
     inTime: true,
     next: "size 49",
     created: 2,
-    replies: 1,
+    answers: 1,
   });
   await ctx.close();
 }
@@ -300,9 +300,9 @@ async function open(options = {}) {
     const pool = window.__rt.pool;
     window.__rt.unmount();
     await new Promise((r) => setTimeout(r, 200));
-    return { terminated: pool.terminated, replies: window.__replies.length, files: window.__rt.files.size, live: window.__rt.live.size };
+    return { terminated: pool.terminated, answers: window.__answers.length, files: window.__rt.files.size, live: window.__rt.live.size };
   });
-  check("unmounting with a job running terminates it and delivers nothing", r, { terminated: 1, replies: 0, files: 0, live: 0 });
+  check("unmounting with a job running terminates it and delivers nothing", r, { terminated: 1, answers: 0, files: 0, live: 0 });
   await ctx.close();
 }
 
@@ -430,7 +430,7 @@ async function open(options = {}) {
     const grew = window.__liveBytes() - before;
     window.__click("Count lines in 1 MiB chunks");
     const outcome = await window.__until("outcome", (t) => t.startsWith("lines") || t.startsWith("failed"), 120000);
-    return { fetched, pageGrewUnder1MiB: grew < 1 << 20, outcome, worker: window.__replies.map((x) => x.handles) };
+    return { fetched, pageGrewUnder1MiB: grew < 1 << 20, outcome, worker: window.__answers.map((x) => x.handles) };
   });
   check("a download becomes a file outside the page's memory, and a task reads it", r, { fetched: `data.csv:${16 << 21}:text/csv`, pageGrewUnder1MiB: true, outcome: `lines ${1 << 21}`, worker: [0] });
   await ctx.close();

@@ -31,7 +31,7 @@ import Store
 ## - `note`: the latest thing that went wrong, for the reader.
 ##
 ## The module's one tag, `Books`, is the store's name. Nothing spells the
-## store's storage type: an annotation that mentions it says `_`.
+## store's type: an annotation that mentions it says `_`.
 ReadingList := [Books].{
 
 	## Which books the list shows.
@@ -73,12 +73,12 @@ ReadingList := [Books].{
 		}.Engine.Cells,
 	)
 
-	## The handles on the store's cells.
-	h = ReadingList.store.handles()
+	## The store's cells.
+	cells = ReadingList.store.cells()
 
 	## How a shelf selects and orders the books: the `plan` of the list's
 	## view.
-	plan : Showing -> Engine.Query(Str, Store.Book, Place)
+	plan : Showing -> Engine.QueryPlan(Str, Store.Book, Place)
 	plan = |showing| {
 		keep: |_, book| match showing {
 			Everything => True
@@ -122,8 +122,8 @@ ReadingList := [Books].{
 		match copy {
 			Loading =>
 				match checked(answer) {
-					Ok(books) => [restock(books), ReadingList.h.copy.put(Loaded)]
-					Err(why) => [ReadingList.h.copy.put(Unreadable(why))]
+					Ok(books) => [restock(books), ReadingList.cells.copy.set(Loaded)]
+					Err(why) => [ReadingList.cells.copy.set(Unreadable(why))]
 				}
 			_ => []
 		}
@@ -133,18 +133,18 @@ ReadingList := [Books].{
 	restocked : Try(List(Store.Book), Port.Error) -> List(Engine.Write(_))
 	restocked = |message|
 		match message {
-			Err(Closed) => [ReadingList.h.note.put("Changes made in other tabs no longer reach this one. Reload to see them.")]
+			Err(Closed) => [ReadingList.cells.note.set("Changes made in other tabs no longer reach this one. Reload to see them.")]
 			_ =>
 				match checked(message) {
-					Ok(books) => [restock(books), ReadingList.h.copy.put(Loaded)]
-					Err(why) => [ReadingList.h.note.put("A change made in another tab could not be read: ${why}")]
+					Ok(books) => [restock(books), ReadingList.cells.copy.set(Loaded)]
+					Err(why) => [ReadingList.cells.note.set("A change made in another tab could not be read: ${why}")]
 				}
 		}
 
 	## What the reader is asking for, as one reading for `submitted`.
-	asking : {} -> Engine.Val(ctx, Asking)
+	asking : {} -> Engine.Signal(ctx, Asking)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	asking = |{}| { form: ReadingList.h.form.val(), copy: ReadingList.h.copy.val() }.Engine.Val
+	asking = |{}| { form: ReadingList.cells.form.signal(), copy: ReadingList.cells.copy.signal() }.Engine.Signal
 
 	## Whether the form can add the book it holds: the shelf is loaded and
 	## the book has a title.
@@ -153,10 +153,10 @@ ReadingList := [Books].{
 
 	## The reader types in the form.
 	title_typed : Str -> List(Engine.Write(_))
-	title_typed = |text| [ReadingList.h.form.change(|form| { ..form, title: text })]
+	title_typed = |text| [ReadingList.cells.form.update(|form| { ..form, title: text })]
 
 	author_typed : Str -> List(Engine.Write(_))
-	author_typed = |text| [ReadingList.h.form.change(|form| { ..form, author: text })]
+	author_typed = |text| [ReadingList.cells.form.update(|form| { ..form, author: text })]
 
 	## The reader adds the book the form holds: it is posted for the
 	## database, and the form and the note are cleared. Nothing happens
@@ -165,7 +165,7 @@ ReadingList := [Books].{
 	submitted = |at|
 		if ReadingList.can_add(at) {
 			book = { title: at.form.title.trim(), author: at.form.author.trim() }
-			[ReadingList.h.adding.change(|box| box.post(book)), ReadingList.h.form.put(ReadingList.blank), ReadingList.h.note.put("")]
+			[ReadingList.cells.adding.update(|box| box.post(book)), ReadingList.cells.form.set(ReadingList.blank), ReadingList.cells.note.set("")]
 		} else {
 			[]
 		}
@@ -176,8 +176,8 @@ ReadingList := [Books].{
 	added : Store.NewBook, Try(Store.Book, Port.Error) -> List(Engine.Write(_))
 	added = |asked, answer|
 		match answer {
-			Ok(book) => [ReadingList.h.books.change(|table| table.put(book.id, book))]
-			Err(error) => [ReadingList.h.note.put("\"${asked.title}\" was not added: ${explain(error)}")]
+			Ok(book) => [ReadingList.cells.books.update(|table| table.put(book.id, book))]
+			Err(error) => [ReadingList.cells.note.set("\"${asked.title}\" was not added: ${explain(error)}")]
 		}
 
 	## Move a book to its next shelf: want to read, reading, finished, and
@@ -185,12 +185,12 @@ ReadingList := [Books].{
 	advanced : Store.Book -> List(Engine.Write(_))
 	advanced = |book| {
 		moved = { ..book, shelf: next_shelf(book.shelf) }
-		[ReadingList.h.books.change(|table| table.replace(moved.id, moved)), ReadingList.send([Put(moved)])]
+		[ReadingList.cells.books.update(|table| table.replace(moved.id, moved)), ReadingList.send([Put(moved)])]
 	}
 
 	## Delete a book.
 	removed : Str -> List(Engine.Write(_))
-	removed = |id| [ReadingList.h.books.change(|table| table.remove(id)), ReadingList.send([Delete(id)])]
+	removed = |id| [ReadingList.cells.books.update(|table| table.remove(id)), ReadingList.send([Delete(id)])]
 
 	## Delete every finished book, given their ids: one write of the table
 	## and one post of every command, since an outbox takes one post per
@@ -202,7 +202,7 @@ ReadingList := [Books].{
 		} else {
 			# A fold over the keys, not a `while` loop over a `var` that
 			# holds the table (roc-lang/roc#12971).
-			[ReadingList.h.books.change(|table| ids.fold(table, |acc, id| acc.remove(id))), ReadingList.send(ids.map(|id| Delete(id)))]
+			[ReadingList.cells.books.update(|table| ids.fold(table, |acc, id| acc.remove(id))), ReadingList.send(ids.map(|id| Delete(id)))]
 		}
 
 	## The ids of the finished books, in the list's order.
@@ -211,16 +211,16 @@ ReadingList := [Books].{
 
 	## Show one shelf, or every book.
 	shown : Showing -> List(Engine.Write(_))
-	shown = |showing| [ReadingList.h.showing.put(showing)]
+	shown = |showing| [ReadingList.cells.showing.set(showing)]
 
 	## The write that posts one change's commands, for the `on_post` site
 	## to send. A change posts all its commands at once: an outbox takes
 	## one post per turn.
 	send : List(Command) -> Engine.Write(_)
-	send = |commands| ReadingList.h.writes.change(|box| box.post(commands))
+	send = |commands| ReadingList.cells.writes.update(|box| box.post(commands))
 
 	## The requests for one change's commands.
-	requests : List(Command) -> List(Engine.Req)
+	requests : List(Command) -> List(Engine.Request)
 	requests = |commands|
 		commands.map(
 			|command| match command {
@@ -288,7 +288,7 @@ ReadingList := [Books].{
 
 ## The write that makes the app's copy the database's.
 restock : List(Store.Book) -> Engine.Write(_)
-restock = |books| ReadingList.h.books.change(|table| ReadingList.synced(table, books))
+restock = |books| ReadingList.cells.books.update(|table| ReadingList.synced(table, books))
 
 next_shelf : Store.Shelf -> Store.Shelf
 next_shelf = |shelf|
@@ -370,15 +370,15 @@ piranesi = { id: "b2", title: "Piranesi", author: "Susanna Clarke", shelf: Finis
 ## The store after the database answers `load`, as the load's reaction
 ## decides it: from the copy the store holds when the answer arrives.
 after_load : Engine.Store(_, _), Try(List(Store.Book), Port.Error) -> Engine.Store(_, _)
-after_load = |at, answer| at.after(ReadingList.loaded(at.read(ReadingList.h.copy), answer))
+after_load = |at, answer| at.after(ReadingList.loaded(at.read(ReadingList.cells.copy), answer))
 
 ## The titles the list shows for a store, in order.
 titles : Engine.Store(_, _) -> List(Str)
-titles = |at| ReadingList.listed(at.read(ReadingList.h.books), at.read(ReadingList.h.showing)).map(|book| book.title)
+titles = |at| ReadingList.listed(at.read(ReadingList.cells.books), at.read(ReadingList.cells.showing)).map(|book| book.title)
 
 ## The status line of a store.
 status_of : Engine.Store(_, _) -> Str
-status_of = |at| ReadingList.status({ copy: at.read(ReadingList.h.copy), tally: ReadingList.tally(at.read(ReadingList.h.books)), showing: at.read(ReadingList.h.showing) })
+status_of = |at| ReadingList.status({ copy: at.read(ReadingList.cells.copy), tally: ReadingList.tally(at.read(ReadingList.cells.books)), showing: at.read(ReadingList.cells.showing) })
 
 ## The list is newest first; a load answer that comes after a `stored`
 ## message is older than it, so it is ignored; and two books under one id
@@ -390,11 +390,11 @@ expect {
 	twice = after_load(ReadingList.store, Ok([dune, { ..piranesi, id: "b1" }]))
 	shared = first.after(ReadingList.restocked(Ok([dune, dune])))
 	actual =
-		\\first: ${Str.inspect(titles(first))} ${Str.inspect(first.read(ReadingList.h.copy))}
+		\\first: ${Str.inspect(titles(first))} ${Str.inspect(first.read(ReadingList.cells.copy))}
 		\\late: ${Str.inspect(titles(late))}
 		\\failed: ${status_of(failed)}
 		\\one id twice: ${status_of(twice)}
-		\\then: ${shared.read(ReadingList.h.books).len().to_str()} ${shared.read(ReadingList.h.note)}
+		\\then: ${shared.read(ReadingList.cells.books).len().to_str()} ${shared.read(ReadingList.cells.note)}
 	expected =
 		\\first: ["Piranesi", "Dune"] Loaded
 		\\late: ["Dune"]
@@ -408,14 +408,14 @@ expect {
 ## of the same book, and the form clears.
 expect {
 	ready = after_load(ReadingList.store, Ok([]))
-	submit = |at, form| at.after(ReadingList.submitted({ form, copy: at.read(ReadingList.h.copy) }))
+	submit = |at, form| at.after(ReadingList.submitted({ form, copy: at.read(ReadingList.cells.copy) }))
 	once = submit(ready, { title: " Dune ", author: "Frank Herbert" })
 	again = submit(once, { title: "Dune", author: "Frank Herbert" })
 	actual =
-		\\loading: ${Str.inspect(submit(ReadingList.store, { title: "Dune", author: "" }).read(ReadingList.h.adding).last())}
-		\\blank: ${Str.inspect(submit(ready, { title: "  ", author: "" }).read(ReadingList.h.adding).last())}
-		\\once: ${Str.inspect(once.read(ReadingList.h.adding).last())} "${once.read(ReadingList.h.form).title}"
-		\\again: ${Str.inspect(again.read(ReadingList.h.adding).last())} ${Str.inspect(again.read(ReadingList.h.adding) == once.read(ReadingList.h.adding))}
+		\\loading: ${Str.inspect(submit(ReadingList.store, { title: "Dune", author: "" }).read(ReadingList.cells.adding).last())}
+		\\blank: ${Str.inspect(submit(ready, { title: "  ", author: "" }).read(ReadingList.cells.adding).last())}
+		\\once: ${Str.inspect(once.read(ReadingList.cells.adding).last())} "${once.read(ReadingList.cells.form).title}"
+		\\again: ${Str.inspect(again.read(ReadingList.cells.adding).last())} ${Str.inspect(again.read(ReadingList.cells.adding) == once.read(ReadingList.cells.adding))}
 	expected =
 		\\loading: Unposted
 		\\blank: Unposted
@@ -428,18 +428,18 @@ expect {
 ## commands; moving a book back is a command of its own.
 expect {
 	s = after_load(ReadingList.store, Ok([dune, piranesi]))
-	book = |at, id| at.read(ReadingList.h.books).get(id) ?? dune
+	book = |at, id| at.read(ReadingList.cells.books).get(id) ?? dune
 	advance = |at, id| at.after(ReadingList.advanced(book(at, id)))
 	started = advance(s, "b1")
 	finished = advance(started, "b1")
 	again = advance(finished, "b1")
-	cleared = finished.after(ReadingList.finished_removed(ReadingList.finished_ids(finished.read(ReadingList.h.books))))
+	cleared = finished.after(ReadingList.finished_removed(ReadingList.finished_ids(finished.read(ReadingList.cells.books))))
 	nothing = s.after(ReadingList.finished_removed([]))
 	actual =
-		\\started: ${Str.inspect(started.read(ReadingList.h.writes).last())}
-		\\again: ${Str.inspect([book(again, "b2").shelf, book(again, "b1").shelf])} ${Str.inspect(again.read(ReadingList.h.writes).last())}
-		\\cleared: ${Str.inspect(titles(cleared))} ${Str.inspect(cleared.read(ReadingList.h.writes).last())}
-		\\nothing finished: ${Str.inspect(nothing.read(ReadingList.h.writes).last())}
+		\\started: ${Str.inspect(started.read(ReadingList.cells.writes).last())}
+		\\again: ${Str.inspect([book(again, "b2").shelf, book(again, "b1").shelf])} ${Str.inspect(again.read(ReadingList.cells.writes).last())}
+		\\cleared: ${Str.inspect(titles(cleared))} ${Str.inspect(cleared.read(ReadingList.cells.writes).last())}
+		\\nothing finished: ${Str.inspect(nothing.read(ReadingList.cells.writes).last())}
 	expected =
 		\\started: Posted([Put({ added_ms: 10, author: "Frank Herbert", id: "b1", shelf: Reading, title: "Dune" })])
 		\\again: [Finished, Reading] Posted([Put({ added_ms: 10, author: "Frank Herbert", id: "b1", shelf: Reading, title: "Dune" })])
@@ -458,8 +458,8 @@ expect {
 	closed = s.after(ReadingList.restocked(Err(Closed)))
 	actual =
 		\\echoed: ${Str.inspect(titles(echoed))}
-		\\failed: ${failed.read(ReadingList.h.note)}
-		\\closed: ${closed.read(ReadingList.h.note)}
+		\\failed: ${failed.read(ReadingList.cells.note)}
+		\\closed: ${closed.read(ReadingList.cells.note)}
 	expected =
 		\\echoed: ["Piranesi", "Dune"]
 		\\failed: "Piranesi" was not added: the store said "QuotaExceededError".

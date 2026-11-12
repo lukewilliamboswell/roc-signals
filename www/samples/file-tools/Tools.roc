@@ -27,7 +27,7 @@ Tools := [].{
 	## The request for what the user asked. Upload, digest and preview act on
 	## the file where the browser keeps it; only `read_utf8` brings its bytes
 	## into the page.
-	plan : Doing -> List(Engine.Req)
+	plan : Doing -> List(Engine.Request)
 	plan = |doing| match doing {
 		Uploading(file) => [file.upload({ url: "/files/${file.name()}", method: "PUT", headers: [("content-type", file.mime())], timeout: Ms(60000) })]
 		Digesting(file) => [file.sha256()]
@@ -42,7 +42,7 @@ Tools := [].{
 	## URL: the URL works while some value holds the file.
 	Shown : [Idle, Busy, Uploaded(Str), Digest(Str), Preview(File, Str), Text(Str), Failed(Str)]
 
-	answer : Doing, Engine.Res -> Shown
+	answer : Doing, Engine.Result -> Shown
 	answer = |doing, res| match doing {
 		Uploading(_) =>
 			match Engine.http_text(res) {
@@ -99,7 +99,7 @@ Tools := [].{
 
 	view : State(In(Root, S), S) -> Elem(In(Root, S))
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"tools",
 			[
@@ -119,8 +119,8 @@ Tools := [].{
 					|shown| Html.div(
 						"result",
 						[
-							Html.p_v(shown.map(Tools.describe), [Engine.test_id("result")]),
-							Engine.element("img", [Engine.attr_v("src", shown.map(Tools.preview_src)), Engine.attr("alt", "")], []),
+							Html.p_s(shown.map(Tools.describe), [Engine.test_id("result")]),
+							Engine.element("img", [Engine.attr_s("src", shown.map(Tools.preview_src)), Engine.attr("alt", "")], []),
 						],
 					),
 				),

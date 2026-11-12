@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, Handler, Row, RowRef, State, Val]
+import pf.Engine exposing [Elem, Handler, Row, RowRef, Signal, State]
 import pf.Html
 import Cells
 import Sheet
@@ -35,7 +35,7 @@ SheetApp := [].{
 	## each row has to stay a labelled `section` for the keyed-reorder specs
 	## to address it. Borders are hung off the bottom/right of every cell so
 	## the frame reads as one continuous ruled grid.
-	grid_frame_class = "min-w-max overflow-hidden rounded-md border-l border-t border-zinc-200"
+	grid_frame_class = "min-w-max overflow-hidden border-l border-t border-zinc-200"
 
 	row_class = "flex items-stretch"
 
@@ -50,7 +50,7 @@ SheetApp := [].{
 	## `#REF`/`#DIV/0!` text can never disagree.
 	tone_class : Sheet.CellKind, [Selected, Unselected] -> Str
 	tone_class = |kind, ring| {
-		base = "w-28 shrink-0 rounded-none border-0 border-b border-r border-zinc-200 px-2 py-1.5 text-sm tabular-nums focus:relative focus:z-10 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-emerald-500"
+		base = "w-28 shrink-0 border-0 border-b border-r border-zinc-200 px-2 py-1.5 text-sm tabular-nums focus:relative focus:z-10 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-accent-600"
 		tone =
 			match kind {
 				Error => " bg-red-50 text-right font-semibold text-red-700"
@@ -60,7 +60,7 @@ SheetApp := [].{
 			}
 		selection =
 			match ring {
-				Selected => " relative z-10 bg-emerald-50 ring-2 ring-inset ring-emerald-500"
+				Selected => " relative z-10 bg-accent-50 ring-2 ring-inset ring-accent-600"
 				Unselected => ""
 			}
 		"${base}${tone}${selection}"
@@ -90,11 +90,11 @@ SheetApp := [].{
 		Html.text_input(
 			address,
 			"text",
-			cell.item().map2(SheetStore.h.mode.val(), Sheet.shown),
+			cell.item().map2(SheetStore.cells.mode.signal(), Sheet.shown),
 			[
-				Engine.test_id_v(address.map(|ref| "cell-${ref}")),
-				Engine.class_v(cell.item().map2(SheetStore.h.selected.val(), |held, caret| SheetApp.tone_class(held.out.kind, if (held.index == caret) Selected else Unselected))),
-				Engine.attr_v("data-kind", cell.field(|held| Sheet.CellKind.to_str(held.out.kind))),
+				Engine.test_id_s(address.map(|ref| "cell-${ref}")),
+				Engine.class_s(cell.item().map2(SheetStore.cells.selected.signal(), |held, caret| SheetApp.tone_class(held.out.kind, if (held.index == caret) Selected else Unselected))),
+				Engine.attr_s("data-kind", cell.field(|held| Sheet.CellKind.to_str(held.out.kind))),
 				Html.on_focus(Engine.handle_by(index, |at, _value| SheetStore.focused(at))),
 				Html.on_blur(Engine.does(SheetStore.blurred)),
 			],
@@ -105,16 +105,16 @@ SheetApp := [].{
 	## A row of the sheet, drawn over the handle the grid's view hands it:
 	## its number, and its cells matched by address, so a row that an edit
 	## wrote touches only the cells that changed.
-	row_line : Val(Row(ctx, U64), U64), State(Row(ctx, U64), Sheet.Row) -> Elem(Row(ctx, U64))
+	row_line : Signal(Row(ctx, U64), U64), State(Row(ctx, U64), Sheet.Row) -> Elem(Row(ctx, U64))
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	row_line = |number, held| {
 		label = number.map(|n| (n + 1).to_str())
-		Html.section_v(
+		Html.section_s(
 			label.map(|n| "Row ${n}"),
 			SheetApp.row_class,
 			[
-				Engine.element("div", [Engine.class(SheetApp.gutter_class)], [Engine.text_v(label)]),
-				Engine.each(held.val(), |cell| Cells.ref_of(cell.index), SheetApp.cell_input),
+				Engine.element("div", [Engine.class(SheetApp.gutter_class)], [Engine.text_s(label)]),
+				Engine.each(held.signal(), |cell| Cells.ref_of(cell.index), SheetApp.cell_input),
 			],
 		)
 	}
@@ -122,16 +122,16 @@ SheetApp := [].{
 	## A caption over a monospaced-figures readout. The label is drawn beside
 	## the value instead of being folded into it, so the assertion targets
 	## the value.
-	readout : Str, Val(ctx, Str), Str -> Elem(ctx)
-	readout = |label, value, id| Html.div("grid min-w-0 gap-1", [Html.p(label, "label"), Html.p_v(value, [Engine.test_id(id), Engine.class("value break-words tabular-nums")])])
+	readout : Str, Signal(ctx, Str), Str -> Elem(ctx)
+	readout = |label, value, id| Html.div("grid min-w-0 gap-1", [Html.p(label, "label"), Html.p_s(value, [Engine.test_id(id), Engine.class("value break-words tabular-nums")])])
 
 	## One metric tile in the summary strip.
-	stat_tile : Str, Val(ctx, Str), Str -> Elem(ctx)
-	stat_tile = |label, value, id| Html.div("stat", [Html.p(label, "stat-label"), Html.p_v(value, [Engine.test_id(id), Engine.class("stat-value")])])
+	stat_tile : Str, Signal(ctx, Str), Str -> Elem(ctx)
+	stat_tile = |label, value, id| Html.div("stat", [Html.p(label, "stat-label"), Html.p_s(value, [Engine.test_id(id), Engine.class("stat-value")])])
 
 	## A button whose label says what a click will do.
-	switch_button : Val(ctx, Str), Handler(ctx) -> Elem(ctx)
-	switch_button = |label, handler| Html.button_v(label, [Engine.attr("type", "button"), Engine.class("button button-sm")], handler)
+	switch_button : Signal(ctx, Str), Handler(ctx) -> Elem(ctx)
+	switch_button = |label, handler| Html.button_s(label, [Engine.attr("type", "button"), Engine.class("button button-sm")], handler)
 
 	## The formula bar: the selected cell as the sheet holds it now. It
 	## shows the source while that cell is being edited and the value
@@ -153,12 +153,12 @@ SheetApp := [].{
 							"flex items-baseline gap-2",
 							[
 								Html.p("Formula bar", "panel-title"),
-								Html.p_v(bar.map(|shown| shown.ref), [Engine.test_id("bar-cell"), Engine.class("text-base font-semibold tabular-nums text-zinc-950")]),
+								Html.p_s(bar.map(|shown| shown.ref), [Engine.test_id("bar-cell"), Engine.class("text-base font-semibold tabular-nums text-zinc-950")]),
 							],
 						),
-						Html.p_v(
+						Html.p_s(
 							bar.map(|shown| if (shown.focus == Editing) "Editing" else "Showing value"),
-							[Engine.test_id("bar-mode"), Engine.class_v(bar.map(|shown| if (shown.focus == Editing) "badge badge-info" else "badge badge-neutral"))],
+							[Engine.test_id("bar-mode"), Engine.class_s(bar.map(|shown| if (shown.focus == Editing) "badge badge-info" else "badge badge-neutral"))],
 						),
 					],
 				),
@@ -174,7 +174,7 @@ SheetApp := [].{
 									"text",
 									bar.map(|shown| if (shown.focus == Editing) shown.source else shown.value),
 									[Engine.test_id("formula-bar"), Engine.class("input tabular-nums"), Engine.attr("placeholder", "=B2+C2")],
-									Engine.handle_by(SheetStore.h.selected.val(), |at, text| SheetStore.typed(at, text)),
+									Engine.handle_by(SheetStore.cells.selected.signal(), |at, text| SheetStore.typed(at, text)),
 								),
 								Html.p("Typing here writes the selected cell. The grid keeps showing computed values.", "hint"),
 							],
@@ -190,7 +190,7 @@ SheetApp := [].{
 									"grid min-w-0 gap-1",
 									[
 										Html.p("Value", "label"),
-										Html.p_v(bar.map(|shown| if (shown.value.is_empty()) "(empty)" else shown.value), [Engine.test_id("bar-value"), Engine.class_v(bar.map(|shown| SheetApp.value_tone_class(shown.kind)))]),
+										Html.p_s(bar.map(|shown| if (shown.value.is_empty()) "(empty)" else shown.value), [Engine.test_id("bar-value"), Engine.class_s(bar.map(|shown| SheetApp.value_tone_class(shown.kind)))]),
 									],
 								),
 								SheetApp.readout("Depends on", bar.map(|shown| shown.depends), "bar-depends"),
@@ -207,9 +207,9 @@ SheetApp := [].{
 	controls : {} -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	controls = |{}| {
-		sheet = SheetStore.h.sheet.val()
-		mode = SheetStore.h.mode.val()
-		listing = SheetStore.h.listing.val()
+		sheet = SheetStore.cells.sheet.signal()
+		mode = SheetStore.cells.mode.signal()
+		listing = SheetStore.cells.listing.signal()
 		Html.section(
 			"Sheet controls",
 			"panel",
@@ -234,7 +234,7 @@ SheetApp := [].{
 						Html.div(
 							"stat-grid",
 							[
-								SheetApp.stat_tile("Selected cell", SheetStore.h.selected.val().map(Cells.ref_of), "stat-selected"),
+								SheetApp.stat_tile("Selected cell", SheetStore.cells.selected.signal().map(Cells.ref_of), "stat-selected"),
 								SheetApp.stat_tile("Grid mode", mode.map(mode_name), "stat-mode"),
 								SheetApp.stat_tile("Formula errors", sheet.map(|table| SheetStore.error_count(table).to_str()), "status-line"),
 								SheetApp.stat_tile("Rows shown", sheet.map2(listing, |table, asked| SheetStore.rows_listed(table, asked).to_str()), "stat-rows"),
@@ -268,9 +268,9 @@ SheetApp := [].{
 								SheetApp.grid_frame_class,
 								[
 									SheetApp.column_header({}),
-									Engine.each_view(
-										SheetStore.h.sheet,
-										{ query: SheetStore.h.listing.val(), plan: Sheet.plan, window: Engine.const(Engine.every_row) },
+									Engine.table_view(
+										SheetStore.cells.sheet,
+										{ query: SheetStore.cells.listing.signal(), plan: Sheet.plan, window: Engine.const(Engine.every_row) },
 										SheetApp.row_line,
 									),
 								],
@@ -347,6 +347,6 @@ expect SheetApp.tone_class(Text, Unselected).contains("text-left")
 
 ## The selected cell gains a ring and a tint on top of whatever tone its kind gives it, and no other cell has them.
 expect {
-	ring = " relative z-10 bg-emerald-50 ring-2 ring-inset ring-emerald-500"
-	(SheetApp.tone_class(Text, Selected).ends_with(ring), SheetApp.tone_class(Text, Unselected).contains("bg-emerald-50")) == (True, False)
+	ring = " relative z-10 bg-accent-50 ring-2 ring-inset ring-accent-600"
+	(SheetApp.tone_class(Text, Selected).ends_with(ring), SheetApp.tone_class(Text, Unselected).contains("bg-accent-50")) == (True, False)
 }

@@ -12,7 +12,7 @@ import pf.Worker
 ## - "Panel" mounts a `when` branch whose site issues a long job at mount;
 ##   closing it disposes the site, which cancels the job.
 ## - "Spin" runs `spin` for the number of rounds in "Rounds"; "Slow" runs
-##   the same calculation as a task with a 50 ms deadline.
+##   the same calculation as a task with a 50 ms timeout.
 ## - "Crash" runs a task that crashes, "Tail" one that returns a slice of
 ##   its input, and "Missing" issues work for a task nobody registered (a
 ##   contract error at issue time).
@@ -55,9 +55,9 @@ WorkersApp := [].{
 	spin : Bytes
 	spin = WorkersApp.bytes_task("test.roc-signals/spin", WorkersApp.spin_bytes)
 
-	## The spin calculation with a 50 ms deadline.
+	## The spin calculation with a 50 ms timeout.
 	slow : Bytes
-	slow = Worker.task({ name: "test.roc-signals/slow", run!: |input| Ok(Wire.Bytes.from_list(WorkersApp.spin_bytes(input.to_list()))), deadline: Ms(50) })
+	slow = Worker.task({ name: "test.roc-signals/slow", run!: |input| Ok(Wire.Bytes.from_list(WorkersApp.spin_bytes(input.to_list()))), timeout: Ms(50) })
 
 	## A task that always crashes: its worker instance is poisoned.
 	crasher : Bytes
@@ -125,7 +125,7 @@ WorkersApp := [].{
 	}
 
 	## A request for a job of a bytes task on `input`.
-	job : Bytes, List(U8) -> Engine.Req
+	job : Bytes, List(U8) -> Engine.Request
 	job = |task, input| task.request(Wire.Bytes.from_list(input))
 
 	## A job's result as the log shows it; a task that cannot fail has no
@@ -139,13 +139,13 @@ WorkersApp := [].{
 	}
 
 	## A bytes task's result, its output as text.
-	describe : Bytes, Engine.Res -> Str
+	describe : Bytes, Engine.Result -> Str
 	describe = |task, r| WorkersApp.described(task.result(r), |out| Str.from_utf8(out.to_list()) ?? "bytes")
 
 	log_line : S, Str -> S
 	log_line = |s, line| { ..s, log: s.log.append(line) }
 
-	logs : State(Ctx, S), Str, (Engine.Res -> Str) -> Engine.Reaction(Ctx, a)
+	logs : State(Ctx, S), Str, (Engine.Result -> Str) -> Engine.Reaction(Ctx, a)
 	logs = |st, label, shown| st.on_result(|s, _, r| WorkersApp.log_line(s, "${label}:${shown(r)}"))
 
 	## The reaction of a bytes task's site, logging under `label`.
@@ -154,14 +154,14 @@ WorkersApp := [].{
 
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"workers",
 			[
 				Html.button("Upper", [], st.update(|s| { ..s, upper: s.upper + 1 })),
-				Engine.on_change(v.map(|s| s.upper), |n| [WorkersApp.job(WorkersApp.upper, "job ${n.to_str()}".to_utf8())], WorkersApp.logs_of(st, "upper", WorkersApp.upper)),
+				Engine.watch_changes(v.map(|s| s.upper), |n| [WorkersApp.job(WorkersApp.upper, "job ${n.to_str()}".to_utf8())], WorkersApp.logs_of(st, "upper", WorkersApp.upper)),
 				Html.button("Batch", [], st.update(|s| { ..s, batch: s.batch + 1 })),
-				Engine.on_change(
+				Engine.watch_changes(
 					v.map(|s| s.batch),
 					|n| [1.U64, 2, 3, 4].map(|i| WorkersApp.job(WorkersApp.upper, "b${n.to_str()}-${i.to_str()}".to_utf8())),
 					WorkersApp.logs_of(st, "batch", WorkersApp.upper),
@@ -187,16 +187,16 @@ WorkersApp := [].{
 				Html.button("Slow", [], st.update(|s| { ..s, slow: s.slow.post(s.rounds) })),
 				Engine.on_post(v.map(|s| s.slow), |rounds| [WorkersApp.job(WorkersApp.slow, rounds.to_utf8())], WorkersApp.logs_of(st, "slow", WorkersApp.slow)),
 				Html.button("Crash", [], st.update(|s| { ..s, crashes: s.crashes + 1 })),
-				Engine.on_change(v.map(|s| s.crashes), |_| [WorkersApp.job(WorkersApp.crasher, [])], WorkersApp.logs_of(st, "crash", WorkersApp.crasher)),
+				Engine.watch_changes(v.map(|s| s.crashes), |_| [WorkersApp.job(WorkersApp.crasher, [])], WorkersApp.logs_of(st, "crash", WorkersApp.crasher)),
 				Html.button("Tail", [], st.update(|s| { ..s, tails: s.tails + 1 })),
-				Engine.on_change(v.map(|s| s.tails), |n| [WorkersApp.job(WorkersApp.tail, "xtail ${n.to_str()}".to_utf8())], WorkersApp.logs_of(st, "tail", WorkersApp.tail)),
+				Engine.watch_changes(v.map(|s| s.tails), |n| [WorkersApp.job(WorkersApp.tail, "xtail ${n.to_str()}".to_utf8())], WorkersApp.logs_of(st, "tail", WorkersApp.tail)),
 				Html.button("Missing", [], st.update(|s| { ..s, missing: s.missing + 1 })),
-				Engine.on_change(v.map(|s| s.missing), |_| [WorkersApp.job(WorkersApp.missing, [])], WorkersApp.logs_of(st, "missing", WorkersApp.missing)),
+				Engine.watch_changes(v.map(|s| s.missing), |_| [WorkersApp.job(WorkersApp.missing, [])], WorkersApp.logs_of(st, "missing", WorkersApp.missing)),
 				Html.button("Grow", [], st.update(|s| { ..s, grows: s.grows + 1 })),
-				Engine.on_change(v.map(|s| s.grows), |_| [WorkersApp.job(WorkersApp.grow, "16777216".to_utf8())], WorkersApp.logs_of(st, "grow", WorkersApp.grow)),
+				Engine.watch_changes(v.map(|s| s.grows), |_| [WorkersApp.job(WorkersApp.grow, "16777216".to_utf8())], WorkersApp.logs_of(st, "grow", WorkersApp.grow)),
 				Html.button("Deep", [], st.update(|s| { ..s, deeps: s.deeps + 1 })),
-				Engine.on_change(v.map(|s| s.deeps), |_| [WorkersApp.deep.request(600)], WorkersApp.logs(st, "deep", |r| WorkersApp.described(WorkersApp.deep.result(r), |_| "chain"))),
-				Html.p_v(v.map(|s| Str.join_with(s.log, "|")), [Engine.test_id("log")]),
+				Engine.watch_changes(v.map(|s| s.deeps), |_| [WorkersApp.deep.request(600)], WorkersApp.logs(st, "deep", |r| WorkersApp.described(WorkersApp.deep.result(r), |_| "chain"))),
+				Html.p_s(v.map(|s| Str.join_with(s.log, "|")), [Engine.test_id("log")]),
 			],
 		)
 	}

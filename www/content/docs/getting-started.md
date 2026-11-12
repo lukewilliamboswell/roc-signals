@@ -13,16 +13,30 @@ deployment.
 
 ## Set up
 
-You need Roc installed as `roc`, from
-[roc-lang/nightlies](https://github.com/roc-lang/nightlies/releases). Each
-release of roc-signals is built and tested with one nightly, which its
-release notes name; use that one.
+First open the [current Roc Signals release notes](https://github.com/lukewilliamboswell/roc-signals/releases/latest).
+Under **Compilers**, find the Roc nightly that release was built and tested
+with. Install that nightly from
+[roc-lang/nightlies](https://github.com/roc-lang/nightlies/releases) and put
+its `roc` executable on your `PATH`.
 
-Every release also publishes `signals.roc`, a small Roc program that
-creates, serves, builds and tests an app. Download it and create an app:
+Check the installed version before downloading the tool:
 
 ```sh
-curl -LO https://github.com/lukewilliamboswell/roc-signals/releases/latest/download/signals.roc
+roc version
+```
+
+The version should match the nightly named in the Signals release notes.
+Those notes also describe any compiler or dependency limitations affecting
+the release; a newer nightly may behave differently.
+
+`signals.roc` is a small Roc program that creates, serves, builds and tests
+an app. Use the tool matching these docs: it generates an entry point for
+its matching platform. A documentation preview may link an unreleased
+candidate; keep its tool, platform and samples together rather than mixing
+versions. Download the tool and create an app:
+
+```sh
+curl -fLO "{{ signals_tool_url() }}"
 roc signals.roc init counter
 cd counter
 ```
@@ -50,15 +64,15 @@ nightly you have.
 {{ sample(file="counter/Counter.roc") }}
 
 `Engine.state(0, Counter.view)` creates a piece of *local state* with the
-initial value `0` and passes its handle to `view`. Inside `view`:
+initial value `0` and passes its `State` to `view`. Inside `view`:
 
-- `count.val()` is the state's current value. `.map` turns it into the text
-  the `span` shows. The engine re-evaluates that text only when `count`
-  changes.
+- `count.signal()` is a signal of the state's current value. `.map` turns it
+  into the text the `span` shows. The engine re-evaluates that text only when
+  `count` changes.
 - `count.update(|n| n + 1)` is a *handler*: a reducer the engine applies when
   the button is clicked.
 - `Ctx` names the *context* the view runs in: inside one state of type `I64`
-  at the root. Every value, state handle and element is typed by the context it
+  at the root. Every signal, `State` and element is typed by the context it
   belongs to, so a value can never be read where it does not exist.
 - `Html.aria_label` gives each button an accessible name, which is also how
   specs find it.
@@ -76,11 +90,14 @@ several parts of an app share lives in a store instead, and
 
 `main.roc` names the platform and binds the app's `program` as `main`:
 
+The example uses `<package release URL here>` as a placeholder. Keep the
+actual platform URL that `init` wrote in your file. If writing an entry
+point by hand, use the platform bundle URL from the
+[Roc Signals release notes](https://github.com/lukewilliamboswell/roc-signals/releases/latest).
+
 {{ sample(file="counter/main.roc") }}
 
-This page's copy names the platform by its path in the repository; the
-`main.roc` that `init` writes names the release's platform bundle by its URL
-instead. The platform builds this one file for two kinds of target:
+The platform builds this one file for two kinds of target:
 `--target=wasm32` gives the module the browser runs, and your system's
 native target gives the app's native spec runner: `x64musl` on Linux,
 `arm64mac` or `x64mac` on macOS, `x64win` on Windows. `signals.roc` makes
@@ -109,8 +126,8 @@ starts [workers](@/docs/workers.md) from) and `app.wasm`, the app's
 development build; your other files are served as they are. When port 8000
 is taken it uses the next free one and says so; `--port N` chooses another.
 
-Now change `Counter.roc`, for example the initial value, and save. The
-server rebuilds the app and the page reloads. Reloading
+Now change the initial value in `Counter.roc` from `0` to `10`, and save.
+The server rebuilds the app and the page reloads, showing `10`. Reloading
 starts the app afresh: nothing of the running app is carried across a
 change. If the build fails, the compiler's report appears over the page,
 which keeps the last build that worked, and the terminal shows it too; fix
@@ -125,6 +142,14 @@ If the app breaks a contract, `onFault` receives the classified diagnostic;
 explains what each class means.
 
 ## Test it
+
+Use another terminal in the `counter` directory while the development server
+runs, or stop it with Ctrl+C before running the commands below.
+
+Before continuing, restore the initial value to `0` in `Counter.roc` and
+save. The spec below describes that original counter: it starts at `0`,
+counts up twice to `2`, then down to `1`. Keeping a different starting
+value is valid, but its spec must expect those different counts too.
 
 A spec describes what a user does and sees, located the way a screen reader
 would find things:
@@ -167,8 +192,17 @@ Built the app into dist/:
   dist/assets/5e711d3a91d0f155/worker.mjs
 ```
 
-`build` makes the app's module with `--opt=size`, lays out `dist/`, and
-lists each file it wrote with its size:
+`build` normally makes the app's module with `--opt=size`, lays out `dist/`,
+and lists each file it wrote with its size. Some release/compiler pairs
+need a compatibility build: for the optimizer failure tracked in
+[roc#12976](https://github.com/roc-lang/roc/issues/12976), the tool explicitly
+reports that it is using `--opt=dev` instead. That output can be served and
+tested, but it is larger and slower; it does not establish optimized
+shipping performance. Check the tool's output and the
+[current release notes](https://github.com/lukewilliamboswell/roc-signals/releases/latest)
+for the mode and limitations of the release you downloaded.
+
+Both modes write the same deployment layout:
 
 - `dist/index.html`, your page, with each quoted relative URL that names
   one of the files below pointed into the hashed directory. Nothing else in

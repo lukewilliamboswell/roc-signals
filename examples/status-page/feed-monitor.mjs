@@ -17,12 +17,12 @@ const REDRAW_MS = 250;
 
 const STYLE = `
   :host { display: block; }
-  section { border: 1px solid #e4e4e7; border-radius: 0.75rem; background: #fafafa; padding: 0.75rem 1rem; display: grid; gap: 0.5rem; font: 13px/1.4 ui-sans-serif, system-ui, sans-serif; color: #18181b; }
-  .head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.5rem; color: #71717a; }
+  section { border: 1px solid #d4d4d8; background: #fafafa; padding: 0.75rem 1rem; display: grid; gap: 0.5rem; font: 13px/1.4 "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; color: #09090b; }
+  .head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.5rem; color: #52525b; }
   dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: 0.5rem; margin: 0; }
-  div.stat { border: 1px solid #f4f4f5; border-radius: 0.5rem; padding: 0.4rem 0.6rem; background: #fff; }
-  dt { color: #71717a; font-size: 0.75rem; }
-  dd { margin: 0; font-size: 1.1rem; font-variant-numeric: tabular-nums; }
+  div.stat { border: 1px solid #d4d4d8; padding: 0.4rem 0.6rem; background: #fff; }
+  dt { color: #52525b; font: 500 0.6875rem/1rem "IBM Plex Mono", ui-monospace, monospace; letter-spacing: 0.1em; text-transform: uppercase; }
+  dd { margin: 0; font: 500 1.1rem/1.4 "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
 `;
 
 const FIELDS = [

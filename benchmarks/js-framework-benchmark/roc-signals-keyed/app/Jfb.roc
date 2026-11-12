@@ -108,10 +108,10 @@ Jfb := [].{
 		key = row.key()
 		Engine.element(
 			"tr",
-			[Engine.class_v(row.select(sel))],
+			[Engine.class_s(row.select(sel))],
 			[
-				Engine.element("td", [Engine.class("col-md-1")], [Engine.text_v(key)]),
-				Engine.element("td", [Engine.class("col-md-4")], [Engine.element("a", [Engine.on_click(selected.lift_row().update_by(key, |_, k| k))], [Engine.text_v(row.field(|r| r.label))])]),
+				Engine.element("td", [Engine.class("col-md-1")], [Engine.text_s(key)]),
+				Engine.element("td", [Engine.class("col-md-4")], [Engine.element("a", [Engine.on_click(selected.lift_row().update_by(key, |_, k| k))], [Engine.text_s(row.field(|r| r.label))])]),
 				Engine.element(
 					"td",
 					[Engine.class("col-md-1")],
@@ -133,8 +133,8 @@ Jfb := [].{
 			"",
 			|selected| {
 				model = outer.lift()
-				rows = model.val().map(|v| v.rows)
-				sel = Engine.keyed(selected.val(), "danger", "")
+				rows = model.signal().map(|v| v.rows)
+				sel = Engine.keyed(selected.signal(), "danger", "")
 				Engine.element(
 					"div",
 					[Engine.class("container")],

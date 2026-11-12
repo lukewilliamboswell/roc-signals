@@ -4,28 +4,31 @@ import Table
 ## The authoring API of the roc-signals web platform: the reactive engine as an
 ## app sees it.
 ##
-## An app describes its UI as an [Elem] tree over typed reactive values ([Val])
+## An app describes its UI as an [Elem] tree over typed signals ([Signal])
 ## and its state; `program` turns that description into the [Program] the
-## host drives. The engine mounts the tree once, then runs one transaction
+## host drives. The engine mounts the tree once, then runs one turn
 ## per DOM event or effect result: handlers write state, and only the text,
 ## attributes, rows and sites that read what changed are re-evaluated,
 ## emitting DOM commands for values that actually changed.
 ##
+## A helper ending `_s` takes a signal where its unsuffixed form takes a
+## constant, for example `text_s` beside `text`.
+##
 ## State lives in one of three places:
 ##
 ## - the app's [Store], held at the root: named cells ([Cell]) that any
-##   scope reads and writes with no `lift`, written by decisions (`handle`,
+##   context reads and writes with no `lift`, written by decisions (`handle`,
 ##   `react`) that return their writes ([Write]);
 ## - a table (`table`), a cell of the store holding rows by key, drawn
-##   through a filtered, sorted, windowed view (`each_view`);
-## - local state (`state`), a layer that lives and dies with the piece of
+##   through a filtered, sorted, windowed view (`table_view`);
+## - local state (`state`), which lives and dies with the piece of
 ##   the view that declares it ([State]).
 ##
 ## A component is a function, usually of a type module, over what it is
 ## handed: the cells it reads and writes, or a [State].
 ##
 ## Every dynamic site (`state`, `derive`, `resource`, `when`, `switch`,
-## `remount_on`, `each`, `each_view`, effect sites) is one closure that owns
+## `remount_on`, `each`, `table_view`, effect sites) is one closure that owns
 ## its typed storage, so updates happen in place. `design.md`
 ## ("Representation: Sites That Own Their Storage") describes the model;
 ## Appendix B specifies the command stream and the host protocol.
@@ -44,22 +47,22 @@ Engine := [].{
 	## root holds the store, whose storage type is `st`. It is the context of
 	## the [Elem] that `program_store`'s view returns, written
 	## `Engine.StoreRoot(_)`. Other code rarely names it: a function that
-	## uses the store is generic over its scope, with
+	## uses the store is generic over its context, with
 	## `where [ctx.store : () -> Reach(ctx, st)]`.
 	StoreRoot(st) : Core.Root(st)
 
-	## How a scope `ctx` reaches the app's store, whose storage type is `st`.
-	## Every scope of an app built with `program_store` has one, answered by
+	## How a context `ctx` reaches the app's store, whose type is `st`.
+	## Every context of an app built with `program_store` has one, answered by
 	## its `store` method ([StoreRoot], [In] and [Row] each have it), and it
 	## is the one thing a function that reads or writes cells asks of its
-	## scope:
+	## context:
 	##
 	## ```
 	## badge : {} -> Elem(ctx)
 	##     where [ctx.store : () -> Engine.Reach(ctx, _)]
 	## ```
 	##
-	## The storage type can be left to the compiler with `_`, as here, or
+	## The store's type can be left to the compiler with `_`, as here, or
 	## named once in the module that builds the store.
 	Reach(ctx, st) : Core.StoreReach(ctx, st)
 
@@ -68,25 +71,25 @@ Engine := [].{
 	## [Cell], a [Write] and a [Reach] of that store.
 	Stored(tag, st) : Core.Stored(tag, st)
 
-	## A handle on one cell of the app's store, whose storage type is `st`,
-	## holding an `a`. Get the handles from the [Store] (`handles`); each
+	## One cell of the app's store, whose type is `st`, holding an `a`.
+	## Get the cells from the [Store] (`cells`); each
 	## cell's place in the store comes from its place in the description.
 	##
-	## A cell is read in any scope, at any depth, with no `lift`: `val` needs
-	## only that the scope reaches a store of type `st`, which every scope of
+	## A cell is read in any context, at any depth, with no `lift`: `signal` needs
+	## only that the context reaches a store of type `st`, which every context of
 	## an app built with `program_store` does. It is written by a decision:
-	## `put` and `change` make the writes a `handle` or a `react` returns. A
+	## `set` and `update` make the writes a `handle` or a `react` returns. A
 	## write to a cell refreshes the readers of that cell and no one else's.
 	Cell(st, a) :: { c : Core.Cell(st, a) }.{
 
 		## The cell's current value.
-		val : Cell(st, a) -> Val(ctx, a)
+		signal : Cell(st, a) -> Signal(ctx, a)
 			where [ctx.store : () -> Reach(ctx, st)]
-		val = |{ c }| { v: c.val() }
+		signal = |{ c }| { v: c.signal() }
 
-		## The cell as a [State] of the scope this is called in, for a
+		## The cell as a [State] of the context this is called in, for a
 		## component that takes a `State(ctx, a)` and should not care whether
-		## its state is the app's or its own. A write through that handle is
+		## its state is the app's or its own. A write through that state is
 		## a write of the cell.
 		state : Cell(st, a) -> State(ctx, a)
 			where [ctx.store : () -> Reach(ctx, st)]
@@ -94,31 +97,31 @@ Engine := [].{
 
 		## A [Write] that replaces the cell with `value`, for the list a
 		## decision returns (`handle`, `react`). Use it for a value that does
-		## not come from the cell itself; to change what the cell holds, use
-		## `change`.
-		put : Cell(st, a), a -> Write(st)
-		put = |{ c }, value| c.put(value)
+		## not come from the cell itself; to update what the cell holds, use
+		## `update`.
+		set : Cell(st, a), a -> Write(st)
+		set = |{ c }, value| c.set(value)
 
 		## A [Write] that replaces the cell with `f` of it, for the list a
 		## decision returns. `f` receives the value uniquely owned, so a
-		## large value (a list, a table) is changed in place: `put` of a
+		## large value (a list, a table) is changed in place: `set` of a
 		## value built from a reading of the cell would copy it, and so
 		## would an `f` that holds such a reading.
-		change : Cell(st, a), (a -> a) -> Write(st)
-		change = |{ c }, f| c.change(f)
+		update : Cell(st, a), (a -> a) -> Write(st)
+		update = |{ c }, f| c.update(f)
 	}
 
 	## One write to the store, as a value: which cells, and how. Make one
-	## with `Cell.put`, `Cell.change` or a group's reset
+	## with `Cell.set`, `Cell.update` or a group's reset
 	## (`Cells.with_reset`), and return a list of them from the function
 	## given to `handle` or `react`. The list is the whole transition: the
 	## engine applies it in order and wakes the readers of exactly the cells
 	## it names. Each write's value comes from the one reading the decision
 	## was given, so the order of writes to different cells never matters.
 	##
-	## A `change` after another write of its cell sees that write's result,
+	## An `update` after another write of its cell sees that write's result,
 	## and a write after the reset of its group refines the reset ("start
-	## again, but with this"). Any other `put` or reset of a cell the same
+	## again, but with this"). Any other `set` or reset of a cell the same
 	## list already wrote would discard that write: it is a contract error
 	## that names the handler's or the reaction's site, the cell's position
 	## in the store and the two writes.
@@ -130,7 +133,7 @@ Engine := [].{
 	## that spans cells.
 	##
 	## ```
-	## Engine.on_click(Engine.handle(|_| [h.count.change(|n| n + 1), h.last.put("bumped")]))
+	## Engine.on_click(Engine.handle(|_| [cells.count.update(|n| n + 1), cells.last.set("bumped")]))
 	## ```
 	##
 	## Only the cells in the list are written, so a decision that returns
@@ -146,16 +149,16 @@ Engine := [].{
 	## every write is computed from the same reading:
 	##
 	## ```
-	## Engine.handle_by(here, |at, _| if (at.session.is_signed_in()) [h.loc.put("/home")] else [])
+	## Engine.handle_by(here, |at, _| if (at.session.is_signed_in()) [cells.loc.set("/home")] else [])
 	## ```
 	##
 	## To read several values, combine them into one with the record
-	## builder ([Val]). Composed after another handler
+	## builder ([Signal]). Composed after another handler
 	## (`first.also(Engine.handle_by(v, ..))`), the reading is taken after
-	## `first` has written: `draft.update(|_| "").also(Engine.handle_by(draft.val(), ..))`
+	## `first` has written: `draft.update(|_| "").also(Engine.handle_by(draft.signal(), ..))`
 	## reads the emptied draft. Put the decision first to read what the
 	## event found.
-	handle_by : Val(ctx, b), (b, Str -> List(Write(st))) -> Handler(ctx)
+	handle_by : Signal(ctx, b), (b, Str -> List(Write(st))) -> Handler(ctx)
 		where [ctx.store : () -> Reach(ctx, st)]
 	handle_by = |b, decide| { h: Core.store_handler_by(b.v, decide) }
 
@@ -164,7 +167,7 @@ Engine := [].{
 	## nothing from the event.
 	##
 	## ```
-	## Html.button("Reset", [], Engine.does([h.form.reset, h.note.put("Started again")]))
+	## Html.button("Reset", [], Engine.does([cells.form.reset, cells.note.set("Started again")]))
 	## ```
 	##
 	## The list is built where the handler is made, once, so it cannot
@@ -181,7 +184,7 @@ Engine := [].{
 	## `on_files` or an `Html` file control.
 	##
 	## ```
-	## Engine.on_files("drop", Engine.handle_files(|{ files, refused: _ }| [h.attached.put(files), h.page.reset, h.note.put("")]))
+	## Engine.on_files("drop", Engine.handle_files(|{ files, refused: _ }| [cells.attached.set(files), cells.page.reset, cells.note.set("")]))
 	## ```
 	##
 	## To write local state for the same files, compose it with that
@@ -193,14 +196,14 @@ Engine := [].{
 	## As `handle_files`, where `decide` also receives `v`, read once when
 	## the files arrive and before any of this decision's own writes, as
 	## `handle_by` reads it.
-	handle_files_by : Val(ctx, b), (b, Received -> List(Write(st))) -> FilesHandler(ctx)
+	handle_files_by : Signal(ctx, b), (b, Received -> List(Write(st))) -> FilesHandler(ctx)
 		where [ctx.store : () -> Reach(ctx, st)]
 	handle_files_by = |b, decide| { h: Core.store_files_handler_by(b.v, decide) }
 
 	## `react(decide)` is an effect site's [Reaction] that writes the cells
 	## `decide` names, given the value the request was issued for and its
 	## result: an answer's whole transition, as `handle` is an event's.
-	react : (r, Res -> List(Write(st))) -> Reaction(ctx, r)
+	react : (r, Result -> List(Write(st))) -> Reaction(ctx, r)
 		where [ctx.store : () -> Reach(ctx, st)]
 	react = |decide| Core.store_reaction(decide)
 
@@ -208,7 +211,7 @@ Engine := [].{
 	## the result arrives and before any of this decision's own writes.
 	## Composed after another reaction (`Reaction.also`), the reading is
 	## taken after that reaction has written.
-	react_by : Val(ctx, b), (b, r, Res -> List(Write(st))) -> Reaction(ctx, r)
+	react_by : Signal(ctx, b), (b, r, Result -> List(Write(st))) -> Reaction(ctx, r)
 		where [ctx.store : () -> Reach(ctx, st)]
 	react_by = |b, decide| Core.store_reaction_by(b.v, decide)
 
@@ -231,12 +234,12 @@ Engine := [].{
 		map2 : Cells(whole, a, ha), Cells(whole, b, hb), (ha, hb -> hc) -> Cells(whole, (a, b), hc)
 		map2 = |l, r, f| { d: l.d.map2(r.d, f) }
 
-		## The same cells, handing out `f` of their handles: a feature can
-		## give its owner its handles in whatever shape suits it.
+		## The same cells, handing out `f` of them: a feature can
+		## give its owner its cells in whatever shape suits it.
 		map : Cells(whole, st, h), (h -> k) -> Cells(whole, st, k)
 		map = |{ d }, f| { d: d.map(f) }
 
-		## The same cells, handing out `f` of their handles and of a
+		## The same cells, handing out `f` of them and of a
 		## [Write] that starts every one of them again at the value it was
 		## described with:
 		##
@@ -262,7 +265,7 @@ Engine := [].{
 	## ```
 	##
 	## The record builder combines two fields or more. A description of
-	## one cell is that cell, with its handle put in a record by `map`:
+	## one cell is that cell, put in a record by `map`:
 	##
 	## ```
 	## Engine.cell("").map(|source| { source: source })
@@ -277,25 +280,25 @@ Engine := [].{
 	## { todos: Engine.table(Todo.sample), query: Engine.cell(Todo.all) }.Engine.Cells
 	## ```
 	##
-	## The handle is an ordinary [Cell]. A decision changes the table with
+	## Its cell is an ordinary [Cell]. A decision changes the table with
 	## the table's own operations, so every write records the rows it
 	## changed, and it stands in the decision's list beside its other
 	## writes:
 	##
 	## ```
-	## Engine.handle_by(key, |id, _| [todos.change(|table| table.update(id, Todo.toggle)), edits.change(|n| n + 1)])
+	## Engine.handle_by(key, |id, _| [todos.update(|table| table.update(id, Todo.toggle)), edits.update(|n| n + 1)])
 	## ```
 	##
-	## `each_view` draws a filtered, sorted window of the table from that
-	## record, at the cost of the rows written, never of the table. A write
+	## `table_view` draws a filtered, sorted window of the table from that
+	## changes, at the cost of the rows written, never of the table. A write
 	## that leaves another table in the cell than the one it held (a `put`
 	## of a new one from `Table.from_list`, a copy kept from earlier) is a
 	## whole rewrite: every view of the cell rebuilds.
 	##
-	## Read one row or the count with the cell's `val`
-	## (`todos.val().map(|table| table.len())`). Such a reader is
+	## Read one row or the count with the cell's `signal`
+	## (`todos.signal().map(|table| table.len())`). Such a reader is
 	## re-evaluated on every write of the table, and pruned if its result
-	## is equal; only a row of an `each_view` wakes for its own row alone.
+	## is equal; only a row of a `table_view` wakes for its own row alone.
 	table : List({ key : k, row : v }) -> Cells(whole, Table(k, v), Cell(whole, Table(k, v)))
 		where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 	table = |rows| { d: Core.table(rows).map(wrap_cell) }
@@ -310,7 +313,7 @@ Engine := [].{
 	## they never tie before or after it. So a sort value ends with the
 	## key, whatever the sorted field: `{ place: row.place, key }`, compared
 	## by `place` and then by `key`.
-	Query(k, v, s) : Core.Query(k, v, s)
+	QueryPlan(k, v, s) : Core.QueryPlan(k, v, s)
 
 	## The part of a view that is drawn: `count` rows from position
 	## `start` of the view's order. A window that reaches past the last row
@@ -325,25 +328,25 @@ Engine := [].{
 	every_row : Window
 	every_row = { start: 0, count: U64.highest }
 
-	## What an `each_view` shows of its table. `query` is plain data
+	## What a `table_view` shows of its table. `query` is plain data
 	## the site can compare (the filter and order the user chose) and
-	## `plan` turns it into the [Query] that selects and orders rows;
+	## `plan` turns it into the [QueryPlan] that selects and orders rows;
 	## `window` is the part of that order to draw.
-	ViewProps(ctx, q, k, v, s) : { query : Val(ctx, q), plan : (q -> Query(k, v, s)), window : Val(ctx, Window) }
+	TableViewProps(ctx, q, k, v, s) : { query : Signal(ctx, q), plan : (q -> QueryPlan(k, v, s)), window : Signal(ctx, Window) }
 
-	## `each_view(table, props, template)` renders one row for each
+	## `table_view(table, props, template)` renders one row for each
 	## row of `table` in the window of a filtered, sorted view of it:
 	##
 	## ```
-	## Engine.each_view(
+	## Engine.table_view(
 	##     todos,
-	##     { query: query.val(), plan: Todo.plan, window: window.val() },
+	##     { query: query.signal(), plan: Todo.plan, window: window.signal() },
 	##     |key, todo| Todo.row(key, todo),
 	## )
 	## ```
 	##
 	## The site keeps the view (the ordered keys of every row that passes
-	## the filter) up to date from the table's record of changes: a turn
+	## the filter) up to date from the table's changes: a turn
 	## that wrote some rows costs those rows, a search and a move in the
 	## ordered keys each, whatever the size of the table. No list of rows
 	## is built, kept or compared. A row that left the window is removed,
@@ -352,14 +355,14 @@ Engine := [].{
 	## re-evaluates its own holes.
 	##
 	## `template` runs once per site and must return a single element. It
-	## is given the row's key, fixed for the row's lifetime, and a handle
-	## on the row's value, a [State] of the row's scope: `row.val()` reads
+	## is given the row's key, fixed for the drawn row's lifetime, and a
+	## [State] of the row in its context: `row.signal()` reads
 	## the row of that key from the table, and `row.update(f)` and its
 	## relatives write that row of that table (`Table.update`), so a row's
 	## handlers cannot name another table by mistake and a component drawn
 	## over a `State` draws a row unchanged. Other writes are decisions
 	## over the table's cell
-	## (`Engine.handle_by(key, |id, _| [todos.change(|table| table.remove(id))])`).
+	## (`Engine.handle_by(key, |id, _| [todos.update(|table| table.remove(id))])`).
 	## Values from the enclosing context enter with `lift_row`.
 	##
 	## The site finds a row by the table's key itself, through the key's
@@ -375,24 +378,24 @@ Engine := [].{
 	## `window` costs the two windows. A row removed from the table must
 	## not be read again by the handler that removed it: that is a
 	## contract error.
-	each_view : Cell(st, Table(k, v)), ViewProps(ctx, q, k, v, s), (Val(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)
+	table_view : Cell(st, Table(k, v)), TableViewProps(ctx, q, k, v, s), (Signal(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)
 		where [ctx.store : () -> Reach(ctx, st), k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher, q.is_eq : q, q -> Bool]
-	each_view = |{ c }, { query, plan, window }, template| Core.each_view(c, { query: query.v, plan, window: window.v }, |key, row| template({ v: key }, { s: row }))
+	table_view = |{ c }, { query, plan, window }, template| Core.table_view(c, { query: query.v, plan, window: window.v }, |key, row| template({ v: key }, { s: row }))
 
 	## An app's store: the cells it holds, their starting values, and the
-	## handles on them. Build it once with `store`, as a top-level value a
+	## cells it gives to readers. Build it once with `store`, as a top-level value a
 	## module that composes the app can import, and hand it to
 	## `program_store`.
 	Store(st, h) :: { s : Core.Store(st, h) }.{
 
-		## The handles on the store's cells, the record its cells described.
-		handles : Store(st, h) -> h
-		handles = |{ s }| s.handles()
+		## The record of cells its description produced.
+		cells : Store(st, h) -> h
+		cells = |{ s }| s.cells()
 
 		## The same store with `cell` starting at `value` instead, for a
 		## start that depends on the boot data. For a table cell, `value` is
 		## the table `Table.from_list` gives. It is a start, not a write: the
-		## table's record is empty afterwards, so a test that applies a
+		## table has no changes afterwards, so a test that applies a
 		## transition with `after` reads that transition's rows in it.
 		with_initial : Store(st, h), Cell(st, a), a -> Store(st, h)
 		with_initial = |{ s }, { c }, value| { s: s.with_initial(c, value) }
@@ -402,12 +405,12 @@ Engine := [].{
 		## pure `expect` on a transition:
 		##
 		## ```
-		## expect store.after(signed_out(at)).read(h.session) == Anonymous
+		## expect store.after(signed_out(at)).read(cells.session) == Anonymous
 		## ```
 		##
 		## The writes are applied and no turn ends, so a table keeps its
-		## record of them: `store.after(writes).read(table).inverse()` tells
-		## which rows a transition wrote. Across chained `after`s the record
+		## changes describing them: `store.after(writes).read(table).inverse()` tells
+		## which rows a transition wrote. Across chained `after`s the changes
 		## holds the rows all of them wrote.
 		after : Store(st, h), List(Write(st)) -> Store(st, h)
 		after = |{ s }, writes| { s: s.after(writes) }
@@ -428,58 +431,59 @@ Engine := [].{
 	## }
 	## ```
 	##
-	## The name is part of the type of every handle the store gives out,
+	## The name is part of the type of every cell the store gives out,
 	## so a cell of another store is a type error wherever this one is
 	## reached, even when the two stores' cells have the same types.
 	store : tag, Cells(Stored(tag, st), st, h) -> Store(Stored(tag, st), h)
 	store = |tag, { d }| { s: Core.store_of(tag, d) }
 
-	## The context inside a `state` or `derive` body: a layer holding a value of
-	## type `s`, nested in `outer`. Values and handlers from `outer` enter with
-	## `lift`.
+	## The context inside a `state`, `derive` or resource body: it can read a
+	## value of type `s` beside what `outer` can read. Signals and handlers
+	## from `outer` enter with `lift`.
 	In(outer, s) : Core.In(outer, s)
 
-	## The context inside one row of an `each` or an `each_view` template,
+	## The context inside one row of an `each` or a `table_view` template,
 	## nested in `outer`: the row's key and item (for a view's row, the
 	## table's key). Values and handlers from `outer` enter with `lift_row`.
 	Row(outer, item) : Core.Row(outer, item)
 
-	## A reactive value of type `a`, readable in context `ctx`.
+	## A read-only signal of type `a`, readable in context `ctx`.
 	##
-	## A value records which layers it reads, so only the text, attributes and sites
-	## that read a changed layer are re-evaluated. Make one with `const`,
-	## `State.val`, a [RowRef] accessor or `derive`, and transform it with `map` and
-	## `map2`. A value is a recipe, not a cache: mapping functions run each time a
-	## reader is re-evaluated, so they must be pure and should be cheap (`derive`
-	## memoises an expensive or shared result).
+	## A signal declares what it reads when it is built; dependencies are never
+	## discovered by running a reader. Only readers of what a turn wrote are
+	## re-evaluated. Make a signal with `const`, `State.signal`, `Cell.signal`,
+	## a [RowRef] accessor or `derive`, then transform it with `map` and `map2`.
+	## A signal is a recipe, not a cache: mapping functions run each time a
+	## reader is re-evaluated, so they must be pure and should be cheap
+	## (`derive` memoises an expensive or shared result).
 	##
-	## `map2` has the shape Roc's record builder calls, so several values
-	## combine into one value of a record, which reads what all of them
-	## read: `{ filter: h.filter.val(), sort: h.sort.val() }.Engine.Val`. It
-	## is how a decision takes a reading of several cells (`handle_by`,
-	## `react_by`) and how a view's query is made of two.
-	Val(ctx, a) :: { v : Core.Val(ctx, a) }.{
+	## `map2` has the shape Roc's record builder calls, so several signals
+	## combine into one signal of a record, which reads what all of them
+	## read: `{ filter: cells.filter.signal(), sort: cells.sort.signal() }.Engine.Signal`.
+	## It is how a decision takes a reading of several cells (`handle_by`,
+	## `react_by`) and how a table view's query is made of two.
+	Signal(ctx, a) :: { v : Core.Signal(ctx, a) }.{
 
-		## Transform a value with a pure function. The result reads the same layers
+		## Transform a signal with a pure function. The result has the same reads
 		## as the input; the function runs wherever the result is read, each time a
-		## read layer changes.
-		map : Val(ctx, a), (a -> b) -> Val(ctx, b)
+		## dependency changes.
+		map : Signal(ctx, a), (a -> b) -> Signal(ctx, b)
 		map = |{ v }, f| { v: v.map(f) }
 
 		## Combine two values with a pure function. The result reads the union of
-		## both inputs' layers. It is also what the record builder calls
-		## (`{ a: va, b: vb }.Engine.Val`).
-		map2 : Val(ctx, a), Val(ctx, b), (a, b -> c) -> Val(ctx, c)
+		## both inputs' dependencies. It is also what the record builder calls
+		## (`{ a: va, b: vb }.Engine.Signal`).
+		map2 : Signal(ctx, a), Signal(ctx, b), (a, b -> c) -> Signal(ctx, c)
 		map2 = |l, r, f| { v: l.v.map2(r.v, f) }
 
 		## Use a value from the enclosing context inside a `state` or `derive` body
-		## nested in it. The value keeps reading the same layers.
-		lift : Val(ctx, a) -> Val(In(ctx, s), a)
+		## nested in it. The signal keeps the same dependencies.
+		lift : Signal(ctx, a) -> Signal(In(ctx, s), a)
 		lift = |{ v }| { v: v.lift() }
 
 		## Use a value from the enclosing context inside an `each` row template
-		## nested in it. The value keeps reading the same layers.
-		lift_row : Val(ctx, a) -> Val(Row(ctx, item), a)
+		## nested in it. The signal keeps the same dependencies.
+		lift_row : Signal(ctx, a) -> Signal(Row(ctx, item), a)
 		lift_row = |{ v }| { v: v.lift_row() }
 	}
 
@@ -488,7 +492,7 @@ Engine := [].{
 	## for a click). Make one with the [State] methods for local state, or
 	## with `handle` for the store's cells, and attach it with `on`,
 	## `on_click` or an `Html` control. A handler runs once per event, in the
-	## transaction that delivers it.
+	## turn that delivers it.
 	Handler(ctx) :: { h : Core.Handler(ctx) }.{
 
 		## Use a handler from the enclosing context inside a `state` or `derive` body
@@ -531,7 +535,7 @@ Engine := [].{
 		## decision:
 		##
 		## ```
-		## hover.on_files(|_, _| Idle).also(Engine.handle_files(|got| [h.attached.put(got.files)]))
+		## hover.on_files(|_, _| Idle).also(Engine.handle_files(|got| [cells.attached.set(got.files)]))
 		## ```
 		also : FilesHandler(ctx), FilesHandler(ctx) -> FilesHandler(ctx)
 		also = |first, second| { h: first.h.also(second.h) }
@@ -560,10 +564,12 @@ Engine := [].{
 	## by default, or `Ms(ms)`).
 	UploadProps : Core.UploadProps
 
-	## A handle on one `state` layer holding an `s`, usable in context `ctx`.
+	## A piece of state as context `ctx` sees it, holding an `s`.
+	## `state` makes a local one, `Cell.state` gives a cell as one, and a
+	## table view gives each drawn row its row as one.
 	##
-	## Read it with `val`; write it only through handlers (`update`, `set_value`,
-	## ...) and reactions (`on_result`). A write marks the layer changed and its
+	## Read it with `signal`; write it only through handlers (`update`, `set_value`,
+	## ...) and reactions (`on_result`). A write marks the state changed and its
 	## readers refresh; equality pruning happens where the value is read (text,
 	## attributes, rows, `derive`), not at the state, so a reducer that returns an
 	## equal value still costs a refresh pass but emits no DOM commands. Reducers
@@ -571,8 +577,8 @@ Engine := [].{
 	State(ctx, s) :: { s : Core.State(ctx, s) }.{
 
 		## The state's current value.
-		val : State(ctx, s) -> Val(ctx, s)
-		val = |{ s }| { v: s.val() }
+		signal : State(ctx, s) -> Signal(ctx, s)
+		signal = |{ s }| { v: s.signal() }
 
 		## A handler that replaces the state with `f` of it, ignoring the event's
 		## payload.
@@ -582,14 +588,14 @@ Engine := [].{
 		## A handler whose reducer also receives `v`, read in the handler's context
 		## when the event fires (typically the row key or a row field), so a row's
 		## handler needs no captured row.
-		update_by : State(ctx, s), Val(ctx, b), (s, b -> s) -> Handler(ctx)
+		update_by : State(ctx, s), Signal(ctx, b), (s, b -> s) -> Handler(ctx)
 		update_by = |{ s }, b, f| { h: s.update_by(b.v, f) }
 
 		## An effect site's [Reaction] that writes this state: the reducer receives
-		## the value the request was issued for and its [Res]. If the state has been
+		## the value the request was issued for and its [Result]. If the state has been
 		## disposed by the time a reparented result arrives, the write is skipped and
 		## counted (`skipped`).
-		on_result : State(ctx, s), (s, a, Res -> s) -> Reaction(ctx, a)
+		on_result : State(ctx, s), (s, a, Result -> s) -> Reaction(ctx, a)
 		on_result = |{ s }, f| s.on_result(f)
 
 		## A handler whose reducer receives the event's payload, such as an input's
@@ -599,7 +605,7 @@ Engine := [].{
 
 		## A handler whose reducer receives both `v`, read when the event fires, and
 		## the event's payload.
-		set_value_by : State(ctx, s), Val(ctx, b), (s, b, Str -> s) -> Handler(ctx)
+		set_value_by : State(ctx, s), Signal(ctx, b), (s, b, Str -> s) -> Handler(ctx)
 		set_value_by = |{ s }, b, f| { h: s.set_value_by(b.v, f) }
 
 		## A handler for the files an event carries (attach it with `on_files`,
@@ -611,12 +617,12 @@ Engine := [].{
 		on_files : State(ctx, s), (s, Received -> s) -> FilesHandler(ctx)
 		on_files = |{ s }, f| { h: s.on_files(f) }
 
-		## Use a state handle from the enclosing context inside a `state` or `derive`
+		## Use state from the enclosing context inside a `state` or `derive`
 		## body nested in it.
 		lift : State(ctx, s) -> State(In(ctx, t), s)
 		lift = |{ s }| { s: s.lift() }
 
-		## Use a state handle from the enclosing context inside an `each` row template
+		## Use state from the enclosing context inside an `each` row template
 		## nested in it.
 		lift_row : State(ctx, s) -> State(Row(ctx, item), s)
 		lift_row = |{ s }| { s: s.lift_row() }
@@ -631,7 +637,7 @@ Engine := [].{
 	## others `no`. Read through `RowRef.select`, a change of `selected`
 	## re-evaluates exactly the previously and the newly selected rows instead of
 	## every row.
-	keyed : Val(ctx, Str), v, v -> Keyed(ctx, v)
+	keyed : Signal(ctx, Str), v, v -> Keyed(ctx, v)
 	keyed = |sel, yes, no| Core.keyed(sel.v, yes, no)
 
 	## The current row of an `each` template. The template runs once per `each`
@@ -640,12 +646,12 @@ Engine := [].{
 	RowRef(outer, item) :: { r : Core.RowRef(outer, item) }.{
 
 		## The row's key. It is fixed for the row's lifetime, so it never triggers a refresh.
-		key : RowRef(outer, item) -> Val(Row(outer, item), Str)
+		key : RowRef(outer, item) -> Signal(Row(outer, item), Str)
 		key = |{ r }| { v: r.key() }
 
 		## A projection of the row's item. It is re-evaluated only for rows whose new
 		## item differs from the old one.
-		field : RowRef(outer, item), (item -> a) -> Val(Row(outer, item), a)
+		field : RowRef(outer, item), (item -> a) -> Signal(Row(outer, item), a)
 		field = |{ r }, f| { v: r.field(f) }
 
 		## The row's whole item, for a handler or a reaction that takes it
@@ -653,33 +659,34 @@ Engine := [].{
 		## it is re-evaluated only for rows whose new item differs from the
 		## old one; a hole that shows one part of the item reads that part
 		## with `field`.
-		item : RowRef(outer, item) -> Val(Row(outer, item), item)
+		item : RowRef(outer, item) -> Signal(Row(outer, item), item)
 		item = |{ r }| { v: r.item() }
 
 		## `yes` or `no` from a [Keyed] selection, depending on whether this row's key
 		## is the selected one.
-		select : RowRef(outer, item), Keyed(outer, v) -> Val(Row(outer, item), v)
+		select : RowRef(outer, item), Keyed(outer, v) -> Signal(Row(outer, item), v)
 		select = |{ r }, kd| { v: r.select(kd) }
 	}
 
 	## An attribute, event listener or focus reference on an element, in context
-	## `ctx`. Make one with `attr`, `attr_v`, `class`, `class_v`, `test_id`,
-	## `test_id_v`, `on`, `on_click` or `ref`.
+	## `ctx`. Make one with `attr`, `attr_s`, `class`, `class_s`, `test_id`,
+	## `test_id_s`, `on`, `on_click` or `ref`.
 	Attr(ctx) : Core.Attr(ctx)
 
 	## A piece of UI in context `ctx`: an element, a text node or a dynamic site
 	## (`state`, `derive`, `resource`, `when`, `switch`, `remount_on`, `each`,
-	## `each_view` or an effect site).
+	## `table_view` or an effect site).
 	## An `Elem` is a description; the engine mounts it once and afterwards updates
-	## only what reads a changed layer.
+	## only what reads a state or cell the turn wrote.
 	Elem(ctx) : Core.Elem(ctx)
 
-	## `state(init, body)` adds a state layer, starting at `init`, for the elements
+	## `state(init, body)` holds local state, starting at `init`, for the elements
 	## `body` builds. There is one instance per mount of the site (so one per row
 	## inside an `each` row) and it lives as long as the enclosing scope: it is
 	## dropped when its branch or row is disposed, and starts again at
 	## `init` if remounted. Values from the enclosing context enter `body` with
-	## `lift`. Layers nest without limit: past 64 nested layers on one path a
+	## `lift`. Contexts nest without limit: past 64 nested states or derived
+	## signals on one path a
 	## write can cost a few extra evaluations, which equality pruning discards.
 	state : s, (State(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
 	state = |init, body| Core.state(init, |s| body({ s: s }))
@@ -692,7 +699,7 @@ Engine := [].{
 	## `template` runs once per site against a [RowRef] and must return a single
 	## element. A duplicate key is a contract error, as is a focus `ref` directly in
 	## the row template (put it in a nested site instead).
-	each : Val(ctx, List(item)), (item -> Str), (RowRef(ctx, item) -> Elem(Row(ctx, item))) -> Elem(ctx)
+	each : Signal(ctx, List(item)), (item -> Str), (RowRef(ctx, item) -> Elem(Row(ctx, item))) -> Elem(ctx)
 		where [item.is_eq : item, item -> Bool]
 	each = |rows, key, template| Core.each(rows.v, key, |r| template({ r: r }))
 
@@ -700,14 +707,14 @@ Engine := [].{
 	## when `cond` changes, disposing the old branch with everything it owns.
 	## Because the unselected branch is never built, recursive UI can be expressed
 	## directly.
-	when : Val(ctx, Bool), (() -> Elem(ctx)), (() -> Elem(ctx)) -> Elem(ctx)
+	when : Signal(ctx, Bool), (() -> Elem(ctx)), (() -> Elem(ctx)) -> Elem(ctx)
 	when = |cond, yes, no| Core.when(cond.v, yes, no)
 
 	## `switch(sel, cases, body)` builds `body(k)` for the current value `k` of
 	## `sel`, and rebuilds it when `sel` changes to a different case. `cases` lists
 	## every value `sel` can take, so the site listens to everything any branch
 	## could read; a value outside `cases` is a contract error.
-	switch : Val(ctx, k), List(k), (k -> Elem(ctx)) -> Elem(ctx)
+	switch : Signal(ctx, k), List(k), (k -> Elem(ctx)) -> Elem(ctx)
 		where [k.is_eq : k, k -> Bool]
 	switch = |sel, cases, body| Core.switch(sel.v, cases, body)
 
@@ -718,26 +725,26 @@ Engine := [].{
 	## timers and subscriptions inside are cancelled, and requests in flight
 	## inside are kept and delivered here, where their writes to the
 	## disposed state are skipped. Use it for state that belongs to one key,
-	## such as a reply drafted to the open message:
+	## such as a draft for the open message:
 	##
 	## ```
-	## Engine.remount_on(open.val(), || detail(open.val()))
+	## Engine.remount_on(open.signal(), || detail(open.signal()))
 	## ```
 	##
 	## The body takes no argument: it reads the key, if it needs it, like
 	## any other value. An equal key costs one evaluation of the key; an
 	## unequal one, disposing and mounting the body. The site keeps the key
 	## to compare, so a key should be small, such as an id.
-	remount_on : Val(ctx, k), (() -> Elem(ctx)) -> Elem(ctx)
+	remount_on : Signal(ctx, k), (() -> Elem(ctx)) -> Elem(ctx)
 		where [k.is_eq : k, k -> Bool]
 	remount_on = |key, body| Core.remount_on(key.v, body)
 
-	## `derive(input, body)` evaluates `input` once per change of the layers it
-	## reads and gives `body` the result as a new layer. Readers inside `body` that
+	## `derive(input, body)` evaluates `input` once per change of what it
+	## reads and gives `body` the result as a new signal. Readers inside `body` that
 	## read only the derived value do no work while it is equal to the previous
 	## result, so use `derive` for a value that is expensive or read in many
 	## places. Values from the enclosing context enter `body` with `lift`.
-	derive : Val(ctx, a), (Val(In(ctx, a), a) -> Elem(In(ctx, a))) -> Elem(ctx)
+	derive : Signal(ctx, a), (Signal(In(ctx, a), a) -> Elem(In(ctx, a))) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
 	derive = |input, body| Core.derive(input.v, |v| body({ v: v }))
 
@@ -759,14 +766,14 @@ Engine := [].{
 	## `Program.with_workers`) on `input`, off the page's thread, where it may
 	## read the `files` its input holds through effects and answer with files
 	## of its own; it delivers one `Work` answer or `WorkLost(fault)`.
-	## `deadline_ms` 0 means no deadline; it is capped at 10 minutes and
+	## `timeout_ms` 0 means no timeout; it is capped at 10 minutes and
 	## delivers `Timeout` when it expires. `on_dispose` says whether disposing
 	## its site stops the job (`Stop`, like a timer) or keeps it, delivering
 	## its answer to the nearest surviving ancestor (`Keep`); `on_cancel`
 	## whether a cancelled running job ends its worker (`Stop`) or completes
 	## with its answer dropped (`Finish`). A preparation's task is `Prepared`,
 	## its input led by the preparation's. Issuing work for a task that is not
-	## registered is a contract error. Apps use the typed layer, `Worker`,
+	## registered is a contract error. Apps use the typed API, `Worker`,
 	## which builds it.
 	##
 	## `ReadBytes` and `ReadUtf8` read a file into the page (`File.read_bytes`,
@@ -776,12 +783,12 @@ Engine := [].{
 	## `FileUrl` or `FileFailed`. Like a timer these belong to their site.
 	## `Upload` is an HTTP request whose body is a file (`File.upload`): it is
 	## answered and kept as `Http` is.
-	Req : [
+	Request : [
 		## `timeout_ms` 0 = no timeout; capped at `max_timeout_ms`.
 		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32 }),
 		StorageGet(Str),
 		Timer(U32),
-		Work({ task : Str, input : List(U8), files : List(File), deadline_ms : U32, on_dispose : [Stop, Keep], on_cancel : [Stop, Finish], prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] }),
+		Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32, on_dispose : [Stop, Keep], on_cancel : [Stop, Finish], prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] }),
 		Interval(U32),
 		Popstate,
 
@@ -806,8 +813,8 @@ Engine := [].{
 		ObjectUrl(File),
 
 		## Ports: a message to the page's JavaScript for a declared port (see
-		## `PortRegistration`; apps use the typed layer, `Port`). `PortCommand` is
-		## emitted and forgotten; `PortCall` awaits one `PortReply` or
+		## `PortRegistration`; apps use the typed API, `Port`). `PortCommand` is
+		## emitted and forgotten; `PortCall` awaits one `PortAnswer` or
 		## `PortFailed` and, like `Http`, survives its site's disposal
 		## (`timeout_ms` 0 = none, capped at 10 minutes); `PortSubscribe`
 		## delivers any number of messages until its site is disposed or the
@@ -834,10 +841,10 @@ Engine := [].{
 	## (`WorkLost`), a file's bytes or text read into the page (`FileBytes`,
 	## `FileText`), a file's SHA-256 digest (`Digest`) or a URL that shows it
 	## (`FileUrl`), or why an operation on a file produced nothing
-	## (`FileFailed`), or a port's answer or message (`PortReply`) or why
+	## (`FileFailed`), or a port's answer or message (`PortAnswer`) or why
 	## there is none (`PortFailed`), or a response whose body is a file
 	## (`Fetched`).
-	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortReply(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File })]
+	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name and the files its `{"$file":N}` markers
@@ -884,25 +891,25 @@ Engine := [].{
 	## A `File.read_bytes` result as the file's bytes or a typed [FileError]:
 	## `TooLarge`, `Unreadable` or `Refused`. Any other result is a contract
 	## error.
-	file_bytes : Res -> Try(List(U8), FileError)
+	file_bytes : Result -> Try(List(U8), FileError)
 	file_bytes = |res| Core.file_bytes(res)
 
 	## A `File.read_utf8` result as the file's text or a typed [FileError]:
 	## `InvalidUtf8`, `TooLarge`, `Unreadable` or `Refused`. Any other result
 	## is a contract error.
-	file_text : Res -> Try(Str, FileError)
+	file_text : Result -> Try(Str, FileError)
 	file_text = |res| Core.file_text(res)
 
 	## A `File.sha256` result as the digest's 32 bytes or a typed [FileError]:
 	## `TooLarge`, `Unavailable`, `Unreadable` or `Refused`. Any other result
 	## is a contract error.
-	file_digest : Res -> Try(List(U8), FileError)
+	file_digest : Result -> Try(List(U8), FileError)
 	file_digest = |res| Core.file_digest(res)
 
 	## A `File.object_url` result as the URL or a typed [FileError]: `TooLarge`
 	## (a 17th range of one file) or `Refused`. Any other result is a contract
 	## error.
-	file_url : Res -> Try(Str, FileError)
+	file_url : Result -> Try(Str, FileError)
 	file_url = |res| Core.file_url(res)
 
 	## Why a `Work` request produced no answer: the worker's instance faulted
@@ -925,7 +932,7 @@ Engine := [].{
 	## An HTTP result as the body of a 2xx response or a typed [HttpError]. Apps
 	## that classify statuses themselves match on `Http` directly. Any result that
 	## is not from an HTTP request is a contract error.
-	http_text : Res -> Try(Str, HttpError)
+	http_text : Result -> Try(Str, HttpError)
 	http_text = |res| Core.http_text(res)
 
 	## Why a `File.fetch` produced no file: `Network`, `Timeout`, a status
@@ -936,7 +943,7 @@ Engine := [].{
 	## A `File.fetch` result as the body of a 2xx response, a file the page
 	## holds, or a typed [FetchError]. To read the status or the headers,
 	## match on `Fetched` instead. Any other result is a contract error.
-	fetched : Res -> Try(File, FetchError)
+	fetched : Result -> Try(File, FetchError)
 	fetched = |res| Core.fetched(res)
 
 	## A file a task's job is writing: make one with `Files.build!`, append
@@ -945,7 +952,7 @@ Engine := [].{
 	Builder : Core.Builder
 
 	## What an effect site does with a result: what it writes, given the value
-	## the request was issued for and the [Res]. Make one with `State.on_result`
+	## the request was issued for and the [Result]. Make one with `State.on_result`
 	## for local state or with `react` for the store's cells, or use `ignore`.
 	## `first.also(second)` runs both on one result, in order, as one atomic
 	## transition, the second seeing the first's writes, like `Handler.also`.
@@ -961,7 +968,7 @@ Engine := [].{
 	## title, storage writes, focus): a request that awaits a result would outlive
 	## its owner, so it is a contract error. Each run is counted by `name`. The site
 	## renders nothing and reads nothing while it is live.
-	on_cleanup : Str, Val(ctx, a), (a -> List(Req)) -> Elem(ctx)
+	on_cleanup : Str, Signal(ctx, a), (a -> List(Request)) -> Elem(ctx)
 	on_cleanup = |name, v, plan| Core.on_cleanup(name, v.v, plan)
 
 	## A cleanup site that issues nothing and only counts its runs under `name`.
@@ -977,17 +984,17 @@ Engine := [].{
 	## surviving ancestor instead. At most 32 requests are
 	## in flight by default (see `program_boot`); beyond that a request is answered
 	## with `Refused`.
-	watch : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
+	watch : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
 	watch = |v, plan, reaction| Core.watch(v.v, plan, reaction)
 
 	## Like `watch`, but issues only when `v` changes after mount, never for its
 	## initial value.
-	on_change : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
+	watch_changes : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
-	on_change = |v, plan, reaction| Core.on_change(v.v, plan, reaction)
+	watch_changes = |v, plan, reaction| Core.watch_changes(v.v, plan, reaction)
 
-	## `latest(v, plan, reaction)` issues like `watch` (at mount, and whenever `v`
+	## `watch_latest(v, plan, reaction)` issues like `watch` (at mount, and whenever `v`
 	## changes to an unequal value) but keeps only the requests of the current
 	## value: the latest value wins. Before it issues for a new value, every
 	## awaited request it still owns from earlier ones is cancelled, whatever its
@@ -998,46 +1005,43 @@ Engine := [].{
 	## serial in its state. A `plan` that returns `[]` makes a change a pure
 	## cancel.
 	##
-	## Supersession is this site's explicit policy; `watch` and `on_change` never
+	## Supersession is this site's explicit policy; `watch` and `watch_changes` never
 	## cancel what they issued. Disposal follows `watch`: subscriptions and timers
 	## stop, and admitted `Http` and `StorageGet` requests of the current value
 	## are delivered to the nearest surviving ancestor. A change costs one read of
 	## `v` plus work linear in the requests the site owns.
-	latest : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
+	watch_latest : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
-	latest = |v, plan, reaction| Core.latest(v.v, plan, reaction)
+	watch_latest = |v, plan, reaction| Core.watch_latest(v.v, plan, reaction)
 
-	## `resource(input, cfg, body)` is an asynchronous `derive`: it gives `body` a
-	## layer whose value follows the answers to the requests issued for `input`.
-	## `Worker.derive` and `Port.derive` are resources that follow one answer;
-	## reach for `resource` itself when the layer is something else (a count of
-	## answers, a list built from several).
+	## `resource(input, cfg, body)` gives `body` a signal whose value follows
+	## results of the requests issued for `input`. `Worker.resource` and
+	## `Port.resource` follow one answer; use this form for another value,
+	## such as a count of answers or a list built from several.
 	##
-	## At mount the layer starts at `cfg.pending(cfg.init, a)` for the input's
+	## At mount the value starts at `cfg.pending(cfg.init, a)` for the input's
 	## value `a`, and `cfg.plan(a)` is issued. When `input` changes to an unequal
-	## value, the site supersedes its requests exactly as `latest` does, sets the
-	## layer to `cfg.pending(s, a)` and issues `cfg.plan(a)`, in the same pass and
-	## before anything in `body` reads the layer, so `body` shows the start of the
-	## new request in the turn that changed the input (a loading state that keeps
-	## the previous answer, say). Each result for a request the site owns sets the
-	## layer to `cfg.resolve(s, a, res)`, with the value `a` it was issued for.
+	## value, the site supersedes requests as `watch_latest` does, sets its value
+	## to `cfg.pending(s, a)` and issues `cfg.plan(a)`, in one pass before `body`
+	## reads the signal. The turn that changed the input therefore shows the
+	## start of the new request, such as a loading state keeping the old answer.
+	## Each result for a request the site owns sets the value to
+	## `cfg.resolve(s, a, res)`, with the value `a` it was issued for.
 	##
-	## The layer prunes like `derive`: readers inside `body` that read only the
-	## layer do no work when `pending` or `resolve` returns a value equal to the
-	## previous one. To compare, the site holds the previous value while `pending`
-	## and `resolve` run, so they receive it shared; keep the layer small, or build
-	## a fresh value rather than update a large one in place. The layer lives as
-	## long as the site's scope, like a `state`: disposal drops it, stops the
-	## site's subscriptions and timers, and delivers its admitted requests to the
-	## nearest surviving ancestor, where their write to the retired layer is
-	## skipped and counted (`skipped`). Values from the enclosing context enter
-	## `body` with `lift`.
-	resource : Val(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Req)), resolve : (s, a, Res -> s) }, (Val(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
+	## Readers of only this signal do no work when `pending` or `resolve`
+	## returns a value equal to the previous one. To compare, the site holds
+	## that previous value while they run, so they receive it shared: keep it
+	## small, or build a fresh value rather than update a large one in place.
+	## The value lives as long as the site's scope. Disposal drops it, stops
+	## the site's scoped requests, and reparents admitted requests to the
+	## nearest surviving ancestor, where writes to the retired state are
+	## skipped and counted. Signals from outside enter `body` with `lift`.
+	resource : Signal(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Request)), resolve : (s, a, Result -> s) }, (Signal(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
 	resource = |input, cfg, body| Core.resource(input.v, cfg, |v| body({ v: v }))
 
-	## What a layer that follows one answer holds (`Worker.derive`,
-	## `Port.derive`): whether a request for the current input is in flight,
+	## What a resource that follows one answer holds (`Worker.resource`,
+	## `Port.resource`): whether a request for the current input is in flight,
 	## and the latest answer.
 	##
 	## - `request` is `Pending` from the turn the input changes until its
@@ -1057,7 +1061,7 @@ Engine := [].{
 	## `Failed(error)`.
 	JobState(output, error) : Core.JobState(output, error)
 
-	## What a `gather` layer holds: `jobs`, the current question's jobs in
+	## What a `gather` resource holds: `jobs`, the current question's jobs in
 	## input order, each shown as it settles, and `all`, the whole list as a
 	## [Remote]: `Pending` while any job works, `Answered(outputs)` in input
 	## order once every job has answered, `Failed(error)` (the first in
@@ -1066,7 +1070,7 @@ Engine := [].{
 	Gathered(output, error) : Core.Gathered(output, error)
 
 	## `gather(asker, inputs, body)` asks one request per input, all at
-	## once, and gives `body` a layer gathering the answers (see
+	## once, and gives `body` a signal gathering the answers (see
 	## [Gathered]): a worker task's jobs over shards of one question, or a
 	## port call per item. `asker` is anything with `request` and `result`
 	## (`Worker.gather` is this for tasks). An empty list is answered at
@@ -1077,8 +1081,8 @@ Engine := [].{
 	## takes a slot of the in-flight bound, and one refused there is its
 	## job's `Failed`, so split a question into no more parts than the bound
 	## allows (32 by default). Disposal follows `resource`.
-	gather : asker, Val(ctx, List(input)), (Val(In(ctx, Gathered(output, error)), Gathered(output, error)) -> Elem(In(ctx, Gathered(output, error)))) -> Elem(ctx)
-		where [asker.request : asker, input -> Req, asker.result : asker, Res -> Try(output, error), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool, error.is_eq : error, error -> Bool]
+	gather : asker, Signal(ctx, List(input)), (Signal(In(ctx, Gathered(output, error)), Gathered(output, error)) -> Elem(In(ctx, Gathered(output, error)))) -> Elem(ctx)
+		where [asker.request : asker, input -> Request, asker.result : asker, Result -> Try(output, error), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool, error.is_eq : error, error -> Bool]
 	gather = |asker, inputs, body| Core.resource_at(inputs.v, Core.gather(asker), |v| body({ v: v }))
 
 	## An outbox in the app's state: the latest thing a handler posted for
@@ -1102,14 +1106,14 @@ Engine := [].{
 	## and each result reaches `reaction` with the item it was posted with,
 	## so several posts can be in flight and each answer knows its own.
 	## Nothing is issued at mount, and nothing is ever cancelled for a
-	## later post: like `on_change`, every request is kept, and disposal
+	## later post: like `watch_changes`, every request is kept, and disposal
 	## follows `watch` (an HTTP request or a port call is delivered to the
 	## nearest surviving ancestor).
 	##
 	## Use it for a request the user's action asks for: a save, an add, a
 	## write to a store. The reducer that changes the state posts in the
 	## same step, so an `expect` sees both.
-	on_post : Val(ctx, Outbox(a)), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
+	on_post : Signal(ctx, Outbox(a)), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
 	on_post = |box, plan, reaction| Core.on_post(box.v, plan, reaction)
 
 	## What the host knows before the first render: the URL, the declared storage
@@ -1123,8 +1127,8 @@ Engine := [].{
 	boot_storage : Boot, Str -> Try(Str, [Missing])
 	boot_storage = |boot, key| Core.boot_storage(boot, key)
 
-	## A value that never changes. It reads no layer, so it never triggers a refresh.
-	const : a -> Val(ctx, a)
+	## A signal that never changes. It reads no state or cell, so it triggers no refresh.
+	const : a -> Signal(ctx, a)
 	const = |value| { v: Core.const(value) }
 
 	## `element(tag, attrs, children)`: an HTML element. `Html` offers typed
@@ -1138,8 +1142,8 @@ Engine := [].{
 
 	## A text node whose content follows a value; the DOM is written only when
 	## the text changes.
-	text_v : Val(ctx, Str) -> Elem(ctx)
-	text_v = |{ v }| Core.text_v(v)
+	text_s : Signal(ctx, Str) -> Elem(ctx)
+	text_s = |{ v }| Core.text_s(v)
 
 	## A static attribute.
 	attr : Str, Str -> Attr(ctx)
@@ -1149,24 +1153,24 @@ Engine := [].{
 	## An empty string removes the attribute. `value` and `checked` update the
 	## control's live state (a focused text control keeps the user's draft until
 	## blur).
-	attr_v : Str, Val(ctx, Str) -> Attr(ctx)
-	attr_v = |name, { v }| Core.attr_v(name, v)
+	attr_s : Str, Signal(ctx, Str) -> Attr(ctx)
+	attr_s = |name, { v }| Core.attr_s(name, v)
 
 	## A static `class` attribute.
 	class : Str -> Attr(ctx)
 	class = |c| Core.class(c)
 
 	## A `class` attribute that follows a value.
-	class_v : Val(ctx, Str) -> Attr(ctx)
-	class_v = |{ v }| Core.class_v(v)
+	class_s : Signal(ctx, Str) -> Attr(ctx)
+	class_s = |{ v }| Core.class_s(v)
 
 	## A static `data-testid` attribute, for spec locators.
 	test_id : Str -> Attr(ctx)
 	test_id = |id| Core.test_id(id)
 
 	## A `data-testid` attribute that follows a value.
-	test_id_v : Val(ctx, Str) -> Attr(ctx)
-	test_id_v = |{ v }| Core.test_id_v(v)
+	test_id_s : Signal(ctx, Str) -> Attr(ctx)
+	test_id_s = |{ v }| Core.test_id_s(v)
 
 	## `on(event, handler)` listens for a DOM event by name (`"input"`, `"keydown"`,
 	## ...). A `:prevent` suffix (`"click:prevent"`) calls `preventDefault` when the
@@ -1196,7 +1200,7 @@ Engine := [].{
 
 	## What the host drives: an app built with `program` or `program_boot`, bound
 	## as the app's `main`. The platform mounts it with the boot data and runs one
-	## transaction per DOM event or effect result. `with_workers` adds the worker
+	## turn per DOM event or effect result. `with_workers` adds the worker
 	## tasks its `Work` requests may name:
 	## `Engine.program(view).with_workers([count.registration()])` for a
 	## `Worker.task`, and `with_ports` the ports the page's JavaScript supplies.
@@ -1220,12 +1224,12 @@ Engine := [].{
 
 	## The [Program] for an app with a [Store]: as `program_boot`, with the
 	## store `start` gives for the boot data held at the root, where every
-	## scope of `view` reaches its cells. `start` is usually the app's store
+	## context of `view` reaches its cells. `start` is usually the app's store
 	## with the cells that depend on the boot data set (`Store.with_initial`).
 	program_store : { storage_keys : List(Str), max_inflight : U64 }, (Boot -> Store(st, h)), (Boot -> Elem(StoreRoot(st))) -> Program
 	program_store = |cfg, start, view| Core.program_store(cfg, |boot| start(boot).s.initial(), view)
 }
 
-## The authoring handle on a cell the engine made.
+## The cell the engine made, wrapped for the public API.
 wrap_cell : Core.Cell(st, a) -> Engine.Cell(st, a)
 wrap_cell = |c| { c: c }

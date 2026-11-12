@@ -16,7 +16,7 @@ or a profile. The architecture and its rules are in
 
 | Piece | File | Job |
 |---|---|---|
-| Engine | `platform/Core.roc`, with tables and their views in `Table.roc`, `View.roc` and `Seq.roc`; `Engine.roc` is the API apps see | Everything reactive: sites, the store, propagation, lists and views, effects, identity. Pure Roc. |
+| Engine | `platform/Core.roc`, with tables and their table views in `Table.roc`, `View.roc` and `Seq.roc`; `Engine.roc` is the API apps see | Everything reactive: sites, the store, propagation, lists and table views, effects, identity. Pure Roc. |
 | Host | `platform/host/host.zig` | Allocates memory, keeps the engine state between calls, stages one payload, backs the handles of [files](@/docs/files.md) the app holds, classifies faults. In a worker it holds no engine state: it keeps at most one preparation's state between jobs, and during a job performs the task's file effects through the worker script. |
 | Runtime | `platform/runtime.mjs` | Applies the engine's commands to the DOM, performs effects, delivers events. |
 | Worker script | `platform/worker.mjs` | Runs [worker](@/docs/workers.md) tasks: a Web Worker instantiates the same `app.wasm`, never mounts it, calls its `work` entry (or `prepare` and `ask` for a preparation's task) for each job, and performs the job's file effects. |
@@ -63,8 +63,8 @@ inside it. The runtime never decides anything: it does what the commands say.
    pass reaches it, for its own subtree and nothing outside it, so a write
    to one state never visits the readers of a sibling, and a reader of two
    things one event wrote is evaluated once, with both in place and every
-   `derive` above it recomputed. A view of a table reads the table's
-   record of the rows this turn wrote, then its query and its window, and
+   `derive` above it recomputed. A table view reads the table's
+   changes from this turn, then its query and its window, and
    changes the rows it draws once, from the window before the event to the
    window after it.
 7. The records of the tables the turn wrote are cleared, focus requests are
@@ -86,7 +86,7 @@ it, so the engine is never re-entered.
 Commands are bytes in Wasm memory: create an element or text node, set an
 attribute or text, move, remove, listen, and the effect commands (start or
 cancel an effect, navigate, write storage, set the title, focus). The rows
-of a list or of a view are compiled once per site into a template, so
+of a list or of a table view are compiled once per site into a template, so
 creating a row is one `INST` command carrying only its holes' values.
 
 The batch becomes visible only when the call returns. If the call traps,
@@ -109,7 +109,7 @@ records and tables in place rather than copying them. That is also why the
 engine never keeps an earlier copy of a state or a cell to compare with: the
 copy would be a second holder, and every write would then copy what it
 changes. What changed comes from the write. The one earlier state the engine
-keeps is a table's record: for each row a turn wrote, that row as it was,
+keeps is a table's changes: for each row a turn wrote, that row as it was,
 dropped when the turn ends.
 
 Disposing a site drops its closure, and reference counting frees what it
@@ -133,7 +133,7 @@ answers `WorkLost` with the class, and the page goes on.
 
 An app's `main.roc` built for a native target (`x64musl`, `arm64mac`,
 `x64mac` or `x64win`) runs the same engine as native code:
-the platform's spec runner calls the engine's transaction functions directly
+the platform's spec runner calls the engine's turn functions directly
 and feeds the command bytes to `platform/Dom.roc`, an independent decoder that builds
 a model of the DOM. Specs assert against that model. Because it reads only the
 command stream, a spec that passes natively has exercised the same protocol

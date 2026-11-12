@@ -9,21 +9,24 @@ template = "page.html"
 
 Apps never call JavaScript. Everything that reaches outside the page — a
 request, a timer, the URL, local storage, focus — is a value of type
-`Engine.Req` that an *effect site* asks for, and every answer comes back as a
-value of type `Engine.Res` delivered in a turn of its own. Most of the
-snippets come from `www/samples/effects.roc`, a search page that keeps its
-state in one local state.
+`Engine.Request` that an *effect site* asks for, and every result comes back as
+a value of type `Engine.Result` delivered in a turn of its own. A result is
+anything delivered for a request, including a timeout, refusal or timer firing.
+An answer is a result the other side produced, such as an HTTP response, a job's
+output or its own failure, or a port call's return. Most of the snippets come
+from `www/samples/effects.roc`, a search page that keeps its state in one local
+state.
 
 ## Effect sites
 
-An effect site watches a value and turns it into a list of requests:
+An effect site watches a signal and turns it into a list of requests:
 
 - `Engine.watch(v, plan, reaction)` issues `plan(value)` at mount and again
   every time `v` changes;
-- `Engine.on_change(v, plan, reaction)` issues only on changes after mount.
+- `Engine.watch_changes(v, plan, reaction)` issues only on changes after mount.
 
-The watched value is any `Val`: a local state's, a cell's, or a `map` of
-several. The *reaction* says what an answer writes. For local state it is a
+The watched signal is any `Signal`: a local state's, a cell's, or a `map` of
+several. The *reaction* says what a result writes. For local state it is a
 reducer, built with `st.on_result(f)`, which receives the state, the value
 the request was issued for, and the result:
 
@@ -55,7 +58,7 @@ post:
 - The reaction is given the item it was posted with, so several posts can be
   in flight and each answer knows its own.
 - Nothing is sent at mount, and nothing is ever cancelled for a later post,
-  as with `on_change`. Disposing the site follows the usual rules: an HTTP
+  as with `watch_changes`. Disposing the site follows the usual rules: an HTTP
   request or a port call still completes, in the nearest surviving owner.
 - The reducer that changes the state posts in the same step, so an `expect`
   sees both: `box.last()` is `Unposted` or `Posted(item)`.
@@ -65,16 +68,16 @@ post:
   replace the first before the site saw it, so it is a contract error.
 
 An outbox can be a cell of the store as well: a decision posts to it with
-`box_cell.change(|box| box.post(item))`, as the shop below does.
+`box_cell.update(|box| box.post(item))`, as the shop below does.
 
-### Answers that write the store
+### Results that write the store
 
-When an answer changes shared state, the reaction is a decision: one pure
-function from the answer to a list of writes
+When a result changes shared state, the reaction is a decision: one pure
+function from the result to a list of writes
 ([Shared State](@/docs/shared-state.md#decisions)). `Engine.react(decide)`
 gives `decide` the value the request was issued for and the result.
 `Engine.react_by(v, decide)` also gives it the value `v` holds when the
-answer arrives, read once and before anything is written. This is the
+result arrives, read once and before anything is written. This is the
 shop's order, from `www/samples/shop/Shop.roc`:
 
 {{ sample(file="shop/Shop.roc", region="answer") }}
@@ -90,27 +93,27 @@ component's own reducer, and the reaction its owner handed it.
 
 ## Superseding sites
 
-`watch` and `on_change` never cancel what they issued. When only the newest
+`watch` and `watch_changes` never cancel what they issued. When only the newest
 value's answer matters — a search box, the selected item — say so with a
 superseding site instead of filtering answers in the reaction:
 
-- `Engine.latest(v, plan, reaction)` issues like `watch`, but before it issues
+- `Engine.watch_latest(v, plan, reaction)` issues like `watch`, but before it issues
   for a new value it cancels everything it still has in flight for earlier
   ones: the fetch is aborted, a subscription stops, a timer is cleared, and a
   late answer never reaches the reaction. A `plan` that returns `[]` makes a
   change a pure cancel.
 - `Engine.resource(input, { init, pending, plan, resolve }, body)` keeps the
-  answers in a layer that `body` reads like a `derive` value. `pending(s, a)`
-  sets the layer when the input changes, in the same turn (a loading state
+  results in a signal that `body` reads like a derived signal. `pending(s, a)`
+  sets the signal when the input changes, in the same turn (a loading state
   that still holds the previous answer, say); `resolve(s, a, res)` sets it
-  from each answer for the current input. Readers below do no work when
-  either returns an equal value. `Worker.derive` and `Port.derive` (taught
+  from each result for the current input. Readers below do no work when
+  either returns an equal value. `Worker.resource` and `Port.resource` (taught
   in [Workers](@/docs/workers.md#showing-its-answer) and
   [Ports](@/docs/ports.md)) are resources that follow one answer, held as
   an `Engine.Remote`.
 
 - `Engine.gather(asker, inputs, body)` asks one request per input, all at
-  once, and keeps the answers in an `Engine.Gathered` layer: `jobs`, each
+  once, and keeps the answers in an `Engine.Gathered` signal: `jobs`, each
   input's job as `Working`, `Answered(output)` or `Failed(error)`, and
   `all`, an `Engine.Remote` of the whole list in input order once no job is
   working (or the first failure). `Worker.gather` is this for a task's jobs;
@@ -119,18 +122,18 @@ superseding site instead of filtering answers in the reaction:
 Both cancel only on a new value. Disposing them follows the same rules as any
 effect site: subscriptions and timers stop, and an admitted request still
 completes in the nearest surviving owner, where its write to the disposed
-layer is skipped.
+resource is skipped.
 
 A reaction that compares a serial, or the value it was issued for, with the
-state to drop an old answer is asking for `latest`: let the site cancel the
+state to drop an old answer is asking for `watch_latest`: let the site cancel the
 old request instead. Keep `watch` and such a check only where cancelling an
 in-flight request would be wrong, such as a write the server must finish.
 
-An `Engine.Remote` layer is read with `remote.answered()`, the latest answer
+An `Engine.Remote` signal is read with `remote.answered()`, the latest answer
 as a `Try`: `?? default` shows a fallback, `.map_ok(f)` picks from it, and a
 handler matches `Ok(output)`. It keeps the answer while a newer request is
 pending, and is `Err(NoAnswer)` before the first answer and after a
-failure. To combine the answer with state outside the layer (the page a
+failure. To combine the answer with state outside the resource (the page a
 list is on, say), lift that state in and map both:
 `v.lift().map2(r, |s, remote| ...)`.
 
@@ -145,13 +148,13 @@ list is on, say), lift that state in and map both:
 | `Popstate` | `Location(url)` on every back or forward |
 | `OnlineChanges` | `Online(Bool)` on every change |
 | `VisibilityChanges` | `Visible(Bool)` on every change |
-| `Work({ task, input, files, deadline_ms, on_dispose, on_cancel, prepared })` | `Work({ output, files })`, `WorkLost(fault)` or `Timeout`: a job of a registered task in a Web Worker. Apps use the typed `Worker` module instead; see [Workers](@/docs/workers.md) |
+| `Work({ task, input, files, timeout_ms, on_dispose, on_cancel, prepared })` | `Work({ output, files })`, `WorkLost(fault)` or `Timeout`: a job of a registered task in a Web Worker. Apps use the typed `Worker` module instead; see [Workers](@/docs/workers.md) |
 | `ReadBytes({ file, max_bytes })`, `ReadUtf8({ file, max_bytes })` | `FileBytes(bytes)` or `FileText(text)`, or `FileFailed(error)`: a file read into the page. Made with `File.read_bytes` and `File.read_utf8`; see [Files](@/docs/files.md) |
 | `Upload({ method, url, headers, body, timeout_ms })` | As `Http`, with a [file](@/docs/files.md) as the body; made with `File.upload` |
 | `Sha256(file)`, `ObjectUrl(file)` | `Digest(bytes)` or `FileUrl(url)`, or `FileFailed(error)`: made with `File.sha256` and `File.object_url`; see [Files](@/docs/files.md) |
 | `Fetch({ method, url, headers, timeout_ms })` | `Fetched({ status, headers, body })` with the body as a [file](@/docs/files.md), `Network(message)`, `Timeout` or `FileFailed(TooLarge)`: made with `File.fetch`, read with `Engine.fetched`; see [Files in Tasks](@/docs/files-in-tasks.md) |
-| `PortCall({ port, message, timeout_ms })` | `PortReply(message)` or `PortFailed(failure)`, once. Made by a typed [port](@/docs/ports.md) call |
-| `PortSubscribe({ port, message })` | `PortReply(message)` for every message, or `PortFailed(failure)`, until the site is disposed or the JavaScript ends it. Made by a typed port subscription |
+| `PortCall({ port, message, timeout_ms })` | `PortAnswer(message)` or `PortFailed(failure)`, once. Made by a typed [port](@/docs/ports.md) call |
+| `PortSubscribe({ port, message })` | `PortAnswer(message)` for every message, or `PortFailed(failure)`, until the site is disposed or the JavaScript ends it. Made by a typed port subscription |
 | `Self` | `Now`, in a follow-up turn |
 | `Push(url)`, `Replace(url)`, `Title(text)`, `StorageSet(key, value)`, `StorageRemove(key)`, `Focus(ref)`, `Blur(ref)`, `SelectText(ref)`, `Save({ file, name })` (made with `File.save`), `PortCommand({ port, message })` (made by a typed port command) | None: commands |
 
@@ -247,17 +250,16 @@ Specs can count cleanup runs by name with `expect-cleanup`;
 
 A JavaScript widget, such as a chart, is integrated as a standard custom
 element. The app renders the element with an ordinary attribute holding the
-widget's input — `Engine.element("plume-chart", [Engine.attr_v("data-figure", json)], [])` —
-and a script on the page defines the element with `customElements.define`,
-redrawing when the attribute changes and cleaning up when it is removed. The
-engine and runtime see an ordinary element and an ordinary attribute write, so
-nothing app-specific enters the platform. The
+widget's input — `Engine.element("plume-chart", [Engine.attr_s("data-figure",
+json)], [])` — and a script on the page defines the element with
+`customElements.define`, redrawing when the attribute changes and cleaning up
+when it is removed. The engine and runtime see an ordinary element and an
+ordinary attribute write, so nothing app-specific enters the platform. The
 [Status Page](@/examples/status-page.md) example draws its charts this way with
-[Plume](https://github.com/lukewilliamboswell/plume), each setting the
-layout's `ui_revision: Preserve(name)` so a viewer's zoom survives the
-redraws. Each change of the attribute is a whole redraw: build the figure
-from page state the app keeps bounded, and from a `derive` that changes
-only when the figure should.
+[Plume](https://github.com/lukewilliamboswell/plume), each setting the layout's
+`ui_revision: Preserve(name)` so a viewer's zoom survives the redraws. Each
+change of the attribute is a whole redraw: build the figure from page state the
+app keeps bounded, and from a `derive` that changes only when the figure should.
 
 A widget answers the way a form control does, because an event reaches the
 app only as text: the element sets its own `value` and dispatches a bubbling

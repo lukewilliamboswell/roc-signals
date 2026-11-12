@@ -6,13 +6,13 @@ import pf.Worker
 ## cross as derived payloads, with no codec written here, in each shape a
 ## task's `run!` takes: a pure lambda, a lambda calling a pure named
 ## function, and a named effectful function.
-## - "Query" filters a word list in a worker through `Worker.derive_when`: an
+## - "Query" filters a word list in a worker through `Worker.resource_when`: an
 ##   empty query is `Skip`, a newer query supersedes the job of an older one,
 ##   and the previous matches stay shown while the next job is wanted.
-## - "Text" is measured through `Worker.derive`, which runs for every value,
+## - "Text" is measured through `Worker.resource`, which runs for every value,
 ##   the first one included.
 ## - "Parse" submits the text to a task that can fail through an
-##   `Engine.latest` site with a typed `request` and `result`.
+##   `Engine.watch_latest` site with a typed `request` and `result`.
 ## - "Shout" submits the text to two tasks: one that cannot fail, and one
 ##   that refuses empty text with its own error and keeps its job when its
 ##   site is disposed.
@@ -32,7 +32,7 @@ TypedApp := [].{
 	filter = Worker.task({ name: "test.roc-signals/typed/filter", run!: |{ query, words: all }| Ok(all.keep_if(|word| word.contains(query))) })
 
 	## A string in, a record with a nominal-free tag union out, with a
-	## deadline and a cancel policy beside it.
+	## timeout and a cancel policy beside it.
 	measure : Worker.Task(Str, { bytes : U64, kind : [Empty, Short, Long] }, Worker.Never)
 	measure = Worker.task({
 		name: "test.roc-signals/typed/measure",
@@ -40,7 +40,7 @@ TypedApp := [].{
 			bytes = text.count_utf8_bytes()
 			Ok({ bytes, kind: if (bytes == 0) Empty else if (bytes < 8) Short else Long })
 		},
-		deadline: Ms(60000),
+		timeout: Ms(60000),
 		on_cancel: Finish,
 	})
 
@@ -124,42 +124,42 @@ TypedApp := [].{
 
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"typed",
 			[
 				Html.text_input(Engine.const("Query"), "search", v.map(|s| s.query), [], st.set_value(|s, query| { ..s, query })),
-				Worker.derive_when(
+				Worker.resource_when(
 					TypedApp.filter,
 					v.map(|s| if (s.query == "") Skip else Run({ query: s.query, words: TypedApp.words })),
-					|matches| Html.p_v(matches.map(TypedApp.show_matches), [Engine.test_id("matches")]),
+					|matches| Html.p_s(matches.map(TypedApp.show_matches), [Engine.test_id("matches")]),
 				),
 				Html.text_input(Engine.const("Text"), "text", v.map(|s| s.text), [], st.set_value(|s, text| { ..s, text })),
-				Worker.derive(
+				Worker.resource(
 					TypedApp.measure,
 					v.map(|s| s.text),
-					|measured| Html.p_v(measured.map(TypedApp.show_measure), [Engine.test_id("measure")]),
+					|measured| Html.p_s(measured.map(TypedApp.show_measure), [Engine.test_id("measure")]),
 				),
 				Html.button("Parse", [], st.update(|s| { ..s, submitted: { n: s.submitted.n + 1, text: s.text }, parsed: "parsing" })),
-				Engine.latest(
+				Engine.watch_latest(
 					v.map(|s| s.submitted),
 					|{ n, text }| if (n == 0) [] else [TypedApp.parse.request(text)],
 					st.on_result(|s, _, res| { ..s, parsed: TypedApp.show_parsed(TypedApp.parse.result(res)) }),
 				),
-				Html.p_v(v.map(|s| s.parsed), [Engine.test_id("parsed")]),
+				Html.p_s(v.map(|s| s.parsed), [Engine.test_id("parsed")]),
 				Html.button("Shout", [], st.update(|s| { ..s, shouted: { n: s.shouted.n + 1, text: s.text } })),
-				Engine.latest(
+				Engine.watch_latest(
 					v.map(|s| s.shouted),
 					|{ n, text }| if (n == 0) [] else [TypedApp.loud.request(text)],
 					st.on_result(|s, _, res| { ..s, loud: TypedApp.show_loud(TypedApp.loud.result(res)) }),
 				),
-				Engine.latest(
+				Engine.watch_latest(
 					v.map(|s| s.shouted),
 					|{ n, text }| if (n == 0) [] else [TypedApp.checked.request(text)],
 					st.on_result(|s, _, res| { ..s, checked: TypedApp.show_checked(TypedApp.checked.result(res)) }),
 				),
-				Html.p_v(v.map(|s| s.loud), [Engine.test_id("loud")]),
-				Html.p_v(v.map(|s| s.checked), [Engine.test_id("checked")]),
+				Html.p_s(v.map(|s| s.loud), [Engine.test_id("loud")]),
+				Html.p_s(v.map(|s| s.checked), [Engine.test_id("checked")]),
 			],
 		)
 	}

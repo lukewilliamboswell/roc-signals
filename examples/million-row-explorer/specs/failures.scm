@@ -7,7 +7,7 @@
     (run-effect 4)
     (expect-text (test-id "orders") "200,000")
     (uncheck (label "Books"))
-    ; The first shard's deadline expires and the third's worker crashes;
+    ; The first shard's timeout expires and the third's worker crashes;
     ; the others answer.
     (time-out-work 5)
     (expect-text (test-id "shard-1") "timed out")

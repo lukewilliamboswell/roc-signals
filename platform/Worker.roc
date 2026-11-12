@@ -1,5 +1,5 @@
 import Core
-import Engine exposing [Elem, In, Val]
+import Engine exposing [Elem, In, Signal]
 import Wire
 
 ## Worker tasks: registered Roc functions an app runs off the page's thread.
@@ -8,7 +8,7 @@ import Wire
 ## output and the task's own error, made with `task` from a props record.
 ## The app lists each task's `registration` in `Program.with_workers`, and
 ## an effect site asks for a job with `request`; the answer comes back as an
-## ordinary result, read with `result`. `derive` wraps both in a layer that
+## ordinary result, read with `result`. `resource` wraps both in a resource that
 ## follows the answers for an input, for the common case of showing a value
 ## computed from other values.
 ##
@@ -27,7 +27,7 @@ import Wire
 ## `Wire.Sendable`: numbers, `Bool`, `Str`, lists, sets, dictionaries,
 ## records, tuples, tag unions, files (as handles, never their bytes), and
 ## nominal types that declare `parser_for : _` and `encoder_for : _`.
-## Functions, state handles and reactive values do not, and using one is a
+## Functions, states and signals do not, and using one is a
 ## compile error at the task's declaration. Send bulk bytes as `Wire.Bytes`,
 ## which crosses as one block. A task that cannot fail names its error
 ## [Never].
@@ -35,8 +35,8 @@ import Wire
 ## One execution of a task is a job, and a job runs in an instance that
 ## shares nothing with the page but the input it is sent, possibly one that
 ## ran other jobs before. A job is stopped when its site is disposed (unless
-## the task says `on_dispose: Keep`), when a `latest` or `derive` site moves
-## on to a newer input, or when its deadline expires: a job still waiting
+## the task says `on_dispose: Keep`), when a `watch_latest` or `resource` site moves
+## on to a newer input, or when its timeout expires: a job still waiting
 ## for a worker is dropped, and a running one is stopped by ending its
 ## instance, so the next job starts a new one (a task that says `on_cancel:
 ## Finish` instead lets a cancelled job complete and drops its answer). A
@@ -49,7 +49,7 @@ import Wire
 Worker := [].{
 
 	## Why a job has no output: the task answered with its own `error`
-	## (`Failed`), its deadline expired and it was stopped (`Timeout`), the
+	## (`Failed`), its timeout expired and it was stopped (`Timeout`), the
 	## in-flight bound turned the request away (`Refused`), or the worker
 	## could not run it or failed running it (`Lost`, with the fault class;
 	## the diagnostic goes to the page's console). A crash in a job is
@@ -85,7 +85,7 @@ Worker := [].{
 	##   parse, a file the browser can no longer read, a builder over its
 	##   bound). A pure calculation is written as a lambda,
 	##   `run!: |text| Ok(count_words(text))`.
-	## - `deadline`: `Ms(ms)` stops a job that has not answered `ms`
+	## - `timeout`: `Ms(ms)` stops a job that has not answered `ms`
 	##   milliseconds after it was requested and answers `Timeout`; the time a
 	##   request waits for a free worker counts, and the platform caps it at
 	##   ten minutes. `Unlimited`, the default, lets a job run until it
@@ -95,16 +95,16 @@ Worker := [].{
 	##   answer to the nearest surviving ancestor, for a job whose work must
 	##   not be lost when a panel closes.
 	## - `on_cancel`: what a running job whose request is cancelled (its site
-	##   disposed, or a `latest` or `derive` site moving on) does: `Stop`, the
+	##   disposed, or a `watch_latest` or `resource` site moving on) does: `Stop`, the
 	##   default, ends the worker running it; `Finish` lets the job complete
 	##   and drops its answer, so the worker, and any prepared state it
-	##   holds, is kept for the next job. A deadline always stops the job, a
+	##   holds, is kept for the next job. A timeout always stops the job, a
 	##   finishing one included, and a finishing job of a task with no
-	##   deadline is stopped ten minutes after it was asked for.
+	##   timeout is stopped ten minutes after it was asked for.
 	TaskProps(input, output, error) := {
 		name : Str,
 		run! : input => Try(output, error),
-		deadline : [Unlimited, Ms(U32)] ?? Unlimited,
+		timeout : [Unlimited, Ms(U32)] ?? Unlimited,
 		on_dispose : [Stop, Keep] ?? Stop,
 		on_cancel : [Stop, Finish] ?? Stop,
 	}
@@ -115,7 +115,7 @@ Worker := [].{
 	## name a task with the right types.
 	Task(input, output, error) :: {
 		name : Str,
-		deadline_ms : U32,
+		timeout_ms : U32,
 		on_dispose : [Stop, Keep],
 		on_cancel : [Stop, Finish],
 		send : (input -> { bytes : List(U8), files : List(Engine.File) }),
@@ -141,17 +141,17 @@ Worker := [].{
 		## plan. The input is a snapshot: it is encoded when the request is
 		## issued, and later changes to the state it came from do not reach
 		## the job. The files it holds travel as handles.
-		request : Task(input, output, error), input -> Engine.Req
+		request : Task(input, output, error), input -> Engine.Request
 		request = |t, input| {
 			{ bytes, files } = (t.send)(input)
-			Work({ task: t.name, input: bytes, files, deadline_ms: t.deadline_ms, on_dispose: t.on_dispose, on_cancel: t.on_cancel, prepared: Unprepared })
+			Work({ task: t.name, input: bytes, files, timeout_ms: t.timeout_ms, on_dispose: t.on_dispose, on_cancel: t.on_cancel, prepared: Unprepared })
 		}
 
 		## The answer to a `request`, for an effect site's reaction: the
 		## task's output, whose files are now handles the page holds, or why
 		## there is none (see [Error]). A result that is not from a worker
 		## request is a contract error.
-		result : Task(input, output, error), Engine.Res -> Try(output, Error(error))
+		result : Task(input, output, error), Engine.Result -> Try(output, Error(error))
 		result = |t, res| answered(res, t.receive)
 	}
 
@@ -164,10 +164,10 @@ Worker := [].{
 	task : TaskProps(input, output, error) -> Task(input, output, error)
 		where [input.Wire.Sendable, output.Wire.Sendable, error.Wire.Sendable]
 	task = |props| {
-		{ name, run!, deadline, on_dispose, on_cancel } = props
+		{ name, run!, timeout, on_dispose, on_cancel } = props
 		{
 			name,
-			deadline_ms: deadline_ms_of(deadline),
+			timeout_ms: timeout_ms_of(timeout),
 			on_dispose,
 			on_cancel,
 			send: |input| sent(input),
@@ -176,9 +176,9 @@ Worker := [].{
 		}
 	}
 
-	## `derive(task, input, body)` is `Engine.derive` computed in a worker:
-	## it gives `body` a layer holding the task's answer for `input`, an
-	## `Engine.Remote(output, Worker.Error(error))`.
+	## `resource(task, input, body)` follows the task's answers as `input`
+	## changes. It gives `body` a signal holding the task's answer for the
+	## current input, an `Engine.Remote(output, Worker.Error(error))`.
 	##
 	## The job for the first input starts at mount. When `input` changes to an
 	## unequal value, the job for the old one is stopped and one for the new
@@ -191,36 +191,36 @@ Worker := [].{
 	##
 	## `task` is a [Task] or a preparation's [PreparedTask]: anything with
 	## `request` and `result`.
-	derive : work, Val(ctx, input), (Val(In(ctx, Engine.Remote(output, Error(error))), Engine.Remote(output, Error(error))) -> Elem(In(ctx, Engine.Remote(output, Error(error))))) -> Elem(ctx)
-		where [work.request : work, input -> Engine.Req, work.result : work, Engine.Res -> Try(output, Error(error)), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool, error.is_eq : error, error -> Bool]
-	derive = |work, input, body| Engine.resource(input, Core.follow(work), body)
+	resource : work, Signal(ctx, input), (Signal(In(ctx, Engine.Remote(output, Error(error))), Engine.Remote(output, Error(error))) -> Elem(In(ctx, Engine.Remote(output, Error(error))))) -> Elem(ctx)
+		where [work.request : work, input -> Engine.Request, work.result : work, Engine.Result -> Try(output, Error(error)), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool, error.is_eq : error, error -> Bool]
+	resource = |work, input, body| Engine.resource(input, Core.follow(work), body)
 
-	## Like `derive`, for an input that is sometimes not a question: `Run(i)`
+	## Like `resource`, for an input that is sometimes not a question: `Run(i)`
 	## asks for a job on `i`, and `Skip` stops any job and clears the answer
 	## (an empty search box, a form that is not valid yet).
-	derive_when : work, Val(ctx, [Run(input), Skip]), (Val(In(ctx, Engine.Remote(output, Error(error))), Engine.Remote(output, Error(error))) -> Elem(In(ctx, Engine.Remote(output, Error(error))))) -> Elem(ctx)
-		where [work.request : work, input -> Engine.Req, work.result : work, Engine.Res -> Try(output, Error(error)), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool, error.is_eq : error, error -> Bool]
-	derive_when = |work, input, body| Engine.resource(input, Core.follow_when(work), body)
+	resource_when : work, Signal(ctx, [Run(input), Skip]), (Signal(In(ctx, Engine.Remote(output, Error(error))), Engine.Remote(output, Error(error))) -> Elem(In(ctx, Engine.Remote(output, Error(error))))) -> Elem(ctx)
+		where [work.request : work, input -> Engine.Request, work.result : work, Engine.Result -> Try(output, Error(error)), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool, error.is_eq : error, error -> Bool]
+	resource_when = |work, input, body| Engine.resource(input, Core.follow_when(work), body)
 
 	## `gather(task, inputs, body)` asks the task one job per input (the
 	## shards, ranges or batches of one question, which the pool spreads
 	## over its workers) and gives `body` an `Engine.Gathered` layer: each
 	## job's state as it settles, and the whole list in input order once
 	## every job has answered. A new list of inputs stops the old
-	## question's jobs, as `derive` does; with `on_cancel: Finish` a worker
+	## question's jobs, as `resource` does; with `on_cancel: Finish` a worker
 	## keeps its prepared state. Each job takes a slot of the in-flight
 	## bound, so split a question into no more parts than it allows; the
 	## pool queues the jobs beyond `maxWorkers` by itself.
-	gather : work, Val(ctx, List(input)), (Val(In(ctx, Engine.Gathered(output, Error(error))), Engine.Gathered(output, Error(error))) -> Elem(In(ctx, Engine.Gathered(output, Error(error))))) -> Elem(ctx)
-		where [work.request : work, input -> Engine.Req, work.result : work, Engine.Res -> Try(output, Error(error)), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool, error.is_eq : error, error -> Bool]
+	gather : work, Signal(ctx, List(input)), (Signal(In(ctx, Engine.Gathered(output, Error(error))), Engine.Gathered(output, Error(error))) -> Elem(In(ctx, Engine.Gathered(output, Error(error))))) -> Elem(ctx)
+		where [work.request : work, input -> Engine.Request, work.result : work, Engine.Result -> Try(output, Error(error)), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool, error.is_eq : error, error -> Bool]
 	gather = |work, inputs, body| Engine.gather(work, inputs, body)
 
-	## How a layer that follows a task stands, in one match: no job asked
+	## How a resource that follows a task stands, in one match: no job asked
 	## for yet (`Unasked`), a job `Working`, its answer, or why there is
 	## none: the task's own error (`Failed`) beside the platform's.
 	Status(output, error) : [Unasked, Working, Answered(output), Failed(error), Timeout, Refused, Lost(Engine.WorkFault)]
 
-	## A worker layer as a [Status], so a view matches one flat union
+	## A worker resource's value as a [Status], so a view matches one flat union
 	## instead of `Failed(Failed(problem))`. While a newer job is `Working`,
 	## `remote.answered()` still gives the previous answer.
 	status : Engine.Remote(output, Error(error)) -> Status(output, error)
@@ -236,7 +236,7 @@ Worker := [].{
 
 	# -- Preparations ---------------------------------------------------------
 
-	## What `prepared` is told about a preparation: its `name`, namespaced
+	## What `preparation` is told about a preparation: its `name`, namespaced
 	## like a task's, and `prepare!`, which turns its input into the state its
 	## tasks read, or fails with `error`, the error its tasks share. It may
 	## read the files its input holds, and its answer must be a function of
@@ -249,7 +249,7 @@ Worker := [].{
 
 	## A preparation: a possibly expensive step from an input of type `init`
 	## (a parsed document, an index) to a `state` that several of its tasks
-	## read. Make one with `prepared`, make its tasks with `task`, and
+	## read. Make one with `preparation`, make its tasks with `task`, and
 	## register it once with `registration`, listing its tasks' entries.
 	##
 	## Keeping the state is an optimisation the runtime may or may not
@@ -268,23 +268,23 @@ Worker := [].{
 	}.{
 
 		## The task a props record describes, over this preparation's state:
-		## `document.task({ name, run!: |lines, query| Ok(search(lines, query)) })`
-		## answers `run!(state, query)` from the state the preparation
-		## built. The query and the output must be `Wire.Sendable`, and the
+		## `document.task({ name, run!: |lines, input| Ok(search(lines, input)) })`
+		## answers `run!(state, input)` from the state the preparation
+		## built. The input and the output must be `Wire.Sendable`, and the
 		## task shares the preparation's error type. Names share the
 		## catalogue's namespace with every other task.
-		task : Preparation(init, state, error), PreparedTaskProps(state, query, output, error) -> PreparedTask(init, state, query, output, error)
-			where [query.Wire.Sendable, output.Wire.Sendable, error.Wire.Sendable]
+		task : Preparation(init, state, error), PreparedTaskProps(state, input, output, error) -> PreparedTask(init, state, input, output, error)
+			where [input.Wire.Sendable, output.Wire.Sendable, error.Wire.Sendable]
 		task = |p, props| {
-			{ name, run!, deadline, on_dispose, on_cancel } = props
+			{ name, run!, timeout, on_dispose, on_cancel } = props
 			{
 				name,
 				prep: p.name,
-				deadline_ms: deadline_ms_of(deadline),
+				timeout_ms: timeout_ms_of(timeout),
 				on_dispose,
 				on_cancel,
 				send_init: p.send,
-				send_query: |query| sent(query),
+				send_input: |input| sent(input),
 				receive: |bytes, files| received(name, bytes, files),
 				entry: {
 					name,
@@ -330,7 +330,7 @@ Worker := [].{
 	}
 
 	## The preparation a props record describes:
-	## `Worker.prepared({ name: "example.org/notes/document", prepare!: |text| Ok(lines_of(text)) })`.
+	## `Worker.preparation({ name: "example.org/notes/document", prepare!: |text| Ok(lines_of(text)) })`.
 	##
 	## Whether a worker holds the state for an input is decided by the
 	## input's exact bytes and the handles and ranges of its files: a job
@@ -339,9 +339,9 @@ Worker := [].{
 	## on each job, so a large input should be a `File` (or a slice of one),
 	## whose identity is its handle and range, not its bytes, and which
 	## `prepare!` reads with `contents!`.
-	prepared : PreparationProps(init, state, error) -> Preparation(init, state, error)
+	preparation : PreparationProps(init, state, error) -> Preparation(init, state, error)
 		where [init.Wire.Sendable, error.Wire.Sendable]
-	prepared = |props| {
+	preparation = |props| {
 		{ name, prepare! } = props
 		{
 			name,
@@ -353,61 +353,61 @@ Worker := [].{
 
 	## What a preparation's `task` is told about a task: as [TaskProps],
 	## with `run!` taking the preparation's state beside the job's own
-	## input. A deadline includes the time a worker spends preparing.
-	PreparedTaskProps(state, query, output, error) := {
+	## input. A timeout includes the time a worker spends preparing.
+	PreparedTaskProps(state, input, output, error) := {
 		name : Str,
-		run! : (state, query => Try(output, error)),
-		deadline : [Unlimited, Ms(U32)] ?? Unlimited,
+		run! : (state, input => Try(output, error)),
+		timeout : [Unlimited, Ms(U32)] ?? Unlimited,
 		on_dispose : [Stop, Keep] ?? Stop,
 		on_cancel : [Stop, Finish] ?? Stop,
 	}
 
-	## What a preparation's task is asked: the preparation's `input` and the
-	## task's own `query`, for `request`, `derive` and `derive_when`.
-	Question(init, query) : { input : init, query : query }
+	## What a preparation's task is asked: the preparation's `init` and the
+	## task's own `input`, for `request`, `resource` and `resource_when`.
+	Question(init, input) : { init : init, input : input }
 
 	## A preparation's task's entry for its preparation's `registration`,
 	## from the task's `registration()`: the task's name and how it runs on
 	## the typed state.
 	PreparedTaskEntry(state) :: { name : Str, run! : (state, List(U8), List(Core.File) => List(U8)) }
 
-	## A task of a preparation, from a `Question(init, query)` to `output`,
+	## A task of a preparation, from a `Question(init, input)` to `output`,
 	## failing with the preparation's `error`. Use it as a [Task] is used:
-	## `request` and `result` in an effect site, or `Worker.derive` and
-	## `Worker.derive_when`.
-	PreparedTask(init, state, query, output, error) :: {
+	## `request` and `result` in an effect site, or `Worker.resource` and
+	## `Worker.resource_when`.
+	PreparedTask(init, state, input, output, error) :: {
 		name : Str,
 		prep : Str,
-		deadline_ms : U32,
+		timeout_ms : U32,
 		on_dispose : [Stop, Keep],
 		on_cancel : [Stop, Finish],
 		send_init : (init -> { bytes : List(U8), files : List(Engine.File) }),
-		send_query : (query -> { bytes : List(U8), files : List(Engine.File) }),
+		send_input : (input -> { bytes : List(U8), files : List(Engine.File) }),
 		receive : (List(U8), List(Engine.File) -> Try(output, error)),
 		entry : PreparedTaskEntry(state),
 	}.{
 
 		## The task's entry for its preparation's `registration`.
-		registration : PreparedTask(init, state, query, output, error) -> PreparedTaskEntry(state)
+		registration : PreparedTask(init, state, input, output, error) -> PreparedTaskEntry(state)
 		registration = |t| t.entry
 
 		## The task's name, as `Task.name` gives a task's.
-		name : PreparedTask(init, state, query, output, error) -> Str
+		name : PreparedTask(init, state, input, output, error) -> Str
 		name = |t| t.name
 
-		## A request to run the task on `query` over the preparation's
-		## `input`, for an effect site's plan. Both are snapshots, encoded
+		## A request to run the task on `input` over the preparation's
+		## `init`, for an effect site's plan. Both are snapshots, encoded
 		## when the request is issued.
-		request : PreparedTask(init, state, query, output, error), Question(init, query) -> Engine.Req
-		request = |t, { input, query }| {
-			init = (t.send_init)(input)
-			asked = (t.send_query)(query)
-			of = Prepared({ name: t.prep, input_len: init.bytes.len(), input_files: init.files.len() })
-			Work({ task: t.name, input: init.bytes.concat(asked.bytes), files: init.files.concat(asked.files), deadline_ms: t.deadline_ms, on_dispose: t.on_dispose, on_cancel: t.on_cancel, prepared: of })
+		request : PreparedTask(init, state, input, output, error), Question(init, input) -> Engine.Request
+		request = |t, { init, input }| {
+			initialized = (t.send_init)(init)
+			asked = (t.send_input)(input)
+			of = Prepared({ name: t.prep, input_len: initialized.bytes.len(), input_files: initialized.files.len() })
+			Work({ task: t.name, input: initialized.bytes.concat(asked.bytes), files: initialized.files.concat(asked.files), timeout_ms: t.timeout_ms, on_dispose: t.on_dispose, on_cancel: t.on_cancel, prepared: of })
 		}
 
 		## The answer to a `request`, as `Task.result`.
-		result : PreparedTask(init, state, query, output, error), Engine.Res -> Try(output, Error(error))
+		result : PreparedTask(init, state, input, output, error), Engine.Result -> Try(output, Error(error))
 		result = |t, res| answered(res, t.receive)
 	}
 }
@@ -460,7 +460,7 @@ received = |name, bytes, files| {
 }
 
 ## A worker request's result as a task's: its answer, or why there is none.
-answered : Engine.Res, (List(U8), List(Engine.File) -> Try(output, error)) -> Try(output, [Failed(error), Timeout, Refused, Lost(Engine.WorkFault)])
+answered : Engine.Result, (List(U8), List(Engine.File) -> Try(output, error)) -> Try(output, [Failed(error), Timeout, Refused, Lost(Engine.WorkFault)])
 answered = |res, receive| match res {
 	Work({ output, files }) =>
 		match receive(output, files) {
@@ -481,21 +481,21 @@ sent = |input| {
 	{ bytes, files }
 }
 
-## A deadline as the request carries it: `0` is none.
-deadline_ms_of : [Unlimited, Ms(U32)] -> U32
-deadline_ms_of = |deadline| match deadline {
+## A timeout as the request carries it: `0` is none.
+timeout_ms_of : [Unlimited, Ms(U32)] -> U32
+timeout_ms_of = |timeout| match timeout {
 	Unlimited => 0
 	Ms(ms) => ms
 }
 
-## A task's request carries its name, its deadline and its policies, and
+## A task's request carries its name, its timeout and its policies, and
 ## its answer is read back as an output or the task's own error; a
-## deadline, a refusal and a lost worker are not answers.
+## timeout, a refusal and a lost worker are not answers.
 expect {
 	parse : Worker.Task(Str, U64, [NotANumber(Str)])
-	parse = Worker.task({ name: "test/parse", run!: |text| U64.from_str(text).map_err(|_| NotANumber(text)), deadline: Ms(250), on_cancel: Finish })
+	parse = Worker.task({ name: "test/parse", run!: |text| U64.from_str(text).map_err(|_| NotANumber(text)), timeout: Ms(250), on_cancel: Finish })
 	shape = match parse.request("7") {
-		Work({ task, deadline_ms, on_dispose, on_cancel, prepared, .. }) => Str.inspect((task, deadline_ms, on_dispose, on_cancel, prepared))
+		Work({ task, timeout_ms, on_dispose, on_cancel, prepared, .. }) => Str.inspect((task, timeout_ms, on_dispose, on_cancel, prepared))
 		_ => "not a work request"
 	}
 	answer = |bytes| Work({ output: bytes, files: [] })
@@ -595,7 +595,7 @@ expect {
 	double : Worker.Task(U64, U64, [Odd])
 	double = Worker.task({ name: "test/double-even", run!: |n| if (n % 2 == 0) Ok(n * 2) else Err(Odd) })
 	gather = Core.gather(double)
-	answer : U64 -> Engine.Res
+	answer : U64 -> Engine.Result
 	answer = |n| Work({ output: Wire.encode(n).append(0), files: [] })
 	odd = Work({ output: Wire.encode(Odd).append(1), files: [] })
 	asked = (gather.pending)(gather.init, [2, 4, 6])
@@ -630,14 +630,14 @@ expect {
 }
 
 ## A preparation's task carries its preparation and where the
-## preparation's input lies on the request, and its deadline and policies
+## preparation's input lies on the request, and its timeout and policies
 ## as any task does.
 expect {
 	lines : Worker.Preparation(Str, List(Str), Worker.Never)
-	lines = Worker.prepared({ name: "test/lines", prepare!: |text| Ok(Str.split_on(text, "\n")) })
-	nth = lines.task({ name: "test/lines/nth", run!: |all, n| Ok(all.get(n) ?? ""), deadline: Ms(40), on_cancel: Finish })
-	shape = match nth.request({ input: "a\nb", query: 1.U64 }) {
-		Work({ task, input, deadline_ms, on_cancel, prepared, .. }) => Str.inspect((task, input.len(), deadline_ms, on_cancel, prepared))
+	lines = Worker.preparation({ name: "test/lines", prepare!: |text| Ok(Str.split_on(text, "\n")) })
+	nth = lines.task({ name: "test/lines/nth", run!: |all, n| Ok(all.get(n) ?? ""), timeout: Ms(40), on_cancel: Finish })
+	shape = match nth.request({ init: "a\nb", input: 1.U64 }) {
+		Work({ task, input, timeout_ms, on_cancel, prepared, .. }) => Str.inspect((task, input, timeout_ms, on_cancel, prepared))
 		_ => "not a work request"
 	}
 	actual =
@@ -646,7 +646,7 @@ expect {
 		\\answer: ${Str.inspect(nth.result(Work({ output: Wire.encode("b").append(0), files: [] })))}
 	expected =
 		\\name: test/lines/nth
-		\\request: ("test/lines/nth", 12, 40, Finish, Prepared({ input_files: 0, input_len: 4, name: "test/lines" }))
+		\\request: ("test/lines/nth", [3, 97, 10, 98, 1, 0, 0, 0, 0, 0, 0, 0], 40, Finish, Prepared({ input_files: 0, input_len: 4, name: "test/lines" }))
 		\\answer: Ok("b")
 	actual == expected
 }

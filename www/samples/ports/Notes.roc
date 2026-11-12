@@ -46,7 +46,7 @@ Notes := [].{
 	# region view
 	view : State(In(Root, S), S) -> Elem(In(Root, S))
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"notes",
 			[
@@ -64,7 +64,7 @@ Notes := [].{
 				Html.text_input(Engine.const("Note"), "text", v.map(|s| s.draft), [], st.set_value(|s, t| { ..s, draft: t })),
 				Html.button("Save", [], st.update(Notes.saved)),
 				# A save is kept even if the user leaves the view mid-way.
-				Engine.on_change(
+				Engine.watch_changes(
 					v.map(|s| s.save),
 					|note| [Notes.put.request(note)],
 					st.on_result(
@@ -76,8 +76,8 @@ Notes := [].{
 				),
 				Html.text_input(Engine.const("Filter"), "text", v.map(|s| s.prefix), [], st.set_value(|s, t| { ..s, prefix: t })),
 				# A newer filter or revision stops the older listing.
-				Port.derive(Notes.list, v.map(|s| { prefix: s.prefix, revision: s.revision }), |r| Html.p_v(r.map(Notes.shown), [Engine.test_id("notes")])),
-				Html.p_v(v.map(|s| s.error), [Engine.test_id("error")]),
+				Port.resource(Notes.list, v.map(|s| { prefix: s.prefix, revision: s.revision }), |r| Html.p_s(r.map(Notes.shown), [Engine.test_id("notes")])),
+				Html.p_s(v.map(|s| s.error), [Engine.test_id("error")]),
 			],
 		)
 	}

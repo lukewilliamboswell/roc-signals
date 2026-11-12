@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, Val]
+import pf.Engine exposing [Elem, Signal]
 import pf.Html
 
 ## Remount test app: `Engine.remount_on`, a site that disposes its
@@ -15,7 +15,7 @@ import pf.Html
 RemountApp := [].{
 
 	## What one message's load writes into the pane.
-	loaded : Str, Str, Engine.Res -> Str
+	loaded : Str, Str, Engine.Result -> Str
 	loaded = |_, id, res| match Engine.http_text(res) {
 		Ok(body) => "${id}:${body}"
 		Err(problem) => "${id}:${Str.inspect(problem)}"
@@ -23,20 +23,20 @@ RemountApp := [].{
 
 	## The detail pane of the open message `id`. It takes no key: it reads
 	## `id` like any other value, and is remounted when the key changes.
-	detail : Val(ctx, Str) -> Elem(ctx)
+	detail : Signal(ctx, Str) -> Elem(ctx)
 	detail = |id| Engine.state(
 		"",
 		|draft| Html.div(
 			"detail",
 			[
-				Html.p_v(id.lift().map(|i| "Message ${i}"), [Engine.test_id("message")]),
-				Html.text_input(Engine.const("Reply"), "text", draft.val(), [], draft.set_value(|_, v| v)),
+				Html.p_s(id.lift().map(|i| "Message ${i}"), [Engine.test_id("message")]),
+				Html.text_input(Engine.const("Reply"), "text", draft.signal(), [], draft.set_value(|_, v| v)),
 				Engine.state(
 					"loading",
 					|body| Html.div(
 						"body",
 						[
-							Html.p_v(body.val(), [Engine.test_id("body")]),
+							Html.p_s(body.signal(), [Engine.test_id("body")]),
 							Engine.watch(
 								id.lift().lift(),
 								|i| [Http({ method: "GET", url: "/messages/${i}", headers: [], body: "", timeout_ms: 0 })],
@@ -59,7 +59,7 @@ RemountApp := [].{
 				[
 					Html.button("Open a", [], open.update(|_| "a")),
 					Html.button("Open b", [], open.update(|_| "b")),
-					Engine.remount_on(open.val(), || RemountApp.detail(open.val())),
+					Engine.remount_on(open.signal(), || RemountApp.detail(open.signal())),
 				],
 			),
 		),

@@ -21,7 +21,7 @@ import Specs
 Signals :: [].{
 
 	## What the user asked for.
-	Command : [Help, Init(Str), Serve({ port : U16 }), Build, Test]
+	Command : [Help, CommandHelp(Str), Init(Str), Serve({ port : U16 }), Build, Test]
 
 	## Run the tool on the arguments `roc signals.roc` passed it. Every
 	## failure is explained in a sentence on standard error and ends the
@@ -31,6 +31,7 @@ Signals :: [].{
 		args = raw.map(OsStr.display).drop_if(|arg| arg == "--")
 		outcome = match Signals.parse(args) {
 			Ok(Help) => Stdout.line!(Signals.usage)
+			Ok(CommandHelp(command)) => Stdout.line!(Signals.command_usage(command))
 			Ok(Init(dir)) => Init.run!(dir)
 			Ok(Serve(options)) => Serve.run!(options)
 			Ok(Build) => Dist.run!()
@@ -55,6 +56,7 @@ Signals :: [].{
 		match args {
 			[] => Ok(Help)
 			["help", ..] | ["--help", ..] | ["-h", ..] => Ok(Help)
+			[command, "--help"] | [command, "-h"] if ["init", "serve", "build", "test"].contains(command) => Ok(CommandHelp(command))
 			["init"] => Ok(Init("."))
 			["init", dir] if !dir.starts_with("-") => Ok(Init(dir))
 			["serve"] => Ok(Serve({ port: 8000 }))
@@ -82,6 +84,48 @@ Signals :: [].{
 		\\
 		\\This is roc-signals ${Bundle.version}, tested with Roc ${Bundle.nightly}.
 		\\Documentation: https://lukewilliamboswell.github.io/roc-signals/docs/getting-started/
+
+	## Describe one command before inspecting an app, writing files or starting
+	## a build or server. Only exact help forms for known commands reach here.
+	command_usage : Str -> Str
+	command_usage = |command| {
+		description = match command {
+			"init" =>
+				\\Create a counter app, its page and an example spec.
+				\\
+				\\Usage: roc signals.roc init [DIR]
+				\\
+				\\DIR defaults to the current directory. Existing files are never overwritten.
+				\\Keep signals.roc in the directory you run init from; a new app gets a copy.
+			"serve" =>
+				\\Develop the app in a browser, rebuilding and reloading when files change.
+				\\
+				\\Usage: roc signals.roc serve [--port N]
+				\\
+				\\Run from the app's directory, containing main.roc and index.html.
+				\\The server listens on 127.0.0.1, starting at port 8000 or N (1 to 65535).
+				\\If that port is busy, it tries nearby ports and prints the address it uses.
+				\\Stop with Ctrl-C. Reloading starts the app again with its initial state.
+			"build" =>
+				\\Build the app for deployment to a static web host.
+				\\
+				\\Usage: roc signals.roc build
+				\\
+				\\Run from the app's directory, containing main.roc and index.html.
+				\\The output replaces dist/. Serve that directory with a static HTTP server.
+				\\Normally uses --opt=size; a compiler workaround reports any change of mode.
+			"test" =>
+				\\Run the app's specs with the native spec runner.
+				\\
+				\\Usage: roc signals.roc test
+				\\
+				\\Run from the app's directory, containing main.roc and specs/*.scm.
+				\\A failed spec exits with an error and reports the step that failed.
+			_ => return Signals.usage
+		}
+		docs = if (command == "test") "testing" else "getting-started"
+		"${description}\n\nThis is roc-signals ${Bundle.version}, tested with Roc ${Bundle.nightly}.\nDocumentation: https://lukewilliamboswell.github.io/roc-signals/docs/${docs}/"
+	}
 
 	## The sentence a failure is explained with, and the exit code. This is
 	## the one place the tool's failures are put into words.
@@ -131,4 +175,28 @@ expect {
 	actual = [["srve"], ["serve", "--port", "http"], ["serve", "--port", "0"], ["build", "--watch"], ["init", "--blueprint"]].map(Signals.parse)
 	expected = [Err(UnknownCommand("srve")), Err(BadPort("http")), Err(BadPort("0")), Err(UnexpectedArguments({ command: "build", extra: ["--watch"] })), Err(UnexpectedArguments({ command: "init", extra: ["--blueprint"] }))]
 	actual == expected
+}
+
+## Help belongs to an exact known command, with no effects or app required.
+expect {
+	["init", "serve", "build", "test"].all(
+		|command| ["--help", "-h"].all(|flag| Signals.parse([command, flag]) == Ok(CommandHelp(command))),
+	)
+}
+
+## Help flags never turn unknown commands, extra options or bad ports into help.
+expect {
+	actual = [["unknown", "--help"], ["init", "new-app", "--help"], ["init", "--help", "--unknown"], ["build", "--watch", "-h"], ["test", "--unknown", "--help"], ["serve", "--port", "--help"], ["serve", "--port", "http", "--help"]].map(Signals.parse)
+	expected = [Err(UnknownCommand("unknown")), Err(UnexpectedArguments({ command: "init", extra: ["new-app", "--help"] })), Err(UnexpectedArguments({ command: "init", extra: ["--help", "--unknown"] })), Err(UnexpectedArguments({ command: "build", extra: ["--watch", "-h"] })), Err(UnexpectedArguments({ command: "test", extra: ["--unknown", "--help"] })), Err(BadPort("--help")), Err(UnexpectedArguments({ command: "serve", extra: ["--port", "http", "--help"] }))]
+	actual == expected
+}
+
+## Each help page carries its own usage and the release/compiler/docs context.
+expect {
+	["init", "serve", "build", "test"].all(
+		|command| {
+			text = Signals.command_usage(command)
+			text.contains("Usage: roc signals.roc ${command}") and text.contains("roc-signals ${Bundle.version}") and text.contains("tested with Roc ${Bundle.nightly}") and text.contains("Documentation: https://lukewilliamboswell.github.io/roc-signals/docs/")
+		},
+	)
 }

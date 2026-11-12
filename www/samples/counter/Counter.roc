@@ -6,7 +6,7 @@ import pf.Html
 ## A counter: one piece of state and two buttons that change it.
 Counter := [].{
 	# region view
-	## Inside the counter's state: one layer holding an `I64`.
+	## Inside the counter's state: one local state holding an `I64`.
 	Ctx : In(Root, I64)
 
 	## The program both platforms run.
@@ -19,7 +19,7 @@ Counter := [].{
 			"counter",
 			[
 				Html.button("-", [Html.aria_label("Decrement")], count.update(|n| n - 1)),
-				Html.span_v(count.val().map(|n| n.to_str()), [Engine.test_id("count")]),
+				Html.span_s(count.signal().map(|n| n.to_str()), [Engine.test_id("count")]),
 				Html.button("+", [Html.aria_label("Increment")], count.update(|n| n + 1)),
 			],
 		)

@@ -39,7 +39,7 @@ ControlsApp := [].{
 			Html.text_input(
 				Engine.const("Plain"),
 				"text",
-				st.val().map(|s| s.plain),
+				st.signal().map(|s| s.plain),
 				[
 					Engine.ref("plain"),
 					Engine.on("focus", st.set_value(|s, v| ControlsApp.log(s, "focus:${v}"))),
@@ -47,13 +47,13 @@ ControlsApp := [].{
 				],
 				st.set_value(|s, v| { ..s, plain: v }),
 			),
-			Html.text_input(Engine.const("Upper"), "text", st.val().map(|s| s.upper), [Engine.ref("upper")], st.set_value(|s, v| { ..s, upper: ControlsApp.upper_ascii(v) })),
+			Html.text_input(Engine.const("Upper"), "text", st.signal().map(|s| s.upper), [Engine.ref("upper")], st.set_value(|s, v| { ..s, upper: ControlsApp.upper_ascii(v) })),
 			Html.button("Focus upper", [], st.update(|s| ControlsApp.ask(s, F("upper")))),
 			Html.button("Select plain", [], st.update(|s| ControlsApp.ask(s, Sel("plain")))),
 			Html.button("Blur plain", [], st.update(|s| ControlsApp.ask(s, B("plain")))),
 			Html.button("Focus missing", [], st.update(|s| ControlsApp.ask(s, F("nowhere")))),
-			Engine.on_change(
-				st.val().map(|s| s.ask),
+			Engine.watch_changes(
+				st.signal().map(|s| s.ask),
 				|a| match a.req {
 					F(n) => [Focus(n)]
 					B(n) => [Blur(n)]
@@ -67,19 +67,19 @@ ControlsApp := [].{
 			## error: duplicate keys are errors, not aliases).
 			Html.button("Add row", [], st.update(|s| { ..s, rows: s.rows.append("r${s.rows.len().to_str()}") })),
 			Html.button("Duplicate row", [], st.update(|s| { ..s, rows: s.rows.append("r0") })),
-			Engine.element("ul", [Engine.test_id("rows")], [Engine.each(st.val().map(|s| s.rows), |r| r, |row| Engine.element("li", [], [Engine.text_v(row.key())]))]),
+			Engine.element("ul", [Engine.test_id("rows")], [Engine.each(st.signal().map(|s| s.rows), |r| r, |row| Engine.element("li", [], [Engine.text_s(row.key())]))]),
 
 			## Containment: two handlers for one event on one element (a
 			## contract error at mount, never a silently dropped listener).
 			Html.button("Two handlers", [], st.update(|s| { ..s, twice: OnElement })),
 			Html.button("Two row handlers", [], st.update(|s| { ..s, twice: InRow })),
 			Engine.when(
-				st.val().map(|s| s.twice == OnElement),
+				st.signal().map(|s| s.twice == OnElement),
 				|| Engine.element("button", [Engine.on_click(st.update(|s| ControlsApp.log(s, "one"))), Engine.on_click(st.update(|s| ControlsApp.log(s, "two")))], [Engine.text("Twice")]),
 				|| Engine.text(""),
 			),
 			Engine.when(
-				st.val().map(|s| s.twice == InRow),
+				st.signal().map(|s| s.twice == InRow),
 				|| Engine.each(
 					Engine.const(["r"]),
 					|r| r,
@@ -87,8 +87,8 @@ ControlsApp := [].{
 				),
 				|| Engine.text(""),
 			),
-			Engine.element("p", [Engine.test_id("state")], [Engine.text_v(st.val().map(|s| "${s.plain}|${s.upper}"))]),
-			Engine.element("pre", [Engine.test_id("log")], [Engine.text_v(st.val().map(|s| Str.join_with(s.log, "|")))]),
+			Engine.element("p", [Engine.test_id("state")], [Engine.text_s(st.signal().map(|s| "${s.plain}|${s.upper}"))]),
+			Engine.element("pre", [Engine.test_id("log")], [Engine.text_s(st.signal().map(|s| Str.join_with(s.log, "|")))]),
 		],
 	)
 

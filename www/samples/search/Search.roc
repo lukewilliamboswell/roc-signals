@@ -19,7 +19,7 @@ Search := [].{
 
 	# region requests
 	## One GET per search or refresh; nothing before the first search.
-	requests : { query : Str, round : U64 } -> List(Engine.Req)
+	requests : { query : Str, round : U64 } -> List(Engine.Request)
 	requests = |{ query, .. }|
 		if query == "" {
 			[]
@@ -28,7 +28,7 @@ Search := [].{
 		}
 
 	## Keep the body of a successful response, or the typed failure.
-	answered : S, { query : Str, round : U64 }, Engine.Res -> S
+	answered : S, { query : Str, round : U64 }, Engine.Result -> S
 	answered = |s, _, res|
 		match Engine.http_text(res) {
 			Ok(body) => { ..s, status: Found(body) }
@@ -48,7 +48,7 @@ Search := [].{
 	# region view
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"search",
 			[
@@ -66,8 +66,8 @@ Search := [].{
 					|| Engine.watch(Engine.const({}), |_| [Interval(30000)], st.on_result(|s, _, _| { ..s, round: s.round + 1 })),
 					|| Engine.text(""),
 				),
-				Engine.on_change(v.map(|s| { query: s.query, round: s.round }), Search.requests, st.on_result(Search.answered)),
-				Html.p_v(v.map(|s| Search.shown(s.status)), [Engine.test_id("results")]),
+				Engine.watch_changes(v.map(|s| { query: s.query, round: s.round }), Search.requests, st.on_result(Search.answered)),
+				Html.p_s(v.map(|s| Search.shown(s.status)), [Engine.test_id("results")]),
 			],
 		)
 	}

@@ -126,6 +126,29 @@ DocSamples := [].{
 		Ok($problems)
 	}
 
+	## Publish maintained sample sources beside the site for download. The site
+	## supplies its Roc-only publication transform so display and downloads use
+	## the same package URL placeholder without adding parser dependencies here.
+	## Other file types are copied byte for byte; checked source is never edited.
+	copy! : { root : Str, dist : Str, publish_roc : Str -> Str } => Try({}, _)
+	copy! = |{ root, dist, publish_roc }| {
+		source = "${root}/${DocSamples.samples_dir}"
+		for file in SpecSuite.files_under!(source, "")? {
+			name = file.drop_prefix("${source}/")
+			if is_source_download(name) {
+				target = "${dist}/samples/${name}"
+				parent = Str.join_with(target.split_on("/").drop_last(1), "/")
+				Path.create_all!(Path.utf8(parent))?
+				if name.ends_with(".roc") {
+					Path.write_utf8!(Path.utf8(target), publish_roc(Path.read_utf8!(Path.utf8(file))?))?
+				} else {
+					Path.copy!(Path.utf8(file), Path.utf8(target))?
+				}
+			}
+		}
+		Ok({})
+	}
+
 	## The sample directories: one app each.
 	dirs! : () => Try(List(Str), _)
 	dirs! = || {
@@ -180,3 +203,12 @@ expect {
 	read = |_| Ok("# region row\nx\n# endregion row-state\n")
 	DocSamples.page_problems("p", "{{ sample(file=\"a.roc\", region=\"row\") }}", read) == ["p: a.roc has no region row"]
 }
+
+## Source downloads exclude executables and the tool's generated directories.
+is_source_download : Str -> Bool
+is_source_download = |name|
+	!name.split_on("/").any(|part| part.starts_with(".") or part == "dist")
+		and [".roc", ".scm", ".html", ".mjs"].any(|suffix| name.ends_with(suffix))
+
+## The published sample tree contains maintained source, not local build output.
+expect ["todos/Todos.roc", "todos/specs/add.scm", "counter/index.html", "ports/notes-ports.mjs", "todos/main", "todos/main.wasm", "todos/.signals/run.mjs", "todos/dist/index.html"].map(is_source_download) == [True, True, True, True, False, False, False, False]

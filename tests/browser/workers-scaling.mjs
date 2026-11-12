@@ -21,9 +21,9 @@
 //    spans.
 // 5. Robustness, as sequences with the monitor's guarantees as the oracle:
 //    a seeded random walk of starts, cancels, resets and parameter changes
-//    over primes, tiles, deadlines and the crashing task; then a storm
+//    over primes, tiles, timeouts and the crashing task; then a storm
 //    of starts and cancels. Afterwards every issued job has exactly one end,
-//    live instances never exceeded the pool, no reply came late, the page
+//    live instances never exceeded the pool, no answer came late, the page
 //    never faulted, a clean run is correct, and unmounting terminates every
 //    Worker the runtime created.
 // 6. Memory: identical runs leave the long-lived instances' memory and
@@ -148,11 +148,11 @@ function install() {
     });
   // Set the parameters and start a run; resolve with what the page shows
   // once it settled, and the run's events.
-  window.__run = async ({ workload, jobs, weight, deadline = 0 }) => {
+  window.__run = async ({ workload, jobs, weight, timeout = 0 }) => {
     window.__set("Workload", workload);
     window.__set("Jobs", jobs);
     window.__set("Weight", weight);
-    window.__set("Deadline (ms)", deadline);
+    window.__set("Timeout (ms)", timeout);
     const from = window.__events.length;
     window.__click("Start");
     if (!(await window.__settled())) throw new Error(`run did not settle; progress ${window.__text("progress")}`);
@@ -527,13 +527,13 @@ async function unmountChecks(page, name) {
 }
 
 // Pool lifecycle on one worker, counted exactly: what one cancelling turn,
-// crashes and deadlines cost in instances. A turn that cancels a whole run
+// crashes and timeouts cost in instances. A turn that cancels a whole run
 // stops the running job's worker and drops the queued ones without handing
 // any of them a worker first; a crash replaces its worker only for the job
-// that waits next. Deadlines are not a batch: each expires in a task of its
+// that waits next. Timeouts are not a batch: each expires in a task of its
 // own, and at that moment the next queued job is still wanted, so it gets
-// the replacement worker until its own deadline stops it (three jobs whose
-// deadlines expire together start three workers).
+// the replacement worker until its own timeout stops it (three jobs whose
+// timeouts expire together start three workers).
 {
   const { page, ctx, errors } = await open({ maxWorkers: 1 });
   const r = await page.evaluate(async () => {
@@ -542,7 +542,7 @@ async function unmountChecks(page, name) {
     window.__set("Workload", "primes");
     window.__set("Jobs", 15);
     window.__set("Weight", 256);
-    window.__set("Deadline (ms)", 0);
+    window.__set("Timeout (ms)", 0);
     window.__click("Start");
     await window.__sleep(30);
     const before = spawns();
@@ -554,11 +554,11 @@ async function unmountChecks(page, name) {
     const s0 = spawns();
     await window.__run({ workload: "faulty", jobs: 8, weight: 1 });
     out.faulty = { spawns: spawns() - s0, lost: window.__rows().filter((t) => t.startsWith("lost")).length, done: window.__rows().filter((t) => t.startsWith("done")).length };
-    // Three heavy jobs with one deadline: each expires in turn, stopping
+    // Three heavy jobs with one timeout: each expires in turn, stopping
     // the worker the job before it freed.
     const s1 = spawns();
-    await window.__run({ workload: "primes", jobs: 3, weight: 256, deadline: 20 });
-    out.deadline = { spawns: spawns() - s1, timedOut: window.__rows().filter((t) => t === "timed out").length };
+    await window.__run({ workload: "primes", jobs: 3, weight: 256, timeout: 20 });
+    out.timeout = { spawns: spawns() - s1, timedOut: window.__rows().filter((t) => t === "timed out").length };
     // A fresh run after all of it uses one new worker and answers.
     const s2 = spawns();
     const run = await window.__run({ workload: "primes", jobs: 4, weight: 1 });
@@ -567,7 +567,7 @@ async function unmountChecks(page, name) {
   });
   same("one cancelling turn of 15 jobs on 1 worker: no worker beyond the one already running", [r.cancel.before, r.cancel.after, r.cancel.queued], [1, 1, 0]);
   same("crashes: 2 lost, 6 done, one replacement worker", [r.faulty.lost, r.faulty.done, r.faulty.spawns], [2, 6, 2]);
-  same("deadlines: all 3 time out, each in a worker of its own", [r.deadline.timedOut, r.deadline.spawns], [3, 3]);
+  same("timeouts: all 3 time out, each in a worker of its own", [r.timeout.timedOut, r.timeout.spawns], [3, 3]);
   same("afterwards one worker runs a clean run", [r.after.spawns, r.after.checksum], [1, expectedRun({ workload: "primes", jobs: 4, weight: 1 }).checksum]);
   const seq = sequenceProblems(await page.evaluate(() => window.__events), 1);
   check("pool lifecycle: every issued job has one end, at most 1 instance live", seq.problems.length === 0 && errors.length === 0, seq.problems.join("; ") + errors.join("; "));
@@ -597,7 +597,7 @@ const robustness = [];
         if (which === 0) window.__set("Workload", workloads[rnd() % 3]);
         else if (which === 1) window.__set("Jobs", 1 + (rnd() % 24));
         else if (which === 2) window.__set("Weight", 1 + (rnd() % 6));
-        else window.__set("Deadline (ms)", rnd() % 3 === 0 ? 1 + (rnd() % 30) : 0);
+        else window.__set("Timeout (ms)", rnd() % 3 === 0 ? 1 + (rnd() % 30) : 0);
       } else if (r < 50) {
         ops.start += 1;
         window.__click("Start");
@@ -609,7 +609,7 @@ const robustness = [];
         window.__click("Reset");
       } else if (r < 74) {
         // Let the run finish (or a second pass), so answers, crashes and
-        // deadlines happen, not only cancellations.
+        // timeouts happen, not only cancellations.
         ops.settle += 1;
         await window.__settled(1000);
       } else {
@@ -625,12 +625,12 @@ const robustness = [];
   const s = after.s;
   check(`walk: ${steps} steps (${JSON.stringify(walk.ops)}) without a page fault`, walk.poisoned === null && errors.length === 0, JSON.stringify({ poisoned: walk.poisoned, errors }));
   check(`walk: every one of ${seq.jobs} issued jobs has exactly one end; at most ${max} instances live`, seq.problems.length === 0 && inFlight === 0, seq.problems.join("; "));
-  check("walk: no late replies, and the pool's peak within its bound", s.jobs.lateReplies === 0 && s.pool.peak.instances <= max, JSON.stringify({ late: s.jobs.lateReplies, peak: s.pool.peak }));
+  check("walk: no late answers, and the pool's peak within its bound", s.jobs.lateAnswers === 0 && s.pool.peak.instances <= max, JSON.stringify({ late: s.jobs.lateAnswers, peak: s.pool.peak }));
   check("walk: every lost job is a crash of the crash task, reported once", after.faults.length === s.jobs.lost && after.faults.every((c) => c === "app_crash"), JSON.stringify({ faults: after.faults.length, lost: s.jobs.lost }));
   // The oracles above mean something only if the walk reached every
   // outcome; the full walk is long enough to.
-  if (FULL) check("walk: it reached answers, deadlines, crashes and cancellations", s.jobs.done > 0 && s.jobs.timeout > 0 && s.jobs.lost > 0 && s.jobs.cancelled > 0, JSON.stringify(s.jobs));
-  robustness.push(["random walk", `${steps} steps in ${Date.now() - t0} ms`, String(seq.jobs), String(s.jobs.done), String(s.jobs.cancelled), String(s.jobs.timeout), String(s.jobs.lost), String(s.instances.spawns), String(seq.peak), String(s.jobs.lateReplies)]);
+  if (FULL) check("walk: it reached answers, timeouts, crashes and cancellations", s.jobs.done > 0 && s.jobs.timeout > 0 && s.jobs.lost > 0 && s.jobs.cancelled > 0, JSON.stringify(s.jobs));
+  robustness.push(["random walk", `${steps} steps in ${Date.now() - t0} ms`, String(seq.jobs), String(s.jobs.done), String(s.jobs.cancelled), String(s.jobs.timeout), String(s.jobs.lost), String(s.instances.spawns), String(seq.peak), String(s.jobs.lateAnswers)]);
   const clean = await page.evaluate((p) => window.__run(p), PRIMES);
   verify("walk: a clean run afterwards", clean, PRIMES);
   await unmountChecks(page, "walk");
@@ -645,7 +645,7 @@ const robustness = [];
     window.__set("Workload", "primes");
     window.__set("Jobs", 16);
     window.__set("Weight", 4);
-    window.__set("Deadline (ms)", 0);
+    window.__set("Timeout (ms)", 0);
     for (let i = 0; i < n; i += 1) {
       window.__click("Start");
       if (i % 3 === 0) await window.__sleep(0);
@@ -658,15 +658,15 @@ const robustness = [];
   const seq = sequenceProblems(after.events, max);
   const s = after.s;
   check(`cancel storm: ${cycles} starts and cancels; every issued job (${seq.jobs}) has exactly one end, at most ${max} instances live`, seq.problems.length === 0 && inFlight === 0 && after.poisoned === null && errors.length === 0, seq.problems.join("; "));
-  check("cancel storm: the pool is healthy (no late replies, nothing queued or busy)", s.jobs.lateReplies === 0 && s.pool.queued === 0 && s.pool.busy === 0, JSON.stringify(s.pool));
-  robustness.push(["cancel storm", `${cycles} cycles in ${Date.now() - t0} ms`, String(seq.jobs), String(s.jobs.done), String(s.jobs.cancelled), String(s.jobs.timeout), String(s.jobs.lost), String(s.instances.spawns), String(seq.peak), String(s.jobs.lateReplies)]);
+  check("cancel storm: the pool is healthy (no late answers, nothing queued or busy)", s.jobs.lateAnswers === 0 && s.pool.queued === 0 && s.pool.busy === 0, JSON.stringify(s.pool));
+  robustness.push(["cancel storm", `${cycles} cycles in ${Date.now() - t0} ms`, String(seq.jobs), String(s.jobs.done), String(s.jobs.cancelled), String(s.jobs.timeout), String(s.jobs.lost), String(s.instances.spawns), String(seq.peak), String(s.jobs.lateAnswers)]);
   const clean = await page.evaluate((p) => window.__run(p), PRIMES);
   verify("cancel storm: a clean run afterwards", clean, PRIMES);
   await unmountChecks(page, "cancel storm");
   await ctx.close();
 }
 console.log(`\nRobustness (${LABEL}; maxWorkers 4; one run each):\n`);
-console.log(table(["sequence", "length", "jobs issued", "done", "cancelled", "timed out", "lost", "instance spawns", "peak live instances", "late replies"], robustness));
+console.log(table(["sequence", "length", "jobs issued", "done", "cancelled", "timed out", "lost", "instance spawns", "peak live instances", "late answers"], robustness));
 console.log("");
 
 // -- 6. Memory --------------------------------------------------------------

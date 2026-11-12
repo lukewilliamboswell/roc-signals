@@ -12,7 +12,7 @@ import src/Targets
 
 ## The `fuzz` task, a campaign: `fuzz.roc -- [--time SECONDS] [--timeout
 ## SECONDS] [TARGET...]` (default: every roc-fuzz target, 600 seconds of
-## exploration each, and a 300-second deadline per input: an app target's
+## exploration each, and a 300-second timeout per input: an app target's
 ## inputs are whole sessions, leak-checked, and take seconds each). Each target explores
 ## (roc-fuzz `explore`; its declared examples are `check`'s and
 ## `check-slow`'s job) from its corpus under `.fuzz-out/<target>/corpus`
