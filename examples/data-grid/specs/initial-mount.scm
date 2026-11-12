@@ -1,6 +1,7 @@
 (test "Data grid — initial mount"
   (steps
-    ; 1. initial mount
+    ; The grid as it mounts: every region, the first page in id order, and
+    ; the summary of all the rows.
     (expect-visible (role heading :name "Data Grid"))
     (expect-visible (role region :name "Data Grid"))
     (expect-visible (role region :name "Grid controls"))

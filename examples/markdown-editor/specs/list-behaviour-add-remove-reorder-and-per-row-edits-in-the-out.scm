@@ -1,6 +1,6 @@
 (test "Markdown editor — List behaviour: add, remove, reorder, and per-row edits in the outline."
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (mark-metrics)
     (uncheck (label "Number the outline"))
     (check (label "Number the outline"))
@@ -14,7 +14,7 @@
     (click (role button :name "Append a section"))
     (click (role button :name "Append a section"))
 
-    ; 6. List behaviour: add, remove, reorder, and per-row edits in the outline.
+    ; List behaviour: add, remove, reorder, and per-row edits in the outline.
     ; ---------------------------------------------------------------------------
 
     (click (role button :name "Load heading drill"))

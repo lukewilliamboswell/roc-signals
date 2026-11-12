@@ -7,10 +7,11 @@ import Notes
 
 ## The outbox's board, over any sequence of what the user and the sync
 ## service can do to it: save a draft, edit, retry, queue, delete or
-## promote a note, go offline or online, pause or resume auto-sync, and
-## answer a lane's send (successfully or not, current or stale). The bugs to
-## fear are a note the storage format cannot give back, two notes in one
-## lane, and a send for anything but the outbox's head.
+## promote a note, go offline or online, pause or resume auto-sync, answer
+## a lane's send (successfully or not, current or stale), and reload the
+## page. The bugs to fear are a note the storage format cannot give back,
+## two notes in one lane, a send for anything but the outbox's head, and an
+## edit that is never sent.
 ##
 ## After every step:
 ##
@@ -23,6 +24,12 @@ import Notes
 ##   and an answer for the current one settles exactly that lane;
 ## - an edit or a retry leaves the note outstanding, whatever its lane had
 ##   settled.
+##
+## A reload is a step like any other: a new session starts from the notes
+## as stored, with lanes that have settled nothing, and every rule holds on
+## from there. So a note is edited, synced and edited again at whatever
+## revision an earlier session left it, and a session saves notes beside
+## the ids it restored. Every sequence ends with a reload and a save.
 Input : List(U8)
 
 ## The pieces a typed body is made of; an input byte picks one.
@@ -70,8 +77,8 @@ rules = |board| {
 step : Notes.Board, U8, U8, U8 -> Try(Notes.Board, Str)
 step = |board, op, a, b| {
 	id = note_id(board, a)
-	match op % 10 {
-		0 => Ok(Notes.save_note({ ..board, draft: typed(a, b) }))
+	match op % 11 {
+		0 => Ok(Notes.save_note(board, typed(a, b)))
 		1 => {
 			edited = Notes.edit_note(board, id, Notes.sanitize(typed(b, a)))
 			outstanding(edited, id, "an edit")
@@ -85,6 +92,7 @@ step = |board, op, a, b| {
 		5 => Ok(Notes.promote_note(board, id))
 		6 => Ok(Notes.set_online(board, !board.online))
 		7 => Ok(Notes.set_auto(board, !board.auto))
+		10 => Ok(reloaded(board))
 		_ => {
 			slot = a.to_u64() % Notes.slot_count
 			issue = Notes.issue_at(board, slot)
@@ -107,6 +115,12 @@ step = |board, op, a, b| {
 	}
 }
 
+## The session a reload starts: the notes as stored, on a board that knows
+## whether the browser is online. Its lanes have settled nothing, and it
+## numbers the notes it saves from one.
+reloaded : Notes.Board -> Notes.Board
+reloaded = |board| Notes.initial(Notes.decode_notes(Notes.encode_notes(board.notes)), board.online)
+
 ## After an edit or a retry, the note is no longer settled by its lane.
 outstanding : Notes.Board, Str, Str -> Try(Notes.Board, Str)
 outstanding = |board, id, what| match board.notes.find_first(|n| n.id == id) {
@@ -123,10 +137,11 @@ check = |bytes| {
 	var $i = 0
 	while $i + 2 < bytes.len() {
 		op = bytes.get($i) ?? 0
-		$board = step($board, op, bytes.get($i + 1) ?? 0, bytes.get($i + 2) ?? 0).map_err(|why| "step ${($i // 3).to_str()} (op ${(op % 10).to_str()}): ${why}")?
-		rules($board).map_err(|why| "after step ${($i // 3).to_str()} (op ${(op % 10).to_str()}): ${why}")?
+		$board = step($board, op, bytes.get($i + 1) ?? 0, bytes.get($i + 2) ?? 0).map_err(|why| "step ${($i // 3).to_str()} (op ${(op % 11).to_str()}): ${why}")?
+		rules($board).map_err(|why| "after step ${($i // 3).to_str()} (op ${(op % 11).to_str()}): ${why}")?
 		$i = $i + 3
 	}
+	rules(Notes.save_note(reloaded($board), "Radio check")).map_err(|why| "after a reload and a save: ${why}")?
 	Ok({})
 }
 
@@ -148,6 +163,18 @@ target = Fuzz.target_with!({
 		ex("separators", [0, 2, 3, 1, 1, 3, 1, 2, 2]),
 		# Offline, then online with a stale answer in between.
 		ex("offline-stale", [6, 0, 0, 8, 0, 2, 6, 0, 0, 8, 0, 0, 8, 0, 2]),
+		# Save one note, which the reload then finds stored as `s1`.
+		ex("save-reload-save", [0, 0, 1]),
+		# Edit a note, reload, answer its lane, edit it again: the note is
+		# restored at the revision the first edit gave it.
+		ex("edit-reload-sync-edit", [1, 0, 8, 10, 0, 0, 8, 0, 0, 1, 0, 8]),
+		# The same after two edits, with two more while offline: the second
+		# must not come back to the revision the lane settled.
+		ex("edits-reload-sync-edits-offline", [1, 0, 8, 1, 0, 8, 10, 0, 0, 8, 0, 0, 6, 0, 0, 1, 0, 8, 1, 0, 8]),
+		# Save, edit and queue a note, reload, let it sync, delete it, and
+		# save and edit another: the new session gives the same id, and the
+		# edit the same revision, in the lane that settled the first.
+		ex("reload-sync-delete-save-edit", [0, 0, 8, 1, 2, 8, 3, 2, 0, 10, 0, 0, 8, 0, 0, 8, 2, 0, 4, 2, 0, 0, 0, 8, 1, 2, 8]),
 		ex("empty", []),
 	],
 	generator: Fuzz.list(Fuzz.u8, 300),

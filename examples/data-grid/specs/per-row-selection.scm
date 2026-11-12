@@ -1,6 +1,6 @@
 (test "Data grid — per row selection"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (mark-metrics)
     (click (role button :name "Sort by score"))
     (mark-metrics)
@@ -20,7 +20,7 @@
     (click (role button :name "Next page"))
     (click (role button :name "Previous page"))
 
-    ; 5. per row selection
+    ; Ticking one row.
     (mark-metrics)
     (check (label "Select Node-0002"))
     (expect-checked (label "Select Node-0002") true)
@@ -29,9 +29,14 @@
     (expect-text (test-id "summary-selected-here") "1")
     (expect-text (test-id "summary-selected-all") "1")
     (expect-checked (label "Select all matching rows") false)
+    ; A tick is a write of one row of the table. The view wakes that row
+    ; and no other of the ten on the page; it compares no list of rows, so
+    ; it counts none as reused.
     (expect-metric-delta rows_created 0)
-    (expect-metric-delta rows_reused 10)
+    (expect-metric-delta rows_reused 0)
     (expect-metric-delta rows_removed 0)
+    (expect-metric-delta rows_moved 0)
+    (expect-metric-delta rows_updated 1)
     (expect-metric-delta set_checked 1)
     (expect-metric-delta set_value 0)
     (uncheck (label "Select Node-0002"))

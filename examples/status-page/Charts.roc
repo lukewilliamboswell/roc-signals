@@ -79,9 +79,9 @@ latency_chart : List(Latency.Point) -> Try(Chart, _)
 latency_chart = |window| {
 	var $traces = []
 	for service in services {
-		# A loop, not `window.map_try(|point| Ok({ .. ? .. }))?`: that form
-		# never finishes compiling under `--specialize=no` on
-		# nightly-2026-11-10 (not yet reported upstream).
+		# A loop, not `window.map_try(|point| Ok({ .. ? .. }))?`: a
+		# `--specialize=no` build of that form does not finish with the
+		# pinned compiler.
 		var $points = []
 		for point in window {
 			$points = $points.append({ x: Coordinate.from_time(point.at), y: Coordinate.from_number(p95_of(point.p95_ms, service).to_f64())?, from_previous: point.from_previous })

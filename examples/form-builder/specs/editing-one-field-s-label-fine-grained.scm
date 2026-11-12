@@ -1,6 +1,6 @@
 (test "Form builder — editing one field's label, fine grained"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (fill (label "Answer f1") "Ada")
     (fill (label "Answer f2") "ada@example")
     (fill (label "Answer f2") "ada@example.com")
@@ -11,9 +11,14 @@
     ; editing one field's label, fine grained
     (mark-metrics)
     (fill (label "Label f1") "Given name")
+    ; The keystroke writes one field's row. Each of the two views of the
+    ; fields wakes that row, in place, and no other; a view compares no
+    ; list of rows, so it counts none as reused.
     (expect-metric-delta rows_created 0)
     (expect-metric-delta rows_removed 0)
-    (expect-metric-delta rows_reused 4)
+    (expect-metric-delta rows_reused 0)
+    (expect-metric-delta rows_moved 0)
+    (expect-metric-delta rows_updated 2)
     (expect-metric-delta scopes_created 0)
     (expect-metric-delta scopes_disposed 0)
     (expect-text (test-id "preview-f1-label") "Given name (required)")

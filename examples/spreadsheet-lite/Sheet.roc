@@ -1,5 +1,8 @@
-## Whole-sheet evaluation: resolve every cell in dependency order, detecting
-## reference cycles, and hand back display-ready output.
+## The sheet. Whole-sheet evaluation resolves every cell in dependency order,
+## detecting reference cycles, and hands back display-ready output. The
+## sheet's rows hold that output beside what was typed, one row of cells
+## under each row number, and a listing says which rows a grid shows and in
+## what order. Nothing here knows the engine.
 import Cells
 import Formula
 
@@ -10,26 +13,7 @@ Sheet := [].{
 	## tints can never disagree. `to_str` is the single encode point for the
 	## `data-kind` attribute the specs assert on.
 	CellKind := [Empty, Number, Text, Error].{
-		is_eq : CellKind, CellKind -> Bool
-		is_eq = |left, right|
-			match left {
-				Empty => match right {
-					Empty => True
-					_ => False
-				}
-				Number => match right {
-					Number => True
-					_ => False
-				}
-				Text => match right {
-					Text => True
-					_ => False
-				}
-				Error => match right {
-					Error => True
-					_ => False
-				}
-			}
+		is_eq : _
 
 		to_str : CellKind -> Str
 		to_str = |kind|
@@ -135,6 +119,122 @@ Sheet := [].{
 	## Evaluate a sheet straight to display-ready outputs.
 	evaluate_out : List(Str) -> List(CellOut)
 	evaluate_out = |sources| Sheet.evaluate(sources).map(Sheet.to_out)
+
+	## One cell as its row holds it: its place on the sheet (its index,
+	## counting across each row in turn), the text typed into it, and what
+	## that text computes to.
+	Cell : { index : U64, source : Str, out : CellOut }
+
+	## One row of the sheet: its cells from column A across. A row is found
+	## by its number, counting from 0.
+	Row : List(Cell)
+
+	## The rows of the sheet whose cells hold `sources`, every cell computed.
+	rows_of : List(Str) -> List({ key : U64, row : Row })
+	rows_of = |sources|
+		List.map2(sources, Sheet.evaluate_out(sources), |source, out| { source, out })
+			.map_with_index(|{ source, out }, index| { index, source, out })
+			.chunks_of(Cells.col_count)
+			.map_with_index(|row, key| { key, row })
+
+	## The sources of a sheet with nothing typed in it.
+	blank_sources : List(Str)
+	blank_sources = List.repeat("", Cells.cell_count)
+
+	## `sources` with `text` in the cell at `index`. An index past the last
+	## cell names no cell, so it changes nothing.
+	with_source : List(Str), U64, Str -> List(Str)
+	with_source = |sources, index, text| sources.set(index, text) ?? sources
+
+	## `sources` with what was typed into each cell of `row`. Folded over a
+	## sheet's rows from `blank_sources`, in any order, it gives the sources
+	## `rows_of` was given.
+	with_row : List(Str), Row -> List(Str)
+	with_row = |sources, row| row.fold(sources, |held, cell| Sheet.with_source(held, cell.index, cell.source))
+
+	## Whether nothing is typed anywhere in a row.
+	is_blank : Row -> Bool
+	is_blank = |row| row.all(|cell| cell.source.is_empty())
+
+	## A cell at `index` with nothing typed in it.
+	blank_cell : U64 -> Cell
+	blank_cell = |index| { index, source: "", out: Sheet.to_out(Empty) }
+
+	## What a grid shows in each cell: what it computes to, or what was
+	## typed into it.
+	Mode : [Values, Formulas]
+
+	## The text a grid in `mode` shows for a cell.
+	shown : Cell, Mode -> Str
+	shown = |cell, mode|
+		match mode {
+			Values => cell.out.text
+			Formulas => cell.source
+		}
+
+	## The mode the grid's mode button changes to.
+	other_mode : Mode -> Mode
+	other_mode = |mode|
+		match mode {
+			Values => Formulas
+			Formulas => Values
+		}
+
+	## Which rows a grid lists and in what order. It is plain data, so a
+	## view of the rows can tell a changed listing from the same one.
+	Listing : { rows : [Every, Filled], order : [TopDown, BottomUp] }
+
+	## The listing a grid opens with: every row, from the top down.
+	whole_sheet : Listing
+	whole_sheet = { rows: Every, order: TopDown }
+
+	## The listing with its blank rows hidden if they were listed, and
+	## listed if they were hidden.
+	with_rows_switched : Listing -> Listing
+	with_rows_switched = |listing| {
+		..listing,
+		rows: match listing.rows {
+			Every => Filled
+			Filled => Every
+		},
+	}
+
+	## The listing in the opposite order.
+	with_order_switched : Listing -> Listing
+	with_order_switched = |listing| {
+		..listing,
+		order: match listing.order {
+			TopDown => BottomUp
+			BottomUp => TopDown
+		},
+	}
+
+	## How a listing selects and orders rows: what a view of the rows asks.
+	## A row is placed by its number, which no other row has, so the order
+	## is total.
+	plan : Listing -> { keep : U64, Row -> Bool, sort : U64, Row -> U64, compare : U64, U64 -> [Before, Same, After] }
+	plan = |{ rows, order }| {
+		keep: |_number, row|
+			match rows {
+				Every => True
+				Filled => !Sheet.is_blank(row)
+			},
+		sort: |number, _row| number,
+		compare: match order {
+			TopDown => Sheet.ascending
+			BottomUp => |left, right| Sheet.ascending(right, left)
+		},
+	}
+
+	ascending : U64, U64 -> [Before, Same, After]
+	ascending = |left, right|
+		if left < right {
+			Before
+		} else if left > right {
+			After
+		} else {
+			Same
+		}
 
 	## The starting workbook: a small quarterly budget plus deliberate error,
 	## cycle, empty-reference, and isolated-cell cases.
@@ -289,3 +389,39 @@ expect Sheet.evaluate_out(Sheet.initial_cells).get(89) == Ok({ text: "5", kind: 
 
 ## A cell with no source evaluates to the empty kind, not to text.
 expect Sheet.evaluate_out(Sheet.initial_cells).get(80) == Ok({ text: "", kind: Empty })
+
+## The sheet's rows are twelve rows of eight cells under the row numbers from 0, each cell at its index with its source and what it computes to.
+expect {
+	rows = Sheet.rows_of(Sheet.initial_cells)
+	actual =
+		\\numbers: ${Str.inspect(rows.map(|entry| entry.key))}
+		\\widths: ${Str.inspect(rows.map(|entry| entry.row.len()))}
+		\\D2: ${Str.inspect(rows.map(|entry| entry.row).join().get(11))}
+	expected =
+		\\numbers: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+		\\widths: [8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8]
+		\\D2: Ok({ index: 11, out: { kind: Number, text: "2500" }, source: "=B2+C2" })
+	actual == expected
+}
+
+## Reading the rows back, in any order, gives the sources they were built from.
+expect Sheet.rows_of(Sheet.initial_cells).rev().fold(Sheet.blank_sources, |held, entry| Sheet.with_row(held, entry.row)) == Sheet.initial_cells
+
+## Row 11 of the starting workbook is the only row with nothing typed in it.
+expect Sheet.rows_of(Sheet.initial_cells).keep_if(|entry| Sheet.is_blank(entry.row)).map(|entry| entry.key) == [10]
+
+## A listing of the filled rows from the bottom up leaves out the blank row and reverses the rest.
+expect {
+	asked = Sheet.plan({ rows: Filled, order: BottomUp })
+	listed = Sheet.rows_of(Sheet.initial_cells)
+		.keep_if(|entry| (asked.keep)(entry.key, entry.row))
+		.map(|entry| (asked.sort)(entry.key, entry.row))
+		.sort_with(asked.compare)
+	listed == [11, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
+}
+
+## A grid showing values shows what a cell computes to; one showing formulas, what was typed.
+expect {
+	cell = { index: 11, source: "=B2+C2", out: { text: "2500", kind: Number } }
+	(Sheet.shown(cell, Values), Sheet.shown(cell, Formulas)) == ("2500", "=B2+C2")
+}

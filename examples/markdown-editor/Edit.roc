@@ -1,6 +1,7 @@
 ## Source-text editing commands for the toolbar. Each one is a pure
-## `Str -> Str` transform used as a `state.on_unit` reducer, so the whole app
-## still has exactly one piece of document state.
+## `Str -> Str` transform that a toolbar button applies to the document's
+## cell (`AppStore.edited`), so the document's text is the only state a
+## command touches.
 ##
 ## A "section" is a heading line plus everything up to the next heading line.
 ## Anything before the first heading is the preamble.
@@ -199,8 +200,8 @@ expect Edit.demote_last_heading("###### Beta") == "###### Beta"
 ## preceding section terminated by a newline.
 expect Edit.remove_last_section("# Alpha\n\nbody\n\n## Beta") == "# Alpha\n\nbody\n"
 
-## Pins surprising existing behaviour. A section owns the blank line that
-## follows it, so swapping the last two sections carries that blank line along:
-## "# Alpha" arrives after "## Beta" with the blank line now trailing the
-## document instead of separating the two headings.
+## A section owns the blank line that follows it, which surprises when the
+## last two sections swap: the blank line goes along, so "# Alpha" arrives
+## after "## Beta" with the blank line trailing the document instead of
+## separating the two headings.
 expect Edit.move_last_section_up("# Alpha\n\n## Beta") == "## Beta\n# Alpha\n"

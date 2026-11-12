@@ -3,11 +3,16 @@
     ; cross column move
     (mark-metrics)
     (click (role button :name "Move right: Draft onboarding copy"))
-    ; Only the moved card is recreated. The sibling left behind in Backlog and the
-    ; sibling already in In Progress are both reused.
+    ; Only the moved card is recreated: it leaves Backlog's view of the cards
+    ; and enters In Progress's. The sibling left behind in Backlog takes the
+    ; place above it, a write of its row that wakes it where it is; the
+    ; sibling already in In Progress is not written. A view compares no list
+    ; of rows, so it counts none as reused.
     (expect-metric-delta rows_created 1)
     (expect-metric-delta rows_removed 1)
-    (expect-metric-delta rows_reused 2)
+    (expect-metric-delta rows_reused 0)
+    (expect-metric-delta rows_moved 0)
+    (expect-metric-delta rows_updated 1)
     (expect-text (test-id "count-backlog") "1 card")
     (expect-text (test-id "count-progress") "2 cards")
     (expect-text (test-id "card-position-Design login screen") "1 of 1 in Backlog")

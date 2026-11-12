@@ -23,7 +23,11 @@ import Sheet
 ## - any other formula's number is its tree's, where an empty cell reads
 ##   as 0 and a range adds its numbers and skips its text;
 ## - every other cell is what it holds;
-## - every cell's name reads back as its index.
+## - every cell's name reads back as its index;
+## - the sheet's rows, which the app keeps in a table and writes row by
+##   row, hold every cell at its index with what was typed into it and what
+##   the sheet shows for it, and read back, in any order, as the text that
+##   was typed.
 Input : List(U8)
 
 ## A formula's tree.
@@ -271,10 +275,23 @@ check = |bytes| {
 			return Err("${Cells.ref_of(index)} = ${Str.inspect(source_of(held))} shows ${Str.inspect(got)}, the model ${Str.inspect(want)}; the sheet: ${Str.inspect(cells.map(|(i, h)| "${Cells.ref_of(i)}: ${source_of(h)}"))}")
 		}
 	}
+	rows = Sheet.rows_of(sources)
+	in_rows = rows.map(|entry| entry.row).join()
 	for index in List.repeat(0, Cells.cell_count).map_with_index(|_, i| i) {
 		if Cells.index_of(Cells.ref_of(index)) != Ok(index) {
 			return Err("${Cells.ref_of(index)} does not read back as cell ${index.to_str()}")
 		}
+		on_sheet = { index, source: sources.get(index) ?? "", out: Sheet.to_out(shown.get(index) ?? Empty) }
+		if in_rows.get(index) != Ok(on_sheet) {
+			return Err("the rows hold ${Str.inspect(in_rows.get(index))} at ${Cells.ref_of(index)}, the sheet ${Str.inspect(on_sheet)}")
+		}
+	}
+	numbers = rows.map(|entry| entry.key)
+	if numbers != List.repeat(0, Cells.row_count).map_with_index(|_, i| i) or rows.any(|entry| entry.row.len() != Cells.col_count) {
+		return Err("the rows are numbered ${Str.inspect(numbers)} and hold ${Str.inspect(rows.map(|entry| entry.row.len()))} cells")
+	}
+	if rows.rev().fold(Sheet.blank_sources, |typed, entry| Sheet.with_row(typed, entry.row)) != sources {
+		return Err("the rows do not read back as what was typed; the sheet: ${Str.inspect(cells.map(|(i, h)| "${Cells.ref_of(i)}: ${source_of(h)}"))}")
 	}
 	Ok({})
 }

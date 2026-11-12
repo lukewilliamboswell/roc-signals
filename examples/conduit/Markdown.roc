@@ -1,15 +1,14 @@
-## Markdown parsing (the view lives in ConduitApp) for article bodies: headings, paragraphs,
-## quotes, fenced code blocks, one-level nested lists, bold, inline code,
-## links, and images. Links and image sources pass a scheme allowlist;
-## anything else degrades to plain text. Adapted from the previous engine's
-## markdown-elem test fixture (the proven app-land path; no roc-parser package
-## exists yet).
+## Markdown parsing for article bodies (`MarkdownView` draws what it
+## parses): headings, paragraphs, quotes, fenced code blocks, one-level
+## nested lists, bold, inline code, links, and images. Links and image
+## sources pass a scheme allowlist; anything else degrades to plain text.
+## The parser is the app's own code, written by hand.
 
 Markdown := {}.{
 	ListItem : { key : Str, text : Str, children : List(Str) }
 
-	## Keys identify rows; block and segment shape is selected lazily from the
-	## typed kind signal by `Ui.switch`.
+	## Keys identify rows; the `switch` in a row draws the element its
+	## block's or segment's kind calls for.
 	BlockKind : [Heading, Quote, CodeBlock, ListBlock, Paragraph]
 
 	SegmentKind : [Strong, Code, Image, Link, Text]
@@ -56,14 +55,15 @@ Markdown := {}.{
 		fence_lines: [],
 	}
 
-	block_key : U64, Markdown.BlockKind -> Str
-	block_key = |index, _| "b:${index.to_str()}"
+	## A block's key is its place in the document, whatever its kind.
+	block_key : U64 -> Str
+	block_key = |index| "b:${index.to_str()}"
 
 	append_block : Markdown.ParseState, Markdown.BlockKind, Str, List(Markdown.ListItem) -> Markdown.ParseState
 	append_block = |state, kind, text, items| {
 		{
 			..state,
-			blocks: state.blocks.append({ key: block_key(state.index, kind), kind, text, items }),
+			blocks: state.blocks.append({ key: block_key(state.index), kind, text, items }),
 			index: state.index + 1,
 		}
 	}
@@ -153,8 +153,9 @@ Markdown := {}.{
 			or href.starts_with("mailto:")
 	}
 
-	segment_key : U64, Markdown.SegmentKind -> Str
-	segment_key = |index, _| "s:${index.to_str()}"
+	## A segment's key is its place in its line of text, whatever its kind.
+	segment_key : U64 -> Str
+	segment_key = |index| "s:${index.to_str()}"
 
 	append_segment : Markdown.InlineState, Markdown.SegmentKind, Str, Str -> Markdown.InlineState
 	append_segment = |state, kind, text, href| {
@@ -162,7 +163,7 @@ Markdown := {}.{
 			state
 		} else {
 			{
-				segments: state.segments.append({ key: segment_key(state.index, kind), kind, text, href }),
+				segments: state.segments.append({ key: segment_key(state.index), kind, text, href }),
 				index: state.index + 1,
 			}
 		}
@@ -259,9 +260,9 @@ Markdown := {}.{
 
 }
 
-## Structural kinds no longer affect keyed-row identity.
-expect Markdown.block_key(7, CodeBlock) == "b:7"
-expect Markdown.segment_key(2, Link) == "s:2"
+## A row's key is its place among its siblings, whatever its kind.
+expect Markdown.parse("# Title\n\nbody\n\n```\ncode\n```").map(|block| block.key) == ["b:0", "b:1", "b:2"]
+expect Markdown.inline_segments("see **this** and `that`").map(|segment| segment.key) == ["s:0", "s:1", "s:2", "s:3"]
 
 ## A blank line separates blocks, and a leading `#` marks the first as a heading.
 expect Markdown.parse("# Title\n\nbody").map(|block| block.kind) == [Heading, Paragraph]

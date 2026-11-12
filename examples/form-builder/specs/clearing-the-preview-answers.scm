@@ -1,6 +1,6 @@
 (test "Form builder — clearing the preview answers"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (fill (label "Answer f1") "Ada")
     (fill (label "Answer f2") "ada@example")
     (fill (label "Answer f2") "ada@example.com")
@@ -41,8 +41,8 @@
     (click (role button :name "Delete f6"))
 
     ; clearing the preview answers
-    ; Answers are a separate source; clearing them re-derives every verdict without
-    ; touching the schema.
+    ; The answers are a cell of their own; clearing them re-derives every verdict
+    ; without touching the schema.
     (click (role button :name "Clear preview answers"))
     (expect-value (label "Answer f1") "")
     (expect-checked (label "Answer f5") false)

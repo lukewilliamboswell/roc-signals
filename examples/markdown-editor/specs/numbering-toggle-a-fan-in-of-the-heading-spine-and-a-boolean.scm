@@ -1,6 +1,6 @@
 (test "Markdown editor — Numbering toggle: a fan-in of the heading spine and a boolean."
   (steps
-    ; 2. Numbering toggle: a fan-in of the heading spine and a boolean.
+    ; Numbering toggle: a fan-in of the heading spine and a boolean.
     ; Row identity is the heading slug, so toggling relabels rows in place.
     ; ---------------------------------------------------------------------------
 

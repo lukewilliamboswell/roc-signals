@@ -1,6 +1,6 @@
 (test "Markdown editor — Edge case: a document with no headings at all."
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (mark-metrics)
     (uncheck (label "Number the outline"))
     (check (label "Number the outline"))
@@ -23,7 +23,7 @@
     (mark-metrics)
     (click (role button :name "Demote the last heading"))
 
-    ; 7. Edge case: a document with no headings at all.
+    ; Edge case: a document with no headings at all.
     ; ---------------------------------------------------------------------------
 
     (click (role button :name "Load document without headings"))

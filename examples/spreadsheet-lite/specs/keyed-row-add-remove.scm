@@ -1,6 +1,6 @@
 (test "Spreadsheet lite — keyed row add/remove"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (focus (label "D2"))
     (fill (label "Formula") "=B2+C2+100")
     (fill (label "Formula") "=B2+C2")

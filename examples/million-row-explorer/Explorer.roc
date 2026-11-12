@@ -1,11 +1,11 @@
-import pf.Engine
+import pf.Engine exposing [Val]
 import pf.Port
 import pf.Worker
 import Feed
 import Orders
 
-## The Million-Row Explorer's tasks, its page state, and every decision the
-## view makes, pure so that `expect`s and specs reach them.
+## The Million-Row Explorer's tasks, its store, and every decision the view
+## makes, pure so that `expect`s and specs reach them.
 ##
 ## The database is split into four shards. Each shard is a preparation
 ## whose input is only its seed, its number and its size, so its orders are
@@ -13,7 +13,21 @@ import Orders
 ## categories and the value range) is asked of every shard at once with
 ## `Worker.gather`; each answer is a few kilobytes of counts, which the page
 ## adds together, with the live orders it has folded in, and draws.
-Explorer := [].{
+##
+## The page's state is a store, held at the root and read wherever it is
+## drawn:
+##
+## - `shown`: the question the controls show (categories and a value range
+##   in whole bins).
+## - `asked`: the question asked of the shards, which a slider being
+##   dragged may be ahead of.
+## - `flow` and `rate`: the live feed's switch and its pace.
+## - `live`: what the feed has delivered, folded into a fixed-size tally.
+## - `note`: what the page says when something it was sent was refused.
+##
+## The database's size is not state: the address chooses it before the
+## page mounts and it never changes (`Setup`).
+Explorer := [Shop].{
 
 	# -- In the workers -----------------------------------------------------
 
@@ -82,22 +96,21 @@ Explorer := [].{
 			}
 	}
 
-	## The state a page starts in, at the address it was opened at: its
-	## size, and the live feed paused when the address says
-	## `feed=paused` (a page to share, or a test that must return to where
-	## it started).
-	starting : Str -> S
-	starting = |url| {
-		flow = if (query_value(url, "feed") == Ok("paused")) Paused else Live
-		sized = Explorer.sized_by(url)
-		{ ..sized, flow }
-	}
+	## What the address chose before the page mounted: the database's size,
+	## the live feed paused when it says `feed=paused` (a page to share, or
+	## a test that must return to where it started), and a note when the
+	## size it asked for is not one the page can generate.
+	Setup : { size : U64, flow : Flow, note : Str }
 
-	sized_by : Str -> S
-	sized_by = |url| match Explorer.size_of_url(url) {
-		Unasked => Explorer.initial
-		Size(size) => { ..Explorer.initial, size }
-		NotASize(text) => { ..Explorer.initial, note: "\"${text}\" is not a number of orders this page can generate (from ${with_commas(Explorer.smallest)} to ${with_commas(Explorer.largest)}): showing ${with_commas(Explorer.default_size)}." }
+	## The setup an address names.
+	setup_of : Str -> Setup
+	setup_of = |url| {
+		flow = if (query_value(url, "feed") == Ok("paused")) Paused else Live
+		match Explorer.size_of_url(url) {
+			Unasked => { size: Explorer.default_size, flow, note: "" }
+			Size(size) => { size, flow, note: "" }
+			NotASize(text) => { size: Explorer.default_size, flow, note: "\"${text}\" is not a number of orders this page can generate (from ${with_commas(Explorer.smallest)} to ${with_commas(Explorer.largest)}): showing ${with_commas(Explorer.default_size)}." }
+		}
 	}
 
 	## The live feed's paces the user can choose, in orders a second.
@@ -118,117 +131,127 @@ Explorer := [].{
 	## Whether the controls show a question that has not been asked yet.
 	Sampling : [Asked, Waiting]
 
-	## The page's state: the database's size, the question the controls
-	## show (categories and a value range in whole bins) and the question
-	## asked of the shards, the live feed and what it has delivered, and a
-	## note when something it sent was refused.
-	S : {
-		size : U64,
-		categories : List(Orders.Category),
-		lowest : U64,
-		highest : U64,
-		asked : Orders.Filter,
-		flow : Flow,
-		rate : U32,
-		live : Orders.Tally,
-		live_orders : U64,
-		dropped : U32,
-		note : Str,
-	}
+	## What the live feed has delivered: its orders folded into a tally,
+	## how many there were, and how many the feed last said it dropped.
+	LiveOrders : { tally : Orders.Tally, orders : U64, dropped : U32 }
 
-	initial : S
-	initial = {
-		size: Explorer.default_size,
-		categories: Orders.categories,
-		lowest: 0,
-		highest: Orders.bins - 1,
-		asked: Orders.everything,
-		flow: Live,
-		rate: 200,
-		live: Orders.no_orders,
-		live_orders: 0,
-		dropped: 0,
-		note: "",
-	}
+	store = Engine.store(
+		Explorer.Shop,
+		{
+			shown: Engine.cell(Orders.everything),
+			asked: Engine.cell(Orders.everything),
+			flow: Engine.cell(Live),
+			rate: Engine.cell(200.U32),
+			live: Engine.cell({ tally: Orders.no_orders, orders: 0, dropped: 0 }),
+			note: Engine.cell(""),
+		}.Engine.Cells,
+	)
 
-	## The question the controls show.
-	filter : S -> Orders.Filter
-	filter = |s| { categories: s.categories, lowest: s.lowest, highest: s.highest }
+	## The handles on the store's cells.
+	h = Explorer.store.handles()
+
+	## The store a page starts with, for the setup its address chose.
+	start : Setup -> Engine.Store(_, _)
+	start = |setup| Explorer.store
+		.with_initial(Explorer.h.flow, setup.flow)
+		.with_initial(Explorer.h.note, setup.note)
+
+	## The question the controls show beside the one asked of the shards.
+	question : {} -> Val(ctx, { shown : Orders.Filter, asked : Orders.Filter })
+		where [ctx.store : () -> Engine.Reach(ctx, _)]
+	question = |{}| { shown: Explorer.h.shown.val(), asked: Explorer.h.asked.val() }.Val
 
 	## Whether the shards have been asked what the controls show.
-	sampling : S -> Sampling
-	sampling = |s| if (Explorer.filter(s) == s.asked) Asked else Waiting
+	sampling : { shown : Orders.Filter, asked : Orders.Filter } -> Sampling
+	sampling = |{ shown, asked }| if (shown == asked) Asked else Waiting
 
-	## Ask the shards what the controls show: at once for a click, and when
-	## the sampling timer fires for a slider.
-	asking : S -> S
-	asking = |s| { ..s, asked: Explorer.filter(s) }
-
-	## One question per shard: equal shards, the last taking the remainder.
-	questions : S -> List(Worker.Question(Orders.Shard, Orders.Filter))
-	questions = |s| {
-		size = s.size // Explorer.shards
+	## One question per shard of a database of `size` orders: equal shards,
+	## the last taking the remainder.
+	questions : U64, Orders.Filter -> List(Worker.Question(Orders.Shard, Orders.Filter))
+	questions = |size, asked| {
+		share = size // Explorer.shards
 		var $out = []
 		for i in 0..<Explorer.shards {
-			rows = if (i + 1 == Explorer.shards) s.size - size * i else size
-			$out = $out.append({ input: { seed: Explorer.seed, shard: i, rows }, query: s.asked })
+			rows = if (i + 1 == Explorer.shards) size - share * i else share
+			$out = $out.append({ input: { seed: Explorer.seed, shard: i, rows }, query: asked })
 		}
 		$out
 	}
 
-	## A category's box was ticked (`"true"`) or cleared, and the question
-	## asked at once. The categories stay in their fixed order, so the same
-	## choice is the same question.
-	toggled : S, Orders.Category, Str -> S
-	toggled = |s, category, checked|
-		Explorer.asking({
-			..s,
-			categories: Orders.categories.keep_if(|c| if (c == category) checked == "true" else s.categories.contains(c)),
-		})
-
-	## The value range's ends, as the sliders send them: a bin number. An
-	## end moved past the other takes the other with it. The question waits
-	## for the sampling timer (`sample_ms`).
-	lowest_set : S, Str -> S
-	lowest_set = |s, text| match U64.from_str(text) {
-		Ok(bin) if bin < Orders.bins => { ..s, lowest: bin, highest: s.highest.max(bin) }
-		_ => s
+	## A category's box was ticked (`"true"`) or cleared while the controls
+	## showed `shown`: the question changes and is asked at once, with
+	## whatever a slider still had waiting. The categories stay in their
+	## fixed order, so the same choice is the same question.
+	ticked : Orders.Filter, Orders.Category, Str -> List(Engine.Write(_))
+	ticked = |shown, category, checked| {
+		next = { ..shown, categories: Orders.categories.keep_if(|c| if (c == category) checked == "true" else shown.categories.contains(c)) }
+		[Explorer.h.shown.put(next), Explorer.h.asked.put(next)]
 	}
 
-	highest_set : S, Str -> S
-	highest_set = |s, text| match U64.from_str(text) {
-		Ok(bin) if bin < Orders.bins => { ..s, highest: bin, lowest: s.lowest.min(bin) }
-		_ => s
-	}
+	## An end of the value range.
+	End : [Lowest, Highest]
+
+	## A slider moved an end of the value range to a bin, as the slider
+	## sends it. An end moved past the other takes the other with it. Only
+	## the controls change: the question waits for the sampling timer
+	## (`sample_ms`).
+	slid : End, Str -> List(Engine.Write(_))
+	slid = |which, text| [
+		Explorer.h.shown.change(
+			|shown| match (which, U64.from_str(text)) {
+				(Lowest, Ok(bin)) if bin < Orders.bins => { ..shown, lowest: bin, highest: shown.highest.max(bin) }
+				(Highest, Ok(bin)) if bin < Orders.bins => { ..shown, highest: bin, lowest: shown.lowest.min(bin) }
+				_ => shown
+			},
+		),
+	]
+
+	## The sampling timer fired while the controls showed `shown`: the
+	## shards are asked it.
+	sampled : Orders.Filter -> List(Engine.Write(_))
+	sampled = |shown| [Explorer.h.asked.put(shown)]
 
 	## A pace from the menu; anything else is ignored.
-	paced : S, Str -> S
-	paced = |s, text| match U32.from_str(text) {
-		Ok(rate) if Explorer.rates.contains(rate) => { ..s, rate }
-		_ => s
+	paced : Str -> List(Engine.Write(_))
+	paced = |text| match U32.from_str(text) {
+		Ok(rate) if Explorer.rates.contains(rate) => [Explorer.h.rate.put(rate)]
+		_ => []
 	}
 
 	## The live feed switched on (`"true"`) or off.
-	flowing : S, Str -> S
-	flowing = |s, checked| { ..s, flow: if (checked == "true") Live else Paused }
+	switched : Str -> List(Engine.Write(_))
+	switched = |checked| [Explorer.h.flow.put(if (checked == "true") Live else Paused)]
 
 	## A message of the live feed. A batch is checked at the door: an order
 	## with a region the shop does not ship to, or a value outside what an
-	## order can be, refuses the whole batch, and the note says which.
-	received : S, Try(Feed.Batch, Port.Error) -> S
-	received = |s, message| match message {
-		Ok(batch) =>
-			match batch.sales.map_try(sale_order) {
-				Ok(orders) => { ..s, live: Orders.tally(s.live, orders), live_orders: s.live_orders + orders.len(), dropped: batch.dropped }
-				Err(UnknownRegion(region)) => { ..s, note: "A batch of live orders was refused: no region is called \"${region}\"." }
-				Err(ValueOutOfRange(cents)) => { ..s, note: "A batch of live orders was refused: an order worth ${cents.to_str()} cents is outside $0.01 to $399.99." }
-			}
-		Err(Closed) => { ..s, flow: Paused, note: "The live feed closed." }
-		Err(Threw(why)) => { ..s, flow: Paused, note: "The live feed failed: ${why}" }
-		Err(Undecodable(why)) => { ..s, note: "A batch of live orders was not understood: ${why}" }
-		Err(TooLarge) => { ..s, note: "A batch of live orders was too large to take." }
-		Err(Refused) | Err(Timeout) => { ..s, note: "The live feed could not start: too many requests at once." }
+	## order can be, refuses the whole batch, and the note says which. A
+	## good batch is folded into the tally where it is held.
+	received : Try(Feed.Batch, Port.Error) -> List(Engine.Write(_))
+	received = |message| {
+		noted = |text| [Explorer.h.note.put(text)]
+		match message {
+			Ok(batch) =>
+				match batch.sales.map_try(sale_order) {
+					Ok(orders) => [Explorer.h.live.change(|live| { tally: Orders.tally(live.tally, orders), orders: live.orders + orders.len(), dropped: batch.dropped })]
+					Err(UnknownRegion(region)) => noted("A batch of live orders was refused: no region is called \"${region}\".")
+					Err(ValueOutOfRange(cents)) => noted("A batch of live orders was refused: an order worth ${cents.to_str()} cents is outside $0.01 to $399.99.")
+				}
+			Err(Closed) => [Explorer.h.flow.put(Paused)].concat(noted("The live feed closed."))
+			Err(Threw(why)) => [Explorer.h.flow.put(Paused)].concat(noted("The live feed failed: ${why}"))
+			Err(Undecodable(why)) => noted("A batch of live orders was not understood: ${why}")
+			Err(TooLarge) => noted("A batch of live orders was too large to take.")
+			Err(Refused) | Err(Timeout) => noted("The live feed could not start: too many requests at once.")
+		}
 	}
+
+	## What the shards' answers are added to and judged against: the
+	## database's size, the live orders and the question asked.
+	Answering : { size : U64, live : LiveOrders, asked : Orders.Filter }
+
+	## What a board is drawn from, for a database of `size` orders.
+	answering : U64 -> Val(ctx, Answering)
+		where [ctx.store : () -> Engine.Reach(ctx, _)]
+	answering = |size| Explorer.h.live.val().map2(Explorer.h.asked.val(), |live, asked| { size, live, asked })
 
 	## What the page shows: the shards' last complete answer added to the
 	## live orders, the question it shows, and how far the current question
@@ -240,16 +263,16 @@ Explorer := [].{
 		shards : List(Str),
 	}
 
-	## The board for a state and the shards' answers, for the question
-	## asked of them (which a slider being dragged may be ahead of). While a question is
+	## The board for the shards' answers to the question asked of them
+	## (which a slider being dragged may be ahead of). While a question is
 	## being answered the charts keep the last complete answer: a sum of
 	## some shards' answers would be a wrong total, not a partial one. A
 	## failed question has no answer to keep (the gather keeps none past a
 	## failure), so the history is empty until the next question is
 	## answered, and the status says so. The live orders always follow the
 	## current question.
-	board : S, Engine.Gathered(Orders.Summary, Worker.Error(Problem)) -> Board
-	board = |s, gathered| {
+	board : Answering, Engine.Gathered(Orders.Summary, Worker.Error(Problem)) -> Board
+	board = |{ size, live, asked }, gathered| {
 		history = gathered.all.answered() ?? []
 		unanswered = " Only today's live orders are shown; change the question to ask again."
 		answered = gathered.jobs.count_if(
@@ -260,7 +283,7 @@ Explorer := [].{
 		)
 		status = match Worker.status(gathered.all) {
 			Unasked => ""
-			Working if history.is_empty() => "Generating ${with_commas(s.size)} orders in ${Explorer.shards.to_str()} workers… ${answered.to_str()} of ${Explorer.shards.to_str()} shards ready."
+			Working if history.is_empty() => "Generating ${with_commas(size)} orders in ${Explorer.shards.to_str()} workers… ${answered.to_str()} of ${Explorer.shards.to_str()} shards ready."
 			Working => "Asking ${Explorer.shards.to_str()} shards… ${answered.to_str()} answered; the charts show the last complete answer."
 			Answered(_) => "${Explorer.shards.to_str()} of ${Explorer.shards.to_str()} shards answered."
 			Failed(TooManyOrders) => "A shard was asked to hold more orders than a worker keeps.${unanswered}"
@@ -269,8 +292,8 @@ Explorer := [].{
 			Lost(fault) => "A shard's worker stopped (${Str.inspect(fault)}).${unanswered}"
 		}
 		{
-			summary: Orders.merge(history.append(Orders.summarise_tally(s.live, s.asked))),
-			filter: s.asked,
+			summary: Orders.merge(history.append(Orders.summarise_tally(live.tally, asked))),
+			filter: asked,
 			status,
 			shards: gathered.jobs.map(shard_text),
 		}
@@ -293,18 +316,18 @@ Explorer := [].{
 	}
 
 	## The value range as the user reads it.
-	range_text : S -> Str
-	range_text = |s| "From $${(s.lowest * Orders.bin_cents // 100).to_str()} to $${((s.highest + 1) * Orders.bin_cents // 100).to_str()}"
+	range_text : Orders.Filter -> Str
+	range_text = |shown| "From $${(shown.lowest * Orders.bin_cents // 100).to_str()} to $${((shown.highest + 1) * Orders.bin_cents // 100).to_str()}"
 
 	## The live feed's line.
-	live_text : S -> Str
-	live_text = |s| {
-		state = match s.flow {
-			Live => "Live: ${with_commas(s.rate.to_u64())} orders a second"
+	live_text : { flow : Flow, rate : U32, live : LiveOrders } -> Str
+	live_text = |{ flow, rate, live }| {
+		state = match flow {
+			Live => "Live: ${with_commas(rate.to_u64())} orders a second"
 			Paused => "Paused"
 		}
-		dropped = if (s.dropped == 0) "" else ", ${with_commas(s.dropped.to_u64())} dropped by the feed"
-		"${state}. ${with_commas(s.live_orders)} live orders folded in today${dropped}."
+		dropped = if (live.dropped == 0) "" else ", ${with_commas(live.dropped.to_u64())} dropped by the feed"
+		"${state}. ${with_commas(live.orders)} live orders folded in today${dropped}."
 	}
 }
 
@@ -361,53 +384,62 @@ with_commas = |n| {
 pad2 : U64 -> Str
 pad2 = |n| if (n < 10) "0${n.to_str()}" else n.to_str()
 
+## The question a store shows beside the one it has asked of the shards.
+question_in : Engine.Store(_, _) -> { shown : Orders.Filter, asked : Orders.Filter }
+question_in = |store| { shown: store.read(Explorer.h.shown), asked: store.read(Explorer.h.asked) }
+
 ## Two million orders split into four shards that cover them exactly, each
 ## asked the same question; a slider's question waits to be asked, and a
 ## click asks everything the controls show.
 expect {
-	asked = Explorer.questions(Explorer.initial)
-	odd = Explorer.questions({ ..Explorer.initial, size: 10 })
+	asked = Explorer.questions(Explorer.default_size, Orders.everything)
+	odd = Explorer.questions(10, Orders.everything)
+	slid = Explorer.store.after(Explorer.slid(Lowest, "3"))
+	sampled = slid.after(Explorer.sampled(slid.read(Explorer.h.shown)))
+	clicked = slid.after(Explorer.ticked(slid.read(Explorer.h.shown), Toys, "false"))
 	actual =
 		\\shards: ${asked.len().to_str()}
 		\\rows: ${Str.inspect(asked.map(|q| q.input.rows))}
 		\\numbers: ${Str.inspect(asked.map(|q| q.input.shard))}
 		\\odd: ${Str.inspect(odd.map(|q| q.input.rows))}
 		\\same question: ${Str.inspect(asked.all(|q| q.query == Orders.everything))}
-		\\slid: ${Str.inspect(Explorer.sampling(Explorer.lowest_set(Explorer.initial, "3")))}
-		\\asked: ${Str.inspect(Explorer.questions(Explorer.asking(Explorer.lowest_set(Explorer.initial, "3"))).map(|q| q.query.lowest))}
-		\\clicked: ${Str.inspect(Explorer.sampling(Explorer.toggled(Explorer.lowest_set(Explorer.initial, "3"), Toys, "false")))}
+		\\slid: ${Str.inspect(Explorer.sampling(question_in(slid)))}, asked from ${slid.read(Explorer.h.asked).lowest.to_str()}
+		\\sampled: ${Str.inspect(Explorer.sampling(question_in(sampled)))}, asked from ${sampled.read(Explorer.h.asked).lowest.to_str()}
+		\\clicked: ${Str.inspect(Explorer.sampling(question_in(clicked)))}, asked from ${clicked.read(Explorer.h.asked).lowest.to_str()}
 	expected =
 		\\shards: 4
 		\\rows: [500000, 500000, 500000, 500000]
 		\\numbers: [0, 1, 2, 3]
 		\\odd: [2, 2, 2, 4]
 		\\same question: True
-		\\slid: Waiting
-		\\asked: [3, 3, 3, 3]
-		\\clicked: Asked
+		\\slid: Waiting, asked from 0
+		\\sampled: Asked, asked from 3
+		\\clicked: Asked, asked from 3
 	actual == expected
 }
 
 ## The controls: categories keep their order, a range end pushes the other,
-## and the address's size is read at the door.
+## and the address's size and the feed's switch are read at the door.
 expect {
-	s = Explorer.initial
-	no_toys = Explorer.toggled(s, Toys, "false")
-	back = Explorer.toggled(Explorer.toggled(no_toys, Books, "false"), Toys, "true")
-	pushed = Explorer.lowest_set({ ..s, highest: 5 }, "9")
-	pulled = Explorer.highest_set({ ..s, lowest: 7 }, "3")
+	shown_after = |store, writes| store.after(writes).read(Explorer.h.shown)
+	no_toys = Explorer.store.after(Explorer.ticked(Orders.everything, Toys, "false"))
+	no_books = no_toys.after(Explorer.ticked(no_toys.read(Explorer.h.shown), Books, "false"))
+	back = shown_after(no_books, Explorer.ticked(no_books.read(Explorer.h.shown), Toys, "true"))
+	pushed = shown_after(Explorer.store.with_initial(Explorer.h.shown, { ..Orders.everything, highest: 5 }), Explorer.slid(Lowest, "9"))
+	pulled = shown_after(Explorer.store.with_initial(Explorer.h.shown, { ..Orders.everything, lowest: 7 }), Explorer.slid(Highest, "3"))
 	actual =
-		\\no toys: ${Str.inspect(no_toys.categories.len())}
+		\\no toys: ${Str.inspect(no_toys.read(Explorer.h.shown).categories.len())}
 		\\back: ${Str.inspect(back.categories)}
 		\\pushed: ${pushed.lowest.to_str()} ${pushed.highest.to_str()}
 		\\pulled: ${pulled.lowest.to_str()} ${pulled.highest.to_str()}
-		\\past the end: ${Str.inspect(Explorer.lowest_set(s, "40").lowest)}
-		\\no size: ${Str.inspect(Explorer.starting("/examples/x/#/").size)}
-		\\a size: ${Str.inspect(Explorer.starting("/x/?a=1&orders=200000#y").size)}
+		\\past the end: ${Str.inspect(shown_after(Explorer.store, Explorer.slid(Lowest, "40")).lowest)}
+		\\no size: ${Str.inspect(Explorer.setup_of("/examples/x/#/").size)}
+		\\a size: ${Str.inspect(Explorer.setup_of("/x/?a=1&orders=200000#y").size)}
 		\\not a size: ${Str.inspect(Explorer.size_of_url("/?orders=9000000"))} ${Str.inspect(Explorer.size_of_url("/?orders=lots"))}
-		\\note: ${Explorer.starting("/?orders=12").note}
-		\\paused: ${Str.inspect(Explorer.starting("/?orders=4000&feed=paused#/").flow)} ${Str.inspect(Explorer.starting("/?feed=on").flow)}
-		\\range: ${Explorer.range_text({ ..s, lowest: 2, highest: 4 })}
+		\\note: ${Explorer.setup_of("/?orders=12").note}
+		\\paused: ${Str.inspect(Explorer.setup_of("/?orders=4000&feed=paused#/").flow)} ${Str.inspect(Explorer.setup_of("/?feed=on").flow)}
+		\\started: ${Str.inspect(Explorer.start(Explorer.setup_of("/?feed=paused")).read(Explorer.h.flow))}
+		\\range: ${Explorer.range_text({ ..Orders.everything, lowest: 2, highest: 4 })}
 	expected =
 		\\no toys: 7
 		\\back: [Electronics, Fashion, Garden, Grocery, Home, Sports, Toys]
@@ -419,24 +451,27 @@ expect {
 		\\not a size: NotASize("9000000") NotASize("lots")
 		\\note: "12" is not a number of orders this page can generate (from 1,000 to 8,000,000): showing 2,000,000.
 		\\paused: Paused Live
+		\\started: Paused
 		\\range: From $20 to $50
 	actual == expected
 }
 
 ## Live orders are checked at the door: a good batch is folded in, a batch
-## with an unknown region or an impossible value is refused whole.
+## with an unknown region or an impossible value is refused whole, and a
+## feed that closes pauses the switch.
 expect {
-	s = Explorer.initial
-	good = Explorer.received(s, Ok({ sales: [{ category: Toys, region: "Canada", cents: 1999 }, { category: Books, region: "Nordics", cents: 500 }], dropped: 0 }))
-	region = Explorer.received(good, Ok({ sales: [{ category: Toys, region: "Mars", cents: 100 }], dropped: 0 }))
-	value = Explorer.received(good, Ok({ sales: [{ category: Toys, region: "Canada", cents: 40000 }], dropped: 3 }))
-	closed = Explorer.received(good, Err(Closed))
+	good = Explorer.store.after(Explorer.received(Ok({ sales: [{ category: Toys, region: "Canada", cents: 1999 }, { category: Books, region: "Nordics", cents: 500 }], dropped: 0 })))
+	region = good.after(Explorer.received(Ok({ sales: [{ category: Toys, region: "Mars", cents: 100 }], dropped: 0 })))
+	value = good.after(Explorer.received(Ok({ sales: [{ category: Toys, region: "Canada", cents: 40000 }], dropped: 3 })))
+	closed = good.after(Explorer.received(Err(Closed)))
+	behind = good.after(Explorer.received(Ok({ sales: [], dropped: 12 })))
+	orders_in = |store| store.read(Explorer.h.live).orders.to_str()
 	actual =
-		\\good: ${good.live_orders.to_str()} ${Explorer.headline(Orders.summarise_tally(good.live, Orders.everything)).revenue}
-		\\region: ${region.live_orders.to_str()} ${region.note}
-		\\value: ${value.live_orders.to_str()} ${value.note}
-		\\closed: ${Str.inspect(closed.flow)} ${closed.note}
-		\\line: ${Explorer.live_text({ ..good, dropped: 12 })}
+		\\good: ${orders_in(good)} ${Explorer.headline(Orders.summarise_tally(good.read(Explorer.h.live).tally, Orders.everything)).revenue}
+		\\region: ${orders_in(region)} ${region.read(Explorer.h.note)}
+		\\value: ${orders_in(value)} ${value.read(Explorer.h.note)}
+		\\closed: ${Str.inspect(closed.read(Explorer.h.flow))} ${closed.read(Explorer.h.note)}
+		\\line: ${Explorer.live_text({ flow: behind.read(Explorer.h.flow), rate: behind.read(Explorer.h.rate), live: behind.read(Explorer.h.live) })}
 	expected =
 		\\good: 2 $25
 		\\region: 2 A batch of live orders was refused: no region is called "Mars".

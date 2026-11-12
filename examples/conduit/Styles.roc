@@ -1,6 +1,5 @@
-## Shared presentation tokens for the Conduit showcase. Keeping these classes in
-## app code makes the same polished tree run under both the browser host and the
-## native spec runner without a Conduit-specific renderer.
+## Conduit's class lists, named for what they style, so its views share one
+## look and say `Styles.primary_button` rather than repeat the classes.
 Styles := {}.{
 	shell : Str
 	shell = "conduit-app flex min-h-screen flex-col text-zinc-900"

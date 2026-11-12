@@ -95,103 +95,35 @@ Api := {}.{
 	decode_feed = |body| {
 		parse : Str -> Try(Api.FeedPage, [InvalidJson(Str)])
 		parse = Json.parser_camel()
-		to_remote(parse(shield_escapes(body)).map_ok(|page| { ..page, articles: page.articles.map(restore_summary) }))
+		to_remote(parse(body))
 	}
 
 	decode_article : Str -> Api.Remote(Api.Article)
 	decode_article = |body| {
 		parse : Str -> Try({ article : Api.Article }, [InvalidJson(Str)])
 		parse = Json.parser_camel()
-		to_remote(parse(shield_escapes(body)).map_ok(|envelope| restore_article(envelope.article)))
+		to_remote(parse(body).map_ok(|envelope| envelope.article))
 	}
 
 	decode_profile : Str -> Api.Remote(Api.Profile)
 	decode_profile = |body| {
 		parse : Str -> Try({ profile : Api.Profile }, [InvalidJson(Str)])
 		parse = Json.parser_camel()
-		to_remote(parse(shield_escapes(body)).map_ok(|envelope| { ..envelope.profile, bio: restore_text(envelope.profile.bio) }))
+		to_remote(parse(body).map_ok(|envelope| envelope.profile))
 	}
 
 	decode_comments : Str -> Api.Remote(List(Api.Comment))
 	decode_comments = |body| {
 		parse : Str -> Try({ comments : List(Api.Comment) }, [InvalidJson(Str)])
 		parse = Json.parser_camel()
-		to_remote(parse(shield_escapes(body)).map_ok(|envelope| envelope.comments.map(restore_comment)))
+		to_remote(parse(body).map_ok(|envelope| envelope.comments))
 	}
 
 	decode_tags : Str -> Api.Remote(List(Str))
 	decode_tags = |body| {
 		parse : Str -> Try({ tags : List(Str) }, [InvalidJson(Str)])
 		parse = Json.parser_camel()
-		to_remote(parse(shield_escapes(body)).map_ok(|envelope| envelope.tags))
-	}
-
-	# TODO remove once https://github.com/roc-lang/roc/pull/10045 is merged
-	#
-	# The builtin Json parser rejects any backslash escape inside a JSON
-	# string (Builtin.Json.split_json_string_tail treats a backslash before
-	# the closing quote as invalid JSON), and RealWorld payloads legally
-	# carry \n, \", \\, and \t escapes in article bodies and bios. Shield
-	# those escapes with private-use placeholder characters before parsing
-	# and restore the real characters on every decoded string field.
-	# Unicode \uXXXX escapes remain unsupported. Remove this once upstream
-	# escape support lands (finding recorded in
-	# https://github.com/roc-lang/roc/pull/10045).
-
-	replace : Str, Str, Str -> Str
-	replace = |text, from, to| Str.join_with(text.split_on(from), to)
-
-	shield_escapes : Str -> Str
-	shield_escapes = |raw| {
-		backslashes = replace(raw, "\\\\", "\u(E000)")
-		quotes = replace(backslashes, "\\\"", "\u(E001)")
-		newlines = replace(quotes, "\\n", "\u(E002)")
-		tabs = replace(newlines, "\\t", "\u(E003)")
-		returns = replace(tabs, "\\r", "")
-		replace(returns, "\\/", "/")
-	}
-
-	restore_text : Str -> Str
-	restore_text = |text| {
-		backslashes = replace(text, "\u(E000)", "\\")
-		quotes = replace(backslashes, "\u(E001)", "\"")
-		newlines = replace(quotes, "\u(E002)", "\n")
-		replace(newlines, "\u(E003)", "\t")
-	}
-
-	restore_author : Api.Author -> Api.Author
-	restore_author = |author| {
-		{ ..author, bio: restore_text(author.bio) }
-	}
-
-	restore_summary : Api.ArticleSummary -> Api.ArticleSummary
-	restore_summary = |summary| {
-		{
-			..summary,
-			title: restore_text(summary.title),
-			description: restore_text(summary.description),
-			author: restore_author(summary.author),
-		}
-	}
-
-	restore_article : Api.Article -> Api.Article
-	restore_article = |article| {
-		{
-			..article,
-			title: restore_text(article.title),
-			description: restore_text(article.description),
-			body: restore_text(article.body),
-			author: restore_author(article.author),
-		}
-	}
-
-	restore_comment : Api.Comment -> Api.Comment
-	restore_comment = |comment| {
-		{
-			..comment,
-			body: restore_text(comment.body),
-			author: restore_author(comment.author),
-		}
+		to_remote(parse(body).map_ok(|envelope| envelope.tags))
 	}
 
 	## Every fetch surface renders `Remote` the same three ways, so the
@@ -232,7 +164,8 @@ Api := {}.{
 
 	AuthResult : [AuthIdle, AuthAccepted(Api.User), AuthRejected(List(Str)), AuthErrored(Str)]
 
-	# Page classifiers consume status and strict text, not package-owned responses.
+	# What a page's classifier reads of a response: its status and body, or
+	# the error in their place.
 	ResponseState : { status : U16, body : Str, error : Str, ready : Bool }
 
 	## The status and text of an effect result, as page classifiers consume
@@ -282,7 +215,7 @@ Api := {}.{
 	delete_request : Str, Str -> Engine.Req
 	delete_request = |uri, token| Http({ method: "DELETE", url: uri, headers: auth_headers(token), body: "", timeout_ms: Api.timeout_ms })
 
-	## A GET whose body decodes into a page resource (the original `Load`).
+	## A GET whose body decodes into a page resource.
 	decode_get : Api.ResponseState, (Str -> Api.Remote(a)) -> Api.Remote(a)
 	decode_get = |response, decode| {
 		if !response.error.is_empty() {
@@ -325,7 +258,7 @@ Api := {}.{
 		} else if response.status == 200 {
 			parse : Str -> Try({ user : Api.User }, [InvalidJson(Str)])
 			parse = Json.parser_camel()
-			match parse(shield_escapes(response.body)) {
+			match parse(response.body) {
 				Ok(envelope) => AuthAccepted(envelope.user)
 				Err(_) => AuthErrored("The server response could not be read.")
 			}
@@ -347,9 +280,33 @@ Api := {}.{
 			?? ["The request was rejected."]
 	}
 
+	# The scan finds each string by its quotes, so the escapes a JSON
+	# string may carry are swapped for private-use placeholder characters
+	# before it and put back in each entry (`restore_text`). A `\uXXXX`
+	# escape is left as it is written.
+	shield_escapes : Str -> Str
+	shield_escapes = |raw| {
+		backslashes = replace(raw, "\\\\", "\u(E000)")
+		quotes = replace(backslashes, "\\\"", "\u(E001)")
+		newlines = replace(quotes, "\\n", "\u(E002)")
+		tabs = replace(newlines, "\\t", "\u(E003)")
+		returns = replace(tabs, "\\r", "")
+		replace(returns, "\\/", "/")
+	}
+
+	restore_text : Str -> Str
+	restore_text = |text| {
+		backslashes = replace(text, "\u(E000)", "\\")
+		quotes = replace(backslashes, "\u(E001)", "\"")
+		newlines = replace(quotes, "\u(E002)", "\n")
+		replace(newlines, "\u(E003)", "\t")
+	}
+
+	replace : Str, Str, Str -> Str
+	replace = |text, from, to| Str.join_with(text.split_on(from), to)
+
 	## Each step of the scan may run out of input; `?` short-circuits to the
-	## entries collected so far, which is exactly the old nested-match
-	## behaviour without the staircase.
+	## entries collected so far.
 	collect_errors : Str, List(Str) -> List(Str)
 	collect_errors = |rest, acc| collect_one_error(rest, acc) ?? acc
 
@@ -370,6 +327,12 @@ Api := {}.{
 
 ## A 422 envelope becomes one "field message" sentence per field, in envelope order.
 expect Api.parse_errors("{\"errors\":{\"email\":[\"can't be blank\"],\"password\":[\"is too short\"]}}") == ["email can't be blank", "password is too short"]
+
+## An escaped quote inside a message does not end it.
+expect Api.parse_errors("{\"errors\":{\"title\":[\"must not be \\\"draft\\\"\"]}}") == ["title must not be \"draft\""]
+
+## A decoded string holds the characters its JSON escapes stand for.
+expect Api.decode_tags("{\"tags\":[\"two\\nlines\",\"a \\\"quoted\\\" word\"]}") == Ready(["two\nlines", "a \"quoted\" word"])
 
 ## A body with no "errors" key falls back to a single generic rejection sentence.
 expect Api.parse_errors("{\"message\":\"nope\"}") == ["The request was rejected."]

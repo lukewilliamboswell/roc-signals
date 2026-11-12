@@ -1,6 +1,6 @@
 (test "Form builder — reordering"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (fill (label "Answer f1") "Ada")
     (fill (label "Answer f2") "ada@example")
     (fill (label "Answer f2") "ada@example.com")
@@ -32,13 +32,18 @@
     (click (role button :name "Add email field"))
 
     ; reordering
-    ; Reordering is a list permutation, not a rebuild: rows keep their identity and
-    ; every answer travels with its field.
+    ; Reordering exchanges the places of two fields, not a rebuild: the
+    ; designer's view and the preview's each move one row and wake the two
+    ; rows written, rows keep their identity and every answer travels with
+    ; its field. A view compares no list of rows, so it counts none as
+    ; reused.
     (mark-metrics)
     (click (role button :name "Move up f2"))
     (expect-metric-delta rows_created 0)
     (expect-metric-delta rows_removed 0)
-    (expect-metric-delta rows_reused 14)
+    (expect-metric-delta rows_reused 0)
+    (expect-metric-delta rows_moved 2)
+    (expect-metric-delta rows_updated 4)
     (expect-metric-delta scopes_created 0)
     (expect-metric-delta scopes_disposed 0)
     (expect-value (label "Answer f2") "ada@example.com")

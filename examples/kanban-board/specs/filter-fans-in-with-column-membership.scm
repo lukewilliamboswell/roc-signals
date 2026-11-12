@@ -1,6 +1,6 @@
 (test "Kanban board — filter fans in with column membership"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (mark-metrics)
     (click (role button :name "Move right: Draft onboarding copy"))
     (mark-metrics)
@@ -14,8 +14,10 @@
     (fill (label "Filter cards") "Design")
     (expect-metric-delta rows_removed 4)
     (expect-metric-delta rows_created 0)
-    ; the Backlog list value is unchanged, so that keyed list never re-runs at all
+    ; Backlog's one card passes the filter, so its row stays as it is
     (expect-metric-delta rows_reused 0)
+    (expect-metric-delta rows_moved 0)
+    (expect-metric-delta rows_updated 0)
     (expect-visible (role region :name "Design login screen"))
     (expect-absent (role region :name "Ship search filters"))
     (expect-absent (role region :name "Draft onboarding copy"))
@@ -37,6 +39,8 @@
     (expect-metric-delta rows_created 4)
     (expect-metric-delta rows_removed 0)
     (expect-metric-delta rows_reused 0)
+    (expect-metric-delta rows_moved 0)
+    (expect-metric-delta rows_updated 0)
     (expect-visible (role region :name "Ship search filters"))
     (expect-text (test-id "board-matching") "5")
     ; card data lives in board state, so it survives the row being rebuilt

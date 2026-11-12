@@ -1,6 +1,6 @@
 (test "Spreadsheet lite — row reorder"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (focus (label "D2"))
     (fill (label "Formula") "=B2+C2+100")
     (fill (label "Formula") "=B2+C2")
@@ -95,9 +95,15 @@
     (expect-visible (role region :name "Row 12"))
     (expect-value (label "D2") "2500")
     (expect-value (label "C12") "7")
+    ; The grid is a view of the sheet's table: it keeps all twelve rows and
+    ; moves eleven of them to reverse their order. No row of the table is
+    ; written, so none is woken, and a view compares no list of rows, so it
+    ; counts none as reused.
     (expect-metric-delta rows_created 0)
     (expect-metric-delta rows_removed 0)
-    (expect-metric-delta rows_reused 12)
+    (expect-metric-delta rows_reused 0)
+    (expect-metric-delta rows_moved 11)
+    (expect-metric-delta rows_updated 0)
     (click (role button :name "Top to bottom"))
     (expect-value (label "D2") "2500")
     (expect-value (label "B10") "#CYCLE!")

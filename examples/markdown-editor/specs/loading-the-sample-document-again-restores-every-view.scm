@@ -1,6 +1,6 @@
-(test "Markdown editor — Back to the sample document: the whole graph restores."
+(test "Markdown editor — Loading the sample document again restores every view"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (mark-metrics)
     (uncheck (label "Number the outline"))
     (check (label "Number the outline"))
@@ -49,7 +49,8 @@
     (click (role button :name "Demote the last heading"))
     (click (role button :name "Demote the last heading"))
 
-    ; 11. Back to the sample document: the whole graph restores.
+    ; Loading the sample document again: the statistics, the table of
+    ; contents and the preview show what they showed when the page opened.
     ; ---------------------------------------------------------------------------
 
     (click (role button :name "Load sample document"))

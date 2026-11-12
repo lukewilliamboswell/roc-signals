@@ -1,6 +1,6 @@
 (test "Data grid — single row filter result"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (mark-metrics)
     (click (role button :name "Sort by score"))
     (mark-metrics)
@@ -30,7 +30,7 @@
     (fill (label "Filter") "Node-119")
     (uncheck (label "Select all matching rows"))
 
-    ; 7. single row filter result
+    ; A filter that matches one row.
     (fill (label "Filter") "Node-0007")
     (expect-text (test-id "summary-matching") "1")
     (expect-text (test-id "summary-total") "308")

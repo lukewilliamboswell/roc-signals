@@ -1,6 +1,6 @@
 (test "Form builder — the key cross level assertion"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (fill (label "Answer f1") "Ada")
     (fill (label "Answer f2") "ada@example")
     (fill (label "Answer f2") "ada@example.com")
@@ -8,7 +8,7 @@
 
     ; the key cross level assertion
     ; Tighten a rule in the DESIGNER and watch previously-valid PREVIEW input turn
-    ; invalid, with the submittable signal flipping in the same propagation.
+    ; invalid, with the form's submittable state flipping in the same turn.
     (fill (label "Minimum f1") "5")
     (expect-text (test-id "preview-f1-verdict") "Must be at least 5 characters")
     (expect-attr (label "Answer f1") aria-invalid "true")

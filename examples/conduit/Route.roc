@@ -17,7 +17,7 @@ Route := [
 	NotFound,
 ].{
 
-	## A browser location split as the original platform's `Browser.Location`.
+	## A browser location, split into its path, query and hash.
 	Location : { path : Str, query : Str, hash : Str }
 
 	## Parse a URL path (path ? query # hash) as the host reports it.
@@ -47,8 +47,8 @@ Route := [
 	Feed : { page : U64, tag : [AllTags, Tagged(Str)], source : [Global, Yours] }
 
 	## The page which a `Route` selects, with the slugs and feed parameters
-	## dropped. Signal branching (`Ui.when`) asks "am I on the article page?",
-	## not "which article?", so the branch predicates compare kinds.
+	## dropped. The app's `switch` over its pages asks "am I on the article
+	## page?", not "which article?", so it selects on kinds.
 	Kind : [
 		Home,
 		Login,
@@ -62,83 +62,9 @@ Route := [
 		NotFound,
 	]
 
-	## Structural equality. Signals compare their previous and next values on
-	## every invalidation, so this stays on the hot path: it must not build
-	## the location strings just to throw them away.
-	is_eq : Route, Route -> Bool
-	is_eq = |left, right|
-		match left {
-			Home(left_feed) => match right {
-				Home(right_feed) => feed_is_eq(left_feed, right_feed)
-				_ => False
-			}
-			Login => match right {
-				Login => True
-				_ => False
-			}
-			Register => match right {
-				Register => True
-				_ => False
-			}
-			Settings => match right {
-				Settings => True
-				_ => False
-			}
-			EditorNew => match right {
-				EditorNew => True
-				_ => False
-			}
-			EditorEdit(left_slug) => match right {
-				EditorEdit(right_slug) => left_slug == right_slug
-				_ => False
-			}
-			Article(left_slug) => match right {
-				Article(right_slug) => left_slug == right_slug
-				_ => False
-			}
-			Profile(left_name) => match right {
-				Profile(right_name) => left_name == right_name
-				_ => False
-			}
-			ProfileFavorites(left_name) => match right {
-				ProfileFavorites(right_name) => left_name == right_name
-				_ => False
-			}
-			NotFound => match right {
-				NotFound => True
-				_ => False
-			}
-		}
-
-	feed_is_eq : Route.Feed, Route.Feed -> Bool
-	feed_is_eq = |left, right|
-		left.page == right.page and tag_is_eq(left.tag, right.tag) and source_is_eq(left.source, right.source)
-
-	tag_is_eq : [AllTags, Tagged(Str)], [AllTags, Tagged(Str)] -> Bool
-	tag_is_eq = |left, right|
-		match left {
-			AllTags => match right {
-				AllTags => True
-				Tagged(_) => False
-			}
-			Tagged(left_tag) => match right {
-				AllTags => False
-				Tagged(right_tag) => left_tag == right_tag
-			}
-		}
-
-	source_is_eq : [Global, Yours], [Global, Yours] -> Bool
-	source_is_eq = |left, right|
-		match left {
-			Global => match right {
-				Global => True
-				Yours => False
-			}
-			Yours => match right {
-				Global => False
-				Yours => True
-			}
-		}
+	## Two routes are equal when they name the same page with the same
+	## parameters.
+	is_eq : _
 
 	default_feed : Route.Feed
 	default_feed = { page: 1, tag: AllTags, source: Global }

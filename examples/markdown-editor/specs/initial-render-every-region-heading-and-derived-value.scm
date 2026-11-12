@@ -1,6 +1,6 @@
 (test "Markdown editor — Initial render: every region, heading, and derived value."
   (steps
-    ; 1. Initial render: every region, heading, and derived value.
+    ; Initial render: every region, heading, and derived value.
     ; ---------------------------------------------------------------------------
 
     (expect-visible (role heading :name "Markdown Editor"))

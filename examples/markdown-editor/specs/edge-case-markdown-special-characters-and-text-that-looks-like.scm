@@ -1,6 +1,6 @@
 (test "Markdown editor — Edge case: markdown special characters and text that looks like markup."
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (mark-metrics)
     (uncheck (label "Number the outline"))
     (check (label "Number the outline"))
@@ -27,7 +27,7 @@
     (fill (label "Markdown source") "word")
     (fill (label "Markdown source") "# Only")
 
-    ; 9. Edge case: markdown special characters and text that looks like markup.
+    ; Edge case: markdown special characters and text that looks like markup.
     ; ---------------------------------------------------------------------------
 
     (fill (label "Markdown source") "## Costs & Trade-offs (2026)")
