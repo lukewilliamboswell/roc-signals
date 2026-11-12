@@ -126,14 +126,12 @@ DocSamples := [].{
 		Ok($problems)
 	}
 
-	## Publish the checked source files beside the site, preserving their
-	## paths and bytes so a reader can download a module or spec without a
-	## checkout. Only maintained source formats are published; builds under
-	## `dist/` and hidden tooling directories are excluded. App headers still
-	## name the checkout's platform: a release user keeps the platform
-	## declaration that `signals.roc init` generated.
-	copy! : { root : Str, dist : Str } => Try({}, _)
-	copy! = |{ root, dist }| {
+	## Publish maintained sample sources beside the site for download. The site
+	## supplies its Roc-only publication transform so display and downloads use
+	## the same package URL placeholder without adding parser dependencies here.
+	## Other file types are copied byte for byte; checked source is never edited.
+	copy! : { root : Str, dist : Str, publish_roc : Str -> Str } => Try({}, _)
+	copy! = |{ root, dist, publish_roc }| {
 		source = "${root}/${DocSamples.samples_dir}"
 		for file in SpecSuite.files_under!(source, "")? {
 			name = file.drop_prefix("${source}/")
@@ -141,7 +139,11 @@ DocSamples := [].{
 				target = "${dist}/samples/${name}"
 				parent = Str.join_with(target.split_on("/").drop_last(1), "/")
 				Path.create_all!(Path.utf8(parent))?
-				Path.copy!(Path.utf8(file), Path.utf8(target))?
+				if name.ends_with(".roc") {
+					Path.write_utf8!(Path.utf8(target), publish_roc(Path.read_utf8!(Path.utf8(file))?))?
+				} else {
+					Path.copy!(Path.utf8(file), Path.utf8(target))?
+				}
 			}
 		}
 		Ok({})

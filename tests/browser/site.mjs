@@ -24,6 +24,29 @@ const server = createServer(async (req, res) => {
 });
 await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
 origin = `http://127.0.0.1:${server.address().port}`;
+// The checked corpus currently uses one simple local platform declaration.
+// This independent oracle permits only that header URL to change; every other
+// byte of every raw download must match its checked source.
+const placeholder = "<package release URL here>";
+const publishedSample = (name, bytes) => name.endsWith(".roc")
+  ? Buffer.from(bytes.toString("utf8").replace(/^(app \[main\] \{ pf: platform )"(?:\.\.\/)+platform\/main\.roc"/, `$1"${placeholder}"`))
+  : bytes;
+let downloads = 0;
+async function checkDownloads(directory, prefix = "") {
+  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+    if (entry.name.startsWith(".") || entry.name === "dist") continue;
+    const name = prefix + entry.name;
+    if (entry.isDirectory()) await checkDownloads(path.join(directory, entry.name), `${name}/`);
+    else if ([".roc", ".scm", ".html", ".mjs"].some(suffix => name.endsWith(suffix))) {
+      const checked = await fs.readFile(path.join(directory, entry.name));
+      const output = await fs.readFile(path.join(root, "samples", name));
+      assert.deepEqual(output, publishedSample(name, checked), `${name} published download changes only its header package URL`);
+      if (name.endsWith(".roc")) assert(!output.includes(Buffer.from('platform "../../')), `${name} has no checkout platform URL`);
+      downloads++;
+    }
+  }
+}
+await checkDownloads("www/samples");
 const browser = await launch({ executablePath: process.env.CHROME ?? "google-chrome" });
 const page = await browser.newPage();
 const emulate = scheme => page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: scheme }] });
@@ -186,7 +209,7 @@ try {
       await page.goto(`${origin}/roc-signals/${name}`);
       await page.waitForFunction(() => document.querySelector("[data-theme-select]")?.closest("label").hidden === false);
       for (const sample of await page.evaluate(() => Array.from(document.querySelectorAll("pre[data-sample-file]"), pre => ({ file: pre.dataset.sampleFile, region: pre.dataset.sampleRegion, text: pre.querySelector("code").textContent, categories: Array.from(pre.querySelectorAll("span"), span => span.className) })))) {
-        let source = await fs.readFile(path.join("www/samples", sample.file), "utf8");
+        let source = await fs.readFile(path.join(root, "samples", sample.file), "utf8");
         if (sample.region) source = `${source}\n`.split(`# region ${sample.region}\n`)[1].split(`# endregion ${sample.region}\n`)[0];
         const lines = source.split("\n");
         const visible = lines.map((line, i) => /^# (?:end)?region /.test(line.trim()) ? "" : line + (i + 1 < lines.length ? "\n" : "")).join("");
@@ -323,8 +346,27 @@ try {
       await fs.writeFile(`.build/site-screenshots/${label}-${mode}-scm.png`, Buffer.from(data, "base64"));
     }
   }
+  // The real introductory entry point copies the visible release placeholder,
+  // and the raw download matches it apart from display-only region markers.
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 1365, height: 1000, deviceScaleFactor: 1, mobile: false });
+  await page.goto(`${origin}/roc-signals/docs/getting-started/`);
+  const mainSelector = 'pre[data-sample-file="counter/main.roc"]';
+  const displayedMain = await page.$eval(mainSelector, pre => pre.querySelector("code").textContent);
+  assert(displayedMain.includes(`platform "${placeholder}"`));
+  assert(!displayedMain.includes("../platform/main.roc"));
+  await page.click('.code-sample:has(pre[data-sample-file="counter/main.roc"]) .code-copy');
+  await page.waitForFunction(expected => window.copied === expected, {}, displayedMain);
+  assert.equal(await page.evaluate(() => window.copied), displayedMain);
+  const response = await fetch(`${origin}/roc-signals/samples/counter/main.roc`);
+  assert.equal(response.status, 200);
+  const downloadedMain = await response.text();
+  const rawLines = downloadedMain.split("\n");
+  assert.equal(rawLines.map((line, i) => /^# (?:end)?region /.test(line.trim()) ? "" : line + (i + 1 < rawLines.length ? "\n" : "")).join(""), displayedMain);
+  await page.$eval(mainSelector, pre => pre.scrollIntoView({ block: "center" }));
+  const { data: mainImage } = await page.send("Page.captureScreenshot", { format: "png" });
+  await fs.writeFile(".build/site-screenshots/desktop-package-placeholder.png", Buffer.from(mainImage, "base64"));
   assert(schemeSamples > 0 && schemeCopied.light && schemeCopied.dark);
-  console.log(`site browser: passed ${samples} sample renderings (${schemeSamples} highlighted Scheme), ${colors} text colors; minimum contrast ${minimum}:1; both themes, real settled hover, system changes, storage, keyboard, copy, escaping and mobile layout`);
+  console.log(`site browser: passed ${samples} sample renderings (${schemeSamples} highlighted Scheme), ${downloads} published source downloads, ${colors} text colors; minimum contrast ${minimum}:1; both themes, real settled hover, system changes, storage, keyboard, copy, escaping and mobile layout`);
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));

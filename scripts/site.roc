@@ -19,7 +19,8 @@ import src/SiteCode
 ## (`-- --base-url URL` to browse it somewhere other than its published
 ## address, such as `http://127.0.0.1:8000/roc-signals` for the `serve` task). Tailwind
 ## writes `www/static/signals.css` (ignored), and the pinned Roc parser
-## highlights sample files without rewriting their text. Zola checks the internal links
+## highlights samples, replacing relative header dependency URLs with a release-URL
+## placeholder while preserving their other text. Zola checks the internal links
 ## and builds `www/`,
 ## roc-docs generates the API docs into `dist/api/`, and every example's
 ## `main.roc` is built for wasm32 (`--opt=size`, as it ships) to
@@ -46,7 +47,7 @@ main! = |raw_args| {
 	Proc.run!({ program: "tailwindcss", args: ["-c", "www/tailwind.config.js", "-i", "www/input.css", "-o", "www/static/signals.css", "--minify"], cwd: o.root })?
 	Proc.run!({ program: "zola", args: ["--root", "www", "check", "--skip-external-links"], cwd: o.root })?
 	Proc.run!({ program: "zola", args: ["--root", "www", "build", "--output-dir", dist, "--force"].concat(base_url), cwd: o.root })?
-	DocSamples.copy!({ root: o.root, dist })?
+	DocSamples.copy!({ root: o.root, dist, publish_roc: SiteCode.published_source })?
 	api = ApiDocs.build!(o, "main")?
 	Proc.run!({ program: "cp", args: ["-R", api, "${dist}/api"], cwd: o.root })?
 	SpecSuite.build_web_platform!(o)?
