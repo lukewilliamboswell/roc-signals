@@ -12,11 +12,102 @@ lives ([Thinking in Signals](@/docs/thinking-in-signals.md#where-state-lives)):
 a table of to-dos and two cells in the app's store, and one piece of local
 state. Along the way it writes a decision and tests it, draws a view of the
 table, saves the list to local storage, and checks all of it with specs. The
-finished app is in `www/samples/todos/`; its entry points are the same as
-the counter's in [Getting Started](@/docs/getting-started.md).
+first checkpoint is a working app in a new directory, using the published
+0.4.0 platform. Then you will explore its files, try each behavior and connect
+it to the code. The later snippets are named parts of that complete app;
+they are not separate programs to paste into an empty file.
 
-Each step is explained in a sentence or two here. The topic guides that
-follow teach each idea in full.
+You need the tools from [Getting Started](@/docs/getting-started.md), but no
+repository checkout. The topic guides that follow teach each idea in full.
+
+## Create and run the app
+
+If the Getting Started server is still running, stop it with Ctrl+C or open
+another terminal. Start in a working directory where you want a new
+`my-todos` app. Download the
+release tool and let it create the page, platform declaration and spec directory:
+
+```sh
+curl -fLO https://github.com/lukewilliamboswell/roc-signals/releases/download/0.4.0/signals.roc
+roc signals.roc init my-todos
+cd my-todos
+```
+
+Add the complete {{ sample_download(file="todos/Todos.roc", label="Todos.roc module") }}
+and its four specs. These commands fetch the same checked files this page shows:
+
+```sh
+todo_samples={{ sample_url(file="todos") }}
+curl -fL "$todo_samples/Todos.roc" -o Todos.roc
+curl -fL "$todo_samples/specs/add-toggle-remove.scm" -o specs/add-toggle-remove.scm
+curl -fL "$todo_samples/specs/duplicate-titles.scm" -o specs/duplicate-titles.scm
+curl -fL "$todo_samples/specs/restore.scm" -o specs/restore.scm
+curl -fL "$todo_samples/specs/show-open-and-done.scm" -o specs/show-open-and-done.scm
+rm Counter.roc specs/counter.scm
+```
+
+The last command removes only the counter module and spec that `init` just
+wrote in this new app. Keep the generated `signals.roc` and `index.html`.
+
+Open `main.roc`. Keep its complete first `app [main]` declaration, including
+its generated release platform URL and the `pf` name. Replace the imports and
+`main` definition below that declaration with:
+
+{{ sample(file="todos/main.roc", region="entry") }}
+
+`main.roc` now imports the `Todos.roc` beside it and hands `Todos.program` to
+the platform. The source tree's downloadable `main.roc` uses a platform path
+for contributor checkouts; your generated declaration keeps this app on the
+published release.
+
+Your app's files are now:
+
+```text
+my-todos/
+  signals.roc
+  main.roc              edited imports and main; generated platform URL kept
+  index.html            generated browser page
+  Todos.roc             downloaded module
+  specs/
+    add-toggle-remove.scm
+    duplicate-titles.scm
+    restore.scm
+    show-open-and-done.scm
+```
+
+Run the module's pure tests, the app's four specs, and the development server:
+
+```sh
+roc test main.roc
+roc signals.roc test
+roc signals.roc serve --port 8080
+```
+
+Open the address the server prints, `http://127.0.0.1:8080/`. Add “Water the
+plants” and “Buy milk”, mark one done, try the three filters and reload. The
+list survives. This is the first runnable checkpoint: all four specs pass,
+and the browser shows the to-do form and list.
+
+As a first edit, change the page title in `index.html` from `Counter` to
+`To-do List`. Save it and watch the development server reload the page. Keep
+it running while you explore the module below; stop it with Ctrl+C when you
+need that terminal again.
+
+## Open the module
+
+`Todos.roc` starts with these imports. They use the same `pf` platform name
+that `main.roc` declares:
+
+{{ sample(file="todos/Todos.roc", region="imports") }}
+
+The definitions that follow belong inside one type module:
+
+{{ sample(file="todos/Todos.roc", region="module") }}
+
+Its closing brace is near the end of the file, before the top-level
+`expect`s. `Todos.TodoList` is the module's tag; it gives this store its own
+identity. Keep this module opening and the imports when editing the sections
+below.
 
 ## The store
 
@@ -63,7 +154,9 @@ reads a cell of the result:
 
 {{ sample(file="todos/Todos.roc", region="expects") }}
 
-Run them with `roc test` in the app's directory.
+Run them with `roc test main.roc` in `my-todos/`. In the browser, try a blank
+title and then add the same title twice. The second submission keeps the
+draft and adds no row, just as the decision says.
 
 ## The list: a view of the table
 
@@ -146,6 +239,12 @@ The format is a pair of pure functions, so one more `expect` pins it:
 
 ## Specs
 
+The four files already downloaded into `my-todos/specs/` are also available
+individually: {{ sample_download(file="todos/specs/add-toggle-remove.scm", label="add-toggle-remove.scm") }},
+{{ sample_download(file="todos/specs/duplicate-titles.scm", label="duplicate-titles.scm") }},
+{{ sample_download(file="todos/specs/restore.scm", label="restore.scm") }} and
+{{ sample_download(file="todos/specs/show-open-and-done.scm", label="show-open-and-done.scm") }}.
+
 The `expect`s test the logic. Specs test what a user sees and does. The
 first walks through the main path:
 
@@ -170,6 +269,28 @@ to-do off while only open ones are shown removes one row and builds none.
 
 `blueprint run check` builds this sample and runs these specs natively and in
 Chrome, so the code on this page is known to work.
+
+## Check and build your app
+
+After an edit, run both kinds of tests from `my-todos/`:
+
+```sh
+roc test main.roc
+roc signals.roc test
+roc signals.roc build
+```
+
+The first command checks the module's pure decisions and storage format; the
+second checks all four `.scm` files against the app. `build` writes a deployable
+`dist/` with the browser module, page and matching runtime. Serve that directory
+over HTTP to deploy it; [Getting Started](@/docs/getting-started.md#build-it-for-deployment)
+explains what to keep together. On the November 11 nightly, the tool announces
+a temporary `--opt=dev` compiler workaround; see the
+[0.4.0 compiler notes](https://github.com/lukewilliamboswell/roc-signals/releases/tag/0.4.0#compiler-and-dependency-limitations).
+
+You have a running app, its editable source and a test suite. As you make it
+your own, use the specs to state what should stay true about adding, checking,
+filtering and restoring a to-do.
 
 ## Where to go next
 

@@ -9,6 +9,7 @@ import cli.OsStr
 import cli.Path
 import src/ApiDocs
 import src/Checks
+import src/DocSamples
 import src/ExampleFiles
 import src/Proc
 import src/SpecSuite
@@ -26,7 +27,8 @@ import src/SiteCode
 ## script, `dist/worker.mjs`), which the
 ## site's `site.mjs` mounts it with. Every other file an example's page
 ## loads, as `www/data/examples.toml` names it (its scripts, port handlers,
-## simulated service and data), is copied beside its app.
+## simulated service and data), is copied beside its app. The checked documentation
+## sample sources are published under `dist/samples/` for readers to download.
 main! = |raw_args| {
 	args = raw_args.map(OsStr.display).drop_if(|a| a == "--")
 	base_url = match args {
@@ -44,6 +46,7 @@ main! = |raw_args| {
 	Proc.run!({ program: "tailwindcss", args: ["-c", "www/tailwind.config.js", "-i", "www/input.css", "-o", "www/static/signals.css", "--minify"], cwd: o.root })?
 	Proc.run!({ program: "zola", args: ["--root", "www", "check", "--skip-external-links"], cwd: o.root })?
 	Proc.run!({ program: "zola", args: ["--root", "www", "build", "--output-dir", dist, "--force"].concat(base_url), cwd: o.root })?
+	DocSamples.copy!({ root: o.root, dist })?
 	api = ApiDocs.build!(o, "main")?
 	Proc.run!({ program: "cp", args: ["-R", api, "${dist}/api"], cwd: o.root })?
 	SpecSuite.build_web_platform!(o)?

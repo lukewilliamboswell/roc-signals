@@ -76,7 +76,9 @@ Zola runs. `www/samples/` remains the source: generated escaped fragments in
 `www/highlighted/` are ignored. Scheme-style `.scm` samples use an independent
 display lexer for comments, strings, list heads, atoms and keyword arguments;
 it never parses or validates spec behavior. Other sample languages remain
-escaped plain text.
+escaped plain text. The same checked files are copied unchanged to
+`dist/samples/`; `sample_download` and `sample_url` resolve against the site
+base URL so readers can fetch them without a repository checkout.
 Chrome checks the rendered source and copying, system/light/dark preferences,
 keyboard controls, every syntax color in both palettes, and text contrast on the
 documentation and index pages. Theme preferences apply to site chrome; example

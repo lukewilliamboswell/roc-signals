@@ -7,7 +7,9 @@ import pf.Table
 ## The tutorial's to-do list: a table of to-dos and two cells in the app's
 ## store, one decision for adding, a view of the table, and a storage
 ## effect.
+# region module
 Todos := [TodoList].{
+	# endregion module
 	# region store
 	Todo : { title : Str, status : [Open, Done] }
 
