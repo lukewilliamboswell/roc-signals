@@ -436,21 +436,23 @@
   --site-accent-ink: #ffffff;
   --site-accent-tint: #f3edfe;
   --site-focus: #7c38f5;
-  /* The ink block: featured cards and code samples, dark in both palettes,
-     with the cyan that marks what is live on it. */
+  /* The ink block of a featured card, dark in both palettes, with the cyan
+     that marks what is live on it. */
   --site-block: #0f1115;
   --site-block-ink: #f4f5f7;
   --site-block-muted: #b7bcc6;
   --site-block-rule: #8d93a0;
   --site-live: #1bd6bd;
-  --site-comment: #a5b4c4;
-  --site-name: #9bbcff;
-  --site-type: #86d5eb;
-  --site-keyword: #d6adff;
-  --site-number: #ffc08a;
-  --site-string: #a6d69a;
-  --site-symbol: #c4ccd6;
-  --site-invalid: #ffacb7;
+  /* Code samples: the ground of a block, and the syntax colors on it. */
+  --site-code-bg: #f3f4f6;
+  --site-comment: #526573;
+  --site-name: #3454a4;
+  --site-type: #005a85;
+  --site-keyword: #7639a5;
+  --site-number: #9c3d10;
+  --site-string: #246333;
+  --site-symbol: #465369;
+  --site-invalid: #ac2634;
 }
 
 :root[data-theme="dark"] {
@@ -472,6 +474,15 @@
   --site-block: #171a21;
   --site-block-ink: #f1f3f6;
   --site-block-muted: #aeb5c0;
+  --site-code-bg: #171a21;
+  --site-comment: #a5b4c4;
+  --site-name: #9bbcff;
+  --site-type: #86d5eb;
+  --site-keyword: #d6adff;
+  --site-number: #ffc08a;
+  --site-string: #a6d69a;
+  --site-symbol: #c4ccd6;
+  --site-invalid: #ffacb7;
 }
 
 /* Without the script that sets `data-theme`, follow the system. */
@@ -495,6 +506,15 @@
     --site-block: #171a21;
     --site-block-ink: #f1f3f6;
     --site-block-muted: #aeb5c0;
+    --site-code-bg: #171a21;
+    --site-comment: #a5b4c4;
+    --site-name: #9bbcff;
+    --site-type: #86d5eb;
+    --site-keyword: #d6adff;
+    --site-number: #ffc08a;
+    --site-string: #a6d69a;
+    --site-symbol: #c4ccd6;
+    --site-invalid: #ffacb7;
   }
 }
 
@@ -1148,13 +1168,13 @@ a.site-row:hover .site-row-title {
   border-bottom: 0;
 }
 
-/* Code is set on the ink block in both palettes, so one set of syntax
-   colors serves both. */
+/* Code sits on a tinted ground inside a pale rule, as part of the page it
+   is on; each palette has its own syntax colors. */
 .prose-signals pre {
   @apply my-5 max-w-full overflow-x-auto p-4 text-[0.8125rem] leading-[1.6];
-  border: 1px solid var(--site-rule);
-  background: var(--site-block);
-  color: var(--site-block-ink);
+  border: 1px solid var(--site-rule-soft);
+  background: var(--site-code-bg);
+  color: var(--site-ink);
 }
 
 .prose-signals pre code {
@@ -1175,9 +1195,9 @@ a.site-row:hover .site-row-title {
    block's corner. The wrapper carries the rule and the ground. */
 .code-sample {
   @apply relative my-5;
-  border: 1px solid var(--site-rule);
-  background: var(--site-block);
-  color: var(--site-block-ink);
+  border: 1px solid var(--site-rule-soft);
+  background: var(--site-code-bg);
+  color: var(--site-ink);
 }
 
 /* Keep horizontally scrolled source outside the copy control's corner rail. */
@@ -1188,14 +1208,14 @@ a.site-row:hover .site-row-title {
 
 .code-copy {
   @apply absolute right-2 top-2 inline-flex h-8 w-8 cursor-pointer items-center justify-center p-0 opacity-0 transition-opacity;
-  border: 1px solid var(--site-block-rule);
-  background: var(--site-block);
-  color: var(--site-block-ink);
+  border: 1px solid var(--site-rule);
+  background: var(--site-panel);
+  color: var(--site-ink);
 }
 
 .code-copy:hover {
-  border-color: var(--site-live);
-  color: var(--site-live);
+  border-color: var(--site-accent);
+  color: var(--site-link);
 }
 
 .code-sample:hover .code-copy,
@@ -1207,11 +1227,6 @@ a.site-row:hover .site-row-title {
   .code-copy {
     opacity: 1;
   }
-}
-
-/* On the ink block the focus ring is the block's own accent. */
-.code-sample :focus-visible {
-  outline-color: var(--site-live);
 }
 
 .copy-status {

@@ -94,9 +94,9 @@ Plex Sans for text and IBM Plex Mono capitals for labels; and one accent, kept
 for what is live or actionable, so status colors mean only status. The first
 half of the file is the design system the examples compose their UI from,
 always drawn light. The second half is the `site-…` classes of the pages
-around an app, in a light and a dark palette; code samples sit on the same
-dark block in both. The fonts are files under `www/static/fonts/`, served
-with the site, with their license beside them.
+around an app, in a light and a dark palette, each with its own syntax
+colors. The fonts are files under `www/static/fonts/`, served with the site,
+with their license beside them.
 
 ## Tasks
 
