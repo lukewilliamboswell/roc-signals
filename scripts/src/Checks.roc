@@ -19,7 +19,9 @@ Checks := [].{
 			Ok(dir) => "${root}/${dir}"
 			Err(_) => "${root}/.build"
 		}
-		Ok({ root, build_dir, compiler: "roc", tooling: "roc-stable", zig: "zig", node: "node", chrome: "google-chrome", filter })
+		version = Str.from_utf8_lossy(Proc.capture!({ program: "roc", args: ["version"], cwd: root })?).trim()
+		nightly = version.split_on(" ").last() ?? version
+		Ok({ root, build_dir, compiler: "roc", nightly, tooling: "roc-stable", zig: "zig", node: "node", chrome: "google-chrome", filter })
 	}
 
 	prepare_platform! : SpecSuite.Options => Try({}, _)

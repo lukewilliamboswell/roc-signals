@@ -66,7 +66,17 @@ SpecSuite := [].{
 	empty_tally = { passed: 0, failed: 0, problems: [] }
 
 	## `root` and `build_dir` are absolute.
-	Options : { root : Str, build_dir : Str, compiler : Str, tooling : Str, zig : Str, node : Str, chrome : Str, filter : Str }
+	Options : { root : Str, build_dir : Str, compiler : Str, nightly : Str, tooling : Str, zig : Str, node : Str, chrome : Str, filter : Str }
+
+	## The optimizer regression is limited to this nightly. A newer compiler
+	## must retry the optimized builds, so a fixed compiler restores coverage
+	## without relying on a maintainer remembering to remove a skip. The CLI
+	## has the same temporary guard in cli/Compiler.roc: the two packages
+	## cannot import each other's private modules.
+	has_broken_optimizer : Str -> Bool
+	has_broken_optimizer = |nightly| nightly == "nightly-2026-11-11-7679cc5"
+
+	optimizer_issue = "https://github.com/roc-lang/roc/issues/12976"
 
 	# -------------------------------------------------------------- files
 
@@ -151,6 +161,10 @@ SpecSuite := [].{
 	## `size`; everything else tests behaviour and builds with `dev`.
 	build_with! : Options, List(Str), List(Str), Str => Try({}, _)
 	build_with! = |o, natives, webs, web_opt| {
+		opt = if (web_opt != "dev" and SpecSuite.has_broken_optimizer(o.nightly)) "dev" else web_opt
+		if opt != web_opt {
+			Proc.note!("SKIP --opt=${web_opt} browser builds (${SpecSuite.optimizer_issue}): ${o.nightly} crashes in spec_constr; build with --opt=dev and keep every app/spec. Restore optimized builds on the next nightly.")
+		}
 		var $jobs = []
 		for example in natives {
 			Path.create_all!(Path.utf8("${o.build_dir}/native/${example}"))?
@@ -160,7 +174,7 @@ SpecSuite := [].{
 			name = w.split_on("/").last() ?? w
 			dir = if (w.starts_with("tests/apps/")) w else SpecSuite.dir_of(w)
 			Path.create_all!(Path.utf8("${o.build_dir}/wasm/${name}"))?
-			$jobs = $jobs.append(SpecSuite.build_job(o, web_opt, "${dir}/main.roc", "wasm32", SpecSuite.wasm_of(o, name)))
+			$jobs = $jobs.append(SpecSuite.build_job(o, opt, "${dir}/main.roc", "wasm32", SpecSuite.wasm_of(o, name)))
 		}
 		results = Proc.parallel!($jobs, Proc.cpus!())?
 		failed = List.map2($jobs, results, |job, r| (job, r.code)).keep_if(|(_, code)| code != 0)
@@ -255,3 +269,7 @@ expect {
 	actual = [t.passed, t.failed, t.problems.len()]
 	actual == [1, 1, 1]
 }
+
+## A compatibility exemption expires with the exact affected compiler;
+## neither the previous nightly nor a later one loses optimized coverage.
+expect [SpecSuite.has_broken_optimizer("nightly-2026-11-10-f7d1f19"), SpecSuite.has_broken_optimizer("nightly-2026-11-11-7679cc5"), SpecSuite.has_broken_optimizer("nightly-2026-11-12-next")] == [False, True, False]

@@ -69,7 +69,7 @@ platform ""
 			inputs: ["host.wasm", app],
 			exports: ["protocol_version", "fault", "boot_keys", "init", "event", "event_files", "files_stage", "files_tokens", "files_released", "drop", "payload_reserve", "work", "prepare", "ask", "forget", "cmd_ptr", "cmd_len", "work_ptr", "work_len", "metric", "reset_metrics", "err_ptr", "err_len"],
 		},
-		x64musl: { inputs: ["crt1.o", "spec.o", app, "libc.a", "libzigc.a", "libcompiler_rt.a"] },
+		x64musl: { inputs: ["rcrt1.o", "spec.o", app, "libc.a", "libzigc.a", "libcompiler_rt.a"] },
 		arm64mac: { inputs: ["libhost.a", app] },
 		x64mac: { inputs: ["libhost.a", app] },
 		x64win: { inputs: ["host.lib", app, "kernel32.lib"] },

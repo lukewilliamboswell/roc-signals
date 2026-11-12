@@ -40,9 +40,8 @@ config = [
 	Name("roc-signals"),
 	Systems(["x86_64-linux", "aarch64-linux", "aarch64-darwin"]),
 	# The engine's environment: native and browser spec runs, the platform's
-	# fetched native inputs, and the scripts that drive them. curl, tar, zstd and
-	# sha256sum fetch and verify the native runner's libc inputs of the
-	# `platform` task, from the roc-fuzz release the fuzz targets depend on.
+	# native inputs, and the scripts that drive them. The pinned Zig builds
+	# matching PIC startup and runtime libraries for the native runner.
 	#
 	# Chrome is the machine's `google-chrome` for now. Chrome for Testing ships
 	# only zip archives, and blueprint lists and unpacks a `Zip` download with
@@ -64,7 +63,7 @@ config = [
 	Task("check-slow", [Use("engine"), Run(["scripts/check_slow.roc"])]),
 	# One or more apps' specs: `blueprint run spec -- --browser kanban-board`.
 	Task("spec", [Use("engine"), Run(["scripts/spec.roc", "--"])]),
-	# Fetch and build the platform's native inputs (the spec runner's host and
+	# Build the platform's native inputs (the spec runner's host and
 	# libc), for building an app's native spec runner by hand.
 	Task("platform", [Use("engine"), Run(["scripts/build_platform.roc"])]),
 	# Build the js-framework-benchmark app and check it in Chrome.

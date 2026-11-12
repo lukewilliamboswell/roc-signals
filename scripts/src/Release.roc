@@ -31,7 +31,7 @@ Release := [].{
 
 	## The platform files a bundle carries, relative to `platform/`.
 	bundle_files : List(Str)
-	bundle_files = ["main.roc", "Engine.roc", "Html.roc", "Worker.roc", "Wire.roc", "Port.roc", "PortJson.roc", "Core.roc", "Effects.roc", "Files.roc", "Hosted.roc", "Cli.roc", "SpecRunner.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "targets/wasm32/host.wasm"].concat(PlatformTest.spec_inputs).concat(SpecSuite.runtime_files)
+	bundle_files = ["main.roc", "Engine.roc", "Html.roc", "Worker.roc", "Wire.roc", "Port.roc", "PortJson.roc", "Core.roc", "Table.roc", "View.roc", "Seq.roc", "EngineOnly.roc", "Effects.roc", "Files.roc", "Hosted.roc", "Cli.roc", "SpecRunner.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "targets/wasm32/host.wasm"].concat(PlatformTest.spec_inputs).concat(SpecSuite.runtime_files)
 
 	archive_name : Str -> Str
 	archive_name = |version| "roc-signals-examples-${version}"
@@ -151,7 +151,12 @@ Release := [].{
 		Proc.run!({ program: "zip", args: ["-q", "-r", "-X", "${out}/${name}.zip", name], cwd: stage })?
 
 		tooling = Str.from_utf8_lossy(Proc.capture!({ program: o.tooling, args: ["version"], cwd: o.root })?).trim()
-		Path.write_utf8!(Path.utf8("${out}/release-notes.md"), Release.notes(version, bundle_url, { compiler, tooling }))?
+		limitations = if SpecSuite.has_broken_optimizer(o.nightly) {
+			"\n## Compiler limitations\n\nThis nightly crashes when optimizing the store apps ([roc-lang/roc#12976](https://github.com/roc-lang/roc/issues/12976)). The site examples use `--opt=dev`; every example's native and browser specs still run. `signals.roc build` automatically uses `--opt=dev` with an explicit warning; direct builds need `roc build --opt=dev --target=wasm32` on this nightly. Optimized walks, shipping browser soaks and worker scaling are explicitly skipped, so this release has no shipping performance or allocation validation on this compiler. Fuzzing is skipped because roc-fuzz 0.6.0's Linux inputs are not PIC ([roc-lang/roc#12949](https://github.com/roc-lang/roc/pull/12949)). On Windows this nightly also cannot compile the CLI tool ([roc-lang/roc#12977](https://github.com/roc-lang/roc/issues/12977)); only the CLI journey is skipped, while native specs remain enabled. Each skip expires on the next nightly, which retries the original check.\n"
+		} else {
+			""
+		}
+		Path.write_utf8!(Path.utf8("${out}/release-notes.md"), "${Release.notes(version, bundle_url, { compiler, tooling })}${limitations}")?
 		Proc.note!("release ${version}: ${out}")
 		Ok($problems)
 	}

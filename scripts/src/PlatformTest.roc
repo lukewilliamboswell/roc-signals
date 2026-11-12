@@ -1,64 +1,54 @@
 import cli.Path
 import Proc
 
-## The platform's link inputs, none of them committed:
-##
-## - for the browser module (`platform/main.roc`, `targets/wasm32/`):
-##   `host.wasm`, built from `platform/host/host.zig` with the pinned Zig;
-## - for the native spec runner on Linux (`platform/main.roc`,
-##   `targets/x64musl/`): `spec.o`, built from `platform/host/spec.zig` with
-##   the pinned Zig, and musl's `crt1.o` and `libc.a`, Zig's `libzigc.a` and
-##   `libcompiler_rt.a`, taken from the roc-fuzz 0.6.0 release bundle, the
-##   release the fuzz targets name as their platform;
-## - for the native spec runner on macOS and Windows (`targets/arm64mac/`,
-##   `targets/x64mac/`, `targets/x64win/`): the same host as a static
-##   library for each, cross-compiled with the pinned Zig, and for Windows
-##   `kernel32.lib`, made by `zig dlltool` from `platform/host/kernel32.def`
-##   (see `spec_hosts`).
-##
-## The bundle is checked against the SHA-256 recorded here; it is downloaded
-## once into the build directory, and every run checks its digest before
-## unpacking it.
+## The platform's uncommitted link inputs. The pinned Zig builds every
+## native input: a static PIE probe selects matching musl startup and libc
+## libraries for Linux, and the same spec host is compiled with PIC for
+## Linux, macOS and Windows. Nothing depends on a fetched platform's
+## non-relocatable native libraries.
 PlatformTest := [].{
-	bundle_url = "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.0/6uc3YKGydgEnS2nrCimSYWDNfT6drYcgU52VAwqrb6DS.tar.zst"
-	bundle_sha256 = "19720c3b47a6ca37394404c8ea379bddba4d1167984a9221243d9b11226a2039"
 
-	## The inputs `platform/main.roc` lists for x64musl, from the bundle.
+	## The Linux runner's startup and libraries, selected by Zig's own link.
 	native_inputs : List(Str)
-	native_inputs = ["crt1.o", "libc.a", "libzigc.a", "libcompiler_rt.a"]
+	native_inputs = ["rcrt1.o", "libc.a", "libzigc.a", "libcompiler_rt.a"]
 
-	## Fetch, verify and unpack the native runner's libc inputs from the
-	## roc-fuzz bundle, then build `host.wasm` and `spec.o`.
+	## Build all native link inputs with the pinned Zig and the browser host.
+	## The probe is never shipped: its verbose link lists the exact matching
+	## startup and runtime libraries the platform must carry. Missing inputs
+	## fail preparation rather than mixing toolchains or substituting crt1.
 	prepare! : { root : Str, build_dir : Str, zig : Str } => Try({}, _)
 	prepare! = |{ root, build_dir, zig }| {
-		downloads = "${build_dir}/downloads"
-		Path.create_all!(Path.utf8(downloads))?
-		bundle = "${downloads}/roc-fuzz-0.6.0.tar.zst"
-		if !(Path.exists!(Path.utf8(bundle))?) {
-			Proc.run!({ program: "curl", args: ["-fsSL", "--retry", "3", "-o", "${bundle}.part", PlatformTest.bundle_url], cwd: root })?
-			Path.rename!(Path.utf8("${bundle}.part"), Path.utf8(bundle))?
+		work = "${build_dir}/native-runtime"
+		Path.create_all!(Path.utf8(work))?
+		probe = "${work}/probe.c"
+		Path.write_utf8!(Path.utf8(probe), "int main(void) { return 0; }\n")?
+		{ code, stdout } = Proc.merged!({ program: zig, args: ["build-exe", probe, "-target", "x86_64-linux-musl", "-lc", "-O", "ReleaseFast", "-fstrip", "-fPIC", "-fPIE", "-static", "--verbose-link", "-femit-bin=${work}/probe"], cwd: root })?
+		if code != 0 {
+			return Err(NativeRuntimeBuildFailed(Str.from_utf8_lossy(stdout)))
 		}
-		sum = Str.from_utf8_lossy(Proc.capture!({ program: "sha256sum", args: [bundle], cwd: root })?)
-		if (sum.split_on(" ").first() ?? "") != PlatformTest.bundle_sha256 {
-			return Err(DigestMismatch("${bundle}: expected sha256 ${PlatformTest.bundle_sha256}, got ${sum}"))
-		}
-		unpacked = "${build_dir}/roc-fuzz-0.6.0"
-		if Path.exists!(Path.utf8(unpacked))? {
-			Path.delete_all!(Path.utf8(unpacked))?
-		}
-		Path.create_all!(Path.utf8(unpacked))?
-		Proc.run!({ program: "tar", args: ["--zstd", "-xf", bundle, "-C", unpacked, "targets/x64musl"], cwd: root })?
 		native_dir = "${root}/platform/targets/x64musl"
 		Path.create_all!(Path.utf8(native_dir))?
-		for name in PlatformTest.native_inputs {
-			Path.copy!(Path.utf8("${unpacked}/targets/x64musl/${name}"), Path.utf8("${native_dir}/${name}"))?
+		var $found = []
+		for token in Str.from_utf8_lossy(stdout).split_on(" ") {
+			path = token.trim()
+			match PlatformTest.native_inputs.find_first(|name| path.ends_with("/${name}")) {
+				Ok(name) if !$found.contains(name) => {
+					Path.copy!(Path.utf8(path), Path.utf8("${native_dir}/${name}"))?
+					$found = $found.append(name)
+				}
+				_ => {}
+			}
+		}
+		missing = PlatformTest.native_inputs.drop_if(|name| $found.contains(name))
+		if !missing.is_empty() {
+			return Err(MissingNativeRuntimeInputs(missing))
 		}
 		Path.create_all!(Path.utf8("${root}/platform/targets/wasm32"))?
 		Proc.run!({ program: zig, args: ["build-obj", "host/host.zig", "-target", "wasm32-freestanding", "-O", "ReleaseSmall", "-fstrip", "-femit-bin=targets/wasm32/host.wasm"], cwd: "${root}/platform" })?
 		Proc.run!({ program: zig, args: ["build-obj", "host/spec.zig", "-target", "x86_64-linux-musl", "-O", "ReleaseFast", "-fstrip", "-fPIC", "-femit-bin=targets/x64musl/spec.o"], cwd: "${root}/platform" })?
 		for host in PlatformTest.spec_hosts {
 			Path.create_all!(Path.utf8("${root}/platform/targets/${host.target}"))?
-			Proc.run!({ program: zig, args: ["build-lib", "-static", "host/spec.zig", "-target", host.zig_target, "-O", "ReleaseFast", "-fstrip", "-fcompiler-rt", "-femit-bin=targets/${host.target}/${host.file}"], cwd: "${root}/platform" })?
+			Proc.run!({ program: zig, args: ["build-lib", "-static", "host/spec.zig", "-target", host.zig_target, "-O", "ReleaseFast", "-fstrip", "-fPIC", "-fcompiler-rt", "-femit-bin=targets/${host.target}/${host.file}"], cwd: "${root}/platform" })?
 		}
 		Proc.run!({ program: zig, args: ["dlltool", "-m", "i386:x86-64", "-d", "host/kernel32.def", "-l", "targets/x64win/kernel32.lib"], cwd: "${root}/platform" })
 	}

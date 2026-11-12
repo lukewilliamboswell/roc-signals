@@ -46,8 +46,12 @@ main! = |raw_args| {
 		Proc.warn!("--time and --timeout take a positive number of seconds, got ${$time} and ${$timeout}")
 		return Err(Exit(2))
 	}
-	chosen = if ($names.is_empty()) Targets.fuzz_targets else Targets.fuzz_targets.keep_if(|t| $names.contains(t.name))
 	o = Checks.options!({ filter: "*" })?
+	selected = if ($names.is_empty()) Targets.fuzz_targets else Targets.fuzz_targets.keep_if(|t| $names.contains(t.name))
+	chosen = Targets.runnable_fuzz!(o, selected)
+	if chosen.is_empty() {
+		return Ok({})
+	}
 	Checks.prepare_platform!(o)?
 	Targets.build_fuzz_all!(o, chosen)?
 	var $failed = []

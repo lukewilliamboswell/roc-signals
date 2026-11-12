@@ -81,7 +81,7 @@ These are the development environment's Blueprint tasks, not an app's
 | `blueprint run check` | The pull-request gate (below) |
 | `blueprint run check-slow` | Every fuzz target's declared examples, a walk of every app of 10,000 steps (`RUNNER --walk`), the native soak of each app's round-trip spec (`RUNNER --soak 48`, flat live allocations and bytes), and a long Chrome session per app |
 | `blueprint run spec -- [--browser] [--filter GLOB] [APP...]` | Some apps' specs, natively and optionally in Chrome |
-| `blueprint run platform` | Fetch and build the platform's link inputs, to build an app's `main.roc` by hand (a fuzz target needs none: `roc build --fuzz` fetches its roc-fuzz release) |
+| `blueprint run platform` | Build the platform's link inputs with the pinned Zig, including matching PIC musl startup and libraries, to build an app's `main.roc` by hand (a fuzz target needs none: `roc build --fuzz` fetches its roc-fuzz release) |
 | `blueprint run jfb` | Build the js-framework-benchmark app and check its operations in Chrome |
 | `blueprint run workers-scaling` | Measure worker jobs in Chrome on both candidate shipping builds of the Worker Lab: correctness (its drawn picture included), the time to draw a picture by pool size, speedup by pool size, responsiveness, payloads, robustness sequences and memory, as tables for a pull request |
 | `blueprint run fuzz -- [--time S] [TARGET...]` | A fuzz campaign |
@@ -380,6 +380,26 @@ allocation baselines in the gates; allocation regressions show up as soak
 growth or scaling.
 
 ## Compilers
+
+For `nightly-2026-11-11-7679cc5` only, automation prints explicit `SKIP`
+messages for compiler-blocked work. [roc-lang/roc#12976](https://github.com/roc-lang/roc/issues/12976)
+crashes optimized builds of every maintained example, so the site and
+`signals.roc build` use `--opt=dev`, with a warning that the artifacts are
+larger and slower. Native and browser specs, short walks and native soaks
+still run. Optimized long walks, shipping browser soaks and full worker
+scaling do not run; development artifacts are not performance or shipping
+allocation evidence. The release notes disclose these limits.
+
+Fuzz examples and campaigns also report `SKIP` on that nightly: roc-fuzz
+0.6.0's Linux libraries predate the [PIE requirement](https://github.com/roc-lang/roc/pull/12949),
+and its engine targets also reach the optimizer crash. Restore them with
+PIC roc-fuzz inputs and the optimizer fix. The Windows CLI journey alone
+is skipped for [roc-lang/roc#12977](https://github.com/roc-lang/roc/issues/12977);
+Windows native specs and worker failure checks remain enabled. Every
+exemption matches that exact compiler version, so the next nightly
+automatically retries the original work. Remove these branches once the
+corresponding upstream fixes are available; do not extend a skip to an
+unverified compiler version.
 
 The repository follows roc-automation's three-compiler model:
 
