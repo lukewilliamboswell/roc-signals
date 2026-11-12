@@ -1023,7 +1023,7 @@ Core := [].{
 			}
 		}
 
-		## Use a state handle from the enclosing context inside a `state` or `derive`
+		## Use state from the enclosing context inside a `state` or `derive`
 		## body nested in it.
 		lift : State(ctx, s) -> State(In(ctx, t), s)
 		lift = |{ mask, writes, get, modify }| {
@@ -1036,7 +1036,7 @@ Core := [].{
 			},
 		}
 
-		## Use a state handle from the enclosing context inside an `each` row template
+		## Use state from the enclosing context inside an `each` row template
 		## nested in it.
 		lift_row : State(ctx, s) -> State(Row(ctx, item), s)
 		lift_row = |{ mask, writes, get, modify }| {
@@ -1214,7 +1214,7 @@ Core := [].{
 	## row of `table` in the window of a filtered, sorted view of it
 	## ([TableViewProps]). The site owns the view (the ordered keys of every row
 	## that passes the filter) and keeps it up to date from the table's
-	## record of changes: a turn that wrote rows costs those rows, a search
+	## changes: a turn that wrote rows costs those rows, a search
 	## and a move in the ordered keys each, whatever the size of the table.
 	## No list of rows is built, kept or compared. The window's changes are
 	## applied as row operations: a row that left is removed, one that
@@ -2170,7 +2170,7 @@ Core := [].{
 	## channel without a command (a follow-up queued, a request refused).
 	##
 	## A view site (`table_view`) keeps its storage from its table's
-	## record of changes instead of comparing values, so pruning alone would
+	## changes instead of comparing values, so pruning alone would
 	## not catch a view the turn left behind. In this pass each view site
 	## also builds its view from scratch and requires the one it holds to be
 	## equal to it (the ordered keys, the window, the rows drawn), at the

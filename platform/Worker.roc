@@ -8,7 +8,7 @@ import Wire
 ## output and the task's own error, made with `task` from a props record.
 ## The app lists each task's `registration` in `Program.with_workers`, and
 ## an effect site asks for a job with `request`; the answer comes back as an
-## ordinary result, read with `result`. `resource` wraps both in a layer that
+## ordinary result, read with `result`. `resource` wraps both in a resource that
 ## follows the answers for an input, for the common case of showing a value
 ## computed from other values.
 ##
@@ -27,7 +27,7 @@ import Wire
 ## `Wire.Sendable`: numbers, `Bool`, `Str`, lists, sets, dictionaries,
 ## records, tuples, tag unions, files (as handles, never their bytes), and
 ## nominal types that declare `parser_for : _` and `encoder_for : _`.
-## Functions, state handles and reactive values do not, and using one is a
+## Functions, states and signals do not, and using one is a
 ## compile error at the task's declaration. Send bulk bytes as `Wire.Bytes`,
 ## which crosses as one block. A task that cannot fail names its error
 ## [Never].
@@ -35,7 +35,7 @@ import Wire
 ## One execution of a task is a job, and a job runs in an instance that
 ## shares nothing with the page but the input it is sent, possibly one that
 ## ran other jobs before. A job is stopped when its site is disposed (unless
-## the task says `on_dispose: Keep`), when a `latest` or `resource` site moves
+## the task says `on_dispose: Keep`), when a `watch_latest` or `resource` site moves
 ## on to a newer input, or when its timeout expires: a job still waiting
 ## for a worker is dropped, and a running one is stopped by ending its
 ## instance, so the next job starts a new one (a task that says `on_cancel:
@@ -95,7 +95,7 @@ Worker := [].{
 	##   answer to the nearest surviving ancestor, for a job whose work must
 	##   not be lost when a panel closes.
 	## - `on_cancel`: what a running job whose request is cancelled (its site
-	##   disposed, or a `latest` or `resource` site moving on) does: `Stop`, the
+	##   disposed, or a `watch_latest` or `resource` site moving on) does: `Stop`, the
 	##   default, ends the worker running it; `Finish` lets the job complete
 	##   and drops its answer, so the worker, and any prepared state it
 	##   holds, is kept for the next job. A timeout always stops the job, a

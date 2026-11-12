@@ -1224,12 +1224,12 @@ Engine := [].{
 
 	## The [Program] for an app with a [Store]: as `program_boot`, with the
 	## store `start` gives for the boot data held at the root, where every
-	## scope of `view` reaches its cells. `start` is usually the app's store
+	## context of `view` reaches its cells. `start` is usually the app's store
 	## with the cells that depend on the boot data set (`Store.with_initial`).
 	program_store : { storage_keys : List(Str), max_inflight : U64 }, (Boot -> Store(st, h)), (Boot -> Elem(StoreRoot(st))) -> Program
 	program_store = |cfg, start, view| Core.program_store(cfg, |boot| start(boot).s.initial(), view)
 }
 
-## The authoring handle on a cell the engine made.
+## The cell the engine made, wrapped for the public API.
 wrap_cell : Core.Cell(st, a) -> Engine.Cell(st, a)
 wrap_cell = |c| { c: c }

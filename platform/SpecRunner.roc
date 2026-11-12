@@ -1870,7 +1870,7 @@ SpecRunner := [].{
 
 	## What a walk answers the app's requests with, gathered from the app's
 	## own specs, so the walk needs nothing written for it: every HTTP
-	## HTTP response and rejection a spec stages (by URL), every port answer (by the
+	## response and rejection a spec stages (by URL), every port answer (by the
 	## port a spec's `expect-port-call` names for that occurrence, else for
 	## any port), every message a spec emits on a port, and every value a
 	## spec types or changes into a control (by its locator).

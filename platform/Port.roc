@@ -105,7 +105,7 @@ Port := [].{
 		## A request that subscribes with `arg`, for an effect site's plan.
 		## The JavaScript's `subscribe` handler receives `arg` and an `emit`
 		## function; each message it emits is a result turn for the site.
-		## Disposing the site, or a `latest` site moving to a new value,
+		## Disposing the site, or a `watch_latest` site moving to a new value,
 		## calls the unsubscribe function the handler returned.
 		subscribe : Subscription(arg, msg), arg -> Engine.Request
 		subscribe = |p, arg| PortSubscribe({ port: p.name, message: (p.encode)(arg) })
