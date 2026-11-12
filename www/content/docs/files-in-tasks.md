@@ -44,7 +44,7 @@ props record. With the current compiler it has to be: see
 
 ## Holding the answer's file
 
-The task is registered once and used like any other. Here a layer follows
+The task is registered once and used like any other. Here a resource follows
 the chosen file: when a file is chosen it asks for a job, and a newer file
 stops the job for the older one.
 
@@ -53,7 +53,7 @@ stops the job for the older one.
 The converted file in the answer is a handle the page now holds. It is a
 file like any other: it stays available while a value holds it, and is let
 go when nothing does (see [Files](@/docs/files.md#how-long-a-file-lasts)).
-The "Save TSV" button reads it out of the layer and keeps it in state to
+The "Save TSV" button reads it out of the resource and keeps it in state to
 save.
 
 ## Handles and effects

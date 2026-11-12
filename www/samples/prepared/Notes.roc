@@ -14,7 +14,7 @@ Notes := [].{
 	## file in a worker that keeps the result. A file that is not text is the
 	## preparation's error, which every task of it shares.
 	document : Worker.Preparation(File, List(Str), Engine.FileError)
-	document = Worker.prepared({
+	document = Worker.preparation({
 		name: "example.org/notes/document",
 		prepare!: |file| {
 			text = file.contents_utf8!()?
@@ -70,8 +70,8 @@ Notes := [].{
 	# region asked
 	## The question for the current file, or none before a file is chosen.
 	asked : S, q -> [Run(Worker.Question(File, q)), Skip]
-	asked = |s, query| match s.doc {
-		Loaded(doc) => Run({ input: doc, query })
+	asked = |s, input| match s.doc {
+		Loaded(doc) => Run({ init: doc, input })
 		None => Skip
 	}
 	# endregion asked
@@ -88,25 +88,25 @@ Notes := [].{
 	## worker that kept the lines runs only the task, not a new split.
 	panel : State(Ctx, S), Tab -> Elem(Ctx)
 	panel = |st, tab| {
-		v = st.val()
+		v = st.signal()
 		match tab {
-			Summary => Worker.derive_when(Notes.summary, v.map(|s| Notes.asked(s, {})), |r| Html.p_v(r.map(|x| Notes.show(x, |a| "${a.lines.to_str()} lines, ${a.chars.to_str()} characters")), [Engine.test_id("summary")]))
+			Summary => Worker.resource_when(Notes.summary, v.map(|s| Notes.asked(s, {})), |r| Html.p_s(r.map(|x| Notes.show(x, |a| "${a.lines.to_str()} lines, ${a.chars.to_str()} characters")), [Engine.test_id("summary")]))
 			Search =>
 				Html.div(
 					"search",
 					[
 						Html.text_input(Engine.const("Word"), "search", v.map(|s| s.word), [], st.set_value(|s, word| { ..s, word })),
-						Worker.derive_when(Notes.search, v.map(|s| Notes.asked(s, s.word)), |r| Html.p_v(r.map(|x| Notes.show(x, |found| "lines ${Str.join_with(found.map(|n| n.to_str()), ", ")}")), [Engine.test_id("found")])),
+						Worker.resource_when(Notes.search, v.map(|s| Notes.asked(s, s.word)), |r| Html.p_s(r.map(|x| Notes.show(x, |found| "lines ${Str.join_with(found.map(|n| n.to_str()), ", ")}")), [Engine.test_id("found")])),
 					],
 				)
-			Longest => Worker.derive_when(Notes.longest, v.map(|s| Notes.asked(s, {})), |r| Html.p_v(r.map(|x| Notes.show(x, |line| line)), [Engine.test_id("longest")]))
+			Longest => Worker.resource_when(Notes.longest, v.map(|s| Notes.asked(s, {})), |r| Html.p_s(r.map(|x| Notes.show(x, |line| line)), [Engine.test_id("longest")]))
 		}
 	}
 	# endregion tabs
 
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"notes",
 			[

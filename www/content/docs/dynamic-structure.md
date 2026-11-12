@@ -16,7 +16,7 @@ it and releases it when it goes. The snippets come from
 
 ## Conditionals
 
-`Engine.when` takes a `Val(ctx, Bool)` and two functions, and builds only the
+`Engine.when` takes a `Signal(ctx, Bool)` and two functions, and builds only the
 branch that is selected:
 
 {{ sample(file="structure.roc", region="when") }}
@@ -73,8 +73,8 @@ removed or changed rows cost work on the page. The comparison itself is
 linear in the list. That suits a list that is small or computed, such as the
 options of a select, the items of an answer, or a few rows in local state as
 here. Rows the user edits by key, and anything sorted, filtered or long,
-belong in a table drawn through a view, where a write names its row and
-nothing is compared: see [Tables and Views](@/docs/tables-and-views.md).
+belong in a table drawn through a table view, where a write names its row and
+nothing is compared: see [Tables and Table Views](@/docs/tables-and-views.md).
 
 ### Keyed selection
 
@@ -108,9 +108,9 @@ later starts a fresh row.
 | Hide with a class or attribute | Everything stays live | Nodes stay |
 | Write a cell of the store | The cell and everything mounted survive; its readers refresh | Only changed holes update |
 
-The rows of a view of a table follow the same rules, with one more way to
-go: leaving the view's window
-([Tables and Views](@/docs/tables-and-views.md#row-state)).
+The rows of a table view follow the same rules, with one more way to
+go: leaving the table view's window
+([Tables and Table Views](@/docs/tables-and-views.md#row-state)).
 
 State that must outlive a branch or a row — a draft that should survive
 switching tabs, say — belongs in the store: a cell, or a field of a table's

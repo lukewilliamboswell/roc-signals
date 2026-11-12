@@ -35,8 +35,8 @@ LabStore := [Bench].{
 		}.Engine.Cells,
 	)
 
-	## The handles on the store's cells.
-	h = LabStore.store.handles()
+	## The store's cells.
+	cells = LabStore.store.cells()
 
 	## Start a run with the parameters as typed, after run `run`; one
 	## already going is superseded. Invalid parameters start nothing.
@@ -46,9 +46,9 @@ LabStore := [Bench].{
 			Ok(params) => {
 				next = run + 1
 				[
-					LabStore.h.run.put(next),
-					LabStore.h.work.jobs.change(|jobs| Lab.admit(jobs.load(Lab.jobs_for(params, next)))),
-					LabStore.h.work.ticks.put(0),
+					LabStore.cells.run.set(next),
+					LabStore.cells.work.jobs.update(|jobs| Lab.admit(jobs.load(Lab.jobs_for(params, next)))),
+					LabStore.cells.work.ticks.set(0),
 				]
 			}
 			Err(_) => []
@@ -61,13 +61,13 @@ LabStore := [Bench].{
 
 	## Stop every job that has not finished. Finished jobs keep their answers.
 	cancelled : List(Engine.Write(_))
-	cancelled = [LabStore.h.work.jobs.change(|jobs| jobs.update_all(|_, job| Lab.cancelled(job)))]
+	cancelled = [LabStore.cells.work.jobs.update(|jobs| jobs.update_all(|_, job| Lab.cancelled(job)))]
 
 	## Ask again for every job that ended without an answer: each goes back
 	## to waiting as a new attempt, and the answers so far are kept. A
 	## picture with a lost or cancelled strip is finished this way.
 	retried : List(Engine.Write(_))
-	retried = [LabStore.h.work.jobs.change(|jobs| Lab.admit(jobs.update_all(|_, job| Lab.again(job))))]
+	retried = [LabStore.cells.work.jobs.update(|jobs| Lab.admit(jobs.update_all(|_, job| Lab.again(job))))]
 
 	## The request of the row whose job is `job` came back, for the attempt
 	## it was issued for. A refusal sends the job back to waiting for
@@ -79,9 +79,9 @@ LabStore := [Bench].{
 	finished = |job, issued, outcome|
 		if Lab.is_attempt(job, issued) and Lab.is_running(job) {
 			settled = Lab.settled(job, outcome)
-			placed = LabStore.h.work.jobs.change(|jobs| Lab.admit(jobs.replace(settled.index, settled)))
+			placed = LabStore.cells.work.jobs.update(|jobs| Lab.admit(jobs.replace(settled.index, settled)))
 			match outcome {
-				Err(Refused) => [placed, LabStore.h.work.refused.change(|count| count + 1)]
+				Err(Refused) => [placed, LabStore.cells.work.refused.update(|count| count + 1)]
 				_ => [placed]
 			}
 		} else {
@@ -95,18 +95,18 @@ LabStore := [Bench].{
 	shown = |job, issued, outcome|
 		if Lab.is_attempt(job, issued) and Lab.awaits_url(job) {
 			linked = Lab.linked(job, outcome)
-			[LabStore.h.work.jobs.change(|jobs| Lab.admit(jobs.replace(linked.index, linked)))]
+			[LabStore.cells.work.jobs.update(|jobs| Lab.admit(jobs.replace(linked.index, linked)))]
 		} else {
 			[]
 		}
 
 	## One tick of the page's clock, counted while strips are being drawn.
 	ticked : Bool -> List(Engine.Write(_))
-	ticked = |drawing| if (drawing) [LabStore.h.work.ticks.change(|count| count + 1)] else []
+	ticked = |drawing| if (drawing) [LabStore.cells.work.ticks.update(|count| count + 1)] else []
 
 	## Keep `file`, the picture, for the save the user asked for.
 	saved : File -> List(Engine.Write(_))
-	saved = |file| [LabStore.h.work.save.change(|box| box.post(file))]
+	saved = |file| [LabStore.cells.work.save.update(|box| box.post(file))]
 }
 
 ## The parameters of a run of `jobs` jobs of the lightest weight.
@@ -115,7 +115,7 @@ asked_for = |workload, jobs| { ..Lab.form, workload, jobs_text: jobs, weight_tex
 
 ## The jobs a store holds.
 jobs_in : Engine.Store(_, _) -> Lab.Jobs
-jobs_in = |store| store.read(LabStore.h.work.jobs)
+jobs_in = |store| store.read(LabStore.cells.work.jobs)
 
 ## The job at `index` in a store.
 job_in : Engine.Store(_, _), U64 -> Lab.Job
@@ -137,7 +137,7 @@ expect {
 	run = LabStore.store.after(LabStore.started(asked_for(Primes, "2"), 0))
 	refused = run.after(LabStore.finished(job_in(run, 1), { run: 1, attempt: 0 }, Err(Refused)))
 	stale = refused.after(LabStore.finished(job_in(refused, 1), { run: 1, attempt: 0 }, Ok(Primes(1))))
-	actual = [job_in(refused, 1).attempt, refused.read(LabStore.h.work.refused), Lab.tally(jobs_in(refused)).running, Lab.tally(jobs_in(stale)).done]
+	actual = [job_in(refused, 1).attempt, refused.read(LabStore.cells.work.refused), Lab.tally(jobs_in(refused)).running, Lab.tally(jobs_in(stale)).done]
 	actual == [1, 1, 2, 0]
 }
 
@@ -148,7 +148,7 @@ expect {
 	first = LabStore.store.after(LabStore.started(asked_for(Primes, "3"), 0))
 	idle = first.after(LabStore.edited({ typed: asked_for(Primes, "5"), run: 1, going: Bool.False }))
 	going = first.after(LabStore.edited({ typed: asked_for(Primes, "5"), run: 1, going: Bool.True }))
-	runs = |store| "run ${store.read(LabStore.h.run).to_str()} of ${jobs_in(store).len().to_str()}"
+	runs = |store| "run ${store.read(LabStore.cells.run).to_str()} of ${jobs_in(store).len().to_str()}"
 	actual =
 		\\invalid: ${runs(invalid)}
 		\\first: ${runs(first)}
@@ -169,7 +169,7 @@ expect {
 	answered = run.after(LabStore.finished(job_in(run, 0), { run: 1, attempt: 0 }, Ok(Primes(7))))
 	cancelled = answered.after(LabStore.cancelled)
 	retried = cancelled.after(LabStore.retried)
-	reset = retried.after([LabStore.h.work.refused.put(4), LabStore.h.work.ticks.put(9)]).after([LabStore.h.work.reset])
+	reset = retried.after([LabStore.cells.work.refused.set(4), LabStore.cells.work.ticks.set(9)]).after([LabStore.cells.work.reset])
 	counts = |store| {
 		tally = Lab.tally(jobs_in(store))
 		"${tally.done.to_str()} done, ${tally.running.to_str()} running, ${tally.waiting.to_str()} waiting, ${tally.cancelled.to_str()} cancelled"
@@ -177,7 +177,7 @@ expect {
 	actual =
 		\\cancelled: ${counts(cancelled)}
 		\\retried: ${counts(retried)}, job 2 at attempt ${job_in(retried, 1).attempt.to_str()}
-		\\reset: ${counts(reset)}, run ${reset.read(LabStore.h.run).to_str()}, ${reset.read(LabStore.h.work.refused).to_str()} refused, ${reset.read(LabStore.h.work.ticks).to_str()} ticks
+		\\reset: ${counts(reset)}, run ${reset.read(LabStore.cells.run).to_str()}, ${reset.read(LabStore.cells.work.refused).to_str()} refused, ${reset.read(LabStore.cells.work.ticks).to_str()} ticks
 	expected =
 		\\cancelled: 1 done, 0 running, 0 waiting, 19 cancelled
 		\\retried: 1 done, 15 running, 4 waiting, 0 cancelled, job 2 at attempt 1
@@ -196,7 +196,7 @@ expect {
 		drawing: Lab.drawing(jobs_in(drawing)),
 		composed: Lab.composition(jobs_in(drawing)) == Skip,
 		strips: Lab.count_jobs(jobs_in(drawing), Lab.is_strip),
-		ticks: ticked.read(LabStore.h.work.ticks),
+		ticks: ticked.read(LabStore.cells.work.ticks),
 	}
 	actual == { running: 14, drawing: Bool.True, composed: Bool.True, strips: 20, ticks: 1 }
 }

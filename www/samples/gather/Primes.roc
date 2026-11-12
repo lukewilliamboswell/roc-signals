@@ -65,7 +65,7 @@ Primes := [].{
 	## new question works.
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"primes",
 			[
@@ -76,8 +76,8 @@ Primes := [].{
 					|gathered| Html.div(
 						"result",
 						[
-							Html.p_v(gathered.map(|g| Str.join_with(g.jobs.map(Primes.show_job), " ")), [Engine.test_id("shards")]),
-							Html.p_v(gathered.map(|g| Primes.show_total(g.all)), [Engine.test_id("total")]),
+							Html.p_s(gathered.map(|g| Str.join_with(g.jobs.map(Primes.show_job), " ")), [Engine.test_id("shards")]),
+							Html.p_s(gathered.map(|g| Primes.show_total(g.all)), [Engine.test_id("total")]),
 						],
 					),
 				),

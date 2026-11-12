@@ -112,7 +112,7 @@ Convert := [].{
 
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"convert",
 			[
@@ -120,14 +120,14 @@ Convert := [].{
 				# region derive
 				# The conversion follows the chosen file: a newer file stops
 				# the job for the older one. The answer's file is the page's.
-				Worker.derive_when(
+				Worker.resource_when(
 					Convert.to_tsv,
 					v.map(Convert.converting),
 					|r| Engine.element(
 						"section",
 						[Html.aria_label("converted")],
 						[
-							Html.p_v(
+							Html.p_s(
 								r.map(
 									|remote| match Worker.status(remote) {
 										Working => "converting"
@@ -161,7 +161,7 @@ Convert := [].{
 				# and `logging` goes back to `Idle` so the request's input,
 				# which holds the old log, is not kept alive.
 				Html.button("Log a line", [], st.update(|s| { ..s, entries: s.entries + 1, logging: Append({ log: s.log, line: "entry ${(s.entries + 1).to_str()}" }) })),
-				Engine.latest(
+				Engine.watch_latest(
 					v.map(|s| s.logging),
 					|logging| match logging {
 						Append(input) => [Convert.log_line.request(input)]
@@ -175,14 +175,14 @@ Convert := [].{
 						},
 					),
 				),
-				Html.p_v(v.map(|s| "log: ${Convert.describe(s.log)}"), [Engine.test_id("log")]),
+				Html.p_s(v.map(|s| "log: ${Convert.describe(s.log)}"), [Engine.test_id("log")]),
 				Html.button("Save log", [], st.update(|s| Convert.save_first(s, s.log))),
 				# endregion log
 				# region fetch
 				# A download into a file: the body stays in the browser, and
 				# a task measures it.
 				Html.button("Download data", [], st.update(|s| { ..s, download: Get("/data/sales.csv") })),
-				Engine.latest(
+				Engine.watch_latest(
 					v.map(|s| s.download),
 					|d| match d {
 						Get(url) => [File.fetch({ url: url })]
@@ -195,7 +195,7 @@ Convert := [].{
 						},
 					),
 				),
-				Worker.derive_when(
+				Worker.resource_when(
 					Convert.count_lines,
 					v.map(
 						|s| match s.downloaded {
@@ -203,7 +203,7 @@ Convert := [].{
 							_ => Skip
 						},
 					),
-					|r| Html.p_v(
+					|r| Html.p_s(
 						r.map(|remote| remote.answered().map_ok(|n| "${n.to_str()} lines downloaded") ?? "nothing downloaded"),
 						[Engine.test_id("downloaded")],
 					),
@@ -214,7 +214,7 @@ Convert := [].{
 				# posted the file, so the browser sees the user's gesture.
 				Engine.on_post(v.map(|s| s.save), |f| [File.save(f, {})], Engine.ignore({})),
 				# endregion save
-				Html.p_v(v.map(|s| s.status), [Engine.test_id("status")]),
+				Html.p_s(v.map(|s| s.status), [Engine.test_id("status")]),
 			],
 		)
 	}

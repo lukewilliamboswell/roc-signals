@@ -38,7 +38,7 @@ Documents := [].{
 	report = Worker.task({
 		name: "example.org/documents/report",
 		run!: |docs| Ok(Str.join_with(docs.map(|d| "${d.id}: ${Documents.word_count(d.text).to_str()} words"), "; ")),
-		deadline: Ms(60000),
+		timeout: Ms(60000),
 		on_dispose: Keep,
 	})
 	# endregion keep
@@ -67,7 +67,7 @@ Documents := [].{
 
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"documents",
 			[
@@ -75,7 +75,7 @@ Documents := [].{
 				Html.button("Add document", [], st.update(Documents.add)),
 				Html.button("Statistics", [], st.update(|s| { ..s, panel: !s.panel })),
 				Documents.panel(st),
-				Html.p_v(v.map(|s| s.report), [Engine.test_id("report")]),
+				Html.p_s(v.map(|s| s.report), [Engine.test_id("report")]),
 			],
 		)
 	}
@@ -92,7 +92,7 @@ Documents := [].{
 	rows = |st|
 		Html.ul(
 			[],
-			[Engine.each(st.val().map(|s| s.docs), |d| d.id, |row| Documents.row(st, row))],
+			[Engine.each(st.signal().map(|s| s.docs), |d| d.id, |row| Documents.row(st, row))],
 		)
 
 	row : State(Ctx, S), RowRef(Ctx, Doc) -> Elem(Line)
@@ -102,13 +102,13 @@ Documents := [].{
 		Html.li(
 			[],
 			[
-				Html.span_v(row_ref.field(|d| d.text), []),
-				Worker.derive(
+				Html.span_s(row_ref.field(|d| d.text), []),
+				Worker.resource(
 					Documents.count,
 					row_ref.field(|d| d.text),
-					|remote| Html.p_v(remote.map(Documents.show_count), [Engine.test_id_v(id.map(|k| "words-${k}").lift())]),
+					|remote| Html.p_s(remote.map(Documents.show_count), [Engine.test_id_s(id.map(|k| "words-${k}").lift())]),
 				),
-				Html.button_v(id.map(|k| "Remove ${k}"), [], st.update_by(id, |s, k| { ..s, docs: s.docs.keep_if(|d| d.id != k) })),
+				Html.button_s(id.map(|k| "Remove ${k}"), [], st.update_by(id, |s, k| { ..s, docs: s.docs.keep_if(|d| d.id != k) })),
 			],
 		)
 	}
@@ -137,7 +137,7 @@ Documents := [].{
 	## outlives the panel.
 	panel : State(Ctx, S) -> Elem(Ctx)
 	panel = |st| {
-		v = st.val()
+		v = st.signal()
 		Engine.when(
 			v.map(|s| s.panel),
 			||
@@ -145,10 +145,10 @@ Documents := [].{
 					"Statistics",
 					"panel",
 					[
-						Worker.derive(
+						Worker.resource(
 							Documents.tally,
 							v.map(|s| s.docs.map(|d| d.text)),
-							|remote| Html.p_v(remote.map(Documents.show_totals), [Engine.test_id("totals")]),
+							|remote| Html.p_s(remote.map(Documents.show_totals), [Engine.test_id("totals")]),
 						),
 						Html.button(
 							"Export",
@@ -164,7 +164,7 @@ Documents := [].{
 						),
 						# Asks for a report each time "Export" is pressed,
 						# never for the value the panel was opened with.
-						Engine.on_change(
+						Engine.watch_changes(
 							v.map(|s| s.ask),
 							|ask|
 								match ask {

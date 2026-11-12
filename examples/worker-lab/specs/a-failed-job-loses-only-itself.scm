@@ -18,10 +18,10 @@
     (expect-text (test-id "job-3") "done: 136 primes")
     (expect-text (test-id "stopped") "1")
     (expect-text (test-id "checksum") "incomplete")
-    ; A deadline expires only when the spec says so, and a job can be lost
+    ; A timeout expires only when the spec says so, and a job can be lost
     ; for any fault class; each shows as its own row's outcome.
     (select-option (label "Workload") "primes")
-    (fill (label "Deadline (ms)") "50")
+    (fill (label "Timeout (ms)") "50")
     (click (role button :name "Start"))
     (expect-pending-work "roc-signals.example/worker-lab/primes" 4)
     (time-out-work 6)

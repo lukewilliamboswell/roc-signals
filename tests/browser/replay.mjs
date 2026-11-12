@@ -26,7 +26,7 @@
 // the current document issued (a job really runs in a worker, and the step
 // waits for its result turn); storage reads answer by themselves from storage. History,
 // title and storage assertions read the real browser state. A worker job's
-// deadline never fires on its own: `time-out-work` expires it and
+// timeout never fires on its own: `time-out-work` expires it and
 // `lose-work` answers it lost, through the runtime's manual-mode hooks.
 // `local-storage-unavailable` makes `window.localStorage` throw, as a browser
 // with site data disabled does; storage assertions then read the real store
@@ -322,7 +322,7 @@ async function stage(state, answer) {
 
 // `lose-work` and `time-out-work`: the N-th effect occurrence must be a
 // pending worker job; the runtime's manual-mode hooks answer it, without
-// running it, `WorkLost(fault)` or (for a job with a deadline) `Timeout`.
+// running it, `WorkLost(fault)` or (for a job with a timeout) `Timeout`.
 async function answerJob(page, n, how, fault) {
   const r = await page.evaluate(
     (n, how, fault) => {
@@ -334,7 +334,7 @@ async function answerJob(page, n, how, fault) {
       if (e.kind === "portcall") return `effect occurrence ${n} is a call on port ${JSON.stringify(e.req.port)}, not a worker job`;
       if (e.kind !== "work") return `effect occurrence ${n} is ${e.kind === "timer" ? "a timer" : e.kind === "file" ? "an operation on a file" : "an HTTP request"}, not a worker job`;
       if (how === "expire") {
-        if (!(e.req.deadline > 0)) return `worker job ${n} has no deadline, so it cannot time out`;
+        if (!(e.req.timeout > 0)) return `worker job ${n} has no timeout, so it cannot time out`;
         return rt.expireEffect(id) ? null : `worker job ${n} could not be expired`;
       }
       return rt.loseEffect(id, fault) ? null : `worker job ${n} could not be lost to ${fault}`;
@@ -560,7 +560,7 @@ const STEPS = {
         }
         // A worker job really runs in a worker; the step waits for its
         // result turn.
-        // A spec's time is manual, so the job's own deadline never ends it;
+        // A spec's time is manual, so the job's own timeout never ends it;
         // the runner's bound (as the native runner's) fails a job that never
         // finishes instead of hanging.
         // An operation on a file the app holds is really performed, on the
@@ -571,7 +571,7 @@ const STEPS = {
         if (e.kind === "work") {
           return Promise.race([
             Promise.resolve(rt.runEffect(id)).then(() => ({ used: false })),
-            new Promise((r) => setTimeout(() => r({ error: "the worker job did not finish within 30 s; a spec expires a job's deadline with time-out-work" }), JOB_BOUND_MS)),
+            new Promise((r) => setTimeout(() => r({ error: "the worker job did not finish within 30 s; a spec expires a job's timeout with time-out-work" }), JOB_BOUND_MS)),
           ]);
         }
         if (answer === null) return { error: `run-effect ${n} answers ${e.req.url} without a staged stub` };

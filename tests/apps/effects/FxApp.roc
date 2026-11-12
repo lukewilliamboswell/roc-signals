@@ -23,7 +23,7 @@ import pf.Worker
 ##   Its reaction appends to the root log.
 ## - R, a `resource` over the counter `r`, shown or hidden by a `when`: an
 ##   HTTP request, a request and a timer, or an interval and a worker job
-##   (the echo task, with a deadline), by `r % 3`. Its layer folds
+##   (the echo task, with a timeout), by `r % 3`. Its layer folds
 ##   answers and is shown as `input|answer|faults`.
 ## - F, an `on_change` site over the flood counter `f`: 70 timers at once,
 ##   far past the bound, so one turn refuses dozens of them. Its reaction
@@ -57,7 +57,7 @@ FxApp := [].{
 	url_of : U64, U64 -> Str
 	url_of = |k, c| "/s${k.to_str()}/${c.to_str()}"
 
-	plan : U64 -> (U64 -> List(Engine.Req))
+	plan : U64 -> (U64 -> List(Engine.Request))
 	plan = |k| |c| {
 		if c == 0 {
 			[]
@@ -72,7 +72,7 @@ FxApp := [].{
 	timeout_of : U64 -> U32
 	timeout_of = |c| if (c % 2 == 1) 300 else c.to_u32_wrap() * 250000
 
-	describe : U64, U64, Engine.Res -> Str
+	describe : U64, U64, Engine.Result -> Str
 	describe = |k, c, r| {
 		head = "${k.to_str()}:${c.to_str()}"
 		match r {
@@ -84,7 +84,7 @@ FxApp := [].{
 			Refused => "${head}:refused"
 			Now => "${head}:self"
 			Location(u) => "pop:${u}"
-			PortReply(m) => "${head}:port:${m.json}"
+			PortAnswer(m) => "${head}:port:${m.json}"
 			PortFailed(failure) => "${head}:portfail:${Str.inspect(failure)}"
 			_ => "${head}:other"
 		}
@@ -115,10 +115,10 @@ FxApp := [].{
 	## answer or a failure, so an arbitrary result for one of its ids
 	## settles a job.
 	Asker := [Asker].{
-		request : Asker, U64 -> Engine.Req
+		request : Asker, U64 -> Engine.Request
 		request = |_, x| Http({ method: "GET", url: "/x/${x.to_str()}", headers: [], body: "", timeout_ms: 0 })
 
-		result : Asker, Engine.Res -> Try(Str, Str)
+		result : Asker, Engine.Result -> Try(Str, Str)
 		result = |_, res| match res {
 			Http({ status: 200, body, .. }) => Ok(body)
 			Http({ status, .. }) => Err("s${status.to_str()}")
@@ -150,7 +150,7 @@ FxApp := [].{
 	}
 
 	## O's request for the item posted.
-	plan_o : U64 -> List(Engine.Req)
+	plan_o : U64 -> List(Engine.Request)
 	plan_o = |item| [Http({ method: "GET", url: "/o/${item.to_str()}", headers: [], body: "", timeout_ms: 0 })]
 
 	## P's ports: a call and a subscription, each sent `p`.
@@ -161,11 +161,11 @@ FxApp := [].{
 	port_feed = Port.subscription({ name: "test.roc-signals/fx-feed", delivery: Every(8) })
 
 	## P's requests for `p`.
-	plan_p : U64 -> List(Engine.Req)
+	plan_p : U64 -> List(Engine.Request)
 	plan_p = |p| if (p == 0) [] else [FxApp.port_call.request(p), FxApp.port_feed.subscribe(p)]
 
 	## L's requests for query `q`.
-	plan_l : U64 -> List(Engine.Req)
+	plan_l : U64 -> List(Engine.Request)
 	plan_l = |q| {
 		if q == 0 {
 			[]
@@ -182,7 +182,7 @@ FxApp := [].{
 
 	## L logs every result; a follow-up also bumps `q`, which supersedes
 	## whatever L still owns (the second follow-up among it).
-	react_l : S, U64, Engine.Res -> S
+	react_l : S, U64, Engine.Result -> S
 	react_l = |s, q, r| {
 		s1 = FxApp.log_line(s, FxApp.describe(7, q, r))
 		match r {
@@ -192,7 +192,7 @@ FxApp := [].{
 	}
 
 	## R's requests for input `r`.
-	plan_r : U64 -> List(Engine.Req)
+	plan_r : U64 -> List(Engine.Request)
 	plan_r = |r| {
 		if r == 0 {
 			[]
@@ -205,9 +205,9 @@ FxApp := [].{
 		}
 	}
 
-	## R's worker task: its input back, with a 100 ms deadline.
+	## R's worker task: its input back, with a 100 ms timeout.
 	echo : Worker.Task(U8, U8, Worker.Never)
-	echo = Worker.task({ name: "test.roc-signals/fx/echo", run!: |b| Ok(b), deadline: Ms(100) })
+	echo = Worker.task({ name: "test.roc-signals/fx/echo", run!: |b| Ok(b), timeout: Ms(100) })
 
 	## The worker catalogue: R's echo task.
 	workers : List(Engine.Registration)
@@ -226,7 +226,7 @@ FxApp := [].{
 	## An HTTP answer or a job's output replaces the answer, a timeout or a
 	## lost job counts as a fault, a refusal is shown; anything else (a tick)
 	## is an equal fold.
-	resolve_r : Load, U64, Engine.Res -> Load
+	resolve_r : Load, U64, Engine.Result -> Load
 	resolve_r = |l, r, res| match res {
 		Http({ status, body, .. }) => { ..l, answer: "${r.to_str()}:${status.to_str()}:${body}" }
 		Work(_) =>
@@ -242,7 +242,7 @@ FxApp := [].{
 	show_r : Load -> Str
 	show_r = |l| "${l.input.to_str()}|${l.answer}|${l.faults.to_str()}"
 
-	react : S, U64, U64, Engine.Res -> S
+	react : S, U64, U64, Engine.Result -> S
 	react = |s, k, c, r| {
 		s1 = FxApp.log_line(s, FxApp.describe(k, c, r))
 		match r {
@@ -261,14 +261,14 @@ FxApp := [].{
 				Html.button("issue ${k.to_str()}", [], st.update(|s| FxApp.bump(s, k))),
 				Html.button("toggle ${k.to_str()}", [], st.update(|s| FxApp.toggle(s, k))),
 				Engine.when(
-					st.val().map(|s| s.shown.get(k) ?? False),
+					st.signal().map(|s| s.shown.get(k) ?? False),
 					|| Engine.element(
 						"p",
 						[],
 						[
 							Engine.text(label),
 							Engine.watch(
-								st.val().map(|s| s.counts.get(k) ?? 0),
+								st.signal().map(|s| s.counts.get(k) ?? 0),
 								FxApp.plan(k),
 								st.on_result(|s, c, r| FxApp.react(s, k, c, r)),
 							),
@@ -279,11 +279,11 @@ FxApp := [].{
 									[Engine.test_id("hits ${k.to_str()}")],
 									[
 										Engine.watch(
-											st.val().map(|s| s.counts.get(k) ?? 0).lift(),
+											st.signal().map(|s| s.counts.get(k) ?? 0).lift(),
 											|c| if (c == 0) [] else [Http({ method: "GET", url: "/h${k.to_str()}/${c.to_str()}", headers: [], body: "", timeout_ms: 0 })],
 											hits.on_result(|h, _, _| h + 1),
 										),
-										Engine.text_v(hits.val().map(|h| h.to_str())),
+										Engine.text_s(hits.signal().map(|h| h.to_str())),
 									],
 								),
 							),
@@ -307,25 +307,25 @@ FxApp := [].{
 				FxApp.site(st, 0),
 				FxApp.site(st, 1),
 				FxApp.site(st, 2),
-				Engine.element("pre", [Engine.test_id("log")], [Engine.text_v(st.val().map(|s| Str.join_with(s.log, "|")))]),
+				Engine.element("pre", [Engine.test_id("log")], [Engine.text_s(st.signal().map(|s| Str.join_with(s.log, "|")))]),
 				# An SVG badge (namespace check in the browser): its class follows the log length.
 				Engine.element(
 					"svg",
 					[Engine.attr("aria-label", "badge"), Engine.attr("width", "10"), Engine.attr("height", "10")],
 					[
-						Engine.element("circle", [Engine.attr("r", "4"), Engine.attr("cx", "5"), Engine.attr("cy", "5"), Engine.class_v(st.val().map(|s| if (s.log.is_empty()) "idle" else "busy"))], []),
+						Engine.element("circle", [Engine.attr("r", "4"), Engine.attr("cx", "5"), Engine.attr("cy", "5"), Engine.class_s(st.signal().map(|s| if (s.log.is_empty()) "idle" else "busy"))], []),
 					],
 				),
 				# F: each flood asks for 70 timers at once, far past the bound, so one
 				# turn queues dozens of refusals (one follow-up chain deep each).
 				Html.button("flood", [], st.update(|s| { ..s, f: s.f + 1 })),
-				Engine.on_change(st.val().map(|s| s.f), |_| List.repeat(Timer(10), FxApp.flood_size), st.on_result(|s, f, r| FxApp.log_line(s, FxApp.describe(6, f, r)))),
+				Engine.watch_changes(st.signal().map(|s| s.f), |_| List.repeat(Timer(10), FxApp.flood_size), st.on_result(|s, f, r| FxApp.log_line(s, FxApp.describe(6, f, r)))),
 				# A genuine follow-up loop, never armed by the fuzz model: once
 				# "loop" is pressed, a refusal bumps `n`, which issues again, which
 				# is refused again while the table is full.
 				Html.button("loop", [], st.update(|s| { ..s, looping: True })),
 				Engine.watch(
-					st.val().map(|s| if (s.looping) s.n + 1 else 0),
+					st.signal().map(|s| if (s.looping) s.n + 1 else 0),
 					|n| if (n == 0) [] else [Http({ method: "GET", url: "/loop/${n.to_str()}", headers: [], body: "", timeout_ms: 0 })],
 					st.on_result(
 						|s, _, r| match r {
@@ -335,34 +335,34 @@ FxApp := [].{
 					),
 				),
 				Html.button("query", [], st.update(|s| { ..s, q: s.q + 1 })),
-				Engine.latest(st.val().map(|s| s.q), FxApp.plan_l, st.on_result(|s, q, r| FxApp.react_l(s, q, r))),
+				Engine.watch_latest(st.signal().map(|s| s.q), FxApp.plan_l, st.on_result(|s, q, r| FxApp.react_l(s, q, r))),
 				Html.button("rquery", [], st.update(|s| { ..s, r: s.r + 1 })),
 				Html.button("toggle r", [], st.update(|s| { ..s, rshown: !s.rshown })),
 				Engine.when(
-					st.val().map(|s| s.rshown),
+					st.signal().map(|s| s.rshown),
 					|| Engine.resource(
-						st.val().map(|s| s.r),
+						st.signal().map(|s| s.r),
 						{ init: FxApp.load0, pending: FxApp.pending_r, plan: FxApp.plan_r, resolve: FxApp.resolve_r },
-						|l| Html.p_v(l.map(FxApp.show_r), [Engine.test_id("res")]),
+						|l| Html.p_s(l.map(FxApp.show_r), [Engine.test_id("res")]),
 					),
 					|| Engine.text(""),
 				),
 				Html.button("pquery", [], st.update(|s| { ..s, p: s.p + 1 })),
 				Html.button("toggle p", [], st.update(|s| { ..s, pshown: !s.pshown })),
 				Engine.when(
-					st.val().map(|s| s.pshown),
-					|| Engine.latest(st.val().map(|s| s.p), FxApp.plan_p, st.on_result(|s, p, r| FxApp.log_line(s, FxApp.describe(10, p, r)))),
+					st.signal().map(|s| s.pshown),
+					|| Engine.watch_latest(st.signal().map(|s| s.p), FxApp.plan_p, st.on_result(|s, p, r| FxApp.log_line(s, FxApp.describe(10, p, r)))),
 					|| Engine.text(""),
 				),
 				Html.button("gquery", [], st.update(|s| { ..s, g: s.g + 1 })),
 				Html.button("toggle g", [], st.update(|s| { ..s, gshown: !s.gshown })),
 				Engine.when(
-					st.val().map(|s| s.gshown),
-					|| Engine.gather(FxApp.asker, st.val().map(|s| FxApp.inputs_x(s.g)), |x| Html.p_v(x.map(FxApp.show_x), [Engine.test_id("gather")])),
+					st.signal().map(|s| s.gshown),
+					|| Engine.gather(FxApp.asker, st.signal().map(|s| FxApp.inputs_x(s.g)), |x| Html.p_s(x.map(FxApp.show_x), [Engine.test_id("gather")])),
 					|| Engine.text(""),
 				),
 				Html.button("post", [], st.update(|s| { ..s, posts: s.posts + 1, out: s.out.post((s.posts + 1) // 2) })),
-				Engine.on_post(st.val().map(|s| s.out), FxApp.plan_o, st.on_result(|s, item, r| FxApp.log_line(s, FxApp.describe(12, item, r)))),
+				Engine.on_post(st.signal().map(|s| s.out), FxApp.plan_o, st.on_result(|s, item, r| FxApp.log_line(s, FxApp.describe(12, item, r)))),
 			],
 		),
 	)

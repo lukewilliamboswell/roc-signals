@@ -6,7 +6,7 @@ app [target] {
 import fz.Fuzz
 import pf.Core
 import pf.Dom
-import pf.Engine exposing [Elem, State, Val]
+import pf.Engine exposing [Elem, Signal, State]
 import pf.Table
 
 ## Tables and their views: bytes decode into a session of events over one
@@ -38,8 +38,8 @@ import pf.Table
 ##   of its group, a copy saved earlier, the other table), keyed writes in
 ##   order (insert, put, replace, update, remove; a run of up to 16 puts or
 ##   updates, which crosses the size at which a view rebuilds instead of
-##   absorbing the record; a whole rewrite by `load` or `update_all`; an
-##   undo of the turn so far), as one `change` or one for each, a write of
+##   absorbing the changes; a whole rewrite by `load` or `update_all`; an
+##   undo of the turn so far), as one `update` or one for each, a write of
 ##   `spare`, a copy of the table saved, `a`'s listing and window, the lanes
 ##   and whether `c` is mounted. It fires from a control whose handler is
 ##   the decision alone, one whose decision also reads the tables it may
@@ -48,7 +48,7 @@ import pf.Table
 ##
 ## Oracles, after every step:
 ## - the engine is settled (`Core.settled`): no reader is stale, and every
-##   view equals one built from scratch with its table's record cleared;
+##   view equals one built from scratch with its table's changes cleared;
 ## - each view is drawn exactly when the model has it mounted, and its rows'
 ##   texts, in order, are the model's: the rows its listing keeps, in its
 ##   order, inside its window;
@@ -120,7 +120,7 @@ entries : U64, U64 -> List(Entry)
 entries = |seed, count| span(count).map(|i| { key: (seed + i * 5) % key_space, row: item_of(seed + i * 3) })
 
 ## How a listing selects and orders rows: the `plan` of every view.
-query_plan : Listing -> Engine.Query(U64, Item, Place)
+query_plan : Listing -> Engine.QueryPlan(U64, Item, Place)
 query_plan = |{ show, order }| {
 	keep: |_, item| match show {
 		All => True
@@ -267,13 +267,13 @@ Op : [
 ##   (`Fresh(seed, count)`), by its group's reset, by the copy `saved`
 ##   holds (`Restore`) or by `spare`'s table (`Borrow`). The last two need
 ##   a reading, so only the control that takes one applies them.
-## - `ops`: writes of `rows`, in order, as one `change` for each (`split`)
-##   or one `change` that folds them.
+## - `ops`: writes of `rows`, in order, as one `update` for each (`split`)
+##   or one `update` that folds them.
 ## - `spare`: a write of the other table.
 ## - `save`: put the table as it was read into `saved` (the reading control).
 ## - `tick`: add one to `serial`, which is in `rows`' group.
 ## - `flip`: mount or unmount `c`.
-## - `listing`, `window`, `lanes`: put those cells.
+## - `listing`, `window`, `lanes`: set those cells.
 ## - `local_listing`, `local_window`: what `b`'s control writes to its state.
 Decision : {
 	head : [Keep, Fresh(U64, U64), Reset, Restore, Borrow],
@@ -486,8 +486,8 @@ store = Engine.store(
 	}.Engine.Cells,
 )
 
-## The handles on the store's cells.
-cells = store.handles()
+## The store's cells.
+cells = store.cells()
 
 ## The store as a session starts it.
 started : {} -> Engine.Store(_, _)
@@ -527,41 +527,41 @@ writes_of : Decision, Reading -> List(Engine.Write(_))
 writes_of = |d, reading| {
 	rows = cells.items.rows
 	head = match (d.head, reading) {
-		(Fresh(seed, count), _) => [rows.put(Table.from_list(entries(seed, count)))]
+		(Fresh(seed, count), _) => [rows.set(Table.from_list(entries(seed, count)))]
 		(Reset, _) => [cells.items.reset]
-		(Restore, Read({ kept, .. })) => [rows.put(kept)]
-		(Borrow, Read({ lent, .. })) => [rows.put(lent)]
+		(Restore, Read({ kept, .. })) => [rows.set(kept)]
+		(Borrow, Read({ lent, .. })) => [rows.set(lent)]
 		_ => []
 	}
 	ops = d.ops
 	keyed =
 		if d.split {
-			ops.map(|op| rows.change(|table| applied(table, op)))
+			ops.map(|op| rows.update(|table| applied(table, op)))
 		} else if ops.is_empty() {
 			[]
 		} else {
-			[rows.change(|table| ops.fold(table, applied))]
+			[rows.update(|table| ops.fold(table, applied))]
 		}
 	spare = match d.spare {
-		Wrote(op) => [cells.spare.change(|table| applied(table, op))]
+		Wrote(op) => [cells.spare.update(|table| applied(table, op))]
 		Untouched => []
 	}
 	save = match reading {
-		Read({ now, .. }) => if (d.save) [cells.saved.put(now)] else []
+		Read({ now, .. }) => if (d.save) [cells.saved.set(now)] else []
 		Unread => []
 	}
-	tick = if (d.tick) [cells.items.serial.change(|n| n + 1)] else []
-	flip = if (d.flip) [cells.shown.change(|on| !on)] else []
+	tick = if (d.tick) [cells.items.serial.update(|n| n + 1)] else []
+	flip = if (d.flip) [cells.shown.update(|on| !on)] else []
 	listing = match d.listing {
-		To(l) => [cells.listing.put(l)]
+		To(l) => [cells.listing.set(l)]
 		Same => []
 	}
 	window = match d.window {
-		To(win) => [cells.window.put(win)]
+		To(win) => [cells.window.set(win)]
 		Same => []
 	}
 	lanes = match d.lanes {
-		To(list) => [cells.lanes.put(list)]
+		To(list) => [cells.lanes.set(list)]
 		Same => []
 	}
 	head.concat(keyed).concat(spare).concat(save).concat(tick).concat(flip).concat(listing).concat(window).concat(lanes)
@@ -589,23 +589,23 @@ press = |name, handler| Engine.element("button", [Engine.attr("data-do", name), 
 ## state of the row's own. `bump` and `tint` write the row through its
 ## `State`, `drop` removes it through the table's cell, `mark` writes the
 ## row's state and `both` writes that state and the row as one event.
-row_view : Engine.Cell(st, Table(U64, Item)), Val(Engine.Row(ctx, U64), U64), State(Engine.Row(ctx, U64), Item) -> Elem(Engine.Row(ctx, U64))
+row_view : Engine.Cell(st, Table(U64, Item)), Signal(Engine.Row(ctx, U64), U64), State(Engine.Row(ctx, U64), Item) -> Elem(Engine.Row(ctx, U64))
 	where [ctx.store : () -> Engine.Reach(ctx, st)]
 row_view = |table, key, row| Engine.element(
 	"li",
 	[],
 	[
-		Engine.text_v(key.map2(row.val(), |k, item| "${k.to_str()}:${item.rank.to_str()}:${item.shade.to_str()}")),
+		Engine.text_s(key.map2(row.signal(), |k, item| "${k.to_str()}:${item.rank.to_str()}:${item.shade.to_str()}")),
 		press("bump", row.update(|item| bumped(item, 1))),
 		press("tint", row.update(|item| bumped(item, 2))),
-		press("drop", Engine.handle_by(key, |k, _| [table.change(|held| held.remove(k))])),
+		press("drop", Engine.handle_by(key, |k, _| [table.update(|held| held.remove(k))])),
 		Engine.state(
 			0.U64,
 			|marks| Engine.element(
 				"span",
 				[],
 				[
-					Engine.text_v(marks.val().map(|n| ":${n.to_str()}")),
+					Engine.text_s(marks.signal().map(|n| ":${n.to_str()}")),
 					press("mark", marks.update(|n| n + 1)),
 					press("both", marks.update(|n| n + 1).also(row.lift().update(|item| bumped(item, 0)))),
 				],
@@ -616,14 +616,14 @@ row_view = |table, key, row| Engine.element(
 
 ## A view of `table`: the window `window` of `listing`, in a list that
 ## carries `name`.
-list_of : Engine.Attr(ctx), Engine.Cell(st, Table(U64, Item)), Val(ctx, Listing), Val(ctx, Engine.Window) -> Elem(ctx)
+list_of : Engine.Attr(ctx), Engine.Cell(st, Table(U64, Item)), Signal(ctx, Listing), Signal(ctx, Engine.Window) -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, st)]
 list_of = |name, table, listing, window| Engine.element(
 	"ul",
 	[name],
 	# The template is given as a lambda, not returned from a helper
 	# (roc-lang/roc#12970).
-	[Engine.each_view(table, { query: listing, plan: query_plan, window }, |key, row| row_view(table, key, row))],
+	[Engine.table_view(table, { query: listing, plan: query_plan, window }, |key, row| row_view(table, key, row))],
 )
 
 ## The page: the three controls a decision fires from (`plain`, `copy`,
@@ -632,16 +632,16 @@ list_of = |name, table, listing, window| Engine.element(
 page : {} -> Elem(Engine.StoreRoot(_))
 page = |{}| {
 	rows = cells.items.rows
-	reading = rows.val().map2(cells.saved.val(), |now, kept| { now, kept }).map2(cells.spare.val(), |read, lent| { now: read.now, kept: read.kept, lent })
+	reading = rows.signal().map2(cells.saved.signal(), |now, kept| { now, kept }).map2(cells.spare.signal(), |read, lent| { now: read.now, kept: read.kept, lent })
 	Engine.element(
 		"main",
 		[],
 		[
 			Engine.element("input", [Engine.test_id("plain"), Engine.on("input", Engine.handle(|payload| writes_of(decided_by(payload), Unread)))], []),
 			Engine.element("input", [Engine.test_id("copy"), Engine.on("input", Engine.handle_by(reading, |read, payload| writes_of(decided_by(payload), Read(read))))], []),
-			Engine.element("p", [Engine.test_id("count")], [Engine.text_v(rows.val().map(|table| table.len().to_str()))]),
-			Engine.element("p", [Engine.test_id("serial")], [Engine.text_v(cells.items.serial.val().map(|n| n.to_str()))]),
-			list_of(Engine.test_id("a"), rows, cells.listing.val(), cells.window.val()),
+			Engine.element("p", [Engine.test_id("count")], [Engine.text_s(rows.signal().map(|table| table.len().to_str()))]),
+			Engine.element("p", [Engine.test_id("serial")], [Engine.text_s(cells.items.serial.signal().map(|n| n.to_str()))]),
+			list_of(Engine.test_id("a"), rows, cells.listing.signal(), cells.window.signal()),
 			Engine.state(
 				first_local,
 				|local| Engine.element(
@@ -659,17 +659,17 @@ page = |{}| {
 							],
 							[],
 						),
-						list_of(Engine.test_id("b"), rows, local.val().map(|held| held.listing), local.val().map(|held| held.window)),
+						list_of(Engine.test_id("b"), rows, local.signal().map(|held| held.listing), local.signal().map(|held| held.window)),
 						Engine.derive(
-							local.val().map(|held| { listing: turned(held.listing), window: held.window }),
+							local.signal().map(|held| { listing: turned(held.listing), window: held.window }),
 							|shown| list_of(Engine.test_id("e"), rows, shown.map(|held| held.listing), shown.map(|held| held.window)),
 						),
 					],
 				),
 			),
 			Engine.when(
-				cells.shown.val(),
-				|| list_of(Engine.test_id("c"), rows, cells.listing.val().map(turned), Engine.const(c_window)),
+				cells.shown.signal(),
+				|| list_of(Engine.test_id("c"), rows, cells.listing.signal().map(turned), Engine.const(c_window)),
 				|| Engine.text(""),
 			),
 			list_of(Engine.test_id("d"), cells.spare, Engine.const(d_listing), Engine.const(d_window)),
@@ -678,12 +678,12 @@ page = |{}| {
 				[Engine.test_id("lanes")],
 				[
 					Engine.each(
-						cells.lanes.val(),
+						cells.lanes.signal(),
 						|shade| shade.to_str(),
 						|lane| Engine.element(
 							"li",
 							[],
-							[list_of(Engine.test_id_v(lane.key().map(|shade| "lane ${shade}")), rows, lane.field(lane_listing), Engine.const(lane_window))],
+							[list_of(Engine.test_id_s(lane.key().map(|shade| "lane ${shade}")), rows, lane.field(lane_listing), Engine.const(lane_window))],
 						),
 					),
 				],
@@ -1311,7 +1311,7 @@ keyed_steps = [
 	wrote(Put(7, ranked(1, 2))),
 ]
 
-## Several writes in one event, as one `change` and as one for each.
+## Several writes in one event, as one `update` and as one for each.
 batch_steps : List(Step)
 batch_steps = [
 	# A row inserted and removed in one event was never there.
@@ -1330,9 +1330,9 @@ batch_steps = [
 ]
 
 ## Runs of writes around the size at which a view rebuilds instead of
-## absorbing the record: more than an eighth of its rows plus eight. One
-## event's record is then absorbed by the larger views and rebuilt from by
-## the smaller ones.
+## absorbing the changes: more than an eighth of its rows plus eight. One
+## event's changes are then absorbed by the larger views; the smaller ones
+## rebuild from the table.
 many_steps : List(Step)
 many_steps = [
 	wrote(Fill(0, 8, 5)),
@@ -1348,7 +1348,7 @@ many_steps = [
 ]
 
 ## Whole rewrites of the table: by `load` and `update_all` among keyed
-## writes, by a put of a new table, and by the reset of the table's group.
+## writes, by setting a new table, and by the reset of the table's group.
 rewrite_steps : List(Step)
 rewrite_steps = [
 	# Keyed writes before and after a load in one event.
@@ -1442,7 +1442,7 @@ local_steps = [
 	both({ ..quiet, local_window: To({ start: 2, count: 2 }), ops: [Remove(15), Remove(14)] }),
 	# The listing in the event that writes a row only the new listing keeps.
 	both({ ..quiet, local_listing: To({ show: All, order: ByRank }), ops: [Update(0, 1)] }),
-	# The listing, the window and the table, as one `change` for each write.
+	# The listing, the window and the table, as one `update` for each write.
 	both({ ..quiet, local_listing: To({ show: Only(1), order: ByKey }), local_window: To({ start: 0, count: 6 }), ops: [Update(10, 2), Put(12, ranked(7, 1))], split: True }),
 	# Every view's listing and window, the lanes and the table in one event.
 	both({ ..quiet, local_listing: To({ show: Except(0), order: ByKey }), local_window: To({ start: 0, count: 6 }), listing: To({ show: Only(1), order: ByRank }), window: To({ start: 0, count: 6 }), flip: True, lanes: To([1, 2]), ops: [Put(2, ranked(5, 2)), Remove(8)], tick: True }),

@@ -47,14 +47,14 @@ function make(options = {}, env = {}) {
   m.instanceReady(seq, { origin: 1005, instStart: 9, instEnd: 10, memBytes: 65536 });
   clock.t = 40;
   // Worker stamps (worker clock): recv 6, begin 16, call 17, ret 30, sent 31.
-  m.jobReplied(1, seq, { t: [6, 16, 17, 30, 31], mem: [131072, 4, 100], outputBytes: 3 });
-  m.jobAnswered(1, "done", null, new Uint8Array(3));
+  m.jobAnswered(1, seq, { t: [6, 16, 17, 30, 31], mem: [131072, 4, 100], outputBytes: 3 });
+  m.jobDelivered(1, "done", null, new Uint8Array(3));
   clock.t = 42;
   check("an answered job's result turn is timed", m.timesTurn(FX_NODE, 1), true);
   check("a DOM turn is not timed without a turn subscriber", m.timesTurn(5, 1), false);
   m.turn(FX_NODE, 1, 41, 41.5, 42, 9);
   const r = m.snapshot().recent[0];
-  check("timeline converted to the page clock", [r.t.recv, r.t.begin, r.t.call, r.t.ret, r.t.sent, r.t.reply, r.t.turnStart, r.t.turnEnd], [11, 21, 22, 35, 36, 40, 41, 42]);
+  check("timeline converted to the page clock", [r.t.recv, r.t.begin, r.t.call, r.t.ret, r.t.sent, r.t.answer, r.t.turnStart, r.t.turnEnd], [11, 21, 22, 35, 36, 40, 41, 42]);
   check("spans of a cold job", r.ms, { held: 0, queue: 1, toWorker: null, cold: 10, stage: 1, compute: 13, copyOut: 1, fromWorker: 4, resultWait: 1, resultTurn: 1, total: 32, prepare: null });
   check("record facts", [r.outcome, r.cold, r.firstJobOnInstance, r.inputBytes, r.outputBytes, r.thread, r.instance], ["done", true, true, 7, 3, "worker", seq]);
   check("no bytes in the record", Object.values(r).some((v) => v instanceof Uint8Array), false);
@@ -70,8 +70,8 @@ function make(options = {}, env = {}) {
   m.jobIssued(2, "p/a", new Uint8Array(1), 0, false);
   m.jobSubmitted(2);
   m.jobPosted(2, seq);
-  m.jobReplied(2, seq, { t: [46, 46, 46, 47, 47], mem: [131072, 4, 100], outputBytes: 1 });
-  m.jobAnswered(2, "done", null, null);
+  m.jobAnswered(2, seq, { t: [46, 46, 46, 47, 47], mem: [131072, 4, 100], outputBytes: 1 });
+  m.jobDelivered(2, "done", null, null);
   m.turn(FX_NODE, 2, 50, 50, 50, 0);
   const w = m.snapshot().recent[1];
   check("a warm job: cold 0, transit measured", [w.cold, w.firstJobOnInstance, w.ms.cold, w.ms.toWorker], [false, false, 0, 1]);
@@ -89,8 +89,8 @@ function make(options = {}, env = {}) {
   m.jobPosted(3, seq, "work", null, postedAt);
   clock.t = 64;
   // Worker stamps (worker clock, 5 ms behind): recv 56, begin 57, call 57, ret 58, sent 58.
-  m.jobReplied(3, seq, { t: [56, 57, 57, 58, 58], mem: [131072, 4, 100], outputBytes: 1 });
-  m.jobAnswered(3, "done", null, null);
+  m.jobAnswered(3, seq, { t: [56, 57, 57, 58, 58], mem: [131072, 4, 100], outputBytes: 1 });
+  m.jobDelivered(3, "done", null, null);
   m.turn(FX_NODE, 3, 65, 65, 66, 0);
   const b = m.snapshot().recent[2];
   check("a post reported late keeps the pool's reading", [b.t.post, b.t.recv, b.ms.toWorker], [60, 61, 1]);
@@ -108,8 +108,8 @@ function make(options = {}, env = {}) {
     const seq = id === 1 ? m.instanceSpawned("page") : 1;
     if (id === 1) m.instanceReady(seq, { origin: 1000, instStart: 0, instEnd: 0, memBytes: 0 });
     m.jobPosted(id, seq);
-    m.jobReplied(id, seq, { t: [clock.t, clock.t, 0, compute, compute], mem: [0, 0, 0], outputBytes: 0 });
-    m.jobAnswered(id, "done", null, null);
+    m.jobAnswered(id, seq, { t: [clock.t, clock.t, 0, compute, compute], mem: [0, 0, 0], outputBytes: 0 });
+    m.jobDelivered(id, "done", null, null);
     m.turn(FX_NODE, id, 0, 0, 0, 0);
   }
   const h = m.snapshot().hist.compute;
@@ -145,13 +145,13 @@ function make(options = {}, env = {}) {
   const c = m.instanceSpawned("worker");
   check("a respawn beyond the peak", m.snapshot().instances.respawns, 1);
   m.jobPosted(3, c);
-  // Deadline: the instance ends first, then the job is answered Timeout.
+  // Timeout: the instance ends first, then the job is answered Timeout.
   clock.t = 15;
-  m.instanceEnded(c, "deadline");
-  m.jobAnswered(3, "timeout", null, null);
+  m.instanceEnded(c, "timeout");
+  m.jobDelivered(3, "timeout", null, null);
   m.turn(FX_NODE, 3, 15, 15, 15, 0);
   s = m.snapshot();
-  check("deadline: outcome and cause", [s.jobs.timeout, s.instances.ended.deadline, s.recent.find((r) => r.id === 3).outcome], [1, 1, "timeout"]);
+  check("timeout: outcome and cause", [s.jobs.timeout, s.instances.ended.timeout, s.recent.find((r) => r.id === 3).outcome], [1, 1, "timeout"]);
 }
 
 // Lost, unavailable, held.
@@ -159,7 +159,7 @@ function make(options = {}, env = {}) {
   const { m } = make();
   m.jobIssued(1, "p", new Uint8Array(0), 0, false);
   m.jobSubmitted(1);
-  m.jobAnswered(1, "unavailable", "unavailable", null);
+  m.jobDelivered(1, "unavailable", "unavailable", null);
   m.turn(FX_NODE, 1, 0, 0, 0, 0);
   m.jobIssued(2, "p", new Uint8Array(0), 0, true);
   m.jobCancelled(2);
@@ -245,8 +245,8 @@ function make(options = {}, env = {}) {
     m.jobIssued(id, "p/u", new Uint8Array(0), 0, false);
     m.jobSubmitted(id);
     m.jobPosted(id, a);
-    m.jobReplied(id, a, { t: [0, 0, 0, 0, 0], mem: [0, 0, 0], outputBytes: 0 });
-    m.jobAnswered(id, "done", null, null);
+    m.jobAnswered(id, a, { t: [0, 0, 0, 0, 0], mem: [0, 0, 0], outputBytes: 0 });
+    m.jobDelivered(id, "done", null, null);
     m.turn(FX_NODE, id, 0, 0, 0, 0);
   }
   check("span names", [...new Set(measures.map((x) => x.name))].sort(), ["roc:work p/u", "roc:work.queue", "roc:work.result", "roc:work.run", "roc:worker 1 spawn"]);

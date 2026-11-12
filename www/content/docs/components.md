@@ -23,7 +23,7 @@ a `State`:
 {{ sample(file="structure.roc", region="over-a-state") }}
 
 The caller decides whose state it is: a local state
-(`Engine.state(3, stars)`), a row of a table, which a view hands out as a
+(`Engine.state(3, stars)`), a row of a table, which a table view hands out as a
 `State`, or a cell of the store (`cell.state()`).
 
 ## A type and its operations
@@ -53,13 +53,13 @@ exactly which shared state the component reads and writes:
 
 {{ sample(file="shop/Cart.roc", region="cells") }}
 
-The view takes that record and is generic twice over: in `st`, the storage
-of whichever store holds the cells, and in `ctx`, the scope it is drawn in.
+The view takes that record and is generic twice over: in `st`, the type of
+whichever store holds the cells, and in `ctx`, the context it is drawn in.
 
 {{ sample(file="shop/Cart.roc", region="view") }}
 
-Because the view names no store and no scope, it works at any depth, in a
-row, and in another app. `Props(st)` takes the storage as a parameter because
+Because the view names no store and no fixed context, it works at any depth, in a
+row, and in another app. `Props(st)` takes the store's type as a parameter because
 a type alias cannot leave it to the compiler with `_`.
 
 ## Private state stays local
@@ -79,7 +79,7 @@ composes them with its local writes:
 
 `Cart.cells({})` above is the description of the cells a cart needs, with a
 reset where they should start again. The app nests it in its store as one
-field, and gets back the handles in the shape the component chose. A cell
+field, and gets back the cells in the shape the component chose. A cell
 the component gains later appears in the app's store, and in the reset,
 with no change to the app.
 
@@ -95,8 +95,8 @@ component its cells: the module that composes, a page or the app's root.
 In this small app the root both builds the store and composes. In a larger
 one the store has a module of its own, each page composes its components, and
 the components import neither. Passing is one level deep: a cell needs
-nothing to reach a deeper scope, so a component hands a cell to a child
-directly and nothing is threaded through the scopes between.
+nothing to reach a nested context, so a component hands a cell to a child
+directly and nothing is threaded through the contexts between.
 
 ## Nothing is sent upward
 
@@ -123,7 +123,7 @@ cells it uses, and name them for what they hold.
 
 ## Code size
 
-A view that is generic over its scope is compiled once for each kind of
-scope it is drawn in. That is what lets one view read the store and be drawn
+A view that is generic over its context is compiled once for each kind of
+context it is drawn in. That is what lets one view read the store and be drawn
 in a row with no ceremony. Its price is code size: a large view drawn under
-several kinds of scope is in the module once for each.
+several kinds of context is in the module once for each.

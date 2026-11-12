@@ -4,13 +4,13 @@
 // module (`worker.mjs` beside the runtime). It checks that a job runs off the
 // page's thread, its result is one turn, several jobs in flight complete,
 // jobs beyond `maxWorkers` queue, disposing the site cancels (CANCEL) and
-// terminates the worker, a deadline answers Timeout, a crashing task is
+// terminates the worker, a timeout answers Timeout, a crashing task is
 // `WorkLost(AppCrash)` with the page still working, `workers: "inline"`
 // gives the same results, a missing worker script is `WorkLost(Executor)`
 // and no Worker is `WorkLost(Unavailable)`, an unregistered task is a
 // contract fault that also stops the workers, and a protocol mismatch is
 // refused by the runtime and by the worker script. In manual mode a job's
-// deadline never fires on its own, and the spec hooks answer a pending job
+// timeout never fires on its own, and the spec hooks answer a pending job
 // Timeout or WorkLost. It prints one-run smoke
 // timings (`measure` lines); they are not asserted.
 import http from "node:http";
@@ -238,7 +238,7 @@ async function liveness(options) {
 }
 
 // Disposal cancels: CANCEL, the worker terminated, no result; the next job
-// gets a fresh worker. Then a deadline, a crash and a slice of the input.
+// gets a fresh worker. Then a timeout, a crash and a slice of the input.
 {
   const { page, ctx } = await open({});
   const r = await page.evaluate(async () => {
@@ -274,9 +274,9 @@ async function liveness(options) {
     await window.__until((l) => l.some((e) => e.startsWith("slow:")));
     return { elapsed: performance.now() - t0, entry: window.__entries().find((e) => e.startsWith("slow:")), terminated: window.__stats().terminated - terminated, timers: window.__rt.timers };
   }, long);
-  check("a 50 ms deadline delivers Timeout", t.entry, "slow:timeout");
-  check("the deadline stopped the job well before it could finish", t.elapsed < 2000, true);
-  check("the deadline terminated its worker and cleared its timer", [t.terminated, t.timers], [1, 0]);
+  check("a 50 ms timeout delivers Timeout", t.entry, "slow:timeout");
+  check("the timeout stopped the job well before it could finish", t.elapsed < 2000, true);
+  check("the timeout terminated its worker and cleared its timer", [t.terminated, t.timers], [1, 0]);
 
   const c = await page.evaluate(async () => {
     window.__click("Crash");
@@ -358,7 +358,7 @@ async function results(options) {
 }
 
 // manualWork (soak walks): work jobs wait for runEffect as in manual mode,
-// with no deadline timer and the monitor's `held` phase, while the rest of
+// with no timeout timer and the monitor's `held` phase, while the rest of
 // the effect channel runs on its own (here an interval subscription and
 // storage reads are not held by it).
 {
@@ -376,16 +376,16 @@ async function results(options) {
     const recent = rt.monitor.snapshot().recent.map((j) => [j.task, j.outcome, j.ms.held > 0]);
     return { waited, log: window.__entries().map((e) => e.split(" ")[0]), recent, pool: rt.monitor.snapshot().pool.instances };
   }, long);
-  check("manualWork: jobs wait without a deadline timer, the rest is not manual", [r.waited.log, r.waited.pending, r.waited.timers, r.waited.manual], ["", ["test.roc-signals/slow", "test.roc-signals/upper"], 0, false]);
-  check("runEffect runs each past its deadline, in the order asked", r.log, ["slow:spun", "upper:JOB"]);
+  check("manualWork: jobs wait without a timeout timer, the rest is not manual", [r.waited.log, r.waited.pending, r.waited.timers, r.waited.manual], ["", ["test.roc-signals/slow", "test.roc-signals/upper"], 0, false]);
+  check("runEffect runs each past its timeout, in the order asked", r.log, ["slow:spun", "upper:JOB"]);
   check("the monitor saw both held, then answered", r.recent, [["test.roc-signals/slow", "done", true], ["test.roc-signals/upper", "done", true]]);
   check("one worker ran both", r.pool, 1);
   await ctx.close();
 }
 
 // Manual mode (spec replays): a job waits until the spec acts, and its
-// deadline never fires on its own. runEffect runs it to completion past its
-// deadline, expireEffect answers Timeout, loseEffect answers WorkLost with
+// timeout never fires on its own. runEffect runs it to completion past its
+// timeout, expireEffect answers Timeout, loseEffect answers WorkLost with
 // the class it names, each reported with the stable `roc worker fault [`
 // prefix; none of them answers a job that is not pending or a request that
 // is not a job.
@@ -400,7 +400,7 @@ async function results(options) {
     window.__rounds(rounds);
     window.__click("Slow");
     await new Promise((res) => setTimeout(res, 300));
-    const waited = { log: window.__log(), pending: rt.pendingEffects().map((q) => [q.op, q.task, q.deadline]), timers: rt.timers };
+    const waited = { log: window.__log(), pending: rt.pendingEffects().map((q) => [q.op, q.task, q.timeout]), timers: rt.timers };
     const [slow] = rt.issued;
     const t0 = performance.now();
     await rt.runEffect(slow);
@@ -413,9 +413,9 @@ async function results(options) {
     const answered = [rt.expireEffect(second), rt.loseEffect(crash, "out_of_memory"), rt.loseEffect(upper, "executor")];
     return { waited, ran, refused, answered, entries: window.__entries(), faults: window.__faults.map((f) => [f.task, f.class]), pending: rt.pendingEffects().length };
   }, long);
-  check("manual mode: a job with a deadline waits, with no timer armed", [r.waited.log, r.waited.pending, r.waited.timers], ["", [["work", "test.roc-signals/slow", 50]], 0]);
-  check("runEffect runs it to completion past its deadline", [r.ran.log.startsWith("slow:spun "), r.ran.elapsed > 50, r.ran.timers], [true, true, 0]);
-  check("expireEffect and loseEffect refuse a job without a deadline, an unknown class, and a job already answered", r.refused, [false, false, false, false]);
+  check("manual mode: a job with a timeout waits, with no timer armed", [r.waited.log, r.waited.pending, r.waited.timers], ["", [["work", "test.roc-signals/slow", 50]], 0]);
+  check("runEffect runs it to completion past its timeout", [r.ran.log.startsWith("slow:spun "), r.ran.elapsed > 50, r.ran.timers], [true, true, 0]);
+  check("expireEffect and loseEffect refuse a job without a timeout, an unknown class, and a job already answered", r.refused, [false, false, false, false]);
   check("expireEffect answers Timeout, loseEffect the class it names", [r.answered, r.entries.slice(1)], [[true, true, true], ["slow:timeout", "crash:lost OutOfMemory", "upper:lost Executor"]]);
   check("each lost job reaches onWorkerFault with its class", r.faults, [["test.roc-signals/crash", "out_of_memory"], ["test.roc-signals/upper", "executor"]]);
   check("and the console with the stable prefix", errors.map((e) => e.slice(0, e.indexOf("]") + 1)), ["roc worker fault [out_of_memory]", "roc worker fault [executor]"]);
@@ -436,13 +436,13 @@ async function results(options) {
       refused = String(e.message);
     }
     const w = new Worker("/worker.mjs", { type: "module" });
-    const reply = new Promise((res) => {
+    const answer = new Promise((res) => {
       w.onmessage = (e) => res(e.data);
     });
     w.postMessage({ type: "init", module: window.__rt.module, version: 3 });
     const payload = new TextEncoder().encode("xxxx");
     w.postMessage({ type: "job", payload: payload.buffer }, [payload.buffer]);
-    const m = await reply;
+    const m = await answer;
     w.terminate();
     return { refused, worker: [m.type, m.code, m.message] };
   });

@@ -40,7 +40,7 @@ import Wire
 ##   it is left out when `Missing`. Decoding ignores keys the type does not
 ##   have, reads a key whose value is `null` as absent, and reads `null` in
 ##   place of a record as a record with no fields, so JavaScript's
-##   `undefined` (sent as `null`) answers a request whose reply is `{}`.
+##   `undefined` (sent as `null`) answers a request whose answer is `{}`.
 ## - A tag without payloads is its name as a string (`"Red"`); a tag with one
 ##   payload is an object with one key (`{"Some":1}`); a tag with several is
 ##   an object whose value is an array (`{"Rgb":[1,2,3]}`).

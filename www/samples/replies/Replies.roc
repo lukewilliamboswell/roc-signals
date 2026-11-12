@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, In, Root, State, Val]
+import pf.Engine exposing [Elem, In, Root, Signal, State]
 import pf.Html
 
 ## A small mail reader: which message is open, and a reply to it. Both are
@@ -24,7 +24,7 @@ Replies := [].{
 			"mail",
 			Replies.inbox
 				.map(|message| Html.button(message.subject, [], open.update(|_| message)))
-				.append(Engine.remount_on(open.val().map(|message| message.id), || Replies.reply(open.val()))),
+				.append(Engine.remount_on(open.signal().map(|message| message.id), || Replies.reply(open.signal()))),
 		)
 	# endregion open
 
@@ -32,7 +32,7 @@ Replies := [].{
 	## The reply to the message `to`. The draft is the reply's own state: it
 	## is created with the reply and goes with it, so each message the
 	## reader opens gets a draft that starts empty.
-	reply : Val(ctx, Message) -> Elem(ctx)
+	reply : Signal(ctx, Message) -> Elem(ctx)
 	reply = |to|
 		Engine.state(
 			"",
@@ -40,9 +40,9 @@ Replies := [].{
 				Html.div(
 					"reply",
 					[
-						Html.p_v(to.lift().map(|message| "Reply to ${message.subject}"), [Engine.test_id("to")]),
-						Html.textarea(Engine.const("Reply"), draft.val(), [], draft.set_value(|_, typed| typed)),
-						Html.p_v(draft.val().map(Replies.length), [Engine.test_id("length")]),
+						Html.p_s(to.lift().map(|message| "Reply to ${message.subject}"), [Engine.test_id("to")]),
+						Html.textarea(Engine.const("Reply"), draft.signal(), [], draft.set_value(|_, typed| typed)),
+						Html.p_s(draft.signal().map(Replies.length), [Engine.test_id("length")]),
 					],
 				),
 		)

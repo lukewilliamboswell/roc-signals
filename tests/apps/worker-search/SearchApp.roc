@@ -9,7 +9,7 @@ import pf.Worker
 ##   query in a worker: only the newest query's job is in flight, and an
 ##   empty query cancels it.
 ## - A "Report" panel (a `when` branch) whose site summarises the catalogue
-##   in a worker at mount, with a deadline; leaving the panel disposes the
+##   in a worker at mount, with a timeout; leaving the panel disposes the
 ##   site, which cancels the job. A lost or timed-out report offers a retry.
 SearchApp := [].{
 	S : { query : Str, results : Str, searched : Str, report : Bool, attempt : U64, summary : Str }
@@ -60,7 +60,7 @@ SearchApp := [].{
 	filter_task = Worker.task({ name: "test.roc-signals/search/filter", run!: |query| Ok(SearchApp.filter(query)) })
 
 	summarise_task : Worker.Task({}, Str, Worker.Never)
-	summarise_task = Worker.task({ name: "test.roc-signals/search/summarise", run!: |input| Ok(SearchApp.summarise(input)), deadline: Ms(2000) })
+	summarise_task = Worker.task({ name: "test.roc-signals/search/summarise", run!: |input| Ok(SearchApp.summarise(input)), timeout: Ms(2000) })
 
 	## What a finished job says, success or not.
 	outcome : Try(Str, Worker.Error(Worker.Never)) -> Try(Str, Str)
@@ -90,7 +90,7 @@ SearchApp := [].{
 			[Html.aria_label("Report")],
 			[
 				Engine.watch(
-					st.val().map(|s| s.attempt),
+					st.signal().map(|s| s.attempt),
 					|_| [SearchApp.summarise_task.request({})],
 					st.on_result(
 						|s, _, r| {
@@ -102,19 +102,19 @@ SearchApp := [].{
 						},
 					),
 				),
-				Html.p_v(st.val().map(|s| if (s.summary == "") "Computing…" else s.summary), [Engine.test_id("summary")]),
+				Html.p_s(st.signal().map(|s| if (s.summary == "") "Computing…" else s.summary), [Engine.test_id("summary")]),
 				Html.button("Retry", [], st.update(|s| { ..s, attempt: s.attempt + 1, summary: "" })),
 			],
 		)
 
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"search",
 			[
 				Html.text_input(Engine.const("Search"), "search", v.map(|s| s.query), [], st.set_value(|s, t| { ..s, query: t })),
-				Engine.latest(
+				Engine.watch_latest(
 					v.map(|s| s.query),
 					|q| if (q == "") [] else [SearchApp.filter_task.request(q)],
 					st.on_result(
@@ -125,8 +125,8 @@ SearchApp := [].{
 							},
 					),
 				),
-				Html.p_v(v.map(SearchApp.status), [Engine.test_id("status")]),
-				Html.p_v(v.map(|s| s.results), [Engine.test_id("results")]),
+				Html.p_s(v.map(SearchApp.status), [Engine.test_id("status")]),
+				Html.p_s(v.map(|s| s.results), [Engine.test_id("results")]),
 				Html.button("Report", [], st.update(|s| { ..s, report: !s.report, summary: "" })),
 				Engine.when(v.map(|s| s.report), || SearchApp.report_view(st), || Engine.text("")),
 			],

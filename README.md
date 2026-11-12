@@ -3,7 +3,8 @@
 A [Roc](https://www.roc-lang.org) platform for interactive browser apps. You
 write the UI in pure Roc; a reactive engine, also in Roc, compiles with your
 app to WebAssembly and updates exactly the DOM that depends on what changed.
-There is no virtual DOM. A small JavaScript runtime applies the engine's
+A signal is a read-only value whose state dependencies are declared when it
+is built. There is no virtual DOM. A small JavaScript runtime applies the engine's
 commands and performs the effects it requests. Slow work, from a pure
 calculation to reading and building files, runs as worker tasks in Web
 Workers that instantiate the same module.
@@ -68,7 +69,7 @@ walks through writing, testing and running a first app.
 
 | Path | Contents |
 |---|---|
-| `platform/` | The engine (`Core.roc`, with tables and their views in `Table.roc`, `View.roc` and `Seq.roc`), its authoring API (`Engine.roc`), the `Html` vocabulary, typed worker tasks (`Worker.roc`, `Wire.roc`), ports (`Port.roc`, `PortJson.roc`), the Wasm host, the browser runtime and its worker script, the native spec runner, and the engine package the platform's own fuzz targets depend on (`main-fuzz.roc`) |
+| `platform/` | The engine (`Core.roc`, with tables and their table views in `Table.roc`, `View.roc` and `Seq.roc`), its authoring API (`Engine.roc`), the `Html` vocabulary, typed worker tasks (`Worker.roc`, `Wire.roc`), ports (`Port.roc`, `PortJson.roc`), the Wasm host, the browser runtime and its worker script, the native spec runner, and the engine package the platform's own fuzz targets depend on (`main-fuzz.roc`) |
 | `cli/` | `signals.roc`, the tool app authors use to create, serve, build and test an app; each release bundles it |
 | `examples/` | Example apps, each with its specs and, where its pure logic has a rule worth stating, a fuzz target of that logic (`fuzz-<subject>.roc`) |
 | `tests/`, `fuzz/` | Browser contract tests and the apps they drive, the Chrome spec replay, and the platform's own fuzz targets |

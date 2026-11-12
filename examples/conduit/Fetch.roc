@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, Val]
+import pf.Engine exposing [Elem, Signal]
 import Api
 
 ## The two request shapes Conduit's pages use, and the sites that send them.
@@ -40,7 +40,7 @@ Fetch := [].{
 	remote : Loaded(a), Str -> Api.Remote(a)
 	remote = |loaded, key| if (!key.is_empty() and loaded.key == key) loaded.value else Loading
 
-	plan_submit : Submit -> List(Engine.Req)
+	plan_submit : Submit -> List(Engine.Request)
 	plan_submit = |s| {
 		if s.serial == 0 {
 			[]
@@ -77,12 +77,12 @@ Fetch := [].{
 
 	## Sends a GET whenever `req` changes; `stored` receives the answer with
 	## the request it was sent for.
-	load_site : Val(ctx, LoadReq), Engine.Reaction(ctx, LoadReq) -> Elem(ctx)
+	load_site : Signal(ctx, LoadReq), Engine.Reaction(ctx, LoadReq) -> Elem(ctx)
 	load_site = |req, stored| Engine.watch(req, |r| if (r.uri.is_empty()) [] else [Api.get_request(r.uri, r.token)], stored)
 
 	## Sends a submission whenever `sub` changes; `answered` receives the
 	## answer with the submission it was sent for.
-	submit_site : Val(ctx, Submit), Engine.Reaction(ctx, Submit) -> Elem(ctx)
+	submit_site : Signal(ctx, Submit), Engine.Reaction(ctx, Submit) -> Elem(ctx)
 	submit_site = |sub, answered| Engine.watch(sub, Fetch.plan_submit, answered)
 }
 

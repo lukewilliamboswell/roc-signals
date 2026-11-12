@@ -67,7 +67,7 @@ Two things hold a file longer than you might expect:
 - A slice of a list (`take_first`, `drop_first`, `sublist`) keeps the whole
   list's files alive. To keep some files and let the rest go, build a new
   list of the ones you keep.
-- A `derive` or `Worker.derive` layer keeps its last input, so a file it was
+- A derived signal or worker resource keeps its last input, so a file it was
   asked about stays until its input changes, and its answer holds the
   files it names until the next answer. A request kept in state for an
   effect site holds its files the same way, until the state is written

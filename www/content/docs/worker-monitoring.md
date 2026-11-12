@@ -10,7 +10,7 @@ template = "page.html"
 A `Work` request runs a job of a registered task in a Web Worker (see
 [Workers](@/docs/workers.md)). The runtime's
 **monitor** shows what that costs: where each job's time went, how busy the
-pool is, what cancellations, deadlines and crashes cost, and how much memory
+pool is, what cancellations, timeouts and crashes cost, and how much memory
 the worker instances hold. It only observes. Turning it on or subscribing to
 it never changes which job runs when, what it returns or what the app sees.
 
@@ -61,9 +61,13 @@ result, and turns those stamps into spans. The spans add up to the job's
 | `resultWait` | received → result turn starts | The page was busy with another turn |
 | `resultTurn` | result turn | The app's reaction and the DOM it changed |
 
-A job's deadline runs from the moment the request is performed, so it covers
+The page receives a worker's answer at `t.answer` in the job record. That
+stamp includes only arrival; `resultWait` and `resultTurn` account for
+delivering it to the engine and applying its commands.
+
+A job's timeout runs from the moment the request is performed, so it covers
 queueing and cold start as well as compute. A held job (manual mode, or the
-`manualWork` mount option) has no deadline timer: a spec's time is manual,
+`manualWork` mount option) has no timeout timer: a spec's time is manual,
 and `expireEffect(id)` expires it instead.
 
 `held` means this on a job everywhere it appears (its span, its `phase` and
@@ -105,8 +109,8 @@ console.table(s.recent.map((j) => ({ id: j.id, task: j.task, outcome: j.outcome,
 |---|---|
 | `mode` | `"workers"`, `"inline"` (the page's thread) or `"unavailable"` (no `Worker`) |
 | `pool` | `instances`, `spawning`, `idle`, `busy` (holding a job, starting ones included) and `queued`, now; their `peak`; and the time integrals `busyMs`, `aliveMs`, `queuedMs` |
-| `jobs` | Counts by outcome (`done`, `lost`, `timeout`, `cancelled`, `unavailable`); `inFlight`; `wastedMs` (time on instances by jobs that never delivered output); input and output bytes; `lateReplies` (always 0 in a healthy pool); for preparations' tasks, `prepared` (jobs that prepared a state), `reused` (jobs run on a kept state) and `prepareMs` (total preparation time) |
-| `instances` | `spawns`, `respawns` (spawns beyond the most instances ever live at once), `ended` by cause (`cancel`, `deadline`, `fault`, `executor`, `unmount`, `contained`, and `retired` for a worker over `maxWorkerBytes`), `evicted`: prepared states let go by cause (`replaced` by another preparation, `released` with their file), and the `live` and `retired` instances: thread, state, spawn and ready times, instantiation time, jobs served, busy time, linear memory and its peak, the host's live allocations and bytes, and `held`, the name of the preparation whose state it keeps (or `null`) |
+| `jobs` | Counts by outcome (`done`, `lost`, `timeout`, `cancelled`, `unavailable`); `inFlight`; `wastedMs` (time on instances by jobs that never delivered output); input and output bytes; `lateAnswers` (always 0 in a healthy pool); for preparations' tasks, `prepared` (jobs that prepared a state), `reused` (jobs run on a kept state) and `prepareMs` (total preparation time) |
+| `instances` | `spawns`, `respawns` (spawns beyond the most instances ever live at once), `ended` by cause (`cancel`, `timeout`, `fault`, `executor`, `unmount`, `contained`, and `retired` for a worker over `maxWorkerBytes`), `evicted`: prepared states let go by cause (`replaced` by another preparation, `released` with their file), and the `live` and `retired` instances: thread, state, spawn and ready times, instantiation time, jobs served, busy time, linear memory and its peak, the host's live allocations and bytes, and `held`, the name of the preparation whose state it keeps (or `null`) |
 | `hist` | Histograms of `queue`, `cold`, `compute`, `total`, `resultTurn` and `prepare`, in fixed 1-2-5 millisecond buckets (`edges`, `counts`, `n`, `sum`, `min`, `max`) |
 | `tasks` | Per task, by name: jobs, outcomes, bytes, and `queue`, `compute` and `total` histograms (job records name their task in `task`) |
 | `recent` | The last `history` job records, with every stamp (`t`) and span (`ms`). The record of a preparation's task's job says whether it `prepared` (`"prepare"`) or reused a kept state (`"reuse"`; `null` for other tasks), and `prepareMs`, how long preparing took (also `ms.prepare`; `null` when it reused); `compute` is then the task alone. `finished` is true for a cancelled job whose task's `on_cancel: Finish` let it complete |
@@ -137,7 +141,7 @@ const stop = runtime.monitor.subscribe((e) => console.log(e.kind, e));
 
 | Kind | Fields |
 |---|---|
-| `job-issue` | `id`, `task`, `inputBytes`, `deadlineMs`, `held` (true when manual mode holds the job), `at` (and `input` with `payloads`) |
+| `job-issue` | `id`, `task`, `inputBytes`, `timeoutMs`, `held` (true when manual mode holds the job), `at` (and `input` with `payloads`) |
 | `job-start` | `id`, `instance`, `cold`, `at` |
 | `job-end` | `id`, `task`, `outcome`, `at`, `record` (the full job record; and `output` with `payloads`) |
 | `instance-spawn` | `instance`, `thread` (`"worker"` or `"page"`), `at` |
@@ -161,9 +165,9 @@ What a listener can rely on:
   `running`) and `record.cancelledBy` (`engine`, `unmount`, `contained`).
 - A cancelled job whose task says `on_cancel: Finish` ends at once as `cancelled`
   with `record.finished`, but its instance stays busy until the job
-  completes, or until its deadline (ten minutes when it has none), when the
-  instance ends with cause `deadline`.
-- When stopping a job terminates its worker (cancel, deadline, fault), the
+  completes, or until its timeout (ten minutes when it has none), when the
+  instance ends with cause `timeout`.
+- When stopping a job terminates its worker (cancel, timeout, fault), the
   `instance-end` comes before that job's `job-end`.
 - When the page's runtime is poisoned or unmounted, every job and instance
   still live ends with that cause, then the `runtime` event follows. Nothing
@@ -181,7 +185,7 @@ jobs show up in the DevTools Performance panel and in any
 
 - `roc:work <task>`: a job from issue to its applied result. Its `detail`
   carries the id, instance, outcome and byte sizes.
-- `roc:work.queue`, `roc:work.cold`, `roc:work.run` (posted until the reply
+- `roc:work.queue`, `roc:work.cold`, `roc:work.run` (posted until the answer
   arrives) and `roc:work.result`: the job's phases.
 - `roc:work.prepare`: the preparation of a preparation's task's job, drawn
   with the length the worker measured, ending where the task's own call

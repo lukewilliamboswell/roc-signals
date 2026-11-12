@@ -97,21 +97,21 @@ GatherApp := [].{
 	view = |st| Html.div(
 		"gather",
 		[
-			Html.number_input(Engine.const("Shards"), st.val().map(|s| s.shards.to_str()), [], st.set_value(|s, text| { ..s, shards: U64.from_str(text) ?? s.shards })),
+			Html.number_input(Engine.const("Shards"), st.signal().map(|s| s.shards.to_str()), [], st.set_value(|s, text| { ..s, shards: U64.from_str(text) ?? s.shards })),
 			Html.checkbox(
 				Engine.const("Fail the second shard"),
-				st.val().map(|s| s.second == Fails),
+				st.signal().map(|s| s.second == Fails),
 				[],
 				st.set_value(|s, checked| { ..s, second: if (checked == "true") Fails else Counts }),
 			),
 			Worker.gather(
 				GatherApp.count,
-				st.val().map(GatherApp.spans),
+				st.signal().map(GatherApp.spans),
 				|g| Html.div(
 					"result",
 					[
-						Html.p_v(g.map(|gathered| Str.join_with(gathered.jobs.map(GatherApp.job_text), " ")), [Engine.test_id("jobs")]),
-						Html.p_v(g.map(GatherApp.total_text), [Engine.test_id("total")]),
+						Html.p_s(g.map(|gathered| Str.join_with(gathered.jobs.map(GatherApp.job_text), " ")), [Engine.test_id("jobs")]),
+						Html.p_s(g.map(GatherApp.total_text), [Engine.test_id("total")]),
 					],
 				),
 			),

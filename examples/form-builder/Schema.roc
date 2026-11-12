@@ -1,4 +1,4 @@
-import pf.Engine exposing [Cell, Elem, Row, State, Val]
+import pf.Engine exposing [Cell, Elem, Row, Signal, State]
 import pf.Table
 import Form
 
@@ -15,18 +15,18 @@ Schema := [].{
 	## field of its row (`Form.Field`), which the list sorts by.
 	Fields : Table(U64, Form.Field)
 
-	## The handles on the schema's cells, in a store whose storage is `st`:
+	## The schema's cells, in a store whose type is `st`:
 	## the fields, and the number the next field added will take.
-	Handles(st) : { fields : Cell(st, Fields), next : Cell(st, U64) }
+	Cells(st) : { fields : Cell(st, Fields), next : Cell(st, U64) }
 
 	## What "Add" writes for a field of `kind`, given the number the next
 	## field takes: the new field under that number, last in the form, and
 	## the number after it as the next one. The two are written together so
 	## that no number is ever given twice.
-	added : Handles(st), { kind : Form.Kind, number : U64 } -> List(Engine.Write(st))
+	added : Cells(st), { kind : Form.Kind, number : U64 } -> List(Engine.Write(st))
 	added = |schema, { kind, number }| [
-		schema.fields.change(|table| table.insert(number, Form.new_field(kind, number))),
-		schema.next.put(number + 1),
+		schema.fields.update(|table| table.insert(number, Form.new_field(kind, number))),
+		schema.next.set(number + 1),
 	]
 
 	## What a field's "Move up" and "Move down" write: the field and the
@@ -35,24 +35,24 @@ Schema := [].{
 	## the table the write is handed, so the table keeps one holder and is
 	## changed in place.
 	moved : Cell(st, Fields), { key : U64, toward : [Earlier, Later] } -> List(Engine.Write(st))
-	moved = |fields, move| [fields.change(|table| table.apply(Form.move_field(table.to_list(), move)))]
+	moved = |fields, move| [fields.update(|table| table.apply(Form.move_field(table.to_list(), move)))]
 
 	## What a field's "Delete" writes: the field gone. Its answer stays
 	## behind in the preview's answers, where no field will ask for it.
 	deleted : Cell(st, Fields), U64 -> List(Engine.Write(st))
-	deleted = |fields, key| [fields.change(|table| table.remove(key))]
+	deleted = |fields, key| [fields.update(|table| table.remove(key))]
 
 	## Whether the form has any field.
-	has_fields : Cell(st, Fields) -> Val(ctx, Bool)
+	has_fields : Cell(st, Fields) -> Signal(ctx, Bool)
 		where [ctx.store : () -> Engine.Reach(ctx, st)]
-	has_fields = |fields| fields.val().map(|table| table.len() > 0)
+	has_fields = |fields| fields.signal().map(|table| table.len() > 0)
 
 	## One row for each field, in the form's order: a view of the fields'
 	## table. `template` is handed the field's number and its row. A form
 	## is short and drawn whole, so the view draws every row.
-	each_field : Cell(st, Fields), (Val(Row(ctx, U64), U64), State(Row(ctx, U64), Form.Field) -> Elem(Row(ctx, U64))) -> Elem(ctx)
+	each_field : Cell(st, Fields), (Signal(Row(ctx, U64), U64), State(Row(ctx, U64), Form.Field) -> Elem(Row(ctx, U64))) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, st)]
-	each_field = |fields, template| Engine.each_view(
+	each_field = |fields, template| Engine.table_view(
 		fields,
 		{
 			query: Engine.const({}),

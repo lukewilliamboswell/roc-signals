@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, Handler, Row, RowRef, Val]
+import pf.Engine exposing [Elem, Handler, Row, RowRef, Signal]
 import pf.Html
 import AppStore
 import Notes
@@ -29,7 +29,7 @@ NotesApp := [].{
 	## The page over the session's boot data.
 	view : Engine.Boot -> Elem(Engine.StoreRoot(_))
 	view = |boot| Engine.derive(
-		AppStore.h.board.val().map(Notes.board_rows),
+		AppStore.cells.board.signal().map(Notes.board_rows),
 		|rows| Html.div(
 			page_class,
 			[
@@ -61,7 +61,7 @@ NotesApp := [].{
 					),
 				),
 				# The notes, written back to local storage whenever they change.
-				Engine.on_change(AppStore.h.board.val().map(|b| Notes.encode_notes(b.notes)), |text| [StorageSet(Notes.notes_key, text)], Engine.ignore({})),
+				Engine.watch_changes(AppStore.cells.board.signal().map(|b| Notes.encode_notes(b.notes)), |text| [StorageSet(Notes.notes_key, text)], Engine.ignore({})),
 			],
 		),
 	)
@@ -112,12 +112,12 @@ retry_class = |status|
 	}
 
 ## One metric tile. A count is a label and a number, not a sentence.
-stat : { label : Str, value : Val(ctx, Str), id : Str } -> Elem(ctx)
-stat = |{ label, value, id }| Html.div("stat", [Html.p(label, "stat-label"), Html.p_v(value, [Engine.class("stat-value"), Engine.test_id(id)])])
+stat : { label : Str, value : Signal(ctx, Str), id : Str } -> Elem(ctx)
+stat = |{ label, value, id }| Html.div("stat", [Html.p(label, "stat-label"), Html.p_s(value, [Engine.class("stat-value"), Engine.test_id(id)])])
 
 ## A checkbox draws no caption of its own, so the visible label is next to
 ## it.
-check_row : Str, Val(ctx, Bool), Handler(ctx) -> Elem(ctx)
+check_row : Str, Signal(ctx, Bool), Handler(ctx) -> Elem(ctx)
 check_row = |label, checked, changed| Html.div("check-row", [Html.checkbox(Engine.const(label), checked, [Engine.class("checkbox")], changed), Engine.text(label)])
 
 ## One note, a row of the list. Its handlers name the note by the row's
@@ -132,19 +132,19 @@ note_card = |row| {
 	act = |decide| Engine.handle_by(key, |id, _| decide(id))
 	Engine.element(
 		"section",
-		[Engine.attr_v("aria-label", named("Note")), Engine.class(note_class), Engine.attr_v("data-status", status.map(Notes.status_code))],
+		[Engine.attr_s("aria-label", named("Note")), Engine.class(note_class), Engine.attr_s("data-status", status.map(Notes.status_code))],
 		[
 			Html.div(
 				"flex flex-wrap items-center justify-between gap-2",
 				[
-					Html.h2_v(named("Note"), [Engine.class("card-title")]),
-					Html.p_v(status.map(Notes.status_title), [Engine.class_v(status.map(status_class)), Engine.test_id_v(key.map(|k| "status-${k}"))]),
+					Html.h2_s(named("Note"), [Engine.class("card-title")]),
+					Html.p_s(status.map(Notes.status_title), [Engine.class_s(status.map(status_class)), Engine.test_id_s(key.map(|k| "status-${k}"))]),
 				],
 			),
 			Html.div(
 				"field",
 				[
-					Html.p_v(named("Body"), [Engine.class("field-label")]),
+					Html.p_s(named("Body"), [Engine.class("field-label")]),
 					Html.text_input(
 						named("Body"),
 						"text",
@@ -154,14 +154,14 @@ note_card = |row| {
 					),
 				],
 			),
-			Html.p_v(row.field(|r| r.detail), [Engine.class("hint numeric")]),
+			Html.p_s(row.field(|r| r.detail), [Engine.class("hint numeric")]),
 			Html.div(
 				toolbar_class,
 				[
 					Html.action_button(named("Queue note"), row.field(|r| r.queue_disabled), [Engine.class("button button-sm")], act(AppStore.queued)),
-					Html.action_button(named("Retry note"), row.field(|r| r.retry_disabled), [Engine.class_v(status.map(retry_class))], act(AppStore.retried)),
-					Html.button_v(named("Promote note"), [Engine.class("button-ghost button-sm")], act(AppStore.promoted)),
-					Html.button_v(named("Delete note"), [Engine.class("button-ghost button-sm")], act(AppStore.deleted)),
+					Html.action_button(named("Retry note"), row.field(|r| r.retry_disabled), [Engine.class_s(status.map(retry_class))], act(AppStore.retried)),
+					Html.button_s(named("Promote note"), [Engine.class("button-ghost button-sm")], act(AppStore.promoted)),
+					Html.button_s(named("Delete note"), [Engine.class("button-ghost button-sm")], act(AppStore.deleted)),
 				],
 			),
 		],
@@ -174,7 +174,7 @@ note_card = |row| {
 sync_lane : U64 -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 sync_lane = |slot| Engine.watch(
-	AppStore.h.board.val().map(|b| Notes.issue_at(b, slot)),
+	AppStore.cells.board.signal().map(|b| Notes.issue_at(b, slot)),
 	|issue| match issue.request {
 		Send(token) => [Http({ method: "POST", url: "/api/notes/sync", headers: [], body: token, timeout_ms: 0 })]
 		Idle => []
@@ -193,17 +193,17 @@ sync_lane = |slot| Engine.watch(
 ## The connection, auto-sync and the outbox at a glance, with the two
 ## switches. `storage_available` is fixed for the session: the browser
 ## reports it at boot.
-sync_status : Bool, Val(ctx, List(Notes.Row)) -> Elem(ctx)
+sync_status : Bool, Signal(ctx, List(Notes.Row)) -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 sync_status = |storage_available, rows| {
-	board = AppStore.h.board.val()
+	board = AppStore.cells.board.signal()
 	online = board.map(|b| b.online)
 	auto = board.map(|b| b.auto)
 	Html.section_attrs(
 		"Sync status",
-		[Engine.class(panel_class), Engine.attr_v("data-network", online.map(|on| if (on) "online" else "offline"))],
+		[Engine.class(panel_class), Engine.attr_s("data-network", online.map(|on| if (on) "online" else "offline"))],
 		[
-			Html.p_v(online.map(Notes.network_text), [Engine.class_v(online.map(network_class)), Engine.test_id("network")]),
+			Html.p_s(online.map(Notes.network_text), [Engine.class_s(online.map(network_class)), Engine.test_id("network")]),
 			Html.div(
 				"stat-grid",
 				[
@@ -220,14 +220,14 @@ sync_status = |storage_available, rows| {
 						toolbar_class,
 						[
 							check_row("Sync automatically", auto, Engine.handle(|checked| AppStore.auto_set(checked == "true"))),
-							check_row("Hide synced notes", AppStore.h.hide_synced.val(), Engine.handle(|checked| AppStore.synced_hidden(checked == "true"))),
+							check_row("Hide synced notes", AppStore.cells.hide_synced.signal(), Engine.handle(|checked| AppStore.synced_hidden(checked == "true"))),
 						],
 					),
 					Html.div(
 						toolbar_class,
 						[
-							Html.p_v(auto.map(Notes.auto_text), [Engine.class_v(auto.map(auto_class)), Engine.test_id("auto-sync")]),
-							Html.p_v(rows.map(Notes.capacity_text), [Engine.class("badge badge-neutral numeric"), Engine.test_id("capacity")]),
+							Html.p_s(auto.map(Notes.auto_text), [Engine.class_s(auto.map(auto_class)), Engine.test_id("auto-sync")]),
+							Html.p_s(rows.map(Notes.capacity_text), [Engine.class("badge badge-neutral numeric"), Engine.test_id("capacity")]),
 						],
 					),
 				],
@@ -239,10 +239,10 @@ sync_status = |storage_available, rows| {
 
 ## The box a new note is typed in. Saving is one decision over the draft
 ## as it stands when the button is clicked.
-capture : Val(ctx, List(Notes.Row)) -> Elem(ctx)
+capture : Signal(ctx, List(Notes.Row)) -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 capture = |rows| {
-	draft = AppStore.h.draft.val()
+	draft = AppStore.cells.draft.signal()
 	Html.section(
 		"Capture",
 		panel_class,
@@ -271,7 +271,7 @@ capture = |rows| {
 }
 
 ## How many notes wait in the outbox.
-outbox : Val(ctx, List(Notes.Row)) -> Elem(ctx)
+outbox : Signal(ctx, List(Notes.Row)) -> Elem(ctx)
 outbox = |rows| Html.section(
 	"Outbox",
 	panel_class,
@@ -280,16 +280,16 @@ outbox = |rows| Html.section(
 		Engine.when(
 			rows.map(|r| Notes.outbox_count(r) == 0),
 			|| Html.p("Outbox is empty", "empty-state"),
-			|| Html.p_v(rows.map(Notes.outbox_text), [Engine.class("notice notice-info"), Engine.test_id("outbox-detail")]),
+			|| Html.p_s(rows.map(Notes.outbox_text), [Engine.class("notice notice-info"), Engine.test_id("outbox-detail")]),
 		),
 	],
 )
 
 ## The captured notes, without the synced ones while they are hidden.
-captured : Val(ctx, List(Notes.Row)) -> Elem(ctx)
+captured : Signal(ctx, List(Notes.Row)) -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 captured = |rows| {
-	shown = rows.map2(AppStore.h.hide_synced.val(), |all, hide| if (hide) all.keep_if(|r| r.status != Synced) else all)
+	shown = rows.map2(AppStore.cells.hide_synced.signal(), |all, hide| if (hide) all.keep_if(|r| r.status != Synced) else all)
 	Html.section(
 		"Notes",
 		panel_class,

@@ -1,4 +1,4 @@
-import pf.Engine exposing [Val]
+import pf.Engine exposing [Signal]
 import pf.Table
 import Cells
 import Formula
@@ -42,34 +42,34 @@ SheetStore := [Workbook].{
 		}.Engine.Cells,
 	)
 
-	## The handles on the store's cells.
-	h = SheetStore.store.handles()
+	## The store's cells.
+	cells = SheetStore.store.cells()
 
 	## Typing `text` into the cell at `index`, in the grid or in the formula
 	## bar.
 	typed : U64, Str -> List(Engine.Write(_))
-	typed = |index, text| [SheetStore.h.sheet.change(|table| SheetStore.retyped(table, index, text))]
+	typed = |index, text| [SheetStore.cells.sheet.update(|table| SheetStore.retyped(table, index, text))]
 
 	## The cell at `index` taking the focus: the caret moves there and
 	## editing starts, as one transition.
 	focused : U64 -> List(Engine.Write(_))
-	focused = |index| [SheetStore.h.selected.put(index), SheetStore.h.editing.put(Editing)]
+	focused = |index| [SheetStore.cells.selected.set(index), SheetStore.cells.editing.set(Editing)]
 
 	## The selected cell losing the focus. The caret stays where it is.
 	blurred : List(Engine.Write(_))
-	blurred = [SheetStore.h.editing.put(Resting)]
+	blurred = [SheetStore.cells.editing.set(Resting)]
 
 	## A click on the button that changes what the grid's cells show.
 	mode_switched : List(Engine.Write(_))
-	mode_switched = [SheetStore.h.mode.change(Sheet.other_mode)]
+	mode_switched = [SheetStore.cells.mode.update(Sheet.other_mode)]
 
 	## A click on the button that hides or lists the blank rows.
 	rows_switched : List(Engine.Write(_))
-	rows_switched = [SheetStore.h.listing.change(Sheet.with_rows_switched)]
+	rows_switched = [SheetStore.cells.listing.update(Sheet.with_rows_switched)]
 
 	## A click on the button that reverses the rows.
 	order_switched : List(Engine.Write(_))
-	order_switched = [SheetStore.h.listing.change(Sheet.with_order_switched)]
+	order_switched = [SheetStore.cells.listing.update(Sheet.with_order_switched)]
 
 	## `table` with `text` typed into the cell at `index` and the whole sheet
 	## computed again. Only the rows that came out different are written,
@@ -112,19 +112,19 @@ SheetStore := [Workbook].{
 
 	## What the formula bar shows: the selected cell as the sheet holds it
 	## now, and whether it is being edited.
-	bar : {} -> Val(ctx, Bar)
+	bar : {} -> Signal(ctx, Bar)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	bar = |{}| {
-		table: SheetStore.h.sheet.val(),
-		index: SheetStore.h.selected.val(),
-		focus: SheetStore.h.editing.val(),
-	}.Val.map(|{ table, index, focus }| SheetStore.bar_of(SheetStore.cell_at(table, index), focus))
+		table: SheetStore.cells.sheet.signal(),
+		index: SheetStore.cells.selected.signal(),
+		focus: SheetStore.cells.editing.signal(),
+	}.Signal.map(|{ table, index, focus }| SheetStore.bar_of(SheetStore.cell_at(table, index), focus))
 }
 
 ## The values the cells named show in the sheet a store holds.
 values_at : Engine.Store(_, _), List(Str) -> List(Str)
 values_at = |held, refs| {
-	table = held.read(SheetStore.h.sheet)
+	table = held.read(SheetStore.cells.sheet)
 	refs.map(
 		|ref| match Cells.index_of(ref) {
 			Ok(index) => SheetStore.cell_at(table, index).out.text
@@ -137,19 +137,19 @@ values_at = |held, refs| {
 ## Annotated, as `switches_of` is, because it uses `read` at two types,
 ## which a function cannot do on a parameter whose type is unknown.
 caret_of : Engine.Store(_, _) -> Str
-caret_of = |held| "${Cells.ref_of(held.read(SheetStore.h.selected))} ${Str.inspect(held.read(SheetStore.h.editing))}"
+caret_of = |held| "${Cells.ref_of(held.read(SheetStore.cells.selected))} ${Str.inspect(held.read(SheetStore.cells.editing))}"
 
 ## What a store's grid shows and lists.
 switches_of : Engine.Store(_, _) -> Str
-switches_of = |held| "${Str.inspect(held.read(SheetStore.h.mode))} ${Str.inspect(held.read(SheetStore.h.listing))}"
+switches_of = |held| "${Str.inspect(held.read(SheetStore.cells.mode))} ${Str.inspect(held.read(SheetStore.cells.listing))}"
 
 ## The store opens on the starting workbook, computed, with the caret resting in A1.
 expect {
 	opened = SheetStore.store
 	actual =
-		\\sources: ${Str.inspect(SheetStore.sources_of(opened.read(SheetStore.h.sheet)) == Sheet.initial_cells)}
+		\\sources: ${Str.inspect(SheetStore.sources_of(opened.read(SheetStore.cells.sheet)) == Sheet.initial_cells)}
 		\\D2, D8, B9: ${Str.inspect(values_at(opened, ["D2", "D8", "B9"]))}
-		\\errors: ${SheetStore.error_count(opened.read(SheetStore.h.sheet)).to_str()}
+		\\errors: ${SheetStore.error_count(opened.read(SheetStore.cells.sheet)).to_str()}
 		\\caret: ${caret_of(opened)}
 	expected =
 		\\sources: True
@@ -175,7 +175,7 @@ expect {
 ## After any edits the table holds exactly the rows its own sources compute: nothing is left over from an earlier edit.
 expect {
 	edited = SheetStore.store.after(SheetStore.typed(9, "1500").concat(SheetStore.typed(26, "oops")).concat(SheetStore.typed(84, "=G4+1")))
-	table = edited.read(SheetStore.h.sheet)
+	table = edited.read(SheetStore.cells.sheet)
 	Sheet.rows_of(SheetStore.sources_of(table)).all(|{ key, row }| table.get(key) == Ok(row))
 }
 
@@ -188,7 +188,7 @@ expect {
 
 ## The formula bar shows the selected cell's source, value and the cells it reads.
 expect {
-	bar = SheetStore.bar_of(SheetStore.cell_at(SheetStore.store.read(SheetStore.h.sheet), 35), Editing)
+	bar = SheetStore.bar_of(SheetStore.cell_at(SheetStore.store.read(SheetStore.cells.sheet), 35), Editing)
 	bar == { ref: "D5", focus: Editing, source: "=SUM(D2:D4)", value: "4100", kind: Number, depends: "D2, D3, D4" }
 }
 
@@ -209,6 +209,6 @@ expect {
 
 ## Hiding the blank rows lists eleven of the starting workbook's twelve.
 expect {
-	table = SheetStore.store.read(SheetStore.h.sheet)
+	table = SheetStore.store.read(SheetStore.cells.sheet)
 	(SheetStore.rows_listed(table, Sheet.whole_sheet), SheetStore.rows_listed(table, Sheet.with_rows_switched(Sheet.whole_sheet))) == (12, 11)
 }

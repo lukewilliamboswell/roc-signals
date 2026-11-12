@@ -26,19 +26,19 @@ ManyApp := [].{
 		[
 			Html.button("Shrink", [], st.update(|s| { ..s, n: s.n // 4 })),
 			Html.button("Grow", [], st.update(|s| { ..s, n: 5000, gen: s.gen + 1 })),
-			Engine.element("pre", [Engine.test_id("log")], [Engine.text_v(st.val().map(|s| Str.join_with(s.log, "|")))]),
+			Engine.element("pre", [Engine.test_id("log")], [Engine.text_s(st.signal().map(|s| Str.join_with(s.log, "|")))]),
 			Engine.element(
 				"ul",
 				[],
 				[
 					Engine.each(
-						st.val().map(|s| ManyApp.keys_of(s.n, s.gen)),
+						st.signal().map(|s| ManyApp.keys_of(s.n, s.gen)),
 						|k| k,
 						|row| Engine.element(
 							"li",
 							[],
 							[
-								Engine.text_v(row.key()),
+								Engine.text_s(row.key()),
 								Engine.element(
 									"ol",
 									[],
@@ -46,7 +46,7 @@ ManyApp := [].{
 										Engine.each(
 											row.key().map(|k| ["${k}-a", "${k}-b"]),
 											|k| k,
-											|item| Engine.element("li", [Engine.attr_v("aria-label", item.key()), Engine.on_click(st.lift_row().lift_row().update_by(item.key(), |s, k| { ..s, log: s.log.append(k) }))], [Engine.text_v(item.key())]),
+											|item| Engine.element("li", [Engine.attr_s("aria-label", item.key()), Engine.on_click(st.lift_row().lift_row().update_by(item.key(), |s, k| { ..s, log: s.log.append(k) }))], [Engine.text_s(item.key())]),
 										),
 									],
 								),

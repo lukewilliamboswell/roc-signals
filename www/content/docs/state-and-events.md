@@ -17,13 +17,18 @@ Most of the snippets on this page come from one sign-up form,
 
 ## Introducing state
 
-`Engine.state(initial, body)` creates a state and calls `body` with its
-handle. Everything `body` returns can read and write it; nothing outside can.
-Nesting states gives each its own layer:
+`State(ctx, s)` is a piece of state as one context sees it. It is read as a
+signal and written with reducers. `Engine.state` makes a local one,
+`cell.state()` gives a store cell as one, and a table view hands each drawn
+row its row as one.
+
+`Engine.state(initial, body)` creates local state and calls `body` with its
+`State`. Everything `body` returns can read and write it; nothing outside can.
+Each nested state introduces its own context:
 
 {{ sample(file="state.roc", region="states") }}
 
-Inside the inner state, the outer handle is lifted with `form.lift()` so it
+Inside the inner state, the outer `State` is lifted with `form.lift()` so it
 can be used in the inner context. Name the contexts once:
 
 {{ sample(file="state.roc", region="contexts") }}
@@ -34,7 +39,7 @@ branch, and released with it.
 ## Handlers
 
 A handler is how an event changes state. For local state it is built from
-the state's handle and attached to an element:
+a `State` and attached to an element:
 
 | Handler | The reducer receives |
 |---|---|
@@ -105,8 +110,8 @@ property, and a select re-applies its value when its options change.
 ## Derived values
 
 `map` and `map2` compute a value every time something it reads changes. When
-the computation is expensive, or many holes read its result, give it a layer
-of its own with `derive`:
+the computation is expensive, or many holes read its result, cache it as a derived
+signal with `derive`:
 
 {{ sample(file="state.roc", region="derive") }}
 
@@ -119,7 +124,7 @@ the derived value do no work on a keystroke that leaves it unchanged.
 Local state lives as long as the piece of the view that declares it. Often
 that is exactly right: a branch that is switched away takes its state with
 it. Sometimes the piece stays but what it is about changes, and its state
-should not carry over. A reply being drafted belongs to the open message, and
+should not carry over. A draft belongs to the open message, and
 opening another message should start a new draft.
 
 `Engine.remount_on(key, body)` builds `body()` and, whenever `key` changes to
@@ -128,7 +133,7 @@ again at its initial value:
 
 {{ sample(file="replies/Replies.roc", region="open") }}
 
-The reply holds its draft as its own state and knows nothing of the remount
+The draft has its own state and knows nothing of the remount
 around it:
 
 {{ sample(file="replies/Replies.roc", region="reply") }}
@@ -152,7 +157,7 @@ The sample's spec pins the behaviour:
 Local state is the right home until one of these becomes true:
 
 - A second part of the app, somewhere else in the view, needs to read or
-  write it. Passing a handle down through every level between them is what
+  write it. Passing a `State` down through every level between them is what
   the store is for.
 - It must outlive the piece of the view that shows it: a draft that should
   survive a change of page, a filter that should survive a branch switching.

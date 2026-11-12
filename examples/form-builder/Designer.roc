@@ -1,4 +1,4 @@
-import pf.Engine exposing [Cell, Elem, Row, State, Val]
+import pf.Engine exposing [Cell, Elem, Row, Signal, State]
 import pf.Html
 import Form
 import Schema
@@ -43,14 +43,14 @@ Designer := [].{
 ## An edit of the definition is a write of the row itself. A move and a
 ## delete change more than this field's row, so each is a transition over
 ## the fields' cell (`Schema`).
-editor : Cell(st, Schema.Fields), Val(Row(ctx, U64), U64), State(Row(ctx, U64), Form.Field) -> Elem(Row(ctx, U64))
+editor : Cell(st, Schema.Fields), Signal(Row(ctx, U64), U64), State(Row(ctx, U64), Form.Field) -> Elem(Row(ctx, U64))
 	where [ctx.store : () -> Engine.Reach(ctx, st)]
 editor = |fields, key, field| {
 	named = |prefix| key.map(|number| "${prefix} ${Form.id_of(number)}")
-	defined = field.val()
+	defined = field.signal()
 	rule_broken = Html.aria_invalid(defined.map(|now| Form.rule_error(now) != ""))
 	move = |toward| Engine.handle_by(key, |number, _| Schema.moved(fields, { key: number, toward }))
-	Html.section_v(
+	Html.section_s(
 		named("Field"),
 		"card gap-3",
 		[
@@ -63,11 +63,11 @@ editor = |fields, key, field| {
 							Html.div(
 								"flex items-center gap-2",
 								[
-									Html.p_v(defined.map(|now| Form.kind_title(now.kind)), [Engine.class_v(defined.map(|now| Form.kind_badge_class(now.kind)))]),
-									Html.p_v(defined.map(|now| now.label), [Engine.class("card-title truncate")]),
+									Html.p_s(defined.map(|now| Form.kind_title(now.kind)), [Engine.class_s(defined.map(|now| Form.kind_badge_class(now.kind)))]),
+									Html.p_s(defined.map(|now| now.label), [Engine.class("card-title truncate")]),
 								],
 							),
-							Html.p_v(defined.map(Form.summary_text), [Engine.class_v(defined.map(Form.summary_tone)), Engine.test_id_v(key.map(|number| "field-${Form.id_of(number)}-summary"))]),
+							Html.p_s(defined.map(Form.summary_text), [Engine.class_s(defined.map(Form.summary_tone)), Engine.test_id_s(key.map(|number| "field-${Form.id_of(number)}-summary"))]),
 						],
 					),
 					Html.div(

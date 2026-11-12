@@ -8,10 +8,11 @@ template = "page.html"
 # Contributing
 
 This page is for people changing the platform, its tests, the examples or this
-site. The architecture and its rules are in
+website. The architecture and its rules are in
 [design.md](https://github.com/lukewilliamboswell/roc-signals/blob/main/design.md);
-repository-wide review guidelines are in `AGENTS.md`, and Roc conventions in
-the [Roc Style Guide](https://gist.github.com/lukewilliamboswell/241a4e8adb7c89c7e0e02f1d303a8fa1).
+repository-wide review guidelines are in `AGENTS.md`, and Roc conventions in the
+[Roc Style
+Guide](https://gist.github.com/lukewilliamboswell/241a4e8adb7c89c7e0e02f1d303a8fa1).
 
 ## Tools
 
@@ -32,13 +33,13 @@ recipe ready.
 | Path | Contents |
 |---|---|
 | `platform/` | The platform (`main.roc`): the engine (`Core.roc`, with a table, its views and their ordered keys in `Table.roc`, `View.roc` and `Seq.roc`, and in `EngineOnly.roc` the value that keeps a table's bookkeeping out of an app's reach), the authoring API (`Engine.roc`, `Table.roc`, `Html.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the hosted effects a worker job calls (`Hosted.roc`, bound in both hosts and reached only through `Effects.roc`, which the platform root hands to the engine with each job, and `Files.roc`, whose `build!` opens a builder), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, with its walks and soaks, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig` with its system services in `host/os_posix.zig` and `host/os_windows.zig`, and `host/kernel32.def`, the Windows host's imports). Also `main-fuzz.roc`, a package root over the same pure modules (all but `Files.roc`, `Effects.roc`, `Hosted.roc` and `Cli.roc`) that the platform's own fuzz targets depend on |
-| `tests/` | Browser contract tests and the apps they drive (`tests/apps/`, for example `store` for cells read and written at depth, `writes` for decisions, resets and `also`, `table` for a table and its views, `remount` for `remount_on`, `files` for file handles, `file-effects` for operations on files, `ports` for ports, `worker-typed` for the task API, `prepared` for preparations, `tasks` for jobs that read and build files, `outbox` for posting requests and `gather` for one question split over several jobs, with the platform's fuzz targets of the effect channel and the controls beside their test apps as `fuzz-<subject>.roc`), the Chrome spec replay, and the release check helper |
+| `tests/` | Browser contract tests and the apps they drive (`tests/apps/`, for example `store` for cells read and written at depth, `writes` for decisions, resets and `also`, `table` for a table and its table views, `remount` for `remount_on`, `files` for file handles, `file-effects` for operations on files, `ports` for ports, `worker-typed` for the task API, `prepared` for preparations, `tasks` for jobs that read and build files, `outbox` for posting requests and `gather` for one question split over several jobs, with the platform's fuzz targets of the effect channel and the controls beside their test apps as `fuzz-<subject>.roc`), the Chrome spec replay, and the release check helper |
 | `fuzz/` | The platform's fuzz targets of the shared support (the spec, wire and port formats, generated site trees, and tables with their views) |
 | `examples/` | The example apps, each with its specs, any fuzz targets of its own pure logic (`fuzz-<subject>.roc`), and any JavaScript of its own beside it (the port handlers of the Reading List, the Status Page and the Million-Row Explorer, `ports.mjs`; the simulated service of Conduit, Field Notes and the Status Page, `backend.mjs`; the Log Explorer's `log-timings` element, `timings.mjs`, the Status Page's `latency-feed-monitor`, `feed-monitor.mjs`, and the Million-Row Explorer's `query-meter`, `meter.mjs`); `examples/shared/` holds the JavaScript several examples load (the `plume-chart` and `worker-pool-panel` elements) |
 | `cli/` | The source of `signals.roc`, the tool app authors run to create, serve, build and test an app (below) |
 | `benchmarks/` | The js-framework-benchmark adapter |
 | `scripts/` | Roc scripts behind the tasks; shared modules in `scripts/src/` |
-| `www/` | This site; `www/samples/` holds every code sample the docs show, each a file `check` compiles and, for a sample app, tests |
+| `www/` | This website; `www/samples/` holds every code sample the docs show, each a file `check` compiles and, for a sample app, tests |
 
 A module added to `platform/` for apps to import is listed in four places:
 `exposes` in `platform/main.roc`, the package's list in `platform/main-fuzz.roc`
@@ -71,16 +72,19 @@ round-trip spec under its `specs/`, is listed in `Slow.native_soaks`;
 target of its own logic, if it has one, is listed in
 `Targets.fuzz_targets`.
 
-The site build highlights Roc samples with the pinned `roc-parser` lexer before
+The website build highlights Roc samples with the pinned `roc-parser` lexer before
 Zola runs. `www/samples/` remains the source: generated escaped fragments in
 `www/highlighted/` are ignored. Scheme-style `.scm` samples use an independent
 display lexer for comments, strings, list heads, atoms and keyword arguments;
-it never parses or validates spec behavior. Other sample languages remain
-escaped plain text. The checked files are also published under
+it never parses or validates spec behavior. HTML samples use another lossless
+display lexer for tags, attributes, values, comments, declarations and character
+references; script and style bodies remain plain text. Every token is escaped
+before markup is added, so highlighted HTML cannot become page elements or run
+scripts. Other sample languages remain escaped plain text. The checked files are also published under
 `dist/samples/`. In both rendered Roc snippets and their downloadable copies,
 checkout-relative package URLs are replaced with `<package release URL here>`;
 the originals retain their local paths for compiler checks. Other text is
-preserved. `sample_download` and `sample_url` resolve against the site base
+preserved. `sample_download` and `sample_url` resolve against the website base
 URL so readers can fetch the samples without a repository checkout.
 Chrome checks the rendered source and copying, system/light/dark preferences,
 keyboard controls, every syntax color in both palettes, and text contrast on the
@@ -88,14 +92,14 @@ documentation and index pages. Theme preferences apply to site chrome; example
 apps keep their authored colors. Screenshots are written to
 `.build/site-screenshots/` for visual review.
 
-The site's look is one stylesheet, `www/input.css`, and its rules are stated
+The website's look is one stylesheet, `www/input.css`, and its rules are stated
 at the top of that file: square corners, one-pixel rules and no shadows; IBM
 Plex Sans for text and IBM Plex Mono capitals for labels; and one accent, kept
 for what is live or actionable, so status colors mean only status. The first
 half of the file is the design system the examples compose their UI from,
 always drawn light. The second half is the `site-…` classes of the pages
 around an app, in a light and a dark palette, each with its own syntax
-colors. The fonts are files under `www/static/fonts/`, served with the site,
+colors. The fonts are files under `www/static/fonts/`, served with the website,
 with their license beside them.
 
 ## Tasks
@@ -112,18 +116,25 @@ These are the development environment's Blueprint tasks, not an app's
 | `blueprint run jfb` | Build the js-framework-benchmark app and check its operations in Chrome |
 | `blueprint run workers-scaling` | Measure worker jobs in Chrome on both candidate shipping builds of the Worker Lab: correctness (its drawn picture included), the time to draw a picture by pool size, speedup by pool size, responsiveness, payloads, robustness sequences and memory, as tables for a pull request |
 | `blueprint run fuzz -- [--time S] [TARGET...]` | A fuzz campaign |
-| `blueprint run site -- [--base-url URL]` | Build the site, the API docs and the example apps into `dist/`; check sample highlighting, copying, themes and contrast in Chrome |
+| `blueprint run site -- [--base-url URL] [--tool-url URL]` | Build the website, the API docs and the example apps into `dist/`; check sample highlighting, copying, themes and contrast in Chrome |
 | `blueprint run serve -- [DIR] [--port N]` | Serve `dist/` at `127.0.0.1:8000/roc-signals/`, its published path, or `DIR` at the root |
 | `blueprint run release -- --version V` | Build the release assets into `dist-release/` |
 
-To browse the site locally:
+To browse the website locally:
 
 ```sh
 blueprint run site -- --base-url http://127.0.0.1:8000/roc-signals
 blueprint run serve
 ```
 
-The published site is main: every push to main that passes `check` deploys
+When reviewing an unreleased API, add `--tool-url URL` to the site build to
+link onboarding downloads to a matching candidate `signals.roc`. That tool must
+name the candidate's platform and tool bundles at reachable URLs; changing the
+website link alone does not make an older release compatible. The override is
+written to `.build/site-config.toml`, leaving `www/config.toml` unchanged.
+Without an override, onboarding links download the latest published release.
+
+The published website is main: every push to main that passes `check` deploys
 CI's `blueprint run site` build to GitHub Pages.
 
 Builds go to `.build/`; set `ROC_SIGNALS_BUILD_DIR` to use another directory,
@@ -264,7 +275,7 @@ and bumps the protocol version.
 
 ## Docs samples
 
-Every Roc code block on this site comes from a file under `www/samples/`,
+Every Roc code block on this website comes from a file under `www/samples/`,
 shown with the `sample` shortcode:
 
 ```text
@@ -302,7 +313,7 @@ live interval, changing visibility or connectivity for a live subscription,
 or delivering a message a spec emits on a port. A worker job runs for real
 in a child process, as a spec runs it, unless the walk loses it with a
 fault class, times it out or leaves it pending; every other request is
-answered from what the files' steps give: an HTTP request with a reply
+answered from what the files' steps give: an HTTP request with an HTTP response
 staged for its URL (else its path), a 503 or a timeout; a port call with an
 answer given that port, a throw or its timeout. After every step the settle
 check must pass (see [Testing](@/docs/testing.md#the-settle-check)) and the
@@ -326,7 +337,7 @@ its last `mark-metrics` (after the mount when there is none), then replays
 those calls 48 times on the engine alone and requires every cycle after a
 warm-up (`--warm N`, two by default) to leave no allocation and no byte
 live. An answer the spec gave (an HTTP stub, a worker job's answer, a port
-reply) is replayed as it was first given, to the request at the same place
+answer) is replayed as it was first given, to the request at the same place
 among those in flight; a cycle that leaves no request there is not a round
 trip, and the soak says so. It is a leak check, never a baseline. Each
 example but the CSV Converter keeps one round-trip spec
@@ -398,7 +409,7 @@ not its inputs, carry the value.
 
 ## Performance
 
-Measure the build that ships: `--opt=size` for the browser, as the site and
+Measure the build that ships: `--opt=size` for the browser, as the website and
 the soak build it. Test how a cost scales with a 10× larger input before
 optimizing anything, since scaling problems dwarf constant factors. Browser
 timing comes from the js-framework-benchmark adapter in `benchmarks/`.
@@ -409,13 +420,14 @@ growth or scaling.
 ## Compilers
 
 For `nightly-2026-11-11-7679cc5` only, automation prints explicit `SKIP`
-messages for compiler-blocked work. [roc-lang/roc#12976](https://github.com/roc-lang/roc/issues/12976)
-crashes optimized builds of every maintained example, so the site and
-`signals.roc build` use `--opt=dev`, with a warning that the artifacts are
-larger and slower. Native and browser specs, short walks and native soaks
-still run. Optimized long walks, shipping browser soaks and full worker
-scaling do not run; development artifacts are not performance or shipping
-allocation evidence. The release notes disclose these limits.
+messages for compiler-blocked work.
+[roc-lang/roc#12976](https://github.com/roc-lang/roc/issues/12976) crashes
+optimized builds of every maintained example, so the website and `signals.roc
+build` use `--opt=dev`, with a warning that the artifacts are larger and slower.
+Native and browser specs, short walks and native soaks still run. Optimized long
+walks, shipping browser soaks and full worker scaling do not run; development
+artifacts are not performance or shipping allocation evidence. The release notes
+disclose these limits.
 
 Fuzz examples and campaigns also report `SKIP` on that nightly: roc-fuzz
 0.6.0's Linux libraries predate the [PIE requirement](https://github.com/roc-lang/roc/pull/12949),
@@ -538,8 +550,8 @@ The repository follows the
 [roc-automation](https://github.com/lukewilliamboswell/roc-automation) model,
 with these deliberate exceptions:
 
-- **Documentation lives on this site**, built with Zola, not in
-  `docs/*.adoc`; roc-docs generates only the API reference. The site is the
+- **Documentation lives on this website**, built with Zola, not in
+  `docs/*.adoc`; roc-docs generates only the API reference. The website is the
   product's documentation surface.
 - **Specs, not `tests/spec.json`, test the working tree.** The examples are
   browser apps; `.scm` specs run in both runners. The examples archive

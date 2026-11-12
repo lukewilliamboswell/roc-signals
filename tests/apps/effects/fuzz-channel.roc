@@ -295,8 +295,8 @@ issue_r = |m, r| {
 	} else {
 		m1 = admit_x(m, k_r, r, Ri, |id| Interval(id, 700), RefR)
 		# The echo task's input, a `U8`, is one byte on the wire; its 100 ms
-		# deadline and `Stop` cancel policy travel with it.
-		admit_x(m1, k_r, r, Rw, |id| Work(id, { task: FxApp.echo.name(), input: [r.to_u8_wrap()], files: [], deadline_ms: 100, cancel: 1, prepared: Unprepared }), RefR)
+		# timeout and `Stop` cancel policy travel with it.
+		admit_x(m1, k_r, r, Rw, |id| Work(id, { task: FxApp.echo.name(), input: [r.to_u8_wrap()], files: [], timeout_ms: 100, cancel: 1, prepared: Unprepared }), RefR)
 	}
 }
 
@@ -373,7 +373,7 @@ issue_x = |m, g| {
 
 ## A result settles X's job at `at`; once no job works, the whole answer
 ## is every answer in input order, or the first failure.
-x_settle : M, U64, Engine.Res -> M
+x_settle : M, U64, Engine.Result -> M
 x_settle = |m, at, res| {
 	job = match FxApp.Asker.result(FxApp.asker, res) {
 		Ok(a) => A(a)
@@ -601,7 +601,7 @@ model_toggle_r = |m| {
 	}
 }
 
-model_deliver : M, U32, Engine.Res -> M
+model_deliver : M, U32, Engine.Result -> M
 model_deliver = |m, id, res| {
 	match m.live.find_first(|l| l.id == id) {
 		Ok(l) => {
@@ -666,7 +666,7 @@ click! = |s, name| {
 
 ## Results go through the wire: an independent encoder here, the engine's
 ## decoder there (the round trip is part of what the model checks).
-deliver! : S, U32, Engine.Res => E
+deliver! : S, U32, Engine.Result => E
 deliver! = |s, id, res| {
 	(a, c) = Core.take_cmds(Core.result(s.eng, id, Core.decode_res(encode_res(res))), [])
 	apply!(s, a, c)
@@ -678,7 +678,7 @@ le32 = |b, v| b.append(v.to_u8_wrap()).append(v.shr_zf_wrap(8).to_u8_wrap()).app
 wstr : List(U8), Str -> List(U8)
 wstr = |b, s| le32(b, s.count_utf8_bytes()).concat(Str.to_utf8(s))
 
-encode_res : Engine.Res -> List(U8)
+encode_res : Engine.Result -> List(U8)
 encode_res = |res| match res {
 	Http({ status, headers, body }) => {
 		var $b = le32([1, status.to_u8_wrap(), status.shr_zf_wrap(8).to_u8_wrap()], headers.len())
@@ -695,7 +695,7 @@ encode_res = |res| match res {
 	Location(u) => [6].concat(Str.to_utf8(u))
 	Work({ output, files: [] }) => SpecRunner.encode_answer(output)
 	WorkLost(AppCrash) => [11, 4]
-	PortReply({ json, .. }) => le32(le32(wstr([14], json), 0), 0)
+	PortAnswer({ json, .. }) => le32(le32(wstr([14], json), 0), 0)
 	PortFailed(Threw(t)) => [15, 1].concat(Str.to_utf8(t))
 	PortFailed(TooLarge) => [15, 2]
 	PortFailed(Closed) => [15, 3]
@@ -822,7 +822,7 @@ run_program! = |prog| {
 		} else if op == 10 {
 			# A port's message, its close or its failure, for an arbitrary id.
 			id = (arg.to_u32() % $m.next) + 1
-			res = if (arg % 3 == 0) PortReply({ json: "\"m${arg.to_str()}\"", blobs: [], files: [] }) else if (arg % 3 == 1) PortFailed(Closed) else PortFailed(Threw("t${arg.to_str()}"))
+			res = if (arg % 3 == 0) PortAnswer({ json: "\"m${arg.to_str()}\"", blobs: [], files: [] }) else if (arg % 3 == 1) PortFailed(Closed) else PortFailed(Threw("t${arg.to_str()}"))
 			(deliver!($s, id, res), model_deliver(m0, id, res), "port result ${id.to_str()}")
 		} else {
 			# A tick, a job's answer (the echo task's answer `arg`: the byte

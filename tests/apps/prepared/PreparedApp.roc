@@ -15,7 +15,7 @@ import pf.Worker
 ## - Three tabs, each with its task's site inside its branch, so leaving a
 ##   tab disposes its site and coming back asks again: "Stats" (lines, words
 ##   and distinct words, `test-id "stats"`), "Lookup" (the count and first
-##   lines of the word typed in "Word", `test-id "lookup"`, with a deadline)
+##   lines of the word typed in "Word", `test-id "lookup"`, with a timeout)
 ##   and "Top" (the three most frequent words, `test-id "top"`, which
 ##   finishes a cancelled job instead of stopping it).
 ## - "Forget" drops the file, so its handle is released and no worker keeps
@@ -81,7 +81,7 @@ PreparedApp := [].{
 	}
 
 	document : Worker.Preparation(Source, Index, Problem)
-	document = Worker.prepared({
+	document = Worker.preparation({
 		name: "test.roc-signals/prepared/document",
 		prepare!: PreparedApp.index!,
 	})
@@ -102,7 +102,7 @@ PreparedApp := [].{
 			lines = ix.at.get(word) ?? []
 			Ok({ count: lines.len(), first: lines.take_first(3) })
 		},
-		deadline: Ms(30000),
+		timeout: Ms(30000),
 	})
 
 	top : Worker.PreparedTask(Source, Index, U64, List({ word : Str, count : U64 }), Problem)
@@ -128,7 +128,7 @@ PreparedApp := [].{
 	}
 
 	scratch : Worker.Preparation(File, Scratch, Engine.FileError)
-	scratch = Worker.prepared({ name: "test.roc-signals/prepared/scratch", prepare!: PreparedApp.scratch! })
+	scratch = Worker.preparation({ name: "test.roc-signals/prepared/scratch", prepare!: PreparedApp.scratch! })
 
 	## Append to the builder the preparation kept: a contract error.
 	write : Worker.PreparedTask(File, Scratch, {}, {}, Engine.FileError)
@@ -181,13 +181,13 @@ PreparedApp := [].{
 	## The scratch task `want` asks for, over the loaded document.
 	scratched : S, [Idle, Write, Keep] -> [Run(Worker.Question(File, {})), Skip]
 	scratched = |s, want| match s.doc {
-		Loaded(doc) if s.scratch == want => Run({ input: doc, query: {} })
+		Loaded(doc) if s.scratch == want => Run({ init: doc, input: {} })
 		_ => Skip
 	}
 
 	asked : S, q -> [Run(Worker.Question(Source, q)), Skip]
-	asked = |s, query| match s.doc {
-		Loaded(doc) => Run({ input: { doc, fold: s.fold }, query })
+	asked = |s, input| match s.doc {
+		Loaded(doc) => Run({ init: { doc, fold: s.fold }, input })
 		None => Skip
 	}
 
@@ -196,24 +196,24 @@ PreparedApp := [].{
 
 	panel : State(Ctx, S), Tab -> Elem(Ctx)
 	panel = |st, tab| {
-		v = st.val()
+		v = st.signal()
 		match tab {
-			Stats => Worker.derive_when(PreparedApp.stats, v.map(|s| PreparedApp.asked(s, {})), |r| Html.p_v(r.map(|x| PreparedApp.show(x, |a| "${a.lines.to_str()} lines, ${a.words.to_str()} words, ${a.distinct.to_str()} distinct")), [Engine.test_id("stats")]))
+			Stats => Worker.resource_when(PreparedApp.stats, v.map(|s| PreparedApp.asked(s, {})), |r| Html.p_s(r.map(|x| PreparedApp.show(x, |a| "${a.lines.to_str()} lines, ${a.words.to_str()} words, ${a.distinct.to_str()} distinct")), [Engine.test_id("stats")]))
 			Lookup =>
 				Html.div(
 					"lookup",
 					[
 						Html.text_input(Engine.const("Word"), "text", v.map(|s| s.word), [], st.set_value(|s, word| { ..s, word })),
-						Worker.derive_when(PreparedApp.lookup, v.map(|s| PreparedApp.asked(s, s.word)), |r| Html.p_v(r.map(|x| PreparedApp.show(x, |a| "${a.count.to_str()} at ${Str.join_with(a.first.map(|l| l.to_str()), ",")}")), [Engine.test_id("lookup")])),
+						Worker.resource_when(PreparedApp.lookup, v.map(|s| PreparedApp.asked(s, s.word)), |r| Html.p_s(r.map(|x| PreparedApp.show(x, |a| "${a.count.to_str()} at ${Str.join_with(a.first.map(|l| l.to_str()), ",")}")), [Engine.test_id("lookup")])),
 					],
 				)
-			Top => Worker.derive_when(PreparedApp.top, v.map(|s| PreparedApp.asked(s, 3)), |r| Html.p_v(r.map(|x| PreparedApp.show(x, |a| Str.join_with(a.map(|w| "${w.word}:${w.count.to_str()}"), " "))), [Engine.test_id("top")]))
+			Top => Worker.resource_when(PreparedApp.top, v.map(|s| PreparedApp.asked(s, 3)), |r| Html.p_s(r.map(|x| PreparedApp.show(x, |a| Str.join_with(a.map(|w| "${w.word}:${w.count.to_str()}"), " "))), [Engine.test_id("top")]))
 		}
 	}
 
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"prepared",
 			[
@@ -234,11 +234,11 @@ PreparedApp := [].{
 				PreparedApp.tab_button(st, "Top", Top),
 				Engine.switch(v.map(|s| s.tab), [Stats, Lookup, Top], |tab| PreparedApp.panel(st, tab)),
 				Html.checkbox(Engine.const("Summary"), v.map(|s| s.summary), [], st.set_value(|s, x| { ..s, summary: x == "true" })),
-				Worker.derive_when(PreparedApp.stats, v.map(|s| if (s.summary) PreparedApp.asked(s, {}) else Skip), |r| Html.p_v(r.map(|x| PreparedApp.show(x, |a| "${a.lines.to_str()} lines")), [Engine.test_id("summary")])),
+				Worker.resource_when(PreparedApp.stats, v.map(|s| if (s.summary) PreparedApp.asked(s, {}) else Skip), |r| Html.p_s(r.map(|x| PreparedApp.show(x, |a| "${a.lines.to_str()} lines")), [Engine.test_id("summary")])),
 				Html.button("Write scratch", [], st.update(|s| { ..s, scratch: Write })),
 				Html.button("Keep copy", [], st.update(|s| { ..s, scratch: Keep })),
-				Worker.derive_when(PreparedApp.write, v.map(|s| PreparedApp.scratched(s, Write)), |r| Html.p_v(r.map(|x| PreparedApp.show(x, |{}| "written")), [Engine.test_id("write")])),
-				Worker.derive_when(PreparedApp.keep, v.map(|s| PreparedApp.scratched(s, Keep)), |r| Html.p_v(r.map(|x| PreparedApp.show(x, |f| "kept ${f.name()}:${f.size().to_str()}")), [Engine.test_id("copy")])),
+				Worker.resource_when(PreparedApp.write, v.map(|s| PreparedApp.scratched(s, Write)), |r| Html.p_s(r.map(|x| PreparedApp.show(x, |{}| "written")), [Engine.test_id("write")])),
+				Worker.resource_when(PreparedApp.keep, v.map(|s| PreparedApp.scratched(s, Keep)), |r| Html.p_s(r.map(|x| PreparedApp.show(x, |f| "kept ${f.name()}:${f.size().to_str()}")), [Engine.test_id("copy")])),
 			],
 		)
 	}

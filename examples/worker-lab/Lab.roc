@@ -45,9 +45,9 @@ Lab := [].{
 	max_weight : U64
 	max_weight = 256
 
-	## The longest deadline the platform honours (ten minutes).
-	max_deadline_ms : U64
-	max_deadline_ms = 600000
+	## The longest timeout the platform honours (ten minutes).
+	max_timeout_ms : U64
+	max_timeout_ms = 600000
 
 	## The most strips a picture has. The page holds every strip and the
 	## composed picture as files, and an app holds at most 64 files at once;
@@ -117,7 +117,7 @@ Lab := [].{
 	## One job of a run. `run` and `attempt` make each request distinct: a new
 	## run, or another attempt after a refusal, is a new value for the row's
 	## effect site, which then issues again.
-	Job : { index : U64, run : U64, attempt : U64, deadline : [Unlimited, Ms(U32)], task : Task, phase : Phase }
+	Job : { index : U64, run : U64, attempt : U64, timeout : [Unlimited, Ms(U32)], task : Task, phase : Phase }
 
 	## A run's jobs, by index: the keys of a run of `n` jobs are 0 to `n - 1`.
 	Jobs : Table(U64, Job)
@@ -127,13 +127,13 @@ Lab := [].{
 	Listing : [Every, Strips]
 
 	## The validated parameters of a run.
-	Params : { workload : Workload, jobs : U64, weight : U64, deadline : [Unlimited, Ms(U32)] }
+	Params : { workload : Workload, jobs : U64, weight : U64, timeout : [Unlimited, Ms(U32)] }
 
 	## The parameters as typed.
-	Form : { workload : Workload, jobs_text : Str, weight_text : Str, deadline_text : Str }
+	Form : { workload : Workload, jobs_text : Str, weight_text : Str, timeout_text : Str }
 
 	## What a row's effect site wants: a run of its job's task, or nothing.
-	Want : [Run({ run : U64, index : U64, attempt : U64, deadline : [Unlimited, Ms(U32)], task : Task }), Hold]
+	Want : [Run({ run : U64, index : U64, attempt : U64, timeout : [Unlimited, Ms(U32)], task : Task }), Hold]
 
 	## What a row's URL site wants: a URL for its drawn strip, or nothing.
 	UrlWant : [Show({ run : U64, index : U64, attempt : U64, file : Engine.File }), Hold]
@@ -143,7 +143,7 @@ Lab := [].{
 
 	## The parameters a page starts with.
 	form : Form
-	form = { workload: Primes, jobs_text: "8", weight_text: "4", deadline_text: "0" }
+	form = { workload: Primes, jobs_text: "8", weight_text: "4", timeout_text: "0" }
 
 	# ------------------------------------------------------------ parameters
 
@@ -189,8 +189,8 @@ Lab := [].{
 			} else {
 				Lab.bounded(typed.weight_text, 1, Lab.max_weight) ? |_| Invalid("Weight must be a whole number from 1 to ${Lab.max_weight.to_str()}.")
 			}
-		deadline = Lab.bounded(typed.deadline_text, 0, Lab.max_deadline_ms) ? |_| Invalid("Deadline must be a number of milliseconds from 0 (none) to ${Lab.max_deadline_ms.to_str()}.")
-		Ok({ workload: typed.workload, jobs, weight, deadline: if (deadline == 0) Unlimited else Ms(deadline.to_u32_wrap()) })
+		timeout = Lab.bounded(typed.timeout_text, 0, Lab.max_timeout_ms) ? |_| Invalid("Timeout must be a number of milliseconds from 0 (none) to ${Lab.max_timeout_ms.to_str()}.")
+		Ok({ workload: typed.workload, jobs, weight, timeout: if (timeout == 0) Unlimited else Ms(timeout.to_u32_wrap()) })
 	}
 
 	## Why the parameters cannot start a run, or `""`.
@@ -493,7 +493,7 @@ Lab := [].{
 		var $rows = List.with_capacity(p.jobs)
 		var $i = 0.U64
 		while $i < p.jobs {
-			$rows = $rows.append({ key: $i, row: { index: $i, run, attempt: 0, deadline: p.deadline, task: Lab.task_of(p, $i), phase: Waiting } })
+			$rows = $rows.append({ key: $i, row: { index: $i, run, attempt: 0, timeout: p.timeout, task: Lab.task_of(p, $i), phase: Waiting } })
 			$i = $i + 1
 		}
 		$rows
@@ -501,7 +501,7 @@ Lab := [].{
 
 	## How a listing selects and orders a run's jobs: the `plan` of both
 	## views of the run, the job grid and the picture's bands.
-	listed : Listing -> Engine.Query(U64, Job, U64)
+	listed : Listing -> Engine.QueryPlan(U64, Job, U64)
 	listed = |listing| {
 		keep: |_, job| match listing {
 			Every => True
@@ -622,7 +622,7 @@ Lab := [].{
 	want_of : Job -> Want
 	want_of = |job|
 		match job.phase {
-			Running => Run({ run: job.run, index: job.index, attempt: job.attempt, deadline: job.deadline, task: job.task })
+			Running => Run({ run: job.run, index: job.index, attempt: job.attempt, timeout: job.timeout, task: job.task })
 			_ => Hold
 		}
 
@@ -973,7 +973,7 @@ expect {
 ## A picture's strips are of equal height and stack from the top: the
 ## second starts where the first ends.
 expect {
-	p = { workload: Draw, jobs: 3, weight: 1, deadline: Unlimited }
+	p = { workload: Draw, jobs: 3, weight: 1, timeout: Unlimited }
 	match (Lab.task_of(p, 0), Lab.task_of(p, 1)) {
 		(Strip(a), Strip(b)) => [a.width, a.rows, b.index, (b.y0 - a.y0).to_u64_wrap()] == [128, 29, 1, 29 * 1536]
 		_ => Bool.False

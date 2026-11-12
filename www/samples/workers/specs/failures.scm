@@ -4,8 +4,8 @@
     (run-effect 2)
     (click (role button :name "Count words"))
     (expect-pending-work "example.org/words/frequencies" 1)
-    ; The count has a five-second deadline. A spec's time only moves when it
-    ; says so: here the deadline expires before the job answers.
+    ; The count has a five-second timeout. A spec's time only moves when it
+    ; says so: here the timeout expires before the job answers.
     (mark-metrics)
     (time-out-work 3)
     (expect-text (test-id "counted") "This took too long.")

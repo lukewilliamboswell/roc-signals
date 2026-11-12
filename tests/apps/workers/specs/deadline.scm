@@ -1,6 +1,6 @@
-(test "Workers — a deadline expires only when the spec says so"
+(test "Workers — a timeout expires only when the spec says so"
   (steps
-    ; "Slow" runs spin as a task with a 50 ms deadline. A spec's time is manual: the
+    ; "Slow" runs spin as a task with a 50 ms timeout. A spec's time is manual: the
     ; job waits, and run-effect runs it to completion however long it takes
     ; (these rounds take far longer than 50 ms).
     (fill (label "Rounds") "100000000")

@@ -40,9 +40,9 @@ values as a turn applies it, and `read(cell)` reads a cell of the result.
   that depends on the boot data is `store.with_initial(cell, value)`.
 - A table is read like any cell, and its rows with `get`:
   `store.after(writes).read(table).get(key)`.
-- `after` ends no turn, so a table keeps its record of the writes:
+- `after` ends no turn, so a table keeps its changes:
   `store.after(writes).read(table).inverse()` is one write for each row
-  the transition wrote. Chained `after`s add to the same record.
+  the transition wrote. Chained `after`s add to the same changes.
 
 Run them with `roc test` in the app's directory; it runs every top-level
 `expect` in `main.roc` and the modules it imports.
@@ -158,7 +158,7 @@ models it. `LOC` is a locator, `"…"` a string, `N` a non-negative integer,
 
 Effects never run on their own in a spec: HTTP requests, timers and worker
 jobs wait for `run-effect`, and intervals for `tick-interval`. A worker
-job's deadline never expires on its own either: `time-out-work` expires it.
+job's timeout never expires on its own either: `time-out-work` expires it.
 Storage reads answer by themselves, from storage.
 
 ### Actions
@@ -212,11 +212,11 @@ browsers do.
 |---|---|
 | `(stub-http "label" :url "/api/x" :status 200 :body "…")` | Stage an HTTP answer; optional `:headers (("name" "value") …)`, default `content-type: application/json`. `:status` is 100–999. Staging a second answer before one is used fails |
 | `(stub-http-reject "label" :kind network :detail "offline")` | Stage a failure: `network` with the browser's message, or `timeout` with an empty `:detail` |
-| `(run-effect N)` | Answer the N-th HTTP request, upload, fetch, timer, worker job or operation on a file the current document issued (1-based, in issue order; port calls share the numbering but are answered with `answer-port` (see [Ports](#ports)); subscriptions, commands and storage reads not counted). It must still be pending. A timer fires; a worker job runs its task (in Chrome in a real worker, natively in a child process that serves the job's effects from the setup files, the step waiting for its result: a task that crashes loses its job with the crash's fault class, and one that has not finished after 30 s fails the step); an HTTP request or an upload takes the staged answer, and a reply's `:url` must equal the request's; a page read, a digest or a file URL is performed on the setup file (see [Files](#files)) |
+| `(run-effect N)` | Answer the N-th HTTP request, upload, fetch, timer, worker job or operation on a file the current document issued (1-based, in issue order; port calls share the numbering but are answered with `answer-port` (see [Ports](#ports)); subscriptions, commands and storage reads not counted). It must still be pending. A timer fires; a worker job runs its task (in Chrome in a real worker, natively in a child process that serves the job's effects from the setup files, the step waiting for its result: a task that crashes loses its job with the crash's fault class, and one that has not finished after 30 s fails the step); an HTTP request or an upload takes the staged answer, and an HTTP response's `:url` must equal the request's; a page read, a digest or a file URL is performed on the setup file (see [Files](#files)) |
 | `(expect-pending-effects N)` | Exactly N HTTP requests, uploads, fetches, timers, worker jobs, operations on files and port calls are waiting to be answered |
 | `(expect-pending-work "task" N)` | Exactly N worker jobs of the task of that name are waiting |
 | `(lose-work N FAULT)` | Answer the N-th effect occurrence, a pending worker job, as `WorkLost(FAULT)` without running it. `FAULT` is `contract`, `resource_limit`, `out_of_memory`, `app_crash`, `expect_failed`, `unavailable` or `executor` |
-| `(time-out-work N)` | Expire the deadline of the N-th effect occurrence, a pending worker job: it is answered `Timeout` without running. A job without a deadline fails the step |
+| `(time-out-work N)` | Expire the timeout of the N-th effect occurrence, a pending worker job: it receives `Timeout` without running. A job without a timeout fails the step |
 | `(tick-interval MS)` | Deliver one tick to every live `Interval(MS)`; fails when none is live |
 | `(tick-interval-if-active MS)` | The same, but a no-op when none is live |
 | `(expect-interval MS N)` | Exactly N `Interval(MS)` subscriptions are live |
@@ -278,7 +278,7 @@ by the runner's host, in Chrome by WebCrypto), so a spec asserts the same
 digest in both runners, and a file URL is answered with a URL of the
 runner's own making, so a spec asserts what the app does with it rather
 than its text. An upload is an HTTP request: `expect-upload` checks which
-file and range it sends, and `run-effect` answers it with the staged reply.
+file and range it sends, and `run-effect` answers it with the staged HTTP response.
 
 Every worker job runs the same way, whatever its [task](@/docs/workers.md)'s
 body does: `run-effect` runs it, in Chrome in a real worker and natively in
@@ -330,10 +330,10 @@ does not fail your spec.
 
 | Metric | Counts |
 |---|---|
-| `rows_created` | Rows created by mount, by an `each` reconciliation or by a view's window |
-| `rows_removed` | Rows a reconciliation removed and rows that left a view's window (rows disposed with their whole site count as disposed scopes instead) |
-| `rows_reused` | Old rows an `each` reconciliation kept; a reconciliation whose list equals the old one counts nothing. A view compares no list and counts nothing here |
-| `rows_updated` | Rows kept whose content was written: a row of an `each` whose item changed, and a row a view draws before and after the event whose row in the table was written. Pinned beside `rows_created`, `rows_removed` and `rows_moved`, it says exactly which rows of a view a write woke |
+| `rows_created` | Rows created by mount, by an `each` reconciliation or by a table view's window |
+| `rows_removed` | Rows a reconciliation removed and rows that left a table view's window (rows disposed with their whole site count as disposed scopes instead) |
+| `rows_reused` | Old rows an `each` reconciliation kept; a reconciliation whose list equals the old one counts nothing. A table view compares no list and counts nothing here |
+| `rows_updated` | Rows kept whose content was written: a row of an `each` whose item changed, and a drawn row a table view draws before and after the event whose row in the table was written. Pinned beside `rows_created`, `rows_removed` and `rows_moved`, it says exactly which drawn rows of a table view a write woke |
 | `rows_moved` | Rows moved |
 | `create_element` | Elements created |
 | `bind_event` | Event listeners bound |
@@ -341,8 +341,8 @@ does not fail your spec.
 | `set_text` | Text writes and text nodes created |
 | `set_value` / `set_checked` | Control `value` / `checked` the engine set |
 | `patches_emitted` | DOM commands of every kind |
-| `derived_calls_into_roc` | Evaluations of app closures: holes, conditions, list reads, `derive` inputs, `remount_on` keys, watched values, cleanup values. For a view: each read of its query or its window, and each row it places with the query's `keep` and `sort` (two for a written key, the row before and after; every row of the table for a mount or a rebuild) |
-| `scopes_created` / `scopes_disposed` | `when` and `switch` branches, `remount_on` bodies, and the rows of `each` and view sites, mounted / disposed |
+| `derived_calls_into_roc` | Evaluations of app closures: holes, conditions, list reads, `derive` inputs, `remount_on` keys, watched values, cleanup values. For a table view: each read of its query or its window, and each row it places with the query's `keep` and `sort` (two for a written key, the row before and after; every row of the table for a mount or a rebuild) |
+| `scopes_created` / `scopes_disposed` | `when` and `switch` branches, `remount_on` bodies, and the rows of `each` and table view sites, mounted / disposed |
 | `dirty_source_roots` | What a turn wrote: the local states and the cells. A decision that returns no write counts nothing |
 | `each_key_hashes` / `each_key_compares` | Keys hashed and full-key comparisons in keyed reconciliation |
 | `effects_issued` | Awaited requests issued (HTTP, timers, storage reads, subscriptions, worker jobs); a refused request is not issued |
@@ -382,13 +382,13 @@ readers, the pass emits the update the turn should have, and the step fails
 naming it:
 
 ```text
-click: a reader was left stale: a settle pass over every layer emitted
+click: a reader was left stale: a settle pass over every signal emitted
 SETTEXT=1; first write: <p data-testid="late">late 0</p> -> <p
 data-testid="late">late 1</p> (in test-id "late")
 ```
 
-A view of a table keeps itself up to date from the rows each turn wrote, not
-by comparing values, so in the same pass every view is also built from
+A table view keeps itself up to date from the rows each turn wrote, not
+by comparing values, so in the same pass every table view is also built from
 scratch, for its query and window as they are then, and must equal the one
 the engine kept: the same rows, in the same order, in the same window.
 

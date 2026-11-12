@@ -29,11 +29,14 @@ The version should match the nightly named in the Signals release notes.
 Those notes also describe any compiler or dependency limitations affecting
 the release; a newer nightly may behave differently.
 
-Every release also publishes `signals.roc`, a small Roc program that
-creates, serves, builds and tests an app. Download it and create an app:
+`signals.roc` is a small Roc program that creates, serves, builds and tests
+an app. Use the tool matching these docs: it generates an entry point for
+its matching platform. A documentation preview may link an unreleased
+candidate; keep its tool, platform and samples together rather than mixing
+versions. Download the tool and create an app:
 
 ```sh
-curl -fLO https://github.com/lukewilliamboswell/roc-signals/releases/latest/download/signals.roc
+curl -fLO "{{ signals_tool_url() }}"
 roc signals.roc init counter
 cd counter
 ```
@@ -61,15 +64,15 @@ nightly you have.
 {{ sample(file="counter/Counter.roc") }}
 
 `Engine.state(0, Counter.view)` creates a piece of *local state* with the
-initial value `0` and passes its handle to `view`. Inside `view`:
+initial value `0` and passes its `State` to `view`. Inside `view`:
 
-- `count.val()` is the state's current value. `.map` turns it into the text
-  the `span` shows. The engine re-evaluates that text only when `count`
-  changes.
+- `count.signal()` is a signal of the state's current value. `.map` turns it
+  into the text the `span` shows. The engine re-evaluates that text only when
+  `count` changes.
 - `count.update(|n| n + 1)` is a *handler*: a reducer the engine applies when
   the button is clicked.
 - `Ctx` names the *context* the view runs in: inside one state of type `I64`
-  at the root. Every value, state handle and element is typed by the context it
+  at the root. Every signal, `State` and element is typed by the context it
   belongs to, so a value can never be read where it does not exist.
 - `Html.aria_label` gives each button an accessible name, which is also how
   specs find it.

@@ -63,7 +63,7 @@ Seq(k, s) :: { chunks : List(List({ sort : s, key : k })), count : U64, limit : 
 			match prev.get(at) {
 				Ok(there) =>
 					if compare(there.sort, entry.sort) == Same {
-						crash "contract: two rows of a view compare Same; a view's order must be total, so its sort value must break ties by key"
+						crash "contract: two rows of a table view compare Same; a table view's order must be total, so its sort value must break ties by key"
 					} else {
 						{}
 					}

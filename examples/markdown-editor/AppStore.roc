@@ -39,24 +39,24 @@ AppStore := [Editor].{
 	## described `{ a: Engine.cell(..), b: Engine.cell(..) }.Engine.Cells`.
 	store = Engine.store(AppStore.Editor, Engine.cell(AppStore.sample_document).map(|source| { source: source }))
 
-	## The handles on the store's cells.
-	h = AppStore.store.handles()
+	## The store's cells.
+	cells = AppStore.store.cells()
 
 	## What the reader typed, or a prepared document they loaded: the
 	## document becomes `text`.
 	replaced : Str -> List(Engine.Write(_))
-	replaced = |text| [AppStore.h.source.put(text)]
+	replaced = |text| [AppStore.cells.source.set(text)]
 
 	## A toolbar command: the document becomes `command` of itself. The
 	## commands are the pure functions of `Edit`.
 	edited : (Str -> Str) -> List(Engine.Write(_))
-	edited = |command| [AppStore.h.source.change(command)]
+	edited = |command| [AppStore.cells.source.update(command)]
 }
 
 ## The store starts at the sample document, and a replacement puts another in its place.
 expect {
 	replaced = AppStore.store.after(AppStore.replaced(AppStore.heading_drill_document))
-	(AppStore.store.read(AppStore.h.source), replaced.read(AppStore.h.source)) == (AppStore.sample_document, AppStore.heading_drill_document)
+	(AppStore.store.read(AppStore.cells.source), replaced.read(AppStore.cells.source)) == (AppStore.sample_document, AppStore.heading_drill_document)
 }
 
 ## A command changes the document that is there, and two in one list compose in order.
@@ -64,5 +64,5 @@ expect {
 	drill = AppStore.store.after(AppStore.replaced(AppStore.heading_drill_document))
 	once = drill.after(AppStore.edited(Edit.remove_last_section))
 	twice = drill.after(AppStore.edited(Edit.append_word).concat(AppStore.edited(Edit.append_word)))
-	(once.read(AppStore.h.source), twice.read(AppStore.h.source)) == ("# Alpha\n\n## Beta\n\n## Gamma\n", "# Alpha\n\n## Beta\n\n## Gamma\n\n## Delta extra extra")
+	(once.read(AppStore.cells.source), twice.read(AppStore.cells.source)) == ("# Alpha\n\n## Beta\n\n## Gamma\n", "# Alpha\n\n## Beta\n\n## Gamma\n\n## Delta extra extra")
 }
