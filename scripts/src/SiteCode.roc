@@ -3,9 +3,11 @@ import cli.Path
 import DocSamples
 import SpecSuite
 import ScmHighlight
+import HtmlHighlight
 
-## Build-time highlighting of the original sample text. The parser's lexer
-## accepts partial snippets; it never formats, repairs or type-checks them.
+## Build-time highlighting of original Roc, Scheme-style specs and HTML.
+## Each display lexer accepts partial snippets without formatting, repairing
+## or type-checking their source; only Roc uses the parser package's lexer.
 SiteCode := [].{
 
 	## Published samples show where a reader supplies the release package URL.
@@ -103,6 +105,30 @@ SiteCode := [].{
 		"",
 	)
 
+	## HTML samples use a display lexer of their own, including raw script/style
+	## bodies. Every token is escaped before markup is added, so displayed HTML
+	## never becomes elements, entities or executable script in the page.
+	html_source : Str -> Str
+	html_source = |source| Str.join_with(
+		HtmlHighlight.tokens(source).map(
+			|{ text, category }| {
+				escaped = SiteCode.escape(text)
+				name = match category {
+					Plain => "plain"
+					Comment => "comment"
+					Keyword => "keyword"
+					Name => "name"
+					String => "string"
+					Type => "type"
+					Symbol => "symbol"
+					Invalid => "invalid"
+				}
+				if (category == Plain) escaped else "<span class=\"syntax-${name}\">${escaped}</span>"
+			},
+		),
+		"",
+	)
+
 	## Remove only whole marker lines, retaining indentation, blank lines,
 	## trailing whitespace and line endings in the displayed sample.
 	visible : Str -> Str
@@ -145,6 +171,8 @@ SiteCode := [].{
 					SiteCode.html(displayed)
 				} else if file.ends_with(".scm") {
 					SiteCode.scm_html(displayed)
+				} else if file.ends_with(".html") {
+					SiteCode.html_source(displayed)
 				} else {
 					SiteCode.escape(displayed)
 				}
@@ -152,13 +180,15 @@ SiteCode := [].{
 			}
 		}
 		Path.create_all!(Path.utf8(".build"))?
-		Path.write_utf8!(Path.utf8(".build/site-code-fixture.html"), "<pre id=\"roc-fixture\"><code>${SiteCode.html(SiteCode.fixture)}</code></pre><pre id=\"scm-fixture\"><code>${SiteCode.scm_html(SiteCode.scm_fixture)}</code></pre>")?
+		Path.write_utf8!(Path.utf8(".build/site-code-fixture.html"), "<pre id=\"roc-fixture\"><code>${SiteCode.html(SiteCode.fixture)}</code></pre><pre id=\"scm-fixture\"><code>${SiteCode.scm_html(SiteCode.scm_fixture)}</code></pre><pre id=\"html-fixture\"><code>${SiteCode.html_source(SiteCode.html_fixture)}</code></pre>")?
 		Ok({})
 	}
 
 	## A hostile, incomplete snippet exercises HTML safety and exact copying,
 	## including Unicode, tabs, CRLF, trailing spaces and a final blank line.
 	scm_fixture = "; café & <script>alert(1)</script>\r\n\t(test \"a\\\"; <&>\" :name #t false -12 symbol)  \n(unfinished \"e\u(0301)\n"
+
+	html_fixture = "<!doctype html>\r\n<!-- café & <script>alert(1)</script> -->\r\n\t<x-card data-note=\"😀 &amp; <&>\" disabled data-id='a>b' count=12>&lt; e\u(0301)</x-card>  \n<script>if (a < b) window.__highlightExecuted = true;</script>\n<input title=\"unfinished"
 
 	fixture = "# café & <script>alert(1)</script>\r\n\tvalue = \"<&>\"  \n\nunterminated = \"\u(0301)\n"
 }
@@ -249,4 +279,13 @@ expect {
 expect {
 	source = "app [main] {\n# region dependency\n pf: platform \"../platform/main.roc\"\n# endregion dependency\n}\n"
 	DocSamples.region_of(SiteCode.published_source(source), "dependency") == Ok(" pf: platform \"<package release URL here>\"\n")
+}
+
+## HTML character references stay source text, hostile markup is escaped, and
+## markup spans use only the existing semantic theme categories.
+expect {
+	markup = SiteCode.html_source(SiteCode.html_fixture)
+	["keyword", "comment", "name", "string", "type", "symbol", "invalid"].all(|category| markup.contains("syntax-${category}"))
+		and !markup.contains("<script>") and !markup.contains("<x-card")
+		and markup.contains("&amp;amp;") and markup.contains("&amp;lt;") and markup.contains("&#13;\n")
 }

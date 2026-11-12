@@ -76,8 +76,11 @@ The website build highlights Roc samples with the pinned `roc-parser` lexer befo
 Zola runs. `www/samples/` remains the source: generated escaped fragments in
 `www/highlighted/` are ignored. Scheme-style `.scm` samples use an independent
 display lexer for comments, strings, list heads, atoms and keyword arguments;
-it never parses or validates spec behavior. Other sample languages remain
-escaped plain text. The checked files are also published under
+it never parses or validates spec behavior. HTML samples use another lossless
+display lexer for tags, attributes, values, comments, declarations and character
+references; script and style bodies remain plain text. Every token is escaped
+before markup is added, so highlighted HTML cannot become page elements or run
+scripts. Other sample languages remain escaped plain text. The checked files are also published under
 `dist/samples/`. In both rendered Roc snippets and their downloadable copies,
 checkout-relative package URLs are replaced with `<package release URL here>`;
 the originals retain their local paths for compiler checks. Other text is

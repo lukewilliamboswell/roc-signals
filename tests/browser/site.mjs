@@ -199,7 +199,9 @@ try {
   await page.send("CSS.enable");
   let samples = 0;
   let schemeSamples = 0;
+  let htmlSamples = 0;
   const schemeCopied = {};
+  const htmlCopied = {};
   const palettes = {};
   let colors = 0;
   let minimum = Infinity;
@@ -222,6 +224,19 @@ try {
             await page.waitForFunction(expected => window.copied === expected, {}, sample.text);
             assert.equal(await page.evaluate(() => window.copied), sample.text, `${mode} Scheme copy preserves source`);
             schemeCopied[mode] = true;
+          }
+        }
+        if (sample.file.endsWith(".html")) {
+          for (const category of ["syntax-keyword", "syntax-name", "syntax-string", "syntax-symbol"]) assert(sample.categories.includes(category), `${sample.file} highlights HTML ${category}`);
+          htmlSamples++;
+          if (!htmlCopied[mode]) {
+            await page.click('.code-sample:has(pre[data-sample-file$=".html"]) .code-copy');
+            await page.waitForFunction(expected => window.copied === expected, {}, sample.text);
+            assert.equal(await page.evaluate(() => window.copied), sample.text, `${mode} HTML copy preserves source`);
+            const response = await fetch(`${origin}/roc-signals/samples/${sample.file}`);
+            assert.equal(response.status, 200);
+            assert.equal(await response.text(), sample.text, "HTML download matches visible and copied source");
+            htmlCopied[mode] = true;
           }
         }
         samples++;
@@ -317,6 +332,11 @@ try {
   assert.equal(await page.$eval("#scm-fixture code", code => code.textContent), '; café & <script>alert(1)</script>\r\n\t(test "a\\\"; <&>" :name #t false -12 symbol)  \n(unfinished "e\u0301\n');
   const scmCategories = await page.evaluate(() => Array.from(document.querySelectorAll("#scm-fixture span"), span => span.className));
   for (const category of ["comment", "keyword", "string", "type", "number", "name", "symbol", "invalid"]) assert(scmCategories.includes(`syntax-${category}`));
+  assert.equal(await page.$eval("#html-fixture code", code => code.textContent), '<!doctype html>\r\n<!-- café & <script>alert(1)</script> -->\r\n\t<x-card data-note="😀 &amp; <&>" disabled data-id=\'a>b\' count=12>&lt; e\u0301</x-card>  \n<script>if (a < b) window.__highlightExecuted = true;</script>\n<input title="unfinished');
+  const htmlCategories = await page.evaluate(() => Array.from(document.querySelectorAll("#html-fixture span"), span => span.className));
+  for (const category of ["comment", "keyword", "string", "type", "name", "symbol", "invalid"]) assert(htmlCategories.includes(`syntax-${category}`));
+  assert.equal(await page.evaluate(() => document.querySelector("#html-fixture script, #html-fixture input, #html-fixture x-card")), null, "highlighted HTML creates no source elements");
+  assert.equal(await page.evaluate(() => window.__highlightExecuted), undefined, "highlighted script stays inert");
   assert.equal(await page.evaluate(() => document.scripts.length), 0);
   // Invalid and unavailable storage still leave a working system preference.
   await page.evaluateOnNewDocument(() => { Object.defineProperty(window, "localStorage", { get() { throw Error("storage unavailable"); } }); });
@@ -351,6 +371,18 @@ try {
       await fs.writeFile(`.build/site-screenshots/${label}-${mode}-scm.png`, Buffer.from(data, "base64"));
     }
   }
+  // HTML uses the same palette, code layout and source-copy controls as Roc
+  // and Scheme, including the embedded script in the real mounting page.
+  for (const [width, height, label] of [[1365, 1000, "desktop"], [390, 844, "mobile"]]) {
+    await page.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 600 });
+    for (const mode of ["light", "dark"]) {
+      await choose(mode);
+      await page.$eval('pre[data-sample-file$=".html"]', pre => pre.scrollIntoView({ block: "center" }));
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${label} HTML has no page overflow`);
+      const { data } = await page.send("Page.captureScreenshot", { format: "png" });
+      await fs.writeFile(`.build/site-screenshots/${label}-${mode}-html.png`, Buffer.from(data, "base64"));
+    }
+  }
   // The real introductory entry point copies the visible release placeholder,
   // and the raw download matches it apart from display-only region markers.
   await page.send("Emulation.setDeviceMetricsOverride", { width: 1365, height: 1000, deviceScaleFactor: 1, mobile: false });
@@ -371,7 +403,8 @@ try {
   const { data: mainImage } = await page.send("Page.captureScreenshot", { format: "png" });
   await fs.writeFile(".build/site-screenshots/desktop-package-placeholder.png", Buffer.from(mainImage, "base64"));
   assert(schemeSamples > 0 && schemeCopied.light && schemeCopied.dark);
-  console.log(`site browser: passed ${samples} sample renderings (${schemeSamples} highlighted Scheme), ${downloads} published source downloads, ${colors} text colors; minimum contrast ${minimum}:1; both themes, real settled hover, system changes, storage, keyboard, copy, escaping and mobile layout`);
+  assert(htmlSamples > 0 && htmlCopied.light && htmlCopied.dark);
+  console.log(`site browser: passed ${samples} sample renderings (${schemeSamples} highlighted Scheme, ${htmlSamples} highlighted HTML), ${downloads} published source downloads, ${colors} text colors; minimum contrast ${minimum}:1; both themes, real settled hover, system changes, storage, keyboard, copy, escaping and mobile layout`);
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));
