@@ -561,3 +561,12 @@ a.bg-emerald-950, a.bg-emerald-950:hover { color: #ffffff; }
 [data-upload-zone] label { background: var(--site-code-bg); border-color: var(--site-rule); }
 .bg-emerald-50:not([data-signals-wasm] *, [data-signals-upload-root] *) { background: var(--site-code-bg); }
 [data-signals-wasm], [data-signals-upload-root] { color-scheme: light; color: #09090b; background: #ffffff; }
+
+/* Html.file_input keeps the browser's chooser. Scope its control styling to
+   this example, whose file picker has no caller-supplied attributes. */
+.converter input[type="file"] {
+  @apply input min-w-0;
+}
+.converter input[type="file"]::file-selector-button {
+  @apply mr-3 cursor-pointer rounded border-0 bg-zinc-100 px-3 py-1 font-medium text-zinc-900;
+}
