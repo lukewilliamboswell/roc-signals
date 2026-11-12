@@ -1,5 +1,5 @@
 import Core
-import Engine exposing [Elem, In, Val]
+import Engine exposing [Elem, In, Signal]
 import PortJson
 
 ## Typed ports: services the page's JavaScript supplies, for what the
@@ -182,14 +182,14 @@ Port := [].{
 	## older call is stopped (its `AbortSignal` aborts) and one for the new
 	## value is made in the same turn, so an answer for an old input is never
 	## shown and the app keeps no request serial.
-	derive : Call(input, output), Val(ctx, input), (Val(In(ctx, Engine.Remote(output, Error)), Engine.Remote(output, Error)) -> Elem(In(ctx, Engine.Remote(output, Error)))) -> Elem(ctx)
+	derive : Call(input, output), Signal(ctx, input), (Signal(In(ctx, Engine.Remote(output, Error)), Engine.Remote(output, Error)) -> Elem(In(ctx, Engine.Remote(output, Error)))) -> Elem(ctx)
 		where [input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool]
 	derive = |port, input, body| Engine.resource(input, Core.follow(port), body)
 
 	## Like `derive`, for an input that is sometimes not a question: `Run(i)`
 	## makes the call with `i`, and `Skip` stops any call and clears the
 	## answer.
-	derive_when : Call(input, output), Val(ctx, [Run(input), Skip]), (Val(In(ctx, Engine.Remote(output, Error)), Engine.Remote(output, Error)) -> Elem(In(ctx, Engine.Remote(output, Error)))) -> Elem(ctx)
+	derive_when : Call(input, output), Signal(ctx, [Run(input), Skip]), (Signal(In(ctx, Engine.Remote(output, Error)), Engine.Remote(output, Error)) -> Elem(In(ctx, Engine.Remote(output, Error)))) -> Elem(ctx)
 		where [input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool]
 	derive_when = |port, input, body| Engine.resource(input, Core.follow_when(port), body)
 }

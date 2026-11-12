@@ -1,5 +1,5 @@
 import Core
-import Engine exposing [Elem, In, Val]
+import Engine exposing [Elem, In, Signal]
 import Wire
 
 ## Worker tasks: registered Roc functions an app runs off the page's thread.
@@ -191,14 +191,14 @@ Worker := [].{
 	##
 	## `task` is a [Task] or a preparation's [PreparedTask]: anything with
 	## `request` and `result`.
-	derive : work, Val(ctx, input), (Val(In(ctx, Engine.Remote(output, Error(error))), Engine.Remote(output, Error(error))) -> Elem(In(ctx, Engine.Remote(output, Error(error))))) -> Elem(ctx)
+	derive : work, Signal(ctx, input), (Signal(In(ctx, Engine.Remote(output, Error(error))), Engine.Remote(output, Error(error))) -> Elem(In(ctx, Engine.Remote(output, Error(error))))) -> Elem(ctx)
 		where [work.request : work, input -> Engine.Req, work.result : work, Engine.Res -> Try(output, Error(error)), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool, error.is_eq : error, error -> Bool]
 	derive = |work, input, body| Engine.resource(input, Core.follow(work), body)
 
 	## Like `derive`, for an input that is sometimes not a question: `Run(i)`
 	## asks for a job on `i`, and `Skip` stops any job and clears the answer
 	## (an empty search box, a form that is not valid yet).
-	derive_when : work, Val(ctx, [Run(input), Skip]), (Val(In(ctx, Engine.Remote(output, Error(error))), Engine.Remote(output, Error(error))) -> Elem(In(ctx, Engine.Remote(output, Error(error))))) -> Elem(ctx)
+	derive_when : work, Signal(ctx, [Run(input), Skip]), (Signal(In(ctx, Engine.Remote(output, Error(error))), Engine.Remote(output, Error(error))) -> Elem(In(ctx, Engine.Remote(output, Error(error))))) -> Elem(ctx)
 		where [work.request : work, input -> Engine.Req, work.result : work, Engine.Res -> Try(output, Error(error)), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool, error.is_eq : error, error -> Bool]
 	derive_when = |work, input, body| Engine.resource(input, Core.follow_when(work), body)
 
@@ -211,7 +211,7 @@ Worker := [].{
 	## keeps its prepared state. Each job takes a slot of the in-flight
 	## bound, so split a question into no more parts than it allows; the
 	## pool queues the jobs beyond `maxWorkers` by itself.
-	gather : work, Val(ctx, List(input)), (Val(In(ctx, Engine.Gathered(output, Error(error))), Engine.Gathered(output, Error(error))) -> Elem(In(ctx, Engine.Gathered(output, Error(error))))) -> Elem(ctx)
+	gather : work, Signal(ctx, List(input)), (Signal(In(ctx, Engine.Gathered(output, Error(error))), Engine.Gathered(output, Error(error))) -> Elem(In(ctx, Engine.Gathered(output, Error(error))))) -> Elem(ctx)
 		where [work.request : work, input -> Engine.Req, work.result : work, Engine.Res -> Try(output, Error(error)), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool, error.is_eq : error, error -> Bool]
 	gather = |work, inputs, body| Engine.gather(work, inputs, body)
 

@@ -116,9 +116,9 @@ Core := [].{
 	Cell(st, a) := { cell : U64, get : (st -> a), modify : (st, (a -> a) -> st) }.{
 
 		## The cell's current value, readable at any depth.
-		val : Cell(st, a) -> Val(ctx, a)
+		signal : Cell(st, a) -> Signal(ctx, a)
 			where [ctx.store : () -> StoreReach(ctx, st)]
-		val = |c| {
+		signal = |c| {
 			## The scope's type, named so its method can be called.
 			Ctx : ctx
 			store_get = Ctx.store().get
@@ -193,7 +193,7 @@ Core := [].{
 	## the event fires, before any write of this decision: every write of
 	## the decision is computed from that one reading. Composed after
 	## another handler (`Handler.also`), it reads what that handler left.
-	store_handler_by : Val(ctx, b), (b, Str -> List(Write(st))) -> Handler(ctx)
+	store_handler_by : Signal(ctx, b), (b, Str -> List(Write(st))) -> Handler(ctx)
 		where [ctx.store : () -> StoreReach(ctx, st)]
 	store_handler_by = |v, decide| {
 		## The scope's type, named so its method can be called.
@@ -230,7 +230,7 @@ Core := [].{
 
 	## As `store_files_handler`, where `decide` also receives `v`, read
 	## once when the files arrive, before any write of this decision.
-	store_files_handler_by : Val(ctx, b), (b, Received -> List(Write(st))) -> FilesHandler(ctx)
+	store_files_handler_by : Signal(ctx, b), (b, Received -> List(Write(st))) -> FilesHandler(ctx)
 		where [ctx.store : () -> StoreReach(ctx, st)]
 	store_files_handler_by = |v, decide| {
 		## The scope's type, named so its method can be called.
@@ -263,7 +263,7 @@ Core := [].{
 
 	## As `store_reaction`, where `decide` also receives `v`, read once when
 	## the result arrives, before any write of this decision.
-	store_reaction_by : Val(ctx, b), (b, r, Res -> List(Write(st))) -> Reaction(ctx, r)
+	store_reaction_by : Signal(ctx, b), (b, r, Res -> List(Write(st))) -> Reaction(ctx, r)
 		where [ctx.store : () -> StoreReach(ctx, st)]
 	store_reaction_by = |v, decide| {
 		## The scope's type, named so its method can be called.
@@ -453,26 +453,26 @@ Core := [].{
 	}
 
 	# Nominal rather than opaque (`::`): with the pinned compiler an opaque
-	# `Val` grows the Conduit wasm by about 220 KB at --opt=size.
-	## A reactive value of type `a`, readable in context `ctx`.
+	# `Signal` grows the Conduit wasm by about 220 KB at --opt=size.
+	## A read-only signal of type `a`, readable in context `ctx`.
 	##
 	## A value records which layers it reads, so only the text, attributes and sites
 	## that read a changed layer are re-evaluated. Make one with `const`,
-	## `State.val`, a [RowRef] accessor or `derive`, and transform it with `map` and
+	## `State.signal`, a [RowRef] accessor or `derive`, and transform it with `map` and
 	## `map2`. A value is a recipe, not a cache: mapping functions run each time a
 	## reader is re-evaluated, so they must be pure and should be cheap (`derive`
 	## memoises an expensive or shared result).
-	Val(ctx, a) := { mask : U128, read : (ctx -> a), sel : Sel(ctx) }.{
+	Signal(ctx, a) := { mask : U128, read : (ctx -> a), sel : Sel(ctx) }.{
 
 		## Transform a value with a pure function. The result reads the same layers
 		## as the input; the function runs wherever the result is read, each time a
 		## read layer changes.
-		map : Val(ctx, a), (a -> b) -> Val(ctx, b)
+		map : Signal(ctx, a), (a -> b) -> Signal(ctx, b)
 		map = |{ mask, read, sel }, f| { mask, read: |env| f(read(env)), sel }
 
 		## Combine two values with a pure function. The result reads the union of
 		## both inputs' layers.
-		map2 : Val(ctx, a), Val(ctx, b), (a, b -> c) -> Val(ctx, c)
+		map2 : Signal(ctx, a), Signal(ctx, b), (a, b -> c) -> Signal(ctx, c)
 		map2 = |l, r, f| {
 			lr = l.read
 			rr = r.read
@@ -482,7 +482,7 @@ Core := [].{
 
 		## Use a value from the enclosing context inside a `state` or `derive` body
 		## nested in it. The value keeps reading the same layers.
-		lift : Val(ctx, a) -> Val(In(ctx, s), a)
+		lift : Signal(ctx, a) -> Signal(In(ctx, s), a)
 		lift = |{ mask, read, sel }| {
 			sel2 = match sel {
 				NoSel => NoSel
@@ -493,7 +493,7 @@ Core := [].{
 
 		## Use a value from the enclosing context inside an `each` row template
 		## nested in it. The value keeps reading the same layers.
-		lift_row : Val(ctx, a) -> Val(Row(ctx, item), a)
+		lift_row : Signal(ctx, a) -> Signal(Row(ctx, item), a)
 		lift_row = |{ mask, read, sel }| {
 			sel2 = match sel {
 				NoSel => NoSel
@@ -940,7 +940,7 @@ Core := [].{
 
 	## A handle on one `state` layer holding an `s`, usable in context `ctx`.
 	##
-	## Read it with `val`; write it only through handlers (`update`, `set_value`,
+	## Read it with `signal`; write it only through handlers (`update`, `set_value`,
 	## ...) and reactions (`on_result`). A write marks the layer changed and its
 	## readers refresh; equality pruning happens where the value is read (text,
 	## attributes, rows, `derive`), not at the state, so a reducer that returns an
@@ -954,8 +954,8 @@ Core := [].{
 	State(ctx, s) := { mask : U128, writes : Layers, get : (ctx -> s), modify : (ctx, (s -> s) -> ctx) }.{
 
 		## The state's current value.
-		val : State(ctx, s) -> Val(ctx, s)
-		val = |{ mask, writes: _, get, modify: _ }| { mask, read: get, sel: NoSel }
+		signal : State(ctx, s) -> Signal(ctx, s)
+		signal = |{ mask, writes: _, get, modify: _ }| { mask, read: get, sel: NoSel }
 
 		## A handler that replaces the state with `f` of it, ignoring the event's
 		## payload.
@@ -967,7 +967,7 @@ Core := [].{
 		## A handler whose reducer also receives `v`, read in the handler's context
 		## when the event fires (typically the row key or a row field), so a row's
 		## handler needs no captured row.
-		update_by : State(ctx, s), Val(ctx, b), (s, b -> s) -> Handler(ctx)
+		update_by : State(ctx, s), Signal(ctx, b), (s, b -> s) -> Handler(ctx)
 		update_by = |{ mask: _, writes: wrote, get: _, modify }, v, f| {
 			read = v.read
 			{
@@ -996,7 +996,7 @@ Core := [].{
 
 		## A handler whose reducer receives both `v`, read when the event fires, and
 		## the event's payload.
-		set_value_by : State(ctx, s), Val(ctx, b), (s, b, Str -> s) -> Handler(ctx)
+		set_value_by : State(ctx, s), Signal(ctx, b), (s, b, Str -> s) -> Handler(ctx)
 		set_value_by = |{ mask: _, writes: wrote, get: _, modify }, v, f| {
 			read = v.read
 			{
@@ -1058,7 +1058,7 @@ Core := [].{
 	## others `no`. Read through `RowRef.select`, a change of `selected`
 	## re-evaluates exactly the previously and the newly selected rows instead of
 	## every row.
-	keyed : Val(ctx, Str), v, v -> Keyed(ctx, v)
+	keyed : Signal(ctx, Str), v, v -> Keyed(ctx, v)
 	keyed = |sv, yes, no| {
 		{ mask, read, sel } = sv
 		{ mask: mask.bitwise_or(sel_mask(sel)), selected: read, yes, no }
@@ -1070,23 +1070,23 @@ Core := [].{
 	RowRef(outer, item) := { depth : U64 }.{
 
 		## The row's key. It is fixed for the row's lifetime, so it never triggers a refresh.
-		key : RowRef(outer, item) -> Val(Row(outer, item), Str)
+		key : RowRef(outer, item) -> Signal(Row(outer, item), Str)
 		key = |_| { mask: 0, read: |e| e.key, sel: NoSel }
 
 		## A projection of the row's item. It is re-evaluated only for rows whose new
 		## item differs from the old one.
-		field : RowRef(outer, item), (item -> a) -> Val(Row(outer, item), a)
+		field : RowRef(outer, item), (item -> a) -> Signal(Row(outer, item), a)
 		field = |{ depth }, f| { mask: bit(depth), read: |e| f(e.item), sel: NoSel }
 
 		## The row's whole item: what a handler or a reaction of the row
 		## takes as its reading. Like `field`, it is re-evaluated only for
 		## rows whose new item differs from the old one.
-		item : RowRef(outer, item) -> Val(Row(outer, item), item)
+		item : RowRef(outer, item) -> Signal(Row(outer, item), item)
 		item = |{ depth }| { mask: bit(depth), read: |e| e.item, sel: NoSel }
 
 		## `yes` or `no` from a [Keyed] selection, depending on whether this row's key
 		## is the selected one.
-		select : RowRef(outer, item), Keyed(outer, v) -> Val(Row(outer, item), v)
+		select : RowRef(outer, item), Keyed(outer, v) -> Signal(Row(outer, item), v)
 		select = |_, kd| {
 			{ mask, selected, yes, no } = kd
 			{ mask: 0, read: |e| if (selected(e.outer) == e.key) yes else no, sel: Sel(mask, |e| selected(e.outer)) }
@@ -1094,9 +1094,9 @@ Core := [].{
 	}
 
 	## An attribute, event listener or focus reference on an element, in context
-	## `ctx`. Make one with `attr`, `attr_v`, `class`, `class_v`, `test_id`,
-	## `test_id_v`, `on`, `on_click` or `ref`.
-	Attr(ctx) :: [Static(Str, Str), Dyn(Str, Val(ctx, Str)), On(Str, Handler(ctx)), Ref(Str)]
+	## `ctx`. Make one with `attr`, `attr_s`, `class`, `class_s`, `test_id`,
+	## `test_id_s`, `on`, `on_click` or `ref`.
+	Attr(ctx) :: [Static(Str, Str), Dyn(Str, Signal(ctx, Str)), On(Str, Handler(ctx)), Ref(Str)]
 
 	## A piece of UI in context `ctx`: an element, a text node or a dynamic site
 	## (`state`, `derive`, `resource`, `when`, `switch`, `remount_on`, `each`,
@@ -1106,7 +1106,7 @@ Core := [].{
 	Elem(ctx) :: [
 		Element(Str, List(Attr(ctx)), List(Elem(ctx))),
 		Text(Str),
-		TextV(Val(ctx, Str)),
+		TextV(Signal(ctx, Str)),
 
 		## A dynamic site and its conservative read mask, given the depth the
 		## site is mounted at (computed without mounting it).
@@ -1149,7 +1149,7 @@ Core := [].{
 	## `template` runs once per site against a [RowRef] and must return a single
 	## element. A duplicate key is a contract error, as is a focus `ref` directly in
 	## the row template (put it in a nested site instead).
-	each : Val(ctx, List(item)), (item -> Str), (RowRef(ctx, item) -> Elem(Row(ctx, item))) -> Elem(ctx)
+	each : Signal(ctx, List(item)), (item -> Str), (RowRef(ctx, item) -> Elem(Row(ctx, item))) -> Elem(ctx)
 		where [item.is_eq : item, item -> Bool]
 	each = |rows, key, template| Site(
 		Mount(
@@ -1208,7 +1208,7 @@ Core := [].{
 	## data the site can compare (a filter and an order the user chose),
 	## and `plan` turns it into the [Query] that selects and orders rows;
 	## `window` is the part of that order to draw.
-	ViewProps(ctx, q, k, v, s) : { query : Val(ctx, q), plan : (q -> Query(k, v, s)), window : Val(ctx, Window) }
+	ViewProps(ctx, q, k, v, s) : { query : Signal(ctx, q), plan : (q -> Query(k, v, s)), window : Signal(ctx, Window) }
 
 	## `each_view(table, props, template)` renders one row for each
 	## row of `table` in the window of a filtered, sorted view of it
@@ -1235,7 +1235,7 @@ Core := [].{
 	## The site finds a mounted row by the table's key itself, in an index
 	## it keeps through the key's `is_eq` and `to_hash`, never by a text of
 	## the key.
-	each_view : Cell(st, Table(k, v)), ViewProps(ctx, q, k, v, s), (Val(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)
+	each_view : Cell(st, Table(k, v)), ViewProps(ctx, q, k, v, s), (Signal(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)
 		where [ctx.store : () -> StoreReach(ctx, st), k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher, q.is_eq : q, q -> Bool]
 	each_view = |source, props, template| Site(
 		Mount(
@@ -1281,7 +1281,7 @@ Core := [].{
 	## when `cond` changes, disposing the old branch with everything it owns.
 	## Because the unselected branch is never built, recursive UI can be expressed
 	## directly.
-	when : Val(ctx, Bool), (() -> Elem(ctx)), (() -> Elem(ctx)) -> Elem(ctx)
+	when : Signal(ctx, Bool), (() -> Elem(ctx)), (() -> Elem(ctx)) -> Elem(ctx)
 	when = |cond, yes, no| Site(
 		Mount(
 			|env, args, tx| {
@@ -1310,7 +1310,7 @@ Core := [].{
 	## `sel`, and rebuilds it when `sel` changes to a different case. `cases` lists
 	## every value `sel` can take, so the site listens to everything any branch
 	## could read; a value outside `cases` is a contract error.
-	switch : Val(ctx, k), List(k), (k -> Elem(ctx)) -> Elem(ctx)
+	switch : Signal(ctx, k), List(k), (k -> Elem(ctx)) -> Elem(ctx)
 		where [k.is_eq : k, k -> Bool]
 	switch = |sel, cases, body| Site(
 		Mount(
@@ -1342,7 +1342,7 @@ Core := [].{
 	## refresh of what else changed; an unequal one costs disposing and
 	## mounting the body. The site keeps the key the body was built for, to
 	## compare, so a key should be small, such as an id.
-	remount_on : Val(ctx, k), (() -> Elem(ctx)) -> Elem(ctx)
+	remount_on : Signal(ctx, k), (() -> Elem(ctx)) -> Elem(ctx)
 		where [k.is_eq : k, k -> Bool]
 	remount_on = |key, body| Site(
 		Mount(
@@ -1365,7 +1365,7 @@ Core := [].{
 	## read only the derived value do no work while it is equal to the previous
 	## result, so use `derive` for a value that is expensive or read in many
 	## places. Values from the enclosing context enter `body` with `lift`.
-	derive : Val(ctx, a), (Val(In(ctx, a), a) -> Elem(In(ctx, a))) -> Elem(ctx)
+	derive : Signal(ctx, a), (Signal(In(ctx, a), a) -> Elem(In(ctx, a))) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
 	derive = |input, body| Site(
 		Mount(
@@ -1679,7 +1679,7 @@ Core := [].{
 	## title, storage writes, focus): a request that awaits a result would outlive
 	## its owner, so it is a contract error. Each run is counted by `name`. The site
 	## renders nothing and reads nothing while it is live.
-	on_cleanup : Str, Val(ctx, a), (a -> List(Req)) -> Elem(ctx)
+	on_cleanup : Str, Signal(ctx, a), (a -> List(Req)) -> Elem(ctx)
 	on_cleanup = |name, v, plan| Site(
 		Mount(|_env, _args, tx| (cleanup_inst(name, v, plan), 0, tx)),
 		|_| 0,
@@ -1696,13 +1696,13 @@ Core := [].{
 	## delivered to the nearest surviving ancestor instead. At most 32 requests are
 	## in flight by default (see `program_boot`); beyond that a request is answered
 	## with `Refused`.
-	watch : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
+	watch : Signal(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
 	watch = |v, plan, react| effect(v, True, plan, replanned(plan), react)
 
 	## Like `watch`, but issues only when `v` changes after mount, never for its
 	## initial value.
-	on_change : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
+	on_change : Signal(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
 	on_change = |v, plan, react| effect(v, False, plan, replanned(plan), react)
 
@@ -1713,7 +1713,7 @@ Core := [].{
 	## follow-ups and refusals (counted `stale`), so a late answer for an earlier
 	## value never reaches `react`. A `plan` that returns `[]` makes a change a
 	## pure cancel. Disposal follows `watch`'s rules.
-	latest : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
+	latest : Signal(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
 	latest = |v, plan, react| Site(
 		Mount(
@@ -1737,7 +1737,7 @@ Core := [].{
 	## the request was issued for. Readers inside `body` do no work while the
 	## layer is equal to its previous value. Disposal follows `watch`'s rules; a
 	## reparented answer's write to the retired layer is skipped and counted.
-	resource : Val(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Req)), resolve : (s, a, Res -> s) }, (Val(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
+	resource : Signal(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Req)), resolve : (s, a, Res -> s) }, (Signal(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
 	resource = |input, cfg, body| {
 		resolve = cfg.resolve
@@ -1747,7 +1747,7 @@ Core := [].{
 	## `resource` whose `resolve` is also told the position, in the list
 	## `plan(a)` returned, of the request a result answers: how a `gather`
 	## layer knows which job answered.
-	resource_at : Val(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Req)), resolve : (s, a, U64, Res -> s) }, (Val(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
+	resource_at : Signal(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Req)), resolve : (s, a, U64, Res -> s) }, (Signal(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
 	resource_at = |input, cfg, body| Site(
 		Mount(
@@ -1853,7 +1853,7 @@ Core := [].{
 	## item. Nothing is issued at mount and nothing is cancelled, as with
 	## `on_change`. Two posts to one outbox in one turn are a contract
 	## error, since the first would never be sent.
-	on_post : Val(ctx, Outbox(item)), (item -> List(Req)), Reaction(ctx, item) -> Elem(ctx)
+	on_post : Signal(ctx, Outbox(item)), (item -> List(Req)), Reaction(ctx, item) -> Elem(ctx)
 	on_post = |v, plan, react| effect(v, False, |_| [], posted_step(plan), posted_reaction(react))
 
 	## The `resource` configuration of a layer that follows the answer to one
@@ -1944,7 +1944,7 @@ Core := [].{
 	}
 
 	## A value that never changes. It reads no layer, so it never triggers a refresh.
-	const : a -> Val(ctx, a)
+	const : a -> Signal(ctx, a)
 	const = |value| { mask: 0, read: |_| value, sel: NoSel }
 
 	## `element(tag, attrs, children)`: an HTML element. `Html` offers typed
@@ -1958,8 +1958,8 @@ Core := [].{
 
 	## A text node whose content follows a value; the DOM is written only when
 	## the text changes.
-	text_v : Val(ctx, Str) -> Elem(ctx)
-	text_v = |v| TextV(v)
+	text_s : Signal(ctx, Str) -> Elem(ctx)
+	text_s = |v| TextV(v)
 
 	## A static attribute.
 	attr : Str, Str -> Attr(ctx)
@@ -1969,24 +1969,24 @@ Core := [].{
 	## An empty string removes the attribute. `value` and `checked` update the
 	## control's live state (a focused text control keeps the user's draft until
 	## blur).
-	attr_v : Str, Val(ctx, Str) -> Attr(ctx)
-	attr_v = |name, v| Dyn(name, v)
+	attr_s : Str, Signal(ctx, Str) -> Attr(ctx)
+	attr_s = |name, v| Dyn(name, v)
 
 	## A static `class` attribute.
 	class : Str -> Attr(ctx)
 	class = |c| Static("class", c)
 
 	## A `class` attribute that follows a value.
-	class_v : Val(ctx, Str) -> Attr(ctx)
-	class_v = |v| Dyn("class", v)
+	class_s : Signal(ctx, Str) -> Attr(ctx)
+	class_s = |v| Dyn("class", v)
 
 	## A static `data-testid` attribute, for spec locators.
 	test_id : Str -> Attr(ctx)
 	test_id = |v| Static("data-testid", v)
 
 	## A `data-testid` attribute that follows a value.
-	test_id_v : Val(ctx, Str) -> Attr(ctx)
-	test_id_v = |v| Dyn("data-testid", v)
+	test_id_s : Signal(ctx, Str) -> Attr(ctx)
+	test_id_s = |v| Dyn("data-testid", v)
 
 	## `on(event, handler)` listens for a DOM event by name (`"input"`, `"keydown"`,
 	## ...). A `:prevent` suffix (`"click:prevent"`) calls `preventDefault` when the
@@ -2491,7 +2491,7 @@ Core := [].{
 # Limits are memory, not bit widths (2^32 - 2 live nodes; fx_node reserved).
 # Effect commands (13-18) are described before `max_timeout_ms`.
 
-## A row-selection dependency: a structural alias, so the public `Val` may
+## A row-selection dependency: a structural alias, so the public `Signal` may
 ## carry it without exposing a private nominal type.
 Sel(ctx) : [NoSel, Sel(U128, (ctx -> Str))]
 
@@ -2502,7 +2502,7 @@ sel_mask = |sel| match sel {
 }
 
 ## Mask a plain block must watch for a value: its layers and its selector's.
-eff_mask : Val(ctx, a) -> U128
+eff_mask : Signal(ctx, a) -> U128
 eff_mask = |v| v.mask.bitwise_or(sel_mask(v.sel))
 
 ## `sole`: the site is the only child of `parent` and sits at its end.
@@ -2907,7 +2907,7 @@ free_site = |{ cmds, next, free, routes, work, paths, site_free, fx }, s| {
 ## index `d + 1`. Indices grow without bound: nesting is limited only by
 ## memory.
 ##
-## Two representations meet. A *read signature* (`Val.mask`, a hole's
+## Two representations meet. A *read signature* (`Signal.mask`, a hole's
 ## mask, a block's reads, the mask of a `Changed` pass) is 128 bits. Its
 ## low 64 bits are the layers': index `i` at bit `i % 64`. It can only
 ## over-approximate: two layers on one path share a bit only when their
@@ -3571,7 +3571,7 @@ state_inst = |s0, block0, depth0, waits0| {
 }
 
 ## A conditional site. The branch is rebuilt when the condition changes.
-When(ctx) : { cond : Val(ctx, Bool), yes : (() -> Elem(ctx)), no : (() -> Elem(ctx)), anchor : U32, depth : U64, path : List(U32), cap : U128 }
+When(ctx) : { cond : Signal(ctx, Bool), yes : (() -> Elem(ctx)), no : (() -> Elem(ctx)), anchor : U32, depth : U64, path : List(U32), cap : U128 }
 
 ## `adopted`: orphans reparented to this site when a branch it disposed
 ## left admitted requests behind.
@@ -3984,7 +3984,7 @@ put_path = |buf, kind, path| buf.append(kind).append(narrow(path.len(), "nesting
 narrow : U64, Str -> U8
 narrow = |n, what| if (n > 255) crash "resource_limit: a row template's ${what} is ${n.to_str()}; the template encoding allows at most 255" else n.to_u8_wrap()
 
-val_hole : Plan(ctx), U8, Str, Val(ctx, Str), List(U8) -> Plan(ctx)
+val_hole : Plan(ctx), U8, Str, Signal(ctx, Str), List(U8) -> Plan(ctx)
 val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads }, kind, name, v, extra| {
 	{ mask, read, sel } = v
 	(smask, skey) = match sel {
@@ -4905,7 +4905,7 @@ row_out = |out| match out {
 }
 
 ## `adopted`: orphans reparented here from removed rows.
-each_inst : EachCfg(Row(ctx, item), (item -> Str)), Val(ctx, List(item)), List(Orphan(ctx)), Cols(Row(ctx, item), item) -> Inst(ctx)
+each_inst : EachCfg(Row(ctx, item), (item -> Str)), Signal(ctx, List(item)), List(Orphan(ctx)), Cols(Row(ctx, item), item) -> Inst(ctx)
 	where [item.is_eq : item, item -> Bool]
 each_inst = |cfg0, rows0, adopted0, cols0| {
 	held = { cfg: cfg0, rows: rows0, adopted: adopted0, cols: cols0 }
@@ -5003,7 +5003,7 @@ view_chunk = 1024
 
 ## Fixed per view site: the table's getter, the query and how it selects
 ## and orders rows, and the window.
-Shows(ctx, q, k, v, s) : { get : (ctx -> Table(k, v)), query : Val(ctx, q), plan : (q -> Core.Query(k, v, s)), window : Val(ctx, Core.Window) }
+Shows(ctx, q, k, v, s) : { get : (ctx -> Table(k, v)), query : Signal(ctx, q), plan : (q -> Core.Query(k, v, s)), window : Signal(ctx, Core.Window) }
 
 ## How a scope reads the table a view draws: through its reach of the
 ## store, then the table's cell.
@@ -5025,7 +5025,7 @@ view_source = |source| {
 
 ## A view row's key. It is fixed for the row's lifetime, so it never
 ## triggers a refresh.
-view_key : {} -> Val(Row(ctx, k), k)
+view_key : {} -> Signal(Row(ctx, k), k)
 view_key = |_| { mask: 0, read: |e| e.item, sel: NoSel }
 
 ## A handle on a view row's value. A read is the row of the row's key in
@@ -5341,9 +5341,9 @@ state_handle = |depth| {
 ## value `k` of `sel`, rebuilt when it changes. `cases` lists every value
 ## `sel` can take; the site's static reads are the union over them (so it
 ## listens exactly), and a value outside `cases` is a contract error.
-Switch(ctx, k) : { sel : Val(ctx, k), cases : List(k), body : (k -> Elem(ctx)), anchor : U32, depth : U64, path : List(U32), cap : U128 }
+Switch(ctx, k) : { sel : Signal(ctx, k), cases : List(k), body : (k -> Elem(ctx)), anchor : U32, depth : U64, path : List(U32), cap : U128 }
 
-switch_reads : Val(ctx, k), List(k), (k -> Elem(ctx)), U64 -> U128
+switch_reads : Signal(ctx, k), List(k), (k -> Elem(ctx)), U64 -> U128
 switch_reads = |sel, cases, body, d| {
 	var $m = eff_mask(sel)
 	for c in cases {
@@ -5352,7 +5352,7 @@ switch_reads = |sel, cases, body, d| {
 	$m
 }
 
-switch_value : Val(ctx, k), List(k), ctx, List(U32) -> k
+switch_value : Signal(ctx, k), List(k), ctx, List(U32) -> k
 	where [k.is_eq : k, k -> Bool]
 switch_value = |sel, cases, env, path| {
 	k = (sel.read)(env)
@@ -5417,7 +5417,7 @@ switch_inst = |w0, cur0, adopted0, block0| {
 
 ## A `remount_on` site's fixed part: its key, its body, its anchor
 ## and where the body mounts.
-Remount(ctx, k) : { key : Val(ctx, k), body : (() -> Elem(ctx)), anchor : U32, depth : U64, path : List(U32), cap : U128 }
+Remount(ctx, k) : { key : Signal(ctx, k), body : (() -> Elem(ctx)), anchor : U32, depth : U64, path : List(U32), cap : U128 }
 
 ## A `remount_on` site holding the body built for key `cur`.
 ## `adopted`: orphans reparented to this site when a body it disposed left
@@ -5479,7 +5479,7 @@ remount_inst = |w0, cur0, adopted0, block0| {
 	)
 }
 
-derive_inst : Val(ctx, a), a, Block(In(ctx, a)), U64 -> Inst(ctx)
+derive_inst : Signal(ctx, a), a, Block(In(ctx, a)), U64 -> Inst(ctx)
 	where [a.is_eq : a, a -> Bool]
 derive_inst = |input0, v0, block0, depth0| {
 	held = { input: input0, v: v0, block: block0, depth: depth0 }
@@ -5524,7 +5524,7 @@ derive_inst = |input0, v0, block0, depth0| {
 
 ## A derived layer has no write handle, so an event below it can only have
 ## changed an outer layer (which will refresh this site) or nothing.
-derive_settle : Val(ctx, a), Block(In(ctx, a)), U64, Out(In(ctx, a)), Tx -> (Inst(ctx), Out(ctx), Tx)
+derive_settle : Signal(ctx, a), Block(In(ctx, a)), U64, Out(In(ctx, a)), Tx -> (Inst(ctx), Out(ctx), Tx)
 	where [a.is_eq : a, a -> Bool]
 derive_settle = |input, block, depth, out, tx| {
 	match out {
@@ -6231,7 +6231,7 @@ Owned(a) : { id : U32, sub : Bool, keep : Bool, a : a, at : U64 }
 ## mount, and `step` those for a change from the value last seen to a new
 ## one at the site's path (`plan` of the new value, except for `on_post`,
 ## which checks the change).
-EffectCfg(ctx, a) : { v : Val(ctx, a), plan : (a -> List(Req)), step : (a, a, List(U32) -> List(Req)), react : Reaction(ctx, a), path : List(U32) }
+EffectCfg(ctx, a) : { v : Signal(ctx, a), plan : (a -> List(Req)), step : (a, a, List(U32) -> List(Req)), react : Reaction(ctx, a), path : List(U32) }
 
 ## The `step` of a site that issues `plan` of each new value.
 replanned : (a -> List(Req)) -> (a, a, List(U32) -> List(Req))
@@ -6565,7 +6565,7 @@ take_dropped = |cols, depth| {
 }
 
 ## An effect site. `initial`: also issue for the value at mount.
-effect : Val(ctx, a), Bool, (a -> List(Req)), (a, a, List(U32) -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
+effect : Signal(ctx, a), Bool, (a -> List(Req)), (a, a, List(U32) -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
 	where [a.is_eq : a, a -> Bool]
 effect = |v, initial, plan, step, react| Site(
 	Mount(
@@ -6584,7 +6584,7 @@ effect = |v, initial, plan, step, react| Site(
 	|_| eff_mask(v),
 )
 
-cleanup_inst : Str, Val(ctx, a), (a -> List(Req)) -> Inst(ctx)
+cleanup_inst : Str, Signal(ctx, a), (a -> List(Req)) -> Inst(ctx)
 cleanup_inst = |name, v, plan| Inst(
 	|env, msg, tx| {
 		match msg {
@@ -6826,7 +6826,7 @@ settled_remote = |outcome| match outcome {
 
 ## Fixed per `resource` site.
 ResourceCfg(ctx, a, s) : {
-	input : Val(ctx, a),
+	input : Signal(ctx, a),
 	pending : (s, a -> s),
 	plan : (a -> List(Req)),
 	resolve : (s, a, U64, Res -> s),
@@ -7275,7 +7275,7 @@ expect {
 				"div",
 				[],
 				[
-					Core.when(st.val(), || Core.watch(Core.const({}), |_| [Work({ task: "t/echo", input: [1], files: [], deadline_ms: 0, on_dispose: Stop, on_cancel: Stop, prepared: Unprepared })], Core.ignore({})), || Core.text("")),
+					Core.when(st.signal(), || Core.watch(Core.const({}), |_| [Work({ task: "t/echo", input: [1], files: [], deadline_ms: 0, on_dispose: Stop, on_cancel: Stop, prepared: Unprepared })], Core.ignore({})), || Core.text("")),
 					Core.watch(Core.const({}), |_| [Self], st.on_result(|_, _, _| Bool.False)),
 				],
 			),
@@ -7363,7 +7363,7 @@ expect {
 				"div",
 				[],
 				[
-					Core.when(st.val(), || Core.watch(Core.const({}), |_| [PortCall({ port: "t/k", message: msg, timeout_ms: 0 }), PortSubscribe({ port: "t/s", message: msg })], Core.ignore({})), || Core.text("")),
+					Core.when(st.signal(), || Core.watch(Core.const({}), |_| [PortCall({ port: "t/k", message: msg, timeout_ms: 0 }), PortSubscribe({ port: "t/s", message: msg })], Core.ignore({})), || Core.text("")),
 					Core.watch(Core.const({}), |_| [Self], st.on_result(|_, _, _| Bool.False)),
 				],
 			),
