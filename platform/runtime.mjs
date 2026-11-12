@@ -883,7 +883,7 @@ export class WorkMonitor {
 
   // The runtime decided the job's result and is delivering it as a turn:
   // `outcome` is done, lost, timeout or unavailable.
-  jobAnswered(id, outcome, faultClass, output) {
+  jobDelivered(id, outcome, faultClass, output) {
     const job = this.jobs.get(id);
     if (job === undefined || !this.live()) return;
     this.tick();
@@ -3423,7 +3423,7 @@ export class RocEngineRuntime {
     const finish = (bytes, outcome, klass = null, output = null) => {
       if (this.live.get(fx.id) !== entry) return;
       this.live.delete(fx.id);
-      this.monitor.jobAnswered(fx.id, outcome, klass, output);
+      this.monitor.jobDelivered(fx.id, outcome, klass, output);
       open = false;
       if (timer !== null) {
         clearTimeout(timer);
@@ -3563,7 +3563,7 @@ export class RocEngineRuntime {
     if (this.poisoned || e === undefined || e.kind !== "work" || e.running || code < 1) return false;
     this.live.delete(id);
     const reported = this.reportLost(e.req, code, "lost by the spec");
-    this.monitor.jobAnswered(id, code === LOST_UNAVAILABLE ? "unavailable" : "lost", reported, null);
+    this.monitor.jobDelivered(id, code === LOST_UNAVAILABLE ? "unavailable" : "lost", reported, null);
     this.result(id, new Uint8Array([RES_WORK_LOST, code]));
     return true;
   }
@@ -3575,7 +3575,7 @@ export class RocEngineRuntime {
     const e = this.live.get(id);
     if (this.poisoned || e === undefined || e.kind !== "work" || e.running || !(e.req.timeout > 0)) return false;
     this.live.delete(id);
-    this.monitor.jobAnswered(id, "timeout", null, null);
+    this.monitor.jobDelivered(id, "timeout", null, null);
     this.result(id, new Uint8Array([RES_TIMEOUT]));
     return true;
   }
