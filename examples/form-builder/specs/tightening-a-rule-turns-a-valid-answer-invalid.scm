@@ -1,4 +1,4 @@
-(test "Form builder — the key cross level assertion"
+(test "Form builder — tightening a rule turns a valid answer invalid"
   (steps
     ; Bring the page to the state this spec starts from.
     (fill (label "Answer f1") "Ada")
@@ -6,7 +6,7 @@
     (fill (label "Answer f2") "ada@example.com")
     (click (role button :name "Submit form"))
 
-    ; the key cross level assertion
+    ; tightening a rule turns a valid answer invalid
     ; Tighten a rule in the DESIGNER and watch previously-valid PREVIEW input turn
     ; invalid, with the form's submittable state flipping in the same turn.
     (fill (label "Minimum f1") "5")

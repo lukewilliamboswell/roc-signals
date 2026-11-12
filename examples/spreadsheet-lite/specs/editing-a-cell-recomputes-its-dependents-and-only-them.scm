@@ -1,4 +1,4 @@
-(test "Spreadsheet lite — B2 > D2 > D5 > D6 > D7 > D8 and B2 > B5 > (F5, D5 already covered)"
+(test "Spreadsheet lite — editing a cell recomputes its dependents and only them"
   (steps
     ; Bring the page to the state this spec starts from.
     (focus (label "D2"))
@@ -9,10 +9,12 @@
     (blur (label "D5"))
     (focus (label "F5"))
     (blur (label "F5"))
+
+    ; editing a cell recomputes its dependents and only them
+
     (focus (label "B2"))
     (mark-metrics)
     (fill (label "B2") "1500")
-
     ; B2 > D2 > D5 > D6 > D7 > D8 and B2 > B5 > (F5, D5 already covered)
     (expect-value (label "D2") "2800")
     (expect-value (label "B5") "2150")

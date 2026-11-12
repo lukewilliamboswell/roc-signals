@@ -1,11 +1,12 @@
-(test "Markdown editor — Reading speed: a fan in of the counts and the selected words per minute"
+(test "Markdown editor — Changing the reading speed leaves the preview and outline alone"
   (steps
     ; Bring the page to the state this spec starts from.
     (mark-metrics)
     (uncheck (label "Number the outline"))
     (check (label "Number the outline"))
 
-    ; Reading speed: a fan in of the counts and the selected words per minute
+    ; Reading speed: the reading time is derived from the word count and the
+    ; selected words per minute.
     ; Changing the speed must not touch the preview or the outline.
     ; ---------------------------------------------------------------------------
 

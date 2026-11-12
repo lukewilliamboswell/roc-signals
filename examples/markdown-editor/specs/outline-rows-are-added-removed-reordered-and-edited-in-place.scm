@@ -1,4 +1,4 @@
-(test "Markdown editor — List behaviour: add, remove, reorder, and per-row edits in the outline."
+(test "Markdown editor — Outline rows are added, removed, reordered and edited in place"
   (steps
     ; Bring the page to the state this spec starts from.
     (mark-metrics)

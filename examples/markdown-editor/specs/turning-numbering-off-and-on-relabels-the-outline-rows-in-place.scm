@@ -1,6 +1,7 @@
-(test "Markdown editor — Numbering toggle: a fan-in of the heading spine and a boolean."
+(test "Markdown editor — Turning numbering off and on relabels the outline rows in place"
   (steps
-    ; Numbering toggle: a fan-in of the heading spine and a boolean.
+    ; Numbering toggle: each row's label is derived from the list of headings
+    ; and the checkbox.
     ; Row identity is the heading slug, so toggling relabels rows in place.
     ; ---------------------------------------------------------------------------
 

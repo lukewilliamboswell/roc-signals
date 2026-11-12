@@ -1,4 +1,4 @@
-(test "Markdown editor — Edge case: markdown special characters and text that looks like markup."
+(test "Markdown editor — Edge case: special characters and text that looks like markup"
   (steps
     ; Bring the page to the state this spec starts from.
     (mark-metrics)

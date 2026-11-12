@@ -1,4 +1,4 @@
-(test "Markdown editor — Contrast: adding a heading does rebuild the outline, by exactly one row."
+(test "Markdown editor — Adding a heading adds one outline row and removes none"
   (steps
     ; Bring the page to the state this spec starts from.
     (mark-metrics)

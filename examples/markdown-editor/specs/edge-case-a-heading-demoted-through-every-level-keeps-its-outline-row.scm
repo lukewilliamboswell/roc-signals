@@ -1,4 +1,4 @@
-(test "Markdown editor — Edge case: every heading level, one demotion at a time. The outline row"
+(test "Markdown editor — Edge case: a heading demoted through every level keeps its outline row"
   (steps
     ; Bring the page to the state this spec starts from.
     (mark-metrics)

@@ -1,4 +1,4 @@
-(test "Spreadsheet lite — the new dependent updates with it"
+(test "Spreadsheet lite — a cell given a formula updates with the cell it reads"
   (steps
     ; Bring the page to the state this spec starts from.
     (focus (label "D2"))
@@ -94,7 +94,7 @@
     (fill (label "B3") "400")
     (blur (label "B3"))
 
-    ; the new dependent updates with it
+    ; a cell given a formula updates with the cell it reads
 
     (focus (label "G1"))
     (fill (label "G1") "=C12+1")
