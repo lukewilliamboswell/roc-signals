@@ -393,10 +393,17 @@ allocation evidence. The release notes disclose these limits.
 Fuzz examples and campaigns also report `SKIP` on that nightly: roc-fuzz
 0.6.0's Linux libraries predate the [PIE requirement](https://github.com/roc-lang/roc/pull/12949),
 and its engine targets also reach the optimizer crash. Restore them with
-PIC roc-fuzz inputs and the optimizer fix. The Windows CLI journey alone
-is skipped for [roc-lang/roc#12977](https://github.com/roc-lang/roc/issues/12977);
-Windows native specs and worker failure checks remain enabled. Every
-exemption matches that exact compiler version, so the next nightly
+PIC roc-fuzz inputs and the optimizer fix. Windows CI always attempts the
+current CLI init and retains its output in `.build/cli-init.log`, printing
+it before classification. Only a failed init matching the reported two
+`Locale` compile-time stack overflows may quarantine the remaining CLI
+journey on that exact nightly ([basic-cli#555](https://github.com/roc-lang/basic-cli/issues/555)).
+That report observed basic-cli 0.27; it does not establish compiler cause
+or that 0.28 is affected. Successful init continues the full journey, and
+other failures remain fatal. Windows native specs and worker failure
+checks remain enabled; remove the quarantine when basic-cli#555 is resolved.
+
+Every exemption matches that exact compiler version, so the next nightly
 automatically retries the original work. Remove these branches once the
 corresponding upstream fixes are available; do not extend a skip to an
 unverified compiler version.

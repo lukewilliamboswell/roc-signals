@@ -164,18 +164,33 @@ jobs:
           EXE: ${{ matrix.exe }}
           ROC_NIGHTLY: ${{ needs.nightly.outputs.tag }}
         run: |
-          # Restore on the first nightly that fixes roc-lang/roc#12977.
-          # New nightlies retry automatically; native specs above still run.
-          if [ "$RUNNER_OS" = Windows ] && [ "$ROC_NIGHTLY" = nightly-2026-11-11-7679cc5 ]; then
-            echo "::notice::SKIP Windows CLI end to end: basic-cli Locale quoted values overflow during compile-time evaluation (https://github.com/roc-lang/roc/issues/12977); remove this workaround when fixed."
-            exit 0
-          fi
           failed=0
           root=$(pwd -W 2>/dev/null || pwd)
           cli_url=$(sed -n 's/.*cli: platform "\(.*\)",/\1/p' cli/main.roc)
           printf '%s\n' 'app [main!] {' "	cli: platform \"$cli_url\"," "	signals: \"$root/cli/main.roc\"," '}' '' 'import signals.Signals' '' 'main! = |args| Signals.run!(args)' > signals.roc
-          echo "== init"
-          roc signals.roc init tool-app || exit 1
+          echo "== init ($cli_url, $ROC_NIGHTLY)"
+          mkdir -p .build
+          init_log=.build/cli-init.log
+          init_status=0
+          roc signals.roc init tool-app > "$init_log" 2>&1 || init_status=$?
+          cat "$init_log"
+          if [ "$init_status" -ne 0 ]; then
+            # The report concerns basic-cli 0.27; always try the current CLI.
+            # Quarantine only its exact two-error signature, never another
+            # failure. Remove when basic-cli#555 is resolved; new nightlies
+            # retry without this exemption. Native specs above still run.
+            if [ "$RUNNER_OS" = Windows ] && [ "$ROC_NIGHTLY" = nightly-2026-11-11-7679cc5 ] && [ "$init_status" -eq 1 ] &&
+               [ "$(grep -c '✗' "$init_log")" -eq 2 ] &&
+               [ "$(grep -Ec 'compile time crash.*Locale\.roc:(253|291):11' "$init_log")" -eq 2 ] &&
+               [ "$(grep -Fc 'This definition crashed during compile-time evaluation.' "$init_log")" -eq 2 ] &&
+               [ "$(grep -Fc 'The crash happened in the module Url (line 909, column 8)' "$init_log")" -eq 2 ] &&
+               [ "$(grep -Fc 'This Roc program overflowed its stack memory.' "$init_log")" -eq 2 ] &&
+               grep -Fq '2 errors and 0 warnings' "$init_log"; then
+              echo "::notice::SKIP remaining Windows CLI journey after the reported Locale compile-time stack overflow (https://github.com/roc-lang/basic-cli/issues/555); remove this quarantine when resolved. Init output is retained in $init_log."
+              exit 0
+            fi
+            exit "$init_status"
+          fi
           cd tool-app
           echo "== test"
           roc signals.roc test || failed=1
