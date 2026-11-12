@@ -4,21 +4,19 @@
 
 {% block content %}
 <main class="site-shell">
-  <section class="grid gap-3">
-    <p class="text-sm font-medium text-emerald-700">Docs</p>
-    <h1 class="text-3xl font-semibold text-zinc-950">Learn Roc Signals</h1>
-    <p class="max-w-3xl leading-7 text-zinc-700">Start with Getting Started to run an app, or Thinking in Signals to learn the model. The topic guides cover local and shared state, tables, components, effects and testing; the reference maps the API.</p>
+  <section class="grid gap-4 pt-4">
+    <p class="site-eyebrow">Docs</p>
+    <h1 class="site-h1">Learn Roc Signals</h1>
+    <p class="site-lede">Start with Getting Started to run an app, or Thinking in Signals to learn the model. The topic guides cover local and shared state, tables, components, effects and testing; the reference maps the API.</p>
   </section>
-  <ol class="grid gap-3">
+  <ol class="panel site-rows">
     {% for page in section.pages %}
     <li>
-      <a class="panel grid gap-1 p-4 no-underline transition hover:border-emerald-500" href="{{ page.permalink }}">
-        <span class="flex flex-wrap items-baseline gap-2">
-          <span class="text-xs font-medium tabular-nums text-emerald-700">{{ loop.index }}</span>
-          <span class="font-semibold text-zinc-950">{{ page.title }}</span>
-        </span>
+      <a class="site-row" href="{{ page.permalink }}">
+        <span class="site-row-no">{% if loop.index < 10 %}0{% endif %}{{ loop.index }}</span>
+        <span class="site-row-title">{{ page.title }}</span>
         {% if page.description %}
-        <span class="text-sm leading-6 text-zinc-600">{{ page.description }}</span>
+        <span class="site-row-text">{{ page.description }}</span>
         {% endif %}
       </a>
     </li>

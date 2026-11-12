@@ -86,7 +86,7 @@ Comments :: { slug : Str, loaded : Fetch.Loaded(List(Api.Comment)), refetch : U6
 		session = props.session.val()
 		mine = r.field(|c| c.author.username).map2(session, |name, s| name == s.username())
 		Html.div(
-			"my-4 overflow-hidden rounded-xl border border-zinc-200 bg-white p-4",
+			"my-4 overflow-hidden border border-zinc-950 bg-white p-4",
 			[
 				Html.p_v(r.field(|c| c.body), []),
 				Html.p_v(r.field(|c| "${c.author.username} on ${Format.display_date(c.created_at)}"), [Engine.class("text-sm text-zinc-500")]),

@@ -88,6 +88,16 @@ documentation and index pages. Theme preferences apply to site chrome; example
 apps keep their authored colors. Screenshots are written to
 `.build/site-screenshots/` for visual review.
 
+The site's look is one stylesheet, `www/input.css`, and its rules are stated
+at the top of that file: square corners, one-pixel rules and no shadows; IBM
+Plex Sans for text and IBM Plex Mono capitals for labels; and one accent, kept
+for what is live or actionable, so status colors mean only status. The first
+half of the file is the design system the examples compose their UI from,
+always drawn light. The second half is the `site-…` classes of the pages
+around an app, in a light and a dark palette; code samples sit on the same
+dark block in both. The fonts are files under `www/static/fonts/`, served
+with the site, with their license beside them.
+
 ## Tasks
 
 These are the development environment's Blueprint tasks, not an app's

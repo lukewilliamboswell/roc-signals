@@ -35,7 +35,7 @@ SheetApp := [].{
 	## each row has to stay a labelled `section` for the keyed-reorder specs
 	## to address it. Borders are hung off the bottom/right of every cell so
 	## the frame reads as one continuous ruled grid.
-	grid_frame_class = "min-w-max overflow-hidden rounded-md border-l border-t border-zinc-200"
+	grid_frame_class = "min-w-max overflow-hidden border-l border-t border-zinc-200"
 
 	row_class = "flex items-stretch"
 
@@ -50,7 +50,7 @@ SheetApp := [].{
 	## `#REF`/`#DIV/0!` text can never disagree.
 	tone_class : Sheet.CellKind, [Selected, Unselected] -> Str
 	tone_class = |kind, ring| {
-		base = "w-28 shrink-0 rounded-none border-0 border-b border-r border-zinc-200 px-2 py-1.5 text-sm tabular-nums focus:relative focus:z-10 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-emerald-500"
+		base = "w-28 shrink-0 border-0 border-b border-r border-zinc-200 px-2 py-1.5 text-sm tabular-nums focus:relative focus:z-10 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-accent-600"
 		tone =
 			match kind {
 				Error => " bg-red-50 text-right font-semibold text-red-700"
@@ -60,7 +60,7 @@ SheetApp := [].{
 			}
 		selection =
 			match ring {
-				Selected => " relative z-10 bg-emerald-50 ring-2 ring-inset ring-emerald-500"
+				Selected => " relative z-10 bg-accent-50 ring-2 ring-inset ring-accent-600"
 				Unselected => ""
 			}
 		"${base}${tone}${selection}"
@@ -347,6 +347,6 @@ expect SheetApp.tone_class(Text, Unselected).contains("text-left")
 
 ## The selected cell gains a ring and a tint on top of whatever tone its kind gives it, and no other cell has them.
 expect {
-	ring = " relative z-10 bg-emerald-50 ring-2 ring-inset ring-emerald-500"
-	(SheetApp.tone_class(Text, Selected).ends_with(ring), SheetApp.tone_class(Text, Unselected).contains("bg-emerald-50")) == (True, False)
+	ring = " relative z-10 bg-accent-50 ring-2 ring-inset ring-accent-600"
+	(SheetApp.tone_class(Text, Selected).ends_with(ring), SheetApp.tone_class(Text, Unselected).contains("bg-accent-50")) == (True, False)
 }

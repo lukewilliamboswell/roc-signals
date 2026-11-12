@@ -24,6 +24,7 @@ const types = {
   ".md": "text/markdown; charset=utf-8",
   ".pdf": "application/pdf",
   ".ttf": "font/ttf",
+  ".woff2": "font/woff2",
 };
 
 const args = process.argv.slice(2).filter((a) => a !== "--");

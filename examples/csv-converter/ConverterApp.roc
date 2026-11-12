@@ -263,7 +263,7 @@ preview = |output| Engine.state(
 			),
 			Html.h2("Preview", "card-title"),
 			Html.p("The first six lines of the converted file, up to 4 KiB.", "muted"),
-			Html.pre_v(lines.val(), [Engine.class("min-h-20 min-w-0 max-w-full overflow-auto rounded-md bg-zinc-950 p-4 font-mono text-xs leading-6 text-zinc-50"), Engine.test_id("preview")]),
+			Html.pre_v(lines.val(), [Engine.class("min-h-20 min-w-0 max-w-full overflow-auto bg-zinc-950 p-4 font-mono text-xs leading-6 text-zinc-50"), Engine.test_id("preview")]),
 		],
 	),
 )

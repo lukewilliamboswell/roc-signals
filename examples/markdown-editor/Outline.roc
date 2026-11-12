@@ -177,7 +177,7 @@ row_view = |row| Engine.element(
 	[
 		Engine.element(
 			"a",
-			[Engine.test_id_v(row.key()), Engine.attr_v("href", row.field(|r| r.href)), Engine.attr_v("data-level", row.field(|r| r.level_text)), Engine.class("block rounded px-2 py-1 text-sm text-zinc-700 transition hover:bg-zinc-100 hover:text-emerald-700")],
+			[Engine.test_id_v(row.key()), Engine.attr_v("href", row.field(|r| r.href)), Engine.attr_v("data-level", row.field(|r| r.level_text)), Engine.class("block px-2 py-1 text-sm text-zinc-700 transition hover:bg-zinc-100 hover:text-accent-700")],
 			[Engine.text_v(row.field(|r| r.label))],
 		),
 	],

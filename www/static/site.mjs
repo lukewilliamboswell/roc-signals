@@ -128,7 +128,7 @@ function setupExampleMounts() {
     const title = mount.dataset.signalsTitle || "Signals app";
     const error = document.createElement("p");
     error.hidden = true;
-    error.className = "hidden border-b border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900";
+    error.className = "hidden border-b border-amber-600 bg-amber-50 px-4 py-3 text-sm text-amber-900";
     mount.before(error);
     mountInto(mount, wasmUrl, title, error).catch(() => {});
   }
@@ -202,7 +202,7 @@ function setupUpload() {
     if (event.dataTransfer) {
       event.dataTransfer.dropEffect = "copy";
     }
-    zone.classList.add("ring-2", "ring-emerald-500");
+    zone.classList.add("is-dragging");
   };
 
   zone.addEventListener("dragenter", allowDrop);
@@ -211,13 +211,13 @@ function setupUpload() {
   zone.addEventListener("dragleave", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    zone.classList.remove("ring-2", "ring-emerald-500");
+    zone.classList.remove("is-dragging");
   });
 
   zone.addEventListener("drop", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    zone.classList.remove("ring-2", "ring-emerald-500");
+    zone.classList.remove("is-dragging");
     openFile(event.dataTransfer?.files?.[0]).catch(() => {});
   });
 

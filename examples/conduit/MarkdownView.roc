@@ -21,7 +21,7 @@ MarkdownView := [].{
 					[Strong, Code, Image, Link, Text],
 					|k| match k {
 						Strong => Engine.element("strong", [], [Engine.text_v(text)])
-						Code => Engine.element("code", [Engine.class("rounded bg-zinc-100 px-1 font-mono")], [Engine.text_v(text)])
+						Code => Engine.element("code", [Engine.class("bg-zinc-100 px-1 font-mono")], [Engine.text_v(text)])
 						Image => Engine.element("img", [Engine.attr_v("src", href), Engine.attr_v("alt", text)], [])
 						Link => Engine.element("a", [Engine.attr_v("href", href)], [Engine.text_v(text)])
 						Text => Engine.text_v(text)
@@ -69,7 +69,7 @@ MarkdownView := [].{
 					|k| match k {
 						Heading => Engine.element("h3", [], [Engine.text_v(text)])
 						Quote => Engine.element("blockquote", [], [MarkdownView.inline_view(text)])
-						CodeBlock => Engine.element("pre", [Engine.class("overflow-x-auto rounded-lg bg-zinc-900 p-4 font-mono text-sm text-zinc-100")], [Engine.element("code", [], [Engine.text_v(text)])])
+						CodeBlock => Engine.element("pre", [Engine.class("overflow-x-auto bg-zinc-900 p-4 font-mono text-sm text-zinc-100")], [Engine.element("code", [], [Engine.text_v(text)])])
 						ListBlock => Engine.element("ul", [], [Engine.each(row.field(|b| b.items), |i| i.key, |item| MarkdownView.md_item(item))])
 						Paragraph => Engine.element("p", [], [MarkdownView.inline_view(text)])
 					},

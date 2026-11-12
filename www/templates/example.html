@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "macros.html" as marks %}
 
 {% block title %}{{ page.title }} · Examples · {{ config.title }}{% endblock title %}
 {% block body_class %}example-standalone{% endblock body_class %}
@@ -9,11 +10,11 @@
   {% for example in data.examples %}
   {% if example.slug == page.extra.slug %}
   <section class="panel example-runner overflow-hidden" data-example-runner>
-    <div class="example-runner-toolbar flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-white px-4 py-3">
+    <div class="example-runner-toolbar site-bar">
       <div class="flex min-w-0 items-center gap-3">
-        <a class="text-sm font-semibold text-zinc-950 no-underline hover:no-underline" href="{{ get_url(path='examples/', trailing_slash=true) }}">Roc Signals</a>
-        <span class="h-5 border-l border-zinc-300"></span>
-        <p class="truncate text-sm text-zinc-600"><strong class="font-medium text-zinc-900">{{ example.title }}</strong></p>
+        <a class="site-brand" href="{{ get_url(path='examples/', trailing_slash=true) }}">{{ marks::mark() }}Roc Signals</a>
+        <span class="site-bar-divider"></span>
+        <p class="site-bar-title">{{ example.title }}</p>
       </div>
       <div class="flex flex-wrap items-center gap-2">
         <a class="button" href="{{ config.extra.github_url }}/tree/{{ config.extra.release_version | default(value='main') }}/examples/{{ example.slug }}">Source</a>

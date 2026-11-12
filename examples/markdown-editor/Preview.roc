@@ -60,8 +60,8 @@ segment_view = |row, style| {
 	match style {
 		Strong => Engine.element("strong", [], [Engine.text_v(text)])
 		Code => Engine.element("code", [], [Engine.text_v(text)])
-		Image => Engine.element("img", [Engine.attr_v("src", href), Engine.attr_v("alt", text), Engine.class("max-w-full rounded-md")], [])
-		Link => Engine.element("a", [Engine.attr_v("href", href), Engine.class("font-medium text-emerald-700 underline underline-offset-2")], [Engine.text_v(text)])
+		Image => Engine.element("img", [Engine.attr_v("src", href), Engine.attr_v("alt", text), Engine.class("max-w-full")], [])
+		Link => Engine.element("a", [Engine.attr_v("href", href), Engine.class("font-medium text-accent-700 underline underline-offset-2")], [Engine.text_v(text)])
 		Plain => Engine.text_v(text)
 	}
 }

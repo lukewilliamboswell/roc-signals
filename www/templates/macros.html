@@ -1,0 +1,50 @@
+{# The marks the site's pages share. Each is decoration: hidden from
+   assistive technology, and styled by the `site-…` classes in input.css. #}
+
+{# The brand's signal: three nodes on a wire, the middle one live. #}
+{% macro mark() %}<span class="site-mark" aria-hidden="true"><span class="site-node"></span><span class="site-wire"></span><span class="site-node is-live"></span><span class="site-wire"></span><span class="site-node"></span></span>{% endmacro mark %}
+
+{% macro arrow() %}<svg class="site-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10M9 4l4 4-4 4"/></svg>{% endmacro arrow %}
+
+{% macro drop() %}<svg class="site-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M4 19h16"/></svg>{% endmacro drop %}
+
+{# A featured card's illustration: a tree of ten sites in which one write
+   reaches one leaf. `lit` (0, 1 or 2) chooses the path that is lit, so cards
+   that sit together differ. Every coordinate is on a half pixel, which keeps
+   the one-pixel strokes sharp. #}
+{% macro tree(lit) %}
+<span class="site-tree" data-lit="{{ lit }}" aria-hidden="true">
+  <svg viewBox="0 0 268 122" shape-rendering="crispEdges">
+    <path d="M140.5 13V34.5M47.5 34.5H233.5M47.5 34.5V56M140.5 34.5V56M233.5 34.5V56M47.5 69V88.5M140.5 69V88.5M233.5 69V88.5M19.5 88.5H75.5M112.5 88.5H168.5M205.5 88.5H261.5M19.5 88.5V108M75.5 88.5V108M112.5 88.5V108M168.5 88.5V108M205.5 88.5V108M261.5 88.5V108"/>
+    <rect x="134.5" y="0.5" width="12" height="12"/>
+    <rect x="41.5" y="56.5" width="12" height="12"/>
+    <rect x="134.5" y="56.5" width="12" height="12"/>
+    <rect x="227.5" y="56.5" width="12" height="12"/>
+    <rect x="13.5" y="108.5" width="12" height="12"/>
+    <rect x="69.5" y="108.5" width="12" height="12"/>
+    <rect x="106.5" y="108.5" width="12" height="12"/>
+    <rect x="162.5" y="108.5" width="12" height="12"/>
+    <rect x="199.5" y="108.5" width="12" height="12"/>
+    <rect x="255.5" y="108.5" width="12" height="12"/>
+    <g class="site-tree-lit site-tree-lit-0">
+      <path d="M140.5 13V34.5H233.5V56M233.5 69V88.5H205.5V108"/>
+      <rect class="is-live" x="134.5" y="0.5" width="12" height="12"/>
+      <rect x="227.5" y="56.5" width="12" height="12"/>
+      <rect class="is-live" x="199.5" y="108.5" width="12" height="12"/>
+    </g>
+    <g class="site-tree-lit site-tree-lit-1">
+      <path d="M140.5 13V34.5H47.5V56M47.5 69V88.5H75.5V108"/>
+      <rect class="is-live" x="134.5" y="0.5" width="12" height="12"/>
+      <rect x="41.5" y="56.5" width="12" height="12"/>
+      <rect class="is-live" x="69.5" y="108.5" width="12" height="12"/>
+    </g>
+    <g class="site-tree-lit site-tree-lit-2">
+      <path d="M140.5 13V56M140.5 69V88.5H112.5V108"/>
+      <rect class="is-live" x="134.5" y="0.5" width="12" height="12"/>
+      <rect x="134.5" y="56.5" width="12" height="12"/>
+      <rect class="is-live" x="106.5" y="108.5" width="12" height="12"/>
+    </g>
+  </svg>
+  <span class="site-tree-label">Changed set · 3 of 10 sites</span>
+</span>
+{% endmacro tree %}

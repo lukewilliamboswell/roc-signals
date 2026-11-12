@@ -76,7 +76,7 @@ CommentForm :: { body : Str, sub : Fetch.Submit, result : Outcome }.{
 	view : State(ctx, CommentForm), Val(ctx, Target), Engine.Reaction(ctx, Fetch.Submit) -> Elem(ctx)
 	view = |form, target, answer| Engine.element(
 		"form",
-		[Engine.class("mb-8 grid gap-3 rounded-xl border border-zinc-200 bg-zinc-50 p-4")],
+		[Engine.class("mb-8 grid gap-3 border border-zinc-950 bg-zinc-50 p-4")],
 		[
 			Fetch.submit_site(form.val().map(CommentForm.sending), answer),
 			Parts.error_list(form.val().map(CommentForm.errors)),
