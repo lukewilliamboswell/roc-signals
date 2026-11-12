@@ -51,6 +51,17 @@ ToolCheck := [].{
 		lab = "${scratch}/lab"
 		var $problems = []
 
+		# Command help works before an app exists and performs no command work.
+		before_help = Path.list!(Path.utf8(scratch))?.map(Path.display).sort_with(SpecSuite.compare_str)
+		for command in ["init", "serve", "build", "test"] {
+			for flag in ["--help", "-h"] {
+				$problems = $problems.concat(judge(run_tool!(tool, scratch, [command, flag])?, { code: 0, says: ["Usage: roc signals.roc ${command}", "This is roc-signals", "tested with Roc", "Documentation:"] }))
+			}
+		}
+		if Path.list!(Path.utf8(scratch))?.map(Path.display).sort_with(SpecSuite.compare_str) != before_help {
+			$problems = $problems.append("signals.roc command help changed files in an empty app directory")
+		}
+
 		# Creating an app, and what init refuses.
 		$problems = $problems.concat(judge(run_tool!(tool, scratch, ["init", "counter"])?, { code: 0, says: ["Created the app counter, a counter on roc-signals", "  cd counter\n  roc signals.roc serve"] }))
 		for file in ["signals.roc", "main.roc", "Counter.roc", "index.html", "specs/counter.scm", ".gitignore"] {
