@@ -4,12 +4,13 @@ import SpecSuite
 
 ## The platform's generated API documentation, built by roc-docs from
 ## `platform/main.roc` with `www/api/index.md` as its front page, and the
-## check that every public symbol of `Engine` and `Html` is documented.
+## check that every public symbol of `Engine`, `Table`, `Files`, `Html`, `Worker`, `Wire`, `Port` and
+## `PortJson` is documented.
 ApiDocs := [].{
 
 	## The modules the web platform exposes.
 	modules : List(Str)
-	modules = ["platform/Engine.roc", "platform/Html.roc"]
+	modules = ["platform/Engine.roc", "platform/Table.roc", "platform/Files.roc", "platform/Html.roc", "platform/Worker.roc", "platform/Wire.roc", "platform/Port.roc", "platform/PortJson.roc"]
 
 	## Build the API docs; the site is `<build_dir>/api-docs/site`.
 	build! : SpecSuite.Options, Str => Try(Str, _)
@@ -28,22 +29,36 @@ ApiDocs := [].{
 		Ok("${out}/site")
 	}
 
-	## The public items of a module that have no `##` doc comment: every
-	## declaration inside the module's nominal type block (`Name := [].{`),
-	## at any depth, whose preceding line is not a doc comment. Record fields
-	## (which end in a comma) and continuation lines are not declarations.
-	undocumented : Str -> List(Str)
-	undocumented = |source| {
+	## The public items of the module `name` that have no `##` doc comment:
+	## every declaration inside the block of the module's own type, at any
+	## depth, whose preceding line is not a doc comment. The block opens
+	## where the type's line ends in `.{` (`Name := [].{`), or, for a type
+	## written as a record (`Name(a) :: {`), at the `}.{` that closes its
+	## fields. Another type at the file's top level is private and is not
+	## scanned. Record fields (which end in a comma) and continuation lines
+	## are not declarations.
+	undocumented : Str, Str -> List(Str)
+	undocumented = |name, source| {
 		var $out = []
-		var $inside = Bool.False
+		var $at = Outside
 		var $previous = ""
 		for line in source.split_on("\n") {
-			if !$inside {
-				$inside = line.contains(" := [].{")
-			} else if line == "}" {
-				$inside = Bool.False
-			} else if ApiDocs.is_declaration(line) and !$previous.trim().starts_with("##") {
-				$out = $out.append(line.trim())
+			ending = line.trim_end()
+			match $at {
+				Outside => {
+					own = line.starts_with("${name} ") or line.starts_with("${name}(")
+					$at = if (own and ending.ends_with(".{")) Inside else if (own and ending.ends_with("{")) Fields else Outside
+				}
+				Fields => {
+					$at = if (ending == "}.{") Inside else if (ending == "}") Outside else Fields
+				}
+				Inside => {
+					if line == "}" {
+						$at = Outside
+					} else if ApiDocs.is_declaration(line) and !$previous.trim().starts_with("##") {
+						$out = $out.append(line.trim())
+					}
+				}
 			}
 			$previous = line
 		}
@@ -71,7 +86,8 @@ ApiDocs := [].{
 		var $problems = []
 		for file in ApiDocs.modules {
 			source = Path.read_utf8!(Path.utf8(file))?
-			for item in ApiDocs.undocumented(source) {
+			name = (file.split_on("/").last() ?? file).drop_suffix(".roc")
+			for item in ApiDocs.undocumented(name, source) {
 				$problems = $problems.append("${file}: public symbol without a ## doc comment: ${item}")
 			}
 		}
@@ -105,5 +121,34 @@ expect {
 		\\
 		\\private : Str
 		\\private = ""
-	ApiDocs.undocumented(source) == ["span : Str -> Elem(ctx)", "Val(a) := { read : a }.{", "map : Val(a) -> Val(a)"]
+	ApiDocs.undocumented("Html", source) == ["span : Str -> Elem(ctx)", "Val(a) := { read : a }.{", "map : Val(a) -> Val(a)"]
+}
+
+## A type written as a record with its methods after it is scanned from the
+## `}.{` that opens them: its fields are not symbols, its methods are. A
+## private type below it is not the module's and is not scanned.
+expect {
+	source =
+		\\## A table.
+		\\Table(k, v) :: {
+		\\	rows : Dict(k, v),
+		\\	version : U64,
+		\\}.{
+		\\
+		\\	## The number of rows.
+		\\	len : Table(k, v) -> U64
+		\\	len = |table| table.rows.len()
+		\\
+		\\	get : Table(k, v), k -> Try(v, [Missing])
+		\\		where [k.is_eq : k, k -> Bool]
+		\\	get = |table, key| table.rows.get(key)
+		\\}
+		\\
+		\\rows_of : List(k) -> Dict(k, v)
+		\\rows_of = |entries| x
+		\\
+		\\Sample := { n : U64 }.{
+		\\	is_eq : _
+		\\}
+	ApiDocs.undocumented("Table", source) == ["get : Table(k, v), k -> Try(v, [Missing])"]
 }

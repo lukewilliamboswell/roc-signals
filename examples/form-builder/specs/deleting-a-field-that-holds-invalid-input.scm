@@ -1,6 +1,6 @@
 (test "Form builder — deleting a field that holds invalid input"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (fill (label "Answer f1") "Ada")
     (fill (label "Answer f2") "ada@example")
     (fill (label "Answer f2") "ada@example.com")
@@ -44,9 +44,14 @@
     (expect-text (test-id "submittable-state") "Not ready")
     (mark-metrics)
     (click (role button :name "Delete f6"))
+    ; The field leaves the designer's view of the fields and the preview's.
+    ; The six fields each view keeps are neither moved nor written; a view
+    ; compares no list of rows, so it counts none as reused.
     (expect-metric-delta rows_removed 2)
     (expect-metric-delta rows_created 0)
-    (expect-metric-delta rows_reused 12)
+    (expect-metric-delta rows_reused 0)
+    (expect-metric-delta rows_moved 0)
+    (expect-metric-delta rows_updated 0)
     (expect-absent (role region :name "Field f6"))
     (expect-absent (role region :name "Preview field f6"))
     (expect-text (test-id "designer-status") "6")

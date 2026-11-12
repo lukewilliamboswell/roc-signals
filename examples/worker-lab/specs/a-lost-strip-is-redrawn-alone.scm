@@ -1,0 +1,54 @@
+(test "Worker Lab — A lost or cancelled strip leaves a gap that a retry redraws alone, and the picture is then composed"
+  (steps
+    (select-option (label "Workload") "draw")
+    (fill (label "Jobs") "3")
+    (fill (label "Weight") "1")
+    (click (role button :name "Start"))
+    (expect-disabled (role button :name "Retry stopped jobs") true)
+    ; Strip 2's worker crashes; strips 1 and 3 are drawn and shown.
+    (lose-work 2 app_crash)
+    (run-effect 1)
+    (run-effect 4)
+    (run-effect 3)
+    (run-effect 5)
+    (expect-text (test-id "strip-2") "lost: app crash")
+    (expect-visible (test-id "strip-image-1"))
+    (expect-visible (test-id "strip-image-3"))
+    (expect-text (test-id "picture") "2 of 3 strips drawn; retry the others to finish the picture")
+    ; No picture is composed with a strip missing, and the page's clock
+    ; has stopped.
+    (expect-pending-effects 0)
+    (expect-interval 100 0)
+    (expect-text (test-id "composed") "")
+    ; Retrying asks again for strip 2 only; the drawn strips keep their
+    ; files and are not drawn again.
+    (mark-metrics)
+    (click (role button :name "Retry stopped jobs"))
+    (expect-metric-delta effects_issued 2)
+    (expect-pending-work "roc-signals.example/worker-lab/strip" 1)
+    (expect-interval 100 1)
+    (expect-text (test-id "strip-2") "drawing")
+    (run-effect 6)
+    (expect-text (test-id "job-2") "done: 4790-byte strip, hash 99ee8b8c")
+    ; Occurrence 7 composes, 8 shows strip 2 (the clock is a subscription,
+    ; which has no occurrence number).
+    (run-effect 7)
+    (run-effect 8)
+    (expect-text (test-id "composed") "mandelbrot-128x87.bmp, 12214 bytes")
+    (run-effect 9)
+    (run-effect 10)
+    (expect-text (test-id "digest") "SHA-256 b3be2ce941ff4178281bb1f673eb2ffc1306964cb0ae4f3b93d51592b2e93d5c")
+    ; Cancelling a new drawing keeps what it drew; a retry resumes it.
+    (click (role button :name "Start"))
+    (expect-text (test-id "composed") "")
+    (expect-absent (test-id "picture-image"))
+    (run-effect 11)
+    (click (role button :name "Cancel"))
+    (expect-text (test-id "strip-2") "cancelled")
+    (expect-text (test-id "strip-3") "cancelled")
+    (expect-interval 100 0)
+    (click (role button :name "Retry stopped jobs"))
+    (expect-pending-work "roc-signals.example/worker-lab/strip" 2)
+    (expect-text (test-id "picture") "1 of 3 strips drawn")
+  )
+)

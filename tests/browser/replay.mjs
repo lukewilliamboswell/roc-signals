@@ -20,10 +20,14 @@
 // every default action the browser takes; fills as Playwright's `fill` (focus,
 // select all, one `insertText` input event, refused for a value the control
 // cannot hold); <select> choice with `input` and `change`. Assertions read the
-// live DOM. Effects are always manual: `stub-http` stages one answer and
-// `run-effect N` answers the N-th awaited HTTP request or timer the current
-// document issued; storage reads answer by themselves from storage. History,
-// title and storage assertions read the real browser state.
+// live DOM. A worker job the runtime reports lost (`roc worker fault [...]`
+// on the console) is a result, not a page error. Effects are always manual: `stub-http` stages one answer and
+// `run-effect N` answers the N-th awaited HTTP request or upload, timer, worker job or operation on a file
+// the current document issued (a job really runs in a worker, and the step
+// waits for its result turn); storage reads answer by themselves from storage. History,
+// title and storage assertions read the real browser state. A worker job's
+// deadline never fires on its own: `time-out-work` expires it and
+// `lose-work` answers it lost, through the runtime's manual-mode hooks.
 // `local-storage-unavailable` makes `window.localStorage` throw, as a browser
 // with site data disabled does; storage assertions then read the real store
 // underneath, so they confirm nothing was written.
@@ -44,6 +48,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { launch } from "./cdp.mjs";
 
@@ -148,6 +153,16 @@ async function click(page, state, loc, real) {
   await navigating(page, state, () => page.clickAt(box));
 }
 
+// How long `run-effect` waits for a worker job, as the native runner does
+// (`spec.zig`, `job_bound_ms`).
+const JOB_BOUND_MS = 30000;
+
+// The runtime reports every lost worker job on the console with this prefix
+// (and the native runner on stderr). A lost job is a result the app sees,
+// not a page error: the spec asserts what the app does with it.
+const WORKER_FAULT = "roc worker fault [";
+const pageErrors = (page) => page.errors.filter((e) => !e.startsWith(WORKER_FAULT));
+
 // Sum of the engine work counters `ks` (metric(16 + k)).
 const counters = (page) => page.evaluate(() => window.__rt.workRecord().counters.map((c) => c.toString()));
 const sumOf = (cs, ks) => ks.reduce((n, k) => n + BigInt(cs[k] ?? "0"), 0n);
@@ -228,9 +243,164 @@ async function expectProp(page, s, what) {
   if (got !== s.value) throw new Error(`${showLoc(s.loc)} ${what} ${got}, expected ${s.value}`);
 }
 
+// The setup files a file step names, as { name, type, text, count }.
+function setupFiles(state, names) {
+  return names.map((name) => {
+    const f = state.files.get(name);
+    if (f === undefined) throw new Error(`no setup file named ${JSON.stringify(name)}`);
+    return { name, ...f };
+  });
+}
+
+// The directories chosen files were written to, removed when the replay ends.
+const chosenDirs = [];
+process.on("exit", () => {
+  for (const d of chosenDirs) fs.rmSync(d, { recursive: true, force: true });
+});
+
+// `choose-files`: the files are written to disk, each under its own name,
+// and set on the file input through DevTools, as a user's choice in the
+// browser's own chooser sets them, which fires `input` and `change`. The
+// browser decides a chosen file's type from its name; it must be the type
+// the spec declares.
+async function chooseFiles(page, s, state) {
+  const files = setupFiles(state, s.files);
+  await need(page, s.loc);
+  const r = await onEl(page, s.loc, (e, n) => {
+    if (e.tagName !== "INPUT" || (e.getAttribute("type") ?? "").toLowerCase() !== "file") return { error: "is not a file input" };
+    if (e.disabled) return { error: "is disabled" };
+    if (n > 1 && !e.multiple) return { error: `takes one file, not ${n}` };
+    return {};
+  }, files.length);
+  if (r.error) throw new Error(`${showLoc(s.loc)} ${r.error}`);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "roc-signals-files-"));
+  const paths = files.map((f, i) => {
+    fs.mkdirSync(path.join(dir, String(i)));
+    const p = path.join(dir, String(i), f.name);
+    fs.writeFileSync(p, f.text.repeat(f.count));
+    return p;
+  });
+  const input = await page.evaluateHandle((loc) => window.__loc(loc), s.loc);
+  await page.send("DOM.setFileInputFiles", { files: paths, objectId: input.objectId });
+  await settle(page);
+  // A chosen file is read from disk when a worker reads it, so it stays
+  // until the replay ends.
+  chosenDirs.push(dir);
+  const types = await onEl(page, s.loc, (e) => Array.from(e.files).map((f) => f.type));
+  files.forEach((f, i) => {
+    if (types[i] !== f.type) throw new Error(`Chrome gives ${f.name} the type ${JSON.stringify(types[i])}, not the declared ${JSON.stringify(f.type)}`);
+  });
+}
+
+// `drop-files` and `paste-files`: a `DataTransfer` of the files, carried by
+// the browser's own `dragover` and `drop` events, or by a `paste` event. A
+// drop needs a `dragover` that the page prevented, as in a real drag.
+async function giveFiles(page, s, state, kind) {
+  const files = setupFiles(state, s.files);
+  await need(page, s.loc);
+  const r = await onEl(page, s.loc, (e, kind, files) => {
+    const dt = new DataTransfer();
+    for (const f of files) dt.items.add(new File([f.text.repeat(f.count)], f.name, { type: f.type }));
+    if (kind === "paste") {
+      e.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+      return {};
+    }
+    const over = new DragEvent("dragover", { dataTransfer: dt, bubbles: true, cancelable: true });
+    e.dispatchEvent(over);
+    if (!over.defaultPrevented) return { error: "does not take a drop" };
+    e.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
+    return {};
+  }, kind, files);
+  if (r.error) throw new Error(`${showLoc(s.loc)} ${r.error}`);
+  return settle(page);
+}
+
 async function stage(state, answer) {
   if (state.stub !== null) throw new Error("a stub is already staged; run-effect answers one at a time");
   state.stub = answer;
+}
+
+// `lose-work` and `time-out-work`: the N-th effect occurrence must be a
+// pending worker job; the runtime's manual-mode hooks answer it, without
+// running it, `WorkLost(fault)` or (for a job with a deadline) `Timeout`.
+async function answerJob(page, n, how, fault) {
+  const r = await page.evaluate(
+    (n, how, fault) => {
+      const rt = window.__rt;
+      const id = rt.issued[n - 1];
+      if (id === undefined) return `effect occurrence ${n} was never issued (${rt.issued.length} issued)`;
+      const e = rt.live.get(id);
+      if (e === undefined || e.running) return `effect occurrence ${n} is not pending (cancelled or done)`;
+      if (e.kind === "portcall") return `effect occurrence ${n} is a call on port ${JSON.stringify(e.req.port)}, not a worker job`;
+      if (e.kind !== "work") return `effect occurrence ${n} is ${e.kind === "timer" ? "a timer" : e.kind === "file" ? "an operation on a file" : "an HTTP request"}, not a worker job`;
+      if (how === "expire") {
+        if (!(e.req.deadline > 0)) return `worker job ${n} has no deadline, so it cannot time out`;
+        return rt.expireEffect(id) ? null : `worker job ${n} could not be expired`;
+      }
+      return rt.loseEffect(id, fault) ? null : `worker job ${n} could not be lost to ${fault}`;
+    },
+    n,
+    how,
+    fault,
+  );
+  if (r) throw new Error(r);
+  return settle(page);
+}
+
+// The pending port call that is the N-th effect occurrence, as the native
+// runner's `pending_port_call` finds it: { id, port, json, timeout } or
+// { error }.
+function pendingPortCall(n) {
+  const rt = window.__rt;
+  const id = rt.issued[n - 1];
+  if (id === undefined) return { error: `effect occurrence ${n} was never issued (${rt.issued.length} issued)` };
+  const e = rt.live.get(id);
+  if (e === undefined || e.running) return { error: `effect occurrence ${n} is not pending (cancelled or done)` };
+  if (e.kind !== "portcall") return { error: `effect occurrence ${n} is not a port call` };
+  return { id, port: e.req.port, json: e.req.msg.json, timeout: e.req.timeout };
+}
+
+// The port steps, through the runtime's manual-mode hooks: a call waits
+// for `answer-port`, subscriptions for `emit-port`, `close-port` and
+// `fail-port`, and commands are logged.
+const PORT_STEPS = {
+  "expect-port-call": async (page, s) => {
+    const c = await page.evaluate(`(${pendingPortCall})(${s.count})`);
+    if (c.error) throw new Error(c.error);
+    if (c.port !== s.port || c.json !== s.json) throw new Error(`effect occurrence ${s.count} is a call on port ${JSON.stringify(c.port)} with ${JSON.stringify(c.json)}, expected port ${JSON.stringify(s.port)} with ${JSON.stringify(s.json)}`);
+  },
+  "answer-port": async (page, s) => {
+    const c = await page.evaluate(`(${pendingPortCall})(${s.count})`);
+    if (c.error) throw new Error(c.error);
+    if (s.answer === "timeout" && !(c.timeout > 0)) throw new Error(`the call on port ${JSON.stringify(c.port)} has no timeout, so it cannot time out`);
+    const answer = s.answer === "reply" ? { json: s.json } : s.answer === "throw" ? { threw: s.text } : s.answer === "too-large" ? { tooLarge: true } : { timeout: true };
+    const ok = await page.evaluate((id, answer) => window.__rt.answerPort(id, answer), c.id, answer);
+    if (!ok) throw new Error(`the call on port ${JSON.stringify(c.port)} could not be answered`);
+    return settle(page);
+  },
+  "expect-port-sent": async (page, s) => {
+    const sent = await page.evaluate((port) => window.__rt.portLog.filter((c) => c.port === port).map((c) => c.json), s.port);
+    if (s.index < 1 || s.index > sent.length) throw new Error(`port ${JSON.stringify(s.port)} was sent ${sent.length} commands, so there is no command ${s.index}`);
+    const got = sent[s.index - 1];
+    if (got !== s.json) throw new Error(`command ${s.index} on port ${JSON.stringify(s.port)} carried ${JSON.stringify(got)}, expected ${JSON.stringify(s.json)}`);
+  },
+  "expect-port-sends": async (page, s) => {
+    const got = await page.evaluate((port) => window.__rt.portLog.filter((c) => c.port === port).length, s.port);
+    if (got !== s.count) throw new Error(`port ${JSON.stringify(s.port)} was sent ${got} commands, expected ${s.count}`);
+  },
+  "emit-port": (page, s) => portMessage(page, s.port, { json: s.json }),
+  "close-port": (page, s) => portMessage(page, s.port, { closed: true }),
+  "fail-port": (page, s) => portMessage(page, s.port, { threw: s.text }),
+  "expect-port-subscriptions": async (page, s) => {
+    const got = await page.evaluate((port) => window.__rt.portSubscriptions(port), s.port);
+    if (got !== s.count) throw new Error(`${got} live subscriptions on port ${JSON.stringify(s.port)}, expected ${s.count}`);
+  },
+};
+
+async function portMessage(page, port, answer) {
+  const n = await page.evaluate((port, answer) => window.__rt.messagePort(port, answer), port, answer);
+  if (n === 0) throw new Error(`no live subscription on port ${JSON.stringify(port)}`);
+  return settle(page);
 }
 
 async function tick(page, s) {
@@ -277,6 +447,7 @@ const sameDocument = (from, to) => to.includes("#") && from.split("#")[0] === to
 
 // One handler per step form of the grammar (`Scm.step_forms`).
 const STEPS = {
+  ...PORT_STEPS,
   click: (page, s, state) => click(page, state, s.loc, false),
   "real-click": (page, s, state) => click(page, state, s.loc, true),
   fill: (page, s) => fill(page, s.loc, s.text),
@@ -375,16 +546,33 @@ const STEPS = {
   "stub-http-reject": (page, s, state) => stage(state, s.kind === "timeout" ? { timeout: true } : { network: s.detail }),
   "run-effect": async (page, s, state) => {
     const r = await page.evaluate(
-      (n, answer) => {
+      (n, answer, JOB_BOUND_MS) => {
         const rt = window.__rt;
         const id = rt.issued[n - 1];
         if (id === undefined) return { error: `effect occurrence ${n} was never issued (${rt.issued.length} issued)` };
         const e = rt.live.get(id);
         if (e === undefined) return { error: `effect occurrence ${n} is not pending (cancelled or done)` };
+        if (e.kind === "portcall") return { error: `effect occurrence ${n} is a call on port ${JSON.stringify(e.req.port)}; answer it with answer-port` };
         // A timer fires; it takes no staged answer.
         if (e.kind === "timer") {
           rt.runEffect(id, {});
           return { used: false };
+        }
+        // A worker job really runs in a worker; the step waits for its
+        // result turn.
+        // A spec's time is manual, so the job's own deadline never ends it;
+        // the runner's bound (as the native runner's) fails a job that never
+        // finishes instead of hanging.
+        // An operation on a file the app holds is really performed, on the
+        // file Chrome holds; the step waits for its result turn.
+        if (e.kind === "file") {
+          return Promise.resolve(rt.runEffect(id)).then(() => ({ used: false }));
+        }
+        if (e.kind === "work") {
+          return Promise.race([
+            Promise.resolve(rt.runEffect(id)).then(() => ({ used: false })),
+            new Promise((r) => setTimeout(() => r({ error: "the worker job did not finish within 30 s; a spec expires a job's deadline with time-out-work" }), JOB_BOUND_MS)),
+          ]);
         }
         if (answer === null) return { error: `run-effect ${n} answers ${e.req.url} without a staged stub` };
         if (answer.url !== undefined && e.req.url !== answer.url) return { error: `no spec stub for ${e.req.url} (stub is for ${answer.url})` };
@@ -393,6 +581,7 @@ const STEPS = {
       },
       s.count,
       state.stub,
+      JOB_BOUND_MS,
     );
     if (r.error) throw new Error(r.error);
     if (r.used) state.stub = null;
@@ -401,6 +590,40 @@ const STEPS = {
   "expect-pending-effects": async (page, s) => {
     const got = await page.evaluate(() => window.__rt.pendingEffects().map((r) => r.url ?? r.op));
     if (got.length !== s.count) throw new Error(`expected ${s.count} pending effects, got ${got.length} ${JSON.stringify(got)}`);
+  },
+  "lose-work": (page, s) => answerJob(page, s.count, "lose", s.fault),
+  "time-out-work": (page, s) => answerJob(page, s.count, "expire", null),
+  "expect-pending-work": async (page, s) => {
+    const got = await page.evaluate((task) => window.__rt.pendingEffects().filter((r) => r.op === "work" && r.task === task).length, s.task);
+    if (got !== s.count) throw new Error(`expected ${s.count} pending worker jobs for ${JSON.stringify(s.task)}, got ${got}`);
+  },
+  // The N-th effect occurrence is a pending upload whose body is the range
+  // of the chosen setup file: what the runtime holds to send, the browser's
+  // own file (by name) and the range it was sliced to.
+  "expect-upload": async (page, s) => {
+    const r = await page.evaluate(
+      (n) => {
+        const rt = window.__rt;
+        const id = rt.issued[n - 1];
+        if (id === undefined) return { error: `effect occurrence ${n} was never issued (${rt.issued.length} issued)` };
+        const e = rt.live.get(id);
+        if (e === undefined) return { error: `effect occurrence ${n} is not pending (cancelled or done)` };
+        if (e.req.op !== "upload") return { error: `effect occurrence ${n} is not an upload` };
+        return { name: e.req.file.name, start: e.req.start, len: e.req.len, size: e.req.blob.size };
+      },
+      s.count,
+    );
+    if (r.error) throw new Error(r.error);
+    if (r.name !== s.file || r.start !== s.start || r.len !== s.len || r.size !== s.len) {
+      throw new Error(`upload ${s.count} sends ${JSON.stringify(r.name)} ${r.start}+${r.len} (a body of ${r.size} bytes), expected ${JSON.stringify(s.file)} ${s.start}+${s.len}`);
+    }
+  },
+  "choose-files": (page, s, state) => chooseFiles(page, s, state),
+  "drop-files": (page, s, state) => giveFiles(page, s, state, "drop"),
+  "paste-files": (page, s, state) => giveFiles(page, s, state, "paste"),
+  "expect-files": async (page, s) => {
+    const n = await page.evaluate(() => Number(window.__rt.x.metric(6)));
+    if (n !== s.count) throw new Error(`expected ${s.count} live file handles, found ${n}`);
   },
   "tick-interval": tick,
   "tick-interval-if-active": tick,
@@ -455,6 +678,22 @@ const STEPS = {
   },
   "expect-metric-delta": (page, s, state) => metricDelta(page, state, s, false),
   "expect-metric-delta-at-most": (page, s, state) => metricDelta(page, state, s, true),
+  // The files the app saved: in manual mode the runtime logs each `SAVE`
+  // with the Blob it would download, read back here as text.
+  "expect-saved": async (page, s) => {
+    const r = await page.evaluate(async (i) => {
+      const log = window.__rt.saveLog;
+      if (i < 1 || i > log.length) return { error: `the app saved ${log.length} files, so there is no save ${i}` };
+      const e = log[i - 1];
+      return { name: e.name, text: await e.blob.text() };
+    }, s.index);
+    if (r.error) throw new Error(r.error);
+    if (r.name !== s.name || r.text !== s.text) throw new Error(`save ${s.index} was ${JSON.stringify(r.name)} holding ${JSON.stringify(r.text)}, expected ${JSON.stringify(s.name)} holding ${JSON.stringify(s.text)}`);
+  },
+  "expect-saves": async (page, s) => {
+    const n = await page.evaluate(() => window.__rt.saveLog.length);
+    if (n !== s.count) throw new Error(`the app saved ${n} files, expected ${s.count}`);
+  },
 };
 
 // One handler per setup form of the grammar (`Scm.setup_forms`).
@@ -474,6 +713,14 @@ const SETUP = {
   "initial-visibility": (out, s) => {
     out.visibility = s.text;
   },
+  file: (out, s) => {
+    if (out.files.has(s.name)) throw new Error(`file ${JSON.stringify(s.name)} is declared twice`);
+    out.files.set(s.name, { type: s.type, text: s.text, count: s.count });
+  },
+  // The runtime's maxOutputBytes mount option.
+  "max-output-bytes": (out, s) => {
+    out.mount.maxOutputBytes = s.count;
+  },
 };
 
 // `--check-grammar`: the handler tables cover exactly the grammar's forms.
@@ -492,7 +739,7 @@ function checkGrammar(file) {
 }
 
 function setupOf(spec) {
-  const out = { location: "/", storage: [], storageAvailable: true, online: true, visibility: "visible" };
+  const out = { location: "/", storage: [], storageAvailable: true, online: true, visibility: "visible", files: new Map(), mount: {} };
   for (const s of spec.setup) {
     const h = SETUP[s.op];
     if (h === undefined) throw new Error(`setup ${s.op} has no handler in this runner`);
@@ -562,6 +809,8 @@ const files = {
   "index.html": path.join(here, "index.html"),
   "locate.js": path.join(here, "locate.js"),
   "runtime.mjs": opts.runtime,
+  // The runtime's worker script, which it loads from beside itself.
+  "worker.mjs": path.join(path.dirname(opts.runtime), "worker.mjs"),
   "app.wasm": opts.wasm,
 };
 const types = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm" };
@@ -601,7 +850,8 @@ for (const spec of specs) {
     const setup = setupOf(spec);
     await page.evaluateOnNewDocument(fs.readFileSync(files["locate.js"], "utf8"));
     await page.evaluateOnNewDocument(
-      (storage, storageAvailable, online, visibility) => {
+      (storage, storageAvailable, online, visibility, mount) => {
+        window.__mountOptions = mount;
         if (!sessionStorage.getItem("__seeded")) {
           for (const [k, v] of storage) localStorage.setItem(k, v);
           sessionStorage.setItem("__seeded", "1");
@@ -626,9 +876,10 @@ for (const spec of specs) {
       setup.storageAvailable,
       setup.online,
       setup.visibility,
+      setup.mount,
     );
     await page.evaluateOnNewDocument(install, attrOf.toString());
-    const state = { stub: null, mark: null, doc: null, loads: 0 };
+    const state = { stub: null, mark: null, doc: null, loads: 0, files: setup.files };
     await page.goto(`http://127.0.0.1:${port}${setup.location}`);
     page.conn.on(page.sessionId, "Page.loadEventFired", () => {
       state.loads += 1;
@@ -640,7 +891,7 @@ for (const spec of specs) {
       const h = STEPS[s.op];
       if (h === undefined) throw new Error(`${s.op} has no handler in this runner`);
       await h(page, s, state);
-      if (page.errors.length) throw new Error(`page error: ${page.errors.join("; ")}`);
+      if (pageErrors(page).length) throw new Error(`page error: ${pageErrors(page).join("; ")}`);
     }
   } catch (e) {
     const wasmErr = await page

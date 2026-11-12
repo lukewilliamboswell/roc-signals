@@ -1,7 +1,7 @@
 #!/usr/bin/env roc-stable
 app [main!] {
 	cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.27.0/9yjxqdGTP4xSpSEmDazwTmRsehfRZzA19pwEKkR6fj1g.tar.zst",
-	roc: "nightly-2026-11-07-ad3a5d2",
+	roc: "nightly-2026-11-10-f7d1f19",
 }
 
 import cli.OsStr
@@ -46,8 +46,12 @@ main! = |raw_args| {
 		Proc.warn!("--time and --timeout take a positive number of seconds, got ${$time} and ${$timeout}")
 		return Err(Exit(2))
 	}
-	chosen = if ($names.is_empty()) Targets.fuzz_targets else Targets.fuzz_targets.keep_if(|t| $names.contains(t.name))
 	o = Checks.options!({ filter: "*" })?
+	selected = if ($names.is_empty()) Targets.fuzz_targets else Targets.fuzz_targets.keep_if(|t| $names.contains(t.name))
+	chosen = Targets.runnable_fuzz!(o, selected)
+	if chosen.is_empty() {
+		return Ok({})
+	}
 	Checks.prepare_platform!(o)?
 	Targets.build_fuzz_all!(o, chosen)?
 	var $failed = []

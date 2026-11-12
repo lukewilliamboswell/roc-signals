@@ -15,9 +15,6 @@ import JsonOut
 ## skipped, repaired or guessed. The native runner (`SpecRunner.roc`) executes
 ## the typed steps; `to_json` emits them for the browser runner, so the grammar
 ## is implemented once.
-##
-## The grammar is the web subset of the previous engine's spec grammar: the
-## GUI `scenario` form and its window steps are not part of it.
 Scm := [].{
 
 	## A source position, one-based.
@@ -53,6 +50,14 @@ Scm := [].{
 	## observe (design.md, "The effect channel").
 	RejectKind : [Network, Timeout]
 
+	## Why a worker job was lost: the fault class of the instance that ran it
+	## (`contract`, `resource_limit`, `out_of_memory`, `app_crash`,
+	## `expect_failed`), no Web Worker support (`unavailable`), or the worker
+	## script failing (`executor`), as `Engine.WorkFault` has them (design.md,
+	## Appendix B, result tag 11). Spelled as design.md and the runtime spell
+	## the classes.
+	WorkFault : [Contract, ResourceLimit, OutOfMemory, AppCrash, ExpectFailed, Unavailable, Executor]
+
 	## Declarative state applied before the app mounts.
 	Setup : [
 		InitialLocation(Str),
@@ -63,6 +68,15 @@ Scm := [].{
 		## Local storage cannot be used at all: every access throws, as in a
 		## browser with site data disabled.
 		LocalStorageUnavailable,
+
+		## A file the spec's file steps can give the app: its name, its media
+		## type, and its contents, `text` repeated `repeat` times.
+		File({ name : Str, mime : Str, text : Str, repeat : U64 }),
+
+		## The most bytes a task's job may append to its builders, the
+		## runtime's `maxOutputBytes` mount option (256 MiB when a spec does
+		## not say).
+		MaxOutputBytes(U64),
 	]
 
 	## A step a test takes, in order. Both runners implement every step
@@ -95,6 +109,29 @@ Scm := [].{
 		StubHttp({ label : Str, stub : Stub }),
 		RunEffect(U64),
 		ExpectPendingEffects(U64),
+
+		## Answer the N-th effect occurrence, a pending worker job, as lost
+		## with a fault class, without running it.
+		LoseWork({ occurrence : U64, fault : WorkFault }),
+
+		## Expire the deadline of the N-th effect occurrence, a pending worker
+		## job with a deadline: it is answered `Timeout`.
+		TimeOutWork(U64),
+
+		## Exactly `count` worker jobs of the task named `task` are pending.
+		ExpectPendingWork({ task : Str, count : U64 }),
+
+		## The user chooses the named setup files in a file input.
+		ChooseFiles(Loc, List(Str)),
+
+		## The user drops the named setup files on an element.
+		DropFiles(Loc, List(Str)),
+
+		## The user pastes the named setup files into an element.
+		PasteFiles(Loc, List(Str)),
+
+		## Exactly `count` file handles are live in the app's instance.
+		ExpectFiles(U64),
 		TickInterval(U64),
 		TickIntervalIfActive(U64),
 		ExpectCleanup({ name : Str, count : U64 }),
@@ -111,7 +148,51 @@ Scm := [].{
 		MarkMetrics,
 		ExpectMetricDelta({ metric : Str, delta : I64 }),
 		ExpectMetricDeltaAtMost({ metric : Str, delta : I64 }),
+
+		## The N-th effect occurrence is a pending upload whose body is `len`
+		## bytes from `start` of the setup file `file`.
+		ExpectUpload({ occurrence : U64, file : Str, start : U64, len : U64 }),
+
+		## The N-th effect occurrence is a pending call on `port` whose
+		## message is exactly `json`.
+		ExpectPortCall({ occurrence : U64, port : Str, json : Str }),
+
+		## Answer the N-th effect occurrence, a pending port call.
+		AnswerPort({ occurrence : U64, answer : PortAnswer }),
+
+		## The `index`-th command (from 1) sent on `port` in this document
+		## carried exactly `json`.
+		ExpectPortSent({ port : Str, index : U64, json : Str }),
+
+		## Exactly `count` commands were sent on `port` in this document.
+		ExpectPortSends({ port : Str, count : U64 }),
+
+		## Deliver `json` to every live subscription on `port`; a step with
+		## none live fails.
+		EmitPort({ port : Str, json : Str }),
+
+		## The JavaScript ends every live subscription on `port` (`Closed`).
+		ClosePort(Str),
+
+		## The JavaScript fails every live subscription on `port` with a
+		## message (`Threw`), which ends it.
+		FailPort({ port : Str, message : Str }),
+
+		## Exactly `count` subscriptions on `port` are live.
+		ExpectPortSubscriptions({ port : Str, count : U64 }),
+
+		## The `index`-th file (from 1) the app saved in this document
+		## (`File.save`) was named `name` and held exactly `text`.
+		ExpectSaved({ index : U64, name : Str, text : Str }),
+
+		## Exactly `count` files were saved in this document.
+		ExpectSaves(U64),
 	]
+
+	## How a spec answers a pending port call: JSON text (delivered as it is
+	## written, so a spec can answer what the app's type does not accept), a
+	## throw with its message, an answer too large, or its timeout expiring.
+	PortAnswer : [Reply(Str), Throw(Str), TooLarge, Timeout]
 
 	## A step with the position of its form.
 	Step : { op : Op, pos : Pos }
@@ -129,7 +210,7 @@ Scm := [].{
 		}
 		head = items.get(0) ?? return Err({ pos, message: "a spec is one (test \"name\" ...) form" })
 		if !Scm.is_sym(head, "test") {
-			return Err({ pos: Scm.pos_of(head), message: "a spec starts with `test`; `scenario` and other forms are not part of the web grammar" })
+			return Err({ pos: Scm.pos_of(head), message: "a spec starts with `test`" })
 		}
 		name = match items.get(1) {
 			Ok(Str(s, _)) => s
@@ -497,7 +578,36 @@ Scm := [].{
 				Ok(LocalStorageUnavailable)
 			},
 		},
+		{
+			name: "file",
+			parse: |form, args| {
+				if args.len() != 3 and args.len() != 4 {
+					return Err(Scm.bad(form, "file takes a name, a type, the contents and optionally a repeat count"))
+				}
+				name_sx = Scm.arg(args, 0)
+				name = Scm.string(name_sx, "the file name")?
+				if name == "" or name.contains("/") {
+					return Err(Scm.bad(name_sx, "a file name must be a non-empty name without a directory"))
+				}
+				repeat = if (args.len() == 4) Scm.unsigned(Scm.arg(args, 3), "the repeat count")? else 1
+				Ok(File({ name, mime: Scm.string(Scm.arg(args, 1), "the media type")?, text: Scm.string(Scm.arg(args, 2), "the contents")?, repeat }))
+			},
+		},
+		{ name: "max-output-bytes", parse: |form, args| Ok(MaxOutputBytes(Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the byte count")?)) },
 	]
+
+	## A locator and one or more setup file names.
+	loc_files : Sx, List(Sx) -> Try((Loc, List(Str)), Problem)
+	loc_files = |form, args| {
+		if args.len() < 2 {
+			return Err(Scm.bad(form, "expected a locator and at least one file name"))
+		}
+		var $names = []
+		for sx in args.drop_first(1) {
+			$names = $names.append(Scm.string(sx, "a file name")?)
+		}
+		Ok((Scm.locator(Scm.arg(args, 0))?, $names))
+	}
 
 	setup_form : Sx -> Try({ item : Setup, pos : Pos }, Problem)
 	setup_form = |form| {
@@ -663,6 +773,30 @@ Scm := [].{
 		{ name: "stub-http-reject", parse: |form, args| Ok(StubHttp(Scm.http_fixture(form, "stub-http-reject", args)?)) },
 		{ name: "run-effect", parse: |form, args| Ok(RunEffect(Scm.count1(form, args, "the effect occurrence")?)) },
 		{ name: "expect-pending-effects", parse: |form, args| Ok(ExpectPendingEffects(Scm.count1(form, args, "the pending count")?)) },
+		{
+			name: "lose-work",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 2)?
+				Ok(LoseWork({ occurrence: Scm.unsigned(Scm.arg(a, 0), "the effect occurrence")?, fault: Scm.work_fault(Scm.arg(a, 1))? }))
+			},
+		},
+		{ name: "time-out-work", parse: |form, args| Ok(TimeOutWork(Scm.count1(form, args, "the effect occurrence")?)) },
+		{ name: "choose-files", parse: |form, args| Scm.loc_files(form, args).map_ok(|(l, names)| ChooseFiles(l, names)) },
+		{ name: "drop-files", parse: |form, args| Scm.loc_files(form, args).map_ok(|(l, names)| DropFiles(l, names)) },
+		{ name: "paste-files", parse: |form, args| Scm.loc_files(form, args).map_ok(|(l, names)| PasteFiles(l, names)) },
+		{ name: "expect-files", parse: |form, args| Ok(ExpectFiles(Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the file count")?)) },
+		{
+			name: "expect-pending-work",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 2)?
+				task_sx = Scm.arg(a, 0)
+				task = Scm.string(task_sx, "the task name")?
+				if task == "" {
+					return Err(Scm.bad(task_sx, "the task name must not be empty"))
+				}
+				Ok(ExpectPendingWork({ task, count: Scm.unsigned(Scm.arg(a, 1), "the pending count")? }))
+			},
+		},
 		{ name: "tick-interval", parse: |form, args| Ok(TickInterval(Scm.count1(form, args, "the period")?)) },
 		{ name: "tick-interval-if-active", parse: |form, args| Ok(TickIntervalIfActive(Scm.count1(form, args, "the period")?)) },
 		{
@@ -691,7 +825,99 @@ Scm := [].{
 		{ name: "mark-metrics", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| MarkMetrics) },
 		{ name: "expect-metric-delta", parse: |form, args| Ok(ExpectMetricDelta(Scm.metric_args(form, args)?)) },
 		{ name: "expect-metric-delta-at-most", parse: |form, args| Ok(ExpectMetricDeltaAtMost(Scm.metric_args(form, args)?)) },
+		{
+			name: "expect-upload",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 4)?
+				file_sx = Scm.arg(a, 1)
+				file = Scm.string(file_sx, "the setup file's name")?
+				if file == "" {
+					return Err(Scm.bad(file_sx, "the setup file's name must not be empty"))
+				}
+				Ok(ExpectUpload({ occurrence: Scm.unsigned(Scm.arg(a, 0), "the effect occurrence")?, file, start: Scm.unsigned(Scm.arg(a, 2), "the range's start")?, len: Scm.unsigned(Scm.arg(a, 3), "the range's length")? }))
+			},
+		},
+		{
+			name: "expect-port-call",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 3)?
+				Ok(ExpectPortCall({ occurrence: Scm.unsigned(Scm.arg(a, 0), "the effect occurrence")?, port: Scm.port_name(Scm.arg(a, 1))?, json: Scm.string(Scm.arg(a, 2), "the message JSON")? }))
+			},
+		},
+		{ name: "answer-port", parse: |form, args| Scm.port_answer(form, args) },
+		{
+			name: "expect-port-sent",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 3)?
+				Ok(ExpectPortSent({ port: Scm.port_name(Scm.arg(a, 0))?, index: Scm.unsigned(Scm.arg(a, 1), "the command's place")?, json: Scm.string(Scm.arg(a, 2), "the message JSON")? }))
+			},
+		},
+		{
+			name: "expect-port-sends",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 2)?
+				Ok(ExpectPortSends({ port: Scm.port_name(Scm.arg(a, 0))?, count: Scm.unsigned(Scm.arg(a, 1), "the count")? }))
+			},
+		},
+		{
+			name: "emit-port",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 2)?
+				Ok(EmitPort({ port: Scm.port_name(Scm.arg(a, 0))?, json: Scm.string(Scm.arg(a, 1), "the message JSON")? }))
+			},
+		},
+		{ name: "close-port", parse: |form, args| Ok(ClosePort(Scm.port_name(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
+		{
+			name: "fail-port",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 2)?
+				Ok(FailPort({ port: Scm.port_name(Scm.arg(a, 0))?, message: Scm.string(Scm.arg(a, 1), "the message")? }))
+			},
+		},
+		{
+			name: "expect-port-subscriptions",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 2)?
+				Ok(ExpectPortSubscriptions({ port: Scm.port_name(Scm.arg(a, 0))?, count: Scm.unsigned(Scm.arg(a, 1), "the count")? }))
+			},
+		},
+		{
+			name: "expect-saved",
+			parse: |form, args| {
+				a = Scm.arity(form, args, 3)?
+				index_sx = Scm.arg(a, 0)
+				index = Scm.unsigned(index_sx, "the save's place")?
+				if index == 0 {
+					return Err(Scm.bad(index_sx, "saves are counted from 1"))
+				}
+				Ok(ExpectSaved({ index, name: Scm.string(Scm.arg(a, 1), "the saved file's name")?, text: Scm.string(Scm.arg(a, 2), "the saved file's contents")? }))
+			},
+		},
+		{ name: "expect-saves", parse: |form, args| Ok(ExpectSaves(Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the save count")?)) },
 	]
+
+	## A port name: a non-empty string.
+	port_name : Sx -> Try(Str, Problem)
+	port_name = |sx| {
+		name = Scm.string(sx, "the port name")?
+		if (name == "") Err(Scm.bad(sx, "the port name must not be empty")) else Ok(name)
+	}
+
+	## `(answer-port N reply "json")`, `(answer-port N throw "message")`,
+	## `(answer-port N too-large)` or `(answer-port N timeout)`.
+	port_answer : Sx, List(Sx) -> Try(Op, Problem)
+	port_answer = |form, args| {
+		occurrence = Scm.unsigned(args.get(0) ? |_| Scm.bad(form, "answer-port needs the effect occurrence"), "the effect occurrence")?
+		kind_sx = args.get(1) ? |_| Scm.bad(form, "answer-port needs how to answer: reply, throw, too-large or timeout")
+		answer = match Scm.symbol(kind_sx, "the answer")? {
+			"reply" => Reply(Scm.string(Scm.arg(Scm.arity(form, args, 3)?, 2), "the reply JSON")?)
+			"throw" => Throw(Scm.string(Scm.arg(Scm.arity(form, args, 3)?, 2), "the thrown message")?)
+			"too-large" => Scm.arity(form, args, 2).map_ok(|_| TooLarge)?
+			"timeout" => Scm.arity(form, args, 2).map_ok(|_| Timeout)?
+			other => return Err(Scm.bad(kind_sx, "unknown answer ${other}; a port call is answered with reply, throw, too-large or timeout"))
+		}
+		Ok(AnswerPort({ occurrence, answer }))
+	}
 
 	step_form : Sx -> Try(Step, Problem)
 	step_form = |form| {
@@ -739,6 +965,23 @@ Scm := [].{
 		JsonOut.field("setup", Array(Scm.setup_forms.map(|f| Text(f.name)))),
 	])
 
+	## Every work fault by its spelling.
+	work_faults : List((Str, WorkFault))
+	work_faults = [("contract", Contract), ("resource_limit", ResourceLimit), ("out_of_memory", OutOfMemory), ("app_crash", AppCrash), ("expect_failed", ExpectFailed), ("unavailable", Unavailable), ("executor", Executor)]
+
+	work_fault : Sx -> Try(WorkFault, Problem)
+	work_fault = |sx| {
+		name = Scm.symbol(sx, "the work fault")?
+		match Scm.work_faults.find_first(|(n, _)| n == name) {
+			Ok((_, f)) => Ok(f)
+			Err(_) => Err(Scm.bad(sx, "unknown work fault ${name}; a job is lost to ${Str.join_with(Scm.work_faults.map(|(n, _)| n), ", ")}"))
+		}
+	}
+
+	## A work fault as a spec spells it.
+	work_fault_name : WorkFault -> Str
+	work_fault_name = |fault| Scm.work_faults.find_first(|(_, f)| f == fault).map_ok(|(n, _)| n) ?? crash "Scm.work_faults names every fault"
+
 	attr_name : Sx -> Try(Str, Problem)
 	attr_name = |sx|
 		match sx {
@@ -752,12 +995,15 @@ Scm := [].{
 	## The work metrics a spec may name (design.md, "Work assertions"), and
 	## the engine work counters each one sums. Counter `k` is the `k`th entry
 	## of the engine's work record (design.md, Appendix B): 1-18 count
-	## commands by opcode, 19 onwards count engine work.
+	## commands by opcode, 19-31 count engine work, and 32-38 are the effect
+	## counters. Counter 39, the live ids, is a gauge rather than a count and
+	## has no metric name.
 	metric_names : List({ name : Str, counters : List(U64) })
 	metric_names = [
 		{ name: "rows_created", counters: [1] },
 		{ name: "rows_removed", counters: [22] },
 		{ name: "rows_reused", counters: [23] },
+		{ name: "rows_updated", counters: [24] },
 		{ name: "rows_moved", counters: [4] },
 		{ name: "create_element", counters: [8] },
 		{ name: "set_text", counters: [2, 12] },
@@ -772,6 +1018,13 @@ Scm := [].{
 		{ name: "dirty_source_roots", counters: [27] },
 		{ name: "each_key_hashes", counters: [28] },
 		{ name: "each_key_compares", counters: [29] },
+		{ name: "effects_issued", counters: [32] },
+		{ name: "effects_delivered", counters: [33] },
+		{ name: "effects_stale", counters: [34] },
+		{ name: "effects_refused", counters: [35] },
+		{ name: "effects_cancelled", counters: [36] },
+		{ name: "effects_reparented", counters: [37] },
+		{ name: "effects_skipped", counters: [38] },
 	]
 
 	## The counters a metric name sums.
@@ -782,9 +1035,8 @@ Scm := [].{
 			Err(_) => Err(UnknownMetric)
 		}
 
-	## Metrics of the deleted Zig engine with no meaning in this one
-	## (design.md, "Work assertions"): a spec asserts the property they stood
-	## for through soak plateaus or the counters above instead.
+	## The problem with a metric name that `metric_names` does not hold,
+	## which lists the names it does.
 	unknown_metric : Str -> Str
 	unknown_metric = |name| "unknown metric ${name}; the metrics are ${Str.join_with(Scm.metric_names.map(|m| m.name), ", ")}"
 
@@ -817,6 +1069,13 @@ Scm := [].{
 			StubHttp({ stub: Reject(_), .. }) => "stub-http-reject"
 			RunEffect(_) => "run-effect"
 			ExpectPendingEffects(_) => "expect-pending-effects"
+			LoseWork(_) => "lose-work"
+			TimeOutWork(_) => "time-out-work"
+			ExpectPendingWork(_) => "expect-pending-work"
+			ChooseFiles(_, _) => "choose-files"
+			DropFiles(_, _) => "drop-files"
+			PasteFiles(_, _) => "paste-files"
+			ExpectFiles(_) => "expect-files"
 			TickInterval(_) => "tick-interval"
 			TickIntervalIfActive(_) => "tick-interval-if-active"
 			ExpectCleanup(_) => "expect-cleanup"
@@ -833,6 +1092,17 @@ Scm := [].{
 			MarkMetrics => "mark-metrics"
 			ExpectMetricDelta(_) => "expect-metric-delta"
 			ExpectMetricDeltaAtMost(_) => "expect-metric-delta-at-most"
+			ExpectUpload(_) => "expect-upload"
+			ExpectPortCall(_) => "expect-port-call"
+			AnswerPort(_) => "answer-port"
+			ExpectPortSent(_) => "expect-port-sent"
+			ExpectPortSends(_) => "expect-port-sends"
+			EmitPort(_) => "emit-port"
+			ClosePort(_) => "close-port"
+			FailPort(_) => "fail-port"
+			ExpectPortSubscriptions(_) => "expect-port-subscriptions"
+			ExpectSaved(_) => "expect-saved"
+			ExpectSaves(_) => "expect-saves"
 		}
 
 	## A locator as a spec spells it.
@@ -910,6 +1180,8 @@ Scm := [].{
 			InitialOnline(o) => ("initial-online", [JsonOut.field("text", Text(Scm.online_name(o)))])
 			LocalStorage({ key, value }) => ("local-storage", [JsonOut.field("key", Text(key)), JsonOut.field("text", Text(value))])
 			LocalStorageUnavailable => ("local-storage-unavailable", [])
+			File({ name, mime, text, repeat }) => ("file", [JsonOut.field("name", Text(name)), JsonOut.field("type", Text(mime)), JsonOut.field("text", Text(text)), JsonOut.field("count", Nat(repeat))])
+			MaxOutputBytes(n) => ("max-output-bytes", [JsonOut.field("count", Nat(n))])
 		}
 		Object([JsonOut.field("op", Text(op))].concat(Scm.pos_fields(pos)).concat(args))
 	}
@@ -944,6 +1216,13 @@ Scm := [].{
 			StubHttp(fixture) => Scm.stub_fields(fixture)
 			RunEffect(n) => [JsonOut.field("count", Nat(n))]
 			ExpectPendingEffects(n) => [JsonOut.field("count", Nat(n))]
+			LoseWork({ occurrence, fault }) => [JsonOut.field("count", Nat(occurrence)), JsonOut.field("fault", Text(Scm.work_fault_name(fault)))]
+			TimeOutWork(n) => [JsonOut.field("count", Nat(n))]
+			ExpectPendingWork({ task, count }) => [JsonOut.field("task", Text(task)), JsonOut.field("count", Nat(count))]
+			ChooseFiles(l, names) => [loc(l), JsonOut.field("files", Array(names.map(|n| Text(n))))]
+			DropFiles(l, names) => [loc(l), JsonOut.field("files", Array(names.map(|n| Text(n))))]
+			PasteFiles(l, names) => [loc(l), JsonOut.field("files", Array(names.map(|n| Text(n))))]
+			ExpectFiles(n) => [JsonOut.field("count", Nat(n))]
 			TickInterval(ms) => [JsonOut.field("period_ms", Nat(ms))]
 			TickIntervalIfActive(ms) => [JsonOut.field("period_ms", Nat(ms))]
 			ExpectCleanup({ name, count }) => [JsonOut.field("name", Text(name)), JsonOut.field("count", Nat(count))]
@@ -960,6 +1239,25 @@ Scm := [].{
 			MarkMetrics => []
 			ExpectMetricDelta({ metric, delta }) => [JsonOut.field("metric", Text(metric)), JsonOut.field("counters", Scm.counters_json(metric)), JsonOut.field("delta", Int(delta))]
 			ExpectMetricDeltaAtMost({ metric, delta }) => [JsonOut.field("metric", Text(metric)), JsonOut.field("counters", Scm.counters_json(metric)), JsonOut.field("delta", Int(delta))]
+			ExpectUpload({ occurrence, file, start, len }) => [JsonOut.field("count", Nat(occurrence)), JsonOut.field("file", Text(file)), JsonOut.field("start", Nat(start)), JsonOut.field("len", Nat(len))]
+			ExpectPortCall({ occurrence, port, json }) => [JsonOut.field("count", Nat(occurrence)), JsonOut.field("port", Text(port)), JsonOut.field("json", Text(json))]
+			AnswerPort({ occurrence, answer }) =>
+				[JsonOut.field("count", Nat(occurrence))].concat(
+					match answer {
+						Reply(json) => [JsonOut.field("answer", Text("reply")), JsonOut.field("json", Text(json))]
+						Throw(message) => [JsonOut.field("answer", Text("throw")), text(message)]
+						TooLarge => [JsonOut.field("answer", Text("too-large"))]
+						Timeout => [JsonOut.field("answer", Text("timeout"))]
+					},
+				)
+			ExpectPortSent({ port, index, json }) => [JsonOut.field("port", Text(port)), JsonOut.field("index", Nat(index)), JsonOut.field("json", Text(json))]
+			ExpectPortSends({ port, count }) => [JsonOut.field("port", Text(port)), JsonOut.field("count", Nat(count))]
+			EmitPort({ port, json }) => [JsonOut.field("port", Text(port)), JsonOut.field("json", Text(json))]
+			ClosePort(port) => [JsonOut.field("port", Text(port))]
+			FailPort({ port, message }) => [JsonOut.field("port", Text(port)), text(message)]
+			ExpectPortSubscriptions({ port, count }) => [JsonOut.field("port", Text(port)), JsonOut.field("count", Nat(count))]
+			ExpectSaved({ index, name, text: contents }) => [JsonOut.field("index", Nat(index)), JsonOut.field("name", Text(name)), text(contents)]
+			ExpectSaves(n) => [JsonOut.field("count", Nat(n))]
 		}
 		Object([JsonOut.field("op", Text(Scm.op_name(op)))].concat(Scm.pos_fields(pos)).concat(args))
 	}
@@ -1027,6 +1325,47 @@ expect {
 	Str.inspect(spec.steps.map(|s| s.op)) == "[StubHttp({ label: \"feed\", stub: Reply({ body: \"hi λ\", headers: [{ name: \"content-type\", value: \"text/plain\" }], status: 200, url: \"/api/a\" }) }), StubHttp({ label: \"x\", stub: Reject({ detail: \"\", kind: Timeout }) }), RunEffect(2), ExpectPendingEffects(0)]"
 }
 
+## Worker steps: a job lost with a fault class, a deadline expired, and the
+## pending jobs of a task; each emits its arguments for the browser runner.
+expect {
+	spec = Scm.parse(
+		\\(test "work"
+		\\  (steps
+		\\    (lose-work 1 app_crash)
+		\\    (time-out-work 2)
+		\\    (expect-pending-work "example.org/search/filter" 3)))
+	)?
+	actual =
+		\\${Str.inspect(spec.steps.map(|s| s.op))}
+		\\${JsonOut.render(Scm.to_json("w", spec))}
+	expected =
+		\\[LoseWork({ fault: AppCrash, occurrence: 1 }), TimeOutWork(2), ExpectPendingWork({ count: 3, task: "example.org/search/filter" })]
+		\\{"id":"w","name":"work","setup":[],"steps":[{"op":"lose-work","line":3,"column":5,"count":1,"fault":"app_crash"},{"op":"time-out-work","line":4,"column":5,"count":2},{"op":"expect-pending-work","line":5,"column":5,"task":"example.org/search/filter","count":3}]}
+	actual == expected
+}
+
+## Every work fault parses and is spelled back as it was written.
+expect Scm.work_faults.all(|(name, fault)| Scm.parse("(test \"t\" (steps (lose-work 1 ${name})))").map_ok(|spec| spec.steps.map(|s| s.op)) == Ok([LoseWork({ occurrence: 1, fault })]) and Scm.work_fault_name(fault) == name)
+
+## Worker steps check their arguments.
+expect {
+	actual =
+		\\${problem_of("(test \"t\" (steps (lose-work 1 crashed)))")}
+		\\${problem_of("(test \"t\" (steps (lose-work 1 \"app_crash\")))")}
+		\\${problem_of("(test \"t\" (steps (lose-work 1)))")}
+		\\${problem_of("(test \"t\" (steps (time-out-work -1)))")}
+		\\${problem_of("(test \"t\" (steps (expect-pending-work \"\" 1)))")}
+		\\${problem_of("(test \"t\" (steps (expect-pending-work filter 1)))")}
+	expected =
+		\\x.scm:1:31: unknown work fault crashed; a job is lost to contract, resource_limit, out_of_memory, app_crash, expect_failed, unavailable, executor
+		\\x.scm:1:31: the work fault must be a bare word, got "app_crash"
+		\\x.scm:1:18: lose-work takes 2 argument(s), got 1
+		\\x.scm:1:33: the effect occurrence must be a non-negative integer, got -1
+		\\x.scm:1:39: the task name must not be empty
+		\\x.scm:1:39: the task name must be a string, got filter
+	actual == expected
+}
+
 ## An unknown step is a hard error naming its line and column.
 expect problem_of("(test \"t\"\n  (steps\n    (click (label \"a\"))\n    (frobnicate 1)))") == "x.scm:4:5: unknown step frobnicate"
 
@@ -1073,8 +1412,8 @@ expect {
 ## Executable steps are refused inside setup.
 expect problem_of("(test \"t\" (setup (click (text \"No\"))) (steps (mark-metrics)))") == "x.scm:1:18: unknown setup form click"
 
-## The GUI scenario form is not part of the web grammar.
-expect problem_of("(scenario \"s\" (steps (click (text \"a\"))))") == "x.scm:1:2: a spec starts with `test`; `scenario` and other forms are not part of the web grammar"
+## A form whose head is not `test` is not a spec.
+expect problem_of("(suite \"s\" (steps (click (text \"a\"))))") == "x.scm:1:2: a spec starts with `test`"
 
 ## Empty steps, missing steps and duplicated sections are refused.
 expect {
@@ -1138,15 +1477,48 @@ expect {
 	actual == "{\"id\":\"j-file\",\"name\":\"j\",\"setup\":[{\"op\":\"local-storage\",\"line\":1,\"column\":18,\"key\":\"k\",\"text\":\"v\"}],\"steps\":[{\"op\":\"expect-checked\",\"line\":1,\"column\":50,\"loc\":{\"kind\":\"role\",\"role\":\"checkbox\",\"name\":\"A\"},\"value\":true}]}"
 }
 
-## Metric names are checked: an old engine-only metric is a parse error, and a
-## known one emits the counters it sums.
+## Metric names are checked: an unknown one is a parse error, and a known one
+## emits the counters it sums.
 expect {
 	spec = Scm.parse("(test \"m\" (steps (mark-metrics) (expect-metric-delta set_text 2)))")?
 	actual =
-		\\${problem_of("(test \"t\" (steps (expect-metric-delta-at-most active_graph_records_rebuilt 0)))")}
+		\\${problem_of("(test \"t\" (steps (expect-metric-delta-at-most rows_painted 0)))")}
 		\\${JsonOut.render(Scm.to_json("m", spec))}
 	expected =
-		\\x.scm:1:47: unknown metric active_graph_records_rebuilt; the metrics are rows_created, rows_removed, rows_reused, rows_moved, create_element, set_text, set_value, set_checked, bind_event, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares
+		\\x.scm:1:47: unknown metric rows_painted; the metrics are rows_created, rows_removed, rows_reused, rows_updated, rows_moved, create_element, set_text, set_value, set_checked, bind_event, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares, effects_issued, effects_delivered, effects_stale, effects_refused, effects_cancelled, effects_reparented, effects_skipped
 		\\{"id":"m","name":"m","setup":[],"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
+	actual == expected
+}
+
+## File steps name setup files, which carry a name, a type and contents.
+expect {
+	text = "(test \"f\" (setup (file \"a.txt\" \"text/plain\" \"ab\" 3) (file \"b.png\" \"image/png\" \"\")) (steps (choose-files (label \"Up\") \"a.txt\" \"b.png\") (drop-files (test-id \"z\") \"a.txt\") (paste-files (test-id \"z\") \"b.png\") (expect-files 3)))"
+	parsed = Scm.parse(text)
+	setup = parsed.map_ok(|spec| spec.setup.map(|e| e.item))
+	steps = parsed.map_ok(|spec| spec.steps.map(|s| s.op))
+	setup == Ok([File({ name: "a.txt", mime: "text/plain", text: "ab", repeat: 3 }), File({ name: "b.png", mime: "image/png", text: "", repeat: 1 })]) and steps == Ok([ChooseFiles(Label("Up"), ["a.txt", "b.png"]), DropFiles(TestId("z"), ["a.txt"]), PasteFiles(TestId("z"), ["b.png"]), ExpectFiles(3)])
+}
+
+## File steps and setup files check their arguments.
+expect {
+	bad_name = problem_of("(test \"t\" (setup (file \"d/a.txt\" \"text/plain\" \"\")) (steps (expect-files 0)))")
+	no_files = problem_of("(test \"t\" (steps (drop-files (test-id \"z\"))))")
+	bad_name.contains("without a directory") and no_files.contains("at least one file name")
+}
+
+## A spec bounds a task's output with `max-output-bytes`, and asserts what
+## the app saved with `expect-saved` and `expect-saves`; saves are counted
+## from 1.
+expect {
+	spec = Scm.parse("(test \"s\" (setup (max-output-bytes 8)) (steps (expect-saved 1 \"out.txt\" \"AB\") (expect-saves 1)))")?
+	zero = problem_of("(test \"s\" (steps (expect-saved 0 \"out.txt\" \"\")))")
+	actual =
+		\\setup: ${Str.inspect(spec.setup.map(|s| s.item))}
+		\\steps: ${Str.inspect(spec.steps.map(|s| s.op))}
+		\\zero: ${zero}
+	expected =
+		\\setup: [MaxOutputBytes(8)]
+		\\steps: [ExpectSaved({ index: 1, name: "out.txt", text: "AB" }), ExpectSaves(1)]
+		\\zero: x.scm:1:32: saves are counted from 1
 	actual == expected
 }

@@ -1,0 +1,21 @@
+(test "Notes — three tasks over one prepared file, and a revisit asks again"
+  (setup
+    (file "notes.txt" "text/plain" "first line\nsecond, longer line\nthird\n"))
+  (steps
+    (expect-text (test-id "summary") "choose a file")
+    (choose-files (label "Notes file") "notes.txt")
+    (run-effect 1)
+    (expect-text (test-id "summary") "4 lines, 34 characters")
+    (click (role button :name "Search"))
+    (fill (label "Word") "line")
+    (run-effect 3)
+    (expect-text (test-id "found") "lines 1, 2")
+    (click (role button :name "Longest"))
+    (run-effect 4)
+    (expect-text (test-id "longest") "second, longer line")
+    (click (role button :name "Summary"))
+    (expect-pending-work "example.org/notes/summary" 1)
+    (run-effect 5)
+    (expect-text (test-id "summary") "4 lines, 34 characters")
+  )
+)

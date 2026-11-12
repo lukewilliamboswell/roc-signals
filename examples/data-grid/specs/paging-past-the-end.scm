@@ -1,6 +1,6 @@
 (test "Data grid — paging past the end"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (mark-metrics)
     (click (role button :name "Sort by score"))
     (mark-metrics)
@@ -37,7 +37,7 @@
     (click (role button :name "Sort by score"))
     (click (role button :name "Sort by id"))
 
-    ; 9. paging past the end
+    ; A filter that leaves fewer pages than the page asked for.
     (fill (label "Filter") "")
     (expect-text (test-id "page-label") "Page 1 of 120")
     (click (role button :name "Next page"))

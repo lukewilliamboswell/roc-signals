@@ -1,6 +1,6 @@
 (test "Kanban board — delete the card that currently matches the filter"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (mark-metrics)
     (click (role button :name "Move right: Draft onboarding copy"))
     (mark-metrics)
@@ -23,6 +23,8 @@
     (expect-metric-delta rows_removed 1)
     (expect-metric-delta rows_created 0)
     (expect-metric-delta rows_reused 0)
+    (expect-metric-delta rows_moved 0)
+    (expect-metric-delta rows_updated 0)
     (expect-absent (role region :name "Rotate API keys"))
     (expect-text (test-id "count-done") "0 cards")
     (expect-text (test-id "matching-done") "0 shown")

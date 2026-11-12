@@ -1,6 +1,6 @@
 (test "Spreadsheet lite — editing a cell nothing depends on"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (focus (label "D2"))
     (fill (label "Formula") "=B2+C2+100")
     (fill (label "Formula") "=B2+C2")
@@ -25,8 +25,12 @@
     (expect-value (label "B12") "5")
     (expect-value (label "D7") "4510")
     (expect-value (label "A1") "Item")
-    ; Only row 12 was re-diffed: 12 outer rows plus its 8 cells.
-    (expect-metric-delta rows_reused 20)
+    ; Only row 12 was written, so only its 8 cells were matched again, and
+    ; of them only C12 changed: the row and the cell are the two rows
+    ; updated.
+    (expect-metric-delta rows_reused 8)
+    (expect-metric-delta rows_moved 0)
+    (expect-metric-delta rows_updated 2)
     (expect-metric-delta dirty_source_roots 1)
     (expect-metric-delta set_value 2)
     (expect-metric-delta bind_event 0)

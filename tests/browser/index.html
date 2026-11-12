@@ -5,7 +5,10 @@
 import { mountRocEngineApp } from "./runtime.mjs";
 const params = new URLSearchParams(location.search);
 try {
-  window.__rt = await mountRocEngineApp({ wasmUrl: params.get("wasm") ?? "app.wasm", root: document.getElementById("app"), manualEffects: !!window.__manualFx, manualIntervals: true });
+  // An app's own port handlers, when a test names their module (the soak
+  // mounts an example with them); spec replays answer ports themselves.
+  const ports = window.__portsModule ? { ports: (await import(window.__portsModule)).default } : {};
+  window.__rt = await mountRocEngineApp({ wasmUrl: params.get("wasm") ?? "app.wasm", root: document.getElementById("app"), manualEffects: !!window.__manualFx, manualIntervals: true, ...ports, ...(window.__mountOptions ?? {}) });
   window.__ready = true;
 } catch (e) {
   window.__error = String(e && e.stack || e);

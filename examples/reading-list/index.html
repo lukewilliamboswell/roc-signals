@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Reading List</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <!--
+      A page that hosts the Reading List by itself, served beside four files:
+      runtime.mjs and worker.mjs, the platform's runtime, as the release ships
+      them; app.wasm, built from main.roc; and ports.mjs, the app's own port
+      handlers. The runtime refuses to mount unless `ports` has one handler
+      for each port the app registers. (The documentation site mounts every
+      example through its own site.mjs instead, which passes the same
+      handlers.)
+    -->
+    <script type="module">
+      import { mountRocEngineApp } from "./runtime.mjs";
+      import ports from "./ports.mjs";
+
+      await mountRocEngineApp({ wasmUrl: "app.wasm", root: document.getElementById("app"), ports });
+    </script>
+  </body>
+</html>

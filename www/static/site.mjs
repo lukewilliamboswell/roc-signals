@@ -1,4 +1,3 @@
-import { createPublicExampleFetch } from "./example_tasks.mjs";
 // The browser runtime, copied from platform/runtime.mjs by scripts/site.roc.
 import { mountRocEngineApp } from "./runtime.mjs";
 
@@ -16,6 +15,79 @@ function setupExamplePage() {
   });
 }
 
+// How a mount runs its worker jobs, the same for every example: the mount
+// element's `data-signals-max-workers` and `data-signals-workers` (set from
+// the example's `max_workers` and `workers` in www/data/examples.toml), each
+// overridden by the page URL's `maxWorkers` and `workers` query parameters,
+// so any example can be tried with another pool size or with
+// `?workers=inline`. Absent, the runtime's defaults apply.
+function workerOptions(root) {
+  const query = new URLSearchParams(window.location.search);
+  const options = {};
+  const max = query.get("maxWorkers") ?? root.dataset.signalsMaxWorkers;
+  if (max !== undefined && max !== null && max !== "") {
+    const n = Number(max);
+    if (!Number.isInteger(n) || n < 1) throw new Error(`maxWorkers must be a whole number of at least 1 (got ${JSON.stringify(max)})`);
+    options.maxWorkers = n;
+  }
+  const workers = query.get("workers") ?? root.dataset.signalsWorkers;
+  if (workers) options.workers = workers;
+  return options;
+}
+
+// The handlers of an example's ports (design.md, "Request kinds"): the
+// default export of the module the mount element's `data-signals-ports`
+// names (set from the example's `ports` in www/data/examples.toml, a file
+// scripts/site.roc copies beside app.wasm). The handlers are the example's
+// own JavaScript; this file only loads them, the same way for every example.
+async function portsOption(root) {
+  const url = root.dataset.signalsPorts;
+  if (!url) return {};
+  const module = await import(new URL(url, document.baseURI).href);
+  return { ports: module.default };
+}
+
+// An example's simulated service: the default export of the module the mount
+// element's `data-signals-backend` names (set from the example's `backend` in
+// www/data/examples.toml, a file beside its app.wasm). The module is the
+// example's own JavaScript; `createBackend()` returns a handler that answers
+// `{ status, body, headers }` for a request it serves, rejects for a network
+// failure, and returns null for any other request, which goes to the real
+// network. This file only adapts that handler to the mount's `fetch` option,
+// the same way for every example; a mount without a backend uses the
+// browser's own fetch.
+async function backendOption(root) {
+  const url = root.dataset.signalsBackend;
+  if (!url) return {};
+  const module = await import(new URL(url, document.baseURI).href);
+  const handle = module.default();
+  return {
+    fetch: async (uri, init = {}) => {
+      const body = init.body === undefined ? "" : await new Response(init.body).text();
+      const answer = await handle({ method: init.method ?? "GET", uri: String(uri), headers: init.headers ?? [], body, signal: init.signal });
+      if (answer === null) return globalThis.fetch(uri, init);
+      return new Response(answer.body, { status: answer.status, headers: answer.headers ?? {} });
+    },
+  };
+}
+
+// Resolves once the document is parsed, so every deferred and module script
+// of the page has run.
+const parsed = new Promise((resolve) => {
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", resolve, { once: true });
+  else resolve();
+});
+
+// Tell the page's own scripts which runtime is mounted where: a
+// `roc-signals:runtime` event, dispatched on the mount root once per mount,
+// bubbling, with the runtime as `detail.runtime`. It fires after the app's
+// first render and after every script of the page has run, so a script (an
+// example's custom element, say) needs only to listen for it.
+async function announce(root, runtime) {
+  await parsed;
+  root.dispatchEvent(new CustomEvent("roc-signals:runtime", { bubbles: true, detail: { runtime } }));
+}
+
 async function mountInto(root, wasmUrl, title, errorTarget = null) {
   root.replaceChildren();
   if (errorTarget) {
@@ -27,9 +99,12 @@ async function mountInto(root, wasmUrl, title, errorTarget = null) {
     const runtime = await mountRocEngineApp({
       wasmUrl,
       root,
-      fetch: createPublicExampleFetch(),
       onFault: (fault) => showError(errorTarget, new Error(`${fault.class}: ${fault.message}`)),
+      ...workerOptions(root),
+      ...(await portsOption(root)),
+      ...(await backendOption(root)),
     });
+    await announce(root, runtime);
     return runtime;
   } catch (err) {
     showError(errorTarget, err);

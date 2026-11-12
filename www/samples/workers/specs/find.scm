@@ -1,0 +1,31 @@
+(test "Words — the search runs only while there is a word to find"
+  (steps
+    (run-effect 1)
+    (run-effect 2)
+    ; An empty box is Skip: nothing runs and nothing is shown.
+    (expect-pending-effects 0)
+    (expect-text (test-id "found") "")
+    (fill (label "Text") "the cat\nsaw\nthe hat")
+    (run-effect 3)
+    (fill (label "Find") "the")
+    (expect-text (test-id "found") "Searching…")
+    (expect-pending-effects 1)
+    (run-effect 4)
+    (expect-text (test-id "found") "Lines 1, 3")
+    ; Changing the text is a new question for the search too.
+    (fill (label "Text") "the cat\nsaw a hat")
+    (expect-pending-effects 2)
+    (run-effect 6)
+    (expect-text (test-id "found") "Lines 1")
+    (run-effect 5)
+    (fill (label "Find") "dog")
+    (run-effect 7)
+    (expect-text (test-id "found") "Not found")
+    ; Clearing the box stops a job that is still wanted and clears the answer.
+    (fill (label "Find") "cat")
+    (expect-pending-effects 1)
+    (fill (label "Find") "")
+    (expect-pending-effects 0)
+    (expect-text (test-id "found") "")
+  )
+)

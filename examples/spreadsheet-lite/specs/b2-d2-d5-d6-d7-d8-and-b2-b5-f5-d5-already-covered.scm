@@ -1,6 +1,6 @@
 (test "Spreadsheet lite — B2 > D2 > D5 > D6 > D7 > D8 and B2 > B5 > (F5, D5 already covered)"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (focus (label "D2"))
     (fill (label "Formula") "=B2+C2+100")
     (fill (label "Formula") "=B2+C2")
@@ -29,26 +29,32 @@
     (expect-value (label "D4") "400")
     (expect-value (label "C12") "7")
     (expect-value (label "A1") "Item")
-    ; Work done for this edit. The outer grid re-diffs its 12 row keys, and only
-    ; the five rows that actually changed (2, 5, 6, 7, 8) re-diff their 8 cells:
-    ; 12 + 5 * 8 = 52 reused rows. A sheet-wide recompute would be 12 + 12 * 8 = 108.
+    ; Work done for this edit. The edit writes the five rows whose cells
+    ; changed (2, 5, 6, 7, 8), and the grid, a view of the sheet's table,
+    ; wakes those rows and no others. Each matches its 8 cells by address:
+    ; 5 * 8 = 40 reused rows, where matching every row's cells would be
+    ; 12 * 8 = 96. Of those 40 cells the 8 whose value changed are woken:
+    ; with the 5 rows, 13 rows updated.
     (expect-metric-delta rows_created 0)
     (expect-metric-delta rows_removed 0)
-    (expect-metric-delta rows_reused 52)
-    ; One root record recompute: the single Signal.map that evaluates the workbook.
+    (expect-metric-delta rows_reused 40)
+    (expect-metric-delta rows_moved 0)
+    (expect-metric-delta rows_updated 13)
+    ; One cell of the store is written: the sheet's table.
     (expect-metric-delta dirty_source_roots 1)
     ; Nine value writes: the eight cells whose displayed value changed (B2, D2, B5,
     ; D5, F5, D6, D7, D8) plus the formula bar. No other cell is written.
     (expect-metric-delta set_value 9)
     (expect-metric-delta set_metadata 0)
-    ; Item-only changes flow through stable row sources. Row builders and their
-    ; event descriptors remain mounted, so no event is rebound.
+    ; Every row and cell stays mounted, so no event listener is bound.
     (expect-metric-delta bind_event 0)
     ; Restoring the old value restores every dependent.
     (mark-metrics)
     (fill (label "B2") "1200")
     (expect-metric-delta bind_event 0)
-    (expect-metric-delta rows_reused 52)
+    (expect-metric-delta rows_reused 40)
+    (expect-metric-delta rows_moved 0)
+    (expect-metric-delta rows_updated 13)
     (expect-value (label "D2") "2500")
     (expect-value (label "D8") "1127.5")
     (blur (label "B2"))

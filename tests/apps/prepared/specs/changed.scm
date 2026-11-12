@@ -1,0 +1,20 @@
+(test "Prepared — a changed preparation input asks again, and the answer follows it"
+  (setup
+    (file "doc.txt" "text/plain" "alpha beta gamma\nBeta alpha\n" 6000)
+    (file "other.txt" "text/plain" "one two\ntwo\n" 10))
+  (steps
+    (choose-files (label "Document") "doc.txt")
+    (run-effect 1)
+    (expect-text (test-id "stats") "12000 lines, 30000 words, 4 distinct")
+    (check (label "Ignore case"))
+    (run-effect 2)
+    (expect-text (test-id "stats") "12000 lines, 30000 words, 3 distinct")
+    (choose-files (label "Document") "other.txt")
+    (expect-files 1)
+    (run-effect 3)
+    (expect-text (test-id "stats") "20 lines, 30 words, 2 distinct")
+    (click (role button :name "Top"))
+    (run-effect 4)
+    (expect-text (test-id "top") "two:20 one:10")
+  )
+)

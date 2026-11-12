@@ -1,7 +1,13 @@
-## Document statistics derived straight from the raw source string. These are
-## deliberately independent of the markdown parse: the statistics panel is its
-## own branch of the graph, so it can update on every keystroke without the
-## outline having to recompute.
+import pf.Engine exposing [Cell, Elem, Val]
+import pf.Html
+
+## Document statistics, and the panel that shows them.
+##
+## The counts come straight from the source text, not from the markdown
+## parse: the panel derives them itself from the document's cell, so it
+## updates on every keystroke without the outline having to recompute. The
+## reading speed is the panel's own state: only its estimate reads it, so
+## it lives in the panel and needs no cell in the app's store.
 Stats := {}.{
 	Counts : { words : U64, characters : U64 }
 
@@ -59,7 +65,67 @@ Stats := {}.{
 			"300" => 300
 			_ => 200
 		}
+
+	## What the panel is drawn over, in a store whose storage is `st`: the
+	## document's source text, which it only reads.
+	Props(st) : { source : Cell(st, Str) }
+
+	## The panel over the document's cell. `heading_count` comes from the
+	## page, which derives the heading spine once for the table of contents
+	## and for this number.
+	##
+	## The counts are one `derive` of the source, read by every tile and by
+	## the summary, and the reading estimate is a fan-in of the word count
+	## and the speed: a change of speed re-evaluates the estimate and the
+	## summary, and nothing outside the panel.
+	view : Props(st), Val(ctx, U64) -> Elem(ctx)
+		where [ctx.store : () -> Engine.Reach(ctx, st)]
+	view = |props, heading_count| Engine.derive(
+		props.source.val().map(Stats.counts),
+		|tally| Engine.state(
+			"200",
+			|speed| {
+				found = tally.lift()
+				headed = heading_count.lift().lift()
+				minutes = found.map2(speed.val(), |c, wpm| Stats.reading_minutes(c.words, Stats.parse_wpm(wpm)))
+				summary = { count: found, headings: headed, minutes }.Val.map(|r| "${r.count.words.to_str()} words | ${r.count.characters.to_str()} characters | ${r.headings.to_str()} headings | ${r.minutes.to_str()} min")
+				Engine.element(
+					"section",
+					[Engine.attr("aria-label", "Statistics"), Engine.attr("data-panel", "statistics"), Engine.class("panel")],
+					[
+						Html.div("panel-head", [Html.h2("Statistics", "panel-title"), Html.p_v(summary, [Engine.test_id("stat-summary"), Engine.class("hint numeric")])]),
+						Html.div(
+							"panel-body",
+							[
+								Html.div(
+									"stat-grid",
+									[
+										tile({ caption: "Words", id: "stat-words", value: found.map(|c| c.words.to_str()) }),
+										tile({ caption: "Characters", id: "stat-characters", value: found.map(|c| c.characters.to_str()) }),
+										tile({ caption: "Headings", id: "stat-headings", value: headed.map(|n| n.to_str()) }),
+										tile({ caption: "Reading time", id: "stat-reading", value: minutes.map(|m| "${m.to_str()} min") }),
+									],
+								),
+								Html.div(
+									"field sm:max-w-xs",
+									[
+										Html.p("Reading speed", "field-label"),
+										Html.select(Engine.const("Reading speed"), speed.val(), [Engine.class("input")], [Html.option("100", "Careful (100 wpm)"), Html.option("200", "Average (200 wpm)"), Html.option("300", "Fast (300 wpm)")], speed.set_value(|_, chosen| chosen)),
+										Html.p("The estimate is a fan-in of the word count and this speed; it never touches the preview or the outline.", "hint"),
+									],
+								),
+							],
+						),
+					],
+				)
+			},
+		),
+	)
 }
+
+## One tile: a caption over a number.
+tile : { caption : Str, id : Str, value : Val(ctx, Str) } -> Elem(ctx)
+tile = |{ caption, id, value }| Html.div("stat", [Html.p(caption, "stat-label"), Html.p_v(value, [Engine.test_id(id), Engine.class("stat-value numeric")])])
 
 ## An empty document has nothing to count.
 expect Stats.counts("") == { words: 0, characters: 0 }

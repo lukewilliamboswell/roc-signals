@@ -1,0 +1,55 @@
+(test "Million-Row Explorer — live orders are folded into today's totals, checked at the door, and stop when the feed is paused"
+  (setup (initial-location "/?orders=200000"))
+  (steps
+    (run-effect 1)
+    (run-effect 2)
+    (run-effect 3)
+    (run-effect 4)
+    (expect-text (test-id "orders") "200,000")
+    ; The feed was asked for at mount, at 200 orders a second.
+    (expect-port-subscriptions "roc-signals.example/million-row-explorer/orders" 1)
+    (expect-text (test-id "live") "Live: 200 orders a second. 0 live orders folded in today.")
+    ; A batch arrives: its orders join the totals at once, with no question asked.
+    (mark-metrics)
+    (emit-port "roc-signals.example/million-row-explorer/orders" "{\"sales\":[{\"category\":\"Toys\",\"region\":\"Canada\",\"cents\":1999},{\"category\":\"Books\",\"region\":\"Nordics\",\"cents\":501}],\"dropped\":0}")
+    (expect-metric-delta effects_issued 0)
+    (expect-text (test-id "live") "Live: 200 orders a second. 2 live orders folded in today.")
+    (expect-text (test-id "orders") "200,002")
+    ; Live orders follow the question: without Toys, only the book counts.
+    (uncheck (label "Toys"))
+    (run-effect 5)
+    (run-effect 6)
+    (run-effect 7)
+    (run-effect 8)
+    (expect-text (test-id "orders") "181,720")
+    (check (label "Toys"))
+    (run-effect 9)
+    (run-effect 10)
+    (run-effect 11)
+    (run-effect 12)
+    (expect-text (test-id "orders") "200,002")
+    ; A batch with a region the shop does not ship to is refused whole.
+    (emit-port "roc-signals.example/million-row-explorer/orders" "{\"sales\":[{\"category\":\"Toys\",\"region\":\"Canada\",\"cents\":100},{\"category\":\"Toys\",\"region\":\"Mars\",\"cents\":100}],\"dropped\":0}")
+    (expect-text (test-id "note") "A batch of live orders was refused: no region is called \"Mars\".")
+    (expect-text (test-id "orders") "200,002")
+    ; A batch the type does not allow is refused before it reaches the app's code.
+    (emit-port "roc-signals.example/million-row-explorer/orders" "{\"sales\":[{\"category\":\"Pets\",\"region\":\"Canada\",\"cents\":100}],\"dropped\":0}")
+    (expect-text (test-id "note") "A batch of live orders was not understood: port \"roc-signals.example/million-row-explorer/orders\": unknown tag \"Pets\"")
+    ; The feed's own count of the orders it dropped is shown.
+    (emit-port "roc-signals.example/million-row-explorer/orders" "{\"sales\":[],\"dropped\":7}")
+    (expect-text (test-id "live") "Live: 200 orders a second. 2 live orders folded in today, 7 dropped by the feed.")
+    ; A faster pace is a new subscription; pausing ends it.
+    (select-option (label "Live orders a second") "2000")
+    (expect-port-subscriptions "roc-signals.example/million-row-explorer/orders" 1)
+    (expect-text (test-id "live") "Live: 2,000 orders a second. 2 live orders folded in today, 7 dropped by the feed.")
+    (uncheck (label "Live orders"))
+    (expect-port-subscriptions "roc-signals.example/million-row-explorer/orders" 0)
+    (expect-text (test-id "live") "Paused. 2 live orders folded in today, 7 dropped by the feed.")
+    ; Switched on again, a feed that closes pauses the switch and says so.
+    (check (label "Live orders"))
+    (expect-port-subscriptions "roc-signals.example/million-row-explorer/orders" 1)
+    (close-port "roc-signals.example/million-row-explorer/orders")
+    (expect-checked (label "Live orders") false)
+    (expect-text (test-id "note") "The live feed closed.")
+  )
+)

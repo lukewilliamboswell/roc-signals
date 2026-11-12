@@ -1,7 +1,7 @@
 import pf.Engine exposing [Elem, In, Root, State]
 import pf.Html
 
-## Browser-services test app: one control per Phase 3 service, each with a
+## Browser-services test app: one control per browser service, each with a
 ## spec in `specs/` run natively and in Chrome.
 ## - A running clock (`when`) owns a 1 s interval and a named cleanup whose
 ##   run sets the document title.
@@ -18,6 +18,8 @@ import pf.Html
 ##   handler prevents it does not; an email field in the form blocks its
 ##   submission while invalid; a box that commits on `change` hears it when
 ##   it loses focus; and a one-shot timer.
+## - Two nested states that one click writes together, with one handler
+##   composed of both writes.
 ServicesApp := [].{
 	S : {
 		online : Bool,
@@ -181,9 +183,29 @@ ServicesApp := [].{
 				Html.button("Delay", [], st.update(|s| { ..s, delays: s.delays + 1 })),
 				Engine.on_change(v.map(|s| s.delays), |_| [Timer(1000)], st.on_result(|s, _, r| { ..s, delayed: Str.inspect(r) })),
 				Html.p_v(v.map(|s| s.delayed), [Engine.test_id("delayed")]),
+				ServicesApp.two_states({}),
 			],
 		)
 	}
+
+	## Two nested states that one click writes in the same turn: the outer
+	## one and the inner one, by one handler.
+	two_states : {} -> Elem(ctx)
+	two_states = |_| Engine.state(
+		"-",
+		|s1| Engine.state(
+			"-",
+			|s2| Engine.element(
+				"div",
+				[],
+				[
+					Html.p_v(s1.lift().val().map(|x| "s1=${x}"), [Engine.test_id("s1")]),
+					Html.p_v(s2.val().map(|x| "s2=${x}"), [Engine.test_id("s2")]),
+					Html.button("Both", [], s1.lift().update(|_| "a").also(s2.update(|_| "b"))),
+				],
+			),
+		),
+	)
 
 	## The program both hosts run.
 	program : Engine.Program

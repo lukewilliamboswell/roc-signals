@@ -4,8 +4,9 @@ import SpecSuite
 
 ## The documentation's code samples. Every Roc sample in `www/content` comes
 ## from a file under `www/samples/` through the `sample` shortcode, so the
-## `check` task can compile it: each sample app is `roc check`ed, and a sample
-## directory with `specs/` has them run natively and in Chrome.
+## `check` task can compile it: each sample app is `roc check`ed and its
+## top-level `expect`s run (`roc test`), and a sample directory with `specs/`
+## has them run natively and in Chrome.
 DocSamples := [].{
 	samples_dir = "www/samples"
 
@@ -31,6 +32,21 @@ DocSamples := [].{
 			_ => ""
 		}
 
+	## The lines of `source` between `# region NAME` and `# endregion NAME`,
+	## as the `sample` shortcode cuts them. Each marker is the whole end of
+	## its line: `# endregion row` is followed by the end of the line or of
+	## the file, so a region `row` does not end at `# endregion row-state`.
+	region_of : Str, Str -> Try(Str, [NoRegion])
+	region_of = |source, region|
+		match "${source}\n".split_on("# region ${region}\n") {
+			[_, rest, ..] =>
+				match rest.split_on("# endregion ${region}\n") {
+					[inside, _, ..] => Ok(inside)
+					_ => Err(NoRegion)
+				}
+			_ => Err(NoRegion)
+		}
+
 	## Problems with a page: an inline Roc block (which nothing would
 	## compile), a missing sample, or a region the sample does not mark.
 	page_problems : Str, Str, (Str -> Try(Str, [Missing])) -> List(Str)
@@ -40,7 +56,7 @@ DocSamples := [].{
 			$out = match read(file) {
 				Err(Missing) => $out.append("${page}: sample ${file} does not exist")
 				Ok(source) =>
-					if region == "" or (source.contains("# region ${region}\n") and source.contains("# endregion ${region}")) {
+					if region == "" or DocSamples.region_of(source, region).is_ok() {
 						$out
 					} else {
 						$out.append("${page}: ${file} has no region ${region}")
@@ -51,8 +67,10 @@ DocSamples := [].{
 	}
 
 	## Check the docs pages and samples: every page's sample references
-	## resolve, every sample app type-checks, and every sample with a
-	## `specs/` directory passes its specs. A failure is a reported problem.
+	## resolve, every sample app type-checks and passes its top-level
+	## `expect`s (the pages show them as the tests of a decision), and every
+	## sample with a `specs/` directory passes its specs. A failure is a
+	## reported problem.
 	check! : SpecSuite.Options => Try(List(Str), _)
 	check! = |o| {
 		var $problems = []
@@ -73,6 +91,12 @@ DocSamples := [].{
 			{ code, .. } = Proc.output!({ program: o.compiler, args: ["check", sample], cwd: "." })?
 			if code != 0 {
 				$problems = $problems.append("docs sample ${sample} does not type-check")
+			} else {
+				# `roc test` of an app runs the expects of every module it imports.
+				tested = Proc.output!({ program: o.compiler, args: ["test", sample], cwd: "." })?
+				if tested.code != 0 {
+					$problems = $problems.append("docs sample ${sample}: roc test fails (an expect of the sample does not hold)")
+				}
 			}
 		}
 		for dir in DocSamples.dirs!()? {
@@ -138,4 +162,21 @@ expect {
 	ok = DocSamples.page_problems("p", "{{ sample(file=\"a.roc\", region=\"r\") }}", read)
 	bad = DocSamples.page_problems("p", "```roc\nx\n```\n{{ sample(file=\"b.roc\") }}{{ sample(file=\"a.roc\", region=\"q\") }}", read)
 	ok == [] and bad.len() == 3
+}
+
+## A region ends at its own end marker, whole: not at the marker of a region
+## whose name it begins, and at the end of the file as at the end of a line.
+expect {
+	source = "a\n# region row\nb\n# region row-state\nc\n# endregion row-state\nd\n# endregion row\ne\n# region last\nf\n# endregion last"
+	outer = DocSamples.region_of(source, "row")
+	inner = DocSamples.region_of(source, "row-state")
+	last = DocSamples.region_of(source, "last")
+	missing = DocSamples.region_of(source, "ro")
+	(outer, inner, last, missing) == (Ok("b\n# region row-state\nc\n# endregion row-state\nd\n"), Ok("c\n"), Ok("f\n"), Err(NoRegion))
+}
+
+## A region whose end marker is only the start of another's is not marked.
+expect {
+	read = |_| Ok("# region row\nx\n# endregion row-state\n")
+	DocSamples.page_problems("p", "{{ sample(file=\"a.roc\", region=\"row\") }}", read) == ["p: a.roc has no region row"]
 }

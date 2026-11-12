@@ -1,79 +1,265 @@
-# The examples the site shows, in index order. Each runs on the web
-# platform from its `main-web.roc`; its specs run natively and in Chrome. An
-# example may list `scripts` its page loads before the app mounts.
+# The examples the site shows. Each runs on the web platform from the entry
+# point `source` names; its specs run natively and in Chrome. An example may
+# list `scripts` its page loads before the app mounts, name its port
+# handlers' module in `ports` (a file beside its app.wasm whose default
+# export site.mjs passes as the `ports` mount option), name its simulated
+# service in `backend` (a module beside its app.wasm whose default export,
+# `createBackend()`, returns a request handler that site.mjs turns into the
+# mount's `fetch`; see examples/conduit/backend.mjs), and list the files it
+# downloads at run time in `data`. scripts/site.roc copies every file named
+# here beside the example's app.wasm; each names a file directly in the
+# example's directory.
+#
+# A script's `src` is a URL (with its `integrity`) or a file of the example's
+# own; `shared` in its place names a file in examples/shared/, the JavaScript
+# several examples load (custom elements such as `plume-chart`), which the
+# site serves once at examples/shared/. `module = true` loads it as a module.
+#
+# The examples index shows the `sections` below in order, and in each the
+# examples whose `section` names it, in the order they appear here: a
+# learning path from plain reactive state to workers. Each example's
+# `features` are its chips, drawn from one vocabulary so a reader can follow
+# a feature across examples: Store, Tables and views, Derived values, Keyed
+# lists, Components, Forms, HTTP, Local storage, Intervals, Routing, Custom
+# elements, Ports, Workers, Cancellation, Files, Preparations. `what_to_try`
+# is one line telling a reader what to do to see the point of the example,
+# where that helps; `featured = true` draws an example as its section's wide
+# card.
+
+[[sections]]
+id = "basics"
+title = "Reactive basics"
+blurb = "A store of shared state, tables and their views, derived values, keyed lists and components. Each change updates exactly what depends on it, and nothing leaves the page."
+
+[[sections]]
+id = "effects"
+title = "Effects and the network"
+blurb = "Requests, timers, storage and the address bar, asked for by the app and answered back into it; each example talks to a simulated service that lives beside it."
+
+[[sections]]
+id = "ports"
+title = "JavaScript through ports"
+blurb = "When an app needs a browser API the platform does not model, its own JavaScript answers typed requests and sends messages, and nothing else."
+
+[[sections]]
+id = "workers"
+title = "Workers and files"
+blurb = "Roc tasks running in Web Workers, and files that never pass through the page: the page stays responsive however long the work takes."
+
+[[examples]]
+slug = "markdown-editor"
+title = "Markdown Editor"
+description = "One markdown document, the single cell of the app's store, feeding four views derived from it: preview, outline, statistics, and reading time."
+source = "examples/markdown-editor/main.roc"
+specs = "examples/markdown-editor/specs"
+public = true
+section = "basics"
+features = ["Store", "Derived values", "Keyed lists", "Components"]
+
+[[examples]]
+slug = "form-builder"
+title = "Form Builder"
+description = "A field designer beside a live preview that validates as you type: the fields are one table that both draw a view of, so tightening a rule in the designer invalidates what is typed in the preview."
+source = "examples/form-builder/main.roc"
+specs = "examples/form-builder/specs"
+public = true
+section = "basics"
+features = ["Store", "Tables and views", "Forms", "Derived values", "Components"]
+
+[[examples]]
+slug = "kanban-board"
+title = "Kanban Board"
+description = "A four-column board over one table of cards, each column a view of it, with cross-column moves, within-column reorder, per-column WIP limits, and counts derived once for each write."
+source = "examples/kanban-board/main.roc"
+specs = "examples/kanban-board/specs"
+public = true
+section = "basics"
+features = ["Store", "Tables and views", "Components", "Derived values"]
+
+[[examples]]
+slug = "spreadsheet-lite"
+title = "Spreadsheet Lite"
+description = "An 8x12 formula grid with cell references, precedence, SUM ranges, error propagation, and cycle detection over fixed-point arithmetic; its rows are a table, and an edit writes only the rows whose cells changed."
+source = "examples/spreadsheet-lite/main.roc"
+specs = "examples/spreadsheet-lite/specs"
+public = true
+section = "basics"
+features = ["Store", "Tables and views", "Derived values", "Keyed lists"]
+
+[[examples]]
+slug = "data-grid"
+title = "Data Grid"
+description = "A 1200-row sortable, filterable, editable grid: the rows are a table and the grid a view that draws one page of it, while a summary aggregates the rows the filter matches."
+source = "examples/data-grid/main.roc"
+specs = "examples/data-grid/specs"
+public = true
+section = "basics"
+features = ["Store", "Tables and views", "Derived values", "Forms"]
 
 [[examples]]
 slug = "field-notes"
 title = "Field Notes"
 description = "Offline-first note capture with an outbox that drains on reconnect, per-note sync status, optimistic writes and rollback."
-source = "examples/field-notes/main-web.roc"
+source = "examples/field-notes/main.roc"
 specs = "examples/field-notes/specs"
 public = true
-
-[[examples]]
-slug = "data-grid"
-title = "Data Grid"
-description = "A 1200-row sortable, filterable, editable grid that renders one page at a time while a summary row aggregates the full dataset."
-source = "examples/data-grid/main-web.roc"
-specs = "examples/data-grid/specs"
-public = true
-
-[[examples]]
-slug = "form-builder"
-title = "Form Builder"
-description = "A field designer beside a live preview that validates as you type, where tightening a rule in the designer invalidates preview input across two levels of signal graph."
-source = "examples/form-builder/main-web.roc"
-specs = "examples/form-builder/specs"
-public = true
+section = "effects"
+features = ["Store", "HTTP", "Local storage", "Keyed lists"]
+what_to_try = "Switch the network to Offline in your browser's developer tools, save and queue a few notes, then go back online and watch the outbox drain; every third sync fails, so you can retry one."
+# Its simulated sync service, the example's own JavaScript.
+backend = "backend.mjs"
 
 [[examples]]
 slug = "status-page"
 title = "Status Page"
-description = "A public status page rolling four independent service checks into one derived status, with visibility-gated polling, a Plume uptime chart and an incident timeline."
-source = "examples/status-page/main-web.roc"
+description = "A public status page rolling four independent service checks into one derived status, with visibility-gated polling, an uptime history and an incident timeline, and a live p95 latency chart streamed through a port with bounded delivery."
+source = "examples/status-page/main.roc"
 specs = "examples/status-page/specs"
 public = true
+section = "effects"
+features = ["Store", "Components", "HTTP", "Intervals", "Ports", "Custom elements"]
+what_to_try = "Wait about fifteen seconds for the API's latency to spike past its objective, then drop the connection for 20 s: the feed replays what it buffered at the page's pace and drops the rest, and the monitor counts the emits the page refused. Switch to another tab and back, and polling and the feed pause and resume."
+# Its simulated checks and incident feed, the example's own JavaScript.
+backend = "backend.mjs"
+# Its simulated latency stream (a subscription) and the command that drops
+# its connection, the example's own JavaScript.
+ports = "ports.mjs"
 
-# The uptime chart: Plotly from its pinned CDN URL (the version Plume 0.5.0
-# pins), then the example's `plume-chart` element. Both are deferred, so they
-# run in this order before the app mounts. A relative `src` is a file in
-# examples/status-page/ that scripts/site.roc copies beside app.wasm.
+# The charts: Plotly from its pinned CDN URL (the version Plume 0.6.0
+# pins), then the shared `plume-chart` element and the example's own
+# `latency-feed-monitor`, which shows the runtime monitor's record of the
+# feed's port. All are deferred, so they run in this order before the app
+# mounts.
 [[examples.scripts]]
 src = "https://cdn.plot.ly/plotly-4.2.0.min.js"
 integrity = "sha384-F4AdcRk3NYRZZUZ7qARRp/wPkwvdta756IMuHDAZcmtM5nuHKykTbDJd7N9h+Qff"
 
 [[examples.scripts]]
-src = "plume-chart.mjs"
+shared = "plume-chart.mjs"
 module = true
 
-[[examples]]
-slug = "kanban-board"
-title = "Kanban Board"
-description = "A four-column board with cross-column moves, within-column reorder, per-column WIP limits, and derived counts over keyed rows."
-source = "examples/kanban-board/main-web.roc"
-specs = "examples/kanban-board/specs"
-public = true
-
-[[examples]]
-slug = "spreadsheet-lite"
-title = "Spreadsheet Lite"
-description = "An 8x12 formula grid with cell references, precedence, SUM ranges, error propagation, and cycle detection over fixed-point arithmetic."
-source = "examples/spreadsheet-lite/main-web.roc"
-specs = "examples/spreadsheet-lite/specs"
-public = true
-
-[[examples]]
-slug = "markdown-editor"
-title = "Markdown Editor"
-description = "One markdown source string feeding four independently derived views: preview, outline, statistics, and reading time."
-source = "examples/markdown-editor/main-web.roc"
-specs = "examples/markdown-editor/specs"
-public = true
+[[examples.scripts]]
+src = "feed-monitor.mjs"
+module = true
 
 [[examples]]
 slug = "conduit"
 title = "Conduit"
 description = "RealWorld (Conduit) demo: hash-routed feeds, sessions, profiles, markdown articles, comments, favorites, follows, and server-confirmed write paths."
-source = "examples/conduit/main-web.roc"
+source = "examples/conduit/main.roc"
 specs = "examples/conduit/specs"
 public = true
+section = "effects"
+featured = true
+features = ["Store", "Components", "HTTP", "Routing", "Local storage", "Keyed lists"]
+what_to_try = "Sign in as anna@conduit.test with the password secret-anna, then favorite an article, follow an author and leave a comment."
+# Its simulated RealWorld API, the example's own JavaScript.
+backend = "backend.mjs"
+
+[[examples]]
+slug = "reading-list"
+title = "Reading List"
+description = "A reading list kept in the browser's IndexedDB through ports: the books survive a reload, a change in one tab shows in every other, and the only JavaScript the app brings is its port handlers."
+source = "examples/reading-list/main.roc"
+specs = "examples/reading-list/specs"
+public = true
+section = "ports"
+features = ["Store", "Tables and views", "Ports"]
+what_to_try = "Open it in two tabs and add a book in one: it appears in the other, and is still there after a reload."
+# The app's port handlers (IndexedDB and a BroadcastChannel), its own
+# JavaScript, which site.mjs passes as the `ports` mount option.
+ports = "ports.mjs"
+
+[[examples]]
+slug = "worker-lab"
+title = "Worker Lab"
+description = "Roc tasks counting primes and drawing the Mandelbrot set in Web Workers: a picture that fills in strip by strip as each worker builds its strip's file, composed by reference into one image to save; a job grid with cancel, retry and supersession, an in-flight bound you can see, a heartbeat that never stalls, and a live pool panel."
+source = "examples/worker-lab/main.roc"
+specs = "examples/worker-lab/specs"
+public = true
+section = "workers"
+features = ["Store", "Tables and views", "Workers", "Files", "Cancellation", "Intervals", "Custom elements"]
+what_to_try = "Choose \"Draw the Mandelbrot set\" with 32 strips of weight 16, press Start, then mount again with 1, 2, 4 and 8 workers from the pool panel and compare the time and the frame gap; with ?workers=inline no strip can be drawn, since only a worker can build a file."
+# Optional for any example: `max_workers` and `workers` set the mount's pool
+# (data-signals-max-workers / data-signals-workers); the page URL's
+# `maxWorkers` and `workers` query parameters override them.
+
+# The shared pool panel, `worker-pool-panel`: drawn from the runtime's
+# monitor once site.mjs announces the runtime (`roc-signals:runtime`).
+[[examples.scripts]]
+shared = "pool-panel.mjs"
+module = true
+
+[[examples]]
+slug = "csv-converter"
+title = "CSV Converter"
+description = "Drop a CSV of any size and convert it to TSV or JSON lines in a worker task, a chunk at a time, without its bytes passing through the page; preview the result, save it, or download a sample into a file first."
+source = "examples/csv-converter/main.roc"
+specs = "examples/csv-converter/specs"
+public = true
+section = "workers"
+features = ["Store", "Workers", "Files"]
+# The sample its "Load the sample" button downloads.
+data = ["sample.csv"]
+
+[[examples]]
+slug = "log-explorer"
+title = "Log Explorer"
+description = "Open a log of any size, or generate one: a worker indexes it once and keeps the index and the file, not its text. A Plume timeline draws entries a minute by level from that index, a search adds its matches to it, a click on it opens the viewer at that time, and the monitor's times show the preparation against each later question."
+source = "examples/log-explorer/main.roc"
+specs = "examples/log-explorer/specs"
+public = true
+section = "workers"
+features = ["Store", "Workers", "Preparations", "Files", "Custom elements"]
+what_to_try = "Generate a sample of a few hundred thousand entries and find the incident on the timeline around midday; search for checkout to see its matches a minute, and click the peak to read the lines from there."
+
+# The timeline: Plotly from its pinned CDN URL (the version Plume 0.6.0
+# pins), the shared `plume-chart` element, then the example's own
+# `log-timings` element, drawn from the runtime's monitor once site.mjs
+# announces the runtime (`roc-signals:runtime`).
+[[examples.scripts]]
+src = "https://cdn.plot.ly/plotly-4.2.0.min.js"
+integrity = "sha384-F4AdcRk3NYRZZUZ7qARRp/wPkwvdta756IMuHDAZcmtM5nuHKykTbDJd7N9h+Qff"
+
+[[examples.scripts]]
+shared = "plume-chart.mjs"
+module = true
+
+[[examples.scripts]]
+src = "timings.mjs"
+module = true
+
+[[examples]]
+slug = "million-row-explorer"
+title = "Million-Row Explorer"
+description = "Two million orders generated inside four workers and never sent to the page: every filter asks each shard for a few kilobytes of counts, the page adds them to a live order feed arriving through a port, and four Plume charts draw the sum, with the query times the runtime measured."
+source = "examples/million-row-explorer/main.roc"
+specs = "examples/million-row-explorer/specs"
+public = true
+section = "workers"
+featured = true
+features = ["Store", "Workers", "Preparations", "Ports", "Custom elements", "Cancellation"]
+what_to_try = "Drag the value sliders and watch the question time the meter shows while the drag goes on; then mount it again with one worker or inline from the pool panel's links, and watch every question generate its shards again."
+# One worker per shard: the database has four shards, and a worker keeps one.
+max_workers = 4
+# The live order feed, the example's own JavaScript.
+ports = "ports.mjs"
+
+# Plotly from its pinned CDN URL (the version Plume 0.6.0 pins), the shared
+# chart and pool elements, and the example's own meter of the runtime's
+# measurements.
+[[examples.scripts]]
+src = "https://cdn.plot.ly/plotly-4.2.0.min.js"
+integrity = "sha384-F4AdcRk3NYRZZUZ7qARRp/wPkwvdta756IMuHDAZcmtM5nuHKykTbDJd7N9h+Qff"
+
+[[examples.scripts]]
+shared = "plume-chart.mjs"
+module = true
+
+[[examples.scripts]]
+shared = "pool-panel.mjs"
+module = true
+
+[[examples.scripts]]
+src = "meter.mjs"
+module = true

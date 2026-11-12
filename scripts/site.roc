@@ -1,13 +1,14 @@
 #!/usr/bin/env roc-stable
 app [main!] {
 	cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.27.0/9yjxqdGTP4xSpSEmDazwTmRsehfRZzA19pwEKkR6fj1g.tar.zst",
-	roc: "nightly-2026-11-07-ad3a5d2",
+	roc: "nightly-2026-11-10-f7d1f19",
 }
 
 import cli.OsStr
 import cli.Path
 import src/ApiDocs
 import src/Checks
+import src/ExampleFiles
 import src/Proc
 import src/SpecSuite
 
@@ -18,9 +19,11 @@ import src/SpecSuite
 ## and builds `www/`,
 ## roc-docs generates the API docs into `dist/api/`, and every example's
 ## `main.roc` is built for wasm32 (`--opt=size`, as it ships) to
-## `dist/examples/<slug>/app.wasm` beside `dist/runtime.mjs`, which the
-## site's `site.mjs` mounts it with. The status page's `plume-chart.mjs` is
-## copied beside its app.
+## `dist/examples/<slug>/app.wasm` beside `dist/runtime.mjs` (and its worker
+## script, `dist/worker.mjs`), which the
+## site's `site.mjs` mounts it with. Every other file an example's page
+## loads, as `www/data/examples.toml` names it (its scripts, port handlers,
+## simulated service and data), is copied beside its app.
 main! = |raw_args| {
 	args = raw_args.map(OsStr.display).drop_if(|a| a == "--")
 	base_url = match args {
@@ -45,9 +48,8 @@ main! = |raw_args| {
 		Path.create_all!(Path.utf8(dir))?
 		Path.copy!(Path.utf8(SpecSuite.wasm_of(o, example)), Path.utf8("${dir}/app.wasm"))?
 	}
-	# Scripts an example's page loads beside its app (www/data/examples.toml).
-	Path.copy!(Path.utf8("${o.root}/examples/status-page/plume-chart.mjs"), Path.utf8("${dist}/examples/status-page/plume-chart.mjs"))?
-	Path.copy!(Path.utf8("${o.root}/${SpecSuite.runtime}"), Path.utf8("${dist}/runtime.mjs"))?
+	ExampleFiles.copy_all!(o.root, dist)?
+	SpecSuite.copy_runtime!(o.root, dist)?
 	Proc.note!("site: built ${dist}")
 	Ok({})
 }

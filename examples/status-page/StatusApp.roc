@@ -1,76 +1,50 @@
-import pf.Engine exposing [Elem, In, Root, Row, RowRef, State, Val]
+import pf.Engine exposing [Elem, Row, RowRef, Val]
 import pf.Html
-import plume.Axis
-import plume.Bar
-import plume.Chart
-import plume.Color
-import plume.Coordinate
-import plume.Layout
-import plume.Title
+import Charts
+import Latency
+import Live
+import Parts
 import Status
+import StatusStore
 
-## Status Page on the Roc-owned engine: ported from the previous engine.
-## Four independent service checks fan in to one rollup.
+## Status Page: four independent service checks fan in to one rollup.
+##
+## What the checks last said is the page's store (`StatusStore`): each
+## service's check, the incident feed and the uptime history are cells any
+## part of the page reads where it draws them, and every change to them is
+## one of the store's transitions.
 ##
 ## Each refresh issues one HTTP check per service plus the incident feed.
-## Refreshes are numbered (`serial`): the mount is refresh 0, and every
-## interval tick, "Refresh now" click and return to visibility starts the
-## next. A result applies only while its refresh is still the latest, so a
-## late answer to a superseded refresh is ignored. The 5 s interval lives
-## inside the visible branch, so hiding the page disposes it; requests
-## already admitted stay in flight.
+## Refreshes are numbered (the store's `serial`): the mount is refresh 0,
+## and every interval tick, "Refresh now" click and return to visibility
+## starts the next. Each check is a `latest` site on the serial, so a new
+## refresh cancels the checks of the one before it and a late answer to a
+## superseded refresh never arrives. The 5 s interval lives inside the
+## visible branch, so hiding the page disposes it; requests already
+## admitted stay in flight.
 ##
 ## The four checks collapse into one `Tally` (a memoised `derive`), and the
 ## banner, the metrics and the counts are read from that one value, so the
 ## page can never show "All systems operational" beside a red component.
 ## The incident feed is a fifth result rendered as a timeline: incidents are
-## keyed rows, each with its keyed updates.
+## keyed rows, each with its keyed updates. Each answer replaces the whole
+## feed, a short list that is a value, so the timeline is an `each`.
 ##
-## The uptime chart is a `plume-chart` custom element (defined by the
-## example's `plume-chart.mjs`) whose `data-figure` attribute carries a Plotly
-## figure built with Plume. To the engine it is an ordinary element with an
-## ordinary attribute.
+## Every refresh also starts a round of the uptime history, which the
+## answers fill in, and the page keeps the last `Status.history_limit`
+## rounds. The history is drawn as a `plume-chart` custom element (defined
+## by `examples/shared/plume-chart.mjs`, which the page loads) whose
+## `data-figure` attribute carries a Plotly figure built with Plume
+## (`Charts.roc`). To the engine it is an ordinary element with an ordinary
+## attribute.
+##
+## Below the services, a live p95 latency chart follows a port
+## subscription (`Latency.roc`, answered by the example's `ports.mjs`). It
+## is a component with a state of its own (`Live`), handed the one cell it
+## reads.
 StatusApp := [].{
-	Board : {
-		serial : U64,
-		refreshes : U64,
-		visible : Bool,
-		api : Status.Check,
-		web : Status.Check,
-		database : Status.Check,
-		notifications : Status.Check,
-		feed : Status.Feed,
-	}
-
-	C1 : In(Root, Board)
-	C2 : In(C1, Status.Tally)
-
-	initial : Bool -> Board
-	initial = |visible| {
-		serial: 0,
-		refreshes: 0,
-		visible,
-		api: Status.pending_check,
-		web: Status.pending_check,
-		database: Status.pending_check,
-		notifications: Status.pending_check,
-		feed: Status.loading_feed,
-	}
-
-	## Start the next refresh.
-	next : Board -> Board
-	next = |b| { ..b, serial: b.serial + 1 }
-
-	## The page's visibility changed; becoming visible refreshes at once.
-	set_visible : Board, Bool -> Board
-	set_visible = |b, visible| if (visible and !b.visible) StatusApp.next({ ..b, visible }) else { ..b, visible }
-
-	totals_of : Board -> Status.Tally
-	totals_of = |b| Status.add_tally(Status.add_tally(Status.tally_of(b.api), Status.tally_of(b.web)), Status.add_tally(Status.tally_of(b.database), Status.tally_of(b.notifications)))
 
 	page_class = "app-shell"
-
-	panel_class = "panel grid gap-4 p-5"
 
 	service_row_class = "card flex flex-wrap items-center justify-between gap-3"
 
@@ -82,19 +56,17 @@ StatusApp := [].{
 	refresh_count_text : U64 -> Str
 	refresh_count_text = |count| "Refreshes requested: ${count.to_str()}"
 
-	## One label-and-number metric. The `test_id` sits on the value, so a spec
-	## reads the number the page shows rather than a sentence built for the
-	## spec.
-	metric : Str, Str, Val(ctx, Str) -> Elem(ctx)
-	metric = |id, label, value| Html.div("stat", [Html.p(label, "stat-label"), Html.p_v(value, [Engine.class("stat-value numeric"), Engine.test_id(id), Html.aria_label(label)])])
-
-	## One service's check: issued for every refresh, applied while that
-	## refresh is the latest.
-	poll : State(ctx, Board), Str, (Board, Try(Str, Engine.HttpError) -> Board) -> Elem(ctx)
-	poll = |board, url, apply| Engine.watch(
-		board.val().map(|b| b.serial),
+	## One check of `url`, issued for every refresh; `answered` decides what
+	## its answer writes. A newer refresh cancels the check still in flight
+	## for an older one (`latest` aborts its fetch), so only the current
+	## refresh's answer is ever applied and a slow service never piles up
+	## requests.
+	poll : Str, (Try(Str, Engine.HttpError) -> List(Engine.Write(_))) -> Elem(ctx)
+		where [ctx.store : () -> Engine.Reach(ctx, _)]
+	poll = |url, answered| Engine.latest(
+		StatusStore.h.serial.val(),
 		|_| [Http({ method: "GET", url, headers: [], body: "", timeout_ms: 0 })],
-		board.on_result(|b, serial, res| if (serial == b.serial) apply(b, Engine.http_text(res)) else b),
+		Engine.react(|_serial, res| answered(Engine.http_text(res))),
 	)
 
 	## One component row: name on the left, uptime and a state badge on the
@@ -116,51 +88,7 @@ StatusApp := [].{
 		],
 	)
 
-	## A service's uptime as a bar height, in percent. A service that has not
-	## reported draws no bar rather than a guessed one.
-	reported_uptime : Status.Check -> F64
-	reported_uptime = |check|
-		match check.health {
-			Unknown => 0
-			CheckFailed(_) => 0
-			_ => check.uptime_bps.to_f64() / 100
-		}
-
-	## A bar's fill, in the tone of the service's status badge.
-	health_color : Status.Health -> Color
-	health_color = |health|
-		match health {
-			Operational => Color.rgb({ red: 5, green: 150, blue: 105 })
-			Degraded => Color.rgb({ red: 217, green: 119, blue: 6 })
-			Outage => Color.rgb({ red: 220, green: 38, blue: 38 })
-			Unknown => Color.rgb({ red: 161, green: 161, blue: 170 })
-			CheckFailed(_) => Color.rgb({ red: 217, green: 119, blue: 6 })
-		}
-
-	## Uptime per service as one bar trace on a 0-100% axis, each bar in its
-	## service's health tone.
-	uptime_chart : Board -> Try(Chart, _)
-	uptime_chart = |b| {
-		var $points = []
-		for { name, check } in [{ name: "API", check: b.api }, { name: "Web app", check: b.web }, { name: "Database", check: b.database }, { name: "Notifications", check: b.notifications }] {
-			$points = $points.append({ x: Coordinate.from_text(name), y: Coordinate.from_number(StatusApp.reported_uptime(check))?, color: StatusApp.health_color(check.health) })
-		}
-		bars = Bar.new({ data: $points, name: "Uptime" })?
-		uptime_axis = Axis.new({ title: Title.new({ text: "Uptime (%)" }), type: Linear, range: Bounds({ min: 0, max: 100 }) })?
-		Ok(Chart.new({ traces: [Bar(bars)], layout: Layout.new({ y_axis: uptime_axis }) }))
-	}
-
-	## The chart's Plotly figure JSON. Uptimes are finite and the bar width is
-	## Plume's default, so construction cannot fail; were it ever to, the
-	## attribute is empty and the element draws nothing.
-	uptime_figure : Board -> Str
-	uptime_figure = |b|
-		match StatusApp.uptime_chart(b) {
-			Ok(chart) => chart.to_json()
-			Err(_) => ""
-		}
-
-	render_update : RowRef(Row(C2, Status.Incident), Status.Update) -> Elem(Row(Row(C2, Status.Incident), Status.Update))
+	render_update : RowRef(ctx, Status.Update) -> Elem(Row(ctx, Status.Update))
 	render_update = |row| {
 		key = row.key()
 		Html.section_v(
@@ -173,7 +101,7 @@ StatusApp := [].{
 		)
 	}
 
-	render_incident : RowRef(C2, Status.Incident) -> Elem(Row(C2, Status.Incident))
+	render_incident : RowRef(ctx, Status.Incident) -> Elem(Row(ctx, Status.Incident))
 	render_incident = |row| {
 		key = row.key()
 		severity = row.field(|i| i.severity)
@@ -194,12 +122,12 @@ StatusApp := [].{
 		)
 	}
 
-	incidents_panel : Val(C2, Status.Feed) -> Elem(C2)
+	incidents_panel : Val(ctx, Status.Feed) -> Elem(ctx)
 	incidents_panel = |feed| {
 		items = feed.map(|f| f.items)
 		Html.section(
 			"Incidents",
-			StatusApp.panel_class,
+			Parts.panel_class,
 			[
 				Html.div(
 					"flex flex-wrap items-baseline justify-between gap-2",
@@ -208,7 +136,7 @@ StatusApp := [].{
 						Html.p_v(feed.map(|f| f.status), [Engine.class("hint"), Engine.test_id("incident-feed-status")]),
 					],
 				),
-				Html.div("stat-grid", [StatusApp.metric("open-incident-count", "Open incidents", items.map(|l| l.len().to_str()))]),
+				Html.div("stat-grid", [Parts.metric("open-incident-count", "Open incidents", items.map(|l| l.len().to_str()))]),
 				Engine.when(
 					items.map(|l| !l.is_empty()),
 					|| Html.section("Incident timeline", "grid gap-3", [Engine.each(items, |i| i.id, StatusApp.render_incident)]),
@@ -218,10 +146,13 @@ StatusApp := [].{
 		)
 	}
 
-	page : State(C2, Board), Val(C2, Status.Tally) -> Elem(C2)
-	page = |board, totals| {
-		bv = board.val()
-		visible = bv.map(|b| b.visible)
+	## The page, under the rollup of the four checks. Everything else it
+	## draws it reads from the store's cells where it draws it.
+	page : Val(ctx, Status.Tally) -> Elem(ctx)
+		where [ctx.store : () -> Engine.Reach(ctx, _)]
+	page = |totals| {
+		cells = StatusStore.h
+		visible = cells.visible.val()
 		Html.div(
 			StatusApp.page_class,
 			[
@@ -244,17 +175,17 @@ StatusApp := [].{
 				),
 				Html.section(
 					"Overall status",
-					StatusApp.panel_class,
+					Parts.panel_class,
 					[
 						Html.h2("Current status", "panel-title"),
 						Html.div_attrs(
 							[Engine.class("stat-grid"), Engine.test_id("status-breakdown")],
 							[
-								StatusApp.metric("count-operational", "Operational", totals.map(|t| t.operational.to_str())),
-								StatusApp.metric("count-degraded", "Degraded", totals.map(|t| t.degraded.to_str())),
-								StatusApp.metric("count-outage", "Outage", totals.map(|t| t.outage.to_str())),
-								StatusApp.metric("count-awaiting", "Awaiting check", totals.map(|t| t.unknown.to_str())),
-								StatusApp.metric("overall-uptime", "Overall uptime", totals.map(Status.overall_uptime_text)),
+								Parts.metric("count-operational", "Operational", totals.map(|t| t.operational.to_str())),
+								Parts.metric("count-degraded", "Degraded", totals.map(|t| t.degraded.to_str())),
+								Parts.metric("count-outage", "Outage", totals.map(|t| t.outage.to_str())),
+								Parts.metric("count-awaiting", "Awaiting check", totals.map(|t| t.unknown.to_str())),
+								Parts.metric("overall-uptime", "Overall uptime", totals.map(Status.overall_uptime_text)),
 							],
 						),
 						Html.div(
@@ -264,46 +195,52 @@ StatusApp := [].{
 									"grid gap-0.5",
 									[
 										Html.p_v(visible.map(StatusApp.visibility_text), [Engine.class("hint"), Engine.test_id("refresh-mode")]),
-										Html.p_v(bv.map(|b| StatusApp.refresh_count_text(b.refreshes)), [Engine.class("hint numeric"), Engine.test_id("refresh-count")]),
+										Html.p_v(cells.requests.val().map(StatusApp.refresh_count_text), [Engine.class("hint numeric"), Engine.test_id("refresh-count")]),
 									],
 								),
-								Html.button("Refresh now", [Engine.class("button-primary")], board.update(|b| StatusApp.next({ ..b, refreshes: b.refreshes + 1 }))),
+								Html.button("Refresh now", [Engine.class("button-primary")], Engine.does(StatusStore.requested)),
 							],
 						),
 					],
 				),
 				Html.section(
 					"Services",
-					StatusApp.panel_class,
+					Parts.panel_class,
 					[
 						Html.h2("Components", "panel-title"),
-						StatusApp.service_card({ id: "api", name: "API", detail: "api.acme.cloud — REST and GraphQL" }, bv.map(|b| b.api)),
-						StatusApp.service_card({ id: "web", name: "Web app", detail: "app.acme.cloud — dashboard and console" }, bv.map(|b| b.web)),
-						StatusApp.service_card({ id: "database", name: "Database", detail: "Primary Postgres cluster, eu-west-1" }, bv.map(|b| b.database)),
-						StatusApp.service_card({ id: "notifications", name: "Notifications", detail: "Email, SMS and outbound webhooks" }, bv.map(|b| b.notifications)),
-						Engine.element("plume-chart", [Engine.class("block"), Engine.attr("role", "img"), Html.aria_label("Uptime by service"), Engine.test_id("uptime-chart"), Engine.attr_v("data-figure", bv.map(StatusApp.uptime_figure))], []),
+						StatusApp.service_card({ id: "api", name: "API", detail: "api.acme.cloud — REST and GraphQL" }, cells.checks.api.val()),
+						StatusApp.service_card({ id: "web", name: "Web app", detail: "app.acme.cloud — dashboard and console" }, cells.checks.web.val()),
+						StatusApp.service_card({ id: "database", name: "Database", detail: "Primary Postgres cluster, eu-west-1" }, cells.checks.database.val()),
+						StatusApp.service_card({ id: "notifications", name: "Notifications", detail: "Email, SMS and outbound webhooks" }, cells.checks.notifications.val()),
+						Html.h3("Uptime over the last ${Status.history_limit.to_str()} checks", "panel-title"),
+						Engine.derive(
+							cells.history.val(),
+							|history| Engine.element("plume-chart", [Engine.class("block"), Engine.attr("role", "img"), Html.aria_label("Uptime history by service"), Engine.test_id("uptime-chart"), Engine.attr_v("data-figure", history.map(Charts.uptime_history))], []),
+						),
 					],
 				),
-				StatusApp.incidents_panel(bv.map(|b| b.feed)),
+				Live.view({ visible: cells.visible }),
+				StatusApp.incidents_panel(cells.feed.val()),
 				# Polling lives inside the visible branch, so hiding the page
 				# disposes the interval. Already-admitted checks finish.
 				Engine.when(
 					visible,
-					|| Html.div("hidden", [Engine.watch(Engine.const({}), |_| [Interval(5000)], board.on_result(|b, _, _| StatusApp.next(b)))]),
+					|| Html.div("hidden", [Engine.watch(Engine.const({}), |_| [Interval(5000)], Engine.react(|_, _| StatusStore.refreshed))]),
 					|| Html.div("hidden", []),
 				),
-				StatusApp.poll(board, "/api/status/api", |b, r| { ..b, api: Status.check_of(r) }),
-				StatusApp.poll(board, "/api/status/web", |b, r| { ..b, web: Status.check_of(r) }),
-				StatusApp.poll(board, "/api/status/database", |b, r| { ..b, database: Status.check_of(r) }),
-				StatusApp.poll(board, "/api/status/notifications", |b, r| { ..b, notifications: Status.check_of(r) }),
-				StatusApp.poll(board, "/api/status/incidents", |b, r| { ..b, feed: Status.feed_of(r) }),
+				StatusApp.poll("/api/status/api", |answer| StatusStore.answered(Api, Status.check_of(answer))),
+				StatusApp.poll("/api/status/web", |answer| StatusStore.answered(Web, Status.check_of(answer))),
+				StatusApp.poll("/api/status/database", |answer| StatusStore.answered(Database, Status.check_of(answer))),
+				StatusApp.poll("/api/status/notifications", |answer| StatusStore.answered(Notifications, Status.check_of(answer))),
+				StatusApp.poll("/api/status/incidents", |answer| [cells.feed.put(Status.feed_of(answer))]),
 				Engine.watch(
 					Engine.const({}),
 					|_| [VisibilityChanges],
-					board.on_result(
-						|b, _, r| match r {
-							Visible(v) => StatusApp.set_visible(b, v)
-							_ => b
+					Engine.react_by(
+						visible,
+						|was, _, res| match res {
+							Visible(now) => StatusStore.shown(was, now)
+							_ => []
 						},
 					),
 				),
@@ -312,14 +249,13 @@ StatusApp := [].{
 		)
 	}
 
-	## The program `main.roc` binds for the browser module and the native spec
-	## runner, and `main-fuzz.roc` drives on the fuzz platform.
-	program : Engine.Program
-	program = Engine.program_boot({ storage_keys: [], max_inflight: 32 }, |boot| StatusApp.main(boot.visible))
+	## The page under one rollup of the checks, which every reader of the
+	## rollup shares.
+	view : {} -> Elem(Engine.StoreRoot(_))
+	view = |{}| Engine.derive(StatusStore.totals({}), StatusApp.page)
 
-	main : Bool -> Elem(Root)
-	main = |visible| Engine.state(
-		StatusApp.initial(visible),
-		|board| Engine.derive(board.val().map(StatusApp.totals_of), |totals| StatusApp.page(board.lift(), totals)),
-	)
+	## The program `main.roc` binds for the browser module and the native spec
+	## runner.
+	program : Engine.Program
+	program = Engine.program_store({ storage_keys: [], max_inflight: 32 }, StatusStore.start, |_boot| StatusApp.view({})).with_ports(Latency.registrations)
 }

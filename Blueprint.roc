@@ -14,7 +14,7 @@
 # tests the platform, the examples and the tests. `roc` is never pinned: CI
 # installs it with roc-lang/setup-roc, and a contributor installs the current
 # nightly as `roc`, so the environments expect it on PATH.
-app [config] { pf: platform "https://github.com/lukewilliamboswell/roc-blueprint/releases/download/0.8.0/FbJymjYdCxx9vqMcau7r4tQfeAbnVGqqJoYrLGqPCqKu.tar.zst" }
+app [config] { pf: platform "https://github.com/lukewilliamboswell/roc-blueprint/releases/download/0.13.0/DBtzmMfrSgt6nCGVAcZYCVPxWbhpqw3MXpm6sdQzMn4v.tar.zst" }
 
 import pf.Config
 import pf.Recipes
@@ -31,22 +31,21 @@ roc_docs_program = Fetch("roc-docs", Recipes.file("https://github.com/lukewillia
 
 # The scripts' tooling compiler (`roc-stable`): every script's `roc` header
 # field names this release, and `check` fails until they match. Nothing else
-# is pinned to it. roc-overlay packages it as
-# `nix#rocpkgs.nightly-2026-11-07-ad3a5d2`; it is fetched directly here so no
-# environment starts Nix.
-roc_stable_program = Fetch("roc-stable", Recipes.roc_nightly("nightly-2026-11-07-ad3a5d2"))
+# is pinned to it. roc-overlay packages each nightly as
+# `nix#rocpkgs.<tag>`; it is fetched directly here so no environment starts
+# Nix.
+roc_stable_program = Fetch("roc-stable", Recipes.roc_nightly("nightly-2026-11-10-f7d1f19"))
 
 config = [
 	Name("roc-signals"),
 	Systems(["x86_64-linux", "aarch64-linux", "aarch64-darwin"]),
-	# The Roc-owned engine: native and browser spec runs, the platform's
-	# fetched native inputs, and the scripts that drive them. curl, tar, zstd and
-	# sha256sum fetch and verify the roc-fuzz release inputs of
-	# the `platform` task.
+	# The engine's environment: native and browser spec runs, the platform's
+	# native inputs, and the scripts that drive them. The pinned Zig builds
+	# matching PIC startup and runtime libraries for the native runner.
 	#
 	# Chrome is the machine's `google-chrome` for now. Chrome for Testing ships
-	# only zip archives, and blueprint 0.8.0 (and 0.9.0) unpacks a Zip download
-	# with `tar -xf`, which GNU tar cannot read; the pinned recipe is ready
+	# only zip archives, and blueprint lists and unpacks a `Zip` download with
+	# `tar`, which GNU tar cannot read; the pinned recipe is ready
 	# below as `chrome` and replaces this Expect once blueprint unpacks zips on
 	# Linux.
 	Environment("engine", [Programs([roc_stable_program, zig_program, node_program]), Expect(["roc", "curl", "tar", "zstd", "sha256sum", "getconf", "google-chrome", "zip"])]),
@@ -64,12 +63,14 @@ config = [
 	Task("check-slow", [Use("engine"), Run(["scripts/check_slow.roc"])]),
 	# One or more apps' specs: `blueprint run spec -- --browser kanban-board`.
 	Task("spec", [Use("engine"), Run(["scripts/spec.roc", "--"])]),
-	# Fetch and build the platform's native inputs (the spec runner's host and
-	# libc, the fuzz platform's roc-fuzz host), for building an app's native
-	# spec runner or fuzz target by hand.
+	# Build the platform's native inputs (the spec runner's host and
+	# libc), for building an app's native spec runner by hand.
 	Task("platform", [Use("engine"), Run(["scripts/build_platform.roc"])]),
 	# Build the js-framework-benchmark app and check it in Chrome.
 	Task("jfb", [Use("engine"), Run(["scripts/jfb.roc"])]),
+	# Measure how worker jobs scale in Chrome, on both candidate shipping
+	# builds of the Worker Lab; prints tables for a pull request.
+	Task("workers-scaling", [Use("engine"), Run(["scripts/workers_scaling.roc"])]),
 	# A fuzz campaign: `blueprint run fuzz -- --time 600 [TARGET...]`.
 	Task("fuzz", [Use("engine"), Run(["scripts/fuzz.roc", "--"])]),
 	# The release assets: `blueprint run release -- --version 0.3.0`.

@@ -1,7 +1,7 @@
 #!/usr/bin/env roc-stable
 app [main!] {
 	cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.27.0/9yjxqdGTP4xSpSEmDazwTmRsehfRZzA19pwEKkR6fj1g.tar.zst",
-	roc: "nightly-2026-11-07-ad3a5d2",
+	roc: "nightly-2026-11-10-f7d1f19",
 }
 
 import cli.OsStr
@@ -13,7 +13,8 @@ import src/SpecSuite
 
 ## The `release` task: build every release asset into `dist-release/` (or
 ## `--output-dir DIR`) for `--version V` (default `0.0.1-dryrun`): the
-## platform bundle, `runtime.mjs`, the examples archive, the API docs archive
+## platform bundle, `runtime.mjs` and `worker.mjs`, the `signals.roc` tool
+## (its package and app), the examples archive, the API docs archive
 ## and the draft release notes. The release workflow publishes exactly these
 ## files; `check` builds them too, as the dry run.
 main! = |raw_args| {

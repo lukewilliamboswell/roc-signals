@@ -8,29 +8,52 @@
   <section class="grid gap-3">
     <p class="text-sm font-medium text-emerald-700">Examples</p>
     <h1 class="text-3xl font-semibold text-zinc-950">Explore the apps</h1>
-    <p class="max-w-3xl leading-7 text-zinc-700">Each example opens on its own focused app page, runs from a prebuilt wasm artifact, and includes source files you can download, modify, and rebuild locally with Roc.</p>
+    <p class="max-w-3xl leading-7 text-zinc-700">Each example opens on its own focused app page, runs from a prebuilt wasm artifact, and includes source files you can download, modify, and rebuild locally with Roc. They are in learning order: start at the top, or jump to the feature you need.</p>
   </section>
-  {% for example in data.examples %}
-  {% if example.public and example.slug == "conduit" %}
-  <a class="group grid gap-5 rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-950 to-emerald-800 p-6 text-white no-underline shadow-sm transition hover:border-emerald-400 hover:no-underline sm:p-8 lg:grid-cols-[1fr_auto] lg:items-end" href="{{ get_url(path='examples/' ~ example.slug ~ '/', trailing_slash=true) }}">
-    <div class="grid gap-3">
-      <span class="w-fit rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-emerald-100">Featured example</span>
-      <span class="text-3xl font-semibold text-white">{{ example.title }} · RealWorld</span>
-      <span class="max-w-3xl leading-7 text-emerald-100">{{ example.description }}</span>
+  {# The sections and their order, each example's section, chips and
+     "what to try" line all come from www/data/examples.toml. #}
+  {% for section in data.sections %}
+  <section class="grid gap-4" aria-labelledby="section-{{ section.id }}">
+    <div class="grid gap-1">
+      <h2 id="section-{{ section.id }}" class="text-xl font-semibold text-zinc-950"><span class="text-emerald-700">{{ loop.index }}.</span> {{ section.title }}</h2>
+      <p class="max-w-3xl text-sm leading-6 text-zinc-600">{{ section.blurb }}</p>
     </div>
-    <span class="font-medium text-white">Open application →</span>
-  </a>
-  {% endif %}
+    <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {% for example in data.examples %}
+      {% if example.public and example.section == section.id %}
+      {% if example.featured | default(value=false) %}
+      <a class="group grid gap-4 rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-950 to-emerald-800 p-6 text-white no-underline shadow-sm transition hover:border-emerald-400 hover:no-underline sm:col-span-2 sm:p-8 lg:col-span-3" href="{{ get_url(path='examples/' ~ example.slug ~ '/', trailing_slash=true) }}">
+        <span class="w-fit rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-emerald-100">Featured example</span>
+        <span class="text-3xl font-semibold text-white">{{ example.title }}</span>
+        <span class="max-w-3xl leading-7 text-emerald-100">{{ example.description }}</span>
+        {% if example.features is defined %}
+        <span class="flex flex-wrap gap-2">
+          {% for feature in example.features %}<span class="rounded-full bg-white/10 px-2.5 py-0.5 text-xs font-medium text-emerald-50">{{ feature }}</span>{% endfor %}
+        </span>
+        {% endif %}
+        {% if example.what_to_try is defined %}
+        <span class="max-w-3xl text-sm leading-6 text-emerald-100"><strong class="font-semibold text-white">Try:</strong> {{ example.what_to_try }}</span>
+        {% endif %}
+        <span class="font-medium text-white">Open application →</span>
+      </a>
+      {% else %}
+      <a class="panel grid content-start gap-2 p-4 no-underline transition hover:border-emerald-500" href="{{ get_url(path='examples/' ~ example.slug ~ '/', trailing_slash=true) }}">
+        <span class="font-semibold text-zinc-950">{{ example.title }}</span>
+        <span class="text-sm leading-6 text-zinc-600">{{ example.description }}</span>
+        {% if example.features is defined %}
+        <span class="flex flex-wrap gap-1.5">
+          {% for feature in example.features %}<span class="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-800">{{ feature }}</span>{% endfor %}
+        </span>
+        {% endif %}
+        {% if example.what_to_try is defined %}
+        <span class="text-sm leading-6 text-zinc-700"><strong class="font-semibold text-zinc-900">Try:</strong> {{ example.what_to_try }}</span>
+        {% endif %}
+      </a>
+      {% endif %}
+      {% endif %}
+      {% endfor %}
+    </div>
+  </section>
   {% endfor %}
-  <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-    {% for example in data.examples %}
-    {% if example.public and example.slug != "conduit" %}
-    <a class="panel grid gap-2 p-4 no-underline transition hover:border-emerald-500" href="{{ get_url(path='examples/' ~ example.slug ~ '/', trailing_slash=true) }}">
-      <span class="font-semibold text-zinc-950">{{ example.title }}</span>
-      <span class="text-sm leading-6 text-zinc-600">{{ example.description }}</span>
-    </a>
-    {% endif %}
-    {% endfor %}
-  </div>
 </main>
 {% endblock content %}

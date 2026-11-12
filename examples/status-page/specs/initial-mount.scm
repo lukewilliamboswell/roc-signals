@@ -12,8 +12,8 @@
     (expect-visible (role region :name "Incidents"))
     (expect-visible (role region :name "Incident timeline"))
     (expect-text (test-id "overall-rollup") "Checking services")
-    ; `status-breakdown` is the metric grid itself; the four counts it used to
-    ; spell out as one sentence are the four metrics inside it.
+    ; `status-breakdown` is the metric grid itself; its four counts are the
+    ; four metrics inside it.
     (expect-visible (test-id "status-breakdown"))
     (expect-text (test-id "count-operational") "0")
     (expect-text (test-id "count-degraded") "0")

@@ -1,0 +1,25 @@
+(test "Outbox — a request in flight when its site is disposed is kept, and its answer still reaches the log"
+  (steps
+    (fill (label "Note") "kept")
+    (click (role button :name "Send"))
+    (expect-pending-effects 1)
+    (mark-metrics)
+    (uncheck (label "Sending"))
+    (expect-metric-delta effects_reparented 1)
+    (expect-metric-delta effects_cancelled 0)
+    (expect-pending-effects 1)
+    (stub-http "kept" :url "/notes/kept" :status 200 :body "done")
+    (run-effect 1)
+    (expect-text (test-id "log") "kept:done")
+    ; While the site is gone a post is not sent, and mounting it again
+    ; sends nothing for the post it missed.
+    (fill (label "Note") "missed")
+    (click (role button :name "Send"))
+    (expect-pending-effects 0)
+    (check (label "Sending"))
+    (expect-pending-effects 0)
+    (fill (label "Note") "after")
+    (click (role button :name "Send"))
+    (expect-pending-effects 1)
+  )
+)

@@ -20,11 +20,14 @@
 
     ; Returning to visible resumes polling
 
-    ; Becoming visible admits a fresh refresh (effects 11–15).
+    ; Becoming visible admits a fresh refresh (effects 11–15), which
+    ; cancels the pre-hide refresh's checks still in flight.
+    (mark-metrics)
     (set-visibility visible)
     (expect-text (test-id "refresh-mode") "Auto refresh every 5s")
     (expect-interval 5000 1)
-    (expect-pending-effects 10)
+    (expect-metric-delta effects_cancelled 5)
+    (expect-pending-effects 5)
     (stub-http "api" :url "/api/status/api" :status 200 :body "operational|99.98")
     (run-effect 11)
     (stub-http "web" :url "/api/status/web" :status 200 :body "operational|99.99")
@@ -37,16 +40,10 @@
     (run-effect 15)
     (expect-text (test-id "overall-rollup") "All systems operational")
     (expect-text (test-id "overall-uptime") "99.95%")
-    ; The pre-hide occurrence survives, but cannot overwrite the newer result.
-    (mark-metrics)
-    (stub-http "late pre-hide api" :url "/api/status/api" :status 200 :body "outage|10.00")
-    (run-effect 6)
-    (expect-metric-delta patches_emitted 0)
-    (expect-text (test-id "service-api-status") "Operational")
-    (expect-text (test-id "service-api-uptime") "99.98%")
-    (expect-pending-effects 4)
+    ; Nothing of the pre-hide refresh is left to overwrite the newer result.
+    (expect-pending-effects 0)
     (tick-interval 5000)
-    (expect-pending-effects 9)
+    (expect-pending-effects 5)
     (stub-http "api" :url "/api/status/api" :status 200 :body "operational|99.98")
     (run-effect 16)
     (stub-http "web" :url "/api/status/web" :status 200 :body "operational|99.99")

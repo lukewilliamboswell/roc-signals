@@ -48,14 +48,14 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-    # Eleven targets at the default 600 s, plus builds, with room for a
+    # Sixteen targets at the default 600 s, plus builds, with room for a
     # longer dispatched campaign.
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@60062e8909dcaf4bf449097132e440e9bc9c9ba6
+      - uses: lukewilliamboswell/roc-automation/actions/setup-blueprint@14a895879f6fea8c2d1a546a2a56c8502decb2a0
         with:
           cache: 'true'
           cache-workload: engine

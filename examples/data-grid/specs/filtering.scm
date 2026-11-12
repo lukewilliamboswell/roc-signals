@@ -1,6 +1,6 @@
 (test "Data grid — filtering"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (mark-metrics)
     (click (role button :name "Sort by score"))
     (mark-metrics)
@@ -23,7 +23,7 @@
     (check (label "Select Node-0002"))
     (uncheck (label "Select Node-0002"))
 
-    ; 6. filtering
+    ; Filtering to ten rows.
     (mark-metrics)
     (fill (label "Filter") "Node-119")
     (expect-value (label "Filter") "Node-119")
@@ -41,10 +41,9 @@
     (expect-metric-delta rows_created 10)
     (expect-metric-delta rows_reused 0)
     (expect-metric-delta rows_removed 10)
+    (expect-metric-delta rows_moved 0)
+    (expect-metric-delta rows_updated 0)
     (expect-metric-delta set_value 11)
-    ; The polished grid renders each row as cells on a shared column
-    ; template rather than one text line, so a re-render touches a few more
-    ; nodes per row. Still O(visible rows), which is what this bounds.
     ; select all, scoped to the current filter
     (mark-metrics)
     (check (label "Select all matching rows"))
@@ -53,9 +52,15 @@
     (expect-checked (label "Select Node-1199") true)
     (expect-text (test-id "summary-selected-here") "10")
     (expect-text (test-id "summary-selected-all") "10")
+    ; Ten rows of the table are written, each by its key, and the view
+    ; wakes those ten where they are. It compares no list of rows, so it
+    ; counts none as reused. The eleven checks are the ten rows' boxes and
+    ; the "select all" box.
     (expect-metric-delta rows_created 0)
-    (expect-metric-delta rows_reused 10)
+    (expect-metric-delta rows_reused 0)
     (expect-metric-delta rows_removed 0)
+    (expect-metric-delta rows_moved 0)
+    (expect-metric-delta rows_updated 10)
     (expect-metric-delta set_checked 11)
     (expect-metric-delta set_value 0)
     ; selection survives a filter change: it is keyed by row id, not by the query

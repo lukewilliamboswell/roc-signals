@@ -1,0 +1,72 @@
+(test "Table — an edit that leaves a row in its place re-evaluates that row, at any size"
+  (steps
+    ; 1,000 rows; the main list is the open rows by quantity, 30 of 500 drawn.
+    (expect-text (test-id "count") "Rows: 1000")
+    (expect-text (test-id "main") "0:0:0 358:2:0 716:4:0 74:6:0 432:8:0 790:10:0 148:12:0 506:14:0 864:16:0 222:18:0 580:20:0 938:22:0 296:24:0 654:26:0 12:28:0 370:30:0 728:32:0 86:34:0 444:36:0 802:38:0 160:40:0 518:42:0 876:44:0 234:46:0 592:48:0 950:50:0 308:52:0 666:54:0 24:56:0 382:58:0 ")
+    (expect-text (test-id "done") "1=Task 1 3=Task 3 5=Task 5 7=Task 7 9=Task 9 ")
+    ; A keystroke in a row's title. Its place in both lists is worked out
+    ; before and after (4 placements) and is the same, so nothing in either
+    ; list's ordered keys is touched; the row re-evaluates its three holes
+    ; that read its value; and the two plain readers of the table (the
+    ; count and row 0's title) are re-evaluated, as on every write.
+    (mark-metrics)
+    (fill (label "Title 12") "Twelve")
+    (expect-value (label "Title 12") "Twelve")
+    (expect-metric-delta derived_calls_into_roc 9)
+    (expect-metric-delta rows_updated 1)
+    (expect-metric-delta patches_emitted 1)
+    (expect-metric-delta set_text 0)
+    (expect-metric-delta set_value 1)
+    (expect-metric-delta set_checked 0)
+    (expect-metric-delta rows_created 0)
+    (expect-metric-delta rows_removed 0)
+    (expect-metric-delta rows_moved 0)
+    ; The same for row 0, whose title the second reader shows.
+    (mark-metrics)
+    (fill (label "Title 0") "Task zero")
+    (expect-text (test-id "row0") "Row 0: Task zero")
+    (expect-metric-delta derived_calls_into_roc 9)
+    (expect-metric-delta rows_updated 1)
+    (expect-metric-delta patches_emitted 2)
+    (expect-metric-delta set_text 1)
+    (expect-metric-delta set_value 1)
+    (expect-metric-delta set_checked 0)
+    (expect-metric-delta rows_created 0)
+    (expect-metric-delta rows_removed 0)
+    (expect-metric-delta rows_moved 0)
+    ; A quantity raised by one: the row's sort value changes, so it is taken
+    ; out of the ordered keys and put back, at the same place. No row is
+    ; created, moved or removed.
+    (mark-metrics)
+    (click (label "Bump 0"))
+    (expect-text (label "Qty 0") "1")
+    (expect-metric-delta derived_calls_into_roc 9)
+    (expect-metric-delta rows_updated 1)
+    (expect-metric-delta patches_emitted 1)
+    (expect-metric-delta set_text 1)
+    (expect-metric-delta set_value 0)
+    (expect-metric-delta set_checked 0)
+    (expect-metric-delta rows_created 0)
+    (expect-metric-delta rows_removed 0)
+    (expect-metric-delta rows_moved 0)
+    (expect-text (test-id "main") "0:1:0 358:2:0 716:4:0 74:6:0 432:8:0 790:10:0 148:12:0 506:14:0 864:16:0 222:18:0 580:20:0 938:22:0 296:24:0 654:26:0 12:28:0 370:30:0 728:32:0 86:34:0 444:36:0 802:38:0 160:40:0 518:42:0 876:44:0 234:46:0 592:48:0 950:50:0 308:52:0 666:54:0 24:56:0 382:58:0 ")
+    ; Five keystrokes cost five times one.
+    (mark-metrics)
+    (fill (label "Title 358") "a")
+    (fill (label "Title 358") "ab")
+    (fill (label "Title 358") "abc")
+    (fill (label "Title 358") "abcd")
+    (fill (label "Title 358") "abcde")
+    (expect-value (label "Title 358") "abcde")
+    (expect-metric-delta derived_calls_into_roc 45)
+    (expect-metric-delta rows_updated 5)
+    (expect-metric-delta patches_emitted 5)
+    (expect-metric-delta set_text 0)
+    (expect-metric-delta set_value 5)
+    (expect-metric-delta set_checked 0)
+    (expect-metric-delta rows_created 0)
+    (expect-metric-delta rows_removed 0)
+    (expect-metric-delta rows_moved 0)
+    (expect-text (test-id "main") "0:1:0 358:2:0 716:4:0 74:6:0 432:8:0 790:10:0 148:12:0 506:14:0 864:16:0 222:18:0 580:20:0 938:22:0 296:24:0 654:26:0 12:28:0 370:30:0 728:32:0 86:34:0 444:36:0 802:38:0 160:40:0 518:42:0 876:44:0 234:46:0 592:48:0 950:50:0 308:52:0 666:54:0 24:56:0 382:58:0 ")
+  )
+)

@@ -1,6 +1,6 @@
 (test "Kanban board — adding cards: empty, duplicate, valid"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (mark-metrics)
     (click (role button :name "Move right: Draft onboarding copy"))
     (mark-metrics)
@@ -37,9 +37,14 @@
     (expect-disabled (role button :name "Add card") false)
     (mark-metrics)
     (click (role button :name "Add card"))
+    ; The new card enters Backlog's view below the card already there, which
+    ; is neither moved nor written; a view compares no list, so it counts
+    ; none as reused.
     (expect-metric-delta rows_created 1)
     (expect-metric-delta rows_removed 0)
-    (expect-metric-delta rows_reused 1)
+    (expect-metric-delta rows_reused 0)
+    (expect-metric-delta rows_moved 0)
+    (expect-metric-delta rows_updated 0)
     (expect-visible (role region :name "Write release notes"))
     (expect-text (test-id "card-position-Write release notes") "2 of 2 in Backlog")
     (expect-text (test-id "card-position-Design login screen") "1 of 2 in Backlog")

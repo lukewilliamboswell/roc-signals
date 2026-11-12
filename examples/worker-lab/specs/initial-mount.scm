@@ -1,0 +1,21 @@
+(test "Worker Lab — Initial mount"
+  (steps
+    (expect-visible (role heading :name "Worker Lab"))
+    (expect-visible (role region :name "Run"))
+    (expect-visible (role region :name "Totals"))
+    (expect-visible (role region :name "Worker pool"))
+    (expect-value (label "Jobs") "8")
+    (expect-value (label "Weight") "4")
+    (expect-value (label "Deadline (ms)") "0")
+    (expect-text (test-id "problem") "")
+    (expect-text (test-id "checksum") "no run")
+    (expect-text (test-id "progress") "0 of 0 done")
+    (expect-text (test-id "heartbeat") "0")
+    ; Nothing runs until Start; the heartbeat's interval is live from mount.
+    (expect-pending-effects 0)
+    (expect-interval 200 1)
+    (tick-interval 200)
+    (tick-interval 200)
+    (expect-text (test-id "heartbeat") "2")
+  )
+)

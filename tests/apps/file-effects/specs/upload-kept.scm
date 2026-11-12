@@ -1,0 +1,20 @@
+(test "File effects — an upload is kept when its site is disposed, and answered to the surviving ancestor"
+  (setup
+    (file "a.txt" "text/plain" "abc"))
+  (steps
+    (choose-files (label "Upload") "a.txt")
+    (mark-metrics)
+    (click (role button :name "Send panel"))
+    (expect-upload 1 "a.txt" 0 3)
+    (click (role button :name "Send panel"))
+    (expect-pending-effects 1)
+    (expect-metric-delta effects_cancelled 0)
+    (expect-metric-delta effects_reparented 1)
+    (stub-http "stored" :url "/upload" :status 200 :body "kept")
+    (run-effect 1)
+    (expect-text (test-id "panel-sent") "sent kept")
+    (expect-pending-effects 0)
+    (click (role button :name "Clear"))
+    (expect-files 0)
+  )
+)

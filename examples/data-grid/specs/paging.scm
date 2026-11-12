@@ -1,6 +1,6 @@
 (test "Data grid — paging"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (mark-metrics)
     (click (role button :name "Sort by score"))
     (mark-metrics)
@@ -10,7 +10,7 @@
     (click (role button :name "Sort by team"))
     (click (role button :name "Sort by id"))
 
-    ; 3. paging
+    ; Paging forward and back.
     (mark-metrics)
     (click (role button :name "Next page"))
     (expect-text (test-id "page-label") "Page 2 of 120")
@@ -22,11 +22,12 @@
     (expect-metric-delta rows_created 10)
     (expect-metric-delta rows_reused 0)
     (expect-metric-delta rows_removed 10)
+    (expect-metric-delta rows_moved 0)
+    (expect-metric-delta rows_updated 0)
     (expect-metric-delta set_value 10)
-    ; The polished grid renders each row as cells on a shared column
-    ; template rather than one text line, so a re-render touches a few more
-    ; nodes per row. Still O(visible rows), which is what this bounds.
-    (expect-metric-delta each_key_hashes 10)
+    ; A page is the window of a view, which finds its rows by the table's
+    ; key: no text key is hashed or compared.
+    (expect-metric-delta each_key_hashes 0)
     (expect-metric-delta-at-most each_key_compares 10)
     (click (role button :name "Previous page"))
     (expect-text (test-id "page-label") "Page 1 of 120")

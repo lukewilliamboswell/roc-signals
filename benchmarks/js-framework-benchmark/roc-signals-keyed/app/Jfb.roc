@@ -1,8 +1,7 @@
 import pf.Engine exposing [Elem, Handler, In, Keyed, Root, Row, RowRef, State]
 
-## The js-framework-benchmark keyed table on the unified engine, written
-## against the D-style API: two states (rows model, selected key), one keyed
-## `each` whose template is described once per site.
+## The js-framework-benchmark keyed table: two states (rows model, selected
+## key), one keyed `each` whose template is described once per site.
 Jfb := [].{
 	Item : { id : U64, label : Str }
 
@@ -97,114 +96,6 @@ Jfb := [].{
 		{ rows: rows.clear(), next_id, seed }
 	}
 
-	## Extra reorder and edit operations used only by the fuzz/bench view.
-	update_one : Model -> Model
-	update_one = |model| {
-		{ rows, next_id, seed } = model
-		updated = match rows.replace(5, { id: 0, label: "" }) {
-			Ok({ list, prev }) => {
-				{ id, label } = prev
-				list.set(5, { id, label: "${label} !!!" }) ?? crash "row"
-			}
-			Err(_) => rows
-		}
-		{ rows: updated, next_id, seed }
-	}
-
-	swap_any : Model -> Model
-	swap_any = |model| {
-		{ rows, next_id, seed } = model
-		n = rows.len()
-		j = if (n > 999) 998 else if (n >= 3) n - 2 else 0
-		swapped = if (j > 1) rows.swap(1, j) ?? rows else rows
-		{ rows: swapped, next_id, seed }
-	}
-
-	reverse : Model -> Model
-	reverse = |model| {
-		{ rows, next_id, seed } = model
-		var $out = List.with_capacity(rows.len())
-		var $i = rows.len()
-		while $i > 0 {
-			$i = $i - 1
-			$out = $out.append(rows.get($i) ?? crash "row")
-		}
-		{ rows: $out, next_id, seed }
-	}
-
-	rotate : Model -> Model
-	rotate = |model| {
-		{ rows, next_id, seed } = model
-		rotated = match rows.first() {
-			Ok(r) => rows.drop_first(1).append(r)
-			Err(_) => rows
-		}
-		{ rows: rotated, next_id, seed }
-	}
-
-	drop_odd : Model -> Model
-	drop_odd = |model| {
-		{ rows, next_id, seed } = model
-		var $out = []
-		var $i = 0.U64
-		for r in rows {
-			if $i % 2 == 0 {
-				$out = $out.append(r)
-			}
-			$i = $i + 1
-		}
-		{ rows: $out, next_id, seed }
-	}
-
-	ins_mid : Model -> Model
-	ins_mid = |model| {
-		{ rows, next_id, seed } = model
-		mid = rows.len() // 2
-		g1 = Jfb.gen_label(seed)
-		g2 = Jfb.gen_label(g1.seed)
-		fresh = [{ id: next_id, label: g1.label }, { id: next_id + 1, label: g2.label }]
-		merged = rows.sublist({ start: 0, len: mid }).concat(fresh).concat(rows.sublist({ start: mid, len: rows.len() - mid }))
-		{ rows: merged, next_id: next_id + 2, seed: g2.seed }
-	}
-
-	## Fisher-Yates shuffle driven by the model seed; also relabels one row so
-	## moves and item changes mix.
-	shuffle : Model -> Model
-	shuffle = |model| {
-		{ rows, next_id, seed } = model
-		var $r = rows
-		var $s = seed
-		var $i = $r.len()
-		while $i > 1 {
-			$s = Jfb.next_seed($s)
-			j = $s.shr_zf_wrap(33) % $i
-			$r = $r.swap($i - 1, j) ?? $r
-			$i = $i - 1
-		}
-		relabelled = match $r.replace(0, { id: 0, label: "" }) {
-			Ok({ list, prev }) => {
-				{ id, label } = prev
-				list.set(0, { id, label: "${label}?" }) ?? crash "row"
-			}
-			Err(_) => $r
-		}
-		{ rows: relabelled, next_id, seed: $s }
-	}
-
-	## Rewrites row 0 with an equal item: must be pruned at the row.
-	same_label : Model -> Model
-	same_label = |model| {
-		{ rows, next_id, seed } = model
-		same = match rows.replace(0, { id: 0, label: "" }) {
-			Ok({ list, prev }) => {
-				{ id, label } = prev
-				list.set(0, { id, label: Str.concat("", label) }) ?? crash "row"
-			}
-			Err(_) => rows
-		}
-		{ rows: same, next_id, seed }
-	}
-
 	button : Str, Str, Handler(Ctx) -> Elem(Ctx)
 	button = |id, label, h| Engine.element(
 		"div",
@@ -232,12 +123,11 @@ Jfb := [].{
 	}
 
 	view : {} -> Elem(Root)
-	view = |_| Jfb.view_with(1000, 10000, False)
+	view = |_| Jfb.view_with(1000, 10000)
 
-	## `small` rows for run/add, `lots` for runlots; `extra` adds the fuzz-only
-	## operation buttons.
-	view_with : U64, U64, Bool -> Elem(Root)
-	view_with = |small, lots, extra| Engine.state(
+	## `small` rows for run/add, `lots` for runlots.
+	view_with : U64, U64 -> Elem(Root)
+	view_with = |small, lots| Engine.state(
 		Jfb.initial,
 		|outer| Engine.state(
 			"",
@@ -257,7 +147,7 @@ Jfb := [].{
 									"div",
 									[Engine.class("row")],
 									[
-										Engine.element("div", [Engine.class("col-md-6")], [Engine.element("h1", [], [Engine.text("Roc D-each keyed")])]),
+										Engine.element("div", [Engine.class("col-md-6")], [Engine.element("h1", [], [Engine.text("Roc Signals keyed")])]),
 										Engine.element(
 											"div",
 											[Engine.class("col-md-6")],
@@ -271,20 +161,8 @@ Jfb := [].{
 														Jfb.button("add", "Append 1,000 rows", model.update(|v| Jfb.add_rows(v, small))),
 														Jfb.button("update", "Update every 10th row", model.update(Jfb.update_every_10)),
 														Jfb.button("clear", "Clear", model.update(Jfb.clear)),
-														Jfb.button("swaprows", "Swap Rows", model.update(if (extra) Jfb.swap_any else Jfb.swap_rows)),
-													].concat(
-														if (extra)
-															[
-																Jfb.button("updone", "u1", model.update(Jfb.update_one)),
-																Jfb.button("reverse", "rev", model.update(Jfb.reverse)),
-																Jfb.button("rotate", "rot", model.update(Jfb.rotate)),
-																Jfb.button("dropodd", "odd", model.update(Jfb.drop_odd)),
-																Jfb.button("insmid", "mid", model.update(Jfb.ins_mid)),
-																Jfb.button("shuffle", "shuf", model.update(Jfb.shuffle)),
-																Jfb.button("same", "same", model.update(Jfb.same_label)),
-															]
-														else [],
-													),
+														Jfb.button("swaprows", "Swap Rows", model.update(Jfb.swap_rows)),
+													],
 												),
 											],
 										),

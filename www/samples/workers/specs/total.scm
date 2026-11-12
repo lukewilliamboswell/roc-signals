@@ -1,0 +1,18 @@
+(test "Words — the total's own error reaches the view as the task's failure"
+  (steps
+    (run-effect 1)
+    (expect-text (test-id "total") "Adding…")
+    (run-effect 2)
+    (expect-text (test-id "total") "Total 0")
+    (fill (label "Numbers") "1 2 3")
+    (run-effect 3)
+    (expect-text (test-id "total") "Total 6")
+    (fill (label "Numbers") "1 two 3")
+    (run-effect 4)
+    (expect-text (test-id "total") "\"two\" is not a number")
+    (fill (label "Numbers") "1 2 3 4")
+    (run-effect 5)
+    (expect-text (test-id "total") "Total 10")
+    (expect-pending-effects 0)
+  )
+)

@@ -1,10 +1,10 @@
-import Engine exposing [Attr, Elem, Handler, Val]
+import Engine exposing [Attr, Elem, FilesHandler, Handler, Val]
 
 ## Typed helpers for common HTML elements, attributes and events, built on
 ## `Engine.element`, `Engine.attr` and `Engine.on`.
 ##
 ## Every helper is generic in the context `ctx`, so it works at the top level,
-## inside a `state` or `derive` body, in an `each` row or in a component.
+## inside a `state` or `derive` body and in a row of an `each` or an `each_view`.
 ## Controls take their accessible name as `aria-label`, which spec `label` and
 ## `role` locators match. Values (`Val`) keep the DOM in step with state; plain
 ## `Str` arguments are static.
@@ -15,6 +15,8 @@ Html := [].{
 	div = |cls, kids| Engine.element("div", [Engine.class(cls)], kids)
 
 	## `section(name, class, children)`: a region whose accessible name is `name`.
+	## The name is set as `aria-label` and is not shown: for a visible title, put
+	## a heading among the children.
 	section : Str, Str, List(Elem(ctx)) -> Elem(ctx)
 	section = |name, cls, kids| Engine.element("section", [Engine.attr("aria-label", name), Engine.class(cls)], kids)
 
@@ -68,6 +70,50 @@ Html := [].{
 	## differing `value`; it is applied on blur.
 	text_input : Val(ctx, Str), Str, Val(ctx, Str), List(Attr(ctx)), Handler(ctx) -> Elem(ctx)
 	text_input = |name, kind, v, attrs, h| Engine.element("input", [Engine.attr_v("aria-label", name), Engine.attr("type", kind), Engine.attr_v("value", v), Engine.on("input", h)].concat(attrs), [])
+
+	## What a file input lets the user choose.
+	##
+	## - `selection`: one file at a time (`Single`, the default) or several
+	##   (`Multiple`).
+	## - `accept`: any file (`Any`, the default), or the browser's list of
+	##   types (`Types(".docx,application/pdf")`), which its chooser offers
+	##   first. It is a hint to the chooser, not a check: a dropped or pasted
+	##   file, or one the user picks with "all files", can be of any type.
+	FileInputProps := {
+		selection : [Single, Multiple] ?? Single,
+		accept : [Any, Types(Str)] ?? Any,
+	}
+
+	## `file_input(name, props, handler)`: a file picker whose accessible name
+	## is `name`, as `file_input(Engine.const("Document"), {}, handler)` or
+	## `file_input(name, { selection: Multiple }, handler)`. The browser opens
+	## its own chooser when the user activates it; `handler`
+	## (`State.on_files`) receives the chosen files as handles.
+	file_input : Val(ctx, Str), FileInputProps, FilesHandler(ctx) -> Elem(ctx)
+	file_input = |name, FileInputProps.({ selection, accept }), h| {
+		attrs = [Engine.attr_v("aria-label", name), Engine.attr("type", "file"), Engine.on_files("change", h)]
+		with_accept = match accept {
+			Any => attrs
+			Types(types) => attrs.append(Engine.attr("accept", types))
+		}
+		with_selection = match selection {
+			Single => with_accept
+			Multiple => with_accept.append(Engine.attr("multiple", "true"))
+		}
+		Engine.element("input", with_selection, [])
+	}
+
+	## Make the element a drop target for files: `handler` (`State.on_files`)
+	## receives the files dropped on it or a descendant, and the browser does
+	## not open them.
+	on_drop_files : FilesHandler(ctx) -> Attr(ctx)
+	on_drop_files = |h| Engine.on_files("drop", h)
+
+	## `handler` (`State.on_files`) receives the files pasted into the element
+	## or a descendant (an image copied from another app, say). A paste that
+	## carries no files reaches no handler.
+	on_paste_files : FilesHandler(ctx) -> Attr(ctx)
+	on_paste_files = |h| Engine.on_files("paste", h)
 
 	## `checkbox(name, checked, attrs, handler)`: a checkbox that follows
 	## `checked`. `handler` receives `"true"` or `"false"` on `change`.

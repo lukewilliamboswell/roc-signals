@@ -1,6 +1,6 @@
 (test "Kanban board — WIP limit crosses and un crosses"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (mark-metrics)
     (click (role button :name "Move right: Draft onboarding copy"))
     (mark-metrics)

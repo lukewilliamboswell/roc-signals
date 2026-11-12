@@ -1,10 +1,19 @@
-## Table-of-contents derivation. `headings` reduces parsed markdown blocks to
-## the heading spine; `rows` turns that spine into display rows. Splitting the
-## two is what lets the outline stay quiet while the preview and the statistics
-## keep updating: a paragraph edit changes the blocks but produces an identical
-## heading list, so the equality cutoff stops propagation before `rows` runs.
+import pf.Engine exposing [Elem, RowRef, Val]
+import pf.Html
 import Markdown
 
+## The table of contents: the heading spine of a document, its display rows,
+## and the panel that draws them.
+##
+## `headings` reduces parsed markdown blocks to the heading spine and `rows`
+## turns that spine into display rows. Splitting the two is what lets the
+## outline stay quiet while the preview and the statistics keep updating: a
+## paragraph edit changes the blocks but produces an identical heading list,
+## so whoever derives the spine stops there and `rows` never runs.
+##
+## The panel is handed the spine as a value. Whether its rows are numbered
+## is its own state: nothing else on the page reads it, so it lives in the
+## panel and needs no cell in the app's store.
 Outline := {}.{
 	Heading : { level : U64, text : Str, slug : Str }
 
@@ -124,7 +133,55 @@ Outline := {}.{
 			5 => "pl-12"
 			_ => "pl-16"
 		}
+
+	## The panel over a document's heading spine. A row is keyed by its
+	## heading's slug, so numbering relabels rows in place and a heading
+	## that moves or changes level keeps its row.
+	view : Val(ctx, List(Outline.Heading)) -> Elem(ctx)
+	view = |spine| Engine.state(
+		True,
+		|numbered| {
+			found = spine.lift()
+			Engine.element(
+				"section",
+				[Engine.attr("aria-label", "Table of contents"), Engine.attr("data-panel", "outline"), Engine.class("panel")],
+				[
+					Html.div(
+						"panel-head",
+						[
+							Html.h2("Table of contents", "panel-title"),
+							Html.div("check-row", [Html.checkbox(Engine.const("Number the outline"), numbered.val(), [Engine.class("checkbox")], numbered.set_value(|_, checked| checked == "true")), Html.p("Number the outline", "")]),
+						],
+					),
+					Html.div(
+						"panel-body",
+						[
+							Engine.when(
+								found.map(|l| l.is_empty()),
+								|| Html.p("No headings yet: add a line that starts with a hash.", "empty-state"),
+								|| Engine.element("ul", [Engine.attr("data-panel", "outline-body"), Engine.class("grid gap-0.5")], [Engine.each(found.map2(numbered.val(), Outline.rows), |r| r.key, row_view)]),
+							),
+						],
+					),
+				],
+			)
+		},
+	)
 }
+
+## One row of the panel: a link to its heading, indented by level.
+row_view : RowRef(ctx, Outline.Row) -> Elem(Engine.Row(ctx, Outline.Row))
+row_view = |row| Engine.element(
+	"li",
+	[Engine.class_v(row.field(|r| r.indent))],
+	[
+		Engine.element(
+			"a",
+			[Engine.test_id_v(row.key()), Engine.attr_v("href", row.field(|r| r.href)), Engine.attr_v("data-level", row.field(|r| r.level_text)), Engine.class("block rounded px-2 py-1 text-sm text-zinc-700 transition hover:bg-zinc-100 hover:text-emerald-700")],
+			[Engine.text_v(row.field(|r| r.label))],
+		),
+	],
+)
 
 ## Slugs are lowercased and spaces become single dashes.
 expect Outline.slugify("Roc Signals Field Guide") == "roc-signals-field-guide"

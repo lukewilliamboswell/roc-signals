@@ -1,6 +1,6 @@
 // services-browser.mjs --wasm services.wasm --runtime runtime.mjs --chrome PATH
-// -- runtime and host contract cases for the protocol additions of versions 2
-// and 3 with tests/apps/services in headless Chrome:
+// -- runtime and host contract cases with tests/apps/services in headless
+// Chrome:
 // - the protocol version: the host reports it and the runtime refuses any
 //   other version before running anything;
 // - malformed boot bytes and a non-UTF-8 effect result poison the instance
@@ -20,11 +20,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { launch } from "./cdp.mjs";
-import { parseArgs } from "./args.mjs";
+import { parseArgs, runtimeFiles } from "./args.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const opts = parseArgs(process.argv.slice(2));
-const files = { "index.html": path.join(here, "index.html"), "runtime.mjs": opts.runtime, "app.wasm": opts.wasm };
+const files = { "index.html": path.join(here, "index.html"), ...runtimeFiles(opts.runtime), "app.wasm": opts.wasm };
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, "http://x");
   const f = u.pathname.endsWith("/") ? files["index.html"] : files[path.basename(u.pathname)];
@@ -61,9 +61,11 @@ async function open(prelude = "") {
 {
   const { page, ctx } = await open();
   const raw = await page.evaluate(async () => {
-    const { RocEngineRuntime, PROTOCOL_VERSION } = await import("./runtime.mjs");
-    const bytes = await (await fetch("app.wasm")).arrayBuffer();
-    const fresh = async () => (await WebAssembly.instantiate(bytes, { env: {} })).instance.exports;
+    const { RocEngineRuntime, PROTOCOL_VERSION, pageImports } = await import("./runtime.mjs");
+    const module = await WebAssembly.compile(await (await fetch("app.wasm")).arrayBuffer());
+    // Every module imports the worker effects, which the page's instance
+    // answers with throwing stubs.
+    const fresh = async () => (await WebAssembly.instantiate(module, pageImports(module))).exports;
     const text = (x) => new TextDecoder().decode(new Uint8Array(x.memory.buffer, x.err_ptr(), x.err_len()));
     const out = {};
     // The version.
@@ -199,7 +201,7 @@ async function open(prelude = "") {
     const viaMetric = rt.x.metric(16 + 12);
     return [after.length, String(after[12] - before[12]), String(viaMetric) === String(after[12]), String(after[1])];
   });
-  check("work record: one SETTEXT for one click; metric(16 + k) reads counter k", work, [32, "1", true, "3"]);
+  check("work record: 41 counters (work, the effect counters, port commands sent); one SETTEXT for one click; metric(16 + k) reads counter k", work, [41, "1", true, "3"]);
   await ctx.close();
 }
 

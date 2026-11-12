@@ -1,0 +1,35 @@
+(test "Reading List — moving and removing books change the page at once and send commands to the store"
+  (steps
+    (answer-port 1 reply "[{\"id\":\"b1\",\"title\":\"Dune\",\"author\":\"Frank Herbert\",\"shelf\":\"WantToRead\",\"added_ms\":\"10\"},{\"id\":\"b2\",\"title\":\"Piranesi\",\"author\":\"Susanna Clarke\",\"shelf\":\"Reading\",\"added_ms\":\"20\"}]")
+    (expect-text (test-id "status") "2 books")
+    (click (role button :name "Start reading Dune"))
+    (expect-visible (role button :name "Finish Dune"))
+    (expect-text (label "Reading") "Reading (2)")
+    (expect-port-sends "roc-signals.example/reading-list/put" 1)
+    (expect-port-sent "roc-signals.example/reading-list/put" 1 "{\"added_ms\":\"10\",\"author\":\"Frank Herbert\",\"id\":\"b1\",\"shelf\":\"Reading\",\"title\":\"Dune\"}")
+    (click (role button :name "Finish Piranesi"))
+    (click (role button :name "Finish Dune"))
+    (expect-port-sent "roc-signals.example/reading-list/put" 3 "{\"added_ms\":\"10\",\"author\":\"Frank Herbert\",\"id\":\"b1\",\"shelf\":\"Finished\",\"title\":\"Dune\"}")
+    ; A shelf shows its own books.
+    (click (role button :name "Finished"))
+    (expect-attr (role button :name "Finished") aria-pressed "true")
+    (expect-text (test-id "status") "2 books")
+    (click (role button :name "Want to read"))
+    (expect-text (test-id "status") "No books on this shelf.")
+    (click (role button :name "All"))
+    ; Read again puts the book back on the reading shelf: a write of its own.
+    (click (role button :name "Read Dune again"))
+    (expect-port-sends "roc-signals.example/reading-list/put" 4)
+    (click (role button :name "Finish Dune"))
+    (expect-port-sends "roc-signals.example/reading-list/put" 5)
+    ; One click removes every finished book, a command for each.
+    (click (role button :name "Remove finished books"))
+    (expect-text (test-id "status") "No books yet. Add the first one above.")
+    (expect-disabled (role button :name "Remove finished books") true)
+    (expect-port-sends "roc-signals.example/reading-list/remove" 2)
+    (expect-port-sent "roc-signals.example/reading-list/remove" 1 "{\"id\":\"b2\"}")
+    (expect-port-sent "roc-signals.example/reading-list/remove" 2 "{\"id\":\"b1\"}")
+    ; Commands are not awaited: nothing is pending.
+    (expect-pending-effects 0)
+  )
+)

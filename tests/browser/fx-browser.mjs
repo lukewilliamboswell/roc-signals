@@ -2,25 +2,40 @@
 // test of the effect channel with tests/apps/effects in headless Chrome: manual mode (pending list, answer, cancel
 // on dispose, injected stale result dropped, saturation refusal, popstate
 // subscription, follow-up self-dispose), automatic mode (real fetch
-// against this server, including an aborted in-flight request), and an
-// embedder's `fetch` option, which may answer synchronously.
+// against this server, including an aborted in-flight request), a `latest`
+// site superseding a real fetch (aborted, its timeout timer released) and
+// an interval, the follow-up budget (a fan-out of 66 refusals from one
+// turn completes; a refusal retried while the table is full is a chain that
+// poisons with class `contract`), and an embedder's `fetch` option, which
+// may answer synchronously.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { launch } from "./cdp.mjs";
-import { parseArgs } from "./args.mjs";
+import { parseArgs, runtimeFiles } from "./args.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const opts = parseArgs(process.argv.slice(2));
 const files = {
   "index.html": path.join(here, "index.html"),
-  "runtime.mjs": opts.runtime,
+  ...runtimeFiles(opts.runtime),
   "app.wasm": opts.wasm,
 };
 let slowRelease = null;
+// /l/* requests (the `latest` site's) are never answered: the test watches
+// whether the browser aborts them.
+const held = new Map();
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, "http://x");
+  if (u.pathname.startsWith("/l/")) {
+    const rec = { aborted: false };
+    held.set(u.pathname, rec);
+    res.on("close", () => {
+      if (!res.writableFinished) rec.aborted = true;
+    });
+    return;
+  }
   const m = /^\/s(\d)\/(\d+)$/.exec(u.pathname);
   if (m) {
     const send = () => {
@@ -52,11 +67,19 @@ const check = (name, got, want) => {
   console.log(`${ok ? "ok  " : "FAIL"} ${name}${ok ? "" : `: got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`}`);
 };
 
+const PORTS = `window.__mountOptions = { ports: {
+  "test.roc-signals/fx-call": { call: (p) => "answer " + p },
+  "test.roc-signals/fx-feed": { subscribe: () => () => {} },
+} };`;
+
 async function open(manual) {
   const ctx = await browser.createBrowserContext();
   const page = await ctx.newPage();
   page.on("pageerror", (e) => console.log("pageerror", String(e)));
   if (manual) await page.evaluateOnNewDocument("window.__manualFx = true");
+  // The app declares two ports (its P site); outside manual mode the page
+  // must supply their handlers.
+  else await page.evaluateOnNewDocument(PORTS);
   await page.goto(`${base}/app/`);
   await page.waitForFunction("window.__ready || window.__error");
   return { page, ctx };
@@ -133,6 +156,54 @@ const stats = (page) => page.evaluate(() => ({ live: [...window.__rt.live.keys()
   await ctx.close();
 }
 {
+  // Follow-ups are bounded by chain depth, not by how many one turn queues.
+  const { page, ctx } = await open(true);
+  await click(page, "flood");
+  const flood = (await log(page)).split("|");
+  check(
+    "flood: 70 timers at once, 4 admitted and 66 refused in one call, without a fault",
+    [flood.filter((x) => x === "6:1:refused").length, (await pending(page)).length, await page.evaluate(() => window.__rt.poisoned)],
+    [66, 4, null],
+  );
+  await click(page, "loop");
+  check(
+    "loop: a refusal retried while the table is full poisons as a deep chain",
+    await page.evaluate(() => {
+      const p = window.__rt.poisoned;
+      return p && [p.class, p.message.startsWith("contract: an effect follow-up chain reached depth 65 at site /")];
+    }),
+    ["contract", true],
+  );
+  await ctx.close();
+}
+{
+  // Supersession through the real runtime: the `latest` site's first query
+  // fetches with a 5 s timeout; the next query cancels it before issuing.
+  const { page, ctx } = await open(false);
+  const until = async (f, ms = 3000) => {
+    for (let t = 0; t < ms && !f(); t += 20) await new Promise((r) => setTimeout(r, 20));
+    return f();
+  };
+  await click(page, "query");
+  check("latest: the first query's fetch reaches the server", await until(() => held.has("/l/1")), true);
+  check("latest: in flight with its timeout timer armed", [(await stats(page)).live.includes(5), await page.evaluate(() => window.__rt.timers)], [true, 1]);
+  await click(page, "query");
+  check("latest: the superseded fetch is really aborted", await until(() => held.get("/l/1").aborted), true);
+  check("latest: its id leaves the runtime and its timeout timer is released", [(await stats(page)).live.includes(5), await page.evaluate(() => window.__rt.timers)], [false, 0]);
+  // Intervals tick only through tick(id) on this page (manualIntervals).
+  check("latest: the second query's interval ticks", [await page.evaluate(() => window.__rt.tick(6)), (await log(page)).endsWith("7:2:other")], [true, true]);
+  await click(page, "query");
+  // The third query's fetch has two follow-ups: the first bumps the query,
+  // which supersedes the fetch and drops the second follow-up.
+  const l3 = (await log(page)).split("|");
+  check("latest: the superseded interval stops; one follow-up ran", [(await stats(page)).live.includes(6), (await stats(page)).live.includes(7), l3.filter((x) => x === "7:3:self").length, await page.evaluate(() => window.__rt.timers)], [false, false, 1, 0]);
+  check("latest: no tick after supersession", await page.evaluate(() => window.__rt.tick(6)), false);
+  const before = await log(page);
+  await page.evaluate(() => window.__rt.injectResult(5, 200, "late"));
+  check("latest: a late result for the cancelled id is dropped", await log(page), before);
+  await ctx.close();
+}
+{
   const { page, ctx } = await open(false);
   const got = await page.evaluate(async () => {
     const { mountRocEngineApp } = await import("./runtime.mjs");
@@ -142,6 +213,7 @@ const stats = (page) => page.evaluate(() => ({ live: [...window.__rt.live.keys()
     const rt = await mountRocEngineApp({
       wasmUrl: "app.wasm",
       root,
+      ports: window.__mountOptions.ports,
       fetch: (url, init) => {
         seen.push(`${init.method} ${url}`);
         return new Response("scripted", { status: 200 });

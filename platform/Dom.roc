@@ -1,5 +1,5 @@
-## An independent decoder of the unified engine's command stream into a small
-## DOM model, used as the test and fuzz oracle. It shares no code with the
+## An independent decoder of the engine's command stream into a small DOM
+## model, used as the test and fuzz oracle. It shares no code with the
 ## engine. Nodes live in one list; engine ids map to node indices (+1).
 Dom := [].{
 
@@ -7,7 +7,7 @@ Dom := [].{
 	## It is spelled here independently of the engine; the spec runner
 	## refuses a program that speaks another.
 	protocol_version : U32
-	protocol_version = 3
+	protocol_version = 4
 
 	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List((Str, U32)), ht : List(U64) }
 
@@ -37,6 +37,17 @@ Dom := [].{
 			crash "short string"
 		}
 		(Str.from_utf8(bytes) ?? crash "bad utf8", at + 4 + n)
+	}
+
+	## A `u32` length and that many raw bytes (not necessarily UTF-8).
+	raw : List(U8), U64 -> (List(U8), U64)
+	raw = |b, at| {
+		n = Dom.u32(b, at).to_u64()
+		bytes = b.sublist({ start: at + 4, len: n })
+		if bytes.len() != n {
+			crash "short byte string"
+		}
+		(bytes, at + 4 + n)
 	}
 
 	byte : List(U8), U64 -> U8
@@ -306,14 +317,14 @@ Dom := [].{
 	apply = |dom0, b| Dom.apply_ops(dom0, b).0
 
 	op_name : U8 -> Str
-	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORE", "TITLE", "FOCUS"].get(op.to_u64()) ?? "?"
+	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORE", "TITLE", "FOCUS", "PORT", "SAVE"].get(op.to_u64()) ?? "?"
 
 	## Opcode histogram of a batch, e.g. "SETTEXT=1 ATTR=1".
 	describe : List(U8) -> Str
 	describe = |ops| {
 		var $parts = []
 		var $op = 1.U8
-		while $op <= 18 {
+		while $op <= 20 {
 			n = ops.count_if(|o| o == $op)
 			if n > 0 {
 				$parts = $parts.append("${Dom.op_name($op)}=${n.to_str()}")
@@ -332,6 +343,12 @@ Dom := [].{
 		Pop(U32),
 		OnlineSub(U32),
 		VisibilitySub(U32),
+
+		## A worker job (`FX` kind 8): its id, then its task's name, input
+		## bytes, the files it names (each a handle's token and a range of its
+		## file), deadline (ms, 0 none), cancel policy (1 stop, 2 finish) and,
+		## for a preparation's task, the preparation and where its input lies.
+		Work(U32, WorkJob),
 		Cancel(U32),
 		Push(Str),
 		Replace(Str),
@@ -339,7 +356,70 @@ Dom := [].{
 		Remove(Str),
 		Title(Str),
 		Focus(U8, U32),
+
+		## A read of a file into the page: id, mode (1 bytes, 2 text) and the
+		## file's handle token and range.
+		FileRead(U32, U8, { token : U64, start : U64, len : U64 }, U64),
+
+		## An HTTP request whose body is a file's range: id, method, URL,
+		## headers, the file and the timeout (ms, 0 none).
+		Upload(U32, Str, Str, List((Str, Str)), { token : U64, start : U64, len : U64 }, U32),
+
+		## A digest of a file's range: id, algorithm (1 SHA-256) and the file.
+		Digest(U32, U8, { token : U64, start : U64, len : U64 }),
+
+		## A URL that shows a file's range: id and the file.
+		FileUrl(U32, { token : U64, start : U64, len : U64 }),
+
+		## A port command (`PORT`): the port and its message.
+		PortSend(Str, PortMsg),
+
+		## A port call (`FX` kind 9): id, port, message and timeout (ms, 0
+		## none).
+		PortCall(U32, Str, PortMsg, U32),
+
+		## A port subscription (`FX` kind 10): id, port and message.
+		PortListen(U32, Str, PortMsg),
+
+		## An HTTP request whose body becomes a file (`FX` kind 15): id,
+		## method, URL, headers and timeout (ms, 0 none).
+		Fetch(U32, Str, Str, List((Str, Str)), U32),
+
+		## A file's range saved as a download (`SAVE`), and the name it is
+		## saved under.
+		Save({ token : U64, start : U64, len : U64 }, Str),
 	]
+
+	## A port message as the wire carries it: JSON text, the byte blocks its
+	## bytes markers name, and the handles and ranges of the files its file
+	## markers name.
+	PortMsg : { json : Str, blobs : List(List(U8)), files : List({ token : U64, start : U64, len : U64 }) }
+
+	## A worker job as `FX` kind 8 describes it (see [FxCmd]'s `Work`).
+	WorkJob : { task : Str, input : List(U8), files : List({ token : U64, start : U64, len : U64 }), deadline_ms : U32, cancel : U8, prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] }
+
+	## A port message at `at`: `json:str nblobs:u32 (len:u32 bytes)* nfiles:u32
+	## (token:u64 start:u64 len:u64)*`, and where it ends.
+	port_msg : List(U8), U64 -> (PortMsg, U64)
+	port_msg = |b, at| {
+		(json, a1) = Dom.str(b, at)
+		nblobs = Dom.u32(b, a1).to_u64()
+		var $a = a1 + 4
+		var $blobs = []
+		while $blobs.len() < nblobs {
+			(blob, next) = Dom.raw(b, $a)
+			$blobs = $blobs.append(blob)
+			$a = next
+		}
+		nfiles = Dom.u32(b, $a).to_u64()
+		$a = $a + 4
+		var $files = []
+		while $files.len() < nfiles {
+			$files = $files.append({ token: Dom.u64(b, $a), start: Dom.u64(b, $a + 8), len: Dom.u64(b, $a + 16) })
+			$a = $a + 24
+		}
+		({ json, blobs: $blobs, files: $files }, $a)
+	}
 
 	## Apply one batch and also return its opcode sequence.
 	apply_ops : Model, List(U8) -> (Model, List(U8))
@@ -547,6 +627,95 @@ Dom := [].{
 					$fx = $fx.append(OnlineSub(id))
 				} else if kind == 7 {
 					$fx = $fx.append(VisibilitySub(id))
+				} else if kind == 8 {
+					(task, a1) = Dom.str(b, $at)
+					(input, a2) = Dom.raw(b, a1)
+					n = Dom.u32(b, a2).to_u64()
+					var $refs = []
+					var $r = a2 + 4
+					while $refs.len() < n {
+						$refs = $refs.append({ token: Dom.u64(b, $r), start: Dom.u64(b, $r + 8), len: Dom.u64(b, $r + 16) })
+						$r = $r + 24
+					}
+					deadline_ms = Dom.u32(b, $r)
+					cancel = b.get($r + 4) ?? crash "truncated work request"
+					flag = b.get($r + 5) ?? crash "truncated work request"
+					if cancel < 1 or cancel > 2 {
+						crash "work request cancel policy ${cancel.to_str()} is not 1 or 2"
+					}
+					$at = $r + 6
+					# A preparation's task names its preparation and where the
+					# preparation's input lies at the start of `input`.
+					prepared = if flag == 1 {
+						(name, a3) = Dom.str(b, $at)
+						input_len = Dom.u32(b, a3).to_u64()
+						input_files = Dom.u32(b, a3 + 4).to_u64()
+						if input_len > input.len() or input_files > n {
+							crash "malformed preparation operands for worker task \"${task}\""
+						}
+						$at = a3 + 8
+						Prepared({ name, input_len, input_files })
+					} else if flag == 0 {
+						Unprepared
+					} else {
+						crash "work request flag ${flag.to_str()} is not 0 or 1"
+					}
+					$fx = $fx.append(Work(id, { task, input, files: $refs, deadline_ms, cancel, prepared }))
+				} else if kind == 11 {
+					mode = Dom.byte(b, $at)
+					if mode != 1 and mode != 2 {
+						crash "unknown file read mode ${mode.to_str()}"
+					}
+					$fx = $fx.append(FileRead(id, mode, Dom.file_ref(b, $at + 1), Dom.u64(b, $at + 25)))
+					$at = $at + 33
+				} else if kind == 12 {
+					(method, a1) = Dom.str(b, $at)
+					(url, a2) = Dom.str(b, a1)
+					n = Dom.u32(b, a2).to_u64()
+					var $hs = []
+					var $a = a2 + 4
+					while $hs.len() < n {
+						(hk, h1) = Dom.str(b, $a)
+						(hv, h2) = Dom.str(b, h1)
+						$hs = $hs.append((hk, hv))
+						$a = h2
+					}
+					$fx = $fx.append(Upload(id, method, url, $hs, Dom.file_ref(b, $a), Dom.u32(b, $a + 24)))
+					$at = $a + 28
+				} else if kind == 13 {
+					algorithm = Dom.byte(b, $at)
+					if algorithm != 1 {
+						crash "unknown digest algorithm ${algorithm.to_str()}"
+					}
+					$fx = $fx.append(Digest(id, algorithm, Dom.file_ref(b, $at + 1)))
+					$at = $at + 25
+				} else if kind == 14 {
+					$fx = $fx.append(FileUrl(id, Dom.file_ref(b, $at)))
+					$at = $at + 24
+				} else if kind == 9 {
+					(port, a1) = Dom.str(b, $at)
+					(msg, a2) = Dom.port_msg(b, a1)
+					$fx = $fx.append(PortCall(id, port, msg, Dom.u32(b, a2)))
+					$at = a2 + 4
+				} else if kind == 10 {
+					(port, a1) = Dom.str(b, $at)
+					(msg, a2) = Dom.port_msg(b, a1)
+					$fx = $fx.append(PortListen(id, port, msg))
+					$at = a2
+				} else if kind == 15 {
+					(method, a1) = Dom.str(b, $at)
+					(url, a2) = Dom.str(b, a1)
+					n = Dom.u32(b, a2).to_u64()
+					var $hs = []
+					var $a = a2 + 4
+					while $hs.len() < n {
+						(hk, h1) = Dom.str(b, $a)
+						(hv, h2) = Dom.str(b, h1)
+						$hs = $hs.append((hk, hv))
+						$a = h2
+					}
+					$fx = $fx.append(Fetch(id, method, url, $hs, Dom.u32(b, $a)))
+					$at = $a + 4
 				} else {
 					crash "unknown effect kind ${kind.to_str()}"
 				}
@@ -578,12 +747,27 @@ Dom := [].{
 				(t, a1) = Dom.str(b, $at)
 				$at = a1
 				$fx = $fx.append(Title(t))
+			} else if op == 19 {
+				(port, a1) = Dom.str(b, $at)
+				(msg, a2) = Dom.port_msg(b, a1)
+				$at = a2
+				$fx = $fx.append(PortSend(port, msg))
+			} else if op == 20 {
+				file = Dom.file_ref(b, $at)
+				(name, a1) = Dom.str(b, $at + 24)
+				$at = a1
+				$fx = $fx.append(Save(file, name))
 			} else {
 				crash "unknown command ${op.to_str()}"
 			}
 		}
 		{ dom: $d, ops: $ops, fx: $fx, written: $written, values: $values }
 	}
+
+	## A file's handle token and range on the wire, `token:u64 start:u64
+	## len:u64`, at `at`.
+	file_ref : List(U8), U64 -> { token : U64, start : U64, len : U64 }
+	file_ref = |b, at| { token: Dom.u64(b, at), start: Dom.u64(b, at + 8), len: Dom.u64(b, at + 16) }
 
 	## The engine's work record (design.md, Appendix B): `count:u32
 	## (counter:u64)*count`, then `n:u32 (name:str runs:u64)*`. Decoded here,
@@ -648,6 +832,37 @@ Dom := [].{
 		}
 	}
 
+	## The (node, handler) pair a `:files` event `ev` on node index i
+	## dispatches: as `target`, but the nearest handler for `ev` must take
+	## files (a `:files` suffix), as the runtime requires before it hands an
+	## event's files over.
+	files_target : Model, U64, Str -> Try((U32, U32), [NoHandler])
+	files_target = |dom, i, ev| {
+		var $n = i
+		var $h = -1.I64
+		while True {
+			n = Dom.node(dom, $n)
+			if $h < 0 {
+				match n.hs.find_first(|(e, _)| e == ev or e.starts_with("${ev}:")) {
+					Ok((e, hh)) => {
+						if !e.ends_with(":files") {
+							return Err(NoHandler)
+						}
+						$h = hh.to_i64()
+					}
+					Err(_) => {}
+				}
+			}
+			if n.rn != 0 and $h >= 0 {
+				return Ok((n.rn, $h.to_u32_wrap()))
+			}
+			if n.parent == 0 {
+				return Err(NoHandler)
+			}
+			$n = n.parent - 1
+		}
+	}
+
 	## Whether the handler event `ev` dispatches from node index i asks the
 	## browser to prevent the event's default action (a `:prevent` suffix), as
 	## the runtime decides it when it dispatches (design.md, "Browser events
@@ -667,7 +882,7 @@ Dom := [].{
 				}
 			}
 			if n.rn != 0 and $name != "" {
-				return $name.ends_with(":prevent")
+				return $name.ends_with(":prevent") or $name.contains(":prevent:")
 			}
 			if n.parent == 0 {
 				return Bool.False

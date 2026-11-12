@@ -1,13 +1,18 @@
 +++
-title = "State, Events, and Forms"
-description = "Choosing state, writing handlers, binding form controls, validating input and deriving values."
+title = "Local State, Events, and Forms"
+description = "State that belongs to one piece of the view: handlers, form controls, validation, derived values, and starting state again."
 weight = 5
 template = "page.html"
 +++
 
-# State, Events, and Forms
+# Local State, Events, and Forms
 
-The snippets on this page come from one sign-up form,
+Local state is what one piece of the view cares about: the fields of a form,
+whether a panel is open, the text of a draft. It is created with the piece of
+the view around it and goes with it. It needs no entry in the app's store,
+and code that has no business with it cannot reach it.
+
+Most of the snippets on this page come from one sign-up form,
 `www/samples/state.roc`.
 
 ## Introducing state
@@ -28,8 +33,8 @@ branch, and released with it.
 
 ## Handlers
 
-A handler is how an event changes state. It is built from a state handle and
-attached to an element:
+A handler is how an event changes state. For local state it is built from
+the state's handle and attached to an element:
 
 | Handler | The reducer receives |
 |---|---|
@@ -48,9 +53,18 @@ click or submit carries nothing. `Html` attaches the usual ones for you:
 `update_by` is the tool for "which one": in a list row, `update_by(row.key(), f)`
 passes the clicked row's key.
 
+A reducer receives the state's value uniquely owned, so updating a record or
+a list in it happens in place. The state is not compared with what it held
+before: a reducer that returns an equal value still wakes the state's
+readers, and they find nothing to change.
+
+An element takes one handler per event; a second one for the same event is a
+contract error. Two things that must both happen are one handler made with
+`also` (see [Shared State](@/docs/shared-state.md#local-and-shared-in-one-event)).
+
 ## One event, one transition
 
-A handler writes one state. If an event must change several things at once —
+A reducer writes one state. If an event must change several things at once —
 a submit that marks the form as tried and counts a successful send — keep them
 in one record and write one reducer:
 
@@ -96,6 +110,54 @@ of its own with `derive`:
 
 {{ sample(file="state.roc", region="derive") }}
 
-`derive` evaluates its input once per change of the states it reads. If the
+`derive` evaluates its input once per change of what it reads. If the
 result is equal to the last one, nothing below it runs. Holes that read only
 the derived value do no work on a keystroke that leaves it unchanged.
+
+## Starting again
+
+Local state lives as long as the piece of the view that declares it. Often
+that is exactly right: a branch that is switched away takes its state with
+it. Sometimes the piece stays but what it is about changes, and its state
+should not carry over. A reply being drafted belongs to the open message, and
+opening another message should start a new draft.
+
+`Engine.remount_on(key, body)` builds `body()` and, whenever `key` changes to
+an unequal value, disposes it and builds it again. Local state inside starts
+again at its initial value:
+
+{{ sample(file="replies/Replies.roc", region="open") }}
+
+The reply holds its draft as its own state and knows nothing of the remount
+around it:
+
+{{ sample(file="replies/Replies.roc", region="reply") }}
+
+- The body takes no argument. It reads the key, if it needs it, like any
+  other value.
+- An equal key changes nothing: opening the open message again keeps its
+  draft.
+- The site keeps the key to compare it, so a key should be small, such as an
+  id, not the record it identifies.
+- Disposing the body follows the rules of every scope: its timers and
+  subscriptions stop, and a request still in flight is delivered to the
+  remount site, where its write to the state that has gone is skipped.
+
+The sample's spec pins the behaviour:
+
+{{ sample(file="replies/specs/a-draft-per-message.scm", syntax="scheme") }}
+
+## When state stops being local
+
+Local state is the right home until one of these becomes true:
+
+- A second part of the app, somewhere else in the view, needs to read or
+  write it. Passing a handle down through every level between them is what
+  the store is for.
+- It must outlive the piece of the view that shows it: a draft that should
+  survive a change of page, a filter that should survive a branch switching.
+- One event must change it together with shared state, and what each becomes
+  depends on the same reading.
+
+Then it is a cell of the app's store, and
+[Shared State](@/docs/shared-state.md) is the next page.

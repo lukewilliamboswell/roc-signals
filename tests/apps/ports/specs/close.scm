@@ -1,0 +1,21 @@
+(test "Ports — the JavaScript ends a subscription with close or a failure"
+  (steps
+    (click (role button :name "Feed"))
+    (expect-port-subscriptions "test.roc-signals/feed" 1)
+    (emit-port "test.roc-signals/feed" "\"first\"")
+    (mark-metrics)
+    (close-port "test.roc-signals/feed")
+    (expect-port-subscriptions "test.roc-signals/feed" 0)
+    (expect-text (test-id "log") "feed:first|feed:closed")
+    (expect-metric-delta effects_delivered 1)
+    (expect-pending-effects 0)
+    ; Subscribing again after the JavaScript closed it starts a new one.
+    (click (role button :name "Feed"))
+    (expect-port-subscriptions "test.roc-signals/feed" 0)
+    (click (role button :name "Feed"))
+    (expect-port-subscriptions "test.roc-signals/feed" 1)
+    (fail-port "test.roc-signals/feed" "socket lost")
+    (expect-port-subscriptions "test.roc-signals/feed" 0)
+    (expect-text (test-id "log") "feed:first|feed:closed|feed:threw socket lost")
+  )
+)

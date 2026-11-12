@@ -1,6 +1,6 @@
 (test "Kanban board — move the only card out of a column, leaving it empty"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (mark-metrics)
     (click (role button :name "Move right: Draft onboarding copy"))
     (mark-metrics)
@@ -23,6 +23,8 @@
     (expect-metric-delta rows_removed 1)
     (expect-metric-delta rows_created 1)
     (expect-metric-delta rows_reused 0)
+    (expect-metric-delta rows_moved 0)
+    (expect-metric-delta rows_updated 0)
     (expect-text (test-id "count-review") "0 cards")
     (expect-text (test-id "empty-review") "No cards")
     (expect-text (test-id "wip-review") "WIP 0/1")

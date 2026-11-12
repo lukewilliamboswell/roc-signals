@@ -1,6 +1,6 @@
 (test "Data grid — sorting"
   (steps
-    ; 2. sorting
+    ; Sorting by a column, and reversing it.
     (mark-metrics)
     (click (role button :name "Sort by score"))
     (expect-text (test-id "sort-caption") "Sorted by score ascending")
@@ -10,13 +10,16 @@
     (expect-absent (test-id "row-name-1"))
     (expect-text (test-id "rows-showing") "Showing 10 of 1200 rows")
     (expect-text (test-id "summary-total") "596952")
+    ; Row 0 has the lowest score as well as the lowest id, so it stays in
+    ; the window, where it is, and the other nine rows are replaced. The
+    ; grid is a view of a table: it keeps a row by its key and compares no
+    ; list of rows, so it counts none as reused.
     (expect-metric-delta rows_created 9)
-    (expect-metric-delta rows_reused 1)
+    (expect-metric-delta rows_reused 0)
     (expect-metric-delta rows_removed 9)
+    (expect-metric-delta rows_moved 0)
+    (expect-metric-delta rows_updated 0)
     (expect-metric-delta set_value 9)
-    ; The polished grid renders each row as cells on a shared column
-    ; template rather than one text line, so a re-render touches a few more
-    ; nodes per row. Still O(visible rows), which is what this bounds.
     ; reverse the same column
     (mark-metrics)
     (click (role button :name "Sort by score"))
@@ -27,6 +30,8 @@
     (expect-metric-delta rows_created 10)
     (expect-metric-delta rows_reused 0)
     (expect-metric-delta rows_removed 10)
+    (expect-metric-delta rows_moved 0)
+    (expect-metric-delta rows_updated 0)
     (click (role button :name "Sort by name"))
     (expect-text (test-id "sort-caption") "Sorted by name ascending")
     (expect-text (test-id "row-name-0") "Node-0000")

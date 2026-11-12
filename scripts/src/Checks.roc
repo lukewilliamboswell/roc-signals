@@ -19,11 +19,25 @@ Checks := [].{
 			Ok(dir) => "${root}/${dir}"
 			Err(_) => "${root}/.build"
 		}
-		Ok({ root, build_dir, compiler: "roc", tooling: "roc-stable", zig: "zig", node: "node", chrome: "google-chrome", filter })
+		version = Str.from_utf8_lossy(Proc.capture!({ program: "roc", args: ["version"], cwd: root })?).trim()
+		nightly = version.split_on(" ").last() ?? version
+		Ok({ root, build_dir, compiler: "roc", nightly, tooling: "roc-stable", zig: "zig", node: "node", chrome: "google-chrome", filter })
 	}
 
 	prepare_platform! : SpecSuite.Options => Try({}, _)
 	prepare_platform! = |o| PlatformTest.prepare!({ root: o.root, build_dir: o.build_dir, zig: o.zig })
+
+	## Run the top-level `expect`s of every example and test app, in
+	## parallel: `roc test` of an app's `main.roc` runs those of every module
+	## the app imports. A decision is tested as a function (design.md,
+	## "Decisions as functions"), and those tests are `expect`s beside the
+	## transitions, in the modules of the apps.
+	app_expects! : SpecSuite.Options => Try(List(Str), _)
+	app_expects! = |o| {
+		dirs = SpecSuite.app_dirs!()?
+		results = Proc.parallel!(dirs.map(|dir| { program: o.compiler, args: ["test", "${dir}/main.roc"], cwd: o.root }), Proc.cpus!())?
+		Ok(List.map2(dirs, results, |dir, r| if (r.code == 0) [] else ["roc test ${dir}/main.roc failed: ${r.output.trim()}"]).join())
+	}
 
 	## Run one app's specs natively, and in Chrome when `browser`, with the
 	## builds `SpecSuite.build!` made.
@@ -53,30 +67,45 @@ Checks := [].{
 		problems: a.problems.concat(b.problems),
 	}
 
-	## Each runner must reject a deliberately broken spec: a copy of
-	## kanban-board's initial-render with one expected text changed. A runner
-	## that passes it is not evidence of anything.
-	broken_spec! : SpecSuite.Options, Str, Str => Try(List(Str), _)
-	broken_spec! = |o, runner, wasm| {
-		original = Path.read_utf8!(Path.utf8("examples/kanban-board/specs/initial-render.scm"))?
-		good = "(expect-text (test-id \"board-total\") \"5\")"
+	## A deliberately broken spec: a copy of `spec` (a spec of `example`) with the
+	## assertion `good` replaced by `bad`, which each runner must reject with
+	## a message holding `rejection`.
+	Broken : { example : Str, spec : Str, good : Str, bad : Str, rejection : Str }
+
+	## The broken specs `check` runs: one expected text changed in
+	## kanban-board's initial render, and a crashing worker job expected to
+	## be lost to the wrong fault class (the native runner's child process and
+	## the browser's worker must both report the class the task's crash
+	## has).
+	broken_specs : List(Broken)
+	broken_specs = [
+		{ example: "kanban-board", spec: "examples/kanban-board/specs/initial-render.scm", good: "(expect-text (test-id \"board-total\") \"5\")", bad: "(expect-text (test-id \"board-total\") \"6\")", rejection: "expected \\\"6\\\"" },
+		{ example: "workers", spec: "tests/apps/workers/specs/crash.scm", good: "(expect-text (test-id \"log\") \"crash:lost AppCrash\")", bad: "(expect-text (test-id \"log\") \"crash:lost Contract\")", rejection: "expected \\\"crash:lost Contract\\\"" },
+	]
+
+	## Each runner must reject each deliberately broken spec
+	## (`broken_specs`). A runner that passes one is not evidence of anything.
+	broken_spec! : SpecSuite.Options, Broken => Try(List(Str), _)
+	broken_spec! = |o, { example, spec, good, bad, rejection }| {
+		original = Path.read_utf8!(Path.utf8(spec))?
 		if !original.contains(good) {
-			return Ok(["broken-spec self-check: initial-render.scm no longer holds ${good}; choose a new assertion to break"])
+			return Ok(["broken-spec self-check: ${spec} no longer holds ${good}; choose a new assertion to break"])
 		}
-		dir = "${o.build_dir}/broken-spec"
+		runner = SpecSuite.runner_of(o, example)
+		dir = "${o.build_dir}/broken-spec/${example}"
 		SpecSuite.fresh_dir!(dir)?
-		broken = "${dir}/initial-render-broken.scm"
-		Path.write_utf8!(Path.utf8(broken), original.replace_each(good, "(expect-text (test-id \"board-total\") \"6\")"))?
+		broken = "${dir}/broken.scm"
+		Path.write_utf8!(Path.utf8(broken), original.replace_each(good, bad))?
 		native = SpecSuite.run_native!({ ..o, filter: "*" }, runner, [broken])?
 		steps = Proc.capture!({ program: runner, args: ["--emit-steps", broken], cwd: "." })?
 		Path.write_bytes!(Path.utf8("${dir}/steps.jsonl"), steps)?
-		{ stdout, .. } = Proc.output!({ program: o.node, args: ["tests/browser/replay.mjs", "--wasm", wasm, "--runtime", SpecSuite.runtime, "--steps", "${dir}/steps.jsonl", "--chrome", o.chrome, "--json-lines"], cwd: "." })?
+		{ stdout, .. } = Proc.output!({ program: o.node, args: ["tests/browser/replay.mjs", "--wasm", SpecSuite.wasm_of(o, example), "--runtime", SpecSuite.runtime, "--steps", "${dir}/steps.jsonl", "--chrome", o.chrome, "--json-lines"], cwd: "." })?
 		in_browser = Str.from_utf8_lossy(stdout).split_on("\n")
-		rejected = |lines| lines.any(|l| SpecSuite.json_field(l, "status") == "failed" and SpecSuite.json_message(l).contains("expected \\\"6\\\""))
+		rejected = |lines| lines.any(|l| SpecSuite.json_field(l, "status") == "failed" and SpecSuite.json_message(l).contains(rejection))
 		Ok(
 			[]
-				.concat(if (rejected(native)) [] else ["broken-spec self-check: the native runner did not reject the broken spec"])
-				.concat(if (rejected(in_browser)) [] else ["broken-spec self-check: the browser runner did not reject the broken spec"]),
+				.concat(if (rejected(native)) [] else ["broken-spec self-check: the native runner did not reject the broken ${spec}"])
+				.concat(if (rejected(in_browser)) [] else ["broken-spec self-check: the browser runner did not reject the broken ${spec}"]),
 		)
 	}
 

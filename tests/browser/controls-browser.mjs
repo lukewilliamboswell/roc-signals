@@ -1,18 +1,18 @@
 // controls-browser.mjs --wasm APP.wasm --runtime runtime.mjs --chrome PATH -- controlled
-// inputs, focus and containment in headless Chrome against tests/apps/controls (design.md "Controlled inputs",
-// "Memory management and allocation failure", "Diagnostics contract").
+// inputs, focus and containment in headless Chrome against tests/apps/controls (design.md "Controlled Inputs",
+// "Error Containment").
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { launch } from "./cdp.mjs";
-import { parseArgs } from "./args.mjs";
+import { parseArgs, runtimeFiles } from "./args.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const opts = parseArgs(process.argv.slice(2));
 const files = {
   "index.html": path.join(here, "index.html"),
-  "runtime.mjs": opts.runtime,
+  ...runtimeFiles(opts.runtime),
   "app.wasm": opts.wasm,
 };
 const server = http.createServer((req, res) => {
@@ -155,6 +155,27 @@ const text = (page, id) => page.$eval(`[data-testid="${id}"]`, (e) => e.textCont
   check("recover(): fresh instance, initial state", [await text(page, "rows"), (await val(page, "Plain"))[0], await page.evaluate(() => window.__rt.x.fault())], ["", "hello world", 0]);
   await clickButton("Add row");
   check("recovered instance handles events", await text(page, "rows"), "r0");
+  await ctx.close();
+}
+for (const [button, where] of [
+  ["Two handlers", ""],
+  ["Two row handlers", " in the row template of an each"],
+]) {
+  // 6. Two handlers for one event on one element: a contract error at
+  // mount that names the event, the element and the site, never a second
+  // listener silently dropped.
+  const { page, ctx, errors } = await open();
+  const clickButton = (name) => page.evaluate((n) => [...document.querySelectorAll("button")].find((b) => b.textContent === n).click(), name);
+  await page.evaluate(() => {
+    window.__faults = [];
+    window.__rt.onFault = (f) => window.__faults.push(f);
+  });
+  await clickButton(button);
+  const f = await page.evaluate(() => window.__faults);
+  const message = new RegExp(`^contract: two handlers for the "click" event on one <button>${where} at site /[\\d/]+: an element takes one handler per event; run both from one with Handler\\.also$`);
+  check(`${button}: one contract fault naming the event, the element and the site`, [f.length, f[0] && f[0].class, f[0] && message.test(f[0].message)], [1, "contract", true]);
+  check(`${button}: nothing of the faulty turn is applied`, await page.evaluate(() => [...document.querySelectorAll("button")].some((b) => b.textContent.startsWith("Twice"))), false);
+  check(`${button}: the fault reaches the console`, errors.some((e) => e.includes("roc engine fault [contract]")), true);
   await ctx.close();
 }
 await browser.close();

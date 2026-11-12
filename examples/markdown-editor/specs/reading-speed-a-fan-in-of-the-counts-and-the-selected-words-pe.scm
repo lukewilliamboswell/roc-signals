@@ -1,11 +1,11 @@
 (test "Markdown editor — Reading speed: a fan in of the counts and the selected words per minute"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (mark-metrics)
     (uncheck (label "Number the outline"))
     (check (label "Number the outline"))
 
-    ; 3. Reading speed: a fan in of the counts and the selected words per minute
+    ; Reading speed: a fan in of the counts and the selected words per minute
     ; Changing the speed must not touch the preview or the outline.
     ; ---------------------------------------------------------------------------
 
