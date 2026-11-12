@@ -87,11 +87,14 @@ several parts of an app share lives in a store instead, and
 
 `main.roc` names the platform and binds the app's `program` as `main`:
 
+The example uses `<package release URL here>` as a placeholder. Keep the
+actual platform URL that `init` wrote in your file. If writing an entry
+point by hand, use the platform bundle URL from the
+[Roc Signals release notes](https://github.com/lukewilliamboswell/roc-signals/releases/latest).
+
 {{ sample(file="counter/main.roc") }}
 
-This page's copy names the platform by its path in the repository; the
-`main.roc` that `init` writes names the release's platform bundle by its URL
-instead. The platform builds this one file for two kinds of target:
+The platform builds this one file for two kinds of target:
 `--target=wasm32` gives the module the browser runs, and your system's
 native target gives the app's native spec runner: `x64musl` on Linux,
 `arm64mac` or `x64mac` on macOS, `x64win` on Windows. `signals.roc` makes

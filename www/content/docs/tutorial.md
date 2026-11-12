@@ -56,9 +56,9 @@ its generated release platform URL and the `pf` name. Replace the imports and
 {{ sample(file="todos/main.roc", region="entry") }}
 
 `main.roc` now imports the `Todos.roc` beside it and hands `Todos.program` to
-the platform. The source tree's downloadable `main.roc` uses a platform path
-for contributor checkouts; your generated declaration keeps this app on the
-published release.
+the platform. Keep the release URL that `init` generated: the generic
+`<package release URL here>` shown in documentation examples is a placeholder,
+not a replacement for that URL.
 
 Your app's files are now:
 
