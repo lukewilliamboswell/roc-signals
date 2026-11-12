@@ -1739,7 +1739,7 @@ SpecRunner := [].{
 		}
 	}
 
-	## Answer a fetch with the staged stub (design.md, "Files"): a reply's
+	## Answer a fetch with the staged stub (design.md, "Files"): an HTTP response's
 	## body becomes a file the page holds, through a handle `mint!` gives,
 	## delivered as result tag 21 with the status and headers; a reject is
 	## `Timeout` or `Network` as for an HTTP request; a body over the
@@ -1870,7 +1870,7 @@ SpecRunner := [].{
 
 	## What a walk answers the app's requests with, gathered from the app's
 	## own specs, so the walk needs nothing written for it: every HTTP
-	## reply and rejection a spec stages (by URL), every port answer (by the
+	## HTTP response and rejection a spec stages (by URL), every port answer (by the
 	## port a spec's `expect-port-call` names for that occurrence, else for
 	## any port), every message a spec emits on a port, and every value a
 	## spec types or changes into a control (by its locator).
@@ -2025,7 +2025,7 @@ SpecRunner := [].{
 	}
 
 	## The answer a walk gives an HTTP request (or an upload or a fetch):
-	## by `v`, a 503, a timeout, or a reply the specs give its URL (else
+	## by `v`, a 503, a timeout, or an HTTP response the specs give its URL (else
 	## one they give its path with another query, else a network failure).
 	http_answer : Book, Str, U64 -> Scm.Stub
 	http_answer = |bk, url, v|

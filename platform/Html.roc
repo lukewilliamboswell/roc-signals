@@ -4,9 +4,9 @@ import Engine exposing [Attr, Elem, FilesHandler, Handler, Signal]
 ## `Engine.element`, `Engine.attr` and `Engine.on`.
 ##
 ## Every helper is generic in the context `ctx`, so it works at the top level,
-## inside a `state` or `derive` body and in a row of an `each` or an `table_view`.
+## inside a `state` or `derive` body and in a row of an `each` or a `table_view`.
 ## Controls take their accessible name as `aria-label`, which spec `label` and
-## `role` locators match. Values (`Signal`) keep the DOM in step with state; plain
+## `role` locators match. Signals keep the DOM in step with state; plain
 ## `Str` arguments are static.
 Html := [].{
 

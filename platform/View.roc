@@ -3,7 +3,7 @@ import Seq
 import Table
 
 ## A filtered, sorted, windowed view of a table, kept up to date from
-## the table's record of changes, never by filtering, sorting or comparing
+## the table's changes, never by filtering, sorting or comparing
 ## the whole table again. It is the storage of an `Engine.table_view` site.
 ##
 ## A view holds the ordered keys of the rows that pass `keep`, each with the
@@ -12,8 +12,8 @@ import Table
 ## The view's state is owned by the site that holds it, apart from the table.
 ##
 ## A site brings a view up to date in two steps. `follow` reads the table's
-## record. For each written key it computes the key's place under the old row
-## (from the record) and under the new row (from the table). If both are the
+## changes. For each written key it computes the key's place under the old row
+## (from the changes) and under the new row (from the table). If both are the
 ## same place, nothing in the sequence is touched. Otherwise the key is removed
 ## and reinserted: a binary search over the chunks and within one chunk, and a
 ## move within the chunk. The rows drawn are left as they were. `draw` then
@@ -46,9 +46,9 @@ View(k, v, s) :: {
 	## drawn as they were: `draw` changes those, once the site knows the
 	## query and the window the turn leaves.
 	##
-	## The view absorbs the record when it has seen exactly the version the
-	## record starts at and the record is small next to the table. It builds
-	## its ordered keys again when the record is large (`Many`), when a bulk
+	## The view absorbs the changes when it has seen exactly the version the
+	## changes start at and the changes are small next to the table. It builds
+	## its ordered keys again when the changes are large (`Many`), when a bulk
 	## write replaced the rows (`Rewritten`), or when it missed writes
 	## (`Behind`): a missed refresh is repaired at the cost of a rebuild, and
 	## reported so the engine can treat it as the contract error it is.
@@ -62,7 +62,7 @@ View(k, v, s) :: {
 	## rebuild, or a row that entered, left or moved at or before the
 	## window's last row. The site then draws. When it does not, `touched`
 	## are the rows drawn whose row was written in place, which it marks.
-	## `wrote` is what `draw` needs of the record: which rows were written.
+	## `wrote` is what `draw` needs of the changes: which rows were written.
 	follow : View(k, v, s), Table(k, v) -> { view : View(k, v, s), how : [Unchanged, Absorbed, Rebuilt([Many, Rewritten, Behind])], placed : U64, reached : Bool, touched : List(k), wrote : [NoRow, Rows(Dict(k, [Absent, Was(v)])), EveryRow] }
 		where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 	follow = |view, table|
@@ -177,7 +177,7 @@ View(k, v, s) :: {
 engine : EngineOnly
 engine = EngineOnly.witness({})
 
-## A record larger than the table's size divided by this, plus the floor, is
+## Changes larger than the table's size divided by this, plus the floor, are
 ## cheaper to rebuild from than to absorb: absorbing costs a search and a
 ## move in the ordered keys for each written row, and rebuilding one pass
 ## over the table and one sort. The table's size is what a rebuild costs,
@@ -425,9 +425,9 @@ expect {
 		and second.changes == [Left(5), Entered({ key: 13, before: End })]
 }
 
-## A view that keeps few rows of a larger table absorbs a record of all of
-## them: what a rebuild costs is the table, so the record is weighed against
-## the table. A record large next to the table is rebuilt from.
+## A view that keeps few rows of a larger table absorbs changes of all of
+## them: what a rebuild costs is the table, so the changes are weighed against
+## the table. Changes large next to the table cause a rebuild.
 expect {
 	table = Table.from_list(numbered(0, 200))
 	view = View.build(table, { query: by_key(10), window: { start: 0, count: U64.highest }, limit: 8 })

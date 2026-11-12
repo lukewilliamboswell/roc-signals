@@ -175,7 +175,7 @@ Port := [].{
 	subscription : SubscriptionProps -> Subscription(arg, msg) where [arg.PortJson.Sendable, msg.PortJson.Sendable]
 	subscription = |SubscriptionProps.({ name, delivery })| { name, delivery, encode: |value| PortJson.encode(value), decode: |message| PortJson.decode(message).map_err(PortJson.describe) }
 
-	## `resource(call, input, body)` gives `body` a layer holding the call's
+	## `resource(call, input, body)` gives `body` a signal holding the call's
 	## answer for `input`, an `Engine.Remote(output, Port.Error)`, as
 	## `Worker.resource` does for a worker task: the call for the first input
 	## is made at mount, and when `input` changes to an unequal value the

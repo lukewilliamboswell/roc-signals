@@ -63,7 +63,7 @@ Core := [].{
 		}
 	}
 
-	## The context inside one row of an `each` or an `table_view` template,
+	## The context inside one row of an `each` or a `table_view` template,
 	## nested in `outer`: the row's key and item. Values and handlers from
 	## `outer` enter with `lift_row`.
 	##
@@ -91,11 +91,11 @@ Core := [].{
 		}
 	}
 
-	## How a scope `ctx` reaches the root store whose storage is `st`: `get`
-	## reads it, and `over` gives the scope with a function applied to it,
-	## which receives it uniquely owned. A scope type answers one from its
+	## How a context `ctx` reaches the root store whose type is `st`: `get`
+	## reads it, and `over` gives the context with a function applied to it,
+	## which receives it uniquely owned. A context type answers one from its
 	## `store` method, so reading and writing the store are one requirement
-	## on a scope: `where [ctx.store : () -> StoreReach(ctx, st)]`. The
+	## on a context: `where [ctx.store : () -> StoreReach(ctx, st)]`. The
 	## method takes nothing because a `where` clause can require a method
 	## of a type but not a value of it.
 	StoreReach(ctx, st) :: { get : (ctx -> st), over : (ctx, (st -> st) -> ctx) }
@@ -106,12 +106,12 @@ Core := [].{
 	## and a cell of one is a type error in a scope that reaches the other.
 	Stored(tag, st) :: { st : st }
 
-	## A handle on one cell of a root store whose storage is `st`, holding an
-	## `a`. [Cells] makes one for each `cell` it describes and [Store] hands
-	## them out (`handles`). `cell` is the cell's position in the store,
+	## One cell of a root store whose type is `st`, holding an `a`. [Cells]
+	## makes one for each `cell` it describes and [Store] gives them out
+	## (`cells`). `cell` is the cell's position in the store,
 	## which names it in a write set and gives its signature bit; `get` and
-	## `modify` are the lens [Cells] generated for that position. The handle
-	## is valid in every scope whose root holds `st`: reading or writing it
+	## `modify` are the lens [Cells] generated for that position. The cell
+	## is valid in every context whose root holds `st`: reading or writing it
 	## needs no `lift`.
 	Cell(st, a) := { cell : U64, get : (st -> a), modify : (st, (a -> a) -> st) }.{
 
@@ -119,20 +119,20 @@ Core := [].{
 		signal : Cell(st, a) -> Signal(ctx, a)
 			where [ctx.store : () -> StoreReach(ctx, st)]
 		signal = |c| {
-			## The scope's type, named so its method can be called.
+			## The context's type, named so its method can be called.
 			Ctx : ctx
 			store_get = Ctx.store().get
 			g = c.get
 			{ mask: cell_bit(c.cell), read: |e| g(store_get(e)), sel: NoSel }
 		}
 
-		## The cell as a [State] in the scope where this is called: what a
+		## The cell as a [State] in the context where this is called: what a
 		## component that takes a `State(ctx, a)` is given, so it cannot
 		## tell a cell from a local state.
 		state : Cell(st, a) -> State(ctx, a)
 			where [ctx.store : () -> StoreReach(ctx, st)]
 		state = |c| {
-			## The scope's type, named so its method can be called.
+			## The context's type, named so its method can be called.
 			Ctx : ctx
 			reach = Ctx.store()
 			store_get = reach.get
@@ -183,7 +183,7 @@ Core := [].{
 	store_handler : (Str -> List(Write(st))) -> Handler(ctx)
 		where [ctx.store : () -> StoreReach(ctx, st)]
 	store_handler = |decide| {
-		## The scope's type, named so its method can be called.
+		## The context's type, named so its method can be called.
 		Ctx : ctx
 		store_over = Ctx.store().over
 		{ run: |e, p, site| store_writes(store_over, e, decide(ev_str(p)), Handler(site)) }
@@ -196,7 +196,7 @@ Core := [].{
 	store_handler_by : Signal(ctx, b), (b, Str -> List(Write(st))) -> Handler(ctx)
 		where [ctx.store : () -> StoreReach(ctx, st)]
 	store_handler_by = |v, decide| {
-		## The scope's type, named so its method can be called.
+		## The context's type, named so its method can be called.
 		Ctx : ctx
 		store_over = Ctx.store().over
 		read = v.read
@@ -215,7 +215,7 @@ Core := [].{
 	store_files_handler : (Received -> List(Write(st))) -> FilesHandler(ctx)
 		where [ctx.store : () -> StoreReach(ctx, st)]
 	store_files_handler = |decide| {
-		## The scope's type, named so its method can be called.
+		## The context's type, named so its method can be called.
 		Ctx : ctx
 		store_over = Ctx.store().over
 		{
@@ -233,7 +233,7 @@ Core := [].{
 	store_files_handler_by : Signal(ctx, b), (b, Received -> List(Write(st))) -> FilesHandler(ctx)
 		where [ctx.store : () -> StoreReach(ctx, st)]
 	store_files_handler_by = |v, decide| {
-		## The scope's type, named so its method can be called.
+		## The context's type, named so its method can be called.
 		Ctx : ctx
 		store_over = Ctx.store().over
 		read = v.read
@@ -255,7 +255,7 @@ Core := [].{
 	store_reaction : (r, Result -> List(Write(st))) -> Reaction(ctx, r)
 		where [ctx.store : () -> StoreReach(ctx, st)]
 	store_reaction = |decide| {
-		## The scope's type, named so its method can be called.
+		## The context's type, named so its method can be called.
 		Ctx : ctx
 		store_over = Ctx.store().over
 		{ run: |e, r, res, site| store_writes(store_over, e, decide(r, res), Reaction(site)) }
@@ -266,7 +266,7 @@ Core := [].{
 	store_reaction_by : Signal(ctx, b), (b, r, Result -> List(Write(st))) -> Reaction(ctx, r)
 		where [ctx.store : () -> StoreReach(ctx, st)]
 	store_reaction_by = |v, decide| {
-		## The scope's type, named so its method can be called.
+		## The context's type, named so its method can be called.
 		Ctx : ctx
 		store_over = Ctx.store().over
 		read = v.read
@@ -280,7 +280,7 @@ Core := [].{
 
 	## A description of cells, for [Store]: the storage `st` the cells it
 	## describes start with, how many there are, `make`, which builds their
-	## handles `h` given the position of the first and the lens from the
+	## cells `h` given the position of the first and the lens from the
 	## whole store `whole` to `st`, and `restart`, which puts every one of
 	## them back to the value it was described with, each through its own
 	## lens. Combine descriptions with `map2`, which is what Roc's record
@@ -314,14 +314,14 @@ Core := [].{
 			}
 		}
 
-		## The same cells, handing out `f` of their handles.
+		## The same cells, handing out `f` of them.
 		map : Cells(whole, st, h), (h -> k) -> Cells(whole, st, k)
 		map = |d, f| {
 			dm = d.make
 			{ init: d.init, count: d.count, make: |base, get, modify| f(dm(base, get, modify)), restart: d.restart, tables: d.tables }
 		}
 
-		## The same cells, handing out `f` of their handles and of a [Write]
+		## The same cells, handing out `f` of them and of a [Write]
 		## that starts every one of them again at the value its description
 		## gave it. The write covers the description, not a list someone
 		## keeps: a cell added to it later is started again by the same
@@ -349,7 +349,7 @@ Core := [].{
 	cell = |init| { init, count: 1, make: |base, get, modify| { cell: base, get, modify }, restart: |_| init, tables: |_, _| [] }
 
 	## What the root site needs of a table cell of the store `st`: the cell's
-	## position, `clear`, which forgets the table's record of changes at the
+	## position, `clear`, which forgets the table's changes at the
 	## end of a turn that wrote it, and `stamp`, which gives the table its
 	## cell's identity when the store is built.
 	TableCell(st) : { cell : U64, clear : (st -> st), stamp : (st -> st) }
@@ -358,13 +358,13 @@ Core := [].{
 	## is an ordinary cell: a decision changes it with `Cell.update` and the
 	## table's own operations (`insert`, `put`, `update`, `remove`, `load`),
 	## so each write records the rows it changed, and `table_view` draws a
-	## filtered, sorted window of it from that record.
+	## filtered, sorted window of it from those changes.
 	##
-	## The cell's lens guards the record: a write that leaves any other
+	## The cell's lens guards the changes: a write that leaves any other
 	## table in the cell than the one it held (a `Cell.set` of a new one,
 	## another cell's, an old copy, or the reset of the cell's group) is
 	## taken as a whole rewrite (`Table.kept`), so no write can leave a view
-	## stale. The root clears the record at the end of each turn that wrote
+	## stale. The root clears the changes at the end of each turn that wrote
 	## the cell.
 	table : List({ key : k, row : v }) -> Cells(whole, Table(k, v), Cell(whole, Table(k, v)))
 		where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
@@ -390,19 +390,19 @@ Core := [].{
 	}
 
 	## A program's store, built once from its [Cells]: the storage it starts
-	## with, the handles on its cells, and its table cells.
+	## with, its cells, and the bookkeeping for its table cells.
 	Store(st, h) := { init : st, cells : h, tables : List(TableCell(st)) }.{
 
-		## The handles on the store's cells, the record the [Cells] described.
+		## The record of cells the [Cells] described.
 		cells : Store(st, h) -> h
 		cells = |s| s.cells
 
 		## The same store with `c` starting at `value`, for a cell whose start
 		## depends on the boot data. For a table cell, `value` is the table
 		## `Table.from_list` gives. It is a start, not a write: the table's
-		## record is left empty, as it is for a table described with its
+		## changes are left empty, as it is for a table described with its
 		## rows, so a pure test that applies writes after it (`after`) reads
-		## those writes in the record and nothing else.
+		## those writes in the changes and nothing else.
 		with_initial : Store(st, h), Cell(st, a), a -> Store(st, h)
 		with_initial = |s, c, value| {
 			m = c.modify
@@ -410,13 +410,13 @@ Core := [].{
 		}
 
 		## What the root site starts with: the storage, each table with an
-		## empty record, and what the root needs of its table cells.
+		## empty changes, and what the root needs of its table cells.
 		initial : Store(st, h) -> Start(st)
 		initial = |s| { st: s.tables.fold(s.init, |st, t| (t.clear)(st)), tables: s.tables }
 
 		## The same store after `writes`, applied as a decision's are
 		## (`store_writes`), for a pure `expect` on a transition. No turn
-		## ends here, so a table keeps its record of the writes.
+		## ends here, so a table keeps its changes for the writes.
 		after : Store(st, h), List(Write(st)) -> Store(st, h)
 		after = |s, writes| {
 			_ = writes_cells(writes, After)
@@ -438,7 +438,7 @@ Core := [].{
 
 	## The store the cells `d` describe, named by `tag`: a value of a type
 	## the app declares for this store and no other. Its storage is
-	## `Stored(tag, st)`, so the handles of two stores whose cells have the
+	## `Stored(tag, st)`, so the cells of two stores whose cells have the
 	## same types are still of different types. Each table among the cells
 	## is given its cell's identity here.
 	store_of : tag, Cells(Stored(tag, st), st, h) -> Store(Stored(tag, st), h)
@@ -1204,7 +1204,7 @@ Core := [].{
 	## `start` of the view's order.
 	Window : { start : U64, count : U64 }
 
-	## What an `table_view` site shows of its table. `query` is plain
+	## What a `table_view` site shows of its table. `query` is plain
 	## data the site can compare (a filter and an order the user chose),
 	## and `plan` turns it into the [QueryPlan] that selects and orders rows;
 	## `window` is the part of that order to draw.
@@ -1335,7 +1335,7 @@ Core := [].{
 	## its initial value, timers and subscriptions inside are cancelled, and
 	## requests in flight inside are kept and delivered to this site, where
 	## a write to the disposed state is skipped. This is how state that
-	## belongs to one key (a reply drafted to one message) starts again when
+	## belongs to one key (a draft for one message) starts again when
 	## the key changes. The body takes no argument, so what it reads does
 	## not depend on the key, and the site's static reads are the key's and
 	## the body's. An equal key costs one evaluation of the key and a
@@ -2038,7 +2038,7 @@ Core := [].{
 	## - `check` is the end-of-turn use check of one request;
 	## - `write` puts a turn's port requests (the `Port` entries of its
 	##   [TurnEnd] list) into its batch, each where it was issued;
-	## - `decode` reads result tags 14 and 15 (and a reply's file handles);
+	## - `decode` reads result tags 14 and 15 (and an answer's file handles);
 	## - `ends` says whether a result ends a subscription.
 	Ports : {
 		decls : List(PortDecl),
@@ -2174,7 +2174,7 @@ Core := [].{
 	## not catch a view the turn left behind. In this pass each view site
 	## also builds its view from scratch and requires the one it holds to be
 	## equal to it (the ordered keys, the window, the rows drawn), at the
-	## table's version, with the table's record cleared; a difference is
+	## table's version, with the table's changes cleared; a difference is
 	## part of the note.
 	##
 	## The end of the turn ([TurnEnd]: focus, program checks, port requests)
@@ -3682,7 +3682,7 @@ Top := [Top]
 ##
 ## That pass is also where a turn ends for the store's tables. The site
 ## keeps the set the turn wrote (`wrote`) from the event until the pass,
-## and once the pass has refreshed every reader it clears the record of
+## and once the pass has refreshed every reader it clears the changes of
 ## changes of each table whose cell is in the set (`end_tables`). A turn
 ## that wrote no table pays one test of the set's signature against the
 ## table cells' bits.
@@ -3722,7 +3722,7 @@ store_inst = |st0, tables0, wrote0, block0| {
 ## each, and the signature bits of all of them.
 Tables(st) : { cells : List(Core.TableCell(st)), written : U128 }
 
-## The end of a turn for the store's tables: clear the record of changes
+## The end of a turn for the store's tables: clear the changes
 ## of every table whose cell the turn wrote, now that the turn's pass has
 ## refreshed every view. `wrote` names the cells exactly, so a table whose
 ## cell only shares a signature bit with a written one is left alone.
@@ -5016,7 +5016,7 @@ Shows(ctx, q, k, v, s) : { get : (ctx -> Table(k, v)), query : Signal(ctx, q), p
 view_source : Core.Cell(st, Table(k, v)) -> (ctx -> Table(k, v))
 	where [ctx.store : () -> Core.StoreReach(ctx, st)]
 view_source = |source| {
-	## The scope's type, named so its method can be called.
+	## The context's type, named so its method can be called.
 	Ctx : ctx
 	store_get = Ctx.store().get
 	cell_get = source.get
@@ -5158,7 +5158,7 @@ view_read = |read| if (read) 1 else 0
 ## The settle check of a view site (`Core.settled`): the view as the site
 ## holds it must be the view a build from scratch gives now, for the query
 ## and the window as they read now, at the table's version, with the
-## table's record cleared, and the site's rows must be its window. A
+## table's changes cleared, and the site's rows must be its window. A
 ## difference can only come from a turn that left the view behind; it is
 ## answered as what to report, or "" when there is none.
 view_check : EachCfg(Row(ctx, k), {}), Shows(ctx, q, k, v, s), q, View(k, v, s), Cols(Row(ctx, k), k), Table(k, v), ctx -> Str
@@ -5170,7 +5170,7 @@ view_check = |cfg, shows, q, view, cols, table, env| {
 	drawn = cols.order.map(|slot| cols.items.get(slot.to_u64()) ?? crash "internal: a view row without its key")
 	drift =
 		if table.changes_start(engine_only) != table.version(engine_only) {
-			"its table's record of changes was not cleared when the last turn ended (version ${table.version(engine_only).to_str()}, record from ${table.changes_start(engine_only).to_str()})"
+			"its table's changes were not cleared when the last turn ended (version ${table.version(engine_only).to_str()}, changes from ${table.changes_start(engine_only).to_str()})"
 		} else if view.version() != table.version(engine_only) {
 			"it is at version ${view.version().to_str()} of its table, which is at version ${table.version(engine_only).to_str()}"
 		} else if asked != q {
@@ -5609,7 +5609,7 @@ derive_settle = |input, block, depth, out, tx| {
 # fired), 6 url (location), 8 online:u8, 9 visible:u8, 10 n:u32 (size
 # name type)* output (a job's answer, with n staged handles), 11
 # class:u8 (work lost), 13 reason:u8 (file failure), 14 message (port
-# reply), 15 class:u8 [text] (port failure), 21
+# answer), 15 class:u8 [text] (port failure), 21
 # status:u16 headers size name type (a fetched body, one staged handle;
 # design.md, Appendix B).
 
@@ -6113,8 +6113,8 @@ decode_port_message = |b, handles| {
 	{ json, blobs: $blobs, files: $files }
 }
 
-## Result tags 14 and 15, and the file handles a reply carries (only a
-## reply carries any). Anything else is a contract error.
+## Result tags 14 and 15, and the file handles an answer carries (only an
+## answer carries any). Anything else is a contract error.
 decode_port_res : List(U8), List(Blob) -> Result
 decode_port_res = |b, handles| match b {
 	[14, ..] => PortAnswer(decode_port_message(b, handles))
@@ -7445,7 +7445,7 @@ expect {
 	actual == expected
 }
 
-## The end of a turn clears the record of a table whose cell the turn
+## The end of a turn clears the changes of a table whose cell the turn
 ## wrote, and leaves alone a table whose cell only shares a signature bit
 ## with a cell it wrote.
 expect {

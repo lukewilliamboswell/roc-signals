@@ -177,7 +177,7 @@ Worker := [].{
 	}
 
 	## `resource(task, input, body)` is `Engine.resource` computed in a worker:
-	## it gives `body` a layer holding the task's answer for `input`, an
+	## it gives `body` a signal holding the task's answer for `input`, an
 	## `Engine.Remote(output, Worker.Error(error))`.
 	##
 	## The job for the first input starts at mount. When `input` changes to an
@@ -215,12 +215,12 @@ Worker := [].{
 		where [work.request : work, input -> Engine.Request, work.result : work, Engine.Result -> Try(output, Error(error)), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool, error.is_eq : error, error -> Bool]
 	gather = |work, inputs, body| Engine.gather(work, inputs, body)
 
-	## How a layer that follows a task stands, in one match: no job asked
+	## How a resource that follows a task stands, in one match: no job asked
 	## for yet (`Unasked`), a job `Working`, its answer, or why there is
 	## none: the task's own error (`Failed`) beside the platform's.
 	Status(output, error) : [Unasked, Working, Answered(output), Failed(error), Timeout, Refused, Lost(Engine.WorkFault)]
 
-	## A worker layer as a [Status], so a view matches one flat union
+	## A worker resource's value as a [Status], so a view matches one flat union
 	## instead of `Failed(Failed(problem))`. While a newer job is `Working`,
 	## `remote.answered()` still gives the previous answer.
 	status : Engine.Remote(output, Error(error)) -> Status(output, error)
