@@ -43,17 +43,45 @@
       const button = document.createElement("button");
       button.type = "button";
       button.className = "code-copy";
-      button.textContent = "Copy code";
       button.setAttribute("aria-label", "Copy code sample");
+      button.title = "Copy code";
+      const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      icon.setAttribute("viewBox", "0 0 24 24");
+      icon.setAttribute("width", "16");
+      icon.setAttribute("height", "16");
+      icon.setAttribute("fill", "none");
+      icon.setAttribute("stroke", "currentColor");
+      icon.setAttribute("stroke-width", "1.75");
+      icon.setAttribute("stroke-linecap", "round");
+      icon.setAttribute("stroke-linejoin", "round");
+      icon.setAttribute("aria-hidden", "true");
+      icon.setAttribute("focusable", "false");
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      const copyPath = "M9 9h11v11H9z M15 5V3H3v12h2";
+      path.setAttribute("d", copyPath);
+      icon.append(path);
+      button.append(icon);
       const status = document.createElement("span");
       status.className = "copy-status";
       status.setAttribute("role", "status");
       wrapper.prepend(button, status);
+      let reset;
       button.addEventListener("click", async () => {
+        clearTimeout(reset);
         try {
           await navigator.clipboard.writeText(code.textContent);
           status.textContent = "Copied";
-        } catch (_) { status.textContent = "Copy failed. Select the code to copy it."; }
+          button.title = "Copied";
+          path.setAttribute("d", "m5 12 4 4L19 6");
+        } catch (_) {
+          status.textContent = "Copy failed. Select the code to copy it.";
+          button.title = status.textContent;
+          path.setAttribute("d", "M12 8v5 M12 17h.01 M12 3 2 21h20Z");
+        }
+        reset = setTimeout(() => {
+          button.title = "Copy code";
+          path.setAttribute("d", copyPath);
+        }, 2500);
       });
     }
   });

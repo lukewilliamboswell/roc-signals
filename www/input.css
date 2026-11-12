@@ -532,9 +532,12 @@ body { background: var(--site-page); color: var(--site-ink); }
 .prose-signals :not(pre) > code { color: var(--site-code); background: var(--site-code-bg); }
 .prose-signals blockquote { color: var(--site-ink); background: var(--site-code-bg); border-color: var(--site-link); }
 .code-sample { position: relative; margin: 1rem 0; border: 1px solid var(--site-rule); border-radius: .5rem; background: var(--site-code-bg); }
-.code-sample pre { margin: 0; border-radius: 0 0 .5rem .5rem; }
-.code-copy { margin: .65rem .5rem 0 1rem; cursor: pointer; }
-.copy-status { color: var(--site-muted); font-size: .875rem; }
+/* Keep horizontally scrolled source outside the copy control's corner rail. */
+.code-sample pre { margin: 0 2.5rem 0 0; border-radius: .5rem; }
+.code-copy { position: absolute; top: .5rem; right: .5rem; display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; padding: 0; cursor: pointer; opacity: 0; }
+.code-sample:hover .code-copy, .code-sample:focus-within .code-copy { opacity: 1; }
+@media (hover: none) { .code-copy { opacity: 1; } }
+.copy-status { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .prose-signals .syntax-comment { color: var(--site-comment); }
 .prose-signals .syntax-name { color: var(--site-name); }
 .prose-signals .syntax-type { color: var(--site-type); }
