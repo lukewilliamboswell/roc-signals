@@ -176,9 +176,9 @@ Worker := [].{
 		}
 	}
 
-	## `resource(task, input, body)` is `Engine.resource` computed in a worker:
-	## it gives `body` a signal holding the task's answer for `input`, an
-	## `Engine.Remote(output, Worker.Error(error))`.
+	## `resource(task, input, body)` follows the task's answers as `input`
+	## changes. It gives `body` a signal holding the task's answer for the
+	## current input, an `Engine.Remote(output, Worker.Error(error))`.
 	##
 	## The job for the first input starts at mount. When `input` changes to an
 	## unequal value, the job for the old one is stopped and one for the new
