@@ -1,76 +1,106 @@
 {% extends "base.html" %}
+{% import "macros.html" as marks %}
 
 {% block title %}Roc Signals{% endblock title %}
 
 {% block content %}
 {% set data = load_data(path="data/examples.toml") %}
 <main class="site-shell">
-  <section class="grid gap-6 py-6 lg:grid-cols-[1.2fr_0.8fr] lg:items-center">
-    <div class="grid gap-5">
-      <p class="text-sm font-medium uppercase tracking-wide text-emerald-700">Reactive by design. Pure Roc.</p>
+  <section class="site-hero">
+    <div class="grid gap-6">
+      <p class="site-eyebrow">Reactive by design. Pure Roc.</p>
       {% if config.extra.release_version | default(value="") %}
-      <p>Supported platform: <a href="{{ config.extra.github_url }}/releases/tag/{{ config.extra.release_version }}">{{ config.extra.release_version }}</a></p>
+      <p class="site-text">Supported platform: <a href="{{ config.extra.github_url }}/releases/tag/{{ config.extra.release_version }}">{{ config.extra.release_version }}</a></p>
       {% endif %}
-      <h1 class="max-w-4xl text-4xl font-semibold tracking-normal text-zinc-950 sm:text-5xl">Interactive browser apps in pure Roc.</h1>
-      <p class="max-w-3xl text-lg leading-8 text-zinc-700">A reactive engine written in Roc updates exactly the DOM that depends on what changed, with no virtual DOM, and every behaviour is testable natively. Explore the examples, read the guide, or drop in your own wasm build.</p>
-      <div class="flex flex-wrap gap-3">
-        <a class="button-primary" href="{{ get_url(path='docs/guide/', trailing_slash=true) }}">Read the guide</a>
+      <h1 class="site-display">Interactive browser apps in pure Roc.</h1>
+      <p class="site-lede">A reactive engine written in Roc updates exactly the DOM that depends on what changed, with no virtual DOM, and every behaviour is testable natively. Explore the examples, read the guide, or drop in your own wasm build.</p>
+      <div class="mt-2 flex flex-wrap gap-3">
+        <a class="button-primary" href="{{ get_url(path='docs/guide/', trailing_slash=true) }}">Read the guide {{ marks::arrow() }}</a>
         <a class="button" href="{{ get_url(path='examples/', trailing_slash=true) }}">Browse examples</a>
       </div>
     </div>
-    <section class="panel grid gap-3 p-5" data-upload-zone>
-      <div>
-        <h2 class="text-xl font-semibold text-zinc-950">Try your own app</h2>
-        <p class="mt-2 text-sm leading-6 text-zinc-600">Build with <code>roc build --target=wasm32 main.roc</code>, then drop the resulting wasm file here.</p>
+    <section class="panel relative grid gap-4 px-6 pb-6 pt-7" data-upload-zone>
+      <span class="site-legend">Input · app.wasm</span>
+      <div class="grid gap-2">
+        <h2 class="site-h3">Try your own app</h2>
+        <p class="site-text">Build with <code class="site-code">roc build --target=wasm32 main.roc</code>, then drop the resulting wasm file here.</p>
       </div>
-      <label class="grid min-h-36 cursor-pointer place-items-center rounded-lg border-2 border-dashed border-zinc-300 bg-zinc-50 p-5 text-center transition hover:border-emerald-500 hover:bg-emerald-50">
+      <label class="site-drop">
         <input class="sr-only" type="file" accept=".wasm,application/wasm" data-upload-input>
-        <span class="text-sm font-medium text-zinc-700" data-upload-status>Drop app.wasm or choose a file</span>
+        {{ marks::drop() }}
+        <span data-upload-status>Drop app.wasm or choose a file</span>
       </label>
-      <p class="hidden rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-upload-error></p>
+      <p class="hidden border border-amber-600 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-upload-error></p>
     </section>
   </section>
 
   <section class="panel hidden overflow-hidden" data-upload-runner>
-    <div class="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3">
-      <h2 class="text-lg font-semibold text-zinc-950" data-upload-title>Uploaded app</h2>
+    <div class="site-bar">
+      <h2 class="site-bar-title" data-upload-title>Uploaded app</h2>
       <button class="button" type="button" data-upload-reset>Close</button>
     </div>
     <div data-signals-upload-root></div>
   </section>
 
-  <section class="grid gap-4">
-    <div class="flex flex-wrap items-end justify-between gap-3">
-      <div>
-        <p class="text-sm font-medium text-emerald-700">Examples</p>
-        <h2 class="text-2xl font-semibold text-zinc-950">Run the maintained apps</h2>
+  {# What a turn does, as four steps along one wire: the first node is the
+     write, and nothing follows the last. #}
+  <ol class="site-trace" aria-label="How a turn works">
+    <li>
+      <div class="site-trace-line" aria-hidden="true"><span class="site-node is-live"></span><span class="site-wire"></span></div>
+      <p class="site-trace-label">01 · Write</p>
+      <p class="site-trace-text">A handler writes a state, a store cell or a table row, and says what it touched.</p>
+    </li>
+    <li>
+      <div class="site-trace-line" aria-hidden="true"><span class="site-node"></span><span class="site-wire"></span></div>
+      <p class="site-trace-label">02 · Propagate</p>
+      <p class="site-trace-text">One pass runs only the sites that read it, each once, in nesting order.</p>
+    </li>
+    <li>
+      <div class="site-trace-line" aria-hidden="true"><span class="site-node"></span><span class="site-wire"></span></div>
+      <p class="site-trace-label">03 · Patch</p>
+      <p class="site-trace-text">Exactly those DOM nodes are updated. There is no virtual DOM.</p>
+    </li>
+    <li>
+      <div class="site-trace-line" aria-hidden="true"><span class="site-node"></span></div>
+      <p class="site-trace-label">04 · Verify</p>
+      <p class="site-trace-text">The same engine runs natively, so every behaviour is a spec you can run without a browser.</p>
+    </li>
+  </ol>
+
+  <section class="grid gap-6">
+    <div class="site-section-head">
+      <div class="grid gap-1.5">
+        <p class="site-eyebrow">Examples</p>
+        <h2 class="site-h2">Run the maintained apps</h2>
       </div>
-      <a class="button" href="{{ get_url(path='examples/', trailing_slash=true) }}">All examples</a>
+      <a class="button" href="{{ get_url(path='examples/', trailing_slash=true) }}">All examples {{ marks::arrow() }}</a>
     </div>
+    {# Featured examples first, each lighting another path of its tree. #}
+    {% set featured_seen = 0 %}
     {% for example in data.examples %}
     {% if example.public and example.featured | default(value=false) %}
-    <a class="group relative grid overflow-hidden rounded-2xl border border-emerald-200 bg-emerald-950 p-6 text-white no-underline shadow-sm transition hover:border-emerald-400 hover:no-underline sm:p-8 lg:grid-cols-[1.35fr_0.65fr] lg:items-end" href="{{ get_url(path='examples/' ~ example.slug ~ '/', trailing_slash=true) }}">
-      <div class="relative z-10 grid gap-4">
-        <span class="w-fit rounded-full bg-emerald-400/15 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-emerald-200">Featured example</span>
-        <div>
-          <span class="text-3xl font-semibold tracking-normal text-white">{{ example.title }}</span>
-          <span class="mt-2 block max-w-3xl leading-7 text-emerald-100">{{ example.description }}</span>
-        </div>
-        <span class="font-medium text-white">Launch the application →</span>
-      </div>
-      <div class="relative mt-8 hidden min-h-40 lg:block" aria-hidden="true">
-        <span class="absolute right-0 top-0 h-32 w-48 rounded-xl border border-emerald-400/30 bg-emerald-900 shadow-2xl"></span>
-        <span class="absolute right-16 top-10 h-32 w-48 rounded-xl border border-emerald-300/40 bg-white/10 shadow-2xl backdrop-blur"></span>
-      </div>
+    {% set lit = featured_seen % 3 %}
+    {% set_global featured_seen = featured_seen + 1 %}
+    <a class="site-feature" href="{{ get_url(path='examples/' ~ example.slug ~ '/', trailing_slash=true) }}">
+      <span class="site-feature-body">
+        <span class="site-feature-tag">Featured example</span>
+        <span class="site-feature-title">{{ example.title }}</span>
+        <span class="site-feature-text">{{ example.description }}</span>
+        <span class="site-feature-go">Launch the application {{ marks::arrow() }}</span>
+      </span>
+      {{ marks::tree(lit=lit) }}
     </a>
     {% endif %}
     {% endfor %}
-    <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+    <div class="site-index">
+      {% set cards_seen = 0 %}
       {% for example in data.examples %}
       {% if example.public and not example.featured | default(value=false) %}
-      <a class="panel grid gap-2 p-4 no-underline transition hover:border-emerald-500" href="{{ get_url(path='examples/' ~ example.slug ~ '/', trailing_slash=true) }}">
-        <span class="font-semibold text-zinc-950">{{ example.title }}</span>
-        <span class="text-sm leading-6 text-zinc-600">{{ example.description }}</span>
+      {% set_global cards_seen = cards_seen + 1 %}
+      <a class="site-card" href="{{ get_url(path='examples/' ~ example.slug ~ '/', trailing_slash=true) }}">
+        <span class="site-card-meta"><span>{% if cards_seen < 10 %}0{% endif %}{{ cards_seen }}</span><span class="site-node" aria-hidden="true"></span></span>
+        <span class="site-card-title">{{ example.title }}</span>
+        <span class="site-card-text">{{ example.description }}</span>
       </a>
       {% endif %}
       {% endfor %}

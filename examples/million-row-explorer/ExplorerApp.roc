@@ -217,7 +217,7 @@ ExplorerApp := [].{
 	chart : Val(ctx, Explorer.Board), Str, (Explorer.Board -> Str) -> Elem(ctx)
 	chart = |b, label, draw| Engine.element(
 		"plume-chart",
-		[Engine.class("block panel"), Engine.attr("style", "height: 300px"), Engine.attr("role", "img"), Html.aria_label(label), Engine.attr_v("data-figure", b.map(draw))],
+		[Engine.class("box-content block panel"), Engine.attr("style", "height: 300px"), Engine.attr("role", "img"), Html.aria_label(label), Engine.attr_v("data-figure", b.map(draw))],
 		[],
 	)
 

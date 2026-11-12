@@ -20,12 +20,12 @@ const KEEP = 32;
 
 const STYLE = `
   :host { display: block; }
-  section { border: 1px solid #e4e4e7; border-radius: 0.75rem; background: #fff; padding: 1.25rem; display: grid; gap: 0.75rem; font: 14px/1.4 ui-sans-serif, system-ui, sans-serif; color: #18181b; }
-  h2 { margin: 0; font-size: 1rem; font-weight: 600; }
+  section { border: 1px solid #09090b; background: #fff; padding: 1.25rem; display: grid; gap: 0.75rem; font: 14px/1.4 "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; color: #09090b; }
+  h2 { margin: 0; font: 500 0.6875rem/1rem "IBM Plex Mono", ui-monospace, monospace; letter-spacing: 0.1em; text-transform: uppercase; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: 0.5rem; }
-  .stat { border: 1px solid #f4f4f5; border-radius: 0.5rem; padding: 0.5rem 0.75rem; background: #fafafa; }
-  .stat b { display: block; font-size: 1.25rem; font-variant-numeric: tabular-nums; }
-  .muted { color: #71717a; font-size: 0.8rem; }
+  .stat { border: 1px solid #d4d4d8; padding: 0.5rem 0.75rem; background: #fff; color: #52525b; font: 500 0.6875rem/1rem "IBM Plex Mono", ui-monospace, monospace; letter-spacing: 0.1em; text-transform: uppercase; }
+  .stat b { display: block; margin-top: 0.125rem; font: 500 1.25rem/1.4 "IBM Plex Mono", ui-monospace, monospace; letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; color: #09090b; }
+  .muted { color: #52525b; font-size: 0.8rem; }
   .warn { color: #b45309; font-size: 0.85rem; }
 `;
 

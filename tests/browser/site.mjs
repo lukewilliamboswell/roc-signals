@@ -228,21 +228,26 @@ try {
           // WCAG 2.2 relative luminance: compare the unrounded ratio.
           // https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html
           const ratio = (a, b) => { const x = luminance(a), y = luminance(b); return (Math.max(x, y) + .05) / (Math.min(x, y) + .05); };
-          const background = element => {
-            const layers = [];
-            for (let current = element; current; current = current.parentElement) {
-              const style = getComputedStyle(current);
-              // Featured cards have pale text over a dark gradient. Its lightest
-              // endpoint is the conservative contrast bound for the whole card.
-              const stops = style.backgroundImage.match(/rgba?\([^)]+\)/g);
-              const color = stops ? stops.reduce((a, b) => luminance(a) > luminance(b) ? a : b) : style.backgroundColor;
-              layers.unshift(rgb(color));
-            }
-            const result = layers.reduce((behind, color) => {
+          // The ground behind an element, as the foreground `against` meets
+          // it. A ground drawn with a gradient (the page's grid of dots, a
+          // legend split between page and panel) is taken at the stop that
+          // contrasts least with that foreground, so the bound holds wherever
+          // on the gradient the foreground falls.
+          const background = (element, against) => {
+            const chain = [];
+            for (let current = element; current; current = current.parentElement) chain.unshift(getComputedStyle(current));
+            const over = (behind, color) => {
               const alpha = color[3] ?? 1;
               return color.slice(0, 3).map((value, i) => value * alpha + behind[i] * (1 - alpha));
+            };
+            const text = value => `rgb(${value.join(",")})`;
+            const result = chain.reduce((behind, style) => {
+              const ground = over(behind, rgb(style.backgroundColor));
+              const stops = style.backgroundImage.match(/rgba?\([^)]+\)/g);
+              if (!stops) return ground;
+              return stops.map(stop => over(ground, rgb(stop))).reduce((a, b) => ratio(against, text(a)) <= ratio(against, text(b)) ? a : b);
             }, [255, 255, 255]);
-            return `rgb(${result.join(",")})`;
+            return text(result);
           };
           const failures = [];
           let count = 0, min = Infinity;
@@ -252,25 +257,25 @@ try {
             if (!node.textContent.trim() || element.closest("script,style,select,[aria-hidden=true]")) continue;
             const range = document.createRange(); range.selectNode(node);
             if (!range.getBoundingClientRect().width) continue;
-            const color = getComputedStyle(element).color, bg = background(element);
+            const color = getComputedStyle(element).color, bg = background(element, color);
             const value = ratio(color, bg);
             count++; min = Math.min(min, value);
             if (value < 4.5) failures.push(`${element.className}: ${color} on ${bg} = ${value}`);
           }
           for (const element of document.querySelectorAll(".theme-control select,.code-copy")) {
-            const style = getComputedStyle(element), bg = background(element);
-            for (const [label, value] of [["control text", ratio(style.color, bg)], ["control border", ratio(style.borderTopColor, bg)]]) {
+            const style = getComputedStyle(element);
+            for (const [label, value] of [["control text", ratio(style.color, background(element, style.color))], ["control border", ratio(style.borderTopColor, background(element, style.borderTopColor))]]) {
               if (value < (label === "control text" ? 4.5 : 3)) failures.push(`${label}: ${value}`);
             }
             element.focus();
             const focused = getComputedStyle(element);
             if (focused.outlineStyle === "none" || parseFloat(focused.outlineWidth) < 3) failures.push("missing visible focus outline");
             const focus = focused.outlineColor;
-            const focusRatio = ratio(focus, background(element.parentElement));
+            const focusRatio = ratio(focus, background(element.parentElement, focus));
             if (focusRatio < 3) failures.push(`focus: ${focusRatio}`);
           }
           const tokens = Object.fromEntries(Array.from(document.querySelectorAll("body > .prose-signals pre span"), element => {
-            const foreground = getComputedStyle(element).color, bg = background(element);
+            const foreground = getComputedStyle(element).color, bg = background(element, foreground);
             return [element.className, { foreground, background: bg, contrast: ratio(foreground, bg) }];
           }));
           return { failures, count, min, tokens };

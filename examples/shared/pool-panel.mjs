@@ -22,26 +22,27 @@ const POOL_SIZES = [1, 2, 4, 8];
 
 const STYLE = `
   :host { display: block; }
-  section { border: 1px solid #e4e4e7; border-radius: 0.75rem; background: #fff; padding: 1.25rem; display: grid; gap: 1rem; font: 14px/1.4 ui-sans-serif, system-ui, sans-serif; color: #18181b; }
-  h2 { margin: 0; font-size: 1rem; font-weight: 600; }
+  section { border: 1px solid #09090b; background: #fff; padding: 1.25rem; display: grid; gap: 1rem; font: 14px/1.4 "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; color: #09090b; }
+  h2 { margin: 0; font: 500 0.6875rem/1rem "IBM Plex Mono", ui-monospace, monospace; letter-spacing: 0.1em; text-transform: uppercase; }
   .head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
-  .muted { color: #71717a; font-size: 0.8rem; }
+  .muted { color: #52525b; font-size: 0.8rem; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr)); gap: 0.5rem; }
-  .stat { border: 1px solid #f4f4f5; border-radius: 0.5rem; padding: 0.5rem 0.75rem; background: #fafafa; }
-  .stat b { display: block; font-size: 1.25rem; font-variant-numeric: tabular-nums; }
-  .bar { height: 0.5rem; border-radius: 999px; background: #f4f4f5; overflow: hidden; }
-  .bar i { display: block; height: 100%; background: #059669; }
+  .stat { border: 1px solid #d4d4d8; padding: 0.5rem 0.75rem; background: #fff; color: #52525b; font: 500 0.6875rem/1rem "IBM Plex Mono", ui-monospace, monospace; letter-spacing: 0.1em; text-transform: uppercase; }
+  .stat b { display: block; margin-top: 0.125rem; font: 500 1.25rem/1.4 "IBM Plex Mono", ui-monospace, monospace; letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; color: #09090b; }
+  .bar { height: 0.5rem; background: #e4e4e7; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: #7c38f5; }
   .slots { display: flex; flex-wrap: wrap; gap: 0.25rem; }
-  .slot { width: 1.25rem; height: 1.25rem; border-radius: 0.25rem; background: #e4e4e7; }
-  .slot.busy { background: #059669; }
-  .slot.queued { background: #f59e0b; }
+  .slot { box-sizing: border-box; width: 1.25rem; height: 1.25rem; border: 1px solid #09090b; background: #fff; }
+  .slot.busy { border-color: #7c38f5; background: #7c38f5; }
+  .slot.queued { border-color: #b45309; background: #f59e0b; }
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-  th, td { text-align: left; padding: 0.2rem 0.4rem; border-bottom: 1px solid #f4f4f5; font-size: 0.8rem; }
-  th { color: #71717a; font-weight: 500; }
+  th, td { text-align: left; padding: 0.2rem 0.4rem; border-bottom: 1px solid #e4e4e7; font-size: 0.8rem; }
+  th { border-bottom-color: #09090b; color: #52525b; font: 500 0.6875rem/1rem "IBM Plex Mono", ui-monospace, monospace; letter-spacing: 0.1em; text-transform: uppercase; }
   td.n, th.n { text-align: right; }
   nav { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; font-size: 0.8rem; }
-  nav a { color: #047857; }
-  button { font: inherit; font-size: 0.8rem; padding: 0.2rem 0.6rem; border-radius: 0.375rem; border: 1px solid #d4d4d8; background: #fff; cursor: pointer; }
+  nav a { color: #612bde; }
+  button { font: inherit; font-size: 0.8rem; padding: 0.2rem 0.6rem; border: 1px solid #09090b; border-radius: 0; background: #fff; color: #09090b; cursor: pointer; }
+  button:hover { border-color: #7c38f5; color: #612bde; }
 `;
 
 const ms = (v) => (v == null || !Number.isFinite(v) ? "–" : v < 10 ? v.toFixed(1) : Math.round(v).toString());
@@ -167,7 +168,7 @@ class WorkerPoolPanel extends HTMLElement {
       .join("");
     body.innerHTML = `
       <div class="head"><h2>Worker pool</h2><span class="muted">${s.mode === "inline" ? "inline, on the page's thread" : `${s.mode}, up to ${s.maxWorkers} workers`} ·measured over ${ms(span / 1000)} s</span></div>
-      <div class="slots" title="green: a busy worker; grey: an idle or not yet started one; amber: a queued job">${slots.join("")}</div>
+      <div class="slots" title="filled: a busy worker; outlined: an idle or not yet started one; amber: a queued job">${slots.join("")}</div>
       <div class="grid">
         ${stat("Busy", s.pool.busy)}${stat("Idle", s.pool.idle)}${stat("Queued", s.pool.queued)}
         ${stat("Peak busy", s.pool.peak.busy)}${stat("Peak queued", s.pool.peak.queued)}

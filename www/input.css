@@ -2,153 +2,89 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ----------------------------------------------------------------------
+   The Schematic theme
+
+   The site and its examples are drawn like a wiring diagram: square
+   corners, one-pixel rules and no shadows; IBM Plex Sans for text and
+   IBM Plex Mono capitals for labels; ink on paper, with one accent
+   (Roc's violet on paper, Roc's cyan on ink) spent only on what is live
+   or actionable. Status colors mean status and nothing else.
+   ---------------------------------------------------------------------- */
+
+/* IBM Plex Sans and Mono, Latin subsets, under the SIL Open Font License
+   1.1 (www/static/fonts/LICENSE.txt). They are served beside this
+   stylesheet, so the addresses are relative to it. */
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/ibm-plex-sans-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/ibm-plex-sans-400-italic.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("fonts/ibm-plex-sans-500.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("fonts/ibm-plex-sans-600.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/ibm-plex-mono-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("fonts/ibm-plex-mono-500.woff2") format("woff2");
+}
+
 @layer base {
   html {
     color-scheme: light;
   }
 
   body {
-    @apply bg-zinc-50 text-zinc-950 antialiased;
+    @apply bg-white font-sans text-zinc-950 antialiased;
   }
 
   a {
-    @apply text-emerald-700 underline-offset-2 hover:text-emerald-800 hover:underline;
+    @apply text-accent-700 underline-offset-2 hover:text-accent-800 hover:underline;
   }
 }
 
 @layer components {
   .site-shell {
-    @apply mx-auto grid w-full max-w-6xl gap-8 px-4 py-6 sm:px-6 lg:px-8;
+    @apply mx-auto grid w-full max-w-6xl gap-10 px-4 py-8 sm:px-6 lg:px-8;
     grid-template-columns: minmax(0, 1fr);
   }
 
   .site-shell > * {
     min-width: 0;
-  }
-
-  .panel {
-    @apply min-w-0 rounded-lg border border-zinc-200 bg-white shadow-sm;
-  }
-
-  .button {
-    @apply inline-flex items-center justify-center rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm font-medium text-zinc-900 shadow-sm transition hover:border-emerald-500 hover:text-emerald-700;
-  }
-
-  .button-primary {
-    @apply inline-flex items-center justify-center rounded-md border border-emerald-600 bg-emerald-600 px-3 py-2 text-sm font-medium text-white shadow-sm transition hover:border-emerald-700 hover:bg-emerald-700;
-  }
-
-  .prose-signals {
-    @apply min-w-0 max-w-none text-zinc-800;
-  }
-
-  .prose-signals h1 {
-    @apply mb-4 text-3xl font-semibold tracking-normal text-zinc-950;
-  }
-
-  .prose-signals h2 {
-    @apply mt-8 border-t border-zinc-200 pt-6 text-2xl font-semibold tracking-normal text-zinc-950;
-  }
-
-  .prose-signals h3 {
-    @apply mt-6 text-xl font-semibold tracking-normal text-zinc-950;
-  }
-
-  .prose-signals p,
-  .prose-signals li {
-    @apply leading-7;
-  }
-
-  /* The Tailwind reset strips paragraph margins, so consecutive paragraphs
-     would otherwise run together with no separation. */
-  .prose-signals p {
-    @apply my-4;
-  }
-
-  .prose-signals li p {
-    @apply my-2;
-  }
-
-  .prose-signals h2 + p,
-  .prose-signals h3 + p {
-    @apply mt-0;
-  }
-
-  .prose-signals ul,
-  .prose-signals ol {
-    @apply my-4 grid gap-2 pl-6;
-  }
-
-  /* Grid items default to min-width:auto, so a nested code block would
-     stretch the list past the viewport instead of scrolling inside it. */
-  .prose-signals li {
-    @apply min-w-0;
-  }
-
-  .prose-signals ul {
-    @apply list-disc;
-  }
-
-  .prose-signals ol {
-    @apply list-decimal;
-  }
-
-  .prose-signals pre {
-    @apply my-4 max-w-full overflow-x-auto rounded-lg bg-zinc-950 p-4 text-sm text-zinc-50;
-  }
-
-  .prose-signals code {
-    @apply rounded bg-zinc-100 px-1 py-0.5 text-sm text-zinc-900;
-  }
-
-  /* Long identifiers like `Html.on_blur(model.on_unit(commit_seats))` have no
-     break opportunities and would otherwise overflow on narrow screens. */
-  .prose-signals :not(pre) > code {
-    @apply break-words;
-  }
-
-  .prose-signals pre code {
-    @apply bg-transparent p-0 text-zinc-50;
-  }
-
-  .prose-signals blockquote {
-    @apply my-4 rounded-r-lg border-l-4 border-emerald-500 bg-emerald-50 px-4 py-3;
-  }
-
-  .prose-signals blockquote p {
-    @apply my-2 text-sm text-emerald-950;
-  }
-
-  .prose-signals blockquote p:first-child {
-    @apply mt-0;
-  }
-
-  .prose-signals blockquote p:last-child {
-    @apply mb-0;
-  }
-
-  .prose-signals table {
-    @apply my-4 block w-full max-w-full overflow-x-auto border-collapse text-left text-sm;
-  }
-
-  .prose-signals thead th {
-    @apply border-b border-zinc-300 pb-2 pr-4 font-semibold text-zinc-950;
-  }
-
-  .prose-signals tbody td {
-    @apply border-b border-zinc-200 py-2 pr-4 align-top leading-6;
-  }
-
-  .prose-signals tbody tr:last-child td {
-    @apply border-b-0;
-  }
-
-  .prose-signals a {
-    @apply text-emerald-700 underline underline-offset-2 hover:text-emerald-800;
-  }
-
-  .prose-signals hr {
-    @apply my-8 border-zinc-200;
   }
 
   /* ------------------------------------------------------------------
@@ -158,6 +94,10 @@
      read as one product rather than twenty unrelated demos. Examples keep
      Tailwind utilities for layout (grid/gap/columns); these components own
      the shared surface, type, and control vocabulary.
+
+     An app is always drawn on paper: the classes here name zinc ink and
+     the accent directly, and the site's light and dark palettes never
+     reach inside a mounted app.
      ------------------------------------------------------------------ */
 
   /* The runner strips the site container from an example page, so each app
@@ -180,7 +120,7 @@
   }
 
   .app-header {
-    @apply grid gap-2 border-b border-zinc-200 pb-6;
+    @apply grid gap-2 border-b border-zinc-950 pb-6;
   }
 
   .app-title {
@@ -193,12 +133,18 @@
 
   /* Surfaces -------------------------------------------------------- */
 
+  /* A surface is a ruled box. Depth is drawn with lines: an ink rule for
+     the box itself, a pale one for what divides its contents. */
+  .panel {
+    @apply min-w-0 border border-zinc-950 bg-white;
+  }
+
   .panel-head {
-    @apply flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3;
+    @apply flex flex-wrap items-center justify-between gap-3 border-b border-zinc-950 px-4 py-3;
   }
 
   .panel-title {
-    @apply text-sm font-semibold uppercase tracking-wide text-zinc-500;
+    @apply font-mono text-xs font-medium uppercase tracking-widest text-zinc-950;
   }
 
   .panel-body {
@@ -206,7 +152,7 @@
   }
 
   .card {
-    @apply grid gap-2 rounded-md border border-zinc-200 bg-white p-3 shadow-sm transition hover:border-zinc-300;
+    @apply grid gap-2 border border-zinc-300 bg-white p-3 transition-colors hover:border-zinc-950;
   }
 
   .card-title {
@@ -218,13 +164,15 @@
   }
 
   .empty-state {
-    @apply rounded-md border border-dashed border-zinc-300 bg-zinc-50 px-4 py-6 text-center text-sm text-zinc-500;
+    @apply border border-dashed border-zinc-400 bg-zinc-50 px-4 py-6 text-center text-sm text-zinc-600;
   }
 
   /* Type ------------------------------------------------------------ */
 
+  /* Mono capitals are the annotation voice: section titles, metric
+     captions, column heads and badges. Running text stays in the sans. */
   .label {
-    @apply text-xs font-medium uppercase tracking-wide text-zinc-500;
+    @apply font-mono text-[0.6875rem] font-medium uppercase leading-4 tracking-widest text-zinc-600;
   }
 
   .value {
@@ -236,7 +184,7 @@
   }
 
   .hint {
-    @apply text-xs text-zinc-500;
+    @apply text-xs text-zinc-600;
   }
 
   .numeric {
@@ -253,41 +201,41 @@
   }
 
   .stat {
-    @apply grid gap-1 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2;
+    @apply grid gap-1 border border-zinc-300 bg-white px-3 py-2;
   }
 
   .stat-label {
-    @apply text-xs font-medium uppercase tracking-wide text-zinc-500;
+    @apply font-mono text-[0.6875rem] font-medium uppercase leading-4 tracking-widest text-zinc-600;
   }
 
   .stat-value {
-    @apply text-lg font-semibold tabular-nums text-zinc-950;
+    @apply font-mono text-xl font-medium tabular-nums text-zinc-950;
   }
 
   /* Badges ---------------------------------------------------------- */
 
   .badge {
-    @apply inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium;
+    @apply inline-flex items-center gap-1 border px-2 py-0.5 font-mono text-[0.6875rem] font-medium uppercase leading-4 tracking-wider;
   }
 
   .badge-neutral {
-    @apply border-zinc-200 bg-zinc-100 text-zinc-700;
+    @apply border-zinc-400 bg-zinc-100 text-zinc-700;
   }
 
   .badge-ok {
-    @apply border-emerald-200 bg-emerald-50 text-emerald-800;
+    @apply border-emerald-600 bg-emerald-50 text-emerald-800;
   }
 
   .badge-warn {
-    @apply border-amber-200 bg-amber-50 text-amber-800;
+    @apply border-amber-600 bg-amber-50 text-amber-800;
   }
 
   .badge-danger {
-    @apply border-red-200 bg-red-50 text-red-800;
+    @apply border-red-600 bg-red-50 text-red-800;
   }
 
   .badge-info {
-    @apply border-sky-200 bg-sky-50 text-sky-800;
+    @apply border-sky-600 bg-sky-50 text-sky-800;
   }
 
   /* Controls -------------------------------------------------------- */
@@ -296,22 +244,22 @@
     @apply grid gap-1.5;
   }
 
-  /* Form labels stay sentence case; the uppercase eyebrow treatment is
-     reserved for section titles and metric captions. */
+  /* Form labels stay sentence case; the mono capitals are reserved for
+     section titles and metric captions. */
   .field-label {
     @apply text-sm font-medium text-zinc-700;
   }
 
   .input {
-    @apply w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 shadow-sm transition placeholder:text-zinc-400 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-100;
+    @apply w-full rounded-none border border-zinc-950 bg-white px-3 py-2 text-sm text-zinc-950 transition-colors placeholder:text-zinc-500 focus:outline focus:outline-2 focus:-outline-offset-1 focus:outline-accent-600;
   }
 
   .input:disabled {
-    @apply cursor-not-allowed bg-zinc-100 text-zinc-500;
+    @apply cursor-not-allowed border-zinc-400 bg-zinc-100 text-zinc-500;
   }
 
   .input[aria-invalid="true"] {
-    @apply border-red-400 focus:border-red-500 focus:ring-red-100;
+    @apply border-red-600 focus:outline-red-600;
   }
 
   .textarea {
@@ -319,11 +267,21 @@
   }
 
   .checkbox {
-    @apply h-4 w-4 rounded border-zinc-300 text-emerald-600 focus:ring-2 focus:ring-emerald-200;
+    @apply h-4 w-4 rounded-none border-zinc-950 accent-accent-600 focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-accent-600;
   }
 
   .check-row {
     @apply flex items-center gap-2 text-sm text-zinc-800;
+  }
+
+  /* A button is a link as often as it is a button, so each names its own
+     hover ink and underline rather than taking a link's. */
+  .button {
+    @apply inline-flex items-center justify-center gap-2 rounded-none border border-zinc-950 bg-white px-3 py-2 text-sm font-medium text-zinc-950 no-underline transition-colors hover:border-accent-600 hover:text-accent-700 hover:no-underline;
+  }
+
+  .button-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-none border border-accent-600 bg-accent-600 px-3 py-2 text-sm font-medium text-white no-underline transition-colors hover:border-zinc-950 hover:bg-zinc-950 hover:text-white hover:no-underline;
   }
 
   .button:disabled,
@@ -332,11 +290,11 @@
   }
 
   .button-ghost {
-    @apply inline-flex items-center justify-center rounded-md border border-transparent px-2.5 py-1.5 text-sm font-medium text-zinc-600 transition hover:bg-zinc-100 hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex items-center justify-center rounded-none border border-transparent px-2.5 py-1.5 text-sm font-medium text-zinc-700 transition-colors hover:border-zinc-950 hover:text-zinc-950 disabled:cursor-not-allowed disabled:opacity-50;
   }
 
   .button-danger {
-    @apply inline-flex items-center justify-center rounded-md border border-red-300 bg-white px-3 py-2 text-sm font-medium text-red-700 shadow-sm transition hover:border-red-500 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex items-center justify-center rounded-none border border-red-700 bg-white px-3 py-2 text-sm font-medium text-red-700 transition-colors hover:bg-red-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-50;
   }
 
   .button-sm {
@@ -346,23 +304,23 @@
   /* Notices --------------------------------------------------------- */
 
   .notice {
-    @apply rounded-md border px-3 py-2 text-sm;
+    @apply border px-3 py-2 text-sm;
   }
 
   .notice-error {
-    @apply border-red-200 bg-red-50 text-red-800;
+    @apply border-red-600 bg-red-50 text-red-800;
   }
 
   .notice-ok {
-    @apply border-emerald-200 bg-emerald-50 text-emerald-800;
+    @apply border-emerald-600 bg-emerald-50 text-emerald-800;
   }
 
   .notice-warn {
-    @apply border-amber-200 bg-amber-50 text-amber-900;
+    @apply border-amber-600 bg-amber-50 text-amber-900;
   }
 
   .notice-info {
-    @apply border-sky-200 bg-sky-50 text-sky-900;
+    @apply border-sky-600 bg-sky-50 text-sky-900;
   }
 
   /* Data tables ----------------------------------------------------- */
@@ -372,11 +330,11 @@
   }
 
   .data-table th {
-    @apply whitespace-nowrap border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-zinc-500;
+    @apply whitespace-nowrap border-b border-zinc-950 bg-white px-3 py-2 font-mono text-[0.6875rem] font-medium uppercase leading-4 tracking-widest text-zinc-600;
   }
 
   .data-table td {
-    @apply border-b border-zinc-100 px-3 py-2 align-middle text-zinc-800;
+    @apply border-b border-zinc-200 px-3 py-2 align-middle text-zinc-800;
   }
 
   .data-table tr:last-child td {
@@ -387,12 +345,14 @@
     @apply -mx-4 overflow-x-auto px-4;
   }
 
+  /* An example's own page ------------------------------------------- */
+
   .example-standalone [data-site-header] {
     @apply hidden;
   }
 
   .example-standalone {
-    @apply overflow-x-hidden bg-white;
+    @apply overflow-x-hidden;
   }
 
   .example-standalone .example-page {
@@ -400,7 +360,7 @@
   }
 
   .example-standalone .example-runner {
-    @apply min-h-screen rounded-none border-0 shadow-none;
+    @apply min-h-screen border-0;
   }
 
   .example-standalone .example-runner-toolbar {
@@ -411,15 +371,18 @@
     min-height: calc(100vh - 4.25rem);
   }
 
-  .conduit-app {
-    background:
-      radial-gradient(circle at 12% 6%, rgb(209 250 229 / 0.45), transparent 24rem),
-      linear-gradient(to bottom, #fff, #fafafa 48rem);
+  /* Conduit --------------------------------------------------------- */
+
+  /* Conduit keeps the green of the RealWorld apps it is one of, on the
+     theme's square geometry. A link takes that green unless its own class
+     names another ink; `:where` keeps this as weak as the base rule. */
+  :where(.conduit-app) a {
+    @apply text-emerald-700 hover:text-emerald-800;
   }
 
   .conduit-app input:focus,
   .conduit-app textarea:focus {
-    @apply border-emerald-500 outline-none ring-2 ring-emerald-100;
+    @apply outline outline-2 -outline-offset-1 outline-emerald-600;
   }
 
   .conduit-prose > * + * {
@@ -440,49 +403,46 @@
   }
 
   .conduit-prose blockquote {
-    @apply border-l-2 border-emerald-500 pl-4 italic text-zinc-600;
+    @apply border-l-2 border-emerald-600 pl-4 italic text-zinc-600;
   }
 }
 
-/* Site chrome and documentation share a palette. Mounted examples keep their
-   own authored colors; these selectors never recolor their engine-owned DOM. */
+/* ----------------------------------------------------------------------
+   Site chrome and documentation
+
+   The pages around an app share one palette with a light and a dark form.
+   Mounted examples keep their own authored colors: no selector below
+   recolors engine-owned DOM, and every class here is named `site-…` (or
+   scoped to the docs) so it cannot meet a class an app wrote.
+
+   These rules sit outside Tailwind's layers on purpose. They are always
+   emitted, whichever templates or scripts name them, and they follow the
+   utilities, so a `site-…` class decides the ink of what it styles.
+   ---------------------------------------------------------------------- */
+
 :root {
-color-scheme: light;
-  --site-page: #f7f8fa;
+  color-scheme: light;
+  --site-page: #ffffff;
+  --site-dot: #dfe2e7;
   --site-panel: #ffffff;
-  --site-ink: #202733;
-  --site-muted: #4b5563;
-  --site-rule: #8b919b;
-  --site-link: #005f50;
-  --site-hover: #004638;
-  --site-accent: #005f50;
+  --site-tint: #f3f4f6;
+  --site-ink: #0f1115;
+  --site-muted: #4a4f59;
+  --site-rule: #0f1115;
+  --site-rule-soft: #c9cdd4;
+  --site-link: #612bde;
+  --site-hover: #4b1fb4;
+  --site-accent: #7c38f5;
   --site-accent-ink: #ffffff;
-  --site-focus: #005fcc;
-  --site-code-bg: #f5f5f2;
-  --site-code: #2b313d;
-  --site-comment: #526573;
-  --site-name: #3454a4;
-  --site-type: #005a85;
-  --site-keyword: #7639a5;
-  --site-number: #9c3d10;
-  --site-string: #246333;
-  --site-symbol: #465369;
-  --site-invalid: #ac2634;
-}
-:root[data-theme="dark"] {
-color-scheme: dark;
-  --site-page: #11151d;
-  --site-panel: #1c222d;
-  --site-ink: #eef2f7;
-  --site-muted: #b9c3d1;
-  --site-rule: #7a8492;
-  --site-link: #8de0c6;
-  --site-hover: #b4f5df;
-  --site-accent: #8de0c6;
-  --site-accent-ink: #11151d;
-  --site-focus: #9bbcff;
-  --site-code-bg: #20252a;
-  --site-code: #ececea;
+  --site-accent-tint: #f3edfe;
+  --site-focus: #7c38f5;
+  /* The ink block: featured cards and code samples, dark in both palettes,
+     with the cyan that marks what is live on it. */
+  --site-block: #0f1115;
+  --site-block-ink: #f4f5f7;
+  --site-block-muted: #b7bcc6;
+  --site-block-rule: #8d93a0;
+  --site-live: #1bd6bd;
   --site-comment: #a5b4c4;
   --site-name: #9bbcff;
   --site-type: #86d5eb;
@@ -492,52 +452,716 @@ color-scheme: dark;
   --site-symbol: #c4ccd6;
   --site-invalid: #ffacb7;
 }
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --site-page: #0d0f13;
+  --site-dot: #23272f;
+  --site-panel: #14171d;
+  --site-tint: #1b1f27;
+  --site-ink: #f1f3f6;
+  --site-muted: #aeb5c0;
+  --site-rule: #9aa1ad;
+  --site-rule-soft: #3a404b;
+  --site-link: #1bd6bd;
+  --site-hover: #8af4e6;
+  --site-accent: #1bd6bd;
+  --site-accent-ink: #0d0f13;
+  --site-accent-tint: #10282a;
+  --site-focus: #1bd6bd;
+  --site-block: #171a21;
+  --site-block-ink: #f1f3f6;
+  --site-block-muted: #aeb5c0;
+}
+
+/* Without the script that sets `data-theme`, follow the system. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
-color-scheme: dark;
-  --site-page: #11151d;
-  --site-panel: #1c222d;
-  --site-ink: #eef2f7;
-  --site-muted: #b9c3d1;
-  --site-rule: #7a8492;
-  --site-link: #8de0c6;
-  --site-hover: #b4f5df;
-  --site-accent: #8de0c6;
-  --site-accent-ink: #11151d;
-  --site-focus: #9bbcff;
-  --site-code-bg: #20252a;
-  --site-code: #ececea;
-  --site-comment: #a5b4c4;
-  --site-name: #9bbcff;
-  --site-type: #86d5eb;
-  --site-keyword: #d6adff;
-  --site-number: #ffc08a;
-  --site-string: #a6d69a;
-  --site-symbol: #c4ccd6;
-  --site-invalid: #ffacb7;
+    color-scheme: dark;
+    --site-page: #0d0f13;
+    --site-dot: #23272f;
+    --site-panel: #14171d;
+    --site-tint: #1b1f27;
+    --site-ink: #f1f3f6;
+    --site-muted: #aeb5c0;
+    --site-rule: #9aa1ad;
+    --site-rule-soft: #3a404b;
+    --site-link: #1bd6bd;
+    --site-hover: #8af4e6;
+    --site-accent: #1bd6bd;
+    --site-accent-ink: #0d0f13;
+    --site-accent-tint: #10282a;
+    --site-focus: #1bd6bd;
+    --site-block: #171a21;
+    --site-block-ink: #f1f3f6;
+    --site-block-muted: #aeb5c0;
   }
 }
 
-body { background: var(--site-page); color: var(--site-ink); }
-[data-site-header], .panel:not([data-signals-wasm] *, [data-signals-upload-root] *), .example-runner-toolbar { background: var(--site-panel); border-color: var(--site-rule); }
-.theme-control { display: inline-flex; align-items: center; gap: .4rem; color: var(--site-ink); }
-.theme-control[hidden] { display: none; }
-.theme-control select, .code-copy { color: var(--site-ink); background: var(--site-panel); border: 1px solid var(--site-rule); border-radius: .4rem; padding: .35rem .55rem; font-size: .875rem; }
-:where(a, button, select, input, pre):focus-visible:not([data-signals-wasm] *, [data-signals-upload-root] *) { outline: 3px solid var(--site-focus); outline-offset: 3px; }
-.prose-signals, .prose-signals :is(h1,h2,h3,h4,th) { color: var(--site-ink); }
-.prose-signals :is(h2,th,td,hr) { border-color: var(--site-rule); }
-.prose-signals a, a:not([data-signals-wasm] *, [data-signals-upload-root] *) { color: var(--site-link); }
-.prose-signals a:hover, a:hover:not([data-signals-wasm] *, [data-signals-upload-root] *) { color: var(--site-hover); }
-.prose-signals pre, .prose-signals pre code { color: var(--site-code); background: var(--site-code-bg); }
-.prose-signals :not(pre) > code { color: var(--site-code); background: var(--site-code-bg); }
-.prose-signals blockquote { color: var(--site-ink); background: var(--site-code-bg); border-color: var(--site-link); }
-.code-sample { position: relative; margin: 1rem 0; border: 1px solid var(--site-rule); border-radius: .5rem; background: var(--site-code-bg); }
-/* Keep horizontally scrolled source outside the copy control's corner rail. */
-.code-sample pre { margin: 0 2.5rem 0 0; border-radius: .5rem; }
-.code-copy { position: absolute; top: .5rem; right: .5rem; display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; padding: 0; cursor: pointer; opacity: 0; }
-.code-sample:hover .code-copy, .code-sample:focus-within .code-copy { opacity: 1; }
-@media (hover: none) { .code-copy { opacity: 1; } }
-.copy-status { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* Drafting paper: a dot every 24 pixels. Text set straight on the page must
+   read against a dot as well as against the paper between them. */
+body {
+  background-color: var(--site-page);
+  background-image: radial-gradient(var(--site-dot) 1px, transparent 1px);
+  background-size: 24px 24px;
+  color: var(--site-ink);
+}
+
+/* A mounted app is always drawn on paper, whatever the site's palette. */
+[data-signals-wasm],
+[data-signals-upload-root] {
+  color-scheme: light;
+  color: #09090b;
+  background: #ffffff;
+}
+
+/* Links, focus and the shared surfaces, outside a mounted app. */
+a:not([data-signals-wasm] *, [data-signals-upload-root] *) {
+  color: var(--site-link);
+}
+
+a:hover:not([data-signals-wasm] *, [data-signals-upload-root] *) {
+  color: var(--site-hover);
+}
+
+:where(a, button, select, input, pre):focus-visible:not([data-signals-wasm] *, [data-signals-upload-root] *) {
+  outline: 3px solid var(--site-focus);
+  outline-offset: 3px;
+}
+
+.panel:not([data-signals-wasm] *, [data-signals-upload-root] *) {
+  border-color: var(--site-rule);
+  background: var(--site-panel);
+}
+
+.button:not([data-signals-wasm] *, [data-signals-upload-root] *),
+.button-primary:not([data-signals-wasm] *, [data-signals-upload-root] *) {
+  padding: 0.625rem 1.125rem;
+  font-size: 0.9375rem;
+}
+
+.button:not([data-signals-wasm] *, [data-signals-upload-root] *) {
+  border-color: var(--site-rule);
+  background: var(--site-panel);
+  color: var(--site-ink);
+}
+
+.button:hover:not([data-signals-wasm] *, [data-signals-upload-root] *) {
+  border-color: var(--site-accent);
+  color: var(--site-link);
+}
+
+.button-primary:not([data-signals-wasm] *, [data-signals-upload-root] *) {
+  border-color: var(--site-accent);
+  background: var(--site-accent);
+  color: var(--site-accent-ink);
+}
+
+/* Hovered, the primary action inverts to the page's ink; its own ink is
+   the page's paper in both palettes, so it stays readable throughout. */
+.button-primary:hover:not([data-signals-wasm] *, [data-signals-upload-root] *) {
+  border-color: var(--site-ink);
+  background: var(--site-ink);
+  color: var(--site-accent-ink);
+}
+
+.site-icon {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+/* Signal marks: a node is a small square, a wire a one-pixel line, and the
+   live one is filled with the accent. */
+.site-node {
+  flex: none;
+  box-sizing: border-box;
+  width: 0.5rem;
+  height: 0.5rem;
+  border: 1px solid var(--site-ink);
+  background: var(--site-panel);
+}
+
+.site-node.is-live {
+  border-color: var(--site-accent);
+  background: var(--site-accent);
+}
+
+.site-wire {
+  height: 1px;
+  background: var(--site-ink);
+}
+
+/* Header ------------------------------------------------------------- */
+
+.site-header {
+  border-bottom: 1px solid var(--site-rule);
+  background: var(--site-panel);
+}
+
+.site-nav {
+  @apply mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-x-6 gap-y-1 px-4 py-3 sm:px-6 lg:px-8;
+}
+
+a.site-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.375rem 0;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--site-ink);
+  text-decoration: none;
+}
+
+a.site-brand:hover {
+  color: var(--site-link);
+  text-decoration: none;
+}
+
+.site-mark {
+  display: inline-flex;
+  align-items: center;
+}
+
+.site-mark .site-wire {
+  width: 0.625rem;
+}
+
+.site-links {
+  @apply flex flex-wrap items-center gap-x-7 gap-y-1 font-mono text-xs uppercase tracking-widest;
+}
+
+.site-links a {
+  padding: 0.5rem 0;
+  color: var(--site-ink);
+  text-decoration: none;
+}
+
+.site-links a:hover {
+  color: var(--site-link);
+  text-decoration: none;
+}
+
+.theme-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--site-muted);
+}
+
+.theme-control[hidden] {
+  display: none;
+}
+
+.theme-control select {
+  border: 1px solid var(--site-rule);
+  border-radius: 0;
+  background: var(--site-panel);
+  padding: 0.3rem 0.5rem;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: var(--site-ink);
+}
+
+/* Type --------------------------------------------------------------- */
+
+.site-eyebrow {
+  @apply flex items-center gap-2.5 font-mono text-xs font-medium uppercase tracking-widest;
+  color: var(--site-link);
+}
+
+.site-eyebrow::before {
+  content: "";
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  background: var(--site-accent);
+}
+
+.site-display {
+  @apply text-[2.5rem] font-semibold leading-[1.04] sm:text-[4rem] sm:leading-[1.02];
+  letter-spacing: -0.025em;
+  color: var(--site-ink);
+}
+
+.site-h1 {
+  @apply text-4xl font-semibold;
+  letter-spacing: -0.02em;
+  color: var(--site-ink);
+}
+
+.site-h2 {
+  @apply text-3xl font-semibold;
+  letter-spacing: -0.015em;
+  color: var(--site-ink);
+}
+
+.site-h3 {
+  @apply text-xl font-semibold;
+  letter-spacing: -0.01em;
+  color: var(--site-ink);
+}
+
+.site-lede {
+  @apply max-w-[38em] text-lg leading-[1.6];
+  color: var(--site-muted);
+}
+
+.site-text {
+  @apply text-sm leading-6;
+  color: var(--site-muted);
+}
+
+.site-text strong {
+  font-weight: 600;
+  color: var(--site-ink);
+}
+
+.site-code,
+.prose-signals :not(pre) > code {
+  @apply break-words font-mono text-[0.875em];
+  background: var(--site-tint);
+  padding: 0.0625rem 0.3125rem;
+  color: var(--site-ink);
+}
+
+/* A panel's caption, set into its top rule. Its ground is the page above
+   the rule and the panel below it. */
+.site-legend {
+  @apply absolute left-4 px-2 font-mono text-[0.6875rem] uppercase leading-[1.125rem] tracking-widest;
+  top: -0.59375rem;
+  background: linear-gradient(var(--site-page) 50%, var(--site-panel) 50%);
+  color: var(--site-muted);
+}
+
+/* A bar across the top of a surface: the uploaded app's and an example's. */
+.site-bar {
+  @apply flex flex-wrap items-center justify-between gap-3 px-4 py-3;
+  border-bottom: 1px solid var(--site-rule);
+  background: var(--site-panel);
+  color: var(--site-ink);
+}
+
+.site-bar-divider {
+  height: 1.25rem;
+  border-left: 1px solid var(--site-rule);
+}
+
+.site-bar-title {
+  @apply truncate text-sm font-medium;
+  color: var(--site-ink);
+}
+
+/* Home ---------------------------------------------------------------- */
+
+.site-hero {
+  @apply grid items-center gap-x-14 gap-y-12 pb-6 pt-8 sm:pt-12 lg:grid-cols-[1.25fr_0.75fr];
+}
+
+.site-drop {
+  @apply grid min-h-36 cursor-pointer place-items-center content-center gap-2.5 p-5 text-center text-sm font-medium transition-colors;
+  border: 1px dashed var(--site-rule);
+  background: var(--site-tint);
+  color: var(--site-ink);
+}
+
+.site-drop:hover,
+.is-dragging .site-drop {
+  border-color: var(--site-accent);
+  background: var(--site-accent-tint);
+}
+
+.is-dragging .site-drop {
+  border-style: solid;
+}
+
+.site-drop:focus-within {
+  outline: 3px solid var(--site-focus);
+  outline-offset: 3px;
+}
+
+.site-drop .site-icon {
+  width: 1.75rem;
+  height: 1.75rem;
+}
+
+/* How a turn works: four steps along one wire. Stacked in one column the
+   steps have no neighbour to reach, so the wire is drawn from two columns up. */
+.site-trace {
+  @apply grid gap-y-7 sm:grid-cols-2 lg:grid-cols-4;
+}
+
+.site-trace-line {
+  display: flex;
+  align-items: center;
+}
+
+.site-trace-line .site-node {
+  width: 0.6875rem;
+  height: 0.6875rem;
+}
+
+.site-trace-line .site-wire {
+  @apply hidden sm:block;
+  flex: 1;
+}
+
+.site-trace-label {
+  @apply mt-3.5 font-mono text-[0.6875rem] font-medium uppercase leading-4 tracking-widest;
+  color: var(--site-ink);
+}
+
+.site-trace-text {
+  @apply mr-6 mt-1.5 text-sm leading-[1.55];
+  color: var(--site-muted);
+}
+
+.site-section-head {
+  @apply flex flex-wrap items-end justify-between gap-4 pt-5;
+  border-top: 1px solid var(--site-rule);
+}
+
+/* Featured examples: the ink block ------------------------------------ */
+
+a.site-feature {
+  @apply flex flex-wrap items-end justify-between gap-8 p-6 sm:p-10;
+  border: 1px solid var(--site-rule);
+  background: var(--site-block);
+  color: var(--site-block-ink);
+  text-decoration: none;
+}
+
+a.site-feature:hover {
+  border-color: var(--site-live);
+  color: var(--site-block-ink);
+  text-decoration: none;
+}
+
+.site-feature-body {
+  @apply grid min-w-0 justify-items-start gap-3;
+  flex: 3 1 26rem;
+}
+
+.site-feature-tag {
+  @apply px-2 py-1 font-mono text-[0.6875rem] font-medium uppercase leading-4 tracking-widest;
+  border: 1px solid var(--site-live);
+  color: var(--site-live);
+}
+
+.site-feature-title {
+  @apply mt-2 text-4xl font-semibold leading-[1.05] sm:text-[2.75rem];
+  letter-spacing: -0.02em;
+  color: var(--site-block-ink);
+}
+
+.site-feature-text {
+  @apply max-w-[36em] leading-[1.6];
+  color: var(--site-block-muted);
+}
+
+.site-feature-text strong {
+  font-weight: 600;
+  color: var(--site-block-ink);
+}
+
+.site-feature-go {
+  @apply mt-3 inline-flex items-center gap-2.5 font-medium;
+  color: var(--site-block-ink);
+}
+
+a.site-feature:hover .site-feature-go {
+  color: var(--site-live);
+}
+
+/* Its illustration: a tree of ten sites with one changed path lit. */
+.site-tree {
+  @apply hidden lg:block;
+  flex: 0 0 16.75rem;
+}
+
+.site-tree svg {
+  display: block;
+  width: 16.75rem;
+  height: 7.625rem;
+  fill: var(--site-block);
+  stroke: var(--site-block-rule);
+}
+
+.site-tree path {
+  fill: none;
+}
+
+.site-tree-lit {
+  display: none;
+  stroke: var(--site-live);
+}
+
+.site-tree[data-lit="0"] .site-tree-lit-0,
+.site-tree[data-lit="1"] .site-tree-lit-1,
+.site-tree[data-lit="2"] .site-tree-lit-2 {
+  display: inline;
+}
+
+.site-tree-lit .is-live {
+  fill: var(--site-live);
+}
+
+.site-tree-label {
+  @apply mt-3 block text-center font-mono text-[0.6875rem] uppercase leading-4 tracking-widest;
+  color: var(--site-block-muted);
+}
+
+/* The ruled index of examples ----------------------------------------- */
+
+/* Neighbours share one rule: each cell is ruled all round and overlaps the
+   next by that pixel, which the index's own padding gives back at its right
+   and bottom edges. A short last row then ends where its cells do. */
+.site-index {
+  @apply grid;
+  grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+  padding: 0 1px 1px 0;
+}
+
+.site-index > * {
+  margin: 0 -1px -1px 0;
+}
+
+a.site-card {
+  @apply flex flex-col gap-2.5 px-5 pb-6 pt-5 transition-colors;
+  border: 1px solid var(--site-rule);
+  background: var(--site-panel);
+  color: var(--site-ink);
+  text-decoration: none;
+}
+
+a.site-card:hover {
+  background: var(--site-accent-tint);
+  color: var(--site-ink);
+  text-decoration: none;
+}
+
+.site-card-meta {
+  @apply flex items-center justify-between font-mono text-[0.6875rem] uppercase leading-4 tracking-widest;
+  color: var(--site-muted);
+}
+
+/* A card's port: the node its wire would leave from. */
+.site-card-meta .site-node {
+  width: 0.5625rem;
+  height: 0.5625rem;
+}
+
+a.site-card:hover .site-node {
+  border-color: var(--site-accent);
+  background: var(--site-accent);
+}
+
+.site-card-title {
+  @apply text-[1.0625rem] font-semibold;
+  color: var(--site-ink);
+}
+
+.site-card-text {
+  @apply text-sm leading-[1.55];
+  color: var(--site-muted);
+}
+
+.site-card-text strong {
+  font-weight: 600;
+  color: var(--site-ink);
+}
+
+.site-chips {
+  @apply flex flex-wrap gap-1.5;
+}
+
+.site-chip {
+  @apply px-1.5 py-px font-mono text-[0.6875rem] leading-4;
+  border: 1px solid var(--site-rule-soft);
+  color: var(--site-muted);
+}
+
+.site-feature .site-chip {
+  border-color: var(--site-block-rule);
+  color: var(--site-block-muted);
+}
+
+/* In the index a featured example keeps its place and takes a whole row. */
+.site-index > a.site-feature {
+  grid-column: 1 / -1;
+}
+
+/* The docs index: one ruled row a page ------------------------------- */
+
+.site-rows > li + li {
+  border-top: 1px solid var(--site-rule-soft);
+}
+
+a.site-row {
+  @apply flex flex-wrap items-baseline gap-x-6 gap-y-1 px-5 py-3.5 transition-colors;
+  color: var(--site-ink);
+  text-decoration: none;
+}
+
+a.site-row:hover {
+  background: var(--site-accent-tint);
+  color: var(--site-ink);
+  text-decoration: none;
+}
+
+.site-row-no {
+  @apply font-mono text-xs tabular-nums;
+  flex: 0 0 1.5rem;
+  color: var(--site-link);
+}
+
+.site-row-title {
+  @apply font-semibold;
+  flex: 0 0 14rem;
+}
+
+a.site-row:hover .site-row-title {
+  color: var(--site-link);
+}
+
+.site-row-text {
+  @apply min-w-0 text-sm leading-6;
+  flex: 1 1 20rem;
+  color: var(--site-muted);
+}
+
+/* Documentation ------------------------------------------------------- */
+
+.prose-signals {
+  @apply min-w-0 max-w-none;
+  color: var(--site-ink);
+}
+
+.prose-signals h1 {
+  @apply mb-4 text-4xl font-semibold;
+  letter-spacing: -0.02em;
+}
+
+.prose-signals h2 {
+  @apply mt-10 pt-6 text-2xl font-semibold;
+  border-top: 1px solid var(--site-rule);
+  letter-spacing: -0.015em;
+}
+
+.prose-signals h3 {
+  @apply mt-7 text-lg font-semibold;
+}
+
+.prose-signals p,
+.prose-signals li {
+  @apply leading-7;
+}
+
+/* The Tailwind reset strips paragraph margins, so consecutive paragraphs
+   would otherwise run together with no separation. */
+.prose-signals p {
+  @apply my-4;
+}
+
+.prose-signals li p {
+  @apply my-2;
+}
+
+.prose-signals h2 + p,
+.prose-signals h3 + p {
+  @apply mt-3;
+}
+
+.prose-signals ul,
+.prose-signals ol {
+  @apply my-4 grid gap-2 pl-6;
+}
+
+/* Grid items default to min-width:auto, so a nested code block would
+   stretch the list past the viewport instead of scrolling inside it. */
+.prose-signals li {
+  @apply min-w-0;
+}
+
+.prose-signals ul {
+  list-style-type: square;
+}
+
+.prose-signals ol {
+  @apply list-decimal;
+}
+
+.prose-signals li::marker {
+  color: var(--site-muted);
+}
+
+.prose-signals a {
+  @apply underline underline-offset-2;
+}
+
+.prose-signals hr {
+  @apply my-8;
+  border-color: var(--site-rule);
+}
+
+/* A note: a ruled box in the accent's tint. */
+.prose-signals blockquote {
+  @apply my-5 px-4 py-3;
+  border: 1px solid var(--site-link);
+  background: var(--site-accent-tint);
+}
+
+.prose-signals blockquote p {
+  @apply my-2 text-sm leading-6;
+}
+
+.prose-signals blockquote p:first-child {
+  @apply mt-0;
+}
+
+.prose-signals blockquote p:last-child {
+  @apply mb-0;
+}
+
+.prose-signals table {
+  @apply my-5 block w-full max-w-full border-collapse overflow-x-auto text-left text-sm;
+}
+
+.prose-signals thead th {
+  @apply whitespace-nowrap pb-2 pr-4 font-mono text-[0.6875rem] font-medium uppercase leading-4 tracking-widest;
+  border-bottom: 1px solid var(--site-rule);
+  color: var(--site-muted);
+}
+
+.prose-signals tbody td {
+  @apply py-2 pr-4 align-top leading-6;
+  border-bottom: 1px solid var(--site-rule-soft);
+}
+
+.prose-signals tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* Code is set on the ink block in both palettes, so one set of syntax
+   colors serves both. */
+.prose-signals pre {
+  @apply my-5 max-w-full overflow-x-auto p-4 text-[0.8125rem] leading-[1.6];
+  border: 1px solid var(--site-rule);
+  background: var(--site-block);
+  color: var(--site-block-ink);
+}
+
+.prose-signals pre code {
+  background: transparent;
+  color: inherit;
+}
+
 .prose-signals .syntax-comment { color: var(--site-comment); }
 .prose-signals .syntax-name { color: var(--site-name); }
 .prose-signals .syntax-type { color: var(--site-type); }
@@ -546,27 +1170,68 @@ body { background: var(--site-page); color: var(--site-ink); }
 .prose-signals .syntax-string { color: var(--site-string); }
 .prose-signals .syntax-symbol { color: var(--site-symbol); }
 .prose-signals .syntax-invalid { color: var(--site-invalid); }
-.text-zinc-950:not([data-signals-wasm] *, [data-signals-upload-root] *) { color: var(--site-ink); }
-.text-zinc-900:not([data-signals-wasm] *, [data-signals-upload-root] *) { color: var(--site-ink); }
-.text-zinc-800:not([data-signals-wasm] *, [data-signals-upload-root] *) { color: var(--site-ink); }
-.text-zinc-700:not([data-signals-wasm] *, [data-signals-upload-root] *) { color: var(--site-muted); }
-.text-zinc-600:not([data-signals-wasm] *, [data-signals-upload-root] *) { color: var(--site-muted); }
-.text-emerald-700:not([data-signals-wasm] *, [data-signals-upload-root] *) { color: var(--site-link); }
-.text-emerald-800:not([data-signals-wasm] *, [data-signals-upload-root] *) { color: var(--site-link); }
-.button:not([data-signals-wasm] *, [data-signals-upload-root] *) { color: var(--site-ink); background: var(--site-panel); border-color: var(--site-rule); }
-.button-primary:not([data-signals-wasm] *, [data-signals-upload-root] *) { color: var(--site-accent-ink); background: var(--site-accent); border-color: var(--site-accent); }
-/* A primary link keeps its contrasting ink when the generic link hover wins. */
-.button-primary:hover:not([data-signals-wasm] *, [data-signals-upload-root] *) { color: var(--site-accent-ink); }
-a.bg-emerald-950, a.bg-emerald-950:hover { color: #ffffff; }
-[data-upload-zone] label { background: var(--site-code-bg); border-color: var(--site-rule); }
-.bg-emerald-50:not([data-signals-wasm] *, [data-signals-upload-root] *) { background: var(--site-code-bg); }
-[data-signals-wasm], [data-signals-upload-root] { color-scheme: light; color: #09090b; background: #ffffff; }
+
+/* appearance.js wraps each sample so its copy control can sit in the
+   block's corner. The wrapper carries the rule and the ground. */
+.code-sample {
+  @apply relative my-5;
+  border: 1px solid var(--site-rule);
+  background: var(--site-block);
+  color: var(--site-block-ink);
+}
+
+/* Keep horizontally scrolled source outside the copy control's corner rail. */
+.code-sample pre {
+  margin: 0 2.5rem 0 0;
+  border: 0;
+}
+
+.code-copy {
+  @apply absolute right-2 top-2 inline-flex h-8 w-8 cursor-pointer items-center justify-center p-0 opacity-0 transition-opacity;
+  border: 1px solid var(--site-block-rule);
+  background: var(--site-block);
+  color: var(--site-block-ink);
+}
+
+.code-copy:hover {
+  border-color: var(--site-live);
+  color: var(--site-live);
+}
+
+.code-sample:hover .code-copy,
+.code-sample:focus-within .code-copy {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .code-copy {
+    opacity: 1;
+  }
+}
+
+/* On the ink block the focus ring is the block's own accent. */
+.code-sample :focus-visible {
+  outline-color: var(--site-live);
+}
+
+.copy-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* CSV Converter -------------------------------------------------------- */
 
 /* Html.file_input keeps the browser's chooser. Scope its control styling to
    this example, whose file picker has no caller-supplied attributes. */
 .converter input[type="file"] {
   @apply input min-w-0;
 }
+
 .converter input[type="file"]::file-selector-button {
-  @apply mr-3 cursor-pointer rounded border-0 bg-zinc-100 px-3 py-1 font-medium text-zinc-900;
+  @apply mr-3 cursor-pointer border border-zinc-950 bg-white px-3 py-1 font-medium text-zinc-950;
 }

@@ -536,7 +536,7 @@ ConduitApp := [].{
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	tag_pill = |row| {
 		key = row.key()
-		Engine.element("a", [Engine.class("rounded-full border border-zinc-300 px-2.5 py-1 text-xs text-zinc-500 no-underline"), Engine.attr_v("href", key.map(ConduitApp.tag_url)), Engine.on("click:prevent", AppStore.go_by(key.map(ConduitApp.tag_url)))], [Engine.text_v(key)])
+		Engine.element("a", [Engine.class("border border-zinc-400 px-2 py-0.5 font-mono text-xs text-zinc-600 no-underline"), Engine.attr_v("href", key.map(ConduitApp.tag_url)), Engine.on("click:prevent", AppStore.go_by(key.map(ConduitApp.tag_url)))], [Engine.text_v(key)])
 	}
 
 	preview_body : Val(Engine.In(Row(Engine.StoreRoot(_), Api.ArticleSummary), FavState), Api.ArticleSummary), State(Engine.In(Row(Engine.StoreRoot(_), Api.ArticleSummary), FavState), FavState) -> Elem(Engine.In(Row(Engine.StoreRoot(_), Api.ArticleSummary), FavState))
@@ -570,7 +570,7 @@ ConduitApp := [].{
 							session.map(ConduitApp.is_signed_in),
 							|| ConduitApp.button_v(
 								shown.map(ConduitApp.favorite_button_label),
-								"rounded-full border border-emerald-500 bg-white px-3 py-1.5 font-medium text-emerald-700",
+								"border border-emerald-600 bg-white px-3 py-1.5 font-medium text-emerald-700",
 								fst.update_by(shown.map2(token, |a, t| (a, t)), |s, (a, t)| { ..s, req: ConduitApp.next(s.req, if (a.favorited) "DELETE" else "POST", Api.favorite_uri(a.slug), "", t) }),
 							),
 							|| Engine.text_v(shown.map(|a| "${a.favorites_count.to_str()} favorites")),
@@ -596,7 +596,7 @@ ConduitApp := [].{
 		art = row.item()
 		Engine.element(
 			"article",
-			[Engine.class("rounded-xl border border-zinc-200 bg-white px-5 py-5 shadow-sm sm:px-6")],
+			[Engine.class("border border-zinc-950 bg-white px-5 py-5 sm:px-6")],
 			[Engine.state({ req: ConduitApp.no_submit, result: FavoriteIdle }, |fst| ConduitApp.preview_body(art.lift(), fst))],
 		)
 	}
@@ -642,7 +642,7 @@ ConduitApp := [].{
 							_ => False
 						},
 					),
-					|| Html.p("No articles are here... yet.", "rounded-xl border border-dashed border-zinc-300 bg-white p-8 text-center text-zinc-500"),
+					|| Html.p("No articles are here... yet.", "border border-dashed border-zinc-400 bg-white p-8 text-center text-zinc-500"),
 					|| Engine.text(""),
 				),
 				Engine.element("div", [Engine.class("grid gap-4")], [Engine.each(articles, |a| a.slug, |row| ConduitApp.preview_row(row))]),
@@ -662,7 +662,7 @@ ConduitApp := [].{
 					|i| i.key,
 					|row| {
 						key = row.key()
-						cls = row.field(|i| if (i.active) "rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-white no-underline" else "rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-600 no-underline")
+						cls = row.field(|i| if (i.active) "bg-emerald-600 px-3 py-2 text-sm font-medium text-white no-underline" else "border border-zinc-950 bg-white px-3 py-2 text-sm text-zinc-700 no-underline")
 						Engine.element("a", [Engine.class_v(cls), Engine.attr_v("href", key.map(ConduitApp.key_url)), Engine.on("click:prevent", AppStore.go_by(key.map(ConduitApp.key_url)))], [Engine.text_v(key.map(ConduitApp.page_label))])
 					},
 				),
@@ -689,7 +689,7 @@ ConduitApp := [].{
 				ConduitApp.load_site(w.map(ConduitApp.feed_req), ConduitApp.store_feed),
 				ConduitApp.load_site(w.map(ConduitApp.tags_req), ConduitApp.store_tags),
 				Html.div(
-					"bg-emerald-700 px-5 py-12 text-center text-white shadow-inner sm:py-16",
+					"bg-emerald-700 px-5 py-12 text-center text-white sm:py-16",
 					[
 						ConduitApp.heading("conduit", "text-5xl font-bold tracking-normal text-white sm:text-6xl"),
 						Html.p("A place to share your knowledge.", "mt-3 text-lg text-emerald-50 sm:text-xl"),
@@ -731,7 +731,7 @@ ConduitApp := [].{
 						),
 						Engine.element(
 							"aside",
-							[Engine.class("h-fit rounded-xl border border-zinc-200 bg-zinc-100 p-5")],
+							[Engine.class("h-fit border border-zinc-950 bg-zinc-50 p-5")],
 							[
 								Html.p("Popular Tags", "mb-3 font-semibold text-zinc-900"),
 								Engine.when(
@@ -897,7 +897,7 @@ ConduitApp := [].{
 						article.map(ConduitApp.is_failed),
 						|| Html.p_v(article.map(ConduitApp.failure), [Engine.class("text-red-700")]),
 						|| Html.div(
-							"mb-4 space-y-1 rounded border border-zinc-200 bg-zinc-50 p-3 text-sm text-zinc-700",
+							"mb-4 space-y-1 border border-zinc-950 bg-zinc-50 p-3 text-sm text-zinc-700",
 							[
 								Html.p_v(current(|a| "Current title: ${a.title}"), []),
 								Html.p_v(current(|a| "Current description: ${a.description}"), []),
@@ -941,13 +941,13 @@ ConduitApp := [].{
 				ConduitApp.submit_site(mv.map(|m| m.prof.follow), Engine.react(|sent, res| [st.change(|m| ConduitApp.react_follow(m, sent, res))])),
 				Engine.when(
 					profile.map(ConduitApp.is_loading),
-					|| Html.p("Loading profile...", "rounded-xl border border-zinc-200 bg-white p-6 text-zinc-500"),
+					|| Html.p("Loading profile...", "border border-zinc-950 bg-white p-6 text-zinc-500"),
 					|| Engine.when(
 						profile.map(ConduitApp.is_failed),
 						|| Html.p_v(profile.map(ConduitApp.failure), [Engine.class(Styles.status_error)]),
 						|| Engine.element(
 							"div",
-							[Engine.attr("data-conduit", "profile"), Engine.class("mb-8 rounded-2xl border border-zinc-200 bg-white p-6 text-center shadow-sm sm:p-8")],
+							[Engine.attr("data-conduit", "profile"), Engine.class("mb-8 border border-zinc-950 bg-white p-6 text-center sm:p-8")],
 							[
 								Engine.element("h2", [Engine.class("text-3xl font-semibold tracking-normal text-zinc-950")], [Engine.text_v(field(|p| "@${p.username}"))]),
 								Html.p_v(field(|p| p.bio), [Engine.class("mx-auto mt-2 max-w-2xl leading-7 text-zinc-600")]),
@@ -966,7 +966,7 @@ ConduitApp := [].{
 												_ => "Follow"
 											},
 										),
-										"mt-4 rounded-lg border border-emerald-500 bg-white px-4 py-2 text-sm font-medium text-emerald-700",
+										"mt-4 border border-emerald-600 bg-white px-4 py-2 text-sm font-medium text-emerald-700",
 										Engine.handle_by(w, |at, _| [st.change(|m| ConduitApp.follow(m, at))]),
 									),
 									|| Engine.text(""),
@@ -1030,7 +1030,7 @@ ConduitApp := [].{
 	header : {} -> Elem(Engine.StoreRoot(_))
 	header = |{}| {
 		session = AppStore.h.session.val()
-		item = "rounded-md px-3 py-2 text-zinc-600 no-underline hover:bg-zinc-100 hover:no-underline"
+		item = "px-3 py-2 text-zinc-600 no-underline hover:bg-zinc-100 hover:no-underline"
 		username = session.map(|s| s.username())
 		Engine.element(
 			"header",
@@ -1049,7 +1049,7 @@ ConduitApp := [].{
 								[
 									Links.link("New Article", item, Route.to_url(Route.location_for("/editor", ""))),
 									Links.link("Settings", item, Route.to_url(Route.location_for("/settings", ""))),
-									Links.link_v(username, "rounded-md px-3 py-2 text-emerald-700 no-underline", username.map(ConduitApp.profile_url)),
+									Links.link_v(username, "px-3 py-2 text-emerald-700 no-underline", username.map(ConduitApp.profile_url)),
 								],
 							),
 							|| Html.div(
