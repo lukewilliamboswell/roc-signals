@@ -432,8 +432,8 @@ expect {
 	(after.read(TableApp.cells.items.todos).contains(3), after.read(TableApp.cells.items.next), after.read(TableApp.cells.window)) == (Bool.True, 4, { start: 1, count: 2 })
 }
 
-## "Retitle few" writes the few rows and no other: the table's record
-## names exactly the rows whose quantity is below 10.
+## "Retitle few" writes the few rows and no other: the table's changes
+## name exactly the rows whose quantity is below 10.
 expect {
 	started = TableApp.start({ rows: 1000, window: 30, draws: Everything })
 	todos = started.after([TableApp.cells.items.todos.update(TableApp.retitled)]).read(TableApp.cells.items.todos)
@@ -459,10 +459,10 @@ expect {
 	actual =
 		\\rows: ${started.read(items.todos).len().to_str()}, ${again.read(items.todos).len().to_str()}, ${refined.read(items.todos).len().to_str()}
 		\\next: ${started.read(items.next).to_str()}, ${again.read(items.next).to_str()}
-		\\record: ${rewritten(again)}, ${rewritten(refined)}
+		\\changes: ${rewritten(again)}, ${rewritten(refined)}
 	expected =
 		\\rows: 3, 0, 1
 		\\next: 3, 0
-		\\record: rewritten, rewritten
+		\\changes: rewritten, rewritten
 	actual == expected
 }

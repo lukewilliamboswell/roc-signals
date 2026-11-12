@@ -31,7 +31,7 @@ import Store
 ## - `note`: the latest thing that went wrong, for the reader.
 ##
 ## The module's one tag, `Books`, is the store's name. Nothing spells the
-## store's storage type: an annotation that mentions it says `_`.
+## store's type: an annotation that mentions it says `_`.
 ReadingList := [Books].{
 
 	## Which books the list shows.

@@ -38,8 +38,8 @@ import pf.Table
 ##   of its group, a copy saved earlier, the other table), keyed writes in
 ##   order (insert, put, replace, update, remove; a run of up to 16 puts or
 ##   updates, which crosses the size at which a view rebuilds instead of
-##   absorbing the record; a whole rewrite by `load` or `update_all`; an
-##   undo of the turn so far), as one `change` or one for each, a write of
+##   absorbing the changes; a whole rewrite by `load` or `update_all`; an
+##   undo of the turn so far), as one `update` or one for each, a write of
 ##   `spare`, a copy of the table saved, `a`'s listing and window, the lanes
 ##   and whether `c` is mounted. It fires from a control whose handler is
 ##   the decision alone, one whose decision also reads the tables it may
@@ -48,7 +48,7 @@ import pf.Table
 ##
 ## Oracles, after every step:
 ## - the engine is settled (`Core.settled`): no reader is stale, and every
-##   view equals one built from scratch with its table's record cleared;
+##   view equals one built from scratch with its table's changes cleared;
 ## - each view is drawn exactly when the model has it mounted, and its rows'
 ##   texts, in order, are the model's: the rows its listing keeps, in its
 ##   order, inside its window;
@@ -267,13 +267,13 @@ Op : [
 ##   (`Fresh(seed, count)`), by its group's reset, by the copy `saved`
 ##   holds (`Restore`) or by `spare`'s table (`Borrow`). The last two need
 ##   a reading, so only the control that takes one applies them.
-## - `ops`: writes of `rows`, in order, as one `change` for each (`split`)
-##   or one `change` that folds them.
+## - `ops`: writes of `rows`, in order, as one `update` for each (`split`)
+##   or one `update` that folds them.
 ## - `spare`: a write of the other table.
 ## - `save`: put the table as it was read into `saved` (the reading control).
 ## - `tick`: add one to `serial`, which is in `rows`' group.
 ## - `flip`: mount or unmount `c`.
-## - `listing`, `window`, `lanes`: put those cells.
+## - `listing`, `window`, `lanes`: set those cells.
 ## - `local_listing`, `local_window`: what `b`'s control writes to its state.
 Decision : {
 	head : [Keep, Fresh(U64, U64), Reset, Restore, Borrow],
@@ -1311,7 +1311,7 @@ keyed_steps = [
 	wrote(Put(7, ranked(1, 2))),
 ]
 
-## Several writes in one event, as one `change` and as one for each.
+## Several writes in one event, as one `update` and as one for each.
 batch_steps : List(Step)
 batch_steps = [
 	# A row inserted and removed in one event was never there.
@@ -1330,9 +1330,9 @@ batch_steps = [
 ]
 
 ## Runs of writes around the size at which a view rebuilds instead of
-## absorbing the record: more than an eighth of its rows plus eight. One
-## event's record is then absorbed by the larger views and rebuilt from by
-## the smaller ones.
+## absorbing the changes: more than an eighth of its rows plus eight. One
+## event's changes are then absorbed by the larger views; the smaller ones
+## rebuild from the table.
 many_steps : List(Step)
 many_steps = [
 	wrote(Fill(0, 8, 5)),
@@ -1348,7 +1348,7 @@ many_steps = [
 ]
 
 ## Whole rewrites of the table: by `load` and `update_all` among keyed
-## writes, by a put of a new table, and by the reset of the table's group.
+## writes, by setting a new table, and by the reset of the table's group.
 rewrite_steps : List(Step)
 rewrite_steps = [
 	# Keyed writes before and after a load in one event.
@@ -1442,7 +1442,7 @@ local_steps = [
 	both({ ..quiet, local_window: To({ start: 2, count: 2 }), ops: [Remove(15), Remove(14)] }),
 	# The listing in the event that writes a row only the new listing keeps.
 	both({ ..quiet, local_listing: To({ show: All, order: ByRank }), ops: [Update(0, 1)] }),
-	# The listing, the window and the table, as one `change` for each write.
+	# The listing, the window and the table, as one `update` for each write.
 	both({ ..quiet, local_listing: To({ show: Only(1), order: ByKey }), local_window: To({ start: 0, count: 6 }), ops: [Update(10, 2), Put(12, ranked(7, 1))], split: True }),
 	# Every view's listing and window, the lanes and the table in one event.
 	both({ ..quiet, local_listing: To({ show: Except(0), order: ByKey }), local_window: To({ start: 0, count: 6 }), listing: To({ show: Only(1), order: ByRank }), window: To({ start: 0, count: 6 }), flip: True, lanes: To([1, 2]), ops: [Put(2, ranked(5, 2)), Remove(8)], tick: True }),

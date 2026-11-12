@@ -1,4 +1,4 @@
-(test "Typed workers — derive runs for the first value and follows later ones"
+(test "Typed workers — resource runs for the first value and follows later ones"
   (steps
     ; The run for the initial text starts at mount.
     (expect-pending-effects 1)
