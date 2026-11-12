@@ -1,6 +1,7 @@
 #!/usr/bin/env roc-stable
 app [main!] {
 	cli: platform "https://github.com/roc-lang/basic-cli/releases/download/0.27.0/9yjxqdGTP4xSpSEmDazwTmRsehfRZzA19pwEKkR6fj1g.tar.zst",
+	parser: "https://github.com/lukewilliamboswell/roc-parser/releases/download/3.0.0/6xsRdRqenJrAb4wG7HaST4Xh349vD5sHAJDsKTK6E3dr.tar.zst",
 	roc: "nightly-2026-11-10-f7d1f19",
 }
 
@@ -11,11 +12,13 @@ import src/Checks
 import src/ExampleFiles
 import src/Proc
 import src/SpecSuite
+import src/SiteCode
 
 ## The `site` task: build the documentation site into `dist/`
 ## (`-- --base-url URL` to browse it somewhere other than its published
 ## address, such as `http://127.0.0.1:8000/roc-signals` for the `serve` task). Tailwind
-## writes `www/static/signals.css` (ignored), Zola checks the internal links
+## writes `www/static/signals.css` (ignored), and the pinned Roc parser
+## highlights sample files without rewriting their text. Zola checks the internal links
 ## and builds `www/`,
 ## roc-docs generates the API docs into `dist/api/`, and every example's
 ## `main.roc` is built for wasm32 (`--opt=size`, as it ships) to
@@ -36,6 +39,8 @@ main! = |raw_args| {
 	}
 	o = Checks.options!({ filter: "*" })?
 	dist = "${o.root}/dist"
+	Proc.run!({ program: o.tooling, args: ["test", "scripts/site.roc"], cwd: o.root })?
+	SiteCode.build!()?
 	Proc.run!({ program: "tailwindcss", args: ["-c", "www/tailwind.config.js", "-i", "www/input.css", "-o", "www/static/signals.css", "--minify"], cwd: o.root })?
 	Proc.run!({ program: "zola", args: ["--root", "www", "check", "--skip-external-links"], cwd: o.root })?
 	Proc.run!({ program: "zola", args: ["--root", "www", "build", "--output-dir", dist, "--force"].concat(base_url), cwd: o.root })?
@@ -50,6 +55,7 @@ main! = |raw_args| {
 	}
 	ExampleFiles.copy_all!(o.root, dist)?
 	SpecSuite.copy_runtime!(o.root, dist)?
+	Proc.run!({ program: "node", args: ["tests/browser/site.mjs", dist], cwd: o.root })?
 	Proc.note!("site: built ${dist}")
 	Ok({})
 }

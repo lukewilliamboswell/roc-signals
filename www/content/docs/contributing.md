@@ -71,6 +71,18 @@ round-trip spec under its `specs/`, is listed in `Slow.native_soaks`;
 target of its own logic, if it has one, is listed in
 `Targets.fuzz_targets`.
 
+The site build highlights Roc samples with the pinned `roc-parser` lexer before
+Zola runs. `www/samples/` remains the source: generated escaped fragments in
+`www/highlighted/` are ignored. Scheme-style `.scm` samples use an independent
+display lexer for comments, strings, list heads, atoms and keyword arguments;
+it never parses or validates spec behavior. Other sample languages remain
+escaped plain text.
+Chrome checks the rendered source and copying, system/light/dark preferences,
+keyboard controls, every syntax color in both palettes, and text contrast on the
+documentation and index pages. Theme preferences apply to site chrome; example
+apps keep their authored colors. Screenshots are written to
+`.build/site-screenshots/` for visual review.
+
 ## Tasks
 
 These are the development environment's Blueprint tasks, not an app's
@@ -85,7 +97,7 @@ These are the development environment's Blueprint tasks, not an app's
 | `blueprint run jfb` | Build the js-framework-benchmark app and check its operations in Chrome |
 | `blueprint run workers-scaling` | Measure worker jobs in Chrome on both candidate shipping builds of the Worker Lab: correctness (its drawn picture included), the time to draw a picture by pool size, speedup by pool size, responsiveness, payloads, robustness sequences and memory, as tables for a pull request |
 | `blueprint run fuzz -- [--time S] [TARGET...]` | A fuzz campaign |
-| `blueprint run site -- [--base-url URL]` | Build the site, the API docs and the example apps into `dist/` |
+| `blueprint run site -- [--base-url URL]` | Build the site, the API docs and the example apps into `dist/`; check sample highlighting, copying, themes and contrast in Chrome |
 | `blueprint run serve -- [DIR] [--port N]` | Serve `dist/` at `127.0.0.1:8000/roc-signals/`, its published path, or `DIR` at the root |
 | `blueprint run release -- --version V` | Build the release assets into `dist-release/` |
 

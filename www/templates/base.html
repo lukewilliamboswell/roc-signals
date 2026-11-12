@@ -6,6 +6,7 @@
     <title>{% block title %}{{ config.title }}{% endblock title %}</title>
     <meta name="description" content="{{ config.description }}">
     <link rel="icon" href="{{ get_url(path='favicon.svg') }}" type="image/svg+xml">
+    <script src="{{ get_url(path='appearance.js') }}"></script>
     <link rel="stylesheet" href="{{ get_url(path='signals.css') }}">
   </head>
   <body class="min-h-screen {% block body_class %}{% endblock body_class %}">
@@ -16,6 +17,13 @@
           <a href="{{ get_url(path='docs/guide/', trailing_slash=true) }}">Guide</a>
           <a href="{{ get_url(path='examples/', trailing_slash=true) }}">Examples</a>
           <a href="{{ config.extra.github_url }}">GitHub</a>
+          <label class="theme-control" hidden>Theme
+            <select aria-label="Color theme" data-theme-select>
+              <option value="system">System</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </label>
         </div>
       </nav>
     </header>
