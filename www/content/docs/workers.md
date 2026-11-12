@@ -1,7 +1,7 @@
 +++
 title = "Workers"
 description = "Run work off the page's thread: declare a task, register it, show its answer like a derived value, read and build files in its jobs, share a preparation between tasks, and handle the ways a job can fail."
-weight = 9
+weight = 12
 template = "page.html"
 +++
 
@@ -55,9 +55,9 @@ job's output, or the task's own error.
   the task's types.
 - A deadline that varies (one the user picks, say) belongs to the task, so
   make the task with a function of the deadline,
-  `primes : Deadline -> Worker.Task(...)`, register each task that can be
-  asked for, and ask for the one with the deadline wanted, as the
-  [Worker Lab](@/examples/worker-lab.md) does.
+  `primes : [Unlimited, Ms(U32)] -> Worker.Task(...)`, register each task
+  that can be asked for, and ask for the one with the deadline wanted, as
+  the [Worker Lab](@/examples/worker-lab.md) does.
 
 Names are namespaced and unversioned, like `"example.org/words/summary"`.
 The page and every worker run the same compiled module, so a name always
@@ -232,11 +232,12 @@ port call per item for instance. A question with more parts than the
 in-flight bound, or one whose parts may each be asked again (a part that
 was lost, retried on its own), does not fit a gather: changing the list
 asks every part again. Keep one site per part instead, each in a row
-of an `each` with its own `latest`, and admit parts from the page's state
-as earlier ones finish, as the [Worker Lab](@/examples/worker-lab.md)
-does for the strips of its picture. Count every request the parts lead
-to: a drawn strip's object URL and an interval take slots of the same
-bound as the jobs.
+with its own `latest`, and admit parts from the page's state as earlier
+ones finish, as the [Worker Lab](@/examples/worker-lab.md) does for the
+strips of its picture: its jobs are a table, and each row of the view that
+draws every one of them owns its job's request. Count every request the
+parts lead to: a drawn strip's object URL and an interval take slots of the
+same bound as the jobs.
 
 ## What a task may do
 

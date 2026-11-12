@@ -1,7 +1,7 @@
 +++
 title = "Getting Started"
 description = "Create a counter with signals.roc, run it in a browser, test it natively, and build it for deployment."
-weight = 3
+weight = 2
 template = "page.html"
 +++
 
@@ -49,8 +49,8 @@ nightly you have.
 
 {{ sample(file="counter/Counter.roc") }}
 
-`Engine.state(0, Counter.view)` creates a piece of state with the initial value
-`0` and passes its handle to `view`. Inside `view`:
+`Engine.state(0, Counter.view)` creates a piece of *local state* with the
+initial value `0` and passes its handle to `view`. Inside `view`:
 
 - `count.val()` is the state's current value. `.map` turns it into the text
   the `span` shows. The engine re-evaluates that text only when `count`
@@ -62,6 +62,13 @@ nightly you have.
   belongs to, so a value can never be read where it does not exist.
 - `Html.aria_label` gives each button an accessible name, which is also how
   specs find it.
+
+`view` runs once, when the app starts. It does not run again on a click: the
+engine applies the reducer and rewrites the one text that reads `count`.
+
+The count is local state because only the counter cares about it. State that
+several parts of an app share lives in a store instead, and
+[Thinking in Signals](@/docs/thinking-in-signals.md) says how to choose.
 
 `program` is the value the entry point binds.
 
@@ -88,12 +95,12 @@ roc signals.roc serve
 
 ```text
 Building the app...
-Built in 0.5 s.
 Serving the app at http://127.0.0.1:8000/ (press Ctrl-C to stop). Pages reload when you save a change, and show build errors over the app.
 ```
 
-Open the address. The page is your `index.html`, which loads the app with
-the platform's runtime:
+Between the two lines it says how long the build took. Open the address.
+The page is your `index.html`, which loads the app with the platform's
+runtime:
 
 {{ sample(file="counter/index.html", syntax="html") }}
 
@@ -103,7 +110,7 @@ development build; your other files are served as they are. When port 8000
 is taken it uses the next free one and says so; `--port N` chooses another.
 
 Now change `Counter.roc`, for example the initial value, and save. The
-server rebuilds the app and the page reloads, in about a second. Reloading
+server rebuilds the app and the page reloads. Reloading
 starts the app afresh: nothing of the running app is carried across a
 change. If the build fails, the compiler's report appears over the page,
 which keeps the last build that worked, and the terminal shows it too; fix
@@ -154,13 +161,14 @@ roc signals.roc build
 ```text
 Built the app into dist/:
 
-  dist/index.html                           501 B
-  dist/assets/5e711d3a91d0f155/app.wasm     215 KB
-  dist/assets/5e711d3a91d0f155/runtime.mjs  149 KB
-  dist/assets/5e711d3a91d0f155/worker.mjs   14 KB
+  dist/index.html
+  dist/assets/5e711d3a91d0f155/app.wasm
+  dist/assets/5e711d3a91d0f155/runtime.mjs
+  dist/assets/5e711d3a91d0f155/worker.mjs
 ```
 
-`build` makes the app's module with `--opt=size` and lays out `dist/`:
+`build` makes the app's module with `--opt=size`, lays out `dist/`, and
+lists each file it wrote with its size:
 
 - `dist/index.html`, your page, with each quoted relative URL that names
   one of the files below pointed into the hashed directory. Nothing else in
@@ -189,4 +197,5 @@ and the platform builds from source.
 ## Next
 
 Read [Thinking in Signals](@/docs/thinking-in-signals.md) for the model, then
-build the [Tutorial](@/docs/tutorial.md) app.
+build the [Tutorial](@/docs/tutorial.md) app, which keeps its state in a
+store.

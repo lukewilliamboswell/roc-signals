@@ -1,6 +1,6 @@
 app [main] { pf: platform "../../platform/main.roc" }
 
-import pf.Engine exposing [Comp, Elem, In, Root, Row, RowRef, State, Val]
+import pf.Engine exposing [Elem, In, Root, Row, RowRef, State, Val]
 import pf.Html
 
 main : Engine.Program
@@ -116,31 +116,22 @@ expandable = |row|
 
 # endregion row-state
 
-# region component
-## A component sees only its prop and its own outward actions. It is
-## specialised once per prop and action type, however many places use it.
-Rating : [Rate(U8)]
-
-stars : Val(Comp(U8, Rating), U8), State(Comp(U8, Rating), List(Rating)) -> Elem(Comp(U8, Rating))
-stars = |current, out|
+# region over-a-state
+## The smallest component is a function over what it is handed: here a
+## `State` of the rating, which it reads and writes. It cannot tell whose
+## state that is, so the same function draws a local state of its caller's,
+## a row of a table or a cell of the app's store (`cell.state()`).
+stars : State(ctx, U8) -> Elem(ctx)
+stars = |rating|
 	Html.div(
 		"stars",
 		[
-			Html.button_v(current.map(|n| "${n.to_str()} of 5"), [], out.push(Rate(5))),
-			Html.button("Clear", [], out.push(Rate(0))),
+			Html.button_v(rating.val().map(|n| "${n.to_str()} of 5"), [], rating.update(|_| 5)),
+			Html.button("Clear", [], rating.update(|_| 0)),
 		],
 	)
 
-## The caller turns the component's actions into writes of its own state.
-rating_field : State(In(Ctx, U8), U8) -> Elem(In(Ctx, U8))
-rating_field = |rating|
-	Engine.component(
-		rating.val(),
-		Engine.sink(rating, |_, Rate(n)| n),
-		stars,
-	)
-
-# endregion component
+# endregion over-a-state
 
 page : State(Ctx, Model) -> Elem(Ctx)
 page = |model|
@@ -150,6 +141,6 @@ page = |model|
 			tabs(model),
 			inbox(model),
 			empty_note(model.val().map(|m| m.messages)),
-			Engine.state(3, rating_field),
+			Engine.state(3, stars),
 		],
 	)

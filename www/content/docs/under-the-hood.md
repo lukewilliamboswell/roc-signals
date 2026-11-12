@@ -1,7 +1,7 @@
 +++
 title = "Under the Hood"
 description = "Follow an event through the runtime, the Wasm host and the engine, and see where work and failures happen."
-weight = 16
+weight = 19
 template = "page.html"
 +++
 
@@ -16,7 +16,7 @@ or a profile. The architecture and its rules are in
 
 | Piece | File | Job |
 |---|---|---|
-| Engine | `platform/Engine.roc` | Everything reactive: sites, propagation, lists, effects, identity. Pure Roc. |
+| Engine | `platform/Core.roc`, with tables and their views in `Table.roc`, `View.roc` and `Seq.roc`; `Engine.roc` is the API apps see | Everything reactive: sites, the store, propagation, lists and views, effects, identity. Pure Roc. |
 | Host | `platform/host/host.zig` | Allocates memory, keeps the engine state between calls, stages one payload, backs the handles of [files](@/docs/files.md) the app holds, classifies faults. In a worker it holds no engine state: it keeps at most one preparation's state between jobs, and during a job performs the task's file effects through the worker script. |
 | Runtime | `platform/runtime.mjs` | Applies the engine's commands to the DOM, performs effects, delivers events. |
 | Worker script | `platform/worker.mjs` | Runs [worker](@/docs/workers.md) tasks: a Web Worker instantiates the same `app.wasm`, never mounts it, calls its `work` entry (or `prepare` and `ask` for a preparation's task) for each job, and performs the job's file effects. |
@@ -31,9 +31,11 @@ inside it. The runtime never decides anything: it does what the commands say.
 2. It asks for the app's declared storage keys, reads them, and stages the
    boot bytes: the URL, those values, and the online, visibility and storage
    flags.
-3. `init()` runs your `program`. The engine builds the static structure, mounts
-   every site, and returns one batch of commands: create these elements, set
-   these attributes, listen for these events, start these effects.
+3. `init()` runs your `program`. The engine starts the store, if the app has
+   one, from the boot data; runs the view, once; builds the static structure
+   and mounts every site; and returns one batch of commands: create these
+   elements, set these attributes, listen for these events, start these
+   effects.
 4. The runtime applies the batch to the mount root, then performs the effects.
 
 ## One event
@@ -45,11 +47,34 @@ inside it. The runtime never decides anything: it does what the commands say.
    `event(node, handler)`.
 3. The engine looks the node up in its routes table — one array index — and
    finds the path of the site that owns the handler, or the list row.
-4. The handler runs and writes its state. Then one pass refreshes exactly the
-   holes and sites that read the written state, descending only into children
-   that read it, and emits a command for each value that changed.
-5. The call returns the command batch and the work record. The runtime applies
-   the DOM commands in order, then performs any effects.
+4. The event travels down that path. On the way the root moves the store
+   into the environment, and each local state the event passes moves its
+   value in. The handler runs there: a reducer is applied to its state; a
+   decision takes its reading and returns its writes, which are applied to
+   the store in order. The handler answers exactly what it wrote: which
+   local states and which cells.
+5. The environment travels back up, and each holder takes its value back.
+6. What was written is refreshed in one pass, which starts at the outermost
+   write: at the root if cells were written, otherwise at the outermost
+   local state the event wrote. Each site carries a small signature of
+   what it reads: a hole or a child whose signature misses the write is
+   skipped with one test, and a command is emitted for each value that did
+   change. A local state written below the start joins the pass where the
+   pass reaches it, for its own subtree and nothing outside it, so a write
+   to one state never visits the readers of a sibling, and a reader of two
+   things one event wrote is evaluated once, with both in place and every
+   `derive` above it recomputed. A view of a table reads the table's
+   record of the rows this turn wrote, then its query and its window, and
+   changes the rows it draws once, from the window before the event to the
+   window after it.
+7. The records of the tables the turn wrote are cleared, focus requests are
+   resolved, and the call returns the command batch and the work record. The
+   runtime applies the DOM commands in order, then performs any effects.
+
+A signature can only err towards more work. Two cells far apart in a large
+store can share a bit of it, and then a write to one also evaluates a reader
+of the other, which comes out equal and emits nothing. A reader of something
+that changed is never skipped.
 
 An effect result takes the same path: the runtime calls `event` on a reserved
 node with the request's id, and the engine runs the reaction as a turn.
@@ -60,9 +85,9 @@ it, so the engine is never re-entered.
 
 Commands are bytes in Wasm memory: create an element or text node, set an
 attribute or text, move, remove, listen, and the effect commands (start or
-cancel an effect, navigate, write storage, set the title, focus). List rows
-are compiled once per list into a template, so creating a row is one `INST`
-command carrying only its holes' values.
+cancel an effect, navigate, write storage, set the title, focus). The rows
+of a list or of a view are compiled once per site into a template, so
+creating a row is one `INST` command carrying only its holes' values.
 
 The batch becomes visible only when the call returns. If the call traps,
 nothing from it is applied.
@@ -71,18 +96,26 @@ nothing from it is applied.
 
 Every call also returns cumulative counters: commands by kind, closures
 evaluated, rows created, moved, reused and removed, scopes created and
-disposed, states written, keys hashed and compared. Specs read them with
+disposed, states and cells written, keys hashed and compared. Specs read them with
 `mark-metrics` and `expect-metric-delta`, natively and in Chrome, which is how
 "this keystroke updates one text node" becomes a test. The native runner also
 checks that the counters agree with the commands it decoded.
 
 ## Memory
 
-Each site's storage is referenced by exactly one closure, so Roc updates lists
-and records in place rather than copying them. Disposing a site drops its
-closure, and reference counting frees what it held. The repository's
-long-session tests walk every example for thousands of steps and repeat its
-round trips, and fail if live allocations or Wasm pages keep growing.
+Each piece of state has one holder. A site's storage is referenced by exactly
+one closure, and the root alone holds the store, so Roc updates lists,
+records and tables in place rather than copying them. That is also why the
+engine never keeps an earlier copy of a state or a cell to compare with: the
+copy would be a second holder, and every write would then copy what it
+changes. What changed comes from the write. The one earlier state the engine
+keeps is a table's record: for each row a turn wrote, that row as it was,
+dropped when the turn ends.
+
+Disposing a site drops its closure, and reference counting frees what it
+held. The repository's long-session tests walk every example for thousands
+of steps and repeat its round trips, and fail if live allocations or Wasm
+pages keep growing.
 
 ## When something goes wrong
 

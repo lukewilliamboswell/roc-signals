@@ -1,7 +1,7 @@
 +++
 title = "Contributing"
 description = "Working on the platform itself: tools, tasks, tests, docs, performance, compilers and releases."
-weight = 17
+weight = 20
 template = "page.html"
 +++
 
@@ -31,14 +31,14 @@ recipe ready.
 
 | Path | Contents |
 |---|---|
-| `platform/` | The platform (`main.roc`): the engine (`Core.roc`), the authoring API (`Engine.roc`, `Html.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the hosted effects a worker job calls (`Hosted.roc`, bound in both hosts and reached only through `Effects.roc`, which the platform root hands to the engine with each job, and `Files.roc`, whose `build!` opens a builder), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, with its walks and soaks, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig` with its system services in `host/os_posix.zig` and `host/os_windows.zig`, and `host/kernel32.def`, the Windows host's imports). Also `main-fuzz.roc`, a package root over the same pure modules (all but `Files.roc`, `Effects.roc`, `Hosted.roc` and `Cli.roc`) that the platform's own fuzz targets depend on |
-| `tests/` | Browser contract tests and the apps they drive (`tests/apps/`, for example `files` for file handles, `file-effects` for operations on files, `ports` for ports, `worker-typed` for the task API, `prepared` for preparations, `tasks` for jobs that read and build files, `outbox` for posting requests and `gather` for one question split over several jobs, with the platform's fuzz targets of the effect channel and the controls beside their test apps as `main-fuzz.roc`), the Chrome spec replay, and the release check helper |
-| `fuzz/` | The platform's fuzz targets of the shared support (the spec, wire and port formats and generated site trees) |
-| `examples/` | The example apps, each with its specs, any fuzz targets of its own pure logic (`fuzz-<subject>.roc`), and any JavaScript of its own beside it (the Reading List's and the Million-Row Explorer's port handlers, `ports.mjs`; the simulated service of Conduit, Field Notes and the Status Page, `backend.mjs`; the Log Explorer's `log-timings` element, `timings.mjs`, and the Million-Row Explorer's `query-meter`, `meter.mjs`); `examples/shared/` holds the JavaScript several examples load (the `plume-chart` and `worker-pool-panel` elements) |
-| `cli/` | `signals.roc`, the tool app authors run to create, serve, build and test an app (below) |
+| `platform/` | The platform (`main.roc`): the engine (`Core.roc`, with a table, its views and their ordered keys in `Table.roc`, `View.roc` and `Seq.roc`, and in `EngineOnly.roc` the value that keeps a table's bookkeeping out of an app's reach), the authoring API (`Engine.roc`, `Table.roc`, `Html.roc`, `Worker.roc` with its payload format `Wire.roc`, and `Port.roc` with its message format `PortJson.roc`), the hosted effects a worker job calls (`Hosted.roc`, bound in both hosts and reached only through `Effects.roc`, which the platform root hands to the engine with each job, and `Files.roc`, whose `build!` opens a builder), the Wasm host (`host/host.zig`, with the typed heaps behind file handles in `host/resources.zig`), the browser runtime (`runtime.mjs` and its worker script `worker.mjs`), and the native spec runner (`SpecRunner.roc`, with its walks and soaks, the `Scm.roc` parser, the `Dom.roc` oracle, `host/spec.zig` with its system services in `host/os_posix.zig` and `host/os_windows.zig`, and `host/kernel32.def`, the Windows host's imports). Also `main-fuzz.roc`, a package root over the same pure modules (all but `Files.roc`, `Effects.roc`, `Hosted.roc` and `Cli.roc`) that the platform's own fuzz targets depend on |
+| `tests/` | Browser contract tests and the apps they drive (`tests/apps/`, for example `store` for cells read and written at depth, `writes` for decisions, resets and `also`, `table` for a table and its views, `remount` for `remount_on`, `files` for file handles, `file-effects` for operations on files, `ports` for ports, `worker-typed` for the task API, `prepared` for preparations, `tasks` for jobs that read and build files, `outbox` for posting requests and `gather` for one question split over several jobs, with the platform's fuzz targets of the effect channel and the controls beside their test apps as `fuzz-<subject>.roc`), the Chrome spec replay, and the release check helper |
+| `fuzz/` | The platform's fuzz targets of the shared support (the spec, wire and port formats, generated site trees, and tables with their views) |
+| `examples/` | The example apps, each with its specs, any fuzz targets of its own pure logic (`fuzz-<subject>.roc`), and any JavaScript of its own beside it (the port handlers of the Reading List, the Status Page and the Million-Row Explorer, `ports.mjs`; the simulated service of Conduit, Field Notes and the Status Page, `backend.mjs`; the Log Explorer's `log-timings` element, `timings.mjs`, the Status Page's `latency-feed-monitor`, `feed-monitor.mjs`, and the Million-Row Explorer's `query-meter`, `meter.mjs`); `examples/shared/` holds the JavaScript several examples load (the `plume-chart` and `worker-pool-panel` elements) |
+| `cli/` | The source of `signals.roc`, the tool app authors run to create, serve, build and test an app (below) |
 | `benchmarks/` | The js-framework-benchmark adapter |
 | `scripts/` | Roc scripts behind the tasks; shared modules in `scripts/src/` |
-| `www/` | This site; `www/samples/` holds every code sample the docs show |
+| `www/` | This site; `www/samples/` holds every code sample the docs show, each a file `check` compiles and, for a sample app, tests |
 
 A module added to `platform/` for apps to import is listed in four places:
 `exposes` in `platform/main.roc`, the package's list in `platform/main-fuzz.roc`
@@ -108,14 +108,16 @@ for example to run two tasks at once.
    no other Roc file names a compiler; every file `www/data/examples.toml`
    names exists, and every example is in a section of the examples index.
 2. `roc fmt --check` over every Roc source, `roc test` on the platform, the
-   engine package (`platform/main-fuzz.roc`), the tool (`cli/`) and the
-   scripts, and the check that `cli/Bundle.roc` is what the release
+   engine package (`platform/main-fuzz.roc`), the tool (`cli/`), the
+   scripts, and the `main.roc` of every example and test app, which runs
+   the `expect`s of every module the app imports (the tests of its
+   transitions), and the check that `cli/Bundle.roc` is what the release
    generates for a checkout.
 3. The platform's link inputs for every target, a worker app's spec runner
    linked for macOS (`arm64mac`, `x64mac`) and Windows (`x64win`) from them,
    and the examples of the fuzz targets in `fuzz/` (the `.scm` parser, the
-   worker wire format, the port message format and generated site trees)
-   and of the examples' own targets.
+   worker wire format, the port message format, generated site trees, and
+   tables with their views) and of the examples' own targets.
 4. The docs samples (below).
 5. Every app's specs natively and in Chrome, a walk of 300 steps of every
    walked app in its native runner (below), the check that the browser
@@ -183,6 +185,42 @@ jobs too. A change to
 Linux and macOS, `os_windows.zig` Windows) is tested there and nowhere else,
 so it waits for those jobs.
 
+## Where each kind of test lives
+
+Each kind of test lives where its subject does:
+
+| What is tested | How | Where |
+|---|---|---|
+| A pure function: a decision's writes, a component's operations, a format | A top-level `expect` | Beside the function, in its module |
+| What an app shows and does, and how much work it costs | `.scm` specs, natively and in Chrome | `<app>/specs/` |
+| The engine over long sessions of real apps | The spec runner's walk (`--walk`) and soak (`--soak`) | Nothing is written: they run over each app's `main.roc` and specs |
+| The engine's rules over generated programs | The platform's roc-fuzz targets | `fuzz/`, and `fuzz-<subject>.roc` beside the `effects` and `controls` test apps |
+| An example's own pure logic over generated inputs | The example's roc-fuzz targets | `fuzz-<subject>.roc` beside the example's modules |
+| The host, the runtime and the worker script against the wire protocol | Contract tests | `tests/` |
+
+No app has a `main-fuzz.roc`. An app's one entry point is `main.roc`, and
+nothing in an example exists only so that a platform test can drive it.
+`platform/main-fuzz.roc` is something else: the root of the engine package
+that the platform's own fuzz targets import.
+
+## Expects
+
+A decision is a pure function from a reading to a list of writes, so a
+transition across cells is checked by a top-level `expect` with no engine
+and no browser: `store.after(writes)` applies the list as a turn applies
+it, the same-cell rule included, and `read(cell)` reads a cell of the
+result. A component's operations on its own type are tested the same way.
+This is the test that sees a transition that left out a reset or wrote the
+wrong cell of the right type; the settle check cannot, since it sees only
+propagation. [Testing](@/docs/testing.md#decisions-as-functions) shows one.
+
+`roc test <app>/main.roc` runs the `expect`s of an app and of every module
+it imports, the platform's among them, since a checkout reaches the platform
+by a path. `roc test --main=<app>/main.roc <app>/<Module>.roc` runs one
+module's; a module that imports the platform needs `--main` to resolve it.
+`check` runs the first form for every example and test app and for every
+docs sample.
+
 ## Specs and contract tests
 
 Application-visible behaviour is specified in `.scm` files beside each app and
@@ -206,10 +244,23 @@ shown with the `sample` shortcode:
 {{/* sample(file="todos/Todos.roc", region="row") */}}
 ```
 
-A region is the lines between `# region NAME` and `# endregion NAME`. `check`
+A region is the lines between `# region NAME` and `# endregion NAME`; the
+marker lines never render, so one region can sit inside another. Each
+marker is the whole end of its line, so a region `row` ends at
+`# endregion row` and not at the `# endregion row-state` of a region inside
+it. `check`
 fails on an inline Roc block in a docs page, a missing sample or region, a
-sample that does not type-check, and a sample directory with `specs/` whose
-specs fail natively or in Chrome.
+sample that does not type-check or whose `expect`s fail, and a sample
+directory with `specs/` whose specs fail natively or in Chrome.
+
+A sample is either one file that is a whole app (`www/samples/state.roc`)
+or a directory laid out as an app is: its modules, a `main.roc` that binds
+the program, and `specs/`. Prefer a directory for anything a page says
+behaves in some way, so that a spec holds the page to it, and give a
+sample's decisions the `expect`s the page shows
+(`roc test www/samples/<app>/main.roc` runs them, and so does `check`). The counter in
+`www/samples/counter/` is also what `signals.roc init` writes, so a change
+to it is a change to every new app.
 
 ## Walks and soaks
 
@@ -236,8 +287,10 @@ steps from seed 7 on a runner built at `--opt=speed`, the Markdown Editor
 five times for 2,000), and `check` 300 steps on the runner it built for the
 specs. The three test apps whose pages offer a contract error on purpose
 (`workers`, `ports`, `outbox`) are not walked: a walk reaches that error and
-the instance is poisoned, as it must be. The walk is the platform's test,
-run by the scripts; app authors do not need it.
+the instance is poisoned, as it must be. The walk is the spec runner's, so
+it is in every app's runner and needs no target, entry point or harness of
+its own; the scripts run it over each app, and an app author can run it
+over theirs ([Testing](@/docs/testing.md#walks)).
 
 A spec that takes the app back to where it started is a round trip, and the
 native runner soaks it: `RUNNER --soak 48 specs/round-trip-NAME.scm` runs
@@ -249,13 +302,14 @@ live. An answer the spec gave (an HTTP stub, a worker job's answer, a port
 reply) is replayed as it was first given, to the request at the same place
 among those in flight; a cycle that leaves no request there is not a round
 trip, and the soak says so. It is a leak check, never a baseline. Each
-example keeps one round-trip spec (`round-trip-*.scm`), which `check` runs
-as an ordinary spec in both runners and `check-slow` soaks
-(`Slow.native_soaks`). A soak records an answer that carried files with
-their handles, to replay it, so while the spec runs under `--soak` the
-runner itself holds those files: an `expect-files` after such an answer
-fails under the soak although it passes as an ordinary spec, so check that
-the app lets its files go in another spec, not in the round trip.
+example but the CSV Converter keeps one round-trip spec
+(`round-trip-*.scm`), which `check` runs as an ordinary spec in both
+runners and `check-slow` soaks (`Slow.native_soaks`). A soak records an
+answer that carried files with their handles, to replay it, so while the
+spec runs under `--soak` the runner itself holds those files: an
+`expect-files` after such an answer fails under the soak although it passes
+as an ordinary spec, so check that the app lets its files go in another
+spec, not in the round trip.
 
 `check-slow` also runs a long session of every example in Chrome
 (`tests/browser/soak.mjs`): a seeded walk without a fault, then 30 round
@@ -270,25 +324,35 @@ Every fuzz target is an ordinary [roc-fuzz](https://github.com/lukewilliamboswel
 app, whose platform (`fz`) is a roc-fuzz release. There are two kinds.
 
 The platform's own targets import the engine package,
-`platform/main-fuzz.roc`, as `pf`; they are its only users. They decode
+`platform/main-fuzz.roc`, as `pf`; they are its only users. They live under
+`fuzz/`, one directory each with a `main.roc`, and as `fuzz-<subject>.roc`
+beside the two test apps whose engine sequences they generate. They decode
 arbitrary bytes into valid programs and check the engine against a model:
 the effect channel's lifecycle including worker jobs, port calls and
 subscriptions, a gather's jobs settling at their positions and an outbox's
-posts (`fx-channel`, `tests/apps/effects/main-fuzz.roc`), controlled inputs
-and more than 4,095 `each` sites (`controls`), generated site trees
+posts (`fx-channel`, `tests/apps/effects/fuzz-channel.roc`), controlled inputs
+and more than 4,095 `each` sites (`controls`,
+`tests/apps/controls/fuzz-controls.roc`), generated site trees
 (`fuzz/structure`, whose pure mode also compares the page with a fresh
-mount, so the settle check meets nestings no app contains), the `.scm`
-parser (`scm-parse`), the worker wire format's decoder (`wire`) and the
-port message format's decoder (`port-json`). Every target that drives the
-engine runs the settle check after every step.
+mount, so the settle check meets nestings no app contains), tables and
+their views against a model that filters, sorts and windows the table from
+scratch, over keyed writes, whole rewrites and events that write the table,
+the query and the window together (`fuzz/table-view`), the `.scm`
+parser (`fuzz/scm-parse`), the worker wire format's decoder (`fuzz/wire`)
+and the port message format's decoder (`fuzz/port-json`). Every target that
+drives the engine runs the settle check after every step.
 
 An example's targets check its own pure logic and import nothing of the
 platform: `fuzz-<subject>.roc` beside the modules it imports, named for
 what it checks (the CSV Converter's `fuzz-csv.roc`, the Spreadsheet's
 `fuzz-formulas.roc`, the Million-Row Explorer's `fuzz-aggregates.roc`), each
-against a model, a round trip or an invariant over generated sequences. An example whose logic depends on the platform's
-types (the Worker Lab, the Status Page, the Reading List) has none; its
-specs and its walk cover it. App authors learn this kind from
+against a model, a round trip or an invariant over generated sequences. The
+logic a target reaches is therefore in modules that import nothing from
+`pf`: a component's module imports the platform for its view, so operations
+worth fuzzing belong in a domain module the component uses. An example
+whose logic depends on the platform's types (the Worker Lab, the Status
+Page, the Reading List) has none; its `expect`s, its specs and its walk
+cover it. App authors learn this kind from
 [Testing](@/docs/testing.md#fuzzing-your-own-logic).
 
 Coverage-guided exploration of event sequences over the example apps is
@@ -301,8 +365,9 @@ examples' own; `check-slow` replays every target's; `fuzz.yml` runs nightly
 campaigns of every target in `Targets.fuzz_targets` with the corpora in the
 Actions cache. When a campaign finds a failure, reduce it and add it to the
 target's examples with `Fuzz.saved`, so every later replay keeps it fixed.
-Judge a target by whether it can fail: break the code it checks by hand and
-see it fail before trusting it.
+Judge a target by its properties: state the rules the code must keep over
+generated sequences, and check them against a reference model. Its oracles,
+not its inputs, carry the value.
 
 ## Performance
 

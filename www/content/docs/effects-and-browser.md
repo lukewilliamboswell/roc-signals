@@ -1,7 +1,7 @@
 +++
 title = "Effects and the Browser"
 description = "HTTP, storage, timers, navigation, title, focus and cleanup, through one typed effect channel."
-weight = 7
+weight = 10
 template = "page.html"
 +++
 
@@ -10,8 +10,9 @@ template = "page.html"
 Apps never call JavaScript. Everything that reaches outside the page — a
 request, a timer, the URL, local storage, focus — is a value of type
 `Engine.Req` that an *effect site* asks for, and every answer comes back as a
-value of type `Engine.Res` delivered in a turn of its own. The snippets come
-from `www/samples/effects.roc`, a search page.
+value of type `Engine.Res` delivered in a turn of its own. Most of the
+snippets come from `www/samples/effects.roc`, a search page that keeps its
+state in one local state.
 
 ## Effect sites
 
@@ -21,8 +22,10 @@ An effect site watches a value and turns it into a list of requests:
   every time `v` changes;
 - `Engine.on_change(v, plan, reaction)` issues only on changes after mount.
 
-The reaction is a reducer over one state, built with `st.on_result(f)`. It
-receives the state, the value the request was issued for, and the result:
+The watched value is any `Val`: a local state's, a cell's, or a `map` of
+several. The *reaction* says what an answer writes. For local state it is a
+reducer, built with `st.on_result(f)`, which receives the state, the value
+the request was issued for, and the result:
 
 {{ sample(file="effects.roc", region="model") }}
 
@@ -39,7 +42,7 @@ value, is posted to an outbox instead.
 
 ### Sending when the user acts
 
-A save, an add or a write to a store is asked for by a click, not by a value
+A save, an add or an order is asked for by a click, not by a value
 changing. Keep an `Engine.Outbox(item)` in the state, made with
 `Engine.outbox({})`; the handler posts to it with `box.post(item)`, and
 `Engine.on_post(box, plan, reaction)` issues `plan(item)` in the turn of the
@@ -57,9 +60,33 @@ post:
 - The reducer that changes the state posts in the same step, so an `expect`
   sees both: `box.last()` is `Unposted` or `Posted(item)`.
 - Post at most once per turn to one outbox. A change that sends several
-  things posts a list (`Engine.Outbox(List(Write))`, sent as
-  `|writes| writes.map(request)`). A second post in the same turn would
+  things posts a list (`Engine.Outbox(List(Note))`, sent as
+  `|notes| notes.map(request)`). A second post in the same turn would
   replace the first before the site saw it, so it is a contract error.
+
+An outbox can be a cell of the store as well: a decision posts to it with
+`box_cell.change(|box| box.post(item))`, as the shop below does.
+
+### Answers that write the store
+
+When an answer changes shared state, the reaction is a decision: one pure
+function from the answer to a list of writes
+([Shared State](@/docs/shared-state.md#decisions)). `Engine.react(decide)`
+gives `decide` the value the request was issued for and the result.
+`Engine.react_by(v, decide)` also gives it the value `v` holds when the
+answer arrives, read once and before anything is written. This is the
+shop's order, from `www/samples/shop/Shop.roc`:
+
+{{ sample(file="shop/Shop.roc", region="answer") }}
+
+`ordered` is tested as a function, with no request made
+([Shared State](@/docs/shared-state.md#starting-again) shows its `expect`),
+and a spec stages the server's answer:
+
+{{ sample(file="shop/specs/check-out.scm", syntax="scheme") }}
+
+`first.also(second)` makes one reaction of two, both run for one result: a
+component's own reducer, and the reaction its owner handed it.
 
 ## Superseding sites
 
@@ -156,6 +183,10 @@ When local storage is unavailable (disabled site data, a throwing
 `localStorage`), `boot.storage_available` is false, the boot storage is empty
 and writes persist nothing, so the app can tell the user.
 
+`Engine.program_store` takes the same configuration for an app with a store,
+and hands the boot data both to the function that starts the store and to
+the view (see [Shared State](@/docs/shared-state.md#starting-values-from-the-boot-data)).
+
 ## Navigation
 
 {{ sample(file="effects.roc", region="routing") }}
@@ -166,6 +197,10 @@ entry: post each place the app asks to go to an outbox, and push what is
 posted. Links inside the app should use a handler with the `click:prevent`
 event (`Engine.on("click:prevent", ...)`) so the browser does not navigate on
 its own.
+
+In an app with several pages the location and the outbox are cells of the
+store, so a link anywhere asks to go somewhere with one write, and the move
+itself is one decision. [Conduit](@/examples/conduit.md) is built this way.
 
 ## Subscriptions and lifetime
 
@@ -182,8 +217,10 @@ when it goes: `Http`, `Upload`, `Fetch`, `StorageGet`, port calls, and the
 jobs of a task that says `on_dispose: Keep` (see
 [Workers](@/docs/workers.md#lifetimes)). They are handed to the nearest
 surviving ancestor, and the reaction runs there when the answer arrives.
-Writes to states that were disposed with the site are skipped. Only
-unmounting the whole app abandons them.
+Writes to local states that were disposed with the site are skipped. Writes
+to cells of the store are made as they would have been: the store is not
+disposed with anything. Only unmounting the whole app abandons such a
+request.
 
 ## Focus
 
@@ -238,7 +275,7 @@ click on its timeline names this way.
 ## Bounds
 
 - At most 32 awaited requests are in flight per app (set `max_inflight` in
-  `program_boot` to change it). A request beyond the bound is not sent: its
+  `program_boot` or `program_store` to change it). A request beyond the bound is not sent: its
   reaction receives `Refused` in a follow-up turn.
 - Follow-up turns (`Self` and refusals) may chain at most 64 deep per event:
   a follow-up whose reaction leads to another follow-up, and so on. A deeper

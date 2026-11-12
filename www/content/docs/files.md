@@ -1,7 +1,7 @@
 +++
 title = "Files"
 description = "Take a file the user chooses, drops or pastes, keep it as a handle, act on it where the browser keeps it, and read its bytes in a worker task's job or, for a small file, on the page."
-weight = 10
+weight = 13
 template = "page.html"
 +++
 
@@ -27,14 +27,6 @@ ranges it needs straight into the worker's memory.
 | Produce a new file to save or send on | A task whose job writes it with `Files.build!` (see [Files in Tasks](@/docs/files-in-tasks.md)) | Built in the worker; the new file never enters the page's memory |
 | Download a file, or save one | [`File.fetch`](@/docs/files-in-tasks.md#downloading-into-a-file) and [`File.save`](@/docs/files-in-tasks.md#saving) | Stay in the browser |
 
-This answers two older workarounds. Getting a file's bytes into Roc used to
-mean a custom element that read the file, base64-encoded it into an input's
-value and dispatched `change`, so the page decoded megabytes of base64 in a
-handler; now the file arrives as a handle, a job in a worker reads its
-bytes, and a small one can be read on the page as bytes, not text. Sending
-a file on used to mean building a `data:` URL; an upload now sends the file
-itself, and a preview is an object URL the browser serves from the file.
-
 ## Receiving files
 
 `State.on_files` makes a handler for the files an event carries. Its reducer
@@ -46,6 +38,15 @@ Attach it to a file input with `Html.file_input`, to a drop target with
 `Html.on_drop_files`, or to a paste target with `Html.on_paste_files`:
 
 {{ sample(file="files/Upload.roc", region="view") }}
+
+A reducer writes one state. When the files belong in the store, or one
+drop must write several cells that agree, the handler is a decision:
+`Engine.handle_files(decide)` gives `decide` the same `Received` and
+applies the list of writes it returns, and `Engine.handle_files_by(v,
+decide)` also gives it the value `v` holds when the files arrive
+([Shared State](@/docs/shared-state.md#decisions)). `first.also(second)`
+makes one handler of two, so a drop can write local state and run a
+decision as one event.
 
 `Html.file_input` takes a props record: `{}` for one file of any type,
 `selection: Multiple` to let the user choose several at once, and
