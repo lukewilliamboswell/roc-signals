@@ -10,7 +10,7 @@ import EngineOnly
 ## `todos.change(|table| table.update(key, toggle))`, so the record of
 ## changes is filled by the write itself. Nothing ever compares two tables
 ## or two lists of rows to find out what changed: a view
-## (`Engine.each_view`) brings itself up to date from the record, at the
+## (`Engine.table_view`) brings itself up to date from the record, at the
 ## cost of the rows written.
 ##
 ## The record holds, for every key written since it was last cleared, the

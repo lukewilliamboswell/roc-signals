@@ -33,7 +33,7 @@ import PortJson
 ## `Refused` beyond it, and its answers are ordinary result turns. A call
 ## survives its site's disposal and is answered to the nearest surviving
 ## ancestor, as an HTTP request is; a subscription is stopped by disposal.
-## Under `Engine.latest` or `Engine.resource` a newer value stops the older
+## Under `Engine.watch_latest` or `Engine.resource` a newer value stops the older
 ## value's calls, and the JavaScript sees its `AbortSignal` abort.
 Port := [].{
 
@@ -69,7 +69,7 @@ Port := [].{
 		## handler receives it after the turn's DOM changes are applied. A
 		## failure there is reported to the console and the page's
 		## `onPortFault`; the app learns nothing of it.
-		send : Command(output), output -> Engine.Req
+		send : Command(output), output -> Engine.Request
 		send = |p, value| PortCommand({ port: p.name, message: (p.encode)(value) })
 
 		## The port's entry for `Program.with_ports`.
@@ -84,13 +84,13 @@ Port := [].{
 		## A request that calls the JavaScript with `value`, for an effect
 		## site's plan. The value is a snapshot, encoded when the request is
 		## issued.
-		request : Call(input, output), input -> Engine.Req
+		request : Call(input, output), input -> Engine.Request
 		request = |p, value| PortCall({ port: p.name, message: (p.encode)(value), timeout_ms: p.timeout_ms })
 
 		## The answer to a `request`, for an effect site's reaction: the
 		## JavaScript's answer as an `output`, or why there is none. A result
 		## that is not from a port request is a contract error.
-		result : Call(input, output), Engine.Res -> Try(output, Error)
+		result : Call(input, output), Engine.Result -> Try(output, Error)
 		result = |p, res| answer_of(p.name, p.decode, res)
 
 		## The port's entry for `Program.with_ports`.
@@ -107,13 +107,13 @@ Port := [].{
 		## function; each message it emits is a result turn for the site.
 		## Disposing the site, or a `latest` site moving to a new value,
 		## calls the unsubscribe function the handler returned.
-		subscribe : Subscription(arg, msg), arg -> Engine.Req
+		subscribe : Subscription(arg, msg), arg -> Engine.Request
 		subscribe = |p, arg| PortSubscribe({ port: p.name, message: (p.encode)(arg) })
 
 		## One message of the subscription, for an effect site's reaction, or
 		## why there is none. After `Closed` or `Threw` no more messages come.
 		## A result that is not from a port request is a contract error.
-		message : Subscription(arg, msg), Engine.Res -> Try(msg, Error)
+		message : Subscription(arg, msg), Engine.Result -> Try(msg, Error)
 		message = |p, res| answer_of(p.name, p.decode, res)
 
 		## The port's entry for `Program.with_ports`.
@@ -175,29 +175,29 @@ Port := [].{
 	subscription : SubscriptionProps -> Subscription(arg, msg) where [arg.PortJson.Sendable, msg.PortJson.Sendable]
 	subscription = |SubscriptionProps.({ name, delivery })| { name, delivery, encode: |value| PortJson.encode(value), decode: |message| PortJson.decode(message).map_err(PortJson.describe) }
 
-	## `derive(call, input, body)` gives `body` a layer holding the call's
+	## `resource(call, input, body)` gives `body` a layer holding the call's
 	## answer for `input`, an `Engine.Remote(output, Port.Error)`, as
-	## `Worker.derive` does for a worker task: the call for the first input
+	## `Worker.resource` does for a worker task: the call for the first input
 	## is made at mount, and when `input` changes to an unequal value the
 	## older call is stopped (its `AbortSignal` aborts) and one for the new
 	## value is made in the same turn, so an answer for an old input is never
 	## shown and the app keeps no request serial.
-	derive : Call(input, output), Signal(ctx, input), (Signal(In(ctx, Engine.Remote(output, Error)), Engine.Remote(output, Error)) -> Elem(In(ctx, Engine.Remote(output, Error)))) -> Elem(ctx)
+	resource : Call(input, output), Signal(ctx, input), (Signal(In(ctx, Engine.Remote(output, Error)), Engine.Remote(output, Error)) -> Elem(In(ctx, Engine.Remote(output, Error)))) -> Elem(ctx)
 		where [input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool]
-	derive = |port, input, body| Engine.resource(input, Core.follow(port), body)
+	resource = |port, input, body| Engine.resource(input, Core.follow(port), body)
 
-	## Like `derive`, for an input that is sometimes not a question: `Run(i)`
+	## Like `resource`, for an input that is sometimes not a question: `Run(i)`
 	## makes the call with `i`, and `Skip` stops any call and clears the
 	## answer.
-	derive_when : Call(input, output), Signal(ctx, [Run(input), Skip]), (Signal(In(ctx, Engine.Remote(output, Error)), Engine.Remote(output, Error)) -> Elem(In(ctx, Engine.Remote(output, Error)))) -> Elem(ctx)
+	resource_when : Call(input, output), Signal(ctx, [Run(input), Skip]), (Signal(In(ctx, Engine.Remote(output, Error)), Engine.Remote(output, Error)) -> Elem(In(ctx, Engine.Remote(output, Error)))) -> Elem(ctx)
 		where [input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool]
-	derive_when = |port, input, body| Engine.resource(input, Core.follow_when(port), body)
+	resource_when = |port, input, body| Engine.resource(input, Core.follow_when(port), body)
 }
 
 ## A port result as the app's type, or why there is none.
-answer_of : Str, (Engine.PortMessage -> Try(a, Str)), Engine.Res -> Try(a, Port.Error)
+answer_of : Str, (Engine.PortMessage -> Try(a, Str)), Engine.Result -> Try(a, Port.Error)
 answer_of = |name, decode, res| match res {
-	PortReply(message) => decode(message).map_err(|why| Undecodable("port \"${name}\": ${why}"))
+	PortAnswer(message) => decode(message).map_err(|why| Undecodable("port \"${name}\": ${why}"))
 	PortFailed(Threw(text)) => Err(Threw(text))
 	PortFailed(TooLarge) => Err(TooLarge)
 	PortFailed(Closed) => Err(Closed)
@@ -215,9 +215,9 @@ expect {
 		_ => "not a call"
 	}
 	good : Try({ title : Str }, Port.Error)
-	good = get.result(PortReply({ json: "{\"title\":\"a\",\"extra\":1}", blobs: [], files: [] }))
+	good = get.result(PortAnswer({ json: "{\"title\":\"a\",\"extra\":1}", blobs: [], files: [] }))
 	bad : Try({ title : Str }, Port.Error)
-	bad = get.result(PortReply({ json: "{\"title\":5}", blobs: [], files: [] }))
+	bad = get.result(PortAnswer({ json: "{\"title\":5}", blobs: [], files: [] }))
 	threw : Try({ title : Str }, Port.Error)
 	threw = get.result(PortFailed(Threw("no store")))
 	actual =
@@ -255,7 +255,7 @@ expect {
 	}
 	actual =
 		\\sent: ${sent}
-		\\one: ${Str.inspect(ticks.message(PortReply({ json: "\"18446744073709551615\"", blobs: [], files: [] })))}
+		\\one: ${Str.inspect(ticks.message(PortAnswer({ json: "\"18446744073709551615\"", blobs: [], files: [] })))}
 		\\closed: ${Str.inspect(ticks.message(PortFailed(Closed)))}
 		\\refused: ${Str.inspect(ticks.message(Refused))}
 	expected =

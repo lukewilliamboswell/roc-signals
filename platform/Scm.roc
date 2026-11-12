@@ -114,8 +114,8 @@ Scm := [].{
 		## with a fault class, without running it.
 		LoseWork({ occurrence : U64, fault : WorkFault }),
 
-		## Expire the deadline of the N-th effect occurrence, a pending worker
-		## job with a deadline: it is answered `Timeout`.
+		## Expire the timeout of the N-th effect occurrence, a pending worker
+		## job with a timeout: it is answered `Timeout`.
 		TimeOutWork(U64),
 
 		## Exactly `count` worker jobs of the task named `task` are pending.
@@ -1325,7 +1325,7 @@ expect {
 	Str.inspect(spec.steps.map(|s| s.op)) == "[StubHttp({ label: \"feed\", stub: Reply({ body: \"hi λ\", headers: [{ name: \"content-type\", value: \"text/plain\" }], status: 200, url: \"/api/a\" }) }), StubHttp({ label: \"x\", stub: Reject({ detail: \"\", kind: Timeout }) }), RunEffect(2), ExpectPendingEffects(0)]"
 }
 
-## Worker steps: a job lost with a fault class, a deadline expired, and the
+## Worker steps: a job lost with a fault class, a timeout expired, and the
 ## pending jobs of a task; each emits its arguments for the browser runner.
 expect {
 	spec = Scm.parse(

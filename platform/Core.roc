@@ -63,7 +63,7 @@ Core := [].{
 		}
 	}
 
-	## The context inside one row of an `each` or an `each_view` template,
+	## The context inside one row of an `each` or an `table_view` template,
 	## nested in `outer`: the row's key and item. Values and handlers from
 	## `outer` enter with `lift_row`.
 	##
@@ -144,8 +144,8 @@ Core := [].{
 
 		## A [Write] that replaces the cell with `value`, for the list a
 		## decision returns (`store_handler`, `store_reaction`).
-		put : Cell(st, a), a -> Write(st)
-		put = |c, value| {
+		set : Cell(st, a), a -> Write(st)
+		set = |c, value| {
 			m = c.modify
 			{ first: c.cell, count: 1, kind: Replace, apply: |st| m(st, |_| value) }
 		}
@@ -153,8 +153,8 @@ Core := [].{
 		## A [Write] that replaces the cell with `f` of it. `f` receives the
 		## value uniquely owned, so a large value is changed in place, as a
 		## state's reducer changes its value.
-		change : Cell(st, a), (a -> a) -> Write(st)
-		change = |c, f| {
+		update : Cell(st, a), (a -> a) -> Write(st)
+		update = |c, f| {
 			m = c.modify
 			{ first: c.cell, count: 1, kind: Change, apply: |st| m(st, f) }
 		}
@@ -164,7 +164,7 @@ Core := [].{
 	## it writes (`count` of them from position `first`) and how. A decision
 	## (`store_handler`, `store_reaction`) returns a list of them, and the
 	## engine applies the list to the store in order and reports exactly the
-	## cells it names as written. Make one with `Cell.put`, `Cell.change` or
+	## cells it names as written. Make one with `Cell.set`, `Cell.update` or
 	## a group's reset (`Cells.with_reset`).
 	##
 	## `Replace` discards what the cells held; `Change` computes from it. A
@@ -252,7 +252,7 @@ Core := [].{
 
 	## An effect site's [Reaction] that writes the cells `decide` names for
 	## the value the request was issued for and its result.
-	store_reaction : (r, Res -> List(Write(st))) -> Reaction(ctx, r)
+	store_reaction : (r, Result -> List(Write(st))) -> Reaction(ctx, r)
 		where [ctx.store : () -> StoreReach(ctx, st)]
 	store_reaction = |decide| {
 		## The scope's type, named so its method can be called.
@@ -263,7 +263,7 @@ Core := [].{
 
 	## As `store_reaction`, where `decide` also receives `v`, read once when
 	## the result arrives, before any write of this decision.
-	store_reaction_by : Signal(ctx, b), (b, r, Res -> List(Write(st))) -> Reaction(ctx, r)
+	store_reaction_by : Signal(ctx, b), (b, r, Result -> List(Write(st))) -> Reaction(ctx, r)
 		where [ctx.store : () -> StoreReach(ctx, st)]
 	store_reaction_by = |v, decide| {
 		## The scope's type, named so its method can be called.
@@ -355,13 +355,13 @@ Core := [].{
 	TableCell(st) : { cell : U64, clear : (st -> st), stamp : (st -> st) }
 
 	## The description of one cell holding a [Table] of `rows`, by key. It
-	## is an ordinary cell: a decision changes it with `Cell.change` and the
+	## is an ordinary cell: a decision changes it with `Cell.update` and the
 	## table's own operations (`insert`, `put`, `update`, `remove`, `load`),
-	## so each write records the rows it changed, and `each_view` draws a
+	## so each write records the rows it changed, and `table_view` draws a
 	## filtered, sorted window of it from that record.
 	##
 	## The cell's lens guards the record: a write that leaves any other
-	## table in the cell than the one it held (a `Cell.put` of a new one,
+	## table in the cell than the one it held (a `Cell.set` of a new one,
 	## another cell's, an old copy, or the reset of the cell's group) is
 	## taken as a whole rewrite (`Table.kept`), so no write can leave a view
 	## stale. The root clears the record at the end of each turn that wrote
@@ -391,11 +391,11 @@ Core := [].{
 
 	## A program's store, built once from its [Cells]: the storage it starts
 	## with, the handles on its cells, and its table cells.
-	Store(st, h) := { init : st, handles : h, tables : List(TableCell(st)) }.{
+	Store(st, h) := { init : st, cells : h, tables : List(TableCell(st)) }.{
 
 		## The handles on the store's cells, the record the [Cells] described.
-		handles : Store(st, h) -> h
-		handles = |s| s.handles
+		cells : Store(st, h) -> h
+		cells = |s| s.cells
 
 		## The same store with `c` starting at `value`, for a cell whose start
 		## depends on the boot data. For a table cell, `value` is the table
@@ -406,7 +406,7 @@ Core := [].{
 		with_initial : Store(st, h), Cell(st, a), a -> Store(st, h)
 		with_initial = |s, c, value| {
 			m = c.modify
-			{ init: s.tables.fold(m(s.init, |_| value), |st, t| (t.clear)(st)), handles: s.handles, tables: s.tables }
+			{ init: s.tables.fold(m(s.init, |_| value), |st, t| (t.clear)(st)), cells: s.cells, tables: s.tables }
 		}
 
 		## What the root site starts with: the storage, each table with an
@@ -420,7 +420,7 @@ Core := [].{
 		after : Store(st, h), List(Write(st)) -> Store(st, h)
 		after = |s, writes| {
 			_ = writes_cells(writes, After)
-			{ init: writes.fold(s.init, |st, w| (w.apply)(st)), handles: s.handles, tables: s.tables }
+			{ init: writes.fold(s.init, |st, w| (w.apply)(st)), cells: s.cells, tables: s.tables }
 		}
 
 		## What `c` holds in the store's starting storage: with `after`, what
@@ -449,7 +449,7 @@ Core := [].{
 			{ st: f(held) }
 		}
 		tables = (d.tables)(0, over)
-		{ init: tables.fold({ st: d.init }, |st, t| (t.stamp)(st)), handles: m(0, |w| w.st, over), tables }
+		{ init: tables.fold({ st: d.init }, |st, t| (t.stamp)(st)), cells: m(0, |w| w.st, over), tables }
 	}
 
 	# Nominal rather than opaque (`::`): with the pinned compiler an opaque
@@ -587,13 +587,13 @@ Core := [].{
 		## into the page's memory, so keep it for small files and send large
 		## ones to a worker task. The request holds the file until it is
 		## answered, and disposing its site cancels it.
-		read_bytes : File, ReadProps -> Req
+		read_bytes : File, ReadProps -> Request
 		read_bytes = |f, ReadProps.({ max_bytes })| ReadBytes({ file: f, max_bytes })
 
 		## A request to read the file into the page as text: as `read_bytes`,
 		## answered `FileText(text)`, or `FileFailed(InvalidUtf8)` when the bytes
 		## are not UTF-8. A byte-order mark is kept. Read it with `file_text`.
-		read_utf8 : File, ReadProps -> Req
+		read_utf8 : File, ReadProps -> Request
 		read_utf8 = |f, ReadProps.({ max_bytes })| ReadUtf8({ file: f, max_bytes })
 
 		## A request that sends the file, or its range, as the body of an HTTP
@@ -605,7 +605,7 @@ Core := [].{
 		## disposed and answered to the nearest surviving ancestor. A file the
 		## browser can no longer read fails the request, which the browser
 		## reports as a network failure.
-		upload : File, UploadProps -> Req
+		upload : File, UploadProps -> Request
 		upload = |f, UploadProps.({ url, method, headers, timeout })| {
 			timeout_ms = match timeout {
 				Unlimited => 0
@@ -622,7 +622,7 @@ Core := [].{
 		## `FileFailed(TooLarge)`, a browser without WebCrypto (a page not
 		## served over HTTPS or from localhost) `FileFailed(Unavailable)`. Like a
 		## timer it belongs to its site.
-		sha256 : File -> Req
+		sha256 : File -> Request
 		sha256 = |f| Sha256(f)
 
 		## A request for a URL the page can show the file, or its range, by:
@@ -633,7 +633,7 @@ Core := [].{
 		## twice for the same range answers the same URL; a file gives at most
 		## 16 ranges URLs, and a 17th is `FileFailed(TooLarge)`. Like a timer it
 		## belongs to its site.
-		object_url : File -> Req
+		object_url : File -> Request
 		object_url = |f| ObjectUrl(f)
 
 		## Equal when they are the same range of the same file.
@@ -690,7 +690,7 @@ Core := [].{
 		## without the user's gesture, and a browser may hold back a second
 		## automatic download from the page or ask the user first: give the
 		## user a button to press when the file is ready instead.
-		save : File, SaveProps -> Req
+		save : File, SaveProps -> Request
 		save = |f, props| {
 			chosen = match props.name {
 				Same => f.name
@@ -713,7 +713,7 @@ Core := [].{
 		## a body over the `maxFileBytes` mount option; read it with
 		## `fetched`. Like an HTTP request it is kept when its site is
 		## disposed and answered to the nearest surviving ancestor.
-		fetch : FetchProps -> Req
+		fetch : FetchProps -> Request
 		fetch = |props| {
 			{ url, method, headers, timeout } = props
 			timeout_ms = match timeout {
@@ -883,7 +883,7 @@ Core := [].{
 	## payload (an input's value, `"true"`/`"false"` for a checkbox, `""` for a
 	## click). Make one with the [State] methods or with `store_handler`, and
 	## attach it with `on`, `on_click` or an `Html` control. A handler runs once
-	## per event, in the transaction that delivers it.
+	## per event, in the turn that delivers it.
 	##
 	## `run` is given the environment, the payload and the path of the site
 	## that fired it (for a diagnostic), and returns the environment with its
@@ -979,10 +979,10 @@ Core := [].{
 		}
 
 		## An effect site's [Reaction] that writes this state: the reducer receives
-		## the value the request was issued for and its [Res]. If the state has been
+		## the value the request was issued for and its [Result]. If the state has been
 		## disposed by the time a reparented result arrives, the write is skipped and
 		## counted (`skipped`).
-		on_result : State(ctx, s), (s, a, Res -> s) -> Reaction(ctx, a)
+		on_result : State(ctx, s), (s, a, Result -> s) -> Reaction(ctx, a)
 		on_result = |{ mask: _, writes: wrote, get: _, modify }, f| {
 			{ run: |e, a, r, _| (modify(e, |s| f(s, a, r)), wrote) }
 		}
@@ -1100,7 +1100,7 @@ Core := [].{
 
 	## A piece of UI in context `ctx`: an element, a text node or a dynamic site
 	## (`state`, `derive`, `resource`, `when`, `switch`, `remount_on`, `each`,
-	## `each_view` or an effect site).
+	## `table_view` or an effect site).
 	## An `Elem` is a description; the engine mounts it once and afterwards updates
 	## only what reads a changed layer.
 	Elem(ctx) :: [
@@ -1198,21 +1198,21 @@ Core := [].{
 	## total: `compare` answers `Same` only for one row's own sort value,
 	## so a sort value includes the key wherever the sorted field can tie.
 	## Two rows that compare `Same` are a contract error.
-	Query(k, v, s) : { keep : k, v -> Bool, sort : k, v -> s, compare : s, s -> [Before, Same, After] }
+	QueryPlan(k, v, s) : { keep : k, v -> Bool, sort : k, v -> s, compare : s, s -> [Before, Same, After] }
 
 	## The part of a view that is drawn: `count` rows from position
 	## `start` of the view's order.
 	Window : { start : U64, count : U64 }
 
-	## What an `each_view` site shows of its table. `query` is plain
+	## What an `table_view` site shows of its table. `query` is plain
 	## data the site can compare (a filter and an order the user chose),
-	## and `plan` turns it into the [Query] that selects and orders rows;
+	## and `plan` turns it into the [QueryPlan] that selects and orders rows;
 	## `window` is the part of that order to draw.
-	ViewProps(ctx, q, k, v, s) : { query : Signal(ctx, q), plan : (q -> Query(k, v, s)), window : Signal(ctx, Window) }
+	TableViewProps(ctx, q, k, v, s) : { query : Signal(ctx, q), plan : (q -> QueryPlan(k, v, s)), window : Signal(ctx, Window) }
 
-	## `each_view(table, props, template)` renders one row for each
+	## `table_view(table, props, template)` renders one row for each
 	## row of `table` in the window of a filtered, sorted view of it
-	## ([ViewProps]). The site owns the view (the ordered keys of every row
+	## ([TableViewProps]). The site owns the view (the ordered keys of every row
 	## that passes the filter) and keeps it up to date from the table's
 	## record of changes: a turn that wrote rows costs those rows, a search
 	## and a move in the ordered keys each, whatever the size of the table.
@@ -1235,9 +1235,9 @@ Core := [].{
 	## The site finds a mounted row by the table's key itself, in an index
 	## it keeps through the key's `is_eq` and `to_hash`, never by a text of
 	## the key.
-	each_view : Cell(st, Table(k, v)), ViewProps(ctx, q, k, v, s), (Signal(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)
+	table_view : Cell(st, Table(k, v)), TableViewProps(ctx, q, k, v, s), (Signal(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)
 		where [ctx.store : () -> StoreReach(ctx, st), k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher, q.is_eq : q, q -> Bool]
-	each_view = |source, props, template| Site(
+	table_view = |source, props, template| Site(
 		Mount(
 			|env, args, tx| {
 				get = view_source(source)
@@ -1404,8 +1404,8 @@ Core := [].{
 	## `Work` runs a job of the task registered under `task` (see
 	## `with_workers`) on `input` in a worker, which may read the `files` the
 	## input refers to through effects and answer with files of its own; it
-	## delivers one `Work` answer or `WorkLost(fault)`. `deadline_ms` 0 means
-	## no deadline; it is capped at 10 minutes and delivers `Timeout` when it
+	## delivers one `Work` answer or `WorkLost(fault)`. `timeout_ms` 0 means
+	## no timeout; it is capped at 10 minutes and delivers `Timeout` when it
 	## expires. `on_dispose` says whether disposing its site stops the job
 	## (`Stop`, like a timer) or keeps it and delivers its answer to the
 	## nearest surviving ancestor (`Keep`, like `Http`); `on_cancel` whether a
@@ -1423,12 +1423,12 @@ Core := [].{
 	## `FileUrl` or `FileFailed`. Like a timer these belong to their site.
 	## `Upload` is an HTTP request whose body is a file (`File.upload`): it is
 	## answered and kept as `Http` is.
-	Req : [
+	Request : [
 		## `timeout_ms` 0 = no timeout; capped at `max_timeout_ms`.
 		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32 }),
 		StorageGet(Str),
 		Timer(U32),
-		Work({ task : Str, input : List(U8), files : List(File), deadline_ms : U32, on_dispose : [Stop, Keep], on_cancel : [Stop, Finish], prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] }),
+		Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32, on_dispose : [Stop, Keep], on_cancel : [Stop, Finish], prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] }),
 		Interval(U32),
 		Popstate,
 
@@ -1454,7 +1454,7 @@ Core := [].{
 
 		## Ports (see [PortDecl]): a message to the page's JavaScript for the
 		## port named `port`. `PortCommand` is emitted and forgotten;
-		## `PortCall` awaits one `PortReply` or `PortFailed` and, like `Http`,
+		## `PortCall` awaits one `PortAnswer` or `PortFailed` and, like `Http`,
 		## survives its site's disposal (`timeout_ms` 0 = none, capped at 10
 		## minutes); `PortSubscribe` delivers any number of messages until its
 		## site is disposed or the JavaScript ends it.
@@ -1481,10 +1481,10 @@ Core := [].{
 	## produced none (`WorkLost`), a file's bytes or text read into the page
 	## (`FileBytes`, `FileText`), a file's digest (`Digest`) or a URL that
 	## shows it (`FileUrl`), or why an operation on a file produced nothing
-	## (`FileFailed`), or a port's answer or message (`PortReply`) or why
+	## (`FileFailed`), or a port's answer or message (`PortAnswer`) or why
 	## there is none (`PortFailed`), or a response whose body is a file
 	## (`Fetched`).
-	Res : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortReply(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File })]
+	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name, and the files its `{"$file":N}` markers
@@ -1558,7 +1558,7 @@ Core := [].{
 
 	## A `read_bytes` result as the file's bytes or a typed [FileError]. Any
 	## other result is a contract error.
-	file_bytes : Res -> Try(List(U8), FileError)
+	file_bytes : Result -> Try(List(U8), FileError)
 	file_bytes = |res| match res {
 		FileBytes(bytes) => Ok(bytes)
 		FileFailed(e) => Err(e)
@@ -1568,7 +1568,7 @@ Core := [].{
 
 	## A `read_utf8` result as the file's text or a typed [FileError]. Any
 	## other result is a contract error.
-	file_text : Res -> Try(Str, FileError)
+	file_text : Result -> Try(Str, FileError)
 	file_text = |res| match res {
 		FileText(text) => Ok(text)
 		FileFailed(e) => Err(e)
@@ -1578,7 +1578,7 @@ Core := [].{
 
 	## A `sha256` result as the digest's 32 bytes or a typed [FileError]. Any
 	## other result is a contract error.
-	file_digest : Res -> Try(List(U8), FileError)
+	file_digest : Result -> Try(List(U8), FileError)
 	file_digest = |res| match res {
 		Digest(bytes) => Ok(bytes)
 		FileFailed(e) => Err(e)
@@ -1588,7 +1588,7 @@ Core := [].{
 
 	## An `object_url` result as the URL or a typed [FileError]. Any other
 	## result is a contract error.
-	file_url : Res -> Try(Str, FileError)
+	file_url : Result -> Try(Str, FileError)
 	file_url = |res| match res {
 		FileUrl(url) => Ok(url)
 		FileFailed(e) => Err(e)
@@ -1614,7 +1614,7 @@ Core := [].{
 	## An HTTP result as the body of a 2xx response or a typed [HttpError]. Apps
 	## that classify statuses themselves match on `Http` directly. Any result that
 	## is not from an HTTP request is a contract error.
-	http_text : Res -> Try(Str, HttpError)
+	http_text : Result -> Try(Str, HttpError)
 	http_text = |res| match res {
 		Http({ status, body, .. }) => if (status >= 200 and status < 300) Ok(body) else Err(Status(status))
 		Network(message) => Err(Network(message))
@@ -1633,7 +1633,7 @@ Core := [].{
 	## A `File.fetch` result as the body of a 2xx response, or a typed
 	## [FetchError]. Apps that read the status or headers themselves match on
 	## `Fetched` directly. Any other result is a contract error.
-	fetched : Res -> Try(File, FetchError)
+	fetched : Result -> Try(File, FetchError)
 	fetched = |res| match res {
 		Fetched({ status, body, .. }) => if (status >= 200 and status < 300) Ok(body) else Err(Status(status))
 		Network(message) => Err(Network(message))
@@ -1644,11 +1644,11 @@ Core := [].{
 	}
 
 	## What an effect site does with a result: what it writes, given the value
-	## the request was issued for and the [Res]. Make one with `State.on_result`
+	## the request was issued for and the [Result]. Make one with `State.on_result`
 	## or `store_reaction`, or use `ignore`. Like a handler's, its `run` is
 	## also given the path of the site whose reaction it is, and returns the
 	## set it wrote.
-	Reaction(ctx, a) :: { run : (ctx, a, Res, List(U32) -> (ctx, Layers)) }.{
+	Reaction(ctx, a) :: { run : (ctx, a, Result, List(U32) -> (ctx, Layers)) }.{
 
 		## One reaction that runs `first` and then `second` on the same
 		## result, as one atomic write: `second` receives the environment
@@ -1679,7 +1679,7 @@ Core := [].{
 	## title, storage writes, focus): a request that awaits a result would outlive
 	## its owner, so it is a contract error. Each run is counted by `name`. The site
 	## renders nothing and reads nothing while it is live.
-	on_cleanup : Str, Signal(ctx, a), (a -> List(Req)) -> Elem(ctx)
+	on_cleanup : Str, Signal(ctx, a), (a -> List(Request)) -> Elem(ctx)
 	on_cleanup = |name, v, plan| Site(
 		Mount(|_env, _args, tx| (cleanup_inst(name, v, plan), 0, tx)),
 		|_| 0,
@@ -1696,26 +1696,26 @@ Core := [].{
 	## delivered to the nearest surviving ancestor instead. At most 32 requests are
 	## in flight by default (see `program_boot`); beyond that a request is answered
 	## with `Refused`.
-	watch : Signal(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
+	watch : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
 	watch = |v, plan, react| effect(v, True, plan, replanned(plan), react)
 
 	## Like `watch`, but issues only when `v` changes after mount, never for its
 	## initial value.
-	on_change : Signal(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
+	watch_changes : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
-	on_change = |v, plan, react| effect(v, False, plan, replanned(plan), react)
+	watch_changes = |v, plan, react| effect(v, False, plan, replanned(plan), react)
 
-	## `latest(v, plan, react)` issues like `watch`, under one more rule: the site
+	## `watch_latest(v, plan, react)` issues like `watch`, under one more rule: the site
 	## owns only the requests of its current value. Before it issues for a new
 	## value it cancels every awaited request it still holds from earlier values
 	## (`CANCEL`, counted `cancelled`), whatever its kind, and drops their queued
 	## follow-ups and refusals (counted `stale`), so a late answer for an earlier
 	## value never reaches `react`. A `plan` that returns `[]` makes a change a
 	## pure cancel. Disposal follows `watch`'s rules.
-	latest : Signal(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
+	watch_latest : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
-	latest = |v, plan, react| Site(
+	watch_latest = |v, plan, react| Site(
 		Mount(
 			|env, args, tx| {
 				a = (v.read)(env)
@@ -1731,13 +1731,13 @@ Core := [].{
 	## value follows the answers to the requests issued for `input`. At mount the
 	## layer starts at `cfg.pending(cfg.init, a)` and `cfg.plan(a)` is issued; when
 	## `input` changes to an unequal value the site supersedes its requests as
-	## `latest` does, sets the layer to `cfg.pending(s, a)` in the same pass (before
+	## `watch_latest` does, sets the layer to `cfg.pending(s, a)` in the same pass (before
 	## anything below reads it) and issues again. Each result for a request the
 	## site owns sets the layer to `cfg.resolve(s, a, res)`, where `a` is the value
 	## the request was issued for. Readers inside `body` do no work while the
 	## layer is equal to its previous value. Disposal follows `watch`'s rules; a
 	## reparented answer's write to the retired layer is skipped and counted.
-	resource : Signal(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Req)), resolve : (s, a, Res -> s) }, (Signal(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
+	resource : Signal(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Request)), resolve : (s, a, Result -> s) }, (Signal(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
 	resource = |input, cfg, body| {
 		resolve = cfg.resolve
@@ -1747,7 +1747,7 @@ Core := [].{
 	## `resource` whose `resolve` is also told the position, in the list
 	## `plan(a)` returned, of the request a result answers: how a `gather`
 	## layer knows which job answered.
-	resource_at : Signal(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Req)), resolve : (s, a, U64, Res -> s) }, (Signal(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
+	resource_at : Signal(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Request)), resolve : (s, a, U64, Result -> s) }, (Signal(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
 	resource_at = |input, cfg, body| Site(
 		Mount(
@@ -1799,8 +1799,8 @@ Core := [].{
 	## every job `Working` and `all` `Pending`, keeping its answer; each
 	## result settles the job at its position, and once none is working
 	## `all` settles too. An empty list is answered at once with `[]`.
-	gather : asker -> { init : Gathered(output, error), pending : (Gathered(output, error), List(input) -> Gathered(output, error)), plan : (List(input) -> List(Req)), resolve : (Gathered(output, error), List(input), U64, Res -> Gathered(output, error)) }
-		where [asker.request : asker, input -> Req, asker.result : asker, Res -> Try(output, error)]
+	gather : asker -> { init : Gathered(output, error), pending : (Gathered(output, error), List(input) -> Gathered(output, error)), plan : (List(input) -> List(Request)), resolve : (Gathered(output, error), List(input), U64, Result -> Gathered(output, error)) }
+		where [asker.request : asker, input -> Request, asker.result : asker, Result -> Try(output, error)]
 	gather = |asker| {
 		init: { all: { request: Idle, answer: Unanswered }, jobs: [] },
 		pending: |gathered, inputs|
@@ -1851,19 +1851,19 @@ Core := [].{
 	## `on_post(v, plan, react)`: in the turn a handler posts `item` to the
 	## outbox `v`, issue `plan(item)`; each result reaches `react` with the
 	## item. Nothing is issued at mount and nothing is cancelled, as with
-	## `on_change`. Two posts to one outbox in one turn are a contract
+	## `watch_changes`. Two posts to one outbox in one turn are a contract
 	## error, since the first would never be sent.
-	on_post : Signal(ctx, Outbox(item)), (item -> List(Req)), Reaction(ctx, item) -> Elem(ctx)
+	on_post : Signal(ctx, Outbox(item)), (item -> List(Request)), Reaction(ctx, item) -> Elem(ctx)
 	on_post = |v, plan, react| effect(v, False, |_| [], posted_step(plan), posted_reaction(react))
 
 	## The `resource` configuration of a layer that follows the answer to one
 	## request for its input, for anything with `request` and `result` (a
 	## worker task, a preparation's task, a port call). A new input
 	## marks the layer `Pending` and keeps the previous answer; each result
-	## settles it as `Answered` or `Failed`. `Worker.derive` and `Port.derive`
+	## settles it as `Answered` or `Failed`. `Worker.resource` and `Port.resource`
 	## are this, so the policy has one home.
-	follow : asker -> { init : Remote(output, error), pending : (Remote(output, error), input -> Remote(output, error)), plan : (input -> List(Req)), resolve : (Remote(output, error), input, Res -> Remote(output, error)) }
-		where [asker.request : asker, input -> Req, asker.result : asker, Res -> Try(output, error)]
+	follow : asker -> { init : Remote(output, error), pending : (Remote(output, error), input -> Remote(output, error)), plan : (input -> List(Request)), resolve : (Remote(output, error), input, Result -> Remote(output, error)) }
+		where [asker.request : asker, input -> Request, asker.result : asker, Result -> Try(output, error)]
 	follow = |asker| {
 		init: { request: Idle, answer: Unanswered },
 		pending: |remote, _| { ..remote, request: Pending },
@@ -1873,8 +1873,8 @@ Core := [].{
 
 	## Like `follow`, for an input that is sometimes not a question: `Run(i)`
 	## asks about `i`, and `Skip` asks nothing and clears the answer.
-	follow_when : asker -> { init : Remote(output, error), pending : (Remote(output, error), [Run(input), Skip] -> Remote(output, error)), plan : ([Run(input), Skip] -> List(Req)), resolve : (Remote(output, error), [Run(input), Skip], Res -> Remote(output, error)) }
-		where [asker.request : asker, input -> Req, asker.result : asker, Res -> Try(output, error)]
+	follow_when : asker -> { init : Remote(output, error), pending : (Remote(output, error), [Run(input), Skip] -> Remote(output, error)), plan : ([Run(input), Skip] -> List(Request)), resolve : (Remote(output, error), [Run(input), Skip], Result -> Remote(output, error)) }
+		where [asker.request : asker, input -> Request, asker.result : asker, Result -> Try(output, error)]
 	follow_when = |asker| {
 		init: { request: Idle, answer: Unanswered },
 		pending: |remote, want| match want {
@@ -1926,7 +1926,7 @@ Core := [].{
 	## host encodes it (design.md, Appendix B). A payload that does not follow the
 	## encoding (unknown tag, truncated, trailing bytes, text that is not UTF-8) is
 	## a contract error: the host broke the protocol, and nothing is guessed.
-	decode_res : List(U8) -> Res
+	decode_res : List(U8) -> Result
 	decode_res = |b| decode_res_with(b, decode_port_res)
 
 	## What the host knows before the first render: the URL, the declared storage
@@ -2014,14 +2014,14 @@ Core := [].{
 	on_files : Str, FilesHandler(ctx) -> Attr(ctx)
 	on_files = |ev, { h }| On(if (ev == "drop") "drop:prevent:files" else "${ev}:files", h)
 
-	## A mounted engine instance: the site tree and the transaction state. The host
+	## A mounted engine instance: the site tree and the turn state. The host
 	## holds it between calls through [Program]; test platforms and harnesses drive
 	## it directly with `mount`, `event`, `result` and `take_cmds`. `programs`
 	## is the program's catalogue: its worker tasks' names and its ports.
 	App :: { root : Inst(Top), tx : Tx, programs : Catalogue }
 
 	## What a program declares beside its view, kept beside the engine root
-	## (never in the transaction, whose every field costs code at each site
+	## (never in the turn, whose every field costs code at each site
 	## that rebuilds it): the worker catalogue's names and the port
 	## declarations with the port code that serves them.
 	Catalogue : { workers : List(Str), ports : Ports }
@@ -2046,8 +2046,8 @@ Core := [].{
 		table : List(U8), List(PortDecl) -> List(U8),
 		check : List(PortDecl), PortAt -> {},
 		write : Tx, List(TurnEnd) -> Tx,
-		decode : List(U8), List(Blob) -> Res,
-		ends : Res -> Bool,
+		decode : List(U8), List(Blob) -> Result,
+		ends : Result -> Bool,
 	}
 
 	## For test platforms and harnesses: mount an app under host node 0 with the
@@ -2068,13 +2068,13 @@ Core := [].{
 	mount_store = |max, start, elem| mount_start(max, { workers: [], ports: no_ports }, start, elem)
 
 	## For test platforms and harnesses: deliver a DOM event to `node` and its
-	## handler number with the event's payload, as one transaction (plus any
+	## handler number with the event's payload, as one turn (plus any
 	## follow-up turns). An event on a node that has since been removed is ignored.
 	event : App, U32, U32, Str -> App
 	event = |inst, node, handler, payload| deliver(inst, node, handler, Ev(payload))
 
 	## For test platforms and harnesses: deliver the files a `:files` event
-	## carries, as one transaction like `event`. `record` is the event's file
+	## carries, as one turn like `event`. `record` is the event's file
 	## record (Appendix B) and `blobs` the handles the host minted for it, in
 	## the record's order; a record that does not match them is a contract
 	## error. An event on a removed node is ignored, and its handles go with it.
@@ -2108,9 +2108,9 @@ Core := [].{
 	}
 
 	## For test platforms and harnesses: deliver an effect result for request `id`,
-	## as one transaction exactly like an event. An id that is not in flight is
+	## as one turn exactly like an event. An id that is not in flight is
 	## dropped and counted `stale`.
-	result : App, U32, Res -> App
+	result : App, U32, Result -> App
 	result = |{ root, tx, programs }, id, res| {
 		match tx.fx.live.find_first(|l| l.id == id) {
 			Err(_) => { root, tx: fx_count(tx, Stale), programs }
@@ -2169,7 +2169,7 @@ Core := [].{
 	## wire encodes them) and a note naming any change it made to the effect
 	## channel without a command (a follow-up queued, a request refused).
 	##
-	## A view site (`each_view`) keeps its storage from its table's
+	## A view site (`table_view`) keeps its storage from its table's
 	## record of changes instead of comparing values, so pruning alone would
 	## not catch a view the turn left behind. In this pass each view site
 	## also builds its view from scratch and requires the one it holds to be
@@ -2254,7 +2254,7 @@ Core := [].{
 	Kept :: { prep : Str, ask! : Box((Str, List(U8), List(Box(U64)) => List(U8))) }
 
 	## What the host drives: the protocol version, the declared storage keys (read
-	## before mount), mount once with the boot bytes, then one transaction per
+	## before mount), mount once with the boot bytes, then one turn per
 	## event or effect result. Each call returns the state, the command batch and
 	## the work record, and the host lends both buffers back on the next call so
 	## they are reused in place. A worker instance of the same module never
@@ -2521,7 +2521,7 @@ Mount(ctx) := [Mount((ctx, Args, Tx -> (Inst(ctx), U128, Tx)))]
 ## the written layers below it (`waits_for_outer`). Each of them joined that
 ## pass if the pass reached its site; the walk refreshes, at its own site,
 ## each one the pass did not reach, and stops at the deepest of them.
-Payload : [Ev(Str), Files(List(Core.File), U64), Fx(Res), Settle(Layers)]
+Payload : [Ev(Str), Files(List(Core.File), U64), Fx(Result), Settle(Layers)]
 
 ## Whether a payload is a `Settle` walk, and if so whether it names a
 ## layer below index `depth`, so that it goes on past the state site there.
@@ -2558,7 +2558,7 @@ Out(ctx) := [Done, Pending(ctx, Layers), Orphaned(List(Orphan(ctx)))]
 ## with the disposed scope land in a snapshot that is discarded (the third
 ## part of its answer counts them), writes to surviving states commit, and
 ## the write set names only surviving layers.
-Orphan(ctx) : { id : U32, run : (ctx, Res -> (ctx, Layers, U64)) }
+Orphan(ctx) : { id : U32, run : (ctx, Result -> (ctx, Layers, U64)) }
 
 orphans_of : Out(ctx) -> List(Orphan(ctx))
 orphans_of = |out| match out {
@@ -2584,7 +2584,7 @@ Tx : {
 }
 
 ## Work counters (design.md, "Work assertions"): one `Work` record in the
-## transaction accumulator, cumulative over the instance. Indices 1-18
+## turn accumulator, cumulative over the instance. Indices 1-18
 ## count the commands emitted, by opcode (`INST` is a row created, `MOVE`
 ## a row moved); the named indices below count engine work.
 w_set_value : U64
@@ -3802,7 +3802,7 @@ writes_cells = |writes, by| {
 						Reaction(site) => "the decision of the reaction at site ${show_path(site)}"
 						After => "the writes given to Store.after"
 					}
-					crash "contract: ${who} wrote cell ${at.to_str()} of the store and then replaced it (write ${($i + 1).to_str()} of the list replaces what write ${($j + 1).to_str()} wrote), which would discard the earlier write; write the cell once, or make the later write a change of what the earlier one left"
+					crash "contract: ${who} wrote cell ${at.to_str()} of the store and then replaced it (write ${($i + 1).to_str()} of the list replaces what write ${($j + 1).to_str()} wrote), which would discard the earlier write; write the cell once, or make the later write an update of what the earlier one left"
 				}
 				$j = $j + 1
 			}
@@ -4988,7 +4988,7 @@ each_inst = |cfg0, rows0, adopted0, cols0| {
 }
 
 ## ------------------------------------------------------------------
-## The view site (`each_view`): rows like an `each` site's, drawn from the
+## The view site (`table_view`): rows like an `each` site's, drawn from the
 ## window of a view the site owns instead of from a list, and found by the
 ## table's key instead of by a text key.
 
@@ -5003,13 +5003,13 @@ view_chunk = 1024
 
 ## Fixed per view site: the table's getter, the query and how it selects
 ## and orders rows, and the window.
-Shows(ctx, q, k, v, s) : { get : (ctx -> Table(k, v)), query : Signal(ctx, q), plan : (q -> Core.Query(k, v, s)), window : Signal(ctx, Core.Window) }
+Shows(ctx, q, k, v, s) : { get : (ctx -> Table(k, v)), query : Signal(ctx, q), plan : (q -> Core.QueryPlan(k, v, s)), window : Signal(ctx, Core.Window) }
 
 ## How a scope reads the table a view draws: through its reach of the
 ## store, then the table's cell.
 ##
 ## A function of its own because of a compiler defect: written as a
-## lambda inside `each_view`, its closure goes into the view site, whose
+## lambda inside `table_view`, its closure goes into the view site, whose
 ## instance calls itself from several branches, and `roc check` of an app
 ## that reaches the site does not finish (roc-lang/roc#12869, fixed in
 ## compilers after the pinned nightly).
@@ -5049,7 +5049,7 @@ view_row = |source, depth, path| {
 		writes: one_cell(source.cell),
 		get: |e| match get(store_get(e.outer)).get(e.item) {
 			Ok(row) => row
-			Err(Missing) => crash "contract: a row of the each_view at site ${show_path(path)} was read after its key left the table: a handler that removes a row must not read that row afterwards in the same event"
+			Err(Missing) => crash "contract: a drawn row of the table_view at site ${show_path(path)} was read after its key left the table: a handler that removes a row must not read that row afterwards in the same event"
 		},
 		modify: |e, f| {
 			{ outer, key, item } = e
@@ -5186,7 +5186,7 @@ view_check = |cfg, shows, q, view, cols, table, env| {
 		} else {
 			""
 		}
-	if (drift.is_empty()) "" else "the each_view at site ${show_path(cfg.path)} differs from its table: ${drift}"
+	if (drift.is_empty()) "" else "the table_view at site ${show_path(cfg.path)} differs from its table: ${drift}"
 }
 
 ## A view site. `slots` is the slot of each mounted row by the table's
@@ -5539,7 +5539,7 @@ derive_settle = |input, block, depth, out, tx| {
 
 # Effects.
 #
-# An effect site watches a value. At mount (`watch`; `on_change` skips
+# An effect site watches a value. At mount (`watch`; `watch_changes` skips
 # mount) and whenever the value changes (equality-pruned), `plan` turns
 # the value into requests.
 #
@@ -5588,7 +5588,7 @@ derive_settle = |input, block, depth, out, tx| {
 #                            2 STORAGE_GET key:str  3 TIMER ms:u32  4 INTERVAL ms:u32  5 POPSTATE
 #                            6 ONLINE  7 VISIBILITY
 #                            8 WORK task:str input:(u32 len, raw bytes) n:u32 (token start len)*n
-#                                   deadline_ms:u32 cancel:u8 prepared:u8 [prep:str input_len:u32 input_files:u32]
+#                                   timeout_ms:u32 cancel:u8 prepared:u8 [prep:str input_len:u32 input_files:u32]
 #                            11 READ mode:u8 token:u64 start:u64 len:u64 max_bytes:u64 (a file's range)
 #                            12 UPLOAD method:str url:str n:u32 (name:str value:str)* token start len timeout_ms:u32
 #                            13 DIGEST algorithm:u8 token start len   14 URL token start len
@@ -5597,7 +5597,7 @@ derive_settle = |input, block, depth, out, tx| {
 #             preparation's task with its operands)
 #  14 CANCEL  id
 #  15 NAV     mode:u8 (1 push, 2 replace) url:str
-#  16 STORE   op:u8 (1 set: key:str value:str, 2 remove: key:str)
+#  16 STORAGE   op:u8 (1 set: key:str value:str, 2 remove: key:str)
 #  17 TITLE   text:str
 #  18 FOCUS   op:u8 (1 focus, 2 blur, 3 select text) node   (end of turn)
 #  19 PORT    port:str message (a port command; design.md, Appendix B)
@@ -5613,7 +5613,7 @@ derive_settle = |input, block, depth, out, tx| {
 # status:u16 headers size name type (a fetched body, one staged handle;
 # design.md, Appendix B).
 
-## Largest per-request HTTP timeout or work deadline the host will arm (10
+## Largest per-request HTTP timeout or work timeout the host will arm (10
 ## minutes).
 max_timeout_ms : U32
 max_timeout_ms = 600000
@@ -5692,14 +5692,14 @@ not_prepared : List(U8), List(File) => Prepared
 not_prepared = |_, _| crash "internal: a task that is not a preparation was prepared"
 
 ## A `Work` request's `FX` (design.md, Appendix B): kind 8, `task:str
-## input:(u32 len, raw bytes) n:u32 (token start len)*n deadline_ms:u32
+## input:(u32 len, raw bytes) n:u32 (token start len)*n timeout_ms:u32
 ## cancel:u8 prepared:u8`, then for a preparation's task `prep:str
 ## input_len:u32 input_files:u32`, so the runtime knows which preparation
 ## answers it, and where its input lies, without reading the input itself.
 ## A preparation's input that does not lie within the request's is a
 ## contract error naming the task.
 put_work : List(U8), Str, List(U8), List(File), U32, [Stop, Finish], [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] -> List(U8)
-put_work = |head, task, input, files, deadline_ms, on_cancel, prepared| {
+put_work = |head, task, input, files, timeout_ms, on_cancel, prepared| {
 	var $b = put_u32(put_u32(put_str(head.append(8), task), input.len().to_u32_wrap()).concat(input), files.len().to_u32_wrap())
 	for file in files {
 		{ token, start, len } = file_ref(file)
@@ -5710,7 +5710,7 @@ put_work = |head, task, input, files, deadline_ms, on_cancel, prepared| {
 		Stop => 1
 		Finish => 2
 	}
-	b = put_u32($b, min_u32(deadline_ms, max_timeout_ms)).append(cancel)
+	b = put_u32($b, min_u32(timeout_ms, max_timeout_ms)).append(cancel)
 	match prepared {
 		Unprepared => b.append(0)
 		Prepared({ name, input_len, input_files }) => {
@@ -5823,7 +5823,7 @@ port_kind_name = |kind| match kind {
 ## `decode_res` with result tags 14 and 15 read by `port_res`, which is
 ## the program's own (see [Ports]): an app that declares no ports
 ## carries no port decoder.
-decode_res_with : List(U8), (List(U8), List(Blob) -> Res) -> Res
+decode_res_with : List(U8), (List(U8), List(Blob) -> Result) -> Result
 decode_res_with = |b, port_res| {
 	tag = b.first() ?? crash "contract: empty effect result"
 	text = |n| Str.from_utf8(b.drop_first(n)) ?? crash "contract: effect result text is not UTF-8"
@@ -5908,7 +5908,7 @@ decode_res_with = |b, port_res| {
 ## (size:u64 name:str type:str)*n output:rest`, and a response whose body
 ## is a file, `status:u16 n:u32 (name:str value:str)*n size:u64 name:str
 ## type:str` with exactly one handle. Anything else is a contract error.
-decode_held_res : List(U8), List(Blob) -> Res
+decode_held_res : List(U8), List(Blob) -> Result
 decode_held_res = |b, handles| {
 	what = "effect result tag ${(b.first() ?? 0).to_str()}"
 	files_at = |at0, count| {
@@ -5984,7 +5984,7 @@ no_ports = {
 }
 
 ## The port a port request names.
-port_name : PortReq -> Str
+port_name : PortRequest -> Str
 port_name = |req| match req {
 	Command(port, _) => port
 	Call(port, _, _) => port
@@ -6074,60 +6074,60 @@ put_port_message = |buf, { json, blobs, files }| {
 	$b
 }
 
-## A port reply's message from result tag 14, `json:str nblobs:u32
+## A port answer's message from result tag 14, `json:str nblobs:u32
 ## (len:u32 bytes)* nfiles:u32 (size:u64 name:str type:str)*`, its files
 ## paired in order with the handles the host minted for them. Anything else
 ## is a contract error.
 decode_port_message : List(U8), List(Blob) -> PortMessage
 decode_port_message = |b, handles| {
-	(json, a1) = get_str(b, 1, "port reply")
-	nblobs = get_u32(b, a1, "port reply").to_u64()
+	(json, a1) = get_str(b, 1, "port answer")
+	nblobs = get_u32(b, a1, "port answer").to_u64()
 	var $at = a1 + 4
 	var $blobs = []
 	var $i = 0.U64
 	while $i < nblobs {
-		len = get_u32(b, $at, "port reply").to_u64()
+		len = get_u32(b, $at, "port answer").to_u64()
 		if $at + 4 + len > b.len() {
-			crash "contract: truncated port reply"
+			crash "contract: truncated port answer"
 		}
 		$blobs = $blobs.append(b.sublist({ start: $at + 4, len }))
 		$at = $at + 4 + len
 		$i = $i + 1
 	}
-	nfiles = get_u32(b, $at, "port reply").to_u64()
+	nfiles = get_u32(b, $at, "port answer").to_u64()
 	if nfiles != handles.len() {
-		crash "contract: a port reply lists ${nfiles.to_str()} files but the host minted ${handles.len().to_str()} handles"
+		crash "contract: a port answer lists ${nfiles.to_str()} files but the host minted ${handles.len().to_str()} handles"
 	}
 	$at = $at + 4
 	var $files = List.with_capacity(nfiles)
 	for blob in handles {
-		size = get_u64(b, $at, "port reply")
-		(name, f1) = get_str(b, $at + 8, "port reply")
-		(mime, f2) = get_str(b, f1, "port reply")
+		size = get_u64(b, $at, "port answer")
+		(name, f1) = get_str(b, $at + 8, "port answer")
+		(mime, f2) = get_str(b, f1, "port answer")
 		$files = $files.append({ blob, name, mime, size, start: 0, len: size, reach: OnPage })
 		$at = f2
 	}
 	if $at != b.len() {
-		crash "contract: a port reply carries ${(b.len() - $at).to_str()} unexpected trailing bytes"
+		crash "contract: a port answer carries ${(b.len() - $at).to_str()} unexpected trailing bytes"
 	}
 	{ json, blobs: $blobs, files: $files }
 }
 
 ## Result tags 14 and 15, and the file handles a reply carries (only a
 ## reply carries any). Anything else is a contract error.
-decode_port_res : List(U8), List(Blob) -> Res
+decode_port_res : List(U8), List(Blob) -> Result
 decode_port_res = |b, handles| match b {
-	[14, ..] => PortReply(decode_port_message(b, handles))
-	[15, ..] if !handles.is_empty() => crash "contract: an effect result that is not a port reply carries file handles"
+	[14, ..] => PortAnswer(decode_port_message(b, handles))
+	[15, ..] if !handles.is_empty() => crash "contract: an effect result that is not a port answer carries file handles"
 	[15, 1, ..] => PortFailed(Threw(Str.from_utf8(b.drop_first(2)) ?? crash "contract: effect result text is not UTF-8"))
 	[15, 2] => PortFailed(TooLarge)
 	[15, 3] => PortFailed(Closed)
 	[15, ..] => crash "contract: effect result tag 15 needs a failure class, 1 with text, 2 or 3"
-	_ => crash "contract: an effect result that is not a port reply carries file handles"
+	_ => crash "contract: an effect result that is not a port answer carries file handles"
 }
 
 ## A result that ends a subscription: its JavaScript closed it or threw.
-ends_subscription : Res -> Bool
+ends_subscription : Result -> Bool
 ends_subscription = |res| match res {
 	PortFailed(Closed) => True
 	PortFailed(Threw(_)) => True
@@ -6136,7 +6136,7 @@ ends_subscription = |res| match res {
 
 Live : { id : U32, path : List(U32), sub : Bool }
 
-Queued : { id : U32, path : List(U32), res : Res }
+Queued : { id : U32, path : List(U32), res : Result }
 
 Fx : {
 	next : U32,
@@ -6171,7 +6171,7 @@ Fx : {
 ## each checked against the worker catalogue with its task and site path.
 ##
 ## The catalogue lives in [App], not in `Fx`: every site rebuilds `Fx` as it
-## threads the transaction, and with the pinned compiler each inline field of
+## threads the turn, and with the pinned compiler each inline field of
 ## it costs code at every one of those places (a catalogue field there grew
 ## every app by about 3%). Checking at the end of the turn is the same
 ## contract error with the same message; nothing the turn did is published,
@@ -6189,11 +6189,11 @@ TurnEnd : [Focus(U8, Str), CheckTask(Str, List(U32)), Port(PortAt), Drift(Str)]
 ## in-flight bound refused it. Its use is checked like a work request's,
 ## and its bytes are written then, through the program's own port code, so
 ## an app that declares no ports never links the port encoder.
-PortAt : { req : PortReq, path : List(U32), slot : [At(U64, U32), Refused] }
+PortAt : { req : PortRequest, path : List(U32), slot : [At(U64, U32), Refused] }
 
 ## A port request as it waits for the end of its turn: a command, a call
 ## with its timeout, or a subscription, each with its port and message.
-PortReq : [Command(Str, PortMessage), Call(Str, PortMessage, U32), Subscribe(Str, PortMessage)]
+PortRequest : [Command(Str, PortMessage), Call(Str, PortMessage, U32), Subscribe(Str, PortMessage)]
 
 fx_empty : Fx
 fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, refs: [], focus: [], ref_pos: [], cleanups: [] }
@@ -6231,10 +6231,10 @@ Owned(a) : { id : U32, sub : Bool, keep : Bool, a : a, at : U64 }
 ## mount, and `step` those for a change from the value last seen to a new
 ## one at the site's path (`plan` of the new value, except for `on_post`,
 ## which checks the change).
-EffectCfg(ctx, a) : { v : Signal(ctx, a), plan : (a -> List(Req)), step : (a, a, List(U32) -> List(Req)), react : Reaction(ctx, a), path : List(U32) }
+EffectCfg(ctx, a) : { v : Signal(ctx, a), plan : (a -> List(Request)), step : (a, a, List(U32) -> List(Request)), react : Reaction(ctx, a), path : List(U32) }
 
 ## The `step` of a site that issues `plan` of each new value.
-replanned : (a -> List(Req)) -> (a, a, List(U32) -> List(Req))
+replanned : (a -> List(Request)) -> (a, a, List(U32) -> List(Request))
 replanned = |plan| |_, a, _| plan(a)
 
 with_fx : Tx, (Fx -> Fx) -> Tx
@@ -6249,7 +6249,7 @@ fx_count = |tx, k| with_fx(
 	},
 )
 
-is_sub : Req -> Bool
+is_sub : Request -> Bool
 is_sub = |req| match req {
 	Interval(_) => True
 	Popstate => True
@@ -6264,7 +6264,7 @@ is_sub = |req| match req {
 ## files on the page are scoped: disposal stops them. A job is kept or
 ## scoped by its task's `on_dispose`, which the caller reads from the
 ## request itself.
-is_kept : Req -> Bool
+is_kept : Request -> Bool
 is_kept = |req| match req {
 	Http(_) => True
 	Upload(_) => True
@@ -6279,13 +6279,13 @@ min_u32 = |a, b| if (a < b) a else b
 
 ## An admitted request's `FX` command (design.md, Appendix B). A port
 ## request's is written at the end of its turn instead (see [PortAt]).
-put_req : List(U8), U32, Req -> List(U8)
+put_req : List(U8), U32, Request -> List(U8)
 put_req = |c, id, req| match req {
 	PortCall(_) | PortSubscribe(_) => c
 	_ => put_fx(c, id, req)
 }
 
-put_fx : List(U8), U32, Req -> List(U8)
+put_fx : List(U8), U32, Request -> List(U8)
 put_fx = |c, id, req| {
 	head = put_u32(c.append(13), id)
 	match req {
@@ -6302,7 +6302,7 @@ put_fx = |c, id, req| {
 		Popstate => head.append(5)
 		OnlineChanges => head.append(6)
 		VisibilityChanges => head.append(7)
-		Work({ task, input, files, deadline_ms, on_cancel, prepared, .. }) => put_work(head, task, input, files, deadline_ms, on_cancel, prepared)
+		Work({ task, input, files, timeout_ms, on_cancel, prepared, .. }) => put_work(head, task, input, files, timeout_ms, on_cancel, prepared)
 		ReadBytes({ file, max_bytes }) => put_u64(put_file(head.append(11).append(1), file), max_bytes)
 		ReadUtf8({ file, max_bytes }) => put_u64(put_file(head.append(11).append(2), file), max_bytes)
 		Upload({ method, url, headers, body, timeout_ms }) => {
@@ -6329,7 +6329,7 @@ put_fx = |c, id, req| {
 }
 
 ## Admit an awaited request (or refuse it when the table is full).
-fx_admit : Tx, List(U32), Req -> (U32, Tx)
+fx_admit : Tx, List(U32), Request -> (U32, Tx)
 fx_admit = |tx, path, req| {
 	# A port request's bytes are written at the end of the turn.
 	{ cmds, next, free, routes, work, paths, site_free, fx } = turn_end_later(tx, path, req)
@@ -6347,7 +6347,7 @@ fx_admit = |tx, path, req| {
 ## it is issued: a focus command on a named reference, or a port request
 ## with the place its bytes go (see [PortAt]), which is nowhere when the
 ## in-flight bound is about to refuse it. Any other request needs nothing.
-turn_end_later : Tx, List(U32), Req -> Tx
+turn_end_later : Tx, List(U32), Request -> Tx
 turn_end_later = |tx, path, req| {
 	at = tx.cmds.len()
 	slot = if (tx.fx.live.len() >= tx.fx.max) Refused else At(at, tx.fx.next)
@@ -6368,14 +6368,14 @@ turn_end_later = |tx, path, req| {
 }
 
 ## Queue a follow-up turn for `path` with result `res`.
-fx_follow : Tx, List(U32), Res -> (U32, Tx)
+fx_follow : Tx, List(U32), Result -> (U32, Tx)
 fx_follow = |tx, path, res| {
 	id = tx.fx.inner
 	(id, with_fx(tx, |fx| { ..fx, inner: id + 1, queue: fx.queue.append({ id, path, res }) }))
 }
 
 ## Issue a site's requests for value `a`.
-issue : Tx, List(U32), List(Req), a, List(Owned(a)) -> (Tx, List(Owned(a)))
+issue : Tx, List(U32), List(Request), a, List(Owned(a)) -> (Tx, List(Owned(a)))
 issue = |tx, path, reqs, a, owned| {
 	var $tx = tx
 	var $owned = owned
@@ -6483,7 +6483,7 @@ fx_adopt = |tx, path, orphans| {
 }
 
 ## An effect result arriving at the site path itself (not below it).
-leaf_fx : List(U32), U64, Payload -> Try(Res, [NotFx])
+leaf_fx : List(U32), U64, Payload -> Try(Result, [NotFx])
 leaf_fx = |path, pos, payload| {
 	if pos >= path.len() {
 		match payload {
@@ -6498,7 +6498,7 @@ leaf_fx = |path, pos, payload| {
 ## Deliver a result to an adopted orphan: its reaction runs in this
 ## site's current environment; writes to retired states are counted as
 ## skipped. An id this site does not hold is dropped and counted stale.
-adopt_deliver : List(Orphan(ctx)), ctx, U32, Res, Tx -> (List(Orphan(ctx)), Out(ctx), Tx)
+adopt_deliver : List(Orphan(ctx)), ctx, U32, Result, Tx -> (List(Orphan(ctx)), Out(ctx), Tx)
 adopt_deliver = |adopted, env, id, res, tx| {
 	match adopted.find_first_index(|o| o.id == id) {
 		Ok(i) => {
@@ -6565,7 +6565,7 @@ take_dropped = |cols, depth| {
 }
 
 ## An effect site. `initial`: also issue for the value at mount.
-effect : Signal(ctx, a), Bool, (a -> List(Req)), (a, a, List(U32) -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
+effect : Signal(ctx, a), Bool, (a -> List(Request)), (a, a, List(U32) -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
 	where [a.is_eq : a, a -> Bool]
 effect = |v, initial, plan, step, react| Site(
 	Mount(
@@ -6584,7 +6584,7 @@ effect = |v, initial, plan, step, react| Site(
 	|_| eff_mask(v),
 )
 
-cleanup_inst : Str, Signal(ctx, a), (a -> List(Req)) -> Inst(ctx)
+cleanup_inst : Str, Signal(ctx, a), (a -> List(Request)) -> Inst(ctx)
 cleanup_inst = |name, v, plan| Inst(
 	|env, msg, tx| {
 		match msg {
@@ -6608,7 +6608,7 @@ cleanup_inst = |name, v, plan| Inst(
 )
 
 ## Requests that are emitted and forgotten.
-is_command : Req -> Bool
+is_command : Request -> Bool
 is_command = |req| match req {
 	Push(_) | Replace(_) | Title(_) | Focus(_) | Blur(_) | SelectText(_) | StorageSet(_, _) | StorageRemove(_) | PortCommand(_) | Save(_) => True
 	_ => False
@@ -6664,7 +6664,7 @@ effect_inst = |cfg0, last0, owned0| {
 	)
 }
 
-effect_deliver : EffectCfg(ctx, a), a, List(Owned(a)), ctx, U32, Res, Tx -> (Inst(ctx), Out(ctx), Tx)
+effect_deliver : EffectCfg(ctx, a), a, List(Owned(a)), ctx, U32, Result, Tx -> (Inst(ctx), Out(ctx), Tx)
 	where [a.is_eq : a, a -> Bool]
 effect_deliver = |cfg, last, owned, env, id, res, tx| {
 	match owned.find_first_index(|o| o.id == id) {
@@ -6682,7 +6682,7 @@ effect_deliver = |cfg, last, owned, env, id, res, tx| {
 
 # Supersession (design.md, "Supersession and asynchronous layers").
 #
-# A `latest` or `resource` site owns only the requests of its current
+# A `watch_latest` or `resource` site owns only the requests of its current
 # value. Before it issues for a new value it gives up everything it still
 # owns: an awaited request still in flight, of any kind, is stopped
 # (CANCEL id), leaves the in-flight table and counts `cancelled`, so its
@@ -6707,7 +6707,7 @@ fx_supersede = |tx, owned| {
 	$tx
 }
 
-## A `latest` site: an effect site that supersedes its requests whenever
+## A `watch_latest` site: an effect site that supersedes its requests whenever
 ## its watched value changes. Results and disposal are an effect site's.
 latest_inst : EffectCfg(ctx, a), a, List(Owned(a)) -> Inst(ctx)
 	where [a.is_eq : a, a -> Bool]
@@ -6746,7 +6746,7 @@ latest_inst = |cfg0, last0, owned0| {
 	)
 }
 
-latest_deliver : EffectCfg(ctx, a), a, List(Owned(a)), ctx, U32, Res, Tx -> (Inst(ctx), Out(ctx), Tx)
+latest_deliver : EffectCfg(ctx, a), a, List(Owned(a)), ctx, U32, Result, Tx -> (Inst(ctx), Out(ctx), Tx)
 	where [a.is_eq : a, a -> Bool]
 latest_deliver = |cfg, last, owned, env, id, res, tx| {
 	match owned.find_first_index(|o| o.id == id) {
@@ -6792,7 +6792,7 @@ gathered_all = |all, jobs| {
 ## requests for the new post. The serial moves by one for each post, so a
 ## jump of more than one means a handler posted again before the site saw
 ## the first post, which would never be sent: a contract error.
-posted_step : (item -> List(Req)) -> (Core.Outbox(item), Core.Outbox(item), List(U32) -> List(Req))
+posted_step : (item -> List(Request)) -> (Core.Outbox(item), Core.Outbox(item), List(U32) -> List(Request))
 posted_step = |plan| |last, box, path| {
 	{ serial: was, posted: _ } = last
 	{ serial, posted } = box
@@ -6828,8 +6828,8 @@ settled_remote = |outcome| match outcome {
 ResourceCfg(ctx, a, s) : {
 	input : Signal(ctx, a),
 	pending : (s, a -> s),
-	plan : (a -> List(Req)),
-	resolve : (s, a, U64, Res -> s),
+	plan : (a -> List(Request)),
+	resolve : (s, a, U64, Result -> s),
 	path : List(U32),
 	depth : U64,
 }
@@ -6912,7 +6912,7 @@ resource_inst = |rc0, last0, s0, owned0, block0| {
 ## value changes nothing. Otherwise the site refreshes its own subtree
 ## now: the answer writes nothing else, so nothing above has a pass to
 ## run first.
-resource_deliver : ResourceCfg(ctx, a, s), a, s, List(Owned(a)), Block(In(ctx, s)), ctx, U32, Res, Tx -> (Inst(ctx), Out(ctx), Tx)
+resource_deliver : ResourceCfg(ctx, a, s), a, s, List(Owned(a)), Block(In(ctx, s)), ctx, U32, Result, Tx -> (Inst(ctx), Out(ctx), Tx)
 	where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
 resource_deliver = |rc, last, s, owned, block, env, id, res, tx| {
 	match owned.find_first_index(|o| o.id == id) {
@@ -7275,7 +7275,7 @@ expect {
 				"div",
 				[],
 				[
-					Core.when(st.signal(), || Core.watch(Core.const({}), |_| [Work({ task: "t/echo", input: [1], files: [], deadline_ms: 0, on_dispose: Stop, on_cancel: Stop, prepared: Unprepared })], Core.ignore({})), || Core.text("")),
+					Core.when(st.signal(), || Core.watch(Core.const({}), |_| [Work({ task: "t/echo", input: [1], files: [], timeout_ms: 0, on_dispose: Stop, on_cancel: Stop, prepared: Unprepared })], Core.ignore({})), || Core.text("")),
 					Core.watch(Core.const({}), |_| [Self], st.on_result(|_, _, _| Bool.False)),
 				],
 			),
@@ -7371,9 +7371,9 @@ expect {
 	disposed = Core.fx_stats(mount_in(32, { workers: [], ports: ports_of(ports) }, {}, elem))
 	open = mount_in(32, { workers: [], ports: ports_of(ports) }, {}, Core.watch(Core.const({}), |_| [PortSubscribe({ port: "t/s", message: msg })], Core.ignore({})))
 	id = Core.fx_live(open).first() ?? 0
-	kept = Core.fx_stats(Core.result(open, id, PortReply(msg)))
+	kept = Core.fx_stats(Core.result(open, id, PortAnswer(msg)))
 	closed = Core.result(open, id, PortFailed(Closed))
-	late = Core.fx_stats(Core.result(closed, id, PortReply(msg)))
+	late = Core.fx_stats(Core.result(closed, id, PortAnswer(msg)))
 	[disposed.issued, disposed.cancelled, disposed.reparented, disposed.live] == [2, 1, 1, 1] and kept.live == 1 and Core.fx_stats(closed).live == 0 and late.stale == 1
 }
 

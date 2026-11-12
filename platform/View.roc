@@ -4,7 +4,7 @@ import Table
 
 ## A filtered, sorted, windowed view of a table, kept up to date from
 ## the table's record of changes, never by filtering, sorting or comparing
-## the whole table again. It is the storage of an `Engine.each_view` site.
+## the whole table again. It is the storage of an `Engine.table_view` site.
 ##
 ## A view holds the ordered keys of the rows that pass `keep`, each with the
 ## sort value it was placed by (`Seq`), the window (`start`, `count`) and the
@@ -217,7 +217,7 @@ scratch = |table, { keep, sort, compare }, limit| {
 			_ => crash "View.scratch: index"
 		}
 		if tie {
-			crash "contract: two rows of a view compare Same; a view's order must be total, so its sort value must break ties by key"
+			crash "contract: two rows of a table view compare Same; a table view's order must be total, so its sort value must break ties by key"
 		} else {
 			{}
 		}

@@ -25,7 +25,7 @@
 // work is never dropped silently.
 //
 // Effects (see "Effects" in Engine.roc): the engine emits FX requests with
-// ids, CANCEL, NAV, STORE and TITLE commands. They are collected while a
+// ids, CANCEL, NAV, STORAGE and TITLE commands. They are collected while a
 // batch is applied and performed only after the whole batch is applied.
 // Each awaited result comes back as its own event on FX_NODE (one turn, in
 // completion order). In manual mode (options.manualEffects) HTTP requests,
@@ -46,14 +46,14 @@
 // FIFO queue that the engine's in-flight cap bounds. CANCEL removes a
 // queued job and terminates a running job's worker (replaced lazily),
 // unless the task says `Finish`: that job runs on with its answer dropped,
-// until its deadline (ten minutes when it has none), which then terminates
-// its worker. A deadline does the same to a job not cancelled and answers
+// until its timeout (ten minutes when it has none), which then terminates
+// its worker. A timeout does the same to a job not cancelled and answers
 // `Timeout`. A worker whose instance
 // faults is discarded and its job answered `WorkLost(class)`; the
 // diagnostic goes to console.error and options.onWorkerFault, never into
 // the result. Without a Worker constructor every job is `WorkLost
 // (unavailable)`. options.workers === "inline" runs jobs on this thread in a
-// second instance of the module instead, one at a time (a deadline then
+// second instance of the module instead, one at a time (a timeout then
 // only stops a job that has not started). The hosted effects a job may
 // call (reading a file, building one) exist only in a worker, so a job
 // that reaches one there is answered `WorkLost(unavailable)`, and the
@@ -62,7 +62,7 @@
 // Poisoning or unmounting this
 // runtime terminates every worker. In manual mode a job waits in `pending`
 // until runEffect(id) runs it, loseEffect(id, class) answers it lost or
-// expireEffect(id) expires its deadline, which never fires on its own.
+// expireEffect(id) expires its timeout, which never fires on its own.
 // options.manualWork holds work jobs the same way while every other effect
 // runs on its own.
 //
@@ -209,9 +209,9 @@ const FILE_UNAVAILABLE = 3;
 // The most ranges of one file handle that have an object URL at once.
 const MAX_URLS_PER_FILE = 16;
 
-// The longest deadline a job may have (the engine caps `deadline_ms` at
+// The longest timeout a job may have (the engine caps `timeout_ms` at
 // this), and the bound on a cancelled job that finishes and has none.
-const MAX_DEADLINE_MS = 600000;
+const MAX_TIMEOUT_MS = 600000;
 const RES_PORT_REPLY = 14;
 const RES_PORT_FAILED = 15;
 const RES_FETCHED = 21;
@@ -482,7 +482,7 @@ const ENGINE_FX_NAMES = ["issued", "delivered", "stale", "refused", "cancelled",
 // Why an instance let go of its prepared state (see stateEvicted).
 const EVICT_CAUSES = ["replaced", "released"];
 
-const END_CAUSES = ["cancel", "deadline", "fault", "executor", "unmount", "contained", "retired"];
+const END_CAUSES = ["cancel", "timeout", "fault", "executor", "unmount", "contained", "retired"];
 
 function newHist() {
   return { counts: new Array(MONITOR_EDGES.length + 1).fill(0), n: 0, sum: 0, min: null, max: null };
@@ -588,7 +588,7 @@ export class WorkMonitor {
   reset() {
     this.tick();
     this.since = this.lastAt;
-    this.count = { issued: 0, done: 0, lost: 0, timeout: 0, cancelled: 0, unavailable: 0, lateReplies: 0, wastedMs: 0, inputBytes: 0, outputBytes: 0, prepared: 0, reused: 0, prepareMs: 0 };
+    this.count = { issued: 0, done: 0, lost: 0, timeout: 0, cancelled: 0, unavailable: 0, lateAnswers: 0, wastedMs: 0, inputBytes: 0, outputBytes: 0, prepared: 0, reused: 0, prepareMs: 0 };
     this.evictions = Object.fromEntries(EVICT_CAUSES.map((c) => [c, 0]));
     this.spawns = 0;
     this.ended = Object.fromEntries(END_CAUSES.map((c) => [c, 0]));
@@ -792,7 +792,7 @@ export class WorkMonitor {
 
   // A work request was performed (`held`: manual mode keeps it pending until
   // runEffect). `input` is only kept for the event when payloads are on.
-  jobIssued(id, task, input, deadlineMs, held) {
+  jobIssued(id, task, input, timeoutMs, held) {
     if (!this.live()) return;
     const at = this.tick();
     const job = {
@@ -808,10 +808,10 @@ export class WorkMonitor {
       firstJobOnInstance: false,
       inputBytes: input.length,
       outputBytes: null,
-      deadlineMs,
+      timeoutMs,
       wasted: false,
       output: null,
-      t: { issue: at, submit: null, post: null, recv: null, begin: null, call: null, ret: null, sent: null, reply: null, turnStart: null, turnEnd: null, end: null },
+      t: { issue: at, submit: null, post: null, recv: null, begin: null, call: null, ret: null, sent: null, answer: null, turnStart: null, turnEnd: null, end: null },
     };
     this.jobs.set(id, job);
     this.count.issued += 1;
@@ -819,12 +819,12 @@ export class WorkMonitor {
     const p = this.perTask(task);
     p.jobs += 1;
     p.inputBytes += input.length;
-    const event = { kind: "job-issue", id, task, inputBytes: input.length, deadlineMs, at, held: !!held };
+    const event = { kind: "job-issue", id, task, inputBytes: input.length, timeoutMs, at, held: !!held };
     if (this.payloads) event.input = input.slice();
     this.emit(event);
   }
 
-  // The job was handed to the pool (its deadline starts now).
+  // The job was handed to the pool (its timeout starts now).
   jobSubmitted(id) {
     const job = this.jobs.get(id);
     if (job === undefined || !this.live()) return;
@@ -859,24 +859,24 @@ export class WorkMonitor {
     this.emit({ kind: "job-start", id, instance: seq, at, cold: job.cold });
   }
 
-  // The instance answered the job. `reply` is { t: [recv, begin, call, ret,
+  // The instance answered the job. `answer` is { t: [recv, begin, call, ret,
   // sent], mem: [memBytes, liveAllocs, liveBytes], outputBytes } in the
   // instance's clock.
-  jobReplied(id, seq, reply) {
+  jobAnswered(id, seq, answer) {
     const job = this.jobs.get(id);
     const inst = this.insts.get(seq);
     if (job === undefined || inst === undefined || !this.live()) return;
     const at = this.tick();
-    job.t.reply = at;
-    if (reply && Array.isArray(reply.t) && reply.t.length === 5) {
-      const [recv, begin, call, ret, sent] = reply.t.map((v) => v + inst.off);
+    job.t.answer = at;
+    if (answer && Array.isArray(answer.t) && answer.t.length === 5) {
+      const [recv, begin, call, ret, sent] = answer.t.map((v) => v + inst.off);
       Object.assign(job.t, { recv, begin, call, ret, sent });
     }
-    if (reply && typeof reply.outputBytes === "number") job.outputBytes = reply.outputBytes;
+    if (answer && typeof answer.outputBytes === "number") job.outputBytes = answer.outputBytes;
     // A preparation's task: how long preparing took (null when it reused).
-    if (reply && typeof reply.prepareMs === "number") job.prepareMs = reply.prepareMs;
-    if (reply && reply.held === false) inst.held = null;
-    if (reply && Array.isArray(reply.mem)) this.memory(inst, reply.mem);
+    if (answer && typeof answer.prepareMs === "number") job.prepareMs = answer.prepareMs;
+    if (answer && answer.held === false) inst.held = null;
+    if (answer && Array.isArray(answer.mem)) this.memory(inst, answer.mem);
     this.release(inst, at);
     inst.jobs += 1;
   }
@@ -897,8 +897,8 @@ export class WorkMonitor {
 
   // The job was cancelled (CANCEL, or the runtime's teardown). `finishing`:
   // a job whose task says `on_cancel: Finish` runs on to completion, or to
-  // its deadline, so its instance stays busy until instanceFinished (or
-  // instanceEnded with cause `deadline`).
+  // its timeout, so its instance stays busy until instanceFinished (or
+  // instanceEnded with cause `timeout`).
   jobCancelled(id, finishing = false) {
     const job = this.jobs.get(id);
     if (job === undefined || !this.live()) return;
@@ -939,9 +939,9 @@ export class WorkMonitor {
     this.emit({ kind: "state-evict", instance: seq, prep, cause, at });
   }
 
-  // A reply arrived for a job the pool no longer holds.
-  lateReply() {
-    this.count.lateReplies += 1;
+  // A answer arrived for a job the pool no longer holds.
+  lateAnswer() {
+    this.count.lateAnswers += 1;
   }
 
   cancelJob(job) {
@@ -959,16 +959,16 @@ export class WorkMonitor {
   // compute thrown away when it was running.
   leave(job) {
     if (job.phase === "queued") this.move("queued", -1);
-    if ((job.phase === "running" || job.phase === "starting") && job.t.reply === null && !job.finishing) {
+    if ((job.phase === "running" || job.phase === "starting") && job.t.answer === null && !job.finishing) {
       this.waste(job, this.lastAt);
       const inst = this.insts.get(job.instance);
       if (inst !== undefined && inst.job === job.id) this.release(inst, this.lastAt);
     }
   }
 
-  // A started job that will never reply: its time on the instance is lost.
+  // A started job that will never answer: its time on the instance is lost.
   waste(job, at) {
-    if (job.wasted || job.t.post === null || job.t.reply !== null) return;
+    if (job.wasted || job.t.post === null || job.t.answer !== null) return;
     job.wasted = true;
     this.count.wastedMs += at - job.t.post;
   }
@@ -992,8 +992,8 @@ export class WorkMonitor {
       stage: span(job.cold ? t.begin : t.recv, t.call),
       compute: span(t.call, t.ret),
       copyOut: span(t.ret, t.sent),
-      fromWorker: span(t.sent, t.reply),
-      resultWait: span(t.reply, t.turnStart),
+      fromWorker: span(t.sent, t.answer),
+      resultWait: span(t.answer, t.turnStart),
       resultTurn: span(t.turnStart, t.turnEnd),
       total: span(t.issue, t.end),
       prepare: job.prepareMs ?? null,
@@ -1036,7 +1036,7 @@ export class WorkMonitor {
       prepared: job.prepared ?? null,
       prepareMs: job.prepareMs ?? null,
       finished: !!job.finishing,
-      deadlineMs: job.deadlineMs,
+      timeoutMs: job.timeoutMs,
       t: { ...t },
       ms,
     };
@@ -1103,7 +1103,7 @@ export class WorkMonitor {
     this.emit({ kind: "instance-ready", instance: seq, at, scriptAt: inst.scriptAt, instantiateMs: inst.instantiateMs, memBytes: inst.memBytes, liveAllocs: inst.liveAllocs });
   }
 
-  // The pool discarded the instance. `cause` is cancel, deadline, fault,
+  // The pool discarded the instance. `cause` is cancel, timeout, fault,
   // executor or shutdown; during the runtime's teardown it is the
   // teardown's cause. `fault` is { class, message } or null.
   instanceEnded(seq, cause, fault = null) {
@@ -1167,8 +1167,8 @@ export class WorkMonitor {
     this.measure(`roc:work ${r.task}`, t.issue, t.end, { id: r.id, instance: r.instance, outcome: r.outcome, inputBytes: r.inputBytes, outputBytes: r.outputBytes }, "jobs");
     if (t.submit !== null && t.post !== null) this.measure("roc:work.queue", t.submit, t.post, { id: r.id }, "jobs");
     if (r.cold && t.begin !== null) this.measure("roc:work.cold", t.post, t.begin, { id: r.id, instance: r.instance }, lane);
-    if (t.post !== null && t.reply !== null) this.measure("roc:work.run", t.post, t.reply, { id: r.id, instance: r.instance }, lane);
-    if (t.reply !== null && t.turnEnd !== null) this.measure("roc:work.result", t.reply, t.turnEnd, { id: r.id }, "jobs");
+    if (t.post !== null && t.answer !== null) this.measure("roc:work.run", t.post, t.answer, { id: r.id, instance: r.instance }, lane);
+    if (t.answer !== null && t.turnEnd !== null) this.measure("roc:work.result", t.answer, t.turnEnd, { id: r.id }, "jobs");
     if (r.prepareMs !== null && t.call !== null) this.measure("roc:work.prepare", t.call - r.prepareMs, t.call, { id: r.id, instance: r.instance }, lane);
   }
 
@@ -1250,15 +1250,15 @@ class WorkPool {
   }
 
   // Returns the job's stop function: `stop("cancel")` for CANCEL,
-  // `stop("deadline")` when its deadline expired. `objects` are the job's
+  // `stop("timeout")` when its timeout expired. `objects` are the job's
   // own files; `prepared`, for a preparation's task, is { key, prepare,
   // prepareObjects }: `payload` is then the task's (`task:str input:rest`)
   // and `prepare` the preparation's (`prep:str init:rest`). `finish` says
   // that a cancelled running job completes (its answer dropped) instead of
-  // ending its worker; `deadline` (ms from now, 0 for none) still bounds it
+  // ending its worker; `timeout` (ms from now, 0 for none) still bounds it
   // then; `maxOutput` bounds what it appends to builders.
-  submit(payload, done, { id, task, objects = [], prepared = null, finish = false, deadline = 0, maxOutput = 0 }) {
-    const limit = deadline > 0 ? Math.min(deadline, MAX_DEADLINE_MS) : MAX_DEADLINE_MS;
+  submit(payload, done, { id, task, objects = [], prepared = null, finish = false, timeout = 0, maxOutput = 0 }) {
+    const limit = timeout > 0 ? Math.min(timeout, MAX_TIMEOUT_MS) : MAX_TIMEOUT_MS;
     const job = { payload, done, slot: null, settled: false, timer: null, id, task, objects, prepared, finish, finishing: false, endBy: Date.now() + limit, maxOutput };
     if (!this.module || (!this.inline && typeof this.W !== "function")) {
       const message = this.module ? "this browser has no Worker" : "the runtime was mounted without its compiled module";
@@ -1278,11 +1278,11 @@ class WorkPool {
 
   // A cancelled running job whose task says `Finish` completes and keeps
   // its worker, and any state it holds; its answer is dropped. It is still
-  // bounded: if it has not completed by its deadline (ten minutes after it
+  // bounded: if it has not completed by its timeout (ten minutes after it
   // was performed when it has none), its worker is terminated as a
   // timed-out job's is, so a job that never ends cannot hold a worker for
   // good. Anything else running is stopped by terminating its worker. A
-  // deadline always stops.
+  // timeout always stops.
   cancel(job, cause = "cancel") {
     if (job.settled) return;
     job.settled = true;
@@ -1300,12 +1300,12 @@ class WorkPool {
     this.pumpSoon();
   }
 
-  // A finishing job reached its deadline: end its worker and give the
+  // A finishing job reached its timeout: end its worker and give the
   // worker's place to the queue.
   overran(job) {
     job.timer = null;
     if (!job.finishing || job.slot === null || this.closed) return;
-    this.discard(job.slot, "deadline");
+    this.discard(job.slot, "timeout");
     this.pump();
   }
 
@@ -1435,7 +1435,7 @@ class WorkPool {
   }
 
   // The runtime let go of these file tokens: no state prepared from one of
-  // them may outlive it. A busy holder is checked when its job replies.
+  // them may outlive it. A busy holder is checked when its job answers.
   released(tokens) {
     if (this.inline) {
       if (this.inlineKey !== null && !this.running && tokens.some((t) => keyNames(this.inlineKey, t))) this.forgetInline("released");
@@ -1467,7 +1467,7 @@ class WorkPool {
     }
     const job = slot.job;
     if (job === null || !this.slots.includes(slot)) {
-      this.monitor.lateReply();
+      this.monitor.lateAnswer();
       return;
     }
     if (m.type === "done") {
@@ -1478,7 +1478,7 @@ class WorkPool {
       if (!m.held) slot.key = null;
       if (job.finishing) this.monitor.instanceFinished(slot.seq, m.mem ?? null);
       else {
-        this.monitor.jobReplied(job.id, slot.seq, { t: m.t, mem: m.mem, outputBytes: m.output.byteLength, prepareMs: m.prepareMs, held: m.held });
+        this.monitor.jobAnswered(job.id, slot.seq, { t: m.t, mem: m.mem, outputBytes: m.output.byteLength, prepareMs: m.prepareMs, held: m.held });
         this.settle(job, { output: new Uint8Array(m.output), objects: m.objects ?? [] });
       }
       this.afterJob(slot, m.mem);
@@ -1499,7 +1499,7 @@ class WorkPool {
     this.pump();
   }
 
-  // `cause`: cancel, deadline, fault, executor, retired or shutdown (for
+  // `cause`: cancel, timeout, fault, executor, retired or shutdown (for
   // the monitor). The worker's state, if any, goes with it.
   discard(slot, cause, fault = null) {
     const i = this.slots.indexOf(slot);
@@ -1610,7 +1610,7 @@ class WorkPool {
           const sent = mon.now();
           const mem = [x.memory.buffer.byteLength, Number(x.metric(4)), Number(x.metric(5))];
           if (mon.userTiming) mon.measure(`roc:work.compute ${job.task}`, call, ret, { id: job.id }, `worker ${this.inlineSeq}`);
-          mon.jobReplied(job.id, this.inlineSeq, { t: [begin, begin, call, ret, sent], mem, outputBytes: output.length, prepareMs, held: this.inlineKey !== null });
+          mon.jobAnswered(job.id, this.inlineSeq, { t: [begin, begin, call, ret, sent], mem, outputBytes: output.length, prepareMs, held: this.inlineKey !== null });
           this.settle(job, { output, objects });
           if (this.inlineKey !== null && !keyLive(this.inlineKey, this.live)) this.forgetInline("released");
           if (mem[0] > this.maxBytes) {
@@ -2471,7 +2471,7 @@ export class RocEngineRuntime {
               ranges.push(token, start, len);
               at += 24;
             }
-            const deadline = dv.getUint32(at, true);
+            const timeout = dv.getUint32(at, true);
             const cancel = u8[at + 4];
             const flag = u8[at + 5];
             at += 6;
@@ -2487,7 +2487,7 @@ export class RocEngineRuntime {
               if (initLen > input.length || initFiles > refs) throw new Error(`malformed preparation operands for worker task ${task}`);
               prep = { name, initLen, initFiles, ranges: ranges.slice(0, 3 * initFiles) };
             } else if (flag !== 0) throw new Error(`work request flag ${flag} is not 0 or 1`);
-            this.fxOut.push({ op: "work", id, task, input, files, deadline, finish: cancel === 2, prep });
+            this.fxOut.push({ op: "work", id, task, input, files, timeout, finish: cancel === 2, prep });
           } else if (kind === 11) {
             const mode = u8[at];
             if (mode !== 1 && mode !== 2) throw new Error(`unknown file read mode ${mode}`);
@@ -2776,7 +2776,7 @@ export class RocEngineRuntime {
       }
       case "work": {
         const held = this.manual || this.manualWork;
-        this.monitor.jobIssued(fx.id, fx.task, fx.input, fx.deadline, held);
+        this.monitor.jobIssued(fx.id, fx.task, fx.input, fx.timeout, held);
         if (held) {
           this.live.set(fx.id, { kind: "work", req: fx, cancel: () => this.monitor.jobCancelled(fx.id) });
           this.issued.push(fx.id);
@@ -3284,7 +3284,7 @@ export class RocEngineRuntime {
 
   // A result turn staged from parts straight into linear memory (one copy
   // of any bytes), with the files it carries minted as handles first: a
-  // port's reply (tag 14), a job's answer (tag 10) or a fetched body (tag
+  // port's answer (tag 14), a job's answer (tag 10) or a fetched body (tag
   // 21). Each file's `size name type` follows `parts`, then `tail` (a
   // job's output). When the heap has no slots for all of them the result
   // is `overflow` (a port's TooLarge, a job lost to a resource limit, or
@@ -3388,8 +3388,8 @@ export class RocEngineRuntime {
   }
 
   // Hand job `fx` to the pool. Its one result (output, WorkLost or, at the
-  // deadline, Timeout) is delivered as a turn unless CANCEL forgets it
-  // first; `settled`, when given, is called once either way. The deadline
+  // timeout, Timeout) is delivered as a turn unless CANCEL forgets it
+  // first; `settled`, when given, is called once either way. The timeout
   // runs from here: when the request is performed, or in manual mode when
   // runEffect runs it.
   startWork(fx, settled) {
@@ -3433,16 +3433,16 @@ export class RocEngineRuntime {
       this.result(fx.id, bytes);
       if (settled) settled();
     };
-    // In manual mode a spec's time is manual too: a deadline never fires on
+    // In manual mode a spec's time is manual too: a timeout never fires on
     // its own, and expireEffect(id) expires it instead.
-    if (fx.deadline > 0 && !this.manual && !this.manualWork) {
+    if (fx.timeout > 0 && !this.manual && !this.manualWork) {
       this.timers += 1;
       timer = setTimeout(() => {
         timer = null;
         this.timers -= 1;
-        if (stop) stop("deadline");
+        if (stop) stop("timeout");
         finish(new Uint8Array([RES_TIMEOUT]), "timeout");
-      }, fx.deadline);
+      }, fx.timeout);
     }
     // A preparation's task carries both ways to run it: preparing from the
     // preparation's input, or asking a worker that already holds the state
@@ -3474,10 +3474,10 @@ export class RocEngineRuntime {
       const klass = this.reportLost(fx, outcome.lost, outcome.message);
       finish(new Uint8Array([RES_WORK_LOST, outcome.lost]), outcome.lost === LOST_UNAVAILABLE ? "unavailable" : "lost", klass);
     };
-    // In manual mode the deadline is not on the clock, so a finishing job
+    // In manual mode the timeout is not on the clock, so a finishing job
     // there is bounded by the cap alone.
-    const deadline = this.manual || this.manualWork ? 0 : fx.deadline;
-    stop = this.workPool().submit(payload, done, { id: fx.id, task: fx.task, objects, prepared, finish: fx.finish, deadline, maxOutput: this.maxOutputBytes });
+    const timeout = this.manual || this.manualWork ? 0 : fx.timeout;
+    stop = this.workPool().submit(payload, done, { id: fx.id, task: fx.task, objects, prepared, finish: fx.finish, timeout, maxOutput: this.maxOutputBytes });
   }
 
   // Report a lost job and return its class name. The `roc worker fault
@@ -3568,12 +3568,12 @@ export class RocEngineRuntime {
     return true;
   }
 
-  // Manual mode: expire the deadline of pending work job `id`, which answers
+  // Manual mode: expire the timeout of pending work job `id`, which answers
   // it `Timeout` as a real expiry does (a pending job has no worker to stop).
-  // Returns false when `id` is not a pending job or has no deadline.
+  // Returns false when `id` is not a pending job or has no timeout.
   expireEffect(id) {
     const e = this.live.get(id);
-    if (this.poisoned || e === undefined || e.kind !== "work" || e.running || !(e.req.deadline > 0)) return false;
+    if (this.poisoned || e === undefined || e.kind !== "work" || e.running || !(e.req.timeout > 0)) return false;
     this.live.delete(id);
     this.monitor.jobAnswered(id, "timeout", null, null);
     this.result(id, new Uint8Array([RES_TIMEOUT]));

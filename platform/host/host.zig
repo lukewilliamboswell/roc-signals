@@ -3,7 +3,7 @@
 //!
 //! The host owns exactly three things between calls: one opaque
 //! `Box(App)` (wrapped as `Box(Iter(App))` until roc-lang/roc#12953 is
-//! resolved), the command byte list of the last transaction and the
+//! resolved), the command byte list of the last turn and the
 //! engine's work record. It never interprets the state or the commands. Each
 //! call moves all three into Roc (clearing the slots first, so a trap mid-call
 //! cannot leave a dangling owner) and stores the replacements Roc returns.
@@ -353,7 +353,7 @@ fn dropPending() void {
     pending_payload = RocList.empty;
 }
 
-/// One DOM event (or effect result) = one transaction. The previous command
+/// One DOM event (or effect result) = one turn. The previous command
 /// bytes are handed back to Roc for reuse; the staged payload (if any) moves
 /// into Roc, which owns and frees it. The new commands are readable until the
 /// next call.
@@ -582,7 +582,7 @@ export fn files_tokens() callconv(.c) usize {
 
 /// A `:files` event (design.md, Appendix B): the staged payload is the
 /// event's file record and the staged handles its files, in order; both move
-/// into Roc for one transaction, like `event`.
+/// into Roc for one turn, like `event`.
 export fn event_files(node: u32, handler: u32) callconv(.c) void {
     refuseIfPoisoned();
     const owned = state orelse @trap();
