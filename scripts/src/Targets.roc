@@ -5,12 +5,16 @@ import SpecSuite
 ## The roc-fuzz targets, the browser contract tests, the soak runs and the
 ## js-framework-benchmark check.
 ##
-## An app's fuzz target is its `main-fuzz.roc`, beside its modules: Roc
-## resolves an app's sibling modules from the directory of its main file, so a
-## target that drives an app's own modules lives with the app. Targets that
-## test only the shared support live under `fuzz/`. Each is an ordinary
-## roc-fuzz app: its platform is a roc-fuzz release, which the compiler
-## fetches, and its `pf` the engine package, `platform/main-fuzz.roc`.
+## Each target is an ordinary roc-fuzz app, whose platform is a roc-fuzz
+## release the compiler fetches. Roc resolves an app's sibling modules from
+## the directory of its main file, so a target lives beside the modules it
+## imports:
+##
+## - the platform's own targets under `fuzz/` and beside the test apps under
+##   `tests/apps/` (`fuzz-<subject>.roc`), which import the engine package,
+##   `platform/main-fuzz.roc`, as `pf`;
+## - an example's targets of its own pure logic, `fuzz-<subject>.roc`
+##   beside the modules they import, which import nothing of the platform.
 Targets := [].{
 	Fuzz : { name : Str, main : Str }
 
@@ -19,24 +23,35 @@ Targets := [].{
 		{ name: "scm-parse", main: "fuzz/scm-parse/main.roc" },
 		{ name: "wire", main: "fuzz/wire/main.roc" },
 		{ name: "structure", main: "fuzz/structure/main.roc" },
+		{ name: "table-view", main: "fuzz/table-view/main.roc" },
 		{ name: "port-json", main: "fuzz/port-json/main.roc" },
-		{ name: "form-builder", main: "examples/form-builder/main-fuzz.roc" },
-		{ name: "kanban-board", main: "examples/kanban-board/main-fuzz.roc" },
-		{ name: "data-grid", main: "examples/data-grid/main-fuzz.roc" },
-		{ name: "markdown-editor", main: "examples/markdown-editor/main-fuzz.roc" },
-		{ name: "conduit", main: "examples/conduit/main-fuzz.roc" },
-		{ name: "field-notes", main: "examples/field-notes/main-fuzz.roc" },
-		{ name: "status-page", main: "examples/status-page/main-fuzz.roc" },
-		{ name: "spreadsheet-lite", main: "examples/spreadsheet-lite/main-fuzz.roc" },
-		{ name: "fx-channel", main: "tests/apps/effects/main-fuzz.roc" },
-		{ name: "controls", main: "tests/apps/controls/main-fuzz.roc" },
-		{ name: "worker-search", main: "tests/apps/worker-search/main-fuzz.roc" },
-		{ name: "worker-lab", main: "examples/worker-lab/main-fuzz.roc" },
-		{ name: "supersede", main: "tests/apps/supersede/main-fuzz.roc" },
-		{ name: "reading-list", main: "examples/reading-list/main-fuzz.roc" },
+		{ name: "form-builder", main: "examples/form-builder/fuzz-rules.roc" },
+		{ name: "kanban-board", main: "examples/kanban-board/fuzz-board.roc" },
+		{ name: "data-grid", main: "examples/data-grid/fuzz-rows.roc" },
+		{ name: "markdown-editor", main: "examples/markdown-editor/fuzz-sections.roc" },
+		{ name: "conduit", main: "examples/conduit/fuzz-routes.roc" },
+		{ name: "field-notes", main: "examples/field-notes/fuzz-outbox.roc" },
+		{ name: "spreadsheet-lite", main: "examples/spreadsheet-lite/fuzz-formulas.roc" },
+		{ name: "fx-channel", main: "tests/apps/effects/fuzz-channel.roc" },
+		{ name: "controls", main: "tests/apps/controls/fuzz-controls.roc" },
+		{ name: "csv-converter", main: "examples/csv-converter/fuzz-csv.roc" },
 		{ name: "log-explorer", main: "examples/log-explorer/fuzz-index.roc" },
 		{ name: "million-row-explorer-aggregates", main: "examples/million-row-explorer/fuzz-aggregates.roc" },
 	]
+
+	## roc-fuzz 0.6.0 bundles non-PIC Linux libraries. Every target fails
+	## linking on the PIE-requiring nightly, before its examples can run.
+	## Limit this exemption to the observed nightly: the next one must retry,
+	## and a roc-fuzz release with PIC inputs lets this branch be removed.
+	runnable_fuzz! : SpecSuite.Options, List(Fuzz) => List(Fuzz)
+	runnable_fuzz! = |o, fuzzes| {
+		if SpecSuite.has_broken_optimizer(o.nightly) {
+			Proc.note!("SKIP fuzz targets ${Str.join_with(fuzzes.map(|t| t.name), ", ")}: roc-fuzz 0.6.0's Linux libc is not PIC (https://github.com/roc-lang/roc/pull/12949); engine targets also hit ${SpecSuite.optimizer_issue}. Restore with PIC roc-fuzz inputs and a fixed optimizer; the next nightly retries automatically.")
+			[]
+		} else {
+			fuzzes
+		}
+	}
 
 	## Where a target's executable is built.
 	exe_of : SpecSuite.Options, Fuzz -> Str
@@ -82,9 +97,10 @@ Targets := [].{
 	## parallel (the checks are independent processes).
 	fuzz_check_all! : SpecSuite.Options, List(Fuzz) => Try(List(Str), _)
 	fuzz_check_all! = |o, fuzzes| {
-		Targets.build_fuzz_all!(o, fuzzes)?
-		results = Proc.parallel!(fuzzes.map(|t| Targets.check_job(o, t)), Proc.cpus!())?
-		Ok(List.map2(fuzzes, results, |t, r| Targets.judge(t.name, r.code, r.output)).join())
+		chosen = Targets.runnable_fuzz!(o, fuzzes)
+		Targets.build_fuzz_all!(o, chosen)?
+		results = Proc.parallel!(chosen.map(|t| Targets.check_job(o, t)), Proc.cpus!())?
+		Ok(List.map2(chosen, results, |t, r| Targets.judge(t.name, r.code, r.output)).join())
 	}
 
 	fuzz_check! : SpecSuite.Options, Fuzz, Str => Try(List(Str), _)
@@ -155,6 +171,10 @@ Targets := [].{
 	## request. `check` runs its smoke on the development build instead.
 	workers_scaling! : SpecSuite.Options => Try(List(Str), _)
 	workers_scaling! = |o| {
+		if SpecSuite.has_broken_optimizer(o.nightly) {
+			Proc.note!("SKIP optimized worker scaling (${SpecSuite.optimizer_issue}): ${o.nightly} crashes building Worker Lab; the dev-build smoke still runs in check. Restore on the next nightly.")
+			return Ok([])
+		}
 		var $problems = []
 		# Compiler workaround (https://github.com/roc-lang/roc/issues/12945): a
 		# derived record decode leaks on every worker job under

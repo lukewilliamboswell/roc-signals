@@ -1,22 +1,56 @@
 +++
 title = "Testing"
-description = "Write .scm specs against the rendered UI, control effects and intervals, and assert how much work an update did, natively and in Chrome."
-weight = 14
+description = "Test decisions as functions with expect, write .scm specs against the rendered UI, control effects and intervals, and assert how much work an update did, natively and in Chrome."
+weight = 17
 template = "page.html"
 +++
 
 # Testing
 
-An app's behaviour is specified in `.scm` specs: short scripts that click,
-type and assert against the rendered UI, the way a user sees it. One spec
-runs twice — natively against a model of the DOM, and in headless Chrome
-against the real runtime — and both runs must agree.
+An app is tested at two levels, and each sees what the other cannot.
+
+- **Its logic is tested as functions.** A component's operations on its own
+  type, and the decisions that write shared state, are pure functions, so a
+  top-level `expect` checks them with no engine and no browser.
+- **Its behaviour is specified in `.scm` specs**: short scripts that click,
+  type and assert against the rendered UI, the way a user sees it. One spec
+  runs twice — natively against a model of the DOM, and in headless Chrome
+  against the real runtime — and both runs must agree.
 
 Specs can also take control of everything that would otherwise depend on
 the outside world: HTTP answers, interval ticks, connectivity, page
 visibility, history and storage. And they can assert *how much* work an
 update did, so a change that makes a keystroke rebuild a whole list fails a
 test instead of slipping through.
+
+## Decisions as functions
+
+A decision returns the list of writes its transition makes
+([Shared State](@/docs/shared-state.md#decisions)), so its test needs only
+the store: `store.after(writes)` applies a list to the store's starting
+values as a turn applies it, and `read(cell)` reads a cell of the result.
+
+{{ sample(file="shop/Shop.roc", region="expects") }}
+
+- Put a `##` comment before each `expect`: `roc test` prints it with a
+  failure.
+- `after` enforces the same rule a turn does: a list that replaces a cell an
+  earlier write of the same list wrote fails the `expect`.
+- Chain `after` to set a scene: `store.after(first).after(second)`. A start
+  that depends on the boot data is `store.with_initial(cell, value)`.
+- A table is read like any cell, and its rows with `get`:
+  `store.after(writes).read(table).get(key)`.
+- `after` ends no turn, so a table keeps its record of the writes:
+  `store.after(writes).read(table).inverse()` is one write for each row
+  the transition wrote. Chained `after`s add to the same record.
+
+Run them with `roc test` in the app's directory; it runs every top-level
+`expect` in `main.roc` and the modules it imports.
+
+This is the test that sees a transition that left out a reset, or wrote the
+wrong cell of the right type. No type checker and no check on the engine
+can: both are faithful to what the decision said. A spec then checks that
+the right control runs the decision, and what the user sees when it does.
 
 ## How specs run
 
@@ -31,8 +65,8 @@ typed list of steps. Two runners consume that list:
   the browser runtime would send: boot data, DOM events and effect results.
   Every assertion reads `Dom.roc`, an oracle that decodes the engine's
   command stream into a small DOM model and shares no code with the engine.
-  It is fast (microseconds per spec) and deterministic, and it proves that
-  the command stream the engine emitted describes the UI the spec expects.
+  It is fast and deterministic, and it proves that the command stream the
+  engine emitted describes the UI the spec expects.
 - **The browser runner.** The same steps, emitted as JSON by the same
   parser, are replayed in headless Chrome against the app's Wasm build and
   `runtime.mjs`. Clicks are real mouse input, `fill` is a real input event,
@@ -296,9 +330,10 @@ does not fail your spec.
 
 | Metric | Counts |
 |---|---|
-| `rows_created` | Rows created by mount or keyed reconciliation |
-| `rows_removed` | Rows a reconciliation removed (rows disposed with their whole `each` count as disposed scopes instead) |
-| `rows_reused` | Old rows a reconciliation kept; a reconciliation whose list equals the old one counts nothing |
+| `rows_created` | Rows created by mount, by an `each` reconciliation or by a view's window |
+| `rows_removed` | Rows a reconciliation removed and rows that left a view's window (rows disposed with their whole site count as disposed scopes instead) |
+| `rows_reused` | Old rows an `each` reconciliation kept; a reconciliation whose list equals the old one counts nothing. A view compares no list and counts nothing here |
+| `rows_updated` | Rows kept whose content was written: a row of an `each` whose item changed, and a row a view draws before and after the event whose row in the table was written. Pinned beside `rows_created`, `rows_removed` and `rows_moved`, it says exactly which rows of a view a write woke |
 | `rows_moved` | Rows moved |
 | `create_element` | Elements created |
 | `bind_event` | Event listeners bound |
@@ -306,9 +341,9 @@ does not fail your spec.
 | `set_text` | Text writes and text nodes created |
 | `set_value` / `set_checked` | Control `value` / `checked` the engine set |
 | `patches_emitted` | DOM commands of every kind |
-| `derived_calls_into_roc` | Evaluations of app closures: holes, conditions, list reads, `derive` inputs, prop reads, watched values, cleanup values |
-| `scopes_created` / `scopes_disposed` | `when` and `switch` branches, components and `each` rows mounted / disposed |
-| `dirty_source_roots` | State layers written |
+| `derived_calls_into_roc` | Evaluations of app closures: holes, conditions, list reads, `derive` inputs, `remount_on` keys, watched values, cleanup values. For a view: each read of its query or its window, and each row it places with the query's `keep` and `sort` (two for a written key, the row before and after; every row of the table for a mount or a rebuild) |
+| `scopes_created` / `scopes_disposed` | `when` and `switch` branches, `remount_on` bodies, and the rows of `each` and view sites, mounted / disposed |
+| `dirty_source_roots` | What a turn wrote: the local states and the cells. A decision that returns no write counts nothing |
 | `each_key_hashes` / `each_key_compares` | Keys hashed and full-key comparisons in keyed reconciliation |
 | `effects_issued` | Awaited requests issued (HTTP, timers, storage reads, subscriptions, worker jobs); a refused request is not issued |
 | `effects_delivered` | Results delivered to a reaction, a `Refused` answer included |
@@ -337,19 +372,25 @@ counters cannot drift from what was emitted.
 
 After mount and after every step, the native runner also asks the engine
 whether the step left anything stale. The engine runs one more observation
-pass over a copy of the instance, as if every layer had changed: every text
-and attribute is re-read, every `when` and `switch` decides again, every
-`each` reconciles, every `derive`, `resource`, component prop and effect site
-re-reads its input, and the pass reaches into every row and component. Each
-of those compares with what it last emitted, so after a complete turn the
-pass emits nothing. If a write never reached one of its readers, the pass
-emits the update the turn should have, and the step fails naming it:
+pass over a copy of the instance, as if every local state and every cell had
+changed: every text and attribute is re-read, every `when`, `switch` and
+`remount_on` decides again, every `each` reconciles, every `derive`,
+`resource` and effect site re-reads its input, and the pass reaches into
+every row. Each of those compares with what it last emitted, so after a
+complete turn the pass emits nothing. If a write never reached one of its
+readers, the pass emits the update the turn should have, and the step fails
+naming it:
 
 ```text
 click: a reader was left stale: a settle pass over every layer emitted
 SETTEXT=1; first write: <p data-testid="late">late 0</p> -> <p
 data-testid="late">late 1</p> (in test-id "late")
 ```
+
+A view of a table keeps itself up to date from the rows each turn wrote, not
+by comparing values, so in the same pass every view is also built from
+scratch, for its query and window as they are then, and must equal the one
+the engine kept: the same rows, in the same order, in the same window.
 
 A settle failure is an engine defect, not a spec error: the step did what
 it says, and the engine left a reader showing an old value. Do not change
@@ -358,9 +399,9 @@ the spec to avoid it; reduce it and report it against the engine.
 The check needs nothing from the spec, so every spec guards against stale
 readers without asserting them. It is an oracle on the engine, not a step:
 the browser runner has no equivalent and needs none, since it replays the
-same engine. It sees only propagation. A handler that writes the wrong value,
-or a command the engine encodes wrongly, settles as faithfully as a correct
-one; specs and the fuzz models catch those.
+same engine. It sees only propagation. A reducer or a decision that writes
+the wrong value, or a command the engine encodes wrongly, settles as
+faithfully as a correct one; `expect`s and specs catch those.
 
 ## Running specs
 
@@ -393,79 +434,49 @@ spec files:
 - `build/app-specs --emit-steps specs/*.scm` prints the parsed steps that
   the browser runner (`tests/browser/replay.mjs`) replays.
 
-## Soaking a round trip
+## Walks
 
-A spec that takes the app back to where it started is a round trip, and the
-native runner can soak it: `build/app-specs --soak 48 specs/round-trip.scm`
-runs the spec once, as always, recording every call its steps make into the
-engine after its last `mark-metrics` (after the mount when there is none),
-then replays those calls 48 times on the engine alone and requires every
-cycle after a warm-up (`--warm N`, two by default) to leave no allocation
-and no byte live. The native host counts Roc's live allocations and bytes
-for it. An answer the spec gave (an HTTP stub, a worker job's answer, a
-port reply) is replayed as it was first given, to the request at the same
-place among those in flight; a cycle that leaves no request there is not a
-round trip, and the soak says so. It is a leak check, never a baseline:
-the counts are compared with nothing but zero. Steps before the
-`mark-metrics` set the scene, such as answering the requests the app makes
-at mount:
+The same runner can walk an app: `build/app-specs --walk 300 specs/*.scm`
+mounts it as the first spec's setup says and takes 300 seeded steps
+(`--seed N` chooses another sequence). Each step is something a user could
+do to a control that is live at that moment, or a service the browser would
+perform: answering a pending request from the answers the specs stage,
+ticking a live interval, delivering a message a spec emits on a port. After
+every step the settle check must pass, and at the end nothing the app
+allocated may be left live. A failure names the step and the last things
+the walk did.
 
-{{ sample(file="search/specs/round-trip.scm", syntax="scheme") }}
+A walk needs nothing written for it: no entry point of its own, no target
+and no harness. Its sequences are ones no spec spells out. It checks the
+engine under your app rather than your app's rules, so it knows nothing of
+what the app should show: `expect`s and specs say that.
 
-Each app with a soak keeps one round-trip spec, which `check` runs as an
-ordinary spec in both runners and `check-slow` soaks.
+## Fuzzing your own logic
 
-A soak records an answer that carried files with their handles, to replay
-it, so while the spec runs under `--soak` the runner itself holds those
-files. An `expect-files` after such an answer counts them and fails under
-the soak although it passes as an ordinary spec: check that the app lets
-its files go in another spec, not in the round trip.
+Specs check the paths you thought of. Where an app has pure logic of its
+own with a rule you can state, check it over inputs you did not think of
+with [roc-fuzz](https://github.com/lukewilliamboswell/roc-fuzz): a parser
+that must read back what its writer wrote, a reducer that must agree with a
+simpler model of itself, an invariant that must hold after any sequence of
+operations. That is a test of your logic, apart from roc-signals: the
+target is an ordinary roc-fuzz app whose platform is a roc-fuzz release,
+and it imports your pure modules and nothing of the platform. Keep the
+logic you fuzz in modules that import nothing from `pf`, as you would to
+test it in any Roc program. A component's module imports the platform for
+its view, so operations worth fuzzing belong in a domain module the
+component uses.
 
-## Fuzzing and soak
+Name the target for what it checks, `fuzz-<subject>.roc`, beside the
+modules it imports. The CSV Converter's `examples/csv-converter/fuzz-csv.roc`
+is one: it generates tables of awkward fields and checks that what its
+`Csv` module writes reads back, and that reading in chunks of any size reads
+the same lines. Build and run one with roc-fuzz's own commands:
 
-Specs check the paths you thought of. For sequences you did not, an app can
-add a `main-fuzz.roc` beside its modules, built with `roc build --fuzz`: an
-ordinary roc-fuzz app, whose platform is a roc-fuzz release and whose `pf`
-is the engine package, `platform/main-fuzz.roc` (roc-fuzz needs its own entry
-and host, so a target cannot share the app's `main.roc`), and a target that decodes
-arbitrary bytes into a valid session — random events found by exploring the
-live DOM — and checks it against an oracle, with every session leak-checked.
-The walk's `after` hook (`Soak.settled`) runs the settle check after every
-event, so a generated session that leaves a reader stale fails at the event
-that did it, in any app, with no model of the app. Among its examples the
-target declares a long seeded walk (a `Soak.Session` whose `seed` and
-`steps` name it), which `check-slow` replays. While a worker job is pending, the walk also
-answers it now and then: usually with a stand-in made from the app's own
-pure function (a walk has no host to run a job's effects on, so the target
-passes `task.stand_in(f)` to `Soak.walk_with`, and the answer goes through
-`SpecRunner.answer_work`), so that function runs inside the leak check (and
-one that crashes on an input the UI produced is a finding), sometimes by
-losing it, timing it out or leaving it pending for disposal to cancel. The
-task's real body runs in the specs, in both runners. A stand-in cannot carry
-files: only a worker holds a file's bytes, so a stand-in whose input or
-answer holds a `File` is a contract error. An app whose tasks take or give
-files fuzzes its pure parts instead, as the Log Explorer's target fuzzes
-its index against a model of the whole text, and leaves its tasks to the
-specs and the Chrome tests. The same goes for an app module that
-imports `Files`: it builds only on the platform, not into a target. The
-settle check runs on a copy that is freed before the walk goes on, so it
-never counts as a leak.
+```sh
+roc build --fuzz fuzz-csv.roc --output=build/fuzz-csv
+build/fuzz-csv check                     # its declared examples
+build/fuzz-csv explore corpus --time=60  # a minute of exploration
+```
 
-Fixed apps only exercise the nestings they contain. The `structure` target
-(`fuzz/structure/main.roc`) decodes its bytes into a site tree instead,
-nesting `state`, `derive`, `resource`, `when`, `switch`, `each`, components
-and effect sites, then clicks through it and answers its timers, with the
-settle check after every step. In its pure mode every button writes the root
-state, so the rendered page must also equal a fresh mount started at the
-root's current value.
-
-- `blueprint run check` replays the examples of the targets in `fuzz/`,
-  and `blueprint run check-slow` every target's, then soaks each app's
-  round-trip spec natively.
-- `blueprint run fuzz -- --time 600 kanban-board` runs a fuzz campaign.
-- `blueprint run check-slow` also runs a long session of every app in
-  Chrome.
-
-When a campaign finds a failure, reduce it to a saved example beside the
-target so `check` keeps it fixed. See
-[Contributing](@/docs/contributing.md) for the details.
+A round trip, a spec that takes the app back to where it started, stays an
+ordinary spec like any other.

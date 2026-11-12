@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, File, In, Root, State]
+import pf.Engine exposing [Elem, File, State]
 import pf.Html
 import pf.Worker
 
@@ -16,11 +16,51 @@ import pf.Worker
 ## - "Count" sends the kept files to a worker task, whose job reads each
 ##   one's bytes there and answers its size and byte sum (`test-id
 ##   "counts"`); "Count tail" sends the last half of the first file only.
+## - "Inbox" is a drop target whose handler is a decision
+##   (`Engine.handle_files`): one drop puts the files in a store cell and
+##   writes a note in another. "Inbox with a reading" adds to the inbox and
+##   notes how many it held when the files arrived
+##   (`Engine.handle_files_by`). "Inbox and list" writes the cells and the
+##   local list as one event (`FilesHandler.also`), and "Empty inbox" lets
+##   the inbox's files go (`Engine.does`).
 ##   "Probe" checks, in the job, that a file's bytes behave as an ordinary
 ##   list: two reads agree, a slice and a UTF-8 view see the same bytes, and
 ##   changing one read leaves the other alone (`test-id "probe"`).
-FilesApp := [].{
+FilesApp := [Shelf].{
 	S : { files : List(File), refused : U64, panel : Bool, ask : Ask }
+
+	## The app's store: the files a decision received, and a note of what
+	## arrived.
+	store = Engine.store(
+		FilesApp.Shelf,
+		{
+			inbox: Engine.cell([]),
+			note: Engine.cell("nothing arrived"),
+		}.Engine.Cells,
+	)
+
+	h = FilesApp.store.handles()
+
+	## What a drop on "Inbox" writes: the files it delivered in place of
+	## the inbox's, and a note of how many came and how many were refused.
+	arrived : Engine.Received -> List(Engine.Write(_))
+	arrived = |{ files, refused }| [
+		FilesApp.h.inbox.put(files),
+		FilesApp.h.note.put("${files.len().to_str()} arrived, ${refused.to_str()} refused"),
+	]
+
+	## What a drop on "Inbox with a reading" writes, given how many files
+	## the inbox held when the drop arrived: the files added to them, and a
+	## note that says both numbers.
+	arrived_after : U64, Engine.Received -> List(Engine.Write(_))
+	arrived_after = |held, { files, refused: _ }| [
+		FilesApp.h.inbox.change(|kept| kept.concat(files)),
+		FilesApp.h.note.put("${files.len().to_str()} arrived after ${held.to_str()}"),
+	]
+
+	## What "Empty inbox" writes.
+	emptied : List(Engine.Write(_))
+	emptied = [FilesApp.h.inbox.put([]), FilesApp.h.note.put("emptied")]
 
 	## What the worker was last asked: nothing yet, to count the kept files,
 	## to count the tail of the first, or to probe the first.
@@ -45,7 +85,7 @@ FilesApp := [].{
 		Ok($counts)
 	}
 
-	## The spike's ownership probe, on a file's bytes in the worker.
+	## An ownership probe on a file's bytes in the worker.
 	probe : Worker.Task(File, Bool, Engine.FileError)
 	probe = Worker.task({ name: "test.roc-signals/files/probe", run!: FilesApp.probe! })
 
@@ -89,8 +129,6 @@ FilesApp := [].{
 		[] => []
 	}
 
-	Ctx : In(Root, S)
-
 	describe : File -> Str
 	describe = |f| "${f.name()}:${f.size().to_str()}:${f.mime()}"
 
@@ -109,15 +147,31 @@ FilesApp := [].{
 	received : S, Engine.Received -> S
 	received = |s, { files, refused }| { ..s, files: s.files.concat(files), refused: s.refused + refused }
 
-	view : State(Ctx, S) -> Elem(Ctx)
+	view : State(ctx, S) -> Elem(ctx)
+		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	view = |st| {
 		v = st.val()
+		inbox = FilesApp.h.inbox
 		Html.div(
 			"files",
 			[
 				Html.file_input(Engine.const("Upload"), { selection: Multiple }, st.on_files(FilesApp.received)),
 				Engine.element("section", [Html.aria_label("Drop"), Html.on_drop_files(st.on_files(FilesApp.received))], [Engine.text("drop here")]),
 				Engine.element("section", [Html.aria_label("Paste"), Html.on_paste_files(st.on_files(FilesApp.received))], [Engine.text("paste here")]),
+				Engine.element("section", [Html.aria_label("Inbox"), Html.on_drop_files(Engine.handle_files(FilesApp.arrived))], [Engine.text("inbox")]),
+				Engine.element(
+					"section",
+					[Html.aria_label("Inbox with a reading"), Html.on_drop_files(Engine.handle_files_by(inbox.val().map(|held| held.len()), FilesApp.arrived_after))],
+					[Engine.text("inbox, added to")],
+				),
+				Engine.element(
+					"section",
+					[Html.aria_label("Inbox and list"), Html.on_drop_files(st.on_files(FilesApp.received).also(Engine.handle_files(FilesApp.arrived)))],
+					[Engine.text("inbox and list")],
+				),
+				Html.button("Empty inbox", [], Engine.does(FilesApp.emptied)),
+				Html.p_v(inbox.val().map(FilesApp.listing), [Engine.test_id("inbox")]),
+				Html.p_v(FilesApp.h.note.val(), [Engine.test_id("note")]),
 				Html.button("Keep first", [], st.update(|s| { ..s, files: FilesApp.first_only(s.files) })),
 				Html.button("Clear", [], st.update(|s| { ..s, files: [] })),
 				Html.p_v(v.map(|s| FilesApp.listing(s.files)), [Engine.test_id("files")]),
@@ -157,6 +211,15 @@ FilesApp := [].{
 
 	program : Engine.Program
 	program =
-		Engine.program(|| Engine.state({ files: [], refused: 0, panel: Bool.False, ask: Nothing }, |st| FilesApp.view(st)))
+		Engine.program_store({ storage_keys: [], max_inflight: 32 }, |_| FilesApp.store, |_| Engine.state({ files: [], refused: 0, panel: Bool.False, ask: Nothing }, |st| FilesApp.view(st)))
 			.with_workers([FilesApp.count.registration(), FilesApp.probe.registration()])
+}
+
+## A drop on "Inbox" writes the inbox and the note as one decision, and
+## "Empty inbox" both again.
+expect {
+	after = FilesApp.store.after(FilesApp.arrived({ files: [], refused: 3 }))
+	added = after.after(FilesApp.arrived_after(2, { files: [], refused: 0 }))
+	gone = added.after(FilesApp.emptied)
+	(after.read(FilesApp.h.note), added.read(FilesApp.h.note), gone.read(FilesApp.h.note), gone.read(FilesApp.h.inbox).len()) == ("0 arrived, 3 refused", "0 arrived after 2", "emptied", 0)
 }

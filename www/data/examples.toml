@@ -19,16 +19,17 @@
 # examples whose `section` names it, in the order they appear here: a
 # learning path from plain reactive state to workers. Each example's
 # `features` are its chips, drawn from one vocabulary so a reader can follow
-# a feature across examples: Derived values, Keyed lists, Components, Forms,
-# HTTP, Local storage, Intervals, Routing, Custom elements, Ports, Workers,
-# Cancellation, Files, Preparations. `what_to_try` is one line telling a
-# reader what to do to see the point of the example, where that helps;
-# `featured = true` draws an example as its section's wide card.
+# a feature across examples: Store, Tables and views, Derived values, Keyed
+# lists, Components, Forms, HTTP, Local storage, Intervals, Routing, Custom
+# elements, Ports, Workers, Cancellation, Files, Preparations. `what_to_try`
+# is one line telling a reader what to do to see the point of the example,
+# where that helps; `featured = true` draws an example as its section's wide
+# card.
 
 [[sections]]
 id = "basics"
 title = "Reactive basics"
-blurb = "State, derived values, keyed lists and components. Each change updates exactly what depends on it, and nothing leaves the page."
+blurb = "A store of shared state, tables and their views, derived values, keyed lists and components. Each change updates exactly what depends on it, and nothing leaves the page."
 
 [[sections]]
 id = "effects"
@@ -48,52 +49,52 @@ blurb = "Roc tasks running in Web Workers, and files that never pass through the
 [[examples]]
 slug = "markdown-editor"
 title = "Markdown Editor"
-description = "One markdown source string feeding four independently derived views: preview, outline, statistics, and reading time."
+description = "One markdown document, the single cell of the app's store, feeding four views derived from it: preview, outline, statistics, and reading time."
 source = "examples/markdown-editor/main.roc"
 specs = "examples/markdown-editor/specs"
 public = true
 section = "basics"
-features = ["Derived values", "Keyed lists", "Components"]
+features = ["Store", "Derived values", "Keyed lists", "Components"]
 
 [[examples]]
 slug = "form-builder"
 title = "Form Builder"
-description = "A field designer beside a live preview that validates as you type, where tightening a rule in the designer invalidates preview input across two levels of signal graph."
+description = "A field designer beside a live preview that validates as you type: the fields are one table that both draw a view of, so tightening a rule in the designer invalidates what is typed in the preview."
 source = "examples/form-builder/main.roc"
 specs = "examples/form-builder/specs"
 public = true
 section = "basics"
-features = ["Forms", "Derived values", "Components"]
+features = ["Store", "Tables and views", "Forms", "Derived values", "Components"]
 
 [[examples]]
 slug = "kanban-board"
 title = "Kanban Board"
-description = "A four-column board with cross-column moves, within-column reorder, per-column WIP limits, and derived counts over keyed rows."
+description = "A four-column board over one table of cards, each column a view of it, with cross-column moves, within-column reorder, per-column WIP limits, and counts derived once for each write."
 source = "examples/kanban-board/main.roc"
 specs = "examples/kanban-board/specs"
 public = true
 section = "basics"
-features = ["Keyed lists", "Components", "Derived values"]
+features = ["Store", "Tables and views", "Components", "Derived values"]
 
 [[examples]]
 slug = "spreadsheet-lite"
 title = "Spreadsheet Lite"
-description = "An 8x12 formula grid with cell references, precedence, SUM ranges, error propagation, and cycle detection over fixed-point arithmetic."
+description = "An 8x12 formula grid with cell references, precedence, SUM ranges, error propagation, and cycle detection over fixed-point arithmetic; its rows are a table, and an edit writes only the rows whose cells changed."
 source = "examples/spreadsheet-lite/main.roc"
 specs = "examples/spreadsheet-lite/specs"
 public = true
 section = "basics"
-features = ["Derived values", "Keyed lists"]
+features = ["Store", "Tables and views", "Derived values", "Keyed lists"]
 
 [[examples]]
 slug = "data-grid"
 title = "Data Grid"
-description = "A 1200-row sortable, filterable, editable grid that renders one page at a time while a summary row aggregates the full dataset."
+description = "A 1200-row sortable, filterable, editable grid: the rows are a table and the grid a view that draws one page of it, while a summary aggregates the rows the filter matches."
 source = "examples/data-grid/main.roc"
 specs = "examples/data-grid/specs"
 public = true
 section = "basics"
-features = ["Keyed lists", "Derived values", "Forms"]
+features = ["Store", "Tables and views", "Derived values", "Forms"]
 
 [[examples]]
 slug = "field-notes"
@@ -103,7 +104,7 @@ source = "examples/field-notes/main.roc"
 specs = "examples/field-notes/specs"
 public = true
 section = "effects"
-features = ["HTTP", "Local storage", "Keyed lists"]
+features = ["Store", "HTTP", "Local storage", "Keyed lists"]
 what_to_try = "Switch the network to Offline in your browser's developer tools, save and queue a few notes, then go back online and watch the outbox drain; every third sync fails, so you can retry one."
 # Its simulated sync service, the example's own JavaScript.
 backend = "backend.mjs"
@@ -116,7 +117,7 @@ source = "examples/status-page/main.roc"
 specs = "examples/status-page/specs"
 public = true
 section = "effects"
-features = ["HTTP", "Intervals", "Ports", "Custom elements"]
+features = ["Store", "Components", "HTTP", "Intervals", "Ports", "Custom elements"]
 what_to_try = "Wait about fifteen seconds for the API's latency to spike past its objective, then drop the connection for 20 s: the feed replays what it buffered at the page's pace and drops the rest, and the monitor counts the emits the page refused. Switch to another tab and back, and polling and the feed pause and resume."
 # Its simulated checks and incident feed, the example's own JavaScript.
 backend = "backend.mjs"
@@ -150,7 +151,7 @@ specs = "examples/conduit/specs"
 public = true
 section = "effects"
 featured = true
-features = ["HTTP", "Routing", "Local storage", "Keyed lists"]
+features = ["Store", "Components", "HTTP", "Routing", "Local storage", "Keyed lists"]
 what_to_try = "Sign in as anna@conduit.test with the password secret-anna, then favorite an article, follow an author and leave a comment."
 # Its simulated RealWorld API, the example's own JavaScript.
 backend = "backend.mjs"
@@ -163,7 +164,7 @@ source = "examples/reading-list/main.roc"
 specs = "examples/reading-list/specs"
 public = true
 section = "ports"
-features = ["Ports", "Keyed lists"]
+features = ["Store", "Tables and views", "Ports"]
 what_to_try = "Open it in two tabs and add a book in one: it appears in the other, and is still there after a reload."
 # The app's port handlers (IndexedDB and a BroadcastChannel), its own
 # JavaScript, which site.mjs passes as the `ports` mount option.
@@ -177,7 +178,7 @@ source = "examples/worker-lab/main.roc"
 specs = "examples/worker-lab/specs"
 public = true
 section = "workers"
-features = ["Workers", "Files", "Cancellation", "Intervals", "Custom elements"]
+features = ["Store", "Tables and views", "Workers", "Files", "Cancellation", "Intervals", "Custom elements"]
 what_to_try = "Choose \"Draw the Mandelbrot set\" with 32 strips of weight 16, press Start, then mount again with 1, 2, 4 and 8 workers from the pool panel and compare the time and the frame gap; with ?workers=inline no strip can be drawn, since only a worker can build a file."
 # Optional for any example: `max_workers` and `workers` set the mount's pool
 # (data-signals-max-workers / data-signals-workers); the page URL's
@@ -197,7 +198,7 @@ source = "examples/csv-converter/main.roc"
 specs = "examples/csv-converter/specs"
 public = true
 section = "workers"
-features = ["Workers", "Files"]
+features = ["Store", "Workers", "Files"]
 # The sample its "Load the sample" button downloads.
 data = ["sample.csv"]
 
@@ -209,7 +210,7 @@ source = "examples/log-explorer/main.roc"
 specs = "examples/log-explorer/specs"
 public = true
 section = "workers"
-features = ["Workers", "Preparations", "Files", "Custom elements"]
+features = ["Store", "Workers", "Preparations", "Files", "Custom elements"]
 what_to_try = "Generate a sample of a few hundred thousand entries and find the incident on the timeline around midday; search for checkout to see its matches a minute, and click the peak to read the lines from there."
 
 # The timeline: Plotly from its pinned CDN URL (the version Plume 0.6.0
@@ -237,8 +238,8 @@ specs = "examples/million-row-explorer/specs"
 public = true
 section = "workers"
 featured = true
-features = ["Workers", "Preparations", "Ports", "Custom elements", "Cancellation"]
-what_to_try = "Drag the value sliders and watch the question time stay in tens of milliseconds; then mount it again with one worker or inline from the pool panel's links, and watch every question generate its shards again."
+features = ["Store", "Workers", "Preparations", "Ports", "Custom elements", "Cancellation"]
+what_to_try = "Drag the value sliders and watch the question time the meter shows while the drag goes on; then mount it again with one worker or inline from the pool panel's links, and watch every question generate its shards again."
 # One worker per shard: the database has four shards, and a worker keeps one.
 max_workers = 4
 # The live order feed, the example's own JavaScript.

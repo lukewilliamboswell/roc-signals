@@ -1,7 +1,7 @@
 +++
 title = "Ports"
 description = "Reach a browser service the platform does not model, such as IndexedDB or a save-file picker, through typed messages to JavaScript your page supplies."
-weight = 13
+weight = 16
 template = "page.html"
 +++
 
@@ -262,8 +262,8 @@ how:
   browser draws again, so keep what one message costs small. Draw an
   expensive view, such as a chart, from a copy the page brings up to date on
   an `Interval`, read through a `derive`, rather than from every message:
-  the Status Page's chart follows a 250 ms redraw tick, and a replay of 64
-  readings costs no long frame.
+  the Status Page's chart follows a 250 ms redraw tick, whatever backlog
+  drains between two of them.
 - **Let the JavaScript set the pace, and listen when `emit` says no.**
   The handler measures on its own clock and emits one message per reading.
   When `emit` returns `false` the page is full: it keeps the rest and offers
@@ -275,8 +275,7 @@ how:
   number lets the app tell a gap (draw a break in the line) from a reading
   that does not belong (refuse and count it). A stream the page joins again
   after a pause carries on its numbering; one that restarted it would be
-  refused, which is how the Status Page found that its first simulation
-  did.
+  refused.
 - **Stop when the subscription ends.** Mount the subscription's site where
   it is wanted, inside a branch for a visible page and a reader who has not
   paused, and return a function from `subscribe` that stops the timer:
@@ -313,9 +312,9 @@ copy and the store stay in agreement, across a reload and across tabs:
   start. A `stored` message that arrives first is newer, so the app takes
   `load`'s answer only while it is still loading.
 
-The Reading List's fuzz target plays these handlers against a model store
-in every order, and checks that the page shows what the store holds
-whenever it should.
+The Reading List holds each of these with an `expect` on its decisions: a
+`load` answered after a `stored` message changes nothing, and a book the
+store added joins the copy once, even when `stored` brought it first.
 
 ## Testing
 

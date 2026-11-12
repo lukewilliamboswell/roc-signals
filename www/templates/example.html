@@ -17,9 +17,6 @@
       </div>
       <div class="flex flex-wrap items-center gap-2">
         <a class="button" href="{{ config.extra.github_url }}/tree/{{ config.extra.release_version | default(value='main') }}/examples/{{ example.slug }}">Source</a>
-        {% if config.extra.release_starters_url | default(value="") %}
-        <a class="button" href="{{ config.extra.release_starters_url }}">Complete starters</a>
-        {% endif %}
         {% if example.specs %}
         <a class="button" href="{{ config.extra.github_url }}/tree/{{ config.extra.release_version | default(value='main') }}/{{ example.specs }}">Specs</a>
         {% endif %}

@@ -1,6 +1,6 @@
 (test "Markdown editor — The teaching point: a paragraph edit updates the statistics and the"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (mark-metrics)
     (uncheck (label "Number the outline"))
     (check (label "Number the outline"))
@@ -9,7 +9,7 @@
     (select-option (label "Reading speed") "300")
     (select-option (label "Reading speed") "200")
 
-    ; 4. The teaching point: a paragraph edit updates the statistics and the
+    ; The teaching point: a paragraph edit updates the statistics and the
     ; preview, and leaves the table of contents entirely alone.
     ; ---------------------------------------------------------------------------
 

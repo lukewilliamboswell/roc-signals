@@ -1,67 +1,70 @@
-## Domain layer for the Form Builder example.
+## The rules of the Form Builder, as plain data and pure functions.
 ##
-## This module owns the two levels of state the app composes:
+## The app composes two levels of state:
 ##
-##   * the *schema* — the field definitions the designer edits, and
-##   * the *answers* — the values a person types into the generated preview.
+##   * the *fields*: the definitions the designer edits, and
+##   * the *answers*: the values a person types into the generated preview.
 ##
-## Both are plain data. Every validation result in this module is a pure
-## function of those two inputs, so the app can express the entire preview,
-## including per-field errors and the "is this form submittable" flag, as
-## derived signals rather than as state written by event handlers.
+## Every validation result here is a pure function of a field and its
+## answer, so the preview's verdicts, the totals and the "is this form
+## submittable" flag are all read from those two, never written by an event.
+##
+## Nothing here knows how the form is held or drawn. A field is edited as a
+## value, and a move is decided from a listing of the fields and answered
+## as the keyed edits that make it: the app applies them to the table its
+## store holds (`Schema`), and `fuzz-rules.roc` to a listing of its own.
 
 Form := {}.{
 
 	## The kind of control a field renders in the preview.
 	Kind := [FieldText, FieldNumber, FieldEmail, FieldSelect, FieldCheckbox].{
-		is_eq : Form.Kind, Form.Kind -> Bool
-		is_eq = |left, right|
-			match (left, right) {
-				(FieldText, FieldText) => True
-				(FieldNumber, FieldNumber) => True
-				(FieldEmail, FieldEmail) => True
-				(FieldSelect, FieldSelect) => True
-				(FieldCheckbox, FieldCheckbox) => True
-				_ => False
-			}
+		is_eq : _
 	}
 
-	## One field definition in the designer.
+	## One field definition, as the form holds it under its number.
 	##
 	## `min_text` / `max_text` / `options_text` are stored exactly as typed. The
 	## parsed rule is derived, never stored, so a half-typed or contradictory
 	## rule is representable and reportable instead of silently dropped.
+	##
+	## `place` is where the field stands in the form's order: fields are
+	## drawn from the lowest place to the highest, and a move exchanges the
+	## places of two fields.
 	Field : {
-		id : Str,
 		kind : Form.Kind,
 		label : Str,
 		required : Bool,
 		min_text : Str,
 		max_text : Str,
 		options_text : Str,
+		place : U64,
 	}
 
-	## The designer's state: the field list plus the id counter used to mint
-	## stable, durable keys for `Ui.each`.
-	Schema : {
-		fields : List(Form.Field),
-		seq : U64,
-	}
+	## The form's fields by number, in no particular order: what a move is
+	## decided from. A field's number is given once, when it is added, and
+	## never to another field, so an answer can never reach the wrong one.
+	Fields : List({ key : U64, row : Form.Field })
 
-	## One answer typed into the preview form. Answers are a sparse map keyed by
-	## field id: fields with no entry read as empty/unchecked, and entries left
-	## behind by a deleted field are simply never looked up again.
+	## One keyed write to the fields: the definition to hold under a
+	## number, or a number to drop. A move is a list of them, applied in
+	## order.
+	Edit : [Put(U64, Form.Field), Remove(U64)]
+
+	## One answer typed into the preview form.
 	Answer : {
-		id : Str,
 		text : Str,
 		flag : Bool,
 	}
 
+	## The preview's answers by field number. The map is sparse: a field
+	## with no entry reads as empty and unchecked, and an entry left behind
+	## by a deleted field is never looked up again.
+	Answers : Dict(U64, Form.Answer)
+
 	## A fully resolved preview row: the field, the answer bound to it, and the
 	## validation verdict. This is the join of the two levels of state and the
-	## only thing the preview UI ever reads.
+	## only thing the preview's verdicts read.
 	Row : {
-		id : Str,
 		kind : Form.Kind,
 		label : Str,
 		required : Bool,
@@ -125,154 +128,164 @@ Form := {}.{
 	uses_bounds : Form.Kind -> Bool
 	uses_bounds = |kind| !Form.is_select(kind)
 
-	## The schema the example mounts with.
-	initial_schema : Form.Schema
-	initial_schema = {
-		seq: 2,
-		fields: [
-			{
-				id: "f1",
+	## The fields the example mounts with.
+	initial_fields : Form.Fields
+	initial_fields = [
+		{
+			key: 1,
+			row: {
 				kind: Form.text_kind,
 				label: "Full name",
 				required: True,
 				min_text: "2",
 				max_text: "",
 				options_text: "",
+				place: 1,
 			},
-			{
-				id: "f2",
+		},
+		{
+			key: 2,
+			row: {
 				kind: Form.email_kind,
 				label: "Work email",
 				required: True,
 				min_text: "",
 				max_text: "",
 				options_text: "",
+				place: 2,
 			},
-		],
+		},
+	]
+
+	## The number the first field added to `initial_fields` takes.
+	initial_next : U64
+	initial_next = 3
+
+	## No answers yet: every field reads as empty and unchecked.
+	no_answers : Form.Answers
+	no_answers = Dict.empty()
+
+	# ---------------------------------------------------------------- field ops
+
+	## The name a field's controls and regions carry: `f` and its number.
+	id_of : U64 -> Str
+	id_of = |number| "f${number.to_str()}"
+
+	## The field a click on "Add" makes, for the number it is added under.
+	## It stands last: numbers only grow, and a field starts at the place
+	## of its number.
+	new_field : Form.Kind, U64 -> Form.Field
+	new_field = |kind, number| {
+		kind,
+		label: "${Form.kind_title(kind)} ${number.to_str()}",
+		required: False,
+		min_text: "",
+		max_text: "",
+		options_text: "",
+		place: number,
 	}
 
-	initial_answers : List(Form.Answer)
-	initial_answers = []
+	set_label : Form.Field, Str -> Form.Field
+	set_label = |field, value| { ..field, label: value }
 
-	# ---------------------------------------------------------------- schema ops
+	set_required : Form.Field, Bool -> Form.Field
+	set_required = |field, value| { ..field, required: value }
 
-	## Append a new field of `kind`, minting the next durable id.
-	add_field : Form.Schema, Form.Kind -> Form.Schema
-	add_field = |schema, kind| {
-		next = schema.seq + 1
-		field : Form.Field
-		field = {
-			id: "f${next.to_str()}",
-			kind,
-			label: "${Form.kind_title(kind)} ${next.to_str()}",
-			required: False,
-			min_text: "",
-			max_text: "",
-			options_text: "",
+	set_min : Form.Field, Str -> Form.Field
+	set_min = |field, value| { ..field, min_text: value }
+
+	set_max : Form.Field, Str -> Form.Field
+	set_max = |field, value| { ..field, max_text: value }
+
+	set_options : Form.Field, Str -> Form.Field
+	set_options = |field, value| { ..field, options_text: value }
+
+	## The edits that move a field one position earlier or later in the
+	## form: it exchanges places with the field beside it on that side. The
+	## first field cannot move earlier nor the last later, and a number the
+	## form does not hold moves nothing: each is no edit.
+	move_field : Form.Fields, { key : U64, toward : [Earlier, Later] } -> List(Form.Edit)
+	move_field = |fields, { key, toward }|
+		match fields.find_first(|held| held.key == key) {
+			Ok(moving) =>
+				match beside(fields, { place: moving.row.place, toward }) {
+					Ok(other) => [Put(key, { ..moving.row, place: other.row.place }), Put(other.key, { ..other.row, place: moving.row.place })]
+					Err(AtEnd) => []
+				}
+			Err(_) => []
 		}
-		{ seq: next, fields: schema.fields.append(field) }
+
+	## Where a field stands in the form's order: its place, then its
+	## number. While the two edits of a move are applied one by one, two
+	## fields stand at one place for a moment, and the number tells them
+	## apart.
+	Rank : { place : U64, key : U64 }
+
+	## How a view of the fields selects and orders them: every field, from
+	## the lowest place to the highest.
+	plan : {} -> { keep : U64, Form.Field -> Bool, sort : U64, Form.Field -> Form.Rank, compare : Form.Rank, Form.Rank -> [Before, Same, After] }
+	plan = |{}| {
+		keep: |_key, _field| True,
+		sort: |key, field| { place: field.place, key },
+		compare: |a, b|
+			if (a.place < b.place)
+				Before
+			else if (a.place > b.place)
+				After
+			else if (a.key < b.key)
+				Before
+			else if (a.key > b.key)
+				After
+			else
+				Same,
 	}
 
-	## Engine port: in place (destructure, replace, set) so a one-field edit does
-	## not rebuild the list.
-	update_field : Form.Schema, Str, (Form.Field -> Form.Field) -> Form.Schema
-	update_field = |schema, id, f| {
-		{ fields, seq } = schema
-		match fields.find_first_index(|field| field.id == id) {
-			Ok(i) => {
-				{ list, prev } = fields.replace(i, Form.prev_placeholder) ?? crash "field"
-				{ fields: list.set(i, f(prev)) ?? crash "field", seq }
-			}
-			Err(_) => { fields, seq }
-		}
+	## The fields' numbers in the form's order: what a view of them draws.
+	ordered : Form.Fields -> List(U64)
+	ordered = |fields| {
+		{ sort, compare, .. } = Form.plan({})
+		fields.sort_with(|a, b| compare(sort(a.key, a.row), sort(b.key, b.row))).map(|held| held.key)
 	}
 
-	prev_placeholder : Form.Field
-	prev_placeholder = { id: "", kind: FieldText, label: "", required: False, min_text: "", max_text: "", options_text: "" }
-
-	set_label : Form.Schema, Str, Str -> Form.Schema
-	set_label = |schema, id, value| Form.update_field(schema, id, |field| { ..field, label: value })
-
-	set_required : Form.Schema, Str, Bool -> Form.Schema
-	set_required = |schema, id, value| Form.update_field(schema, id, |field| { ..field, required: value })
-
-	set_min : Form.Schema, Str, Str -> Form.Schema
-	set_min = |schema, id, value| Form.update_field(schema, id, |field| { ..field, min_text: value })
-
-	set_max : Form.Schema, Str, Str -> Form.Schema
-	set_max = |schema, id, value| Form.update_field(schema, id, |field| { ..field, max_text: value })
-
-	set_options : Form.Schema, Str, Str -> Form.Schema
-	set_options = |schema, id, value| Form.update_field(schema, id, |field| { ..field, options_text: value })
-
-	delete_field : Form.Schema, Str -> Form.Schema
-	delete_field = |schema, id|
-		{ ..schema, fields: schema.fields.keep_if(|field| field.id != id) }
-
-	## Move the field with `id` one position earlier. The fold carries the
-	## previous element so the swap needs no index arithmetic.
-	move_up : Form.Schema, Str -> Form.Schema
-	move_up = |schema, id| {
-		folded =
-			schema.fields.fold(
-				{ out: [], prev: [] },
-				|acc, field| {
-					if field.id == id and !acc.prev.is_empty() {
-						{ out: acc.out.append(field).concat(acc.prev), prev: [] }
-					} else {
-						{ out: acc.out.concat(acc.prev), prev: [field] }
-					}
-				},
-			)
-		{ ..schema, fields: folded.out.concat(folded.prev) }
-	}
-
-	## Move the field with `id` one position later, by mirroring `move_up`.
-	move_down : Form.Schema, Str -> Form.Schema
-	move_down = |schema, id| {
-		reversed = { ..schema, fields: Form.reverse(schema.fields) }
-		moved = Form.move_up(reversed, id)
-		{ ..schema, fields: Form.reverse(moved.fields) }
-	}
-
-	reverse : List(Form.Field) -> List(Form.Field)
-	reverse = |fields| fields.fold([], |acc, field| [field].concat(acc))
+	## A listing with `edits` applied in order, as the app's table applies
+	## them: what a test or a model holds a move to.
+	edited : Form.Fields, List(Form.Edit) -> Form.Fields
+	edited = |fields, edits| edits.fold(
+		fields,
+		|held, edit| match edit {
+			Put(key, field) => held.drop_if(|one| one.key == key).append({ key, row: field })
+			Remove(key) => held.drop_if(|one| one.key == key)
+		},
+	)
 
 	# --------------------------------------------------------------- answer ops
 
-	## The answer bound to `id`, if the preview has one yet.
-	find_answer : List(Form.Answer), Str -> Try(Form.Answer, [NotFound])
-	find_answer = |answers, id| answers.find_first(|answer| answer.id == id)
+	## An answer no one has given: empty and unchecked.
+	unanswered : Form.Answer
+	unanswered = { text: "", flag: False }
 
-	answer_text : List(Form.Answer), Str -> Str
-	answer_text = |answers, id|
-		Form.find_answer(answers, id).map_ok(|answer| answer.text) ?? ""
+	## The answer bound to the field numbered `key`: `unanswered` until the
+	## preview holds one.
+	answer_of : Form.Answers, U64 -> Form.Answer
+	answer_of = |answers, key| answers.get(key) ?? Form.unanswered
 
-	answer_flag : List(Form.Answer), Str -> Bool
-	answer_flag = |answers, id|
-		Form.find_answer(answers, id).map_ok(|answer| answer.flag) ?? False
+	set_answer_text : Form.Answers, U64, Str -> Form.Answers
+	set_answer_text = |answers, key, value| answers.update(
+		key,
+		|found| match found {
+			Ok(answer) => Ok({ ..answer, text: value })
+			Err(Missing) => Ok({ text: value, flag: False })
+		},
+	)
 
-	set_answer_text : List(Form.Answer), Str, Str -> List(Form.Answer)
-	set_answer_text = |answers, id, value|
-		match answers.find_first_index(|answer| answer.id == id) {
-			Ok(i) => {
-				{ list, prev } = answers.replace(i, { id: "", text: "", flag: False }) ?? crash "answer"
-				{ id: aid, text: _, flag } = prev
-				list.set(i, { id: aid, text: value, flag }) ?? crash "answer"
-			}
-			Err(_) => answers.append({ id, text: value, flag: False })
-		}
-
-	set_answer_flag : List(Form.Answer), Str, Bool -> List(Form.Answer)
-	set_answer_flag = |answers, id, value|
-		match answers.find_first_index(|answer| answer.id == id) {
-			Ok(i) => {
-				{ list, prev } = answers.replace(i, { id: "", text: "", flag: False }) ?? crash "answer"
-				{ id: aid, text, flag: _ } = prev
-				list.set(i, { id: aid, text, flag: value }) ?? crash "answer"
-			}
-			Err(_) => answers.append({ id, text: "", flag: value })
-		}
+	set_answer_flag : Form.Answers, U64, Bool -> Form.Answers
+	set_answer_flag = |answers, key, value| answers.update(
+		key,
+		|found| match found {
+			Ok(answer) => Ok({ ..answer, flag: value })
+			Err(Missing) => Ok({ text: "", flag: value })
+		},
+	)
 
 	# ------------------------------------------------------------- text helpers
 
@@ -285,10 +298,9 @@ Form := {}.{
 	contains_text = |haystack, needle| haystack.split_on(needle).len() > 1
 
 	## Length in bytes; the example's rules are documented in characters and the
-	## example only ever uses ASCII input. Counted with a fold because this Roc
-	## build exposes no `U64 -> I64` conversion.
+	## example only ever uses ASCII input. An `I64`, as a field's bounds are.
 	length_of : Str -> I64
-	length_of = |text| text.to_utf8().fold(0, |acc, _byte| acc + 1)
+	length_of = |text| text.to_utf8().len().to_i64_wrap()
 
 	## Only plain decimal digits count as a number here. `I64.from_str` is more
 	## generous than the rule syntax this example documents — it would accept
@@ -447,10 +459,8 @@ Form := {}.{
 	}
 
 	## Join one field definition with its answer into a resolved preview row.
-	row_of : Form.Field, List(Form.Answer) -> Form.Row
-	row_of = |field, answers| {
-		text = Form.answer_text(answers, field.id)
-		flag = Form.answer_flag(answers, field.id)
+	row_of : Form.Field, Form.Answer -> Form.Row
+	row_of = |field, { text, flag }| {
 		rule = Form.rule_error(field)
 		error = if rule == "" {
 			Form.answer_error(field, text, flag)
@@ -458,7 +468,6 @@ Form := {}.{
 			rule
 		}
 		{
-			id: field.id,
 			kind: field.kind,
 			label: field.label,
 			required: field.required,
@@ -470,22 +479,27 @@ Form := {}.{
 		}
 	}
 
-	## The join of the two levels of state: schema x answers -> preview rows.
-	rows_of : List(Form.Field), List(Form.Answer) -> List(Form.Row)
-	rows_of = |fields, answers| fields.map(|field| Form.row_of(field, answers))
+	## How many fields the form has, and how many of them hold a problem: a
+	## broken rule or an unacceptable answer.
+	Totals : { fields : U64, problems : U64 }
 
-	problem_count : List(Form.Row) -> U64
+	## The totals of a form with no fields.
+	empty_totals : Form.Totals
+	empty_totals = { fields: 0, problems: 0 }
 
-	## Engine port: count_if, not keep_if: the rows are a shared derived value,
-	## so keep_if copied the whole list on every read.
-	problem_count = |rows| rows.count_if(|row| row.error != "")
+	## The totals with one more resolved row counted: the step of a fold
+	## over the form's fields.
+	counted : Form.Totals, Form.Row -> Form.Totals
+	counted = |totals, row| { fields: totals.fields + 1, problems: if (row.error == "") totals.problems else totals.problems + 1 }
 
-	all_valid : List(Form.Row) -> Bool
-	all_valid = |rows| Form.problem_count(rows) == 0
+	## How many fields currently hold an acceptable answer.
+	valid_count : Form.Totals -> U64
+	valid_count = |totals| totals.fields - totals.problems
 
-	## How many rows currently hold an acceptable answer.
-	valid_count : List(Form.Row) -> U64
-	valid_count = |rows| rows.len() - Form.problem_count(rows)
+	## Whether the generated form can be submitted: every field holds an
+	## acceptable answer. An empty form has nothing to submit, so it cannot.
+	is_submittable : Form.Totals -> Bool
+	is_submittable = |totals| totals.fields > 0 and totals.problems == 0
 
 	## The note under a builder row's title: normally the field's own rule in one
 	## word, and the rule error as soon as the rule contradicts itself.
@@ -549,4 +563,141 @@ Form := {}.{
 		} else {
 			"text-xs font-medium text-red-600"
 		}
+}
+
+## The field that stands nearest to `place` on the side `toward`.
+beside : Form.Fields, { place : U64, toward : [Earlier, Later] } -> Try({ key : U64, row : Form.Field }, [AtEnd])
+beside = |fields, { place, toward }| fields.fold(
+	Err(AtEnd),
+	|nearest, held| {
+		is_on_side = match toward {
+			Earlier => held.row.place < place
+			Later => held.row.place > place
+		}
+		is_nearer = match nearest {
+			Ok(found) =>
+				match toward {
+					Earlier => held.row.place > found.row.place
+					Later => held.row.place < found.row.place
+				}
+			Err(AtEnd) => True
+		}
+		if (is_on_side and is_nearer) Ok(held) else nearest
+	},
+)
+
+## Three fields in the order 1, 2, 3, for the tests below.
+three : Form.Fields
+three = [1, 2, 3].map(|number| { key: number, row: Form.new_field(Form.text_kind, number) })
+
+## The starting form's fields stand in the order of their numbers.
+expect Form.ordered(Form.initial_fields) == [1, 2]
+
+## A new field is named for its kind and number, is optional, and stands last.
+expect {
+	added = Form.edited(Form.initial_fields, [Put(Form.initial_next, Form.new_field(Form.number_kind, Form.initial_next))])
+	field = Form.new_field(Form.number_kind, 3)
+	(Form.ordered(added), field.label, field.required, Form.id_of(3)) == ([1, 2, 3], "Number 3", False, "f3")
+}
+
+## Moving a field earlier exchanges it with the field before it, and writes no other field.
+expect {
+	edits = Form.move_field(three, { key: 3, toward: Earlier })
+	(edits.len(), Form.ordered(Form.edited(three, edits))) == (2, [1, 3, 2])
+}
+
+## Moving a field later exchanges it with the field after it.
+expect Form.ordered(Form.edited(three, Form.move_field(three, { key: 1, toward: Later }))) == [2, 1, 3]
+
+## The first field cannot move earlier, the last cannot move later, and a number the form does not hold moves nothing.
+expect {
+	edits = [
+		Form.move_field(three, { key: 1, toward: Earlier }),
+		Form.move_field(three, { key: 3, toward: Later }),
+		Form.move_field(three, { key: 9, toward: Earlier }),
+	]
+	edits == [[], [], []]
+}
+
+## A field moved twice the same way passes two fields, and deleting the one between leaves the order of the rest.
+expect {
+	once = Form.edited(three, Form.move_field(three, { key: 3, toward: Earlier }))
+	twice = Form.edited(once, Form.move_field(once, { key: 3, toward: Earlier }))
+	(Form.ordered(twice), Form.ordered(Form.edited(twice, [Remove(1)]))) == ([3, 1, 2], [3, 2])
+}
+
+## Two fields at one place are ordered by number, and a field is `Same` only as itself.
+expect {
+	{ compare, .. } = Form.plan({})
+	orders = [
+		compare({ place: 1, key: 9 }, { place: 2, key: 1 }),
+		compare({ place: 2, key: 1 }, { place: 2, key: 3 }),
+		compare({ place: 2, key: 3 }, { place: 2, key: 1 }),
+		compare({ place: 2, key: 3 }, { place: 2, key: 3 }),
+	]
+	orders == [Before, Before, After, Same]
+}
+
+## A field with no answer reads as empty and unchecked, and an answer's text and flag are set apart.
+expect {
+	typed = Form.set_answer_text(Form.no_answers, 2, "Ada")
+	checked = Form.set_answer_flag(typed, 2, True)
+	retyped = Form.set_answer_text(checked, 2, "Grace")
+	actual =
+		\\unanswered: ${Str.inspect(Form.answer_of(typed, 1))}
+		\\typed: ${Str.inspect(Form.answer_of(typed, 2))}
+		\\checked: ${Str.inspect(Form.answer_of(checked, 2))}
+		\\retyped: ${Str.inspect(Form.answer_of(retyped, 2))}
+	expected =
+		\\unanswered: { flag: False, text: "" }
+		\\typed: { flag: False, text: "Ada" }
+		\\checked: { flag: True, text: "Ada" }
+		\\retyped: { flag: True, text: "Grace" }
+	actual == expected
+}
+
+## A bound is no bound when blank, a whole number when it is one, and otherwise bad.
+expect [Form.bound_of("  "), Form.bound_of(" 12 "), Form.bound_of("-3"), Form.bound_of("+5"), Form.bound_of("1_0"), Form.bound_of("abc")] == [NoBound, HasBound(12), HasBound(-3), BadBound, BadBound, BadBound]
+
+## A rule that contradicts itself is reported for the field, whatever its answer.
+expect {
+	field = Form.set_max(Form.set_min(Form.new_field(Form.number_kind, 3), "20"), "10")
+	row = Form.row_of(field, { text: "15", flag: False })
+	(row.rule_error, row.error, Form.summary_text(field)) == ("Rule error: minimum is greater than maximum", "Rule error: minimum is greater than maximum", "Rule error: minimum is greater than maximum")
+}
+
+## A required text field refuses a blank answer and one shorter than its minimum, and accepts one within its bounds.
+expect {
+	field = Form.set_min(Form.set_required(Form.new_field(Form.text_kind, 1), True), "2")
+	verdicts = ["  ", "A", "Ada"].map(|text| Form.verdict_text(Form.row_of(field, { text, flag: False })))
+	verdicts == ["This field is required", "Must be at least 2 characters", "Valid"]
+}
+
+## A select with no options can never be answered, and one with options accepts only one of them.
+expect {
+	bare = Form.new_field(Form.select_kind, 4)
+	sized = Form.set_options(bare, "Small, Large")
+	verdicts = [
+		Form.row_of(bare, Form.unanswered).error,
+		Form.row_of(sized, Form.unanswered).error,
+		Form.row_of(sized, { text: "Medium", flag: False }).error,
+		Form.row_of(sized, { text: "Large", flag: False }).error,
+	]
+	verdicts == ["Rule error: select has no options", "", "Choose one of the configured options", ""]
+}
+
+## The totals count every field and those with a problem, and only a form with fields and no problem can be submitted.
+expect {
+	required = Form.set_required(Form.new_field(Form.text_kind, 1), True)
+	blank = Form.counted(Form.empty_totals, Form.row_of(required, Form.unanswered))
+	answered = Form.counted(Form.empty_totals, Form.row_of(required, { text: "Ada", flag: False }))
+	actual =
+		\\empty: ${Str.inspect(Form.is_submittable(Form.empty_totals))}
+		\\blank: ${Str.inspect(blank)}, valid ${Form.valid_count(blank).to_str()}, submittable ${Str.inspect(Form.is_submittable(blank))}
+		\\answered: ${Str.inspect(answered)}, valid ${Form.valid_count(answered).to_str()}, submittable ${Str.inspect(Form.is_submittable(answered))}
+	expected =
+		\\empty: False
+		\\blank: { fields: 1, problems: 1 }, valid 0, submittable False
+		\\answered: { fields: 1, problems: 0 }, valid 1, submittable True
+	actual == expected
 }

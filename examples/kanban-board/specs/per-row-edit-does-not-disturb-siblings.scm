@@ -1,6 +1,6 @@
 (test "Kanban board — per row edit does not disturb siblings"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (mark-metrics)
     (click (role button :name "Move right: Draft onboarding copy"))
     (mark-metrics)
@@ -10,7 +10,12 @@
     ; per row edit does not disturb siblings
     (mark-metrics)
     (click (role button :name "Flag: Ship search filters"))
-    (expect-metric-delta rows_reused 2)
+    ; A flag is a write of the card's own row: its column's view wakes that
+    ; row and leaves its sibling alone, both in place. A view compares no
+    ; list of rows, so it counts none as reused.
+    (expect-metric-delta rows_reused 0)
+    (expect-metric-delta rows_moved 0)
+    (expect-metric-delta rows_updated 1)
     (expect-metric-delta rows_created 0)
     (expect-metric-delta rows_removed 0)
     (expect-text (test-id "card-flags-Ship search filters") "1 flag")

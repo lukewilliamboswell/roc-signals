@@ -15,9 +15,8 @@
 // workers that hold states; a preparation that fails (a document that is
 // not UTF-8, or one deleted from disk) answers every task with its error;
 // and with `workers: "inline"` a preparation that reads its file is
-// unavailable and the page goes on. It prints the
-// measurements the pull request reports (prepare once against every time,
-// cancel policies).
+// unavailable and the page goes on. It prints its timings (prepare once
+// against every time, cancel policies) as `measured` lines.
 import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";

@@ -1,6 +1,6 @@
 (test "Markdown editor — Edge case: an empty document. All four views stay locatable."
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (mark-metrics)
     (uncheck (label "Number the outline"))
     (check (label "Number the outline"))
@@ -24,7 +24,7 @@
     (click (role button :name "Demote the last heading"))
     (click (role button :name "Load document without headings"))
 
-    ; 8. Edge case: an empty document. All four views stay locatable.
+    ; Edge case: an empty document. All four views stay locatable.
     ; ---------------------------------------------------------------------------
 
     (click (role button :name "Clear document"))

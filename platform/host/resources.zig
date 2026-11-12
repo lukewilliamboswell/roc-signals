@@ -7,7 +7,7 @@
 //! last reference goes it calls `roc_dealloc` with the slot's address. The
 //! host's `roc_dealloc` offers every address to its heaps first (two compares
 //! per heap, no scan), and a heap that owns the address retires the slot
-//! instead of freeing it. The port follows roc-ray's `HostResourceHeap`.
+//! instead of freeing it. The scheme follows roc-ray's `HostResourceHeap`.
 //!
 //! The handles here are **blobs** (`BlobHeap`): file handles, Roc
 //! `Box(U64)` values whose payload is a token naming a browser `Blob` the

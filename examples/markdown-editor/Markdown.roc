@@ -1,92 +1,24 @@
-## Markdown source to `Elem` structure: headings (levels 1-6), paragraphs,
+## Markdown parsing for the editor: headings (levels 1-6), paragraphs,
 ## quotes, fenced code blocks, one-level nested lists, bold, inline code,
 ## links, and images. Links and image sources pass a scheme allowlist;
 ## anything else degrades to plain text, and nothing is ever injected as raw
-## HTML. Adapted from Conduit's `Markdown.roc`, with heading levels
-## carried in the block key so the outline can be derived from parsed blocks
-## rather than re-scanning the raw source.
+## HTML. A heading's level is part of its block's kind, so the outline is
+## derived from the parsed blocks rather than by scanning the source again.
 
 Markdown := {}.{
 	ListItem : { key : Str, text : Str, children : List(Str) }
 
 	## What a parsed block *is*. The heading level rides in the tag, so there is
 	## no "level is 0 for everything that is not a heading" sentinel to forget.
-	## `to_str` reproduces the wire form used inside the reconciler key.
 	Kind := [Heading(U64), Paragraph, Quote, CodeBlock, ListBlock].{
-		is_eq : Markdown.Kind, Markdown.Kind -> Bool
-		is_eq = |left, right|
-			match left {
-				Heading(left_level) => match right {
-					Heading(right_level) => left_level == right_level
-					_ => False
-				}
-				Paragraph => match right {
-					Paragraph => True
-					_ => False
-				}
-				Quote => match right {
-					Quote => True
-					_ => False
-				}
-				CodeBlock => match right {
-					CodeBlock => True
-					_ => False
-				}
-				ListBlock => match right {
-					ListBlock => True
-					_ => False
-				}
-			}
-
-		to_str : Markdown.Kind -> Str
-		to_str = |kind|
-			match kind {
-				Heading(level) => "heading${level.to_str()}"
-				Paragraph => "paragraph"
-				Quote => "quote"
-				CodeBlock => "codeblock"
-				ListBlock => "list"
-			}
+		is_eq : _
 	}
 
 	Block : { key : Str, kind : Markdown.Kind, text : Str, items : List(Markdown.ListItem) }
 
 	## Inline markup carried by one run of text.
 	Style := [Plain, Strong, Code, Image, Link].{
-		is_eq : Markdown.Style, Markdown.Style -> Bool
-		is_eq = |left, right|
-			match left {
-				Plain => match right {
-					Plain => True
-					_ => False
-				}
-				Strong => match right {
-					Strong => True
-					_ => False
-				}
-				Code => match right {
-					Code => True
-					_ => False
-				}
-				Image => match right {
-					Image => True
-					_ => False
-				}
-				Link => match right {
-					Link => True
-					_ => False
-				}
-			}
-
-		to_str : Markdown.Style -> Str
-		to_str = |style|
-			match style {
-				Plain => "text"
-				Strong => "strong"
-				Code => "code"
-				Image => "image"
-				Link => "link"
-			}
+		is_eq : _
 	}
 
 	Segment : { key : Str, kind : Markdown.Style, text : Str, href : Str }
@@ -129,16 +61,17 @@ Markdown := {}.{
 		fence_lines: [],
 	}
 
-	## Row identity is independent of block shape; `Ui.switch` remounts the
-	## structural branch when the kind changes.
-	block_key : U64, Markdown.Kind -> Str
-	block_key = |index, _| "b:${index.to_str()}"
+	## A block's key is its place in the document, whatever its kind: a block
+	## whose kind changes keeps its row, and the `switch` in that row draws
+	## the new kind's element.
+	block_key : U64 -> Str
+	block_key = |index| "b:${index.to_str()}"
 
 	append_block : Markdown.ParseState, Markdown.Kind, Str, List(Markdown.ListItem) -> Markdown.ParseState
 	append_block = |state, kind, text, items| {
 		{
 			..state,
-			blocks: state.blocks.append({ key: block_key(state.index, kind), kind, text, items }),
+			blocks: state.blocks.append({ key: block_key(state.index), kind, text, items }),
 			index: state.index + 1,
 		}
 	}
@@ -260,8 +193,9 @@ Markdown := {}.{
 			or href.starts_with("mailto:")
 	}
 
-	segment_key : U64, Markdown.Style -> Str
-	segment_key = |index, _| "s:${index.to_str()}"
+	## A segment's key is its place in its line of text, whatever its style.
+	segment_key : U64 -> Str
+	segment_key = |index| "s:${index.to_str()}"
 
 	append_segment : Markdown.InlineState, Markdown.Style, Str, Str -> Markdown.InlineState
 	append_segment = |state, kind, text, href| {
@@ -269,7 +203,7 @@ Markdown := {}.{
 			state
 		} else {
 			{
-				segments: state.segments.append({ key: segment_key(state.index, kind), kind, text, href }),
+				segments: state.segments.append({ key: segment_key(state.index), kind, text, href }),
 				index: state.index + 1,
 			}
 		}

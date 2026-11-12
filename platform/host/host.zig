@@ -1,4 +1,5 @@
-//! The Wasm host of the web platform for the pure Roc engine (`platform/Engine.roc`).
+//! The Wasm host of the web platform, whose engine is Roc code
+//! (`platform/Core.roc`, behind the authoring API in `platform/Engine.roc`).
 //!
 //! The host owns exactly three things between calls: one opaque
 //! `Box(App)` (wrapped as `Box(Iter(App))` until roc-lang/roc#12953 is
@@ -48,14 +49,14 @@ var cmds: RocList = RocList.empty;
 var work: RocList = RocList.empty;
 
 // ---------------------------------------------------------------------------
-// Allocator: the same inline-header scheme as the production Wasm host, over
-// the Zig Wasm page allocator. Counters are always on (a few adds per call).
+// Allocator: an inline header before each allocation, over the Zig Wasm page
+// allocator. Counters are always on (a few adds per call).
 
 const Header = extern struct { requested: usize, backing: usize };
 
 /// alloc calls, dealloc calls, requested bytes, realloc calls, live count, live bytes
 var counters: [6]u64 = @splat(0);
-/// p3copy probe: sizes of the first 32 allocations since reset.
+/// A measurement probe: the sizes of the first 32 allocations since reset.
 var sizes: [32]u64 = @splat(0);
 
 fn alignment(bytes: usize) std.mem.Alignment {
@@ -185,20 +186,20 @@ export fn roc_realloc(ptr: *anyopaque, size: usize, align_arg: usize) callconv(.
     @memcpy(@as([*]u8, @ptrCast(next))[0..copied], user[0..copied]);
     _ = freeRaw(ptr, align_arg);
     counters[3] += 1;
-    // A realloc is one allocation request in the Roc ledger, not alloc + free.
+    // A realloc counts as one reallocation, not as an allocation and a free.
     counters[0] -= 1;
     counters[1] -= 1;
     return next;
 }
 
 // ---------------------------------------------------------------------------
-// Fault containment (design.md, "Memory management and allocation failure"
-// and "Diagnostics contract"). A Roc crash, a failed expect or an allocation
-// failure poisons the instance: the diagnostic is written to storage reserved
-// here (no allocation, bounded), staged commands are discarded, and the call
-// traps. A poisoned instance never re-enters Roc: every engine entry point
-// traps immediately; only `fault`, `err_ptr`/`err_len`, `metric` and
-// `cmd_len` (0) answer. Recovery is a fresh instance (JavaScript side).
+// Fault containment (design.md, "Error Containment"). A Roc crash, a failed
+// expect or an allocation failure poisons the instance: the diagnostic is
+// written to storage reserved here (no allocation, bounded), staged commands
+// are discarded, and the call traps. A poisoned instance never re-enters Roc:
+// every engine entry point traps immediately; only `fault`,
+// `err_ptr`/`err_len`, `metric` and `cmd_len` (0) answer. Recovery is a fresh
+// instance (JavaScript side).
 
 /// Error classes (closed set): 0 healthy, 1 contract, 2 resource_limit,
 /// 3 out_of_memory, 4 app_crash (any other Roc crash), 5 expect_failed.
@@ -777,10 +778,10 @@ const work_base: u32 = 16;
 
 /// Allocator counters (0-5), the live file handles (6), whether a prepared
 /// state is held (8: 1 or 0), the engine's work counters (`16 + k` reads
-/// counter `k` of the work record; 0 past its end), and the spike's
-/// first-allocation sizes probe (100-131). The work counters are copied out
-/// of the record the engine returned with the last call; the host does not
-/// compute them.
+/// counter `k` of the work record; 0 past its end), and a measurement
+/// probe, the sizes of the first allocations (100-131). The work counters
+/// are copied out of the record the engine returned with the last call; the
+/// host does not compute them.
 export fn metric(index: u32) callconv(.c) u64 {
     if (index >= 100 and index < 132) return sizes[index - 100];
     if (index == 6) return blobs.live_count;

@@ -1,118 +1,264 @@
 # region imports
-import pf.Engine exposing [Elem, In, Root, Row, RowRef, State]
+import pf.Engine exposing [Elem, State, Val]
 import pf.Html
+import pf.Table
 # endregion imports
 
-## The tutorial's todo list: one state, a keyed list, a conditional and a
-## storage effect.
-Todos := [].{
-	# region model
-	Todo : { title : Str, done : Bool }
+## The tutorial's to-do list: a table of to-dos and two cells in the app's
+## store, one decision for adding, a view of the table, and a storage
+## effect.
+Todos := [TodoList].{
+	# region store
+	Todo : { title : Str, status : [Open, Done] }
 
-	Model : { items : List(Todo), draft : Str }
-
-	## The context inside the model's state, and inside one row of the list.
-	Ctx : In(Root, Model)
-	Item : Row(Ctx, Todo)
-	# endregion model
-
-	# region reducers
-	## Add the draft as a new todo. A blank draft or a title already on the
-	## list changes nothing: titles are the rows' keys, and keys are unique.
-	add : Model -> Model
-	add = |model| {
-		title = model.draft.trim()
-		if title.is_empty() or model.items.any(|t| t.title == title) {
-			model
-		} else {
-			{ items: model.items.append({ title, done: False }), draft: "" }
-		}
-	}
-
-	toggle : Model, Str -> Model
-	toggle = |model, title| { ..model, items: model.items.map(|t| if (t.title == title) { ..t, done: !t.done } else t) }
-
-	remove : Model, Str -> Model
-	remove = |model, title| { ..model, items: model.items.drop_if(|t| t.title == title) }
-
-	remaining : List(Todo) -> Str
-	remaining = |items|
-		match items.count_if(|t| !t.done) {
-			1 => "1 item left"
-			n => "${n.to_str()} items left"
-		}
-	# endregion reducers
-
-	# region storage
-	## The saved list: one todo per line, `+` for done and `-` for open.
-	encode : List(Todo) -> Str
-	encode = |items| Str.join_with(items.map(|t| "${if (t.done) "+" else "-"}${t.title}"), "\n")
-
-	decode : Str -> List(Todo)
-	decode = |text|
-		text.split_on("\n").keep_oks(
-			|line|
-				if line.starts_with("+") {
-					Ok({ title: line.drop_prefix("+"), done: True })
-				} else if line.starts_with("-") {
-					Ok({ title: line.drop_prefix("-"), done: False })
-				} else {
-					Err(Blank)
-				},
-		)
-
-	program : Engine.Program
-	program = Engine.program_boot(
-		{ storage_keys: ["todos"], max_inflight: 32 },
-		|boot| {
-			saved = Engine.boot_storage(boot, "todos") ?? ""
-			Engine.state({ items: Todos.decode(saved), draft: "" }, Todos.view)
-		},
+	## The app's store. Its to-dos are a table: rows by key, here a number
+	## the app hands out. `next` is the key the next to-do takes, and
+	## `draft` the title being typed.
+	store = Engine.store(
+		Todos.TodoList,
+		{
+			todos: Engine.table([]),
+			next: Engine.cell(0.U64),
+			draft: Engine.cell(""),
+		}.Engine.Cells,
 	)
-	# endregion storage
+
+	## The handles on the store's cells.
+	h = Todos.store.handles()
+	# endregion store
+
+	# region add
+	## What the form reads when it is submitted: the title typed, whether
+	## the list has it already, and the key the next to-do takes.
+	Adding : { title : Str, listed : [Listed, Unlisted], next : U64 }
+
+	## The form's reading: three cells read together, and mapped to the
+	## three small things the decision needs.
+	adding : {} -> Val(ctx, Adding)
+		where [ctx.store : () -> Engine.Reach(ctx, _)]
+	adding = |{}|
+		{
+			draft: Todos.h.draft.val(),
+			table: Todos.h.todos.val(),
+			next: Todos.h.next.val(),
+		}.Val.map(|{ draft, table, next }| { title: draft.trim(), listed: Todos.presence(table, draft.trim()), next })
+
+	## Whether `table` has a to-do called `title`.
+	presence : Table(U64, Todo), Str -> [Listed, Unlisted]
+	presence = |table, title| table.fold(Unlisted, |found, _, todo| if (todo.title == title) Listed else found)
+
+	## What submitting the form writes. A blank title, or one the list has
+	## already, writes nothing. Any other writes the new row, the key after
+	## it and an empty draft, together.
+	added : Adding -> List(Engine.Write(_))
+	added = |{ title, listed, next }|
+		if title.is_empty() or listed == Listed {
+			[]
+		} else {
+			[
+				Todos.h.todos.change(|table| table.insert(next, { title, status: Open })),
+				Todos.h.next.put(next + 1),
+				Todos.h.draft.put(""),
+			]
+		}
+	# endregion add
+
+	# region plan
+	## Which to-dos the list shows.
+	Showing : [All, Open, Done]
+
+	## How a choice of `Showing` selects and orders rows: the rows it
+	## keeps, in the order they were added, which is the order of their
+	## keys.
+	plan : Showing -> Engine.Query(U64, Todo, U64)
+	plan = |showing| {
+		keep: |_, todo| match showing {
+			All => True
+			Open => todo.status == Open
+			Done => todo.status == Done
+		},
+		sort: |key, _| key,
+		compare: by_key,
+	}
+	# endregion plan
+
+	# region list
+	## The list: three buttons that choose what it shows, and a view of the
+	## table. The choice is the list's own state, since nothing else in the
+	## app reads it.
+	list : {} -> Elem(ctx)
+		where [ctx.store : () -> Engine.Reach(ctx, _)]
+	list = |{}|
+		Engine.state(
+			All,
+			|showing| Html.div(
+				"list",
+				[
+					Html.button("Show all", [], showing.update(|_| All)),
+					Html.button("Show open", [], showing.update(|_| Open)),
+					Html.button("Show done", [], showing.update(|_| Done)),
+					Html.ul(
+						[],
+						[
+							Engine.each_view(
+								Todos.h.todos,
+								{ query: showing.val(), plan: Todos.plan, window: Engine.const(Engine.every_row) },
+								|key, todo| Todos.row(key, todo),
+							),
+						],
+					),
+				],
+			),
+		)
+	# endregion list
+
+	# region row
+	## One row. `todo` is a `State` of this row of the table: the checkbox
+	## reads and writes this to-do and no other. Removing a row changes the
+	## table itself, so it is a decision over the table's cell.
+	row : Val(r, U64), State(r, Todo) -> Elem(r)
+		where [r.store : () -> Engine.Reach(r, _)]
+	row = |key, todo| {
+		title = todo.val().map(|held| held.title)
+		Html.li(
+			[],
+			[
+				Html.checkbox(
+					title.map(|text| "Done: ${text}"),
+					todo.val().map(|held| held.status == Done),
+					[],
+					todo.set_value(|held, checked| { ..held, status: if (checked == "true") Done else Open }),
+				),
+				Engine.text_v(title),
+				Html.icon_button(
+					"x",
+					title.map(|text| "Remove ${text}"),
+					"remove",
+					Engine.handle_by(key, |id, _| [Todos.h.todos.change(|table| table.remove(id))]),
+				),
+			],
+		)
+	}
+	# endregion row
 
 	# region view
-	view : State(Ctx, Model) -> Elem(Ctx)
-	view = |model| {
-		items = model.val().map(|m| m.items)
+	## The page: the form, the list, a note while there is nothing to do,
+	## the count of open to-dos, and the effect that saves the list.
+	view : {} -> Elem(Engine.StoreRoot(_))
+	view = |{}| {
+		todos = Todos.h.todos.val()
 		Html.div(
 			"todos",
 			[
 				Html.form(
 					"New todo",
-					[Html.on_submit(model.update(Todos.add))],
+					[Html.on_submit(Engine.handle_by(Todos.adding({}), |at, _| Todos.added(at)))],
 					[
-						Html.text_input(Engine.const("Title"), "text", model.val().map(|m| m.draft), [], model.set_value(|m, v| { ..m, draft: v })),
+						Html.text_input(Engine.const("Title"), "text", Todos.h.draft.val(), [], Engine.handle(|typed| [Todos.h.draft.put(typed)])),
 						Html.submit_button("Add", []),
 					],
 				),
-				Html.ul([], [Engine.each(items, |t| t.title, |row| Todos.row(model, row))]),
-				Engine.when(items.map(|l| l.is_empty()), || Html.p("Nothing to do.", "empty"), || Engine.text("")),
-				Html.span_v(items.map(Todos.remaining), [Engine.test_id("remaining")]),
+				Todos.list({}),
+				Engine.when(todos.map(|table| table.len() == 0), || Html.p("Nothing to do.", "empty"), || Engine.text("")),
+				Html.span_v(todos.map(Todos.remaining), [Engine.test_id("remaining")]),
 				# region persist
-				Engine.on_change(items, |l| [StorageSet("todos", Todos.encode(l))], Engine.ignore({})),
+				Engine.on_change(todos.map(Todos.encode), |text| [StorageSet("todos", text)], Engine.ignore({})),
 				# endregion persist
 			],
 		)
 	}
 	# endregion view
 
-	# region row
-	## One row. The template runs once for the whole list; `row` reads the
-	## current row's key and item when a hole is evaluated or a handler fires.
-	row : State(Ctx, Model), RowRef(Ctx, Todo) -> Elem(Item)
-	row = |model0, row|
-		{
-			model = model0.lift_row()
-			title = row.key()
-			Html.li(
-				[],
-				[
-					Html.checkbox(title.map(|t| "Done: ${t}"), row.field(|t| t.done), [], model.update_by(title, Todos.toggle)),
-					Engine.text_v(title),
-					Html.icon_button("x", title.map(|t| "Remove ${t}"), "remove", model.update_by(title, Todos.remove)),
-				],
-			)
+	## How many to-dos are still open, as the page says it.
+	remaining : Table(U64, Todo) -> Str
+	remaining = |table|
+		match table.fold(0.U64, |count, _, todo| if (todo.status == Open) count + 1 else count) {
+			1 => "1 item left"
+			count => "${count.to_str()} items left"
 		}
-	# endregion row
+
+	# region storage
+	## The saved list: one to-do per line in the order they were added, `+`
+	## for done and `-` for open.
+	encode : Table(U64, Todo) -> Str
+	encode = |table| {
+		rows = table.fold([], |found, key, todo| found.append({ key, todo })).sort_with(|a, b| by_key(a.key, b.key))
+		Str.join_with(rows.map(|{ todo, .. }| "${if (todo.status == Done) "+" else "-"}${todo.title}"), "\n")
+	}
+
+	## The to-dos a saved text holds, in its order. A line that starts with
+	## neither sign is skipped.
+	decode : Str -> List(Todo)
+	decode = |text|
+		text.split_on("\n").keep_oks(
+			|line|
+				if line.starts_with("+") {
+					Ok({ title: line.drop_prefix("+"), status: Done })
+				} else if line.starts_with("-") {
+					Ok({ title: line.drop_prefix("-"), status: Open })
+				} else {
+					Err(Blank)
+				},
+		)
+
+	## The store a visit starts with: the saved to-dos under the keys 0, 1,
+	## 2 and so on, and the key after the last as the next.
+	start : Engine.Boot -> Engine.Store(_, _)
+	start = |boot| {
+		saved = Todos.decode(Engine.boot_storage(boot, "todos") ?? "")
+		rows = saved.map_with_index(|todo, index| { key: index, row: todo })
+		Todos.store
+			.with_initial(Todos.h.todos, Table.from_list(rows))
+			.with_initial(Todos.h.next, saved.len())
+	}
+
+	program : Engine.Program
+	program = Engine.program_store({ storage_keys: ["todos"], max_inflight: 32 }, Todos.start, |_boot| Todos.view({}))
+	# endregion storage
 }
+
+## The order of two keys: the smaller first.
+by_key : U64, U64 -> [Before, Same, After]
+by_key = |a, b|
+	if a < b {
+		Before
+	} else if a > b {
+		After
+	} else {
+		Same
+	}
+
+# region expects
+## A new title is added under the next key, and the next key and the draft
+## move on with it.
+expect {
+	typed = Todos.store.after([Todos.h.draft.put("Buy milk")])
+	after = typed.after(Todos.added({ title: "Buy milk", listed: Unlisted, next: 0 }))
+
+	actual =
+		\\row 0: ${Str.inspect(after.read(Todos.h.todos).get(0))}
+		\\next: ${after.read(Todos.h.next).to_str()}
+		\\draft: "${after.read(Todos.h.draft)}"
+	expected =
+		\\row 0: Ok({ status: Open, title: "Buy milk" })
+		\\next: 1
+		\\draft: ""
+	actual == expected
+}
+
+## A blank title and a title already on the list write nothing.
+expect {
+	blank = Todos.added({ title: "", listed: Unlisted, next: 3 })
+	again = Todos.added({ title: "Buy milk", listed: Listed, next: 3 })
+	blank.is_empty() and again.is_empty()
+}
+# endregion expects
+
+# region storage-expect
+## The saved text reads back as the same to-dos, in the order they were added.
+expect {
+	todos = [{ title: "Water the plants", status: Open }, { title: "Buy milk", status: Done }]
+	table = Table.from_list(todos.map_with_index(|todo, index| { key: index, row: todo }))
+	Todos.encode(table) == "-Water the plants\n+Buy milk" and Todos.decode(Todos.encode(table)) == todos
+}
+# endregion storage-expect

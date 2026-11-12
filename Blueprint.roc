@@ -14,7 +14,7 @@
 # tests the platform, the examples and the tests. `roc` is never pinned: CI
 # installs it with roc-lang/setup-roc, and a contributor installs the current
 # nightly as `roc`, so the environments expect it on PATH.
-app [config] { pf: platform "https://github.com/lukewilliamboswell/roc-blueprint/releases/download/0.8.0/FbJymjYdCxx9vqMcau7r4tQfeAbnVGqqJoYrLGqPCqKu.tar.zst" }
+app [config] { pf: platform "https://github.com/lukewilliamboswell/roc-blueprint/releases/download/0.13.0/DBtzmMfrSgt6nCGVAcZYCVPxWbhpqw3MXpm6sdQzMn4v.tar.zst" }
 
 import pf.Config
 import pf.Recipes
@@ -39,14 +39,13 @@ roc_stable_program = Fetch("roc-stable", Recipes.roc_nightly("nightly-2026-11-10
 config = [
 	Name("roc-signals"),
 	Systems(["x86_64-linux", "aarch64-linux", "aarch64-darwin"]),
-	# The Roc-owned engine: native and browser spec runs, the platform's
-	# fetched native inputs, and the scripts that drive them. curl, tar, zstd and
-	# sha256sum fetch and verify the native runner's libc inputs of the
-	# `platform` task, from the roc-fuzz release the fuzz targets depend on.
+	# The engine's environment: native and browser spec runs, the platform's
+	# native inputs, and the scripts that drive them. The pinned Zig builds
+	# matching PIC startup and runtime libraries for the native runner.
 	#
 	# Chrome is the machine's `google-chrome` for now. Chrome for Testing ships
-	# only zip archives, and blueprint 0.8.0 (and 0.9.0) unpacks a Zip download
-	# with `tar -xf`, which GNU tar cannot read; the pinned recipe is ready
+	# only zip archives, and blueprint lists and unpacks a `Zip` download with
+	# `tar`, which GNU tar cannot read; the pinned recipe is ready
 	# below as `chrome` and replaces this Expect once blueprint unpacks zips on
 	# Linux.
 	Environment("engine", [Programs([roc_stable_program, zig_program, node_program]), Expect(["roc", "curl", "tar", "zstd", "sha256sum", "getconf", "google-chrome", "zip"])]),
@@ -64,7 +63,7 @@ config = [
 	Task("check-slow", [Use("engine"), Run(["scripts/check_slow.roc"])]),
 	# One or more apps' specs: `blueprint run spec -- --browser kanban-board`.
 	Task("spec", [Use("engine"), Run(["scripts/spec.roc", "--"])]),
-	# Fetch and build the platform's native inputs (the spec runner's host and
+	# Build the platform's native inputs (the spec runner's host and
 	# libc), for building an app's native spec runner by hand.
 	Task("platform", [Use("engine"), Run(["scripts/build_platform.roc"])]),
 	# Build the js-framework-benchmark app and check it in Chrome.

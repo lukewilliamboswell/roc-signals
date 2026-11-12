@@ -1,11 +1,12 @@
 import pf.Engine
+import pf.Table
 import pf.Worker
 
 ## Worker Lab's model: the parameters a person sets, the jobs of a run and
 ## their phases, the pure kernels the workers run, and the totals.
 ##
-## A run is a list of jobs, one per row, each with its task. A job is
-## `Waiting` until the page admits it, `Running` while its request is in
+## A run is a table of jobs by index, one per row, each with its task. A
+## job is `Waiting` until the page admits it, `Running` while its request is in
 ## flight, and then `Done` with its answer, `TimedOut`, `Lost` (its worker
 ## crashed) or `Cancelled`. The page admits jobs in index order and keeps at
 ## most `window` of them in flight: the program's in-flight bound
@@ -113,22 +114,23 @@ Lab := [].{
 	## (or waiting for its URL), drawn at a URL, or missing and why.
 	Look : [Waiting, Drawing, Drawn(Str), Missing(Str)]
 
-	## One band of the picture: its strip's place, size and look.
-	Band : { index : U64, width : U64, rows : U64, look : Look }
-
 	## One job of a run. `run` and `attempt` make each request distinct: a new
 	## run, or another attempt after a refusal, is a new value for the row's
 	## effect site, which then issues again.
 	Job : { index : U64, run : U64, attempt : U64, deadline : [Unlimited, Ms(U32)], task : Task, phase : Phase }
 
+	## A run's jobs, by index: the keys of a run of `n` jobs are 0 to `n - 1`.
+	Jobs : Table(U64, Job)
+
+	## Which of a run's jobs a list shows: every job, or the strips of a
+	## picture. Both lists are in index order.
+	Listing : [Every, Strips]
+
 	## The validated parameters of a run.
 	Params : { workload : Workload, jobs : U64, weight : U64, deadline : [Unlimited, Ms(U32)] }
 
-	## The page's state: the parameters as typed, the run's serial, its jobs,
-	## the refusals counted since the last reset, the ticks of the page's
-	## clock counted while strips were drawn, and the picture the user last
-	## asked to save.
-	S : { workload : Workload, jobs_text : Str, weight_text : Str, deadline_text : Str, run : U64, jobs : List(Job), refused : U64, ticks : U64, save : Engine.Outbox(Engine.File) }
+	## The parameters as typed.
+	Form : { workload : Workload, jobs_text : Str, weight_text : Str, deadline_text : Str }
 
 	## What a row's effect site wants: a run of its job's task, or nothing.
 	Want : [Run({ run : U64, index : U64, attempt : U64, deadline : [Unlimited, Ms(U32)], task : Task }), Hold]
@@ -139,8 +141,9 @@ Lab := [].{
 	## The totals over a run's jobs.
 	Tally : { total : U64, waiting : U64, running : U64, done : U64, timed_out : U64, lost : U64, failed : U64, cancelled : U64, primes : U64, tile_bytes : U64, checksum : U32 }
 
-	initial : S
-	initial = { workload: Primes, jobs_text: "8", weight_text: "4", deadline_text: "0", run: 0, jobs: [], refused: 0, ticks: 0, save: Engine.outbox({}) }
+	## The parameters a page starts with.
+	form : Form
+	form = { workload: Primes, jobs_text: "8", weight_text: "4", deadline_text: "0" }
 
 	# ------------------------------------------------------------ parameters
 
@@ -172,28 +175,28 @@ Lab := [].{
 		}
 
 	## The parameters as typed, if every field is valid.
-	params : S -> Try(Params, [Invalid(Str)])
-	params = |s| {
+	params : Form -> Try(Params, [Invalid(Str)])
+	params = |typed| {
 		jobs =
-			if s.workload == Draw {
-				Lab.bounded(s.jobs_text, 1, Lab.max_strips) ? |_| Invalid("A picture has from 1 to ${Lab.max_strips.to_str()} strips: the page holds every strip, and the picture, as a file.")
+			if typed.workload == Draw {
+				Lab.bounded(typed.jobs_text, 1, Lab.max_strips) ? |_| Invalid("A picture has from 1 to ${Lab.max_strips.to_str()} strips: the page holds every strip, and the picture, as a file.")
 			} else {
-				Lab.bounded(s.jobs_text, 1, Lab.max_jobs) ? |_| Invalid("Jobs must be a whole number from 1 to ${Lab.max_jobs.to_str()}.")
+				Lab.bounded(typed.jobs_text, 1, Lab.max_jobs) ? |_| Invalid("Jobs must be a whole number from 1 to ${Lab.max_jobs.to_str()}.")
 			}
 		weight =
-			if s.workload == Draw {
-				Lab.bounded(s.weight_text, 1, Lab.max_draw_weight) ? |_| Invalid("A picture's weight is from 1 to ${Lab.max_draw_weight.to_str()}, ${Lab.pixels_per_draw_weight.to_str()} pixels of width each.")
+			if typed.workload == Draw {
+				Lab.bounded(typed.weight_text, 1, Lab.max_draw_weight) ? |_| Invalid("A picture's weight is from 1 to ${Lab.max_draw_weight.to_str()}, ${Lab.pixels_per_draw_weight.to_str()} pixels of width each.")
 			} else {
-				Lab.bounded(s.weight_text, 1, Lab.max_weight) ? |_| Invalid("Weight must be a whole number from 1 to ${Lab.max_weight.to_str()}.")
+				Lab.bounded(typed.weight_text, 1, Lab.max_weight) ? |_| Invalid("Weight must be a whole number from 1 to ${Lab.max_weight.to_str()}.")
 			}
-		deadline = Lab.bounded(s.deadline_text, 0, Lab.max_deadline_ms) ? |_| Invalid("Deadline must be a number of milliseconds from 0 (none) to ${Lab.max_deadline_ms.to_str()}.")
-		Ok({ workload: s.workload, jobs, weight, deadline: if (deadline == 0) Unlimited else Ms(deadline.to_u32_wrap()) })
+		deadline = Lab.bounded(typed.deadline_text, 0, Lab.max_deadline_ms) ? |_| Invalid("Deadline must be a number of milliseconds from 0 (none) to ${Lab.max_deadline_ms.to_str()}.")
+		Ok({ workload: typed.workload, jobs, weight, deadline: if (deadline == 0) Unlimited else Ms(deadline.to_u32_wrap()) })
 	}
 
 	## Why the parameters cannot start a run, or `""`.
-	problem : S -> Str
-	problem = |s|
-		match Lab.params(s) {
+	problem : Form -> Str
+	problem = |typed|
+		match Lab.params(typed) {
 			Ok(_) => ""
 			Err(Invalid(message)) => message
 		}
@@ -483,17 +486,55 @@ Lab := [].{
 
 	# ------------------------------------------------------------------ runs
 
-	## The jobs of run `run` with parameters `p`, the first `window` admitted.
-	jobs_for : Params, U64 -> List(Job)
+	## The jobs of run `run` with parameters `p`, every one waiting: the
+	## rows a run's table is loaded with.
+	jobs_for : Params, U64 -> List({ key : U64, row : Job })
 	jobs_for = |p, run| {
-		var $jobs = List.with_capacity(p.jobs)
+		var $rows = List.with_capacity(p.jobs)
 		var $i = 0.U64
 		while $i < p.jobs {
-			$jobs = $jobs.append({ index: $i, run, attempt: 0, deadline: p.deadline, task: Lab.task_of(p, $i), phase: Waiting })
+			$rows = $rows.append({ key: $i, row: { index: $i, run, attempt: 0, deadline: p.deadline, task: Lab.task_of(p, $i), phase: Waiting } })
 			$i = $i + 1
 		}
-		Lab.admit($jobs)
+		$rows
 	}
+
+	## How a listing selects and orders a run's jobs: the `plan` of both
+	## views of the run, the job grid and the picture's bands.
+	listed : Listing -> Engine.Query(U64, Job, U64)
+	listed = |listing| {
+		keep: |_, job| match listing {
+			Every => True
+			Strips => Lab.is_strip(job)
+		},
+		sort: |index, _| index,
+		compare: |a, b| if (a < b) Before else if (a > b) After else Same,
+	}
+
+	## Fold over a run's jobs in index order.
+	fold_jobs : Jobs, state, (state, Job -> state) -> state
+	fold_jobs = |jobs, init, step| {
+		var $state = init
+		var $index = 0.U64
+		while $index < jobs.len() {
+			match jobs.get($index) {
+				Ok(job) => {
+					$state = step($state, job)
+				}
+				Err(Missing) => {}
+			}
+			$index = $index + 1
+		}
+		$state
+	}
+
+	## How many of a run's jobs `test` holds for.
+	count_jobs : Jobs, (Job -> Bool) -> U64
+	count_jobs = |jobs, test| jobs.fold(0, |n, _, job| if (test(job)) n + 1 else n)
+
+	## Whether `test` holds for any of a run's jobs.
+	any_job : Jobs, (Job -> Bool) -> Bool
+	any_job = |jobs, test| Lab.count_jobs(jobs, test) > 0
 
 	is_running : Job -> Bool
 	is_running = |job|
@@ -526,59 +567,39 @@ Lab := [].{
 			_ => False
 		}
 
-	## The slots a run's jobs may hold: the window, less one for the page's
-	## clock while a picture is drawn.
-	window_of : List(Job) -> U64
-	window_of = |jobs| if (jobs.any(Lab.is_strip)) Lab.window - 1 else Lab.window
-
 	## Admit waiting jobs, lowest index first, while fewer than the run's
-	## window hold slots. Linear in the run's jobs.
-	admit : List(Job) -> List(Job)
+	## slots are held: the window, less one for the page's clock while a
+	## picture is drawn. Linear in the run's jobs.
+	admit : Jobs -> Jobs
 	admit = |jobs| {
-		slots = Lab.window_of(jobs)
-		var $running = jobs.count_if(Lab.occupies)
-		var $out = jobs
-		var $i = 0.U64
-		while $running < slots and $i < jobs.len() {
-			match $out.get($i) {
-				Ok(job) if Lab.is_waiting(job) => {
-					$out = $out.set($i, { ..job, phase: Running }) ?? $out
-					$running = $running + 1
-				}
-				_ => {}
-			}
-			$i = $i + 1
-		}
-		$out
+		seen = Lab.fold_jobs(
+			jobs,
+			{ held: 0.U64, strips: Bool.False, waiting: [] },
+			|acc, job| {
+				held: if (Lab.occupies(job)) acc.held + 1 else acc.held,
+				strips: acc.strips or Lab.is_strip(job),
+				waiting: if (Lab.is_waiting(job)) acc.waiting.append(job.index) else acc.waiting,
+			},
+		)
+		slots = if (seen.strips) Lab.window - 1 else Lab.window
+		free = if (slots > seen.held) slots - seen.held else 0
+		# A fold over the keys to admit rather than a `while` loop over a
+		# `var` holding the table, which copies the table on every
+		# iteration in optimised builds (roc-lang/roc#12971).
+		seen.waiting.take_first(free).fold(jobs, |table, index| table.update(index, |job| { ..job, phase: Running }))
 	}
 
 	## Whether any job is still waiting or running.
-	active : S -> Bool
-	active = |s| s.jobs.any(|j| Lab.is_running(j) or Lab.is_waiting(j))
+	active : Jobs -> Bool
+	active = |jobs| Lab.any_job(jobs, |job| Lab.is_running(job) or Lab.is_waiting(job))
 
-	## Start a run with the current parameters; one already going is
-	## superseded. Invalid parameters start nothing.
-	start : S -> S
-	start = |s|
-		match Lab.params(s) {
-			Ok(p) => {
-				run = s.run + 1
-				{ ..s, run, jobs: Lab.jobs_for(p, run), ticks: 0 }
-			}
-			Err(_) => s
+	## A job that has not finished, stopped. A finished job keeps its answer.
+	cancelled : Job -> Job
+	cancelled = |job|
+		match job.phase {
+			Waiting | Running => { ..job, phase: Cancelled }
+			_ => job
 		}
-
-	## Stop every job that has not finished. Finished jobs keep their answers.
-	cancel : S -> S
-	cancel = |s| {
-		..s,
-		jobs: s.jobs.map(
-			|j| match j.phase {
-				Waiting | Running => { ..j, phase: Cancelled }
-				_ => j
-			},
-		),
-	}
 
 	## Whether a job ended without an answer, so it can be asked again.
 	is_stopped : Job -> Bool
@@ -597,24 +618,6 @@ Lab := [].{
 			job
 		}
 
-	## Ask again for every job that ended without an answer: each goes back
-	## to waiting as a new attempt, and the answers so far are kept. A
-	## picture with a lost or cancelled strip is finished this way.
-	retry : S -> S
-	retry = |s| {
-		..s,
-		jobs: Lab.admit(s.jobs.map(Lab.again)),
-	}
-
-	## Drop the run and its jobs, and the picture kept to save.
-	reset : S -> S
-	reset = |s| { ..s, jobs: [], refused: 0, ticks: 0, save: Engine.outbox({}) }
-
-	## A parameter changed: while a run is going, it restarts with the new
-	## parameters (when they are valid), superseding the old run's jobs.
-	edited : S -> S
-	edited = |s| if (Lab.active(s) and Lab.problem(s) == "") Lab.start(s) else s
-
 	## What job `job`'s effect site wants.
 	want_of : Job -> Want
 	want_of = |job|
@@ -623,24 +626,21 @@ Lab := [].{
 			_ => Hold
 		}
 
-	## A job's request came back. A refusal sends the job back to waiting
-	## for another attempt; anything else finishes it and admits the next
-	## waiting job. A drawn strip keeps its slot until its URL comes back.
-	finish : S, { run : U64, index : U64, attempt : U64 }, Try(Answer, Ended) -> S
-	finish = |s, { run, index, attempt }, outcome|
-		match s.jobs.get(index) {
-			Ok(job) if job.run == run and job.attempt == attempt and Lab.is_running(job) => {
-				(next, refused) =
-					match outcome {
-						Ok(answer) => ({ ..job, phase: Done(answer) }, 0)
-						Err(Timeout) => ({ ..job, phase: TimedOut }, 0)
-						Err(Lost(fault)) => ({ ..job, phase: Lost(fault) }, 0)
-						Err(Failed(why)) => ({ ..job, phase: Failed(why) }, 0)
-						Err(Refused) => ({ ..job, phase: Waiting, attempt: attempt + 1 }, 1)
-					}
-				{ ..s, jobs: Lab.admit(s.jobs.set(index, next) ?? s.jobs), refused: s.refused + refused }
-			}
-			_ => s
+	## Whether a job is still the attempt a request was issued for. A new
+	## run, or another attempt, is another request.
+	is_attempt : Job, { run : U64, attempt : U64 } -> Bool
+	is_attempt = |job, { run, attempt }| job.run == run and job.attempt == attempt
+
+	## A job whose request came back: done with its answer, or how it ended.
+	## A refusal sends it back to waiting for another attempt.
+	settled : Job, Try(Answer, Ended) -> Job
+	settled = |job, outcome|
+		match outcome {
+			Ok(answer) => { ..job, phase: Done(answer) }
+			Err(Timeout) => { ..job, phase: TimedOut }
+			Err(Lost(fault)) => { ..job, phase: Lost(fault) }
+			Err(Failed(why)) => { ..job, phase: Failed(why) }
+			Err(Refused) => { ..job, phase: Waiting, attempt: job.attempt + 1 }
 		}
 
 	## The outcomes of a task that has no error of its own, as `Ended`.
@@ -664,53 +664,49 @@ Lab := [].{
 			_ => Hold
 		}
 
-	## A strip's URL came back, or why there is none; either way its slot
-	## is free, and the next waiting strip is admitted.
-	shown : S, { run : U64, index : U64, attempt : U64 }, Try(Str, Str) -> S
-	shown = |s, { run, index, attempt }, outcome|
-		match s.jobs.get(index) {
-			Ok(job) if job.run == run and job.attempt == attempt =>
-				match job.phase {
-					Done(Strip({ drawn: d, shown: Asking })) => {
-						look = match outcome {
-							Ok(url) => Shown(url)
-							Err(why) => Unshown(why)
-						}
-						{ ..s, jobs: Lab.admit(s.jobs.set(index, { ..job, phase: Done(Strip({ drawn: d, shown: look })) }) ?? s.jobs) }
-					}
-					_ => s
+	## Whether a job is a drawn strip waiting for its URL.
+	awaits_url : Job -> Bool
+	awaits_url = |job|
+		match job.phase {
+			Done(Strip({ shown: Asking, .. })) => True
+			_ => False
+		}
+
+	## A drawn strip whose URL came back, or why there is none. Any other
+	## job as it is.
+	linked : Job, Try(Str, Str) -> Job
+	linked = |job, outcome|
+		match job.phase {
+			Done(Strip({ drawn: d, shown: Asking })) => {
+				look = match outcome {
+					Ok(url) => Shown(url)
+					Err(why) => Unshown(why)
 				}
-			_ => s
+				{ ..job, phase: Done(Strip({ drawn: d, shown: look })) }
+			}
+			_ => job
 		}
 
 	# -------------------------------------------------------------- pictures
 
 	## Whether strips are being drawn: some strip waits or runs. The page's
 	## clock ticks only then.
-	drawing : S -> Bool
-	drawing = |s| s.jobs.any(|j| Lab.is_strip(j) and (Lab.is_running(j) or Lab.is_waiting(j)))
-
-	## One tick of the page's clock while strips are drawn.
-	tick : S -> S
-	tick = |s|
-		if Lab.drawing(s) {
-			{ ..s, ticks: s.ticks + 1 }
-		} else {
-			s
-		}
+	drawing : Jobs -> Bool
+	drawing = |jobs| Lab.any_job(jobs, |job| Lab.is_strip(job) and (Lab.is_running(job) or Lab.is_waiting(job)))
 
 	## The composition of a run whose every job drew its strip, or `Skip`.
-	composition : S -> [Run(Composition), Skip]
-	composition = |s| {
-		files = s.jobs.fold(
+	composition : Jobs -> [Run(Composition), Skip]
+	composition = |jobs| {
+		files = Lab.fold_jobs(
+			jobs,
 			[],
-			|acc, j| match j.phase {
+			|acc, job| match job.phase {
 				Done(Strip({ drawn: { file, .. }, .. })) => acc.append(file)
 				_ => acc
 			},
 		)
-		match s.jobs.first() {
-			Ok({ task: Strip({ width, rows, .. }), .. }) if files.len() == s.jobs.len() => {
+		match jobs.get(0) {
+			Ok({ task: Strip({ width, rows, .. }), .. }) if files.len() == jobs.len() => {
 				height = rows * files.len()
 				Run({ name: "mandelbrot-${width.to_str()}x${height.to_str()}.bmp", width, height, strips: files })
 			}
@@ -734,23 +730,12 @@ Lab := [].{
 			Cancelled => Missing("cancelled")
 		}
 
-	## The picture's bands, one per strip of the run, top first.
-	bands : List(Job) -> List(Band)
-	bands = |jobs|
-		jobs.fold(
-			[],
-			|acc, j| match j.task {
-				Strip({ width, rows, .. }) => acc.append({ index: j.index, width, rows, look: Lab.look_of(j.phase) })
-				_ => acc
-			},
-		)
-
 	## What the picture says about its strips.
-	picture_text : S -> Str
-	picture_text = |s| {
-		strips = s.jobs.count_if(Lab.is_strip)
-		finished = s.jobs.count_if(|j| Lab.is_strip(j) and Lab.is_done(j))
-		left = s.jobs.count_if(|j| Lab.is_strip(j) and (Lab.is_running(j) or Lab.is_waiting(j)))
+	picture_text : Jobs -> Str
+	picture_text = |jobs| {
+		strips = Lab.count_jobs(jobs, Lab.is_strip)
+		finished = Lab.count_jobs(jobs, |job| Lab.is_strip(job) and Lab.is_done(job))
+		left = Lab.count_jobs(jobs, |job| Lab.is_strip(job) and (Lab.is_running(job) or Lab.is_waiting(job)))
 		if strips == 0 {
 			"Choose \"Draw the Mandelbrot set\" and press Start."
 		} else if left > 0 {
@@ -770,8 +755,8 @@ Lab := [].{
 		}
 
 	## The ticks of the page's clock counted while strips were drawn.
-	ticks_text : S -> Str
-	ticks_text = |s| if (s.jobs.any(Lab.is_strip)) s.ticks.to_str() else "–"
+	ticks_text : Jobs, U64 -> Str
+	ticks_text = |jobs, ticks| if (Lab.any_job(jobs, Lab.is_strip)) ticks.to_str() else "–"
 
 	## The URL a band shows, or `""` while it has none.
 	look_url : Look -> Str
@@ -792,10 +777,6 @@ Lab := [].{
 			Refused => "too many requests were in flight"
 		}
 
-	## Keep `file`, the picture, for the save the user asked for.
-	keep_to_save : S, Engine.File -> S
-	keep_to_save = |s, file| { ..s, save: s.save.post(file) }
-
 	# ---------------------------------------------------------------- totals
 
 	## A job's contribution to the checksum.
@@ -815,9 +796,10 @@ Lab := [].{
 	## strip's hash)
 	## as four little-endian bytes, in job order, so it does not depend on
 	## the order the answers arrived in.
-	tally : List(Job) -> Tally
+	tally : Jobs -> Tally
 	tally = |jobs|
-		jobs.fold(
+		Lab.fold_jobs(
+			jobs,
 			Lab.empty_tally,
 			|t0, job| {
 				t = { ..t0, total: t0.total + 1 }
@@ -938,9 +920,14 @@ Lab := [].{
 			Missing(why) => why
 		}
 
-	## A band's shape, so a placeholder takes the room its strip will.
-	look_style : Band -> Str
-	look_style = |{ width, rows, .. }| "aspect-ratio: ${width.to_str()} / ${rows.to_str()}"
+	## A strip's shape, so its band's placeholder takes the room the strip
+	## will. A job that draws no strip has none.
+	strip_style : Job -> Str
+	strip_style = |job|
+		match job.task {
+			Strip({ width, rows, .. }) => "aspect-ratio: ${width.to_str()} / ${rows.to_str()}"
+			_ => ""
+		}
 }
 
 ## The first primes from one million, and the edges of a range.
@@ -962,32 +949,8 @@ expect [Lab.fnv([]), Lab.fnv([97])] == [2166136261, 3826002220]
 ## Hex is eight lower-case digits.
 expect [Lab.hex(0), Lab.hex(3826002220)] == ["00000000", "e40c292c"]
 
-## A run admits `window` jobs and keeps the rest waiting; a finished job
-## admits the next.
-expect {
-	s0 = Lab.start({ ..Lab.initial, jobs_text: "20", weight_text: "1" })
-	t0 = Lab.tally(s0.jobs)
-	s1 = Lab.finish(s0, { run: 1, index: 3, attempt: 0 }, Ok(Primes(7)))
-	t1 = Lab.tally(s1.jobs)
-	actual = [t0.running, t0.waiting, t1.running, t1.waiting, t1.done]
-	actual == [15, 5, 15, 4, 1]
-}
-
-## A refused job waits for another attempt, and a stale answer changes
-## nothing.
-expect {
-	s0 = Lab.start({ ..Lab.initial, jobs_text: "2", weight_text: "1" })
-	s1 = Lab.finish(s0, { run: 1, index: 1, attempt: 0 }, Err(Refused))
-	job = s1.jobs.get(1) ?? crash "no job"
-	stale = Lab.finish(s1, { run: 1, index: 1, attempt: 0 }, Ok(Primes(1)))
-	[job.attempt, s1.refused, Lab.tally(stale.jobs).done] == [1, 1, 0]
-}
-
-## Invalid parameters are explained and start nothing.
-expect {
-	s = { ..Lab.initial, jobs_text: "257" }
-	[Lab.problem(s), Str.inspect(Lab.start(s).run)] == ["Jobs must be a whole number from 1 to 256.", "0"]
-}
+## Invalid parameters are explained.
+expect Lab.problem({ ..Lab.form, jobs_text: "257" }) == "Jobs must be a whole number from 1 to 256."
 
 ## A BMP header is 1078 bytes: its size, pixel offset, width and a negative
 ## (top row first) height in place, the cycle's first colour first, and
@@ -1017,16 +980,8 @@ expect {
 	}
 }
 
-## A drawing admits one strip fewer than the window, since the page's
-## clock holds a slot, and composes nothing until every strip is drawn.
-expect {
-	s = Lab.start({ ..Lab.initial, workload: Draw, jobs_text: "20", weight_text: "1" })
-	actual = { running: Lab.tally(s.jobs).running, drawing: Lab.drawing(s), composed: Lab.composition(s) == Skip, bands: Lab.bands(s.jobs).len() }
-	actual == { running: 14, drawing: Bool.True, composed: Bool.True, bands: 20 }
-}
-
 ## A picture's limits are explained.
 expect {
-	s = { ..Lab.initial, workload: Draw, jobs_text: "61" }
-	Lab.problem(s) == "A picture has from 1 to 60 strips: the page holds every strip, and the picture, as a file."
+	typed = { ..Lab.form, workload: Draw, jobs_text: "61" }
+	Lab.problem(typed) == "A picture has from 1 to 60 strips: the page holds every strip, and the picture, as a file."
 }

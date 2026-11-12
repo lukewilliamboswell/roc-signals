@@ -1,7 +1,7 @@
 +++
 title = "Files in Tasks"
 description = "What a worker task's job can do with files: read the ranges it needs, build new files that come back to the page as handles, append to a file across jobs, download into a file, and save."
-weight = 11
+weight = 14
 template = "page.html"
 +++
 

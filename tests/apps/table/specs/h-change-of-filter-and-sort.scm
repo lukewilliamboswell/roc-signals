@@ -1,0 +1,68 @@
+(test "Table — a change of filter or of sort rebuilds the one view whose query changed"
+  (steps
+    ; The filter changed to every row: the query is read, the main list
+    ; rebuilds (1,000 placements) and its windows are compared. The rows
+    ; of the old window that are still in the new one stay; the others are
+    ; removed, and the rows that enter are created with their 14 holes.
+    ; The list of done rows is not visited.
+    (mark-metrics)
+    (click (role button :name "Show all"))
+    (expect-metric-delta derived_calls_into_roc 1211)
+    (expect-metric-delta patches_emitted 180)
+    (expect-metric-delta set_text 0)
+    (expect-metric-delta set_value 15)
+    (expect-metric-delta set_checked 15)
+    (expect-metric-delta rows_created 15)
+    (expect-metric-delta rows_removed 15)
+    (expect-metric-delta rows_moved 0)
+    (expect-text (test-id "main") "0:0:0 679:1:0 358:2:0 37:3:0 716:4:0 395:5:0 74:6:0 753:7:0 432:8:0 111:9:0 790:10:0 469:11:0 148:12:0 827:13:0 506:14:0 185:15:0 864:16:0 543:17:0 222:18:0 901:19:0 580:20:0 259:21:0 938:22:0 617:23:0 296:24:0 975:25:0 654:26:0 333:27:0 12:28:0 691:29:0 ")
+    ; The same filter again: the query is read, found equal, and nothing
+    ; is rebuilt.
+    (mark-metrics)
+    (click (role button :name "Show all"))
+    (expect-metric-delta derived_calls_into_roc 1)
+    (expect-metric-delta patches_emitted 0)
+    (expect-metric-delta set_text 0)
+    (expect-metric-delta set_value 0)
+    (expect-metric-delta set_checked 0)
+    (expect-metric-delta rows_created 0)
+    (expect-metric-delta rows_removed 0)
+    (expect-metric-delta rows_moved 0)
+    ; The order changed to by key: a rebuild again.
+    (mark-metrics)
+    (click (role button :name "By key"))
+    (expect-metric-delta derived_calls_into_roc 1393)
+    (expect-metric-delta patches_emitted 336)
+    (expect-metric-delta set_text 0)
+    (expect-metric-delta set_value 28)
+    (expect-metric-delta set_checked 28)
+    (expect-metric-delta rows_created 28)
+    (expect-metric-delta rows_removed 28)
+    (expect-metric-delta rows_moved 0)
+    (expect-text (test-id "main") "0:0:0 1:919:0 2:838:0 3:757:0 4:676:0 5:595:0 6:514:0 7:433:0 8:352:0 9:271:0 10:190:0 11:109:0 12:28:0 13:947:0 14:866:0 15:785:0 16:704:0 17:623:0 18:542:0 19:461:0 20:380:0 21:299:0 22:218:0 23:137:0 24:56:0 25:975:0 26:894:0 27:813:0 28:732:0 29:651:0 ")
+    (mark-metrics)
+    (click (role button :name "Show done"))
+    (expect-metric-delta derived_calls_into_roc 1211)
+    (expect-metric-delta patches_emitted 180)
+    (expect-metric-delta set_text 0)
+    (expect-metric-delta set_value 15)
+    (expect-metric-delta set_checked 15)
+    (expect-metric-delta rows_created 15)
+    (expect-metric-delta rows_removed 15)
+    (expect-metric-delta rows_moved 0)
+    (expect-text (test-id "main") "1:919:0 3:757:0 5:595:0 7:433:0 9:271:0 11:109:0 13:947:0 15:785:0 17:623:0 19:461:0 21:299:0 23:137:0 25:975:0 27:813:0 29:651:0 31:489:0 33:327:0 35:165:0 37:3:0 39:841:0 41:679:0 43:517:0 45:355:0 47:193:0 49:31:0 51:869:0 53:707:0 55:545:0 57:383:0 59:221:0 ")
+    ; A row edit under the new query: by key, a quantity moves nothing.
+    ; Row 1 is drawn in both lists now, and re-evaluated in both.
+    (mark-metrics)
+    (click (label "Bump 1"))
+    (expect-metric-delta derived_calls_into_roc 10)
+    (expect-metric-delta patches_emitted 1)
+    (expect-metric-delta set_text 1)
+    (expect-metric-delta set_value 0)
+    (expect-metric-delta set_checked 0)
+    (expect-metric-delta rows_created 0)
+    (expect-metric-delta rows_removed 0)
+    (expect-metric-delta rows_moved 0)
+    (expect-text (test-id "main") "1:920:0 3:757:0 5:595:0 7:433:0 9:271:0 11:109:0 13:947:0 15:785:0 17:623:0 19:461:0 21:299:0 23:137:0 25:975:0 27:813:0 29:651:0 31:489:0 33:327:0 35:165:0 37:3:0 39:841:0 41:679:0 43:517:0 45:355:0 47:193:0 49:31:0 51:869:0 53:707:0 55:545:0 57:383:0 59:221:0 ")
+  )
+)

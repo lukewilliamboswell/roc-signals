@@ -19,11 +19,25 @@ Checks := [].{
 			Ok(dir) => "${root}/${dir}"
 			Err(_) => "${root}/.build"
 		}
-		Ok({ root, build_dir, compiler: "roc", tooling: "roc-stable", zig: "zig", node: "node", chrome: "google-chrome", filter })
+		version = Str.from_utf8_lossy(Proc.capture!({ program: "roc", args: ["version"], cwd: root })?).trim()
+		nightly = version.split_on(" ").last() ?? version
+		Ok({ root, build_dir, compiler: "roc", nightly, tooling: "roc-stable", zig: "zig", node: "node", chrome: "google-chrome", filter })
 	}
 
 	prepare_platform! : SpecSuite.Options => Try({}, _)
 	prepare_platform! = |o| PlatformTest.prepare!({ root: o.root, build_dir: o.build_dir, zig: o.zig })
+
+	## Run the top-level `expect`s of every example and test app, in
+	## parallel: `roc test` of an app's `main.roc` runs those of every module
+	## the app imports. A decision is tested as a function (design.md,
+	## "Decisions as functions"), and those tests are `expect`s beside the
+	## transitions, in the modules of the apps.
+	app_expects! : SpecSuite.Options => Try(List(Str), _)
+	app_expects! = |o| {
+		dirs = SpecSuite.app_dirs!()?
+		results = Proc.parallel!(dirs.map(|dir| { program: o.compiler, args: ["test", "${dir}/main.roc"], cwd: o.root }), Proc.cpus!())?
+		Ok(List.map2(dirs, results, |dir, r| if (r.code == 0) [] else ["roc test ${dir}/main.roc failed: ${r.output.trim()}"]).join())
+	}
 
 	## Run one app's specs natively, and in Chrome when `browser`, with the
 	## builds `SpecSuite.build!` made.

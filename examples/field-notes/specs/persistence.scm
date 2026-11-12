@@ -10,7 +10,7 @@
     (local-storage "field-notes:notes" "n0|0|1|r7|Generator hours;n1|1|0|r7|Fence line check")
   )
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (fill (label "Note body") "Pump pressure log")
     (click (role button :name "Save note"))
     (fill (label "Note body") "   ")

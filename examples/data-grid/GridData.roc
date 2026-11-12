@@ -1,3 +1,7 @@
+## The grid's rows and the rules over them: what a row holds, which rows a
+## listing keeps and in what order, the page a reader sees, and the summary
+## of the rows a filter matches. Nothing here knows the engine, so every
+## rule is a plain function that an `expect` or `fuzz-rows.roc` can check.
 GridData :: [].{
 
 	# ---------------------------------------------------------------------------
@@ -13,33 +17,10 @@ GridData :: [].{
 	page_size : U64
 	page_size = 10
 
-	## Which of the four teams a row belongs to.
-	##
-	## The dataset generator picks a team from a hash of the row id. That used to
-	## be an `if slot == 0 { "Atlas" } else if slot == 1 { … }` ladder over a bare
-	## integer; the tags carry the meaning the integers only hinted at, and the
-	## single `to_str` is the only place a team name is spelled.
+	## Which of the four teams a row belongs to. `to_str` is the only place a
+	## team name is spelled.
 	Team := [Atlas, Borealis, Cobalt, Delta].{
-		is_eq : Team, Team -> Bool
-		is_eq = |left, right|
-			match left {
-				Atlas => match right {
-					Atlas => True
-					_ => False
-				}
-				Borealis => match right {
-					Borealis => True
-					_ => False
-				}
-				Cobalt => match right {
-					Cobalt => True
-					_ => False
-				}
-				Delta => match right {
-					Delta => True
-					_ => False
-				}
-			}
+		is_eq : _
 
 		## The rendered cell text, and what the filter box matches against.
 		to_str : Team -> Str
@@ -68,7 +49,13 @@ GridData :: [].{
 	teams : List(Team)
 	teams = [Atlas, Borealis, Cobalt, Delta]
 
-	Row : { id : U64, name : Str, team : Team, score : U64 }
+	## Whether the reader has ticked a row.
+	Selection : [Selected, Unselected]
+
+	## One row of the grid. Its id is its key in the table, not a field. The
+	## name, team and score are generated; the note and the selection are
+	## the reader's, so they live in the row and go wherever it is listed.
+	Row : { name : Str, team : Team, score : U64, note : Str, selection : Selection }
 
 	team_of : U64 -> Team
 	team_of = |id| teams.get((id * 7 + 3) % 4) ?? Atlas
@@ -90,77 +77,31 @@ GridData :: [].{
 	score_of : U64 -> U64
 	score_of = |id| (id * 37 + (id * id) % 101) % 1000
 
-	## Lexicographic byte order over two strings. There is no `Str.compare` in
-	## this build, so the grid supplies the one comparator it needs; the walk is
-	## recursive rather than a `var $state = 2` integer state machine.
-	str_compare : Str, Str -> [LT, EQ, GT]
-	str_compare = |left, right| bytes_compare(left.to_utf8(), right.to_utf8())
+	## The row the dataset holds under `id`, with no note and unselected.
+	row_of : U64 -> Row
+	row_of = |id| { name: "Node-${pad4(id)}", team: team_of(id), score: score_of(id), note: "", selection: Unselected }
 
-	bytes_compare : List(U8), List(U8) -> [LT, EQ, GT]
-	bytes_compare = |left, right|
-		match (left.first(), right.first()) {
-			(Ok(x), Ok(y)) =>
-				if x == y {
-					bytes_compare(left.drop_first(1), right.drop_first(1))
-				} else if x < y {
-					LT
-				} else {
-					GT
-				}
-			(Err(_), Ok(_)) => LT
-			(Ok(_), Err(_)) => GT
-			_ => EQ
-		}
-
-	generate_rows : U64 -> List(Row)
+	## The first `count` rows of the dataset, each under its id.
+	generate_rows : U64 -> List({ key : U64, row : Row })
 	generate_rows = |count| {
-		var $out = []
-		var $id = 0
-		while $id < count {
-			$out = $out.append({
-				id: $id,
-				name: "Node-${pad4($id)}",
-				team: team_of($id),
-				score: score_of($id),
-			})
-			$id = $id + 1
+		var $out = List.with_capacity(count)
+		for id in 0..<count {
+			$out = $out.append({ key: id, row: row_of(id) })
 		}
 		$out
 	}
 
-	all_rows : List(Row)
+	all_rows : List({ key : U64, row : Row })
 	all_rows = generate_rows(row_count)
 
 	# ---------------------------------------------------------------------------
-	# Pure grid logic
+	# The listing: which rows, in what order
 	# ---------------------------------------------------------------------------
 
-	## Which column the grid is ordered by.
-	##
-	## The sort buttons used to pass the column name as a `Str` and three separate
-	## functions re-tested it with `==`. As a tag the compiler checks every branch
-	## is covered, and `to_str` is the one place the caption's wording comes from.
+	## Which column the grid is ordered by. `to_str` is the one place the
+	## caption's wording comes from.
 	SortKey := [ById, ByName, ByTeam, ByScore].{
-		is_eq : SortKey, SortKey -> Bool
-		is_eq = |left, right|
-			match left {
-				ById => match right {
-					ById => True
-					_ => False
-				}
-				ByName => match right {
-					ByName => True
-					_ => False
-				}
-				ByTeam => match right {
-					ByTeam => True
-					_ => False
-				}
-				ByScore => match right {
-					ByScore => True
-					_ => False
-				}
-			}
+		is_eq : _
 
 		## The column name as it appears in the sort caption.
 		to_str : SortKey -> Str
@@ -175,222 +116,88 @@ GridData :: [].{
 
 	Sort : { key : SortKey, desc : Bool }
 
-	Note : { id : U64, note : Str }
+	## The order the grid opens in.
+	first_sort : Sort
+	first_sort = { key: ById, desc: False }
 
-	ViewRow : { id : U64, name : Str, team : Str, score : U64, note : Str, selected : Bool }
+	## What the grid lists: the rows the filter box's text matches, in the
+	## order the sort buttons chose. It is plain data, so a view of the rows
+	## can tell a changed listing from the same one.
+	Listing : { filter : Str, sort : Sort }
 
-	Summary : { matching : U64, total : U64, average : U64, highest : U64, lowest : U64, selected_here : U64, selected_all : U64 }
+	## Where a row stands in a listing's order: the sorted column's value (a
+	## name's bytes, or a team's rank or a score as a number), then the
+	## row's id, so that no two rows tie. Whichever of `name` and `number`
+	## the sort does not use is left empty or zero for every row.
+	Place : { name : List(U8), number : U64, id : U64 }
 
 	matches : Row, Str -> Bool
-	matches = |row, query|
-		if query.is_empty() {
+	matches = |row, filter|
+		if filter.is_empty() {
 			True
 		} else {
-			row.name.contains(query) or row.team.to_str().contains(query)
+			row.name.contains(filter) or row.team.to_str().contains(filter)
 		}
 
-	filter_rows : Str -> List(Row)
-	filter_rows = |query|
-		if query.is_empty() {
-			all_rows
-		} else {
-			all_rows.keep_if(|row| matches(row, query))
+	## A row's place when the grid is ordered by `key`.
+	place : U64, Row, SortKey -> Place
+	place = |id, row, key|
+		match key {
+			ById => { name: [], number: 0, id }
+			ByName => { name: row.name.to_utf8(), number: 0, id }
+			ByTeam => { name: [], number: row.team.rank(), id }
+			ByScore => { name: [], number: row.score, id }
 		}
 
-	## The reverse of an ordering, used to turn the ascending comparator into the
-	## descending one.
-	flip : [LT, EQ, GT] -> [LT, EQ, GT]
-	flip = |order|
-		match order {
-			LT => GT
-			GT => LT
-			EQ => EQ
-		}
-
-	u64_compare : U64, U64 -> [LT, EQ, GT]
+	u64_compare : U64, U64 -> [Before, Same, After]
 	u64_compare = |left, right|
 		if left < right {
-			LT
+			Before
 		} else if left > right {
-			GT
+			After
 		} else {
-			EQ
+			Same
 		}
 
-	## Ascending order for one column, with the row id as the tiebreak so the
-	## comparator is a strict total order and the sort is deterministic.
-	row_order : Row, Row, SortKey -> [LT, EQ, GT]
-	row_order = |a, b, key| {
-		by_id = u64_compare(a.id, b.id)
-		match key {
-			ById => by_id
-			ByName =>
-				match str_compare(a.name, b.name) {
-					EQ => by_id
+	## Lexicographic byte order. There is no `Str.compare` in this build, so
+	## the grid supplies the one comparator it needs.
+	bytes_compare : List(U8), List(U8) -> [Before, Same, After]
+	bytes_compare = |left, right|
+		match (left.first(), right.first()) {
+			(Ok(x), Ok(y)) =>
+				if x == y {
+					bytes_compare(left.drop_first(1), right.drop_first(1))
+				} else if x < y {
+					Before
+				} else {
+					After
+				}
+			(Err(_), Ok(_)) => Before
+			(Ok(_), Err(_)) => After
+			_ => Same
+		}
+
+	## Ascending order of two places: by name, then by number, then by id.
+	## The id makes it a total order: only a row's own place is `Same`.
+	compare_places : Place, Place -> [Before, Same, After]
+	compare_places = |left, right|
+		match bytes_compare(left.name, right.name) {
+			Same =>
+				match u64_compare(left.number, right.number) {
+					Same => u64_compare(left.id, right.id)
 					other => other
 				}
-			ByTeam =>
-				match u64_compare(a.team.rank(), b.team.rank()) {
-					EQ => by_id
-					other => other
-				}
-			ByScore =>
-				match u64_compare(a.score, b.score) {
-					EQ => by_id
-					other => other
-				}
-		}
-	}
-
-	## Ordering for the whole sort, honouring the descending flag.
-	sort_order : Row, Row, Sort -> [LT, EQ, GT]
-	sort_order = |a, b, sort| {
-		order = row_order(a, b, sort.key)
-		if sort.desc {
-			flip(order)
-		} else {
-			order
-		}
-	}
-
-	merge_rows : List(Row), List(Row), Sort -> List(Row)
-	merge_rows = |left, right, sort| {
-		var $l = left
-		var $r = right
-		var $out = []
-		while !$l.is_empty() and !$r.is_empty() {
-			match ($l.first(), $r.first()) {
-				(Ok(a), Ok(b)) => {
-					match sort_order(a, b, sort) {
-						GT => {
-							$out = $out.append(b)
-							$r = $r.drop_first(1)
-						}
-						_ => {
-							$out = $out.append(a)
-							$l = $l.drop_first(1)
-						}
-					}
-				}
-				_ => {
-					$l = []
-					$r = []
-				}
-			}
-		}
-		$out.concat($l).concat($r)
-	}
-
-	sort_rows : List(Row), Sort -> List(Row)
-	sort_rows = |rows, sort| {
-		len = rows.len()
-		if len <= 1 {
-			rows
-		} else {
-			half = len // 2
-			merge_rows(
-				sort_rows(rows.take_first(half), sort),
-				sort_rows(rows.drop_first(half), sort),
-				sort,
-			)
-		}
-	}
-
-	last_page_of : U64 -> U64
-	last_page_of = |count|
-		if count == 0 {
-			0
-		} else {
-			(count - 1) // page_size
+			other => other
 		}
 
-	window_of : List(Row), U64 -> List(Row)
-	window_of = |rows, page| rows.drop_first(page * page_size).take_first(page_size)
-
-	note_for : List(Note), U64 -> Str
-	note_for = |notes, id|
-		notes.find_first(|entry| entry.id == id).map_ok(|entry| entry.note) ?? ""
-
-	set_note : List(Note), U64, Str -> List(Note)
-	set_note = |notes, id, note| notes.keep_if(|entry| entry.id != id).append({ id, note })
-
-	is_selected : List(U64), U64 -> Bool
-	is_selected = |selected, id| selected.contains(id)
-
-	toggle_selected : List(U64), U64, Bool -> List(U64)
-	toggle_selected = |selected, id, on| {
-		without = selected.keep_if(|value| value != id)
-		if on {
-			without.append(id)
-		} else {
-			without
-		}
-	}
-
-	set_all_matching : List(U64), Str, Bool -> List(U64)
-	set_all_matching = |selected, query, on| {
-		matching_ids = filter_rows(query).map(|row| row.id)
-		kept = selected.keep_if(|id| !matching_ids.contains(id))
-		if on {
-			kept.concat(matching_ids)
-		} else {
-			kept
-		}
-	}
-
-	## The edge where the internal `Team` tag becomes the text a cell renders.
-	decorate : List(Row), { selected : List(U64), notes : List(Note) } -> List(ViewRow)
-	decorate = |rows, ctx|
-		rows.map(
-			|row| {
-				id: row.id,
-				name: row.name,
-				team: row.team.to_str(),
-				score: row.score,
-				note: note_for(ctx.notes, row.id),
-				selected: is_selected(ctx.selected, row.id),
-			},
-		)
-
-	summarize : List(Row), List(U64) -> Summary
-	summarize = |rows, selected| {
-		first_score =
-			match rows.first() {
-				Ok(row) => row.score
-				Err(_) => 0
-			}
-		var $total = 0
-		var $highest = first_score
-		var $lowest = first_score
-		var $selected_here = 0
-		for row in rows {
-			$total = $total + row.score
-			if row.score > $highest {
-				$highest = row.score
-			} else {}
-			if row.score < $lowest {
-				$lowest = row.score
-			} else {}
-			if is_selected(selected, row.id) {
-				$selected_here = $selected_here + 1
-			} else {}
-		}
-		matching = rows.len()
-		average =
-			if matching == 0 {
-				0
-			} else {
-				$total // matching
-			}
-		{
-			matching,
-			total: $total,
-			average,
-			highest: $highest,
-			lowest: $lowest,
-			selected_here: $selected_here,
-			selected_all: selected.len(),
-		}
+	## How a listing selects and orders rows: what a view of the rows asks.
+	## A descending sort is the ascending order with its sides exchanged, so
+	## rows that tie on the column are reversed too.
+	plan : Listing -> { keep : U64, Row -> Bool, sort : U64, Row -> Place, compare : Place, Place -> [Before, Same, After] }
+	plan = |{ filter, sort: { key, desc } }| {
+		keep: |_id, row| matches(row, filter),
+		sort: |id, row| place(id, row, key),
+		compare: if (desc) |left, right| compare_places(right, left) else compare_places,
 	}
 
 	sort_caption : Sort -> Str
@@ -414,4 +221,161 @@ GridData :: [].{
 			{ key, desc: False }
 		}
 
+	# ---------------------------------------------------------------------------
+	# Pages
+	# ---------------------------------------------------------------------------
+
+	## The last page of `count` listed rows, counting pages from 0.
+	last_page_of : U64 -> U64
+	last_page_of = |count|
+		if count == 0 {
+			0
+		} else {
+			(count - 1) // page_size
+		}
+
+	## The page the grid shows when the reader asked for page `asked` and
+	## `count` rows are listed: the page asked for, or the last page when a
+	## filter left fewer. The page asked for is kept, so widening the filter
+	## shows it again.
+	page_shown : U64, U64 -> U64
+	page_shown = |asked, count| {
+		last = last_page_of(count)
+		if (asked > last) last else asked
+	}
+
+	## The part of the listing that page `page` draws.
+	window_of : U64 -> { start : U64, count : U64 }
+	window_of = |page| { start: page * page_size, count: page_size }
+
+	## How many of `count` listed rows page `page` holds.
+	rows_on : U64, U64 -> U64
+	rows_on = |page, count| {
+		start = page * page_size
+		if start >= count {
+			0
+		} else if count - start < page_size {
+			count - start
+		} else {
+			page_size
+		}
+	}
+
+	## The page a paging button turns to from page `shown`.
+	turned : U64, [First, Previous, Next] -> U64
+	turned = |shown, turn|
+		match turn {
+			First => 0
+			Previous => if (shown == 0) 0 else shown - 1
+			Next => shown + 1
+		}
+
+	# ---------------------------------------------------------------------------
+	# What the reader edits
+	# ---------------------------------------------------------------------------
+
+	noted : Row, Str -> Row
+	noted = |row, note| { ..row, note }
+
+	marked : Row, Selection -> Row
+	marked = |row, selection| { ..row, selection }
+
+	# ---------------------------------------------------------------------------
+	# Summary
+	# ---------------------------------------------------------------------------
+
+	## What the summary tiles show: the rows the filter matches, their
+	## scores, and how many rows are selected among them and in all.
+	Summary : { matching : U64, total : U64, highest : U64, lowest : U64, selected_here : U64, selected_all : U64 }
+
+	## The summary of no rows, where a fold over the rows starts.
+	no_rows : Summary
+	no_rows = { matching: 0, total: 0, highest: 0, lowest: 0, selected_here: 0, selected_all: 0 }
+
+	## `so_far` with one more row counted. The rows can come in any order.
+	counted : Summary, Row, Str -> Summary
+	counted = |so_far, row, filter| {
+		selected = if (row.selection == Selected) 1 else 0
+		if matches(row, filter) {
+			first = so_far.matching == 0
+			{
+				matching: so_far.matching + 1,
+				total: so_far.total + row.score,
+				highest: if (first or row.score > so_far.highest) row.score else so_far.highest,
+				lowest: if (first or row.score < so_far.lowest) row.score else so_far.lowest,
+				selected_here: so_far.selected_here + selected,
+				selected_all: so_far.selected_all + selected,
+			}
+		} else {
+			{ ..so_far, selected_all: so_far.selected_all + selected }
+		}
+	}
+
+	## The mean score of the matching rows, rounded down; 0 when none match.
+	average : Summary -> U64
+	average = |summary| if (summary.matching == 0) 0 else summary.total // summary.matching
+}
+
+## A filter matches a row's name or its team's name, and no filter matches every row.
+expect {
+	row = GridData.row_of(7)
+	actual =
+		\\row: ${row.name} ${row.team.to_str()}
+		\\by name: ${Str.inspect(GridData.matches(row, "Node-0007"))}
+		\\by team: ${Str.inspect(GridData.matches(row, "Atlas"))}
+		\\other: ${Str.inspect(GridData.matches(row, "Delta"))}
+		\\none: ${Str.inspect(GridData.matches(row, ""))}
+	expected =
+		\\row: Node-0007 Atlas
+		\\by name: True
+		\\by team: True
+		\\other: False
+		\\none: True
+	actual == expected
+}
+
+## Rows that tie on the sorted column are ordered by id, and a descending sort reverses them too.
+expect {
+	ordered = |sort| {
+		asked = GridData.plan({ filter: "", sort })
+		[3, 1, 2]
+			.map(|id| (asked.sort)(id, { ..GridData.row_of(id), score: 5 }))
+			.sort_with(asked.compare)
+			.map(|at| at.id)
+	}
+	(ordered({ key: ByScore, desc: False }), ordered({ key: ByScore, desc: True })) == ([1, 2, 3], [3, 2, 1])
+}
+
+## A page past the end is shown as the last page, and the last page holds what is left.
+expect {
+	actual =
+		\\last of 0, 10, 11: ${GridData.last_page_of(0).to_str()} ${GridData.last_page_of(10).to_str()} ${GridData.last_page_of(11).to_str()}
+		\\asked 3 of 25 rows: ${GridData.page_shown(3, 25).to_str()}
+		\\asked 1 of 25 rows: ${GridData.page_shown(1, 25).to_str()}
+		\\rows on pages 0, 2, 3 of 25: ${GridData.rows_on(0, 25).to_str()} ${GridData.rows_on(2, 25).to_str()} ${GridData.rows_on(3, 25).to_str()}
+		\\window of page 2: ${Str.inspect(GridData.window_of(2))}
+	expected =
+		\\last of 0, 10, 11: 0 0 1
+		\\asked 3 of 25 rows: 2
+		\\asked 1 of 25 rows: 1
+		\\rows on pages 0, 2, 3 of 25: 10 5 0
+		\\window of page 2: { count: 10, start: 20 }
+	actual == expected
+}
+
+## The previous page of the first page is the first page.
+expect [First, Previous, Next].map(|turn| GridData.turned(0, turn)) == [0, 0, 1]
+
+## A note and a tick each change their own field of a row and leave the rest of it alone.
+expect {
+	row = GridData.row_of(3)
+	edited = GridData.marked(GridData.noted(row, "needs review"), Selected)
+	edited == { ..row, note: "needs review", selection: Selected }
+}
+
+## A summary counts the selected rows the filter matches apart from all the selected rows.
+expect {
+	rows = [3, 7, 11].map(|id| GridData.marked(GridData.row_of(id), Selected))
+	summary = rows.fold(GridData.no_rows, |so_far, row| GridData.counted(so_far, row, "Node-0007"))
+	(summary.matching, summary.selected_here, summary.selected_all, GridData.average(summary)) == (1, 1, 3, 308)
 }

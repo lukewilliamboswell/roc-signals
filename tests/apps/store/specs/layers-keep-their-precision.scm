@@ -1,0 +1,17 @@
+(test "Store — a local layer's write wakes its own reader and no cell's, at every depth"
+  (steps
+    (mark-metrics)
+    (click (role button :name "Bump L1"))
+    (expect-metric-delta derived_calls_into_roc 1)
+    (expect-metric-delta set_text 1)
+    (mark-metrics)
+    (click (role button :name "Bump L5"))
+    (expect-metric-delta derived_calls_into_roc 1)
+    (mark-metrics)
+    (click (role button :name "Bump L10"))
+    (expect-metric-delta derived_calls_into_roc 1)
+    (expect-text (test-id "L1") "L1=1")
+    (expect-text (test-id "L5") "L5=1")
+    (expect-text (test-id "L10") "L10=1")
+    (expect-text (test-id "c7") "c7=0")
+  ))

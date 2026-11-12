@@ -15,9 +15,6 @@ import JsonOut
 ## skipped, repaired or guessed. The native runner (`SpecRunner.roc`) executes
 ## the typed steps; `to_json` emits them for the browser runner, so the grammar
 ## is implemented once.
-##
-## The grammar is the web subset of the previous engine's spec grammar: the
-## GUI `scenario` form and its window steps are not part of it.
 Scm := [].{
 
 	## A source position, one-based.
@@ -213,7 +210,7 @@ Scm := [].{
 		}
 		head = items.get(0) ?? return Err({ pos, message: "a spec is one (test \"name\" ...) form" })
 		if !Scm.is_sym(head, "test") {
-			return Err({ pos: Scm.pos_of(head), message: "a spec starts with `test`; `scenario` and other forms are not part of the web grammar" })
+			return Err({ pos: Scm.pos_of(head), message: "a spec starts with `test`" })
 		}
 		name = match items.get(1) {
 			Ok(Str(s, _)) => s
@@ -1006,6 +1003,7 @@ Scm := [].{
 		{ name: "rows_created", counters: [1] },
 		{ name: "rows_removed", counters: [22] },
 		{ name: "rows_reused", counters: [23] },
+		{ name: "rows_updated", counters: [24] },
 		{ name: "rows_moved", counters: [4] },
 		{ name: "create_element", counters: [8] },
 		{ name: "set_text", counters: [2, 12] },
@@ -1037,9 +1035,8 @@ Scm := [].{
 			Err(_) => Err(UnknownMetric)
 		}
 
-	## Metrics of the deleted Zig engine with no meaning in this one
-	## (design.md, "Work assertions"): a spec asserts the property they stood
-	## for through soak plateaus or the counters above instead.
+	## The problem with a metric name that `metric_names` does not hold,
+	## which lists the names it does.
 	unknown_metric : Str -> Str
 	unknown_metric = |name| "unknown metric ${name}; the metrics are ${Str.join_with(Scm.metric_names.map(|m| m.name), ", ")}"
 
@@ -1415,8 +1412,8 @@ expect {
 ## Executable steps are refused inside setup.
 expect problem_of("(test \"t\" (setup (click (text \"No\"))) (steps (mark-metrics)))") == "x.scm:1:18: unknown setup form click"
 
-## The GUI scenario form is not part of the web grammar.
-expect problem_of("(scenario \"s\" (steps (click (text \"a\"))))") == "x.scm:1:2: a spec starts with `test`; `scenario` and other forms are not part of the web grammar"
+## A form whose head is not `test` is not a spec.
+expect problem_of("(suite \"s\" (steps (click (text \"a\"))))") == "x.scm:1:2: a spec starts with `test`"
 
 ## Empty steps, missing steps and duplicated sections are refused.
 expect {
@@ -1480,15 +1477,15 @@ expect {
 	actual == "{\"id\":\"j-file\",\"name\":\"j\",\"setup\":[{\"op\":\"local-storage\",\"line\":1,\"column\":18,\"key\":\"k\",\"text\":\"v\"}],\"steps\":[{\"op\":\"expect-checked\",\"line\":1,\"column\":50,\"loc\":{\"kind\":\"role\",\"role\":\"checkbox\",\"name\":\"A\"},\"value\":true}]}"
 }
 
-## Metric names are checked: an old engine-only metric is a parse error, and a
-## known one emits the counters it sums.
+## Metric names are checked: an unknown one is a parse error, and a known one
+## emits the counters it sums.
 expect {
 	spec = Scm.parse("(test \"m\" (steps (mark-metrics) (expect-metric-delta set_text 2)))")?
 	actual =
-		\\${problem_of("(test \"t\" (steps (expect-metric-delta-at-most active_graph_records_rebuilt 0)))")}
+		\\${problem_of("(test \"t\" (steps (expect-metric-delta-at-most rows_painted 0)))")}
 		\\${JsonOut.render(Scm.to_json("m", spec))}
 	expected =
-		\\x.scm:1:47: unknown metric active_graph_records_rebuilt; the metrics are rows_created, rows_removed, rows_reused, rows_moved, create_element, set_text, set_value, set_checked, bind_event, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares, effects_issued, effects_delivered, effects_stale, effects_refused, effects_cancelled, effects_reparented, effects_skipped
+		\\x.scm:1:47: unknown metric rows_painted; the metrics are rows_created, rows_removed, rows_reused, rows_updated, rows_moved, create_element, set_text, set_value, set_checked, bind_event, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares, effects_issued, effects_delivered, effects_stale, effects_refused, effects_cancelled, effects_reparented, effects_skipped
 		\\{"id":"m","name":"m","setup":[],"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
 	actual == expected
 }

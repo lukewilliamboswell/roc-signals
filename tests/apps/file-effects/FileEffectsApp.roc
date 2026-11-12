@@ -108,7 +108,12 @@ FileEffectsApp := [].{
 
 	## A `resource` that reads what `ask` names into the page.
 	reader : Engine.Val(ctx, Ask), (Engine.Val(In(ctx, Shown), Shown) -> Elem(In(ctx, Shown))) -> Elem(ctx)
-	reader = |ask, body|
+	reader = |ask, body| {
+		# Compiler workaround (https://github.com/roc-lang/roc/issues/12978):
+		# the nominal defaulted props are not inferred for an empty record in
+		# this callback. Keep the default 8 MiB, with its type made explicit.
+		defaults : Engine.ReadProps
+		defaults = {}
 		Engine.resource(
 			ask,
 			{
@@ -118,8 +123,8 @@ FileEffectsApp := [].{
 					_ => Reading
 				},
 				plan: |a| match a {
-					Bytes(f) => [f.read_bytes({})]
-					Text(f) => [f.read_utf8({})]
+					Bytes(f) => [f.read_bytes(defaults)]
+					Text(f) => [f.read_utf8(defaults)]
 					Large(f) => [f.read_bytes({ max_bytes: 64 * 1024 * 1024 })]
 					Skip => []
 				},
@@ -131,6 +136,7 @@ FileEffectsApp := [].{
 			},
 			body,
 		)
+	}
 
 	## A `resource` that runs `request` on the file `pick` names and shows its
 	## answer with `answer`.

@@ -451,7 +451,9 @@ async function open(options = {}) {
   });
   const t0 = Date.now();
   const target = path.join(dir, "s.txt.upper");
-  while (!(fs.existsSync(target) && fs.readFileSync(target, "utf8") === "XXXXX") && Date.now() - t0 < 10000) await new Promise((r) => setTimeout(r, 50));
+  // The file can be on disk before the browser's notice that the download
+  // began has been delivered, so wait for both.
+  while (!(begun.length > 0 && fs.existsSync(target) && fs.readFileSync(target, "utf8") === "XXXXX") && Date.now() - t0 < 10000) await new Promise((r) => setTimeout(r, 50));
   check("File.save downloads the file's bytes under its name", { begun, bytes: fs.existsSync(target) ? fs.readFileSync(target, "utf8") : null }, { begun: ["s.txt.upper"], bytes: "XXXXX" });
   fs.rmSync(dir, { recursive: true, force: true });
   await ctx.close();

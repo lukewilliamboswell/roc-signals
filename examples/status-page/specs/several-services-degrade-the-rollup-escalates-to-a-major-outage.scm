@@ -1,6 +1,6 @@
 (test "Status page — Several services degrade: the rollup escalates to a major outage"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (stub-http "api" :url "/api/status/api" :status 200 :body "operational|99.98")
     (run-effect 1)
     (stub-http "web" :url "/api/status/web" :status 200 :body "operational|99.99")

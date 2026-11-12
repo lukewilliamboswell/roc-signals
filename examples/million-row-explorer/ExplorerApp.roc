@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, In, Root, State, Val]
+import pf.Engine exposing [Elem, Val]
 import pf.Html
 import pf.Worker
 import Charts
@@ -10,20 +10,25 @@ import Orders
 ## default, split into four shards that live in four workers, with live
 ## orders arriving through a port.
 ##
+## The page's state is the store `Explorer` describes: the question the
+## controls show, the question asked of the shards, the live feed's switch
+## and pace, and the live orders folded in. The controls and the sites
+## below read its cells where they stand, and every change to them is one
+## of `Explorer`'s decisions.
+##
 ## Two sites do the work. A `Worker.gather` asks every shard the current
 ## question at once; its body adds the shards' last complete answer to the
-## live orders the page has folded in (`v.lift().map2`) and draws four
-## charts from the sum. A `latest` site keeps the live feed's subscription
-## while the feed is on, and folds each batch into a fixed-size tally.
-## Everything else is ordinary view code. Two elements of the page's own
-## JavaScript show what the runtime measured: `query-meter` (this
-## example's `meter.mjs`) and `worker-pool-panel` (the shared pool panel).
+## live orders the page has folded in and draws four charts from the sum.
+## A `latest` site keeps the live feed's subscription while the feed is
+## on, and folds each batch into a fixed-size tally. Everything else is
+## ordinary view code. Two elements of the page's own JavaScript show what
+## the runtime measured: `query-meter` (this example's `meter.mjs`) and
+## `worker-pool-panel` (the shared pool panel).
 ExplorerApp := [].{
-	Ctx : In(Root, Explorer.S)
 
-	view : State(Ctx, Explorer.S) -> Elem(Ctx)
-	view = |st| {
-		v = st.val()
+	view : Explorer.Setup -> Elem(Engine.StoreRoot(_))
+	view = |setup| {
+		cells = Explorer.h
 		Html.div(
 			"app-shell",
 			[
@@ -35,11 +40,11 @@ ExplorerApp := [].{
 						Html.p("A year of a shop's orders, generated inside four workers and never sent to the page. Every change of the question asks each worker for a few kilobytes of counts; the page adds them to the live orders arriving now and draws the charts.", "app-subtitle"),
 					],
 				),
-				ExplorerApp.controls(st),
+				ExplorerApp.controls(setup.size),
 				Worker.gather(
 					Explorer.summary,
-					v.map(Explorer.questions),
-					|g| Engine.derive(v.lift().map2(g, Explorer.board), ExplorerApp.results),
+					cells.asked.val().map(|asked| Explorer.questions(setup.size, asked)),
+					|gathered| Engine.derive(Explorer.answering(setup.size).map2(gathered, Explorer.board), ExplorerApp.results),
 				),
 				Html.section(
 					"Measured",
@@ -52,22 +57,22 @@ ExplorerApp := [].{
 				# A slider's question, asked when the timer fires: at most
 				# every `sample_ms` while a slider is dragged.
 				Engine.watch(
-					v.map(Explorer.sampling),
+					Explorer.question({}).map(Explorer.sampling),
 					|sampling| match sampling {
 						Waiting => [Timer(Explorer.sample_ms)]
 						Asked => []
 					},
-					st.on_result(|s, _, _| Explorer.asking(s)),
+					Engine.react_by(cells.shown.val(), |shown, _, _| Explorer.sampled(shown)),
 				),
 				# The live feed, for as long as it is on and at the pace
 				# chosen: a new pace or pausing stops the old subscription.
 				Engine.latest(
-					v.map(|s| { flow: s.flow, rate: s.rate }),
+					{ flow: cells.flow.val(), rate: cells.rate.val() }.Val,
 					|{ flow, rate }| match flow {
 						Live => [Feed.orders.subscribe({ per_second: rate })]
 						Paused => []
 					},
-					st.on_result(|s, _, res| Explorer.received(s, Feed.orders.message(res))),
+					Engine.react(|_, res| Explorer.received(Feed.orders.message(res))),
 				),
 			],
 		)
@@ -75,9 +80,11 @@ ExplorerApp := [].{
 
 	## The question and the feed: the database's size, the categories, the
 	## value range and the live feed's switch and pace.
-	controls : State(Ctx, Explorer.S) -> Elem(Ctx)
-	controls = |st| {
-		v = st.val()
+	controls : U64 -> Elem(ctx)
+		where [ctx.store : () -> Engine.Reach(ctx, _)]
+	controls = |size| {
+		cells = Explorer.h
+		shown = cells.shown.val()
 		Html.section(
 			"Question",
 			"panel grid gap-3 p-4",
@@ -85,10 +92,10 @@ ExplorerApp := [].{
 				Html.div(
 					"toolbar",
 					[
-						Html.p_v(v.map(|s| "${Explorer.grouped(s.size)} orders. Generate"), [Engine.class("field-label"), Engine.test_id("size")]),
+						Html.p_attrs("${Explorer.grouped(size)} orders. Generate", [Engine.class("field-label"), Engine.test_id("size")]),
 					]
 						# Each size is a link: the page loads again at that size.
-						.concat(Explorer.sizes.map(|size| Html.link(Explorer.grouped(size), "?orders=${size.to_str()}", [Engine.class("button button-sm")]))),
+						.concat(Explorer.sizes.map(|other| Html.link(Explorer.grouped(other), "?orders=${other.to_str()}", [Engine.class("button button-sm")]))),
 				),
 				Html.div(
 					"toolbar",
@@ -99,7 +106,7 @@ ExplorerApp := [].{
 								"label",
 								[Engine.class("flex items-center gap-1 text-sm")],
 								[
-									Html.checkbox(Engine.const(name), v.map(|s| s.categories.contains(category)), [], st.set_value(|s, checked| Explorer.toggled(s, category, checked))),
+									Html.checkbox(Engine.const(name), shown.map(|filter| filter.categories.contains(category)), [], Engine.handle_by(shown, |at, checked| Explorer.ticked(at, category, checked))),
 									Engine.text(name),
 								],
 							)
@@ -109,9 +116,9 @@ ExplorerApp := [].{
 				Html.div(
 					"toolbar",
 					[
-						Html.p_v(v.map(Explorer.range_text), [Engine.class("field-label numeric"), Engine.test_id("range")]),
-						ExplorerApp.slider(st, "Lowest value", |s| s.lowest, Explorer.lowest_set),
-						ExplorerApp.slider(st, "Highest value", |s| s.highest, Explorer.highest_set),
+						Html.p_v(shown.map(Explorer.range_text), [Engine.class("field-label numeric"), Engine.test_id("range")]),
+						ExplorerApp.slider("Lowest value", shown.map(|filter| filter.lowest), Lowest),
+						ExplorerApp.slider("Highest value", shown.map(|filter| filter.highest), Highest),
 					],
 				),
 				Html.div(
@@ -121,37 +128,38 @@ ExplorerApp := [].{
 							"label",
 							[Engine.class("flex items-center gap-1 text-sm")],
 							[
-								Html.checkbox(Engine.const("Live orders"), v.map(|s| s.flow == Live), [], st.set_value(Explorer.flowing)),
+								Html.checkbox(Engine.const("Live orders"), cells.flow.val().map(|flow| flow == Live), [], Engine.handle(Explorer.switched)),
 								Engine.text("Live orders"),
 							],
 						),
 						Html.select(
 							Engine.const("Live orders a second"),
-							v.map(|s| s.rate.to_str()),
+							cells.rate.val().map(|rate| rate.to_str()),
 							[Engine.class("input")],
 							Explorer.rates.map(|rate| Html.option(rate.to_str(), "${Explorer.grouped(rate.to_u64())} a second")),
-							st.set_value(Explorer.paced),
+							Engine.handle(Explorer.paced),
 						),
-						Html.p_v(v.map(Explorer.live_text), [Engine.class("hint"), Engine.test_id("live")]),
+						Html.p_v({ flow: cells.flow.val(), rate: cells.rate.val(), live: cells.live.val() }.Val.map(Explorer.live_text), [Engine.class("hint"), Engine.test_id("live")]),
 					],
 				),
-				Html.p_v(v.map(|s| s.note), [Engine.class("hint"), Engine.test_id("note")]),
+				Html.p_v(cells.note.val(), [Engine.class("hint"), Engine.test_id("note")]),
 			],
 		)
 	}
 
-	## A range slider over the value bins. It asks on every `input`, so a
-	## drag asks as it goes, and on `change`, which is what a keyboard or a
-	## spec sends.
-	slider : State(Ctx, Explorer.S), Str, (Explorer.S -> U64), (Explorer.S, Str -> Explorer.S) -> Elem(Ctx)
-	slider = |st, name, read, set| {
-		handler = st.set_value(set)
+	## A range slider over the value bins, showing `bin`. It asks on every
+	## `input`, so a drag asks as it goes, and on `change`, which is what a
+	## keyboard or a spec sends.
+	slider : Str, Val(ctx, U64), Explorer.End -> Elem(ctx)
+		where [ctx.store : () -> Engine.Reach(ctx, _)]
+	slider = |name, bin, which| {
+		moved = Engine.handle(|text| Explorer.slid(which, text))
 		Html.text_input(
 			Engine.const(name),
 			"range",
-			st.val().map(|s| read(s).to_str()),
-			[Engine.attr("min", "0"), Engine.attr("max", (Orders.bins - 1).to_str()), Engine.attr("step", "1"), Html.on_change(handler)],
-			handler,
+			bin.map(|at| at.to_str()),
+			[Engine.attr("min", "0"), Engine.attr("max", (Orders.bins - 1).to_str()), Engine.attr("step", "1"), Html.on_change(moved)],
+			moved,
 		)
 	}
 
@@ -217,7 +225,11 @@ ExplorerApp := [].{
 	## spec runner. The page passes `ports.mjs`'s handler for the feed.
 	program : Engine.Program
 	program =
-		Engine.program_boot({ storage_keys: [], max_inflight: 32 }, |boot| Engine.state(Explorer.starting(boot.url), ExplorerApp.view))
+		Engine.program_store(
+			{ storage_keys: [], max_inflight: 32 },
+			|boot| Explorer.start(Explorer.setup_of(boot.url)),
+			|boot| ExplorerApp.view(Explorer.setup_of(boot.url)),
+		)
 			.with_workers([Explorer.shard.registration([Explorer.summary.registration()])])
 			.with_ports(Feed.registrations)
 }

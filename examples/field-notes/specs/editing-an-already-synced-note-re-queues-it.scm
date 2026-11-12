@@ -10,7 +10,7 @@
     (local-storage "field-notes:notes" "n0|0|1|r7|Generator hours;n1|1|0|r7|Fence line check")
   )
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (fill (label "Note body") "Pump pressure log")
     (click (role button :name "Save note"))
     (fill (label "Note body") "   ")
@@ -35,8 +35,8 @@
     (run-effect 4)
 
     ; editing an already synced note re queues it
-    ; Documented behaviour: an edit bumps the note's attempt, which invalidates the
-    ; lane's settled token, so the note re-enters the outbox and syncs again.
+    ; An edit gives the note its next revision, so a token its lane has not
+    ; settled: the note re-enters the outbox and syncs again.
 
     (mark-metrics)
     (fill (label "Body n0") "Generator hours 128")

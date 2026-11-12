@@ -1,9 +1,14 @@
-## Field Notes domain: the persisted note shape, the board the app keeps as
-## one state (notes, connectivity, auto-sync and the four sync lanes), every
-## domain transition as a reducer over it, and the pure derivation from the
-## board to per-row view records.
+## Field Notes domain: the persisted note shape, the board (notes,
+## connectivity, auto-sync and the four sync lanes), every change to the
+## board as a pure function on it, and the pure derivation from the board
+## to per-row view records.
 ##
-## Nothing in here knows about markup or CSS.
+## The board is one value because its parts must agree: which lane sends
+## follows from the notes, their order, the lanes' settlements and the
+## connection, so every change ends by working the lanes out again
+## (`settle`). The app holds it in one cell of its store (`AppStore`).
+##
+## Nothing in here knows about markup, CSS or the engine.
 Notes := {}.{
 
 	## Local storage key holding the whole persisted note list.
@@ -22,30 +27,7 @@ Notes := {}.{
 	## the single source for the badge caption, the badge tone, and the
 	## `data-status` attribute, so the three can never disagree.
 	Status := [Draft, Queued, Syncing, Synced, Failed].{
-		is_eq : Notes.Status, Notes.Status -> Bool
-		is_eq = |left, right|
-			match left {
-				Draft => match right {
-					Draft => True
-					_ => False
-				}
-				Queued => match right {
-					Queued => True
-					_ => False
-				}
-				Syncing => match right {
-					Syncing => True
-					_ => False
-				}
-				Synced => match right {
-					Synced => True
-					_ => False
-				}
-				Failed => match right {
-					Failed => True
-					_ => False
-				}
-			}
+		is_eq : _
 	}
 
 	## The machine-readable token, rendered into `data-status`.
@@ -92,42 +74,27 @@ Notes := {}.{
 	## What a lane should send next. Idle is explicit, so an empty string never
 	## stands in for "nothing to send".
 	Request := [Idle, Send(Str)].{
-		is_eq : Notes.Request, Notes.Request -> Bool
-		is_eq = |left, right|
-			match left {
-				Idle => match right {
-					Idle => True
-					_ => False
-				}
-				Send(left_token) => match right {
-					Send(right_token) => left_token == right_token
-					_ => False
-				}
-			}
+		is_eq : _
 	}
 
 	Note : { id : Str, slot : U64, body : Str, queued : Bool, rev : Str }
 
 	## One sync lane: the request it last issued, how many sends it has
 	## issued (its generation), and the settlement of its latest send. A
-	## result for an older generation is stale and settles nothing.
+	## result for an older generation is stale and settles nothing. The
+	## settlement is of the note in the lane's slot, and goes when that
+	## note is deleted.
 	Lane : { request : Notes.Request, generation : U64, settled : TaskView }
 
 	## What a lane's effect site watches: a new generation is a new send, so
 	## a resend of the same token is a distinct occurrence.
 	Issue : { request : Notes.Request, generation : U64 }
 
-	## Revisions minted this session for one note.
-	Bumps : { id : Str, count : U64 }
-
-	## The whole board. Saving a draft writes the notes and clears the draft
-	## in one transition, and every transition re-derives the lanes' requests
-	## (`settle`), so they share one state.
+	## The whole board. Every change works the lanes' requests out again
+	## (`settle`), so the notes and the lanes are one value.
 	Board : {
-		draft : Str,
 		notes : List(Note),
 		adds : U64,
-		bumps : List(Bumps),
 		online : Bool,
 		auto : Bool,
 		lanes : List(Lane),
@@ -148,7 +115,7 @@ Notes := {}.{
 	## The board at mount: the restored notes, the browser's connectivity,
 	## auto-sync on, and the lanes asked to send whatever is due.
 	initial : List(Note), Bool -> Board
-	initial = |notes, online| Notes.settle({ draft: "", notes, adds: 0, bumps: [], online, auto: True, lanes: List.repeat(Notes.idle_lane, Notes.slot_count) })
+	initial = |notes, online| Notes.settle({ notes, adds: 0, online, auto: True, lanes: List.repeat(Notes.idle_lane, Notes.slot_count) })
 
 	## --- small helpers ---
 	part_at : List(Str), U64 -> Str
@@ -264,61 +231,111 @@ Notes := {}.{
 			candidate
 		}
 
-	## The next absolute revision for a note: one more than the revisions this
-	## session has minted for it, counted per note.
-	next_rev : List(Bumps), Str -> (List(Bumps), Str)
-	next_rev = |bumps, id| {
-		count = (bumps.find_first(|b| b.id == id).map_ok(|b| b.count) ?? 0) + 1
-		next = bumps.keep_if(|b| b.id != id).append({ id, count })
-		(next, "${id}:${count.to_str()}")
+	## The revision an edit or a retry gives `note`: `<id>:<n>`, one more
+	## than the note's current revision. Storage keeps a note's revision
+	## with it, so the count goes on through a reload, and a note is never
+	## given a revision it has held: its token can never be one a lane has
+	## settled for it. A revision that is not of that form (a note as first
+	## saved, or whatever storage held) counts as none, so the first is
+	## `<id>:1`.
+	next_rev : Note -> Str
+	next_rev = |note| {
+		prefix = "${note.id}:"
+		held = if (note.rev.starts_with(prefix)) U64.from_str(note.rev.drop_prefix(prefix)) ?? 0 else 0
+		"${prefix}${(if (held < U64.highest) held + 1 else 1).to_str()}"
 	}
 
-	## A note that has never been edited is at its first revision.
-	expect Notes.next_rev([], "n0").1 == "n0:1"
+	## A note that has never been edited is given its first revision.
+	expect Notes.next_rev({ id: "n0", slot: 0, body: "", queued: True, rev: "r7" }) == "n0:1"
 
-	## Each edit mints the next revision for that note.
-	expect Notes.next_rev([{ id: "n0", count: 1 }], "n0").1 == "n0:2"
+	## Each edit gives the revision after the note's own, wherever that came
+	## from: this session, or the storage an earlier one left.
+	expect Notes.next_rev({ id: "n0", slot: 0, body: "", queued: True, rev: "n0:1" }) == "n0:2"
 
-	## Revisions are counted per note, so another note's edits do not bump this one.
-	expect Notes.next_rev([{ id: "n1", count: 1 }], "n0").1 == "n0:1"
+	## Only a revision under the note's own id counts.
+	expect Notes.next_rev({ id: "n0", slot: 0, body: "", queued: True, rev: "n1:4" }) == "n0:1"
 
 	map_note : Board, Str, (Note -> Note) -> Board
 	map_note = |board, id, f| { ..board, notes: board.notes.map(|note| if (note.id == id) f(note) else note) }
 
-	## Save the draft as a new session note (`s<n>`, numbered from one) in the
-	## first free slot; a blank draft saves nothing.
-	save_note : Board -> Board
-	save_note = |board| {
-		body = Notes.sanitize(board.draft).trim()
+	## The body a draft saves as: without the storage format's separators
+	## and the space around it. A blank draft has none (`""`).
+	draft_body : Str -> Str
+	draft_body = |draft| Notes.sanitize(draft).trim()
+
+	## The number of the next session note (`s<n>`): the first after
+	## `given`, the last number this session gave, that no note holds. A
+	## session numbers its notes from one, and the notes it restored from
+	## storage keep the ids the session that saved them gave them, so the
+	## numbers those hold are passed over.
+	free_number : List(Note), U64 -> U64
+	free_number = |notes, given|
+		if notes.any(|note| note.id == "s${(given + 1).to_str()}") {
+			Notes.free_number(notes, given + 1)
+		} else {
+			given + 1
+		}
+
+	## Save `draft` as a new session note in the first free slot, under the
+	## next session id no note holds (`free_number`); a blank draft saves
+	## nothing. `adds` is the last number the session gave, so an id is not
+	## given twice in a session, even after its note is deleted.
+	save_note : Board, Str -> Board
+	save_note = |board, draft| {
+		body = Notes.draft_body(draft)
 		if body == "" {
 			board
 		} else {
-			adds = board.adds + 1
+			adds = Notes.free_number(board.notes, board.adds)
 			slot = Notes.free_slot(board.notes, 0)
 			notes = if (slot >= Notes.slot_count) board.notes else board.notes.append({ id: "s${adds.to_str()}", slot, body, queued: False, rev: "r0" })
-			Notes.settle({ ..board, draft: "", adds, notes })
+			Notes.settle({ ..board, adds, notes })
 		}
 	}
 
-	## An edit mints a new revision, which invalidates the lane's last settled
-	## token and so re-queues an already synced note.
-	edit_note : Board, Str, Str -> Board
-	edit_note = |board, id, body| {
-		(bumps, rev) = Notes.next_rev(board.bumps, id)
-		Notes.settle(Notes.map_note({ ..board, bumps }, id, |note| { ..note, body, rev }))
+	## A saved draft is a draft note in the first free slot, numbered for
+	## the session, and a blank one saves nothing.
+	expect {
+		board = Notes.initial([{ id: "n0", slot: 1, body: "one", queued: True, rev: "r7" }], False)
+		saved = Notes.save_note(board, "  Pump | pressure; log ")
+		blank = Notes.save_note(board, " | ")
+		(saved.notes.drop_first(1), blank == board) == ([{ id: "s1", slot: 0, body: "Pump   pressure  log", queued: False, rev: "r0" }], True)
 	}
 
-	retry_note : Board, Str -> Board
-	retry_note = |board, id| {
-		(bumps, rev) = Notes.next_rev(board.bumps, id)
-		Notes.settle(Notes.map_note({ ..board, bumps }, id, |note| { ..note, rev }))
+	## A session's ids pass over the ids its restored notes hold, so the
+	## first note saved after a reload is not a second `s1`; and an id the
+	## session gave is not given again once its note is deleted.
+	expect {
+		restored = Notes.initial([{ id: "s1", slot: 0, body: "one", queued: False, rev: "r0" }, { id: "s3", slot: 1, body: "three", queued: False, rev: "r0" }], False)
+		first = Notes.save_note(restored, "two")
+		second = Notes.save_note(first, "four")
+		again = Notes.save_note(Notes.delete_note(second, "s4"), "five")
+		[first, second, again].map(|board| board.notes.map(|note| note.id)) == [["s1", "s3", "s2"], ["s1", "s3", "s2", "s4"], ["s1", "s3", "s2", "s5"]]
 	}
+
+	## An edit gives the note its next revision, which no lane has settled,
+	## and so re-queues an already synced note.
+	edit_note : Board, Str, Str -> Board
+	edit_note = |board, id, body| Notes.settle(Notes.map_note(board, id, |note| { ..note, body, rev: Notes.next_rev(note) }))
+
+	## A retry sends the note again under its next revision.
+	retry_note : Board, Str -> Board
+	retry_note = |board, id| Notes.settle(Notes.map_note(board, id, |note| { ..note, rev: Notes.next_rev(note) }))
 
 	queue_note : Board, Str -> Board
 	queue_note = |board, id| Notes.settle(Notes.map_note(board, id, |note| { ..note, queued: True }))
 
+	## Delete a note. Its lane forgets what it settled: a note saved into
+	## the slot later is another note, even one a later session gives the
+	## same id, and must not be taken for the one that synced there.
 	delete_note : Board, Str -> Board
-	delete_note = |board, id| Notes.settle({ ..board, notes: board.notes.keep_if(|note| note.id != id) })
+	delete_note = |board, id| {
+		lanes = match board.notes.find_first(|note| note.id == id) {
+			Ok(note) => board.lanes.set(note.slot, { ..Notes.lane_at(board, note.slot), settled: TaskIdle }) ?? board.lanes
+			Err(_) => board.lanes
+		}
+		Notes.settle({ ..board, lanes, notes: board.notes.keep_if(|note| note.id != id) })
+	}
 
 	## Move a note to the front, so it drains first.
 	promote_note : Board, Str -> Board
@@ -377,8 +394,9 @@ Notes := {}.{
 	}
 
 	## --- sync derivation ---
-	## A note's sync request token. Editing or retrying mints a new revision, which
-	## invalidates the lane's last settled token and re-queues the note.
+	## A note's sync request token. Editing or retrying gives the note a new
+	## revision, so a new token, which its lane has not settled: the note is
+	## queued again.
 	token : Note -> Str
 	token = |note| "${note.id}#${note.rev}"
 
@@ -555,4 +573,32 @@ Notes := {}.{
 			"${used.to_str()} of ${Notes.slot_count.to_str()}"
 		}
 	}
+}
+
+## Whether a note waits to be sent after it is restored at revision `rev`,
+## synced, and then edited `edits` times while offline.
+requeued : Str, U64 -> Bool
+requeued = |rev, edits| {
+	restored = Notes.initial([{ id: "n0", slot: 0, body: "one", queued: True, rev }], True)
+	synced = Notes.set_online(Notes.settle_send(restored, 0, Notes.issue_at(restored, 0), True), False)
+	edited = List.repeat({}, edits).fold(synced, |board, _| Notes.edit_note(board, "n0", "two"))
+	edited.notes.all(|note| Notes.is_outstanding(note, Notes.view_at(Notes.views(edited), note.slot)))
+}
+
+## An edit re-queues a synced note whatever revision it was restored at:
+## `n0:1` and `n0:2` are what edits in an earlier session left.
+expect [requeued("r7", 1), requeued("n0:1", 1), requeued("n0:2", 1)] == [True, True, True]
+
+## A second edit before the first is sent does not come back to the
+## revision the lane settled.
+expect [requeued("n0:1", 2), requeued("n0:2", 2)] == [True, True]
+
+## A note saved where a synced note was deleted is not taken for it, even
+## under the same id and revision: a session numbers its notes from one,
+## so after a reload a deleted note's id is given again.
+expect {
+	restored = Notes.initial([{ id: "s1", slot: 0, body: "one", queued: True, rev: "s1:1" }], True)
+	synced = Notes.settle_send(restored, 0, Notes.issue_at(restored, 0), True)
+	again = Notes.edit_note(Notes.save_note(Notes.delete_note(synced, "s1"), "two"), "s1", "three")
+	again.notes.map(|note| (note.id, note.rev, Notes.is_outstanding(note, Notes.view_at(Notes.views(again), note.slot)))) == [("s1", "s1:1", True)]
 }

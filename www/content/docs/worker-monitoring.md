@@ -1,7 +1,7 @@
 +++
 title = "Monitoring Workers"
 description = "Where a worker job's time goes, how busy the pool is, and what workers cost, from the runtime's monitor."
-weight = 12
+weight = 15
 template = "page.html"
 +++
 

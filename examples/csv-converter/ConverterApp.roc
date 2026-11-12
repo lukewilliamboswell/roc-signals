@@ -1,7 +1,8 @@
-import pf.Engine exposing [Elem, File, In, Root, State]
+import pf.Engine exposing [Elem, File, Val]
 import pf.Files
 import pf.Html
 import pf.Worker
+import AppStore
 import Csv
 
 ## CSV Converter: drop a CSV file, of any size, and convert it to TSV or JSON
@@ -12,6 +13,12 @@ import Csv
 ## file and its row counts; the page shows the first lines of the output
 ## (read back with a small page read) and saves the file when the user asks.
 ## "Load the sample" downloads a sample CSV into a file the same way.
+##
+## The file and the format are cells of the app's store (`AppStore`): the
+## chooser and the select write them, and the conversion follows them from
+## inside its own layer with no `lift`. The result panel keeps what only it
+## cares about, the file a click asks to save and the preview's lines, as
+## its own state beside the effect sites that use them.
 ConverterApp := [].{
 
 	## What a conversion is asked for.
@@ -93,27 +100,11 @@ ConverterApp := [].{
 		if (parts.len() > 1) Str.join_with(parts.drop_last(1), ".") else name
 	}
 
-	## The page's state: the source and the format, the file to save, and
-	## whether the sample is being downloaded.
-	S : {
-		source : [Nothing, Chosen(File)],
-		format : Csv.Format,
-		sample : [Idle, Loading],
-		save : Engine.Outbox(File),
-		note : Str,
-	}
-
-	Ctx : In(Root, S)
-
-	chosen : S, Engine.Received -> S
-	chosen = |s, { files, refused: _ }| match files {
-		[f, ..] => { ..s, source: Chosen(f), note: "" }
-		[] => s
-	}
-
-	wanted : S -> [Run(Job), Skip]
-	wanted = |s| match s.source {
-		Chosen(source) => Run({ source, format: s.format })
+	## The conversion the store asks for: the chosen file to the chosen
+	## format, or none while there is no file.
+	wanted : AppStore.Source, Csv.Format -> [Run(Job), Skip]
+	wanted = |source, format| match source.file {
+		Chosen(file) => Run({ source: file, format })
 		Nothing => Skip
 	}
 
@@ -153,113 +144,130 @@ ConverterApp := [].{
 	first_lines : List(U8), U64 -> Str
 	first_lines = |bytes, lines| Str.join_with(Str.from_utf8_lossy(bytes).split_on("\n").take_first(lines), "\n")
 
-	view : State(Ctx, S) -> Elem(Ctx)
-	view = |st| {
-		v = st.val()
+	## The page.
+	view : {} -> Elem(Engine.StoreRoot(_))
+	view = |{}| {
+		source = AppStore.h.source.val()
 		Html.div(
 			"converter",
 			[
-				Engine.element(
-					"section",
-					[Html.aria_label("Drop a CSV file"), Html.on_drop_files(st.on_files(ConverterApp.chosen))],
-					[
-						Html.file_input(Engine.const("CSV file"), { accept: Types(".csv,text/csv") }, st.on_files(ConverterApp.chosen)),
-						Html.button("Load the sample", [], st.update(|s| { ..s, sample: Loading })),
-					],
-				),
+				chooser({}),
 				Html.select(
 					Engine.const("Format"),
-					v.map(
-						|s| match s.format {
-							Tsv => "tsv"
-							JsonLines => "jsonl"
-						},
-					),
+					AppStore.h.format.val().map(AppStore.option_of),
 					[],
 					[Html.option("tsv", "TSV"), Html.option("jsonl", "JSON lines")],
-					st.set_value(|s, value| { ..s, format: if (value == "jsonl") JsonLines else Tsv }),
+					Engine.handle(AppStore.format_picked),
 				),
 				Html.p_v(
-					v.map(
-						|s| match s.source {
+					source.map(
+						|s| match s.file {
 							Chosen(f) => "${f.name()}, ${ConverterApp.size_text(f.size())}"
 							Nothing => "no file"
 						},
 					),
 					[Engine.test_id("source")],
 				),
-				# The conversion follows the file and the format: changing
-				# either stops the job for the old ones.
-				Worker.derive_when(
-					ConverterApp.convert,
-					v.map(ConverterApp.wanted),
-					|r| Engine.element(
-						"section",
-						[Html.aria_label("Result")],
-						[
-							Html.p_v(r.map(ConverterApp.status), [Engine.test_id("status")]),
-							Html.button(
-								"Save",
-								[],
-								st.lift().update_by(
-									r,
-									|s, remote| match remote.answered() {
-										Ok(c) => { ..s, save: s.save.post(c.output) }
-										Err(NoAnswer) => s
-									},
-								),
-							),
-							# A preview of the output: its first 4 KiB, read
-							# back on the page.
-							Engine.state(
-								"",
-								|preview| Engine.element(
-									"section",
-									[],
-									[
-										Engine.latest(
-											r.map(|remote| remote.answered().map_ok(|c| c.output)).lift(),
-											|output| match output {
-												Ok(out) => [out.slice({ start: 0, len: out.size().min(4096) }).read_bytes({})]
-												Err(NoAnswer) => []
-											},
-											preview.on_result(
-												|_, _, res| match Engine.file_bytes(res) {
-													Ok(bytes) => ConverterApp.first_lines(bytes, 6)
-													Err(_) => ""
-												},
-											),
-										),
-										Html.pre_v(preview.val(), [Engine.test_id("preview")]),
-									],
-								),
-							),
-						],
-					),
-				),
+				result({}),
 				# The sample, downloaded into a file.
 				Engine.latest(
-					v.map(|s| s.sample),
+					source.map(|s| s.sample),
 					|sample| match sample {
 						Loading => [File.fetch({ url: "sample.csv" })]
 						Idle => []
 					},
-					st.on_result(
-						|s, _, res| match Engine.fetched(res) {
-							Ok(f) => { ..s, source: Chosen(f), sample: Idle }
-							Err(e) => { ..s, sample: Idle, note: "the sample did not load: ${Str.inspect(e)}" }
-						},
-					),
+					Engine.react(|_, res| AppStore.sample_arrived(Engine.fetched(res))),
 				),
-				# Saving, in the turn of the click that asked for it.
-				Engine.on_post(v.map(|s| s.save), |out| [File.save(out, {})], Engine.ignore({})),
-				Html.p_v(v.map(|s| s.note), [Engine.test_id("note")]),
+				Html.p_v(source.map(|s| s.note), [Engine.test_id("note")]),
 			],
 		)
 	}
 
 	program : Engine.Program
 	program =
-		Engine.program(|| Engine.state({ source: Nothing, format: Tsv, sample: Idle, save: Engine.outbox({}), note: "" }, ConverterApp.view))
+		Engine.program_store({ storage_keys: [], max_inflight: 32 }, |_| AppStore.store, |_| ConverterApp.view({}))
 			.with_workers([ConverterApp.convert.registration()])
 }
+
+## Where a file is dropped or chosen, and the button that asks for the
+## sample. A drop and a choice are the same decision over the files they
+## carry.
+chooser : {} -> Elem(ctx)
+	where [ctx.store : () -> Engine.Reach(ctx, _)]
+chooser = |{}| Engine.element(
+	"section",
+	[Html.aria_label("Drop a CSV file"), Html.on_drop_files(Engine.handle_files(AppStore.chosen))],
+	[
+		Html.file_input(Engine.const("CSV file"), { accept: Types(".csv,text/csv") }, Engine.handle_files(AppStore.chosen)),
+		Html.button("Load the sample", [], Engine.does(AppStore.sample_asked)),
+	],
+)
+
+## A preview of a converted file: its first 4 KiB, read back on the
+## page. The lines are this panel's own state, kept until the next
+## read answers.
+preview : Val(ctx, Try(File, [NoAnswer])) -> Elem(ctx)
+preview = |output| Engine.state(
+	"",
+	|lines| Engine.element(
+		"section",
+		[],
+		[
+			Engine.latest(
+				output.lift(),
+				|converted| match converted {
+					Ok(out) => [out.slice({ start: 0, len: out.size().min(4096) }).read_bytes({})]
+					Err(NoAnswer) => []
+				},
+				lines.on_result(
+					|_, _, res| match Engine.file_bytes(res) {
+						Ok(bytes) => ConverterApp.first_lines(bytes, 6)
+						Err(_) => ""
+					},
+				),
+			),
+			Html.pre_v(lines.val(), [Engine.test_id("preview")]),
+		],
+	),
+)
+
+## The conversion and what is done with its output. The conversion
+## follows the file and the format: changing either stops the job for
+## the old ones.
+##
+## The file a click asks to save is posted to an outbox that only this
+## panel reads, so the outbox is the panel's own state, with the site
+## that saves what is posted beside it.
+result : {} -> Elem(ctx)
+	where [ctx.store : () -> Engine.Reach(ctx, _)]
+result = |{}| Worker.derive_when(
+	ConverterApp.convert,
+	AppStore.h.source.val().map2(AppStore.h.format.val(), ConverterApp.wanted),
+	|answer| Engine.state(
+		Engine.outbox({}),
+		|save| {
+			remote = answer.lift()
+			Engine.element(
+				"section",
+				[Html.aria_label("Result")],
+				[
+					Html.p_v(remote.map(ConverterApp.status), [Engine.test_id("status")]),
+					Html.button(
+						"Save",
+						[],
+						save.update_by(
+							remote,
+							|box, latest| match latest.answered() {
+								Ok(c) => box.post(c.output)
+								Err(NoAnswer) => box
+							},
+						),
+					),
+					preview(remote.map(|latest| latest.answered().map_ok(|c| c.output))),
+					# Saving, in the turn of the click that asked for it.
+					Engine.on_post(save.val(), |out| [File.save(out, {})], Engine.ignore({})),
+				],
+			)
+		},
+	),
+)

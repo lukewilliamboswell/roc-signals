@@ -1,6 +1,6 @@
 (test "Markdown editor — Edge case: every heading level, one demotion at a time. The outline row"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (mark-metrics)
     (uncheck (label "Number the outline"))
     (check (label "Number the outline"))
@@ -34,7 +34,7 @@
     (click (role button :name "Append a section"))
     (fill (label "Markdown source") "## Use **map2** for `fan-in`")
 
-    ; 10. Edge case: every heading level, one demotion at a time. The outline row
+    ; Edge case: every heading level, one demotion at a time. The outline row
     ; keeps its slug key throughout, so only its level attribute changes.
     ; ---------------------------------------------------------------------------
 
@@ -52,7 +52,7 @@
     (click (role button :name "Demote the last heading"))
     (expect-attr (test-id "toc:one") data-level "6")
     ; The keyed block and outline rows survive because their keys are unchanged.
-    ; The heading tag is structural, however, so `Ui.switch` retires the h5
+    ; The heading tag is structural, however, so the row's `switch` retires the h5
     ; branch and creates the h6 branch. Its nested inline-segment row belongs to
     ; that branch scope and is therefore created once in the replacement branch.
     ; Retiring the old branch is scope disposal, not a keyed reconciliation

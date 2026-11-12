@@ -3,8 +3,12 @@
 ## the typed vocabulary above that, and `Worker.roc` is the typed layer for
 ## tasks run in Web Workers, whose payloads `Wire.roc` derives;
 ## `Port.roc` is the typed layer for services the page's JavaScript supplies,
-## whose messages `PortJson.roc` derives. A worker job's hosted effects
-## (`Hosted.roc`) are reached only through `Effects.roc`, which this root
+## whose messages `PortJson.roc` derives. `Table.roc` is what a table cell
+## of an app's store holds, rows by key, and `View.roc` and `Seq.roc` keep
+## the filtered, sorted view of it that `Engine.each_view` draws;
+## `EngineOnly.roc` is the value that keeps a table's bookkeeping the
+## engine's. A worker
+## job's hosted effects (`Hosted.roc`) are reached only through `Effects.roc`, which this root
 ## hands to the engine with each job, and `Files.roc`, whose `build!`
 ## opens a builder; every other module is pure, and `main-fuzz.roc` is a
 ## package root over them for the fuzz targets. An app
@@ -24,7 +28,7 @@ platform ""
 	requires {
 		main : Engine.Program
 	}
-	exposes [Engine, Files, Html, Port, PortJson, Wire, Worker]
+	exposes [Engine, Files, Html, Port, PortJson, Table, Wire, Worker]
 	packages {}
 	provides {
 		"roc_engine_ask": ask_for_host!,
@@ -65,7 +69,7 @@ platform ""
 			inputs: ["host.wasm", app],
 			exports: ["protocol_version", "fault", "boot_keys", "init", "event", "event_files", "files_stage", "files_tokens", "files_released", "drop", "payload_reserve", "work", "prepare", "ask", "forget", "cmd_ptr", "cmd_len", "work_ptr", "work_len", "metric", "reset_metrics", "err_ptr", "err_len"],
 		},
-		x64musl: { inputs: ["crt1.o", "spec.o", app, "libc.a", "libzigc.a", "libcompiler_rt.a"] },
+		x64musl: { inputs: ["rcrt1.o", "spec.o", app, "libc.a", "libzigc.a", "libcompiler_rt.a"] },
 		arm64mac: { inputs: ["libhost.a", app] },
 		x64mac: { inputs: ["libhost.a", app] },
 		x64win: { inputs: ["host.lib", app, "kernel32.lib"] },
@@ -81,6 +85,7 @@ import Html
 import Port
 import PortJson
 import SpecRunner
+import Table
 import Wire
 import Worker
 

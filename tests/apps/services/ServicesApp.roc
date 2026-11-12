@@ -1,7 +1,7 @@
-import pf.Engine exposing [Comp, Elem, In, Root, State, Val]
+import pf.Engine exposing [Elem, In, Root, State]
 import pf.Html
 
-## Browser-services test app: one control per Phase 3 service, each with a
+## Browser-services test app: one control per browser service, each with a
 ## spec in `specs/` run natively and in Chrome.
 ## - A running clock (`when`) owns a 1 s interval and a named cleanup whose
 ##   run sets the document title.
@@ -18,8 +18,8 @@ import pf.Html
 ##   handler prevents it does not; an email field in the form blocks its
 ##   submission while invalid; a box that commits on `change` hears it when
 ##   it loses focus; and a one-shot timer.
-## - Two nested states of a component that one click writes together: a
-##   nested component pushes two actions, and `split` routes them to both.
+## - Two nested states that one click writes together, with one handler
+##   composed of both writes.
 ServicesApp := [].{
 	S : {
 		online : Bool,
@@ -183,19 +183,15 @@ ServicesApp := [].{
 				Html.button("Delay", [], st.update(|s| { ..s, delays: s.delays + 1 })),
 				Engine.on_change(v.map(|s| s.delays), |_| [Timer(1000)], st.on_result(|s, _, r| { ..s, delayed: Str.inspect(r) })),
 				Html.p_v(v.map(|s| s.delayed), [Engine.test_id("delayed")]),
-				Engine.component(Engine.const({}), Engine.discard({}), ServicesApp.two_states),
+				ServicesApp.two_states({}),
 			],
 		)
 	}
 
-	## Two actions a component pushes in one event.
-	Two : [L(Str), R(Str)]
-
-	## A component body holding two nested states that one click inside a
-	## nested component writes in the same turn: its two actions go through
-	## `split` to the outer state and the inner one.
-	two_states : Val(Comp({}, {}), {}), State(Comp({}, {}), List({})) -> Elem(Comp({}, {}))
-	two_states = |_, _| Engine.state(
+	## Two nested states that one click writes in the same turn: the outer
+	## one and the inner one, by one handler.
+	two_states : {} -> Elem(ctx)
+	two_states = |_| Engine.state(
 		"-",
 		|s1| Engine.state(
 			"-",
@@ -205,11 +201,7 @@ ServicesApp := [].{
 				[
 					Html.p_v(s1.lift().val().map(|x| "s1=${x}"), [Engine.test_id("s1")]),
 					Html.p_v(s2.val().map(|x| "s2=${x}"), [Engine.test_id("s2")]),
-					Engine.component(
-						Engine.const({}),
-						Engine.split(Engine.sink(s1.lift(), |_, a| a), Engine.sink(s2, |_, b| b), |c| c),
-						|_, out| Html.button("Both", [], out.update(|l| l.append(L("a")).append(R("b")))),
-					),
+					Html.button("Both", [], s1.lift().update(|_| "a").also(s2.update(|_| "b"))),
 				],
 			),
 		),

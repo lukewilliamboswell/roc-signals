@@ -12,30 +12,7 @@ Status := [].{
 	## Health of one service check. `CheckFailed` is a refresh that did not come
 	## back; it is deliberately distinct from an observed outage.
 	Health := [Operational, Degraded, Outage, Unknown, CheckFailed(Str)].{
-		is_eq : Health, Health -> Bool
-		is_eq = |left, right|
-			match left {
-				Operational => match right {
-					Operational => True
-					_ => False
-				}
-				Degraded => match right {
-					Degraded => True
-					_ => False
-				}
-				Outage => match right {
-					Outage => True
-					_ => False
-				}
-				Unknown => match right {
-					Unknown => True
-					_ => False
-				}
-				CheckFailed(left_error) => match right {
-					CheckFailed(right_error) => left_error == right_error
-					_ => False
-				}
-			}
+		is_eq : _
 
 		## The wire form a check payload arrives in. Anything unrecognised is
 		## `Unknown`, so a garbled payload never claims a service is healthy.
@@ -55,22 +32,7 @@ Status := [].{
 	## How bad one incident is. The wire sends `"major"` / `"minor"`; everything
 	## else is routine maintenance. Parsed once, in `parse_incident`.
 	Severity := [Major, Minor, Maintenance].{
-		is_eq : Severity, Severity -> Bool
-		is_eq = |left, right|
-			match left {
-				Major => match right {
-					Major => True
-					_ => False
-				}
-				Minor => match right {
-					Minor => True
-					_ => False
-				}
-				Maintenance => match right {
-					Maintenance => True
-					_ => False
-				}
-			}
+		is_eq : _
 
 		from_str : Str -> Severity
 		from_str = |text|
@@ -151,7 +113,7 @@ Status := [].{
 		}
 
 	## Fan-in accumulator. Every service contributes one of these; adding them is
-	## associative, so the rollup is a balanced `Signal.map2` tree.
+	## associative, so the rollup is a balanced tree of `map2`s.
 	Tally : { operational : U64, degraded : U64, outage : U64, unknown : U64, uptime_bps : U64, reporting : U64 }
 
 	## One published update on an incident. `time` and `body` are kept apart

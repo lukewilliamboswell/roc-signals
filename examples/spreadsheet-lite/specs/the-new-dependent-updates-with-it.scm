@@ -1,6 +1,6 @@
 (test "Spreadsheet lite — the new dependent updates with it"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (focus (label "D2"))
     (fill (label "Formula") "=B2+C2+100")
     (fill (label "Formula") "=B2+C2")
@@ -105,8 +105,11 @@
     (mark-metrics)
     (fill (label "C12") "8")
     (expect-value (label "G1") "9")
-    ; Two rows away from each other, two rows re-diffed: 12 outer plus 2 x 8 inner.
-    (expect-metric-delta rows_reused 28)
+    ; Two rows away from each other, two rows written: 2 x 8 cells matched
+    ; again, and the two rows and the two cells that changed (C12, G1) woken.
+    (expect-metric-delta rows_reused 16)
+    (expect-metric-delta rows_moved 0)
+    (expect-metric-delta rows_updated 4)
     (expect-metric-delta set_value 3)
     (expect-metric-delta bind_event 0)
     (fill (label "C12") "7")

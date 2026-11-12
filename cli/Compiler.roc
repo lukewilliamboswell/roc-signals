@@ -27,6 +27,15 @@ Compiler :: [].{
 	version_of : Str -> Str
 	version_of = |text| text.trim().split_on(" ").last() ?? text.trim()
 
+	## The optimizer regression affects this exact nightly. Both the tool and
+	## repository automation retry optimized builds on every other version.
+	## Remove with the matching guard in scripts/src/SpecSuite.roc; the two
+	## packages cannot import each other's private modules.
+	has_broken_optimizer : Str -> Bool
+	has_broken_optimizer = |nightly| nightly == "nightly-2026-11-11-7679cc5"
+
+	optimizer_issue = "https://github.com/roc-lang/roc/issues/12976"
+
 	## A sentence to add to a failed build's report when the compiler is not
 	## the one the release was tested with, since a compiler change can
 	## break an app that has no error of its own. Empty when they agree.
@@ -141,6 +150,10 @@ Compiler :: [].{
 
 ## The version is the last word of `roc version`.
 expect Compiler.version_of("Roc compiler version nightly-2026-11-10-f7d1f19\n") == "nightly-2026-11-10-f7d1f19"
+
+## The compatibility fallback cannot hide optimized coverage on a different
+## compiler version, including a newer nightly that still needs checking.
+expect [Compiler.has_broken_optimizer("nightly-2026-11-10-f7d1f19"), Compiler.has_broken_optimizer("nightly-2026-11-11-7679cc5"), Compiler.has_broken_optimizer("nightly-2026-11-12-next")] == [False, True, False]
 
 ## Warnings alone are a successful build; errors and signals are not.
 expect [Compiler.verdict(Exited(0)), Compiler.verdict(Exited(2)), Compiler.verdict(Exited(1)), Compiler.verdict(Signaled(9))] == [Succeeded, Succeeded, Failed, Failed]

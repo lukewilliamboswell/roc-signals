@@ -1,6 +1,6 @@
 (test "Data grid — empty filter result"
   (steps
-    ; Given the state established by earlier scenarios
+    ; Bring the page to the state this spec starts from.
     (mark-metrics)
     (click (role button :name "Sort by score"))
     (mark-metrics)
@@ -31,7 +31,7 @@
     (uncheck (label "Select all matching rows"))
     (fill (label "Filter") "Node-0007")
 
-    ; 8. empty filter result
+    ; A filter that matches no row.
     (mark-metrics)
     (fill (label "Filter") "no-such-row")
     (expect-text (test-id "summary-matching") "0")
@@ -68,6 +68,8 @@
     (expect-text (test-id "sort-caption") "Sorted by id ascending")
     (expect-metric-delta rows_created 0)
     (expect-metric-delta rows_reused 0)
+    (expect-metric-delta rows_moved 0)
+    (expect-metric-delta rows_updated 0)
     ; select-all is hidden while nothing matches, so selection cannot be changed here
     (expect-text (test-id "summary-selected-all") "0")
   )
