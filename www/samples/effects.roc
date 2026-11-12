@@ -36,8 +36,8 @@ Ctx : In(Root, Model)
 ## recognised and ignored.
 search : State(Ctx, Model) -> Elem(Ctx)
 search = |model|
-	Engine.on_change(
-		model.val().map(|m| m.query),
+	Engine.watch_changes(
+		model.signal().map(|m| m.query),
 		|q| [Http({ method: "GET", url: "/api/search?q=${q}", headers: [], body: "", timeout_ms: 5000 })],
 		model.on_result(
 			|m, q, res|
@@ -62,7 +62,7 @@ save : State(Ctx, Model) -> List(Elem(Ctx))
 save = |model| [
 	Html.button("Save search", [], model.update(|m| { ..m, saving: m.saving.post(m.query) })),
 	Engine.on_post(
-		model.val().map(|m| m.saving),
+		model.signal().map(|m| m.saving),
 		|q| [Http({ method: "POST", url: "/api/saved", headers: [], body: q, timeout_ms: 5000 })],
 		model.on_result(
 			|m, q, res|
@@ -81,10 +81,10 @@ save = |model| [
 ## query is saved for the next visit.
 commands : State(Ctx, Model) -> List(Elem(Ctx))
 commands = |model| {
-	query = model.val().map(|m| m.query)
+	query = model.signal().map(|m| m.query)
 	[
 		Engine.watch(query, |q| [Title(if (q.is_empty()) "Search" else "Search: ${q}")], Engine.ignore({})),
-		Engine.on_change(query, |q| [StorageSet("query", q)], Engine.ignore({})),
+		Engine.watch_changes(query, |q| [StorageSet("query", q)], Engine.ignore({})),
 	]
 }
 
@@ -98,7 +98,7 @@ go = |m, url| { ..m, url, nav: m.nav.post(url) }
 
 routing : State(Ctx, Model) -> List(Elem(Ctx))
 routing = |model| [
-	Engine.on_post(model.val().map(|m| m.nav), |url| [Push(url)], Engine.ignore({})),
+	Engine.on_post(model.signal().map(|m| m.nav), |url| [Push(url)], Engine.ignore({})),
 	Html.button("Settings", [], model.update(|m| go(m, "/settings"))),
 	Engine.watch(
 		Engine.const({}),
@@ -133,7 +133,7 @@ subscriptions = |model| [
 		),
 	),
 	Engine.when(
-		model.val().map(|m| m.online),
+		model.signal().map(|m| m.online),
 		|| Engine.watch(Engine.const({}), |_| [Interval(30000)], model.on_result(|m, _, _| { ..m, ticks: m.ticks + 1 })),
 		|| Engine.text(""),
 	),
@@ -146,10 +146,10 @@ subscriptions = |model| [
 ## keeps the search box focused.
 search_box : State(Ctx, Model) -> List(Elem(Ctx))
 search_box = |model| {
-	query = model.val().map(|m| m.query)
+	query = model.signal().map(|m| m.query)
 	[
 		Html.text_input(Engine.const("Search"), "search", query, [Engine.ref("search")], model.set_value(|m, q| { ..m, query: q, results: Loading })),
-		Engine.on_change(query, |_| [Focus("search")], Engine.ignore({})),
+		Engine.watch_changes(query, |_| [Focus("search")], Engine.ignore({})),
 	]
 }
 
@@ -158,7 +158,7 @@ search_box = |model| {
 # region cleanup
 ## A cleanup runs when its scope is disposed, and may only issue commands.
 leaving : State(Ctx, Model) -> Elem(Ctx)
-leaving = |model| Engine.on_cleanup("restore title", model.val(), |_| [Title("Search")])
+leaving = |model| Engine.on_cleanup("restore title", model.signal(), |_| [Title("Search")])
 
 # endregion cleanup
 
@@ -179,7 +179,7 @@ page = |model|
 	Html.div(
 		"search",
 		search_box(model)
-			.concat([search(model), leaving(model), Html.p_v(model.val().map(|m| status(m.results)), [Engine.test_id("results")])])
+			.concat([search(model), leaving(model), Html.p_s(model.signal().map(|m| status(m.results)), [Engine.test_id("results")])])
 			.concat(save(model))
 			.concat(commands(model))
 			.concat(routing(model))

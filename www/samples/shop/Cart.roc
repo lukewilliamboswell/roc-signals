@@ -48,7 +48,7 @@ Cart :: { lines : List(Line) }.{
 	## cart, and a note for whoever delivers it.
 	Props(st) : { cart : Cell(st, Cart), note : Cell(st, Str) }
 
-	## What an app's store holds for a cart: the handles on its cells, and
+	## What an app's store holds for a cart: its cells, and
 	## the write that starts every one of them again.
 	Basket(st) : { cells : Props(st), reset : Engine.Write(st) }
 
@@ -59,7 +59,7 @@ Cart :: { lines : List(Line) }.{
 	cells = |{}| {
 		cart: Engine.cell(Cart.empty),
 		note: Engine.cell(""),
-	}.Engine.Cells.with_reset(|handles, reset| { cells: handles, reset })
+	}.Engine.Cells.with_reset(|described, reset| { cells: described, reset })
 	# endregion cells
 
 	# region view
@@ -77,8 +77,8 @@ Cart :: { lines : List(Line) }.{
 				"Cart",
 				"cart",
 				[
-					Html.button_v(props.cart.val().map(|cart| "Cart (${cart.size().to_str()})"), [], panel.update(toggled)),
-					Engine.when(panel.val().map(|shown| shown == Open), || Cart.contents(props, panel), || Engine.text("")),
+					Html.button_s(props.cart.signal().map(|cart| "Cart (${cart.size().to_str()})"), [], panel.update(toggled)),
+					Engine.when(panel.signal().map(|shown| shown == Open), || Cart.contents(props, panel), || Engine.text("")),
 				],
 			),
 		)
@@ -90,17 +90,17 @@ Cart :: { lines : List(Line) }.{
 	contents : Props(st), State(ctx, Panel) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, st)]
 	contents = |props, panel| {
-		held = props.cart.val()
+		held = props.cart.signal()
 		# region also
 		# One click, two writes: the panel closes, which is the view's own
 		# state, and the cart is emptied, which is the store's.
-		emptied = panel.update(|_| Closed).also(Engine.does([props.cart.put(Cart.empty)]))
+		emptied = panel.update(|_| Closed).also(Engine.does([props.cart.set(Cart.empty)]))
 		# endregion also
 		Html.div(
 			"lines",
 			[
 				Html.ul([], [Engine.each(held.map(|cart| cart.lines), |line| line.product.name, |row| Cart.line_row(props, row))]),
-				Html.p_v(held.map(|cart| "Total ${cart.total().to_str()}"), [Engine.test_id("total")]),
+				Html.p_s(held.map(|cart| "Total ${cart.total().to_str()}"), [Engine.test_id("total")]),
 				note_box("Note for the courier", props.note.state()),
 				Html.button("Empty cart", [], emptied),
 			],
@@ -116,8 +116,8 @@ Cart :: { lines : List(Line) }.{
 		Html.li(
 			[],
 			[
-				Engine.text_v(row.field(|held| "${held.count.to_str()} × ${held.product.name}")),
-				Html.button_v(name.map(|product| "Remove ${product}"), [], Engine.handle_by(name, |product, _| [props.cart.change(|cart| cart.remove(product))])),
+				Engine.text_s(row.field(|held| "${held.count.to_str()} × ${held.product.name}")),
+				Html.button_s(name.map(|product| "Remove ${product}"), [], Engine.handle_by(name, |product, _| [props.cart.update(|cart| cart.remove(product))])),
 			],
 		)
 	}
@@ -135,7 +135,7 @@ toggled = |shown|
 ## A text box over a `State`. It cannot tell whose state that is: here the
 ## cart hands it a cell of the app's store, as `props.note.state()`.
 note_box : Str, State(ctx, Str) -> Elem(ctx)
-note_box = |label, text| Html.text_input(Engine.const(label), "text", text.val(), [], text.set_value(|_, typed| typed))
+note_box = |label, text| Html.text_input(Engine.const(label), "text", text.signal(), [], text.set_value(|_, typed| typed))
 # endregion note-box
 
 # region expects

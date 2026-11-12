@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, State, Val]
+import pf.Engine exposing [Elem, Signal, State]
 import pf.Html
 import pf.Table
 
@@ -32,14 +32,14 @@ Scores := [League].{
 			league: {
 				players: Engine.table(Scores.roster),
 				next: Engine.cell(7.U64),
-			}.Engine.Cells.with_reset(|handles, reset| { players: handles.players, next: handles.next, reset }),
+			}.Engine.Cells.with_reset(|described, reset| { players: described.players, next: described.next, reset }),
 			listing: Engine.cell({ show: Everyone, order: Highest }),
 			window: Engine.cell({ start: 0.U64, count: 3.U64 }),
 		}.Engine.Cells,
 	)
 
-	## The handles on the store's cells.
-	h = Scores.store.handles()
+	## The store's cells.
+	cells = Scores.store.cells()
 	# endregion table
 
 	program : Engine.Program
@@ -51,7 +51,7 @@ Scores := [League].{
 	Place : { rank : I64, key : U64 }
 
 	## How a listing selects and orders players.
-	plan : Listing -> Engine.Query(U64, Player, Place)
+	plan : Listing -> Engine.QueryPlan(U64, Player, Place)
 	plan = |{ show, order }| {
 		keep: |_, player| match show {
 			Everyone => True
@@ -74,9 +74,9 @@ Scores := [League].{
 		Html.ul(
 			[],
 			[
-				Engine.each_view(
-					Scores.h.league.players,
-					{ query: Scores.h.listing.val(), plan: Scores.plan, window: Scores.h.window.val() },
+				Engine.table_view(
+					Scores.cells.league.players,
+					{ query: Scores.cells.listing.signal(), plan: Scores.plan, window: Scores.cells.window.signal() },
 					|key, player| Scores.row(key, player),
 				),
 			],
@@ -88,17 +88,17 @@ Scores := [League].{
 	## reads the row at this key, and writing it writes that row and no
 	## other. Removing the row is a write of the table, so it is a decision
 	## over the table's cell.
-	row : Val(r, U64), State(r, Player) -> Elem(r)
+	row : Signal(r, U64), State(r, Player) -> Elem(r)
 		where [r.store : () -> Engine.Reach(r, _)]
 	row = |key, player| {
-		name = player.val().map(|held| held.name)
+		name = player.signal().map(|held| held.name)
 		# region cheers
 		# How often this row was cheered: state of the row on the page, which
 		# the table knows nothing of.
 		cheer = Engine.state(
 			0.U64,
-			|cheers| Html.button_v(
-				cheers.val().map2(name.lift(), |count, who| "Cheer ${who} (${count.to_str()})"),
+			|cheers| Html.button_s(
+				cheers.signal().map2(name.lift(), |count, who| "Cheer ${who} (${count.to_str()})"),
 				[],
 				cheers.update(|count| count + 1),
 			),
@@ -107,9 +107,9 @@ Scores := [League].{
 		Html.li(
 			[],
 			[
-				Html.span_v(player.val().map(|held| "${held.name} ${held.points.to_str()}"), []),
-				Html.button_v(name.map(|who| "Point to ${who}"), [], player.update(|held| { ..held, points: held.points + 1 })),
-				Html.button_v(name.map(|who| "Remove ${who}"), [], Engine.handle_by(key, |id, _| [Scores.h.league.players.change(|table| table.remove(id))])),
+				Html.span_s(player.signal().map(|held| "${held.name} ${held.points.to_str()}"), []),
+				Html.button_s(name.map(|who| "Point to ${who}"), [], player.update(|held| { ..held, points: held.points + 1 })),
+				Html.button_s(name.map(|who| "Remove ${who}"), [], Engine.handle_by(key, |id, _| [Scores.cells.league.players.update(|table| table.remove(id))])),
 				cheer,
 			],
 		)
@@ -121,8 +121,8 @@ Scores := [League].{
 	## new row, and the key after it.
 	joined : U64 -> List(Engine.Write(_))
 	joined = |key| [
-		Scores.h.league.players.change(|table| table.insert(key, { name: "Player ${key.to_str()}", team: Red, points: 0 })),
-		Scores.h.league.next.put(key + 1),
+		Scores.cells.league.players.update(|table| table.insert(key, { name: "Player ${key.to_str()}", team: Red, points: 0 })),
+		Scores.cells.league.next.set(key + 1),
 	]
 
 	## A point to each of `keys`, as that many keyed writes in one event. A
@@ -136,8 +136,8 @@ Scores := [League].{
 	## the top of the new order.
 	shown : [Everyone, Team([Red, Blue])] -> List(Engine.Write(_))
 	shown = |show| [
-		Scores.h.listing.change(|listing| { ..listing, show }),
-		Scores.h.window.change(|window| { ..window, start: 0 }),
+		Scores.cells.listing.update(|listing| { ..listing, show }),
+		Scores.cells.window.update(|window| { ..window, start: 0 }),
 	]
 	# endregion writes
 
@@ -148,20 +148,20 @@ Scores := [League].{
 	toolbar : {} -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	toolbar = |{}| {
-		players = Scores.h.league.players
-		window = Scores.h.window
+		players = Scores.cells.league.players
+		window = Scores.cells.window
 		Html.div(
 			"toolbar",
 			[
 				Html.button("Everyone", [], Engine.does(Scores.shown(Everyone))),
 				Html.button("Red team", [], Engine.does(Scores.shown(Team(Red)))),
-				Html.button("Lowest first", [], Engine.does([Scores.h.listing.change(|listing| { ..listing, order: Lowest })])),
-				Html.button("Next three", [], Engine.does([window.change(|at| { ..at, start: at.start + 3 })])),
-				Html.button("First three", [], Engine.does([window.change(|at| { ..at, start: 0 })])),
-				Html.button("Add player", [], Engine.handle_by(Scores.h.league.next.val(), |key, _| Scores.joined(key))),
-				Html.button("Point to the first three", [], Engine.does([players.change(|table| Scores.awarded(table, [1, 2, 3]))])),
-				Html.button("Clear the points", [], Engine.does([players.change(|table| table.update_all(|_, player| { ..player, points: 0 }))])),
-				Html.button("New season", [], Engine.does([Scores.h.league.reset])),
+				Html.button("Lowest first", [], Engine.does([Scores.cells.listing.update(|listing| { ..listing, order: Lowest })])),
+				Html.button("Next three", [], Engine.does([window.update(|at| { ..at, start: at.start + 3 })])),
+				Html.button("First three", [], Engine.does([window.update(|at| { ..at, start: 0 })])),
+				Html.button("Add player", [], Engine.handle_by(Scores.cells.league.next.signal(), |key, _| Scores.joined(key))),
+				Html.button("Point to the first three", [], Engine.does([players.update(|table| Scores.awarded(table, [1, 2, 3]))])),
+				Html.button("Clear the points", [], Engine.does([players.update(|table| table.update_all(|_, player| { ..player, points: 0 }))])),
+				Html.button("New season", [], Engine.does([Scores.cells.league.reset])),
 			],
 		)
 	}
@@ -178,10 +178,10 @@ Scores := [League].{
 			"p",
 			[Engine.test_id("podium")],
 			[
-				Engine.each_view(
-					Scores.h.league.players,
+				Engine.table_view(
+					Scores.cells.league.players,
 					{ query: Engine.const({ show: Everyone, order: Highest }), plan: Scores.plan, window: Engine.const({ start: 0, count: 3 }) },
-					|_key, player| Html.span_v(player.val().map(|held| "${held.name} "), []),
+					|_key, player| Html.span_s(player.signal().map(|held| "${held.name} "), []),
 				),
 			],
 		)
@@ -192,7 +192,7 @@ Scores := [League].{
 	## evaluated on every write of the table.
 	size : {} -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	size = |{}| Html.p_v(Scores.h.league.players.val().map(|table| "${table.len().to_str()} players"), [Engine.test_id("size")])
+	size = |{}| Html.p_s(Scores.cells.league.players.signal().map(|table| "${table.len().to_str()} players"), [Engine.test_id("size")])
 	# endregion reader
 
 	## The page: the buttons, the count, the podium and the board.
@@ -220,7 +220,7 @@ before = |a, b|
 ## A new player takes the next key, and the key after it becomes the next.
 expect {
 	after = Scores.store.after(Scores.joined(7))
-	league = Scores.h.league
+	league = Scores.cells.league
 
 	actual =
 		\\players: ${after.read(league.players).len().to_str()}
@@ -236,8 +236,8 @@ expect {
 ## A new season starts the league again at the roster it was described
 ## with, whatever was added or scored.
 expect {
-	league = Scores.h.league
-	played = Scores.store.after(Scores.joined(7)).after([league.players.change(|table| Scores.awarded(table, [1, 7]))])
+	league = Scores.cells.league
+	played = Scores.store.after(Scores.joined(7)).after([league.players.update(|table| Scores.awarded(table, [1, 7]))])
 	again = played.after([league.reset])
 
 	actual =

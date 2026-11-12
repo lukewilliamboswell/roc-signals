@@ -51,7 +51,7 @@ Read these in order; each builds on the one before.
   values, and starting state again.
 - [Shared State](@/docs/shared-state.md): the store and its cells, writes as
   values, decisions and how to test them, and resets.
-- [Tables and Views](@/docs/tables-and-views.md): rows held by key, and a
+- [Tables and Table Views](@/docs/tables-and-views.md): rows held by key, and a
   sorted, filtered window of them that follows each write.
 - [Conditionals and Lists](@/docs/dynamic-structure.md): `when`, `switch`,
   `each`, row identity and lifetimes.

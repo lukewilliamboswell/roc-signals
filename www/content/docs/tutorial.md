@@ -1,21 +1,22 @@
 +++
 title = "Tutorial"
-description = "Build a to-do list on a store, a table and a view of it, with one decision, local storage and a passing test suite."
+description = "Build a to-do list on a store, a table and a table view, with one decision, local storage and a passing test suite."
 weight = 4
 template = "page.html"
 +++
 
 # Tutorial
 
-This tutorial builds a to-do list. It uses each of the three places state
-lives ([Thinking in Signals](@/docs/thinking-in-signals.md#where-state-lives)):
-a table of to-dos and two cells in the app's store, and one piece of local
-state. Along the way it writes a decision and tests it, draws a view of the
-table, saves the list to local storage, and checks all of it with specs. The
-first checkpoint is a working app in a new directory, using the published
-0.4.0 platform. Then you will explore its files, try each behavior and connect
-it to the code. The later snippets are named parts of that complete app;
-they are not separate programs to paste into an empty file.
+This tutorial builds a to-do list. It uses each of the three places state lives
+([Thinking in Signals](@/docs/thinking-in-signals.md#where-state-lives)): a
+table of to-dos and two cells in the app's store, and one piece of local state.
+Along the way it writes a decision and tests it, draws a table view, saves the
+list to local storage, and checks all of it with specs. The first checkpoint is
+a working app in a new directory, using the tool and platform matching these
+docs. Then you
+will explore its files, try each behavior and connect it to the code. The later
+snippets are named parts of that complete app; they are not separate programs to
+paste into an empty file.
 
 You need the tools from [Getting Started](@/docs/getting-started.md), but no
 repository checkout. The topic guides that follow teach each idea in full.
@@ -24,11 +25,11 @@ repository checkout. The topic guides that follow teach each idea in full.
 
 If the Getting Started server is still running, stop it with Ctrl+C or open
 another terminal. Start in a working directory where you want a new
-`my-todos` app. Download the
-release tool and let it create the page, platform declaration and spec directory:
+`my-todos` app. Download the tool matching these docs and let it create the
+page, platform declaration and spec directory:
 
 ```sh
-curl -fLO https://github.com/lukewilliamboswell/roc-signals/releases/download/0.4.0/signals.roc
+curl -fLO "{{ signals_tool_url() }}"
 roc signals.roc init my-todos
 cd my-todos
 ```
@@ -50,13 +51,13 @@ The last command removes only the counter module and spec that `init` just
 wrote in this new app. Keep the generated `signals.roc` and `index.html`.
 
 Open `main.roc`. Keep its complete first `app [main]` declaration, including
-its generated release platform URL and the `pf` name. Replace the imports and
+its generated platform URL and the `pf` name. Replace the imports and
 `main` definition below that declaration with:
 
 {{ sample(file="todos/main.roc", region="entry") }}
 
 `main.roc` now imports the `Todos.roc` beside it and hands `Todos.program` to
-the platform. Keep the release URL that `init` generated: the generic
+the platform. Keep the platform URL that `init` generated: the generic
 `<package release URL here>` shown in documentation examples is a placeholder,
 not a replacement for that URL.
 
@@ -118,7 +119,7 @@ its to-dos, the key the next one takes, and the title being typed:
 {{ sample(file="todos/Todos.roc", region="store") }}
 
 - The store is the app's shared state, described once. Each field is a
-  *cell*, and `Todos.h` holds a handle on each, which the rest of the app
+  *cell*, and `Todos.cells` holds each cell, which the rest of the app
   reads and writes through.
 - The to-dos are a *table*: a cell that holds rows by key. The user changes
   them one at a time (checks one off, removes one), and a table's writes say
@@ -137,14 +138,14 @@ decides which, and returns every write:
 {{ sample(file="todos/Todos.roc", region="add") }}
 
 - `added` is a *decision*: a function from a reading to a list of writes.
-  `cell.put(value)` and `cell.change(f)` are values that say what to write;
+  `cell.set(value)` and `cell.update(f)` are values that say what to write;
   the engine applies the list when the form is submitted.
 - `adding` is the reading. Three values are combined into one with Roc's
-  record builder (`{ ... }.Val`), and mapped down to the three small things
+  record builder (`{ ... }.Signal`), and mapped down to the three small things
   the decision needs. It is read once, when the form is submitted and before
   anything is written. The decision is handed whether the title is listed,
   not the table, so it holds nothing large while it decides.
-- The table is changed with `change` and one of its own operations,
+- The table is changed with `update` and one of its own operations,
   `insert`. That is how the table knows which row was written.
 - The draft is a cell, not local state of the form, because this decision
   must clear it or keep it from the same reading that decides the rest.
@@ -159,11 +160,11 @@ Run them with `roc test main.roc` in `my-todos/`. In the browser, try a blank
 title and then add the same title twice. The second submission keeps the
 draft and adds no row, just as the decision says.
 
-## The list: a view of the table
+## The list: a table view
 
-A table has no order of its own. A *view* draws the rows a query keeps, in
+A table has no order of its own. A *table view* draws the rows a query keeps, in
 the query's order. The query is plain data, here which to-dos to show, and
-`plan` turns it into the three functions a view needs:
+`plan` turns it into the three functions a table view needs:
 
 {{ sample(file="todos/Todos.roc", region="plan") }}
 
@@ -174,18 +175,18 @@ sorting by key is the order the to-dos were added in.
 
 {{ sample(file="todos/Todos.roc", region="list") }}
 
-- `Engine.each_view` draws the view. When a row of the table is written, the
-  view places that row again and touches only it on the page.
+- `Engine.table_view` draws the table view. When a row of the table is written, the
+  table view places that row again and touches only it on the page.
 - `showing` is *local state*: `Engine.state(All, ...)` creates it for this
   piece of the view. Nothing else in the app reads which to-dos the list
   shows, so it does not belong in the store. Its buttons write it with a
   reducer, `showing.update(...)`.
-- A view draws a window of its rows. A to-do list is short, so it draws
+- A table view draws a window of its rows. A to-do list is short, so it draws
   every row: `Engine.every_row`.
 
 ## One row
 
-The row template runs once for the whole view, not once per row. It is
+The row template runs once for the whole table view, not once per row. It is
 handed the row's key and a `State` of the row:
 
 {{ sample(file="todos/Todos.roc", region="row") }}
@@ -207,7 +208,7 @@ Going through it:
   every form, so submitting never reloads the page.
 - The text box shows the draft, and each keystroke puts the box's new text
   in the draft's cell. `Engine.handle` gives a decision the event's payload.
-- `todos` is the table's value, read here without a view by the empty note,
+- `todos` is the table's value, read here without a table view by the empty note,
   the counter and the storage effect. Such a reader is evaluated on every
   write to the table, which is fine for a count.
 - `Engine.when` shows "Nothing to do." only while the table is empty.
@@ -229,7 +230,7 @@ them. The saving half is the last child of the view:
 
 {{ sample(file="todos/Todos.roc", region="persist") }}
 
-`on_change` issues its requests each time the watched value changes after
+`watch_changes` issues its requests each time the watched value changes after
 mount. `StorageSet` is a command, so there is no result to react to and the
 reaction is `Engine.ignore`. [Effects and the Browser](@/docs/effects-and-browser.md)
 covers requests that do return results.
@@ -285,9 +286,9 @@ The first command checks the module's pure decisions and storage format; the
 second checks all four `.scm` files against the app. `build` writes a deployable
 `dist/` with the browser module, page and matching runtime. Serve that directory
 over HTTP to deploy it; [Getting Started](@/docs/getting-started.md#build-it-for-deployment)
-explains what to keep together. On the November 11 nightly, the tool announces
-a temporary `--opt=dev` compiler workaround; see the
-[0.4.0 compiler notes](https://github.com/lukewilliamboswell/roc-signals/releases/tag/0.4.0#compiler-and-dependency-limitations).
+explains what to keep together. Check the tool's build output for the
+optimization mode: a compiler workaround may explicitly select `--opt=dev`
+instead of the usual `--opt=size`, as Getting Started explains.
 
 You have a running app, its editable source and a test suite. As you make it
 your own, use the specs to state what should stay true about adding, checking,
@@ -298,6 +299,6 @@ filtering and restoring a to-do.
 - [Local State, Events, and Forms](@/docs/state-and-events.md) for handlers,
   validation and derived values.
 - [Shared State](@/docs/shared-state.md) for the store, decisions and resets.
-- [Tables and Views](@/docs/tables-and-views.md) for queries, windows and
+- [Tables and Table Views](@/docs/tables-and-views.md) for queries, windows and
   what a write costs.
 - [Testing](@/docs/testing.md) for every spec step.

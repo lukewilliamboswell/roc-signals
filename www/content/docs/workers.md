@@ -30,7 +30,7 @@ job's output, or the task's own error.
 {{ sample(file="workers/Words.roc", region="tasks") }}
 
 - `Worker.task` takes a props record. `name` and `run!` are required;
-  `deadline`, `on_dispose` and `on_cancel` are optional (see
+  `timeout`, `on_dispose` and `on_cancel` are optional (see
   [Lifetimes](#lifetimes)).
 - Its type is `Worker.Task(input, output, error)`. The types of `run!` are
   the task's types, so a request can only send the input the task expects,
@@ -53,10 +53,10 @@ job's output, or the task's own error.
   function (`run!: ConverterApp.convert!`), or a lambda whose error type is
   known, compiles without one; the function's annotation already gives
   the task's types.
-- A deadline that varies (one the user picks, say) belongs to the task, so
-  make the task with a function of the deadline,
+- A timeout that varies (one the user picks, say) belongs to the task, so
+  make the task with a function of the timeout,
   `primes : [Unlimited, Ms(U32)] -> Worker.Task(...)`, register each task
-  that can be asked for, and ask for the one with the deadline wanted, as
+  that can be asked for, and ask for the one with the timeout wanted, as
   the [Worker Lab](@/examples/worker-lab.md) does.
 
 Names are namespaced and unversioned, like `"example.org/words/summary"`.
@@ -89,7 +89,8 @@ duplicate list key does (see [Reference](@/docs/reference.md#errors)):
 
 ## Showing its answer
 
-`Worker.derive(task, input, body)` is `Engine.derive` computed in a worker.
+`Worker.resource(task, input, body)` holds a task's asynchronous answer
+as a signal. `Engine.derive` computes a signal synchronously in the turn.
 It gives `body` a value of type `Engine.Remote(output, Worker.Error(error))`:
 
 {{ sample(file="workers/Editor.roc", region="derive") }}
@@ -103,11 +104,11 @@ It gives `body` a value of type `Engine.Remote(output, Worker.Error(error))`:
   for a failure of the task's own.
 - `remote.answered()` is the latest answer as a `Try`, kept while a newer
   job works: `remote.answered() ?? default` shows a fallback, and
-  `.map_ok(f)` picks from it. `Worker.status(remote)` is the whole layer as
+  `.map_ok(f)` picks from it. `Worker.status(remote)` is the whole resource as
   one union, `Unasked`, `Working`, `Answered(output)`, the task's own
   `Failed(error)`, `Timeout`, `Refused` or `Lost(fault)`, for a view that
   says something different in each case (see [Failures](#failures)).
-- To show an answer beside state the layer does not hold (the page of
+- To show an answer beside state the resource does not hold (the page of
   results the user is on, say), lift the state in and combine the two:
   `v.lift().map2(remote, |s, r| ...)`. The task then need not echo its
   input in its answer.
@@ -135,7 +136,7 @@ job that has started ends its worker, and the next job starts a new one
 
 ### An input that is sometimes not a question
 
-`Worker.derive_when(task, input, body)` takes an input of type
+`Worker.resource_when(task, input, body)` takes an input of type
 `[Run(i), Skip]`. `Run(i)` asks for a job on `i`; `Skip` stops any job and
 clears the answer, so `answer` is `Unanswered` and `request` is `Idle`. Use
 it for an empty search box or a form that is not valid yet:
@@ -145,15 +146,15 @@ it for an empty search box or a form that is not valid yet:
 The search's input includes the text, so editing the text while a word is
 in the box searches again.
 
-A layer's body can be a named function, as `found` is. Give it a generic
-context, `Val(ctx, Engine.Remote(…)) -> Elem(ctx)`, and it fits any site:
-inside the layer the context is `In(Ctx, Engine.Remote(…))`, and a named
+A resource's body can be a named function, as `found` is. Give it a generic
+context, `Signal(ctx, Engine.Remote(…)) -> Elem(ctx)`, and it fits any site:
+inside the resource the context is `In(Ctx, Engine.Remote(…))`, and a named
 body never needs to write that out.
 
 ### Starting and cancelling from a button
 
 When the user decides when a job runs, keep the request in state and use
-`Engine.latest` (see
+`Engine.watch_latest` (see
 [Effects and the Browser](@/docs/effects-and-browser.md#superseding-sites)).
 `task.request(input)` is the request for its plan, and `task.result(res)`
 reads its result as `Try(output, Worker.Error(error))`:
@@ -162,7 +163,7 @@ reads its result as `Try(output, Worker.Error(error))`:
 
 {{ sample(file="workers/Editor.roc", region="latest") }}
 
-- "Count words" puts a new `Count` in state, and `latest` asks for a job on
+- "Count words" puts a new `Count` in state, and `watch_latest` asks for a job on
   it. The press number makes each press a new value, so pressing again for
   the same text counts again. (A request that must never be cancelled by a
   later press, a save say, is posted to an outbox and sent with
@@ -173,7 +174,7 @@ reads its result as `Try(output, Worker.Error(error))`:
   the job that is in flight.
 - Editing the text starts nothing: the site watches only `ask`.
 - The answer is written to state by the reaction, so it stays after the job
-  is over. `latest` never delivers an answer for a request it has stopped,
+  is over. `watch_latest` never delivers an answer for a request it has stopped,
   so the reaction does not need to check which press it belongs to.
 
 ## One question, several jobs
@@ -196,7 +197,7 @@ input and gives `body` an `Engine.Gathered(output, Worker.Error(error))`:
   question's answer while a new one works, so `all.answered()` still gives
   the last total.
 - A new, unequal list of inputs stops every job of the old question and
-  asks again, as `derive` does; an equal list asks nothing. With
+  asks again, as `resource` does; an equal list asks nothing. With
   `on_cancel: Finish` a stopped job runs to its end, so a worker keeps its
   prepared state.
 - Each job takes a slot of the in-flight bound (32 by default), and a job
@@ -232,7 +233,7 @@ port call per item for instance. A question with more parts than the
 in-flight bound, or one whose parts may each be asked again (a part that
 was lost, retried on its own), does not fit a gather: changing the list
 asks every part again. Keep one site per part instead, each in a row
-with its own `latest`, and admit parts from the page's state as earlier
+with its own `watch_latest`, and admit parts from the page's state as earlier
 ones finish, as the [Worker Lab](@/examples/worker-lab.md) does for the
 strips of its picture: its jobs are a table, and each row of the view that
 draws every one of them owns its job's request. Count every request the
@@ -289,7 +290,7 @@ anywhere else with a contract error.
 A job's effects are synchronous: the job blocks inside each one until it
 returns (a read waits for the browser to read the file), and otherwise runs
 from start to answer without pausing. So a task cannot await anything: no
-timer, page event or network response reaches a running job. The platform
+timer, page event or HTTP response reaches a running job. The platform
 has no effect yet that makes an HTTP request from inside a job: download on
 the page with `File.fetch` and send the file to the task instead.
 
@@ -298,7 +299,7 @@ the page with `File.fetch` and send the file to the task instead.
 Some apps ask several questions of one expensive intermediate result: an
 explorer parses a document and then shows its outline, its search results
 and its statistics. With separate tasks, each job parses the document
-again. A **preparation** names that first step once. `Worker.prepared`
+again. A **preparation** names that first step once. `Worker.preparation`
 declares it: a function `prepare!` from its input to a `Try` of a state.
 The state can be any type, since it never leaves the worker, and
 `prepare!` may read the files its input holds:
@@ -322,11 +323,11 @@ tasks:
 
 {{ sample(file="prepared/Notes.roc", region="register") }}
 
-A preparation's task is used like any task: `Worker.derive`,
-`Worker.derive_when`, or `request` and `result` in an `Engine.latest` site,
-with the same `deadline`, `on_dispose` and `on_cancel`. What it is asked is
-a `Worker.Question(init, query)`, the preparation's `input` and the task's
-own `query`:
+A preparation's task is used like any task: `Worker.resource`,
+`Worker.resource_when`, or `request` and `result` in an `Engine.watch_latest` site,
+with the same `timeout`, `on_dispose` and `on_cancel`. What it is asked is
+a `Worker.Question(init, input)`: its `init` field is the preparation's
+input, and its `input` field is the task's own input:
 
 {{ sample(file="prepared/Notes.roc", region="asked") }}
 
@@ -364,7 +365,7 @@ see only answers, and the native spec runner prepares for every job.
   states' types differ (`Worker.PreparedTaskEntry(List(Str))` against
   `Worker.PreparedTaskEntry(U64)`). When they are the same type it
   compiles, and every job of that task is a contract error in its worker,
-  answered `Lost(Contract)`.
+  given the result `Lost(Contract)`.
 - **A file's state goes with the file.** When the app lets go of a file,
   every state prepared from it is let go too.
 - **Tasks only read the state.** A task cannot change it, so an answer never
@@ -374,8 +375,8 @@ see only answers, and the native spec runner prepares for every job.
   returns, and a job that uses it is a contract error, answered
   `Lost(Contract)`.
 - **A lost worker costs a preparation, never an answer.** A crash in
-  `prepare!` or in a task ends that worker: the job answers `Lost(fault)`,
-  the state is gone, and the next job prepares again elsewhere. A deadline
+  `prepare!` or in a task ends that worker: the job has result `Lost(fault)`,
+  the state is gone, and the next job prepares again elsewhere. A timeout
   counts the preparation's time.
 - **A failed preparation is kept like any other.** When `prepare!` answers
   `Err(error)`, the worker keeps that answer for the input, and the next
@@ -438,13 +439,13 @@ Two costs come with a state like this:
 
 A job belongs to the site that asked for it, and what you see follows from
 that. Three props of a task say how long its jobs live: `on_dispose`,
-`deadline` and `on_cancel`.
+`timeout` and `on_cancel`.
 
 **Leaving the screen stops the job.** When a site is disposed (its `when`
 branch switched, its row left the list, its panel closed), its job is
 stopped, and no answer arrives. That is `on_dispose: Stop`, the default: a
 job nobody will read is only cost. The panel below shows its totals in a
-`derive` that lives inside the panel, so closing the panel stops the
+`resource` that lives inside the panel, so closing the panel stops the
 totals' job:
 
 {{ sample(file="worker-lifetimes/Documents.roc", region="panel") }}
@@ -459,12 +460,12 @@ Closing the panel while an export runs leaves the job running. When it
 answers, the reaction its request was made with still runs, and its write
 to the page's state shows the report. Write a kept job's answer into state
 that outlives the site, as here: a write to a state that was disposed with
-the site is skipped, and a `Worker.derive` layer goes with its site, so ask
+the site is skipped, and a worker resource goes with its site, so ask
 for a kept job with `request` and `result`. The other way to let work
 outlive a panel is to mount its site outside the panel, in the scope that
 should own the work.
 
-**Each row can have its own job.** A `derive` in an `each` row runs for that
+**Each row can have its own job.** A `resource` in an `each` row runs for that
 row's value. Jobs finish in any order, and each row shows its own answer.
 Removing a row stops its job:
 
@@ -473,38 +474,38 @@ Removing a row stops its job:
 **Jobs share the in-flight bound.** Worker jobs count against the same bound
 as HTTP requests and timers: 32 awaited requests by default, set with
 `max_inflight` in `Engine.program_boot`. A job beyond the bound is not
-started; it answers `Refused` straight away, and the others go on. The
+started; its result is `Refused` straight away, and the others go on. The
 sample sets a bound of three so its spec can reach it:
 
 {{ sample(file="worker-lifetimes/Documents.roc", region="bound") }}
 
-A refused job is not retried. A `derive` asks again only when its input
+A refused job is not retried. A `resource` asks again only when its input
 changes, so tell the user, as the rows do, or ask again from a button.
 
 Jobs beyond the number of workers wait for a free one. The pool's size is
 the page's `maxWorkers` option (see [Serving the app](#serving-the-app)).
 
-**A deadline stops a job that takes too long.** `deadline: Ms(ms)` stops a
+**A timeout stops a job that takes too long.** `timeout: Ms(ms)` stops a
 job that has not answered `ms` milliseconds after it was asked for, and
-answers `Timeout`:
+delivers the result `Timeout`:
 
-{{ sample(file="workers/Words.roc", region="deadline") }}
+{{ sample(file="workers/Words.roc", region="timeout") }}
 
 - The time counts from when the job is asked for, so time spent waiting for
   a free worker and starting one counts too, and so does a preparation.
 - Expiry stops the job: a job still waiting for a worker is dropped, and a
   running one ends its worker. The work does not finish in the background.
-- `Unlimited`, the default, means no deadline. The longest deadline is ten
+- `Unlimited`, the default, means no timeout. The longest timeout is ten
   minutes.
 
 A job that never finishes holds its worker until its site stops it, or,
-when its task says `on_cancel: Finish` (below), until its deadline, and at
+when its task says `on_cancel: Finish` (below), until its timeout, and at
 most ten minutes after it was asked for when it has none. Give a task a
-deadline when its input can make it run for an unreasonable time.
+timeout when its input can make it run for an unreasonable time.
 
 **A cancelled job can be allowed to finish.** A job is cancelled when its
-site is disposed (unless its task says `Keep`) or when a `latest` or
-`derive` site moves on to a newer input. By default, `on_cancel: Stop`, a
+site is disposed (unless its task says `Keep`) or when a `watch_latest` or
+`resource` site moves on to a newer input. By default, `on_cancel: Stop`, a
 cancelled job that is running ends its worker, and anything that worker
 held goes with it, a prepared state included. A task declared
 `on_cancel: Finish`, as `longest` is in the notes sample above, lets a
@@ -515,10 +516,10 @@ of that job. Either way the app never sees a cancelled job's answer.
 worker is still warm when they come back, and a task asked again as the
 user types, such as a search over a prepared file: a search the user has
 typed past runs to its end, and the next one waits for the worker that
-holds the state rather than preparing it again on another. A deadline
+holds the state rather than preparing it again on another. A timeout
 always ends the worker, a cancelled job's included: a job that is still
-finishing when its deadline expires has its worker ended there, and one
-whose task has no deadline is ended ten minutes after it was asked for, so
+finishing when its timeout expires has its worker ended there, and one
+whose task has no timeout is ended ten minutes after it was asked for, so
 a job that never ends cannot hold a worker for good.
 
 Whatever stops a job, nothing it wrote can be seen: only a delivered
@@ -533,7 +534,7 @@ tells them apart:
 | Error | Cause |
 |---|---|
 | `Failed(error)` | The task answered `Err(error)`: a failure of its own, which it chose |
-| `Timeout` | The job's deadline expired, and it was stopped |
+| `Timeout` | The job's timeout expired, and it was stopped |
 | `Refused` | Too many requests were in flight; the job was never started |
 | `Lost(fault)` | The job crashed, or no worker could run it |
 
@@ -543,8 +544,8 @@ error type of its choosing:
 
 {{ sample(file="workers/Words.roc", region="failing") }}
 
-In the layer, that error is `Failed(Failed(NotANumber(word)))`: the
-layer's `Failed`, holding the `Worker.Error`'s. `Worker.status` flattens
+In the resource, that error is `Failed(Failed(NotANumber(word)))`: the
+resource's `Failed`, holding the `Worker.Error`'s. `Worker.status` flattens
 the two into one union, so a view matches each case once:
 
 {{ sample(file="workers/Editor.roc", region="failing-view") }}
@@ -556,13 +557,13 @@ With `request` and `result`, the same cases are `Ok(value)`,
 **A long job.** A job cannot be stopped from inside: there are no
 checkpoints, and stopping one ends its worker. Split long work into
 shorter jobs (see [One question, several jobs](#one-question-several-jobs))
-and give a task a deadline, so a job that runs too long is stopped and
-answers `Timeout`.
+and give a task a timeout, so a job that runs too long is stopped and
+has result `Timeout`.
 
 **A lost job.** Use the task's own error for failures you expect. A
 `crash` in a job is not an error you chose: it is `Lost`. A job that fails
 badly (a `crash`, running out of memory, a failed `expect` in a development
-build) ends only its worker. The job answers `Lost(fault)` with the fault's
+build) ends only its worker. The job has result `Lost(fault)` with the fault's
 class, the diagnostic goes to the browser console, and the page keeps
 working. The next job starts a new worker.
 
@@ -578,7 +579,7 @@ working. The next job starts a new worker.
 answers it. And with the `workers: "inline"` mount option jobs run on the
 page's thread, where the effects on files do not exist: a job that reaches
 none of them answers as it would in a worker, and a job that reaches one
-answers `Lost(Unavailable)`, while the page and later jobs keep working.
+has result `Lost(Unavailable)`, while the page and later jobs keep working.
 
 The workers sample's specs show both kinds: a total whose own error
 reaches the view, and a total whose job is lost (see [Testing](#testing)).
@@ -597,7 +598,7 @@ A nominal type crosses once it declares the codec hooks `parser_for : _` and
 
 {{ sample(file="wire.roc", region="nominal") }}
 
-Functions, `State` handles, `Val`s, builders and nominal types without the
+Functions, `State` values, `Signal`s, builders and nominal types without the
 hooks do not cross. Using one is a compile error at the task's declaration,
 naming the type that lacks the hooks. Here `Celsius` declares only `is_eq`:
 
@@ -710,7 +711,7 @@ await mountRocEngineApp({
   the page's own thread, one at a time. A job that only calculates gives
   the same answer; a job that reads or builds a file answers
   `Lost(Unavailable)` (see [Failures](#failures)). The page waits while a
-  job runs, and a deadline can only stop a job that has not started. It
+  job runs, and a timeout can only stop a job that has not started. It
   gives up what a worker is for; use it to measure or debug.
 - `maxWorkerBytes` ends a worker whose memory has grown past it, after its
   job, since a worker's memory never shrinks.
@@ -743,13 +744,13 @@ timers (see [Testing](@/docs/testing.md#effects)):
 Here the text and the word are both in the box, so editing the text asks for
 the summary (job 5) and the search (job 6); the spec answers the search first.
 
-A spec's time only moves when the spec says so, so a deadline never expires
+A spec's time only moves when the spec says so, so a timeout never expires
 by itself, however long the job takes. Two steps answer a waiting job
 without running it:
 
-- `(time-out-work N)` expires its deadline: the job answers `Timeout`. A
-  job of a task without a deadline cannot time out, and the step fails.
-- `(lose-work N FAULT)` answers `Lost(fault)`, as if its worker had
+- `(time-out-work N)` expires its timeout: the job has result `Timeout`. A
+  job of a task without a timeout cannot time out, and the step fails.
+- `(lose-work N FAULT)` delivers `Lost(fault)`, as if its worker had
   crashed (`app_crash`), run out of memory (`out_of_memory`), or there were
   no worker at all (`unavailable`). See [Testing](@/docs/testing.md#effects)
   for every fault.
@@ -774,15 +775,15 @@ the in-flight bound turned away (see
 | You want | Use |
 |---|---|
 | A cheap value computed from state | `Engine.derive` |
-| A slow value that follows its input | `Worker.derive` with a task |
-| The same, when some inputs ask nothing | `Worker.derive_when` |
-| A job the user starts and cancels, with its answer kept in state | `Engine.latest` with `request` and `result` |
+| A slow value that follows its input | `Worker.resource` with a task |
+| The same, when some inputs ask nothing | `Worker.resource_when` |
+| A job the user starts and cancels, with its answer kept in state | `Engine.watch_latest` with `request` and `result` |
 | A task that cannot fail | `Worker.Never` as its error |
 | A task that fails on some inputs | An error type of its own, answered `Err(error)` and read as `Failed(error)` |
 | A job that reads a file, or part of one | `file.read!`, `file.contents!`, `file.contents_utf8!` in `run!` |
 | A job that writes a new file | `Files.build!` and a builder; see [Files in Tasks](@/docs/files-in-tasks.md) |
-| Several tasks over one slow preparation | `Worker.prepared` and its `task` |
-| A job that must not take too long | `deadline: Ms(ms)` |
+| Several tasks over one slow preparation | `Worker.preparation` and its `task` |
+| A job that must not take too long | `timeout: Ms(ms)` |
 | A job that must finish although its panel closed | `on_dispose: Keep`, and a reaction that writes to state outside the panel |
 | A cancelled job that should keep its worker's prepared state | `on_cancel: Finish` |
 | Bulk bytes in a payload | `Wire.Bytes` |
@@ -795,7 +796,7 @@ written where the action is, which a thread sharing the UI's memory then
 runs. Here a job runs in another instance of the module with memory of its
 own, and a closure cannot cross to it. So a task is a named, registered
 function whose context is its input, and its `pending` and `resolve` are
-the sites that issue it and react to its answer (`Worker.derive`, `latest`,
+the sites that issue it and react to its answer (`Worker.resource`, `watch_latest`,
 `Engine.resource`). The handles are the same idea, and so are the `!`
 effects on them; what is different is that a job's effects cannot wait, and
 that a handle crosses to the job by token rather than being shared.

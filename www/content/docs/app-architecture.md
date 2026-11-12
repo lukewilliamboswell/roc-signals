@@ -18,7 +18,7 @@ is the largest example and worth reading alongside it.
 |---|---|
 | `<Domain>.roc` | Pure domain types and functions: parsing, validation, formats. No platform imports, tested with `expect`. |
 | `<Component>.roc` | A component: a type, its pure operations, and a view that is handed the cells it uses ([Components](@/docs/components.md)). It may describe the cells it needs. It never imports the store. |
-| `AppStore.roc` | The store: its description, its handles, and the transitions that span features, each a function returning its writes, with `expect`s. It imports the components whose types it holds. |
+| `AppStore.roc` | The store: its description, its cells, and the transitions that span features, each a function returning its writes, with `expect`s. It imports the components whose types it holds. |
 | `<Page>.roc` | A module that composes: it imports the store and the components and hands each its cells. |
 | `<Name>App.roc` | The root: the view, the effect sites that belong to the whole app, and `program`. In a small app it is also the store and the only composing module. |
 | `main.roc` | The one entry point: `main = <Name>App.program`. Built for `wasm32` it is the browser module; for `x64musl`, `arm64mac`, `x64mac` or `x64win`, the native spec runner. |
@@ -37,7 +37,7 @@ Ask who cares about it and how long it must live:
 | The state | Its home |
 |---|---|
 | More than one part of the app reads or writes it, or it must survive a change of page | A cell of the store ([Shared State](@/docs/shared-state.md)) |
-| Rows the user edits by key; anything shown sorted, filtered or long | A table in the store, drawn through a view ([Tables and Views](@/docs/tables-and-views.md)) |
+| Rows the user edits by key; anything shown sorted, filtered or long | A table in the store, drawn through a table view ([Tables and Table Views](@/docs/tables-and-views.md)) |
 | One piece of the view cares about it, and it should go when that piece goes | Local state ([Local State, Events, and Forms](@/docs/state-and-events.md)) |
 | One row on the page cares about it, and it need not survive the row leaving the page | Local state inside the row template |
 | It follows from other state | No state at all: a `map`, or a `derive` when it is expensive or widely read |
@@ -75,10 +75,10 @@ is the shape of your update cost:
   data they act on change independently. As fields of one record in one
   cell, every keystroke in the filter re-evaluates everything that reads the
   record. As three cells, it re-evaluates only what reads the filter.
-- **Rows in a table.** A row's write then wakes that row in each view, not
+- **Rows in a table.** A row's write then wakes that row in each table view, not
   every reader of a list.
 - **Compute once with `derive`.** A value that many holes read, such as a
-  summary over a data set, should be a `derive` layer. Its readers do no
+  summary over a data set, should be a derived signal. Its readers do no
   work when it comes out equal.
 - **Row-local state lives in the row.** An "expanded" flag per row belongs
   in a `state` inside the row template, not in the row's record or in a map
@@ -123,7 +123,7 @@ equal value is posted to an outbox
 
 ## Code size
 
-A view that is generic over its scope is compiled for each kind of scope it
+A view that is generic over its context is compiled for each kind of context it
 is drawn under, and a generic helper for each type it is used at. When a
 large app's Wasm grows, look for a large view drawn under several different
 scopes.

@@ -74,7 +74,7 @@ checksum = Worker.task({
 ## A request for a checksum of bytes the page holds, wrapped for sending.
 ## (A file the page holds is sent as its handle instead, and read in the
 ## job.)
-check_bytes : List(U8) -> Engine.Req
+check_bytes : List(U8) -> Engine.Request
 check_bytes = |contents| checksum.request(Wire.Bytes.from_list(contents))
 
 # endregion bytes

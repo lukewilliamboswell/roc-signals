@@ -19,8 +19,8 @@ products to add to a cart, and an order sent to a server.
 
 ## Describe the store
 
-A store is a set of *cells*. A cell is one piece of state, with a handle that
-it is read and written through. An app describes its store once:
+A store is a set of *cells*. A cell is one piece of state, read and
+written through a `Cell` value. An app describes its store once:
 
 {{ sample(file="shop/Shop.roc", region="store") }}
 
@@ -32,36 +32,36 @@ it is read and written through. An app describes its store once:
   ([Starting again](#starting-again) shows it).
 - `Engine.store(tag, cells)` builds the store. The tag is a value of a type
   declared for this store, usually the one tag of the module that builds it:
-  here `Shop.CornerShop`. It is part of the type of every handle, so a cell
+  here `Shop.CornerShop`. It is part of the type of every cell, so a cell
   of another store is a compile error wherever this one is used.
-- `store.handles()` is the record of handles, in the shape of the
-  description. The rest of the app reads and writes through `Shop.h`.
+- `store.cells()` is the record of cells, in the shape of the
+  description. The rest of the app reads and writes through `Shop.cells`.
 - `Engine.program_store(config, start, view)` is the program of an app with
   a store: `start` gives the store and `view` the page, each from the boot
   data.
 - The record builder combines two fields or more. A store with one cell
-  describes it as the cell itself, its handle put in a record by `map`:
+  describes it as the cell itself, named in a record by `map`:
   `Engine.cell("").map(|draft| { draft: draft })`.
 
-You never write the code that finds a cell inside the store. Each handle is
-generated from the cell's place in the description, so two handles cannot
-overlap, and a write through one can never leave a reader of another showing
-an old value.
+You never write the code that finds a cell inside the store. Each cell's getter
+and modifier are generated from its place in the description, so two cells
+cannot overlap, and a write through one can never leave a reader of another
+showing an old value.
 
 ## Read a cell anywhere
 
-`cell.val()` is the cell's value, a `Val` to `map` and show like any other.
-It works in any scope, at any depth, with nothing passed down and no `lift`.
+`cell.signal()` is the cell's value, a `Signal` to `map` and show like any other.
+It works in any context, at any depth, with nothing passed down and no `lift`.
 Here a row of the product list reads the cart:
 
 {{ sample(file="shop/Shop.roc", region="depth") }}
 
 The `where` clause is the one thing a function that uses the store asks of
-the scope it is called in: that the scope reaches a store. Every scope of an
-app started with `program_store` does. The store's own type is generated and
+its context: that the context reaches a store. Every context of an app
+started with `program_store` does. The store's own type is generated and
 long, so annotations write `_` for it, here and in `Engine.Write(_)` and
 `Engine.StoreRoot(_)`. A type alias cannot contain `_`, so an alias that
-mentions a store takes the storage as a parameter, as `Props(st)` does in
+mentions a store takes the store's type as a parameter, as `Props(st)` does in
 [Components](@/docs/components.md).
 
 A write to a cell wakes the readers of that cell and no one else's. Adding
@@ -75,12 +75,16 @@ which cell, and how:
 
 | Write | Meaning | Use it when |
 |---|---|---|
-| `cell.put(value)` | Replace what the cell holds with `value` | The new value does not depend on the old one |
-| `cell.change(f)` | Replace what the cell holds with `f` of it | It does. `f` is given the value uniquely owned, so a list or a table is updated in place |
+| `cell.set(value)` | Replace what the cell holds with `value` | The new value does not depend on the old one |
+| `cell.update(f)` | Replace what the cell holds with `f` of it | It does. `f` is given the value uniquely owned, so a list or a table is updated in place |
 
-A `put` of a value built from a reading of the same cell is allowed, but for
+A `set` of a value built from a reading of the same cell is allowed, but for
 a large value it copies: the reading is still held while the new value is
-built. Use `change` for anything large.
+built. Use `update` for anything large.
+
+`state.update(f)` is a handler, while `cell.update(f)` is a write. A decision
+or `Engine.does([..])` turns a list of cell writes into a handler. Both apply
+a function to the current state; their return types say who applies it.
 
 ## Decisions
 
@@ -103,11 +107,12 @@ is pressed. The page's "Check out" button reads the cart:
 
 {{ sample(file="shop/Shop.roc", region="check-out") }}
 
-The reading is one value. To read several things, combine them first: `map2`
-for two, and for more a record of values with Roc's record builder,
-`{ cart: h.cart.val(), note: h.note.val() }.Engine.Val`, as the
-[Tutorial](@/docs/tutorial.md#adding-a-to-do-one-decision) does. `Val.map2`
-has the shape the builder calls, so the result is one value of the record,
+The reading comes from one signal. To read several things, combine their
+signals first: `map2` for two, and for more a record of signals with Roc's
+record builder,
+`{ cart: cells.cart.signal(), note: cells.note.signal() }.Engine.Signal`, as the
+[Tutorial](@/docs/tutorial.md#adding-a-to-do-one-decision) does. `Signal.map2`
+has the shape the builder calls, so the result is one signal of the record,
 which reads what all of its fields read. Read what the decision needs and
 no more: a count or a flag worked out from a table, not the table.
 
@@ -128,14 +133,14 @@ What the engine does with the list:
   that one reading, so the order of writes to different cells cannot
   matter. Composed after another handler with `also`, it reads what that
   handler left ([Local and shared in one event](#local-and-shared-in-one-event)).
-- Two writes to one cell are applied in order: a `change` after another
-  write of its cell sees that write's result. A `put` over a cell the same
+- Two writes to one cell are applied in order: an `update` after another
+  write of its cell sees that write's result. A `set` over a cell the same
   list already wrote is a contract error, because it could only throw the
   earlier write away.
 
 A decision does nothing but return its writes. A request to the outside
 world is asked for by state that an effect site watches: `checked_out` posts
-the order to an outbox cell, and [an effect site](#answers-decide-too) sends
+the order to an outbox cell, and [an effect site](#results-decide-too) sends
 it.
 
 ## Test a decision as a function
@@ -152,21 +157,21 @@ transition that wrote the wrong cell or left one out. The type checker
 cannot: two cells of one type are the same to it.
 
 `after` applies the writes and ends no turn. A table therefore keeps its
-record of them, and `store.after(writes).read(table).inverse()` tells which
-rows the transition wrote. Across chained `after`s the record holds the
+changes, and `store.after(writes).read(table).inverse()` tells which
+rows the transition wrote. Across chained `after`s the changes hold the
 rows all of them wrote.
 
-## Answers decide too
+## Results decide too
 
-An answer from outside (an HTTP response, a timer, a worker's result) is
+A result from outside (an HTTP response, a timer firing, a job's answer) is
 decided the same way. `Engine.react(decide)` is an effect site's reaction
 that writes cells: the decision receives the value the request was issued
 for and the result. `Engine.react_by(v, decide)` also gives it the value `v`
-holds when the answer arrives.
+holds when the result arrives.
 
 {{ sample(file="shop/Shop.roc", region="answer") }}
 
-`Shop.h.basket.reset` is one write that starts the cart's cells again;
+`Shop.cells.basket.reset` is one write that starts the cart's cells again;
 [Starting again](#starting-again) explains it.
 [Effects and the Browser](@/docs/effects-and-browser.md) covers the sites
 that issue requests, and outboxes.
@@ -180,7 +185,7 @@ event, in order, and the page is refreshed once, after both:
 {{ sample(file="shop/Cart.roc", region="also") }}
 
 `second` sees what `first` wrote, and that includes a reading:
-`draft.update(|_| "").also(Engine.handle_by(draft.val(), ...))` hands the
+`draft.update(|_| "").also(Engine.handle_by(draft.signal(), ...))` hands the
 decision the emptied draft, with no error. When a decision reads local state
 that the same click clears, put the decision first. `Reaction.also` does the
 same for one result, and `FilesHandler.also` for the files of one event.
@@ -195,16 +200,16 @@ in the decision.
 A cell lives as long as the app. Nothing disposes it, so state that should
 start fresh (a basket once its order is placed, a page's form once the reader
 leaves the page) is started again on purpose, by a write. A description of
-cells can hand out that write with its handles:
+cells can hand out that write with its cells:
 
 {{ sample(file="shop/Cart.roc", region="cells") }}
 
-`with_reset` gives its function the handles and one `Engine.Write` that puts
+`with_reset` gives its function the cells and one `Engine.Write` that puts
 every cell of the description back to the value it was described with. In
-`ordered` above, `Shop.h.basket.reset` empties the cart and clears the note
+`ordered` above, `Shop.cells.basket.reset` empties the cart and clears the note
 in one write.
 
-- The reset is generated with the handles, so a cell added to the group
+- The reset is generated with the cells, so a cell added to the group
   later is covered with no other change.
 - It restores the value the cell was described with, not one that
   `with_initial` started the store with.
@@ -226,12 +231,12 @@ way.
 
 ## A cell where a `State` is expected
 
-`cell.state()` is the cell as a `State` of the scope it is called in. A
+`cell.state()` is the cell as a `State` of the context it is called in. A
 function written over a `State` then draws a cell without knowing it is one:
 
 {{ sample(file="shop/Cart.roc", region="note-box") }}
 
-A write through that handle is a write of the cell, and wakes the cell's
+A reducer through that `State` is a write of the cell, and wakes the cell's
 readers. [Components](@/docs/components.md) builds on this.
 
 ## What to keep in mind
@@ -241,7 +246,7 @@ readers. [Components](@/docs/components.md) builds on this.
   large record wakes every reader of the record for every field.
 - **Rows the user edits are a table.** A cell holding a plain list wakes
   every reader of the list when one item changes.
-  [Tables and Views](@/docs/tables-and-views.md) is the next page.
+  [Tables and Table Views](@/docs/tables-and-views.md) is the next page.
 - **Private state stays out of the store.** Whether a menu is open is no
   one else's business, and in the store it would need a reset of its own.
 - **The types do not tell two cells of one type apart.** A function handed

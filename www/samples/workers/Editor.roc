@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, In, Root, State, Val]
+import pf.Engine exposing [Elem, In, Root, Signal, State]
 import pf.Html
 import pf.Worker
 import Words
@@ -39,7 +39,7 @@ Editor := [].{
 
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"editor",
 			[
@@ -55,22 +55,22 @@ Editor := [].{
 
 	# region cheap
 	## Counting words is quick, so it stays on the page in a `derive`.
-	length : Val(Ctx, S) -> Elem(Ctx)
+	length : Signal(Ctx, S) -> Elem(Ctx)
 	length = |v|
 		Engine.derive(
 			v.map(|s| Words.split(s.text).len()),
-			|n| Html.p_v(n.map(|count| "${count.to_str()} words"), [Engine.test_id("length")]),
+			|n| Html.p_s(n.map(|count| "${count.to_str()} words"), [Engine.test_id("length")]),
 		)
 	# endregion cheap
 
 	# region derive
 	## The summary of the text, computed in a worker.
-	summary : Val(Ctx, S) -> Elem(Ctx)
+	summary : Signal(Ctx, S) -> Elem(Ctx)
 	summary = |v|
-		Worker.derive(
+		Worker.resource(
 			Words.summary,
 			v.map(|s| s.text),
-			|remote| Html.p_v(remote.map(Editor.show_summary), [Engine.test_id("summary")]),
+			|remote| Html.p_s(remote.map(Editor.show_summary), [Engine.test_id("summary")]),
 		)
 
 	## While a job is wanted, the previous answer stays and says it is being
@@ -101,12 +101,12 @@ Editor := [].{
 	## Search the text for a word. An empty box asks nothing.
 	find : State(Ctx, S) -> Elem(Ctx)
 	find = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"find",
 			[
 				Html.text_input(Engine.const("Find"), "search", v.map(|s| s.query), [], st.set_value(|s, query| { ..s, query })),
-				Worker.derive_when(
+				Worker.resource_when(
 					Words.find,
 					v.map(|s| if (s.query == "") Skip else Run({ text: s.text, word: s.query })),
 					Editor.found,
@@ -115,12 +115,12 @@ Editor := [].{
 		)
 	}
 
-	## The body of the search's layer, as a named function. Its context is
-	## left generic: inside the layer it is
+	## The body of the search's resource, as a named function. Its context is
+	## left generic: inside the resource it is
 	## `In(Ctx, Engine.Remote(List(U64), Worker.Error(Worker.Never)))`, which
 	## a named body has no need to spell out.
-	found : Val(ctx, Engine.Remote(List(U64), Worker.Error(Worker.Never))) -> Elem(ctx)
-	found = |remote| Html.p_v(remote.map(Editor.show_lines), [Engine.test_id("found")])
+	found : Signal(ctx, Engine.Remote(List(U64), Worker.Error(Worker.Never))) -> Elem(ctx)
+	found = |remote| Html.p_s(remote.map(Editor.show_lines), [Engine.test_id("found")])
 
 	show_lines : Engine.Remote(List(U64), Worker.Error(Worker.Never)) -> Str
 	show_lines = |{ request, answer }|
@@ -137,13 +137,13 @@ Editor := [].{
 	## still running; editing the text starts nothing.
 	count : State(Ctx, S) -> Elem(Ctx)
 	count = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"count",
 			[
 				Html.button("Count words", [], st.update(|s| { ..s, presses: s.presses + 1, ask: Count({ press: s.presses + 1, text: s.text }), counted: Counting })),
 				Html.button("Cancel", [], st.update(|s| { ..s, ask: Idle, counted: Editor.cancelled(s.counted) })),
-				Engine.latest(
+				Engine.watch_latest(
 					v.map(|s| s.ask),
 					|ask|
 						match ask {
@@ -152,7 +152,7 @@ Editor := [].{
 						},
 					st.on_result(|s, _, res| { ..s, counted: Editor.counted(Words.frequencies.result(res)) }),
 				),
-				Html.p_v(v.map(|s| Editor.show_counted(s.counted)), [Engine.test_id("counted")]),
+				Html.p_s(v.map(|s| Editor.show_counted(s.counted)), [Engine.test_id("counted")]),
 			],
 		)
 	}
@@ -187,17 +187,17 @@ Editor := [].{
 	## Add up the numbers in a box, in a worker.
 	total : State(Ctx, S) -> Elem(Ctx)
 	total = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"total",
 			[
 				Html.text_input(Engine.const("Numbers"), "text", v.map(|s| s.numbers), [], st.set_value(|s, numbers| { ..s, numbers })),
-				Worker.derive(Words.total, v.map(|s| s.numbers), |sum| Html.p_v(sum.map(Editor.show_total), [Engine.test_id("total")])),
+				Worker.resource(Words.total, v.map(|s| s.numbers), |sum| Html.p_s(sum.map(Editor.show_total), [Engine.test_id("total")])),
 			],
 		)
 	}
 
-	## `Worker.status` reads the layer as one union: the task's own error
+	## `Worker.status` reads the resource as one union: the task's own error
 	## (`Failed`) beside the ways a job can produce no answer at all.
 	show_total : Engine.Remote(U64, Worker.Error([NotANumber(Str)])) -> Str
 	show_total = |remote|

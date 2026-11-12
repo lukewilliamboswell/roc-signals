@@ -35,7 +35,7 @@ Lines := [].{
 	}
 
 	lines : Worker.Preparation(File, Indexed, Engine.FileError)
-	lines = Worker.prepared({ name: "example.org/lines/index", prepare!: Lines.index! })
+	lines = Worker.preparation({ name: "example.org/lines/index", prepare!: Lines.index! })
 	# endregion index
 
 	# region line
@@ -71,8 +71,8 @@ Lines := [].{
 	Ctx : In(Root, S)
 
 	asked : S, q -> [Run(Worker.Question(File, q)), Skip]
-	asked = |s, query| match s.doc {
-		Loaded(doc) => Run({ input: doc, query })
+	asked = |s, input| match s.doc {
+		Loaded(doc) => Run({ init: doc, input })
 		None => Skip
 	}
 
@@ -85,7 +85,7 @@ Lines := [].{
 
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"lines",
 			[
@@ -99,9 +99,9 @@ Lines := [].{
 						},
 					),
 				),
-				Worker.derive_when(Lines.count, v.map(|s| Lines.asked(s, {})), |r| Html.p_v(r.map(|x| Lines.show(x, |n| "${n.to_str()} lines")), [Engine.test_id("count")])),
+				Worker.resource_when(Lines.count, v.map(|s| Lines.asked(s, {})), |r| Html.p_s(r.map(|x| Lines.show(x, |n| "${n.to_str()} lines")), [Engine.test_id("count")])),
 				Html.number_input(Engine.const("Line"), v.map(|s| s.wanted), [], st.set_value(|s, wanted| { ..s, wanted })),
-				Worker.derive_when(
+				Worker.resource_when(
 					Lines.line,
 					v.map(
 						|s| match U64.from_str(s.wanted) {
@@ -109,7 +109,7 @@ Lines := [].{
 							Err(_) => Skip
 						},
 					),
-					|r| Html.p_v(
+					|r| Html.p_s(
 						r.map(
 							|x| Lines.show(
 								x,

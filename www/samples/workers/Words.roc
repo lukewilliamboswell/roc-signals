@@ -24,16 +24,16 @@ Words := [].{
 	})
 	# endregion tasks
 
-	# region deadline
+	# region timeout
 	## The three most used words. A job that has not answered five seconds
 	## after it was asked for is stopped and answers `Timeout`.
 	frequencies : Worker.Task(Str, List(Frequency), Worker.Never)
 	frequencies = Worker.task({
 		name: "example.org/words/frequencies",
 		run!: |text| Ok(Words.most_used(text, 3)),
-		deadline: Ms(5000),
+		timeout: Ms(5000),
 	})
-	# endregion deadline
+	# endregion timeout
 
 	# region failing
 	## The sum of the numbers in a text, or the first word that is not one:

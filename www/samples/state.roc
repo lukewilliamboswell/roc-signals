@@ -1,6 +1,6 @@
 app [main] { pf: platform "../../platform/main.roc" }
 
-import pf.Engine exposing [Elem, In, Root, State, Val]
+import pf.Engine exposing [Elem, In, Root, Signal, State]
 import pf.Html
 
 main : Engine.Program
@@ -56,12 +56,12 @@ submit = |s| if (problems(s).is_empty()) { ..s, tried: True, sent: s.sent + 1 } 
 # region page
 page : State(C2, Signup), State(C2, Bool) -> Elem(C2)
 page = |form, compact| {
-	s = form.val()
+	s = form.signal()
 	shown = |p| s.map(|v| v.tried and problems(v).contains(p))
-	Html.div_v(
-		compact.val().map(|c| if (c) "signup compact" else "signup"),
+	Html.div_s(
+		compact.signal().map(|c| if (c) "signup compact" else "signup"),
 		[
-			Html.checkbox(Engine.const("Compact"), compact.val(), [], compact.set_value(|_, v| v == "true")),
+			Html.checkbox(Engine.const("Compact"), compact.signal(), [], compact.set_value(|_, v| v == "true")),
 			Html.form(
 				"Sign up",
 				[Html.on_submit(form.update(submit))],
@@ -72,8 +72,8 @@ page = |form, compact| {
 					Html.submit_button("Sign up", []),
 				],
 			),
-			Html.p_v(s.map(|v| if (v.tried) Str.join_with(problems(v).map(message), " ") else ""), [Engine.test_id("problems")]),
-			Html.p_v(s.map(|v| "Sent ${v.sent.to_str()} times"), [Engine.test_id("sent")]),
+			Html.p_s(s.map(|v| if (v.tried) Str.join_with(problems(v).map(message), " ") else ""), [Engine.test_id("problems")]),
+			Html.p_s(s.map(|v| "Sent ${v.sent.to_str()} times"), [Engine.test_id("sent")]),
 		],
 	)
 }
@@ -81,20 +81,20 @@ page = |form, compact| {
 # endregion page
 
 # region derive
-## `derive` turns a value into a layer of its own. Its body re-runs only when
+## `derive` caches a signal of its own. Its body re-runs only when
 ## the derived value changes, so readers of `count` do no work on a keystroke
 ## that leaves the count the same.
 word_count : State(C2, Signup) -> Elem(C2)
 word_count = |form|
 	Engine.derive(
-		form.val().map(|v| v.name.split_on(" ").count_if(|w| !w.is_empty())),
-		|count| Html.p_v(count.map(|n| "${n.to_str()} words"), []),
+		form.signal().map(|v| v.name.split_on(" ").count_if(|w| !w.is_empty())),
+		|count| Html.p_s(count.map(|n| "${n.to_str()} words"), []),
 	)
 
 # endregion derive
 
 # region map2
-## Two values combine with `map2`; the result reads both layers.
-greeting : Val(C2, Signup), Val(C2, Bool) -> Val(C2, Str)
-greeting = |s, compact| Val.map2(s, compact, |v, c| if (c) v.name else "Hello, ${v.name}")
+## Two signals combine with `map2`; the result reads both sources.
+greeting : Signal(C2, Signup), Signal(C2, Bool) -> Signal(C2, Str)
+greeting = |s, compact| Signal.map2(s, compact, |v, c| if (c) v.name else "Hello, ${v.name}")
 # endregion map2

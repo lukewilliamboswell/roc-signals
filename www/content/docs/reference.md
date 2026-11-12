@@ -18,23 +18,23 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 | Area | Symbols | Guide |
 |---|---|---|
 | Programs | `program`, `program_boot`, `program_store` (an app with a store: the configuration, `Boot -> Store` and `Boot -> Elem(StoreRoot(_))`), `Program`, `Program.with_workers`, `Registration` (made by a `Worker` task's or preparation's `registration`), `Program.with_ports`, `PortRegistration`, `Boot`, `boot_storage` | [Getting Started](@/docs/getting-started.md) |
-| Contexts | `Root`, `StoreRoot(st)` (the top of an app with a store), `In(outer, s)`, `Row(outer, item)`, `Reach(ctx, st)` (how a scope reaches the store; a function that uses cells asks `where [ctx.store : () -> Engine.Reach(ctx, _)]`) | [Thinking in Signals](@/docs/thinking-in-signals.md#contexts) |
-| Values | `Val`, `const`, `Val.map`, `Val.map2` (which Roc's record builder calls: `{ a: va, b: vb }.Engine.Val` is a value of the record, the way a decision reads several cells), `Val.lift`, `Val.lift_row` | [Thinking in Signals](@/docs/thinking-in-signals.md#values-declare-what-they-read) |
-| The store | `cell`, `table`, `Cells(whole, st, h)` (a description, built with the record builder: `{ a: .., b: .. }.Engine.Cells`; a store of one cell is `Engine.cell(init).map(\|c\| { c: c })`), `Cells.map`, `Cells.map2`, `Cells.with_reset`, `store`, `Stored(tag, st)`, `Store(st, h)`, `Store.handles`, `Store.with_initial`, `Store.after`, `Store.read` | [Shared State](@/docs/shared-state.md) |
-| Cells and writes | `Cell(st, a)`, `Cell.val`, `Cell.state`, `Cell.put`, `Cell.change`, `Write(st)` | [Shared State](@/docs/shared-state.md#writes-are-values) |
+| Contexts | `Root`, `StoreRoot(st)` (the top of an app with a store), `In(outer, s)`, `Row(outer, item)`, `Reach(ctx, st)` (how a context reaches the store; a function that uses cells asks `where [ctx.store : () -> Engine.Reach(ctx, _)]`) | [Thinking in Signals](@/docs/thinking-in-signals.md#contexts) |
+| Signals | `Signal`, `const`, `Signal.map`, `Signal.map2` (which Roc's record builder calls: `{ a: va, b: vb }.Engine.Signal` is a signal of the record, the way a decision reads several cells), `Signal.lift`, `Signal.lift_row` | [Thinking in Signals](@/docs/thinking-in-signals.md#signals-declare-what-they-read) |
+| The store | `cell`, `table`, `Cells(whole, st, h)` (a description, built with the record builder: `{ a: .., b: .. }.Engine.Cells`; a store of one cell is `Engine.cell(init).map(\|c\| { c: c })`), `Cells.map`, `Cells.map2`, `Cells.with_reset`, `store`, `Stored(tag, st)`, `Store(st, h)`, `Store.cells`, `Store.with_initial`, `Store.after`, `Store.read` | [Shared State](@/docs/shared-state.md) |
+| Cells and writes | `Cell(st, a)`, `Cell.signal`, `Cell.state`, `Cell.set`, `Cell.update`, `Write(st)` | [Shared State](@/docs/shared-state.md#writes-are-values) |
 | Decisions | `handle`, `handle_by` (handlers), `handle_files`, `handle_files_by` (handlers of the files an event carries), `react`, `react_by` (reactions): each from one pure function that returns a `List(Write(st))`; `does` (a handler from a list of writes, for a transition that needs nothing from the event) | [Shared State](@/docs/shared-state.md#decisions) |
-| Local state | `state`, `State`, `State.val`, `State.lift`, `State.lift_row` | [Local State, Events, and Forms](@/docs/state-and-events.md) |
+| State | `state`, `State(ctx, s)` (a piece of state as one context sees it, local or shared), `State.signal`, `State.lift`, `State.lift_row` | [Local State, Events, and Forms](@/docs/state-and-events.md) |
 | Handlers | `Handler`, `State.update`, `State.update_by`, `State.set_value`, `State.set_value_by`, `Handler.also` (two handlers as one event), `Handler.lift`, `Handler.lift_row` | [Local State, Events, and Forms](@/docs/state-and-events.md#handlers) |
-| Structure | `Elem`, `element`, `text`, `text_v`, `when`, `switch`, `remount_on`, `derive`, `resource`, `Remote(output, error)` (`request`: `Idle`, `Pending`; `answer`: `Unanswered`, `Answered(output)`, `Failed(error)`; `remote.answered()`, the latest answer as `Try(output, [NoAnswer])`), `gather` (one request per input), `Gathered(output, error)` (`jobs`: a `JobState` per input, `Working`, `Answered(output)` or `Failed(error)`; `all`: a `Remote` of the whole list) | [Conditionals and Lists](@/docs/dynamic-structure.md) |
+| Structure | `Elem`, `element`, `text`, `text_s`, `when`, `switch`, `remount_on`, `derive`, `resource`, `Remote(output, error)` (`request`: `Idle`, `Pending`; `answer`: `Unanswered`, `Answered(output)`, `Failed(error)`; `remote.answered()`, the latest answer as `Try(output, [NoAnswer])`), `gather` (one request per input), `Gathered(output, error)` (`jobs`: a `JobState` per input, `Working`, `Answered(output)` or `Failed(error)`; `all`: a `Remote` of the whole list) | [Conditionals and Lists](@/docs/dynamic-structure.md) |
 | Lists | `each`, `RowRef`, `RowRef.key`, `RowRef.field`, `RowRef.item` (the whole item), `RowRef.select`, `keyed`, `Keyed` | [Conditionals and Lists](@/docs/dynamic-structure.md#keyed-lists) |
-| Views of a table | `each_view`, `ViewProps` (`query`, `plan`, `window`), `Query(k, v, s)` (`keep`, `sort`, `compare`), `Window` (`start`, `count`), `every_row` (the window that draws every row) | [Tables and Views](@/docs/tables-and-views.md) |
-| Attributes | `Attr`, `attr`, `attr_v`, `class`, `class_v`, `test_id`, `test_id_v`, `ref` | |
+| Table views | `table_view`, `TableViewProps` (`query`, `plan`, `window`), `QueryPlan(k, v, s)` (`keep`, `sort`, `compare`), `Window` (`start`, `count`), `every_row` (the window that draws every row) | [Tables and Table Views](@/docs/tables-and-views.md) |
+| Attributes | `Attr`, `attr`, `attr_s`, `class`, `class_s`, `test_id`, `test_id_s`, `ref` | |
 | Events | `on` (event name, optionally `:prevent`), `on_click` | |
 | Files | `File`, `File.name`, `File.size`, `File.mime`, `File.slice`, `File.spans` (the `{ start, len }` ranges of `n` bytes that cover a file, for `read!`), `Received`, `FilesHandler`, `State.on_files`, `handle_files`, `handle_files_by`, `FilesHandler.also` (two files handlers as one event), `on_files` | [Files](@/docs/files.md) |
 | Operations on files | `File.upload` (`UploadProps`: `url`, `method ?? "POST"`, `headers ?? []`, `timeout ?? Unlimited`), `File.sha256`, `File.object_url` (acting where the browser keeps the file), `File.read_bytes`, `File.read_utf8` (reading it into the page; `ReadProps`: `max_bytes ?? 8388608`), `file_bytes`, `file_text`, `file_digest`, `file_url`, `FileError` (`Unreadable`, `TooLarge`, `InvalidUtf8`, `Unavailable`, `Refused`) | [Files](@/docs/files.md) |
 | Saving and downloading | `File.save` (a download command; `SaveProps`: `name : [Same, Named(Str)]`), `File.fetch` (`FetchProps`: `url`, `method`, `headers`, `timeout : [Unlimited, Ms(U32)]`), `fetched`, `FetchError` (`Network`, `Timeout`, `Status`, `TooLarge`, `Refused`) | [Files in Tasks](@/docs/files-in-tasks.md) |
 | Effects in a worker job | `File.read!` (`{ start, len }`) and `File.contents!`, answering `Try(_, [Unreadable])`, and `File.contents_utf8!`, `Try(Str, [Unreadable, InvalidUtf8])`; `Files.build!` (`import pf.Files`; `BuildProps`: `name`, `mime : [Auto, Mime(Str)] ?? Auto`, `start_from : [Empty, From(File)] ?? Empty`), `Builder`, `Builder.append!` (`Try({}, [TooLarge])`), `Builder.append_file!`, `Builder.finish!` | [Files in Tasks](@/docs/files-in-tasks.md) |
-| Effects | `watch`, `on_change`, `latest`, `on_post`, `Outbox(item)` (`outbox({})`, `box.post(item)`, `box.last()`: `Unposted` or `Posted(item)`), `Reaction`, `State.on_result`, `react`, `react_by`, `Reaction.also` (two reactions to one result), `ignore`, `on_cleanup`, `cleanup`, `Req`, `Res`, `HttpError`, `http_text`, `WorkFault`, `FileError`, and the plain data of port requests, `PortMessage`, `PortFailure` and `PortDelivery`, which the typed `Port` module wraps | [Effects and the Browser](@/docs/effects-and-browser.md) |
+| Effects | `watch`, `watch_changes`, `watch_latest`, `on_post`, `Outbox(item)` (`outbox({})`, `box.post(item)`, `box.last()`: `Unposted` or `Posted(item)`), `Reaction`, `State.on_result`, `react`, `react_by`, `Reaction.also` (two reactions to one result), `ignore`, `on_cleanup`, `cleanup`, `Request`, `Result`, `HttpError`, `http_text`, `WorkFault`, `FileError`, and the plain data of port requests, `PortMessage`, `PortFailure` and `PortDelivery`, which the typed `Port` module wraps | [Effects and the Browser](@/docs/effects-and-browser.md) |
 
 A component is not an API of its own: it is a type module whose view is
 handed the cells it uses ([Components](@/docs/components.md)).
@@ -43,8 +43,8 @@ handed the cells it uses ([Components](@/docs/components.md)).
 
 `Table(k, v)` is the value a table cell holds: rows by a key that has
 equality and a hash (`import pf.Table`). A decision changes it inside
-`cell.change(...)` with these operations, and each names the rows it
-touches; see [Tables and Views](@/docs/tables-and-views.md).
+`cell.update(...)` with these operations, and each names the rows it
+touches; see [Tables and Table Views](@/docs/tables-and-views.md).
 
 | Area | Symbols |
 |---|---|
@@ -52,28 +52,29 @@ touches; see [Tables and Views](@/docs/tables-and-views.md).
 | Keyed writes | `insert` (a key already present: contract error), `put` (insert or replace), `replace`, `update`, `remove` (each leaves the table unchanged for a key it does not hold) |
 | Whole rewrites | `load` (replace every row), `update_all` (change every row) |
 | Reading | `get` (a `Try(v, [Missing])`), `contains`, `len`, `fold` and `to_list` (every row with its key; both in no particular order) |
-| The record of this turn's writes | `changes` (each written key with its row as it was, or `Rewritten`), `inverse` (the writes that undo this turn's, or `Err(Rewritten)`), `apply` (a list of `Put(k, v)` and `Remove(k)`) |
+| This turn's changes | `changes` (each written key with its row as it was, or `Rewritten`), `inverse` (the writes that undo this turn's, or `Err(Rewritten)`), `apply` (a list of `Put(k, v)` and `Remove(k)`) |
 
-The record is for an undo history and for tests: in a pure test,
+The changes serve an undo history and tests: in a pure test,
 `store.after(writes).read(table).inverse()` tells which rows a transition
 wrote.
 
 The module's remaining functions (`version`, `changes_start`,
 `clear_changes`, `with_id`, `mark`, `kept`) are the engine's bookkeeping of
-the record. Each takes an `EngineOnly` as its last argument, a value only
+the changes. Each takes an `EngineOnly` as its last argument, a value only
 the platform can make, so an app cannot call them.
 
 ## Html
 
 `Html` is a typed vocabulary over `Engine.element`. Every helper is generic in
 its context. Accessible names go in `aria-label`, which the spec locators
-match.
+match. A helper ending `_s` takes a signal where its plain counterpart
+takes a constant; `Html.p_s` takes reactive text, for example.
 
 | Area | Helpers |
 |---|---|
-| Structure | `div`, `div_v`, `div_attrs`, `section`, `section_v`, `section_attrs`, `h1`, `h2`, `h2_v`, `h3`, `p`, `p_v`, `p_attrs`, `span_v`, `pre_v`, `ul`, `li`, `link`, `label_for` |
-| Controls | `button`, `button_v`, `icon_button`, `action_button`, `submit_button`, `text_input`, `number_input`, `textarea`, `checkbox`, `radio`, `select`, `option`, `option_v`, `option_attrs`, `form`, `file_input` (`FileInputProps`: `selection : [Single, Multiple] ?? Single`, `accept : [Any, Types(Str)] ?? Any`) |
-| Attributes | `aria_label`, `aria_label_v`, `aria_describedby`, `aria_invalid`, `disabled`, `flag`, `flag_maybe` |
+| Structure | `div`, `div_s`, `div_attrs`, `section`, `section_s`, `section_attrs`, `h1`, `h2`, `h2_s`, `h3`, `p`, `p_s`, `p_attrs`, `span_s`, `pre_s`, `ul`, `li`, `link`, `label_for` |
+| Controls | `button`, `button_s`, `icon_button`, `action_button`, `submit_button`, `text_input`, `number_input`, `textarea`, `checkbox`, `radio`, `select`, `option`, `option_s`, `option_attrs`, `form`, `file_input` (`FileInputProps`: `selection : [Single, Multiple] ?? Single`, `accept : [Any, Types(Str)] ?? Any`) |
+| Attributes | `aria_label`, `aria_label_s`, `aria_describedby`, `aria_invalid`, `disabled`, `flag`, `flag_maybe` |
 | Events | `on_input`, `on_change`, `on_focus`, `on_blur`, `on_keydown`, `on_submit`, `on_drop_files`, `on_paste_files` |
 
 `section(name, class, children)` names a region for assistive technology
@@ -89,10 +90,10 @@ Anything else is `Engine.element(tag, attrs, children)`.
 
 | Area | Symbols |
 |---|---|
-| Tasks | `task`, `TaskProps(input, output, error)` (`name`, `run! : input => Try(output, error)`, `deadline : [Unlimited, Ms(U32)] ?? Unlimited`, `on_dispose : [Stop, Keep] ?? Stop`, `on_cancel : [Stop, Finish] ?? Stop`), `Task(input, output, error)`, `Task.registration`, `Task.name` |
+| Tasks | `task`, `TaskProps(input, output, error)` (`name`, `run! : input => Try(output, error)`, `timeout : [Unlimited, Ms(U32)] ?? Unlimited`, `on_dispose : [Stop, Keep] ?? Stop`, `on_cancel : [Stop, Finish] ?? Stop`), `Task(input, output, error)`, `Task.registration`, `Task.name` |
 | Jobs from an effect site | `Task.request`, `Task.result` (a `Try(output, Error(error))`), `Error(error)` (`Failed(error)`, `Timeout`, `Refused`, `Lost(WorkFault)`), `Never` (the error of a task that cannot fail) |
-| Layers | `derive`, `derive_when` (for a task or a preparation's task), holding an `Engine.Remote(output, Error(error))`; `gather` (one job per input), holding an `Engine.Gathered(output, Error(error))`; `status`, a layer as one `Status(output, error)`: `Unasked`, `Working`, `Answered(output)`, `Failed(error)`, `Timeout`, `Refused` or `Lost(WorkFault)` |
-| Preparations | `prepared`, `PreparationProps(init, state, error)` (`name`, `prepare! : init => Try(state, error)`), `Preparation(init, state, error)`, `Preparation.task`, `PreparedTaskProps(state, query, output, error)` (`name`, `run! : state, query => Try(output, error)`, `deadline`, `on_dispose`, `on_cancel`, as a task's), `Preparation.registration` (given its tasks' registrations), `PreparedTask(init, state, query, output, error)`, `PreparedTask.registration`, `PreparedTask.name`, `PreparedTaskEntry(state)`, `PreparedTask.request`, `PreparedTask.result`, `Question(init, query)` (`input`, `query`) |
+| Resources | `resource`, `resource_when` (for a task or a preparation's task), holding an `Engine.Remote(output, Error(error))`; `gather` (one job per input), holding an `Engine.Gathered(output, Error(error))`; `status`, a resource as one `Status(output, error)`: `Unasked`, `Working`, `Answered(output)`, `Failed(error)`, `Timeout`, `Refused` or `Lost(WorkFault)` |
+| Preparations | `preparation`, `PreparationProps(init, state, error)` (`name`, `prepare! : init => Try(state, error)`), `Preparation(init, state, error)`, `Preparation.task`, `PreparedTaskProps(state, input, output, error)` (`name`, `run! : state, input => Try(output, error)`, `timeout`, `on_dispose`, `on_cancel`, as a task's), `Preparation.registration` (given its tasks' registrations), `PreparedTask(init, state, input, output, error)`, `PreparedTask.registration`, `PreparedTask.name`, `PreparedTaskEntry(state)`, `PreparedTask.request`, `PreparedTask.result`, `Question(init, input)` (`init`, `input`) |
 
 ## Wire
 
@@ -114,7 +115,7 @@ task's types decide what is sent.
 |---|---|
 | Declaring | `command` (`CommandProps`: `name`), `call` (`CallProps`: `name`, `timeout : [Unlimited, Ms(U32)] ?? Unlimited`), `subscription` (`SubscriptionProps`: `name`, `delivery`), `Delivery` (`Latest`, `Every(n)`), and each shape's `registration` for `Program.with_ports` |
 | From an effect site | `Command.send`, `Call.request`, `Call.result`, `Subscription.subscribe`, `Subscription.message`, `Error` (`Refused`, `Timeout`, `Threw(message)`, `TooLarge`, `Closed`, `Undecodable(why)`) |
-| Layers | `derive`, `derive_when` (for a call), holding an `Engine.Remote(output, Error)` |
+| Resources | `resource`, `resource_when` (for a call), holding an `Engine.Remote(output, Error)` |
 
 ## PortJson
 
@@ -149,7 +150,7 @@ guarded while the control has focus. `checked` is a property set from
 `mountRocEngineApp({ wasmUrl, root, ...options })` fetches and compiles
 `wasmUrl`, mounts the app into the element `root` and returns the runtime.
 What an app means is decided in its Roc code and carried on its requests
-(a job's deadline, a read's `max_bytes`); a `max…` option is what this
+(a job's timeout, a read's `max_bytes`); a `max…` option is what this
 deployment allows, and caps what any request asks for. Every option is
 optional.
 
@@ -189,8 +190,8 @@ them.
 | Live DOM nodes | 2³² − 2 | Resource limit |
 | Events queued while a batch applies | 4096 | Resource limit |
 | Names in a worker catalogue | 64: tasks, preparations and each preparation's tasks | Contract error at mount |
-| Work deadline | 600 s | Capped |
-| A cancelled job of a task that says `on_cancel: Finish` | Its deadline, else 600 s after it was asked for | Its worker is ended, its prepared state with it |
+| Work timeout | 600 s | Capped |
+| A cancelled job of a task that says `on_cancel: Finish` | Its timeout, else 600 s after it was asked for | Its worker is ended, its prepared state with it |
 | Workers alive at once | `maxWorkers` (default the core count, at most 8) | Jobs wait in order for a free worker |
 | Prepared states | One per worker | A new input replaces the least recently used idle worker's |
 | A worker's memory | `maxWorkerBytes` (default 128 MiB), checked after each job | The worker is ended after the job, its prepared state with it; the console warns once per preparation whose state was too large to keep |

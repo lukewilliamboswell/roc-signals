@@ -57,13 +57,13 @@ And use them from effect sites, like any other request:
 
 {{ sample(file="ports/Notes.roc", region="view") }}
 
-`Port.derive` is to a call what `Worker.derive` is to a worker task: a
-layer holding the answer for an input, an `Engine.Remote`, where a newer
-input stops the older call. `Port.derive_when` takes `[Run(input), Skip]`
+`Port.resource` is to a call what `Worker.resource` is to a worker task: a
+resource holding the answer for an input, an `Engine.Remote`, where a newer
+input stops the older call. `Port.resource_when` takes `[Run(input), Skip]`
 for an input that is sometimes not a question.
 
 Give each port its own effect site. A site's reaction receives every
-result of what its plan issued, and a `PortReply` does not say which port
+result of what its plan issued, and a `PortAnswer` does not say which port
 it came from, so a site that issued a call on one port and a subscription
 on another could not tell their results apart. One outbox whose item's tag
 names the port (`[Add(Book), Remove(Str)]`) works too: the reaction is
@@ -158,7 +158,7 @@ What each handler can count on:
 - **Every handler may be synchronous or `async`.** An answer is always
   delivered as a turn of its own, after the turn that sent the request.
 - **A call's `signal` aborts** when the app no longer wants the answer: a
-  `latest` or `derive` site moved on to a newer value (`AbortError`), the
+  `watch_latest` or `resource` site moved on to a newer value (`AbortError`), the
   call's timeout expired (`TimeoutError`), or the app stopped. Disposing
   the site that made the call does not abort it: a call usually has an
   effect worth finishing (a write), so, like an HTTP request, it is answered
@@ -169,7 +169,7 @@ What each handler can count on:
   with `Threw`. Messages are delivered in order, each as its own turn, and
   never inside the call to `emit`.
 - **A subscription's unsubscribe function** runs when the site that asked
-  for it is disposed, when a `latest` site moves on, or when the app stops.
+  for it is disposed, when a `watch_latest` site moves on, or when the app stops.
 - **Failures are values.** A call whose handler throws or rejects answers
   `Threw(message)`. A command handler's failure is reported to the console
   and to the `onPortFault` mount option. Nothing a handler does stops the
@@ -295,14 +295,13 @@ copy and the store stay in agreement, across a reload and across tabs:
 - **The page changes its copy in the turn of the click** and sends the
   write as a command. It never waits on the store to show a change.
 - **The store's copy comes back as a subscription.** After any write, the
-  handlers read the whole store in a new transaction and emit it on a
+  handlers read the whole store afresh and emit it on a
   `Latest` subscription, and the app replaces its copy with it. A write in
   another tab is announced over a `BroadcastChannel`, and the tabs that
   hear it read and emit the same way.
 - **A tab's own writes come back too.** A read another tab's write started
   may still be in flight when this tab writes; delivered after the write,
-  it would undo it on the page. IndexedDB runs the transactions on one
-  store in the order they were made, so the read that follows this tab's
+  it would undo it on the page. IndexedDB orders these reads and writes on one store as they were made, so the read that follows this tab's
   write sees it, and the last copy any tab receives is the store as it is.
 - **A failed command is undone by the copy that follows.** The handler
   emits the store's copy whether or not its write succeeded, so the app
