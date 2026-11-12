@@ -127,23 +127,23 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 
 	## The site that loads the article.
 	load : State(ctx, Story) -> Elem(ctx)
-	load = |story| Fetch.load_site(story.val().map(Story.req), story.on_result(Story.stored))
+	load = |story| Fetch.load_site(story.signal().map(Story.req), story.on_result(Story.stored))
 
 	## The site that sends a favourite or its undoing.
 	favorite_site : State(ctx, Story) -> Elem(ctx)
-	favorite_site = |story| Fetch.submit_site(story.val().map(|s| s.fav), story.on_result(Story.favorite_answered))
+	favorite_site = |story| Fetch.submit_site(story.signal().map(|s| s.fav), story.on_result(Story.favorite_answered))
 
 	## The site that sends a deletion. `answer` is the owner's reaction,
 	## because a deleted article changes more than the story.
 	delete_site : State(ctx, Story), Engine.Reaction(ctx, Fetch.Submit) -> Elem(ctx)
-	delete_site = |story, answer| Fetch.submit_site(story.val().map(|s| s.del), answer)
+	delete_site = |story, answer| Fetch.submit_site(story.signal().map(|s| s.del), answer)
 
 	## The article, drawn over its cell, with `below` under it.
 	view : Props(st), Elem(ctx) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, st)]
 	view = |props, below| {
 		story = props.story
-		sv = story.val()
+		sv = story.signal()
 		article = sv.map(Story.current)
 		field = |f| article.map(
 			|shown| match shown {
@@ -152,28 +152,28 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 			},
 		)
 		author = field(|a| a.author.username)
-		session = props.session.val()
+		session = props.session.signal()
 		Engine.when(
 			article.map(Api.is_loading),
 			|| Html.p("Loading article...", "border border-zinc-950 bg-white p-6 text-zinc-500"),
 			|| Engine.when(
 				article.map(Api.is_failed),
-				|| Html.p_v(article.map(Api.failure_message), [Engine.class(Styles.status_error)]),
+				|| Html.p_s(article.map(Api.failure_message), [Engine.class(Styles.status_error)]),
 				|| Engine.element(
 					"div",
 					[Engine.attr("data-conduit", "article"), Engine.class("border border-zinc-950 bg-white p-6 sm:p-10")],
 					[
-						Engine.element("h2", [Engine.class("text-4xl font-semibold leading-tight tracking-normal text-zinc-950 sm:text-5xl")], [Engine.text_v(field(|a| a.title))]),
+						Engine.element("h2", [Engine.class("text-4xl font-semibold leading-tight tracking-normal text-zinc-950 sm:text-5xl")], [Engine.text_s(field(|a| a.title))]),
 						Html.div(
 							"flex flex-wrap items-center gap-2 py-4 text-sm text-zinc-500",
 							[
-								Nav.link_v(props.nav, author, "font-medium text-emerald-600", author.map(profile_url)),
-								Engine.text_v(field(|a| "${Format.display_date(a.created_at)} | ${a.favorites_count.to_str()} favorites")),
+								Nav.link_s(props.nav, author, "font-medium text-emerald-600", author.map(profile_url)),
+								Engine.text_s(field(|a| "${Format.display_date(a.created_at)} | ${a.favorites_count.to_str()} favorites")),
 							],
 						),
 						Engine.when(
 							session.map(|s| s.is_signed_in()),
-							|| Parts.button_v(
+							|| Parts.button_s(
 								article.map(
 									|shown| match shown {
 										Ready(a) => if (a.favorited) "Unfavorite Article (${a.favorites_count.to_str()})" else "Favorite Article (${a.favorites_count.to_str()})"
@@ -185,7 +185,7 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 							),
 							|| Engine.text(""),
 						),
-						Html.p_v(
+						Html.p_s(
 							sv.map(favorite_error),
 							[Engine.class("text-red-700")],
 						),
@@ -200,7 +200,7 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 							|| Parts.button("Delete Article", "mb-4 ${Styles.danger_button}", Engine.handle_by(session, |who, _| [story.change(|s| Story.deleting(s, who))])),
 							|| Engine.text(""),
 						),
-						Html.p_v(sv.map(delete_error), [Engine.class("text-red-700")]),
+						Html.p_s(sv.map(delete_error), [Engine.class("text-red-700")]),
 						MarkdownView.markdown(field(|a| a.body)),
 						below,
 					],

@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, File, Row, State, Val]
+import pf.Engine exposing [Elem, File, Row, Signal, State]
 import pf.Html
 import pf.Worker
 import pf.Wire
@@ -155,34 +155,34 @@ LabApp := [].{
 		}
 
 	## One label-and-number metric; the `test_id` sits on the value.
-	metric : Str, Str, Val(ctx, Str) -> Elem(ctx)
-	metric = |id, label, value| Html.div("stat", [Html.p(label, "stat-label"), Html.p_v(value, [Engine.class("stat-value numeric"), Engine.test_id(id), Html.aria_label(label)])])
+	metric : Str, Str, Signal(ctx, Str) -> Elem(ctx)
+	metric = |id, label, value| Html.div("stat", [Html.p(label, "stat-label"), Html.p_s(value, [Engine.class("stat-value numeric"), Engine.test_id(id), Html.aria_label(label)])])
 
 	## A labelled number box that edits one parameter.
-	field : Str, Val(ctx, Str), Engine.Handler(ctx) -> Elem(ctx)
+	field : Str, Signal(ctx, Str), Engine.Handler(ctx) -> Elem(ctx)
 	field = |label, value, h| Html.div("field", [Html.p(label, "field-label"), Html.number_input(Engine.const(label), value, [Engine.class("input w-28")], h)])
 
 	## One row of the job grid, handed its own job: what it is, where it
 	## is, and the two sites that ask for its work and for its strip's URL.
 	## Their answers are decisions over the table, since finishing one job
 	## admits another.
-	job_row : Val(Row(ctx, U64), U64), State(Row(ctx, U64), Lab.Job) -> Elem(Row(ctx, U64))
+	job_row : Signal(Row(ctx, U64), U64), State(Row(ctx, U64), Lab.Job) -> Elem(Row(ctx, U64))
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	job_row = |index, held| {
-		job = held.val()
+		job = held.signal()
 		number = index.map(|i| (i + 1).to_str())
 		phase = job.map(|j| j.phase)
 		Html.li(
-			[Engine.class("card flex flex-wrap items-center justify-between gap-2 py-2"), Html.aria_label_v(number.map(|k| "Job ${k}"))],
+			[Engine.class("card flex flex-wrap items-center justify-between gap-2 py-2"), Html.aria_label_s(number.map(|k| "Job ${k}"))],
 			[
 				Html.div(
 					"grid min-w-0 gap-0.5",
 					[
-						Html.p_v(number.map(|k| "Job ${k}"), [Engine.class("card-title")]),
-						Html.p_v(job.map(|j| Lab.describe(j.task)), [Engine.class("hint numeric")]),
+						Html.p_s(number.map(|k| "Job ${k}"), [Engine.class("card-title")]),
+						Html.p_s(job.map(|j| Lab.describe(j.task)), [Engine.class("hint numeric")]),
 					],
 				),
-				Html.span_v(phase.map(Lab.phase_text), [Engine.class_v(phase.map(Lab.phase_class)), Engine.test_id_v(number.map(|k| "job-${k}"))]),
+				Html.span_s(phase.map(Lab.phase_text), [Engine.class_s(phase.map(Lab.phase_class)), Engine.test_id_s(number.map(|k| "job-${k}"))]),
 				Engine.latest(job.map(Lab.want_of), LabApp.plan, Engine.react_by(job, LabApp.answered)),
 				Engine.latest(job.map(Lab.url_want), LabApp.plan_url, Engine.react_by(job, LabApp.url_answered)),
 			],
@@ -198,9 +198,9 @@ LabApp := [].{
 		Lab.form,
 		|form| {
 			cells = LabStore.h
-			typed = form.val()
-			jobs = cells.work.jobs.val()
-			restart = Engine.handle_by({ typed, run: cells.run.val(), going: jobs.map(Lab.active) }.Val, |at, _| LabStore.edited(at))
+			typed = form.signal()
+			jobs = cells.work.jobs.signal()
+			restart = Engine.handle_by({ typed, run: cells.run.signal(), going: jobs.map(Lab.active) }.Signal, |at, _| LabStore.edited(at))
 			Html.section(
 				"Run",
 				"panel grid gap-4 p-5",
@@ -227,11 +227,11 @@ LabApp := [].{
 							LabApp.field("Deadline (ms)", typed.map(|f| f.deadline_text), form.set_value(|f, text| { ..f, deadline_text: text }).also(restart)),
 						],
 					),
-					Html.p_v(typed.map(Lab.problem), [Engine.class("hint text-red-700"), Engine.test_id("problem")]),
+					Html.p_s(typed.map(Lab.problem), [Engine.class("hint text-red-700"), Engine.test_id("problem")]),
 					Html.div(
 						"toolbar",
 						[
-							Html.action_button(Engine.const("Start"), typed.map(|f| Lab.problem(f) != ""), [Engine.class("button-primary")], Engine.handle_by({ typed, run: cells.run.val() }.Val, |at, _| LabStore.started(at.typed, at.run))),
+							Html.action_button(Engine.const("Start"), typed.map(|f| Lab.problem(f) != ""), [Engine.class("button-primary")], Engine.handle_by({ typed, run: cells.run.signal() }.Signal, |at, _| LabStore.started(at.typed, at.run))),
 							Html.action_button(Engine.const("Cancel"), jobs.map(|table| !Lab.active(table)), [Engine.class("button")], Engine.does(LabStore.cancelled)),
 							Html.action_button(Engine.const("Retry stopped jobs"), jobs.map(|table| !Lab.any_job(table, Lab.is_stopped)), [Engine.class("button")], Engine.does(LabStore.retried)),
 							Html.action_button(Engine.const("Reset"), jobs.map(|table| table.len() == 0), [Engine.class("button-ghost")], Engine.does([cells.work.reset])),
@@ -254,13 +254,13 @@ LabApp := [].{
 			"stat",
 			[
 				Html.p("Heartbeat", "stat-label"),
-				Html.p_v(beats.val().map(|n| n.to_str()), [Engine.class("stat-value numeric"), Engine.test_id("heartbeat"), Html.aria_label("Heartbeat")]),
+				Html.p_s(beats.signal().map(|n| n.to_str()), [Engine.class("stat-value numeric"), Engine.test_id("heartbeat"), Html.aria_label("Heartbeat")]),
 				Engine.watch(Engine.const({}), |_| [Interval(LabApp.heartbeat_ms)], beats.on_result(|n, _, _| n + 1)),
 			],
 		),
 	)
 
-	totals : Val(ctx, Lab.Tally) -> Elem(ctx)
+	totals : Signal(ctx, Lab.Tally) -> Elem(ctx)
 	totals = |t| Html.section(
 		"Totals",
 		"panel grid gap-4 p-5",
@@ -279,7 +279,7 @@ LabApp := [].{
 					LabApp.metric("checksum", "Checksum", t.map(Lab.checksum_text)),
 				],
 			),
-			Html.p_v(t.map(Lab.progress_text), [Engine.class("hint"), Engine.test_id("progress")]),
+			Html.p_s(t.map(Lab.progress_text), [Engine.class("hint"), Engine.test_id("progress")]),
 		],
 	)
 
@@ -288,19 +288,19 @@ LabApp := [].{
 	## One band of the picture, handed its strip's job: the strip once it
 	## has a URL, and until then a placeholder of the strip's shape that
 	## says where the strip is.
-	band : Val(Row(ctx, U64), U64), State(Row(ctx, U64), Lab.Job) -> Elem(Row(ctx, U64))
+	band : Signal(Row(ctx, U64), U64), State(Row(ctx, U64), Lab.Job) -> Elem(Row(ctx, U64))
 	band = |index, held| {
-		job = held.val()
+		job = held.signal()
 		look = job.map(|j| Lab.look_of(j.phase))
 		number = index.map(|i| (i + 1).to_str())
 		Engine.element(
 			"div",
-			[Engine.class_v(look.map(Lab.look_class)), Engine.attr_v("style", job.map(Lab.strip_style)), Engine.test_id_v(number.map(|k| "strip-${k}"))],
+			[Engine.class_s(look.map(Lab.look_class)), Engine.attr_s("style", job.map(Lab.strip_style)), Engine.test_id_s(number.map(|k| "strip-${k}"))],
 			[
 				Engine.when(
 					look.map(|l| Lab.look_url(l) != ""),
-					|| Engine.element("img", [Engine.attr_v("src", look.map(Lab.look_url)), Engine.attr_v("alt", number.map(|k| "Strip ${k}")), Engine.class("block w-full"), Engine.test_id_v(number.map(|k| "strip-image-${k}"))], []),
-					|| Engine.text_v(look.map(Lab.look_text)),
+					|| Engine.element("img", [Engine.attr_s("src", look.map(Lab.look_url)), Engine.attr_s("alt", number.map(|k| "Strip ${k}")), Engine.class("block w-full"), Engine.test_id_s(number.map(|k| "strip-image-${k}"))], []),
+					|| Engine.text_s(look.map(Lab.look_text)),
 				),
 			],
 		)
@@ -386,7 +386,7 @@ LabApp := [].{
 
 	## The picture once composed and linked, the bands until then, and what
 	## it is, with a button that saves it.
-	shown : Val(ctx, Composed), Val(ctx, Link), Val(ctx, Sum) -> Elem(ctx)
+	shown : Signal(ctx, Composed), Signal(ctx, Link), Signal(ctx, Sum) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	shown = |r, link, sum|
 		Html.div(
@@ -394,11 +394,11 @@ LabApp := [].{
 			[
 				Engine.when(
 					link.map(|l| LabApp.link_url(l) != ""),
-					|| Engine.element("img", [Engine.attr_v("src", link.map(LabApp.link_url)), Engine.attr("alt", "The Mandelbrot set, composed from its strips"), Engine.class("block w-full"), Engine.test_id("picture-image")], []),
+					|| Engine.element("img", [Engine.attr_s("src", link.map(LabApp.link_url)), Engine.attr("alt", "The Mandelbrot set, composed from its strips"), Engine.class("block w-full"), Engine.test_id("picture-image")], []),
 					|| LabApp.bands({}),
 				),
-				Html.p_v(r.map(LabApp.composed_text), [Engine.class("hint"), Engine.test_id("composed")]),
-				Html.p_v(sum.map(LabApp.sum_text), [Engine.class("hint break-all font-mono"), Engine.test_id("digest")]),
+				Html.p_s(r.map(LabApp.composed_text), [Engine.class("hint"), Engine.test_id("composed")]),
+				Html.p_s(sum.map(LabApp.sum_text), [Engine.class("hint break-all font-mono"), Engine.test_id("digest")]),
 				Html.action_button(
 					Engine.const("Save picture"),
 					r.map(|remote| remote.answered().is_err()),
@@ -422,14 +422,14 @@ LabApp := [].{
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	picture = |{}| {
 		cells = LabStore.h
-		jobs = cells.work.jobs.val()
+		jobs = cells.work.jobs.signal()
 		drawing = jobs.map(Lab.drawing)
 		Html.section(
 			"Picture",
 			"panel grid content-start gap-4 p-5",
 			[
 				Html.h2("Picture", "panel-title"),
-				Html.p_v(jobs.map(Lab.picture_text), [Engine.class("hint"), Engine.test_id("picture")]),
+				Html.p_s(jobs.map(Lab.picture_text), [Engine.class("hint"), Engine.test_id("picture")]),
 				Worker.derive_when(
 					Picture.compose,
 					jobs.map(Lab.composition),
@@ -446,7 +446,7 @@ LabApp := [].{
 						)
 					},
 				),
-				LabApp.metric("draw-ticks", "Page clock ticks while drawing, one per ${LabApp.clock_ms.to_str()} ms", jobs.map2(cells.work.ticks.val(), Lab.ticks_text)),
+				LabApp.metric("draw-ticks", "Page clock ticks while drawing, one per ${LabApp.clock_ms.to_str()} ms", jobs.map2(cells.work.ticks.signal(), Lab.ticks_text)),
 				Html.p(
 					"Each strip is drawn by a worker and shown as soon as it arrives, so the picture fills in in the order the workers finish. The pool panel's links mount the page again with another pool size, which starts any drawing over. With the page's own thread (inline) no strip can be drawn: building a file needs a worker.",
 					"hint",
@@ -476,7 +476,7 @@ LabApp := [].{
 					],
 				),
 				LabApp.controls({}),
-				Engine.derive(cells.work.jobs.val().map(Lab.tally), LabApp.totals),
+				Engine.derive(cells.work.jobs.signal().map(Lab.tally), LabApp.totals),
 				Html.div(
 					"grid items-start gap-4 lg:grid-cols-2",
 					[
@@ -484,8 +484,8 @@ LabApp := [].{
 						Engine.element("worker-pool-panel", [Engine.class("block"), Engine.attr("role", "region"), Html.aria_label("Worker pool"), Engine.test_id("pool-panel")], []),
 					],
 				),
-				Engine.on_post(cells.work.save.val(), |file| [File.save(file, {})], Engine.ignore({})),
-				Html.p_v(cells.work.refused.val().map(|count| "Refused at the in-flight bound and retried: ${count.to_str()}"), [Engine.class("hint"), Engine.test_id("refused")]),
+				Engine.on_post(cells.work.save.signal(), |file| [File.save(file, {})], Engine.ignore({})),
+				Html.p_s(cells.work.refused.signal().map(|count| "Refused at the in-flight bound and retried: ${count.to_str()}"), [Engine.class("hint"), Engine.test_id("refused")]),
 				Html.ul(
 					[Engine.class("grid gap-2"), Html.aria_label("Jobs")],
 					[Engine.each_view(cells.work.jobs, { query: Engine.const(Every), plan: Lab.listed, window: Engine.const(Engine.every_row) }, LabApp.job_row)],

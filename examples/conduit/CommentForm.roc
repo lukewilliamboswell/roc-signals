@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, State, Val]
+import pf.Engine exposing [Elem, Signal, State]
 import Api
 import Fetch
 import Parts
@@ -73,14 +73,14 @@ CommentForm :: { body : Str, sub : Fetch.Submit, result : Outcome }.{
 	## The box, drawn over a state that holds a form. `target` is read when
 	## the button is pressed. `answer` is the owner's reaction to the POST's
 	## answer: the owner decides what else an accepted comment changes.
-	view : State(ctx, CommentForm), Val(ctx, Target), Engine.Reaction(ctx, Fetch.Submit) -> Elem(ctx)
+	view : State(ctx, CommentForm), Signal(ctx, Target), Engine.Reaction(ctx, Fetch.Submit) -> Elem(ctx)
 	view = |form, target, answer| Engine.element(
 		"form",
 		[Engine.class("mb-8 grid gap-3 border border-zinc-950 bg-zinc-50 p-4")],
 		[
-			Fetch.submit_site(form.val().map(CommentForm.sending), answer),
-			Parts.error_list(form.val().map(CommentForm.errors)),
-			Parts.textarea("Comment", form.val().map(|f| f.body), form.set_value(CommentForm.typed)),
+			Fetch.submit_site(form.signal().map(CommentForm.sending), answer),
+			Parts.error_list(form.signal().map(CommentForm.errors)),
+			Parts.textarea("Comment", form.signal().map(|f| f.body), form.set_value(CommentForm.typed)),
 			Parts.button("Post Comment", Styles.primary_button, form.update_by(target, CommentForm.submitted)),
 		],
 	)

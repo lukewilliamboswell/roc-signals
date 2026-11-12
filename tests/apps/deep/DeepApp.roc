@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, In, Root, State, Val]
+import pf.Engine exposing [Elem, In, Root, Signal, State]
 import pf.Html
 
 ## Deep-nesting test app: one path that runs past 100 layer indices, with
@@ -64,15 +64,15 @@ DeepApp := [].{
 	down16 = |st| DeepApp.down4(DeepApp.down4(DeepApp.down4(DeepApp.down4(st))))
 
 	## A line naming a number, read by a reader with test id `name`.
-	reader : Str, Val(ctx, I64) -> Elem(ctx)
-	reader = |name, v| Html.p_v(v.map(|n| "${name}=${n.to_str()}"), [Engine.test_id(name)])
+	reader : Str, Signal(ctx, I64) -> Elem(ctx)
+	reader = |name, v| Html.p_s(v.map(|n| "${name}=${n.to_str()}"), [Engine.test_id(name)])
 
 	## The counter `n` named `name`: its reader and its button, above `below`.
 	counter : Str, State(ctx, I64), Elem(ctx) -> Elem(ctx)
 	counter = |name, n, below| Html.div(
 		name,
 		[
-			DeepApp.reader(name, n.val()),
+			DeepApp.reader(name, n.signal()),
 			Html.button("${name}+1", [], n.update(|v| v + 1)),
 			below,
 		],
@@ -117,7 +117,7 @@ DeepApp := [].{
 									{ init: 0.I64, pending: |n, _| n, plan: |_| [Timer(50)], resolve: |n, _, _| n + 1 },
 									|answers| DeepApp.reader("answers", answers),
 								),
-								Engine.state({}, |_| Engine.derive(s12.lift().val().map(|n| n * 2), |d| DeepApp.below_d(a12.lift().lift(), s12.lift().lift(), d))),
+								Engine.state({}, |_| Engine.derive(s12.lift().signal().map(|n| n * 2), |d| DeepApp.below_d(a12.lift().lift(), s12.lift().lift(), d))),
 							],
 						)
 					},
@@ -128,12 +128,12 @@ DeepApp := [].{
 
 	## Indices 66 to 100: the derived value, the far read of `a`, `e`
 	## sixteen layers below, and the rows state sixteen layers below `e`.
-	below_d : State(ctx, I64), State(ctx, I64), Val(ctx, I64) -> Elem(ctx)
+	below_d : State(ctx, I64), State(ctx, I64), Signal(ctx, I64) -> Elem(ctx)
 	below_d = |a, s, d| Html.div(
 		"d",
 		[
 			DeepApp.reader("d", d),
-			DeepApp.reader("far", a.val()),
+			DeepApp.reader("far", a.signal()),
 			DeepApp.pad16(
 				|| Engine.state(
 					0.I64,
@@ -153,17 +153,17 @@ DeepApp := [].{
 	bottom = |s, rs| Html.div(
 		"rows",
 		[
-			DeepApp.reader("rows", rs.val().map(|items| items.fold(0, |sum, it| sum + it.n))),
+			DeepApp.reader("rows", rs.signal().map(|items| items.fold(0, |sum, it| sum + it.n))),
 			Html.button("Reset rows", [], rs.update(|_| DeepApp.rows)),
 			Engine.each(
-				rs.val(),
+				rs.signal(),
 				|it| it.id,
 				|r| Html.li(
 					[],
 					[
-						Html.p_v(r.field(|it| "${it.id}=${it.n.to_str()}"), [Engine.test_id_v(r.key())]),
-						Html.p_v(s.lift_row().val().map(|n| "seen=${n.to_str()}"), [Engine.test_id_v(r.key().map(|k| "seen-${k}"))]),
-						Html.button("row+1", [Engine.test_id_v(r.key().map(|k| "inc-${k}"))], rs.lift_row().update_by(r.key(), DeepApp.bump_row)),
+						Html.p_s(r.field(|it| "${it.id}=${it.n.to_str()}"), [Engine.test_id_s(r.key())]),
+						Html.p_s(s.lift_row().signal().map(|n| "seen=${n.to_str()}"), [Engine.test_id_s(r.key().map(|k| "seen-${k}"))]),
+						Html.button("row+1", [Engine.test_id_s(r.key().map(|k| "inc-${k}"))], rs.lift_row().update_by(r.key(), DeepApp.bump_row)),
 					],
 				),
 			),

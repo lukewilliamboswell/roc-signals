@@ -6,7 +6,7 @@ app [target] {
 import fz.Fuzz
 import pf.Core
 import pf.Dom
-import pf.Engine exposing [Elem, State, Val]
+import pf.Engine exposing [Elem, Signal, State]
 import pf.Table
 
 ## Tables and their views: bytes decode into a session of events over one
@@ -589,13 +589,13 @@ press = |name, handler| Engine.element("button", [Engine.attr("data-do", name), 
 ## state of the row's own. `bump` and `tint` write the row through its
 ## `State`, `drop` removes it through the table's cell, `mark` writes the
 ## row's state and `both` writes that state and the row as one event.
-row_view : Engine.Cell(st, Table(U64, Item)), Val(Engine.Row(ctx, U64), U64), State(Engine.Row(ctx, U64), Item) -> Elem(Engine.Row(ctx, U64))
+row_view : Engine.Cell(st, Table(U64, Item)), Signal(Engine.Row(ctx, U64), U64), State(Engine.Row(ctx, U64), Item) -> Elem(Engine.Row(ctx, U64))
 	where [ctx.store : () -> Engine.Reach(ctx, st)]
 row_view = |table, key, row| Engine.element(
 	"li",
 	[],
 	[
-		Engine.text_v(key.map2(row.val(), |k, item| "${k.to_str()}:${item.rank.to_str()}:${item.shade.to_str()}")),
+		Engine.text_s(key.map2(row.signal(), |k, item| "${k.to_str()}:${item.rank.to_str()}:${item.shade.to_str()}")),
 		press("bump", row.update(|item| bumped(item, 1))),
 		press("tint", row.update(|item| bumped(item, 2))),
 		press("drop", Engine.handle_by(key, |k, _| [table.change(|held| held.remove(k))])),
@@ -605,7 +605,7 @@ row_view = |table, key, row| Engine.element(
 				"span",
 				[],
 				[
-					Engine.text_v(marks.val().map(|n| ":${n.to_str()}")),
+					Engine.text_s(marks.signal().map(|n| ":${n.to_str()}")),
 					press("mark", marks.update(|n| n + 1)),
 					press("both", marks.update(|n| n + 1).also(row.lift().update(|item| bumped(item, 0)))),
 				],
@@ -616,7 +616,7 @@ row_view = |table, key, row| Engine.element(
 
 ## A view of `table`: the window `window` of `listing`, in a list that
 ## carries `name`.
-list_of : Engine.Attr(ctx), Engine.Cell(st, Table(U64, Item)), Val(ctx, Listing), Val(ctx, Engine.Window) -> Elem(ctx)
+list_of : Engine.Attr(ctx), Engine.Cell(st, Table(U64, Item)), Signal(ctx, Listing), Signal(ctx, Engine.Window) -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, st)]
 list_of = |name, table, listing, window| Engine.element(
 	"ul",
@@ -632,16 +632,16 @@ list_of = |name, table, listing, window| Engine.element(
 page : {} -> Elem(Engine.StoreRoot(_))
 page = |{}| {
 	rows = cells.items.rows
-	reading = rows.val().map2(cells.saved.val(), |now, kept| { now, kept }).map2(cells.spare.val(), |read, lent| { now: read.now, kept: read.kept, lent })
+	reading = rows.signal().map2(cells.saved.signal(), |now, kept| { now, kept }).map2(cells.spare.signal(), |read, lent| { now: read.now, kept: read.kept, lent })
 	Engine.element(
 		"main",
 		[],
 		[
 			Engine.element("input", [Engine.test_id("plain"), Engine.on("input", Engine.handle(|payload| writes_of(decided_by(payload), Unread)))], []),
 			Engine.element("input", [Engine.test_id("copy"), Engine.on("input", Engine.handle_by(reading, |read, payload| writes_of(decided_by(payload), Read(read))))], []),
-			Engine.element("p", [Engine.test_id("count")], [Engine.text_v(rows.val().map(|table| table.len().to_str()))]),
-			Engine.element("p", [Engine.test_id("serial")], [Engine.text_v(cells.items.serial.val().map(|n| n.to_str()))]),
-			list_of(Engine.test_id("a"), rows, cells.listing.val(), cells.window.val()),
+			Engine.element("p", [Engine.test_id("count")], [Engine.text_s(rows.signal().map(|table| table.len().to_str()))]),
+			Engine.element("p", [Engine.test_id("serial")], [Engine.text_s(cells.items.serial.signal().map(|n| n.to_str()))]),
+			list_of(Engine.test_id("a"), rows, cells.listing.signal(), cells.window.signal()),
 			Engine.state(
 				first_local,
 				|local| Engine.element(
@@ -659,17 +659,17 @@ page = |{}| {
 							],
 							[],
 						),
-						list_of(Engine.test_id("b"), rows, local.val().map(|held| held.listing), local.val().map(|held| held.window)),
+						list_of(Engine.test_id("b"), rows, local.signal().map(|held| held.listing), local.signal().map(|held| held.window)),
 						Engine.derive(
-							local.val().map(|held| { listing: turned(held.listing), window: held.window }),
+							local.signal().map(|held| { listing: turned(held.listing), window: held.window }),
 							|shown| list_of(Engine.test_id("e"), rows, shown.map(|held| held.listing), shown.map(|held| held.window)),
 						),
 					],
 				),
 			),
 			Engine.when(
-				cells.shown.val(),
-				|| list_of(Engine.test_id("c"), rows, cells.listing.val().map(turned), Engine.const(c_window)),
+				cells.shown.signal(),
+				|| list_of(Engine.test_id("c"), rows, cells.listing.signal().map(turned), Engine.const(c_window)),
 				|| Engine.text(""),
 			),
 			list_of(Engine.test_id("d"), cells.spare, Engine.const(d_listing), Engine.const(d_window)),
@@ -678,12 +678,12 @@ page = |{}| {
 				[Engine.test_id("lanes")],
 				[
 					Engine.each(
-						cells.lanes.val(),
+						cells.lanes.signal(),
 						|shade| shade.to_str(),
 						|lane| Engine.element(
 							"li",
 							[],
-							[list_of(Engine.test_id_v(lane.key().map(|shade| "lane ${shade}")), rows, lane.field(lane_listing), Engine.const(lane_window))],
+							[list_of(Engine.test_id_s(lane.key().map(|shade| "lane ${shade}")), rows, lane.field(lane_listing), Engine.const(lane_window))],
 						),
 					),
 				],

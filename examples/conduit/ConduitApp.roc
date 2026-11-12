@@ -1,4 +1,4 @@
-import pf.Engine exposing [Cell, Elem, Reaction, Row, RowRef, State, Val]
+import pf.Engine exposing [Cell, Elem, Reaction, Row, RowRef, Signal, State]
 import pf.Html
 import Api
 import AppStore
@@ -70,7 +70,7 @@ ConduitApp := [].{
 	pages = AppStore.h.pages
 
 	## Where the reader is and who they are, read at the root.
-	here : Val(Engine.StoreRoot(_), Here)
+	here : Signal(Engine.StoreRoot(_), Here)
 	here = AppStore.here({})
 
 	no_submit : Submit
@@ -175,7 +175,7 @@ ConduitApp := [].{
 	## A load site: issue a GET whenever the request record changes; store
 	## the decoded result only while it is still the current request, which
 	## `store` decides from where the reader is when the answer arrives.
-	load_site : Val(Engine.StoreRoot(_), LoadReq), (M, Here, LoadReq, Engine.Res -> M) -> Elem(Engine.StoreRoot(_))
+	load_site : Signal(Engine.StoreRoot(_), LoadReq), (M, Here, LoadReq, Engine.Res -> M) -> Elem(Engine.StoreRoot(_))
 	load_site = |req, store| Engine.watch(
 		req,
 		|r| if (r.uri.is_empty()) [] else [Api.get_request(r.uri, r.token)],
@@ -223,7 +223,7 @@ ConduitApp := [].{
 	next : Submit, Str, Str, Str, Str -> Submit
 	next = |prev, method, url, body, token| { serial: prev.serial + 1, method, url, body, token }
 
-	submit_site : Val(Engine.StoreRoot(_), Submit), Reaction(Engine.StoreRoot(_), Submit) -> Elem(Engine.StoreRoot(_))
+	submit_site : Signal(Engine.StoreRoot(_), Submit), Reaction(Engine.StoreRoot(_), Submit) -> Elem(Engine.StoreRoot(_))
 	submit_site = |sub, react| Engine.watch(sub, ConduitApp.plan_submit, react)
 
 	classify_favorite : Api.ResponseState, Str -> FavoriteResult
@@ -504,26 +504,26 @@ ConduitApp := [].{
 	button : Str, Str, Engine.Handler(ctx) -> Elem(ctx)
 	button = |label, cls, h| Engine.element("button", [Engine.attr("type", "button"), Engine.class(cls), Engine.on_click(h)], [Engine.text(label)])
 
-	button_v : Val(ctx, Str), Str, Engine.Handler(ctx) -> Elem(ctx)
-	button_v = |label, cls, h| Engine.element("button", [Engine.attr("type", "button"), Engine.class(cls), Engine.on_click(h)], [Engine.text_v(label)])
+	button_s : Signal(ctx, Str), Str, Engine.Handler(ctx) -> Elem(ctx)
+	button_s = |label, cls, h| Engine.element("button", [Engine.attr("type", "button"), Engine.class(cls), Engine.on_click(h)], [Engine.text_s(label)])
 
-	input : Str, Str, Val(ctx, Str), Engine.Handler(ctx) -> Elem(ctx)
-	input = |name, kind, v, h| Engine.element("input", [Engine.attr("aria-label", name), Engine.attr("type", kind), Engine.class(Styles.field), Engine.attr_v("value", v), Engine.on("input", h)], [])
+	input : Str, Str, Signal(ctx, Str), Engine.Handler(ctx) -> Elem(ctx)
+	input = |name, kind, v, h| Engine.element("input", [Engine.attr("aria-label", name), Engine.attr("type", kind), Engine.class(Styles.field), Engine.attr_s("value", v), Engine.on("input", h)], [])
 
-	textarea : Str, Val(ctx, Str), Engine.Handler(ctx) -> Elem(ctx)
-	textarea = |name, v, h| Engine.element("textarea", [Engine.attr("aria-label", name), Engine.class(Styles.field), Engine.attr_v("value", v), Engine.on("input", h)], [])
+	textarea : Str, Signal(ctx, Str), Engine.Handler(ctx) -> Elem(ctx)
+	textarea = |name, v, h| Engine.element("textarea", [Engine.attr("aria-label", name), Engine.class(Styles.field), Engine.attr_s("value", v), Engine.on("input", h)], [])
 
 	heading : Str, Str -> Elem(ctx)
 	heading = |t, cls| Engine.element("h1", [Engine.class(cls)], [Engine.text(t)])
 
-	error_list : Val(ctx, List(Str)) -> Elem(ctx)
+	error_list : Signal(ctx, List(Str)) -> Elem(ctx)
 	error_list = |errors| Engine.element(
 		"div",
 		[],
 		[
 			Engine.when(
 				errors.map(|l| !l.is_empty()),
-				|| Engine.element("ul", [Engine.class(Styles.error_list)], [Engine.each(errors.map(ConduitApp.keyed_lines), |i| i.key, |row| Engine.element("li", [], [Engine.text_v(row.field(|i| i.text))]))]),
+				|| Engine.element("ul", [Engine.class(Styles.error_list)], [Engine.each(errors.map(ConduitApp.keyed_lines), |i| i.key, |row| Engine.element("li", [], [Engine.text_s(row.field(|i| i.text))]))]),
 				|| Engine.text(""),
 			),
 		],
@@ -536,50 +536,50 @@ ConduitApp := [].{
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	tag_pill = |row| {
 		key = row.key()
-		Engine.element("a", [Engine.class("border border-zinc-400 px-2 py-0.5 font-mono text-xs text-zinc-600 no-underline"), Engine.attr_v("href", key.map(ConduitApp.tag_url)), Engine.on("click:prevent", AppStore.go_by(key.map(ConduitApp.tag_url)))], [Engine.text_v(key)])
+		Engine.element("a", [Engine.class("border border-zinc-400 px-2 py-0.5 font-mono text-xs text-zinc-600 no-underline"), Engine.attr_s("href", key.map(ConduitApp.tag_url)), Engine.on("click:prevent", AppStore.go_by(key.map(ConduitApp.tag_url)))], [Engine.text_s(key)])
 	}
 
-	preview_body : Val(Engine.In(Row(Engine.StoreRoot(_), Api.ArticleSummary), FavState), Api.ArticleSummary), State(Engine.In(Row(Engine.StoreRoot(_), Api.ArticleSummary), FavState), FavState) -> Elem(Engine.In(Row(Engine.StoreRoot(_), Api.ArticleSummary), FavState))
+	preview_body : Signal(Engine.In(Row(Engine.StoreRoot(_), Api.ArticleSummary), FavState), Api.ArticleSummary), State(Engine.In(Row(Engine.StoreRoot(_), Api.ArticleSummary), FavState), FavState) -> Elem(Engine.In(Row(Engine.StoreRoot(_), Api.ArticleSummary), FavState))
 	preview_body = |art, fst| {
-		shown = art.map2(fst.val(), |a, s| ConduitApp.row_state(a, s.result))
-		session = AppStore.h.session.val()
+		shown = art.map2(fst.signal(), |a, s| ConduitApp.row_state(a, s.result))
+		session = AppStore.h.session.signal()
 		token = session.map(ConduitApp.token_of)
 		author = art.map(|a| a.author.username)
 		Engine.element(
 			"div",
 			[],
 			[
-				Engine.watch(fst.val().map(|s| s.req), ConduitApp.plan_submit, fst.on_result(ConduitApp.react_row_fav)),
+				Engine.watch(fst.signal().map(|s| s.req), ConduitApp.plan_submit, fst.on_result(ConduitApp.react_row_fav)),
 				Html.div(
 					"mb-3 flex flex-wrap items-center gap-2 text-sm text-zinc-500",
 					[
-						Links.link_v(author, "font-medium text-emerald-600", author.map(ConduitApp.profile_url)),
-						Engine.text_v(art.map(|a| Format.display_date(a.created_at))),
+						Links.link_s(author, "font-medium text-emerald-600", author.map(ConduitApp.profile_url)),
+						Engine.text_s(art.map(|a| Format.display_date(a.created_at))),
 					],
 				),
 				Engine.element(
 					"a",
-					[Engine.class("block text-2xl font-semibold tracking-normal text-zinc-900 no-underline"), Engine.attr_v("href", art.map(|a| ConduitApp.article_url(a.slug))), Engine.on("click:prevent", AppStore.go_by(art.map(|a| ConduitApp.article_url(a.slug))))],
-					[Engine.text_v(shown.map(|a| a.title))],
+					[Engine.class("block text-2xl font-semibold tracking-normal text-zinc-900 no-underline"), Engine.attr_s("href", art.map(|a| ConduitApp.article_url(a.slug))), Engine.on("click:prevent", AppStore.go_by(art.map(|a| ConduitApp.article_url(a.slug))))],
+					[Engine.text_s(shown.map(|a| a.title))],
 				),
-				Html.p_v(shown.map(|a| a.description), [Engine.class("mt-2 leading-7 text-zinc-600")]),
+				Html.p_s(shown.map(|a| a.description), [Engine.class("mt-2 leading-7 text-zinc-600")]),
 				Html.div(
 					"mt-4 flex flex-wrap items-center justify-between gap-3 text-sm text-zinc-500",
 					[
 						Engine.when(
 							session.map(ConduitApp.is_signed_in),
-							|| ConduitApp.button_v(
+							|| ConduitApp.button_s(
 								shown.map(ConduitApp.favorite_button_label),
 								"border border-emerald-600 bg-white px-3 py-1.5 font-medium text-emerald-700",
 								fst.update_by(shown.map2(token, |a, t| (a, t)), |s, (a, t)| { ..s, req: ConduitApp.next(s.req, if (a.favorited) "DELETE" else "POST", Api.favorite_uri(a.slug), "", t) }),
 							),
-							|| Engine.text_v(shown.map(|a| "${a.favorites_count.to_str()} favorites")),
+							|| Engine.text_s(shown.map(|a| "${a.favorites_count.to_str()} favorites")),
 						),
 						Engine.element("div", [Engine.class("flex flex-wrap gap-1")], [Engine.each(art.map(|a| a.tag_list), |t| t, |row| ConduitApp.tag_pill(row))]),
 					],
 				),
-				Html.p_v(
-					fst.val().map(
+				Html.p_s(
+					fst.signal().map(
 						|s| match s.result {
 							FavoriteRejected(message) => message
 							_ => ""
@@ -604,7 +604,7 @@ ConduitApp := [].{
 	## Keep the one stored answer visible while another feed is pending. The
 	## status identifies it as previous results; only a matching response can
 	## replace it. The keyed rows stay mounted across the loading transition.
-	feed_view : { current : Val(Engine.StoreRoot(_), Api.Remote(Api.FeedPage)), stored : Val(Engine.StoreRoot(_), Api.Remote(Api.FeedPage)) } -> Elem(Engine.StoreRoot(_))
+	feed_view : { current : Signal(Engine.StoreRoot(_), Api.Remote(Api.FeedPage)), stored : Signal(Engine.StoreRoot(_), Api.Remote(Api.FeedPage)) } -> Elem(Engine.StoreRoot(_))
 	feed_view = |{ current, stored }| {
 		articles = current.map2(
 			stored,
@@ -620,19 +620,19 @@ ConduitApp := [].{
 		loading = current.map(ConduitApp.is_loading)
 		Engine.element(
 			"section",
-			[Engine.attr("data-conduit", "article-list"), Html.aria_label("Articles"), Engine.attr_v("aria-busy", loading.map(|pending| if (pending) "true" else "false"))],
+			[Engine.attr("data-conduit", "article-list"), Html.aria_label("Articles"), Engine.attr_s("aria-busy", loading.map(|pending| if (pending) "true" else "false"))],
 			[
 				Engine.element(
 					"p",
 					[Engine.attr("role", "status"), Engine.class("min-h-6 text-sm leading-6 text-zinc-600")],
 					[
-						Engine.text_v(loading.map(|pending| if (pending) "Loading articles..." else "")),
-						Engine.text_v(loading.map2(articles, |pending, rows| if (pending and !rows.is_empty()) " Showing previous results." else "")),
+						Engine.text_s(loading.map(|pending| if (pending) "Loading articles..." else "")),
+						Engine.text_s(loading.map2(articles, |pending, rows| if (pending and !rows.is_empty()) " Showing previous results." else "")),
 					],
 				),
 				Engine.when(
 					current.map(ConduitApp.is_failed),
-					|| Html.p_v(current.map(ConduitApp.failure), [Engine.class(Styles.status_error)]),
+					|| Html.p_s(current.map(ConduitApp.failure), [Engine.class(Styles.status_error)]),
 					|| Engine.text(""),
 				),
 				Engine.when(
@@ -652,7 +652,7 @@ ConduitApp := [].{
 
 	pagination : {} -> Elem(Engine.StoreRoot(_))
 	pagination = |{}| {
-		items = ConduitApp.here.map2(ConduitApp.pages.val(), |w, m| ConduitApp.page_items(m.loads.feed.value, Route.feed_of(ConduitApp.route_of(w))))
+		items = ConduitApp.here.map2(ConduitApp.pages.signal(), |w, m| ConduitApp.page_items(m.loads.feed.value, Route.feed_of(ConduitApp.route_of(w))))
 		Engine.element(
 			"nav",
 			[Engine.attr("aria-label", "Pagination"), Engine.class("flex flex-wrap gap-2 py-6")],
@@ -663,7 +663,7 @@ ConduitApp := [].{
 					|row| {
 						key = row.key()
 						cls = row.field(|i| if (i.active) "bg-emerald-600 px-3 py-2 text-sm font-medium text-white no-underline" else "border border-zinc-950 bg-white px-3 py-2 text-sm text-zinc-700 no-underline")
-						Engine.element("a", [Engine.class_v(cls), Engine.attr_v("href", key.map(ConduitApp.key_url)), Engine.on("click:prevent", AppStore.go_by(key.map(ConduitApp.key_url)))], [Engine.text_v(key.map(ConduitApp.page_label))])
+						Engine.element("a", [Engine.class_s(cls), Engine.attr_s("href", key.map(ConduitApp.key_url)), Engine.on("click:prevent", AppStore.go_by(key.map(ConduitApp.key_url)))], [Engine.text_s(key.map(ConduitApp.page_label))])
 					},
 				),
 			],
@@ -675,10 +675,10 @@ ConduitApp := [].{
 
 	home_page : {} -> Elem(Engine.StoreRoot(_))
 	home_page = |{}| {
-		mv = ConduitApp.pages.val()
+		mv = ConduitApp.pages.signal()
 		w = ConduitApp.here
 		feed = w.map(|x| Route.feed_of(ConduitApp.route_of(x)))
-		signed_in = AppStore.h.session.val().map(ConduitApp.is_signed_in)
+		signed_in = AppStore.h.session.signal().map(ConduitApp.is_signed_in)
 		tags = mv.map(|m| ConduitApp.remote(m.loads.tags, "tags"))
 		active = "border-b-2 border-emerald-600 px-4 py-3 font-medium text-emerald-700 no-underline"
 		idle = "border-b-2 border-transparent px-4 py-3 text-zinc-500 no-underline"
@@ -713,7 +713,7 @@ ConduitApp := [].{
 										Links.link_c("Global Feed", feed.map(|f| if (f.source == Global and f.tag == AllTags) active else idle), ConduitApp.home_url),
 									],
 								),
-								Html.p_v(
+								Html.p_s(
 									feed.map(
 										|f| match f.source {
 											Yours => "Your Feed"
@@ -768,13 +768,13 @@ ConduitApp := [].{
 	auth_page : Bool -> Elem(Engine.StoreRoot(_))
 	auth_page = |is_register| {
 		st = ConduitApp.pages
-		af = st.val().map(|m| m.auth)
+		af = st.signal().map(|m| m.auth)
 		title = if (is_register) "Sign up" else "Sign in"
 		Html.section(
 			title,
 			Styles.narrow_page,
 			[
-				ConduitApp.submit_site(af.map(|a| a.sub), Engine.react_by(st.val(), ConduitApp.auth_answered)),
+				ConduitApp.submit_site(af.map(|a| a.sub), Engine.react_by(st.signal(), ConduitApp.auth_answered)),
 				ConduitApp.heading(title, "text-center text-4xl font-semibold tracking-normal text-zinc-950"),
 				Html.div(
 					"mb-7 mt-2 text-center",
@@ -808,7 +808,7 @@ ConduitApp := [].{
 	settings_page : {} -> Elem(Engine.StoreRoot(_))
 	settings_page = |{}| {
 		st = ConduitApp.pages
-		mv = st.val()
+		mv = st.signal()
 		sf = mv.map(|m| m.settings)
 		Html.section(
 			"Settings",
@@ -816,9 +816,9 @@ ConduitApp := [].{
 			[
 				ConduitApp.submit_site(sf.map(|f| f.sub), Engine.react(|sent, res| [st.change(|m| ConduitApp.react_settings(m, sent, res))])),
 				ConduitApp.heading("Settings", "text-center text-4xl font-semibold tracking-normal text-zinc-950"),
-				Html.p_v(AppStore.h.session.val().map(|x| "Signed in as ${ConduitApp.username_of(x)}"), [Engine.class("mb-7 mt-2 text-center text-sm text-zinc-500")]),
+				Html.p_s(AppStore.h.session.signal().map(|x| "Signed in as ${ConduitApp.username_of(x)}"), [Engine.class("mb-7 mt-2 text-center text-sm text-zinc-500")]),
 				ConduitApp.error_list(sf.map(|s| ConduitApp.auth_errors(s.result))),
-				Html.p_v(
+				Html.p_s(
 					sf.map(
 						|s| match s.result {
 							AuthAccepted(_) => "Settings saved."
@@ -846,7 +846,7 @@ ConduitApp := [].{
 	editor_form : Str -> Elem(Engine.StoreRoot(_))
 	editor_form = |label| {
 		st = ConduitApp.pages
-		ef = st.val().map(|m| m.editor)
+		ef = st.signal().map(|m| m.editor)
 		Engine.element(
 			"form",
 			[Engine.class(Styles.form)],
@@ -865,16 +865,16 @@ ConduitApp := [].{
 		"New article",
 		Styles.wide_page,
 		[
-			ConduitApp.submit_site(ConduitApp.pages.val().map(|m| m.editor.sub), Engine.react_by(ConduitApp.pages.val(), ConduitApp.editor_answered)),
+			ConduitApp.submit_site(ConduitApp.pages.signal().map(|m| m.editor.sub), Engine.react_by(ConduitApp.pages.signal(), ConduitApp.editor_answered)),
 			ConduitApp.heading("New article", "mb-8 text-center text-4xl font-semibold tracking-normal text-zinc-950"),
-			ConduitApp.error_list(ConduitApp.pages.val().map(|m| ConduitApp.article_errors(m.editor.result))),
+			ConduitApp.error_list(ConduitApp.pages.signal().map(|m| ConduitApp.article_errors(m.editor.result))),
 			ConduitApp.editor_form("Publish Article"),
 		],
 	)
 
 	editor_edit_page : {} -> Elem(Engine.StoreRoot(_))
 	editor_edit_page = |{}| {
-		mv = ConduitApp.pages.val()
+		mv = ConduitApp.pages.signal()
 		w = ConduitApp.here
 		article = w.map2(mv, |x, m| ConduitApp.remote(m.loads.article, ConduitApp.edit_req(x).key))
 		current = |f| article.map(
@@ -895,14 +895,14 @@ ConduitApp := [].{
 					|| Html.p("Loading article...", ""),
 					|| Engine.when(
 						article.map(ConduitApp.is_failed),
-						|| Html.p_v(article.map(ConduitApp.failure), [Engine.class("text-red-700")]),
+						|| Html.p_s(article.map(ConduitApp.failure), [Engine.class("text-red-700")]),
 						|| Html.div(
 							"mb-4 space-y-1 border border-zinc-950 bg-zinc-50 p-3 text-sm text-zinc-700",
 							[
-								Html.p_v(current(|a| "Current title: ${a.title}"), []),
-								Html.p_v(current(|a| "Current description: ${a.description}"), []),
-								Html.p_v(current(|a| "Current body: ${a.body}"), []),
-								Html.p_v(current(|a| "Current tags: ${Str.join_with(a.tag_list, ", ")}"), []),
+								Html.p_s(current(|a| "Current title: ${a.title}"), []),
+								Html.p_s(current(|a| "Current description: ${a.description}"), []),
+								Html.p_s(current(|a| "Current body: ${a.body}"), []),
+								Html.p_s(current(|a| "Current tags: ${Str.join_with(a.tag_list, ", ")}"), []),
 							],
 						),
 					),
@@ -920,7 +920,7 @@ ConduitApp := [].{
 	profile_page : Bool -> Elem(Engine.StoreRoot(_))
 	profile_page = |favorites| {
 		st = ConduitApp.pages
-		mv = st.val()
+		mv = st.signal()
 		w = ConduitApp.here
 		profile = w.map2(mv, ConduitApp.profile_remote)
 		field = |f| profile.map(
@@ -944,13 +944,13 @@ ConduitApp := [].{
 					|| Html.p("Loading profile...", "border border-zinc-950 bg-white p-6 text-zinc-500"),
 					|| Engine.when(
 						profile.map(ConduitApp.is_failed),
-						|| Html.p_v(profile.map(ConduitApp.failure), [Engine.class(Styles.status_error)]),
+						|| Html.p_s(profile.map(ConduitApp.failure), [Engine.class(Styles.status_error)]),
 						|| Engine.element(
 							"div",
 							[Engine.attr("data-conduit", "profile"), Engine.class("mb-8 border border-zinc-950 bg-white p-6 text-center sm:p-8")],
 							[
-								Engine.element("h2", [Engine.class("text-3xl font-semibold tracking-normal text-zinc-950")], [Engine.text_v(field(|p| "@${p.username}"))]),
-								Html.p_v(field(|p| p.bio), [Engine.class("mx-auto mt-2 max-w-2xl leading-7 text-zinc-600")]),
+								Engine.element("h2", [Engine.class("text-3xl font-semibold tracking-normal text-zinc-950")], [Engine.text_s(field(|p| "@${p.username}"))]),
+								Html.p_s(field(|p| p.bio), [Engine.class("mx-auto mt-2 max-w-2xl leading-7 text-zinc-600")]),
 								Engine.when(
 									w.map2(
 										mv,
@@ -959,7 +959,7 @@ ConduitApp := [].{
 											_ => False
 										},
 									),
-									|| ConduitApp.button_v(
+									|| ConduitApp.button_s(
 										profile.map(
 											|r| match r {
 												Ready(p) => if (p.following) "Unfollow ${p.username}" else "Follow ${p.username}"
@@ -971,7 +971,7 @@ ConduitApp := [].{
 									),
 									|| Engine.text(""),
 								),
-								Html.p_v(
+								Html.p_s(
 									mv.map(
 										|m| match m.prof.follow_result {
 											FollowRejected(message) => message
@@ -991,8 +991,8 @@ ConduitApp := [].{
 						Html.div(
 							"flex",
 							[
-								Links.link_v(Engine.const("My Articles"), if (favorites) idle else active, username.map(ConduitApp.profile_url)),
-								Links.link_v(Engine.const("Favorited Articles"), if (favorites) active else idle, username.map(|u| Route.to_url(Route.profile_favorites_location(u)))),
+								Links.link_s(Engine.const("My Articles"), if (favorites) idle else active, username.map(ConduitApp.profile_url)),
+								Links.link_s(Engine.const("Favorited Articles"), if (favorites) active else idle, username.map(|u| Route.to_url(Route.profile_favorites_location(u)))),
 							],
 						),
 					],
@@ -1029,7 +1029,7 @@ ConduitApp := [].{
 
 	header : {} -> Elem(Engine.StoreRoot(_))
 	header = |{}| {
-		session = AppStore.h.session.val()
+		session = AppStore.h.session.signal()
 		item = "px-3 py-2 text-zinc-600 no-underline hover:bg-zinc-100 hover:no-underline"
 		username = session.map(|s| s.username())
 		Engine.element(
@@ -1049,7 +1049,7 @@ ConduitApp := [].{
 								[
 									Links.link("New Article", item, Route.to_url(Route.location_for("/editor", ""))),
 									Links.link("Settings", item, Route.to_url(Route.location_for("/settings", ""))),
-									Links.link_v(username, "px-3 py-2 text-emerald-700 no-underline", username.map(ConduitApp.profile_url)),
+									Links.link_s(username, "px-3 py-2 text-emerald-700 no-underline", username.map(ConduitApp.profile_url)),
 								],
 							),
 							|| Html.div(
@@ -1080,8 +1080,8 @@ ConduitApp := [].{
 	## change elsewhere wakes none of their readers.
 	view : {} -> Elem(Engine.StoreRoot(_))
 	view = |{}| {
-		session = AppStore.h.session.val()
-		loc = AppStore.h.loc.val()
+		session = AppStore.h.session.signal()
+		loc = AppStore.h.loc.signal()
 		Html.div(
 			Styles.shell,
 			[
@@ -1097,12 +1097,12 @@ ConduitApp := [].{
 						},
 					),
 				),
-				Engine.on_post(AppStore.h.nav.val(), |url| [Push(url), Self], Engine.react_by(ConduitApp.here, |at, url, _| AppStore.moved(at, url))),
+				Engine.on_post(AppStore.h.nav.signal(), |url| [Push(url), Self], Engine.react_by(ConduitApp.here, |at, url, _| AppStore.moved(at, url))),
 				Engine.watch(ConduitApp.here.map(|w| ConduitApp.guard_for(w.loc, w.session)), |u| if (u.is_empty()) [] else [Replace(u), Self], Engine.react_by(ConduitApp.here, |at, u, _| if (!u.is_empty() and ConduitApp.guard_for(at.loc, at.session) == u) AppStore.moved(at, u) else [])),
-				Engine.watch(ConduitApp.here.map2(AppStore.h.article.cells.story.val(), ConduitApp.title_of), |t| [Title(t)], Engine.ignore({})),
+				Engine.watch(ConduitApp.here.map2(AppStore.h.article.cells.story.signal(), ConduitApp.title_of), |t| [Title(t)], Engine.ignore({})),
 				Engine.on_change(session, ConduitApp.storage_plan, Engine.ignore({})),
 				Engine.on_change(
-					AppStore.h.incoming.val(),
+					AppStore.h.incoming.signal(),
 					|s| match s {
 						SignedIn(_) => [Self]
 						Anonymous => []

@@ -72,24 +72,24 @@ Comments :: { slug : Str, loaded : Fetch.Loaded(List(Api.Comment)), refetch : U6
 	## The site that loads the comments. It is separate from `view` so the
 	## page can start the load before the article has arrived.
 	load : State(ctx, Comments) -> Elem(ctx)
-	load = |comments| Fetch.load_site(comments.val().map(Comments.req), comments.on_result(Comments.stored))
+	load = |comments| Fetch.load_site(comments.signal().map(Comments.req), comments.on_result(Comments.stored))
 
 	## The site that sends a deletion.
 	delete_site : State(ctx, Comments) -> Elem(ctx)
-	delete_site = |comments| Fetch.submit_site(comments.val().map(|c| c.del), comments.on_result(Comments.delete_answered))
+	delete_site = |comments| Fetch.submit_site(comments.signal().map(|c| c.del), comments.on_result(Comments.delete_answered))
 
 	## One comment, in a row of the list: a row reads and writes the cells
 	## with no `lift`.
 	one : Props(st), RowRef(ctx, Api.Comment) -> Elem(Row(ctx, Api.Comment))
 		where [ctx.store : () -> Engine.Reach(ctx, st)]
 	one = |props, r| {
-		session = props.session.val()
+		session = props.session.signal()
 		mine = r.field(|c| c.author.username).map2(session, |name, s| name == s.username())
 		Html.div(
 			"my-4 overflow-hidden border border-zinc-950 bg-white p-4",
 			[
-				Html.p_v(r.field(|c| c.body), []),
-				Html.p_v(r.field(|c| "${c.author.username} on ${Format.display_date(c.created_at)}"), [Engine.class("text-sm text-zinc-500")]),
+				Html.p_s(r.field(|c| c.body), []),
+				Html.p_s(r.field(|c| "${c.author.username} on ${Format.display_date(c.created_at)}"), [Engine.class("text-sm text-zinc-500")]),
 				Engine.when(
 					mine,
 					|| Parts.button("Delete Comment", "mt-3 ${Styles.danger_button}", Engine.handle_by(r.key().map2(session, |key, s| { key, token: s.token() }), |asked, _| [props.comments.change(|c| Comments.deleting(c, asked))])),
@@ -105,20 +105,20 @@ Comments :: { slug : Str, loaded : Fetch.Loaded(List(Api.Comment)), refetch : U6
 		where [ctx.store : () -> Engine.Reach(ctx, st)]
 	view = |props, form| {
 		comments = props.comments
-		session = props.session.val()
-		list = comments.val().map(Comments.current)
+		session = props.session.signal()
+		list = comments.signal().map(Comments.current)
 		Html.div(
 			"mt-10 border-t border-zinc-200 pt-8",
 			[
 				Engine.element("h3", [Engine.class("mb-5 text-2xl font-semibold tracking-normal text-zinc-950")], [Engine.text("Comments")]),
 				Engine.when(session.map(|s| s.is_signed_in()), || form, || Html.p("Sign in to add a comment.", "")),
-				Html.p_v(comments.val().map(delete_error), [Engine.class("text-red-700")]),
+				Html.p_s(comments.signal().map(delete_error), [Engine.class("text-red-700")]),
 				Engine.when(
 					list.map(Api.is_loading),
 					|| Html.p("Loading comments...", ""),
 					|| Engine.when(
 						list.map(Api.is_failed),
-						|| Html.p_v(list.map(Api.failure_message), [Engine.class("text-red-700")]),
+						|| Html.p_s(list.map(Api.failure_message), [Engine.class("text-red-700")]),
 						|| Engine.element(
 							"div",
 							[],

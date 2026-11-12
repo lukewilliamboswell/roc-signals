@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, State, Val]
+import pf.Engine exposing [Elem, Signal, State]
 import pf.Html
 
 ## Writes test app: one pure function decides a transition that spans cells
@@ -55,13 +55,13 @@ WritesApp := [Writes].{
 	h = WritesApp.store.handles()
 
 	## A line naming a value, read by a reader with test id `name`.
-	reader : Str, Val(ctx, Str) -> Elem(ctx)
-	reader = |name, v| Html.p_v(v.map(|s| "${name}=${s}"), [Engine.test_id(name)])
+	reader : Str, Signal(ctx, Str) -> Elem(ctx)
+	reader = |name, v| Html.p_s(v.map(|s| "${name}=${s}"), [Engine.test_id(name)])
 
 	## `left` and `right` as one reading.
-	sides : {} -> Val(ctx, { left : I64, right : I64 })
+	sides : {} -> Signal(ctx, { left : I64, right : I64 })
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	sides = |{}| WritesApp.h.left.val().map2(WritesApp.h.right.val(), |left, right| { left, right })
+	sides = |{}| WritesApp.h.left.signal().map2(WritesApp.h.right.signal(), |left, right| { left, right })
 
 	## The buttons at the root.
 	buttons : {} -> Elem(ctx)
@@ -71,9 +71,9 @@ WritesApp := [Writes].{
 		[
 			Html.button("Swap", [], Engine.handle_by(WritesApp.sides({}), |at, _| [WritesApp.h.left.put(at.right), WritesApp.h.right.put(at.left)])),
 			Html.button("Swap, other order", [], Engine.handle_by(WritesApp.sides({}), |at, _| [WritesApp.h.right.put(at.left), WritesApp.h.left.put(at.right)])),
-			Html.button("Grow left", [], Engine.handle_by(WritesApp.h.left.val(), |n, _| if (n < 3) [WritesApp.h.left.put(n + 1)] else [])),
+			Html.button("Grow left", [], Engine.handle_by(WritesApp.h.left.signal(), |n, _| if (n < 3) [WritesApp.h.left.put(n + 1)] else [])),
 			Html.button("Set then add", [], Engine.handle(|_| [WritesApp.h.total.put(10), WritesApp.h.total.change(|n| n + 1)])),
-			Html.text_input(Engine.const("Echo"), "text", WritesApp.h.echo.val(), [], Engine.handle(|typed| [WritesApp.h.echo.put(typed)])),
+			Html.text_input(Engine.const("Echo"), "text", WritesApp.h.echo.signal(), [], Engine.handle(|typed| [WritesApp.h.echo.put(typed)])),
 		],
 	)
 
@@ -88,7 +88,7 @@ WritesApp := [Writes].{
 			|clicks| Html.div(
 				"deep",
 				[
-					WritesApp.reader("clicks", clicks.val().map(|n| n.to_str())),
+					WritesApp.reader("clicks", clicks.signal().map(|n| n.to_str())),
 					Engine.element(
 						"ul",
 						[],
@@ -103,7 +103,7 @@ WritesApp := [Writes].{
 										Engine.element(
 											"button",
 											[
-												Engine.attr_v("aria-label", row.key().map(|k| "Deep ${k}")),
+												Engine.attr_s("aria-label", row.key().map(|k| "Deep ${k}")),
 												Engine.on_click(
 													clicks.lift_row().update(|n| n + 1).also(
 														Engine.handle_by(row.key(), |key, _| [WritesApp.h.log.put(key), WritesApp.h.total.change(|n| n + 1)]),
@@ -128,7 +128,7 @@ WritesApp := [Writes].{
 	card = |held| Html.div(
 		"card",
 		[
-			WritesApp.reader("name", held.val().map(|p| p.name)),
+			WritesApp.reader("name", held.signal().map(|p| p.name)),
 			Html.button("Rename", [], held.update(|p| { name: "lee", visits: p.visits + 1 })),
 		],
 	)
@@ -142,12 +142,12 @@ WritesApp := [Writes].{
 		Html.div(
 			"form",
 			[
-				WritesApp.reader("draft", group.cells.draft.val()),
-				WritesApp.reader("sent", group.cells.sent.val().map(|n| n.to_str())),
-				Html.text_input(Engine.const("Draft"), "text", group.cells.draft.val(), [], Engine.handle(|typed| [group.cells.draft.put(typed)])),
-				Html.button("Send", [], Engine.handle_by(group.cells.draft.val(), |draft, _| [WritesApp.h.log.put(draft), group.cells.sent.change(|n| n + 1)])),
+				WritesApp.reader("draft", group.cells.draft.signal()),
+				WritesApp.reader("sent", group.cells.sent.signal().map(|n| n.to_str())),
+				Html.text_input(Engine.const("Draft"), "text", group.cells.draft.signal(), [], Engine.handle(|typed| [group.cells.draft.put(typed)])),
+				Html.button("Send", [], Engine.handle_by(group.cells.draft.signal(), |draft, _| [WritesApp.h.log.put(draft), group.cells.sent.change(|n| n + 1)])),
 				Html.button("Start again", [], Engine.handle(|_| [group.reset])),
-				Html.button("Start again, counted", [], Engine.handle_by(group.cells.sent.val(), |sent, _| [group.reset, group.cells.sent.put(sent)])),
+				Html.button("Start again, counted", [], Engine.handle_by(group.cells.sent.signal(), |sent, _| [group.reset, group.cells.sent.put(sent)])),
 			],
 		)
 	}
@@ -161,11 +161,11 @@ WritesApp := [Writes].{
 	paired : {} -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	paired = |{}| Engine.derive(
-		WritesApp.h.score.val().map(|n| n * 2),
+		WritesApp.h.score.signal().map(|n| n * 2),
 		|doubled| Engine.state(
 			0.I64,
 			|taps| {
-				seen = taps.val().map2(doubled.lift(), |t, d| "${t.to_str()}/${d.to_str()}")
+				seen = taps.signal().map2(doubled.lift(), |t, d| "${t.to_str()}/${d.to_str()}")
 				Html.div(
 					"paired",
 					[
@@ -189,9 +189,9 @@ WritesApp := [Writes].{
 	rewarded = |{}| Engine.state(
 		0.I64,
 		|taps| Engine.derive(
-			taps.val().map(|n| n * 2),
+			taps.signal().map(|n| n * 2),
 			|doubled| {
-				seen = doubled.map2(WritesApp.h.bonus.val(), |d, b| "${d.to_str()}/${b.to_str()}")
+				seen = doubled.map2(WritesApp.h.bonus.signal(), |d, b| "${d.to_str()}/${b.to_str()}")
 				Html.div(
 					"rewarded",
 					[
@@ -208,24 +208,24 @@ WritesApp := [Writes].{
 	view = |{}| Html.div(
 		"app",
 		[
-			WritesApp.reader("left", WritesApp.h.left.val().map(|n| n.to_str())),
-			WritesApp.reader("right", WritesApp.h.right.val().map(|n| n.to_str())),
-			WritesApp.reader("total", WritesApp.h.total.val().map(|n| n.to_str())),
-			WritesApp.reader("log", WritesApp.h.log.val()),
-			WritesApp.reader("echo", WritesApp.h.echo.val()),
-			WritesApp.reader("visits", WritesApp.h.profile.val().map(|p| p.visits.to_str())),
+			WritesApp.reader("left", WritesApp.h.left.signal().map(|n| n.to_str())),
+			WritesApp.reader("right", WritesApp.h.right.signal().map(|n| n.to_str())),
+			WritesApp.reader("total", WritesApp.h.total.signal().map(|n| n.to_str())),
+			WritesApp.reader("log", WritesApp.h.log.signal()),
+			WritesApp.reader("echo", WritesApp.h.echo.signal()),
+			WritesApp.reader("visits", WritesApp.h.profile.signal().map(|p| p.visits.to_str())),
 			WritesApp.buttons({}),
 			WritesApp.deep({}),
 			WritesApp.card(WritesApp.h.profile.state()),
 			WritesApp.form({}),
-			WritesApp.reader("score", WritesApp.h.score.val().map(|n| n.to_str())),
+			WritesApp.reader("score", WritesApp.h.score.signal().map(|n| n.to_str())),
 			WritesApp.paired({}),
-			WritesApp.reader("bonus", WritesApp.h.bonus.val().map(|n| n.to_str())),
+			WritesApp.reader("bonus", WritesApp.h.bonus.signal().map(|n| n.to_str())),
 			WritesApp.rewarded({}),
 			Engine.on_change(
-				WritesApp.h.left.val(),
+				WritesApp.h.left.signal(),
 				|_| [Self],
-				Engine.react_by(WritesApp.h.right.val(), |right, left, _| [WritesApp.h.log.put("left ${left.to_str()} right ${right.to_str()}")]),
+				Engine.react_by(WritesApp.h.right.signal(), |right, left, _| [WritesApp.h.log.put("left ${left.to_str()} right ${right.to_str()}")]),
 			),
 		],
 	)

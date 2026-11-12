@@ -1,4 +1,4 @@
-import pf.Engine exposing [Cell, Elem, State, Val]
+import pf.Engine exposing [Cell, Elem, Signal, State]
 import pf.Html
 
 ## Store test app: a root store of 100 cells under a view ten local layers
@@ -63,8 +63,8 @@ StoreApp := [Hundred].{
 	at = |i| StoreApp.cells.get(i) ?? crash "no cell ${i.to_str()}"
 
 	## A line naming a value, read by a reader with test id `name`.
-	reader : Str, Val(ctx, Str) -> Elem(ctx)
-	reader = |name, v| Html.p_v(v.map(|s| "${name}=${s}"), [Engine.test_id(name)])
+	reader : Str, Signal(ctx, Str) -> Elem(ctx)
+	reader = |name, v| Html.p_s(v.map(|s| "${name}=${s}"), [Engine.test_id(name)])
 
 	button : Str, Engine.Handler(ctx) -> Elem(ctx)
 	button = |label, h| Engine.element("button", [Engine.on_click(h)], [Engine.text(label)])
@@ -75,7 +75,7 @@ StoreApp := [Hundred].{
 	cell_view = |c, name| Html.div(
 		"",
 		[
-			StoreApp.reader(name, c.val().map(|n| n.to_str())),
+			StoreApp.reader(name, c.signal().map(|n| n.to_str())),
 			StoreApp.button("Bump ${name}", Engine.handle(|_| [c.change(|n| n + 1)])),
 		],
 	)
@@ -88,7 +88,7 @@ StoreApp := [Hundred].{
 		|s| Html.div(
 			name,
 			[
-				StoreApp.reader(name, s.val().map(|n| n.to_str())),
+				StoreApp.reader(name, s.signal().map(|n| n.to_str())),
 				StoreApp.button("Bump ${name}", s.update(|n| n + 1)),
 			].concat(inner(s)),
 		),
@@ -107,21 +107,21 @@ StoreApp := [Hundred].{
 				Engine.each(
 					Engine.const(["r1", "r2", "r3", "r4", "r5"]),
 					|k| k,
-					|r| Engine.element("li", [], [StoreApp.reader_row(r.key().map2(StoreApp.at(50).val(), |k, n| "${k}:${n.to_str()}"))]),
+					|r| Engine.element("li", [], [StoreApp.reader_row(r.key().map2(StoreApp.at(50).signal(), |k, n| "${k}:${n.to_str()}"))]),
 				),
 			],
 		),
 		Html.div("cells", StoreApp.cells.map_with_index(|c, i| StoreApp.cell_view(c, "c${i.to_str()}"))),
 	]
 
-	reader_row : Val(ctx, Str) -> Elem(ctx)
-	reader_row = |v| Html.p_v(v, [Engine.test_id("row")])
+	reader_row : Signal(ctx, Str) -> Elem(ctx)
+	reader_row = |v| Html.p_s(v, [Engine.test_id("row")])
 
 	view : {} -> Elem(Engine.StoreRoot(_))
 	view = |{}| Html.div(
 		"app",
 		[
-			StoreApp.reader("root-c7", StoreApp.at(7).val().map(|n| n.to_str())),
+			StoreApp.reader("root-c7", StoreApp.at(7).signal().map(|n| n.to_str())),
 			StoreApp.layer(
 				"L1",
 				|_| [
@@ -137,7 +137,7 @@ StoreApp := [Hundred].{
 											StoreApp.layer(
 												"L5",
 												|_| [
-													StoreApp.reader("mid-c7", StoreApp.at(7).val().map(|n| n.to_str())),
+													StoreApp.reader("mid-c7", StoreApp.at(7).signal().map(|n| n.to_str())),
 													StoreApp.layer(
 														"L6",
 														|_| [

@@ -1,4 +1,4 @@
-import pf.Engine exposing [Val]
+import pf.Engine exposing [Signal]
 import pf.Table
 import GridData
 
@@ -38,15 +38,15 @@ GridStore := [Grid].{
 	h = GridStore.store.handles()
 
 	## The listing the rows are drawn in: the query of the grid's view.
-	listing : {} -> Val(ctx, GridData.Listing)
+	listing : {} -> Signal(ctx, GridData.Listing)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	listing = |{}| { filter: GridStore.h.filter.val(), sort: GridStore.h.sort.val() }.Val
+	listing = |{}| { filter: GridStore.h.filter.signal(), sort: GridStore.h.sort.signal() }.Signal
 
 	## The summary of the rows the filter matches: a pass over the table,
 	## taken again whenever a row or the filter is written.
-	summary : {} -> Val(ctx, GridData.Summary)
+	summary : {} -> Signal(ctx, GridData.Summary)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	summary = |{}| GridStore.h.rows.val().map2(GridStore.h.filter.val(), GridStore.summary_of)
+	summary = |{}| GridStore.h.rows.signal().map2(GridStore.h.filter.signal(), GridStore.summary_of)
 
 	summary_of : Table(U64, GridData.Row), Str -> GridData.Summary
 	summary_of = |table, filter| table.fold(GridData.no_rows, |so_far, _id, row| GridData.counted(so_far, row, filter))

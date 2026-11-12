@@ -1,4 +1,4 @@
-import pf.Engine exposing [Cell, Val]
+import pf.Engine exposing [Cell, Signal]
 import Status
 
 ## The Status Page's store: what the checks last said, held at the root and
@@ -57,10 +57,10 @@ StatusStore := [StatusPage].{
 	## The four checks as one rollup. The banner, the counts and the overall
 	## uptime all read this one value, so the page can never show "All
 	## systems operational" beside a red component.
-	totals : {} -> Val(ctx, Status.Tally)
+	totals : {} -> Signal(ctx, Status.Tally)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	totals = |{}| {
-		tally = |service| StatusStore.cell_of(service).val().map(Status.tally_of)
+		tally = |service| StatusStore.cell_of(service).signal().map(Status.tally_of)
 		tally(Api).map2(tally(Web), Status.add_tally).map2(tally(Database).map2(tally(Notifications), Status.add_tally), Status.add_tally)
 	}
 

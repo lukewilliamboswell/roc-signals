@@ -301,7 +301,7 @@ TasksApp := [].{
 
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"tasks",
 			[
@@ -330,11 +330,11 @@ TasksApp := [].{
 				Html.button("Save log", [], st.update(|s| TasksApp.save_first(s, s.log, "log-copy.txt"))),
 				Html.button("Panel", [], st.update(|s| { ..s, panel: !s.panel })),
 				Html.button("Forget files", [], st.update(|s| { ..s, files: [], built: [], log: [], fetched: [], run: Idle })),
-				Html.p_v(v.map(|s| s.outcome), [Engine.test_id("outcome")]),
-				Html.p_v(v.map(|s| TasksApp.listing(s.built)), [Engine.test_id("built")]),
-				Html.p_v(v.map(|s| TasksApp.listing(s.log)), [Engine.test_id("log")]),
-				Html.p_v(v.map(|s| TasksApp.listing(s.fetched)), [Engine.test_id("fetched")]),
-				Html.p_v(v.map(|s| s.kept), [Engine.test_id("kept")]),
+				Html.p_s(v.map(|s| s.outcome), [Engine.test_id("outcome")]),
+				Html.p_s(v.map(|s| TasksApp.listing(s.built)), [Engine.test_id("built")]),
+				Html.p_s(v.map(|s| TasksApp.listing(s.log)), [Engine.test_id("log")]),
+				Html.p_s(v.map(|s| TasksApp.listing(s.fetched)), [Engine.test_id("fetched")]),
+				Html.p_s(v.map(|s| s.kept), [Engine.test_id("kept")]),
 				# One job at a time: a new `run` cancels the job of the old one.
 				Engine.latest(v.map(|s| s.run), TasksApp.plan, st.on_result(TasksApp.answered)),
 				Engine.latest(
@@ -370,7 +370,7 @@ TasksApp := [].{
 									},
 								),
 							),
-							Html.p_v(preview.val(), [Engine.test_id("preview")]),
+							Html.p_s(preview.signal(), [Engine.test_id("preview")]),
 						],
 					),
 				),
@@ -431,7 +431,7 @@ TasksApp := [].{
 												},
 											),
 										),
-										Html.p_v(noted.val(), [Engine.test_id("noted")]),
+										Html.p_s(noted.signal(), [Engine.test_id("noted")]),
 									],
 								),
 							),

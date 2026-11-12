@@ -104,7 +104,7 @@ PortsApp := [].{
 
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"ports",
 			[
@@ -169,7 +169,7 @@ PortsApp := [].{
 				Engine.on_change(v.map(|s| s.undeclared), |_| [PortCommand({ port: "test.roc-signals/undeclared", message: { json: "null", blobs: [], files: [] } })], Engine.ignore({})),
 				Html.button("Wrong", [], st.update(|s| { ..s, wrong: s.wrong + 1 })),
 				Engine.on_change(v.map(|s| s.wrong), |_| [PortSubscribe({ port: "test.roc-signals/get", message: { json: "{}", blobs: [], files: [] } })], Engine.ignore({})),
-				Html.p_v(v.map(|s| Str.join_with(s.log, "|")), [Engine.test_id("log")]),
+				Html.p_s(v.map(|s| Str.join_with(s.log, "|")), [Engine.test_id("log")]),
 			],
 		)
 	}

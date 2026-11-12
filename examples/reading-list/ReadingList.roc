@@ -142,9 +142,9 @@ ReadingList := [Books].{
 		}
 
 	## What the reader is asking for, as one reading for `submitted`.
-	asking : {} -> Engine.Val(ctx, Asking)
+	asking : {} -> Engine.Signal(ctx, Asking)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	asking = |{}| { form: ReadingList.h.form.val(), copy: ReadingList.h.copy.val() }.Engine.Val
+	asking = |{}| { form: ReadingList.h.form.signal(), copy: ReadingList.h.copy.signal() }.Engine.Signal
 
 	## Whether the form can add the book it holds: the shelf is loaded and
 	## the book has a title.

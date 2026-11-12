@@ -1,4 +1,4 @@
-import pf.Engine exposing [Handler, Val]
+import pf.Engine exposing [Handler, Signal]
 import Article
 import CommentForm
 import Comments
@@ -78,9 +78,9 @@ AppStore := [Conduit].{
 	}
 
 	## Where the reader is and who they are, as one value.
-	here : {} -> Val(ctx, Here)
+	here : {} -> Signal(ctx, Here)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	here = |{}| AppStore.h.loc.val().map2(AppStore.h.session.val(), |loc, session| { loc, session })
+	here = |{}| AppStore.h.loc.signal().map2(AppStore.h.session.signal(), |loc, session| { loc, session })
 
 	## A handler that asks to go to `url`.
 	go : Str -> Handler(ctx)
@@ -88,7 +88,7 @@ AppStore := [Conduit].{
 	go = |url| Nav.go(AppStore.h.nav, url)
 
 	## A handler that asks to go to the URL `url` holds when the event fires.
-	go_by : Val(ctx, Str) -> Handler(ctx)
+	go_by : Signal(ctx, Str) -> Handler(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	go_by = |url| Nav.go_by(AppStore.h.nav, url)
 

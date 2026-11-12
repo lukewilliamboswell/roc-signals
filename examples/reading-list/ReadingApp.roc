@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, Handler, Row, State, Val]
+import pf.Engine exposing [Elem, Handler, Row, Signal, State]
 import pf.Html
 import ReadingList
 import Store
@@ -41,7 +41,7 @@ ReadingApp := [].{
 			Engine.watch(
 				Engine.const({}),
 				|_| [Store.load.request({})],
-				Engine.react_by(ReadingList.h.copy.val(), |copy, _, res| ReadingList.loaded(copy, Store.load.result(res))),
+				Engine.react_by(ReadingList.h.copy.signal(), |copy, _, res| ReadingList.loaded(copy, Store.load.result(res))),
 			),
 			# The database's books again after any tab writes, for as long
 			# as the app runs.
@@ -52,10 +52,10 @@ ReadingApp := [].{
 			),
 			# A new book, which the database numbers. `on_post` never stops
 			# an earlier add for a later one: each answer arrives.
-			Engine.on_post(ReadingList.h.adding.val(), |asked| [Store.add.request(asked)], Engine.react(|asked, res| ReadingList.added(asked, Store.add.result(res)))),
+			Engine.on_post(ReadingList.h.adding.signal(), |asked| [Store.add.request(asked)], Engine.react(|asked, res| ReadingList.added(asked, Store.add.result(res)))),
 			# Every change's commands, sent in the turn of the click that
 			# made them.
-			Engine.on_post(ReadingList.h.writes.val(), ReadingList.requests, Engine.ignore({})),
+			Engine.on_post(ReadingList.h.writes.signal(), ReadingList.requests, Engine.ignore({})),
 		],
 	)
 
@@ -69,7 +69,7 @@ ReadingApp := [].{
 }
 
 ## A labelled text box of the form.
-field : { label : Str, value : Val(ctx, Str), placeholder : Str, typed : Handler(ctx) } -> Elem(ctx)
+field : { label : Str, value : Signal(ctx, Str), placeholder : Str, typed : Handler(ctx) } -> Elem(ctx)
 field = |{ label, value, placeholder, typed }|
 	Html.div(
 		"field",
@@ -84,7 +84,7 @@ field = |{ label, value, placeholder, typed }|
 add_form : {} -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 add_form = |{}| {
-	form = ReadingList.h.form.val()
+	form = ReadingList.h.form.signal()
 	Html.form(
 		"Add a book",
 		[Engine.class("panel grid gap-3 p-4"), Html.on_submit(Engine.handle_by(ReadingList.asking({}), |at, _| ReadingList.submitted(at)))],
@@ -107,48 +107,48 @@ add_form = |{}| {
 }
 
 ## A button that shows one shelf, with its count; pressed while shown.
-shelf_button : Val(ctx, ReadingList.Tally), { label : Str, showing : ReadingList.Showing } -> Elem(ctx)
+shelf_button : Signal(ctx, ReadingList.Tally), { label : Str, showing : ReadingList.Showing } -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 shelf_button = |counted, { label, showing }|
 	Html.action_button(
 		counted.map(|c| "${label} (${ReadingList.count(c, showing).to_str()})"),
 		Engine.const(False),
-		[Engine.class("button button-sm"), Html.aria_label(label), Html.flag("aria-pressed", ReadingList.h.showing.val().map(|now| now == showing))],
+		[Engine.class("button button-sm"), Html.aria_label(label), Html.flag("aria-pressed", ReadingList.h.showing.signal().map(|now| now == showing))],
 		Engine.does(ReadingList.shown(showing)),
 	)
 
 ## One book, a row of the list: its title and author, its shelf, and what
 ## can be done with it. The row reads its own book, so a move to another
 ## shelf re-evaluates this row and no other.
-book : Val(Row(ctx, Str), Str), State(Row(ctx, Str), Store.Book) -> Elem(Row(ctx, Str))
+book : Signal(Row(ctx, Str), Str), State(Row(ctx, Str), Store.Book) -> Elem(Row(ctx, Str))
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 book = |id, row| {
-	held = row.val()
+	held = row.signal()
 	title = held.map(|b| b.title)
 	action = held.map(ReadingList.next_action)
 	Engine.element(
 		"li",
-		[Engine.class("card flex flex-wrap items-center justify-between gap-3 p-3"), Engine.attr_v("aria-label", title)],
+		[Engine.class("card flex flex-wrap items-center justify-between gap-3 p-3"), Engine.attr_s("aria-label", title)],
 		[
 			Html.div(
 				"grid",
 				[
-					Engine.element("strong", [], [Engine.text_v(title)]),
-					Html.span_v(held.map(|b| if (b.author.is_empty()) "Unknown author" else b.author), [Engine.class("muted")]),
+					Engine.element("strong", [], [Engine.text_s(title)]),
+					Html.span_s(held.map(|b| if (b.author.is_empty()) "Unknown author" else b.author), [Engine.class("muted")]),
 				],
 			),
 			Html.div(
 				"toolbar",
 				[
-					Html.span_v(held.map(|b| ReadingList.shelf_name(b.shelf)), [Engine.class("badge badge-neutral")]),
+					Html.span_s(held.map(|b| ReadingList.shelf_name(b.shelf)), [Engine.class("badge badge-neutral")]),
 					Engine.element(
 						"button",
-						[Engine.attr("type", "button"), Engine.class("button button-sm"), Engine.attr_v("aria-label", action.map(|a| a.name)), Engine.on_click(Engine.handle_by(held, |b, _| ReadingList.advanced(b)))],
-						[Engine.text_v(action.map(|a| a.label))],
+						[Engine.attr("type", "button"), Engine.class("button button-sm"), Engine.attr_s("aria-label", action.map(|a| a.name)), Engine.on_click(Engine.handle_by(held, |b, _| ReadingList.advanced(b)))],
+						[Engine.text_s(action.map(|a| a.label))],
 					),
 					Engine.element(
 						"button",
-						[Engine.attr("type", "button"), Engine.class("button-ghost button-sm"), Engine.attr_v("aria-label", title.map(|t| "Remove ${t}")), Engine.on_click(Engine.handle_by(id, |key, _| ReadingList.removed(key)))],
+						[Engine.attr("type", "button"), Engine.class("button-ghost button-sm"), Engine.attr_s("aria-label", title.map(|t| "Remove ${t}")), Engine.on_click(Engine.handle_by(id, |key, _| ReadingList.removed(key)))],
 						[Engine.text("Remove")],
 					),
 				],
@@ -164,9 +164,9 @@ shelves : {} -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 shelves = |{}| {
 	books = ReadingList.h.books
-	showing = ReadingList.h.showing.val()
+	showing = ReadingList.h.showing.signal()
 	Engine.derive(
-		books.val().map(ReadingList.tally),
+		books.signal().map(ReadingList.tally),
 		|counted| {
 			Html.section(
 				"Shelves",
@@ -181,8 +181,8 @@ shelves = |{}| {
 							shelf_button(counted, { label: "Finished", showing: Only(Finished) }),
 						],
 					),
-					Html.p_v(
-						{ copy: ReadingList.h.copy.val(), tally: counted, showing }.Val.map(ReadingList.status),
+					Html.p_s(
+						{ copy: ReadingList.h.copy.signal(), tally: counted, showing }.Signal.map(ReadingList.status),
 						[Engine.class("muted"), Engine.test_id("status")],
 					),
 					Engine.element(
@@ -202,9 +202,9 @@ shelves = |{}| {
 						Engine.const("Remove finished books"),
 						counted.map(|c| ReadingList.count(c, Only(Finished)) == 0),
 						[Engine.class("button-ghost button-sm justify-self-start")],
-						Engine.handle_by(books.val().map(ReadingList.finished_ids), |ids, _| ReadingList.finished_removed(ids)),
+						Engine.handle_by(books.signal().map(ReadingList.finished_ids), |ids, _| ReadingList.finished_removed(ids)),
 					),
-					Html.p_v(ReadingList.h.note.val(), [Engine.class("hint"), Engine.test_id("note")]),
+					Html.p_s(ReadingList.h.note.signal(), [Engine.class("hint"), Engine.test_id("note")]),
 				],
 			)
 		},

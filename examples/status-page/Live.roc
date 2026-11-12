@@ -1,4 +1,4 @@
-import pf.Engine exposing [Cell, Elem, State, Val]
+import pf.Engine exposing [Cell, Elem, Signal, State]
 import pf.Html
 import pf.Port
 import Charts
@@ -133,16 +133,16 @@ Live :: {
 	## The panel, with a state of its own for the feed.
 	view : Props(st) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, st)]
-	view = |props| Engine.state(Live.init, |live| panel(live, props.visible.val()))
+	view = |props| Engine.state(Live.init, |live| panel(live, props.visible.signal()))
 }
 
 ## The panel over its state. The subscription lives in a branch that is
 ## mounted only while the page is visible and the reader follows the feed,
 ## so hiding the page or pausing disposes it, which stops the feed's
 ## JavaScript; showing or resuming subscribes afresh.
-panel : State(ctx, Live), Val(ctx, Bool) -> Elem(ctx)
+panel : State(ctx, Live), Signal(ctx, Bool) -> Elem(ctx)
 panel = |live, visible| {
-	lv = live.val()
+	lv = live.signal()
 	following = visible.map2(lv, |showing, l| showing and l.mode == Following)
 	Html.section(
 		"Live latency",
@@ -152,7 +152,7 @@ panel = |live, visible| {
 				"flex flex-wrap items-baseline justify-between gap-2",
 				[
 					Html.h2("Live p95 latency", "panel-title"),
-					Html.p_v(lv.map(Live.status_text), [Engine.class("hint"), Engine.test_id("live-status")]),
+					Html.p_s(lv.map(Live.status_text), [Engine.class("hint"), Engine.test_id("live-status")]),
 				],
 			),
 			Html.div(
@@ -169,7 +169,7 @@ panel = |live, visible| {
 			# most four times a second however fast readings arrive.
 			Engine.derive(
 				lv.map(|l| l.drawn),
-				|drawn| Engine.element("plume-chart", [Engine.class("block"), Engine.attr("role", "img"), Html.aria_label("Live p95 latency by service"), Engine.test_id("latency-chart"), Engine.attr_v("data-figure", drawn.map(Charts.latency))], []),
+				|drawn| Engine.element("plume-chart", [Engine.class("block"), Engine.attr("role", "img"), Html.aria_label("Live p95 latency by service"), Engine.test_id("latency-chart"), Engine.attr_s("data-figure", drawn.map(Charts.latency))], []),
 			),
 			Html.div(
 				"toolbar",

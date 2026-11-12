@@ -1,4 +1,4 @@
-import pf.Engine exposing [Val]
+import pf.Engine exposing [Signal]
 import pf.Table
 import Cells
 import Formula
@@ -112,13 +112,13 @@ SheetStore := [Workbook].{
 
 	## What the formula bar shows: the selected cell as the sheet holds it
 	## now, and whether it is being edited.
-	bar : {} -> Val(ctx, Bar)
+	bar : {} -> Signal(ctx, Bar)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	bar = |{}| {
-		table: SheetStore.h.sheet.val(),
-		index: SheetStore.h.selected.val(),
-		focus: SheetStore.h.editing.val(),
-	}.Val.map(|{ table, index, focus }| SheetStore.bar_of(SheetStore.cell_at(table, index), focus))
+		table: SheetStore.h.sheet.signal(),
+		index: SheetStore.h.selected.signal(),
+		focus: SheetStore.h.editing.signal(),
+	}.Signal.map(|{ table, index, focus }| SheetStore.bar_of(SheetStore.cell_at(table, index), focus))
 }
 
 ## The values the cells named show in the sheet a store holds.

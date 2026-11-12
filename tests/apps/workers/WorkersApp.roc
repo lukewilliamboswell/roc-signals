@@ -154,7 +154,7 @@ WorkersApp := [].{
 
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"workers",
 			[
@@ -196,7 +196,7 @@ WorkersApp := [].{
 				Engine.on_change(v.map(|s| s.grows), |_| [WorkersApp.job(WorkersApp.grow, "16777216".to_utf8())], WorkersApp.logs_of(st, "grow", WorkersApp.grow)),
 				Html.button("Deep", [], st.update(|s| { ..s, deeps: s.deeps + 1 })),
 				Engine.on_change(v.map(|s| s.deeps), |_| [WorkersApp.deep.request(600)], WorkersApp.logs(st, "deep", |r| WorkersApp.described(WorkersApp.deep.result(r), |_| "chain"))),
-				Html.p_v(v.map(|s| Str.join_with(s.log, "|")), [Engine.test_id("log")]),
+				Html.p_s(v.map(|s| Str.join_with(s.log, "|")), [Engine.test_id("log")]),
 			],
 		)
 	}

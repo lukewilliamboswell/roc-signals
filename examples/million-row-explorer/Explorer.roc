@@ -1,4 +1,4 @@
-import pf.Engine exposing [Val]
+import pf.Engine exposing [Signal]
 import pf.Port
 import pf.Worker
 import Feed
@@ -157,9 +157,9 @@ Explorer := [Shop].{
 		.with_initial(Explorer.h.note, setup.note)
 
 	## The question the controls show beside the one asked of the shards.
-	question : {} -> Val(ctx, { shown : Orders.Filter, asked : Orders.Filter })
+	question : {} -> Signal(ctx, { shown : Orders.Filter, asked : Orders.Filter })
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	question = |{}| { shown: Explorer.h.shown.val(), asked: Explorer.h.asked.val() }.Val
+	question = |{}| { shown: Explorer.h.shown.signal(), asked: Explorer.h.asked.signal() }.Signal
 
 	## Whether the shards have been asked what the controls show.
 	sampling : { shown : Orders.Filter, asked : Orders.Filter } -> Sampling
@@ -249,9 +249,9 @@ Explorer := [Shop].{
 	Answering : { size : U64, live : LiveOrders, asked : Orders.Filter }
 
 	## What a board is drawn from, for a database of `size` orders.
-	answering : U64 -> Val(ctx, Answering)
+	answering : U64 -> Signal(ctx, Answering)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	answering = |size| Explorer.h.live.val().map2(Explorer.h.asked.val(), |live, asked| { size, live, asked })
+	answering = |size| Explorer.h.live.signal().map2(Explorer.h.asked.signal(), |live, asked| { size, live, asked })
 
 	## What the page shows: the shards' last complete answer added to the
 	## live orders, the question it shows, and how far the current question

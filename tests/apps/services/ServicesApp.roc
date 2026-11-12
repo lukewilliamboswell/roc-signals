@@ -83,7 +83,7 @@ ServicesApp := [].{
 
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"services",
 			[
@@ -107,15 +107,15 @@ ServicesApp := [].{
 						},
 					),
 				),
-				Html.p_v(v.map(|s| if (s.online) "online" else "offline"), [Engine.test_id("online")]),
-				Html.p_v(v.map(|s| if (s.visible) "visible" else "hidden"), [Engine.test_id("visible")]),
-				Html.p_v(v.map(|s| if (s.storage_available) "storage available" else "storage unavailable"), [Engine.test_id("storage")]),
+				Html.p_s(v.map(|s| if (s.online) "online" else "offline"), [Engine.test_id("online")]),
+				Html.p_s(v.map(|s| if (s.visible) "visible" else "hidden"), [Engine.test_id("visible")]),
+				Html.p_s(v.map(|s| if (s.storage_available) "storage available" else "storage unavailable"), [Engine.test_id("storage")]),
 				Engine.when(
 					v.map(|s| s.visible),
 					|| Engine.element("span", [], [Engine.watch(Engine.const({}), |_| [Interval(5000)], st.on_result(|s, _, _| { ..s, polls: s.polls + 1 }))]),
 					|| Engine.text(""),
 				),
-				Html.p_v(v.map(|s| s.polls.to_str()), [Engine.test_id("polls")]),
+				Html.p_s(v.map(|s| s.polls.to_str()), [Engine.test_id("polls")]),
 				# The clock
 				Html.button("Start", [], st.update(|s| { ..s, running: True })),
 				Html.button("Stop", [], st.update(|s| { ..s, running: False })),
@@ -132,14 +132,14 @@ ServicesApp := [].{
 					),
 					|| Engine.text(""),
 				),
-				Html.p_v(v.map(|s| s.ticks.to_str()), [Engine.test_id("ticks")]),
+				Html.p_s(v.map(|s| s.ticks.to_str()), [Engine.test_id("ticks")]),
 				# Real clicks
 				Html.radio("Small", "size", "s", v.map(|s| s.size), [], st.update(|s| { ..s, size: "s" })),
 				Html.radio("Medium", "size", "m", v.map(|s| s.size), [], st.update(|s| { ..s, size: "m" })),
-				Html.p_v(v.map(|s| s.size), [Engine.test_id("size")]),
+				Html.p_s(v.map(|s| s.size), [Engine.test_id("size")]),
 				Html.checkbox(Engine.const("Agree"), v.map(|s| s.agree), [], st.set_value(|s, p| { ..s, agree: p == "true" })),
 				Engine.element("button", [Html.aria_label("Press"), ServicesApp.press(st, "focus"), ServicesApp.press(st, "mousedown"), ServicesApp.press(st, "mouseup"), ServicesApp.press(st, "click")], [Engine.text("Press")]),
-				Html.p_v(v.map(|s| Str.join_with(s.presses, ",")), [Engine.test_id("presses")]),
+				Html.p_s(v.map(|s| Str.join_with(s.presses, ",")), [Engine.test_id("presses")]),
 				# A form
 				Html.form(
 					"Order",
@@ -150,16 +150,16 @@ ServicesApp := [].{
 						Html.submit_button("Place order", []),
 					],
 				),
-				Html.p_v(v.map(|s| s.submitted.to_str()), [Engine.test_id("submitted")]),
+				Html.p_s(v.map(|s| s.submitted.to_str()), [Engine.test_id("submitted")]),
 				# Selects: static options, and options an `each` mounts after
 				# the select's value is set.
 				Html.select(Engine.const("Fruit"), v.map(|s| s.fruit), [], [Html.option("apple", "Apple"), Html.option("pear", "Pear")], st.set_value(|s, f| { ..s, fruit: f })),
-				Html.p_v(v.map(|s| s.fruit), [Engine.test_id("fruit")]),
+				Html.p_s(v.map(|s| s.fruit), [Engine.test_id("fruit")]),
 				Html.select(
 					Engine.const("Shade"),
 					v.map(|s| s.shade),
 					[],
-					[Engine.each(Engine.const(["amber", "teal", "plum"]), |k| k, |row| Engine.element("option", [Engine.attr_v("value", row.key())], [Engine.text_v(row.key())]))],
+					[Engine.each(Engine.const(["amber", "teal", "plum"]), |k| k, |row| Engine.element("option", [Engine.attr_s("value", row.key())], [Engine.text_s(row.key())]))],
 					st.set_value(|s, c| { ..s, shade: c }),
 				),
 				# HTTP results as typed errors
@@ -169,20 +169,20 @@ ServicesApp := [].{
 					|n| [Http({ method: "GET", url: "/api/item/${n.to_str()}", headers: [], body: "", timeout_ms: 100 })],
 					st.on_result(|s, _, r| { ..s, fetched: ServicesApp.shown(r) }),
 				),
-				Html.p_v(v.map(|s| s.fetched), [Engine.test_id("fetched")]),
+				Html.p_s(v.map(|s| s.fetched), [Engine.test_id("fetched")]),
 				# A controlled input whose value the app rewrites (trimmed):
 				# the rewrite waits for blur while the control has focus.
 				Html.text_input(Engine.const("Trimmed"), "text", v.map(|s| s.trimmed), [], st.set_value(|s, t| { ..s, trimmed: t.trim() })),
-				Html.p_v(v.map(|s| s.trimmed), [Engine.test_id("trimmed")]),
+				Html.p_s(v.map(|s| s.trimmed), [Engine.test_id("trimmed")]),
 				# Default actions
 				Html.link("Jump", "#jump", []),
 				Engine.element("a", [Engine.attr("href", "#stay"), Engine.on("click:prevent", st.update(|s| { ..s, prevented: s.prevented + 1 }))], [Engine.text("Stay")]),
-				Html.p_v(v.map(|s| s.prevented.to_str()), [Engine.test_id("prevented")]),
+				Html.p_s(v.map(|s| s.prevented.to_str()), [Engine.test_id("prevented")]),
 				Engine.element("input", [Html.aria_label("Commit"), Engine.attr("type", "text"), Html.on_change(st.set_value(|s, t| { ..s, committed: t }))], []),
-				Html.p_v(v.map(|s| s.committed), [Engine.test_id("committed")]),
+				Html.p_s(v.map(|s| s.committed), [Engine.test_id("committed")]),
 				Html.button("Delay", [], st.update(|s| { ..s, delays: s.delays + 1 })),
 				Engine.on_change(v.map(|s| s.delays), |_| [Timer(1000)], st.on_result(|s, _, r| { ..s, delayed: Str.inspect(r) })),
-				Html.p_v(v.map(|s| s.delayed), [Engine.test_id("delayed")]),
+				Html.p_s(v.map(|s| s.delayed), [Engine.test_id("delayed")]),
 				ServicesApp.two_states({}),
 			],
 		)
@@ -199,8 +199,8 @@ ServicesApp := [].{
 				"div",
 				[],
 				[
-					Html.p_v(s1.lift().val().map(|x| "s1=${x}"), [Engine.test_id("s1")]),
-					Html.p_v(s2.val().map(|x| "s2=${x}"), [Engine.test_id("s2")]),
+					Html.p_s(s1.lift().signal().map(|x| "s1=${x}"), [Engine.test_id("s1")]),
+					Html.p_s(s2.signal().map(|x| "s2=${x}"), [Engine.test_id("s2")]),
 					Html.button("Both", [], s1.lift().update(|_| "a").also(s2.update(|_| "b"))),
 				],
 			),

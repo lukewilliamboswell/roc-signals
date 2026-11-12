@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, In, Root, State, Val]
+import pf.Engine exposing [Elem, In, Root, Signal, State]
 import pf.Html
 
 ## Supersession test app: the two explicit effect-site policies, each with
@@ -81,29 +81,29 @@ SupersedeApp := [].{
 		"${head}${slow}; showing ${l.answer}; before ${l.previous}"
 	}
 
-	item_view : Val(ctx, Str), Str -> Elem(ctx)
-	item_view = |item, id| Engine.resource(item, SupersedeApp.item_cfg, |l| Html.p_v(l.map(SupersedeApp.show), [Engine.test_id(id)]))
+	item_view : Signal(ctx, Str), Str -> Elem(ctx)
+	item_view = |item, id| Engine.resource(item, SupersedeApp.item_cfg, |l| Html.p_s(l.map(SupersedeApp.show), [Engine.test_id(id)]))
 
 	## The panel: the picked item's view.
-	panel : Val(ctx, Str) -> Elem(ctx)
+	panel : Signal(ctx, Str) -> Elem(ctx)
 	panel = |picked| Engine.element("div", [], [SupersedeApp.item_view(picked, "panel")])
 
 	## One row: a reload counter and the row's resource over (key, version).
-	row_view : Val(In(Engine.Row(Ctx, Str), U64), Str), State(In(Engine.Row(Ctx, Str), U64), U64) -> Elem(In(Engine.Row(Ctx, Str), U64))
+	row_view : Signal(In(Engine.Row(Ctx, Str), U64), Str), State(In(Engine.Row(Ctx, Str), U64), U64) -> Elem(In(Engine.Row(Ctx, Str), U64))
 	row_view = |key, ver| Engine.element(
 		"span",
 		[],
 		[
-			Engine.element("button", [Html.aria_label_v(key.map(|k| "Reload ${k}")), Engine.on_click(ver.update(|v| v + 1))], [Engine.text("Reload")]),
+			Engine.element("button", [Html.aria_label_s(key.map(|k| "Reload ${k}")), Engine.on_click(ver.update(|v| v + 1))], [Engine.text("Reload")]),
 			Engine.resource(
-				key.map2(ver.val(), |k, v| (k, v)),
+				key.map2(ver.signal(), |k, v| (k, v)),
 				{
 					init: "",
 					pending: |_, (k, v)| "loading ${k}/${v.to_str()}",
 					plan: |(k, v)| [Http({ method: "GET", url: "/row/${k}/${v.to_str()}", headers: [], body: "", timeout_ms: 0 })],
 					resolve: |_, (k, v), res| SupersedeApp.answer_of("${k}/${v.to_str()}", res),
 				},
-				|l| Html.span_v(l, [Engine.test_id_v(key.lift().map(|k| "row ${k}"))]),
+				|l| Html.span_s(l, [Engine.test_id_s(key.lift().map(|k| "row ${k}"))]),
 			),
 		],
 	)
@@ -117,7 +117,7 @@ SupersedeApp := [].{
 			[],
 			[
 				Html.button("Inc ${name}", [], c.update(|n| n + 1)),
-				Html.p_v(c.val().map(|n| "${name} ${n.to_str()}"), [Engine.test_id(name)]),
+				Html.p_s(c.signal().map(|n| "${name} ${n.to_str()}"), [Engine.test_id(name)]),
 			],
 		),
 	)
@@ -132,8 +132,8 @@ SupersedeApp := [].{
 			[],
 			[
 				Html.button("Inc late", [], c.update(|n| n + 1)),
-				Html.p_v(c.val().map(|n| "late ${n.to_str()}"), [Engine.test_id("late")]),
-				Engine.on_change(c.val(), |n| [Title("late ${n.to_str()}")], Engine.ignore({})),
+				Html.p_s(c.signal().map(|n| "late ${n.to_str()}"), [Engine.test_id("late")]),
+				Engine.on_change(c.signal(), |n| [Title("late ${n.to_str()}")], Engine.ignore({})),
 			],
 		),
 	)
@@ -153,14 +153,14 @@ SupersedeApp := [].{
 					"div",
 					[],
 					[
-						Html.p_v(l.map(|n| "answers ${n.to_str()}"), [Engine.test_id("answers")]),
+						Html.p_s(l.map(|n| "answers ${n.to_str()}"), [Engine.test_id("answers")]),
 						SupersedeApp.counter("below resource"),
 					],
 				),
 			),
 			Html.button("Toggle inner", [], st.update(|s| { ..s, inner: !s.inner })),
 			Engine.when(
-				st.val().map(|s| s.inner),
+				st.signal().map(|s| s.inner),
 				|| Engine.state(
 					0.U64,
 					|a| Engine.state(
@@ -171,7 +171,7 @@ SupersedeApp := [].{
 							[
 								Html.button("Inc outer", [], a.lift().update(|n| n + 1)),
 								Html.button("Inc inner", [], b.update(|n| n + 1)),
-								Html.p_v(a.val().lift().map2(b.val(), |x, y| "nested ${x.to_str()}/${y.to_str()}"), [Engine.test_id("nested")]),
+								Html.p_s(a.signal().lift().map2(b.signal(), |x, y| "nested ${x.to_str()}/${y.to_str()}"), [Engine.test_id("nested")]),
 							],
 						),
 					),
@@ -195,7 +195,7 @@ SupersedeApp := [].{
 
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"supersede",
 			[
@@ -208,7 +208,7 @@ SupersedeApp := [].{
 					|q| if (q == "") [] else [Http({ method: "GET", url: "/search?q=${q}", headers: [], body: "", timeout_ms: 1000 })],
 					st.on_result(|s, q, r| { ..s, results: SupersedeApp.answer_of(q, r) }),
 				),
-				Html.p_v(v.map(|s| s.results), [Engine.test_id("results")]),
+				Html.p_s(v.map(|s| s.results), [Engine.test_id("results")]),
 				# Latest wins for a subscription: one ticker interval at a time.
 				Html.button("Fast", [], st.update(|s| { ..s, rate: 100 })),
 				Html.button("Slow", [], st.update(|s| { ..s, rate: 1000 })),
@@ -218,7 +218,7 @@ SupersedeApp := [].{
 					|r| if (r == 0) [] else [Interval(r)],
 					st.on_result(|s, _, _| { ..s, ticks: s.ticks + 1 }),
 				),
-				Html.p_v(v.map(|s| s.ticks.to_str()), [Engine.test_id("ticks")]),
+				Html.p_s(v.map(|s| s.ticks.to_str()), [Engine.test_id("ticks")]),
 				# An asynchronous layer at the top level.
 				Html.button("Item 1", [], st.update(|s| { ..s, item: "1" })),
 				Html.button("Item 2", [], st.update(|s| { ..s, item: "2" })),
@@ -248,7 +248,7 @@ SupersedeApp := [].{
 				# Layers mounted only in a later branch.
 				# A flood of rows fetching at mount.
 				Html.button("Flood", [], st.update(|s| { ..s, flood: SupersedeApp.flood_keys(100) })),
-				Html.p_v(v.map(|s| "refused ${s.refused.to_str()}, answered ${s.answered.to_str()}"), [Engine.test_id("flood")]),
+				Html.p_s(v.map(|s| "refused ${s.refused.to_str()}, answered ${s.answered.to_str()}"), [Engine.test_id("flood")]),
 				Html.ul(
 					[],
 					[
@@ -268,7 +268,7 @@ SupersedeApp := [].{
 											},
 										),
 									),
-									Engine.text_v(row.key()),
+									Engine.text_s(row.key()),
 								],
 							),
 						),

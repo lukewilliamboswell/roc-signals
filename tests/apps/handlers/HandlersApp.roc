@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, Handler, In, State, Val]
+import pf.Engine exposing [Elem, Handler, In, Signal, State]
 import pf.Html
 
 ## Handlers test app: `Handler.also` and `Reaction.also`, one event or one
@@ -39,8 +39,8 @@ import pf.Html
 HandlersApp := [].{
 
 	## A line naming a value, read by a reader with test id `name`.
-	reader : Str, Val(ctx, Str) -> Elem(ctx)
-	reader = |name, v| Html.p_v(v.map(|s| "${name}=${s}"), [Engine.test_id(name)])
+	reader : Str, Signal(ctx, Str) -> Elem(ctx)
+	reader = |name, v| Html.p_s(v.map(|s| "${name}=${s}"), [Engine.test_id(name)])
 
 	## A packaged picker with private open state. Its owner passes down what
 	## to do when a date is picked; the click closes the picker as well.
@@ -50,7 +50,7 @@ HandlersApp := [].{
 		|open| Html.div(
 			"picker",
 			[
-				HandlersApp.reader("picker", open.val().map(|o| if (o) "open" else "closed")),
+				HandlersApp.reader("picker", open.signal().map(|o| if (o) "open" else "closed")),
 				Engine.element("button", [Engine.on_click(open.update(|_| False).also(picked.lift()))], [Engine.text("Pick 3rd")]),
 			],
 		),
@@ -64,8 +64,8 @@ HandlersApp := [].{
 		|other| Html.div(
 			"owner",
 			[
-				HandlersApp.reader("date", date.lift().val()),
-				HandlersApp.reader("other", other.val().map(|n| n.to_str())),
+				HandlersApp.reader("date", date.lift().signal()),
+				HandlersApp.reader("other", other.signal().map(|n| n.to_str())),
 				HandlersApp.picker(date.lift().update(|_| "3rd")),
 				Html.button("Both", [], date.lift().update(|d| "${d}!").also(other.update(|n| n + 1))),
 			],
@@ -79,7 +79,7 @@ HandlersApp := [].{
 		|n| Html.div(
 			"counter",
 			[
-				HandlersApp.reader("n", n.val().map(|v| v.to_str())),
+				HandlersApp.reader("n", n.signal().map(|v| v.to_str())),
 				Html.button("n+1, then double", [], n.update(|v| v.plus_wrap(1)).also(n.update(|v| v.times_wrap(2)))),
 			],
 		),
@@ -92,8 +92,8 @@ HandlersApp := [].{
 		|log| Html.div(
 			"answers",
 			[
-				HandlersApp.reader("count", count.lift().val().map(|v| v.to_str())),
-				HandlersApp.reader("log", log.val()),
+				HandlersApp.reader("count", count.lift().signal().map(|v| v.to_str())),
+				HandlersApp.reader("log", log.signal()),
 				Engine.watch(Engine.const("tick"), |_| [Timer(10)], count.lift().on_result(|c, _, _| c + 1).also(log.on_result(|l, a, _| "${l}${a};"))),
 			],
 		),
@@ -108,11 +108,11 @@ HandlersApp := [].{
 	pair = |_| Engine.state(
 		0.I64,
 		|outer| Engine.derive(
-			outer.val().map(|n| n * 2),
+			outer.signal().map(|n| n * 2),
 			|doubled| Engine.state(
 				0.I64,
 				|inner| {
-					seen = inner.val().map2(doubled.lift(), |i, d| "${i.to_str()}/${d.to_str()}")
+					seen = inner.signal().map2(doubled.lift(), |i, d| "${i.to_str()}/${d.to_str()}")
 					Html.div(
 						"pair",
 						[
@@ -142,13 +142,13 @@ HandlersApp := [].{
 		|outer| Html.div(
 			"mixed",
 			[
-				Engine.state(0.I64, |aside| HandlersApp.reader("aside", aside.val().map(|n| n.to_str()))),
+				Engine.state(0.I64, |aside| HandlersApp.reader("aside", aside.signal().map(|n| n.to_str()))),
 				Engine.state(
 					0.I64,
 					|inner| Engine.derive(
-						inner.val().map(|n| n * 2),
+						inner.signal().map(|n| n * 2),
 						|doubled| {
-							seen = outer.lift().lift().val().map2(doubled, |o, d| "${o.to_str()}/${d.to_str()}")
+							seen = outer.lift().lift().signal().map2(doubled, |o, d| "${o.to_str()}/${d.to_str()}")
 							Html.div(
 								"pairing",
 								[
@@ -182,7 +182,7 @@ HandlersApp := [].{
 			[],
 			[
 				Engine.each(
-					rows.val(),
+					rows.signal(),
 					|row| row.id,
 					|r| Html.li(
 						[],
@@ -190,12 +190,12 @@ HandlersApp := [].{
 							Engine.state(
 								0.I64,
 								|clicks| {
-									seen = clicks.val().map2(r.field(|row| row.stars).lift(), |c, s| "${c.to_str()}/${s.to_str()}")
+									seen = clicks.signal().map2(r.field(|row| row.stars).lift(), |c, s| "${c.to_str()}/${s.to_str()}")
 									Html.div(
 										"rated",
 										[
-											Html.p_v(seen, [Engine.test_id_v(r.key().lift())]),
-											Html.button_v(r.key().lift().map(|k| "Rate ${k}"), [], clicks.update(|n| n + 1).also(rows.lift_row().lift().update_by(r.key().lift(), HandlersApp.starred))),
+											Html.p_s(seen, [Engine.test_id_s(r.key().lift())]),
+											Html.button_s(r.key().lift().map(|k| "Rate ${k}"), [], clicks.update(|n| n + 1).also(rows.lift_row().lift().update_by(r.key().lift(), HandlersApp.starred))),
 											Engine.on_change(seen.map2(r.key().lift(), |text, k| "${k} ${text}"), |text| [Title("rated ${text}"), Timer(10)], Engine.ignore({})),
 										],
 									)
@@ -215,7 +215,7 @@ HandlersApp := [].{
 	closing = |_| Engine.state(
 		{ shown: Open, presses: 0.I64 },
 		|outer| Engine.when(
-			outer.val().map(|o| o.shown == Open),
+			outer.signal().map(|o| o.shown == Open),
 			|| Engine.state(
 				0.I64,
 				|inner| Html.button("Close", [], inner.update(|n| n + 1).also(outer.lift().update(|o| { ..o, shown: Closed }))),
@@ -225,7 +225,7 @@ HandlersApp := [].{
 				|_| Html.div(
 					"closed",
 					[
-						HandlersApp.reader("presses", outer.lift().val().map(|o| o.presses.to_str())),
+						HandlersApp.reader("presses", outer.lift().signal().map(|o| o.presses.to_str())),
 						Html.button("Press", [], outer.lift().update(|o| { ..o, presses: o.presses + 1 })),
 					],
 				),

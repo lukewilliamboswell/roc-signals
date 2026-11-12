@@ -150,7 +150,7 @@ FilesApp := [Shelf].{
 	view : State(ctx, S) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		inbox = FilesApp.h.inbox
 		Html.div(
 			"files",
@@ -161,7 +161,7 @@ FilesApp := [Shelf].{
 				Engine.element("section", [Html.aria_label("Inbox"), Html.on_drop_files(Engine.handle_files(FilesApp.arrived))], [Engine.text("inbox")]),
 				Engine.element(
 					"section",
-					[Html.aria_label("Inbox with a reading"), Html.on_drop_files(Engine.handle_files_by(inbox.val().map(|held| held.len()), FilesApp.arrived_after))],
+					[Html.aria_label("Inbox with a reading"), Html.on_drop_files(Engine.handle_files_by(inbox.signal().map(|held| held.len()), FilesApp.arrived_after))],
 					[Engine.text("inbox, added to")],
 				),
 				Engine.element(
@@ -170,21 +170,21 @@ FilesApp := [Shelf].{
 					[Engine.text("inbox and list")],
 				),
 				Html.button("Empty inbox", [], Engine.does(FilesApp.emptied)),
-				Html.p_v(inbox.val().map(FilesApp.listing), [Engine.test_id("inbox")]),
-				Html.p_v(FilesApp.h.note.val(), [Engine.test_id("note")]),
+				Html.p_s(inbox.signal().map(FilesApp.listing), [Engine.test_id("inbox")]),
+				Html.p_s(FilesApp.h.note.signal(), [Engine.test_id("note")]),
 				Html.button("Keep first", [], st.update(|s| { ..s, files: FilesApp.first_only(s.files) })),
 				Html.button("Clear", [], st.update(|s| { ..s, files: [] })),
-				Html.p_v(v.map(|s| FilesApp.listing(s.files)), [Engine.test_id("files")]),
-				Html.p_v(v.map(|s| "refused ${s.refused.to_str()}"), [Engine.test_id("refused")]),
+				Html.p_s(v.map(|s| FilesApp.listing(s.files)), [Engine.test_id("files")]),
+				Html.p_s(v.map(|s| "refused ${s.refused.to_str()}"), [Engine.test_id("refused")]),
 				Html.button("Count", [], st.update(|s| { ..s, ask: Count(s.files) })),
 				Html.button("Count tail", [], st.update(|s| { ..s, ask: Tail(FilesApp.tail_of(s.files)) })),
 				Html.button("Probe", [], st.update(|s| { ..s, ask: Probe(FilesApp.first_only(s.files)) })),
 				Html.button("Forget", [], st.update(|s| { ..s, ask: Nothing })),
-				Worker.derive_when(FilesApp.count, v.map(|s| FilesApp.asked(s.ask)), |r| Html.p_v(r.map(FilesApp.show_counts), [Engine.test_id("counts")])),
+				Worker.derive_when(FilesApp.count, v.map(|s| FilesApp.asked(s.ask)), |r| Html.p_s(r.map(FilesApp.show_counts), [Engine.test_id("counts")])),
 				Worker.derive_when(
 					FilesApp.probe,
 					v.map(|s| FilesApp.probed(s.ask)),
-					|r| Html.p_v(
+					|r| Html.p_s(
 						r.map(|remote| remote.answered().map_ok(|ok| if (ok) "probe ok" else "probe failed") ?? "no probe"),
 						[Engine.test_id("probe")],
 					),
@@ -199,7 +199,7 @@ FilesApp := [Shelf].{
 							[Html.aria_label("panel")],
 							[
 								Html.file_input(Engine.const("Panel upload"), { accept: Types(".txt") }, inner.on_files(|kept, { files, refused: _ }| kept.concat(files))),
-								Html.p_v(inner.val().map(FilesApp.listing), [Engine.test_id("panel-files")]),
+								Html.p_s(inner.signal().map(FilesApp.listing), [Engine.test_id("panel-files")]),
 							],
 						),
 					),

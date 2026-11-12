@@ -60,23 +60,23 @@ OutboxApp := [].{
 	view = |st| Html.div(
 		"outbox",
 		[
-			Html.text_input(Engine.const("Note"), "text", st.val().map(|s| s.draft), [], st.set_value(|s, text| { ..s, draft: text })),
+			Html.text_input(Engine.const("Note"), "text", st.signal().map(|s| s.draft), [], st.set_value(|s, text| { ..s, draft: text })),
 			Html.button("Send", [], st.update(OutboxApp.send)),
 			Html.button("Send twice", [], st.update(OutboxApp.send_twice)),
 			Html.button("Send both", [], st.update(OutboxApp.send_both)),
 			Html.checkbox(
 				Engine.const("Sending"),
-				st.val().map(|s| s.sending == Sending),
+				st.signal().map(|s| s.sending == Sending),
 				[],
 				st.set_value(|s, checked| { ..s, sending: if (checked == "true") Sending else Paused }),
 			),
 			Engine.when(
-				st.val().map(|s| s.sending == Sending),
-				|| Engine.on_post(st.val().map(|s| s.notes), |note| [OutboxApp.request(note)], st.on_result(OutboxApp.answered)),
+				st.signal().map(|s| s.sending == Sending),
+				|| Engine.on_post(st.signal().map(|s| s.notes), |note| [OutboxApp.request(note)], st.on_result(OutboxApp.answered)),
 				|| Engine.text(""),
 			),
-			Engine.on_post(st.val().map(|s| s.batches), |notes| notes.map(OutboxApp.request), st.on_result(|s, notes, res| OutboxApp.answered(s, Str.join_with(notes, "+"), res))),
-			Html.p_v(st.val().map(|s| Str.join_with(s.log, " | ")), [Engine.test_id("log")]),
+			Engine.on_post(st.signal().map(|s| s.batches), |notes| notes.map(OutboxApp.request), st.on_result(|s, notes, res| OutboxApp.answered(s, Str.join_with(notes, "+"), res))),
+			Html.p_s(st.signal().map(|s| Str.join_with(s.log, " | ")), [Engine.test_id("log")]),
 		],
 	)
 

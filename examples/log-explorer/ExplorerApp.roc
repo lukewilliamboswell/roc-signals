@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, File, Row, RowRef, Val]
+import pf.Engine exposing [Elem, File, Row, RowRef, Signal]
 import pf.Files
 import pf.Html
 import pf.Worker
@@ -222,14 +222,14 @@ ExplorerApp := [].{
 	## The overview task's answer, which every tab reads.
 	OverviewAnswer : Engine.Remote(Log.Overview, Worker.Error(Problem))
 
-	level_tile : Val(ctx, OverviewAnswer), Log.Level -> Elem(ctx)
+	level_tile : Signal(ctx, OverviewAnswer), Log.Level -> Elem(ctx)
 	level_tile = |r, level| {
 		name = Log.level_name(level)
 		Html.div(
 			"stat",
 			[
 				Html.p(name, "stat-label"),
-				Html.p_v(
+				Html.p_s(
 					r.map(|remote| remote.answered().map_ok(|o| ExplorerApp.grouped(Log.tally_of(o.tally, level))) ?? "–"),
 					[Engine.class("stat-value numeric"), Engine.test_id("level-${Str.from_utf8_lossy(name.to_utf8().map(|b| b + 32))}")],
 				),
@@ -237,16 +237,16 @@ ExplorerApp := [].{
 		)
 	}
 
-	overview_panel : Val(ctx, OverviewAnswer) -> Elem(ctx)
+	overview_panel : Signal(ctx, OverviewAnswer) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	overview_panel = |r|
 		Html.section(
 			"Overview",
 			"grid gap-3",
 			[
-				Html.p_v(r.map(|remote| ExplorerApp.status(remote, "Indexing the log…", ExplorerApp.summary)), [Engine.test_id("overview")]),
+				Html.p_s(r.map(|remote| ExplorerApp.status(remote, "Indexing the log…", ExplorerApp.summary)), [Engine.test_id("overview")]),
 				Html.div("stat-grid", Log.levels.map(|level| ExplorerApp.level_tile(r, level))),
-				Html.p_v(
+				Html.p_s(
 					r.map(
 						|remote| match remote.answered() {
 							Ok(o) => "Busiest sources: ${Str.join_with(o.sources.map(|s| "${s.source} ${ExplorerApp.grouped(s.entries)}"), ", ")} (of ${o.distinct_sources.to_str()})"
@@ -262,7 +262,7 @@ ExplorerApp := [].{
 	## The timeline chart, with a line under it naming its peak: the
 	## busiest bucket for errors, or for a search's matches. A click on a
 	## point opens the viewer at that time.
-	timeline_view : Val(ctx, OverviewAnswer), Val(ctx, [NotCounted, Counted(List(U64))]) -> Elem(ctx)
+	timeline_view : Signal(ctx, OverviewAnswer), Signal(ctx, [NotCounted, Counted(List(U64))]) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	timeline_view = |r, matches| {
 		answered = r.map2(matches, |remote, over_time| remote.answered().map_ok(|o| { o, over_time }))
@@ -278,8 +278,8 @@ ExplorerApp := [].{
 						# The element reports a click on a point as the point's
 						# time, in its value and a change event.
 						Engine.attr("data-click", "x"),
-						Engine.attr_v("aria-label", answered.map(|a| a.map_ok(|{ o, over_time }| ExplorerApp.timeline_label(o, over_time)) ?? "Timeline")),
-						Engine.attr_v(
+						Engine.attr_s("aria-label", answered.map(|a| a.map_ok(|{ o, over_time }| ExplorerApp.timeline_label(o, over_time)) ?? "Timeline")),
+						Engine.attr_s(
 							"data-figure",
 							answered.map(
 								|a| match a {
@@ -292,7 +292,7 @@ ExplorerApp := [].{
 					],
 					[],
 				),
-				Html.p_v(answered.map(|a| a.map_ok(|{ o, over_time }| ExplorerApp.peak_text(o, over_time)) ?? ""), [Engine.class("hint"), Engine.test_id("timeline-peak")]),
+				Html.p_s(answered.map(|a| a.map_ok(|{ o, over_time }| ExplorerApp.peak_text(o, over_time)) ?? ""), [Engine.class("hint"), Engine.test_id("timeline-peak")]),
 			],
 		)
 	}
@@ -338,13 +338,13 @@ ExplorerApp := [].{
 					Jump =>
 						Engine.element(
 							"button",
-							[Engine.attr("type", "button"), Engine.class("button-ghost button-sm numeric"), Engine.attr_v("aria-label", number.map(|n| "Show line ${n.to_str()}")), Engine.on_click(Engine.handle_by(number, |n, _| LogStore.shown_at(n - 1)))],
-							[Engine.text_v(number.map(|n| n.to_str()))],
+							[Engine.attr("type", "button"), Engine.class("button-ghost button-sm numeric"), Engine.attr_s("aria-label", number.map(|n| "Show line ${n.to_str()}")), Engine.on_click(Engine.handle_by(number, |n, _| LogStore.shown_at(n - 1)))],
+							[Engine.text_s(number.map(|n| n.to_str()))],
 						)
-					Stay => Html.span_v(number.map(|n| n.to_str()), [Engine.class("muted numeric")])
+					Stay => Html.span_s(number.map(|n| n.to_str()), [Engine.class("muted numeric")])
 				},
-				Html.span_v(row.field(|line| ExplorerApp.mark_name(line.mark)), [Engine.class_v(row.field(|line| ExplorerApp.mark_class(line.mark)))]),
-				Html.span_v(row.field(|line| line.text), [Engine.class("whitespace-pre-wrap break-all"), Engine.test_id_v(number.map(|n| "line-${n.to_str()}"))]),
+				Html.span_s(row.field(|line| ExplorerApp.mark_name(line.mark)), [Engine.class_s(row.field(|line| ExplorerApp.mark_class(line.mark)))]),
+				Html.span_s(row.field(|line| line.text), [Engine.class("whitespace-pre-wrap break-all"), Engine.test_id_s(number.map(|n| "line-${n.to_str()}"))]),
 			],
 		)
 	}
@@ -367,11 +367,11 @@ ExplorerApp := [].{
 
 	## The search: its text and level, a page of what it found, and the
 	## overview's timeline with its matches.
-	search_panel : Val(ctx, OverviewAnswer) -> Elem(ctx)
+	search_panel : Signal(ctx, OverviewAnswer) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	search_panel = |answer| {
 		cells = LogStore.h
-		query = cells.query.val()
+		query = cells.query.signal()
 		Html.section(
 			"Search",
 			"grid gap-3",
@@ -396,12 +396,12 @@ ExplorerApp := [].{
 				),
 				Worker.derive_when(
 					ExplorerApp.search,
-					{ open: cells.log.val(), typed: query, page: cells.place.page.val() }.Val.map(|at| ExplorerApp.asked(at.open, { text: at.typed.text, filter: at.typed.filter, page: at.page })),
+					{ open: cells.log.signal(), typed: query, page: cells.place.page.signal() }.Signal.map(|at| ExplorerApp.asked(at.open, { text: at.typed.text, filter: at.typed.filter, page: at.page })),
 					|r| Html.div(
 						"grid gap-2",
 						[
-							Html.p_v(
-								cells.place.page.val().map2(r, |page, remote| ExplorerApp.status(remote, "Searching…", |found| ExplorerApp.found_text(found, page))),
+							Html.p_s(
+								cells.place.page.signal().map2(r, |page, remote| ExplorerApp.status(remote, "Searching…", |found| ExplorerApp.found_text(found, page))),
 								[Engine.test_id("search-status")],
 							),
 							Engine.element("ol", [Engine.class("grid gap-1"), Html.aria_label("Search results")], [Engine.each(r.map(|remote| remote.answered().map_ok(|found| found.lines) ?? []), |line| line.number.to_str(), |row| ExplorerApp.line_row(row, Jump))]),
@@ -441,7 +441,7 @@ ExplorerApp := [].{
 		cells = LogStore.h
 		Worker.derive_when(
 			ExplorerApp.window,
-			cells.log.val().map2(cells.place.first.val(), ExplorerApp.asked),
+			cells.log.signal().map2(cells.place.first.signal(), ExplorerApp.asked),
 			|r| Html.section(
 				"Viewer",
 				"grid gap-3",
@@ -455,13 +455,13 @@ ExplorerApp := [].{
 							Html.button("Last", [Engine.class("button button-sm")], ExplorerApp.stepped(r, |w| Log.window_first({ lines: w.total, wanted: w.total }))),
 							Html.number_input(
 								Engine.const("Go to line"),
-								cells.place.first.val().map(|first| (first + 1).to_str()),
+								cells.place.first.signal().map(|first| (first + 1).to_str()),
 								[Engine.class("input w-32")],
 								Engine.handle(LogStore.went_to),
 							),
 						],
 					),
-					Html.p_v(
+					Html.p_s(
 						r.map(
 							|remote| ExplorerApp.status(
 								remote,
@@ -482,7 +482,7 @@ ExplorerApp := [].{
 	## local of `viewer_panel`: as a local helper it makes `roc check` of
 	## this module take minutes with the pinned compiler
 	## (roc-lang/roc#12869, fixed in later ones).
-	stepped : Val(ctx, Engine.Remote(Log.Window, Worker.Error(Problem))), (Log.Window -> U64) -> Engine.Handler(ctx)
+	stepped : Signal(ctx, Engine.Remote(Log.Window, Worker.Error(Problem))), (Log.Window -> U64) -> Engine.Handler(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	stepped = |r, step| Engine.handle_by(r, |remote, _| LogStore.moved_to(remote.answered().map_ok(step)))
 
@@ -491,7 +491,7 @@ ExplorerApp := [].{
 	tab_button = |label, tab| Html.action_button(
 		Engine.const(label),
 		Engine.const(Bool.False),
-		[Engine.class("button button-sm"), Html.flag("aria-pressed", LogStore.h.tab.val().map(|showing| showing == tab))],
+		[Engine.class("button button-sm"), Html.flag("aria-pressed", LogStore.h.tab.signal().map(|showing| showing == tab))],
 		Engine.does(LogStore.turned_to(tab)),
 	)
 
@@ -514,14 +514,14 @@ ExplorerApp := [].{
 						"toolbar",
 						[
 							Html.file_input(Engine.const("Log file"), { accept: Types(".log,.txt,text/plain") }, arrival),
-							Html.number_input(Engine.const("Entries"), entries.val(), [Engine.class("input w-32")], entries.set_value(|_, typed| typed)),
-							Html.button("Generate a sample log", [Engine.class("button")], Engine.handle_by(entries.val(), |typed, _| LogStore.sample_asked(typed))),
+							Html.number_input(Engine.const("Entries"), entries.signal(), [Engine.class("input w-32")], entries.set_value(|_, typed| typed)),
+							Html.button("Generate a sample log", [Engine.class("button")], Engine.handle_by(entries.signal(), |typed, _| LogStore.sample_asked(typed))),
 							Html.button("Close the log", [Engine.class("button-ghost")], Engine.does(LogStore.closed)),
 						],
 					),
-					Html.p_v(
-						cells.generating.val().map2(
-							cells.log.val(),
+					Html.p_s(
+						cells.generating.signal().map2(
+							cells.log.signal(),
 							|generating, open| match (generating, open) {
 								(Generating(count), _) => "Generating a sample log of ${ExplorerApp.grouped(count)} entries…"
 								(Idle, Chosen(file)) => "${file.name()}, ${ExplorerApp.size_text(file.size())}"
@@ -530,7 +530,7 @@ ExplorerApp := [].{
 						),
 						[Engine.test_id("log")],
 					),
-					Html.p_v(cells.note.val().map(ExplorerApp.note_text), [Engine.class("hint"), Engine.test_id("note")]),
+					Html.p_s(cells.note.signal().map(ExplorerApp.note_text), [Engine.class("hint"), Engine.test_id("note")]),
 				],
 			)
 		},
@@ -566,12 +566,12 @@ ExplorerApp := [].{
 				# index makes cheap.
 				Worker.derive_when(
 					ExplorerApp.overview,
-					cells.log.val().map(|open| ExplorerApp.asked(open, {})),
+					cells.log.signal().map(|open| ExplorerApp.asked(open, {})),
 					|answer| Html.div(
 						"panel p-4",
 						[
 							Engine.switch(
-								cells.tab.val(),
+								cells.tab.signal(),
 								[Overview, Search, Viewer],
 								|tab| match tab {
 									Overview => ExplorerApp.overview_panel(answer)
@@ -588,7 +588,7 @@ ExplorerApp := [].{
 				Engine.element("log-timings", [Engine.class("block")], []),
 				# The sample, written to a file by a task of its own.
 				Engine.latest(
-					cells.generating.val(),
+					cells.generating.signal(),
 					|generating| match generating {
 						Generating(entries) => [ExplorerApp.generate.request(entries)]
 						Idle => []

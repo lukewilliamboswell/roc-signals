@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, File, Val]
+import pf.Engine exposing [Elem, File, Signal]
 import pf.Files
 import pf.Html
 import pf.Worker
@@ -147,7 +147,7 @@ ConverterApp := [].{
 	## The page.
 	view : {} -> Elem(Engine.StoreRoot(_))
 	view = |{}| {
-		source = AppStore.h.source.val()
+		source = AppStore.h.source.signal()
 		Html.div(
 			"converter app-shell app-shell-narrow",
 			[
@@ -170,7 +170,7 @@ ConverterApp := [].{
 								Html.label_for("Format", "converter-format", [Engine.class("field-label")]),
 								Html.select(
 									Engine.const("Format"),
-									AppStore.h.format.val().map(AppStore.option_of),
+									AppStore.h.format.signal().map(AppStore.option_of),
 									[Engine.class("input"), Engine.attr("id", "converter-format")],
 									[Html.option("tsv", "TSV"), Html.option("jsonl", "JSON lines")],
 									Engine.handle(AppStore.format_picked),
@@ -181,7 +181,7 @@ ConverterApp := [].{
 							"field content-start",
 							[
 								Html.p("Selected file", "field-label"),
-								Html.p_v(
+								Html.p_s(
 									source.map(
 										|s| match s.file {
 											Chosen(f) => "${f.name()}, ${ConverterApp.size_text(f.size())}"
@@ -204,7 +204,7 @@ ConverterApp := [].{
 					},
 					Engine.react(|_, res| AppStore.sample_arrived(Engine.fetched(res))),
 				),
-				Html.p_v(source.map(|s| s.note), [Engine.class("muted"), Engine.test_id("note")]),
+				Html.p_s(source.map(|s| s.note), [Engine.class("muted"), Engine.test_id("note")]),
 			],
 		)
 	}
@@ -241,7 +241,7 @@ chooser = |{}| Engine.element(
 ## A preview of a converted file: its first 4 KiB, read back on the
 ## page. The lines are this panel's own state, kept until the next
 ## read answers.
-preview : Val(ctx, Try(File, [NoAnswer])) -> Elem(ctx)
+preview : Signal(ctx, Try(File, [NoAnswer])) -> Elem(ctx)
 preview = |output| Engine.state(
 	"",
 	|lines| Engine.element(
@@ -263,7 +263,7 @@ preview = |output| Engine.state(
 			),
 			Html.h2("Preview", "card-title"),
 			Html.p("The first six lines of the converted file, up to 4 KiB.", "muted"),
-			Html.pre_v(lines.val(), [Engine.class("min-h-20 min-w-0 max-w-full overflow-auto bg-zinc-950 p-4 font-mono text-xs leading-6 text-zinc-50"), Engine.test_id("preview")]),
+			Html.pre_s(lines.signal(), [Engine.class("min-h-20 min-w-0 max-w-full overflow-auto bg-zinc-950 p-4 font-mono text-xs leading-6 text-zinc-50"), Engine.test_id("preview")]),
 		],
 	),
 )
@@ -279,7 +279,7 @@ result : {} -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 result = |{}| Worker.derive_when(
 	ConverterApp.convert,
-	AppStore.h.source.val().map2(AppStore.h.format.val(), ConverterApp.wanted),
+	AppStore.h.source.signal().map2(AppStore.h.format.signal(), ConverterApp.wanted),
 	|answer| Engine.state(
 		Engine.outbox({}),
 		|save| {
@@ -289,7 +289,7 @@ result = |{}| Worker.derive_when(
 				[Engine.class("panel grid min-w-0 gap-4 p-4"), Html.aria_label("Result")],
 				[
 					Html.h2("Converted file", "card-title"),
-					Html.p_v(remote.map(ConverterApp.status), [Engine.class("notice notice-info break-words"), Engine.test_id("status")]),
+					Html.p_s(remote.map(ConverterApp.status), [Engine.class("notice notice-info break-words"), Engine.test_id("status")]),
 					Html.button(
 						"Save",
 						[Engine.class("button-primary justify-self-start")],
@@ -303,7 +303,7 @@ result = |{}| Worker.derive_when(
 					),
 					preview(remote.map(|latest| latest.answered().map_ok(|c| c.output))),
 					# Saving, in the turn of the click that asked for it.
-					Engine.on_post(save.val(), |out| [File.save(out, {})], Engine.ignore({})),
+					Engine.on_post(save.signal(), |out| [File.save(out, {})], Engine.ignore({})),
 				],
 			)
 		},

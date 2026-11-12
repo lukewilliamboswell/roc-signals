@@ -90,7 +90,7 @@ SearchApp := [].{
 			[Html.aria_label("Report")],
 			[
 				Engine.watch(
-					st.val().map(|s| s.attempt),
+					st.signal().map(|s| s.attempt),
 					|_| [SearchApp.summarise_task.request({})],
 					st.on_result(
 						|s, _, r| {
@@ -102,14 +102,14 @@ SearchApp := [].{
 						},
 					),
 				),
-				Html.p_v(st.val().map(|s| if (s.summary == "") "Computing…" else s.summary), [Engine.test_id("summary")]),
+				Html.p_s(st.signal().map(|s| if (s.summary == "") "Computing…" else s.summary), [Engine.test_id("summary")]),
 				Html.button("Retry", [], st.update(|s| { ..s, attempt: s.attempt + 1, summary: "" })),
 			],
 		)
 
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"search",
 			[
@@ -125,8 +125,8 @@ SearchApp := [].{
 							},
 					),
 				),
-				Html.p_v(v.map(SearchApp.status), [Engine.test_id("status")]),
-				Html.p_v(v.map(|s| s.results), [Engine.test_id("results")]),
+				Html.p_s(v.map(SearchApp.status), [Engine.test_id("status")]),
+				Html.p_s(v.map(|s| s.results), [Engine.test_id("results")]),
 				Html.button("Report", [], st.update(|s| { ..s, report: !s.report, summary: "" })),
 				Engine.when(v.map(|s| s.report), || SearchApp.report_view(st), || Engine.text("")),
 			],

@@ -1,4 +1,4 @@
-import pf.Engine exposing [Cell, Elem, Row, State, Val]
+import pf.Engine exposing [Cell, Elem, Row, Signal, State]
 import pf.Table
 import Form
 
@@ -43,14 +43,14 @@ Schema := [].{
 	deleted = |fields, key| [fields.change(|table| table.remove(key))]
 
 	## Whether the form has any field.
-	has_fields : Cell(st, Fields) -> Val(ctx, Bool)
+	has_fields : Cell(st, Fields) -> Signal(ctx, Bool)
 		where [ctx.store : () -> Engine.Reach(ctx, st)]
-	has_fields = |fields| fields.val().map(|table| table.len() > 0)
+	has_fields = |fields| fields.signal().map(|table| table.len() > 0)
 
 	## One row for each field, in the form's order: a view of the fields'
 	## table. `template` is handed the field's number and its row. A form
 	## is short and drawn whole, so the view draws every row.
-	each_field : Cell(st, Fields), (Val(Row(ctx, U64), U64), State(Row(ctx, U64), Form.Field) -> Elem(Row(ctx, U64))) -> Elem(ctx)
+	each_field : Cell(st, Fields), (Signal(Row(ctx, U64), U64), State(Row(ctx, U64), Form.Field) -> Elem(Row(ctx, U64))) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, st)]
 	each_field = |fields, template| Engine.each_view(
 		fields,

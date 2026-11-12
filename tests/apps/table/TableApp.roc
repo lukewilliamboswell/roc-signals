@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, Handler, State, Val]
+import pf.Engine exposing [Elem, Handler, Signal, State]
 import pf.Html
 import pf.Table
 
@@ -216,14 +216,14 @@ TableApp := [Todos].{
 
 	## A button named `name`, with no text of its own, so that a list's
 	## text is its rows' keys and numbers alone.
-	action : Val(ctx, Str), Handler(ctx) -> Elem(ctx)
-	action = |name, handler| Engine.element("button", [Html.aria_label_v(name), Engine.attr("type", "button"), Engine.on_click(handler)], [])
+	action : Signal(ctx, Str), Handler(ctx) -> Elem(ctx)
+	action = |name, handler| Engine.element("button", [Html.aria_label_s(name), Engine.attr("type", "button"), Engine.on_click(handler)], [])
 
 	## One row of the main list: its key, a done checkbox, its title, its
 	## quantity with three ways to raise it, a remove button, and a count
 	## of marks the row keeps in a state of its own. Its text is
 	## `key:quantity:marks`.
-	row : Val(Engine.Row(ctx, U64), U64), State(Engine.Row(ctx, U64), Todo) -> Elem(Engine.Row(ctx, U64))
+	row : Signal(Engine.Row(ctx, U64), U64), State(Engine.Row(ctx, U64), Todo) -> Elem(Engine.Row(ctx, U64))
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	row = |key, todo| {
 		named = |what| key.map(|k| "${what} ${k.to_str()}")
@@ -231,10 +231,10 @@ TableApp := [Todos].{
 		Html.li(
 			[],
 			[
-				Html.span_v(key.map(|k| "${k.to_str()}:"), []),
-				Html.checkbox(named("Done"), todo.val().map(|t| t.status == Done), [], todo.set_value(|t, checked| { ..t, status: if (checked == "true") Done else Open })),
-				Html.text_input(named("Title"), "text", todo.val().map(|t| t.title), [], todo.set_value(|t, title| { ..t, title })),
-				Html.span_v(todo.val().map(|t| t.qty.to_str()), [Html.aria_label_v(named("Qty"))]),
+				Html.span_s(key.map(|k| "${k.to_str()}:"), []),
+				Html.checkbox(named("Done"), todo.signal().map(|t| t.status == Done), [], todo.set_value(|t, checked| { ..t, status: if (checked == "true") Done else Open })),
+				Html.text_input(named("Title"), "text", todo.signal().map(|t| t.title), [], todo.set_value(|t, title| { ..t, title })),
+				Html.span_s(todo.signal().map(|t| t.qty.to_str()), [Html.aria_label_s(named("Qty"))]),
 				TableApp.action(named("Bump"), raise(1)),
 				TableApp.action(named("Later"), raise(25)),
 				TableApp.action(named("Last"), raise(1_000_000)),
@@ -246,7 +246,7 @@ TableApp := [Todos].{
 						[],
 						[
 							Engine.text(":"),
-							Html.span_v(marks.val().map(|count| count.to_str()), [Html.aria_label_v(named("Marks").lift())]),
+							Html.span_s(marks.signal().map(|count| count.to_str()), [Html.aria_label_s(named("Marks").lift())]),
 							TableApp.action(named("Mark").lift(), marks.update(|count| count + 1)),
 							Engine.text(" "),
 						],
@@ -257,11 +257,11 @@ TableApp := [Todos].{
 	}
 
 	## One row of the smaller lists: its key and its title.
-	line : Val(r, U64), State(r, Todo) -> Elem(r)
-	line = |key, todo| Html.li([], [Html.span_v(key.map2(todo.val(), |k, t| "${k.to_str()}=${t.title} "), [])])
+	line : Signal(r, U64), State(r, Todo) -> Elem(r)
+	line = |key, todo| Html.li([], [Html.span_s(key.map2(todo.signal(), |k, t| "${k.to_str()}=${t.title} "), [])])
 
 	## A list of `todos` named `name`: the window `window` of `listing`.
-	list : Str, Val(ctx, Listing), Val(ctx, Engine.Window), (Val(Engine.Row(ctx, U64), U64), State(Engine.Row(ctx, U64), Todo) -> Elem(Engine.Row(ctx, U64))) -> Elem(ctx)
+	list : Str, Signal(ctx, Listing), Signal(ctx, Engine.Window), (Signal(Engine.Row(ctx, U64), U64), State(Engine.Row(ctx, U64), Todo) -> Elem(Engine.Row(ctx, U64))) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	list = |name, listing, window, template| Html.ul(
 		[Engine.test_id(name)],
@@ -282,8 +282,8 @@ TableApp := [Todos].{
 		Html.div(
 			"toolbar",
 			[
-				Html.button("Add", [], Engine.handle_by(TableApp.h.items.next.val(), |key, _| TableApp.added(key))),
-				Html.button("Add above", [], Engine.handle_by(TableApp.h.items.next.val(), |key, _| TableApp.added_above(key))),
+				Html.button("Add", [], Engine.handle_by(TableApp.h.items.next.signal(), |key, _| TableApp.added(key))),
+				Html.button("Add above", [], Engine.handle_by(TableApp.h.items.next.signal(), |key, _| TableApp.added_above(key))),
 				Html.button("Edit 20", [], edit(20)),
 				Html.button("Edit 100", [], edit(100)),
 				Html.button("Edit 1000", [], edit(1000)),
@@ -325,11 +325,11 @@ TableApp := [Todos].{
 				Html.button(
 					"Add and page down",
 					[],
-					window.update(|w| { ..w, start: w.start + 1 }).also(Engine.handle_by(TableApp.h.items.next.val(), |key, _| TableApp.added(key))),
+					window.update(|w| { ..w, start: w.start + 1 }).also(Engine.handle_by(TableApp.h.items.next.signal(), |key, _| TableApp.added(key))),
 				),
-				TableApp.list("paged", Engine.const({ show: Few, order: ByQty }), window.val(), TableApp.line),
+				TableApp.list("paged", Engine.const({ show: Few, order: ByQty }), window.signal(), TableApp.line),
 				Engine.derive(
-					window.val().map(|w| { start: w.start, count: 2 }),
+					window.signal().map(|w| { start: w.start, count: 2 }),
 					|narrow| TableApp.list("narrow", Engine.const({ show: Few, order: ByQty }), narrow, TableApp.line),
 				),
 			],
@@ -343,9 +343,9 @@ TableApp := [Todos].{
 	extras = |{}| {
 		todos = TableApp.h.items.todos
 		[
-			Html.p_v(todos.val().map(|table| "Rows: ${table.len().to_str()}"), [Engine.test_id("count")]),
-			Html.p_v(
-				todos.val().map(
+			Html.p_s(todos.signal().map(|table| "Rows: ${table.len().to_str()}"), [Engine.test_id("count")]),
+			Html.p_s(
+				todos.signal().map(
 					|table| match table.get(0) {
 						Ok(todo) => "Row 0: ${todo.title}"
 						Err(Missing) => "Row 0: gone"
@@ -355,7 +355,7 @@ TableApp := [Todos].{
 			),
 			TableApp.list("done", Engine.const({ show: Done, order: ByKey }), Engine.const({ start: 0, count: 5 }), TableApp.line),
 			Engine.when(
-				TableApp.h.late.val().map(
+				TableApp.h.late.signal().map(
 					|late| match late {
 						Shown => True
 						Hidden => False
@@ -365,7 +365,7 @@ TableApp := [Todos].{
 				|| Engine.text(""),
 			),
 			Engine.when(
-				TableApp.h.few.val().map(
+				TableApp.h.few.signal().map(
 					|few| match few {
 						Shown => True
 						Hidden => False
@@ -375,7 +375,7 @@ TableApp := [Todos].{
 				|| Engine.text(""),
 			),
 			Engine.when(
-				TableApp.h.paged.val().map(
+				TableApp.h.paged.signal().map(
 					|drawn| match drawn {
 						Shown => True
 						Hidden => False
@@ -392,7 +392,7 @@ TableApp := [Todos].{
 		"app",
 		[
 			TableApp.toolbar(setup),
-			TableApp.list("main", TableApp.h.listing.val(), TableApp.h.window.val(), TableApp.row),
+			TableApp.list("main", TableApp.h.listing.signal(), TableApp.h.window.signal(), TableApp.row),
 		].concat(
 			match setup.draws {
 				Everything => TableApp.extras({})

@@ -31,7 +31,7 @@ MdApp := [].{
 	## read it, and a spine equal to the last one wakes none of its readers.
 	view : {} -> Elem(Engine.StoreRoot(_))
 	view = |{}| Engine.derive(
-		AppStore.h.source.val().map(Markdown.parse),
+		AppStore.h.source.signal().map(Markdown.parse),
 		|blocks| Engine.derive(
 			blocks.map(Outline.headings),
 			|spine| Html.div(
@@ -83,7 +83,7 @@ editor = |{}| Engine.element(
 					"field",
 					[
 						Html.p("Markdown source", "field-label"),
-						Engine.element("textarea", [Engine.attr("aria-label", "Markdown source"), Engine.attr_v("value", AppStore.h.source.val()), Engine.class("input textarea font-mono min-h-96 text-sm"), Engine.on("input", Engine.handle(AppStore.replaced))], []),
+						Engine.element("textarea", [Engine.attr("aria-label", "Markdown source"), Engine.attr_s("value", AppStore.h.source.signal()), Engine.class("input textarea font-mono min-h-96 text-sm"), Engine.on("input", Engine.handle(AppStore.replaced))], []),
 						Html.p("Headings, lists, fenced code, quotes, and links all render live in the preview.", "hint"),
 					],
 				),

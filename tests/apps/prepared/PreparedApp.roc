@@ -196,24 +196,24 @@ PreparedApp := [].{
 
 	panel : State(Ctx, S), Tab -> Elem(Ctx)
 	panel = |st, tab| {
-		v = st.val()
+		v = st.signal()
 		match tab {
-			Stats => Worker.derive_when(PreparedApp.stats, v.map(|s| PreparedApp.asked(s, {})), |r| Html.p_v(r.map(|x| PreparedApp.show(x, |a| "${a.lines.to_str()} lines, ${a.words.to_str()} words, ${a.distinct.to_str()} distinct")), [Engine.test_id("stats")]))
+			Stats => Worker.derive_when(PreparedApp.stats, v.map(|s| PreparedApp.asked(s, {})), |r| Html.p_s(r.map(|x| PreparedApp.show(x, |a| "${a.lines.to_str()} lines, ${a.words.to_str()} words, ${a.distinct.to_str()} distinct")), [Engine.test_id("stats")]))
 			Lookup =>
 				Html.div(
 					"lookup",
 					[
 						Html.text_input(Engine.const("Word"), "text", v.map(|s| s.word), [], st.set_value(|s, word| { ..s, word })),
-						Worker.derive_when(PreparedApp.lookup, v.map(|s| PreparedApp.asked(s, s.word)), |r| Html.p_v(r.map(|x| PreparedApp.show(x, |a| "${a.count.to_str()} at ${Str.join_with(a.first.map(|l| l.to_str()), ",")}")), [Engine.test_id("lookup")])),
+						Worker.derive_when(PreparedApp.lookup, v.map(|s| PreparedApp.asked(s, s.word)), |r| Html.p_s(r.map(|x| PreparedApp.show(x, |a| "${a.count.to_str()} at ${Str.join_with(a.first.map(|l| l.to_str()), ",")}")), [Engine.test_id("lookup")])),
 					],
 				)
-			Top => Worker.derive_when(PreparedApp.top, v.map(|s| PreparedApp.asked(s, 3)), |r| Html.p_v(r.map(|x| PreparedApp.show(x, |a| Str.join_with(a.map(|w| "${w.word}:${w.count.to_str()}"), " "))), [Engine.test_id("top")]))
+			Top => Worker.derive_when(PreparedApp.top, v.map(|s| PreparedApp.asked(s, 3)), |r| Html.p_s(r.map(|x| PreparedApp.show(x, |a| Str.join_with(a.map(|w| "${w.word}:${w.count.to_str()}"), " "))), [Engine.test_id("top")]))
 		}
 	}
 
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"prepared",
 			[
@@ -234,11 +234,11 @@ PreparedApp := [].{
 				PreparedApp.tab_button(st, "Top", Top),
 				Engine.switch(v.map(|s| s.tab), [Stats, Lookup, Top], |tab| PreparedApp.panel(st, tab)),
 				Html.checkbox(Engine.const("Summary"), v.map(|s| s.summary), [], st.set_value(|s, x| { ..s, summary: x == "true" })),
-				Worker.derive_when(PreparedApp.stats, v.map(|s| if (s.summary) PreparedApp.asked(s, {}) else Skip), |r| Html.p_v(r.map(|x| PreparedApp.show(x, |a| "${a.lines.to_str()} lines")), [Engine.test_id("summary")])),
+				Worker.derive_when(PreparedApp.stats, v.map(|s| if (s.summary) PreparedApp.asked(s, {}) else Skip), |r| Html.p_s(r.map(|x| PreparedApp.show(x, |a| "${a.lines.to_str()} lines")), [Engine.test_id("summary")])),
 				Html.button("Write scratch", [], st.update(|s| { ..s, scratch: Write })),
 				Html.button("Keep copy", [], st.update(|s| { ..s, scratch: Keep })),
-				Worker.derive_when(PreparedApp.write, v.map(|s| PreparedApp.scratched(s, Write)), |r| Html.p_v(r.map(|x| PreparedApp.show(x, |{}| "written")), [Engine.test_id("write")])),
-				Worker.derive_when(PreparedApp.keep, v.map(|s| PreparedApp.scratched(s, Keep)), |r| Html.p_v(r.map(|x| PreparedApp.show(x, |f| "kept ${f.name()}:${f.size().to_str()}")), [Engine.test_id("copy")])),
+				Worker.derive_when(PreparedApp.write, v.map(|s| PreparedApp.scratched(s, Write)), |r| Html.p_s(r.map(|x| PreparedApp.show(x, |{}| "written")), [Engine.test_id("write")])),
+				Worker.derive_when(PreparedApp.keep, v.map(|s| PreparedApp.scratched(s, Keep)), |r| Html.p_s(r.map(|x| PreparedApp.show(x, |f| "kept ${f.name()}:${f.size().to_str()}")), [Engine.test_id("copy")])),
 			],
 		)
 	}

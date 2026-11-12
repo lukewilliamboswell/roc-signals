@@ -124,7 +124,7 @@ TypedApp := [].{
 
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
-		v = st.val()
+		v = st.signal()
 		Html.div(
 			"typed",
 			[
@@ -132,13 +132,13 @@ TypedApp := [].{
 				Worker.derive_when(
 					TypedApp.filter,
 					v.map(|s| if (s.query == "") Skip else Run({ query: s.query, words: TypedApp.words })),
-					|matches| Html.p_v(matches.map(TypedApp.show_matches), [Engine.test_id("matches")]),
+					|matches| Html.p_s(matches.map(TypedApp.show_matches), [Engine.test_id("matches")]),
 				),
 				Html.text_input(Engine.const("Text"), "text", v.map(|s| s.text), [], st.set_value(|s, text| { ..s, text })),
 				Worker.derive(
 					TypedApp.measure,
 					v.map(|s| s.text),
-					|measured| Html.p_v(measured.map(TypedApp.show_measure), [Engine.test_id("measure")]),
+					|measured| Html.p_s(measured.map(TypedApp.show_measure), [Engine.test_id("measure")]),
 				),
 				Html.button("Parse", [], st.update(|s| { ..s, submitted: { n: s.submitted.n + 1, text: s.text }, parsed: "parsing" })),
 				Engine.latest(
@@ -146,7 +146,7 @@ TypedApp := [].{
 					|{ n, text }| if (n == 0) [] else [TypedApp.parse.request(text)],
 					st.on_result(|s, _, res| { ..s, parsed: TypedApp.show_parsed(TypedApp.parse.result(res)) }),
 				),
-				Html.p_v(v.map(|s| s.parsed), [Engine.test_id("parsed")]),
+				Html.p_s(v.map(|s| s.parsed), [Engine.test_id("parsed")]),
 				Html.button("Shout", [], st.update(|s| { ..s, shouted: { n: s.shouted.n + 1, text: s.text } })),
 				Engine.latest(
 					v.map(|s| s.shouted),
@@ -158,8 +158,8 @@ TypedApp := [].{
 					|{ n, text }| if (n == 0) [] else [TypedApp.checked.request(text)],
 					st.on_result(|s, _, res| { ..s, checked: TypedApp.show_checked(TypedApp.checked.result(res)) }),
 				),
-				Html.p_v(v.map(|s| s.loud), [Engine.test_id("loud")]),
-				Html.p_v(v.map(|s| s.checked), [Engine.test_id("checked")]),
+				Html.p_s(v.map(|s| s.loud), [Engine.test_id("loud")]),
+				Html.p_s(v.map(|s| s.checked), [Engine.test_id("checked")]),
 			],
 		)
 	}

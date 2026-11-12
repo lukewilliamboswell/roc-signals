@@ -40,22 +40,22 @@ ArticlePage := [].{
 	view : {} -> Elem(Engine.StoreRoot(_))
 	view = |{}| {
 		art = AppStore.h.article.cells
-		session = AppStore.h.session.val()
-		target = art.story.val().map2(session, |s, who| { slug: s.slug(), token: who.token() })
+		session = AppStore.h.session.signal()
+		target = art.story.signal().map2(session, |s, who| { slug: s.slug(), token: who.token() })
 		Html.section(
 			"Article",
 			Styles.wide_page,
 			[
 				Story.load(art.story.state()),
 				Comments.load(art.comments.state()),
-				Story.delete_site(art.story.state(), Engine.react_by(art.story.val(), ArticlePage.delete_answered)),
+				Story.delete_site(art.story.state(), Engine.react_by(art.story.signal(), ArticlePage.delete_answered)),
 				Comments.delete_site(art.comments.state()),
 				Story.favorite_site(art.story.state()),
 				Story.view(
 					{ story: art.story, session: AppStore.h.session, nav: AppStore.h.nav },
 					Comments.view(
 						{ comments: art.comments, session: AppStore.h.session },
-						CommentForm.view(art.form.state(), target, Engine.react_by(art.form.val(), ArticlePage.comment_answered)),
+						CommentForm.view(art.form.state(), target, Engine.react_by(art.form.signal(), ArticlePage.comment_answered)),
 					),
 				),
 			],

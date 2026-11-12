@@ -261,14 +261,14 @@ FxApp := [].{
 				Html.button("issue ${k.to_str()}", [], st.update(|s| FxApp.bump(s, k))),
 				Html.button("toggle ${k.to_str()}", [], st.update(|s| FxApp.toggle(s, k))),
 				Engine.when(
-					st.val().map(|s| s.shown.get(k) ?? False),
+					st.signal().map(|s| s.shown.get(k) ?? False),
 					|| Engine.element(
 						"p",
 						[],
 						[
 							Engine.text(label),
 							Engine.watch(
-								st.val().map(|s| s.counts.get(k) ?? 0),
+								st.signal().map(|s| s.counts.get(k) ?? 0),
 								FxApp.plan(k),
 								st.on_result(|s, c, r| FxApp.react(s, k, c, r)),
 							),
@@ -279,11 +279,11 @@ FxApp := [].{
 									[Engine.test_id("hits ${k.to_str()}")],
 									[
 										Engine.watch(
-											st.val().map(|s| s.counts.get(k) ?? 0).lift(),
+											st.signal().map(|s| s.counts.get(k) ?? 0).lift(),
 											|c| if (c == 0) [] else [Http({ method: "GET", url: "/h${k.to_str()}/${c.to_str()}", headers: [], body: "", timeout_ms: 0 })],
 											hits.on_result(|h, _, _| h + 1),
 										),
-										Engine.text_v(hits.val().map(|h| h.to_str())),
+										Engine.text_s(hits.signal().map(|h| h.to_str())),
 									],
 								),
 							),
@@ -307,25 +307,25 @@ FxApp := [].{
 				FxApp.site(st, 0),
 				FxApp.site(st, 1),
 				FxApp.site(st, 2),
-				Engine.element("pre", [Engine.test_id("log")], [Engine.text_v(st.val().map(|s| Str.join_with(s.log, "|")))]),
+				Engine.element("pre", [Engine.test_id("log")], [Engine.text_s(st.signal().map(|s| Str.join_with(s.log, "|")))]),
 				# An SVG badge (namespace check in the browser): its class follows the log length.
 				Engine.element(
 					"svg",
 					[Engine.attr("aria-label", "badge"), Engine.attr("width", "10"), Engine.attr("height", "10")],
 					[
-						Engine.element("circle", [Engine.attr("r", "4"), Engine.attr("cx", "5"), Engine.attr("cy", "5"), Engine.class_v(st.val().map(|s| if (s.log.is_empty()) "idle" else "busy"))], []),
+						Engine.element("circle", [Engine.attr("r", "4"), Engine.attr("cx", "5"), Engine.attr("cy", "5"), Engine.class_s(st.signal().map(|s| if (s.log.is_empty()) "idle" else "busy"))], []),
 					],
 				),
 				# F: each flood asks for 70 timers at once, far past the bound, so one
 				# turn queues dozens of refusals (one follow-up chain deep each).
 				Html.button("flood", [], st.update(|s| { ..s, f: s.f + 1 })),
-				Engine.on_change(st.val().map(|s| s.f), |_| List.repeat(Timer(10), FxApp.flood_size), st.on_result(|s, f, r| FxApp.log_line(s, FxApp.describe(6, f, r)))),
+				Engine.on_change(st.signal().map(|s| s.f), |_| List.repeat(Timer(10), FxApp.flood_size), st.on_result(|s, f, r| FxApp.log_line(s, FxApp.describe(6, f, r)))),
 				# A genuine follow-up loop, never armed by the fuzz model: once
 				# "loop" is pressed, a refusal bumps `n`, which issues again, which
 				# is refused again while the table is full.
 				Html.button("loop", [], st.update(|s| { ..s, looping: True })),
 				Engine.watch(
-					st.val().map(|s| if (s.looping) s.n + 1 else 0),
+					st.signal().map(|s| if (s.looping) s.n + 1 else 0),
 					|n| if (n == 0) [] else [Http({ method: "GET", url: "/loop/${n.to_str()}", headers: [], body: "", timeout_ms: 0 })],
 					st.on_result(
 						|s, _, r| match r {
@@ -335,34 +335,34 @@ FxApp := [].{
 					),
 				),
 				Html.button("query", [], st.update(|s| { ..s, q: s.q + 1 })),
-				Engine.latest(st.val().map(|s| s.q), FxApp.plan_l, st.on_result(|s, q, r| FxApp.react_l(s, q, r))),
+				Engine.latest(st.signal().map(|s| s.q), FxApp.plan_l, st.on_result(|s, q, r| FxApp.react_l(s, q, r))),
 				Html.button("rquery", [], st.update(|s| { ..s, r: s.r + 1 })),
 				Html.button("toggle r", [], st.update(|s| { ..s, rshown: !s.rshown })),
 				Engine.when(
-					st.val().map(|s| s.rshown),
+					st.signal().map(|s| s.rshown),
 					|| Engine.resource(
-						st.val().map(|s| s.r),
+						st.signal().map(|s| s.r),
 						{ init: FxApp.load0, pending: FxApp.pending_r, plan: FxApp.plan_r, resolve: FxApp.resolve_r },
-						|l| Html.p_v(l.map(FxApp.show_r), [Engine.test_id("res")]),
+						|l| Html.p_s(l.map(FxApp.show_r), [Engine.test_id("res")]),
 					),
 					|| Engine.text(""),
 				),
 				Html.button("pquery", [], st.update(|s| { ..s, p: s.p + 1 })),
 				Html.button("toggle p", [], st.update(|s| { ..s, pshown: !s.pshown })),
 				Engine.when(
-					st.val().map(|s| s.pshown),
-					|| Engine.latest(st.val().map(|s| s.p), FxApp.plan_p, st.on_result(|s, p, r| FxApp.log_line(s, FxApp.describe(10, p, r)))),
+					st.signal().map(|s| s.pshown),
+					|| Engine.latest(st.signal().map(|s| s.p), FxApp.plan_p, st.on_result(|s, p, r| FxApp.log_line(s, FxApp.describe(10, p, r)))),
 					|| Engine.text(""),
 				),
 				Html.button("gquery", [], st.update(|s| { ..s, g: s.g + 1 })),
 				Html.button("toggle g", [], st.update(|s| { ..s, gshown: !s.gshown })),
 				Engine.when(
-					st.val().map(|s| s.gshown),
-					|| Engine.gather(FxApp.asker, st.val().map(|s| FxApp.inputs_x(s.g)), |x| Html.p_v(x.map(FxApp.show_x), [Engine.test_id("gather")])),
+					st.signal().map(|s| s.gshown),
+					|| Engine.gather(FxApp.asker, st.signal().map(|s| FxApp.inputs_x(s.g)), |x| Html.p_s(x.map(FxApp.show_x), [Engine.test_id("gather")])),
 					|| Engine.text(""),
 				),
 				Html.button("post", [], st.update(|s| { ..s, posts: s.posts + 1, out: s.out.post((s.posts + 1) // 2) })),
-				Engine.on_post(st.val().map(|s| s.out), FxApp.plan_o, st.on_result(|s, item, r| FxApp.log_line(s, FxApp.describe(12, item, r)))),
+				Engine.on_post(st.signal().map(|s| s.out), FxApp.plan_o, st.on_result(|s, item, r| FxApp.log_line(s, FxApp.describe(12, item, r)))),
 			],
 		),
 	)

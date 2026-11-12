@@ -1,4 +1,4 @@
-import pf.Engine exposing [Elem, Row, RowRef, Val]
+import pf.Engine exposing [Elem, Row, RowRef, Signal]
 import pf.Html
 import Markdown
 
@@ -14,7 +14,7 @@ import Markdown
 Preview := [].{
 
 	## The panel over a document's parsed blocks.
-	view : Val(ctx, List(Markdown.Block)) -> Elem(ctx)
+	view : Signal(ctx, List(Markdown.Block)) -> Elem(ctx)
 	view = |blocks| Engine.element(
 		"section",
 		[Engine.attr("aria-label", "Preview"), Engine.attr("data-panel", "preview"), Engine.class("panel flex flex-col")],
@@ -58,16 +58,16 @@ segment_view = |row, style| {
 	text = row.field(|s| s.text)
 	href = row.field(|s| s.href)
 	match style {
-		Strong => Engine.element("strong", [], [Engine.text_v(text)])
-		Code => Engine.element("code", [], [Engine.text_v(text)])
-		Image => Engine.element("img", [Engine.attr_v("src", href), Engine.attr_v("alt", text), Engine.class("max-w-full")], [])
-		Link => Engine.element("a", [Engine.attr_v("href", href), Engine.class("font-medium text-accent-700 underline underline-offset-2")], [Engine.text_v(text)])
-		Plain => Engine.text_v(text)
+		Strong => Engine.element("strong", [], [Engine.text_s(text)])
+		Code => Engine.element("code", [], [Engine.text_s(text)])
+		Image => Engine.element("img", [Engine.attr_s("src", href), Engine.attr_s("alt", text), Engine.class("max-w-full")], [])
+		Link => Engine.element("a", [Engine.attr_s("href", href), Engine.class("font-medium text-accent-700 underline underline-offset-2")], [Engine.text_s(text)])
+		Plain => Engine.text_s(text)
 	}
 }
 
 ## A run of text with its inline markup.
-inline_view : Val(ctx, Str) -> Elem(ctx)
+inline_view : Signal(ctx, Str) -> Elem(ctx)
 inline_view = |source| Engine.element(
 	"span",
 	[],
@@ -112,7 +112,7 @@ block_view = |row, kind| {
 	match kind {
 		Heading(level) => Engine.element(heading_tag(level), [Engine.class(if (level <= 3) "" else "mt-6 text-base font-semibold text-zinc-950")], [inline_view(text)])
 		Quote => Engine.element("blockquote", [], [inline_view(text)])
-		CodeBlock => Engine.element("pre", [], [Engine.element("code", [], [Engine.text_v(text)])])
+		CodeBlock => Engine.element("pre", [], [Engine.element("code", [], [Engine.text_s(text)])])
 		ListBlock => Engine.element("ul", [], [Engine.each(row.field(|b| b.items), |i| i.key, item_view)])
 		Paragraph => Engine.element("p", [], [inline_view(text)])
 	}
