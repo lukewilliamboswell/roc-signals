@@ -23,12 +23,12 @@ Article := [].{
 
 	## What the app's store holds for this page: its cells,
 	## and the write that starts every one of them again.
-	Handles(st) : { cells : Cells(st), reset : Engine.Write(st) }
+	Group(st) : { cells : Cells(st), reset : Engine.Write(st) }
 
 	## The page's cells, for a reader at no article yet. `reset` is
 	## generated from this description: a cell added here is started again
 	## with the rest, and whoever applies `reset` need not know.
-	cells : {} -> Engine.Cells(whole, _, Handles(whole))
+	cells : {} -> Engine.Cells(whole, _, Group(whole))
 	cells = |{}| {
 		story: Engine.cell(Story.init("")),
 		comments: Engine.cell(Comments.init("")),

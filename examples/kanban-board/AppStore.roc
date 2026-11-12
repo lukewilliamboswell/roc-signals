@@ -26,7 +26,7 @@ AppStore := [KanbanBoard].{
 		}.Engine.Cells,
 	)
 
-	## The handles on the store's cells: what a board is drawn over
+	## The store's cells: what a board is drawn over
 	## (`Board.Props`).
 	cells = AppStore.store.cells()
 }

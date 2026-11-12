@@ -20,7 +20,7 @@ import pf.Html
 ## and equality pruning discards it.
 StoreApp := [Hundred].{
 
-	## Ten counters, as one description. Its handles are a list, the
+	## Ten counters, as one description. Its cells form a list, the
 	## shape this app wants.
 	group : {} -> Engine.Cells(whole, _, List(Cell(whole, I64)))
 	group = |{}| {

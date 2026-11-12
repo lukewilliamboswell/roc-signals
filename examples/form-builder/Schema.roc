@@ -15,15 +15,15 @@ Schema := [].{
 	## field of its row (`Form.Field`), which the list sorts by.
 	Fields : Table(U64, Form.Field)
 
-	## The handles on the schema's cells, in a store whose type is `st`:
+	## The schema's cells, in a store whose type is `st`:
 	## the fields, and the number the next field added will take.
-	Handles(st) : { fields : Cell(st, Fields), next : Cell(st, U64) }
+	Cells(st) : { fields : Cell(st, Fields), next : Cell(st, U64) }
 
 	## What "Add" writes for a field of `kind`, given the number the next
 	## field takes: the new field under that number, last in the form, and
 	## the number after it as the next one. The two are written together so
 	## that no number is ever given twice.
-	added : Handles(st), { kind : Form.Kind, number : U64 } -> List(Engine.Write(st))
+	added : Cells(st), { kind : Form.Kind, number : U64 } -> List(Engine.Write(st))
 	added = |schema, { kind, number }| [
 		schema.fields.update(|table| table.insert(number, Form.new_field(kind, number))),
 		schema.next.set(number + 1),
