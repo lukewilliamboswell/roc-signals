@@ -395,9 +395,9 @@ Fuzz examples and campaigns also report `SKIP` on that nightly: roc-fuzz
 and its engine targets also reach the optimizer crash. Restore them with
 PIC roc-fuzz inputs and the optimizer fix. Windows CI always attempts the
 current CLI init and retains its output in `.build/cli-init.log`, printing
-it before classification. Only a failed init matching the captured `Locale`
-compile-time stack overflows, optionally with the exact basic-cli 0.28
-`Path.roc:739:1` / `Bundle:30:17` literal overflow, may quarantine the remaining
+it before classification. Only a failed init containing a nonempty subset of
+the three captured basic-cli 0.28 diagnostics (`Locale:253:11`, `Locale:291:11`, or `Path:739:1`), each once
+and with every error, cause and summary accounted for, may quarantine the remaining
 CLI journey on that exact nightly ([basic-cli#555](https://github.com/roc-lang/basic-cli/issues/555)).
 CI has reproduced the Locale failures with basic-cli 0.27 and 0.28; the
 underlying cause remains unproven. Successful init continues the full journey, and
