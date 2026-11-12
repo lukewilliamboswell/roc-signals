@@ -30,23 +30,33 @@ import src/SiteCode
 ## loads, as `www/data/examples.toml` names it (its scripts, port handlers,
 ## simulated service and data), is copied beside its app. The checked documentation
 ## sample sources are published under `dist/samples/` for readers to download.
+## `--tool-url URL` points onboarding downloads at a matching candidate tool
+## when reviewing an unreleased API; normal builds link the latest release.
 main! = |raw_args| {
 	args = raw_args.map(OsStr.display).drop_if(|a| a == "--")
-	base_url = match args {
-		["--base-url", url] => ["--base-url", url]
-		[] => []
-		_ => {
-			Proc.warn!("usage: site.roc -- [--base-url URL]")
-			return Err(Exit(2))
-		}
+	options = parse_options(args) ?? {
+		Proc.warn!("usage: site.roc -- [--base-url URL] [--tool-url URL]")
+		return Err(Exit(2))
 	}
 	o = Checks.options!({ filter: "*" })?
 	dist = "${o.root}/dist"
+	config = match options.tool_url {
+		Released => []
+		Preview(url) => {
+			source = Path.read_utf8!(Path.utf8("${o.root}/www/config.toml"))?
+			configured = preview_config({ source, tool_url: url })?
+			Path.create_all!(Path.utf8(o.build_dir))?
+			path = "${o.build_dir}/site-config.toml"
+			Path.write_utf8!(Path.utf8(path), configured)?
+			["--config", path]
+		}
+	}
+	zola = ["--root", "www"].concat(config)
 	Proc.run!({ program: o.tooling, args: ["test", "scripts/site.roc"], cwd: o.root })?
 	SiteCode.build!()?
 	Proc.run!({ program: "tailwindcss", args: ["-c", "www/tailwind.config.js", "-i", "www/input.css", "-o", "www/static/signals.css", "--minify"], cwd: o.root })?
-	Proc.run!({ program: "zola", args: ["--root", "www", "check", "--skip-external-links"], cwd: o.root })?
-	Proc.run!({ program: "zola", args: ["--root", "www", "build", "--output-dir", dist, "--force"].concat(base_url), cwd: o.root })?
+	Proc.run!({ program: "zola", args: zola.concat(["check", "--skip-external-links"]), cwd: o.root })?
+	Proc.run!({ program: "zola", args: zola.concat(["build", "--output-dir", dist, "--force"]).concat(options.base_url), cwd: o.root })?
 	DocSamples.copy!({ root: o.root, dist, publish_roc: SiteCode.published_source })?
 	api = ApiDocs.build!(o, "main")?
 	Proc.run!({ program: "cp", args: ["-R", api, "${dist}/api"], cwd: o.root })?
@@ -62,4 +72,72 @@ main! = |raw_args| {
 	Proc.run!({ program: "node", args: ["tests/browser/site.mjs", dist], cwd: o.root })?
 	Proc.note!("site: built ${dist}")
 	Ok({})
+}
+
+SiteOptions : { base_url : List(Str), tool_url : [Released, Preview(Str)] }
+
+## Accept each preview override once, in either order. Missing values and
+## unknown arguments are usage errors rather than silently ignored options.
+parse_options : List(Str) -> Try(SiteOptions, [Usage])
+parse_options = |args| match args {
+	[] => Ok({ base_url: [], tool_url: Released })
+	["--base-url", url, .. as rest] if !url.starts_with("--") => {
+		options = parse_options(rest)?
+		if !options.base_url.is_empty() {
+			return Err(Usage)
+		}
+		Ok({ ..options, base_url: ["--base-url", url] })
+	}
+	["--tool-url", url, .. as rest] if !url.starts_with("--") => {
+		options = parse_options(rest)?
+		if options.tool_url != Released {
+			return Err(Usage)
+		}
+		Ok({ ..options, tool_url: Preview(url) })
+	}
+	_ => Err(Usage)
+}
+
+## Add the candidate URL to a separate Zola configuration, preserving the
+## checked-in file. Refuse characters that cannot appear literally in this
+## URL's TOML string, and require the existing extra section exactly once.
+preview_config : { source : Str, tool_url : Str } -> Try(Str, [InvalidToolUrl, MissingExtraSection])
+preview_config = |{ source, tool_url }| {
+	if !(tool_url.starts_with("https://") or tool_url.starts_with("http://")) or tool_url.to_utf8().any(|b| b <= 32 or b == 127 or b == '"' or b == '\\') {
+		return Err(InvalidToolUrl)
+	}
+	match source.split_on("[extra]\n") {
+		[before, after] => Ok("${before}[extra]\nsignals_tool_url = \"${tool_url}\"\n${after}")
+		_ => Err(MissingExtraSection)
+	}
+}
+
+## Both override orders produce the same options; duplicate and incomplete
+## flags are rejected before a site build starts.
+expect {
+	first = parse_options(["--tool-url", "http://127.0.0.1/candidate/signals.roc", "--base-url", "http://127.0.0.1"])?
+	second = parse_options(["--base-url", "http://127.0.0.1", "--tool-url", "http://127.0.0.1/candidate/signals.roc"])?
+	{
+		order: first == second,
+		duplicate: parse_options(["--tool-url", "a", "--tool-url", "b"]),
+		missing: parse_options(["--tool-url"]),
+		unknown: parse_options(["--unknown"]),
+	} == { order: True, duplicate: Err(Usage), missing: Err(Usage), unknown: Err(Usage) }
+}
+
+## Candidate configuration retains the other extra keys and cannot inject
+## a TOML setting through a quote or newline in the supplied URL.
+expect {
+	configured = preview_config({ source: "title = \"Roc\"\n[extra]\ngithub_url = \"upstream\"\n", tool_url: "http://127.0.0.1/candidate/signals.roc" })?
+	{
+		configured,
+		quote: preview_config({ source: "[extra]\n", tool_url: "https://example.com/\"oops" }),
+		newline: preview_config({ source: "[extra]\n", tool_url: "https://example.com/\ninjected" }),
+		missing: preview_config({ source: "title = \"Roc\"\n", tool_url: "https://example.com/signals.roc" }),
+	} == {
+		configured: "title = \"Roc\"\n[extra]\nsignals_tool_url = \"http://127.0.0.1/candidate/signals.roc\"\ngithub_url = \"upstream\"\n",
+		quote: Err(InvalidToolUrl),
+		newline: Err(InvalidToolUrl),
+		missing: Err(MissingExtraSection),
+	}
 }

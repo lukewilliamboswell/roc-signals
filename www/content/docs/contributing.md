@@ -113,7 +113,7 @@ These are the development environment's Blueprint tasks, not an app's
 | `blueprint run jfb` | Build the js-framework-benchmark app and check its operations in Chrome |
 | `blueprint run workers-scaling` | Measure worker jobs in Chrome on both candidate shipping builds of the Worker Lab: correctness (its drawn picture included), the time to draw a picture by pool size, speedup by pool size, responsiveness, payloads, robustness sequences and memory, as tables for a pull request |
 | `blueprint run fuzz -- [--time S] [TARGET...]` | A fuzz campaign |
-| `blueprint run site -- [--base-url URL]` | Build the website, the API docs and the example apps into `dist/`; check sample highlighting, copying, themes and contrast in Chrome |
+| `blueprint run site -- [--base-url URL] [--tool-url URL]` | Build the website, the API docs and the example apps into `dist/`; check sample highlighting, copying, themes and contrast in Chrome |
 | `blueprint run serve -- [DIR] [--port N]` | Serve `dist/` at `127.0.0.1:8000/roc-signals/`, its published path, or `DIR` at the root |
 | `blueprint run release -- --version V` | Build the release assets into `dist-release/` |
 
@@ -123,6 +123,13 @@ To browse the website locally:
 blueprint run site -- --base-url http://127.0.0.1:8000/roc-signals
 blueprint run serve
 ```
+
+When reviewing an unreleased API, add `--tool-url URL` to the site build to
+link onboarding downloads to a matching candidate `signals.roc`. That tool must
+name the candidate's platform and tool bundles at reachable URLs; changing the
+website link alone does not make an older release compatible. The override is
+written to `.build/site-config.toml`, leaving `www/config.toml` unchanged.
+Without an override, onboarding links download the latest published release.
 
 The published website is main: every push to main that passes `check` deploys
 CI's `blueprint run site` build to GitHub Pages.
