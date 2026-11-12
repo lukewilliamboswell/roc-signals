@@ -22,12 +22,14 @@ const files = {
   "app.wasm": opts.wasm,
 };
 const api = [];
+let feedGate = null;
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, "http://x");
   if (u.pathname.startsWith("/api/")) {
     let body = "";
     for await (const c of req) body += c;
     api.push(`${req.method} ${u.pathname}${u.search}`);
+    if (feedGate !== null && u.pathname === "/api/articles") await feedGate;
     const r = await handle({ method: req.method, uri: u.pathname + u.search, headers: req.headers, body });
     if (r === null) {
       res.writeHead(404);
@@ -105,16 +107,40 @@ await step("favorite a feed article (server-confirmed)", async () => {
   await (await el(["role", "button", favName])).click();
   await el(["role", "button", `Unfavorite ${m[1]} (${Number(m[2]) + 1})`]);
 });
-await step("filter by a popular tag (pushState + new request)", async () => {
+await step("tag filter keeps existing rows while loading and reconciles once", async () => {
   const tag = await page.evaluate(() => {
     const h = [...document.querySelectorAll("*")].find((n) => n.childNodes.length === 1 && n.textContent === "Popular Tags");
     const a = h && h.parentElement.querySelector("a");
     return a ? a.textContent : null;
   });
   if (!tag) throw new Error("no popular tag link");
-  await (await el(["role", "link", tag])).click();
-  await until((t) => location.hash === `#/?tag=${t}`, tag);
-  await el(["text", `Tag: ${tag}`]);
+  await page.evaluate(() => {
+    window.feedRows = [...document.querySelectorAll('[data-conduit="article-list"] article')];
+  });
+  let release;
+  feedGate = new Promise(resolve => { release = resolve; });
+  try {
+    await (await el(["role", "link", tag])).click();
+    await until((t) => location.hash === `#/?tag=${t}`, tag);
+    await el(["text", `Tag: ${tag}`]);
+    await until(() => document.querySelector('[data-conduit="article-list"]').getAttribute("aria-busy") === "true");
+    const kept = await page.evaluate(() => {
+      const list = document.querySelector('[data-conduit="article-list"]');
+      const rows = [...list.querySelectorAll("article")];
+      return rows.length > 0 && rows.length === window.feedRows.length && rows.every((row, i) => row === window.feedRows[i]) && list.textContent.includes("Showing previous results.");
+    });
+    if (!kept) throw Error("tag loading disposed or replaced the previous feed rows");
+  } finally {
+    feedGate = null;
+    release();
+  }
+  await until(() => document.querySelector('[data-conduit="article-list"]').getAttribute("aria-busy") === "false");
+  const reused = await page.evaluate(() => {
+    const old = new Map(window.feedRows.map(row => [row.querySelector('a[href*="#/article/"]').getAttribute("href"), row]));
+    const rows = [...document.querySelectorAll('[data-conduit="article-list"] article')];
+    return rows.length > 0 && rows.every(row => !old.has(row.querySelector('a[href*="#/article/"]').getAttribute("href")) || old.get(row.querySelector('a[href*="#/article/"]').getAttribute("href")) === row);
+  });
+  if (!reused) throw Error("tag answer rebuilt a surviving article row");
 });
 let before = null;
 await step("open an article and post a comment", async () => {
