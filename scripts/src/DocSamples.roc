@@ -129,8 +129,9 @@ DocSamples := [].{
 	## Publish the checked source files beside the site, preserving their
 	## paths and bytes so a reader can download a module or spec without a
 	## checkout. Only maintained source formats are published; builds under
-	## `dist/` and hidden tooling directories are excluded. App headers still name the checkout's platform: a release
-	## user keeps the platform declaration that `signals.roc init` generated.
+	## `dist/` and hidden tooling directories are excluded. App headers still
+	## name the checkout's platform: a release user keeps the platform
+	## declaration that `signals.roc init` generated.
 	copy! : { root : Str, dist : Str } => Try({}, _)
 	copy! = |{ root, dist }| {
 		source = "${root}/${DocSamples.samples_dir}"

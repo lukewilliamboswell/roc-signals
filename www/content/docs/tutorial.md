@@ -83,7 +83,8 @@ roc signals.roc test
 roc signals.roc serve --port 8080
 ```
 
-Open the address the server prints, `http://127.0.0.1:8080/`. Add “Water the
+Open the address the server prints, normally `http://127.0.0.1:8080/`. If
+that port is busy, use the different address it prints. Add “Water the
 plants” and “Buy milk”, mark one done, try the three filters and reload. The
 list survives. This is the first runnable checkpoint: all four specs pass,
 and the browser shows the to-do form and list.
