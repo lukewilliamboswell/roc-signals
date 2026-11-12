@@ -552,6 +552,8 @@ body { background: var(--site-page); color: var(--site-ink); }
 .text-emerald-800:not([data-signals-wasm] *, [data-signals-upload-root] *) { color: var(--site-link); }
 .button:not([data-signals-wasm] *, [data-signals-upload-root] *) { color: var(--site-ink); background: var(--site-panel); border-color: var(--site-rule); }
 .button-primary:not([data-signals-wasm] *, [data-signals-upload-root] *) { color: var(--site-accent-ink); background: var(--site-accent); border-color: var(--site-accent); }
+/* A primary link keeps its contrasting ink when the generic link hover wins. */
+.button-primary:hover:not([data-signals-wasm] *, [data-signals-upload-root] *) { color: var(--site-accent-ink); }
 a.bg-emerald-950, a.bg-emerald-950:hover { color: #ffffff; }
 [data-upload-zone] label { background: var(--site-code-bg); border-color: var(--site-rule); }
 .bg-emerald-50:not([data-signals-wasm] *, [data-signals-upload-root] *) { background: var(--site-code-bg); }

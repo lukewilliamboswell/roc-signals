@@ -107,6 +107,36 @@ try {
   for (const entry of await fs.readdir(path.join(root, "docs"), { withFileTypes: true })) {
     if (entry.isDirectory()) pages.push(`docs/${entry.name}/`);
   }
+  // Exercise a real pointer hover with live transitions before the bulk
+  // endpoint checks disable them. Sampling the first animation frame hid a
+  // primary-link hover color that settled to dark green on dark green.
+  const hoverEndpoints = {};
+  for (const mode of ["light", "dark"]) {
+    await choose(mode);
+    await page.goto(`${origin}/roc-signals/`);
+    const point = await page.$eval("a.button-primary", button => {
+      const rect = button.getBoundingClientRect();
+      return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+    });
+    await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point });
+    const endpoint = await page.evaluate(async () => {
+      const button = document.querySelector("a.button-primary");
+      // Flush hover styles, then await every CSS transition's final frame.
+      getComputedStyle(button).color;
+      await Promise.all(button.getAnimations().map(animation => animation.finished));
+      const style = getComputedStyle(button);
+      const ink = document.createElement("span");
+      ink.style.color = "var(--site-accent-ink)";
+      document.body.append(ink);
+      const expected = getComputedStyle(ink).color;
+      ink.remove();
+      return { color: style.color, background: style.backgroundColor, expected };
+    });
+    assert.equal(endpoint.color, endpoint.expected, `${mode} real primary hover after transitions finish`);
+    hoverEndpoints[mode] = endpoint;
+    await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 0, y: 0 });
+  }
+
   await page.send("DOM.enable");
   await page.send("CSS.enable");
   let samples = 0;
@@ -126,6 +156,14 @@ try {
         assert.equal(sample.text, visible, `${sample.file} ${sample.region} source fidelity`);
         samples++;
       }
+      // Contrast belongs to the settled CSS states. Suppress transitions for
+      // this exhaustive pass so forcePseudoState cannot sample an earlier
+      // frame and accidentally accept an inaccessible destination color.
+      await page.evaluate(() => {
+        const style = document.createElement("style");
+        style.textContent = "*, *::before, *::after { transition: none !important; animation: none !important; }";
+        document.head.append(style);
+      });
       // Include every lexer category, even when the current page has none.
       await page.evaluate(() => {
         const fixture = document.createElement("div");
@@ -198,7 +236,7 @@ try {
       for (const nodeId of nodeIds) await page.send("CSS.forcePseudoState", { nodeId, forcedPseudoClasses: [] });
     }
   }
-  await fs.writeFile(".build/site-contrast.json", JSON.stringify({ textMinimum: 4.5, controlMinimum: 3, palettes }, null, 2) + "\n");
+  await fs.writeFile(".build/site-contrast.json", JSON.stringify({ textMinimum: 4.5, controlMinimum: 3, palettes, hoverEndpoints }, null, 2) + "\n");
   await page.goto(`${origin}/roc-signals/__fixture.html`);
   assert.equal(await page.$eval("code", code => code.textContent), '# café & <script>alert(1)</script>\r\n\tvalue = "<&>"  \n\nunterminated = "\u0301\n');
   assert.equal(await page.evaluate(() => document.scripts.length), 0);
@@ -219,7 +257,7 @@ try {
       await fs.writeFile(`.build/site-screenshots/${label}-${mode}.png`, Buffer.from(data, "base64"));
     }
   }
-  console.log(`site browser: passed ${samples} sample renderings, ${colors} text colors; minimum contrast ${minimum}:1; both themes, system changes, storage, keyboard, copy, escaping and mobile layout`);
+  console.log(`site browser: passed ${samples} sample renderings, ${colors} text colors; minimum contrast ${minimum}:1; both themes, real settled hover, system changes, storage, keyboard, copy, escaping and mobile layout`);
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));
