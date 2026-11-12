@@ -2,6 +2,7 @@ import parser.RocSyntax
 import cli.Path
 import DocSamples
 import SpecSuite
+import ScmHighlight
 
 ## Build-time highlighting of the original sample text. The parser's lexer
 ## accepts partial snippets; it never formats, repairs or type-checks them.
@@ -45,6 +46,19 @@ SiteCode := [].{
 		if ($cursor == lexed.source.len()) Str.join_with($parts, "") else SiteCode.escape(source)
 	}
 
+	## Scheme-style specs use their own display lexer, never the Roc lexer.
+	## Token text is escaped by the same HTML boundary as the Roc samples.
+	scm_html : Str -> Str
+	scm_html = |source| Str.join_with(
+		ScmHighlight.tokens(source).map(
+			|{ text, category }| {
+				escaped = SiteCode.escape(text)
+				if (category == "plain") escaped else "<span class=\"syntax-${category}\">${escaped}</span>"
+			},
+		),
+		"",
+	)
+
 	## Remove only whole marker lines, retaining indentation, blank lines,
 	## trailing whitespace and line endings in the displayed sample.
 	visible : Str -> Str
@@ -81,16 +95,26 @@ SiteCode := [].{
 				dir = "www/highlighted/${file}/regions"
 				Path.create_all!(Path.utf8(dir))?
 				name = if (region == "") "../full" else region
-				Path.write_utf8!(Path.utf8("${dir}/${name}.html"), if (file.ends_with(".roc")) SiteCode.html(SiteCode.visible(selected)) else SiteCode.escape(SiteCode.visible(selected)))?
+				displayed = SiteCode.visible(selected)
+				markup = if file.ends_with(".roc") {
+					SiteCode.html(displayed)
+				} else if file.ends_with(".scm") {
+					SiteCode.scm_html(displayed)
+				} else {
+					SiteCode.escape(displayed)
+				}
+				Path.write_utf8!(Path.utf8("${dir}/${name}.html"), markup)?
 			}
 		}
 		Path.create_all!(Path.utf8(".build"))?
-		Path.write_utf8!(Path.utf8(".build/site-code-fixture.html"), "<pre><code>${SiteCode.html(SiteCode.fixture)}</code></pre>")?
+		Path.write_utf8!(Path.utf8(".build/site-code-fixture.html"), "<pre id=\"roc-fixture\"><code>${SiteCode.html(SiteCode.fixture)}</code></pre><pre id=\"scm-fixture\"><code>${SiteCode.scm_html(SiteCode.scm_fixture)}</code></pre>")?
 		Ok({})
 	}
 
 	## A hostile, incomplete snippet exercises HTML safety and exact copying,
 	## including Unicode, tabs, CRLF, trailing spaces and a final blank line.
+	scm_fixture = "; café & <script>alert(1)</script>\r\n\t(test \"a\\\"; <&>\" :name #t false -12 symbol)  \n(unfinished \"e\u(0301)\n"
+
 	fixture = "# café & <script>alert(1)</script>\r\n\tvalue = \"<&>\"  \n\nunterminated = \"\u(0301)\n"
 }
 
@@ -119,3 +143,8 @@ expect {
 }
 
 expect SiteCode.visible("# region outer\n\tvalue = \"# region text\"  \r\n\n# endregion outer\n") == "\tvalue = \"# region text\"  \r\n\n"
+
+expect {
+	markup = SiteCode.scm_html(SiteCode.scm_fixture)
+	["comment", "keyword", "string", "type", "number", "name", "symbol", "invalid"].all(|category| markup.contains("syntax-${category}")) and !markup.contains("<script>") and markup.contains("&lt;script&gt;") and markup.contains("&#13;\n")
+}

@@ -66,12 +66,47 @@ try {
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
   assert.equal(await theme(), "light");
+  // The copy action occupies the code corner rather than a toolbar row.
+  // A keyboard user can reveal and activate the otherwise quiet control.
+  await page.$eval("pre.sample-code", pre => pre.focus());
+  await page.keyboard.down("Shift");
+  await page.keyboard.press("Tab");
+  await page.keyboard.up("Shift");
+  const copyControl = await page.evaluate(() => {
+    const button = document.querySelector(".code-copy");
+    const wrapper = button.closest(".code-sample");
+    const b = button.getBoundingClientRect(), w = wrapper.getBoundingClientRect();
+    const pre = wrapper.querySelector("pre").getBoundingClientRect();
+    return { active: document.activeElement === button, label: button.getAttribute("aria-label"), text: button.textContent.trim(), opacity: getComputedStyle(button).opacity, top: b.top - w.top, right: w.right - b.right, preTop: pre.top - w.top, preRight: pre.right, buttonLeft: b.left, width: b.width, height: b.height };
+  });
+  assert.equal(copyControl.active, true, "Tab reaches the copy action");
+  assert.equal(copyControl.label, "Copy code sample");
+  assert.equal(copyControl.text, "");
+  assert.equal(copyControl.opacity, "1", "keyboard focus reveals copy");
+  assert(copyControl.top >= 0 && copyControl.top < 16 && copyControl.right >= 0 && copyControl.right < 16);
+  assert(copyControl.preTop <= 2, "copy action adds no toolbar above the code");
+  assert(copyControl.preRight <= copyControl.buttonLeft, "code content never passes under copy");
+  assert(copyControl.width >= 32 && copyControl.height >= 32);
+  await page.evaluate(() => document.activeElement.blur());
+  await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 0, y: 0 });
+  const quiet = await page.evaluate(() => ({ hover: matchMedia("(hover: hover)").matches, opacity: getComputedStyle(document.querySelector(".code-copy")).opacity }));
+  assert.equal(quiet.opacity, quiet.hover ? "0" : "1");
   await page.click(".code-copy");
+  await page.waitForFunction(() => typeof window.copied === "string");
   assert.equal(await page.evaluate(() => window.copied), await page.$eval("pre.sample-code code", code => code.textContent));
   assert.equal(await page.$eval(".copy-status", status => status.textContent), "Copied");
   await page.evaluate(() => { navigator.clipboard.writeText = async () => { throw Error("denied"); }; });
   await page.click(".code-copy");
+  await page.waitForFunction(() => document.querySelector(".copy-status").textContent.includes("Copy failed"));
   assert.match(await page.$eval(".copy-status", status => status.textContent), /Copy failed/);
+  await page.evaluate(() => document.activeElement.blur());
+  await page.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 0, y: 0 });
+  await page.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  assert.equal(await page.evaluate(() => matchMedia("(hover: none)").matches), true);
+  assert.equal(await page.$eval(".code-copy", button => getComputedStyle(button).opacity), "1", "touch users always see copy");
+  await page.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+  await page.send("Emulation.clearDeviceMetricsOverride");
   await page.evaluate(() => {
     localStorage.setItem("roc-signals-theme", "invalid");
   });
@@ -140,6 +175,8 @@ try {
   await page.send("DOM.enable");
   await page.send("CSS.enable");
   let samples = 0;
+  let schemeSamples = 0;
+  const schemeCopied = {};
   const palettes = {};
   let colors = 0;
   let minimum = Infinity;
@@ -148,12 +185,22 @@ try {
     for (const name of pages) {
       await page.goto(`${origin}/roc-signals/${name}`);
       await page.waitForFunction(() => document.querySelector("[data-theme-select]")?.closest("label").hidden === false);
-      for (const sample of await page.evaluate(() => Array.from(document.querySelectorAll("pre[data-sample-file]"), pre => ({ file: pre.dataset.sampleFile, region: pre.dataset.sampleRegion, text: pre.querySelector("code").textContent })))) {
+      for (const sample of await page.evaluate(() => Array.from(document.querySelectorAll("pre[data-sample-file]"), pre => ({ file: pre.dataset.sampleFile, region: pre.dataset.sampleRegion, text: pre.querySelector("code").textContent, categories: Array.from(pre.querySelectorAll("span"), span => span.className) })))) {
         let source = await fs.readFile(path.join("www/samples", sample.file), "utf8");
         if (sample.region) source = `${source}\n`.split(`# region ${sample.region}\n`)[1].split(`# endregion ${sample.region}\n`)[0];
         const lines = source.split("\n");
         const visible = lines.map((line, i) => /^# (?:end)?region /.test(line.trim()) ? "" : line + (i + 1 < lines.length ? "\n" : "")).join("");
         assert.equal(sample.text, visible, `${sample.file} ${sample.region} source fidelity`);
+        if (sample.file.endsWith(".scm")) {
+          for (const category of ["syntax-keyword", "syntax-string", "syntax-symbol"]) assert(sample.categories.includes(category), `${sample.file} highlights ${category}`);
+          schemeSamples++;
+          if (!schemeCopied[mode]) {
+            await page.click('.code-sample:has(pre[data-sample-file$=".scm"]) .code-copy');
+            await page.waitForFunction(expected => window.copied === expected, {}, sample.text);
+            assert.equal(await page.evaluate(() => window.copied), sample.text, `${mode} Scheme copy preserves source`);
+            schemeCopied[mode] = true;
+          }
+        }
         samples++;
       }
       // Contrast belongs to the settled CSS states. Suppress transitions for
@@ -238,7 +285,10 @@ try {
   }
   await fs.writeFile(".build/site-contrast.json", JSON.stringify({ textMinimum: 4.5, controlMinimum: 3, palettes, hoverEndpoints }, null, 2) + "\n");
   await page.goto(`${origin}/roc-signals/__fixture.html`);
-  assert.equal(await page.$eval("code", code => code.textContent), '# café & <script>alert(1)</script>\r\n\tvalue = "<&>"  \n\nunterminated = "\u0301\n');
+  assert.equal(await page.$eval("#roc-fixture code", code => code.textContent), '# café & <script>alert(1)</script>\r\n\tvalue = "<&>"  \n\nunterminated = "\u0301\n');
+  assert.equal(await page.$eval("#scm-fixture code", code => code.textContent), '; café & <script>alert(1)</script>\r\n\t(test "a\\\"; <&>" :name #t false -12 symbol)  \n(unfinished "e\u0301\n');
+  const scmCategories = await page.evaluate(() => Array.from(document.querySelectorAll("#scm-fixture span"), span => span.className));
+  for (const category of ["comment", "keyword", "string", "type", "number", "name", "symbol", "invalid"]) assert(scmCategories.includes(`syntax-${category}`));
   assert.equal(await page.evaluate(() => document.scripts.length), 0);
   // Invalid and unavailable storage still leave a working system preference.
   await page.evaluateOnNewDocument(() => { Object.defineProperty(window, "localStorage", { get() { throw Error("storage unavailable"); } }); });
@@ -257,7 +307,24 @@ try {
       await fs.writeFile(`.build/site-screenshots/${label}-${mode}.png`, Buffer.from(data, "base64"));
     }
   }
-  console.log(`site browser: passed ${samples} sample renderings, ${colors} text colors; minimum contrast ${minimum}:1; both themes, real settled hover, system changes, storage, keyboard, copy, escaping and mobile layout`);
+  // Show an actual highlighted spec in both themes at both viewport sizes.
+  await page.goto(`${origin}/roc-signals/docs/getting-started/`);
+  for (const [width, height, label] of [[1365, 1000, "desktop"], [390, 844, "mobile"]]) {
+    await page.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 600 });
+    for (const mode of ["light", "dark"]) {
+      await choose(mode);
+      await page.$eval('pre[data-sample-file$=".scm"]', pre => pre.scrollIntoView({ block: "center" }));
+      assert.equal(await page.$eval('pre[data-sample-file$=".scm"]', pre => {
+        const button = pre.closest(".code-sample").querySelector(".code-copy");
+        return pre.getBoundingClientRect().right <= button.getBoundingClientRect().left;
+      }), true, `${label} code stays outside the copy control`);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      const { data } = await page.send("Page.captureScreenshot", { format: "png" });
+      await fs.writeFile(`.build/site-screenshots/${label}-${mode}-scm.png`, Buffer.from(data, "base64"));
+    }
+  }
+  assert(schemeSamples > 0 && schemeCopied.light && schemeCopied.dark);
+  console.log(`site browser: passed ${samples} sample renderings (${schemeSamples} highlighted Scheme), ${colors} text colors; minimum contrast ${minimum}:1; both themes, real settled hover, system changes, storage, keyboard, copy, escaping and mobile layout`);
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));
