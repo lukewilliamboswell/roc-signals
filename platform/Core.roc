@@ -410,7 +410,7 @@ Core := [].{
 		}
 
 		## What the root site starts with: the storage, each table with an
-		## empty changes, and what the root needs of its table cells.
+		## no changes, and what the root needs of its table cells.
 		initial : Store(st, h) -> Start(st)
 		initial = |s| { st: s.tables.fold(s.init, |st, t| (t.clear)(st)), tables: s.tables }
 

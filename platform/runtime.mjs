@@ -212,7 +212,7 @@ const MAX_URLS_PER_FILE = 16;
 // The longest timeout a job may have (the engine caps `timeout_ms` at
 // this), and the bound on a cancelled job that finishes and has none.
 const MAX_TIMEOUT_MS = 600000;
-const RES_PORT_REPLY = 14;
+const RES_PORT_ANSWER = 14;
 const RES_PORT_FAILED = 15;
 const RES_FETCHED = 21;
 
@@ -939,7 +939,7 @@ export class WorkMonitor {
     this.emit({ kind: "state-evict", instance: seq, prep, cause, at });
   }
 
-  // A answer arrived for a job the pool no longer holds.
+  // An answer arrived for a job the pool no longer holds.
   lateAnswer() {
     this.count.lateAnswers += 1;
   }
@@ -3162,7 +3162,7 @@ export class RocEngineRuntime {
       (v) => {
         if (this.live.get(fx.id) !== entry) return;
         const payload = this.portAnswer(fx.port, v);
-        if (payload.parts[0][0] === RES_PORT_REPLY) this.portCount(fx.port, "answered");
+        if (payload.parts[0][0] === RES_PORT_ANSWER) this.portCount(fx.port, "answered");
         settle(payload);
       },
       (e) => settle(threw(e)),
@@ -3271,7 +3271,7 @@ export class RocEngineRuntime {
       if (terminal) {
         this.live.delete(sub.id);
         this.dropPushSub(sub);
-      } else if (payload.parts[0][0] === RES_PORT_REPLY) this.portCount(sub.port, "messages");
+      } else if (payload.parts[0][0] === RES_PORT_ANSWER) this.portCount(sub.port, "messages");
       this.result(sub.id, {
         ...payload,
         after: () => {
@@ -3807,7 +3807,7 @@ export function portValue({ json, blobs, files }) {
 // are added when the handles are minted) and its size against the bound.
 function portReplyPayload({ json, blobs, files }) {
   const text = utf8enc.encode(json);
-  const parts = [new Uint8Array([RES_PORT_REPLY]), u32(text.length), text, u32(blobs.length)];
+  const parts = [new Uint8Array([RES_PORT_ANSWER]), u32(text.length), text, u32(blobs.length)];
   let size = text.length;
   for (const b of blobs) {
     parts.push(u32(b.length), b);
