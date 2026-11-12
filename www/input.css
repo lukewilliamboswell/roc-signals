@@ -443,3 +443,12 @@
     @apply border-l-2 border-emerald-500 pl-4 italic text-zinc-600;
   }
 }
+
+/* Html.file_input keeps the browser's chooser. Scope its control styling to
+   this example, whose file picker has no caller-supplied attributes. */
+.converter input[type="file"] {
+  @apply input min-w-0;
+}
+.converter input[type="file"]::file-selector-button {
+  @apply mr-3 cursor-pointer rounded border-0 bg-zinc-100 px-3 py-1 font-medium text-zinc-900;
+}
