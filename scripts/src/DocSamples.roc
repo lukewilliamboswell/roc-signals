@@ -205,7 +205,7 @@ expect {
 is_source_download : Str -> Bool
 is_source_download = |name|
 	!name.split_on("/").any(|part| part.starts_with(".") or part == "dist")
-	and [".roc", ".scm", ".html", ".mjs"].any(|suffix| name.ends_with(suffix))
+		and [".roc", ".scm", ".html", ".mjs"].any(|suffix| name.ends_with(suffix))
 
 ## The published sample tree contains maintained source, not local build output.
 expect ["todos/Todos.roc", "todos/specs/add.scm", "counter/index.html", "ports/notes-ports.mjs", "todos/main", "todos/main.wasm", "todos/.signals/run.mjs", "todos/dist/index.html"].map(is_source_download) == [True, True, True, True, False, False, False, False]
