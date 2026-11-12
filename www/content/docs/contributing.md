@@ -441,6 +441,10 @@ reproduction lives in the issue, not in this repository.
 `cli/` is a Roc package on basic-cli; `Signals.roc` reads the command line
 and puts every failure into words, and one module serves each command
 (`Init.roc`, `Serve.roc`, `Dist.roc` for `build`, `Specs.roc` for `test`).
+The tool's basic-cli dependency in `cli/main.roc` supplies PIE-compatible
+native inputs ([basic-cli#549](https://github.com/roc-lang/basic-cli/pull/549)).
+It is separate from the scripts' platform dependency, which must remain
+compatible with the pinned `roc-stable`.
 The page script `serve` adds, `cli/dev-client.js`, is the tool's own: it
 only watches the page, and nothing of it reaches `platform/` or `dist/`.
 
