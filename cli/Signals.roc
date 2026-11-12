@@ -113,7 +113,7 @@ Signals :: [].{
 				\\
 				\\Run from the app's directory, containing main.roc and index.html.
 				\\The output replaces dist/. Serve that directory with a static HTTP server.
-				\\The build reports its optimization mode and any compiler workaround.
+				\\Normally uses --opt=size; a compiler workaround reports any change of mode.
 			"test" =>
 				\\Run the app's specs with the native spec runner.
 				\\
