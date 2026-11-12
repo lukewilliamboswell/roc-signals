@@ -52,7 +52,7 @@ ControlsApp := [].{
 			Html.button("Select plain", [], st.update(|s| ControlsApp.ask(s, Sel("plain")))),
 			Html.button("Blur plain", [], st.update(|s| ControlsApp.ask(s, B("plain")))),
 			Html.button("Focus missing", [], st.update(|s| ControlsApp.ask(s, F("nowhere")))),
-			Engine.on_change(
+			Engine.watch_changes(
 				st.signal().map(|s| s.ask),
 				|a| match a.req {
 					F(n) => [Focus(n)]

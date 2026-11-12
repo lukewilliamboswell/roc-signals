@@ -13,7 +13,7 @@
 // simulation of its own (the Status Page's seeded latency stream).
 // A worker app (WORKER_APPS) mounts with one worker and `manualWork`: after
 // every event the soak runs each pending job in issue order and waits for
-// its result, so results arrive in a fixed order and no deadline fires. Its
+// its result, so results arrive in a fixed order and no timeout fires. Its
 // round trips must also leave the one long-lived worker instance flat (its
 // memory, live allocations and live bytes, from `runtime.monitor.snapshot()`)
 // and the pool settled: that instance only, never respawned, idle, nothing

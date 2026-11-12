@@ -15,7 +15,7 @@ Comments :: { slug : Str, loaded : Fetch.Loaded(List(Api.Comment)), refetch : U6
 
 	is_eq : _
 
-	## What the view is drawn over, in a store whose storage is `st`: the
+	## What the view is drawn over, in a store whose type is `st`: the
 	## comments' own cell and who is signed in.
 	Props(st) : { comments : Cell(st, Comments), session : Cell(st, Session) }
 
@@ -38,7 +38,7 @@ Comments :: { slug : Str, loaded : Fetch.Loaded(List(Api.Comment)), refetch : U6
 	}
 
 	## Keep an answer only if it is for the load wanted now.
-	stored : Comments, Fetch.LoadReq, Engine.Res -> Comments
+	stored : Comments, Fetch.LoadReq, Engine.Result -> Comments
 	stored = |c, sent, res| if (Comments.req(c).key != sent.key) c else { ..c, loaded: { key: sent.key, value: Api.decode_get(Api.response_of(res), Api.decode_comments) } }
 
 	## What to show now: the list, a failure, or loading.
@@ -56,7 +56,7 @@ Comments :: { slug : Str, loaded : Fetch.Loaded(List(Api.Comment)), refetch : U6
 		{ ..c, del: Fetch.next(c.del, "DELETE", Api.comment_uri(c.slug, id), "", token), del_result: DeleteIdle }
 	}
 
-	delete_answered : Comments, Fetch.Submit, Engine.Res -> Comments
+	delete_answered : Comments, Fetch.Submit, Engine.Result -> Comments
 	delete_answered = |c, sent, res| {
 		if sent.serial != c.del.serial {
 			c
@@ -92,7 +92,7 @@ Comments :: { slug : Str, loaded : Fetch.Loaded(List(Api.Comment)), refetch : U6
 				Html.p_s(r.field(|c| "${c.author.username} on ${Format.display_date(c.created_at)}"), [Engine.class("text-sm text-zinc-500")]),
 				Engine.when(
 					mine,
-					|| Parts.button("Delete Comment", "mt-3 ${Styles.danger_button}", Engine.handle_by(r.key().map2(session, |key, s| { key, token: s.token() }), |asked, _| [props.comments.change(|c| Comments.deleting(c, asked))])),
+					|| Parts.button("Delete Comment", "mt-3 ${Styles.danger_button}", Engine.handle_by(r.key().map2(session, |key, s| { key, token: s.token() }), |asked, _| [props.comments.update(|c| Comments.deleting(c, asked))])),
 					|| Engine.text(""),
 				),
 			],

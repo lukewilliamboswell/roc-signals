@@ -28,7 +28,7 @@ KanbanApp := [].{
 
 ## What the board is drawn over: the cells of this app's store that `Board`
 ## reads and writes.
-board = { cards: AppStore.h.cards, filter: AppStore.h.filter, limit: AppStore.h.limit }
+board = { cards: AppStore.cells.cards, filter: AppStore.cells.filter, limit: AppStore.cells.limit }
 
 ## The page under the board's tally: the controls, the summary and the
 ## four columns.
@@ -61,7 +61,7 @@ controls : {} -> Elem(ctx)
 controls = |{}| Engine.state(
 	"",
 	|draft| {
-		cards = AppStore.h.cards
+		cards = AppStore.cells.cards
 		status = draft.signal().map2(cards.signal(), |text, table| Kanban.add_status(text, |title| table.contains(title)))
 		Html.section(
 			"Board controls",
@@ -75,18 +75,18 @@ controls = |{}| Engine.state(
 							Html.text_input(
 								Engine.const("Filter cards"),
 								"text",
-								AppStore.h.filter.signal(),
+								AppStore.cells.filter.signal(),
 								[Engine.class("input"), Engine.attr("placeholder", "Search titles, e.g. billing")],
-								Engine.handle(|text| [AppStore.h.filter.put(text)]),
+								Engine.handle(|text| [AppStore.cells.filter.set(text)]),
 							),
 						),
 						labelled_field(
 							{ label: "WIP limit", look: "w-28 shrink-0" },
 							Html.number_input(
 								Engine.const("WIP limit"),
-								AppStore.h.limit.signal(),
+								AppStore.cells.limit.signal(),
 								[Engine.class("input"), Engine.attr("placeholder", "3"), Engine.attr("min", "0")],
-								Engine.handle(|text| [AppStore.h.limit.put(text)]),
+								Engine.handle(|text| [AppStore.cells.limit.set(text)]),
 							),
 						),
 						labelled_field(
@@ -116,7 +116,7 @@ controls = |{}| Engine.state(
 summary : Signal(ctx, Kanban.Tally) -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 summary = |sizes| {
-	over = sizes.map2(AppStore.h.limit.signal(), |tally, text| Kanban.columns_over(tally, Kanban.Limit.from_str(text)))
+	over = sizes.map2(AppStore.cells.limit.signal(), |tally, text| Kanban.columns_over(tally, Kanban.Limit.from_str(text)))
 	Html.section(
 		"Board summary",
 		"panel grid gap-4 p-5",

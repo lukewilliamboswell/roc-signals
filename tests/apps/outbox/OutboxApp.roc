@@ -43,11 +43,11 @@ OutboxApp := [].{
 	send_both = |s| { ..s, batches: s.batches.post([s.draft, "${s.draft}2"]), draft: "" }
 
 	## A note's request: one GET whose URL names it.
-	request : Str -> Engine.Req
+	request : Str -> Engine.Request
 	request = |note| Http({ method: "GET", url: "/notes/${note}", headers: [], body: "", timeout_ms: 0 })
 
 	## A line of the log: the note an answer belongs to, and the answer.
-	answered : S, Str, Engine.Res -> S
+	answered : S, Str, Engine.Result -> S
 	answered = |s, note, res| {
 		line = match Engine.http_text(res) {
 			Ok(body) => "${note}:${body}"

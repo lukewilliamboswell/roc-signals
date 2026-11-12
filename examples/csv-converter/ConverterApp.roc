@@ -147,7 +147,7 @@ ConverterApp := [].{
 	## The page.
 	view : {} -> Elem(Engine.StoreRoot(_))
 	view = |{}| {
-		source = AppStore.h.source.signal()
+		source = AppStore.cells.source.signal()
 		Html.div(
 			"converter app-shell app-shell-narrow",
 			[
@@ -170,7 +170,7 @@ ConverterApp := [].{
 								Html.label_for("Format", "converter-format", [Engine.class("field-label")]),
 								Html.select(
 									Engine.const("Format"),
-									AppStore.h.format.signal().map(AppStore.option_of),
+									AppStore.cells.format.signal().map(AppStore.option_of),
 									[Engine.class("input"), Engine.attr("id", "converter-format")],
 									[Html.option("tsv", "TSV"), Html.option("jsonl", "JSON lines")],
 									Engine.handle(AppStore.format_picked),
@@ -196,7 +196,7 @@ ConverterApp := [].{
 				),
 				result({}),
 				# The sample, downloaded into a file.
-				Engine.latest(
+				Engine.watch_latest(
 					source.map(|s| s.sample),
 					|sample| match sample {
 						Loading => [File.fetch({ url: "sample.csv" })]
@@ -248,7 +248,7 @@ preview = |output| Engine.state(
 		"section",
 		[Engine.class("grid min-w-0 gap-3")],
 		[
-			Engine.latest(
+			Engine.watch_latest(
 				output.lift(),
 				|converted| match converted {
 					Ok(out) => [out.slice({ start: 0, len: out.size().min(4096) }).read_bytes({})]
@@ -277,9 +277,9 @@ preview = |output| Engine.state(
 ## that saves what is posted beside it.
 result : {} -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
-result = |{}| Worker.derive_when(
+result = |{}| Worker.resource_when(
 	ConverterApp.convert,
-	AppStore.h.source.signal().map2(AppStore.h.format.signal(), ConverterApp.wanted),
+	AppStore.cells.source.signal().map2(AppStore.cells.format.signal(), ConverterApp.wanted),
 	|answer| Engine.state(
 		Engine.outbox({}),
 		|save| {

@@ -40,7 +40,7 @@ Fetch := [].{
 	remote : Loaded(a), Str -> Api.Remote(a)
 	remote = |loaded, key| if (!key.is_empty() and loaded.key == key) loaded.value else Loading
 
-	plan_submit : Submit -> List(Engine.Req)
+	plan_submit : Submit -> List(Engine.Request)
 	plan_submit = |s| {
 		if s.serial == 0 {
 			[]

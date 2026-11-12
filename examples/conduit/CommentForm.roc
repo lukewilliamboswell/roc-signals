@@ -52,7 +52,7 @@ CommentForm :: { body : Str, sub : Fetch.Submit, result : Outcome }.{
 
 	## The form after the answer to `sent`, and whether that answer posted a
 	## comment. An answer to anything but the latest POST changes nothing.
-	answered : CommentForm, Fetch.Submit, Engine.Res -> { form : CommentForm, posted : Bool }
+	answered : CommentForm, Fetch.Submit, Engine.Result -> { form : CommentForm, posted : Bool }
 	answered = |form, sent, res| {
 		if sent.serial != form.sub.serial {
 			{ form, posted: False }

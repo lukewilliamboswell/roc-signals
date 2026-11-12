@@ -98,13 +98,13 @@ FileEffectsApp := [].{
 		Answered(text) => text
 	}
 
-	sent : Res -> Str
+	sent : Result -> Str
 	sent = |res| match Engine.http_text(res) {
 		Ok(body) => "sent ${body}"
 		Err(e) => "send failed ${Str.inspect(e)}"
 	}
 
-	Res : Engine.Res
+	Result : Engine.Result
 
 	## A `resource` that reads what `ask` names into the page.
 	reader : Engine.Signal(ctx, Ask), (Engine.Signal(In(ctx, Shown), Shown) -> Elem(In(ctx, Shown))) -> Elem(ctx)
@@ -140,7 +140,7 @@ FileEffectsApp := [].{
 
 	## A `resource` that runs `request` on the file `pick` names and shows its
 	## answer with `answer`.
-	operation : Engine.Signal(ctx, Pick), (File -> Engine.Req), (Res -> Str), (Engine.Signal(In(ctx, Op), Op) -> Elem(In(ctx, Op))) -> Elem(ctx)
+	operation : Engine.Signal(ctx, Pick), (File -> Engine.Request), (Result -> Str), (Engine.Signal(In(ctx, Op), Op) -> Elem(In(ctx, Op))) -> Elem(ctx)
 	operation = |pick, request, answer, body|
 		Engine.resource(
 			pick,
@@ -159,16 +159,16 @@ FileEffectsApp := [].{
 			body,
 		)
 
-	upload : File -> Engine.Req
+	upload : File -> Engine.Request
 	upload = |f| f.upload({ url: "/upload", headers: [("x-name", f.name())] })
 
-	digested : Res -> Str
+	digested : Result -> Str
 	digested = |res| match Engine.file_digest(res) {
 		Ok(bytes) => "sha256 ${FileEffectsApp.hex(bytes)}"
 		Err(e) => "digest failed ${Str.inspect(e)}"
 	}
 
-	shown_url : Res -> Str
+	shown_url : Result -> Str
 	shown_url = |res| match Engine.file_url(res) {
 		Ok(url) => url
 		Err(e) => "failed ${Str.inspect(e)}"

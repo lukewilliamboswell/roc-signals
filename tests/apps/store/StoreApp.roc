@@ -54,8 +54,8 @@ StoreApp := [Hundred].{
 
 	## The 100 cells, in order.
 	cells = {
-		h = StoreApp.store.handles()
-		h.g0.concat(h.g1).concat(h.g2).concat(h.g3).concat(h.g4).concat(h.g5).concat(h.g6).concat(h.g7).concat(h.g8).concat(h.g9)
+		cells = StoreApp.store.cells()
+		cells.g0.concat(cells.g1).concat(cells.g2).concat(cells.g3).concat(cells.g4).concat(cells.g5).concat(cells.g6).concat(cells.g7).concat(cells.g8).concat(cells.g9)
 	}
 
 	## Cell `i`.
@@ -76,7 +76,7 @@ StoreApp := [Hundred].{
 		"",
 		[
 			StoreApp.reader(name, c.signal().map(|n| n.to_str())),
-			StoreApp.button("Bump ${name}", Engine.handle(|_| [c.change(|n| n + 1)])),
+			StoreApp.button("Bump ${name}", Engine.handle(|_| [c.update(|n| n + 1)])),
 		],
 	)
 
@@ -99,7 +99,7 @@ StoreApp := [Hundred].{
 	bottom : State(ctx, I64) -> List(Elem(ctx))
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	bottom = |s10| [
-		StoreApp.button("Both", s10.update(|n| n + 1).also(Engine.handle(|_| [StoreApp.at(3).change(|n| n + 1)]))),
+		StoreApp.button("Both", s10.update(|n| n + 1).also(Engine.handle(|_| [StoreApp.at(3).update(|n| n + 1)]))),
 		Engine.element(
 			"ul",
 			[],

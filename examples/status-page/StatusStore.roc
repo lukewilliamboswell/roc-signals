@@ -37,21 +37,21 @@ StatusStore := [StatusPage].{
 		}.Engine.Cells,
 	)
 
-	## The handles on the store's cells.
-	h = StatusStore.store.handles()
+	## The store's cells.
+	cells = StatusStore.store.cells()
 
 	## The store a page starts with: showing or hidden, as the browser says.
 	start : Engine.Boot -> Engine.Store(_, _)
-	start = |boot| StatusStore.store.with_initial(StatusStore.h.visible, boot.visible)
+	start = |boot| StatusStore.store.with_initial(StatusStore.cells.visible, boot.visible)
 
 	## The cell that holds a service's latest check.
 	cell_of : Status.Service -> Cell(_, Status.Check)
 	cell_of = |service|
 		match service {
-			Api => StatusStore.h.checks.api
-			Web => StatusStore.h.checks.web
-			Database => StatusStore.h.checks.database
-			Notifications => StatusStore.h.checks.notifications
+			Api => StatusStore.cells.checks.api
+			Web => StatusStore.cells.checks.web
+			Database => StatusStore.cells.checks.database
+			Notifications => StatusStore.cells.checks.notifications
 		}
 
 	## The four checks as one rollup. The banner, the counts and the overall
@@ -68,27 +68,27 @@ StatusStore := [StatusPage].{
 	## an interval tick, or the page showing again.
 	refreshed : List(Engine.Write(_))
 	refreshed = [
-		StatusStore.h.serial.change(|serial| serial + 1),
-		StatusStore.h.history.change(Status.start_round),
+		StatusStore.cells.serial.update(|serial| serial + 1),
+		StatusStore.cells.history.update(Status.start_round),
 	]
 
 	## The reader pressed "Refresh now": a refresh, counted.
 	requested : List(Engine.Write(_))
-	requested = StatusStore.refreshed.concat([StatusStore.h.requests.change(|count| count + 1)])
+	requested = StatusStore.refreshed.concat([StatusStore.cells.requests.update(|count| count + 1)])
 
 	## A service's check answered: its card shows it, and the current round
 	## of the history records its uptime.
 	answered : Status.Service, Status.Check -> List(Engine.Write(_))
 	answered = |service, check| [
-		StatusStore.cell_of(service).put(check),
-		StatusStore.h.history.change(|history| Status.record_uptime(history, service, check)),
+		StatusStore.cell_of(service).set(check),
+		StatusStore.cells.history.update(|history| Status.record_uptime(history, service, check)),
 	]
 
 	## The page's visibility changed from `was` to `now`. Becoming visible
 	## refreshes at once.
 	shown : Bool, Bool -> List(Engine.Write(_))
 	shown = |was, now| {
-		seen = [StatusStore.h.visible.put(now)]
+		seen = [StatusStore.cells.visible.set(now)]
 		if (now and !was) seen.concat(StatusStore.refreshed) else seen
 	}
 }
@@ -99,9 +99,9 @@ expect {
 	ticked = StatusStore.store.after(StatusStore.refreshed)
 	pressed = ticked.after(StatusStore.requested)
 	actual =
-		\\serial: ${ticked.read(StatusStore.h.serial).to_str()}, ${pressed.read(StatusStore.h.serial).to_str()}
-		\\requests: ${ticked.read(StatusStore.h.requests).to_str()}, ${pressed.read(StatusStore.h.requests).to_str()}
-		\\rounds: ${ticked.read(StatusStore.h.history).len().to_str()}, ${pressed.read(StatusStore.h.history).len().to_str()}
+		\\serial: ${ticked.read(StatusStore.cells.serial).to_str()}, ${pressed.read(StatusStore.cells.serial).to_str()}
+		\\requests: ${ticked.read(StatusStore.cells.requests).to_str()}, ${pressed.read(StatusStore.cells.requests).to_str()}
+		\\rounds: ${ticked.read(StatusStore.cells.history).len().to_str()}, ${pressed.read(StatusStore.cells.history).len().to_str()}
 	expected =
 		\\serial: 1, 2
 		\\requests: 0, 1
@@ -115,9 +115,9 @@ expect {
 	degraded = Status.parse_check("degraded|97.40")
 	after = StatusStore.store.after(StatusStore.refreshed).after(StatusStore.answered(Web, degraded))
 	actual =
-		\\web: ${Status.health_text(after.read(StatusStore.h.checks.web).health)} ${Status.uptime_text(after.read(StatusStore.h.checks.web))}
-		\\api: ${Status.health_text(after.read(StatusStore.h.checks.api).health)}
-		\\history: ${Str.inspect(after.read(StatusStore.h.history).map(|round| round.web))}
+		\\web: ${Status.health_text(after.read(StatusStore.cells.checks.web).health)} ${Status.uptime_text(after.read(StatusStore.cells.checks.web))}
+		\\api: ${Status.health_text(after.read(StatusStore.cells.checks.api).health)}
+		\\history: ${Str.inspect(after.read(StatusStore.cells.history).map(|round| round.web))}
 	expected =
 		\\web: Degraded 97.40%
 		\\api: Awaiting first check
@@ -132,8 +132,8 @@ expect {
 	back = hidden.after(StatusStore.shown(Bool.False, Bool.True))
 	again = back.after(StatusStore.shown(Bool.True, Bool.True))
 	actual =
-		\\visible: ${Str.inspect(hidden.read(StatusStore.h.visible))}, ${Str.inspect(back.read(StatusStore.h.visible))}, ${Str.inspect(again.read(StatusStore.h.visible))}
-		\\serial: ${hidden.read(StatusStore.h.serial).to_str()}, ${back.read(StatusStore.h.serial).to_str()}, ${again.read(StatusStore.h.serial).to_str()}
+		\\visible: ${Str.inspect(hidden.read(StatusStore.cells.visible))}, ${Str.inspect(back.read(StatusStore.cells.visible))}, ${Str.inspect(again.read(StatusStore.cells.visible))}
+		\\serial: ${hidden.read(StatusStore.cells.serial).to_str()}, ${back.read(StatusStore.cells.serial).to_str()}, ${again.read(StatusStore.cells.serial).to_str()}
 	expected =
 		\\visible: False, True, True
 		\\serial: 0, 1, 1

@@ -28,7 +28,7 @@ ExplorerApp := [].{
 
 	view : Explorer.Setup -> Elem(Engine.StoreRoot(_))
 	view = |setup| {
-		cells = Explorer.h
+		cells = Explorer.cells
 		Html.div(
 			"app-shell",
 			[
@@ -66,7 +66,7 @@ ExplorerApp := [].{
 				),
 				# The live feed, for as long as it is on and at the pace
 				# chosen: a new pace or pausing stops the old subscription.
-				Engine.latest(
+				Engine.watch_latest(
 					{ flow: cells.flow.signal(), rate: cells.rate.signal() }.Signal,
 					|{ flow, rate }| match flow {
 						Live => [Feed.orders.subscribe({ per_second: rate })]
@@ -83,7 +83,7 @@ ExplorerApp := [].{
 	controls : U64 -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	controls = |size| {
-		cells = Explorer.h
+		cells = Explorer.cells
 		shown = cells.shown.signal()
 		Html.section(
 			"Question",

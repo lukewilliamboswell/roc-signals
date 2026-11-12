@@ -29,7 +29,7 @@ NotesApp := [].{
 	## The page over the session's boot data.
 	view : Engine.Boot -> Elem(Engine.StoreRoot(_))
 	view = |boot| Engine.derive(
-		AppStore.h.board.signal().map(Notes.board_rows),
+		AppStore.cells.board.signal().map(Notes.board_rows),
 		|rows| Html.div(
 			page_class,
 			[
@@ -61,7 +61,7 @@ NotesApp := [].{
 					),
 				),
 				# The notes, written back to local storage whenever they change.
-				Engine.on_change(AppStore.h.board.signal().map(|b| Notes.encode_notes(b.notes)), |text| [StorageSet(Notes.notes_key, text)], Engine.ignore({})),
+				Engine.watch_changes(AppStore.cells.board.signal().map(|b| Notes.encode_notes(b.notes)), |text| [StorageSet(Notes.notes_key, text)], Engine.ignore({})),
 			],
 		),
 	)
@@ -174,7 +174,7 @@ note_card = |row| {
 sync_lane : U64 -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 sync_lane = |slot| Engine.watch(
-	AppStore.h.board.signal().map(|b| Notes.issue_at(b, slot)),
+	AppStore.cells.board.signal().map(|b| Notes.issue_at(b, slot)),
 	|issue| match issue.request {
 		Send(token) => [Http({ method: "POST", url: "/api/notes/sync", headers: [], body: token, timeout_ms: 0 })]
 		Idle => []
@@ -196,7 +196,7 @@ sync_lane = |slot| Engine.watch(
 sync_status : Bool, Signal(ctx, List(Notes.Row)) -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 sync_status = |storage_available, rows| {
-	board = AppStore.h.board.signal()
+	board = AppStore.cells.board.signal()
 	online = board.map(|b| b.online)
 	auto = board.map(|b| b.auto)
 	Html.section_attrs(
@@ -220,7 +220,7 @@ sync_status = |storage_available, rows| {
 						toolbar_class,
 						[
 							check_row("Sync automatically", auto, Engine.handle(|checked| AppStore.auto_set(checked == "true"))),
-							check_row("Hide synced notes", AppStore.h.hide_synced.signal(), Engine.handle(|checked| AppStore.synced_hidden(checked == "true"))),
+							check_row("Hide synced notes", AppStore.cells.hide_synced.signal(), Engine.handle(|checked| AppStore.synced_hidden(checked == "true"))),
 						],
 					),
 					Html.div(
@@ -242,7 +242,7 @@ sync_status = |storage_available, rows| {
 capture : Signal(ctx, List(Notes.Row)) -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 capture = |rows| {
-	draft = AppStore.h.draft.signal()
+	draft = AppStore.cells.draft.signal()
 	Html.section(
 		"Capture",
 		panel_class,
@@ -289,7 +289,7 @@ outbox = |rows| Html.section(
 captured : Signal(ctx, List(Notes.Row)) -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 captured = |rows| {
-	shown = rows.map2(AppStore.h.hide_synced.signal(), |all, hide| if (hide) all.keep_if(|r| r.status != Synced) else all)
+	shown = rows.map2(AppStore.cells.hide_synced.signal(), |all, hide| if (hide) all.keep_if(|r| r.status != Synced) else all)
 	Html.section(
 		"Notes",
 		panel_class,

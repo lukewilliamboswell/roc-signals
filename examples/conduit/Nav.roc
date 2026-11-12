@@ -6,18 +6,18 @@ import pf.Engine exposing [Cell, Elem, Handler, Signal]
 ## store holds the cell and never imports the app's.
 Nav := [].{
 
-	## The cell a navigation is asked through, in a store whose storage is `st`.
+	## The cell a navigation is asked through, in a store whose type is `st`.
 	Asked(st) : Cell(st, Engine.Outbox(Str))
 
 	## A handler that asks to go to `url`.
 	go : Asked(st), Str -> Handler(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, st)]
-	go = |nav, url| Engine.does([nav.change(|o| o.post(url))])
+	go = |nav, url| Engine.does([nav.update(|o| o.post(url))])
 
 	## A handler that asks to go to the URL `url` holds when the event fires.
 	go_by : Asked(st), Signal(ctx, Str) -> Handler(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, st)]
-	go_by = |nav, url| Engine.handle_by(url, |to, _| [nav.change(|o| o.post(to))])
+	go_by = |nav, url| Engine.handle_by(url, |to, _| [nav.update(|o| o.post(to))])
 
 	## A link with a fixed label, class and URL.
 	link : Asked(st), Str, Str, Str -> Elem(ctx)

@@ -13,7 +13,7 @@ import { readFile } from "node:fs/promises";
 
 const PROTOCOL_VERSION = 4;
 const WORK_METRIC_BASE = 16;
-const OPCODES = ["", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORE", "TITLE", "FOCUS"];
+const OPCODES = ["", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "FOCUS"];
 const FAULTS = ["none", "contract", "resource_limit", "out_of_memory", "app_crash", "expect_failed"];
 
 const path = process.argv[2];

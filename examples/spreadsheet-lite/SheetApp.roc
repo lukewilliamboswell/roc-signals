@@ -90,10 +90,10 @@ SheetApp := [].{
 		Html.text_input(
 			address,
 			"text",
-			cell.item().map2(SheetStore.h.mode.signal(), Sheet.shown),
+			cell.item().map2(SheetStore.cells.mode.signal(), Sheet.shown),
 			[
 				Engine.test_id_s(address.map(|ref| "cell-${ref}")),
-				Engine.class_s(cell.item().map2(SheetStore.h.selected.signal(), |held, caret| SheetApp.tone_class(held.out.kind, if (held.index == caret) Selected else Unselected))),
+				Engine.class_s(cell.item().map2(SheetStore.cells.selected.signal(), |held, caret| SheetApp.tone_class(held.out.kind, if (held.index == caret) Selected else Unselected))),
 				Engine.attr_s("data-kind", cell.field(|held| Sheet.CellKind.to_str(held.out.kind))),
 				Html.on_focus(Engine.handle_by(index, |at, _value| SheetStore.focused(at))),
 				Html.on_blur(Engine.does(SheetStore.blurred)),
@@ -174,7 +174,7 @@ SheetApp := [].{
 									"text",
 									bar.map(|shown| if (shown.focus == Editing) shown.source else shown.value),
 									[Engine.test_id("formula-bar"), Engine.class("input tabular-nums"), Engine.attr("placeholder", "=B2+C2")],
-									Engine.handle_by(SheetStore.h.selected.signal(), |at, text| SheetStore.typed(at, text)),
+									Engine.handle_by(SheetStore.cells.selected.signal(), |at, text| SheetStore.typed(at, text)),
 								),
 								Html.p("Typing here writes the selected cell. The grid keeps showing computed values.", "hint"),
 							],
@@ -207,9 +207,9 @@ SheetApp := [].{
 	controls : {} -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	controls = |{}| {
-		sheet = SheetStore.h.sheet.signal()
-		mode = SheetStore.h.mode.signal()
-		listing = SheetStore.h.listing.signal()
+		sheet = SheetStore.cells.sheet.signal()
+		mode = SheetStore.cells.mode.signal()
+		listing = SheetStore.cells.listing.signal()
 		Html.section(
 			"Sheet controls",
 			"panel",
@@ -234,7 +234,7 @@ SheetApp := [].{
 						Html.div(
 							"stat-grid",
 							[
-								SheetApp.stat_tile("Selected cell", SheetStore.h.selected.signal().map(Cells.ref_of), "stat-selected"),
+								SheetApp.stat_tile("Selected cell", SheetStore.cells.selected.signal().map(Cells.ref_of), "stat-selected"),
 								SheetApp.stat_tile("Grid mode", mode.map(mode_name), "stat-mode"),
 								SheetApp.stat_tile("Formula errors", sheet.map(|table| SheetStore.error_count(table).to_str()), "status-line"),
 								SheetApp.stat_tile("Rows shown", sheet.map2(listing, |table, asked| SheetStore.rows_listed(table, asked).to_str()), "stat-rows"),
@@ -268,9 +268,9 @@ SheetApp := [].{
 								SheetApp.grid_frame_class,
 								[
 									SheetApp.column_header({}),
-									Engine.each_view(
-										SheetStore.h.sheet,
-										{ query: SheetStore.h.listing.signal(), plan: Sheet.plan, window: Engine.const(Engine.every_row) },
+									Engine.table_view(
+										SheetStore.cells.sheet,
+										{ query: SheetStore.cells.listing.signal(), plan: Sheet.plan, window: Engine.const(Engine.every_row) },
 										SheetApp.row_line,
 									),
 								],

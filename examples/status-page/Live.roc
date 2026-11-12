@@ -44,7 +44,7 @@ Live :: {
 	## What the reader chose: follow the feed, or stop it to read the chart.
 	Mode : [Following, Paused]
 
-	## What the view is handed, in a store whose storage is `st`: whether
+	## What the view is handed, in a store whose type is `st`: whether
 	## the page is showing.
 	Props(st) : { visible : Cell(st, Bool) }
 
@@ -195,7 +195,7 @@ panel = |live, visible| {
 				|| Html.div(
 					"hidden",
 					[
-						Engine.latest(
+						Engine.watch_latest(
 							lv.map(|l| l.generation),
 							|_| [Latency.readings.subscribe({ seed: Latency.seed })],
 							live.on_result(|l, _, res| Live.receive(l, Latency.readings.message(res))),

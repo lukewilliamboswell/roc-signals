@@ -41,7 +41,7 @@ ReadingApp := [].{
 			Engine.watch(
 				Engine.const({}),
 				|_| [Store.load.request({})],
-				Engine.react_by(ReadingList.h.copy.signal(), |copy, _, res| ReadingList.loaded(copy, Store.load.result(res))),
+				Engine.react_by(ReadingList.cells.copy.signal(), |copy, _, res| ReadingList.loaded(copy, Store.load.result(res))),
 			),
 			# The database's books again after any tab writes, for as long
 			# as the app runs.
@@ -52,10 +52,10 @@ ReadingApp := [].{
 			),
 			# A new book, which the database numbers. `on_post` never stops
 			# an earlier add for a later one: each answer arrives.
-			Engine.on_post(ReadingList.h.adding.signal(), |asked| [Store.add.request(asked)], Engine.react(|asked, res| ReadingList.added(asked, Store.add.result(res)))),
+			Engine.on_post(ReadingList.cells.adding.signal(), |asked| [Store.add.request(asked)], Engine.react(|asked, res| ReadingList.added(asked, Store.add.result(res)))),
 			# Every change's commands, sent in the turn of the click that
 			# made them.
-			Engine.on_post(ReadingList.h.writes.signal(), ReadingList.requests, Engine.ignore({})),
+			Engine.on_post(ReadingList.cells.writes.signal(), ReadingList.requests, Engine.ignore({})),
 		],
 	)
 
@@ -84,7 +84,7 @@ field = |{ label, value, placeholder, typed }|
 add_form : {} -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 add_form = |{}| {
-	form = ReadingList.h.form.signal()
+	form = ReadingList.cells.form.signal()
 	Html.form(
 		"Add a book",
 		[Engine.class("panel grid gap-3 p-4"), Html.on_submit(Engine.handle_by(ReadingList.asking({}), |at, _| ReadingList.submitted(at)))],
@@ -113,7 +113,7 @@ shelf_button = |counted, { label, showing }|
 	Html.action_button(
 		counted.map(|c| "${label} (${ReadingList.count(c, showing).to_str()})"),
 		Engine.const(False),
-		[Engine.class("button button-sm"), Html.aria_label(label), Html.flag("aria-pressed", ReadingList.h.showing.signal().map(|now| now == showing))],
+		[Engine.class("button button-sm"), Html.aria_label(label), Html.flag("aria-pressed", ReadingList.cells.showing.signal().map(|now| now == showing))],
 		Engine.does(ReadingList.shown(showing)),
 	)
 
@@ -163,8 +163,8 @@ book = |id, row| {
 shelves : {} -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 shelves = |{}| {
-	books = ReadingList.h.books
-	showing = ReadingList.h.showing.signal()
+	books = ReadingList.cells.books
+	showing = ReadingList.cells.showing.signal()
 	Engine.derive(
 		books.signal().map(ReadingList.tally),
 		|counted| {
@@ -182,7 +182,7 @@ shelves = |{}| {
 						],
 					),
 					Html.p_s(
-						{ copy: ReadingList.h.copy.signal(), tally: counted, showing }.Signal.map(ReadingList.status),
+						{ copy: ReadingList.cells.copy.signal(), tally: counted, showing }.Signal.map(ReadingList.status),
 						[Engine.class("muted"), Engine.test_id("status")],
 					),
 					Engine.element(
@@ -191,7 +191,7 @@ shelves = |{}| {
 						[
 							# A reading list is short: every book the shelf
 							# keeps is drawn.
-							Engine.each_view(
+							Engine.table_view(
 								books,
 								{ query: showing, plan: ReadingList.plan, window: Engine.const(Engine.every_row) },
 								book,
@@ -204,7 +204,7 @@ shelves = |{}| {
 						[Engine.class("button-ghost button-sm justify-self-start")],
 						Engine.handle_by(books.signal().map(ReadingList.finished_ids), |ids, _| ReadingList.finished_removed(ids)),
 					),
-					Html.p_s(ReadingList.h.note.signal(), [Engine.class("hint"), Engine.test_id("note")]),
+					Html.p_s(ReadingList.cells.note.signal(), [Engine.class("hint"), Engine.test_id("note")]),
 				],
 			)
 		},

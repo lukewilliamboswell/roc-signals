@@ -120,7 +120,7 @@ entries : U64, U64 -> List(Entry)
 entries = |seed, count| span(count).map(|i| { key: (seed + i * 5) % key_space, row: item_of(seed + i * 3) })
 
 ## How a listing selects and orders rows: the `plan` of every view.
-query_plan : Listing -> Engine.Query(U64, Item, Place)
+query_plan : Listing -> Engine.QueryPlan(U64, Item, Place)
 query_plan = |{ show, order }| {
 	keep: |_, item| match show {
 		All => True
@@ -486,8 +486,8 @@ store = Engine.store(
 	}.Engine.Cells,
 )
 
-## The handles on the store's cells.
-cells = store.handles()
+## The store's cells.
+cells = store.cells()
 
 ## The store as a session starts it.
 started : {} -> Engine.Store(_, _)
@@ -527,41 +527,41 @@ writes_of : Decision, Reading -> List(Engine.Write(_))
 writes_of = |d, reading| {
 	rows = cells.items.rows
 	head = match (d.head, reading) {
-		(Fresh(seed, count), _) => [rows.put(Table.from_list(entries(seed, count)))]
+		(Fresh(seed, count), _) => [rows.set(Table.from_list(entries(seed, count)))]
 		(Reset, _) => [cells.items.reset]
-		(Restore, Read({ kept, .. })) => [rows.put(kept)]
-		(Borrow, Read({ lent, .. })) => [rows.put(lent)]
+		(Restore, Read({ kept, .. })) => [rows.set(kept)]
+		(Borrow, Read({ lent, .. })) => [rows.set(lent)]
 		_ => []
 	}
 	ops = d.ops
 	keyed =
 		if d.split {
-			ops.map(|op| rows.change(|table| applied(table, op)))
+			ops.map(|op| rows.update(|table| applied(table, op)))
 		} else if ops.is_empty() {
 			[]
 		} else {
-			[rows.change(|table| ops.fold(table, applied))]
+			[rows.update(|table| ops.fold(table, applied))]
 		}
 	spare = match d.spare {
-		Wrote(op) => [cells.spare.change(|table| applied(table, op))]
+		Wrote(op) => [cells.spare.update(|table| applied(table, op))]
 		Untouched => []
 	}
 	save = match reading {
-		Read({ now, .. }) => if (d.save) [cells.saved.put(now)] else []
+		Read({ now, .. }) => if (d.save) [cells.saved.set(now)] else []
 		Unread => []
 	}
-	tick = if (d.tick) [cells.items.serial.change(|n| n + 1)] else []
-	flip = if (d.flip) [cells.shown.change(|on| !on)] else []
+	tick = if (d.tick) [cells.items.serial.update(|n| n + 1)] else []
+	flip = if (d.flip) [cells.shown.update(|on| !on)] else []
 	listing = match d.listing {
-		To(l) => [cells.listing.put(l)]
+		To(l) => [cells.listing.set(l)]
 		Same => []
 	}
 	window = match d.window {
-		To(win) => [cells.window.put(win)]
+		To(win) => [cells.window.set(win)]
 		Same => []
 	}
 	lanes = match d.lanes {
-		To(list) => [cells.lanes.put(list)]
+		To(list) => [cells.lanes.set(list)]
 		Same => []
 	}
 	head.concat(keyed).concat(spare).concat(save).concat(tick).concat(flip).concat(listing).concat(window).concat(lanes)
@@ -598,7 +598,7 @@ row_view = |table, key, row| Engine.element(
 		Engine.text_s(key.map2(row.signal(), |k, item| "${k.to_str()}:${item.rank.to_str()}:${item.shade.to_str()}")),
 		press("bump", row.update(|item| bumped(item, 1))),
 		press("tint", row.update(|item| bumped(item, 2))),
-		press("drop", Engine.handle_by(key, |k, _| [table.change(|held| held.remove(k))])),
+		press("drop", Engine.handle_by(key, |k, _| [table.update(|held| held.remove(k))])),
 		Engine.state(
 			0.U64,
 			|marks| Engine.element(
@@ -623,7 +623,7 @@ list_of = |name, table, listing, window| Engine.element(
 	[name],
 	# The template is given as a lambda, not returned from a helper
 	# (roc-lang/roc#12970).
-	[Engine.each_view(table, { query: listing, plan: query_plan, window }, |key, row| row_view(table, key, row))],
+	[Engine.table_view(table, { query: listing, plan: query_plan, window }, |key, row| row_view(table, key, row))],
 )
 
 ## The page: the three controls a decision fires from (`plain`, `copy`,

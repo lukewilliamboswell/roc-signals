@@ -63,8 +63,8 @@ StatusApp := [].{
 	## requests.
 	poll : Str, (Try(Str, Engine.HttpError) -> List(Engine.Write(_))) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	poll = |url, answered| Engine.latest(
-		StatusStore.h.serial.signal(),
+	poll = |url, answered| Engine.watch_latest(
+		StatusStore.cells.serial.signal(),
 		|_| [Http({ method: "GET", url, headers: [], body: "", timeout_ms: 0 })],
 		Engine.react(|_serial, res| answered(Engine.http_text(res))),
 	)
@@ -151,7 +151,7 @@ StatusApp := [].{
 	page : Signal(ctx, Status.Tally) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	page = |totals| {
-		cells = StatusStore.h
+		cells = StatusStore.cells
 		visible = cells.visible.signal()
 		Html.div(
 			StatusApp.page_class,
@@ -232,7 +232,7 @@ StatusApp := [].{
 				StatusApp.poll("/api/status/web", |answer| StatusStore.answered(Web, Status.check_of(answer))),
 				StatusApp.poll("/api/status/database", |answer| StatusStore.answered(Database, Status.check_of(answer))),
 				StatusApp.poll("/api/status/notifications", |answer| StatusStore.answered(Notifications, Status.check_of(answer))),
-				StatusApp.poll("/api/status/incidents", |answer| [cells.feed.put(Status.feed_of(answer))]),
+				StatusApp.poll("/api/status/incidents", |answer| [cells.feed.set(Status.feed_of(answer))]),
 				Engine.watch(
 					Engine.const({}),
 					|_| [VisibilityChanges],

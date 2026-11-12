@@ -109,9 +109,9 @@ PortsApp := [].{
 			"ports",
 			[
 				Html.button("Send", [], st.update(|s| { ..s, sends: s.sends + 1 })),
-				Engine.on_change(v.map(|s| s.sends), |n| [PortsApp.log.send({ text: "hello ${n.to_str()}" })], Engine.ignore({})),
+				Engine.watch_changes(v.map(|s| s.sends), |n| [PortsApp.log.send({ text: "hello ${n.to_str()}" })], Engine.ignore({})),
 				Html.button("Get", [], st.update(|s| { ..s, gets: s.gets + 1 })),
-				Engine.latest(
+				Engine.watch_latest(
 					v.map(|s| s.gets),
 					|n| if (n == 0) [] else [PortsApp.get.request({ key: "k${n.to_str()}" })],
 					st.on_result(|s, n, r| PortsApp.log_line(s, "get k${n.to_str()}:${PortsApp.shown(PortsApp.get.result(r), |a| a.value)}")),
@@ -131,21 +131,21 @@ PortsApp := [].{
 					|| Engine.text(""),
 				),
 				Html.button("Feed", [], st.update(|s| { ..s, feed: !s.feed })),
-				Engine.latest(
+				Engine.watch_latest(
 					v.map(|s| s.feed),
 					|on| if (on) [PortsApp.feed.subscribe("news")] else [],
 					st.on_result(|s, _, r| PortsApp.log_line(s, "feed:${PortsApp.shown(PortsApp.feed.message(r), |t| t)}")),
 				),
 				Html.text_input(Engine.const("Size"), "text", v.map(|s| s.size), [], st.set_value(|s, t| { ..s, size: t })),
 				Html.button("Echo", [], st.update(|s| { ..s, echoes: { n: s.echoes.n + 1, size: s.size } })),
-				Engine.on_change(
+				Engine.watch_changes(
 					v.map(|s| s.echoes),
 					|p| [PortsApp.echo.request(PortsApp.payload(U64.from_str(p.size) ?? 0))],
 					st.on_result(|s, _, r| PortsApp.log_line(s, "echo:${PortsApp.shown(PortsApp.echo.result(r), PortsApp.echoed)}")),
 				),
 				Html.file_input(Engine.const("Upload"), {}, st.on_files(|s, { files, refused: _ }| { ..s, chosen: files })),
 				Html.button("Inspect", [], st.update(|s| { ..s, inspects: s.inspects + 1 })),
-				Engine.on_change(
+				Engine.watch_changes(
 					v.map(|s| (s.inspects, s.chosen)),
 					|(_, chosen)| match chosen.first() {
 						Ok(file) => [PortsApp.inspect.request(file)]
@@ -154,7 +154,7 @@ PortsApp := [].{
 					st.on_result(|s, _, r| PortsApp.log_line(s, "inspect:${PortsApp.shown(PortsApp.inspect.result(r), |a| "${a.name} ${a.size.to_str()}")}")),
 				),
 				Html.button("Make", [], st.update(|s| { ..s, makes: s.makes + 1 })),
-				Engine.on_change(
+				Engine.watch_changes(
 					v.map(|s| s.makes),
 					|n| [PortsApp.make.request("made ${n.to_str()}")],
 					st.on_result(
@@ -166,9 +166,9 @@ PortsApp := [].{
 				),
 				Html.button("Forget", [], st.update(|s| { ..s, made: [], chosen: [] })),
 				Html.button("Undeclared", [], st.update(|s| { ..s, undeclared: s.undeclared + 1 })),
-				Engine.on_change(v.map(|s| s.undeclared), |_| [PortCommand({ port: "test.roc-signals/undeclared", message: { json: "null", blobs: [], files: [] } })], Engine.ignore({})),
+				Engine.watch_changes(v.map(|s| s.undeclared), |_| [PortCommand({ port: "test.roc-signals/undeclared", message: { json: "null", blobs: [], files: [] } })], Engine.ignore({})),
 				Html.button("Wrong", [], st.update(|s| { ..s, wrong: s.wrong + 1 })),
-				Engine.on_change(v.map(|s| s.wrong), |_| [PortSubscribe({ port: "test.roc-signals/get", message: { json: "{}", blobs: [], files: [] } })], Engine.ignore({})),
+				Engine.watch_changes(v.map(|s| s.wrong), |_| [PortSubscribe({ port: "test.roc-signals/get", message: { json: "{}", blobs: [], files: [] } })], Engine.ignore({})),
 				Html.p_s(v.map(|s| Str.join_with(s.log, "|")), [Engine.test_id("log")]),
 			],
 		)

@@ -39,14 +39,14 @@ FilesApp := [Shelf].{
 		}.Engine.Cells,
 	)
 
-	h = FilesApp.store.handles()
+	cells = FilesApp.store.cells()
 
 	## What a drop on "Inbox" writes: the files it delivered in place of
 	## the inbox's, and a note of how many came and how many were refused.
 	arrived : Engine.Received -> List(Engine.Write(_))
 	arrived = |{ files, refused }| [
-		FilesApp.h.inbox.put(files),
-		FilesApp.h.note.put("${files.len().to_str()} arrived, ${refused.to_str()} refused"),
+		FilesApp.cells.inbox.set(files),
+		FilesApp.cells.note.set("${files.len().to_str()} arrived, ${refused.to_str()} refused"),
 	]
 
 	## What a drop on "Inbox with a reading" writes, given how many files
@@ -54,13 +54,13 @@ FilesApp := [Shelf].{
 	## note that says both numbers.
 	arrived_after : U64, Engine.Received -> List(Engine.Write(_))
 	arrived_after = |held, { files, refused: _ }| [
-		FilesApp.h.inbox.change(|kept| kept.concat(files)),
-		FilesApp.h.note.put("${files.len().to_str()} arrived after ${held.to_str()}"),
+		FilesApp.cells.inbox.update(|kept| kept.concat(files)),
+		FilesApp.cells.note.set("${files.len().to_str()} arrived after ${held.to_str()}"),
 	]
 
 	## What "Empty inbox" writes.
 	emptied : List(Engine.Write(_))
-	emptied = [FilesApp.h.inbox.put([]), FilesApp.h.note.put("emptied")]
+	emptied = [FilesApp.cells.inbox.set([]), FilesApp.cells.note.set("emptied")]
 
 	## What the worker was last asked: nothing yet, to count the kept files,
 	## to count the tail of the first, or to probe the first.
@@ -151,7 +151,7 @@ FilesApp := [Shelf].{
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	view = |st| {
 		v = st.signal()
-		inbox = FilesApp.h.inbox
+		inbox = FilesApp.cells.inbox
 		Html.div(
 			"files",
 			[
@@ -171,7 +171,7 @@ FilesApp := [Shelf].{
 				),
 				Html.button("Empty inbox", [], Engine.does(FilesApp.emptied)),
 				Html.p_s(inbox.signal().map(FilesApp.listing), [Engine.test_id("inbox")]),
-				Html.p_s(FilesApp.h.note.signal(), [Engine.test_id("note")]),
+				Html.p_s(FilesApp.cells.note.signal(), [Engine.test_id("note")]),
 				Html.button("Keep first", [], st.update(|s| { ..s, files: FilesApp.first_only(s.files) })),
 				Html.button("Clear", [], st.update(|s| { ..s, files: [] })),
 				Html.p_s(v.map(|s| FilesApp.listing(s.files)), [Engine.test_id("files")]),
@@ -180,8 +180,8 @@ FilesApp := [Shelf].{
 				Html.button("Count tail", [], st.update(|s| { ..s, ask: Tail(FilesApp.tail_of(s.files)) })),
 				Html.button("Probe", [], st.update(|s| { ..s, ask: Probe(FilesApp.first_only(s.files)) })),
 				Html.button("Forget", [], st.update(|s| { ..s, ask: Nothing })),
-				Worker.derive_when(FilesApp.count, v.map(|s| FilesApp.asked(s.ask)), |r| Html.p_s(r.map(FilesApp.show_counts), [Engine.test_id("counts")])),
-				Worker.derive_when(
+				Worker.resource_when(FilesApp.count, v.map(|s| FilesApp.asked(s.ask)), |r| Html.p_s(r.map(FilesApp.show_counts), [Engine.test_id("counts")])),
+				Worker.resource_when(
 					FilesApp.probe,
 					v.map(|s| FilesApp.probed(s.ask)),
 					|r| Html.p_s(
@@ -221,5 +221,5 @@ expect {
 	after = FilesApp.store.after(FilesApp.arrived({ files: [], refused: 3 }))
 	added = after.after(FilesApp.arrived_after(2, { files: [], refused: 0 }))
 	gone = added.after(FilesApp.emptied)
-	(after.read(FilesApp.h.note), added.read(FilesApp.h.note), gone.read(FilesApp.h.note), gone.read(FilesApp.h.inbox).len()) == ("0 arrived, 3 refused", "0 arrived after 2", "emptied", 0)
+	(after.read(FilesApp.cells.note), added.read(FilesApp.cells.note), gone.read(FilesApp.cells.note), gone.read(FilesApp.cells.inbox).len()) == ("0 arrived, 3 refused", "0 arrived after 2", "emptied", 0)
 }

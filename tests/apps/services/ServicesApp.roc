@@ -75,7 +75,7 @@ ServicesApp := [].{
 	press : State(Ctx, S), Str -> Engine.Attr(Ctx)
 	press = |st, ev| Engine.on(ev, st.update(|s| { ..s, presses: s.presses.append(ev) }))
 
-	shown : Engine.Res -> Str
+	shown : Engine.Result -> Str
 	shown = |r| match Engine.http_text(r) {
 		Ok(body) => "ok:${body}"
 		Err(e) => Str.inspect(e)
@@ -164,7 +164,7 @@ ServicesApp := [].{
 				),
 				# HTTP results as typed errors
 				Html.button("Fetch", [], st.update(|s| { ..s, fetches: s.fetches + 1 })),
-				Engine.on_change(
+				Engine.watch_changes(
 					v.map(|s| s.fetches),
 					|n| [Http({ method: "GET", url: "/api/item/${n.to_str()}", headers: [], body: "", timeout_ms: 100 })],
 					st.on_result(|s, _, r| { ..s, fetched: ServicesApp.shown(r) }),
@@ -181,7 +181,7 @@ ServicesApp := [].{
 				Engine.element("input", [Html.aria_label("Commit"), Engine.attr("type", "text"), Html.on_change(st.set_value(|s, t| { ..s, committed: t }))], []),
 				Html.p_s(v.map(|s| s.committed), [Engine.test_id("committed")]),
 				Html.button("Delay", [], st.update(|s| { ..s, delays: s.delays + 1 })),
-				Engine.on_change(v.map(|s| s.delays), |_| [Timer(1000)], st.on_result(|s, _, r| { ..s, delayed: Str.inspect(r) })),
+				Engine.watch_changes(v.map(|s| s.delays), |_| [Timer(1000)], st.on_result(|s, _, r| { ..s, delayed: Str.inspect(r) })),
 				Html.p_s(v.map(|s| s.delayed), [Engine.test_id("delayed")]),
 				ServicesApp.two_states({}),
 			],

@@ -17,7 +17,7 @@ import Csv
 ## app shares and how it changes are read, and tested, without the markup.
 ##
 ## The module's one tag, `Converter`, is the store's name. Nothing spells
-## the store's storage type: an annotation that mentions it says `_`.
+## the store's contents type: an annotation that mentions it says `_`.
 AppStore := [Converter].{
 
 	## What the page has to convert. `note` is why the last download of the
@@ -37,27 +37,27 @@ AppStore := [Converter].{
 		}.Engine.Cells,
 	)
 
-	## The handles on the store's cells.
-	h = AppStore.store.handles()
+	## The store's cells.
+	cells = AppStore.store.cells()
 
 	## The reader chose or dropped files: the first becomes the file to
 	## convert, and what the last download reported is cleared. An event
 	## that carried no file changes nothing.
 	chosen : Engine.Received -> List(Engine.Write(_))
 	chosen = |{ files, refused: _ }| match files {
-		[first, ..] => [AppStore.h.source.change(|source| { ..source, file: Chosen(first), note: "" })]
+		[first, ..] => [AppStore.cells.source.update(|source| { ..source, file: Chosen(first), note: "" })]
 		[] => []
 	}
 
 	## The reader asks for the sample: its download starts.
 	sample_asked : List(Engine.Write(_))
-	sample_asked = [AppStore.h.source.change(|source| { ..source, sample: Loading })]
+	sample_asked = [AppStore.cells.source.update(|source| { ..source, sample: Loading })]
 
 	## The sample's download answered: with the file to convert, or with
 	## why there is none.
 	sample_arrived : Try(File, Engine.FetchError) -> List(Engine.Write(_))
 	sample_arrived = |answer| [
-		AppStore.h.source.change(
+		AppStore.cells.source.update(
 			|source| match answer {
 				Ok(sample) => { ..source, file: Chosen(sample), sample: Idle }
 				Err(why) => { ..source, sample: Idle, note: "the sample did not load: ${Str.inspect(why)}" }
@@ -67,7 +67,7 @@ AppStore := [Converter].{
 
 	## The reader picks a format by the value of its option.
 	format_picked : Str -> List(Engine.Write(_))
-	format_picked = |value| [AppStore.h.format.put(AppStore.format_of(value))]
+	format_picked = |value| [AppStore.cells.format.set(AppStore.format_of(value))]
 
 	## The format an option's value names, and the value of a format's
 	## option.
@@ -82,19 +82,19 @@ AppStore := [Converter].{
 }
 
 ## The page starts with nothing to convert, to TSV.
-expect (AppStore.store.read(AppStore.h.source), AppStore.store.read(AppStore.h.format)) == (AppStore.no_source, Tsv)
+expect (AppStore.store.read(AppStore.cells.source), AppStore.store.read(AppStore.cells.format)) == (AppStore.no_source, Tsv)
 
 ## Asking for the sample starts its download, and a download that fails
 ## ends it with a note and no file.
 expect {
 	asked = AppStore.store.after(AppStore.sample_asked)
 	failed = asked.after(AppStore.sample_arrived(Err(Status(404))))
-	(asked.read(AppStore.h.source).sample, failed.read(AppStore.h.source)) == (Loading, { file: Nothing, sample: Idle, note: "the sample did not load: Status(404)" })
+	(asked.read(AppStore.cells.source).sample, failed.read(AppStore.cells.source)) == (Loading, { file: Nothing, sample: Idle, note: "the sample did not load: Status(404)" })
 }
 
 ## A format is picked by its option's value; a value no option has is TSV.
 expect {
-	picked = |value| AppStore.store.after(AppStore.format_picked(value)).read(AppStore.h.format)
+	picked = |value| AppStore.store.after(AppStore.format_picked(value)).read(AppStore.cells.format)
 	actual =
 		\\jsonl: ${Str.inspect(picked("jsonl"))}
 		\\tsv: ${Str.inspect(picked("tsv"))}

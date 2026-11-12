@@ -64,10 +64,10 @@ ExplorerApp := [].{
 
 	## The preparation every tab's task reads.
 	log : Worker.Preparation(File, Prepared, Problem)
-	log = Worker.prepared({ name: "roc-signals.example/log-explorer/log", prepare!: ExplorerApp.index! })
+	log = Worker.preparation({ name: "roc-signals.example/log-explorer/log", prepare!: ExplorerApp.index! })
 
-	## A task of the log's preparation, asked a `query`, answering `output`.
-	LogTask(query, output) : Worker.PreparedTask(File, Prepared, query, output, Problem)
+	## A task of the log's preparation, given `input`, answering `output`.
+	LogTask(input, output) : Worker.PreparedTask(File, Prepared, input, output, Problem)
 
 	## The overview, from the index alone: the counts, the busiest sources
 	## and the timeline.
@@ -145,8 +145,8 @@ ExplorerApp := [].{
 
 	## A tab's question for the open log, or none before one is open.
 	asked : [NoLog, Chosen(File)], q -> [Run(Worker.Question(File, q)), Skip]
-	asked = |open, query| match open {
-		Chosen(file) => Run({ input: file, query })
+	asked = |open, input| match open {
+		Chosen(file) => Run({ init: file, input })
 		NoLog => Skip
 	}
 
@@ -370,7 +370,7 @@ ExplorerApp := [].{
 	search_panel : Signal(ctx, OverviewAnswer) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	search_panel = |answer| {
-		cells = LogStore.h
+		cells = LogStore.cells
 		query = cells.query.signal()
 		Html.section(
 			"Search",
@@ -394,7 +394,7 @@ ExplorerApp := [].{
 						),
 					],
 				),
-				Worker.derive_when(
+				Worker.resource_when(
 					ExplorerApp.search,
 					{ open: cells.log.signal(), typed: query, page: cells.place.page.signal() }.Signal.map(|at| ExplorerApp.asked(at.open, { text: at.typed.text, filter: at.typed.filter, page: at.page })),
 					|r| Html.div(
@@ -438,8 +438,8 @@ ExplorerApp := [].{
 	viewer_panel : {} -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	viewer_panel = |{}| {
-		cells = LogStore.h
-		Worker.derive_when(
+		cells = LogStore.cells
+		Worker.resource_when(
 			ExplorerApp.window,
 			cells.log.signal().map2(cells.place.first.signal(), ExplorerApp.asked),
 			|r| Html.section(
@@ -491,7 +491,7 @@ ExplorerApp := [].{
 	tab_button = |label, tab| Html.action_button(
 		Engine.const(label),
 		Engine.const(Bool.False),
-		[Engine.class("button button-sm"), Html.flag("aria-pressed", LogStore.h.tab.signal().map(|showing| showing == tab))],
+		[Engine.class("button button-sm"), Html.flag("aria-pressed", LogStore.cells.tab.signal().map(|showing| showing == tab))],
 		Engine.does(LogStore.turned_to(tab)),
 	)
 
@@ -504,7 +504,7 @@ ExplorerApp := [].{
 	opener = |{}| Engine.state(
 		"20000",
 		|entries| {
-			cells = LogStore.h
+			cells = LogStore.cells
 			arrival = Engine.handle_files(LogStore.arrived)
 			Engine.element(
 				"section",
@@ -538,7 +538,7 @@ ExplorerApp := [].{
 
 	view : {} -> Elem(Engine.StoreRoot(_))
 	view = |{}| {
-		cells = LogStore.h
+		cells = LogStore.cells
 		Html.div(
 			"app-shell",
 			[
@@ -564,7 +564,7 @@ ExplorerApp := [].{
 				# the viewer's sites live in their branches: leaving a tab
 				# stops its job and coming back asks again, which the prepared
 				# index makes cheap.
-				Worker.derive_when(
+				Worker.resource_when(
 					ExplorerApp.overview,
 					cells.log.signal().map(|open| ExplorerApp.asked(open, {})),
 					|answer| Html.div(
@@ -587,7 +587,7 @@ ExplorerApp := [].{
 				# its own shadow root and only reads.
 				Engine.element("log-timings", [Engine.class("block")], []),
 				# The sample, written to a file by a task of its own.
-				Engine.latest(
+				Engine.watch_latest(
 					cells.generating.signal(),
 					|generating| match generating {
 						Generating(entries) => [ExplorerApp.generate.request(entries)]

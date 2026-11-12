@@ -23,11 +23,11 @@ import pf.Worker
 ##   replaced only by a delivered answer. "Save log" saves it.
 ## - "Fetch" downloads `/data.csv` into a file; "Count lines" counts its
 ##   lines in a task.
-## - "Crash", "Twice" (finishing a builder twice) and "Timed" (a deadline)
+## - "Crash", "Twice" (finishing a builder twice) and "Timed" (a timeout)
 ##   end their jobs without an answer; "Stop" cancels whatever runs.
 ## - "Linger" counts the first file's lines one byte at a time, with a
-##   short deadline and `on_cancel: Finish`: on a large file a cancelled job
-##   runs on past its deadline unless the platform ends it there.
+##   short timeout and `on_cancel: Finish`: on a large file a cancelled job
+##   runs on past its timeout unless the platform ends it there.
 ## - "Panel" mounts three jobs on the first file: one that stops when the
 ##   panel closes, one that is kept and answers to the page, and one that is
 ##   kept and answers to a state the panel owns, whose write is skipped once
@@ -181,14 +181,14 @@ TasksApp := [].{
 	size! = |file| file.contents!().map_ok(|bytes| bytes.len())
 
 	timed : Worker.Task(File, U64, Engine.FileError)
-	timed = Worker.task({ name: "test.roc-signals/tasks/timed", run!: TasksApp.size!, deadline: Ms(5000) })
+	timed = Worker.task({ name: "test.roc-signals/tasks/timed", run!: TasksApp.size!, timeout: Ms(5000) })
 
 	## The lines of a file, read one byte at a time.
 	linger! : File => Try(U64, Engine.FileError)
 	linger! = |file| TasksApp.count_lines!({ file, chunk: 1 })
 
 	lingering : Worker.Task(File, U64, Engine.FileError)
-	lingering = Worker.task({ name: "test.roc-signals/tasks/lingering", run!: TasksApp.linger!, deadline: Ms(1000), on_cancel: Finish })
+	lingering = Worker.task({ name: "test.roc-signals/tasks/lingering", run!: TasksApp.linger!, timeout: Ms(1000), on_cancel: Finish })
 
 	stopped : Worker.Task(File, U64, Engine.FileError)
 	stopped = Worker.task({ name: "test.roc-signals/tasks/stopped", run!: TasksApp.size! })
@@ -215,7 +215,7 @@ TasksApp := [].{
 		_ => s
 	}
 
-	plan : Run -> List(Engine.Req)
+	plan : Run -> List(Engine.Request)
 	plan = |run| match run {
 		Idle => []
 		Upper(input) => [TasksApp.upper.request(input)]
@@ -237,13 +237,13 @@ TasksApp := [].{
 	## What a job's answer does to the state. The job is done, so `run` goes
 	## back to `Idle`: a request's input in state holds the files it names,
 	## and keeping it would keep them alive.
-	answered : S, Run, Engine.Res -> S
+	answered : S, Run, Engine.Result -> S
 	answered = |s, run, res| {
 		next = TasksApp.took(s, run, res)
 		{ ..next, run: Idle }
 	}
 
-	took : S, Run, Engine.Res -> S
+	took : S, Run, Engine.Result -> S
 	took = |s, run, res| match run {
 		Idle => s
 		Upper(_) => TasksApp.took_file(s, TasksApp.upper.result(res), |f| { ..s, built: [f] })
@@ -336,8 +336,8 @@ TasksApp := [].{
 				Html.p_s(v.map(|s| TasksApp.listing(s.fetched)), [Engine.test_id("fetched")]),
 				Html.p_s(v.map(|s| s.kept), [Engine.test_id("kept")]),
 				# One job at a time: a new `run` cancels the job of the old one.
-				Engine.latest(v.map(|s| s.run), TasksApp.plan, st.on_result(TasksApp.answered)),
-				Engine.latest(
+				Engine.watch_latest(v.map(|s| s.run), TasksApp.plan, st.on_result(TasksApp.answered)),
+				Engine.watch_latest(
 					v.map(|s| s.fetching),
 					|f| match f {
 						Get(url) => [File.fetch({ url: url })]
@@ -357,7 +357,7 @@ TasksApp := [].{
 						"section",
 						[],
 						[
-							Engine.latest(
+							Engine.watch_latest(
 								v.map(|s| s.built).lift(),
 								|built| match built {
 									[f] => [f.read_utf8({})]
@@ -374,7 +374,7 @@ TasksApp := [].{
 						],
 					),
 				),
-				Engine.on_change(
+				Engine.watch_changes(
 					v.map(|s| s.save),
 					|save| match save {
 						Save(f, "", _) => [File.save(f, {})]
@@ -389,7 +389,7 @@ TasksApp := [].{
 						"section",
 						[Html.aria_label("panel")],
 						[
-							Engine.latest(
+							Engine.watch_latest(
 								v.map(|s| s.files.first()),
 								|first| match first {
 									Ok(f) => [TasksApp.stopped.request(f)]
@@ -397,7 +397,7 @@ TasksApp := [].{
 								},
 								st.on_result(|s, _, res| { ..s, kept: "stopped answered ${Str.inspect(TasksApp.stopped.result(res))}" }),
 							),
-							Engine.latest(
+							Engine.watch_latest(
 								v.map(|s| s.files.first()),
 								|first| match first {
 									Ok(f) => [TasksApp.kept.request(f)]
@@ -418,7 +418,7 @@ TasksApp := [].{
 									"span",
 									[],
 									[
-										Engine.latest(
+										Engine.watch_latest(
 											v.map(|s| s.files.first()).lift(),
 											|first| match first {
 												Ok(f) => [TasksApp.kept.request(f)]

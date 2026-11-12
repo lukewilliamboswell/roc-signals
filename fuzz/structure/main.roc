@@ -265,9 +265,9 @@ flat = |n, g, inner| match n {
 		if k % 3 == 0 {
 			Core.watch(v, plan, Core.ignore({}))
 		} else if k % 3 == 1 {
-			Core.on_change(v, plan, Core.ignore({}))
+			Core.watch_changes(v, plan, Core.ignore({}))
 		} else {
-			Core.latest(v, plan, Core.ignore({}))
+			Core.watch_latest(v, plan, Core.ignore({}))
 		}
 	}
 }
@@ -309,7 +309,7 @@ tripled = |input| {
 
 ## A layer that follows a worker job for its input: the output's byte sum,
 ## or a marker for a lost or timed-out job.
-job_cfg : { init : U64, pending : (U64, U64 -> U64), plan : (U64 -> List(Core.Req)), resolve : (U64, U64, Core.Res -> U64) }
+job_cfg : { init : U64, pending : (U64, U64 -> U64), plan : (U64 -> List(Core.Request)), resolve : (U64, U64, Core.Result -> U64) }
 job_cfg = {
 	init: 0,
 	pending: |_, a| a + 3,

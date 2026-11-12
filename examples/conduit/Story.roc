@@ -25,7 +25,7 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 
 	FavoriteResult : [FavoriteIdle, FavoriteAccepted(Api.Article), FavoriteRejected(Str)]
 
-	## What the view is drawn over, in a store whose storage is `st`: the
+	## What the view is drawn over, in a store whose type is `st`: the
 	## story's own cell, who is signed in, and the cell a navigation is
 	## asked through.
 	Props(st) : { story : Cell(st, Story), session : Cell(st, Session), nav : Nav.Asked(st) }
@@ -52,7 +52,7 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 	}
 
 	## Keep an answer only if it is for the load wanted now.
-	stored : Story, Fetch.LoadReq, Engine.Res -> Story
+	stored : Story, Fetch.LoadReq, Engine.Result -> Story
 	stored = |s, sent, res| if (Story.req(s).key != sent.key) s else { ..s, article: { key: sent.key, value: Api.decode_get(Api.response_of(res), Api.decode_article) } }
 
 	## What to show now: the article, a failure, or loading.
@@ -96,7 +96,7 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 		{ ..s, fav: Fetch.next(s.fav, method, Api.favorite_uri(s.slug), "", session.token()), fav_result: FavoriteIdle }
 	}
 
-	favorite_answered : Story, Fetch.Submit, Engine.Res -> Story
+	favorite_answered : Story, Fetch.Submit, Engine.Result -> Story
 	favorite_answered = |s, sent, res| {
 		if sent.serial != s.fav.serial {
 			s
@@ -115,7 +115,7 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 
 	## The story after the answer to a deletion, and whether the article is
 	## gone. Its owner decides where to go when it is.
-	delete_answered : Story, Fetch.Submit, Engine.Res -> { story : Story, deleted : Bool }
+	delete_answered : Story, Fetch.Submit, Engine.Result -> { story : Story, deleted : Bool }
 	delete_answered = |s, sent, res| {
 		if sent.serial != s.del.serial {
 			{ story: s, deleted: False }
@@ -181,7 +181,7 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 									},
 								),
 								"mb-4 mr-2 border border-emerald-600 bg-white px-4 py-2 text-sm font-medium text-emerald-700",
-								Engine.handle_by(session, |who, _| [story.change(|s| Story.favoriting(s, who))]),
+								Engine.handle_by(session, |who, _| [story.update(|s| Story.favoriting(s, who))]),
 							),
 							|| Engine.text(""),
 						),
@@ -197,7 +197,7 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 									_ => False
 								},
 							),
-							|| Parts.button("Delete Article", "mb-4 ${Styles.danger_button}", Engine.handle_by(session, |who, _| [story.change(|s| Story.deleting(s, who))])),
+							|| Parts.button("Delete Article", "mb-4 ${Styles.danger_button}", Engine.handle_by(session, |who, _| [story.update(|s| Story.deleting(s, who))])),
 							|| Engine.text(""),
 						),
 						Html.p_s(sv.map(delete_error), [Engine.class("text-red-700")]),

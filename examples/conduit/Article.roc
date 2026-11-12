@@ -18,10 +18,10 @@ import Story
 ## reactions.
 Article := [].{
 
-	## The handles on the page's cells, in a store whose storage is `st`.
+	## The page's cells, in a store whose type is `st`.
 	Cells(st) : { story : Cell(st, Story), comments : Cell(st, Comments), form : Cell(st, CommentForm) }
 
-	## What the app's store holds for this page: the handles on its cells,
+	## What the app's store holds for this page: its cells,
 	## and the write that starts every one of them again.
 	Handles(st) : { cells : Cells(st), reset : Engine.Write(st) }
 

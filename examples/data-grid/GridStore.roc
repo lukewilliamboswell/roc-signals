@@ -34,42 +34,42 @@ GridStore := [Grid].{
 		}.Engine.Cells,
 	)
 
-	## The handles on the store's cells.
-	h = GridStore.store.handles()
+	## The store's cells.
+	cells = GridStore.store.cells()
 
 	## The listing the rows are drawn in: the query of the grid's view.
 	listing : {} -> Signal(ctx, GridData.Listing)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	listing = |{}| { filter: GridStore.h.filter.signal(), sort: GridStore.h.sort.signal() }.Signal
+	listing = |{}| { filter: GridStore.cells.filter.signal(), sort: GridStore.cells.sort.signal() }.Signal
 
 	## The summary of the rows the filter matches: a pass over the table,
 	## taken again whenever a row or the filter is written.
 	summary : {} -> Signal(ctx, GridData.Summary)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	summary = |{}| GridStore.h.rows.signal().map2(GridStore.h.filter.signal(), GridStore.summary_of)
+	summary = |{}| GridStore.cells.rows.signal().map2(GridStore.cells.filter.signal(), GridStore.summary_of)
 
 	summary_of : Table(U64, GridData.Row), Str -> GridData.Summary
 	summary_of = |table, filter| table.fold(GridData.no_rows, |so_far, _id, row| GridData.counted(so_far, row, filter))
 
 	## Typing in the filter box.
 	filtered : Str -> List(Engine.Write(_))
-	filtered = |text| [GridStore.h.filter.put(text)]
+	filtered = |text| [GridStore.cells.filter.set(text)]
 
 	## A click on a sort button.
 	sorted_by : GridData.SortKey -> List(Engine.Write(_))
-	sorted_by = |key| [GridStore.h.sort.change(|sort| GridData.apply_sort_click(sort, key))]
+	sorted_by = |key| [GridStore.cells.sort.update(|sort| GridData.apply_sort_click(sort, key))]
 
 	## A click on a paging button while the grid shows page `shown`: the
 	## page asked for is the one the button turns to from there. The page
 	## shown is what the reader sees, and it is not the page asked for
 	## while a filter leaves fewer pages.
 	paged : U64, [First, Previous, Next] -> List(Engine.Write(_))
-	paged = |shown, turn| [GridStore.h.page.put(GridData.turned(shown, turn))]
+	paged = |shown, turn| [GridStore.cells.page.set(GridData.turned(shown, turn))]
 
 	## Ticking or clearing "Select all matching rows" while the filter box
 	## holds `filter`.
 	marked_matching : Str, GridData.Selection -> List(Engine.Write(_))
-	marked_matching = |filter, selection| [GridStore.h.rows.change(|table| GridStore.with_matching(table, filter, selection))]
+	marked_matching = |filter, selection| [GridStore.cells.rows.update(|table| GridStore.with_matching(table, filter, selection))]
 
 	## `table` with every row `filter` matches given `selection`. Only the
 	## rows it changes are written, each by its key, so a view of the table
@@ -87,11 +87,11 @@ GridStore := [Grid].{
 ## The store opens on every row, in id order, at the first page, with nothing selected.
 expect {
 	opened = GridStore.store
-	summary = GridStore.summary_of(opened.read(GridStore.h.rows), opened.read(GridStore.h.filter))
+	summary = GridStore.summary_of(opened.read(GridStore.cells.rows), opened.read(GridStore.cells.filter))
 	actual =
-		\\rows: ${opened.read(GridStore.h.rows).len().to_str()}
-		\\sort: ${GridData.sort_caption(opened.read(GridStore.h.sort))}
-		\\page: ${opened.read(GridStore.h.page).to_str()}
+		\\rows: ${opened.read(GridStore.cells.rows).len().to_str()}
+		\\sort: ${GridData.sort_caption(opened.read(GridStore.cells.sort))}
+		\\page: ${opened.read(GridStore.cells.page).to_str()}
 		\\matching: ${summary.matching.to_str()}
 		\\selected: ${summary.selected_all.to_str()}
 	expected =
@@ -106,7 +106,7 @@ expect {
 ## A second click on the same sort button reverses the order, and a click on another starts it ascending.
 expect {
 	captions = [[ByScore], [ByScore, ByScore], [ByScore, ByScore, ByName]].map(
-		|clicks| GridData.sort_caption(GridStore.store.after(clicks.map(GridStore.sorted_by).join()).read(GridStore.h.sort)),
+		|clicks| GridData.sort_caption(GridStore.store.after(clicks.map(GridStore.sorted_by).join()).read(GridStore.cells.sort)),
 	)
 	captions == ["Sorted by score ascending", "Sorted by score descending", "Sorted by name ascending"]
 }
@@ -114,22 +114,22 @@ expect {
 ## Typing a filter leaves the page asked for as it was, so clearing the filter shows that page again.
 expect {
 	narrowed = GridStore.store.after(GridStore.paged(0, Next)).after(GridStore.paged(1, Next)).after(GridStore.filtered("Node-119"))
-	(narrowed.read(GridStore.h.filter), narrowed.read(GridStore.h.page)) == ("Node-119", 2)
+	(narrowed.read(GridStore.cells.filter), narrowed.read(GridStore.cells.page)) == ("Node-119", 2)
 }
 
 ## A paging button steps from the page shown: with the fourth page asked for and a filter that leaves two, "Previous page" asks for the first.
 expect {
-	narrowed = GridStore.store.after([GridStore.h.page.put(3)]).after(GridStore.filtered("119"))
-	matching = GridStore.summary_of(narrowed.read(GridStore.h.rows), narrowed.read(GridStore.h.filter)).matching
-	shown = GridData.page_shown(narrowed.read(GridStore.h.page), matching)
+	narrowed = GridStore.store.after([GridStore.cells.page.set(3)]).after(GridStore.filtered("119"))
+	matching = GridStore.summary_of(narrowed.read(GridStore.cells.rows), narrowed.read(GridStore.cells.filter)).matching
+	shown = GridData.page_shown(narrowed.read(GridStore.cells.page), matching)
 	back = narrowed.after(GridStore.paged(shown, Previous))
-	(matching, shown, back.read(GridStore.h.page)) == (12, 1, 0)
+	(matching, shown, back.read(GridStore.cells.page)) == (12, 1, 0)
 }
 
 ## Selecting every matching row selects the rows the filter matches and no others, and clearing them leaves a row selected outside the filter as it was.
 expect {
-	rows = GridStore.h.rows
-	one = GridStore.store.after([rows.change(|table| table.update(3, |row| GridData.marked(row, Selected)))])
+	rows = GridStore.cells.rows
+	one = GridStore.store.after([rows.update(|table| table.update(3, |row| GridData.marked(row, Selected)))])
 	all = one.after(GridStore.marked_matching("Node-119", Selected))
 	cleared = all.after(GridStore.marked_matching("Node-119", Unselected))
 	show = |held| {

@@ -2,8 +2,8 @@ import pf.Engine exposing [Elem, Signal, State]
 import pf.Html
 
 ## Writes test app: one pure function decides a transition that spans cells
-## and returns its writes (`Engine.handle`, `Engine.react`, `Cell.put`,
-## `Cell.change`), with specs in `specs/` that pin which readers each
+## and returns its writes (`Engine.handle`, `Engine.react`, `Cell.set`,
+## `Cell.update`), with specs in `specs/` that pin which readers each
 ## decision wakes.
 ##
 ## - Cells with one reader each at the root, so a click's evaluation
@@ -52,7 +52,7 @@ WritesApp := [Writes].{
 		}.Engine.Cells,
 	)
 
-	h = WritesApp.store.handles()
+	cells = WritesApp.store.cells()
 
 	## A line naming a value, read by a reader with test id `name`.
 	reader : Str, Signal(ctx, Str) -> Elem(ctx)
@@ -61,7 +61,7 @@ WritesApp := [Writes].{
 	## `left` and `right` as one reading.
 	sides : {} -> Signal(ctx, { left : I64, right : I64 })
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	sides = |{}| WritesApp.h.left.signal().map2(WritesApp.h.right.signal(), |left, right| { left, right })
+	sides = |{}| WritesApp.cells.left.signal().map2(WritesApp.cells.right.signal(), |left, right| { left, right })
 
 	## The buttons at the root.
 	buttons : {} -> Elem(ctx)
@@ -69,11 +69,11 @@ WritesApp := [Writes].{
 	buttons = |{}| Html.div(
 		"buttons",
 		[
-			Html.button("Swap", [], Engine.handle_by(WritesApp.sides({}), |at, _| [WritesApp.h.left.put(at.right), WritesApp.h.right.put(at.left)])),
-			Html.button("Swap, other order", [], Engine.handle_by(WritesApp.sides({}), |at, _| [WritesApp.h.right.put(at.left), WritesApp.h.left.put(at.right)])),
-			Html.button("Grow left", [], Engine.handle_by(WritesApp.h.left.signal(), |n, _| if (n < 3) [WritesApp.h.left.put(n + 1)] else [])),
-			Html.button("Set then add", [], Engine.handle(|_| [WritesApp.h.total.put(10), WritesApp.h.total.change(|n| n + 1)])),
-			Html.text_input(Engine.const("Echo"), "text", WritesApp.h.echo.signal(), [], Engine.handle(|typed| [WritesApp.h.echo.put(typed)])),
+			Html.button("Swap", [], Engine.handle_by(WritesApp.sides({}), |at, _| [WritesApp.cells.left.set(at.right), WritesApp.cells.right.set(at.left)])),
+			Html.button("Swap, other order", [], Engine.handle_by(WritesApp.sides({}), |at, _| [WritesApp.cells.right.set(at.left), WritesApp.cells.left.set(at.right)])),
+			Html.button("Grow left", [], Engine.handle_by(WritesApp.cells.left.signal(), |n, _| if (n < 3) [WritesApp.cells.left.set(n + 1)] else [])),
+			Html.button("Set then add", [], Engine.handle(|_| [WritesApp.cells.total.set(10), WritesApp.cells.total.update(|n| n + 1)])),
+			Html.text_input(Engine.const("Echo"), "text", WritesApp.cells.echo.signal(), [], Engine.handle(|typed| [WritesApp.cells.echo.set(typed)])),
 		],
 	)
 
@@ -106,7 +106,7 @@ WritesApp := [Writes].{
 												Engine.attr_s("aria-label", row.key().map(|k| "Deep ${k}")),
 												Engine.on_click(
 													clicks.lift_row().update(|n| n + 1).also(
-														Engine.handle_by(row.key(), |key, _| [WritesApp.h.log.put(key), WritesApp.h.total.change(|n| n + 1)]),
+														Engine.handle_by(row.key(), |key, _| [WritesApp.cells.log.set(key), WritesApp.cells.total.update(|n| n + 1)]),
 													),
 												),
 											],
@@ -138,16 +138,16 @@ WritesApp := [Writes].{
 	form : {} -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	form = |{}| {
-		group = WritesApp.h.form
+		group = WritesApp.cells.form
 		Html.div(
 			"form",
 			[
 				WritesApp.reader("draft", group.cells.draft.signal()),
 				WritesApp.reader("sent", group.cells.sent.signal().map(|n| n.to_str())),
-				Html.text_input(Engine.const("Draft"), "text", group.cells.draft.signal(), [], Engine.handle(|typed| [group.cells.draft.put(typed)])),
-				Html.button("Send", [], Engine.handle_by(group.cells.draft.signal(), |draft, _| [WritesApp.h.log.put(draft), group.cells.sent.change(|n| n + 1)])),
+				Html.text_input(Engine.const("Draft"), "text", group.cells.draft.signal(), [], Engine.handle(|typed| [group.cells.draft.set(typed)])),
+				Html.button("Send", [], Engine.handle_by(group.cells.draft.signal(), |draft, _| [WritesApp.cells.log.set(draft), group.cells.sent.update(|n| n + 1)])),
 				Html.button("Start again", [], Engine.handle(|_| [group.reset])),
-				Html.button("Start again, counted", [], Engine.handle_by(group.cells.sent.signal(), |sent, _| [group.reset, group.cells.sent.put(sent)])),
+				Html.button("Start again, counted", [], Engine.handle_by(group.cells.sent.signal(), |sent, _| [group.reset, group.cells.sent.set(sent)])),
 			],
 		)
 	}
@@ -161,7 +161,7 @@ WritesApp := [Writes].{
 	paired : {} -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	paired = |{}| Engine.derive(
-		WritesApp.h.score.signal().map(|n| n * 2),
+		WritesApp.cells.score.signal().map(|n| n * 2),
 		|doubled| Engine.state(
 			0.I64,
 			|taps| {
@@ -170,8 +170,8 @@ WritesApp := [Writes].{
 					"paired",
 					[
 						WritesApp.reader("paired", seen),
-						Html.button("Tap and score", [], taps.update(|n| n + 1).also(Engine.handle(|_| [WritesApp.h.score.change(|n| n + 1)]))),
-						Engine.on_change(seen, |text| [Title("paired ${text}"), Timer(10)], Engine.ignore({})),
+						Html.button("Tap and score", [], taps.update(|n| n + 1).also(Engine.handle(|_| [WritesApp.cells.score.update(|n| n + 1)]))),
+						Engine.watch_changes(seen, |text| [Title("paired ${text}"), Timer(10)], Engine.ignore({})),
 					],
 				)
 			},
@@ -191,13 +191,13 @@ WritesApp := [Writes].{
 		|taps| Engine.derive(
 			taps.signal().map(|n| n * 2),
 			|doubled| {
-				seen = doubled.map2(WritesApp.h.bonus.signal(), |d, b| "${d.to_str()}/${b.to_str()}")
+				seen = doubled.map2(WritesApp.cells.bonus.signal(), |d, b| "${d.to_str()}/${b.to_str()}")
 				Html.div(
 					"rewarded",
 					[
 						WritesApp.reader("rewarded", seen),
-						Html.button("Tap and reward", [], taps.lift().update(|n| n + 1).also(Engine.does([WritesApp.h.bonus.change(|n| n + 1)]))),
-						Engine.on_change(seen, |text| [Title("rewarded ${text}"), Timer(10)], Engine.ignore({})),
+						Html.button("Tap and reward", [], taps.lift().update(|n| n + 1).also(Engine.does([WritesApp.cells.bonus.update(|n| n + 1)]))),
+						Engine.watch_changes(seen, |text| [Title("rewarded ${text}"), Timer(10)], Engine.ignore({})),
 					],
 				)
 			},
@@ -208,24 +208,24 @@ WritesApp := [Writes].{
 	view = |{}| Html.div(
 		"app",
 		[
-			WritesApp.reader("left", WritesApp.h.left.signal().map(|n| n.to_str())),
-			WritesApp.reader("right", WritesApp.h.right.signal().map(|n| n.to_str())),
-			WritesApp.reader("total", WritesApp.h.total.signal().map(|n| n.to_str())),
-			WritesApp.reader("log", WritesApp.h.log.signal()),
-			WritesApp.reader("echo", WritesApp.h.echo.signal()),
-			WritesApp.reader("visits", WritesApp.h.profile.signal().map(|p| p.visits.to_str())),
+			WritesApp.reader("left", WritesApp.cells.left.signal().map(|n| n.to_str())),
+			WritesApp.reader("right", WritesApp.cells.right.signal().map(|n| n.to_str())),
+			WritesApp.reader("total", WritesApp.cells.total.signal().map(|n| n.to_str())),
+			WritesApp.reader("log", WritesApp.cells.log.signal()),
+			WritesApp.reader("echo", WritesApp.cells.echo.signal()),
+			WritesApp.reader("visits", WritesApp.cells.profile.signal().map(|p| p.visits.to_str())),
 			WritesApp.buttons({}),
 			WritesApp.deep({}),
-			WritesApp.card(WritesApp.h.profile.state()),
+			WritesApp.card(WritesApp.cells.profile.state()),
 			WritesApp.form({}),
-			WritesApp.reader("score", WritesApp.h.score.signal().map(|n| n.to_str())),
+			WritesApp.reader("score", WritesApp.cells.score.signal().map(|n| n.to_str())),
 			WritesApp.paired({}),
-			WritesApp.reader("bonus", WritesApp.h.bonus.signal().map(|n| n.to_str())),
+			WritesApp.reader("bonus", WritesApp.cells.bonus.signal().map(|n| n.to_str())),
 			WritesApp.rewarded({}),
-			Engine.on_change(
-				WritesApp.h.left.signal(),
+			Engine.watch_changes(
+				WritesApp.cells.left.signal(),
 				|_| [Self],
-				Engine.react_by(WritesApp.h.right.signal(), |right, left, _| [WritesApp.h.log.put("left ${left.to_str()} right ${right.to_str()}")]),
+				Engine.react_by(WritesApp.cells.right.signal(), |right, left, _| [WritesApp.cells.log.set("left ${left.to_str()} right ${right.to_str()}")]),
 			),
 		],
 	)
@@ -237,26 +237,26 @@ WritesApp := [Writes].{
 ## Writes computed from one reading swap two cells in either order.
 expect {
 	at = { left: 1, right: 2 }
-	one = WritesApp.store.after([WritesApp.h.left.put(at.right), WritesApp.h.right.put(at.left)])
-	other = WritesApp.store.after([WritesApp.h.right.put(at.left), WritesApp.h.left.put(at.right)])
-	(one.read(WritesApp.h.left), one.read(WritesApp.h.right), other.read(WritesApp.h.left), other.read(WritesApp.h.right)) == (2, 1, 2, 1)
+	one = WritesApp.store.after([WritesApp.cells.left.set(at.right), WritesApp.cells.right.set(at.left)])
+	other = WritesApp.store.after([WritesApp.cells.right.set(at.left), WritesApp.cells.left.set(at.right)])
+	(one.read(WritesApp.cells.left), one.read(WritesApp.cells.right), other.read(WritesApp.cells.left), other.read(WritesApp.cells.right)) == (2, 1, 2, 1)
 }
 
 ## A change after a put of the same cell sees the put.
-expect WritesApp.store.after([WritesApp.h.total.put(10), WritesApp.h.total.change(|n| n + 1)]).read(WritesApp.h.total) == 11
+expect WritesApp.store.after([WritesApp.cells.total.set(10), WritesApp.cells.total.update(|n| n + 1)]).read(WritesApp.cells.total) == 11
 
 ## A group's reset starts every cell of the group again, and a write of one of them after it refines it.
 expect {
-	form = WritesApp.h.form
-	used = WritesApp.store.after([form.cells.draft.put("hi"), form.cells.sent.put(3), WritesApp.h.total.put(7)])
+	form = WritesApp.cells.form
+	used = WritesApp.store.after([form.cells.draft.set("hi"), form.cells.sent.set(3), WritesApp.cells.total.set(7)])
 	again = used.after([form.reset])
-	counted = used.after([form.reset, form.cells.sent.put(3)])
-	(again.read(form.cells.draft), again.read(form.cells.sent), again.read(WritesApp.h.total), counted.read(form.cells.draft), counted.read(form.cells.sent)) == ("", 0, 7, "", 3)
+	counted = used.after([form.reset, form.cells.sent.set(3)])
+	(again.read(form.cells.draft), again.read(form.cells.sent), again.read(WritesApp.cells.total), counted.read(form.cells.draft), counted.read(form.cells.sent)) == ("", 0, 7, "", 3)
 }
 
 ## A reset starts a cell at the value it was described with, not at the one the store was started with.
 expect {
-	form = WritesApp.h.form
+	form = WritesApp.cells.form
 	booted = WritesApp.store.with_initial(form.cells.draft, "from the boot data")
 	(booted.read(form.cells.draft), booted.after([form.reset]).read(form.cells.draft)) == ("from the boot data", "")
 }

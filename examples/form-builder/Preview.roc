@@ -11,7 +11,7 @@ import Schema
 ## submissions, so it can answer a field and never redefine one.
 Preview := [].{
 
-	## What the preview is drawn over, in a store whose storage is `st`:
+	## What the preview is drawn over, in a store whose type is `st`:
 	## the fields it shows, the answers typed into it, and how often the
 	## form has been submitted.
 	Props(st) : { fields : Cell(st, Schema.Fields), answers : Cell(st, Form.Answers), submissions : Cell(st, U64) }
@@ -19,23 +19,23 @@ Preview := [].{
 	## What typing in a field's control, or choosing one of its options,
 	## writes: the text of that field's answer.
 	answered_text : Cell(st, Form.Answers), { key : U64, text : Str } -> List(Engine.Write(st))
-	answered_text = |answers, { key, text }| [answers.change(|held| Form.set_answer_text(held, key, text))]
+	answered_text = |answers, { key, text }| [answers.update(|held| Form.set_answer_text(held, key, text))]
 
 	## What ticking a field's checkbox writes: the flag of that field's
 	## answer.
 	answered_flag : Cell(st, Form.Answers), { key : U64, flag : Bool } -> List(Engine.Write(st))
-	answered_flag = |answers, { key, flag }| [answers.change(|held| Form.set_answer_flag(held, key, flag))]
+	answered_flag = |answers, { key, flag }| [answers.update(|held| Form.set_answer_flag(held, key, flag))]
 
 	## What "Clear preview answers" writes: no answers. The fields are not
 	## touched, so every verdict is read again against an empty answer.
 	cleared : Cell(st, Form.Answers) -> List(Engine.Write(st))
-	cleared = |answers| [answers.put(Form.no_answers)]
+	cleared = |answers| [answers.set(Form.no_answers)]
 
 	## What "Submit form" writes, given the form's totals when it is
 	## pressed: one more submission of a form that can be submitted, and
 	## nothing for one that cannot.
 	submitted : Cell(st, U64), Form.Totals -> List(Engine.Write(st))
-	submitted = |submissions, sums| if (Form.is_submittable(sums)) [submissions.change(|count| count + 1)] else []
+	submitted = |submissions, sums| if (Form.is_submittable(sums)) [submissions.update(|count| count + 1)] else []
 
 	## The form's totals: its fields, and those that hold a problem. It
 	## reads every field and its answer, so mount it once in an

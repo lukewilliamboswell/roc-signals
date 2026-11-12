@@ -18,7 +18,7 @@ Board := [].{
 	## row (`Kanban.Card`), which each column's view sorts by.
 	Cards : Table(Str, Kanban.Card)
 
-	## What a board is drawn over, in a store whose storage is `st`: the
+	## What a board is drawn over, in a store whose type is `st`: the
 	## cards, the text of the filter box and the text of the WIP limit box.
 	Props(st) : { cards : Cell(st, Cards), filter : Cell(st, Str), limit : Cell(st, Str) }
 
@@ -92,7 +92,7 @@ Board := [].{
 					"panel-body",
 					[
 						Html.p_s(size.map(|held| "${held.shown.to_str()} shown"), [Engine.class("hint numeric"), Engine.test_id("matching-${slug}")]),
-						Engine.each_view(
+						Engine.table_view(
 							props.cards,
 							{
 								query: props.filter.signal().map(|text| { column, filter: text.trim() }),
@@ -121,7 +121,7 @@ Board := [].{
 ## write, from the table the write is handed, so the table keeps one holder
 ## and is changed in place.
 edit : Cell(st, Board.Cards), (Kanban.Listing -> List(Kanban.Edit)) -> List(Engine.Write(st))
-edit = |cards, decide| [cards.change(|table| table.apply(decide(table.to_list())))]
+edit = |cards, decide| [cards.update(|table| table.apply(decide(table.to_list())))]
 
 ## One card in its column's view: its title, its flags, its position line
 ## and its buttons. `column` is the column the view shows and `size` that

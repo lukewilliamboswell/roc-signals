@@ -15,7 +15,7 @@ import pf.Html
 RemountApp := [].{
 
 	## What one message's load writes into the pane.
-	loaded : Str, Str, Engine.Res -> Str
+	loaded : Str, Str, Engine.Result -> Str
 	loaded = |_, id, res| match Engine.http_text(res) {
 		Ok(body) => "${id}:${body}"
 		Err(problem) => "${id}:${Str.inspect(problem)}"

@@ -66,7 +66,7 @@ Stats := {}.{
 			_ => 200
 		}
 
-	## What the panel is drawn over, in a store whose storage is `st`: the
+	## What the panel is drawn over, in a store whose type is `st`: the
 	## document's source text, which it only reads.
 	Props(st) : { source : Cell(st, Str) }
 

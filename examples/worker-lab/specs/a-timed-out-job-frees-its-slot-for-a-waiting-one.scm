@@ -2,12 +2,12 @@
   (steps
     (fill (label "Jobs") "20")
     (fill (label "Weight") "1")
-    (fill (label "Deadline (ms)") "50")
+    (fill (label "Timeout (ms)") "50")
     (click (role button :name "Start"))
     (expect-pending-work "roc-signals.example/worker-lab/primes" 15)
     (expect-text (test-id "job-16") "waiting")
-    ; A waiting job's deadline has not started: the page has not asked for
-    ; it yet. Expiring the deadline of a job in flight answers it Timeout,
+    ; A waiting job's timeout has not started: the page has not asked for
+    ; it yet. Expiring the timeout of a job in flight answers it Timeout,
     ; and the slot it held goes to the lowest waiting job.
     (mark-metrics)
     (time-out-work 3)
@@ -17,7 +17,7 @@
     (expect-text (test-id "job-16") "running")
     (expect-text (test-id "job-17") "waiting")
     (expect-pending-work "roc-signals.example/worker-lab/primes" 15)
-    ; The job admitted in its place carries the same deadline, which can
+    ; The job admitted in its place carries the same timeout, which can
     ; expire in turn (occurrence 16 is job 16).
     (time-out-work 16)
     (expect-text (test-id "job-16") "timed out")

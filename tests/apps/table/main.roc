@@ -4,7 +4,7 @@ import pf.Engine
 import TableApp
 
 ## The table test app: a table cell of the store drawn through
-## `each_view`. `roc build --target=wasm32` gives the browser module and
+## `table_view`. `roc build --target=wasm32` gives the browser module and
 ## `roc build --target=x64musl` its native spec runner.
 main : Engine.Program
 main = TableApp.program

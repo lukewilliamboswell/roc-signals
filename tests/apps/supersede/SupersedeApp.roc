@@ -54,7 +54,7 @@ SupersedeApp := [].{
 	initial : S
 	initial = { query: "", results: "", rate: 0, ticks: 0, item: "", rows: [], panel: False, picked: "1", solo: False, late: False, inner: False, case: "plain", flood: [], refused: 0, answered: 0 }
 
-	answer_of : Str, Engine.Res -> Str
+	answer_of : Str, Engine.Result -> Str
 	answer_of = |id, res| match Engine.http_text(res) {
 		Ok(body) => "${id}:${body}"
 		Err(e) => "${id}:${Str.inspect(e)}"
@@ -63,7 +63,7 @@ SupersedeApp := [].{
 	## The resource configuration every item view uses: a request and a 2 s
 	## slow-answer timer per item. The timer's tick after the answer changes
 	## nothing, so its fold returns the layer unchanged and readers prune.
-	item_cfg : { init : Load, pending : (Load, Str -> Load), plan : (Str -> List(Engine.Req)), resolve : (Load, Str, Engine.Res -> Load) }
+	item_cfg : { init : Load, pending : (Load, Str -> Load), plan : (Str -> List(Engine.Request)), resolve : (Load, Str, Engine.Result -> Load) }
 	item_cfg = {
 		init: SupersedeApp.idle,
 		pending: |s, id| { ..s, pending: id, slow: False },
@@ -133,7 +133,7 @@ SupersedeApp := [].{
 			[
 				Html.button("Inc late", [], c.update(|n| n + 1)),
 				Html.p_s(c.signal().map(|n| "late ${n.to_str()}"), [Engine.test_id("late")]),
-				Engine.on_change(c.signal(), |n| [Title("late ${n.to_str()}")], Engine.ignore({})),
+				Engine.watch_changes(c.signal(), |n| [Title("late ${n.to_str()}")], Engine.ignore({})),
 			],
 		),
 	)
@@ -203,7 +203,7 @@ SupersedeApp := [].{
 				Html.button("Search A", [], st.update(|s| { ..s, query: "a" })),
 				Html.button("Search B", [], st.update(|s| { ..s, query: "b" })),
 				Html.button("Clear", [], st.update(|s| { ..s, query: "" })),
-				Engine.latest(
+				Engine.watch_latest(
 					v.map(|s| s.query),
 					|q| if (q == "") [] else [Http({ method: "GET", url: "/search?q=${q}", headers: [], body: "", timeout_ms: 1000 })],
 					st.on_result(|s, q, r| { ..s, results: SupersedeApp.answer_of(q, r) }),
@@ -213,7 +213,7 @@ SupersedeApp := [].{
 				Html.button("Fast", [], st.update(|s| { ..s, rate: 100 })),
 				Html.button("Slow", [], st.update(|s| { ..s, rate: 1000 })),
 				Html.button("Pause", [], st.update(|s| { ..s, rate: 0 })),
-				Engine.latest(
+				Engine.watch_latest(
 					v.map(|s| s.rate),
 					|r| if (r == 0) [] else [Interval(r)],
 					st.on_result(|s, _, _| { ..s, ticks: s.ticks + 1 }),

@@ -31,7 +31,7 @@ FormApp := [].{
 
 ## What the preview is drawn over: the fields it reads, and the cells it
 ## writes.
-preview = { fields: AppStore.h.schema.fields, answers: AppStore.h.answers, submissions: AppStore.h.submissions }
+preview = { fields: AppStore.cells.schema.fields, answers: AppStore.cells.answers, submissions: AppStore.cells.submissions }
 
 ## The page under the form's totals: the figures, the toolbar, the designer
 ## and the preview.
@@ -54,7 +54,7 @@ page = |sums| Html.div(
 				stat({ caption: "Fields", id: "designer-status" }, sums.map(|now| now.fields.to_str())),
 				stat({ caption: "Valid answers", id: "valid-answers" }, sums.map(|now| Form.valid_count(now).to_str())),
 				stat({ caption: "Problems", id: "preview-status" }, sums.map(|now| now.problems.to_str())),
-				stat({ caption: "Submissions", id: "submissions-count" }, AppStore.h.submissions.signal().map(|count| count.to_str())),
+				stat({ caption: "Submissions", id: "submissions-count" }, AppStore.cells.submissions.signal().map(|count| count.to_str())),
 			],
 		),
 		Html.section(
@@ -77,7 +77,7 @@ page = |sums| Html.div(
 		Html.div(
 			"grid gap-5 lg:grid-cols-2",
 			[
-				Designer.view(AppStore.h.schema.fields),
+				Designer.view(AppStore.cells.schema.fields),
 				Preview.view(preview, sums),
 			],
 		),
@@ -88,7 +88,7 @@ page = |sums| Html.div(
 ## for the next field when it is pressed.
 add_button : Str, Form.Kind -> Elem(ctx)
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
-add_button = |label, kind| Html.button(label, [Engine.class("button button-sm")], Engine.handle_by(AppStore.h.schema.next.signal(), |number, _| Schema.added(AppStore.h.schema, { kind, number })))
+add_button = |label, kind| Html.button(label, [Engine.class("button button-sm")], Engine.handle_by(AppStore.cells.schema.next.signal(), |number, _| Schema.added(AppStore.cells.schema, { kind, number })))
 
 ## One figure, under its caption.
 stat : { caption : Str, id : Str }, Signal(ctx, Str) -> Elem(ctx)

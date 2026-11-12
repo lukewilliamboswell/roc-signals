@@ -9,7 +9,7 @@ import pf.Worker
 ##   query in a worker: only the newest query's job is in flight, and an
 ##   empty query cancels it.
 ## - A "Report" panel (a `when` branch) whose site summarises the catalogue
-##   in a worker at mount, with a deadline; leaving the panel disposes the
+##   in a worker at mount, with a timeout; leaving the panel disposes the
 ##   site, which cancels the job. A lost or timed-out report offers a retry.
 SearchApp := [].{
 	S : { query : Str, results : Str, searched : Str, report : Bool, attempt : U64, summary : Str }
@@ -60,7 +60,7 @@ SearchApp := [].{
 	filter_task = Worker.task({ name: "test.roc-signals/search/filter", run!: |query| Ok(SearchApp.filter(query)) })
 
 	summarise_task : Worker.Task({}, Str, Worker.Never)
-	summarise_task = Worker.task({ name: "test.roc-signals/search/summarise", run!: |input| Ok(SearchApp.summarise(input)), deadline: Ms(2000) })
+	summarise_task = Worker.task({ name: "test.roc-signals/search/summarise", run!: |input| Ok(SearchApp.summarise(input)), timeout: Ms(2000) })
 
 	## What a finished job says, success or not.
 	outcome : Try(Str, Worker.Error(Worker.Never)) -> Try(Str, Str)
@@ -114,7 +114,7 @@ SearchApp := [].{
 			"search",
 			[
 				Html.text_input(Engine.const("Search"), "search", v.map(|s| s.query), [], st.set_value(|s, t| { ..s, query: t })),
-				Engine.latest(
+				Engine.watch_latest(
 					v.map(|s| s.query),
 					|q| if (q == "") [] else [SearchApp.filter_task.request(q)],
 					st.on_result(

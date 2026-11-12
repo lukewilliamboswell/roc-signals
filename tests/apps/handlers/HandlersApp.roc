@@ -118,7 +118,7 @@ HandlersApp := [].{
 						[
 							HandlersApp.reader("pair", seen),
 							Html.button("Raise both", [], inner.update(|n| n + 1).also(outer.lift().lift().update(|n| n + 1))),
-							Engine.on_change(seen, |text| [Title("pair ${text}"), Timer(10)], Engine.ignore({})),
+							Engine.watch_changes(seen, |text| [Title("pair ${text}"), Timer(10)], Engine.ignore({})),
 						],
 					)
 				},
@@ -154,7 +154,7 @@ HandlersApp := [].{
 								[
 									HandlersApp.reader("mixed", seen),
 									Html.button("Raise outer and inner", [], inner.lift().update(|n| n + 1).also(outer.lift().lift().update(|n| n + 1))),
-									Engine.on_change(seen, |text| [Title("mixed ${text}"), Timer(10)], Engine.ignore({})),
+									Engine.watch_changes(seen, |text| [Title("mixed ${text}"), Timer(10)], Engine.ignore({})),
 								],
 							)
 						},
@@ -196,7 +196,7 @@ HandlersApp := [].{
 										[
 											Html.p_s(seen, [Engine.test_id_s(r.key().lift())]),
 											Html.button_s(r.key().lift().map(|k| "Rate ${k}"), [], clicks.update(|n| n + 1).also(rows.lift_row().lift().update_by(r.key().lift(), HandlersApp.starred))),
-											Engine.on_change(seen.map2(r.key().lift(), |text, k| "${k} ${text}"), |text| [Title("rated ${text}"), Timer(10)], Engine.ignore({})),
+											Engine.watch_changes(seen.map2(r.key().lift(), |text, k| "${k} ${text}"), |text| [Title("rated ${text}"), Timer(10)], Engine.ignore({})),
 										],
 									)
 								},

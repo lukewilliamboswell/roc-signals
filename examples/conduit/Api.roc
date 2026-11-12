@@ -172,7 +172,7 @@ Api := {}.{
 	## it: any response (the pages classify 4xx envelopes themselves), or a
 	## failure shown as its inspected `Engine.HttpError` (`Network("offline")`,
 	## `Timeout`, `Refused`).
-	response_of : Engine.Res -> Api.ResponseState
+	response_of : Engine.Result -> Api.ResponseState
 	response_of = |res| match res {
 		Http({ status, headers: _, body }) => { status, body, error: "", ready: True }
 		Network(message) => Api.failure(Network(message))
@@ -203,16 +203,16 @@ Api := {}.{
 			[("content-type", "application/json"), ("authorization", "Token ${token}")]
 		}
 
-	get_request : Str, Str -> Engine.Req
+	get_request : Str, Str -> Engine.Request
 	get_request = |uri, token| Http({ method: "GET", url: uri, headers: auth_headers(token), body: "", timeout_ms: Api.timeout_ms })
 
-	post_request : Str, Str, Str -> Engine.Req
+	post_request : Str, Str, Str -> Engine.Request
 	post_request = |uri, body, token| Http({ method: "POST", url: uri, headers: json_headers(token), body, timeout_ms: Api.timeout_ms })
 
-	put_request : Str, Str, Str -> Engine.Req
+	put_request : Str, Str, Str -> Engine.Request
 	put_request = |uri, body, token| Http({ method: "PUT", url: uri, headers: json_headers(token), body, timeout_ms: Api.timeout_ms })
 
-	delete_request : Str, Str -> Engine.Req
+	delete_request : Str, Str -> Engine.Request
 	delete_request = |uri, token| Http({ method: "DELETE", url: uri, headers: auth_headers(token), body: "", timeout_ms: Api.timeout_ms })
 
 	## A GET whose body decodes into a page resource.

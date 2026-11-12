@@ -59,7 +59,7 @@ GridApp := [].{
 	## matches too few rows to reach it.
 	shown_page : Signal(ctx, GridData.Summary) -> Signal(ctx, U64)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	shown_page = |summary| GridStore.h.page.signal().map2(summary, |asked, s| GridData.page_shown(asked, s.matching))
+	shown_page = |summary| GridStore.cells.page.signal().map2(summary, |asked, s| GridData.page_shown(asked, s.matching))
 
 	## The filter box, the sort buttons and the caption of the current sort.
 	controls : {} -> Elem(ctx)
@@ -78,7 +78,7 @@ GridApp := [].{
 							"field min-w-64 grow",
 							[
 								Html.p("Filter rows", "field-label"),
-								Html.text_input(Engine.const("Filter"), "text", GridStore.h.filter.signal(), [Engine.class("input"), Engine.attr("placeholder", "Node-0042 or Atlas")], Engine.handle(GridStore.filtered)),
+								Html.text_input(Engine.const("Filter"), "text", GridStore.cells.filter.signal(), [Engine.class("input"), Engine.attr("placeholder", "Node-0042 or Atlas")], Engine.handle(GridStore.filtered)),
 								Html.p("Matches on name or team across all ${n} rows.", "hint"),
 							],
 						),
@@ -95,7 +95,7 @@ GridApp := [].{
 										GridApp.sort_button("Sort by score", ByScore),
 									],
 								),
-								Html.p_s(GridStore.h.sort.signal().map(GridData.sort_caption), [Engine.class("badge badge-info w-fit"), Engine.test_id("sort-caption")]),
+								Html.p_s(GridStore.cells.sort.signal().map(GridData.sort_caption), [Engine.class("badge badge-info w-fit"), Engine.test_id("sort-caption")]),
 							],
 						),
 					],
@@ -147,7 +147,7 @@ GridApp := [].{
 									Engine.const("Select all matching rows"),
 									summary.map(|s| s.matching > 0 and s.selected_here == s.matching),
 									[Engine.class("checkbox")],
-									Engine.handle_by(GridStore.h.filter.signal(), |filter, checked| GridStore.marked_matching(filter, selection_of(checked))),
+									Engine.handle_by(GridStore.cells.filter.signal(), |filter, checked| GridStore.marked_matching(filter, selection_of(checked))),
 								),
 								Html.p("Select all matching rows", "text-sm text-zinc-700"),
 							],
@@ -174,8 +174,8 @@ GridApp := [].{
 												Html.p("Note", "text-xs font-semibold uppercase tracking-wide text-zinc-500"),
 											],
 										),
-										Engine.each_view(
-											GridStore.h.rows,
+										Engine.table_view(
+											GridStore.cells.rows,
 											{ query: GridStore.listing({}), plan: GridData.plan, window: shown.map(GridData.window_of) },
 											GridApp.line,
 										),

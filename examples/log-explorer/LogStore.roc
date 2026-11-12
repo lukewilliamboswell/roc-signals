@@ -49,8 +49,8 @@ LogStore := [Explorer].{
 		}.Engine.Cells,
 	)
 
-	## The handles on the store's cells.
-	h = LogStore.store.handles()
+	## The store's cells.
+	cells = LogStore.store.cells()
 
 	## The reader chose or dropped files: the first is the log to open, in
 	## the event that carried it. The others are not kept, and an event
@@ -63,45 +63,45 @@ LogStore := [Explorer].{
 
 	## A new log is open.
 	opened : File -> List(Engine.Write(_))
-	opened = |file| [LogStore.h.log.put(Chosen(file))].concat(LogStore.fresh)
+	opened = |file| [LogStore.cells.log.set(Chosen(file))].concat(LogStore.fresh)
 
 	## What every new log starts from: the search and the viewer at its
 	## beginning, and nothing to say.
 	fresh : List(Engine.Write(_))
 	fresh = [
-		LogStore.h.place.reset,
-		LogStore.h.note.put(NoNote),
+		LogStore.cells.place.reset,
+		LogStore.cells.note.set(NoNote),
 	]
 
 	## The log is closed, and its file let go.
 	closed : List(Engine.Write(_))
-	closed = [LogStore.h.log.put(NoLog)]
+	closed = [LogStore.cells.log.set(NoLog)]
 
 	## Ask for a sample of the entries typed, or say why not.
 	sample_asked : Str -> List(Engine.Write(_))
 	sample_asked = |typed| match U64.from_str(typed.trim()) {
-		Ok(entries) if entries >= 1 and entries <= LogStore.most_entries => [LogStore.h.generating.put(Generating(entries)), LogStore.h.note.put(NoNote)]
-		_ => [LogStore.h.note.put(NotACount)]
+		Ok(entries) if entries >= 1 and entries <= LogStore.most_entries => [LogStore.cells.generating.set(Generating(entries)), LogStore.cells.note.set(NoNote)]
+		_ => [LogStore.cells.note.set(NotACount)]
 	}
 
 	## The sample's task answered: its file opens, or the note says why
 	## there is none.
 	sample_written : Try(File, Worker.Error(Engine.FileError)) -> List(Engine.Write(_))
 	sample_written = |answer| {
-		ended = LogStore.h.generating.put(Idle)
+		ended = LogStore.cells.generating.set(Idle)
 		match answer {
 			Ok(file) => [ended].concat(LogStore.opened(file))
-			Err(problem) => [ended, LogStore.h.note.put(NotWritten(problem))]
+			Err(problem) => [ended, LogStore.cells.note.set(NotWritten(problem))]
 		}
 	}
 
 	## Another tab is showing.
 	turned_to : Tab -> List(Engine.Write(_))
-	turned_to = |tab| [LogStore.h.tab.put(tab)]
+	turned_to = |tab| [LogStore.cells.tab.set(tab)]
 
 	## The viewer, opened at a line (from 0).
 	shown_at : U64 -> List(Engine.Write(_))
-	shown_at = |line| [LogStore.h.tab.put(Viewer), LogStore.h.place.first.put(line)]
+	shown_at = |line| [LogStore.cells.tab.set(Viewer), LogStore.cells.place.first.set(line)]
 
 	## The viewer, opened at the time a click on the timeline reports: at
 	## the first line of that bucket, or of the next one with entries. A
@@ -120,7 +120,7 @@ LogStore := [Explorer].{
 
 	## The search's text as typed: a new search starts from its first page.
 	searched : Str -> List(Engine.Write(_))
-	searched = |text| [LogStore.h.query.change(|query| { ..query, text }), LogStore.h.place.page.put(0)]
+	searched = |text| [LogStore.cells.query.update(|query| { ..query, text }), LogStore.cells.place.page.set(0)]
 
 	## The level the search keeps, by the name the menu sends; any other
 	## name keeps every level. A new search starts from its first page.
@@ -130,31 +130,31 @@ LogStore := [Explorer].{
 			Ok(level) => Only(level)
 			Err(_) => Everything
 		}
-		[LogStore.h.query.change(|query| { ..query, filter }), LogStore.h.place.page.put(0)]
+		[LogStore.cells.query.update(|query| { ..query, filter }), LogStore.cells.place.page.set(0)]
 	}
 
 	## The search's page before this one, or the first.
 	paged_back : List(Engine.Write(_))
-	paged_back = [LogStore.h.place.page.change(|page| if (page > 0) page - 1 else 0)]
+	paged_back = [LogStore.cells.place.page.update(|page| if (page > 0) page - 1 else 0)]
 
 	## The search's next page, when what it found has one.
 	paged_on : Try(Log.Found, [NoAnswer]) -> List(Engine.Write(_))
 	paged_on = |answered| match answered {
-		Ok(found) => [LogStore.h.place.page.change(|page| if ((page + 1) * Log.page_lines < found.matches) page + 1 else page)]
+		Ok(found) => [LogStore.cells.place.page.update(|page| if ((page + 1) * Log.page_lines < found.matches) page + 1 else page)]
 		Err(NoAnswer) => []
 	}
 
 	## The viewer moved to a line (from 0), when there is one to move to.
 	moved_to : Try(U64, [NoAnswer]) -> List(Engine.Write(_))
 	moved_to = |line| match line {
-		Ok(first) => [LogStore.h.place.first.put(first)]
+		Ok(first) => [LogStore.cells.place.first.set(first)]
 		Err(NoAnswer) => []
 	}
 
 	## The viewer sent to the line typed (from 1); anything else is ignored.
 	went_to : Str -> List(Engine.Write(_))
 	went_to = |typed| match U64.from_str(typed.trim()) {
-		Ok(line) if line >= 1 => [LogStore.h.place.first.put(line - 1)]
+		Ok(line) if line >= 1 => [LogStore.cells.place.first.set(line - 1)]
 		_ => []
 	}
 }
@@ -162,7 +162,7 @@ LogStore := [Explorer].{
 ## Where a store's reader is: the tab, the search's page and the viewer's
 ## first line.
 place_in : Engine.Store(_, _) -> Str
-place_in = |store| "${Str.inspect(store.read(LogStore.h.tab))} page ${store.read(LogStore.h.place.page).to_str()} line ${store.read(LogStore.h.place.first).to_str()}"
+place_in = |store| "${Str.inspect(store.read(LogStore.cells.tab))} page ${store.read(LogStore.cells.place.page).to_str()} line ${store.read(LogStore.cells.place.first).to_str()}"
 
 ## A new log starts the search and the viewer from its beginning and says
 ## nothing, whatever the last one left. An `expect` cannot make a file, so
@@ -175,8 +175,8 @@ expect {
 		.after(LogStore.shown_at(41))
 	begun = left.after(LogStore.fresh)
 	actual =
-		\\left: ${place_in(left)}, ${Str.inspect(left.read(LogStore.h.note))}
-		\\begun: ${place_in(begun)}, ${Str.inspect(begun.read(LogStore.h.note))}, "${begun.read(LogStore.h.query).text}"
+		\\left: ${place_in(left)}, ${Str.inspect(left.read(LogStore.cells.note))}
+		\\begun: ${place_in(begun)}, ${Str.inspect(begun.read(LogStore.cells.note))}, "${begun.read(LogStore.cells.query).text}"
 	expected =
 		\\left: Viewer page 1 line 41, NotACount
 		\\begun: Viewer page 0 line 0, NoNote, "reset"
@@ -189,15 +189,15 @@ expect LogStore.arrived({ files: [], refused: 2 }).len() == 0
 ## A sample is asked for only with a number of entries the generator
 ## writes, and a task that did not finish says why.
 expect {
-	generating_in = |store| Str.inspect(store.read(LogStore.h.generating))
+	generating_in = |store| Str.inspect(store.read(LogStore.cells.generating))
 	none = LogStore.store.after(LogStore.sample_asked("0"))
 	many = LogStore.store.after(LogStore.sample_asked(" 3000 "))
 	lost = many.after(LogStore.sample_written(Err(Timeout)))
 	actual =
-		\\none: ${generating_in(none)} ${Str.inspect(none.read(LogStore.h.note))}
-		\\many: ${generating_in(many)} ${Str.inspect(many.read(LogStore.h.note))}
+		\\none: ${generating_in(none)} ${Str.inspect(none.read(LogStore.cells.note))}
+		\\many: ${generating_in(many)} ${Str.inspect(many.read(LogStore.cells.note))}
 		\\too many: ${generating_in(LogStore.store.after(LogStore.sample_asked("2000001")))}
-		\\lost: ${generating_in(lost)} ${Str.inspect(lost.read(LogStore.h.note))}
+		\\lost: ${generating_in(lost)} ${Str.inspect(lost.read(LogStore.cells.note))}
 	expected =
 		\\none: Idle NotACount
 		\\many: Generating(3000) NoNote
@@ -210,7 +210,7 @@ expect {
 ## further than the first, and a new text or level starts from the first.
 expect {
 	found = Ok({ matches: 2 * Log.page_lines, lines: [], over_time: NotCounted })
-	page_in = |store| store.read(LogStore.h.place.page).to_str()
+	page_in = |store| store.read(LogStore.cells.place.page).to_str()
 	second = LogStore.store.after(LogStore.paged_on(found))
 	third = second.after(LogStore.paged_on(found))
 	back = third.after(LogStore.paged_back).after(LogStore.paged_back)
@@ -218,7 +218,7 @@ expect {
 	actual =
 		\\pages: ${page_in(second)} ${page_in(third)} ${page_in(back)} ${page_in(LogStore.store.after(LogStore.paged_on(Err(NoAnswer))))}
 		\\typed: ${page_in(second.after(LogStore.searched("pool")))}
-		\\levelled: ${page_in(levelled)} ${Str.inspect(levelled.read(LogStore.h.query).filter)} ${Str.inspect(levelled.after(LogStore.filtered("any")).read(LogStore.h.query).filter)}
+		\\levelled: ${page_in(levelled)} ${Str.inspect(levelled.read(LogStore.cells.query).filter)} ${Str.inspect(levelled.after(LogStore.filtered("any")).read(LogStore.cells.query).filter)}
 	expected =
 		\\pages: 1 1 0 0
 		\\typed: 0

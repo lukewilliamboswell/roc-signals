@@ -28,26 +28,26 @@ AppStore := [KanbanBoard].{
 
 	## The handles on the store's cells: what a board is drawn over
 	## (`Board.Props`).
-	h = AppStore.store.handles()
+	cells = AppStore.store.cells()
 }
 
 ## Every column of the store's board after `writes`, in board order, each
 ## top to bottom.
 lanes_after : List(Engine.Write(_)) -> List(List(Str))
 lanes_after = |writes| {
-	held = AppStore.store.after(writes).read(AppStore.h.cards).to_list()
+	held = AppStore.store.after(writes).read(AppStore.cells.cards).to_list()
 	Kanban.all_columns.map(|column| Kanban.lane(held, column))
 }
 
 ## Adding a card writes it at the end of Backlog, under its title without the spaces around it.
-expect lanes_after(Board.added(AppStore.h.cards, " Write release notes ")) == [["Draft onboarding copy", "Design login screen", "Write release notes"], ["Ship search filters"], ["Audit billing events"], ["Rotate API keys"]]
+expect lanes_after(Board.added(AppStore.cells.cards, " Write release notes ")) == [["Draft onboarding copy", "Design login screen", "Write release notes"], ["Ship search filters"], ["Audit billing events"], ["Rotate API keys"]]
 
 ## A draft that is a card's title already, or blank, adds nothing.
-expect lanes_after(Board.added(AppStore.h.cards, "Rotate API keys").concat(Board.added(AppStore.h.cards, "  "))) == lanes_after([])
+expect lanes_after(Board.added(AppStore.cells.cards, "Rotate API keys").concat(Board.added(AppStore.cells.cards, "  "))) == lanes_after([])
 
 ## A move to the next column lands at its end, and a move past the board's edge writes no card.
 expect {
-	cards = AppStore.h.cards
+	cards = AppStore.cells.cards
 	right = lanes_after(Board.moved_across(cards, { title: "Draft onboarding copy", toward: Rightward }))
 	edge = lanes_after(Board.moved_across(cards, { title: "Rotate API keys", toward: Rightward }))
 	actual =
@@ -61,7 +61,7 @@ expect {
 
 ## A move inside a column exchanges two cards, and the two moves of one event apply in order.
 expect {
-	cards = AppStore.h.cards
+	cards = AppStore.cells.cards
 	up = Board.moved_within(cards, { title: "Design login screen", toward: Upward })
 	back = Board.moved_within(cards, { title: "Design login screen", toward: Downward })
 	actual =
@@ -75,7 +75,7 @@ expect {
 
 ## Deleting a card moves the card below it up, and the table records the two cards written, not a rewrite of the board.
 expect {
-	cards = AppStore.h.cards
+	cards = AppStore.cells.cards
 	after = AppStore.store.after(Board.deleted(cards, "Draft onboarding copy")).read(cards)
 	written = match after.inverse() {
 		Ok(undoing) => "${undoing.len().to_str()} cards"
