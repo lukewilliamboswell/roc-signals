@@ -82,6 +82,27 @@ try {
   await page.evaluate(() => dispatchEvent(new StorageEvent("storage", { key: null, newValue: null })));
   assert.equal(await theme(), "dark");
 
+  // The same shared panel/control classes appear inside mounted apps. A site
+  // preference must not change the example's authored palette or native inputs.
+  await page.evaluate(() => {
+    for (const boundary of ["data-signals-wasm", "data-signals-upload-root"]) {
+      const root = document.createElement("div");
+      root.setAttribute(boundary, "");
+      root.dataset.paletteFixture = "";
+      root.innerHTML = '<section class="panel"><p class="text-zinc-900">App text</p><button class="button">App button</button><select><option>App input</option></select></section>';
+      document.body.append(root);
+    }
+  });
+  const appPalette = () => page.evaluate(() => Array.from(document.querySelectorAll("[data-palette-fixture], [data-palette-fixture] *"), element => {
+    const style = getComputedStyle(element);
+    return { background: style.backgroundColor, color: style.color, border: style.borderTopColor, scheme: style.colorScheme };
+  }));
+  await choose("light");
+  const lightApp = await appPalette();
+  await choose("dark");
+  assert.deepEqual(await appPalette(), lightApp, "site themes preserve mounted/uploaded app palettes");
+  await page.evaluate(() => document.querySelectorAll("[data-palette-fixture]").forEach(element => element.remove()));
+
   const pages = ["", "docs/", "examples/"];
   for (const entry of await fs.readdir(path.join(root, "docs"), { withFileTypes: true })) {
     if (entry.isDirectory()) pages.push(`docs/${entry.name}/`);

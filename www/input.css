@@ -519,7 +519,7 @@ color-scheme: dark;
 }
 
 body { background: var(--site-page); color: var(--site-ink); }
-[data-site-header], .panel, .example-runner-toolbar { background: var(--site-panel); border-color: var(--site-rule); }
+[data-site-header], .panel:not([data-signals-wasm] *, [data-signals-upload-root] *), .example-runner-toolbar { background: var(--site-panel); border-color: var(--site-rule); }
 .theme-control { display: inline-flex; align-items: center; gap: .4rem; color: var(--site-ink); }
 .theme-control[hidden] { display: none; }
 .theme-control select, .code-copy { color: var(--site-ink); background: var(--site-panel); border: 1px solid var(--site-rule); border-radius: .4rem; padding: .35rem .55rem; font-size: .875rem; }
