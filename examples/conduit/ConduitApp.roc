@@ -28,7 +28,8 @@ import Styles
 ## Effects are sites that watch state:
 ## - loads watch a request record ({ key, uri, token }); a result is stored
 ##   only while its key is still the page's current key, so an older
-##   response never overwrites a newer one;
+##   response never overwrites a newer one. A feed keeps its one stored
+##   answer visible, labeled as previous results, while a new key loads;
 ## - mutations watch a submission snapshot ({ serial, method, url, body,
 ##   token }) written by the click; a result applies only while its serial is
 ##   the latest;
@@ -574,7 +575,7 @@ ConduitApp := [].{
 							),
 							|| Engine.text_v(shown.map(|a| "${a.favorites_count.to_str()} favorites")),
 						),
-						Engine.element("div", [Engine.class("flex gap-1")], [Engine.each(art.map(|a| a.tag_list), |t| t, |row| ConduitApp.tag_pill(row))]),
+						Engine.element("div", [Engine.class("flex flex-wrap gap-1")], [Engine.each(art.map(|a| a.tag_list), |t| t, |row| ConduitApp.tag_pill(row))]),
 					],
 				),
 				Html.p_v(
@@ -584,7 +585,7 @@ ConduitApp := [].{
 							_ => ""
 						},
 					),
-					[Engine.class("mt-3 text-sm text-red-700")],
+					[Engine.class("mt-3 text-sm text-red-700 empty:hidden")],
 				),
 			],
 		)
@@ -595,43 +596,63 @@ ConduitApp := [].{
 		art = row.item()
 		Engine.element(
 			"article",
-			[Engine.class("border-b border-zinc-200 bg-white py-6 first:border-t")],
+			[Engine.class("rounded-xl border border-zinc-200 bg-white px-5 py-5 shadow-sm sm:px-6")],
 			[Engine.state({ req: ConduitApp.no_submit, result: FavoriteIdle }, |fst| ConduitApp.preview_body(art.lift(), fst))],
 		)
 	}
 
-	feed_view : Val(Engine.StoreRoot(_), Api.Remote(Api.FeedPage)) -> Elem(Engine.StoreRoot(_))
-	feed_view = |r| {
-		articles = r.map(
-			|v| match v {
+	## Keep the one stored answer visible while another feed is pending. The
+	## status identifies it as previous results; only a matching response can
+	## replace it. The keyed rows stay mounted across the loading transition.
+	feed_view : { current : Val(Engine.StoreRoot(_), Api.Remote(Api.FeedPage)), stored : Val(Engine.StoreRoot(_), Api.Remote(Api.FeedPage)) } -> Elem(Engine.StoreRoot(_))
+	feed_view = |{ current, stored }| {
+		articles = current.map2(
+			stored,
+			|requested, loaded| match requested {
 				Ready(page) => page.articles
-				_ => []
+				Loading => match loaded {
+					Ready(page) => page.articles
+					_ => []
+				}
+				Failed(_) => []
 			},
 		)
+		loading = current.map(ConduitApp.is_loading)
 		Engine.element(
-			"div",
-			[Engine.attr("data-conduit", "article-list")],
+			"section",
+			[Engine.attr("data-conduit", "article-list"), Html.aria_label("Articles"), Engine.attr_v("aria-busy", loading.map(|pending| if (pending) "true" else "false"))],
 			[
-				Engine.when(
-					r.map(ConduitApp.is_loading),
-					|| Html.p("Loading articles...", "rounded-xl border border-zinc-200 bg-white p-6 text-zinc-500"),
-					|| Engine.when(
-						r.map(ConduitApp.is_failed),
-						|| Html.p_v(r.map(ConduitApp.failure), [Engine.class(Styles.status_error)]),
-						|| Engine.when(
-							articles.map(|l| l.is_empty()),
-							|| Html.p("No articles are here... yet.", "rounded-xl border border-dashed border-zinc-300 bg-white p-8 text-center text-zinc-500"),
-							|| Engine.element("div", [], [Engine.each(articles, |a| a.slug, |row| ConduitApp.preview_row(row))]),
-						),
-					),
+				Engine.element(
+					"p",
+					[Engine.attr("role", "status"), Engine.class("min-h-6 text-sm leading-6 text-zinc-600")],
+					[
+						Engine.text_v(loading.map(|pending| if (pending) "Loading articles..." else "")),
+						Engine.text_v(loading.map2(articles, |pending, rows| if (pending and !rows.is_empty()) " Showing previous results." else "")),
+					],
 				),
+				Engine.when(
+					current.map(ConduitApp.is_failed),
+					|| Html.p_v(current.map(ConduitApp.failure), [Engine.class(Styles.status_error)]),
+					|| Engine.text(""),
+				),
+				Engine.when(
+					current.map(
+						|requested| match requested {
+							Ready(page) => page.articles.is_empty()
+							_ => False
+						},
+					),
+					|| Html.p("No articles are here... yet.", "rounded-xl border border-dashed border-zinc-300 bg-white p-8 text-center text-zinc-500"),
+					|| Engine.text(""),
+				),
+				Engine.element("div", [Engine.class("grid gap-4")], [Engine.each(articles, |a| a.slug, |row| ConduitApp.preview_row(row))]),
 			],
 		)
 	}
 
 	pagination : {} -> Elem(Engine.StoreRoot(_))
 	pagination = |{}| {
-		items = ConduitApp.here.map2(ConduitApp.pages.val(), |w, m| ConduitApp.page_items(ConduitApp.feed_remote(w, m), Route.feed_of(ConduitApp.route_of(w))))
+		items = ConduitApp.here.map2(ConduitApp.pages.val(), |w, m| ConduitApp.page_items(m.loads.feed.value, Route.feed_of(ConduitApp.route_of(w))))
 		Engine.element(
 			"nav",
 			[Engine.attr("aria-label", "Pagination"), Engine.class("flex flex-wrap gap-2 py-6")],
@@ -660,7 +681,7 @@ ConduitApp := [].{
 		signed_in = AppStore.h.session.val().map(ConduitApp.is_signed_in)
 		tags = mv.map(|m| ConduitApp.remote(m.loads.tags, "tags"))
 		active = "border-b-2 border-emerald-600 px-4 py-3 font-medium text-emerald-700 no-underline"
-		idle = "px-4 py-3 text-zinc-500 no-underline"
+		idle = "border-b-2 border-transparent px-4 py-3 text-zinc-500 no-underline"
 		Html.section(
 			"Home",
 			"pb-12",
@@ -702,9 +723,9 @@ ConduitApp := [].{
 											}
 										},
 									),
-									[Engine.class("font-medium text-emerald-700")],
+									[Engine.class("text-sm font-medium text-emerald-700")],
 								),
-								ConduitApp.feed_view(w.map2(mv, ConduitApp.feed_remote)),
+								ConduitApp.feed_view({ current: w.map2(mv, ConduitApp.feed_remote), stored: mv.map(|m| m.loads.feed.value) }),
 								ConduitApp.pagination({}),
 							],
 						),
@@ -910,7 +931,7 @@ ConduitApp := [].{
 		)
 		username = w.map(|x| Route.profile_username(ConduitApp.route_of(x)))
 		active = "border-b-2 border-emerald-600 px-4 py-3 font-medium text-emerald-700 no-underline"
-		idle = "px-4 py-3 text-zinc-500 no-underline"
+		idle = "border-b-2 border-transparent px-4 py-3 text-zinc-500 no-underline"
 		Html.section(
 			"Profile",
 			Styles.page,
@@ -976,7 +997,7 @@ ConduitApp := [].{
 						),
 					],
 				),
-				ConduitApp.feed_view(w.map2(mv, |x, m| ConduitApp.remote(m.loads.articles, ConduitApp.articles_req(x).key))),
+				ConduitApp.feed_view({ current: w.map2(mv, |x, m| ConduitApp.remote(m.loads.articles, ConduitApp.articles_req(x).key)), stored: mv.map(|m| m.loads.articles.value) }),
 			],
 		)
 	}
