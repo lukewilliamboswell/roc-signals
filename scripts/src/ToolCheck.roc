@@ -107,7 +107,7 @@ ToolCheck := [].{
 		$problems = $problems.concat(judge(run_tool!(tool, scratch, ["init", "lab"])?, { code: 0, says: ["Created the app lab"] }))
 		Path.delete!(Path.utf8("${lab}/Counter.roc"))?
 		Path.delete!(Path.utf8("${lab}/specs/counter.scm"))?
-		for file in SpecSuite.roc_files!("examples/worker-lab")?.keep_if(|f| !f.ends_with("/main.roc") and !f.ends_with("/main-fuzz.roc")) {
+		for file in SpecSuite.roc_files!("examples/worker-lab")?.keep_if(|f| !f.ends_with("/main.roc") and Release.is_archived(f)) {
 			Path.copy!(Path.utf8(file), Path.utf8("${lab}/${file.split_on("/").last() ?? file}"))?
 		}
 		lab_specs = SpecSuite.files_with!("examples/worker-lab/specs", ".scm")?

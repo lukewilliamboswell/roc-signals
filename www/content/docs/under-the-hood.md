@@ -80,9 +80,9 @@ checks that the counters agree with the commands it decoded.
 
 Each site's storage is referenced by exactly one closure, so Roc updates lists
 and records in place rather than copying them. Disposing a site drops its
-closure, and reference counting frees what it held. The soak runs repeat a
-round trip thousands of times and fail if live allocations or Wasm pages keep
-growing.
+closure, and reference counting frees what it held. The repository's
+long-session tests walk every example for thousands of steps and repeat its
+round trips, and fail if live allocations or Wasm pages keep growing.
 
 ## When something goes wrong
 

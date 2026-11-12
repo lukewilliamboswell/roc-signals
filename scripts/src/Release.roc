@@ -36,11 +36,15 @@ Release := [].{
 	archive_name : Str -> Str
 	archive_name = |version| "roc-signals-examples-${version}"
 
-	## The examples archive omits the fuzz entry points, which depend on the
-	## repository's engine package (`platform/main-fuzz.roc`), not on the
-	## released platform.
+	## The examples archive omits an example's fuzz targets of its own logic
+	## (`fuzz-<subject>.roc`), which depend on a roc-fuzz release rather than
+	## on the released platform, and any older entry point named
+	## `main-fuzz.roc`.
 	is_archived : Str -> Bool
-	is_archived = |file| !file.ends_with("/main-fuzz.roc")
+	is_archived = |file| {
+		name = file.split_on("/").last() ?? file
+		!(name == "main-fuzz.roc" or (name.starts_with("fuzz-") and name.ends_with(".roc")))
+	}
 
 	## An example's own files beside its Roc modules, directly in `dir`: the
 	## JavaScript its author wrote (port handlers, a custom element), a page
@@ -213,5 +217,5 @@ expect Release.released_main("app [main] { pf: platform \"https://y\" }", "u") =
 ## Recorded output is escaped as JSON.
 expect Release.json_str("a\"b\nc") == "\"a\\\"b\\nc\""
 
-## The entry point and its modules are archived; the fuzz entry is not.
-expect [Release.is_archived("e/main.roc"), Release.is_archived("e/main-fuzz.roc"), Release.is_archived("e/Api.roc")] == [True, False, True]
+## The entry point and its modules are archived; a fuzz target is not.
+expect [Release.is_archived("e/main.roc"), Release.is_archived("e/fuzz-csv.roc"), Release.is_archived("e/main-fuzz.roc"), Release.is_archived("e/Api.roc"), Release.is_archived("e/Fuzzy.roc")] == [True, False, False, True, True]

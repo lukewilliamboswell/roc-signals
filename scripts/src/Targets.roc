@@ -5,12 +5,16 @@ import SpecSuite
 ## The roc-fuzz targets, the browser contract tests, the soak runs and the
 ## js-framework-benchmark check.
 ##
-## An app's fuzz target is its `main-fuzz.roc`, beside its modules: Roc
-## resolves an app's sibling modules from the directory of its main file, so a
-## target that drives an app's own modules lives with the app. Targets that
-## test only the shared support live under `fuzz/`. Each is an ordinary
-## roc-fuzz app: its platform is a roc-fuzz release, which the compiler
-## fetches, and its `pf` the engine package, `platform/main-fuzz.roc`.
+## Each target is an ordinary roc-fuzz app, whose platform is a roc-fuzz
+## release the compiler fetches. Roc resolves an app's sibling modules from
+## the directory of its main file, so a target lives beside the modules it
+## imports:
+##
+## - the platform's own targets under `fuzz/` and beside the test apps under
+##   `tests/apps/` (`main-fuzz.roc`), which import the engine package,
+##   `platform/main-fuzz.roc`, as `pf`;
+## - an example's targets of its own pure logic, `fuzz-<subject>.roc`
+##   beside the modules they import, which import nothing of the platform.
 Targets := [].{
 	Fuzz : { name : Str, main : Str }
 
@@ -20,20 +24,16 @@ Targets := [].{
 		{ name: "wire", main: "fuzz/wire/main.roc" },
 		{ name: "structure", main: "fuzz/structure/main.roc" },
 		{ name: "port-json", main: "fuzz/port-json/main.roc" },
-		{ name: "form-builder", main: "examples/form-builder/main-fuzz.roc" },
-		{ name: "kanban-board", main: "examples/kanban-board/main-fuzz.roc" },
-		{ name: "data-grid", main: "examples/data-grid/main-fuzz.roc" },
-		{ name: "markdown-editor", main: "examples/markdown-editor/main-fuzz.roc" },
-		{ name: "conduit", main: "examples/conduit/main-fuzz.roc" },
-		{ name: "field-notes", main: "examples/field-notes/main-fuzz.roc" },
-		{ name: "status-page", main: "examples/status-page/main-fuzz.roc" },
-		{ name: "spreadsheet-lite", main: "examples/spreadsheet-lite/main-fuzz.roc" },
+		{ name: "form-builder", main: "examples/form-builder/fuzz-rules.roc" },
+		{ name: "kanban-board", main: "examples/kanban-board/fuzz-board.roc" },
+		{ name: "data-grid", main: "examples/data-grid/fuzz-rows.roc" },
+		{ name: "markdown-editor", main: "examples/markdown-editor/fuzz-sections.roc" },
+		{ name: "conduit", main: "examples/conduit/fuzz-routes.roc" },
+		{ name: "field-notes", main: "examples/field-notes/fuzz-outbox.roc" },
+		{ name: "spreadsheet-lite", main: "examples/spreadsheet-lite/fuzz-formulas.roc" },
 		{ name: "fx-channel", main: "tests/apps/effects/main-fuzz.roc" },
 		{ name: "controls", main: "tests/apps/controls/main-fuzz.roc" },
-		{ name: "worker-search", main: "tests/apps/worker-search/main-fuzz.roc" },
-		{ name: "worker-lab", main: "examples/worker-lab/main-fuzz.roc" },
-		{ name: "supersede", main: "tests/apps/supersede/main-fuzz.roc" },
-		{ name: "reading-list", main: "examples/reading-list/main-fuzz.roc" },
+		{ name: "csv-converter", main: "examples/csv-converter/fuzz-csv.roc" },
 		{ name: "log-explorer", main: "examples/log-explorer/fuzz-index.roc" },
 		{ name: "million-row-explorer-aggregates", main: "examples/million-row-explorer/fuzz-aggregates.roc" },
 	]

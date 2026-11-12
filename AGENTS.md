@@ -35,7 +35,7 @@
   No engine module imports a hosted function: a job's effects reach the
   engine as values the platform root hands it, which the files and builders
   of that job carry, so the engine also builds as a package
-  (`platform/main-fuzz.roc`) for the fuzz targets. Only the platform-only
+  (`platform/main-fuzz.roc`) for the platform's own fuzz targets. Only the platform-only
   modules (`Files`, `Effects`, `Hosted`, `Cli`) reach the hosts.
 - Dependencies are declared by read masks on values, built before anything
   runs. Preserve glitch-free propagation: all writes of a turn are applied
@@ -216,7 +216,8 @@
   `scripts/`, invoked through Blueprint tasks.
 - Test invariants and failure paths, not only successful output. Every
   reader of a layer a turn wrote is refreshed in that turn: the native spec
-  runner and every fuzz walk check it after each step (`Core.settled`), and
+  runner, its walks and every fuzz target that drives the engine check it
+  after each step (`Core.settled`), and
   a change to propagation must keep that check meaningful. Cover
   ordering, equality cutoffs, identity reuse, scope disposal, reparenting,
   refusal at the in-flight bound, stale results, cancellation and
@@ -228,12 +229,20 @@
 - Use `.scm` specs beside each app (`examples/<app>/specs/`,
   `tests/apps/<app>/specs/`) for application-visible behavior and work, run
   natively and in Chrome, with each app's round trip as a spec the native
-  runner soaks (`--soak`); roc-fuzz targets (each app's `main-fuzz.roc`, and
-  `fuzz/` for the shared support), ordinary roc-fuzz apps on the engine
-  package, for engine sequences and leak-checked walks;
-  and contract cases under `tests/` for `host.zig`, `runtime.mjs` and
-  `worker.mjs` against the wire protocol. Keep semantic locators stable and
-  assert structural work exactly.
+  runner soaks (`--soak`); the native runner's seeded walk of each app
+  (`--walk`, run by the repository's scripts over the app's ordinary
+  `main.roc`) for long leak-checked sessions of real apps; the platform's
+  roc-fuzz targets (`fuzz/`, and those beside test apps under
+  `tests/apps/`), ordinary roc-fuzz apps on the engine package, for engine
+  sequences checked against a model; and contract cases under `tests/` for
+  `host.zig`, `runtime.mjs` and `worker.mjs` against the wire protocol.
+  Keep semantic locators stable and assert structural work exactly.
+- Keep platform tests out of the examples. An example holds what an app
+  author would write: its modules, `main.roc`, its specs, its own
+  JavaScript and, where its pure logic has a rule worth stating, a roc-fuzz
+  target of that logic named for what it checks (`fuzz-<subject>.roc`)
+  that imports nothing of the platform. Nothing in an example exists only
+  so a platform test can drive it, and no public API exists only for one.
 - Reach for fuzzing where the bug class is a *sequence* rather than a case:
   reconciliation order, identity reuse across disposal, effect lifetime across
   disposal and reparenting, allocation balance over a long history. Targets are

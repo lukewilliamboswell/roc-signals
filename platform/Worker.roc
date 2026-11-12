@@ -153,17 +153,6 @@ Worker := [].{
 		## request is a contract error.
 		result : Task(input, output, error), Engine.Res -> Try(output, Error(error))
 		result = |t, res| answered(res, t.receive)
-
-		## For fuzz targets and soak walks, which have no worker to run a job
-		## on: a stand-in for the task's jobs that answers with `f`, a pure
-		## function playing `run!`. It takes a request's input bytes (after
-		## the preparation's, which a task of its own has none of) and gives
-		## the answer's bytes as a job's entry would (`Soak.StandIn`,
-		## `SpecRunner.answer_work`). An answer holding files is a contract
-		## error: a stand-in has no host to hold them.
-		stand_in : Task(input, output, error), (input -> Try(output, error)) -> (List(U8), List(U8) -> List(U8))
-			where [input.Wire.Sendable, output.Wire.Sendable, error.Wire.Sendable]
-		stand_in = |t, f| |_, bytes| stood_in(t.name, f(stand_in_input(t.name, bytes)))
 	}
 
 	## The task a props record describes:
@@ -420,12 +409,6 @@ Worker := [].{
 		## The answer to a `request`, as `Task.result`.
 		result : PreparedTask(init, state, query, output, error), Engine.Res -> Try(output, Error(error))
 		result = |t, res| answered(res, t.receive)
-
-		## As `Task.stand_in`, with `f` playing the preparation and the task
-		## together: it is given the preparation's input and the task's own.
-		stand_in : PreparedTask(init, state, query, output, error), (init, query -> Try(output, error)) -> (List(U8), List(U8) -> List(U8))
-			where [init.Wire.Sendable, query.Wire.Sendable, output.Wire.Sendable, error.Wire.Sendable]
-		stand_in = |t, f| |prep_bytes, bytes| stood_in(t.name, f(stand_in_input(t.name, prep_bytes), stand_in_input(t.name, bytes)))
 	}
 }
 
@@ -474,26 +457,6 @@ received = |name, bytes, files| {
 		}
 		_ => crash "contract: worker task \"${name}\" answered without saying whether it succeeded"
 	}
-}
-
-## A stand-in job's input, which holds no files.
-stand_in_input : Str, List(U8) -> input where [input.Wire.Sendable]
-stand_in_input = |name, bytes| match Wire.decode(bytes) {
-	Ok(input) => input
-	Err(_) => crash "contract: a stand-in for worker task \"${name}\" was given bytes that are not its input type, or an input holding files"
-}
-
-## A stand-in job's answer as its entry would give it, after the file list.
-stood_in : Str, Try(output, error) -> List(U8) where [output.Wire.Sendable, error.Wire.Sendable]
-stood_in = |name, answer| {
-	(encoded, flag) = match answer {
-		Ok(value) => (Wire.encode_with_files(value), 0)
-		Err(error) => (Wire.encode_with_files(error), 1)
-	}
-	if !encoded.files.is_empty() {
-		crash "contract: a stand-in for worker task \"${name}\" answered with files, which only a worker holds"
-	}
-	encoded.bytes.append(flag)
 }
 
 ## A worker request's result as a task's: its answer, or why there is none.

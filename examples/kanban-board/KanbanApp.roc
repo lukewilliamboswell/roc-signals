@@ -234,7 +234,7 @@ KanbanApp := [].{
 	}
 
 	## The program `main.roc` binds for the browser module and the native spec
-	## runner, and `main-fuzz.roc` drives as a roc-fuzz target.
+	## runner.
 	program : Engine.Program
 	program = Engine.program(|| KanbanApp.main({}))
 

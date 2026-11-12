@@ -6,7 +6,7 @@ app [target] {
 import fz.Fuzz
 import pf.Core
 import pf.Dom
-import pf.Soak
+import pf.SpecRunner
 import pf.Wire
 import pf.Worker
 
@@ -307,10 +307,15 @@ triple = |bytes| bytes.map(|x| x.times_wrap(3))
 tripler : Worker.Task(Wire.Bytes, Wire.Bytes, Worker.Never)
 tripler = Worker.task({ name: "roc-signals.test/structure/triple", run!: |bytes| Ok(Wire.Bytes.from_list(triple(bytes.to_list()))) })
 
-## A job's answer as the walk gives it, with no worker to run it: the
-## task's stand-in, from `triple`.
+## A job's answer as the walk gives it, with no worker to run it: what the
+## task's entry gives after its file list, its output's bytes and the flag
+## byte 0 for `Ok` (design.md, Appendix B, result tag 10).
 tripled : List(U8) -> List(U8)
-tripled = |input| (tripler.stand_in(|bytes| Ok(Wire.Bytes.from_list(triple(bytes.to_list())))))([], input)
+tripled = |input| {
+	bytes : Wire.Bytes
+	bytes = Wire.decode(input) ?? crash "structure: a job's input is not the task's"
+	Wire.encode(Wire.Bytes.from_list(triple(bytes.to_list()))).append(0)
+}
 
 ## A layer that follows a worker job for its input: the output's byte sum,
 ## or a marker for a lost or timed-out job.
@@ -488,7 +493,7 @@ step = |s, op, b| {
 			Err(_) => (s, "no answer")
 		}
 	} else {
-		cs = Soak.candidates(s.dom)
+		cs = SpecRunner.candidates(s.dom)
 		match cs.get(b % cs.len().max(1)) {
 			Ok((i, ev)) =>
 				match Dom.target(s.dom, i, ev) {
@@ -528,7 +533,7 @@ series = |seed, count| {
 		var $bytes = []
 		var $j = 0.U64
 		while $j < 160 {
-			$x = Soak.prng($x)
+			$x = SpecRunner.prng($x)
 			$bytes = $bytes.append($x.shr_zf_wrap(40).to_u8_wrap())
 			$j = $j + 1
 		}

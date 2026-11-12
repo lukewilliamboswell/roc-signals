@@ -8,10 +8,6 @@ import Lab
 ## each strip as it arrives; the composing job writes one picture from every
 ## strip, its header followed by each strip's pixels appended by reference,
 ## so composing copies nothing but the header.
-##
-## They are here, apart from the page, because opening a builder takes the
-## platform's `Files` module, which a fuzz target cannot import:
-## `LabPage` takes these tasks as an argument, and `LabApp` passes them.
 Picture := [].{
 
 	## Draws one strip. A deadline the user picks is the task's, as for

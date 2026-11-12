@@ -164,7 +164,10 @@ Edit := {}.{
 			start,
 			|acc, line| {
 				next = if acc.index == 0 and Markdown.heading_level(line) < 6 {
-					"#${line}"
+					# After any indent, which a heading may have, so the hash
+					# joins the heading's own.
+					text = line.trim_start()
+					"${line.drop_suffix(text)}#${text}"
 				} else {
 					line
 				}
@@ -185,6 +188,9 @@ expect Edit.append_section("") == "## New Section"
 
 ## Demotion adds one hash to the last heading and leaves earlier ones alone.
 expect Edit.demote_last_heading("# Alpha\n\n## Beta") == "# Alpha\n\n### Beta"
+
+## An indented heading is demoted after its indent, one level deeper.
+expect Edit.demote_last_heading("  ## Beta") == "  ### Beta"
 
 ## Level six is the floor, so a further demotion is a no-op.
 expect Edit.demote_last_heading("###### Beta") == "###### Beta"
