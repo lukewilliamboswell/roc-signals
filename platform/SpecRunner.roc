@@ -1739,7 +1739,7 @@ SpecRunner := [].{
 		}
 	}
 
-	## Answer a fetch with the staged stub (design.md, "Tasks"): a reply's
+	## Answer a fetch with the staged stub (design.md, "Files"): a reply's
 	## body becomes a file the page holds, through a handle `mint!` gives,
 	## delivered as result tag 21 with the status and headers; a reject is
 	## `Timeout` or `Network` as for an HTTP request; a body over the

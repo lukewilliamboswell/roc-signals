@@ -1,4 +1,5 @@
-// Browser runtime for the pure Roc engine (platform/Engine.roc). The engine
+// Browser runtime of the web platform. The engine, which is Roc code
+// (platform/Core.roc, behind the authoring API in platform/Engine.roc),
 // decides everything; this file applies its command bytes to the DOM and
 // routes DOM events back as (node id, handler number, payload bytes).
 // Commands are read straight out of Wasm linear memory after each call; views
@@ -1760,7 +1761,7 @@ export class RocEngineRuntime {
     // it): the next job that needs a worker starts a fresh one.
     this.maxWorkerBytes = options.maxWorkerBytes ?? 128 * 1024 * 1024;
     // The most bytes one task's job may append to its builders (design.md,
-    // "Tasks"): a builder's parts are held in memory, and the browser does
+    // "Workers"): a builder's parts are held in memory, and the browser does
     // not page a large in-memory Blob to disk. An append beyond it is
     // refused with TooLarge, which the job sees.
     this.maxOutputBytes = options.maxOutputBytes ?? 256 * 1024 * 1024;
@@ -1857,8 +1858,7 @@ export class RocEngineRuntime {
   }
 
   // ---------------------------------------------------------------------
-  // Containment (design.md, "Memory management and allocation failure",
-  // "Browser execution and external failure"). Any trap or executor failure
+  // Containment (design.md, "Error Containment"). Any trap or executor failure
   // poisons this runtime: the diagnostic is read from the instance's
   // reserved storage (fresh memory view), listeners and asynchronous work
   // are detached, staged commands and queued events are dropped, the last
@@ -2890,7 +2890,7 @@ export class RocEngineRuntime {
   }
 
   // ---------------------------------------------------------------------
-  // Saving and fetching files (design.md, "Tasks").
+  // Saving and fetching files (design.md, "Files").
 
   // `SAVE`: a download of the file's range under `fx.name`, made with an
   // object URL and a link with a `download` attribute, clicked, then

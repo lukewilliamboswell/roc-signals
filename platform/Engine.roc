@@ -1,43 +1,448 @@
 import Core
+import Table
 
 ## The authoring API of the roc-signals web platform: the reactive engine as an
 ## app sees it.
 ##
 ## An app describes its UI as an [Elem] tree over typed reactive values ([Val])
-## and state layers ([State]); `program` turns that description into the
-## [Program] the host drives. The engine mounts the tree once, then runs one
-## transaction per DOM event or effect result: handlers write states, and only
-## the text, attributes, rows and sites that read a changed layer are
-## re-evaluated, emitting DOM commands for values that actually changed.
+## and its state; `program` turns that description into the [Program] the
+## host drives. The engine mounts the tree once, then runs one transaction
+## per DOM event or effect result: handlers write state, and only the text,
+## attributes, rows and sites that read what changed are re-evaluated,
+## emitting DOM commands for values that actually changed.
 ##
-## Every dynamic site (`state`, `derive`, `resource`, `when`, `switch`, `each`,
-## `component`, effect sites) is one closure that owns its typed storage, so
-## updates happen in place. `design.md` ("Representation D") describes the
-## model; Appendix B specifies the command stream and the host protocol.
+## State lives in one of three places:
+##
+## - the app's [Store], held at the root: named cells ([Cell]) that any
+##   scope reads and writes with no `lift`, written by decisions (`handle`,
+##   `react`) that return their writes ([Write]);
+## - a table (`table`), a cell of the store holding rows by key, drawn
+##   through a filtered, sorted, windowed view (`each_view`);
+## - local state (`state`), a layer that lives and dies with the piece of
+##   the view that declares it ([State]).
+##
+## A component is a function, usually of a type module, over what it is
+## handed: the cells it reads and writes, or a [State].
+##
+## Every dynamic site (`state`, `derive`, `resource`, `when`, `switch`,
+## `remount_on`, `each`, `each_view`, effect sites) is one closure that owns
+## its typed storage, so updates happen in place. `design.md`
+## ("Representation: Sites That Own Their Storage") describes the model;
+## Appendix B specifies the command stream and the host protocol.
 ##
 ## Every type here is opaque: an app builds values with the functions below
 ## and never sees their representation. The engine itself is the platform's
 ## internal `Core` module.
 Engine := [].{
 
-	## The context at the top of the application: the context of the [Elem] that
-	## `program`'s view returns. Nested contexts ([In], [Row], [Comp]) are built
-	## on top of it.
-	Root : Core.Root
+	## The context at the top of an application without a store: the context of
+	## the [Elem] that `program`'s view returns. Nested contexts ([In], [Row])
+	## are built on top of it.
+	Root : Core.Root({})
+
+	## The context at the top of an app with a store (`program_store`): the
+	## root holds the store, whose storage type is `st`. It is the context of
+	## the [Elem] that `program_store`'s view returns, written
+	## `Engine.StoreRoot(_)`. Other code rarely names it: a function that
+	## uses the store is generic over its scope, with
+	## `where [ctx.store : () -> Reach(ctx, st)]`.
+	StoreRoot(st) : Core.Root(st)
+
+	## How a scope `ctx` reaches the app's store, whose storage type is `st`.
+	## Every scope of an app built with `program_store` has one, answered by
+	## its `store` method ([StoreRoot], [In] and [Row] each have it), and it
+	## is the one thing a function that reads or writes cells asks of its
+	## scope:
+	##
+	## ```
+	## badge : {} -> Elem(ctx)
+	##     where [ctx.store : () -> Engine.Reach(ctx, _)]
+	## ```
+	##
+	## The storage type can be left to the compiler with `_`, as here, or
+	## named once in the module that builds the store.
+	Reach(ctx, st) : Core.StoreReach(ctx, st)
+
+	## The storage type of the store that `tag` names, whose cells'
+	## types nest as `st` (see `store`). It is what `st` stands for in a
+	## [Cell], a [Write] and a [Reach] of that store.
+	Stored(tag, st) : Core.Stored(tag, st)
+
+	## A handle on one cell of the app's store, whose storage type is `st`,
+	## holding an `a`. Get the handles from the [Store] (`handles`); each
+	## cell's place in the store comes from its place in the description.
+	##
+	## A cell is read in any scope, at any depth, with no `lift`: `val` needs
+	## only that the scope reaches a store of type `st`, which every scope of
+	## an app built with `program_store` does. It is written by a decision:
+	## `put` and `change` make the writes a `handle` or a `react` returns. A
+	## write to a cell refreshes the readers of that cell and no one else's.
+	Cell(st, a) :: { c : Core.Cell(st, a) }.{
+
+		## The cell's current value.
+		val : Cell(st, a) -> Val(ctx, a)
+			where [ctx.store : () -> Reach(ctx, st)]
+		val = |{ c }| { v: c.val() }
+
+		## The cell as a [State] of the scope this is called in, for a
+		## component that takes a `State(ctx, a)` and should not care whether
+		## its state is the app's or its own. A write through that handle is
+		## a write of the cell.
+		state : Cell(st, a) -> State(ctx, a)
+			where [ctx.store : () -> Reach(ctx, st)]
+		state = |{ c }| { s: c.state() }
+
+		## A [Write] that replaces the cell with `value`, for the list a
+		## decision returns (`handle`, `react`). Use it for a value that does
+		## not come from the cell itself; to change what the cell holds, use
+		## `change`.
+		put : Cell(st, a), a -> Write(st)
+		put = |{ c }, value| c.put(value)
+
+		## A [Write] that replaces the cell with `f` of it, for the list a
+		## decision returns. `f` receives the value uniquely owned, so a
+		## large value (a list, a table) is changed in place: `put` of a
+		## value built from a reading of the cell would copy it, and so
+		## would an `f` that holds such a reading.
+		change : Cell(st, a), (a -> a) -> Write(st)
+		change = |{ c }, f| c.change(f)
+	}
+
+	## One write to the store, as a value: which cells, and how. Make one
+	## with `Cell.put`, `Cell.change` or a group's reset
+	## (`Cells.with_reset`), and return a list of them from the function
+	## given to `handle` or `react`. The list is the whole transition: the
+	## engine applies it in order and wakes the readers of exactly the cells
+	## it names. Each write's value comes from the one reading the decision
+	## was given, so the order of writes to different cells never matters.
+	##
+	## A `change` after another write of its cell sees that write's result,
+	## and a write after the reset of its group refines the reset ("start
+	## again, but with this"). Any other `put` or reset of a cell the same
+	## list already wrote would discard that write: it is a contract error
+	## that names the handler's or the reaction's site, the cell's position
+	## in the store and the two writes.
+	Write(st) : Core.Write(st)
+
+	## `handle(decide)` is a handler that writes the cells `decide` names,
+	## given the event's payload (an input's value, `"true"`/`"false"` for a
+	## checkbox, `""` for a click): one pure function decides a transition
+	## that spans cells.
+	##
+	## ```
+	## Engine.on_click(Engine.handle(|_| [h.count.change(|n| n + 1), h.last.put("bumped")]))
+	## ```
+	##
+	## Only the cells in the list are written, so a decision that returns
+	## `[]` wakes no one. It works at any depth with no `lift`, as cells do.
+	## To write local state in the same event, compose it with that state's
+	## handler (`Handler.also`).
+	handle : (Str -> List(Write(st))) -> Handler(ctx)
+		where [ctx.store : () -> Reach(ctx, st)]
+	handle = |decide| { h: Core.store_handler(decide) }
+
+	## As `handle`, where `decide` also receives `v`, read once when
+	## the event fires and before any of this decision's own writes, so
+	## every write is computed from the same reading:
+	##
+	## ```
+	## Engine.handle_by(here, |at, _| if (at.session.is_signed_in()) [h.loc.put("/home")] else [])
+	## ```
+	##
+	## To read several values, combine them into one with the record
+	## builder ([Val]). Composed after another handler
+	## (`first.also(Engine.handle_by(v, ..))`), the reading is taken after
+	## `first` has written: `draft.update(|_| "").also(Engine.handle_by(draft.val(), ..))`
+	## reads the emptied draft. Put the decision first to read what the
+	## event found.
+	handle_by : Val(ctx, b), (b, Str -> List(Write(st))) -> Handler(ctx)
+		where [ctx.store : () -> Reach(ctx, st)]
+	handle_by = |b, decide| { h: Core.store_handler_by(b.v, decide) }
+
+	## `does(writes)` is a handler that makes `writes`, whatever the
+	## event's payload: the handler of a button whose transition needs
+	## nothing from the event.
+	##
+	## ```
+	## Html.button("Reset", [], Engine.does([h.form.reset, h.note.put("Started again")]))
+	## ```
+	##
+	## The list is built where the handler is made, once, so it cannot
+	## depend on the payload or on a reading: a transition that does is a
+	## `handle` or a `handle_by`.
+	does : List(Write(st)) -> Handler(ctx)
+		where [ctx.store : () -> Reach(ctx, st)]
+	does = |writes| { h: Core.store_handler(|_| writes) }
+
+	## As `handle`, for the files an event carries: `decide` receives the
+	## files the user chose, dropped or pasted ([Received]) and returns
+	## every write the event makes, so a drop can keep the files, start a
+	## page again and clear a note as one transition. Attach it with
+	## `on_files` or an `Html` file control.
+	##
+	## ```
+	## Engine.on_files("drop", Engine.handle_files(|{ files, refused: _ }| [h.attached.put(files), h.page.reset, h.note.put("")]))
+	## ```
+	##
+	## To write local state for the same files, compose it with that
+	## state's `on_files` handler (`FilesHandler.also`).
+	handle_files : (Received -> List(Write(st))) -> FilesHandler(ctx)
+		where [ctx.store : () -> Reach(ctx, st)]
+	handle_files = |decide| { h: Core.store_files_handler(decide) }
+
+	## As `handle_files`, where `decide` also receives `v`, read once when
+	## the files arrive and before any of this decision's own writes, as
+	## `handle_by` reads it.
+	handle_files_by : Val(ctx, b), (b, Received -> List(Write(st))) -> FilesHandler(ctx)
+		where [ctx.store : () -> Reach(ctx, st)]
+	handle_files_by = |b, decide| { h: Core.store_files_handler_by(b.v, decide) }
+
+	## `react(decide)` is an effect site's [Reaction] that writes the cells
+	## `decide` names, given the value the request was issued for and its
+	## result: an answer's whole transition, as `handle` is an event's.
+	react : (r, Res -> List(Write(st))) -> Reaction(ctx, r)
+		where [ctx.store : () -> Reach(ctx, st)]
+	react = |decide| Core.store_reaction(decide)
+
+	## As `react`, where `decide` also receives `v`, read once when
+	## the result arrives and before any of this decision's own writes.
+	## Composed after another reaction (`Reaction.also`), the reading is
+	## taken after that reaction has written.
+	react_by : Val(ctx, b), (b, r, Res -> List(Write(st))) -> Reaction(ctx, r)
+		where [ctx.store : () -> Reach(ctx, st)]
+	react_by = |b, decide| Core.store_reaction_by(b.v, decide)
+
+	## A description of cells: build one with `cell` and Roc's record
+	## builder, which calls `map2`, and nest one description in another:
+	##
+	## ```
+	## schema = { session: Engine.cell(Anonymous), page: Article.cells({}) }.Cells
+	## ```
+	##
+	## Each cell's place in the store comes from its position in the
+	## description, so a feature module exports the description of its own
+	## cells and the app nests it as it is. `whole` is the storage of the
+	## store the cells end up in and `st` theirs within it; an annotation
+	## can leave `st` to the compiler:
+	## `cells : {} -> Engine.Cells(whole, _, Handles(whole))`.
+	Cells(whole, st, h) :: { d : Core.Cells(whole, st, h) }.{
+
+		## Two descriptions side by side: the record builder's combinator.
+		map2 : Cells(whole, a, ha), Cells(whole, b, hb), (ha, hb -> hc) -> Cells(whole, (a, b), hc)
+		map2 = |l, r, f| { d: l.d.map2(r.d, f) }
+
+		## The same cells, handing out `f` of their handles: a feature can
+		## give its owner its handles in whatever shape suits it.
+		map : Cells(whole, st, h), (h -> k) -> Cells(whole, st, k)
+		map = |{ d }, f| { d: d.map(f) }
+
+		## The same cells, handing out `f` of their handles and of a
+		## [Write] that starts every one of them again at the value it was
+		## described with:
+		##
+		## ```
+		## { draft: Engine.cell(""), sent: Engine.cell(0) }.Engine.Cells.with_reset(|cells, reset| { cells, reset })
+		## ```
+		##
+		## The write belongs to the description, so a cell added to it later
+		## is started again by the same write and no list of cells to reset
+		## is kept anywhere. A cell starts again at the value its description
+		## gave it, not at one `Store.with_initial` put there; a table starts
+		## again at the rows it was described with, as a whole rewrite, so
+		## its views rebuild.
+		with_reset : Cells(whole, st, h), (h, Write(whole) -> k) -> Cells(whole, st, k)
+		with_reset = |{ d }, f| { d: d.with_reset(f) }
+	}
+
+	## The description of one cell that starts at `init`, a field of the
+	## record a store's cells are described with:
+	##
+	## ```
+	## { count: Engine.cell(0), name: Engine.cell("") }.Engine.Cells
+	## ```
+	##
+	## The record builder combines two fields or more. A description of
+	## one cell is that cell, with its handle put in a record by `map`:
+	##
+	## ```
+	## Engine.cell("").map(|source| { source: source })
+	## ```
+	cell : a -> Cells(whole, a, Cell(whole, a))
+	cell = |init| { d: Core.cell(init).map(wrap_cell) }
+
+	## The description of one cell holding a table of `rows` by key
+	## (`Table`), for rows that are edited by key and drawn as a list:
+	##
+	## ```
+	## { todos: Engine.table(Todo.sample), query: Engine.cell(Todo.all) }.Engine.Cells
+	## ```
+	##
+	## The handle is an ordinary [Cell]. A decision changes the table with
+	## the table's own operations, so every write records the rows it
+	## changed, and it stands in the decision's list beside its other
+	## writes:
+	##
+	## ```
+	## Engine.handle_by(key, |id, _| [todos.change(|table| table.update(id, Todo.toggle)), edits.change(|n| n + 1)])
+	## ```
+	##
+	## `each_view` draws a filtered, sorted window of the table from that
+	## record, at the cost of the rows written, never of the table. A write
+	## that leaves another table in the cell than the one it held (a `put`
+	## of a new one from `Table.from_list`, a copy kept from earlier) is a
+	## whole rewrite: every view of the cell rebuilds.
+	##
+	## Read one row or the count with the cell's `val`
+	## (`todos.val().map(|table| table.len())`). Such a reader is
+	## re-evaluated on every write of the table, and pruned if its result
+	## is equal; only a row of an `each_view` wakes for its own row alone.
+	table : List({ key : k, row : v }) -> Cells(whole, Table(k, v), Cell(whole, Table(k, v)))
+		where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
+	table = |rows| { d: Core.table(rows).map(wrap_cell) }
+
+	## Which rows of a table a view shows and in what order: `keep`
+	## says whether a row is in the view, `sort` gives the value it is
+	## ordered by, and `compare` orders two sort values. The order must be
+	## total: two rows that compare `Same` are a contract error, when the
+	## view mounts, after a write, and also between the keyed writes of one
+	## event, which the view takes one key at a time. Two rows that swap
+	## their places in one event tie while the first is written, though
+	## they never tie before or after it. So a sort value ends with the
+	## key, whatever the sorted field: `{ place: row.place, key }`, compared
+	## by `place` and then by `key`.
+	Query(k, v, s) : Core.Query(k, v, s)
+
+	## The part of a view that is drawn: `count` rows from position
+	## `start` of the view's order. A window that reaches past the last row
+	## draws the rows there are.
+	Window : Core.Window
+
+	## The window that draws every row a view keeps, however many it comes
+	## to hold: `window: Engine.const(Engine.every_row)`. It is for a list
+	## that is short by nature (the cards of a column, the fields of a
+	## form). A row that enters, leaves or moves costs the rows drawn, so a
+	## long list wants a window of its own.
+	every_row : Window
+	every_row = { start: 0, count: U64.highest }
+
+	## What an `each_view` shows of its table. `query` is plain data
+	## the site can compare (the filter and order the user chose) and
+	## `plan` turns it into the [Query] that selects and orders rows;
+	## `window` is the part of that order to draw.
+	ViewProps(ctx, q, k, v, s) : { query : Val(ctx, q), plan : (q -> Query(k, v, s)), window : Val(ctx, Window) }
+
+	## `each_view(table, props, template)` renders one row for each
+	## row of `table` in the window of a filtered, sorted view of it:
+	##
+	## ```
+	## Engine.each_view(
+	##     todos,
+	##     { query: query.val(), plan: Todo.plan, window: window.val() },
+	##     |key, todo| Todo.row(key, todo),
+	## )
+	## ```
+	##
+	## The site keeps the view (the ordered keys of every row that passes
+	## the filter) up to date from the table's record of changes: a turn
+	## that wrote some rows costs those rows, a search and a move in the
+	## ordered keys each, whatever the size of the table. No list of rows
+	## is built, kept or compared. A row that left the window is removed,
+	## one that entered is created, one that moved is moved with its nodes
+	## and any state nested in it, and one whose row was written
+	## re-evaluates its own holes.
+	##
+	## `template` runs once per site and must return a single element. It
+	## is given the row's key, fixed for the row's lifetime, and a handle
+	## on the row's value, a [State] of the row's scope: `row.val()` reads
+	## the row of that key from the table, and `row.update(f)` and its
+	## relatives write that row of that table (`Table.update`), so a row's
+	## handlers cannot name another table by mistake and a component drawn
+	## over a `State` draws a row unchanged. Other writes are decisions
+	## over the table's cell
+	## (`Engine.handle_by(key, |id, _| [todos.change(|table| table.remove(id))])`).
+	## Values from the enclosing context enter with `lift_row`.
+	##
+	## The site finds a row by the table's key itself, through the key's
+	## `is_eq` and `to_hash`. A row is drawn while it is in the window:
+	## state nested in it is kept when the row moves and dropped when it
+	## leaves the window. An event changes the rows drawn once, whatever
+	## it wrote of the table, the query and the window: a row drawn before
+	## the event and after it is the same row throughout, and the rows
+	## that enter are created from the first to the last, as at mount.
+	##
+	## A change of `query` to an unequal value, or a whole rewrite of the
+	## table, rebuilds the view in the size of the table; a change of
+	## `window` costs the two windows. A row removed from the table must
+	## not be read again by the handler that removed it: that is a
+	## contract error.
+	each_view : Cell(st, Table(k, v)), ViewProps(ctx, q, k, v, s), (Val(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)
+		where [ctx.store : () -> Reach(ctx, st), k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher, q.is_eq : q, q -> Bool]
+	each_view = |{ c }, { query, plan, window }, template| Core.each_view(c, { query: query.v, plan, window: window.v }, |key, row| template({ v: key }, { s: row }))
+
+	## An app's store: the cells it holds, their starting values, and the
+	## handles on them. Build it once with `store`, as a top-level value a
+	## module that composes the app can import, and hand it to
+	## `program_store`.
+	Store(st, h) :: { s : Core.Store(st, h) }.{
+
+		## The handles on the store's cells, the record its cells described.
+		handles : Store(st, h) -> h
+		handles = |{ s }| s.handles()
+
+		## The same store with `cell` starting at `value` instead, for a
+		## start that depends on the boot data. For a table cell, `value` is
+		## the table `Table.from_list` gives. It is a start, not a write: the
+		## table's record is empty afterwards, so a test that applies a
+		## transition with `after` reads that transition's rows in it.
+		with_initial : Store(st, h), Cell(st, a), a -> Store(st, h)
+		with_initial = |{ s }, { c }, value| { s: s.with_initial(c, value) }
+
+		## The same store after `writes`, applied as the engine applies a
+		## decision's (a replaced write is the same contract error), for a
+		## pure `expect` on a transition:
+		##
+		## ```
+		## expect store.after(signed_out(at)).read(h.session) == Anonymous
+		## ```
+		##
+		## The writes are applied and no turn ends, so a table keeps its
+		## record of them: `store.after(writes).read(table).inverse()` tells
+		## which rows a transition wrote. Across chained `after`s the record
+		## holds the rows all of them wrote.
+		after : Store(st, h), List(Write(st)) -> Store(st, h)
+		after = |{ s }, writes| { s: s.after(writes) }
+
+		## What `cell` holds in this store: its starting value, or
+		## with `after`, what a transition left in it.
+		read : Store(st, h), Cell(st, a) -> a
+		read = |{ s }, { c }| s.read(c)
+	}
+
+	## The store the cells `d` describe, named by `tag`: a value of
+	## a type declared for this store, usually the one tag of the module
+	## that builds it:
+	##
+	## ```
+	## AppStore := [Conduit].{
+	##     store = Engine.store(AppStore.Conduit, { session: Engine.cell(Anonymous), .. }.Engine.Cells)
+	## }
+	## ```
+	##
+	## The name is part of the type of every handle the store gives out,
+	## so a cell of another store is a type error wherever this one is
+	## reached, even when the two stores' cells have the same types.
+	store : tag, Cells(Stored(tag, st), st, h) -> Store(Stored(tag, st), h)
+	store = |tag, { d }| { s: Core.store_of(tag, d) }
 
 	## The context inside a `state` or `derive` body: a layer holding a value of
 	## type `s`, nested in `outer`. Values and handlers from `outer` enter with
 	## `lift`.
 	In(outer, s) : Core.In(outer, s)
 
-	## The context inside one row of an `each` template: the row's key and item,
-	## nested in `outer`. Values and handlers from `outer` enter with `lift_row`.
+	## The context inside one row of an `each` or an `each_view` template,
+	## nested in `outer`: the row's key and item (for a view's row, the
+	## table's key). Values and handlers from `outer` enter with `lift_row`.
 	Row(outer, item) : Core.Row(outer, item)
-
-	## The context inside a `component` body: the prop of type `p` and the outward
-	## action list of type `List(a)`. A body typed over `Comp(p, a)` is specialised
-	## once per prop and action type, not once per call site.
-	Comp(p, a) : Core.Comp(p, a)
 
 	## A reactive value of type `a`, readable in context `ctx`.
 	##
@@ -47,6 +452,12 @@ Engine := [].{
 	## `map2`. A value is a recipe, not a cache: mapping functions run each time a
 	## reader is re-evaluated, so they must be pure and should be cheap (`derive`
 	## memoises an expensive or shared result).
+	##
+	## `map2` has the shape Roc's record builder calls, so several values
+	## combine into one value of a record, which reads what all of them
+	## read: `{ filter: h.filter.val(), sort: h.sort.val() }.Engine.Val`. It
+	## is how a decision takes a reading of several cells (`handle_by`,
+	## `react_by`) and how a view's query is made of two.
 	Val(ctx, a) :: { v : Core.Val(ctx, a) }.{
 
 		## Transform a value with a pure function. The result reads the same layers
@@ -56,7 +467,8 @@ Engine := [].{
 		map = |{ v }, f| { v: v.map(f) }
 
 		## Combine two values with a pure function. The result reads the union of
-		## both inputs' layers.
+		## both inputs' layers. It is also what the record builder calls
+		## (`{ a: va, b: vb }.Engine.Val`).
 		map2 : Val(ctx, a), Val(ctx, b), (a, b -> c) -> Val(ctx, c)
 		map2 = |l, r, f| { v: l.v.map2(r.v, f) }
 
@@ -71,11 +483,12 @@ Engine := [].{
 		lift_row = |{ v }| { v: v.lift_row() }
 	}
 
-	## An event handler usable in context `ctx`: a write to one state layer that
-	## also receives the event's payload (an input's value, `"true"`/`"false"` for
-	## a checkbox, `""` for a click). Make one with the [State] methods and attach
-	## it with `on`, `on_click` or an `Html` control. A handler runs once per event,
-	## in the transaction that delivers it.
+	## An event handler usable in context `ctx`: what an event writes, given
+	## its payload (an input's value, `"true"`/`"false"` for a checkbox, `""`
+	## for a click). Make one with the [State] methods for local state, or
+	## with `handle` for the store's cells, and attach it with `on`,
+	## `on_click` or an `Html` control. A handler runs once per event, in the
+	## transaction that delivers it.
 	Handler(ctx) :: { h : Core.Handler(ctx) }.{
 
 		## Use a handler from the enclosing context inside a `state` or `derive` body
@@ -87,11 +500,42 @@ Engine := [].{
 		## nested in it.
 		lift_row : Handler(ctx) -> Handler(Row(ctx, item))
 		lift_row = |{ h }| { h: h.lift_row() }
+
+		## `first.also(second)` is one handler that runs `first` and then
+		## `second` for the same event, as one atomic transition. `second`
+		## sees what `first` wrote, so two writes of one state compose, and
+		## what they wrote is observed together once the event settles: no
+		## text, branch or effect site ever sees one new value beside the
+		## other's old one. An element takes one handler per event (a second one is a
+		## contract error), so this is how a click writes local state and
+		## also runs a decision, or a handler its owner passed down:
+		##
+		## ```
+		## Engine.on_click(open.update(|_| False).also(picked.lift()))
+		## ```
+		##
+		## It costs one closure call more per event.
+		also : Handler(ctx), Handler(ctx) -> Handler(ctx)
+		also = |first, second| { h: first.h.also(second.h) }
 	}
 
 	## A handler for the files an event carries: make one with
-	## `State.on_files`, attach it with `on_files`.
-	FilesHandler(ctx) :: { h : Core.FilesHandler(ctx) }
+	## `State.on_files` for local state or with `handle_files` for the
+	## store's cells, and attach it with `on_files`.
+	FilesHandler(ctx) :: { h : Core.FilesHandler(ctx) }.{
+
+		## `first.also(second)` is one handler that runs `first` and then
+		## `second` for the same files, as one atomic transition, exactly
+		## as `Handler.also` does for an event: `second` sees what `first`
+		## wrote. It is how a drop writes local state and also runs a
+		## decision:
+		##
+		## ```
+		## hover.on_files(|_, _| Idle).also(Engine.handle_files(|got| [h.attached.put(got.files)]))
+		## ```
+		also : FilesHandler(ctx), FilesHandler(ctx) -> FilesHandler(ctx)
+		also = |first, second| { h: first.h.also(second.h) }
+	}
 
 	## A file the user gave the app, or a range of one (`File.slice`): a handle
 	## with its `name`, `size` and `mime` type, never its bytes on the page. Send
@@ -158,22 +602,6 @@ Engine := [].{
 		set_value_by : State(ctx, s), Val(ctx, b), (s, b, Str -> s) -> Handler(ctx)
 		set_value_by = |{ s }, b, f| { h: s.set_value_by(b.v, f) }
 
-		## For a component's outward action list (the second argument of a `component`
-		## body): a handler that appends `a`. After the event settles, the boundary
-		## hands each pushed action, in order, to the caller's [Sink].
-		push : State(ctx, List(a)), a -> Handler(ctx)
-		push = |{ s }, a| { h: s.push(a) }
-
-		## Like `push`, appending an action built from `v` read when the event fires
-		## (typically the row key).
-		push_by : State(ctx, List(a)), Val(ctx, b), (b -> a) -> Handler(ctx)
-		push_by = |{ s }, b, f| { h: s.push_by(b.v, f) }
-
-		## Like `push`, appending an action built from `v` read when the event fires
-		## and the event's payload.
-		push_value_by : State(ctx, List(a)), Val(ctx, b), (b, Str -> a) -> Handler(ctx)
-		push_value_by = |{ s }, b, f| { h: s.push_value_by(b.v, f) }
-
 		## A handler for the files an event carries (attach it with `on_files`,
 		## or use `Html.file_input`): the reducer receives the files the user
 		## chose, dropped or pasted, each a handle with a name, size and type,
@@ -192,6 +620,7 @@ Engine := [].{
 		## nested in it.
 		lift_row : State(ctx, s) -> State(Row(ctx, item), s)
 		lift_row = |{ s }| { s: s.lift_row() }
+
 	}
 
 	## A keyed selection for `RowRef.select`: the selected key and the values a
@@ -219,6 +648,14 @@ Engine := [].{
 		field : RowRef(outer, item), (item -> a) -> Val(Row(outer, item), a)
 		field = |{ r }, f| { v: r.field(f) }
 
+		## The row's whole item, for a handler or a reaction that takes it
+		## as its reading (`Engine.handle_by(row.item(), ..)`). Like `field`,
+		## it is re-evaluated only for rows whose new item differs from the
+		## old one; a hole that shows one part of the item reads that part
+		## with `field`.
+		item : RowRef(outer, item) -> Val(Row(outer, item), item)
+		item = |{ r }| { v: r.item() }
+
 		## `yes` or `no` from a [Keyed] selection, depending on whether this row's key
 		## is the selected one.
 		select : RowRef(outer, item), Keyed(outer, v) -> Val(Row(outer, item), v)
@@ -231,7 +668,8 @@ Engine := [].{
 	Attr(ctx) : Core.Attr(ctx)
 
 	## A piece of UI in context `ctx`: an element, a text node or a dynamic site
-	## (`state`, `derive`, `resource`, `when`, `switch`, `each`, `component` or an effect site).
+	## (`state`, `derive`, `resource`, `when`, `switch`, `remount_on`, `each`,
+	## `each_view` or an effect site).
 	## An `Elem` is a description; the engine mounts it once and afterwards updates
 	## only what reads a changed layer.
 	Elem(ctx) : Core.Elem(ctx)
@@ -239,10 +677,10 @@ Engine := [].{
 	## `state(init, body)` adds a state layer, starting at `init`, for the elements
 	## `body` builds. There is one instance per mount of the site (so one per row
 	## inside an `each` row) and it lives as long as the enclosing scope: it is
-	## dropped when its branch, row or component is disposed, and starts again at
+	## dropped when its branch or row is disposed, and starts again at
 	## `init` if remounted. Values from the enclosing context enter `body` with
-	## `lift`. More than 63 nested `state`, `derive` or `each` layers within one
-	## component is a `resource_limit` error.
+	## `lift`. Layers nest without limit: past 64 nested layers on one path a
+	## write can cost a few extra evaluations, which equality pruning discards.
 	state : s, (State(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
 	state = |init, body| Core.state(init, |s| body({ s: s }))
 
@@ -273,6 +711,27 @@ Engine := [].{
 		where [k.is_eq : k, k -> Bool]
 	switch = |sel, cases, body| Core.switch(sel.v, cases, body)
 
+	## `remount_on(key, body)` builds `body()` and, whenever `key`
+	## changes to a value unequal to the one the body was built for,
+	## disposes it and builds it again from scratch, as `switch` does when
+	## its case changes: its nodes are removed, state inside starts again,
+	## timers and subscriptions inside are cancelled, and requests in flight
+	## inside are kept and delivered here, where their writes to the
+	## disposed state are skipped. Use it for state that belongs to one key,
+	## such as a reply drafted to the open message:
+	##
+	## ```
+	## Engine.remount_on(open.val(), || detail(open.val()))
+	## ```
+	##
+	## The body takes no argument: it reads the key, if it needs it, like
+	## any other value. An equal key costs one evaluation of the key; an
+	## unequal one, disposing and mounting the body. The site keeps the key
+	## to compare, so a key should be small, such as an id.
+	remount_on : Val(ctx, k), (() -> Elem(ctx)) -> Elem(ctx)
+		where [k.is_eq : k, k -> Bool]
+	remount_on = |key, body| Core.remount_on(key.v, body)
+
 	## `derive(input, body)` evaluates `input` once per change of the layers it
 	## reads and gives `body` the result as a new layer. Readers inside `body` that
 	## read only the derived value do no work while it is equal to the previous
@@ -281,33 +740,6 @@ Engine := [].{
 	derive : Val(ctx, a), (Val(In(ctx, a), a) -> Elem(In(ctx, a))) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
 	derive = |input, body| Core.derive(input.v, |v| body({ v: v }))
-
-	## Where a component's outward actions go in the caller: each action becomes a
-	## write of a caller state. Make one with `sink`, or route actions to two sinks
-	## with `split`.
-	Sink(ctx, a) : Core.Sink(ctx, a)
-
-	## A [Sink] that folds each action into state `st` with the reducer `f`.
-	sink : State(ctx, s), (s, a -> s) -> Sink(ctx, a)
-	sink = |{ s }, f| Core.sink(s, f)
-
-	## A [Sink] that drops every action, for a component that reports none.
-	discard : {} -> Sink(ctx, a)
-	discard = |_| Core.discard({})
-
-	## A [Sink] that routes each action to one of two sinks: `route` tags it `L`
-	## for the first or `R` for the second.
-	split : Sink(ctx, a), Sink(ctx, b), (c -> [L(a), R(b)]) -> Sink(ctx, c)
-	split = |left, right, route| Core.split(left, right, route)
-
-	## `component(prop, sink, body)` mounts a reusable piece of UI with its own
-	## context. `body` sees the prop as a value read from the caller (re-read, not
-	## retained, whenever a caller layer it reads changes) and a handle on its
-	## outward action list; actions pushed during an event are delivered, in order,
-	## to `sink` when the event settles. The body is specialised once per prop and
-	## action type, which keeps code size bounded as an app grows.
-	component : Val(ctx, p), Sink(ctx, a), (Val(Comp(p, a), p), State(Comp(p, a), List(a)) -> Elem(Comp(p, a))) -> Elem(ctx)
-	component = |prop, out, body| Core.component(prop.v, out, |p, s| body({ v: p }, { s: s }))
 
 	## A request from an effect site.
 	##
@@ -512,9 +944,11 @@ Engine := [].{
 	## [File]. It lives only in the job that opened it.
 	Builder : Core.Builder
 
-	## What an effect site does with a result: a write to a state given the value
-	## the request was issued for and the [Res]. Make one with `State.on_result`,
-	## or use `ignore`.
+	## What an effect site does with a result: what it writes, given the value
+	## the request was issued for and the [Res]. Make one with `State.on_result`
+	## for local state or with `react` for the store's cells, or use `ignore`.
+	## `first.also(second)` runs both on one result, in order, as one atomic
+	## transition, the second seeing the first's writes, like `Handler.also`.
 	Reaction(ctx, a) : Core.Reaction(ctx, a)
 
 	## A reaction that discards every result, for sites that only issue commands.
@@ -534,8 +968,8 @@ Engine := [].{
 	cleanup : Str -> Elem(ctx)
 	cleanup = |name| Core.cleanup(name)
 
-	## `watch(v, plan, react)` issues `plan(v)` when the site mounts and again
-	## whenever `v` changes to an unequal value; results go to `react`. Awaited
+	## `watch(v, plan, reaction)` issues `plan(v)` when the site mounts and again
+	## whenever `v` changes to an unequal value; results go to `reaction`. Awaited
 	## requests belong to the site: when it is disposed, its subscriptions,
 	## timers, operations on files and worker jobs are cancelled, and admitted
 	## `Http`, `Upload`, `Fetch` and `StorageGet` requests, port calls and the
@@ -545,22 +979,22 @@ Engine := [].{
 	## with `Refused`.
 	watch : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
-	watch = |v, plan, react| Core.watch(v.v, plan, react)
+	watch = |v, plan, reaction| Core.watch(v.v, plan, reaction)
 
 	## Like `watch`, but issues only when `v` changes after mount, never for its
 	## initial value.
 	on_change : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
-	on_change = |v, plan, react| Core.on_change(v.v, plan, react)
+	on_change = |v, plan, reaction| Core.on_change(v.v, plan, reaction)
 
-	## `latest(v, plan, react)` issues like `watch` (at mount, and whenever `v`
+	## `latest(v, plan, reaction)` issues like `watch` (at mount, and whenever `v`
 	## changes to an unequal value) but keeps only the requests of the current
 	## value: the latest value wins. Before it issues for a new value, every
 	## awaited request it still owns from earlier ones is cancelled, whatever its
 	## kind (an `Http` request is aborted, a subscription stops, a timer is
 	## cleared), and follow-ups or refusals still queued for it are dropped, all
 	## counted (`cancelled`, `stale`). A late answer for a superseded value never
-	## reaches `react`, so a search box or a selected item needs no request
+	## reaches `reaction`, so a search box or a selected item needs no request
 	## serial in its state. A `plan` that returns `[]` makes a change a pure
 	## cancel.
 	##
@@ -571,7 +1005,7 @@ Engine := [].{
 	## `v` plus work linear in the requests the site owns.
 	latest : Val(ctx, a), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
-	latest = |v, plan, react| Core.latest(v.v, plan, react)
+	latest = |v, plan, reaction| Core.latest(v.v, plan, reaction)
 
 	## `resource(input, cfg, body)` is an asynchronous `derive`: it gives `body` a
 	## layer whose value follows the answers to the requests issued for `input`.
@@ -654,7 +1088,7 @@ Engine := [].{
 	## post, so posting an item equal to the last one still sends it.
 	##
 	## Post at most once per turn to one outbox: a change that sends
-	## several things posts a list (`Outbox(List(Write))`). A second post
+	## several things posts a list (`Outbox(List(Note))`). A second post
 	## in the same turn is a contract error, since the first would never
 	## be sent.
 	Outbox(a) : Core.Outbox(a)
@@ -663,9 +1097,9 @@ Engine := [].{
 	outbox : {} -> Outbox(a)
 	outbox = |_| Core.outbox({})
 
-	## `on_post(box, plan, react)` sends what a handler posts: in the turn a
+	## `on_post(box, plan, reaction)` sends what a handler posts: in the turn a
 	## handler posts `item` to the outbox `box`, it issues `plan(item)`,
-	## and each result reaches `react` with the item it was posted with,
+	## and each result reaches `reaction` with the item it was posted with,
 	## so several posts can be in flight and each answer knows its own.
 	## Nothing is issued at mount, and nothing is ever cancelled for a
 	## later post: like `on_change`, every request is kept, and disposal
@@ -676,7 +1110,7 @@ Engine := [].{
 	## write to a store. The reducer that changes the state posts in the
 	## same step, so an `expect` sees both.
 	on_post : Val(ctx, Outbox(a)), (a -> List(Req)), Reaction(ctx, a) -> Elem(ctx)
-	on_post = |box, plan, react| Core.on_post(box.v, plan, react)
+	on_post = |box, plan, reaction| Core.on_post(box.v, plan, reaction)
 
 	## What the host knows before the first render: the URL, the declared storage
 	## keys' values (missing keys are absent), whether the browser is online and
@@ -783,4 +1217,15 @@ Engine := [].{
 	## requests in flight at once.
 	program_boot : { storage_keys : List(Str), max_inflight : U64 }, (Boot -> Elem(Root)) -> Program
 	program_boot = |cfg, view| Core.program_boot(cfg, view)
+
+	## The [Program] for an app with a [Store]: as `program_boot`, with the
+	## store `start` gives for the boot data held at the root, where every
+	## scope of `view` reaches its cells. `start` is usually the app's store
+	## with the cells that depend on the boot data set (`Store.with_initial`).
+	program_store : { storage_keys : List(Str), max_inflight : U64 }, (Boot -> Store(st, h)), (Boot -> Elem(StoreRoot(st))) -> Program
+	program_store = |cfg, start, view| Core.program_store(cfg, |boot| start(boot).s.initial(), view)
 }
+
+## The authoring handle on a cell the engine made.
+wrap_cell : Core.Cell(st, a) -> Engine.Cell(st, a)
+wrap_cell = |c| { c: c }

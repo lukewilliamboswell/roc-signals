@@ -19,7 +19,9 @@ import src/ToolCheck
 
 ## The `check` task, the per-pull-request gate: the script pins,
 ## formatting, every file `www/data/examples.toml` names present, every
-## public `Engine` and `Html` symbol documented, `roc test`,
+## public `Engine` and `Html` symbol documented, `roc test` (the platform,
+## the engine package, the tool, the scripts, and every example's and test
+## app's `expect`s),
 ## the platform inputs, the host's resource-heap tests, the spec runner's
 ## links for macOS and Windows, the fuzz targets under `fuzz/` and the
 ## examples' own, the docs samples, every
@@ -56,6 +58,7 @@ main! = |_args| {
 	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "platform/main.roc"], cwd: "." }, "roc test platform/main.roc")?)
 	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "platform/main-fuzz.roc"], cwd: "." }, "roc test platform/main-fuzz.roc")?)
 	$problems = $problems.concat(check!({ program: o.compiler, args: ["test", "cli/main.roc"], cwd: "." }, "roc test cli/main.roc")?)
+	$problems = $problems.concat(Checks.app_expects!(o)?)
 	$problems = $problems.concat(ToolCheck.bundle_current!(o)?)
 	$problems = $problems.concat(check!({ program: o.tooling, args: ["test", "scripts/check_all.roc"], cwd: "." }, "roc-stable test scripts")?)
 
@@ -140,8 +143,7 @@ source_dirs = ["platform", "cli", "examples", "tests", "fuzz", "scripts", "www/s
 
 ## No two source files have paths that differ only in letter case. macOS and
 ## Windows keep one file for such a pair, so a checkout there silently loses
-## the other (a package root `platform/engine.roc` beside the module
-## `platform/Engine.roc` broke every build on both).
+## the other, and a build that needs both fails.
 file_names! : () => Try(List(Str), _)
 file_names! = || {
 	var $files = []

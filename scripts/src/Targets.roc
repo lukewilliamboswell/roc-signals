@@ -11,7 +11,7 @@ import SpecSuite
 ## imports:
 ##
 ## - the platform's own targets under `fuzz/` and beside the test apps under
-##   `tests/apps/` (`main-fuzz.roc`), which import the engine package,
+##   `tests/apps/` (`fuzz-<subject>.roc`), which import the engine package,
 ##   `platform/main-fuzz.roc`, as `pf`;
 ## - an example's targets of its own pure logic, `fuzz-<subject>.roc`
 ##   beside the modules they import, which import nothing of the platform.
@@ -23,6 +23,7 @@ Targets := [].{
 		{ name: "scm-parse", main: "fuzz/scm-parse/main.roc" },
 		{ name: "wire", main: "fuzz/wire/main.roc" },
 		{ name: "structure", main: "fuzz/structure/main.roc" },
+		{ name: "table-view", main: "fuzz/table-view/main.roc" },
 		{ name: "port-json", main: "fuzz/port-json/main.roc" },
 		{ name: "form-builder", main: "examples/form-builder/fuzz-rules.roc" },
 		{ name: "kanban-board", main: "examples/kanban-board/fuzz-board.roc" },
@@ -31,8 +32,8 @@ Targets := [].{
 		{ name: "conduit", main: "examples/conduit/fuzz-routes.roc" },
 		{ name: "field-notes", main: "examples/field-notes/fuzz-outbox.roc" },
 		{ name: "spreadsheet-lite", main: "examples/spreadsheet-lite/fuzz-formulas.roc" },
-		{ name: "fx-channel", main: "tests/apps/effects/main-fuzz.roc" },
-		{ name: "controls", main: "tests/apps/controls/main-fuzz.roc" },
+		{ name: "fx-channel", main: "tests/apps/effects/fuzz-channel.roc" },
+		{ name: "controls", main: "tests/apps/controls/fuzz-controls.roc" },
 		{ name: "csv-converter", main: "examples/csv-converter/fuzz-csv.roc" },
 		{ name: "log-explorer", main: "examples/log-explorer/fuzz-index.roc" },
 		{ name: "million-row-explorer-aggregates", main: "examples/million-row-explorer/fuzz-aggregates.roc" },

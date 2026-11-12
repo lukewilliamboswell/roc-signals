@@ -4,7 +4,7 @@ import Engine exposing [Attr, Elem, FilesHandler, Handler, Val]
 ## `Engine.element`, `Engine.attr` and `Engine.on`.
 ##
 ## Every helper is generic in the context `ctx`, so it works at the top level,
-## inside a `state` or `derive` body, in an `each` row or in a component.
+## inside a `state` or `derive` body and in a row of an `each` or an `each_view`.
 ## Controls take their accessible name as `aria-label`, which spec `label` and
 ## `role` locators match. Values (`Val`) keep the DOM in step with state; plain
 ## `Str` arguments are static.

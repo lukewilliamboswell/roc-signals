@@ -1,0 +1,468 @@
+import pf.Engine exposing [Elem, Handler, State, Val]
+import pf.Html
+import pf.Table
+
+## Table test app: a table of to-dos in the app's store, drawn as filtered,
+## sorted windows of it, with specs in `specs/` that pin the work of every
+## kind of change at 1,000 rows.
+##
+## - `todos` is a table cell: rows by a `U64` key. Every decision changes it
+##   with the table's own operations, so each write records its rows.
+## - `todos` and `next`, the key the next to-do takes, are one group, whose
+##   generated reset starts both again: the table as a whole rewrite.
+## - The main list is an `each_view` of it: the rows the listing keeps, in
+##   the listing's order, a window of them drawn. The listing (which rows,
+##   what order) and the window are cells, so buttons change them.
+## - A second `each_view` shows the first five done rows by key, and a
+##   third, mounted on request, the last five rows by key: three views of
+##   one table.
+## - A fourth, mounted on request, shows the few rows whose quantity is
+##   below 10, every one of them drawn (`Engine.every_row`): a narrow view
+##   of a large table.
+## - A fifth, mounted on request, shows three of those few rows through a
+##   window it keeps in a state of its own, and a sixth beside it the
+##   first two of the three, through a `derive` of that window. Their
+##   button moves the window and adds a row as one event: a cell and a
+##   local state written together, which each view must meet together.
+## - Two plain readers: the number of rows, and row 0's title.
+## - `shadow` is a second table of the same size that nothing draws: a
+##   write to it is the cost of a turn that touches a table and no view.
+##
+## The address chooses the size (`?n=1000&window=30&draws=main`, see
+## `Setup`). To-do `i` starts with the quantity `i * 7919 % n` (every
+## quantity once when `n` is not a multiple of 7919) and is done when `i`
+## is odd, so the main list starts as the even keys in the order of their
+## quantities.
+TableApp := [Todos].{
+
+	## One to-do. Its key is its row's key in the table, not a field.
+	Todo : { title : Str, status : [Open, Done], qty : I64 }
+
+	## What a list shows: which rows and in what order. Plain data, which a
+	## view compares to know when to rebuild.
+	Listing : { show : [All, Open, Done, Few], order : [ByQty, ByKey, ByKeyDown] }
+
+	## The quantity below which a row is one of the few (`Few`): 10 of the
+	## rows a table starts with, and every row "Add" adds.
+	few_below : I64
+	few_below = 10
+
+	## Where a row stands in a listing's order: its order's number, then
+	## its key, so that no two rows tie.
+	Place : { primary : I64, key : U64 }
+
+	## What the address chose. `draws` is `Everything`, or `Main` for the
+	## main list alone (no second list, no readers), which is what a timing
+	## of one view wants.
+	Setup : { rows : U64, window : U64, draws : [Everything, Main] }
+
+	## The setup an address names; 1,000 rows, a window of 30, everything
+	## drawn, by default.
+	setup_of : Str -> Setup
+	setup_of = |url| {
+		rows = U64.from_str(TableApp.asked(url, "n") ?? "1000") ?? 1000
+		window = U64.from_str(TableApp.asked(url, "window") ?? "30") ?? 30
+		draws = match TableApp.asked(url, "draws") ?? "everything" {
+			"main" => Main
+			_ => Everything
+		}
+		{ rows, window, draws }
+	}
+
+	## The value of `name` in the address's query.
+	asked : Str, Str -> Try(Str, [NotInAddress])
+	asked = |url, name| {
+		before_hash = url.split_on("#").first() ?? ""
+		query = before_hash.split_on("?").drop_first(1).first() ?? ""
+		match query.split_on("&").find_first(|part| part.starts_with("${name}=")) {
+			Ok(part) => Ok(part.drop_prefix("${name}="))
+			Err(_) => Err(NotInAddress)
+		}
+	}
+
+	## The to-dos a table of `count` rows starts with.
+	sample : U64 -> List({ key : U64, row : Todo })
+	sample = |count| {
+		var $rows = List.with_capacity(count)
+		var $key = 0.U64
+		while $key < count {
+			$rows = $rows.append({ key: $key, row: TableApp.todo_of($key, count) })
+			$key = $key + 1
+		}
+		$rows
+	}
+
+	todo_of : U64, U64 -> Todo
+	todo_of = |key, count| {
+		title: "Task ${key.to_str()}",
+		status: if (key % 2 == 1) Done else Open,
+		qty: ((key * 7919) % count).to_i64_wrap(),
+	}
+
+	## How a listing selects and orders rows: the `plan` of every view.
+	plan : Listing -> Engine.Query(U64, Todo, Place)
+	plan = |{ show, order }| {
+		keep: |_, todo| match show {
+			All => True
+			Open => todo.status == Open
+			Done => todo.status == Done
+			Few => todo.qty < TableApp.few_below
+		},
+		sort: |key, todo| match order {
+			ByQty => { primary: todo.qty, key }
+			ByKey => { primary: 0, key }
+			ByKeyDown => { primary: 0 - key.to_i64_wrap(), key }
+		},
+		compare: TableApp.compare_place,
+	}
+
+	compare_place : Place, Place -> [Before, Same, After]
+	compare_place = |a, b|
+		if (a.primary < b.primary)
+			Before
+		else if (a.primary > b.primary)
+			After
+		else if (a.key < b.key)
+			Before
+		else if (a.key > b.key)
+			After
+		else
+			Same
+
+	raised : Todo, I64 -> Todo
+	raised = |todo, by| { ..todo, qty: todo.qty + by }
+
+	toggled : Todo -> Todo
+	toggled = |todo| {
+		..todo,
+		status: match todo.status {
+			Open => Done
+			Done => Open
+		},
+	}
+
+	## Raise the quantity of the first `count` keys by one, as `count`
+	## keyed writes in one event. A fold over the keys rather than a `while`
+	## loop over a `var` holding the table, which copies the table on every
+	## iteration in optimised builds (roc-lang/roc#12971).
+	edited : Table(U64, Todo), U64 -> Table(U64, Todo)
+	edited = |table, count| {
+		var $keys = List.with_capacity(count)
+		var $key = 0.U64
+		while $key < count {
+			$keys = $keys.append($key)
+			$key = $key + 1
+		}
+		$keys.fold(table, |acc, key| acc.update(key, |todo| TableApp.raised(todo, 1)))
+	}
+
+	## Mark the title of every row the `Few` listing keeps, as one keyed
+	## write for each: the rows are found first, then written by a fold
+	## over their keys (roc-lang/roc#12971).
+	retitled : Table(U64, Todo) -> Table(U64, Todo)
+	retitled = |table| {
+		keys = table.fold([], |found, key, todo| if (todo.qty < TableApp.few_below) found.append(key) else found)
+		keys.fold(table, |acc, key| acc.update(key, |todo| { ..todo, title: "${todo.title}!" }))
+	}
+
+	store = Engine.store(
+		TableApp.Todos,
+		{
+			items: {
+				todos: Engine.table([]),
+				next: Engine.cell(0.U64),
+			}.Engine.Cells.with_reset(|cells, reset| { todos: cells.todos, next: cells.next, reset }),
+			shadow: Engine.table([]),
+			listing: Engine.cell({ show: Open, order: ByQty }),
+			window: Engine.cell({ start: 0.U64, count: 30.U64 }),
+			late: Engine.cell(Hidden),
+			few: Engine.cell(Hidden),
+			paged: Engine.cell(Hidden),
+		}.Engine.Cells,
+	)
+
+	h = TableApp.store.handles()
+
+	## The store as a setup starts it: both tables at the setup's size.
+	start : Setup -> Engine.Store(_, _)
+	start = |setup| TableApp.store
+		.with_initial(TableApp.h.items.todos, Table.from_list(TableApp.sample(setup.rows)))
+		.with_initial(TableApp.h.shadow, Table.from_list(TableApp.sample(setup.rows)))
+		.with_initial(TableApp.h.items.next, setup.rows)
+		.with_initial(TableApp.h.window, { start: 0, count: setup.window })
+
+	## What "Add" writes: a to-do under the key `key`, and the key after it
+	## as the next one.
+	added : U64 -> List(Engine.Write(_))
+	added = |key| [
+		TableApp.h.items.todos.change(|table| table.insert(key, { title: "New ${key.to_str()}", status: Open, qty: 0 - key.to_i64_wrap() })),
+		TableApp.h.items.next.put(key + 1),
+	]
+
+	## What "Reset" writes: the table a setup starts with, as a new table
+	## (`Table.from_list`), and the key after its last, so that the next
+	## to-do added takes a key the table does not hold.
+	restored : Setup -> List(Engine.Write(_))
+	restored = |setup| [
+		TableApp.h.items.todos.put(Table.from_list(TableApp.sample(setup.rows))),
+		TableApp.h.items.next.put(setup.rows),
+	]
+
+	## What "Add above" writes: the same to-do, and the window moved down
+	## by one. The new row has the lowest quantity, so in a list by quantity
+	## it stands above the window, and the window holds the rows it held.
+	added_above : U64 -> List(Engine.Write(_))
+	added_above = |key| TableApp.added(key).append(TableApp.h.window.change(|w| { ..w, start: w.start + 1 }))
+
+	## A button named `name`, with no text of its own, so that a list's
+	## text is its rows' keys and numbers alone.
+	action : Val(ctx, Str), Handler(ctx) -> Elem(ctx)
+	action = |name, handler| Engine.element("button", [Html.aria_label_v(name), Engine.attr("type", "button"), Engine.on_click(handler)], [])
+
+	## One row of the main list: its key, a done checkbox, its title, its
+	## quantity with three ways to raise it, a remove button, and a count
+	## of marks the row keeps in a state of its own. Its text is
+	## `key:quantity:marks`.
+	row : Val(Engine.Row(ctx, U64), U64), State(Engine.Row(ctx, U64), Todo) -> Elem(Engine.Row(ctx, U64))
+		where [ctx.store : () -> Engine.Reach(ctx, _)]
+	row = |key, todo| {
+		named = |what| key.map(|k| "${what} ${k.to_str()}")
+		raise = |by| todo.update(|t| TableApp.raised(t, by))
+		Html.li(
+			[],
+			[
+				Html.span_v(key.map(|k| "${k.to_str()}:"), []),
+				Html.checkbox(named("Done"), todo.val().map(|t| t.status == Done), [], todo.set_value(|t, checked| { ..t, status: if (checked == "true") Done else Open })),
+				Html.text_input(named("Title"), "text", todo.val().map(|t| t.title), [], todo.set_value(|t, title| { ..t, title })),
+				Html.span_v(todo.val().map(|t| t.qty.to_str()), [Html.aria_label_v(named("Qty"))]),
+				TableApp.action(named("Bump"), raise(1)),
+				TableApp.action(named("Later"), raise(25)),
+				TableApp.action(named("Last"), raise(1_000_000)),
+				TableApp.action(named("Remove"), Engine.handle_by(key, |k, _| [TableApp.h.items.todos.change(|table| table.remove(k))])),
+				Engine.state(
+					0.U64,
+					|marks| Engine.element(
+						"span",
+						[],
+						[
+							Engine.text(":"),
+							Html.span_v(marks.val().map(|count| count.to_str()), [Html.aria_label_v(named("Marks").lift())]),
+							TableApp.action(named("Mark").lift(), marks.update(|count| count + 1)),
+							Engine.text(" "),
+						],
+					),
+				),
+			],
+		)
+	}
+
+	## One row of the smaller lists: its key and its title.
+	line : Val(r, U64), State(r, Todo) -> Elem(r)
+	line = |key, todo| Html.li([], [Html.span_v(key.map2(todo.val(), |k, t| "${k.to_str()}=${t.title} "), [])])
+
+	## A list of `todos` named `name`: the window `window` of `listing`.
+	list : Str, Val(ctx, Listing), Val(ctx, Engine.Window), (Val(Engine.Row(ctx, U64), U64), State(Engine.Row(ctx, U64), Todo) -> Elem(Engine.Row(ctx, U64))) -> Elem(ctx)
+		where [ctx.store : () -> Engine.Reach(ctx, _)]
+	list = |name, listing, window, template| Html.ul(
+		[Engine.test_id(name)],
+		[Engine.each_view(TableApp.h.items.todos, { query: listing, plan: TableApp.plan, window }, template)],
+	)
+
+	toolbar : Setup -> Elem(ctx)
+		where [ctx.store : () -> Engine.Reach(ctx, _)]
+	toolbar = |setup| {
+		todos = TableApp.h.items.todos
+		listing = TableApp.h.listing
+		window = TableApp.h.window
+		page = setup.window
+		edit = |count| Engine.handle(|_| [todos.change(|table| TableApp.edited(table, count))])
+		show = |which| Engine.handle(|_| [listing.change(|l| { ..l, show: which })])
+		order = |by| Engine.handle(|_| [listing.change(|l| { ..l, order: by })])
+		scroll = |to| Engine.handle(|_| [window.change(|w| { ..w, start: to(w.start) })])
+		Html.div(
+			"toolbar",
+			[
+				Html.button("Add", [], Engine.handle_by(TableApp.h.items.next.val(), |key, _| TableApp.added(key))),
+				Html.button("Add above", [], Engine.handle_by(TableApp.h.items.next.val(), |key, _| TableApp.added_above(key))),
+				Html.button("Edit 20", [], edit(20)),
+				Html.button("Edit 100", [], edit(100)),
+				Html.button("Edit 1000", [], edit(1000)),
+				Html.button("Toggle all", [], Engine.handle(|_| [todos.change(|table| table.update_all(|_, todo| TableApp.toggled(todo)))])),
+				Html.button("Reset", [], Engine.handle(|_| TableApp.restored(setup))),
+				Html.button("Start again", [], Engine.handle(|_| [TableApp.h.items.reset])),
+				Html.button("Show open", [], show(Open)),
+				Html.button("Show all", [], show(All)),
+				Html.button("Show done", [], show(Done)),
+				Html.button("By qty", [], order(ByQty)),
+				Html.button("By key", [], order(ByKey)),
+				Html.button("Down 1", [], scroll(|at| at + 1)),
+				Html.button("Up 1", [], scroll(|at| if (at > 0) at - 1 else 0)),
+				Html.button("Down page", [], scroll(|at| at + page)),
+				Html.button("Up page", [], scroll(|at| if (at > page) at - page else 0)),
+				Html.button("Show late list", [], Engine.handle(|_| [TableApp.h.late.put(Shown)])),
+				Html.button("Hide late list", [], Engine.handle(|_| [TableApp.h.late.put(Hidden)])),
+				Html.button("Touch shadow", [], Engine.handle(|_| [TableApp.h.shadow.change(|table| table.update(0, |todo| TableApp.raised(todo, 1)))])),
+				Html.button("Show few list", [], Engine.does([TableApp.h.few.put(Shown)])),
+				Html.button("Retitle few", [], Engine.does([todos.change(TableApp.retitled)])),
+				Html.button("Show paged list", [], Engine.does([TableApp.h.paged.put(Shown)])),
+			],
+		)
+	}
+
+	## Three of the few rows, from the second: a list whose window is a
+	## state of its own, and beside it the first two of those rows, in a
+	## list whose window is a `derive` of that state. "Add and page down"
+	## moves the window down by one, a local write, and adds a to-do, a
+	## decision, as one event. The new row has the lowest quantity and
+	## stands above the window, so each window holds the rows it held.
+	paged : {} -> Elem(ctx)
+		where [ctx.store : () -> Engine.Reach(ctx, _)]
+	paged = |{}| Engine.state(
+		{ start: 1.U64, count: 3.U64 },
+		|window| Html.div(
+			"paged",
+			[
+				Html.button(
+					"Add and page down",
+					[],
+					window.update(|w| { ..w, start: w.start + 1 }).also(Engine.handle_by(TableApp.h.items.next.val(), |key, _| TableApp.added(key))),
+				),
+				TableApp.list("paged", Engine.const({ show: Few, order: ByQty }), window.val(), TableApp.line),
+				Engine.derive(
+					window.val().map(|w| { start: w.start, count: 2 }),
+					|narrow| TableApp.list("narrow", Engine.const({ show: Few, order: ByQty }), narrow, TableApp.line),
+				),
+			],
+		),
+	)
+
+	## What the app draws beside its main list: the two readers and the
+	## smaller lists.
+	extras : {} -> List(Elem(ctx))
+		where [ctx.store : () -> Engine.Reach(ctx, _)]
+	extras = |{}| {
+		todos = TableApp.h.items.todos
+		[
+			Html.p_v(todos.val().map(|table| "Rows: ${table.len().to_str()}"), [Engine.test_id("count")]),
+			Html.p_v(
+				todos.val().map(
+					|table| match table.get(0) {
+						Ok(todo) => "Row 0: ${todo.title}"
+						Err(Missing) => "Row 0: gone"
+					},
+				),
+				[Engine.test_id("row0")],
+			),
+			TableApp.list("done", Engine.const({ show: Done, order: ByKey }), Engine.const({ start: 0, count: 5 }), TableApp.line),
+			Engine.when(
+				TableApp.h.late.val().map(
+					|late| match late {
+						Shown => True
+						Hidden => False
+					},
+				),
+				|| TableApp.list("late", Engine.const({ show: All, order: ByKeyDown }), Engine.const({ start: 0, count: 5 }), TableApp.line),
+				|| Engine.text(""),
+			),
+			Engine.when(
+				TableApp.h.few.val().map(
+					|few| match few {
+						Shown => True
+						Hidden => False
+					},
+				),
+				|| TableApp.list("few", Engine.const({ show: Few, order: ByQty }), Engine.const(Engine.every_row), TableApp.line),
+				|| Engine.text(""),
+			),
+			Engine.when(
+				TableApp.h.paged.val().map(
+					|drawn| match drawn {
+						Shown => True
+						Hidden => False
+					},
+				),
+				|| TableApp.paged({}),
+				|| Engine.text(""),
+			),
+		]
+	}
+
+	view : Setup -> Elem(Engine.StoreRoot(_))
+	view = |setup| Html.div(
+		"app",
+		[
+			TableApp.toolbar(setup),
+			TableApp.list("main", TableApp.h.listing.val(), TableApp.h.window.val(), TableApp.row),
+		].concat(
+			match setup.draws {
+				Everything => TableApp.extras({})
+				Main => []
+			},
+		),
+	)
+
+	program : Engine.Program
+	program = Engine.program_store(
+		{ storage_keys: [], max_inflight: 8 },
+		|boot| TableApp.start(TableApp.setup_of(boot.url)),
+		|boot| TableApp.view(TableApp.setup_of(boot.url)),
+	)
+}
+
+## Adding a to-do writes its row and the next key as one decision.
+expect {
+	after = TableApp.start({ rows: 3, window: 30, draws: Everything }).after(TableApp.added(3))
+	titles = [0, 3].map(|key| after.read(TableApp.h.items.todos).get(key).map_ok(|todo| todo.title))
+	(titles, after.read(TableApp.h.items.next)) == ([Ok("Task 0"), Ok("New 3")], 4)
+}
+
+## After the group's reset, "Reset" puts back the rows and the key that
+## follows them, so "Add" then adds a row under a new key.
+expect {
+	setup = { rows: 3, window: 30, draws: Everything }
+	after = TableApp.start(setup).after([TableApp.h.items.reset]).after(TableApp.restored(setup))
+	added = after.after(TableApp.added(after.read(TableApp.h.items.next)))
+	(after.read(TableApp.h.items.next), added.read(TableApp.h.items.todos).len()) == (3, 4)
+}
+
+## "Add above" is the same row and next key, with the window one row down.
+expect {
+	started = TableApp.start({ rows: 3, window: 2, draws: Everything })
+	after = started.after(TableApp.added_above(3))
+	(after.read(TableApp.h.items.todos).contains(3), after.read(TableApp.h.items.next), after.read(TableApp.h.window)) == (Bool.True, 4, { start: 1, count: 2 })
+}
+
+## "Retitle few" writes the few rows and no other: the table's record
+## names exactly the rows whose quantity is below 10.
+expect {
+	started = TableApp.start({ rows: 1000, window: 30, draws: Everything })
+	todos = started.after([TableApp.h.items.todos.change(TableApp.retitled)]).read(TableApp.h.items.todos)
+	written = match todos.inverse() {
+		Ok(writes) => writes.len()
+		Err(Rewritten) => 0
+	}
+	(written, todos.get(0).map_ok(|todo| todo.title), todos.get(1).map_ok(|todo| todo.title)) == (10, Ok("Task 0!"), Ok("Task 1"))
+}
+
+## The group's reset starts the table again as a whole rewrite, at the rows
+## it was described with, and a row written after it in the same list is
+## kept.
+expect {
+	items = TableApp.h.items
+	started = TableApp.start({ rows: 3, window: 30, draws: Everything })
+	again = started.after([items.reset])
+	refined = started.after([items.reset, items.todos.change(|table| table.insert(7, { title: "Seven", status: Open, qty: 0 }))])
+	rewritten = |store| match store.read(items.todos).changes() {
+		Rewritten => "rewritten"
+		Keyed(_) => "keyed"
+	}
+	actual =
+		\\rows: ${started.read(items.todos).len().to_str()}, ${again.read(items.todos).len().to_str()}, ${refined.read(items.todos).len().to_str()}
+		\\next: ${started.read(items.next).to_str()}, ${again.read(items.next).to_str()}
+		\\record: ${rewritten(again)}, ${rewritten(refined)}
+	expected =
+		\\rows: 3, 0, 1
+		\\next: 3, 0
+		\\record: rewritten, rewritten
+	actual == expected
+}

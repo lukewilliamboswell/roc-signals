@@ -1,5 +1,5 @@
-## An independent decoder of the unified engine's command stream into a small
-## DOM model, used as the test and fuzz oracle. It shares no code with the
+## An independent decoder of the engine's command stream into a small DOM
+## model, used as the test and fuzz oracle. It shares no code with the
 ## engine. Nodes live in one list; engine ids map to node indices (+1).
 Dom := [].{
 

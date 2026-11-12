@@ -38,12 +38,11 @@ Release := [].{
 
 	## The examples archive omits an example's fuzz targets of its own logic
 	## (`fuzz-<subject>.roc`), which depend on a roc-fuzz release rather than
-	## on the released platform, and any older entry point named
-	## `main-fuzz.roc`.
+	## on the released platform.
 	is_archived : Str -> Bool
 	is_archived = |file| {
 		name = file.split_on("/").last() ?? file
-		!(name == "main-fuzz.roc" or (name.starts_with("fuzz-") and name.ends_with(".roc")))
+		!(name.starts_with("fuzz-") and name.ends_with(".roc"))
 	}
 
 	## An example's own files beside its Roc modules, directly in `dir`: the
@@ -218,4 +217,4 @@ expect Release.released_main("app [main] { pf: platform \"https://y\" }", "u") =
 expect Release.json_str("a\"b\nc") == "\"a\\\"b\\nc\""
 
 ## The entry point and its modules are archived; a fuzz target is not.
-expect [Release.is_archived("e/main.roc"), Release.is_archived("e/fuzz-csv.roc"), Release.is_archived("e/main-fuzz.roc"), Release.is_archived("e/Api.roc"), Release.is_archived("e/Fuzzy.roc")] == [True, False, False, True, True]
+expect [Release.is_archived("e/main.roc"), Release.is_archived("e/fuzz-csv.roc"), Release.is_archived("e/Api.roc"), Release.is_archived("e/Fuzzy.roc")] == [True, False, True, True]

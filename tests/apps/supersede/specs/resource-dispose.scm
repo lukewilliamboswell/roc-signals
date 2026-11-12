@@ -5,7 +5,7 @@
     (mark-metrics)
     (click (role button :name "Close panel"))
     (expect-absent (test-id "panel"))
-    (expect-metric-delta scopes_disposed 2)
+    (expect-metric-delta scopes_disposed 1)
     ; The slow-answer timer stopped; the admitted request reparents and
     ; still completes, writing nothing.
     (expect-pending-effects 1)

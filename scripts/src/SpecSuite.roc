@@ -1,7 +1,7 @@
 import cli.Path
 import Proc
 
-## Builds the ported apps for the native and the browser spec runners and runs
+## Builds the apps for the native and the browser spec runners and runs
 ## their `.scm` specs. Each app's one entry, `main.roc`, is built twice from
 ## the one platform: `--target=x64musl` gives its native spec runner and
 ## `--target=wasm32` its browser module.
@@ -24,7 +24,7 @@ SpecSuite := [].{
 		Ok({})
 	}
 
-	## The apps ported to the engine, with their original specs.
+	## The examples under `examples/`, each with its specs.
 	apps : List(Str)
 	apps = ["form-builder", "kanban-board", "data-grid", "markdown-editor", "conduit", "field-notes", "status-page", "spreadsheet-lite", "worker-lab", "csv-converter", "reading-list", "log-explorer", "million-row-explorer"]
 
@@ -32,11 +32,28 @@ SpecSuite := [].{
 	## browser services, work counters, worker jobs (byte-level and typed) and
 	## superseding effect sites the examples do not exercise.
 	test_apps : List(Str)
-	test_apps = ["services", "workers", "worker-typed", "supersede", "worker-search", "files", "file-effects", "prepared", "ports", "tasks", "gather", "outbox"]
+	test_apps = ["services", "workers", "worker-typed", "supersede", "worker-search", "files", "file-effects", "prepared", "ports", "tasks", "gather", "outbox", "deep", "handlers", "remount", "store", "writes", "table"]
 
 	## Every spec-bearing app, examples first.
 	spec_apps : List(Str)
 	spec_apps = SpecSuite.apps.concat(SpecSuite.test_apps)
+
+	## Every example and test app: each directory under `examples/` and
+	## `tests/apps/` that holds a `main.roc`, with or without specs.
+	app_dirs! : () => Try(List(Str), _)
+	app_dirs! = || {
+		var $out = []
+		for parent in ["examples", "tests/apps"] {
+			var $names = []
+			for entry in Path.list!(Path.utf8(parent))? {
+				if Path.is_dir!(entry)? and Path.exists!(Path.utf8("${Path.display(entry)}/main.roc"))? {
+					$names = $names.append(Path.display(entry))
+				}
+			}
+			$out = $out.concat($names.sort_with(SpecSuite.compare_str))
+		}
+		Ok($out)
+	}
 
 	Runner : [Native, Browser]
 

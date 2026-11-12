@@ -1,6 +1,6 @@
 // services-browser.mjs --wasm services.wasm --runtime runtime.mjs --chrome PATH
-// -- runtime and host contract cases for the protocol additions of versions 2
-// and 3 with tests/apps/services in headless Chrome:
+// -- runtime and host contract cases with tests/apps/services in headless
+// Chrome:
 // - the protocol version: the host reports it and the runtime refuses any
 //   other version before running anything;
 // - malformed boot bytes and a non-UTF-8 effect result poison the instance

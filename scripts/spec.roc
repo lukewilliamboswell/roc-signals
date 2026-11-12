@@ -9,8 +9,8 @@ import src/Checks
 import src/Proc
 import src/SpecSuite
 
-## Run ported apps' `.scm` specs: `spec.roc -- [--browser] [--filter GLOB]
-## [APP...]` (default: every ported example, natively).
+## Run apps' `.scm` specs: `spec.roc -- [--browser] [--filter GLOB]
+## [APP...]` (default: every example and test app, natively).
 main! = |raw_args| {
 	args = raw_args.map(OsStr.display).drop_if(|a| a == "--")
 	var $browser = Bool.False

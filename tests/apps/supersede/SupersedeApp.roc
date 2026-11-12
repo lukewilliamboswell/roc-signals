@@ -1,4 +1,4 @@
-import pf.Engine exposing [Comp, Elem, In, Root, State, Val]
+import pf.Engine exposing [Elem, In, Root, State, Val]
 import pf.Html
 
 ## Supersession test app: the two explicit effect-site policies, each with
@@ -10,8 +10,8 @@ import pf.Html
 ##   in the turn that changes the item, keeps the previous answer, and marks
 ##   a slow answer with a timer whose late tick is an equal fold.
 ## - The same `resource` in each row of an `each` (reloaded through a
-##   row-local `state`) and inside a component that a `when` opens and
-##   closes, so its answers settle locally and its disposal is observable.
+##   row-local `state`) and inside a panel that a `when` opens and closes,
+##   so its disposal is observable.
 ## - A flood: 100 rows that each fetch at mount, far past the in-flight
 ##   bound of 32, so one turn queues 68 refusals; each reaction counts its
 ##   answer at the top level.
@@ -20,8 +20,8 @@ import pf.Html
 ##   (two `when`s that start closed, a `switch` that starts on a plain case, and a `when`
 ##   inside that branch): a `state`, a `state` below a `derive` and below a
 ##   `resource`, the `resource`'s own answers, and two states nested two
-##   deep. Writes to them, outside any row or component, must still reach
-##   their readers.
+##   deep. Writes to them, outside any row, must still reach their
+##   readers.
 SupersedeApp := [].{
 	S : {
 		query : Str,
@@ -84,8 +84,8 @@ SupersedeApp := [].{
 	item_view : Val(ctx, Str), Str -> Elem(ctx)
 	item_view = |item, id| Engine.resource(item, SupersedeApp.item_cfg, |l| Html.p_v(l.map(SupersedeApp.show), [Engine.test_id(id)]))
 
-	## The component's body: the prop is the picked item.
-	panel : Val(Comp(Str, {}), Str) -> Elem(Comp(Str, {}))
+	## The panel: the picked item's view.
+	panel : Val(ctx, Str) -> Elem(ctx)
 	panel = |picked| Engine.element("div", [], [SupersedeApp.item_view(picked, "panel")])
 
 	## One row: a reload counter and the row's resource over (key, version).
@@ -237,7 +237,7 @@ SupersedeApp := [].{
 						),
 					],
 				),
-				# The same layer inside a component that a branch owns.
+				# The same layer inside a panel that a branch owns.
 				Html.button("Open panel", [], st.update(|s| { ..s, panel: True })),
 				Html.button("Close panel", [], st.update(|s| { ..s, panel: False })),
 				Html.button("Pick 1", [], st.update(|s| { ..s, picked: "1" })),
@@ -286,7 +286,7 @@ SupersedeApp := [].{
 				),
 				Engine.when(
 					v.map(|s| s.panel),
-					|| Engine.component(v.map(|s| s.picked), Engine.discard({}), |picked, _| SupersedeApp.panel(picked)),
+					|| SupersedeApp.panel(v.map(|s| s.picked)),
 					|| Engine.text(""),
 				),
 			],

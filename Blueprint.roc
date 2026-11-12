@@ -14,7 +14,7 @@
 # tests the platform, the examples and the tests. `roc` is never pinned: CI
 # installs it with roc-lang/setup-roc, and a contributor installs the current
 # nightly as `roc`, so the environments expect it on PATH.
-app [config] { pf: platform "https://github.com/lukewilliamboswell/roc-blueprint/releases/download/0.8.0/FbJymjYdCxx9vqMcau7r4tQfeAbnVGqqJoYrLGqPCqKu.tar.zst" }
+app [config] { pf: platform "https://github.com/lukewilliamboswell/roc-blueprint/releases/download/0.13.0/DBtzmMfrSgt6nCGVAcZYCVPxWbhpqw3MXpm6sdQzMn4v.tar.zst" }
 
 import pf.Config
 import pf.Recipes
@@ -39,14 +39,14 @@ roc_stable_program = Fetch("roc-stable", Recipes.roc_nightly("nightly-2026-11-10
 config = [
 	Name("roc-signals"),
 	Systems(["x86_64-linux", "aarch64-linux", "aarch64-darwin"]),
-	# The Roc-owned engine: native and browser spec runs, the platform's
+	# The engine's environment: native and browser spec runs, the platform's
 	# fetched native inputs, and the scripts that drive them. curl, tar, zstd and
 	# sha256sum fetch and verify the native runner's libc inputs of the
 	# `platform` task, from the roc-fuzz release the fuzz targets depend on.
 	#
 	# Chrome is the machine's `google-chrome` for now. Chrome for Testing ships
-	# only zip archives, and blueprint 0.8.0 (and 0.9.0) unpacks a Zip download
-	# with `tar -xf`, which GNU tar cannot read; the pinned recipe is ready
+	# only zip archives, and blueprint lists and unpacks a `Zip` download with
+	# `tar`, which GNU tar cannot read; the pinned recipe is ready
 	# below as `chrome` and replaces this Expect once blueprint unpacks zips on
 	# Linux.
 	Environment("engine", [Programs([roc_stable_program, zig_program, node_program]), Expect(["roc", "curl", "tar", "zstd", "sha256sum", "getconf", "google-chrome", "zip"])]),

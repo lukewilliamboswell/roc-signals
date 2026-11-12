@@ -1,4 +1,4 @@
-(test "Supersede — a resource in a component follows its prop and settles locally"
+(test "Supersede — a resource in a branch follows its input, and its answer refreshes its one reader"
   (steps
     (click (role button :name "Open panel"))
     (expect-text (test-id "panel") "loading 1; showing none; before none")

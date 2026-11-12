@@ -6,8 +6,9 @@
 ## this file (`main.roc`) cannot serve a target: it binds the hosted
 ## functions and needs its hosts. So this second root sits over the same
 ## files and offers, as a package, just the modules a target needs, every
-## one of them pure: the engine, the authoring API, the spec runner, the
-## `Dom` oracle, the `.scm` parser, and the wire and port formats.
+## one of them pure: the engine, the authoring API, the table of a store
+## with its view and ordered keys, the spec runner, the `Dom` oracle, the
+## `.scm` parser, and the wire and port formats.
 ##
 ## Its only users are the platform's own targets: those under `fuzz/` (the
 ## spec, wire and port format parsers and generated site trees) and those
@@ -26,4 +27,4 @@
 ## root hands it (`Effects.roc`), which is what keeps the modules listed
 ## here pure. `Files.roc`, `Effects.roc`, `Hosted.roc` and `Cli.roc` belong
 ## to the platform alone and are not listed.
-package [Core, Dom, Engine, Html, JsonOut, Port, PortJson, Scm, SpecRunner, Wire, Worker] {}
+package [Core, Dom, Engine, Html, JsonOut, Port, PortJson, Scm, Seq, SpecRunner, Table, View, Wire, Worker] {}

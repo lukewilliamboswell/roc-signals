@@ -8,8 +8,11 @@ import pf.Html
 ## Both carry focus references; buttons ask for Focus / SelectText / Blur
 ## through an effect site, and focus/blur handlers on "Plain" log their
 ## payloads. The log is rendered for the tests.
+## - "Two handlers" and "Two row handlers" mount an element with two `click`
+##   handlers, plainly or in an `each` row template: a contract error at
+##   mount (`tests/browser/controls-browser.mjs` observes it).
 ControlsApp := [].{
-	S : { plain : Str, upper : Str, log : List(Str), ask : { serial : U64, req : [None, F(Str), B(Str), Sel(Str)] }, rows : List(Str) }
+	S : { plain : Str, upper : Str, log : List(Str), ask : { serial : U64, req : [None, F(Str), B(Str), Sel(Str)] }, rows : List(Str), twice : [Neither, OnElement, InRow] }
 
 	Ctx : In(Root, S)
 
@@ -65,16 +68,35 @@ ControlsApp := [].{
 			Html.button("Add row", [], st.update(|s| { ..s, rows: s.rows.append("r${s.rows.len().to_str()}") })),
 			Html.button("Duplicate row", [], st.update(|s| { ..s, rows: s.rows.append("r0") })),
 			Engine.element("ul", [Engine.test_id("rows")], [Engine.each(st.val().map(|s| s.rows), |r| r, |row| Engine.element("li", [], [Engine.text_v(row.key())]))]),
+
+			## Containment: two handlers for one event on one element (a
+			## contract error at mount, never a silently dropped listener).
+			Html.button("Two handlers", [], st.update(|s| { ..s, twice: OnElement })),
+			Html.button("Two row handlers", [], st.update(|s| { ..s, twice: InRow })),
+			Engine.when(
+				st.val().map(|s| s.twice == OnElement),
+				|| Engine.element("button", [Engine.on_click(st.update(|s| ControlsApp.log(s, "one"))), Engine.on_click(st.update(|s| ControlsApp.log(s, "two")))], [Engine.text("Twice")]),
+				|| Engine.text(""),
+			),
+			Engine.when(
+				st.val().map(|s| s.twice == InRow),
+				|| Engine.each(
+					Engine.const(["r"]),
+					|r| r,
+					|_| Engine.element("button", [Engine.on_click(st.lift_row().update(|s| ControlsApp.log(s, "one"))), Engine.on_click(st.lift_row().update(|s| ControlsApp.log(s, "two")))], [Engine.text("Twice in a row")]),
+				),
+				|| Engine.text(""),
+			),
 			Engine.element("p", [Engine.test_id("state")], [Engine.text_v(st.val().map(|s| "${s.plain}|${s.upper}"))]),
 			Engine.element("pre", [Engine.test_id("log")], [Engine.text_v(st.val().map(|s| Str.join_with(s.log, "|")))]),
 		],
 	)
 
 	## The program `main.roc` binds for the browser module and the native spec
-	## runner, and `main-fuzz.roc` drives as a roc-fuzz target.
+	## runner, and `fuzz-controls.roc` drives as a roc-fuzz target.
 	program : Engine.Program
 	program = Engine.program(|| ControlsApp.main({}))
 
 	main : {} -> Elem(Root)
-	main = |_| Engine.state({ plain: "hello world", upper: "", log: [], ask: { serial: 0, req: None }, rows: [] }, |st| ControlsApp.view(st))
+	main = |_| Engine.state({ plain: "hello world", upper: "", log: [], ask: { serial: 0, req: None }, rows: [], twice: Neither }, |st| ControlsApp.view(st))
 }

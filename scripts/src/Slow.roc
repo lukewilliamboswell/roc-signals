@@ -34,6 +34,7 @@ Slow := [].{
 		{ example: "million-row-explorer", spec: "round-trip-clear-and-restore-a-category" },
 		{ example: "supersede", spec: "round-trip-late-branch" },
 		{ example: "worker-search", spec: "round-trip-search-and-report" },
+		{ example: "table", spec: "round-trip-edit-scroll-and-rewrite" },
 	]
 
 	## How many times a native soak repeats its round trip.

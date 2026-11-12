@@ -16,11 +16,14 @@ import pf.Worker
 ## The tree is at most 5 deep and 40 nodes, over every site kind; the only
 ## awaited requests are timers and worker jobs:
 ## - `Show(i)`: a text reading a visible layer; `Bump(i)`: a button whose
-##   click adds 1 to a writable layer (a `state`, or a component's outward
-##   action that the caller's sink turns into the same write);
-##   `Bump2(i, j)`: inside a component, a button that pushes two actions in
-##   one click, so the caller's sink writes two of its layers in one turn
-##   (elsewhere, and in mode 0, it is a `Bump(i)`);
+##   click adds 1 to a writable layer (a `state`); `Bump2(i, j)`: a button
+##   whose click adds 1 to two writable layers as one event, one handler
+##   composed of both writes (in mode 0 it is a `Bump(i)`);
+## - `Pair(i, j)`: a `derive` of visible layer `i` and, below it, a text and
+##   a `watch` that read layer `i`, the derived value and layer `j` together,
+##   as `pair x~d~y`. Whatever an event writes, `d` is `x * 2 + 1` once every
+##   write is in place and the `derive` has followed, so a text or a title
+##   in which it is not is one new value seen beside one old one;
 ## - `When(i, yes, no)` on a layer's parity and `Switch(i, a, b, c)` on it
 ##   modulo 3;
 ## - `Layer(kind, i, body)`: a `state`, a `derive` of a layer, a `resource`
@@ -29,21 +32,25 @@ import pf.Worker
 ##   input and folds its output, its loss or its timeout; each shows its own
 ##   value and a `state` gets a button of its own;
 ## - `Each(i, body)`: rows whose keys are a layer-dependent permutation, each
-##   row showing its key and holding `body` in a component;
-## - `Comp(body)`: a component whose prop is every visible layer and whose
-##   actions write every visible writable;
+##   row showing its key and holding `body`;
 ## - `Watch(k, i)`: a `watch`, `on_change` or `latest` that sets the title.
 ##
-## Outside components, layers nest at most three deep below the root state
-## (the generator's typed levels); deeper layers and every `Each` row and
-## `Comp` body go through a component, whose body has the same three levels
-## again. That keeps the generator monomorphic: a recursive generator over
-## the typed contexts would need polymorphic recursion (roc-lang/roc#12835).
+## The contexts a tree can nest through are typed by hand (the generator's
+## levels): three layers below the root state, a row at each of the first
+## three levels, and one layer inside a row. Below the last level a `Layer`
+## or an `Each` draws its body in place and adds no scope. That keeps the
+## generator monomorphic: a recursive generator over the typed contexts
+## would need polymorphic recursion (roc-lang/roc#12835).
 ##
 ## The session clicks any live button or answers any live request: a timer
 ## fires; a worker job is answered by its task's stand-in (`triple`), or is lost
 ## (`WorkLost(AppCrash)`) or times out. Oracles:
 ## - every step leaves the engine settled (`Core.settled`);
+## - no reader sees an event half applied: a turn writes a node at most
+##   once and never writes a node it created, and every title a `Pair` sets
+##   names a derived value that follows its layer. A reader evaluated
+##   between two of an event's writes, or before a `derive` above it has
+##   followed one of them, breaks one of the two;
 ## - in mode 0 every write goes to the root state (other states stay at
 ##   their initial value and resources issue nothing), so the page is a
 ##   function of the root's value: after every step the rendered DOM must
@@ -54,11 +61,11 @@ Node := [
 	Show(U64),
 	Bump(U64),
 	Bump2(U64, U64),
+	Pair(U64, U64),
 	When(U64, List(Node), List(Node)),
 	Switch(U64, List(Node), List(Node), List(Node)),
 	Layer(U64, U64, List(Node)),
 	Each(U64, List(Node)),
-	Comp(List(Node)),
 	Watch(U64, U64),
 ]
 
@@ -90,7 +97,13 @@ node = |d0, depth| {
 	(b, d1) = next(d0)
 	(i, d2) = next(d1)
 	match b % 10 {
-		0 | 1 => (Show(i), d2)
+		0 | 1 =>
+			if (b // 10) % 2 == 0 {
+				(Show(i), d2)
+			} else {
+				(j, d3) = next(d2)
+				(Pair(i, j), d3)
+			}
 		2 =>
 			if (b // 10) % 2 == 0 {
 				(Bump(i), d2)
@@ -113,13 +126,9 @@ node = |d0, depth| {
 			(body, d3) = nodes(d2, depth)
 			(Layer(b // 10, i, body), d3)
 		}
-		7 => {
+		7 | 8 => {
 			(body, d3) = nodes(d2, depth)
 			(Each(i, body), d3)
-		}
-		8 => {
-			(body, d3) = nodes(d2, depth)
-			(Comp(body), d3)
 		}
 		_ => (Watch(b // 10, i), d2)
 	}
@@ -130,18 +139,17 @@ decode = |bytes| nodes({ bytes, pos: 0, left: 40 }, 5).0
 
 # ---------------------------------------------------------------- generating
 
-## A writable layer: a state, or a component's action `j`.
-Wr(ctx) : [St(Core.State(ctx, U64)), Out(Core.State(ctx, List(U64)), U64)]
-
 ## What a node can read and write where it is built. `pure`: writes go to the
 ## root only and resources issue nothing (mode 0).
-G(ctx) : { vals : List(Core.Val(ctx, U64)), wrs : List(Wr(ctx)), pure : Bool }
+G(ctx) : { vals : List(Core.Val(ctx, U64)), wrs : List(Core.State(ctx, U64)), pure : Bool }
 
-## The context of every component body.
-C0 : Core.Comp(List(U64), U64)
-
-## How to build what nests below a layer, and a component body.
-Inner(ctx) : { layer : (List(Node), G(Core.In(ctx, U64)) -> Core.Elem(Core.In(ctx, U64))), comp : (List(Node), G(C0) -> Core.Elem(C0)) }
+## How to build what nests below a layer and inside a row, at a level that
+## has typed levels below it; at the bottom, a layer's or a row's body is
+## drawn in place.
+Inner(ctx) : [
+	Below({ layer : (List(Node), G(Core.In(ctx, U64)) -> Core.Elem(Core.In(ctx, U64))), row : (List(Node), G(Core.Row(ctx, U64)) -> Core.Elem(Core.Row(ctx, U64))) }),
+	Bottom,
+]
 
 ## 0, 1, ... `n - 1`.
 upto : U64 -> List(U64)
@@ -161,67 +169,17 @@ pick = |l, i, fallback| l.get(i % l.len().max(1)) ?? fallback
 val_of : G(ctx), U64 -> Core.Val(ctx, U64)
 val_of = |g, i| pick(g.vals, i, Core.const(0))
 
-lift_wr : Wr(ctx) -> Wr(Core.In(ctx, U64))
-lift_wr = |w| match w {
-	St(s) => St(s.lift())
-	Out(o, j) => Out(o.lift(), j)
-}
-
-lift_wr_row : Wr(ctx) -> Wr(Core.Row(ctx, U64))
-lift_wr_row = |w| match w {
-	St(s) => St(s.lift_row())
-	Out(o, j) => Out(o.lift_row(), j)
-}
-
-bump_of : Wr(ctx) -> Core.Handler(ctx)
-bump_of = |w| match w {
-	St(s) => s.update(|n| n + 1)
-	Out(o, j) => o.push(j)
-}
-
-sink_one : Wr(ctx) -> Core.Sink(ctx, {})
-sink_one = |w| match w {
-	St(s) => Core.sink(s, |n, _| n + 1)
-	Out(o, j) => Core.sink(o, |l, _| l.append(j))
-}
-
-## Action `i` writes the `i`-th writable.
-sink_of : List(Wr(ctx)) -> Core.Sink(ctx, U64)
-sink_of = |wrs| match wrs {
-	[] => Core.discard({})
-	[w, .. as rest] => Core.split(sink_one(w), sink_of(rest), |i| if (i == 0) L({}) else R(i - 1))
-}
-
 ## A button whose click adds 1 to writable `i` (none when nothing is
 ## writable).
 bump_button : G(ctx), U64 -> Core.Elem(ctx)
 bump_button = |g, i|
 	match g.wrs.get(i % g.wrs.len().max(1)) {
-		Ok(w) => Core.element("button", [Core.on_click(bump_of(w))], [Core.text("+")])
+		Ok(w) => Core.element("button", [Core.on_click(w.update(|n| n + 1))], [Core.text("+")])
 		Err(_) => Core.text("-")
 	}
 
 show : Core.Val(ctx, U64) -> Core.Elem(ctx)
 show = |v| Core.text_v(v.map(|n| n.to_str()))
-
-## A component over everything `g` sees: the prop lists the visible layers,
-## action `j` writes writable `j`.
-via_comp : List(Node), G(ctx), (List(Node), G(C0) -> Core.Elem(C0)) -> Core.Elem(ctx)
-via_comp = |ns, g, comp| {
-	prop = g.vals.fold(Core.const([]), |acc, v| acc.map2(v, |l, x| l.append(x)))
-	nv = g.vals.len()
-	nw = g.wrs.len()
-	pure = g.pure
-	Core.component(
-		prop,
-		sink_of(g.wrs),
-		|p, out| {
-			vals = upto(nv).map(|k| p.map(|l| l.get(k) ?? 0))
-			wrs = upto(nw).map(|k| Out(out, k))
-			comp(ns, { vals, wrs, pure })
-		},
-	)
-}
 
 flat_list : List(Node), G(ctx), Inner(ctx) -> Core.Elem(ctx)
 flat_list = |ns, g, inner| Core.element("div", [], ns.map(|n| flat(n, g, inner)))
@@ -233,59 +191,74 @@ flat = |n, g, inner| match n {
 	Bump2(i, j) => {
 		count = g.wrs.len().max(1)
 		match (g.wrs.get(i % count), g.wrs.get(j % count)) {
-			(Ok(Out(o, a)), Ok(Out(_, b))) if !g.pure => Core.element("button", [Core.on_click(o.update(|l| l.append(a).append(b)))], [Core.text("++")])
+			(Ok(first), Ok(second)) if !g.pure => Core.element("button", [Core.on_click(first.update(|x| x + 1).also(second.update(|x| x + 1)))], [Core.text("++")])
 			_ => bump_button(g, i)
 		}
 	}
+	Pair(i, j) => {
+		layer_i = val_of(g, i)
+		layer_j = val_of(g, j)
+		Core.derive(
+			layer_i.map(|x| x * 2 + 1),
+			|d| {
+				tied = layer_i.lift().map2(d, |x, twice| "${x.to_str()}~${twice.to_str()}")
+				seen = tied.map2(layer_j.lift(), |both, y| "${pair_mark}${both}~${y.to_str()}")
+				Core.element("p", [], [Core.text_v(seen), Core.watch(seen, |text| [Title(text)], Core.ignore({}))])
+			},
+		)
+	}
 	When(i, yes, no) => Core.when(val_of(g, i).map(|x| x % 2 == 0), || flat_list(yes, g, inner), || flat_list(no, g, inner))
 	Switch(i, a, b, c) => Core.switch(val_of(g, i).map(|x| x % 3), [0, 1, 2], |k| flat_list(if (k == 0) a else if (k == 1) b else c, g, inner))
-	Layer(kind, i, body) => {
-		v = val_of(g, i)
-		lifted = g.vals.map(|x| x.lift())
-		lwrs = g.wrs.map(lift_wr)
-		pure = g.pure
-		layer = inner.layer
-		k = kind % 5
-		if k == 0 {
-			Core.state(
-				0.U64,
-				|st| {
-					own = if (pure) [] else [Core.element("button", [Core.on_click(st.update(|x| x + 1))], [Core.text("+")])]
-					g2 = { vals: lifted.append(st.val()), wrs: if (pure) lwrs else lwrs.append(St(st)), pure }
-					Core.element("p", [], [show(st.val())].concat(own).append(layer(body, g2)))
-				},
-			)
-		} else if k == 1 {
-			Core.derive(v.map(|x| x * 2 + 1), |d| Core.element("p", [], [show(d), layer(body, { vals: lifted.append(d), wrs: lwrs, pure })]))
-		} else if k == 2 or pure {
-			Core.resource(v, { init: 0.U64, pending: |_, a| a + 7, plan: |_| [], resolve: |s, _, _| s }, |r| Core.element("p", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
-		} else if k == 3 {
-			Core.resource(v, { init: 0.U64, pending: |_, a| a * 10, plan: |_| [Timer(10)], resolve: |s, _, _| s + 1 }, |r| Core.element("p", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
-		} else {
-			Core.resource(v, job_cfg, |r| Core.element("p", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
+	Layer(kind, i, body) => match inner {
+		Bottom => flat_list(body, g, Bottom)
+		Below({ layer, .. }) => {
+			v = val_of(g, i)
+			lifted = g.vals.map(|x| x.lift())
+			lwrs = g.wrs.map(|w| w.lift())
+			pure = g.pure
+			k = kind % 5
+			if k == 0 {
+				Core.state(
+					0.U64,
+					|st| {
+						own = if (pure) [] else [Core.element("button", [Core.on_click(st.update(|x| x + 1))], [Core.text("+")])]
+						g2 = { vals: lifted.append(st.val()), wrs: if (pure) lwrs else lwrs.append(st), pure }
+						Core.element("p", [], [show(st.val())].concat(own).append(layer(body, g2)))
+					},
+				)
+			} else if k == 1 {
+				Core.derive(v.map(|x| x * 2 + 1), |d| Core.element("p", [], [show(d), layer(body, { vals: lifted.append(d), wrs: lwrs, pure })]))
+			} else if k == 2 or pure {
+				Core.resource(v, { init: 0.U64, pending: |_, a| a + 7, plan: |_| [], resolve: |s, _, _| s }, |r| Core.element("p", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
+			} else if k == 3 {
+				Core.resource(v, { init: 0.U64, pending: |_, a| a * 10, plan: |_| [Timer(10)], resolve: |s, _, _| s + 1 }, |r| Core.element("p", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
+			} else {
+				Core.resource(v, job_cfg, |r| Core.element("p", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
+			}
 		}
 	}
-	Each(i, body) => {
-		rows = val_of(g, i).map(
-			|x| {
-				upto(x % 5).map(|j| (j * (x + 3) + x) % 7).fold([], |acc, k| if (acc.contains(k)) acc else acc.append(k))
-			},
-		)
-		vals = g.vals
-		wrs = g.wrs
-		pure = g.pure
-		comp = inner.comp
-		Core.each(
-			rows,
-			|k| k.to_str(),
-			|row| {
-				item = row.field(|k| k)
-				g2 = { vals: vals.map(|x| x.lift_row()).append(item), wrs: wrs.map(lift_wr_row), pure }
-				Core.element("li", [], [show(item), via_comp(body, g2, comp)])
-			},
-		)
+	Each(i, body) => match inner {
+		Bottom => flat_list(body, g, Bottom)
+		Below({ row, .. }) => {
+			rows = val_of(g, i).map(
+				|x| {
+					upto(x % 5).map(|j| (j * (x + 3) + x) % 7).fold([], |acc, k| if (acc.contains(k)) acc else acc.append(k))
+				},
+			)
+			vals = g.vals
+			wrs = g.wrs
+			pure = g.pure
+			Core.each(
+				rows,
+				|k| k.to_str(),
+				|r| {
+					item = r.field(|k| k)
+					g2 = { vals: vals.map(|x| x.lift_row()).append(item), wrs: wrs.map(|w| w.lift_row()), pure }
+					Core.element("li", [], [show(item), row(body, g2)])
+				},
+			)
+		}
 	}
-	Comp(body) => via_comp(body, g, inner.comp)
 	Watch(k, i) => {
 		v = val_of(g, i)
 		plan = |x| [Title("t${x.to_str()}")]
@@ -298,6 +271,23 @@ flat = |n, g, inner| match n {
 		}
 	}
 }
+
+## What a `Pair`'s text and title begin with.
+pair_mark : Str
+pair_mark = "pair "
+
+## Whether a title is a `Pair`'s and names a derived value that does not
+## follow its layer: `pair x~d~y` with `d` other than `x * 2 + 1`.
+unpaired : Str -> Bool
+unpaired = |title|
+	if title.starts_with(pair_mark) {
+		match title.drop_prefix(pair_mark).split_on("~") {
+			[x, d, ..] => (U64.from_str(d) ?? 0) != (U64.from_str(x) ?? 0) * 2 + 1
+			_ => Bool.True
+		}
+	} else {
+		Bool.False
+	}
 
 ## Every input byte tripled: the one worker task's calculation.
 triple : List(U8) -> List(U8)
@@ -336,11 +326,11 @@ job_cfg = {
 	},
 }
 
-# The typed levels. Layers outside a component nest three deep below the
-# root state (R1); a component body (C0) has three levels of its own. The
-# deepest level's layers and every component body go through `via_comp`.
+# The typed levels. Below the root state (R1) layers nest three deep (R2 to
+# R4). Each of the first three levels can hold rows (W1 to W3), and a row
+# one layer of its own (V1 to V3). Past those, a body is drawn in place.
 
-R1 : Core.In(Core.Root, U64)
+R1 : Core.In(Core.Root({}), U64)
 
 R2 : Core.In(R1, U64)
 
@@ -348,35 +338,51 @@ R3 : Core.In(R2, U64)
 
 R4 : Core.In(R3, U64)
 
-C1 : Core.In(C0, U64)
+W1 : Core.Row(R1, U64)
 
-C2 : Core.In(C1, U64)
+W2 : Core.Row(R2, U64)
 
-C3 : Core.In(C2, U64)
+W3 : Core.Row(R3, U64)
 
-comp_top : List(Node), G(C0) -> Core.Elem(C0)
-comp_top = |ns, g| flat_list(ns, g, { layer: comp_l2, comp: comp_top })
+V1 : Core.In(W1, U64)
 
-comp_l2 : List(Node), G(C1) -> Core.Elem(C1)
-comp_l2 = |ns, g| flat_list(ns, g, { layer: comp_l3, comp: comp_top })
+V2 : Core.In(W2, U64)
 
-comp_l3 : List(Node), G(C2) -> Core.Elem(C2)
-comp_l3 = |ns, g| flat_list(ns, g, { layer: comp_deep, comp: comp_top })
+V3 : Core.In(W3, U64)
 
-comp_deep : List(Node), G(C3) -> Core.Elem(C3)
-comp_deep = |ns, g| via_comp(ns, g, comp_top)
+## The last level of any path: what nests below it is drawn in place.
+bottom : List(Node), G(ctx) -> Core.Elem(ctx)
+bottom = |ns, g| flat_list(ns, g, Bottom)
 
 root_l2 : List(Node), G(R2) -> Core.Elem(R2)
-root_l2 = |ns, g| flat_list(ns, g, { layer: root_l3, comp: comp_top })
+root_l2 = |ns, g| flat_list(ns, g, Below({ layer: root_l3, row: row_2 }))
 
 root_l3 : List(Node), G(R3) -> Core.Elem(R3)
-root_l3 = |ns, g| flat_list(ns, g, { layer: root_deep, comp: comp_top })
+root_l3 = |ns, g| flat_list(ns, g, Below({ layer: root_l4, row: row_3 }))
 
-root_deep : List(Node), G(R4) -> Core.Elem(R4)
-root_deep = |ns, g| via_comp(ns, g, comp_top)
+root_l4 : List(Node), G(R4) -> Core.Elem(R4)
+root_l4 = |ns, g| flat_list(ns, g, Below({ layer: bottom, row: bottom }))
+
+row_1 : List(Node), G(W1) -> Core.Elem(W1)
+row_1 = |ns, g| flat_list(ns, g, Below({ layer: row_1_layer, row: bottom }))
+
+row_1_layer : List(Node), G(V1) -> Core.Elem(V1)
+row_1_layer = |ns, g| flat_list(ns, g, Below({ layer: bottom, row: bottom }))
+
+row_2 : List(Node), G(W2) -> Core.Elem(W2)
+row_2 = |ns, g| flat_list(ns, g, Below({ layer: row_2_layer, row: bottom }))
+
+row_2_layer : List(Node), G(V2) -> Core.Elem(V2)
+row_2_layer = |ns, g| flat_list(ns, g, Below({ layer: bottom, row: bottom }))
+
+row_3 : List(Node), G(W3) -> Core.Elem(W3)
+row_3 = |ns, g| flat_list(ns, g, Below({ layer: row_3_layer, row: bottom }))
+
+row_3_layer : List(Node), G(V3) -> Core.Elem(V3)
+row_3_layer = |ns, g| flat_list(ns, g, Below({ layer: bottom, row: bottom }))
 
 ## The page: the root state starting at `init`, then the tree.
-view : List(Node), Bool, U64 -> Core.Elem(Core.Root)
+view : List(Node), Bool, U64 -> Core.Elem(Core.Root({}))
 view = |tree, pure, init| Core.state(
 	init,
 	|st| Core.element(
@@ -385,7 +391,7 @@ view = |tree, pure, init| Core.state(
 		[
 			show(st.val()),
 			Core.element("button", [Core.on_click(st.update(|x| x + 1))], [Core.text("+")]),
-			flat_list(tree, { vals: [st.val()], wrs: [St(st)], pure }, { layer: root_l2, comp: comp_top }),
+			flat_list(tree, { vals: [st.val()], wrs: [st], pure }, Below({ layer: root_l2, row: row_1 })),
 		],
 	),
 )
@@ -402,14 +408,23 @@ mount : List(Node), Bool, U64 -> S
 mount = |tree, pure, init| {
 	program = Core.program(|| view(tree, pure, init)).with_workers([tripler.registration()])
 	(a, c, _) = (Core.driver(program).init)([])
-	absorb({ eng: a, dom: Dom.new({}), clicks: 0, jobs: [] }, a, c)
+	absorb({ eng: a, dom: Dom.new({}), clicks: 0, jobs: [] }, a, c, "")
 }
 
 ## Apply one batch to the oracle, keeping track of the worker jobs it issued
-## or cancelled.
-absorb : S, Core.App, List(U8) -> S
-absorb = |s, a, c| {
-	(dom, _, fx) = Dom.apply_fx(s.dom, c)
+## or cancelled. `what` names the step the batch answers, or is "" for the
+## mount: a step's batch must show no reader that saw the step half applied
+## (`half_seen`).
+absorb : S, Core.App, List(U8), Str -> S
+absorb = |s, a, c, what| {
+	{ dom, fx, written, .. } = Dom.apply_full(s.dom, c)
+	if !what.is_empty() {
+		turns = (Core.work_counters(a).get(turns_at) ?? 0) - (Core.work_counters(s.eng).get(turns_at) ?? 0)
+		match half_seen(s.dom.nodes.len(), written, fx, turns) {
+			Ok(_) => {}
+			Err(why) => crash "${what}: ${why}"
+		}
+	}
 	jobs = fx.fold(
 		s.jobs,
 		|acc, cmd| match cmd {
@@ -419,6 +434,43 @@ absorb = |s, a, c| {
 		},
 	)
 	{ ..s, eng: a, dom, jobs }
+}
+
+## The index of the turns counter in the engine's work record (design.md,
+## Appendix B).
+turns_at : U64
+turns_at = 30
+
+## What in one step's batch shows a reader that saw the step half applied.
+## `held` is how many nodes the oracle held before the batch, `written` the
+## node each text or attribute command wrote, in order, and `turns` how many
+## turns the call ran. A title is judged whatever the batch holds. The node
+## rules are one turn's: a call that also delivers refusals queued behind
+## the step runs a turn for each, and a later turn may write a node again.
+half_seen : U64, List(U64), List(Dom.FxCmd), U64 -> Try({}, Str)
+half_seen = |held, written, fx, turns| {
+	for cmd in fx {
+		match cmd {
+			Title(title) =>
+				if unpaired(title) {
+					return Err("a watch was issued for \"${title}\", a derived value beside a layer it does not follow")
+				}
+			_ => {}
+		}
+	}
+	if turns == 1 {
+		var $seen = []
+		for at in written {
+			if at >= held {
+				return Err("node ${at.to_str()} was created by the turn and then written again by it")
+			}
+			if $seen.contains(at) {
+				return Err("node ${at.to_str()} was written twice in one turn")
+			}
+			$seen = $seen.append(at)
+		}
+	}
+	Ok({})
 }
 
 ## The DOM as markup with each element's attributes sorted, so two models
@@ -488,7 +540,8 @@ step = |s, op, b| {
 					Err(_) => (Fired, "fire timer")
 				}
 				(a, c) = Core.take_cmds(Core.result(s.eng, id, res), [])
-				(absorb({ ..s, jobs: s.jobs.keep_if(|(j, _)| j != id) }, a, c), "${what} ${id.to_str()}")
+				named = "${what} ${id.to_str()}"
+				(absorb({ ..s, jobs: s.jobs.keep_if(|(j, _)| j != id) }, a, c, named), named)
 			}
 			Err(_) => (s, "no answer")
 		}
@@ -499,7 +552,8 @@ step = |s, op, b| {
 				match Dom.target(s.dom, i, ev) {
 					Ok((id, h)) => {
 						(a, c) = Core.take_cmds(Core.event(s.eng, id, h, ""), [])
-						(absorb({ ..s, clicks: s.clicks + 1 }, a, c), "click node ${id.to_str()}")
+						named = "click node ${id.to_str()}"
+						(absorb({ ..s, clicks: s.clicks + 1 }, a, c, named), named)
 					}
 					Err(_) => (s, "no handler")
 				}
@@ -561,13 +615,17 @@ target = Fuzz.target_with!({
 	name: "structure",
 	examples: [
 		# `When(0, [Show(0)], [Layer(state, 0, [Show(1), Bump(1)])])`: a state
-		# that exists only in the branch the `when` mounts second, outside any
-		# component, written by its own button and by a `Bump`.
+		# that exists only in the branch the `when` mounts second, written by
+		# its own button and by a `Bump`.
 		ex("late-state", 1, [1, 3, 0, 1, 0, 0, 1, 5, 0, 2, 0, 1, 2, 1], [0, 0, 0, 1, 0, 2, 0, 1, 0, 0, 0, 1]),
-		# `Comp([Layer(state, 0, [Layer(state, 0, [Comp([Bump2(1, 2)])])])])`:
-		# one click pushes two actions that the sink routes to two nested
-		# states of a component body, written in one turn (issue #175).
-		ex("two-writes", 1, [1, 8, 0, 1, 5, 0, 1, 5, 0, 1, 8, 0, 1, 12, 1, 2], [0, 0, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5]),
+		# `Layer(state, 0, [Layer(state, 0, [Bump2(1, 2)])])`: one click
+		# writes two nested states in one turn (issue #175).
+		ex("two-writes", 1, [1, 5, 0, 1, 5, 0, 1, 12, 1, 2], [0, 0, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5]),
+		# `Layer(state, 0, [Layer(state, 0, [Bump2(1, 2), Pair(2, 1), Pair(1, 2)])])`:
+		# one click writes two nested states, and below both a text and a
+		# watch read each with a derive of the other. Clicks 3 is the button
+		# that writes both; 1 and 2 write one each; 0 the root.
+		ex("pairs", 1, [1, 5, 0, 1, 5, 0, 3, 12, 1, 2, 10, 2, 1, 10, 1, 2], [0, 3, 0, 3, 0, 1, 0, 3, 0, 2, 0, 3, 0, 0, 0, 3]),
 		ex("series", 2, [], []),
 	],
 	generator: { mode: Fuzz.u8_in(0, 1), tree: Fuzz.list(Fuzz.u8, 80), events: Fuzz.list(Fuzz.u8, 80) }.Fuzz,
