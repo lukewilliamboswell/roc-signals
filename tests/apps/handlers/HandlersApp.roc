@@ -9,7 +9,8 @@ import pf.Html
 ##   its owner. Its one button closes the picker and runs the owner's
 ##   handler, which writes the owner's `date` state, as one event.
 ## - "n+1, then double" writes one counter twice in one event: the second
-##   write sees the first.
+##   write sees the first. Its I64 arithmetic wraps so long sessions stay
+##   defined after repeated doubling reaches the integer boundary.
 ## - "Both" writes the owner's two states in one event.
 ## - A timer's answer writes a count and a log through one composed
 ##   reaction.
@@ -79,7 +80,7 @@ HandlersApp := [].{
 			"counter",
 			[
 				HandlersApp.reader("n", n.val().map(|v| v.to_str())),
-				Html.button("n+1, then double", [], n.update(|v| v + 1).also(n.update(|v| v * 2))),
+				Html.button("n+1, then double", [], n.update(|v| v.plus_wrap(1)).also(n.update(|v| v.times_wrap(2)))),
 			],
 		),
 	)
