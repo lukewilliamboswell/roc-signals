@@ -331,6 +331,10 @@
   target of that logic named for what it checks (`fuzz-<subject>.roc`)
   that imports nothing of the platform. Nothing in an example exists only
   so a platform test can drive it, and no public API exists only for one.
+- Run applicable roc-fuzz smoke checks; do not replace them with compiler
+  checks or ordinary `expect` tests. Deferring a campaign does not defer the
+  fixed-example replays. Compiler, linker and replay failures fail the check,
+  rather than exempting the target.
 - Reach for fuzzing where the bug class is a *sequence* rather than a case:
   reconciliation order, identity reuse across disposal, effect lifetime across
   disposal and reparenting, a table view kept from a long history of keyed writes,
