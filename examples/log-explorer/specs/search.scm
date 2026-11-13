@@ -36,6 +36,7 @@
     (expect-text (test-id "line-4") "    at Pool.acquire (pool.roc:88)")
     ; A result opens the viewer at its line.
     (click (role button :name "Show line 4"))
+    (report-size (test-id "viewer-viewport") 800 1000)
     (expect-pending-work "roc-signals.example/log-explorer/window" 1)
     (run-effect 7)
     (expect-text (test-id "viewer-status") "Lines 4–53 of 200.")

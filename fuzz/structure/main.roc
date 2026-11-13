@@ -22,6 +22,8 @@ import pf.Worker
 ##   click adds 1 to a writable layer (a `state`); `Bump2(i, j)`: a button
 ##   whose click adds 1 to two writable layers as one event, one handler
 ##   composed of both writes (in mode 0 it is a `Bump(i)`);
+##   Bump buttons also own size/seen observations; they follow the same
+##   varied conditional, nested-layer and row lifetimes as their controls.
 ## - `Pair(i, j)`: a `derive` of visible layer `i` and, below it, a text and
 ##   a `watch` that read layer `i`, the derived value and layer `j` together,
 ##   as `pair x~d~y`. Whatever an event writes, `d` is `x * 2 + 1` once every
@@ -180,7 +182,7 @@ val_of = |g, i| pick(g.vals, i, Core.const(0))
 bump_button : G(ctx), U64 -> Core.Elem(ctx)
 bump_button = |g, i|
 	match g.wrs.get(i % g.wrs.len().max(1)) {
-		Ok(w) => Core.element("button", [Core.on_with("click", { prevent: i % 2 == 0, stop: i % 3 == 0 }, w.update(|n| n + 1))], [Core.text("+")])
+		Ok(w) => Core.element("button", [Core.on_with("click", { prevent: i % 2 == 0, stop: i % 3 == 0 }, w.update(|n| n + 1)), Core.on_size(w.update(|value| value)), Core.on_seen({ ahead: i % 2 == 0 }, w.update(|value| value))], [Core.text("+")])
 		Err(_) => Core.text("-")
 	}
 
@@ -466,6 +468,10 @@ mount = |tree, pure, init| {
 absorb : S, Core.App, List(U8), Str -> S
 absorb = |s, a, c, what| {
 	{ dom, fx, written, .. } = Dom.apply_full(s.dom, c)
+	observed = Core.work_counters(a).get(44) ?? crash "structure: observation gauge is missing"
+	if observed != dom.observed_count {
+		crash "${what}: engine observation gauge ${observed.to_str()} differs from oracle ${dom.observed_count.to_str()}"
+	}
 	if !what.is_empty() {
 		turns = (Core.work_counters(a).get(turns_at) ?? 0) - (Core.work_counters(s.eng).get(turns_at) ?? 0)
 		match half_seen(s.dom.nodes.len(), written, fx, turns) {
@@ -648,7 +654,9 @@ series = |seed, count| {
 
 test! : Input => Fuzz.Outcome
 test! = |{ mode, tree, events }| {
-	if mode == 2 {
+	if mode == 3 {
+		Fuzz.expect_no_leaks!(|| observation_release_case({}))
+	} else if mode == 2 {
 		Fuzz.expect_no_leaks!(|| series(11 + tree.len().to_u64(), 400))
 	} else {
 		Fuzz.expect_no_leaks!(|| run(decode(tree), mode == 0, events))
@@ -676,6 +684,8 @@ target = Fuzz.target_with!({
 		ex("pairs", 1, [1, 5, 0, 1, 5, 0, 3, 12, 1, 2, 10, 2, 1, 10, 1, 2], [0, 3, 0, 3, 0, 1, 0, 3, 0, 2, 0, 3, 0, 0, 0, 3]),
 		ex("document-release", 0, [1, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0]),
 		ex("properties-in-rows", 0, [1, 7, 0, 1, 20, 0], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+		ex("observation-release", 3, [], []),
+		ex("observations-in-rows", 0, [1, 7, 0, 1, 2, 0], [0, 0, 0, 0, 0, 0, 0, 0]),
 		ex("series", 2, [], []),
 	],
 	generator: { mode: Fuzz.u8_in(0, 1), tree: Fuzz.list(Fuzz.u8, 80), events: Fuzz.list(Fuzz.u8, 80) }.Fuzz,
@@ -686,3 +696,66 @@ target = Fuzz.target_with!({
 ## Ordinary root turns repeatedly dispose generated document shortcuts. The
 ## independent DOM oracle refuses any detached declaration without RELEASE.
 expect run([Show(0), When(0, [Show(0)], [])], Bool.True, [0, 0, 0, 0, 0, 0, 0, 0]) == {}
+
+## A branch owns both ordinary and template observations, including nested
+## row state. Closing, reopening and closing it leaves no registration alive.
+observation_release_case : {} -> {}
+observation_release_case = |_props| {
+	program = Core.program(
+		|| Core.state(
+			True,
+			|visible| Core.element(
+				"main",
+				[],
+				[
+					Core.element("button", [Core.on_click(visible.update(|value| !value))], []),
+					Core.when(
+						visible.signal(),
+						|| Core.element(
+							"section",
+							[Core.on_size(visible.update(|value| value))],
+							[
+								Core.each(
+									Core.const([1.U64, 2]),
+									|key| key.to_str(),
+									|_row| Core.element(
+										"article",
+										[Core.on_size(visible.lift_row().update(|value| value)), Core.on_seen({ ahead: True }, visible.lift_row().update(|value| value))],
+										[
+											Core.state(0.U64, |local| Core.element("span", [Core.on_seen({}, local.update(|value| value))], [])),
+										],
+									),
+								),
+							],
+						),
+						|| Core.text(""),
+					),
+				],
+			),
+		),
+	)
+	(initial, commands, _) = (Core.driver(program).init)([])
+	var $engine = initial
+	var $dom = Dom.apply(Dom.new({}), commands)
+	if $dom.observed_count != 7 or Core.work_counters($engine).get(44) != Ok(7) {
+		crash "structure: initial observation count must be seven"
+	}
+	var $turn = 0.U64
+	while $turn < 3 {
+		button = Dom.find($dom, $dom.root, |n| n.tag == "button") ?? crash "structure: stable close control"
+		listener = Dom.target($dom, button, "click", True) ?? crash "structure: stable close handler"
+		(engine_after, emitted) = Core.take_cmds(Core.event($engine, listener.node, listener.handler, ""), [])
+		$engine = engine_after
+		$dom = Dom.apply($dom, emitted)
+		want = if ($turn % 2 == 0) 0.U64 else 7
+		if $dom.observed_count != want or Core.work_counters($engine).get(44) != Ok(want) {
+			crash "structure: scope disposal or remount lost observation ownership"
+		}
+		$turn = $turn + 1
+	}
+	{}
+}
+
+## The independent oracle and the engine both reach zero after a nested
+## observed branch, its template descendants and its row states are disposed.
+expect observation_release_case({}) == {}

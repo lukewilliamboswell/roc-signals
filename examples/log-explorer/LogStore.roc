@@ -1,6 +1,7 @@
 import pf.Engine exposing [File]
 import pf.Worker
 import Log
+import TimelineChart
 
 ## The Log Explorer's store: the open log and where the reader is in it,
 ## held at the root and read by every tab with no `lift`, and every
@@ -13,6 +14,9 @@ import Log
 ## - `place`: where the reader is in the open log, the search's page and
 ##   the viewer's first line. A group, because a new log starts both from
 ##   its beginning: `opened` applies the reset the description generated.
+## - `viewport`: the capacity of the observed viewer, kept across tabs.
+##   It waits for the first report before asking for a window.
+## - `theme`: the declared color-scheme query, starting from boot.
 ## - `generating`: the sample being written, if one is.
 ## - `note`: why the last request for a sample gave no log.
 ##
@@ -44,6 +48,10 @@ LogStore := [Explorer].{
 				page: Engine.cell(0.U64),
 				first: Engine.cell(0.U64),
 			}.Engine.Cells.with_reset(|cells, reset| { page: cells.page, first: cells.first, reset }),
+			viewport: Engine.cell(Log.Viewport.waiting),
+			# Construct the full union: an open Light initializer crashes monotype
+			# across store tests (https://github.com/roc-lang/roc/issues/13011).
+			theme: Engine.cell(TimelineChart.preferred_theme(Bool.False)),
 			generating: Engine.cell(Idle),
 			note: Engine.cell(NoNote),
 		}.Engine.Cells,
@@ -51,6 +59,28 @@ LogStore := [Explorer].{
 
 	## The store's cells.
 	cells = LogStore.store.cells()
+
+	## The query the timeline follows, declared before boot reads it.
+	dark_query : Str
+	dark_query = "(prefers-color-scheme: dark)"
+
+	## The first figure already uses the declared boot preference.
+	start : Engine.Boot -> Engine.Store(_, _)
+	start = |boot| match Engine.boot_media(boot, LogStore.dark_query) {
+		Ok(matches) => LogStore.store.with_initial(LogStore.cells.theme, TimelineChart.preferred_theme(matches))
+		Err(Undeclared) => crash "LogStore.start: color-scheme query was not declared"
+	}
+
+	## A size report changes only the viewer's requested capacity.
+	viewer_sized : U32 -> List(Engine.Write(_))
+	viewer_sized = |height| [LogStore.cells.viewport.set(Log.Viewport.for_height(height))]
+
+	## The subscription changes chart presentation without touching the log.
+	media_changed : Engine.Result -> List(Engine.Write(_))
+	media_changed = |result| match result {
+		Matches(matches) => [LogStore.cells.theme.set(TimelineChart.preferred_theme(matches))]
+		_ => []
+	}
 
 	## The reader chose or dropped files: the first is the log to open, in
 	## the event that carried it. The others are not kept, and an event
@@ -248,4 +278,25 @@ expect {
 		\\unanswered: Overview page 0 line 0
 		\\typed: Overview page 0 line 6, Overview page 0 line 0
 	actual == expected
+}
+
+## The boot preference is available before any subscription result.
+expect {
+	boot = LogStore.start({ media: [(LogStore.dark_query, Bool.True)] })
+	boot.read(LogStore.cells.theme) == Dark
+}
+
+## Resizing retains the reader's place and changing media retains capacity.
+expect {
+	before = LogStore.store.after(LogStore.shown_at(99))
+	fitted = before.after(LogStore.viewer_sized(400))
+	dark = fitted.after(LogStore.media_changed(Matches(Bool.True)))
+	actual = {
+		count: dark.read(LogStore.cells.viewport).capacity()?,
+		first: dark.read(LogStore.cells.place.first),
+		theme: dark.read(LogStore.cells.theme),
+		light: dark.after(LogStore.media_changed(Matches(Bool.False))).read(LogStore.cells.theme),
+		refused: LogStore.media_changed(Refused).len(),
+	}
+	actual == { count: 20, first: 99, theme: Dark, light: Light, refused: 0 }
 }

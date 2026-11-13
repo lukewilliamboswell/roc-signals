@@ -254,10 +254,15 @@ const BIG = 64 * MIB + 1;
     const matched = { matches: window.__traceSum(searchFigure.figure, "Matches"), bytes: searchFigure.bytes };
     // The viewer reads only the lines it shows.
     window.__click("Viewer");
-    await window.__answer("viewer-status", "Lines 1–50");
+    const viewport = window.__root.querySelector('[data-testid="viewer-viewport"]');
+    // This journey uses the real observer. The app draws fixed 20px lines;
+    // its first worker request waits until the content-box report arrives.
+    const capacity = Math.max(1, Math.floor(viewport.clientHeight / 20));
+    await window.__answer("viewer-status", `Lines 1–${capacity}`);
+    const rowHeight = viewport.querySelector("li").getBoundingClientRect().height;
     t = performance.now();
     window.__click("Last");
-    const last = await window.__answer("viewer-status", `Lines ${(made.lines - 49).toLocaleString("en-US")}–`);
+    const last = await window.__answer("viewer-status", `Lines ${(made.lines - capacity + 1).toLocaleString("en-US")}–`);
     const viewed = performance.now() - t;
     // The overview was asked once, above the tabs: going back asks nothing.
     // A click on its chart opens the viewer at that minute's first line.
@@ -278,6 +283,8 @@ const BIG = 64 * MIB + 1;
       answers: { overview, errors, listing, search, again, last, picked },
       timeline,
       matched,
+      capacity,
+      rowHeight,
       issuedByPick,
       prepareShown: { text: prepareShown, ms: rec("overview")[0].prepareMs },
       jobs: window.__jobs(),
@@ -305,8 +312,9 @@ const BIG = 64 * MIB + 1;
     `${n(made.lines)} matching lines, page 1 of ${n(Math.ceil(made.lines / 25))}.`,
     `${n(made.resets)} matching lines, page 1 of ${n(Math.ceil(made.resets / 25))}.`,
     `${n(made.resets)} matching lines, page 1 of ${n(Math.ceil(made.resets / 25))}.`,
-    `Lines ${n(made.lines - 49)}–${n(made.lines)} of ${n(made.lines)}.`,
+    `Lines ${n(made.lines - r.capacity + 1)}–${n(made.lines)} of ${n(made.lines)}.`,
   ]);
+  check("the viewer draws the fixed height its observed capacity assumes", r.rowHeight, 20);
   const holder = r.jobs[0][2];
   check("the log is prepared once: every later question reuses the state on the worker that holds it", r.jobs, [
     ["overview", "prepare", holder],

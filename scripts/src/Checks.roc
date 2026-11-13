@@ -53,6 +53,9 @@ Checks := [].{
 			{ name: "dialog-close-text", rejection: "Bool" },
 			{ name: "popover-toggle-text", rejection: "Bool" },
 			{ name: "dialog-internal-bridge", rejection: "EngineOnly" },
+			{ name: "layout-scroll-text", rejection: "top: U32" },
+			{ name: "layout-size-text", rejection: "width: U32" },
+			{ name: "layout-seen-text", rejection: "ratio_permille: U16" },
 		]
 		dir = "${o.build_dir}/key-type-errors"
 		SpecSuite.fresh_dir!(dir)?
@@ -95,6 +98,7 @@ Checks := [].{
 			{ name: "popover-beforetoggle", rejection: "beforetoggle", prefix: "contract:", code: 70 },
 			{ name: "popover-duplicate", rejection: "one static popover", prefix: "contract:", code: 70 },
 			{ name: "popover-dynamic-popover", rejection: "one static popover", prefix: "contract:", code: 70 },
+			{ name: "media-undeclared", rejection: "missing-media", prefix: "contract:", code: 70 },
 			{ name: "raw-controlled-attributes", rejection: "", prefix: "", code: 0 },
 		]
 		dir = "${o.build_dir}/key-contracts"

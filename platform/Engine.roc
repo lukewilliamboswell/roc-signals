@@ -1,5 +1,6 @@
 import Core
 import EngineOnly
+import Layout
 import Table
 
 ## The authoring API of the roc-signals web platform: the reactive engine as an
@@ -757,6 +758,9 @@ Engine := [].{
 		## `Online(Bool)` or `Visible(Bool)`; the value at mount is in `Boot`.
 		OnlineChanges,
 		VisibilityChanges,
+
+		## Subscribe to a query listed in ProgramProps.media.
+		MediaChanges(Str),
 		Self,
 		Push(Str),
 		Replace(Str),
@@ -834,7 +838,7 @@ Engine := [].{
 	## (`FileFailed`), or a port's answer or message (`PortAnswer`) or why
 	## there is none (`PortFailed`), or a response whose body is a file
 	## (`Fetched`).
-	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File })]
+	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name and the files its `{"$file":N}` markers
@@ -1113,12 +1117,18 @@ Engine := [].{
 	## not, the storage list is empty and `StorageSet`/`StorageRemove` do not
 	## persist, so an app that relies on reloads surviving can say so. All
 	## fields have defaults: a URL of `/`, empty available storage, online
-	## and visible. Pure tests may name only the facts they need.
+	## and visible, with no media queries. Declared media values arrive before
+	## first paint; boot_media reads one or reports Undeclared.
 	Boot : Core.Boot
 
 	## The boot value of a declared storage key, or `Missing` if it has none.
 	boot_storage : Boot, Str -> Try(Str, [Missing])
 	boot_storage = |boot, key| Core.boot_storage(boot, key)
+
+	## A declared media query's first-paint value, or Undeclared for a query
+	## absent from ProgramProps.media. Test that error in the app's pure logic.
+	boot_media : Boot, Str -> Try(Bool, [Undeclared])
+	boot_media = |boot, query| Core.boot_media(boot, query)
 
 	## A signal that never changes. It reads no state or cell, so it triggers no refresh.
 	const : a -> Signal(ctx, a)
@@ -1128,6 +1138,22 @@ Engine := [].{
 	## helpers for common elements and controls.
 	element : Str, List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
 	element = |tag, attrs, kids| Core.element(tag, attrs, kids)
+
+	## Follow scroll offsets through the report queue, keeping the newest
+	## value before the next frame rather than dispatching every native event.
+	on_scroll : HandlerOf(ctx, Layout.Scroll) -> Attr(ctx)
+	on_scroll = |handler| Core.on_scroll(handler.h)
+
+	## Observe the content box until the declaring element's scope is disposed.
+	on_size : HandlerOf(ctx, Layout.Size) -> Attr(ctx)
+	on_size = |handler| Core.on_size(handler.h)
+
+	## Visibility's optional one-screen-ahead observation.
+	SeenProps : Core.SeenProps
+
+	## Report intersection changes through the ordinary typed handler family.
+	on_seen : SeenProps, HandlerOf(ctx, Layout.Seen) -> Attr(ctx)
+	on_seen = |props, handler| Core.on_seen(props, handler.h)
 
 	## Platform vocabulary construction: keep a controlled dialog's private
 	## property and echo handler together. Platform modules supply the witness.

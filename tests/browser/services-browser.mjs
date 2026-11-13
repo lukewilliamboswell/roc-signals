@@ -83,7 +83,7 @@ async function open(prelude = "") {
     const join = (parts) => { const b = new Uint8Array(parts.reduce((n, p) => n + p.length, 0)); let at = 0; for (const p of parts) { b.set(p, at); at += p.length; } return b; };
     const str = (text) => { const b = new TextEncoder().encode(text); return join([u32(b.length), b]); };
     const section = (tag, body) => join([new Uint8Array([tag]), u32(body.length), body]);
-    const bootBytes = (url = "/", storage = [1, 0, 0, 0, 0]) => join([section(1, str(url)), section(2, new Uint8Array(storage)), section(3, new Uint8Array([1])), section(4, new Uint8Array([1]))]);
+    const bootBytes = (url = "/", storage = [1, 0, 0, 0, 0]) => join([section(1, str(url)), section(2, new Uint8Array(storage)), section(3, new Uint8Array([1])), section(4, new Uint8Array([1])), section(6, new Uint8Array())]);
     // Malformed boot bytes: a section header that runs past the end.
     const x1 = await fresh();
     x1.boot_keys();
@@ -152,7 +152,7 @@ async function open(prelude = "") {
       [join([section(1, new Uint8Array([3, 0, 0, 0, 65])), storage, online, visible]), 1],
       [join([section(1, join([str("/"), new Uint8Array([0])])), storage, online, visible]), 1],
       [join([location, section(2, join([new Uint8Array([0]), u32(1), str("saved"), str("x")])), online, visible]), 2],
-      [join([location, section(2, join([new Uint8Array([1]), u32(1), str("undeclared"), str("x")])), online, visible]), 2],
+      [join([location, section(2, join([new Uint8Array([1]), u32(1), str("undeclared"), str("x")])), online, visible, section(6, new Uint8Array())]), 2],
     ];
     for (const [bytes, tag] of cases) {
       const x = await fresh(); x.boot_keys();
@@ -162,7 +162,7 @@ async function open(prelude = "") {
     // Capture staging independently of command application.
     const empty = await fresh();
     let emptyBytes, declarationsPtr, initialized = false;
-    const declarations = join([section(2, join([u32(1), str("saved")])), section(5, u32(0))]);
+    const declarations = join([section(2, join([u32(1), str("saved")])), section(5, u32(0)), section(6, u32(0))]);
     const capture = { ...empty,
       boot_keys: () => { declarationsPtr = empty.payload_reserve(declarations.length); new Uint8Array(empty.memory.buffer, declarationsPtr, declarations.length).set(declarations); },
       cmd_ptr: () => declarationsPtr,
@@ -173,7 +173,7 @@ async function open(prelude = "") {
     const rt = new RocEngineRuntime(capture, document.createElement("div"), { window: { location: { pathname: "/test", search: "?a=1", hash: "#h" } }, storage: { getItem: (key) => key === "saved" ? "seed" : null }, environment: { online: () => false, visible: () => true } });
     rt.mount();
     out.layout = Array.from(emptyBytes);
-    out.expectedLayout = Array.from(join([section(1, str("/test?a=1#h")), section(2, join([new Uint8Array([1]), u32(1), str("saved"), str("seed")])), section(3, new Uint8Array([0])), visible]));
+    out.expectedLayout = Array.from(join([section(1, str("/test?a=1#h")), section(2, join([new Uint8Array([1]), u32(1), str("saved"), str("seed")])), section(3, new Uint8Array([0])), visible, section(6, new Uint8Array())]));
     rt.unmount();
     const keys = section(2, u32(0)), ports = section(5, u32(0));
     out.declarations = [];
@@ -345,7 +345,7 @@ async function open(prelude = "") {
     const viaMetric = rt.x.metric(16 + 12);
     return [after.length, String(after[12] - before[12]), String(viaMetric) === String(after[12]), String(after[1])];
   });
-  check("work record: 44 counters (work, effects, ports, property and release commands); one SETTEXT for one click; metric(16 + k) reads counter k", work, [44, "1", true, "3"]);
+  check("work record: 45 counters (work, effects, ports, properties, releases and observations); one SETTEXT for one click; metric(16 + k) reads counter k", work, [45, "1", true, "3"]);
   await ctx.close();
 }
 

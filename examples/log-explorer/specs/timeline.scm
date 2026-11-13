@@ -12,6 +12,7 @@
     ; the first line of that minute, from the timeline the page has: one
     ; job, the viewer's own.
     (change (test-id "timeline") "2026-11-11 12:01")
+    (report-size (test-id "viewer-viewport") 800 1000)
     (expect-pending-work "roc-signals.example/log-explorer/window" 1)
     (run-effect 2)
     (expect-text (test-id "viewer-status") "Lines 3–52 of 90.")
@@ -19,12 +20,14 @@
     ; A minute with no entries opens at the next one that has some.
     (click (role button :name "Overview"))
     (change (test-id "timeline") "2026-11-11 12:02")
+    (report-size (test-id "viewer-viewport") 800 1000)
     (run-effect 3)
     (expect-text (test-id "viewer-status") "Lines 8–57 of 90.")
     ; Plotly writes midnight as the date alone; it is before the log, which
     ; opens at its first line.
     (click (role button :name "Overview"))
     (change (test-id "timeline") "2026-11-11")
+    (report-size (test-id "viewer-viewport") 800 1000)
     (run-effect 4)
     (expect-text (test-id "viewer-status") "Lines 1–50 of 90.")
     ; After the last entry, or not a time at all: nothing changes.
@@ -45,6 +48,7 @@
     (expect-text (test-id "timeline-peak") "Most matches in a minute: 30 matches at 2026-11-11 12:01. Not on the timeline: 10 entries whose time is not a real one.")
     ; A click on the search's chart opens the viewer too.
     (change (test-id "timeline") "2026-11-11 12:03")
+    (report-size (test-id "viewer-viewport") 800 1000)
     (run-effect 7)
     (expect-text (test-id "viewer-status") "Lines 8–57 of 90.")
     (expect-pending-effects 0)

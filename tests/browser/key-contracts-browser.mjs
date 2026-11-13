@@ -29,6 +29,7 @@ const fixtures = [
   ["popover-beforetoggle", ["beforetoggle", "site"]],
   ["popover-duplicate", ["one static popover", "site"]],
   ["popover-dynamic-popover", ["one static popover", "site"]],
+  ["media-undeclared", ["missing-media", "site"]],
   ["raw-controlled-attributes", [], false],
 ];
 const runtime = runtimeFiles(options.runtime);

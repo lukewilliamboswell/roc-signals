@@ -95,7 +95,7 @@ SpecRunner := [].{
 		live : state -> List(U32),
 	}
 
-	Sub : [Interval(U32), Pop, OnlineSub, VisibilitySub, PortSub(Str, Str)]
+	Sub : [Interval(U32), Pop, OnlineSub, VisibilitySub, MediaSub(Str), PortSub(Str, Str)]
 
 	## A history entry: its URL and the document it belongs to.
 	Entry : { url : Str, doc : U64 }
@@ -195,6 +195,7 @@ SpecRunner := [].{
 		scrolls : List(ScrollRecord),
 		scroll_count : U64,
 		scroll_exhausted : Bool,
+		scroll_error : Str,
 
 		## Live report sources are indexed so cancelling or delivering one
 		## never searches the full subscription set.
@@ -202,7 +203,7 @@ SpecRunner := [].{
 
 		## One source index and epoch over the same ingress queue as focus
 		## callbacks. Slots are absolute while a drain removes its prefix.
-		reports : { held : Bool, replaced : U64, epoch : U64, head : U64, index : Dict(ReportSource, { epoch : U64, slot : U64 }) },
+		reports : { held : Bool, releasing : Bool, replaced : U64, epoch : U64, head : U64, index : Dict(ReportSource, { epoch : U64, slot : U64 }) },
 	}
 
 	## Browser task-source entries keep only never-reused model lifetimes.
@@ -247,7 +248,7 @@ SpecRunner := [].{
 
 	## Request ids and DOM pointer sources cannot alias. A DOM source follows
 	## its declaring element's lifetime, handler and pointer independently.
-	ReportSource := [Request(U32), Pointer({ element : U64, handler : U32, pointer : U32 })].{
+	ReportSource := [Request(U32), Pointer({ element : U64, handler : U32, pointer : U32 }), Scroll({ element : U64, handler : U32 }), Observation({ element : U64, kind : U8 })].{
 		is_eq : _
 		to_hash : _
 	}
@@ -318,7 +319,7 @@ SpecRunner := [].{
 
 	## Decode both declaration sections once: only the catalogue decides
 	## whether a subscription's messages are reports.
-	decode_declarations : List(U8) -> { keys : List(Str), latest_ports : List(Str) }
+	decode_declarations : List(U8) -> { keys : List(Str), latest_ports : List(Str), media : List(Str) }
 	decode_declarations = |b| {
 		if b.first() != Ok(2) {
 			crash "contract: declaration section 2 (local-storage) is missing"
@@ -350,7 +351,7 @@ SpecRunner := [].{
 			crash "contract: declaration section 5 (ports) is missing or out of order"
 		}
 		port_len = (SpecRunner.get_u32(b, port_at + 1) ?? crash "contract: declaration section 5 (ports) has a short header").to_u64()
-		if port_len != b.len() - port_at - 5 {
+		if port_len > b.len() - port_at - 5 {
 			crash "contract: declaration section 5 (ports) has a short body or trailing bytes"
 		}
 		ports = b.sublist({ start: port_at + 5, len: port_len })
@@ -393,7 +394,39 @@ SpecRunner := [].{
 		if $at != ports.len() {
 			crash "contract: declaration section 5 (ports) has trailing body bytes"
 		}
-		{ keys: $keys, latest_ports: $latest_ports }
+		media_at = port_at + 5 + port_len
+		if b.get(media_at) != Ok(6) {
+			crash "contract: declaration section 6 (media) is missing or out of order"
+		}
+		media_len = (SpecRunner.get_u32(b, media_at + 1) ?? crash "contract: declaration section 6 (media) has a short header").to_u64()
+		if media_len != b.len() - media_at - 5 {
+			crash "contract: declaration section 6 (media) has a short body or trailing bytes"
+		}
+		media = b.sublist({ start: media_at + 5, len: media_len })
+		media_count = SpecRunner.get_u32(media, 0) ?? crash "contract: declaration section 6 (media) has a short count"
+		if media_count > 32 {
+			crash "contract: declaration section 6 (media) has more than 32 queries"
+		}
+		$at = 4
+		$i = 0
+		var $queries = []
+		while $i < media_count {
+			query_len = (SpecRunner.get_u32(media, $at) ?? crash "contract: declaration section 6 (media) has a short query").to_u64()
+			if query_len < 1 or query_len > 256 or query_len > media.len() - $at - 4 {
+				crash "contract: declaration section 6 (media) has an invalid query length"
+			}
+			query = Str.from_utf8(media.sublist({ start: $at + 4, len: query_len })) ?? crash "contract: declaration section 6 (media) query is not UTF-8"
+			if $queries.contains(query) {
+				crash "contract: declaration section 6 (media) has a duplicate query"
+			}
+			$queries = $queries.append(query)
+			$at = $at + 4 + query_len
+			$i = $i + 1
+		}
+		if $at != media.len() {
+			crash "contract: declaration section 6 (media) has trailing body bytes"
+		}
+		{ keys: $keys, latest_ports: $latest_ports, media: $queries }
 	}
 
 	flag_byte : Bool -> U8
@@ -417,6 +450,7 @@ SpecRunner := [].{
 			{ tag: 2, body: $storage },
 			{ tag: 3, body: [SpecRunner.flag_byte(env.online)] },
 			{ tag: 4, body: [SpecRunner.flag_byte(env.visible)] },
+			{ tag: 6, body: env.media.map(|(_, matches)| SpecRunner.flag_byte(matches)) },
 		].fold([], SpecRunner.put_section)
 	}
 
@@ -647,8 +681,9 @@ SpecRunner := [].{
 		scrolls: [],
 		scroll_count: 0,
 		scroll_exhausted: Bool.False,
+		scroll_error: "",
 		report_sources: Dict.empty(),
-		reports: { held: Bool.False, replaced: 0, epoch: 0, head: 0, index: Dict.empty() },
+		reports: { held: Bool.False, releasing: Bool.False, replaced: 0, epoch: 0, head: 0, index: Dict.empty() },
 	}
 
 	## A runner state for instance `inst` before its first batch.
@@ -673,6 +708,7 @@ SpecRunner := [].{
 				Pop(id) => { ..b, subs: b.subs.append({ id, sub: Pop }) }
 				OnlineSub(id) => { ..b, subs: b.subs.append({ id, sub: OnlineSub }), report_sources: b.report_sources.insert(id, {}) }
 				VisibilitySub(id) => { ..b, subs: b.subs.append({ id, sub: VisibilitySub }), report_sources: b.report_sources.insert(id, {}) }
+				MediaSub(id, query) => { ..b, subs: b.subs.append({ id, sub: MediaSub(query) }), report_sources: b.report_sources.insert(id, {}) }
 				Cancel(id) => { ..b, pending: b.pending.keep_if(|p| p.id != id), subs: b.subs.keep_if(|x| x.id != id), reports: { ..b.reports, index: b.reports.index.remove(Request(id)) }, report_sources: b.report_sources.remove(id) }
 				Push(url) => { ..b, back: b.back.append({ url: b.env.url, doc: b.doc }), env: { ..b.env, url: SpecRunner.resolve_in_document(b.env.url, url) }, fwd: [] }
 				Replace(url) => { ..b, env: { ..b.env, url: SpecRunner.resolve_in_document(b.env.url, url) } }
@@ -716,7 +752,13 @@ SpecRunner := [].{
 				MaxOutputBytes(n) => {
 					$max_output = n
 				}
-				InitialLocation(_) | LocalStorage(_) | InitialOnline(_) | InitialVisibility(_) | LocalStorageUnavailable => {}
+				InitialLocation(_) | LocalStorage(_) | InitialOnline(_) | InitialVisibility(_) | InitialMedia(_) | LocalStorageUnavailable => {}
+			}
+		}
+		queries = SpecRunner.decode_declarations((program.keys)()).media
+		for (query, _) in spec.environment.media {
+			if !queries.contains(query) {
+				return Err("initial-media query ${JsonOut.quote(query)} is not declared")
 			}
 		}
 		s0 = SpecRunner.mount_in(program, spec.environment)
@@ -735,8 +777,14 @@ SpecRunner := [].{
 	mount_in = |program, env| {
 		declared = SpecRunner.decode_declarations((program.keys)())
 		boot_kvs = declared.keys.keep_oks(|key| env.storage.find_first(|(name, _)| name == key))
-		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_boot({ ..env, storage: if (env.storage_available) boot_kvs else [] }))
-		browser = { ..SpecRunner.fresh_browser(env), latest_ports: declared.latest_ports }
+		for (query, _) in env.media {
+			if !declared.media.contains(query) {
+				crash "contract: initial-media query ${JsonOut.quote(query)} is not declared"
+			}
+		}
+		media = declared.media.map(|query| (query, env.media.find_first(|(name, _)| name == query).map_ok(|(_, matches)| matches) ?? False))
+		(inst, cmds, wbuf) = (program.init)(SpecRunner.encode_boot({ ..env, media, storage: if (env.storage_available) boot_kvs else [] }))
+		browser = { ..SpecRunner.fresh_browser({ ..env, media }), latest_ports: declared.latest_ports }
 		s0 = SpecRunner.fresh(inst, browser)
 		{ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, SpecRunner.take({ ..s0, draining: Bool.True }, inst, cmds, wbuf))), draining: Bool.False }
 	}
@@ -780,7 +828,7 @@ SpecRunner := [].{
 			}
 			b = s.browser
 			queued = { ..s, browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1 } }, event_queue: s.event_queue.append(input) }
-			return if (s.applying_focus or s.draining) queued else SpecRunner.release_reports(program, queued)
+			return if (s.applying_focus or s.draining) queued else SpecRunner.drain_focus(program, queued)
 		}
 		SpecRunner.send_now(program, { state: s, node: node, handler: h, payload: payload })
 	}
@@ -807,6 +855,10 @@ SpecRunner := [].{
 	drain_focus = |program, s0| {
 		var $s = { ..s0, draining: Bool.True }
 		while $s.fault == Healthy and (!$s.after_batch.is_empty() or !$s.event_queue.is_empty() or !$s.browser.gets.is_empty()) {
+			if !$s.browser.gets.is_empty() and !$s.event_queue.is_empty() and !SpecRunner.head_ready($s) {
+				b = $s.browser
+				$s = { ..$s, browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1 } } }
+			}
 			while $s.fault == Healthy and !$s.after_batch.is_empty() {
 				command = $s.after_batch.first() ?? crash "SpecRunner.drain_focus: not empty"
 				s = { ..$s, applying_focus: Bool.True, after_batch: $s.after_batch.drop_first(1) }
@@ -822,21 +874,25 @@ SpecRunner := [].{
 							Focus(4) => { ..s, dom: Dom.apply_value(s.dom, i, ref.node), deferred: if (s.focused == i + 1) NoValue else s.deferred }
 							Focus(2) => if (s.focused == i + 1) SpecRunner.move_focus(program, s, 0) else s
 							Focus(_) => if (SpecRunner.focusable_in(s.dom, i) and SpecRunner.reachable(s, i)) SpecRunner.move_focus(program, s, i + 1) else s
-							IntoView(_) | To(_) => SpecRunner.record_scroll(s, i, ref.action)
+							IntoView(_) | To(_) => SpecRunner.perform_scroll(program, s, i, ref.action)
 						}
 					}
 				}
 				$s = { ..applied, applying_focus: Bool.False }
 			}
-			if !$s.event_queue.is_empty() {
+			if !$s.event_queue.is_empty() and SpecRunner.head_ready($s) {
 				{ input, rest } = SpecRunner.pop_input($s)
 				$s = SpecRunner.deliver_input(program, { state: rest, input: input })
 			} else if !$s.browser.gets.is_empty() {
 				$s = SpecRunner.answer_gets(program, $s)
+			} else {
+				break
 			}
 		}
 		b = $s.browser
-		{ ..$s, draining: s0.draining, browser: { ..b, reports: { ..b.reports, head: 0, index: Dict.empty() } } }
+		if $s.event_queue.is_empty() {
+			{ ..$s, draining: s0.draining, browser: { ..b, reports: { ..b.reports, head: 0, index: Dict.empty() } } }
+		} else { ..$s, draining: s0.draining }
 	}
 
 	## Pop exactly one ingress slot and remove only the index that still
@@ -856,13 +912,31 @@ SpecRunner := [].{
 		{ input, rest: { ..s, event_queue: s.event_queue.drop_first(1), browser: { ..b, reports: { ..reports, head: reports.head + 1, index } } } }
 	}
 
+	## An unpinned report waits for a frame. The source index identifies its
+	## current epoch and absolute slot without searching later queue entries.
+	head_ready : S(state) -> Bool
+	head_ready = |s| {
+		if s.browser.reports.releasing {
+			return True
+		}
+		input = s.event_queue.first() ?? return False
+		match input.source {
+			Occurrence => True
+			Report(source) => match s.browser.reports.index.get(source) {
+				Ok(at) => at.epoch != s.browser.reports.epoch or at.slot != s.browser.reports.head
+				Err(_) => True
+			}
+		}
+	}
+
 	## A cancelled source or a DOM lifetime that ended cannot receive its
 	## queued input. Valid entries use the same ordinary turn path.
 	deliver_input : Program(state), { state : S(state), input : Input } -> S(state)
 	deliver_input = |program, { state: s, input }| {
 		live = match input.source {
 			Report(Request(id)) => s.browser.report_sources.contains(id)
-			Report(Pointer({ element, .. })) => SpecRunner.attached(s.dom, element) and (s.dom.statics.get(input.node.to_u64()) ?? 0).bitwise_and(1099511627775) == input.owner + 1
+			Report(Pointer({ element, .. })) | Report(Scroll({ element, .. })) => SpecRunner.attached(s.dom, element) and (s.dom.statics.get(input.node.to_u64()) ?? 0).bitwise_and(1099511627775) == input.owner + 1
+			Report(Observation({ element, kind })) => SpecRunner.attached(s.dom, element) and Dom.node(s.dom, element).observing.bitwise_and(if (kind == 7) 1 else 2) != 0 and (s.dom.statics.get(input.node.to_u64()) ?? 0).bitwise_and(1099511627775) == input.owner + 1
 			Occurrence => {
 				current = (s.dom.statics.get(input.node.to_u64()) ?? 0).bitwise_and(1099511627775)
 				input.node == SpecRunner.fx_node or (current == input.owner + 1 and SpecRunner.attached(s.dom, input.owner))
@@ -888,7 +962,8 @@ SpecRunner := [].{
 	queue_report = |program, { state: s, source, node, handler, owner, payload }| {
 		is_live = match source {
 			Request(id) => s.browser.report_sources.contains(id)
-			Pointer({ element, .. }) => SpecRunner.attached(s.dom, element) and (s.dom.statics.get(node.to_u64()) ?? 0).bitwise_and(1099511627775) == owner + 1
+			Pointer({ element, .. }) | Scroll({ element, .. }) => SpecRunner.attached(s.dom, element) and (s.dom.statics.get(node.to_u64()) ?? 0).bitwise_and(1099511627775) == owner + 1
+			Observation({ element, kind }) => SpecRunner.attached(s.dom, element) and Dom.node(s.dom, element).observing.bitwise_and(if (kind == 7) 1 else 2) != 0 and (s.dom.statics.get(node.to_u64()) ?? 0).bitwise_and(1099511627775) == owner + 1
 		}
 		if s.fault != Healthy or !is_live {
 			return s
@@ -919,7 +994,8 @@ SpecRunner := [].{
 	release_reports : Program(state), S(state) -> S(state)
 	release_reports = |program, s| {
 		b = s.browser
-		SpecRunner.drain_focus(program, { ..s, turns: 0, browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1 } } })
+		released = SpecRunner.drain_focus(program, { ..s, turns: 0, browser: { ..b, reports: { ..b.reports, epoch: b.reports.epoch + 1, releasing: True } } })
+		{ ..released, browser: { ..released.browser, reports: { ..released.browser.reports, releasing: b.reports.releasing } } }
 	}
 
 	## Answer every storage read waiting for its turn: the stored value, or
@@ -950,7 +1026,7 @@ SpecRunner := [].{
 		var $s = s0
 		for x in s0.browser.subs.keep_if(pick) {
 			is_report = match x.sub {
-				OnlineSub | VisibilitySub => Bool.True
+				OnlineSub | VisibilitySub | MediaSub(_) => Bool.True
 				PortSub(port, _) => s0.browser.latest_ports.contains(port)
 				_ => Bool.False
 			}
@@ -1382,6 +1458,70 @@ SpecRunner := [].{
 		{ ..s, browser: { ..b, scroll_count: ordinal, scrolls: if (history.len() > 4096) history.drop_first(1) else history } }
 	}
 
+	## Inject a layout observation only while its declared observation is live.
+	inject_observation : Program(state), S(state), { loc : Scm.Loc, kind : U8, payload : List(U8) } -> Try(S(state), Str)
+	inject_observation = |program, s, { loc, kind, payload }| {
+		i = SpecRunner.need(s.dom, loc)?
+		bit = if (kind == 7) 1.U8 else 2
+		event = if (kind == 7) "size" else "seen"
+		if Dom.node(s.dom, i).observing.bitwise_and(bit) == 0 {
+			return Err("${Scm.show_loc(loc)} has no live ${event} observation")
+		}
+		target = Dom.target(s.dom, i, event, False) ? |_| "${Scm.show_loc(loc)} has no ${event} handler"
+		Ok(SpecRunner.queue_report(program, { state: s, source: Observation({ element: i, kind }), node: target.node, handler: target.handler, owner: Dom.lookup(s.dom, target.node), payload }))
+	}
+
+	## A changed offset raises the element's own scroll event, never an ancestor's.
+	set_scroll : Program(state), S(state), { target : U64, top : U32, left : U32 } -> S(state)
+	set_scroll = |program, s, { target: i, top, left }| {
+		prior = Dom.node(s.dom, i).scroll
+		if prior.top == top and prior.left == left {
+			return s
+		}
+		changed = { ..s, dom: Dom.modify(s.dom, i, |n| { ..n, scroll: { top, left } }) }
+		handler = Dom.target(changed.dom, i, "scroll", False) ?? return changed
+		if handler.kind == 6 {
+			SpecRunner.queue_report(program, { state: changed, source: Scroll({ element: i, handler: handler.handler }), node: handler.node, handler: handler.handler, owner: Dom.lookup(changed.dom, handler.node), payload: SpecRunner.put_u32(SpecRunner.put_u32([], top), left) })
+		} else SpecRunner.send(program, changed, handler.node, handler.handler, [])
+	}
+
+	## Explicit commands keep their observable command record. Handled scrollers
+	## additionally model only geometry-free offsets; unsupported placement fails
+	## the spec rather than inventing a layout or changing an application's fault.
+	perform_scroll : Program(state), S(state), U64, Dom.RefAction -> S(state)
+	perform_scroll = |program, s, i, action| {
+		recorded = SpecRunner.record_scroll(s, i, action)
+		match action {
+			To({ top, left, .. }) => {
+				if Dom.target(s.dom, i, "scroll", False).is_err() {
+					return recorded
+				}
+				if top == End or left == End {
+					return { ..recorded, browser: { ..recorded.browser, scroll_error: "ScrollTo End on an element that handles scroll needs layout; use a scroll step" } }
+				}
+				prior = Dom.node(s.dom, i).scroll
+				edge = |value, before| match value {
+					Keep => before
+					Start => 0
+					Px(pixels) => pixels
+					End => crash "SpecRunner.perform_scroll: End refused"
+				}
+				SpecRunner.set_scroll(program, recorded, { target: i, top: edge(top, prior.top), left: edge(left, prior.left) })
+			}
+			IntoView(_) => {
+				var $at = Dom.node(s.dom, i).parent
+				while $at != 0 {
+					if Dom.target(s.dom, $at - 1, "scroll", False).is_ok() {
+						return { ..recorded, browser: { ..recorded.browser, scroll_error: "ScrollIntoView inside an element that handles scroll needs layout; use a scroll step" } }
+					}
+					$at = Dom.node(s.dom, $at - 1).parent
+				}
+				recorded
+			}
+			Focus(_) => crash "SpecRunner.perform_scroll: focus is not scrolling"
+		}
+	}
+
 	# ------------------------------------------------------------- locators
 
 	implicit_role : Dom.DNode -> Str
@@ -1534,6 +1674,10 @@ SpecRunner := [].{
 				return Err("the engine counted ${engine.to_str()} effects ${what} but emitted ${oracle.to_str()} ${Dom.op_name(op.to_u8_wrap())} commands")
 			}
 		}
+		observed = s.work.counters.get(44) ?? 0
+		if observed != s.dom.observed_count {
+			return Err("the engine counted ${observed.to_str()} live observations, but the oracle holds ${s.dom.observed_count.to_str()}")
+		}
 		Ok({})
 	}
 
@@ -1543,6 +1687,9 @@ SpecRunner := [].{
 	## the oracle renders it now and after them.
 	check_settled : Program(state), S(state) -> Try({}, Str)
 	check_settled = |program, s| {
+		if !s.browser.scroll_error.is_empty() {
+			return Err(s.browser.scroll_error)
+		}
 		match s.fault {
 			Poisoned(message) => return Err(message)
 			Healthy => {}
@@ -1593,7 +1740,12 @@ SpecRunner := [].{
 		activated = SpecRunner.activate_step(s, op)
 		ready = if (SpecRunner.is_occurrence(activated, op)) SpecRunner.release_reports(program, activated) else activated
 		next = SpecRunner.one_ready(program, ready, op)?
-		Ok(if (next.browser.reports.held) next else SpecRunner.release_reports(program, next))
+		settled = if (next.browser.reports.held) next else SpecRunner.release_reports(program, next)
+		if settled.browser.scroll_error.is_empty() {
+			Ok(settled)
+		} else {
+			Err(settled.browser.scroll_error)
+		}
 	}
 
 	## Activation policy comes from the same complete grammar table emitted for Chrome.
@@ -1700,6 +1852,29 @@ SpecRunner := [].{
 					Focus(_) => crash "scroll history contains focus"
 				}
 				check(record.target == i and actual == kind, "scroll ordinal ${ordinal.to_str()} does not name ${Scm.show_loc(target)} with ${Str.inspect(kind)}")
+			}
+			Scroll({ target, top, left }) => {
+				i = SpecRunner.need(dom, target)?
+				Ok(SpecRunner.set_scroll(program, s, { target: i, top, left }))
+			}
+			ReportSize({ target, width, height }) => SpecRunner.inject_observation(program, s, { loc: target, kind: 7, payload: SpecRunner.put_u32(SpecRunner.put_u32([], width), height) })
+			ReportSeen({ target, intersecting, ratio_permille }) => SpecRunner.inject_observation(program, s, { loc: target, kind: 8, payload: [SpecRunner.flag_byte(intersecting), ratio_permille.bitwise_and(255).to_u8_wrap(), ratio_permille.shr_zf_wrap(8).to_u8_wrap()] })
+			SetMedia({ query, matches: is_match }) => {
+				previous = b.env.media.find_first(|(name, _)| name == query) ? |_| "set-media query ${JsonOut.quote(query)} is not declared"
+				if previous.1 == is_match {
+					Ok(s)
+				} else {
+					changed = { ..s, browser: { ..b, env: { ..b.env, media: b.env.media.map(|(name, old)| (name, if (name == query) is_match else old)) } } }
+					Ok(SpecRunner.broadcast(program, changed, |sub| sub.sub == MediaSub(query), [22, SpecRunner.flag_byte(is_match)]))
+				}
+			}
+			ExpectObserved(count) => check(dom.observed_count == count and (s.work.counters.get(44) ?? 0) == count, "${dom.observed_count.to_str()} live observations, expected ${count.to_str()}")
+			ExpectMediaSubscriptions({ query, count }) => {
+				if !b.env.media.any(|(name, _)| name == query) {
+					return Err("expect-media-subscriptions query ${JsonOut.quote(query)} is not declared")
+				}
+				got = b.subs.count_if(|sub| sub.sub == MediaSub(query))
+				check(got == count, "${got.to_str()} live media subscriptions for ${JsonOut.quote(query)}, expected ${count.to_str()}")
 			}
 			HoldReports => if (b.reports.held) Err("hold-reports while reports are already held") else Ok({ ..s, browser: { ..b, reports: { ..b.reports, held: Bool.True } } })
 			ReleaseReports => if (!b.reports.held) Err("release-reports while reports are not held") else Ok(SpecRunner.release_reports(program, { ..s, browser: { ..b, reports: { ..b.reports, held: Bool.False } } }))
@@ -2359,7 +2534,7 @@ SpecRunner := [].{
 			return s
 		}
 		listener = Dom.target(s.dom, target, event, Bool.True) ?? return s
-		if listener.kind != 3 {
+		if listener.kind == 1 or listener.kind == 2 {
 			return SpecRunner.send(program, s, listener.node, listener.handler, [])
 		}
 		captured = if (event == "pointerdown" and listener.policies.bitwise_and(4) != 0) { ..pointer, capture: listener.declaring + 1 } else pointer
@@ -3310,17 +3485,43 @@ SpecRunner := [].{
 	## a pending request, tick a live interval, change visibility or
 	## connectivity for a live subscription, or deliver a message the specs
 	## emit on a port with a live subscription.
-	Service : [Answer(Pending), Tick(U32), ToggleVisibility, ToggleOnline, Emit(Str), BurstOnline, BurstVisibility, BurstPort(Str), PointerGesture(Scm.Loc)]
+	Service : [Answer(Pending), Tick(U32), ToggleVisibility, ToggleOnline, Emit(Str), BurstOnline, BurstVisibility, BurstPort(Str), PointerGesture(Scm.Loc), LayoutReport({ target : Scm.Loc, kind : U8 }), ToggleMedia(Str)]
+
+	## Walks enumerate named live observations as they enumerate controls and
+	## pointer zones. Their injected facts need no browser geometry.
+	layout_reports : Dom.Model -> List(Service)
+	layout_reports = |dom| {
+		var $stack = [dom.root]
+		var $out = []
+		while !$stack.is_empty() {
+			i = $stack.last() ?? crash "SpecRunner.layout_reports: nonempty stack"
+			$stack = $stack.drop_last(1)
+			n = Dom.node(dom, i)
+			test_id = Dom.attr_of(n, "data-testid")
+			label = Dom.attr_of(n, "aria-label")
+			if !test_id.is_empty() or !label.is_empty() {
+				target = if (!test_id.is_empty()) TestId(test_id) else Label(label)
+				for listener in n.hs {
+					if listener.kind >= 6 and listener.kind <= 8 {
+						$out = $out.append(LayoutReport({ target, kind: listener.kind }))
+					}
+				}
+			}
+			$stack = $stack.concat(n.kids)
+		}
+		$out
+	}
 
 	## Every service the browser can do now, in a fixed order.
 	services : Book, S(state) -> List(Service)
 	services = |bk, s| {
 		b = s.browser
-		var $out = b.pending.map(|p| Answer(p)).concat(SpecRunner.pointer_places(s.dom, Grips).map(|p| PointerGesture(p.target)))
+		var $out = b.pending.map(|p| Answer(p)).concat(SpecRunner.pointer_places(s.dom, Grips).map(|p| PointerGesture(p.target))).concat(SpecRunner.layout_reports(s.dom))
 		var $ticks = []
 		var $ports = []
 		var $vis = Bool.False
 		var $online = Bool.False
+		var $media = []
 		for x in b.subs {
 			match x.sub {
 				Interval(ms) if !$ticks.contains(ms) => {
@@ -3332,13 +3533,16 @@ SpecRunner := [].{
 				OnlineSub => {
 					$online = Bool.True
 				}
+				MediaSub(query) if !$media.contains(query) => {
+					$media = $media.append(query)
+				}
 				PortSub(port, _) if !$ports.contains(port) and bk.messages.any(|m| m.port == port) => {
 					$ports = $ports.append(port)
 				}
 				_ => {}
 			}
 		}
-		$out = $out.concat($ticks.map(|ms| Tick(ms))).concat($ports.map(|p| Emit(p)))
+		$out = $out.concat($ticks.map(|ms| Tick(ms))).concat($ports.map(|p| Emit(p))).concat($media.map(|query| ToggleMedia(query)))
 		$out = $out.concat($ports.keep_if(|port| b.latest_ports.contains(port)).map(|port| BurstPort(port)))
 		$out = if ($vis) $out.append(ToggleVisibility).append(BurstVisibility) else $out
 		if ($online) $out.append(ToggleOnline).append(BurstOnline) else $out
@@ -3386,6 +3590,19 @@ SpecRunner := [].{
 	serve! = |program, host, bk, s, service, v| {
 		b = s.browser
 		match service {
+			LayoutReport({ target, kind }) => {
+				op = match kind {
+					6 => Scroll({ target, top: ((v % 20) * 20).to_u32_wrap(), left: 0 })
+					7 => ReportSize({ target, width: (160 * (1 + v % 4)).to_u32_wrap(), height: (80 * (1 + v % 6)).to_u32_wrap() })
+					8 => ReportSeen({ target, intersecting: v % 2 == 0, ratio_permille: if (v % 2 == 0) 500 else 0 })
+					_ => crash "SpecRunner.serve!: layout service kind"
+				}
+				Ok((SpecRunner.one(program, s, op)?, { what: Scm.op_name(op), kind: Service }))
+			}
+			ToggleMedia(query) => {
+				prior = b.env.media.find_first(|(name, _)| name == query) ? |_| "a live media subscription has no declared query"
+				Ok((SpecRunner.one(program, s, SetMedia({ query, matches: !prior.1 }))?, { what: "set-media ${query}", kind: Service }))
+			}
 			PointerGesture(target) => Ok((SpecRunner.walk_pointer(program, s, { target, choice: v })?, { what: "pointer gesture", kind: UserEvent }))
 			BurstOnline | BurstVisibility | BurstPort(_) => {
 				var $s = SpecRunner.one(program, s, HoldReports)?
@@ -3971,7 +4188,7 @@ SpecRunner := [].{
 
 ## Wire encoding: strings are length-prefixed, integers little-endian, and
 ## each boot section is tagged and length-bounded in ascending order.
-expect SpecRunner.encode_boot({ url: "/a", storage: [("k", "v")], online: Bool.False }) == [1, 6, 0, 0, 0, 2, 0, 0, 0, '/', 'a', 2, 15, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 'k', 1, 0, 0, 0, 'v', 3, 1, 0, 0, 0, 0, 4, 1, 0, 0, 0, 1]
+expect SpecRunner.encode_boot({ url: "/a", storage: [("k", "v")], online: Bool.False }) == [1, 6, 0, 0, 0, 2, 0, 0, 0, '/', 'a', 2, 15, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 'k', 1, 0, 0, 0, 'v', 3, 1, 0, 0, 0, 0, 4, 1, 0, 0, 0, 1, 6, 0, 0, 0, 0]
 
 ## An HTTP result carries status, headers and the body as the rest.
 expect SpecRunner.encode_http(422, [{ name: "a", value: "b" }], "x") == [1, 0xA6, 0x01, 1, 0, 0, 0, 1, 0, 0, 0, 'a', 1, 0, 0, 0, 'b', 'x']
@@ -3980,7 +4197,7 @@ expect SpecRunner.encode_http(422, [{ name: "a", value: "b" }], "x") == [1, 0xA6
 expect SpecRunner.encode_reject(Timeout, "") == [7] and SpecRunner.encode_reject(Network, "offline") == [2, 'o', 'f', 'f', 'l', 'i', 'n', 'e']
 
 ## Declared storage keys decode from `count:u32 (key:str)*`.
-expect SpecRunner.decode_keys([2, 15, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 'a', 2, 0, 0, 0, 'b', 'c', 5, 4, 0, 0, 0, 0, 0, 0, 0]) == ["a", "bc"]
+expect SpecRunner.decode_keys([2, 15, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 'a', 2, 0, 0, 0, 'b', 'c', 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0]) == ["a", "bc"]
 
 ## Filters match ids shell-style.
 expect {
@@ -4340,7 +4557,7 @@ expect {
 report_probe : {} -> SpecRunner.Program(List({ id : U32, payload : List(U8) }))
 report_probe = |_| {
 	version: Dom.protocol_version,
-	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0],
+	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0],
 	init: |_| ([], [13, 1, 0, 0, 0, 6, 13, 2, 0, 0, 0, 7], List.repeat(0, 8)),
 	event: |seen, _buf, _work, _node, id, payload| (seen.append({ id, payload }), [], List.repeat(0, 8)),
 	files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
@@ -4471,7 +4688,7 @@ expect {
 pointer_probe : {} -> SpecRunner.Program(List({ handler : U32, payload : List(U8) }))
 pointer_probe = |_props| {
 	version: Dom.protocol_version,
-	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0],
+	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0],
 	init: |_| ([], [], List.repeat(0, 8)),
 	event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), [], List.repeat(0, 8)),
 	files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
@@ -4771,4 +4988,148 @@ expect {
 	fresh = { ..base, dom, focused: button + 1, browser: { ..base.browser, doc: 1 } }
 	done = SpecRunner.press_up(program, fresh, context)?
 	Ok(done.inst.is_empty()) == Ok(True)
+}
+
+## Media declarations retain their written order and boot pairs are ordered
+## by that catalogue, with unspecified declared queries starting false.
+expect {
+	query_body = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([], 2), "wide"), "dark")
+	base = pointer_probe({})
+	program = { ..base, keys: || SpecRunner.put_section([2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0], { tag: 6, body: query_body }), init: |boot| ([{ handler: 0.U32, payload: boot }], [], List.repeat(0.U8, 8)) }
+	mounted = SpecRunner.mount_in(program, { media: [("dark", True)] })
+	{ media: mounted.browser.env.media, flags: mounted.inst.first()?.payload.take_last(2) } == { media: [("wide", False), ("dark", True)], flags: [0.U8, 1] }
+}
+
+## Observations in a row share its release owner even when their target also
+## has a command alias. Releasing that alias alone cannot end the row's work.
+expect {
+	(d1, root) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "section" })
+	(d2, target) = Dom.add_node(d1, { ..Dom.empty_node, tag: "div" })
+	placed = Dom.bind(Dom.bind(Dom.insert(Dom.insert(d2, d2.root, root, Err(End)), root, target, Err(End)), 1, root), 2, target)
+	observed = Dom.observe(Dom.observe(placed, { owner: root, target, kind: 7 }), { owner: root, target, kind: 8 })
+	alias = Dom.release_observed(observed, target)
+	released = Dom.release_observed(alias, root)
+	removed = Dom.apply(released, SpecRunner.put_u32([5], 1))
+	{ live: observed.observed_count, alias_live: alias.observed_count, flags: Dom.node(alias, target).observing, indexed: Dom.node(alias, root).observed, after: removed.observed_count, removed_alias: removed.statics.get(2) } == { live: 2, alias_live: 2, flags: 3.U8, indexed: [target], after: 0, removed_alias: Ok(0) }
+}
+
+## Layout reports freeze their payloads and replace only their own source;
+## a repeated scroll to the current offset raises no event.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, index) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, attrs: [("aria-label", "List")], hs: [{ event: "scroll", handler: 2, kind: 6, policies: 8 }, { event: "size", handler: 3, kind: 7, policies: 8 }, { event: "seen", handler: 4, kind: 8, policies: 40 }] })
+	placed = Dom.bind(Dom.insert(d1, d1.root, index, Err(End)), 1, index)
+	dom = Dom.observe(Dom.observe(placed, { owner: index, target: index, kind: 7 }), { owner: index, target: index, kind: 8 })
+	start = SpecRunner.one(program, { ..base, dom }, HoldReports)?
+	a = SpecRunner.one(program, start, ReportSize({ target: Label("List"), width: 1, height: 2 }))?
+	b = SpecRunner.one(program, a, ReportSeen({ target: Label("List"), intersecting: True, ratio_permille: 500 }))?
+	c = SpecRunner.one(program, b, Scroll({ target: Label("List"), top: 20, left: 0 }))?
+	d = SpecRunner.one(program, c, ReportSize({ target: Label("List"), width: 3, height: 4 }))?
+	e = SpecRunner.one(program, d, Scroll({ target: Label("List"), top: 40, left: 0 }))?
+	f = SpecRunner.one(program, e, Scroll({ target: Label("List"), top: 40, left: 0 }))?
+	done = SpecRunner.one(program, f, ReleaseReports)?
+	{ held: f.inst, replaced: f.browser.reports.replaced, seen: done.inst, offset: Dom.node(done.dom, index).scroll } == { held: [], replaced: 2, seen: [{ handler: 3.U32, payload: [3.U8, 0, 0, 0, 4, 0, 0, 0] }, { handler: 4, payload: [1, 244, 1] }, { handler: 2, payload: [40, 0, 0, 0, 0, 0, 0, 0] }], offset: { top: 40.U32, left: 0.U32 } }
+}
+
+## A scroll command's report raised after a turn waits during a held frame.
+## A later occurrence pins it, and its input precedes that occurrence.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, index) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, hs: [{ event: "scroll", handler: 2, kind: 6, policies: 8 }] })
+	dom = Dom.bind(Dom.insert(d1, d1.root, index, Err(End)), 1, index)
+	start = SpecRunner.one(program, { ..base, dom }, HoldReports)?
+	command = SpecRunner.perform_scroll(program, start, index, To({ top: Px(20), left: Keep, behavior: 1 }))
+	waiting = SpecRunner.drain_focus(program, command)
+	done = SpecRunner.send(program, waiting, SpecRunner.fx_node, 9, [])
+	{ waiting: waiting.inst, queued: waiting.event_queue.len(), shown: done.inst, held: done.browser.reports.held } == { waiting: [], queued: 1, shown: [{ handler: 2.U32, payload: [20.U8, 0, 0, 0, 0, 0, 0, 0] }, { handler: 9, payload: [] }], held: True }
+}
+
+## End and descendant reveal need geometry, so refusing their native proof
+## is a step failure while the app remains healthy. Revealing the scroller
+## itself does not move its own viewport and remains allowed.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, scroller) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, hs: [{ event: "scroll", handler: 2, kind: 6, policies: 8 }] })
+	(d2, child) = Dom.add_node(d1, { ..Dom.empty_node, tag: "p" })
+	dom = Dom.bind(Dom.insert(Dom.insert(d2, d2.root, scroller, Err(End)), scroller, child, Err(End)), 1, scroller)
+	start = { ..base, dom }
+	ended = SpecRunner.perform_scroll(program, start, scroller, To({ top: End, left: Keep, behavior: 1 }))
+	revealed = SpecRunner.perform_scroll(program, start, child, IntoView({ block: 3, inline: 3, behavior: 1 }))
+	self = SpecRunner.perform_scroll(program, start, scroller, IntoView({ block: 3, inline: 3, behavior: 1 }))
+	{ end_refused: !ended.browser.scroll_error.is_empty(), child_refused: !revealed.browser.scroll_error.is_empty(), self_allowed: self.browser.scroll_error.is_empty(), faults: [ended.fault, revealed.fault, self.fault] } == { end_refused: True, child_refused: True, self_allowed: True, faults: [Healthy, Healthy, Healthy] }
+}
+
+## An ordinary text scroll remains an occurrence during a held frame: it
+## delivers older reports before its empty payload and keeps the hold active.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, index) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, attrs: [("aria-label", "List")], hs: [{ event: "scroll", handler: 2, kind: 1, policies: 0 }, { event: "size", handler: 3, kind: 7, policies: 8 }] })
+	placed = Dom.bind(Dom.insert(d1, d1.root, index, Err(End)), 1, index)
+	dom = Dom.observe(placed, { owner: index, target: index, kind: 7 })
+	held = SpecRunner.one(program, { ..base, dom }, HoldReports)?
+	pending = SpecRunner.one(program, held, ReportSize({ target: Label("List"), width: 10, height: 20 }))?
+	done = SpecRunner.one(program, pending, Scroll({ target: Label("List"), top: 30, left: 0 }))?
+	{ seen: done.inst, held: done.browser.reports.held, queued: done.event_queue.len() } == { seen: [{ handler: 3.U32, payload: [10.U8, 0, 0, 0, 20, 0, 0, 0] }, { handler: 2, payload: [] }], held: True, queued: 0 }
+}
+
+## An occurrence pins the reports ahead of it, while a scroll report its own
+## command raises waits behind it for the next released frame.
+expect {
+	base_program = pointer_probe({})
+	command = SpecRunner.put_u32(SpecRunner.put_u32([18, 7], 1).append(3), 40).concat([0, 1])
+	program = { ..base_program, event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), if (handler == 9) command else [], List.repeat(0.U8, 8)) }
+	base = SpecRunner.mount_in(program, {})
+	(d1, index) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, hs: [{ event: "scroll", handler: 2, kind: 6, policies: 8 }] })
+	dom = Dom.bind(Dom.insert(d1, d1.root, index, Err(End)), 1, index)
+	held = SpecRunner.one(program, { ..base, dom }, HoldReports)?
+	older = SpecRunner.set_scroll(program, held, { target: index, top: 20, left: 0 })
+	after_occurrence = SpecRunner.send(program, older, SpecRunner.fx_node, 9, [])
+	done = SpecRunner.one(program, after_occurrence, ReleaseReports)?
+	{ at_occurrence: after_occurrence.inst, waiting: after_occurrence.event_queue.len(), after_frame: done.inst } == { at_occurrence: [{ handler: 2.U32, payload: [20.U8, 0, 0, 0, 0, 0, 0, 0] }, { handler: 9, payload: [] }], waiting: 1, after_frame: [{ handler: 2, payload: [20, 0, 0, 0, 0, 0, 0, 0] }, { handler: 9, payload: [] }, { handler: 2, payload: [40, 0, 0, 0, 0, 0, 0, 0] }] }
+}
+
+## Injected observations require live declarations, and media facts cannot
+## silently create a query the program never declared.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, index) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, attrs: [("aria-label", "List")] })
+	dom = Dom.bind(Dom.insert(d1, d1.root, index, Err(End)), 1, index)
+	state = { ..base, dom }
+	spec = Scm.parse("(test \"undeclared\" (setup (initial-media \"dark\" true)) (steps (mark-metrics)))")?
+	{
+		size: SpecRunner.one(program, state, ReportSize({ target: Label("List"), width: 10, height: 20 })).map_ok(|_| {}),
+		seen: SpecRunner.one(program, state, ReportSeen({ target: Label("List"), intersecting: True, ratio_permille: 500 })).map_ok(|_| {}),
+		media: SpecRunner.one(program, state, SetMedia({ query: "dark", matches: True })).map_ok(|_| {}),
+		boot: SpecRunner.start(program, spec).map_ok(|_| {}),
+	} == {
+		size: Err("(label \"List\") has no live size observation"),
+		seen: Err("(label \"List\") has no live seen observation"),
+		media: Err("set-media query \"dark\" is not declared"),
+		boot: Err("initial-media query \"dark\" is not declared"),
+	}
+}
+
+## A declared media source uses the shared report queue: newest matches
+## replace earlier ones, unchanged facts raise nothing, and cancellation
+## drops waiting answers while retaining the query's environment value.
+expect {
+	base_program = pointer_probe({})
+	declarations = SpecRunner.put_section([2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0], { tag: 6, body: SpecRunner.put_str(SpecRunner.put_u32([], 1), "dark") })
+	listen = SpecRunner.put_str(SpecRunner.put_u32([13], 1).append(16), "dark")
+	program = { ..base_program, keys: || declarations, init: |_boot| ([], listen, List.repeat(0.U8, 8)) }
+	base = SpecRunner.mount_in(program, {})
+	held = SpecRunner.one(program, base, HoldReports)?
+	first = SpecRunner.one(program, held, SetMedia({ query: "dark", matches: True }))?
+	second = SpecRunner.one(program, first, SetMedia({ query: "dark", matches: False }))?
+	unchanged = SpecRunner.one(program, second, SetMedia({ query: "dark", matches: False }))?
+	answered = SpecRunner.one(program, unchanged, ReleaseReports)?
+	waiting = SpecRunner.one(program, SpecRunner.one(program, answered, HoldReports)?, SetMedia({ query: "dark", matches: True }))?
+	cancelled = SpecRunner.take_batch(waiting, waiting.inst, SpecRunner.put_u32([14], 1))
+	done = SpecRunner.one(program, cancelled, ReleaseReports)?
+	{ seen: done.inst, replacements: done.browser.reports.replaced, sources: done.browser.report_sources.len(), subscriptions: done.browser.subs.len(), media: done.browser.env.media } == { seen: [{ handler: 1.U32, payload: [22.U8, 0] }], replacements: 1, sources: 0, subscriptions: 0, media: [("dark", True)] }
 }

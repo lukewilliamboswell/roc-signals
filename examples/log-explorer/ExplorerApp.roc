@@ -103,16 +103,16 @@ ExplorerApp := [].{
 	}
 
 	## The viewer's page from a line (from 0): one read of just its lines.
-	window : LogTask(U64, Log.Window)
-	window = ExplorerApp.log.task({ name: "roc-signals.example/log-explorer/window", run!: ExplorerApp.window! })
+	window : LogTask({ first : U64, count : U64 }, Log.Window)
+	window = ExplorerApp.log.task({ name: "roc-signals.example/log-explorer/window", run!: ExplorerApp.window!, on_cancel: Finish })
 
-	window! : Prepared, U64 => Try(Log.Window, Problem)
+	window! : Prepared, { first : U64, count : U64 } => Try(Log.Window, Problem)
 	window! = |{ file, index }, wanted| {
 		total = index.starts.len()
-		first = Log.window_first({ lines: total, wanted })
-		count = (total - first).min(Log.window_lines)
+		first = Log.window_first({ lines: total, wanted: wanted.first, count: wanted.count })
+		count = (total - first).min(wanted.count)
 		bytes = file.read!(Log.span(index, { first, count }))?
-		Ok({ first, total, lines: Log.lines_in(index, { first, count, bytes }) })
+		Ok({ first, total, count: wanted.count, lines: Log.lines_in(index, { first, count, bytes }) })
 	}
 
 	## A sample log of some number of entries, written to a new file.
@@ -265,7 +265,8 @@ ExplorerApp := [].{
 	timeline_view : Signal(ctx, OverviewAnswer), Signal(ctx, [NotCounted, Counted(List(U64))]) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	timeline_view = |r, matches| {
-		answered = r.map2(matches, |remote, over_time| remote.answered().map_ok(|o| { o, over_time }))
+		answered : Signal(ctx, Try({ o : Log.Overview, over_time : [NotCounted, Counted(List(U64))], theme : TimelineChart.Theme }, [NoAnswer]))
+		answered = { remote: r, over_time: matches, theme: LogStore.cells.theme.signal() }.Signal.map(|{ remote, over_time, theme }| remote.answered().map_ok(|o| { o, over_time, theme }))
 		Html.div(
 			"grid gap-1",
 			[
@@ -278,12 +279,13 @@ ExplorerApp := [].{
 						# The element reports a click on a point as the point's
 						# time, in its value and a change event.
 						Engine.attr("data-click", "x"),
-						Engine.attr_s("aria-label", answered.map(|a| a.map_ok(|{ o, over_time }| ExplorerApp.timeline_label(o, over_time)) ?? "Timeline")),
+						Engine.attr_s("data-background", LogStore.cells.theme.signal().map(TimelineChart.background)),
+						Engine.attr_s("aria-label", answered.map(|a| a.map_ok(|{ o, over_time, .. }| ExplorerApp.timeline_label(o, over_time)) ?? "Timeline")),
 						Engine.attr_presence(
 							"data-figure",
 							answered.map(
 								|a| match a {
-									Ok({ o, over_time }) => TimelineChart.figure({ timeline: o.timeline, matches: over_time, revision: "${o.size.to_str()}/${o.lines.to_str()}" })
+									Ok({ o, over_time, theme }) => TimelineChart.figure({ timeline: o.timeline, matches: over_time, revision: "${o.size.to_str()}/${o.lines.to_str()}", theme })
 									Err(NoAnswer) => Absent
 								},
 							),
@@ -292,7 +294,7 @@ ExplorerApp := [].{
 					],
 					[],
 				),
-				Html.p_s(answered.map(|a| a.map_ok(|{ o, over_time }| ExplorerApp.peak_text(o, over_time)) ?? ""), [Engine.class("hint"), Engine.test_id("timeline-peak")]),
+				Html.p_s(answered.map(|a| a.map_ok(|{ o, over_time, .. }| ExplorerApp.peak_text(o, over_time)) ?? ""), [Engine.class("hint"), Engine.test_id("timeline-peak")]),
 			],
 		)
 	}
@@ -332,7 +334,12 @@ ExplorerApp := [].{
 		number = row.field(|line| line.number)
 		Engine.element(
 			"li",
-			[Engine.class("flex items-baseline gap-2 font-mono text-xs")],
+			[Engine.class("flex items-baseline gap-2 font-mono text-xs")].concat(
+				match jump {
+					Stay => [Engine.attr("style", "height:${Log.line_height.to_str()}px;line-height:${Log.line_height.to_str()}px;white-space:pre")]
+					Jump => []
+				},
+			),
 			[
 				match jump {
 					Jump =>
@@ -343,8 +350,27 @@ ExplorerApp := [].{
 						)
 					Stay => Html.span_s(number.map(|n| n.to_str()), [Engine.class("muted numeric")])
 				},
-				Html.span_s(row.field(|line| ExplorerApp.mark_name(line.mark)), [Engine.class_s(row.field(|line| ExplorerApp.mark_class(line.mark)))]),
-				Html.span_s(row.field(|line| line.text), [Engine.class("whitespace-pre-wrap break-all"), Engine.test_id_s(number.map(|n| "line-${n.to_str()}"))]),
+				Html.span_s(
+					row.field(|line| ExplorerApp.mark_name(line.mark)),
+					[Engine.class_s(row.field(|line| ExplorerApp.mark_class(line.mark)))].concat(
+						match jump {
+							Stay => [Engine.attr("style", "padding-block:0;line-height:16px")]
+							Jump => []
+						},
+					),
+				),
+				Html.span_s(
+					row.field(|line| line.text),
+					[
+						Engine.class(
+							match jump {
+								Jump => "whitespace-pre-wrap break-all"
+								Stay => "whitespace-pre"
+							},
+						),
+						Engine.test_id_s(number.map(|n| "line-${n.to_str()}")),
+					],
+				),
 			],
 		)
 	}
@@ -441,7 +467,12 @@ ExplorerApp := [].{
 		cells = LogStore.cells
 		Worker.resource_when(
 			ExplorerApp.window,
-			cells.log.signal().map2(cells.place.first.signal(), ExplorerApp.asked),
+			{ open: cells.log.signal(), first: cells.place.first.signal(), viewport: cells.viewport.signal() }.Signal.map(
+				|at| match at.viewport.capacity() {
+					Ok(count) => ExplorerApp.asked(at.open, { first: at.first, count })
+					Err(Unmeasured) => Skip
+				},
+			),
 			|r| Html.section(
 				"Viewer",
 				"grid gap-3",
@@ -450,9 +481,9 @@ ExplorerApp := [].{
 						"toolbar",
 						[
 							Html.button("First", [Engine.class("button button-sm")], Engine.does(LogStore.moved_to(Ok(0)))),
-							Html.button("Previous", [Engine.class("button button-sm")], ExplorerApp.stepped(r, |w| if (w.first > Log.window_lines) w.first - Log.window_lines else 0)),
-							Html.button("Next", [Engine.class("button button-sm")], ExplorerApp.stepped(r, |w| Log.window_first({ lines: w.total, wanted: w.first + Log.window_lines }))),
-							Html.button("Last", [Engine.class("button button-sm")], ExplorerApp.stepped(r, |w| Log.window_first({ lines: w.total, wanted: w.total }))),
+							Html.button("Previous", [Engine.class("button button-sm")], ExplorerApp.stepped(r, |w| if (w.first > w.count) w.first - w.count else 0)),
+							Html.button("Next", [Engine.class("button button-sm")], ExplorerApp.stepped(r, |w| Log.window_first({ lines: w.total, wanted: w.first + w.count, count: w.count }))),
+							Html.button("Last", [Engine.class("button button-sm")], ExplorerApp.stepped(r, |w| Log.window_first({ lines: w.total, wanted: w.total, count: w.count }))),
 							Html.number_input(
 								Engine.const("Go to line"),
 								cells.place.first.signal().map(|first| (first + 1).to_str()),
@@ -471,7 +502,15 @@ ExplorerApp := [].{
 						),
 						[Engine.test_id("viewer-status")],
 					),
-					Engine.element("ol", [Engine.class("grid gap-1"), Html.aria_label("Lines")], [Engine.each(r.map(|remote| remote.answered().map_ok(|w| w.lines) ?? []), |line| line.number.to_str(), |row| ExplorerApp.line_row(row, Stay))]),
+					Engine.element(
+						"div",
+						[
+							Engine.test_id("viewer-viewport"),
+							Engine.attr("style", "height:min(60vh,1000px);min-width:0;overflow-x:scroll;overflow-y:hidden;overflow-anchor:none"),
+							Html.on_size(Engine.handle(|size| LogStore.viewer_sized(size.height))),
+						],
+						[Engine.element("ol", [Engine.class("m-0 p-0"), Html.aria_label("Lines")], [Engine.each(r.map(|remote| remote.answered().map_ok(|w| w.lines) ?? []), |line| line.number.to_str(), |row| ExplorerApp.line_row(row, Stay))])],
+					),
 				],
 			),
 		)
@@ -550,6 +589,7 @@ ExplorerApp := [].{
 						Html.p("Open a log of any size: a worker indexes it once, and the overview, the search and the viewer ask that index their own questions, reading only the lines they need. The file never comes into the page.", "app-subtitle"),
 					],
 				),
+				Engine.watch(Engine.const({}), |_| [MediaChanges(LogStore.dark_query)], Engine.react(|_, result| LogStore.media_changed(result))),
 				ExplorerApp.opener({}),
 				Html.div(
 					"toolbar",
@@ -600,5 +640,5 @@ ExplorerApp := [].{
 	}
 
 	program : Engine.Program
-	program = Engine.program_store({ storage_keys: [], max_inflight: 32 }, |_boot| LogStore.store, |_boot| ExplorerApp.view({})).with_workers(ExplorerApp.registrations)
+	program = Engine.program_store({ media: [LogStore.dark_query] }, LogStore.start, |_boot| ExplorerApp.view({})).with_workers(ExplorerApp.registrations)
 }

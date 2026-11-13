@@ -260,6 +260,7 @@ Scm := [].{
 		InitialLocation(Str),
 		InitialVisibility(Visibility),
 		InitialOnline(Online),
+		InitialMedia({ query : Str, matches : Bool }),
 		LocalStorage({ key : Str, value : Str }),
 
 		## Local storage cannot be used at all: every access throws, as in a
@@ -293,6 +294,7 @@ Scm := [].{
 				InitialLocation(url) => { ..env, url }
 				InitialOnline(value) => { ..env, online: value == Online }
 				InitialVisibility(value) => { ..env, visible: value == Visible }
+				InitialMedia({ query, matches }) => { ..env, media: env.media.keep_if(|(name, _)| name != query).append((query, matches)) }
 				LocalStorage({ key, value }) => {
 					if !env.storage_available {
 						return Err({ pos, message: "local-storage seeds storage that local-storage-unavailable says the app cannot read" })
@@ -319,7 +321,7 @@ Scm := [].{
 	## Every environment section by its wire-table name. The browser replay's
 	## appliers must cover exactly this list, checked with the rest of its grammar.
 	environment_sections : List(Str)
-	environment_sections = ["location", "local-storage", "connectivity", "visibility"]
+	environment_sections = ["location", "local-storage", "connectivity", "visibility", "media"]
 
 	## Pointer steps carry a zone-relative percentage or ask for the located
 	## element's centre. The runner rejects an ambiguous centre inside a zone.
@@ -458,6 +460,12 @@ Scm := [].{
 		ExpectShown(Loc, [Hidden, Open, Modal, Popover]),
 		ExpectScroll({ ordinal : U64, target : Loc, kind : [IntoView, To] }),
 		ExpectScrolls(U64),
+		Scroll({ target : Loc, top : U32, left : U32 }),
+		ReportSize({ target : Loc, width : U32, height : U32 }),
+		ReportSeen({ target : Loc, intersecting : Bool, ratio_permille : U16 }),
+		SetMedia({ query : Str, matches : Bool }),
+		ExpectObserved(U64),
+		ExpectMediaSubscriptions({ query : Str, count : U64 }),
 		Focus(Loc),
 		Blur(Loc),
 		Change(Loc, Str),
@@ -852,6 +860,23 @@ Scm := [].{
 		_ => Scm.unsigned(sx, what)
 	}
 
+	## CSS pixel dimensions and offsets fit the unsigned wire fields exactly.
+	pixels : Sx, Str -> Try(U32, Problem)
+	pixels = |sx, what| {
+		value = Scm.unsigned(sx, what)?
+		if value > 4294967295 {
+			return Err(Scm.bad(sx, "${what} must fit U32"))
+		}
+		Ok(value.to_u32_wrap())
+	}
+
+	## A media query and its injected match value, for setup and later reports.
+	media_fact : Sx, List(Sx) -> Try({ query : Str, matches : Bool }, Problem)
+	media_fact = |form, args| {
+		values = Scm.arity(form, args, 2)?
+		Ok({ query: Scm.string(Scm.arg(values, 0), "the media query")?, matches: Scm.boolean(Scm.arg(values, 1), "the media match")? })
+	}
+
 	integer : Sx, Str -> Try(I64, Problem)
 	integer = |sx, what|
 		match sx {
@@ -963,6 +988,7 @@ Scm := [].{
 		{ name: "initial-location", parse: |form, args| Ok(InitialLocation(Scm.location(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
 		{ name: "initial-visibility", parse: |form, args| Ok(InitialVisibility(Scm.visibility(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
 		{ name: "initial-online", parse: |form, args| Ok(InitialOnline(Scm.online(Scm.arg(Scm.arity(form, args, 1)?, 0))?)) },
+		{ name: "initial-media", parse: |form, args| Scm.media_fact(form, args).map_ok(|fact| InitialMedia(fact)) },
 		{ name: "local-storage", parse: |form, args| Ok(LocalStorage(Scm.key_value(form, args)?)) },
 		{
 			name: "local-storage-unavailable",
@@ -1156,6 +1182,48 @@ Scm := [].{
 			},
 		},
 		{ name: "expect-scrolls", parse: |form, args| Ok(ExpectScrolls(Scm.scroll_count(Scm.arg(Scm.arity(form, args, 1)?, 0), "the scroll count")?)) },
+		{
+			name: "scroll",
+			parse: |form, args| {
+				values = Scm.arity(form, args, 3)?
+				Ok(Scroll({ target: Scm.locator(Scm.arg(values, 0))?, top: Scm.pixels(Scm.arg(values, 1), "the top offset")?, left: Scm.pixels(Scm.arg(values, 2), "the left offset")? }))
+			},
+		},
+		{
+			name: "report-size",
+			parse: |form, args| {
+				values = Scm.arity(form, args, 3)?
+				Ok(ReportSize({ target: Scm.locator(Scm.arg(values, 0))?, width: Scm.pixels(Scm.arg(values, 1), "the width")?, height: Scm.pixels(Scm.arg(values, 2), "the height")? }))
+			},
+		},
+		{
+			name: "report-seen",
+			parse: |form, args| {
+				if args.len() != 2 and args.len() != 3 {
+					return Err(Scm.bad(form, "report-seen takes a locator, yes or no, and optionally a ratio per mille"))
+				}
+				flag = Scm.arg(args, 1)
+				intersecting = match Scm.symbol(flag, "the intersection state")? {
+					"yes" => Bool.True
+					"no" => Bool.False
+					_ => return Err(Scm.bad(flag, "the intersection state must be yes or no"))
+				}
+				ratio = if (args.len() == 3) Scm.unsigned(Scm.arg(args, 2), "the ratio per mille")? else if (intersecting) 1000 else 0
+				if ratio > 1000 {
+					return Err(Scm.bad(Scm.arg(args, 2), "the ratio per mille must be between 0 and 1000"))
+				}
+				Ok(ReportSeen({ target: Scm.locator(Scm.arg(args, 0))?, intersecting, ratio_permille: ratio.to_u16_wrap() }))
+			},
+		},
+		{ name: "set-media", parse: |form, args| Scm.media_fact(form, args).map_ok(|fact| SetMedia(fact)) },
+		{ name: "expect-observed", parse: |form, args| Ok(ExpectObserved(Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the observation count")?)) },
+		{
+			name: "expect-media-subscriptions",
+			parse: |form, args| {
+				values = Scm.arity(form, args, 2)?
+				Ok(ExpectMediaSubscriptions({ query: Scm.string(Scm.arg(values, 0), "the media query")?, count: Scm.unsigned(Scm.arg(values, 1), "the subscription count")? }))
+			},
+		},
 		{ name: "pointer-down", parse: |form, args| Scm.pointer_place({ form, args, mode: Press }).map_ok(|press| PointerDown(press)) },
 		{ name: "pointer-move", parse: |form, args| Scm.pointer_place({ form, args, mode: Place }).map_ok(|p| PointerMove({ target: p.target, at: p.at, id: p.id })) },
 		{ name: "pointer-up", parse: |form, args| Scm.pointer_place({ form, args, mode: Place }).map_ok(|p| PointerUp({ target: p.target, at: p.at, id: p.id })) },
@@ -1501,6 +1569,12 @@ Scm := [].{
 		{ op: "expect-shown", grant: Never },
 		{ op: "expect-scroll", grant: Never },
 		{ op: "expect-scrolls", grant: Never },
+		{ op: "scroll", grant: Never },
+		{ op: "report-size", grant: Never },
+		{ op: "report-seen", grant: Never },
+		{ op: "set-media", grant: Never },
+		{ op: "expect-observed", grant: Never },
+		{ op: "expect-media-subscriptions", grant: Never },
 		{ op: "pointer-down", grant: PointerPress },
 		{ op: "pointer-move", grant: Never },
 		{ op: "pointer-up", grant: PointerRelease },
@@ -1603,6 +1677,12 @@ Scm := [].{
 			ExpectShown(_, _) => "expect-shown"
 			ExpectScroll(_) => "expect-scroll"
 			ExpectScrolls(_) => "expect-scrolls"
+			Scroll(_) => "scroll"
+			ReportSize(_) => "report-size"
+			ReportSeen(_) => "report-seen"
+			SetMedia(_) => "set-media"
+			ExpectObserved(_) => "expect-observed"
+			ExpectMediaSubscriptions(_) => "expect-media-subscriptions"
 			Focus(_) => "focus"
 			Blur(_) => "blur"
 			Change(_, _) => "change"
@@ -1718,6 +1798,7 @@ Scm := [].{
 		JsonOut.field("storage_available", Bool(env.storage_available)),
 		JsonOut.field("online", Bool(env.online)),
 		JsonOut.field("visible", Bool(env.visible)),
+		JsonOut.field("media", Array(env.media.map(|(query, matches)| Array([Text(query), Bool(matches)])))),
 	])
 
 	loc_json : Loc -> JsonOut.Value
@@ -1768,6 +1849,7 @@ Scm := [].{
 			InitialLocation(url) => ("initial-location", [JsonOut.field("text", Text(url))])
 			InitialVisibility(v) => ("initial-visibility", [JsonOut.field("text", Text(Scm.visibility_name(v)))])
 			InitialOnline(o) => ("initial-online", [JsonOut.field("text", Text(Scm.online_name(o)))])
+			InitialMedia({ query, matches }) => ("initial-media", [JsonOut.field("query", Text(query)), JsonOut.field("matches", Bool(matches))])
 			LocalStorage({ key, value }) => ("local-storage", [JsonOut.field("key", Text(key)), JsonOut.field("text", Text(value))])
 			LocalStorageUnavailable => ("local-storage-unavailable", [])
 			File({ name, mime, text, repeat }) => ("file", [JsonOut.field("name", Text(name)), JsonOut.field("type", Text(mime)), JsonOut.field("text", Text(text)), JsonOut.field("count", Nat(repeat))])
@@ -1834,6 +1916,12 @@ Scm := [].{
 			]
 			ExpectScroll({ ordinal, target, kind }) => [loc(target), JsonOut.field("ordinal", Text(ordinal.to_str())), JsonOut.field("kind", Text(if (kind == IntoView) "into-view" else "to"))]
 			ExpectScrolls(count) => [JsonOut.field("count", Text(count.to_str()))]
+			Scroll({ target, top, left }) => [loc(target), JsonOut.field("top", Nat(top.to_u64())), JsonOut.field("left", Nat(left.to_u64()))]
+			ReportSize({ target, width, height }) => [loc(target), JsonOut.field("width", Nat(width.to_u64())), JsonOut.field("height", Nat(height.to_u64()))]
+			ReportSeen({ target, intersecting, ratio_permille }) => [loc(target), JsonOut.field("intersecting", Bool(intersecting)), JsonOut.field("ratio_permille", Nat(ratio_permille.to_u64()))]
+			SetMedia({ query, matches }) => [JsonOut.field("query", Text(query)), JsonOut.field("matches", Bool(matches))]
+			ExpectObserved(count) => [JsonOut.field("count", Nat(count))]
+			ExpectMediaSubscriptions({ query, count }) => [JsonOut.field("query", Text(query)), JsonOut.field("count", Nat(count))]
 			Focus(l) => [loc(l)]
 			Blur(l) => [loc(l)]
 			Change(l, t) => [loc(l), text(t)]
@@ -1982,7 +2070,7 @@ expect {
 		\\${JsonOut.render(Scm.spec_fields("w", spec))}
 	expected =
 		\\[LoseWork({ fault: AppCrash, occurrence: 1 }), TimeOutWork(2), ExpectPendingWork({ count: 3, task: "example.org/search/filter" })]
-		\\{"id":"w","name":"work","setup":[],"environment":{"url":"/","storage":[],"storage_available":true,"online":true,"visible":true},"steps":[{"op":"lose-work","line":3,"column":5,"count":1,"fault":"app_crash"},{"op":"time-out-work","line":4,"column":5,"count":2},{"op":"expect-pending-work","line":5,"column":5,"task":"example.org/search/filter","count":3}]}
+		\\{"id":"w","name":"work","setup":[],"environment":{"url":"/","storage":[],"storage_available":true,"online":true,"visible":true,"media":[]},"steps":[{"op":"lose-work","line":3,"column":5,"count":1,"fault":"app_crash"},{"op":"time-out-work","line":4,"column":5,"count":2},{"op":"expect-pending-work","line":5,"column":5,"task":"example.org/search/filter","count":3}]}
 	actual == expected
 }
 
@@ -2116,7 +2204,7 @@ expect {
 expect {
 	spec = Scm.parse("(test \"j\" (setup (local-storage \"k\" \"v\")) (steps (expect-checked (role checkbox :name \"A\") true)))")?
 	actual = JsonOut.render(Scm.spec_fields("j-file", spec))
-	actual == "{\"id\":\"j-file\",\"name\":\"j\",\"setup\":[{\"op\":\"local-storage\",\"line\":1,\"column\":18,\"key\":\"k\",\"text\":\"v\"}],\"environment\":{\"url\":\"/\",\"storage\":[[\"k\",\"v\"]],\"storage_available\":true,\"online\":true,\"visible\":true},\"steps\":[{\"op\":\"expect-checked\",\"line\":1,\"column\":50,\"loc\":{\"kind\":\"role\",\"role\":\"checkbox\",\"name\":\"A\"},\"value\":true}]}"
+	actual == "{\"id\":\"j-file\",\"name\":\"j\",\"setup\":[{\"op\":\"local-storage\",\"line\":1,\"column\":18,\"key\":\"k\",\"text\":\"v\"}],\"environment\":{\"url\":\"/\",\"storage\":[[\"k\",\"v\"]],\"storage_available\":true,\"online\":true,\"visible\":true,\"media\":[]},\"steps\":[{\"op\":\"expect-checked\",\"line\":1,\"column\":50,\"loc\":{\"kind\":\"role\",\"role\":\"checkbox\",\"name\":\"A\"},\"value\":true}]}"
 }
 
 ## Metric names are checked: an unknown one is a parse error, and a known one
@@ -2128,7 +2216,7 @@ expect {
 		\\${JsonOut.render(Scm.spec_fields("m", spec))}
 	expected =
 		\\x.scm:1:47: unknown metric rows_painted; the metrics are rows_created, rows_removed, rows_reused, rows_updated, rows_moved, create_element, set_text, set_value, set_checked, bind_event, registrations_released, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares, effects_issued, effects_delivered, effects_stale, effects_refused, effects_cancelled, effects_reparented, effects_skipped
-		\\{"id":"m","name":"m","setup":[],"environment":{"url":"/","storage":[],"storage_available":true,"online":true,"visible":true},"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
+		\\{"id":"m","name":"m","setup":[],"environment":{"url":"/","storage":[],"storage_available":true,"online":true,"visible":true,"media":[]},"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
 	actual == expected
 }
 
@@ -2312,4 +2400,41 @@ expect {
 		},
 	)
 	{ plain: keys.get(0) == keys.get(1), shifted: keys.get(2) == keys.get(3), shift: (keys.get(2)?).shift } == { plain: Bool.True, shifted: Bool.True, shift: Bool.True }
+}
+
+## Layout steps keep their typed fields and media facts use the same environment
+## representation as Boot, resolving repeated setup facts in written order.
+expect {
+	spec = Scm.parse("(test \"layout\" (setup (initial-media \"dark\" true) (initial-media \"dark\" false)) (steps (scroll (label \"List\") 4294967295 2) (report-size (label \"List\") 640 400) (report-seen (test-id \"end\") yes 500) (report-seen (test-id \"end\") no) (set-media \"dark\" true) (expect-observed 2) (expect-media-subscriptions \"dark\" 1)))")?
+	{
+		media: spec.environment.media,
+		ops: spec.steps.map(|step| step.op),
+		activation: spec.steps.map(|step| Scm.activation_for(step.op)),
+	} == {
+		media: [("dark", False)],
+		ops: [Scroll({ target: Label("List"), top: 4294967295, left: 2 }), ReportSize({ target: Label("List"), width: 640, height: 400 }), ReportSeen({ target: TestId("end"), intersecting: True, ratio_permille: 500 }), ReportSeen({ target: TestId("end"), intersecting: False, ratio_permille: 0 }), SetMedia({ query: "dark", matches: True }), ExpectObserved(2), ExpectMediaSubscriptions({ query: "dark", count: 1 })],
+		activation: List.repeat(Never, 7),
+	}
+}
+
+## Layout dimensions and ratios reject overflow, negative values, misspelt
+## states and extra arguments before either runner can act.
+expect {
+	forms = ["(scroll (label \"L\") -1 0)", "(scroll (label \"L\") 4294967296 0)", "(report-size (label \"L\") 1 4294967296)", "(report-seen (label \"L\") true)", "(report-seen (label \"L\") yes 1001)", "(report-seen (label \"L\") no -1)", "(report-seen (label \"L\") no 0 extra)", "(set-media \"dark\" yes)", "(expect-observed -1)", "(expect-media-subscriptions \"dark\" 1 2)"]
+	forms.map(|form| Scm.parse("(test \"bad\" (steps ${form}))").is_err()) == List.repeat(True, 10)
+}
+
+## Layout and media JSON carries plain named fields, with no runner-specific
+## interpretation of a missing ratio, media match or activation policy.
+expect {
+	pos = { line: 2, column: 3 }
+	ops = [Scroll({ target: Label("L"), top: 3, left: 4 }), ReportSize({ target: Label("L"), width: 640, height: 400 }), ReportSeen({ target: Label("L"), intersecting: True, ratio_permille: 500 }), SetMedia({ query: "dark", matches: False }), ExpectObserved(2), ExpectMediaSubscriptions({ query: "dark", count: 1 })]
+	ops.map(|op| JsonOut.render(Scm.step_json({ op, pos }))) == [
+		"{\"op\":\"scroll\",\"line\":2,\"column\":3,\"loc\":{\"kind\":\"label\",\"value\":\"L\"},\"top\":3,\"left\":4}",
+		"{\"op\":\"report-size\",\"line\":2,\"column\":3,\"loc\":{\"kind\":\"label\",\"value\":\"L\"},\"width\":640,\"height\":400}",
+		"{\"op\":\"report-seen\",\"line\":2,\"column\":3,\"loc\":{\"kind\":\"label\",\"value\":\"L\"},\"intersecting\":true,\"ratio_permille\":500}",
+		"{\"op\":\"set-media\",\"line\":2,\"column\":3,\"query\":\"dark\",\"matches\":false}",
+		"{\"op\":\"expect-observed\",\"line\":2,\"column\":3,\"count\":2}",
+		"{\"op\":\"expect-media-subscriptions\",\"line\":2,\"column\":3,\"query\":\"dark\",\"count\":1}",
+	]
 }
