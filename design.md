@@ -2665,7 +2665,14 @@ holds. The paste-text kind, attached by `Html.on_paste_text`, is allowed only
 on `paste`. It reads `clipboardData.getData("text/plain")` during dispatch,
 prevents the element's paste default and delivers `Text(Str)` or `TooLarge`.
 `maxPasteBytes` is a deployment bound, 4 MiB by default; an over-bound string
-is never staged into Wasm. An element has one handler per event type, so
+is never staged into Wasm. The browser's
+[`getData` API](https://html.spec.whatwg.org/multipage/dnd.html#dom-datatransfer-getdata)
+first provides a whole string, with no preceding byte-length query. The
+limit therefore bounds validation, UTF-8 copying and Wasm staging, after
+that unavoidable browser read. The runtime first checks the string's
+constant-time UTF-16 length, then checks candidates' UTF-8 size and Unicode
+within the bound. This explicitly qualifies the issue's "unread" wording:
+refusal precedes encoding and staging, rather than the browser's own read. An element has one handler per event type, so
 it accepts pasted files or pasted text. An ordinary text-kind `paste`
 continues to carry its ordinary empty string. A handler is generic over its payload, and a kind is attached only
 to the event types its row allows. Decoding happens once, after routing,

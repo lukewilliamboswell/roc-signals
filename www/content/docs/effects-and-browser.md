@@ -397,8 +397,9 @@ prevents the paste's default on that element:
 {{ sample(file="effects.roc", region="paste") }}
 
 The runtime reads plain text during dispatch. `maxPasteBytes` caps its UTF-8
-size, 4 MiB by default; over the bound the app receives `TooLarge`. An
-element takes pasted text or pasted files, since it has one handler per
+size, 4 MiB by default; over the bound the app receives `TooLarge`. The
+browser first provides the whole string; the limit then bounds validation,
+UTF-8 copying and Wasm staging. An element takes pasted text or pasted files, since it has one handler per
 event type. An ordinary `on("paste", ...)` still receives its ordinary
 empty text payload. Reading the clipboard on demand remains a port's
 business; the paste event covers text the user chooses to paste.
