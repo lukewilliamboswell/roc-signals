@@ -1,20 +1,20 @@
 # Third-Party Licenses
 
-This project links runtime archives from roc-fuzz's release into the native
-spec runner. Its fuzz targets are roc-fuzz apps that depend on that release
-as their platform; nothing of roc-fuzz is copied into the repository. The
-documentation site serves font files that are kept in it.
+The native spec runner links runtime archives built and selected by the Zig
+release pinned in `Blueprint.roc`. The fuzz targets separately depend on the
+roc-fuzz 0.6.1 release as their platform; nothing of roc-fuzz is copied into the
+repository. The documentation site serves font files that are kept in it.
 
 ## musl and Zig runtime archives
 
 The native spec runner (`platform/main.roc` built for `x64musl`) links
-`crt1.o` and `libc.a` (musl, MIT License) and `libzigc.a` and
-`libcompiler_rt.a` (Zig, MIT License; compiler-rt under the Apache License
-2.0 with LLVM Exceptions), taken from the roc-fuzz 0.6.0 release bundle
-(https://github.com/lukewilliamboswell/roc-fuzz, MIT License) by
-`scripts/src/PlatformTest.roc` into `platform/targets/x64musl/` and shipped
-in this platform's release bundle. Their notices are those the roc-fuzz
-release bundle carries.
+`rcrt1.o` and `libc.a` (musl, MIT License), and `libzigc.a` and
+`libcompiler_rt.a` from Zig's runtime sources. `scripts/src/PlatformTest.roc`
+builds a static PIE probe with the pinned Zig, copies the exact link inputs
+selected by Zig into `platform/targets/x64musl/`, and ships those inputs in the
+platform release bundle. They are not taken from a roc-fuzz release. The source
+notices accompany the Zig distribution, including its `LICENSE` (MIT License)
+and `lib/libc/musl/COPYRIGHT`.
 
 ## IBM Plex fonts
 
