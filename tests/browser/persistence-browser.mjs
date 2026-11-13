@@ -169,6 +169,22 @@ try {
       const overflow = f.rt.poisoned?.class; f.end(); return [atBound, overflow];
     });
     check("deferred failure recipients and ingress share the 4096-entry bound", combined, [[1, 4095, null], "resource_limit"]);
+    const chained = await page.evaluate(async () => {
+      const f = window.__fixture({ storage: { getItem: () => null, setItem: () => { throw Error("blocked"); } } });
+      f.rt.perform({ op: "storagefailures", id: 1 });
+      const warn = console.warn; console.warn = () => {};
+      try {
+        f.rt.deliver = (node, handler, payload) => {
+          f.calls.push({ node, handler, payload: [...payload] });
+          if (f.calls.length === 1) f.rt.perform({ op: "set", key: "second", value: "v" });
+        };
+        f.rt.perform({ op: "set", key: "first", value: "v" });
+        await new Promise(resolve => setTimeout(resolve, 0)); const firstTask = f.calls.length;
+        await new Promise(resolve => setTimeout(resolve, 0)); const secondTask = f.calls.length;
+        f.end(); return [firstTask, secondTask];
+      } finally { console.warn = warn; }
+    });
+    check("a write failed during a failure reaction waits for its own next task", chained, [1, 2]);
 
     await context.close();
   }
