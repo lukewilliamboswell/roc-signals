@@ -1960,13 +1960,30 @@ Dom := [].{
 			if prefix == "xml" and name.namespace != "http://www.w3.org/XML/1998/namespace" {
 				crash "executor: xml prefix requires XML namespace"
 			}
-		} else if name.local.contains(":") and !((element and (name.namespace == Dom.html_namespace or name.namespace.is_empty())) or (!element and name.namespace.is_empty())) {
+		} else if name.local.contains(":") and !((element and [Dom.html_namespace, Dom.svg_namespace, "http://www.w3.org/1998/Math/MathML", ""].contains(name.namespace)) or (!element and name.namespace.is_empty())) {
 			crash "executor: unrepresentable unprefixed local name"
 		}
 		ordinary = prefix.is_empty() and ((element and (name.namespace == Dom.html_namespace or name.namespace.is_empty())) or (!element and name.namespace.is_empty()))
 		declares = prefix == "xmlns" or Dom.written_name(name) == "xmlns"
-		if !ordinary and (name.namespace == "http://www.w3.org/2000/xmlns/") != declares {
+		bare_xmlns = element and prefix.is_empty() and name.local == "xmlns"
+		if !ordinary and !bare_xmlns and (name.namespace == "http://www.w3.org/2000/xmlns/") != declares {
 			crash "executor: invalid xmlns namespace pairing"
+		}
+		if element and prefix.is_empty() and name.local.contains(":") {
+			foreign = [Dom.svg_namespace, "http://www.w3.org/1998/Math/MathML"].contains(name.namespace)
+			bytes = name.local.to_utf8()
+			first = bytes.first() ?? crash "validated nonempty local name"
+			if foreign and !((first >= 65 and first <= 90) or (first >= 97 and first <= 122)) {
+				crash "executor: foreign colon factory requires an ASCII letter"
+			}
+			if (foreign or name.namespace == Dom.html_namespace) and bytes.any(|unit| unit >= 65 and unit <= 90) {
+				crash "executor: empty-node factory would fold the local name"
+			}
+		}
+		if bare_xmlns and !ordinary and name.namespace != "http://www.w3.org/2000/xmlns/" {
+			if name.namespace == "http://www.w3.org/XML/1998/namespace" or name.namespace.to_utf8().any(|unit| unit < 32 and ![9.U8, 10, 13].contains(unit)) or name.namespace.contains("\u(FFFE)") or name.namespace.contains("\u(FFFF)") {
+				crash "executor: unrepresentable empty-node namespace"
+			}
 		}
 	}
 

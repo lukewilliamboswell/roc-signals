@@ -4,6 +4,7 @@ app [target] {
 }
 import fz.Fuzz
 import pf.Web
+import pf.Dom
 import NameModel
 import NameCorpus
 import NamespaceModel
@@ -78,6 +79,17 @@ check_namespace = |name| {
 	}
 	match tag {
 		Ok(value) => {
+			Dom.validate_name(
+				{
+					namespace: name.uri,
+					prefix: match name.prefix {
+						Unprefixed => ""
+						Prefixed(text) => text
+					},
+					local: name.local,
+				},
+				True,
+			)
 			if value.local() != name.local or value.prefix() != prefix or value.namespace() != Explicit(namespace) or value.text() != written {
 				crash "element qualification changed expanded identity"
 			}

@@ -79,7 +79,9 @@ Web := [].{
 
 		## Qualify this local name with explicit namespace facts. This checks modern
 		## DOM name and reserved xml/xmlns rules, not XML QName vocabulary. Prefix
-		## and local spelling remain separate; malformed facts return a typed error.
+		## and local spelling remain separate. Verified empty-node factories also
+		## preserve unprefixed foreign colon names and bare xmlns extension names;
+		## facts those factories cannot retain return a typed error.
 		in_namespace : Tag, NameProps -> Try(Tag, [NotATag(Str)])
 		in_namespace = |Tag.(name), props| {
 			ns = normalized_namespace(props.namespace)
@@ -385,12 +387,15 @@ check_qualified = |local, namespace, prefix, element| {
 			}
 		}
 		Unprefixed => {
-			if element and namespace == Html and local.contains(":") and local.to_utf8().any(|unit| unit >= 'A' and unit <= 'Z') {
-				return Err("an unprefixed HTML colon local name cannot preserve uppercase through its DOM factory")
+			if element and (namespace == Html or namespace == Svg or namespace == MathML) and local.contains(":") and local.to_utf8().any(|unit| unit >= 'A' and unit <= 'Z') {
+				return Err("an unprefixed HTML, SVG or MathML colon local name cannot preserve uppercase through its empty-node factory")
 			}
-			# Raw HTML local names and ordinary attributes can contain a colon.
-			# Namespace-aware factories would reinterpret it as a prefix.
-			if local.contains(":") and !((element and (namespace == Html or namespace == None)) or (!element and namespace == None)) {
+			if element and (namespace == Svg or namespace == MathML) and local.contains(":") and !is_ascii_alpha(local.to_utf8().first() ?? crash "checked nonempty local name") {
+				return Err("an unprefixed SVG or MathML colon local name must begin with an ASCII letter for its empty-node factory")
+			}
+			# Direct or verified empty-node factories retain local colon text;
+			# a namespace-aware qualified-name factory would split it instead.
+			if local.contains(":") and !((element and (namespace == Html or namespace == Svg or namespace == MathML or namespace == None)) or (!element and namespace == None)) {
 				return Err("${Str.inspect(local)} requires an explicit prefix and local name in this namespace")
 			}
 		}
@@ -400,11 +405,29 @@ check_qualified = |local, namespace, prefix, element| {
 	# An ordinary raw xmlns attribute is allowed by setAttribute, like other
 	# unqualified raw text; explicit namespace declarations stay distinct.
 	ordinary = prefix == Unprefixed and ((element and (namespace == Html or namespace == None)) or (!element and namespace == None))
-	if !ordinary and xmlns != declares {
+	bare_xmlns = element and prefix == Unprefixed and local == "xmlns"
+	if !ordinary and !bare_xmlns and xmlns != declares {
 		return Err("xmlns names require the XMLNS namespace, and only xmlns names use it")
+	}
+	if bare_xmlns and !ordinary and !xmlns {
+		uri = match namespace {
+			Svg => "http://www.w3.org/2000/svg"
+			MathML => "http://www.w3.org/1998/Math/MathML"
+			Uri(value) => value
+			_ => crash "nonordinary xmlns namespace"
+		}
+		if uri == "http://www.w3.org/XML/1998/namespace" or !xml_factory_uri(uri) {
+			return Err("this unprefixed xmlns element cannot preserve its namespace through the empty-node factory")
+		}
 	}
 	Ok({})
 }
+
+## Only the XML empty-node fallback needs XML 1.0 character data. Ordinary
+## DOM factories keep their broader namespace URI contract. Valid Roc strings
+## exclude surrogates; these are the remaining XML Char exclusions.
+xml_factory_uri : Str -> Bool
+xml_factory_uri = |uri| !uri.to_utf8().any(|byte| byte < 32 and byte != 9 and byte != 10 and byte != 13) and !uri.contains("\u(FFFE)") and !uri.contains("\u(FFFF)")
 
 ## Explicit namespace qualification retains the prefix, URI and local name,
 ## including extension namespaces unknown to the HTML/SVG catalogue.
@@ -485,4 +508,27 @@ expect {
 expect {
 	name = Web.Tag.from_str("h:div")?
 	name.in_namespace({ namespace: Html }) == name.in_namespace({ namespace: Html, prefix: Unprefixed })
+}
+
+## Foreign colon factories keep exact lowercase local text, while a genuine
+## prefix remains a separate identity. Tokenization and case loss are refused.
+expect {
+	local = Web.Tag.from_str("h:a=b")?
+	local.in_namespace({ namespace: Svg })?.local() == "h:a=b" and
+		local.in_namespace({ namespace: MathML })?.prefix() == Unprefixed and
+			Web.Tag.from_str("h:UPPER")?.in_namespace({ namespace: Svg }).is_err() and
+				Web.Tag.from_str("é:x")?.in_namespace({ namespace: MathML }).is_err()
+}
+
+## XML-only restrictions apply to the bare xmlns empty-node fallback, never
+## ordinary DOM namespace strings or a genuine XMLNS declaration element.
+expect {
+	name = Web.Tag.from_str("xmlns")?
+	name.in_namespace({ namespace: Uri("urn:entry\t&<\"") }).is_ok() and
+		name.in_namespace({ namespace: Uri("http://www.w3.org/XML/1998/namespace") }).is_err() and
+			name.in_namespace({ namespace: Uri("urn:entry\u(0000)") }).is_err() and
+				name.in_namespace({ namespace: Uri("urn:entry\u(FFFE)") }).is_err() and
+					name.in_namespace({ namespace: Uri("urn:entry\u(1FFFE)") }).is_ok() and
+						name.in_namespace({ namespace: Uri("http://www.w3.org/2000/xmlns/") }).is_ok() and
+							Web.Tag.from_str("entry")?.in_namespace({ namespace: Uri("urn:entry\u(0000)") }).is_ok()
 }
