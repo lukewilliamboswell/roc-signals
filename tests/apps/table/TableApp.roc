@@ -54,7 +54,7 @@ TableApp := [Todos].{
 	## What the address chose. `draws` is `Everything`, or `Main` for the
 	## main list alone (no second list, no readers), which is what a timing
 	## of one view wants.
-	Setup : { rows : U64, window : U64, draws : [Everything, Main] }
+	Setup : { rows : U64, window : U64, draws : [Everything, Main, Changes] }
 
 	## The setup an address names; 1,000 rows, a window of 30, everything
 	## drawn, by default.
@@ -64,6 +64,7 @@ TableApp := [Todos].{
 		window = U64.from_str(TableApp.asked(url, "window") ?? "30") ?? 30
 		draws = match TableApp.asked(url, "draws") ?? "everything" {
 			"main" => Main
+			"changes" => Changes
 			_ => Everything
 		}
 		{ rows, window, draws }
@@ -415,6 +416,22 @@ TableApp := [Todos].{
 				Html.button("Load Store snapshot", [], Engine.handle(|_| [todos.set(TableApp.snapshot(setup, AfterInitial))])),
 				Html.button("Load Store chain", [], Engine.handle(|_| [todos.set(TableApp.snapshot(setup, Chain))])),
 				Html.button("Load second Store", [], Engine.handle(|_| [todos.set(TableApp.snapshot(setup, OtherStore))])),
+				Html.button("Touch next", [], Engine.does([TableApp.cells.items.next.update(|next| next + 1)])),
+				Html.button("Write twice", [], Engine.does([todos.update(|table| table.update(0, |todo| TableApp.raised(todo, 1))), todos.update(|table| table.update(2, |todo| TableApp.raised(todo, 1)))])),
+				Html.button("Write with also", [], Engine.does([todos.update(|table| table.update(0, |todo| TableApp.raised(todo, 1)))]).also(Engine.does([todos.update(|table| table.update(2, |todo| TableApp.raised(todo, 1)))]))),
+				Html.button("Keep table", [], Engine.does([todos.update(|table| table)])),
+				Html.button(
+					"Undo previous",
+					[],
+					Engine.handle_by(
+						todos.signal(),
+						|table, _| match table.inverse() {
+							Ok(inverse) => [todos.update(|held| held.apply(inverse))]
+							Err(Rewritten) => []
+						},
+					),
+				),
+				Html.button("Reset with also", [], Engine.does([TableApp.cells.items.reset]).also(Engine.does([todos.update(|table| table.insert(3, { title: "After reset", status: Open, qty: -1 }))]))),
 				Html.button("Start again", [], Engine.handle(|_| [TableApp.cells.items.reset])),
 				Html.button("Show open", [], show(Open)),
 				Html.button("Show all", [], show(All)),
@@ -528,6 +545,27 @@ TableApp := [Todos].{
 		].concat(
 			match setup.draws {
 				Everything => TableApp.extras({})
+				Changes => TableApp.extras({}).concat([
+					Html.p_s(
+						TableApp.cells.items.todos.signal().map(
+							|table| match table.changes() {
+								Keyed(changes) => "Changed: ${changes.len().to_str()}"
+								Rewritten => "Rewritten"
+							},
+						),
+						[Engine.test_id("changes")],
+					),
+					Html.p_s(
+						TableApp.cells.items.todos.signal().map(
+							|table| match table.inverse() {
+								Ok(inverse) => "Inverse: ${inverse.len().to_str()}"
+								Err(Rewritten) => "No inverse"
+							},
+						),
+						[Engine.test_id("inverse")],
+					),
+					Html.p_s(TableApp.cells.items.next.signal().map(|next| "Next: ${next.to_str()}"), [Engine.test_id("next")]),
+				])
 				Main => []
 			},
 		),

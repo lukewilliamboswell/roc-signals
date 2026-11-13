@@ -330,16 +330,17 @@ Engine := [].{
 		to_list : Table(k, v) -> List({ key : k, row : v })
 		to_list = |{ t }| t.to_list()
 
-		## Read the keys written since changes were cleared, with each row’s state
-		## before its first write, or Rewritten for a whole rewrite. A pure test
+		## Read the last writing turn’s keys, with each row’s state before its
+		## first write, or Rewritten for a whole rewrite. Unrelated turns retain
+		## them; the next writing turn replaces them. A pure test
 		## using Store.after can assert exactly which rows its decision wrote.
 		changes : Table(k, v) -> [Keyed(Dict(k, [Absent, Was(v)])), Rewritten]
 		changes = |{ t }| t.changes()
 
 		## Build the writes that undo these keyed changes. A whole rewrite answers
-		## Rewritten because it keeps no earlier rows. A handler that keeps undo
-		## history takes the inverse in the event that made the writes, before the
-		## turn ends and clears them.
+		## Rewritten because it keeps no earlier rows. A later event’s decision
+		## can read this inverse before writing and apply it to undo the last
+		## writing turn. Keep it in a history cell to survive the next write.
 		inverse : Table(k, v) -> Try(List([Put(k, v), Remove(k)]), [Rewritten])
 		inverse = |{ t }| t.inverse()
 

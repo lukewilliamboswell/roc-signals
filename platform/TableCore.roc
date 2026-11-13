@@ -1,9 +1,9 @@
-## The engine's keyed table representation and change bookkeeping. Apps use
-## Engine.Table; only internal modules can stamp, clear or guard this value.
+## The keyed table representation and recording phase used by the engine.
+## Apps reach rows through Engine.Table; bookkeeping remains in this namespace.
 TableCore := [].{
-	## Unordered keyed rows, uniquely held by a cell. Its change record keeps
-	## one earlier row per written key; the guard distinguishes keyed writes
-	## from a replacement whose changes cannot describe the cell's old rows.
+
+	## Unordered rows and one earlier row per distinct key of the last writing
+	## turn. The private phase rearms clearing without changing an observation.
 	Table(k, v) :: {
 		rows : Dict(k, v),
 		record : Dict(k, [Absent, Was(v)]),
@@ -11,13 +11,14 @@ TableCore := [].{
 		version : U64,
 		start : U64,
 		id : U64,
+		phase : [Ready, Writing],
 	}.{
 
 		## A table of `entries`, for a cell's starting value or a whole
 		## rewrite. Two rows with one key are a contract error.
 		from_list : List({ key : k, row : v }) -> Table(k, v)
 			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
-		from_list = |entries| { rows: rows_of(entries), record: Dict.empty(), whole: Keyed, version: 0, start: 0, id: 0 }
+		from_list = |entries| { rows: rows_of(entries), record: Dict.empty(), whole: Keyed, version: 0, start: 0, id: 0, phase: Ready }
 
 		## Replace every row with `entries`: a whole rewrite. Every view of the
 		## table rebuilds, in the size of the table. Two rows with one key are
@@ -25,8 +26,8 @@ TableCore := [].{
 		load : Table(k, v), List({ key : k, row : v }) -> Table(k, v)
 			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 		load = |table, entries| {
-			{ record, version: now, start, id, .. } = table
-			{ rows: rows_of(entries), record: if (record.is_empty()) record else Dict.empty(), whole: Rewritten, version: now + 1, start, id }
+			{ record, version: now, start, id, phase, .. } = table
+			{ rows: rows_of(entries), record: if (record.is_empty()) record else Dict.empty(), whole: Rewritten, version: now + 1, start, id, phase }
 		}
 
 		## The number of rows.
@@ -95,8 +96,8 @@ TableCore := [].{
 		## size of the table.
 		update_all : Table(k, v), (k, v -> v) -> Table(k, v)
 		update_all = |table, change| {
-			{ rows, record, version: now, start, id, .. } = table
-			{ rows: rows.map(change), record: if (record.is_empty()) record else Dict.empty(), whole: Rewritten, version: now + 1, start, id }
+			{ rows, record, version: now, start, id, phase, .. } = table
+			{ rows: rows.map(change), record: if (record.is_empty()) record else Dict.empty(), whole: Rewritten, version: now + 1, start, id, phase }
 		}
 
 		## Fold over every row, in no particular order.
@@ -111,8 +112,9 @@ TableCore := [].{
 
 		## The writes since the changes were last cleared: each written key with
 		## its row as it was then (`Was(row)`, or `Absent`), or `Rewritten` if
-		## a whole rewrite replaced the rows. In a pure test of a transition
-		## (`Store.after`) it tells which rows the transition wrote.
+		## a whole rewrite replaced the rows. A mounted table retains its last
+		## writing turn's changes across unrelated turns, so a signal may read
+		## them. In a pure test (`Store.after`) they name the recorded writes.
 		changes : Table(k, v) -> [Keyed(Dict(k, [Absent, Was(v)])), Rewritten]
 		changes = |table| match table.whole {
 			Keyed => Keyed(table.record)
@@ -120,9 +122,10 @@ TableCore := [].{
 		}
 
 		## The writes that undo every write since the last clear, or
-		## `Rewritten` when a whole rewrite left no per-key changes. A handler
-		## that keeps a history takes it in the event that made the writes:
-		## the changes are cleared when the turn ends.
+		## `Rewritten` when a whole rewrite left no per-key changes. A later
+		## handler may read the last writing turn's inverse before its own first
+		## write clears that record, and apply it to undo that turn. A history
+		## that must outlive the next write keeps the inverse in its own cell.
 		inverse : Table(k, v) -> Try(List([Put(k, v), Remove(k)]), [Rewritten])
 		inverse = |table| match table.whole {
 			Rewritten => Err(Rewritten)
@@ -160,23 +163,39 @@ TableCore := [].{
 	changes_start : Table(k, v) -> U64
 	changes_start = |table| table.start
 
-	## For the engine: forget the changes, at the end of a turn that wrote
-	## the table, once every view has been refreshed. It is a step of its
-	## own on the stored table. Empty changes are kept as they are; a
+	## For the engine: forget recorded writes at mount, initialization or
+	## the next writing turn's first modifier. Empty changes are kept as
+	## they are; a
 	## non-empty one is replaced by a new empty one, since `Dict.clear`
 	## walks the whole capacity, which one large turn would leave at the
 	## size of the table.
 	clear_changes : Table(k, v) -> Table(k, v)
 	clear_changes = |table| {
 		{ rows, record, version: now, id, .. } = table
-		{ rows, record: if (record.is_empty()) record else Dict.empty(), whole: Keyed, version: now, start: now, id }
+		{ rows, record: if (record.is_empty()) record else Dict.empty(), whole: Keyed, version: now, start: now, id, phase: Ready }
 	}
+
+	## Start recording a turn once, before its first modifier. Retained
+	## changes from the previous writing turn stop holding their rows here.
+	begin_changes : Table(k, v) -> Table(k, v)
+	begin_changes = |table| match table.phase {
+		Writing => table
+		Ready => { ..TableCore.clear_changes(table), phase: Writing }
+	}
+
+	## Rearm the next write without changing what changes/inverse observe.
+	finish_changes : Table(k, v) -> Table(k, v)
+	finish_changes = |table| { ..table, phase: Ready }
+
+	## The settled invariant checks that the root closed the writing turn.
+	is_ready : Table(k, v) -> Bool
+	is_ready = |table| table.phase == Ready
 
 	## For the engine: the table as cell `id` of its store holds it.
 	with_id : Table(k, v), U64 -> Table(k, v)
 	with_id = |table, id| {
-		{ rows, record, whole, version: now, start, .. } = table
-		{ rows, record, whole, version: now, start, id }
+		{ rows, record, whole, version: now, start, phase, .. } = table
+		{ rows, record, whole, version: now, start, id, phase }
 	}
 
 	## For the engine: what a table cell notes before a write of it runs, to
@@ -194,10 +213,10 @@ TableCore := [].{
 	kept : Table(k, v), { id : U64, start : U64, version : U64 } -> Table(k, v)
 	kept = |table, before|
 		if table.id == before.id and table.start == before.start {
-			table
+			{ ..table, phase: Writing }
 		} else {
 			{ rows, .. } = table
-			{ rows, record: Dict.empty(), whole: Rewritten, version: before.version + 1, start: before.start, id: before.id }
+			{ rows, record: Dict.empty(), whole: Rewritten, version: before.version + 1, start: before.start, id: before.id, phase: Writing }
 		}
 }
 
@@ -218,7 +237,7 @@ rows_of = |entries| {
 write : Table(k, v), k, [Absent, Was(v)], Try(v, [Missing]) -> Table(k, v)
 	where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 write = |table, key, before, after| {
-	{ rows, record, whole, version: now, start, id } = table
+	{ rows, record, whole, version: now, start, id, phase } = table
 	next_record = match whole {
 		Rewritten => record
 		Keyed =>
@@ -234,7 +253,7 @@ write = |table, key, before, after| {
 		Ok(row) => rows.insert(key, row)
 		Err(Missing) => rows.remove(key)
 	}
-	{ rows: next_rows, record: next_record, whole, version: now + 1, start, id }
+	{ rows: next_rows, record: next_record, whole, version: now + 1, start, id, phase }
 }
 
 ## How many keys a table's changes hold, or `Rewritten`.
@@ -304,4 +323,19 @@ expect {
 		\\other: rewritten v1 from 0 rows 2
 		\\stale: rewritten v2 from 1 rows 2
 	actual == expected
+}
+
+## A writing turn keeps the first earlier row of each key. Closing it
+## preserves that record; only the next writing turn replaces it.
+expect {
+	started = TableCore.begin_changes(Table.from_list([{ key: 1.U64, row: "a" }]))
+	wrote_first = TableCore.begin_changes(started.put(1, "b")).put(1, "c")
+	first = TableCore.finish_changes(wrote_first)
+	second = TableCore.finish_changes(TableCore.begin_changes(first).put(1, "d"))
+	actual = {
+		first_inverse: first.inverse()?,
+		second_inverse: second.inverse()?,
+		ready: TableCore.is_ready(first),
+	}
+	actual == { first_inverse: [Put(1, "a")], second_inverse: [Put(1, "c")], ready: True }
 }

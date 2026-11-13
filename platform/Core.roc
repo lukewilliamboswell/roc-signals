@@ -321,11 +321,11 @@ Core := [].{
 	cell = |init| { init, count: 1, make: |base, get, modify| { cell: base, get, modify }, restart: |_| init, tables: |_, _| [] }
 
 	## What the root site needs of a table cell of the store `st`: the cell's
-	## position, `clear`, which forgets the table's changes at the
-	## end of a turn that wrote it, and `stamp`, which gives the table its
-	## cell's value identity when the store is built. `live` gives mounted
-	## storage an identity no table read from a Store value carries.
-	TableCell(st) : { cell : U64, clear : (st -> st), stamp : (st -> st), live : (st -> st) }
+	## position, `clear` for initialization, and `finish` to rearm the next
+	## writing turn without changing the retained record. `stamp` gives a
+	## Store value its table identity; `live` gives mounted storage an
+	## identity no table read from a Store value carries.
+	TableCell(st) : { cell : U64, clear : (st -> st), stamp : (st -> st), live : (st -> st), finish : (st -> st) }
 
 	## The description of one cell holding a [Table] of `rows`, by key. It
 	## is an ordinary cell: a decision changes it with `Cell.update` and the
@@ -337,8 +337,9 @@ Core := [].{
 	## table in the cell than the one it held (a `Cell.set` of a new one,
 	## another cell's, an old copy, or the reset of the cell's group) is
 	## taken as a whole rewrite (`Table.kept`), so no write can leave a view
-	## stale. The root clears the changes at the end of each turn that wrote
-	## the cell.
+	## stale. The first modifier of a turn clears the previous writing turn's
+	## changes; the root rearms that step after every reader has refreshed.
+	## Other modifiers of this event keep the first earlier row per key.
 	table : List({ key : k, row : v }) -> Cells(whole, Table(k, v), Cell(whole, Table(k, v)))
 		where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 	table = |rows| Core.table_of(rows, |table| table, |table| table)
@@ -358,13 +359,14 @@ Core := [].{
 				modify: |w, f| modify(
 					w,
 					|t| {
-						before = TableCore.mark(unwrap(t))
-						wrap(TableCore.kept(unwrap(f(t)), before))
+						began = wrap(TableCore.begin_changes(unwrap(t)))
+						before = TableCore.mark(unwrap(began))
+						wrap(TableCore.kept(unwrap(f(began)), before))
 					},
 				),
 			},
-			restart: |t| wrap(TableCore.kept(unwrap(init), TableCore.mark(unwrap(t)))),
-			tables: |base, modify| [{ cell: base, clear: |w| modify(w, |t| wrap(TableCore.clear_changes(unwrap(t)))), stamp: |w| modify(w, |t| wrap(TableCore.with_id(unwrap(t), base + 1))), live: |w| modify(w, |t| wrap(TableCore.with_id(unwrap(t), base + 1 + live_ids))) }],
+			restart: |t| wrap(TableCore.kept(unwrap(init), TableCore.mark(TableCore.begin_changes(unwrap(t))))),
+			tables: |base, modify| [{ cell: base, clear: |w| modify(w, |t| wrap(TableCore.clear_changes(unwrap(t)))), stamp: |w| modify(w, |t| wrap(TableCore.with_id(unwrap(t), base + 1))), live: |w| modify(w, |t| wrap(TableCore.with_id(unwrap(t), base + 1 + live_ids))), finish: |w| modify(w, |t| wrap(TableCore.finish_changes(unwrap(t)))) }],
 		}
 	}
 
@@ -1861,6 +1863,7 @@ Core := [].{
 	## What a layer following one answer holds (`Engine.Remote`): whether a
 	## request for the current input is in flight, and the latest answer.
 	Remote(output, error) := { request : [Idle, Pending], answer : [Unanswered, Answered(output), Failed(error)] }.{
+
 		## Compare the pending state and latest answer structurally, for pruning
 		## equal observations of a remote result.
 		is_eq : _
@@ -2084,6 +2087,7 @@ Core := [].{
 		languages : List(Str) ?? ["en-US"],
 		zone : Zone ?? utc,
 	}.{
+
 		## Compare all boot facts, including the initial storage and browser
 		## environment, when a test needs to assert an exact starting context.
 		is_eq : _
@@ -2327,6 +2331,7 @@ Core := [].{
 		## The Control and Meta alternatives for a platform primary shortcut.
 		primary : Chord -> List(Chord)
 		primary = |chord| [chord.with_ctrl(), chord.with_meta()]
+
 		## Compare the logical or physical key and every modifier exactly. A
 		## primary shortcut therefore has distinct Control and Meta chords.
 		is_eq : _
@@ -2368,6 +2373,7 @@ Core := [].{
 				Every(_) => Every(True)
 			},
 		}
+
 		## Compare the ordered entries and their prevention rules. Entry order
 		## is significant when several entries match the same keyboard event.
 		is_eq : _
@@ -2699,7 +2705,8 @@ Core := [].{
 	## not catch a view the turn left behind. In this pass each view site
 	## also builds its view from scratch and requires the one it holds to be
 	## equal to it (the ordered keys, the window, the rows drawn), at the
-	## table's version, with the table's changes cleared; a difference is
+	## table's version, with its recording phase ready for the next turn; a
+	## difference is
 	## part of the note.
 	##
 	## The end of the turn ([TurnEnd]: focus, program checks, port requests)
@@ -3897,8 +3904,8 @@ upto = |depth| if (depth >= 63) all_layer_bits else bit(depth).shl_wrap(1) - 1
 ##
 ## Only the root settles cells, so every site hands them up untouched. The
 ## root refreshes their readers by the signature (`layers_sig`), in which
-## cells 64 apart share a bit, and ends the turn of each table by the exact
-## cells (`end_tables`).
+## cells 64 apart share a bit, and rearms each table's next writing turn
+## by the exact cells (`end_tables`).
 Layers : { lo : U64, hi : List(U64), cells : U64, more : List(U64) }
 
 ## No layer and no cell.
@@ -4767,10 +4774,10 @@ Top := [Top]
 ##
 ## That pass is also where a turn ends for the store's tables. The site
 ## keeps the set the turn wrote (`wrote`) from the event until the pass,
-## and once the pass has refreshed every reader it clears the changes of
-## changes of each table whose cell is in the set (`end_tables`). A turn
-## that wrote no table pays one test of the set's signature against the
-## table cells' bits.
+## and once the pass has refreshed every reader it rearms each table whose
+## cell is in the set (`end_tables`). Its changes remain observable until
+## the next writing turn's first modifier, which clears them before the
+## modifier runs. A turn that wrote no table pays one signature test.
 store_inst : st, Tables(st), Layers, Block(Root(st)) -> Inst(Top)
 store_inst = |st0, tables0, wrote0, block0| {
 	held = { st: st0, tables: tables0, wrote: wrote0, block: block0 }
@@ -4836,16 +4843,16 @@ expect {
 ## each, and the signature bits of all of them.
 Tables(st) : { cells : List(Core.TableCell(st)), written : U128 }
 
-## The end of a turn for the store's tables: clear the changes
-## of every table whose cell the turn wrote, now that the turn's pass has
-## refreshed every view. `wrote` names the cells exactly, so a table whose
+## The end of a turn for the store's tables: rearm the recording phase of
+## every table the turn wrote, after its readers have refreshed, without
+## changing its last writing turn's record. `wrote` names cells exactly; a table whose
 ## cell only shares a signature bit with a written one is left alone.
 end_tables : st, Tables(st), Layers -> st
 end_tables = |st, tables, wrote| {
 	if layers_sig(wrote).bitwise_and(tables.written) == 0 {
 		st
 	} else {
-		tables.cells.fold(st, |acc, t| if (layers_has_cell(wrote, t.cell)) (t.clear)(acc) else acc)
+		tables.cells.fold(st, |acc, t| if (layers_has_cell(wrote, t.cell)) (t.finish)(acc) else acc)
 	}
 }
 
@@ -6541,7 +6548,7 @@ view_read = |read| if (read) 1 else 0
 ## The settle check of a view site (`Core.settled`): the view as the site
 ## holds it must be the view a build from scratch gives now, for the query
 ## and the window as they read now, at the table's version, with the
-## table's changes cleared, and the site's rows must be its window. A
+## recording phase ready for the next turn, and its rows must be its window. A
 ## difference can only come from a turn that left the view behind; it is
 ## answered as what to report, or "" when there is none.
 view_check : EachCfg(Row(ctx, k), {}), Shows(ctx, q, k, v, s), q, View(k, v, s), Cols(Row(ctx, k), k), Table(k, v), ctx -> Str
@@ -6552,8 +6559,8 @@ view_check = |cfg, shows, q, view, cols, table, env| {
 	fresh = View.build(table, { query: (shows.plan)(asked), window, limit: view_chunk })
 	drawn = cols.order.map(|slot| cols.items.get(slot.to_u64()) ?? crash "internal: a view row without its key")
 	drift =
-		if TableCore.changes_start(table) != TableCore.version(table) {
-			"its table's changes were not cleared when the last turn ended (version ${TableCore.version(table).to_str()}, changes from ${TableCore.changes_start(table).to_str()})"
+		if !TableCore.is_ready(table) {
+			"its table was not rearmed when the last writing turn ended"
 		} else if view.version() != TableCore.version(table) {
 			"it is at version ${view.version().to_str()} of its table, which is at version ${TableCore.version(table).to_str()}"
 		} else if asked != q {
@@ -9430,25 +9437,25 @@ expect {
 	actual == expected
 }
 
-## The end of a turn clears the changes of a table whose cell the turn
-## wrote, and leaves alone a table whose cell only shares a signature bit
-## with a cell it wrote.
+## Closing a writing turn retains its changes and rearms exactly its table
+## cells, leaving a table that only shares a signature bit untouched.
 expect {
 	changed = |table| match table.changes() {
 		Keyed(record) => record.len()
 		Rewritten => 0
 	}
-	edited = Table.from_list([{ key: 1.U64, row: "a" }]).update(1, |row| "${row}!")
+	edited = TableCore.begin_changes(Table.from_list([{ key: 1.U64, row: "a" }])).update(1, |row| "${row}!")
 	tables = {
 		cells: [
-			{ cell: 6, clear: |(a, b)| (TableCore.clear_changes(a), b), stamp: |st| st, live: |st| st },
-			{ cell: 70, clear: |(a, b)| (a, TableCore.clear_changes(b)), stamp: |st| st, live: |st| st },
+			{ cell: 6, clear: |(a, b)| (TableCore.clear_changes(a), b), stamp: |st| st, live: |st| st, finish: |(a, b)| (TableCore.finish_changes(a), b) },
+			{ cell: 70, clear: |(a, b)| (a, TableCore.clear_changes(b)), stamp: |st| st, live: |st| st, finish: |(a, b)| (a, TableCore.finish_changes(b)) },
 		],
 		written: cell_bit(6),
 	}
 	(first, second) = end_tables((edited, edited), tables, one_cell(70))
 	(untouched, _) = end_tables((edited, edited), tables, one_layer(6))
-	(changed(first), changed(second), changed(untouched)) == (1, 0, 1)
+	actual = { changes: (changed(first), changed(second), changed(untouched)), ready: (TableCore.is_ready(first), TableCore.is_ready(second), TableCore.is_ready(untouched)) }
+	actual == { changes: (1, 1, 1), ready: (False, True, False) }
 }
 
 ## A row's `item` reads the whole item and listens to the row's layer, as a
