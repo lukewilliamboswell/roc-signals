@@ -157,7 +157,7 @@ assemble_claims = |props| {
 	for scaffold in props.rendered.scaffolds {
 		converted = match scaffold {
 			ControlText(value) => ControlText({ owner: narrow(value.owner)?, container: narrow(value.container)?, physical: physical_ref(value.physical_text)? })
-			AttributeOverride(value) => AttributeOverride({ owner: narrow(value.owner)?, name: value.name, original: value.logical, physical: value.physical })
+			AttributeOverride(value) => AttributeOverride({ owner: narrow(value.owner)?, name: value.name, logical_index: narrow(value.logical_index)?, original: value.logical, physical: value.physical })
 			NoSelectionOption(value) => NoSelectionOption({ owner: narrow(value.owner)?, physical_option: narrow(value.physical_option)? })
 		}
 		$scaffolds = $scaffolds.append(converted)
@@ -216,7 +216,9 @@ assemble_claims = |props| {
 							}
 							var $hole = 0.U32
 							for hole in template.holes {
-								if captured.holes.get({ birth: frame.at, row: frame.address, slot: $hole }) != Ok(hole.kind) { return Err(InvalidClaims("captured row hole index or kind differs from oracle template")) }
+								if captured.holes.get({ birth: frame.at, row: frame.address, slot: $hole }) != Ok(hole.kind) {
+									return Err(InvalidClaims("captured row hole index or kind differs from oracle template"))
+								}
 								target_model = row.ht.get($hole.to_u64()) ?? crash "PictureClaims.assemble: checked hole cache"
 								target = $models.get(target_model) ? |_| InvalidClaims("live row hole has no final logical target")
 								$bindings = append_binding($bindings, { maximum: props.limits.codec.max_bytes // 18, binding: { birth_offset: frame.at, role: Hole, address: frame.address, slot: $hole, kind: binding_kind(hole.kind)?, logical: target } })?
@@ -266,7 +268,9 @@ is_birth = |frame| frame.opcode == 0 or frame.opcode == 1 or frame.opcode == 8 o
 ## Capture must describe every ordinary command boundary in order. Secondary
 ## aliases follow the one INST with that exact extent, and carry no bytes.
 HoleKey : { birth : U32, row : U32, slot : U32 }
+
 RowBirth : { birth : U32, row : U32 }
+
 Captured : { latest : Dict(U32, PictureCapture.Frame), holes : Dict(HoleKey, U8), hole_counts : Dict(RowBirth, U64) }
 
 final_births : List(PictureCapture.Frame), List(U8) -> Try(Captured, PictureClaims.Error)
@@ -279,33 +283,54 @@ final_births = |frames, batch| {
 	var $aliases = []
 	for frame in frames {
 		if frame.opcode == 0 or frame.opcode == 255 {
-			if $row.opcode != 1 or frame.at != $row.at or frame.end != $row.end { return Err(InvalidClaims("row metadata outside its INST boundary")) }
+			if $row.opcode != 1 or frame.at != $row.at or frame.end != $row.end {
+				return Err(InvalidClaims("row metadata outside its INST boundary"))
+			}
 			if frame.opcode == 255 {
-				if frame.address != $row.address or frame.kind < 1 or frame.kind > 6 { return Err(InvalidClaims("invalid captured row hole")) }
+				if frame.address != $row.address or frame.kind < 1 or frame.kind > 6 {
+					return Err(InvalidClaims("invalid captured row hole"))
+				}
 				key = { birth: frame.at, row: frame.address, slot: frame.slot }
-				if $holes.contains(key) { return Err(InvalidClaims("duplicate captured row hole")) }
+				if $holes.contains(key) {
+					return Err(InvalidClaims("duplicate captured row hole"))
+				}
 				$holes = $holes.insert(key, frame.kind)
 				row_key = { birth: frame.at, row: frame.address }
 				$hole_counts = $hole_counts.insert(row_key, ($hole_counts.get(row_key) ?? 0) + 1)
 			} else {
-				if frame.kind != 4 and frame.kind != 5 { return Err(InvalidClaims("invalid captured alias kind")) }
+				if frame.kind != 4 and frame.kind != 5 {
+					return Err(InvalidClaims("invalid captured alias kind"))
+				}
 				$aliases = $aliases.append({ key: { birth: frame.at, row: $row.address, slot: frame.slot }, kind: frame.kind })
 			}
 		} else {
-			if frame.at != $next or frame.end <= frame.at or frame.end.to_u64() > batch.len() or batch.get(frame.at.to_u64()) != Ok(frame.opcode) { return Err(InvalidClaims("capture differs from ordinary command boundaries")) }
+			if frame.at != $next or frame.end <= frame.at or frame.end.to_u64() > batch.len() or batch.get(frame.at.to_u64()) != Ok(frame.opcode) {
+				return Err(InvalidClaims("capture differs from ordinary command boundaries"))
+			}
 			$next = frame.end
 			$row = frame
-			if frame.opcode == 1 { $hole_counts = $hole_counts.insert({ birth: frame.at, row: frame.address }, 0) }
+			if frame.opcode == 1 {
+				$hole_counts = $hole_counts.insert({ birth: frame.at, row: frame.address }, 0)
+			}
 		}
 		if is_birth(frame) {
-			if frame.address == 0 or frame.address == 0xffffffff { return Err(InvalidClaims("reserved birth address")) }
-			match $latest.get(frame.address) { Ok(previous) if previous.at == frame.at => return Err(InvalidClaims("duplicate address at one birth")), _ => {} }
+			if frame.address == 0 or frame.address == 0xffffffff {
+				return Err(InvalidClaims("reserved birth address"))
+			}
+			match $latest.get(frame.address) {
+				Ok(previous) if previous.at == frame.at => return Err(InvalidClaims("duplicate address at one birth"))
+				_ => {}
+			}
 			$latest = $latest.insert(frame.address, frame)
 		}
 	}
-	if $next.to_u64() != batch.len() { return Err(InvalidClaims("capture does not cover ordinary batch")) }
+	if $next.to_u64() != batch.len() {
+		return Err(InvalidClaims("capture does not cover ordinary batch"))
+	}
 	for alias in $aliases {
-		if $holes.get(alias.key) != Ok(alias.kind) { return Err(InvalidClaims("alias does not match a captured row hole")) }
+		if $holes.get(alias.key) != Ok(alias.kind) {
+			return Err(InvalidClaims("alias does not match a captured row hole"))
+		}
 	}
 	Ok({ latest: $latest, holes: $holes, hole_counts: $hole_counts })
 }
@@ -500,6 +525,17 @@ check_physical = |value, rendered| {
 				if owner.name.namespace != Dom.html_namespace or owner.name.local != "option" or !item.name.namespace.is_empty() or !item.name.prefix.is_empty() or item.name.local != "selected" {
 					return Err(InvalidClaims("attribute restoration target differs from selected option"))
 				}
+				match item.original {
+					Absent => if item.logical_index != 0 {
+						return Err(InvalidClaims("absent original attribute has a nonzero unused index"))
+					}
+					Present(_) => {
+						logical_count = owner.attributes.len() + if (item.physical == Absent) 1 else 0
+						if item.logical_index.to_u64() >= logical_count {
+							return Err(InvalidClaims("original attribute index exceeds restored attribute count"))
+						}
+					}
+				}
 				observed = owner.attributes.find_first(|(name, _)| name.namespace == item.name.namespace and name.local == item.name.local)
 				physical = match observed {
 					Ok((name, text)) => {
@@ -641,7 +677,9 @@ expect {
 	batch = [0, 1, 0]
 	row = { at: 1.U32, end: 3.U32, opcode: 1.U8, address: 7.U32, slot: 2.U32, kind: 0.U8 }
 	var $frames = [row]
-	for kind in 1.U8..=6 { $frames = $frames.append({ ..row, opcode: 255, slot: (kind - 1).to_u32(), kind }) }
+	for kind in 1.U8..=6 {
+		$frames = $frames.append({ ..row, opcode: 255, slot: (kind - 1).to_u32(), kind })
+	}
 	frames = $frames.append({ ..row, opcode: 0, address: 8, slot: 4, kind: 5 })
 	captured = final_births(frames, batch)?
 	actual = {

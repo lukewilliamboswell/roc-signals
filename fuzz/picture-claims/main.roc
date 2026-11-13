@@ -28,7 +28,8 @@ view = |props| match props.mode {
 	4 => Core.element("select", [Core.prop(Core.Prop.value, "missing")], [Core.element("option", [Core.prop(Core.Prop.value, "present")], [Core.text(props.text)])])
 	5 => Core.element("select", [Core.prop(Core.Prop.value, "present")], [Core.element("option", [Core.prop(Core.Prop.value, "present"), Core.attr("selected", "authored")], [Core.text(props.text)])])
 	6 => Core.state(True, |visible| Core.element("main", [], [Core.when(visible.signal(), || Core.element("section", [], [Core.text("gone")]), || Core.element("section", [], [Core.text(props.text)])), Core.watch(Core.const({}), |_| [Core.again({})], visible.on_result(|_, _, _| False))]))
-	_ => Core.element("template", [], [])
+	7 => Core.element("template", [], [])
+	_ => Core.element("select", [Core.prop(Core.Prop.value, "missing")], [Core.element("option", [Core.attr("selected", ""), Core.attr("data-x", "x"), Core.prop(Core.Prop.value, "present")], [])])
 }
 
 ## A deliberately small reference checks every returned binding against the
@@ -36,7 +37,7 @@ view = |props| match props.mode {
 ## all final principals and holes rather than merely accepting returned claims.
 test : List(U8) -> Fuzz.Outcome
 test = |bytes| {
-	mode = (bytes.get(0) ?? 0) % 8
+	mode = (bytes.get(0) ?? 0) % 9
 	count = (bytes.get(1) ?? 0).to_u64() % 5 + 1
 	text = match (bytes.get(2) ?? 0) % 4 {
 		0 => ""
@@ -56,9 +57,19 @@ test = |bytes| {
 		Err(_) => {}
 		Ok(first_hole) => {
 			missing = frames.keep_if(|frame| frame.opcode != 255 or frame.at != first_hole.at or frame.address != first_hole.address or frame.slot != first_hole.slot)
-			if PictureClaims.assemble({ dom, rendered, frames: missing, batch: picture.commands, fingerprint: List.repeat(17, 32), expected: List.repeat(34, 32), limits: {} }).is_ok() { crash "picture-claims: missing captured hole accepted" }
-			wrong = frames.map(|frame| if frame.opcode == 255 and frame.at == first_hole.at and frame.address == first_hole.address and frame.slot == first_hole.slot { { ..frame, kind: frame.kind % 6 + 1 } } else { frame })
-			if PictureClaims.assemble({ dom, rendered, frames: wrong, batch: picture.commands, fingerprint: List.repeat(17, 32), expected: List.repeat(34, 32), limits: {} }).is_ok() { crash "picture-claims: wrong captured hole kind accepted" }
+			if PictureClaims.assemble({ dom, rendered, frames: missing, batch: picture.commands, fingerprint: List.repeat(17, 32), expected: List.repeat(34, 32), limits: {} }).is_ok() {
+				crash "picture-claims: missing captured hole accepted"
+			}
+			wrong = frames.map(
+				|frame| if frame.opcode == 255 and frame.at == first_hole.at and frame.address == first_hole.address and frame.slot == first_hole.slot {
+					{ ..frame, kind: frame.kind % 6 + 1 }
+				} else {
+					frame
+				},
+			)
+			if PictureClaims.assemble({ dom, rendered, frames: wrong, batch: picture.commands, fingerprint: List.repeat(17, 32), expected: List.repeat(34, 32), limits: {} }).is_ok() {
+				crash "picture-claims: wrong captured hole kind accepted"
+			}
 		}
 	}
 
@@ -143,6 +154,7 @@ fixed_cases = [
 	{ name: "no-selection-scaffold", revision: "1", make: || [4, 0, 1] },
 	{ name: "selected-attribute-override", revision: "1", make: || [5, 0, 1] },
 	{ name: "followup-disposal-id-reuse", revision: "1", make: || [6, 0, 1] },
+	{ name: "selected-original-first-attribute", revision: "1", make: || [8, 0, 0] },
 	{ name: "raw-template-children-empty", revision: "1", make: || [7, 0, 0] },
 ]
 

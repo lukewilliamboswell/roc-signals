@@ -29,7 +29,9 @@ PictureCodec :: [].{
 	BindingRole : [Static, Row, Hole, Alias]
 	Binding : { birth_offset : U32, role : BindingRole, address : U32, slot : U32, kind : BindingKind, logical : U32 }
 	Presence : [Absent, Present(Str)]
-	Scaffold : [ControlText({ owner : U32, container : U32, physical : Physical }), AttributeOverride({ owner : U32, name : Name, original : Presence, physical : Presence }), NoSelectionOption({ owner : U32, physical_option : U32 })]
+	## Attribute restoration retains its original ordered slot; absence leaves
+	## that index unused at zero. Actual attribute-count bounds are measured later.
+	Scaffold : [ControlText({ owner : U32, container : U32, physical : Physical }), AttributeOverride({ owner : U32, name : Name, logical_index : U32, original : Presence, physical : Presence }), NoSelectionOption({ owner : U32, physical_option : U32 })]
 
 	## Producer records contain no model lifetime indices or executable policy.
 	## Fingerprint and expected digest are uninterpreted exact32-byte values.
@@ -481,13 +483,16 @@ decode = |bytes, limits| {
 				name_field = read_name($cursor)?
 				$cursor = name_field.rest
 				name = name_field.value
+				index_field = read_u32($cursor)?
+				$cursor = index_field.rest
+				logical_index = index_field.value
 				original_field = read_presence($cursor)?
 				$cursor = original_field.rest
 				original = original_field.value
 				physical_field = read_presence($cursor)?
 				$cursor = physical_field.rest
 				physical = physical_field.value
-				AttributeOverride({ owner, name, original, physical })
+				AttributeOverride({ owner, name, logical_index, original, physical })
 			}
 			2 => {
 				physical_option_field = read_u32($cursor)?
@@ -747,6 +752,9 @@ validate = |value, limits| {
 			}
 			AttributeOverride(item) => {
 				physical_ref({ index: item.owner, count: value.physical_count })?
+				if item.original == Absent and item.logical_index != 0 {
+					return Err(InvalidParts("absent original attribute has a nonzero unused index"))
+				}
 				if item.name.local.is_empty() {
 					return Err(InvalidParts("empty attribute local name"))
 				}
@@ -910,7 +918,7 @@ measure = |value, maximum| {
 				Omitted => 0
 				Physical(_) => 4
 			}
-			AttributeOverride(item) => 5 + name_size(item.name)? + presence_size(item.original)? + presence_size(item.physical)?
+			AttributeOverride(item) => 9 + name_size(item.name)? + presence_size(item.original)? + presence_size(item.physical)?
 			NoSelectionOption(_) => 9
 		}
 		$used = charge({ used: $used, more: size, maximum })?
@@ -1007,7 +1015,7 @@ encode_parts = |value, allocated| {
 	for scaffold in value.scaffolds {
 		$out = match scaffold {
 			ControlText(item) => put_physical(put_u32(put_u32($out.append(0), item.owner), item.container), item.physical)
-			AttributeOverride(item) => put_presence(put_presence(put_name(put_u32($out.append(1), item.owner), item.name), item.original), item.physical)
+			AttributeOverride(item) => put_presence(put_presence(put_u32(put_name(put_u32($out.append(1), item.owner), item.name), item.logical_index), item.original), item.physical)
 			NoSelectionOption(item) => put_u32(put_u32($out.append(2), item.owner), item.physical_option)
 		}
 	}
@@ -1067,7 +1075,7 @@ rich_fixture = |_| {
 	],
 	scaffolds: [
 		ControlText({ owner: 4, container: 3, physical: Physical(5) }),
-		AttributeOverride({ owner: 6, name: { namespace: "urn:a", prefix: "p", local: "x" }, original: Present(""), physical: Present("false") }),
+		AttributeOverride({ owner: 6, name: { namespace: "urn:a", prefix: "p", local: "x" }, logical_index: 2, original: Present(""), physical: Present("false") }),
 		NoSelectionOption({ owner: 6, physical_option: 7 }),
 	],
 }
@@ -1594,6 +1602,10 @@ golden_rich = [
 	0,
 	0,
 	120,
+	2,
+	0,
+	0,
+	0,
 	1,
 	0,
 	0,
@@ -1724,7 +1736,7 @@ expect {
 ## introduce a second scaffold for the same attribute on the same owner.
 expect {
 	base = rich_fixture({})
-	duplicate = AttributeOverride({ owner: 6, name: { namespace: "urn:a", prefix: "other", local: "x" }, original: Absent, physical: Absent })
+	duplicate = AttributeOverride({ owner: 6, name: { namespace: "urn:a", prefix: "other", local: "x" }, logical_index: 0, original: Absent, physical: Absent })
 	PictureCodec.make({ ..base, scaffolds: base.scaffolds.append(duplicate) }, {}).is_err()
 }
 
@@ -1848,4 +1860,16 @@ expect {
 		control_one: PictureCodec.make(control, { max_depth: 1 }).is_err(),
 		control_two: PictureCodec.make(control, { max_depth: 2 }).is_ok(),
 	} == { empty_zero: True, run_zero: True, run_one: True, control_zero: True, control_one: True, control_two: True }
+}
+
+## Original absence leaves the index unused at zero. Original presence may
+## occupy index zero or any u32; checking the restored DOM count is measurement.
+expect {
+	base = rich_fixture({})
+	override = { owner: 6.U32, name: { namespace: "urn:a", prefix: "p", local: "x" }, logical_index: 0.U32, original: Present(""), physical: Absent }
+	first = PictureCodec.make({ ..base, scaffolds: base.scaffolds.set(1, AttributeOverride(override))? }, {})?
+	last = PictureCodec.make({ ..base, scaffolds: base.scaffolds.set(1, AttributeOverride({ ..override, logical_index: 4294967295 }))? }, {})?
+	bad = PictureCodec.make({ ..base, scaffolds: base.scaffolds.set(1, AttributeOverride({ ..override, original: Absent, logical_index: 1 }))? }, {})
+	actual = { first: PictureCodec.parts(PictureCodec.read(PictureCodec.encode(first), {})?).scaffolds.get(1)?, last: PictureCodec.parts(PictureCodec.read(PictureCodec.encode(last), {})?).scaffolds.get(1)?, unused_nonzero: bad.is_err() }
+	actual == { first: AttributeOverride(override), last: AttributeOverride({ ..override, logical_index: 4294967295 }), unused_nonzero: True }
 }
