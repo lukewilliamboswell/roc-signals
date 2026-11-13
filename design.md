@@ -3191,8 +3191,8 @@ An attribute's text and its presence are separate facts. `attr(name, text)`
 and `attr_s(name, signal)` set a present attribute, including when its text
 is empty. Empty text has HTML meaning: `alt=""` marks a decorative image,
 and an option's `value=""` is a real empty choice rather than its text.
-Only the boolean attributes in Appendix B retain the empty/`"false"`
-absence rule.
+This holds for Boolean attributes too: raw empty text and `"false"` remain
+present. Typed HTML helpers encode their chosen presence before emission.
 
 `attr_presence(name, signal)` takes a signal of `[Absent, Present(Str)]`.
 `Absent` removes the attribute; `Present("")` keeps it with empty text.

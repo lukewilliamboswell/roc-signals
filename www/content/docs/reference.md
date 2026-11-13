@@ -8,7 +8,7 @@ template = "page.html"
 # Reference
 
 The [API documentation](../../api/api/) is generated from the platform's source
-and documents every public symbol of `Engine`, `Files`, `Html`, `Layout`, `Clipboard`, `Worker`, `Wire`, `Port`, `PortJson`, `Order`, `Url` and `Web`,
+and documents every public symbol of `Engine`, `Files`, `Html`, `Svg`, `Layout`, `Clipboard`, `Worker`, `Wire`, `Port`, `PortJson`, `Order`, `Url` and `Web`,
 including members inherited through public aliases: the authoring API.
 Operations only the engine may perform belong to unexposed modules. The engine's storage and executable values are opaque; its implementation
 and the interfaces its hosts and test harnesses use live in the platform's
@@ -103,7 +103,8 @@ takes a constant; `Html.p_s` takes reactive text, for example.
 | Dialogs and popovers | `dialog`, `DialogProps(ctx)` (`open`, `on_close : HandlerOf(ctx, Bool)`, `modal : [Modal, NonModal] ?? Modal`); `popover`, `PopoverProps(ctx)` (`open`, `on_toggle : HandlerOf(ctx, Bool)`, `dismiss : [Auto, Manual] ?? Auto`); both open fields are `Signal(ctx, Bool)` |
 | Ordered values | `Order.pair`, `Order.asc`, `Order.desc`, `Order.directed`, `Order.utf8`, `Order.compare`; types whose `order_relative_to` also works with ordinary Roc sorting | [Tables and Table Views](@/docs/tables-and-views.md#the-query-is-data) |
 | URL values | `Url.parse`, checked literals, `append_path_segments`, `append_query_param`, `resolve`, `request_target`, `path_segments`, `query_pairs` | [Building URLs](@/docs/effects-and-browser.md#building-urls) |
-| Attributes | `aria_label`, `aria_label_s`, `aria_describedby`, `aria_invalid`, `disabled`, `flag`, `flag_maybe` |
+| Literals | `Html.Markup`, `Svg.Markup`, `Markup.to_elem` — [Markup Literals](@/docs/markup.md) |
+| Attributes | `boolean`, `Hidden`, `hidden`, `hidden_s`, `InputType`, `aria_label`, `aria_label_s`, `aria_describedby`, `aria_invalid`, `disabled`, `flag`, `flag_maybe` |
 | Events | `on_input`, `on_change`, `on_focus`, `on_blur`, `on_submit`, `on_cancel`, `on_drop_files`, `on_paste_files`, `on_pointer_down`, `on_pointer_down_capture`, `on_pointer_move`, `on_pointer_move_paced`, `on_pointer_up`, `on_pointer_cancel` |
 | Layout reports | `on_scroll`, `on_size`, `on_seen` (`SeenProps`: `ahead : Bool ?? False`) |
 | Zones | `zone`, `zone_s` (pointer-zone keys, with empty text marking no zone) |
@@ -239,10 +240,10 @@ any ASCII spelling of GET or HEAD is a contract error before admission.
 `Present("")` is distinct from absence and both cases prune equal updates
 without replacing the element, including in a row template.
 
-Only the boolean attributes `disabled`, `selected`, `readonly`, `required`,
-`hidden`, `multiple` and `open` treat `""` and `"false"` as absent; every
-other value makes them present. `"true"` is written as an empty attribute;
-other present text is kept as given, including `hidden="until-found"`.
+Raw Boolean attributes follow the same rule: both `""` and `"false"` remain
+present, and `"true"` remains that text. Use `Html.boolean` for a Boolean
+signal encoded as absence or present-empty, and `Html.hidden` or
+`Html.hidden_s` for `Shown`, `Hidden` and `UntilFound`.
 `Html.flag_maybe` omits an attribute when false through explicit `Absent`.
 
 {{ sample(file="attributes/main.roc", region="presence") }}
@@ -418,10 +419,13 @@ it mounts.
 ## Protocol
 
 The command stream, event records, boot bytes and program declarations are versioned together. The
-current protocol is version 16: every nonempty page batch starts with a flags
+current protocol is version 18: every nonempty page batch starts with a flags
 byte, and a marked batch ends with `TRANSITION` (opcode 24). Worker answers
 have no page-batch header. Session storage adds section 11, and `GUARD` is
-opcode 25. Clipboard and failed storage writes have typed results; paste
+opcode 25. Expanded names carry namespace, prefix and local name; elements
+carry an explicit child-container role, and literal comments use `COMMENT`
+(opcode 26). Engine-only boot section 13 carries the measured mount root.
+Clipboard and failed storage writes have typed results; paste
 text has its own payload kind. HTTP carries cache, credentials and an optional
 progress interval; transfer reports use tag 26 and counter 47. The full wire protocol is Appendix B of
 [design.md](https://github.com/lukewilliamboswell/roc-signals/blob/main/design.md).
