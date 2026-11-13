@@ -115,6 +115,39 @@ Html := [].{
 	on_paste_files : FilesHandler(ctx) -> Attr(ctx)
 	on_paste_files = |h| Engine.on_files(Paste, h)
 
+	## Mark this element as the nearest pointer zone under it. Empty text
+	## disables it without removing the element or changing its identity.
+	zone : Str -> Attr(ctx)
+	zone = |key| Engine.prop(Engine.Prop.pointer_zone, key)
+
+	## Follow a signal with this element's pointer-zone key.
+	zone_s : Signal(ctx, Str) -> Attr(ctx)
+	zone_s = |key| Engine.prop_s(Engine.Prop.pointer_zone, key)
+
+	## Receive a pointer press without capturing it.
+	on_pointer_down : Engine.HandlerOf(ctx, Engine.Pointer) -> Attr(ctx)
+	on_pointer_down = |handler| Engine.on_pointer(Down, handler)
+
+	## Receive a pointer press and capture it on this element immediately.
+	on_pointer_down_capture : Engine.HandlerOf(ctx, Engine.Pointer) -> Attr(ctx)
+	on_pointer_down_capture = |handler| Engine.on_pointer_capture(handler)
+
+	## Receive every pointer move as a separate occurrence.
+	on_pointer_move : Engine.HandlerOf(ctx, Engine.Pointer) -> Attr(ctx)
+	on_pointer_move = |handler| Engine.on_pointer(Move, handler)
+
+	## Receive only the newest waiting move of each pointer per frame.
+	on_pointer_move_paced : Engine.HandlerOf(ctx, Engine.Pointer) -> Attr(ctx)
+	on_pointer_move_paced = |handler| Engine.on_pointer_paced(handler)
+
+	## Receive a pointer release, after any earlier waiting paced move.
+	on_pointer_up : Engine.HandlerOf(ctx, Engine.Pointer) -> Attr(ctx)
+	on_pointer_up = |handler| Engine.on_pointer(Up, handler)
+
+	## Receive browser cancellation so a drag can discard its pending target.
+	on_pointer_cancel : Engine.HandlerOf(ctx, Engine.Pointer) -> Attr(ctx)
+	on_pointer_cancel = |handler| Engine.on_pointer(Cancel, handler)
+
 	## `checkbox(name, checked, attrs, handler)`: a checkbox that follows
 	## `checked`. `handler` receives `"true"` or `"false"` on `change`.
 	checkbox : Signal(ctx, Str), Signal(ctx, Bool), List(Attr(ctx)), Handler(ctx) -> Elem(ctx)

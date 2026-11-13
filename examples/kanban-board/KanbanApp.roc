@@ -28,7 +28,7 @@ KanbanApp := [].{
 
 ## What the board is drawn over: the cells of this app's store that `Board`
 ## reads and writes.
-board = { cards: AppStore.cells.cards, filter: AppStore.cells.filter, limit: AppStore.cells.limit }
+board = { cards: AppStore.cells.cards, filter: AppStore.cells.filter, limit: AppStore.cells.limit, drag: AppStore.cells.drag }
 
 ## The page under the board's tally: the controls, the summary and the
 ## four columns.
@@ -46,6 +46,7 @@ page = |sizes| Html.div(
 			],
 		),
 		controls({}),
+		Board.drag_status(board, sizes),
 		summary(sizes),
 		Html.div("grid gap-4 md:grid-cols-2 xl:grid-cols-4", Kanban.all_columns.map(|column| Board.lane(board, column, sizes))),
 	],

@@ -184,6 +184,8 @@ SpecRunner := [].{
 
 		## The catalogue chooses which port messages report a current value.
 		latest_ports : List(Str),
+		pointers : Dict(U32, PointerState),
+		touch_multi : Bool,
 
 		## Live report sources are indexed so cancelling or delivering one
 		## never searches the full subscription set.
@@ -191,7 +193,7 @@ SpecRunner := [].{
 
 		## One source index and epoch over the same ingress queue as focus
 		## callbacks. Slots are absolute while a drain removes its prefix.
-		reports : { held : Bool, replaced : U64, epoch : U64, head : U64, index : Dict(U32, { epoch : U64, slot : U64 }) },
+		reports : { held : Bool, replaced : U64, epoch : U64, head : U64, index : Dict(ReportSource, { epoch : U64, slot : U64 }) },
 	}
 
 	## A setup file: its name, media type and contents.
@@ -228,7 +230,17 @@ SpecRunner := [].{
 	}
 
 	## One ingress entry; its source fixes replacement, never its payload.
-	Input : { node : U32, handler : U32, payload : List(U8), owner : U64, source : [Occurrence, Report(U32)] }
+	Input : { node : U32, handler : U32, payload : List(U8), owner : U64, source : [Occurrence, Report(ReportSource)] }
+
+	## Request ids and DOM pointer sources cannot alias. A DOM source follows
+	## its declaring element's lifetime, handler and pointer independently.
+	ReportSource := [Request(U32), Pointer({ element : U64, handler : U32, pointer : U32 })].{
+		is_eq : _
+		to_hash : _
+	}
+
+	PointerAt : [Outside, In({ zone : Str, x : U16, y : U16 })]
+	PointerState : { id : U32, kind : [Mouse, Pen, Touch], button : [Main, Middle, Secondary], modifiers : U8, primary : Bool, down : U64, capture : U64, moved : Bool, suppress_mouse : Bool, at : PointerAt }
 
 	## A control value held back while its control has focus (design.md,
 	## "Controlled inputs").
@@ -592,6 +604,8 @@ SpecRunner := [].{
 		saves: [],
 		max_output: SpecRunner.max_output_bytes,
 		latest_ports: [],
+		pointers: Dict.empty(),
+		touch_multi: Bool.False,
 		report_sources: Dict.empty(),
 		reports: { held: Bool.False, replaced: 0, epoch: 0, head: 0, index: Dict.empty() },
 	}
@@ -618,7 +632,7 @@ SpecRunner := [].{
 				Pop(id) => { ..b, subs: b.subs.append({ id, sub: Pop }) }
 				OnlineSub(id) => { ..b, subs: b.subs.append({ id, sub: OnlineSub }), report_sources: b.report_sources.insert(id, {}) }
 				VisibilitySub(id) => { ..b, subs: b.subs.append({ id, sub: VisibilitySub }), report_sources: b.report_sources.insert(id, {}) }
-				Cancel(id) => { ..b, pending: b.pending.keep_if(|p| p.id != id), subs: b.subs.keep_if(|x| x.id != id), reports: { ..b.reports, index: b.reports.index.remove(id) }, report_sources: b.report_sources.remove(id) }
+				Cancel(id) => { ..b, pending: b.pending.keep_if(|p| p.id != id), subs: b.subs.keep_if(|x| x.id != id), reports: { ..b.reports, index: b.reports.index.remove(Request(id)) }, report_sources: b.report_sources.remove(id) }
 				Push(url) => { ..b, back: b.back.append({ url: b.env.url, doc: b.doc }), env: { ..b.env, url: SpecRunner.resolve_in_document(b.env.url, url) }, fwd: [] }
 				Replace(url) => { ..b, env: { ..b.env, url: SpecRunner.resolve_in_document(b.env.url, url) } }
 				# Writes to unavailable storage fail in the browser and persist nothing.
@@ -690,14 +704,16 @@ SpecRunner := [].{
 	## runtime's delegated listener does.
 	fire : Program(state), S(state), U64, Str, Str -> Try(S(state), Str)
 	fire = |program, s, i, ev, payload|
-		match Dom.target(s.dom, i, ev, Bool.True) {
+		if !SpecRunner.attached(s.dom, i) {
+			Err("event target is detached")
+		} else match Dom.target(s.dom, i, ev, Bool.True) {
 			Err(_) => Err("no ${ev} handler")
 			Ok(target) => if (target.kind == 1) Ok(SpecRunner.send(program, s, target.node, target.handler, payload.to_utf8())) else Ok(s)
 		}
 
 	## Dispatch `ev` if a handler listens for it on the way up from node `i`.
 	fire_if : Program(state), S(state), U64, Str, Str -> S(state)
-	fire_if = |program, s, i, ev, payload| SpecRunner.fire(program, s, i, ev, payload) ?? s
+	fire_if = |program, s, i, ev, payload| if (SpecRunner.attached(s.dom, i)) SpecRunner.fire(program, s, i, ev, payload) ?? s else s
 
 	## One host call, then the storage reads and focus events it issued, each
 	## answered in a turn of its own as the runtime answers them. Reentrant
@@ -797,7 +813,8 @@ SpecRunner := [].{
 	deliver_input : Program(state), { state : S(state), input : Input } -> S(state)
 	deliver_input = |program, { state: s, input }| {
 		live = match input.source {
-			Report(id) => s.browser.report_sources.contains(id)
+			Report(Request(id)) => s.browser.report_sources.contains(id)
+			Report(Pointer({ element, .. })) => SpecRunner.attached(s.dom, element) and (s.dom.statics.get(input.node.to_u64()) ?? 0).bitwise_and(1099511627775) == input.owner + 1
 			Occurrence => {
 				current = (s.dom.statics.get(input.node.to_u64()) ?? 0).bitwise_and(1099511627775)
 				input.node == SpecRunner.fx_node or (current == input.owner + 1 and SpecRunner.attached(s.dom, input.owner))
@@ -811,12 +828,26 @@ SpecRunner := [].{
 	## source sets; occurrences use the same queue and pin by advancing it.
 	report : Program(state), { state : S(state), id : U32, payload : List(U8) } -> S(state)
 	report = |program, { state: s, id, payload }| {
-		if s.fault != Healthy or !s.browser.report_sources.contains(id) {
+		if !s.browser.report_sources.contains(id) {
+			return s
+		}
+		SpecRunner.queue_report(program, { state: s, source: Request(id), node: SpecRunner.fx_node, handler: id, owner: 0, payload })
+	}
+
+	## All report kinds use one queue and epoch. DOM identity is the declaring
+	## node index, which is never recycled by the oracle.
+	queue_report : Program(state), { state : S(state), source : ReportSource, node : U32, handler : U32, owner : U64, payload : List(U8) } -> S(state)
+	queue_report = |program, { state: s, source, node, handler, owner, payload }| {
+		is_live = match source {
+			Request(id) => s.browser.report_sources.contains(id)
+			Pointer({ element, .. }) => SpecRunner.attached(s.dom, element) and (s.dom.statics.get(node.to_u64()) ?? 0).bitwise_and(1099511627775) == owner + 1
+		}
+		if s.fault != Healthy or !is_live {
 			return s
 		}
 		b = s.browser
 		reports = b.reports
-		match reports.index.get(id) {
+		match reports.index.get(source) {
 			Ok(position) if position.epoch == reports.epoch => {
 				at = position.slot - reports.head
 				prior = s.event_queue.get(at) ?? crash "SpecRunner.report: index names a queued report"
@@ -829,10 +860,10 @@ SpecRunner := [].{
 			if s.applying_focus or s.draining {
 				return { ..s, fault: Poisoned("resource_limit: more than 4096 events queued behind one batch (an event feedback loop)"), event_queue: [], focus_commands: [], browser: { ..b, reports: { ..reports, head: 0, index: Dict.empty() } } }
 			}
-			return SpecRunner.report(program, { state: SpecRunner.release_reports(program, s), id: id, payload: payload })
+			return SpecRunner.queue_report(program, { state: SpecRunner.release_reports(program, s), source, node, handler, owner, payload })
 		}
 		slot = reports.head + s.event_queue.len()
-		{ ..s, event_queue: s.event_queue.append({ node: SpecRunner.fx_node, handler: id, payload, owner: 0, source: Report(id) }), browser: { ..b, reports: { ..reports, index: reports.index.insert(id, { epoch: reports.epoch, slot }) } } }
+		{ ..s, event_queue: s.event_queue.append({ node, handler, payload, owner, source: Report(source) }), browser: { ..b, reports: { ..reports, index: reports.index.insert(source, { epoch: reports.epoch, slot }) } } }
 	}
 
 	## Deliver the waiting ingress entries as ordinary turns. A held frame
@@ -1292,17 +1323,19 @@ SpecRunner := [].{
 	## has a case here (the match has no catch-all).
 	one : Program(state), S(state), Scm.Op -> Try(S(state), Str)
 	one = |program, s, op| {
-		ready = if (SpecRunner.is_occurrence(s.browser, op)) SpecRunner.release_reports(program, s) else s
+		ready = if (SpecRunner.is_occurrence(s, op)) SpecRunner.release_reports(program, s) else s
 		next = SpecRunner.one_ready(program, ready, op)?
 		Ok(if (next.browser.reports.held) next else SpecRunner.release_reports(program, next))
 	}
 
 	## Classify only declarations and step meanings. Assertions and fixtures
 	## do not flush a held frame, and an unchanged fact raises no report.
-	is_occurrence : Browser, Scm.Op -> Bool
-	is_occurrence = |browser, op| match op {
+	is_occurrence : S(state), Scm.Op -> Bool
+	is_occurrence = |s, op| match op {
 		Click(_) | RealClick(_) | Focus(_) | Blur(_) | Change(_, _) | SelectOption(_, _) | Submit(_) | Fill(_, _) | Check(_) | Uncheck(_) | ChooseFiles(_, _) | DropFiles(_, _) | PasteFiles(_, _) | RunEffect(_) | LoseWork(_) | TimeOutWork(_) | Navigate(_) | HistoryBack | HistoryForward | TickInterval(_) | TickIntervalIfActive(_) | AnswerPort(_) | ClosePort(_) | FailPort(_) => Bool.True
-		EmitPort({ port, .. }) => !browser.latest_ports.contains(port)
+		PointerDown(_) | PointerUp(_) | PointerCancel(_) => Bool.True
+		PointerMove(place) => !SpecRunner.paced_move(s, place)
+		EmitPort({ port, .. }) => !s.browser.latest_ports.contains(port)
 		_ => Bool.False
 	}
 
@@ -1317,6 +1350,10 @@ SpecRunner := [].{
 			HoldReports => if (b.reports.held) Err("hold-reports while reports are already held") else Ok({ ..s, browser: { ..b, reports: { ..b.reports, held: Bool.True } } })
 			ReleaseReports => if (!b.reports.held) Err("release-reports while reports are not held") else Ok(SpecRunner.release_reports(program, { ..s, browser: { ..b, reports: { ..b.reports, held: Bool.False } } }))
 			ExpectReportsReplaced(count) => check(b.reports.replaced == count, "reports replaced ${b.reports.replaced.to_str()} times, expected ${count.to_str()}")
+			PointerDown(press) => SpecRunner.pointer_down(program, s, press)
+			PointerMove(place) => SpecRunner.pointer_move(program, s, place)
+			PointerUp(place) => SpecRunner.pointer_up(program, s, place)
+			PointerCancel(id) => SpecRunner.pointer_cancel(program, s, id)
 			Click(loc) => {
 				i = SpecRunner.need(dom, loc)?
 				# A browser delivers no click to a disabled control.
@@ -1713,27 +1750,278 @@ SpecRunner := [].{
 	## Default prevention is read from the nearest declaration's policy bits;
 	## a files drop also prevents by its payload kind's rule.
 	prevents : Dom.Model, U64, Str -> Bool
-	prevents = |dom, i, event| Dom.target(dom, i, event, Bool.True).map_ok(|target| target.policies.bitwise_and(1) != 0 or (target.kind == 2 and event == "drop")) ?? Bool.False
+	prevents = |dom, i, event| SpecRunner.attached(dom, i) and (Dom.target(dom, i, event, Bool.True).map_ok(|target| target.policies.bitwise_and(1) != 0 or (target.kind == 2 and event == "drop")) ?? Bool.False)
+
+	## Only a declared paced pointermove is a report step. Capture changes
+	## routing, while the located node still supplies the zone under the point.
+	paced_move : S(state), Scm.PointerPlace -> Bool
+	paced_move = |s, place| {
+		i = SpecRunner.find(s.dom, place.target) ?? return Bool.False
+		p = s.browser.pointers.get(place.id) ?? SpecRunner.idle_pointer(place.id)
+		target = SpecRunner.pointer_target(s, { pointer: p, target: i })
+		listener = Dom.target(s.dom, target, "pointermove", Bool.True) ?? return Bool.False
+		listener.kind == 3 and listener.policies.bitwise_and(8) != 0
+	}
+
+	idle_pointer : U32 -> PointerState
+	idle_pointer = |id| { id, kind: Mouse, button: Main, modifiers: 0, primary: Bool.True, down: 0, capture: 0, moved: Bool.False, suppress_mouse: Bool.False, at: Outside }
+
+	pointer_target : S(state), { pointer : PointerState, target : U64 } -> U64
+	pointer_target = |s, { pointer, target }| if (pointer.capture != 0 and SpecRunner.attached(s.dom, pointer.capture - 1)) pointer.capture - 1 else target
+
+	## A centre inside somebody else's zone has no native geometry. Explicit
+	## percentages name that zone directly; Outside needs no measured position.
+	pointer_point : Dom.Model, { target : U64, at : Scm.PointerPoint } -> Try(PointerAt, Str)
+	pointer_point = |dom, { target, at }| match (Dom.zone_of(dom, target), at) {
+		(Err(_), Centre) => Ok(Outside)
+		(Err(_), Percent(_)) => Err("give :at only for a locator in a pointer zone")
+		(Ok(zone), Centre) if zone.index != target => Err("LOC lies in zone ${zone.key}; give :at in that zone with the pointer steps")
+		(Ok(zone), Centre) => Ok(In({ zone: zone.key, x: 5000, y: 5000 }))
+		(Ok(zone), Percent({ x, y })) => Ok(In({ zone: zone.key, x: x * 100, y: y * 100 }))
+	}
+
+	pointer_button : [Main, Middle, Secondary] -> { code : U8, held : U16 }
+	pointer_button = |button| match button {
+		Main => { code: 1, held: 1 }
+		Middle => { code: 2, held: 4 }
+		Secondary => { code: 3, held: 2 }
+	}
+
+	## Encode the pointer kind independently of Core's decoder. A cancelled
+	## pointer always carries Outside, and only a press/release changes a button.
+	pointer_payload : { pointer : PointerState, event : Str, at : PointerAt } -> List(U8)
+	pointer_payload = |{ pointer, event, at }| {
+		button = SpecRunner.pointer_button(pointer.button)
+		kind : U8
+		kind = match pointer.kind {
+			Mouse => 0
+			Pen => 1
+			Touch => 2
+		}
+		held = if (event == "pointerup" or event == "pointercancel" or pointer.down == 0) 0.U16 else button.held
+		bytes = SpecRunner.put_u32([], pointer.id).concat([kind, if (event == "pointerdown" or event == "pointerup") button.code else 0, held.bitwise_and(255).to_u8_wrap(), held.shr_zf_wrap(8).to_u8_wrap(), pointer.modifiers, if (pointer.primary) 1 else 0])
+		match at {
+			Outside => bytes.append(0)
+			In({ zone, x, y }) => SpecRunner.put_str(bytes.concat([1, x.bitwise_and(255).to_u8_wrap(), x.shr_zf_wrap(8).to_u8_wrap(), y.bitwise_and(255).to_u8_wrap(), y.shr_zf_wrap(8).to_u8_wrap()]), zone)
+		}
+	}
+
+	## Capture belongs to the declaring element, even when a row's routing id
+	## is on an ancestor. A paced move shares ordinary ingress and pruning.
+	fire_pointer : Program(state), S(state), { target : U64, pointer : PointerState, event : Str, at : PointerAt } -> S(state)
+	fire_pointer = |program, s, { target, pointer, event, at }| {
+		if !SpecRunner.attached(s.dom, target) {
+			return s
+		}
+		listener = Dom.target(s.dom, target, event, Bool.True) ?? return s
+		if listener.kind != 3 {
+			return SpecRunner.send(program, s, listener.node, listener.handler, [])
+		}
+		captured = if (event == "pointerdown" and listener.policies.bitwise_and(4) != 0) { ..pointer, capture: listener.declaring + 1 } else pointer
+		b = s.browser
+		ready = if (event == "pointerdown") { ..s, browser: { ..b, pointers: b.pointers.insert(pointer.id, captured) } } else s
+		payload = SpecRunner.pointer_payload({ pointer: captured, event, at })
+		if listener.policies.bitwise_and(8) != 0 {
+			SpecRunner.queue_report(program, { state: ready, source: Pointer({ element: listener.declaring, handler: listener.handler, pointer: pointer.id }), node: listener.node, handler: listener.handler, owner: Dom.lookup(s.dom, listener.node), payload })
+		} else {
+			SpecRunner.send(program, ready, listener.node, listener.handler, payload)
+		}
+	}
+
+	## A press establishes the physical pointer before its handler runs. The
+	## browser driver has one non-touch channel or at most sixteen contacts.
+	pointer_down : Program(state), S(state), Scm.PointerPress -> Try(S(state), Str)
+	pointer_down = |program, s, press| {
+		if s.browser.pointers.contains(press.id) {
+			return Err("pointer ${press.id.to_str()} is already down")
+		}
+		if s.browser.pointers.values().any(|p| (p.kind == Touch) != (press.kind == Touch)) {
+			return Err("touch and mouse or pen gestures cannot be active together")
+		}
+		if press.kind != Touch and s.browser.pointers.values().any(|p| p.kind != Touch) {
+			return Err("only one mouse or pen pointer may be down")
+		}
+		if press.kind == Touch and s.browser.pointers.values().count_if(|p| p.kind == Touch) >= 16 {
+			return Err("at most 16 active touch pointers are supported by the browser driver")
+		}
+		if press.kind != Mouse and press.id == 1 {
+			return Err("pointer id 1 is reserved for the mouse")
+		}
+		if press.kind == Mouse and press.id != 1 {
+			return Err("the mouse pointer id is 1")
+		}
+		i = SpecRunner.need(s.dom, press.target)?
+		at = SpecRunner.pointer_point(s.dom, { target: i, at: press.at })?
+		prevented = SpecRunner.prevents(s.dom, i, "pointerdown")
+		pointer = { id: press.id, kind: press.kind, button: press.button, modifiers: press.modifiers, primary: !s.browser.pointers.values().any(|p| p.kind == press.kind), down: i + 1, capture: if (press.kind == Touch) i + 1 else 0, moved: Bool.False, suppress_mouse: prevented, at }
+		b = s.browser
+		s1 = SpecRunner.fire_pointer(program, { ..s, browser: { ..b, pointers: b.pointers.insert(press.id, pointer), touch_multi: if (press.kind == Touch) b.pointers.values().any(|p| p.kind == Touch) or b.touch_multi else b.touch_multi } }, { target: i, pointer, event: "pointerdown", at })
+		if press.kind == Touch or prevented {
+			return Ok(s1)
+		}
+		mouse_prevented = SpecRunner.prevents(s1.dom, i, "mousedown")
+		s2 = SpecRunner.fire_if(program, s1, i, "mousedown", "")
+		Ok(if (mouse_prevented) s2 else SpecRunner.move_focus(program, s2, SpecRunner.focus_target(s2.dom, i)))
+	}
+
+	## Hit-test data comes from the located zone even when capture sends the
+	## event to a different element. The frozen result can then be paced.
+	pointer_move : Program(state), S(state), Scm.PointerPlace -> Try(S(state), Str)
+	pointer_move = |program, s, place| {
+		pointer = match s.browser.pointers.get(place.id) {
+			Ok(p) => p
+			Err(_) if place.id == 1 => SpecRunner.idle_pointer(1)
+			Err(_) => return Err("pointer ${place.id.to_str()} is not down")
+		}
+		i = SpecRunner.need(s.dom, place.target)?
+		at = SpecRunner.pointer_point(s.dom, { target: i, at: place.at })?
+		if pointer.kind == Touch and at == pointer.at {
+			return Err("a touch move must leave the tap slop")
+		}
+		next_pointer = { ..pointer, at, moved: Bool.True }
+		b = s.browser
+		stored = if (pointer.down == 0) s else { ..s, browser: { ..b, pointers: b.pointers.insert(pointer.id, next_pointer) } }
+		target = SpecRunner.pointer_target(stored, { pointer: next_pointer, target: i })
+		next = SpecRunner.fire_pointer(program, stored, { target, pointer: next_pointer, event: "pointermove", at })
+		Ok(if (pointer.kind == Touch or pointer.suppress_mouse) next else SpecRunner.fire_if(program, next, target, "mousemove", ""))
+	}
+
+	## Snapshot only a pressed element's ancestor path. Counts come from MOVE,
+	## REMOVE and CLEAR, so detecting a dislodged press never retains a DOM copy.
+	pressed_path : Dom.Model, U64 -> List({ node : U64, parent : U64, count : U64 })
+	pressed_path = |dom, i| {
+		var $at = i + 1
+		var $out = []
+		while $at != 0 {
+			n = Dom.node(dom, $at - 1)
+			$out = $out.append({ node: $at - 1, parent: n.parent, count: n.detach_count })
+			$at = n.parent
+		}
+		$out
+	}
+
+	common_ancestor : Dom.Model, { pressed : U64, released : U64 } -> U64
+	common_ancestor = |dom, { pressed, released }| {
+		parents = SpecRunner.pressed_path(dom, pressed).fold(Dict.empty(), |found, p| found.insert(p.node, {}))
+		var $at = released + 1
+		while $at != 0 {
+			if parents.contains($at - 1) {
+				return $at - 1
+			}
+			$at = Dom.node(dom, $at - 1).parent
+		}
+		dom.root
+	}
+
+	## A release follows any older report and uses the capture that is still
+	## live, rather than a recycled route or a disposed pressed element.
+	pointer_up : Program(state), S(state), Scm.PointerPlace -> Try(S(state), Str)
+	pointer_up = |program, s, place| {
+		pointer = s.browser.pointers.get(place.id) ? |_| "pointer ${place.id.to_str()} is not down"
+		i = SpecRunner.need(s.dom, place.target)?
+		at = SpecRunner.pointer_point(s.dom, { target: i, at: place.at })?
+		SpecRunner.pointer_up_at(program, s, { pointer, target: i, at })
+	}
+
+	## Complete a release at an already-resolved point, including the pointer
+	## sequence of a click whose initial target may since have been disposed.
+	pointer_up_at : Program(state), S(state), { pointer : PointerState, target : U64, at : PointerAt } -> Try(S(state), Str)
+	pointer_up_at = |program, s, { pointer, target: i, at }| {
+		target = SpecRunner.pointer_target(s, { pointer, target: i })
+		had_capture = pointer.capture != 0 and SpecRunner.attached(s.dom, pointer.capture - 1)
+		pressed = if (had_capture) pointer.capture - 1 else pointer.down - 1
+		path = SpecRunner.pressed_path(s.dom, pressed)
+		after_up = SpecRunner.fire_pointer(program, s, { target, pointer, event: "pointerup", at })
+		b = after_up.browser
+		remaining = b.pointers.remove(pointer.id)
+		touch_multi = b.touch_multi
+		released = { ..after_up, browser: { ..b, pointers: remaining, touch_multi: if (remaining.values().any(|p| p.kind == Touch)) touch_multi else Bool.False } }
+		if pointer.kind == Touch and (pointer.moved or touch_multi) {
+			return Ok(released)
+		}
+		dislodged = path.find_first(|p| Dom.node(released.dom, p.node).detach_count != p.count)
+		mouse_target = match dislodged {
+			Ok(p) => if (p.parent == 0) released.dom.root else p.parent - 1
+			Err(_) => target
+		}
+		var $next = released
+		if pointer.kind == Touch and !pointer.suppress_mouse {
+			$next = SpecRunner.fire_if(program, $next, mouse_target, "mousemove", "")
+			mouse_prevented = SpecRunner.prevents($next.dom, mouse_target, "mousedown")
+			$next = SpecRunner.fire_if(program, $next, mouse_target, "mousedown", "")
+			if !mouse_prevented {
+				$next = SpecRunner.move_focus(program, $next, SpecRunner.focus_target($next.dom, mouse_target))
+			}
+		}
+		if !pointer.suppress_mouse {
+			$next = SpecRunner.fire_if(program, $next, mouse_target, "mouseup", "")
+		}
+		if dislodged.is_ok() {
+			return Ok($next)
+		}
+		click_target = if (had_capture) pressed else SpecRunner.common_ancestor($next.dom, { pressed: pointer.down - 1, released: i })
+		event = if (pointer.button == Main) "click" else "auxclick"
+		prevented = SpecRunner.prevents($next.dom, click_target, event)
+		$next = SpecRunner.fire_if(program, $next, click_target, event, "")
+		if (prevented or pointer.button != Main) Ok($next) else SpecRunner.default_action(program, $next, click_target)
+	}
+
+	## CDP cancellation ends its whole touch set, so a named cancel is valid
+	## only while that one contact remains. Nothing is synthesized for a subset.
+	pointer_cancel : Program(state), S(state), U32 -> Try(S(state), Str)
+	pointer_cancel = |program, s, id| {
+		pointer = s.browser.pointers.get(id) ? |_| "pointer ${id.to_str()} is not down"
+		if pointer.kind != Touch {
+			return Err("pointer-cancel requires a touch pointer")
+		}
+		if s.browser.pointers.values().count_if(|p| p.kind == Touch) != 1 {
+			return Err("pointer-cancel cannot cancel only the named touch while other touches are down")
+		}
+		target = SpecRunner.pointer_target(s, { pointer, target: pointer.down - 1 })
+		next = SpecRunner.fire_pointer(program, s, { target, pointer, event: "pointercancel", at: Outside })
+		b = next.browser
+		Ok({ ..next, browser: { ..b, pointers: b.pointers.remove(id), touch_multi: Bool.False } })
+	}
 
 	## A click delivers Chrome's pointer and mouse sequence at the destination.
 	## Preventing pointerdown suppresses compatibility mouse press/release and
 	## its focus change; pointerup and click still arrive.
+	## Refresh a click's pointer-kind centre contract at every actual phase:
+	## earlier handlers may have installed a new zone or pointer declaration.
+	click_pointer_point : Dom.Model, { located : U64, routing : U64, event : Str } -> Try(PointerAt, Str)
+	click_pointer_point = |dom, { located, routing, event }| {
+		if !SpecRunner.attached(dom, located) or !SpecRunner.attached(dom, routing) {
+			return Ok(Outside)
+		}
+		listener = Dom.target(dom, routing, event, Bool.True) ?? return Ok(Outside)
+		if (listener.kind == 3) SpecRunner.pointer_point(dom, { target: located, at: Centre }) else Ok(Outside)
+	}
+
+	## Deliver the complete click sequence through the same typed pointer
+	## dispatch as explicit gestures, rechecking each phase against the live DOM.
 	mouse_click : Program(state), S(state), U64 -> Try(S(state), Str)
 	mouse_click = |program, s0, i| {
-		s1 = SpecRunner.fire_if(program, s0, i, "pointermove", "")
+		if !s0.browser.pointers.is_empty() {
+			return Err("a click cannot start while a pointer gesture is down")
+		}
+		at_move = SpecRunner.click_pointer_point(s0.dom, { located: i, routing: i, event: "pointermove" })?
+		idle = SpecRunner.idle_pointer(1)
+		s1 = SpecRunner.fire_pointer(program, s0, { target: i, pointer: idle, event: "pointermove", at: at_move })
 		s2 = SpecRunner.fire_if(program, s1, i, "mousemove", "")
+		at_down = SpecRunner.click_pointer_point(s2.dom, { located: i, routing: i, event: "pointerdown" })?
 		press_prevented = SpecRunner.prevents(s2.dom, i, "pointerdown")
-		s3 = SpecRunner.fire_if(program, s2, i, "pointerdown", "")
-		s4 = if (press_prevented) s3 else {
+		pointer = { ..idle, down: i + 1, suppress_mouse: press_prevented, at: at_down }
+		b = s2.browser
+		s3 = SpecRunner.fire_pointer(program, { ..s2, browser: { ..b, pointers: b.pointers.insert(1, pointer) } }, { target: i, pointer, event: "pointerdown", at: at_down })
+		s4 = if (press_prevented or !SpecRunner.attached(s3.dom, i)) s3 else {
 			mouse_prevented = SpecRunner.prevents(s3.dom, i, "mousedown")
 			pressed = SpecRunner.fire_if(program, s3, i, "mousedown", "")
 			if (mouse_prevented) pressed else SpecRunner.move_focus(program, pressed, SpecRunner.focus_target(pressed.dom, i))
 		}
-		s5 = SpecRunner.fire_if(program, s4, i, "pointerup", "")
-		s6 = if (press_prevented) s5 else SpecRunner.fire_if(program, s5, i, "mouseup", "")
-		prevented = SpecRunner.prevents(s6.dom, i, "click")
-		s7 = SpecRunner.fire_if(program, s6, i, "click", "")
-		if (prevented) Ok(s7) else SpecRunner.default_action(program, s7, i)
+		captured = s4.browser.pointers.get(1) ?? pointer
+		routing = SpecRunner.pointer_target(s4, { pointer: captured, target: i })
+		at_up = SpecRunner.click_pointer_point(s4.dom, { located: i, routing, event: "pointerup" })?
+		SpecRunner.pointer_up_at(program, s4, { pointer: captured, target: i, at: at_up })
 	}
 
 	## The browser's default action for a click on node `i`: a checkbox
@@ -1741,6 +2029,9 @@ SpecRunner := [].{
 	## button submits its form, and a link navigates.
 	default_action : Program(state), S(state), U64 -> Try(S(state), Str)
 	default_action = |program, s, i| {
+		if !SpecRunner.attached(s.dom, i) {
+			return Ok(s)
+		}
 		match s.fault {
 			Poisoned(message) => return Err(message)
 			Healthy => {}
@@ -1888,6 +2179,9 @@ SpecRunner := [].{
 		if SpecRunner.same_document(b.env.url, url) {
 			Ok(SpecRunner.popstate(program, { ..s, browser: { ..b, back: b.back.append(entry), env: { ..b.env, url }, fwd: [] } }))
 		} else {
+			if !b.pointers.is_empty() {
+				return Err("cross-document navigation while a pointer is down")
+			}
 			if b.reports.held {
 				return Err("cross-document navigation while reports are held")
 			}
@@ -2215,7 +2509,7 @@ SpecRunner := [].{
 	## handle count) through `host`, every other step through `one`.
 	step! : Program(state), Host, S(state), Scm.Op => Try(S(state), Str)
 	step! = |program, host, initial, op| {
-		s = if (SpecRunner.is_occurrence(initial.browser, op)) SpecRunner.release_reports(program, initial) else initial
+		s = if (SpecRunner.is_occurrence(initial, op)) SpecRunner.release_reports(program, initial) else initial
 		match (SpecRunner.file_count(s.dom, op), op) {
 			(Ok(n), _) => SpecRunner.give_files(program, s, op, (host.mint_files!)(n))
 			(_, ExpectFiles(n)) => {
@@ -2303,7 +2597,9 @@ SpecRunner := [].{
 			n = Dom.node(dom, i)
 			if Dom.attr_of(n, "disabled") != "true" {
 				for listener in n.hs {
-					$out = $out.append((i, listener.event))
+					if listener.kind != 3 {
+						$out = $out.append((i, listener.event))
+					}
 				}
 			}
 			var $k = n.kids.len()
@@ -2349,6 +2645,68 @@ SpecRunner := [].{
 		}
 	}
 
+	## Walks enumerate only the live tree, as they enumerate controls. A grip
+	## owns its zone, so its centre has the same meaning in both runners.
+	pointer_places : Dom.Model, [Grips, Zones] -> List({ target : Scm.Loc, index : U64 })
+	pointer_places = |dom, what| {
+		var $stack = [dom.root]
+		var $out = []
+		while !$stack.is_empty() {
+			i = $stack.last() ?? crash "SpecRunner.pointer_places: stack has a node"
+			$stack = $stack.drop_last(1)
+			n = Dom.node(dom, i)
+			has_zone = !Dom.live_value(n, "pointer_zone").is_empty()
+			is_grip = n.hs.any(|h| h.kind == 3 and h.event == "pointerdown")
+			if has_zone and !SpecRunner.disabled(n) and (what == Zones or is_grip) {
+				id = Dom.attr_of(n, "data-testid")
+				label = Dom.attr_of(n, "aria-label")
+				if !id.is_empty() {
+					$out = $out.append({ target: TestId(id), index: i })
+				} else if !label.is_empty() {
+					$out = $out.append({ target: Label(label), index: i })
+				}
+			}
+			$stack = $stack.concat(n.kids)
+		}
+		$out
+	}
+
+	## A gesture is made from the ordinary pointer steps, with settling checked
+	## at every boundary rather than only at the final release or cancel.
+	walk_pointer : Program(state), S(state), { target : Scm.Loc, choice : U64 } -> Try(S(state), Str)
+	walk_pointer = |program, s, { target, choice }| {
+		kind = if (choice % 4 == 3) Touch else Mouse
+		id = if (kind == Mouse) 1.U32 else 2.U32
+		var $s = SpecRunner.one(program, s, PointerDown({ target, at: Centre, id, kind, button: Main, modifiers: 0 }))?
+		SpecRunner.check_settled(program, $s)?
+		$s = SpecRunner.one(program, $s, HoldReports)?
+		var $last = { target, at: Centre, id }
+		var $count = 0.U64
+		while $count < 2 + choice % 2 {
+			places = SpecRunner.pointer_places($s.dom, Zones)
+			if places.is_empty() {
+				break
+			}
+			place = places.get((choice + $count) % places.len()) ?? crash "SpecRunner.walk_pointer: place index is bounded"
+			$last = { target: place.target, at: Percent({ x: if ($count % 2 == 0) 25 else 75, y: 50 }), id }
+			$s = SpecRunner.one(program, $s, PointerMove($last))?
+			SpecRunner.check_settled(program, $s)?
+			$count = $count + 1
+		}
+		$s = SpecRunner.one(program, $s, ReleaseReports)?
+		SpecRunner.check_settled(program, $s)?
+		if kind == Touch and choice % 8 == 3 {
+			$s = SpecRunner.one(program, $s, PointerCancel(id))?
+		} else if SpecRunner.find($s.dom, $last.target).is_ok() {
+			$s = SpecRunner.one(program, $s, PointerUp($last))?
+		} else {
+			pointer = $s.browser.pointers.get(id) ? |_| "a walk's active pointer disappeared"
+			$s = SpecRunner.pointer_up_at(program, $s, { pointer, target: $s.dom.root, at: Outside })?
+		}
+		SpecRunner.check_settled(program, $s)?
+		Ok($s)
+	}
+
 	## The fault classes a walk loses a worker job to, in the order a byte
 	## picks them.
 	faults : List(Scm.WorkFault)
@@ -2358,13 +2716,13 @@ SpecRunner := [].{
 	## a pending request, tick a live interval, change visibility or
 	## connectivity for a live subscription, or deliver a message the specs
 	## emit on a port with a live subscription.
-	Service : [Answer(Pending), Tick(U32), ToggleVisibility, ToggleOnline, Emit(Str), BurstOnline, BurstVisibility, BurstPort(Str)]
+	Service : [Answer(Pending), Tick(U32), ToggleVisibility, ToggleOnline, Emit(Str), BurstOnline, BurstVisibility, BurstPort(Str), PointerGesture(Scm.Loc)]
 
 	## Every service the browser can do now, in a fixed order.
 	services : Book, S(state) -> List(Service)
 	services = |bk, s| {
 		b = s.browser
-		var $out = b.pending.map(|p| Answer(p))
+		var $out = b.pending.map(|p| Answer(p)).concat(SpecRunner.pointer_places(s.dom, Grips).map(|p| PointerGesture(p.target)))
 		var $ticks = []
 		var $ports = []
 		var $vis = Bool.False
@@ -2434,6 +2792,7 @@ SpecRunner := [].{
 	serve! = |program, host, bk, s, service, v| {
 		b = s.browser
 		match service {
+			PointerGesture(target) => Ok((SpecRunner.walk_pointer(program, s, { target, choice: v })?, { what: "pointer gesture", kind: UserEvent }))
 			BurstOnline | BurstVisibility | BurstPort(_) => {
 				var $s = SpecRunner.one(program, s, HoldReports)?
 				var $count = 0.U64
@@ -3215,7 +3574,7 @@ expect {
 	target = Dom.target(decoded.dom, i, "change", Bool.True)?
 	n = Dom.node(decoded.dom, i)
 	{ target, value: Dom.live_value(n, "value"), checked: Dom.live_value(n, "checked"), mirror: Dom.attr_of(n, "value"), values: decoded.values, writes: decoded.written } == {
-		target: { node: 1, handler: 7, event: "change", kind: 2, policies: 2 },
+		target: { node: 1, handler: 7, event: "change", kind: 2, policies: 2, declaring: i },
 		value: "first",
 		checked: "true",
 		mirror: "first",
@@ -3237,7 +3596,7 @@ expect {
 	i = Dom.lookup(decoded.dom, 1)
 	{ checked: Dom.live_value(Dom.node(decoded.dom, i), "checked"), target: Dom.target(decoded.dom, i, "change", Bool.True)?, writes: decoded.written, ops: decoded.ops } == {
 		checked: "true",
-		target: { node: 1, handler: 0, event: "change", kind: 1, policies: 1 },
+		target: { node: 1, handler: 0, event: "change", kind: 1, policies: 1, declaring: i },
 		writes: [i],
 		ops: [7, 1, 22],
 	}
@@ -3511,4 +3870,83 @@ expect {
 		delivered: [{ id: 1, payload: [8, 0] }, { id: 9, payload: [] }, { id: 3, payload: [3, 'n', 'e', 'w'] }],
 		pending_reads: [],
 	}
+}
+
+## A protocol recorder isolates browser input ordering from application logic.
+## Pointer payload validation remains the real engine's separate contract.
+pointer_probe : {} -> SpecRunner.Program(List({ handler : U32, payload : List(U8) }))
+pointer_probe = |_props| {
+	version: Dom.protocol_version,
+	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0],
+	init: |_| ([], [], List.repeat(0, 8)),
+	event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), [], List.repeat(0, 8)),
+	files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
+	settled: |_| Ok({}),
+	live: |_| [],
+}
+
+## Neither an old capturing element nor its recycled routing id receives a
+## later release. The actual live target's ancestor handles it, with no stale
+## click or default navigation from the detached anchor.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, old) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "a", rn: 1, attrs: [("data-testid", "old"), ("href", "/phantom")], props: [("pointer_zone", "old")], hs: [{ event: "pointerdown", handler: 1, kind: 3, policies: 4 }, { event: "pointerup", handler: 2, kind: 3, policies: 0 }, { event: "click", handler: 3, kind: 1, policies: 0 }] })
+	(d2, outside) = Dom.add_node(d1, { ..Dom.empty_node, tag: "div", rn: 2, attrs: [("data-testid", "outside")], hs: [{ event: "pointerup", handler: 4, kind: 3, policies: 0 }] })
+	dom = Dom.bind(Dom.bind(Dom.insert(Dom.insert(d2, d2.root, old, Err(End)), d2.root, outside, Err(End)), 1, old), 2, outside)
+	down = SpecRunner.one(program, { ..base, dom }, PointerDown({ target: TestId("old"), at: Centre, id: 1, kind: Mouse, button: Main, modifiers: 0 }))?
+	detached = Dom.detach(Dom.forget_subtree(down.dom, old), old)
+	(d3, replacement) = Dom.add_node(detached, { ..Dom.empty_node, tag: "a", rn: 1, attrs: [("href", "/replacement")], hs: [{ event: "pointerup", handler: 5, kind: 3, policies: 0 }, { event: "click", handler: 6, kind: 1, policies: 0 }] })
+	up = SpecRunner.one(program, { ..down, dom: Dom.bind(Dom.insert(d3, d3.root, replacement, Err(End)), 1, replacement) }, PointerUp({ target: TestId("outside"), at: Centre, id: 1 }))?
+	{ handlers: up.inst.map(|event| event.handler), url: up.browser.env.url, active: up.browser.pointers.len() } == { handlers: [1, 4], url: "/", active: 0 }
+}
+
+## A multi-contact touch set never synthesizes a tap's mouse events, even
+## after its nonprimary contact ends. A later single tap starts fresh.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	(d1, zone) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, attrs: [("data-testid", "zone")], props: [("pointer_zone", "zone")], hs: [{ event: "pointerdown", handler: 1, kind: 3, policies: 4 }, { event: "pointerup", handler: 2, kind: 3, policies: 0 }, { event: "mousemove", handler: 4, kind: 1, policies: 0 }, { event: "mousedown", handler: 5, kind: 1, policies: 0 }, { event: "mouseup", handler: 6, kind: 1, policies: 0 }, { event: "click", handler: 7, kind: 1, policies: 0 }] })
+	s = { ..base, dom: Dom.bind(Dom.insert(d1, d1.root, zone, Err(End)), 1, zone) }
+	press = { target: TestId("zone"), at: Centre, id: 2, kind: Touch, button: Main, modifiers: 0 }
+	a = SpecRunner.one(program, s, PointerDown(press))?
+	b = SpecRunner.one(program, a, PointerDown({ ..press, id: 3 }))?
+	c = SpecRunner.one(program, b, PointerUp({ target: TestId("zone"), at: Centre, id: 3 }))?
+	d = SpecRunner.one(program, c, PointerUp({ target: TestId("zone"), at: Centre, id: 2 }))?
+	e = SpecRunner.one(program, d, PointerDown(press))?
+	f = SpecRunner.one(program, e, PointerUp({ target: TestId("zone"), at: Centre, id: 2 }))?
+	f.inst.map(|event| event.handler) == [1, 1, 2, 2, 1, 2, 4, 5, 6, 7]
+}
+
+## A mousedown can install the first typed pointer handler. The centre rule
+## is checked again for pointerup instead of trusting the initial click tree.
+expect {
+	probe = pointer_probe({})
+	zone = SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(3), "dynamic")
+	listener = SpecRunner.put_u32(SpecRunner.put_u32([11], 1), 8)
+	commands = zone.concat(SpecRunner.put_str(listener, "pointerup").concat([3, 0, 0, 0, 0]))
+	program = { ..probe, event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), if (handler == 9) commands else [], List.repeat(0, 8)) }
+	base = SpecRunner.mount_in(program, {})
+	(d1, parent) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1 })
+	(d2, child) = Dom.add_node(d1, { ..Dom.empty_node, tag: "button", rn: 2, hs: [{ event: "mousedown", handler: 9, kind: 1, policies: 0 }] })
+	dom = Dom.bind(Dom.bind(Dom.insert(Dom.insert(d2, d2.root, parent, Err(End)), parent, child, Err(End)), 1, parent), 2, child)
+	SpecRunner.mouse_click(program, { ..base, dom }, child) == Err("LOC lies in zone dynamic; give :at in that zone with the pointer steps")
+}
+
+## A zone installed on LOC itself has a defined centre. The later typed
+## pointerup reads that zone after mousedown's command batch has applied.
+expect {
+	probe = pointer_probe({})
+	zone = SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(3), "dynamic")
+	listener = SpecRunner.put_u32(SpecRunner.put_u32([11], 1), 8)
+	commands = zone.concat(SpecRunner.put_str(listener, "pointerup").concat([3, 0, 0, 0, 0]))
+	program = { ..probe, event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), if (handler == 9) commands else [], List.repeat(0, 8)) }
+	base = SpecRunner.mount_in(program, {})
+	(d1, button) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "button", rn: 1, hs: [{ event: "mousedown", handler: 9, kind: 1, policies: 0 }] })
+	dom = Dom.bind(Dom.insert(d1, d1.root, button, Err(End)), 1, button)
+	after = SpecRunner.mouse_click(program, { ..base, dom }, button)?
+	after.inst == [
+		{ handler: 9, payload: [] },
+		{ handler: 8, payload: [1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 136, 19, 136, 19, 7, 0, 0, 0, 'd', 'y', 'n', 'a', 'm', 'i', 'c'] },
+	]
 }

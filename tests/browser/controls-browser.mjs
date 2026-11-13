@@ -602,7 +602,7 @@ for (const mode of ["initial", "changed"]) {
       if (fault === "inst-presence") { bad.attrTemplate(1); bad.attrInst(10, 1, 2); }
       if (fault === "kind") bad.listen(9, "click", 99, 0);
       if (fault === "kind-event") bad.listen(9, "click", 2, 0);
-      if (fault === "policy") bad.listen(9, "click", 1, 4);
+      if (fault === "policy") bad.listen(9, "click", 1, 16);
       if (fault === "property") bad.prop(9, 99, "x");
       if (fault === "wrong-element") bad.prop(9, 2, "true");
       if (fault === "checked") bad.prop(9, 2, "yes");

@@ -240,6 +240,150 @@ attribute_presence! = |events| {
 	Fuzz.keep
 }
 
+## A pointer session is checked against a small input-side model: only one
+## newest move waits during a hold, an up delivers it before itself, and an
+## unchanged or released frame creates no extra move. Every accepted turn
+## also passes the engine's settle check and command-counter oracle.
+PointerCounts : { downs : U64, moves : U64, ups : U64, last : Str }
+
+pointer_counts : PointerCounts
+pointer_counts = { downs: 0, moves: 0, ups: 0, last: "" }
+
+pointer_view : {} -> Engine.Elem(Engine.Root)
+pointer_view = |{}| Engine.state(
+	pointer_counts,
+	|state| Engine.element(
+		"div",
+		[],
+		[
+			Engine.element(
+				"div",
+				[
+					Engine.test_id("grip"),
+					Engine.prop(Engine.Prop.pointer_zone, "grip"),
+					Engine.on_pointer_capture(state.set_value(|held, pointer| { ..held, downs: held.downs + 1, last: pointer_place(pointer) })),
+					Engine.on_pointer_paced(state.set_value(|held, pointer| { ..held, moves: held.moves + 1, last: pointer_place(pointer) })),
+					Engine.on_pointer(Up, state.set_value(|held, pointer| { ..held, ups: held.ups + 1, last: pointer_place(pointer) })),
+				],
+				[],
+			),
+			Engine.element("div", [Engine.test_id("a"), Engine.prop(Engine.Prop.pointer_zone, "a")], []),
+			Engine.element("div", [Engine.test_id("b"), Engine.prop(Engine.Prop.pointer_zone, "b")], []),
+			Engine.element("p", [Engine.test_id("counts")], [Engine.text_s(state.signal().map(Str.inspect))]),
+			Engine.element("button", [Engine.on_click(state.update(|_| pointer_counts))], [Engine.text("Reset")]),
+		],
+	),
+)
+
+pointer_place : Engine.Pointer -> Str
+pointer_place = |pointer| match pointer.at {
+	Outside => "outside"
+	In({ zone, x, y }) => "${zone}:${x.to_str()}:${y.to_str()}"
+}
+
+pointer_history! : List(U8) => Fuzz.Outcome
+pointer_history! = |events| {
+	program = Core.driver(Engine.program(|| pointer_view({})))
+	var $state = SpecRunner.start(program, { name: "pointer history", setup: [], steps: [] }) ?? crash "pointer history: mount failed"
+	var $expected = pointer_counts
+	var $down = False
+	var $held = False
+	var $pending = Quiet
+	var $replaced = 0.U64
+	for event in events {
+		x = (event % 101).to_u16()
+		y = 100 - x
+		zone = if (event.bitwise_and(8) == 0) "a" else "b"
+		point : Scm.PointerPlace
+		point = { target: TestId(zone), at: Percent({ x, y }), id: 1 }
+		last = "${zone}:${(x * 100).to_str()}:${(y * 100).to_str()}"
+		op = match event % 5 {
+			0 if !$down => {
+				$down = True
+				$expected = { ..$expected, downs: $expected.downs + 1, last: "grip:5000:5000" }
+				PointerDown({ target: TestId("grip"), at: Centre, id: 1, kind: Mouse, button: Main, modifiers: 0 })
+			}
+			1 | 4 if $down => {
+				if $held {
+					match $pending {
+						MoveAt(_) => {
+							$replaced = $replaced + 1
+						}
+						Quiet => {}
+					}
+					$pending = MoveAt(last)
+				} else {
+					$expected = { ..$expected, moves: $expected.moves + 1, last }
+				}
+				PointerMove(point)
+			}
+			2 => {
+				$held = !$held
+				if $held {
+					HoldReports
+				} else {
+					match $pending {
+						MoveAt(place) => {
+							$expected = { ..$expected, moves: $expected.moves + 1, last: place }
+						}
+						Quiet => {}
+					}
+					$pending = Quiet
+					ReleaseReports
+				}
+			}
+			3 if $down => {
+				match $pending {
+					MoveAt(_) => {
+						$expected = { ..$expected, moves: $expected.moves + 1 }
+					}
+					Quiet => {}
+				}
+				$pending = Quiet
+				$down = False
+				$expected = { ..$expected, ups: $expected.ups + 1, last }
+				PointerUp(point)
+			}
+			4 if !$down => {
+				$expected = pointer_counts
+				Click(Role({ role: "button", name: "Reset" }))
+			}
+			_ => ExpectReportsReplaced($replaced)
+		}
+		$state = SpecRunner.one(program, $state, op) ?? crash "pointer history: ${Str.inspect(op)} failed"
+		$state = SpecRunner.one(program, $state, ExpectText(TestId("counts"), Str.inspect($expected))) ?? crash "pointer history: counters differ from the input model"
+		$state = SpecRunner.one(program, $state, ExpectReportsReplaced($replaced)) ?? crash "pointer history: replacement count differs"
+		match SpecRunner.check_settled(program, $state) {
+			Ok(_) => {}
+			Err(message) => crash "pointer history: ${message}"
+		}
+		match SpecRunner.check_counters($state) {
+			Ok(_) => {}
+			Err(message) => crash "pointer history: ${message}"
+		}
+	}
+	if $down {
+		match $pending {
+			MoveAt(_) => {
+				$expected = { ..$expected, moves: $expected.moves + 1 }
+			}
+			Quiet => {}
+		}
+		$pending = Quiet
+		$expected = { ..$expected, ups: $expected.ups + 1, last: "grip:5000:5000" }
+		$state = SpecRunner.one(program, $state, PointerUp({ target: TestId("grip"), at: Centre, id: 1 })) ?? crash "pointer history: final release failed"
+	}
+	if $held {
+		$state = SpecRunner.one(program, $state, ReleaseReports) ?? crash "pointer history: final frame failed"
+	}
+	$state = SpecRunner.one(program, $state, ExpectText(TestId("counts"), Str.inspect($expected))) ?? crash "pointer history: final counters differ"
+	match SpecRunner.check_settled(program, $state) {
+		Ok(_) => {}
+		Err(message) => crash "pointer history: final ${message}"
+	}
+	Fuzz.keep
+}
+
 Input : { mode : U8, pad : U8, events : List(U8) }
 
 target = Fuzz.target_with!({
@@ -249,11 +393,12 @@ target = Fuzz.target_with!({
 		Fuzz.example({ name: "many-sites", revision: "2", make: || { mode: 1, pad: 0, events: [] } }),
 		Fuzz.example({ name: "attribute-history", revision: "1", make: || { mode: 3, pad: 0, events: [0, 0, 1, 3, 4, 2, 5, 0, 4, 1, 5, 2] } }),
 		Fuzz.example({ name: "reference-history", revision: "1", make: || { mode: 2, pad: 0, events: [0, 2, 0, 3, 0, 4, 0, 5, 8, 6, 8, 2, 8, 7, 8, 9, 10] } }),
+		Fuzz.example({ name: "pointer-reports", revision: "1", make: || { mode: 4, pad: 0, events: [0, 2, 1, 4, 1, 3, 2, 0, 1, 3, 4] } }),
 	],
 	generator: {
 		mode: |arbitrary| {
 			next = Fuzz.u8(arbitrary)
-			{ state: next.state, value: 2 + next.value % 2 }
+			{ state: next.state, value: 2 + next.value % 3 }
 		},
 		pad: Fuzz.constant(0),
 		events: Fuzz.list(Fuzz.u8, 64),
@@ -262,7 +407,8 @@ target = Fuzz.target_with!({
 		0 => focus!({})
 		1 => many!(5000 + pad.to_u64())
 		2 => reference_focus!(events)
-		_ => attribute_presence!(events)
+		3 => attribute_presence!(events)
+		_ => pointer_history!(events)
 	},
 	show: Str.inspect,
 })

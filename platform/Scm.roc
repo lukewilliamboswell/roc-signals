@@ -125,6 +125,124 @@ Scm := [].{
 	environment_sections : List(Str)
 	environment_sections = ["location", "local-storage", "connectivity", "visibility"]
 
+	## Pointer steps carry a zone-relative percentage or ask for the located
+	## element's centre. The runner rejects an ambiguous centre inside a zone.
+	PointerPoint : [Centre, Percent({ x : U16, y : U16 })]
+	PointerPlace : { target : Loc, at : PointerPoint, id : U32 }
+	PointerPress : { target : Loc, at : PointerPoint, id : U32, kind : [Mouse, Pen, Touch], button : [Main, Middle, Secondary], modifiers : U8 }
+
+	## Parse pointer options exactly once. Press-only options are rejected on
+	## moves and releases rather than silently changing a pointer's identity.
+	pointer_place : { form : Sx, args : List(Sx), mode : [Press, Place] } -> Try(PointerPress, Problem)
+	pointer_place = |{ form, args, mode }| {
+		target = Scm.locator(args.first() ?? return Err(Scm.bad(form, "a pointer step needs a locator")))?
+		var $rest = args.drop_first(1)
+		var $seen = []
+		var $at = Centre
+		var $id = 1.U32
+		var $kind = Mouse
+		var $button = Main
+		var $modifiers = 0.U8
+		while !$rest.is_empty() {
+			key = $rest.first() ?? crash "Scm.pointer_place: options remain"
+			name = match key {
+				Sym(value, _) => value
+				_ => return Err(Scm.bad(key, "pointer options start with :at, :id, :button, :pointer or :modifiers"))
+			}
+			if $seen.contains(name) {
+				return Err(Scm.bad(key, "pointer option ${name} is repeated"))
+			}
+			$seen = $seen.append(name)
+			$rest = $rest.drop_first(1)
+			value = $rest.first() ?? return Err(Scm.bad(key, "${name} needs a value"))
+			match name {
+				":at" => {
+					x = Scm.unsigned(value, "the horizontal percentage")?
+					y_sx = $rest.get(1) ?? return Err(Scm.bad(key, ":at needs two integer percentages"))
+					y = Scm.unsigned(y_sx, "the vertical percentage")?
+					if x > 100 or y > 100 {
+						return Err(Scm.bad(value, "pointer percentages must be between 0 and 100"))
+					}
+					$at = Percent({ x: x.to_u16_wrap(), y: y.to_u16_wrap() })
+					$rest = $rest.drop_first(2)
+				}
+				":id" => {
+					$id = Scm.pointer_id(value)?
+					$rest = $rest.drop_first(1)
+				}
+				":pointer" if mode == Press => {
+					$kind = match value {
+						Sym("mouse", _) => Mouse
+						Sym("pen", _) => Pen
+						Sym("touch", _) => Touch
+						_ => return Err(Scm.bad(value, "a pointer is mouse, pen or touch"))
+					}
+					$rest = $rest.drop_first(1)
+				}
+				":button" if mode == Press => {
+					$button = match value {
+						Sym("main", _) => Main
+						Sym("middle", _) => Middle
+						Sym("secondary", _) => Secondary
+						_ => return Err(Scm.bad(value, "a pointer button is main, middle or secondary"))
+					}
+					$rest = $rest.drop_first(1)
+				}
+				":modifiers" if mode == Press => {
+					items = match value {
+						List(xs, _) => xs
+						_ => return Err(Scm.bad(value, "pointer modifiers are a list of shift, ctrl, alt and meta"))
+					}
+					for item in items {
+						bit = match item {
+							Sym("shift", _) => 1.U8
+							Sym("ctrl", _) => 2.U8
+							Sym("alt", _) => 4.U8
+							Sym("meta", _) => 8.U8
+							_ => return Err(Scm.bad(item, "a pointer modifier is shift, ctrl, alt or meta"))
+						}
+						if $modifiers.bitwise_and(bit) != 0 {
+							return Err(Scm.bad(item, "a pointer modifier is repeated"))
+						}
+						$modifiers = $modifiers.bitwise_or(bit)
+					}
+					$rest = $rest.drop_first(1)
+				}
+				_ => return Err(Scm.bad(key, "unknown option ${name} for this pointer step"))
+			}
+		}
+		Ok({ target, at: $at, id: if ($kind != Mouse and !$seen.contains(":id")) 2 else $id, kind: $kind, button: $button, modifiers: $modifiers })
+	}
+
+	pointer_id : Sx -> Try(U32, Problem)
+	pointer_id = |sx| {
+		n = Scm.unsigned(sx, "the pointer id")?
+		if n > 4294967295 {
+			return Err(Scm.bad(sx, "the pointer id must fit in U32"))
+		}
+		Ok(n.to_u32_wrap())
+	}
+
+	pointer_cancel : { form : Sx, args : List(Sx) } -> Try(Op, Problem)
+	pointer_cancel = |{ form, args }| match args {
+		[] => Ok(PointerCancel(2))
+		[Sym(":id", _), id] => Ok(PointerCancel(Scm.pointer_id(id)?))
+		_ => Err(Scm.bad(form, "pointer-cancel takes only an optional :id N"))
+	}
+
+	pointer_place_json : PointerPlace -> List({ key : Str, value : JsonOut.Value })
+	pointer_place_json = |{ target, at, id }| [
+		JsonOut.field("loc", Scm.loc_json(target)),
+		JsonOut.field(
+			"at",
+			match at {
+				Centre => Null
+				Percent({ x, y }) => Object([JsonOut.field("x", Nat(x.to_u64())), JsonOut.field("y", Nat(y.to_u64()))])
+			},
+		),
+		JsonOut.field("id", Nat(id.to_u64())),
+	]
+
 	## A step a test takes, in order. Both runners implement every step
 	## (design.md, "The `.scm` spec language"): the native runner's `one` matches
 	## every variant, and the browser runner's handler table is checked against
@@ -135,6 +253,10 @@ Scm := [].{
 	Op : [
 		Click(Loc),
 		RealClick(Loc),
+		PointerDown(PointerPress),
+		PointerMove(PointerPlace),
+		PointerUp(PointerPlace),
+		PointerCancel(U32),
 		Focus(Loc),
 		Blur(Loc),
 		Change(Loc, Str),
@@ -785,6 +907,10 @@ Scm := [].{
 	## accepts exactly these; anything else is an unknown step.
 	step_forms : List({ name : Str, parse : (Sx, List(Sx) -> Try(Op, Problem)) })
 	step_forms = [
+		{ name: "pointer-down", parse: |form, args| Scm.pointer_place({ form, args, mode: Press }).map_ok(|press| PointerDown(press)) },
+		{ name: "pointer-move", parse: |form, args| Scm.pointer_place({ form, args, mode: Place }).map_ok(|p| PointerMove({ target: p.target, at: p.at, id: p.id })) },
+		{ name: "pointer-up", parse: |form, args| Scm.pointer_place({ form, args, mode: Place }).map_ok(|p| PointerUp({ target: p.target, at: p.at, id: p.id })) },
+		{ name: "pointer-cancel", parse: |form, args| Scm.pointer_cancel({ form, args }) },
 		{ name: "hold-reports", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| HoldReports) },
 		{ name: "release-reports", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| ReleaseReports) },
 		{ name: "expect-reports-replaced", parse: |form, args| Ok(ExpectReportsReplaced(Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the replacement count")?)) },
@@ -1118,6 +1244,10 @@ Scm := [].{
 		match op {
 			Click(_) => "click"
 			RealClick(_) => "real-click"
+			PointerDown(_) => "pointer-down"
+			PointerMove(_) => "pointer-move"
+			PointerUp(_) => "pointer-up"
+			PointerCancel(_) => "pointer-cancel"
 			Focus(_) => "focus"
 			Blur(_) => "blur"
 			Change(_, _) => "change"
@@ -1284,6 +1414,31 @@ Scm := [].{
 		args = match op {
 			Click(l) => [loc(l)]
 			RealClick(l) => [loc(l)]
+			PointerDown(p) => Scm.pointer_place_json({ target: p.target, at: p.at, id: p.id }).concat([
+				JsonOut.field(
+					"pointer",
+					Text(
+						match p.kind {
+							Mouse => "mouse"
+							Pen => "pen"
+							Touch => "touch"
+						},
+					),
+				),
+				JsonOut.field(
+					"button",
+					Text(
+						match p.button {
+							Main => "main"
+							Middle => "middle"
+							Secondary => "secondary"
+						},
+					),
+				),
+				JsonOut.field("modifiers", Array([{ name: "shift", bit: 1.U8 }, { name: "ctrl", bit: 2 }, { name: "alt", bit: 4 }, { name: "meta", bit: 8 }].keep_if(|m| p.modifiers.bitwise_and(m.bit) != 0).map(|m| Text(m.name)))),
+			])
+			PointerMove(p) | PointerUp(p) => Scm.pointer_place_json(p)
+			PointerCancel(id) => [JsonOut.field("id", Nat(id.to_u64()))]
 			Focus(l) => [loc(l)]
 			Blur(l) => [loc(l)]
 			Change(l, t) => [loc(l), text(t)]
@@ -1468,7 +1623,7 @@ expect problem_of("(test \"t\" (steps (local-storage-unavailable)))") == "x.scm:
 ## unknown step or setup form.
 expect {
 	actual =
-		\\${problem_of("(test \"t\" (steps (pointer-down (label \"a\"))))")}
+		\\${problem_of("(test \"t\" (steps (pointer-hover (label \"a\"))))")}
 		\\${problem_of("(test \"t\" (steps (key-down (label \"a\") \"Enter\" false)))")}
 		\\${problem_of("(test \"t\" (steps (composition-start (label \"a\"))))")}
 		\\${problem_of("(test \"t\" (steps (custom-event (label \"a\") \"x\" \"\")))")}
@@ -1478,7 +1633,7 @@ expect {
 		\\${problem_of("(test \"t\" (setup (session-storage \"k\" \"v\")) (steps (mark-metrics)))")}
 		\\${problem_of("(test \"t\" (setup (stub-http \"f\" :url \"/a\" :status 200 :body \"\")) (steps (mark-metrics)))")}
 	expected =
-		\\x.scm:1:18: unknown step pointer-down
+		\\x.scm:1:18: unknown step pointer-hover
 		\\x.scm:1:18: unknown step key-down
 		\\x.scm:1:18: unknown step composition-start
 		\\x.scm:1:18: unknown step custom-event
@@ -1679,4 +1834,21 @@ expect {
 		"{\"op\":\"release-reports\",\"line\":4,\"column\":5}",
 		"{\"op\":\"expect-reports-replaced\",\"line\":4,\"column\":5,\"count\":2}",
 	]
+}
+
+## Pointer options resolve into one typed step record, including the reserved
+## mouse id and the default non-mouse id, and emit the shared JSON fields.
+expect {
+	spec = Scm.parse("(test \"pointer\" (steps (pointer-down (test-id \"a\") :pointer touch :at 25 70 :modifiers (shift meta)) (pointer-move (test-id \"b\") :id 2) (pointer-up (test-id \"b\") :id 2) (pointer-cancel)))")?
+	{ ops: spec.steps.map(|step| step.op), json: JsonOut.render(Scm.step_json(spec.steps.first()?)) } == {
+		ops: [PointerDown({ target: TestId("a"), at: Percent({ x: 25, y: 70 }), id: 2, kind: Touch, button: Main, modifiers: 9 }), PointerMove({ target: TestId("b"), at: Centre, id: 2 }), PointerUp({ target: TestId("b"), at: Centre, id: 2 }), PointerCancel(2)],
+		json: "{\"op\":\"pointer-down\",\"line\":1,\"column\":24,\"loc\":{\"kind\":\"test-id\",\"value\":\"a\"},\"at\":{\"x\":25,\"y\":70},\"id\":2,\"pointer\":\"touch\",\"button\":\"main\",\"modifiers\":[\"shift\",\"meta\"]}",
+	}
+}
+
+## Unknown, duplicate and misplaced options never become guessed pointer
+## input. Percentages and ids are checked before narrowing their integer type.
+expect {
+	bad = ["(pointer-down (test-id \"a\") :at 101 0)", "(pointer-down (test-id \"a\") :id -1)", "(pointer-down (test-id \"a\") :id 4294967296)", "(pointer-down (test-id \"a\") :id 2 :id 3)", "(pointer-down (test-id \"a\") :modifiers (shift shift))", "(pointer-move (test-id \"a\") :button main)", "(pointer-up (test-id \"a\") :pointer touch)", "(pointer-cancel :at 50 50)", "(pointer-down (test-id \"a\") :at 0)"]
+	bad.map(|form| Scm.parse("(test \"bad\" (steps ${form}))").is_err()) == List.repeat(Bool.True, bad.len())
 }
