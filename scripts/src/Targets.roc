@@ -24,6 +24,7 @@ Targets := [].{
 		{ name: "scm-parse", main: "fuzz/scm-parse/main.roc" },
 		{ name: "wire", main: "fuzz/wire/main.roc" },
 		{ name: "structure", main: "fuzz/structure/main.roc" },
+		{ name: "dom", main: "fuzz/dom/main.roc" },
 		{ name: "table-view", main: "fuzz/table-view/main.roc" },
 		{ name: "port-json", main: "fuzz/port-json/main.roc" },
 		{ name: "form-builder", main: "examples/form-builder/fuzz-rules.roc" },
