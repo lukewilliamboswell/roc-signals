@@ -433,7 +433,9 @@ mount, so the settle check meets nestings no app contains), tables and
 their views against a model that filters, sorts and windows the table from
 scratch, over keyed writes, whole rewrites and events that write the table,
 the query and the window together (`fuzz/table-view`), the `.scm`
-parser (`fuzz/scm-parse`), the worker wire format's decoder (`fuzz/wire`)
+parser (`fuzz/scm-parse`), boot sections (`fuzz/boot`, whose total decoder
+accepts only the exact encoding of its decoded value or the empty default
+shorthand), the worker wire format's decoder (`fuzz/wire`)
 and the port message format's decoder (`fuzz/port-json`). Every target that
 drives the engine runs the settle check after every step.
 
