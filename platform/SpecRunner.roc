@@ -4562,11 +4562,15 @@ SpecRunner := [].{
 	picture_path_line : Str -> Try(Str, Str)
 	picture_path_line = |url| {
 		path = PicturePage.route(url) ? |InvalidRoute(message)| message
-		Ok(JsonOut.render(Object([
-			JsonOut.field("protocol", Text("roc-signals/picture-path/v1")),
-			JsonOut.field("url", Text(url)),
-			JsonOut.field("path", Text(path)),
-		])))
+		Ok(
+			JsonOut.render(
+				Object([
+					JsonOut.field("protocol", Text("roc-signals/picture-path/v1")),
+					JsonOut.field("url", Text(url)),
+					JsonOut.field("path", Text(path)),
+				]),
+			),
+		)
 	}
 
 	## Render only the engine's ordinary init batch. Storage answers, focus
@@ -4608,13 +4612,17 @@ SpecRunner := [].{
 		model = Dom.apply(template.overlay(Dom.new({})), commands)
 		rendered = Dom.render(model, { root: model.root, scope: MountEnvelope, mode: Picture, enclosing: template.parent(), limits: { max_bytes: 16777216, max_nodes: 262144, max_depth: 1024 } }) ? |problem| "picture renderer refused the frame: ${Str.inspect(problem)}"
 		page = template.page({ markup: rendered.markup, max_bytes: 16777216 }) ? |PageLimit({ maximum, required })| "picture page needs ${required.to_str()} UTF-8 bytes; maximum is ${maximum.to_str()} bytes"
-		Ok(JsonOut.render(Object([
-			JsonOut.field("protocol", Text("roc-signals/prerender/v1")),
-			JsonOut.field("url", Text(url)),
-			JsonOut.field("path", Text(resolved.path)),
-			JsonOut.field("page", Text(page)),
-			JsonOut.field("metadata", Array([])),
-		])))
+		Ok(
+			JsonOut.render(
+				Object([
+					JsonOut.field("protocol", Text("roc-signals/prerender/v1")),
+					JsonOut.field("url", Text(url)),
+					JsonOut.field("path", Text(resolved.path)),
+					JsonOut.field("page", Text(page)),
+					JsonOut.field("metadata", Array([])),
+				]),
+			),
+		)
 	}
 
 	## The command line: which specs, whether to emit their steps or the
@@ -6123,7 +6131,6 @@ expect {
 	} == { stored: "/x?", reported: True, query_removed: False, query_kept: True, query_added: False }
 }
 
-
 ## Prerender is one exact command, never mixed with ordinary spec options.
 expect SpecRunner.prerender_args(["--prerender", "/tasks?open=1#list", "--template", "index.html"]) == Ok(Picture({ url: "/tasks?open=1#list", template: "index.html" }))
 
@@ -6135,7 +6142,6 @@ expect SpecRunner.prerender_args(["--prerender", "/"]).is_err()
 
 ## Existing ordinary spec argument parsing remains selected without new input.
 expect SpecRunner.prerender_args(["--filter", "round*", "round-trip.scm"]) == Ok(Specs)
-
 
 ## Route projection is a separate no-init mode with one explicit URL.
 expect SpecRunner.prerender_args(["--picture-path", "/tasks?open=1#list"]) == Ok(PicturePath("/tasks?open=1#list"))

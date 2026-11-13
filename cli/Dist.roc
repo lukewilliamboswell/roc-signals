@@ -89,13 +89,19 @@ Dist :: [].{
 		resources = assets.map(|a| { ..a, path: "${directory}/${a.path}" }).concat($public)
 		Dist.validate_outputs(resources)?
 		for file in resources {
-			Dist.stage_file!(file, { staging })?
+			Dist.stage_file!(
+				file,
+				{ staging: staging },
+			)?
 		}
 		written = resources.map(|file| { path: file.path, bytes: file.bytes.len() })
 		pages = if options.pictures.is_empty() {
 			page = { path: "index.html", bytes: Dist.rewrite(template, { names: assets.map(|a| a.path), directory }).to_utf8() }
 			Dist.validate_outputs([{ ..page, bytes: [] }].concat(resources))?
-			Dist.stage_file!(page, { staging })?
+			Dist.stage_file!(
+				page,
+				{ staging: staging },
+			)?
 			[{ path: page.path, bytes: page.bytes.len() }]
 		} else {
 			Dist.stage_pictures!(options.pictures, { staging, names: assets.map(|a| a.path), directory, reserved: resources.map(|file| file.path), template })?
@@ -129,7 +135,7 @@ Dist :: [].{
 		if !Bundle.spec_targets.contains(target) {
 			return Err(PictureUnsupported(target))
 		}
-		runner = ".signals/build/picture-runner${if target.ends_with("win") ".exe" else ""}"
+		runner = ".signals/build/picture-runner${if (target.ends_with("win")) ".exe" else ""}"
 		version = Compiler.version!()?
 		match Compiler.build!({ target, opt: "dev", output: runner })? {
 			Built(_) => {}
@@ -140,10 +146,13 @@ Dist :: [].{
 		var $outputs = reserved.map(|path| { path, bytes: [] })
 		var $written = []
 		for url in urls {
-			output = Cmd.new(OsStr.from_str(program)).args(["--picture-path", url].map(OsStr.from_str)).stdout(Capture).stderr(Capture).output_limit(MaxBytes(1048576)).run!() ? |problem| PictureRunnerFailed({ url, reason: match problem {
-				CmdErr(error) => error.to_str()
-				Interrupted => "command interrupted"
-			} })
+			output = Cmd.new(OsStr.from_str(program)).args(["--picture-path", url].map(OsStr.from_str)).stdout(Capture).stderr(Capture).output_limit(MaxBytes(1048576)).run!() ? |problem| PictureRunnerFailed({
+				url,
+				reason: match problem {
+					CmdErr(error) => error.to_str()
+					Interrupted => "command interrupted"
+				},
+			})
 			if output.status != Exited(0) {
 				return Err(PictureFailed({ url, report: Str.from_utf8_lossy(output.stderr_bytes) }))
 			}
@@ -169,10 +178,13 @@ Dist :: [].{
 			# Rewrite only the original host template. A rendered app attribute
 			# or text which resembles an asset name must remain untouched.
 			Path.write_utf8!(Path.utf8(projected), Dist.rewrite(template, { names, directory: "${prefix}${directory}" }))?
-			output = Cmd.new(OsStr.from_str(program)).args(["--prerender", url, "--template", projected].map(OsStr.from_str)).stdout(Capture).stderr(Capture).output_limit(MaxBytes(134217728)).run!() ? |problem| PictureRunnerFailed({ url, reason: match problem {
-				CmdErr(error) => error.to_str()
-				Interrupted => "command interrupted"
-			} })
+			output = Cmd.new(OsStr.from_str(program)).args(["--prerender", url, "--template", projected].map(OsStr.from_str)).stdout(Capture).stderr(Capture).output_limit(MaxBytes(134217728)).run!() ? |problem| PictureRunnerFailed({
+				url,
+				reason: match problem {
+					CmdErr(error) => error.to_str()
+					Interrupted => "command interrupted"
+				},
+			})
 			if output.status != Exited(0) {
 				return Err(PictureFailed({ url, report: Str.from_utf8_lossy(output.stderr_bytes) }))
 			}
@@ -184,7 +196,10 @@ Dist :: [].{
 			}
 			# Stage 1 emits no envelope; no fake adoption metadata is accepted.
 			page = { path: picture.path, bytes: picture.page.to_utf8() }
-			Dist.stage_file!(page, { staging })?
+			Dist.stage_file!(
+				page,
+				{ staging: staging },
+			)?
 			$written = $written.append({ path: page.path, bytes: page.bytes.len() })
 		}
 		Path.delete!(Path.utf8(projected))?
@@ -225,7 +240,7 @@ Dist :: [].{
 	## Compare output locations conservatively across supported filesystems.
 	## This is path collision detection, never application or row identity.
 	output_key : Str -> Str
-	output_key = |path| Str.from_utf8(path.to_utf8().map(|byte| if byte >= 'A' and byte <= 'Z' byte + 32 else byte)) ?? crash "Dist.output_key: ASCII folding preserves UTF-8"
+	output_key = |path| Str.from_utf8(path.to_utf8().map(|byte| if (byte >= 'A' and byte <= 'Z') byte + 32 else byte)) ?? crash "Dist.output_key: ASCII folding preserves UTF-8"
 
 	## Files cannot overwrite one another or be both a file and a directory.
 	## Check pages, hashed assets and public files as one publication plan.
@@ -244,7 +259,7 @@ Dist :: [].{
 		for file in files {
 			var $prefix = ""
 			for part in Dist.output_key(file.path).split_on("/").drop_last(1) {
-				$prefix = if $prefix.is_empty() part else "${$prefix}/${part}"
+				$prefix = if ($prefix.is_empty()) part else "${$prefix}/${part}"
 				match $known.get($prefix) {
 					Ok(first) => return Err(OutputCollision({ first, second: file.path }))
 					Err(_) => {}
@@ -350,8 +365,8 @@ expect {
 ## Route pages, assets and public files share one namespace, including file
 ## versus directory prefixes and case aliases on supported deployment hosts.
 expect {
-    Dist.validate_outputs([{ path: "a/index.html", bytes: [] }, { path: "a", bytes: [] }]).is_err() and
-    Dist.validate_outputs([{ path: "Assets/A", bytes: [] }, { path: "assets/a", bytes: [] }]).is_err()
+	Dist.validate_outputs([{ path: "a/index.html", bytes: [] }, { path: "a", bytes: [] }]).is_err() and
+		Dist.validate_outputs([{ path: "Assets/A", bytes: [] }, { path: "assets/a", bytes: [] }]).is_err()
 }
 
 ## Root traversal, Windows drive syntax and reserved names cannot become output.
@@ -359,7 +374,6 @@ expect ["../index.html", "/index.html", "a//index.html", "C:/index.html", "a/CON
 
 ## Adjacent sibling pages do not overlap their common directory.
 expect Dist.validate_outputs([{ path: "a/one/index.html", bytes: [] }, { path: "a/two/index.html", bytes: [] }]).is_ok()
-
 
 ## A lexical neighbour cannot hide an earlier file/directory prefix conflict.
 expect Dist.validate_outputs([{ path: "a", bytes: [] }, { path: "a-file", bytes: [] }, { path: "a/b/index.html", bytes: [] }]).is_err()

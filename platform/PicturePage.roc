@@ -7,9 +7,11 @@ import parser.Markup
 ## Native picture preparation uses the public parser's authored boundaries.
 ## It never finds tags with a second scanner or recovers a repaired host tree.
 PicturePage := [].{
+
 	## A checked host-page root and the exact source span it owns. Only parse
 	## creates this value; page replacement cannot select another source range.
 	Template :: { source : Markup.Source, span : Markup.Span, root_name : Dom.ExpandedName, attributes : List((Dom.ExpandedName, Str)), parent : [Document, Element(Dom.ExpandedName)] }.{
+
 		## Root facts are engine-only mount input, independent of app Boot.
 		root : Template -> Scm.MountRoot
 		root = |template| template.root_name
@@ -85,7 +87,7 @@ PicturePage := [].{
 	resolve = |input| {
 		url = Url.parse(input) ? |problem| InvalidRoute("${input}: ${Str.inspect(problem)}")
 		segments = url.path_segments()
-		parts = if segments.last() == Ok("") segments.drop_last(1) else segments
+		parts = if (segments.last() == Ok("")) segments.drop_last(1) else segments
 		for part in parts {
 			if part.is_empty() or part == "." or part == ".." or part.ends_with(".") or part.ends_with(" ") or part.to_utf8().any(|byte| byte < 32 or byte == 127 or ['/', '\\', ':', '<', '>', '"', '|', '?', '*'].contains(byte)) {
 				return Err(InvalidRoute("${input}: path cannot name a static output directory"))
@@ -93,7 +95,7 @@ PicturePage := [].{
 			# Win32 reserves these device names in every directory, also before
 			# extensions: https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file
 			stem = part.split_on(".").first() ?? crash "PicturePage.route: nonempty path component"
-			folded = Str.from_utf8(stem.to_utf8().map(|byte| if byte >= 'A' and byte <= 'Z' byte + 32 else byte)) ?? crash "PicturePage.route: ASCII folding preserves UTF-8"
+			folded = Str.from_utf8(stem.to_utf8().map(|byte| if (byte >= 'A' and byte <= 'Z') byte + 32 else byte)) ?? crash "PicturePage.route: ASCII folding preserves UTF-8"
 			if ["con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9", "com¹", "com²", "com³", "lpt¹", "lpt²", "lpt³"].contains(folded) {
 				return Err(InvalidRoute("${input}: path names a reserved filesystem device"))
 			}
@@ -135,50 +137,47 @@ expect PicturePage.route("/a//b").is_err()
 ## Source tokens and the authored full span protect tag-like script text and
 ## every host byte outside the selected root's replacement range.
 expect {
-    template = PicturePage.parse("<!doctype html><html><head><title>host</title></head><body><svg data-roc-picture><g/></svg><script>const close = '</svg>';</script></body></html>")?
-    template.page({ markup: "replacement", max_bytes: 16777216 })? == "<!doctype html><html><head><title>host</title></head><body>replacement<script>const close = '</svg>';</script></body></html>"
+	template = PicturePage.parse("<!doctype html><html><head><title>host</title></head><body><svg data-roc-picture><g/></svg><script>const close = '</svg>';</script></body></html>")?
+	template.page({ markup: "replacement", max_bytes: 16777216 })? == "<!doctype html><html><head><title>host</title></head><body>replacement<script>const close = '</svg>';</script></body></html>"
 }
 
 ## A self-closed foreign root has one authored token range; the renderer can
 ## replace that whole range without inventing an HTML closing-tag scanner.
 expect {
-    template = PicturePage.parse("<!doctype html><html><head></head><body><svg data-roc-picture/></body></html>")?
-    { root: template.root(), page: template.page({ markup: "replacement", max_bytes: 16777216 })? } == {
-        root: { namespace: Dom.svg_namespace, prefix: "", local: "svg" },
-        page: "<!doctype html><html><head></head><body>replacement</body></html>",
-    }
+	template = PicturePage.parse("<!doctype html><html><head></head><body><svg data-roc-picture/></body></html>")?
+	{ root: template.root(), page: template.page({ markup: "replacement", max_bytes: 16777216 })? } == {
+		root: { namespace: Dom.svg_namespace, prefix: "", local: "svg" },
+		page: "<!doctype html><html><head></head><body>replacement</body></html>",
+	}
 }
 
 ## No opt-in and multiple explicit opt-ins are refused before app init.
 expect {
-    [
-        "<!doctype html><html><head></head><body><div></div></body></html>",
-        "<!doctype html><html><head></head><body><div data-roc-picture></div><div data-roc-picture></div></body></html>",
-    ].all(|page| PicturePage.parse(page).is_err())
+	[
+		"<!doctype html><html><head></head><body><div></div></body></html>",
+		"<!doctype html><html><head></head><body><div data-roc-picture></div><div data-roc-picture></div></body></html>",
+	].all(|page| PicturePage.parse(page).is_err())
 }
 
 ## A repaired authored tree is never a template selection compatibility path.
 expect PicturePage.parse("<!doctype html><html><head></head><body><p data-roc-picture><div></div></p></body></html>").is_err()
 
-
 ## Static routes cannot name reserved Win32 devices, including superscript
 ## digit aliases, or acquire trailing-dot/space aliases on another filesystem.
 expect ["/CON.txt", "/COM%C2%B9.log", "/entry.", "/entry%20"].all(|input| PicturePage.route(input).is_err())
 
-
 ## Aggregate refusal counts retained host bytes before allocating a full page.
 expect {
-    template = PicturePage.parse("<!doctype html><html><head></head><body><div data-roc-picture></div></body></html>")?
-    match template.page({ markup: "replacement", max_bytes: 1 }) {
-        Err(PageLimit({ maximum: 1, required })) => required > 1
-        _ => False
-    }
+	template = PicturePage.parse("<!doctype html><html><head></head><body><div data-roc-picture></div></body></html>")?
+	match template.page({ markup: "replacement", max_bytes: 1 }) {
+		Err(PageLimit({ maximum: 1, required })) => required > 1
+		_ => False
+	}
 }
-
 
 ## Absolute URLs supply only browser location components to app Boot, while
 ## normalization and explicit query/hash data come from the public Url parser.
 expect {
-    resolved = PicturePage.resolve("https://example.test/a/../tasks?open=1#list")?
-    resolved == { path: "tasks/index.html", boot_url: "/tasks?open=1#list" }
+	resolved = PicturePage.resolve("https://example.test/a/../tasks?open=1#list")?
+	resolved == { path: "tasks/index.html", boot_url: "/tasks?open=1#list" }
 }

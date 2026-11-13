@@ -22,7 +22,12 @@ Signals :: [].{
 
 	## Explicit routes for the build command, visible through this package
 	## rather than an implementation-module type in command diagnostics.
-	BuildProps := { pictures : List(Str) ?? [] }
+	BuildProps := { pictures : List(Str) ?? [] }.{
+
+		## Options compare their explicit route lists in order. Filesystem route
+		## equivalence and collision checks belong to the native output planner.
+		is_eq : _
+	}
 
 	## What the user asked for.
 	Command : [Help, CommandHelp(Str), Init(Str), Serve({ port : U16 }), Build(BuildProps), Test]
@@ -70,7 +75,11 @@ Signals :: [].{
 					_ => Err(BadPort(value))
 				}
 			["build"] => Ok(Build({ pictures: [] }))
-			["build", "--picture", .. as pictures] if !pictures.is_empty() and !pictures.any(|url| url.starts_with("--")) => Ok(Build({ pictures }))
+			["build", "--picture", .. as pictures] if !pictures.is_empty() and !pictures.any(|url| url.starts_with("--")) => Ok(
+				Build(
+					{ pictures: pictures },
+				),
+			)
 			["test"] => Ok(Test)
 			[command, .. as extra] if ["init", "serve", "build", "test"].contains(command) => Err(UnexpectedArguments({ command, extra }))
 			[command, ..] => Err(UnknownCommand(command))
