@@ -98,12 +98,18 @@ Targets := [].{
 		Ok(if (code == 0) [] else ["${script} ${Str.join_with(args, " ")} failed (exit ${code.to_str()})"])
 	}
 
-	## The runtime's pure parts in Node: the work monitor's aggregation and
-	## bounds (tests/runtime/monitor-unit.mjs), driven on a fake clock.
+	## Exercise the monitor's bounded aggregation and environment facts, including
+	## time-zone probes in UTC and Sydney, without a browser.
 	runtime_unit! : SpecSuite.Options => Try(List(Str), _)
 	runtime_unit! = |o| {
-		code = Proc.status!({ program: o.node, args: ["tests/runtime/monitor-unit.mjs"], cwd: o.root })?
-		Ok(if (code == 0) [] else ["monitor-unit.mjs failed (exit ${code.to_str()})"])
+		var $failures = []
+		for script in ["monitor-unit.mjs", "environment-unit.mjs"] {
+			code = Proc.status!({ program: o.node, args: ["tests/runtime/${script}"], cwd: o.root })?
+			if code != 0 {
+				$failures = $failures.append("${script} failed (exit ${code.to_str()})")
+			}
+		}
+		Ok($failures)
 	}
 
 	## The runtime contract tests in Chrome (test apps built by `SpecSuite.build!`): the effect channel (tests/apps/effects),
@@ -136,6 +142,7 @@ Targets := [].{
 				.concat(Targets.browser!(o, "layout-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "table"), "--runner", SpecSuite.runner_of(o, "table")])?)
 				.concat(Targets.browser!(o, "outbox-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "outbox")])?)
 				.concat(Targets.browser!(o, "services-browser.mjs", ["--wasm", services])?)
+				.concat(Targets.browser!(o, "environment-browser.mjs", ["--wasm", services])?)
 				.concat(Targets.browser!(o, "transitions-browser.mjs", ["--wasm", services])?)
 				.concat(Targets.browser!(o, "workers-browser.mjs", ["--wasm", workers])?)
 				.concat(Targets.browser!(o, "monitor-browser.mjs", ["--wasm", workers])?)

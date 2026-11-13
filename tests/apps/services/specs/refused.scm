@@ -19,7 +19,7 @@
     (expect-text (test-id "delayed") "Refused")
     ; Freeing a slot lets the next one through.
     (run-effect 1)
-    (expect-text (test-id "delayed") "Fired")
+    (expect-text (test-id "delayed") "Fired(0)")
     (click (role button :name "Delay"))
     (expect-metric-delta effects_issued 6)
     (expect-metric-delta effects_refused 1)

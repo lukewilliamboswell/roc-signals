@@ -642,7 +642,7 @@ step = |s, op, b| {
 						} else {
 							(Work({ output: tripled(input), files: [] }), "run job")
 						}
-					Err(_) => (Fired, "fire timer")
+					Err(_) => (Fired(s.clicks.to_i64_wrap()), "fire timer")
 				}
 				(a, c) = Core.take_cmds(Core.result(s.eng, id, res), [])
 				named = "${what} ${id.to_str()}"

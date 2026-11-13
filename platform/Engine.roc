@@ -837,7 +837,7 @@ Engine := [].{
 
 	## The result of an awaited request: an HTTP response (`Http`, with any status),
 	## a network failure (`Network`) or `Timeout`, a storage `Value` or `Missing`, a
-	## timer or interval tick (`Fired`), the URL after `Popstate` (`Location`), a
+	## timer or interval tick (`Fired` with its sampled wall time), the URL after `Popstate` (`Location`), a
 	## connectivity or visibility change (`Online`, `Visible`), a `Self` follow-up
 	## (`Now`), `Refused` when the in-flight bound turned the request away, or a
 	## worker job's answer with the files it holds, handles the page now owns
@@ -848,7 +848,7 @@ Engine := [].{
 	## (`FileFailed`), or a port's answer or message (`PortAnswer`) or why
 	## there is none (`PortFailed`), or a response whose body is a file
 	## (`Fetched`).
-	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File })]
+	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name and the files its `{"$file":N}` markers
@@ -1131,6 +1131,19 @@ Engine := [].{
 	## first paint; boot_media reads one or reports Undeclared.
 	Boot : Core.Boot
 
+	## The user's UTC offsets over an inclusive millisecond span. Boot supplies
+	## a validated table; dates outside that span need an app-level decision.
+	Zone : Core.Zone
+
+	## An offset of zero covering the entire I64 wall-clock range.
+	utc : Zone
+	utc = Core.utc
+
+	## Read minutes east of UTC at the given timestamp. OutsideZone refuses a
+	## guess beyond the table's span; malformed hand-built tables are contracts.
+	zone_offset : Zone, I64 -> Try(I32, [OutsideZone])
+	zone_offset = |zone, at_ms| Core.zone_offset(zone, at_ms)
+
 	## The boot value of a declared storage key, or `Missing` if it has none.
 	boot_storage : Boot, Str -> Try(Str, [Missing])
 	boot_storage = |boot, key| Core.boot_storage(boot, key)
@@ -1374,7 +1387,9 @@ Engine := [].{
 
 	## Declare values the app reads at boot. Every field has a default, so
 	## callers name only what differs. Request catalogues instead use
-	## `with_ports` and `with_workers` on the resulting program.
+	## `with_ports` and `with_workers` on the resulting program. zone_days asks
+	## for that many days of zone offsets on each side of mount (default 366,
+	## at most 7305); zero asks only for the offset at mount.
 	ProgramProps : Core.ProgramProps
 
 	## The [Program] for an app that reads boot data: the host reads

@@ -11,8 +11,8 @@ import ToolRelease
 ##   `platform/main.roc` with every module it uses, the Wasm host, the native
 ##   spec runner's link inputs for every system it builds for (Linux
 ##   x86-64, macOS on Apple silicon and Intel, Windows x86-64),
-##   `runtime.mjs` and its worker script `worker.mjs`;
-## - `runtime.mjs` and `worker.mjs` on their own, for pages that load an app
+##   `runtime.mjs`, its fact readers `environment.mjs` and `worker.mjs`;
+## - `runtime.mjs`, `environment.mjs` and `worker.mjs` on their own, for pages that load an app
 ##   (the runtime loads the worker script from beside itself);
 ## - the `signals.roc` tool: its package, `signals-<hash>.tar.zst` (`cli/`
 ##   with the runtime files, the scaffold and a generated `Bundle.roc`
@@ -173,7 +173,7 @@ Release := [].{
 		\\An example's other files are its own: JavaScript its author wrote (port
 		\\handlers, a simulated service), a page that mounts it, data it downloads.
 		\\JavaScript several examples load (custom elements) is in `examples/shared/`.
-		\\The platform's `runtime.mjs` and `worker.mjs` are separate release assets.
+		\\The platform's `runtime.mjs`, `environment.mjs` and `worker.mjs` are separate release assets.
 		\\`spec.json` and `runtime/check.mjs` are the compatibility suite the
 		\\nightly workflow runs against the latest Roc nightly.
 
@@ -191,7 +191,7 @@ Release := [].{
 		\\app [main] { pf: platform "${bundle_url}" }
 		\\```
 		\\
-		\\Load apps with this release's `runtime.mjs`, served beside its `worker.mjs`.
+		\\Load apps with this release's `runtime.mjs`, served beside `environment.mjs` and `worker.mjs`.
 		\\
 		\\## Start an app
 		\\

@@ -86,7 +86,7 @@ ToolCheck := [].{
 
 		# The counter's specs and its deployable build.
 		$problems = $problems.concat(judge(run_tool!(tool, counter, ["test"])?, { code: 0, says: ["Running 1 spec:", "  passed  the counter counts both ways", "The spec passed."] }))
-		$problems = $problems.concat(judge(run_tool!(tool, counter, ["build"])?, { code: 0, says: ["Built the app into dist/:", "  dist/index.html", "/app.wasm", "/runtime.mjs", "/worker.mjs"] }))
+		$problems = $problems.concat(judge(run_tool!(tool, counter, ["build"])?, { code: 0, says: ["Built the app into dist/:", "  dist/index.html", "/app.wasm", "/runtime.mjs", "/worker.mjs", "/environment.mjs"] }))
 		$problems = $problems.concat(dist_problems!(o, counter)?)
 
 		# What the tool says when something is missing or wrong.
@@ -219,7 +219,7 @@ dist_problems! = |o, dir| {
 			$problems = $problems.append("signals.roc build: dist/index.html does not name ${url}")
 		}
 	}
-	for file in ["app.wasm", "runtime.mjs", "worker.mjs"] {
+	for file in ["app.wasm"].concat(SpecSuite.runtime_files) {
 		if !(Path.exists!(Path.utf8("${hashed}/${file}"))?) {
 			$problems = $problems.append("signals.roc build: dist/assets/${name}/ has no ${file}")
 		}

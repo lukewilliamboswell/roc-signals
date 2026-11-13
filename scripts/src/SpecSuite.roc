@@ -8,12 +8,12 @@ import Proc
 SpecSuite := [].{
 	runtime = "platform/runtime.mjs"
 
-	## The runtime's files in `platform/`: the runtime and the worker script
+	## The runtime's files in `platform/`: the runtime, its fact readers and the worker script
 	## it loads from beside itself. Every place that serves or ships the
 	## runtime copies all of them side by side (`copy_runtime!`); the browser
 	## tests serve the same list (`tests/browser/args.mjs`).
 	runtime_files : List(Str)
-	runtime_files = ["runtime.mjs", "worker.mjs"]
+	runtime_files = ["runtime.mjs", "worker.mjs", "environment.mjs"]
 
 	## Copy every runtime file from `root`'s `platform/` into `dir`.
 	copy_runtime! : Str, Str => Try({}, _)

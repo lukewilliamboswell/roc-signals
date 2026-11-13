@@ -2,7 +2,7 @@ import path from "node:path";
 
 // The runtime's files, which a test serves by basename from beside the
 // `--runtime` path: the same list as `SpecSuite.runtime_files`.
-export const RUNTIME_FILES = ["runtime.mjs", "worker.mjs"];
+export const RUNTIME_FILES = ["runtime.mjs", "worker.mjs", "environment.mjs"];
 
 // The file-map entries for every runtime file beside `runtime`.
 export function runtimeFiles(runtime) {

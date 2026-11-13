@@ -76,7 +76,7 @@ SupersedeApp := [].{
 		pending: |s, id| { ..s, pending: id, slow: False },
 		plan: |id| if (id == "") [] else [Http({ method: "GET", url: "/item/${id}", headers: [], body: "", timeout_ms: 1000 }), Timer(2000)],
 		resolve: |s, id, res| match res {
-			Fired => if (s.pending == "") s else { ..s, slow: True }
+			Fired(_) => if (s.pending == "") s else { ..s, slow: True }
 			_ => { pending: "", answer: SupersedeApp.answer_of(id, res), previous: s.answer, slow: False }
 		},
 	}

@@ -1480,7 +1480,7 @@ Core := [].{
 	## (`FileFailed`), or a port's answer or message (`PortAnswer`) or why
 	## there is none (`PortFailed`), or a response whose body is a file
 	## (`Fetched`).
-	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired, Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File })]
+	Result : [Http({ status : U16, headers : List((Str, Str)), body : Str }), Network(Str), Timeout, Value(Str), Missing, Fired(I64), Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused, Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError), FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str), PortAnswer(PortMessage), PortFailed(PortFailure), Fetched({ status : U16, headers : List((Str, Str)), body : File })]
 
 	## A port message as it crosses: JSON text, the byte blocks its
 	## `{"$bytes":N}` markers name, and the files its `{"$file":N}` markers
@@ -1926,13 +1926,48 @@ Core := [].{
 	decode_res : List(U8) -> Result
 	decode_res = |b| decode_res_with(b, decode_port_res)
 
+	## A zone is an offset table over an inclusive UTC-millisecond span. The
+	## first offset starts at from_ms; later offsets start strictly later.
+	Zone : { name : Str, from_ms : I64, until_ms : I64, offsets : List({ from_ms : I64, minutes : I32 }) }
+
+	## UTC has no transitions and is valid for every I64 wall-clock timestamp.
+	utc : Zone
+	utc = { name: "UTC", from_ms: -9223372036854775808, until_ms: 9223372036854775807, offsets: [{ from_ms: -9223372036854775808, minutes: 0 }] }
+
+	## Find minutes east of UTC at a time the zone table covers. OutsideZone
+	## is data the app handles; a malformed hand-built table is a contract error.
+	zone_offset : Zone, I64 -> Try(I32, [OutsideZone])
+	zone_offset = |zone, at_ms| {
+		match check_zone(zone) {
+			Ok(_) => {}
+			Err(message) => crash "contract: zone_offset ${message}"
+		}
+		if at_ms < zone.from_ms or at_ms > zone.until_ms {
+			return Err(OutsideZone)
+		}
+		var $low = 0.U64
+		var $high = zone.offsets.len()
+		while $low + 1 < $high {
+			middle = $low + ($high - $low) // 2
+			offset = zone.offsets.get(middle) ?? crash "internal: zone_offset index"
+			if offset.from_ms <= at_ms {
+				$low = middle
+			} else {
+				$high = middle
+			}
+		}
+		Ok((zone.offsets.get($low) ?? crash "internal: zone_offset has no first offset").minutes)
+	}
+
 	## What the host knows before the first render: the URL, the declared storage
 	## keys' values (missing keys are absent), whether the browser is online and
 	## the page visible, and whether local storage is available at all. When it is
 	## not, the storage list is empty and `StorageSet`/`StorageRemove` do not
 	## persist, so an app that relies on reloads surviving can say so. All
 	## fields have defaults: a URL of `/`, empty available storage, online
-	## and visible, with no media queries. Pure tests may name only the facts
+	## and visible, with no media queries, wall time and seed zero, en-US and
+	## full-range UTC. Time, seed, languages and zone stay fixed for the instance;
+	## timers supply fresh time through Fired. Pure tests may name only the facts
 	## they need; a program supplies declared queries in their declaration order.
 	Boot := {
 		url : Str ?? "/",
@@ -1941,6 +1976,10 @@ Core := [].{
 		visible : Bool ?? True,
 		storage_available : Bool ?? True,
 		media : List((Str, Bool)) ?? [],
+		now_ms : I64 ?? 0,
+		seed : U128 ?? 0,
+		languages : List(Str) ?? ["en-US"],
+		zone : Zone ?? utc,
 	}.{
 		is_eq : _
 	}
@@ -1980,8 +2019,8 @@ Core := [].{
 			$at = start + length.to_u64()
 		}
 		if $at != bytes.len() {
-			tag = bytes.get($at) ? |_| "contract: boot section after media missing tag"
-			return Err("contract: boot section ${tag.to_str()} after section 6 (media): unexpected section")
+			tag = bytes.get($at) ? |_| "contract: boot section after time-zone missing tag"
+			return Err("contract: boot section ${tag.to_str()} after section 10 (time-zone): unexpected section")
 		}
 		Ok($boot)
 	}
@@ -1998,7 +2037,16 @@ Core := [].{
 		local = put_section(location, 2, $storage)
 		online = put_section(local, 3, [if (boot.online) 1 else 0])
 		visible = put_section(online, 4, [if (boot.visible) 1 else 0])
-		put_section(visible, 6, boot.media.map(|(_, matches)| if (matches) 1 else 0))
+		media = put_section(visible, 6, boot.media.map(|(_, matches)| if (matches) 1 else 0))
+		time = put_section(media, 7, put_u64([], boot.now_ms.to_u64_wrap()))
+		seed = put_section(time, 8, put_u128([], boot.seed))
+		languages = boot.languages.fold(put_u32([], boot.languages.len().to_u32_wrap()), put_str)
+		zone = boot.zone
+		var $offsets = put_u32(put_u64(put_u64(put_str([], zone.name), zone.from_ms.to_u64_wrap()), zone.until_ms.to_u64_wrap()), zone.offsets.len().to_u32_wrap())
+		for offset in zone.offsets {
+			$offsets = put_u32(put_u64($offsets, offset.from_ms.to_u64_wrap()), offset.minutes.to_u32_wrap())
+		}
+		put_section(put_section(seed, 9, languages), 10, $offsets)
 	}
 
 	## The boot value of a declared storage key, or `Missing` if it has none.
@@ -2540,7 +2588,7 @@ Core := [].{
 	## host exports it, and the runtime refuses an instance whose version it does
 	## not implement.
 	protocol_version : U32
-	protocol_version = 13
+	protocol_version = 14
 
 	## A worker task as the catalogue holds it (design.md, "Workers"): a
 	## namespaced name (`"example.org/search/filter"`) and its effectful
@@ -2611,6 +2659,7 @@ Core := [].{
 		workers : List(Registration),
 		ports : Ports,
 		media : List(Str),
+		zone_days : U16,
 	}.{
 
 		## Declare the ports the program's effect sites use (see [PortDecl]):
@@ -2644,9 +2693,10 @@ Core := [].{
 		ports = p.ports
 		media = p.media
 		keys = p.keys
+		zone_days = p.zone_days
 		{
 			version: p.version,
-			keys: || put_media_table((ports.table)(keys(), (ports.ready)(ports.decls)), media),
+			keys: || put_section(put_media_table((ports.table)(keys(), (ports.ready)(ports.decls)), media), 10, [zone_days.to_u8_wrap(), zone_days.shr_zf_wrap(8).to_u8_wrap()]),
 			init: |boot| init({ workers: catalogue_names(workers), ports: { ..ports, decls: (ports.ready)(ports.decls) }, media }, boot),
 			event: p.event,
 			files: |inst, buf, wbuf, node, handler, record, blobs| {
@@ -2772,7 +2822,9 @@ Core := [].{
 	## Values read at boot are declared here; request catalogues are added
 	## with `with_ports` or `with_workers`. Defaults let a caller name only
 	## what differs, and let later boot declarations leave existing apps intact.
-	ProgramProps := { storage_keys : List(Str) ?? [], max_inflight : U64 ?? 32, media : List(Str) ?? [] }
+	## zone_days declares the zone probe span on each side of mount (default
+	## 366, at most 7305); zero requests only the offset at mount.
+	ProgramProps := { storage_keys : List(Str) ?? [], max_inflight : U64 ?? 32, media : List(Str) ?? [], zone_days : U16 ?? 366 }
 
 	## The [Program] for an app that needs no boot data: mount `view()` with the
 	## default in-flight bound of 32.
@@ -2791,6 +2843,9 @@ Core := [].{
 	## and `view` the UI over it.
 	program_store : ProgramProps, (Boot -> Start(st)), (Boot -> Elem(Root(st))) -> Program
 	program_store = |cfg, start, view| {
+		if cfg.zone_days > 7305 {
+			crash "contract: ProgramProps.zone_days must be at most 7305"
+		}
 		media = match Core.media_catalogue(cfg.media) {
 			Ok(queries) => queries
 			Err(message) => crash message
@@ -2833,6 +2888,7 @@ Core := [].{
 			workers: [],
 			ports: no_ports,
 			media,
+			zone_days: cfg.zone_days,
 		}
 	}
 }
@@ -7035,7 +7091,10 @@ decode_res_with = |b, port_res| {
 	} else if tag == 4 {
 		bare(Missing)
 	} else if tag == 5 {
-		bare(Fired)
+		if b.len() != 9 {
+			crash "contract: effect result tag 5 needs exactly eight timestamp bytes"
+		}
+		Fired(get_u64(b, 1, "Fired timestamp").to_i64_wrap())
 	} else if tag == 6 {
 		Location(text(1))
 	} else if tag == 8 {
@@ -8281,7 +8340,128 @@ boot_sections = |queries| [
 			Ok({ ..boot, media: $pairs })
 		},
 	},
+	{
+		tag: 7,
+		name: "time",
+		read: |boot, body| {
+			now_ms = boot_u64(body, 0)?.to_i64_wrap()
+			boot_end(body, 8)?
+			Ok({ ..boot, now_ms })
+		},
+	},
+	{
+		tag: 8,
+		name: "seed",
+		read: |boot, body| {
+			low = boot_u64(body, 0)?.to_u128()
+			high = boot_u64(body, 8)?.to_u128()
+			boot_end(body, 16)?
+			Ok({ ..boot, seed: low + high.shl_wrap(64) })
+		},
+	},
+	{
+		tag: 9,
+		name: "languages",
+		read: |boot, body| {
+			count = boot_u32(body, 0)?.to_u64()
+			if count == 0 or count > 16 {
+				return Err("expected 1 to 16 languages")
+			}
+			var $at = 4.U64
+			var $languages = []
+			while $languages.len() < count {
+				(language, after) = boot_str(body, $at)?
+				if language.count_utf8_bytes() > 64 {
+					return Err("language exceeds 64 UTF-8 bytes")
+				}
+				$languages = $languages.append(language)
+				$at = after
+			}
+			boot_end(body, $at)?
+			Ok({ ..boot, languages: $languages })
+		},
+	},
+	{
+		tag: 10,
+		name: "time-zone",
+		read: |boot, body| {
+			(name, after_name) = boot_str(body, 0)?
+			from_ms = boot_u64(body, after_name)?.to_i64_wrap()
+			until_ms = boot_u64(body, after_name + 8)?.to_i64_wrap()
+			count = boot_u32(body, after_name + 16)?.to_u64()
+			if count == 0 or count > 128 {
+				return Err("expected 1 to 128 zone offsets")
+			}
+			var $at = after_name + 20
+			var $offsets = []
+			while $offsets.len() < count {
+				start = boot_u64(body, $at)?.to_i64_wrap()
+				minutes = boot_u32(body, $at + 8)?.to_i32_wrap()
+				$offsets = $offsets.append({ from_ms: start, minutes })
+				$at = $at + 12
+			}
+			boot_end(body, $at)?
+			zone = { name, from_ms, until_ms, offsets: $offsets }
+			check_zone(zone)?
+			Ok({ ..boot, zone })
+		},
+	},
 ]
+
+## The zone shape is checked at the boot boundary and for a hand-built
+## value passed to zone_offset. No malformed table is treated as a UTC guess.
+check_zone : Core.Zone -> Try({}, Str)
+check_zone = |zone| {
+	if zone.name.count_utf8_bytes() > 64 {
+		return Err("zone name exceeds 64 UTF-8 bytes")
+	}
+	if zone.from_ms > zone.until_ms {
+		return Err("zone span starts after it ends")
+	}
+	if zone.offsets.is_empty() or zone.offsets.len() > 128 {
+		return Err("expected 1 to 128 zone offsets")
+	}
+	first = zone.offsets.first() ?? crash "internal: zone has no first offset"
+	if first.from_ms != zone.from_ms {
+		return Err("first zone offset must start at from_ms")
+	}
+	var $previous = zone.from_ms
+	var $first = True
+	for offset in zone.offsets {
+		if offset.from_ms < zone.from_ms or offset.from_ms > zone.until_ms {
+			return Err("zone offset starts outside the span")
+		}
+		if !$first and offset.from_ms <= $previous {
+			return Err("zone offsets must start in strictly ascending order")
+		}
+		$first = False
+		$previous = offset.from_ms
+	}
+	Ok({})
+}
+
+## Read the bits of signed time fields without losing their I64 endpoints.
+boot_u64 : List(U8), U64 -> Try(U64, Str)
+boot_u64 = |bytes, at| {
+	low = boot_u32(bytes, at)?.to_u64()
+	high = boot_u32(bytes, at + 4)?.to_u64()
+	Ok(low + high.shl_wrap(32))
+}
+
+## Seeds cross as exactly sixteen little-endian bytes rather than a number
+## converted through JavaScript's narrower integer representation.
+put_u128 : List(U8), U128 -> List(U8)
+put_u128 = |bytes, seed| {
+	var $bytes = bytes
+	var $seed = seed
+	var $index = 0.U64
+	while $index < 16 {
+		$bytes = $bytes.append($seed.to_u8_wrap())
+		$seed = $seed.shr_zf_wrap(8)
+		$index = $index + 1
+	}
+	$bytes
+}
 
 ## Read a little-endian length without trapping, including at an empty tail.
 boot_u32 : List(U8), U64 -> Try(U32, Str)
@@ -9168,11 +9348,11 @@ expect {
 }
 
 ## Declarations contain only their mandatory direction-specific sections:
-## local-storage keys, the port table and media, each length-bounded.
+## local-storage keys, the port table, media and the zone span, each bounded.
 expect {
 	program = Core.driver(Core.program_boot({ storage_keys: ["theme", "theme"] }, |_| Core.text("")))
 	keys = put_str(put_str(put_u32([], 2), "theme"), "theme")
-	(program.keys)() == put_media_table(put_section(put_section([], 2, keys), 5, put_u32([], 0)), [])
+	(program.keys)() == put_section(put_media_table(put_section(put_section([], 2, keys), 5, put_u32([], 0)), []), 10, [110, 1])
 }
 
 ## A storage declaration and every port shape retain their bodies inside
@@ -9189,7 +9369,7 @@ expect {
 	command = put_u32(put_str(put_u32([], 3), "command").concat([1, 0]), 0)
 	call_bytes = put_u32(put_str(command, "call").concat([2, 0]), 0)
 	ports = put_u32(put_str(call_bytes, "updates").concat([3, 1]), 3)
-	(program.keys)() == put_media_table(put_section(put_section([], 2, keys), 5, ports), [])
+	(program.keys)() == put_section(put_media_table(put_section(put_section([], 2, keys), 5, ports), []), 10, [110, 1])
 }
 
 ## Pointer bytes retain the browser's button, modifier and zone facts without
@@ -9541,7 +9721,7 @@ expect {
 ## A media body has one strict flag per declared query, with no ignored tail.
 expect {
 	bytes = Core.write_boot({ media: [("a", True)] })
-	[Core.read_boot_media(bytes, []).is_err(), Core.read_boot_media(bytes, ["a", "b"]).is_err(), Core.read_boot_media(bytes.drop_last(1).append(2), ["a"]).is_err(), Core.read_boot_media(bytes.append(0), ["a"]).is_err()] == [True, True, True, True]
+	[Core.read_boot_media(bytes, []).is_err(), Core.read_boot_media(bytes, ["a", "b"]).is_err(), Core.read_boot_media(bytes.take_first(37).append(2).concat(bytes.drop_first(38)), ["a"]).is_err(), Core.read_boot_media(bytes.append(0), ["a"]).is_err()] == [True, True, True, True]
 }
 
 ## The media catalogue's bounds follow program text, and reject a duplicate
@@ -9625,4 +9805,35 @@ expect {
 	(idle, empty) = Core.take_cmds(changed, [])
 	want = put_str(put_str(put_str(put_u32([1, 24], 3), "shelf"), "books"), "detail")
 	first.get(0) == Ok(0) and commands == want and empty.is_empty() and Core.work_counters(mounted).get(45) == Ok(0) and Core.work_counters(idle).get(45) == Ok(1) and Core.fx_stats(idle).issued == 0 and Core.settled(idle).is_ok()
+}
+
+## Signed wall time, all seed bits and bounded author data survive the wire.
+expect {
+	boot : Core.Boot
+	boot = { now_ms: -9223372036854775808, seed: 340282366920938463463374607431768211455, languages: ["", "en-AU"], zone: { name: "test", from_ms: -100, until_ms: 100, offsets: [{ from_ms: -100, minutes: -60 }, { from_ms: 0, minutes: 90 }] } }
+	Core.read_boot(Core.write_boot(boot)) == Ok(boot) and Core.decode_res(put_u64([5], (-123.I64).to_u64_wrap())) == Fired(-123)
+}
+
+## Zone lookup includes both endpoints and gives each transition its new offset.
+expect {
+	zone = { name: "test", from_ms: -100.I64, until_ms: 100.I64, offsets: [{ from_ms: -100.I64, minutes: -60.I32 }, { from_ms: 0.I64, minutes: 90.I32 }] }
+	[-101.I64, -100, -1, 0, 100, 101].map(|at| Core.zone_offset(zone, at)) == [Err(OutsideZone), Ok(-60), Ok(-60), Ok(90), Ok(90), Err(OutsideZone)] and Core.zone_offset(Core.utc, -9223372036854775808) == Ok(0) and Core.zone_offset(Core.utc, 9223372036854775807) == Ok(0)
+}
+
+## Boot rejects malformed language and zone facts instead of repairing them.
+expect {
+	base : Core.Boot
+	base = {}
+	bad = [
+		{ ..base, languages: [] },
+		{ ..base, languages: List.repeat("x", 17) },
+		{ ..base, languages: [Str.repeat("λ", 33)] },
+		{ ..base, zone: { ..Core.utc, name: Str.repeat("x", 65) } },
+		{ ..base, zone: { ..Core.utc, from_ms: 1, until_ms: 0 } },
+		{ ..base, zone: { ..Core.utc, offsets: [] } },
+		{ ..base, zone: { ..Core.utc, offsets: [{ from_ms: 0, minutes: 0 }] } },
+		{ ..base, zone: { name: "x", from_ms: 0, until_ms: 1, offsets: [{ from_ms: 0, minutes: 0 }, { from_ms: 0, minutes: 1 }] } },
+		{ ..base, zone: { name: "x", from_ms: 0, until_ms: 1, offsets: [{ from_ms: 0, minutes: 0 }, { from_ms: 2, minutes: 1 }] } },
+	]
+	bad.all(|boot| Core.read_boot(Core.write_boot(boot)).is_err()) and Core.read_boot(Core.write_boot({ zone: { name: "", from_ms: 0, until_ms: 0, offsets: [{ from_ms: 0, minutes: -2147483648 }] } })).is_ok()
 }

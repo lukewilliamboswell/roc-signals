@@ -319,7 +319,7 @@ SpecRunner := [].{
 
 	## Decode both declaration sections once: only the catalogue decides
 	## whether a subscription's messages are reports.
-	decode_declarations : List(U8) -> { keys : List(Str), latest_ports : List(Str), media : List(Str) }
+	decode_declarations : List(U8) -> { keys : List(Str), latest_ports : List(Str), media : List(Str), zone_days : U16 }
 	decode_declarations = |b| {
 		if b.first() != Ok(2) {
 			crash "contract: declaration section 2 (local-storage) is missing"
@@ -399,7 +399,7 @@ SpecRunner := [].{
 			crash "contract: declaration section 6 (media) is missing or out of order"
 		}
 		media_len = (SpecRunner.get_u32(b, media_at + 1) ?? crash "contract: declaration section 6 (media) has a short header").to_u64()
-		if media_len != b.len() - media_at - 5 {
+		if media_len > b.len() - media_at - 5 {
 			crash "contract: declaration section 6 (media) has a short body or trailing bytes"
 		}
 		media = b.sublist({ start: media_at + 5, len: media_len })
@@ -426,7 +426,19 @@ SpecRunner := [].{
 		if $at != media.len() {
 			crash "contract: declaration section 6 (media) has trailing body bytes"
 		}
-		{ keys: $keys, latest_ports: $latest_ports, media: $queries }
+		zone_at = media_at + 5 + media_len
+		if b.get(zone_at) != Ok(10) {
+			crash "contract: declaration section 10 (time-zone) is missing or out of order"
+		}
+		zone_len = SpecRunner.get_u32(b, zone_at + 1) ?? crash "contract: declaration section 10 (time-zone) has a short header"
+		if zone_len != 2 or zone_at + 7 != b.len() {
+			crash "contract: declaration section 10 (time-zone) needs exactly two days bytes"
+		}
+		days = (b.get(zone_at + 5) ?? crash "contract: declaration section 10 truncated days").to_u16() + (b.get(zone_at + 6) ?? crash "contract: declaration section 10 truncated days").to_u16().shl_wrap(8)
+		if days > 7305 {
+			crash "contract: declaration section 10 (time-zone) days exceed 7305"
+		}
+		{ keys: $keys, latest_ports: $latest_ports, media: $queries, zone_days: days }
 	}
 
 	flag_byte : Bool -> U8
@@ -445,12 +457,30 @@ SpecRunner := [].{
 		for (key, value) in env.storage {
 			$storage = SpecRunner.put_str(SpecRunner.put_str($storage, key), value)
 		}
+		var $seed = []
+		var $number = env.seed
+		var $byte = 0.U64
+		while $byte < 16 {
+			$seed = $seed.append($number.to_u8_wrap())
+			$number = $number.shr_zf_wrap(8)
+			$byte = $byte + 1
+		}
+		languages = env.languages.fold(SpecRunner.put_u32([], env.languages.len().to_u32_wrap()), SpecRunner.put_str)
+		zone = env.zone
+		var $offsets = SpecRunner.put_u32(SpecRunner.put_u64(SpecRunner.put_u64(SpecRunner.put_str([], zone.name), zone.from_ms.to_u64_wrap()), zone.until_ms.to_u64_wrap()), zone.offsets.len().to_u32_wrap())
+		for offset in zone.offsets {
+			$offsets = SpecRunner.put_u32(SpecRunner.put_u64($offsets, offset.from_ms.to_u64_wrap()), offset.minutes.to_u32_wrap())
+		}
 		[
 			{ tag: 1, body: SpecRunner.put_str([], env.url) },
 			{ tag: 2, body: $storage },
 			{ tag: 3, body: [SpecRunner.flag_byte(env.online)] },
 			{ tag: 4, body: [SpecRunner.flag_byte(env.visible)] },
 			{ tag: 6, body: env.media.map(|(_, matches)| SpecRunner.flag_byte(matches)) },
+			{ tag: 7, body: SpecRunner.put_u64([], env.now_ms.to_u64_wrap()) },
+			{ tag: 8, body: $seed },
+			{ tag: 9, body: languages },
+			{ tag: 10, body: $offsets },
 		].fold([], SpecRunner.put_section)
 	}
 
@@ -763,7 +793,7 @@ SpecRunner := [].{
 				MaxOutputBytes(n) => {
 					$max_output = n
 				}
-				InitialLocation(_) | LocalStorage(_) | InitialOnline(_) | InitialVisibility(_) | InitialMedia(_) | LocalStorageUnavailable => {}
+				InitialLocation(_) | LocalStorage(_) | InitialOnline(_) | InitialVisibility(_) | InitialMedia(_) | InitialTime(_) | Seed(_) | Languages(_) | TimeZone(_) | LocalStorageUnavailable => {}
 			}
 		}
 		queries = SpecRunner.decode_declarations((program.keys)()).media
@@ -1124,7 +1154,7 @@ SpecRunner := [].{
 		p = b.pending.find_first(|q| q.id == id) ? |_| "effect occurrence ${n.to_str()} is not pending (cancelled or done)"
 		rest = b.pending.keep_if(|q| q.id != id)
 		match p.kind {
-			TimerRequest => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, [5]))
+			TimerRequest => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, SpecRunner.put_u64([5], b.env.now_ms.to_u64_wrap())))
 			WorkRequest(_) => return Err("run-effect ${n.to_str()} runs a worker job, which needs the spec command's host for its effects")
 			ReadRequest({ mode, file, max_bytes }) => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, SpecRunner.read_result(b, mode, file, max_bytes)))
 			UrlRequest(file) => return Ok(SpecRunner.deliver(program, { ..s, browser: { ..b, pending: rest } }, id, SpecRunner.url_result(file)))
@@ -1152,7 +1182,7 @@ SpecRunner := [].{
 
 	## Fire one tick of every live interval of period `ms`.
 	tick : Program(state), S(state), U64 -> S(state)
-	tick = |program, s, ms| SpecRunner.broadcast(program, s, |x| x.sub == Interval(ms.to_u32_wrap()), [5])
+	tick = |program, s, ms| SpecRunner.broadcast(program, s, |x| x.sub == Interval(ms.to_u32_wrap()), SpecRunner.put_u64([5], s.browser.env.now_ms.to_u64_wrap()))
 
 	live_intervals : S(state), U64 -> U64
 	live_intervals = |s, ms| s.browser.subs.count_if(|x| x.sub == Interval(ms.to_u32_wrap()))
@@ -2073,6 +2103,11 @@ SpecRunner := [].{
 				got = s.work.cleanups.find_first(|(n, _)| n == name).map_ok(|(_, k)| k) ?? 0
 				check(got == count, "cleanup ${JsonOut.quote(name)} ran ${got.to_str()} times, expected ${count.to_str()}")
 			}
+			SetTime(now_ms) => Ok({ ..s, browser: { ..b, env: { ..b.env, now_ms } } })
+			AdvanceTime(duration) => {
+				now_ms = Scm.advance_clock(b.env.now_ms, duration)?
+				Ok({ ..s, browser: { ..b, env: { ..b.env, now_ms } } })
+			}
 			SetOnline(o) => {
 				on = o == Online
 				if on == b.env.online {
@@ -2947,7 +2982,7 @@ SpecRunner := [].{
 			if b.reports.held {
 				return Err("cross-document navigation while reports are held")
 			}
-			s1 = SpecRunner.mount_in(program, Scm.next_document({ ..b.env, url }))
+			s1 = SpecRunner.mount_in(program, Scm.next_document({ ..b.env, url })?)
 			b1 = s1.browser
 			Ok({ ..s1, mark: s.mark, browser: { ..b1, doc: b.doc + 1, back: b.back.append(entry), fwd: [], files: b.files, given: b.given, max_output: b.max_output } })
 		}
@@ -3514,7 +3549,7 @@ SpecRunner := [].{
 	## a pending request, tick a live interval, change visibility or
 	## connectivity for a live subscription, or deliver a message the specs
 	## emit on a port with a live subscription.
-	Service : [Answer(Pending), Tick(U32), ToggleVisibility, ToggleOnline, Emit(Str), BurstOnline, BurstVisibility, BurstPort(Str), PointerGesture(Scm.Loc), LayoutReport({ target : Scm.Loc, kind : U8 }), ToggleMedia(Str)]
+	Service : [Answer(Pending), Tick(U32), ToggleVisibility, ToggleOnline, Emit(Str), BurstOnline, BurstVisibility, BurstPort(Str), PointerGesture(Scm.Loc), LayoutReport({ target : Scm.Loc, kind : U8 }), ToggleMedia(Str), MoveClock]
 
 	## Walks enumerate named live observations as they enumerate controls and
 	## pointer zones. Their injected facts need no browser geometry.
@@ -3545,7 +3580,7 @@ SpecRunner := [].{
 	services : Book, S(state) -> List(Service)
 	services = |bk, s| {
 		b = s.browser
-		var $out = b.pending.map(|p| Answer(p)).concat(SpecRunner.pointer_places(s.dom, Grips).map(|p| PointerGesture(p.target))).concat(SpecRunner.layout_reports(s.dom))
+		var $out = [MoveClock].concat(b.pending.map(|p| Answer(p))).concat(SpecRunner.pointer_places(s.dom, Grips).map(|p| PointerGesture(p.target))).concat(SpecRunner.layout_reports(s.dom))
 		var $ticks = []
 		var $ports = []
 		var $vis = Bool.False
@@ -3678,7 +3713,21 @@ SpecRunner := [].{
 				}
 				Ok((s2, { what: "${Scm.op_name(op)} ${n.to_str()} ${p.url}", kind }))
 			}
-			Tick(ms) => Ok((SpecRunner.one(program, s, TickInterval(ms.to_u64()))?, { what: "tick-interval ${ms.to_str()}", kind: Service }))
+			Tick(ms) => {
+				advanced = SpecRunner.one(program, s, AdvanceTime(ms.to_u64()))?
+				Ok((SpecRunner.one(program, advanced, TickInterval(ms.to_u64()))?, { what: "advance-time and tick-interval ${ms.to_str()}", kind: Service }))
+			}
+			MoveClock => {
+				duration = 1000 + v % 86399001
+				op = if v % 8 == 0 {
+					back = b.env.now_ms.to_i128() - duration.to_i128()
+					if back < -9223372036854775808 {
+						return Err("walk clock moved below I64 range")
+					}
+					SetTime(back.to_i64_wrap())
+				} else AdvanceTime(duration)
+				Ok((SpecRunner.one(program, s, op)?, { what: Scm.op_name(op), kind: Service }))
+			}
 			ToggleVisibility => Ok((SpecRunner.one(program, s, SetVisibility(if (b.env.visible) Hidden else Visible))?, { what: "set-visibility", kind: Service }))
 			ToggleOnline => Ok((SpecRunner.one(program, s, SetOnline(if (b.env.online) Offline else Online))?, { what: "set-online", kind: Service }))
 			Emit(port) => {
@@ -4217,7 +4266,7 @@ SpecRunner := [].{
 
 ## Wire encoding: strings are length-prefixed, integers little-endian, and
 ## each boot section is tagged and length-bounded in ascending order.
-expect SpecRunner.encode_boot({ url: "/a", storage: [("k", "v")], online: Bool.False }) == [1, 6, 0, 0, 0, 2, 0, 0, 0, '/', 'a', 2, 15, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 'k', 1, 0, 0, 0, 'v', 3, 1, 0, 0, 0, 0, 4, 1, 0, 0, 0, 1, 6, 0, 0, 0, 0]
+expect SpecRunner.encode_boot({ url: "/a", storage: [("k", "v")], online: Bool.False }) == [1, 6, 0, 0, 0, 2, 0, 0, 0, '/', 'a', 2, 15, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 'k', 1, 0, 0, 0, 'v', 3, 1, 0, 0, 0, 0, 4, 1, 0, 0, 0, 1, 6, 0, 0, 0, 0, 7, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 13, 0, 0, 0, 1, 0, 0, 0, 5, 0, 0, 0, 101, 110, 45, 85, 83, 10, 39, 0, 0, 0, 3, 0, 0, 0, 85, 84, 67, 0, 0, 0, 0, 0, 0, 0, 128, 255, 255, 255, 255, 255, 255, 255, 127, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0]
 
 ## An HTTP result carries status, headers and the body as the rest.
 expect SpecRunner.encode_http(422, [{ name: "a", value: "b" }], "x") == [1, 0xA6, 0x01, 1, 0, 0, 0, 1, 0, 0, 0, 'a', 1, 0, 0, 0, 'b', 'x']
@@ -4226,7 +4275,7 @@ expect SpecRunner.encode_http(422, [{ name: "a", value: "b" }], "x") == [1, 0xA6
 expect SpecRunner.encode_reject(Timeout, "") == [7] and SpecRunner.encode_reject(Network, "offline") == [2, 'o', 'f', 'f', 'l', 'i', 'n', 'e']
 
 ## Declared storage keys decode from `count:u32 (key:str)*`.
-expect SpecRunner.decode_keys([2, 15, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 'a', 2, 0, 0, 0, 'b', 'c', 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0]) == ["a", "bc"]
+expect SpecRunner.decode_keys([2, 15, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 'a', 2, 0, 0, 0, 'b', 'c', 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1]) == ["a", "bc"]
 
 ## Filters match ids shell-style.
 expect {
@@ -4586,7 +4635,7 @@ expect {
 report_probe : {} -> SpecRunner.Program(List({ id : U32, payload : List(U8) }))
 report_probe = |_| {
 	version: Dom.protocol_version,
-	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0],
+	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1],
 	init: |_| ([], [0, 13, 1, 0, 0, 0, 6, 13, 2, 0, 0, 0, 7], List.repeat(0, 8)),
 	event: |seen, _buf, _work, _node, id, payload| (seen.append({ id, payload }), [], List.repeat(0, 8)),
 	files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
@@ -4717,7 +4766,7 @@ expect {
 pointer_probe : {} -> SpecRunner.Program(List({ handler : U32, payload : List(U8) }))
 pointer_probe = |_props| {
 	version: Dom.protocol_version,
-	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0],
+	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0, 10, 2, 0, 0, 0, 110, 1],
 	init: |_| ([], [], List.repeat(0, 8)),
 	event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), [], List.repeat(0, 8)),
 	files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
@@ -5024,9 +5073,9 @@ expect {
 expect {
 	query_body = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([], 2), "wide"), "dark")
 	base = pointer_probe({})
-	program = { ..base, keys: || SpecRunner.put_section([2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0], { tag: 6, body: query_body }), init: |boot| ([{ handler: 0.U32, payload: boot }], [], List.repeat(0.U8, 8)) }
+	program = { ..base, keys: || SpecRunner.put_section([2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0], { tag: 6, body: query_body }).concat([10, 2, 0, 0, 0, 110, 1]), init: |boot| ([{ handler: 0.U32, payload: boot }], [], List.repeat(0.U8, 8)) }
 	mounted = SpecRunner.mount_in(program, { media: [("dark", True)] })
-	{ media: mounted.browser.env.media, flags: mounted.inst.first()?.payload.take_last(2) } == { media: [("wide", False), ("dark", True)], flags: [0.U8, 1] }
+	{ media: mounted.browser.env.media, flags: mounted.inst.first()?.payload.sublist({ start: 37, len: 2 }) } == { media: [("wide", False), ("dark", True)], flags: [0.U8, 1] }
 }
 
 ## Observations in a row share its release owner even when their target also
@@ -5148,7 +5197,7 @@ expect {
 ## drops waiting answers while retaining the query's environment value.
 expect {
 	base_program = pointer_probe({})
-	declarations = SpecRunner.put_section([2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0], { tag: 6, body: SpecRunner.put_str(SpecRunner.put_u32([], 1), "dark") })
+	declarations = SpecRunner.put_section([2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0], { tag: 6, body: SpecRunner.put_str(SpecRunner.put_u32([], 1), "dark") }).concat([10, 2, 0, 0, 0, 110, 1])
 	listen = SpecRunner.put_str(SpecRunner.put_u32([13], 1).append(16), "dark")
 	program = { ..base_program, keys: || declarations, init: |_boot| ([], [0].concat(listen), List.repeat(0.U8, 8)) }
 	base = SpecRunner.mount_in(program, {})
@@ -5196,4 +5245,14 @@ expect {
 		evicted: Err("transition ordinal 1 is unavailable in retained history (newest 4096, at most 1048576 encoded type bytes)"),
 		exhausted: Err("transition observation ordinal exhausted"),
 	}
+}
+
+## Clock steps change only the next sampled input. They cannot route a turn
+## or modify already-recorded boot facts, and overflow remains a runner error.
+expect {
+	program = report_probe({})
+	start = SpecRunner.mount_in(program, { now_ms: -1 })
+	set = SpecRunner.one(program, start, SetTime(-9223372036854775808))?
+	advanced = SpecRunner.one(program, set, AdvanceTime(18446744073709551615))?
+	{ seen: advanced.inst, now: advanced.browser.env.now_ms, overflow: SpecRunner.one(program, advanced, AdvanceTime(1)).is_err() } == { seen: [], now: 9223372036854775807, overflow: True }
 }
