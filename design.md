@@ -1703,8 +1703,10 @@ commands observe the mounted page. The app chooses the routes to render;
 no origin, user session or hash route is invented by the build.
 
 Adoption preserves the existing nodes only on the engine's command. The
-build writes node and row-hole marks, the mount batch's fingerprint, and a
-digest of the tree it expects the browser to parse. Before init, the runtime
+build writes versioned node and row-hole claims separately from the owned
+DOM, the mount batch's fingerprint, and a digest of the tree and claim facts
+it expects the browser to expose. Authored comments and attributes remain
+data; their spelling never assigns an adoption role. Before init, the runtime
 measures that same canonical tree and stages the built and measured facts
 with boot bytes, separately from the app-visible Boot. Roc compares those
 facts with its own mount batch and emits adopt or replace. JavaScript never
@@ -1713,14 +1715,25 @@ An assertion that fails after adoption poisons the instance as an executor
 fault; recovery mounts afresh without a picture.
 
 The canonical tree covers namespace URIs, optional prefixes, exact local
-names, every attribute and value, child order, text and comments, including
-row marks. Live properties changed
+names, every attribute and value, ordinary children and template content,
+text and comments. Its measurement also covers the ordered claim roles and
+logical text boundaries. Live properties changed
 by a page script, CSS, layout and nodes outside the root are outside that
 measurement. Adoption re-applies the batch's attributes, text and properties.
 The canonical form has independent Roc and JavaScript implementations, kept
 in agreement by Chrome differential tests over every maintained app's picture.
 The wire layouts and hash widths land together in Appendix B with the
 producer and consumers; a fingerprint is never an application-state registry.
+
+HTML omits empty text nodes and merges adjacent ones. The renderer therefore
+declares their physical text runs and a Roc-built plan for the logical text
+boundaries. On adoption, Roc explicitly commands any splitting and creation
+of empty text nodes required by that plan. The runtime verifies each claim
+and applies those instructions; it never invents boundaries or repairs a
+mismatch. Correct existing elements, comments and text nodes stay in place.
+A claim's structural position locates an already-decided engine address,
+not an application identity. Temporary claim and text-run data is bounded
+and released when mount completes or faults.
 
 A picture is accepted only when the parser preserves the structure and text
 that the oracle rendered. The parser and its browser comparisons are the
