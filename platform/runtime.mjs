@@ -2717,42 +2717,83 @@ function httpResult(status, body, headers = []) {
 // assigns an engine address or an adoption role.
 const PICTURE_MARKER = "data-roc-picture";
 const PICTURE_FAILED = "data-roc-failed";
+const PICTURE_INERT = "data-roc-picture-inert";
+const PICTURE_INERT_PARENT = "data-roc-picture-inert-parent";
 const PICTURE_HOLD = Symbol("roc-picture-hold");
 
+class PictureBootstrapError extends Error {
+  constructor(rule) { super(`picture bootstrap: ${rule}`); this.rule = rule; }
+}
+
 function markedPicture(root) {
-  return root?.nodeType === 1 && root.hasAttribute(PICTURE_MARKER);
+  return root?.nodeType === 1 && root.hasAttributeNS(null, PICTURE_MARKER);
+}
+
+function pictureDescriptorMatches(candidate) {
+  return candidate?.nodeType === 1 && candidate.namespaceURI === HTML_NS && candidate.localName === "script" && candidate.getAttributeNS(null, "type") === "application/json" && candidate.getAttributeNS(null, "data-roc-picture-envelope") === "1";
+}
+
+function pictureDescriptorSibling(root) {
+  const candidate = root.nextElementSibling;
+  return pictureDescriptorMatches(candidate) ? candidate : null;
+}
+
+function pictureInertOwner(root) {
+  if (root.namespaceURI === HTML_NS) return root;
+  const parent = root.parentElement;
+  if (parent?.namespaceURI !== HTML_NS || parent.getAttributeNS(null, PICTURE_INERT_PARENT) !== "") throw new PictureBootstrapError("a non-HTML picture root requires its explicitly marked immediate HTML parent");
+  const next = root.nextElementSibling;
+  if (parent.firstElementChild !== root || (next !== null && (!pictureDescriptorMatches(next) || next.nextElementSibling !== null))) throw new PictureBootstrapError("the inert parent must contain only its root and optional associated descriptor as element children");
+  return parent;
+}
+
+function keepPictureHold(root) {
+  const hold = root[PICTURE_HOLD];
+  if (hold && !hold.owner.hasAttributeNS(null, "inert")) hold.owner.setAttributeNS(null, "inert", "");
 }
 
 function holdPicture(root) {
-  // A failed loader has no runtime to retain the hold. The one token stays
-  // with its root across retries and becomes unreachable with that root.
-  if (!root[PICTURE_HOLD]) root[PICTURE_HOLD] = { inert: root.hasAttribute("inert") };
-  if (!root.hasAttribute("inert")) root.setAttribute("inert", "");
+  // Resolve only the declared edge. A failed loader retains this Root-local
+  // owner token across retries; it never discovers another owner on cleanup.
+  const owner = pictureInertOwner(root), previous = root[PICTURE_HOLD];
+  if (previous && previous.owner !== owner) throw new PictureBootstrapError("the recorded inert owner changed before mount");
+  if (!previous) {
+    const added = owner.getAttributeNS(null, PICTURE_INERT) === "added";
+    root[PICTURE_HOLD] = { owner, inert: !added && owner.hasAttributeNS(null, "inert") };
+  }
+  keepPictureHold(root);
 }
 
 function restorePictureHold(runtime) {
   const hold = runtime.root[PICTURE_HOLD];
   if (!hold) return;
   delete runtime.root[PICTURE_HOLD];
-  if (!hold.inert) runtime.root.removeAttribute("inert");
+  hold.owner.removeAttributeNS(null, PICTURE_INERT);
+  if (!hold.inert) hold.owner.removeAttributeNS(null, "inert");
+}
+
+function clearPictureBootstrap(runtime) {
+  if (!runtime.pictureManaged) return;
+  runtime.picturePending = false;
+  runtime.root.removeAttributeNS(null, PICTURE_MARKER);
+  runtime.root.removeAttributeNS(null, PICTURE_FAILED);
+  restorePictureHold(runtime);
 }
 
 function failPicture(root) {
-  root.setAttribute(PICTURE_FAILED, "");
+  root.setAttributeNS(null, PICTURE_FAILED, "");
 }
 
 function finishPicture(runtime) {
   if (!runtime.picturePending) return;
-  runtime.picturePending = false;
-  runtime.root.removeAttribute(PICTURE_MARKER);
-  runtime.root.removeAttribute(PICTURE_FAILED);
-  restorePictureHold(runtime);
+  holdPicture(runtime.root);
+  clearPictureBootstrap(runtime);
 }
 
 // A module can fail before there is a runtime whose containment path can
 // report it. Keep the document's picture and use the same fault vocabulary.
 function pictureLoadFault(root, error, onFault) {
-  holdPicture(root);
+  keepPictureHold(root);
   failPicture(root);
   const message = String(error?.message ?? error);
   const fault = { class: "executor", code: 0, message, trap: String(error) };
@@ -3116,7 +3157,7 @@ export class RocEngineRuntime {
     this.cancelTransition();
     if (this.poisoned) return;
     if (this.pictureManaged) failPicture(this.root);
-    if (this.picturePending) holdPicture(this.root);
+    if (this.picturePending) keepPictureHold(this.root);
     let code = 0;
     let message = String(error && error.message ? error.message : error);
     if (klass !== null) {
@@ -3173,13 +3214,8 @@ export class RocEngineRuntime {
     if (!this.module) throw new Error("recover() needs the compiled module (mountRocEngineApp keeps it)");
     const instance = await WebAssembly.instantiate(this.module, pageImports(this.module));
     this.x = instance.exports;
-    if (this.pictureManaged) {
-      this.picturePending = false;
-      this.root.removeAttribute(PICTURE_MARKER);
-      this.root.removeAttribute(PICTURE_FAILED);
-      restorePictureHold(this);
-    }
     this.root.textContent = "";
+    clearPictureBootstrap(this);
     this.statics = [];
     this.sites = [];
     this.templates = [];
@@ -3235,21 +3271,25 @@ export class RocEngineRuntime {
     this.clearObservations();
     for (const [type, fn] of this.internal) this.root.removeEventListener(type, fn, true);
     this.internal = [];
-    this.x.drop();
-    this.files.clear();
-    this.revokeUrls();
-    this.root.textContent = "";
-    this.statics = [];
-    this.sites = [];
-    this.templates = [];
-    if (this.scrollLog) this.scrollLog.clear();
-    if (this.transitionLog) this.transitionLog.clear();
-    this.nativeTasks.clear();
-    if (this.modalOrder) this.modalOrder.clear();
-    this.nativeObservationError = null;
-    if (this.manualScrollers) this.manualScrollers.clear();
-    this.pendingManualScrolls.clear();
-    this.manualScrollError = null;
+    try { this.x.drop(); }
+    finally {
+      this.files.clear();
+      this.revokeUrls();
+      this.root.textContent = "";
+      clearPictureBootstrap(this);
+      this.pictureManaged = false;
+      this.statics = [];
+      this.sites = [];
+      this.templates = [];
+      if (this.scrollLog) this.scrollLog.clear();
+      if (this.transitionLog) this.transitionLog.clear();
+      this.nativeTasks.clear();
+      if (this.modalOrder) this.modalOrder.clear();
+      this.nativeObservationError = null;
+      if (this.manualScrollers) this.manualScrollers.clear();
+      this.pendingManualScrolls.clear();
+      this.manualScrollError = null;
+    }
   }
 
   // Only the manual driver observes native queued UI callbacks. This does
@@ -4143,6 +4183,7 @@ export class RocEngineRuntime {
 
   apply() {
     const len = this.x.cmd_len();
+    if (this.picturePending) holdPicture(this.root);
     if (!len) {
       if (this.picturePending) this.root.replaceChildren();
       finishPicture(this); this.releaseFiles(); return 0;
@@ -4156,6 +4197,7 @@ export class RocEngineRuntime {
         // The shared wire reader builds only temporary template shapes. DOM
         // factories and effect registration run once, after framing succeeds.
         this.applyBatch("preflight", batch);
+        holdPicture(this.root);
         this.root.replaceChildren();
         this.applyBatch("normal", batch);
         finishPicture(this);
@@ -6226,8 +6268,8 @@ export async function preparePicture(root, limits = {}) {
   const marker = root.getAttributeNS(null, PICTURE_MARKER);
   if (marker === null || marker === "") return absent(null);
   if (marker !== "19:1") return absent({ code: "marker", message: "picture marker must be 19:1" });
-  const candidate = root.nextElementSibling;
-  if (candidate?.nodeType !== 1 || candidate.namespaceURI !== HTML_NS || candidate.localName !== "script" || candidate.getAttributeNS(null, "type") !== "application/json" || candidate.getAttributeNS(null, "data-roc-picture-envelope") !== "1") return absent({ code: "locator", message: "picture descriptor must be the explicitly marked next HTML script sibling" });
+  const candidate = pictureDescriptorSibling(root);
+  if (candidate === null) return absent({ code: "locator", message: "picture descriptor must be the explicitly marked next HTML script sibling" });
   descriptor = candidate;
   try {
     const envelope = pictureDescriptorBytes(descriptor, checked.maximumBytes, checked.maximumFragments);
@@ -6528,9 +6570,9 @@ function manualPortPayload(answer) {
 
 export async function mountRocEngineApp({ wasmUrl, root, ...options }) {
   const picture = markedPicture(root);
-  if (picture) holdPicture(root);
   let runtime = null;
   try {
+    if (picture) holdPicture(root);
     const response = await fetch(wasmUrl);
     if (!response.ok) throw new Error(`failed to fetch ${wasmUrl}: ${response.status}`);
     const module = await WebAssembly.compile(await response.arrayBuffer());
