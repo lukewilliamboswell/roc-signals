@@ -514,6 +514,12 @@ Judge a target by its properties: state the rules the code must keep over
 generated sequences, and check them against a reference model. Its oracles,
 not its inputs, carry the value.
 
+Protocol consumer facts are checked against Appendix B. Runtime contracts
+reject malformed declarations before init, compare every valid Unicode scalar
+between the native oracle and Chrome, and check that one mounted module cannot
+change another's protocol bindings. `protocol-facts` fixed replays check the
+bounded declaration codec; compiler checks do not replace those replays.
+
 ## Performance
 
 Compiler batches refill a vacant process slot as soon as a job finishes;

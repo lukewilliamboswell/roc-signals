@@ -2827,12 +2827,13 @@ all exact matches in listed order, all physical fallbacks in listed order,
 and finally `every`. Ctrl, Alt and Meta must equal the chord's. One ASCII
 letter compares without case; other keys compare exactly. Shift must equal
 except when the chord is exactly one Unicode scalar with general category
-Punctuation or Symbol (`P*` or `S*`) in Unicode **18.0.0**. Space, digits,
-letters of other alphabets and named keys still compare Shift. Both
-implementations pin that Unicode data rather than using the host's version.
-The source is `UnicodeData.txt`, SHA-256
-`0736451de439ae7baf1425136617da495e09ee5afbe6e394374db7009ea08950`,
-under the [Unicode data license](https://www.unicode.org/license.txt).
+Punctuation or Symbol (`P*` or `S*`). Space, digits, letters of other
+alphabets and named keys still compare Shift. The native oracle uses
+roc-lang/unicode 4.3.2 (Unicode 17) through its own one-scalar decoder; the
+browser uses its Unicode category regular expression. A contract compares
+every valid scalar and rejects any package/browser upgrade disagreement.
+Neither implementation keeps a copied range table. This check establishes
+agreement with the tested browser, not a universal JavaScript Unicode version.
 
 A physical fallback is available only to a chord naming one ASCII letter
 or digit, when the event's key is not an ASCII letter or digit and its code
@@ -4732,7 +4733,7 @@ touches the wire, an Appendix B entry.
 All integers are little-endian. `u32` ids. `str` is `u32` byte length followed
 by UTF-8 bytes. `rest` is the remaining bytes of a payload as UTF-8.
 
-This appendix is protocol version **16**. The engine declares it
+This appendix is protocol version **17**. The engine declares it
 (`Core.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
@@ -4741,6 +4742,13 @@ engine's encoder and decoders, `Dom.roc`, both hosts (`host.zig`,
 `spec.zig`), `runtime.mjs`, `worker.mjs`, the contract tests and this
 appendix together. Renaming a label without changing its bytes does not
 change the protocol version.
+
+`Protocol.roc` owns consumer names and closed vocabularies. The engine keeps
+independent numeric dispatch and semantics and imports neither Protocol nor
+ProtocolFacts. Consumers share names, event restrictions and allowed element
+lists; their decoding, policy combination guards and command behavior remain
+independent. The platform root appends mandatory declaration section 12 at the
+compiled-module boundary. This is declaration metadata, never boot input.
 
 ### Roc ↔ host
 
@@ -4752,7 +4760,7 @@ roc-lang/roc#12953 workaround (see [Compiler Limitations](#compiler-limitations)
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (16) |
+| `roc_engine_version` | `() -> u32` | The protocol version (17) |
 | `roc_engine_keys` | `() -> List(U8)` | The program's declaration sections, described under Boot below. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Handle, List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
@@ -4843,9 +4851,40 @@ space. A dash means that section does not occur in that direction.
 | 9 | languages | — | `n:u32 (language:str)*n` | `environment.languages()`, default preferred browser languages; `["en-US"]` in a spec |
 | 10 | time zone | `days:u16` | `name:str from_ms:i64 until_ms:i64 n:u32 (from_ms:i64 minutes:i32)*n` | `environment.timeZone(days)`; default probe, UTC in a spec |
 | 11 | session-storage | `n:u32 (key:str)*n` | `available:u8 n:u32 (key:str value:str)*n` | `sessionStorage` service; available, no pairs |
+| 12 | protocol | The bounded metadata item below | — | ProtocolFacts appended by the platform root; mandatory |
+
+Section 12 uses the temporary length-delimited fallback until the owner's
+roc-cbor port has a compatible pinned release. A future codec change requires
+a coordinated protocol revision. Its nine fields are `tag:u8 length:u32 body`,
+in tag order: opcodes, payload kinds, policy bits, properties, HTTP cache modes,
+HTTP credential modes, legacy absence-rule attributes, OutsideText excluded
+input types and fault classes. Each table starts with `count:u32`; strings use
+`UTF-8-byte-count:u32 bytes`. Opcode/cache/credential rows are `code:u8 name:str`;
+kind rows add `events:(count:u32 str*)`; policy rows are `bit:u32 name:str`;
+property rows are `index:u8 name:str elements:(count:u32 str*)`. The last three
+fields contain strings only. Empty element lists mean unrestricted elements
+subject to independent guards. Empty event lists mean the generic bare-event
+vocabulary, with key events independently forbidden for text payloads.
+
+The item is at most 65,536 bytes; tables have at most 64 rows, nested event or
+element lists at most 32 names, and nonempty names at most 128 UTF-8 bytes,
+without NUL. Readers reject invalid UTF-8, duplicate names or codes, non-dense
+numbered tables, zero or non-single policy bits, empty required numbered tables
+or fault labels, incorrect field order, truncation and trailing bytes. The
+runtime binds each validated role to its actual implementation and rejects
+unknown or missing roles before init. Bindings are immutable per instance;
+one module cannot change another's tables.
+
+The seven-name absence convention includes hidden, which HTML treats as an
+enumeration. Parser facts validate the six actual boolean names separately
+from hidden's enumeration, without applying HTML defaults or changing SVG
+comparison. This preserves the current wire convention pending its explicit
+replacement.
 
 Each applicable section is required exactly once, in ascending tag order:
-boot has 1–4 and 6–11; declarations have 2, 5, 6, 10 and 11. Unknown, repeated, out-of-order
+boot has 1–4 and 6–11; compiled-module declarations have 2, 5, 6, 10, 11 and 12. The pure engine driver
+retains its internal sections 2, 5, 6, 10 and 11; the native runner reads
+consumer facts directly. Unknown, repeated, out-of-order
 or missing sections are errors; tags are not a compatibility mechanism.
 The length bounds the body exactly, with no trailing bytes. Flags are
 strictly `0` or `1`; strings must be UTF-8. A body that overruns its section,

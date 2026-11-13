@@ -31,7 +31,7 @@ Release := [].{
 
 	## The platform files a bundle carries, relative to `platform/`.
 	bundle_files : List(Str)
-	bundle_files = ["main.roc", "Engine.roc", "Clipboard.roc", "Html.roc", "Layout.roc", "Worker.roc", "Wire.roc", "Port.roc", "PortJson.roc", "PortRegistry.roc", "Core.roc", "TableCore.roc", "View.roc", "Seq.roc", "Effects.roc", "Files.roc", "Hosted.roc", "Cli.roc", "SpecRunner.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "targets/wasm32/host.wasm"].concat(PlatformTest.spec_inputs).concat(SpecSuite.runtime_files)
+	bundle_files = ["main.roc", "Engine.roc", "Clipboard.roc", "Html.roc", "Layout.roc", "Worker.roc", "Wire.roc", "Port.roc", "PortJson.roc", "PortRegistry.roc", "Protocol.roc", "ProtocolFacts.roc", "Core.roc", "TableCore.roc", "View.roc", "Seq.roc", "Effects.roc", "Files.roc", "Hosted.roc", "Cli.roc", "SpecRunner.roc", "Scm.roc", "Dom.roc", "JsonOut.roc", "targets/wasm32/host.wasm"].concat(PlatformTest.spec_inputs).concat(SpecSuite.runtime_files)
 
 	archive_name : Str -> Str
 	archive_name = |version| "roc-signals-examples-${version}"
@@ -112,6 +112,7 @@ Release := [].{
 		root = "${stage}/${name}"
 		SpecSuite.fresh_dir!(stage)?
 		Path.create_all!(Path.utf8("${root}/runtime"))?
+		SpecSuite.copy_runtime!(o.root, "${root}/runtime")?
 		Path.copy!(Path.utf8("${o.root}/tests/release/check.mjs"), Path.utf8("${root}/runtime/check.mjs"))?
 		var $problems = []
 		var $cases = []
@@ -135,7 +136,7 @@ Release := [].{
 			for spec in SpecSuite.files_with!("examples/${example}/specs", ".scm")? {
 				Path.copy!(Path.utf8(spec), Path.utf8("${dir}/specs/${spec.split_on("/").last() ?? spec}"))?
 			}
-			{ code, stdout } = Proc.output!({ program: o.node, args: ["tests/release/check.mjs", SpecSuite.wasm_of(o, example)], cwd: o.root })?
+			{ code, stdout } = Proc.output!({ program: o.node, args: ["tests/release/check.mjs", SpecSuite.wasm_of(o, example), SpecSuite.runtime], cwd: o.root })?
 			if code != 0 {
 				$problems = $problems.append("release: ${example} does not mount: ${Str.from_utf8_lossy(stdout)}")
 			}

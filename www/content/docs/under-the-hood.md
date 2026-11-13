@@ -28,6 +28,10 @@ inside it. The runtime never decides anything: it does what the commands say.
 ## Mounting
 
 1. The runtime checks the module's protocol version and refuses a mismatch.
+   It validates the module's bounded protocol vocabulary before initialization,
+   then binds those names to its implementations for that instance. Names and
+   closed lists come from `Protocol.roc`; the Roc engine keeps its own numbers
+   and behavior, and the native oracle keeps independent command decoding.
 2. It asks for the app's declared storage keys, reads them, and stages the
    boot bytes: the URL, those values, and the online, visibility and storage
    flags.

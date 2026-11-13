@@ -28,7 +28,13 @@ ApiSurface := [].{
 	## Quoted escapes are decoded after syntax validation; comments and source
 	## strings elsewhere cannot accidentally trigger this repository check.
 	has_internal_dependency : Str -> Try(Bool, _)
-	has_internal_dependency = |source| {
+	has_internal_dependency = |source| ApiSurface.dependencies(source).map_ok(|dependencies| dependencies.any(|dependency| dependency.url == "main-fuzz.roc" or dependency.url.ends_with("/main-fuzz.roc")))
+
+	## Read dependency names and decoded URLs from validated header fields.
+	## Escapes and platform references use the same source parser as the audit.
+	dependencies : Str -> Try(List({ name : Str, url : Str }), _)
+	dependencies = |source| {
+		var $found = []
 		parsed = RocSyntax.validate({ source, name: "source dependency audit", lints: { placeholders: False } })?
 		root = parsed.nodes.get(parsed.root)?
 		for header in children(parsed, root).keep_if(|node| node.kind == Header) {
@@ -50,13 +56,15 @@ ApiSurface := [].{
 					}
 					decoded = SourceText.quoted(parsed.source.sublist({ start: segment.start, len: segment.end - segment.start }), segment.start)
 					url = Str.from_utf8(decoded.map(|point| point.byte)) ?? crash "ApiSurface: validated dependency UTF-8"
-					if url == "main-fuzz.roc" or url.ends_with("/main-fuzz.roc") {
-						return Ok(True)
+					name = match children(parsed, field) {
+						[key, _] => text(parsed, key)
+						_ => return Err(BadDependency)
 					}
+					$found = $found.append({ name, url })
 				}
 			}
 		}
-		Ok(False)
+		Ok($found)
 	}
 
 	## Only the platform's declared target locations may name its internal root.

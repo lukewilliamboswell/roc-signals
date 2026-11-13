@@ -22,6 +22,7 @@ Targets := [].{
 	fuzz_targets = [
 		{ name: "boot", main: "fuzz/boot/main.roc" },
 		{ name: "scm-parse", main: "fuzz/scm-parse/main.roc" },
+		{ name: "protocol-facts", main: "fuzz/protocol-facts/main.roc" },
 		{ name: "wire", main: "fuzz/wire/main.roc" },
 		{ name: "structure", main: "fuzz/structure/main.roc" },
 		{ name: "dom", main: "fuzz/dom/main.roc" },
@@ -110,7 +111,8 @@ Targets := [].{
 	runtime_unit! = |o| {
 		var $failures = []
 		Proc.run!({ program: o.tooling, args: ["scripts/test_parallel.roc"], cwd: o.root })?
-		for script in ["monitor-unit.mjs", "environment-unit.mjs", "port-recipes-unit.mjs"] {
+		Proc.run!({ program: o.tooling, args: ["scripts/test_protocol.roc"], cwd: o.root })?
+		for script in ["monitor-unit.mjs", "environment-unit.mjs", "port-recipes-unit.mjs", "protocol-facts.mjs"] {
 			code = Proc.status!({ program: o.node, args: ["tests/runtime/${script}"], cwd: o.root })?
 			if code != 0 {
 				$failures = $failures.append("${script} failed (exit ${code.to_str()})")
@@ -155,8 +157,17 @@ Targets := [].{
 		files = SpecSuite.wasm_of(o, "files")
 		file_effects = SpecSuite.wasm_of(o, "file-effects")
 		ports = SpecSuite.wasm_of(o, "ports")
+		# The native oracle classifies every scalar; Chrome compares independently.
+		unicode_runner = "${o.build_dir}/unicode-symbols"
+		unicode_bits = "${o.build_dir}/unicode-symbols.bin"
+		Path.create_all!(Path.utf8(o.build_dir))?
+		Proc.run!({ program: o.compiler, args: ["build", "--opt=dev", "scripts/unicode_symbols.roc", "--output=${unicode_runner}"], cwd: o.root })?
+		bits = Proc.capture!({ program: unicode_runner, args: [], cwd: o.root })?
+		Path.write_bytes!(Path.utf8(unicode_bits), bits)?
 		Ok(
-			Targets.browser!(o, "fx-browser.mjs", ["--wasm", fx])?
+			Targets.browser!(o, "protocol-facts-browser.mjs", [])?
+				.concat(Targets.browser!(o, "unicode-symbols-browser.mjs", ["--oracle", unicode_bits])?)
+				.concat(Targets.browser!(o, "fx-browser.mjs", ["--wasm", fx])?)
 				.concat(Targets.browser!(o, "controls-browser.mjs", ["--wasm", controls])?)
 				.concat(Targets.browser!(o, "pointer-browser.mjs", ["--wasm", controls])?)
 				.concat(Targets.browser!(o, "keys-browser.mjs", ["--wasm", controls])?)

@@ -25,13 +25,17 @@ packaged by Fontsource 5.3.0 (`@fontsource/ibm-plex-sans`,
 `@fontsource/ibm-plex-mono`). The license is `www/static/fonts/LICENSE.txt`.
 Nothing outside the site uses them.
 
-## Unicode keyboard classification data
+## Internal Roc dependencies
 
-The keyboard matchers in `platform/runtime.mjs` and `platform/Dom.roc`
-contain punctuation and symbol ranges derived from Unicode 18.0.0
-[`UnicodeData.txt`](https://www.unicode.org/Public/18.0.0/ucd/UnicodeData.txt),
-SHA-256 `0736451de439ae7baf1425136617da495e09ee5afbe6e394374db7009ea08950`.
-The notice below also accompanies those tables in distributed source.
+roc-parser is used through the sibling 6.0.0 stand-in named in both platform
+roots. Copyright © 2023 Luke Boswell and subsequent authors; Universal
+Permissive License (UPL), Version 1.0. Its LICENSE accompanies that package.
+
+The native keyboard oracle uses roc-lang/unicode 4.3.2, pinned by bundle URL
+in both platform roots. Copyright © 2019 Richard Feldman and subsequent Roc
+authors; UPL Version 1.0. Its Unicode 17 data is covered by the Unicode License
+V3 reproduced below. The browser uses its own Unicode category implementation;
+this repository contains no copied keyboard classification ranges.
 
 UNICODE LICENSE V3
 

@@ -267,8 +267,11 @@
   and decoders, `platform/Dom.roc`, both hosts (`host.zig`, `spec.zig`),
   `runtime.mjs`, `worker.mjs`, the contract tests in `tests/` and Appendix B of
   `design.md` together.
+- Names and closed consumer lists live in `platform/Protocol.roc`; the runtime
+  reads them from the compiled module. They contain no command meaning.
 - Keep `platform/Dom.roc` independent of the engine. It is the oracle; code
-  shared with `Core.roc` would let one bug pass its own test.
+  shared with `Core.roc` would let one bug pass its own test. A table of names
+  shared by consumers is not code shared with `Core.roc`.
 - Keep `.scm` specs the single source of truth for application-visible
   behavior, parsed by the one Roc parser in `platform/Scm.roc`. Unknown steps are
   hard errors in every runner. An `expect-absent` names a locator its spec
