@@ -27,4 +27,4 @@
 ## root hands it (`Effects.roc`), which is what keeps the modules listed
 ## here pure. `Files.roc`, `Effects.roc`, `Hosted.roc` and `Cli.roc` belong
 ## to the platform alone and are not listed.
-package [Clipboard, Core, Dom, Engine, Html, JsonOut, Layout, MarkupLiteral, Order, PictureCodec, Port, PortJson, Protocol, ProtocolFacts, Scm, Seq, SpecRunner, Svg, Url, View, Web, Wire, Worker] { parser: "../../roc-parser/package/main.roc", unicode: "https://github.com/roc-lang/unicode/releases/download/4.3.2/3gvgiWm6BShjHKbNV2zRH6fhC5ZvScZgWF7AnVDWHSdd.tar.zst" }
+package [Clipboard, Core, Dom, Engine, Html, JsonOut, Layout, MarkupLiteral, Order, PictureCapture, PictureCodec, Port, PortJson, Protocol, ProtocolFacts, Scm, Seq, SpecRunner, Svg, Url, View, Web, Wire, Worker] { parser: "../../roc-parser/package/main.roc", unicode: "https://github.com/roc-lang/unicode/releases/download/4.3.2/3gvgiWm6BShjHKbNV2zRH6fhC5ZvScZgWF7AnVDWHSdd.tar.zst" }
