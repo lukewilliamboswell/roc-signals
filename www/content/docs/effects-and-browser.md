@@ -156,7 +156,7 @@ list is on, say), lift that state in and map both:
 | `PortCall({ port, message, timeout_ms })` | `PortAnswer(message)` or `PortFailed(failure)`, once. Made by a typed [port](@/docs/ports.md) call |
 | `PortSubscribe({ port, message })` | `PortAnswer(message)` for every message, or `PortFailed(failure)`, until the site is disposed or the JavaScript ends it. Made by a typed port subscription |
 | `Self` | `Now`, in a follow-up turn |
-| `Push(url)`, `Replace(url)`, `Title(text)`, `StorageSet(key, value)`, `StorageRemove(key)`, `Focus(ref)`, `Blur(ref)`, `SelectText(ref)`, `Save({ file, name })` (made with `File.save`), `PortCommand({ port, message })` (made by a typed port command) | None: commands |
+| `Push(url)`, `Replace(url)`, `Title(text)`, `StorageSet(key, value)`, `StorageRemove(key)`, `Focus(ref)`, `Blur(ref)`, `SelectText(ref)`, `Save({ file, name })` (made with `File.save`), `PortCommand({ port, message })` (made by a typed port command) | None: commands, the tags of `Engine.Command` |
 
 `Engine.http_text(res)` reads an HTTP result as the body of a 2xx response,
 or a typed `HttpError`: `Network(message)`, `Timeout`, `Status(code)` or
@@ -237,11 +237,19 @@ target an element the same turn created:
 ## Cleanup
 
 `Engine.on_cleanup(name, v, plan)` runs when its scope is disposed, in the
-disposing turn, with the last value of `v`. It may only issue commands: a
-request that awaits a result would outlive its owner, so asking for one is a
-contract error.
+disposing turn, with the last value of `v`. Its plan returns a list of
+`Engine.Command`: the requests that are emitted and forgotten, the last row
+of the table under [Requests](#requests). A request that awaits a result
+would outlive its owner, and `Command` has no such tag, so a cleanup that
+asks for one does not compile.
 
 {{ sample(file="effects.roc", region="cleanup") }}
+
+A command written as a tag (`Title("Search")`) fits a list of commands and
+a list of requests alike, and so does one built by `File.save` or by a port
+command's `send`. A function of your own that builds a command for a
+cleanup returns `Engine.Command`, and a plan written as a named function
+returns `List(Engine.Command)`.
 
 Specs can count cleanup runs by name with `expect-cleanup`;
 `Engine.cleanup(name)` is a cleanup that only counts.

@@ -156,7 +156,9 @@ search_box = |model| {
 # endregion focus
 
 # region cleanup
-## A cleanup runs when its scope is disposed, and may only issue commands.
+## A cleanup runs when its scope is disposed. Its plan returns commands, a
+## list of `Engine.Command`: a request that awaits a result does not compile
+## there.
 leaving : State(Ctx, Model) -> Elem(Ctx)
 leaving = |model| Engine.on_cleanup("restore title", model.signal(), |_| [Title("Search")])
 

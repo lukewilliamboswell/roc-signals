@@ -64,12 +64,14 @@ Port := [].{
 	## Make one with `command`.
 	Command(output) :: { name : Str, encode : (output -> Engine.PortMessage) }.{
 
-		## A request that sends `value`, for an effect site's plan (or an
-		## `on_cleanup`, which allows commands). The JavaScript's `command`
-		## handler receives it after the turn's DOM changes are applied. A
-		## failure there is reported to the console and the page's
-		## `onPortFault`; the app learns nothing of it.
-		send : Command(output), output -> Engine.Request
+		## A command that sends `value`, for an effect site's plan or the
+		## plan of an `on_cleanup`: its type is the one tag it returns, so
+		## it fits a list of `Engine.Request`s and a list of
+		## `Engine.Command`s alike. The JavaScript's `command` handler
+		## receives it after the turn's DOM changes are applied. A failure
+		## there is reported to the console and the page's `onPortFault`;
+		## the app learns nothing of it.
+		send : Command(output), output -> [PortCommand({ port : Str, message : Engine.PortMessage })]
 		send = |p, value| PortCommand({ port: p.name, message: (p.encode)(value) })
 
 		## The port's entry for `Program.with_ports`.
@@ -230,6 +232,33 @@ expect {
 		\\good: Ok({ title: "a" })
 		\\bad names the port: True
 		\\threw: Err(Threw("no store"))
+	actual == expected
+}
+
+## A command's `send` carries its value's JSON, and is typed by the one tag
+## it returns: its value is a request in an effect site's plan and a command
+## in a cleanup's.
+expect {
+	note : Port.Command({ text : Str })
+	note = Port.command({ name: "test/note" })
+	requests : List(Engine.Request)
+	requests = [note.send({ text: "a" }), Timer(1)]
+	commands : List(Engine.Command)
+	commands = [note.send({ text: "b" }), Title("t")]
+	as_request = match requests {
+		[PortCommand({ port, message }), ..] => "${port} ${message.json}"
+		_ => "not a command"
+	}
+	as_command = match commands {
+		[PortCommand({ port, message }), ..] => "${port} ${message.json}"
+		_ => "not a command"
+	}
+	actual =
+		\\request: ${as_request}
+		\\command: ${as_command}
+	expected =
+		\\request: test/note {"text":"a"}
+		\\command: test/note {"text":"b"}
 	actual == expected
 }
 

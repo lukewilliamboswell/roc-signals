@@ -753,7 +753,8 @@ Engine := [].{
 	## Commands are emitted and forgotten: `Push` and `Replace` (history), `Title`,
 	## `StorageSet` and `StorageRemove` (local storage), and `Focus`, `Blur` and
 	## `SelectText` on a reference named with `ref` (resolved at the end of the
-	## turn; a reference that is not mounted then is counted stale).
+	## turn; a reference that is not mounted then is counted stale). With
+	## `PortCommand` and `Save` they are the tags of [Command].
 	##
 	## Awaited requests deliver results to the site's [Reaction]: `Http`,
 	## `StorageGet` and `Timer` deliver one; `Interval`, `Popstate`,
@@ -829,6 +830,28 @@ Engine := [].{
 		## An HTTP request whose response body becomes a file
 		## (`File.fetch`), answered `Fetched`; kept like `Http`.
 		Fetch({ method : Str, url : Str, headers : List((Str, Str)), timeout_ms : U32 }),
+	]
+
+	## A request that is emitted and forgotten: the commands of [Request],
+	## and nothing that awaits a result. It is what the plan of an
+	## `on_cleanup` returns, where a request that awaits a result would
+	## outlive the scope that asked for it: this type has no such tag, so a
+	## cleanup that asks for one does not compile.
+	##
+	## Each tag carries what the tag of the same name in [Request] carries,
+	## and a value written as a tag (`Title("Inbox")`), or built by
+	## `File.save` or a port command's `send`, fits a list of either type.
+	Command : [
+		Push(Str),
+		Replace(Str),
+		Title(Str),
+		Focus(Str),
+		Blur(Str),
+		SelectText(Str),
+		StorageSet(Str, Str),
+		StorageRemove(Str),
+		PortCommand({ port : Str, message : PortMessage }),
+		Save({ file : File, name : Str }),
 	]
 
 	## The result of an awaited request: an HTTP response (`Http`, with any status),
@@ -964,11 +987,12 @@ Engine := [].{
 
 	## `on_cleanup(name, v, plan)` runs `plan` on `v`, read in the scope's last
 	## environment, when the scope this site is mounted in is disposed, and issues
-	## the requests in the disposing turn. Only commands are allowed (history,
-	## title, storage writes, focus): a request that awaits a result would outlive
-	## its owner, so it is a contract error. Each run is counted by `name`. The site
-	## renders nothing and reads nothing while it is live.
-	on_cleanup : Str, Signal(ctx, a), (a -> List(Request)) -> Elem(ctx)
+	## the commands in the disposing turn. A plan returns [Command]s (history,
+	## title, storage writes, focus, port commands, saves): a request that awaits
+	## a result would outlive its owner, and the type has none, so the compiler
+	## rejects it. Each run is counted by `name`. The site renders nothing and
+	## reads nothing while it is live.
+	on_cleanup : Str, Signal(ctx, a), (a -> List(Command)) -> Elem(ctx)
 	on_cleanup = |name, v, plan| Core.on_cleanup(name, v.v, plan)
 
 	## A cleanup site that issues nothing and only counts its runs under `name`.

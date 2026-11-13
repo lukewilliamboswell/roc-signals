@@ -1138,12 +1138,19 @@ Soak runs assert it natively and in Chrome.
 
 `on_cleanup(name, value, plan)` is a site that renders nothing and reads
 nothing while it is live. When its scope is disposed it reads `value` in the
-scope's last environment and turns it into requests with `plan`, in the
-disposing turn. Only commands are allowed (history, title, storage writes,
-focus): a request that awaits a result would outlive its owner, so asking for
-one is a `contract` error. Cleanup runs are counted per name in the engine's
-work record (Appendix B) so specs assert them (`expect-cleanup`); `cleanup(name)`
-is the form that only counts.
+scope's last environment and turns it into commands with `plan`, in the
+disposing turn. A plan returns a list of `Command`: the tag union of the
+requests that are emitted and forgotten (history, title, storage writes,
+focus, port commands, saves) and of nothing else. A request that awaits a
+result would outlive its owner, and no value of that type is one, so a
+cleanup that asks for one does not compile. The rule is the type's, because
+a check made when a scope is disposed would first run in whichever branch
+closes last. The engine turns each command into the request it issues with a
+total `match`. A function that builds a command (`File.save`, a port
+command's `send`) is typed by the one tag it returns, so its value fits a
+list of requests and a list of commands alike. Cleanup runs are counted per
+name in the engine's work record (Appendix B) so specs assert them
+(`expect-cleanup`); `cleanup(name)` is the form that only counts.
 
 ## Propagation: Turns, Ordering, and Pruning
 
@@ -1424,7 +1431,9 @@ reducer or the decision sees both what changed and what is sent.
 - **Commands** are emitted and forgotten: history `Push`/`Replace` (`NAV`),
   `Title` (`TITLE`), `StorageSet`/`StorageRemove` (`STORAGE`), and
   `Focus`/`Blur`/`SelectText` on a named reference (`FOCUS`, resolved at the
-  end of the turn).
+  end of the turn). With a port's command and a save, below, they are the
+  tags of `Command`, the type a cleanup's plan returns (see
+  [Explicit Scopes and Disposal](#explicit-scopes-and-disposal)).
 - **Awaited requests** get an id: `Http`, `StorageGet`, `Timer`, `Work` and
   the operations on a file the app holds (see [Files](#files)) deliver one
   result; `Interval` and `Popstate` are subscriptions that deliver any number
@@ -2271,8 +2280,8 @@ no field names); `Table.insert` of a key
 already present; a table built from two rows with one key; two rows of a
 view that compare `Same`; a table view's row read after its key left the table in
 the same event;
-an effect follow-up chain deeper than 64; a cleanup asking for an awaited
-request; `http_text` given a non-HTTP result; a worker catalogue with a
+an effect follow-up chain deeper than 64;
+`http_text` given a non-HTTP result; a worker catalogue with a
 duplicate name or more than 64 names; work issued for a task the
 catalogue does not hold; an upload whose method is `GET` or `HEAD`;
 a port catalogue with a duplicate name, more than
@@ -2786,9 +2795,9 @@ opaque wrappers whose methods are documented here, and the contexts, `Elem`,
 app can neither name a representation nor call the interfaces only hosts and
 harnesses use (`Core.driver`, `mount`, `event`, `result`, `take_cmds`,
 `settled`, the effect and work counters); the generated API docs list the
-authoring API and nothing else. `Request`, `Result`, `WorkFault`, `FileError`,
-`HttpError`, `Boot`, `QueryPlan` and `Window` are plain data and stay
-structural; `Remote` is a transparent nominal type over a record, so an app
+authoring API and nothing else. `Request`, `Command`, `Result`, `WorkFault`,
+`FileError`, `HttpError`, `Boot`, `QueryPlan` and `Window` are plain data and
+stay structural; `Remote` is a transparent nominal type over a record, so an app
 reads and builds it as the record and calls its methods. `Table` is an
 opaque type in a module of its own, which an app imports to write a table.
 The operations of `Table` that only the engine may call take an
@@ -2916,7 +2925,9 @@ File.sha256 : File -> Request                     # answered Digest(32 bytes)
 File.object_url : File -> Request                 # answered FileUrl(url), valid while the handle lives
 file_bytes, file_digest : Result -> Try(List(U8), FileError)
 file_text, file_url : Result -> Try(Str, FileError)
-File.save : File, { name : [Same, Named(Str)] ?? Same } -> Request   # a command: a download
+File.save : File, { name : [Same, Named(Str)] ?? Same }
+            -> [Save({ file : File, name : Str })]   # a command: a download; typed by its one tag,
+                                              # so it fits a List(Request) and a List(Command)
 File.fetch : { url : Str, method : Str ?? "GET", headers : List((Str, Str)) ?? [],
                timeout : [Unlimited, Ms(U32)] ?? Unlimited } -> Request   # answered Fetched
 fetched : Result -> Try(File, FetchError)
@@ -2946,7 +2957,7 @@ Outbox.post : Outbox(item), item -> Outbox(item)   # one post per turn; a second
 Outbox.last : Outbox(item) -> [Unposted, Posted(item)]
 on_post : Signal(ctx, Outbox(item)), (item -> List(Request)), Reaction(ctx, item) -> Elem(ctx)
 ignore : {} -> Reaction(ctx, a)
-on_cleanup : Str, Signal(ctx, a), (a -> List(Request)) -> Elem(ctx)   # commands only
+on_cleanup : Str, Signal(ctx, a), (a -> List(Command)) -> Elem(ctx)   # an awaited request does not compile
 cleanup : Str -> Elem(ctx)
 Request : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Timer(U32),
        Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32,
@@ -2960,6 +2971,9 @@ Request : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Ti
        PortCommand({ port, message }), PortCall({ port, message, timeout_ms }),
        PortSubscribe({ port, message }),
        Save({ file : File, name : Str }), Fetch({ method, url, headers, timeout_ms })]
+Command : [Push(Str), Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str),
+       StorageSet(Str, Str), StorageRemove(Str), PortCommand({ port, message }),
+       Save({ file : File, name : Str })]     # the requests that await nothing: a cleanup's plan
 Result : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
        Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused,
        Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError),
@@ -3064,7 +3078,8 @@ Port.CallProps := { name : Str, timeout : [Unlimited, Ms(U32)] ?? Unlimited }
 Port.subscription : SubscriptionProps -> Subscription(arg, msg)   where [arg.PortJson.Sendable, msg.PortJson.Sendable]
 Port.SubscriptionProps := { name : Str, delivery : Delivery }
 Command.registration, Call.registration, Subscription.registration : ... -> PortRegistration
-Command.send : Command(output), output -> Request          # a PortCommand
+Command.send : Command(output), output -> [PortCommand({ port : Str, message : PortMessage })]
+                                              # typed by its one tag, as File.save is
 Call.request : Call(input, output), input -> Request       # a PortCall
 Call.result : Call(input, output), Result -> Try(output, Port.Error)
 Subscription.subscribe : Subscription(arg, msg), arg -> Request   # a PortSubscribe

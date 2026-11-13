@@ -4,7 +4,8 @@ import pf.Html
 ## Browser-services test app: one control per browser service, each with a
 ## spec in `specs/` run natively and in Chrome.
 ## - A running clock (`when`) owns a 1 s interval and a named cleanup whose
-##   run sets the document title.
+##   run issues two commands: it sets the document title and writes the
+##   ticks it stopped at to local storage.
 ## - While the page is visible a 5 s poll interval is live; connectivity and
 ##   visibility are shown from boot and kept current by subscriptions, and
 ##   whether local storage is available is shown from boot.
@@ -81,6 +82,10 @@ ServicesApp := [].{
 		Err(e) => Str.inspect(e)
 	}
 
+	## What the clock's cleanup issues for the ticks it stopped at, in order.
+	stopped : U64 -> List(Engine.Command)
+	stopped = |ticks| [Title("stopped at ${ticks.to_str()}"), StorageSet("clock.stopped", ticks.to_str())]
+
 	view : State(Ctx, S) -> Elem(Ctx)
 	view = |st| {
 		v = st.signal()
@@ -126,7 +131,7 @@ ServicesApp := [].{
 						[Engine.test_id("clock")],
 						[
 							Engine.watch(Engine.const({}), |_| [Interval(1000)], st.on_result(|s, _, _| { ..s, ticks: s.ticks + 1 })),
-							Engine.on_cleanup("clock cleanup", v.map(|s| s.ticks), |t| [Title("stopped at ${t.to_str()}")]),
+							Engine.on_cleanup("clock cleanup", v.map(|s| s.ticks), ServicesApp.stopped),
 							Engine.text("running"),
 						],
 					),

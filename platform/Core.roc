@@ -690,7 +690,10 @@ Core := [].{
 		## without the user's gesture, and a browser may hold back a second
 		## automatic download from the page or ask the user first: give the
 		## user a button to press when the file is ready instead.
-		save : File, SaveProps -> Request
+		##
+		## Its type is the one tag it returns, so it fits a list of
+		## [Request]s and a cleanup's list of [Command]s alike.
+		save : File, SaveProps -> [Save({ file : File, name : Str })]
 		save = |f, props| {
 			chosen = match props.name {
 				Same => f.name
@@ -1392,7 +1395,8 @@ Core := [].{
 	## Commands are emitted and forgotten: `Push` and `Replace` (history), `Title`,
 	## `StorageSet` and `StorageRemove` (local storage), and `Focus`, `Blur` and
 	## `SelectText` on a reference named with `ref` (resolved at the end of the
-	## turn; a reference that is not mounted then is counted stale).
+	## turn; a reference that is not mounted then is counted stale). With
+	## `PortCommand` and `Save` they are the tags of [Command].
 	##
 	## Awaited requests deliver results to the site's [Reaction]: `Http`,
 	## `StorageGet` and `Timer` deliver one; `Interval`, `Popstate`,
@@ -1470,6 +1474,25 @@ Core := [].{
 		## (`File.fetch`), delivering `Fetched`. `timeout_ms` 0 = none, capped
 		## at 10 minutes; kept like `Http`.
 		Fetch({ method : Str, url : Str, headers : List((Str, Str)), timeout_ms : U32 }),
+	]
+
+	## A request that is emitted and forgotten: the commands of [Request],
+	## and nothing that awaits a result. It is what a cleanup's plan returns
+	## (`on_cleanup`): a request that awaits a result would outlive the scope
+	## that asked for it, and this type has no such tag, so a cleanup that
+	## asks for one does not compile. Each tag carries what the tag of the
+	## same name in [Request] carries.
+	Command : [
+		Push(Str),
+		Replace(Str),
+		Title(Str),
+		Focus(Str),
+		Blur(Str),
+		SelectText(Str),
+		StorageSet(Str, Str),
+		StorageRemove(Str),
+		PortCommand({ port : Str, message : PortMessage }),
+		Save({ file : File, name : Str }),
 	]
 
 	## The result of an awaited request: an HTTP response (`Http`, with any status),
@@ -1675,11 +1698,12 @@ Core := [].{
 
 	## `on_cleanup(name, v, plan)` runs `plan` on `v`, read in the scope's last
 	## environment, when the scope this site is mounted in is disposed, and issues
-	## the requests in the disposing turn. Only commands are allowed (history,
-	## title, storage writes, focus): a request that awaits a result would outlive
-	## its owner, so it is a contract error. Each run is counted by `name`. The site
-	## renders nothing and reads nothing while it is live.
-	on_cleanup : Str, Signal(ctx, a), (a -> List(Request)) -> Elem(ctx)
+	## the commands in the disposing turn. A plan returns [Command]s (history,
+	## title, storage writes, focus, port commands, saves): a request that awaits
+	## a result would outlive its owner, and the type has none, so the compiler
+	## rejects it. Each run is counted by `name`. The site renders nothing and
+	## reads nothing while it is live.
+	on_cleanup : Str, Signal(ctx, a), (a -> List(Command)) -> Elem(ctx)
 	on_cleanup = |name, v, plan| Site(
 		Mount(|_env, _args, tx| (cleanup_inst(name, v, plan), 0, tx)),
 		|_| 0,
@@ -6584,34 +6608,37 @@ effect = |v, initial, plan, step, react| Site(
 	|_| eff_mask(v),
 )
 
-cleanup_inst : Str, Signal(ctx, a), (a -> List(Request)) -> Inst(ctx)
+## An `on_cleanup` site: it holds nothing while it is live, and on disposal
+## issues its plan's commands with no owner, since none awaits a result.
+cleanup_inst : Str, Signal(ctx, a), (a -> List(Command)) -> Inst(ctx)
 cleanup_inst = |name, v, plan| Inst(
 	|env, msg, tx| {
 		match msg {
 			Changed(_) => (cleanup_inst(name, v, plan), Done, tx)
 			Fire(_, _, _, _) => (cleanup_inst(name, v, plan), Pending(env, no_layers), tx)
 			Dispose(_) => {
-				reqs = plan((v.read)(env))
-				var $tx = bump(count_evals(tx, 1), w_cleanups, 1)
-				for req in reqs {
-					if is_command(req) {
-						(t2, _) = issue($tx, [], [req], {}, [])
-						$tx = t2
-					} else {
-						crash "contract: cleanup \"${name}\" asked for a request that awaits a result; a cleanup may only issue commands"
-					}
-				}
-				(noop({}), Orphaned([]), with_fx($tx, |fx| { ..fx, cleanups: count_name(fx.cleanups, name) }))
+				commands = plan((v.read)(env))
+				(t1, _) = issue(bump(count_evals(tx, 1), w_cleanups, 1), [], commands.map(command_request), {}, [])
+				(noop({}), Orphaned([]), with_fx(t1, |fx| { ..fx, cleanups: count_name(fx.cleanups, name) }))
 			}
 		}
 	},
 )
 
-## Requests that are emitted and forgotten.
-is_command : Request -> Bool
-is_command = |req| match req {
-	Push(_) | Replace(_) | Title(_) | Focus(_) | Blur(_) | SelectText(_) | StorageSet(_, _) | StorageRemove(_) | PortCommand(_) | Save(_) => True
-	_ => False
+## The request that issues a command. The match is total over [Command],
+## so a command added there without an arm here does not compile.
+command_request : Command -> Request
+command_request = |command| match command {
+	Push(url) => Push(url)
+	Replace(url) => Replace(url)
+	Title(text) => Title(text)
+	Focus(name) => Focus(name)
+	Blur(name) => Blur(name)
+	SelectText(name) => SelectText(name)
+	StorageSet(key, value) => StorageSet(key, value)
+	StorageRemove(key) => StorageRemove(key)
+	PortCommand(sent) => PortCommand(sent)
+	Save(saved) => Save(saved)
 }
 
 count_name : List((Str, U64)), Str -> List((Str, U64))
@@ -7348,6 +7375,42 @@ expect {
 	want = put_str([19], "t/c").concat(body).concat(put_u32(put_str(put_u32([13], 1).append(9), "t/k").concat(body), 600000)).concat(put_str(put_u32([13], 2).append(10), "t/s").concat(body))
 	counters = Core.work_counters(taken)
 	cmds == want and counters.get(19) == Ok(0) and counters.get(40) == Ok(1) and Core.fx_stats(taken).issued == 2
+}
+
+## A cleanup's commands issue the requests of the same tags, carrying the
+## same values, in the plan's order; `File.save` builds a command as well as
+## a request.
+expect {
+	file = Core.placed_file(Core.held_file(Box.box(1)), { name: "log", mime: "", size: 10, start: 0, len: 10 }) ?? crash "command expect: the file lies within its size"
+	message = { json: "1", blobs: [], files: [] }
+	commands : List(Core.Command)
+	commands = [Push("/a"), Replace("/b"), Title("t"), Focus("f"), Blur("g"), SelectText("h"), StorageSet("k", "v"), StorageRemove("r"), PortCommand({ port: "t/c", message }), File.save(file, { name: Named("copy") })]
+	requests : List(Core.Request)
+	requests = [Push("/a"), Replace("/b"), Title("t"), Focus("f"), Blur("g"), SelectText("h"), StorageSet("k", "v"), StorageRemove("r"), PortCommand({ port: "t/c", message }), Save({ file, name: "copy" })]
+	commands.map(command_request) == requests
+}
+
+## A disposed scope's cleanup issues its commands in the disposing turn, in
+## the plan's order and before the branch that replaces its scope is built,
+## and counts one run under its name.
+expect {
+	elem = Core.state(
+		Bool.True,
+		|st|
+			Core.element(
+				"div",
+				[],
+				[
+					Core.when(st.signal(), || Core.on_cleanup("closing", Core.const("a"), |name| [Title(name), StorageSet("last", name), StorageRemove("draft")]), || Core.text("")),
+					Core.watch(Core.const({}), |_| [Self], st.on_result(|_, _, _| Bool.False)),
+				],
+			),
+	)
+	(taken, cmds) = Core.take_cmds(mount_in(32, { workers: [], ports: ports_of([]) }, {}, elem), [])
+	mounted = put_str(put_u32(put_u32(put_u32([8], 1), 0), 0), "div").concat(put_str(put_u32(put_u32(put_u32([10], 2), 1), 0), ""))
+	cleaned = put_str([17], "a").concat(put_str(put_str([16, 1], "last"), "a")).concat(put_str([16, 2], "draft"))
+	replaced = put_str(put_u32(put_u32(put_u32([10], 3), 0), 2), "")
+	cmds == mounted.concat(cleaned).concat(replaced) and taken.tx.fx.cleanups == [("closing", 1)]
 }
 
 ## A call is kept when its site is disposed (it reparents, like HTTP) and a
