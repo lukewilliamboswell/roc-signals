@@ -56,6 +56,7 @@ jobs:
           version: nightly-new-compiler
           nightly-tag: ${{ needs.nightly.outputs.tag }}
       - run: blueprint check
+      - run: blueprint run setup-parser
       - run: blueprint run check
 
   # The spec runner's link inputs for every system, cross-compiled on Linux

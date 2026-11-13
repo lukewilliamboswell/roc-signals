@@ -24,14 +24,15 @@ the `blueprint` release that `Blueprint.roc` names (no Nix is needed) and the
 current Roc nightly as `roc` (see [Compilers](#compilers)). `blueprint shell`
 opens a shell with the tools on `PATH`.
 
-Before building the site from source, run `blueprint run setup-parser`. The site
-tooling imports `../../roc-parser/package/main.roc`, so the parser must be a
+Before running `check`, `site` or `release` from source, run
+`blueprint run setup-parser`. The tooling imports `../../roc-parser/package/main.roc`, so the parser must be a
 sibling of this checkout. Setup fetches the exact public commit recorded in
 `scripts/src/ParserSource.roc` into a new sibling when none exists. If you already
 have `../roc-parser` (including a symlink), setup checks the package entry and
 reports its commit and whether it has local changes without fetching or changing
 it. Your existing checkout remains the authority for local work on the unreleased
-parser. The site CI job runs the same setup in its fresh checkout and uses the pin.
+parser. The check, site and release CI jobs run the same setup in fresh checkouts and
+use the pin.
 
 Chrome is the machine's `google-chrome` for now, because blueprint cannot yet
 unpack Chrome for Testing's zip archives; `Blueprint.roc` has the pinned
