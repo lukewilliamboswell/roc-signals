@@ -53,7 +53,7 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 
 	## Keep an answer only if it is for the load wanted now.
 	stored : Story, Fetch.LoadReq, Try(Engine.Response, Engine.HttpFailure) -> Story
-	stored = |s, sent, res| if (Story.req(s).key != sent.key) s else { ..s, article: { key: sent.key, value: Api.decode_get(Api.response_of(res), Api.decode_article) } }
+	stored = |s, sent, res| { ..s, article: { key: sent.key, value: Api.decode_get(Api.response_of(res), Api.decode_article) } }
 
 	## What to show now: the article, a failure, or loading.
 	current : Story -> Api.Remote(Api.Article)
@@ -97,15 +97,11 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 	}
 
 	favorite_answered : Story, Fetch.Submit, Try(Engine.Response, Engine.HttpFailure) -> Story
-	favorite_answered = |s, sent, res| {
-		if sent.serial != s.fav.serial {
-			s
-		} else {
-			outcome = Story.classify_favorite(Api.response_of(res))
-			match outcome {
-				FavoriteAccepted(_) => { ..s, fav_result: outcome, refetch: s.refetch + 1 }
-				_ => { ..s, fav_result: outcome }
-			}
+	favorite_answered = |s, _sent, res| {
+		outcome = Story.classify_favorite(Api.response_of(res))
+		match outcome {
+			FavoriteAccepted(_) => { ..s, fav_result: outcome, refetch: s.refetch + 1 }
+			_ => { ..s, fav_result: outcome }
 		}
 	}
 
@@ -116,13 +112,9 @@ Story :: { slug : Str, article : Fetch.Loaded(Api.Article), refetch : U64, fav :
 	## The story after the answer to a deletion, and whether the article is
 	## gone. Its owner decides where to go when it is.
 	delete_answered : Story, Fetch.Submit, Try(Engine.Response, Engine.HttpFailure) -> { story : Story, deleted : Bool }
-	delete_answered = |s, sent, res| {
-		if sent.serial != s.del.serial {
-			{ story: s, deleted: False }
-		} else {
-			outcome = Fetch.classify_delete(Api.response_of(res), "article")
-			{ story: { ..s, del_result: outcome }, deleted: outcome == DeleteAccepted }
-		}
+	delete_answered = |s, _sent, res| {
+		outcome = Fetch.classify_delete(Api.response_of(res), "article")
+		{ story: { ..s, del_result: outcome }, deleted: outcome == DeleteAccepted }
 	}
 
 	## The site that loads the article.

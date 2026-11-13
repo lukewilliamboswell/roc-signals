@@ -1210,6 +1210,16 @@ Engine := [].{
 		where [a.is_eq : a, a -> Bool]
 	watch = |v, plan, reaction| Core.watch(v.v, plan, reaction)
 
+	## Keep every request while accepting only the latest issuing step's results.
+	## Older results and progress still count as delivered to the site, but run
+	## neither their retained reader nor their reaction. After disposal, a kept
+	## request must also still match this signal in its surviving ancestor.
+	## A changed value with an empty plan invalidates the older step too.
+	## Subscriptions are a contract error here; use watch_latest to stop them.
+	keep_current : Signal(ctx, a), (a -> List(Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
+		where [a.is_eq : a, a -> Bool]
+	keep_current = |value, plan, reaction| Core.keep_current(value.v, plan, reaction)
+
 	## Like `watch`, but issues only when `v` changes after mount, never for its
 	## initial value.
 	watch_changes : Signal(ctx, a), (a -> List(Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)

@@ -51,15 +51,11 @@ CommentForm :: { body : Str, sub : Fetch.Submit, result : Outcome }.{
 	}
 
 	## The form after the answer to `sent`, and whether that answer posted a
-	## comment. An answer to anything but the latest POST changes nothing.
+	## comment. Its keep_current site admits only the latest POST’s result.
 	answered : CommentForm, Fetch.Submit, Try(Engine.Response, Engine.HttpFailure) -> { form : CommentForm, posted : Bool }
-	answered = |form, sent, res| {
-		if sent.serial != form.sub.serial {
-			{ form, posted: False }
-		} else {
-			outcome = CommentForm.classify(Api.response_of(res))
-			{ form: { ..form, result: outcome }, posted: outcome == Accepted }
-		}
+	answered = |form, _sent, res| {
+		outcome = CommentForm.classify(Api.response_of(res))
+		{ form: { ..form, result: outcome }, posted: outcome == Accepted }
 	}
 
 	## The lines to show above the box.

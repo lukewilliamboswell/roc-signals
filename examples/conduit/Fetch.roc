@@ -78,12 +78,12 @@ Fetch := [].{
 	## Sends a GET whenever `req` changes; `stored` receives the answer with
 	## the request it was sent for.
 	load_site : Signal(ctx, LoadReq), Engine.Reaction(ctx, LoadReq, Try(Engine.Response, Engine.HttpFailure)) -> Elem(ctx)
-	load_site = |req, stored| Engine.watch(req, |r| if (r.uri.is_empty()) [] else [Api.get_request(r.uri, r.token)], stored)
+	load_site = |req, stored| Engine.keep_current(req, |r| if (r.uri.is_empty()) [] else [Api.get_request(r.uri, r.token)], stored)
 
 	## Sends a submission whenever `sub` changes; `answered` receives the
 	## answer with the submission it was sent for.
 	submit_site : Signal(ctx, Submit), Engine.Reaction(ctx, Submit, Try(Engine.Response, Engine.HttpFailure)) -> Elem(ctx)
-	submit_site = |sub, answered| Engine.watch(sub, Fetch.plan_submit, answered)
+	submit_site = |sub, answered| Engine.keep_current(sub, Fetch.plan_submit, answered)
 }
 
 expect Fetch.next(Fetch.no_submit, "POST", "/x", "", "").serial == 1

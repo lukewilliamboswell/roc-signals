@@ -39,7 +39,7 @@ Comments :: { slug : Str, loaded : Fetch.Loaded(List(Api.Comment)), refetch : U6
 
 	## Keep an answer only if it is for the load wanted now.
 	stored : Comments, Fetch.LoadReq, Try(Engine.Response, Engine.HttpFailure) -> Comments
-	stored = |c, sent, res| if (Comments.req(c).key != sent.key) c else { ..c, loaded: { key: sent.key, value: Api.decode_get(Api.response_of(res), Api.decode_comments) } }
+	stored = |c, sent, res| { ..c, loaded: { key: sent.key, value: Api.decode_get(Api.response_of(res), Api.decode_comments) } }
 
 	## What to show now: the list, a failure, or loading.
 	current : Comments -> Api.Remote(List(Api.Comment))
@@ -57,15 +57,11 @@ Comments :: { slug : Str, loaded : Fetch.Loaded(List(Api.Comment)), refetch : U6
 	}
 
 	delete_answered : Comments, Fetch.Submit, Try(Engine.Response, Engine.HttpFailure) -> Comments
-	delete_answered = |c, sent, res| {
-		if sent.serial != c.del.serial {
-			c
-		} else {
-			outcome = Fetch.classify_delete(Api.response_of(res), "comment")
-			match outcome {
-				DeleteAccepted => { ..c, del_result: outcome, refetch: c.refetch + 1 }
-				_ => { ..c, del_result: outcome }
-			}
+	delete_answered = |c, _sent, res| {
+		outcome = Fetch.classify_delete(Api.response_of(res), "comment")
+		match outcome {
+			DeleteAccepted => { ..c, del_result: outcome, refetch: c.refetch + 1 }
+			_ => { ..c, del_result: outcome }
 		}
 	}
 

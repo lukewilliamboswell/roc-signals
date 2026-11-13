@@ -1948,13 +1948,21 @@ Core := [].{
 	## with `Refused`.
 	watch : Signal(ctx, a), (a -> List(Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
-	watch = |v, plan, react| effect(v, True, plan, replanned(plan), react)
+	watch = |v, plan, react| effect(v, True, plan, replanned(plan), react, Every)
+
+	## Keep every request, but deliver only the latest issuing step's results.
+	## A reparented request must also still match the question in the surviving
+	## ancestor. Older results and progress count as delivered without running
+	## their readers or reactions. Subscriptions must use watch_latest instead.
+	keep_current : Signal(ctx, a), (a -> List(Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
+		where [a.is_eq : a, a -> Bool]
+	keep_current = |v, plan, react| effect(v, True, plan, replanned(plan), react, Current)
 
 	## Like `watch`, but issues only when `v` changes after mount, never for its
 	## initial value.
 	watch_changes : Signal(ctx, a), (a -> List(Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
-	watch_changes = |v, plan, react| effect(v, False, plan, replanned(plan), react)
+	watch_changes = |v, plan, react| effect(v, False, plan, replanned(plan), react, Every)
 
 	## `watch_latest(v, plan, react)` issues like `watch`, under one more rule: the site
 	## owns only the requests of its current value. Before it issues for a new
@@ -1969,7 +1977,7 @@ Core := [].{
 		Mount(
 			|env, args, tx| {
 				a = (v.read)(env)
-				cfg = { v, plan: |_, value| hold_asks(value, plan(value)), step: |_, old, value, path| hold_asks(value, replanned(plan)(old, value, path)), react: held_reaction(react), path: args.path }
+				cfg = { v, plan: |_, value| hold_asks(value, plan(value)), step: |_, old, value, path| hold_asks(value, replanned(plan)(old, value, path)), react: held_reaction(react), path: args.path, only: Every }
 				(t1, owned) = issue_progress(count_evals(tx, 1), args.path, (cfg.plan)(env, a), [], progress_interval(cfg.react))
 				(latest_inst(cfg, a, owned), eff_mask(v), t1)
 			},
@@ -2110,7 +2118,7 @@ Core := [].{
 	## `watch_changes`. Two posts to one outbox in one turn are a contract
 	## error, since the first would never be sent.
 	on_post : Signal(ctx, Outbox(item)), (item -> List(Ask(output, error))), Reaction(ctx, item, Try(output, error)) -> Elem(ctx)
-	on_post = |v, plan, react| effect(v, False, |_| [], posted_step(plan), posted_reaction(react))
+	on_post = |v, plan, react| effect(v, False, |_| [], posted_step(plan), posted_reaction(react), Every)
 
 	## Issue a small posted intent using a reading sampled only when it is sent.
 	## Both signals declare reads, but the site's retained value and each result's
@@ -2118,7 +2126,7 @@ Core := [].{
 	on_post_by : Signal(ctx, Outbox(item)), Signal(ctx, reading), (reading, item -> List(Ask(output, error))), Reaction(ctx, item, Try(output, error)) -> Elem(ctx)
 	on_post_by = |box, reading, plan, react| {
 		watched = { ..box, mask: eff_mask(box).bitwise_or(eff_mask(reading)), sel: NoSel }
-		effect_reading(watched, False, |_, _| [], |env, before, value, path| posted_step(|item| plan((reading.read)(env), item))(before, value, path), posted_reaction(react))
+		effect_reading(watched, False, |_, _| [], |env, before, value, path| posted_step(|item| plan((reading.read)(env), item))(before, value, path), posted_reaction(react), Every)
 	}
 
 	## The `resource` configuration of a layer that follows the answer to one
@@ -7973,7 +7981,51 @@ put_http_options = |bytes, cache, credentials, progress_ms| {
 ## mount, and `step` those for a change from the value last seen to a new
 ## one at the site's path (`plan` of the new value, except for `on_post`,
 ## which checks the change).
-EffectCfg(ctx, a, h) : { v : Signal(ctx, a), plan : (ctx, a -> List(Planned(h))), step : (ctx, a, a, List(U32) -> List(Planned(h))), react : Reaction(ctx, h, Result), path : List(U32) }
+EffectCfg(ctx, a, h) : { v : Signal(ctx, a), plan : (ctx, a -> List(Planned(h))), step : (ctx, a, a, List(U32) -> List(Planned(h))), react : Reaction(ctx, h, Result), path : List(U32), only : Delivery(ctx, h) }
+
+## Current-step ids are metadata only. The question reads the environment
+## supplied to an orphan's eventual turn, never a captured store or context.
+Delivery(ctx, h) : [Every, Current({ ids : Dict(U32, {}), question : (ctx, h -> Bool) })]
+
+accepts_result : Delivery(ctx, h), U32 -> Bool
+accepts_result = |only, id| match only {
+	Every => True
+	Current({ ids, .. }) => ids.contains(id)
+}
+
+## Build a fresh index from just this issuing step. Reading the old length
+## happens before append, so indexing cannot keep an old Owned list aliased.
+issue_effect : EffectCfg(ctx, a, h), Tx, List(Planned(h)), List(Owned(h)) -> (EffectCfg(ctx, a, h), Tx, List(Owned(h)))
+issue_effect = |cfg, tx, planned, owned| {
+	previous = owned.len()
+	match cfg.only {
+		Every => {}
+		Current(_) => {
+			for request in planned {
+				if is_sub(request.request) {
+					crash "contract: keep_current cannot issue a subscription at site ${show_path(cfg.path)}; use watch_latest to stop an older subscription"
+				}
+			}
+		}
+	}
+	(next, issued) = issue_progress(tx, cfg.path, planned, owned, progress_interval(cfg.react))
+	only = match cfg.only {
+		Every => Every
+		Current({ question, .. }) => Current({ ids: issued.drop_first(previous).fold(Dict.empty(), |ids, entry| ids.insert(entry.id, {})), question })
+	}
+	({ ..cfg, only }, next, issued)
+}
+
+## Move the policy out before mutating its index. Keeping the old cfg beside
+## a Dict.remove would make every final result copy the current-id set.
+retire_current : EffectCfg(ctx, a, h), U32, EffectInput -> EffectCfg(ctx, a, h)
+retire_current = |{ v, plan, step, react, path, only }, id, input| {
+	only2 = match only {
+		Every => Every
+		Current({ ids, question }) => Current({ ids: if (keeps_owned(input)) ids else ids.remove(id), question })
+	}
+	{ v, plan, step, react, path, only: only2 }
+}
 
 ## The `step` of a site that issues `plan` of each new value.
 replanned : (a -> List(request)) -> (a, a, List(U32) -> List(request))
@@ -8234,21 +8286,34 @@ issue_progress = |tx, path, reqs, owned, progress_ms| {
 ## queued follow-ups it would have received are dropped and counted stale.
 fx_dispose : Tx, Reaction(ctx, a, Result), List(Owned(a)), List(U32) -> (List(Orphan(ctx)), Tx)
 fx_dispose = |tx, react, owned, site| {
+	run = |env, a, input, path| run_reaction(react, env, a, input, path)
+	fx_dispose_by(
+		tx,
+		owned,
+		|entry| {
+			a = entry.a
+			{
+				id: entry.id,
+				run: |current, input| {
+					(next, wrote) = run(current, a, input, site)
+					(next, wrote, 0)
+				},
+			}
+		},
+	)
+}
+
+## Only orphan construction varies by delivery policy; cancellation, queued
+## refusal cleanup and reparenting remain the one per-kind disposal law.
+fx_dispose_by : Tx, List(Owned(a)), (Owned(a) -> Orphan(ctx)) -> (List(Orphan(ctx)), Tx)
+fx_dispose_by = |tx, owned, orphan| {
 	var $tx = tx
 	var $orph = []
-	run = |env, a, input, path| run_reaction(react, env, a, input, path)
 	for o in owned {
 		id = o.id
 		if $tx.fx.live.any(|l| l.id == id) {
 			if o.keep {
-				a = o.a
-				$orph = $orph.append({
-					id,
-					run: |e, r| {
-						(next, wrote) = run(e, a, r, site)
-						(next, wrote, 0)
-					},
-				})
+				$orph = $orph.append(orphan(o))
 			} else {
 				t1 = with_fx($tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id), cancelled: fx.cancelled + 1 })
 				$tx = emit_op(t1, 14, |c| put_u32(c, id))
@@ -8258,6 +8323,31 @@ fx_dispose = |tx, react, owned, site| {
 		}
 	}
 	($orph, $tx)
+}
+
+## Current orphans retain only their reader, issued-for value and declared
+## question code. Older orphans need neither snapshot nor reader.
+effect_dispose : EffectCfg(ctx, a, h), Tx, List(Owned(h)) -> (List(Orphan(ctx)), Tx)
+effect_dispose = |cfg, tx, owned| match cfg.only {
+	Every => fx_dispose(tx, cfg.react, owned, cfg.path)
+	Current({ ids, question }) => {
+		react = cfg.react
+		path = cfg.path
+		fx_dispose_by(
+			tx,
+			owned,
+			|entry| if ids.contains(entry.id) {
+				asked = entry.a
+				{
+					id: entry.id,
+					run: |current, input| if question(current, asked) {
+						(next, wrote) = run_reaction(react, current, asked, input, path)
+						(next, wrote, 0)
+					} else (current, no_layers, 0),
+				}
+			} else { id: entry.id, run: |current, _input| (current, no_layers, 0) },
+		)
+	}
 }
 
 ## A surviving site takes over orphans: their results now route to it.
@@ -8361,23 +8451,34 @@ take_dropped = |cols, depth| {
 }
 
 ## An effect site. `initial`: also issue for the value at mount.
-effect : Signal(ctx, a), Bool, (a -> List(Core.Ask(output, error))), (a, a, List(U32) -> List(Core.Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
+effect : Signal(ctx, a), Bool, (a -> List(Core.Ask(output, error))), (a, a, List(U32) -> List(Core.Ask(output, error))), Reaction(ctx, a, Try(output, error)), [Every, Current] -> Elem(ctx)
 	where [a.is_eq : a, a -> Bool]
-effect = |v, initial, plan, step, react| effect_reading(v, initial, |_, value| plan(value), |_, before, value, path| step(before, value, path), react)
+effect = |v, initial, plan, step, react, delivery| effect_reading(v, initial, |_, value| plan(value), |_, before, value, path| step(before, value, path), react, delivery)
 
 ## The plan borrows the current environment only while issuing. The site
 ## retains its watched value, never a reading used to construct the requests.
-effect_reading : Signal(ctx, a), Bool, (ctx, a -> List(Core.Ask(output, error))), (ctx, a, a, List(U32) -> List(Core.Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
+effect_reading : Signal(ctx, a), Bool, (ctx, a -> List(Core.Ask(output, error))), (ctx, a, a, List(U32) -> List(Core.Ask(output, error))), Reaction(ctx, a, Try(output, error)), [Every, Current] -> Elem(ctx)
 	where [a.is_eq : a, a -> Bool]
-effect_reading = |v, initial, plan, step, react| Site(
+effect_reading = |v, initial, plan, step, react, delivery| Site(
 	Mount(
 		|env, args, tx| {
 			a = (v.read)(env)
-			cfg = { v, plan: |current, value| hold_asks(value, plan(current, value)), step: |current, before, value, path| hold_asks(value, step(current, before, value, path)), react: held_reaction(react), path: args.path }
+			question = v.read
+			cfg = {
+				v,
+				plan: |current, value| hold_asks(value, plan(current, value)),
+				step: |current, before, value, path| hold_asks(value, step(current, before, value, path)),
+				react: held_reaction(react),
+				path: args.path,
+				only: match delivery {
+					Every => Every
+					Current => Current({ ids: Dict.empty(), question: |current, held| question(current) == held.value })
+				},
+			}
 			t1 = count_evals(tx, 1)
 			if initial {
-				(t2, owned) = issue_progress(t1, args.path, (cfg.plan)(env, a), [], progress_interval(cfg.react))
-				(effect_inst(cfg, a, owned), eff_mask(v), t2)
+				(cfg2, t2, owned) = issue_effect(cfg, t1, (cfg.plan)(env, a), [])
+				(effect_inst(cfg2, a, owned), eff_mask(v), t2)
 			} else {
 				(effect_inst(cfg, a, []), eff_mask(v), t1)
 			}
@@ -8452,8 +8553,8 @@ effect_inst = |cfg0, last0, owned0| {
 						if a == last {
 							(effect_inst(cfg, last, owned), Done, t1)
 						} else {
-							(t2, owned2) = issue_progress(t1, cfg.path, (cfg.step)(env, last, a, cfg.path), owned, progress_interval(cfg.react))
-							(effect_inst(cfg, a, owned2), Done, t2)
+							(cfg2, t2, owned2) = issue_effect(cfg, t1, (cfg.step)(env, last, a, cfg.path), owned)
+							(effect_inst(cfg2, a, owned2), Done, t2)
 						}
 					}
 				}
@@ -8468,7 +8569,7 @@ effect_inst = |cfg0, last0, owned0| {
 					}
 				}
 				Dispose(_) => {
-					(orph, t2) = fx_dispose(tx, cfg.react, owned, cfg.path)
+					(orph, t2) = effect_dispose(cfg, tx, owned)
 					(noop({}), Orphaned(orph), t2)
 				}
 			}
@@ -8483,9 +8584,11 @@ effect_deliver = |cfg, last, owned, env, id, res, tx| {
 		Ok(i) => {
 			entry = owned.get(i) ?? crash "owned"
 			kept = if (keeps_owned(res)) owned else owned.drop_at(i)
+			accepted = accepts_result(cfg.only, id)
 			react = cfg.react
-			next = effect_inst(cfg, last, kept)
-			(env2, wrote) = run_reaction(react, env, entry.a, res, cfg.path)
+			path = cfg.path
+			next = effect_inst(retire_current(cfg, id, res), last, kept)
+			(env2, wrote) = if (accepted) run_reaction(react, env, entry.a, res, path) else (env, no_layers)
 			(next, Pending(env2, wrote), count_delivery(tx, res))
 		}
 		Err(_) => (effect_inst(cfg, last, owned), Pending(env, no_layers), fx_count(tx, Stale))
