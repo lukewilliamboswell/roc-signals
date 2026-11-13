@@ -11936,7 +11936,7 @@ expect {
 				[],
 				[
 					Core.text("before"),
-					Core.watch(Core.const({}), |_| [PortCommand({ port: "test/command", message }), PortCall({ port: "test/call", message, timeout_ms: 0 }), PortSubscribe({ port: "test/subscription", message })].map(Core.raw), Core.ignore({})),
+					Core.watch(visible.signal(), |_| [PortCommand({ port: "test/command", message }), PortCall({ port: "test/call", message, timeout_ms: 0 }), PortSubscribe({ port: "test/subscription", message })].map(Core.raw), Core.ignore({})),
 					Core.when(visible.signal(), || Core.element("span", [], [Core.text("first")]), || Core.text("replacement")),
 					Core.watch(Core.const({}), |_| [Core.again({})], visible.on_result(|_, _, _| False)),
 					Core.text("after"),
@@ -11954,7 +11954,7 @@ expect {
 		$end = frame.end
 	}
 	(_, normal_commands, normal_work) = (Core.driver(program).init)([])
-	$matches and $end.to_u64() == picture.commands.len() and picture.commands == normal_commands and picture.work == normal_work and commands.any(|frame| frame.opcode == 19) and commands.any(|frame| frame.opcode == 5) and Core.settled(picture.state).is_ok()
+	$matches and $end.to_u64() == picture.commands.len() and picture.commands == normal_commands and picture.work == normal_work and commands.keep_if(|frame| frame.opcode == 19).len() == 2 and commands.any(|frame| frame.opcode == 5) and Core.settled(picture.state).is_ok()
 }
 
 ## A refused capture still writes every port command and keeps the ordinary
