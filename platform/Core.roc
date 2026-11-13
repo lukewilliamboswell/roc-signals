@@ -8056,6 +8056,21 @@ is_sub = |req| match req {
 	_ => False
 }
 
+## Every subscription kind takes the same pre-admission rejection path for
+## keep_current; a one-shot zero timer remains an ordinary legal request.
+expect {
+	message = { json: "null", blobs: [], files: [] }
+	kinds = [Interval(1), Popstate, OnlineChanges, VisibilityChanges, MediaChanges("(color)"), StorageChanges("key"), StorageWriteFailures, PortSubscribe({ port: "events", message })]
+	kinds.all(is_sub) and !is_sub(Timer(0)) and !is_sub(Self)
+}
+
+expect {
+	page = Core.keep_current(Core.const({}), |_| [Core.timer(0)], Core.ignore({}))
+	(mounted, bytes) = Core.take_cmds(Core.mount(page), [])
+	timer_bytes = put_fx([], 1, Timer(0))
+	Core.fx_live(mounted) == [1] and bytes.drop_first(bytes.len() - timer_bytes.len()) == timer_bytes and Core.settled(mounted).is_ok()
+}
+
 ## Requests that survive their site's disposal (design.md: an admitted
 ## effect reparents). Subscriptions, intervals, timers and operations on
 ## files on the page are scoped: disposal stops them. A job is kept or
