@@ -323,7 +323,7 @@ current_ownership_view = |_| Engine.state(
 	),
 )
 
-current_round : Core.App, Dom.Target -> Core.App
+current_round : Core.App({}), Dom.Target -> Core.App({})
 current_round = |engine, route| {
 	(first, _) = Core.take_cmds(Core.event(engine, route.node, route.handler, ""), [])
 	old = Core.fx_live(first)

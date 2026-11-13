@@ -762,7 +762,7 @@ does not fail your spec.
 | `dirty_source_roots` | What a turn wrote: the local states and the cells. A decision that returns no write counts nothing |
 | `each_key_hashes` / `each_key_compares` | Keys hashed and full-key comparisons in keyed reconciliation |
 | `effects_issued` | Awaited requests issued (HTTP, timers, storage reads, subscriptions, worker jobs); a refused request is not issued |
-| `effects_delivered` | Results delivered to a reaction, a `Refused` answer included; progress excluded |
+| `effects_delivered` | Results delivered to their site, including `Refused` and answers withheld by `keep_current`; progress excluded |
 | `effects_progress` | Transfer progress reports delivered to a progress handler; replaced reports excluded |
 | `effects_stale` | Results dropped because their request was no longer in flight |
 | `effects_refused` | Requests refused because the in-flight table was full |

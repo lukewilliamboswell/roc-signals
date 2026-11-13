@@ -111,6 +111,7 @@ Checks := [].{
 			{ name: "popover-duplicate", rejection: "one static popover", prefix: "contract:", code: 70 },
 			{ name: "popover-dynamic-popover", rejection: "one static popover", prefix: "contract:", code: 70 },
 			{ name: "media-undeclared", rejection: "missing-media", prefix: "contract:", code: 70 },
+			{ name: "keep-current-subscription", rejection: "keep_current cannot issue a subscription", prefix: "contract:", code: 70 },
 			{ name: "interval-zero", rejection: "Interval(0) has no period", prefix: "contract:", code: 70 },
 			{ name: "timer-overflow", rejection: "Timer(3000000000) is longer", prefix: "contract:", code: 70 },
 			{ name: "interval-overflow", rejection: "Interval(2147483648) is longer", prefix: "contract:", code: 70 },

@@ -199,6 +199,8 @@ An answer is a decision too. Supply the typed result its ask delivers, and
 state which request it answers and when it arrives. A keeping site can have
 several requests in flight; each result carries its own issued-for value even
 after newer posts. A test that keeps only the latest post omits those paths.
+Under `keep_current`, test the decision with an admitted current result; the
+site's sequence specs check withholding of older steps.
 
 An example's roc-fuzz target tests its platform-free domain rules. It imports
 nothing of the platform or another package of this repository. Decisions that

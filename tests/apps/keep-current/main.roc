@@ -5,3 +5,6 @@ import CurrentApp
 
 main : Engine.Program
 main = CurrentApp.program
+
+## This instance has no shared store.
+Store : {}

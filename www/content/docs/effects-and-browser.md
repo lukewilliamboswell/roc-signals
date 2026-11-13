@@ -107,6 +107,14 @@ component's own reducer, and the reaction its owner handed it.
 value's answer matters — a search box, the selected item — say so with a
 superseding site instead of filtering answers in the reaction:
 
+- `Engine.keep_current(v, plan, reaction)` lets old work finish while accepting
+  only the latest issuing step's results. All requests from that step may
+  answer, including progress. A changed value with an empty plan invalidates
+  the earlier step too. Withheld answers count as delivered to the site, but
+  run neither their reader nor reaction. After disposal, an eligible kept
+  request must also match the signal read in its surviving ancestor. Use
+  `watch_latest` for subscriptions. Keep `watch` or `on_post` when every outcome
+  matters, such as a mutation whose failures must all be shown.
 - `Engine.watch_latest(v, plan, reaction)` issues like `watch`, but before it issues
   for a new value it cancels everything it still has in flight for earlier
   ones: the fetch is aborted, a subscription stops, a timer is cleared, and a

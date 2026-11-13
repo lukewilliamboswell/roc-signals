@@ -2234,6 +2234,30 @@ inference:
   cancelled id is then stale like any other. A `plan` that returns `[]` makes a
   change a pure cancel. Disposal keeps the per-kind rules above: supersession
   is about a value being replaced, disposal about an owner going away.
+- **`keep_current(v, plan, react)`** issues at mount and each unequal value,
+  keeping every request while delivering readers and reactions only for the
+  latest issuing step. Every request of that step is eligible. An empty or
+  commands-only plan also replaces the eligible step; an equal value does not.
+  Older results and progress still count as delivered to their site, but run
+  neither their retained typed reader nor their reaction. Subscriptions are a
+  contract error before admission, even at an in-flight bound of zero; use
+  `watch_latest` for them. A one-shot `Timer(0)` is legal.
+  On disposal, eligibility freezes for each admitted request. An eligible
+  orphan also requires its declared signal, read from the surviving ancestor's
+  passed environment, to equal its issued-for value. The check captures no
+  environment or store; retired local reads use the existing snapshot and
+  writes to retired state remain skipped. A remount is a new scope, not a
+  generation shared with the orphan. Existing cancellation, refusal, retirement
+  and reparenting rules remain in force.
+  The site's index contains only outstanding ids from its current step,
+  including queued follow-ups and refusals. Final delivery removes an id;
+  progress retains it. Lookup is expected O(1). The pinned Dict retains bucket
+  capacity after removal, so physical storage follows the current step's
+  high-water capacity until replacement or disposal. Existing owned-request
+  lookup and removal remain linear in the site's owned requests. An eligible
+  orphan performs one declared-question read and equality check per result or
+  progress report; live delivery needs no guard read. Like reaction readings,
+  this result-time read is outside the propagation sampling counter.
 - **`resource(input, { init, pending, plan, resolve }, body)`** is a layer whose
   value follows the answers to requests issued for its input. At mount the
   layer is `pending(init, a)` and `plan(a)` is issued. When the input changes to
@@ -3933,7 +3957,7 @@ metric: soak plateaus assert it.
 | `dirty_source_roots` | What a turn wrote: one for each cell, and one for each layer when its readers are refreshed, whether its site started the pass, joined it or was reached by the walk after it (a layer disposed before then counts none; a `resource` answer that folds to an equal value writes none, and a decision that returns no write counts nothing) |
 | `each_key_hashes` / `each_key_compares` | Keys hashed and full-key comparisons made by keyed reconciliation (lookups and inserts; a key hashed for a lookup is not hashed again to insert it, and a removal uses the stored hash) |
 | `effects_progress` | Delivered transfer reports, excluding replacements; the request remains in flight and the final-delivery counter is unchanged |
-| `effects_issued`, `effects_delivered`, `effects_stale`, `effects_refused`, `effects_cancelled`, `effects_reparented`, `effects_skipped` | The engine's effect counters (The Effect Channel, "Counters"): awaited requests issued (one `FX` each), results delivered to a reaction, stale results dropped, requests refused at the in-flight cap, requests cancelled (one `CANCEL` each), requests reparented to a surviving ancestor, and reparented writes skipped because their state was retired |
+| `effects_issued`, `effects_delivered`, `effects_stale`, `effects_refused`, `effects_cancelled`, `effects_reparented`, `effects_skipped` | The engine's effect counters (The Effect Channel, "Counters"): awaited requests issued (one `FX` each), results delivered to their site (including withheld keep_current results), stale results dropped, requests refused at the in-flight cap, requests cancelled (one `CANCEL` each), requests reparented to a surviving ancestor, and reparented writes skipped because their state was retired |
 | `expect-updates loc n` | The located element's creation plus every later `ATTR`, `HATTR`, `SETTEXT` or `TEXT` that wrote it or a text node directly inside it, and `PROP`/`HPROP` whose row claims an attribute; natively from the oracle, in Chrome from a MutationObserver of the mirrored attributes |
 | `expect-interval ms n` | Live `INTERVAL` subscriptions with period `ms` |
 | `tick-interval ms` | Deliver `Fired(current_clock)` to every live interval with period `ms`; a step with none live fails. `tick-interval-if-active` is a no-op when none is live |
@@ -4470,6 +4494,7 @@ State.on_progress : State(ctx, s), (s, a, Transfer -> s) -> ProgressReaction(ctx
 Reaction.with_progress : Reaction(ctx, a, result), ProgressProps, ProgressReaction(ctx, a) -> Reaction(ctx, a, result)
 watch : Signal(ctx, a), (a -> List(Ask(o, e))), Reaction(ctx, a, Try(o, e)) -> Elem(ctx)
 watch_changes : Signal(ctx, a), (a -> List(Ask(o, e))), Reaction(ctx, a, Try(o, e)) -> Elem(ctx)
+keep_current : Signal(ctx, a), (a -> List(Ask(o, e))), Reaction(ctx, a, Try(o, e)) -> Elem(ctx)   # keeps work; latest step answers
 watch_latest : Signal(ctx, a), (a -> List(Ask(o, e))), Reaction(ctx, a, Try(o, e)) -> Elem(ctx)   # supersedes
 Outbox(item)                                  # opaque: the latest post and its serial
 outbox : {} -> Outbox(item)

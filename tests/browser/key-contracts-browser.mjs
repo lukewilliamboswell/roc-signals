@@ -30,6 +30,7 @@ const fixtures = [
   ["popover-duplicate", ["one static popover", "site"]],
   ["popover-dynamic-popover", ["one static popover", "site"]],
   ["media-undeclared", ["missing-media", "site"]],
+  ["keep-current-subscription", ["keep_current", "subscription", "site"]],
   ["interval-zero", ["Interval(0) has no period"]],
   ["timer-overflow", ["Timer(3000000000)", "2147483647 ms"]],
   ["interval-overflow", ["Interval(2147483648)", "2147483647 ms"]],
