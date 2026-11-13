@@ -64,8 +64,10 @@ The template runs once per list and receives a `RowRef` rather than an item:
   row's key.
 - Outer values and local states are brought in with `lift_row`. Cells of the
   store need no lift.
-- A row template must produce a single element, and may not declare a focus
-  reference.
+- A row template must produce a single element. It can declare a reference
+  with `Engine.ref_s`, using a name built from the row's key; see
+  [Focus](@/docs/effects-and-browser.md#focus). An empty name names nothing,
+  and two live elements with one nonempty name are a contract error.
 
 When the list changes, `each` compares the new list with the rows it drew:
 surviving rows keep their nodes and move if they must, and only added,

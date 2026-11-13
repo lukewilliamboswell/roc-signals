@@ -637,6 +637,8 @@ The static content of a site that draws no rows is flattened at mount into a
 
 - *holes* — dynamic text and attributes, each with its read signature, reader
   and last emitted value;
+- *reference holes* — named element addresses, whose signal updates the
+  reference map without emitting a DOM command;
 - *handlers* — in mount order, so a handler number is a dense index;
 - *children* — nested sites with their static read signatures;
 - the block's node ids and its top-level nodes (for removal).
@@ -665,7 +667,7 @@ its own representation:
 
 - The row template runs **once per site**, against a `RowRef` accessor rather
   than a row value. It compiles to a DOM template (sent once as `TEMPLATE`)
-  plus a hole table: text, attribute, event and nested-site placeholders.
+  plus a hole table: text, attribute, event, reference and nested-site placeholders.
 - Rows are **typed columns** indexed by slot: items, keys, the last value of
   every live hole, nested site instances, dirty marks, plus `order` (slots by
   position), a free-slot list, and an open-addressing key index from the exact
@@ -1066,7 +1068,12 @@ Rules:
 - **Engine ids are private.** DOM node ids, handler numbers, site ids, cell
   positions and effect ids are dense integers minted by the engine. Apps
   never see them; focus targets are named references scoped to the element
-  that declares them.
+  that declares them. A reference's name is an address in the app's
+  vocabulary, never a row's identity: rows are found by their keys. Two live
+  references with one name are a `contract` error, and the empty name names
+  nothing. An app may build a name from a row's key because a typed reference
+  carried through the plain-data request channel would need a value registry;
+  the duplicate check makes a collision an error rather than an alias.
 - **Ids are recycled, never aliased across a live lifetime.** Freed node ids,
   slots and site ids are reused only after their owner is disposed. An event
   that arrives for a freed id finds no route and is dropped.
@@ -1194,7 +1201,9 @@ Every external input — a DOM event or an effect result — is one *turn*:
    is one test of the pass's signature against the tables' bits. A table
    whose cell shares a bit with another written cell is cleared too; its
    changes are empty already. A table the turn wrote is cleared whether or not
-   a view draws it. Then focus requests made during the turn are resolved to
+   a view draws it. The reference names the turn mounted or renamed are
+   checked for duplicates, after every departing reference has been removed
+   and before focus is resolved. Then focus requests made during the turn are resolved to
    node ids and emitted, and follow-up turns queued by the turn run next, in
    order.
 
@@ -1274,6 +1283,11 @@ between the DOM and the engine fills it, so overflow is not refused event by
 event (that would drop non-lossy input or strand an in-flight id): it poisons
 the runtime with class `resource_limit`, reported like any other fault.
 
+A drain also delivers at most 4096 turns before the runtime returns to
+idle. A loop that raises only one further event per turn never fills the
+queue, but still cannot settle: a 4097th turn poisons with `resource_limit`.
+The native runner applies the same bound to the turns one step raises.
+
 ### Complexity budget
 
 The scaling claim must hold in the data structures. N is the total mounted
@@ -1300,6 +1314,7 @@ keys a turn wrote in a table.
 | End of turn | One test when no table was written; otherwise O(table cells in the store), clearing those the pass named | visiting a view, or the rows of a table |
 | Dispose a scope | O(scope size) | work outside the scope |
 | Effect result lookup | O(in-flight), bounded by the cap | unbounded tables |
+| Mount, rename, dispose or resolve a reference | One map lookup per affected name; duplicate checks visit only names touched by the turn | scanning all references |
 
 `each` is honest about its cost: comparing a new list value with the site's
 columns is linear in the list, as any keyed reconciliation of a list value is.
@@ -2097,11 +2112,19 @@ in this channel, each landed whole (see
 
 ## Browser Events and Policies
 
-The runtime installs one delegated listener per event type on the mount root,
-the first time a `LISTEN` command or a template event hole names that type.
-When an event fires it walks up from the target to the nearest element with a
-handler for that type, then to the nearest element carrying an engine node id,
-and dispatches `(node, handler, payload)`.
+The runtime installs two delegated listeners per event type on the mount root,
+one capturing and one bubbling, the first time a `LISTEN` command or a template
+event hole names that type. The event's own `bubbles` flag decides which acts.
+A bubbling event walks up from the target to the nearest element with a
+handler for that type. An event that does not bubble reaches only a handler
+on its target. The runtime then finds the nearest element carrying a routing
+node id and dispatches `(node, handler, payload)`. A row reference's command
+id does not change routing: its events still use the row's id.
+
+The set of event types is open, so `Engine.on` takes text. A misspelt type,
+or an event declared on an element that never raises it, reaches nothing.
+Typed attach functions cover the events of `Html`'s controls and helpers;
+a spec that expects a handler to run fails in both runners.
 
 Event payloads are UTF-8 text decided by event type (Appendix B). An event name
 may carry a policy suffix: `click:prevent` calls `preventDefault` when the
@@ -2140,7 +2163,22 @@ the mount root, so a submit never navigates the page.
 
 Focus is an explicit command on a named reference (`ref(name)` on an element;
 `Focus`/`Blur`/`SelectText` requests). A reference that is not mounted at the
-end of the turn is counted stale. App `focus`/`blur` handlers listen to the
+end of the turn is counted stale: it may leave in the turn that asks for it,
+so rejecting the request would punish a race the app cannot avoid.
+`expect-focused` checks the resulting focus in both runners. Focusing an
+element that cannot take focus leaves focus where it was, as `element.focus()`
+does; the engine does not interpret focusability.
+
+`ref_s(signal)` lets the name follow a signal, including a row's key in an
+`each` or table view template. A rename emits no DOM command. The empty name
+holds no reference and can be used for unselected rows. References live in a
+map from name to live nodes and their construction sites: mounting adds one
+node, disposal removes that node, and a rename does both. Each touched name
+is checked at the end of the turn; more than one live node is a `contract`
+error naming the name and both sites. Checking then lets a departing row
+and an entering row share a name within a turn. Resolution is one lookup.
+
+App `focus`/`blur` handlers listen to the
 bubbling `focusin`/`focusout` and carry the control's value. A disposed target
 never receives a delayed focus or value write.
 
@@ -2278,8 +2316,8 @@ builders and their parts go with a discarded worker too: nothing a failed
 job wrote is ever delivered.
 
 **Contract errors the engine raises:** duplicate key; switch value not in its
-cases; row template not a single element; focus reference inside a row
-template; two handlers for one event on one element; a decision whose list
+cases; row template not a single element; two live references with one name;
+two handlers for one event on one element; a decision whose list
 replaces a cell an earlier write of the same list wrote (named by the site
 whose handler or reaction fired, the cell's position in the store and the
 two writes' places in the list, since the record builder hands the engine
@@ -2311,7 +2349,8 @@ static attributes, children, holes, hole path depth, row handlers — above 255;
 more follow-up turns of depth 2 or more in one host call than the breadth
 backstop allows.
 Each is checked before it could wrap. The runtime adds `resource_limit` for
-ingress-queue overflow and refuses a module of another protocol version
+ingress-queue overflow or a drain delivering more than 4096 turns before
+returning to idle, and refuses a module of another protocol version
 before running it, and a page whose port handlers do not match the
 program's declarations before mounting it.
 
@@ -2365,6 +2404,7 @@ bound and a declared behaviour at the bound:
 | Live node ids (rows included) | 2³² − 2 | `resource_limit` poison |
 | A table's changes | One earlier row for each distinct key one turn writes | Cleared when the turn ends |
 | Runtime ingress queue | 4096 queued events | `resource_limit` poison |
+| Turns one drain delivers | 4096 | `resource_limit` poison |
 | Monitor job history | `history` option (default 128, at most 1024) | Oldest overwritten, counted |
 | Monitor retired instances | 16 | Oldest overwritten, counted |
 | Monitor per-task figures | 64 names (the catalogue) | Further names under `*` |
@@ -2471,9 +2511,16 @@ oracle and never defines a meaning of its own. In particular:
   checkbox toggles and a radio checks, each with `input` and `change`; a
   submit button submits its form if the form's controls are valid; a link
   navigates) unless the dispatched handler's `:prevent` policy prevented
-  them; `real-click` differs only in failing on a disabled control;
+  them. Before the default action it delivers `pointermove`, `mousemove`,
+  `pointerdown`, `mousedown`, the focus change, `pointerup`, `mouseup` and
+  `click`, in that order. A prevented `pointerdown` suppresses `mousedown`,
+  `mouseup` and the focus change; `click` still fires. `real-click` differs
+  only in failing on a disabled control;
 - focus moves as in Chrome, and a text control the user changed gets
-  `change` when it loses focus;
+  `change` when it loses focus. Engine `FOCUS` commands are applied after
+  the batch and raise the same focus events as programmatic focus in
+  Chrome, each as a turn. `expect-focused LOC` checks the active element,
+  and `expect-no-focus` checks that focus is on the document body;
 - `fill` is Playwright's: it refuses a control that cannot hold the value;
 - a navigation to a URL that differs from the current one only in its
   fragment stays in the document; any other mounts the app afresh in a new
@@ -2481,8 +2528,16 @@ oracle and never defines a meaning of its own. In particular:
   browser may restore a cached page rather than mount afresh;
 - a spec without `initial-location` starts at `/`.
 
-There are no native-only or Chrome-only steps. Inputs no runner implements —
-pointer, keyboard, composition and custom events, and session storage — are
+There are no native-only or Chrome-only steps. Hover is outside the grammar:
+neither runner delivers `pointerover`, `pointerout`, `pointerenter`,
+`pointerleave` or their four mouse counterparts. The browser replay stops
+them at `window` before the app loads. Which element is under the cursor
+after layout shifts needs layout the oracle lacks, and Chrome can raise
+these events without a step. Contract tests cover their dispatch, and an
+author can test a hover handler as a pure function.
+
+Inputs no runner implements — pointer input beyond the click sequence,
+keyboard, composition and custom events, and session storage — are
 not part of the grammar: IME composition is covered by the runtime's
 contract tests, and session storage is a **Target** service. An unknown step
 is a hard parse error in both runners, and neither runner may weaken a step;
@@ -2918,6 +2973,7 @@ attr, attr_s, class, class_s, test_id, test_id_s
 on : Str, Handler(ctx) -> Attr(ctx)          # event name, optional ":prevent"
 on_click : Handler(ctx) -> Attr(ctx)
 ref : Str -> Attr(ctx)                        # named focus reference
+ref_s : Signal(ctx, Str) -> Attr(ctx)          # reactive name; allowed in a row; empty names nothing
 
 # Files
 File                                          # opaque handle: a file, or a range of one
@@ -3122,8 +3178,8 @@ touches the wire, an Appendix B entry.
 All integers are little-endian. `u32` ids. `str` is `u32` byte length followed
 by UTF-8 bytes. `rest` is the remaining bytes of a payload as UTF-8.
 
-This appendix is protocol version **4**. The engine declares it
-(`Engine.protocol_version`), the host exports it (`protocol_version()`), the
+This appendix is protocol version **5**. The engine declares it
+(`Core.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
 `Dom.roc` decodes. A change to the wire bytes below bumps the version and updates the
@@ -3141,7 +3197,7 @@ roc-lang/roc#12953 (see [Compiler Limitations](#compiler-limitations)).
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (4) |
+| `roc_engine_version` | `() -> u32` | The protocol version (5) |
 | `roc_engine_keys` | `() -> List(U8)` | Declared storage keys, then the port table: `count:u32 (key:str)* nports:u32 (name:str kind:u8 delivery:u8 bound:u32)*`, where `kind` is `1` command, `2` call, `3` subscription, `delivery` is `0` (not a subscription), `1` every or `2` latest, and `bound` is n for every, `1` for latest, `0` otherwise. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
@@ -3326,7 +3382,7 @@ a `contract` fault.
 
 | Op | Name | Operands |
 |---|---|---|
-| 1 | `INST` | `node parent before tpl`, then per template hole in order: text/attr → `str`; event → nothing; nested site → `u32` node id for its placeholder |
+| 1 | `INST` | `node parent before tpl`, then per template hole in order: text/attr → `str`; event → nothing; nested site → `u32` node id for its placeholder; reference → `u32` command node id for its element |
 | 2 | `TEXT` | `node hole:u8 str` — row text hole |
 | 3 | `HATTR` | `node hole:u8 str` — row attribute hole |
 | 4 | `MOVE` | `node before` (`0` = append to the parent's end) |
@@ -3383,12 +3439,18 @@ extra := (kind 1, text)   —
        | (kind 2, attr)   name:str
        | (kind 3, event)  handler:u8 event:str
        | (kind 4, site)   —
+       | (kind 5, reference) —
 ```
 
 Text and nested-site holes have an empty text node in the tree as their
 placeholder. `path` is child indices from the template root. Hole targets are
 resolved once per row at `INST`, so later insertions by nested sites do not
 shift them.
+
+A reference hole carries no name on the wire: the engine alone holds the
+name. Its `INST` operand assigns its element an id for commands such as
+`FOCUS`, freed with the row. The runtime keeps that command address separate
+from event routing, which still uses the row's id.
 
 **Attribute values.** `""` removes the attribute. `value` is set as the live
 control value under the controlled-input rule and mirrored as an attribute;

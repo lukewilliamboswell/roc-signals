@@ -165,7 +165,7 @@ Storage reads answer by themselves, from storage.
 
 | Step | What happens |
 |---|---|
-| `(click LOC)` | A real mouse click: `mousedown`, focus moves to the nearest focusable element (or away), `mouseup`, `click`, then the default action unless the click handler prevented it — a checkbox toggles and a radio checks (each with `input` and `change`), a submit button submits its form if the form's controls are valid, a link navigates. A disabled control gets no click |
+| `(click LOC)` | A real mouse click: `pointermove`, `mousemove`, `pointerdown`, `mousedown`, focus moves to the nearest focusable element (or away), `pointerup`, `mouseup`, `click`, then the default action unless the click handler prevented it — a checkbox toggles and a radio checks (each with `input` and `change`), a submit button submits its form if the form's controls are valid, a link navigates. A prevented `pointerdown` suppresses `mousedown`, `mouseup` and the focus change; `click` still fires. A disabled control gets no click |
 | `(real-click LOC)` | The same click, but a disabled control fails the step |
 | `(fill LOC "text")` | Playwright's `fill`: focus an enabled text input or textarea and deliver the whole value as one `input` event. A value the control cannot hold (`"2x"` in an `<input type=number>`) fails the step |
 | `(change LOC "value")` | Set the value and fire `change`; on a radio or checkbox the value must equal the control's `value`, and it becomes checked |
@@ -176,8 +176,19 @@ Storage reads answer by themselves, from storage.
 
 Focus follows Chrome in both runners: a text control the user changed gets
 `change` when it loses focus, and a controlled input's rewritten value waits
-for blur while it has focus. A handler with no listener for its event is not
+for blur while it has focus. The engine's `Focus`, `Blur` and `SelectText`
+commands also update focus and raise the same events after the batch, each
+as its own turn. A focus loop stops the instance with `resource_limit`
+after 4096 turns in one step. A handler with no listener for its event is not
 an error: the event simply reaches nothing, as in a browser.
+
+Hover is not driven by specs. Neither runner delivers `pointerover`,
+`pointerout`, `pointerenter`, `pointerleave` or their mouse counterparts;
+the browser replay filters them before the app sees them. Hover depends on
+layout, including changes under a resting cursor, which the native oracle
+cannot model. Contract tests cover dispatch of those events, and a hover
+handler's pure logic can be tested as a function. The move events in the
+click sequence above are delivered in both runners.
 
 ### Assertions
 
@@ -191,6 +202,8 @@ an error: the event simply reaches nothing, as in a browser.
 | `(expect-no-attr LOC name)` | The attribute `name` is absent. `checked`, `disabled` and `value` are live state, asserted with their own steps |
 | `(expect-visible LOC)` | The locator matches an element in the document |
 | `(expect-absent LOC)` | The locator matches nothing |
+| `(expect-focused LOC)` | The located element is the document's active element |
+| `(expect-no-focus)` | No page element holds focus; the active element is the document body |
 
 ### Location, history, title and storage
 

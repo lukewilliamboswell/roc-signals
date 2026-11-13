@@ -28,7 +28,7 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 | Structure | `Elem`, `element`, `text`, `text_s`, `when`, `switch`, `remount_on`, `derive`, `resource`, `Remote(output, error)` (`request`: `Idle`, `Pending`; `answer`: `Unanswered`, `Answered(output)`, `Failed(error)`; `remote.answered()`, the latest answer as `Try(output, [NoAnswer])`), `gather` (one request per input), `Gathered(output, error)` (`jobs`: a `JobState` per input, `Working`, `Answered(output)` or `Failed(error)`; `all`: a `Remote` of the whole list) | [Conditionals and Lists](@/docs/dynamic-structure.md) |
 | Lists | `each`, `RowRef`, `RowRef.key`, `RowRef.field`, `RowRef.item` (the whole item), `RowRef.select`, `keyed`, `Keyed` | [Conditionals and Lists](@/docs/dynamic-structure.md#keyed-lists) |
 | Table views | `table_view`, `TableViewProps` (`query`, `plan`, `window`), `QueryPlan(k, v, s)` (`keep`, `sort`, `compare`), `Window` (`start`, `count`), `every_row` (the window that draws every row) | [Tables and Table Views](@/docs/tables-and-views.md) |
-| Attributes | `Attr`, `attr`, `attr_s`, `class`, `class_s`, `test_id`, `test_id_s`, `ref` | |
+| Attributes | `Attr`, `attr`, `attr_s`, `class`, `class_s`, `test_id`, `test_id_s`, `ref`, `ref_s` (a signal of the reference's name, including in a row; the empty name names nothing) | [Effects and the Browser](@/docs/effects-and-browser.md#focus) |
 | Events | `on` (event name, optionally `:prevent`), `on_click` | |
 | Files | `File`, `File.name`, `File.size`, `File.mime`, `File.slice`, `File.spans` (the `{ start, len }` ranges of `n` bytes that cover a file, for `read!`), `Received`, `FilesHandler`, `State.on_files`, `handle_files`, `handle_files_by`, `FilesHandler.also` (two files handlers as one event), `on_files` | [Files](@/docs/files.md) |
 | Operations on files | `File.upload` (`UploadProps`: `url`, `method ?? "POST"`, `headers ?? []`, `timeout ?? Unlimited`), `File.sha256`, `File.object_url` (acting where the browser keeps the file), `File.read_bytes`, `File.read_utf8` (reading it into the page; `ReadProps`: `max_bytes ?? 8388608`), `file_bytes`, `file_text`, `file_digest`, `file_url`, `FileError` (`Unreadable`, `TooLarge`, `InvalidUtf8`, `Unavailable`, `Refused`) | [Files](@/docs/files.md) |
@@ -129,6 +129,13 @@ with bytes and files carried beside the text.
 
 ## Event payloads
 
+A bubbling event reaches the nearest handler on its target or an ancestor.
+An event that does not bubble reaches only a handler on its target. The
+browser's `bubbles` flag decides this, so custom event types follow the same
+rule. `Engine.on` accepts an open event name; a misspelt name or an event
+the element never raises runs no handler. A spec expecting that handler's
+result catches it.
+
 | Event | Payload |
 |---|---|
 | `click`, `submit` | empty |
@@ -189,6 +196,8 @@ them.
 | Static attributes, children or holes per row template element | 255 | Resource limit |
 | Live DOM nodes | 2³² − 2 | Resource limit |
 | Events queued while a batch applies | 4096 | Resource limit |
+| Turns delivered before the runtime returns to idle | 4096 | Resource limit; bounds a focus feedback loop even when only one event waits at a time |
+| Live references with one nonempty name | 1, checked at the end of the turn | Contract error naming the name and both construction sites |
 | Names in a worker catalogue | 64: tasks, preparations and each preparation's tasks | Contract error at mount |
 | Work timeout | 600 s | Capped |
 | A cancelled job of a task that says `on_cancel: Finish` | Its timeout, else 600 s after it was asked for | Its worker is ended, its prepared state with it |
@@ -221,7 +230,7 @@ construction site, for example `contract: duplicate key "r0" in each at site
 
 | Class | Cause |
 |---|---|
-| `contract` | A rule of the API was broken: a duplicate key in an `each`, a `switch` value outside its cases, a row template that is not a single element, two handlers for one event on one element, a decision whose list replaces a cell an earlier write of the same list wrote, `Table.insert` of a key already present, a table built from two rows with one key, two rows of a view that compare `Same`, a view's row read after its key left the table in the same event, an effect feedback loop, an outbox posted twice in one turn, a worker task registered twice or asked for without being registered, a port declared twice or used without being declared or as another shape, a worker effect outside a job, a builder used after `finish!` or after the call that opened it returned, an answer holding more than 16 files, malformed boot or result bytes |
+| `contract` | A rule of the API was broken: a duplicate key in an `each`, two live references with one name, a `switch` value outside its cases, a row template that is not a single element, two handlers for one event on one element, a decision whose list replaces a cell an earlier write of the same list wrote, `Table.insert` of a key already present, a table built from two rows with one key, two rows of a view that compare `Same`, a view's row read after its key left the table in the same event, an effect feedback loop, an outbox posted twice in one turn, a worker task registered twice or asked for without being registered, a port declared twice or used without being declared or as another shape, a worker effect outside a job, a builder used after `finish!` or after the call that opened it returned, an answer holding more than 16 files, malformed boot or result bytes |
 | `resource_limit` | A bound in the table above |
 | `out_of_memory` | The Wasm heap could not grow |
 | `app_crash` | `crash` in app code, or a Roc runtime error |

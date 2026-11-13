@@ -40,9 +40,12 @@ inside it. The runtime never decides anything: it does what the commands say.
 
 ## One event
 
-1. One delegated listener per event type sits on the mount root. A click walks
-   up from the target to the nearest element with a click handler, then to the
-   nearest element with an engine node id.
+1. Two delegated listeners per event type sit on the mount root, one
+   capturing and one bubbling. A bubbling event walks from the target to
+   the nearest handler; an event that does not bubble reaches only a
+   handler on its target. The runtime then finds the nearest element with
+   a routing node id. A reference inside a row has its own command id,
+   while its events still route through the row.
 2. The runtime stages the payload (for an `input`, the new text) and calls
    `event(node, handler)`.
 3. The engine looks the node up in its routes table — one array index — and
@@ -67,8 +70,9 @@ inside it. The runtime never decides anything: it does what the commands say.
    changes from this turn, then its query and its window, and
    changes the rows it draws once, from the window before the event to the
    window after it.
-7. The records of the tables the turn wrote are cleared, focus requests are
-   resolved, and the call returns the command batch and the work record. The
+7. The changes of the tables the turn wrote are cleared, the reference names
+   the turn mounted or renamed are checked for duplicates, focus requests
+   are resolved, and the call returns the command batch and the work record. The
    runtime applies the DOM commands in order, then performs any effects.
 
 A signature can only err towards more work. Two cells far apart in a large
@@ -80,6 +84,10 @@ An effect result takes the same path: the runtime calls `event` on a reserved
 node with the request's id, and the engine runs the reaction as a turn.
 Events raised while a batch is being applied are queued and delivered after
 it, so the engine is never re-entered.
+
+The queue holds at most 4096 events, and one drain delivers at most 4096
+turns before returning to idle. Either overflow stops the instance with
+`resource_limit`, including a focus loop that queues only one event at a time.
 
 ## The command stream
 

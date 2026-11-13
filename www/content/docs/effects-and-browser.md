@@ -234,6 +234,24 @@ target an element the same turn created:
 
 {{ sample(file="effects.roc", region="focus") }}
 
+`Engine.ref_s(name_signal)` lets the name follow a signal, including a row's
+key in an `each` or table view. A rename changes only the engine's reference
+map and writes nothing to the DOM. The empty name names nothing, so only a
+selected row need hold a reference. A name is an address you build for a
+command; the row's identity remains its key.
+
+Two live elements may not hold the same nonempty name. The engine checks
+the names mounted or renamed at the end of the turn, before resolving
+focus, and reports a contract error naming the name and both construction
+sites. A departing row and an entering row can share a name during a turn
+as long as only one holds it when the turn ends.
+
+A name that is no longer mounted is counted stale. It can leave in the
+same turn that asks for it, so this is not a contract error. Focusing an
+element that cannot take focus leaves focus where it was. Both spec runners
+apply focus commands and let you assert the outcome with `expect-focused`
+and `expect-no-focus`.
+
 ## Cleanup
 
 `Engine.on_cleanup(name, v, plan)` runs when its scope is disposed, in the
@@ -302,3 +320,8 @@ click on its timeline names this way.
   fetch.
 - An HTTP timeout is capped at 600 seconds.
 - An outbox takes one post per turn; a second is a contract error.
+- The runtime queues at most 4096 events while applying a batch. A drain
+  also delivers at most 4096 turns before returning to idle. Beyond either
+  bound the app stops with `resource_limit`; the second catches a focus
+  loop that raises only one further event at a time. The native runner
+  applies the same turn bound to each step.
