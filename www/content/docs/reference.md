@@ -22,15 +22,16 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 | Signals | `Signal`, `const`, `Signal.map`, `Signal.map2` (which Roc's record builder calls: `{ a: va, b: vb }.Engine.Signal` is a signal of the record, the way a decision reads several cells), `Signal.lift`, `Signal.lift_row` | [Thinking in Signals](@/docs/thinking-in-signals.md#signals-declare-what-they-read) |
 | The store | `cell`, `table`, `Cells(whole, st, h)` (a description, built with the record builder: `{ a: .., b: .. }.Engine.Cells`; a store of one cell is `Engine.cell(init).map(\|c\| { c: c })`), `Cells.map`, `Cells.map2`, `Cells.with_reset`, `store`, `Stored(tag, st)`, `Store(st, h)`, `Store.cells`, `Store.with_initial`, `Store.after`, `Store.read` | [Shared State](@/docs/shared-state.md) |
 | Cells and writes | `Cell(st, a)`, `Cell.signal`, `Cell.state`, `Cell.set`, `Cell.update`, `Write(st)` | [Shared State](@/docs/shared-state.md#writes-are-values) |
-| Decisions | `handle`, `handle_by` (handlers), `handle_files`, `handle_files_by` (handlers of the files an event carries), `react`, `react_by` (reactions): each from one pure function that returns a `List(Write(st))`; `does` (a handler from a list of writes, for a transition that needs nothing from the event) | [Shared State](@/docs/shared-state.md#decisions) |
+| Decisions | `handle`, `handle_by` (handlers generic over the payload), `react`, `react_by` (reactions): each from one pure function that returns a `List(Write(st))`; `does` (a handler from a list of writes, for a transition that needs nothing from the event) | [Shared State](@/docs/shared-state.md#decisions) |
 | State | `state`, `State(ctx, s)` (a piece of state as one context sees it, local or shared), `State.signal`, `State.lift`, `State.lift_row` | [Local State, Events, and Forms](@/docs/state-and-events.md) |
-| Handlers | `Handler`, `State.update`, `State.update_by`, `State.set_value`, `State.set_value_by`, `Handler.also` (two handlers as one event), `Handler.lift`, `Handler.lift_row` | [Local State, Events, and Forms](@/docs/state-and-events.md#handlers) |
+| Handlers | `HandlerOf(ctx, p)`, `Handler(ctx)` (text), `FilesHandler(ctx)` (`Received`), `State.update`, `State.update_by`, `State.set_value`, `State.set_value_by`, `HandlerOf.also` (two handlers of one payload as one event), `HandlerOf.lift`, `HandlerOf.lift_row` | [Local State, Events, and Forms](@/docs/state-and-events.md#handlers) |
 | Structure | `Elem`, `element`, `text`, `text_s`, `when`, `switch`, `remount_on`, `derive`, `resource`, `Remote(output, error)` (`request`: `Idle`, `Pending`; `answer`: `Unanswered`, `Answered(output)`, `Failed(error)`; `remote.answered()`, the latest answer as `Try(output, [NoAnswer])`), `gather` (one request per input), `Gathered(output, error)` (`jobs`: a `JobState` per input, `Working`, `Answered(output)` or `Failed(error)`; `all`: a `Remote` of the whole list) | [Conditionals and Lists](@/docs/dynamic-structure.md) |
 | Lists | `each`, `RowRef`, `RowRef.key`, `RowRef.field`, `RowRef.item` (the whole item), `RowRef.select`, `keyed`, `Keyed` | [Conditionals and Lists](@/docs/dynamic-structure.md#keyed-lists) |
 | Table views | `table_view`, `TableViewProps` (`query`, `plan`, `window`), `QueryPlan(k, v, s)` (`keep`, `sort`, `compare`), `Window` (`start`, `count`), `every_row` (the window that draws every row) | [Tables and Table Views](@/docs/tables-and-views.md) |
 | Attributes | `Attr`, `attr`, `attr_s`, `class`, `class_s`, `test_id`, `test_id_s`, `ref`, `ref_s` (a signal of the reference's name, including in a row; the empty name names nothing) | [Effects and the Browser](@/docs/effects-and-browser.md#focus) |
-| Events | `on` (event name, optionally `:prevent`), `on_click` | |
-| Files | `File`, `File.name`, `File.size`, `File.mime`, `File.slice`, `File.spans` (the `{ start, len }` ranges of `n` bytes that cover a file, for `read!`), `Received`, `FilesHandler`, `State.on_files`, `handle_files`, `handle_files_by`, `FilesHandler.also` (two files handlers as one event), `on_files` | [Files](@/docs/files.md) |
+| Events | `on` (bare event type, text payload), `on_with` (text payload and typed `Policy`: `prevent` and `stop`, both false by default), `on_click`, `on_files` (`Change`, `Drop` or `Paste`, files payload) | [Local State, Events, and Forms](@/docs/state-and-events.md#handlers) |
+| Properties | `Prop(a)`, `Prop.value` (`Str`), `Prop.checked` (`Bool`), `prop`, `prop_s` | [Element properties](#element-properties) |
+| Files | `File`, `File.name`, `File.size`, `File.mime`, `File.slice`, `File.spans` (the `{ start, len }` ranges of `n` bytes that cover a file, for `read!`), `Received`, `FilesHandler` (the generic handler family at `Received`), `on_files` | [Files](@/docs/files.md) |
 | Operations on files | `File.upload` (`UploadProps`: `url`, `method ?? "POST"`, `headers ?? []`, `timeout ?? Unlimited`), `File.sha256`, `File.object_url` (acting where the browser keeps the file), `File.read_bytes`, `File.read_utf8` (reading it into the page; `ReadProps`: `max_bytes ?? 8388608`), `file_bytes`, `file_text`, `file_digest`, `file_url`, `FileError` (`Unreadable`, `TooLarge`, `InvalidUtf8`, `Unavailable`, `Refused`) | [Files](@/docs/files.md) |
 | Saving and downloading | `File.save` (a download command; `SaveProps`: `name : [Same, Named(Str)]`), `File.fetch` (`FetchProps`: `url`, `method`, `headers`, `timeout : [Unlimited, Ms(U32)]`), `fetched`, `FetchError` (`Network`, `Timeout`, `Status`, `TooLarge`, `Refused`) | [Files in Tasks](@/docs/files-in-tasks.md) |
 | Effects in a worker job | `File.read!` (`{ start, len }`) and `File.contents!`, answering `Try(_, [Unreadable])`, and `File.contents_utf8!`, `Try(Str, [Unreadable, InvalidUtf8])`; `Files.build!` (`import pf.Files`; `BuildProps`: `name`, `mime : [Auto, Mime(Str)] ?? Auto`, `start_from : [Empty, From(File)] ?? Empty`), `Builder`, `Builder.append!` (`Try({}, [TooLarge])`), `Builder.append_file!`, `Builder.finish!` | [Files in Tasks](@/docs/files-in-tasks.md) |
@@ -136,7 +137,14 @@ rule. `Engine.on` accepts an open event name; a misspelt name or an event
 the element never raises runs no handler. A spec expecting that handler's
 result catches it.
 
-| Event | Payload |
+The attach function declares a payload kind. Text helpers use the text
+kind; `on_files` uses the files kind. The handler's payload type must
+match. Policies are a typed record, never suffixes on the name. `prevent`
+prevents the default action, and `stop` prevents a bubbling event from
+reaching page listeners above the mount. `stop` has no effect on an event
+that does not bubble, so its own target can still receive it.
+
+| Text event or files declaration | Payload |
 |---|---|
 | `click`, `submit` | empty |
 | `input` | the control's value |
@@ -147,10 +155,27 @@ result catches it.
 
 ## Attribute values
 
-An empty value removes the attribute. `value` is the live control value,
-guarded while the control has focus. `checked` is a property set from
-`"true"`. `disabled`, `selected`, `readonly`, `required`, `hidden` and
+An empty value removes the attribute. `disabled`, `selected`, `readonly`, `required`, `hidden` and
 `multiple` are present for any value other than `""` and `"false"`.
+
+## Element properties
+
+`Engine.prop(row, value)` and `prop_s(row, signal)` set a property from
+the closed table below. Their values are typed and equal updates are
+pruned, including in a row template. `Html` controls set them for you.
+
+| Row | Value type | Elements | Behavior | Claims attribute |
+|---|---|---|---|---|
+| `Engine.Prop.value` | `Str` | `input`, `textarea`, `select`, `option` | Live value, guarded while focused or composing; a select settles after option changes | `value` |
+| `Engine.Prop.checked` | `Bool` | `input` | Live checked state | `checked` |
+
+Both mirror their attribute; an empty value removes that mirrored
+attribute. A claimed name used through `attr` or `attr_s` is a contract
+error on the row's elements. On another element, such as a custom element
+or `<progress>`, `attr("value", ...)` sets only the attribute. A property
+on an element its row does not allow, or declared twice, is a contract
+error at mount. Applying `value` to a file input is a contract error at
+that command, including if its `type` changed through a signal.
 
 ## Mount options
 
@@ -197,6 +222,8 @@ them.
 | Live DOM nodes | 2³² − 2 | Resource limit |
 | Events queued while a batch applies | 4096 | Resource limit |
 | Turns delivered before the runtime returns to idle | 4096 | Resource limit; bounds a focus feedback loop even when only one event waits at a time |
+| Payload kinds, element properties | Closed tables with one-byte indices | Unknown numbers on the wire are contained as `executor` |
+| Event policies | Closed table of 32 bits | Unknown fields do not compile; unknown wire bits are contained as `executor` |
 | Live references with one nonempty name | 1, checked at the end of the turn | Contract error naming the name and both construction sites |
 | Names in a worker catalogue | 64: tasks, preparations and each preparation's tasks | Contract error at mount |
 | Work timeout | 600 s | Capped |
@@ -230,7 +257,7 @@ construction site, for example `contract: duplicate key "r0" in each at site
 
 | Class | Cause |
 |---|---|
-| `contract` | A rule of the API was broken: a duplicate key in an `each`, two live references with one name, a `switch` value outside its cases, a row template that is not a single element, two handlers for one event on one element, a decision whose list replaces a cell an earlier write of the same list wrote, `Table.insert` of a key already present, a table built from two rows with one key, two rows of a view that compare `Same`, a view's row read after its key left the table in the same event, an effect feedback loop, an outbox posted twice in one turn, a worker task registered twice or asked for without being registered, a port declared twice or used without being declared or as another shape, a worker effect outside a job, a builder used after `finish!` or after the call that opened it returned, an answer holding more than 16 files, malformed boot or result bytes |
+| `contract` | A rule of the API was broken: a duplicate key in an `each`, two live references with one name, a `switch` value outside its cases, a row template that is not a single element, two handlers for one event type on one element, an event type ending in a retired suffix, a property on an element its row does not allow or declared twice, an attribute with a name a property row claims on that element, a value property on a file input, a decision whose list replaces a cell an earlier write of the same list wrote, `Table.insert` of a key already present, a table built from two rows with one key, two rows of a view that compare `Same`, a view's row read after its key left the table in the same event, an effect feedback loop, an outbox posted twice in one turn, a worker task registered twice or asked for without being registered, a port declared twice or used without being declared or as another shape, a worker effect outside a job, a builder used after `finish!` or after the call that opened it returned, an answer holding more than 16 files, malformed boot or result bytes |
 | `resource_limit` | A bound in the table above |
 | `out_of_memory` | The Wasm heap could not grow |
 | `app_crash` | `crash` in app code, or a Roc runtime error |

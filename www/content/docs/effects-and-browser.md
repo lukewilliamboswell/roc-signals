@@ -197,8 +197,8 @@ the view (see [Shared State](@/docs/shared-state.md#starting-values-from-the-boo
 Keep the app's navigation *intent* separate from the current location, so
 that following the back button updates the location without pushing a new
 entry: post each place the app asks to go to an outbox, and push what is
-posted. Links inside the app should use a handler with the `click:prevent`
-event (`Engine.on("click:prevent", ...)`) so the browser does not navigate on
+posted. Links inside the app should use a click handler with the `prevent`
+policy (`Engine.on_with("click", { prevent: True }, ...)`) so the browser does not navigate on
 its own.
 
 In an app with several pages the location and the outbox are cells of the

@@ -559,8 +559,9 @@ visits the readers of a cell that shares its bit, and they prune.
 
 A `State(ctx, s)` is a piece of state as one context sees it, local or
 shared. It is a lens (`get`, `modify`) with what a read of it listens to
-and what a write through it reports. A `Handler(ctx)` is an environment
-transformer that answers what it wrote, `(ctx, payload) -> (ctx, written)`,
+and what a write through it reports. A `HandlerOf(ctx, p)` is an environment
+transformer over a typed payload that answers what it wrote,
+`(ctx, p) -> (ctx, written)` (`Handler(ctx)` is its text alias),
 and a `Reaction(ctx, a)` is the same for an effect result. The set is the
 handler's answer, not a property fixed before it runs, so a handler that
 decides what to write from what it reads reports only the writes it made,
@@ -635,7 +636,7 @@ to carry it.
 The static content of a site that draws no rows is flattened at mount into a
 *block*:
 
-- *holes* — dynamic text and attributes, each with its read signature, reader
+- *holes* — dynamic text, attributes and element properties, each with its read signature, reader
   and last emitted value;
 - *reference holes* — named element addresses, whose signal updates the
   reference map without emitting a DOM command;
@@ -653,7 +654,8 @@ everything it could need. A layer site's reads include its own layer and the
 layers below it: a pass from above reaches a changed layer only through the
 signatures of the sites above it.
 
-An element takes one handler per event. Two handlers for one event on one
+An element takes one handler per event type, whatever its policies or payload
+kind. Two handlers for one event type on one
 element are a `contract` error at mount, naming the event, the element and
 the site: the runtime keeps one listener per event and element, so the
 second would be dropped without a word. Two things that must both happen are
@@ -667,7 +669,7 @@ its own representation:
 
 - The row template runs **once per site**, against a `RowRef` accessor rather
   than a row value. It compiles to a DOM template (sent once as `TEMPLATE`)
-  plus a hole table: text, attribute, event, reference and nested-site placeholders.
+  plus a hole table: text, attribute, property, event, reference and nested-site placeholders.
 - Rows are **typed columns** indexed by slot: items, keys, the last value of
   every live hole, nested site instances, dirty marks, plus `order` (slots by
   position), a free-slot list, and an open-addressing key index from the exact
@@ -962,7 +964,7 @@ State lives in three places, and each is written in its own way:
   event fires, receives the payload, and answers the environment with its
   writes applied and the set it wrote.
 - **Local state is written by reducers.** `update`, `update_by`, `set_value`,
-  `set_value_by`, `on_result` and `on_files` are applied to the value the
+  `set_value_by` and `on_result` are applied to the value the
   state holds at that moment. The same `State` API writes a table view's row, and
   `cell.state()` gives a component written over a `State` a cell to draw
   without knowing it is one.
@@ -980,9 +982,10 @@ State lives in three places, and each is written in its own way:
   record: `Signal.map2` has the shape Roc's record builder calls, so
   `{ a: va, b: vb }.Engine.Signal` reads what both read.
   `Engine.does(writes)` is the handler of a list that needs neither the
-  payload nor a reading, and `handle_files` and `handle_files_by` make a
-  decision of the files an event carries, so a drop or a choice is a
-  transition like any other.
+  payload nor a reading. These constructors, the reducers `set_value` and
+  `set_value_by`, and handler composition are generic over the event's
+  payload: text, files or a later declared kind use the same family. A
+  handler of one payload can attach only through a kind of that payload.
   A transition usually touches several cells that must agree. One function
   sees one reading and returns every write, so there is no order to get
   wrong; a reaction per cell would decide the same transition again for each
@@ -1011,7 +1014,8 @@ State lives in three places, and each is written in its own way:
   cell replaces it. A decision composed second takes its reading from the
   environment `first` returned:
   `draft.update(|_| "").also(Engine.handle_by(draft.signal(), ..))` reads the
-  emptied draft. `FilesHandler.also` is the same for the files of one event.
+  emptied draft. Both handlers have the same payload type, including when
+  that payload is the files of one event.
 - **One event is one atomic transition.** All writes made while an event
   fires are in place before any observation runs.
 - **A reset is a write the transition includes.** The generated reset of a
@@ -1407,10 +1411,12 @@ Rules:
 - **Determinism.** The same mount and the same sequence of inputs produce the
   same command bytes.
 
-Attribute commands carry the engine's decided value. The runtime's
-interpretation of a few attribute names (`value` and `checked` as live control
-state, boolean attributes, `class` on SVG) is part of the protocol in
-Appendix B, not a decision about application state.
+Element properties, such as a control's live value, are their own commands,
+from a closed table in Appendix B. Attribute commands set attributes, and
+the runtime interprets only how a boolean attribute or SVG `class` is
+written. Each property row fixes its value type, encoding, allowed elements
+and the attribute name it claims, if any; the runtime applies the
+engine-decided value rather than inferring control state from a name.
 
 ## The Effect Channel
 
@@ -1969,7 +1975,7 @@ reaches it as a **handle**, never as bytes on the page. The browser keeps
 the file; the runtime holds its `File` under a token; the host mints a
 `Box(U64)` holding the token in its blob heap; and the engine pairs each
 handle with the name, size and type the event's file record carries into a
-`File` value the handler's reducer receives (`State.on_files`). The page's
+`File` value the handler's reducer receives (`State.set_value`). The page's
 heap holds a few dozen bytes per file whatever its size.
 
 A handle's lifetime is Roc's reference count. A `File` is an ordinary value:
@@ -2123,40 +2129,56 @@ id does not change routing: its events still use the row's id.
 
 The set of event types is open, so `Engine.on` takes text. A misspelt type,
 or an event declared on an element that never raises it, reaches nothing.
+Nothing reports that silent outcome: an earlier check would need a closed
+list kept in step with every browser and custom element.
 Typed attach functions cover the events of `Html`'s controls and helpers;
 a spec that expects a handler to run fails in both runners.
 
-Event payloads are UTF-8 text decided by event type (Appendix B). An event name
-may carry a policy suffix: `click:prevent` calls `preventDefault` when the
-handler dispatches. The policy is static, fixed at the time the handler is
-declared, because the browser's synchronous response window closes before the
-engine could decide.
+What an event carries is decided by its handler's declaration: a payload
+kind from a closed, versioned set (Appendix B). The text kind carries UTF-8
+text decided by event type, and the files kind carries the files the event
+holds. A handler is generic over its payload, and a kind is attached only
+to the event types its row allows. Decoding happens once, after routing,
+and a malformed payload is a `contract` fault naming the site.
 
-A handler declared with the `:files` suffix receives the files the event
-carries instead of text: a file input's `change`, a `drop` and a `paste`
-(see [Files](#files)). The runtime captures them while the event is
-dispatched, because the browser empties a drop's or a paste's file list
-afterwards. A `drop:files` handler also makes the runtime prevent the
-default of `dragover` on its element, without a turn, so the drop happens
-there instead of the browser opening the file. A file input needs no
-policy: the browser opens its chooser on the user's own click, so user
-activation never depends on the engine.
+A declaration may carry policies from a closed table, as a record the
+compiler checks (`{ prevent: True }`). They are static, because the
+browser's synchronous response window closes before the engine could
+decide, and they cross the wire as bits. `prevent` calls `preventDefault`
+when the handler dispatches. `stop` calls `stopPropagation` for an event
+that bubbles, so listeners above the mount root do not receive it.
+Nearest-handler dispatch already isolates handlers within the mount.
+For an event that does not bubble, `stop` does nothing: stopping it at the
+capturing root would keep it from its own target.
 
-**Target:** `stopPropagation` as a static policy; dynamic `preventDefault`
+Event types are bare text. A type ending in a retired suffix (`:prevent`,
+`:files` or `:prevent:files`) is a `contract` error at mount naming
+`on_with` or `on_files`. Another colon is part of the type, so a custom
+event such as `x:y` remains valid.
+
+`on_files` takes its event as `[Change, Drop, Paste]`, so a files handler
+cannot attach to an event that carries no files. The runtime captures the
+files during dispatch, before a drop's or paste's list is emptied. The
+files kind's `Drop` prevents the default of both `drop` and `dragover` on
+its element, without another turn, so a file is dropped there rather than
+opened by the browser. An event carrying no files dispatches nothing. A
+file input needs no policy: its chooser opens on the user's own click.
+
+**Target:** dynamic `preventDefault`
 expressed as a declared policy over a value the engine has already rendered
 (never decided after the event); pointer coordinates and form-data payloads.
 Each is a protocol change with a contract test.
 
 ## Controlled Inputs
 
-A `value` attribute is a guarded update, not a blind assignment:
+The `value` property is a guarded update, not a blind assignment:
 
 - an equal value is a no-op, so caret and selection stay;
 - a differing value is deferred while the control is focused or composing
   (IME), and applied on blur, unless a later input echo already matched it.
 
 This applies to text-like controls (text inputs, number-input draft strings,
-textarea). `checked` is set as a property. A `<select>`'s value is re-applied
+textarea). The `checked` property takes a `Bool`. A `<select>`'s value is re-applied
 when an option is inserted below it or an option's value changes. Forms are
 app-managed: the runtime prevents the default of every `submit` that reaches
 the mount root, so a submit never navigates the page.
@@ -2185,6 +2207,18 @@ never receives a delayed focus or value write.
 Native specs model this contract through the oracle; they do not establish
 real IME, keyboard or assistive-technology behaviour. Chrome tests (typing,
 mid-text edits, a CDP IME composition) do.
+
+Properties are a closed table, attached with `prop` or `prop_s`, and pruned
+like attributes, including in row templates. A property on an element its
+row does not allow, a property declared twice on an element, and an
+attribute with a name a row claims on that element are `contract` errors
+at mount. Outside that row's elements the name remains an ordinary
+attribute: `value` on a custom element sets its attribute only.
+
+A `value` property on a file input is a `contract` error when applied,
+naming the node, in the runtime and the oracle alike. The input's `type`
+can follow a signal, so a mount check cannot decide it. `Html.file_input`
+offers no value property.
 
 ## The Thin Wasm Host
 
@@ -2340,7 +2374,10 @@ the file; a job's answer holding more than 16 files or nesting deeper than
 the page decodes; in the worker, a job for a name that is not a task of
 its own (a preparation's name, or a preparation's task through `work`),
 and a job of a task its preparation does not list; event payload not
-UTF-8; boot
+valid for its handler's payload kind (for text, not UTF-8); an event type
+ending in a retired policy or files suffix; a property on an element its
+row does not allow, a property declared twice on an element, or an
+attribute with a name a property row claims on that element; boot
 bytes or an effect result that do not follow Appendix B (truncated, trailing
 bytes, unknown tag, flags other than 0 or 1, text that is not UTF-8).
 **Resource limits:** node ids (2³² − 2 live nodes); any count the template
@@ -2353,6 +2390,9 @@ ingress-queue overflow or a drain delivering more than 4096 turns before
 returning to idle, and refuses a module of another protocol version
 before running it, and a page whose port handlers do not match the
 program's declarations before mounting it.
+It also raises `contract` for a `value` property applied to a file input,
+which `Dom.roc` raises too: the element's current type makes the program's
+mistake knowable only where the property is applied.
 
 A port handler is the page's own JavaScript and is contained like a
 browser service: a handler that throws or rejects, or answers with
@@ -2405,6 +2445,8 @@ bound and a declared behaviour at the bound:
 | A table's changes | One earlier row for each distinct key one turn writes | Cleared when the turn ends |
 | Runtime ingress queue | 4096 queued events | `resource_limit` poison |
 | Turns one drain delivers | 4096 | `resource_limit` poison |
+| Payload kinds and element properties | Closed tables with one-byte indices | Unknown wire numbers are contained as `executor` |
+| Event policies | Closed table of 32 bits | Unknown fields do not compile; unknown wire bits are contained as `executor` |
 | Monitor job history | `history` option (default 128, at most 1024) | Oldest overwritten, counted |
 | Monitor retired instances | 16 | Oldest overwritten, counted |
 | Monitor per-task figures | 64 names (the catalogue) | Further names under `*` |
@@ -2510,7 +2552,7 @@ oracle and never defines a meaning of its own. In particular:
 - a click is a real mouse click with the browser's default actions (a
   checkbox toggles and a radio checks, each with `input` and `change`; a
   submit button submits its form if the form's controls are valid; a link
-  navigates) unless the dispatched handler's `:prevent` policy prevented
+  navigates) unless the dispatched handler's `prevent` policy prevented
   them. Before the default action it delivers `pointermove`, `mousemove`,
   `pointerdown`, `mousedown`, the focus change, `pointerup`, `mouseup` and
   `click`, in that order. A prevented `pointerdown` suppresses `mousedown`,
@@ -2581,14 +2623,14 @@ metric: soak plateaus assert it.
 | `rows_moved` | `MOVE` commands |
 | `create_element`, `bind_event`, `set_metadata` | `ELEM`, `LISTEN` and `TITLE` commands |
 | `set_text` | `SETTEXT` and `TEXT` commands |
-| `set_value`, `set_checked` | Control state the engine set: `ATTR` and `HATTR` named `value` / `checked`, and `INST` attribute holes with those names |
-| `patches_emitted` | DOM commands (opcodes 1–12) |
+| `set_value`, `set_checked` | Control state the engine set: `PROP` and `HPROP` for the `value` / `checked` rows, and `INST` property holes of those rows |
+| `patches_emitted` | DOM commands (opcodes 1–12 and `PROP`/`HPROP`, 21–22) |
 | `derived_calls_into_roc` | Evaluations of app closures: holes, conditions, list reads, `derive` inputs, `remount_on` keys, watched values, cleanup values; for a table view, each read of its query or its window and each row it places with the query's `keep` and `sort` (two for a written key it absorbs, the row before and after; every row of the table for a mount or a rebuild). A table view's comparisons are not counted |
 | `scopes_created` / `scopes_disposed` | Scopes mounted / disposed: `when` and `switch` branches, `remount_on` bodies, and the rows of `each` and table view sites |
 | `dirty_source_roots` | What a turn wrote: one for each cell, and one for each layer when its readers are refreshed, whether its site started the pass, joined it or was reached by the walk after it (a layer disposed before then counts none; a `resource` answer that folds to an equal value writes none, and a decision that returns no write counts nothing) |
 | `each_key_hashes` / `each_key_compares` | Keys hashed and full-key comparisons made by keyed reconciliation (lookups and inserts; a key hashed for a lookup is not hashed again to insert it, and a removal uses the stored hash) |
 | `effects_issued`, `effects_delivered`, `effects_stale`, `effects_refused`, `effects_cancelled`, `effects_reparented`, `effects_skipped` | The engine's effect counters (The Effect Channel, "Counters"): awaited requests issued (one `FX` each), results delivered to a reaction, stale results dropped, requests refused at the in-flight cap, requests cancelled (one `CANCEL` each), requests reparented to a surviving ancestor, and reparented writes skipped because their state was retired |
-| `expect-updates loc n` | The located element's creation plus every later `ATTR`, `HATTR`, `SETTEXT` or `TEXT` that wrote it or a text node directly inside it; natively from the oracle, in Chrome from a MutationObserver |
+| `expect-updates loc n` | The located element's creation plus every later `ATTR`, `HATTR`, `SETTEXT` or `TEXT` that wrote it or a text node directly inside it, and `PROP`/`HPROP` whose row claims an attribute; natively from the oracle, in Chrome from a MutationObserver of the mirrored attributes |
 | `expect-interval ms n` | Live `INTERVAL` subscriptions with period `ms` |
 | `tick-interval ms` | Deliver `Fired` to every live interval with period `ms`; a step with none live fails. `tick-interval-if-active` is a no-op when none is live |
 | `expect-cleanup name n` | Runs of `on_cleanup` sites named `name` |
@@ -2851,7 +2893,7 @@ The authoring API as it stands (`Engine.roc`). Types are abbreviated; `ctx` is
 the context a value or handler is used in.
 
 **The authoring API is the whole public surface.** Every `Engine` type is
-opaque: `Signal`, `State`, `Handler`, `RowRef`, `Cell`, `Cells` and `Store` are
+opaque: `Signal`, `State`, `HandlerOf`, `Prop`, `RowRef`, `Cell`, `Cells` and `Store` are
 opaque wrappers whose methods are documented here, and the contexts, `Elem`,
 `Attr`, `Keyed`, `Write`, `Reach`, `Stored`, `Reaction`, `Program`,
 `Registration` and `Outbox` are aliases of opaque types in the internal
@@ -2867,6 +2909,12 @@ opaque type in a module of its own, which an app imports to write a table.
 The operations of `Table` that only the engine may call take an
 `EngineOnly`, an opaque value of a module the platform does not expose, so
 they are outside the surface too.
+
+`Handler(ctx)` and `FilesHandler(ctx)` are aliases of `HandlerOf` at
+`Str` and `Received`, so both use one family of reducers, decisions and
+composition methods. `Policy` is a nominal props record with defaulted
+fields. A payload kind and its decoder are Core-only: an app chooses one
+through an attach function rather than supplying an unchecked codec.
 
 ```roc
 # Program entry
@@ -2918,24 +2966,25 @@ Cell.update : Cell(st, a), (a -> a) -> Write(st)
 Write(st)                                     # opaque: one write to the store
 
 # Decisions: one pure function from a reading to a list of writes
-handle : (Str -> List(Write(st))) -> Handler(ctx)                # given the event's payload
-handle_by : Signal(ctx, b), (b, Str -> List(Write(st))) -> Handler(ctx)   # b read before the decision's own writes
-does : List(Write(st)) -> Handler(ctx)                           # a list that needs neither payload nor reading
-handle_files : (Received -> List(Write(st))) -> FilesHandler(ctx)   # given the files an event carries
-handle_files_by : Signal(ctx, b), (b, Received -> List(Write(st))) -> FilesHandler(ctx)
+handle : (p -> List(Write(st))) -> HandlerOf(ctx, p)                # given the event's payload
+handle_by : Signal(ctx, b), (b, p -> List(Write(st))) -> HandlerOf(ctx, p)   # b read before the decision's own writes
+does : List(Write(st)) -> HandlerOf(ctx, p)                          # a list that needs neither payload nor reading
 react : (r, Result -> List(Write(st))) -> Reaction(ctx, r)          # given what the request was issued for
 react_by : Signal(ctx, b), (b, r, Result -> List(Write(st))) -> Reaction(ctx, r)
 
 # Local state and handlers
 state : s, (State(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
 State.signal : State(ctx, s) -> Signal(ctx, s)
-State.update : State(ctx, s), (s -> s) -> Handler(ctx)
-State.update_by : State(ctx, s), Signal(ctx, b), (s, b -> s) -> Handler(ctx)
-State.set_value : State(ctx, s), (s, Str -> s) -> Handler(ctx)
-State.set_value_by : State(ctx, s), Signal(ctx, b), (s, b, Str -> s) -> Handler(ctx)
+HandlerOf(ctx, p)                             # opaque: a handler of payload p
+Handler(ctx) : HandlerOf(ctx, Str)              # text events
+FilesHandler(ctx) : HandlerOf(ctx, Received)    # file events; same constructors and methods
+State.update : State(ctx, s), (s -> s) -> HandlerOf(ctx, p)
+State.update_by : State(ctx, s), Signal(ctx, b), (s, b -> s) -> HandlerOf(ctx, p)
+State.set_value : State(ctx, s), (s, p -> s) -> HandlerOf(ctx, p)
+State.set_value_by : State(ctx, s), Signal(ctx, b), (s, b, p -> s) -> HandlerOf(ctx, p)
 State.on_result : State(ctx, s), (s, a, Result -> s) -> Reaction(ctx, a)
-State.lift, State.lift_row, Handler.lift, Handler.lift_row
-Handler.also : Handler(ctx), Handler(ctx) -> Handler(ctx)        # both for one event, in order
+State.lift, State.lift_row, HandlerOf.lift, HandlerOf.lift_row
+HandlerOf.also : HandlerOf(ctx, p), HandlerOf(ctx, p) -> HandlerOf(ctx, p)  # both for one event, in order
 Reaction.also : Reaction(ctx, a), Reaction(ctx, a) -> Reaction(ctx, a)
 
 # Structure
@@ -2970,8 +3019,15 @@ every_row : Window                            # the window that draws every row 
 
 # Attributes and events
 attr, attr_s, class, class_s, test_id, test_id_s
-on : Str, Handler(ctx) -> Attr(ctx)          # event name, optional ":prevent"
+on : Str, Handler(ctx) -> Attr(ctx)          # bare event type; text kind, no policy
+Policy := { prevent : Bool ?? False, stop : Bool ?? False }
+on_with : Str, Policy, Handler(ctx) -> Attr(ctx)
 on_click : Handler(ctx) -> Attr(ctx)
+Prop(a)                                      # opaque: a closed property row and its value encoding
+Prop.value : Prop(Str)                        # input, textarea, select, option; guarded live value
+Prop.checked : Prop(Bool)                     # input's checked state
+prop : Prop(a), a -> Attr(ctx)
+prop_s : Prop(a), Signal(ctx, a) -> Attr(ctx)
 ref : Str -> Attr(ctx)                        # named focus reference
 ref_s : Signal(ctx, Str) -> Attr(ctx)          # reactive name; allowed in a row; empty names nothing
 
@@ -3008,9 +3064,7 @@ Builder.append! : Builder, List(U8) => Try({}, [TooLarge])   # past maxOutputByt
 Builder.append_file! : Builder, File => {}                    # by reference
 Builder.finish! : Builder => File
 Received : { files : List(File), refused : U64 }
-State.on_files : State(ctx, s), (s, Received -> s) -> FilesHandler(ctx)
-FilesHandler.also : FilesHandler(ctx), FilesHandler(ctx) -> FilesHandler(ctx)   # both for one event's files
-on_files : Str, FilesHandler(ctx) -> Attr(ctx)   # "change", "drop" or "paste"
+on_files : [Change, Drop, Paste], FilesHandler(ctx) -> Attr(ctx)
 
 # Effects
 watch : Signal(ctx, a), (a -> List(Request)), Reaction(ctx, a) -> Elem(ctx)
@@ -3168,7 +3222,7 @@ accept : [Any, Types(Str)] ?? Any }`), accessibility attributes (`aria_label`,
 match.
 
 **Target vocabulary.** An `Svg` module and a typed style API, event policies
-beyond `:prevent`, session storage, an entropy seed, and handler-level
+beyond `prevent` and `stop`, session storage, an entropy seed, and handler-level
 request occurrences. Each lands with an engine change,
 a native spec, a runtime contract test, a demonstration and, where it
 touches the wire, an Appendix B entry.
@@ -3178,7 +3232,7 @@ touches the wire, an Appendix B entry.
 All integers are little-endian. `u32` ids. `str` is `u32` byte length followed
 by UTF-8 bytes. `rest` is the remaining bytes of a payload as UTF-8.
 
-This appendix is protocol version **5**. The engine declares it
+This appendix is protocol version **6**. The engine declares it
 (`Core.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
@@ -3197,11 +3251,11 @@ roc-lang/roc#12953 (see [Compiler Limitations](#compiler-limitations)).
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (5) |
+| `roc_engine_version` | `() -> u32` | The protocol version (6) |
 | `roc_engine_keys` | `() -> List(U8)` | Declared storage keys, then the port table: `count:u32 (key:str)* nports:u32 (name:str kind:u8 delivery:u8 bound:u32)*`, where `kind` is `1` command, `2` call, `3` subscription, `delivery` is `0` (not a subscription), `1` every or `2` latest, and `bound` is n for every, `1` for latest, `0` otherwise. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
-| `roc_engine_files` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8), List(Box(U64)) -> { cmds, state, work }` | A `:files` event: as `roc_engine_event`, with the file record as the payload and the handles the host minted for it, in the record's order; a record that does not match them is a `contract` crash. On the effect node it is a result that carries files, whose files are those handles, in order: a job's answer (result tag 10), a port answer (14) or a fetched file (21) |
+| `roc_engine_files` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8), List(Box(U64)) -> { cmds, state, work }` | A files-kind event: as `roc_engine_event`, with the file record as the payload and the handles the host minted for it, in the record's order; a record that does not match them is a `contract` crash. On the effect node it is a result that carries files, whose files are those handles, in order: a job's answer (result tag 10), a port answer (14) or a fetched file (21) |
 | `roc_engine_drop` | `Box(Iter(Core.App)), List(U8), List(U8) -> {}` | Teardown |
 | `roc_engine_work` | `List(U8), List(Box(U64)) => List(U8)` | A worker instance's job (effectful): payload `name:str input:rest` and the handles the instance's host minted for the files the request named, in its order; returns the answer, `n:u32 (token:u64)*n output:rest`: the instance's tokens of the files the answer holds (in the order its payload refers to them), then the answer's bytes, a list of its own. `name` is a `str` (a `u32` length), while `input` is a `Wire` payload whose counts are LEB128, so a harness meets both encodings in one buffer. `output` is the `Wire` encoding of the job's `Ok` value or `Err` error followed by one byte, `0` or `1`, which the typed layer writes and reads. A name the catalogue does not hold, a preparation's name or a preparation's task's name, a payload without a name, or an answer holding more than 16 files, is a `contract` crash (it poisons that worker instance only) |
 | `roc_engine_prepare` | `List(U8), List(Box(U64)) => Box(Core.Kept)` | Prepare a state to keep (effectful): payload `prep:str init:rest` (the preparation's name and its own input) and the handles of the preparation's files; returns the state. A name that is not a preparation is a `contract` crash |
@@ -3244,7 +3298,7 @@ warm-up neither allocates.
 | `init()` | Mount with the staged boot bytes; mount commands become readable |
 | `event(node, handler)` | One turn with the staged payload; its commands become readable |
 | `files_stage(n) -> u32` | Mint handles for the next `event_files`, as many of `n` as the blob heap has free slots (64 at most live), and return how many; their tokens (`u64` each) are readable at `files_tokens()`. Releases an undelivered staged set first |
-| `event_files(node, handler)` | A `:files` event: the staged payload (its file record) and the staged handles move into `roc_engine_files` |
+| `event_files(node, handler)` | A files-kind event: the staged payload (its file record) and the staged handles move into `roc_engine_files` |
 | `files_released() -> u32` | After a batch is applied and its effects performed: free the slots of the handles Roc released since the last drain and return how many; their tokens are readable at `files_tokens()`, and the runtime lets their files go. `0` when poisoned |
 | `files_tokens() -> ptr` | The tokens `files_stage` or `files_released` left |
 | `work()` | A worker instance's job: the staged payload and the handles staged with `files_stage` move into `roc_engine_work`, the hosted effects may act for the length of the call, and the answer stays readable through `cmd_ptr`/`cmd_len` until the next call, the previous one released first. Traps when the instance is poisoned; a `contract` fault when an engine state is mounted in this instance (the page's) |
@@ -3287,7 +3341,7 @@ that has run, in first-run order, with its run count.
 | Index | Counter |
 |---|---|
 | 1–18 | Commands emitted, by opcode (`1` is `INST`, `4` `MOVE`, …) |
-| 19 | `set_value`: control values set (`ATTR`/`HATTR` named `value`, `INST` value holes) |
+| 19 | `set_value`: control values set (`PROP`/`HPROP` for property 1, and `INST` value property holes) |
 | 20 | `set_checked`: the same for `checked` |
 | 21 | Evaluations of app closures (`derived_calls_into_roc`) |
 | 22 | Rows removed by reconciliation, and rows that left a table view's window (`rows_removed`) |
@@ -3301,6 +3355,7 @@ that has run, in first-run order, with its run count.
 | 32–38 | Effect counters (The Effect Channel, "Counters"): requests issued, results delivered, stale results, requests refused at the in-flight cap, requests cancelled, requests reparented, writes skipped |
 | 39 | Live awaited ids now (a gauge, not cumulative) |
 | 40 | Port commands sent (`PORT`, opcode 19, which is counted here and not at index 19) |
+| 41, 42 | `PROP`, `HPROP` commands (opcodes 21, 22; counted here rather than by opcode) |
 
 Index 0 is unused. The metric names the spec language accepts map onto these
 indices (`platform/Scm.roc`, `metric_names`).
@@ -3309,15 +3364,15 @@ indices (`platform/Scm.roc`, `metric_names`).
 
 An event is `event(node, handler)` with the payload staged first:
 
-- **DOM events:** `node` is the nearest engine node id at or above the handler
+- **Text-kind DOM events:** `node` is the nearest engine node id at or above the handler
   element, `handler` the handler number from `LISTEN` or the template's event
   hole. Payload (UTF-8): `click`/`submit` → empty (and the runtime prevents
   the default of every `submit` that reaches the mount root); `input` → the
   target's value; `change` → `"true"`/`"false"` for a checkbox or radio, else the value;
   `keydown`/`keyup` → the key; `focus`/`blur` (listened as
   `focusin`/`focusout`) → the target's value.
-- **File events:** a handler declared `change:files`, `drop:prevent:files`
-  or `paste:files` receives the target's `files`, the drop's
+- **Files-kind DOM events:** a handler declared with the files kind on
+  `change`, `drop` or `paste` receives the target's `files`, the drop's
   `dataTransfer.files` or the paste's `clipboardData.files`, captured while
   the event is dispatched; an event that carries none dispatches nothing.
   The runtime stages handles with `files_stage`, then the file record
@@ -3382,7 +3437,7 @@ a `contract` fault.
 
 | Op | Name | Operands |
 |---|---|---|
-| 1 | `INST` | `node parent before tpl`, then per template hole in order: text/attr → `str`; event → nothing; nested site → `u32` node id for its placeholder; reference → `u32` command node id for its element |
+| 1 | `INST` | `node parent before tpl`, then per template hole in order: text/attr/property → `str`; event → nothing; nested site → `u32` node id for its placeholder; reference → `u32` command node id for its element |
 | 2 | `TEXT` | `node hole:u8 str` — row text hole |
 | 3 | `HATTR` | `node hole:u8 str` — row attribute hole |
 | 4 | `MOVE` | `node before` (`0` = append to the parent's end) |
@@ -3392,7 +3447,7 @@ a `contract` fault.
 | 8 | `ELEM` | `node parent before tag:str` |
 | 9 | `ATTR` | `node name:str value:str` |
 | 10 | `TEXTNODE` | `node parent before text:str` |
-| 11 | `LISTEN` | `node handler:u32 event:str` |
+| 11 | `LISTEN` | `node handler:u32 type:str kind:u8 policies:u32` |
 | 12 | `SETTEXT` | `node text:str` |
 | 13 | `FX` | `id kind:u8 …` (below) |
 | 14 | `CANCEL` | `id` |
@@ -3402,6 +3457,8 @@ a `contract` fault.
 | 18 | `FOCUS` | `op:u8 node` (`1` focus, `2` blur, `3` focus and select text) |
 | 19 | `PORT` | `port:str message` — a port command; `message` is `json:str nblobs:u32 (len:u32 bytes)* nfiles:u32 (token:u64 start:u64 len:u64)*` |
 | 20 | `SAVE` | `token:u64 start:u64 len:u64 name:str` — save a file's range as a download named `name`; not counted by opcode (index 20 of the work record is `set_checked`) |
+| 21 | `PROP` | `node prop:u8 value:str` — set an element property from the closed table below |
+| 22 | `HPROP` | `node hole:u8 value:str` — set a row property hole |
 
 `before = 0` appends to `parent`; otherwise the node is inserted before
 `before` (and `parent` is that node's parent). Opcodes 13–18 are collected while
@@ -3437,9 +3494,10 @@ holes := nholes:u8 hole*
 hole  := kind:u8 depth:u8 path:u8{depth} extra
 extra := (kind 1, text)   —
        | (kind 2, attr)   name:str
-       | (kind 3, event)  handler:u8 event:str
+       | (kind 3, event)  handler:u8 type:str kind:u8 policies:u32
        | (kind 4, site)   —
        | (kind 5, reference) —
+       | (kind 6, property) prop:u8
 ```
 
 Text and nested-site holes have an empty text node in the tree as their
@@ -3452,16 +3510,52 @@ name. Its `INST` operand assigns its element an id for commands such as
 `FOCUS`, freed with the row. The runtime keeps that command address separate
 from event routing, which still uses the row's id.
 
-**Attribute values.** `""` removes the attribute. `value` is set as the live
-control value under the controlled-input rule and mirrored as an attribute;
-`checked` is set as a property from `"true"`; `disabled`, `selected`,
+**Attribute values.** `""` removes the attribute. `disabled`, `selected`,
 `readonly`, `required`, `hidden` and `multiple` are present for any value other
 than `""` and `"false"`. `class` on an SVG element is set as an attribute.
 
-**Event names.** `name[:suffix]*`: `prevent` calls `preventDefault` when the
-handler dispatches; `files` makes the payload the event's files (above),
-and on `drop` also makes the runtime prevent `dragover`'s default on the
-element. `focus` and `blur` are listened as `focusin` and `focusout`.
+**Payload kinds.** A handler's declaration chooses its payload, decoded once
+at its routed site. A malformed payload is a `contract` fault naming that
+site; an unknown kind number in commands is an `executor` fault.
+
+| Kind | Payload layout | Delivering export | Allowed event types |
+|---|---|---|---|
+| 1 Text | UTF-8, with the per-type meanings in Event records | `event` | Any bare type |
+| 2 Files | `minted:u32 refused:u32 (size:u64 name:str type:str)*minted`, with staged handles in order | `event_files` | `change`, `drop`, `paste`; no files means no dispatch. `drop` prevents both its default and `dragover`'s default |
+
+**Policies.** `policies:u32` is a bit set. Unknown bits are an `executor`
+fault. Policies are applied when the handler dispatches, never inferred
+from the event type or decided by an engine result.
+
+| Bit | Policy | Dispatch behavior |
+|---|---|---|
+| 0 (`1`) | `prevent` | Call `preventDefault` |
+| 1 (`2`) | `stop` | Call `stopPropagation` only when `event.bubbles` is true; a non-bubbling event must still reach its target |
+
+**Event declarations.** Types are bare text, keyed independently of their
+kind and policies. Two handlers for one type on one element are a
+`contract` error at mount. Types ending in `:prevent`, `:files` or
+`:prevent:files` are retired syntax and a `contract` error naming the typed
+replacement. Any other colon is part of the type. `focus` and `blur` are
+listened as `focusin` and `focusout`.
+
+**Element properties.** `PROP`, `HPROP` and property holes use this closed
+table. Each encoded value is a `str`; the row decides its type and meaning.
+Both rows apply in stream order and mirror their attribute. An empty value
+sets the live value to empty text and removes the mirrored attribute.
+
+| Index | Property | Elements | Type and encoding | Claims attribute |
+|---|---|---|---|---|
+| 1 | `value` | `input`, `textarea`, `select`, `option` | `Str`, UTF-8; the controlled-input guard and select settle apply | `value` |
+| 2 | `checked` | `input` | `Bool`, exactly `"true"` or `"false"` | `checked` |
+
+A property on another element, one declared twice, and an attribute using
+a name claimed by a row on that element are `contract` errors at mount.
+A `value` property on an input whose current `type` is `file` is a
+`contract` error when applied, naming the node, in the runtime and oracle.
+The type can follow a signal, so this check cannot be made at mount.
+An unknown index or a value outside its row's encoding is contained as
+`executor`.
 
 **Namespaces.** `<svg>` and its descendants are created in the SVG namespace; a
 row template first instantiated under an SVG parent is re-created in the SVG

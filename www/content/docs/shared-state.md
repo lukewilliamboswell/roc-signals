@@ -100,7 +100,11 @@ The list is the whole transition:
 | `Engine.handle(decide)` | the event's payload |
 | `Engine.handle_by(v, decide)` | the value `v` holds when the event fires, and the payload |
 | `Engine.does(writes)` | nothing: the handler is the list of writes itself, for a transition that needs neither the payload nor a reading |
-| `Engine.handle_files(decide)`, `Engine.handle_files_by(v, decide)` | the files an event carries (a drop, a paste, a choice in a file input), and for `_by` the value `v` holds when they arrive ([Files](@/docs/files.md)) |
+
+These handlers are generic over the event's payload. The same `handle`
+and `handle_by` receive a `Received` for a file choice, drop or paste when
+attached as a files handler ([Files](@/docs/files.md)); a handler of one
+payload cannot attach to an event kind of another.
 
 In the product row above, the "Add" button reads the row's product when it
 is pressed. The page's "Check out" button reads the cart:
@@ -188,7 +192,8 @@ event, in order, and the page is refreshed once, after both:
 `draft.update(|_| "").also(Engine.handle_by(draft.signal(), ...))` hands the
 decision the emptied draft, with no error. When a decision reads local state
 that the same click clears, put the decision first. `Reaction.also` does the
-same for one result, and `FilesHandler.also` for the files of one event.
+same for one result. Handler composition also works for the files of one
+event; both handlers must take the same payload type.
 
 `also` runs two handlers one after the other; it does not give them one
 reading. If one transition must decide a piece of local state and a cell

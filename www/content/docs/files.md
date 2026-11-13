@@ -29,7 +29,7 @@ ranges it needs straight into the worker's memory.
 
 ## Receiving files
 
-`State.on_files` makes a handler for the files an event carries. Its reducer
+`State.set_value` makes a handler for the files an event carries. Its reducer
 receives them and how many there were beyond what the app can hold at once:
 
 {{ sample(file="files/Upload.roc", region="state") }}
@@ -41,8 +41,8 @@ Attach it to a file input with `Html.file_input`, to a drop target with
 
 A reducer writes one state. When the files belong in the store, or one
 drop must write several cells that agree, the handler is a decision:
-`Engine.handle_files(decide)` gives `decide` the same `Received` and
-applies the list of writes it returns, and `Engine.handle_files_by(v,
+`Engine.handle(decide)` gives `decide` the same `Received` and
+applies the list of writes it returns, and `Engine.handle_by(v,
 decide)` also gives it the value `v` holds when the files arrive
 ([Shared State](@/docs/shared-state.md#decisions)). `first.also(second)`
 makes one handler of two, so a drop can write local state and run a
@@ -54,6 +54,12 @@ decision as one event.
 The browser opens its own chooser when the user clicks the file input, so
 there is nothing to set up for permissions. A drop target lets a dropped
 file land there instead of the browser opening it.
+
+The handler family is generic over its payload: `FilesHandler(ctx)` is
+`HandlerOf(ctx, Received)`, made with the same reducers, decisions and
+`also` as a text handler. Attaching a files handler to a text event is a
+compile error. For a raw element, `Engine.on_files` takes `Change`, `Drop`
+or `Paste`, so an event that cannot carry files cannot be selected.
 
 ## How long a file lasts
 

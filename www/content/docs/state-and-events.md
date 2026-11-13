@@ -48,12 +48,17 @@ a `State` and attached to an element:
 | `st.set_value(f)` | the state and the event's payload |
 | `st.set_value_by(v, f)` | the state, `v`'s value and the payload |
 
-The payload depends on the event: an `input` carries the control's new text, a
+The handler's declaration chooses its payload kind. For text events, an `input` carries the control's new text, a
 `change` on a checkbox or radio carries `"true"` or `"false"`, a `change` on a
 select carries the chosen option's value, `keydown` carries the key, and a
 click or submit carries nothing. `Html` attaches the usual ones for you:
 `text_input` and `textarea` listen to `input`, `checkbox` and `select` to
 `change`.
+
+`HandlerOf(ctx, p)` is the generic family: `Handler(ctx)` is its text
+alias, and `FilesHandler(ctx)` takes the `Received` of a file event. The
+same `set_value`, `handle` and `also` serve either kind; attaching a
+handler through the wrong kind is a compile error.
 
 `update_by` is the tool for "which one": in a list row, `update_by(row.key(), f)`
 passes the clicked row's key.
@@ -63,9 +68,18 @@ a list in it happens in place. The state is not compared with what it held
 before: a reducer that returns an equal value still wakes the state's
 readers, and they find nothing to change.
 
-An element takes one handler per event; a second one for the same event is a
+An element takes one handler per event type, whatever its kind or policies;
+a second one for the same type is a
 contract error. Two things that must both happen are one handler made with
 `also` (see [Shared State](@/docs/shared-state.md#local-and-shared-in-one-event)).
+
+Declare browser policies with `Engine.on_with(type, policy, handler)`.
+`Policy` has `prevent` and `stop`, both false by default. `prevent` stops
+the default action; `stop` hides a bubbling event from page listeners
+above the mount root. For an event that does not bubble, `stop` does
+nothing, so its target still receives it. Policies are static, chosen
+before dispatch; a misspelt field does not compile. Event types are bare
+names: retired `:prevent` and `:files` suffixes are contract errors.
 
 ## One event, one transition
 
@@ -95,7 +109,7 @@ A few things to note:
 
 ## Controlled inputs
 
-A text box's `value` attribute is guarded, so the engine can rewrite it
+A text box's `value` property is guarded, so the engine can rewrite it
 without fighting the user:
 
 - writing the value it already shows does nothing, so the caret stays put;
@@ -106,6 +120,15 @@ In practice: state written from a keystroke flows straight back, and a value
 your app changes while the user is typing (clearing a draft after submit, for
 example) appears when focus leaves the box. Checkboxes take `checked` as a
 property, and a select re-applies its value when its options change.
+
+`Html` controls set these properties for you. On a raw element use
+`Engine.prop` or `prop_s` with `Engine.Prop.value` (text) or
+`Engine.Prop.checked` (`Bool`). Properties prune equal values and work in
+row templates. An attribute using a name claimed by a property row is a
+contract error on that row's elements. Elsewhere, such as on a custom
+element, it is only an attribute. A property on an element its row does not allow, or declared
+twice, is a contract error at mount. A value property on a file input is
+rejected when applied, because its `type` can change through a signal.
 
 ## Derived values
 

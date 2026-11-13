@@ -33,7 +33,7 @@ The parts that can change are *sites*. A site is one of:
 - an **effect** (`Engine.watch`, `Engine.watch_changes`, `Engine.on_cleanup`),
   which asks the outside world to do something.
 
-Between them sit *holes*: text and attributes whose content comes from a signal.
+Between them sit *holes*: text, attributes and element properties whose content comes from a signal.
 
 Your view function is not called again after mount. There is no second tree
 to compare with the first: the engine knows, from how the description was

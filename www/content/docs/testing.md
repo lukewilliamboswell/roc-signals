@@ -198,12 +198,17 @@ click sequence above are delivered in both runners.
 | `(expect-value LOC "value")` | The control's value is `value` |
 | `(expect-checked LOC BOOL)` | The control's checked state is `BOOL` |
 | `(expect-disabled LOC BOOL)` | The control's disabled state is `BOOL` |
-| `(expect-attr LOC name "value")` | The attribute `name` is present with that value; `checked` and `disabled` read `"true"`/`"false"` and `value` the live value |
-| `(expect-no-attr LOC name)` | The attribute `name` is absent. `checked`, `disabled` and `value` are live state, asserted with their own steps |
+| `(expect-attr LOC name "value")` | The attribute `name` is present with that value. On property-table elements, `value` reads the live value and `checked` reads `"true"`/`"false"`; elsewhere they read ordinary attributes. `disabled` reads `"true"`/`"false"` |
+| `(expect-no-attr LOC name)` | The attribute `name` is absent. On property-table elements, assert live `checked` and `value` with their own steps; `disabled` also has its own step |
 | `(expect-visible LOC)` | The locator matches an element in the document |
 | `(expect-absent LOC)` | The locator matches nothing |
 | `(expect-focused LOC)` | The located element is the document's active element |
 | `(expect-no-focus)` | No page element holds focus; the active element is the document body |
+
+`expect-updates` counts property commands whose row mirrors an attribute,
+including control values and checked state. Both runners count the same
+work: the native oracle reads the property commands, and Chrome observes
+their mirrored attributes. `patches_emitted` includes `PROP` and `HPROP`.
 
 ### Location, history, title and storage
 
