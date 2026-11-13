@@ -10,14 +10,21 @@
 // are decided by the engine and the app, not by the compiler, so a nightly
 // that changes them has changed behaviour.
 import { readFile } from "node:fs/promises";
-
-import { PROTOCOL_VERSION, WORK_METRIC_BASE, readDeclarations } from "./runtime.mjs";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const path = process.argv[2];
 if (!path) {
-  console.error("usage: node check.mjs app.wasm");
+  console.error("usage: node check.mjs app.wasm [runtime.mjs]");
   process.exit(2);
 }
+// The archive carries the complete runtime beside this helper. Repository
+// checks pass the source runtime explicitly so they exercise the same module.
+const runtimeURL = process.argv[3]
+  ? pathToFileURL(resolve(process.argv[3]))
+  : new URL("./runtime.mjs", import.meta.url);
+const { PROTOCOL_VERSION, WORK_METRIC_BASE, readDeclarations } = await import(runtimeURL.href);
+
 // A module whose tasks call hosted effects imports them (`env.js_*`); the
 // page's instance gets stubs that throw, as runtime.mjs's `pageImports`
 // gives it, and mounting never reaches one.
@@ -76,6 +83,7 @@ const defaults = new Uint8Array([
   10, 39, 0, 0, 0, 3, 0, 0, 0, 85, 84, 67,
   0, 0, 0, 0, 0, 0, 0, 128, 255, 255, 255, 255, 255, 255, 255, 127,
   1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0,
+  11, 5, 0, 0, 0, 1, 0, 0, 0, 0,
 ]);
 const other = (await WebAssembly.instantiate(module, { env })).exports;
 other.boot_keys();
