@@ -1602,7 +1602,12 @@ SpecRunner := [].{
 
 	## Native show/close defaults maintain a distinct live top-layer state.
 	change_shown : S(state), U64, Dom.Shown -> S(state)
-	change_shown = |s0, i, value| {
+	change_shown = |s0, i, value| SpecRunner.change_shown_with(s0, { target: i, value, focus: Restore })
+
+	## Showing a sibling or modal hides auto popovers without restoring their
+	## opener. Native close, Escape and light dismissal retain normal restoration.
+	change_shown_with : S(state), { target : U64, value : Dom.Shown, focus : [Restore, Keep] } -> S(state)
+	change_shown_with = |s0, { target: i, value, focus }| {
 		old = Dom.node(s0.dom, i).shown
 		if old == value {
 			return s0
@@ -1611,7 +1616,7 @@ SpecRunner := [].{
 		if value == Modal or (value == Popover and Dom.enum_attr(Dom.node($s.dom, i), "popover") == "auto") {
 			for other in $s.browser.top_layer {
 				if other != i and Dom.node($s.dom, other).shown == Popover and Dom.enum_attr(Dom.node($s.dom, other), "popover") == "auto" and !SpecRunner.inside($s.dom, i, other) {
-					$s = SpecRunner.change_shown($s, other, Hidden)
+					$s = SpecRunner.change_shown_with($s, { target: other, value: Hidden, focus: Keep })
 				}
 			}
 		}
@@ -1630,7 +1635,13 @@ SpecRunner := [].{
 		queued = SpecRunner.queue_toggle(changed, i)
 		if value == Hidden {
 			opener = b.openers.get(i) ?? 0
-			restored = if (opener != 0 and (old == Modal or (s.focused != 0 and SpecRunner.inside(s.dom, s.focused - 1, i))) and SpecRunner.attached(queued.dom, opener - 1) and SpecRunner.focusable_in(queued.dom, opener - 1)) SpecRunner.queue_focus(queued, opener) else queued
+			restored = if focus == Restore and opener != 0 and (old == Modal or (s.focused != 0 and SpecRunner.inside(s.dom, s.focused - 1, i))) and SpecRunner.attached(queued.dom, opener - 1) and SpecRunner.focusable_in(queued.dom, opener - 1) {
+				SpecRunner.queue_focus(queued, opener)
+			} else if s.focused != 0 and SpecRunner.inside(s.dom, s.focused - 1, i) {
+				# Hiding focused content leaves body active when no visible opener
+				# is restored, including a modal re-shown after its row moved.
+				SpecRunner.queue_focus(queued, 0)
+			} else queued
 			if n.tag == "dialog" {
 				SpecRunner.queue_ui(restored, Close(i))
 			} else restored
