@@ -3587,7 +3587,7 @@ SpecRunner := [].{
 			if SpecRunner.disabled(n) {
 				return Err("${Scm.show_loc(loc)} is disabled")
 			}
-			if names.len() > 1 and Dom.attr_of(n, "multiple") == "" {
+			if names.len() > 1 and !Dom.has_attr(n, "multiple") {
 				return Err("${Scm.show_loc(loc)} takes one file, not ${names.len().to_str()}")
 			}
 		}
@@ -5265,7 +5265,9 @@ expect {
 
 ## Only a files declaration stages handles. The same selected files reach a
 ## text declaration as its ordinary file-input value, and an empty choice
-## reaches text but dispatches nothing to a files declaration.
+## reaches text but dispatches nothing to a files declaration. Multiple-file
+## admission depends on attribute presence, including empty and false text;
+## an input without that attribute still refuses a multi-file choice.
 expect {
 	program : SpecRunner.Program({ events : List(Str), files : U64 })
 	program = {
@@ -5290,7 +5292,10 @@ expect {
 	wrong_type = Dom.set_attr_on(dom, input, "type", "Text")
 	refused = SpecRunner.give_files(program, { ..s, dom: wrong_type }, op, [])
 	too_many = SpecRunner.give_files(program, s, ChooseFiles(Label("Choice"), ["a.txt", "a.txt"]), [])
-	accepted.inst.files == 1 and refused.is_err() and too_many.is_err() and { files_count: SpecRunner.file_count(dom, op)?, text_count: SpecRunner.file_count(text, op)?, events: empty_text.inst.events, files: empty_files.inst.files } == {
+	multiple = ["", "false", "named"].all(
+		|value| SpecRunner.give_files(program, { ..s, dom: Dom.set_attr_on(dom, input, "multiple", value) }, ChooseFiles(Label("Choice"), ["a.txt", "a.txt"]), []).map_ok(|next| next.inst.files == 1) == Ok(True),
+	)
+	accepted.inst.files == 1 and refused.is_err() and too_many.is_err() and multiple and { files_count: SpecRunner.file_count(dom, op)?, text_count: SpecRunner.file_count(text, op)?, events: empty_text.inst.events, files: empty_files.inst.files } == {
 		files_count: 1,
 		text_count: 0,
 		events: ["C:\\fakepath\\a.txt", ""],
