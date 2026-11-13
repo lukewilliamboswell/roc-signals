@@ -25,7 +25,7 @@ Scm := [].{
 	Problem : { pos : Pos, message : Str }
 
 	## One s-expression with the position of its first character.
-	Sx := [Sym(Str, Pos), Str(Str, Pos), Int(I64, Pos), Bool(Bool, Pos), List(List(Sx), Pos)]
+	Sx := [Sym(Str, Pos), Str(Str, Pos), Int(I64, Pos), Unsigned(U64, Pos), Bool(Bool, Pos), List(List(Sx), Pos)]
 
 	## Semantic locators. `Role` matches an element's explicit `role` or its
 	## implicit role with its accessible name; `Label` its `aria-label`;
@@ -34,132 +34,134 @@ Scm := [].{
 	Loc : [Role({ role : Str, name : Str }), Label(Str), Text(Str), TestId(Str)]
 
 	## The US keyboard vocabulary shared by parsing, native delivery and CDP.
-	KeyEntry : { key : Str, name : Str, code : Str, needs_shift : Bool, named : Bool }
+	## Virtual key codes are physical: shifted partners share the code Chrome
+	## needs for native defaults such as Escape and Tab, beside key and code.
+	KeyEntry : { key : Str, name : Str, code : Str, vk : U32, needs_shift : Bool, named : Bool }
 	Key : { key : Str, code : Str, ctrl : Bool, alt : Bool, shift : Bool, meta : Bool }
 	KeyPress : { target : [Focused, At(Loc)], key : Key }
 	key_table : List(KeyEntry)
 	key_table = [
-		{ key: " ", name: " ", code: "Space", needs_shift: Bool.False, named: Bool.False },
-		{ key: "Enter", name: "Enter", code: "Enter", needs_shift: Bool.False, named: Bool.True },
-		{ key: "Escape", name: "Escape", code: "Escape", needs_shift: Bool.False, named: Bool.True },
-		{ key: "Tab", name: "Tab", code: "Tab", needs_shift: Bool.False, named: Bool.True },
-		{ key: " ", name: "Space", code: "Space", needs_shift: Bool.False, named: Bool.True },
-		{ key: "Backspace", name: "Backspace", code: "Backspace", needs_shift: Bool.False, named: Bool.True },
-		{ key: "Delete", name: "Delete", code: "Delete", needs_shift: Bool.False, named: Bool.True },
-		{ key: "ArrowUp", name: "ArrowUp", code: "ArrowUp", needs_shift: Bool.False, named: Bool.True },
-		{ key: "ArrowDown", name: "ArrowDown", code: "ArrowDown", needs_shift: Bool.False, named: Bool.True },
-		{ key: "ArrowLeft", name: "ArrowLeft", code: "ArrowLeft", needs_shift: Bool.False, named: Bool.True },
-		{ key: "ArrowRight", name: "ArrowRight", code: "ArrowRight", needs_shift: Bool.False, named: Bool.True },
-		{ key: "Home", name: "Home", code: "Home", needs_shift: Bool.False, named: Bool.True },
-		{ key: "End", name: "End", code: "End", needs_shift: Bool.False, named: Bool.True },
-		{ key: "PageUp", name: "PageUp", code: "PageUp", needs_shift: Bool.False, named: Bool.True },
-		{ key: "PageDown", name: "PageDown", code: "PageDown", needs_shift: Bool.False, named: Bool.True },
-		{ key: "F1", name: "F1", code: "F1", needs_shift: Bool.False, named: Bool.True },
-		{ key: "F2", name: "F2", code: "F2", needs_shift: Bool.False, named: Bool.True },
-		{ key: "F3", name: "F3", code: "F3", needs_shift: Bool.False, named: Bool.True },
-		{ key: "F4", name: "F4", code: "F4", needs_shift: Bool.False, named: Bool.True },
-		{ key: "F5", name: "F5", code: "F5", needs_shift: Bool.False, named: Bool.True },
-		{ key: "F6", name: "F6", code: "F6", needs_shift: Bool.False, named: Bool.True },
-		{ key: "F7", name: "F7", code: "F7", needs_shift: Bool.False, named: Bool.True },
-		{ key: "F8", name: "F8", code: "F8", needs_shift: Bool.False, named: Bool.True },
-		{ key: "F9", name: "F9", code: "F9", needs_shift: Bool.False, named: Bool.True },
-		{ key: "F10", name: "F10", code: "F10", needs_shift: Bool.False, named: Bool.True },
-		{ key: "F11", name: "F11", code: "F11", needs_shift: Bool.False, named: Bool.True },
-		{ key: "F12", name: "F12", code: "F12", needs_shift: Bool.False, named: Bool.True },
-		{ key: "!", name: "!", code: "Digit1", needs_shift: Bool.True, named: Bool.False },
-		{ key: "\"", name: "\"", code: "Quote", needs_shift: Bool.True, named: Bool.False },
-		{ key: "#", name: "#", code: "Digit3", needs_shift: Bool.True, named: Bool.False },
-		{ key: "$", name: "$", code: "Digit4", needs_shift: Bool.True, named: Bool.False },
-		{ key: "%", name: "%", code: "Digit5", needs_shift: Bool.True, named: Bool.False },
-		{ key: "&", name: "&", code: "Digit7", needs_shift: Bool.True, named: Bool.False },
-		{ key: "'", name: "'", code: "Quote", needs_shift: Bool.False, named: Bool.False },
-		{ key: "(", name: "(", code: "Digit9", needs_shift: Bool.True, named: Bool.False },
-		{ key: ")", name: ")", code: "Digit0", needs_shift: Bool.True, named: Bool.False },
-		{ key: "*", name: "*", code: "Digit8", needs_shift: Bool.True, named: Bool.False },
-		{ key: "+", name: "+", code: "Equal", needs_shift: Bool.True, named: Bool.False },
-		{ key: ",", name: ",", code: "Comma", needs_shift: Bool.False, named: Bool.False },
-		{ key: "-", name: "-", code: "Minus", needs_shift: Bool.False, named: Bool.False },
-		{ key: ".", name: ".", code: "Period", needs_shift: Bool.False, named: Bool.False },
-		{ key: "/", name: "/", code: "Slash", needs_shift: Bool.False, named: Bool.False },
-		{ key: "0", name: "0", code: "Digit0", needs_shift: Bool.False, named: Bool.False },
-		{ key: "1", name: "1", code: "Digit1", needs_shift: Bool.False, named: Bool.False },
-		{ key: "2", name: "2", code: "Digit2", needs_shift: Bool.False, named: Bool.False },
-		{ key: "3", name: "3", code: "Digit3", needs_shift: Bool.False, named: Bool.False },
-		{ key: "4", name: "4", code: "Digit4", needs_shift: Bool.False, named: Bool.False },
-		{ key: "5", name: "5", code: "Digit5", needs_shift: Bool.False, named: Bool.False },
-		{ key: "6", name: "6", code: "Digit6", needs_shift: Bool.False, named: Bool.False },
-		{ key: "7", name: "7", code: "Digit7", needs_shift: Bool.False, named: Bool.False },
-		{ key: "8", name: "8", code: "Digit8", needs_shift: Bool.False, named: Bool.False },
-		{ key: "9", name: "9", code: "Digit9", needs_shift: Bool.False, named: Bool.False },
-		{ key: ":", name: ":", code: "Semicolon", needs_shift: Bool.True, named: Bool.False },
-		{ key: ";", name: ";", code: "Semicolon", needs_shift: Bool.False, named: Bool.False },
-		{ key: "<", name: "<", code: "Comma", needs_shift: Bool.True, named: Bool.False },
-		{ key: "=", name: "=", code: "Equal", needs_shift: Bool.False, named: Bool.False },
-		{ key: ">", name: ">", code: "Period", needs_shift: Bool.True, named: Bool.False },
-		{ key: "?", name: "?", code: "Slash", needs_shift: Bool.True, named: Bool.False },
-		{ key: "@", name: "@", code: "Digit2", needs_shift: Bool.True, named: Bool.False },
-		{ key: "A", name: "A", code: "KeyA", needs_shift: Bool.True, named: Bool.False },
-		{ key: "B", name: "B", code: "KeyB", needs_shift: Bool.True, named: Bool.False },
-		{ key: "C", name: "C", code: "KeyC", needs_shift: Bool.True, named: Bool.False },
-		{ key: "D", name: "D", code: "KeyD", needs_shift: Bool.True, named: Bool.False },
-		{ key: "E", name: "E", code: "KeyE", needs_shift: Bool.True, named: Bool.False },
-		{ key: "F", name: "F", code: "KeyF", needs_shift: Bool.True, named: Bool.False },
-		{ key: "G", name: "G", code: "KeyG", needs_shift: Bool.True, named: Bool.False },
-		{ key: "H", name: "H", code: "KeyH", needs_shift: Bool.True, named: Bool.False },
-		{ key: "I", name: "I", code: "KeyI", needs_shift: Bool.True, named: Bool.False },
-		{ key: "J", name: "J", code: "KeyJ", needs_shift: Bool.True, named: Bool.False },
-		{ key: "K", name: "K", code: "KeyK", needs_shift: Bool.True, named: Bool.False },
-		{ key: "L", name: "L", code: "KeyL", needs_shift: Bool.True, named: Bool.False },
-		{ key: "M", name: "M", code: "KeyM", needs_shift: Bool.True, named: Bool.False },
-		{ key: "N", name: "N", code: "KeyN", needs_shift: Bool.True, named: Bool.False },
-		{ key: "O", name: "O", code: "KeyO", needs_shift: Bool.True, named: Bool.False },
-		{ key: "P", name: "P", code: "KeyP", needs_shift: Bool.True, named: Bool.False },
-		{ key: "Q", name: "Q", code: "KeyQ", needs_shift: Bool.True, named: Bool.False },
-		{ key: "R", name: "R", code: "KeyR", needs_shift: Bool.True, named: Bool.False },
-		{ key: "S", name: "S", code: "KeyS", needs_shift: Bool.True, named: Bool.False },
-		{ key: "T", name: "T", code: "KeyT", needs_shift: Bool.True, named: Bool.False },
-		{ key: "U", name: "U", code: "KeyU", needs_shift: Bool.True, named: Bool.False },
-		{ key: "V", name: "V", code: "KeyV", needs_shift: Bool.True, named: Bool.False },
-		{ key: "W", name: "W", code: "KeyW", needs_shift: Bool.True, named: Bool.False },
-		{ key: "X", name: "X", code: "KeyX", needs_shift: Bool.True, named: Bool.False },
-		{ key: "Y", name: "Y", code: "KeyY", needs_shift: Bool.True, named: Bool.False },
-		{ key: "Z", name: "Z", code: "KeyZ", needs_shift: Bool.True, named: Bool.False },
-		{ key: "[", name: "[", code: "BracketLeft", needs_shift: Bool.False, named: Bool.False },
-		{ key: "\\", name: "\\", code: "Backslash", needs_shift: Bool.False, named: Bool.False },
-		{ key: "]", name: "]", code: "BracketRight", needs_shift: Bool.False, named: Bool.False },
-		{ key: "^", name: "^", code: "Digit6", needs_shift: Bool.True, named: Bool.False },
-		{ key: "_", name: "_", code: "Minus", needs_shift: Bool.True, named: Bool.False },
-		{ key: "`", name: "`", code: "Backquote", needs_shift: Bool.False, named: Bool.False },
-		{ key: "a", name: "a", code: "KeyA", needs_shift: Bool.False, named: Bool.False },
-		{ key: "b", name: "b", code: "KeyB", needs_shift: Bool.False, named: Bool.False },
-		{ key: "c", name: "c", code: "KeyC", needs_shift: Bool.False, named: Bool.False },
-		{ key: "d", name: "d", code: "KeyD", needs_shift: Bool.False, named: Bool.False },
-		{ key: "e", name: "e", code: "KeyE", needs_shift: Bool.False, named: Bool.False },
-		{ key: "f", name: "f", code: "KeyF", needs_shift: Bool.False, named: Bool.False },
-		{ key: "g", name: "g", code: "KeyG", needs_shift: Bool.False, named: Bool.False },
-		{ key: "h", name: "h", code: "KeyH", needs_shift: Bool.False, named: Bool.False },
-		{ key: "i", name: "i", code: "KeyI", needs_shift: Bool.False, named: Bool.False },
-		{ key: "j", name: "j", code: "KeyJ", needs_shift: Bool.False, named: Bool.False },
-		{ key: "k", name: "k", code: "KeyK", needs_shift: Bool.False, named: Bool.False },
-		{ key: "l", name: "l", code: "KeyL", needs_shift: Bool.False, named: Bool.False },
-		{ key: "m", name: "m", code: "KeyM", needs_shift: Bool.False, named: Bool.False },
-		{ key: "n", name: "n", code: "KeyN", needs_shift: Bool.False, named: Bool.False },
-		{ key: "o", name: "o", code: "KeyO", needs_shift: Bool.False, named: Bool.False },
-		{ key: "p", name: "p", code: "KeyP", needs_shift: Bool.False, named: Bool.False },
-		{ key: "q", name: "q", code: "KeyQ", needs_shift: Bool.False, named: Bool.False },
-		{ key: "r", name: "r", code: "KeyR", needs_shift: Bool.False, named: Bool.False },
-		{ key: "s", name: "s", code: "KeyS", needs_shift: Bool.False, named: Bool.False },
-		{ key: "t", name: "t", code: "KeyT", needs_shift: Bool.False, named: Bool.False },
-		{ key: "u", name: "u", code: "KeyU", needs_shift: Bool.False, named: Bool.False },
-		{ key: "v", name: "v", code: "KeyV", needs_shift: Bool.False, named: Bool.False },
-		{ key: "w", name: "w", code: "KeyW", needs_shift: Bool.False, named: Bool.False },
-		{ key: "x", name: "x", code: "KeyX", needs_shift: Bool.False, named: Bool.False },
-		{ key: "y", name: "y", code: "KeyY", needs_shift: Bool.False, named: Bool.False },
-		{ key: "z", name: "z", code: "KeyZ", needs_shift: Bool.False, named: Bool.False },
-		{ key: "{", name: "{", code: "BracketLeft", needs_shift: Bool.True, named: Bool.False },
-		{ key: "|", name: "|", code: "Backslash", needs_shift: Bool.True, named: Bool.False },
-		{ key: "}", name: "}", code: "BracketRight", needs_shift: Bool.True, named: Bool.False },
-		{ key: "~", name: "~", code: "Backquote", needs_shift: Bool.True, named: Bool.False },
+		{ key: " ", name: " ", code: "Space", vk: 32, needs_shift: Bool.False, named: Bool.False },
+		{ key: "Enter", name: "Enter", code: "Enter", vk: 13, needs_shift: Bool.False, named: Bool.True },
+		{ key: "Escape", name: "Escape", code: "Escape", vk: 27, needs_shift: Bool.False, named: Bool.True },
+		{ key: "Tab", name: "Tab", code: "Tab", vk: 9, needs_shift: Bool.False, named: Bool.True },
+		{ key: " ", name: "Space", code: "Space", vk: 32, needs_shift: Bool.False, named: Bool.True },
+		{ key: "Backspace", name: "Backspace", code: "Backspace", vk: 8, needs_shift: Bool.False, named: Bool.True },
+		{ key: "Delete", name: "Delete", code: "Delete", vk: 46, needs_shift: Bool.False, named: Bool.True },
+		{ key: "ArrowUp", name: "ArrowUp", code: "ArrowUp", vk: 38, needs_shift: Bool.False, named: Bool.True },
+		{ key: "ArrowDown", name: "ArrowDown", code: "ArrowDown", vk: 40, needs_shift: Bool.False, named: Bool.True },
+		{ key: "ArrowLeft", name: "ArrowLeft", code: "ArrowLeft", vk: 37, needs_shift: Bool.False, named: Bool.True },
+		{ key: "ArrowRight", name: "ArrowRight", code: "ArrowRight", vk: 39, needs_shift: Bool.False, named: Bool.True },
+		{ key: "Home", name: "Home", code: "Home", vk: 36, needs_shift: Bool.False, named: Bool.True },
+		{ key: "End", name: "End", code: "End", vk: 35, needs_shift: Bool.False, named: Bool.True },
+		{ key: "PageUp", name: "PageUp", code: "PageUp", vk: 33, needs_shift: Bool.False, named: Bool.True },
+		{ key: "PageDown", name: "PageDown", code: "PageDown", vk: 34, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F1", name: "F1", code: "F1", vk: 112, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F2", name: "F2", code: "F2", vk: 113, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F3", name: "F3", code: "F3", vk: 114, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F4", name: "F4", code: "F4", vk: 115, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F5", name: "F5", code: "F5", vk: 116, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F6", name: "F6", code: "F6", vk: 117, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F7", name: "F7", code: "F7", vk: 118, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F8", name: "F8", code: "F8", vk: 119, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F9", name: "F9", code: "F9", vk: 120, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F10", name: "F10", code: "F10", vk: 121, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F11", name: "F11", code: "F11", vk: 122, needs_shift: Bool.False, named: Bool.True },
+		{ key: "F12", name: "F12", code: "F12", vk: 123, needs_shift: Bool.False, named: Bool.True },
+		{ key: "!", name: "!", code: "Digit1", vk: 49, needs_shift: Bool.True, named: Bool.False },
+		{ key: "\"", name: "\"", code: "Quote", vk: 222, needs_shift: Bool.True, named: Bool.False },
+		{ key: "#", name: "#", code: "Digit3", vk: 51, needs_shift: Bool.True, named: Bool.False },
+		{ key: "$", name: "$", code: "Digit4", vk: 52, needs_shift: Bool.True, named: Bool.False },
+		{ key: "%", name: "%", code: "Digit5", vk: 53, needs_shift: Bool.True, named: Bool.False },
+		{ key: "&", name: "&", code: "Digit7", vk: 55, needs_shift: Bool.True, named: Bool.False },
+		{ key: "'", name: "'", code: "Quote", vk: 222, needs_shift: Bool.False, named: Bool.False },
+		{ key: "(", name: "(", code: "Digit9", vk: 57, needs_shift: Bool.True, named: Bool.False },
+		{ key: ")", name: ")", code: "Digit0", vk: 48, needs_shift: Bool.True, named: Bool.False },
+		{ key: "*", name: "*", code: "Digit8", vk: 56, needs_shift: Bool.True, named: Bool.False },
+		{ key: "+", name: "+", code: "Equal", vk: 187, needs_shift: Bool.True, named: Bool.False },
+		{ key: ",", name: ",", code: "Comma", vk: 188, needs_shift: Bool.False, named: Bool.False },
+		{ key: "-", name: "-", code: "Minus", vk: 189, needs_shift: Bool.False, named: Bool.False },
+		{ key: ".", name: ".", code: "Period", vk: 190, needs_shift: Bool.False, named: Bool.False },
+		{ key: "/", name: "/", code: "Slash", vk: 191, needs_shift: Bool.False, named: Bool.False },
+		{ key: "0", name: "0", code: "Digit0", vk: 48, needs_shift: Bool.False, named: Bool.False },
+		{ key: "1", name: "1", code: "Digit1", vk: 49, needs_shift: Bool.False, named: Bool.False },
+		{ key: "2", name: "2", code: "Digit2", vk: 50, needs_shift: Bool.False, named: Bool.False },
+		{ key: "3", name: "3", code: "Digit3", vk: 51, needs_shift: Bool.False, named: Bool.False },
+		{ key: "4", name: "4", code: "Digit4", vk: 52, needs_shift: Bool.False, named: Bool.False },
+		{ key: "5", name: "5", code: "Digit5", vk: 53, needs_shift: Bool.False, named: Bool.False },
+		{ key: "6", name: "6", code: "Digit6", vk: 54, needs_shift: Bool.False, named: Bool.False },
+		{ key: "7", name: "7", code: "Digit7", vk: 55, needs_shift: Bool.False, named: Bool.False },
+		{ key: "8", name: "8", code: "Digit8", vk: 56, needs_shift: Bool.False, named: Bool.False },
+		{ key: "9", name: "9", code: "Digit9", vk: 57, needs_shift: Bool.False, named: Bool.False },
+		{ key: ":", name: ":", code: "Semicolon", vk: 186, needs_shift: Bool.True, named: Bool.False },
+		{ key: ";", name: ";", code: "Semicolon", vk: 186, needs_shift: Bool.False, named: Bool.False },
+		{ key: "<", name: "<", code: "Comma", vk: 188, needs_shift: Bool.True, named: Bool.False },
+		{ key: "=", name: "=", code: "Equal", vk: 187, needs_shift: Bool.False, named: Bool.False },
+		{ key: ">", name: ">", code: "Period", vk: 190, needs_shift: Bool.True, named: Bool.False },
+		{ key: "?", name: "?", code: "Slash", vk: 191, needs_shift: Bool.True, named: Bool.False },
+		{ key: "@", name: "@", code: "Digit2", vk: 50, needs_shift: Bool.True, named: Bool.False },
+		{ key: "A", name: "A", code: "KeyA", vk: 65, needs_shift: Bool.True, named: Bool.False },
+		{ key: "B", name: "B", code: "KeyB", vk: 66, needs_shift: Bool.True, named: Bool.False },
+		{ key: "C", name: "C", code: "KeyC", vk: 67, needs_shift: Bool.True, named: Bool.False },
+		{ key: "D", name: "D", code: "KeyD", vk: 68, needs_shift: Bool.True, named: Bool.False },
+		{ key: "E", name: "E", code: "KeyE", vk: 69, needs_shift: Bool.True, named: Bool.False },
+		{ key: "F", name: "F", code: "KeyF", vk: 70, needs_shift: Bool.True, named: Bool.False },
+		{ key: "G", name: "G", code: "KeyG", vk: 71, needs_shift: Bool.True, named: Bool.False },
+		{ key: "H", name: "H", code: "KeyH", vk: 72, needs_shift: Bool.True, named: Bool.False },
+		{ key: "I", name: "I", code: "KeyI", vk: 73, needs_shift: Bool.True, named: Bool.False },
+		{ key: "J", name: "J", code: "KeyJ", vk: 74, needs_shift: Bool.True, named: Bool.False },
+		{ key: "K", name: "K", code: "KeyK", vk: 75, needs_shift: Bool.True, named: Bool.False },
+		{ key: "L", name: "L", code: "KeyL", vk: 76, needs_shift: Bool.True, named: Bool.False },
+		{ key: "M", name: "M", code: "KeyM", vk: 77, needs_shift: Bool.True, named: Bool.False },
+		{ key: "N", name: "N", code: "KeyN", vk: 78, needs_shift: Bool.True, named: Bool.False },
+		{ key: "O", name: "O", code: "KeyO", vk: 79, needs_shift: Bool.True, named: Bool.False },
+		{ key: "P", name: "P", code: "KeyP", vk: 80, needs_shift: Bool.True, named: Bool.False },
+		{ key: "Q", name: "Q", code: "KeyQ", vk: 81, needs_shift: Bool.True, named: Bool.False },
+		{ key: "R", name: "R", code: "KeyR", vk: 82, needs_shift: Bool.True, named: Bool.False },
+		{ key: "S", name: "S", code: "KeyS", vk: 83, needs_shift: Bool.True, named: Bool.False },
+		{ key: "T", name: "T", code: "KeyT", vk: 84, needs_shift: Bool.True, named: Bool.False },
+		{ key: "U", name: "U", code: "KeyU", vk: 85, needs_shift: Bool.True, named: Bool.False },
+		{ key: "V", name: "V", code: "KeyV", vk: 86, needs_shift: Bool.True, named: Bool.False },
+		{ key: "W", name: "W", code: "KeyW", vk: 87, needs_shift: Bool.True, named: Bool.False },
+		{ key: "X", name: "X", code: "KeyX", vk: 88, needs_shift: Bool.True, named: Bool.False },
+		{ key: "Y", name: "Y", code: "KeyY", vk: 89, needs_shift: Bool.True, named: Bool.False },
+		{ key: "Z", name: "Z", code: "KeyZ", vk: 90, needs_shift: Bool.True, named: Bool.False },
+		{ key: "[", name: "[", code: "BracketLeft", vk: 219, needs_shift: Bool.False, named: Bool.False },
+		{ key: "\\", name: "\\", code: "Backslash", vk: 220, needs_shift: Bool.False, named: Bool.False },
+		{ key: "]", name: "]", code: "BracketRight", vk: 221, needs_shift: Bool.False, named: Bool.False },
+		{ key: "^", name: "^", code: "Digit6", vk: 54, needs_shift: Bool.True, named: Bool.False },
+		{ key: "_", name: "_", code: "Minus", vk: 189, needs_shift: Bool.True, named: Bool.False },
+		{ key: "`", name: "`", code: "Backquote", vk: 192, needs_shift: Bool.False, named: Bool.False },
+		{ key: "a", name: "a", code: "KeyA", vk: 65, needs_shift: Bool.False, named: Bool.False },
+		{ key: "b", name: "b", code: "KeyB", vk: 66, needs_shift: Bool.False, named: Bool.False },
+		{ key: "c", name: "c", code: "KeyC", vk: 67, needs_shift: Bool.False, named: Bool.False },
+		{ key: "d", name: "d", code: "KeyD", vk: 68, needs_shift: Bool.False, named: Bool.False },
+		{ key: "e", name: "e", code: "KeyE", vk: 69, needs_shift: Bool.False, named: Bool.False },
+		{ key: "f", name: "f", code: "KeyF", vk: 70, needs_shift: Bool.False, named: Bool.False },
+		{ key: "g", name: "g", code: "KeyG", vk: 71, needs_shift: Bool.False, named: Bool.False },
+		{ key: "h", name: "h", code: "KeyH", vk: 72, needs_shift: Bool.False, named: Bool.False },
+		{ key: "i", name: "i", code: "KeyI", vk: 73, needs_shift: Bool.False, named: Bool.False },
+		{ key: "j", name: "j", code: "KeyJ", vk: 74, needs_shift: Bool.False, named: Bool.False },
+		{ key: "k", name: "k", code: "KeyK", vk: 75, needs_shift: Bool.False, named: Bool.False },
+		{ key: "l", name: "l", code: "KeyL", vk: 76, needs_shift: Bool.False, named: Bool.False },
+		{ key: "m", name: "m", code: "KeyM", vk: 77, needs_shift: Bool.False, named: Bool.False },
+		{ key: "n", name: "n", code: "KeyN", vk: 78, needs_shift: Bool.False, named: Bool.False },
+		{ key: "o", name: "o", code: "KeyO", vk: 79, needs_shift: Bool.False, named: Bool.False },
+		{ key: "p", name: "p", code: "KeyP", vk: 80, needs_shift: Bool.False, named: Bool.False },
+		{ key: "q", name: "q", code: "KeyQ", vk: 81, needs_shift: Bool.False, named: Bool.False },
+		{ key: "r", name: "r", code: "KeyR", vk: 82, needs_shift: Bool.False, named: Bool.False },
+		{ key: "s", name: "s", code: "KeyS", vk: 83, needs_shift: Bool.False, named: Bool.False },
+		{ key: "t", name: "t", code: "KeyT", vk: 84, needs_shift: Bool.False, named: Bool.False },
+		{ key: "u", name: "u", code: "KeyU", vk: 85, needs_shift: Bool.False, named: Bool.False },
+		{ key: "v", name: "v", code: "KeyV", vk: 86, needs_shift: Bool.False, named: Bool.False },
+		{ key: "w", name: "w", code: "KeyW", vk: 87, needs_shift: Bool.False, named: Bool.False },
+		{ key: "x", name: "x", code: "KeyX", vk: 88, needs_shift: Bool.False, named: Bool.False },
+		{ key: "y", name: "y", code: "KeyY", vk: 89, needs_shift: Bool.False, named: Bool.False },
+		{ key: "z", name: "z", code: "KeyZ", vk: 90, needs_shift: Bool.False, named: Bool.False },
+		{ key: "{", name: "{", code: "BracketLeft", vk: 219, needs_shift: Bool.True, named: Bool.False },
+		{ key: "|", name: "|", code: "Backslash", vk: 220, needs_shift: Bool.True, named: Bool.False },
+		{ key: "}", name: "}", code: "BracketRight", vk: 221, needs_shift: Bool.True, named: Bool.False },
+		{ key: "~", name: "~", code: "Backquote", vk: 192, needs_shift: Bool.True, named: Bool.False },
 	]
 
 	## Parse explicit modifiers, rejecting an implicit or contradictory US Shift.
@@ -452,6 +454,10 @@ Scm := [].{
 		PointerUp(PointerPlace),
 		PointerCancel(U32),
 		Press(KeyPress),
+		Dismiss,
+		ExpectShown(Loc, [Hidden, Open, Modal, Popover]),
+		ExpectScroll({ ordinal : U64, target : Loc, kind : [IntoView, To] }),
+		ExpectScrolls(U64),
 		Focus(Loc),
 		Blur(Loc),
 		Change(Loc, Str),
@@ -773,7 +779,10 @@ Scm := [].{
 		} else {
 			match I64.from_str(text) {
 				Ok(n) => Int(n, start)
-				Err(_) => Sym(text, start)
+				Err(_) => match U64.from_str(text) {
+					Ok(n) => Unsigned(n, start)
+					Err(_) => Sym(text, start)
+				}
 			}
 		}
 		Ok((atom, $r))
@@ -787,6 +796,7 @@ Scm := [].{
 			Sym(_, p) => p
 			Str(_, p) => p
 			Int(_, p) => p
+			Unsigned(_, p) => p
 			Bool(_, p) => p
 			List(_, p) => p
 		}
@@ -805,6 +815,7 @@ Scm := [].{
 			Sym(s, _) => s
 			Str(s, _) => "\"${s}\""
 			Int(n, _) => n.to_str()
+			Unsigned(n, _) => n.to_str()
 			Bool(b, _) => if (b) "true" else "false"
 			List(xs, _) => "(${Str.join_with(xs.map(Scm.show), " ")})"
 		}
@@ -833,6 +844,13 @@ Scm := [].{
 			Int(n, _) if n >= 0 => Ok(n.to_u64_wrap())
 			_ => Err(Scm.bad(sx, "${what} must be a non-negative integer, got ${Scm.show(sx)}"))
 		}
+
+	## Scroll observation ordinals use the whole U64 range and cross JSON as text.
+	scroll_count : Sx, Str -> Try(U64, Problem)
+	scroll_count = |sx, what| match sx {
+		Unsigned(n, _) => Ok(n)
+		_ => Scm.unsigned(sx, what)
+	}
 
 	integer : Sx, Str -> Try(I64, Problem)
 	integer = |sx, what|
@@ -1103,6 +1121,41 @@ Scm := [].{
 	step_forms : List({ name : Str, parse : (Sx, List(Sx) -> Try(Op, Problem)) })
 	step_forms = [
 		{ name: "press", parse: |form, args| Scm.key_press(form, args) },
+		{ name: "dismiss", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| Dismiss) },
+		{
+			name: "expect-shown",
+			parse: |form, args| {
+				values = Scm.arity(form, args, 2)?
+				state = Scm.arg(values, 1)
+				shown = match Scm.symbol(state, "the shown state")? {
+					"hidden" => Hidden
+					"open" => Open
+					"modal" => Modal
+					"popover" => Popover
+					_ => return Err(Scm.bad(state, "the shown state must be hidden, open, modal or popover"))
+				}
+				Ok(ExpectShown(Scm.locator(Scm.arg(values, 0))?, shown))
+			},
+		},
+		{
+			name: "expect-scroll",
+			parse: |form, args| {
+				values = Scm.arity(form, args, 3)?
+				ordinal_sx = Scm.arg(values, 0)
+				ordinal = Scm.scroll_count(ordinal_sx, "the scroll ordinal")?
+				if ordinal == 0 {
+					return Err(Scm.bad(ordinal_sx, "the scroll ordinal starts at one"))
+				}
+				kind_sx = Scm.arg(values, 2)
+				kind = match Scm.symbol(kind_sx, "the scroll kind")? {
+					"into-view" => IntoView
+					"to" => To
+					_ => return Err(Scm.bad(kind_sx, "the scroll kind must be into-view or to"))
+				}
+				Ok(ExpectScroll({ ordinal, target: Scm.locator(Scm.arg(values, 1))?, kind }))
+			},
+		},
+		{ name: "expect-scrolls", parse: |form, args| Ok(ExpectScrolls(Scm.scroll_count(Scm.arg(Scm.arity(form, args, 1)?, 0), "the scroll count")?)) },
 		{ name: "pointer-down", parse: |form, args| Scm.pointer_place({ form, args, mode: Press }).map_ok(|press| PointerDown(press)) },
 		{ name: "pointer-move", parse: |form, args| Scm.pointer_place({ form, args, mode: Place }).map_ok(|p| PointerMove({ target: p.target, at: p.at, id: p.id })) },
 		{ name: "pointer-up", parse: |form, args| Scm.pointer_place({ form, args, mode: Place }).map_ok(|p| PointerUp({ target: p.target, at: p.at, id: p.id })) },
@@ -1435,6 +1488,106 @@ Scm := [].{
 
 	# ------------------------------------------------------------ properties
 
+	## Whether a performed step grants user activation. Conditional rows inspect
+	## the actual input the step performed, rather than its spelling alone.
+	Activation : [Never, Always, WhenClicked, WhenTyped, KeyboardPress, PointerPress, PointerRelease]
+
+	## The whole activation model, including every step that does not grant it.
+	## Browser replay consumes the emitted table; the native runner reads it here.
+	activation_table : List({ op : Str, grant : Activation })
+	activation_table = [
+		{ op: "press", grant: KeyboardPress },
+		{ op: "dismiss", grant: Never },
+		{ op: "expect-shown", grant: Never },
+		{ op: "expect-scroll", grant: Never },
+		{ op: "expect-scrolls", grant: Never },
+		{ op: "pointer-down", grant: PointerPress },
+		{ op: "pointer-move", grant: Never },
+		{ op: "pointer-up", grant: PointerRelease },
+		{ op: "pointer-cancel", grant: Never },
+		{ op: "hold-reports", grant: Never },
+		{ op: "release-reports", grant: Never },
+		{ op: "expect-reports-replaced", grant: Never },
+		{ op: "click", grant: WhenClicked },
+		{ op: "real-click", grant: Always },
+		{ op: "focus", grant: Never },
+		{ op: "blur", grant: Never },
+		{ op: "submit", grant: Never },
+		{ op: "check", grant: WhenClicked },
+		{ op: "uncheck", grant: WhenClicked },
+		{ op: "fill", grant: WhenTyped },
+		{ op: "change", grant: Never },
+		{ op: "select-option", grant: Never },
+		{ op: "expect-text", grant: Never },
+		{ op: "expect-focused", grant: Never },
+		{ op: "expect-no-focus", grant: Never },
+		{ op: "expect-visible", grant: Never },
+		{ op: "expect-absent", grant: Never },
+		{ op: "expect-value", grant: Never },
+		{ op: "expect-attr", grant: Never },
+		{ op: "expect-no-attr", grant: Never },
+		{ op: "expect-checked", grant: Never },
+		{ op: "expect-disabled", grant: Never },
+		{ op: "expect-updates", grant: Never },
+		{ op: "stub-http", grant: Never },
+		{ op: "stub-http-reject", grant: Never },
+		{ op: "run-effect", grant: Never },
+		{ op: "expect-pending-effects", grant: Never },
+		{ op: "lose-work", grant: Never },
+		{ op: "time-out-work", grant: Never },
+		{ op: "choose-files", grant: Never },
+		{ op: "drop-files", grant: Never },
+		{ op: "paste-files", grant: Never },
+		{ op: "expect-files", grant: Never },
+		{ op: "expect-pending-work", grant: Never },
+		{ op: "tick-interval", grant: Never },
+		{ op: "tick-interval-if-active", grant: Never },
+		{ op: "expect-cleanup", grant: Never },
+		{ op: "expect-interval", grant: Never },
+		{ op: "navigate", grant: Never },
+		{ op: "set-visibility", grant: Never },
+		{ op: "set-online", grant: Never },
+		{ op: "history-back", grant: Never },
+		{ op: "history-forward", grant: Never },
+		{ op: "expect-current-location", grant: Never },
+		{ op: "expect-document-title", grant: Never },
+		{ op: "expect-local-storage", grant: Never },
+		{ op: "expect-no-local-storage", grant: Never },
+		{ op: "mark-metrics", grant: Never },
+		{ op: "expect-metric-delta", grant: Never },
+		{ op: "expect-metric-delta-at-most", grant: Never },
+		{ op: "expect-upload", grant: Never },
+		{ op: "expect-port-call", grant: Never },
+		{ op: "answer-port", grant: Never },
+		{ op: "expect-port-sent", grant: Never },
+		{ op: "expect-port-sends", grant: Never },
+		{ op: "emit-port", grant: Never },
+		{ op: "close-port", grant: Never },
+		{ op: "fail-port", grant: Never },
+		{ op: "expect-port-subscriptions", grant: Never },
+		{ op: "expect-saved", grant: Never },
+		{ op: "expect-saves", grant: Never },
+	]
+
+	## A new grammar form must declare its activation behavior explicitly.
+	activation_for : Op -> Activation
+	activation_for = |op| {
+		name = Scm.op_name(op)
+		(Scm.activation_table.find_first(|row| row.op == name) ?? crash "Scm.activation_for: missing activation row ${name}").grant
+	}
+
+	## The emitted vocabulary keeps replay from restating the step table.
+	activation_name : Activation -> Str
+	activation_name = |grant| match grant {
+		Never => "never"
+		Always => "always"
+		WhenClicked => "clicked"
+		WhenTyped => "typed"
+		KeyboardPress => "keyboard"
+		PointerPress => "pointer-down"
+		PointerRelease => "pointer-up"
+	}
+
 	## The step's name as a spec spells it.
 	op_name : Op -> Str
 	op_name = |op|
@@ -1446,6 +1599,10 @@ Scm := [].{
 			PointerUp(_) => "pointer-up"
 			PointerCancel(_) => "pointer-cancel"
 			Press(_) => "press"
+			Dismiss => "dismiss"
+			ExpectShown(_, _) => "expect-shown"
+			ExpectScroll(_) => "expect-scroll"
+			ExpectScrolls(_) => "expect-scrolls"
 			Focus(_) => "focus"
 			Blur(_) => "blur"
 			Change(_, _) => "change"
@@ -1533,8 +1690,9 @@ Scm := [].{
 		}
 		Object(
 			fields.concat([
+				JsonOut.field("activation_table", Array(Scm.activation_table.map(|row| Object([JsonOut.field("op", Text(row.op)), JsonOut.field("grant", Text(Scm.activation_name(row.grant)))])))),
 				JsonOut.field("key_control_types", Object([JsonOut.field("text_input_excluded", Array(Scm.key_control_types.text_input_excluded.map(|kind| Text(kind)))), JsonOut.field("choice_input_types", Array(Scm.key_control_types.choice_input_types.map(|kind| Text(kind))))])),
-				JsonOut.field("key_table", Array(Scm.key_table.map(|k| Object([JsonOut.field("key", Text(k.key)), JsonOut.field("name", Text(k.name)), JsonOut.field("code", Text(k.code)), JsonOut.field("needs_shift", Bool(k.needs_shift)), JsonOut.field("named", Bool(k.named))])))),
+				JsonOut.field("key_table", Array(Scm.key_table.map(|k| Object([JsonOut.field("key", Text(k.key)), JsonOut.field("name", Text(k.name)), JsonOut.field("code", Text(k.code)), JsonOut.field("vk", Nat(k.vk.to_u64())), JsonOut.field("needs_shift", Bool(k.needs_shift)), JsonOut.field("named", Bool(k.named))])))),
 				JsonOut.field("unmodelled_key_defaults", Array(Scm.unmodelled_key_defaults.map(|r| Object([JsonOut.field("control", Text(r.control)), JsonOut.field("keys", Array(r.keys.map(|k| Text(k))))])))),
 			]),
 		)
@@ -1659,6 +1817,23 @@ Scm := [].{
 					At(l) => [loc(l)]
 				},
 			)
+			Dismiss => []
+			ExpectShown(l, shown) => [
+				loc(l),
+				JsonOut.field(
+					"shown",
+					Text(
+						match shown {
+							Hidden => "hidden"
+							Open => "open"
+							Modal => "modal"
+							Popover => "popover"
+						},
+					),
+				),
+			]
+			ExpectScroll({ ordinal, target, kind }) => [loc(target), JsonOut.field("ordinal", Text(ordinal.to_str())), JsonOut.field("kind", Text(if (kind == IntoView) "into-view" else "to"))]
+			ExpectScrolls(count) => [JsonOut.field("count", Text(count.to_str()))]
 			Focus(l) => [loc(l)]
 			Blur(l) => [loc(l)]
 			Change(l, t) => [loc(l), text(t)]
@@ -2077,6 +2252,34 @@ expect {
 expect {
 	spec = Scm.parse("(test \"keys\" (steps (press \"Control+`\") (press (label \"Grid\") \"Shift+ArrowDown\") (press \"Shift+?\")))")?
 	spec.steps.map(|step| step.op) == [Press({ target: Focused, key: { key: "`", code: "Backquote", ctrl: Bool.True, alt: Bool.False, shift: Bool.False, meta: Bool.False } }), Press({ target: At(Label("Grid")), key: { key: "ArrowDown", code: "ArrowDown", ctrl: Bool.False, alt: Bool.False, shift: Bool.True, meta: Bool.False } }), Press({ target: Focused, key: { key: "?", code: "Slash", ctrl: Bool.False, alt: Bool.False, shift: Bool.True, meta: Bool.False } })]
+}
+
+## Dialog assertions and scroll ordinals are parsed once, with exact U64 JSON.
+expect {
+	spec = Scm.parse("(test \"shown\" (steps (dismiss) (expect-shown (label \"Editor\") modal) (expect-scroll 18446744073709551615 (test-id \"answer\") into-view) (expect-scrolls 18446744073709551615)))")?
+	actual = {
+		ops: spec.steps.map(|step| step.op),
+		ordinal: JsonOut.render(Scm.step_json(spec.steps.get(2)?)),
+	}
+	actual == {
+		ops: [Dismiss, ExpectShown(Label("Editor"), Modal), ExpectScroll({ ordinal: 18446744073709551615, target: TestId("answer"), kind: IntoView }), ExpectScrolls(18446744073709551615)],
+		ordinal: "{\"op\":\"expect-scroll\",\"line\":1,\"column\":70,\"loc\":{\"kind\":\"test-id\",\"value\":\"answer\"},\"ordinal\":\"18446744073709551615\",\"kind\":\"into-view\"}",
+	}
+}
+
+## New forms reject unknown states, zero ordinals, overflow and extra arguments.
+expect ["(dismiss 1)", "(expect-shown (label \"x\") dialog)", "(expect-scroll 0 (label \"x\") to)", "(expect-scroll -1 (label \"x\") to)", "(expect-scrolls 18446744073709551616)", "(expect-scroll 1 (label \"x\") smooth)", "(expect-files 18446744073709551615)"].map(|step| Scm.parse("(test \"bad\" (steps ${step}))").is_err()) == List.repeat(Bool.True, 7)
+
+## Every grammar spelling has one explicit activation row, including assertions.
+expect {
+	names = Scm.step_forms.map(|form| form.name)
+	rows = Scm.activation_table
+	{
+		count: rows.len(),
+		unique: rows.map(|row| row.op).fold(Dict.empty(), |seen, name| seen.insert(name, {})).len(),
+		covered: names.all(|name| rows.any(|row| row.op == name)),
+		keyboard: Scm.activation_for(Dismiss),
+	} == { count: names.len(), unique: names.len(), covered: Bool.True, keyboard: Never }
 }
 
 ## Implicit and contradictory Shift, repeated modifiers and unknown keys are

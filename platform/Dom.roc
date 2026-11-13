@@ -7,9 +7,21 @@ Dom := [].{
 	## It is spelled here independently of the engine; the spec runner
 	## refuses a program that speaks another.
 	protocol_version : U32
-	protocol_version = 10
+	protocol_version = 11
 
-	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)), detach_count : U64, keymaps : Dict(Str, KeyIndex) }
+	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)), detach_count : U64, keymaps : Dict(Str, KeyIndex), shown : Shown, shown_intent : { dialog : U64, popover : U64 }, pending_toggle : Bool, toggle_slot : U64 }
+
+	## Browser top-layer state, separate from the value a property decided.
+	Shown : [Hidden, Open, Modal, Popover]
+
+	## Scroll operands remain command data; layout belongs to the browser.
+	Edge : [Keep, Start, End, Px(U32)]
+	RefAction : [Focus(U8), IntoView({ block : U8, inline : U8, behavior : U8 }), To({ top : Edge, left : Edge, behavior : U8 })]
+
+	## Deferred work captures a model lifetime, never a recycled engine id.
+	RefCmd : { node : U32, target : U64, action : RefAction }
+	ShownCmd : { target : U64, property : U8, value : Shown, intent : U64 }
+	AfterCmd : [Ref(RefCmd), Show(ShownCmd), Effect(FxCmd)]
 
 	## Parsed keymaps index canonical labels separately from physical fallback.
 	Chord : { key : Str, ctrl : Bool, alt : Bool, shift : Bool, meta : Bool }
@@ -698,7 +710,7 @@ Dom := [].{
 	Model : { nodes : List(DNode), statics : List(U64), rows : List(Dict(U64, {})), tpls : List(Tpl), root : U64, documents : List({ index : U64, event : Str }) }
 
 	new : {} -> Model
-	new = |_| { nodes: [{ tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty() }], statics: [], rows: [], tpls: [], root: 0, documents: [] }
+	new = |_| { nodes: [{ tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0 }], statics: [], rows: [], tpls: [], root: 0, documents: [] }
 
 	u32 : List(U8), U64 -> U32
 	u32 = |b, at| {
@@ -803,7 +815,7 @@ Dom := [].{
 	}
 
 	empty_node : DNode
-	empty_node = { tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty() }
+	empty_node = { tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0 }
 
 	## Update node i in place (the node is moved out of the list first, so
 	## its kid list stays uniquely owned).
@@ -861,12 +873,12 @@ Dom := [].{
 				dom,
 				n.parent - 1,
 				|p| {
-					{ tag, text, attrs, kids, parent, rn, hs, ht, ids, props, detach_count, keymaps } = p
+					{ tag, text, attrs, kids, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot } = p
 					kept = match kids.find_last_index(|k| k == i) {
 						Ok(pos) => kids.drop_at(pos)
 						Err(_) => kids
 					}
-					{ tag, text, attrs, kids: kept, parent, rn, hs, ht, ids, props, detach_count, keymaps }
+					{ tag, text, attrs, kids: kept, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot }
 				},
 			)
 			Dom.modify(d1, i, |m| { ..m, parent: 0, detach_count: m.detach_count + 1 })
@@ -881,7 +893,7 @@ Dom := [].{
 			d0,
 			parent,
 			|p| {
-				{ tag, text, attrs, kids, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps } = p
+				{ tag, text, attrs, kids, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot } = p
 				kids2 = match before {
 					Err(End) => kids.append(i)
 					Ok(b) => {
@@ -889,7 +901,7 @@ Dom := [].{
 						kids.sublist({ start: 0, len: pos }).append(i).concat(kids.sublist({ start: pos, len: kids.len() - pos }))
 					}
 				}
-				{ tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps }
+				{ tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot }
 			},
 		)
 		Dom.modify(d1, i, |n| { ..n, parent: parent + 1 })
@@ -916,7 +928,7 @@ Dom := [].{
 		kind = Dom.byte(b, at)
 		if kind == 2 {
 			(t, next) = Dom.str(b, at + 1)
-			(d1, i) = Dom.add_node(dom, { tag: "", text: t, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty() })
+			(d1, i) = Dom.add_node(dom, { tag: "", text: t, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0 })
 			(d1, i, next)
 		} else {
 			(tag, a1) = Dom.str(b, at + 1)
@@ -935,7 +947,7 @@ Dom := [].{
 			}
 			nk = Dom.byte(b, $at).to_u64()
 			$at = $at + 1
-			(d1, i) = Dom.add_node(dom, { tag, text: "", attrs: $attrs, kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty() })
+			(d1, i) = Dom.add_node(dom, { tag, text: "", attrs: $attrs, kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0 })
 			var $d = d1
 			$k = 0
 			while $k < nk {
@@ -1032,7 +1044,7 @@ Dom := [].{
 
 	## Remove an attribute explicitly, without interpreting any text as absence.
 	remove_attr_on : Model, U64, Str -> Model
-	remove_attr_on = |dom, i, name| Dom.modify(dom, i, |n| { ..n, attrs: n.attrs.keep_if(|(key, _)| key != name) })
+	remove_attr_on = |dom, i, name| Dom.modify(dom, i, |n| { ..n, attrs: n.attrs.keep_if(|(key, _)| key != name), shown: if (n.tag == "dialog" and name == "open") Hidden else n.shown })
 
 	## Apply the presence carried by an attribute command or row operand.
 	set_presence_on : Model, U64, Str, [Absent, Present(Str)] -> Model
@@ -1048,7 +1060,7 @@ Dom := [].{
 		}
 		n = Dom.node(dom, i)
 		attrs = if (n.attrs.any(|(k, _)| k == name)) n.attrs.map(|(k, v)| if (k == name) (k, value) else (k, v)) else n.attrs.append((name, value))
-		Dom.set_node(dom, i, { ..n, attrs })
+		Dom.set_node(dom, i, { ..n, attrs, shown: if (n.tag == "dialog" and name == "open" and n.shown == Hidden) Open else n.shown })
 	}
 
 	## Only the closed boolean names interpret empty or false text as absence.
@@ -1082,7 +1094,7 @@ Dom := [].{
 	## Invalid numbers come from a protocol mismatch, never an app event.
 	check_listener : { event : Str, kind : U8, policies : U32 } -> {}
 	check_listener = |{ event, kind, policies }| {
-		if kind != 1 and kind != 2 and kind != 3 and kind != 4 {
+		if kind != 1 and kind != 2 and kind != 3 and kind != 4 and kind != 5 {
 			crash "executor: unknown payload kind ${kind.to_str()}"
 		}
 		if kind == 2 and !["change", "drop", "paste"].contains(event) {
@@ -1096,6 +1108,9 @@ Dom := [].{
 		}
 		if policies.bitwise_and(8) != 0 and (kind != 3 or event != "pointermove") {
 			crash "executor: paced policy requires a pointermove pointer handler"
+		}
+		if kind == 5 and !["close", "toggle"].contains(event) {
+			crash "executor: open-state payload requires close or toggle"
 		}
 		if kind == 4 and !["keydown", "keyup"].contains(event) {
 			crash "executor: key payload requires keydown or keyup"
@@ -1111,6 +1126,26 @@ Dom := [].{
 		}
 	}
 
+	## Decode only the private property vocabulary; invalid values are wire faults.
+	shown_value : U8, Str -> Shown
+	shown_value = |property, value| match (property, value) {
+		(6, "hidden") | (7, "false") => Hidden
+		(6, "open") => Open
+		(6, "modal") => Modal
+		(7, "true") => Popover
+		_ => crash "executor: invalid shown property value"
+	}
+
+	## Each scroll edge consumes exactly its discriminant and optional pixel value.
+	read_edge : List(U8), U64 -> (Edge, U64)
+	read_edge = |bytes, at| match Dom.byte(bytes, at) {
+		0 => (Keep, at + 1)
+		1 => (Start, at + 1)
+		2 => (End, at + 1)
+		3 => (Px(Dom.u32(bytes, at + 1)), at + 5)
+		_ => crash "executor: unknown scroll edge"
+	}
+
 	## The independent property table fixes each wire index's claimed name.
 	property_name : U8 -> Str
 	property_name = |property| match property {
@@ -1119,6 +1154,8 @@ Dom := [].{
 		3 => "pointer_zone"
 		4 => "keymap_down"
 		5 => "keymap_up"
+		6 => "shown"
+		7 => "popover_shown"
 		_ => crash "executor: unknown property index ${property.to_str()}"
 	}
 
@@ -1137,6 +1174,14 @@ Dom := [].{
 	set_property_on : Model, U64, U8, Str, U32 -> Model
 	set_property_on = |dom, i, property, value, command_node| {
 		name = Dom.property_name(property)
+		if property == 6 or property == 7 {
+			n = Dom.node(dom, i)
+			_ = Dom.shown_value(property, value)
+			if (property == 6 and n.tag != "dialog") or (property == 7 and !["auto", "manual"].contains(Dom.enum_attr(n, "popover"))) {
+				crash "executor: shown property on unsupported element at node ${command_node.to_str()}"
+			}
+			return Dom.set_live_on(dom, i, name, value)
+		}
 		if property >= 3 {
 			if Dom.node(dom, i).tag.is_empty() {
 				crash "executor: pointer zone property requires an element"
@@ -1184,7 +1229,7 @@ Dom := [].{
 	apply = |dom0, b| Dom.apply_ops(dom0, b).0
 
 	op_name : U8 -> Str
-	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "FOCUS", "PORT", "SAVE", "PROP", "HPROP", "RELEASE"].get(op.to_u64()) ?? "?"
+	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF", "PORT", "SAVE", "PROP", "HPROP", "RELEASE"].get(op.to_u64()) ?? "?"
 
 	## Opcode histogram of a batch, e.g. "SETTEXT=1 ATTR=1".
 	describe : List(U8) -> Str
@@ -1222,7 +1267,8 @@ Dom := [].{
 		Set(Str, Str),
 		Remove(Str),
 		Title(Str),
-		Focus(U8, U32),
+		Ref(RefCmd),
+		Shown(ShownCmd),
 
 		## A read of a file into the page: id, mode (1 bytes, 2 text) and the
 		## file's handle token and range.
@@ -1312,13 +1358,25 @@ Dom := [].{
 	## at or above the model's node count before it.
 	apply_full : Model, List(U8) -> { dom : Model, ops : List(U8), fx : List(FxCmd), written : List(U64), values : List((U64, Str)) }
 	apply_full = |dom0, b| {
+		r = Dom.decode_commands(dom0, b, { start: 0, one: Bool.False })
+		{ dom: r.dom, ops: r.ops, fx: r.fx, written: r.written, values: r.values }
+	}
+
+	## Decode one command at its byte position, allowing the browser model to
+	## apply a hiding value before decoding the content removal that follows it.
+	apply_next : Model, List(U8), U64 -> { dom : Model, ops : List(U8), fx : List(FxCmd), written : List(U64), values : List((U64, Str)), next : U64 }
+	apply_next = |dom, bytes, at| Dom.decode_commands(dom, bytes, { start: at, one: Bool.True })
+
+	decode_commands : Model, List(U8), { start : U64, one : Bool } -> { dom : Model, ops : List(U8), fx : List(FxCmd), written : List(U64), values : List((U64, Str)), next : U64 }
+	decode_commands = |dom0, b, { start, one }| {
 		var $written = []
 		var $values = []
 		var $fx = []
 		var $d = dom0
-		var $at = 0.U64
+		var $at = start
 		var $ops = []
-		while $at < b.len() {
+		while $at < b.len() and (!one or $ops.is_empty()) {
+			intent = $at
 			op = Dom.byte(b, $at)
 			$ops = $ops.append(op)
 			$at = $at + 1
@@ -1352,6 +1410,10 @@ Dom := [].{
 						(v, next) = Dom.str(b, $at)
 						$at = next
 						$dd = Dom.set_property_on($dd, target, hole.property, v, nid)
+						if hole.property == 6 or hole.property == 7 {
+							$dd = Dom.modify($dd, target, |n| { ..n, shown_intent: if (hole.property == 6) { ..n.shown_intent, dialog: intent } else { ..n.shown_intent, popover: intent } })
+							$fx = $fx.append(Shown({ target: target, property: hole.property, value: Dom.shown_value(hole.property, v), intent }))
+						}
 					} else if hole.kind == 3 {
 						t = Dom.node($dd, target)
 						$dd = Dom.set_node($dd, target, { ..t, hs: t.hs.append({ event: hole.name, handler: hole.handler.to_u32(), kind: hole.payload_kind, policies: hole.policies }) })
@@ -1406,6 +1468,14 @@ Dom := [].{
 						Dom.set_property_on($d, target, hole.property, v, nid)
 					}
 				}
+				if op == 22 and (hole.property == 6 or hole.property == 7) {
+					v = match presence {
+						Present(text) => text
+						Absent => crash "executor: missing shown value"
+					}
+					$d = Dom.modify($d, target, |n| { ..n, shown_intent: if (hole.property == 6) { ..n.shown_intent, dialog: intent } else { ..n.shown_intent, popover: intent } })
+					$fx = $fx.append(Shown({ target, property: hole.property, value: Dom.shown_value(hole.property, v), intent }))
+				}
 			} else if op == 4 {
 				i = Dom.lookup($d, Dom.u32(b, $at))
 				before = Dom.u32(b, $at + 4)
@@ -1459,7 +1529,7 @@ Dom := [].{
 				before = Dom.u32(b, $at + 8)
 				(s, next) = Dom.str(b, $at + 12)
 				$at = next
-				fresh = if (op == 8) { tag: s, text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty() } else { tag: "", text: s, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty() }
+				fresh = if (op == 8) { tag: s, text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0 } else { tag: "", text: s, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0 }
 				(d1, i) = Dom.add_node($d, fresh)
 				$d = Dom.bind(Dom.place(d1, i, parent, before), nid, i)
 			} else if op == 9 {
@@ -1486,6 +1556,10 @@ Dom := [].{
 					$values = $values.append((i, value))
 				}
 				$d = Dom.set_property_on($d, i, property, value, id)
+				if property == 6 or property == 7 {
+					$d = Dom.modify($d, i, |n| { ..n, shown_intent: if (property == 6) { ..n.shown_intent, dialog: intent } else { ..n.shown_intent, popover: intent } })
+					$fx = $fx.append(Shown({ target: i, property: property, value: Dom.shown_value(property, value), intent }))
+				}
 			} else if op == 11 {
 				id = Dom.u32(b, $at)
 				h = Dom.u32(b, $at + 4)
@@ -1658,8 +1732,34 @@ Dom := [].{
 					crash "unknown store op"
 				}
 			} else if op == 18 {
-				$fx = $fx.append(Focus(Dom.byte(b, $at), Dom.u32(b, $at + 1)))
+				mode = Dom.byte(b, $at)
+				ref_node = Dom.u32(b, $at + 1)
+				target = Dom.lookup($d, ref_node)
 				$at = $at + 5
+				action = if mode >= 1 and mode <= 5 {
+					Focus(mode)
+				} else if mode == 6 {
+					block = Dom.byte(b, $at)
+					inline = Dom.byte(b, $at + 1)
+					behavior = Dom.byte(b, $at + 2)
+					if block > 3 or inline > 3 or behavior > 2 {
+						crash "executor: invalid scroll-into-view operands"
+					}
+					$at = $at + 3
+					IntoView({ block, inline, behavior })
+				} else if mode == 7 {
+					(top, next) = Dom.read_edge(b, $at)
+					(left, end) = Dom.read_edge(b, next)
+					behavior = Dom.byte(b, end)
+					if behavior > 2 {
+						crash "executor: invalid scroll behavior"
+					}
+					$at = end + 1
+					To({ top, left, behavior })
+				} else {
+					crash "executor: unknown REF mode ${mode.to_str()}"
+				}
+				$fx = $fx.append(Ref({ node: ref_node, target, action }))
 			} else if op == 17 {
 				(t, a1) = Dom.str(b, $at)
 				$at = a1
@@ -1678,7 +1778,7 @@ Dom := [].{
 				crash "unknown command ${op.to_str()}"
 			}
 		}
-		{ dom: $d, ops: $ops, fx: $fx, written: $written, values: $values }
+		{ dom: $d, ops: $ops, fx: $fx, written: $written, values: $values, next: $at }
 	}
 
 	## A file's handle token and range on the wire, `token:u64 start:u64
@@ -1918,4 +2018,17 @@ expect {
 	key = { key: "", code: "", ctrl: False, alt: False, shift: False, meta: False, composing: False }
 	map = Dom.parse_keymap("pa----0:a*")
 	{ empty: Dom.key_match(map, key, False).is_err(), every: Dom.key_match(map, { ..key, key: "F2" }, False).map_ok(|m| m.heard.key) } == { empty: Bool.True, every: Ok("F2") }
+}
+
+## REF decoding captures lifetimes and keeps all legacy modes byte-for-byte.
+expect {
+	(d1, target) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "button" })
+	dom = Dom.bind(d1, 1, target)
+	legacy = [1.U8, 2, 3, 4, 5].fold([], |bytes, mode| bytes.concat([18, mode, 1, 0, 0, 0]))
+	bytes = legacy.concat([18, 6, 1, 0, 0, 0, 0, 1, 2, 18, 7, 1, 0, 0, 0, 3, 255, 0, 0, 0, 2, 1])
+	actual = Dom.apply_full(dom, bytes)
+	actual.fx == [1.U8, 2, 3, 4, 5].map(|mode| Ref({ node: 1, target, action: Focus(mode) })).concat([
+		Ref({ node: 1, target, action: IntoView({ block: 0, inline: 1, behavior: 2 }) }),
+		Ref({ node: 1, target, action: To({ top: Px(255), left: End, behavior: 1 }) }),
+	])
 }

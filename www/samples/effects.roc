@@ -187,3 +187,22 @@ page = |model|
 			.concat(routing(model))
 			.concat(subscriptions(model)),
 	)
+
+# region scroll
+## Explicit scroll commands run in stream order after the batch. Focus in
+## place then moves keyboard focus without asking the browser to scroll.
+reveal_problem : Engine.Signal(Ctx, Bool) -> Elem(Ctx)
+reveal_problem = |invalid| Engine.watch_changes(
+	invalid,
+	|has_problem| if has_problem {
+		[Engine.scroll_into_view("problem", { block: Center, behavior: Instant }), FocusInPlace("problem")]
+	} else {
+		[]
+	},
+	Engine.ignore({}),
+)
+
+## The narrow scroll tag also fits cleanup's command-only plan.
+restore_scroll : Engine.Signal(Ctx, {}) -> Elem(Ctx)
+restore_scroll = |signal| Engine.on_cleanup("restore page position", signal, |_| [Engine.scroll_into_view("search", {}), ScrollTo("search", { top: Start, left: Keep, behavior: Auto })])
+# endregion scroll

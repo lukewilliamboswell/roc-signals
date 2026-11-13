@@ -1,0 +1,18 @@
+(test "Form Builder — problem feedback accepts Escape, outside clicks and opening Settings"
+  (steps
+    (click (role button :name "Submit form"))
+    (expect-shown (test-id "form-problems") popover)
+    (dismiss)
+    (expect-shown (test-id "form-problems") hidden)
+    (click (role button :name "Submit form"))
+    (click (role button :name "Clear preview answers"))
+    (expect-shown (test-id "form-problems") hidden)
+    (click (role button :name "Submit form"))
+    (click (role button :name "Settings f2"))
+    (expect-shown (test-id "settings-f2") modal)
+    (expect-shown (test-id "form-problems") hidden)
+    (dismiss)
+    (expect-shown (test-id "settings-f2") hidden)
+    (expect-shown (test-id "form-problems") hidden)
+  )
+)

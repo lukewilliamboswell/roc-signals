@@ -1,0 +1,18 @@
+(test "Top layer — moved modal rows regain modality and disposed ids never reopen"
+  (setup (initial-location "/#top-layer"))
+  (steps
+    (click (role button :name "Open row modal"))
+    (expect-shown (test-id "modal-row-a") modal)
+    (expect-focused (role button :name "Reverse modal rows"))
+    (click (role button :name "Reverse modal rows"))
+    (expect-shown (test-id "modal-row-a") modal)
+    (expect-focused (role button :name "Reverse modal rows"))
+    (click (role button :name "Dispose modal rows"))
+    (expect-absent (test-id "modal-row-a"))
+    (expect-absent (test-id "modal-row-b"))
+    (click (role button :name "Restore shown rows"))
+    (expect-shown (test-id "modal-row-a") hidden)
+    (expect-shown (test-id "modal-row-b") hidden)
+    (click (role button :name "Reverse shown rows"))
+    (expect-shown (test-id "modal-row-a") hidden)
+    (expect-shown (test-id "modal-row-b") hidden)))

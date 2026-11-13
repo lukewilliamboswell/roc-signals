@@ -40,7 +40,7 @@ Checks := [].{
 		Ok(List.map2(dirs, results, |dir, r| if (r.code == 0) [] else ["roc test ${dir}/main.roc failed: ${r.output.trim()}"]).join().concat(negatives))
 	}
 
-	## Invalid key declarations must remain impossible to author. Each probe
+	## Invalid typed declarations must remain impossible to author. Each probe
 	## is compiled as a complete app so context evidence is checked at use.
 	key_type_errors! : SpecSuite.Options => Try(List(Str), _)
 	key_type_errors! = |o| {
@@ -49,6 +49,10 @@ Checks := [].{
 			{ name: "key-prevent", rejection: "Engine.KeyProps" },
 			{ name: "document-row", rejection: "outside_rows" },
 			{ name: "document-state-in-row", rejection: "outside_rows" },
+			{ name: "dialog-open-text", rejection: "Bool" },
+			{ name: "dialog-close-text", rejection: "Bool" },
+			{ name: "popover-toggle-text", rejection: "Bool" },
+			{ name: "dialog-internal-bridge", rejection: "EngineOnly" },
 		]
 		dir = "${o.build_dir}/key-type-errors"
 		SpecSuite.fresh_dir!(dir)?
@@ -64,23 +68,34 @@ Checks := [].{
 			Path.write_utf8!(Path.utf8(path), source)?
 			{ code, stdout } = Proc.merged!({ program: o.compiler, args: ["check", path], cwd: o.root })?
 			if code == 0 or !Str.from_utf8_lossy(stdout).contains(test.rejection) {
-				$problems = $problems.append("key type contract ${test.name}: expected rejection naming ${test.rejection}, got ${Str.from_utf8_lossy(stdout)}")
+				$problems = $problems.append("typed declaration contract ${test.name}: expected rejection naming ${test.rejection}, got ${Str.from_utf8_lossy(stdout)}")
 			}
 		}
 		Ok($problems)
 	}
 
-	## Engine mistakes are mounted in isolated apps. A native crash must name
-	## the intended contract; the matching Wasm app is checked in Chrome.
+	## Isolated apps check element contracts in both hosts: deliberate mistakes
+	## name the violated rule, while ordinary raw attributes still mount.
 	key_contracts! : SpecSuite.Options => Try(List(Str), _)
 	key_contracts! = |o| {
 		cases = [
-			{ name: "oracle-leading-zero", rejection: "leading zero", prefix: "executor:" },
-			{ name: "oracle-apply-file", rejection: "value property on file input", prefix: "contract:" },
-			{ name: "text-key", rejection: "on_key", prefix: "contract:" },
-			{ name: "document-bound", rejection: "32", prefix: "contract:" },
-			{ name: "apply-noncontrol", rejection: "ApplyValue", prefix: "contract:" },
-			{ name: "apply-without-value", rejection: "ApplyValue", prefix: "contract:" },
+			{ name: "oracle-leading-zero", rejection: "leading zero", prefix: "executor:", code: 70 },
+			{ name: "oracle-apply-file", rejection: "value property on file input", prefix: "contract:", code: 70 },
+			{ name: "text-key", rejection: "on_key", prefix: "contract:", code: 70 },
+			{ name: "document-bound", rejection: "32", prefix: "contract:", code: 70 },
+			{ name: "apply-noncontrol", rejection: "ApplyValue", prefix: "contract:", code: 70 },
+			{ name: "apply-without-value", rejection: "ApplyValue", prefix: "contract:", code: 70 },
+			{ name: "dialog-open", rejection: "owned by the controlled dialog", prefix: "contract:", code: 70 },
+			{ name: "dialog-dynamic-open", rejection: "owned by the controlled dialog", prefix: "contract:", code: 70 },
+			{ name: "dialog-popover", rejection: "popover and closedby", prefix: "contract:", code: 70 },
+			{ name: "dialog-dynamic-popover", rejection: "popover and closedby", prefix: "contract:", code: 70 },
+			{ name: "dialog-closedby", rejection: "popover and closedby", prefix: "contract:", code: 70 },
+			{ name: "dialog-dynamic-closedby", rejection: "popover and closedby", prefix: "contract:", code: 70 },
+			{ name: "controlled-beforetoggle", rejection: "beforetoggle", prefix: "contract:", code: 70 },
+			{ name: "popover-beforetoggle", rejection: "beforetoggle", prefix: "contract:", code: 70 },
+			{ name: "popover-duplicate", rejection: "one static popover", prefix: "contract:", code: 70 },
+			{ name: "popover-dynamic-popover", rejection: "one static popover", prefix: "contract:", code: 70 },
+			{ name: "raw-controlled-attributes", rejection: "", prefix: "", code: 0 },
 		]
 		dir = "${o.build_dir}/key-contracts"
 		SpecSuite.fresh_dir!(dir)?
@@ -101,7 +116,7 @@ Checks := [].{
 			Path.write_utf8!(Path.utf8(spec), "(test \"contract\" (steps (mark-metrics)))")?
 			{ code, stdout } = Proc.merged!({ program: runner, args: [spec], cwd: case_dir })?
 			message = Str.from_utf8_lossy(stdout)
-			if code != 70 or !message.contains(test.prefix) or !message.contains(test.rejection) {
+			if code != test.code or !message.contains(test.prefix) or !message.contains(test.rejection) {
 				$problems = $problems.append("native key contract ${test.name}: expected ${test.prefix} ${test.rejection}, got ${code.to_str()}: ${message}")
 			}
 		}

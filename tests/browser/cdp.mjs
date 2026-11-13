@@ -427,8 +427,8 @@ class Page {
     if (!definition) throw new Error(`press has no parser key definition for ${JSON.stringify(chord.key)}`);
     const modifiers = (chord.alt ? 1 : 0) | (chord.ctrl ? 2 : 0) | (chord.meta ? 4 : 0) | (chord.shift ? 8 : 0);
     const text = !chord.ctrl && !chord.meta && (chord.key.length === 1 ? chord.key : chord.key === "Enter" ? "\r" : undefined);
-    const vk = chord.code.startsWith("Key") ? chord.code.charCodeAt(3) : chord.code.startsWith("Digit") ? chord.code.charCodeAt(5) : undefined;
-    const fields = { key: chord.key, code: chord.code, modifiers, ...(vk === undefined ? {} : { windowsVirtualKeyCode: vk }) };
+    if (!Number.isInteger(definition.vk) || definition.vk < 0 || definition.vk > 255) throw new Error("press parser key definition has no valid virtual key code");
+    const fields = { key: chord.key, code: chord.code, modifiers, windowsVirtualKeyCode: definition.vk };
     if (phase === "down") await this.send("Input.dispatchKeyEvent", { ...fields, type: text ? "keyDown" : "rawKeyDown", ...(text ? { text, unmodifiedText: text } : {}) });
     else await this.send("Input.dispatchKeyEvent", { ...fields, type: "keyUp" });
   }

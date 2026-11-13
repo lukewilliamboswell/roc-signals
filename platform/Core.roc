@@ -1049,7 +1049,7 @@ Core := [].{
 	## `ctx`. Make one with `attr`, `attr_s`, `attr_presence`, `class`,
 	## `class_s`, `test_id`,
 	## `test_id_s`, `on`, `on_click`, `ref` or `ref_s`.
-	Attr(ctx) :: [Static(Str, Str), Dyn(Str, Signal(ctx, [Absent, Present(Str)])), On(EventDecl, RoutedHandler(ctx)), KeyOn(EventDecl, RoutedHandler(ctx), Signal(ctx, Str)), Property(U8, Str), PropertyV(U8, Signal(ctx, Str)), Ref(Signal(ctx, Str))]
+	Attr(ctx) :: [Static(Str, Str), Dyn(Str, Signal(ctx, [Absent, Present(Str)])), On(EventDecl, RoutedHandler(ctx)), KeyOn(EventDecl, RoutedHandler(ctx), Signal(ctx, Str)), ShownOn(U8, Signal(ctx, Str), HandlerOf(ctx, Bool), Str), Property(U8, Str), PropertyV(U8, Signal(ctx, Str)), Ref(Signal(ctx, Str))]
 
 	## A piece of UI in context `ctx`: an element, a text node or a dynamic site
 	## (`state`, `derive`, `resource`, `when`, `switch`, `remount_on`, `each`,
@@ -1059,6 +1059,7 @@ Core := [].{
 	Elem(ctx) :: [
 		Element(Str, List(Attr(ctx)), List(Elem(ctx))),
 		Text(Str),
+		Fragment(List(Elem(ctx))),
 		TextV(Signal(ctx, Str)),
 
 		## A dynamic site and its conservative read mask, given the depth the
@@ -1399,6 +1400,9 @@ Core := [].{
 		Blur(Str),
 		SelectText(Str),
 		ApplyValue(Str),
+		FocusInPlace(Str),
+		ScrollIntoView(Str, { block : Align, inline : Align, behavior : ScrollBehavior }),
+		ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }),
 		StorageSet(Str, Str),
 		StorageRemove(Str),
 		ReadBytes({ file : File, max_bytes : U64 }),
@@ -1441,6 +1445,9 @@ Core := [].{
 		Blur(Str),
 		SelectText(Str),
 		ApplyValue(Str),
+		FocusInPlace(Str),
+		ScrollIntoView(Str, { block : Align, inline : Align, behavior : ScrollBehavior }),
+		ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }),
 		StorageSet(Str, Str),
 		StorageRemove(Str),
 		PortCommand({ port : Str, message : PortMessage }),
@@ -1992,10 +1999,27 @@ Core := [].{
 			[],
 			|out, attribute| match attribute {
 				KeyOn(event, handler, keymap) => out.concat([PropertyV(if (event.event == "keydown") 4 else 5, keymap), On(event, handler)])
+				ShownOn(index, value, handler, showing) => out.concat([PropertyV(index, value), attach_open(index, showing, handler)])
 				_ => out.append(attribute)
 			},
 		),
 		kids,
+	)
+
+	## Internal vocabulary construction keeps its private shown row paired with its handler.
+	controlled_dialog : { label : Str, open : Signal(ctx, Bool), on_close : HandlerOf(ctx, Bool), modal : [Modal, NonModal], attrs : List(Attr(ctx)), children : List(Elem(ctx)) } -> Elem(ctx)
+	controlled_dialog = |props| Core.element(
+		"dialog",
+		[ShownOn(6, props.open.map(|open| if (!open) "hidden" else if (props.modal == Modal) "modal" else "open"), props.on_close, if (props.modal == Modal) "modal" else "open"), Core.attr("aria-label", props.label)].concat(props.attrs),
+		[Core.when(props.open, || Fragment(props.children), || Fragment([]))],
+	)
+
+	## A controlled popover owns one static dismissal mode and its toggle echo.
+	controlled_popover : { label : Str, open : Signal(ctx, Bool), on_toggle : HandlerOf(ctx, Bool), dismiss : [Auto, Manual], attrs : List(Attr(ctx)), children : List(Elem(ctx)) } -> Elem(ctx)
+	controlled_popover = |props| Core.element(
+		"div",
+		[Core.attr("popover", if (props.dismiss == Auto) "auto" else "manual"), ShownOn(7, props.open.map(|open| if (open) "true" else "false"), props.on_toggle, "true"), Core.attr("aria-label", props.label)].concat(props.attrs),
+		props.children,
 	)
 
 	## A static text node.
@@ -2205,6 +2229,23 @@ Core := [].{
 	on_pointer_paced : HandlerOf(ctx, Pointer) -> Attr(ctx)
 	on_pointer_paced = |handler| attach_kind("pointermove", pointer_kind(Move), 8, handler)
 
+	## Where the browser aligns a target within its scrolling ancestors.
+	Align : [Start, Center, End, Nearest]
+
+	## One axis of an explicit scroll; End is resolved by the browser.
+	Edge : [Keep, Start, End, Px(U32)]
+
+	## Whether a scroll uses CSS behavior, moves instantly or animates.
+	ScrollBehavior : [Auto, Instant, Smooth]
+
+	## Scroll alignment with nearest-edge behavior unless the caller chooses otherwise.
+	ScrollProps := { block : Align ?? Nearest, inline : Align ?? Nearest, behavior : ScrollBehavior ?? Auto }
+
+	## Scroll a named element after the batch; a missing name counts as stale.
+	## Its narrow tag also fits a cleanup plan.
+	scroll_into_view : Str, ScrollProps -> [ScrollIntoView(Str, { block : Align, inline : Align, behavior : ScrollBehavior })]
+	scroll_into_view = |name, props| ScrollIntoView(name, { block: props.block, inline: props.inline, behavior: props.behavior })
+
 	## Name this element as a focus reference for `Focus`, `Blur` and `SelectText`
 	## requests, so the app never handles engine node ids. Names are unique
 	## among live elements and released with the element. An empty name names
@@ -2351,8 +2392,8 @@ Core := [].{
 	## batch.
 	take_cmds : App, List(U8) -> (App, List(U8))
 	take_cmds = |{ root, tx, programs }, buf| {
-		{ cmds, next, free, routes, work, paths, site_free, fx } = tx
-		({ root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, fx }, programs }, cmds)
+		{ cmds, next, free, routes, work, paths, site_free, observations, fx } = tx
+		({ root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs }, cmds)
 	}
 
 	## For test platforms and harnesses: how many app closures (holes, values,
@@ -2420,7 +2461,7 @@ Core := [].{
 	## host exports it, and the runtime refuses an instance whose version it does
 	## not implement.
 	protocol_version : U32
-	protocol_version = 10
+	protocol_version = 11
 
 	## A worker task as the catalogue holds it (design.md, "Workers"): a
 	## namespaced name (`"example.org/search/filter"`) and its effectful
@@ -2529,8 +2570,8 @@ Core := [].{
 			event: p.event,
 			files: |inst, buf, wbuf, node, handler, record, blobs| {
 				{ root, tx, programs } = inst
-				{ cmds: _, next, free, routes, work, paths, site_free, fx } = tx
-				fresh = { root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, fx }, programs }
+				{ cmds: _, next, free, routes, work, paths, site_free, observations, fx } = tx
+				fresh = { root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs }
 				handles = blobs.map(|b| Blob.(b))
 				if node == fx_node {
 					# A result that carries files: a port's answer (result
@@ -2695,8 +2736,8 @@ Core := [].{
 		},
 		event: |inst, buf, wbuf, node, handler, payload| {
 			{ root, tx, programs } = inst
-			{ cmds: _, next, free, routes, work, paths, site_free, fx } = tx
-			fresh = { root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, fx }, programs }
+			{ cmds: _, next, free, routes, work, paths, site_free, observations, fx } = tx
+			fresh = { root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs }
 			if node == fx_node {
 				finish(Core.result(fresh, handler, decode_res_with(payload, programs.ports.decode)), [], wbuf)
 			} else {
@@ -2761,31 +2802,48 @@ Mount(ctx) := [Mount((ctx, Args, Tx -> (Inst(ctx), U128, Tx)))]
 ## the written layers below it (`waits_for_outer`). Each of them joined that
 ## pass if the pass reached its site; the walk refreshes, at its own site,
 ## each one the pass did not reach, and stops at the deepest of them.
-Payload : [Ev(List(U8)), Files(List(U8), List(Core.Blob)), Fx(Result), Settle(Layers)]
+Payload : [Ev(List(U8)), Files(List(U8), List(Core.Blob)), Fx(Result), Settle(Layers, Bool), OpenState(Bool)]
 
 ## Whether a payload is a `Settle` walk, and if so whether it names a
 ## layer below index `depth`, so that it goes on past the state site there.
 settle_walk : Payload, U64 -> Try([Further, Ends], [Fires])
 settle_walk = |payload, depth| match payload {
-	Settle(left) => if (layers_empty(layers_from(left, depth + 1))) Ok(Ends) else Ok(Further)
+	Settle(left, forced) => if (!forced and layers_empty(layers_from(left, depth + 1))) Ok(Ends) else Ok(Further)
 	_ => Err(Fires)
 }
 
 ## Whether a payload fires handlers: a `Settle` does not.
 fires : Payload -> Bool
 fires = |payload| match payload {
-	Settle(_) => False
+	Settle(_, _) => False
 	_ => True
 }
 
 ## A handler in a mounted block has already fixed its payload kind. It
 ## decodes once at this boundary and then calls its typed handler.
-RoutedHandler(ctx) : { run : (ctx, Payload, List(U32) -> (ctx, Layers)) }
+RoutedHandler(ctx) : { run : (ctx, Payload, List(U32) -> (ctx, Layers)), echo : [NoEcho, Echo({ property : U8, hole : U64, showing : Str })] }
 
 EventDecl : { event : Str, kind : U8, policies : U32 }
 
-## Text decodes as UTF-8. Files stay handles until the typed handler
-## consumes them; a stale route drops the staged handles without decoding.
+## Live shown state is a strict flag, decoded once at its routed site.
+attach_open : U8, Str, Core.HandlerOf(ctx, Bool) -> Core.Attr(ctx)
+attach_open = |property, showing, { run }| On(
+	{ event: if (property == 6) "close" else "toggle", kind: 5, policies: 0 },
+	{ run: |env, payload, site| run(env, (open_kind.decode)(payload, site), site), echo: Echo({ property, hole: 0, showing }) },
+)
+
+open_kind : Core.Kind(Bool)
+open_kind = {
+	code: 5,
+	decode: |payload, site| match payload {
+		OpenState(open) => open
+		Ev([0]) => False
+		Ev([1]) => True
+		_ => crash "contract: event payload does not match open-state kind at site ${show_path(site)}"
+	},
+}
+
+## Text events decode strictly as UTF-8 at their routed construction site.
 text_kind : Core.Kind(Str)
 text_kind = {
 	code: 1,
@@ -2795,6 +2853,8 @@ text_kind = {
 	},
 }
 
+## Files stay handles until the typed handler consumes them; a stale route
+## drops the staged handles without decoding.
 files_kind : Core.Kind(Core.Received)
 files_kind = {
 	code: 2,
@@ -2837,7 +2897,7 @@ pointer_kind = |event| {
 attach_key : Core.Signal(ctx, Core.Keymap), [Down, Up], Bool, Bool, Core.HandlerOf(ctx, Core.Key) -> Core.Attr(ctx)
 attach_key = |map, phase, stop, document, handler| {
 	{ run } = handler
-	KeyOn({ event: if (phase == Down) "keydown" else "keyup", kind: 4, policies: (if (stop) 2.U32 else 0).bitwise_or(if (document) 16 else 0) }, { run: |env, payload, site| run(env, (key_kind.decode)(payload, site), site) }, map.map(encode_keymap))
+	KeyOn({ event: if (phase == Down) "keydown" else "keyup", kind: 4, policies: (if (stop) 2.U32 else 0).bitwise_or(if (document) 16 else 0) }, { run: |env, payload, site| run(env, (key_kind.decode)(payload, site), site), echo: NoEcho }, map.map(encode_keymap))
 }
 
 ## Serialize only through the internal attach path; apps cannot inspect this encoding.
@@ -2949,7 +3009,7 @@ policy_bits = |{ prevent, stop }| (if (prevent) 1.U32 else 0).bitwise_or(if (sto
 attach_kind : Str, Core.Kind(p), U32, Core.HandlerOf(ctx, p) -> Attr(ctx)
 attach_kind = |event, { code, decode }, policies, { run }| On(
 	{ event, kind: code, policies },
-	{ run: |env, payload, site| run(env, decode(payload, site), site) },
+	{ run: |env, payload, site| run(env, decode(payload, site), site), echo: NoEcho },
 )
 
 Msg := [Fire(List(U32), U64, U32, Payload), Changed(U128), Dispose(Bool)]
@@ -2980,6 +3040,9 @@ Inst(ctx) := [Inst((ctx, Msg, Tx -> (Inst(ctx), Out(ctx), Tx)))]
 ## and slot (resolved through the site's current path).
 Route := [NoRoute, Route(List(U32), U32), RowOf(U32, U32)]
 
+## Changed shown addresses are consumed only by rows on the active call path.
+ShownChange : [SetShown({ node : U32, hole : U16, property : U8, value : Str }), DropShown(U32)]
+
 Tx : {
 	cmds : List(U8),
 	next : U32,
@@ -2988,6 +3051,7 @@ Tx : {
 	work : Work,
 	paths : List(List(U32)),
 	site_free : List(U32),
+	observations : { echo : Bool, shown : List(ShownChange) },
 	fx : Fx,
 }
 
@@ -3151,7 +3215,7 @@ work_get = |w, i| match i {
 	_ => 0
 }
 
-Hole(ctx) : { node : U32, mask : U128, attr : Str, reference : [NotReference, Reference(List(U32), Bool)], property : U8, read : (ctx -> [Absent, Present(Str)]), last : [Absent, Present(Str)] }
+Hole(ctx) : { node : U32, mask : U128, attr : Str, reference : [NotReference, Reference(List(U32), Bool)], property : U8, read : (ctx -> [Absent, Present(Str)]), last : [Absent, Present(Str)], dirty : Bool }
 
 Block(ctx) : {
 	holes : List(Hole(ctx)),
@@ -3200,11 +3264,11 @@ put_presence = |bytes, presence| match presence {
 ## opcode is counted in the work counters; property commands use the
 ## dedicated PROP and HPROP slots (design.md, "Work assertions").
 emit_op : Tx, U8, (List(U8) -> List(U8)) -> Tx
-emit_op = |{ cmds, next, free, routes, work, paths, site_free, fx }, op, write| { cmds: write(cmds.append(op)), next, free, routes, work: add_work(work, if (op == 21) 41 else if (op == 22) 42 else if (op == 23) 43 else op.to_u64(), 1), paths, site_free, fx }
+emit_op = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, op, write| { cmds: write(cmds.append(op)), next, free, routes, work: add_work(work, if (op == 21) 41 else if (op == 22) 42 else if (op == 23) 43 else op.to_u64(), 1), paths, site_free, observations, fx }
 
 ## Add `n` to work counter `i`.
 bump : Tx, U64, U64 -> Tx
-bump = |{ cmds, next, free, routes, work, paths, site_free, fx }, i, n| { cmds, next, free, routes, work: add_work(work, i, n), paths, site_free, fx }
+bump = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, i, n| { cmds, next, free, routes, work: add_work(work, i, n), paths, site_free, observations, fx }
 
 ## One evaluation of an app closure (a hole, a condition, a list read, a
 ## `derive` input, a prop read, an effect site's watched value).
@@ -3220,6 +3284,8 @@ property_row = |index| match index {
 	3 => { name: "pointer_zone", elements: [], counter: 0 }
 	4 => { name: "keymap_down", elements: [], counter: 0 }
 	5 => { name: "keymap_up", elements: [], counter: 0 }
+	6 => { name: "shown", elements: ["dialog"], counter: 0 }
+	7 => { name: "popover_shown", elements: [], counter: 0 }
 	_ => crash "internal: unknown property row ${index.to_str()}"
 }
 
@@ -3233,24 +3299,24 @@ count_property = |tx, index| {
 
 ## Allocate a static node id, reusing a freed one first.
 alloc_id : Tx -> (U32, Tx)
-alloc_id = |{ cmds, next, free, routes, work, paths, site_free, fx }| {
+alloc_id = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }| {
 	match free.last() {
-		Ok(id) => (id, { cmds, next, free: free.drop_last(1), routes, work, paths, site_free, fx })
+		Ok(id) => (id, { cmds, next, free: free.drop_last(1), routes, work, paths, site_free, observations, fx })
 		Err(_) => {
 			if next >= 4294967294 {
 				crash "resource_limit: node ids exhausted (4294967294 live nodes)"
 			}
-			(next, { cmds, next: next + 1, free, routes, work, paths, site_free, fx })
+			(next, { cmds, next: next + 1, free, routes, work, paths, site_free, observations, fx })
 		}
 	}
 }
 
 ## Release a static node id and its route.
 free_id : Tx, U32 -> Tx
-free_id = |{ cmds, next, free, routes, work, paths, site_free, fx }, id| {
+free_id = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, id| {
 	routes2 = if (id.to_u64() < routes.len()) routes.set(id.to_u64(), NoRoute) ?? routes else routes
 	fx2 = if ((fx.ref_pos.get(id.to_u64()) ?? []).is_empty()) fx else drop_ref(fx, id)
-	{ cmds, next, free: free.append(id), routes: routes2, work, paths, site_free, fx: fx2 }
+	{ cmds, next, free: free.append(id), routes: routes2, work, paths, site_free, observations: { ..observations, shown: observations.shown.append(DropShown(id)) }, fx: fx2 }
 }
 
 ## Register a name with its node and construction site. The end-of-turn
@@ -3308,38 +3374,38 @@ with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused,
 }
 
 set_route : Tx, U32, List(U32), U32 -> Tx
-set_route = |{ cmds, next, free, routes, work, paths, site_free, fx }, id, path, handler| {
+set_route = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, id, path, handler| {
 	var $r = routes
 	while $r.len() <= id.to_u64() {
 		$r = $r.append(NoRoute)
 	}
-	{ cmds, next, free, routes: $r.set(id.to_u64(), Route(path, handler)) ?? $r, work, paths, site_free, fx }
+	{ cmds, next, free, routes: $r.set(id.to_u64(), Route(path, handler)) ?? $r, work, paths, site_free, observations, fx }
 }
 
 set_row_route : Tx, U32, U32, U32 -> Tx
-set_row_route = |{ cmds, next, free, routes, work, paths, site_free, fx }, id, site, slot| {
+set_row_route = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, id, site, slot| {
 	var $r = routes
 	while $r.len() <= id.to_u64() {
 		$r = $r.append(NoRoute)
 	}
-	{ cmds, next, free, routes: $r.set(id.to_u64(), RowOf(site, slot)) ?? $r, work, paths, site_free, fx }
+	{ cmds, next, free, routes: $r.set(id.to_u64(), RowOf(site, slot)) ?? $r, work, paths, site_free, observations, fx }
 }
 
 ## Allocate an each-site id (template id).
 alloc_site : Tx, List(U32) -> (U32, Tx)
-alloc_site = |{ cmds, next, free, routes, work, paths, site_free, fx }, path| {
+alloc_site = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, path| {
 	match site_free.last() {
-		Ok(s) => (s, { cmds, next, free, routes, work, paths: paths.set(s.to_u64(), path) ?? crash "site", site_free: site_free.drop_last(1), fx })
+		Ok(s) => (s, { cmds, next, free, routes, work, paths: paths.set(s.to_u64(), path) ?? crash "site", site_free: site_free.drop_last(1), observations, fx })
 		Err(_) => {
 			s = paths.len().to_u32_wrap()
-			(s, { cmds, next, free, routes, work, paths: paths.append(path), site_free, fx })
+			(s, { cmds, next, free, routes, work, paths: paths.append(path), site_free, observations, fx })
 		}
 	}
 }
 
 free_site : Tx, U32 -> Tx
-free_site = |{ cmds, next, free, routes, work, paths, site_free, fx }, s| {
-	{ cmds, next, free, routes, work, paths: paths.set(s.to_u64(), []) ?? paths, site_free: site_free.append(s), fx }
+free_site = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, s| {
+	{ cmds, next, free, routes, work, paths: paths.set(s.to_u64(), []) ?? paths, site_free: site_free.append(s), observations, fx }
 }
 
 ## ------------------------------------------------------------------
@@ -3624,12 +3690,74 @@ twice_handled = |attrs| {
 	Err(Distinct)
 }
 
+## HTML folds ASCII attribute names. Controlled-helper ownership must
+## recognize that spelling without rewriting the attributes an app authored.
+html_attribute_is : Str, Str -> Bool
+html_attribute_is = |authored, expected| {
+	left = authored.to_utf8()
+	right = expected.to_utf8()
+	if left.len() != right.len() {
+		return False
+	}
+	var $i = 0.U64
+	while $i < left.len() {
+		byte = left.get($i) ?? crash "attribute byte"
+		folded = if byte >= 65 and byte <= 90 {
+			byte + 32
+		} else {
+			byte
+		}
+		if folded != (right.get($i) ?? crash "attribute byte") {
+			return False
+		}
+		$i = $i + 1
+	}
+	True
+}
+
 ## Reject element contracts before allocating its nodes: one handler per
 ## bare event type, no retired suffixes, and properties used only on their
 ## declared elements without duplicates or claimed ordinary attributes.
 ## Both plain blocks and row templates use this construction-site check.
 check_element_attrs : List(Attr(ctx)), Str, Str, List(U32) -> {}
 check_element_attrs = |attrs, tag, placed, path| {
+	controlled = attrs.any(
+		|attribute| match attribute {
+			PropertyV(index, _) => index == 6 or index == 7
+			_ => False
+		},
+	)
+	if controlled {
+		for attribute in attrs {
+			match attribute {
+				On(event, _) if event.event == "beforetoggle" => crash "contract: beforetoggle is not supported on a controlled shown element at site ${show_path(path)}"
+				Static(name, _) | Dyn(name, _) if tag == "dialog" and (html_attribute_is(name, "popover") or html_attribute_is(name, "closedby")) => crash "contract: popover and closedby are not supported on a controlled dialog at site ${show_path(path)}"
+				Static(name, _) | Dyn(name, _) if tag == "dialog" and html_attribute_is(name, "open") => crash "contract: attribute open is owned by the controlled dialog at site ${show_path(path)}"
+				_ => {}
+			}
+		}
+	}
+	if attrs.any(
+		|attribute| match attribute {
+			PropertyV(7, _) => True
+			_ => False
+		},
+	) {
+		static_popovers = attrs.keep_if(
+			|attribute| match attribute {
+				Static(name, _) if html_attribute_is(name, "popover") => True
+				_ => False
+			},
+		).len()
+		if static_popovers != 1 or attrs.any(
+			|attribute| match attribute {
+				Dyn(name, _) if html_attribute_is(name, "popover") => True
+				_ => False
+			},
+		) {
+			crash "contract: the controlled popover owns one static popover declaration at site ${show_path(path)}"
+		}
+	}
 	var $properties = []
 	for attribute in attrs {
 		match attribute {
@@ -3692,6 +3820,7 @@ mount_elem = |block, env, elem, depth, path, parent, before, top, sole, scope, t
 			}
 			($b, $t)
 		}
+		Fragment(children) => children.fold((block, tx), |(held, acc), child| mount_elem(held, env, child, depth, path, parent, at, top, sole and children.len() == 1, scope, acc))
 		Text(s) => {
 			(id, tx1) = alloc_id(tx)
 			tx2 = emit_op(tx1, 10, |c| put_str(put_u32(put_u32(put_u32(c, id), parent), at), s))
@@ -3703,7 +3832,7 @@ mount_elem = |block, env, elem, depth, path, parent, before, top, sole, scope, t
 			s = read(env)
 			tx2 = emit_op(count_evals(tx1, 1), 10, |c| put_str(put_u32(put_u32(put_u32(c, id), parent), at), s))
 			b1 = add_node(block, id, top)
-			(add_hole(b1, { node: id, mask: eff_mask(v), attr: "", reference: NotReference, property: 0, read: |context| Present(read(context)), last: Present(s) }), tx2)
+			(add_hole(b1, { node: id, mask: eff_mask(v), attr: "", reference: NotReference, property: 0, read: |context| Present(read(context)), last: Present(s), dirty: False }), tx2)
 		}
 		Site(Mount(mount), _) => {
 			k = block.children.len().to_u32_wrap()
@@ -3716,19 +3845,19 @@ mount_elem = |block, env, elem, depth, path, parent, before, top, sole, scope, t
 mount_attr : Block(ctx), ctx, Attr(ctx), U32, List(U32), Bool, Tx -> (Block(ctx), Tx)
 mount_attr = |block, env, attr, id, path, value_control, tx| {
 	match attr {
-		KeyOn(_, _, _) => crash "internal: key declaration was not lowered by element"
+		KeyOn(_, _, _) | ShownOn(_, _, _, _) => crash "internal: paired declaration was not lowered by element"
 		Static(name, value) => (block, emit_op(tx, 9, |c| put_presence(put_str(put_u32(c, id), name), Present(value))))
 		Dyn(name, v) => {
 			read = v.read
 			value = read(env)
 			tx1 = emit_op(count_evals(tx, 1), 9, |c| put_presence(put_str(put_u32(c, id), name), value))
-			(add_hole(block, { node: id, mask: eff_mask(v), attr: name, reference: NotReference, property: 0, read, last: value }), tx1)
+			(add_hole(block, { node: id, mask: eff_mask(v), attr: name, reference: NotReference, property: 0, read, last: value, dirty: False }), tx1)
 		}
 		Property(index, value) => (block, emit_op(count_property(tx, index), 21, |commands| put_str(put_u32(commands, id).append(index), value)))
 		PropertyV(index, value) => {
 			encoded = (value.read)(env)
-			next = emit_op(count_property(count_evals(tx, 1), index), 21, |commands| put_str(put_u32(commands, id).append(index), encoded))
-			(add_hole(block, { node: id, mask: eff_mask(value), attr: "", reference: NotReference, property: index, read: |context| Present((value.read)(context)), last: Present(encoded) }), next)
+			next = shown_fact(emit_op(count_property(count_evals(tx, 1), index), 21, |commands| put_str(put_u32(commands, id).append(index), encoded)), id, 256, index, encoded)
+			(add_hole(block, { node: id, mask: eff_mask(value), attr: "", reference: NotReference, property: index, read: |context| Present((value.read)(context)), last: Present(encoded), dirty: False }), next)
 		}
 		On(ev, handler) => {
 			tx0 = if ev.policies.bitwise_and(16) != 0 {
@@ -3739,12 +3868,12 @@ mount_attr = |block, env, attr, id, path, value_control, tx| {
 			} else tx
 			h = block.handlers.len().to_u32_wrap()
 			tx1 = emit_op(tx0, 11, |c| put_u32(put_str(put_u32(put_u32(c, id), h), ev.event).append(ev.kind), ev.policies))
-			(add_handler(block, handler), set_route(tx1, id, path, h))
+			(add_handler(block, bind_block_echo(handler, block.holes)), set_route(tx1, id, path, h))
 		}
 		Ref(value) => {
 			ref_path = path.append(block.holes.len().to_u32_wrap())
 			name = (value.read)(env)
-			(add_hole(block, { node: id, mask: eff_mask(value), attr: "", reference: Reference(ref_path, value_control), property: 0, read: |context| Present((value.read)(context)), last: Present(name) }), with_fx(count_evals(tx, 1), |fx| add_ref(fx, { name, node: id, path: ref_path, value_control })))
+			(add_hole(block, { node: id, mask: eff_mask(value), attr: "", reference: Reference(ref_path, value_control), property: 0, read: |context| Present((value.read)(context)), last: Present(name), dirty: False }), with_fx(count_evals(tx, 1), |fx| add_ref(fx, { name, node: id, path: ref_path, value_control })))
 		}
 	}
 }
@@ -3797,17 +3926,17 @@ refresh = |{ holes, handlers, children, child_reads, child_top, nodes, tops, rea
 	var $i = 0.U64
 	while $i < $holes.len() {
 		hm = $holes.get($i).map_ok(|h| h.mask) ?? 0
-		if all or hm.bitwise_and(mask) != 0 {
-			{ list, prev } = $holes.replace($i, { node: 0, mask: 0, attr: "", reference: NotReference, property: 0, read: |_| Absent, last: Absent }) ?? crash "hole"
-			{ node, mask: m, attr, reference, property, read, last } = prev
+		if all or hm.bitwise_and(mask) != 0 or ($holes.get($i).map_ok(|hole| hole.dirty) ?? False) {
+			{ list, prev } = $holes.replace($i, { node: 0, mask: 0, attr: "", reference: NotReference, property: 0, read: |_| Absent, last: Absent, dirty: False }) ?? crash "hole"
+			{ node, mask: m, attr, reference, property, read, last, dirty: _ } = prev
 			v = read(env)
 			t1 = count_evals($tx, 1)
 			if v == last {
-				$holes = list.set($i, { node, mask: m, attr, reference, property, read, last }) ?? crash "hole"
+				$holes = list.set($i, { node, mask: m, attr, reference, property, read, last, dirty: False }) ?? crash "hole"
 				$tx = t1
 			} else {
 				$tx = if property != 0 {
-					emit_op(count_property(t1, property), 21, |commands| put_str(put_u32(commands, node).append(property), observed_text(v)))
+					shown_fact(emit_op(count_property(t1, property), 21, |commands| put_str(put_u32(commands, node).append(property), observed_text(v))), node, 256, property, observed_text(v))
 				} else match reference {
 					Reference(path, value_control) => with_fx(t1, |fx| add_ref(drop_name(fx, { node, name: observed_text(last), path }), { name: observed_text(v), node, path, value_control }))
 					NotReference => if attr.is_empty() {
@@ -3816,7 +3945,7 @@ refresh = |{ holes, handlers, children, child_reads, child_top, nodes, tops, rea
 						emit_op(t1, 9, |c| put_presence(put_str(put_u32(c, node), attr), v))
 					}
 				}
-				$holes = list.set($i, { node, mask: m, attr, reference, property, read, last: v }) ?? crash "hole"
+				$holes = list.set($i, { node, mask: m, attr, reference, property, read, last: v, dirty: False }) ?? crash "hole"
 			}
 		}
 		$i = $i + 1
@@ -3857,17 +3986,59 @@ fire_target = |block, path, pos| {
 
 ## Run handler `h` of this block (the event's target is this block, the
 ## site at `site`). A `Settle` that reaches the block runs nothing.
-fire_leaf : Block(ctx), ctx, U32, Payload, List(U32) -> Out(ctx)
-fire_leaf = |block, env, h, payload, site| {
+fire_leaf : Block(ctx), ctx, U32, Payload, List(U32), Tx -> (Block(ctx), Out(ctx), Tx)
+fire_leaf = |block, env, h, payload, site, tx| {
 	if !fires(payload) {
-		return Pending(env, no_layers)
+		(b2, t2) = match payload {
+			Settle(_, True) => refresh(block, env, 0, tx)
+			_ => (block, tx)
+		}
+		return (b2, Pending(env, no_layers), t2)
 	}
 	match block.handlers.get(h.to_u64()) {
 		Ok(handler) => {
-			(next, wrote) = (handler.run)(env, payload, site)
-			Pending(next, wrote)
+			(block2, prepared, tx2) = match handler.echo {
+				NoEcho => (block, payload, tx)
+				Echo(echo) => {
+					open = (open_kind.decode)(payload, site)
+					value = if (open) echo.showing else if (echo.property == 6) "hidden" else "false"
+					{ holes, handlers, children, child_reads, child_top, nodes, tops, reads } = block
+					{ list, prev } = holes.replace(echo.hole, { node: 0, mask: 0, attr: "", reference: NotReference, property: 0, read: |_| Absent, last: Absent, dirty: False }) ?? crash "internal: paired shown hole"
+					next = { ..prev, last: Present(value), dirty: True }
+					fact = shown_fact(tx, prev.node, 256, echo.property, value)
+					({ holes: list.set(echo.hole, next) ?? crash "internal: paired shown hole", handlers, children, child_reads, child_top, nodes, tops, reads }, OpenState(open), { ..fact, observations: { ..fact.observations, echo: True } })
+				}
+			}
+			(next, wrote) = (handler.run)(env, prepared, site)
+			(block2, Pending(next, wrote), tx2)
 		}
-		Err(_) => Pending(env, no_layers)
+		Err(_) => (block, Pending(env, no_layers), tx)
+	}
+}
+
+## Paired attachment makes the previous property hole the unique echo owner.
+bind_block_echo : RoutedHandler(ctx), List(Hole(ctx)) -> RoutedHandler(ctx)
+bind_block_echo = |handler, holes| match handler.echo {
+	NoEcho => handler
+	Echo(echo) => {
+		hole = holes.last() ?? crash "internal: shown handler needs its property"
+		if hole.property != echo.property {
+			crash "internal: shown handler and property disagree"
+		}
+		{ ..handler, echo: Echo({ ..echo, hole: holes.len() - 1 }) }
+	}
+}
+
+## Template handler metadata addresses its paired property directly, never by a scan.
+bind_row_echo : RoutedHandler(ctx), List(RHole(ctx)) -> RoutedHandler(ctx)
+bind_row_echo = |handler, holes| match handler.echo {
+	NoEcho => handler
+	Echo(echo) => {
+		hole = holes.last() ?? crash "internal: shown row handler needs its property"
+		if hole.property != echo.property {
+			crash "internal: shown row handler and property disagree"
+		}
+		{ ..handler, echo: Echo({ ..echo, hole: holes.len() - 1 }) }
 	}
 }
 
@@ -3974,7 +4145,7 @@ state_settle = |block, depth, out, path, pos, h, tx| {
 				} else {
 					# Then the walk for the written layers below it that the
 					# pass did not reach: they lie on the event's path.
-					(b4, settled, t4) = fire_kid(b3, In.{ outer: next_outer, value: s2 }, path, pos, h, Settle(waiting), t3)
+					(b4, settled, t4) = fire_kid(b3, In.{ outer: next_outer, value: s2 }, path, pos, h, Settle(waiting, False), t3)
 					(outer, s4) = state_out(settled)
 					(state_inst(s4, b4, depth, Settled), Pending(outer, no_layers), t4)
 				}
@@ -4010,6 +4181,13 @@ state_walk_on = |s, block, env, depth, on, path, pos, h, payload, tx| {
 			(b2, out, t2) = fire_kid(block, In.{ outer: env, value: s }, path, pos, h, payload, tx)
 			(outer, s2) = state_out(out)
 			(state_inst(s2, b2, depth, Settled), Pending(outer, no_layers), t2)
+		}
+		(_, Leaf) => {
+			(b2, t2) = match payload {
+				Settle(_, True) => refresh(block, In.{ outer: env, value: s }, 0, tx)
+				_ => (block, tx)
+			}
+			(state_inst(s, b2, depth, Settled), Pending(env, no_layers), t2)
 		}
 		_ => (state_inst(s, block, depth, Settled), Pending(env, no_layers), tx)
 	}
@@ -4063,7 +4241,10 @@ state_inst = |s0, block0, depth0, waits0| {
 							# `s` moves into the environment here and is never used again on
 							# this path, so a reducer below sees it uniquely owned.
 							match fire_target(block, path, pos) {
-								Leaf => state_settle(block, depth, fire_leaf(block, In.{ outer: env, value: s }, h, payload, path), path, pos, h, tx)
+								Leaf => {
+									(b2, out, t2) = fire_leaf(block, In.{ outer: env, value: s }, h, payload, path, tx)
+									state_settle(b2, depth, out, path, pos, h, t2)
+								}
 								Kid => {
 									(b2, out, t2) = fire_kid(block, In.{ outer: env, value: s }, path, pos, h, payload, tx)
 									state_settle(b2, depth, out, path, pos, h, t2)
@@ -4122,8 +4303,8 @@ when_inst = |w0, cur0, adopted0, block0| {
 						Err(_) => {
 							match fire_target(block, path, pos) {
 								Leaf => {
-									out = fire_leaf(block, env, h, payload, path)
-									(when_inst(w, cur, adopted, block), out, tx)
+									(b2, out, t2) = fire_leaf(block, env, h, payload, path, tx)
+									(when_inst(w, cur, adopted, b2), out, t2)
 								}
 								Kid => {
 									(b2, out, t2) = fire_kid(block, env, path, pos, h, payload, tx)
@@ -4159,8 +4340,8 @@ block_inst = |block0| {
 				Fire(path, pos, h, payload) => {
 					match fire_target(block, path, pos) {
 						Leaf => {
-							out = fire_leaf(block, env, h, payload, path)
-							(block_inst(block), out, tx)
+							(b2, out, t2) = fire_leaf(block, env, h, payload, path, tx)
+							(block_inst(b2), out, t2)
 						}
 						Kid => {
 							(b2, out, t2) = fire_kid(block, env, path, pos, h, payload, tx)
@@ -4213,7 +4394,10 @@ store_inst = |st0, tables0, wrote0, block0| {
 					# `st` moves into the environment here and is never used again
 					# on this path, so a reducer below sees it uniquely owned.
 					match fire_target(block, path, pos) {
-						Leaf => store_settle(block, tables, fire_leaf(block, Root.{ store: st }, h, payload, path), tx)
+						Leaf => {
+							(b2, out, t2) = fire_leaf(block, Root.{ store: st }, h, payload, path, tx)
+							store_settle(b2, tables, out, t2)
+						}
 						Kid => {
 							(b2, out, t2) = fire_kid(block, Root.{ store: st }, path, pos, h, payload, tx)
 							store_settle(b2, tables, out, t2)
@@ -4478,7 +4662,7 @@ index_remove = |{ hs, vals, count, bits, by_slot }, slot| {
 ## `ctl`: the work counter a property hole's updates also count in
 ## (`w_set_value`, `w_set_checked`), or 0; for a reference, its index
 ## among reference holes, after the nested-site ids in the row's bindings.
-RHole(ctx) : { evaluated : Bool, kind : U8, mask : U128, smask : U128, skey : (ctx -> Str), read : (ctx -> [Absent, Present(Str)]), col : U64, live : Bool, ctl : U64, value_control : Bool }
+RHole(ctx) : { evaluated : Bool, kind : U8, mask : U128, smask : U128, skey : (ctx -> Str), read : (ctx -> [Absent, Present(Str)]), col : U64, live : Bool, ctl : U64, value_control : Bool, property : U8 }
 
 Plan(ctx) : {
 	tree : List(U8),
@@ -4508,8 +4692,9 @@ val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads }, { kind, valu
 		NoSel => (0, |_| "")
 		Sel(m, k) => (m, k)
 	}
-	live = mask.bitwise_or(smask) != 0
-	hole = { evaluated, kind, mask, smask, skey, read, col: if (live) ncols else 0, live, ctl: if (kind == 5) holes.keep_if(|prior| prior.kind == 5).len() else counter, value_control: kind == 5 and counter == 1 }
+	property = if (kind == 6) extra.last() ?? crash "internal: property row has an index" else 0
+	live = mask.bitwise_or(smask) != 0 or property == 6 or property == 7
+	hole = { evaluated, kind, mask, smask, skey, read, col: if (live) ncols else 0, live, ctl: if (kind == 5) holes.keep_if(|prior| prior.kind == 5).len() else counter, value_control: kind == 5 and counter == 1, property }
 	{ tree, htab: htab.concat(extra), holes: holes.append(hole), handlers, mounts, ncols: if (live) ncols + 1 else ncols, kreads }
 }
 
@@ -4538,7 +4723,7 @@ compile_elem = |plan, elem, path, depth, site| {
 			var $ncols = ncols
 			for a in attrs {
 				match a {
-					KeyOn(_, _, _) => crash "internal: key declaration was not lowered by element"
+					KeyOn(_, _, _) | ShownOn(_, _, _, _) => crash "internal: paired declaration was not lowered by element"
 					Static(name, value) => {
 						$tree = put_str(put_str($tree, name), value)
 					}
@@ -4561,9 +4746,10 @@ compile_elem = |plan, elem, path, depth, site| {
 						$ncols = r.ncols
 					}
 					On(ev, handler) => {
+						bound = bind_row_echo(handler, $holes)
 						$htab = put_u32(put_str(put_path($htab, 3, path).append(narrow($handlers.len(), "event handler count")), ev.event).append(ev.kind), ev.policies)
-						$holes = $holes.append({ evaluated: False, kind: 3, mask: 0, smask: 0, skey: |_| "", read: |_| Absent, col: $handlers.len(), live: False, ctl: 0, value_control: False })
-						$handlers = $handlers.append(handler)
+						$holes = $holes.append({ evaluated: False, kind: 3, mask: 0, smask: 0, skey: |_| "", read: |_| Absent, col: $handlers.len(), live: False, ctl: 0, value_control: False, property: 0 })
+						$handlers = $handlers.append(bound)
 					}
 					Ref(value) => {
 						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 5, value: value.map(|encoded| Present(encoded)), extra: put_path([], 5, path), counter: if (value_control) 1 else 0, evaluated: True })
@@ -4582,6 +4768,7 @@ compile_elem = |plan, elem, path, depth, site| {
 			}
 			$p
 		}
+		Fragment(_) => crash "internal: a fragment is only a dynamic branch, never a row template node"
 		Text(s) => {
 			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
 			{ tree: put_str(tree.append(2), s), htab, holes, handlers, mounts, ncols, kreads }
@@ -4593,7 +4780,7 @@ compile_elem = |plan, elem, path, depth, site| {
 		}
 		Site(m, rf) => {
 			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
-			hole = { evaluated: False, kind: 4, mask: 0, smask: 0, skey: |_| "", read: |_| Absent, col: mounts.len(), live: False, ctl: 0, value_control: False }
+			hole = { evaluated: False, kind: 4, mask: 0, smask: 0, skey: |_| "", read: |_| Absent, col: mounts.len(), live: False, ctl: 0, value_control: False, property: 0 }
 			{ tree: put_str(tree.append(2), ""), htab: put_path(htab, 4, path), holes: holes.append(hole), handlers, mounts: mounts.append(m), ncols, kreads: kreads.bitwise_or(rf(depth)) }
 		}
 	}
@@ -4632,6 +4819,200 @@ EachCfg(r, key) : {
 	sel_mask : U128,
 }
 
+## The live shown addresses of a row retain show-intent order. Exact command
+## addresses are bounded integers, reused only after the old entry is removed.
+ShownMap : {
+	owners : Dict(U32, List(U64)),
+	entries : Dict(U64, ShownEntry),
+	first : U64,
+	last : U64,
+}
+
+ShownEntry : { node : U32, hole : U16, property : U8, value : Str, prev : U64, next : U64 }
+
+shown_empty : ShownMap
+shown_empty = { owners: Dict.empty(), entries: Dict.empty(), first: 0, last: 0 }
+
+shown_address : U32, U16 -> U64
+shown_address = |node, hole| node.to_u64().shl_wrap(16).bitwise_or(hole.to_u64())
+
+## Unlink one known entry without walking any other shown descendant.
+shown_unlink : ShownMap, U64 -> ShownMap
+shown_unlink = |shown, address| {
+	entry = shown.entries.get(address) ?? return shown
+	var $entries = shown.entries.remove(address)
+	if entry.prev != 0 {
+		previous = $entries.get(entry.prev) ?? crash "shown previous link"
+		$entries = $entries.insert(entry.prev, { ..previous, next: entry.next })
+	}
+	if entry.next != 0 {
+		following = $entries.get(entry.next) ?? crash "shown next link"
+		$entries = $entries.insert(entry.next, { ..following, prev: entry.prev })
+	}
+	{
+		..shown,
+		entries: $entries,
+		first: if entry.prev == 0 {
+			entry.next
+		} else {
+			shown.first
+		},
+		last: if entry.next == 0 {
+			entry.prev
+		} else {
+			shown.last
+		},
+	}
+}
+
+## One owner has at most the template's 255 holes, or one plain PROP.
+shown_remove : ShownMap, U32, U16 -> ShownMap
+shown_remove = |shown, node, hole| {
+	address = shown_address(node, hole)
+	keys = shown.owners.get(node) ?? return shown
+	owners = shown.owners.remove(node)
+	kept = keys.keep_if(|key| key != address)
+	shown_unlink(
+		{
+			..shown,
+			owners: if kept.is_empty() {
+				owners
+			} else {
+				owners.insert(node, kept)
+			},
+		},
+		address,
+	)
+}
+
+shown_record : ShownMap, { node : U32, hole : U16, property : U8, value : Str } -> ShownMap
+shown_record = |shown, fact| {
+	address = shown_address(fact.node, fact.hole)
+	match shown.entries.get(address) {
+		Ok(entry) => { ..shown, entries: shown.entries.insert(address, { ..entry, value: fact.value }) }
+		Err(_) => {
+			keys = shown.owners.get(fact.node) ?? []
+			owners = shown.owners.remove(fact.node).insert(fact.node, keys.append(address))
+			var $entries = shown.entries
+			if shown.last != 0 {
+				last = $entries.get(shown.last) ?? crash "shown last link"
+				$entries = $entries.insert(shown.last, { ..last, next: address })
+			}
+			{
+				owners,
+				entries: $entries.insert(address, { node: fact.node, hole: fact.hole, property: fact.property, value: fact.value, prev: shown.last, next: 0 }),
+				first: if shown.first == 0 {
+					address
+				} else {
+					shown.first
+				},
+				last: address,
+			}
+		}
+	}
+}
+
+shown_observation : Tx, U32, U16, U8, [Absent, Present(Str)] -> Tx
+shown_observation = |tx, node, hole, property, value| {
+	if property != 6 and property != 7 {
+		return tx
+	}
+	shown_fact(tx, node, hole, property, observed_text(value))
+}
+
+shown_fact : Tx, U32, U16, U8, Str -> Tx
+shown_fact = |tx, node, hole, property, value| {
+	if property != 6 and property != 7 {
+		return tx
+	}
+	{ ..tx, observations: { ..tx.observations, shown: tx.observations.shown.append(SetShown({ node, hole, property, value })) } }
+}
+
+shown_since : ShownMap, U64, Tx -> ShownMap
+shown_since = |shown, start, tx| {
+	var $shown = shown
+	var $i = start
+	while $i < tx.observations.shown.len() {
+		match tx.observations.shown.get($i) ?? crash "shown change" {
+			DropShown(node) => {
+				keys = $shown.owners.get(node) ?? []
+				$shown = { ..$shown, owners: $shown.owners.remove(node) }
+				for address in keys {
+					$shown = shown_unlink($shown, address)
+				}
+			}
+			SetShown(fact) => {
+				$shown = if fact.value == "hidden" or fact.value == "false" {
+					shown_remove($shown, fact.node, fact.hole)
+				} else {
+					shown_record($shown, fact)
+				}
+			}
+		}
+		$i = $i + 1
+	}
+	$shown
+}
+
+clear_row_echo : [NoEcho, Echo({ slot : U32, hole : U64 })], U32 -> [NoEcho, Echo({ slot : U32, hole : U64 })]
+clear_row_echo = |pending, slot| match pending {
+	Echo(e) if e.slot == slot => NoEcho
+	_ => pending
+}
+
+## Record the browser fact before invoking the one typed handler. The row's
+## ordinary dirty queue settles this one hole even when no layer was written.
+row_echo : Cols(r, item), Plan(r), U32, RoutedHandler(r), Payload, List(U32), Tx -> (Cols(r, item), Payload, Tx)
+row_echo = |cols, plan, slot, handler, payload, path, tx| match handler.echo {
+	NoEcho => (cols, payload, tx)
+	Echo(echo) => {
+		open = (open_kind.decode)(payload, path)
+		value = if open {
+			echo.showing
+		} else if echo.property == 6 {
+			"hidden"
+		} else {
+			"false"
+		}
+		hole = plan.holes.get(echo.hole) ?? crash "paired row shown hole"
+		si = slot.to_u64()
+		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, shown, pending_echo: _, rnodes } = cols
+		{ list: columns, prev: column } = lasts.replace(hole.col, []) ?? crash "paired row shown column"
+		lasts2 = columns.set(hole.col, column.set(si, Present(value)) ?? crash "paired row shown slot") ?? crash "paired row shown column"
+		node = rnodes.get(si) ?? crash "paired row node"
+		start = tx.observations.shown.len()
+		t2 = shown_fact(tx, node, echo.hole.to_u16_wrap(), echo.property, value)
+		{ list: maps, prev: row_shown } = shown.replace(si, shown_empty) ?? crash "shown column"
+		shown2 = maps.set(si, shown_since(row_shown, start, t2)) ?? crash "shown column"
+		dirty2 = if (pend.get(si) ?? 0) == 0 {
+			dirty.append(slot)
+		} else {
+			dirty
+		}
+		({ items, keys, order, free, index, lasts: lasts2, kids, binds, pend, dirty: dirty2, sels, known, kid_mask, dropped, shown: shown2, pending_echo: Echo({ slot, hole: echo.hole }), rnodes }, OpenState(open), { ..t2, observations: { ..t2.observations, echo: True } })
+	}
+}
+
+## Moving a row can remove its descendants from the browser's top layer.
+## Reassert only the live shown descendants this row owns, after its MOVE.
+move_row : Cols(r, item), U32, U32, Tx -> Tx
+move_row = |cols, slot, before, tx| {
+	node = node_of(cols, slot)
+	var $tx = emit_op(tx, 4, |c| put_u32(put_u32(c, node), before))
+	shown = cols.shown.get(slot.to_u64()) ?? shown_empty
+	var $address = shown.first
+	while $address != 0 {
+		entry = shown.entries.get($address) ?? crash "shown move link"
+		$tx = if entry.hole == 256 {
+			emit_op($tx, 21, |c| put_str(put_u32(c, entry.node).append(entry.property), entry.value))
+		} else {
+			emit_op($tx, 22, |c| put_str(put_u32(c, entry.node).append(entry.hole.to_u8_wrap()), entry.value))
+		}
+		$address = entry.next
+	}
+	$tx
+}
+
 ## Typed row columns, indexed by slot (except `order`, by position, and
 ## `sels`, by hole). An `each` site and a view site hold the same columns.
 ## `keys` and `index` are an `each` site's: each row's text key and the
@@ -4660,6 +5041,8 @@ Cols(r, item) : {
 	## The host node id of each slot's row element (dense node ids,
 	## shared with static nodes; routes map them back to site and slot),
 	## or 0 for a slot that holds no row (`is_live`).
+	shown : List(ShownMap),
+	pending_echo : [NoEcho, Echo({ slot : U32, hole : U64 })],
 	rnodes : List(U32),
 }
 
@@ -4679,6 +5062,8 @@ cols_empty = |ncols, nholes| {
 	known: False,
 	kid_mask: 0,
 	dropped: [],
+	shown: [],
+	pending_echo: NoEcho,
 	rnodes: [],
 }
 
@@ -4714,12 +5099,12 @@ create_row_h = |cfg, cols, env, item, before, known_hash, tx| {
 		Err(Unhashed) => (hash_str(key), 1)
 	}
 	slot = next_slot(cols)
-	{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes } = cols
+	{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes } = cols
 	# The index compares with the keys of the rows it holds, never with the
 	# slot this row is about to take, so the key column need not hold the
 	# new key yet.
 	(index2, compares) = index_insert(index, keys, key, h, slot, cfg.path)
-	indexed = { items, keys, order, free, index: index2, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes }
+	indexed = { items, keys, order, free, index: index2, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes }
 	place_row(cfg, indexed, env, item, key, before, { hashes, compares }, tx)
 }
 
@@ -4738,7 +5123,8 @@ next_slot = |cols| match cols.free.last() {
 ## index work to count with the row.
 place_row : EachCfg(r, find), Cols(r, item), (Str, item -> r), item, Str, U32, { hashes : U64, compares : U64 }, Tx -> (Cols(r, item), U32, Tx)
 place_row = |cfg, cols, env, item, key, before, keyed, tx| {
-	{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes } = cols
+	shown_start = tx.observations.shown.len()
+	{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes } = cols
 	(slot, free2) = match free.last() {
 		Ok(s) => (s, free.drop_last(1))
 		Err(_) => (items.len().to_u32_wrap(), free)
@@ -4750,7 +5136,7 @@ place_row = |cfg, cols, env, item, key, before, keyed, tx| {
 	(node, tx0) = alloc_id(tx)
 	rnodes2 = put_at(rnodes, si, node)
 	row_env = env(key, item)
-	{ cmds, next, free: idfree, routes, work, paths, site_free, fx } = set_row_route(tx0, node, cfg.site, slot)
+	{ cmds, next, free: idfree, routes, work, paths, site_free, observations, fx } = set_row_route(tx0, node, cfg.site, slot)
 	var $c = put_u32(put_u32(put_u32(put_u32(cmds.append(1), node), cfg.parent), before), cfg.site)
 	var $lasts = lasts
 	var $sels = sels
@@ -4758,12 +5144,13 @@ place_row = |cfg, cols, env, item, key, before, keyed, tx| {
 	# Control properties carried by INST count as set, like PROP would.
 	var $set_value = 0.U64
 	var $set_checked = 0.U64
-	var $t = { cmds: [], next, free: idfree, routes, work, paths, site_free, fx }
+	var $t = { cmds: [], next, free: idfree, routes, work, paths, site_free, observations, fx }
 	var $bound = List.repeat(0.U32, cfg.plan.mounts.len())
 	var $hi = 0.U64
 	for hole in cfg.plan.holes {
 		if hole.kind == 1 or hole.kind == 2 or hole.kind == 6 {
 			v = (hole.read)(row_env)
+			$t = shown_observation($t, node, $hi.to_u16_wrap(), hole.property, v)
 			$ev = $ev + if (hole.evaluated) 1 else 0
 			if hole.ctl == w_set_value {
 				$set_value = $set_value + 1
@@ -4801,11 +5188,11 @@ place_row = |cfg, cols, env, item, key, before, keyed, tx| {
 		$hi = $hi + 1
 	}
 	known2 = known or cfg.sel_mask != 0
-	{ cmds: _, next: n3, free: f3, routes: r3, work: w3, paths: p3, site_free: sf3, fx: fx3 } = $t
+	{ cmds: _, next: n3, free: f3, routes: r3, work: w3, paths: p3, site_free: sf3, observations: ob3, fx: fx3 } = $t
 	# One INST (a row and its scope created), its hole evaluations and the
 	# key index work of the site that placed it.
 	w4 = add_work(add_work(add_work(add_work(add_work(add_work(add_work(w3, 1, 1), w_evals, $ev), w_scopes_created, 1), w_key_hashes, keyed.hashes), w_key_compares, keyed.compares), w_set_value, $set_value), w_set_checked, $set_checked)
-	var $tx = { cmds: $c, next: n3, free: f3, routes: r3, work: w4, paths: p3, site_free: sf3, fx: fx3 }
+	var $tx = { cmds: $c, next: n3, free: f3, routes: r3, work: w4, paths: p3, site_free: sf3, observations: ob3, fx: fx3 }
 	if cfg.dynamic {
 		var $insts = []
 		var $km = kid_mask
@@ -4821,10 +5208,10 @@ place_row = |cfg, cols, env, item, key, before, keyed, tx| {
 			$tx = t4
 			$j = $j + 1
 		}
-		cols2 = { items: items2, keys: keys2, order, free: free2, index, lasts: $lasts, kids: put_at(kids, si, $insts), binds: put_at(binds, si, $bound), pend: pend2, dirty, sels: $sels, known: known2, kid_mask: $km, dropped, rnodes: rnodes2 }
+		cols2 = { items: items2, keys: keys2, order, free: free2, index, lasts: $lasts, kids: put_at(kids, si, $insts), binds: put_at(binds, si, $bound), pend: pend2, dirty, sels: $sels, known: known2, kid_mask: $km, dropped, shown: put_at(shown, si, shown_since(shown_empty, shown_start, $tx)), pending_echo, rnodes: rnodes2 }
 		(cols2, slot, $tx)
 	} else {
-		cols2 = { items: items2, keys: keys2, order, free: free2, index, lasts: $lasts, kids, binds, pend: pend2, dirty, sels: $sels, known: known2, kid_mask, dropped, rnodes: rnodes2 }
+		cols2 = { items: items2, keys: keys2, order, free: free2, index, lasts: $lasts, kids, binds, pend: pend2, dirty, sels: $sels, known: known2, kid_mask, dropped, shown: put_at(shown, si, shown_since(shown_empty, shown_start, $tx)), pending_echo, rnodes: rnodes2 }
 		(cols2, slot, $tx)
 	}
 }
@@ -4833,8 +5220,8 @@ place_row = |cfg, cols, env, item, key, before, keyed, tx| {
 ## release the row. `remove` emits REMOVE.
 drop_row : EachCfg(r, find), Cols(r, item), (Str, item -> r), U32, Bool, Tx -> (Cols(r, item), Tx)
 drop_row = |cfg, cols, env, slot, remove, tx| {
-	{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes } = cols
-	unindexed = { items, keys, order, free, index: index_remove(index, slot), lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes }
+	{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes } = cols
+	unindexed = { items, keys, order, free, index: index_remove(index, slot), lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes }
 	remove_row(cfg, unindexed, env, slot, remove, tx)
 }
 
@@ -4843,7 +5230,7 @@ drop_row = |cfg, cols, env, slot, remove, tx| {
 ## REMOVE. Like `place_row`, it leaves the key index to the site.
 remove_row : EachCfg(r, find), Cols(r, item), (Str, item -> r), U32, Bool, Tx -> (Cols(r, item), Tx)
 remove_row = |cfg, cols, env, slot, remove, tx| {
-	{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes: nodes } = cols
+	{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes: nodes } = cols
 	si = slot.to_u64()
 	key = keys.get(si) ?? crash "key"
 	pend2 = pend.set(si, 0) ?? pend
@@ -4873,9 +5260,9 @@ remove_row = |cfg, cols, env, slot, remove, tx| {
 			$t = free_id($t, b)
 		}
 		dropped2 = if ($orph.is_empty()) dropped else dropped.append({ key, item, orphans: $orph })
-		({ items, keys, order, free: free.append(slot), index, lasts, kids: kl, binds: bl, pend: pend2, dirty, sels, known, kid_mask, dropped: dropped2, rnodes }, $t)
+		({ items, keys, order, free: free.append(slot), index, lasts, kids: kl, binds: bl, pend: pend2, dirty, sels, known, kid_mask, dropped: dropped2, shown: shown.set(si, shown_empty) ?? shown, pending_echo: clear_row_echo(pending_echo, slot), rnodes }, $t)
 	} else {
-		({ items, keys, order, free: free.append(slot), index, lasts, kids, binds, pend: pend2, dirty, sels, known, kid_mask, dropped, rnodes }, t1)
+		({ items, keys, order, free: free.append(slot), index, lasts, kids, binds, pend: pend2, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes }, t1)
 	}
 }
 
@@ -4890,11 +5277,15 @@ mark_all = |cols, m| {
 }
 
 mark : Cols(r, item), U32, U128 -> Cols(r, item)
-mark = |{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes }, slot, m| {
+mark = |{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes }, slot, m| {
 	si = slot.to_u64()
 	p = pend.get(si) ?? 0
-	dirty2 = if (p == 0) dirty.append(slot) else dirty
-	{ items, keys, order, free, index, lasts, kids, binds, pend: pend.set(si, p.bitwise_or(m)) ?? pend, dirty: dirty2, sels, known, kid_mask, dropped, rnodes }
+	already_echo = match pending_echo {
+		Echo(e) => e.slot == slot
+		NoEcho => False
+	}
+	dirty2 = if (p == 0 and !already_echo) dirty.append(slot) else dirty
+	{ items, keys, order, free, index, lasts, kids, binds, pend: pend.set(si, p.bitwise_or(m)) ?? pend, dirty: dirty2, sels, known, kid_mask, dropped, shown, pending_echo, rnodes }
 }
 
 ## A kept row whose new item may differ: equal items are pruned here.
@@ -4910,19 +5301,19 @@ keep_row_n = |cols, slot, item, row_bit| {
 	if same {
 		(cols, 0)
 	} else {
-		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes } = cols
-		(mark({ items: items.set(si, item) ?? crash "item", keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes }, slot, row_bit), 1)
+		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes } = cols
+		(mark({ items: items.set(si, item) ?? crash "item", keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes }, slot, row_bit), 1)
 	}
 }
 
 set_order : Cols(r, item), List(U32) -> Cols(r, item)
-set_order = |{ items, keys, order: _, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes }, order| {
-	{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes }
+set_order = |{ items, keys, order: _, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes }, order| {
+	{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes }
 }
 
 take_order : Cols(r, item) -> (Cols(r, item), List(U32))
-take_order = |{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes }| {
-	({ items, keys, order: [], free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes }, order)
+take_order = |{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes }| {
+	({ items, keys, order: [], free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes }, order)
 }
 
 end_ref : EachCfg(r, find) -> U32
@@ -5005,10 +5396,10 @@ clear_rows = |cfg, cols, env, dom, tx| {
 			$i = $i + 1
 		}
 	}
-	{ sels, known, kid_mask, lasts, dropped: dropped0, items: _, keys: _, order: _, free: _, index: _, kids: _, binds: _, pend: _, dirty: _, rnodes: _ } = cols
+	{ sels, known, kid_mask, lasts, dropped: dropped0, shown: _, pending_echo: _, items: _, keys: _, order: _, free: _, index: _, kids: _, binds: _, pend: _, dirty: _, rnodes: _ } = cols
 	dropped = dropped0.concat($dropped)
 	ncols = lasts.len()
-	({ items: [], keys: [], order: [], free: [], index: index_empty, lasts: List.repeat([], ncols), kids: [], binds: [], pend: [], dirty: [], sels, known, kid_mask, dropped, rnodes: [] }, $tx)
+	({ items: [], keys: [], order: [], free: [], index: index_empty, lasts: List.repeat([], ncols), kids: [], binds: [], pend: [], dirty: [], sels, known, kid_mask, dropped, shown: [], pending_echo: NoEcho, rnodes: [] }, $tx)
 }
 
 ## Append rows new_list[from..] at the end of the site.
@@ -5118,9 +5509,8 @@ reconcile_rows = |cfg, cols, env, list, tx| {
 				last = list.get($ne - 1) ?? crash "row"
 				if same_row(cfg, $cols, b, first) and same_row(cfg, $cols, a, last) {
 					na = node_of($cols, a)
-					nb = node_of($cols, b)
 					after = ref_at(cfg, $cols, $oe)
-					$tx = emit_op(emit_op($tx, 4, |c| put_u32(put_u32(c, nb), na)), 4, |c| put_u32(put_u32(c, na), after))
+					$tx = move_row($cols, a, after, move_row($cols, b, na, $tx))
 					(c3, u3) = keep_row_n($cols, b, first, row_bit)
 					(c4, u4) = keep_row_n(c3, a, last, row_bit)
 					$cols = c4
@@ -5260,7 +5650,7 @@ reconcile_general = |cfg, cols, env, list, i, oe, ne, tx| {
 			node = node_of($cols, slot)
 			if !(stable.get(idx) ?? False) {
 				r = $ref
-				$tx = emit_op($tx, 4, |c| put_u32(put_u32(c, node), r))
+				$tx = move_row($cols, slot, r, $tx)
 			}
 			(c4, u4) = keep_row_n($cols, slot, item, row_bit)
 			$cols = c4
@@ -5319,14 +5709,16 @@ lis_mark = |seq| {
 ## their nested sites.
 settle : EachCfg(r, find), Cols(r, item), (Str, item -> r), Tx -> (Cols(r, item), Tx)
 settle = |cfg, cols, env, tx| {
-	{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes } = cols
+	{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes } = cols
 	var $lasts = lasts
 	var $pend = pend
 	var $kids = kids
+	var $shown = shown
 	var $tx = tx
 	# Hole evaluations, counted once after the loop.
 	var $evals = 0.U64
 	for slot in dirty {
+		start = $tx.observations.shown.len()
 		si = slot.to_u64()
 		m = $pend.get(si) ?? 0
 		$pend = $pend.set(si, 0) ?? $pend
@@ -5336,7 +5728,11 @@ settle = |cfg, cols, env, tx| {
 		node = rnodes.get(si) ?? crash "internal: row node"
 		var $hi = 0.U64
 		for hole in cfg.plan.holes {
-			if hole.live and hole.mask.bitwise_or(hole.smask).bitwise_and(m) != 0 {
+			echo_dirty = match pending_echo {
+				NoEcho => False
+				Echo(e) => e.slot == slot and e.hole == $hi
+			}
+			if hole.live and (echo_dirty or hole.mask.bitwise_or(hole.smask).bitwise_and(m) != 0) {
 				v = (hole.read)(row_env)
 				{ list, prev } = $lasts.replace(hole.col, []) ?? crash "lasts"
 				old = prev.get(si) ?? crash "internal: missing row hole observation"
@@ -5350,7 +5746,7 @@ settle = |cfg, cols, env, tx| {
 					} else {
 						op = if (hole.kind == 1) 2 else if (hole.kind == 6) 22 else 3
 						hidx = $hi.to_u8_wrap()
-						$tx = emit_op(bump($tx, hole.ctl, 1), op, |c| if (hole.kind == 2) put_presence(put_u32(c, node).append(hidx), v) else put_str(put_u32(c, node).append(hidx), observed_text(v)))
+						$tx = shown_observation(emit_op(bump($tx, hole.ctl, 1), op, |c| if (hole.kind == 2) put_presence(put_u32(c, node).append(hidx), v) else put_str(put_u32(c, node).append(hidx), observed_text(v))), node, $hi.to_u16_wrap(), hole.property, v)
 					}
 					$lasts = list.set(hole.col, prev.set(si, v) ?? crash "lasts") ?? crash "lasts"
 				}
@@ -5370,8 +5766,10 @@ settle = |cfg, cols, env, tx| {
 			}
 			$kids = kl.set(si, $rk) ?? crash "kids"
 		}
+		{ list: maps, prev: row_shown } = $shown.replace(si, shown_empty) ?? crash "shown column"
+		$shown = maps.set(si, shown_since(row_shown, start, $tx)) ?? crash "shown column"
 	}
-	({ items, keys, order, free, index, lasts: $lasts, kids: $kids, binds, pend: $pend, dirty: dirty.clear(), sels, known, kid_mask, dropped, rnodes }, count_evals($tx, $evals))
+	({ items, keys, order, free, index, lasts: $lasts, kids: $kids, binds, pend: $pend, dirty: dirty.clear(), sels, known, kid_mask, dropped, shown: $shown, pending_echo: NoEcho, rnodes }, count_evals($tx, $evals))
 }
 
 ## Selection changed: mark only the previously and newly selected rows.
@@ -5380,8 +5778,8 @@ select_changed = |cfg, cols, env, mask| {
 	first = cols.order.first()
 	match first {
 		Err(_) => {
-			{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known: _, kid_mask, dropped, rnodes } = cols
-			{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known: False, kid_mask, dropped, rnodes }
+			{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known: _, kid_mask, dropped, shown, pending_echo, rnodes } = cols
+			{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known: False, kid_mask, dropped, shown, pending_echo, rnodes }
 		}
 		Ok(s0) => {
 			key0 = cols.keys.get(s0.to_u64()) ?? crash "key"
@@ -5411,8 +5809,8 @@ select_changed = |cfg, cols, env, mask| {
 							}
 							Err(_) => {}
 						}
-						{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known: _, kid_mask, dropped, rnodes } = $cols
-						$cols = { items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels: sels.set($hi, nk) ?? sels, known: True, kid_mask, dropped, rnodes }
+						{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known: _, kid_mask, dropped, shown, pending_echo, rnodes } = $cols
+						$cols = { items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels: sels.set($hi, nk) ?? sels, known: True, kid_mask, dropped, shown, pending_echo, rnodes }
 					}
 				}
 				$hi = $hi + 1
@@ -5433,18 +5831,21 @@ is_live = |cols, si| (cols.rnodes.get(si) ?? 0) != 0
 ## site is rebuilt (roc-lang/roc#12846 class).
 each_fire_kid : Cols(Row(ctx, item), item), Row(ctx, item), U64, List(U32), U64, U32, Payload, Tx -> (Cols(Row(ctx, item), item), ctx, Layers, Tx)
 each_fire_kid = |cols, row_env, si, path, pos, h, payload, tx| {
+	start = tx.observations.shown.len()
 	j = (path.get(pos + 1) ?? 0).to_u64()
-	{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes } = cols
+	{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes } = cols
 	{ list: kl, prev: row_kids } = kids.replace(si, []) ?? crash "kids"
 	if j < row_kids.len() {
 		{ list: rl, prev: kid } = row_kids.replace(j, noop({})) ?? crash "kid"
 		(k2, out, t2) = call(kid, row_env, Fire(path, pos + 2, h, payload), tx)
 		kids2 = kl.set(si, rl.set(j, k2) ?? crash "kid") ?? crash "kids"
 		(outer, m) = row_out(out)
-		({ items, keys, order, free, index, lasts, kids: kids2, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes }, outer, m, t2)
+		{ list: maps, prev: row_shown } = shown.replace(si, shown_empty) ?? crash "shown column"
+		shown2 = maps.set(si, shown_since(row_shown, start, t2)) ?? crash "shown column"
+		({ items, keys, order, free, index, lasts, kids: kids2, binds, pend, dirty, sels, known, kid_mask, dropped, shown: shown2, pending_echo, rnodes }, outer, m, t2)
 	} else {
 		{ outer, key: _, item: _ } = row_env
-		({ items, keys, order, free, index, lasts, kids: kl.set(si, row_kids) ?? crash "kids", binds, pend, dirty, sels, known, kid_mask, dropped, rnodes }, outer, no_layers, tx)
+		({ items, keys, order, free, index, lasts, kids: kl.set(si, row_kids) ?? crash "kids", binds, pend, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes }, outer, no_layers, tx)
 	}
 }
 
@@ -5495,7 +5896,7 @@ each_inst = |cfg0, rows0, adopted0, cols0| {
 						res = fx ?? crash "fx"
 						(ad2, out, t2) = adopt_deliver(adopted, env, h, res, tx)
 						(each_inst(cfg, rows, ad2, cols), out, t2)
-					} else if !is_live(cols, si) or (pos + 1 >= path.len() and !fires(payload)) {
+					} else if !is_live(cols, si) {
 						# No such row any more, or a `Settle` come as far as a row's
 						# handler: nothing to run.
 						(each_inst(cfg, rows, adopted, cols), Pending(env, no_layers), tx)
@@ -5503,17 +5904,21 @@ each_inst = |cfg0, rows0, adopted0, cols0| {
 						key = cols.keys.get(si) ?? crash "key"
 						item = cols.items.get(si) ?? crash "item"
 						row_env = Row.{ outer: env, key, item }
-						if pos + 1 >= path.len() {
+						if pos + 1 >= path.len() and !fires(payload) {
+							(c2, t2) = settle(cfg, cols, mk, tx)
+							(each_inst(cfg, rows, adopted, c2), Pending(env, no_layers), t2)
+						} else if pos + 1 >= path.len() {
 							match cfg.plan.handlers.get(h.to_u64()) {
 								Ok(handler) => {
 									# Rebuild the site before running the row handler: with the
 									# handler call first, --opt=speed/size treats the captured
 									# columns as borrowed and every later write copies them
 									# (roc-lang/roc#12846).
-									next = each_inst(cfg, rows, adopted, cols)
-									(row, wrote) = (handler.run)(row_env, payload, cfg.path)
+									(c2, prepared, t2) = row_echo(cols, cfg.plan, slot, handler, payload, cfg.path, tx)
+									next = each_inst(cfg, rows, adopted, c2)
+									(row, wrote) = (handler.run)(row_env, prepared, cfg.path)
 									{ outer, key: _, item: _ } = row
-									(next, Pending(outer, wrote), tx)
+									(next, Pending(outer, wrote), t2)
 								}
 								Err(_) => {
 									{ outer, key: _, item: _ } = row_env
@@ -5682,9 +6087,9 @@ view_apply = |cfg, cols, slots, env, view, changes, tx| {
 					$placed = True
 				}
 				Moved({ key, before }) => {
-					node = node_of($cols, view_slot($slots, key))
+					slot = view_slot($slots, key)
 					target = view_before(cfg, $cols, $slots, before)
-					$tx = emit_op($tx, 4, |c| put_u32(put_u32(c, node), target))
+					$tx = move_row($cols, slot, target, $tx)
 					$placed = True
 				}
 				Changed(key) => {
@@ -5813,22 +6218,26 @@ view_inst = |cfg0, shows0, q0, view0, adopted0, cols0, slots0| {
 						res = fx ?? crash "fx"
 						(ad2, out, t2) = adopt_deliver(adopted, env, h, res, tx)
 						(view_inst(cfg, shows, q, view, ad2, cols, slots), out, t2)
-					} else if !is_live(cols, si) or (pos + 1 >= path.len() and !fires(payload)) {
+					} else if !is_live(cols, si) {
 						# No such row any more, or a `Settle` come as far as a row's
 						# handler: nothing to run.
 						(view_inst(cfg, shows, q, view, adopted, cols, slots), Pending(env, no_layers), tx)
 					} else {
 						key = cols.items.get(si) ?? crash "item"
 						row_env = Row.{ outer: env, key: "", item: key }
-						if pos + 1 >= path.len() {
+						if pos + 1 >= path.len() and !fires(payload) {
+							(c2, t2) = settle(cfg, cols, mk, tx)
+							(view_inst(cfg, shows, q, view, adopted, c2, slots), Pending(env, no_layers), t2)
+						} else if pos + 1 >= path.len() {
 							match cfg.plan.handlers.get(h.to_u64()) {
 								Ok(handler) => {
 									# Rebuild the site before running the row handler, as
 									# an each site does (roc-lang/roc#12846).
-									next = view_inst(cfg, shows, q, view, adopted, cols, slots)
-									(row, wrote) = (handler.run)(row_env, payload, cfg.path)
+									(c2, prepared, t2) = row_echo(cols, cfg.plan, slot, handler, payload, cfg.path, tx)
+									next = view_inst(cfg, shows, q, view, adopted, c2, slots)
+									(row, wrote) = (handler.run)(row_env, prepared, cfg.path)
 									{ outer, key: _, item: _ } = row
-									(next, Pending(outer, wrote), tx)
+									(next, Pending(outer, wrote), t2)
 								}
 								Err(_) => {
 									{ outer, key: _, item: _ } = row_env
@@ -5877,6 +6286,7 @@ elem_reads = |elem, depth| match elem {
 		}
 		$m
 	}
+	Fragment(children) => children.fold(0, |mask, child| mask.bitwise_or(elem_reads(child, depth)))
 	Text(_) => 0
 	TextV(v) => eff_mask(v)
 	Site(_, rf) => rf(depth)
@@ -5950,8 +6360,8 @@ switch_inst = |w0, cur0, adopted0, block0| {
 						Err(_) => {
 							match fire_target(block, path, pos) {
 								Leaf => {
-									out = fire_leaf(block, env, h, payload, path)
-									(switch_inst(w, cur, adopted, block), out, tx)
+									(b2, out, t2) = fire_leaf(block, env, h, payload, path, tx)
+									(switch_inst(w, cur, adopted, b2), out, t2)
 								}
 								Kid => {
 									(b2, out, t2) = fire_kid(block, env, path, pos, h, payload, tx)
@@ -6014,8 +6424,8 @@ remount_inst = |w0, cur0, adopted0, block0| {
 						Err(_) => {
 							match fire_target(block, path, pos) {
 								Leaf => {
-									out = fire_leaf(block, env, h, payload, path)
-									(remount_inst(w, cur, adopted, block), out, tx)
+									(b2, out, t2) = fire_leaf(block, env, h, payload, path, tx)
+									(remount_inst(w, cur, adopted, b2), out, t2)
 								}
 								Kid => {
 									(b2, out, t2) = fire_kid(block, env, path, pos, h, payload, tx)
@@ -6062,7 +6472,10 @@ derive_inst = |input0, v0, block0, depth0| {
 				}
 				Fire(path, pos, h, payload) => {
 					match fire_target(block, path, pos) {
-						Leaf => derive_settle(input, block, depth, fire_leaf(block, In.{ outer: env, value: v }, h, payload, path), tx)
+						Leaf => {
+							(b2, out, t2) = fire_leaf(block, In.{ outer: env, value: v }, h, payload, path, tx)
+							derive_settle(input, b2, depth, out, t2)
+						}
 						Kid => {
 							(b2, out, t2) = fire_kid(block, In.{ outer: env, value: v }, path, pos, h, payload, tx)
 							derive_settle(input, b2, depth, out, t2)
@@ -6193,8 +6606,8 @@ mount_in = |max, programs, st, elem| mount_start(max, programs, { st, tables: []
 ## site also takes what it needs of the store's table cells.
 mount_start : U64, Catalogue, Core.Start(st), Elem(Root(st)) -> App
 mount_start = |max, programs, { st, tables }, elem| {
-	{ cmds, next, free, routes, work, paths, site_free, fx } = new_tx([])
-	tx0 = { cmds, next, free, routes, work, paths, site_free, fx: { ..fx, max } }
+	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = new_tx([])
+	tx0 = { cmds, next, free, routes, work, paths, site_free, observations, fx: { ..fx, max } }
 	(block, tx) = mount_block(Root.{ store: st }, elem, 0, [], 0, 0, { cap: 0 }, tx0)
 	written = tables.fold(0.U128, |acc, t| acc.bitwise_or(cell_bit(t.cell)))
 	drain({ root: store_inst(st, { cells: tables, written }, no_layers, block), tx: flush_turn(tx, programs), programs })
@@ -6590,7 +7003,7 @@ write_ports = |tx, entries| {
 			_ => Err(NotWritten)
 		},
 	)
-	{ cmds, next, free, routes, work, paths, site_free, fx } = tx
+	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = tx
 	first = match reqs.first() {
 		Ok((_, at, _)) => at
 		Err(_) => cmds.len()
@@ -6614,7 +7027,7 @@ write_ports = |tx, entries| {
 		}
 	}
 	out = if (in_place) $out else $out.concat(cmds.sublist({ start: $from, len: cmds.len() - $from }))
-	{ cmds: out, next, free, routes, work: add_work(work, w_port_sends, $sends), paths, site_free, fx }
+	{ cmds: out, next, free, routes, work: add_work(work, w_port_sends, $sends), paths, site_free, observations, fx }
 }
 
 ## A message as FX kinds 9 and 10 and `PORT` carry it: `json:str
@@ -6745,7 +7158,7 @@ Fx : {
 ## settle check (`Core.settled`) when the view it holds is not the one its
 ## table gives from scratch; the check reports it, and the pass it ran in
 ## is discarded.
-TurnEnd : [CheckRef(Str), Focus(U8, Str), CheckTask(Str, List(U32)), Port(PortAt), Drift(Str)]
+TurnEnd : [CheckRef(Str), Focus(U8, Str), ScrollIntoView(Str, { block : Align, inline : Align, behavior : ScrollBehavior }), ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }), CheckTask(Str, List(U32)), Port(PortAt), Drift(Str)]
 
 ## A port request waiting for the end of its turn (see [Ports]): the
 ## request, the site that issued it, and where its bytes go: at offset `at`
@@ -6804,7 +7217,7 @@ replanned : (a -> List(Request)) -> (a, a, List(U32) -> List(Request))
 replanned = |plan| |_, a, _| plan(a)
 
 with_fx : Tx, (Fx -> Fx) -> Tx
-with_fx = |{ cmds, next, free, routes, work, paths, site_free, fx }, f| { cmds, next, free, routes, work, paths, site_free, fx: f(fx) }
+with_fx = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, f| { cmds, next, free, routes, work, paths, site_free, observations, fx: f(fx) }
 
 fx_count : Tx, [Delivered, Stale] -> Tx
 fx_count = |tx, k| with_fx(
@@ -6898,19 +7311,19 @@ put_fx = |c, id, req| {
 fx_admit : Tx, List(U32), Request -> (U32, Tx)
 fx_admit = |tx, path, req| {
 	# A port request's bytes are written at the end of the turn.
-	{ cmds, next, free, routes, work, paths, site_free, fx } = turn_end_later(tx, path, req)
+	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = turn_end_later(tx, path, req)
 	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, refs, focus, ref_pos, cleanups } = fx
 	if live.len() >= max {
 		fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, document_nodes, refs, focus, ref_pos, cleanups }
-		(id, { cmds, next, free, routes, work, paths, site_free, fx: fx2 })
+		(id, { cmds, next, free, routes, work, paths, site_free, observations, fx: fx2 })
 	} else {
 		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, refs, focus, ref_pos, cleanups }
-		(id, { cmds: put_req(cmds, id, req), next, free, routes, work: add_work(work, 13, 1), paths, site_free, fx: fx2 })
+		(id, { cmds: put_req(cmds, id, req), next, free, routes, work: add_work(work, 13, 1), paths, site_free, observations, fx: fx2 })
 	}
 }
 
 ## Queue what the end of the turn settles for a request (see [TurnEnd]) as
-## it is issued: a focus command on a named reference, or a port request
+## it is issued: a focus or scroll command on a named reference, or a port request
 ## with the place its bytes go (see [PortAt]), which is nowhere when the
 ## in-flight bound is about to refuse it. Any other request needs nothing.
 turn_end_later : Tx, List(U32), Request -> Tx
@@ -6922,6 +7335,9 @@ turn_end_later = |tx, path, req| {
 		Blur(n) => Focus(2, n)
 		SelectText(n) => Focus(3, n)
 		ApplyValue(n) => Focus(4, n)
+		FocusInPlace(n) => Focus(5, n)
+		ScrollIntoView(n, props) => ScrollIntoView(n, props)
+		ScrollTo(n, props) => ScrollTo(n, props)
 		PortCommand({ port, message }) => Port({ req: Command(port, message), path, slot: At(at, 0) })
 		PortCall({ port, message, timeout_ms }) => Port({ req: Call(port, message, timeout_ms), path, slot })
 		PortSubscribe({ port, message }) => Port({ req: Subscribe(port, message), path, slot })
@@ -6930,6 +7346,8 @@ turn_end_later = |tx, path, req| {
 	match entry {
 		Skip => tx
 		Focus(op, n) => with_fx(tx, |fx| { ..fx, focus: fx.focus.append(Focus(op, n)) })
+		ScrollIntoView(n, props) => with_fx(tx, |fx| { ..fx, focus: fx.focus.append(ScrollIntoView(n, props)) })
+		ScrollTo(n, props) => with_fx(tx, |fx| { ..fx, focus: fx.focus.append(ScrollTo(n, props)) })
 		Port(p) => with_fx(tx, |fx| { ..fx, focus: fx.focus.append(Port(p)) })
 	}
 }
@@ -6957,7 +7375,7 @@ issue = |tx, path, reqs, a, owned| {
 			Replace(url) => {
 				$tx = emit_op($tx, 15, |c| put_str(c.append(2), url))
 			}
-			Focus(_) | Blur(_) | SelectText(_) | ApplyValue(_) | PortCommand(_) => {
+			Focus(_) | Blur(_) | SelectText(_) | ApplyValue(_) | FocusInPlace(_) | ScrollIntoView(_, _) | ScrollTo(_, _) | PortCommand(_) => {
 				# Settled at the end of the turn (see [TurnEnd]).
 				$tx = turn_end_later($tx, path, req)
 			}
@@ -6985,8 +7403,8 @@ issue = |tx, path, reqs, a, owned| {
 				# Opcode 20 is not counted by opcode: index 20 of the work
 				# record is `set_checked`.
 				{ token, start, len } = file_ref(file)
-				{ cmds, next, free, routes, work, paths, site_free, fx } = $tx
-				$tx = { cmds: put_str(put_u64(put_u64(put_u64(cmds.append(20), token), start), len), name), next, free, routes, work, paths, site_free, fx }
+				{ cmds, next, free, routes, work, paths, site_free, observations, fx } = $tx
+				$tx = { cmds: put_str(put_u64(put_u64(put_u64(cmds.append(20), token), start), len), name), next, free, routes, work, paths, site_free, observations, fx }
 			}
 			_ => {
 				(id, t1) = fx_admit($tx, path, req)
@@ -7122,12 +7540,12 @@ take_dropped = |cols, depth| {
 	if cols.dropped.is_empty() {
 		(cols, [])
 	} else {
-		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, rnodes } = cols
+		{ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped, shown, pending_echo, rnodes } = cols
 		var $o = []
 		for d in dropped {
 			$o = $o.concat(lower_row(d.orphans, d.key, d.item, depth))
 		}
-		({ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped: [], rnodes }, $o)
+		({ items, keys, order, free, index, lasts, kids, binds, pend, dirty, sels, known, kid_mask, dropped: [], shown, pending_echo, rnodes }, $o)
 	}
 }
 
@@ -7179,6 +7597,9 @@ command_request = |command| match command {
 	Blur(name) => Blur(name)
 	SelectText(name) => SelectText(name)
 	ApplyValue(name) => ApplyValue(name)
+	FocusInPlace(name) => FocusInPlace(name)
+	ScrollIntoView(name, props) => ScrollIntoView(name, props)
+	ScrollTo(name, props) => ScrollTo(name, props)
 	StorageSet(key, value) => StorageSet(key, value)
 	StorageRemove(key) => StorageRemove(key)
 	PortCommand(sent) => PortCommand(sent)
@@ -7448,7 +7869,10 @@ resource_inst = |rc0, last0, s0, owned0, block0| {
 						Ok(res) => resource_deliver(rc, last, s, owned, block, env, h, res, tx)
 						Err(_) => {
 							match fire_target(block, path, pos) {
-								Leaf => resource_settle(rc, last, owned, block, fire_leaf(block, In.{ outer: env, value: s }, h, payload, path), tx)
+								Leaf => {
+									(b2, out, t2) = fire_leaf(block, In.{ outer: env, value: s }, h, payload, path, tx)
+									resource_settle(rc, last, owned, b2, out, t2)
+								}
 								Kid => {
 									(b2, out, t2) = fire_kid(block, In.{ outer: env, value: s }, path, pos, h, payload, tx)
 									resource_settle(rc, last, owned, b2, out, t2)
@@ -7655,7 +8079,7 @@ decode_boot = |bytes| match Core.read_boot(bytes) {
 }
 
 new_tx : List(U8) -> Tx
-new_tx = |cmds| { cmds, next: 1, free: [], routes: [], work: work_zero, paths: [[]], site_free: [], fx: fx_empty }
+new_tx = |cmds| { cmds, next: 1, free: [], routes: [], work: work_zero, paths: [[]], site_free: [], observations: { echo: False, shown: [] }, fx: fx_empty }
 
 ## One turn: fire down `path`; then the root's Changed pass for the cells
 ## the event wrote, which the layers it wrote with them join where the
@@ -7667,29 +8091,35 @@ turn : App, List(U32), U32, Payload -> App
 turn = |{ root, tx, programs }, path, h, payload| {
 	(root2, out, tx2) = call(root, Top, Fire(path, 0, h, payload), bump(tx, w_turns, 1))
 	writes = out_writes(out)
+	force = tx2.observations.echo
 	if layers_empty(writes) {
-		{ root: root2, tx: flush_turn(tx2, programs), programs }
+		if force {
+			(root3, _, tx3) = call(root2, Top, Fire(path, 0, h, Settle(no_layers, True)), tx2)
+			{ root: root3, tx: flush_turn(tx3, programs), programs }
+		} else {
+			{ root: root2, tx: flush_turn(tx2, programs), programs }
+		}
 	} else {
 		cells = cells_of(writes)
 		waiting = layers_from(writes, 0)
 		(root3, _, tx3) = call(root2, Top, Changed(layers_sig(cells)), bump(tx2, w_dirty_roots, layers_count(cells)))
-		if layers_empty(waiting) {
+		if layers_empty(waiting) and !force {
 			{ root: root3, tx: flush_turn(tx3, programs), programs }
 		} else {
-			(root4, _, tx4) = call(root3, Top, Fire(path, 0, h, Settle(waiting)), tx3)
+			(root4, _, tx4) = call(root3, Top, Fire(path, 0, h, Settle(waiting, force)), tx3)
 			{ root: root4, tx: flush_turn(tx4, programs), programs }
 		}
 	}
 }
 
-## The end of a turn (see [TurnEnd]): command 18 FOCUS op:u8 node:u32 for
-## each focus request, the catalogue check of each work and port request
+## The end of a turn (see [TurnEnd]): command 18 REF for each focus or
+## scroll request, the catalogue check of each work and port request
 ## against the instance's `programs`, in issue order, and then the bytes of
 ## the turn's port requests, each where it was issued (see [PortAt]).
 flush_turn : Tx, Catalogue -> Tx
 flush_turn = |tx, programs| {
 	if tx.fx.focus.is_empty() {
-		tx
+		{ ..tx, observations: { echo: False, shown: tx.observations.shown.clear() } }
 	} else {
 		reqs = tx.fx.focus
 		for check in reqs {
@@ -7716,6 +8146,22 @@ flush_turn = |tx, programs| {
 							$tx = with_fx($tx, |fx| { ..fx, stale: fx.stale + 1 })
 						}
 					}
+				ScrollIntoView(name, props) => match ($tx.fx.refs.get(name) ?? []).first() {
+					Ok({ node, .. }) => {
+						$tx = emit_op($tx, 18, |commands| put_u32(commands.append(6), node).append(align_byte(props.block)).append(align_byte(props.inline)).append(behavior_byte(props.behavior)))
+					}
+					Err(_) => {
+						$tx = with_fx($tx, |fx| { ..fx, stale: fx.stale + 1 })
+					}
+				}
+				ScrollTo(name, props) => match ($tx.fx.refs.get(name) ?? []).first() {
+					Ok({ node, .. }) => {
+						$tx = emit_op($tx, 18, |commands| put_edge(put_edge(put_u32(commands.append(7), node), props.top), props.left).append(behavior_byte(props.behavior)))
+					}
+					Err(_) => {
+						$tx = with_fx($tx, |fx| { ..fx, stale: fx.stale + 1 })
+					}
+				}
 				CheckTask(task, path) =>
 					if !programs.workers.contains(task) {
 						crash "contract: worker task \"${task}\" is not registered; add its registration to with_workers (site ${show_path(path)})"
@@ -7724,7 +8170,8 @@ flush_turn = |tx, programs| {
 				Drift(_) | CheckRef(_) => {}
 			}
 		}
-		(programs.ports.write)($tx, reqs)
+		written = (programs.ports.write)($tx, reqs)
+		{ ..written, observations: { echo: False, shown: written.observations.shown.clear() } }
 	}
 }
 
@@ -8048,9 +8495,9 @@ expect {
 	file = Core.placed_file(Core.held_file(Box.box(1)), { name: "log", mime: "", size: 10, start: 0, len: 10 }) ?? crash "command expect: the file lies within its size"
 	message = { json: "1", blobs: [], files: [] }
 	commands : List(Core.Command)
-	commands = [Push("/a"), Replace("/b"), Title("t"), Focus("f"), Blur("g"), SelectText("h"), ApplyValue("v"), StorageSet("k", "v"), StorageRemove("r"), PortCommand({ port: "t/c", message }), File.save(file, { name: Named("copy") })]
+	commands = [Push("/a"), Replace("/b"), Title("t"), Focus("f"), Blur("g"), SelectText("h"), ApplyValue("v"), FocusInPlace("f"), Core.scroll_into_view("s", {}), ScrollTo("s", { top: End, left: Px(7), behavior: Instant }), StorageSet("k", "v"), StorageRemove("r"), PortCommand({ port: "t/c", message }), File.save(file, { name: Named("copy") })]
 	requests : List(Core.Request)
-	requests = [Push("/a"), Replace("/b"), Title("t"), Focus("f"), Blur("g"), SelectText("h"), ApplyValue("v"), StorageSet("k", "v"), StorageRemove("r"), PortCommand({ port: "t/c", message }), Save({ file, name: "copy" })]
+	requests = [Push("/a"), Replace("/b"), Title("t"), Focus("f"), Blur("g"), SelectText("h"), ApplyValue("v"), FocusInPlace("f"), Core.scroll_into_view("s", {}), ScrollTo("s", { top: End, left: Px(7), behavior: Instant }), StorageSet("k", "v"), StorageRemove("r"), PortCommand({ port: "t/c", message }), Save({ file, name: "copy" })]
 	commands.map(command_request) == requests
 }
 
@@ -8583,4 +9030,224 @@ expect {
 		runs: 1,
 		consumed: True,
 	}
+}
+
+## Alignments use one closed wire byte; malformed bytes are the decoder's responsibility.
+align_byte : Core.Align -> U8
+align_byte = |alignment| match alignment {
+	Start => 0
+	Center => 1
+	End => 2
+	Nearest => 3
+}
+
+## Preserve the browser's three distinct scroll behaviors on the wire.
+behavior_byte : Core.ScrollBehavior -> U8
+behavior_byte = |behavior| match behavior {
+	Auto => 0
+	Instant => 1
+	Smooth => 2
+}
+
+## Encode an axis without reading browser layout into the engine.
+put_edge : List(U8), Core.Edge -> List(U8)
+put_edge = |bytes, edge| match edge {
+	Keep => bytes.append(0)
+	Start => bytes.append(1)
+	End => bytes.append(2)
+	Px(offset) => put_u32(bytes.append(3), offset)
+}
+
+## A cleanup's scroll command has the same precise request tag and defaults.
+expect {
+	command : Core.Command
+	command = Core.scroll_into_view("problem", {})
+	command_request(command) == ScrollIntoView("problem", { block: Nearest, inline: Nearest, behavior: Auto })
+}
+
+## An ignored browser close revisits a constant shown hole through the
+## ordinary path settlement, without manufacturing a state write.
+expect {
+	handler = { run: |env, _, _| (env, no_layers) }
+	mounted = Core.mount(Core.controlled_dialog({ label: "Settings", open: Core.const(True), on_close: handler, modal: Modal, attrs: [], children: [] }))
+	before = Core.evals(mounted)
+	(clean, _) = Core.take_cmds(mounted, [])
+	closed = Core.event(clean, 1, 0, Str.from_utf8([0]) ?? crash "UTF8")
+	(_, commands) = Core.take_cmds(closed, [])
+	commands == put_str(put_u32([21], 1).append(6), "modal") and Core.evals(closed) == before + 1 and Core.settled(closed).is_ok()
+}
+
+## Row-constant shown properties own a cache column and use the same echo
+## settlement even though their declared read signature is empty.
+expect {
+	handler = { run: |env, _, _| (env, no_layers) }
+	mounted = Core.mount(Core.element("main", [], [Core.each(Core.const(["a"]), |key| key, |_| Core.controlled_popover({ label: "Help", open: Core.const(True), on_toggle: handler, dismiss: Manual, attrs: [], children: [] }))]))
+	before = Core.evals(mounted)
+	(clean, _) = Core.take_cmds(mounted, [])
+	closed = Core.event(clean, 2, 0, Str.from_utf8([0]) ?? crash "UTF8")
+	(_, commands) = Core.take_cmds(closed, [])
+	commands == put_str(put_u32([22], 2).append(0), "true") and Core.evals(closed) == before + 1 and Core.settled(closed).is_ok()
+}
+
+## A derive equality cutoff cannot strand the echoed hole below it. Its
+## input and the dirty hole are each observed once, after the handler write.
+expect {
+	view = Core.state(0.U64, |counter| Core.derive(counter.signal().map(|n| n % 2 == 0), |open| Core.controlled_dialog({ label: "Settings", open, on_close: counter.update(|n| n + 2).lift(), modal: Modal, attrs: [], children: [] })))
+	mounted = Core.mount(view)
+	before = Core.evals(mounted)
+	(clean, _) = Core.take_cmds(mounted, [])
+	closed = Core.event(clean, 1, 0, Str.from_utf8([0]) ?? crash "UTF8")
+	(_, commands) = Core.take_cmds(closed, [])
+	commands == put_str(put_u32([21], 1).append(6), "modal") and Core.evals(closed) == before + 2 and Core.settled(closed).is_ok()
+}
+
+## When a close handler accepts the browser fact, equality prunes the shown
+## write while the dialog's one content scope is disposed in the same turn.
+expect {
+	view = Core.state(True, |open| Core.controlled_dialog({ label: "Settings", open: open.signal(), on_close: open.set_value(|_, value| value), modal: Modal, attrs: [], children: [Core.text("content")] }))
+	mounted = Core.mount(view)
+	before = Core.evals(mounted)
+	(clean, _) = Core.take_cmds(mounted, [])
+	closed = Core.event(clean, 1, 0, Str.from_utf8([0]) ?? crash "UTF8")
+	(_, commands) = Core.take_cmds(closed, [])
+	commands == put_u32([5], 3) and Core.evals(closed) == before + 2 and Core.settled(closed).is_ok()
+}
+
+## Moving a row reasserts the shown template descendants of that row at
+## their HPROP addresses, immediately after each MOVE in stream order.
+expect {
+	handler = { run: |env, _, _| (env, no_layers) }
+	view = Core.state(["a", "b", "c"], |rows| Core.element("main", [Core.on_click(rows.update(|_| ["c", "b", "a"]))], [Core.each(rows.signal(), |key| key, |_| Core.element("article", [Core.attr_presence("title", Core.const(Absent))], [Core.controlled_popover({ label: "Help", open: Core.const(True), on_toggle: handler, dismiss: Manual, attrs: [], children: [] })]))]))
+	mounted = Core.mount(view)
+	(clean, _) = Core.take_cmds(mounted, [])
+	moved = Core.event(clean, 1, 0, "")
+	(_, commands) = Core.take_cmds(moved, [])
+	expected = put_u32(put_u32([4], 4), 2).concat(put_str(put_u32([22], 4).append(1), "true")).concat(put_u32(put_u32([4], 2), 0)).concat(put_str(put_u32([22], 2).append(1), "true"))
+	commands == expected and Core.settled(moved).is_ok()
+}
+
+## Two written layers meet below a derive before the echoed property is
+## observed. The browser fact is not reconciled against a half-written pair.
+expect {
+	view = Core.state(0.U64, |outer| Core.derive(outer.signal(), |derived| Core.state(0.U64, |inner| Core.controlled_popover({ label: "Help", open: derived.lift().map2(inner.signal(), |a, b| a == b), on_toggle: outer.update(|n| n + 1).lift().lift().also(inner.update(|n| n + 1)), dismiss: Manual, attrs: [], children: [] }))))
+	mounted = Core.mount(view)
+	before = Core.evals(mounted)
+	(clean, _) = Core.take_cmds(mounted, [])
+	closed = Core.event(clean, 1, 0, Str.from_utf8([0]) ?? crash "UTF8")
+	(_, commands) = Core.take_cmds(closed, [])
+	commands == put_str(put_u32([21], 1).append(7), "true") and Core.evals(closed) == before + 2 and Core.settled(closed).is_ok()
+}
+
+## Reversing the derive's direction still observes the two writes once.
+expect {
+	view = Core.state(0.U64, |outer| Core.state(0.U64, |inner| Core.derive(inner.signal(), |derived| Core.controlled_popover({ label: "Help", open: outer.signal().lift().lift().map2(derived, |a, b| a == b), on_toggle: outer.update(|n| n + 1).lift().lift().also(inner.update(|n| n + 1).lift()), dismiss: Manual, attrs: [], children: [] }))))
+	mounted = Core.mount(view)
+	before = Core.evals(mounted)
+	(clean, _) = Core.take_cmds(mounted, [])
+	closed = Core.event(clean, 1, 0, Str.from_utf8([0]) ?? crash "UTF8")
+	(_, commands) = Core.take_cmds(closed, [])
+	commands == put_str(put_u32([21], 1).append(7), "true") and Core.evals(closed) == before + 2 and Core.settled(closed).is_ok()
+}
+
+## Disposing a nested shown node removes its address from the owning row.
+## Recycled ids used by the closed branch must not receive a later re-show.
+expect {
+	handler = { run: |env, _, _| (env, no_layers) }
+	view = Core.state(
+		{ phase: 0.U64, rows: ["a", "b"] },
+		|st| Core.element(
+			"main",
+			[
+				Core.on_click(
+					st.update(
+						|s| {
+							phase: s.phase + 1,
+							rows: if s.phase == 0 {
+								s.rows
+							} else {
+								["b", "a"]
+							},
+						},
+					),
+				),
+			],
+			[
+				Core.each(
+					st.signal().map(|s| s.rows),
+					|key| key,
+					|_| Core.element(
+						"article",
+						[],
+						[
+							Core.when(st.signal().map(|s| s.phase == 0).lift_row(), || Core.controlled_popover({ label: "Help", open: Core.const(True), on_toggle: handler, dismiss: Manual, attrs: [], children: [] }), || Core.text("closed")),
+						],
+					),
+				),
+			],
+		),
+	)
+	mounted = Core.mount(view)
+	closed = Core.event(mounted, 1, 0, "")
+	(clean, _) = Core.take_cmds(closed, [])
+	moved = Core.event(clean, 1, 0, "")
+	(_, commands) = Core.take_cmds(moved, [])
+	commands.len() == 18 and commands.get(0) == Ok(4) and commands.get(9) == Ok(4) and Core.settled(moved).is_ok()
+}
+
+## Reopened template addresses and nested plain owners share one row order.
+## Grouping by owner would move the last popover ahead of the nested one.
+expect {
+	handler = { run: |env, _, _| (env, no_layers) }
+	view = Core.state(
+		{ phase: 0.U64, rows: ["a", "b"] },
+		|st| Core.element(
+			"main",
+			[
+				Core.on_click(
+					st.update(
+						|s| {
+							phase: s.phase + 1,
+							rows: if s.phase == 0 {
+								s.rows
+							} else {
+								["b", "a"]
+							},
+						},
+					),
+				),
+			],
+			[
+				Core.each(
+					st.signal().map(|s| s.rows),
+					|key| key,
+					|row| Core.element(
+						"article",
+						[],
+						[
+							Core.controlled_popover({ label: "First", open: Core.const(True), on_toggle: handler, dismiss: Manual, attrs: [Core.ref_s(row.key().map(|key| "first-${key}"))], children: [] }),
+							Core.state({}, |_| Core.controlled_popover({ label: "Nested", open: Core.const(True), on_toggle: handler.lift(), dismiss: Manual, attrs: [Core.ref_s(row.key().lift().map(|key| "nested-${key}"))], children: [] })),
+							Core.controlled_popover({ label: "Last", open: st.signal().map(|s| s.phase != 0).lift_row(), on_toggle: handler, dismiss: Manual, attrs: [], children: [] }),
+						],
+					),
+				),
+			],
+		),
+	)
+	opened = Core.event(Core.mount(view), 1, 0, "")
+	first_nested = ((opened.tx.fx.refs.get("nested-b") ?? []).first() ?? crash "nested b").node
+	second_nested = ((opened.tx.fx.refs.get("nested-a") ?? []).first() ?? crash "nested a").node
+	first = ((opened.tx.fx.refs.get("first-a") ?? []).first() ?? crash "first a").node
+	(c0, _) = Core.take_cmds(opened, [])
+	echoed = Core.event(c0, first, 0, Str.from_utf8([1]) ?? crash "UTF8")
+	(clean, echo_commands) = Core.take_cmds(echoed, [])
+	moved = Core.event(clean, 1, 0, "")
+	(_, commands) = Core.take_cmds(moved, [])
+	var $ok = echo_commands.is_empty() and commands.len() == 102
+	var $at = 0.U64
+	for nested in [first_nested, second_nested] {
+		row_node = get_u32(commands, $at + 1, "moved row")
+		$ok = $ok and commands.get($at) == Ok(4) and commands.get($at + 9) == Ok(22) and commands.get($at + 23) == Ok(21) and commands.get($at + 37) == Ok(22) and get_u32(commands, $at + 10, "first shown") == row_node and get_u32(commands, $at + 24, "nested shown") == nested and get_u32(commands, $at + 38, "last shown") == row_node and commands.get($at + 14) == Ok(0) and commands.get($at + 42) == Ok(4)
+		$at = $at + 51
+	}
+	$ok and Core.settled(moved).is_ok()
 }

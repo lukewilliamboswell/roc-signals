@@ -1,0 +1,15 @@
+(test "Form Builder — confirm above Settings and remove its open modal with the row"
+  (steps
+    (click (role button :name "Settings f1"))
+    (expect-shown (test-id "settings-f1") modal)
+    (click (role button :name "Delete from settings f1"))
+    (expect-shown (test-id "settings-f1") modal)
+    (expect-shown (test-id "confirm-delete") modal)
+    (click (role button :name "Delete"))
+    (expect-absent (role region :name "Field f1"))
+    (expect-absent (test-id "settings-f1"))
+    (expect-shown (test-id "confirm-delete") hidden)
+    (expect-focused (role button :name "Add text field"))
+    (expect-text (test-id "designer-status") "1")
+  )
+)
