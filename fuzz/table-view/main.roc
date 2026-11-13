@@ -5,6 +5,7 @@ app [target] {
 
 import fz.Fuzz
 import pf.Core
+import pf.Order
 import pf.Dom
 import pf.Engine exposing [Elem, Signal, State, Table]
 
@@ -72,11 +73,7 @@ Entry : { key : U64, row : Item }
 
 ## What a view shows: which rows and in what order. Plain data a view site
 ## compares. `ByRank` and `ByRankDown` order equal ranks by key, ascending.
-Listing : { show : [All, Only(U64), Except(U64)], order : [ByKey, ByKeyDown, ByRank, ByRankDown] }
-
-## Where a row stands in a listing's order: its order's number, then its key,
-## so no two rows tie.
-Place : { primary : I64, key : U64 }
+Listing : { show : [All, Only(U64), Except(U64)], order : [ByKey, ByKeyDown, ByRank, ByRankDown, ByBand, ByBandDown] }
 
 ## What `b` holds in its local state.
 Local : { listing : Listing, window : Engine.Window }
@@ -119,36 +116,24 @@ entries : U64, U64 -> List(Entry)
 entries = |seed, count| span(count).map(|i| { key: (seed + i * 5) % key_space, row: item_of(seed + i * 3) })
 
 ## How a listing selects and orders rows: the `plan` of every view.
-query_plan : Listing -> Engine.QueryPlan(U64, Item, Place)
-query_plan = |{ show, order }| {
+query_plan : Listing -> Engine.QueryPlan(U64, Item, (Order.Direction(U64), U64))
+query_plan = |{ show, order }| Engine.sort_by({
 	keep: |_, item| match show {
 		All => True
 		Only(shade) => item.shade == shade
 		Except(shade) => item.shade != shade
 	},
 	sort: |key, item| match order {
-		ByKey => { primary: 0, key }
-		ByKeyDown => { primary: 0 - key.to_i64_wrap(), key }
-		ByRank => { primary: item.rank.to_i64_wrap(), key }
-		ByRankDown => { primary: 0 - item.rank.to_i64_wrap(), key }
+		ByKey => Order.asc(key)
+		ByKeyDown => Order.desc(key)
+		ByRank => Order.asc(item.rank)
+		ByRankDown => Order.desc(item.rank)
+		ByBand => Order.asc(item.rank // 8)
+		ByBandDown => Order.desc(item.rank // 8)
 	},
-	compare: compare_place,
-}
+})
 
-compare_place : Place, Place -> [Before, Same, After]
-compare_place = |x, y|
-	if (x.primary < y.primary)
-		Before
-	else if (x.primary > y.primary)
-		After
-	else if (x.key < y.key)
-		Before
-	else if (x.key > y.key)
-		After
-	else
-		Same
-
-## The listing a number names: 5 filters by 4 orders.
+## The listing a number names: 5 filters by 6 orders.
 listing_of : U64 -> Listing
 listing_of = |n| {
 	show: match n % 5 {
@@ -158,11 +143,13 @@ listing_of = |n| {
 		3 => Only(2)
 		_ => Except(0)
 	},
-	order: match (n // 5) % 4 {
+	order: match (n // 5) % 6 {
 		0 => ByKey
 		1 => ByKeyDown
 		2 => ByRank
-		_ => ByRankDown
+		3 => ByRankDown
+		4 => ByBand
+		_ => ByBandDown
 	},
 }
 
@@ -181,6 +168,8 @@ listing_word = |{ show, order }| {
 		ByKeyDown => 1
 		ByRank => 2
 		ByRankDown => 3
+		ByBand => 4
+		ByBandDown => 5
 	}
 	filter + by * 5
 }
@@ -194,6 +183,8 @@ turned = |{ show, order }| {
 		ByKeyDown => ByKey
 		ByRank => ByRankDown
 		ByRankDown => ByRank
+		ByBand => ByBandDown
+		ByBandDown => ByBand
 	},
 }
 
@@ -775,6 +766,8 @@ drawn = |rows, { show, order }, window| {
 			ByKeyDown => compare_u64(y.key, x.key)
 			ByRank => if (x.row.rank == y.row.rank) compare_u64(x.key, y.key) else compare_u64(x.row.rank, y.row.rank)
 			ByRankDown => if (x.row.rank == y.row.rank) compare_u64(x.key, y.key) else compare_u64(y.row.rank, x.row.rank)
+			ByBand => if (x.row.rank // 8 == y.row.rank // 8) compare_u64(x.key, y.key) else compare_u64(x.row.rank // 8, y.row.rank // 8)
+			ByBandDown => if (x.row.rank // 8 == y.row.rank // 8) compare_u64(x.key, y.key) else compare_u64(y.row.rank // 8, x.row.rank // 8)
 		},
 	)
 	sorted.sublist({ start: window.start, len: window.count.min(sorted.len()) }).map(|e| e.key)
@@ -1584,6 +1577,17 @@ snapshot_steps = [
 	wrote(Update(1, 1)),
 ]
 
+## Many equal sort values exercise the plan's key tie-break through keyed
+## writes, a move across a band, a reversed query and a changed window.
+tied_steps : List(Step)
+tied_steps = [
+	plain({ ..quiet, head: Snapshot(0, 0), listing: To({ show: All, order: ByBand }), window: To({ start: 0, count: 16 }), ops: [Put(3, ranked(2, 0)), Put(1, ranked(3, 0)), Put(2, ranked(1, 0))] }),
+	Click(A, 1, Mark),
+	plain({ ..quiet, ops: [Put(3, ranked(1, 0)), Put(1, ranked(2, 0))] }),
+	plain({ ..quiet, ops: [Put(2, ranked(10, 0))], listing: To({ show: All, order: ByBandDown }), window: To({ start: 0, count: 2 }) }),
+	plain({ ..quiet, ops: [Remove(2), Put(4, ranked(4, 0))], listing: To({ show: All, order: ByBand }), window: To({ start: 1, count: 2 }) }),
+]
+
 ## A session written as steps. Its bytes must decode to the steps it was
 ## written as, so an example cannot quietly stop meaning what it says.
 ex : Str, List(Step) -> Fuzz.Example(Input)
@@ -1614,6 +1618,7 @@ target = Fuzz.target_with!({
 		ex("copies", copy_steps),
 		ex("store-snapshots", snapshot_steps),
 		ex("one-change", once_steps),
+		ex("sort-value-ties", tied_steps),
 		Fuzz.example({ name: "series", revision: "1", make: || { mode: 1, events: [] } }),
 	],
 	generator: { mode: Fuzz.constant(0), events: Fuzz.list(Fuzz.u8, 640) }.Fuzz,

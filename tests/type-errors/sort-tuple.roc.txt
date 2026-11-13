@@ -1,0 +1,12 @@
+app [main] { pf: platform "<PLATFORM>" }
+
+import pf.Engine
+
+main : Engine.Program
+main = Engine.program(|| Engine.text(""))
+
+## This fixture has no shared store.
+Store : {}
+
+bad : {} -> Engine.QueryPlan(U64, U64, ((U64, U64), U64))
+bad = |{}| Engine.sort_by({ keep: |_key, _row| Bool.True, sort: |_key, row| (row, row) })

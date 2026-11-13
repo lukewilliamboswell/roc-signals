@@ -1,3 +1,4 @@
+import pf.Order
 import pf.Engine exposing [Elem, Signal, State, Table]
 import pf.Html
 
@@ -47,23 +48,15 @@ Scores := [League].{
 	program = Engine.program_store({ storage_keys: [], max_inflight: 32 }, |_boot| Scores.store, |_boot| Scores.view({}))
 
 	# region plan
-	## Where a player stands in a listing's order: the number the order goes
-	## by, then the key, so that no two players tie.
-	Place : { rank : I64, key : U64 }
-
-	## How a listing selects and orders players.
-	plan : Listing -> Engine.QueryPlan(U64, Player, Place)
-	plan = |{ show, order }| {
+	## Order by points in the chosen direction, with keys breaking ties.
+	plan : Listing -> Engine.QueryPlan(U64, Player, (Order.Direction(I64), U64))
+	plan = |{ show, order }| Engine.sort_by({
 		keep: |_, player| match show {
 			Everyone => True
 			Team(team) => player.team == team
 		},
-		sort: |key, player| match order {
-			Highest => { rank: 0 - player.points, key }
-			Lowest => { rank: player.points, key }
-		},
-		compare: before,
-	}
+		sort: |_, player| Order.directed(player.points, order == Highest),
+	})
 	# endregion plan
 
 	# region board
@@ -235,22 +228,6 @@ Scores := [League].{
 	view : {} -> Elem(Engine.StoreRoot(_))
 	view = |{}| Html.div("scores", [Scores.toolbar({}), Scores.size({}), Scores.podium({}), Scores.board({}), Engine.when(Scores.cells.scrolled.signal(), || Scores.scroll_board({}), || Engine.text(""))])
 }
-
-## The order of two places: by rank, then by key. `Same` only for a row's
-## own place.
-before : Scores.Place, Scores.Place -> [Before, Same, After]
-before = |a, b|
-	if a.rank < b.rank {
-		Before
-	} else if a.rank > b.rank {
-		After
-	} else if a.key < b.key {
-		Before
-	} else if a.key > b.key {
-		After
-	} else {
-		Same
-	}
 
 # region expects
 ## A new player takes the next key, and the key after it becomes the next.

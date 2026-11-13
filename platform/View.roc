@@ -21,7 +21,8 @@ import TableCore exposing [Table]
 ## now, which costs the two windows. A site that finds no write at or before
 ## its window's last row, and the same query and window, does not draw.
 ##
-## The order must be total: `compare` must never answer `Same` for two
+## Engine.sort_by provides a total order using the key to break ties. A plan
+## with its own `compare` must never answer `Same` for two
 ## different rows, so a sort value includes the key when the sorted field can
 ## tie. Two rows comparing `Same` is a contract error.
 View(k, v, s) :: {

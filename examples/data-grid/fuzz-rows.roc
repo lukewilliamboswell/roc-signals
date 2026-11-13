@@ -137,14 +137,14 @@ check = |{ rows: bytes, sort: s, query: q, picks }| {
 	places = entries.map(|e| (asked.sort)(e.key, e.row))
 	for a in places {
 		for b in places {
-			order = (asked.compare)(a, b)
-			if (order == Same) != (a.id == b.id) or (asked.compare)(b, a) != opposite(order) {
-				return Err("sorted by ${GridData.sort_caption(sort)}, rows ${a.id.to_str()} and ${b.id.to_str()} compare ${Str.inspect(order)} and, the other way round, ${Str.inspect((asked.compare)(b, a))}")
+			order = a.order_relative_to(b)
+			if (order == Same) != (a.id == b.id) or b.order_relative_to(a) != opposite(order) {
+				return Err("sorted by ${GridData.sort_caption(sort)}, rows ${a.id.to_str()} and ${b.id.to_str()} compare ${Str.inspect(order)} and, the other way round, ${Str.inspect(b.order_relative_to(a))}")
 			}
 		}
 	}
 	kept = entries.keep_if(|e| (asked.keep)(e.key, e.row))
-	listed = kept.map(|e| (asked.sort)(e.key, e.row)).sort_with(asked.compare).map(|at| at.id)
+	listed = kept.map(|e| (asked.sort)(e.key, e.row)).sort().map(|at| at.id)
 	matching = entries.keep_if(|e| filter.is_empty() or e.row.name.contains(filter) or e.row.team.to_str().contains(filter))
 	want = model_sort(matching, sort).map(|e| e.key)
 	if listed != want {

@@ -55,7 +55,7 @@ Schema := [].{
 		fields,
 		{
 			query: Engine.const({}),
-			plan: Form.plan,
+			plan: |query| Engine.sort_by(Form.plan(query)),
 			window: Engine.const(Engine.every_row),
 		},
 		template,

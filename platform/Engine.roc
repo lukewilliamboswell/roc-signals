@@ -382,17 +382,27 @@ Engine := [].{
 		where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 	table = |rows| { d: Core.table_of(rows, outer, inner).map(wrap_cell) }
 
-	## Which rows of a table a view shows and in what order: `keep`
-	## says whether a row is in the view, `sort` gives the value it is
-	## ordered by, and `compare` orders two sort values. The order must be
-	## total: two rows that compare `Same` are a contract error, when the
-	## view mounts, after a write, and also between the keyed writes of one
-	## event, which the view takes one key at a time. Two rows that swap
-	## their places in one event tie while the first is written, though
-	## they never tie before or after it. So a sort value ends with the
-	## key, whatever the sorted field: `{ place: row.place, key }`, compared
-	## by `place` and then by `key`.
+	## The primitive form of a table-view plan: keep selects rows, sort gives
+	## their placement values, and compare orders those values. Prefer sort_by
+	## when the sort value and key have their own order. With an explicit
+	## comparator, Same must identify only one row, so include the key wherever
+	## a sorted field can tie, including between writes of one event.
 	QueryPlan(k, v, s) : Core.QueryPlan(k, v, s)
+
+	## Build a plan from the sort value's own order, breaking ties by the key's
+	## own order. A table has no insertion order for ties to keep. The key's
+	## order must agree with its equality: Same exactly when the keys are equal.
+	## Use QueryPlan with an explicit compare for keys without an order.
+	sort_by : { keep : k, v -> Bool, sort : k, v -> s } -> QueryPlan(k, v, (s, k))
+		where [s.order_relative_to : s, s -> [Before, Same, After], k.order_relative_to : k, k -> [Before, Same, After]]
+	sort_by = |{ keep, sort }| {
+		keep,
+		sort: |key, row| (sort(key, row), key),
+		compare: |(left, left_key), (right, right_key)| match left.order_relative_to(right) {
+			Same => left_key.order_relative_to(right_key)
+			other => other
+		},
+	}
 
 	## The part of a view that is drawn: `count` rows from position
 	## `start` of the view's order. A window that reaches past the last row
@@ -1703,4 +1713,12 @@ inner_cell = |c| {
 	cell: c.cell,
 	get: |st| inner((c.get)(st)),
 	modify: |st, change| (c.modify)(st, |held| outer(change(inner(held)))),
+}
+
+## A table plan breaks equal scores by key, independently of input order.
+expect {
+	plan = Engine.sort_by({ keep: |_key, score| score >= 0.I64, sort: |_key, score| score })
+	rows = [{ key: 9.U64, score: 2.I64 }, { key: 3, score: 2 }, { key: 7, score: 1 }]
+	ordered = rows.sort_with(|left, right| (plan.compare)((plan.sort)(left.key, left.score), (plan.sort)(right.key, right.score))).map(|row| row.key)
+	{ keys: ordered, same: (plan.compare)((plan.sort)(3, 2), (plan.sort)(3, 2)), excluded: (plan.keep)(1, -1) } == { keys: [7, 3, 9], same: Same, excluded: False }
 }

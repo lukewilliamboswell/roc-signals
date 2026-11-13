@@ -176,7 +176,7 @@ GridApp := [].{
 										),
 										Engine.table_view(
 											GridStore.cells.rows,
-											{ query: GridStore.listing({}), plan: GridData.plan, window: shown.map(GridData.window_of) },
+											{ query: GridStore.listing({}), plan: |listing| Engine.sort_by(GridData.plan(listing)), window: shown.map(GridData.window_of) },
 											GridApp.line,
 										),
 									],

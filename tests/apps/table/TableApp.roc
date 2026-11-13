@@ -1,3 +1,4 @@
+import pf.Order
 import pf.Engine exposing [Elem, Handler, Signal, State, Table]
 import pf.Html
 import pf.Layout
@@ -46,10 +47,6 @@ TableApp := [Todos].{
 	## rows a table starts with, and every row "Add" adds.
 	few_below : I64
 	few_below = 10
-
-	## Where a row stands in a listing's order: its order's number, then
-	## its key, so that no two rows tie.
-	Place : { primary : I64, key : U64 }
 
 	## What the address chose. `draws` is `Everything`, or `Main` for the
 	## main list alone (no second list, no readers), which is what a timing
@@ -102,8 +99,8 @@ TableApp := [Todos].{
 	}
 
 	## How a listing selects and orders rows: the `plan` of every view.
-	plan : Listing -> Engine.QueryPlan(U64, Todo, Place)
-	plan = |{ show, order }| {
+	plan : Listing -> Engine.QueryPlan(U64, Todo, (Order.Direction(I64), U64))
+	plan = |{ show, order }| Engine.sort_by({
 		keep: |_, todo| match show {
 			All => True
 			Open => todo.status == Open
@@ -111,25 +108,11 @@ TableApp := [Todos].{
 			Few => todo.qty < TableApp.few_below
 		},
 		sort: |key, todo| match order {
-			ByQty => { primary: todo.qty, key }
-			ByKey => { primary: 0, key }
-			ByKeyDown => { primary: 0 - key.to_i64_wrap(), key }
+			ByQty => Order.asc(todo.qty)
+			ByKey => Order.asc(key.to_i64_wrap())
+			ByKeyDown => Order.desc(key.to_i64_wrap())
 		},
-		compare: TableApp.compare_place,
-	}
-
-	compare_place : Place, Place -> [Before, Same, After]
-	compare_place = |a, b|
-		if (a.primary < b.primary)
-			Before
-		else if (a.primary > b.primary)
-			After
-		else if (a.key < b.key)
-			Before
-		else if (a.key > b.key)
-			After
-		else
-			Same
+	})
 
 	raised : Todo, I64 -> Todo
 	raised = |todo, by| { ..todo, qty: todo.qty + by }

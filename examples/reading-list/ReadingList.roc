@@ -1,3 +1,4 @@
+import pf.Order
 import pf.Engine exposing [Table]
 import pf.Port
 import BookStorage
@@ -44,11 +45,6 @@ ReadingList := [Books].{
 	## Whether the app's copy of the books has come from the database.
 	Copy : [Loading, Loaded, Unreadable(Str)]
 
-	## Where a book stands in the list: newest first, and by id among books
-	## added in the same millisecond, so no two books tie and every tab
-	## orders them alike.
-	Place : { added_ms : I64, id : Str }
-
 	## How many books are on each shelf.
 	Tally : { want_to_read : U64, reading : U64, finished : U64 }
 
@@ -93,14 +89,14 @@ ReadingList := [Books].{
 
 	## How a shelf selects and orders the books: the `plan` of the list's
 	## view.
-	plan : Showing -> Engine.QueryPlan(Str, BookStorage.Book, Place)
+	plan : Showing -> Engine.QueryPlan(Str, BookStorage.Book, Order.Pair(Order.Direction(I64), Order.Utf8))
 	plan = |showing| {
 		keep: |_, book| match showing {
 			Everything => True
 			Only(shelf) => book.shelf == shelf
 		},
-		sort: |id, book| { added_ms: book.added_ms, id },
-		compare: newest_first,
+		sort: |id, book| Order.pair(Order.desc(book.added_ms), Order.utf8(id)),
+		compare: Order.compare,
 	}
 
 	## The books of a table that `showing` keeps, in the list's order: what
@@ -366,41 +362,6 @@ checked = |answer|
 			}
 		Err(error) => Err(explain(error))
 	}
-
-## Newest first; books added in the same millisecond by id.
-newest_first : ReadingList.Place, ReadingList.Place -> [Before, Same, After]
-newest_first = |a, b|
-	if a.added_ms > b.added_ms {
-		Before
-	} else if a.added_ms < b.added_ms {
-		After
-	} else {
-		compare_text(a.id, b.id)
-	}
-
-## Text in the order of its UTF-8 bytes.
-compare_text : Str, Str -> [Before, Same, After]
-compare_text = |left, right| {
-	l = left.to_utf8()
-	r = right.to_utf8()
-	var $at = 0
-	while $at < l.len() and $at < r.len() {
-		# In range: both indices are below the lengths checked above.
-		a = l.get($at) ?? 0
-		b = r.get($at) ?? 0
-		if a != b {
-			return if (a < b) Before else After
-		}
-		$at = $at + 1
-	}
-	if l.len() < r.len() {
-		Before
-	} else if l.len() > r.len() {
-		After
-	} else {
-		Same
-	}
-}
 
 ## Why a port gave no answer, for the reader.
 explain : Port.Error -> Str

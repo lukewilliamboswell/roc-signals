@@ -298,20 +298,23 @@ Kanban := [].{
 	## Where a card stands in its column's order: its place, then its
 	## title. While the edits of a move are applied one by one, two cards can
 	## stand at one place for a moment, and the title tells them apart.
-	Rank : { place : U64, title : Str }
+	Rank := { place : U64, title : Str }.{
+		is_eq : _
+
+		## Titles break position ties using the board's existing byte order.
+		order_relative_to : Rank, Rank -> [Before, Same, After]
+		order_relative_to = |left, right| match left.place.order_relative_to(right.place) {
+			Same => title_order(left.title, right.title)
+			other => other
+		}
+	}
 
 	## How a column's view selects and orders the board's cards.
 	plan : Kanban.Showing -> { keep : Str, Kanban.Card -> Bool, sort : Str, Kanban.Card -> Kanban.Rank, compare : Kanban.Rank, Kanban.Rank -> [Before, Same, After] }
 	plan = |{ column, filter }| {
 		keep: |title, card| card.column == column and Kanban.is_match({ title, filter }),
 		sort: |title, card| { place: card.place, title },
-		compare: |a, b|
-			if (a.place < b.place)
-				Before
-			else if (a.place > b.place)
-				After
-			else
-				title_order(a.title, b.title),
+		compare: Kanban.Rank.order_relative_to,
 	}
 
 	## Whether a title passes a filter: an empty filter passes every title.

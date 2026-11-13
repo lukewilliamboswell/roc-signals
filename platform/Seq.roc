@@ -8,7 +8,8 @@
 ## own entries whatever the table holds meanwhile.
 ##
 ## The comparison is passed to every call rather than stored, and must be a
-## total order on the entries held: two entries comparing `Same` is a contract
+## total order on the entries held. Engine.sort_by supplies one with key
+## tie-breaks; an explicit comparator must maintain it too: two entries comparing `Same` is a contract
 ## error, since an entry is found again by its sort value alone.
 Seq(k, s) :: { chunks : List(List({ sort : s, key : k })), count : U64, limit : U64 }.{
 

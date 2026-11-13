@@ -1209,8 +1209,9 @@ Core := [].{
 
 	## Which rows of a table a view shows and in what order: `keep`
 	## says whether a row is in the view, `sort` gives the value it is
-	## ordered by, and `compare` orders two sort values. The order must be
-	## total: `compare` answers `Same` only for one row's own sort value,
+	## ordered by, and `compare` orders two sort values. Engine.sort_by builds
+	## this record using the sort value's and key's own orders. An explicit
+	## comparator must be total: `compare` answers `Same` only for one row's own sort value,
 	## so a sort value includes the key wherever the sorted field can tie.
 	## Two rows that compare `Same` are a contract error.
 	QueryPlan(k, v, s) : { keep : k, v -> Bool, sort : k, v -> s, compare : s, s -> [Before, Same, After] }
@@ -8230,8 +8231,8 @@ request_problem = |request| match request {
 ## one-shot timer, and the browser's largest delay remains valid for both.
 expect {
 	request_problem(Timer(0)).is_ok() and request_problem(Interval(0)).is_err() and
-	request_problem(Timer(max_browser_timer_ms)).is_ok() and request_problem(Interval(max_browser_timer_ms)).is_ok() and
-	request_problem(Timer(max_browser_timer_ms + 1)).is_err() and request_problem(Interval(max_browser_timer_ms + 1)).is_err()
+		request_problem(Timer(max_browser_timer_ms)).is_ok() and request_problem(Interval(max_browser_timer_ms)).is_ok() and
+			request_problem(Timer(max_browser_timer_ms + 1)).is_err() and request_problem(Interval(max_browser_timer_ms + 1)).is_err()
 }
 
 ## An admitted request's `FX` command (design.md, Appendix B). A port

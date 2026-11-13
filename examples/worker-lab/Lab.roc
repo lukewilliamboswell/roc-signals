@@ -510,15 +510,14 @@ Lab := [].{
 
 	## How a listing selects and orders a run's jobs: the `plan` of both
 	## views of the run, the job grid and the picture's bands.
-	listed : Listing -> Engine.QueryPlan(U64, Job, U64)
-	listed = |listing| {
+	listed : Listing -> Engine.QueryPlan(U64, Job, (U64, U64))
+	listed = |listing| Engine.sort_by({
 		keep: |_, job| match listing {
 			Every => True
 			Strips => Lab.is_strip(job)
 		},
 		sort: |index, _| index,
-		compare: |a, b| if (a < b) Before else if (a > b) After else Same,
-	}
+	})
 
 	## Fold over a run's jobs in index order.
 	fold_jobs : Jobs, state, (state, Job -> state) -> state

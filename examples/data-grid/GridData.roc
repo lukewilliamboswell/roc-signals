@@ -129,7 +129,33 @@ GridData :: [].{
 	## name's bytes, or a team's rank or a score as a number), then the
 	## row's id, so that no two rows tie. Whichever of `name` and `number`
 	## the sort does not use is left empty or zero for every row.
-	Place : { name : List(U8), number : U64, id : U64 }
+	Place := { name : List(U8), number : U64, id : U64, desc : Bool }.{
+		is_eq : _
+
+		## Column ties follow id, with descending reversing that tie too.
+		order_relative_to : Place, Place -> [Before, Same, After]
+		order_relative_to = |left, right| {
+			if left.desc != right.desc {
+				return if (left.desc) After else Before
+			}
+			ascending = match GridData.bytes_compare(left.name, right.name) {
+				Same => match left.number.order_relative_to(right.number) {
+					Same => left.id.order_relative_to(right.id)
+					other => other
+				}
+				other => other
+			}
+			if left.desc {
+				match ascending {
+					Before => After
+					Same => Same
+					After => Before
+				}
+			} else {
+				ascending
+			}
+		}
+	}
 
 	matches : Row, Str -> Bool
 	matches = |row, filter|
@@ -143,20 +169,10 @@ GridData :: [].{
 	place : U64, Row, SortKey -> Place
 	place = |id, row, key|
 		match key {
-			ById => { name: [], number: 0, id }
-			ByName => { name: row.name.to_utf8(), number: 0, id }
-			ByTeam => { name: [], number: row.team.rank(), id }
-			ByScore => { name: [], number: row.score, id }
-		}
-
-	u64_compare : U64, U64 -> [Before, Same, After]
-	u64_compare = |left, right|
-		if left < right {
-			Before
-		} else if left > right {
-			After
-		} else {
-			Same
+			ById => { name: [], number: 0, id, desc: False }
+			ByName => { name: row.name.to_utf8(), number: 0, id, desc: False }
+			ByTeam => { name: [], number: row.team.rank(), id, desc: False }
+			ByScore => { name: [], number: row.score, id, desc: False }
 		}
 
 	## Lexicographic byte order. There is no `Str.compare` in this build, so
@@ -177,27 +193,13 @@ GridData :: [].{
 			_ => Same
 		}
 
-	## Ascending order of two places: by name, then by number, then by id.
-	## The id makes it a total order: only a row's own place is `Same`.
-	compare_places : Place, Place -> [Before, Same, After]
-	compare_places = |left, right|
-		match bytes_compare(left.name, right.name) {
-			Same =>
-				match u64_compare(left.number, right.number) {
-					Same => u64_compare(left.id, right.id)
-					other => other
-				}
-			other => other
-		}
-
 	## How a listing selects and orders rows: what a view of the rows asks.
 	## A descending sort is the ascending order with its sides exchanged, so
 	## rows that tie on the column are reversed too.
-	plan : Listing -> { keep : U64, Row -> Bool, sort : U64, Row -> Place, compare : Place, Place -> [Before, Same, After] }
+	plan : Listing -> { keep : U64, Row -> Bool, sort : U64, Row -> Place }
 	plan = |{ filter, sort: { key, desc } }| {
 		keep: |_id, row| matches(row, filter),
-		sort: |id, row| place(id, row, key),
-		compare: if (desc) |left, right| compare_places(right, left) else compare_places,
+		sort: |id, row| { ..place(id, row, key), desc },
 	}
 
 	sort_caption : Sort -> Str
@@ -340,7 +342,7 @@ expect {
 		asked = GridData.plan({ filter: "", sort })
 		[3, 1, 2]
 			.map(|id| (asked.sort)(id, { ..GridData.row_of(id), score: 5 }))
-			.sort_with(asked.compare)
+			.sort()
 			.map(|at| at.id)
 	}
 	(ordered({ key: ByScore, desc: False }), ordered({ key: ByScore, desc: True })) == ([1, 2, 3], [3, 2, 1])

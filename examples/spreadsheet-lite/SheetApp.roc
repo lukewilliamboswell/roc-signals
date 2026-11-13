@@ -282,7 +282,7 @@ SheetApp := [].{
 									SheetApp.column_header({}),
 									Engine.table_view(
 										SheetStore.cells.sheet,
-										{ query: SheetStore.cells.listing.signal(), plan: Sheet.plan, window: Engine.const(Engine.every_row) },
+										{ query: SheetStore.cells.listing.signal(), plan: |listing| Engine.sort_by(Sheet.plan(listing)), window: Engine.const(Engine.every_row) },
 										SheetApp.row_line,
 									),
 								],
