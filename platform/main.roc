@@ -3,11 +3,10 @@
 ## the typed vocabulary above that, and `Worker.roc` is the typed layer for
 ## tasks run in Web Workers, whose payloads `Wire.roc` derives;
 ## `Port.roc` is the typed layer for services the page's JavaScript supplies,
-## whose messages `PortJson.roc` derives. `Table.roc` is what a table cell
+## whose messages `PortJson.roc` derives. `Engine.Table` is what a table cell
 ## of an app's store holds, rows by key, and `View.roc` and `Seq.roc` keep
 ## the filtered, sorted view of it that `Engine.table_view` draws;
-## `EngineOnly.roc` is the value that keeps a table's bookkeeping the
-## engine's. A worker
+## Table bookkeeping stays in the internal `TableCore.roc` module. A worker
 ## job's hosted effects (`Hosted.roc`) are reached only through `Effects.roc`, which this root
 ## hands to the engine with each job, and `Files.roc`, whose `build!`
 ## opens a builder; every other module is pure, and `main-fuzz.roc` is a
@@ -28,7 +27,7 @@ platform ""
 	requires {
 		main : Engine.Program
 	}
-	exposes [Clipboard, Engine, Files, Html, Layout, Port, PortJson, Table, Wire, Worker]
+	exposes [Clipboard, Engine, Files, Html, Layout, Port, PortJson, Wire, Worker]
 	packages {}
 	provides {
 		"roc_engine_ask": ask_for_host!,
@@ -87,7 +86,6 @@ import Layout
 import Port
 import PortJson
 import SpecRunner
-import Table
 import Wire
 import Worker
 

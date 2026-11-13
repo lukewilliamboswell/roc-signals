@@ -1,5 +1,4 @@
 import Engine exposing [Attr, Elem, FilesHandler, Handler, HandlerOf, Signal]
-import EngineOnly
 import Layout
 
 ## Typed helpers for common HTML elements, attributes and events, built on
@@ -18,7 +17,7 @@ Html := [].{
 	## A named dialog whose content lives only while open. Native modality
 	## supplies focus and inertness; on_close receives the state at dispatch.
 	dialog : Str, DialogProps(ctx), List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
-	dialog = |label, props, attrs, children| Engine.dialog_element({ label, open: props.open, on_close: props.on_close, modal: props.modal, attrs, children }, EngineOnly.witness({}))
+	dialog = |label, props, attrs, children| Engine.dialog_element({ label, open: props.open, on_close: props.on_close, modal: props.modal, attrs, children })
 
 	## A popover's controlled state, toggle echo and automatic dismissal policy.
 	PopoverProps(ctx) := { open : Signal(ctx, Bool), on_toggle : HandlerOf(ctx, Bool), dismiss : [Auto, Manual] ?? Auto }
@@ -26,7 +25,7 @@ Html := [].{
 	## A named div in the browser's popover layer. Its static mode is owned
 	## by this helper; use Manual when several unrelated popovers stay shown.
 	popover : Str, PopoverProps(ctx), List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
-	popover = |label, props, attrs, children| Engine.popover_element({ label, open: props.open, on_toggle: props.on_toggle, dismiss: props.dismiss, attrs, children }, EngineOnly.witness({}))
+	popover = |label, props, attrs, children| Engine.popover_element({ label, open: props.open, on_toggle: props.on_toggle, dismiss: props.dismiss, attrs, children })
 
 	## Import bounded plain text from a paste, with the native paste prevented.
 	on_paste_text : HandlerOf(ctx, Engine.Paste) -> Attr(ctx)

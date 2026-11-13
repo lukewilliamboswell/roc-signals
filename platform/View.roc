@@ -1,6 +1,5 @@
-import EngineOnly
 import Seq
-import Table
+import TableCore exposing [Table]
 
 ## A filtered, sorted, windowed view of a table, kept up to date from
 ## the table's changes, never by filtering, sorting or comparing
@@ -39,7 +38,7 @@ View(k, v, s) :: {
 	build : Table(k, v), { query : { keep : k, v -> Bool, sort : k, v -> s, compare : s, s -> [Before, Same, After] }, window : { start : U64, count : U64 }, limit : U64 } -> View(k, v, s)
 	build = |table, { query, window, limit }| {
 		seq = scratch(table, query, limit)
-		{ query, seq, window, shown: seq.slice(window), version: table.version(engine) }
+		{ query, seq, window, shown: seq.slice(window), version: TableCore.version(table) }
 	}
 
 	## Bring the ordered keys up to date with the table, leaving the rows
@@ -66,9 +65,9 @@ View(k, v, s) :: {
 	follow : View(k, v, s), Table(k, v) -> { view : View(k, v, s), how : [Unchanged, Absorbed, Rebuilt([Many, Rewritten, Behind])], placed : U64, reached : Bool, touched : List(k), wrote : [NoRow, Rows(Dict(k, [Absent, Was(v)])), EveryRow] }
 		where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 	follow = |view, table|
-		if view.version == table.version(engine) {
+		if view.version == TableCore.version(table) {
 			{ view, how: Unchanged, placed: 0, reached: False, touched: [], wrote: NoRow }
-		} else if view.version != table.changes_start(engine) {
+		} else if view.version != TableCore.changes_start(table) {
 			{ view: resorted(view, table), how: Rebuilt(Behind), placed: table.len(), reached: True, touched: [], wrote: EveryRow }
 		} else {
 			match table.changes() {
@@ -98,7 +97,7 @@ View(k, v, s) :: {
 	draw : View(k, v, s), Table(k, v), { query : [Same, New({ keep : k, v -> Bool, sort : k, v -> s, compare : s, s -> [Before, Same, After] })], window : { start : U64, count : U64 }, wrote : [NoRow, Rows(Dict(k, [Absent, Was(v)])), EveryRow] } -> { view : View(k, v, s), changes : List([Left(k), Entered({ key : k, before : [Row(k), End] }), Moved({ key : k, before : [Row(k), End] }), Changed(k)]) }
 		where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
 	draw = |view, table, { query: asked, window, wrote }|
-		if view.version != table.version(engine) {
+		if view.version != TableCore.version(table) {
 			crash "View.draw: follow the table before drawing the view"
 		} else {
 			{ query: held, seq: old_seq, shown, version, .. } = view
@@ -127,7 +126,7 @@ View(k, v, s) :: {
 			Ok(r) => r
 			Err(Missing) => crash "View.neighbours: the key has no row"
 		}
-		if view.version != table.version(engine) or !keep(key, row) {
+		if view.version != TableCore.version(table) or !keep(key, row) {
 			crash "View.neighbours: the view is behind the table, or the row is not in it"
 		} else {
 			view.seq.neighbours(sort(key, row), compare)
@@ -172,10 +171,6 @@ View(k, v, s) :: {
 		},
 	)
 }
-
-## The value the table's bookkeeping asks for (`EngineOnly`).
-engine : EngineOnly
-engine = EngineOnly.witness({})
 
 ## Changes larger than the table's size divided by this, plus the floor, are
 ## cheaper to rebuild from than to absorb: absorbing costs a search and a
@@ -231,7 +226,7 @@ scratch = |table, { keep, sort, compare }, limit| {
 resorted : View(k, v, s), Table(k, v) -> View(k, v, s)
 resorted = |view, table| {
 	{ query, seq: old_seq, window, shown, .. } = view
-	{ query, seq: scratch(table, query, old_seq.limit_of()), window, shown, version: table.version(engine) }
+	{ query, seq: scratch(table, query, old_seq.limit_of()), window, shown, version: TableCore.version(table) }
 }
 
 absorb : View(k, v, s), Table(k, v), Dict(k, [Absent, Was(v)]) -> { view : View(k, v, s), reached : Bool, touched : List(k), placed : U64 }
@@ -286,7 +281,7 @@ absorb = |view, table, record| {
 			}
 		},
 	)
-	{ view: { query, seq: step.seq, window, shown, version: table.version(engine) }, reached: step.moved, touched: if (step.moved) [] else step.touched, placed: step.placed }
+	{ view: { query, seq: step.seq, window, shown, version: TableCore.version(table) }, reached: step.moved, touched: if (step.moved) [] else step.touched, placed: step.placed }
 }
 
 ## The changes that turn the window `old` into `new`: `Left` for rows that

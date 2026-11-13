@@ -1,5 +1,4 @@
-import pf.Engine exposing [Signal]
-import pf.Table
+import pf.Engine exposing [Signal, Table]
 import Cells
 import Formula
 import Sheet

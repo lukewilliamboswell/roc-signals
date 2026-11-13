@@ -1,6 +1,5 @@
-import pf.Engine exposing [Cell, Elem, Handler, Row, Signal, State]
+import pf.Engine exposing [Cell, Elem, Handler, Row, Signal, State, Table]
 import pf.Html
-import pf.Table
 import Kanban
 
 ## The board as a store holds it and a page draws it: the cards as a table

@@ -1,5 +1,4 @@
-import pf.Engine
-import pf.Table
+import pf.Engine exposing [Table]
 import pf.Worker
 
 ## Worker Lab's model: the parameters a person sets, the jobs of a run and

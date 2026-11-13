@@ -6,8 +6,7 @@ app [target] {
 import fz.Fuzz
 import pf.Core
 import pf.Dom
-import pf.Engine exposing [Elem, Signal, State]
-import pf.Table
+import pf.Engine exposing [Elem, Signal, State, Table]
 
 ## Tables and their views: bytes decode into a session of events over one
 ## app, and after every event each view must draw what a model that filters,

@@ -1,6 +1,5 @@
-import pf.Engine
+import pf.Engine exposing [Table]
 import pf.Port
-import pf.Table
 import Store
 
 ## The reading list's state, as the cells of the app's store, and every

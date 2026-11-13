@@ -27,4 +27,4 @@
 ## root hands it (`Effects.roc`), which is what keeps the modules listed
 ## here pure. `Files.roc`, `Effects.roc`, `Hosted.roc` and `Cli.roc` belong
 ## to the platform alone and are not listed.
-package [Clipboard, Core, Dom, Engine, Html, JsonOut, Layout, Port, PortJson, Scm, Seq, SpecRunner, Table, View, Wire, Worker] {}
+package [Clipboard, Core, Dom, Engine, Html, JsonOut, Layout, Port, PortJson, Scm, Seq, SpecRunner, View, Wire, Worker] {}

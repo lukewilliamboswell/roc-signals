@@ -1,6 +1,5 @@
-import EngineOnly
 import Layout
-import Table
+import TableCore exposing [Table]
 import View
 
 ## The reactive engine behind the roc-signals web platform, written in Roc:
@@ -341,8 +340,14 @@ Core := [].{
 	## the cell.
 	table : List({ key : k, row : v }) -> Cells(whole, Table(k, v), Cell(whole, Table(k, v)))
 		where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
-	table = |rows| {
-		init = Table.from_list(rows)
+	table = |rows| Core.table_of(rows, |table| table, |table| table)
+
+	## Build the generated table lens through its public wrapper. Conversions
+	## move the representation whole; the guard and bookkeeping remain here.
+	table_of : List({ key : k, row : v }), (Table(k, v) -> wrapped), (wrapped -> Table(k, v)) -> Cells(whole, wrapped, Cell(whole, wrapped))
+		where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
+	table_of = |rows, wrap, unwrap| {
+		init = wrap(Table.from_list(rows))
 		{
 			init,
 			count: 1,
@@ -352,13 +357,13 @@ Core := [].{
 				modify: |w, f| modify(
 					w,
 					|t| {
-						before = t.mark(engine_only)
-						f(t).kept(before, engine_only)
+						before = TableCore.mark(unwrap(t))
+						wrap(TableCore.kept(unwrap(f(t)), before))
 					},
 				),
 			},
-			restart: |t| init.kept(t.mark(engine_only), engine_only),
-			tables: |base, modify| [{ cell: base, clear: |w| modify(w, |t| t.clear_changes(engine_only)), stamp: |w| modify(w, |t| t.with_id(base + 1, engine_only)) }],
+			restart: |t| wrap(TableCore.kept(unwrap(init), TableCore.mark(unwrap(t)))),
+			tables: |base, modify| [{ cell: base, clear: |w| modify(w, |t| wrap(TableCore.clear_changes(unwrap(t)))), stamp: |w| modify(w, |t| wrap(TableCore.with_id(unwrap(t), base + 1))) }],
 		}
 	}
 
@@ -6335,10 +6340,6 @@ each_inst = |cfg0, rows0, adopted0, cols0| {
 ## table's key instead of by a text key.
 
 ## The value a table's bookkeeping asks for: what makes this module the
-## engine (`EngineOnly`).
-engine_only : EngineOnly
-engine_only = EngineOnly.witness({})
-
 ## The chunk size of a view's ordered keys (see `Seq`).
 view_chunk : U64
 view_chunk = 1024
@@ -6511,10 +6512,10 @@ view_check = |cfg, shows, q, view, cols, table, env| {
 	fresh = View.build(table, { query: (shows.plan)(asked), window, limit: view_chunk })
 	drawn = cols.order.map(|slot| cols.items.get(slot.to_u64()) ?? crash "internal: a view row without its key")
 	drift =
-		if table.changes_start(engine_only) != table.version(engine_only) {
-			"its table's changes were not cleared when the last turn ended (version ${table.version(engine_only).to_str()}, changes from ${table.changes_start(engine_only).to_str()})"
-		} else if view.version() != table.version(engine_only) {
-			"it is at version ${view.version().to_str()} of its table, which is at version ${table.version(engine_only).to_str()}"
+		if TableCore.changes_start(table) != TableCore.version(table) {
+			"its table's changes were not cleared when the last turn ended (version ${TableCore.version(table).to_str()}, changes from ${TableCore.changes_start(table).to_str()})"
+		} else if view.version() != TableCore.version(table) {
+			"it is at version ${view.version().to_str()} of its table, which is at version ${TableCore.version(table).to_str()}"
 		} else if asked != q {
 			"it was not refreshed for a change of its query"
 		} else if view.window_of() != window {
@@ -9383,8 +9384,8 @@ expect {
 	edited = Table.from_list([{ key: 1.U64, row: "a" }]).update(1, |row| "${row}!")
 	tables = {
 		cells: [
-			{ cell: 6, clear: |(a, b)| (a.clear_changes(engine_only), b), stamp: |st| st },
-			{ cell: 70, clear: |(a, b)| (a, b.clear_changes(engine_only)), stamp: |st| st },
+			{ cell: 6, clear: |(a, b)| (TableCore.clear_changes(a), b), stamp: |st| st },
+			{ cell: 70, clear: |(a, b)| (a, TableCore.clear_changes(b)), stamp: |st| st },
 		],
 		written: cell_bit(6),
 	}

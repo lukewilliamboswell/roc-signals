@@ -1,7 +1,6 @@
-import pf.Engine exposing [Elem, Handler, Signal, State]
+import pf.Engine exposing [Elem, Handler, Signal, State, Table]
 import pf.Html
 import pf.Layout
-import pf.Table
 
 ## Table test app: a table of to-dos in the app's store, drawn as filtered,
 ## sorted windows of it, with specs in `specs/` that pin the work of every

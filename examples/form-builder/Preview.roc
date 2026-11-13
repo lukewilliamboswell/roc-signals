@@ -1,6 +1,5 @@
-import pf.Engine exposing [Cell, Elem, Row, Signal, State]
+import pf.Engine exposing [Cell, Elem, Row, Signal, State, Table]
 import pf.Html
-import pf.Table
 import Form
 import Schema
 

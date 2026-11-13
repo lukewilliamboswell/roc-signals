@@ -1,7 +1,6 @@
 # region imports
-import pf.Engine exposing [Elem, Signal, State]
+import pf.Engine exposing [Elem, Signal, State, Table]
 import pf.Html
-import pf.Table
 # endregion imports
 
 ## The tutorial's to-do list: a table of to-dos and two cells in the app's

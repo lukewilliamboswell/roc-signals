@@ -1,5 +1,4 @@
-import pf.Engine exposing [Cell, Elem, Row, Signal, State]
-import pf.Table
+import pf.Engine exposing [Cell, Elem, Row, Signal, State, Table]
 import Form
 
 ## The form's schema as a store holds it: the fields as a table by number,

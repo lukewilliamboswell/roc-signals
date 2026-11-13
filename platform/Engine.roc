@@ -1,7 +1,6 @@
 import Core
-import EngineOnly
 import Layout
-import Table
+import TableCore
 
 ## The authoring API of the roc-signals web platform: the reactive engine as an
 ## app sees it.
@@ -252,6 +251,105 @@ Engine := [].{
 	cell : a -> Cells(whole, a, Cell(whole, a))
 	cell = |init| { d: Core.cell(init).map(wrap_cell) }
 
+	## Keyed rows held in a table cell. Change them through the cell’s update
+	## decision; table views reflect those writes in the same turn. A table
+	## has no display order: its table views choose filtering and order.
+	Table(k, v) :: { t : TableCore.Table(k, v) }.{
+
+		## Build a table from keyed rows, for a starting value or replacement. Two rows
+		## with the same key are a contract error; the table has no order of its own.
+		from_list : List({ key : k, row : v }) -> Table(k, v)
+			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
+		from_list = |entries| { t: TableCore.Table.from_list(entries) }
+
+		## Replace every row with these entries. Every table view rebuilds in the size
+		## of the table. Duplicate keys are a contract error.
+		load : Table(k, v), List({ key : k, row : v }) -> Table(k, v)
+			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
+		load = |{ t }, entries| { t: t.load(entries) }
+
+		## Count the rows currently in the table, without building a list.
+		len : Table(k, v) -> U64
+		len = |{ t }| t.len()
+
+		## Read the row at a key. A missing key answers Missing; use contains when
+		## only existence matters.
+		get : Table(k, v), k -> Try(v, [Missing])
+			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
+		get = |{ t }, key| t.get(key)
+
+		## Whether a key has a row. Use this before insert when the decision must
+		## choose how to handle an existing key.
+		contains : Table(k, v), k -> Bool
+			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
+		contains = |{ t }, key| t.contains(key)
+
+		## Add a row at a new key. An existing key is a contract error; use put to
+		## insert or replace. A table view of the cell sees the new row in this turn.
+		insert : Table(k, v), k, v -> Table(k, v)
+			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
+		insert = |{ t }, key, row| { t: t.insert(key, row) }
+
+		## Set the row at a key, adding it if absent. A drawn row of that key keeps
+		## its state. Use insert to require a new key or replace to leave a missing
+		## key alone: `todos.update(|table| table.put(id, todo))`.
+		put : Table(k, v), k, v -> Table(k, v)
+			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
+		put = |{ t }, key, row| { t: t.put(key, row) }
+
+		## Replace an existing row. A missing key leaves the table unchanged, so a
+		## write after an earlier removal does not recreate that row.
+		replace : Table(k, v), k, v -> Table(k, v)
+			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
+		replace = |{ t }, key, row| { t: t.replace(key, row) }
+
+		## Change an existing row with a pure function. A missing key leaves the
+		## table unchanged. Use it inside the table cell’s update decision.
+		update : Table(k, v), k, (v -> v) -> Table(k, v)
+			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
+		update = |{ t }, key, change| { t: t.update(key, change) }
+
+		## Remove the row at a key. A missing key leaves the table unchanged; a
+		## drawn row that leaves its table view is disposed with its local state.
+		remove : Table(k, v), k -> Table(k, v)
+			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
+		remove = |{ t }, key| { t: t.remove(key) }
+
+		## Change every row with a pure function. This is a whole rewrite: every
+		## table view rebuilds in the size of the table and there are no per-key changes.
+		update_all : Table(k, v), (k, v -> v) -> Table(k, v)
+		update_all = |{ t }, change| { t: t.update_all(change) }
+
+		## Visit every row in no particular order, carrying an accumulated result.
+		## The work is proportional to the number of rows.
+		fold : Table(k, v), state, (state, k, v -> state) -> state
+		fold = |{ t }, initial, step| t.fold(initial, step)
+
+		## Collect every row with its key, in no particular order. Sort this list
+		## before displaying or comparing it; building it costs the size of the table.
+		to_list : Table(k, v) -> List({ key : k, row : v })
+		to_list = |{ t }| t.to_list()
+
+		## Read the keys written since changes were cleared, with each row’s state
+		## before its first write, or Rewritten for a whole rewrite. A pure test
+		## using Store.after can assert exactly which rows its decision wrote.
+		changes : Table(k, v) -> [Keyed(Dict(k, [Absent, Was(v)])), Rewritten]
+		changes = |{ t }| t.changes()
+
+		## Build the writes that undo these keyed changes. A whole rewrite answers
+		## Rewritten because it keeps no earlier rows. A handler that keeps undo
+		## history takes the inverse in the event that made the writes, before the
+		## turn ends and clears them.
+		inverse : Table(k, v) -> Try(List([Put(k, v), Remove(k)]), [Rewritten])
+		inverse = |{ t }| t.inverse()
+
+		## Apply keyed puts and removals in list order, recording each write. Use
+		## this to apply the writes returned by inverse in an undo decision.
+		apply : Table(k, v), List([Put(k, v), Remove(k)]) -> Table(k, v)
+			where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
+		apply = |{ t }, writes| { t: t.apply(writes) }
+	}
+
 	## The description of one cell holding a table of `rows` by key
 	## (`Table`), for rows that are edited by key and drawn as a list:
 	##
@@ -280,7 +378,7 @@ Engine := [].{
 	## is equal; only a row of a `table_view` wakes for its own row alone.
 	table : List({ key : k, row : v }) -> Cells(whole, Table(k, v), Cell(whole, Table(k, v)))
 		where [k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher]
-	table = |rows| { d: Core.table(rows).map(wrap_cell) }
+	table = |rows| { d: Core.table_of(rows, outer, inner).map(wrap_cell) }
 
 	## Which rows of a table a view shows and in what order: `keep`
 	## says whether a row is in the view, `sort` gives the value it is
@@ -359,7 +457,7 @@ Engine := [].{
 	## contract error.
 	table_view : Cell(st, Table(k, v)), TableViewProps(ctx, q, k, v, s), (Signal(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)
 		where [ctx.store : () -> Reach(ctx, st), k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher, q.is_eq : q, q -> Bool]
-	table_view = |{ c }, { query, plan, window }, template| Core.table_view(c, { query: query.v, plan, window: window.v }, |key, row| template({ v: key }, { s: row }))
+	table_view = |{ c }, { query, plan, window }, template| Core.table_view(inner_cell(c), { query: query.v, plan, window: window.v }, |key, row| template({ v: key }, { s: row }))
 
 	## An app's store: the cells it holds, their starting values, and the
 	## cells it gives to readers. Build it once with `store`, as a top-level value a
@@ -1250,15 +1348,17 @@ Engine := [].{
 	on_seen : SeenProps, HandlerOf(ctx, Layout.Seen) -> Attr(ctx)
 	on_seen = |props, handler| Core.on_seen(props, handler.h)
 
-	## Platform vocabulary construction: keep a controlled dialog's private
-	## property and echo handler together. Platform modules supply the witness.
-	dialog_element : { label : Str, open : Signal(ctx, Bool), on_close : HandlerOf(ctx, Bool), modal : [Modal, NonModal], attrs : List(Attr(ctx)), children : List(Elem(ctx)) }, EngineOnly -> Elem(ctx)
-	dialog_element = |props, _witness| Core.controlled_dialog({ label: props.label, open: props.open.v, on_close: props.on_close.h, modal: props.modal, attrs: props.attrs, children: props.children })
+	## A dialog controlled by a signal: the record form of Html.dialog. It is
+	## shown while open is true. Closing it sends False to on_close; the app
+	## writes the state that open reads. Content lives while the dialog is open.
+	dialog_element : { label : Str, open : Signal(ctx, Bool), on_close : HandlerOf(ctx, Bool), modal : [Modal, NonModal], attrs : List(Attr(ctx)), children : List(Elem(ctx)) } -> Elem(ctx)
+	dialog_element = |props| Core.controlled_dialog({ label: props.label, open: props.open.v, on_close: props.on_close.h, modal: props.modal, attrs: props.attrs, children: props.children })
 
-	## Platform vocabulary construction with one owned popover mode and echo.
-	## The EngineOnly witness keeps partial construction out of app code.
-	popover_element : { label : Str, open : Signal(ctx, Bool), on_toggle : HandlerOf(ctx, Bool), dismiss : [Auto, Manual], attrs : List(Attr(ctx)), children : List(Elem(ctx)) }, EngineOnly -> Elem(ctx)
-	popover_element = |props, _witness| Core.controlled_popover({ label: props.label, open: props.open.v, on_toggle: props.on_toggle.h, dismiss: props.dismiss, attrs: props.attrs, children: props.children })
+	## A popover controlled by a signal: the record form of Html.popover.
+	## Browser dismissal sends False to on_toggle so the app can change the
+	## state read by open. Content lives while the popover is open.
+	popover_element : { label : Str, open : Signal(ctx, Bool), on_toggle : HandlerOf(ctx, Bool), dismiss : [Auto, Manual], attrs : List(Attr(ctx)), children : List(Elem(ctx)) } -> Elem(ctx)
+	popover_element = |props| Core.controlled_popover({ label: props.label, open: props.open.v, on_toggle: props.on_toggle.h, dismiss: props.dismiss, attrs: props.attrs, children: props.children })
 
 	## A static text node.
 	text : Str -> Elem(ctx)
@@ -1482,3 +1582,20 @@ Engine := [].{
 ## The cell the engine made, wrapped for the public API.
 wrap_cell : Core.Cell(st, a) -> Engine.Cell(st, a)
 wrap_cell = |c| { c: c }
+
+## Move the public table's representation into the engine; no rows are copied.
+inner : Engine.Table(k, v) -> TableCore.Table(k, v)
+inner = |{ t }| t
+
+## Wrap the uniquely held representation without retaining another reference.
+outer : TableCore.Table(k, v) -> Engine.Table(k, v)
+outer = |table| { t: table }
+
+## Adapt a generated lens for a table view. Each modifier moves the wrapper
+## into its representation and back, so a row update retains unique ownership.
+inner_cell : Core.Cell(st, Engine.Table(k, v)) -> Core.Cell(st, TableCore.Table(k, v))
+inner_cell = |c| {
+	cell: c.cell,
+	get: |st| inner((c.get)(st)),
+	modify: |st, change| (c.modify)(st, |held| outer(change(inner(held)))),
+}

@@ -1,6 +1,5 @@
-import pf.Engine exposing [Elem, Signal, State]
+import pf.Engine exposing [Elem, Signal, State, Table]
 import pf.Html
-import pf.Table
 
 ## A league table: players held by key in a table, drawn as a sorted,
 ## filtered window of it.

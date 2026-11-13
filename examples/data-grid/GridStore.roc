@@ -1,5 +1,4 @@
-import pf.Engine exposing [Signal]
-import pf.Table
+import pf.Engine exposing [Signal, Table]
 import GridData
 
 ## The grid's store: the state the controls, the summary, the rows and the
