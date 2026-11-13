@@ -554,7 +554,14 @@ it, and `In` forwards its enclosing context's evidence; `Row` does not.
 store reference. Thus `on_document_key` cannot compile in a row or in a
 layer nested within one, without a mount-time failure that follows row data.
 
-**Read signatures.** A `Signal(ctx, a)` is `{ mask, read, sel }`: a signature of
+**Read signatures.** The public `Engine.Signal(ctx, a)` holds either a
+constant value or a varying Core recipe, as an opaque representation. Mapping
+a constant runs once at construction; combining one constant with a varying
+signal preserves the latter's keyed selection. Lifting preserves this mark.
+A zero ordinary mask never proves a signal constant: row keys and keyed
+selections remain varying.
+
+A varying `Core.Signal(ctx, a)` is `{ mask, read, sel }`: a signature of
 what it reads, a reader from the environment, and an optional keyed selector.
 A signature has two words. The layers' word has a bit for each layer index
 and the cells' word a bit for each cell's position in the store, each taken
@@ -564,6 +571,24 @@ store, share a bit, and a shared bit costs an evaluation that equality
 pruning then discards. A reader of something that changed is never skipped.
 A cell never shares a bit with a layer, so a store of any size leaves the
 precision of local state as it was, and layers nest without a limit.
+
+Text literals produce constant text signals. Interpolation parts provide
+`to_text_signal`; one literal has one part type, with explicit conversion for
+mixed signal types. Constant pieces are assembled at construction. The joined
+reader samples each varying part once and joins text once. It preserves one
+keyed selector only when exactly one varying part has it and all other varying
+parts have zero ordinary mask; otherwise selection dependencies become ordinary
+reads, as in map2. Manual hook calls require one more static segment than
+parts and raise a named contract error on any arity mismatch.
+
+Exactly six signal attach forms use existing static builders for constants:
+text_s, attr_s, class_s, test_id_s, prop_s and ref_s. Static references retain
+their ordinary reference hole and sampling. A constant row property still uses
+the existing per-row property hole, since cloning does not copy live control
+state and selects must see their options first. Explicit attr_presence retains
+its Dyn route; controlled shown properties and other signal-consuming sites
+retain their required machinery. Constant recognition invents no reference or
+absence representation and changes no wire counter's meaning.
 
 **Write sets.** What an event wrote is kept exactly wherever exactness
 decides something. A write set names the layers written by index, without
@@ -4343,6 +4368,11 @@ Signal.map2 : Signal(ctx, a), Signal(ctx, b), (a, b -> c) -> Signal(ctx, c)   # 
                                               # { a: va, b: vb }.Engine.Signal is a Signal of the record
 Signal.lift : Signal(ctx, a) -> Signal(In(ctx, s), a)
 Signal.lift_row : Signal(ctx, a) -> Signal(Row(ctx, item), a)
+Signal.from_quote : Str -> Try(Signal(ctx, Str), [BadQuotedBytes(Str)])
+Signal.from_interpolation : List(Str) -> Try((Iter(part) -> Signal(ctx, Str)), [InvalidInterpolation(Str)])
+    where [part.to_text_signal : part -> Signal(ctx, Str)]
+Signal.to_text_signal : Signal(ctx, a) -> Signal(ctx, Str) where [a.to_str : a -> Str]
+
 
 # The store: cells, their description and the store built from it
 cell : a -> Cells(whole, a, Cell(whole, a))                       # one cell starting at a value; a store of

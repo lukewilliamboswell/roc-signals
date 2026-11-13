@@ -8,3 +8,6 @@ main = Engine.program(|| {
  join = Engine.Signal.from_interpolation(["before", "after"]) ?? crash "interpolation hook unexpectedly rejected text segments"
  Engine.text_s(join([].iter()))
 })
+
+## This instance has no shared store.
+Store : {}

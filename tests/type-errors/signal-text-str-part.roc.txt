@@ -7,3 +7,6 @@ view = |name| Engine.text_s("card-${name}")
 
 main : Engine.Program
 main = Engine.program(|| Engine.text("uncalled view still checked"))
+
+## This instance has no shared store.
+Store : {}

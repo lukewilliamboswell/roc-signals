@@ -7,13 +7,13 @@ LiteralApp := [].{
 	S : { selected : Str, focus : Engine.Outbox(Str) }
 	Ctx : In(Root, S)
 
-	controls : Signal(ctx, Str), Engine.Handler(ctx) -> Elem(ctx)
-	controls = |name, unchanged| Html.div(
+	controls : Signal(ctx, Str), State(ctx, S) -> Elem(ctx)
+	controls = |name, state| Html.div(
 		"",
 		[
-			Html.select("${name} select", "two", [Engine.test_id_s("${name}-select")], [Html.option("one", "One"), Html.option("two", "Two")], unchanged),
-			Html.checkbox("${name} checked", Engine.const(True), [Engine.test_id_s("${name}-checked")], unchanged),
-			Html.text_input("${name} input", "text", "draft", [Engine.ref_s("${name}-input")], unchanged),
+			Html.select("${name} select", "two", Engine.const(["one", "two"]), { key: |choice| choice, label: |choice| if (choice == "one") "One" else "Two" }, [Engine.test_id_s("${name}-select")], state.update(|held| held)),
+			Html.checkbox("${name} checked", Engine.const(True), [Engine.test_id_s("${name}-checked")], state.update(|held| held)),
+			Html.text_input("${name} input", "text", "draft", [Engine.ref_s("${name}-input")], state.update(|held| held)),
 			Html.p_s("fixed text", [Engine.attr_s("title", "fixed title"), Engine.class_s("fixed-class"), Engine.test_id_s("${name}-constant"), Engine.attr_presence("data-empty", Engine.const(Present("")))]),
 		],
 	)
@@ -24,9 +24,9 @@ LiteralApp := [].{
 		Html.div(
 			"",
 			[
-				LiteralApp.controls("block", state.update(|s| s)),
-				Engine.element("select", [Engine.attr("aria-label", "static property"), Engine.prop(Engine.Prop.value, "two")], [Html.option("one", "One"), Html.option("two", "Two")]),
-				Engine.each(Engine.const(["left", "right"]), |key| key, |row| LiteralApp.controls(row.key(), state.update(|s| s).lift_row())),
+				LiteralApp.controls("block", state),
+				Engine.element("select", [Engine.attr("aria-label", "static property"), Engine.prop(Engine.Prop.value, "two")], [Engine.element("option", [Engine.prop(Engine.Prop.value, "one")], [Engine.text("One")]), Engine.element("option", [Engine.prop(Engine.Prop.value, "two")], [Engine.text("Two")])]),
+				Engine.each(Engine.const(["left", "right"]), |key| key, |row| LiteralApp.controls(row.key(), state.lift_row())),
 				Html.button("Focus left", [], state.update(|s| { ..s, focus: s.focus.post("left-input") })),
 				Engine.on_post(state.signal().map(|s| s.focus), |name| [Engine.command(Focus(name))], Engine.ignore({})),
 				Html.button("Choose row-0", [], state.update(|s| { ..s, selected: "row-0" })),

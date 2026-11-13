@@ -20,3 +20,6 @@ view = || {
 
 main : Engine.Program
 main = Engine.program(view)
+
+## This instance has no shared store.
+Store : {}

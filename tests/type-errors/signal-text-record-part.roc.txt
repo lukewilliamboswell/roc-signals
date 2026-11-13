@@ -7,3 +7,6 @@ view = |record| Engine.text_s("record ${record}")
 
 main : Engine.Program
 main = Engine.program(|| Engine.text("uncalled view still checked"))
+
+## This instance has no shared store.
+Store : {}

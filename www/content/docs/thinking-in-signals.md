@@ -112,6 +112,24 @@ followed by `.Engine.Signal` is one signal of the record, and reads what each
 field reads. The [Tutorial](@/docs/tutorial.md#adding-a-to-do-one-decision)
 reads three cells that way.
 
+A quoted text literal can stand wherever a text signal is expected. An
+interpolation there combines the declared reads of its signal parts into one
+text signal:
+
+{{ sample(file="counter/Counter.roc", region="view") }}
+
+A plain `Str` variable still needs `Engine.const(value)`. Each interpolation
+has one part type; convert different signal value types with `to_text_signal`
+before combining them. An application type can provide its own
+`to_text_signal`, returning a signal made through the public API.
+
+A constant's `map` runs once when it is built. `map2` runs once when both
+inputs are constant; with one constant it preserves the other input's keyed
+selection. A varying signal maps whenever read. Row keys remain varying even
+when they read no state layer. Literal text and constant ordinary attributes
+are drawn once; control properties in cloned rows still initialize each clone,
+and references retain their usual lifetime and addressing rules.
+
 A signal carries the set of states and cells it reads, fixed by how it was
 built. The engine never runs your code to discover its dependencies. When
 something is written, the engine re-evaluates exactly the holes and sites whose
