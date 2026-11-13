@@ -3824,7 +3824,14 @@ Inputs no runner implements — composition and custom events — are not
 part of the grammar: IME composition is covered by the runtime's
 contract tests. An unknown step
 is a hard parse error in both runners, and neither runner may weaken a step;
-it fails. Coverage is checked: the native runner's step dispatch is an
+it fails.
+
+An `expect-absent` names a locator that another step of the same spec requires
+to match, or says `:never-drawn`; the parser rejects any other, so a misspelt or
+renamed locator fails at parse instead of passing. A marker on an anchored
+locator is also a parse error. Locators are compared exactly as written.
+
+Coverage is checked: the native runner's step dispatch is an
 exhaustive `match`, and `check` compares the browser runner's handler table
 with the parser's form tables (`replay.mjs --check-grammar`).
 

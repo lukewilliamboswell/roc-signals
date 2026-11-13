@@ -307,9 +307,23 @@ These are step errors, with no fabricated release or cancellation.
 | `(expect-attr LOC name "value")` | The attribute `name` is present with that value. On property-table elements, `value` reads the live value and `checked` reads `"true"`/`"false"`; elsewhere they read ordinary attributes. `disabled` reads `"true"`/`"false"` |
 | `(expect-no-attr LOC name)` | The attribute `name` is absent. On property-table elements, assert live `checked` and `value` with their own steps; `disabled` also has its own step |
 | `(expect-visible LOC)` | The locator matches an element in the document |
-| `(expect-absent LOC)` | The locator matches nothing |
+| `(expect-absent LOC)` | The locator matches nothing now. Another step of this spec must require the same locator to match, before or after this step |
+| `(expect-absent LOC :never-drawn)` | The locator matches nothing in a story that never draws it. No step of this spec may require that locator to match; its spelling remains unchecked |
 | `(expect-focused LOC)` | The located element is the document's active element |
 | `(expect-no-focus)` | No page element holds focus; the active element is the document body |
+
+An absence alone cannot catch a misspelt locator or one the app renamed. Show
+where the story draws it with a step such as `expect-visible`, `expect-text`
+or `click`, using exactly the same locator. The anchor may occur later when
+the absence checks something not drawn yet. An anchor proves that spelling
+matches at that step; it does not prove the two steps identify the same element.
+Use `:never-drawn` for a branch the story never draws. The parser rejects that
+marker if the story already has an anchor, naming its line.
+
+Previously passing specs with an unanchored `expect-absent` fail to parse at
+that step in both runners and `--emit-steps`. Add an assertion where the
+existing story draws the element, or mark a branch the story never draws
+with `:never-drawn`.
 
 `expect-updates` counts property commands whose row mirrors an attribute,
 including control values and checked state. Both runners count the same

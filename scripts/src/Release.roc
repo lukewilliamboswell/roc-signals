@@ -185,6 +185,10 @@ Release := [].{
 		\\
 		\\<!-- What changed, for app authors. Write this on GitHub before publishing. -->
 		\\
+		\\## Upgrading specs
+		\\
+		\\An `expect-absent` needs the same locator in another step that requires it to match. Previously passing unanchored guards fail to parse at that step. Add an assertion where the existing story draws the element, or use `:never-drawn` for a branch the story never draws; the marker leaves its spelling unchecked.
+		\\
 		\\## Use this release
 		\\
 		\\```roc

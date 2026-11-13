@@ -264,7 +264,9 @@
   shared with `Core.roc` would let one bug pass its own test.
 - Keep `.scm` specs the single source of truth for application-visible
   behavior, parsed by the one Roc parser in `platform/Scm.roc`. Unknown steps are
-  hard errors in every runner. The native runner builds for several systems
+  hard errors in every runner. An `expect-absent` names a locator its spec
+  shows to match, or is marked `:never-drawn`. The native runner builds for
+  several systems
   and means the same on each: what differs between them is a service of the
   native host's system files (`platform/host/os_posix.zig`,
   `platform/host/os_windows.zig`), never a difference in what `spec.zig`
