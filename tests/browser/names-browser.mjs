@@ -19,6 +19,12 @@ const cases = fs.readFileSync(options.corpus, "utf8").split("\n").filter((line) 
   const [name, flags, hex] = columns;
   return { name, text: utf8.decode(Buffer.from(hex, "hex")), expected: { tag: flags[0] === "1", attribute: flags[1] === "1", method: flags[2] === "1" } };
 });
+// These are independent modern DOM namespace facts, not XML QName rules.
+const namespaceCases = fs.readFileSync(new URL("../../fuzz/names/namespaces.tsv", import.meta.url), "utf8").trimEnd().split("\n").map(line => {
+  const [name, flags, namespaceHex, qualifiedHex] = line.split("\t");
+  if (!/^[01]{2}$/.test(flags) || !/^(?:[0-9a-f]{2})*$/.test(namespaceHex) || !/^(?:[0-9a-f]{2})*$/.test(qualifiedHex)) throw new Error("invalid namespace corpus row");
+  return { name, namespace: utf8.decode(Buffer.from(namespaceHex, "hex")), qualified: utf8.decode(Buffer.from(qualifiedHex, "hex")), expected: { element: flags[0] === "1", attribute: flags[1] === "1" } };
+});
 if (cases.length === 0 || new Set(cases.map((entry) => entry.name)).size !== cases.length) throw new Error("the name corpus must be nonempty with unique names");
 const browser = await launch({ executablePath: options.chrome });
 let failed = 0;
@@ -42,6 +48,46 @@ try {
       console.log(`FAIL ${expected.name}: got ${JSON.stringify(result.result)}, expected ${JSON.stringify(expected.expected)}`);
     }
   }
+  const namespaceActual = await page.evaluate(inputs => inputs.map(({ name, namespace, qualified }) => {
+    const accepted = run => { try { run(); return true; } catch (_) { return false; } };
+    return { name, result: {
+      element: accepted(() => document.createElementNS(namespace, qualified)),
+      attribute: accepted(() => document.createElement("div").setAttributeNS(namespace, qualified, "value")),
+    } };
+  }), namespaceCases);
+  for (let index = 0; index < namespaceCases.length; index += 1) {
+    const expected = namespaceCases[index], result = namespaceActual[index];
+    if (result.name !== expected.name || JSON.stringify(result.result) !== JSON.stringify(expected.expected)) {
+      failed += 1;
+      console.log(`FAIL namespace ${expected.name}: got ${JSON.stringify(result.result)}, expected ${JSON.stringify(expected.expected)}`);
+    }
+  }
+  const namespaceIdentities = await page.evaluate(() => {
+    const html = "http://www.w3.org/1999/xhtml", xlink = "http://www.w3.org/1999/xlink";
+    const identity = node => ({ namespace: node.namespaceURI, prefix: node.prefix, local: node.localName, interface: node.constructor.name });
+    const ordinary = document.createElement("h:div"), qualified = document.createElementNS(html, "h:div");
+    const folded = document.createElement("DIV"), exact = document.createElementNS(html, "DIV");
+    const attrs = document.createElement("div");
+    attrs.setAttribute("data-UPPER", "raw");
+    attrs.setAttributeNS(null, "data-UPPER", "exact");
+    attrs.setAttribute("xlink:href", "raw");
+    attrs.setAttributeNS(xlink, "xlink:href", "qualified");
+    const distinct = attrs.getAttribute("data-upper") === "raw" && attrs.getAttributeNS(null, "data-UPPER") === "exact" && attrs.getAttributeNS(xlink, "href") === "qualified";
+    attrs.removeAttributeNS(xlink, "href");
+    return { ordinary: identity(ordinary), qualified: identity(qualified), folded: identity(folded), exact: identity(exact), distinct, rawSurvives: attrs.getAttribute("xlink:href") === "raw" && !attrs.hasAttributeNS(xlink, "href") };
+  });
+  const htmlNamespace = "http://www.w3.org/1999/xhtml";
+  const expectedIdentities = {
+    ordinary: { namespace: htmlNamespace, prefix: null, local: "h:div", interface: "HTMLUnknownElement" },
+    qualified: { namespace: htmlNamespace, prefix: "h", local: "div", interface: "HTMLDivElement" },
+    folded: { namespace: htmlNamespace, prefix: null, local: "div", interface: "HTMLDivElement" },
+    exact: { namespace: htmlNamespace, prefix: null, local: "DIV", interface: "HTMLUnknownElement" },
+    distinct: true, rawSurvives: true,
+  };
+  if (JSON.stringify(namespaceIdentities) !== JSON.stringify(expectedIdentities)) {
+    failed += 1;
+    console.log(`FAIL namespace identity: ${JSON.stringify(namespaceIdentities)}`);
+  }
   const facts = await page.evaluate(() => {
     const target = new EventTarget();
     let heard = 0;
@@ -54,7 +100,7 @@ try {
     console.log(`FAIL browser rule attribution: ${JSON.stringify(facts)}`);
   }
   await context.close();
-  console.log(JSON.stringify({ corpus: options.corpus, cases: cases.length, failed, facts }));
+  console.log(JSON.stringify({ corpus: options.corpus, cases: cases.length, namespaceCases: namespaceCases.length, failed, facts }));
 } finally {
   await browser.close();
 }

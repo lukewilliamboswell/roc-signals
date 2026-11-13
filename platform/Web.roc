@@ -1,3 +1,4 @@
+import Spelling
 import parser.Html as MarkupHtml
 import parser.Svg as MarkupSvg
 import parser.MathML as MarkupMathML
@@ -11,20 +12,29 @@ import parser.MathML as MarkupMathML
 ## Each value retains its original spelling; these types never normalize it.
 Web := [].{
 
-	## An element local name. Computed text checks DOM grammar; literals also
-	## use the parser's HTML and SVG vocabulary. The eventual construction
-	## context determines its namespace.
-	Tag :: Str.{
+	## An explicit element or attribute namespace. Uri keeps extension namespaces
+	## available without adding them to the platform's vocabulary. An empty URI
+	## has the DOM's no-namespace meaning.
+	Namespace : [Html, Svg, MathML, None, Uri(Str)]
+
+	## An expanded name's prefix. It is separate from its local name: a colon in
+	## an unqualified HTML name does not establish a namespace or prefix.
+	Prefix : [Unprefixed, Prefix(Str)]
+
+	## An element name. Computed text checks DOM grammar; literals also use the
+	## parser's HTML and SVG vocabulary. Raw names inherit construction context;
+	## in_namespace supplies explicit namespace, prefix and local identity.
+	Tag :: { local : Str, namespace : [Inherit, Explicit(Namespace)], prefix : Prefix }.{
 
 		## Check an authored name without restricting unknown or custom elements.
 		from_str : Str -> Try(Tag, [NotATag(Str)])
 		from_str = |text| match text.to_utf8() {
 			[] => Err(NotATag("${Str.inspect(text)} is not an element name: a name must not be empty"))
 			[first, ..] if is_ascii_alpha(first) => if text.to_utf8().all(|byte| !is_ascii_whitespace(byte) and byte != 0 and byte != '/' and byte != '>') {
-				Ok(Tag.(text))
+				Ok(Tag.({ local: text, namespace: Inherit, prefix: Unprefixed }))
 			} else Err(NotATag("${Str.inspect(text)} is not an element name: it holds ASCII whitespace, NUL, / or >, which the DOM refuses"))
 			[first, ..] if first == ':' or first == '_' or first >= 128 => if text.to_utf8().all(|byte| is_ascii_alpha(byte) or (byte >= '0' and byte <= '9') or "-.:_".to_utf8().contains(byte) or byte >= 128) {
-				Ok(Tag.(text))
+				Ok(Tag.({ local: text, namespace: Inherit, prefix: Unprefixed }))
 			} else Err(NotATag("${Str.inspect(text)} is not an element name: after this initial character only letters, digits, -, ., :, _, and non-ASCII characters are allowed"))
 			_ => Err(NotATag("${Str.inspect(text)} is not an element name: an element's name starts with a letter, :, _, or a non-ASCII character"))
 		}
@@ -40,24 +50,49 @@ Web := [].{
 			if MarkupMathML.Vocabulary.elements.contains(text) {
 				return Err(BadQuotedBytes("<${text}> is a MathML element, which Engine.element does not create in its namespace; write MathML in a markup literal. Web.Tag.from_str(${Str.inspect(text)}) writes it as an unknown HTML element"))
 			}
-			hint = suggestion(text, MarkupHtml.Vocabulary.elements.concat(MarkupSvg.Vocabulary.elements))
+			hint = Spelling.suggest(text, MarkupHtml.Vocabulary.elements.concat(MarkupSvg.Vocabulary.elements))
 			Err(BadQuotedBytes("<${text}> is not an HTML or SVG element in the pinned roc-parser vocabulary;${hint} a custom element's name holds a hyphen; any other name is written Web.Tag.from_str(${Str.inspect(text)})"))
 		}
 
 		## Recover the exact authored spelling for a boundary or an application log.
 		text : Tag -> Str
-		text = |Tag.(text)| text
+		text = |Tag.(name)| written_name(name.local, name.prefix)
 
-		## Names are equal exactly when their retained text is equal.
+		## The local spelling, independent of a prefix. Raw HTML names may themselves
+		## contain a colon, which remains local text until explicitly qualified.
+		local : Tag -> Str
+		local = |Tag.(name)| name.local
+
+		## Whether construction inherits the raw svg/foreignObject context or
+		## uses an explicit namespace. Moving a drawn element never changes this.
+		namespace : Tag -> [Inherit, Explicit(Namespace)]
+		namespace = |Tag.(name)| name.namespace
+
+		## The explicitly supplied prefix; raw constructors supply none.
+		prefix : Tag -> Prefix
+		prefix = |Tag.(name)| name.prefix
+
+		## Qualify this local name with explicit namespace facts. This checks modern
+		## DOM name and reserved xml/xmlns rules, not XML QName vocabulary. Prefix
+		## and local spelling remain separate; malformed facts return a typed error.
+		in_namespace : Tag, Namespace, Prefix -> Try(Tag, [NotATag(Str)])
+		in_namespace = |Tag.(name), selected_namespace, selected_prefix| {
+			ns = normalized_namespace(selected_namespace)
+			check_qualified(name.local, ns, selected_prefix, True).map_err(|note| NotATag(note))?
+			Ok(Tag.({ local: name.local, namespace: Explicit(ns), prefix: selected_prefix }))
+		}
+
+		## Names compare by their local spelling, namespace selection and prefix.
 		is_eq : _
 	}
 
-	## An attribute local name, independent of its element and namespace.
-	AttrName :: Str.{
+	## An attribute name, unnamespaced until explicitly qualified. Its text alone
+	## never supplies a prefix or namespace.
+	AttrName :: { local : Str, namespace : Namespace, prefix : Prefix, exact : Bool }.{
 
 		## Check only the DOM grammar, including explicitly computed class names.
 		from_str : Str -> Try(AttrName, [NotAnAttribute(Str)])
-		from_str = |text| if (is_attribute(text)) Ok(AttrName.(text)) else Err(NotAnAttribute("${Str.inspect(text)} is not a valid attribute local name"))
+		from_str = |text| if (is_attribute(text)) Ok(AttrName.({ local: text, namespace: None, prefix: Unprefixed, exact: False })) else Err(NotAnAttribute("${Str.inspect(text)} is not a valid attribute local name"))
 
 		## Literals check aria-* names against the parser's ARIA vocabulary and
 		## direct class and test-id names to their dedicated builders. from_str
@@ -72,7 +107,7 @@ Web := [].{
 			}
 			name = AttrName.from_str(text).map_err(|NotAnAttribute(note)| BadQuotedBytes(note))?
 			if text.starts_with("aria-") and !MarkupHtml.Vocabulary.aria_attributes.contains(text) {
-				hint = suggestion(text, MarkupHtml.Vocabulary.aria_attributes)
+				hint = Spelling.suggest(text, MarkupHtml.Vocabulary.aria_attributes)
 				return Err(BadQuotedBytes("${Str.inspect(text)} is not an ARIA attribute in the pinned roc-parser vocabulary;${hint} one newer than the pinned vocabulary is written Web.AttrName.from_str(${Str.inspect(text)})"))
 			}
 			Ok(name)
@@ -80,9 +115,36 @@ Web := [].{
 
 		## Recover the exact authored spelling for a boundary or an application log.
 		text : AttrName -> Str
-		text = |AttrName.(text)| text
+		text = |AttrName.(name)| written_name(name.local, name.prefix)
 
-		## Names are equal exactly when their retained text is equal.
+		## The local spelling used with its namespace to identify this attribute.
+		## An unqualified raw name retains its complete text, including any colon.
+		local : AttrName -> Str
+		local = |AttrName.(name)| name.local
+
+		## The explicit namespace, or None for ordinary raw attributes.
+		namespace : AttrName -> Namespace
+		namespace = |AttrName.(name)| name.namespace
+
+		## The explicit prefix retained when the attribute is set.
+		prefix : AttrName -> Prefix
+		prefix = |AttrName.(name)| name.prefix
+
+		## Explicit qualification preserves exact local case. Raw names instead
+		## follow the eventual element's HTML attribute-name case folding.
+		is_qualified : AttrName -> Bool
+		is_qualified = |AttrName.(name)| name.exact
+
+		## Qualify a local attribute name without guessing a namespace from its
+		## text. Checks DOM namespace pairings; values and vocabulary stay separate.
+		in_namespace : AttrName, Namespace, Prefix -> Try(AttrName, [NotAnAttribute(Str)])
+		in_namespace = |AttrName.(name), selected_namespace, selected_prefix| {
+			ns = normalized_namespace(selected_namespace)
+			check_qualified(name.local, ns, selected_prefix, False).map_err(|note| NotAnAttribute(note))?
+			Ok(AttrName.({ local: name.local, namespace: ns, prefix: selected_prefix, exact: True }))
+		}
+
+		## Names compare by their local spelling, namespace selection and prefix.
 		is_eq : _
 	}
 
@@ -207,94 +269,6 @@ expect {
 ## The nonempty event rule is the platform's own, not a DOM restriction.
 expect Web.EventType.from_str("").is_err() and Web.EventType.from_quote("").is_err()
 
-## Suggestions read only parser-owned names. Equal edit distances prefer the
-## same initial letter, then lexical order, independent of catalogue ordering.
-suggestion : Str, List(Str) -> Str
-suggestion = |text, names| {
-	folded = MarkupHtml.ascii_lower(text)
-	first = folded.to_utf8().first()
-	best = names.fold(
-		{ distance: 3.U64, initial: False, name: "" },
-		|kept, name| {
-			candidate = MarkupHtml.ascii_lower(name)
-			distance = edit_distance(folded.to_utf8(), candidate.to_utf8())
-			initial = candidate.to_utf8().first() == first
-			prefer = distance < kept.distance or (distance == kept.distance and (initial and !kept.initial or (initial == kept.initial and lexical_before(name, kept.name))))
-			if distance <= 2 and prefer {
-				{ distance, initial, name }
-			} else kept
-		},
-	)
-	if best.distance <= 2 {
-		" did you mean ${Str.inspect(best.name)}?"
-	} else ""
-}
-
-## A literal-only optimal-string-alignment distance over folded UTF-8: an
-## adjacent transposition counts as one edit, as do insertion, deletion and
-## substitution. The length bound skips names outside the two-edit limit.
-edit_distance : List(U8), List(U8) -> U64
-edit_distance = |left, right| {
-	if left.len() > right.len() {
-		if left.len() - right.len() > 2 {
-			return 3
-		}
-	} else if right.len() - left.len() > 2 {
-		return 3
-	}
-	var $previous = [0.U64]
-	var $initial_column = 0.U64
-	for _ in right {
-		$initial_column = $initial_column + 1
-		$previous = $previous.append($initial_column)
-	}
-	var $before_previous = [0.U64]
-	var $row = 0.U64
-	for a in left {
-		$row = $row + 1
-		var $current = [$row]
-		var $column = 0.U64
-		for b in right {
-			$column = $column + 1
-			above = $previous.get($column) ?? crash "Web.edit_distance: previous row has every column"
-			beside = $current.get($column - 1) ?? crash "Web.edit_distance: current row has preceding column"
-			diagonal = $previous.get($column - 1) ?? crash "Web.edit_distance: previous row has preceding column"
-			replace = diagonal + (if (a == b) 0 else 1)
-			var $distance = minimum(replace, minimum(above + 1, beside + 1))
-			if $row > 1 and $column > 1 {
-				prior_a = left.get($row - 2) ?? crash "Web.edit_distance: prior left byte is in range"
-				prior_b = right.get($column - 2) ?? crash "Web.edit_distance: prior right byte is in range"
-				if a == prior_b and b == prior_a {
-					before = $before_previous.get($column - 2) ?? crash "Web.edit_distance: prior diagonal is in range"
-					$distance = minimum($distance, before + 1)
-				}
-			}
-			$current = $current.append($distance)
-		}
-		$before_previous = $previous
-		$previous = $current
-	}
-	$previous.last() ?? crash "Web.edit_distance: even an empty name has column zero"
-}
-
-minimum : U64, U64 -> U64
-minimum = |left, right| if (left < right) left else right
-
-lexical_before : Str, Str -> Bool
-lexical_before = |left, right| {
-	a = left.to_utf8()
-	b = right.to_utf8()
-	var $index = 0.U64
-	for byte in a {
-		other = b.get($index) ?? return False
-		if byte != other {
-			return byte < other
-		}
-		$index = $index + 1
-	}
-	a.len() < b.len()
-}
-
 ## The parser owns the complete catalogue: every exported HTML/SVG/ARIA name
 ## remains usable, while HTML membership preserves case-insensitive spelling.
 expect {
@@ -326,25 +300,25 @@ expect {
 ## Suggestions use the threshold, case folding, initial-letter and lexical
 ## tie rules; supplied candidate order never selects a different answer.
 expect {
-	suggestion("dvi", MarkupHtml.Vocabulary.elements) == " did you mean \"div\"?" and
-		suggestion("aria-lable", MarkupHtml.Vocabulary.aria_attributes) == " did you mean \"aria-label\"?" and
-			suggestion("lineargradient", MarkupSvg.Vocabulary.elements) == " did you mean \"linearGradient\"?" and
-				suggestion("zzzzzzzzzzzzzzzzzzzz", MarkupHtml.Vocabulary.elements).is_empty() and
-					suggestion("cat", ["bat", "cap"]) == suggestion("cat", ["cap", "bat"]) and
-						suggestion("cat", ["bat", "cap"]) == " did you mean \"cap\"?" and
-							suggestion("cat", ["can", "cap"]) == " did you mean \"can\"?"
+	Spelling.suggest("dvi", MarkupHtml.Vocabulary.elements) == " did you mean \"div\"?" and
+		Spelling.suggest("aria-lable", MarkupHtml.Vocabulary.aria_attributes) == " did you mean \"aria-label\"?" and
+			Spelling.suggest("lineargradient", MarkupSvg.Vocabulary.elements) == " did you mean \"linearGradient\"?" and
+				Spelling.suggest("zzzzzzzzzzzzzzzzzzzz", MarkupHtml.Vocabulary.elements).is_empty() and
+					Spelling.suggest("cat", ["bat", "cap"]) == Spelling.suggest("cat", ["cap", "bat"]) and
+						Spelling.suggest("cat", ["bat", "cap"]) == " did you mean \"cap\"?" and
+							Spelling.suggest("cat", ["can", "cap"]) == " did you mean \"can\"?"
 }
 
 ## Each allowed edit has one cost; a swap is not a special case for any name.
 expect {
-	edit_distance("dvi".to_utf8(), "div".to_utf8()) == 1 and
-		edit_distance("aria-lable".to_utf8(), "aria-label".to_utf8()) == 1 and
-			edit_distance("dv".to_utf8(), "div".to_utf8()) == 1 and
-				edit_distance("diiv".to_utf8(), "div".to_utf8()) == 1 and
-					edit_distance("dov".to_utf8(), "div".to_utf8()) == 1 and
-						edit_distance("".to_utf8(), "".to_utf8()) == 0 and
-							edit_distance("div".to_utf8(), "div".to_utf8()) == 0 and
-								edit_distance("xxxx".to_utf8(), "div".to_utf8()) > 2
+	Spelling.distance("dvi".to_utf8(), "div".to_utf8()) == 1 and
+		Spelling.distance("aria-lable".to_utf8(), "aria-label".to_utf8()) == 1 and
+			Spelling.distance("dv".to_utf8(), "div".to_utf8()) == 1 and
+				Spelling.distance("diiv".to_utf8(), "div".to_utf8()) == 1 and
+					Spelling.distance("dov".to_utf8(), "div".to_utf8()) == 1 and
+						Spelling.distance("".to_utf8(), "".to_utf8()) == 0 and
+							Spelling.distance("div".to_utf8(), "div".to_utf8()) == 0 and
+								Spelling.distance("xxxx".to_utf8(), "div".to_utf8()) > 2
 }
 
 ## Authored near misses exercise the actual pinned catalogue, including exact
@@ -352,7 +326,7 @@ expect {
 expect {
 	pairs = [("dvi", "div"), ("spna", "span"), ("butotn", "button"), ("inpt", "input"), ("texarea", "textarea"), ("selec", "select"), ("optoin", "option"), ("lable", "label"), ("artcle", "article"), ("sectoin", "section"), ("heder", "header"), ("foooter", "footer"), ("mian", "main"), ("nva", "nav"), ("imgg", "img"), ("canavs", "canvas"), ("svgg", "svg"), ("lineargradient", "linearGradient"), ("foreignobject", "foreignObject"), ("cricle", "circle")]
 	names = MarkupHtml.Vocabulary.elements.concat(MarkupSvg.Vocabulary.elements)
-	pairs.all(|(typo, word)| Web.Tag.from_quote(typo).is_err() and suggestion(typo, names) == " did you mean ${Str.inspect(word)}?")
+	pairs.all(|(typo, word)| Web.Tag.from_quote(typo).is_err() and Spelling.suggest(typo, names) == " did you mean ${Str.inspect(word)}?")
 }
 
 ## The strict and near-miss-only rules are remeasured against parser data.
@@ -362,6 +336,127 @@ expect {
 	names = ["div", "span", "button", "input", "textarea", "select", "a", "svg", "linearGradient", "foreignObject", "my-widget", "section", "article", "nav", "math", "mi", "center", "marquee", "frame", "frameset", "font", "big", "geolocation", "fencedframe", "h7"]
 	catalogue = MarkupHtml.Vocabulary.elements.concat(MarkupSvg.Vocabulary.elements)
 	strict_refused = names.keep_if(|name| Web.Tag.from_quote(name).is_err()).len()
-	near_miss_refused = names.keep_if(|name| Web.Tag.from_quote(name).is_err() and !suggestion(name, catalogue).is_empty()).len()
+	near_miss_refused = names.keep_if(|name| Web.Tag.from_quote(name).is_err() and !Spelling.suggest(name, catalogue).is_empty()).len()
 	strict_refused == 11 and near_miss_refused == 7 and names.all(|name| Web.Tag.from_str(name).is_ok())
+}
+
+## Namespace URI spelling is data, not a catalogue lookup. The DOM treats an
+## empty URI as no namespace, so equal construction facts have one spelling.
+normalized_namespace : Web.Namespace -> Web.Namespace
+normalized_namespace = |namespace| match namespace {
+	Uri("") => None
+	Uri("http://www.w3.org/1999/xhtml") => Html
+	Uri("http://www.w3.org/2000/svg") => Svg
+	Uri("http://www.w3.org/1998/Math/MathML") => MathML
+	_ => namespace
+}
+
+## Keep prefix identity separate from local text. This is called only after
+## construction has established which part is a prefix.
+written_name : Str, Web.Prefix -> Str
+written_name = |local, prefix| match prefix {
+	Unprefixed => local
+	Prefix(value) => "${value}:${local}"
+}
+
+## DOM Standard section 1.4 deliberately permits more than XML QNames. The
+## prefix/local split is already explicit; reject an unrepresentable split
+## rather than letting a DOM factory split a different first colon.
+check_qualified : Str, Web.Namespace, Web.Prefix, Bool -> Try({}, Str)
+check_qualified = |local, namespace, prefix, element| {
+	written = written_name(local, prefix)
+	match prefix {
+		Prefix(value) => {
+			if value.is_empty() or value.to_utf8().any(|byte| is_ascii_whitespace(byte) or byte == 0 or byte == '/' or byte == '>' or byte == ':') {
+				return Err("${Str.inspect(written)} has an invalid or unrepresentable namespace prefix")
+			}
+			if namespace == None {
+				return Err("${Str.inspect(written)} has a prefix without a namespace")
+			}
+			if value == "xml" and namespace != Uri("http://www.w3.org/XML/1998/namespace") {
+				return Err("the xml prefix requires the XML namespace")
+			}
+		}
+		Unprefixed => {
+			# Raw HTML local names and ordinary attributes can contain a colon.
+			# Namespace-aware factories would reinterpret it as a prefix.
+			if local.contains(":") and !((element and namespace == Html) or (!element and namespace == None)) {
+				return Err("${Str.inspect(local)} requires an explicit prefix and local name in this namespace")
+			}
+		}
+	}
+	xmlns = namespace == Uri("http://www.w3.org/2000/xmlns/")
+	declares = written == "xmlns" or prefix == Prefix("xmlns")
+	# An ordinary raw xmlns attribute is allowed by setAttribute, like other
+	# unqualified raw text; explicit namespace declarations stay distinct.
+	ordinary = prefix == Unprefixed and ((element and namespace == Html) or (!element and namespace == None))
+	if !ordinary and xmlns != declares {
+		return Err("xmlns names require the XMLNS namespace, and only xmlns names use it")
+	}
+	Ok({})
+}
+
+## Explicit namespace qualification retains the prefix, URI and local name,
+## including extension namespaces unknown to the HTML/SVG catalogue.
+expect {
+	name = Web.Tag.from_str("entry")?.in_namespace(Uri("urn:entry"), Prefix("e"))?
+	name.local() == "entry" and name.text() == "e:entry" and name.prefix() == Prefix("e") and name.namespace() == Explicit(Uri("urn:entry"))
+}
+
+## A raw colon-bearing attribute never guesses XLink identity, while an
+## explicitly qualified name retains a different local name and namespace.
+expect {
+	raw = Web.AttrName.from_str("xlink:href")?
+	qualified = Web.AttrName.from_str("href")?.in_namespace(Uri("http://www.w3.org/1999/xlink"), Prefix("xlink"))?
+	raw.text() == qualified.text() and raw.local() == "xlink:href" and qualified.local() == "href" and raw != qualified
+}
+
+## Modern DOM accepts equals in element local names and numeric prefixes;
+## qualification must not accidentally substitute XML NCName grammar.
+expect {
+	Web.Tag.from_str("a=b")?.in_namespace(Svg, Unprefixed).is_ok() and
+		Web.Tag.from_str("a")?.in_namespace(Svg, Prefix("1")).is_ok() and
+			Web.Tag.from_str("b:c")?.in_namespace(Svg, Prefix("a")).is_ok()
+}
+
+## Reserved namespace pairings fail as values before construction. XML's
+## namespace may have another prefix; the reverse implication is not a rule.
+expect {
+	name = Web.AttrName.from_str("lang")?
+	name.in_namespace(Svg, Prefix("xml")).is_err() and
+		name.in_namespace(Uri("http://www.w3.org/XML/1998/namespace"), Prefix("xml")).is_ok() and
+			name.in_namespace(Uri("http://www.w3.org/XML/1998/namespace"), Prefix("p")).is_ok() and
+				name.in_namespace(None, Prefix("p")).is_err()
+}
+
+## XMLNS attributes retain their declaration identity, and empty URI follows
+## the DOM's no-namespace conversion without changing the retained text.
+expect {
+	declaration = Web.AttrName.from_str("p")?.in_namespace(Uri("http://www.w3.org/2000/xmlns/"), Prefix("xmlns"))?
+	plain = Web.AttrName.from_str("name")?.in_namespace(Uri(""), Unprefixed)?
+	declaration.text() == "xmlns:p" and plain.namespace() == None and Web.AttrName.from_str("name")?.in_namespace(Uri("http://www.w3.org/2000/xmlns/"), Unprefixed).is_err()
+}
+
+## HTML local text containing a colon and a genuinely prefixed HTML name are
+## distinct facts, even though their written qualified spelling is identical.
+expect {
+	local = Web.Tag.from_str("h:div")?.in_namespace(Html, Unprefixed)?
+	prefixed = Web.Tag.from_str("div")?.in_namespace(Html, Prefix("h"))?
+	local.text() == prefixed.text() and local.local() == "h:div" and prefixed.local() == "div" and local != prefixed
+}
+
+## Named common namespaces and their literal URI aliases have one identity;
+## changing only the public spelling must not create a different attribute.
+expect {
+	name = Web.AttrName.from_str("label")?
+	name.in_namespace(Svg, Unprefixed) == name.in_namespace(Uri("http://www.w3.org/2000/svg"), Unprefixed) and
+		Web.Tag.from_str("div")?.in_namespace(Html, Unprefixed) == Web.Tag.from_str("div")?.in_namespace(Uri("http://www.w3.org/1999/xhtml"), Unprefixed)
+}
+
+## Qualification supplies exact attribute case, even with no namespace; raw
+## construction keeps the HTML attribute-name folding requested by setAttribute.
+expect {
+	raw = Web.AttrName.from_str("data-UPPER")?
+	exact = raw.in_namespace(None, Unprefixed)?
+	!raw.is_qualified() and exact.is_qualified() and raw.local() == exact.local() and exact.local() == "data-UPPER"
 }
