@@ -766,7 +766,9 @@ Engine := [].{
 		Replace(Str),
 		Title(Str),
 
-		## Animate the complete host-call batch, merging types in issue order. Mount never animates.
+		## Animate the complete host-call batch with unique types in first-issue order.
+		## Mount and its follow-ups are ignored; an unavailable browser API applies
+		## the batch immediately. This command has no result or in-flight slot.
 		ViewTransition(List(Str)),
 		Focus(Str),
 		Blur(Str),
@@ -816,7 +818,9 @@ Engine := [].{
 		Replace(Str),
 		Title(Str),
 
-		## Animate the complete host-call batch, merging types in issue order. Mount never animates.
+		## Animate the complete host-call batch with unique types in first-issue order.
+		## Mount and its follow-ups are ignored; an unavailable browser API applies
+		## the batch immediately. This command has no result or in-flight slot.
 		ViewTransition(List(Str)),
 		Focus(Str),
 		Blur(Str),

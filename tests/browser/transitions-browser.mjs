@@ -89,6 +89,26 @@ try {
   check("absent, hidden and off use ordinary ordering; synchronous API failure applies after early effects", fallbacks, [
     [1, false, null, "1", [["title", 1]]], [1, false, null, "1", [["title", 1]]], [1, false, null, "1", [["title", 1]]], [1, false, null, "1", [["title", 0]]],
   ]);
+  const readings = await page.evaluate(() => {
+    const results = [];
+    for (const options of [{}, { absent: true }, { hidden: true }, { viewTransitions: "off" }]) {
+      const f = __transitionFixture(options), modes = [];
+      const read = f.rt.applyBatch.bind(f.rt); f.rt.applyBatch = (...args) => { modes.push(args[0]); return read(...args); };
+      f.raw(0, f.elem(1)); const normal = modes.splice(0);
+      f.raw(1, f.title("count"), f.mark()); if (f.starts.length) { f.starts[0].update(); f.starts[0].finish(); }
+      results.push([normal, modes, f.effects.length]); f.end();
+    }
+    return results;
+  });
+  check("ordinary and fallback batches read once; an animated batch reads twice", readings,
+    [[["normal"], ["early", "update"], 1], ...Array(3).fill([["normal"], ["normal"], 1])]);
+  const emptyRelease = await page.evaluate(() => {
+    const f = __transitionFixture(); f.rt.files.set(1, new File(["x"], "released.txt"));
+    f.x.cmd_len = () => 0; f.x.files_released = () => 1; f.x.files_tokens = () => 100;
+    new DataView(f.x.memory.buffer).setBigUint64(100, 1n, true);
+    const bytes = f.rt.apply(), held = f.rt.files.size; f.end(); return [bytes, held];
+  });
+  check("an empty batch still drains handles released by the host call", emptyRelease, [0, 0]);
   const overload = await page.evaluate(async () => {
     let calls = 0, callback;
     const f = __transitionFixture({ start(arg) { calls++; if (typeof arg !== "function") throw new TypeError("function required"); callback = arg; return { ready: Promise.resolve(), finished: Promise.resolve(), skipTransition() {} }; } });
@@ -106,7 +126,8 @@ try {
     }
     return result;
   });
-  check("unknown flags and marker pairing fail before DOM or effects in every mode", malformed, Array(12).fill(["executor", 0, 0, 0]));
+  check("framing rejects before animated publication; ordinary streaming faults stop before effects", malformed,
+    [0, 0, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1].map(nodes => ["executor", nodes, 0, 0]));
   const timeout = await page.evaluate(async () => {
     const f = __transitionFixture(); f.raw(1, f.elem(1), f.mark());
     await new Promise(resolve => setTimeout(resolve, 1100));
@@ -167,6 +188,34 @@ try {
     await f.rt.idle(); const result = [events, f.rt.poisoned, f.root.childNodes.length]; f.end(); return result;
   });
   check("ready and finished rejection are bounded passive observations", rejected, [[["applied", 0], ["ready-rejected", 1024], ["finished-rejected", 18]], null, 1]);
+  const lateRejections = await page.evaluate(async () => {
+    const results = [];
+    for (const action of ["unmount", "poison", "fresh-generation"]) {
+      let update, readyReject, finishedReject;
+      const f = __transitionFixture({ start(arg) { update = arg.update; return {
+        ready: new Promise((_, reject) => { readyReject = reject; }),
+        finished: new Promise((_, reject) => { finishedReject = reject; }), skipTransition() {},
+      }; } });
+      const events = []; f.rt.monitor.subscribe(event => { if (event.kind === "transition") events.push(event.state); });
+      f.raw(1, f.elem(1), f.mark()); update(); const idle = f.rt.idle();
+      const oldReadyReject = readyReject, oldFinishedReject = finishedReject;
+      if (action === "unmount") f.rt.unmount();
+      else if (action === "poison") f.rt.contain(new Error("test teardown"));
+      else f.rt.cancelTransition(); // recover invalidates this token before its asynchronous instantiate.
+      await idle;
+      let newerIdle = true;
+      if (action === "fresh-generation") {
+        f.raw(1, f.mark("new")); update(); newerIdle = false;
+        f.rt.idle().then(() => { newerIdle = true; });
+      }
+      oldReadyReject(new Error("old ready")); oldFinishedReject(new Error("old finished"));
+      await Promise.resolve(); await Promise.resolve();
+      results.push([events, newerIdle]); f.end();
+    }
+    return results;
+  });
+  check("late ready and finished rejections are consumed silently after every lifecycle boundary", lateRejections,
+    [[["applied"], true], [["applied"], true], [["applied", "applied"], false]]);
   const retainedFiles = await page.evaluate(() => {
     const f = __transitionFixture(); const file = new File(["abc"], "source.txt"); f.rt.files.set(1, file);
     const u64 = n => f.join(f.u32(n), f.u32(0));

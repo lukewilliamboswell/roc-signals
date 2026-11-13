@@ -1401,7 +1401,9 @@ Core := [].{
 		Replace(Str),
 		Title(Str),
 
-		## Mark this call's batch for a document view transition; mount requests are ignored.
+		## Animate this call's batch with unique types in first-issue order. Mount
+		## and its follow-ups are ignored; an unavailable browser API applies it
+		## immediately. This command has no result or in-flight slot.
 		ViewTransition(List(Str)),
 		Focus(Str),
 		Blur(Str),
@@ -1449,7 +1451,9 @@ Core := [].{
 		Replace(Str),
 		Title(Str),
 
-		## Mark this call's batch for a document view transition; mount requests are ignored.
+		## Animate this call's batch with unique types in first-issue order. Mount
+		## and its follow-ups are ignored; an unavailable browser API applies it
+		## immediately. This command has no result or in-flight slot.
 		ViewTransition(List(Str)),
 		Focus(Str),
 		Blur(Str),
@@ -2648,7 +2652,7 @@ Core := [].{
 			files: |inst, buf, wbuf, node, handler, record, blobs| {
 				{ root, tx, programs } = inst
 				{ cmds: _, next, free, routes, work, paths, site_free, observations, fx } = tx
-				fresh = { root, tx: { cmds: buf.clear().append(0), next, free, routes, work, paths, site_free, observations, fx }, programs }
+				fresh = { root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs }
 				handles = blobs.map(|b| Blob.(b))
 				if node == fx_node {
 					# A result that carries files: a port's answer (result
@@ -2819,7 +2823,7 @@ Core := [].{
 			event: |inst, buf, wbuf, node, handler, payload| {
 				{ root, tx, programs } = inst
 				{ cmds: _, next, free, routes, work, paths, site_free, observations, fx } = tx
-				fresh = { root, tx: { cmds: buf.clear().append(0), next, free, routes, work, paths, site_free, observations, fx }, programs }
+				fresh = { root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs }
 				if node == fx_node {
 					finish(Core.result(fresh, handler, decode_res_with(payload, programs.ports.decode)), [], wbuf)
 				} else {
@@ -8335,8 +8339,8 @@ decode_boot = |bytes, queries| match Core.read_boot_media(bytes, queries) {
 	Err(message) => crash message
 }
 
-## Direct harness delivery starts a batch lazily; real host entry has already
-## reserved this byte in the recycled command buffer. Scratch buffers stay empty.
+## A routed call reserves its header before running any turn. A stale call
+## leaves its recycled buffer empty and allocates no header. Scratch buffers stay empty.
 start_batch : Tx -> Tx
 start_batch = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }| {
 	{ cmds: if (cmds.is_empty()) cmds.append(0) else cmds, next, free, routes, work, paths, site_free, observations, fx }

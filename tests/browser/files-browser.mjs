@@ -215,10 +215,10 @@ async function open(options = {}) {
     const freed = x.files_released();
     x.files_stage(0);
     const last = x.files_released();
-    return { minted, staged, retired, released, after, again, restaged, freed, last, end: window.__live(), balanced: JSON.stringify(balance) === JSON.stringify(before) };
+    return { minted, staged, retired, released, after, again, restaged, freed, last, end: window.__live(), before, balance };
   });
   check("an event for no node releases its handles", [r.minted, r.staged, r.retired, r.released, r.after], [2, 2, 2, 2, 0]);
-  check("the handle list and the record are freed exactly", r.balanced, true);
+  check("the handle list and the record are freed exactly", r.balance, r.before);
   check("staging again releases the undelivered set", [r.again, r.restaged, r.freed, r.last, r.end], [3, 1, 3, 1, 0]);
   await ctx.close();
 }
