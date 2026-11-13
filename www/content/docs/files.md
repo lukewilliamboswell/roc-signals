@@ -68,7 +68,7 @@ it, or take a range of it with `File.slice`. It stays available as long as
 some value holds it, and the app lets it go when nothing does: write the
 state without it, or let the scope holding that state be disposed.
 
-Two things hold a file longer than you might expect:
+Several holders can keep a file longer than you might expect:
 
 - A slice of a list (`take_first`, `drop_first`, `sublist`) keeps the whole
   list's files alive. To keep some files and let the rest go, build a new
@@ -79,6 +79,10 @@ Two things hold a file longer than you might expect:
   effect site holds its files the same way, until the state is written
   without it, and an outbox holds its last post's files until the next
   post.
+- A table keeps earlier rows from its last writing turn. Removing a row
+  containing a file can leave that file held in the changes until the next
+  write of the table or disposal of its holder. Unrelated turns keep it,
+  and it still counts against the file bound.
 
 An app holds at most 64 files at once, counting the files a job answered
 with and downloaded ones. Files an event carries beyond that are not

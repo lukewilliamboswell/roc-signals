@@ -2556,9 +2556,13 @@ the scope holding that state is disposed — Roc frees the box, the host
 retires the slot, and after the call the runtime lets the `File` go. No
 handle dangles: nothing can name a file once nothing holds it. What keeps a
 file alive is what keeps any value alive, including the less visible holders
-— a `resource` site's previous value, a reparented request's snapshot, or a
-slice of a list that held it, which keeps the whole list's elements alive —
-and `expect-files` makes it assertable.
+— a `resource` site's previous value, a reparented request's snapshot, a table's
+retained earlier row from its last writing turn, or a slice of a list that
+held it, which keeps the whole list's elements alive — and `expect-files`
+makes it assertable. Removing a File-valued table row therefore need not
+release its handle: that earlier row can hold it until the table's next write
+or disposal of its holder. Retained handles still count against the instance's
+64-handle bound.
 
 An instance holds at most 64 handles at once. An event that carries more
 files than there are free slots delivers the ones that fit and counts the
