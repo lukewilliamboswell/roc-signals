@@ -95,12 +95,33 @@ span = |n| {
 	$out
 }
 
-## The row a number names, and the number that names a row.
+## Seed-generated rows keep their original eight ranks and three shades.
 item_of : U64 -> Item
 item_of = |n| { rank: n % 8, shade: (n // 8) % 3 }
 
+## Direct writes reserve words 24..47 for ranks 8..15, giving generated
+## sessions two bands without changing the legacy seeded rows or low-rank words.
+item_from_word : U64 -> Item
+item_from_word = |word| {
+	n = word % 64
+	if n >= 24 and n < 48 {
+		high = n - 24
+		{ rank: 8 + high % 8, shade: high // 8 }
+	} else {
+		item_of(n)
+	}
+}
+
+## Every authored row must fit the direct-write vocabulary exactly.
 item_word : Item -> U64
-item_word = |item| item.shade * 8 + item.rank
+item_word = |item|
+	if item.rank >= 16 or item.shade >= 3 {
+		crash "table-view: an authored row exceeds the codec's 16 ranks or 3 shades"
+	} else if item.rank < 8 {
+		item.shade * 8 + item.rank
+	} else {
+		24 + item.shade * 8 + item.rank - 8
+	}
 
 ## A row changed in one of four ways; the last leaves it equal.
 bumped : Item, U64 -> Item
@@ -342,10 +363,10 @@ decision_of = |words| {
 		save: (w(3) // 4) % 4 == 3,
 		flip: (w(3) // 16) % 4 == 3,
 		listing: if (w(4) % 4 == 3) To(listing_of(w(5))) else Same,
-		window: if ((w(4) // 4) % 4 == 3) To({ start: w(6) % 20, count: w(7) % 7 }) else Same,
+		window: if ((w(4) // 4) % 4 == 3) To({ start: w(6) % 20, count: w(7) % (key_space + 1) }) else Same,
 		lanes: if ((w(4) // 16) % 4 == 3) To(lane_lists.get(w(8) % 16) ?? []) else Same,
 		local_listing: if (w(9) % 2 == 1) To(listing_of(w(10))) else Same,
-		local_window: if ((w(9) // 2) % 2 == 1) To({ start: w(11) % 20, count: w(12) % 7 }) else Same,
+		local_window: if ((w(9) // 2) % 2 == 1) To({ start: w(11) % 20, count: w(12) % (key_space + 1) }) else Same,
 		spare: if (w(13) % 4 == 3) Wrote(op_of((w(13) // 4) * 2, w(14), w(15), w(16), True)) else Untouched,
 	}
 }
@@ -357,13 +378,13 @@ op_of = |kind, a, b, c, undoes| {
 	key = a % key_space
 	k = kind % 32
 	if k < 6 {
-		Put(key, item_of(b))
+		Put(key, item_from_word(b))
 	} else if k < 11 {
-		Insert(key, item_of(b))
+		Insert(key, item_from_word(b))
 	} else if k < 18 {
 		Update(key, c % 4)
 	} else if k < 20 {
-		Replace(key, item_of(b))
+		Replace(key, item_from_word(b))
 	} else if k < 26 {
 		Remove(key)
 	} else if k < 28 {
@@ -1593,7 +1614,7 @@ tied_steps = [
 ex : Str, List(Step) -> Fuzz.Example(Input)
 ex = |name, steps| Fuzz.example({
 	name,
-	revision: "1",
+	revision: "2",
 	make: || {
 		events = bytes_of(steps)
 		if steps_of(events) != steps {
@@ -1604,23 +1625,61 @@ ex = |name, steps| Fuzz.example({
 	},
 })
 
+## All authored sessions share one list so the cheap codec check and the
+## actual fixed replay cannot disagree about which histories they protect.
+written_cases : List({ name : Str, steps : List(Step) })
+written_cases = [
+	{ name: "keyed", steps: keyed_steps },
+	{ name: "batch", steps: batch_steps },
+	{ name: "many", steps: many_steps },
+	{ name: "rewrite", steps: rewrite_steps },
+	{ name: "window", steps: window_steps },
+	{ name: "mount", steps: mount_steps },
+	{ name: "local", steps: local_steps },
+	{ name: "marks", steps: marks_steps },
+	{ name: "copies", steps: copy_steps },
+	{ name: "store-snapshots", steps: snapshot_steps },
+	{ name: "one-change", steps: once_steps },
+	{ name: "sort-value-ties", steps: tied_steps },
+]
+
+## Every named session must survive its complete byte codec before a fuzz build.
+expect written_cases.all(|written| steps_of(bytes_of(written.steps)) == written.steps)
+
+## Each direct-write row round trips and arbitrary words genuinely reach both bands.
+expect {
+	span(3).all(
+		|shade| span(16).all(
+			|rank| {
+				row = { rank, shade }
+				item_from_word(item_word(row)) == row
+			},
+		),
+	) and span(64).all(
+		|word| {
+			row = item_from_word(word)
+			row.rank < 16 and row.shade < 3
+		},
+	) and span(64).map(|word| item_from_word(word).rank // 8).contains(0) and span(64).map(|word| item_from_word(word).rank // 8).contains(1)
+}
+
+## Every generated listing retains its filter and all six orders through its word.
+expect span(30).all(|word| listing_word(listing_of(word)) == word)
+
+## Store and local windows round trip through their full 0..16 count range.
+expect span(key_space + 1).all(
+	|count| {
+		d = { ..quiet, window: To({ start: 19, count }), local_window: To({ start: 0, count }) }
+		decision_of(words_of(d)) == d
+	},
+)
+
+## The seeded starting windows keep the row identities the older histories mark.
+expect drawn(first_rows, first_listing, first_window) == [0, 8, 15, 14] and drawn(first_rows, first_local.listing, first_local.window) == [14, 9, 4]
+
 target = Fuzz.target_with!({
 	name: "table-view",
-	examples: [
-		ex("keyed", keyed_steps),
-		ex("batch", batch_steps),
-		ex("many", many_steps),
-		ex("rewrite", rewrite_steps),
-		ex("window", window_steps),
-		ex("mount", mount_steps),
-		ex("local", local_steps),
-		ex("marks", marks_steps),
-		ex("copies", copy_steps),
-		ex("store-snapshots", snapshot_steps),
-		ex("one-change", once_steps),
-		ex("sort-value-ties", tied_steps),
-		Fuzz.example({ name: "series", revision: "1", make: || { mode: 1, events: [] } }),
-	],
+	examples: written_cases.map(|written| ex(written.name, written.steps)).append(Fuzz.example({ name: "series", revision: "1", make: || { mode: 1, events: [] } })),
 	generator: { mode: Fuzz.constant(0), events: Fuzz.list(Fuzz.u8, 640) }.Fuzz,
 	test!,
 	show: |{ mode, events }| if (mode == 1) "a seeded series" else Str.inspect(steps_of(events)),
