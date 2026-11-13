@@ -1,6 +1,7 @@
 import Core
 import Engine exposing [Elem, In, Signal]
 import PortJson
+import PortRegistry
 
 ## Typed ports: services the page's JavaScript supplies, for what the
 ## platform does not model itself (IndexedDB, a save-file picker, a socket).
@@ -13,9 +14,10 @@ import PortJson
 ## - a [Subscription] sends an argument and receives any number of messages
 ##   until its site is disposed or the JavaScript ends it.
 ##
-## Make each port once from a props record (`Port.call({ name })`), list its
-## `registration` in `Program.with_ports`, and use the same value wherever
-## the app sends on it, so a request can only carry the port's own types.
+## Keep a module's ports in one annotated record, using constructors such as
+## `Port.call({ name })`. `Port.registrations` derives every entry for
+## `Program.with_ports`, so a port in that record cannot be left out. Use
+## those same values wherever the app sends on them, with their own types.
 ## The page passes one handler per registered port in the `ports` option of
 ## `mountRocEngineApp`, and the runtime refuses to mount a page whose
 ## handlers do not match the registrations.
@@ -36,6 +38,122 @@ import PortJson
 ## Under `Engine.watch_latest` or `Engine.resource` a newer value stops the older
 ## value's calls, and the JavaScript sees its `AbortSignal` abort.
 Port := [].{
+
+	# Format hooks do not resolve through a re-exported alias on ce942d6:
+	# https://github.com/roc-lang/roc/issues/13022 . Keep this public format
+	# concrete; catalogue mutation still belongs to the internal registry.
+	## The format used to derive a record of ports. It visits fixed fields,
+	## including nested records, and rejects fields that are ordinary data.
+	Registering :: [Records].{
+
+		## Keep each record field's authored name in the derived walk.
+		rename_field : Registering, Str -> Str
+		rename_field = |_, name| name
+
+		## Visit every field of a record in derivation order. Nested records
+		## retain their full field path when an invalid field is reported.
+		encode_record : Walk, U64, (Walk, (Walk, Str, (Walk -> Try(Walk, err)) -> Try(Walk, err)) -> Try(Walk, err)) -> Try(Walk, err)
+		encode_record = |walk, count, write_fields| PortRegistry.record(walk, count, write_fields)
+
+		## Refuse a data field of type Str when deriving port registrations.
+		encode_str : Str, Walk -> Try(Walk, [])
+		encode_str = |_value, walk| PortRegistry.reject(walk)
+
+		## Refuse a data field of type Bool when deriving port registrations.
+		encode_bool : Bool, Walk -> Try(Walk, [])
+		encode_bool = |_value, walk| PortRegistry.reject(walk)
+
+		## Refuse a data field of type U8 when deriving port registrations.
+		encode_u8 : U8, Walk -> Try(Walk, [])
+		encode_u8 = |_value, walk| PortRegistry.reject(walk)
+
+		## Refuse a data field of type I8 when deriving port registrations.
+		encode_i8 : I8, Walk -> Try(Walk, [])
+		encode_i8 = |_value, walk| PortRegistry.reject(walk)
+
+		## Refuse a data field of type U16 when deriving port registrations.
+		encode_u16 : U16, Walk -> Try(Walk, [])
+		encode_u16 = |_value, walk| PortRegistry.reject(walk)
+
+		## Refuse a data field of type I16 when deriving port registrations.
+		encode_i16 : I16, Walk -> Try(Walk, [])
+		encode_i16 = |_value, walk| PortRegistry.reject(walk)
+
+		## Refuse a data field of type U32 when deriving port registrations.
+		encode_u32 : U32, Walk -> Try(Walk, [])
+		encode_u32 = |_value, walk| PortRegistry.reject(walk)
+
+		## Refuse a data field of type I32 when deriving port registrations.
+		encode_i32 : I32, Walk -> Try(Walk, [])
+		encode_i32 = |_value, walk| PortRegistry.reject(walk)
+
+		## Refuse a data field of type U64 when deriving port registrations.
+		encode_u64 : U64, Walk -> Try(Walk, [])
+		encode_u64 = |_value, walk| PortRegistry.reject(walk)
+
+		## Refuse a data field of type I64 when deriving port registrations.
+		encode_i64 : I64, Walk -> Try(Walk, [])
+		encode_i64 = |_value, walk| PortRegistry.reject(walk)
+
+		## Refuse a data field of type U128 when deriving port registrations.
+		encode_u128 : U128, Walk -> Try(Walk, [])
+		encode_u128 = |_value, walk| PortRegistry.reject(walk)
+
+		## Refuse a data field of type I128 when deriving port registrations.
+		encode_i128 : I128, Walk -> Try(Walk, [])
+		encode_i128 = |_value, walk| PortRegistry.reject(walk)
+
+		## Refuse a data field of type F32 when deriving port registrations.
+		encode_f32 : F32, Walk -> Try(Walk, [])
+		encode_f32 = |_value, walk| PortRegistry.reject(walk)
+
+		## Refuse a data field of type F64 when deriving port registrations.
+		encode_f64 : F64, Walk -> Try(Walk, [])
+		encode_f64 = |_value, walk| PortRegistry.reject(walk)
+
+		## Refuse a data field of type Dec when deriving port registrations.
+		encode_dec : Dec, Walk -> Try(Walk, [])
+		encode_dec = |_value, walk| PortRegistry.reject(walk)
+
+		## Reject a list field rather than registering only some of its items.
+		encode_list : Walk, U64, (Walk, (Walk, (Walk -> Try(Walk, err)) -> Try(Walk, err)) -> Try(Walk, err)) -> Try(Walk, err)
+		encode_list = |walk, _count, _write_items| PortRegistry.reject(walk)
+
+		## Reject tuples: names in a port record identify its declared fields.
+		encode_tuple : Walk, U64, (Walk, (Walk, (Walk -> Try(Walk, err)) -> Try(Walk, err)) -> Try(Walk, err)) -> Try(Walk, err)
+		encode_tuple = |walk, _count, _write_items| PortRegistry.reject(walk)
+
+		## Reject ordinary tag values: a port record declares fixed port fields.
+		encode_tag : Walk, Str, U64, (Walk, (Walk, (Walk -> Try(Walk, err)) -> Try(Walk, err)) -> Try(Walk, err)) -> Try(Walk, err)
+		encode_tag = |walk, _name, _count, _write_payloads| PortRegistry.reject(walk)
+
+		## Reject dictionary fields rather than interpreting data keys as ports.
+		encode_dict : Walk, U64, (Walk, (Walk, (Walk -> Try(Walk, err)), (Walk -> Try(Walk, err)) -> Try(Walk, err)) -> Try(Walk, err)) -> Try(Walk, err)
+		encode_dict = |walk, _count, _write_entries| PortRegistry.reject(walk)
+
+		## Reject byte payloads: the record declares ports, not their messages.
+		encode_bytes : Registering, List(U8), Walk -> Try(Walk, [])
+		encode_bytes = |_, _bytes, walk| PortRegistry.reject(walk)
+
+		## Reject File payloads: a port value carries its declared message type.
+		encode_file : Registering, Engine.File, Walk -> Try(Walk, [])
+		encode_file = |_, _file, walk| PortRegistry.reject(walk)
+	}
+
+	## The state passed through registration derivation. A record's derived
+	## encoder uses this type; Port.registrations starts and finishes the walk.
+	Walk : PortRegistry.Walk
+
+	## Derive every declaration from one record of named ports, including
+	## nested records. The catalogue permits at most 64 ports, unique names
+	## of 1 to 128 UTF-8 bytes, and Every bounds of 1 to 1024. Invalid records
+	## are contract errors here, at compile time for a top-level constant.
+	registrations : ports -> List(Engine.PortRegistration)
+		where [ports.encoder_for : Registering -> (ports, Walk -> Try(Walk, []))]
+	registrations = |ports| match PortRegistry.collect(ports, Registering.Records) {
+		Ok(declarations) => declarations
+		Err(message) => crash message
+	}
 
 	## Why a port request has no value for the app.
 	##
@@ -74,9 +192,14 @@ Port := [].{
 		send : Command(output), output -> [PortCommand({ port : Str, message : Engine.PortMessage })]
 		send = |p, value| PortCommand({ port: p.name, message: (p.encode)(value) })
 
-		## The port's entry for `Program.with_ports`.
-		registration : Command(output) -> Engine.PortRegistration
-		registration = |p| Core.port_declaration(p.name, Command)
+		## The name its JavaScript handler and runtime monitor use.
+		name : Command(output) -> Str
+		name = |p| p.name
+
+		## Let a derived port record read this port's declaration. This hook
+		## keeps its existing name and options; it creates no port or codec.
+		encoder_for : Registering -> (Command(output), Walk -> Try(Walk, []))
+		encoder_for = |_format| |p, walk| Ok(PortRegistry.append(walk, Core.port_declaration(p.name, Command)))
 	}
 
 	## A port that sends an `input` to JavaScript and awaits one `output`.
@@ -99,9 +222,14 @@ Port := [].{
 		result : Call(input, output), Engine.Result -> Try(output, Error)
 		result = |p, res| answer_of(p.name, p.decode, res)
 
-		## The port's entry for `Program.with_ports`.
-		registration : Call(input, output) -> Engine.PortRegistration
-		registration = |p| Core.port_declaration(p.name, Call)
+		## The name its JavaScript handler and runtime monitor use.
+		name : Call(input, output) -> Str
+		name = |p| p.name
+
+		## Let a derived port record read this port's declaration. This hook
+		## keeps its existing name and options; it creates no port or codec.
+		encoder_for : Registering -> (Call(input, output), Walk -> Try(Walk, []))
+		encoder_for = |_format| |p, walk| Ok(PortRegistry.append(walk, Core.port_declaration(p.name, Call)))
 	}
 
 	## A port that sends an `arg` to JavaScript once and receives any number
@@ -128,9 +256,14 @@ Port := [].{
 		message : Subscription(arg, msg), Engine.Result -> Try(msg, Error)
 		message = |p, res| answer_of(p.name, p.decode, res)
 
-		## The port's entry for `Program.with_ports`.
-		registration : Subscription(arg, msg) -> Engine.PortRegistration
-		registration = |p| Core.port_declaration(p.name, Subscription(p.delivery))
+		## The name its JavaScript handler and runtime monitor use.
+		name : Subscription(arg, msg) -> Str
+		name = |p| p.name
+
+		## Let a derived port record read this port's declaration. This hook
+		## keeps its existing name and options; it creates no port or codec.
+		encoder_for : Registering -> (Subscription(arg, msg), Walk -> Try(Walk, []))
+		encoder_for = |_format| |p, walk| Ok(PortRegistry.append(walk, Core.port_declaration(p.name, Subscription(p.delivery))))
 	}
 
 	## What `command` is told about a command port: its `name`, namespaced
@@ -301,4 +434,47 @@ expect {
 		\\closed: Err(Closed)
 		\\refused: Err(Refused)
 	actual == expected
+}
+
+## Registration derives nested fields in field order and preserves each port's
+## existing name, shape and delivery policy without changing its codecs.
+expect {
+	ports : { load : Port.Call({}, Str), commands : { remove : Port.Command({ id : Str }), put : Port.Command(Str) }, events : Port.Subscription({}, U64) }
+	ports = {
+		load: Port.call({ name: "test/load" }),
+		commands: { remove: Port.command({ name: "test/remove" }), put: Port.command({ name: "test/put" }) },
+		events: Port.subscription({ name: "test/events", delivery: Every(4) }),
+	}
+	declarations = PortRegistry.collect(ports, Port.Registering.Records)?
+	encoded = |entries| {
+		keys = Core.driver(Core.program(|| Core.text("")).with_ports(entries)).keys
+		keys()
+	}
+	{
+		declarations: encoded(declarations),
+		names: [ports.load.name(), ports.commands.put.name(), ports.events.name()],
+	} == {
+		declarations: encoded([Core.port_declaration("test/put", Command), Core.port_declaration("test/remove", Command), Core.port_declaration("test/events", Subscription(Every(4))), Core.port_declaration("test/load", Call)]),
+		names: ["test/load", "test/put", "test/events"],
+	}
+}
+
+## Invalid catalogues are returned by the internal collector, so their
+## diagnostics are tested without weakening the public compile-time crash.
+expect {
+	one : Port.Command({})
+	one = Port.command({ name: "test/same" })
+	empty : Port.Command({})
+	empty = Port.command({ name: "" })
+	unbounded : Port.Subscription({}, Str)
+	unbounded = Port.subscription({ name: "test/events", delivery: Every(0) })
+	{
+		duplicate: PortRegistry.collect({ first: one, nested: { second: one } }, Port.Registering.Records).map_ok(|_| {}),
+		empty: PortRegistry.collect({ empty: empty }, Port.Registering.Records).map_ok(|_| {}),
+		bound: PortRegistry.collect({ events: unbounded }, Port.Registering.Records).map_ok(|_| {}),
+	} == {
+		duplicate: Err("contract: port \"test/same\" is declared twice"),
+		empty: Err("contract: a program declares a port named \"\"; a port name is 1 to 128 bytes"),
+		bound: Err("contract: port \"test/events\" delivers Every(0); a subscription keeps 1 to 1024 undelivered messages"),
+	}
 }

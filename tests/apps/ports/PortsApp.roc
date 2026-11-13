@@ -44,26 +44,28 @@ PortsApp := [].{
 	initial : S
 	initial = { sends: 0, gets: 0, panel: False, feed: False, size: "4", echoes: { n: 0, size: "" }, inspects: 0, makes: 0, chosen: [], made: [], undeclared: 0, wrong: 0, log: [] }
 
-	log : Port.Command({ text : Str })
-	log = Port.command({ name: "test.roc-signals/log" })
+	## The module's named ports, declared once and registered together.
+	Ports : {
+		log : Port.Command({ text : Str }),
+		get : Port.Call({ key : Str }, { value : Str }),
+		echo : Port.Call(Wire.Bytes, Wire.Bytes),
+		inspect : Port.Call(Engine.File, { name : Str, size : U64 }),
+		make : Port.Call(Str, Engine.File),
+		ticks : Port.Subscription({}, U64),
+		feed : Port.Subscription(Str, Str),
+	}
 
-	get : Port.Call({ key : Str }, { value : Str })
-	get = Port.call({ name: "test.roc-signals/get", timeout: Ms(1000) })
-
-	echo : Port.Call(Wire.Bytes, Wire.Bytes)
-	echo = Port.call({ name: "test.roc-signals/echo" })
-
-	inspect : Port.Call(Engine.File, { name : Str, size : U64 })
-	inspect = Port.call({ name: "test.roc-signals/inspect" })
-
-	make : Port.Call(Str, Engine.File)
-	make = Port.call({ name: "test.roc-signals/make" })
-
-	ticks : Port.Subscription({}, U64)
-	ticks = Port.subscription({ name: "test.roc-signals/ticks", delivery: Latest })
-
-	feed : Port.Subscription(Str, Str)
-	feed = Port.subscription({ name: "test.roc-signals/feed", delivery: Every(4) })
+	## The same values serve requests and the derived program catalogue.
+	ports : Ports
+	ports = {
+		log: Port.command({ name: "test.roc-signals/log" }),
+		get: Port.call({ name: "test.roc-signals/get", timeout: Ms(1000) }),
+		echo: Port.call({ name: "test.roc-signals/echo" }),
+		inspect: Port.call({ name: "test.roc-signals/inspect" }),
+		make: Port.call({ name: "test.roc-signals/make" }),
+		ticks: Port.subscription({ name: "test.roc-signals/ticks", delivery: Latest }),
+		feed: Port.subscription({ name: "test.roc-signals/feed", delivery: Every(4) }),
+	}
 
 	error : Port.Error -> Str
 	error = |e| match e {
@@ -109,11 +111,11 @@ PortsApp := [].{
 			"ports",
 			[
 				Html.button("Send", [], st.update(|s| { ..s, sends: s.sends + 1 })),
-				Engine.watch_changes(v.map(|s| s.sends), |n| [Engine.command(PortsApp.log.send({ text: "hello ${n.to_str()}" }))], Engine.ignore({})),
+				Engine.watch_changes(v.map(|s| s.sends), |n| [Engine.command(PortsApp.ports.log.send({ text: "hello ${n.to_str()}" }))], Engine.ignore({})),
 				Html.button("Get", [], st.update(|s| { ..s, gets: s.gets + 1 })),
 				Engine.watch_latest(
 					v.map(|s| s.gets),
-					|n| if (n == 0) [] else [PortsApp.get.ask({ key: "k${n.to_str()}" })],
+					|n| if (n == 0) [] else [PortsApp.ports.get.ask({ key: "k${n.to_str()}" })],
 					st.on_result(|s, n, r| PortsApp.log_line(s, "get k${n.to_str()}:${PortsApp.shown(r, |a| a.value)}")),
 				),
 				Html.button("Panel", [], st.update(|s| { ..s, panel: !s.panel })),
@@ -123,8 +125,8 @@ PortsApp := [].{
 						"section",
 						[Html.aria_label("panel")],
 						[
-							Engine.watch(Engine.const({}), |_| [PortsApp.get.ask({ key: "panel" })], st.on_result(|s, _, r| PortsApp.log_line(s, "panel get:${PortsApp.shown(r, |a| a.value)}"))),
-							Engine.watch(Engine.const({}), |_| [PortsApp.ticks.ask({})], st.on_result(|s, _, r| PortsApp.log_line(s, "tick:${PortsApp.shown(r, |n| n.to_str())}"))),
+							Engine.watch(Engine.const({}), |_| [PortsApp.ports.get.ask({ key: "panel" })], st.on_result(|s, _, r| PortsApp.log_line(s, "panel get:${PortsApp.shown(r, |a| a.value)}"))),
+							Engine.watch(Engine.const({}), |_| [PortsApp.ports.ticks.ask({})], st.on_result(|s, _, r| PortsApp.log_line(s, "tick:${PortsApp.shown(r, |n| n.to_str())}"))),
 							Engine.text("panel open"),
 						],
 					),
@@ -133,14 +135,14 @@ PortsApp := [].{
 				Html.button("Feed", [], st.update(|s| { ..s, feed: !s.feed })),
 				Engine.watch_latest(
 					v.map(|s| s.feed),
-					|on| if (on) [PortsApp.feed.ask("news")] else [],
+					|on| if (on) [PortsApp.ports.feed.ask("news")] else [],
 					st.on_result(|s, _, r| PortsApp.log_line(s, "feed:${PortsApp.shown(r, |t| t)}")),
 				),
 				Html.text_input(Engine.const("Size"), "text", v.map(|s| s.size), [], st.set_value(|s, t| { ..s, size: t })),
 				Html.button("Echo", [], st.update(|s| { ..s, echoes: { n: s.echoes.n + 1, size: s.size } })),
 				Engine.watch_changes(
 					v.map(|s| s.echoes),
-					|p| [PortsApp.echo.ask(PortsApp.payload(U64.from_str(p.size) ?? 0))],
+					|p| [PortsApp.ports.echo.ask(PortsApp.payload(U64.from_str(p.size) ?? 0))],
 					st.on_result(|s, _, r| PortsApp.log_line(s, "echo:${PortsApp.shown(r, PortsApp.echoed)}")),
 				),
 				Html.file_input(Engine.const("Upload"), {}, st.set_value(|s, { files, refused: _ }| { ..s, chosen: files })),
@@ -148,7 +150,7 @@ PortsApp := [].{
 				Engine.watch_changes(
 					v.map(|s| (s.inspects, s.chosen)),
 					|(_, chosen)| match chosen.first() {
-						Ok(file) => [PortsApp.inspect.ask(file)]
+						Ok(file) => [PortsApp.ports.inspect.ask(file)]
 						Err(_) => []
 					},
 					st.on_result(|s, _, r| PortsApp.log_line(s, "inspect:${PortsApp.shown(r, |a| "${a.name} ${a.size.to_str()}")}")),
@@ -156,7 +158,7 @@ PortsApp := [].{
 				Html.button("Make", [], st.update(|s| { ..s, makes: s.makes + 1 })),
 				Engine.watch_changes(
 					v.map(|s| s.makes),
-					|n| [PortsApp.make.ask("made ${n.to_str()}")],
+					|n| [PortsApp.ports.make.ask("made ${n.to_str()}")],
 					st.on_result(
 						|s, _, r| match r {
 							Ok(file) => PortsApp.log_line({ ..s, made: s.made.append(file) }, "make:${file.name()} ${file.size().to_str()}")
@@ -178,13 +180,5 @@ PortsApp := [].{
 	program : Engine.Program
 	program =
 		Engine.program(|| Engine.state(PortsApp.initial, |st| PortsApp.view(st)))
-			.with_ports([
-				PortsApp.log.registration(),
-				PortsApp.get.registration(),
-				PortsApp.echo.registration(),
-				PortsApp.inspect.registration(),
-				PortsApp.make.registration(),
-				PortsApp.ticks.registration(),
-				PortsApp.feed.registration(),
-			])
+			.with_ports(Port.registrations(PortsApp.ports))
 }

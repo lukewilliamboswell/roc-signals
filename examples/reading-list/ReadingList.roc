@@ -258,8 +258,8 @@ ReadingList := [Books].{
 	requests = |commands|
 		commands.map(
 			|command| match command {
-				Put(book) => Engine.command(BookStorage.put.send(book))
-				Delete(id) => Engine.command(BookStorage.remove.send({ id: id }))
+				Put(book) => Engine.command(BookStorage.ports.put.send(book))
+				Delete(id) => Engine.command(BookStorage.ports.remove.send({ id: id }))
 			},
 		)
 

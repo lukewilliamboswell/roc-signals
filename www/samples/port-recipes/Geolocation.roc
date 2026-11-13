@@ -7,20 +7,28 @@ Geolocation := [].{
 	# region declaration
 	Position : { latitude : F64, longitude : F64, accuracy : F64 }
 
-	## One location, cancelled through the handler's AbortSignal on timeout.
-	locate : Port.Call({}, Position)
-	locate = Port.call({ name: "example.org/recipes/location", timeout: Ms(15000) })
+	## The module's named ports, declared once and registered together.
+	Ports : {
+		## One location, cancelled through the handler's AbortSignal on timeout.
+		locate : Port.Call({}, Position),
 
-	## Current position is a value: only the newest waiting fix matters.
-	positions : Port.Subscription({}, Position)
-	positions = Port.subscription({ name: "example.org/recipes/positions", delivery: Latest })
+		## Current position is a value: only the newest waiting fix matters.
+		positions : Port.Subscription({}, Position),
+	}
+
+	## The same values serve requests and the derived program catalogue.
+	ports : Ports
+	ports = {
+		locate: Port.call({ name: "example.org/recipes/location", timeout: Ms(15000) }),
+		positions: Port.subscription({ name: "example.org/recipes/positions", delivery: Latest }),
+	}
 	# endregion declaration
 
 	view : {} -> Engine.Elem(ctx)
 	view = |_| Html.div(
 		"recipe",
 		[
-			CallView.view({ label: "Find location", test_id: "location-result", port: Geolocation.locate, argument: Engine.const({}), show: show }),
+			CallView.view({ label: "Find location", test_id: "location-result", port: Geolocation.ports.locate, argument: Engine.const({}), show: show }),
 			Engine.state(
 				{ following: False, text: "Location watch stopped" },
 				|state| Html.div(
@@ -31,7 +39,7 @@ Geolocation := [].{
 							state.signal().map(|s| s.following),
 							|| Engine.watch(
 								Engine.const({}),
-								|_| [Geolocation.positions.ask({})],
+								|_| [Geolocation.ports.positions.ask({})],
 								state.on_result(
 									|s, _, result| match result {
 										Ok(position) => { ..s, text: show(position) }

@@ -50,7 +50,7 @@ ExplorerApp := [].{
 					"Measured",
 					"grid gap-3",
 					[
-						Engine.element("query-meter", [Engine.attr("data-task", Explorer.summary.name()), Engine.attr("data-port", Feed.name), Engine.attr("data-shards", Explorer.shards.to_str())], []),
+						Engine.element("query-meter", [Engine.attr("data-task", Explorer.summary.name()), Engine.attr("data-port", Feed.ports.orders.name()), Engine.attr("data-shards", Explorer.shards.to_str())], []),
 						Engine.element("worker-pool-panel", [], []),
 					],
 				),
@@ -69,7 +69,7 @@ ExplorerApp := [].{
 				Engine.watch_latest(
 					{ flow: cells.flow.signal(), rate: cells.rate.signal() }.Signal,
 					|{ flow, rate }| match flow {
-						Live => [Feed.orders.ask({ per_second: rate })]
+						Live => [Feed.ports.orders.ask({ per_second: rate })]
 						Paused => []
 					},
 					Engine.react(|_, res| Explorer.received(res)),

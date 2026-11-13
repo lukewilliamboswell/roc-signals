@@ -1628,13 +1628,13 @@ Core := [].{
 		for d in decls {
 			name = d.name
 			if $seen.len() >= max_ports {
-				return Err("contract: with_ports declares more than ${max_ports.to_str()} ports (port \"${name}\" is over the bound)")
+				return Err("contract: a program declares more than ${max_ports.to_str()} ports (port \"${name}\" is over the bound)")
 			}
 			if name.is_empty() or name.count_utf8_bytes() > max_port_name {
-				return Err("contract: with_ports declares a port named \"${name}\"; a port name is 1 to ${max_port_name.to_str()} bytes")
+				return Err("contract: a program declares a port named \"${name}\"; a port name is 1 to ${max_port_name.to_str()} bytes")
 			}
 			if $seen.contains(name) {
-				return Err("contract: port \"${name}\" is declared twice in with_ports")
+				return Err("contract: port \"${name}\" is declared twice")
 			}
 			if d.delivery == 1 and (d.bound < 1 or d.bound > max_port_every) {
 				return Err("contract: port \"${name}\" delivers Every(${d.bound.to_str()}); a subscription keeps 1 to ${max_port_every.to_str()} undelivered messages")
@@ -2727,7 +2727,6 @@ Core := [].{
 	## request or port result as the contract error it is, so its module
 	## carries no port codec (design.md, "Ports").
 	##
-	## - `ready` applies the catalogue's rules when the program mounts;
 	## - `table` writes the port table after the boot keys;
 	## - `check` is the end-of-turn use check of one request;
 	## - `write` puts a turn's port requests (the `Port` entries of its
@@ -2736,7 +2735,6 @@ Core := [].{
 	## - `ends` says whether a result ends a subscription.
 	Ports : {
 		decls : List(PortDecl),
-		ready : List(PortDecl) -> List(PortDecl),
 		table : List(U8), List(PortDecl) -> List(U8),
 		check : List(PortDecl), PortAt -> {},
 		write : Tx, List(TurnEnd) -> Tx,
@@ -2994,11 +2992,12 @@ Core := [].{
 		## Declare the ports the program's effect sites use (see [PortDecl]):
 		## the services the page's JavaScript supplies at mount. At most 64,
 		## each name once and 1 to 128 bytes long; anything else is a contract
-		## error when the program mounts. A request for a port not declared
+		## error when these declarations and the program are built, at compile
+		## time for a top-level program constant. A request for a port not declared
 		## here, or for a declared port as another shape, is a contract error
 		## naming the port and the site.
 		with_ports : Program(st), List(PortDecl) -> Program(st)
-		with_ports = |p, decls| { ..p, ports: ports_of(p.ports.decls.concat(decls)) }
+		with_ports = |p, decls| { ..p, ports: ports_of(ports_checked(p.ports.decls.concat(decls))) }
 
 		## Add worker tasks to the program's catalogue, so its effect sites can
 		## issue `Work` requests for them. The page's instance and every worker
@@ -3026,8 +3025,8 @@ Core := [].{
 		session_keys = p.session_keys
 		{
 			version: p.version,
-			keys: || put_section(put_section(put_media_table((ports.table)(keys(), (ports.ready)(ports.decls)), media), 10, [zone_days.to_u8_wrap(), zone_days.shr_zf_wrap(8).to_u8_wrap()]), 11, session_keys.fold(put_u32([], session_keys.len().to_u32_wrap()), put_str)),
-			init: |boot| init({ workers: catalogue_names(workers), ports: { ..ports, decls: (ports.ready)(ports.decls) }, media }, boot),
+			keys: || put_section(put_section(put_media_table((ports.table)(keys(), ports.decls), media), 10, [zone_days.to_u8_wrap(), zone_days.shr_zf_wrap(8).to_u8_wrap()]), 11, session_keys.fold(put_u32([], session_keys.len().to_u32_wrap()), put_str)),
+			init: |boot| init({ workers: catalogue_names(workers), ports, media }, boot),
 			event: p.event,
 			files: |inst, buf, wbuf, node, handler, record, blobs| {
 				{ store, root, tx, programs } = inst
@@ -7578,7 +7577,6 @@ decode_held_res = |b, handles| {
 ports_of : List(PortDecl) -> Ports
 ports_of = |decls| {
 	decls,
-	ready: ports_checked,
 	table: put_port_table,
 	check: check_port,
 	write: write_ports,
@@ -7592,9 +7590,8 @@ ports_of = |decls| {
 no_ports : Ports
 no_ports = {
 	decls: [],
-	ready: |decls| decls,
 	table: |keys, _| put_section(keys, 5, put_u32([], 0)),
-	check: |_, { req, path, .. }| crash "contract: port \"${port_name(req)}\" is not declared; add its declaration to with_ports (site ${show_path(path)})",
+	check: |_, { req, path, .. }| crash "contract: port \"${port_name(req)}\" is not declared; add it to its module's record of ports (site ${show_path(path)})",
 	write: |tx, _| tx,
 	decode: |_, _| crash "contract: a port result (effect result tag 14 or 15) reached an app that declares no ports",
 	ends: |_| Bool.False,
@@ -7625,7 +7622,7 @@ check_port = |decls, { req, path, .. }| {
 			} else {
 				{}
 			}
-		Err(_) => crash "contract: port \"${port}\" is not declared; add its declaration to with_ports (site ${show_path(path)})"
+		Err(_) => crash "contract: port \"${port}\" is not declared; add it to its module's record of ports (site ${show_path(path)})"
 	}
 }
 
@@ -9597,10 +9594,10 @@ expect {
 	]
 	expected = [
 		"Ok([\"a\", \"b\"])",
-		"Err(\"contract: port \\\"a\\\" is declared twice in with_ports\")",
+		"Err(\"contract: port \\\"a\\\" is declared twice\")",
 		"True",
-		"Err(\"contract: with_ports declares more than 64 ports (port \\\"p64\\\" is over the bound)\")",
-		"Err(\"contract: with_ports declares a port named \\\"\\\"; a port name is 1 to 128 bytes\")",
+		"Err(\"contract: a program declares more than 64 ports (port \\\"p64\\\" is over the bound)\")",
+		"Err(\"contract: a program declares a port named \\\"\\\"; a port name is 1 to 128 bytes\")",
 		"Err(\"contract: port \\\"s\\\" delivers Every(0); a subscription keeps 1 to 1024 undelivered messages\")",
 		"Ok([\"s\"])",
 	]

@@ -421,7 +421,7 @@ async function open(options = {}, mountWith = null) {
     await ctx.close();
   }
   check("an undeclared port and a port used as another shape are contract errors", faults, [
-    `contract: contract: port "${P}undeclared" is not declared; add its declaration to with_ports (site …)`,
+    `contract: contract: port "${P}undeclared" is not declared; add it to its module's record of ports (site …)`,
     `contract: contract: port "${P}get" is declared as a call but used as a subscription (site …)`,
   ]);
 }

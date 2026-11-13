@@ -215,7 +215,7 @@ panel = |live, visible| {
 			),
 			# The runtime's own account of the port, drawn by the
 			# example's `feed-monitor.mjs` from `runtime.monitor`.
-			Engine.element("latency-feed-monitor", [Engine.attr("data-port", Latency.readings_name)], []),
+			Engine.element("latency-feed-monitor", [Engine.attr("data-port", Latency.ports.readings.name())], []),
 			Engine.when(
 				following,
 				|| Html.div(
@@ -230,7 +230,7 @@ panel = |live, visible| {
 							),
 							|| Engine.watch_latest(
 								lv.map(|l| { generation: l.generation, after: l.after }),
-								|issue| [Latency.readings.ask({ seed: Latency.seed, after: issue.after })],
+								|issue| [Latency.ports.readings.ask({ seed: Latency.seed, after: issue.after })],
 								live.on_result(|l, _, res| Live.receive(l, res)),
 							),
 							|| Html.div("hidden", []),
@@ -268,7 +268,7 @@ panel = |live, visible| {
 				),
 				|| Html.div("hidden", []),
 			),
-			Engine.on_post(lv.map(|l| l.outage), |cut| [Engine.command(Latency.drop.send(cut))], Engine.ignore({})),
+			Engine.on_post(lv.map(|l| l.outage), |cut| [Engine.command(Latency.ports.drop.send(cut))], Engine.ignore({})),
 			Engine.watch_changes(visible, |_| [Engine.again({})], live.on_result(|l, showing, _| Live.shown(l, showing))),
 		],
 	)

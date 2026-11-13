@@ -42,14 +42,14 @@ ReadingApp := [].{
 			# it arrives.
 			Engine.watch(
 				Engine.const({}),
-				|_| [BookStorage.load.ask({})],
+				|_| [BookStorage.ports.load.ask({})],
 				Engine.react_by(ReadingList.cells.copy.signal(), |copy, _, res| ReadingList.loaded(copy, res)),
 			),
 			# The database's books again after any tab writes, for as long
 			# as the app runs.
 			Engine.watch(
 				Engine.const({}),
-				|_| [BookStorage.stored.ask({})],
+				|_| [BookStorage.ports.stored.ask({})],
 				Engine.react(|_, res| ReadingList.restocked(res)),
 			),
 			# Read the time a task after submission. Refusal uses the last
@@ -64,7 +64,7 @@ ReadingApp := [].{
 			),
 			# A new book, ready to store. `on_post` never stops
 			# an earlier add for a later one: each answer arrives.
-			Engine.on_post(ReadingList.cells.adding.signal(), |asked| [BookStorage.add.ask(asked)], Engine.react(ReadingList.added)),
+			Engine.on_post(ReadingList.cells.adding.signal(), |asked| [BookStorage.ports.add.ask(asked)], Engine.react(ReadingList.added)),
 			# Every change's commands, sent in the turn of the click that
 			# made them.
 			Engine.on_post(ReadingList.cells.writes.signal(), ReadingList.requests, Engine.ignore({})),

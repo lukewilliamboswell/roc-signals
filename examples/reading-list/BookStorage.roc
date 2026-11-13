@@ -29,34 +29,36 @@ BookStorage := [].{
 	## What the user typed for a new book.
 	NewBook : { title : Str, author : Str }
 
-	## Every book in the store.
-	load : Port.Call({}, List(Book))
-	load = Port.call({ name: "roc-signals.example/reading-list/load", timeout: Ms(10000) })
+	## The module's named ports, declared once and registered together.
+	Ports : {
+		## Every book in the store.
+		load : Port.Call({}, List(Book)),
 
-	## Store the complete book Roc minted, returning it after the write commits.
-	add : Port.Call(Book, Book)
-	add = Port.call({ name: "roc-signals.example/reading-list/add", timeout: Ms(10000) })
+		## Store the complete book Roc minted, returning it after the write commits.
+		add : Port.Call(Book, Book),
 
-	## Store a book as it now is (a move to another shelf).
-	put : Port.Command(Book)
-	put = Port.command({ name: "roc-signals.example/reading-list/put" })
+		## Store a book as it now is (a move to another shelf).
+		put : Port.Command(Book),
 
-	## Delete a book from the store.
-	remove : Port.Command({ id : Str })
-	remove = Port.command({ name: "roc-signals.example/reading-list/remove" })
+		## Delete a book from the store.
+		remove : Port.Command({ id : Str }),
 
-	## The books as stored, after any tab writes. Only the newest matters,
-	## so a busy tab skips to it.
-	stored : Port.Subscription({}, List(Book))
-	stored = Port.subscription({ name: "roc-signals.example/reading-list/stored", delivery: Latest })
+		## The books as stored, after any tab writes. Only the newest matters,
+		## so a busy tab skips to it.
+		stored : Port.Subscription({}, List(Book)),
+	}
 
-	## The program's entry for `Program.with_ports`: every port, once.
+	## The same values serve requests and the derived program catalogue.
+	ports : Ports
+	ports = {
+		load: Port.call({ name: "roc-signals.example/reading-list/load", timeout: Ms(10000) }),
+		add: Port.call({ name: "roc-signals.example/reading-list/add", timeout: Ms(10000) }),
+		put: Port.command({ name: "roc-signals.example/reading-list/put" }),
+		remove: Port.command({ name: "roc-signals.example/reading-list/remove" }),
+		stored: Port.subscription({ name: "roc-signals.example/reading-list/stored", delivery: Latest }),
+	}
+
+	## Every port in the module's record, checked where this list is built.
 	registrations : List(Engine.PortRegistration)
-	registrations = [
-		BookStorage.load.registration(),
-		BookStorage.add.registration(),
-		BookStorage.put.registration(),
-		BookStorage.remove.registration(),
-		BookStorage.stored.registration(),
-	]
+	registrations = Port.registrations(BookStorage.ports)
 }

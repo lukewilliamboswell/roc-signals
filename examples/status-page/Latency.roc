@@ -38,23 +38,26 @@ Latency := [].{
 	## Opening is distinct from a reading; only an Event makes the panel live.
 	Message : [Opened, Event(Reading)]
 
-	## The live feed. The seed always tells the same story, and after is
-	## the last reading the page kept. Reopening replays its bounded history.
-	readings : Port.Subscription({ seed : U32, after : U32 }, Message)
-	readings = Port.subscription({ name: Latency.readings_name, delivery: Every(16) })
+	## The module's named ports, declared once and registered together.
+	Ports : {
+		## The live feed. The seed always tells the same story, and after is
+		## the last reading the page kept. Reopening replays its bounded history.
+		readings : Port.Subscription({ seed : U32, after : U32 }, Message),
 
-	## The feed's port name, which the page also gives the element that
-	## shows the runtime's monitor record for it.
-	readings_name : Str
-	readings_name = "roc-signals.example/status-page/latency"
+		## End every open connection. Roc decides when to try again.
+		drop : Port.Command({}),
+	}
 
-	## End every open connection. Roc decides when to try again.
-	drop : Port.Command({})
-	drop = Port.command({ name: "roc-signals.example/status-page/drop" })
+	## The same values serve requests and the derived program catalogue.
+	ports : Ports
+	ports = {
+		readings: Port.subscription({ name: "roc-signals.example/status-page/latency", delivery: Every(16) }),
+		drop: Port.command({ name: "roc-signals.example/status-page/drop" }),
+	}
 
 	## The program declares the subscription and the drop command once.
 	registrations : List(Engine.PortRegistration)
-	registrations = [Latency.readings.registration(), Latency.drop.registration()]
+	registrations = Port.registrations(Latency.ports)
 
 	## The seed the page subscribes with.
 	seed : U32

@@ -775,7 +775,7 @@ run_program! : List(U8) => {}
 run_program! = |prog| {
 	max = 5
 	# The app's view with its worker catalogue, mounted as a host mounts it.
-	program = Engine.program_boot({ storage_keys: [], max_inflight: max }, |_| FxApp.main({})).with_workers(FxApp.workers).with_ports(FxApp.ports)
+	program = Engine.program_boot({ storage_keys: [], max_inflight: max }, |_| FxApp.main({})).with_workers(FxApp.workers).with_ports(FxApp.registrations)
 	(a0, c0, _) = (Core.driver(program).init)([])
 	(d0, _, fx0) = Dom.apply_fx(Dom.new({}), c0)
 	var $s = { eng: a0, dom: d0, steps: 0 }

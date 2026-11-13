@@ -8,17 +8,24 @@ Sockets := [].{
 	Message : [Opened, Event({ seq : U64, data : Str, dropped : U64 })]
 	Input : { url : Str, after : U64 }
 
-	## One scope is one connection. Every(16) preserves accepted messages;
-	## the handler's own bounded buffer reports any older readings it drops.
-	sse : Port.Subscription(Input, Message)
-	sse = Port.subscription({ name: "example.org/recipes/sse", delivery: Every(16) })
+	## The module's named ports, declared once and registered together.
+	Ports : {
+		## One scope is one connection. Every(16) preserves accepted messages;
+		## the handler's own bounded buffer reports any older readings it drops.
+		sse : Port.Subscription(Input, Message),
+		websocket : Port.Subscription(Input, Message),
 
-	websocket : Port.Subscription(Input, Message)
-	websocket = Port.subscription({ name: "example.org/recipes/websocket", delivery: Every(16) })
+		## A closed connection drops this command. Use a call for acknowledged sends.
+		send : Port.Command({ connection : Str, data : Str }),
+	}
 
-	## A closed connection drops this command. Use a call for acknowledged sends.
-	send : Port.Command({ connection : Str, data : Str })
-	send = Port.command({ name: "example.org/recipes/socket-send" })
+	## The same values serve requests and the derived program catalogue.
+	ports : Ports
+	ports = {
+		sse: Port.subscription({ name: "example.org/recipes/sse", delivery: Every(16) }),
+		websocket: Port.subscription({ name: "example.org/recipes/websocket", delivery: Every(16) }),
+		send: Port.command({ name: "example.org/recipes/socket-send" }),
+	}
 	# endregion declaration
 
 	Transport : [Sse, WebSocket]
@@ -82,7 +89,7 @@ Sockets := [].{
 					Html.button("Connect WebSocket", [], state.update(|s| Sockets.started(s, WebSocket))),
 					Html.button("Pause connection", [], state.update(|s| { ..s, following: False, message: "Connection paused" })),
 					Html.button("Send greeting", [], state.update(|s| { ..s, sent: s.sent.post({}) })),
-					Engine.on_post(v.map(|s| s.sent), |_| [Engine.command(Sockets.send.send({ connection: "primary", data: "hello" }))], Engine.ignore({})),
+					Engine.on_post(v.map(|s| s.sent), |_| [Engine.command(Sockets.ports.send.send({ connection: "primary", data: "hello" }))], Engine.ignore({})),
 					Engine.when(
 						v.map(|s| s.following),
 						|| Html.div(
@@ -97,7 +104,7 @@ Sockets := [].{
 									),
 									|| Engine.watch_latest(
 										v.map(|s| { generation: s.generation, transport: s.transport, resume: s.resume }),
-										|wanted| [if (wanted.transport == Sse) Sockets.sse.ask({ url: "/events", after: wanted.resume }) else Sockets.websocket.ask({ url: "/socket", after: wanted.resume })],
+										|wanted| [if (wanted.transport == Sse) Sockets.ports.sse.ask({ url: "/events", after: wanted.resume }) else Sockets.ports.websocket.ask({ url: "/socket", after: wanted.resume })],
 										state.on_result(|s, _, result| Sockets.received(s, result)),
 									),
 									|| Engine.text(""),

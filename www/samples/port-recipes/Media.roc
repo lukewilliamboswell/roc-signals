@@ -6,10 +6,18 @@ Media := [].{
 	# region declaration
 	State : [Starting, Active, Ended]
 
-	## Only device state crosses. The custom element owns its MediaStream and
-	## video, and unsubscribe stops its tracks; no browser object reaches Roc.
-	camera : Port.Subscription({}, State)
-	camera = Port.subscription({ name: "example.org/recipes/camera", delivery: Latest })
+	## The module's named ports, declared once and registered together.
+	Ports : {
+		## Only device state crosses. The custom element owns its MediaStream and
+		## video, and unsubscribe stops its tracks; no browser object reaches Roc.
+		camera : Port.Subscription({}, State),
+	}
+
+	## The same values serve requests and the derived program catalogue.
+	ports : Ports
+	ports = {
+		camera: Port.subscription({ name: "example.org/recipes/camera", delivery: Latest }),
+	}
 	# endregion declaration
 
 	view : {} -> Engine.Elem(ctx)
@@ -23,7 +31,7 @@ Media := [].{
 					state.signal().map(|s| s.enabled),
 					|| Engine.watch(
 						Engine.const({}),
-						|_| [Media.camera.ask({})],
+						|_| [Media.ports.camera.ask({})],
 						state.on_result(
 							|s, _, result| match result {
 								Ok(value) => { ..s, text: Str.inspect(value) }

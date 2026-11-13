@@ -13,17 +13,25 @@ Notes := [].{
 	## (`saved_ms` as a signed decimal string, since it is an `I64`).
 	Note : { id : Str, title : Str, saved_ms : I64 }
 
-	## Every note whose title starts with `prefix`, at `revision`.
-	list : Port.Call({ prefix : Str, revision : U64 }, List(Note))
-	list = Port.call({ name: "example.org/notes/list", timeout: Ms(5000) })
+	## The module's named ports, declared once and registered together.
+	Ports : {
+		## Every note whose title starts with `prefix`, at `revision`.
+		list : Port.Call({ prefix : Str, revision : U64 }, List(Note)),
 
-	## Store a note; JavaScript answers nothing (`undefined`).
-	put : Port.Call(Note, {})
-	put = Port.call({ name: "example.org/notes/put" })
+		## Store a note; JavaScript answers nothing (`undefined`).
+		put : Port.Call(Note, {}),
 
-	## The store's revision, whenever it changes. Only the newest matters.
-	changed : Port.Subscription({}, U64)
-	changed = Port.subscription({ name: "example.org/notes/changed", delivery: Latest })
+		## The store's revision, whenever it changes. Only the newest matters.
+		changed : Port.Subscription({}, U64),
+	}
+
+	## The same values serve requests and the derived program catalogue.
+	ports : Ports
+	ports = {
+		list: Port.call({ name: "example.org/notes/list", timeout: Ms(5000) }),
+		put: Port.call({ name: "example.org/notes/put" }),
+		changed: Port.subscription({ name: "example.org/notes/changed", delivery: Latest }),
+	}
 	# endregion ports
 
 	S : { prefix : Str, draft : Str, revision : U64, saves : U64, clock : I64, stamping : Engine.Outbox(Note), save : Note, error : Str }
@@ -68,7 +76,7 @@ Notes := [].{
 				# Any tab's write moves the revision, which lists the notes again.
 				Engine.watch(
 					Engine.const({}),
-					|_| [Notes.changed.ask({})],
+					|_| [Notes.ports.changed.ask({})],
 					st.on_result(
 						|s, _, res| match res {
 							Ok(revision) => { ..s, revision }
@@ -82,7 +90,7 @@ Notes := [].{
 				# Once stamped, hand the complete note to its storage call.
 				Engine.watch_changes(
 					v.map(|s| s.save),
-					|note| [Notes.put.ask(note)],
+					|note| [Notes.ports.put.ask(note)],
 					st.on_result(
 						|s, _, res| match res {
 							Ok({}) => s
@@ -92,7 +100,7 @@ Notes := [].{
 				),
 				Html.text_input(Engine.const("Filter"), "text", v.map(|s| s.prefix), [], st.set_value(|s, t| { ..s, prefix: t })),
 				# A newer filter or revision stops the older listing.
-				Port.resource(Notes.list, v.map(|s| { prefix: s.prefix, revision: s.revision }), |r| Html.p_s(r.map(Notes.shown), [Engine.test_id("notes")])),
+				Port.resource(Notes.ports.list, v.map(|s| { prefix: s.prefix, revision: s.revision }), |r| Html.p_s(r.map(Notes.shown), [Engine.test_id("notes")])),
 				Html.p_s(v.map(|s| s.error), [Engine.test_id("error")]),
 			],
 		)
@@ -103,7 +111,7 @@ Notes := [].{
 	program : Engine.Program
 	program =
 		Engine.program_boot({}, |boot| Engine.state(Notes.initial(boot.now_ms), Notes.view))
-			.with_ports([Notes.list.registration(), Notes.put.registration(), Notes.changed.registration()])
+			.with_ports(Port.registrations(Notes.ports))
 	# endregion program
 }
 

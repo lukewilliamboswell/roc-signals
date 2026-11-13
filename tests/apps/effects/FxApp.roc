@@ -168,16 +168,23 @@ FxApp := [].{
 	plan_o : U64, U64 -> List(Engine.Request)
 	plan_o = |query, item| [FxApp.http({ url: "/o/${item.to_str()}?q=${query.to_str()}" })]
 
-	## P's ports: a call and a subscription, each sent `p`.
-	port_call : Port.Call(U64, Str)
-	port_call = Port.call({ name: "test.roc-signals/fx-call" })
+	## The module's named ports, declared once and registered together.
+	Ports : {
+		## P's ports: a call and a subscription, each sent `p`.
+		port_call : Port.Call(U64, Str),
+		port_feed : Port.Subscription(U64, Str),
+	}
 
-	port_feed : Port.Subscription(U64, Str)
-	port_feed = Port.subscription({ name: "test.roc-signals/fx-feed", delivery: Every(8) })
+	## The same values serve requests and the derived program catalogue.
+	ports : Ports
+	ports = {
+		port_call: Port.call({ name: "test.roc-signals/fx-call" }),
+		port_feed: Port.subscription({ name: "test.roc-signals/fx-feed", delivery: Every(8) }),
+	}
 
 	## P's requests for `p`.
 	plan_p : U64 -> List(Engine.Request)
-	plan_p = |p| if (p == 0) [] else [FxApp.port_call.request(p), FxApp.port_feed.subscribe(p)]
+	plan_p = |p| if (p == 0) [] else [FxApp.ports.port_call.request(p), FxApp.ports.port_feed.subscribe(p)]
 
 	## L's requests for query `q`.
 	plan_l : U64 -> List(Engine.Request)
@@ -399,11 +406,11 @@ FxApp := [].{
 	## The program `main.roc` binds for the browser module and the native spec
 	## runner, and `fuzz-channel.roc` drives as a roc-fuzz target.
 	program : Engine.Program
-	program = Engine.program_boot({ storage_keys: [], max_inflight: 8 }, |_| FxApp.main({})).with_workers(FxApp.workers).with_ports(FxApp.ports)
+	program = Engine.program_boot({ storage_keys: [], max_inflight: 8 }, |_| FxApp.main({})).with_workers(FxApp.workers).with_ports(FxApp.registrations)
 
 	## The ports P uses.
-	ports : List(Engine.PortRegistration)
-	ports = [FxApp.port_call.registration(), FxApp.port_feed.registration()]
+	registrations : List(Engine.PortRegistration)
+	registrations = Port.registrations(FxApp.ports)
 
 	main : {} -> Elem(Root)
 	main = |_| FxApp.main_with([True, True, True])
