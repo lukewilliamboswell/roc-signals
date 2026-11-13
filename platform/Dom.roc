@@ -22,10 +22,7 @@ Dom := [].{
 	## retained for exact serialization but never aliases another namespace.
 	ExpandedName : { namespace : Str, prefix : Str, local : Str }
 
-	## Original clone lifetimes stay in template preorder even after dynamic
-	## insertions. Oversized caches refuse picture production, not ordinary DOM.
-	CloneNodes : [NotARow, Cloned(List(U64)), TooMany]
-	DNode : { namespace : Str, prefix : Str, kind : U8, container : U8, content : [None, Some(U64)], svg : Bool, tag : Str, text : Str, attrs : List((ExpandedName, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), template_nodes : CloneNodes, ids : List(U32), props : List((Str, Str)), detach_count : U64, keymaps : Dict(Str, KeyIndex), shown : Shown, shown_intent : { dialog : U64, popover : U64 }, pending_toggle : Bool, toggle_slot : U64, scroll : { top : U32, left : U32 }, observing : U8, observed : List(U64) }
+	DNode : { namespace : Str, prefix : Str, kind : U8, container : U8, content : [None, Some(U64)], svg : Bool, tag : Str, text : Str, attrs : List((ExpandedName, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)), detach_count : U64, keymaps : Dict(Str, KeyIndex), shown : Shown, shown_intent : { dialog : U64, popover : U64 }, pending_toggle : Bool, toggle_slot : U64, scroll : { top : U32, left : U32 }, observing : U8, observed : List(U64) }
 
 	## Explicit cold-render limits are supplied by the caller's build or display
 	## policy. They never change the app's live node or propagation limits.
@@ -51,9 +48,8 @@ Dom := [].{
 	TextRun : { container : U64, child_index : U64, physical : [Omitted, Node(U64)], parts : List(TextPart) }
 
 	## Producer-only controls have explicit restoration data. No app spelling
-	## assigns these roles, and ordinary logical children remain separate. An
-	## attribute override retains its original ordered slot, zero when absent.
-	Scaffold : [ControlText({ owner : U64, container : U64, physical_text : [Omitted, Node(U64)] }), AttributeOverride({ owner : U64, name : ExpandedName, logical_index : U64, logical : [Absent, Present(Str)], physical : [Absent, Present(Str)] }), NoSelectionOption({ owner : U64, physical_option : U64 })]
+	## assigns these roles, and ordinary logical children remain separate.
+	Scaffold : [ControlText({ owner : U64, container : U64, physical_text : [Omitted, Node(U64)] }), AttributeOverride({ owner : U64, name : ExpandedName, logical : [Absent, Present(Str)], physical : [Absent, Present(Str)] }), NoSelectionOption({ owner : U64, physical_option : U64 })]
 
 	## The one walk supplies markup and canonical facts together. Diagnostic
 	## output is not a parse-back certification; picture mode returns only after
@@ -424,7 +420,7 @@ Dom := [].{
 	## No engine aliases, templates, document listeners or observations survive
 	## from an earlier model.
 	new : {} -> Model
-	new = |_| { nodes: [{ namespace: Dom.html_namespace, prefix: "", kind: 1, container: 0, content: None, svg: False, tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], template_nodes: NotARow, ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }], statics: [], rows: [], tpls: [], root: 0, documents: [], observed_count: 0, transitions: { count: 0, oldest: 0, bytes: 0, records: Dict.empty(), exhausted: False } }
+	new = |_| { nodes: [{ namespace: Dom.html_namespace, prefix: "", kind: 1, container: 0, content: None, svg: False, tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }], statics: [], rows: [], tpls: [], root: 0, documents: [], observed_count: 0, transitions: { count: 0, oldest: 0, bytes: 0, records: Dict.empty(), exhausted: False } }
 
 	## Read a little-endian command operand independently of the engine's
 	## encoder. Every byte is bounds checked; a short operand is an executor
@@ -555,7 +551,7 @@ Dom := [].{
 	## serving fixtures, it lets modify move a record out of its list before
 	## changing nested storage without retaining a second holder.
 	empty_node : DNode
-	empty_node = { namespace: Dom.html_namespace, prefix: "", kind: 1, container: 0, content: None, svg: False, tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], template_nodes: NotARow, ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }
+	empty_node = { namespace: Dom.html_namespace, prefix: "", kind: 1, container: 0, content: None, svg: False, tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty(), shown: Hidden, shown_intent: { dialog: 0, popover: 0 }, pending_toggle: False, toggle_slot: 0, scroll: { top: 0, left: 0 }, observing: 0, observed: [] }
 
 	## Update node i in place (the node is moved out of the list first, so
 	## its kid list stays uniquely owned).
@@ -663,12 +659,12 @@ Dom := [].{
 				dom,
 				n.parent - 1,
 				|p| {
-					{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids, parent, rn, hs, ht, template_nodes, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
+					{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
 					kept = match kids.find_last_index(|k| k == i) {
 						Ok(pos) => kids.drop_at(pos)
 						Err(_) => kids
 					}
-					{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids: kept, parent, rn, hs, ht, template_nodes, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
+					{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids: kept, parent, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
 				},
 			)
 			Dom.modify(d1, i, |m| { ..m, parent: 0, detach_count: m.detach_count + 1 })
@@ -683,7 +679,7 @@ Dom := [].{
 			d0,
 			parent,
 			|p| {
-				{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids, parent: pp, rn, hs, ht, template_nodes, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
+				{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed } = p
 				kids2 = match before {
 					Err(End) => kids.append(i)
 					Ok(b) => {
@@ -691,7 +687,7 @@ Dom := [].{
 						kids.sublist({ start: 0, len: pos }).append(i).concat(kids.sublist({ start: pos, len: kids.len() - pos }))
 					}
 				}
-				{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, template_nodes, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
+				{ namespace, prefix, kind, container, content, svg, tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps, shown, shown_intent, pending_toggle, toggle_slot, scroll, observing, observed }
 			},
 		)
 		Dom.modify(d1, i, |n| { ..n, parent: parent + 1 })
@@ -1230,23 +1226,7 @@ Dom := [].{
 				site_id = Dom.u32(b, $at + 12).to_u64()
 				tpl = $d.tpls.get(site_id) ?? crash "unknown template"
 				$at = $at + 16
-				clone_start = $d.nodes.len()
 				(d1, root, _) = Dom.build($d, tpl.bytes, 0)
-				var $template_nodes = Cloned([])
-				var $clone_index = clone_start
-				while $clone_index < d1.nodes.len() and $template_nodes != TooMany {
-					if Dom.node(d1, $clone_index).kind != 4 {
-						$template_nodes = match $template_nodes {
-							Cloned(nodes) => if nodes.len() >= 262144 {
-								TooMany
-							} else {
-								Cloned(nodes.append($clone_index))
-							}
-							_ => crash "Dom.INST: active bounded clone cache"
-						}
-					}
-					$clone_index = $clone_index + 1
-				}
 				r = Dom.node(d1, root)
 				# Hole targets are resolved once, here: content a nested site
 				# inserts into the row later shifts sibling indices.
@@ -1254,7 +1234,7 @@ Dom := [].{
 				for hole0 in tpl.holes {
 					$ht = $ht.append(Dom.walk(d1, root, hole0.path))
 				}
-				var $dd = Dom.set_node(d1, root, { ..r, rn: nid, ht: $ht, template_nodes: $template_nodes })
+				var $dd = Dom.set_node(d1, root, { ..r, rn: nid, ht: $ht })
 				for hole in tpl.holes {
 					target = Dom.walk($dd, root, hole.path)
 					if hole.kind == 1 {
@@ -2671,7 +2651,6 @@ render_override : RenderState, { owner : U64, attributes : List((Dom.ExpandedNam
 render_override = |state, { owner, attributes, name, value }| {
 	previous = attributes.find_first(|(key, _)| key.namespace == name.namespace and key.local == name.local)
 	logical = previous.map_ok(|(_, text)| Present(text)) ?? Absent
-	logical_index = attributes.find_first_index(|(key, _)| key.namespace == name.namespace and key.local == name.local) ?? 0
 	if logical == value or (value == Present("") and previous.is_ok()) {
 		return Ok({ state, attributes })
 	}
@@ -2698,7 +2677,7 @@ render_override = |state, { owner, attributes, name, value }| {
 			}
 		}
 	}
-	changed = render_scaffold(state, AttributeOverride({ owner, name, logical_index, logical, physical: value }))?
+	changed = render_scaffold(state, AttributeOverride({ owner, name, logical, physical: value }))?
 	Ok({ state: changed, attributes: $attributes })
 }
 
@@ -3116,7 +3095,7 @@ expect {
 	multiple = Dom.render(dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 512, max_nodes: 32, max_depth: 8 } }) ?? crash "multiple select render"
 	missing_dom = Dom.set_node(dom, 1, { ..select, attrs: [], props: [("value", "missing")] })
 	missing = Dom.render(missing_dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 512, max_nodes: 32, max_depth: 8 } }) ?? crash "missing select render"
-	multiple.markup == "<select multiple=\"\"><option value=\"x\" selected=\"false\"></option><option value=\"x\"></option></select>" and multiple.scaffolds == [AttributeOverride({ owner: 2, name: { namespace: "", prefix: "", local: "selected" }, logical_index: 1, logical: Present("false"), physical: Absent })] and missing.scaffolds.last().map_ok(
+	multiple.markup == "<select multiple=\"\"><option value=\"x\" selected=\"false\"></option><option value=\"x\"></option></select>" and multiple.scaffolds == [AttributeOverride({ owner: 2, name: { namespace: "", prefix: "", local: "selected" }, logical: Present("false"), physical: Absent })] and missing.scaffolds.last().map_ok(
 		|scaffold| match scaffold {
 			NoSelectionOption(_) => True
 			_ => False
@@ -3194,30 +3173,4 @@ expect {
 	raw_false = Dom.set_attr_on(dom, 0, "checked", "false")
 	raw_true = Dom.set_attr_on(dom, 0, "checked", "true")
 	Dom.has_attr(Dom.node(on, 0), "checked") and Dom.attr_of(Dom.node(on, 0), "checked") == "" and Dom.live_value(Dom.node(on, 0), "checked") == "true" and !Dom.has_attr(Dom.node(off, 0), "checked") and Dom.live_value(Dom.node(off, 0), "checked") == "false" and Dom.attr_of(Dom.node(raw_false, 0), "checked") == "false" and Dom.attr_of(Dom.node(raw_true, 0), "checked") == "true"
-}
-
-## Removing selected for a controlled select preserves its original ordered
-## slot, including the valid first position. Remaining attributes stay ordered;
-## materialization must restore into this slot rather than append selected.
-expect {
-	cases = [
-		{ attributes: Dom.attributes([("selected", ""), ("data-x", "x"), ("value", "present")]), index: 0.U64 },
-		{ attributes: Dom.attributes([("data-x", "x"), ("selected", ""), ("value", "present")]), index: 1 },
-	]
-	cases.all(
-		|fixture| {
-			dom = { ..Dom.new({}), nodes: [{ ..Dom.empty_node, tag: "select", props: [("value", "missing")], kids: [1] }, { ..Dom.empty_node, tag: "option", attrs: fixture.attributes }] }
-			rendered = Dom.render(dom, { root: 0, mode: Picture, limits: { max_bytes: 1024, max_nodes: 32, max_depth: 8 } }) ?? crash "valid controlled selection order fixture"
-			observed = rendered.scaffolds.find_first(
-				|role| match role {
-					AttributeOverride(_) => True
-					_ => False
-				},
-			) ?? crash "selected removal must declare restoration"
-			observed == AttributeOverride({ owner: 1, name: { namespace: "", prefix: "", local: "selected" }, logical_index: fixture.index, logical: Present(""), physical: Absent }) and match rendered.physical.get(1) {
-				Ok(Element(option)) => option.attributes == Dom.attributes([("data-x", "x"), ("value", "present")])
-				_ => False
-			}
-		},
-	)
 }

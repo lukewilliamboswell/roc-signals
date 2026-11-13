@@ -1,5 +1,4 @@
 import Web
-import PictureCapture
 import Layout
 import TableCore exposing [Table]
 import View
@@ -3024,7 +3023,7 @@ Core := [].{
 	take_cmds = |{ store, root, tx, programs }, buf| {
 		{ cmds, next, free, routes, work, paths, site_free, observations, fx } = tx
 		{ next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch } = fx
-		{ mounting, asked, types, seen: _, capture: _ } = batch
+		{ mounting, asked, types, seen: _ } = batch
 		var $cmds = cmds
 		if asked {
 			$cmds = $cmds.set(0, 1) ?? crash "internal: missing batch header"
@@ -3035,7 +3034,7 @@ Core := [].{
 		} else if $cmds.len() == 1 {
 			$cmds = $cmds.clear()
 		}
-		fx2 = { next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch: { mounting, asked: False, types: [], seen: Dict.empty(), capture: PictureCapture.disabled } }
+		fx2 = { next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch: { mounting, asked: False, types: [], seen: Dict.empty() } }
 		({ store, root, tx: { cmds: buf.clear(), next, free, routes, work: add_work(work, 45, if (asked) 1 else 0), paths, site_free, observations, fx: fx2 }, programs }, $cmds)
 	}
 
@@ -3096,7 +3095,7 @@ Core := [].{
 	settled : App(st) -> Try({}, { cmds : List(U8), note : Str })
 	settled = |{ store, root, tx, programs: _ }| {
 		before = tx.fx
-		scratch = with_fx(tx, |effects| { ..effects, batch: { mounting: False, asked: False, types: [], seen: Dict.empty(), capture: PictureCapture.disabled } })
+		scratch = with_fx(tx, |effects| { ..effects, batch: { mounting: False, asked: False, types: [], seen: Dict.empty() } })
 		(_, _, after) = call(root, Root.{ store }, Changed(every_layer), { ..scratch, cmds: [] })
 		note = settle_note(before, after.fx)
 		if (after.cmds.is_empty() and note.is_empty()) Ok({}) else Err({ cmds: after.cmds, note })
@@ -3172,7 +3171,7 @@ Core := [].{
 	Program(st) :: {
 		version : U32,
 		keys : () -> List(U8),
-		init : Catalogue, List(U8), PictureCapture.Capture -> App(st),
+		init : Catalogue, List(U8) -> (App(st), List(U8), List(U8)),
 		event : App(st), List(U8), List(U8), U32, U32, List(U8) -> (App(st), List(U8), List(U8)),
 		workers : List(Registration),
 		ports : Ports,
@@ -3224,7 +3223,7 @@ Core := [].{
 		{
 			version: p.version,
 			keys: || put_section(put_section(put_media_table((ports.table)(keys(), ports.decls), media), 10, [zone_days.to_u8_wrap(), zone_days.shr_zf_wrap(8).to_u8_wrap()]), 11, session_keys.fold(put_u32([], session_keys.len().to_u32_wrap()), put_str)),
-			init: |boot| finish(init({ workers: catalogue_names(workers), ports, media }, boot, PictureCapture.disabled), [], []),
+			init: |boot| init({ workers: catalogue_names(workers), ports, media }, boot),
 			event: p.event,
 			files: |inst, buf, wbuf, node, handler, record, blobs| {
 				{ store, root, tx, programs } = inst
@@ -3246,19 +3245,6 @@ Core := [].{
 			settled: Core.settled,
 			live: Core.fx_live,
 		}
-	}
-
-	## Native picture production mounts exactly once through the ordinary
-	## initializer. Capture is moved out and disabled before App is returned;
-	## neither the native runner nor the host inspects application storage.
-	init_picture : Program(st), List(U8) -> { state : App(st), commands : List(U8), work : List(U8), capture : Try(List(PictureCapture.Frame), [NotCaptured, CaptureLimit, InvalidBoundary]) }
-	init_picture = |program, boot| {
-		capture = PictureCapture.start({ max_records: PictureCapture.max_records }) ?? crash "internal: picture capture protocol limit is valid"
-		{ store, root, tx, programs } = (program.init)({ workers: catalogue_names(program.workers), ports: program.ports, media: program.media }, boot, capture)
-		captured = PictureCapture.finish(tx.fx.batch.capture)
-		cleared = with_fx(tx, |fx| with_capture(fx, |_finished| PictureCapture.disabled))
-		(instance, commands, work) = finish({ store, root, tx: cleared, programs }, [], [])
-		{ state: instance, commands, work, capture: captured }
 	}
 
 	## For the platform's hosts: a worker instance's job entry (design.md,
@@ -3407,7 +3393,7 @@ Core := [].{
 				]
 				declarations.fold([], |bytes, section| put_section(bytes, section.tag, (section.write)()))
 			},
-			init: |names, boot, capture| {
+			init: |names, boot| {
 				mounted = match Core.read_mount(boot, names.media) {
 					Ok(value) => value
 					Err(message) => crash message
@@ -3422,7 +3408,7 @@ Core := [].{
 						crash "contract: boot section 11 (session-storage) pair for undeclared key \"${key}\""
 					}
 				}
-				mount_start_captured({ max: cfg.max_inflight, programs: names, start: start(b), elem: view(b), enclosing: enclosing_root(mounted.root), capture })
+				finish(mount_start_in(cfg.max_inflight, names, start(b), view(b), enclosing_root(mounted.root)), [], [])
 			},
 			event: |inst, buf, wbuf, node, handler, payload| {
 				{ store, root, tx, programs } = inst
@@ -4030,35 +4016,7 @@ put_presence = |bytes, presence| match presence {
 ## opcode is counted in the work counters; property commands use the
 ## dedicated PROP and HPROP slots (design.md, "Work assertions").
 emit_op : Tx, U8, (List(U8) -> List(U8)) -> Tx
-emit_op = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, op, write| {
-	at = cmds.len()
-	written = write(cmds.append(op))
-	{ cmds: written, next, free, routes, work: add_work(work, if (op == 21) 41 else if (op == 22) 42 else if (op == 23) 43 else if (op == 25) 46 else if (op == 26) 48 else op.to_u64(), 1), paths, site_free, observations, fx: capture_command(fx, { bytes: written, at, opcode: op }) }
-}
-
-## Only fixed-prefix command addresses are read here. Effects' payloads are
-## never decoded by capture, and no command or app state is interpreted by a host.
-capture_command : Fx, { bytes : List(U8), at : U64, opcode : U8 } -> Fx
-capture_command = |fx, emitted| with_capture(
-	fx,
-	|capture| {
-		if !PictureCapture.is_collecting(capture) {
-			return capture
-		}
-		address = match emitted.opcode {
-			1 | 2 | 3 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 12 | 21 | 22 | 23 | 26 => get_u32(emitted.bytes, emitted.at + 1, "captured command address")
-			18 => get_u32(emitted.bytes, emitted.at + 2, "captured reference address")
-			_ => 0
-		}
-		slot = match emitted.opcode {
-			1 => get_u32(emitted.bytes, emitted.at + 13, "captured row site")
-			6 => get_u32(emitted.bytes, emitted.at + 5, "captured clear site")
-			7 => get_u32(emitted.bytes, emitted.at + 1, "captured template site")
-			_ => 0
-		}
-		PictureCapture.command(capture, { at: emitted.at, end: emitted.bytes.len(), opcode: emitted.opcode, address, slot })
-	},
-)
+emit_op = |{ cmds, next, free, routes, work, paths, site_free, observations, fx }, op, write| { cmds: write(cmds.append(op)), next, free, routes, work: add_work(work, if (op == 21) 41 else if (op == 22) 42 else if (op == 23) 43 else if (op == 25) 46 else if (op == 26) 48 else op.to_u64(), 1), paths, site_free, observations, fx }
 
 ## Add `n` to work counter `i`.
 bump : Tx, U64, U64 -> Tx
@@ -5615,7 +5573,6 @@ RHole(ctx) : { is_observation : Bool, evaluated : Bool, kind : U8, mask : U128, 
 
 Plan(ctx) : {
 	tree : List(U8),
-	node_kinds : PictureCapture.NodeKinds,
 	htab : List(U8),
 	holes : List(RHole(ctx)),
 	handlers : List(RoutedHandler(ctx)),
@@ -5625,7 +5582,7 @@ Plan(ctx) : {
 }
 
 plan_empty : {} -> Plan(ctx)
-plan_empty = |_| { tree: [], node_kinds: PictureCapture.empty_nodes, htab: [], holes: [], handlers: [], mounts: [], ncols: 0, kreads: 0 }
+plan_empty = |_| { tree: [], htab: [], holes: [], handlers: [], mounts: [], ncols: 0, kreads: 0 }
 
 put_path : List(U8), U8, List({ container : U8, index : U8 }) -> List(U8)
 put_path = |buf, kind, path| path.fold(buf.append(kind).append(narrow(path.len(), "nesting depth of a hole")), |out, step| out.append(step.container).append(step.index))
@@ -5636,7 +5593,7 @@ narrow : U64, Str -> U8
 narrow = |n, what| if (n > 255) crash "resource_limit: a row template's ${what} is ${n.to_str()}; the template encoding allows at most 255" else n.to_u8_wrap()
 
 val_hole : Plan(ctx), { kind : U8, value : Signal(ctx, [Absent, Present(Str)]), extra : List(U8), counter : U64, evaluated : Bool } -> Plan(ctx)
-val_hole = |{ tree, node_kinds, htab, holes, handlers, mounts, ncols, kreads }, { kind, value: v, extra, counter, evaluated }| {
+val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads }, { kind, value: v, extra, counter, evaluated }| {
 	{ mask, read, sel } = v
 	(smask, skey) = match sel {
 		NoSel => (0, |_| "")
@@ -5645,7 +5602,7 @@ val_hole = |{ tree, node_kinds, htab, holes, handlers, mounts, ncols, kreads }, 
 	property = if (kind == 6) extra.last() ?? crash "internal: property row has an index" else 0
 	live = mask.bitwise_or(smask) != 0 or property == 6 or property == 7
 	hole = { is_observation: False, evaluated, kind, mask, smask, skey, read, col: if (live) ncols else 0, live, ctl: if (kind == 5) holes.keep_if(|prior| prior.kind == 5).len() else counter, value_control: kind == 5 and counter == 1, property }
-	{ tree, node_kinds, htab: htab.concat(extra), holes: holes.append(hole), handlers, mounts, ncols: if (live) ncols + 1 else ncols, kreads }
+	{ tree, htab: htab.concat(extra), holes: holes.append(hole), handlers, mounts, ncols: if (live) ncols + 1 else ncols, kreads }
 }
 
 compile_elem : Plan(ctx), Elem(ctx), List({ container : U8, index : U8 }), U64, List(U32), Str, Enclosing -> Plan(ctx)
@@ -5668,7 +5625,7 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 			}
 			nstatic = $nstatic
 			var $p = plan
-			{ tree, node_kinds, htab, holes, handlers, mounts, ncols, kreads } = $p
+			{ tree, htab, holes, handlers, mounts, ncols, kreads } = $p
 			var $tree = put_element_name(tree.append(1), tag).append(container).append(narrow(nstatic, "static attributes on one element"))
 			var $htab = htab
 			var $holes = holes
@@ -5681,19 +5638,19 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 						$tree = put_str(put_attribute_name($tree, resolve_attribute(name, tag)), value)
 					}
 					Dyn(name, v) => {
-						r = val_hole({ tree: [], node_kinds: PictureCapture.empty_nodes, htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 2, value: v, extra: put_attribute_name(put_path([], 2, path), resolve_attribute(name, tag)), counter: 0, evaluated: True })
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 2, value: v, extra: put_attribute_name(put_path([], 2, path), resolve_attribute(name, tag)), counter: 0, evaluated: True })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
 					}
 					Property(index, encoded) => {
-						r = val_hole({ tree: [], node_kinds: PictureCapture.empty_nodes, htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 6, value: Core.const(Present(encoded)), extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: False })
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 6, value: Core.const(Present(encoded)), extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: False })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
 					}
 					PropertyV(index, value) => {
-						r = val_hole({ tree: [], node_kinds: PictureCapture.empty_nodes, htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 6, value: value.map(|encoded| Present(encoded)), extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: True })
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 6, value: value.map(|encoded| Present(encoded)), extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: True })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
@@ -5705,7 +5662,7 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 						$handlers = $handlers.append(bound)
 					}
 					Ref(value) => {
-						r = val_hole({ tree: [], node_kinds: PictureCapture.empty_nodes, htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 5, value: value.map(|encoded| Present(encoded)), extra: put_path([], 5, path), counter: if (value_control) 1 else 0, evaluated: True })
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 5, value: value.map(|encoded| Present(encoded)), extra: put_path([], 5, path), counter: if (value_control) 1 else 0, evaluated: True })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
@@ -5713,7 +5670,7 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 				}
 			}
 			$tree = $tree.append(narrow(kids.len(), "children of one element"))
-			$p = { tree: $tree, node_kinds: PictureCapture.add_node(node_kinds, Element), htab: $htab, holes: $holes, handlers: $handlers, mounts, ncols: $ncols, kreads }
+			$p = { tree: $tree, htab: $htab, holes: $holes, handlers: $handlers, mounts, ncols: $ncols, kreads }
 			var $i = 0.U8
 			for kid in kids {
 				$p = compile_elem($p, kid, path.append({ container, index: $i }), depth, site, placed, children_context)
@@ -5727,27 +5684,26 @@ compile_elem = |plan, elem, path, depth, site, placed, enclosing| {
 		}
 		Comment(value) => {
 			check_construction_text(enclosing.construction, { value: "", site, placement: "${placed} (comment)" })
-			{ tree, node_kinds, htab, holes, handlers, mounts, ncols, kreads } = plan
-			{ tree: put_str(tree.append(3), value), node_kinds: PictureCapture.add_node(node_kinds, Comment), htab, holes, handlers, mounts, ncols, kreads }
+			{ ..plan, tree: put_str(plan.tree.append(3), value) }
 		}
 		Fragment(_) => crash "internal: a fragment is only a dynamic branch, never a row template node"
 		Text(s) => {
 			check_construction_text(enclosing.construction, { value: s, site, placement: placed })
-			{ tree, node_kinds, htab, holes, handlers, mounts, ncols, kreads } = plan
-			{ tree: put_str(tree.append(2), s), node_kinds: PictureCapture.add_node(node_kinds, Text), htab, holes, handlers, mounts, ncols, kreads }
+			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
+			{ tree: put_str(tree.append(2), s), htab, holes, handlers, mounts, ncols, kreads }
 		}
 		TextV(v) => {
 			check_construction_text(enclosing.construction, { value: "", site, placement: placed })
 			checked = checked_text_read(v.read, { context: enclosing.construction, site, placement: placed })
-			{ tree, node_kinds, htab, holes, handlers, mounts, ncols, kreads } = plan
+			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
 			t2 = put_str(tree.append(2), "")
-			val_hole({ tree: t2, node_kinds: PictureCapture.add_node(node_kinds, Text), htab, holes, handlers, mounts, ncols, kreads }, { kind: 1, value: { ..v.map(|encoded| Present(encoded)), read: |context| Present(checked(context)) }, extra: put_path([], 1, path), counter: 0, evaluated: True })
+			val_hole({ tree: t2, htab, holes, handlers, mounts, ncols, kreads }, { kind: 1, value: { ..v.map(|encoded| Present(encoded)), read: |context| Present(checked(context)) }, extra: put_path([], 1, path), counter: 0, evaluated: True })
 		}
 		Site(m, rf) => {
 			check_construction_text(enclosing.construction, { value: "", site, placement: "${placed} (nested site anchor)" })
-			{ tree, node_kinds, htab, holes, handlers, mounts, ncols, kreads } = plan
+			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
 			hole = { is_observation: False, evaluated: False, kind: 4, mask: 0, smask: 0, skey: |_| "", read: |_| Absent, col: mounts.len(), live: False, ctl: 0, value_control: False, property: 0 }
-			{ tree: put_str(tree.append(2), ""), node_kinds: PictureCapture.add_node(node_kinds, Text), htab: put_path(htab, 4, path), holes: holes.append(hole), handlers, mounts: mounts.append(mount_in_context(m, enclosing)), ncols, kreads: kreads.bitwise_or(rf(depth)) }
+			{ tree: put_str(tree.append(2), ""), htab: put_path(htab, 4, path), holes: holes.append(hole), handlers, mounts: mounts.append(mount_in_context(m, enclosing)), ncols, kreads: kreads.bitwise_or(rf(depth)) }
 		}
 	}
 }
@@ -6107,7 +6063,6 @@ place_row = |cfg, cols, env, item, key, before, keyed, tx| {
 	rnodes2 = put_at(rnodes, si, node)
 	row_env = env(key, item)
 	{ cmds, next, free: idfree, routes, work, paths, site_free, observations, fx } = set_row_route(tx0, node, cfg.site, slot)
-	command_at = cmds.len()
 	var $c = put_u32(put_u32(put_u32(put_u32(cmds.append(1), node), cfg.parent), before), cfg.site)
 	var $lasts = lasts
 	var $sels = sels
@@ -6165,31 +6120,7 @@ place_row = |cfg, cols, env, item, key, before, keyed, tx| {
 	# One INST (a row and its scope created), its hole evaluations and the
 	# key index work of the site that placed it.
 	w4 = add_work(add_work(add_work(add_work(add_work(add_work(add_work(w3, 1, 1), w_evals, $ev), w_scopes_created, 1), w_key_hashes, keyed.hashes), w_key_compares, keyed.compares), w_set_value, $set_value), w_set_checked, $set_checked)
-	captured = with_capture(
-		fx3,
-		|capture| {
-			if !PictureCapture.is_collecting(capture) {
-				return capture
-			}
-			var $capture = PictureCapture.nodes(PictureCapture.command(capture, { at: command_at, end: $c.len(), opcode: 1, address: node, slot: cfg.site }), { at: command_at, end: $c.len(), row: node, kinds: cfg.plan.node_kinds })
-			var $hole = 0.U32
-			var $reference = cfg.plan.mounts.len()
-			for hole in cfg.plan.holes {
-				$capture = PictureCapture.hole($capture, { at: command_at, end: $c.len(), row: node, index: $hole, kind: hole.kind })
-				if hole.kind == 4 or hole.kind == 5 {
-					alias_index = if (hole.kind == 4) hole.col else $reference
-					address = $bound.get(alias_index) ?? crash "internal: captured INST alias is allocated"
-					$capture = PictureCapture.alias($capture, { at: command_at, end: $c.len(), address, hole: $hole, kind: hole.kind })
-					if hole.kind == 5 {
-						$reference = $reference + 1
-					}
-				}
-				$hole = $hole + 1
-			}
-			$capture
-		},
-	)
-	var $tx = { cmds: $c, next: n3, free: f3, routes: r3, work: w4, paths: p3, site_free: sf3, observations: ob3, fx: captured }
+	var $tx = { cmds: $c, next: n3, free: f3, routes: r3, work: w4, paths: p3, site_free: sf3, observations: ob3, fx: fx3 }
 	if cfg.dynamic {
 		var $insts = []
 		var $km = kid_mask
@@ -7616,14 +7547,9 @@ mount_start = |max, programs, start, elem| mount_start_in(max, programs, start, 
 ## The program boundary supplies measured finite root facts without giving
 ## them to an app's Boot reader or retaining another copy of its store.
 mount_start_in : U64, Catalogue, Core.Start(st), Elem(Root(st)), Enclosing -> App(st)
-mount_start_in = |max, programs, start, elem, enclosing| mount_start_captured({ max, programs, start, elem, enclosing, capture: PictureCapture.disabled })
-
-## Picture metadata is passive and exists only for this mount's command batch.
-## The store and sites have exactly the ordinary mount's ownership and turns.
-mount_start_captured : { max : U64, programs : Catalogue, start : Core.Start(st), elem : Elem(Root(st)), enclosing : Enclosing, capture : PictureCapture.Capture } -> App(st)
-mount_start_captured = |{ max, programs, start: { st, tables }, elem, enclosing, capture }| {
+mount_start_in = |max, programs, { st, tables }, elem, enclosing| {
 	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = new_tx([])
-	tx0 = { cmds, next, free, routes, work, paths, site_free, observations, fx: with_capture({ ..fx, max }, |_disabled| capture) }
+	tx0 = { cmds, next, free, routes, work, paths, site_free, observations, fx: { ..fx, max } }
 	(block, tx) = mount_block(Root.{ store: st }, elem, 0, [], 0, 0, { cap: 0, enclosing }, tx0)
 	written = tables.fold(0.U128, |acc, t| acc.bitwise_or(cell_bit(t.cell)))
 	{ store, root, tx: mounted, programs: catalogue } = drain({ store: st, root: store_inst({ cells: tables, written }, no_layers, block), tx: flush_turn(tx, programs), programs })
@@ -8070,16 +7996,11 @@ write_ports = |tx, entries| {
 	var $out = if (in_place) cmds else List.with_capacity(cmds.len() + 64).concat(cmds.sublist({ start: 0, len: first }))
 	var $from = first
 	var $sends = 0.U64
-	var $insertions = []
-	var $insertions_full = False
-	collecting = PictureCapture.is_collecting(fx.batch.capture)
-	insertion_limit = PictureCapture.remaining(fx.batch.capture)
 	for (req, at, id) in reqs {
 		if at > $from {
 			$out = $out.concat(cmds.sublist({ start: $from, len: at - $from }))
 			$from = at
 		}
-		before = $out.len()
 		$out = match req {
 			Command(port, message) => {
 				$sends = $sends + 1
@@ -8088,23 +8009,9 @@ write_ports = |tx, entries| {
 			Call(port, message, timeout_ms) => put_u32(put_port_message(put_str(put_u32($out.append(13), id).append(9), port), message), min_u32(timeout_ms, max_timeout_ms))
 			Subscribe(port, message) => put_port_message(put_str(put_u32($out.append(13), id).append(10), port), message)
 		}
-		if collecting and !$insertions_full {
-			if $insertions.len() >= insertion_limit {
-				$insertions_full = True
-			} else {
-				$insertions = $insertions.append({
-					at,
-					bytes: $out.len() - before,
-					opcode: match req {
-						Command(_, _) => 19
-						Call(_, _, _) | Subscribe(_, _) => 13
-					},
-				})
-			}
-		}
 	}
 	out = if (in_place) $out else $out.concat(cmds.sublist({ start: $from, len: cmds.len() - $from }))
-	{ cmds: out, next, free, routes, work: add_work(work, w_port_sends, $sends), paths, site_free, observations, fx: with_capture(fx, |capture| if ($insertions_full) PictureCapture.refuse_limit(capture) else PictureCapture.seal(capture, $insertions)) }
+	{ cmds: out, next, free, routes, work: add_work(work, w_port_sends, $sends), paths, site_free, observations, fx }
 }
 
 ## A message as FX kinds 9 and 10 and `PORT` carry it: `json:str
@@ -8260,16 +8167,16 @@ PortAt : { req : PortRequest, path : List(U32), slot : [At(U64, U32), Refused] }
 ## with its timeout, or a subscription, each with its port and message.
 PortRequest : [Command(Str, PortMessage), Call(Str, PortMessage, U32), Subscribe(Str, PortMessage)]
 
-TransitionBatch : { mounting : Bool, asked : Bool, types : List(Str), seen : Dict(Str, {}), capture : PictureCapture.Capture }
+TransitionBatch : { mounting : Bool, asked : Bool, types : List(Str), seen : Dict(Str, {}) }
 
 fx_empty : Fx
-fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, document_nodes: [], observed: { owners: Dict.empty(), live: 0 }, refs: Dict.empty(), focus: [], ref_pos: [], cleanups: [], guard: { live: 0, emitted: False }, batch: { mounting: True, asked: False, types: [], seen: Dict.empty(), capture: PictureCapture.disabled } }
+fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, document_nodes: [], observed: { owners: Dict.empty(), live: 0 }, refs: Dict.empty(), focus: [], ref_pos: [], cleanups: [], guard: { live: 0, emitted: False }, batch: { mounting: True, asked: False, types: [], seen: Dict.empty() } }
 
 ## Collect a request without allocating an awaited id. Removing the batch from
 ## its holder before updating keeps its hash set and ordered list unique.
 collect_transition : Fx, List(Str) -> Fx
 collect_transition = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }, names| {
-	{ mounting, asked, types, seen, capture } = batch
+	{ mounting, asked, types, seen } = batch
 	var $types = types
 	var $seen = seen
 	if !mounting {
@@ -8280,15 +8187,7 @@ collect_transition = |{ next, inner, live, queue, max, issued, delivered, stale,
 			}
 		}
 	}
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch: { mounting, asked: asked or !mounting, types: $types, seen: $seen, capture } }
-}
-
-## Move the transient collector out of its holder before updating it. Keeping
-## a second reference here would copy the command history on every emission.
-with_capture : Fx, (PictureCapture.Capture -> PictureCapture.Capture) -> Fx
-with_capture = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }, update| {
-	{ mounting, asked, types, seen, capture } = batch
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch: { mounting, asked, types, seen, capture: update(capture) } }
+	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch: { mounting, asked: asked or !mounting, types: $types, seen: $seen } }
 }
 
 ## The first follow-up id: follow-ups are a space of their own, above
@@ -8661,9 +8560,7 @@ fx_admit_progress = |tx, path, req, progress_ms| {
 		(id, { cmds, next, free, routes, work, paths, site_free, observations, fx: fx2 })
 	} else {
 		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req), progress: progress_ms > 0 and supports_progress(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch }
-		command_at = cmds.len()
-		written = put_req(cmds, id, req, progress_ms)
-		(id, { cmds: written, next, free, routes, work: add_work(work, 13, 1), paths, site_free, observations, fx: if (written.len() == command_at) fx2 else capture_command(fx2, { bytes: written, at: command_at, opcode: 13 }) })
+		(id, { cmds: put_req(cmds, id, req, progress_ms), next, free, routes, work: add_work(work, 13, 1), paths, site_free, observations, fx: fx2 })
 	}
 }
 
@@ -8765,9 +8662,7 @@ issue_progress = |tx, path, reqs, owned, progress_ms| {
 				# record is `set_checked`.
 				{ token, start, len } = file_ref(file)
 				{ cmds, next, free, routes, work, paths, site_free, observations, fx } = $tx
-				command_at = cmds.len()
-				written = put_str(put_u64(put_u64(put_u64(cmds.append(20), token), start), len), name)
-				$tx = { cmds: written, next, free, routes, work, paths, site_free, observations, fx: capture_command(fx, { bytes: written, at: command_at, opcode: 20 }) }
+				$tx = { cmds: put_str(put_u64(put_u64(put_u64(cmds.append(20), token), start), len), name), next, free, routes, work, paths, site_free, observations, fx }
 			}
 			_ => {
 				(id, t1) = fx_admit_progress($tx, path, req, progress_ms)
@@ -9722,7 +9617,7 @@ flush_turn = |incoming, programs| {
 	on = guard.live > 0
 	tx = if (on == guard.emitted) incoming else emit_op(with_fx(incoming, |fx| { ..fx, guard: { live: guard.live, emitted: on } }), 25, |bytes| bytes.append(if (on) 1 else 0))
 	if tx.fx.focus.is_empty() {
-		{ ..tx, fx: with_capture(tx.fx, |capture| PictureCapture.seal(capture, [])), observations: { echo: False, shown: tx.observations.shown.clear() } }
+		{ ..tx, observations: { echo: False, shown: tx.observations.shown.clear() } }
 	} else {
 		reqs = tx.fx.focus
 		for check in reqs {
@@ -9777,7 +9672,7 @@ flush_turn = |incoming, programs| {
 			}
 		}
 		written = (programs.ports.write)($tx, reqs)
-		{ ..written, fx: with_capture(written.fx, |capture| PictureCapture.seal(capture, [])), observations: { echo: False, shown: written.observations.shown.clear() } }
+		{ ..written, observations: { echo: False, shown: written.observations.shown.clear() } }
 	}
 }
 
@@ -11894,82 +11789,3 @@ expect {
 ## An effect-only site emits no child node, so placing it in a void element
 ## does not trigger the rule for anchors or authored text children.
 expect Core.settled(Core.mount(Core.element("input", [], [Core.guard_leave(Core.const(False))]))).is_ok()
-
-## Capturing a picture uses one ordinary mount and leaves no collector in its
-## returned state; later events emit the same bytes and work as ordinary init.
-expect {
-	program = Core.program(|| Core.state(0.U64, |counter| Core.element("button", [Core.on_click(counter.update(|value| value + 1))], [Core.text_s(counter.signal().map(U64.to_str))])))
-	picture = Core.init_picture(program, [])
-	(normal, normal_commands, normal_work) = (Core.driver(program).init)([])
-	frames = picture.capture?
-	mount_cleared = PictureCapture.finish(picture.state.tx.fx.batch.capture) == Err(NotCaptured)
-	(captured_event, captured_commands, captured_work) = (Core.driver(program).event)(picture.state, [], [], 1, 0, [])
-	(normal_event, event_commands, event_work) = (Core.driver(program).event)(normal, [], [], 1, 0, [])
-	mount_cleared and picture.commands == normal_commands and picture.work == normal_work and captured_commands == event_commands and captured_work == event_work and frames.all(|frame| picture.commands.get(frame.at.to_u64()) == Ok(frame.opcode)) and PictureCapture.finish(captured_event.tx.fx.batch.capture) == Err(NotCaptured) and Core.settled(captured_event).is_ok() and Core.settled(normal_event).is_ok()
-}
-
-## A row birth carries both its nested-site and reference alias, with the
-## INST's final byte boundary and distinct hole roles, without rereading data.
-expect {
-	program = Core.program(|| Core.element("main", [], [Core.each(Core.const(["row"]), |key| key, |row| Core.element("article", [Core.ref_s(row.item())], [Core.when(Core.const(True), || Core.text("inside"), || Core.text("else"))]))]))
-	picture = Core.init_picture(program, [])
-	frames = picture.capture?
-	row = frames.find_first(|frame| frame.opcode == 1)?
-	aliases = frames.keep_if(|frame| frame.opcode == 0)
-	holes = frames.keep_if(|frame| frame.opcode == 255)
-	holes.len() == 2 and holes.all(|frame| frame.at == row.at and frame.end == row.end and frame.address == row.address) and aliases.len() == 2 and aliases.map(|frame| frame.kind).sort_with(
-		|left, right| if left < right {
-			Before
-		} else if left == right {
-			Same
-		} else {
-			After
-		},
-	) == [4, 5] and aliases.all(|frame| frame.at == row.at and frame.end == row.end and frame.address != row.address and frame.address != 0) and Core.settled(picture.state).is_ok()
-}
-
-## Port messages inserted between ordinary mount commands preserve every
-## captured final boundary, including a later self-result turn's replacement.
-expect {
-	message = { json: "\"λ\"", blobs: [[0, 255]], files: [] }
-	program = Core.program(
-		|| Core.state(
-			True,
-			|visible| Core.element(
-				"main",
-				[],
-				[
-					Core.text("before"),
-					Core.watch(visible.signal(), |_| [PortCommand({ port: "test/command", message }), PortCall({ port: "test/call", message, timeout_ms: 0 }), PortSubscribe({ port: "test/subscription", message })].map(Core.raw), Core.ignore({})),
-					Core.when(visible.signal(), || Core.element("span", [], [Core.text("first")]), || Core.text("replacement")),
-					Core.watch(Core.const({}), |_| [Core.again({})], visible.on_result(|_, _, _| False)),
-					Core.text("after"),
-				],
-			),
-		),
-	).with_ports([Core.port_declaration("test/command", Command), Core.port_declaration("test/call", Call), Core.port_declaration("test/subscription", Subscription(Latest))])
-	picture = Core.init_picture(program, [])
-	frames = picture.capture?
-	commands = frames.keep_if(|frame| frame.opcode != 0 and frame.opcode != 254 and frame.opcode != 255)
-	var $end = 1.U32
-	var $matches = True
-	for frame in commands {
-		$matches = $matches and frame.at == $end and picture.commands.get(frame.at.to_u64()) == Ok(frame.opcode)
-		$end = frame.end
-	}
-	(_, normal_commands, normal_work) = (Core.driver(program).init)([])
-	$matches and $end.to_u64() == picture.commands.len() and picture.commands == normal_commands and picture.work == normal_work and commands.keep_if(|frame| frame.opcode == 19).len() == 2 and commands.any(|frame| frame.opcode == 5) and Core.settled(picture.state).is_ok()
-}
-
-## A refused capture still writes every port command and keeps the ordinary
-## counters. Its temporary insertion list cannot grow past the capture budget.
-expect {
-	message = { json: "null", blobs: [], files: [] }
-	catalogue = { workers: [], ports: ports_of([Core.port_declaration("test/bounded", Command)]), media: [] }
-	view = || Core.watch(Core.const({}), |_| List.repeat(PortCommand({ port: "test/bounded", message }), 3).map(Core.raw), Core.ignore({}))
-	captured = mount_start_captured({ max: 32, programs: catalogue, start: { st: {}, tables: [] }, elem: view(), enclosing: root_enclosing, capture: PictureCapture.start({ max_records: 1 })? })
-	refusal = PictureCapture.finish(captured.tx.fx.batch.capture)
-	(captured_state, captured_commands) = Core.take_cmds(captured, [])
-	(normal, commands) = Core.take_cmds(mount_in(32, catalogue, {}, view()), [])
-	refusal == Err(CaptureLimit) and captured_commands == commands and Core.work_counters(captured_state) == Core.work_counters(normal) and Core.work_counters(captured_state).get(40) == Ok(3)
-}
