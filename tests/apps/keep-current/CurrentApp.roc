@@ -24,8 +24,8 @@ CurrentApp := [].{
 		$requests
 	}
 
-	answered : S, Question, Try(Str, Engine.HttpError) -> S
-	answered = |s, asked, result| {
+	answered : S, { asked : Question, result : Try(Str, Engine.HttpError) } -> S
+	answered = |s, { asked, result }| {
 		answer = match result {
 			Ok(body) => body
 			Err(error) => Str.inspect(error)
@@ -68,7 +68,7 @@ CurrentApp := [].{
 					|| Engine.keep_current(
 						value.map(CurrentApp.question_of),
 						CurrentApp.requests,
-						state.on_result(CurrentApp.answered).with_progress({}, state.on_progress(|s, asked, transfer| { ..s, progress: "${asked.text}:${transfer.done.to_str()}" })),
+						state.on_result(|s, asked, result| CurrentApp.answered(s, { asked, result })).with_progress({ every_ms: 1 }, state.on_progress(|s, asked, transfer| { ..s, progress: "${asked.text}:${transfer.done.to_str()}" })),
 					),
 					|| Engine.text(""),
 				),

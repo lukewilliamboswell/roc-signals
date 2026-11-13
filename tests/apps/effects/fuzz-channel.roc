@@ -10,6 +10,7 @@ import pf.Dom
 import pf.Scm
 import pf.SpecRunner
 import FxApp
+import CurrentModel
 
 ## The engine and the oracle's DOM, driven through the engine directly.
 S : { eng : Core.App({}), dom : Dom.Model, steps : U64 }
@@ -1076,6 +1077,7 @@ test! = |{ mode, program }| {
 		run_transitions(program)
 		run_persistence(program)
 		run_progress(program)
+		CurrentModel.run(program)
 		Fuzz.keep
 	}
 }
@@ -1086,6 +1088,7 @@ ex = |name, mode, program| Fuzz.example({ name, revision: "1", make: || { mode, 
 target = Fuzz.target_with!({
 	name: "fx-channel",
 	examples: [
+		ex("keep-current-lifecycle", 1, [18, 22, 12, 27, 30, 3, 10, 1, 8, 39, 1, 6, 5, 4, 9, 15, 21, 24, 27]),
 		ex("progress-lifecycle", 1, [0, 4, 3, 8, 1, 3, 2, 0, 5, 6, 12, 3, 16, 3, 9]),
 		ex("post-send-time-reading", 1, [12, 0, 4, 0, 12, 0, 4, 0, 12, 0, 2, 5, 2, 6, 2, 7]),
 		ex("persistence-lifetimes", 1, [3, 0, 2, 4, 1, 5, 1, 0, 8, 11, 0, 14, 1, 17, 1]),

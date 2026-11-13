@@ -7995,8 +7995,8 @@ accepts_result = |only, id| match only {
 
 ## Build a fresh index from just this issuing step. Reading the old length
 ## happens before append, so indexing cannot keep an old Owned list aliased.
-issue_effect : EffectCfg(ctx, a, h), Tx, List(Planned(h)), List(Owned(h)) -> (EffectCfg(ctx, a, h), Tx, List(Owned(h)))
-issue_effect = |cfg, tx, planned, owned| {
+issue_effect : EffectCfg(ctx, a, h), { tx : Tx, planned : List(Planned(h)), owned : List(Owned(h)) } -> (EffectCfg(ctx, a, h), Tx, List(Owned(h)))
+issue_effect = |cfg, { tx, planned, owned }| {
 	previous = owned.len()
 	match cfg.only {
 		Every => {}
@@ -8018,8 +8018,8 @@ issue_effect = |cfg, tx, planned, owned| {
 
 ## Move the policy out before mutating its index. Keeping the old cfg beside
 ## a Dict.remove would make every final result copy the current-id set.
-retire_current : EffectCfg(ctx, a, h), U32, EffectInput -> EffectCfg(ctx, a, h)
-retire_current = |{ v, plan, step, react, path, only }, id, input| {
+retire_current : EffectCfg(ctx, a, h), { id : U32, input : EffectInput } -> EffectCfg(ctx, a, h)
+retire_current = |{ v, plan, step, react, path, only }, { id, input }| {
 	only2 = match only {
 		Every => Every
 		Current({ ids, question }) => Current({ ids: if (keeps_owned(input)) ids else ids.remove(id), question })
@@ -8305,8 +8305,8 @@ fx_dispose = |tx, react, owned, site| {
 
 ## Only orphan construction varies by delivery policy; cancellation, queued
 ## refusal cleanup and reparenting remain the one per-kind disposal law.
-fx_dispose_by : Tx, List(Owned(a)), (Owned(a) -> Orphan(ctx)) -> (List(Orphan(ctx)), Tx)
-fx_dispose_by = |tx, owned, orphan| {
+fx_dispose_by : Tx, { owned : List(Owned(a)), orphan : (Owned(a) -> Orphan(ctx)) } -> (List(Orphan(ctx)), Tx)
+fx_dispose_by = |tx, { owned, orphan }| {
 	var $tx = tx
 	var $orph = []
 	for o in owned {
@@ -8327,8 +8327,8 @@ fx_dispose_by = |tx, owned, orphan| {
 
 ## Current orphans retain only their reader, issued-for value and declared
 ## question code. Older orphans need neither snapshot nor reader.
-effect_dispose : EffectCfg(ctx, a, h), Tx, List(Owned(h)) -> (List(Orphan(ctx)), Tx)
-effect_dispose = |cfg, tx, owned| match cfg.only {
+effect_dispose : EffectCfg(ctx, a, h), { tx : Tx, owned : List(Owned(h)) } -> (List(Orphan(ctx)), Tx)
+effect_dispose = |cfg, { tx, owned }| match cfg.only {
 	Every => fx_dispose(tx, cfg.react, owned, cfg.path)
 	Current({ ids, question }) => {
 		react = cfg.react
@@ -8477,7 +8477,7 @@ effect_reading = |v, initial, plan, step, react, delivery| Site(
 			}
 			t1 = count_evals(tx, 1)
 			if initial {
-				(cfg2, t2, owned) = issue_effect(cfg, t1, (cfg.plan)(env, a), [])
+				(cfg2, t2, owned) = issue_effect(cfg, { tx: t1, planned: (cfg.plan)(env, a), owned: [] })
 				(effect_inst(cfg2, a, owned), eff_mask(v), t2)
 			} else {
 				(effect_inst(cfg, a, []), eff_mask(v), t1)
@@ -8553,7 +8553,7 @@ effect_inst = |cfg0, last0, owned0| {
 						if a == last {
 							(effect_inst(cfg, last, owned), Done, t1)
 						} else {
-							(cfg2, t2, owned2) = issue_effect(cfg, t1, (cfg.step)(env, last, a, cfg.path), owned)
+							(cfg2, t2, owned2) = issue_effect(cfg, { tx: t1, planned: (cfg.step)(env, last, a, cfg.path), owned })
 							(effect_inst(cfg2, a, owned2), Done, t2)
 						}
 					}
@@ -8569,7 +8569,7 @@ effect_inst = |cfg0, last0, owned0| {
 					}
 				}
 				Dispose(_) => {
-					(orph, t2) = effect_dispose(cfg, tx, owned)
+					(orph, t2) = effect_dispose(cfg, { tx, owned })
 					(noop({}), Orphaned(orph), t2)
 				}
 			}
@@ -8587,7 +8587,7 @@ effect_deliver = |cfg, last, owned, env, id, res, tx| {
 			accepted = accepts_result(cfg.only, id)
 			react = cfg.react
 			path = cfg.path
-			next = effect_inst(retire_current(cfg, id, res), last, kept)
+			next = effect_inst(retire_current(cfg, { id, input: res }), last, kept)
 			(env2, wrote) = if (accepted) run_reaction(react, env, entry.a, res, path) else (env, no_layers)
 			(next, Pending(env2, wrote), count_delivery(tx, res))
 		}
