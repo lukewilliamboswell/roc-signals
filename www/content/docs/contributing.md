@@ -524,7 +524,7 @@ bounded declaration codec; compiler checks do not replace those replays.
 
 Compiler batches refill a vacant process slot as soon as a job finishes;
 their logs and results retain input order. The default compiler concurrency
-reserves 8 GiB per process, using the smaller of physical and constrained
+reserves 16 GiB per process, using the smaller of physical and constrained
 memory, and never exceeds available CPUs. This is scheduling headroom, not a
 compiler memory guarantee. Set `ROC_SIGNALS_BUILD_JOBS` to a positive integer
 to choose a different process limit; it is still capped by CPUs. Independent

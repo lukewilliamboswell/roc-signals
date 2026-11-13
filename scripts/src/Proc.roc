@@ -135,7 +135,7 @@ Proc := [].{
 		)
 	}
 
-	## Limit compiler processes by CPU and memory capacity, reserving 8 GiB
+	## Limit compiler processes by CPU and memory capacity, reserving 16 GiB
 	## per process by default. This is scheduling headroom, not a compiler
 	## memory guarantee. ROC_SIGNALS_BUILD_JOBS explicitly overrides the memory
 	## choice, still capped by available CPUs. Runtime replays use cpus! instead.
@@ -153,7 +153,7 @@ Proc := [].{
 			return Err(CapacityProbeFailed)
 		}
 		requested = match Env.var_str!("ROC_SIGNALS_BUILD_JOBS") {
-			Err(VarNotFound(_)) => (memory // 8589934592).max(1)
+			Err(VarNotFound(_)) => (memory // 17179869184).max(1)
 			Err(_) => return Err(InvalidBuildJobs)
 			Ok(text) => {
 				if text.is_empty() or !text.to_utf8().all(|byte| byte >= '0' and byte <= '9') {
