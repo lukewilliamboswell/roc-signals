@@ -15,7 +15,6 @@ Store : {}
 mounted : U64
 mounted = Engine.mounts(main)
 
-
 ## Browser boot may include the origin; mode selection uses only decoded path
 ## segments, with no invented base or query/fragment-dependent test behavior.
 mode_from_url : Str -> Str
