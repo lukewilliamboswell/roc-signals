@@ -143,7 +143,7 @@ PortsApp := [].{
 					|p| [PortsApp.echo.request(PortsApp.payload(U64.from_str(p.size) ?? 0))],
 					st.on_result(|s, _, r| PortsApp.log_line(s, "echo:${PortsApp.shown(PortsApp.echo.result(r), PortsApp.echoed)}")),
 				),
-				Html.file_input(Engine.const("Upload"), {}, st.on_files(|s, { files, refused: _ }| { ..s, chosen: files })),
+				Html.file_input(Engine.const("Upload"), {}, st.set_value(|s, { files, refused: _ }| { ..s, chosen: files })),
 				Html.button("Inspect", [], st.update(|s| { ..s, inspects: s.inspects + 1 })),
 				Engine.watch_changes(
 					v.map(|s| (s.inspects, s.chosen)),

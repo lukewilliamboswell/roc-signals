@@ -113,7 +113,7 @@ Notes := [].{
 				Html.file_input(
 					Engine.const("Notes file"),
 					{ accept: Types(".txt,text/plain") },
-					st.on_files(
+					st.set_value(
 						|s, { files, refused: _ }| match files {
 							[first, ..] => { ..s, doc: Loaded(first) }
 							[] => s

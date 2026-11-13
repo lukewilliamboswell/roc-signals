@@ -180,20 +180,20 @@ Core := [].{
 	## name is not written, and its readers are not woken. The handler is
 	## told the site that fired it, which the contract error of a replaced
 	## write names.
-	store_handler : (Str -> List(Write(st))) -> Handler(ctx)
+	store_handler : (p -> List(Write(st))) -> HandlerOf(ctx, p)
 		where [ctx.store : () -> StoreReach(ctx, st)]
 	store_handler = |decide| {
 		## The context's type, named so its method can be called.
 		Ctx : ctx
 		store_over = Ctx.store().over
-		{ run: |e, p, site| store_writes(store_over, e, decide(ev_str(p)), Handler(site)) }
+		{ run: |e, p, site| store_writes(store_over, e, decide(p), Handler(site)) }
 	}
 
 	## As `store_handler`, where `decide` also receives `v`, read once when
 	## the event fires, before any write of this decision: every write of
 	## the decision is computed from that one reading. Composed after
 	## another handler (`Handler.also`), it reads what that handler left.
-	store_handler_by : Signal(ctx, b), (b, Str -> List(Write(st))) -> Handler(ctx)
+	store_handler_by : Signal(ctx, b), (b, p -> List(Write(st))) -> HandlerOf(ctx, p)
 		where [ctx.store : () -> StoreReach(ctx, st)]
 	store_handler_by = |v, decide| {
 		## The context's type, named so its method can be called.
@@ -202,50 +202,8 @@ Core := [].{
 		read = v.read
 		{
 			run: |e, p, site| {
-				writes = decide(read(e), ev_str(p))
+				writes = decide(read(e), p)
 				store_writes(store_over, e, writes, Handler(site))
-			},
-		}
-	}
-
-	## As `store_handler`, for the files an event carries: `decide` receives
-	## the files the user chose, dropped or pasted and how many more there
-	## were than the instance could take, and names every cell the event
-	## writes. An event that carries no files writes nothing.
-	store_files_handler : (Received -> List(Write(st))) -> FilesHandler(ctx)
-		where [ctx.store : () -> StoreReach(ctx, st)]
-	store_files_handler = |decide| {
-		## The context's type, named so its method can be called.
-		Ctx : ctx
-		store_over = Ctx.store().over
-		{
-			h: {
-				run: |e, p, site| match p {
-					Files(files, refused) => store_writes(store_over, e, decide({ files, refused }), Handler(site))
-					_ => (e, no_layers)
-				},
-			},
-		}
-	}
-
-	## As `store_files_handler`, where `decide` also receives `v`, read
-	## once when the files arrive, before any write of this decision.
-	store_files_handler_by : Signal(ctx, b), (b, Received -> List(Write(st))) -> FilesHandler(ctx)
-		where [ctx.store : () -> StoreReach(ctx, st)]
-	store_files_handler_by = |v, decide| {
-		## The context's type, named so its method can be called.
-		Ctx : ctx
-		store_over = Ctx.store().over
-		read = v.read
-		{
-			h: {
-				run: |e, p, site| match p {
-					Files(files, refused) => {
-						writes = decide(read(e), { files, refused })
-						store_writes(store_over, e, writes, Handler(site))
-					}
-					_ => (e, no_layers)
-				},
 			},
 		}
 	}
@@ -870,17 +828,11 @@ Core := [].{
 		timeout : [Unlimited, Ms(U32)] ?? Unlimited,
 	}
 
-	## A handler for the files an event carries; make one with
-	## `State.on_files` or `store_files_handler` and attach it with
-	## `on_files`.
-	FilesHandler(ctx) := { h : Handler(ctx) }.{
+	## A text handler is the generic family specialised to UTF-8 text.
+	Handler(ctx) : HandlerOf(ctx, Str)
 
-		## One handler that runs `first` and then `second` for the same
-		## files, as one atomic write (see `Handler.also`): how a drop
-		## writes local state and also runs a decision.
-		also : FilesHandler(ctx), FilesHandler(ctx) -> FilesHandler(ctx)
-		also = |first, second| { h: first.h.also(second.h) }
-	}
+	## A file handler is the same family specialised to received handles.
+	FilesHandler(ctx) : HandlerOf(ctx, Received)
 
 	## An event handler usable in context `ctx`: what an event writes, given its
 	## payload (an input's value, `"true"`/`"false"` for a checkbox, `""` for a
@@ -894,11 +846,11 @@ Core := [].{
 	## is the handler's answer, not a property known before it runs, so a
 	## handler that decides what to write from what it reads (`store_handler`)
 	## reports only the writes it made.
-	Handler(ctx) := { run : (ctx, Payload, List(U32) -> (ctx, Layers)) }.{
+	HandlerOf(ctx, p) := { run : (ctx, p, List(U32) -> (ctx, Layers)) }.{
 
 		## Use a handler from the enclosing context inside a `state` or `derive` body
 		## nested in it.
-		lift : Handler(ctx) -> Handler(In(ctx, s))
+		lift : HandlerOf(ctx, p) -> HandlerOf(In(ctx, s), p)
 		lift = |{ run }| {
 			run: |e, p, site| {
 				{ outer, value } = e
@@ -909,7 +861,7 @@ Core := [].{
 
 		## Use a handler from the enclosing context inside an `each` row template
 		## nested in it.
-		lift_row : Handler(ctx) -> Handler(Row(ctx, item))
+		lift_row : HandlerOf(ctx, p) -> HandlerOf(Row(ctx, item), p)
 		lift_row = |{ run }| {
 			run: |e, p, site| {
 				{ outer, key, item } = e
@@ -927,7 +879,7 @@ Core := [].{
 		## takes one handler per event, so this is how a click writes local
 		## state and also runs a decision, or a handler its owner passed
 		## down. Costs one closure call more per event.
-		also : Handler(ctx), Handler(ctx) -> Handler(ctx)
+		also : HandlerOf(ctx, p), HandlerOf(ctx, p) -> HandlerOf(ctx, p)
 		also = |first, second| {
 			run_first = first.run
 			run_second = second.run
@@ -962,7 +914,7 @@ Core := [].{
 
 		## A handler that replaces the state with `f` of it, ignoring the event's
 		## payload.
-		update : State(ctx, s), (s -> s) -> Handler(ctx)
+		update : State(ctx, s), (s -> s) -> HandlerOf(ctx, p)
 		update = |{ mask: _, writes: wrote, get: _, modify }, f| {
 			{ run: |e, _, _| (modify(e, f), wrote) }
 		}
@@ -970,7 +922,7 @@ Core := [].{
 		## A handler whose reducer also receives `v`, read in the handler's context
 		## when the event fires (typically the row key or a row field), so a row's
 		## handler needs no captured row.
-		update_by : State(ctx, s), Signal(ctx, b), (s, b -> s) -> Handler(ctx)
+		update_by : State(ctx, s), Signal(ctx, b), (s, b -> s) -> HandlerOf(ctx, p)
 		update_by = |{ mask: _, writes: wrote, get: _, modify }, v, f| {
 			read = v.read
 			{
@@ -990,38 +942,22 @@ Core := [].{
 			{ run: |e, a, r, _| (modify(e, |s| f(s, a, r)), wrote) }
 		}
 
-		## A handler whose reducer receives the event's payload, such as an input's
-		## new value or `"true"`/`"false"` from a checkbox.
-		set_value : State(ctx, s), (s, Str -> s) -> Handler(ctx)
+		## A handler whose reducer receives its typed payload: text, received
+		## file handles, or another kind chosen by its attach function.
+		set_value : State(ctx, s), (s, p -> s) -> HandlerOf(ctx, p)
 		set_value = |{ mask: _, writes: wrote, get: _, modify }, f| {
-			{ run: |e, p, _| (modify(e, |s| f(s, ev_str(p))), wrote) }
+			{ run: |e, p, _| (modify(e, |s| f(s, p)), wrote) }
 		}
 
 		## A handler whose reducer receives both `v`, read when the event fires, and
 		## the event's payload.
-		set_value_by : State(ctx, s), Signal(ctx, b), (s, b, Str -> s) -> Handler(ctx)
+		set_value_by : State(ctx, s), Signal(ctx, b), (s, b, p -> s) -> HandlerOf(ctx, p)
 		set_value_by = |{ mask: _, writes: wrote, get: _, modify }, v, f| {
 			read = v.read
 			{
 				run: |e, p, _| {
 					b = read(e)
-					(modify(e, |s| f(s, b, ev_str(p))), wrote)
-				},
-			}
-		}
-
-		## A handler for files the user chose, dropped or pasted: the reducer
-		## receives the files, each a handle with its name, size and type, and
-		## how many more there were than the instance could take. Attach it with
-		## `on_files`. A file stays available while any value holds its handle.
-		on_files : State(ctx, s), (s, Received -> s) -> FilesHandler(ctx)
-		on_files = |{ mask: _, writes: wrote, get: _, modify }, f| {
-			{
-				h: {
-					run: |e, p, _| match p {
-						Files(files, refused) => (modify(e, |s| f(s, { files, refused })), wrote)
-						_ => (e, no_layers)
-					},
+					(modify(e, |s| f(s, b, p)), wrote)
 				},
 			}
 		}
@@ -1099,7 +1035,7 @@ Core := [].{
 	## An attribute, event listener or focus reference on an element, in context
 	## `ctx`. Make one with `attr`, `attr_s`, `class`, `class_s`, `test_id`,
 	## `test_id_s`, `on`, `on_click`, `ref` or `ref_s`.
-	Attr(ctx) :: [Static(Str, Str), Dyn(Str, Signal(ctx, Str)), On(Str, Handler(ctx)), Ref(Signal(ctx, Str))]
+	Attr(ctx) :: [Static(Str, Str), Dyn(Str, Signal(ctx, Str)), On(EventDecl, RoutedHandler(ctx)), Property(U8, Str), PropertyV(U8, Signal(ctx, Str)), Ref(Signal(ctx, Str))]
 
 	## A piece of UI in context `ctx`: an element, a text node or a dynamic site
 	## (`state`, `derive`, `resource`, `when`, `switch`, `remount_on`, `each`,
@@ -1989,10 +1925,9 @@ Core := [].{
 	attr : Str, Str -> Attr(ctx)
 	attr = |name, value| Static(name, value)
 
-	## An attribute that follows a value; the DOM is written only when it changes.
-	## An empty string removes the attribute. `value` and `checked` update the
-	## control's live state (a focused text control keeps the user's draft until
-	## blur).
+	## Follow a signal with an attribute, writing only when it changes. An
+	## empty string removes it. Names claimed by an element property are
+	## rejected on that property's elements; use `prop_s` for live control state.
 	attr_s : Str, Signal(ctx, Str) -> Attr(ctx)
 	attr_s = |name, v| Dyn(name, v)
 
@@ -2012,12 +1947,41 @@ Core := [].{
 	test_id_s : Signal(ctx, Str) -> Attr(ctx)
 	test_id_s = |v| Dyn("data-testid", v)
 
-	## `on(event, handler)` listens for a DOM event by name (`"input"`, `"keydown"`,
-	## ...). A `:prevent` suffix (`"click:prevent"`) calls `preventDefault` when the
-	## handler runs. The handler's payload depends on the event type (design.md,
-	## Appendix B).
+	## Static dispatch policies, checked by the compiler. Prevention and
+	## propagation must be decided before an event's synchronous window closes.
+	Policy := { prevent : Bool ?? False, stop : Bool ?? False }
+
+	## One typed row of the platform's payload vocabulary. Only an attach
+	## function chooses a kind; applications cannot construct a decoder.
+	Kind(p) :: { code : U8, decode : (Payload, List(U32) -> p) }
+
+	## A property row fixes both the value type and its wire encoding.
+	Prop(a) :: { index : U8, encode : (a -> Str) }.{
+
+		## A control's live text, under the controlled-input rule.
+		value : Prop(Str)
+		value = { index: 1, encode: |content| content }
+
+		## An input's checked state, encoded as a canonical boolean.
+		checked : Prop(Bool)
+		checked = { index: 2, encode: |checked| if (checked) "true" else "false" }
+	}
+
+	## Set a property from its typed row; ordinary attributes remain attributes.
+	prop : Prop(a), a -> Attr(ctx)
+	prop = |{ index, encode }, value| Property(index, encode(value))
+
+	## Follow a signal with a property, pruning equal encoded values at its hole.
+	prop_s : Prop(a), Signal(ctx, a) -> Attr(ctx)
+	prop_s = |{ index, encode }, value| PropertyV(index, value.map(encode))
+
+	## Listen for a text event with no synchronous browser policy.
 	on : Str, Handler(ctx) -> Attr(ctx)
-	on = |ev, h| On(ev, h)
+	on = |event, handler| Core.on_with(event, {}, handler)
+
+	## Listen for text with static prevention and propagation policies.
+	on_with : Str, Policy, Handler(ctx) -> Attr(ctx)
+	on_with = |event, policy, handler| attach_kind(event, text_kind, policy_bits(policy), handler)
 
 	## Name this element as a focus reference for `Focus`, `Blur` and `SelectText`
 	## requests, so the app never handles engine node ids. Names are unique
@@ -2034,14 +1998,23 @@ Core := [].{
 
 	## A `click` listener; its payload is empty.
 	on_click : Handler(ctx) -> Attr(ctx)
-	on_click = |h| On("click", h)
+	on_click = |h| Core.on("click", h)
 
 	## `on_files(event, handler)` listens for the files an event carries:
 	## `"change"` on a file input, `"drop"` (whose default the runtime
 	## prevents, with `dragover`'s, so the browser does not open the file) and
 	## `"paste"`. The handler receives the files as handles, never their bytes.
-	on_files : Str, FilesHandler(ctx) -> Attr(ctx)
-	on_files = |ev, { h }| On(if (ev == "drop") "drop:prevent:files" else "${ev}:files", h)
+	on_files : [Change, Drop, Paste], FilesHandler(ctx) -> Attr(ctx)
+	on_files = |event, handler| attach_kind(
+		match event {
+			Change => "change"
+			Drop => "drop"
+			Paste => "paste"
+		},
+		files_kind,
+		0,
+		handler,
+	)
 
 	## A mounted engine instance: the site tree and the turn state. The host
 	## holds it between calls through [Program]; test platforms and harnesses drive
@@ -2100,17 +2073,16 @@ Core := [].{
 	## handler number with the event's payload, as one turn (plus any
 	## follow-up turns). An event on a node that has since been removed is ignored.
 	event : App, U32, U32, Str -> App
-	event = |inst, node, handler, payload| deliver(inst, node, handler, Ev(payload))
+	event = |inst, node, handler, payload| deliver(inst, node, handler, Ev(payload.to_utf8()))
 
-	## For test platforms and harnesses: deliver the files a `:files` event
+	## For test platforms and harnesses: deliver the files a files-kind event
 	## carries, as one turn like `event`. `record` is the event's file
 	## record (Appendix B) and `blobs` the handles the host minted for it, in
 	## the record's order; a record that does not match them is a contract
 	## error. An event on a removed node is ignored, and its handles go with it.
 	event_files : App, U32, U32, List(U8), List(Blob) -> App
 	event_files = |inst, node, handler, record, blobs| {
-		(files, refused) = decode_files(record, blobs)
-		deliver(inst, node, handler, Files(files, refused))
+		deliver(inst, node, handler, Files(record, blobs))
 	}
 
 	## Route an event's payload to its node's handler.
@@ -2176,7 +2148,7 @@ Core := [].{
 			$out = $out.append(work_get(a.tx.work, $i))
 			$i = $i + 1
 		}
-		$out.concat(fx_counters(a)).append(work_get(a.tx.work, w_port_sends))
+		$out.concat(fx_counters(a)).concat([work_get(a.tx.work, w_port_sends), work_get(a.tx.work, 41), work_get(a.tx.work, 42)])
 	}
 
 	# ------------------------------------------------------------------
@@ -2226,7 +2198,7 @@ Core := [].{
 	## host exports it, and the runtime refuses an instance whose version it does
 	## not implement.
 	protocol_version : U32
-	protocol_version = 5
+	protocol_version = 6
 
 	## A worker task as the catalogue holds it (design.md, "Workers"): a
 	## namespaced name (`"example.org/search/filter"`) and its effectful
@@ -2489,7 +2461,7 @@ Core := [].{
 			if node == fx_node {
 				finish(Core.result(fresh, handler, decode_res_with(payload, programs.ports.decode)), [], wbuf)
 			} else {
-				finish(Core.event(fresh, node, handler, Str.from_utf8(payload) ?? crash "contract: event payload is not UTF-8"), [], wbuf)
+				finish(deliver(fresh, node, handler, Ev(payload)), [], wbuf)
 			}
 		},
 		workers: [],
@@ -2501,7 +2473,7 @@ Core := [].{
 # Core internals. Nothing below is visible outside this module.
 #
 # Command stream (little endian, u32 ids, strings are u32 length + bytes):
-#   1 INST     node parent before tpl  then per template hole: text/attr: str,
+#   1 INST     node parent before tpl  then per template hole: text/attr/prop: str,
 #              click: nothing, bind: u32 node id for the hole's placeholder
 #   2 TEXT     node hole:u8 str        (row text hole)
 #   3 HATTR    node hole:u8 str        (row attribute hole)
@@ -2544,13 +2516,13 @@ Scope : { cap : U128 }
 Mount(ctx) := [Mount((ctx, Args, Tx -> (Inst(ctx), U128, Tx)))]
 
 ## What travels down a site path: what fires a handler (a DOM event's
-## text, the files a `:files` event carries and how many were refused, or
+## text, the files a files-kind event carries and how many were refused, or
 ## an effect result), or `Settle`, which fires nothing. A `Settle` follows
 ## the pass of an event's outermost write down the event's path, and names
 ## the written layers below it (`waits_for_outer`). Each of them joined that
 ## pass if the pass reached its site; the walk refreshes, at its own site,
 ## each one the pass did not reach, and stops at the deepest of them.
-Payload : [Ev(Str), Files(List(Core.File), U64), Fx(Result), Settle(Layers)]
+Payload : [Ev(List(U8)), Files(List(U8), List(Core.Blob)), Fx(Result), Settle(Layers)]
 
 ## Whether a payload is a `Settle` walk, and if so whether it names a
 ## layer below index `depth`, so that it goes on past the state site there.
@@ -2567,11 +2539,43 @@ fires = |payload| match payload {
 	_ => True
 }
 
-ev_str : Payload -> Str
-ev_str = |p| match p {
-	Ev(s) => s
-	_ => ""
+## A handler in a mounted block has already fixed its payload kind. It
+## decodes once at this boundary and then calls its typed handler.
+RoutedHandler(ctx) : { run : (ctx, Payload, List(U32) -> (ctx, Layers)) }
+
+EventDecl : { event : Str, kind : U8, policies : U32 }
+
+## The two initial payload rows. Files stay handles until the typed handler
+## consumes them; a stale route drops the staged handles without decoding.
+text_kind : Core.Kind(Str)
+text_kind = {
+	code: 1,
+	decode: |payload, site| match payload {
+		Ev(bytes) => Str.from_utf8(bytes) ?? crash "contract: text event payload is not UTF-8 at site ${show_path(site)}"
+		_ => crash "contract: event payload does not match text kind at site ${show_path(site)}"
+	},
 }
+
+files_kind : Core.Kind(Core.Received)
+files_kind = {
+	code: 2,
+	decode: |payload, site| match payload {
+		Files(record, blobs) => {
+			(files, refused) = decode_files(record, blobs, site)
+			{ files, refused }
+		}
+		_ => crash "contract: event payload does not match files kind at site ${show_path(site)}"
+	},
+}
+
+policy_bits : Core.Policy -> U32
+policy_bits = |{ prevent, stop }| (if (prevent) 1.U32 else 0).bitwise_or(if (stop) 2 else 0)
+
+attach_kind : Str, Core.Kind(p), U32, Core.HandlerOf(ctx, p) -> Attr(ctx)
+attach_kind = |event, { code, decode }, policies, { run }| On(
+	{ event, kind: code, policies },
+	{ run: |env, payload, site| run(env, decode(payload, site), site) },
+)
 
 Msg := [Fire(List(U32), U64, U32, Payload), Changed(U128), Dispose(Bool)]
 
@@ -2676,17 +2680,17 @@ w_port_sends : U64
 w_port_sends = 40
 
 ## The number of counters in the work record: the work counters, the eight
-## effect counters, then the port commands sent (index 40).
+## effect counters, port commands (40), and property commands (41–42).
 w_record_count : U64
-w_record_count = w_count + 9
+w_record_count = w_count + 11
 
 ## The work counters as plain fields (`c01` is counter 1): bumping one
 ## updates a value in the accumulator and never allocates, so counting
 ## cannot cost an allocation or a copy on any path.
-Work : { c01 : U64, c02 : U64, c03 : U64, c04 : U64, c05 : U64, c06 : U64, c07 : U64, c08 : U64, c09 : U64, c10 : U64, c11 : U64, c12 : U64, c13 : U64, c14 : U64, c15 : U64, c16 : U64, c17 : U64, c18 : U64, c19 : U64, c20 : U64, c21 : U64, c22 : U64, c23 : U64, c24 : U64, c25 : U64, c26 : U64, c27 : U64, c28 : U64, c29 : U64, c30 : U64, c31 : U64, c40 : U64 }
+Work : { c01 : U64, c02 : U64, c03 : U64, c04 : U64, c05 : U64, c06 : U64, c07 : U64, c08 : U64, c09 : U64, c10 : U64, c11 : U64, c12 : U64, c13 : U64, c14 : U64, c15 : U64, c16 : U64, c17 : U64, c18 : U64, c19 : U64, c20 : U64, c21 : U64, c22 : U64, c23 : U64, c24 : U64, c25 : U64, c26 : U64, c27 : U64, c28 : U64, c29 : U64, c30 : U64, c31 : U64, c40 : U64, c41 : U64, c42 : U64 }
 
 work_zero : Work
-work_zero = { c01: 0, c02: 0, c03: 0, c04: 0, c05: 0, c06: 0, c07: 0, c08: 0, c09: 0, c10: 0, c11: 0, c12: 0, c13: 0, c14: 0, c15: 0, c16: 0, c17: 0, c18: 0, c19: 0, c20: 0, c21: 0, c22: 0, c23: 0, c24: 0, c25: 0, c26: 0, c27: 0, c28: 0, c29: 0, c30: 0, c31: 0, c40: 0 }
+work_zero = { c01: 0, c02: 0, c03: 0, c04: 0, c05: 0, c06: 0, c07: 0, c08: 0, c09: 0, c10: 0, c11: 0, c12: 0, c13: 0, c14: 0, c15: 0, c16: 0, c17: 0, c18: 0, c19: 0, c20: 0, c21: 0, c22: 0, c23: 0, c24: 0, c25: 0, c26: 0, c27: 0, c28: 0, c29: 0, c30: 0, c31: 0, c40: 0, c41: 0, c42: 0 }
 
 ## Add `n` to counter `i`; counter 0 (and any index past the last) is the
 ## unused sink.
@@ -2724,6 +2728,8 @@ add_work = |w, i, n| match i {
 	30 => { ..w, c30: w.c30 + n }
 	31 => { ..w, c31: w.c31 + n }
 	40 => { ..w, c40: w.c40 + n }
+	41 => { ..w, c41: w.c41 + n }
+	42 => { ..w, c42: w.c42 + n }
 	_ => w
 }
 
@@ -2762,14 +2768,16 @@ work_get = |w, i| match i {
 	30 => w.c30
 	31 => w.c31
 	40 => w.c40
+	41 => w.c41
+	42 => w.c42
 	_ => 0
 }
 
-Hole(ctx) : { node : U32, mask : U128, attr : Str, reference : [NotReference, Reference(List(U32))], read : (ctx -> Str), last : Str }
+Hole(ctx) : { node : U32, mask : U128, attr : Str, reference : [NotReference, Reference(List(U32))], property : U8, read : (ctx -> Str), last : Str }
 
 Block(ctx) : {
 	holes : List(Hole(ctx)),
-	handlers : List(Handler(ctx)),
+	handlers : List(RoutedHandler(ctx)),
 	children : List(Inst(ctx)),
 	child_reads : List(U128),
 	child_top : List(Bool),
@@ -2796,9 +2804,10 @@ put_str = |buf, s| {
 }
 
 ## Append one command: its opcode, then the operands `write` adds. The
-## opcode is counted in the work counters (design.md, "Work assertions").
+## opcode is counted in the work counters; property commands use the
+## dedicated PROP and HPROP slots (design.md, "Work assertions").
 emit_op : Tx, U8, (List(U8) -> List(U8)) -> Tx
-emit_op = |{ cmds, next, free, routes, work, paths, site_free, fx }, op, write| { cmds: write(cmds.append(op)), next, free, routes, work: add_work(work, op.to_u64(), 1), paths, site_free, fx }
+emit_op = |{ cmds, next, free, routes, work, paths, site_free, fx }, op, write| { cmds: write(cmds.append(op)), next, free, routes, work: add_work(work, if (op == 21) 41 else if (op == 22) 42 else op.to_u64(), 1), paths, site_free, fx }
 
 ## Add `n` to work counter `i`.
 bump : Tx, U64, U64 -> Tx
@@ -2809,16 +2818,14 @@ bump = |{ cmds, next, free, routes, work, paths, site_free, fx }, i, n| { cmds, 
 count_evals : Tx, U64 -> Tx
 count_evals = |tx, n| bump(tx, w_evals, n)
 
-## An attribute command (`ATTR` or `HATTR`) that sets a control's live
-## state is also counted by name.
-count_attr : Tx, Str -> Tx
-count_attr = |tx, name| bump(tx, ctl_of(name), 1)
-
-## The work counter an attribute name counts in besides its opcode: 0
-## (the unused counter, so the accumulator is always rebuilt the same
-## way, roc-lang/roc#12846) when it names no control state.
-ctl_of : Str -> U64
-ctl_of = |name| if (name == "value") w_set_value else if (name == "checked") w_set_checked else 0
+## A property's allowed elements, claimed attribute and work counter live
+## beside its index. A later row extends this table, never attribute parsing.
+property_row : U8 -> { name : Str, elements : List(Str), counter : U64 }
+property_row = |index| match index {
+	1 => { name: "value", elements: ["input", "textarea", "select", "option"], counter: w_set_value }
+	2 => { name: "checked", elements: ["input"], counter: w_set_checked }
+	_ => crash "internal: unknown property row ${index.to_str()}"
+}
 
 ## Allocate a static node id, reusing a freed one first.
 alloc_id : Tx -> (U32, Tx)
@@ -3185,17 +3192,17 @@ empty_block = |_| { holes: [], handlers: [], children: [], child_reads: [], chil
 ## The first event that two of an element's attributes both handle, if any.
 ## The runtime keeps one listener per event and element, so a second
 ## handler would be silently dropped: binding it is a contract error
-## instead (`one_handler_per_event`).
+## instead (`check_element_attrs`).
 twice_handled : List(Attr(ctx)) -> Try(Str, [Distinct])
 twice_handled = |attrs| {
 	var $seen = []
 	for a in attrs {
 		match a {
 			On(ev, _) => {
-				if $seen.contains(ev) {
-					return Ok(ev)
+				if $seen.contains(ev.event) {
+					return Ok(ev.event)
 				}
-				$seen = $seen.append(ev)
+				$seen = $seen.append(ev.event)
 			}
 			_ => {}
 		}
@@ -3203,13 +3210,41 @@ twice_handled = |attrs| {
 	Err(Distinct)
 }
 
-## Mount an element only if each event on it has one handler: two handlers
-## for one event on one element are a contract error that names the event,
-## the element, and the construction site: the block's site `path`, or,
-## when `placed` says the element is in an `each` row template, the each
-## site's path.
-one_handler_per_event : List(Attr(ctx)), Str, Str, List(U32) -> {}
-one_handler_per_event = |attrs, tag, placed, path| {
+## Reject element contracts before allocating its nodes: one handler per
+## bare event type, no retired suffixes, and properties used only on their
+## declared elements without duplicates or claimed ordinary attributes.
+## Both plain blocks and row templates use this construction-site check.
+check_element_attrs : List(Attr(ctx)), Str, Str, List(U32) -> {}
+check_element_attrs = |attrs, tag, placed, path| {
+	var $properties = []
+	for attribute in attrs {
+		match attribute {
+			On(declaration, _) => {
+				if declaration.event.ends_with(":prevent") or declaration.event.ends_with(":files") {
+					crash "contract: retired event suffix in \"${declaration.event}\" at site ${show_path(path)}; use on_with for policies or on_files for files"
+				}
+			}
+			Property(index, _) | PropertyV(index, _) => {
+				row = property_row(index)
+				if !row.elements.contains(tag) {
+					crash "contract: property \"${row.name}\" is not allowed on <${tag}> at site ${show_path(path)}"
+				}
+				if $properties.contains(index) {
+					crash "contract: property \"${row.name}\" is declared twice on <${tag}> at site ${show_path(path)}"
+				}
+				$properties = $properties.append(index)
+			}
+			Static(name, _) | Dyn(name, _) => {
+				for index in [1.U8, 2] {
+					row = property_row(index)
+					if row.elements.contains(tag) and row.name == name {
+						crash "contract: attribute \"${name}\" on <${tag}> is claimed by a property at site ${show_path(path)}; use prop or prop_s"
+					}
+				}
+			}
+			_ => {}
+		}
+	}
 	match twice_handled(attrs) {
 		Ok(ev) => crash "contract: two handlers for the \"${ev}\" event on one <${tag}>${placed} at site ${show_path(path)}: an element takes one handler per event; run both from one with Handler.also"
 		Err(Distinct) => {}
@@ -3221,7 +3256,7 @@ mount_elem = |block, env, elem, depth, path, parent, before, top, sole, scope, t
 	at = if (top) before else 0
 	match elem {
 		Element(tag, attrs, kids) => {
-			one_handler_per_event(attrs, tag, "", path)
+			check_element_attrs(attrs, tag, "", path)
 			(id, tx1) = alloc_id(tx)
 			tx2 = emit_op(tx1, 8, |c| put_str(put_u32(put_u32(put_u32(c, id), parent), at), tag))
 			var $b = add_node(block, id, top)
@@ -3250,7 +3285,7 @@ mount_elem = |block, env, elem, depth, path, parent, before, top, sole, scope, t
 			s = read(env)
 			tx2 = emit_op(count_evals(tx1, 1), 10, |c| put_str(put_u32(put_u32(put_u32(c, id), parent), at), s))
 			b1 = add_node(block, id, top)
-			(add_hole(b1, { node: id, mask: eff_mask(v), attr: "", reference: NotReference, read, last: s }), tx2)
+			(add_hole(b1, { node: id, mask: eff_mask(v), attr: "", reference: NotReference, property: 0, read, last: s }), tx2)
 		}
 		Site(Mount(mount), _) => {
 			k = block.children.len().to_u32_wrap()
@@ -3263,22 +3298,28 @@ mount_elem = |block, env, elem, depth, path, parent, before, top, sole, scope, t
 mount_attr : Block(ctx), ctx, Attr(ctx), U32, List(U32), Tx -> (Block(ctx), Tx)
 mount_attr = |block, env, attr, id, path, tx| {
 	match attr {
-		Static(name, value) => (block, emit_op(count_attr(tx, name), 9, |c| put_str(put_str(put_u32(c, id), name), value)))
+		Static(name, value) => (block, emit_op(tx, 9, |c| put_str(put_str(put_u32(c, id), name), value)))
 		Dyn(name, v) => {
 			read = v.read
 			value = read(env)
-			tx1 = emit_op(count_attr(count_evals(tx, 1), name), 9, |c| put_str(put_str(put_u32(c, id), name), value))
-			(add_hole(block, { node: id, mask: eff_mask(v), attr: name, reference: NotReference, read, last: value }), tx1)
+			tx1 = emit_op(count_evals(tx, 1), 9, |c| put_str(put_str(put_u32(c, id), name), value))
+			(add_hole(block, { node: id, mask: eff_mask(v), attr: name, reference: NotReference, property: 0, read, last: value }), tx1)
+		}
+		Property(index, value) => (block, emit_op(bump(tx, property_row(index).counter, 1), 21, |commands| put_str(put_u32(commands, id).append(index), value)))
+		PropertyV(index, value) => {
+			encoded = (value.read)(env)
+			next = emit_op(bump(count_evals(tx, 1), property_row(index).counter, 1), 21, |commands| put_str(put_u32(commands, id).append(index), encoded))
+			(add_hole(block, { node: id, mask: eff_mask(value), attr: "", reference: NotReference, property: index, read: value.read, last: encoded }), next)
 		}
 		On(ev, handler) => {
 			h = block.handlers.len().to_u32_wrap()
-			tx1 = emit_op(tx, 11, |c| put_str(put_u32(put_u32(c, id), h), ev))
+			tx1 = emit_op(tx, 11, |c| put_u32(put_str(put_u32(put_u32(c, id), h), ev.event).append(ev.kind), ev.policies))
 			(add_handler(block, handler), set_route(tx1, id, path, h))
 		}
 		Ref(value) => {
 			ref_path = path.append(block.holes.len().to_u32_wrap())
 			name = (value.read)(env)
-			(add_hole(block, { node: id, mask: eff_mask(value), attr: "", reference: Reference(ref_path), read: value.read, last: name }), with_fx(count_evals(tx, 1), |fx| add_ref(fx, { name, node: id, path: ref_path })))
+			(add_hole(block, { node: id, mask: eff_mask(value), attr: "", reference: Reference(ref_path), property: 0, read: value.read, last: name }), with_fx(count_evals(tx, 1), |fx| add_ref(fx, { name, node: id, path: ref_path })))
 		}
 	}
 }
@@ -3294,7 +3335,7 @@ add_hole = |{ holes, handlers, children, child_reads, child_top, nodes, tops, re
 	{ holes: holes.append(hole), handlers, children, child_reads, child_top, nodes, tops, reads: reads.bitwise_or(m) }
 }
 
-add_handler : Block(ctx), Handler(ctx) -> Block(ctx)
+add_handler : Block(ctx), RoutedHandler(ctx) -> Block(ctx)
 add_handler = |{ holes, handlers, children, child_reads, child_top, nodes, tops, reads }, h| {
 	{ holes, handlers: handlers.append(h), children, child_reads, child_top, nodes, tops, reads }
 }
@@ -3332,23 +3373,25 @@ refresh = |{ holes, handlers, children, child_reads, child_top, nodes, tops, rea
 	while $i < $holes.len() {
 		hm = $holes.get($i).map_ok(|h| h.mask) ?? 0
 		if all or hm.bitwise_and(mask) != 0 {
-			{ list, prev } = $holes.replace($i, { node: 0, mask: 0, attr: "", reference: NotReference, read: |_| "", last: "" }) ?? crash "hole"
-			{ node, mask: m, attr, reference, read, last } = prev
+			{ list, prev } = $holes.replace($i, { node: 0, mask: 0, attr: "", reference: NotReference, property: 0, read: |_| "", last: "" }) ?? crash "hole"
+			{ node, mask: m, attr, reference, property, read, last } = prev
 			v = read(env)
 			t1 = count_evals($tx, 1)
 			if v == last {
-				$holes = list.set($i, { node, mask: m, attr, reference, read, last }) ?? crash "hole"
+				$holes = list.set($i, { node, mask: m, attr, reference, property, read, last }) ?? crash "hole"
 				$tx = t1
 			} else {
-				$tx = match reference {
+				$tx = if property != 0 {
+					emit_op(bump(t1, property_row(property).counter, 1), 21, |commands| put_str(put_u32(commands, node).append(property), v))
+				} else match reference {
 					Reference(path) => with_fx(t1, |fx| add_ref(drop_name(fx, { node, name: last, path }), { name: v, node, path }))
 					NotReference => if attr.is_empty() {
 						emit_op(t1, 12, |c| put_str(put_u32(c, node), v))
 					} else {
-						emit_op(count_attr(t1, attr), 9, |c| put_str(put_str(put_u32(c, node), attr), v))
+						emit_op(t1, 9, |c| put_str(put_str(put_u32(c, node), attr), v))
 					}
 				}
-				$holes = list.set($i, { node, mask: m, attr, reference, read, last: v }) ?? crash "hole"
+				$holes = list.set($i, { node, mask: m, attr, reference, property, read, last: v }) ?? crash "hole"
 			}
 		}
 		$i = $i + 1
@@ -3993,21 +4036,25 @@ index_remove = |{ hs, vals, count, bits, by_slot }, slot| {
 ##
 ## Template encoding: node := 1 tag:str nattr:u8 (name:str value:str)*
 ## nchild:u8 node* | 2 text:str; then nholes:u8, each hole := kind:u8
-## depth:u8 path:u8* [attr: name:str | click: handler:u8].
-## Hole kinds: 1 text, 2 attr, 3 click, 4 bind (placeholder for a nested
-## site), 5 reference (an element addressed by a minted node id). `col` is the value column for text/attr holes whose value can
-## change (none for row-constant holes), the handler index for clicks and
+## depth:u8 path:u8*, followed by an attribute name, an event declaration
+## (handler index, bare event name, payload kind and policy bits), or a
+## property index for those hole kinds.
+## Hole kinds: 1 text, 2 attr, 3 event, 4 bind (placeholder for a nested
+## site), 5 reference (an element addressed by a minted node id), 6 property.
+## A property hole's extra byte is its property index. `col` is the value
+## column for text, attribute and property holes whose value can
+## change (none for row-constant holes), the handler index for events and
 ## the mount index for binds.
-## `ctl`: the work counter an attribute hole's updates also count in
+## `ctl`: the work counter a property hole's updates also count in
 ## (`w_set_value`, `w_set_checked`), or 0; for a reference, its index
 ## among reference holes, after the nested-site ids in the row's bindings.
-RHole(ctx) : { kind : U8, mask : U128, smask : U128, skey : (ctx -> Str), read : (ctx -> Str), col : U64, live : Bool, ctl : U64 }
+RHole(ctx) : { evaluated : Bool, kind : U8, mask : U128, smask : U128, skey : (ctx -> Str), read : (ctx -> Str), col : U64, live : Bool, ctl : U64 }
 
 Plan(ctx) : {
 	tree : List(U8),
 	htab : List(U8),
 	holes : List(RHole(ctx)),
-	handlers : List(Handler(ctx)),
+	handlers : List(RoutedHandler(ctx)),
 	mounts : List(Mount(ctx)),
 	ncols : U64,
 	kreads : U128,
@@ -4024,15 +4071,15 @@ put_path = |buf, kind, path| buf.append(kind).append(narrow(path.len(), "nesting
 narrow : U64, Str -> U8
 narrow = |n, what| if (n > 255) crash "resource_limit: a row template's ${what} is ${n.to_str()}; the template encoding allows at most 255" else n.to_u8_wrap()
 
-val_hole : Plan(ctx), U8, Str, Signal(ctx, Str), List(U8) -> Plan(ctx)
-val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads }, kind, name, v, extra| {
+val_hole : Plan(ctx), { kind : U8, value : Signal(ctx, Str), extra : List(U8), counter : U64, evaluated : Bool } -> Plan(ctx)
+val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads }, { kind, value: v, extra, counter, evaluated }| {
 	{ mask, read, sel } = v
 	(smask, skey) = match sel {
 		NoSel => (0, |_| "")
 		Sel(m, k) => (m, k)
 	}
 	live = mask.bitwise_or(smask) != 0
-	hole = { kind, mask, smask, skey, read, col: if (live) ncols else 0, live, ctl: if (kind == 5) holes.keep_if(|prior| prior.kind == 5).len() else ctl_of(name) }
+	hole = { evaluated, kind, mask, smask, skey, read, col: if (live) ncols else 0, live, ctl: if (kind == 5) holes.keep_if(|prior| prior.kind == 5).len() else counter }
 	{ tree, htab: htab.concat(extra), holes: holes.append(hole), handlers, mounts, ncols: if (live) ncols + 1 else ncols, kreads }
 }
 
@@ -4040,7 +4087,7 @@ compile_elem : Plan(ctx), Elem(ctx), List(U8), U64, List(U32) -> Plan(ctx)
 compile_elem = |plan, elem, path, depth, site| {
 	match elem {
 		Element(tag, attrs, kids) => {
-			one_handler_per_event(attrs, tag, " in the row template of an each", site)
+			check_element_attrs(attrs, tag, " in the row template of an each", site)
 			var $nstatic = 0.U64
 			for a0 in attrs {
 				match a0 {
@@ -4064,18 +4111,30 @@ compile_elem = |plan, elem, path, depth, site| {
 						$tree = put_str(put_str($tree, name), value)
 					}
 					Dyn(name, v) => {
-						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, 2, name, v, put_str(put_path([], 2, path), name))
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 2, value: v, extra: put_str(put_path([], 2, path), name), counter: 0, evaluated: True })
+						$htab = $htab.concat(r.htab)
+						$holes = r.holes
+						$ncols = r.ncols
+					}
+					Property(index, encoded) => {
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 6, value: Core.const(encoded), extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: False })
+						$htab = $htab.concat(r.htab)
+						$holes = r.holes
+						$ncols = r.ncols
+					}
+					PropertyV(index, value) => {
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 6, value: value, extra: put_path([], 6, path).append(index), counter: property_row(index).counter, evaluated: True })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
 					}
 					On(ev, handler) => {
-						$htab = put_str(put_path($htab, 3, path).append(narrow($handlers.len(), "event handler count")), ev)
-						$holes = $holes.append({ kind: 3, mask: 0, smask: 0, skey: |_| "", read: |_| "", col: $handlers.len(), live: False, ctl: 0 })
+						$htab = put_u32(put_str(put_path($htab, 3, path).append(narrow($handlers.len(), "event handler count")), ev.event).append(ev.kind), ev.policies)
+						$holes = $holes.append({ evaluated: False, kind: 3, mask: 0, smask: 0, skey: |_| "", read: |_| "", col: $handlers.len(), live: False, ctl: 0 })
 						$handlers = $handlers.append(handler)
 					}
 					Ref(value) => {
-						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, 5, "", value, put_path([], 5, path))
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 5, value, extra: put_path([], 5, path), counter: 0, evaluated: True })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
@@ -4098,11 +4157,11 @@ compile_elem = |plan, elem, path, depth, site| {
 		TextV(v) => {
 			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
 			t2 = put_str(tree.append(2), "")
-			val_hole({ tree: t2, htab, holes, handlers, mounts, ncols, kreads }, 1, "", v, put_path([], 1, path))
+			val_hole({ tree: t2, htab, holes, handlers, mounts, ncols, kreads }, { kind: 1, value: v, extra: put_path([], 1, path), counter: 0, evaluated: True })
 		}
 		Site(m, rf) => {
 			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
-			hole = { kind: 4, mask: 0, smask: 0, skey: |_| "", read: |_| "", col: mounts.len(), live: False, ctl: 0 }
+			hole = { evaluated: False, kind: 4, mask: 0, smask: 0, skey: |_| "", read: |_| "", col: mounts.len(), live: False, ctl: 0 }
 			{ tree: put_str(tree.append(2), ""), htab: put_path(htab, 4, path), holes: holes.append(hole), handlers, mounts: mounts.append(m), ncols, kreads: kreads.bitwise_or(rf(depth)) }
 		}
 	}
@@ -4264,17 +4323,16 @@ place_row = |cfg, cols, env, item, key, before, keyed, tx| {
 	var $lasts = lasts
 	var $sels = sels
 	var $ev = 0.U64
-	# Control state carried by INST (attribute holes named value or
-	# checked) counts as set, like an ATTR would.
+	# Control properties carried by INST count as set, like PROP would.
 	var $set_value = 0.U64
 	var $set_checked = 0.U64
 	var $t = { cmds: [], next, free: idfree, routes, work, paths, site_free, fx }
 	var $bound = List.repeat(0.U32, cfg.plan.mounts.len())
 	var $hi = 0.U64
 	for hole in cfg.plan.holes {
-		if hole.kind == 1 or hole.kind == 2 {
+		if hole.kind == 1 or hole.kind == 2 or hole.kind == 6 {
 			v = (hole.read)(row_env)
-			$ev = $ev + 1
+			$ev = $ev + if (hole.evaluated) 1 else 0
 			if hole.ctl == w_set_value {
 				$set_value = $set_value + 1
 			} else if hole.ctl == w_set_checked {
@@ -4294,7 +4352,7 @@ place_row = |cfg, cols, env, item, key, before, keyed, tx| {
 			$t = with_fx(t2, |fx2| add_ref(fx2, { name, node: bid, path: cfg.path.concat([slot, $hi.to_u32_wrap()]) }))
 			$c = put_u32($c, bid)
 			$bound = $bound.append(bid)
-			$ev = $ev + 1
+			$ev = $ev + if (hole.evaluated) 1 else 0
 			if hole.live {
 				{ list, prev } = $lasts.replace(hole.col, []) ?? crash "lasts"
 				$lasts = list.set(hole.col, put_at(prev, si, name)) ?? crash "lasts"
@@ -4858,7 +4916,7 @@ settle = |cfg, cols, env, tx| {
 						id = (binds.get(si) ?? []).get(cfg.plan.mounts.len() + hole.ctl) ?? crash "internal: reference binding"
 						$tx = with_fx($tx, |fx| add_ref(drop_name(fx, { node: id, name: old, path: cfg.path.concat([slot, $hi.to_u32_wrap()]) }), { name: v, node: id, path: cfg.path.concat([slot, $hi.to_u32_wrap()]) }))
 					} else {
-						op = if (hole.kind == 1) 2 else 3
+						op = if (hole.kind == 1) 2 else if (hole.kind == 6) 22 else 3
 						hidx = $hi.to_u8_wrap()
 						$tx = emit_op(bump($tx, hole.ctl, 1), op, |c| put_str(put_u32(c, node).append(hidx), v))
 					}
@@ -5373,7 +5431,7 @@ elem_reads = |elem, depth| match elem {
 		var $m = 0.U128
 		for a in attrs {
 			match a {
-				Dyn(_, v) | Ref(v) => {
+				Dyn(_, v) | PropertyV(_, v) | Ref(v) => {
 					$m = $m.bitwise_or(eff_mask(v))
 				}
 				_ => {}
@@ -5707,28 +5765,29 @@ mount_start = |max, programs, { st, tables }, elem| {
 	drain({ root: store_inst(st, { cells: tables, written }, no_layers, block), tx: flush_turn(tx, programs), programs })
 }
 
-## A `:files` event's record (design.md, Appendix B), `count:u32
+## A files-kind event's record (design.md, Appendix B), `count:u32
 ## refused:u32 (size:u64 name:str type:str)*count`, paired in order with the
 ## handles the host minted for it. Anything else is a contract error: the
 ## runtime and the host broke the protocol, and nothing is guessed.
-decode_files : List(U8), List(Blob) -> (List(File), U64)
-decode_files = |record, blobs| {
-	count = get_u32(record, 0, "file record").to_u64()
-	refused = get_u32(record, 4, "file record").to_u64()
+decode_files : List(U8), List(Blob), List(U32) -> (List(File), U64)
+decode_files = |record, blobs, site| {
+	context = "file record at site ${show_path(site)}"
+	count = get_u32(record, 0, context).to_u64()
+	refused = get_u32(record, 4, context).to_u64()
 	if count != blobs.len() {
-		crash "contract: a file record lists ${count.to_str()} files but the host minted ${blobs.len().to_str()} handles"
+		crash "contract: a file record lists ${count.to_str()} files but the host minted ${blobs.len().to_str()} handles at site ${show_path(site)}"
 	}
 	var $at = 8.U64
 	var $files = List.with_capacity(count)
 	for blob in blobs {
-		size = get_u64(record, $at, "file record")
-		(name, a1) = get_str(record, $at + 8, "file record")
-		(mime, a2) = get_str(record, a1, "file record")
+		size = get_u64(record, $at, context)
+		(name, a1) = get_str(record, $at + 8, context)
+		(mime, a2) = get_str(record, a1, context)
 		$files = $files.append({ blob, name, mime, size, start: 0, len: size, reach: OnPage })
 		$at = a2
 	}
 	if $at != record.len() {
-		crash "contract: a file record carries ${(record.len() - $at).to_str()} unexpected trailing bytes"
+		crash "contract: a file record carries ${(record.len() - $at).to_str()} unexpected trailing bytes at site ${show_path(site)}"
 	}
 	($files, refused)
 }
@@ -7256,7 +7315,7 @@ work_bytes = |inst, buf| {
 	fx = inst.tx.fx
 	$b = put_u64(put_u64(put_u64(put_u64($b, fx.issued), fx.delivered), fx.stale), fx.refused)
 	$b = put_u64(put_u64(put_u64(put_u64($b, fx.cancelled), fx.reparented), fx.skipped), fx.live.len())
-	$b = put_u64($b, work_get(counters, w_port_sends))
+	$b = put_u64(put_u64(put_u64($b, work_get(counters, w_port_sends)), work_get(counters, 41)), work_get(counters, 42))
 	runs = inst.tx.fx.cleanups
 	$b = put_u32($b, runs.len().to_u32_wrap())
 	for (name, k) in runs {
@@ -7632,9 +7691,9 @@ expect {
 	h : Handler({})
 	h = { run: |e, _, _| (e, no_layers) }
 	distinct : List(Attr({}))
-	distinct = [On("click", h), Static("class", "x"), On("input", h), Ref(Core.const("r"))]
+	distinct = [Core.on("click", h), Static("class", "x"), Core.on("input", h), Ref(Core.const("r"))]
 	twice : List(Attr({}))
-	twice = [On("click", h), On("input", h), Dyn("title", Core.const("t")), On("click", h)]
+	twice = [Core.on("click", h), Core.on("input", h), Dyn("title", Core.const("t")), Core.on("click", h)]
 	(twice_handled(distinct), twice_handled(twice)) == (Err(Distinct), Ok("click"))
 }
 
@@ -7718,6 +7777,43 @@ expect {
 	second = add_ref(drop_name(first, { node: 1, name: "b", path: [1] }), { node: 1, name: "a", path: [1] })
 	actual = { a: second.refs.get("a"), b: second.refs.get("b"), after_disposal: drop_ref(second, 1).refs.len() }
 	actual == { a: Ok([{ node: 1, path: [1] }]), b: Ok([{ node: 1, path: [0] }]), after_disposal: 0 }
+}
+
+## Typed declarations encode the bare event, payload kind and policy bits.
+## Property commands use their own opcodes and count by property index,
+## leaving the existing evaluation counters untouched.
+expect {
+	handler : Handler(Root({}))
+	handler = { run: |env, _payload, _site| (env, no_layers) }
+	mounted = Core.mount(
+		Core.element(
+			"input",
+			[
+				Core.prop(Core.Prop.value, "draft"),
+				Core.prop(Core.Prop.checked, Bool.True),
+				Core.on_with("change", { prevent: Bool.True, stop: Bool.True }, handler),
+			],
+			[],
+		),
+	)
+	(_, commands) = Core.take_cmds(mounted, [])
+	element = put_str(put_u32(put_u32(put_u32([8], 1), 0), 0), "input")
+	value = put_str(put_u32([21], 1).append(1), "draft")
+	checked = put_str(put_u32([21], 1).append(2), "true")
+	listen = put_u32(put_str(put_u32(put_u32([11], 1), 0), "change").append(1), 3)
+	actual = { bytes: commands, value: work_get(mounted.tx.work, 19), checked: work_get(mounted.tx.work, 20), properties: work_get(mounted.tx.work, 41), evaluations: work_get(mounted.tx.work, 21) }
+	actual == { bytes: element.concat(value).concat(checked).concat(listen), value: 1, checked: 1, properties: 2, evaluations: 0 }
+}
+
+## A row property hole declares its property index once in the template.
+## Its INST value is encoded separately, so later HPROP commands need only
+## the row and the hole's position.
+expect {
+	row : Elem(Row(Root({}), Str))
+	row = Core.element("input", [Core.attr("type", "checkbox"), Core.prop_s(Core.Prop.checked, Core.const(Bool.True))], [])
+	plan = compile(row, 1, [0])
+	expected = put_str(put_str(put_str([1], "input").append(1), "type"), "checkbox").concat([0, 1, 6, 0, 2])
+	template_bytes(plan) == expected
 }
 
 ## A table view names references from its typed key signal. A keyed removal

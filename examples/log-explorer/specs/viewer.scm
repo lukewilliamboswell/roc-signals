@@ -1,8 +1,8 @@
 (test "Log Explorer — the viewer reads a page of lines at a time and moves through the log"
   (setup
-    (file "app.log" "text/x-log" "2026-11-11T08:00:00.120Z INFO  api: GET /orders/1 answered 200\n2026-11-11T08:00:00.300Z DEBUG db: query took 3 ms\n2026-11-11T08:00:01.004Z ERROR db: connection reset by peer\n    at Pool.acquire (pool.roc:88)\n2026-11-11T08:00:02.000Z WARN  auth: failed sign-in for user 7\n" 40))
+    (file "app.txt" "text/plain" "2026-11-11T08:00:00.120Z INFO  api: GET /orders/1 answered 200\n2026-11-11T08:00:00.300Z DEBUG db: query took 3 ms\n2026-11-11T08:00:01.004Z ERROR db: connection reset by peer\n    at Pool.acquire (pool.roc:88)\n2026-11-11T08:00:02.000Z WARN  auth: failed sign-in for user 7\n" 40))
   (steps
-    (choose-files (label "Log file") "app.log")
+    (choose-files (label "Log file") "app.txt")
     ; The overview is asked above the tabs, so leaving its tab keeps its
     ; job; the viewer asks its own beside it.
     (click (role button :name "Viewer"))

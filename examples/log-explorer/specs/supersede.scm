@@ -1,8 +1,8 @@
 (test "Log Explorer — typing past a search cancels it, and only the answer for the text in the box is shown"
   (setup
-    (file "app.log" "text/x-log" "2026-11-11T08:00:00Z INFO api: order 12 paid\n2026-11-11T08:00:01Z INFO api: order 125 paid\n" 20))
+    (file "app.txt" "text/plain" "2026-11-11T08:00:00Z INFO api: order 12 paid\n2026-11-11T08:00:01Z INFO api: order 125 paid\n" 20))
   (steps
-    (choose-files (label "Log file") "app.log")
+    (choose-files (label "Log file") "app.txt")
     (click (role button :name "Search"))
     (fill (label "Text to find") "order 1")
     (mark-metrics)

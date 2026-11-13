@@ -198,7 +198,7 @@ FileEffectsApp := [].{
 		Html.div(
 			"file-effects",
 			[
-				Html.file_input(Engine.const("Upload"), { selection: Multiple }, st.on_files(FileEffectsApp.received)),
+				Html.file_input(Engine.const("Upload"), { selection: Multiple }, st.set_value(FileEffectsApp.received)),
 				Html.p_s(v.map(|s| FileEffectsApp.listing(s.files)), [Engine.test_id("files")]),
 				Html.button("Clear", [], st.update(|s| { ..s, files: [] })),
 				Html.button("Read text", [], st.update(|s| FileEffectsApp.ask_first(s, |f| Text(f)))),

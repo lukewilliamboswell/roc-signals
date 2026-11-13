@@ -1065,8 +1065,8 @@ rows_in = |dom, list| Dom.node(dom, list).kids.keep_if(|kid| Dom.node(dom, kid).
 ## and apply its commands to the oracle. Answers the batch's opcodes too.
 fire : S, U64, Str, Str -> (S, List(U8))
 fire = |s, at, event, payload| match Dom.target(s.dom, at, event, Bool.True) {
-	Ok((node, handler)) => {
-		(eng, cmds) = Core.take_cmds(Core.event(s.eng, node, handler, payload), [])
+	Ok(target) => {
+		(eng, cmds) = Core.take_cmds(Core.event(s.eng, target.node, target.handler, payload), [])
 		(dom, ops) = Dom.apply_ops(s.dom, cmds)
 		({ eng, dom, model: s.model }, ops)
 	}

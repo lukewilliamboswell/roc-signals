@@ -152,7 +152,7 @@ event_for_host = |boxed, buf, wbuf, node, handler, payload| {
 	{ cmds, state: hold(next), work }
 }
 
-## A `:files` event: the file record and the handles the host minted for its
+## A files-kind event: the file record and the handles the host minted for its
 ## files, which move into the engine with the call.
 files_for_host : Handle, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> Step
 files_for_host = |boxed, buf, wbuf, node, handler, record, blobs| {

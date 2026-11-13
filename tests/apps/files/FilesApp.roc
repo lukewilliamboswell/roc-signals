@@ -17,10 +17,10 @@ import pf.Worker
 ##   one's bytes there and answers its size and byte sum (`test-id
 ##   "counts"`); "Count tail" sends the last half of the first file only.
 ## - "Inbox" is a drop target whose handler is a decision
-##   (`Engine.handle_files`): one drop puts the files in a store cell and
+##   (`Engine.handle`): one drop puts the files in a store cell and
 ##   writes a note in another. "Inbox with a reading" adds to the inbox and
 ##   notes how many it held when the files arrived
-##   (`Engine.handle_files_by`). "Inbox and list" writes the cells and the
+##   (`Engine.handle_by`). "Inbox and list" writes the cells and the
 ##   local list as one event (`FilesHandler.also`), and "Empty inbox" lets
 ##   the inbox's files go (`Engine.does`).
 ##   "Probe" checks, in the job, that a file's bytes behave as an ordinary
@@ -155,18 +155,18 @@ FilesApp := [Shelf].{
 		Html.div(
 			"files",
 			[
-				Html.file_input(Engine.const("Upload"), { selection: Multiple }, st.on_files(FilesApp.received)),
-				Engine.element("section", [Html.aria_label("Drop"), Html.on_drop_files(st.on_files(FilesApp.received))], [Engine.text("drop here")]),
-				Engine.element("section", [Html.aria_label("Paste"), Html.on_paste_files(st.on_files(FilesApp.received))], [Engine.text("paste here")]),
-				Engine.element("section", [Html.aria_label("Inbox"), Html.on_drop_files(Engine.handle_files(FilesApp.arrived))], [Engine.text("inbox")]),
+				Html.file_input(Engine.const("Upload"), { selection: Multiple }, st.set_value(FilesApp.received)),
+				Engine.element("section", [Html.aria_label("Drop"), Html.on_drop_files(st.set_value(FilesApp.received))], [Engine.text("drop here")]),
+				Engine.element("section", [Html.aria_label("Paste"), Html.on_paste_files(st.set_value(FilesApp.received))], [Engine.text("paste here")]),
+				Engine.element("section", [Html.aria_label("Inbox"), Html.on_drop_files(Engine.handle(FilesApp.arrived))], [Engine.text("inbox")]),
 				Engine.element(
 					"section",
-					[Html.aria_label("Inbox with a reading"), Html.on_drop_files(Engine.handle_files_by(inbox.signal().map(|held| held.len()), FilesApp.arrived_after))],
+					[Html.aria_label("Inbox with a reading"), Html.on_drop_files(Engine.handle_by(inbox.signal().map(|held| held.len()), FilesApp.arrived_after))],
 					[Engine.text("inbox, added to")],
 				),
 				Engine.element(
 					"section",
-					[Html.aria_label("Inbox and list"), Html.on_drop_files(st.on_files(FilesApp.received).also(Engine.handle_files(FilesApp.arrived)))],
+					[Html.aria_label("Inbox and list"), Html.on_drop_files(st.set_value(FilesApp.received).also(Engine.handle(FilesApp.arrived)))],
 					[Engine.text("inbox and list")],
 				),
 				Html.button("Empty inbox", [], Engine.does(FilesApp.emptied)),
@@ -198,7 +198,7 @@ FilesApp := [Shelf].{
 							"section",
 							[Html.aria_label("panel")],
 							[
-								Html.file_input(Engine.const("Panel upload"), { accept: Types(".txt") }, inner.on_files(|kept, { files, refused: _ }| kept.concat(files))),
+								Html.file_input(Engine.const("Panel upload"), { accept: Types(".txt") }, inner.set_value(|kept, { files, refused: _ }| kept.concat(files))),
 								Html.p_s(inner.signal().map(FilesApp.listing), [Engine.test_id("panel-files")]),
 							],
 						),

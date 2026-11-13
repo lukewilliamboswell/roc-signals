@@ -221,13 +221,12 @@ async function setChecked(page, state, loc, want) {
   if ((await onEl(page, loc, (e) => e.checked)) !== want) throw new Error(`clicking ${showLoc(loc)} did not ${want ? "check" : "uncheck"} it`);
 }
 
-// The value an assertion reads for an attribute: `checked` and `disabled`
-// as "true"/"false" from the live properties, `value` as the live value,
-// anything else as the attribute the element holds (null when absent).
+// Claimed attributes on controls read their live property. On other
+// elements value/checked remain ordinary attributes, as their commands do.
 const attrOf = (e, n) => {
-  if (n === "checked") return e.checked ? "true" : "false";
+  if (n === "checked" && e.tagName === "INPUT") return e.checked ? "true" : "false";
   if (n === "disabled") return e.disabled ? "true" : "false";
-  if (n === "value") return e.value;
+  if (n === "value" && ["INPUT", "TEXTAREA", "SELECT", "OPTION"].includes(e.tagName)) return e.value;
   return e.getAttribute(n);
 };
 

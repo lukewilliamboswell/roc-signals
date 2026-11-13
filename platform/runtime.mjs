@@ -8,8 +8,8 @@
 // Encoding: design.md, Appendix B, protocol version PROTOCOL_VERSION. A module
 // whose `protocol_version()` differs is refused at mount.
 //
-// Event payloads (UTF-8, staged with `payload_reserve` and moved into Roc by
-// `event`): click/submit "", input: the target's value, change: "true"/"false"
+// Text-kind event payloads (UTF-8, staged with `payload_reserve` and moved
+// into Roc by `event`): click/submit "", input: the target's value, change: "true"/"false"
 // for a checkbox or radio, else the target's value, keydown/keyup: the key.
 // A `submit` event that reaches the mount root is always default-prevented:
 // forms are app-managed and never navigate the page.
@@ -72,12 +72,11 @@
 // Timing entries, all bounded (see "The monitor" below). The pool and this
 // runtime report to it after they act; it decides nothing.
 //
-// Handler event names may carry suffixes: "click:prevent" listens to
-// "click" and calls preventDefault when it dispatches (in-app links, forms);
-// ":files" makes the payload the event's files (a file input's `change`, a
-// `drop`, a `paste`) instead of text. A "drop" handler with ":files" also
-// prevents `dragover`'s default on its element, so the browser lets the drop
-// happen there instead of opening the file.
+// Each handler declaration carries a payload kind and static policy bits.
+// The closed kind table builds text or files; event names are bare names,
+// including custom names containing colons. Policies prevent the default or
+// stop bubbling above the mount. The files kind's drop rule also prevents
+// dragover's default so the browser permits the drop.
 //
 // Files (design.md, "Files"): the runtime holds each file the app was given
 // as the browser's own `File`, under the token of the handle the host minted
@@ -143,13 +142,13 @@
 // never called: calls wait for answerPort(), subscriptions for
 // messagePort(), and commands are logged in portLog.
 //
-// Attribute values: "" removes the attribute. `value` and `checked` are set
-// as properties (the live control state), boolean attributes (disabled,
+// Attribute values: "" removes the attribute. Element properties have their
+// own commands and a closed table. Boolean attributes (disabled,
 // selected, readonly, required, hidden, multiple) are present for any value
 // other than "" and "false".
 
 // The wire protocol version this runtime implements (design.md, Appendix B).
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
@@ -179,6 +178,8 @@ const OP_TITLE = 17;
 const OP_FOCUS = 18;
 const OP_PORT = 19;
 const OP_SAVE = 20;
+const OP_PROP = 21;
+const OP_HPROP = 22;
 
 // Effect results are events on this node; the handler number is the id.
 const FX_NODE = 0xffffffff;
@@ -233,6 +234,12 @@ const HOLE_ATTR = 2;
 const HOLE_CLICK = 3;
 const HOLE_BIND = 4;
 const HOLE_REF = 5;
+const HOLE_PROP = 6;
+
+const KIND_TEXT = 1;
+const KIND_FILES = 2;
+const POLICY_PREVENT = 1;
+const POLICY_STOP = 2;
 
 
 export async function instantiateEngineBytes(bytes) {
@@ -339,17 +346,6 @@ function setAttr(el, name, value) {
     else el.setAttribute("class", value);
   } else if (name === "class") {
     el.className = value;
-  } else if (name === "value") {
-    setValue(el, value);
-    if (el.tagName === "SELECT") el.__v = value;
-    if (value === "") el.removeAttribute("value");
-    else el.setAttribute("value", value);
-    // An option whose value changes may now be the one its select wants.
-    if (el.tagName === "OPTION") settleSelect(el.parentNode);
-  } else if (name === "checked") {
-    el.checked = value === "true";
-    if (el.checked) el.setAttribute("checked", "");
-    else el.removeAttribute("checked");
   } else if (BOOL_ATTRS.has(name)) {
     if (value === "" || value === "false") el.removeAttribute(name);
     else el.setAttribute(name, "");
@@ -358,6 +354,40 @@ function setAttr(el, name, value) {
   } else {
     el.setAttribute(name, value);
   }
+}
+
+// A file input's live value is a program contract error, rather than an
+// executor defect. Its type can change in the batch, so only application of
+// the property can make this check against the current DOM state.
+class ContractFault extends Error {}
+
+const PROPS = [null, {
+  name: "value",
+  elements: ["INPUT", "TEXTAREA", "SELECT", "OPTION"],
+  apply(el, value, node) {
+    if (el.tagName === "INPUT" && el.type === "file") throw new ContractFault(`contract: value property on file input at node ${node}`);
+    setValue(el, value);
+    if (el.tagName === "SELECT") el.__v = value;
+    if (value === "") el.removeAttribute("value");
+    else el.setAttribute("value", value);
+    if (el.tagName === "OPTION") settleSelect(el.parentNode);
+  },
+}, {
+  name: "checked",
+  elements: ["INPUT"],
+  apply(el, value) {
+    if (value !== "true" && value !== "false") throw new Error(`invalid checked property value ${JSON.stringify(value)}`);
+    el.checked = value === "true";
+    if (el.checked) el.setAttribute("checked", "");
+    else el.removeAttribute("checked");
+  },
+}];
+
+function setProp(el, prop, value, node) {
+  const row = PROPS[prop];
+  if (!row) throw new Error(`unknown element property ${prop}`);
+  if (!row.elements.includes(el.tagName)) throw new Error(`element property ${row.name} does not apply to ${el.tagName}`);
+  row.apply(el, value, node);
 }
 
 // A <select>'s value can only be set once its options exist: re-apply the
@@ -371,13 +401,18 @@ function settleSelect(parent) {
 const DOM_EVENT = { focus: "focusin", blur: "focusout" };
 const APP_EVENT = { focusin: "focus", focusout: "blur" };
 
-// What a handler declared: its number and its suffixes (see "Handler event
-// names" above).
-function handlerEntry(h, policies) {
-  return { h, prevent: policies.includes("prevent"), files: policies.includes("files") };
+// Validate the closed declaration tables before retaining a listener. An
+// unknown number or bit is a producer/consumer mismatch, contained as executor.
+function handlerEntry(h, kind, policies, type) {
+  const row = PAYLOAD_KINDS[kind];
+  if (!row) throw new Error(`unknown event payload kind ${kind}`);
+  if (row.events && !row.events.includes(type)) throw new Error(`event payload kind ${kind} does not apply to ${type}`);
+  if ((policies & ~(POLICY_PREVENT | POLICY_STOP)) !== 0) throw new Error(`unknown event policy bits ${policies}`);
+  return { h, kind, policies };
 }
 
-// The files a `:files` event carries.
+// The files a files-kind event carries, captured before the browser clears
+// a drop's or paste's list after dispatch.
 function filesOf(event) {
   const list = event.type === "drop" ? event.dataTransfer && event.dataTransfer.files : event.type === "paste" ? event.clipboardData && event.clipboardData.files : event.target.files;
   return list ? Array.from(list) : [];
@@ -401,6 +436,17 @@ function payloadOf(event) {
       return "";
   }
 }
+
+const PAYLOAD_KINDS = {
+  [KIND_TEXT]: { payload: payloadOf },
+  [KIND_FILES]: {
+    events: ["change", "drop", "paste"],
+    payload(event) {
+      const files = filesOf(event);
+      return files.length === 0 ? null : { files };
+    },
+  },
+};
 
 const utf8enc = new TextEncoder();
 
@@ -1876,12 +1922,13 @@ export class RocEngineRuntime {
     try {
       return fn();
     } catch (e) {
-      this.contain(e);
+      this.contain(e, e instanceof ContractFault ? "contract" : null);
       return null;
     }
   }
 
-  // `klass` names a fault the runtime itself classifies (the ingress bound);
+  // `klass` names a fault the runtime itself classifies (an ingress bound
+  // or a value property applied to a file input);
   // otherwise the instance's fault class decides, and a trap the instance
   // did not classify is an executor failure.
   contain(error, klass = null) {
@@ -2022,7 +2069,7 @@ export class RocEngineRuntime {
         for (let node = event.target; node && node !== this.root; node = node.parentNode) {
           const h = node.__h && node.__h.drop;
           if (h !== undefined) {
-            if (h.files) event.preventDefault();
+            if (h.kind === KIND_FILES) event.preventDefault();
             return;
           }
         }
@@ -2049,13 +2096,12 @@ export class RocEngineRuntime {
         if (h !== undefined) handler = h;
       }
       if (node.__rn !== undefined && handler !== null) {
-        if (handler.prevent) event.preventDefault();
-        if (handler.files) {
-          // The browser empties a drop's or a paste's file list after the
-          // event, so the files are captured now.
-          const files = filesOf(event);
-          if (files.length > 0) this.dispatch(node.__rn, handler.h, { files }, node);
-        } else this.dispatch(node.__rn, handler.h, payloadOf(event), node);
+        if ((handler.policies & POLICY_PREVENT) !== 0 || (handler.kind === KIND_FILES && type === "drop")) event.preventDefault();
+        // A non-bubbling event is heard during capture; stopping it there
+        // would prevent its target's own listeners from running.
+        if (event.bubbles && (handler.policies & POLICY_STOP) !== 0) event.stopPropagation();
+        const payload = PAYLOAD_KINDS[handler.kind].payload(event);
+        if (payload !== null) this.dispatch(node.__rn, handler.h, payload, node);
         return;
       }
       node = node.parentNode;
@@ -2107,8 +2153,8 @@ export class RocEngineRuntime {
     }
   }
 
-  // One engine call for an event: a `:files` event stages its handles and
-  // file record (design.md, Appendix B), anything else its text.
+  // One engine call for an event: a files-kind event stages its handles and
+  // file record (design.md, Appendix B); other events stage their bytes or text.
   call(node, handler, payload) {
     if (payload !== null && typeof payload === "object" && payload.parts !== undefined) {
       this.callPort(node, handler, payload);
@@ -2270,13 +2316,20 @@ export class RocEngineRuntime {
       const depth = u8[at++];
       const path = Array.from(u8.subarray(at, at + depth));
       at += depth;
-      const hole = { kind, path, name: null, handler: 0 };
+      const hole = { kind, path, name: null, handler: 0, prop: 0, entry: null };
       if (kind === HOLE_ATTR) hole.name = str();
       else if (kind === HOLE_CLICK) {
         hole.handler = u8[at++];
         hole.name = str();
-        this.listen(hole.name.split(":")[0]);
-      }
+        const payloadKind = u8[at++];
+        const policies = dv.getUint32(at, true);
+        at += 4;
+        hole.entry = handlerEntry(hole.handler, payloadKind, policies, hole.name);
+        this.listen(hole.name);
+      } else if (kind === HOLE_PROP) {
+        hole.prop = u8[at++];
+        if (!PROPS[hole.prop]) throw new Error(`unknown element property ${hole.prop}`);
+      } else if (kind !== HOLE_TEXT && kind !== HOLE_BIND && kind !== HOLE_REF) throw new Error(`unknown template hole kind ${kind}`);
       holes.push(hole);
     }
     if (at !== start + len) throw new Error("template length mismatch");
@@ -2344,10 +2397,13 @@ export class RocEngineRuntime {
               const n = dv.getUint32(at, true);
               setAttr(target, hole.name, readStr(u8, at + 4, n));
               at += 4 + n;
+            } else if (hole.kind === HOLE_PROP) {
+              const n = dv.getUint32(at, true);
+              setProp(target, hole.prop, readStr(u8, at + 4, n), node);
+              at += 4 + n;
             } else if (hole.kind === HOLE_CLICK) {
               if (target.__h === undefined) target.__h = {};
-              const [type, ...policies] = hole.name.split(":");
-              target.__h[type] = handlerEntry(hole.handler, policies);
+              target.__h[hole.name] = hole.entry;
             } else if (hole.kind === HOLE_BIND || hole.kind === HOLE_REF) {
               const id = dv.getUint32(at, true);
               this.statics[id] = target;
@@ -2363,7 +2419,8 @@ export class RocEngineRuntime {
           break;
         }
         case OP_TEXT:
-        case OP_HATTR: {
+        case OP_HATTR:
+        case OP_HPROP: {
           const node = dv.getUint32(at, true);
           const row = this.lookup(node);
           const hole = this.templates[row.__site].holes[u8[at + 4]];
@@ -2371,7 +2428,10 @@ export class RocEngineRuntime {
           const target = row.__ht[u8[at + 4]];
           const v = readStr(u8, at + 9, n);
           if (op === OP_TEXT) target.nodeValue = v;
-          else setAttr(target, hole.name, v);
+          else if (op === OP_HPROP) {
+            if (hole.kind !== HOLE_PROP) throw new Error("HPROP names a non-property hole");
+            setProp(target, hole.prop, v, node);
+          } else setAttr(target, hole.name, v);
           at += 9 + n;
           break;
         }
@@ -2435,6 +2495,14 @@ export class RocEngineRuntime {
           at += 4 + m;
           break;
         }
+        case OP_PROP: {
+          const node = dv.getUint32(at, true);
+          const prop = u8[at + 4];
+          const n = dv.getUint32(at + 5, true);
+          setProp(this.lookup(node), prop, readStr(u8, at + 9, n), node);
+          at += 9 + n;
+          break;
+        }
         case OP_LISTEN: {
           const node = dv.getUint32(at, true);
           const el = this.statics[node];
@@ -2442,11 +2510,12 @@ export class RocEngineRuntime {
           const type = readStr(u8, at + 12, n);
           el.__rn = node;
           if (el.__h === undefined) el.__h = {};
-          const [base, ...policies] = type.split(":");
           const h = dv.getUint32(at + 4, true);
-          el.__h[base] = handlerEntry(h, policies);
-          this.listen(base);
-          at += 12 + n;
+          const kind = u8[at + 12 + n];
+          const policies = dv.getUint32(at + 13 + n, true);
+          el.__h[type] = handlerEntry(h, kind, policies, type);
+          this.listen(type);
+          at += 17 + n;
           break;
         }
         case OP_SETTEXT: {
