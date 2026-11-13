@@ -53,7 +53,8 @@ TableApp := [Todos].{
 
 	## What the address chose. `draws` is `Everything`, or `Main` for the
 	## main list alone (no second list, no readers), which is what a timing
-	## of one view wants.
+	## of one view wants. `Changes` adds readers of the last writing turn's
+	## changes and inverse for the lifecycle specs.
 	Setup : { rows : U64, window : U64, draws : [Everything, Main, Changes] }
 
 	## The setup an address names; 1,000 rows, a window of 30, everything
