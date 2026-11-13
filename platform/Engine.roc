@@ -87,7 +87,7 @@ Engine := [].{
 		## The cell's current value.
 		signal : Cell(st, a) -> Signal(ctx, a)
 			where [ctx.store : () -> Reach(ctx, st)]
-		signal = |{ c }| { v: c.signal() }
+		signal = |{ c }| Varies(c.signal())
 
 		## The cell as a [State] of the context this is called in, for a
 		## component that takes a `State(ctx, a)` and should not care whether
@@ -162,7 +162,7 @@ Engine := [].{
 	## event found.
 	handle_by : Signal(ctx, b), (b, p -> List(Write(st))) -> HandlerOf(ctx, p)
 		where [ctx.store : () -> Reach(ctx, st)]
-	handle_by = |b, decide| { h: Core.store_handler_by(b.v, decide) }
+	handle_by = |b, decide| { h: Core.store_handler_by(core_signal(b), decide) }
 
 	## `does(writes)` is a handler that makes `writes`, whatever the
 	## event's payload: the handler of a button whose transition needs
@@ -192,7 +192,7 @@ Engine := [].{
 	## taken after that reaction has written.
 	react_by : Signal(ctx, b), (b, r, result -> List(Write(st))) -> Reaction(ctx, r, result)
 		where [ctx.store : () -> Reach(ctx, st)]
-	react_by = |b, decide| Core.store_reaction_by(b.v, decide)
+	react_by = |b, decide| Core.store_reaction_by(core_signal(b), decide)
 
 	## A description of cells: build one with `cell` and Roc's record
 	## builder, which calls `map2`, and nest one description in another:
@@ -469,7 +469,7 @@ Engine := [].{
 	## contract error.
 	table_view : Cell(st, Table(k, v)), TableViewProps(ctx, q, k, v, s), (Signal(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)
 		where [ctx.store : () -> Reach(ctx, st), k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher, q.is_eq : q, q -> Bool]
-	table_view = |{ c }, { query, plan, window }, template| Core.table_view(inner_cell(c), { query: query.v, plan, window: window.v }, |key, row| template({ v: key }, { s: row }))
+	table_view = |{ c }, { query, plan, window }, template| Core.table_view(inner_cell(c), { query: core_signal(query), plan, window: core_signal(window) }, |key, row| template(Varies(key), { s: row }))
 
 	## An app's store: the cells it holds, their starting values, and the
 	## cells it gives to readers. Build it once with `store`, as a top-level value a
@@ -544,8 +544,9 @@ Engine := [].{
 	## discovered by running a reader. Only readers of what a turn wrote are
 	## re-evaluated. Make a signal with `const`, `State.signal`, `Cell.signal`,
 	## a [RowRef] accessor or `derive`, then transform it with `map` and `map2`.
-	## A signal is a recipe, not a cache: mapping functions run each time a
-	## reader is re-evaluated, so they must be pure and should be cheap
+	## A varying signal is a recipe, not a cache: its mapping functions run each
+	## time its reader is re-evaluated. A constant maps once at construction.
+	## Mapping functions must be pure and should be cheap
 	## (`derive` memoises an expensive or shared result).
 	##
 	## `map2` has the shape Roc's record builder calls, so several signals
@@ -553,29 +554,60 @@ Engine := [].{
 	## read: `{ filter: cells.filter.signal(), sort: cells.sort.signal() }.Engine.Signal`.
 	## It is how a decision takes a reading of several cells (`handle_by`,
 	## `react_by`) and how a table view's query is made of two.
-	Signal(ctx, a) :: { v : Core.Signal(ctx, a) }.{
+	Signal(ctx, a) :: [Fixed(a), Varies(Core.Signal(ctx, a))].{
 
-		## Transform a signal with a pure function. The result has the same reads
-		## as the input; the function runs wherever the result is read, each time a
-		## dependency changes.
+		## Transform a signal without changing its reads. A constant is mapped
+		## once at construction; a varying input is mapped whenever it is read.
 		map : Signal(ctx, a), (a -> b) -> Signal(ctx, b)
-		map = |{ v }, f| { v: v.map(f) }
+		map = |signal, f| match signal {
+			Fixed(value) => Fixed(f(value))
+			Varies(value) => Varies(value.map(f))
+		}
 
-		## Combine two values with a pure function. The result reads the union of
-		## both inputs' dependencies. It is also what the record builder calls
-		## (`{ a: va, b: vb }.Engine.Signal`).
+		## Combine two readings, or map once when both inputs are constant.
+		## One constant input preserves the other's keyed selection. Two varying
+		## inputs read their union, as does the signal record builder.
 		map2 : Signal(ctx, a), Signal(ctx, b), (a, b -> c) -> Signal(ctx, c)
-		map2 = |l, r, f| { v: l.v.map2(r.v, f) }
+		map2 = |left, right, f| match (left, right) {
+			(Fixed(a), Fixed(b)) => Fixed(f(a, b))
+			(Fixed(a), Varies(b)) => Varies(b.map(|value| f(a, value)))
+			(Varies(a), Fixed(b)) => Varies(a.map(|value| f(value, b)))
+			(Varies(a), Varies(b)) => Varies(a.map2(b, f))
+		}
 
-		## Use a value from the enclosing context inside a `state` or `derive` body
-		## nested in it. The signal keeps the same dependencies.
+		## Use this reading inside a nested state or derived layer, preserving
+		## its dependencies. A constant needs no reader in either context.
 		lift : Signal(ctx, a) -> Signal(In(ctx, s), a)
-		lift = |{ v }| { v: v.lift() }
+		lift = |signal| match signal {
+			Fixed(value) => Fixed(value)
+			Varies(value) => Varies(value.lift())
+		}
 
-		## Use a value from the enclosing context inside an `each` row template
-		## nested in it. The signal keeps the same dependencies.
+		## Use this reading inside a row, preserving its dependencies. A row key
+		## remains varying even though it reads no layer.
 		lift_row : Signal(ctx, a) -> Signal(Row(ctx, item), a)
-		lift_row = |{ v }| { v: v.lift_row() }
+		lift_row = |signal| match signal {
+			Fixed(value) => Fixed(value)
+			Varies(value) => Varies(value.lift_row())
+		}
+
+		## A text literal is a constant signal. It can be used wherever a text
+		## signal is expected, without wrapping the literal in Engine.const.
+		from_quote : Str -> Try(Signal(ctx, Str), [BadQuotedBytes(Str)])
+		from_quote = |text| Ok(Fixed(text))
+
+		## Join constant text and signal parts into one text reading. Fixed parts
+		## are assembled at construction; varying parts share one reader. Parts
+		## must provide to_text_signal, so a plain Str value is wrapped in const.
+		from_interpolation : List(Str) -> Try((Iter(part) -> Signal(ctx, Str)), [InvalidInterpolation(Str)])
+			where [part.to_text_signal : part -> Signal(ctx, Str)]
+		from_interpolation = |segments| Ok(|parts| interpolate_text(segments, parts.map(|part| part.to_text_signal())))
+
+		## Use a signal's user-facing text as an interpolation part. Convert
+		## different part value types to text signals before combining them.
+		to_text_signal : Signal(ctx, a) -> Signal(ctx, Str)
+			where [a.to_str : a -> Str]
+		to_text_signal = |signal| signal.map(|value| value.to_str())
 	}
 
 	## An event handler usable in context `ctx`: what an event writes, given
@@ -589,7 +621,7 @@ Engine := [].{
 		## Convert an incoming payload using a signal read when the event arrives,
 		## before this handler applies any writes. The signal keeps its context.
 		from_payload_by : HandlerOf(ctx, q), Signal(ctx, b), (b, p -> q) -> HandlerOf(ctx, p)
-		from_payload_by = |{ h }, { v }, convert| { h: h.from_payload_by(v, convert) }
+		from_payload_by = |{ h }, reading, convert| { h: h.from_payload_by(core_signal(reading), convert) }
 
 		## Use a handler from the enclosing context inside a `state` or `derive` body
 		## nested in it.
@@ -785,7 +817,7 @@ Engine := [].{
 
 		## The state's current value.
 		signal : State(ctx, s) -> Signal(ctx, s)
-		signal = |{ s }| { v: s.signal() }
+		signal = |{ s }| Varies(s.signal())
 
 		## A handler that replaces the state with `f` of it, ignoring the event's
 		## payload.
@@ -796,7 +828,7 @@ Engine := [].{
 		## when the event fires (typically the row key or a row field), so a row's
 		## handler needs no captured row.
 		update_by : State(ctx, s), Signal(ctx, b), (s, b -> s) -> HandlerOf(ctx, p)
-		update_by = |{ s }, b, f| { h: s.update_by(b.v, f) }
+		update_by = |{ s }, b, f| { h: s.update_by(core_signal(b), f) }
 
 		## An effect site's [Reaction] that writes this state: the reducer receives
 		## the value the request was issued for and its [Result]. If the state has been
@@ -817,7 +849,7 @@ Engine := [].{
 		## A handler whose reducer receives both `v`, read when the event fires, and
 		## the event's payload.
 		set_value_by : State(ctx, s), Signal(ctx, b), (s, b, p -> s) -> HandlerOf(ctx, p)
-		set_value_by = |{ s }, b, f| { h: s.set_value_by(b.v, f) }
+		set_value_by = |{ s }, b, f| { h: s.set_value_by(core_signal(b), f) }
 
 		## Use state from the enclosing context inside a `state` or `derive`
 		## body nested in it.
@@ -840,7 +872,7 @@ Engine := [].{
 	## re-evaluates exactly the previously and the newly selected rows instead of
 	## every row.
 	keyed : Signal(ctx, Str), v, v -> Keyed(ctx, v)
-	keyed = |sel, yes, no| Core.keyed(sel.v, yes, no)
+	keyed = |sel, yes, no| Core.keyed(core_signal(sel), yes, no)
 
 	## The current row of an `each` template. The template runs once per `each`
 	## site, not once per row, so it reads the row through these accessors rather
@@ -849,12 +881,12 @@ Engine := [].{
 
 		## The row's key. It is fixed for the row's lifetime, so it never triggers a refresh.
 		key : RowRef(outer, item) -> Signal(Row(outer, item), Str)
-		key = |{ r }| { v: r.key() }
+		key = |{ r }| Varies(r.key())
 
 		## A projection of the row's item. It is re-evaluated only for rows whose new
 		## item differs from the old one.
 		field : RowRef(outer, item), (item -> a) -> Signal(Row(outer, item), a)
-		field = |{ r }, f| { v: r.field(f) }
+		field = |{ r }, f| Varies(r.field(f))
 
 		## The row's whole item, for a handler or a reaction that takes it
 		## as its reading (`Engine.handle_by(row.item(), ..)`). Like `field`,
@@ -862,12 +894,12 @@ Engine := [].{
 		## old one; a hole that shows one part of the item reads that part
 		## with `field`.
 		item : RowRef(outer, item) -> Signal(Row(outer, item), item)
-		item = |{ r }| { v: r.item() }
+		item = |{ r }| Varies(r.item())
 
 		## `yes` or `no` from a [Keyed] selection, depending on whether this row's key
 		## is the selected one.
 		select : RowRef(outer, item), Keyed(outer, v) -> Signal(Row(outer, item), v)
-		select = |{ r }, kd| { v: r.select(kd) }
+		select = |{ r }, kd| Varies(r.select(kd))
 	}
 
 	## An attribute, event listener or focus reference on an element, in context
@@ -905,14 +937,14 @@ Engine := [].{
 	## live elements, and the empty name names nothing.
 	each : Signal(ctx, List(item)), (item -> Str), (RowRef(ctx, item) -> Elem(Row(ctx, item))) -> Elem(ctx)
 		where [item.is_eq : item, item -> Bool]
-	each = |rows, key, template| Core.each(rows.v, key, |r| template({ r: r }))
+	each = |rows, key, template| Core.each(core_signal(rows), key, |r| template({ r: r }))
 
 	## `when(cond, yes, no)` builds only the branch `cond` selects, and rebuilds it
 	## when `cond` changes, disposing the old branch with everything it owns.
 	## Because the unselected branch is never built, recursive UI can be expressed
 	## directly.
 	when : Signal(ctx, Bool), (() -> Elem(ctx)), (() -> Elem(ctx)) -> Elem(ctx)
-	when = |cond, yes, no| Core.when(cond.v, yes, no)
+	when = |cond, yes, no| Core.when(core_signal(cond), yes, no)
 
 	## `switch(sel, cases, body)` builds `body(k)` for the current value `k` of
 	## `sel`, and rebuilds it when `sel` changes to a different case. `cases` lists
@@ -920,7 +952,7 @@ Engine := [].{
 	## could read; a value outside `cases` is a contract error.
 	switch : Signal(ctx, k), List(k), (k -> Elem(ctx)) -> Elem(ctx)
 		where [k.is_eq : k, k -> Bool]
-	switch = |sel, cases, body| Core.switch(sel.v, cases, body)
+	switch = |sel, cases, body| Core.switch(core_signal(sel), cases, body)
 
 	## `remount_on(key, body)` builds `body()` and, whenever `key`
 	## changes to a value unequal to the one the body was built for,
@@ -941,7 +973,7 @@ Engine := [].{
 	## to compare, so a key should be small, such as an id.
 	remount_on : Signal(ctx, k), (() -> Elem(ctx)) -> Elem(ctx)
 		where [k.is_eq : k, k -> Bool]
-	remount_on = |key, body| Core.remount_on(key.v, body)
+	remount_on = |key, body| Core.remount_on(core_signal(key), body)
 
 	## `derive(input, body)` evaluates `input` once per change of what it
 	## reads and gives `body` the result as a new signal. Readers inside `body` that
@@ -950,7 +982,7 @@ Engine := [].{
 	## places. Values from the enclosing context enter `body` with `lift`.
 	derive : Signal(ctx, a), (Signal(In(ctx, a), a) -> Elem(In(ctx, a))) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
-	derive = |input, body| Core.derive(input.v, |v| body({ v: v }))
+	derive = |input, body| Core.derive(core_signal(input), |v| body(Varies(v)))
 
 	## A request from an effect site.
 	##
@@ -1206,7 +1238,7 @@ Engine := [].{
 	## rejects it. Each run is counted by `name`. The site renders nothing and
 	## reads nothing while it is live.
 	on_cleanup : Str, Signal(ctx, a), (a -> List(Command)) -> Elem(ctx)
-	on_cleanup = |name, v, plan| Core.on_cleanup(name, v.v, plan)
+	on_cleanup = |name, v, plan| Core.on_cleanup(name, core_signal(v), plan)
 
 	## A cleanup site that issues nothing and only counts its runs under `name`.
 	cleanup : Str -> Elem(ctx)
@@ -1223,7 +1255,7 @@ Engine := [].{
 	## with `Refused`.
 	watch : Signal(ctx, a), (a -> List(Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
-	watch = |v, plan, reaction| Core.watch(v.v, plan, reaction)
+	watch = |v, plan, reaction| Core.watch(core_signal(v), plan, reaction)
 
 	## Keep every request while accepting only the latest issuing step's results.
 	## Older results and progress still count as delivered to the site, but run
@@ -1233,13 +1265,13 @@ Engine := [].{
 	## Subscriptions are a contract error here; use watch_latest to stop them.
 	keep_current : Signal(ctx, a), (a -> List(Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
-	keep_current = |value, plan, reaction| Core.keep_current(value.v, plan, reaction)
+	keep_current = |value, plan, reaction| Core.keep_current(core_signal(value), plan, reaction)
 
 	## Like `watch`, but issues only when `v` changes after mount, never for its
 	## initial value.
 	watch_changes : Signal(ctx, a), (a -> List(Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
-	watch_changes = |v, plan, reaction| Core.watch_changes(v.v, plan, reaction)
+	watch_changes = |v, plan, reaction| Core.watch_changes(core_signal(v), plan, reaction)
 
 	## `watch_latest(v, plan, reaction)` issues like `watch` (at mount, and whenever `v`
 	## changes to an unequal value) but keeps only the requests of the current
@@ -1259,7 +1291,7 @@ Engine := [].{
 	## `v` plus work linear in the requests the site owns.
 	watch_latest : Signal(ctx, a), (a -> List(Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool]
-	watch_latest = |v, plan, reaction| Core.watch_latest(v.v, plan, reaction)
+	watch_latest = |v, plan, reaction| Core.watch_latest(core_signal(v), plan, reaction)
 
 	## `resource(input, cfg, body)` gives `body` a signal whose value follows
 	## results of the requests issued for `input`. `Worker.resource` and
@@ -1285,7 +1317,7 @@ Engine := [].{
 	## skipped and counted. Signals from outside enter `body` with `lift`.
 	resource : Signal(ctx, a), { init : s, pending : (s, a -> s), plan : (a -> List(Ask(output, error))), resolve : (s, a, Try(output, error) -> s) }, (Signal(In(ctx, s), s) -> Elem(In(ctx, s))) -> Elem(ctx)
 		where [a.is_eq : a, a -> Bool, s.is_eq : s, s -> Bool]
-	resource = |input, cfg, body| Core.resource(input.v, cfg, |v| body({ v: v }))
+	resource = |input, cfg, body| Core.resource(core_signal(input), cfg, |v| body(Varies(v)))
 
 	## What a resource that follows one answer holds (`Worker.resource`,
 	## `Port.resource`): whether a request for the current input is in flight,
@@ -1330,7 +1362,7 @@ Engine := [].{
 	## allows (32 by default). Disposal follows `resource`.
 	gather : asker, Signal(ctx, List(input)), (Signal(In(ctx, Gathered(output, error)), Gathered(output, error)) -> Elem(In(ctx, Gathered(output, error)))) -> Elem(ctx)
 		where [asker.request : asker, input -> Request, asker.result : asker, Result -> Try(output, error), input.is_eq : input, input -> Bool, output.is_eq : output, output -> Bool, error.is_eq : error, error -> Bool]
-	gather = |asker, inputs, body| Core.resource_at(inputs.v, Core.gather(asker), |v| body({ v: v }))
+	gather = |asker, inputs, body| Core.resource_at(core_signal(inputs), Core.gather(asker), |v| body(Varies(v)))
 
 	## An outbox in the app's state: the latest thing a handler posted for
 	## an `on_post` site to send. A handler posts with `box.post(item)`,
@@ -1361,13 +1393,13 @@ Engine := [].{
 	## write to a store. The reducer that changes the state posts in the
 	## same step, so an `expect` sees both.
 	on_post : Signal(ctx, Outbox(a)), (a -> List(Ask(output, error))), Reaction(ctx, a, Try(output, error)) -> Elem(ctx)
-	on_post = |box, plan, reaction| Core.on_post(box.v, plan, reaction)
+	on_post = |box, plan, reaction| Core.on_post(core_signal(box), plan, reaction)
 
 	## Send a posted intent with a reading taken only when its plan runs. The
 	## site and its requests retain the small item, not the reading; the reaction
 	## receives that same posted item. Two posts in a turn remain a contract error.
 	on_post_by : Signal(ctx, Outbox(item)), Signal(ctx, reading), (reading, item -> List(Ask(output, error))), Reaction(ctx, item, Try(output, error)) -> Elem(ctx)
-	on_post_by = |box, reading, plan, reaction| Core.on_post_by(box.v, reading.v, plan, reaction)
+	on_post_by = |box, reading, plan, reaction| Core.on_post_by(core_signal(box), core_signal(reading), plan, reaction)
 
 	## What the host knows before the first render: the URL, independently
 	## declared local and session storage keys' values (missing keys are absent),
@@ -1403,7 +1435,7 @@ Engine := [].{
 	## Keep the browser's leave warning while any live guard reads True.
 	## This site renders nothing, takes no in-flight slot and settles once per turn.
 	guard_leave : Signal(ctx, Bool) -> Elem(ctx)
-	guard_leave = |value| Core.guard_leave(value.v)
+	guard_leave = |value| Core.guard_leave(core_signal(value))
 
 	## Text from the native paste event, or a refusal at the deployment's bound.
 	Paste : Core.Paste
@@ -1427,7 +1459,7 @@ Engine := [].{
 
 	## A signal that never changes. It reads no state or cell, so it triggers no refresh.
 	const : a -> Signal(ctx, a)
-	const = |value| { v: Core.const(value) }
+	const = |value| Fixed(value)
 
 	## `element(tag, attrs, children)`: an HTML element. `Html` offers typed
 	## helpers for common elements and controls.
@@ -1454,13 +1486,13 @@ Engine := [].{
 	## shown while open is true. Closing it sends False to on_close; the app
 	## writes the state that open reads. Content lives while the dialog is open.
 	dialog_element : { label : Str, open : Signal(ctx, Bool), on_close : HandlerOf(ctx, Bool), modal : [Modal, NonModal], attrs : List(Attr(ctx)), children : List(Elem(ctx)) } -> Elem(ctx)
-	dialog_element = |props| Core.controlled_dialog({ label: props.label, open: props.open.v, on_close: props.on_close.h, modal: props.modal, attrs: props.attrs, children: props.children })
+	dialog_element = |props| Core.controlled_dialog({ label: props.label, open: core_signal(props.open), on_close: props.on_close.h, modal: props.modal, attrs: props.attrs, children: props.children })
 
 	## A popover controlled by a signal: the record form of Html.popover.
 	## Browser dismissal sends False to on_toggle so the app can change the
 	## state read by open. Content lives while the popover is open.
 	popover_element : { label : Str, open : Signal(ctx, Bool), on_toggle : HandlerOf(ctx, Bool), dismiss : [Auto, Manual], attrs : List(Attr(ctx)), children : List(Elem(ctx)) } -> Elem(ctx)
-	popover_element = |props| Core.controlled_popover({ label: props.label, open: props.open.v, on_toggle: props.on_toggle.h, dismiss: props.dismiss, attrs: props.attrs, children: props.children })
+	popover_element = |props| Core.controlled_popover({ label: props.label, open: core_signal(props.open), on_toggle: props.on_toggle.h, dismiss: props.dismiss, attrs: props.attrs, children: props.children })
 
 	## A static text node.
 	text : Str -> Elem(ctx)
@@ -1469,7 +1501,10 @@ Engine := [].{
 	## A text node whose content follows a value; the DOM is written only when
 	## the text changes.
 	text_s : Signal(ctx, Str) -> Elem(ctx)
-	text_s = |{ v }| Core.text_s(v)
+	text_s = |signal| match signal {
+		Fixed(value) => Core.text(value)
+		Varies(value) => Core.text_s(value)
+	}
 
 	## Set a static attribute to literal text, keeping an empty nonboolean
 	## attribute present. Use a property builder for names a control claims.
@@ -1481,13 +1516,16 @@ Engine := [].{
 	## an element property are rejected on that property's elements; use
 	## `prop_s` for live control state.
 	attr_s : Str, Signal(ctx, Str) -> Attr(ctx)
-	attr_s = |name, { v }| Core.attr_s(name, v)
+	attr_s = |name, signal| match signal {
+		Fixed(value) => Core.attr(name, value)
+		Varies(value) => Core.attr_s(name, value)
+	}
 
 	## Follow explicit presence, keeping `Present("")` as an empty nonboolean
 	## attribute and removing the attribute for `Absent`. As with `attr_s`,
 	## names claimed by a property must use that property's builder instead.
 	attr_presence : Str, Signal(ctx, [Absent, Present(Str)]) -> Attr(ctx)
-	attr_presence = |name, { v }| Core.attr_presence(name, v)
+	attr_presence = |name, signal| Core.attr_presence(name, core_signal(signal))
 
 	## A static `class` attribute.
 	class : Str -> Attr(ctx)
@@ -1495,7 +1533,10 @@ Engine := [].{
 
 	## A `class` attribute that follows a value.
 	class_s : Signal(ctx, Str) -> Attr(ctx)
-	class_s = |{ v }| Core.class_s(v)
+	class_s = |signal| match signal {
+		Fixed(value) => Core.class(value)
+		Varies(value) => Core.class_s(value)
+	}
 
 	## A static `data-testid` attribute, for spec locators.
 	test_id : Str -> Attr(ctx)
@@ -1503,7 +1544,10 @@ Engine := [].{
 
 	## A `data-testid` attribute that follows a value.
 	test_id_s : Signal(ctx, Str) -> Attr(ctx)
-	test_id_s = |{ v }| Core.test_id_s(v)
+	test_id_s = |signal| match signal {
+		Fixed(value) => Core.test_id(value)
+		Varies(value) => Core.test_id_s(value)
+	}
 
 	## Listen for an event's text payload by its bare event name. Custom names
 	## may contain a colon. Retired policy/file suffixes are a contract error
@@ -1562,13 +1606,13 @@ Engine := [].{
 
 	## Receive only keys the rendered map hears; other keys pass to ancestors.
 	on_key : KeyProps(ctx), HandlerOf(ctx, Key) -> Attr(ctx)
-	on_key = |props, { h }| Core.on_key({ keymap: props.keymap.v, on: props.on, stop: props.stop }, h)
+	on_key = |props, { h }| Core.on_key({ keymap: core_signal(props.keymap), on: props.on, stop: props.stop }, h)
 
 	## Hear document keys after this mount's element handlers. A declaration
 	## cannot sit under a row, and the most recently mounted matching one wins.
 	on_document_key : DocumentKeyProps(ctx), HandlerOf(ctx, Key) -> Attr(ctx)
 		where [ctx.outside_rows : () -> OutsideRows(ctx)]
-	on_document_key = |props, { h }| Core.on_document_key({ keymap: props.keymap.v, on: props.on, stop: props.stop }, h)
+	on_document_key = |props, { h }| Core.on_document_key({ keymap: core_signal(props.keymap), on: props.on, stop: props.stop }, h)
 
 	## A typed row of the platform's closed element-property vocabulary.
 	Prop(a) :: { p : Core.Prop(a) }.{
@@ -1598,7 +1642,10 @@ Engine := [].{
 
 	## Follow a signal with a property, writing only when its value changes.
 	prop_s : Prop(a), Signal(ctx, a) -> Attr(ctx)
-	prop_s = |{ p }, { v }| Core.prop_s(p, v)
+	prop_s = |{ p }, signal| match signal {
+		Fixed(value) => Core.prop(p, value)
+		Varies(value) => Core.prop_s(p, value)
+	}
 
 	## Where the browser aligns a target within its scrolling ancestors.
 	Align : [Start, Center, End, Nearest]
@@ -1628,7 +1675,10 @@ Engine := [].{
 	## registers nothing; two live elements with one name are a contract error
 	## checked at the end of the turn. Changing a name emits no DOM command.
 	ref_s : Signal(ctx, Str) -> Attr(ctx)
-	ref_s = |{ v }| Core.ref_s(v)
+	ref_s = |signal| match signal {
+		Fixed(value) => Core.ref(value)
+		Varies(value) => Core.ref_s(value)
+	}
 
 	## A `click` listener; its payload is empty.
 	on_click : Handler(ctx) -> Attr(ctx)
@@ -1721,4 +1771,39 @@ expect {
 	rows = [{ key: 9.U64, score: 2.I64 }, { key: 3, score: 2 }, { key: 7, score: 1 }]
 	ordered = rows.sort_with(|left, right| (plan.compare)((plan.sort)(left.key, left.score), (plan.sort)(right.key, right.score))).map(|row| row.key)
 	{ keys: ordered, same: (plan.compare)((plan.sort)(3, 2), (plan.sort)(3, 2)), excluded: (plan.keep)(1, -1) } == { keys: [7, 3, 9], same: Same, excluded: False }
+}
+
+## Convert the public representation only at an engine boundary. Constants
+## become readers here, without keeping a second holder beside their value.
+core_signal : Engine.Signal(ctx, a) -> Core.Signal(ctx, a)
+core_signal = |signal| match signal {
+	Fixed(value) => Core.const(value)
+	Varies(value) => value
+}
+
+## The compiler supplies one more segment than parts. Check that same rule
+## for a manual hook call rather than silently dropping text or a part.
+interpolate_text : List(Str), Iter(Engine.Signal(ctx, Str)) -> Engine.Signal(ctx, Str)
+interpolate_text = |segments, parts| {
+	var $fixed = [segments.first() ?? crash "contract: Signal.from_interpolation needs an initial text segment"]
+	var $varying = []
+	var $index = 1.U64
+	for part in parts {
+		next = segments.get($index) ?? crash "contract: Signal.from_interpolation has more parts than text segments"
+		match part {
+			Fixed(value) => {
+				$fixed = $fixed.append(value).append(next)
+			}
+			Varies(value) => {
+				$varying = $varying.append({ prefix: Str.join_with($fixed, ""), value })
+				$fixed = [next]
+			}
+		}
+		$index = $index + 1
+	}
+	if $index != segments.len() {
+		crash "contract: Signal.from_interpolation has fewer parts than text segments"
+	}
+	suffix = Str.join_with($fixed, "")
+	if ($varying.is_empty()) Fixed(suffix) else Varies(Core.join_text($varying, suffix))
 }

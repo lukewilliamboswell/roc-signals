@@ -492,6 +492,47 @@ Core := [].{
 		}
 	}
 
+	## Assemble an interpolation with one reader. Preserve a lone keyed
+	## selector only when every other part reads no layer or cell; otherwise
+	## selection dependencies join the ordinary signature as in map2.
+	join_text : List({ prefix : Str, value : Signal(ctx, Str) }), Str -> Signal(ctx, Str)
+	join_text = |parts, suffix| {
+		if parts.is_empty() {
+			return Core.const(suffix)
+		}
+		var $mask = 0.U128
+		var $other_mask = 0.U128
+		var $selection_mask = 0.U128
+		var $selection_count = 0.U64
+		var $selection = NoSel
+		for part in parts {
+			$mask = $mask.bitwise_or(part.value.mask)
+			match part.value.sel {
+				NoSel => {
+					$other_mask = $other_mask.bitwise_or(part.value.mask)
+				}
+				Sel(mask, read) => {
+					$selection_count = $selection_count + 1
+					$selection_mask = $selection_mask.bitwise_or(mask)
+					$selection = Sel(mask, read)
+				}
+			}
+		}
+		keeps_selection = $selection_count == 1 and $other_mask == 0
+		readers = parts.map(|{ prefix, value }| { prefix, read: value.read })
+		{
+			mask: if (keeps_selection) $mask else $mask.bitwise_or($selection_mask),
+			sel: if (keeps_selection) $selection else NoSel,
+			read: |env| {
+				var $pieces = []
+				for { prefix, read } in readers {
+					$pieces = $pieces.append(prefix).append(read(env))
+				}
+				Str.join_with($pieces.append(suffix), "")
+			},
+		}
+	}
+
 	## The page's handle on a browser `Blob`: a box the host minted in its
 	## resource heap, holding the token the runtime knows the `Blob` by. Roc's
 	## reference count is the handle's lifetime: when the last value holding it
