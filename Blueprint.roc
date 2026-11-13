@@ -73,6 +73,9 @@ config = [
 	# Measure how worker jobs scale in Chrome, on both candidate shipping
 	# builds of the Worker Lab; prints tables for a pull request.
 	Task("workers-scaling", [Use("engine"), Run(["scripts/workers_scaling.roc"])]),
+	# Fixed examples only, with ordinary optimized native builds. Covered
+	# check/check-slow targets and campaigns keep their own executables.
+	Task("fuzz-smoke", [Use("engine"), Run(["scripts/fuzz_smoke.roc", "--"])]),
 	# A fuzz campaign: `blueprint run fuzz -- --time 600 [TARGET...]`.
 	Task("fuzz", [Use("engine"), Run(["scripts/fuzz.roc", "--"])]),
 	# The release assets: `blueprint run release -- --version 0.3.0`.

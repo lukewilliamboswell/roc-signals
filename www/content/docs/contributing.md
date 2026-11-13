@@ -119,6 +119,7 @@ These are the development environment's Blueprint tasks, not an app's
 | `blueprint run platform` | Build the platform's link inputs with the pinned Zig, including matching PIC musl startup and libraries, to build an app's `main.roc` by hand (a fuzz target needs none: `roc build --fuzz` fetches its roc-fuzz release) |
 | `blueprint run jfb` | Build the js-framework-benchmark app and check its operations in Chrome |
 | `blueprint run workers-scaling` | Measure worker jobs in Chrome on both candidate shipping builds of the Worker Lab: correctness (its drawn picture included), the time to draw a picture by pool size, speedup by pool size, responsiveness, payloads, robustness sequences and memory, as tables for a pull request |
+| `blueprint run fuzz-smoke -- [TARGET...]` | Actual fixed examples on ordinary optimized native builds; defaults to every maintained target |
 | `blueprint run fuzz -- [--time S] [TARGET...]` | A fuzz campaign |
 | `blueprint run api` | Build and audit the API reference alone, including methods inherited through public aliases, without rebuilding the site examples |
 | `blueprint run site -- [--base-url URL] [--tool-url URL]` | Build the website, the API docs and the example apps into `dist/`; check sample highlighting, copying, themes and contrast in Chrome |
@@ -532,6 +533,34 @@ not its inputs, carry the value.
 Fuzz builds print compiler phase timings. Use those alongside the replay
 report to distinguish time spent compiling the optimized target from time
 spent running its fixed examples.
+
+For a fixed-example editing loop, run `blueprint run fuzz-smoke`, or select
+whole applicable targets with `blueprint run fuzz-smoke -- controls fx-channel`.
+It defaults to all entries in `Targets.fuzz_targets`, including the test-app
+targets. It builds the same roc-fuzz apps at `--opt=speed` without coverage
+instrumentation, then runs their actual `check` commands with the usual
+30-minute per-invocation deadline, allocator observations, trace rules and
+leak checks. Compiler, linker, replay and report failures fail the task.
+It neither explores new inputs nor replaces an applicable fixed replay with
+a compiler check or an `expect`.
+
+Its executables, compiler/check logs, roc-fuzz reports and `validation.json`
+are under `.build/fuzz-smoke/<target>/` (or `ROC_SIGNALS_BUILD_DIR`). The
+validator checks supervised preparation, the complete declared inventory,
+saved input hashes, complete observations and traces, and zero outer live
+allocations and bytes. It preserves U64 evidence without rounding. The build
+metadata records the command, compiler version, entry and binary hashes; it
+is not a dependency manifest or an executable cache. A matched-profile proof
+also retains the complete frozen source and dependency manifests.
+
+`check`, `check-slow` and `fuzz` retain their instrumented builds under
+`.build/fuzz/`; campaigns never select the plain smoke executables. Keep the
+covered final checks and guided campaigns: the plain profile does not test
+coverage-generated machine code. The task prints compiler and fixed-replay
+batch wall times separately, while each build log has compiler phase timings.
+Those batch times include scheduling and are not individual target timings.
+The small matched URL check established compatibility; it does not establish
+a speed improvement for large engine targets.
 
 Protocol consumer facts are checked against Appendix B. Runtime contracts
 reject malformed declarations before init, compare every valid Unicode scalar

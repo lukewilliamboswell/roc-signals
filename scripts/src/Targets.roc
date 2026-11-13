@@ -1,4 +1,5 @@
 import cli.Path
+import cli.Monotonic
 import Proc
 import SpecSuite
 
@@ -101,6 +102,87 @@ Targets := [].{
 	fuzz_check! : SpecSuite.Options, Fuzz, Str => Try(List(Str), _)
 	fuzz_check! = |o, t, _exe| Targets.fuzz_check_all!(o, [t])
 
+	## The explicit fixed-example lane has its own executables. Campaigns and
+	## covered checks continue to use exe_of and never consult this directory.
+	smoke_exe_of : SpecSuite.Options, Fuzz -> Str
+	smoke_exe_of = |o, { name, .. }| "${o.build_dir}/fuzz-smoke/${name}/target"
+
+	## A plain optimized build of the same actual roc-fuzz app. This job is
+	## separate from covered build_fuzz_all!; it never supplies a campaign.
+	smoke_build_job : SpecSuite.Options, Fuzz -> Proc.Job
+	smoke_build_job = |o, t| { program: o.compiler, args: ["build", "--opt=speed", "--timings", t.main, "--output=${Targets.smoke_exe_of(o, t)}"], cwd: o.root }
+
+	## Check every declared example of each selected target. A failed build
+	## blocks only its own replay and remains a failure; every independent
+	## successfully built target is checked. Durable reports, saved input
+	## hashes, traces and outer allocation balance are judged by one helper.
+	## Compiler and replay batch wall times are reported separately; neither
+	## is a per-target timing when the scheduler admits several processes.
+	fuzz_smoke_all! : SpecSuite.Options, List(Fuzz) => Try(List(Str), _)
+	fuzz_smoke_all! = |o, fuzzes| {
+		if fuzzes.is_empty() { return Err(NoFuzzTargets) }
+		for target in fuzzes {
+			SpecSuite.fresh_dir!("${o.build_dir}/fuzz-smoke/${target.name}")?
+		}
+		build_start = Monotonic.now!()
+		built = Proc.parallel!(fuzzes.map(|target| Targets.smoke_build_job(o, target)), Proc.compiler_jobs!()?)?
+		build_elapsed = build_start.elapsed!()
+		Proc.note!("== fuzz-smoke compiler batch: ${build_elapsed.to_str()}")
+		var $problems = []
+		var $ready = []
+		for outcome in List.map2(fuzzes, built, |target, result| { target, code: result.code, output: result.output }) {
+			dir = "${o.build_dir}/fuzz-smoke/${outcome.target.name}"
+			Path.write_utf8!(Path.utf8("${dir}/build.log"), outcome.output)?
+			if outcome.code != 0 {
+				$problems = $problems.append("fuzz smoke ${outcome.target.name}: compiler/linker exited ${outcome.code.to_str()}; see ${dir}/build.log")
+			} else if !(Path.exists!(Path.utf8(Targets.smoke_exe_of(o, outcome.target)))?) {
+				$problems = $problems.append("fuzz smoke ${outcome.target.name}: compiler produced no executable")
+			} else {
+				$ready = $ready.append(outcome.target)
+			}
+		}
+		check_start = Monotonic.now!()
+		checked = Proc.parallel!(
+			$ready.map(|target| { program: Targets.smoke_exe_of(o, target), args: ["check", "--timeout=1800", "--profile=fixed-examples-plain", "--report-dir=${o.build_dir}/fuzz-smoke/${target.name}/report"], cwd: "${o.build_dir}/fuzz-smoke/${target.name}" }),
+			Proc.cpus!(),
+		)?
+		check_elapsed = check_start.elapsed!()
+		Proc.note!("== fuzz-smoke fixed replay batch: ${check_elapsed.to_str()}")
+		var $judges = []
+		for outcome in List.map2($ready, checked, |target, result| { target, code: result.code, output: result.output }) {
+			dir = "${o.build_dir}/fuzz-smoke/${outcome.target.name}"
+			Path.write_utf8!(Path.utf8("${dir}/check.log"), outcome.output)?
+			build = Targets.smoke_build_job(o, outcome.target)
+			$judges = $judges.append({
+				program: o.node,
+				args: [
+					"tests/fuzz/check-report.mjs",
+					"--report-dir", "${dir}/report",
+					"--target", outcome.target.name,
+					"--profile", "fixed-examples-plain",
+					"--binary", Targets.smoke_exe_of(o, outcome.target),
+					"--build-exit", "0",
+					"--check-exit", outcome.code.to_str(),
+					"--build-log", "${dir}/build.log",
+					"--check-log", "${dir}/check.log",
+					"--compiler-version", o.nightly,
+					"--build-cwd", o.root,
+					"--build-batch-ns", build_elapsed.to_nanos().to_str(),
+					"--check-batch-ns", check_elapsed.to_nanos().to_str(),
+					"--build-command", build.program,
+				].concat(build.args),
+				cwd: o.root,
+			})
+		}
+		judged = Proc.parallel!($judges, Proc.cpus!())?
+		for outcome in List.map2($ready, judged, |target, result| { target, code: result.code, output: result.output }) {
+			if outcome.code != 0 {
+				$problems = $problems.append("fuzz smoke ${outcome.target.name}: ${outcome.output.trim()}; see ${o.build_dir}/fuzz-smoke/${outcome.target.name}")
+			}
+		}
+		Ok($problems)
+	}
+
 	browser! : SpecSuite.Options, Str, List(Str) => Try(List(Str), _)
 	browser! = |o, script, args| {
 		code = Proc.status!({ program: o.node, args: ["tests/browser/${script}", "--runtime", SpecSuite.runtime, "--chrome", o.chrome].concat(args), cwd: o.root })?
@@ -121,6 +203,10 @@ Targets := [].{
 			if code != 0 {
 				$failures = $failures.append("${script} failed (exit ${code.to_str()})")
 			}
+		}
+		report_units = Proc.status!({ program: o.node, args: ["tests/fuzz/check-report-unit.mjs"], cwd: o.root })?
+		if report_units != 0 {
+			$failures = $failures.append("fixed-report transport contracts failed (exit ${report_units.to_str()})")
 		}
 		wasm = "${o.build_dir}/write-scaling.wasm"
 		Path.create_all!(Path.utf8(o.build_dir))?
