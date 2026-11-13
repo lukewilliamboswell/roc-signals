@@ -491,11 +491,9 @@ walks, shipping browser soaks and full worker scaling do not run; development
 artifacts are not performance or shipping allocation evidence. The release notes
 disclose these limits.
 
-Fuzz examples and campaigns also report `SKIP` on that nightly: roc-fuzz
-0.6.0's Linux libraries predate the [PIE requirement](https://github.com/roc-lang/roc/pull/12949),
-and its engine targets also reach the optimizer crash. Restore them with
-PIC roc-fuzz inputs and the optimizer fix. Windows CI always attempts the
-current CLI init and retains its output in `.build/cli-init.log`, printing
+Fuzz examples and campaigns always attempt their requested targets. Compiler,
+linker and runtime failures fail the task; no compiler version exempts fuzzing.
+Windows CI always attempts the current CLI init and retains its output in `.build/cli-init.log`, printing
 it before classification. Only a failed init containing a nonempty subset of
 the three captured basic-cli 0.28 diagnostics (`Locale:253:11`, `Locale:291:11`, or `Path:739:1`), each once
 and with every error, cause and summary accounted for, may quarantine the remaining

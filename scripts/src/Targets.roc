@@ -40,20 +40,6 @@ Targets := [].{
 		{ name: "million-row-explorer-aggregates", main: "examples/million-row-explorer/fuzz-aggregates.roc" },
 	]
 
-	## roc-fuzz 0.6.0 bundles non-PIC Linux libraries. Every target fails
-	## linking on the PIE-requiring nightly, before its examples can run.
-	## Limit this exemption to the observed nightly: the next one must retry,
-	## and a roc-fuzz release with PIC inputs lets this branch be removed.
-	runnable_fuzz! : SpecSuite.Options, List(Fuzz) => List(Fuzz)
-	runnable_fuzz! = |o, fuzzes| {
-		if SpecSuite.has_broken_optimizer(o.nightly) {
-			Proc.note!("SKIP fuzz targets ${Str.join_with(fuzzes.map(|t| t.name), ", ")}: roc-fuzz 0.6.0's Linux libc is not PIC (https://github.com/roc-lang/roc/pull/12949); engine targets also hit ${SpecSuite.optimizer_issue}. Restore with PIC roc-fuzz inputs and a fixed optimizer; the next nightly retries automatically.")
-			[]
-		} else {
-			fuzzes
-		}
-	}
-
 	## Where a target's executable is built.
 	exe_of : SpecSuite.Options, Fuzz -> Str
 	exe_of = |o, { name, .. }| "${o.build_dir}/fuzz/${name}/target"
@@ -98,10 +84,9 @@ Targets := [].{
 	## parallel (the checks are independent processes).
 	fuzz_check_all! : SpecSuite.Options, List(Fuzz) => Try(List(Str), _)
 	fuzz_check_all! = |o, fuzzes| {
-		chosen = Targets.runnable_fuzz!(o, fuzzes)
-		Targets.build_fuzz_all!(o, chosen)?
-		results = Proc.parallel!(chosen.map(|t| Targets.check_job(o, t)), Proc.cpus!())?
-		Ok(List.map2(chosen, results, |t, r| Targets.judge(t.name, r.code, r.output)).join())
+		Targets.build_fuzz_all!(o, fuzzes)?
+		results = Proc.parallel!(fuzzes.map(|t| Targets.check_job(o, t)), Proc.cpus!())?
+		Ok(List.map2(fuzzes, results, |t, r| Targets.judge(t.name, r.code, r.output)).join())
 	}
 
 	fuzz_check! : SpecSuite.Options, Fuzz, Str => Try(List(Str), _)
