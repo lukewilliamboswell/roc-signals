@@ -1,3 +1,5 @@
+import { checkedI64, i64Bytes, i32Bytes, checkedLanguages, browserLanguages, checkedSeed, browserSeed, checkedZone, probeTimeZone } from "./environment.mjs";
+
 // Browser runtime of the web platform. The engine, which is Roc code
 // (platform/Core.roc, behind the authoring API in platform/Engine.roc),
 // decides everything; this file applies its command bytes to the DOM and
@@ -155,7 +157,7 @@
 // are present for any value other than "" and "false".
 
 // The wire protocol version this runtime implements (design.md, Appendix B).
-export const PROTOCOL_VERSION = 13;
+export const PROTOCOL_VERSION = 14;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
@@ -2186,7 +2188,7 @@ export class RocEngineRuntime {
     const environment = options.environment === undefined ? {} : options.environment;
     if (typeof environment !== "object" || environment === null || Array.isArray(environment)) throw new Error("options.environment must be an object of readers");
     for (const key of Object.keys(environment)) {
-      if (!["online", "visible", "matchMedia"].includes(key)) throw new Error(`options.environment has an unknown reader "${key}"`);
+      if (!["online", "visible", "matchMedia", "now", "seed", "languages", "timeZone"].includes(key)) throw new Error(`options.environment has an unknown reader "${key}"`);
       if (typeof environment[key] !== "function") throw new Error(`options.environment.${key} must be a function`);
     }
     this.environment = environment;
@@ -2284,6 +2286,7 @@ export class RocEngineRuntime {
     const boot = readDeclarations(this.x);
     this.bootKeys = boot.keys;
     this.mediaQueries = boot.media;
+    this.zoneDays = boot.zoneDays;
     this.portDecls = new Map(boot.decls.map((d) => [d.name, d]));
     checkPortHandlers(boot.decls, this.ports, this.manual);
     const bytes = this.bootBytes();
@@ -2311,12 +2314,23 @@ export class RocEngineRuntime {
     if (!storageOk) pairs.length = 0;
     const loc = this.win ? this.win.location : null;
     const url = loc ? loc.pathname + loc.search + loc.hash : "/";
+    // The default zone probe uses this exact mount sample rather than
+    // reading a second clock value. Injected zone readers retain their one
+    // argument: the span the program declares, in days each side of mount.
+    const now = this.readNow();
+    const seed = checkedSeed(this.environment.seed ? this.environment.seed() : browserSeed());
+    const languages = checkedLanguages(this.environment.languages ? this.environment.languages() : browserLanguages(this.win?.navigator));
+    const zone = this.environment.timeZone ? checkedZone(this.environment.timeZone(this.zoneDays)) : probeTimeZone(this.zoneDays, now);
     const sections = [
       { tag: 1, write: () => encStr(url) },
       { tag: 2, write: () => concat([new Uint8Array([storageOk ? 1 : 0]), u32(pairs.length), ...pairs.flatMap(([k, v]) => [encStr(k), encStr(v)])]) },
       { tag: 3, write: () => new Uint8Array([this.isOnline() ? 1 : 0]) },
       { tag: 4, write: () => new Uint8Array([this.isVisible() ? 1 : 0]) },
       { tag: 6, write: () => new Uint8Array(this.mediaQueries.map((query) => this.mediaMatch(this.mediaQuery(query)) ? 1 : 0)) },
+      { tag: 7, write: () => i64Bytes(now) },
+      { tag: 8, write: () => seed },
+      { tag: 9, write: () => concat([u32(languages.length), ...languages.map(encStr)]) },
+      { tag: 10, write: () => concat([encStr(zone.name), i64Bytes(zone.from_ms), i64Bytes(zone.until_ms), u32(zone.offsets.length), ...zone.offsets.flatMap(offset => [i64Bytes(offset.from_ms), i32Bytes(offset.minutes)])]) },
     ];
     return concat(sections.map(({ tag, write }) => {
       const body = write();
@@ -4181,7 +4195,7 @@ export class RocEngineRuntime {
           this.live.set(fx.id, { kind: "sub", req: fx, cancel: () => {} });
           return;
         }
-        const h = setInterval(() => this.result(fx.id, new Uint8Array([RES_FIRED])), fx.ms);
+        const h = setInterval(() => this.guard(() => this.result(fx.id, this.firedPayload())), fx.ms);
         this.live.set(fx.id, { kind: "sub", req: fx, cancel: () => clearInterval(h) });
         return;
       }
@@ -4231,10 +4245,11 @@ export class RocEngineRuntime {
           return;
         }
         if (fx.op === "timer") {
-          const h = setTimeout(() => {
+          const h = setTimeout(() => this.guard(() => {
+            const payload = this.firedPayload();
             this.live.delete(fx.id);
-            this.result(fx.id, new Uint8Array([RES_FIRED]));
-          }, fx.ms);
+            this.result(fx.id, payload);
+          }), fx.ms);
           this.live.set(fx.id, { kind: "timer", cancel: () => clearTimeout(h) });
           return;
         }
@@ -5002,7 +5017,7 @@ export class RocEngineRuntime {
     if (answer.timeout) this.result(id, new Uint8Array([RES_TIMEOUT]));
     else if (answer.network !== undefined) this.result(id, concat([new Uint8Array([RES_NETWORK]), utf8enc.encode(answer.network)]));
     else if (answer.status !== undefined) this.result(id, httpResult(answer.status, answer.body ?? "", answer.headers ?? []));
-    else this.result(id, new Uint8Array([RES_FIRED]));
+    else this.guard(() => this.result(id, this.firedPayload()));
     return true;
   }
 
@@ -5037,7 +5052,7 @@ export class RocEngineRuntime {
   tick(id) {
     const e = this.live.get(id);
     if (e === undefined || e.kind !== "sub") return false;
-    this.result(id, new Uint8Array([RES_FIRED]));
+    this.guard(() => this.result(id, this.firedPayload()));
     return true;
   }
 
@@ -5049,6 +5064,16 @@ export class RocEngineRuntime {
 
   liveRows(site = 1) {
     return (this.sites[site] ?? new Set()).size;
+  }
+
+  // Wall time is sampled only at boot and when a timer callback runs. The
+  // encoded result keeps that sample even if ingress must wait for a batch.
+  readNow() {
+    return checkedI64(this.environment.now ? this.environment.now() : Date.now(), "options.environment.now");
+  }
+
+  firedPayload() {
+    return concat([new Uint8Array([RES_FIRED]), i64Bytes(this.readNow())]);
   }
 
   isOnline() {
@@ -5136,7 +5161,7 @@ export class RocEngineRuntime {
 function readDeclarations(x) {
   x.boot_keys();
   const bytes = new Uint8Array(x.memory.buffer, x.cmd_ptr(), x.cmd_len());
-  const out = { keys: [], decls: [], media: [] };
+  const out = { keys: [], decls: [], media: [], zoneDays: 366 };
   const sections = [
     { tag: 2, name: "local-storage", read: (r) => {
       for (let n = r.u32(); n > 0; n -= 1) out.keys.push(r.str());
@@ -5164,6 +5189,10 @@ function readDeclarations(x) {
         queries.add(query); out.media.push(query);
       }
     } },
+    { tag: 10, name: "time-zone", read: (r) => {
+      out.zoneDays = r.u16();
+      if (out.zoneDays > 7305) throw new Error("zone_days is greater than 7305");
+    } },
   ];
   let at = 0;
   for (const section of sections) {
@@ -5181,6 +5210,7 @@ function readDeclarations(x) {
       const need = (n) => { if (n > body.length - pos) throw new Error("has a short body"); };
       const reader = {
         u8: () => { need(1); return body[pos++]; },
+        u16: () => { need(2); const value = new DataView(body.buffer, body.byteOffset + pos, 2).getUint16(0, true); pos += 2; return value; },
         u32: () => { need(4); const value = new DataView(body.buffer, body.byteOffset + pos, 4).getUint32(0, true); pos += 4; return value; },
         str: () => { const n = reader.u32(); need(n); const value = readStr(body, pos, n); pos += n; return value; },
       };

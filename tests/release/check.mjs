@@ -11,7 +11,7 @@
 // that changes them has changed behaviour.
 import { readFile } from "node:fs/promises";
 
-const PROTOCOL_VERSION = 13;
+const PROTOCOL_VERSION = 14;
 const WORK_METRIC_BASE = 16;
 const OPCODES = ["", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "REF"];
 const FAULTS = ["none", "contract", "resource_limit", "out_of_memory", "app_crash", "expect_failed"];
@@ -84,6 +84,12 @@ const defaults = new Uint8Array([
   3, 1, 0, 0, 0, 1,
   4, 1, 0, 0, 0, 1,
   6, mediaCount, 0, 0, 0, ...new Array(mediaCount).fill(0),
+  7, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  8, 16, 0, 0, 0, ...new Array(16).fill(0),
+  9, 13, 0, 0, 0, 1, 0, 0, 0, 5, 0, 0, 0, 101, 110, 45, 85, 83,
+  10, 39, 0, 0, 0, 3, 0, 0, 0, 85, 84, 67,
+  0, 0, 0, 0, 0, 0, 0, 128, 255, 255, 255, 255, 255, 255, 255, 127,
+  1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 0, 0, 0, 0,
 ]);
 const other = (await WebAssembly.instantiate(module, { env })).exports;
 other.boot_keys();

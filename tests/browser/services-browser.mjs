@@ -83,7 +83,10 @@ async function open(prelude = "") {
     const join = (parts) => { const b = new Uint8Array(parts.reduce((n, p) => n + p.length, 0)); let at = 0; for (const p of parts) { b.set(p, at); at += p.length; } return b; };
     const str = (text) => { const b = new TextEncoder().encode(text); return join([u32(b.length), b]); };
     const section = (tag, body) => join([new Uint8Array([tag]), u32(body.length), body]);
-    const bootBytes = (url = "/", storage = [1, 0, 0, 0, 0]) => join([section(1, str(url)), section(2, new Uint8Array(storage)), section(3, new Uint8Array([1])), section(4, new Uint8Array([1])), section(6, new Uint8Array())]);
+    const i64 = (value) => { const b = new Uint8Array(8); new DataView(b.buffer).setBigInt64(0, value, true); return b; };
+    const utc = { name: "UTC", from_ms: -(1n << 63n), until_ms: (1n << 63n) - 1n, offsets: [{ from_ms: -(1n << 63n), minutes: 0 }] };
+    const facts = [section(7, i64(0n)), section(8, new Uint8Array(16)), section(9, join([u32(1), str("en-US")])), section(10, join([str("UTC"), i64(utc.from_ms), i64(utc.until_ms), u32(1), i64(utc.from_ms), u32(0)]))];
+    const bootBytes = (url = "/", storage = [1, 0, 0, 0, 0]) => join([section(1, str(url)), section(2, new Uint8Array(storage)), section(3, new Uint8Array([1])), section(4, new Uint8Array([1])), section(6, new Uint8Array()), ...facts]);
     // Malformed boot bytes: a section header that runs past the end.
     const x1 = await fresh();
     x1.boot_keys();
@@ -152,7 +155,7 @@ async function open(prelude = "") {
       [join([section(1, new Uint8Array([3, 0, 0, 0, 65])), storage, online, visible]), 1],
       [join([section(1, join([str("/"), new Uint8Array([0])])), storage, online, visible]), 1],
       [join([location, section(2, join([new Uint8Array([0]), u32(1), str("saved"), str("x")])), online, visible]), 2],
-      [join([location, section(2, join([new Uint8Array([1]), u32(1), str("undeclared"), str("x")])), online, visible, section(6, new Uint8Array())]), 2],
+      [join([location, section(2, join([new Uint8Array([1]), u32(1), str("undeclared"), str("x")])), online, visible, section(6, new Uint8Array()), ...facts]), 2],
     ];
     for (const [bytes, tag] of cases) {
       const x = await fresh(); x.boot_keys();
@@ -162,7 +165,7 @@ async function open(prelude = "") {
     // Capture staging independently of command application.
     const empty = await fresh();
     let emptyBytes, declarationsPtr, initialized = false;
-    const declarations = join([section(2, join([u32(1), str("saved")])), section(5, u32(0)), section(6, u32(0))]);
+    const declarations = join([section(2, join([u32(1), str("saved")])), section(5, u32(0)), section(6, u32(0)), section(10, new Uint8Array([110, 1]))]);
     const capture = { ...empty,
       boot_keys: () => { declarationsPtr = empty.payload_reserve(declarations.length); new Uint8Array(empty.memory.buffer, declarationsPtr, declarations.length).set(declarations); },
       cmd_ptr: () => declarationsPtr,
@@ -170,10 +173,10 @@ async function open(prelude = "") {
       init: () => { emptyBytes = new Uint8Array(empty.memory.buffer, capture.ptr, capture.len).slice(); initialized = true; },
       payload_reserve: (n) => { capture.len = n; capture.ptr = empty.payload_reserve(n); return capture.ptr; },
     };
-    const rt = new RocEngineRuntime(capture, document.createElement("div"), { window: { location: { pathname: "/test", search: "?a=1", hash: "#h" } }, storage: { getItem: (key) => key === "saved" ? "seed" : null }, environment: { online: () => false, visible: () => true } });
+    const rt = new RocEngineRuntime(capture, document.createElement("div"), { window: { location: { pathname: "/test", search: "?a=1", hash: "#h" } }, storage: { getItem: (key) => key === "saved" ? "seed" : null }, environment: { online: () => false, visible: () => true, now: () => 0n, seed: () => new Uint8Array(16), languages: () => ["en-US"], timeZone: () => utc } });
     rt.mount();
     out.layout = Array.from(emptyBytes);
-    out.expectedLayout = Array.from(join([section(1, str("/test?a=1#h")), section(2, join([new Uint8Array([1]), u32(1), str("saved"), str("seed")])), section(3, new Uint8Array([0])), visible, section(6, new Uint8Array())]));
+    out.expectedLayout = Array.from(join([section(1, str("/test?a=1#h")), section(2, join([new Uint8Array([1]), u32(1), str("saved"), str("seed")])), section(3, new Uint8Array([0])), visible, section(6, new Uint8Array()), ...facts]));
     rt.unmount();
     const keys = section(2, u32(0)), ports = section(5, u32(0));
     out.declarations = [];
