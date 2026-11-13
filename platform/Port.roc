@@ -140,7 +140,8 @@ Port := [].{
 	## - `timeout`: `Ms(ms)` answers `Timeout` when the JavaScript has not
 	##   answered `ms` milliseconds after the request was performed, and
 	##   aborts its `AbortSignal`; the platform caps it at ten minutes.
-	##   `Unlimited`, the default, waits for the JavaScript.
+	##   `Unlimited`, the default, waits for the JavaScript. `Ms(0)` is a
+	##   contract error; a finite timeout is at least one millisecond.
 	CallProps := {
 		name : Str,
 		timeout : [Unlimited, Ms(U32)] ?? Unlimited,
@@ -154,10 +155,7 @@ Port := [].{
 	call : CallProps -> Call(input, output) where [input.PortJson.Sendable, output.PortJson.Sendable]
 	call = |CallProps.({ name, timeout })| {
 		name,
-		timeout_ms: match timeout {
-			Unlimited => 0
-			Ms(ms) => ms
-		},
+		timeout_ms: Core.timeout_wire(timeout),
 		encode: |value| PortJson.encode(value),
 		decode: |message| PortJson.decode(message).map_err(PortJson.describe),
 	}

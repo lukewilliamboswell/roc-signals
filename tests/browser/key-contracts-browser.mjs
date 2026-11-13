@@ -1,5 +1,5 @@
-// Mount element declarations through the real Wasm host. Controlled helpers
-// reject conflicting declarations; ordinary elements retain their attributes.
+// Mount declarations and requests through the real Wasm host. Invalid timing
+// and conflicting declarations are contracts; raw elements keep their attributes.
 // Failed mounts and unmount both release every browser listener.
 import http from "node:http";
 import fs from "node:fs";
@@ -30,6 +30,11 @@ const fixtures = [
   ["popover-duplicate", ["one static popover", "site"]],
   ["popover-dynamic-popover", ["one static popover", "site"]],
   ["media-undeclared", ["missing-media", "site"]],
+  ["interval-zero", ["Interval(0) has no period"]],
+  ["timer-overflow", ["Timer(3000000000)", "2147483647 ms"]],
+  ["interval-overflow", ["Interval(2147483648)", "2147483647 ms"]],
+  ["timer-overflow-boundary", ["Timer(2147483648)", "2147483647 ms"]],
+  ["timeout-zero", ["a timeout of Ms(0)", "write Unlimited"]],
   ["raw-controlled-attributes", [], false],
 ];
 const runtime = runtimeFiles(options.runtime);

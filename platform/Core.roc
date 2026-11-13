@@ -588,10 +588,7 @@ Core := [].{
 		## reports as a network failure.
 		upload : File, UploadProps -> Request
 		upload = |f, UploadProps.({ url, method, headers, timeout, credentials })| {
-			timeout_ms = match timeout {
-				Unlimited => 0
-				Ms(ms) => ms
-			}
+			timeout_ms = Core.timeout_wire(timeout)
 			Upload({ method, url, headers, body: f, timeout_ms, credentials })
 		}
 
@@ -685,7 +682,8 @@ Core := [].{
 
 		## How a download into a file is asked for: the URL, the method, the
 		## request headers, and a timeout (`Unlimited` by default; capped at
-		## ten minutes), with browser cache and credentials policies.
+		## ten minutes), with browser cache and credentials policies. `Ms(0)`
+		## is a contract error; use `Unlimited` explicitly for no timeout.
 		FetchProps := { url : Str, method : Str ?? "GET", headers : List((Str, Str)) ?? [], timeout : [Unlimited, Ms(U32)] ?? Unlimited, cache : Cache ?? Default, credentials : Credentials ?? SameOrigin }
 
 		## A request for an HTTP response whose body becomes a [File], for an
@@ -701,10 +699,7 @@ Core := [].{
 		fetch : FetchProps -> Request
 		fetch = |props| {
 			{ url, method, headers, timeout, cache, credentials } = props
-			timeout_ms = match timeout {
-				Unlimited => 0
-				Ms(ms) => ms
-			}
+			timeout_ms = Core.timeout_wire(timeout)
 			Fetch({ method, url, headers, timeout_ms, cache, credentials })
 		}
 
@@ -842,7 +837,17 @@ Core := [].{
 	## Same-origin credentials by default; Include also permits cross-origin credentials.
 	Credentials : [SameOrigin, Include]
 
-	## HTTP options with browser defaults, for an effect site’s plan.
+	## A timeout as a request carries it. Zero means none on the wire, so
+	## callers use Unlimited explicitly rather than asking for Ms(0).
+	timeout_wire : [Unlimited, Ms(U32)] -> U32
+	timeout_wire = |timeout| match timeout {
+		Unlimited => 0
+		Ms(0) => crash "contract: a timeout of Ms(0) would be read as no timeout; write Unlimited for none, or a timeout of at least 1 ms"
+		Ms(ms) => ms
+	}
+
+	## HTTP options with browser defaults, for an effect site’s plan. A
+	## finite timeout is at least one millisecond; Ms(0) is a contract error.
 	HttpProps := { url : Str, method : Str ?? "GET", headers : List((Str, Str)) ?? [], body : Str ?? "", timeout : [Unlimited, Ms(U32)] ?? Unlimited, cache : Cache ?? Default, credentials : Credentials ?? SameOrigin }
 
 	## Build an HTTP request without repeating its default method, body or policies.
@@ -852,10 +857,7 @@ Core := [].{
 		url: props.url,
 		headers: props.headers,
 		body: props.body,
-		timeout_ms: match props.timeout {
-			Unlimited => 0
-			Ms(ms) => ms
-		},
+		timeout_ms: Core.timeout_wire(props.timeout),
 		cache: props.cache,
 		credentials: props.credentials,
 	})
@@ -869,6 +871,7 @@ Core := [].{
 	##   `Http` request's are.
 	## - `timeout`: `Ms(ms)` answers `Timeout` when the server has not
 	##   answered in time, capped at ten minutes; `Unlimited` by default.
+	##   `Ms(0)` is a contract error; a finite timeout is at least one millisecond.
 	## - `credentials`: SameOrigin by default, or Include for credentials across origins.
 	UploadProps := {
 		url : Str,
@@ -7005,6 +7008,10 @@ derive_settle = |input, block, depth, out, tx| {
 # status:u16 headers size name type (a fetched body, one staged handle;
 # design.md, Appendix B).
 
+## A browser timer stores a signed 32-bit millisecond delay.
+max_browser_timer_ms : U32
+max_browser_timer_ms = 2147483647
+
 ## Largest per-request HTTP timeout or work timeout the host will arm (10
 ## minutes).
 max_timeout_ms : U32
@@ -7851,8 +7858,21 @@ put_fx_progress = |c, id, req, progress_ms| {
 			Plain => put_str(head.append(19), text).append(0)
 			Html(markup) => put_str(put_str(head.append(19), text).append(1), markup)
 		}
-		Timer(ms) => put_u32(head.append(3), ms)
-		Interval(ms) => put_u32(head.append(4), ms)
+		Timer(ms) => {
+			if ms > max_browser_timer_ms {
+				crash "contract: Timer(${ms.to_str()}) is longer than a browser timer holds (2147483647 ms, about 24.8 days); the browser would fire it at once"
+			}
+			put_u32(head.append(3), ms)
+		}
+		Interval(ms) => {
+			if ms == 0 {
+				crash "contract: Interval(0) has no period; the browser would fire it as fast as it can, a turn each time"
+			}
+			if ms > max_browser_timer_ms {
+				crash "contract: Interval(${ms.to_str()}) is longer than a browser timer holds (2147483647 ms, about 24.8 days); the browser would fire it as fast as it can, a turn each time"
+			}
+			put_u32(head.append(4), ms)
+		}
 		Popstate => head.append(5)
 		OnlineChanges => head.append(6)
 		VisibilityChanges => head.append(7)
@@ -10386,4 +10406,29 @@ expect {
 		delivered: 0,
 		settled: True,
 	}
+}
+
+## Typed timeouts distinguish a positive duration from the wire's zero sentinel.
+expect Core.timeout_wire(Unlimited) == 0 and Core.timeout_wire(Ms(1)) == 1 and Core.timeout_wire(Ms(4294967295)) == 4294967295
+
+## Zero remains a legal one-shot clock sample; both timers keep the largest
+## browser delay exactly, without a signed conversion or the timeout cap.
+expect {
+	{ zero: put_fx([], 1, Timer(0)), one: put_fx([], 1, Timer(1)), timer_max: put_fx([], 1, Timer(2147483647)), interval_one: put_fx([], 1, Interval(1)), interval_max: put_fx([], 1, Interval(2147483647)) } == {
+		zero: [13, 1, 0, 0, 0, 3, 0, 0, 0, 0],
+		one: [13, 1, 0, 0, 0, 3, 1, 0, 0, 0],
+		timer_max: [13, 1, 0, 0, 0, 3, 255, 255, 255, 127],
+		interval_one: [13, 1, 0, 0, 0, 4, 1, 0, 0, 0],
+		interval_max: [13, 1, 0, 0, 0, 4, 255, 255, 255, 127],
+	}
+}
+
+## Raw requests retain zero as no timeout, and positive typed durations are
+## still capped by the existing ten-minute wire policy when they are issued.
+expect {
+	raw = Http({ method: "GET", url: "/timeout", headers: [], body: "", timeout_ms: 0, cache: Default, credentials: SameOrigin })
+	wide = Core.http({ url: "/timeout", timeout: Ms(4294967295) })
+	unlimited = put_fx([], 1, raw)
+	capped = put_fx([], 1, wide)
+	unlimited.drop_first(unlimited.len() - 10) == [0, 0, 0, 0, 1, 1, 0, 0, 0, 0] and capped.drop_first(capped.len() - 10) == [192, 39, 9, 0, 1, 1, 0, 0, 0, 0] and Core.http({ url: "/timeout" }) == raw
 }

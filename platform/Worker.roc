@@ -89,7 +89,8 @@ Worker := [].{
 	##   milliseconds after it was requested and answers `Timeout`; the time a
 	##   request waits for a free worker counts, and the platform caps it at
 	##   ten minutes. `Unlimited`, the default, lets a job run until it
-	##   answers or its site stops it.
+	##   answers or its site stops it. `Ms(0)` is a contract error; use
+	##   `Unlimited` explicitly for no timeout.
 	## - `on_dispose`: what disposing the site that asked for a job does to
 	##   it: `Stop` it (the default), or `Keep` it running and deliver its
 	##   answer to the nearest surviving ancestor, for a job whose work must
@@ -481,12 +482,9 @@ sent = |input| {
 	{ bytes, files }
 }
 
-## A timeout as the request carries it: `0` is none.
+## Use the shared timeout conversion so Ms(0) cannot become no deadline.
 timeout_ms_of : [Unlimited, Ms(U32)] -> U32
-timeout_ms_of = |timeout| match timeout {
-	Unlimited => 0
-	Ms(ms) => ms
-}
+timeout_ms_of = Core.timeout_wire
 
 ## A task's request carries its name, its timeout and its policies, and
 ## its answer is read back as an output or the task's own error; a

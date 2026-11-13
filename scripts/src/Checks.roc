@@ -57,6 +57,7 @@ Checks := [].{
 			{ name: "layout-scroll-text", rejection: "top: U32" },
 			{ name: "layout-size-text", rejection: "width: U32" },
 			{ name: "layout-seen-text", rejection: "ratio_permille: U16" },
+			{ name: "timeout-zero", rejection: "a timeout of Ms(0)" },
 		]
 		dir = "${o.build_dir}/key-type-errors"
 		SpecSuite.fresh_dir!(dir)?
@@ -78,8 +79,8 @@ Checks := [].{
 		Ok($problems)
 	}
 
-	## Isolated apps check element contracts in both hosts: deliberate mistakes
-	## name the violated rule, while ordinary raw attributes still mount.
+	## Isolated apps check declaration and request contracts in both hosts:
+	## deliberate mistakes name the rule; ordinary raw attributes still mount.
 	key_contracts! : SpecSuite.Options => Try(List(Str), _)
 	key_contracts! = |o| {
 		cases = [
@@ -105,6 +106,11 @@ Checks := [].{
 			{ name: "popover-duplicate", rejection: "one static popover", prefix: "contract:", code: 70 },
 			{ name: "popover-dynamic-popover", rejection: "one static popover", prefix: "contract:", code: 70 },
 			{ name: "media-undeclared", rejection: "missing-media", prefix: "contract:", code: 70 },
+			{ name: "interval-zero", rejection: "Interval(0) has no period", prefix: "contract:", code: 70 },
+			{ name: "timer-overflow", rejection: "Timer(3000000000) is longer", prefix: "contract:", code: 70 },
+			{ name: "interval-overflow", rejection: "Interval(2147483648) is longer", prefix: "contract:", code: 70 },
+			{ name: "timer-overflow-boundary", rejection: "Timer(2147483648) is longer", prefix: "contract:", code: 70 },
+			{ name: "timeout-zero", rejection: "a timeout of Ms(0)", prefix: "contract:", code: 70 },
 			{ name: "raw-controlled-attributes", rejection: "", prefix: "", code: 0 },
 		]
 		dir = "${o.build_dir}/key-contracts"
