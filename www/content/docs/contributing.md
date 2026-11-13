@@ -371,8 +371,8 @@ things the walk did. The walk needs nothing written for an app, so every
 app with specs is walked: `check-slow` walks each (`Slow.walks`: 10,000
 steps from seed 7 on a runner built at `--opt=speed`, the Markdown Editor
 five times for 2,000), and `check` 300 steps on the runner it built for the
-specs. The three test apps whose pages offer a contract error on purpose
-(`workers`, `ports`, `outbox`) are not walked: a walk reaches that error and
+specs. The four test apps whose pages offer a contract error or a focus loop
+on purpose (`workers`, `ports`, `outbox`, `controls`) are not walked: a walk reaches that error and
 the instance is poisoned, as it must be. The walk is the spec runner's, so
 it is in every app's runner and needs no target, entry point or harness of
 its own; the scripts run it over each app, and an app author can run it
