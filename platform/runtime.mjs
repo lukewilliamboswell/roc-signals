@@ -319,6 +319,8 @@ function walk(root, path, protocol) {
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 const SVG_NS = "http://www.w3.org/2000/svg";
 const MATHML_NS = "http://www.w3.org/1998/Math/MathML";
+const XML_NS = "http://www.w3.org/XML/1998/namespace";
+const XMLNS_NS = "http://www.w3.org/2000/xmlns/";
 
 // Registry keys bind the module's names to real decoding implementations before
 // init. Command layout and DOM validation remain independent from Roc.
@@ -342,19 +344,30 @@ function nameString(reader) {
   return text;
 }
 
+// The XML factory is needed only for a bare xmlns element outside the
+// ordinary HTML/no-namespace and XMLNS factories. Other URI strings stay data.
+function xmlFactoryNamespace(value) {
+  return value !== XML_NS && value.isWellFormed() && !/[\0-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]/u.test(value);
+}
+
 function validateExpandedName(name, element) {
   const localPattern = /^(?:[A-Za-z][^\0\t\n\f\r\u0020/>]*|[:_\u0080-\u{10FFFF}][A-Za-z0-9-.:_\u0080-\u{10FFFF}]*)$/u;
   if (!(element ? localPattern.test(name.local) : name.local.length > 0 && !/[\0\t\n\f\r\u0020/=>]/u.test(name.local))) throw new Error("invalid namespace-dependent local name");
   if (name.prefix !== null) {
     if (!name.prefix || /[\0\t\n\f\r\u0020/:>]/u.test(name.prefix)) throw new Error("invalid namespace prefix");
     if (name.namespace === null) throw new Error("namespace prefix without namespace");
-    if (name.prefix === "xml" && name.namespace !== "http://www.w3.org/XML/1998/namespace") throw new Error("xml prefix requires XML namespace");
-  } else if (name.local.includes(":") && !((element && (name.namespace === HTML_NS || name.namespace === null)) || (!element && name.namespace === null))) {
-    throw new Error("unrepresentable unprefixed local name");
+    if (name.prefix === "xml" && name.namespace !== XML_NS) throw new Error("xml prefix requires XML namespace");
+  } else if (name.local.includes(":")) {
+    if (element && name.namespace === HTML_NS && /[A-Z]/.test(name.local)) throw new Error("unprefixed HTML colon name cannot preserve spelling through its factory");
+    const foreign = element && (name.namespace === SVG_NS || name.namespace === MATHML_NS);
+    if (foreign && (!/^[a-z]/.test(name.local) || /[A-Z]/.test(name.local))) throw new Error("unprefixed foreign colon name cannot preserve spelling through its empty-node factory");
+    if (!foreign && !((element && (name.namespace === HTML_NS || name.namespace === null)) || (!element && name.namespace === null))) throw new Error("unrepresentable unprefixed local name");
   }
   const ordinary = name.prefix === null && ((element && (name.namespace === HTML_NS || name.namespace === null)) || (!element && name.namespace === null));
+  const bareXmlns = element && name.prefix === null && name.local === "xmlns" && name.namespace !== null && name.namespace !== XMLNS_NS;
+  if (bareXmlns && !ordinary && !xmlFactoryNamespace(name.namespace)) throw new Error("bare xmlns namespace cannot be preserved by its empty-node factory");
   const declares = name.prefix === "xmlns" || name.qualified === "xmlns";
-  if (!ordinary && (name.namespace === "http://www.w3.org/2000/xmlns/") !== declares) throw new Error("invalid xmlns namespace pairing");
+  if (!ordinary && !bareXmlns && (name.namespace === XMLNS_NS) !== declares) throw new Error("invalid xmlns namespace pairing");
 }
 
 function expandedName(reader, element) {
@@ -393,15 +406,52 @@ function mountRootBytes(root, protocol) {
   return bytes;
 }
 
-function createNamedElement(doc, name) {
-  if (name.namespace === null && name.prefix === null && (name.local.includes(":") || name.local === "xmlns")) {
+// Every fallback creates one empty element of an already-decided identity.
+// Parsing never receives app attributes, children or text. Exact facts are
+// checked before import and again before return; mismatch is an executor fault.
+function checkFactoryElement(element, name, realm, interfaceName = null) {
+  if (element?.nodeType !== 1 || element.namespaceURI !== name.namespace || element.prefix !== name.prefix || element.localName !== name.local) throw new Error("element factory changed expanded identity");
+  if (interfaceName !== null && Object.getPrototypeOf(element) !== realm[interfaceName].prototype) throw new Error("element factory changed DOM interface");
+  if (element.attributes.length !== 0 || element.childNodes.length !== 0) throw new Error("element factory returned nonempty data");
+  return element;
+}
+
+function createResolvedElement(doc, name) {
+  const realm = doc.defaultView ?? globalThis;
+  let element, interfaceName = null;
+  if (name.prefix === null && name.local.includes(":") && (name.namespace === SVG_NS || name.namespace === MATHML_NS)) {
+    const wrapper = name.namespace === SVG_NS ? "svg" : "math";
+    const source = doc.createElement("template");
+    source.innerHTML = `<${wrapper}><${name.local}></${name.local}></${wrapper}>`;
+    const outer = source.content.firstChild;
+    if (source.content.childNodes.length !== 1 || outer?.namespaceURI !== name.namespace || outer.prefix !== null || outer.localName !== wrapper || outer.attributes.length !== 0 || outer.childNodes.length !== 1) throw new Error("foreign empty-node factory changed its wrapper");
+    interfaceName = name.namespace === SVG_NS ? "SVGElement" : "MathMLElement";
+    checkFactoryElement(outer.firstChild, name, realm, interfaceName);
+    element = doc.importNode(outer.firstChild, false);
+  } else if (name.prefix === null && name.local === "xmlns" && name.namespace !== null && name.namespace !== HTML_NS && name.namespace !== XMLNS_NS) {
+    const uri = name.namespace.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll('"', "&quot;").replaceAll("\r", "&#13;").replaceAll("\n", "&#10;").replaceAll("\t", "&#9;");
+    const source = new realm.DOMParser().parseFromString(`<xmlns xmlns="${uri}"/>`, "application/xml");
+    const candidate = source.documentElement;
+    interfaceName = name.namespace === SVG_NS ? "SVGElement" : name.namespace === MATHML_NS ? "MathMLElement" : "Element";
+    if (source.childNodes.length !== 1 || source.firstChild !== candidate || candidate?.nodeType !== 1 || candidate.namespaceURI !== name.namespace || candidate.prefix !== null || candidate.localName !== "xmlns" || candidate.childNodes.length !== 0 || candidate.attributes.length !== 1) throw new Error("XML empty-node factory changed expanded identity");
+    const declaration = candidate.attributes[0];
+    if (declaration.namespaceURI !== XMLNS_NS || declaration.prefix !== null || declaration.localName !== "xmlns" || declaration.value !== name.namespace) throw new Error("XML empty-node factory changed its declaration");
+    candidate.removeAttributeNS(XMLNS_NS, "xmlns");
+    checkFactoryElement(candidate, name, realm, interfaceName);
+    element = doc.importNode(candidate, false);
+  } else if (name.namespace === null && name.prefix === null && (name.local.includes(":") || name.local === "xmlns")) {
     const source = doc.implementation.createDocument(null, "");
-    return doc.importNode(source.createElement(name.local), false);
+    const candidate = source.createElement(name.local);
+    checkFactoryElement(candidate, name, realm, "Element");
+    element = doc.importNode(candidate, false);
+    interfaceName = "Element";
+  } else {
+    element = name.namespace === HTML_NS && name.prefix === null && (name.local.includes(":") || name.local === "xmlns")
+      ? doc.createElement(name.local)
+      : doc.createElementNS(name.namespace, name.qualified);
   }
-  const element = name.namespace === HTML_NS && name.prefix === null && (name.local.includes(":") || name.local === "xmlns")
-    ? doc.createElement(name.local)
-    : doc.createElementNS(name.namespace, name.qualified);
-  if (element.namespaceURI !== name.namespace || element.prefix !== name.prefix || element.localName !== name.local) throw new Error("element factory changed expanded identity");
+  checkFactoryElement(element, name, realm, interfaceName);
+  if (element.ownerDocument !== doc) throw new Error("element factory returned another document's node");
   return element;
 }
 
@@ -429,7 +479,7 @@ const TEMPLATE_NODE_APPLIERS = {
     const name = expandedName(reader, true);
     const element = reader.dry
       ? { children: [], content: name.namespace === HTML_NS && name.local === "template" ? [] : null }
-      : createNamedElement(reader.doc, name);
+      : createResolvedElement(reader.doc, name);
     let code, target;
     if (reader.dry) {
       code = reader.u8[reader.at++];
@@ -543,7 +593,7 @@ function applyNodeCommand(reader) {
   const before = dv.getUint32(reader.at + 8, true);
   reader.at += 12;
   const element = op === this.protocol.OP_ELEM;
-  const el = element ? createNamedElement(doc, expandedName(reader, true))
+  const el = element ? createResolvedElement(doc, expandedName(reader, true))
     : op === this.protocol.OP_COMMENT ? doc.createComment(nameString(reader)) : doc.createTextNode(nameString(reader));
   if (element) readContainer(reader, el);
   el.__id = node;

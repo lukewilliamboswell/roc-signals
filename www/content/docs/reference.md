@@ -227,6 +227,13 @@ Attribute identity is namespace URI plus local name; replacing that identity
 retains its existing prefix. Builtin namespace tags and their explicit URI
 spellings denote the same identity.
 
+Qualification also checks that the browser can recreate the tuple exactly.
+In SVG and MathML, an unprefixed local name containing a colon must start
+with an ASCII letter and contain no ASCII capitals. A bare `xmlns` element
+in another namespace requires XML 1.0 characters in its URI and cannot use
+the reserved XML namespace URI. Other URI strings remain data; these
+construction limits do not impose XML grammar on ordinary DOM names.
+
 A tag literal names a listed HTML element (case-insensitively), an exact-case
 SVG element, or a grammar-valid name with a hyphen. Literal names beginning
 exactly `aria-` use the parser's ARIA vocabulary. Unknowns suggest close spellings

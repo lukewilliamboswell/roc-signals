@@ -5628,6 +5628,26 @@ namespace pairing or a creation operation that changes identity is an
 restriction on well-formed raw names. XML source retains the parser's XML
 grammar; computed DOM names follow the DOM boundary's grammar.
 
+The executor normally uses the direct DOM creation operation. Two narrowly
+selected empty-node factories bridge identities that operation cannot express:
+an HTML template wrapper produces an unprefixed colon-bearing SVG or MathML
+local name, and an XML document with one namespace declaration produces a
+bare `xmlns` element in another namespace. The first requires an ASCII letter
+at the start and no ASCII capitals, because HTML parsing would otherwise
+change the name. The second requires XML 1.0 characters in that URI and
+excludes the reserved XML namespace URI. These are construction limits on
+those tuples, not a general restriction on namespace URI text.
+
+This is an explicit exception for creating an empty node, not a markup
+renderer. The runtime verifies the exact URI, prefix, local name and expected
+DOM interface, removes only the factory's known namespace declaration, and
+checks that no attributes or children remain before importing and returning
+the node. A changed or nonempty result is an executor fault. App attributes,
+text, comments and children come only from the ordinary command operands;
+no app markup is sent to these factories. Temporary wrapper/document data is
+bounded by the new name and URI operands and released after that creation;
+no parsed source or node cache is retained for later turns.
+
 Attributes are looked up and removed by namespace URI and local name. A
 replacement retains the existing attribute's prefix and order, as the DOM
 does. Raw no-namespace `xlink:href` and qualified XLink `href` are distinct and

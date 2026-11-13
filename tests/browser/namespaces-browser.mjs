@@ -117,6 +117,43 @@ try {
     check("disposed row and alias IDs reopen with fresh content", runtime.lookup(30) !== row && runtime.lookup(31) !== cloned && runtime.lookup(31).content.lastChild.textContent === "reused");
     apply([23, ...word(30)], [6, ...word(31), ...word(99)]);
     check("CLEAR selects explicit content and preserves the owning template", runtime.lookup(31).content.childNodes.length === 0 && runtime.lookup(31).childNodes.length === 0);
+    // These names cannot be reconstructed by createElementNS without
+    // changing a prefix/local tuple. Only an empty, identity-checked node
+    // comes from the selected browser factory; ordinary bytes add its data.
+    let factoryId = 100;
+    const math = "http://www.w3.org/1998/Math/MathML", xml = "http://www.w3.org/XML/1998/namespace", xmlns = "http://www.w3.org/2000/xmlns/";
+    for (const [code, uri, type] of [[1, svg, SVGElement], [2, math, MathMLElement]]) {
+      for (const local of ["h:div", "h:é", "h:a=b", "h:a<x", "h:a&b", 'h:a"b', "h:a'b", "h:a:b", "h:a\u000bb"]) {
+        const id = factoryId; factoryId += 2;
+        apply(element(id, 0, name(code, local)));
+        const node = runtime.lookup(id);
+        check(`empty ${code === 1 ? "SVG" : "MathML"} colon factory preserves ${JSON.stringify(local)}`, node.namespaceURI === uri && node.prefix === null && node.localName === local && Object.getPrototypeOf(node) === type.prototype && node.attributes.length === 0 && node.childNodes.length === 0 && node.ownerDocument === document);
+        apply(attr(id, name(3, "data-factory"), "from command"), [10, ...word(id + 1), ...word(id), ...word(0), ...text("fresh <& data")]);
+        check(`foreign colon data comes only from later ordinary commands ${id}`, runtime.lookup(id) === node && node.attributes.length === 1 && node.getAttribute("data-factory") === "from command" && node.childNodes.length === 1 && node.firstChild === runtime.lookup(id + 1) && node.textContent === "fresh <& data");
+      }
+    }
+    for (const uri of ["urn:entry", 'urn:entry?quote="&less=<', "urn:entry\tline\nnext\rend", "urn:entry\u007ftail", "urn:entry😀", svg, math, xmlns]) {
+      const id = factoryId; factoryId += 2;
+      apply(element(id, 0, name(4, "xmlns", "", uri)));
+      const node = runtime.lookup(id), type = uri === svg ? SVGElement : uri === math ? MathMLElement : Element;
+      check(`empty xmlns factory retains URI and removes only its declaration ${JSON.stringify(uri)}`, node.namespaceURI === uri && node.prefix === null && node.localName === "xmlns" && Object.getPrototypeOf(node) === type.prototype && node.attributes.length === 0 && node.childNodes.length === 0 && node.ownerDocument === document);
+      apply(attr(id, name(3, "title"), "fresh title"), [26, ...word(id + 1), ...word(id), ...word(0), ...text("fresh comment")]);
+      check(`xmlns receives exact attributes/comments from ordinary commands ${id}`, runtime.lookup(id) === node && node.attributes.length === 1 && node.getAttribute("title") === "fresh title" && node.firstChild === runtime.lookup(id + 1) && node.firstChild.data === "fresh comment");
+    }
+    for (const [site, expanded, uri, local, type] of [[3, name(1, "h:row"), svg, "h:row", SVGElement], [4, name(2, "h:row"), math, "h:row", MathMLElement], [5, name(4, "xmlns", "", "urn:row"), "urn:row", "xmlns", Element]]) {
+      const body = [1, ...expanded, 0, 1, ...name(3, "title"), ...text("template command"), 2, 2, ...text("row text"), 3, ...text("row comment"), 0];
+      const first = factoryId, second = factoryId + 1; factoryId += 2;
+      apply([7, ...word(site), ...word(body.length), ...body], [1, ...word(first), ...word(0), ...word(0), ...word(site)], [1, ...word(second), ...word(0), ...word(0), ...word(site)]);
+      const row = runtime.lookup(first), another = runtime.lookup(second), child = row.firstChild;
+      check(`template factory and clones preserve full identity/data for site ${site}`, row !== another && [row, another].every(node => node.namespaceURI === uri && node.prefix === null && node.localName === local && Object.getPrototypeOf(node) === type.prototype && node.attributes.length === 1 && node.getAttribute("title") === "template command" && node.childNodes.length === 2 && node.firstChild.data === "row text" && node.lastChild.data === "row comment"));
+      apply([4, ...word(first), ...word(0)]);
+      check(`factory row move preserves element and child identities ${site}`, runtime.lookup(first) === row && row.firstChild === child);
+    }
+    // Ordinary custom URI elements still accept XML-forbidden URI data when
+    // the native factory directly represents it. This is not an XML URI gate.
+    apply(element(factoryId, 0, name(4, "entry", "", "urn:ordinary\u0000tail")));
+    check("ordinary namespace URI controls remain data through direct construction", runtime.lookup(factoryId).namespaceURI === "urn:ordinary\u0000tail");
+    factoryId++;
     // Negative framing uses fresh real mounts, so a poison never serves as
     // permission to continue another case and every malformed operand is reached.
     const fresh = wrapper => {
@@ -139,6 +176,8 @@ try {
       ["content container on HTML div", elem(1, 0, name(0, "div"), 1)],
       ["content container on SVG template", elem(1, 0, name(1, "template"), 1)],
     ];
+    for (const code of [1, 2]) for (const local of ["h:DIV", "H:div", ":x", "é:x", "_x:y"]) invalid.push([`unconstructible foreign colon ${code}/${local}`, element(1, 0, name(code, local))]);
+    for (const uri of [xml, "urn:bad\u0000", "urn:bad\u000b", "urn:bad\ufffe", "urn:bad\uffff"]) invalid.push([`unconstructible xmlns URI ${JSON.stringify(uri)}`, element(1, 0, name(4, "xmlns", "", uri))]);
     const badPath = container => [1, ...name(0, "div"), 0, 0, 1, 2, ...text("x"), 1, 1, 1, container, 0];
     for (const [label, code] of [["unknown hole container", 2], ["content path on ordinary element", 1]]) {
       const body = badPath(code); invalid.push([label, [7, ...word(0), ...word(body.length), ...body]]);
@@ -147,6 +186,24 @@ try {
       const wrapper = document.createElement("div"); document.body.append(wrapper);
       const f = fresh(wrapper); f.rt.mount(); f.raw(bytes);
       check(`${label} is an executor fault before publication`, f.rt.poisoned?.class === "executor" && wrapper.childNodes.length === 0);
+      f.rt.unmount(); wrapper.remove();
+    }
+    // Independently damage the browser result. A helper may return only the
+    // exact empty node, never discard arbitrary parser data to make it fit.
+    for (const mutation of ["attribute", "child", "identity", "import"]) {
+      const wrapper = document.createElement("div"); document.body.append(wrapper);
+      const f = fresh(wrapper); f.rt.mount();
+      const parse = DOMParser.prototype.parseFromString, importNode = Document.prototype.importNode;
+      if (mutation === "import") Document.prototype.importNode = function (...args) { const node = importNode.apply(this, args); node.setAttribute("data-injected", "bad"); return node; };
+      else DOMParser.prototype.parseFromString = function (...args) {
+        const parsed = parse.apply(this, mutation === "identity" ? ['<xmlns xmlns="urn:wrong"/>', "application/xml"] : args);
+        if (mutation === "attribute") parsed.documentElement.setAttribute("data-injected", "bad");
+        if (mutation === "child") parsed.documentElement.appendChild(parsed.createComment("bad"));
+        return parsed;
+      };
+      try { f.raw(element(1, 0, name(4, "xmlns", "", "urn:expected"))); }
+      finally { DOMParser.prototype.parseFromString = parse; Document.prototype.importNode = importNode; }
+      check(`empty-node factory refuses injected ${mutation} without publishing a node`, f.rt.poisoned?.class === "executor" && wrapper.childNodes.length === 0);
       f.rt.unmount(); wrapper.remove();
     }
     for (const uri of ["u".repeat(65536), "é".repeat(32768)]) {

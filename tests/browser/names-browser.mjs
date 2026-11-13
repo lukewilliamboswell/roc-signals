@@ -10,6 +10,7 @@ const { values: options } = parseArgs({ options: {
   chrome: { type: "string", default: process.env.CHROME ?? "chrome" },
   corpus: { type: "string", default: fileURLToPath(new URL("../../fuzz/names/corpus.tsv", import.meta.url)) },
   runtime: { type: "string" },
+  "expanded-corpus": { type: "string", default: fileURLToPath(new URL("../../fuzz/names/expanded.tsv", import.meta.url)) },
 } });
 // A leading U+FEFF is name data, not a file signature to discard.
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -26,9 +27,9 @@ const namespaceCases = fs.readFileSync(new URL("../../fuzz/names/namespaces.tsv"
   return { name, namespace: utf8.decode(Buffer.from(namespaceHex, "hex")), qualified: utf8.decode(Buffer.from(qualifiedHex, "hex")), expected: { element: flags[0] === "1", attribute: flags[1] === "1" } };
 });
 // Expanded identity facts include parser-created names which a namespace-aware
-// factory alone cannot express. These empty-node constructions are test-only
-// evidence; this contract never authorizes parsing in the production executor.
-const expandedCases = fs.readFileSync(new URL("../../fuzz/names/expanded.tsv", import.meta.url), "utf8").trimEnd().split("\n").map(line => {
+// factory alone cannot express. This independent browser construction checks
+// the corpus separately from the executor's verified empty-node factories.
+const expandedCases = fs.readFileSync(options["expanded-corpus"], "utf8").trimEnd().split("\n").map(line => {
   const [name, flags, namespace, prefix, local] = line.split("\t");
   if (!/^[01]{2}$/.test(flags) || ![namespace, local, ...(prefix === "-" ? [] : [prefix])].every(value => /^(?:[0-9a-f]{2})*$/.test(value))) throw new Error("invalid expanded-name corpus row");
   const decode = value => utf8.decode(Buffer.from(value, "hex"));
@@ -144,7 +145,7 @@ try {
     console.log(`FAIL browser rule attribution: ${JSON.stringify(facts)}`);
   }
   await context.close();
-  console.log(JSON.stringify({ corpus: options.corpus, cases: cases.length, namespaceCases: namespaceCases.length, expandedCases: expandedCases.length, failed, facts }));
+  console.log(JSON.stringify({ corpus: options.corpus, cases: cases.length, namespaceCases: namespaceCases.length, expandedCases: expandedCases.length, expandedCorpus: options["expanded-corpus"], failed, facts }));
 } finally {
   await browser.close();
 }
