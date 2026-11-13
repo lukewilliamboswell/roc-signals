@@ -24,6 +24,15 @@ the `blueprint` release that `Blueprint.roc` names (no Nix is needed) and the
 current Roc nightly as `roc` (see [Compilers](#compilers)). `blueprint shell`
 opens a shell with the tools on `PATH`.
 
+Before building the site from source, run `blueprint run setup-parser`. The site
+tooling imports `../../roc-parser/package/main.roc`, so the parser must be a
+sibling of this checkout. Setup fetches the exact public commit recorded in
+`scripts/src/ParserSource.roc` into a new sibling when none exists. If you already
+have `../roc-parser` (including a symlink), setup checks the package entry and
+reports its commit and whether it has local changes without fetching or changing
+it. Your existing checkout remains the authority for local work on the unreleased
+parser. The site CI job runs the same setup in its fresh checkout and uses the pin.
+
 Chrome is the machine's `google-chrome` for now, because blueprint cannot yet
 unpack Chrome for Testing's zip archives; `Blueprint.roc` has the pinned
 recipe ready.
@@ -109,6 +118,7 @@ These are the development environment's Blueprint tasks, not an app's
 
 | Task | What it does |
 |---|---|
+| `blueprint run setup-parser` | Prepare the pinned sibling parser source or report an existing checkout without changing it |
 | `blueprint run check` | The pull-request gate (below) |
 | `blueprint run check-slow` | Every fuzz target's declared examples, a walk of every app of 10,000 steps (`RUNNER --walk`), the native soak of each app's round-trip spec (`RUNNER --soak 48`, flat live allocations and bytes), and a long Chrome session per app |
 | `blueprint run spec -- [--browser] [--filter GLOB] [APP...]` | Some apps' specs, natively and optionally in Chrome |
