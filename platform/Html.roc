@@ -1,6 +1,7 @@
 import Engine exposing [Attr, Elem, FilesHandler, Handler, HandlerOf, Signal]
 import Layout
 import Spelling
+import MarkupLiteral
 import parser.Html as MarkupHtml
 
 ## Typed helpers for common HTML elements, attributes and events, built on
@@ -12,6 +13,36 @@ import parser.Html as MarkupHtml
 ## `role` locators match. Signals keep the DOM in step with state; plain
 ## `Str` arguments are static.
 Html := [].{
+
+	## A checked element fragment with text signals bound to whole text or
+	## quoted attribute holes. Fixed syntax is parsed while compiling the literal.
+	## Handlers and child elements remain ordinary constructors around it.
+	## Explicit format-hook calls parse their supplied segments; ordinary literal
+	## binding, rendering and reactive updates do not parse source.
+	Markup(ctx) :: { plan : MarkupLiteral.Plan, parts : List(Signal(ctx, Str)) }.{
+
+		## Check fixed HTML, including embedded SVG/MathML, with exact authored
+		## structure. The result retains constructor data, not parser source.
+		from_quote : Str -> Try(Markup(ctx), [BadQuotedBytes(Str)])
+		from_quote = |source| MarkupLiteral.compile([source], HtmlFragment)
+			.map_ok(|plan| Markup.({ plan, parts: [] }))
+			.map_err(|BadLiteral(note)| BadQuotedBytes(note))
+
+		## Parse fixed segments once and bind homogeneous text-able signals.
+		## Computed values are data; binding and later updates never parse them.
+		from_interpolation : List(Str) -> Try((Iter(part) -> Markup(ctx)), [InvalidInterpolation(Str)])
+			where [part.to_text_signal : part -> Signal(ctx, Str)]
+		from_interpolation = |segments| {
+			plan = MarkupLiteral.compile(segments, HtmlFragment).map_err(|BadLiteral(note)| InvalidInterpolation(note))?
+			Ok(|parts| Markup.({ plan, parts: MarkupLiteral.bind(plan, parts.map(|part| part.to_text_signal())) }))
+		}
+
+		## Build the ordinary element and its existing text/attribute holes.
+		## One-line spaces survive; ASCII indentation containing CR/LF is omitted,
+		## even in whitespace-only pre content. Comments inside the root survive.
+		to_elem : Markup(ctx) -> Elem(ctx)
+		to_elem = |Markup.(bound)| MarkupLiteral.render(bound.plan, bound.parts)
+	}
 
 	## A checked HTML input keyword. Raw Engine.attr("type", text) remains
 	## available when an app deliberately wants the browser's raw behavior.

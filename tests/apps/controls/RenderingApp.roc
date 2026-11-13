@@ -36,7 +36,7 @@ RenderingApp := [].{
 
 	view : {} -> Elem(ctx)
 	view = |_| Engine.state(
-		{ rows: ["a", "b"], length: "10", animated: False, hidden: "until-found" },
+		{ rows: ["a", "b"], length: "10", animated: False, hidden: UntilFound },
 		|state| Engine.element(
 			"section",
 			[],
@@ -53,12 +53,12 @@ RenderingApp := [].{
 					|| RenderingApp.scene(state.signal().map(|s| s.rows), state.signal().map(|s| s.length), "animated-svg"),
 					|| Engine.text(""),
 				),
-				Html.button("Show findable", [], state.update(|s| { ..s, hidden: "false" })),
-				Html.button("Hide findable", [], state.update(|s| { ..s, hidden: "true" })),
-				Html.button("Findable until found", [], state.update(|s| { ..s, hidden: "until-found" })),
+				Html.button("Show findable", [], state.update(|s| { ..s, hidden: Shown })),
+				Html.button("Hide findable", [], state.update(|s| { ..s, hidden: Hidden })),
+				Html.button("Findable until found", [], state.update(|s| { ..s, hidden: UntilFound })),
 				Engine.element(
 					"details",
-					[Engine.test_id("findable"), Engine.attr("open", "true"), Engine.attr_s("hidden", state.signal().map(|s| s.hidden))],
+					[Engine.test_id("findable"), Engine.attr("open", "true"), Html.hidden_s(state.signal().map(|s| s.hidden))],
 					[
 						Engine.element("summary", [], [Engine.text("Findable details")]),
 						Engine.element("p", [], [Engine.text("until-found needle225")]),

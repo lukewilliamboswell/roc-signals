@@ -254,6 +254,9 @@ card_row = |{ cards, drag, column, size, marker }, title, card| {
 	across = |toward| Engine.handle_by(title, |name, _| Board.moved_across(cards, { title: name, toward }))
 	within = |toward| Engine.handle_by(title, |name, _| Board.moved_within(cards, { title: name, toward }))
 	look = "button button-sm w-8 justify-center px-0"
+	position_text = held.map2(size, |now, lane_size| "${(now.place + 1).to_str()} of ${lane_size.cards.to_str()} in ${Kanban.Column.to_str(column)}")
+	position : Html.Markup(Row(ctx, Str))
+	position = "<p class='hint numeric' data-testid='${title.map(|name| "card-position-${name}")}'>${position_text}</p>"
 	Engine.element(
 		"section",
 		[Html.aria_label_s(title), Html.zone_s(title.map(|name| "card:${name}")), Engine.class_s(marker.map2(title, |now, name| "card min-w-0${if (now.source == name) " opacity-50" else ""}${if (now.over == Before(name)) " border-t-2 border-blue-500" else if (now.over == After(name)) " border-b-2 border-blue-500" else ""}")), Engine.attr_s("data-card", title)],
@@ -283,10 +286,7 @@ card_row = |{ cards, drag, column, size, marker }, title, card| {
 					),
 				],
 			),
-			Html.p_s(
-				held.map2(size, |now, lane_size| "${(now.place + 1).to_str()} of ${lane_size.cards.to_str()} in ${Kanban.Column.to_str(column)}"),
-				[Engine.class("hint numeric"), Engine.test_id_s(title.map(|name| "card-position-${name}"))],
-			),
+			position.to_elem(),
 			Html.div(
 				"flex items-center gap-1",
 				[

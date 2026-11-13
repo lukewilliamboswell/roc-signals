@@ -145,4 +145,12 @@ labelled_field = |{ label, look }, control| Html.div("field ${look}", [Html.p(la
 
 ## One figure of the summary, under its caption.
 stat_tile : { label : Str, id : Str }, Signal(ctx, Str) -> Elem(ctx)
-stat_tile = |{ label, id }, value| Html.div("stat", [Html.p(label, "stat-label"), Html.p_s(value, [Engine.class("stat-value"), Engine.test_id(id)])])
+stat_tile = |{ label, id }, value| {
+	markup : Html.Markup(ctx)
+	markup =
+		\\<div class="stat">
+		\\  <p class="stat-label">${Engine.const(label)}</p>
+		\\  <p class="stat-value" data-testid="${Engine.const(id)}">${value}</p>
+		\\</div>
+	markup.to_elem()
+}

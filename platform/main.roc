@@ -27,7 +27,7 @@ platform ""
 	requires {
 		[Store : st] for main : Engine.Program(st)
 	}
-	exposes [Clipboard, Engine, Files, Html, Layout, Order, Port, PortJson, Url, Web, Wire, Worker]
+	exposes [Clipboard, Engine, Files, Html, Layout, Order, Port, PortJson, Svg, Url, Web, Wire, Worker]
 	packages { parser: "../../roc-parser/package/main.roc", unicode: "https://github.com/roc-lang/unicode/releases/download/4.3.2/3gvgiWm6BShjHKbNV2zRH6fhC5ZvScZgWF7AnVDWHSdd.tar.zst" }
 	provides {
 		"roc_engine_ask": ask_for_host!,
@@ -83,6 +83,7 @@ import Web
 import Files
 import Hosted
 import Html
+import Svg
 import Layout
 import Order
 import Port
