@@ -29,6 +29,7 @@ Targets := [].{
 		{ name: "markup", main: "fuzz/markup/main.roc" },
 		{ name: "picture-capture", main: "fuzz/picture-capture/main.roc" },
 		{ name: "picture-codec", main: "fuzz/picture-codec/main.roc" },
+		{ name: "picture-plan", main: "fuzz/picture-plan/main.roc" },
 		{ name: "table-view", main: "fuzz/table-view/main.roc" },
 		{ name: "result-readers", main: "fuzz/result-readers/main.roc" },
 		{ name: "port-json", main: "fuzz/port-json/main.roc" },

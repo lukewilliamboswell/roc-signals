@@ -485,7 +485,8 @@ shorthand), the worker wire format's decoder (`fuzz/wire`)
 the port message format's decoder (`fuzz/port-json`), mount command capture
 (`fuzz/picture-capture`, checked against a direct stream model across port
 insertions, row aliases, address reuse and follow-up turn boundaries), picture
-envelope framing and topology (`fuzz/picture-codec`), URL parsing, builders and readers (`fuzz/url`), and DOM/Fetch name grammar (`fuzz/names`). Every target that
+envelope framing and topology (`fuzz/picture-codec`), and fresh claim
+incarnations checked against a generation model (`fuzz/picture-plan`), URL parsing, builders and readers (`fuzz/url`), and DOM/Fetch name grammar (`fuzz/names`). Every target that
 drives the engine runs the settle check after every step.
 
 An example's targets check its own pure logic and import nothing of the
