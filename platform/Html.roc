@@ -1,5 +1,7 @@
 import Engine exposing [Attr, Elem, FilesHandler, Handler, HandlerOf, Signal]
 import Layout
+import Spelling
+import parser.Html as MarkupHtml
 
 ## Typed helpers for common HTML elements, attributes and events, built on
 ## `Engine.element`, `Engine.attr` and `Engine.on`.
@@ -10,6 +12,95 @@ import Layout
 ## `role` locators match. Signals keep the DOM in step with state; plain
 ## `Str` arguments are static.
 Html := [].{
+
+	## A checked HTML input keyword. Raw Engine.attr("type", text) remains
+	## available when an app deliberately wants the browser's raw behavior.
+	InputType := [Hidden, Text, Search, Tel, Url, Email, Password, Date, Month, Week, Time, DatetimeLocal, Number, Range, Color, Checkbox, Radio, File, Submit, Image, Reset, Button].{
+
+		## Check a computed keyword in any ASCII case and keep its typed meaning.
+		from_str : Str -> Try(InputType, [NotAnInputType(Str)])
+		from_str = |text| match MarkupHtml.ascii_lower(text) {
+			"hidden" => Ok(Hidden)
+			"text" => Ok(Text)
+			"search" => Ok(Search)
+			"tel" => Ok(Tel)
+			"url" => Ok(Url)
+			"email" => Ok(Email)
+			"password" => Ok(Password)
+			"date" => Ok(Date)
+			"month" => Ok(Month)
+			"week" => Ok(Week)
+			"time" => Ok(Time)
+			"datetime-local" => Ok(DatetimeLocal)
+			"number" => Ok(Number)
+			"range" => Ok(Range)
+			"color" => Ok(Color)
+			"checkbox" => Ok(Checkbox)
+			"radio" => Ok(Radio)
+			"file" => Ok(File)
+			"submit" => Ok(Submit)
+			"image" => Ok(Image)
+			"reset" => Ok(Reset)
+			"button" => Ok(Button)
+			_ => {
+				words = MarkupHtml.attribute_keywords({ element: "input", attribute: "type" }) ?? crash "Html.InputType: parser must describe input type keywords"
+				hint = Spelling.suggest(text, words)
+				advice = if (hint.is_empty()) " choose a listed HTML input keyword" else hint
+				Err(NotAnInputType("${Str.inspect(text)} is not an input type;${advice}"))
+			}
+		}
+
+		## Report a rejected keyword at its literal, before the input is built.
+		from_quote : Str -> Try(InputType, [BadQuotedBytes(Str)])
+		from_quote = |text| InputType.from_str(text).map_err(|NotAnInputType(note)| BadQuotedBytes(note))
+
+		## Render the canonical lowercase keyword the browser understands.
+		text : InputType -> Str
+		text = |kind| match kind {
+			Hidden => "hidden"
+			Text => "text"
+			Search => "search"
+			Tel => "tel"
+			Url => "url"
+			Email => "email"
+			Password => "password"
+			Date => "date"
+			Month => "month"
+			Week => "week"
+			Time => "time"
+			DatetimeLocal => "datetime-local"
+			Number => "number"
+			Range => "range"
+			Color => "color"
+			Checkbox => "checkbox"
+			Radio => "radio"
+			File => "file"
+			Submit => "submit"
+			Image => "image"
+			Reset => "reset"
+			Button => "button"
+		}
+
+		## Equal kinds render the same input behavior and canonical keyword.
+		is_eq : _
+	}
+
+	## The three HTML hidden states; UntilFound lets browser search reveal it.
+	Hidden : [Shown, Hidden, UntilFound]
+
+	## Set a fixed hidden state using explicit absence or its HTML keyword.
+	hidden : Hidden -> Attr(ctx)
+	hidden = |value| Engine.attr_presence("hidden", Engine.const(hidden_presence(value)))
+
+	## Let the hidden state follow a signal without treating text as Boolean.
+	hidden_s : Signal(ctx, Hidden) -> Attr(ctx)
+	hidden_s = |value| Engine.attr_presence("hidden", value.map(hidden_presence))
+
+	## Encode Boolean presence: false removes this named attribute, true keeps
+	## it with empty text. The name itself remains grammar-checked raw input;
+	## this helper does not claim every name is an HTML Boolean attribute.
+	boolean : Engine.AttrName, Signal(ctx, Bool) -> Attr(ctx)
+	boolean = |name, value| Engine.attr_presence(name, value.map(|present| if (present) Present("") else Absent))
 
 	## A dialog's controlled state and the handler that accepts browser closes.
 	DialogProps(ctx) := { open : Signal(ctx, Bool), on_close : HandlerOf(ctx, Bool), modal : [Modal, NonModal] ?? Modal }
@@ -84,8 +175,8 @@ Html := [].{
 	span_s : Signal(ctx, Str), List(Attr(ctx)) -> Elem(ctx)
 	span_s = |v, attrs| Engine.element("span", attrs, [Engine.text_s(v)])
 
-	## A boolean attribute rendered `"true"` or `"false"` (such as `disabled` or
-	## `aria-pressed`).
+	## Render Boolean text, including the meaningful ARIA value "false".
+	## Use boolean for presence rather than encoding absence as text.
 	flag : Engine.AttrName, Signal(ctx, Bool) -> Attr(ctx)
 	flag = |name, v| Engine.attr_s(name, v.map(bool_str))
 
@@ -108,8 +199,8 @@ Html := [].{
 	## `type` whose value follows `value`. `handler` receives the new text on every
 	## `input` event. While the input is focused, the user's draft wins over a
 	## differing `value`; it is applied on blur.
-	text_input : Signal(ctx, Str), Str, Signal(ctx, Str), List(Attr(ctx)), Handler(ctx) -> Elem(ctx)
-	text_input = |name, kind, v, attrs, h| Engine.element("input", [Engine.attr_s("aria-label", name), Engine.attr("type", kind), Engine.prop_s(Engine.Prop.value, v), Engine.on("input", h)].concat(attrs), [])
+	text_input : Signal(ctx, Str), InputType, Signal(ctx, Str), List(Attr(ctx)), Handler(ctx) -> Elem(ctx)
+	text_input = |name, kind, v, attrs, h| Engine.element("input", [Engine.attr_s("aria-label", name), Engine.attr("type", kind.text()), Engine.prop_s(Engine.Prop.value, v), Engine.on("input", h)].concat(attrs), [])
 
 	## What a file input lets the user choose.
 	##
@@ -138,7 +229,7 @@ Html := [].{
 		}
 		with_selection = match selection {
 			Single => with_accept
-			Multiple => with_accept.append(Engine.attr("multiple", "true"))
+			Multiple => with_accept.append(Engine.attr("multiple", ""))
 		}
 		Engine.element("input", with_selection, [])
 	}
@@ -286,7 +377,7 @@ Html := [].{
 
 	## Disables the control while the value is true.
 	disabled : Signal(ctx, Bool) -> Attr(ctx)
-	disabled = |v| Html.flag("disabled", v)
+	disabled = |v| Html.boolean("disabled", v)
 
 	# --------------------------------------------------------------- events
 
@@ -365,3 +456,28 @@ Html := [].{
 
 bool_str : Bool -> Str
 bool_str = |b| if (b) "true" else "false"
+
+## Hidden is an enumeration, so absence and its two keywords stay distinct.
+hidden_presence : Html.Hidden -> [Absent, Present(Str)]
+hidden_presence = |state| match state {
+	Shown => Absent
+	Hidden => Present("hidden")
+	UntilFound => Present("until-found")
+}
+
+## The closed union tracks the parser-owned keyword set exactly. A parser
+## update cannot silently add a type the helper does not represent.
+expect {
+	kinds : List(Html.InputType)
+	kinds = [Hidden, Text, Search, Tel, Url, Email, Password, Date, Month, Week, Time, DatetimeLocal, Number, Range, Color, Checkbox, Radio, File, Submit, Image, Reset, Button]
+	kinds.map(|kind| kind.text()) == MarkupHtml.attribute_keywords({ element: "input", attribute: "type" })?
+}
+
+## Both literal and computed keyword checks fold only ASCII spelling.
+expect {
+	Html.InputType.from_quote("TeXt")?.text() == "text" and
+		Html.InputType.from_str("CHECKBOX")?.text() == "checkbox" and
+			Html.InputType.from_quote("chekbox") == Err(BadQuotedBytes("\"chekbox\" is not an input type; did you mean \"checkbox\"?")) and
+				Html.InputType.from_str("unknown").is_err() and
+					hidden_presence(Shown) == Absent and hidden_presence(Hidden) == Present("hidden") and hidden_presence(UntilFound) == Present("until-found")
+}
