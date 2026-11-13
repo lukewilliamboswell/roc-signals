@@ -240,7 +240,7 @@ map and writes nothing to the DOM. The empty name names nothing, so only a
 selected row need hold a reference. A name is an address you build for a
 command; the row's identity remains its key.
 
-Two live elements may not hold the same nonempty name. The engine checks
+Two live references may not hold the same nonempty name. The engine checks
 the names mounted or renamed at the end of the turn, before resolving
 focus, and reports a contract error naming the name and both construction
 sites. A departing row and an entering row can share a name during a turn
