@@ -30,6 +30,11 @@ const server = http.createServer((req, res) => {
     const timer = setInterval(() => { if (sent === size) { clearInterval(timer); res.end(); } else { res.write(Buffer.alloc(16384, 65)); sent += 16384; } }, 20);
     req.on("close", () => clearInterval(timer)); return;
   }
+  if (u.pathname === "/edge") {
+    const body = u.searchParams.has("empty") ? Buffer.alloc(0) : Buffer.from("missing");
+    res.writeHead(Number(u.searchParams.get("status") ?? 200), { "content-length": body.length, "content-type": "application/x-edge", "x-answer": "edge" });
+    res.end(body); return;
+  }
   if (u.pathname === "/reset") { req.socket.destroy(); return; }
   if (u.pathname === "/") { res.writeHead(200, { "content-type": "text/html" }); res.end("<!doctype html><title>HTTP contracts</title>"); return; }
   const file = files[path.basename(u.pathname)];
@@ -136,6 +141,27 @@ try {
     return [JSON.stringify(await one(0, "/data")) === JSON.stringify(await one(16, "/data")), await one(0, "/reset"), await one(16, "/reset")];
   });
   check("Fetch and XHR agree exactly on status, headers, type and failure class", parity, [true, [2], [2]]);
+  const edgeParity = await page.evaluate(async () => {
+    const one = async (progressMs, method, url) => {
+      const rt = make(); rt.manual = false;
+      rt.startTransfer(request(1, "fetch", { progressMs, method, url })); await wait(() => !rt.live.size);
+      const answer = rt.log.find(e => e.tag !== 26), file = answer.files?.[0];
+      const header = answer.payload.parts?.[0];
+      return { tag: answer.tag, status: header ? header[1] + header[2] * 256 : null, record: answer.payload.parts?.map(b => [...b]), size: file?.size, type: file?.type, body: file ? await file.text() : null };
+    };
+    const results = [];
+    for (const [method, url] of [["HEAD", "/edge"], ["GET", "/edge?empty"], ["GET", "/edge?status=404"], ["GET", "/edge?empty&status=404"]]) {
+      const fetched = await one(0, method, url), xhr = await one(16, method, url);
+      results.push([method, url, JSON.stringify(fetched) === JSON.stringify(xhr), xhr.tag, xhr.status, xhr.size, xhr.type, xhr.body]);
+    }
+    return results;
+  });
+  check("HEAD, empty and non-2xx file responses preserve Blob, status, headers and type across transports", edgeParity, [
+    ["HEAD", "/edge", true, 21, 200, 0, "application/x-edge", ""],
+    ["GET", "/edge?empty", true, 21, 200, 0, "application/x-edge", ""],
+    ["GET", "/edge?status=404", true, 21, 404, 7, "application/x-edge", "missing"],
+    ["GET", "/edge?empty&status=404", true, 21, 404, 0, "application/x-edge", ""],
+  ]);
   const stream = await page.evaluate(async () => {
     const rt = make(); rt.manual = false; rt.startTransfer(request(1, "http", { url: "/slow" })); await wait(() => !rt.live.size);
     const progress = rt.log.filter(e => e.tag === 26);
