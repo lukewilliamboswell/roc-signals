@@ -239,6 +239,7 @@ HandlersApp := [].{
 			"handlers",
 			[
 				HandlersApp.presses({}),
+				HandlersApp.keyboard({}),
 				Engine.state("none", HandlersApp.owner),
 				HandlersApp.counter({}),
 				Engine.state(0.I64, HandlersApp.answers),
@@ -248,6 +249,34 @@ HandlersApp := [].{
 				HandlersApp.mixed({}),
 			],
 		),
+	)
+
+	## Keyboard declarations exercise pass-over, live maps, row holes and
+	## document lifetime without giving the app a second handler mechanism.
+	keyboard : {} -> Elem(Engine.Root)
+	keyboard = |_| Engine.state(
+		{ log: "", inner: True, modal: False, row: True, value: "initial", out: Engine.outbox({}) },
+		|state| {
+			append = |label| state.update(|s| { ..s, log: "${s.log}${label};" })
+			map = Engine.Keymap.prevent([Engine.Chord.plain("F2")])
+			Engine.element(
+				"section",
+				[
+					Engine.on_key({ keymap: Engine.const(map) }, append("outer")),
+				],
+				[
+					Engine.element("span", [Engine.on_document_key({ keymap: Engine.const(Engine.Keymap.prevent([Engine.Chord.plain("F4")])) }, append("shell"))], []),
+					Html.p_s(state.signal().map(|s| s.log), [Engine.test_id("key-log")]),
+					Engine.element("button", [Engine.test_id("key-inner"), Engine.on_key({ keymap: state.signal().map(|s| if (s.inner) Engine.Keymap.prevent([Engine.Chord.plain("F3")]) else Engine.Keymap.prevent([])) }, append("inner"))], [Engine.text("Key target")]),
+					Html.button("Toggle keymap", [], state.update(|s| { ..s, inner: !s.inner })),
+					Html.button("Toggle shortcut scope", [], state.update(|s| { ..s, modal: !s.modal })),
+					Engine.when(state.signal().map(|s| s.modal), || Engine.element("aside", [Engine.on_document_key({ keymap: Engine.const(Engine.Keymap.prevent([Engine.Chord.plain("F4")])) }, append("modal"))], [Engine.text("Shortcut scope")]), || Engine.text("")),
+					Engine.each(Engine.const(["one", "two"]), |key| key, |row| Engine.element("button", [Engine.test_id_s(row.key().map(|key| "key-row-${key}")), Engine.on_key({ keymap: row.key().map(|key| Engine.Keymap.prevent([Engine.Chord.plain(if (key == "one") "F5" else "F6")])) }, state.lift_row().update(|s| { ..s, log: "${s.log}row;" }))], [Engine.text_s(row.key())])),
+					Engine.element("input", [Html.aria_label("Keyboard text"), Engine.ref("key-value"), Engine.prop_s(Engine.Prop.value, state.signal().map(|s| s.value)), Html.on_input(state.set_value(|s, value| { ..s, value })), Engine.on_key({ keymap: Engine.const(Engine.Keymap.prevent([Engine.Chord.plain("Escape")])) }, state.update(|s| { ..s, value: "initial", out: s.out.post(ApplyValue("key-value")) }))], []),
+					Engine.on_post(state.signal().map(|s| s.out), |request| [request], Engine.ignore({})),
+				],
+			)
+		},
 	)
 
 	## Both runners deliver the same click sequence, including pointer moves.

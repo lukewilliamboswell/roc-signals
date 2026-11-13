@@ -27,7 +27,7 @@ Slow := [].{
 		{ example: "conduit", spec: "round-trip-sign-in-page-and-home" },
 		{ example: "field-notes", spec: "round-trip-draft-filter-and-reorder" },
 		{ example: "status-page", spec: "round-trip-refresh-answered-healthy" },
-		{ example: "spreadsheet-lite", spec: "round-trip-edit-reorder-filter-and-mode" },
+		{ example: "spreadsheet-lite", spec: "round-trip-keyboard" },
 		{ example: "worker-lab", spec: "round-trip-a-run-answered-and-reset" },
 		{ example: "reading-list", spec: "round-trip-finish-and-read-again" },
 		{ example: "log-explorer", spec: "round-trip-search-on-the-timeline" },

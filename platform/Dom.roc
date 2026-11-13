@@ -7,9 +7,675 @@ Dom := [].{
 	## It is spelled here independently of the engine; the spec runner
 	## refuses a program that speaks another.
 	protocol_version : U32
-	protocol_version = 9
+	protocol_version = 10
 
-	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)), detach_count : U64 }
+	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)), detach_count : U64, keymaps : Dict(Str, KeyIndex) }
+
+	## Parsed keymaps index canonical labels separately from physical fallback.
+	Chord : { key : Str, ctrl : Bool, alt : Bool, shift : Bool, meta : Bool }
+	Key : { key : Str, code : Str, ctrl : Bool, alt : Bool, shift : Bool, meta : Bool, composing : Bool }
+	KeyEntry : { chord : Chord, prevent : Bool, outside : Bool }
+	KeyIndex : { exact : Dict(Str, List(KeyEntry)), physical : Dict(Str, List(KeyEntry)), every : [None, Anywhere, OutsideText] }
+	KeyTarget : { target : Target, heard : Chord, prevent : Bool }
+
+	## Only ASCII letters fold. Non-Latin labels retain their exact spelling.
+	key_label : Str -> Str
+	key_label = |key| {
+		bs = key.to_utf8()
+		if bs.len() == 1 {
+			c = bs.first() ?? crash "Dom.key_label: one byte"
+			if c >= 'A' and c <= 'Z' {
+				return Str.from_utf8([c + 32]) ?? crash "Dom.key_label: ASCII"
+			}
+		}
+		key
+	}
+
+	## Physical fallback is eligible only for a single ASCII letter or digit.
+	key_alphanumeric : Str -> Bool
+	key_alphanumeric = |key| {
+		bs = Dom.key_label(key).to_utf8()
+		bs.len() == 1 and bs.any(|c| (c >= 'a' and c <= 'z') or (c >= '0' and c <= '9'))
+	}
+
+	## One lookup group carries exact non-Shift modifiers and a canonical label.
+	key_group : Str, { ctrl : Bool, alt : Bool, meta : Bool } -> Str
+	key_group = |key, mods| "${if (mods.ctrl) "C" else "-"}${if (mods.alt) "A" else "-"}${if (mods.meta) "M" else "-"}${Dom.key_label(key)}"
+
+	## Only ASCII letters and digits have a platform-defined physical fallback.
+	physical_key : Str -> Str
+	physical_key = |key| {
+		bs = Dom.key_label(key).to_utf8()
+		if bs.len() != 1 {
+			return ""
+		}
+		c = bs.first() ?? crash "Dom.physical_key: one byte"
+		if c >= 'a' and c <= 'z' {
+			return "Key${Str.from_utf8([c - 32]) ?? crash "Dom.physical_key: ASCII"}"
+		}
+		if c >= '0' and c <= '9' {
+			return "Digit${key}"
+		}
+		""
+	}
+
+	## Decode the private property once. Malformed framing is executor failure.
+	parse_keymap : Str -> KeyIndex
+	parse_keymap = |text| {
+		bs = text.to_utf8()
+		var $at = 0.U64
+		var $index = { exact: Dict.empty(), physical: Dict.empty(), every: None }
+		while $at < bs.len() {
+			policy = Dom.byte(bs, $at)
+			if (policy == 'a' or policy == 'o') and bs.get($at + 1) == Ok('*') {
+				if $at + 2 != bs.len() {
+					crash "executor: keymap every must be last"
+				}
+				$index = { ..$index, every: if (policy == 'a') Anywhere else OutsideText }
+				$at = $at + 2
+			} else {
+				if bs.len() - $at < 8 {
+					crash "executor: truncated keymap entry"
+				}
+				if policy != 'p' and policy != 'k' {
+					crash "executor: invalid keymap policy"
+				}
+				place = Dom.byte(bs, $at + 1)
+				if place != 'a' and place != 'o' {
+					crash "executor: invalid keymap place"
+				}
+				var $flags = []
+				for (offset, expected) in [(2.U64, 'C'), (3, 'A'), (4, 'S'), (5, 'M')] {
+					flag = Dom.byte(bs, $at + offset)
+					if flag != '-' and flag != expected {
+						crash "executor: invalid keymap modifier"
+					}
+					$flags = $flags.append(flag == expected)
+				}
+				$at = $at + 6
+				start = $at
+				var $length = 0.U64
+				while $at < bs.len() and Dom.byte(bs, $at) >= '0' and Dom.byte(bs, $at) <= '9' {
+					digit = (Dom.byte(bs, $at) - '0').to_u64()
+					if $length > (bs.len() - digit.min(bs.len())) / 10 {
+						crash "executor: keymap key length exceeds property"
+					}
+					$length = $length * 10 + digit
+					$at = $at + 1
+				}
+				if $at == start or $at >= bs.len() or Dom.byte(bs, $at) != ':' or $length > bs.len() - $at - 1 {
+					crash "executor: invalid keymap key length"
+				}
+				key = Str.from_utf8(bs.sublist({ start: $at + 1, len: $length })) ?? crash "executor: invalid keymap UTF-8"
+				$at = $at + 1 + $length
+				chord = { key, ctrl: $flags.get(0) ?? Bool.False, alt: $flags.get(1) ?? Bool.False, shift: $flags.get(2) ?? Bool.False, meta: $flags.get(3) ?? Bool.False }
+				entry = { chord, prevent: policy == 'p', outside: place == 'o' }
+				mods = { ctrl: chord.ctrl, alt: chord.alt, meta: chord.meta }
+				group = Dom.key_group(key, mods)
+				index = $index
+				physical = Dom.physical_key(key)
+				pg = Dom.key_group(physical, mods)
+				$index = {
+					..index,
+					exact: index.exact.insert(group, (index.exact.get(group) ?? []).append(entry)),
+					physical: if physical == "" {
+						index.physical
+					} else {
+						index.physical.insert(pg, (index.physical.get(pg) ?? []).append(entry))
+					},
+				}
+			}
+		}
+		$index
+	}
+
+	## HTML enumerated attributes use ASCII case-insensitive keywords. An
+	## invalid contenteditable keyword inherits its nearest valid ancestor.
+	enum_attr : DNode, Str -> Str
+	enum_attr = |node, name| Str.from_utf8(Dom.attr_of(node, name).to_utf8().map(|c| if (c >= 'A' and c <= 'Z') c + 32 else c)) ?? crash "Dom.enum_attr: ASCII folding preserves UTF-8"
+
+	## OutsideText is about the event target, including inherited editability.
+	text_entry : Model, U64 -> Bool
+	text_entry = |dom, i| {
+		n = Dom.node(dom, i)
+		if ["textarea", "select"].contains(n.tag) {
+			return Bool.True
+		}
+		if n.tag == "input" and !["button", "submit", "reset", "checkbox", "radio", "file", "hidden", "range", "color", "image"].contains(Dom.enum_attr(n, "type")) {
+			return Bool.True
+		}
+		var $at = i
+		while True {
+			item = Dom.node(dom, $at)
+			if Dom.has_attr(item, "contenteditable") {
+				value = Dom.enum_attr(item, "contenteditable")
+				if value == "false" {
+					return Bool.False
+				}
+				if ["", "true", "plaintext-only"].contains(value) {
+					return Bool.True
+				}
+			}
+			if item.parent == 0 {
+				return Bool.False
+			}
+			$at = item.parent - 1
+		}
+	}
+
+	# UNICODE LICENSE V3
+	#
+	# COPYRIGHT AND PERMISSION NOTICE
+	#
+	# Copyright © 1991-2026 Unicode, Inc.
+	#
+	# NOTICE TO USER: Carefully read the following legal agreement. BY
+	# DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
+	# SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+	# TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
+	# DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+	#
+	# Permission is hereby granted, free of charge, to any person obtaining a
+	# copy of data files and any associated documentation (the "Data Files") or
+	# software and any associated documentation (the "Software") to deal in the
+	# Data Files or Software without restriction, including without limitation
+	# the rights to use, copy, modify, merge, publish, distribute, and/or sell
+	# copies of the Data Files or Software, and to permit persons to whom the
+	# Data Files or Software are furnished to do so, provided that either (a)
+	# this copyright and permission notice appear with all copies of the Data
+	# Files or Software, or (b) this copyright and permission notice appear in
+	# associated Documentation.
+	#
+	# THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+	# KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+	# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+	# THIRD PARTY RIGHTS.
+	#
+	# IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+	# BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+	# OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+	# WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+	# ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+	# FILES OR SOFTWARE.
+	#
+	# Except as contained in this notice, the name of a copyright holder shall
+	# not be used in advertising or otherwise to promote the sale, use or other
+	# dealings in these Data Files or Software without prior written
+	# authorization of the copyright holder.
+	## Frozen Unicode 18.0.0 punctuation and symbols, independently decoded
+	## from UnicodeData.txt (Unicode license: https://www.unicode.org/license.txt).
+	## SHA-256: 0736451de439ae7baf1425136617da495e09ee5afbe6e394374db7009ea08950.
+	key_symbol_ranges : List((U32, U32))
+	key_symbol_ranges = [
+		(33, 47),
+		(58, 64),
+		(91, 96),
+		(123, 126),
+		(161, 169),
+		(171, 172),
+		(174, 177),
+		(180, 180),
+		(182, 184),
+		(187, 187),
+		(191, 191),
+		(215, 215),
+		(247, 247),
+		(706, 709),
+		(722, 735),
+		(741, 747),
+		(749, 749),
+		(751, 767),
+		(885, 885),
+		(894, 894),
+		(900, 901),
+		(903, 903),
+		(1014, 1014),
+		(1154, 1154),
+		(1370, 1375),
+		(1417, 1418),
+		(1421, 1423),
+		(1470, 1470),
+		(1472, 1472),
+		(1475, 1475),
+		(1478, 1478),
+		(1523, 1524),
+		(1542, 1551),
+		(1563, 1563),
+		(1565, 1567),
+		(1642, 1645),
+		(1748, 1748),
+		(1758, 1758),
+		(1769, 1769),
+		(1789, 1790),
+		(1792, 1805),
+		(2038, 2041),
+		(2046, 2047),
+		(2096, 2110),
+		(2142, 2142),
+		(2184, 2184),
+		(2404, 2405),
+		(2416, 2416),
+		(2546, 2547),
+		(2554, 2555),
+		(2557, 2557),
+		(2678, 2678),
+		(2800, 2801),
+		(2928, 2928),
+		(3059, 3066),
+		(3191, 3191),
+		(3199, 3199),
+		(3204, 3204),
+		(3407, 3407),
+		(3449, 3449),
+		(3572, 3572),
+		(3647, 3647),
+		(3663, 3663),
+		(3674, 3675),
+		(3841, 3863),
+		(3866, 3871),
+		(3892, 3892),
+		(3894, 3894),
+		(3896, 3896),
+		(3898, 3901),
+		(3973, 3973),
+		(4030, 4037),
+		(4039, 4044),
+		(4046, 4058),
+		(4170, 4175),
+		(4254, 4255),
+		(4347, 4347),
+		(4960, 4968),
+		(5008, 5017),
+		(5120, 5120),
+		(5741, 5742),
+		(5787, 5788),
+		(5867, 5869),
+		(5941, 5942),
+		(6100, 6102),
+		(6104, 6107),
+		(6144, 6154),
+		(6464, 6464),
+		(6468, 6469),
+		(6622, 6655),
+		(6686, 6687),
+		(6816, 6822),
+		(6824, 6829),
+		(6990, 6991),
+		(7002, 7018),
+		(7028, 7039),
+		(7164, 7167),
+		(7227, 7231),
+		(7294, 7295),
+		(7360, 7367),
+		(7379, 7379),
+		(8125, 8125),
+		(8127, 8129),
+		(8141, 8143),
+		(8157, 8159),
+		(8173, 8175),
+		(8189, 8190),
+		(8208, 8231),
+		(8240, 8286),
+		(8314, 8318),
+		(8330, 8334),
+		(8352, 8388),
+		(8448, 8449),
+		(8451, 8454),
+		(8456, 8457),
+		(8468, 8468),
+		(8470, 8472),
+		(8478, 8483),
+		(8485, 8485),
+		(8487, 8487),
+		(8489, 8489),
+		(8494, 8494),
+		(8506, 8507),
+		(8512, 8516),
+		(8522, 8525),
+		(8527, 8527),
+		(8586, 8587),
+		(8592, 9257),
+		(9280, 9290),
+		(9372, 9449),
+		(9472, 10101),
+		(10132, 11123),
+		(11126, 11263),
+		(11493, 11498),
+		(11513, 11516),
+		(11518, 11519),
+		(11632, 11632),
+		(11776, 11822),
+		(11824, 11869),
+		(11872, 11875),
+		(11904, 11929),
+		(11931, 12019),
+		(12032, 12245),
+		(12272, 12287),
+		(12289, 12292),
+		(12296, 12320),
+		(12336, 12336),
+		(12342, 12343),
+		(12349, 12351),
+		(12443, 12444),
+		(12448, 12448),
+		(12539, 12539),
+		(12688, 12689),
+		(12694, 12703),
+		(12736, 12773),
+		(12783, 12783),
+		(12800, 12830),
+		(12842, 12871),
+		(12880, 12880),
+		(12896, 12927),
+		(12938, 12976),
+		(12992, 13311),
+		(19904, 19967),
+		(42128, 42182),
+		(42238, 42239),
+		(42509, 42511),
+		(42611, 42611),
+		(42622, 42622),
+		(42738, 42743),
+		(42752, 42774),
+		(42784, 42785),
+		(42889, 42890),
+		(43048, 43051),
+		(43062, 43065),
+		(43124, 43127),
+		(43214, 43215),
+		(43256, 43258),
+		(43260, 43260),
+		(43310, 43311),
+		(43359, 43359),
+		(43457, 43469),
+		(43486, 43487),
+		(43612, 43615),
+		(43639, 43641),
+		(43742, 43743),
+		(43760, 43761),
+		(43867, 43867),
+		(43882, 43883),
+		(44011, 44011),
+		(64297, 64297),
+		(64434, 64466),
+		(64830, 64847),
+		(64912, 64913),
+		(64968, 64975),
+		(65020, 65023),
+		(65040, 65049),
+		(65072, 65106),
+		(65108, 65126),
+		(65128, 65131),
+		(65281, 65295),
+		(65306, 65312),
+		(65339, 65344),
+		(65371, 65381),
+		(65504, 65510),
+		(65512, 65518),
+		(65532, 65533),
+		(65792, 65794),
+		(65847, 65855),
+		(65913, 65929),
+		(65932, 65934),
+		(65936, 65948),
+		(65952, 65952),
+		(66000, 66044),
+		(66463, 66463),
+		(66512, 66512),
+		(66927, 66927),
+		(67671, 67671),
+		(67703, 67704),
+		(67871, 67871),
+		(67903, 67903),
+		(68176, 68184),
+		(68223, 68223),
+		(68296, 68296),
+		(68336, 68342),
+		(68409, 68415),
+		(68505, 68508),
+		(68974, 68974),
+		(69006, 69007),
+		(69293, 69293),
+		(69321, 69322),
+		(69328, 69336),
+		(69461, 69465),
+		(69510, 69513),
+		(69703, 69709),
+		(69819, 69820),
+		(69822, 69825),
+		(69952, 69955),
+		(70004, 70005),
+		(70085, 70088),
+		(70093, 70093),
+		(70107, 70107),
+		(70109, 70111),
+		(70200, 70205),
+		(70313, 70313),
+		(70612, 70613),
+		(70615, 70616),
+		(70731, 70735),
+		(70746, 70747),
+		(70749, 70749),
+		(70854, 70854),
+		(71105, 71127),
+		(71233, 71235),
+		(71264, 71276),
+		(71353, 71353),
+		(71484, 71487),
+		(71739, 71739),
+		(72004, 72006),
+		(72162, 72162),
+		(72255, 72262),
+		(72346, 72348),
+		(72350, 72354),
+		(72448, 72457),
+		(72673, 72673),
+		(72769, 72773),
+		(72816, 72817),
+		(73463, 73464),
+		(73539, 73551),
+		(73685, 73713),
+		(73727, 73727),
+		(74864, 74868),
+		(77809, 77810),
+		(92782, 92783),
+		(92917, 92917),
+		(92983, 92991),
+		(92996, 92997),
+		(93549, 93551),
+		(93847, 93850),
+		(94178, 94178),
+		(113820, 113820),
+		(113823, 113823),
+		(117760, 117999),
+		(118010, 118012),
+		(118016, 118451),
+		(118458, 118480),
+		(118482, 118484),
+		(118493, 118525),
+		(118608, 118723),
+		(118784, 119029),
+		(119040, 119078),
+		(119081, 119140),
+		(119146, 119148),
+		(119171, 119172),
+		(119180, 119209),
+		(119214, 119361),
+		(119365, 119365),
+		(119379, 119386),
+		(119389, 119390),
+		(119392, 119423),
+		(119552, 119638),
+		(120513, 120513),
+		(120539, 120539),
+		(120571, 120571),
+		(120597, 120597),
+		(120629, 120629),
+		(120655, 120655),
+		(120687, 120687),
+		(120713, 120713),
+		(120745, 120745),
+		(120771, 120771),
+		(120832, 121343),
+		(121399, 121402),
+		(121453, 121460),
+		(121462, 121475),
+		(121477, 121483),
+		(121600, 121628),
+		(123215, 123215),
+		(123647, 123647),
+		(124415, 124415),
+		(125278, 125279),
+		(126124, 126124),
+		(126128, 126128),
+		(126254, 126254),
+		(126704, 126705),
+		(126976, 127019),
+		(127024, 127123),
+		(127136, 127150),
+		(127153, 127167),
+		(127169, 127183),
+		(127185, 127221),
+		(127245, 127406),
+		(127462, 127490),
+		(127504, 127547),
+		(127552, 127560),
+		(127568, 127569),
+		(127584, 127589),
+		(127744, 128729),
+		(128732, 128748),
+		(128752, 128764),
+		(128768, 128987),
+		(128992, 129003),
+		(129008, 129035),
+		(129040, 129095),
+		(129104, 129113),
+		(129120, 129159),
+		(129168, 129197),
+		(129200, 129211),
+		(129216, 129217),
+		(129232, 129240),
+		(129280, 129623),
+		(129632, 129645),
+		(129648, 129660),
+		(129664, 129734),
+		(129736, 129736),
+		(129740, 129757),
+		(129759, 129771),
+		(129775, 129786),
+		(129792, 129938),
+		(129940, 130031),
+		(130042, 130042),
+	]
+
+	## Shift is ignored only for one Unicode punctuation or symbol scalar.
+	key_symbol : Str -> Bool
+	key_symbol = |key| {
+		bs = key.to_utf8()
+		first = bs.first() ?? return Bool.False
+		width = if (first < 128) 1 else if (first < 224) 2 else if (first < 240) 3 else 4
+		if bs.len() != width {
+			return Bool.False
+		}
+		var $scalar = first.to_u32().bitwise_and(if (width == 1) 127 else if (width == 2) 31 else if (width == 3) 15 else 7)
+		for byte in bs.drop_first(1) {
+			$scalar = $scalar * 64 + byte.to_u32().bitwise_and(63)
+		}
+		var $lo = 0.U64
+		var $hi = Dom.key_symbol_ranges.len()
+		while $lo < $hi {
+			mid = $lo + ($hi - $lo) / 2
+			(start, end) = Dom.key_symbol_ranges.get(mid) ?? crash "Dom.key_symbol: bounded index"
+			if $scalar < start {
+				$hi = mid
+			} else if $scalar > end {
+				$lo = mid + 1
+			} else {
+				return Bool.True
+			}
+		}
+		Bool.False
+	}
+
+	## Exact entries win over all physical fallbacks; every is tried last,
+	## including while composition suppresses the explicit chord entries.
+	key_match : KeyIndex, Key, Bool -> Try({ heard : Chord, prevent : Bool }, [Unheard])
+	key_match = |index, key, in_text| {
+		if key.key.is_empty() {
+			return Err(Unheard)
+		}
+		mods = { ctrl: key.ctrl, alt: key.alt, meta: key.meta }
+		fits = |e| (!e.outside or !in_text) and (e.chord.shift == key.shift or Dom.key_symbol(e.chord.key))
+		if !key.composing {
+			exact = index.exact.get(Dom.key_group(key.key, mods)) ?? []
+			match exact.find_first(fits) {
+				Ok(e) => return Ok({ heard: e.chord, prevent: e.prevent })
+				Err(_) => {}
+			}
+			if !Dom.key_alphanumeric(key.key) {
+				fallback = index.physical.get(Dom.key_group(key.code, mods)) ?? []
+				match fallback.find_first(fits) {
+					Ok(e) => return Ok({ heard: e.chord, prevent: e.prevent })
+					Err(_) => {}
+				}
+			}
+		}
+		if index.every == Anywhere or (index.every == OutsideText and !in_text) {
+			return Ok({ heard: { key: key.key, ctrl: key.ctrl, alt: key.alt, shift: key.shift, meta: key.meta }, prevent: Bool.False })
+		}
+		Err(Unheard)
+	}
+
+	## Resolve a matching element handler first, then the newest live document
+	## handler. The latter list is populated by LISTEN and emptied by RELEASE.
+	key_target : Model, U64, Str, Key -> Try(KeyTarget, [NoHandler])
+	key_target = |dom, i, event, key| {
+		if key.key.is_empty() {
+			return Err(NoHandler)
+		}
+		in_text = Dom.text_entry(dom, i)
+		var $at = i
+		while True {
+			n = Dom.node(dom, $at)
+			for listener in n.hs {
+				if listener.event == event and listener.kind == 4 and listener.policies.bitwise_and(16) == 0 {
+					index = n.keymaps.get(event) ?? Dom.parse_keymap("")
+					match Dom.key_match(index, key, in_text) {
+						Ok(matched) => {
+							var $route = $at
+							while Dom.node(dom, $route).rn == 0 {
+								$route = Dom.node(dom, $route).parent - 1
+							}
+							return Ok({ target: { node: Dom.node(dom, $route).rn, handler: listener.handler, event, kind: 4, policies: listener.policies, declaring: $at }, heard: matched.heard, prevent: matched.prevent })
+						}
+						Err(_) => {}
+					}
+				}
+			}
+			if n.parent == 0 {
+				break
+			}
+			$at = n.parent - 1
+		}
+		var $n = dom.documents.len()
+		while $n > 0 {
+			$n = $n - 1
+			doc = dom.documents.get($n) ?? crash "Dom.key_target: bounded index"
+			if doc.event == event {
+				n = Dom.node(dom, doc.index)
+				listener = n.hs.find_first(|h| h.event == event and h.policies.bitwise_and(16) != 0) ?? crash "Dom.key_target: registered listener"
+				match Dom.key_match(n.keymaps.get(event) ?? Dom.parse_keymap(""), key, in_text) {
+					Ok(matched) => return Ok({ target: { node: n.rn, handler: listener.handler, event, kind: 4, policies: listener.policies, declaring: doc.index }, heard: matched.heard, prevent: matched.prevent })
+					Err(_) => {}
+				}
+			}
+		}
+		Err(NoHandler)
+	}
+
+	## The selected rendered entry determines the synchronous default policy.
+	key_prevents : Model, U64, Str, Key -> Bool
+	key_prevents = |dom, i, event, key| Dom.key_target(dom, i, event, key).map_ok(|m| m.prevent) ?? Bool.False
 
 	Listener : { event : Str, handler : U32, kind : U8, policies : U32 }
 
@@ -19,10 +685,10 @@ Dom := [].{
 
 	Tpl : { bytes : List(U8), root_at : U64, holes : List(THole) }
 
-	Model : { nodes : List(DNode), statics : List(U64), rows : List(Dict(U64, {})), tpls : List(Tpl), root : U64 }
+	Model : { nodes : List(DNode), statics : List(U64), rows : List(Dict(U64, {})), tpls : List(Tpl), root : U64, documents : List({ index : U64, event : Str }) }
 
 	new : {} -> Model
-	new = |_| { nodes: [{ tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0 }], statics: [], rows: [], tpls: [], root: 0 }
+	new = |_| { nodes: [{ tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty() }], statics: [], rows: [], tpls: [], root: 0, documents: [] }
 
 	u32 : List(U8), U64 -> U32
 	u32 = |b, at| {
@@ -87,24 +753,24 @@ Dom := [].{
 	node = |dom, i| dom.nodes.get(i) ?? crash "node index"
 
 	set_node : Model, U64, DNode -> Model
-	set_node = |{ nodes, statics, rows, tpls, root }, i, n| { nodes: nodes.set(i, n) ?? crash "node index", statics, rows, tpls, root }
+	set_node = |{ nodes, statics, rows, tpls, root, documents }, i, n| { nodes: nodes.set(i, n) ?? crash "node index", statics, rows, tpls, root, documents }
 
 	add_node : Model, DNode -> (Model, U64)
-	add_node = |{ nodes, statics, rows, tpls, root }, n| ({ nodes: nodes.append(n), statics, rows, tpls, root }, nodes.len())
+	add_node = |{ nodes, statics, rows, tpls, root, documents }, n| ({ nodes: nodes.append(n), statics, rows, tpls, root, documents }, nodes.len())
 
 	set_static : Model, U32, U64 -> Model
-	set_static = |{ nodes, statics, rows, tpls, root }, id, idx| {
+	set_static = |{ nodes, statics, rows, tpls, root, documents }, id, idx| {
 		var $s = statics
 		while $s.len() <= id.to_u64() {
 			$s = $s.append(0)
 		}
-		{ nodes, statics: $s.set(id.to_u64(), idx + 1) ?? crash "static", rows, tpls, root }
+		{ nodes, statics: $s.set(id.to_u64(), idx + 1) ?? crash "static", rows, tpls, root, documents }
 	}
 
 	## Bind a row element: its node index, its site (recorded with the id and
 	## in the site's row list, so CLEAR can forget the site's rows).
 	set_row : Model, U32, U64, U64 -> Model
-	set_row = |{ nodes, statics, rows, tpls, root }, id, idx, site| {
+	set_row = |{ nodes, statics, rows, tpls, root, documents }, id, idx, site| {
 		var $s = statics
 		while $s.len() <= id.to_u64() {
 			$s = $s.append(0)
@@ -115,7 +781,7 @@ Dom := [].{
 		}
 		{ list, prev } = $r.replace(site, Dict.empty()) ?? crash "row"
 		packed = (idx + 1).bitwise_or((site + 1).shl_wrap(40))
-		dom = { nodes, statics: $s.set(id.to_u64(), packed) ?? crash "static", rows: list.set(site, prev.insert(id.to_u64(), {})) ?? crash "row", tpls, root }
+		dom = { nodes, statics: $s.set(id.to_u64(), packed) ?? crash "static", rows: list.set(site, prev.insert(id.to_u64(), {})) ?? crash "row", tpls, root, documents }
 		Dom.modify(dom, idx, |n| { ..n, ids: n.ids.append(id) })
 	}
 
@@ -127,30 +793,30 @@ Dom := [].{
 	}
 
 	empty_node : DNode
-	empty_node = { tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0 }
+	empty_node = { tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty() }
 
 	## Update node i in place (the node is moved out of the list first, so
 	## its kid list stays uniquely owned).
 	modify : Model, U64, (DNode -> DNode) -> Model
-	modify = |{ nodes, statics, rows, tpls, root }, i, f| {
+	modify = |{ nodes, statics, rows, tpls, root, documents }, i, f| {
 		{ list, prev } = nodes.replace(i, Dom.empty_node) ?? crash "node index"
-		{ nodes: list.set(i, f(prev)) ?? crash "node index", statics, rows, tpls, root }
+		{ nodes: list.set(i, f(prev)) ?? crash "node index", statics, rows, tpls, root, documents }
 	}
 
 	bind : Model, U32, U64 -> Model
 	bind = |dom, id, idx| Dom.modify(Dom.set_static(dom, id, idx), idx, |n| { ..n, ids: n.ids.append(id) })
 
 	unbind : Model, U32 -> Model
-	unbind = |{ nodes, statics, rows, tpls, root }, id| {
+	unbind = |{ nodes, statics, rows, tpls, root, documents }, id| {
 		packed = statics.get(id.to_u64()) ?? 0
 		statics2 = statics.set(id.to_u64(), 0) ?? statics
 		site1 = packed.shr_zf_wrap(40)
 		if site1 == 0 {
-			{ nodes, statics: statics2, rows, tpls, root }
+			{ nodes, statics: statics2, rows, tpls, root, documents }
 		} else {
 			site = site1 - 1
 			{ list, prev } = rows.replace(site, Dict.empty()) ?? crash "row"
-			{ nodes, statics: statics2, rows: list.set(site, prev.remove(id.to_u64())) ?? crash "row", tpls, root }
+			{ nodes, statics: statics2, rows: list.set(site, prev.remove(id.to_u64())) ?? crash "row", tpls, root, documents }
 		}
 	}
 
@@ -160,6 +826,9 @@ Dom := [].{
 	forget_subtree : Model, U64 -> Model
 	forget_subtree = |dom, i| {
 		owned = Dom.node(dom, i)
+		if dom.documents.any(|d| d.index == i) {
+			crash "executor: document key handler detached without RELEASE"
+		}
 		var $d = dom
 		for child in owned.kids {
 			$d = Dom.forget_subtree($d, child)
@@ -182,12 +851,12 @@ Dom := [].{
 				dom,
 				n.parent - 1,
 				|p| {
-					{ tag, text, attrs, kids, parent, rn, hs, ht, ids, props, detach_count } = p
+					{ tag, text, attrs, kids, parent, rn, hs, ht, ids, props, detach_count, keymaps } = p
 					kept = match kids.find_last_index(|k| k == i) {
 						Ok(pos) => kids.drop_at(pos)
 						Err(_) => kids
 					}
-					{ tag, text, attrs, kids: kept, parent, rn, hs, ht, ids, props, detach_count }
+					{ tag, text, attrs, kids: kept, parent, rn, hs, ht, ids, props, detach_count, keymaps }
 				},
 			)
 			Dom.modify(d1, i, |m| { ..m, parent: 0, detach_count: m.detach_count + 1 })
@@ -202,7 +871,7 @@ Dom := [].{
 			d0,
 			parent,
 			|p| {
-				{ tag, text, attrs, kids, parent: pp, rn, hs, ht, ids, props, detach_count } = p
+				{ tag, text, attrs, kids, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps } = p
 				kids2 = match before {
 					Err(End) => kids.append(i)
 					Ok(b) => {
@@ -210,7 +879,7 @@ Dom := [].{
 						kids.sublist({ start: 0, len: pos }).append(i).concat(kids.sublist({ start: pos, len: kids.len() - pos }))
 					}
 				}
-				{ tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, ids, props, detach_count }
+				{ tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, ids, props, detach_count, keymaps }
 			},
 		)
 		Dom.modify(d1, i, |n| { ..n, parent: parent + 1 })
@@ -237,7 +906,7 @@ Dom := [].{
 		kind = Dom.byte(b, at)
 		if kind == 2 {
 			(t, next) = Dom.str(b, at + 1)
-			(d1, i) = Dom.add_node(dom, { tag: "", text: t, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0 })
+			(d1, i) = Dom.add_node(dom, { tag: "", text: t, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty() })
 			(d1, i, next)
 		} else {
 			(tag, a1) = Dom.str(b, at + 1)
@@ -256,7 +925,7 @@ Dom := [].{
 			}
 			nk = Dom.byte(b, $at).to_u64()
 			$at = $at + 1
-			(d1, i) = Dom.add_node(dom, { tag, text: "", attrs: $attrs, kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0 })
+			(d1, i) = Dom.add_node(dom, { tag, text: "", attrs: $attrs, kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty() })
 			var $d = d1
 			$k = 0
 			while $k < nk {
@@ -403,7 +1072,7 @@ Dom := [].{
 	## Invalid numbers come from a protocol mismatch, never an app event.
 	check_listener : { event : Str, kind : U8, policies : U32 } -> {}
 	check_listener = |{ event, kind, policies }| {
-		if kind != 1 and kind != 2 and kind != 3 {
+		if kind != 1 and kind != 2 and kind != 3 and kind != 4 {
 			crash "executor: unknown payload kind ${kind.to_str()}"
 		}
 		if kind == 2 and !["change", "drop", "paste"].contains(event) {
@@ -418,7 +1087,16 @@ Dom := [].{
 		if policies.bitwise_and(8) != 0 and (kind != 3 or event != "pointermove") {
 			crash "executor: paced policy requires a pointermove pointer handler"
 		}
-		if policies.bitwise_and(0xFFFFFFF0) != 0 {
+		if kind == 4 and !["keydown", "keyup"].contains(event) {
+			crash "executor: key payload requires keydown or keyup"
+		}
+		if policies.bitwise_and(16) != 0 and kind != 4 {
+			crash "executor: document policy requires a key handler"
+		}
+		if kind == 4 and policies.bitwise_and(1) != 0 {
+			crash "executor: key prevention belongs to its keymap"
+		}
+		if policies.bitwise_and(0xFFFFFFE0) != 0 {
 			crash "executor: unknown event policy bits ${policies.to_str()}"
 		}
 	}
@@ -429,6 +1107,8 @@ Dom := [].{
 		1 => "value"
 		2 => "checked"
 		3 => "pointer_zone"
+		4 => "keymap_down"
+		5 => "keymap_up"
 		_ => crash "executor: unknown property index ${property.to_str()}"
 	}
 
@@ -447,11 +1127,15 @@ Dom := [].{
 	set_property_on : Model, U64, U8, Str, U32 -> Model
 	set_property_on = |dom, i, property, value, command_node| {
 		name = Dom.property_name(property)
-		if property == 3 {
+		if property >= 3 {
 			if Dom.node(dom, i).tag.is_empty() {
 				crash "executor: pointer zone property requires an element"
 			}
-			return Dom.set_live_on(dom, i, name, value)
+			return if property == 3 {
+				Dom.set_live_on(dom, i, name, value)
+			} else {
+				Dom.modify(dom, i, |n| { ..n, keymaps: n.keymaps.insert(if (property == 4) "keydown" else "keyup", Dom.parse_keymap(value)) })
+			}
 		}
 		n = Dom.node(dom, i)
 		if property == 1 and Dom.is_file_input(n) {
@@ -479,14 +1163,14 @@ Dom := [].{
 	apply = |dom0, b| Dom.apply_ops(dom0, b).0
 
 	op_name : U8 -> Str
-	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "FOCUS", "PORT", "SAVE", "PROP", "HPROP"].get(op.to_u64()) ?? "?"
+	op_name = |op| ["?", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "FOCUS", "PORT", "SAVE", "PROP", "HPROP", "RELEASE"].get(op.to_u64()) ?? "?"
 
 	## Opcode histogram of a batch, e.g. "SETTEXT=1 ATTR=1".
 	describe : List(U8) -> Str
 	describe = |ops| {
 		var $parts = []
 		var $op = 1.U8
-		while $op <= 22 {
+		while $op <= 23 {
 			n = ops.count_if(|o| o == $op)
 			if n > 0 {
 				$parts = $parts.append("${Dom.op_name($op)}=${n.to_str()}")
@@ -676,7 +1360,7 @@ Dom := [].{
 				tpl = $d.tpls.get(Dom.site_of($d, nid) ?? crash "TEXT/HATTR on a non-row node") ?? crash "unknown template"
 				hole = tpl.holes.get(h) ?? crash "unknown hole"
 				target = Dom.node($d, row).ht.get(h) ?? crash "hole target"
-				if op != 22 or hole.property != 3 {
+				if op != 22 or hole.property < 3 {
 					$written = $written.append(target)
 				}
 				$d = if op == 3 {
@@ -734,7 +1418,7 @@ Dom := [].{
 				bytes = b.sublist({ start: $at + 8, len: n })
 				$at = $at + 8 + n
 				t = Dom.parse_tpl(bytes)
-				{ nodes, statics, rows, tpls, root } = $d
+				{ nodes, statics, rows, tpls, root, documents } = $d
 				var $t = tpls
 				while $t.len() <= tpl {
 					$t = $t.append({ bytes: [], root_at: 0, holes: [] })
@@ -747,14 +1431,14 @@ Dom := [].{
 				# recycled): rows of an earlier site that was disposed with an
 				# ancestor are forgotten, as the runtime does, or its next CLEAR
 				# would unbind node ids reused since.
-				$d = { nodes, statics, rows: $r.set(tpl, Dict.empty()) ?? $r, tpls: $t.set(tpl, t) ?? $t, root }
+				$d = { nodes, statics, rows: $r.set(tpl, Dict.empty()) ?? $r, tpls: $t.set(tpl, t) ?? $t, root, documents }
 			} else if op == 8 or op == 10 {
 				nid = Dom.u32(b, $at)
 				parent = Dom.u32(b, $at + 4)
 				before = Dom.u32(b, $at + 8)
 				(s, next) = Dom.str(b, $at + 12)
 				$at = next
-				fresh = if (op == 8) { tag: s, text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0 } else { tag: "", text: s, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0 }
+				fresh = if (op == 8) { tag: s, text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty() } else { tag: "", text: s, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0, keymaps: Dict.empty() }
 				(d1, i) = Dom.add_node($d, fresh)
 				$d = Dom.bind(Dom.place(d1, i, parent, before), nid, i)
 			} else if op == 9 {
@@ -764,13 +1448,17 @@ Dom := [].{
 				$at = n2
 				$written = $written.append(i)
 				$d = Dom.set_presence_on($d, i, name, presence)
+			} else if op == 23 {
+				i = Dom.lookup($d, Dom.u32(b, $at))
+				$at = $at + 4
+				$d = { ..$d, documents: $d.documents.keep_if(|d| d.index != i) }
 			} else if op == 21 {
 				id = Dom.u32(b, $at)
 				property = Dom.byte(b, $at + 4)
 				(value, next) = Dom.str(b, $at + 5)
 				$at = next
 				i = Dom.lookup($d, id)
-				if property != 3 {
+				if property < 3 {
 					$written = $written.append(i)
 				}
 				if property == 1 {
@@ -788,6 +1476,9 @@ Dom := [].{
 				i = Dom.lookup($d, id)
 				n = Dom.node($d, i)
 				$d = Dom.set_node($d, i, { ..n, rn: id, hs: n.hs.append({ event: ev, handler: h, kind, policies }) })
+				if policies.bitwise_and(16) != 0 {
+					$d = { ..$d, documents: $d.documents.append({ index: i, event: ev }) }
+				}
 			} else if op == 12 {
 				i = Dom.lookup($d, Dom.u32(b, $at))
 				(t, next) = Dom.str(b, $at + 4)
@@ -1158,4 +1849,51 @@ Dom := [].{
 		actual == { parent: 0, row: 0, ref: 0, members: 0 }
 	}
 
+}
+
+## A keymap gives exact labels priority over an earlier physical fallback;
+## duplicate places are considered only inside the selected chord group.
+expect {
+	key = { key: "л", code: "KeyK", ctrl: True, alt: False, shift: False, meta: False, composing: False }
+	map = Dom.parse_keymap("paC---1:kkaC---2:л")
+	matched = Dom.key_match(map, key, False)?
+	{ heard: matched.heard.key, prevent: matched.prevent } == { heard: "л", prevent: Bool.False }
+}
+
+## Dvorak labels suppress physical fallback, and composing keys bypass every
+## explicit entry while an every declaration preserves their own spelling.
+expect {
+	base = { key: "k", code: "KeyK", ctrl: True, alt: False, shift: False, meta: False, composing: False }
+	map = Dom.parse_keymap("paC---1:k")
+	{ dvorak: Dom.key_match(map, { ..base, key: "t" }, False).is_err(), cyrillic: Dom.key_match(map, { ..base, key: "л" }, False).map_ok(|m| m.heard.key), composing: Dom.key_match(map, { ..base, composing: True }, False).is_err(), every: Dom.key_match(Dom.parse_keymap("a*"), { ..base, composing: True }, False).map_ok(|m| m.heard.key) } == { dvorak: Bool.True, cyrillic: Ok("k"), composing: Bool.True, every: Ok("k") }
+}
+
+## OutsideText duplicates fall through without changing their listed order.
+expect {
+	key = { key: "/", code: "Slash", ctrl: False, alt: False, shift: False, meta: False, composing: False }
+	map = Dom.parse_keymap("po----1:/ka----1:/o*")
+	{ outside: Dom.key_match(map, key, False).map_ok(|m| m.prevent), inside: Dom.key_match(map, key, True).map_ok(|m| m.prevent), every: Dom.key_match(map, { ..key, key: "Escape" }, True).is_err() } == { outside: Ok(Bool.True), inside: Ok(Bool.False), every: Bool.True }
+}
+
+## Shift-insensitive Unicode categories exclude letters and Space, and require
+## exactly one scalar rather than a combining sequence or a named key.
+expect ["?", "`", "€", "💡", "л", "é", " ", "á", "ArrowDown"].map(Dom.key_symbol) == [Bool.True, Bool.True, Bool.True, Bool.True, Bool.False, Bool.False, Bool.False, Bool.False, Bool.False]
+
+## OutsideText follows HTML enumeration and inheritance rather than treating
+## an arbitrary contenteditable attribute as true or a raw input type as text.
+expect {
+	(d1, parent) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "div", attrs: [("contenteditable", "TRUE")] })
+	(d2, child) = Dom.add_node(d1, { ..Dom.empty_node, tag: "span", attrs: [("contenteditable", "invalid")] })
+	dom = Dom.insert(Dom.insert(d2, d2.root, parent, Err(End)), parent, child, Err(End))
+	stopped = Dom.set_attr_on(dom, child, "contenteditable", "FALSE")
+	(d3, checkbox) = Dom.add_node(dom, { ..Dom.empty_node, tag: "input", attrs: [("type", "CHECKBOX")] })
+	{ inherited: Dom.text_entry(dom, child), stopped: Dom.text_entry(stopped, child), checkbox: Dom.text_entry(d3, checkbox) } == { inherited: Bool.True, stopped: Bool.False, checkbox: Bool.False }
+}
+
+## An empty declared chord is a valid inert entry, while an empty browser
+## key dispatches nothing even when every is declared.
+expect {
+	key = { key: "", code: "", ctrl: False, alt: False, shift: False, meta: False, composing: False }
+	map = Dom.parse_keymap("pa----0:a*")
+	{ empty: Dom.key_match(map, key, False).is_err(), every: Dom.key_match(map, { ..key, key: "F2" }, False).map_ok(|m| m.heard.key) } == { empty: Bool.True, every: Ok("F2") }
 }

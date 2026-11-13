@@ -406,6 +406,40 @@ view = |tree, pure, init| Core.state(
 			show(st.signal()),
 			Core.element("button", [Core.on_click(st.update(|x| x + 1))], [Core.text("+")]),
 			flat_list(tree, { vals: [st.signal()], wrs: [st], pure }, Below({ layer: root_l2, row: row_1 })),
+			# Generated document handlers live outside rows and are repeatedly
+			# mounted/disposed by ordinary turns. Dom's independent detach check
+			# rejects any missing RELEASE, including ancestor removal.
+			Core.element(
+				"aside",
+				[],
+				tree.map(
+					|generated| Core.when(
+						st.signal().map(|value| value % 2 == 0),
+						|| Core.element(
+							"span",
+							[
+								Core.on_document_key(
+									{
+										keymap: Core.const(
+											Core.Keymap.keep([
+												Core.Chord.plain(
+													match generated {
+														Show(_) => "Escape"
+														_ => "F2"
+													},
+												),
+											]),
+										),
+									},
+									st.update(|value| value + 1),
+								),
+							],
+							[],
+						),
+						|| Core.text(""),
+					),
+				),
+			),
 		],
 	),
 )
@@ -640,6 +674,7 @@ target = Fuzz.target_with!({
 		# watch read each with a derive of the other. Clicks 3 is the button
 		# that writes both; 1 and 2 write one each; 0 the root.
 		ex("pairs", 1, [1, 5, 0, 1, 5, 0, 3, 12, 1, 2, 10, 2, 1, 10, 1, 2], [0, 3, 0, 3, 0, 1, 0, 3, 0, 2, 0, 3, 0, 0, 0, 3]),
+		ex("document-release", 0, [1, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0]),
 		ex("properties-in-rows", 0, [1, 7, 0, 1, 20, 0], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
 		ex("series", 2, [], []),
 	],
@@ -647,3 +682,7 @@ target = Fuzz.target_with!({
 	test!,
 	show: Str.inspect,
 })
+
+## Ordinary root turns repeatedly dispose generated document shortcuts. The
+## independent DOM oracle refuses any detached declaration without RELEASE.
+expect run([Show(0), When(0, [Show(0)], [])], Bool.True, [0, 0, 0, 0, 0, 0, 0, 0]) == {}

@@ -763,6 +763,7 @@ Engine := [].{
 		Focus(Str),
 		Blur(Str),
 		SelectText(Str),
+		ApplyValue(Str),
 		StorageSet(Str, Str),
 		StorageRemove(Str),
 		ReadBytes({ file : File, max_bytes : U64 }),
@@ -806,6 +807,7 @@ Engine := [].{
 		Focus(Str),
 		Blur(Str),
 		SelectText(Str),
+		ApplyValue(Str),
 		StorageSet(Str, Str),
 		StorageRemove(Str),
 		PortCommand({ port : Str, message : PortMessage }),
@@ -1199,6 +1201,34 @@ Engine := [].{
 	## occurrence such as pointerup drains its earlier waiting move first.
 	on_pointer_paced : HandlerOf(ctx, Pointer) -> Attr(ctx)
 	on_pointer_paced = |{ h }| Core.on_pointer_paced(h)
+
+	## A browser key and the chord the rendered keymap heard.
+	Key : Core.Key
+
+	## A key with exact modifiers; compare it with Key.heard.
+	Chord : Core.Chord
+
+	## An ordered filter and per-chord browser default policy.
+	Keymap : Core.Keymap
+
+	## Evidence that a declaration is outside every row lifetime.
+	OutsideRows(ctx) : Core.OutsideRows(ctx)
+
+	## The required rendered map with a key phase and propagation policy.
+	KeyProps(ctx) := { keymap : Signal(ctx, Keymap), on : [Down, Up] ?? Down, stop : Bool ?? False }
+
+	## A document shortcut's required rendered map, phase and stop policy.
+	DocumentKeyProps(ctx) := { keymap : Signal(ctx, Keymap), on : [Down, Up] ?? Down, stop : Bool ?? False }
+
+	## Receive only keys the rendered map hears; other keys pass to ancestors.
+	on_key : KeyProps(ctx), HandlerOf(ctx, Key) -> Attr(ctx)
+	on_key = |props, { h }| Core.on_key({ keymap: props.keymap.v, on: props.on, stop: props.stop }, h)
+
+	## Hear document keys after this mount's element handlers. A declaration
+	## cannot sit under a row, and the most recently mounted matching one wins.
+	on_document_key : DocumentKeyProps(ctx), HandlerOf(ctx, Key) -> Attr(ctx)
+		where [ctx.outside_rows : () -> OutsideRows(ctx)]
+	on_document_key = |props, { h }| Core.on_document_key({ keymap: props.keymap.v, on: props.on, stop: props.stop }, h)
 
 	## A typed row of the platform's closed element-property vocabulary.
 	Prop(a) :: { p : Core.Prop(a) }.{

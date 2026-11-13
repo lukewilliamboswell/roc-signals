@@ -28,6 +28,10 @@ Core := [].{
 	## `lift`.
 	Root(st) := { store : st }.{
 
+		## Evidence that this context has no enclosing row, without retaining its store.
+		outside_rows : () -> OutsideRows(Root(st))
+		outside_rows = || { proof: |context| context }
+
 		## How the root reaches the store: it holds it.
 		store : () -> StoreReach(Root(st), st)
 		store = || {
@@ -43,6 +47,15 @@ Core := [].{
 	## type `s`, nested in `outer`. Values and handlers from `outer` enter with
 	## `lift`.
 	In(outer, s) := { outer : outer, value : s }.{
+
+		## A layer remains outside rows only when its enclosing context is too.
+		outside_rows : () -> OutsideRows(In(outer, s))
+			where [outer.outside_rows : () -> OutsideRows(outer)]
+		outside_rows = || {
+			Outer : outer
+			_ = Outer.outside_rows()
+			{ proof: |context| context }
+		}
 
 		## How this scope reaches the root store: through the enclosing one.
 		store : () -> StoreReach(In(outer, s), st)
@@ -1036,7 +1049,7 @@ Core := [].{
 	## `ctx`. Make one with `attr`, `attr_s`, `attr_presence`, `class`,
 	## `class_s`, `test_id`,
 	## `test_id_s`, `on`, `on_click`, `ref` or `ref_s`.
-	Attr(ctx) :: [Static(Str, Str), Dyn(Str, Signal(ctx, [Absent, Present(Str)])), On(EventDecl, RoutedHandler(ctx)), Property(U8, Str), PropertyV(U8, Signal(ctx, Str)), Ref(Signal(ctx, Str))]
+	Attr(ctx) :: [Static(Str, Str), Dyn(Str, Signal(ctx, [Absent, Present(Str)])), On(EventDecl, RoutedHandler(ctx)), KeyOn(EventDecl, RoutedHandler(ctx), Signal(ctx, Str)), Property(U8, Str), PropertyV(U8, Signal(ctx, Str)), Ref(Signal(ctx, Str))]
 
 	## A piece of UI in context `ctx`: an element, a text node or a dynamic site
 	## (`state`, `derive`, `resource`, `when`, `switch`, `remount_on`, `each`,
@@ -1385,6 +1398,7 @@ Core := [].{
 		Focus(Str),
 		Blur(Str),
 		SelectText(Str),
+		ApplyValue(Str),
 		StorageSet(Str, Str),
 		StorageRemove(Str),
 		ReadBytes({ file : File, max_bytes : U64 }),
@@ -1426,6 +1440,7 @@ Core := [].{
 		Focus(Str),
 		Blur(Str),
 		SelectText(Str),
+		ApplyValue(Str),
 		StorageSet(Str, Str),
 		StorageRemove(Str),
 		PortCommand({ port : Str, message : PortMessage }),
@@ -1971,7 +1986,17 @@ Core := [].{
 	## `element(tag, attrs, children)`: an HTML element. `Html` offers typed
 	## helpers for common elements and controls.
 	element : Str, List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
-	element = |tag, attrs, kids| Element(tag, attrs, kids)
+	element = |tag, attrs, kids| Element(
+		tag,
+		attrs.fold(
+			[],
+			|out, attribute| match attribute {
+				KeyOn(event, handler, keymap) => out.concat([PropertyV(if (event.event == "keydown") 4 else 5, keymap), On(event, handler)])
+				_ => out.append(attribute)
+			},
+		),
+		kids,
+	)
 
 	## A static text node.
 	text : Str -> Elem(ctx)
@@ -2031,6 +2056,101 @@ Core := [].{
 		modifiers : { shift : Bool, ctrl : Bool, alt : Bool, meta : Bool },
 		primary : Bool,
 		at : [Outside, In({ zone : Str, x : U16, y : U16 })],
+	}
+
+	## Type evidence for an attachment whose lifetime cannot be owned by a row.
+	OutsideRows(ctx) :: { proof : (ctx -> ctx) }
+
+	## A browser key and the declared chord that caused its handler to hear it.
+	Key : { key : Str, code : Str, ctrl : Bool, alt : Bool, shift : Bool, meta : Bool, repeat : Bool, composing : Bool, heard : Chord }
+
+	## A key with exact modifiers. Compare a payload's heard chord with the
+	## declared chord rather than repeating the browser's matching rules.
+	Chord :: { key : Str, ctrl : Bool, alt : Bool, shift : Bool, meta : Bool }.{
+
+		## A key without held modifiers.
+		plain : Str -> Chord
+		plain = |key| { key, ctrl: False, alt: False, shift: False, meta: False }
+
+		## Require Shift with this chord.
+		with_shift : Chord -> Chord
+		with_shift = |chord| { ..chord, shift: True }
+
+		## Require Control with this chord.
+		with_ctrl : Chord -> Chord
+		with_ctrl = |chord| { ..chord, ctrl: True }
+
+		## Require Alt with this chord.
+		with_alt : Chord -> Chord
+		with_alt = |chord| { ..chord, alt: True }
+
+		## Require Meta (Command on macOS) with this chord.
+		with_meta : Chord -> Chord
+		with_meta = |chord| { ..chord, meta: True }
+
+		## The Control and Meta alternatives for a platform primary shortcut.
+		primary : Chord -> List(Chord)
+		primary = |chord| [chord.with_ctrl(), chord.with_meta()]
+		is_eq : _
+	}
+
+	## An ordered rendered filter. Explicit entries are tried before every;
+	## each matching entry states whether its browser default is prevented.
+	Keymap :: { entries : List({ chord : Chord, prevent : Bool, outside : Bool }), every : [NoEvery, Every(Bool)] }.{
+
+		## Hear these chords and prevent their browser defaults.
+		prevent : List(Chord) -> Keymap
+		prevent = |chords| { entries: chords.map(|chord| { chord, prevent: True, outside: False }), every: NoEvery }
+
+		## Hear these chords while preserving their browser defaults.
+		keep : List(Chord) -> Keymap
+		keep = |chords| { entries: chords.map(|chord| { chord, prevent: False, outside: False }), every: NoEvery }
+
+		## Hear any remaining key, including composition, without prevention.
+		every : Keymap
+		every = { entries: [], every: Every(False) }
+
+		## Preserve listed order; an anywhere every wins over an outside-text every.
+		concat : Keymap, Keymap -> Keymap
+		concat = |first, second| {
+			entries: first.entries.concat(second.entries),
+			every: match (first.every, second.every) {
+				(NoEvery, other) => other
+				(other, NoEvery) => other
+				(Every(a), Every(b)) => Every(a and b)
+			},
+		}
+
+		## Ignore this map's entries in inputs, textareas, selects and editable text.
+		outside_text : Keymap -> Keymap
+		outside_text = |map| {
+			entries: map.entries.map(|entry| { ..entry, outside: True }),
+			every: match map.every {
+				NoEvery => NoEvery
+				Every(_) => Every(True)
+			},
+		}
+		is_eq : _
+	}
+
+	## A keymap paired with one key event handler; prevention belongs to the map.
+	KeyProps(ctx) := { keymap : Signal(ctx, Keymap), on : [Down, Up] ?? Down, stop : Bool ?? False }
+
+	## Document shortcuts have the same declared keymap and propagation policy.
+	DocumentKeyProps(ctx) := { keymap : Signal(ctx, Keymap), on : [Down, Up] ?? Down, stop : Bool ?? False }
+
+	## Receive keys heard by the rendered map, passing other keys to ancestors.
+	on_key : KeyProps(ctx), HandlerOf(ctx, Key) -> Attr(ctx)
+	on_key = |props, handler| attach_key(props.keymap, props.on, props.stop, False, handler)
+
+	## Receive document keys after this mount's element handlers. The most
+	## recently mounted matching declaration wins and disposal releases it.
+	on_document_key : DocumentKeyProps(ctx), HandlerOf(ctx, Key) -> Attr(ctx)
+		where [ctx.outside_rows : () -> OutsideRows(ctx)]
+	on_document_key = |props, handler| {
+		Context : ctx
+		_ = Context.outside_rows()
+		attach_key(props.keymap, props.on, props.stop, True, handler)
 	}
 
 	## One typed row of the platform's payload vocabulary. Only an attach
@@ -2250,7 +2370,7 @@ Core := [].{
 			$out = $out.append(work_get(a.tx.work, $i))
 			$i = $i + 1
 		}
-		$out.concat(fx_counters(a)).concat([work_get(a.tx.work, w_port_sends), work_get(a.tx.work, 41), work_get(a.tx.work, 42)])
+		$out.concat(fx_counters(a)).concat([work_get(a.tx.work, w_port_sends), work_get(a.tx.work, 41), work_get(a.tx.work, 42), work_get(a.tx.work, 43)])
 	}
 
 	# ------------------------------------------------------------------
@@ -2300,7 +2420,7 @@ Core := [].{
 	## host exports it, and the runtime refuses an instance whose version it does
 	## not implement.
 	protocol_version : U32
-	protocol_version = 9
+	protocol_version = 10
 
 	## A worker task as the catalogue holds it (design.md, "Workers"): a
 	## namespaced name (`"example.org/search/filter"`) and its effectful
@@ -2713,6 +2833,62 @@ pointer_kind = |event| {
 	},
 }
 
+## The map and handler lower together into a private property and listener.
+attach_key : Core.Signal(ctx, Core.Keymap), [Down, Up], Bool, Bool, Core.HandlerOf(ctx, Core.Key) -> Core.Attr(ctx)
+attach_key = |map, phase, stop, document, handler| {
+	{ run } = handler
+	KeyOn({ event: if (phase == Down) "keydown" else "keyup", kind: 4, policies: (if (stop) 2.U32 else 0).bitwise_or(if (document) 16 else 0) }, { run: |env, payload, site| run(env, (key_kind.decode)(payload, site), site) }, map.map(encode_keymap))
+}
+
+## Serialize only through the internal attach path; apps cannot inspect this encoding.
+encode_keymap : Core.Keymap -> Str
+encode_keymap = |{ entries, every }| {
+	pieces = entries.map(
+		|{ chord, prevent, outside }| {
+			{ key, ctrl, alt, shift, meta } = chord
+			"${if (prevent) "p" else "k"}${if (outside) "o" else "a"}${if (ctrl) "C" else "-"}${if (alt) "A" else "-"}${if (shift) "S" else "-"}${if (meta) "M" else "-"}${key.count_utf8_bytes().to_str()}:${key}"
+		},
+	)
+	"${Str.join_with(pieces, "")}${
+		match every {
+			NoEvery => ""
+			Every(outside) => if (outside) "o*" else "a*"
+		}
+	}"
+}
+
+key_kind : Core.Kind(Core.Key)
+key_kind = {
+	code: 4,
+	decode: |payload, site| match payload {
+		Ev(bytes) => read_key(bytes) ?? crash "contract: event payload does not match key kind at site ${show_path(site)}"
+		_ => crash "contract: event payload does not match key kind at site ${show_path(site)}"
+	},
+}
+
+## Validate all flags, UTF-8 fields and the exact end before exposing a key.
+read_key : List(U8) -> Try(Core.Key, [InvalidKey])
+read_key = |bytes| {
+	flags = bytes.first() ? |_| InvalidKey
+	if flags.bitwise_and(192) != 0 {
+		return Err(InvalidKey)
+	}
+	(key, next) = boot_str(bytes, 1) ? |_| InvalidKey
+	if key.is_empty() {
+		return Err(InvalidKey)
+	}
+	(code, after) = boot_str(bytes, next) ? |_| InvalidKey
+	heard = bytes.get(after) ? |_| InvalidKey
+	if heard.bitwise_and(240) != 0 {
+		return Err(InvalidKey)
+	}
+	(heard_key, end) = boot_str(bytes, after + 1) ? |_| InvalidKey
+	if heard_key.is_empty() or end != bytes.len() {
+		return Err(InvalidKey)
+	}
+	Ok({ key, code, ctrl: flags.bitwise_and(1) != 0, alt: flags.bitwise_and(2) != 0, shift: flags.bitwise_and(4) != 0, meta: flags.bitwise_and(8) != 0, repeat: flags.bitwise_and(16) != 0, composing: flags.bitwise_and(32) != 0, heard: Core.Chord.{ key: heard_key, ctrl: heard.bitwise_and(1) != 0, alt: heard.bitwise_and(2) != 0, shift: heard.bitwise_and(4) != 0, meta: heard.bitwise_and(8) != 0 } })
+}
+
 ## Validate a bounded pointer record before a handler observes any field.
 ## Browser geometry is rounded before encoding; the decoder never clamps it.
 read_pointer : List(U8) -> Try(Core.Pointer, [InvalidPointer])
@@ -2886,10 +3062,10 @@ w_record_count = w_count + 11
 ## The work counters as plain fields (`c01` is counter 1): bumping one
 ## updates a value in the accumulator and never allocates, so counting
 ## cannot cost an allocation or a copy on any path.
-Work : { c01 : U64, c02 : U64, c03 : U64, c04 : U64, c05 : U64, c06 : U64, c07 : U64, c08 : U64, c09 : U64, c10 : U64, c11 : U64, c12 : U64, c13 : U64, c14 : U64, c15 : U64, c16 : U64, c17 : U64, c18 : U64, c19 : U64, c20 : U64, c21 : U64, c22 : U64, c23 : U64, c24 : U64, c25 : U64, c26 : U64, c27 : U64, c28 : U64, c29 : U64, c30 : U64, c31 : U64, c40 : U64, c41 : U64, c42 : U64 }
+Work : { c01 : U64, c02 : U64, c03 : U64, c04 : U64, c05 : U64, c06 : U64, c07 : U64, c08 : U64, c09 : U64, c10 : U64, c11 : U64, c12 : U64, c13 : U64, c14 : U64, c15 : U64, c16 : U64, c17 : U64, c18 : U64, c19 : U64, c20 : U64, c21 : U64, c22 : U64, c23 : U64, c24 : U64, c25 : U64, c26 : U64, c27 : U64, c28 : U64, c29 : U64, c30 : U64, c31 : U64, c40 : U64, c41 : U64, c42 : U64, c43 : U64 }
 
 work_zero : Work
-work_zero = { c01: 0, c02: 0, c03: 0, c04: 0, c05: 0, c06: 0, c07: 0, c08: 0, c09: 0, c10: 0, c11: 0, c12: 0, c13: 0, c14: 0, c15: 0, c16: 0, c17: 0, c18: 0, c19: 0, c20: 0, c21: 0, c22: 0, c23: 0, c24: 0, c25: 0, c26: 0, c27: 0, c28: 0, c29: 0, c30: 0, c31: 0, c40: 0, c41: 0, c42: 0 }
+work_zero = { c01: 0, c02: 0, c03: 0, c04: 0, c05: 0, c06: 0, c07: 0, c08: 0, c09: 0, c10: 0, c11: 0, c12: 0, c13: 0, c14: 0, c15: 0, c16: 0, c17: 0, c18: 0, c19: 0, c20: 0, c21: 0, c22: 0, c23: 0, c24: 0, c25: 0, c26: 0, c27: 0, c28: 0, c29: 0, c30: 0, c31: 0, c40: 0, c41: 0, c42: 0, c43: 0 }
 
 ## Add `n` to counter `i`; counter 0 (and any index past the last) is the
 ## unused sink.
@@ -2929,6 +3105,7 @@ add_work = |w, i, n| match i {
 	40 => { ..w, c40: w.c40 + n }
 	41 => { ..w, c41: w.c41 + n }
 	42 => { ..w, c42: w.c42 + n }
+	43 => { ..w, c43: w.c43 + n }
 	_ => w
 }
 
@@ -2969,10 +3146,11 @@ work_get = |w, i| match i {
 	40 => w.c40
 	41 => w.c41
 	42 => w.c42
+	43 => w.c43
 	_ => 0
 }
 
-Hole(ctx) : { node : U32, mask : U128, attr : Str, reference : [NotReference, Reference(List(U32))], property : U8, read : (ctx -> [Absent, Present(Str)]), last : [Absent, Present(Str)] }
+Hole(ctx) : { node : U32, mask : U128, attr : Str, reference : [NotReference, Reference(List(U32), Bool)], property : U8, read : (ctx -> [Absent, Present(Str)]), last : [Absent, Present(Str)] }
 
 Block(ctx) : {
 	holes : List(Hole(ctx)),
@@ -3021,7 +3199,7 @@ put_presence = |bytes, presence| match presence {
 ## opcode is counted in the work counters; property commands use the
 ## dedicated PROP and HPROP slots (design.md, "Work assertions").
 emit_op : Tx, U8, (List(U8) -> List(U8)) -> Tx
-emit_op = |{ cmds, next, free, routes, work, paths, site_free, fx }, op, write| { cmds: write(cmds.append(op)), next, free, routes, work: add_work(work, if (op == 21) 41 else if (op == 22) 42 else op.to_u64(), 1), paths, site_free, fx }
+emit_op = |{ cmds, next, free, routes, work, paths, site_free, fx }, op, write| { cmds: write(cmds.append(op)), next, free, routes, work: add_work(work, if (op == 21) 41 else if (op == 22) 42 else if (op == 23) 43 else op.to_u64(), 1), paths, site_free, fx }
 
 ## Add `n` to work counter `i`.
 bump : Tx, U64, U64 -> Tx
@@ -3039,6 +3217,8 @@ property_row = |index| match index {
 	1 => { name: "value", elements: ["input", "textarea", "select", "option"], counter: w_set_value }
 	2 => { name: "checked", elements: ["input"], counter: w_set_checked }
 	3 => { name: "pointer_zone", elements: [], counter: 0 }
+	4 => { name: "keymap_down", elements: [], counter: 0 }
+	5 => { name: "keymap_up", elements: [], counter: 0 }
 	_ => crash "internal: unknown property row ${index.to_str()}"
 }
 
@@ -3075,8 +3255,8 @@ free_id = |{ cmds, next, free, routes, work, paths, site_free, fx }, id| {
 ## Register a name with its node and construction site. The end-of-turn
 ## check permits a departing and an entering element to share a name while
 ## reconciliation is in progress. Empty names never enter either index.
-add_ref : Fx, { name : Str, node : U32, path : List(U32) } -> Fx
-add_ref = |fx, { name, node, path }| if (name.is_empty()) fx else with_refs(
+add_ref : Fx, { name : Str, node : U32, path : List(U32), value_control : Bool } -> Fx
+add_ref = |fx, { name, node, path, value_control }| if (name.is_empty()) fx else with_refs(
 	fx,
 	|refs, ref_pos, focus| {
 		var $positions = ref_pos
@@ -3084,7 +3264,7 @@ add_ref = |fx, { name, node, path }| if (name.is_empty()) fx else with_refs(
 			$positions = $positions.append([])
 		}
 		live = refs.get(name) ?? []
-		(refs.insert(name, live.append({ node, path })), $positions.set(node.to_u64(), ($positions.get(node.to_u64()) ?? []).append({ name, path })) ?? crash "internal: reference index", focus.append(CheckRef(name)))
+		(refs.insert(name, live.append({ node, path, value_control })), $positions.set(node.to_u64(), ($positions.get(node.to_u64()) ?? []).append({ name, path })) ?? crash "internal: reference index", focus.append(CheckRef(name)))
 	},
 )
 
@@ -3121,9 +3301,9 @@ drop_name = |fx, { node, name, path }| if (name.is_empty()) fx else with_refs(
 ## Move the reference indexes and pending checks out of the accumulator so
 ## updates retain one holder for each map, list and reverse-index column.
 with_refs : Fx, (RefMap, List(List(RefOwned)), List(TurnEnd) -> (RefMap, List(List(RefOwned)), List(TurnEnd))) -> Fx
-with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups }, change| {
+with_refs = |{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, refs, focus, ref_pos, cleanups }, change| {
 	(names, positions, checks) = change(refs, ref_pos, focus)
-	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs: names, focus: checks, ref_pos: positions, cleanups }
+	{ next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, refs: names, focus: checks, ref_pos: positions, cleanups }
 }
 
 set_route : Tx, U32, List(U32), U32 -> Tx
@@ -3412,6 +3592,16 @@ layers_count = |a| a.more.fold(a.hi.fold(popcount(a.lo) + popcount(a.cells), |ac
 empty_block : {} -> Block(ctx)
 empty_block = |_| { holes: [], handlers: [], children: [], child_reads: [], child_top: [], nodes: [], tops: [], reads: 0 }
 
+## ApplyValue can land only a value the renderer actually declared. The
+## capability is retained with a reference, never a copy of the control's text.
+declares_value : List(Attr(ctx)) -> Bool
+declares_value = |attrs| attrs.any(
+	|attribute| match attribute {
+		Property(1, _) | PropertyV(1, _) => Bool.True
+		_ => Bool.False
+	},
+)
+
 ## The first event that two of an element's attributes both handle, if any.
 ## The runtime keeps one listener per event and element, so a second
 ## handler would be silently dropped: binding it is a contract error
@@ -3443,6 +3633,9 @@ check_element_attrs = |attrs, tag, placed, path| {
 	for attribute in attrs {
 		match attribute {
 			On(declaration, _) => {
+				if declaration.kind == 1 and (declaration.event == "keydown" or declaration.event == "keyup") {
+					crash "contract: text handler on ${declaration.event} at site ${show_path(path)}; use on_key"
+				}
 				if declaration.event.ends_with(":prevent") or declaration.event.ends_with(":files") {
 					crash "contract: retired event suffix in \"${declaration.event}\" at site ${show_path(path)}; use on_with for policies or on_files for files"
 				}
@@ -3484,8 +3677,9 @@ mount_elem = |block, env, elem, depth, path, parent, before, top, sole, scope, t
 			tx2 = emit_op(tx1, 8, |c| put_str(put_u32(put_u32(put_u32(c, id), parent), at), tag))
 			var $b = add_node(block, id, top)
 			var $t = tx2
+			value_control = declares_value(attrs)
 			for attr in attrs {
-				(b2, t2) = mount_attr($b, env, attr, id, path, $t)
+				(b2, t2) = mount_attr($b, env, attr, id, path, value_control, $t)
 				$b = b2
 				$t = t2
 			}
@@ -3518,9 +3712,10 @@ mount_elem = |block, env, elem, depth, path, parent, before, top, sole, scope, t
 	}
 }
 
-mount_attr : Block(ctx), ctx, Attr(ctx), U32, List(U32), Tx -> (Block(ctx), Tx)
-mount_attr = |block, env, attr, id, path, tx| {
+mount_attr : Block(ctx), ctx, Attr(ctx), U32, List(U32), Bool, Tx -> (Block(ctx), Tx)
+mount_attr = |block, env, attr, id, path, value_control, tx| {
 	match attr {
+		KeyOn(_, _, _) => crash "internal: key declaration was not lowered by element"
 		Static(name, value) => (block, emit_op(tx, 9, |c| put_presence(put_str(put_u32(c, id), name), Present(value))))
 		Dyn(name, v) => {
 			read = v.read
@@ -3535,14 +3730,20 @@ mount_attr = |block, env, attr, id, path, tx| {
 			(add_hole(block, { node: id, mask: eff_mask(value), attr: "", reference: NotReference, property: index, read: |context| Present((value.read)(context)), last: Present(encoded) }), next)
 		}
 		On(ev, handler) => {
+			tx0 = if ev.policies.bitwise_and(16) != 0 {
+				if tx.fx.document_nodes.len() >= 32 {
+					crash "contract: more than 32 live document key handlers at site ${show_path(path)}"
+				}
+				with_fx(tx, |fx| { ..fx, document_nodes: fx.document_nodes.append(id) })
+			} else tx
 			h = block.handlers.len().to_u32_wrap()
-			tx1 = emit_op(tx, 11, |c| put_u32(put_str(put_u32(put_u32(c, id), h), ev.event).append(ev.kind), ev.policies))
+			tx1 = emit_op(tx0, 11, |c| put_u32(put_str(put_u32(put_u32(c, id), h), ev.event).append(ev.kind), ev.policies))
 			(add_handler(block, handler), set_route(tx1, id, path, h))
 		}
 		Ref(value) => {
 			ref_path = path.append(block.holes.len().to_u32_wrap())
 			name = (value.read)(env)
-			(add_hole(block, { node: id, mask: eff_mask(value), attr: "", reference: Reference(ref_path), property: 0, read: |context| Present((value.read)(context)), last: Present(name) }), with_fx(count_evals(tx, 1), |fx| add_ref(fx, { name, node: id, path: ref_path })))
+			(add_hole(block, { node: id, mask: eff_mask(value), attr: "", reference: Reference(ref_path, value_control), property: 0, read: |context| Present((value.read)(context)), last: Present(name) }), with_fx(count_evals(tx, 1), |fx| add_ref(fx, { name, node: id, path: ref_path, value_control })))
 		}
 	}
 }
@@ -3607,7 +3808,7 @@ refresh = |{ holes, handlers, children, child_reads, child_top, nodes, tops, rea
 				$tx = if property != 0 {
 					emit_op(count_property(t1, property), 21, |commands| put_str(put_u32(commands, node).append(property), observed_text(v)))
 				} else match reference {
-					Reference(path) => with_fx(t1, |fx| add_ref(drop_name(fx, { node, name: observed_text(last), path }), { name: observed_text(v), node, path }))
+					Reference(path, value_control) => with_fx(t1, |fx| add_ref(drop_name(fx, { node, name: observed_text(last), path }), { name: observed_text(v), node, path, value_control }))
 					NotReference => if attr.is_empty() {
 						emit_op(t1, 12, |c| put_str(put_u32(c, node), observed_text(v)))
 					} else {
@@ -3695,6 +3896,11 @@ dispose_block = |{ holes: _, handlers: _, children, child_reads: _, child_top, n
 		$ks = list
 		$tx = t1
 		$j = $j + 1
+	}
+	for id in nodes {
+		if $tx.fx.document_nodes.contains(id) {
+			$tx = with_fx(emit_op($tx, 23, |commands| put_u32(commands, id)), |fx| { ..fx, document_nodes: fx.document_nodes.keep_if(|node| node != id) })
+		}
 	}
 	if remove {
 		for id in tops {
@@ -4271,7 +4477,7 @@ index_remove = |{ hs, vals, count, bits, by_slot }, slot| {
 ## `ctl`: the work counter a property hole's updates also count in
 ## (`w_set_value`, `w_set_checked`), or 0; for a reference, its index
 ## among reference holes, after the nested-site ids in the row's bindings.
-RHole(ctx) : { evaluated : Bool, kind : U8, mask : U128, smask : U128, skey : (ctx -> Str), read : (ctx -> [Absent, Present(Str)]), col : U64, live : Bool, ctl : U64 }
+RHole(ctx) : { evaluated : Bool, kind : U8, mask : U128, smask : U128, skey : (ctx -> Str), read : (ctx -> [Absent, Present(Str)]), col : U64, live : Bool, ctl : U64, value_control : Bool }
 
 Plan(ctx) : {
 	tree : List(U8),
@@ -4302,7 +4508,7 @@ val_hole = |{ tree, htab, holes, handlers, mounts, ncols, kreads }, { kind, valu
 		Sel(m, k) => (m, k)
 	}
 	live = mask.bitwise_or(smask) != 0
-	hole = { evaluated, kind, mask, smask, skey, read, col: if (live) ncols else 0, live, ctl: if (kind == 5) holes.keep_if(|prior| prior.kind == 5).len() else counter }
+	hole = { evaluated, kind, mask, smask, skey, read, col: if (live) ncols else 0, live, ctl: if (kind == 5) holes.keep_if(|prior| prior.kind == 5).len() else counter, value_control: kind == 5 and counter == 1 }
 	{ tree, htab: htab.concat(extra), holes: holes.append(hole), handlers, mounts, ncols: if (live) ncols + 1 else ncols, kreads }
 }
 
@@ -4311,6 +4517,7 @@ compile_elem = |plan, elem, path, depth, site| {
 	match elem {
 		Element(tag, attrs, kids) => {
 			check_element_attrs(attrs, tag, " in the row template of an each", site)
+			value_control = declares_value(attrs)
 			var $nstatic = 0.U64
 			for a0 in attrs {
 				match a0 {
@@ -4330,6 +4537,7 @@ compile_elem = |plan, elem, path, depth, site| {
 			var $ncols = ncols
 			for a in attrs {
 				match a {
+					KeyOn(_, _, _) => crash "internal: key declaration was not lowered by element"
 					Static(name, value) => {
 						$tree = put_str(put_str($tree, name), value)
 					}
@@ -4353,11 +4561,11 @@ compile_elem = |plan, elem, path, depth, site| {
 					}
 					On(ev, handler) => {
 						$htab = put_u32(put_str(put_path($htab, 3, path).append(narrow($handlers.len(), "event handler count")), ev.event).append(ev.kind), ev.policies)
-						$holes = $holes.append({ evaluated: False, kind: 3, mask: 0, smask: 0, skey: |_| "", read: |_| Absent, col: $handlers.len(), live: False, ctl: 0 })
+						$holes = $holes.append({ evaluated: False, kind: 3, mask: 0, smask: 0, skey: |_| "", read: |_| Absent, col: $handlers.len(), live: False, ctl: 0, value_control: False })
 						$handlers = $handlers.append(handler)
 					}
 					Ref(value) => {
-						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 5, value: value.map(|encoded| Present(encoded)), extra: put_path([], 5, path), counter: 0, evaluated: True })
+						r = val_hole({ tree: [], htab: [], holes: $holes, handlers: [], mounts: [], ncols: $ncols, kreads: 0 }, { kind: 5, value: value.map(|encoded| Present(encoded)), extra: put_path([], 5, path), counter: if (value_control) 1 else 0, evaluated: True })
 						$htab = $htab.concat(r.htab)
 						$holes = r.holes
 						$ncols = r.ncols
@@ -4384,7 +4592,7 @@ compile_elem = |plan, elem, path, depth, site| {
 		}
 		Site(m, rf) => {
 			{ tree, htab, holes, handlers, mounts, ncols, kreads } = plan
-			hole = { evaluated: False, kind: 4, mask: 0, smask: 0, skey: |_| "", read: |_| Absent, col: mounts.len(), live: False, ctl: 0 }
+			hole = { evaluated: False, kind: 4, mask: 0, smask: 0, skey: |_| "", read: |_| Absent, col: mounts.len(), live: False, ctl: 0, value_control: False }
 			{ tree: put_str(tree.append(2), ""), htab: put_path(htab, 4, path), holes: holes.append(hole), handlers, mounts: mounts.append(m), ncols, kreads: kreads.bitwise_or(rf(depth)) }
 		}
 	}
@@ -4572,7 +4780,7 @@ place_row = |cfg, cols, env, item, key, before, keyed, tx| {
 		} else if hole.kind == 5 {
 			(bid, t2) = alloc_id($t)
 			name = observed_text((hole.read)(row_env))
-			$t = with_fx(t2, |fx2| add_ref(fx2, { name, node: bid, path: cfg.path.concat([slot, $hi.to_u32_wrap()]) }))
+			$t = with_fx(t2, |fx2| add_ref(fx2, { name, node: bid, path: cfg.path.concat([slot, $hi.to_u32_wrap()]), value_control: hole.value_control }))
 			$c = put_u32($c, bid)
 			$bound = $bound.append(bid)
 			$ev = $ev + if (hole.evaluated) 1 else 0
@@ -5137,7 +5345,7 @@ settle = |cfg, cols, env, tx| {
 				} else {
 					if hole.kind == 5 {
 						id = (binds.get(si) ?? []).get(cfg.plan.mounts.len() + hole.ctl) ?? crash "internal: reference binding"
-						$tx = with_fx($tx, |fx| add_ref(drop_name(fx, { node: id, name: observed_text(old), path: cfg.path.concat([slot, $hi.to_u32_wrap()]) }), { name: observed_text(v), node: id, path: cfg.path.concat([slot, $hi.to_u32_wrap()]) }))
+						$tx = with_fx($tx, |fx| add_ref(drop_name(fx, { node: id, name: observed_text(old), path: cfg.path.concat([slot, $hi.to_u32_wrap()]) }), { name: observed_text(v), node: id, path: cfg.path.concat([slot, $hi.to_u32_wrap()]), value_control: hole.value_control }))
 					} else {
 						op = if (hole.kind == 1) 2 else if (hole.kind == 6) 22 else 3
 						hidx = $hi.to_u8_wrap()
@@ -6488,7 +6696,7 @@ Live : { id : U32, path : List(U32), sub : Bool }
 
 Queued : { id : U32, path : List(U32), res : Result }
 
-RefMap : Dict(Str, List({ node : U32, path : List(U32) }))
+RefMap : Dict(Str, List({ node : U32, path : List(U32), value_control : Bool }))
 
 RefOwned : { name : Str, path : List(U32) }
 
@@ -6508,6 +6716,7 @@ Fx : {
 
 	## Focus names and their live nodes with construction sites, and the checks awaiting the end of the
 	## turn (see [TurnEnd]).
+	document_nodes : List(U32),
 	refs : RefMap,
 	focus : List(TurnEnd),
 
@@ -6550,7 +6759,7 @@ PortAt : { req : PortRequest, path : List(U32), slot : [At(U64, U32), Refused] }
 PortRequest : [Command(Str, PortMessage), Call(Str, PortMessage, U32), Subscribe(Str, PortMessage)]
 
 fx_empty : Fx
-fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, refs: Dict.empty(), focus: [], ref_pos: [], cleanups: [] }
+fx_empty = { next: 1, inner: fx_inner_base, live: [], queue: [], max: 32, issued: 0, delivered: 0, stale: 0, refused: 0, cancelled: 0, reparented: 0, skipped: 0, document_nodes: [], refs: Dict.empty(), focus: [], ref_pos: [], cleanups: [] }
 
 ## The first follow-up id: follow-ups are a space of their own, above
 ## every request id.
@@ -6689,12 +6898,12 @@ fx_admit : Tx, List(U32), Request -> (U32, Tx)
 fx_admit = |tx, path, req| {
 	# A port request's bytes are written at the end of the turn.
 	{ cmds, next, free, routes, work, paths, site_free, fx } = turn_end_later(tx, path, req)
-	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups } = fx
+	{ next: id, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, refs, focus, ref_pos, cleanups } = fx
 	if live.len() >= max {
-		fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups }
+		fx2 = { next: id + 1, inner, live, queue: queue.append({ id, path, res: Refused }), max, issued, delivered, stale, refused: refused + 1, cancelled, reparented, skipped, document_nodes, refs, focus, ref_pos, cleanups }
 		(id, { cmds, next, free, routes, work, paths, site_free, fx: fx2 })
 	} else {
-		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, refs, focus, ref_pos, cleanups }
+		fx2 = { next: id + 1, inner, live: live.append({ id, path, sub: is_sub(req) }), queue, max, issued: issued + 1, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, refs, focus, ref_pos, cleanups }
 		(id, { cmds: put_req(cmds, id, req), next, free, routes, work: add_work(work, 13, 1), paths, site_free, fx: fx2 })
 	}
 }
@@ -6711,6 +6920,7 @@ turn_end_later = |tx, path, req| {
 		Focus(n) => Focus(1, n)
 		Blur(n) => Focus(2, n)
 		SelectText(n) => Focus(3, n)
+		ApplyValue(n) => Focus(4, n)
 		PortCommand({ port, message }) => Port({ req: Command(port, message), path, slot: At(at, 0) })
 		PortCall({ port, message, timeout_ms }) => Port({ req: Call(port, message, timeout_ms), path, slot })
 		PortSubscribe({ port, message }) => Port({ req: Subscribe(port, message), path, slot })
@@ -6746,7 +6956,7 @@ issue = |tx, path, reqs, a, owned| {
 			Replace(url) => {
 				$tx = emit_op($tx, 15, |c| put_str(c.append(2), url))
 			}
-			Focus(_) | Blur(_) | SelectText(_) | PortCommand(_) => {
+			Focus(_) | Blur(_) | SelectText(_) | ApplyValue(_) | PortCommand(_) => {
 				# Settled at the end of the turn (see [TurnEnd]).
 				$tx = turn_end_later($tx, path, req)
 			}
@@ -6967,6 +7177,7 @@ command_request = |command| match command {
 	Focus(name) => Focus(name)
 	Blur(name) => Blur(name)
 	SelectText(name) => SelectText(name)
+	ApplyValue(name) => ApplyValue(name)
 	StorageSet(key, value) => StorageSet(key, value)
 	StorageRemove(key) => StorageRemove(key)
 	PortCommand(sent) => PortCommand(sent)
@@ -7494,7 +7705,10 @@ flush_turn = |tx, programs| {
 			match entry {
 				Focus(op, name) =>
 					match ($tx.fx.refs.get(name) ?? []).first() {
-						Ok({ node, path: _ }) => {
+						Ok({ node, path, value_control }) => {
+							if op == 4 and !value_control {
+								crash "contract: ApplyValue reference \"${name}\" is not a value control at site ${show_path(path)}"
+							}
 							$tx = emit_op($tx, 18, |c| put_u32(c.append(op), node))
 						}
 						Err(_) => {
@@ -7832,9 +8046,9 @@ expect {
 	file = Core.placed_file(Core.held_file(Box.box(1)), { name: "log", mime: "", size: 10, start: 0, len: 10 }) ?? crash "command expect: the file lies within its size"
 	message = { json: "1", blobs: [], files: [] }
 	commands : List(Core.Command)
-	commands = [Push("/a"), Replace("/b"), Title("t"), Focus("f"), Blur("g"), SelectText("h"), StorageSet("k", "v"), StorageRemove("r"), PortCommand({ port: "t/c", message }), File.save(file, { name: Named("copy") })]
+	commands = [Push("/a"), Replace("/b"), Title("t"), Focus("f"), Blur("g"), SelectText("h"), ApplyValue("v"), StorageSet("k", "v"), StorageRemove("r"), PortCommand({ port: "t/c", message }), File.save(file, { name: Named("copy") })]
 	requests : List(Core.Request)
-	requests = [Push("/a"), Replace("/b"), Title("t"), Focus("f"), Blur("g"), SelectText("h"), StorageSet("k", "v"), StorageRemove("r"), PortCommand({ port: "t/c", message }), Save({ file, name: "copy" })]
+	requests = [Push("/a"), Replace("/b"), Title("t"), Focus("f"), Blur("g"), SelectText("h"), ApplyValue("v"), StorageSet("k", "v"), StorageRemove("r"), PortCommand({ port: "t/c", message }), Save({ file, name: "copy" })]
 	commands.map(command_request) == requests
 }
 
@@ -8011,10 +8225,10 @@ expect {
 ## Replacing a row in one turn may temporarily hold two claims; the check
 ## after reconciliation sees just the surviving element. Empty names hold none.
 expect {
-	first = add_ref(fx_empty, { name: "field", node: 1, path: [0] })
-	two = add_ref(first, { name: "field", node: 2, path: [1] })
+	first = add_ref(fx_empty, { name: "field", node: 1, path: [0], value_control: False })
+	two = add_ref(first, { name: "field", node: 2, path: [1], value_control: False })
 	kept = drop_ref(two, 1)
-	empty = add_ref(kept, { name: "", node: 3, path: [2] })
+	empty = add_ref(kept, { name: "", node: 3, path: [2], value_control: False })
 	actual = {
 		claims: (two.refs.get("field") ?? []).len(),
 		kept: kept.refs.get("field"),
@@ -8023,7 +8237,7 @@ expect {
 	}
 	actual == {
 		claims: 2,
-		kept: Ok([{ node: 2, path: [1] }]),
+		kept: Ok([{ node: 2, path: [1], value_control: False }]),
 		empty: 1,
 		retired: Ok([]),
 	}
@@ -8074,12 +8288,12 @@ expect {
 ## Two names on one element may swap in one turn. Each reference owns its
 ## own claim, so renaming the second does not remove the first's new name.
 expect {
-	one = add_ref(fx_empty, { node: 1, name: "a", path: [0] })
-	two = add_ref(one, { node: 1, name: "b", path: [1] })
-	first = add_ref(drop_name(two, { node: 1, name: "a", path: [0] }), { node: 1, name: "b", path: [0] })
-	second = add_ref(drop_name(first, { node: 1, name: "b", path: [1] }), { node: 1, name: "a", path: [1] })
+	one = add_ref(fx_empty, { node: 1, name: "a", path: [0], value_control: False })
+	two = add_ref(one, { node: 1, name: "b", path: [1], value_control: False })
+	first = add_ref(drop_name(two, { node: 1, name: "a", path: [0] }), { node: 1, name: "b", path: [0], value_control: False })
+	second = add_ref(drop_name(first, { node: 1, name: "b", path: [1] }), { node: 1, name: "a", path: [1], value_control: False })
 	actual = { a: second.refs.get("a"), b: second.refs.get("b"), after_disposal: drop_ref(second, 1).refs.len() }
-	actual == { a: Ok([{ node: 1, path: [1] }]), b: Ok([{ node: 1, path: [0] }]), after_disposal: 0 }
+	actual == { a: Ok([{ node: 1, path: [1], value_control: False }]), b: Ok([{ node: 1, path: [0], value_control: False }]), after_disposal: 0 }
 }
 
 ## Typed declarations encode the bare event, payload kind and policy bits.
@@ -8298,3 +8512,32 @@ expect {
 		rejected: List.repeat(Bool.True, invalid.len()),
 	}
 }
+
+## Keymaps encode ordered explicit chords before a single merged every entry.
+expect {
+	ctrl_k = Core.Chord.plain("k").with_ctrl()
+	map = Core.Keymap.prevent([ctrl_k]).outside_text().concat(Core.Keymap.keep([ctrl_k])).concat(Core.Keymap.every.outside_text()).concat(Core.Keymap.every)
+	encode_keymap(map) == "poC---1:kkaC---1:ka*"
+}
+
+## Key decoding preserves browser facts and the declared chord independently.
+expect {
+	payload = put_str(put_str(put_str([49], "л"), "KeyK").append(1), "k")
+	key = read_key(payload)?
+	(key.key, key.code, key.ctrl, key.repeat, key.composing, key.heard == Core.Chord.plain("k").with_ctrl()) == ("л", "KeyK", True, True, True, True)
+}
+
+## Unknown flags, empty browser keys, truncation and trailing bytes are refused.
+expect {
+	valid = put_str(put_str(put_str([0], "Escape"), "Escape").append(0), "Escape")
+	bad_flags = valid.set(0, 64)?
+	empty = put_str(put_str(put_str([0], ""), "Escape").append(0), "Escape")
+	[read_key(bad_flags).is_err(), read_key(empty).is_err(), read_key(valid.drop_last(1)).is_err(), read_key(valid.append(0)).is_err()] == [True, True, True, True]
+}
+
+## An empty declared chord is valid data that no browser key can produce.
+expect encode_keymap(Core.Keymap.prevent([Core.Chord.plain("")]).concat(Core.Keymap.every)) == "pa----0:a*"
+
+## A heard chord cannot be empty: neither a declared empty entry nor every
+## can have matched it to a valid browser key.
+expect read_key(put_str(put_str(put_str([0], "Escape"), "").append(0), "")).is_err()

@@ -1,0 +1,18 @@
+(test "keymaps choose the nearest matching handler and follow rendered state"
+  (steps
+    (press (test-id "key-inner") "F2")
+    (expect-text (test-id "key-log") "outer;")
+    (press "F3")
+    (expect-text (test-id "key-log") "outer;inner;")
+    (click (role button :name "Toggle keymap"))
+    (mark-metrics)
+    (press (test-id "key-inner") "F3")
+    (expect-metric-delta dirty_source_roots 0)
+    (expect-text (test-id "key-log") "outer;inner;")
+    (press (test-id "key-row-one") "F5")
+    (press (test-id "key-row-two") "F6")
+    (expect-text (test-id "key-log") "outer;inner;row;row;")
+    (fill (label "Keyboard text") "changed")
+    (press "Escape")
+    (expect-focused (label "Keyboard text"))
+    (expect-value (label "Keyboard text") "initial")))

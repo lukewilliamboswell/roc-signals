@@ -93,9 +93,11 @@ SheetApp := [].{
 			cell.item().map2(SheetStore.cells.mode.signal(), Sheet.shown),
 			[
 				Engine.test_id_s(address.map(|ref| "cell-${ref}")),
+				Engine.ref_s(address.map(|ref| "cell-${ref}")),
+				Engine.attr("role", "gridcell"),
 				Engine.class_s(cell.item().map2(SheetStore.cells.selected.signal(), |held, caret| SheetApp.tone_class(held.out.kind, if (held.index == caret) Selected else Unselected))),
 				Engine.attr_s("data-kind", cell.field(|held| Sheet.CellKind.to_str(held.out.kind))),
-				Html.on_focus(Engine.handle_by(index, |at, _value| SheetStore.focused(at))),
+				Html.on_focus(Engine.handle_by({ index: index, source: cell.field(|held| held.source), keyboard: SheetStore.cells.keyboard.signal() }.Signal, |reading, _value| SheetStore.focused_source(reading.index, reading.source, reading.keyboard))),
 				Html.on_blur(Engine.does(SheetStore.blurred)),
 			],
 			Engine.handle_by(index, |at, text| SheetStore.typed(at, text)),
@@ -157,8 +159,8 @@ SheetApp := [].{
 							],
 						),
 						Html.p_s(
-							bar.map(|shown| if (shown.focus == Editing) "Editing" else "Showing value"),
-							[Engine.test_id("bar-mode"), Engine.class_s(bar.map(|shown| if (shown.focus == Editing) "badge badge-info" else "badge badge-neutral"))],
+							bar.map(|shown| if (shown.focus != Resting) "Editing" else "Showing value"),
+							[Engine.test_id("bar-mode"), Engine.class_s(bar.map(|shown| if (shown.focus != Resting) "badge badge-info" else "badge badge-neutral"))],
 						),
 					],
 				),
@@ -172,8 +174,16 @@ SheetApp := [].{
 								Html.text_input(
 									Engine.const("Formula"),
 									"text",
-									bar.map(|shown| if (shown.focus == Editing) shown.source else shown.value),
-									[Engine.test_id("formula-bar"), Engine.class("input tabular-nums"), Engine.attr("placeholder", "=B2+C2")],
+									bar.map(|shown| if (shown.focus != Resting) shown.source else shown.value),
+									[
+										Engine.test_id("formula-bar"),
+										Engine.ref("formula-bar"),
+										Html.on_blur(Engine.does(SheetStore.blurred)),
+										Engine.class("input tabular-nums"),
+										Engine.attr("placeholder", "=B2+C2"),
+										Html.on_focus(Engine.handle_by({ index: SheetStore.cells.selected.signal(), source: bar.map(|shown| shown.source), keyboard: SheetStore.cells.keyboard.signal() }.Signal, |reading, _| SheetStore.focused_source(reading.index, reading.source, reading.keyboard))),
+										Engine.on_key({ keymap: Engine.const(Engine.Keymap.prevent([Engine.Chord.plain("Enter"), Engine.Chord.plain("Escape")])) }, SheetApp.key_handler(True)),
+									],
 									Engine.handle_by(SheetStore.cells.selected.signal(), |at, text| SheetStore.typed(at, text)),
 								),
 								Html.p("Typing here writes the selected cell. The grid keeps showing computed values.", "hint"),
@@ -234,6 +244,7 @@ SheetApp := [].{
 						Html.div(
 							"stat-grid",
 							[
+								SheetApp.stat_tile("Selection", { table: sheet, index: SheetStore.cells.selected.signal(), keyboard: SheetStore.cells.keyboard.signal() }.Signal.map(|reading| SheetStore.selection(reading.table, reading.keyboard.anchor, reading.index)), "stat-selection"),
 								SheetApp.stat_tile("Selected cell", SheetStore.cells.selected.signal().map(Cells.ref_of), "stat-selected"),
 								SheetApp.stat_tile("Grid mode", mode.map(mode_name), "stat-mode"),
 								SheetApp.stat_tile("Formula errors", sheet.map(|table| SheetStore.error_count(table).to_str()), "status-line"),
@@ -264,8 +275,9 @@ SheetApp := [].{
 					Html.div(
 						"table-scroll",
 						[
-							Html.div(
-								SheetApp.grid_frame_class,
+							Engine.element(
+								"div",
+								[Engine.class(SheetApp.grid_frame_class), Engine.attr("role", "grid"), Engine.on_key({ keymap: SheetStore.cells.editing.signal().map(SheetStore.keymap) }, SheetApp.key_handler(False))],
 								[
 									SheetApp.column_header({}),
 									Engine.table_view(
@@ -283,8 +295,9 @@ SheetApp := [].{
 	)
 
 	view : {} -> Elem(Engine.StoreRoot(_))
-	view = |{}| Html.div(
-		SheetApp.page_class,
+	view = |{}| Engine.element(
+		"div",
+		[Engine.class(SheetApp.page_class), Engine.on_document_key({ keymap: Engine.const(Engine.Keymap.prevent([Engine.Chord.plain("`").with_ctrl(), Engine.Chord.plain("Escape")])) }, Engine.handle_by({ index: SheetStore.cells.selected.signal(), keyboard: SheetStore.cells.keyboard.signal() }.Signal, |reading, key| if (key.heard == Engine.Chord.plain("`").with_ctrl()) SheetStore.mode_switched else [SheetStore.cells.keyboard.set({ ..reading.keyboard, anchor: reading.index })]))],
 		[
 			Html.section(
 				"Spreadsheet Lite",
@@ -294,10 +307,38 @@ SheetApp := [].{
 					Html.p("A quarterly budget on an 8 by 12 sheet, where every formula is a dependency edge. Editing a cell recomputes only the cells that transitively depend on it.", "app-subtitle"),
 				],
 			),
+			Engine.on_post(SheetStore.cells.keyboard.signal().map(|keyboard| keyboard.commands), |commands| commands.map(command_request), Engine.ignore({})),
 			SheetApp.formula_bar({}),
 			SheetApp.controls({}),
 			SheetApp.grid({}),
 		],
+	)
+
+	## Route declared chords into pure transitions over a small keyboard reading.
+	key_handler : Bool -> Engine.HandlerOf(ctx, Engine.Key)
+		where [ctx.store : () -> Engine.Reach(ctx, _)]
+	key_handler = |formula| Engine.handle_by(
+		{ index: SheetStore.cells.selected.signal(), keyboard: SheetStore.cells.keyboard.signal(), editing: SheetStore.cells.editing.signal(), rows: SheetStore.cells.sheet.signal().map2(SheetStore.cells.listing.signal(), SheetStore.listed_rows) }.Signal,
+		|reading, key| {
+			if key.heard == Engine.Chord.plain("Escape") {
+				SheetStore.cancelled(reading.index, reading.keyboard, reading.editing, if (formula) "formula-bar" else "cell-${Cells.ref_of(reading.index)}")
+			} else if key.heard == Engine.Chord.plain("F2") or (key.heard == Engine.Chord.plain("Enter") and !formula) {
+				[SheetStore.cells.keyboard.set({ ..reading.keyboard, commands: reading.keyboard.commands.post([Focus("formula-bar")]) })]
+			} else {
+				direction = if (key.heard == Engine.Chord.plain("ArrowLeft") or key.heard == Engine.Chord.plain("ArrowLeft").with_shift()) Left
+				else if (key.heard == Engine.Chord.plain("ArrowRight") or key.heard == Engine.Chord.plain("ArrowRight").with_shift()) Right
+				else if (Engine.Chord.plain("ArrowUp").primary().contains(key.heard)) First
+				else if (Engine.Chord.plain("ArrowDown").primary().contains(key.heard)) Last
+				else if (key.heard == Engine.Chord.plain("ArrowUp") or key.heard == Engine.Chord.plain("ArrowUp").with_shift()) Up
+				else Down
+				next = SheetStore.next_cell(reading.index, reading.rows, direction)
+				if key.shift {
+					SheetStore.extended(next, reading.keyboard)
+				} else {
+					SheetStore.moved(next, reading.keyboard)
+				}
+			}
+		},
 	)
 
 	## The program `main.roc` binds for the browser module and the native spec
@@ -349,4 +390,20 @@ expect SheetApp.tone_class(Text, Unselected).contains("text-left")
 expect {
 	ring = " relative z-10 bg-accent-50 ring-2 ring-inset ring-accent-600"
 	(SheetApp.tone_class(Text, Selected).ends_with(ring), SheetApp.tone_class(Text, Unselected).contains("bg-accent-50")) == (True, False)
+}
+
+## Cleanup commands and posted commands share the request channel's command tags.
+command_request : Engine.Command -> Engine.Request
+command_request = |command| match command {
+	Push(value) => Push(value)
+	Replace(value) => Replace(value)
+	Title(value) => Title(value)
+	Focus(value) => Focus(value)
+	Blur(value) => Blur(value)
+	SelectText(value) => SelectText(value)
+	ApplyValue(value) => ApplyValue(value)
+	StorageSet(key, value) => StorageSet(key, value)
+	StorageRemove(value) => StorageRemove(value)
+	PortCommand(value) => PortCommand(value)
+	Save(value) => Save(value)
 }

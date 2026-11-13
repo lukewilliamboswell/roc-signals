@@ -10,7 +10,7 @@
 //
 // Text-kind event payloads (UTF-8, staged with `payload_reserve` and moved
 // into Roc by `event`): click/submit "", input: the target's value, change: "true"/"false"
-// for a checkbox or radio, else the target's value, keydown/keyup: the key.
+// for a checkbox or radio, else the target's value. Keys use their typed binary payload.
 // A `submit` event that reaches the mount root is always default-prevented:
 // forms are app-managed and never navigate the page.
 //
@@ -148,7 +148,7 @@
 // are present for any value other than "" and "false".
 
 // The wire protocol version this runtime implements (design.md, Appendix B).
-export const PROTOCOL_VERSION = 9;
+export const PROTOCOL_VERSION = 10;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
@@ -183,6 +183,7 @@ const OP_PORT = 19;
 const OP_SAVE = 20;
 const OP_PROP = 21;
 const OP_HPROP = 22;
+const OP_RELEASE = 23;
 
 // Effect results are events on this node; the handler number is the id.
 const FX_NODE = 0xffffffff;
@@ -242,10 +243,12 @@ const HOLE_PROP = 6;
 const KIND_TEXT = 1;
 const KIND_FILES = 2;
 const KIND_POINTER = 3;
+const KIND_KEY = 4;
 const POLICY_PREVENT = 1;
 const POLICY_STOP = 2;
 const POLICY_CAPTURE = 4;
 const POLICY_PACED = 8;
+const POLICY_DOCUMENT = 16;
 
 
 export async function instantiateEngineBytes(bytes) {
@@ -338,6 +341,7 @@ function toSvg(doc, node) {
 function setValue(el, value) {
   if (el.value === value) {
     el.__deferred = undefined;
+    el.__applyValue = false;
     return;
   }
   const doc = el.ownerDocument;
@@ -360,6 +364,14 @@ function setAttr(el, name, value) {
   }
 }
 
+// ApplyValue uses the last rendered property even when equality pruning
+// emitted no new PROP and the user changed the live value meanwhile.
+function applyRenderedValue(el) {
+  if (typeof el.__renderedValue !== "string") throw new Error("ApplyValue requires a rendered value property");
+  el.__deferred = undefined;
+  if (el.value !== el.__renderedValue) el.value = el.__renderedValue;
+}
+
 // A file input's live value is a program contract error, rather than an
 // executor defect. Its type can change in the batch, so only application of
 // the property can make this check against the current DOM state.
@@ -370,6 +382,7 @@ const PROPS = [null, {
   elements: ["INPUT", "TEXTAREA", "SELECT", "OPTION"],
   apply(el, value, node) {
     if (el.tagName === "INPUT" && el.type === "file") throw new ContractFault(`contract: value property on file input at node ${node}`);
+    el.__renderedValue = value;
     setValue(el, value);
     if (el.tagName === "SELECT") el.__v = value;
     el.setAttribute("value", value);
@@ -388,6 +401,12 @@ const PROPS = [null, {
   name: "pointer_zone",
   elements: null,
   apply(el, value) { el.__pointerZone = value; },
+}, {
+  name: "keymap_down", elements: null,
+  apply(el, value) { el.__keymapDown = parseKeymap(value); },
+}, {
+  name: "keymap_up", elements: null,
+  apply(el, value) { el.__keymapUp = parseKeymap(value); },
 }];
 
 function setProp(el, prop, value, node) {
@@ -415,9 +434,12 @@ function handlerEntry(h, kind, policies, type) {
   const row = PAYLOAD_KINDS[kind];
   if (!row) throw new Error(`unknown event payload kind ${kind}`);
   if (row.events && !row.events.includes(type)) throw new Error(`event payload kind ${kind} does not apply to ${type}`);
-  if ((policies & ~(POLICY_PREVENT | POLICY_STOP | POLICY_CAPTURE | POLICY_PACED)) !== 0) throw new Error(`unknown event policy bits ${policies}`);
+  if ((policies & ~(POLICY_PREVENT | POLICY_STOP | POLICY_CAPTURE | POLICY_PACED | POLICY_DOCUMENT)) !== 0) throw new Error(`unknown event policy bits ${policies}`);
   if ((policies & POLICY_CAPTURE) && (kind !== KIND_POINTER || type !== "pointerdown")) throw new Error("capture policy requires a pointerdown pointer handler");
   if ((policies & POLICY_PACED) && (kind !== KIND_POINTER || type !== "pointermove")) throw new Error("paced policy requires a pointermove pointer handler");
+  if ((policies & POLICY_DOCUMENT) && kind !== KIND_KEY) throw new Error("document policy requires a key handler");
+  if (kind === KIND_KEY && (policies & POLICY_PREVENT)) throw new Error("key prevention belongs to its keymap");
+  if (kind === KIND_TEXT && (type === "keydown" || type === "keyup")) throw new Error("text key handler requires on_key");
   return { h, kind, policies };
 }
 
@@ -439,9 +461,6 @@ function payloadOf(event) {
     case "change":
       if (t.type === "checkbox" || t.type === "radio") return t.checked ? "true" : "false";
       return t.value ?? "";
-    case "keydown":
-    case "keyup":
-      return event.key;
     default:
       return "";
   }
@@ -457,7 +476,205 @@ const PAYLOAD_KINDS = {
     },
   },
   [KIND_POINTER]: { events: ["pointerdown", "pointermove", "pointerup", "pointercancel"] },
+  [KIND_KEY]: { events: ["keydown", "keyup"] },
 };
+
+// A rendered map is indexed once. Dispatch visits only the matching chord's
+// entries, preserving the first declaration whose place applies.
+function keyModifiers(event) {
+  return (event.ctrlKey ? 1 : 0) | (event.altKey ? 2 : 0) | (event.shiftKey ? 4 : 0) | (event.metaKey ? 8 : 0);
+}
+function asciiLetter(key) { return /^[A-Za-z]$/.test(key); }
+function asciiAlnum(key) { return /^[A-Za-z0-9]$/.test(key); }
+// Unicode 18.0.0 UnicodeData.txt, general categories P* and S*.
+// SHA-256: 0736451de439ae7baf1425136617da495e09ee5afbe6e394374db7009ea08950
+// Source: https://www.unicode.org/Public/18.0.0/ucd/UnicodeData.txt
+// Unicode data license: https://www.unicode.org/license.txt
+/*
+UNICODE LICENSE V3
+
+COPYRIGHT AND PERMISSION NOTICE
+
+Copyright © 1991-2026 Unicode, Inc.
+
+NOTICE TO USER: Carefully read the following legal agreement. BY
+DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
+SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
+DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of data files and any associated documentation (the "Data Files") or
+software and any associated documentation (the "Software") to deal in the
+Data Files or Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, and/or sell
+copies of the Data Files or Software, and to permit persons to whom the
+Data Files or Software are furnished to do so, provided that either (a)
+this copyright and permission notice appear with all copies of the Data
+Files or Software, or (b) this copyright and permission notice appear in
+associated Documentation.
+
+THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+THIRD PARTY RIGHTS.
+
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+FILES OR SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder shall
+not be used in advertising or otherwise to promote the sale, use or other
+dealings in these Data Files or Software without prior written
+authorization of the copyright holder.
+*/
+const SYMBOL_RANGES = [
+  [0x21, 0x2f], [0x3a, 0x40], [0x5b, 0x60], [0x7b, 0x7e], [0xa1, 0xa9], [0xab, 0xac],
+  [0xae, 0xb1], [0xb4, 0xb4], [0xb6, 0xb8], [0xbb, 0xbb], [0xbf, 0xbf], [0xd7, 0xd7],
+  [0xf7, 0xf7], [0x2c2, 0x2c5], [0x2d2, 0x2df], [0x2e5, 0x2eb], [0x2ed, 0x2ed], [0x2ef, 0x2ff],
+  [0x375, 0x375], [0x37e, 0x37e], [0x384, 0x385], [0x387, 0x387], [0x3f6, 0x3f6], [0x482, 0x482],
+  [0x55a, 0x55f], [0x589, 0x58a], [0x58d, 0x58f], [0x5be, 0x5be], [0x5c0, 0x5c0], [0x5c3, 0x5c3],
+  [0x5c6, 0x5c6], [0x5f3, 0x5f4], [0x606, 0x60f], [0x61b, 0x61b], [0x61d, 0x61f], [0x66a, 0x66d],
+  [0x6d4, 0x6d4], [0x6de, 0x6de], [0x6e9, 0x6e9], [0x6fd, 0x6fe], [0x700, 0x70d], [0x7f6, 0x7f9],
+  [0x7fe, 0x7ff], [0x830, 0x83e], [0x85e, 0x85e], [0x888, 0x888], [0x964, 0x965], [0x970, 0x970],
+  [0x9f2, 0x9f3], [0x9fa, 0x9fb], [0x9fd, 0x9fd], [0xa76, 0xa76], [0xaf0, 0xaf1], [0xb70, 0xb70],
+  [0xbf3, 0xbfa], [0xc77, 0xc77], [0xc7f, 0xc7f], [0xc84, 0xc84], [0xd4f, 0xd4f], [0xd79, 0xd79],
+  [0xdf4, 0xdf4], [0xe3f, 0xe3f], [0xe4f, 0xe4f], [0xe5a, 0xe5b], [0xf01, 0xf17], [0xf1a, 0xf1f],
+  [0xf34, 0xf34], [0xf36, 0xf36], [0xf38, 0xf38], [0xf3a, 0xf3d], [0xf85, 0xf85], [0xfbe, 0xfc5],
+  [0xfc7, 0xfcc], [0xfce, 0xfda], [0x104a, 0x104f], [0x109e, 0x109f], [0x10fb, 0x10fb], [0x1360, 0x1368],
+  [0x1390, 0x1399], [0x1400, 0x1400], [0x166d, 0x166e], [0x169b, 0x169c], [0x16eb, 0x16ed], [0x1735, 0x1736],
+  [0x17d4, 0x17d6], [0x17d8, 0x17db], [0x1800, 0x180a], [0x1940, 0x1940], [0x1944, 0x1945], [0x19de, 0x19ff],
+  [0x1a1e, 0x1a1f], [0x1aa0, 0x1aa6], [0x1aa8, 0x1aad], [0x1b4e, 0x1b4f], [0x1b5a, 0x1b6a], [0x1b74, 0x1b7f],
+  [0x1bfc, 0x1bff], [0x1c3b, 0x1c3f], [0x1c7e, 0x1c7f], [0x1cc0, 0x1cc7], [0x1cd3, 0x1cd3], [0x1fbd, 0x1fbd],
+  [0x1fbf, 0x1fc1], [0x1fcd, 0x1fcf], [0x1fdd, 0x1fdf], [0x1fed, 0x1fef], [0x1ffd, 0x1ffe], [0x2010, 0x2027],
+  [0x2030, 0x205e], [0x207a, 0x207e], [0x208a, 0x208e], [0x20a0, 0x20c4], [0x2100, 0x2101], [0x2103, 0x2106],
+  [0x2108, 0x2109], [0x2114, 0x2114], [0x2116, 0x2118], [0x211e, 0x2123], [0x2125, 0x2125], [0x2127, 0x2127],
+  [0x2129, 0x2129], [0x212e, 0x212e], [0x213a, 0x213b], [0x2140, 0x2144], [0x214a, 0x214d], [0x214f, 0x214f],
+  [0x218a, 0x218b], [0x2190, 0x2429], [0x2440, 0x244a], [0x249c, 0x24e9], [0x2500, 0x2775], [0x2794, 0x2b73],
+  [0x2b76, 0x2bff], [0x2ce5, 0x2cea], [0x2cf9, 0x2cfc], [0x2cfe, 0x2cff], [0x2d70, 0x2d70], [0x2e00, 0x2e2e],
+  [0x2e30, 0x2e5d], [0x2e60, 0x2e63], [0x2e80, 0x2e99], [0x2e9b, 0x2ef3], [0x2f00, 0x2fd5], [0x2ff0, 0x2fff],
+  [0x3001, 0x3004], [0x3008, 0x3020], [0x3030, 0x3030], [0x3036, 0x3037], [0x303d, 0x303f], [0x309b, 0x309c],
+  [0x30a0, 0x30a0], [0x30fb, 0x30fb], [0x3190, 0x3191], [0x3196, 0x319f], [0x31c0, 0x31e5], [0x31ef, 0x31ef],
+  [0x3200, 0x321e], [0x322a, 0x3247], [0x3250, 0x3250], [0x3260, 0x327f], [0x328a, 0x32b0], [0x32c0, 0x33ff],
+  [0x4dc0, 0x4dff], [0xa490, 0xa4c6], [0xa4fe, 0xa4ff], [0xa60d, 0xa60f], [0xa673, 0xa673], [0xa67e, 0xa67e],
+  [0xa6f2, 0xa6f7], [0xa700, 0xa716], [0xa720, 0xa721], [0xa789, 0xa78a], [0xa828, 0xa82b], [0xa836, 0xa839],
+  [0xa874, 0xa877], [0xa8ce, 0xa8cf], [0xa8f8, 0xa8fa], [0xa8fc, 0xa8fc], [0xa92e, 0xa92f], [0xa95f, 0xa95f],
+  [0xa9c1, 0xa9cd], [0xa9de, 0xa9df], [0xaa5c, 0xaa5f], [0xaa77, 0xaa79], [0xaade, 0xaadf], [0xaaf0, 0xaaf1],
+  [0xab5b, 0xab5b], [0xab6a, 0xab6b], [0xabeb, 0xabeb], [0xfb29, 0xfb29], [0xfbb2, 0xfbd2], [0xfd3e, 0xfd4f],
+  [0xfd90, 0xfd91], [0xfdc8, 0xfdcf], [0xfdfc, 0xfdff], [0xfe10, 0xfe19], [0xfe30, 0xfe52], [0xfe54, 0xfe66],
+  [0xfe68, 0xfe6b], [0xff01, 0xff0f], [0xff1a, 0xff20], [0xff3b, 0xff40], [0xff5b, 0xff65], [0xffe0, 0xffe6],
+  [0xffe8, 0xffee], [0xfffc, 0xfffd], [0x10100, 0x10102], [0x10137, 0x1013f], [0x10179, 0x10189], [0x1018c, 0x1018e],
+  [0x10190, 0x1019c], [0x101a0, 0x101a0], [0x101d0, 0x101fc], [0x1039f, 0x1039f], [0x103d0, 0x103d0], [0x1056f, 0x1056f],
+  [0x10857, 0x10857], [0x10877, 0x10878], [0x1091f, 0x1091f], [0x1093f, 0x1093f], [0x10a50, 0x10a58], [0x10a7f, 0x10a7f],
+  [0x10ac8, 0x10ac8], [0x10af0, 0x10af6], [0x10b39, 0x10b3f], [0x10b99, 0x10b9c], [0x10d6e, 0x10d6e], [0x10d8e, 0x10d8f],
+  [0x10ead, 0x10ead], [0x10ec9, 0x10eca], [0x10ed0, 0x10ed8], [0x10f55, 0x10f59], [0x10f86, 0x10f89], [0x11047, 0x1104d],
+  [0x110bb, 0x110bc], [0x110be, 0x110c1], [0x11140, 0x11143], [0x11174, 0x11175], [0x111c5, 0x111c8], [0x111cd, 0x111cd],
+  [0x111db, 0x111db], [0x111dd, 0x111df], [0x11238, 0x1123d], [0x112a9, 0x112a9], [0x113d4, 0x113d5], [0x113d7, 0x113d8],
+  [0x1144b, 0x1144f], [0x1145a, 0x1145b], [0x1145d, 0x1145d], [0x114c6, 0x114c6], [0x115c1, 0x115d7], [0x11641, 0x11643],
+  [0x11660, 0x1166c], [0x116b9, 0x116b9], [0x1173c, 0x1173f], [0x1183b, 0x1183b], [0x11944, 0x11946], [0x119e2, 0x119e2],
+  [0x11a3f, 0x11a46], [0x11a9a, 0x11a9c], [0x11a9e, 0x11aa2], [0x11b00, 0x11b09], [0x11be1, 0x11be1], [0x11c41, 0x11c45],
+  [0x11c70, 0x11c71], [0x11ef7, 0x11ef8], [0x11f43, 0x11f4f], [0x11fd5, 0x11ff1], [0x11fff, 0x11fff], [0x12470, 0x12474],
+  [0x12ff1, 0x12ff2], [0x16a6e, 0x16a6f], [0x16af5, 0x16af5], [0x16b37, 0x16b3f], [0x16b44, 0x16b45], [0x16d6d, 0x16d6f],
+  [0x16e97, 0x16e9a], [0x16fe2, 0x16fe2], [0x1bc9c, 0x1bc9c], [0x1bc9f, 0x1bc9f], [0x1cc00, 0x1ccef], [0x1ccfa, 0x1ccfc],
+  [0x1cd00, 0x1ceb3], [0x1ceba, 0x1ced0], [0x1ced2, 0x1ced4], [0x1cedd, 0x1cefd], [0x1cf50, 0x1cfc3], [0x1d000, 0x1d0f5],
+  [0x1d100, 0x1d126], [0x1d129, 0x1d164], [0x1d16a, 0x1d16c], [0x1d183, 0x1d184], [0x1d18c, 0x1d1a9], [0x1d1ae, 0x1d241],
+  [0x1d245, 0x1d245], [0x1d253, 0x1d25a], [0x1d25d, 0x1d25e], [0x1d260, 0x1d27f], [0x1d300, 0x1d356], [0x1d6c1, 0x1d6c1],
+  [0x1d6db, 0x1d6db], [0x1d6fb, 0x1d6fb], [0x1d715, 0x1d715], [0x1d735, 0x1d735], [0x1d74f, 0x1d74f], [0x1d76f, 0x1d76f],
+  [0x1d789, 0x1d789], [0x1d7a9, 0x1d7a9], [0x1d7c3, 0x1d7c3], [0x1d800, 0x1d9ff], [0x1da37, 0x1da3a], [0x1da6d, 0x1da74],
+  [0x1da76, 0x1da83], [0x1da85, 0x1da8b], [0x1db00, 0x1db1c], [0x1e14f, 0x1e14f], [0x1e2ff, 0x1e2ff], [0x1e5ff, 0x1e5ff],
+  [0x1e95e, 0x1e95f], [0x1ecac, 0x1ecac], [0x1ecb0, 0x1ecb0], [0x1ed2e, 0x1ed2e], [0x1eef0, 0x1eef1], [0x1f000, 0x1f02b],
+  [0x1f030, 0x1f093], [0x1f0a0, 0x1f0ae], [0x1f0b1, 0x1f0bf], [0x1f0c1, 0x1f0cf], [0x1f0d1, 0x1f0f5], [0x1f10d, 0x1f1ae],
+  [0x1f1e6, 0x1f202], [0x1f210, 0x1f23b], [0x1f240, 0x1f248], [0x1f250, 0x1f251], [0x1f260, 0x1f265], [0x1f300, 0x1f6d9],
+  [0x1f6dc, 0x1f6ec], [0x1f6f0, 0x1f6fc], [0x1f700, 0x1f7db], [0x1f7e0, 0x1f7eb], [0x1f7f0, 0x1f80b], [0x1f810, 0x1f847],
+  [0x1f850, 0x1f859], [0x1f860, 0x1f887], [0x1f890, 0x1f8ad], [0x1f8b0, 0x1f8bb], [0x1f8c0, 0x1f8c1], [0x1f8d0, 0x1f8d8],
+  [0x1f900, 0x1fa57], [0x1fa60, 0x1fa6d], [0x1fa70, 0x1fa7c], [0x1fa80, 0x1fac6], [0x1fac8, 0x1fac8], [0x1facc, 0x1fadd],
+  [0x1fadf, 0x1faeb], [0x1faef, 0x1fafa], [0x1fb00, 0x1fb92], [0x1fb94, 0x1fbef], [0x1fbfa, 0x1fbfa],
+];
+function symbolKey(key) {
+  const scalar = key.codePointAt(0);
+  if (scalar === undefined || String.fromCodePoint(scalar) !== key) return false;
+  let low = 0, high = SYMBOL_RANGES.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1, [start, end] = SYMBOL_RANGES[middle];
+    if (scalar < start) high = middle;
+    else if (scalar > end) low = middle + 1;
+    else return true;
+  }
+  return false;
+}
+function chordIndex(key, modifiers) {
+  return `${symbolKey(key) ? modifiers & ~4 : modifiers}:${asciiLetter(key) ? key.toLowerCase() : key}`;
+}
+function textEntry(target) {
+  if (target?.nodeType !== 1) target = target?.parentElement;
+  return !!target && (target.tagName === "TEXTAREA" || target.tagName === "SELECT" ||
+    (target.tagName === "INPUT" && !["button", "submit", "reset", "checkbox", "radio", "range", "color", "file", "hidden", "image"].includes(target.type)) || target.isContentEditable);
+}
+function parseKeymap(value) {
+  const bytes = utf8enc.encode(value);
+  const exact = new Map(), physical = new Map();
+  let every = null, at = 0;
+  const add = (index, key, entry) => {
+    const entries = index.get(key);
+    if (entries) entries.push(entry); else index.set(key, [entry]);
+  };
+  while (at < bytes.length) {
+    const policy = bytes[at++];
+    if ((policy === 97 || policy === 111) && bytes[at] === 42) {
+      at += 1;
+      if (at !== bytes.length || every !== null) throw new Error("keymap every must occur once at the end");
+      every = { outside: policy === 111, prevent: false };
+      continue;
+    }
+    if (policy !== 112 && policy !== 107) throw new Error("invalid keymap policy");
+    const place = bytes[at++];
+    if (place !== 97 && place !== 111) throw new Error("invalid keymap place");
+    let modifiers = 0;
+    for (let bit = 0; bit < 4; bit += 1) {
+      const flag = bytes[at++];
+      if (flag === [67, 65, 83, 77][bit]) modifiers |= 1 << bit;
+      else if (flag !== 45) throw new Error("invalid keymap modifier");
+    }
+    const start = at;
+    while (bytes[at] >= 48 && bytes[at] <= 57) at += 1;
+    if (at === start || bytes[at++] !== 58 || (at - start > 2 && bytes[start] === 48)) throw new Error("invalid keymap key length");
+    const length = Number(new TextDecoder().decode(bytes.subarray(start, at - 1)));
+    if (!Number.isSafeInteger(length) || length > bytes.length - at) throw new Error("invalid keymap key length");
+    const key = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(at, at + length));
+    at += length;
+    const entry = { key, modifiers, outside: place === 111, prevent: policy === 112 };
+    add(exact, chordIndex(key, modifiers), entry);
+    if (asciiAlnum(key)) {
+      const code = asciiLetter(key) ? `Key${key.toUpperCase()}` : `Digit${key}`;
+      add(physical, `${modifiers}:${code}`, entry);
+    }
+  }
+  return { exact, physical, every };
+}
+function matchKey(map, event) {
+  if (!map || typeof event.key !== "string" || event.key === "") return null;
+  const outside = !textEntry(event.target);
+  const first = (entries) => entries?.find((entry) => !entry.outside || outside) ?? null;
+  if (!event.isComposing && event.keyCode !== 229) {
+    const modifiers = keyModifiers(event);
+    const exact = first(map.exact.get(chordIndex(event.key, modifiers)));
+    if (exact) return exact;
+    if (!asciiAlnum(event.key)) {
+      const physical = first(map.physical.get(`${modifiers}:${event.code}`));
+      if (physical) return physical;
+    }
+  }
+  if (map.every && (!map.every.outside || outside)) return { ...map.every, key: event.key, modifiers: keyModifiers(event) };
+  return null;
+}
+function keyPayload(event, heard) {
+  if (!event.key.isWellFormed() || !(event.code ?? "").isWellFormed()) throw new Error("key event contains malformed UTF-16");
+  const flags = keyModifiers(event) | (event.repeat ? 16 : 0) | (event.isComposing || event.keyCode === 229 ? 32 : 0);
+  return concat([new Uint8Array([flags]), encStr(event.key), encStr(event.code ?? ""), new Uint8Array([heard.modifiers]), encStr(heard.key)]);
+}
 
 const utf8enc = new TextEncoder();
 
@@ -1773,6 +1990,9 @@ export class RocEngineRuntime {
     this.templates = [];
     this.listening = new Map();
     this.internal = [];
+    this.documentKeys = new Map();
+    this.documentListeners = new Map();
+    this.heardKeys = new WeakSet();
     this.onEvent = (event) => { if (event.bubbles) this.guard(() => this.handle(event)); };
     this.onCapture = (event) => { if (!event.bubbles) this.guard(() => this.handle(event)); };
     this.busy = false;
@@ -1987,6 +2207,7 @@ export class RocEngineRuntime {
       if (listeners.capture) this.root.removeEventListener(type, listeners.capture, true);
     }
     this.listening.clear();
+    this.clearDocumentKeys();
     for (const [type, fn] of this.internal) this.root.removeEventListener(type, fn, true);
     this.internal = [];
     this.monitor.runtimeEnding("contained");
@@ -2052,6 +2273,7 @@ export class RocEngineRuntime {
       if (listeners.capture) this.root.removeEventListener(type, listeners.capture, true);
     }
     this.listening.clear();
+    this.clearDocumentKeys();
     for (const [type, fn] of this.internal) this.root.removeEventListener(type, fn, true);
     this.internal = [];
     this.x.drop();
@@ -2075,16 +2297,25 @@ export class RocEngineRuntime {
       e.target.__composing = true;
     });
     on("compositionend", (e) => {
-      e.target.__composing = false;
+      const t = e.target;
+      t.__composing = false;
+      if (t.__applyValue) {
+        t.__applyValue = false;
+        applyRenderedValue(t);
+      }
     });
     on("input", (e) => {
       const t = e.target;
       if (t.__deferred !== undefined && t.__deferred === t.value) t.__deferred = undefined;
+      if (t.__applyValue && t.value === t.__renderedValue) t.__applyValue = false;
     });
     on("focusout", (e) => {
       const t = e.target;
       t.__composing = false;
-      if (t.__deferred !== undefined) {
+      if (t.__applyValue) {
+        t.__applyValue = false;
+        applyRenderedValue(t);
+      } else if (t.__deferred !== undefined) {
         const v = t.__deferred;
         t.__deferred = undefined;
         if (t.value !== v) t.value = v;
@@ -2131,13 +2362,17 @@ export class RocEngineRuntime {
     let node = event.target;
     let handler = null;
     let declaring = null;
+    let heard = null;
     while (node && node !== this.root) {
       if (handler === null && (event.bubbles || node === event.target) && node.__h !== undefined) {
         const h = node.__h[type];
-        if (h !== undefined) { handler = h; declaring = node; }
+        if (h !== undefined && !(h.policies & POLICY_DOCUMENT)) {
+          const match = h.kind === KIND_KEY ? matchKey(type === "keydown" ? node.__keymapDown : node.__keymapUp, event) : null;
+          if (h.kind !== KIND_KEY || match) { handler = h; declaring = node; heard = match; }
+        }
       }
       if (node.__rn !== undefined && handler !== null) {
-        if ((handler.policies & POLICY_PREVENT) !== 0 || (handler.kind === KIND_FILES && type === "drop")) event.preventDefault();
+        if (heard?.prevent || (handler.policies & POLICY_PREVENT) !== 0 || (handler.kind === KIND_FILES && type === "drop")) event.preventDefault();
         // A non-bubbling event is heard during capture; stopping it there
         // would prevent its target's own listeners from running.
         if (event.bubbles && (handler.policies & POLICY_STOP) !== 0) event.stopPropagation();
@@ -2148,7 +2383,10 @@ export class RocEngineRuntime {
             this.monitor.emit({ kind: "pointer-capture-refused", pointer: event.pointerId, at: this.monitor.tick() });
           }
         }
-        if (handler.kind === KIND_POINTER) {
+        if (handler.kind === KIND_KEY) {
+          this.heardKeys.add(event);
+          this.dispatch(node.__rn, handler.h, keyPayload(event, heard), node);
+        } else if (handler.kind === KIND_POINTER) {
           const pointer = this.pointerPayload(event);
           if (this.manual) {
             if (this.pointerLog.length >= MAX_QUEUED) {
@@ -2167,6 +2405,43 @@ export class RocEngineRuntime {
       }
       node = node.parentNode;
     }
+  }
+
+  registerDocumentKey(el, type, handler) {
+    let entries = this.documentKeys.get(type);
+    if (!entries) { entries = []; this.documentKeys.set(type, entries); }
+    entries.push({ el, handler });
+    if (!this.documentListeners.has(type)) {
+      const listener = (event) => this.guard(() => {
+        if (this.heardKeys.has(event)) return;
+        const live = this.documentKeys.get(type);
+        for (let i = live.length - 1; i >= 0; i -= 1) {
+          const { el: declaring, handler: h } = live[i];
+          const heard = matchKey(type === "keydown" ? declaring.__keymapDown : declaring.__keymapUp, event);
+          if (!heard) continue;
+          if (heard.prevent) event.preventDefault();
+          if (h.policies & POLICY_STOP) event.stopPropagation();
+          this.heardKeys.add(event);
+          this.dispatch(declaring.__rn, h.h, keyPayload(event, heard), declaring);
+          return;
+        }
+      });
+      this.documentListeners.set(type, listener);
+      this.doc.addEventListener(type, listener);
+    }
+  }
+
+  releaseNode(el) {
+    for (const [type, entries] of this.documentKeys) {
+      this.documentKeys.set(type, entries.filter((entry) => entry.el !== el));
+    }
+  }
+
+  clearDocumentKeys() {
+    for (const [type, listener] of this.documentListeners) this.doc.removeEventListener(type, listener);
+    this.documentListeners.clear();
+    this.documentKeys.clear();
+    this.heardKeys = new WeakSet();
   }
 
   // A hit test ignores capture, and returns only the nearest nonempty zone
@@ -2731,6 +3006,11 @@ export class RocEngineRuntime {
           at += 8;
           break;
         }
+        case OP_RELEASE: {
+          this.releaseNode(this.lookup(dv.getUint32(at, true)));
+          at += 4;
+          break;
+        }
         case OP_REMOVE: {
           const node = dv.getUint32(at, true);
           const el = this.lookup(node);
@@ -2800,8 +3080,10 @@ export class RocEngineRuntime {
           const h = dv.getUint32(at + 4, true);
           const kind = u8[at + 12 + n];
           const policies = dv.getUint32(at + 13 + n, true);
-          el.__h[type] = handlerEntry(h, kind, policies, type);
-          this.listen(type);
+          const entry = handlerEntry(h, kind, policies, type);
+          el.__h[type] = entry;
+          if (policies & POLICY_DOCUMENT) this.registerDocumentKey(el, type, entry);
+          else this.listen(type);
           at += 17 + n;
           break;
         }
@@ -3100,7 +3382,10 @@ export class RocEngineRuntime {
         // queued (busy) and delivered as their own turns.
         const el = this.lookup(fx.node);
         if (!el) return;
-        if (fx.mode === 2) el.blur();
+        if (fx.mode === 4) {
+          if (el.__composing) el.__applyValue = el.value !== el.__renderedValue;
+          else applyRenderedValue(el);
+        } else if (fx.mode === 2) el.blur();
         else {
           el.focus();
           if (fx.mode === 3 && typeof el.select === "function") el.select();

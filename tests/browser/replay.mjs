@@ -570,8 +570,72 @@ async function traverse(page, delta, what) {
 // has a fragment and differs from the current one only in the fragment.
 const sameDocument = (from, to) => to.includes("#") && from.split("#")[0] === to.split("#")[0];
 
+// Keep the actual KeyboardEvent until dispatch has returned. A passive CDP
+// binding preserves its prevented flag even when a key activates navigation.
+async function press(page, step, state) {
+  if (step.loc) {
+    await need(page, step.loc);
+    await onEl(page, step.loc, (element) => element.focus());
+    await settle(page);
+  }
+  if (!page.keyBinding) {
+    await page.send("Runtime.addBinding", { name: "__rocKeyFacts" });
+    page.conn.on(page.sessionId, "Runtime.bindingCalled", (event) => {
+      if (event.name !== "__rocKeyFacts" || !page.keyFacts) return;
+      if (page.keyFacts.length >= 2) { page.keyFactsError = "press raised more than two keyboard events"; return; }
+      page.keyFacts.push(JSON.parse(event.payload));
+    });
+    page.keyBinding = true;
+  }
+  page.keyFacts = [];
+  page.keyFactsError = null;
+  await page.evaluate((defaults) => {
+    let pending = null;
+    const flush = () => {
+      if (!pending) return;
+      window.__rocKeyFacts(JSON.stringify({ type: pending.event.type, prevented: pending.event.defaultPrevented, refused: pending.refused }));
+      pending = null;
+    };
+    const capture = (event) => {
+      flush();
+      const target = event.target;
+      const input = target.tagName === "INPUT";
+      const text = target.tagName === "TEXTAREA" || target.isContentEditable ||
+        (input && !["button", "submit", "reset", "checkbox", "radio", "range", "color", "file", "hidden", "image"].includes(target.type));
+      const controls = new Set();
+      if (text) controls.add("text");
+      if (target.tagName === "TEXTAREA") controls.add("textarea");
+      if (target.tagName === "SELECT" || (input && ["radio", "number", "range", "date", "time"].includes(target.type))) controls.add("choice");
+      const refused = defaults.some((row) => controls.has(row.control) && row.keys.some((key) => {
+        if (key === "printable") return /^[ -~]$/.test(event.key) && !event.ctrlKey && !event.metaKey;
+        if (key.startsWith("primary:")) return (event.ctrlKey || event.metaKey) && event.key.toUpperCase() === key.slice(8);
+        return event.key === key;
+      }));
+      pending = { event, refused };
+    };
+    for (const type of ["keydown", "keyup"]) window.addEventListener(type, capture, true);
+    window.addEventListener("beforeunload", flush);
+    window.__endKeyInput = () => {
+      flush();
+      for (const type of ["keydown", "keyup"]) window.removeEventListener(type, capture, true);
+      window.removeEventListener("beforeunload", flush);
+      delete window.__endKeyInput;
+    };
+  }, state.keyDefaults);
+  try {
+    await navigating(page, state, () => page.pressSpec(step.key, state.keyTable));
+    await page.evaluate(() => window.__endKeyInput?.());
+    if (page.keyFactsError) throw new Error(page.keyFactsError);
+    const down = page.keyFacts.find((fact) => fact.type === "keydown");
+    if (!down) throw new Error("press is missing physical keydown evidence");
+    if (down.refused && !down.prevented) throw new Error("press has an unmodelled default that changes a control's value; use fill or prevent it with a keymap");
+  } finally { page.keyFacts = null; }
+  await settle(page);
+}
+
 // One handler per step form of the grammar (`Scm.step_forms`).
 const STEPS = {
+  press,
   "pointer-down": pointerStep,
   "pointer-move": pointerStep,
   "pointer-up": pointerStep,
@@ -1069,7 +1133,7 @@ for (const spec of specs) {
   try {
     const setup = setupOf(spec);
     await page.evaluateOnNewDocument(fs.readFileSync(files["locate.js"], "utf8"));
-    const state = { stub: null, mark: null, doc: null, loads: 0, files: setup.files, environment: setup.environment, mount: setup.mount, environmentScript: null, holdingReports: false, pointers: new Map() };
+    const state = { stub: null, mark: null, doc: null, loads: 0, files: setup.files, environment: setup.environment, mount: setup.mount, environmentScript: null, holdingReports: false, pointers: new Map(), keyTable: spec.key_table, keyDefaults: spec.unmodelled_key_defaults };
     await installEnvironment(page, state, true);
     await page.evaluateOnNewDocument(install, attrOf.toString());
     await page.goto(`http://127.0.0.1:${port}${setup.environment.url}`);

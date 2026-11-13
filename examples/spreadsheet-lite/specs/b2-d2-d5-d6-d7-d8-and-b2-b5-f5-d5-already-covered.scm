@@ -40,8 +40,8 @@
     (expect-metric-delta rows_reused 40)
     (expect-metric-delta rows_moved 0)
     (expect-metric-delta rows_updated 13)
-    ; One cell of the store is written: the sheet's table.
-    (expect-metric-delta dirty_source_roots 1)
+    ; The sheet table and keyboard editing mode are written together.
+    (expect-metric-delta dirty_source_roots 2)
     ; Nine value writes: the eight cells whose displayed value changed (B2, D2, B5,
     ; D5, F5, D6, D7, D8) plus the formula bar. No other cell is written.
     (expect-metric-delta set_value 9)

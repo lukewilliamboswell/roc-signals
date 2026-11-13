@@ -33,6 +33,191 @@ Scm := [].{
 	## `data-testid`. Resolution is the runner's job.
 	Loc : [Role({ role : Str, name : Str }), Label(Str), Text(Str), TestId(Str)]
 
+	## The US keyboard vocabulary shared by parsing, native delivery and CDP.
+	KeyEntry : { key : Str, name : Str, code : Str, needs_shift : Bool, named : Bool }
+	Key : { key : Str, code : Str, ctrl : Bool, alt : Bool, shift : Bool, meta : Bool }
+	KeyPress : { target : [Focused, At(Loc)], key : Key }
+	key_table : List(KeyEntry)
+	key_table = [
+		{ key: " ", name: " ", code: "Space", needs_shift: Bool.False, named: Bool.False },
+		{ key: "Enter", name: "Enter", code: "Enter", needs_shift: Bool.False, named: Bool.True },
+		{ key: "Escape", name: "Escape", code: "Escape", needs_shift: Bool.False, named: Bool.True },
+		{ key: "Tab", name: "Tab", code: "Tab", needs_shift: Bool.False, named: Bool.True },
+		{ key: " ", name: "Space", code: "Space", needs_shift: Bool.False, named: Bool.True },
+		{ key: "Backspace", name: "Backspace", code: "Backspace", needs_shift: Bool.False, named: Bool.True },
+		{ key: "Delete", name: "Delete", code: "Delete", needs_shift: Bool.False, named: Bool.True },
+		{ key: "ArrowUp", name: "ArrowUp", code: "ArrowUp", needs_shift: Bool.False, named: Bool.True },
+		{ key: "ArrowDown", name: "ArrowDown", code: "ArrowDown", needs_shift: Bool.False, named: Bool.True },
+		{ key: "ArrowLeft", name: "ArrowLeft", code: "ArrowLeft", needs_shift: Bool.False, named: Bool.True },
+		{ key: "ArrowRight", name: "ArrowRight", code: "ArrowRight", needs_shift: Bool.False, named: Bool.True },
+		{ key: "Home", name: "Home", code: "Home", needs_shift: Bool.False, named: Bool.True },
+		{ key: "End", name: "End", code: "End", needs_shift: Bool.False, named: Bool.True },
+		{ key: "PageUp", name: "PageUp", code: "PageUp", needs_shift: Bool.False, named: Bool.True },
+		{ key: "PageDown", name: "PageDown", code: "PageDown", needs_shift: Bool.False, named: Bool.True },
+		{ key: "F1", name: "F1", code: "F1", needs_shift: Bool.False, named: Bool.True },
+		{ key: "F2", name: "F2", code: "F2", needs_shift: Bool.False, named: Bool.True },
+		{ key: "F3", name: "F3", code: "F3", needs_shift: Bool.False, named: Bool.True },
+		{ key: "F4", name: "F4", code: "F4", needs_shift: Bool.False, named: Bool.True },
+		{ key: "F5", name: "F5", code: "F5", needs_shift: Bool.False, named: Bool.True },
+		{ key: "F6", name: "F6", code: "F6", needs_shift: Bool.False, named: Bool.True },
+		{ key: "F7", name: "F7", code: "F7", needs_shift: Bool.False, named: Bool.True },
+		{ key: "F8", name: "F8", code: "F8", needs_shift: Bool.False, named: Bool.True },
+		{ key: "F9", name: "F9", code: "F9", needs_shift: Bool.False, named: Bool.True },
+		{ key: "F10", name: "F10", code: "F10", needs_shift: Bool.False, named: Bool.True },
+		{ key: "F11", name: "F11", code: "F11", needs_shift: Bool.False, named: Bool.True },
+		{ key: "F12", name: "F12", code: "F12", needs_shift: Bool.False, named: Bool.True },
+		{ key: "!", name: "!", code: "Digit1", needs_shift: Bool.True, named: Bool.False },
+		{ key: "\"", name: "\"", code: "Quote", needs_shift: Bool.True, named: Bool.False },
+		{ key: "#", name: "#", code: "Digit3", needs_shift: Bool.True, named: Bool.False },
+		{ key: "$", name: "$", code: "Digit4", needs_shift: Bool.True, named: Bool.False },
+		{ key: "%", name: "%", code: "Digit5", needs_shift: Bool.True, named: Bool.False },
+		{ key: "&", name: "&", code: "Digit7", needs_shift: Bool.True, named: Bool.False },
+		{ key: "'", name: "'", code: "Quote", needs_shift: Bool.False, named: Bool.False },
+		{ key: "(", name: "(", code: "Digit9", needs_shift: Bool.True, named: Bool.False },
+		{ key: ")", name: ")", code: "Digit0", needs_shift: Bool.True, named: Bool.False },
+		{ key: "*", name: "*", code: "Digit8", needs_shift: Bool.True, named: Bool.False },
+		{ key: "+", name: "+", code: "Equal", needs_shift: Bool.True, named: Bool.False },
+		{ key: ",", name: ",", code: "Comma", needs_shift: Bool.False, named: Bool.False },
+		{ key: "-", name: "-", code: "Minus", needs_shift: Bool.False, named: Bool.False },
+		{ key: ".", name: ".", code: "Period", needs_shift: Bool.False, named: Bool.False },
+		{ key: "/", name: "/", code: "Slash", needs_shift: Bool.False, named: Bool.False },
+		{ key: "0", name: "0", code: "Digit0", needs_shift: Bool.False, named: Bool.False },
+		{ key: "1", name: "1", code: "Digit1", needs_shift: Bool.False, named: Bool.False },
+		{ key: "2", name: "2", code: "Digit2", needs_shift: Bool.False, named: Bool.False },
+		{ key: "3", name: "3", code: "Digit3", needs_shift: Bool.False, named: Bool.False },
+		{ key: "4", name: "4", code: "Digit4", needs_shift: Bool.False, named: Bool.False },
+		{ key: "5", name: "5", code: "Digit5", needs_shift: Bool.False, named: Bool.False },
+		{ key: "6", name: "6", code: "Digit6", needs_shift: Bool.False, named: Bool.False },
+		{ key: "7", name: "7", code: "Digit7", needs_shift: Bool.False, named: Bool.False },
+		{ key: "8", name: "8", code: "Digit8", needs_shift: Bool.False, named: Bool.False },
+		{ key: "9", name: "9", code: "Digit9", needs_shift: Bool.False, named: Bool.False },
+		{ key: ":", name: ":", code: "Semicolon", needs_shift: Bool.True, named: Bool.False },
+		{ key: ";", name: ";", code: "Semicolon", needs_shift: Bool.False, named: Bool.False },
+		{ key: "<", name: "<", code: "Comma", needs_shift: Bool.True, named: Bool.False },
+		{ key: "=", name: "=", code: "Equal", needs_shift: Bool.False, named: Bool.False },
+		{ key: ">", name: ">", code: "Period", needs_shift: Bool.True, named: Bool.False },
+		{ key: "?", name: "?", code: "Slash", needs_shift: Bool.True, named: Bool.False },
+		{ key: "@", name: "@", code: "Digit2", needs_shift: Bool.True, named: Bool.False },
+		{ key: "A", name: "A", code: "KeyA", needs_shift: Bool.True, named: Bool.False },
+		{ key: "B", name: "B", code: "KeyB", needs_shift: Bool.True, named: Bool.False },
+		{ key: "C", name: "C", code: "KeyC", needs_shift: Bool.True, named: Bool.False },
+		{ key: "D", name: "D", code: "KeyD", needs_shift: Bool.True, named: Bool.False },
+		{ key: "E", name: "E", code: "KeyE", needs_shift: Bool.True, named: Bool.False },
+		{ key: "F", name: "F", code: "KeyF", needs_shift: Bool.True, named: Bool.False },
+		{ key: "G", name: "G", code: "KeyG", needs_shift: Bool.True, named: Bool.False },
+		{ key: "H", name: "H", code: "KeyH", needs_shift: Bool.True, named: Bool.False },
+		{ key: "I", name: "I", code: "KeyI", needs_shift: Bool.True, named: Bool.False },
+		{ key: "J", name: "J", code: "KeyJ", needs_shift: Bool.True, named: Bool.False },
+		{ key: "K", name: "K", code: "KeyK", needs_shift: Bool.True, named: Bool.False },
+		{ key: "L", name: "L", code: "KeyL", needs_shift: Bool.True, named: Bool.False },
+		{ key: "M", name: "M", code: "KeyM", needs_shift: Bool.True, named: Bool.False },
+		{ key: "N", name: "N", code: "KeyN", needs_shift: Bool.True, named: Bool.False },
+		{ key: "O", name: "O", code: "KeyO", needs_shift: Bool.True, named: Bool.False },
+		{ key: "P", name: "P", code: "KeyP", needs_shift: Bool.True, named: Bool.False },
+		{ key: "Q", name: "Q", code: "KeyQ", needs_shift: Bool.True, named: Bool.False },
+		{ key: "R", name: "R", code: "KeyR", needs_shift: Bool.True, named: Bool.False },
+		{ key: "S", name: "S", code: "KeyS", needs_shift: Bool.True, named: Bool.False },
+		{ key: "T", name: "T", code: "KeyT", needs_shift: Bool.True, named: Bool.False },
+		{ key: "U", name: "U", code: "KeyU", needs_shift: Bool.True, named: Bool.False },
+		{ key: "V", name: "V", code: "KeyV", needs_shift: Bool.True, named: Bool.False },
+		{ key: "W", name: "W", code: "KeyW", needs_shift: Bool.True, named: Bool.False },
+		{ key: "X", name: "X", code: "KeyX", needs_shift: Bool.True, named: Bool.False },
+		{ key: "Y", name: "Y", code: "KeyY", needs_shift: Bool.True, named: Bool.False },
+		{ key: "Z", name: "Z", code: "KeyZ", needs_shift: Bool.True, named: Bool.False },
+		{ key: "[", name: "[", code: "BracketLeft", needs_shift: Bool.False, named: Bool.False },
+		{ key: "\\", name: "\\", code: "Backslash", needs_shift: Bool.False, named: Bool.False },
+		{ key: "]", name: "]", code: "BracketRight", needs_shift: Bool.False, named: Bool.False },
+		{ key: "^", name: "^", code: "Digit6", needs_shift: Bool.True, named: Bool.False },
+		{ key: "_", name: "_", code: "Minus", needs_shift: Bool.True, named: Bool.False },
+		{ key: "`", name: "`", code: "Backquote", needs_shift: Bool.False, named: Bool.False },
+		{ key: "a", name: "a", code: "KeyA", needs_shift: Bool.False, named: Bool.False },
+		{ key: "b", name: "b", code: "KeyB", needs_shift: Bool.False, named: Bool.False },
+		{ key: "c", name: "c", code: "KeyC", needs_shift: Bool.False, named: Bool.False },
+		{ key: "d", name: "d", code: "KeyD", needs_shift: Bool.False, named: Bool.False },
+		{ key: "e", name: "e", code: "KeyE", needs_shift: Bool.False, named: Bool.False },
+		{ key: "f", name: "f", code: "KeyF", needs_shift: Bool.False, named: Bool.False },
+		{ key: "g", name: "g", code: "KeyG", needs_shift: Bool.False, named: Bool.False },
+		{ key: "h", name: "h", code: "KeyH", needs_shift: Bool.False, named: Bool.False },
+		{ key: "i", name: "i", code: "KeyI", needs_shift: Bool.False, named: Bool.False },
+		{ key: "j", name: "j", code: "KeyJ", needs_shift: Bool.False, named: Bool.False },
+		{ key: "k", name: "k", code: "KeyK", needs_shift: Bool.False, named: Bool.False },
+		{ key: "l", name: "l", code: "KeyL", needs_shift: Bool.False, named: Bool.False },
+		{ key: "m", name: "m", code: "KeyM", needs_shift: Bool.False, named: Bool.False },
+		{ key: "n", name: "n", code: "KeyN", needs_shift: Bool.False, named: Bool.False },
+		{ key: "o", name: "o", code: "KeyO", needs_shift: Bool.False, named: Bool.False },
+		{ key: "p", name: "p", code: "KeyP", needs_shift: Bool.False, named: Bool.False },
+		{ key: "q", name: "q", code: "KeyQ", needs_shift: Bool.False, named: Bool.False },
+		{ key: "r", name: "r", code: "KeyR", needs_shift: Bool.False, named: Bool.False },
+		{ key: "s", name: "s", code: "KeyS", needs_shift: Bool.False, named: Bool.False },
+		{ key: "t", name: "t", code: "KeyT", needs_shift: Bool.False, named: Bool.False },
+		{ key: "u", name: "u", code: "KeyU", needs_shift: Bool.False, named: Bool.False },
+		{ key: "v", name: "v", code: "KeyV", needs_shift: Bool.False, named: Bool.False },
+		{ key: "w", name: "w", code: "KeyW", needs_shift: Bool.False, named: Bool.False },
+		{ key: "x", name: "x", code: "KeyX", needs_shift: Bool.False, named: Bool.False },
+		{ key: "y", name: "y", code: "KeyY", needs_shift: Bool.False, named: Bool.False },
+		{ key: "z", name: "z", code: "KeyZ", needs_shift: Bool.False, named: Bool.False },
+		{ key: "{", name: "{", code: "BracketLeft", needs_shift: Bool.True, named: Bool.False },
+		{ key: "|", name: "|", code: "Backslash", needs_shift: Bool.True, named: Bool.False },
+		{ key: "}", name: "}", code: "BracketRight", needs_shift: Bool.True, named: Bool.False },
+		{ key: "~", name: "~", code: "Backquote", needs_shift: Bool.True, named: Bool.False },
+	]
+
+	## Parse explicit modifiers, rejecting an implicit or contradictory US Shift.
+	key_press : Sx, List(Sx) -> Try(Op, Problem)
+	key_press = |form, args| {
+		(target, chord) = match args {
+			[x] => (Focused, Scm.string(x, "the chord")?)
+			[loc, x] => (At(Scm.locator(loc)?), Scm.string(x, "the chord")?)
+			_ => return Err(Scm.bad(form, "press takes a chord, optionally preceded by a locator"))
+		}
+		var $rest = chord
+		var $mods = []
+		while True {
+			match ["Control", "Alt", "Shift", "Meta"].find_first(|m| $rest.starts_with("${m}+")) {
+				Err(_) => break
+				Ok(modifier) => {
+					if $mods.contains(modifier) {
+						return Err(Scm.bad(form, "press repeats ${modifier}"))
+					}
+					$mods = $mods.append(modifier)
+					$rest = Str.from_utf8($rest.to_utf8().drop_first(modifier.count_utf8_bytes() + 1)) ?? crash "Scm.key_press: ASCII prefix"
+				}
+			}
+		}
+		entry = Scm.key_table.find_first(|k| k.name == $rest) ? |_| Scm.bad(form, "press has unknown key ${$rest}")
+		shift = $mods.contains("Shift")
+		if !entry.named and shift != entry.needs_shift {
+			wanted = if entry.needs_shift {
+				"Shift+${entry.name}"
+			} else {
+				partner = Scm.key_table.find_first(|k| k.code == entry.code and k.needs_shift) ?? crash "Scm.key_press: shifted US partner"
+				"Shift+${partner.name}"
+			}
+			return Err(Scm.bad(form, "press ${chord}: write ${wanted}"))
+		}
+		Ok(Press({ target, key: { key: entry.key, code: entry.code, ctrl: $mods.contains("Control"), alt: $mods.contains("Alt"), shift, meta: $mods.contains("Meta") } }))
+	}
+
+	## Defaults that edit values are deliberately outside the layout-free oracle.
+	## Runners consume this data rather than maintaining two refusal lists.
+	unmodelled_key_defaults : List({ control : Str, keys : List(Str) })
+	unmodelled_key_defaults = [
+		{ control: "text", keys: ["printable", "Backspace", "Delete", "primary:A", "primary:C", "primary:V", "primary:X", "primary:Y", "primary:Z"] },
+		{ control: "textarea", keys: ["Enter"] },
+		{ control: "choice", keys: ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"] },
+	]
+
+	## Emit the resolved event data, so replay never reparses a chord string.
+	key_json : Key -> JsonOut.Value
+	key_json = |k| Object([
+		JsonOut.field("key", Text(k.key)),
+		JsonOut.field("code", Text(k.code)),
+		JsonOut.field("ctrl", Bool(k.ctrl)),
+		JsonOut.field("alt", Bool(k.alt)),
+		JsonOut.field("shift", Bool(k.shift)),
+		JsonOut.field("meta", Bool(k.meta)),
+	])
+
 	Visibility : [Visible, Hidden]
 
 	Online : [Online, Offline]
@@ -257,6 +442,7 @@ Scm := [].{
 		PointerMove(PointerPlace),
 		PointerUp(PointerPlace),
 		PointerCancel(U32),
+		Press(KeyPress),
 		Focus(Loc),
 		Blur(Loc),
 		Change(Loc, Str),
@@ -907,6 +1093,7 @@ Scm := [].{
 	## accepts exactly these; anything else is an unknown step.
 	step_forms : List({ name : Str, parse : (Sx, List(Sx) -> Try(Op, Problem)) })
 	step_forms = [
+		{ name: "press", parse: |form, args| Scm.key_press(form, args) },
 		{ name: "pointer-down", parse: |form, args| Scm.pointer_place({ form, args, mode: Press }).map_ok(|press| PointerDown(press)) },
 		{ name: "pointer-move", parse: |form, args| Scm.pointer_place({ form, args, mode: Place }).map_ok(|p| PointerMove({ target: p.target, at: p.at, id: p.id })) },
 		{ name: "pointer-up", parse: |form, args| Scm.pointer_place({ form, args, mode: Place }).map_ok(|p| PointerUp({ target: p.target, at: p.at, id: p.id })) },
@@ -1248,6 +1435,7 @@ Scm := [].{
 			PointerMove(_) => "pointer-move"
 			PointerUp(_) => "pointer-up"
 			PointerCancel(_) => "pointer-cancel"
+			Press(_) => "press"
 			Focus(_) => "focus"
 			Blur(_) => "blur"
 			Change(_, _) => "change"
@@ -1328,7 +1516,22 @@ Scm := [].{
 	## `op` (its spec spelling), `line`, `column`, and its arguments under
 	## fixed names (`loc`, `text`, `value`, `count`, ...).
 	to_json : Str, Spec -> JsonOut.Value
-	to_json = |id, spec|
+	to_json = |id, spec| {
+		fields = match Scm.spec_fields(id, spec) {
+			Object(items) => items
+			_ => crash "Scm.to_json: spec fields are an object"
+		}
+		Object(
+			fields.concat([
+				JsonOut.field("key_table", Array(Scm.key_table.map(|k| Object([JsonOut.field("key", Text(k.key)), JsonOut.field("name", Text(k.name)), JsonOut.field("code", Text(k.code)), JsonOut.field("needs_shift", Bool(k.needs_shift)), JsonOut.field("named", Bool(k.named))])))),
+				JsonOut.field("unmodelled_key_defaults", Array(Scm.unmodelled_key_defaults.map(|r| Object([JsonOut.field("control", Text(r.control)), JsonOut.field("keys", Array(r.keys.map(|k| Text(k))))])))),
+			]),
+		)
+	}
+
+	## The per-spec fields, separate from shared keyboard vocabulary.
+	spec_fields : Str, Spec -> JsonOut.Value
+	spec_fields = |id, spec|
 		Object([
 			JsonOut.field("id", Text(id)),
 			JsonOut.field("name", Text(spec.name)),
@@ -1439,6 +1642,12 @@ Scm := [].{
 			])
 			PointerMove(p) | PointerUp(p) => Scm.pointer_place_json(p)
 			PointerCancel(id) => [JsonOut.field("id", Nat(id.to_u64()))]
+			Press(p) => [JsonOut.field("key", Scm.key_json(p.key))].concat(
+				match p.target {
+					Focused => []
+					At(l) => [loc(l)]
+				},
+			)
 			Focus(l) => [loc(l)]
 			Blur(l) => [loc(l)]
 			Change(l, t) => [loc(l), text(t)]
@@ -1584,7 +1793,7 @@ expect {
 	)?
 	actual =
 		\\${Str.inspect(spec.steps.map(|s| s.op))}
-		\\${JsonOut.render(Scm.to_json("w", spec))}
+		\\${JsonOut.render(Scm.spec_fields("w", spec))}
 	expected =
 		\\[LoseWork({ fault: AppCrash, occurrence: 1 }), TimeOutWork(2), ExpectPendingWork({ count: 3, task: "example.org/search/filter" })]
 		\\{"id":"w","name":"work","setup":[],"environment":{"url":"/","storage":[],"storage_available":true,"online":true,"visible":true},"steps":[{"op":"lose-work","line":3,"column":5,"count":1,"fault":"app_crash"},{"op":"time-out-work","line":4,"column":5,"count":2},{"op":"expect-pending-work","line":5,"column":5,"task":"example.org/search/filter","count":3}]}
@@ -1720,7 +1929,7 @@ expect {
 ## The emitted JSON names the op, its position and its arguments.
 expect {
 	spec = Scm.parse("(test \"j\" (setup (local-storage \"k\" \"v\")) (steps (expect-checked (role checkbox :name \"A\") true)))")?
-	actual = JsonOut.render(Scm.to_json("j-file", spec))
+	actual = JsonOut.render(Scm.spec_fields("j-file", spec))
 	actual == "{\"id\":\"j-file\",\"name\":\"j\",\"setup\":[{\"op\":\"local-storage\",\"line\":1,\"column\":18,\"key\":\"k\",\"text\":\"v\"}],\"environment\":{\"url\":\"/\",\"storage\":[[\"k\",\"v\"]],\"storage_available\":true,\"online\":true,\"visible\":true},\"steps\":[{\"op\":\"expect-checked\",\"line\":1,\"column\":50,\"loc\":{\"kind\":\"role\",\"role\":\"checkbox\",\"name\":\"A\"},\"value\":true}]}"
 }
 
@@ -1730,7 +1939,7 @@ expect {
 	spec = Scm.parse("(test \"m\" (steps (mark-metrics) (expect-metric-delta set_text 2)))")?
 	actual =
 		\\${problem_of("(test \"t\" (steps (expect-metric-delta-at-most rows_painted 0)))")}
-		\\${JsonOut.render(Scm.to_json("m", spec))}
+		\\${JsonOut.render(Scm.spec_fields("m", spec))}
 	expected =
 		\\x.scm:1:47: unknown metric rows_painted; the metrics are rows_created, rows_removed, rows_reused, rows_updated, rows_moved, create_element, set_text, set_value, set_checked, bind_event, set_metadata, patches_emitted, derived_calls_into_roc, scopes_created, scopes_disposed, dirty_source_roots, each_key_hashes, each_key_compares, effects_issued, effects_delivered, effects_stale, effects_refused, effects_cancelled, effects_reparented, effects_skipped
 		\\{"id":"m","name":"m","setup":[],"environment":{"url":"/","storage":[],"storage_available":true,"online":true,"visible":true},"steps":[{"op":"mark-metrics","line":1,"column":18},{"op":"expect-metric-delta","line":1,"column":33,"metric":"set_text","counters":[2,12],"delta":2}]}
@@ -1851,4 +2060,29 @@ expect {
 expect {
 	bad = ["(pointer-down (test-id \"a\") :at 101 0)", "(pointer-down (test-id \"a\") :id -1)", "(pointer-down (test-id \"a\") :id 4294967296)", "(pointer-down (test-id \"a\") :id 2 :id 3)", "(pointer-down (test-id \"a\") :modifiers (shift shift))", "(pointer-move (test-id \"a\") :button main)", "(pointer-up (test-id \"a\") :pointer touch)", "(pointer-cancel :at 50 50)", "(pointer-down (test-id \"a\") :at 0)"]
 	bad.map(|form| Scm.parse("(test \"bad\" (steps ${form}))").is_err()) == List.repeat(Bool.True, bad.len())
+}
+
+## Press resolves one explicit US chord once for both runners.
+expect {
+	spec = Scm.parse("(test \"keys\" (steps (press \"Control+`\") (press (label \"Grid\") \"Shift+ArrowDown\") (press \"Shift+?\")))")?
+	spec.steps.map(|step| step.op) == [Press({ target: Focused, key: { key: "`", code: "Backquote", ctrl: Bool.True, alt: Bool.False, shift: Bool.False, meta: Bool.False } }), Press({ target: At(Label("Grid")), key: { key: "ArrowDown", code: "ArrowDown", ctrl: Bool.False, alt: Bool.False, shift: Bool.True, meta: Bool.False } }), Press({ target: Focused, key: { key: "?", code: "Slash", ctrl: Bool.False, alt: Bool.False, shift: Bool.True, meta: Bool.False } })]
+}
+
+## Implicit and contradictory Shift, repeated modifiers and unknown keys are
+## parser failures, so neither runner can assign a different chord.
+expect ["?", "A", "Shift+a", "Control+Control+k", "Hyper+k", "é"].map(|chord| Scm.parse("(test \"bad\" (steps (press \"${chord}\")))").is_err()) == List.repeat(Bool.True, 6)
+
+## The shared keyboard table covers every printable ASCII character and each
+## physical Shift partner without duplicated names.
+expect {
+	printable = Scm.key_table.keep_if(|k| !k.named)
+	{
+		printable: printable.len(),
+		unique: Scm.key_table.map(|k| k.name).fold(Dict.empty(), |seen, name| seen.insert(name, {})).len() == Scm.key_table.len(),
+		shifted: printable.keep_if(|k| k.needs_shift).all(|k| Scm.key_table.any(|other| other.code == k.code and !other.needs_shift)),
+		metadata: match Scm.to_json("keyboard", Scm.parse("(test \"k\" (steps (press \"F2\")))")?) {
+			Object(fields) => fields.any(|f| f.key == "key_table") and fields.any(|f| f.key == "unmodelled_key_defaults")
+			_ => Bool.False
+		},
+	} == { printable: 95, unique: Bool.True, shifted: Bool.True, metadata: Bool.True }
 }

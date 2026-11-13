@@ -64,6 +64,7 @@ main! = |_args| {
 
 	Proc.note!("== platform inputs")
 	Checks.prepare_platform!(o)?
+	$problems = $problems.concat(Checks.key_contracts!(o)?)
 	$problems = $problems.concat(check!({ program: o.zig, args: ["test", "platform/host/resources.zig"], cwd: "." }, "zig test platform/host/resources.zig")?)
 	$problems = $problems.concat(cross_links!(o)?)
 	$problems = $problems.concat(fuzz_smoke!(o)?)
