@@ -863,6 +863,17 @@ function tokenAt(dv, i, at = 0) {
 }
 
 
+// Storage uses UTF-16 strings. Refuse unrepresentable text rather than
+// letting TextEncoder silently replace a lone surrogate at the Roc boundary.
+function storageText(value) {
+  if (typeof value !== "string" || !value.isWellFormed()) throw new Error("storage returned text that is not well-formed Unicode");
+  return value;
+}
+
+function storageResult(value) {
+  return value === null ? new Uint8Array([RES_MISSING]) : concat([new Uint8Array([RES_VALUE]), utf8enc.encode(storageText(value))]);
+}
+
 function encStr(s) {
   const b = utf8enc.encode(s);
   return concat([u32(b.length), b]);
@@ -2399,20 +2410,20 @@ export class RocEngineRuntime {
     const pairs = [];
     for (const k of keys) {
       if (!storageOk) break;
-      try {
-        const v = this.storage.getItem(k);
-        if (v !== null) pairs.push([k, v]);
-      } catch (_) {
-        storageOk = false;
-      }
+      let value;
+      try { value = this.storage.getItem(k); }
+      catch { storageOk = false; continue; }
+      if (value !== null) pairs.push([k, storageText(value)]);
     }
     if (!storageOk) pairs.length = 0;
     let sessionOk = !!this.sessionStorage && typeof this.sessionStorage.getItem === "function";
     const session = [];
     for (const key of this.sessionKeys) {
       if (!sessionOk) break;
-      try { const value = this.sessionStorage.getItem(key); if (value !== null) session.push([key, value]); }
-      catch { sessionOk = false; }
+      let value;
+      try { value = this.sessionStorage.getItem(key); }
+      catch { sessionOk = false; continue; }
+      if (value !== null) session.push([key, storageText(value)]);
     }
     if (!sessionOk) session.length = 0;
     const loc = this.win ? this.win.location : null;
@@ -4359,10 +4370,11 @@ export class RocEngineRuntime {
         if (this.storageListener === null) {
           this.storageListener = event => this.guard(() => {
             if (!this.storage || event.storageArea !== this.storage) return;
-            const payload = event.key === null || event.newValue === null ? new Uint8Array([RES_MISSING]) : concat([new Uint8Array([RES_VALUE]), utf8enc.encode(event.newValue)]);
             // Reporting can drain an already-full ingress queue. Fix the
             // recipients before that delivery can dispose or mount a site.
             const recipients = event.key === null ? [...this.storageChanges.values()].flatMap(ids => [...ids]) : [...(this.storageChanges.get(event.key) ?? [])];
+            if (recipients.length === 0) return;
+            const payload = storageResult(event.key === null ? null : event.newValue);
             for (const id of recipients) this.report(id, payload);
           });
           w.addEventListener("storage", this.storageListener);
@@ -4433,7 +4445,7 @@ export class RocEngineRuntime {
       case "sessionget":
       case "get": {
         // One turn later, never inside the current call.
-        const h = setTimeout(() => {
+        const h = setTimeout(() => this.guard(() => {
           this.live.delete(fx.id);
           let v = null;
           try {
@@ -4442,8 +4454,8 @@ export class RocEngineRuntime {
           } catch (_) {
             v = null;
           }
-          this.result(fx.id, v === null ? new Uint8Array([RES_MISSING]) : concat([new Uint8Array([RES_VALUE]), utf8enc.encode(v)]));
-        }, 0);
+          this.result(fx.id, storageResult(v));
+        }), 0);
         this.live.set(fx.id, { kind: "get", cancel: () => clearTimeout(h) });
         return;
       }

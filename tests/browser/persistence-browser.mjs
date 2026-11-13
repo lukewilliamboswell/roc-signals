@@ -46,9 +46,9 @@ async function fixture() {
     const u32 = value => { const out = new Uint8Array(4); new DataView(out.buffer).setUint32(0, value, true); return out; };
     const str = text => { const bytes = encoder.encode(text); return join(u32(bytes.length), bytes); };
     const section = (tag, bytes) => join(new Uint8Array([tag]), u32(bytes.length), bytes);
-    window.__fixture = (options = {}, sessionKeys = []) => {
+    window.__fixture = (options = {}, sessionKeys = [], localKeys = []) => {
       const memory = new WebAssembly.Memory({ initial: 4 });
-      const declarations = join(section(2, u32(0)), section(5, u32(0)), section(6, u32(0)), section(10, new Uint8Array([0, 0])), section(11, join(u32(sessionKeys.length), ...sessionKeys.map(str))));
+      const declarations = join(section(2, join(u32(localKeys.length), ...localKeys.map(str))), section(5, u32(0)), section(6, u32(0)), section(10, new Uint8Array([0, 0])), section(11, join(u32(sessionKeys.length), ...sessionKeys.map(str))));
       new Uint8Array(memory.buffer).set(declarations);
       let length = declarations.length, payloadLength = 0, boot;
       const exports = { memory, protocol_version: () => PROTOCOL_VERSION, boot_keys: () => {}, cmd_ptr: () => 0, cmd_len: () => length,
@@ -107,6 +107,20 @@ try {
     await page.evaluate(() => window.__storage.rt.releaseReports());
     check("clear reports Missing to every local subscription and session writes do not", await page.evaluate(() => window.__storage.calls.slice(1).map(c => [c.handler, c.payload])), [[1, [4]], [2, [4]]]);
     check("last cancellation removes the shared storage listener", await page.evaluate(() => { const f = window.__storage; f.rt.cancel(1); const first = f.rt.storageListener !== null; f.rt.cancel(2); const last = f.rt.storageListener === null; f.end(); return [first, last]; }), [true, true]);
+    const identifiable = await page.evaluate(() => {
+      const area = localStorage;
+      const original = Object.getOwnPropertyDescriptor(area, "getItem");
+      Object.defineProperty(area, "getItem", { value: () => { throw Error("read blocked"); }, configurable: true });
+      try {
+        const f = window.__fixture({ storage: area }, [], ["declared"]);
+        f.rt.perform({ op: "storagechanges", id: 1, key: "wanted" });
+        window.dispatchEvent(new StorageEvent("storage", { storageArea: area, key: "wanted", newValue: "from event" }));
+        f.rt.releaseReports(); const result = f.calls.map(call => call.payload); f.end(); return result;
+      } finally {
+        if (original) Object.defineProperty(area, "getItem", original); else delete area.getItem;
+      }
+    });
+    check("a store whose reads throw still reports when its non-null area identity matches", identifiable, [[3, ...new TextEncoder().encode("from event")]]);
     await context.close();
   }
   {
@@ -185,7 +199,45 @@ try {
       } finally { console.warn = warn; }
     });
     check("a write failed during a failure reaction waits for its own next task", chained, [1, 2]);
+    const mixed = await page.evaluate(async () => {
+      const blocked = { getItem: () => "read", setItem: () => { throw Error("blocked"); } };
+      const f = window.__fixture({ storage: blocked });
+      const warn = console.warn; console.warn = () => {};
+      try {
+        f.raw(f.join(new Uint8Array([0]), f.fx(1, 20), f.store(1, "A", "value"), f.fx(2, 2, f.str("B")), f.store(1, "C", "value")));
+        await new Promise(resolve => setTimeout(resolve, 0));
+        const result = f.calls.map(call => call.handler === 1 ? new TextDecoder().decode(new Uint8Array(call.payload.slice(3))) : "read B");
+        f.end(); return result;
+      } finally { console.warn = warn; }
+    });
+    check("the single failure task batches A and C before an intervening storage-read callback B", mixed, ["A", "C", "read B"]);
 
+    await context.close();
+  }
+  {
+    const { context, page } = await fixture();
+    const malformed = await page.evaluate(async () => {
+      let bootRefused = false;
+      try { window.__fixture({ sessionStorage: { getItem: () => "\ud800" } }, ["draft"]); }
+      catch (error) { bootRefused = error.message.includes("well-formed Unicode"); }
+      const readFailures = [];
+      for (const op of ["get", "sessionget"]) {
+        const bad = { getItem: () => "\ud800" };
+        const f = window.__fixture({ storage: bad, sessionStorage: bad });
+        f.rt.perform({ op, id: 1, key: "draft" }); await new Promise(resolve => setTimeout(resolve, 0));
+        readFailures.push([f.rt.poisoned?.class, f.calls.length]); f.end();
+      }
+      const f = window.__fixture(); f.rt.perform({ op: "storagechanges", id: 1, key: "wanted" });
+      let reads = 0;
+      const unrelated = new Event("storage");
+      Object.defineProperties(unrelated, { storageArea: { value: localStorage }, key: { value: "unrelated" }, newValue: { get: () => { reads += 1; throw Error("unrelated value was read"); } } });
+      window.dispatchEvent(unrelated);
+      const untouched = [reads, f.rt.poisoned === null];
+      window.dispatchEvent(new StorageEvent("storage", { storageArea: localStorage, key: "wanted", newValue: "\ud800" }));
+      const reported = [f.rt.poisoned?.class, f.calls.length]; f.end();
+      return { bootRefused, readFailures, untouched, reported };
+    });
+    check("storage refuses unrepresentable Unicode without repairing values or reading unrelated keys", malformed, { bootRefused: true, readFailures: [["executor", 0], ["executor", 0]], untouched: [0, true], reported: ["executor", 0] });
     await context.close();
   }
   {
@@ -396,7 +448,7 @@ try {
   // Negative cases use the same Roc parser and must fail the action that
   // opened a forbidden dialog. Positive cases really answer Chrome's dialog.
   {
-    const fixtures = ["guarded-navigate", "guarded-link", "guarded-stay", "guarded-leave", "disposed-guard"].map(name => path.join(here, "../apps/services/contracts", `${name}.scm`));
+    const fixtures = ["guarded-navigate", "guarded-link", "guarded-stay", "guarded-leave", "disposed-guard", "storage-area-available", "storage-area-unavailable"].map(name => path.join(here, "../apps/services/contracts", `${name}.scm`));
     const emitted = spawnSync(opts.runner, ["--emit-steps", ...fixtures], { encoding: "utf8", timeout: 30000 });
     if (emitted.status !== 0) throw new Error(`could not parse guarded-navigation contracts: ${emitted.stderr}`);
     const native = spawnSync(opts.runner, fixtures, { encoding: "utf8", timeout: 30000 });
@@ -405,7 +457,7 @@ try {
       const steps = path.join(directory, "steps.jsonl"); fs.writeFileSync(steps, emitted.stdout);
       const replay = spawnSync(process.execPath, [path.join(here, "replay.mjs"), "--wasm", opts.wasm, "--runtime", opts.runtime, "--steps", steps, "--chrome", opts.chrome, "--json-lines"], { encoding: "utf8", timeout: 60000 });
       const rows = output => output.split("\n").filter(Boolean).map(line => JSON.parse(line));
-      const wanted = ["failed", "failed", "passed", "passed", "passed"];
+      const wanted = ["failed", "failed", "passed", "passed", "passed", "passed", "passed"];
       const nativeRows = rows(native.stdout), browserRows = rows(replay.stdout);
       check("guarded navigation/link failures and deliberate stay/leave/disposal agree in both runners", [native.status, nativeRows.map(row => row.status), replay.status, browserRows.map(row => row.status)], [1, wanted, 1, wanted]);
       check("a dialog outside leave-page fails exactly its navigate or click step", [nativeRows.slice(0, 2).every(row => row.failure?.message.includes("leave-page")), browserRows.slice(0, 2).map(row => [row.failure?.step, row.failure?.message.includes("leave-page")])], [true, [[1, true], [1, true]]]);
