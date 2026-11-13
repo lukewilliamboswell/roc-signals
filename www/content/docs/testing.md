@@ -293,6 +293,10 @@ their mirrored attributes. `patches_emitted` includes `PROP` and `HPROP`.
 
 ### Keyboard steps
 
+`press` raises keydown and keyup. If keydown loads a new document, the
+driver waits for its app to mount before releasing the key there; it
+checks physical evidence for both phases.
+
 `press` uses exact `Control`, `Alt`, `Shift` and `Meta` prefixes. Its one
 US-key table is declared in `Scm.roc` and emitted for the browser runner:
 printable ASCII, Enter, Escape, Tab, Space, Backspace, Delete, arrows,

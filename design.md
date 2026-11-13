@@ -3015,7 +3015,10 @@ available and contract-tested.
 ### Keyboard steps
 
 `(press LOC "Shift+ArrowDown")` focuses the locator, then raises keydown
-and keyup. `(press "Escape")` instead uses the current focus or body. Prefixes
+and keyup. If keydown navigates, the driver waits for the new document
+to load and mount before releasing the key there; both phases require
+physical browser evidence. `(press "Escape")` instead uses the current
+focus or body. Prefixes
 are `Control`, `Alt`, `Shift` and `Meta`, with exact modifiers. There is no
 platform-dependent `ControlOrMeta`. One US-key table in `Scm.roc` supplies
 key, code and modifiers to both runners through the emitted JSON. It
