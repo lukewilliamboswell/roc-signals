@@ -81,6 +81,8 @@ config = [
 	Task("release", [Use("release"), Run(["scripts/release.roc", "--"])]),
 	# Build the site into dist/: `-- --base-url http://127.0.0.1:8000/roc-signals` for serve.
 	Task("site", [Use("site"), Run(["scripts/site.roc", "--"])]),
+	# API documentation and coverage alone, without shipping app builds.
+	Task("api", [Use("release"), Run(["scripts/api.roc"])]),
 	# Serve dist/ at 127.0.0.1:8000/roc-signals/, or `-- DIR` at the root (`--port N`).
 	Task("serve", [Use("engine"), Run(["node", "www/serve.mjs", "--"])]),
 ]

@@ -24,7 +24,7 @@ the `blueprint` release that `Blueprint.roc` names (no Nix is needed) and the
 current Roc nightly as `roc` (see [Compilers](#compilers)). `blueprint shell`
 opens a shell with the tools on `PATH`.
 
-Before running `check`, `site` or `release` from source, run
+Before running `check`, `site`, `api` or `release` from source, run
 `blueprint run setup-parser`. The tooling imports `../../roc-parser/package/main.roc`, so the parser must be a
 sibling of this checkout. Setup fetches the exact public commit recorded in
 `scripts/src/ParserSource.roc` into a new sibling when none exists. If you already
@@ -127,6 +127,7 @@ These are the development environment's Blueprint tasks, not an app's
 | `blueprint run jfb` | Build the js-framework-benchmark app and check its operations in Chrome |
 | `blueprint run workers-scaling` | Measure worker jobs in Chrome on both candidate shipping builds of the Worker Lab: correctness (its drawn picture included), the time to draw a picture by pool size, speedup by pool size, responsiveness, payloads, robustness sequences and memory, as tables for a pull request |
 | `blueprint run fuzz -- [--time S] [TARGET...]` | A fuzz campaign |
+| `blueprint run api` | Build and audit the API reference alone, including methods inherited through public aliases, without rebuilding the site examples |
 | `blueprint run site -- [--base-url URL] [--tool-url URL]` | Build the website, the API docs and the example apps into `dist/`; check sample highlighting, copying, themes and contrast in Chrome |
 | `blueprint run serve -- [DIR] [--port N]` | Serve `dist/` at `127.0.0.1:8000/roc-signals/`, its published path, or `DIR` at the root |
 | `blueprint run release -- --version V` | Build the release assets into `dist-release/` |

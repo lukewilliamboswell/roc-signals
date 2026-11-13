@@ -44,6 +44,42 @@ ApiDocs := [].{
 		Ok(if (result.code == 0) [] else ["roc bump against ${published.tag_name} failed: ${output}"])
 	}
 
+	## Parse module declarations once, retaining the source comments used for
+	## both API coverage and inherited-member documentation.
+	catalogue! : Str => Try(List(ApiSurface.Module), _)
+	catalogue! = |root| {
+		var $out = []
+		for entry in Path.list!(Path.utf8("${root}/platform"))? {
+			file = Path.display(entry)
+			if file.ends_with(".roc") {
+				name = (file.split_on("/").last() ?? file).drop_suffix(".roc")
+				source = Path.read_utf8!(entry)?
+				$out = $out.append({ name, declarations: ApiSurface.declarations(name, source)? })
+			}
+		}
+		Ok($out)
+	}
+
+	## Document the members an alias publishes, using their original comments.
+	## Direct declarations stay on the compiler's module pages. This companion
+	## is generated, never a second hand-maintained list of app-facing methods.
+	inherited : List(ApiSurface.Module), List(Str) -> Try(Str, _)
+	inherited = |catalogue, public| {
+		var $sections = []
+		for name in public {
+			decls = (catalogue.find_first(|entry| entry.name == name)?).declarations
+			for decl in ApiSurface.reachable(catalogue, decls)? {
+				if !decls.any(|direct| direct.name == decl.name) {
+					if decl.doc.is_empty() {
+						return Err(MissingInheritedComment(decl.name))
+					}
+					$sections = $sections.append("### ${decl.name}\n\n${decl.doc}\n")
+				}
+			}
+		}
+		Ok(if ($sections.is_empty()) "" else "\n## Methods on aliased types\n\nThese methods are available through the public types named below.\n\n${Str.join_with($sections, "\n")}")
+	}
+
 	## Build the API docs; the site is `<build_dir>/api-docs/site`.
 	build! : SpecSuite.Options, Str => Try(Str, _)
 	build! = |o, version| {
@@ -53,12 +89,28 @@ ApiDocs := [].{
 		if Path.exists!(Path.utf8(out))? {
 			Path.delete_all!(Path.utf8(out))?
 		}
+		# TODO(roc-lang/roc#13018): the compiler omits alias members.
+		# https://github.com/roc-lang/roc/issues/13018
+		# Render their source comments through roc-docs' Markdown renderer in
+		# the reference's front page and PDF until the compiler includes them.
+		root = Path.read_utf8!(Path.utf8("${o.root}/platform/main.roc"))?
+		public = ApiDocs.modules(root)?
+		catalogue = ApiDocs.catalogue!(o.root)?
+		intro = Path.read_utf8!(Path.utf8("${o.root}/www/api/index.md"))?
+		input = "${o.build_dir}/api-docs-source"
+		SpecSuite.fresh_dir!(input)?
+		Path.write_utf8!(Path.utf8("${input}/index.md"), "${intro}${ApiDocs.inherited(catalogue, public)?}")?
 		Proc.run!({
 			program: "roc-docs",
-			args: ["build", "--workspace", ".", "--docs-directory", "www/api", "--entrypoint", "index.md", "--output-directory", relative, "--api-entrypoint", "platform/main.roc", "--roc-command", o.compiler, "--pdf-filename", "roc-signals-api.pdf", "--docs-version", version, "--title", "Roc Signals API", "--site-url", "https://lukewilliamboswell.github.io/roc-signals/api/"],
+			args: ["build", "--workspace", ".", "--docs-directory", input.drop_prefix("${o.root}/"), "--entrypoint", "index.md", "--output-directory", relative, "--api-entrypoint", "platform/main.roc", "--roc-command", o.compiler, "--pdf-filename", "roc-signals-api.pdf", "--docs-version", version, "--title", "Roc Signals API", "--site-url", "https://lukewilliamboswell.github.io/roc-signals/api/"],
 			cwd: o.root,
 		})?
-		Ok("${out}/site")
+		problems = ApiDocs.rendered!(o, "${out}/site")?
+		if problems.is_empty() {
+			Ok("${out}/site")
+		} else {
+			Err(IncompleteGeneratedApi(problems))
+		}
 	}
 
 	## Inspect the actual generated pages against declarations reachable from
@@ -68,15 +120,8 @@ ApiDocs := [].{
 	rendered! = |o, site| {
 		root = Path.read_utf8!(Path.utf8("${o.root}/platform/main.roc"))?
 		public = ApiDocs.modules(root)?
-		var $modules = []
-		for entry in Path.list!(Path.utf8("${o.root}/platform"))? {
-			file = Path.display(entry)
-			if file.ends_with(".roc") {
-				name = (file.split_on("/").last() ?? file).drop_suffix(".roc")
-				source = Path.read_utf8!(entry)?
-				$modules = $modules.append({ name, declarations: ApiSurface.declarations(name, source)? })
-			}
-		}
+		all_modules = ApiDocs.catalogue!(o.root)?
+		manual = Path.read_utf8!(Path.utf8("${site}/index.html"))?
 		var $problems = []
 		for entry in Path.list!(Path.utf8("${site}/api"))? {
 			if Path.is_dir!(entry)? {
@@ -88,9 +133,10 @@ ApiDocs := [].{
 		}
 		for name in public {
 			html = Path.read_utf8!(Path.utf8("${site}/api/${name}/index.html"))?
-			decls = ($modules.find_first(|entry| entry.name == name)?).declarations
-			for decl in ApiSurface.reachable($modules, decls)? {
-				if !ApiDocs.has_rendered_comment(html, decl.name) {
+			decls = (all_modules.find_first(|entry| entry.name == name)?).declarations
+			for decl in ApiSurface.reachable(all_modules, decls)? {
+				is_inherited = !decls.any(|direct| direct.name == decl.name)
+				if !ApiDocs.has_rendered_comment(html, decl.name) and !(is_inherited and ApiDocs.has_inherited_comment(manual, decl.name)) {
 					$problems = $problems.append("API member missing or undocumented in generated HTML: ${decl.name}")
 				}
 			}
@@ -112,55 +158,15 @@ ApiDocs := [].{
 		_ => False
 	}
 
-	## The public items of the module `name` that have no `##` doc comment:
-	## every declaration inside the block of the module's own type, at any
-	## depth, whose preceding line is not a doc comment. The block opens
-	## where the type's line ends in `.{` (`Name := [].{`), or, for a type
-	## written as a record (`Name(a) :: {`), at the `}.{` that closes its
-	## fields. Another type at the file's top level is private and is not
-	## scanned. Record fields (which end in a comma) and continuation lines
-	## are not declarations.
-	undocumented : Str, Str -> List(Str)
-	undocumented = |name, source| {
-		var $out = []
-		var $at = Outside
-		var $previous = ""
-		for line in source.split_on("\n") {
-			ending = line.trim_end()
-			match $at {
-				Outside => {
-					own = line.starts_with("${name} ") or line.starts_with("${name}(")
-					$at = if (own and ending.ends_with(".{")) Inside else if (own and ending.ends_with("{")) Fields else Outside
-				}
-				Fields => {
-					$at = if (ending == "}.{") Inside else if (ending == "}") Outside else Fields
-				}
-				Inside => {
-					if line == "}" {
-						$at = Outside
-					} else if ApiDocs.is_declaration(line) and !$previous.trim().starts_with("##") {
-						$out = $out.append(line.trim())
-					}
-				}
-			}
-			$previous = line
+	## The generated companion's own heading must have prose before the next
+	## heading. A table-of-contents link or a neighbouring comment is not proof.
+	has_inherited_comment : Str, Str -> Bool
+	has_inherited_comment = |html, name| match html.split_on(">${name}<a class=\"anchor\"") {
+		[_, after] => match after.split_on("</h3>") {
+			[_, body, ..] => !(body.split_on("<h").first() ?? "").trim().is_empty()
+			_ => False
 		}
-		$out
-	}
-
-	## A line that declares a value's type or a type: `name : ...` or
-	## `Name(args) :` / `:=` at the start of an indented line.
-	is_declaration : Str -> Bool
-	is_declaration = |line| {
-		trimmed = line.trim_start()
-		if !line.starts_with("\t") or trimmed.ends_with(",") or trimmed.starts_with("#") {
-			Bool.False
-		} else {
-			match trimmed.split_on(" :") {
-				[head, _, ..] => !head.is_empty() and !head.contains(" ") and !head.contains(".") and !head.contains("{") and !head.contains("[")
-				_ => Bool.False
-			}
-		}
+		_ => False
 	}
 
 	## Problems: one per undocumented public symbol.
@@ -189,64 +195,6 @@ ApiDocs := [].{
 	}
 }
 
-## Documented items pass; an undocumented one, at any depth, is reported.
-expect {
-	source =
-		\\import Engine
-		\\
-		\\Html := [].{
-		\\	## A box.
-		\\	div : Str -> Elem(ctx)
-		\\	div = |c| x
-		\\
-		\\	span : Str -> Elem(ctx)
-		\\	span = |c| x
-		\\
-		\\	## A record type.
-		\\	Rec : {
-		\\		field : Str,
-		\\	}
-		\\
-		\\	Signal(a) := { read : a }.{
-		\\		map : Signal(a) -> Signal(a)
-		\\		map = |v| v
-		\\	}
-		\\}
-		\\
-		\\private : Str
-		\\private = ""
-	ApiDocs.undocumented("Html", source) == ["span : Str -> Elem(ctx)", "Signal(a) := { read : a }.{", "map : Signal(a) -> Signal(a)"]
-}
-
-## A type written as a record with its methods after it is scanned from the
-## `}.{` that opens them: its fields are not symbols, its methods are. A
-## private type below it is not the module's and is not scanned.
-expect {
-	source =
-		\\## A table.
-		\\Table(k, v) :: {
-		\\	rows : Dict(k, v),
-		\\	version : U64,
-		\\}.{
-		\\
-		\\	## The number of rows.
-		\\	len : Table(k, v) -> U64
-		\\	len = |table| table.rows.len()
-		\\
-		\\	get : Table(k, v), k -> Try(v, [Missing])
-		\\		where [k.is_eq : k, k -> Bool]
-		\\	get = |table, key| table.rows.get(key)
-		\\}
-		\\
-		\\rows_of : List(k) -> Dict(k, v)
-		\\rows_of = |entries| x
-		\\
-		\\Sample := { n : U64 }.{
-		\\	is_eq : _
-		\\}
-	ApiDocs.undocumented("Table", source) == ["get : Table(k, v), k -> Try(v, [Missing])"]
-}
-
 ## The root list can span lines and carry comments; names are not duplicated
 ## by a manually maintained tooling catalogue.
 expect {
@@ -265,4 +213,11 @@ expect {
 expect {
 	good = "<article id=\"Engine.Table.put\"><div class=\"entry-doc\"><p>Replace a row.</p></div></article>"
 	{ present: ApiDocs.has_rendered_comment(good, "Engine.Table.put"), missing: ApiDocs.has_rendered_comment(good, "Engine.Table.remove"), empty: ApiDocs.has_rendered_comment("<article id=\"Engine.Table.put\"><div class=\"entry-doc\"> \n </div></article>", "Engine.Table.put"), borrowed: ApiDocs.has_rendered_comment("<article id=\"Engine.Table.put\"></article>".concat(good.replace_each("Engine.Table.put", "Engine.Table.remove")), "Engine.Table.put") } == { present: True, missing: False, empty: False, borrowed: False }
+}
+
+## A companion entry needs its own heading and body; a table-of-contents
+## link or the next member's comment cannot conceal missing documentation.
+expect {
+	good = "<h3 id=\"x\">Engine.Program.with_ports<a class=\"anchor\" href=\"#x\">§</a></h3><p>Declare ports.</p>"
+	{ present: ApiDocs.has_inherited_comment(good, "Engine.Program.with_ports"), followed: ApiDocs.has_inherited_comment("${good}${good.replace_each("with_ports", "with_workers")}", "Engine.Program.with_ports"), missing: ApiDocs.has_inherited_comment(good, "Engine.Program.with_workers"), neighbour: ApiDocs.has_inherited_comment("<h3 id=\"x\">Engine.Program.with_ports<a class=\"anchor\" href=\"#x\">§</a></h3>\n".concat(good.replace_each("with_ports", "with_workers")), "Engine.Program.with_ports") } == { present: True, followed: True, missing: False, neighbour: False }
 }
