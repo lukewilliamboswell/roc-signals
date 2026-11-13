@@ -27,6 +27,8 @@ commands = |{ count, shape }| {
 		template = if shape == ContentRows {
 			# Template content contains an element reference plus text. The fragment
 			# is intrinsic DOM data and has no emitted command or engine address.
+			# Aliases occupy count+1..2*count, disjoint from row ids and dense like
+			# the engine allocator, so address capacity scales with this workload.
 			[1.U8, 0].concat(text("")).concat(text("template")).concat([1, 0, 1, 1, 0]).concat(text("")).concat(text("span")).concat([0, 0, 1, 2]).concat(text("row text")).concat([1, 5, 1, 1, 0])
 		} else {
 			[1.U8, 0].concat(text("")).concat(text("li")).concat([0, 0, 1, 2]).concat(text("row text")).append(0)
@@ -38,7 +40,7 @@ commands = |{ count, shape }| {
 		$bytes = match shape {
 			Elements => $bytes.append(8).concat(u32(id)).concat(u32(0)).concat(u32(0)).append(0).concat(text("")).concat(text("li")).append(0)
 			TemplateRows => $bytes.append(1).concat(u32(id)).concat(u32(0)).concat(u32(0)).concat(u32(0))
-			ContentRows => $bytes.append(1).concat(u32(id)).concat(u32(0)).concat(u32(0)).concat(u32(0)).concat(u32(id + 10000))
+			ContentRows => $bytes.append(1).concat(u32(id)).concat(u32(0)).concat(u32(0)).concat(u32(0)).concat(u32(id + count.to_u32_wrap()))
 		}
 		if shape == Elements {
 			# URI identity joins builtin and explicit-URI encodings. A replacement
@@ -54,7 +56,7 @@ commands = |{ count, shape }| {
 		}
 		for row in 0.U64..<count {
 			id = (row + 1).to_u32_wrap()
-			$bytes = $bytes.append(1).concat(u32(id)).concat(u32(0)).concat(u32(0)).concat(u32(0)).concat(u32(id + 10000))
+			$bytes = $bytes.append(1).concat(u32(id)).concat(u32(0)).concat(u32(0)).concat(u32(0)).concat(u32(id + count.to_u32_wrap()))
 		}
 	}
 	$bytes
@@ -88,7 +90,7 @@ check = |{ count, shape }, model| {
 				child = Dom.node(model, index + 2)
 				leaf = Dom.node(model, index + 3)
 				old_child = Dom.node(model, 1 + row * stride + 2)
-				if fragment != index + 1 or !node.kids.is_empty() or node.container != 1 or content.kind != 4 or content.parent != 0 or content.kids != [index + 2] or child.parent != fragment + 1 or child.kids != [index + 3] or leaf.text != "row text" or Dom.text_of(model, index) != "" or !content.ids.is_empty() or !old_child.ids.is_empty() or Dom.lookup(model, (row + 10001).to_u32_wrap()) != index + 2 {
+				if fragment != index + 1 or !node.kids.is_empty() or node.container != 1 or content.kind != 4 or content.parent != 0 or content.kids != [index + 2] or child.parent != fragment + 1 or child.kids != [index + 3] or leaf.text != "row text" or Dom.text_of(model, index) != "" or !content.ids.is_empty() or !old_child.ids.is_empty() or Dom.lookup(model, (row + count + 1).to_u32_wrap()) != index + 2 {
 					crash "DOM model: incorrect inert content ownership, text observation or recycled alias"
 				}
 			}
@@ -141,7 +143,7 @@ test! = |input| {
 
 target = Fuzz.target_with!({
 	name: "dom",
-	examples: [Elements, TemplateRows, ContentRows].map(|shape| [0.U64, 1, 100, 200, 400, 1000].map(|count| Fuzz.example({ name: "${Str.inspect(shape)}-${count.to_str()}", revision: "2", make: || { count, shape } }))).join(),
+	examples: [Elements, TemplateRows, ContentRows].map(|shape| [0.U64, 1, 100, 200, 400, 1000].map(|count| Fuzz.example({ name: "${Str.inspect(shape)}-${count.to_str()}", revision: "3", make: || { count, shape } }))).join(),
 	generator: {
 		count: Fuzz.u64_in(0, 1000),
 		shape: Fuzz.map(
