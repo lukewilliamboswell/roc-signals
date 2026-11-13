@@ -77,12 +77,17 @@ Checks := [].{
 	## be lost to the wrong fault class (the native runner's child process and
 	## the browser's worker must both report the class the task's crash
 	## has), and a focus feedback loop that both runners must stop with
-	## resource_limit rather than hanging the replay.
+	## resource_limit rather than hanging the replay. Report-frame mutations
+	## also hold both runners to rejecting an invalid hold lifecycle.
 	broken_specs : List(Broken)
 	broken_specs = [
 		{ example: "kanban-board", spec: "examples/kanban-board/specs/initial-render.scm", good: "(expect-text (test-id \"board-total\") \"5\")", bad: "(expect-text (test-id \"board-total\") \"6\")", rejection: "expected \\\"6\\\"" },
 		{ example: "workers", spec: "tests/apps/workers/specs/crash.scm", good: "(expect-text (test-id \"log\") \"crash:lost AppCrash\")", bad: "(expect-text (test-id \"log\") \"crash:lost Contract\")", rejection: "expected \\\"crash:lost Contract\\\"" },
 		{ example: "controls", spec: "tests/apps/controls/specs/focus.scm", good: "(click (role button :name \"Focus upper\"))", bad: "(click (role button :name \"Start focus loop\"))", rejection: "resource_limit" },
+		{ example: "services", spec: "tests/apps/services/specs/reports.scm", good: "(hold-reports)", bad: "(hold-reports) (hold-reports)", rejection: "reports are already held" },
+		{ example: "services", spec: "tests/apps/services/specs/reports.scm", good: "(hold-reports)", bad: "(release-reports)", rejection: "reports are not held" },
+		{ example: "services", spec: "tests/apps/services/specs/reports.scm", good: "(expect-reports-replaced 0)", bad: "(hold-reports)", rejection: "spec ended while reports were held" },
+		{ example: "services", spec: "tests/apps/services/specs/reports.scm", good: "(release-reports)", bad: "(navigate \"/leave-held-document\")", rejection: "cross-document navigation" },
 	]
 
 	## Each runner must reject each deliberately broken spec

@@ -187,6 +187,13 @@ Scm := [].{
 		Navigate(Str),
 		SetVisibility(Visibility),
 		SetOnline(Online),
+
+		## Keep report sources waiting until an explicit frame boundary.
+		HoldReports,
+		ReleaseReports,
+
+		## Reports replaced before delivery in the current document.
+		ExpectReportsReplaced(U64),
 		HistoryBack,
 		HistoryForward,
 		ExpectLocation(Str),
@@ -778,6 +785,9 @@ Scm := [].{
 	## accepts exactly these; anything else is an unknown step.
 	step_forms : List({ name : Str, parse : (Sx, List(Sx) -> Try(Op, Problem)) })
 	step_forms = [
+		{ name: "hold-reports", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| HoldReports) },
+		{ name: "release-reports", parse: |form, args| Scm.arity(form, args, 0).map_ok(|_| ReleaseReports) },
+		{ name: "expect-reports-replaced", parse: |form, args| Ok(ExpectReportsReplaced(Scm.unsigned(Scm.arg(Scm.arity(form, args, 1)?, 0), "the replacement count")?)) },
 		{ name: "click", parse: |form, args| Ok(Click(Scm.loc1(form, args)?)) },
 		{ name: "real-click", parse: |form, args| Ok(RealClick(Scm.loc1(form, args)?)) },
 		{ name: "focus", parse: |form, args| Ok(Focus(Scm.loc1(form, args)?)) },
@@ -1145,6 +1155,9 @@ Scm := [].{
 			Navigate(_) => "navigate"
 			SetVisibility(_) => "set-visibility"
 			SetOnline(_) => "set-online"
+			HoldReports => "hold-reports"
+			ReleaseReports => "release-reports"
+			ExpectReportsReplaced(_) => "expect-reports-replaced"
 			HistoryBack => "history-back"
 			HistoryForward => "history-forward"
 			ExpectLocation(_) => "expect-current-location"
@@ -1307,6 +1320,8 @@ Scm := [].{
 			Navigate(url) => [text(url)]
 			SetVisibility(v) => [text(Scm.visibility_name(v))]
 			SetOnline(o) => [text(Scm.online_name(o))]
+			HoldReports | ReleaseReports => []
+			ExpectReportsReplaced(n) => [JsonOut.field("count", Nat(n))]
 			HistoryBack => []
 			HistoryForward => []
 			ExpectLocation(url) => [text(url)]
@@ -1641,4 +1656,27 @@ expect {
 		before: Err({ pos: { line: 1, column: 44 }, message }),
 		after: Err({ pos: { line: 1, column: 48 }, message }),
 	}
+}
+
+## Report controls and their count emit the same names and arguments both
+## runners consume; malformed arity and a negative count remain hard errors.
+expect {
+	spec = Scm.parse("(test \"reports\" (steps (hold-reports) (expect-reports-replaced 2) (release-reports)))")?
+	invalid = ["(hold-reports 1)", "(release-reports 1)", "(expect-reports-replaced -1)", "(expect-reports-replaced)"]
+	{ ops: spec.steps.map(|step| step.op), rejected: invalid.map(|form| Scm.parse("(test \"bad\" (steps ${form}))").is_err()) } == {
+		ops: [HoldReports, ExpectReportsReplaced(2), ReleaseReports],
+		rejected: [Bool.True, Bool.True, Bool.True, Bool.True],
+	}
+}
+
+## The report-step wire data keeps controls argument-free and carries the
+## replacement assertion's count without inventing a work-record metric.
+expect {
+	pos = { line: 4, column: 5 }
+	actual = [HoldReports, ReleaseReports, ExpectReportsReplaced(2)].map(|op| JsonOut.render(Scm.step_json({ op, pos })))
+	actual == [
+		"{\"op\":\"hold-reports\",\"line\":4,\"column\":5}",
+		"{\"op\":\"release-reports\",\"line\":4,\"column\":5}",
+		"{\"op\":\"expect-reports-replaced\",\"line\":4,\"column\":5,\"count\":2}",
+	]
 }

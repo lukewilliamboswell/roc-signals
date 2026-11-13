@@ -224,6 +224,7 @@ async function open(prelude = "") {
     const boot = [text("online"), text("visible"), onlineReads, visibleReads];
     online = true; visible = true;
     window.dispatchEvent(new Event("online")); document.dispatchEvent(new Event("visibilitychange"));
+    await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
     const live = [text("online"), text("visible"), onlineReads, visibleReads];
     fail = true; window.dispatchEvent(new Event("offline"));
     const fault = [rt.poisoned.class, rt.poisoned.message];
@@ -238,9 +239,48 @@ async function open(prelude = "") {
   });
   check("invalid environment readers refuse the mount", out.rejected, Array(7).fill(true));
   check("environment readers supply boot facts", out.boot, ["offline", "hidden", 1, 1]);
-  check("environment readers supply later subscription results", out.live, ["online", "visible", 2, 2]);
+  check("environment readers supply later subscription results and the report scheduler's visibility", out.live, ["online", "visible", 2, 4]);
   check("a reader that throws later is an executor fault", out.fault, ["executor", "live reader failed"]);
   check("a reader that answers the wrong type later is an executor fault", out.wrongType, ["executor", "options.environment.visible must answer a boolean"]);
+  await ctx.close();
+}
+
+// Connectivity events from different browser tasks meet before one frame,
+// and the delivered value stays the one captured at the last event.
+{
+  const { page, ctx } = await open(`
+    window.__reportFrames = new Map(); window.__reportFrameId = 0;
+    window.requestAnimationFrame = (fn) => { const id = ++window.__reportFrameId; window.__reportFrames.set(id, fn); return id; };
+    window.cancelAnimationFrame = (id) => window.__reportFrames.delete(id);
+    window.__reportTimers = new Map(); window.__reportTimerId = 0;
+    const set = window.setTimeout, clear = window.clearTimeout;
+    window.setTimeout = (fn, ms, ...args) => {
+      if (ms !== 100) return set(fn, ms, ...args);
+      const id = --window.__reportTimerId; window.__reportTimers.set(id, () => fn(...args)); return id;
+    };
+    window.clearTimeout = (id) => { if (!window.__reportTimers.delete(id)) clear(id); };
+    window.__onlineReport = true;
+    Object.defineProperty(navigator, "onLine", { get: () => window.__onlineReport, configurable: true });
+  `);
+  const got = await page.evaluate(async () => {
+    const rt = window.__rt;
+    const before = rt.workRecord().counters;
+    await new Promise((resolve) => {
+      const channel = new MessageChannel(); let events = 0;
+      channel.port1.onmessage = () => {
+        window.__onlineReport = events++ !== 0;
+        window.dispatchEvent(new Event(window.__onlineReport ? "online" : "offline"));
+        if (events === 2) { channel.port1.close(); channel.port2.close(); resolve(); }
+        else channel.port2.postMessage(null);
+      };
+      channel.port2.postMessage(null);
+    });
+    const waiting = [Number(rt.workRecord().counters[30] - before[30]), rt.reportsReplaced, rt.queue.length];
+    window.__onlineReport = false;
+    for (const callback of [...window.__reportFrames.values()]) callback();
+    return [waiting, document.querySelector('[data-testid="online"]').textContent, Number(rt.workRecord().counters[30] - before[30]), Number(rt.workRecord().counters[33] - before[33]), rt.reportSources.size, window.__reportTimers.size];
+  });
+  check("connectivity from separate tasks delivers one captured newest report at the frame", got, [[0, 1, 1], "online", 1, 1, 0, 0]);
   await ctx.close();
 }
 
@@ -273,9 +313,10 @@ async function open(prelude = "") {
   const text = (id) => page.evaluate((id) => document.querySelector(`[data-testid="${id}"]`).textContent, id);
   check("boot carries connectivity (booted offline)", await text("online"), "offline");
   check("boot carries storage availability (available)", await text("storage"), "storage available");
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
     Object.defineProperty(navigator, "onLine", { get: () => true, configurable: true });
     window.dispatchEvent(new Event("online"));
+    await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
   });
   check("online event reaches the subscription", await text("online"), "online");
   await page.evaluate(() => {
