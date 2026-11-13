@@ -282,6 +282,11 @@ fn nothing(_: anytype) void {}
 /// nearly full), as a Roc `List(Box(U64))` whose single reference passes to
 /// Roc, each element the address of a handle's payload with refcount 1.
 fn hostedMintFiles(n: u64) callconv(.c) RocList {
+    // This is a new page-input or result boundary: the runner has already
+    // interpreted the preceding batch and its effects. Reclaim only slots
+    // Roc retired before counting admission, including a previous spec's
+    // teardown. Live Roc-owned handles stay reserved.
+    _ = hostedLiveFiles();
     const want: usize = @min(@as(usize, @intCast(n)), 64 - blobs.live_count);
     if (want == 0) return .{ .elements = null, .length = 0, .capacity_or_alloc_ptr = 0 };
     // A list of refcounted elements, laid out as Roc lays one out: its
