@@ -136,10 +136,10 @@ Node : [Element(Web.Tag, List(Attribute), List(U64), [Children, Content]), Text(
 
 ## Expanded parser names are facts, never inferred by splitting a raw colon.
 element_name : Markup.Name -> Try(Web.Tag, [NotATag(Str)])
-element_name = |name| Web.Tag.from_str(name.local)?.in_namespace(namespace(name), prefix(name))
+element_name = |name| Web.Tag.from_str(name.local)?.in_namespace({ namespace: namespace(name), prefix: prefix(name) })
 
 attribute_name : Markup.Name -> Try(Web.AttrName, [NotAnAttribute(Str)])
-attribute_name = |name| Web.AttrName.from_str(name.local)?.in_namespace(namespace(name), prefix(name))
+attribute_name = |name| Web.AttrName.from_str(name.local)?.in_namespace({ namespace: namespace(name), prefix: prefix(name) })
 
 namespace : Markup.Name -> Web.Namespace
 namespace = |name| match name.namespace {
@@ -340,10 +340,10 @@ expect {
 ## The shared claim query uses resolved DOM identity. Exact uppercase and
 ## namespaced attributes remain distinct from an HTML input's value property.
 expect {
-	tag = Web.Tag.from_str("input")?.in_namespace(Html, Unprefixed)?
-	ordinary = Web.AttrName.from_str("value")?.in_namespace(None, Unprefixed)?
-	uppercase = Web.AttrName.from_str("VALUE")?.in_namespace(None, Unprefixed)?
-	qualified = Web.AttrName.from_str("value")?.in_namespace(Uri("urn:fields"), Prefix("x"))?
+	tag = Web.Tag.from_str("input")?.in_namespace({ namespace: Html })?
+	ordinary = Web.AttrName.from_str("value")?.in_namespace({ namespace: None })?
+	uppercase = Web.AttrName.from_str("VALUE")?.in_namespace({ namespace: None })?
+	qualified = Web.AttrName.from_str("value")?.in_namespace({ namespace: Uri("urn:fields"), prefix: Prefix("x") })?
 	Core.attribute_claim(tag, ordinary) == Claimed("value") and
 		Core.attribute_claim(tag, uppercase) == Unclaimed and
 			Core.attribute_claim(tag, qualified) == Unclaimed
