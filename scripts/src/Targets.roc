@@ -29,6 +29,7 @@ Targets := [].{
 		{ name: "markup", main: "fuzz/markup/main.roc" },
 		{ name: "picture-capture", main: "fuzz/picture-capture/main.roc" },
 		{ name: "picture-codec", main: "fuzz/picture-codec/main.roc" },
+		{ name: "picture-claims", main: "fuzz/picture-claims/main.roc" },
 		{ name: "picture-plan", main: "fuzz/picture-plan/main.roc" },
 		{ name: "table-view", main: "fuzz/table-view/main.roc" },
 		{ name: "result-readers", main: "fuzz/result-readers/main.roc" },
@@ -181,6 +182,7 @@ Targets := [].{
 		Ok(
 			Targets.browser!(o, "protocol-facts-browser.mjs", [])?
 				.concat(Targets.browser!(o, "picture-browser.mjs", [])?)
+				.concat(Targets.browser!(o, "picture-parent-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "picture-envelope-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "picture-measurement-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "picture-preparation-browser.mjs", [])?)
