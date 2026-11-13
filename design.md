@@ -1023,12 +1023,17 @@ ownership law that makes this hold is:
 Patterns that hold this law against current compiler behaviour (wrapping a
 site's captures in a single-tag `Held`, returning a rebuilt site from each
 branch directly) are workarounds for upstream issues and are marked as such in
-the code. They are not semantics. One defect has no local workaround: in
-optimised builds a large value held by a site's closure, a list or a `Dict`
-alike, is copied on every write (roc-lang/roc#12957), and every site's
-storage and the store are held that way. The design assumes the fix: the law
-above is what the engine asks of the compiler, and a write to a large cell
-or table is constant only where the compiler honours it.
+the code. They are not semantics. Optimized closure and aggregate ownership
+can still copy a large, uniquely held value on a write. roc-lang/roc#12957
+has a standalone nested-capture and list-extraction reproduction;
+roc-lang/roc#13019 records an engine-dependent local-state case without a
+host box. The latter was closed for insufficient isolation, not as fixed.
+The instance holds its store beside the sites and moves it through their
+environments; it is not another site capture. That layout does not by itself
+establish flat shipping allocations, and no general workaround for the
+engine's optimized copying is established. The law above is what the engine
+asks of the compiler; allocation guards must distinguish development and
+shipping builds.
 
 The same law constrains apps. These patterns copy silently on every update:
 
@@ -4401,11 +4406,11 @@ of them is platform semantics.
 | [roc-lang/roc#13012](https://github.com/roc-lang/roc/issues/13012) | Updating storage captured by a boxed closure can borrow that capture and copy it even in development builds | The instance holds its store as plain data beside boxed sites. Local state still lives in a site's closure and remains affected; extend the allocation guard to local state when the compiler is fixed |
 | [roc-lang/roc#13022](https://github.com/roc-lang/roc/issues/13022) | Format derivation cannot resolve inherited hooks through a public format alias | Port.Registering declares its safe format hooks directly; catalogue accumulation remains in the unexposed PortRegistry module |
 | [roc-lang/roc#13002](https://github.com/roc-lang/roc/issues/13002) | Compile-time Dict and Set work can be quadratic in the default page's rows | Engine.mounts has inherent default-mount work; the compiler's extra superlinear cost remains upstream. Removing the app constant disables the check |
-| [roc-lang/roc#13019](https://github.com/roc-lang/roc/issues/13019) | Optimized site writes still show table-size-dependent allocation when the engine never crosses a host box | The development sparse-write guard checks requested bytes at two table sizes. Shipping optimized allocation is not claimed flat; add an optimized guard when the compiler defect is fixed |
+| [roc-lang/roc#13019](https://github.com/roc-lang/roc/issues/13019) | An engine-dependent local-list reproduction shows value-size-dependent allocation in optimized writes without a host box; the report was closed for insufficient isolation, not as fixed | The development sparse-write guard proves only its own scope. Shipping allocation is not claimed flat; isolate the optimized path against the standalone #12957 case before attributing a separate compiler defect |
 | [roc-lang/roc#12953](https://github.com/roc-lang/roc/issues/12953) | Since roc-lang/roc#12887, the host boundary rejects an opaque `Box` of a value that contains functions, though it accepts the same value as `Box(Iter(...))` | The sites cross as `Box(Iter(Core.Sites(st)))` inside the one outer `Handle`, beside the plain store; `platform/main.roc` alone wraps and unwraps them. `Core.Kept` holds its task runner as a `Box` of its own |
 | [roc-lang/roc#12945](https://github.com/roc-lang/roc/issues/12945) | Under `--specialize=no`, a derived record decode leaks on every call | Worker instances grow per job in that build, so the scaling task's memory checks fail for it |
 | [roc-lang/roc#12951](https://github.com/roc-lang/roc/issues/12951) | A lambda passed to a generic function is rejected when its body uses `?` on a method of its own parameter and then `?` again | A task whose `run!` reads a file and then uses `?` again is written as a named function, not a lambda in the props record; the Workers guide says so |
-| [roc-lang/roc#12957](https://github.com/roc-lang/roc/issues/12957) | In optimised builds (`--opt=size`, `--opt=speed`) a large value held by a closure that is itself kept in a list is copied on every write, a list and a `Dict` alike | Every site's storage and the store are held this way, so a write to a large state, cell or table copies it in a shipping build. There is no local workaround: the design assumes the fix (see [In-place ownership](#in-place-ownership)) |
+| [roc-lang/roc#12957](https://github.com/roc-lang/roc/issues/12957) | Nested aggregate captures in closures taken from a list can copy a uniquely held list or `Dict` on each write under `--opt=size` and `--opt=speed` | Standalone controls distinguish nested captures from in-place shapes. The store remains beside the sites; its development guard is not a shipping allocation guarantee (see [In-place ownership](#in-place-ownership)) |
 | [roc-lang/roc#12963](https://github.com/roc-lang/roc/issues/12963) | Roc has no field accessor or updater as a value | A store's storage cannot be a record the author wrote, addressed field by field. The record builder generates it as nested pairs, with a lens for each position (see [The store](#the-store)) |
 | [roc-lang/roc#12965](https://github.com/roc-lang/roc/issues/12965) | Punned fields in a record builder (`{ x, y }.T`) are reported as unused, which fails `roc check` and `roc test` | A description of cells writes each field out: `{ x: x, y: y }.Engine.Cells` |
 | [roc-lang/roc#12962](https://github.com/roc-lang/roc/issues/12962) | A member of a type's `.{ }` block and a top-level definition of the same name resolve by declaration order: the member binds to itself when the top-level definition comes after the type, so `roc check` passes and `roc test` hangs | A helper in a type module is never given the name of a top-level function |
