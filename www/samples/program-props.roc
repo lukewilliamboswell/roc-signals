@@ -15,3 +15,6 @@ expect {
 	boot.url == "/articles" and boot.online and boot.visible
 }
 # endregion boot
+
+## The instance holds this store beside its site tree.
+Store : {}

@@ -3,3 +3,6 @@ import pf.Engine
 import pf.Html
 main : Engine.Program
 main = Engine.program(|| Engine.state("", |text| Html.dialog("Settings", {open: Engine.const(True), on_close: text.set_value(|_, value| value)}, [], [])))
+
+## No shared store is declared by this contract fixture.
+Store : {}

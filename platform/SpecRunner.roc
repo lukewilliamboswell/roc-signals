@@ -1058,7 +1058,15 @@ SpecRunner := [].{
 
 	## Dispatch `ev` if a handler listens for it on the way up from node `i`.
 	fire_if : Program(state), S(state), U64, Str, Str -> S(state)
-	fire_if = |program, s, i, ev, payload| if (SpecRunner.attached(s.dom, i)) SpecRunner.fire(program, s, i, ev, payload) ?? s else s
+	fire_if = |program, s, i, ev, payload| {
+		if !SpecRunner.attached(s.dom, i) {
+			return s
+		}
+		match Dom.target(s.dom, i, ev, Bool.True) {
+			Ok(target) if target.kind == 1 => SpecRunner.send(program, s, target.node, target.handler, payload.to_utf8())
+			_ => s
+		}
+	}
 
 	## One host call, then the storage reads and focus events it issued, each
 	## answered in a turn of its own as the runtime answers them. Reentrant
@@ -1101,9 +1109,18 @@ SpecRunner := [].{
 		is_final_network = node == SpecRunner.fx_node and payload.first() != Ok(26) and active.browser.network.contains(h)
 		cleaned = if (is_final_network) { ..active, browser: { ..active.browser, report_sources: active.browser.report_sources.remove(h), network: active.browser.network.remove(h), reports: { ..active.browser.reports, index: active.browser.reports.index.remove(Request(h)) } } } else active
 		counted = { ..cleaned, turns: cleaned.turns + if (outer) 0 else 1 }
-		(inst, cmds, wbuf) = (program.event)(counted.inst, counted.buf, counted.wbuf, node, h, payload)
-		next = SpecRunner.answer_gets(program, SpecRunner.take(counted, inst, cmds, wbuf))
+		next = SpecRunner.answer_gets(program, SpecRunner.engine_call(counted, |inst, buf, wbuf| (program.event)(inst, buf, wbuf, node, h, payload)))
 		if (outer) { ..SpecRunner.drain_focus(program, next), draining: Bool.False } else next
+	}
+
+	## Move the instance and reusable buffers out before an engine call. Keeping
+	## the runner record alive across that call would retain a second store holder
+	## and make a keyed write copy its table. The oracle consumes the answer only
+	## after the old instance has moved, outside the engine's measured region.
+	engine_call : S(state), (state, List(U8), List(U8) -> (state, List(U8), List(U8))) -> S(state)
+	engine_call = |{ inst, buf, wbuf, dom, browser, work, ops, writes, mark, focused, focus_value, deferred, after_batch, event_queue, applying_focus, draining, turns, fault }, run| {
+		(next, cmds, workbuf) = run(inst, buf, wbuf)
+		SpecRunner.take({ inst: next, buf: [], wbuf: [], dom, browser, work, ops, writes, mark, focused, focus_value, deferred, after_batch, event_queue, applying_focus, draining, turns, fault }, next, cmds, workbuf)
 	}
 
 	## Apply deferred effects, showing values and reference commands in stream order.
@@ -3569,8 +3586,8 @@ SpecRunner := [].{
 		}
 		b = selected.browser
 		s1 = { ..selected, browser: { ..b, given: $given } }
-		(inst, cmds, wbuf) = (program.files)(s1.inst, s1.buf, s1.wbuf, target.node, target.handler, $record, handles)
-		Ok({ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, SpecRunner.take({ ..s1, draining: Bool.True, turns: 0 }, inst, cmds, wbuf))), draining: Bool.False })
+		next = SpecRunner.engine_call({ ..s1, draining: Bool.True, turns: 0 }, |inst, buf, wbuf| (program.files)(inst, buf, wbuf, target.node, target.handler, $record, handles))
+		Ok({ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, next)), draining: Bool.False })
 	}
 
 	## The pending worker job or fetch that step `op` answers, when `op` is
@@ -3673,8 +3690,8 @@ SpecRunner := [].{
 				}
 				rb = rest.browser
 				s1 = { ..rest, browser: { ..rb, files: $files, given: $given } }
-				(inst, cmds, wbuf) = (program.files)(s1.inst, s1.buf, s1.wbuf, SpecRunner.fx_node, id, $payload.concat(output), handles)
-				Ok({ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, SpecRunner.take({ ..s1, draining: Bool.True, turns: 0 }, inst, cmds, wbuf))), draining: Bool.False })
+				next = SpecRunner.engine_call({ ..s1, draining: Bool.True, turns: 0 }, |inst, buf, wbuf| (program.files)(inst, buf, wbuf, SpecRunner.fx_node, id, $payload.concat(output), handles))
+				Ok({ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, next)), draining: Bool.False })
 			}
 			_ => Ok(SpecRunner.deliver(program, rest, id, record))
 		}
@@ -3715,8 +3732,8 @@ SpecRunner := [].{
 				record = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u64($record, bytes.len()), name), mime)
 				rb = rest.browser
 				s1 = { ..rest, browser: { ..rb, files: rb.files.append({ name: key, mime, bytes }), given: rb.given.append({ token: Box.unbox(handle), name: key }), network: rb.network.remove(id), report_sources: rb.report_sources.remove(id), reports: { ..rb.reports, index: rb.reports.index.remove(Request(id)) } } }
-				(inst, cmds, wbuf) = (program.files)(s1.inst, s1.buf, s1.wbuf, SpecRunner.fx_node, id, record, handles)
-				Ok({ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, SpecRunner.take({ ..s1, draining: Bool.True, turns: 0 }, inst, cmds, wbuf))), draining: Bool.False })
+				next = SpecRunner.engine_call({ ..s1, draining: Bool.True, turns: 0 }, |inst, buf, wbuf| (program.files)(inst, buf, wbuf, SpecRunner.fx_node, id, record, handles))
+				Ok({ ..SpecRunner.drain_focus(program, SpecRunner.answer_gets(program, next)), draining: Bool.False })
 			}
 		}
 	}
@@ -4358,15 +4375,15 @@ SpecRunner := [].{
 				(inst, cmds, wbuf) = init(boot)
 				({ inst, calls: [] }, cmds, wbuf)
 			},
-			event: |r, buf, wbuf, node, h, payload| {
-				call = { node, handler: SpecRunner.handler_of(live(r.inst), node, h), payload, files: Event }
-				(inst, cmds, w) = event(r.inst, buf, wbuf, node, h, payload)
-				({ inst, calls: r.calls.append(call) }, cmds, w)
+			event: |{ inst: prior, calls }, buf, wbuf, node, h, payload| {
+				call = { node, handler: SpecRunner.handler_of(live(prior), node, h), payload, files: Event }
+				(inst, cmds, w) = event(prior, buf, wbuf, node, h, payload)
+				({ inst, calls: calls.append(call) }, cmds, w)
 			},
-			files: |r, buf, wbuf, node, h, record, handles| {
-				call = { node, handler: SpecRunner.handler_of(live(r.inst), node, h), payload: record, files: Files(handles) }
-				(inst, cmds, w) = files(r.inst, buf, wbuf, node, h, record, handles)
-				({ inst, calls: r.calls.append(call) }, cmds, w)
+			files: |{ inst: prior, calls }, buf, wbuf, node, h, record, handles| {
+				call = { node, handler: SpecRunner.handler_of(live(prior), node, h), payload: record, files: Files(handles) }
+				(inst, cmds, w) = files(prior, buf, wbuf, node, h, record, handles)
+				({ inst, calls: calls.append(call) }, cmds, w)
 			},
 			settled: |r| settled(r.inst),
 			live: |r| live(r.inst),

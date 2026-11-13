@@ -102,3 +102,6 @@ expect {
 		cancelled: { gesture: Idle, place: "Cancelled" },
 	}
 }
+
+## The instance holds this store beside its site tree.
+Store : {}

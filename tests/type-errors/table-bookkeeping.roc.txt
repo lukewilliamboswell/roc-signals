@@ -8,3 +8,6 @@ table = Engine.Table.from_list([{ key: 1.U64, row: "one" }]).with_id(7)
 
 main : Engine.Program
 main = Engine.program(|| Engine.text(table.len().to_str()))
+
+## No shared store is declared by this contract fixture.
+Store : {}

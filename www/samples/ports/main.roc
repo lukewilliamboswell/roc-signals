@@ -8,3 +8,6 @@ import Notes
 ## ports' handlers, `notes-ports.mjs`, when it mounts the module.
 main : Engine.Program
 main = Notes.program
+
+## The instance holds this store beside its site tree.
+Store : {}

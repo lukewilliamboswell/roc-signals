@@ -4,3 +4,6 @@ import pf.Engine
 
 main : Engine.Program
 main = Engine.program(|| Engine.element("input", [Engine.ref("bad")], [Engine.watch(Engine.const({}), |_| [ApplyValue("bad")], Engine.ignore({}))]))
+
+## No shared store is declared by this contract fixture.
+Store : {}

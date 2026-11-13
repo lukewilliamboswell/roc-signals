@@ -458,7 +458,7 @@ view = |tree, pure, init| Core.state(
 
 ## The engine, the oracle's DOM, the clicks so far, and the worker jobs
 ## issued and not yet answered or cancelled (id and input).
-S : { eng : Core.App, dom : Dom.Model, clicks : U64, jobs : List((U32, List(U8))), guard : Bool }
+S : { eng : Core.App({}), dom : Dom.Model, clicks : U64, jobs : List((U32, List(U8))), guard : Bool }
 
 ## Mount through the program's driver, so the worker catalogue is the one
 ## a host would see.
@@ -473,7 +473,7 @@ mount = |tree, pure, init| {
 ## or cancelled. `what` names the step the batch answers, or is "" for the
 ## mount: a step's batch must show no reader that saw the step half applied
 ## (`half_seen`).
-absorb : S, Core.App, List(U8), Str -> S
+absorb : S, Core.App({}), List(U8), Str -> S
 absorb = |s, a, c, what| {
 	{ dom, fx, written } = batch_writes(s.dom, c)
 	observed = Core.work_counters(a).get(44) ?? crash "structure: observation gauge is missing"

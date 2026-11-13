@@ -4,9 +4,19 @@ app [main] {
 }
 
 import pf.Engine
+import pf.Worker
 import ExplorerApp
 
 ## Log Explorer: `roc build --target=wasm32` gives the browser module and
 ## `roc build --target=x64musl` its native spec runner.
+import Log
+
+import LogStore
+
+import TimelineChart
+
 main : Engine.Program
 main = ExplorerApp.program
+
+## The instance holds this store beside its site tree.
+Store : Engine.Stored(LogStore, ([Chosen(Engine.File), NoLog], ([Overview, Search, Viewer], ({ filter : [Everything, Only(Log.Level)], text : Str }, ((U64, (U64, (U32, LogStore.Geometry))), (Log.Viewport, (Engine.Outbox(U32), (TimelineChart.Theme, ([Generating(U64), Idle], [NoNote, NotACount, NotWritten(Worker.Error(Engine.FileError))])))))))))

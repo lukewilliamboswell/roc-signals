@@ -1,13 +1,13 @@
 import pf.Engine exposing [Table]
 import pf.Port
-import Store
+import BookStorage
 
 ## The reading list's state, as the cells of the app's store, and every
 ## change to it, as a pure function from what it reads to the writes it
 ## makes. The view's handlers and effect sites call them, and the
 ## `expect`s below test them with no engine and no browser.
 ##
-## Two things here are called a store. `Store` is the module of the ports
+## Two things here are called a store. `BookStorage` is the module of the ports
 ## to the browser's IndexedDB, where the books are kept; the comments below
 ## call that the database. This module builds the app's store, the cells
 ## the page shares.
@@ -36,10 +36,10 @@ import Store
 ReadingList := [Books].{
 
 	## Which books the list shows.
-	Showing : [Everything, Only(Store.Shelf)]
+	Showing : [Everything, Only(BookStorage.Shelf)]
 
 	## A change the database must learn of, sent as a command.
-	Command : [Put(Store.Book), Delete(Str)]
+	Command : [Put(BookStorage.Book), Delete(Str)]
 
 	## Whether the app's copy of the books has come from the database.
 	Copy : [Loading, Loaded, Unreadable(Str)]
@@ -53,13 +53,13 @@ ReadingList := [Books].{
 	Tally : { want_to_read : U64, reading : U64, finished : U64 }
 
 	## What the form and the copy say when the reader asks to add a book.
-	Asking : { form : Store.NewBook, copy : Copy }
+	Asking : { form : BookStorage.NewBook, copy : Copy }
 
 	## The id stream and last sampled time when an add's timer answers.
 	StampReading : { state : U64, clock : I64 }
 
 	## A form with nothing typed.
-	blank : Store.NewBook
+	blank : BookStorage.NewBook
 	blank = { title: "", author: "" }
 
 	## The store: its name, and its cells with their starting values:
@@ -93,7 +93,7 @@ ReadingList := [Books].{
 
 	## How a shelf selects and orders the books: the `plan` of the list's
 	## view.
-	plan : Showing -> Engine.QueryPlan(Str, Store.Book, Place)
+	plan : Showing -> Engine.QueryPlan(Str, BookStorage.Book, Place)
 	plan = |showing| {
 		keep: |_, book| match showing {
 			Everything => True
@@ -106,7 +106,7 @@ ReadingList := [Books].{
 	## The books of a table that `showing` keeps, in the list's order: what
 	## the view draws, as a list, for a decision that needs them in order
 	## and for a test.
-	listed : Table(Str, Store.Book), Showing -> List(Store.Book)
+	listed : Table(Str, BookStorage.Book), Showing -> List(BookStorage.Book)
 	listed = |table, showing| {
 		query = ReadingList.plan(showing)
 		kept = table.fold([], |acc, id, book| if ((query.keep)(id, book)) acc.append(book) else acc)
@@ -119,7 +119,7 @@ ReadingList := [Books].{
 	## written, and its row does no work. The database reports its whole
 	## copy after every write, this tab's own included, so most of what
 	## arrives is what the table already holds.
-	synced : Table(Str, Store.Book), List(Store.Book) -> Table(Str, Store.Book)
+	synced : Table(Str, BookStorage.Book), List(BookStorage.Book) -> Table(Str, BookStorage.Book)
 	synced = |table, books| {
 		stored = Set.from_list(books.map(|book| book.id))
 		gone = table.fold([], |acc, id, _| if (stored.contains(id)) acc else acc.append(id))
@@ -132,7 +132,7 @@ ReadingList := [Books].{
 
 	## The database's answer to `load`. It counts only while the app is
 	## still loading: a `stored` message that came first is newer.
-	loaded : Copy, Try(List(Store.Book), Port.Error) -> List(Engine.Write(_))
+	loaded : Copy, Try(List(BookStorage.Book), Port.Error) -> List(Engine.Write(_))
 	loaded = |copy, answer|
 		match copy {
 			Loading =>
@@ -145,7 +145,7 @@ ReadingList := [Books].{
 
 	## A message of `stored`: the books as stored after a write in any tab,
 	## which replace the app's copy.
-	restocked : Try(List(Store.Book), Port.Error) -> List(Engine.Write(_))
+	restocked : Try(List(BookStorage.Book), Port.Error) -> List(Engine.Write(_))
 	restocked = |message|
 		match message {
 			Err(Closed) => [ReadingList.cells.note.set("Changes made in other tabs no longer reach this one. Reload to see them.")]
@@ -188,7 +188,7 @@ ReadingList := [Books].{
 	## A zero-delay timer supplies the action's time, a task after submission.
 	## Refusal uses the last sample instead. Roc supplies the complete book;
 	## the database only stores it. Every answer consumes a fresh stream word.
-	stamped : { at : StampReading, form : Store.NewBook, result : Engine.Result } -> List(Engine.Write(_))
+	stamped : { at : StampReading, form : BookStorage.NewBook, result : Engine.Result } -> List(Engine.Write(_))
 	stamped = |{ at, form, result }| {
 		time = match result {
 			Fired(now) => now
@@ -196,7 +196,7 @@ ReadingList := [Books].{
 			_ => crash "ReadingList.stamped: Timer(0) returned another result"
 		}
 		next = next_id(at.state)
-		book : Store.Book
+		book : BookStorage.Book
 		book = { id: next.id, title: form.title, author: form.author, shelf: WantToRead, added_ms: time }
 		[
 			ReadingList.cells.id_state.set(next.state),
@@ -208,7 +208,7 @@ ReadingList := [Books].{
 	## The database's answer to `add`: the book as stored, which joins the
 	## app's copy (or replaces itself there, if a `stored` message brought
 	## it first).
-	added : Store.Book, Try(Store.Book, Port.Error) -> List(Engine.Write(_))
+	added : BookStorage.Book, Try(BookStorage.Book, Port.Error) -> List(Engine.Write(_))
 	added = |asked, answer|
 		match answer {
 			Ok(book) => [ReadingList.cells.books.update(|table| table.put(book.id, book))]
@@ -217,7 +217,7 @@ ReadingList := [Books].{
 
 	## Move a book to its next shelf: want to read, reading, finished, and
 	## from finished back to reading.
-	advanced : Store.Book -> List(Engine.Write(_))
+	advanced : BookStorage.Book -> List(Engine.Write(_))
 	advanced = |book| {
 		moved = { ..book, shelf: next_shelf(book.shelf) }
 		[ReadingList.cells.books.update(|table| table.replace(moved.id, moved)), ReadingList.send([Put(moved)])]
@@ -241,7 +241,7 @@ ReadingList := [Books].{
 		}
 
 	## The ids of the finished books, in the list's order.
-	finished_ids : Table(Str, Store.Book) -> List(Str)
+	finished_ids : Table(Str, BookStorage.Book) -> List(Str)
 	finished_ids = |table| ReadingList.listed(table, Only(Finished)).map(|book| book.id)
 
 	## Show one shelf, or every book.
@@ -259,13 +259,13 @@ ReadingList := [Books].{
 	requests = |commands|
 		commands.map(
 			|command| match command {
-				Put(book) => Store.put.send(book)
-				Delete(id) => Store.remove.send({ id: id })
+				Put(book) => BookStorage.put.send(book)
+				Delete(id) => BookStorage.remove.send({ id: id })
 			},
 		)
 
 	## How many books are on each shelf.
-	tally : Table(Str, Store.Book) -> Tally
+	tally : Table(Str, BookStorage.Book) -> Tally
 	tally = |table|
 		table.fold(
 			{ want_to_read: 0, reading: 0, finished: 0 },
@@ -302,7 +302,7 @@ ReadingList := [Books].{
 		}
 
 	## A shelf's name, as the list says it.
-	shelf_name : Store.Shelf -> Str
+	shelf_name : BookStorage.Shelf -> Str
 	shelf_name = |shelf|
 		match shelf {
 			WantToRead => "Want to read"
@@ -312,7 +312,7 @@ ReadingList := [Books].{
 
 	## The button that moves a book on: what it says, and its accessible
 	## name, which names the book.
-	next_action : Store.Book -> { label : Str, name : Str }
+	next_action : BookStorage.Book -> { label : Str, name : Str }
 	next_action = |book|
 		match book.shelf {
 			WantToRead => { label: "Start", name: "Start reading ${book.title}" }
@@ -341,10 +341,10 @@ next_id = |state| {
 }
 
 ## The write that makes the app's copy the database's.
-restock : List(Store.Book) -> Engine.Write(_)
+restock : List(BookStorage.Book) -> Engine.Write(_)
 restock = |books| ReadingList.cells.books.update(|table| ReadingList.synced(table, books))
 
-next_shelf : Store.Shelf -> Store.Shelf
+next_shelf : BookStorage.Shelf -> BookStorage.Shelf
 next_shelf = |shelf|
 	match shelf {
 		WantToRead => Reading
@@ -356,7 +356,7 @@ next_shelf = |shelf|
 ## each book's shape, but not that ids are distinct, and the table keys
 ## its rows by id: of two books under one id only one could be a row, so
 ## they are refused here, at the door.
-checked : Try(List(Store.Book), Port.Error) -> Try(List(Store.Book), Str)
+checked : Try(List(BookStorage.Book), Port.Error) -> Try(List(BookStorage.Book), Str)
 checked = |answer|
 	match answer {
 		Ok(books) =>
@@ -415,15 +415,15 @@ explain = |error|
 		Undecodable(why) => "it holds something this app does not understand (${why})."
 	}
 
-dune : Store.Book
+dune : BookStorage.Book
 dune = { id: "b1", title: "Dune", author: "Frank Herbert", shelf: WantToRead, added_ms: 10 }
 
-piranesi : Store.Book
+piranesi : BookStorage.Book
 piranesi = { id: "b2", title: "Piranesi", author: "Susanna Clarke", shelf: Finished, added_ms: 20 }
 
 ## The store after the database answers `load`, as the load's reaction
 ## decides it: from the copy the store holds when the answer arrives.
-after_load : Engine.Store(_, _), Try(List(Store.Book), Port.Error) -> Engine.Store(_, _)
+after_load : Engine.Store(_, _), Try(List(BookStorage.Book), Port.Error) -> Engine.Store(_, _)
 after_load = |at, answer| at.after(ReadingList.loaded(at.read(ReadingList.cells.copy), answer))
 
 ## The titles the list shows for a store, in order.

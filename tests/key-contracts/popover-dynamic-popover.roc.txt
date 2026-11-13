@@ -5,3 +5,6 @@ import pf.Html
 
 main : Engine.Program
 main = Engine.program(|| Html.popover("Controlled", { open: Engine.const(False), on_toggle: Engine.does([]) }, [Engine.attr_s("popover", Engine.const("manual"))], []))
+
+## No shared store is declared by this contract fixture.
+Store : {}

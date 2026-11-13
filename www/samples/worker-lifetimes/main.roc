@@ -7,3 +7,6 @@ import Documents
 ## `roc build --target=x64musl` its native spec runner.
 main : Engine.Program
 main = Documents.program
+
+## The instance holds this store beside its site tree.
+Store : {}

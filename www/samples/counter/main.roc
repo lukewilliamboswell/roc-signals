@@ -7,3 +7,6 @@ import Counter
 ## `roc build --target=x64musl` its native spec runner.
 main : Engine.Program
 main = Counter.program
+
+## The instance holds this store beside its site tree.
+Store : {}

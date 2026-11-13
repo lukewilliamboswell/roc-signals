@@ -11,3 +11,6 @@ main = Engine.program(|| {
     decoded = Dom.apply(Dom.new({}), [1, 24, 1, 0, 0, 0])
     Engine.text(decoded.nodes.len().to_str())
 })
+
+## No shared store is declared by this contract fixture.
+Store : {}

@@ -14,7 +14,7 @@ import ManyApp
 import TopLayerApp
 
 ## The engine and the oracle's DOM, driven through the engine directly.
-S : { eng : Core.App, dom : Dom.Model, steps : U64 }
+S : { eng : Core.App({}), dom : Dom.Model, steps : U64 }
 
 start : Engine.Elem(Engine.Root) -> S
 start = |view| {
@@ -25,7 +25,7 @@ start = |view| {
 
 ## The settle check: a pass over every layer of the engine (on a discarded
 ## copy) must emit nothing, or the last call left a reader stale.
-settled : Core.App, Dom.Model, a -> a
+settled : Core.App({}), Dom.Model, a -> a
 settled = |eng, dom, value|
 	match Core.settled(eng) {
 		Ok(_) => value

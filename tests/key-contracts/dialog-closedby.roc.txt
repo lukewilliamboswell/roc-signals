@@ -5,3 +5,6 @@ import pf.Html
 
 main : Engine.Program
 main = Engine.program(|| Html.dialog("Controlled", { open: Engine.const(False), on_close: Engine.does([]) }, [Engine.attr("closedby", "any")], []))
+
+## No shared store is declared by this contract fixture.
+Store : {}

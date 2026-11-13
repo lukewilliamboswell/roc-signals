@@ -7,3 +7,6 @@ import Recipes
 ## browser handlers; specs fake only their messages, using the same program.
 main : Engine.Program
 main = Recipes.program
+
+## The instance holds this store beside its site tree.
+Store : {}

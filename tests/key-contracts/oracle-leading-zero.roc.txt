@@ -11,3 +11,6 @@ main = Engine.program(|| {
     parsed = Dom.parse_keymap("pa----01:a")
     Engine.text(parsed.exact.len().to_str())
 })
+
+## No shared store is declared by this contract fixture.
+Store : {}

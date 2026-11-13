@@ -7,3 +7,6 @@ import Editor
 ## `roc build --target=x64musl` its native spec runner.
 main : Engine.Program
 main = Editor.program
+
+## The instance holds this store beside its site tree.
+Store : {}

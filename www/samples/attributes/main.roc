@@ -36,3 +36,6 @@ main = Engine.program(
 		),
 	),
 )
+
+## The instance holds this store beside its site tree.
+Store : {}

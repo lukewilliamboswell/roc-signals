@@ -78,3 +78,6 @@ check_bytes : List(U8) -> Engine.Request
 check_bytes = |contents| checksum.request(Wire.Bytes.from_list(contents))
 
 # endregion bytes
+
+## The instance holds this store beside its site tree.
+Store : {}

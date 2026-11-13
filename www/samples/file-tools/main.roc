@@ -7,3 +7,6 @@ import Tools
 ## `roc build --target=x64musl` its native spec runner.
 main : Engine.Program
 main = Tools.program
+
+## The instance holds this store beside its site tree.
+Store : {}

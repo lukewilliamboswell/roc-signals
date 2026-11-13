@@ -12,7 +12,7 @@ import pf.SpecRunner
 import FxApp
 
 ## The engine and the oracle's DOM, driven through the engine directly.
-S : { eng : Core.App, dom : Dom.Model, steps : U64 }
+S : { eng : Core.App({}), dom : Dom.Model, steps : U64 }
 
 start : Engine.Elem(Engine.Root) -> S
 start = |view| {
@@ -629,7 +629,7 @@ E : { s : S, fx : List(Dom.FxCmd) }
 
 ## Apply one batch to the oracle. The engine's per-opcode work counters must
 ## have moved by exactly the commands the oracle decoded from it.
-apply! : S, Core.App, List(U8) => E
+apply! : S, Core.App({}), List(U8) => E
 apply! = |s, a, c| {
 	(d2, ops, fx) = Dom.apply_fx(s.dom, c)
 	before = Core.work_counters(s.eng)
@@ -649,7 +649,7 @@ apply! = |s, a, c| {
 
 ## The settle check: a pass over every layer of the engine (on a discarded
 ## copy) must emit nothing, or the batch left a reader stale.
-settle! : Core.App, Dom.Model => {}
+settle! : Core.App({}), Dom.Model => {}
 settle! = |a, dom|
 	match Core.settled(a) {
 		Ok(_) => {}
@@ -938,7 +938,7 @@ media_program = |_args| {
 
 ## Compare commands, counters, live ids and rendered answers after every
 ## transition. The model never reads the engine's state or live request data.
-media_apply : { eng : Core.App, dom : Dom.Model, model : MediaModel }, MediaStep -> { eng : Core.App, dom : Dom.Model, model : MediaModel }
+media_apply : { eng : Core.App({}), dom : Dom.Model, model : MediaModel }, MediaStep -> { eng : Core.App({}), dom : Dom.Model, model : MediaModel }
 media_apply = |held, step| {
 	{ eng, dom, model } = held
 	expected = media_transition(model, step)
@@ -1170,7 +1170,7 @@ persist_issue = |model| {
 	($model, $commands)
 }
 
-persist_check : Core.App, List(Dom.FxCmd), PersistModel, List(Dom.FxCmd) -> {}
+persist_check : Core.App({}), List(Dom.FxCmd), PersistModel, List(Dom.FxCmd) -> {}
 persist_check = |engine, got, model, wanted| {
 	stats = Core.fx_stats(engine)
 	actual = { commands: got, live: Core.fx_live(engine), issued: stats.issued, delivered: stats.delivered, refused: stats.refused, stale: stats.stale, cancelled: stats.cancelled, reparented: stats.reparented }

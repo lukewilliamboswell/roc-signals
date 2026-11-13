@@ -55,4 +55,8 @@ long_exit = |_| Engine.state(
 		),
 	),
 )
+
 # endregion leaving
+
+## The instance holds this store beside its site tree.
+Store : {}

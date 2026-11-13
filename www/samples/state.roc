@@ -97,4 +97,8 @@ word_count = |form|
 ## Two signals combine with `map2`; the result reads both sources.
 greeting : Signal(C2, Signup), Signal(C2, Bool) -> Signal(C2, Str)
 greeting = |s, compact| Signal.map2(s, compact, |v, c| if (c) v.name else "Hello, ${v.name}")
+
 # endregion map2
+
+## The instance holds this store beside its site tree.
+Store : {}

@@ -5,3 +5,6 @@ import pf.TableCore
 
 main : Engine.Program
 main = Engine.program(|| Engine.text("internal module must not be importable"))
+
+## No shared store is declared by this contract fixture.
+Store : {}

@@ -1547,7 +1547,10 @@ Engine := [].{
 	## tasks its `Work` requests may name:
 	## `Engine.program(view).with_workers([count.registration()])` for a
 	## `Worker.task`, and `with_ports` the ports the page's JavaScript supplies.
-	Program : Core.Program
+	## The parameter names the plain store the instance holds beside its sites.
+	## An app declares it once as Store in its entry; the compiler prints the
+	## concrete type when that declaration is missing or out of date.
+	Program(st) : Core.Program(st)
 
 	## A worker task or preparation for `Program.with_workers`. Make one with
 	## a typed task's or preparation's `registration` (see `Worker`).
@@ -1555,7 +1558,7 @@ Engine := [].{
 
 	## The [Program] for an app that needs no boot data: mount `view()` with the
 	## default in-flight bound of 32.
-	program : (() -> Elem(Root)) -> Program
+	program : (() -> Elem(Root)) -> Program({})
 	program = |view| Core.program(view)
 
 	## Declare values the app reads at boot. Every field has a default, so
@@ -1569,14 +1572,14 @@ Engine := [].{
 	## `storage_keys` from local storage before mount, and `view` receives them in
 	## the [Boot] with the URL and connectivity. `max_inflight` bounds the awaited
 	## requests in flight at once.
-	program_boot : ProgramProps, (Boot -> Elem(Root)) -> Program
+	program_boot : ProgramProps, (Boot -> Elem(Root)) -> Program({})
 	program_boot = |cfg, view| Core.program_boot(cfg, view)
 
 	## The [Program] for an app with a [Store]: as `program_boot`, with the
-	## store `start` gives for the boot data held at the root, where every
+	## store `start` gives for the boot data held beside the sites, where every
 	## context of `view` reaches its cells. `start` is usually the app's store
 	## with the cells that depend on the boot data set (`Store.with_initial`).
-	program_store : ProgramProps, (Boot -> Store(st, h)), (Boot -> Elem(StoreRoot(st))) -> Program
+	program_store : ProgramProps, (Boot -> Store(st, h)), (Boot -> Elem(StoreRoot(st))) -> Program(st)
 	program_store = |cfg, start, view| Core.program_store(cfg, |boot| start(boot).s.initial(), view)
 }
 

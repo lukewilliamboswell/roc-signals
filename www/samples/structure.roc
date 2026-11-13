@@ -144,3 +144,6 @@ page = |model|
 			Engine.state(3, stars),
 		],
 	)
+
+## The instance holds this store beside its site tree.
+Store : {}

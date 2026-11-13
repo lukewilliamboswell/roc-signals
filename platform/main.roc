@@ -25,7 +25,7 @@
 ##   worker jobs in child processes. Run it as `RUNNER FILE.scm...`.
 platform ""
 	requires {
-		main : Engine.Program
+		[Store : st] for main : Engine.Program(st)
 	}
 	exposes [Clipboard, Engine, Files, Html, Layout, Port, PortJson, Wire, Worker]
 	packages {}
@@ -94,39 +94,44 @@ import Worker
 ## by the host, lent to JS, and passed back into the next call for reuse).
 Step : { cmds : List(U8), state : Handle, work : List(U8) }
 
-## The engine state as the host holds it between calls. By design this is
-## `Box(Core.App)`; compiler workaround
-## (https://github.com/roc-lang/roc/issues/12953): the host boundary rejects
-## a box of a state that holds functions but accepts a boxed `Iter`, so the
-## state crosses wrapped in a one-item `Iter`. `hold` is the one place that
-## wraps it and `release` the one place that unwraps it; all three go, and
-## `Step.state` becomes `Box(Core.App)` again, once the plain box is
-## accepted. Stepping the unique handle moves the state out, so the engine
-## still updates it in place.
-Handle : Box(Iter(Core.App))
+## The host owns one opaque box containing the store as plain Roc data and
+## the site tree beside it. The host neither inspects nor shares either part.
+## The nested boxed Iter is the narrow #12953 workaround for sites containing
+## functions: https://github.com/roc-lang/roc/issues/12953.
+## TODO https://github.com/roc-lang/roc/issues/13012: keeping the store outside
+## that closure avoids borrowed capture updates;
+## local site storage remains affected by https://github.com/roc-lang/roc/issues/13012.
+Handle : Box({ store : Store, sites : Box(Iter(Core.Sites(Store))) })
 
 ## The handle over the state the host keeps until its next call.
-hold : Core.App -> Handle
-hold = |engine|
-	Box.box(
-		Iter.custom(
-			Some(engine),
-			Ok(1),
-			|seed|
-				match seed {
-					Some(state) => Ok((state, None))
-					None => Err(NoMore)
-				},
+hold : Core.App(Store) -> Handle
+hold = |engine| {
+	(store, sites) = Core.split(engine)
+	Box.box({
+		store,
+		sites: Box.box(
+			Iter.custom(
+				Some(sites),
+				Ok(1),
+				|seed|
+					match seed {
+						Some(state) => Ok((state, None))
+						None => Err(NoMore)
+					},
+			),
 		),
-	)
+	})
+}
 
 ## The state a handle holds; the host passes each handle back once.
-release : Handle -> Core.App
-release = |handle|
-	match Box.unbox(handle).next() {
-		One({ item, rest: _ }) => item
+release : Handle -> Core.App(Store)
+release = |handle| {
+	{ store, sites } = Box.unbox(handle)
+	match Box.unbox(sites).next() {
+		One({ item, rest: _ }) => Core.join(store, item)
 		_ => crash "internal: the host passed an engine handle whose state was already taken"
 	}
+}
 
 ## The wire protocol version the engine speaks (design.md, Appendix B).
 version_for_host : () -> U32

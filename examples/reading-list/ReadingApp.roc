@@ -1,7 +1,7 @@
 import pf.Engine exposing [Elem, Handler, Row, Signal, State]
 import pf.Html
 import ReadingList
-import Store
+import BookStorage
 
 ## Reading List: the books you want to read, are reading and have finished,
 ## kept in the browser's IndexedDB through ports, so they are still there
@@ -42,15 +42,15 @@ ReadingApp := [].{
 			# it arrives.
 			Engine.watch(
 				Engine.const({}),
-				|_| [Store.load.request({})],
-				Engine.react_by(ReadingList.cells.copy.signal(), |copy, _, res| ReadingList.loaded(copy, Store.load.result(res))),
+				|_| [BookStorage.load.request({})],
+				Engine.react_by(ReadingList.cells.copy.signal(), |copy, _, res| ReadingList.loaded(copy, BookStorage.load.result(res))),
 			),
 			# The database's books again after any tab writes, for as long
 			# as the app runs.
 			Engine.watch(
 				Engine.const({}),
-				|_| [Store.stored.subscribe({})],
-				Engine.react(|_, res| ReadingList.restocked(Store.stored.message(res))),
+				|_| [BookStorage.stored.subscribe({})],
+				Engine.react(|_, res| ReadingList.restocked(BookStorage.stored.message(res))),
 			),
 			# Read the time a task after submission. Refusal uses the last
 			# sampled clock; each answer mints its own complete book in Roc.
@@ -64,7 +64,7 @@ ReadingApp := [].{
 			),
 			# A new book, ready to store. `on_post` never stops
 			# an earlier add for a later one: each answer arrives.
-			Engine.on_post(ReadingList.cells.adding.signal(), |asked| [Store.add.request(asked)], Engine.react(|asked, res| ReadingList.added(asked, Store.add.result(res)))),
+			Engine.on_post(ReadingList.cells.adding.signal(), |asked| [BookStorage.add.request(asked)], Engine.react(|asked, res| ReadingList.added(asked, BookStorage.add.result(res)))),
 			# Every change's commands, sent in the turn of the click that
 			# made them.
 			Engine.on_post(ReadingList.cells.writes.signal(), ReadingList.requests, Engine.ignore({})),
@@ -77,7 +77,7 @@ ReadingApp := [].{
 	program : Engine.Program
 	program =
 		Engine.program_store({ storage_keys: [], max_inflight: 32 }, ReadingList.start, |_| ReadingApp.view({}))
-			.with_ports(Store.registrations)
+			.with_ports(BookStorage.registrations)
 }
 
 ## A labelled text box of the form.
@@ -132,7 +132,7 @@ shelf_button = |counted, { label, showing }|
 ## One book, a row of the list: its title and author, its shelf, and what
 ## can be done with it. The row reads its own book, so a move to another
 ## shelf re-evaluates this row and no other.
-book : Signal(Row(ctx, Str), Str), State(Row(ctx, Str), Store.Book) -> Elem(Row(ctx, Str))
+book : Signal(Row(ctx, Str), Str), State(Row(ctx, Str), BookStorage.Book) -> Elem(Row(ctx, Str))
 	where [ctx.store : () -> Engine.Reach(ctx, _)]
 book = |id, row| {
 	held = row.signal()

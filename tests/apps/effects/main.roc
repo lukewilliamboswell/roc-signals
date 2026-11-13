@@ -7,3 +7,6 @@ import FxApp
 ## `roc build --target=x64musl` its native spec runner.
 main : Engine.Program
 main = FxApp.program
+
+## The instance holds this store beside its site tree.
+Store : {}

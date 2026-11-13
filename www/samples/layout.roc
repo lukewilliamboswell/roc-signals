@@ -68,3 +68,6 @@ expect {
 	size = { width: 300, height: 150 }
 	size.height // 20 == 7
 }
+
+## The instance holds this store beside its site tree.
+Store : {}

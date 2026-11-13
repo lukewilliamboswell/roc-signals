@@ -10,3 +10,6 @@ main = Engine.program_boot(
 		Engine.watch(Engine.const(initial), |length| [Timer(2147483648 + (length - length))], Engine.ignore({}))
 	},
 )
+
+## No shared store is declared by this contract fixture.
+Store : {}

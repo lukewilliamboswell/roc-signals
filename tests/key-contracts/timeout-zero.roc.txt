@@ -13,3 +13,6 @@ main = Engine.program_boot(
 		Engine.watch(Engine.const({}), |_| [call.request({})], Engine.ignore({}))
 	},
 )
+
+## No shared store is declared by this contract fixture.
+Store : {}

@@ -1992,14 +1992,14 @@ Core := [].{
 	## For test platforms and harnesses: the instance's effect counters (issued,
 	## delivered, stale, refused, cancelled, reparented, skipped) and the number
 	## of requests in flight.
-	fx_stats : App -> { issued : U64, delivered : U64, stale : U64, refused : U64, cancelled : U64, live : U64, reparented : U64, skipped : U64 }
+	fx_stats : App(st) -> { issued : U64, delivered : U64, stale : U64, refused : U64, cancelled : U64, live : U64, reparented : U64, skipped : U64 }
 	fx_stats = |a| {
 		fx = a.tx.fx
 		{ issued: fx.issued, delivered: fx.delivered, stale: fx.stale, refused: fx.refused, cancelled: fx.cancelled, live: fx.live.len(), reparented: fx.reparented, skipped: fx.skipped }
 	}
 
 	## For test platforms and harnesses: the ids of the requests in flight, in issue order.
-	fx_live : App -> List(U32)
+	fx_live : App(st) -> List(U32)
 	fx_live = |a| a.tx.fx.live.map(|l| l.id)
 
 	## For the wire format: what a file's encoding carries beside its handle.
@@ -2523,11 +2523,24 @@ Core := [].{
 		handler,
 	)
 
-	## A mounted engine instance: the site tree and the turn state. The host
+	## A mounted engine instance owns its store as plain data beside its site
+	## tree and turn state. No site captures the store. The host
 	## holds it between calls through [Program]; test platforms and harnesses drive
 	## it directly with `mount`, `event`, `result` and `take_cmds`. `programs`
 	## is the program's catalogue: its worker tasks' names and its ports.
-	App :: { root : Inst(Top), tx : Tx, programs : Catalogue }
+	App(st) :: { root : Inst(Root(st)), store : st, tx : Tx, programs : Catalogue }
+
+	## The site tree and engine bookkeeping, separated from the store only while
+	## the platform moves both parts through its single opaque host handle.
+	Sites(st) :: { root : Inst(Root(st)), tx : Tx, programs : Catalogue }
+
+	## Move the store out as plain data; no site captures it.
+	split : App(st) -> (st, Sites(st))
+	split = |{ store, root, tx, programs }| (store, { root, tx, programs })
+
+	## Reunite the uniquely owned store with its site tree after host transfer.
+	join : st, Sites(st) -> App(st)
+	join = |store, { root, tx, programs }| { store, root, tx, programs }
 
 	## What a program declares beside its view, kept beside the engine root
 	## (never in the turn, whose every field costs code at each site
@@ -2562,24 +2575,24 @@ Core := [].{
 	## For test platforms and harnesses: mount an app under host node 0 with the
 	## default in-flight bound of 32. The mount's commands wait in the instance
 	## until `take_cmds`.
-	mount : Elem(Root({})) -> App
+	mount : Elem(Root({})) -> App({})
 	mount = |elem| Core.mount_with(32, elem)
 
 	## For test platforms and harnesses: mount with an explicit in-flight effect
 	## bound, running any follow-up turns the mount queued.
-	mount_with : U64, Elem(Root({})) -> App
+	mount_with : U64, Elem(Root({})) -> App({})
 	mount_with = |max, elem| mount_in(max, { workers: [], ports: no_ports, media: [] }, {}, elem)
 
-	## For test platforms and harnesses: mount an app whose root holds
+	## For test platforms and harnesses: mount an app whose instance holds
 	## the store that starts as `start` (`Store.initial`), with an explicit
 	## in-flight bound.
-	mount_store : U64, Start(st), Elem(Root(st)) -> App
+	mount_store : U64, Start(st), Elem(Root(st)) -> App(st)
 	mount_store = |max, start, elem| mount_start(max, { workers: [], ports: no_ports, media: [] }, start, elem)
 
 	## For test platforms and harnesses: deliver a DOM event to `node` and its
 	## handler number with the event's payload, as one turn (plus any
 	## follow-up turns). An event on a node that has since been removed is ignored.
-	event : App, U32, U32, Str -> App
+	event : App(st), U32, U32, Str -> App(st)
 	event = |inst, node, handler, payload| deliver(inst, node, handler, Ev(payload.to_utf8()))
 
 	## For test platforms and harnesses: deliver the files a files-kind event
@@ -2587,14 +2600,14 @@ Core := [].{
 	## record (Appendix B) and `blobs` the handles the host minted for it, in
 	## the record's order; a record that does not match them is a contract
 	## error. An event on a removed node is ignored, and its handles go with it.
-	event_files : App, U32, U32, List(U8), List(Blob) -> App
+	event_files : App(st), U32, U32, List(U8), List(Blob) -> App(st)
 	event_files = |inst, node, handler, record, blobs| {
 		deliver(inst, node, handler, Files(record, blobs))
 	}
 
 	## Route an event's payload to its node's handler.
-	deliver : App, U32, U32, Payload -> App
-	deliver = |{ root, tx, programs }, node, handler, payload| {
+	deliver : App(st), U32, U32, Payload -> App(st)
+	deliver = |{ store, root, tx, programs }, node, handler, payload| {
 		# O(1): the route gives a static node's block path or a row's site and
 		# slot (the site's path + slot). The handler number comes from the host
 		# (LISTEN or the template carried it per event name), so an element
@@ -2610,42 +2623,42 @@ Core := [].{
 			}
 		}
 		match target {
-			Err(Stale) => { root, tx, programs }
-			Ok((path, h)) => drain(turn({ root, tx: start_batch(tx), programs }, path, h, payload))
+			Err(Stale) => { store, root, tx, programs }
+			Ok((path, h)) => drain(turn({ store, root, tx: start_batch(tx), programs }, path, h, payload))
 		}
 	}
 
 	## For test platforms and harnesses: deliver an effect result for request `id`,
 	## as one turn exactly like an event. An id that is not in flight is
 	## dropped and counted `stale`.
-	result : App, U32, Result -> App
-	result = |{ root, tx, programs }, id, res| {
+	result : App(st), U32, Result -> App(st)
+	result = |{ store, root, tx, programs }, id, res| {
 		match tx.fx.live.find_first(|l| l.id == id) {
-			Err(_) => { root, tx: fx_count(tx, Stale), programs }
+			Err(_) => { store, root, tx: fx_count(tx, Stale), programs }
 			Ok(entry) => {
 				# A subscription stays live until it is cancelled, unless its
 				# JavaScript ended it (a port's `Closed` or `Threw`).
 				tx1 = if (entry.sub and !(programs.ports.ends)(res)) tx else with_fx(tx, |fx| { ..fx, live: fx.live.keep_if(|l| l.id != id) })
-				drain(turn({ root, tx: start_batch(tx1), programs }, entry.path, id, Fx(Final(res))))
+				drain(turn({ store, root, tx: start_batch(tx1), programs }, entry.path, id, Fx(Final(res))))
 			}
 		}
 	}
 
 	## Deliver a sampled transfer through its live request’s owning path without
 	## retiring the request. An unsolicited report is a contract error.
-	progress : App, U32, Transfer -> App
-	progress = |{ root, tx, programs }, id, transfer| match tx.fx.live.find_first(|entry| entry.id == id) {
-		Err(_) => { root, tx: fx_count(tx, Stale), programs }
+	progress : App(st), U32, Transfer -> App(st)
+	progress = |{ store, root, tx, programs }, id, transfer| match tx.fx.live.find_first(|entry| entry.id == id) {
+		Err(_) => { store, root, tx: fx_count(tx, Stale), programs }
 		Ok(entry) => if entry.progress {
-			drain(turn({ root, tx: start_batch(tx), programs }, entry.path, id, Fx(Progress(transfer))))
+			drain(turn({ store, root, tx: start_batch(tx), programs }, entry.path, id, Fx(Progress(transfer))))
 		} else crash "contract: transfer progress was not requested for effect ${id.to_str()} at site ${show_path(entry.path)}"
 	}
 
 	## For test platforms and harnesses: take the commands accumulated since the
 	## last call, reusing `buf` (cleared) for the next batch.
 	## Finalization merges transition types into one terminal command.
-	take_cmds : App, List(U8) -> (App, List(U8))
-	take_cmds = |{ root, tx, programs }, buf| {
+	take_cmds : App(st), List(U8) -> (App(st), List(U8))
+	take_cmds = |{ store, root, tx, programs }, buf| {
 		{ cmds, next, free, routes, work, paths, site_free, observations, fx } = tx
 		{ next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch } = fx
 		{ mounting, asked, types, seen: _ } = batch
@@ -2660,17 +2673,17 @@ Core := [].{
 			$cmds = $cmds.clear()
 		}
 		fx2 = { next: fx_next, inner, live, queue, max, issued, delivered, stale, refused, cancelled, reparented, skipped, document_nodes, observed, refs, focus, ref_pos, cleanups, guard, batch: { mounting, asked: False, types: [], seen: Dict.empty() } }
-		({ root, tx: { cmds: buf.clear(), next, free, routes, work: add_work(work, 45, if (asked) 1 else 0), paths, site_free, observations, fx: fx2 }, programs }, $cmds)
+		({ store, root, tx: { cmds: buf.clear(), next, free, routes, work: add_work(work, 45, if (asked) 1 else 0), paths, site_free, observations, fx: fx2 }, programs }, $cmds)
 	}
 
 	## For test platforms and harnesses: how many app closures (holes, values,
 	## reducers) the instance has evaluated so far.
-	evals : App -> U64
+	evals : App(st) -> U64
 	evals = |a| work_get(a.tx.work, w_evals)
 
 	## For test platforms and harnesses: the instance's work counters so far, in
 	## the order of the host's work record (design.md, "Work assertions").
-	work_counters : App -> List(U64)
+	work_counters : App(st) -> List(U64)
 	work_counters = |a| {
 		var $out = []
 		var $i = 0.U64
@@ -2717,11 +2730,11 @@ Core := [].{
 	## shares the instance's storage, so the pass copies what it touches, and
 	## once the result is dropped the instance owns its storage alone again.
 	## Run it outside any region that measures allocations.
-	settled : App -> Try({}, { cmds : List(U8), note : Str })
-	settled = |{ root, tx, programs: _ }| {
+	settled : App(st) -> Try({}, { cmds : List(U8), note : Str })
+	settled = |{ store, root, tx, programs: _ }| {
 		before = tx.fx
 		scratch = with_fx(tx, |effects| { ..effects, batch: { mounting: False, asked: False, types: [], seen: Dict.empty() } })
-		(_, _, after) = call(root, Top, Changed(every_layer), { ..scratch, cmds: [] })
+		(_, _, after) = call(root, Root.{ store }, Changed(every_layer), { ..scratch, cmds: [] })
 		note = settle_note(before, after.fx)
 		if (after.cmds.is_empty() and note.is_empty()) Ok({}) else Err({ cmds: after.cmds, note })
 	}
@@ -2793,11 +2806,11 @@ Core := [].{
 	## they are reused in place. A worker instance of the same module never
 	## mounts; it only runs the catalogue's tasks. Apps build one with
 	## `program` or `program_boot` and bind it as `main`.
-	Program :: {
+	Program(st) :: {
 		version : U32,
 		keys : () -> List(U8),
-		init : Catalogue, List(U8) -> (App, List(U8), List(U8)),
-		event : App, List(U8), List(U8), U32, U32, List(U8) -> (App, List(U8), List(U8)),
+		init : Catalogue, List(U8) -> (App(st), List(U8), List(U8)),
+		event : App(st), List(U8), List(U8), U32, U32, List(U8) -> (App(st), List(U8), List(U8)),
 		workers : List(Registration),
 		ports : Ports,
 		media : List(Str),
@@ -2811,7 +2824,7 @@ Core := [].{
 		## error when the program mounts. A request for a port not declared
 		## here, or for a declared port as another shape, is a contract error
 		## naming the port and the site.
-		with_ports : Program, List(PortDecl) -> Program
+		with_ports : Program(st), List(PortDecl) -> Program(st)
 		with_ports = |p, decls| { ..p, ports: ports_of(p.ports.decls.concat(decls)) }
 
 		## Add worker tasks to the program's catalogue, so its effect sites can
@@ -2820,7 +2833,7 @@ Core := [].{
 		## most 64 names may be registered (a preparation's and its tasks' each
 		## count) and each name once; anything else is a contract error when the
 		## catalogue is built.
-		with_workers : Program, List(Registration) -> Program
+		with_workers : Program(st), List(Registration) -> Program(st)
 		with_workers = |p, registrations| { ..p, workers: p.workers.concat(registrations) }
 	}
 
@@ -2829,7 +2842,7 @@ Core := [].{
 	## are `work!`, `work_prepare!` and `work_ask!`. `settled` is the settle
 	## check (`Core.settled`) and `live` the requests in flight
 	## (`Core.fx_live`), which only harnesses call.
-	driver : Program -> { version : U32, keys : () -> List(U8), init : List(U8) -> (App, List(U8), List(U8)), event : App, List(U8), List(U8), U32, U32, List(U8) -> (App, List(U8), List(U8)), files : App, List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (App, List(U8), List(U8)), settled : App -> Try({}, { cmds : List(U8), note : Str }), live : App -> List(U32) }
+	driver : Program(st) -> { version : U32, keys : () -> List(U8), init : List(U8) -> (App(st), List(U8), List(U8)), event : App(st), List(U8), List(U8), U32, U32, List(U8) -> (App(st), List(U8), List(U8)), files : App(st), List(U8), List(U8), U32, U32, List(U8), List(Box(U64)) -> (App(st), List(U8), List(U8)), settled : App(st) -> Try({}, { cmds : List(U8), note : Str }), live : App(st) -> List(U32) }
 	driver = |p| {
 		init = p.init
 		workers = p.workers
@@ -2844,9 +2857,9 @@ Core := [].{
 			init: |boot| init({ workers: catalogue_names(workers), ports: { ..ports, decls: (ports.ready)(ports.decls) }, media }, boot),
 			event: p.event,
 			files: |inst, buf, wbuf, node, handler, record, blobs| {
-				{ root, tx, programs } = inst
+				{ store, root, tx, programs } = inst
 				{ cmds: _, next, free, routes, work, paths, site_free, observations, fx } = tx
-				fresh = { root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs }
+				fresh = { store, root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs }
 				handles = blobs.map(|b| Blob.(b))
 				if node == fx_node {
 					# A result that carries files: a port's answer (result
@@ -2874,7 +2887,7 @@ Core := [].{
 	## module, or the name of a preparation's task (those run through
 	## `work_prepare!` and `work_ask!`), is a contract error that poisons this
 	## worker instance only.
-	work! : Program, JobEffects, List(U8), List(Box(U64)) => List(U8)
+	work! : Program(st), JobEffects, List(U8), List(Box(U64)) => List(U8)
 	work! = |p, effects, payload, handles| {
 		registrations = p.workers
 		_ = catalogue_names(registrations)
@@ -2900,7 +2913,7 @@ Core := [].{
 	## preparation's files and returns the state the instance keeps. A name
 	## that is not a preparation registered in this module is a contract
 	## error that poisons this worker instance only.
-	work_prepare! : Program, JobEffects, List(U8), List(Box(U64)) => Kept
+	work_prepare! : Program(st), JobEffects, List(U8), List(Box(U64)) => Kept
 	work_prepare! = |p, effects, payload, handles| {
 		registrations = p.workers
 		_ = catalogue_names(registrations)
@@ -2972,20 +2985,20 @@ Core := [].{
 
 	## The [Program] for an app that needs no boot data: mount `view()` with the
 	## default in-flight bound of 32.
-	program : (() -> Elem(Root({}))) -> Program
+	program : (() -> Elem(Root({}))) -> Program({})
 	program = |view| Core.program_boot({}, |_| view())
 
 	## The [Program] for an app that reads boot data: the host reads
 	## `storage_keys` from local storage before mount, and `view` receives them in
 	## the [Boot] with the URL and connectivity. `max_inflight` bounds the awaited
 	## requests in flight at once.
-	program_boot : ProgramProps, (Boot -> Elem(Root({}))) -> Program
+	program_boot : ProgramProps, (Boot -> Elem(Root({}))) -> Program({})
 	program_boot = |cfg, view| Core.program_store(cfg, |_| Core.no_store, view)
 
 	## The [Program] for an app with a root store: `start` gives what
 	## the store starts with at mount (`Store.initial`), from the boot data,
 	## and `view` the UI over it.
-	program_store : ProgramProps, (Boot -> Start(st)), (Boot -> Elem(Root(st))) -> Program
+	program_store : ProgramProps, (Boot -> Start(st)), (Boot -> Elem(Root(st))) -> Program(st)
 	program_store = |cfg, start, view| {
 		if cfg.zone_days > 7305 {
 			crash "contract: ProgramProps.zone_days must be at most 7305"
@@ -3025,9 +3038,9 @@ Core := [].{
 				finish(mount_start(cfg.max_inflight, names, start(b), view(b)), [], [])
 			},
 			event: |inst, buf, wbuf, node, handler, payload| {
-				{ root, tx, programs } = inst
+				{ store, root, tx, programs } = inst
 				{ cmds: _, next, free, routes, work, paths, site_free, observations, fx } = tx
-				fresh = { root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs }
+				fresh = { store, root, tx: { cmds: buf.clear(), next, free, routes, work, paths, site_free, observations, fx }, programs }
 				if node == fx_node {
 					finish(if (payload.first() == Ok(26)) Core.progress(fresh, handler, decode_progress(payload)) else Core.result(fresh, handler, decode_res_with(payload, programs.ports.decode)), [], wbuf)
 				} else {
@@ -3457,7 +3470,7 @@ w_count = 32
 ## cancelled, reparented, skipped, and the live ids (a gauge, not a count).
 ## They are read from the effect table when the record is written, so the
 ## accumulator keeps no second copy.
-fx_counters : App -> List(U64)
+fx_counters : App(st) -> List(U64)
 fx_counters = |a| {
 	fx = a.tx.fx
 	[fx.issued, fx.delivered, fx.stale, fx.refused, fx.cancelled, fx.reparented, fx.skipped, fx.live.len()]
@@ -4610,6 +4623,10 @@ state_out = |out| match out {
 ## until its readers are refreshed, in the same turn: by the pass of the
 ## outer write, if that pass reaches the site, and otherwise by the
 ## `Settle` walk that follows it.
+## TODO https://github.com/roc-lang/roc/issues/13012: boxed site captures
+## remain borrowed; local state can copy even in development builds.
+## TODO https://github.com/roc-lang/roc/issues/13019: optimized writes still
+## copy site storage without a boxed engine value; no local workaround found.
 state_inst : s, Block(In(ctx, s)), U64, [Settled, Waiting] -> Inst(ctx)
 state_inst = |s0, block0, depth0, waits0| {
 	held = { s: s0, block: block0, depth: depth0, waits: waits0 }
@@ -4758,54 +4775,36 @@ block_inst = |block0| {
 	)
 }
 
-## The context the root site is called in: nothing, since the root site
-## holds what the root context carries.
-Top := [Top]
-
-## The root site. It owns the program's store `st` (exactly one reference
-## to it: this closure's) and the block of the program's view. For an
-## event the store moves into the root context and comes back out of it,
-## as a state site's value does, so a handler that writes a cell at any
-## depth receives the store uniquely owned and writes in place. Writes to
-## cells are settled here and nowhere else: the turn's one `Changed` pass
-## carries their signature from this site down. A layer the same event
-## wrote joins that pass where it reaches the layer's site
-## (`waits_for_outer`).
-##
-## That pass is also where a turn ends for the store's tables. The site
-## keeps the set the turn wrote (`wrote`) from the event until the pass,
-## and once the pass has refreshed every reader it rearms each table whose
-## cell is in the set (`end_tables`). Its changes remain observable until
-## the next writing turn's first modifier, which clears them before the
-## modifier runs. A turn that wrote no table pays one signature test.
-store_inst : st, Tables(st), Layers, Block(Root(st)) -> Inst(Top)
-store_inst = |st0, tables0, wrote0, block0| {
-	held = { st: st0, tables: tables0, wrote: wrote0, block: block0 }
+## The root site owns its block, table bookkeeping and exact pending write set.
+## The instance moves the store into each call's Root context and takes it back
+## from Pending. The Changed pass rearms only written tables after refreshing
+## readers; their last writing turn's record remains until the next write.
+## TODO https://github.com/roc-lang/roc/issues/13019: moving the store out
+## fixes development ownership, but optimized site paths can still copy it.
+store_inst : Tables(st), Layers, Block(Root(st)) -> Inst(Root(st))
+store_inst = |tables0, wrote0, block0| {
+	held = { tables: tables0, wrote: wrote0, block: block0 }
 	Inst(
-		|_, msg, tx| {
-			{ st, tables, wrote, block } = held
+		|env, msg, tx| {
+			{ tables, wrote, block } = held
 			match msg {
 				Changed(mask) => {
-					(b2, t2) = refresh(block, Root.{ store: st }, mask, tx)
-					(store_inst(end_tables(st, tables, wrote), tables, no_layers, b2), Done, t2)
+					(b2, t2) = refresh(block, env, mask, tx)
+					(store_inst(tables, no_layers, b2), Pending(Root.{ store: end_tables(env.store, tables, wrote) }, no_layers), t2)
 				}
-				Fire(path, pos, h, payload) => {
-					# `st` moves into the environment here and is never used again
-					# on this path, so a reducer below sees it uniquely owned.
-					match fire_target(block, path, pos) {
-						Leaf => {
-							(b2, out, t2) = fire_leaf(block, Root.{ store: st }, h, payload, path, tx)
-							store_settle(b2, tables, out, t2)
-						}
-						Kid => {
-							(b2, out, t2) = fire_kid(block, Root.{ store: st }, path, pos, h, payload, tx)
-							store_settle(b2, tables, out, t2)
-						}
-						Miss => store_settle(block, tables, Pending(Root.{ store: st }, no_layers), tx)
+				Fire(path, pos, h, payload) => match fire_target(block, path, pos) {
+					Leaf => {
+						(b2, out, t2) = fire_leaf(block, env, h, payload, path, tx)
+						store_settle(b2, tables, out, t2)
 					}
+					Kid => {
+						(b2, out, t2) = fire_kid(block, env, path, pos, h, payload, tx)
+						store_settle(b2, tables, out, t2)
+					}
+					Miss => store_settle(block, tables, Pending(env, no_layers), tx)
 				}
 				Dispose(remove) => {
-					(_, t2) = dispose_block(block, Root.{ store: st }, remove, tx)
+					(_, t2) = dispose_block(block, env, remove, tx)
 					(noop({}), Orphaned([]), t2)
 				}
 			}
@@ -4856,19 +4855,13 @@ end_tables = |st, tables, wrote| {
 	}
 }
 
-## After an event: take the store back out of the root context, keep the
-## set the event wrote for the end of the turn, and hand it up to the
-## turn, which runs the one `Changed` pass.
-store_settle : Block(Root(st)), Tables(st), Out(Root(st)), Tx -> (Inst(Top), Out(Top), Tx)
-store_settle = |block, tables, out, tx| {
-	match out {
-		Done => crash "internal: fire must hand the environment back"
-		Orphaned(_) => crash "internal: fire must hand the environment back"
-		Pending(env, writes) => {
-			{ store } = env
-			(store_inst(store, tables, writes, block), Pending(Top, writes), tx)
-		}
-	}
+## After an event, return its root environment intact to the instance and
+## keep only the write set for end-of-turn table rearming. The turn moves that
+## store into its one Changed pass before any later input can write again.
+store_settle : Block(Root(st)), Tables(st), Out(Root(st)), Tx -> (Inst(Root(st)), Out(Root(st)), Tx)
+store_settle = |block, tables, out, tx| match out {
+	Pending(env, writes) => (store_inst(tables, writes, block), Pending(env, writes), tx)
+	_ => crash "internal: fire must hand the environment back"
 }
 
 ## The halves of a pair of store cells, for the generated lenses.
@@ -7034,19 +7027,19 @@ max_answer_files = 16
 
 ## Mount `elem` with the in-flight bound `max` and the program's catalogue,
 ## running any follow-up turns the mount queued.
-mount_in : U64, Catalogue, st, Elem(Root(st)) -> App
+mount_in : U64, Catalogue, st, Elem(Root(st)) -> App(st)
 mount_in = |max, programs, st, elem| mount_start(max, programs, { st, tables: [] }, elem)
 
 ## `mount_in` for a root whose store starts as `start`: the root
 ## site also takes what it needs of the store's table cells.
-mount_start : U64, Catalogue, Core.Start(st), Elem(Root(st)) -> App
+mount_start : U64, Catalogue, Core.Start(st), Elem(Root(st)) -> App(st)
 mount_start = |max, programs, { st, tables }, elem| {
 	{ cmds, next, free, routes, work, paths, site_free, observations, fx } = new_tx([])
 	tx0 = { cmds, next, free, routes, work, paths, site_free, observations, fx: { ..fx, max } }
 	(block, tx) = mount_block(Root.{ store: st }, elem, 0, [], 0, 0, { cap: 0 }, tx0)
 	written = tables.fold(0.U128, |acc, t| acc.bitwise_or(cell_bit(t.cell)))
-	{ root, tx: mounted, programs: catalogue } = drain({ root: store_inst(st, { cells: tables, written }, no_layers, block), tx: flush_turn(tx, programs), programs })
-	{ root, tx: with_fx(mounted, |effects| { ..effects, batch: { ..effects.batch, mounting: False } }), programs: catalogue }
+	{ store, root, tx: mounted, programs: catalogue } = drain({ store: st, root: store_inst({ cells: tables, written }, no_layers, block), tx: flush_turn(tx, programs), programs })
+	{ store, root, tx: with_fx(mounted, |effects| { ..effects, batch: { ..effects.batch, mounting: False } }), programs: catalogue }
 }
 
 ## A files-kind event's record (design.md, Appendix B), `count:u32
@@ -8896,27 +8889,28 @@ new_tx = |cmds| { cmds: cmds.append(0), next: 1, free: [], routes: [], work: wor
 ## the same path for those the pass did not reach; then the turn's focus
 ## commands (resolved now, so a reference mounted later in the same turn
 ## is found; a missing one is counted stale).
-turn : App, List(U32), U32, Payload -> App
-turn = |{ root, tx, programs }, path, h, payload| {
-	(root2, out, tx2) = call(root, Top, Fire(path, 0, h, payload), bump(tx, w_turns, 1))
-	writes = out_writes(out)
+turn : App(st), List(U32), U32, Payload -> App(st)
+turn = |{ store, root, tx, programs }, path, h, payload| {
+	(root2, out, tx2) = call(root, Root.{ store }, Fire(path, 0, h, payload), bump(tx, w_turns, 1))
+	(store2, writes) = root_answer(out)
 	force = tx2.observations.echo
 	if layers_empty(writes) {
 		if force {
-			(root3, _, tx3) = call(root2, Top, Fire(path, 0, h, Settle(no_layers, True)), tx2)
-			{ root: root3, tx: flush_turn(tx3, programs), programs }
+			(root3, answer3, tx3) = call(root2, Root.{ store: store2 }, Fire(path, 0, h, Settle(no_layers, True)), tx2)
+			{ store: root_answer(answer3).0, root: root3, tx: flush_turn(tx3, programs), programs }
 		} else {
-			{ root: root2, tx: flush_turn(tx2, programs), programs }
+			{ store: store2, root: root2, tx: flush_turn(tx2, programs), programs }
 		}
 	} else {
 		cells = cells_of(writes)
 		waiting = layers_from(writes, 0)
-		(root3, _, tx3) = call(root2, Top, Changed(layers_sig(cells)), bump(tx2, w_dirty_roots, layers_count(cells)))
+		(root3, answer3, tx3) = call(root2, Root.{ store: store2 }, Changed(layers_sig(cells)), bump(tx2, w_dirty_roots, layers_count(cells)))
+		(store3, _) = root_answer(answer3)
 		if layers_empty(waiting) and !force {
-			{ root: root3, tx: flush_turn(tx3, programs), programs }
+			{ store: store3, root: root3, tx: flush_turn(tx3, programs), programs }
 		} else {
-			(root4, _, tx4) = call(root3, Top, Fire(path, 0, h, Settle(waiting, force)), tx3)
-			{ root: root4, tx: flush_turn(tx4, programs), programs }
+			(root4, answer4, tx4) = call(root3, Root.{ store: store3 }, Fire(path, 0, h, Settle(waiting, force)), tx3)
+			{ store: root_answer(answer4).0, root: root4, tx: flush_turn(tx4, programs), programs }
 		}
 	}
 }
@@ -9021,7 +9015,7 @@ flush_turn = |incoming, programs| {
 ## or more are counted, at most `max_breadth(max_inflight)` per host call:
 ## a loop in which each follow-up queues two or more reaches that long
 ## before it reaches the depth bound.
-drain : App -> App
+drain : App(st) -> App(st)
 drain = |app0| {
 	var $app = app0
 	var $deep_turns = 0.U64
@@ -9030,7 +9024,7 @@ drain = |app0| {
 	var $below_inner = app0.tx.fx.inner
 	breadth = max_breadth(app0.tx.fx.max)
 	while !$app.tx.fx.queue.is_empty() {
-		{ root, tx, programs } = $app
+		{ store, root, tx, programs } = $app
 		q = tx.fx.queue.first() ?? crash "queue"
 		deeper = if (q.id >= fx_inner_base) q.id >= $below_inner else q.id >= $below_next
 		if deeper {
@@ -9048,7 +9042,7 @@ drain = |app0| {
 			$deep_turns = $deep_turns + 1
 		}
 		tx1 = with_fx(tx, |fx| { ..fx, queue: fx.queue.drop_first(1) })
-		$app = turn({ root, tx: tx1, programs }, q.path, q.id, Fx(Final(q.res)))
+		$app = turn({ store, root, tx: tx1, programs }, q.path, q.id, Fx(Final(q.res)))
 	}
 	$app
 }
@@ -9064,15 +9058,16 @@ popcount = |m| {
 	$n
 }
 
-out_writes : Out(Top) -> Layers
-out_writes = |out| match out {
-	Pending(_, m) => m
-	_ => no_layers
+## Every non-disposal root call returns the uniquely owned store with its writes.
+root_answer : Out(Root(st)) -> (st, Layers)
+root_answer = |out| match out {
+	Pending(env, writes) => (env.store, writes)
+	_ => crash "internal: root call must hand the store back"
 }
 
 ## Hand over the command batch (taking `buf` in its place) and write the
 ## work record into `wbuf`.
-finish : App, List(U8), List(U8) -> (App, List(U8), List(U8))
+finish : App(st), List(U8), List(U8) -> (App(st), List(U8), List(U8))
 finish = |inst, buf, wbuf| {
 	(a2, cmds) = Core.take_cmds(inst, buf)
 	w = work_bytes(a2, wbuf)
@@ -9083,7 +9078,7 @@ finish = |inst, buf, wbuf| {
 ## in `w_` index order followed by the effect counters (`fx_counters`),
 ## then `n:u32 (name:str runs:u64)*` for the cleanups that have run.
 ## Written into `buf`, which is cleared first.
-work_bytes : App, List(U8) -> List(U8)
+work_bytes : App(st), List(U8) -> List(U8)
 work_bytes = |inst, buf| {
 	counters = inst.tx.work
 	var $b = put_u32(buf.clear(), w_record_count.to_u32_wrap())

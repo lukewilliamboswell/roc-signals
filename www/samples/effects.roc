@@ -331,4 +331,8 @@ progress_search = |_| Engine.state(
 		],
 	),
 )
+
 # endregion progress
+
+## The instance holds this store beside its site tree.
+Store : {}

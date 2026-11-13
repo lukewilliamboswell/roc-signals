@@ -15,7 +15,7 @@ import pf.Port
 ## - `stored` is a subscription: the books as stored, after any tab
 ##   (this one included) changes them, so every open tab converges on what
 ##   the store holds.
-Store := [].{
+BookStorage := [].{
 
 	## Which shelf a book is on. It crosses as its tag's name
 	## (`"WantToRead"`), and IndexedDB keeps it that way.
@@ -53,10 +53,10 @@ Store := [].{
 	## The program's entry for `Program.with_ports`: every port, once.
 	registrations : List(Engine.PortRegistration)
 	registrations = [
-		Store.load.registration(),
-		Store.add.registration(),
-		Store.put.registration(),
-		Store.remove.registration(),
-		Store.stored.registration(),
+		BookStorage.load.registration(),
+		BookStorage.add.registration(),
+		BookStorage.put.registration(),
+		BookStorage.remove.registration(),
+		BookStorage.stored.registration(),
 	]
 }

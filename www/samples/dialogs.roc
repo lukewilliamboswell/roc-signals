@@ -49,3 +49,6 @@ page = |model| Html.div(
 		help(model),
 	],
 )
+
+## The instance holds this store beside its site tree.
+Store : {}

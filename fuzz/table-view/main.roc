@@ -1053,7 +1053,10 @@ bytes_of = |steps| steps.fold(
 )
 
 ## The engine, the oracle's DOM and the model.
-S : { eng : Core.App, dom : Dom.Model, model : Model }
+## The concrete store storage carried beside the generated site tree.
+Live : Engine.Stored(Tag, ((Engine.Table(U64, Item), U64), (Engine.Table(U64, Item), (Engine.Table(U64, Item), (Listing, (Engine.Window, (Bool, List(U64))))))))
+
+S : { eng : Core.App(Live), dom : Dom.Model, model : Model }
 
 ## Mount the app through its program's driver, as a host does.
 mount : {} -> S
