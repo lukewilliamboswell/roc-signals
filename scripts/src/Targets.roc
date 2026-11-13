@@ -136,6 +136,7 @@ Targets := [].{
 				.concat(Targets.browser!(o, "layout-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "table"), "--runner", SpecSuite.runner_of(o, "table")])?)
 				.concat(Targets.browser!(o, "outbox-browser.mjs", ["--wasm", SpecSuite.wasm_of(o, "outbox")])?)
 				.concat(Targets.browser!(o, "services-browser.mjs", ["--wasm", services])?)
+				.concat(Targets.browser!(o, "transitions-browser.mjs", ["--wasm", services])?)
 				.concat(Targets.browser!(o, "workers-browser.mjs", ["--wasm", workers])?)
 				.concat(Targets.browser!(o, "monitor-browser.mjs", ["--wasm", workers])?)
 				.concat(Targets.browser!(o, "workers-scaling.mjs", ["--wasm", SpecSuite.wasm_of(o, "worker-lab"), "--mode", "smoke"])?)

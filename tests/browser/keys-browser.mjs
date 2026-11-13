@@ -52,7 +52,7 @@ try {
         const key = read(), code = read(), heard = bytes[at++], heardKey = read();
         calls.push({ node, handler, flags: bytes[0], key, code, heard, heardKey });
       };
-      const raw = (...parts) => { const bytes = join(...parts); new Uint8Array(memory.buffer).set(bytes); length = bytes.length; rt.apply(); length = 0; };
+      const raw = (...parts) => { const bytes = join([0], ...parts); new Uint8Array(memory.buffer).set(bytes); length = bytes.length; rt.apply(); length = 0; };
       const emit = (id, key, options = {}) => {
         const { type = "keydown", keyCode = 0, ...fields } = options;
         const event = new KeyboardEvent(type, { key, code: "", bubbles: true, cancelable: true, ...fields });

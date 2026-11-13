@@ -43,7 +43,7 @@ try {
       const rt = new RocEngineRuntime(exports, root, { manualEffects: true });
       rt.controlListeners(); rt.nativeEventListeners(); rt.documentKeyListeners(); rt.listen("submit");
       const calls = []; rt.deliver = (node, handler, bytes) => calls.push({ node, handler, payload: [...bytes] });
-      const raw = (...parts) => { const bytes = join(...parts); new Uint8Array(memory.buffer).set(bytes); length = bytes.length; rt.busy = true; try { rt.apply(); } finally { rt.busy = false; length = 0; } rt.drainQueue(); };
+      const raw = (...parts) => { const bytes = join([0], ...parts); new Uint8Array(memory.buffer).set(bytes); length = bytes.length; rt.busy = true; try { rt.apply(); } finally { rt.busy = false; length = 0; } rt.drainQueue(); };
       const elem = (id, parent, tag) => join([8], u32(id), u32(parent), u32(0), str(tag));
       const attr = (id, name, value) => join([9], u32(id), str(name), [1], str(value));
       const prop = (id, kind, value) => join([21], u32(id), [kind], str(value));

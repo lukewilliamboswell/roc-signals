@@ -44,7 +44,7 @@ try {
       const exports = { memory, cmd_ptr: () => 0, cmd_len: () => length, files_released: () => 0, metric: () => 0n, work_len: () => 0, fault: () => 0, drop: () => {} };
       const rt = new RocEngineRuntime(exports, root, options);
       const calls = []; rt.deliver = (node, handler, bytes) => calls.push({ node, handler, bytes: typeof bytes === "string" ? bytes : [...bytes] });
-      const raw = (...parts) => { const bytes = join(...parts); if (bytes.length > memory.buffer.byteLength) memory.grow(Math.ceil((bytes.length - memory.buffer.byteLength) / 65536)); new Uint8Array(memory.buffer).set(bytes); length = bytes.length; rt.busy = true; try { rt.apply(); } finally { rt.busy = false; length = 0; } rt.drainQueue(); };
+      const raw = (...parts) => { const bytes = join([0], ...parts); if (bytes.length > memory.buffer.byteLength) memory.grow(Math.ceil((bytes.length - memory.buffer.byteLength) / 65536)); new Uint8Array(memory.buffer).set(bytes); length = bytes.length; rt.busy = true; try { rt.apply(); } finally { rt.busy = false; length = 0; } rt.drainQueue(); };
       const elem = (id, parent, tag) => join([8], u32(id), u32(parent), u32(0), str(tag));
       const attr = (id, name, value) => join([9], u32(id), str(name), [1], str(value));
       const listen = (id, handler, type, kind, policies = 8) => join([11], u32(id), u32(handler), str(type), [kind], u32(policies));

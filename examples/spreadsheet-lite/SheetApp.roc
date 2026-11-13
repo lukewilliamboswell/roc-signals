@@ -398,6 +398,7 @@ command_request = |command| match command {
 	Push(value) => Push(value)
 	Replace(value) => Replace(value)
 	Title(value) => Title(value)
+	ViewTransition(types) => ViewTransition(types)
 	Focus(value) => Focus(value)
 	Blur(value) => Blur(value)
 	SelectText(value) => SelectText(value)

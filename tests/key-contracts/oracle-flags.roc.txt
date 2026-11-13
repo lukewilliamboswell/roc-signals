@@ -1,0 +1,13 @@
+app [main] {
+    pf: platform "<PLATFORM>",
+    oracle: "<ORACLE>",
+}
+
+import pf.Engine
+import oracle.Dom
+
+main : Engine.Program
+main = Engine.program(|| {
+    decoded = Dom.apply(Dom.new({}), [2])
+    Engine.text(decoded.nodes.len().to_str())
+})

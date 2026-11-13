@@ -598,6 +598,17 @@ SpecRunner := [].{
 			b = $s.browser
 			$s = { ..$s, browser: { ..b, top_layer: b.top_layer.keep_if(|i| SpecRunner.attached($s.dom, i)) } }
 		}
+		if cmds.first() == Ok(1) {
+			# The browser starts non-node effects before the deferred DOM update.
+			# Native application has no animation gap, but retains that ordering.
+			prior = $s
+			queued = prior.after_batch.drop_first(s.after_batch.len())
+			early = |command| match command {
+				Effect(_) => True
+				Ref(_) | Show(_) => False
+			}
+			$s = { ..prior, after_batch: s.after_batch.concat(queued.keep_if(early)).concat(queued.keep_if(|command| !early(command))) }
+		}
 		$s
 	}
 
@@ -688,7 +699,7 @@ SpecRunner := [].{
 
 	## A runner state for instance `inst` before its first batch.
 	fresh : state, Browser -> S(state)
-	fresh = |inst, browser| { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 24), writes: [], mark: [], focused: 0, focus_value: "", deferred: NoValue, after_batch: [], event_queue: [], applying_focus: Bool.False, draining: Bool.False, turns: 0, fault: Healthy }
+	fresh = |inst, browser| { inst, buf: [], wbuf: [], dom: Dom.new({}), browser, work: { counters: [], cleanups: [] }, ops: List.repeat(0, 25), writes: [], mark: [], focused: 0, focus_value: "", deferred: NoValue, after_batch: [], event_queue: [], applying_focus: Bool.False, draining: Bool.False, turns: 0, fault: Healthy }
 
 	set_store : List((Str, Str)), Str, Str -> List((Str, Str))
 	set_store = |l, key, value| l.keep_if(|(name, _)| name != key).append((key, value))
@@ -1667,7 +1678,7 @@ SpecRunner := [].{
 		# Every issued request is one FX command and every cancelled one a
 		# CANCEL (design.md, "Counters"), so the effect counters must agree
 		# with the commands too.
-		for (counter, op, what) in [(32.U64, 13.U64, "issued"), (36, 14, "cancelled"), (40, 19, "port commands sent"), (41, 21, "properties set"), (42, 22, "row properties set"), (43, 23, "registrations released")] {
+		for (counter, op, what) in [(32.U64, 13.U64, "issued"), (36, 14, "cancelled"), (40, 19, "port commands sent"), (41, 21, "properties set"), (42, 22, "row properties set"), (43, 23, "registrations released"), (45, 24, "view transitions")] {
 			engine = s.work.counters.get(counter) ?? 0
 			oracle = s.ops.get(op) ?? 0
 			if engine != oracle {
@@ -1830,6 +1841,24 @@ SpecRunner := [].{
 			ExpectShown(loc, want) => {
 				i = SpecRunner.need(dom, loc)?
 				check(Dom.node(dom, i).shown == want, "${Scm.show_loc(loc)} is ${Str.inspect(Dom.node(dom, i).shown)}, expected ${Str.inspect(want)}")
+			}
+			ExpectTransitions(count) => {
+				h = dom.transitions
+				if h.exhausted {
+					Err("transition observation ordinal exhausted")
+				}
+				else check(h.count == count, "transition batches performed ${h.count.to_str()}, expected ${count.to_str()}")
+			}
+			ExpectTransition({ at, types }) => {
+				h = dom.transitions
+				if h.exhausted {
+					return Err("transition observation ordinal exhausted")
+				}
+				if at > h.count {
+					return Err("transition ordinal ${at.to_str()} was not performed")
+				}
+				record = h.records.get(at) ? |_| "transition ordinal ${at.to_str()} is unavailable in retained history (newest 4096, at most 1048576 encoded type bytes)"
+				check(record.types == types, "transition ordinal ${at.to_str()} has types ${Str.inspect(record.types)}, expected ${Str.inspect(types)}")
 			}
 			ExpectScrolls(count) => {
 				if b.scroll_exhausted {
@@ -4252,7 +4281,7 @@ expect {
 		init: |_| (0, [], []),
 		event: |count, _buf, _work, node, _handler, _payload| {
 			next = count + 1
-			cmds = if (next == 4096) [] else SpecRunner.put_u32([18, 1], if (node == 1) 2 else 1)
+			cmds = if (next == 4096) [] else SpecRunner.put_u32([0, 18, 1], if (node == 1) 2 else 1)
 			(next, cmds, List.repeat(0, 8))
 		},
 		files: |count, _buf, _work, _node, _handler, _payload, _files| (count, [], List.repeat(0, 8)),
@@ -4277,7 +4306,7 @@ expect {
 		version: Dom.protocol_version,
 		keys: || [],
 		init: |_| ([], [], []),
-		event: |seen, _buf, _work, node, _handler, _payload| (seen.append(node), if (node == 1) SpecRunner.put_u32([18, 1], 3) else [], List.repeat(0, 8)),
+		event: |seen, _buf, _work, node, _handler, _payload| (seen.append(node), if (node == 1) SpecRunner.put_u32([0, 18, 1], 3) else [], List.repeat(0, 8)),
 		files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
 		settled: |_| Ok({}),
 		live: |_| [],
@@ -4300,7 +4329,7 @@ expect {
 		version: Dom.protocol_version,
 		keys: || [],
 		init: |_| (0, [], []),
-		event: |count, _buf, _work, node, _handler, _payload| (count + 1, SpecRunner.put_u32([18, 1], if (node == 1) 2 else 1), List.repeat(0, 8)),
+		event: |count, _buf, _work, node, _handler, _payload| (count + 1, SpecRunner.put_u32([0, 18, 1], if (node == 1) 2 else 1), List.repeat(0, 8)),
 		files: |count, _buf, _work, _node, _handler, _payload, _files| (count, [], List.repeat(0, 8)),
 		settled: |_| Ok({}),
 		live: |_| [],
@@ -4327,7 +4356,7 @@ expect {
 		init: |_| ([], [], []),
 		event: |seen, _buf, _work, id, _handler, _payload| {
 			cmds = if (id == 1) SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([5], 2).append(8), 2), 0), 0), "input") else []
-			(seen.append(id), cmds, List.repeat(0, 8))
+			(seen.append(id), [0].concat(cmds), List.repeat(0, 8))
 		},
 		files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
 		settled: |_| Ok({}),
@@ -4369,7 +4398,7 @@ expect {
 	s = SpecRunner.fresh(0, SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
 	focused = SpecRunner.drain_focus(program, { ..s, dom: $dom, after_batch: [1.U32, 2, 3, 5].map(|id| Ref({ action: Focus(1), node: id, target: Dom.lookup($dom, id) })) })
 	cmds = SpecRunner.put_u32([18, 1], 1).concat(SpecRunner.put_u32([5], 1))
-	removed = SpecRunner.drain_focus(program, SpecRunner.take_batch(focused, 0, cmds))
+	removed = SpecRunner.drain_focus(program, SpecRunner.take_batch(focused, 0, [0].concat(cmds)))
 	{ kept: focused.focused, removed: removed.focused, calls: removed.inst, waiting: removed.after_batch.len() } == { kept: Dom.lookup(focused.dom, 1) + 1, removed: 0, calls: 0, waiting: 0 }
 }
 
@@ -4380,7 +4409,7 @@ expect {
 	listener = SpecRunner.put_u32(SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32([11], 1), 7), "change").append(2), 2)
 	value = SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(1), "first")
 	checked = SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(2), "true")
-	decoded = Dom.apply_full(Dom.new({}), element.concat(listener).concat(value).concat(checked))
+	decoded = Dom.apply_full(Dom.new({}), [0].concat(element).concat(listener).concat(value).concat(checked))
 	i = Dom.lookup(decoded.dom, 1)
 	target = Dom.target(decoded.dom, i, "change", Bool.True)?
 	n = Dom.node(decoded.dom, i)
@@ -4403,7 +4432,7 @@ expect {
 	define = SpecRunner.put_u32(SpecRunner.put_u32([7], 0), template.len().to_u32_wrap()).concat(template)
 	instance = SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([1], 1), 0), 0), 0), "false")
 	update = SpecRunner.put_str(SpecRunner.put_u32([22], 1).append(0), "true")
-	decoded = Dom.apply_full(Dom.new({}), define.concat(instance).concat(update))
+	decoded = Dom.apply_full(Dom.new({}), [0].concat(define).concat(instance).concat(update))
 	i = Dom.lookup(decoded.dom, 1)
 	{ checked: Dom.live_value(Dom.node(decoded.dom, i), "checked"), target: Dom.target(decoded.dom, i, "change", Bool.True)?, writes: decoded.written, ops: decoded.ops } == {
 		checked: "true",
@@ -4419,7 +4448,7 @@ expect {
 	(d1, i) = Dom.add_node(Dom.new({}), { ..Dom.empty_node, tag: "custom-field", props: [("value", "live")] })
 	dom = Dom.bind(d1, 1, i)
 	attribute = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1), "value").append(1), "attribute")
-	decoded = Dom.apply(dom, attribute)
+	decoded = Dom.apply(dom, [0].concat(attribute))
 	{ attr: SpecRunner.attr_value(decoded, i, "value")?, value: SpecRunner.value_of(decoded, i) } == { attr: "attribute", value: "live" }
 }
 
@@ -4431,17 +4460,17 @@ expect {
 	empty_alt = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1), "alt").append(1), "")
 	removed_alt = SpecRunner.put_str(SpecRunner.put_u32([9], 1), "alt").append(0)
 	ordinary_checked = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_u32([9], 1), "checked").append(1), "")
-	present = Dom.apply(Dom.new({}), element.concat(empty_alt).concat(ordinary_checked))
+	present = Dom.apply(Dom.new({}), [0].concat(element).concat(empty_alt).concat(ordinary_checked))
 	i = Dom.lookup(present, 1)
-	removed = Dom.apply(present, removed_alt)
+	removed = Dom.apply(present, [0].concat(removed_alt))
 	static_attrs = SpecRunner.put_str(SpecRunner.put_str(SpecRunner.put_str([1], "img").append(1), "alt"), "")
 	template = SpecRunner.put_str(static_attrs.concat([0, 1, 2, 0]), "aria-label")
 	define = SpecRunner.put_u32(SpecRunner.put_u32([7], 0), template.len().to_u32_wrap()).concat(template)
 	instance = SpecRunner.put_str(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32(SpecRunner.put_u32([1], 2), 0), 0), 0).append(1), "")
-	row_present = Dom.apply(removed, define.concat(instance))
+	row_present = Dom.apply(removed, [0].concat(define).concat(instance))
 	row = Dom.lookup(row_present, 2)
-	row_absent = Dom.apply(row_present, SpecRunner.put_u32([3], 2).concat([0, 0]))
-	row_restored = Dom.apply(row_absent, SpecRunner.put_str(SpecRunner.put_u32([3], 2).concat([0, 1]), ""))
+	row_absent = Dom.apply(row_present, SpecRunner.put_u32([0, 3], 2).concat([0, 0]))
+	row_restored = Dom.apply(row_absent, SpecRunner.put_str(SpecRunner.put_u32([0, 3], 2).concat([0, 1]), ""))
 	actual = {
 		plain_empty: SpecRunner.attr_value(present, i, "alt")?,
 		ordinary_checked: SpecRunner.attr_value(present, i, "checked")?,
@@ -4558,7 +4587,7 @@ report_probe : {} -> SpecRunner.Program(List({ id : U32, payload : List(U8) }))
 report_probe = |_| {
 	version: Dom.protocol_version,
 	keys: || [2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 0],
-	init: |_| ([], [13, 1, 0, 0, 0, 6, 13, 2, 0, 0, 0, 7], List.repeat(0, 8)),
+	init: |_| ([], [0, 13, 1, 0, 0, 0, 6, 13, 2, 0, 0, 0, 7], List.repeat(0, 8)),
 	event: |seen, _buf, _work, _node, id, payload| (seen.append({ id, payload }), [], List.repeat(0, 8)),
 	files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
 	settled: |_| Ok({}),
@@ -4671,7 +4700,7 @@ expect {
 				9 => SpecRunner.put_str(SpecRunner.put_str([16, 1], "k"), "new")
 				_ => []
 			}
-			(seen.append({ id, payload }), commands, List.repeat(0, 8))
+			(seen.append({ id, payload }), [0].concat(commands), List.repeat(0, 8))
 		},
 	}
 	initial = SpecRunner.mount_in(program, { storage: [("k", "old")] })
@@ -4736,7 +4765,7 @@ expect {
 	zone = SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(3), "dynamic")
 	listener = SpecRunner.put_u32(SpecRunner.put_u32([11], 1), 8)
 	commands = zone.concat(SpecRunner.put_str(listener, "pointerup").concat([3, 0, 0, 0, 0]))
-	program = { ..probe, event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), if (handler == 9) commands else [], List.repeat(0, 8)) }
+	program = { ..probe, event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), if (handler == 9) [0].concat(commands) else [], List.repeat(0, 8)) }
 	base = SpecRunner.mount_in(program, {})
 	(d1, parent) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1 })
 	(d2, child) = Dom.add_node(d1, { ..Dom.empty_node, tag: "button", rn: 2, hs: [{ event: "mousedown", handler: 9, kind: 1, policies: 0 }] })
@@ -4751,7 +4780,7 @@ expect {
 	zone = SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(3), "dynamic")
 	listener = SpecRunner.put_u32(SpecRunner.put_u32([11], 1), 8)
 	commands = zone.concat(SpecRunner.put_str(listener, "pointerup").concat([3, 0, 0, 0, 0]))
-	program = { ..probe, event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), if (handler == 9) commands else [], List.repeat(0, 8)) }
+	program = { ..probe, event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), if (handler == 9) [0].concat(commands) else [], List.repeat(0, 8)) }
 	base = SpecRunner.mount_in(program, {})
 	(d1, button) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "button", rn: 1, hs: [{ event: "mousedown", handler: 9, kind: 1, policies: 0 }] })
 	dom = Dom.bind(Dom.insert(d1, d1.root, button, Err(End)), 1, button)
@@ -4782,7 +4811,7 @@ expect {
 	commands.map(
 		|batch| {
 			probe = pointer_probe({})
-			program = { ..probe, event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), if (handler == 9) batch else [], List.repeat(0, 8)) }
+			program = { ..probe, event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), if (handler == 9) [0].concat(batch) else [], List.repeat(0, 8)) }
 			base = SpecRunner.mount_in(program, {})
 			(d1, a) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "button", rn: 1, attrs: [("type", "button")], keymaps: Dict.empty().insert("keydown", Dom.parse_keymap("a*")), hs: [{ event: "keydown", handler: 9, kind: 4, policies: 0 }, { event: "click", handler: 6, kind: 1, policies: 0 }] })
 			(d2, b) = Dom.add_node(d1, { ..Dom.empty_node, tag: "button", rn: 2, attrs: [("type", "button")], keymaps: Dict.empty().insert("keyup", Dom.parse_keymap("a*")), hs: [{ event: "keyup", handler: 8, kind: 4, policies: 0 }, { event: "click", handler: 7, kind: 1, policies: 0 }] })
@@ -4891,7 +4920,7 @@ expect {
 	(d1, dialog) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "dialog" })
 	dom = Dom.bind(Dom.insert(d1, d1.root, dialog, Err(End)), 1, dialog)
 	prop = |value| SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(6), value)
-	done = SpecRunner.drain_focus(program, SpecRunner.take_batch({ ..base, dom }, base.inst, prop("modal").concat(prop("hidden"))))
+	done = SpecRunner.drain_focus(program, SpecRunner.take_batch({ ..base, dom }, base.inst, [0].concat(prop("modal")).concat(prop("hidden"))))
 	{ shown: Dom.node(done.dom, dialog).shown, tasks: done.browser.ui_tasks.len(), focus: done.focused } == { shown: Hidden, tasks: 0, focus: 0 }
 }
 
@@ -4972,7 +5001,7 @@ expect {
 	(d1, dialog) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "dialog", attrs: [("popover", "manual")] })
 	dom = Dom.bind(Dom.insert(d1, d1.root, dialog, Err(End)), 1, dialog)
 	prop = |property, value| SpecRunner.put_str(SpecRunner.put_u32([21], 1).append(property), value)
-	done = SpecRunner.drain_focus(program, SpecRunner.take_batch({ ..base, dom }, base.inst, prop(6, "modal").concat(prop(7, "false"))))
+	done = SpecRunner.drain_focus(program, SpecRunner.take_batch({ ..base, dom }, base.inst, [0].concat(prop(6, "modal")).concat(prop(7, "false"))))
 	Dom.node(done.dom, dialog).shown == Modal
 }
 
@@ -5009,7 +5038,7 @@ expect {
 	observed = Dom.observe(Dom.observe(placed, { owner: root, target, kind: 7 }), { owner: root, target, kind: 8 })
 	alias = Dom.release_observed(observed, target)
 	released = Dom.release_observed(alias, root)
-	removed = Dom.apply(released, SpecRunner.put_u32([5], 1))
+	removed = Dom.apply(released, SpecRunner.put_u32([0, 5], 1))
 	{ live: observed.observed_count, alias_live: alias.observed_count, flags: Dom.node(alias, target).observing, indexed: Dom.node(alias, root).observed, after: removed.observed_count, removed_alias: removed.statics.get(2) } == { live: 2, alias_live: 2, flags: 3.U8, indexed: [target], after: 0, removed_alias: Ok(0) }
 }
 
@@ -5081,7 +5110,7 @@ expect {
 expect {
 	base_program = pointer_probe({})
 	command = SpecRunner.put_u32(SpecRunner.put_u32([18, 7], 1).append(3), 40).concat([0, 1])
-	program = { ..base_program, event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), if (handler == 9) command else [], List.repeat(0.U8, 8)) }
+	program = { ..base_program, event: |seen, _buf, _work, _node, handler, payload| (seen.append({ handler, payload }), if (handler == 9) [0].concat(command) else [], List.repeat(0.U8, 8)) }
 	base = SpecRunner.mount_in(program, {})
 	(d1, index) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "div", rn: 1, hs: [{ event: "scroll", handler: 2, kind: 6, policies: 8 }] })
 	dom = Dom.bind(Dom.insert(d1, d1.root, index, Err(End)), 1, index)
@@ -5121,7 +5150,7 @@ expect {
 	base_program = pointer_probe({})
 	declarations = SpecRunner.put_section([2, 4, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 0, 0, 0, 0], { tag: 6, body: SpecRunner.put_str(SpecRunner.put_u32([], 1), "dark") })
 	listen = SpecRunner.put_str(SpecRunner.put_u32([13], 1).append(16), "dark")
-	program = { ..base_program, keys: || declarations, init: |_boot| ([], listen, List.repeat(0.U8, 8)) }
+	program = { ..base_program, keys: || declarations, init: |_boot| ([], [0].concat(listen), List.repeat(0.U8, 8)) }
 	base = SpecRunner.mount_in(program, {})
 	held = SpecRunner.one(program, base, HoldReports)?
 	first = SpecRunner.one(program, held, SetMedia({ query: "dark", matches: True }))?
@@ -5129,7 +5158,42 @@ expect {
 	unchanged = SpecRunner.one(program, second, SetMedia({ query: "dark", matches: False }))?
 	answered = SpecRunner.one(program, unchanged, ReleaseReports)?
 	waiting = SpecRunner.one(program, SpecRunner.one(program, answered, HoldReports)?, SetMedia({ query: "dark", matches: True }))?
-	cancelled = SpecRunner.take_batch(waiting, waiting.inst, SpecRunner.put_u32([14], 1))
+	cancelled = SpecRunner.take_batch(waiting, waiting.inst, SpecRunner.put_u32([0, 14], 1))
 	done = SpecRunner.one(program, cancelled, ReleaseReports)?
 	{ seen: done.inst, replacements: done.browser.reports.replaced, sources: done.browser.report_sources.len(), subscriptions: done.browser.subs.len(), media: done.browser.env.media } == { seen: [{ handler: 1.U32, payload: [22.U8, 0] }], replacements: 1, sources: 0, subscriptions: 0, media: [("dark", True)] }
+}
+
+## Marked batches start non-node effects before references, preserving order
+## within each class. Ordinary batches keep their original stream order.
+expect {
+	base = SpecRunner.fresh(0.U64, SpecRunner.fresh_browser({}))
+	(d, target) = Dom.add_node(base.dom, { ..Dom.empty_node, tag: "button" })
+	dom = Dom.bind(Dom.insert(d, d.root, target, Err(End)), 1, target)
+	commands = SpecRunner.put_u32([18, 1], 1).concat(SpecRunner.put_str([17], "early"))
+	marked = SpecRunner.take_batch({ ..base, dom }, 0, [1].concat(commands).concat([24, 0, 0, 0, 0]))
+	ordinary = SpecRunner.take_batch({ ..base, dom }, 0, [0].concat(commands))
+	ref = Ref({ node: 1, target, action: Focus(1) })
+	{ marked: marked.after_batch, ordinary: ordinary.after_batch } == { marked: [Effect(Title("early")), ref], ordinary: [ref, Effect(Title("early"))] }
+}
+
+## Assertion failures distinguish an unperformed ordinal, an evicted record
+## and exhaustion of observation, without turning any into an app fault.
+expect {
+	program = pointer_probe({})
+	base = SpecRunner.mount_in(program, {})
+	dom = Dom.transition(base.dom, ["shelf"])
+	seen = { ..base, dom }
+	evicted = { ..seen, dom: { ..dom, transitions: { ..dom.transitions, records: Dict.empty() } } }
+	exhausted = { ..seen, dom: { ..dom, transitions: { ..dom.transitions, exhausted: True } } }
+	{
+		seen: SpecRunner.one(program, seen, ExpectTransition({ at: 1, types: ["shelf"] })).map_ok(|_| {}),
+		missing: SpecRunner.one(program, seen, ExpectTransition({ at: 2, types: [] })).map_ok(|_| {}),
+		evicted: SpecRunner.one(program, evicted, ExpectTransition({ at: 1, types: [] })).map_ok(|_| {}),
+		exhausted: SpecRunner.one(program, exhausted, ExpectTransitions(0)).map_ok(|_| {}),
+	} == {
+		seen: Ok({}),
+		missing: Err("transition ordinal 2 was not performed"),
+		evicted: Err("transition ordinal 1 is unavailable in retained history (newest 4096, at most 1048576 encoded type bytes)"),
+		exhausted: Err("transition observation ordinal exhausted"),
+	}
 }

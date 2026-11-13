@@ -190,9 +190,24 @@ ServicesApp := [].{
 				Engine.watch_changes(v.map(|s| s.delays), |_| [Timer(1000)], st.on_result(|s, _, r| { ..s, delayed: Str.inspect(r) })),
 				Html.p_s(v.map(|s| s.delayed), [Engine.test_id("delayed")]),
 				ServicesApp.two_states({}),
+				ServicesApp.transition_probe({}),
 			],
 		)
 	}
+
+	## A mount-time request is ignored, while a later change marks its call.
+	transition_probe : {} -> Elem(ctx)
+	transition_probe = |_| Engine.state(
+		0.U64,
+		|st| Engine.element(
+			"div",
+			[],
+			[
+				Engine.watch(st.signal(), |_| [ViewTransition(["services"])], st.on_result(|s, _, _| s)),
+				Html.button("Animate turn", [], st.update(|n| n + 1)),
+			],
+		),
+	)
 
 	## Two nested states that one click writes in the same turn: the outer
 	## one and the inner one, by one handler.

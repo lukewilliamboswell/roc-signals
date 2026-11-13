@@ -22,12 +22,16 @@
 // Ingress: declared reports wait for the frame, with one replaceable entry
 // per source. Occurrences pin earlier reports and drain them synchronously.
 // At MAX_QUEUED entries an idle runtime drains early; exceeding that bound
-// while busy poisons with `resource_limit`. A drain also delivers at most
+// while synchronously busy poisons with `resource_limit`. A waiting view
+// transition instead applies its held batch and drains. A drain delivers at most
 // MAX_QUEUED turns before idle, bounding a one-event-per-turn feedback loop.
 //
 // Effects (see "Effects" in Engine.roc): the engine emits FX requests with
 // ids, CANCEL, NAV, STORAGE and TITLE commands. They are collected while a
-// batch is applied and performed only after the whole batch is applied.
+// batch is applied and performed after its DOM changes. A marked transition
+// performs commands naming no node before waiting for its update callback;
+// node commands and shown properties wait until its DOM changes are applied.
+// The page instance cannot be called or staged while that batch is waiting.
 // Each awaited result comes back as its own event on FX_NODE (one turn, in
 // completion order). In manual mode (options.manualEffects) HTTP requests,
 // timers and work jobs wait in `pending` until runEffect() answers or runs them and intervals
@@ -151,7 +155,7 @@
 // are present for any value other than "" and "false".
 
 // The wire protocol version this runtime implements (design.md, Appendix B).
-export const PROTOCOL_VERSION = 12;
+export const PROTOCOL_VERSION = 13;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
@@ -187,6 +191,8 @@ const OP_SAVE = 20;
 const OP_PROP = 21;
 const OP_HPROP = 22;
 const OP_RELEASE = 23;
+const OP_TRANSITION = 24;
+const TRANSITION_WAIT_MS = 1000;
 
 // Effect results are events on this node; the handler number is the id.
 const FX_NODE = 0xffffffff;
@@ -536,6 +542,35 @@ const U64_MAX = (1n << 64n) - 1n;
 
 // Observation retains weak identities rather than nodes or recycled command
 // addresses. Exhaustion disables observation, never the command it observes.
+// Observation never bounds application requests. Retained type bytes and
+// record count are bounded independently; ordinals remain absolute.
+class TransitionHistory {
+  constructor(maximum = U64_MAX) { this.maximum = maximum; this.clear(); }
+  clear() { this.count = 0n; this.exhausted = false; this.records = new Map(); this.bytes = 0; }
+  add(types, cause) {
+    if (this.exhausted) return;
+    if (this.count === this.maximum) { this.exhausted = true; this.records.clear(); this.bytes = 0; return; }
+    this.count += 1n;
+    const bytes = types.reduce((n, type) => n + 4 + utf8enc.encode(type).length, 0);
+    while (this.records.size && (this.records.size >= 4096 || this.bytes + bytes > 1048576)) {
+      const oldest = this.records.keys().next().value;
+      this.bytes -= this.records.get(oldest).bytes; this.records.delete(oldest);
+    }
+    if (bytes <= 1048576) {
+      this.records.set(this.count, { ordinal: this.count, types: types.slice(), cause, bytes });
+      this.bytes += bytes;
+    }
+  }
+  total() { if (this.exhausted) throw new Error("transition history ordinal exhausted"); return this.count; }
+  at(ordinal) {
+    this.total();
+    if (ordinal < 1n || ordinal > this.count) throw new Error(`transition ${ordinal} has not been performed`);
+    const record = this.records.get(ordinal);
+    if (!record) throw new Error(`transition ${ordinal} is outside retained transition history (newest 4096, at most 1048576 encoded type bytes)`);
+    return record;
+  }
+}
+
 class ScrollHistory {
   constructor(maximum = U64_MAX) {
     this.maximum = maximum;
@@ -2116,6 +2151,11 @@ export class RocEngineRuntime {
     this.onEvent = (event) => { if (event.bubbles) this.guard(() => this.handle(event)); };
     this.onCapture = (event) => { if (!event.bubbles) this.guard(() => this.handle(event)); };
     this.busy = false;
+    this.pendingTransition = null;
+    this.transitionIdle = Promise.resolve();
+    this.transitionIdleState = null;
+    this.viewTransitions = options.viewTransitions ?? "document";
+    if (this.viewTransitions !== "document" && this.viewTransitions !== "off") throw new TypeError('viewTransitions must be "document" or "off"');
     this.queue = { head: null, tail: null, length: 0 };
     this.reportSources = new Map();
     this.reportEpoch = {};
@@ -2194,6 +2234,7 @@ export class RocEngineRuntime {
     // { name, blob }, for a spec to read.
     this.saveLog = [];
     this.scrollLog = this.manual ? new ScrollHistory() : null;
+    this.transitionLog = this.manual ? new TransitionHistory() : null;
     this.modalOrder = this.manual ? new ModalOrder() : null;
     this.nativeTasks = new Map();
     this.nativeObservationError = null;
@@ -2295,7 +2336,7 @@ export class RocEngineRuntime {
       x.init();
       this.apply();
     } finally {
-      this.busy = false;
+      this.busy = this.pendingTransition !== null;
     }
   }
 
@@ -2325,6 +2366,7 @@ export class RocEngineRuntime {
   // otherwise the instance's fault class decides, and a trap the instance
   // did not classify is an executor failure.
   contain(error, klass = null) {
+    this.cancelTransition();
     if (this.poisoned) return;
     const CLASSES = ["executor", "contract", "resource_limit", "out_of_memory", "app_crash", "expect_failed"];
     let code = 0;
@@ -2375,6 +2417,7 @@ export class RocEngineRuntime {
 
   // A fresh instance from the same module; the poisoned one is abandoned.
   async recover() {
+    this.cancelTransition();
     if (!this.module) throw new Error("recover() needs the compiled module (mountRocEngineApp keeps it)");
     const instance = await WebAssembly.instantiate(this.module, pageImports(this.module));
     this.x = instance.exports;
@@ -2399,6 +2442,7 @@ export class RocEngineRuntime {
     this.portLog = [];
     this.saveLog = [];
     this.scrollLog = this.manual ? new ScrollHistory() : null;
+    this.transitionLog = this.manual ? new TransitionHistory() : null;
     this.modalOrder = this.manual ? new ModalOrder() : null;
     this.nativeTasks = new Map();
     this.nativeObservationError = null;
@@ -2410,6 +2454,7 @@ export class RocEngineRuntime {
   }
 
   unmount() {
+    this.cancelTransition();
     this.monitor.runtimeEnding("unmount");
     this.ending = "unmounted";
     this.clearIngress();
@@ -2434,6 +2479,7 @@ export class RocEngineRuntime {
     this.sites = [];
     this.templates = [];
     if (this.scrollLog) this.scrollLog.clear();
+    if (this.transitionLog) this.transitionLog.clear();
     this.nativeTasks.clear();
     if (this.modalOrder) this.modalOrder.clear();
     this.nativeObservationError = null;
@@ -2898,12 +2944,18 @@ export class RocEngineRuntime {
         try {
           this.guard(() => this.deliver(node, handler, payload));
         } finally {
-          this.busy = false;
+          this.busy = this.pendingTransition !== null;
         }
         this.drainQueue();
         return false;
       }
       let active = null;
+      if (this.queue.length >= MAX_QUEUED && this.pendingTransition?.phase === "waiting") {
+        this.pendingTransition.update("queue");
+        this.drainQueue(true);
+        if (this.poisoned || this.ending) return;
+        if (report && (owner.dom ? !owner.isLive() : this.live.get(source) !== owner)) return;
+      }
       if (this.queue.length >= MAX_QUEUED) {
         if (this.busy) {
           this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} events queued behind one batch (an event feedback loop)`), "resource_limit");
@@ -2934,7 +2986,7 @@ export class RocEngineRuntime {
             try {
               this.guard(() => this.deliver(active.node, active.handler, first));
             } finally {
-              this.busy = false;
+              this.busy = this.pendingTransition !== null;
             }
           }
         }
@@ -2997,7 +3049,7 @@ export class RocEngineRuntime {
       try {
         this.guard(() => this.deliver(entry.node, entry.handler, payload));
       } finally {
-        this.busy = false;
+        this.busy = this.pendingTransition !== null;
       }
     }
     if (this.queue.length === 0) this.cancelReportDrain();
@@ -3254,20 +3306,137 @@ export class RocEngineRuntime {
     return { root, holes };
   }
 
-  // Returns the number of command bytes applied. Effect commands found in
-  // the batch run after the whole batch has been applied.
-  apply() {
-    const n = this.applyBatch();
-    if (this.fxOut.length > 0) {
-      const out = this.fxOut;
-      this.fxOut = [];
-      for (const fx of out) this.perform(fx);
-    }
-    this.releaseFiles();
-    return n;
+  // One shared promise covers both a deferred update and its animation. Manual
+  // replay waits for this before allowing another pointer event.
+  idle() { return this.transitionIdle; }
+
+  transitionEvent(state, detail = {}) {
+    this.monitor.emit({ kind: "transition", state, at: this.monitor.tick(), ...detail });
   }
 
-  applyBatch() {
+  skipTransition(pending) {
+    pending.skipRequested = true;
+    if (!pending.transition || pending.skipped) return;
+    pending.skipped = true;
+    try { pending.transition.skipTransition(); } catch { /* animation only */ }
+  }
+
+  cancelTransition() {
+    const idle = this.transitionIdleState;
+    this.transitionIdleState = null;
+    idle?.resolve();
+    if (idle?.token) this.skipTransition(idle.token);
+    const pending = this.pendingTransition;
+    if (!pending) return;
+    this.pendingTransition = null;
+    clearTimeout(pending.timer);
+    pending.cancelled = true;
+    pending.batch.definitions.clear(); pending.batch.spans.clear(); pending.batch.effects.clear(); pending.batch.types = null;
+    this.skipTransition(pending);
+    pending.resolve();
+  }
+
+  flushEffects() {
+    const out = this.fxOut;
+    this.fxOut = [];
+    for (const fx of out) {
+      if (this.poisoned || this.ending) break;
+      this.perform(fx);
+    }
+  }
+
+  apply() {
+    const len = this.x.cmd_len();
+    if (!len) return 0;
+    const flags = new Uint8Array(this.x.memory.buffer, this.x.cmd_ptr(), len)[0];
+    if (flags !== 0 && flags !== 1) throw new Error(`invalid command batch flags ${flags}`);
+    const animate = flags === 1 && this.viewTransitions === "document" && this.doc.visibilityState !== "hidden" && typeof this.doc.startViewTransition === "function";
+    if (!animate) {
+      const batch = { definitions: new Map(), spans: new Map(), effects: new Map(), types: null, deferredEffects: true };
+      this.applyBatch("early", batch);
+      this.fxOut = [];
+      this.applyBatch("update", batch);
+      this.flushEffects();
+      if (this.poisoned || this.ending) return len;
+      this.releaseFiles();
+      if (flags) { this.transitionLog?.add(batch.types, "none"); this.transitionEvent("applied", { cause: "none", typeCount: batch.types.length }); }
+      return len;
+    }
+    const batch = { definitions: new Map(), spans: new Map(), effects: new Map(), types: null };
+    this.applyBatch("early", batch);
+    // No effect runs until the complete marked batch has passed framing checks.
+    this.flushEffects();
+    if (this.poisoned || this.ending) return len;
+    batch.effects.clear();
+    // All callers share one outstanding idle promise. A document transition
+    // supersedes the preceding animation, so only the newest token completes
+    // it; stale browser promise handlers cannot affect a later generation.
+    let state = this.transitionIdleState;
+    if (state === null) {
+      let finish;
+      const promise = new Promise(resolve => { finish = resolve; });
+      state = { resolve: finish, token: null };
+      this.transitionIdleState = state;
+      this.transitionIdle = promise;
+    }
+    let pending;
+    const resolve = () => {
+      if (this.transitionIdleState !== state || state.token !== pending) return;
+      this.transitionIdleState = null;
+      state.resolve();
+    };
+    pending = { batch, resolve, timer: null, transition: null, applied: false, cancelled: false, finished: false, phase: "waiting" };
+    state.token = pending;
+    this.pendingTransition = pending;
+    this.busy = true;
+    const update = (cause = "callback") => {
+      if (pending.cancelled || pending.applied || this.pendingTransition !== pending) return;
+      pending.applied = true;
+      pending.phase = "applying";
+      clearTimeout(pending.timer);
+      this.guard(() => {
+        this.applyBatch("update", batch);
+        this.flushEffects();
+        if (this.poisoned || this.ending) return;
+        this.releaseFiles();
+        this.transitionLog?.add(batch.types, cause);
+        this.transitionEvent("applied", { cause, typeCount: batch.types.length });
+      });
+      // Browser animation promises retain only their small lifecycle token,
+      // never completed requests' files or parsed template trees.
+      batch.definitions.clear(); batch.spans.clear(); batch.effects.clear(); batch.types = null;
+      if (this.pendingTransition === pending) this.pendingTransition = null;
+      this.busy = false;
+      if (cause !== "callback" || this.manual || this.poisoned) {
+        this.skipTransition(pending);
+      }
+      this.drainQueue();
+      if (pending.finished) resolve();
+    };
+    pending.update = update;
+    pending.timer = setTimeout(() => update("timer"), TRANSITION_WAIT_MS);
+    try {
+      try { pending.transition = this.doc.startViewTransition({ update: () => update(), types: batch.types }); }
+      catch (error) {
+        // Older implementations support only the callback overload.
+        if (pending.applied) throw error;
+        pending.transition = this.doc.startViewTransition(() => update());
+      }
+      const transition = pending.transition;
+      if (pending.skipRequested || pending.applied && (this.manual || this.poisoned)) this.skipTransition(pending);
+      const rejected = (state, error) => this.transitionEvent(state, { message: String(error?.message ?? error).slice(0, 1024) });
+      Promise.resolve(transition?.ready).catch(error => rejected("ready-rejected", error));
+      const finished = () => { pending.finished = true; if (pending.applied || pending.cancelled) resolve(); };
+      Promise.resolve(transition?.finished).then(finished, error => { rejected("finished-rejected", error); finished(); });
+    } catch (error) {
+      this.transitionEvent("start-rejected", { message: String(error?.message ?? error).slice(0, 1024) });
+      update("none");
+      resolve();
+    }
+    return len;
+  }
+
+  applyBatch(mode = "normal", batch = {}) {
     const x = this.x;
     const len = x.cmd_len();
     if (len === 0) return 0;
@@ -3276,7 +3445,13 @@ export class RocEngineRuntime {
     const u8 = new Uint8Array(buffer, ptr, len);
     const dv = new DataView(buffer, ptr, len);
     const doc = this.doc;
-    let at = 0;
+    let at = 1;
+    const flags = u8[0];
+    if (flags !== 0 && flags !== 1) throw new Error(`invalid command batch flags ${flags}`);
+    let marked = false;
+    const shadow = new Map();
+    const skipString = () => { const n = dv.getUint32(at, true); at += 4 + n; };
+    const skipAttribute = () => { const present = u8[at++]; if (present === 1) skipString(); else if (present !== 0) throw new Error(`invalid attribute presence ${present}`); };
     // Attribute absence is an explicit wire case. An empty present string
     // reaches setAttr unchanged, including during row instantiation.
     const attribute = (el, name) => {
@@ -3289,8 +3464,64 @@ export class RocEngineRuntime {
       } else throw new Error(`invalid attribute presence ${present}`);
     };
     while (at < len) {
+      const offset = at;
       const op = u8[at];
       at += 1;
+      if (op === OP_TRANSITION) {
+        if (mode === "update") { marked = true; at = len; break; }
+        if (!flags || marked) throw new Error("TRANSITION requires a marked batch and must occur once, last");
+        marked = true;
+        const count = dv.getUint32(at, true); at += 4;
+        const types = [];
+        for (let i = 0; i < count; i += 1) { const n = dv.getUint32(at, true); types.push(readStr(u8, at + 4, n)); at += 4 + n; }
+        if (at !== len) throw new Error("TRANSITION must be last");
+        batch.types = types;
+        break;
+      }
+      if (mode === "update" && batch.spans.has(offset)) {
+        if (batch.deferredEffects) this.fxOut.push(...batch.effects.get(offset));
+        at = batch.spans.get(offset); continue;
+      }
+      const effectsStart = this.fxOut.length;
+      if (mode === "early") {
+        let skipped = true;
+        switch (op) {
+          case OP_TEMPLATE: {
+            const site = dv.getUint32(at, true), n = dv.getUint32(at + 4, true);
+            const template = this.parseTemplate(u8, dv, at + 8, n);
+            shadow.set(site, template); batch.definitions.set(offset, template); at += 8 + n; break;
+          }
+          case OP_INST: {
+            const site = dv.getUint32(at + 12, true), template = shadow.get(site) ?? this.templates[site];
+            if (!template) throw new Error(`INST names unknown template ${site}`);
+            at += 16;
+            for (const hole of template.holes) {
+              if (hole.kind === HOLE_TEXT || hole.kind === HOLE_PROP) skipString();
+              else if (hole.kind === HOLE_ATTR) skipAttribute();
+              else if (hole.kind === HOLE_BIND || hole.kind === HOLE_REF) at += 4;
+            }
+            break;
+          }
+          case OP_HATTR: at += 5; skipAttribute(); break;
+          case OP_TEXT: case OP_HPROP: case OP_PROP: at += 5; skipString(); break;
+          case OP_MOVE: case OP_CLEAR: at += 8; break;
+          case OP_RELEASE: case OP_REMOVE: at += 4; break;
+          case OP_ELEM: case OP_TEXTNODE: at += 12; skipString(); break;
+          case OP_ATTR: at += 4; skipString(); skipAttribute(); break;
+          case OP_LISTEN: { const n = dv.getUint32(at + 8, true); at += 17 + n; break; }
+          case OP_SETTEXT: at += 4; skipString(); break;
+          case OP_REF: {
+            const kind = u8[at]; at += 5;
+            if (kind < 1 || kind > 7) throw new Error(`unknown reference operation ${kind}`);
+            if (kind === 6) { if (u8[at] > 3 || u8[at + 1] > 3 || u8[at + 2] > 2) throw new Error("invalid scroll-into-view operands"); at += 3; }
+            if (kind === 7) { for (let i = 0; i < 2; i += 1) { const edge = u8[at++]; if (edge > 3) throw new Error("invalid scroll edge"); if (edge === 3) at += 4; } if (u8[at++] > 2) throw new Error("invalid scroll behavior"); }
+            break;
+          }
+          default: skipped = false;
+        }
+        if (at > len) throw new Error("command exceeds batch length");
+        if (skipped) continue;
+      }
       switch (op) {
         case OP_INST: {
           const node = dv.getUint32(at, true);
@@ -3405,7 +3636,7 @@ export class RocEngineRuntime {
         case OP_TEMPLATE: {
           const tpl = dv.getUint32(at, true);
           const n = dv.getUint32(at + 4, true);
-          this.templates[tpl] = this.parseTemplate(u8, dv, at + 8, n);
+          this.templates[tpl] = mode === "update" ? batch.definitions.get(offset) : this.parseTemplate(u8, dv, at + 8, n);
           this.sites[tpl] = new Set();
           at += 8 + n;
           break;
@@ -3670,7 +3901,13 @@ export class RocEngineRuntime {
         default:
           throw new Error(`unknown engine command ${op} at byte ${at - 1}`);
       }
+      if (at > len) throw new Error("command exceeds batch length");
+      if (mode === "early") {
+        batch.spans.set(offset, at);
+        batch.effects.set(offset, this.fxOut.slice(effectsStart));
+      }
     }
+    if (at !== len || (flags === 1) !== marked) throw new Error("command batch flag/TRANSITION mismatch");
     return len;
   }
 

@@ -765,6 +765,9 @@ Engine := [].{
 		Push(Str),
 		Replace(Str),
 		Title(Str),
+
+		## Animate the complete host-call batch, merging types in issue order. Mount never animates.
+		ViewTransition(List(Str)),
 		Focus(Str),
 		Blur(Str),
 		SelectText(Str),
@@ -812,6 +815,9 @@ Engine := [].{
 		Push(Str),
 		Replace(Str),
 		Title(Str),
+
+		## Animate the complete host-call batch, merging types in issue order. Mount never animates.
+		ViewTransition(List(Str)),
 		Focus(Str),
 		Blur(Str),
 		SelectText(Str),

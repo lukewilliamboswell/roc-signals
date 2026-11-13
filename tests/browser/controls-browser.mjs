@@ -287,7 +287,7 @@ for (const [button, where] of [
     tpl.push(...bytes); bytes.length = 0;
     byte(7); word(1); word(tpl.length); bytes.push(...tpl);
     byte(1); word(10); word(0); word(0); word(1); word(11);
-    let batch = Uint8Array.from(bytes);
+    let batch = Uint8Array.from([0, ...bytes]);
     const memory = new WebAssembly.Memory({ initial: 1 });
     const x = { memory, cmd_ptr: () => 0, cmd_len: () => batch.length };
     const rt = new RocEngineRuntime(x, root);
@@ -300,12 +300,12 @@ for (const [button, where] of [
     const input = rt.statics[11];
     input.dispatchEvent(new Event("click", { bubbles: true }));
     const addressed = input === root.firstChild.firstChild;
-    batch = Uint8Array.from([5, 10, 0, 0, 0]); apply();
+    batch = Uint8Array.from([0, 5, 10, 0, 0, 0]); apply();
     const removed = rt.statics[11] === undefined;
     bytes.length = 0;
     byte(1); word(10); word(0); word(0); word(1); word(11);
-    batch = Uint8Array.from(bytes); apply();
-    batch = Uint8Array.from([6, 0, 0, 0, 0, 1, 0, 0, 0]); apply();
+    batch = Uint8Array.from([0, ...bytes]); apply();
+    batch = Uint8Array.from([0, 6, 0, 0, 0, 0, 1, 0, 0, 0]); apply();
     const cleared = rt.statics[11] === undefined && root.childNodes.length === 0;
     // A static ancestor can remove a row without a separate row REMOVE.
     bytes.length = 0;
@@ -313,8 +313,8 @@ for (const [button, where] of [
     byte(8); word(31); word(30); word(0); str("div");
     byte(10); word(32); word(31); word(0); str("static child");
     byte(1); word(10); word(31); word(0); word(1); word(11);
-    batch = Uint8Array.from(bytes); apply();
-    batch = Uint8Array.from([5, 30, 0, 0, 0]); apply();
+    batch = Uint8Array.from([0, ...bytes]); apply();
+    batch = Uint8Array.from([0, 5, 30, 0, 0, 0]); apply();
     const ancestor = [10, 11, 30, 31, 32].every((id) => rt.statics[id] === undefined) && rt.sites[1].size === 0;
     // Clearing an outer site must also forget a nested site's rows and
     // references, while leaving another live site alone.
@@ -325,8 +325,8 @@ for (const [button, where] of [
     byte(1); word(20); word(10); word(0); word(2); word(21);
     byte(8); word(40); word(0); word(0); str("section");
     byte(1); word(41); word(40); word(0); word(2); word(42);
-    batch = Uint8Array.from(bytes); apply();
-    batch = Uint8Array.from([6, 50, 0, 0, 0, 1, 0, 0, 0]); apply();
+    batch = Uint8Array.from([0, ...bytes]); apply();
+    batch = Uint8Array.from([0, 6, 50, 0, 0, 0, 1, 0, 0, 0]); apply();
     const nested = [10, 11, 20, 21].every((id) => rt.statics[id] === undefined) && rt.sites[1].size === 0 && [...rt.sites[2]].join() === "41" && rt.statics[42].isConnected;
     rt.contain(new Error("fixture done"), "executor");
     root.remove();
@@ -446,20 +446,21 @@ for (const [button, where] of [
     const rowId = checkbox.parentNode.__rn;
     const original = rt.applyBatch;
     let bytes;
-    rt.applyBatch = function () {
+    rt.applyBatch = function (...args) {
       bytes = Array.from(new Uint8Array(this.x.memory.buffer, this.x.cmd_ptr(), this.x.cmd_len()));
-      return original.call(this);
+      return original.apply(this, args);
     };
     const click = (name) => [...document.querySelectorAll("button")].find((b) => b.textContent === name).click();
     click("Set row checks");
     const changed = bytes;
+    bytes = [];
     click("Touch row metadata");
     const equal = bytes;
     rt.applyBatch = original;
     document.querySelector('[aria-label="Custom colon event"]').dispatchEvent(new Event("x:y", { bubbles: true }));
     const word = (n) => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255];
     return {
-      changed, expected: [22, ...word(rowId), 1, 4, 0, 0, 0, 116, 114, 117, 101],
+      changed, expected: [0, 22, ...word(rowId), 1, 4, 0, 0, 0, 116, 114, 117, 101],
       equal, checked: checkbox.checked, same: checkbox === document.querySelector('[aria-label="Property check a"]'),
       custom: document.querySelector('[data-testid="custom-event-log"]').textContent,
       attrs: [document.querySelector('[data-testid="ordinary-progress"]').getAttribute("value"), document.querySelector('[data-testid="ordinary-custom-value"]').getAttribute("value"), document.querySelector('[data-testid="ordinary-custom-value"]').value ?? null],
@@ -524,7 +525,7 @@ for (const mode of ["initial", "changed"]) {
       const attr = (id, name, value, present = 1) => { byte(9); word(id); str(name); byte(present); if (present === 1) str(value); };
       const prop = (id, index, value) => { byte(21); word(id); byte(index); str(value); };
       const listen = (id, type, kind = 1, policies = 0) => { byte(11); word(id); word(7); str(type); byte(kind); word(policies); };
-      const apply = () => { new Uint8Array(memory.buffer).set(bytes); rt.guard(() => rt.applyBatch()); bytes = []; };
+      const apply = () => { bytes.unshift(0); new Uint8Array(memory.buffer).set(bytes); rt.guard(() => rt.applyBatch()); bytes = []; };
       const template = (id, tag, property) => {
         const outer = bytes; bytes = [];
         byte(1); str(tag); byte(0); byte(0);
