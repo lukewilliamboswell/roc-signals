@@ -1,5 +1,5 @@
-// Twenty-one sparse writes per size; the median excludes initial fill and
-// setup costs. Subsequent writes release one earlier row, O(J_previous = 1).
+// One unmeasured warm-up before each group of 21 sparse writes; the median
+// excludes fill/setup costs. Keyed samples release one earlier row, O(J_previous = 1).
 // A self-comparison at two table sizes catches copies that allocation counts miss.
 // Build this fixture with --opt=dev: optimized site storage is tracked upstream.
 import assert from "node:assert/strict";
@@ -61,9 +61,12 @@ const results = [];
 for (const size of [1000, 10000]) {
   click(`Fill ${size}`);
   assert.ok([...content.values()].includes("a long row name 7"));
-  const keyed = median("Rename"), small = median("Count");
-  assert.ok([...content.values()].includes(`Count ${size === 1000 ? 21 : 42}`));
-  assert.ok([...content.values()].includes(`a long row name 7${"!".repeat(21)}`));
+  click("Rename"); // Establish a one-key previous record outside measurement.
+  const keyed = median("Rename");
+  click("Count");
+  const small = median("Count");
+  assert.ok([...content.values()].includes(`Count ${size === 1000 ? 22 : 44}`));
+  assert.ok([...content.values()].includes(`a long row name 7${"!".repeat(22)}`));
   results.push({ size, keyed, small });
 }
 try {
