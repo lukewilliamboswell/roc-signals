@@ -45,7 +45,8 @@ Engine := [].{
 	Root : Core.Root({})
 
 	## The context at the top of an app with a store (`program_store`): the
-	## root holds the store, whose storage type is `st`. It is the context of
+	## instance moves its store, whose storage type is `st`, into each root
+	## call and takes it back from the answer. It is the context of
 	## the [Elem] that `program_store`'s view returns, written
 	## `Engine.StoreRoot(_)`. Other code rarely names it: a function that
 	## uses the store is generic over its context, with

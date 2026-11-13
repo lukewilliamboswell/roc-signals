@@ -14,7 +14,7 @@
 ## binds a `program` as `main`, and one entry file builds for two targets:
 ##
 ## - `roc build --target=wasm32` gives the module the browser runs. The Zig
-##   host (`host/host.zig`) holds exactly one opaque `Box(Core.App)` and the
+##   host (`host/host.zig`) holds one opaque box of the store and sites, and the
 ##   command buffer between calls; JavaScript (`runtime.mjs`) reads the buffer
 ##   straight from linear memory.
 ## - `roc build --target=x64musl` (Linux), `arm64mac` or `x64mac` (macOS) or

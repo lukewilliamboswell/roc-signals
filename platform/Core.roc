@@ -20,8 +20,9 @@ Core := [].{
 	## of it.
 	##
 	## It holds the program's store, of type `st` (`{}` for a program without
-	## one; see [Store]). The root site owns the store and moves it into this
-	## context for an event, as a state site moves its value, so a write to a
+	## one; see [Store]). The instance owns the store beside its sites and moves
+	## it into this context for each root call, taking it back from the answer.
+	## As a state site moves its value, a write to a
 	## cell is in place. Every scope type says how it reaches the store with
 	## one method, `store`, which answers a [StoreReach] built on the
 	## enclosing scope's, so a cell is read and written at any depth with no
@@ -2791,7 +2792,7 @@ Core := [].{
 	## job effects `work_prepare!` was handed, so no function value appears
 	## in its type but the one the host boundary requires boxed. The state
 	## never crosses a boundary; the worker's host keeps one `Box(Kept)` as
-	## the page's host keeps `Box(App)`, and every answer is what preparing
+	## the page's host keeps one opaque instance handle, and every answer is what preparing
 	## afresh would give. Compiler workaround
 	## (https://github.com/roc-lang/roc/issues/12953): the host boundary
 	## rejects `Box(Kept)` while `ask!` is a bare function, so `ask!` is boxed
