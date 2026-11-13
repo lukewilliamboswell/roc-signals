@@ -9,7 +9,8 @@ template = "page.html"
 
 The [API documentation](../../api/api/) is generated from the platform's source
 and documents every public symbol of `Engine`, `Table`, `Html`, `Worker`, `Wire`, `Port` and `PortJson`:
-the authoring API, and nothing else. The engine's storage and executable values are opaque; its implementation
+the authoring API. Platform-only bridges on exposed types require an
+unexposed `EngineOnly` witness, so apps cannot call them. The engine's storage and executable values are opaque; its implementation
 and the interfaces its hosts and test harnesses use live in the platform's
 internal `Core` module, which apps cannot import. This page is the map of it. The spec language is in [Testing](@/docs/testing.md).
 
@@ -32,6 +33,7 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 | Events | `on` (bare event type, text payload), `on_with` (text payload and typed `Policy`: `prevent` and `stop`, both false by default), `on_click`, `on_files` (`Change`, `Drop` or `Paste`, files payload), `on_pointer` (`Down`, `Move`, `Up`, `Cancel`, `Pointer` payload), `on_pointer_capture`, `on_pointer_paced`, `on_key` (`KeyProps`), `on_document_key` (`DocumentKeyProps`, requires `OutsideRows(ctx)`) | [Local State, Events, and Forms](@/docs/state-and-events.md#handlers) |
 | Properties | `Prop(a)`, `Prop.value` (`Str`), `Prop.checked` (`Bool`), `Prop.pointer_zone` (`Str`), `prop`, `prop_s` | [Element properties](#element-properties) |
 | Key data | `Key` (`key`, `code`, `ctrl`, `alt`, `shift`, `meta`, `repeat`, `composing`, `heard`), `Chord` (`plain`, `with_ctrl`, `with_alt`, `with_shift`, `with_meta`, `primary`), `Keymap` (`prevent`, `keep`, `every`, `concat`, `outside_text`) | [Keys and shortcuts](@/docs/state-and-events.md#keys-and-shortcuts) |
+| Reference commands | `Focus`, `Blur`, `SelectText`, `ApplyValue`, `FocusInPlace`, `ScrollIntoView`, `ScrollTo`; `scroll_into_view`, `ScrollProps` (`block ?? Nearest`, `inline ?? Nearest`, `behavior ?? Auto`), `Align` (`Start`, `Center`, `End`, `Nearest`), `Edge` (`Keep`, `Start`, `End`, `Px(U32)`), `ScrollBehavior` (`Auto`, `Instant`, `Smooth`) | [Focus and scrolling](@/docs/effects-and-browser.md#focus) |
 | Pointer data | `Pointer`: `id`, `kind`, `button`, `buttons`, `modifiers`, `primary`, `at` (`Outside` or `In({ zone, x, y })` with fractions 0–10000) | [Pointer input and dragging](@/docs/state-and-events.md#pointer-input-and-dragging) |
 | Files | `File`, `File.name`, `File.size`, `File.mime`, `File.slice`, `File.spans` (the `{ start, len }` ranges of `n` bytes that cover a file, for `read!`), `Received`, `FilesHandler` (the generic handler family at `Received`), `on_files` | [Files](@/docs/files.md) |
 | Operations on files | `File.upload` (`UploadProps`: `url`, `method ?? "POST"`, `headers ?? []`, `timeout ?? Unlimited`), `File.sha256`, `File.object_url` (acting where the browser keeps the file), `File.read_bytes`, `File.read_utf8` (reading it into the page; `ReadProps`: `max_bytes ?? 8388608`), `file_bytes`, `file_text`, `file_digest`, `file_url`, `FileError` (`Unreadable`, `TooLarge`, `InvalidUtf8`, `Unavailable`, `Refused`) | [Files](@/docs/files.md) |
@@ -90,8 +92,9 @@ takes a constant; `Html.p_s` takes reactive text, for example.
 |---|---|
 | Structure | `div`, `div_s`, `div_attrs`, `section`, `section_s`, `section_attrs`, `h1`, `h2`, `h2_s`, `h3`, `p`, `p_s`, `p_attrs`, `span_s`, `pre_s`, `ul`, `li`, `link`, `label_for` |
 | Controls | `button`, `button_s`, `icon_button`, `action_button`, `submit_button`, `text_input`, `number_input`, `textarea`, `checkbox`, `radio`, `select`, `option`, `option_s`, `option_attrs`, `form`, `file_input` (`FileInputProps`: `selection : [Single, Multiple] ?? Single`, `accept : [Any, Types(Str)] ?? Any`) |
+| Dialogs and popovers | `dialog`, `DialogProps(ctx)` (`open`, `on_close : HandlerOf(ctx, Bool)`, `modal : [Modal, NonModal] ?? Modal`); `popover`, `PopoverProps(ctx)` (`open`, `on_toggle : HandlerOf(ctx, Bool)`, `dismiss : [Auto, Manual] ?? Auto`); both open fields are `Signal(ctx, Bool)` |
 | Attributes | `aria_label`, `aria_label_s`, `aria_describedby`, `aria_invalid`, `disabled`, `flag`, `flag_maybe` |
-| Events | `on_input`, `on_change`, `on_focus`, `on_blur`, `on_submit`, `on_drop_files`, `on_paste_files`, `on_pointer_down`, `on_pointer_down_capture`, `on_pointer_move`, `on_pointer_move_paced`, `on_pointer_up`, `on_pointer_cancel` |
+| Events | `on_input`, `on_change`, `on_focus`, `on_blur`, `on_submit`, `on_cancel`, `on_drop_files`, `on_paste_files`, `on_pointer_down`, `on_pointer_down_capture`, `on_pointer_move`, `on_pointer_move_paced`, `on_pointer_up`, `on_pointer_cancel` |
 | Zones | `zone`, `zone_s` (pointer-zone keys, with empty text marking no zone) |
 
 `section(name, class, children)` names a region for assistive technology
@@ -213,6 +216,14 @@ is a `Request` and `Command` that applies the last rendered value at a
 reference even while focused; it requires a declared `Prop.value` and
 waits for composition to end.
 
+The dialog and popover helpers also pair private shown properties with
+Boolean native-event echoes. These are not public `Prop` rows or standalone
+codecs. Hiding applies in stream order; showing runs after the batch among
+commands and effects, with a later hide or removal invalidating an older
+queued show. A close/toggle echo settles its paired signal even when its
+handler writes nothing. See [Dialogs and popovers](@/docs/state-and-events.md#dialogs-and-popovers)
+for lifetimes, ownership restrictions and automatic dismissal.
+
 ## Mount options
 
 `mountRocEngineApp({ wasmUrl, root, ...options })` fetches and compiles
@@ -266,6 +277,8 @@ them.
 | Ingress entries (occurrences and reports) | 4096 | A report drains a full queue early while idle; overflow while a batch applies is a resource limit |
 | Replaceable reports per source | 1 | A newer report replaces the waiting payload in place |
 | Wait for a report's frame | 100 ms | Timer drains a visible page given no frames; hidden pages use a microtask |
+| Manual scroll history | Newest 4096 commands, absolute U64 count | Overwritten ordinals and counter exhaustion fail observation; app execution continues |
+| Manual native UI callbacks | At most live controlled nodes, one coalesced toggle and a U64 close count per node; 20 s settle wait | Counter exhaustion or timeout fails observation |
 | Manual pointer log | 4096 records, taken after each input step | Resource limit on overflow |
 | Spec driver pointers | One mouse/pen gesture or up to 16 touches, without overlap between modes | Step error before input; production pointer dispatch has no driver limit |
 | Turns delivered before the runtime returns to idle | 4096 | Resource limit; bounds a focus feedback loop even when only one event waits at a time |
@@ -304,12 +317,12 @@ construction site, for example `contract: duplicate key "r0" in each at site
 
 | Class | Cause |
 |---|---|
-| `contract` | A rule of the API was broken: a duplicate key in an `each`, two live references with one name, a `switch` value outside its cases, a row template that is not a single element, two handlers for one event type on one element, an event type ending in a retired suffix, a property on an element its row does not allow or declared twice, an attribute with a name a property row claims on that element, a value property on a file input, a text-kind key handler, a 33rd live document-key handler, `ApplyValue` without a declared value property at its reference, a decision whose list replaces a cell an earlier write of the same list wrote, `Table.insert` of a key already present, a table built from two rows with one key, two rows of a view that compare `Same`, a view's row read after its key left the table in the same event, an effect feedback loop, an outbox posted twice in one turn, a worker task registered twice or asked for without being registered, a port declared twice or used without being declared or as another shape, a worker effect outside a job, a builder used after `finish!` or after the call that opened it returned, an answer holding more than 16 files, malformed boot or result bytes |
+| `contract` | A rule of the API was broken: a duplicate key in an `each`, two live references with one name, a `switch` value outside its cases, a row template that is not a single element, two handlers for one event type on one element, an event type ending in a retired suffix, a property on an element its row does not allow or declared twice, an attribute with a name a property row claims on that element, a value property on a file input, a controlled helper with reserved attributes or a `beforetoggle` handler, a text-kind key handler, a 33rd live document-key handler, `ApplyValue` without a declared value property at its reference, a decision whose list replaces a cell an earlier write of the same list wrote, `Table.insert` of a key already present, a table built from two rows with one key, two rows of a view that compare `Same`, a view's row read after its key left the table in the same event, an effect feedback loop, an outbox posted twice in one turn, a worker task registered twice or asked for without being registered, a port declared twice or used without being declared or as another shape, a worker effect outside a job, a builder used after `finish!` or after the call that opened it returned, an answer holding more than 16 files, malformed boot or result bytes |
 | `resource_limit` | A bound in the table above |
 | `out_of_memory` | The Wasm heap could not grow |
 | `app_crash` | `crash` in app code, or a Roc runtime error |
 | `expect_failed` | A failed `expect` in a development build |
-| `executor` | A bug in the browser runtime while applying commands |
+| `executor` | A failure while applying commands, including an external listener preventing a controlled show from reaching its requested state |
 
 `recover()` on the runtime mounts a fresh instance from the same module.
 

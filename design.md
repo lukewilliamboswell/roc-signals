@@ -647,7 +647,7 @@ The static content of a site that draws no rows is flattened at mount into a
 *block*:
 
 - *holes* — dynamic text, attributes and element properties, each with its read signature, reader
-  and last emitted value;
+  and last observed value (emitted, or echoed by a controlled browser property);
 - *reference holes* — named element addresses, whose signal updates the
   reference map without emitting a DOM command;
 - *handlers* — in mount order, so a handler number is a dense index;
@@ -655,7 +655,8 @@ The static content of a site that draws no rows is flattened at mount into a
 - the block's node ids and its top-level nodes (for removal).
 
 A refresh with mask `m`, the signature of what changed, re-evaluates the
-holes whose signature intersects `m`, emits a command only when the new
+holes whose signature intersects `m` and any controlled shown hole marked
+by its own browser echo, emits a command only when the new
 value differs from the last one, and
 descends only into children whose signature intersects `m`. A site's reads
 are computed statically (`elem_reads`) without mounting it, including the
@@ -696,7 +697,18 @@ its own representation:
 Reconciliation compares the new list against the site's columns with fast
 paths for a common prefix and suffix, swapped ends, pure insertion and pure
 removal, and otherwise a keyed move planned with a longest increasing
-subsequence, so surviving rows move rather than rebuild. A kept row whose new
+subsequence, so surviving rows move rather than rebuild. A row also keeps an ordered index of its currently shown dialog and popover
+addresses. A changed shown command updates only that address in the rows on
+its call path; hiding and disposal remove it before an id can be reused.
+The index supports direct affected-owner removal and preserves show-intent
+chronology across template holes and nested sites. Moving a row re-emits
+those shown properties in that order, without scanning the row's tree.
+Reinsertion loses native top-layer membership, so re-showing can restack the
+moved controls above unmoved ones and focus their first control again.
+A browser echo of true that emits no new show keeps the existing order.
+This bookkeeping holds command addresses, never application identity.
+
+A kept row whose new
 item is equal to its old item is pruned; a changed item marks the row dirty and
 only its live holes that read the row layer are re-evaluated.
 
@@ -1190,7 +1202,9 @@ Every external input — a DOM event or an effect result — is one *turn*:
    applied to the local state it names; a decision takes its reading and
    returns its list of writes, which are applied to the store in order. The
    handler answers the environment and the exact set of layers and cells it
-   wrote.
+   wrote. An open-state event first records the browser's value in its paired
+   shown hole and marks that hole dirty, before running the handler. This is
+   a browser fact, not a write to an application cell or local state.
 3. **Settle.** The environment travels back up and each layer takes its value
    back. A state layer the event wrote, with nothing written above it on the
    event's path and no cell written, starts the event's pass at its own
@@ -1211,7 +1225,11 @@ Every external input — a DOM event or an effect result — is one *turn*:
    subtree reads what the pass carried. The site that started the pass (the
    root for a cell, otherwise the outermost written layer) then sends a
    walk down the event's path, which refreshes each such layer's subtree
-   at its own site. A turn that wrote nothing runs no pass.
+   at its own site. An echoed shown hole joins the ordinary pass when it
+   reaches its block; otherwise the same path walk reaches that one marked
+   hole, including beyond an equality-pruned derive. It is evaluated once,
+   after all writes and derives above it. With no writes and no echo, a turn
+   runs no pass. No sibling is visited to discover an echo.
 5. **End of turn.** When the pass has refreshed every reader, the root site
    clears the changes of each table the pass named. When it named none, that
    is one test of the pass's signature against the tables' bits. A table
@@ -1274,7 +1292,8 @@ a host inference.
 
 Pruning happens at observation points:
 
-- every hole compares its new value to the last emitted value;
+- every hole compares its new value to its last observation: a command, or
+  the browser value an open-state event echoed;
 - `each` compares a kept row's new item to its old item;
 - `derive` compares its recomputation to its last value;
 - `resource` compares its layer after each `pending` and `resolve` to its
@@ -1410,6 +1429,8 @@ keys a turn wrote in a table.
 | Keyed selection change | 2 rows re-evaluated | O(L) row re-evaluation |
 | `when`/`switch` flip, `remount_on` key change | O(disposed + mounted subtree) | rebuilding siblings |
 | `each` list change | O(L) key and item comparisons, O(K) row evaluations and DOM commands | O(L) row re-evaluation or rebuild; O(L²) planning |
+| Refresh an echoed shown property | One paired hole, in the ordinary pass or its path walk | refreshing siblings or discovering changes from DOM state |
+| Re-show controls after a row move | O(shown addresses in that row), in recorded show-intent order | scanning all descendant nodes or all rows |
 | Row event | O(1) to find the row (slot from the node id) | key or list scan |
 | Keyed writes to a table, per table view | Per written key: two placements with the query, a search of the ordered keys and a move inside one chunk. O(W) more when a change reaches the window. O(J) row evaluations and DOM commands at most | a pass over the table; a comparison of two lists of rows; a copy of the table |
 | A move of a row within a view | O(W) | O(T) |
@@ -1501,14 +1522,23 @@ Rules:
   failed call.
 - **Apply, then perform.** The runtime applies DOM commands in stream order and
   collects effect commands, then performs the effects after the whole batch is
-  applied, so an effect never observes a half-applied DOM.
+  applied, so an effect never observes a half-applied DOM. A shown property
+  hides in stream order but queues a show at its position among the commands
+  performed after the batch, when its content exists. A later decision for
+  the same property supersedes an earlier queued show, including a later
+  hide. The runtime checks the captured element and per-property intent
+  token before performing it; a removed or superseded target is skipped.
+  Other surviving shows, effects and reference commands keep stream order.
 - **Decided, not interpreted.** The runtime does not diff, reorder, coalesce or
   skip commands. Its only state is the id → DOM node tables, parsed templates
   and live effect handles the commands told it to keep, plus the ingress
   queue and its index of report sources, the keymaps rendered on nodes and
   the document-key registrations commands registered. `RELEASE`, teardown
   and poisoning remove those registrations. Input delivery applies a declared
-  policy; it does not decide application meaning.
+  policy; it does not decide application meaning. The controlled-value guard
+  and the shown-property live-state table below are explicit protocol guards,
+  not application-state diffing. Shown intent tokens exist only to reject
+  superseded work within a batch.
 - **Fresh views.** Any call may grow Wasm memory. The runtime re-reads
   `memory.buffer` after every call that can allocate, including
   `payload_reserve`, and never holds a view across one.
@@ -1555,7 +1585,8 @@ reducer or the decision sees both what changed and what is sent.
 
 - **Commands** are emitted and forgotten: history `Push`/`Replace` (`NAV`),
   `Title` (`TITLE`), `StorageSet`/`StorageRemove` (`STORAGE`), and
-  `Focus`/`Blur`/`SelectText`/`ApplyValue` on a named reference (`FOCUS`, resolved at the
+  `Focus`/`Blur`/`SelectText`/`ApplyValue`/`FocusInPlace`, `ScrollIntoView`
+  and `ScrollTo` on a named reference (`REF`, resolved at the
   end of the turn). With a port's command and a save, below, they are the
   tags of `Command`, the type a cleanup's plan returns (see
   [Explicit Scopes and Disposal](#explicit-scopes-and-disposal)).
@@ -2479,6 +2510,109 @@ name. `Html.flag_maybe` is `Present("true")` while its flag is true and
 `Absent` otherwise. A static attribute that should not exist is normally
 omitted from its element's attributes.
 
+## Dialogs, Popovers and Scrolling
+
+`Html.dialog(label, props, attrs, children)` pairs a required `open` signal
+and `on_close : HandlerOf(ctx, Bool)` with one controlled dialog property.
+`modal` is fixed at construction, `Modal` by default or `NonModal`. The
+dialog element stays mounted while closed; its content is one conditional
+scope mounted only while open. Removing an open dialog would bypass native
+focus restoration, so closing hides before disposing that content.
+
+`Html.popover(label, props, attrs, children)` makes a named div with a fixed
+`dismiss: Auto|Manual` (default Auto), an `open` signal and required Boolean
+`on_toggle` handler. Auto popovers accept Escape and outside pointer
+press-and-release dismissal. Showing another unrelated auto popover hides
+older ones; showing a modal hides auto popovers that do not contain it.
+Manual popovers are appropriate when unrelated controls must stay shown
+together. Popover children remain mounted while the browser hides them.
+Placement and anchor positioning are ordinary authored CSS, not engine
+geometry or an application JavaScript callback.
+
+The shown rows and open-state codec are private to these helpers. The
+Engine bridges they use require the unexposed `EngineOnly` witness; an app
+cannot render a row without its echo handler. A controlled dialog reserves
+`open`, `popover` and `closedby`; a controlled popover owns its one static
+`popover` declaration. Extra or dynamic declarations are mount `contract`
+errors, with HTML's ASCII-insensitive attribute names. `beforetoggle`
+handlers on either controlled helper are also contract errors: canceling or
+observing that intermediate lifecycle is outside this capability. Ordinary
+attributes and event declarations on raw elements keep their meanings.
+
+The open-state payload is read from the element when the native event is
+dispatched, rather than from an older event's state strings. `close` echoes
+whether the dialog is open; `toggle` echoes whether the popover is shown.
+Before its handler, the engine updates the paired hole's last observation:
+false is hidden; true retains a dialog's declared showing mode. It marks
+that hole for the event's ordinary settlement. An accepted close emits
+nothing; an ignored close re-evaluates the signal and reopens the control.
+A delayed close dispatched after reopening carries true. This rule applies
+to constant properties and template property holes too, without a second
+propagation mechanism or a static handler write mask.
+
+Hiding happens in stream order, ahead of content removal. Showing waits
+until after the batch at its stream position among effects and reference
+commands. A later decision for the same shown property invalidates an
+older queued show, so show followed by hide in one batch cannot resurrect a
+closed control. A later removal also invalidates the target. The runtime
+applies each surviving decision against live browser state:
+
+| Value | Closed | Open, non-modal | Open, modal |
+|---|---|---|---|
+| Hidden | Nothing | close | close |
+| Open | show | Nothing | close, then show |
+| Modal | showModal | close, then showModal | Nothing |
+
+A popover is shown or hidden only if its current state differs. Failure to
+reach the requested state, including an external listener canceling a show,
+is an `executor` fault naming the node. The adapter never silently claims a
+show succeeded. The browser's dialog focusing steps see mounted content:
+autofocus, otherwise the first focusable descendant, otherwise the dialog.
+A modal close restores its connected opener; a non-modal close restores it
+only while focus is still inside. Removing an open control produces no
+restoration on behalf of the engine; an app that needs another destination
+posts focus in the same decision that removes it.
+
+`FocusInPlace(name)` focuses with scrolling prevented. `ScrollIntoView`
+takes block/inline alignment (`Start`, `Center`, `End`, `Nearest`) and
+`ScrollBehavior` (`Auto`, `Instant`, `Smooth`). The narrow-tag constructor
+`scroll_into_view(name, props)` defaults both alignments to Nearest and
+behavior to Auto, so its result fits requests and cleanup commands alike.
+`ScrollTo` takes top/left `Edge` values (`Keep`, `Start`, `End`, `Px(U32)`)
+and a behavior. End is resolved by the browser when performed; geometry
+never enters Roc. These commands use the reference map, count missing
+addresses stale and consume no awaited id. A scroll command is an action,
+not a persistent value to reconcile. A spec asserts the performed command,
+not whether layout put something in view.
+
+Two unrelated auto popovers cannot both remain shown if each ignores the
+other's automatic hiding. An app must accept the toggle or make its desired
+states compatible; pure decisions test that rule. The platform does not
+arbitrate a winner or infer which state to rewrite. Each turn and retained
+registry stays bounded, but incompatible app decisions can keep generating
+browser tasks. This is an application liveness error, not a reason to
+invent a consecutive-event threshold or poison valid large fanout.
+
+Native close and toggle callbacks are browser tasks, not synchronous method
+results. Toggle callbacks coalesce and read live state when dispatched.
+Different HTML task sources have no promised relative arrival order;
+`close` uses user interaction and dialog `toggle` uses DOM manipulation.
+Applications must not depend on a total order between those sources. The
+native oracle exercises a legal interleaving; decisions spanning them are
+tested in both orders and specs assert order-independent settled results.
+See the [HTML dialog algorithms](https://html.spec.whatwg.org/multipage/interactive-elements.html#close-the-dialog).
+
+Manual replay passively observes pending native callbacks and waits up to
+20 seconds for them, rather than assuming one zero-delay timer settles UI.
+The tracker holds at most live controlled nodes, with a per-node close
+count and coalesced-toggle mark; it checks identity after deferred marking
+and forgets removed targets. A weak modal-order index supplies reachability
+facts without DOM-wide searches. These observers never create an event,
+choose a result or schedule production input. The native driver's effectful
+clock bounds a pump of the same pure UI-task transitions; a timeout or
+observer counter exhaustion fails observation, leaving app faults untouched.
+Pure fuzz targets pump their own bounded generated sequences.
+
 ## Controlled Inputs
 
 The `value` property is a guarded update, not a blind assignment:
@@ -2501,8 +2635,9 @@ stale, as for focus. A file input still cannot take `Prop.value`.
 This applies to text-like controls (text inputs, number-input draft strings,
 textarea). The `checked` property takes a `Bool`. A `<select>`'s value is re-applied
 when an option is inserted below it or an option's value changes. Forms are
-app-managed: the runtime prevents the default of every `submit` that reaches
-the mount root, so a submit never navigates the page.
+app-managed: the runtime listens for `submit` from mount, even without an
+app handler, and prevents every submit that reaches the root. A form never
+navigates or closes a dialog through its native submit default.
 
 Focus is an explicit command on a named reference (`ref(name)` on an element;
 `Focus`/`Blur`/`SelectText`/`ApplyValue` requests). A reference that is not mounted at the
@@ -2653,7 +2788,9 @@ The runtime catches every trap, reads the class and diagnostic through fresh
 memory views, reports them, detaches its listeners and cancels its effects,
 drops queued events and staged effects, keeps the last applied DOM as fallback,
 and refuses later calls without entering Wasm. An executor failure (a bug in
-applying a command) is contained the same way with class `executor`.
+applying a command, including an external listener preventing a controlled
+show from reaching its requested state) is contained the same way with
+class `executor`.
 `recover()` mounts a fresh instance from the same module; it never resumes a
 poisoned one. External effects already performed are not undone. Poisoning
 or unmounting the page's runtime terminates every worker it started and
@@ -2698,7 +2835,8 @@ and a job of a task its preparation does not list; event payload not
 valid for its handler's payload kind (for text, not UTF-8); an event type
 ending in a retired policy or files suffix; a property on an element its
 row does not allow, a property declared twice on an element, or an
-attribute with a name a property row claims on that element; a text-kind
+attribute with a name a property row claims on that element; a controlled
+helper with reserved attributes or a `beforetoggle` handler; a text-kind
 key handler, a 33rd live document-key handler, or `ApplyValue` without a
 declared value property at its reference; boot
 bytes or an effect result that do not follow Appendix B (truncated, trailing
@@ -2776,6 +2914,8 @@ bound and a declared behaviour at the bound:
 | A table's changes | One earlier row for each distinct key one turn writes | Cleared when the turn ends |
 | Runtime ingress queue | 4096 occurrences and reports | A report drains a full queue early while idle; overflow while busy is `resource_limit` poison |
 | Live document-key handlers | 32 per instance, structurally outside rows | `contract` at mount naming the site |
+| Manual scroll history | Newest 4096 performed records per document, weak target identities, cumulative U64 ordinal | Older assertions fail retained-history diagnostics; ordinal exhaustion disables observation, never scrolling |
+| Manual native-UI readiness | Live controlled nodes; per-node U64 close count or coalesced toggle mark; 20 s observation deadline | Explicit observation failure, never app poison |
 | Manual pointer log | 4096 dispatch records, taken after each input step | `resource_limit` on overflow; production retains no log |
 | Spec driver pointers | One mouse/pen gesture or up to 16 touches, without overlap between modes | Step error before input; no such limit on production pointer dispatch |
 | Turns one drain delivers | 4096 | `resource_limit` poison |
@@ -2894,7 +3034,7 @@ oracle and never defines a meaning of its own. In particular:
   `mouseup` and the focus change; `click` still fires. `real-click` differs
   only in failing on a disabled control;
 - focus moves as in Chrome, and a text control the user changed gets
-  `change` when it loses focus. Engine `FOCUS` commands are applied after
+  `change` when it loses focus. Engine `REF` commands are applied after
   the batch and raise the same focus events as programmatic focus in
   Chrome, each as a turn. `expect-focused LOC` checks the active element,
   and `expect-no-focus` checks that focus is on the document body;
@@ -2907,6 +3047,32 @@ oracle and never defines a meaning of its own. In particular:
   storage available with no seeded pairs, online and visible unless a
   setup form says otherwise. `set-online` and `set-visibility` carry their
   current values into a later document and dispatch nothing when unchanged.
+
+### Native UI and scrolling steps
+
+`(dismiss)` is Escape down and up at current focus, honoring key prevention,
+CloseWatcher cancellation and native dialog/auto-popover dismissal.
+`(expect-shown LOC hidden|open|modal|popover)` tests live shown state rather
+than document presence. Actions refuse hidden dialog/popover descendants
+and elements outside the top modal; observations may read inert background.
+Tab skips inert elements. The driver settles native callbacks after mount
+and each step with the bounded passive observation described above.
+
+`(expect-scroll K LOC into-view|to)` checks the K-th performed explicit
+scroll command, with one-based U64 ordinals; `(expect-scrolls N)` checks the
+absolute U64 count in this document. The manual history retains 4096 newest
+commands and element identity, never reused node ids; an overwritten
+ordinal fails. JSON carries these counts as decimal strings to retain U64
+precision. No geometry, final offset or animation completion is asserted.
+
+`Scm` supplies one explicit activation classification for every step, shared
+by both runners. Actual clicks (including check/uncheck only when clicking),
+nonempty fill, press except Escape, mouse/pen down and touch up grant
+activation. Disabled/no-op clicks, empty fill, pointer move/cancel,
+mouse/pen up and scripted change/select/submit/focus do not. A new document
+starts without it. A prevented cancel consumes the opportunity until the
+next actual activation. Native callbacks preserve each task source's order
+and toggle coalescing without promising cross-source ordering.
 
 ### Pointer steps
 
@@ -3530,6 +3696,13 @@ prop_s : Prop(a), Signal(ctx, a) -> Attr(ctx)
 ref : Str -> Attr(ctx)                        # named focus reference
 ref_s : Signal(ctx, Str) -> Attr(ctx)          # reactive name; allowed in a row; empty names nothing
 
+# Reference commands
+Align : [Start, Center, End, Nearest]
+Edge : [Keep, Start, End, Px(U32)]
+ScrollBehavior : [Auto, Instant, Smooth]
+ScrollProps := { block : Align ?? Nearest, inline : Align ?? Nearest, behavior : ScrollBehavior ?? Auto }
+scroll_into_view : Str, ScrollProps -> [ScrollIntoView(Str, { block : Align, inline : Align, behavior : ScrollBehavior })]
+
 # Files
 File                                          # opaque handle: a file, or a range of one
 File.name, File.mime : File -> Str
@@ -3582,14 +3755,18 @@ Request : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Ti
               on_dispose : [Stop, Keep], on_cancel : [Stop, Finish],
               prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] }),
        Interval(U32), Popstate, OnlineChanges, VisibilityChanges, Self, Push(Str),
-       Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str), ApplyValue(Str),
+       Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str), ApplyValue(Str), FocusInPlace(Str),
+       ScrollIntoView(Str, { block : Align, inline : Align, behavior : ScrollBehavior }),
+       ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }),
        StorageSet(Str, Str), StorageRemove(Str), ReadBytes({ file, max_bytes }),
        ReadUtf8({ file, max_bytes }),
        Upload({ method, url, headers, body : File, timeout_ms }), Sha256(File), ObjectUrl(File),
        PortCommand({ port, message }), PortCall({ port, message, timeout_ms }),
        PortSubscribe({ port, message }),
        Save({ file : File, name : Str }), Fetch({ method, url, headers, timeout_ms })]
-Command : [Push(Str), Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str), ApplyValue(Str),
+Command : [Push(Str), Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str), ApplyValue(Str), FocusInPlace(Str),
+       ScrollIntoView(Str, { block : Align, inline : Align, behavior : ScrollBehavior }),
+       ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }),
        StorageSet(Str, Str), StorageRemove(Str), PortCommand({ port, message }),
        Save({ file : File, name : Str })]     # the requests that await nothing: a cleanup's plan
 Result : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
@@ -3716,11 +3893,21 @@ controls (`button`, `action_button`, `text_input`, `number_input`, `textarea`,
 whose props are `FileInputProps := { selection : [Single, Multiple] ?? Single,
 accept : [Any, Types(Str)] ?? Any }`), accessibility attributes (`aria_label`,
 `aria_invalid`, `aria_describedby`) and event helpers (`on_input`, `on_change`,
-`on_focus`, `on_blur`, `on_submit`, `on_drop_files`,
+`on_focus`, `on_blur`, `on_submit`, `on_cancel`, `on_drop_files`,
 `on_paste_files`, `on_pointer_down`, `on_pointer_down_capture`,
 `on_pointer_move`, `on_pointer_move_paced`, `on_pointer_up`,
 `on_pointer_cancel`) and zone properties (`zone`, `zone_s`). Accessible names go in `aria-label`, which the spec locators
 match.
+
+The controlled helpers are:
+
+```roc
+Html.DialogProps(ctx) := { open : Signal(ctx, Bool), on_close : HandlerOf(ctx, Bool), modal : [Modal, NonModal] ?? Modal }
+Html.dialog : Str, Html.DialogProps(ctx), List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
+Html.PopoverProps(ctx) := { open : Signal(ctx, Bool), on_toggle : HandlerOf(ctx, Bool), dismiss : [Auto, Manual] ?? Auto }
+Html.popover : Str, Html.PopoverProps(ctx), List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
+Html.on_cancel : Handler(ctx) -> Attr(ctx)
+```
 
 **Target vocabulary.** An `Svg` module and a typed style API, session storage, an entropy seed, and handler-level
 request occurrences. Each lands with an engine change,
@@ -3732,7 +3919,7 @@ touches the wire, an Appendix B entry.
 All integers are little-endian. `u32` ids. `str` is `u32` byte length followed
 by UTF-8 bytes. `rest` is the remaining bytes of a payload as UTF-8.
 
-This appendix is protocol version **10**. The engine declares it
+This appendix is protocol version **11**. The engine declares it
 (`Core.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
@@ -3751,7 +3938,7 @@ roc-lang/roc#12953 (see [Compiler Limitations](#compiler-limitations)).
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (10) |
+| `roc_engine_version` | `() -> u32` | The protocol version (11) |
 | `roc_engine_keys` | `() -> List(U8)` | The program's declaration sections, described under Boot below. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
@@ -3982,7 +4169,7 @@ a `contract` fault.
 | 15 | `NAV` | `mode:u8 url:str` (`1` push, `2` replace) |
 | 16 | `STORAGE` | `op:u8 key:str [value:str]` (`1` set with value, `2` remove) |
 | 17 | `TITLE` | `text:str` |
-| 18 | `FOCUS` | `op:u8 node` (`1` focus, `2` blur, `3` focus and select text, `4` apply rendered value) |
+| 18 | `REF` | `op:u8 node` then operands: `1` focus, `2` blur, `3` focus and select text, `4` apply rendered value, `5` focus without scrolling; `6` scroll into view with `block:u8 inline:u8 behavior:u8`; `7` scroll to with `top:edge left:edge behavior:u8` |
 | 19 | `PORT` | `port:str message` — a port command; `message` is `json:str nblobs:u32 (len:u32 bytes)* nfiles:u32 (token:u64 start:u64 len:u64)*` |
 | 20 | `SAVE` | `token:u64 start:u64 len:u64 name:str` — save a file's range as a download named `name`; not counted by opcode (index 20 of the work record is `set_checked`) |
 | 21 | `PROP` | `node prop:u8 value:str` — set an element property from the closed table below |
@@ -3993,6 +4180,13 @@ a `contract` fault.
 `before` (and `parent` is that node's parent). Opcodes 13–18 are collected while
 the batch is applied and performed after it, as are 19 and 20 (a save's
 file is resolved when the batch is applied).
+
+For REF, alignment is `0` Start, `1` Center, `2` End, `3` Nearest;
+behavior is `0` Auto, `1` Instant, `2` Smooth. An edge is tag `0` Keep,
+`1` Start, `2` End or `3` followed by `pixels:u32`. Unknown ops or enum
+values are executor faults. All REF modes are counted at work index 18.
+Collected commands capture element identity, so a recycled id never retargets
+an earlier command. Scroll end is resolved at perform time.
 
 **`FX` kinds:**
 
@@ -4036,7 +4230,7 @@ shift them.
 
 A reference hole carries no name on the wire: the engine alone holds the
 name. Its `INST` operand assigns its element an id for commands such as
-`FOCUS`, freed with the row. The runtime keeps that command address separate
+`REF`, freed with the row. The runtime keeps that command address separate
 from event routing, which still uses the row's id.
 
 **Attribute presence and values.** In `ATTR`, `HATTR` and an attribute
@@ -4061,6 +4255,15 @@ site; an unknown kind number in commands is an `executor` fault.
 | 2 Files | `minted:u32 refused:u32 (size:u64 name:str type:str)*minted`, with staged handles in order | `event_files` | `change`, `drop`, `paste`; no files means no dispatch. `drop` prevents both its default and `dragover`'s default |
 | 3 Pointer | `id:u32 kind:u8 button:u8 buttons:u16 mods:u8 primary:u8 at:u8 [x:u16 y:u16 zone:str]` | `event` | `pointerdown`, `pointermove`, `pointerup`, `pointercancel` |
 | 4 Key | `flags:u8 key:str code:str heard:u8 heard_key:str` | `event` | `keydown`, `keyup`; pass over a local handler whose keymap hears nothing |
+| 5 OpenState | One byte, strictly `0` or `1` | `event` | Helper-paired dialog `close` or popover `toggle` |
+
+Kind **5 OpenState** is one byte, strictly `0` or `1`, delivered by
+`event`. Its private helper declaration pairs `close` with shown property 6
+and `toggle` with popover property 7. The runtime reads `dialog.open` or
+`:popover-open` at dispatch. The engine records that value in the paired
+hole before the Boolean handler and settles it once as described above.
+`cancel` remains text-kind with an empty payload. Malformed Boolean bytes
+are a routed-site contract fault; authors cannot attach this codec alone.
 
 Key kind **4** is allowed only on `keydown` and `keyup`, delivered by
 `event`. Its payload is `flags:u8 key:str code:str heard:u8 heard_key:str`.
@@ -4111,19 +4314,25 @@ listened as `focusin` and `focusout`.
 
 **Element properties.** `PROP`, `HPROP` and property holes use this closed
 table. Each encoded value is a `str`; the row decides its type and meaning.
-All rows apply in stream order. `value` and `checked` mirror their
+Rows 1–5 apply in stream order; rows 6–7 have the timing below. `value` and `checked` mirror their
 attribute; `pointer_zone` has no attribute mirror. An empty
 `value` sets the live value to empty text and keeps `value=""`, so an
 option remains the empty choice. A false `checked` removes its mirrored
 attribute; true keeps it present.
 
-| Index | Property | Elements | Type and encoding | Claims attribute |
-|---|---|---|---|---|
-| 1 | `value` | `input`, `textarea`, `select`, `option` | `Str`, UTF-8; the controlled-input guard and select settle apply | `value` |
-| 2 | `checked` | `input` | `Bool`, exactly `"true"` or `"false"` | `checked` |
-| 3 | `pointer_zone` | Any element | `Str`, UTF-8; empty key marks no zone | None |
-| 4 | `keymap_down` | Any element | Encoded keymap for its paired keydown handler | None |
-| 5 | `keymap_up` | Any element | Encoded keymap for its paired keyup handler | None |
+| Index | Property | Elements | Type and encoding | Claims attribute | When applied |
+|---|---|---|---|---|---|
+| 1 | `value` | `input`, `textarea`, `select`, `option` | `Str`, UTF-8; the controlled-input guard and select settle apply | `value` | Stream |
+| 2 | `checked` | `input` | `Bool`, exactly `"true"` or `"false"` | `checked` | Stream |
+| 3 | `pointer_zone` | Any element | `Str`, UTF-8; empty key marks no zone | None | Stream |
+| 4 | `keymap_down` | Any element | Encoded keymap for its paired keydown handler | None | Stream |
+| 5 | `keymap_up` | Any element | Encoded keymap for its paired keyup handler | None | Stream |
+| 6 | `shown` | Controlled dialog | `hidden`, `open`, `modal`; guarded by live-state table above | `open` (reserved, not a string mirror) | Hidden in stream; showing after batch, guarded by latest intent |
+| 7 | `popover_shown` | Controlled element with one static auto/manual popover declaration | Exactly `true` or `false`, guarded by live state | None; helper owns its static `popover` declaration | False in stream; true after batch, guarded by latest intent |
+
+Rows 6 and 7 and their echo attachment are helper-only, with the attribute
+and event restrictions stated above. Showing work keeps its collected stream
+position and is invalidated by a later property decision or target removal.
 
 Rows 4 and 5 are private to `on_key` and `on_document_key`, never exposed
 as `Prop` constructors. Each entry concatenates policy `p` (prevent) or

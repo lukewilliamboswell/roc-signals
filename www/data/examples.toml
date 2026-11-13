@@ -59,12 +59,12 @@ features = ["Store", "Derived values", "Keyed lists", "Components"]
 [[examples]]
 slug = "form-builder"
 title = "Form Builder"
-description = "A field designer beside a live preview that validates as you type: the fields are one table that both draw a view of, so tightening a rule in the designer invalidates what is typed in the preview."
+description = "A field designer with settings dialogs and delete confirmation beside a live preview. Both draw views of one table; invalid submission opens a problem popover and scrolls and focuses the first problem."
 source = "examples/form-builder/main.roc"
 specs = "examples/form-builder/specs"
 public = true
 section = "basics"
-features = ["Store", "Tables and views", "Forms", "Derived values", "Components"]
+features = ["Store", "Tables and views", "Forms", "Dialogs", "Popovers", "Scrolling", "Derived values", "Components"]
 
 [[examples]]
 slug = "kanban-board"

@@ -179,6 +179,59 @@ A few things to note:
 - The compact toggle is a separate state, so toggling it re-evaluates only the
   class that reads it.
 
+## Dialogs and popovers
+
+A dialog's open state is a signal, and its close handler receives the
+browser's current open state as a `Bool`. Accept that value so Escape and
+an authored close button agree:
+
+{{ sample(file="dialogs.roc", region="dialog") }}
+
+`Html.dialog(label, props, attrs, children)` defaults to `modal: Modal`;
+choose `NonModal` for an inline dialog. The element stays mounted while
+closed, but its content has one scope that exists only while open. Closing
+hides the dialog before disposing that content, so the browser can restore
+focus to its opener. An open dialog removed with its row cannot restore
+focus that way; post a focus command in the decision that removes it.
+
+A modal initially focuses its autofocus descendant, otherwise its first
+focusable descendant, otherwise the dialog itself. It makes background
+controls inert. `Html.on_cancel(handler)` hears the text-kind `cancel`
+event; use a preventing policy on `Engine.on_with("cancel", ...)` when the
+app must refuse dismissal. Forms never navigate or close a dialog through
+`method="dialog"`: the runtime prevents every submit from mount onward.
+
+A popover keeps its children mounted while hidden:
+
+{{ sample(file="dialogs.roc", region="popover") }}
+
+`Html.popover` defaults to `dismiss: Auto`, accepting Escape, an outside
+pointer press and release, and hiding caused by another unrelated auto
+popover or a modal opening. Write the `on_toggle` value back to its cell or
+local state. Choose `Manual` when unrelated popovers must stay shown
+together, and provide the controls that hide them. Position either kind
+with ordinary CSS, including anchor positioning.
+
+Both handlers are required. If a handler ignores a browser close, the open
+signal is evaluated again and the control reopens, even when no state was
+written. Two unrelated auto popovers that both insist on staying open can
+keep dismissing each other; accept their toggles or make their desired
+states compatible. Test that decision as a pure function.
+
+Native callbacks run in browser tasks and read live state at dispatch.
+A delayed close after reopening can therefore carry `True`. Close and
+toggle task sources have no promised relative arrival order: decisions
+spanning them must work in either order. The helpers own their shown
+properties and echo declarations. A controlled dialog rejects `open`,
+`popover` and `closedby` attributes; a controlled popover owns its static
+`popover` attribute. Both reject `beforetoggle` handlers. Extra declarations
+are contract errors, including differently cased HTML attribute names.
+
+[Form Builder](@/examples/form-builder.md) uses row settings dialogs, a
+page-level delete confirmation, and an automatic problem summary. Its
+invalid submit scrolls and focuses the first problem through named
+references ([Scrolling and focus in place](@/docs/effects-and-browser.md#scrolling-and-focus-in-place)).
+
 ## Controlled inputs
 
 A text box's `value` property is guarded, so the engine can rewrite it

@@ -190,12 +190,13 @@ Storage reads answer by themselves, from storage.
 | `(check LOC)` / `(uncheck LOC)` | Click a checkbox or radio that is not in that state; it must then be in it. A radio cannot be unchecked |
 | `(submit LOC)` | Submit a `<form>` as `requestSubmit` does: nothing is submitted while a control is invalid |
 | `(press LOC "Shift+ArrowDown")` / `(press "Escape")` | Focus the locator if supplied, then keydown and keyup; otherwise use current focus or body. See [Keyboard steps](#keyboard-steps) |
+| `(dismiss)` | Press and release Escape at current focus, with normal key prevention and native dismissal |
 | `(focus LOC)` / `(blur LOC)` | Move focus, delivering `blur` and `focus` to handlers that listen. Focusing an element that cannot take focus does nothing |
 
 Focus follows Chrome in both runners: a text control the user changed gets
 `change` when it loses focus, and a controlled input's rewritten value waits
 for blur while it has focus. The engine's `Focus`, `Blur` and `SelectText`
-commands also update focus and raise the same events after the batch, each
+and `FocusInPlace` commands also update focus and raise the same events after the batch, each
 as its own turn. A focus loop stops the instance with `resource_limit`
 after 4096 turns in one step. A handler with no listener for its event is not
 an error: the event simply reaches nothing, as in a browser.
@@ -291,6 +292,46 @@ including control values and checked state. Both runners count the same
 work: the native oracle reads the property commands, and Chrome observes
 their mirrored attributes. `patches_emitted` includes `PROP` and `HPROP`.
 
+### Dialogs, popovers and scrolling
+
+| Step | Passes when |
+|---|---|
+| `(expect-shown LOC hidden\|open\|modal\|popover)` | The live dialog or popover has exactly that shown state |
+| `(expect-scroll K LOC into-view\|to)` | The K-th performed explicit scroll command targeted this element and had this kind; K starts at 1 |
+| `(expect-scrolls N)` | Exactly N explicit scroll commands were performed in this document |
+
+`expect-visible` tests presence in the document, so a closed dialog or
+hidden popover can still match it. Use `expect-shown` for shown state.
+Actions on hidden dialog/popover content or outside the top modal fail;
+assertions can inspect the inert background. No pixel layout or smooth
+scroll completion is asserted. A scroll command targeting a missing
+reference is stale and adds no performed scroll.
+
+The manual scroll history keeps the newest 4096 commands, with absolute
+U64 ordinals and element identity rather than reusable engine ids. An
+assertion for an overwritten command fails explicitly. The count resets
+with the document. At ordinal exhaustion, observation fails without
+stopping the app or suppressing its scroll. The browser history uses weak
+element references so it cannot retain removed subtrees.
+
+Both runners settle native close and toggle callbacks after mount and
+after each step. Browser replay passively tracks pending callbacks and
+waits up to 20 seconds; it does not assume a timer tick is enough. A
+nonsettling app fails the step. Close and toggle use different browser task
+sources, whose relative order is unspecified; assert the settled outcome
+and test decisions in both orders. In particular, accept automatic
+popover hiding rather than making unrelated auto popovers reopen each
+other indefinitely.
+
+The parser emits one activation table for both runners. An actual click,
+including a check/uncheck that clicks, grants user activation; a disabled
+click or already-satisfied check does not. Nonempty `fill` grants it,
+while empty `fill` does not. Every supported `press` except Escape grants
+it. Mouse/pen pointer down and touch pointer up grant it; move, cancel,
+mouse/pen up, scripted changes, selects, submits and focus do not. A new
+document starts without activation. This matters to native dismissal:
+preventing one `cancel` can consume the activation that allowed it.
+
 ### Keyboard steps
 
 `press` raises keydown and keyup. If keydown loads a new document, the
@@ -304,16 +345,17 @@ Home, End, PageUp, PageDown and F1–F12. There is no `ControlOrMeta`.
 Write `Shift+?` and `Shift+A`; omitting required Shift is a parse error,
 as is `Shift+a` (use `Shift+A`). A named key may also carry Shift.
 
-Tab moves focus by positive tabindex then document order, skipping disabled
-and hidden elements. Enter activates a button or link or implicitly
+Tab moves focus by positive tabindex then document order, skipping disabled,
+hidden and inert elements. Enter activates a button or link or implicitly
 submits a form. Enter on a file or color input clicks the control instead;
 the chooser UI is outside the DOM model, as for a mouse click. Ctrl/Meta
 suppresses button, file/color and implicit-form activation;
 Alt/Shift retains it. Space activates buttons, checkboxes and radios on keyup,
 with any modifiers, if the original control still holds focus and its
 pressed ancestry has not been detached.
-Prevention suppresses the default. Escape, function keys and caret-only
-movement have no modelled change.
+Prevention suppresses the default. Escape performs native dialog and auto
+popover dismissal; function keys and caret-only movement have no modelled
+change.
 
 Unprevented modified Enter on a link is refused for any Control, Alt,
 Shift or Meta modifier: its navigation, download or new-context default

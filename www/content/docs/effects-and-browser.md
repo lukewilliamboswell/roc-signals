@@ -1,6 +1,6 @@
 +++
 title = "Effects and the Browser"
-description = "HTTP, storage, timers, navigation, title, focus and cleanup, through one typed effect channel."
+description = "HTTP, storage, timers, navigation, title, focus, scrolling and cleanup, through one typed effect channel."
 weight = 10
 template = "page.html"
 +++
@@ -156,7 +156,7 @@ list is on, say), lift that state in and map both:
 | `PortCall({ port, message, timeout_ms })` | `PortAnswer(message)` or `PortFailed(failure)`, once. Made by a typed [port](@/docs/ports.md) call |
 | `PortSubscribe({ port, message })` | `PortAnswer(message)` for every message, or `PortFailed(failure)`, until the site is disposed or the JavaScript ends it. Made by a typed port subscription |
 | `Self` | `Now`, in a follow-up turn |
-| `Push(url)`, `Replace(url)`, `Title(text)`, `StorageSet(key, value)`, `StorageRemove(key)`, `Focus(ref)`, `Blur(ref)`, `SelectText(ref)`, `Save({ file, name })` (made with `File.save`), `PortCommand({ port, message })` (made by a typed port command) | None: commands, the tags of `Engine.Command` |
+| `Push(url)`, `Replace(url)`, `Title(text)`, `StorageSet(key, value)`, `StorageRemove(key)`, `Focus(ref)`, `Blur(ref)`, `SelectText(ref)`, `ApplyValue(ref)`, `FocusInPlace(ref)`, `ScrollIntoView(ref, props)`, `ScrollTo(ref, props)`, `Save({ file, name })` (made with `File.save`), `PortCommand({ port, message })` (made by a typed port command) | None: commands, the tags of `Engine.Command` |
 
 `Engine.http_text(res)` reads an HTTP result as the body of a 2xx response,
 or a typed `HttpError`: `Network(message)`, `Timeout`, `Status(code)` or
@@ -289,6 +289,26 @@ same turn that asks for it, so this is not a contract error. Focusing an
 element that cannot take focus leaves focus where it was. Both spec runners
 apply focus commands and let you assert the outcome with `expect-focused`
 and `expect-no-focus`.
+
+### Scrolling and focus in place
+
+`FocusInPlace(name)` moves focus with the browser's scrolling prevented.
+Pair it with an explicit scroll when revealing a validation problem:
+
+{{ sample(file="effects.roc", region="scroll") }}
+
+`Engine.scroll_into_view(name, props)` defaults `block` and `inline` to
+`Nearest` and `behavior` to `Auto`. Alignments are `Start`, `Center`, `End`
+and `Nearest`; behavior is `Auto`, `Instant` or `Smooth`. Its narrow return
+tag fits both a request plan and a cleanup's command plan.
+
+`ScrollTo(name, { top, left, behavior })` scrolls the named element. Each
+edge is `Keep`, `Start`, `End` or `Px(U32)`; the browser resolves `End` when
+it performs the command. Both scroll commands run after the whole batch,
+in order with focus and other commands. They use the same reference map
+and stale-name count as focus, and await no result. Layout stays in the
+browser. Specs assert the command performed with
+[`expect-scroll`](@/docs/testing.md#dialogs-popovers-and-scrolling).
 
 ## Cleanup
 
