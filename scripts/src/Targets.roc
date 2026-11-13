@@ -113,7 +113,8 @@ Targets := [].{
 	## Exercise the monitor's bounded aggregation and environment facts, including
 	## time-zone probes in UTC and Sydney, and the documented port handlers
 	## with bounded queues and browser-resource cleanup, without a browser.
-	## A development Wasm fixture also guards sparse-write allocation scaling.
+	## Independent picture vectors check framing and canonical hashing. A
+	## development Wasm fixture also guards sparse-write allocation scaling.
 	runtime_unit! : SpecSuite.Options => Try(List(Str), _)
 	runtime_unit! = |o| {
 		var $failures = []
@@ -123,6 +124,12 @@ Targets := [].{
 			code = Proc.status!({ program: o.node, args: ["tests/runtime/${script}"], cwd: o.root })?
 			if code != 0 {
 				$failures = $failures.append("${script} failed (exit ${code.to_str()})")
+			}
+		}
+		for picture_script in ["tests/picture-envelope.mjs", "tests/picture-measurement.mjs"] {
+			picture_status = Proc.status!({ program: o.node, args: [picture_script], cwd: o.root })?
+			if picture_status != 0 {
+				$failures = $failures.append("${picture_script} failed (exit ${picture_status.to_str()})")
 			}
 		}
 		wasm = "${o.build_dir}/write-scaling.wasm"
@@ -175,6 +182,8 @@ Targets := [].{
 			Targets.browser!(o, "protocol-facts-browser.mjs", [])?
 				.concat(Targets.browser!(o, "picture-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "picture-envelope-browser.mjs", [])?)
+				.concat(Targets.browser!(o, "picture-measurement-browser.mjs", [])?)
+				.concat(Targets.browser!(o, "picture-preparation-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "names-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "namespaces-browser.mjs", [])?)
 				.concat(Targets.browser!(o, "unicode-symbols-browser.mjs", ["--oracle", unicode_bits])?)
