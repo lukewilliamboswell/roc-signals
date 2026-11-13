@@ -5726,6 +5726,190 @@ export class RocEngineRuntime {
 // ---------------------------------------------------------------------
 // Port data (see "Ports" above).
 
+// Picture metadata is untrusted deployment input. This pass decodes only data:
+// actual DOM kinds/text, hashes, the mount batch and Roc's verdict are separate.
+class PictureEnvelopeError extends Error {
+  constructor(rule) { super(`picture envelope: ${rule}`); this.rule = rule; }
+}
+
+// Read one bounded deployment envelope before any DOM allocation or claim
+// execution. A classified malformed result is separate from a picture verdict;
+// callers still measure actual names, text boundaries and hashes independently.
+export function decodePictureEnvelope(bytes, limits = {}) {
+  const ceiling = 16 * 1024 * 1024 - 37;
+  const settings = { maxBytes: ceiling, maxNodes: 262144, maxDepth: 1024 };
+  if (!limits || typeof limits !== "object" || Array.isArray(limits)) throw new PictureEnvelopeError("invalid limits");
+  for (const key of Object.keys(limits)) {
+    if (!Object.hasOwn(settings, key)) throw new PictureEnvelopeError(`unknown limit ${key}`);
+    const value = limits[key], maximum = settings[key];
+    if (!Number.isInteger(value) || value < 0 || value > maximum) throw new PictureEnvelopeError(`invalid limit ${key}`);
+    settings[key] = value;
+  }
+  const fail = rule => { throw new PictureEnvelopeError(rule); };
+  if (!(bytes instanceof Uint8Array) || bytes.length > settings.maxBytes) fail("byte limit");
+  let view;
+  try { view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); } catch (_) { fail("unreadable bytes"); }
+  let at = 0;
+  const need = n => { if (!Number.isInteger(n) || n < 0 || n > bytes.length - at) fail("truncated bytes"); };
+  const u8 = () => { need(1); return bytes[at++]; };
+  const u16 = () => { need(2); const n = view.getUint16(at, true); at += 2; return n; };
+  const u32 = () => { need(4); const n = view.getUint32(at, true); at += 4; return n; };
+  const count = (minimum, maximum, label) => {
+    const n = u32();
+    if (n > maximum || n > Math.floor((bytes.length - at) / minimum)) fail(`${label} count`);
+    return n;
+  };
+  const string = () => {
+    const n = u32(); need(n);
+    let value;
+    try { value = utf8.decode(bytes.subarray(at, at + n)); } catch (_) { fail("invalid UTF-8"); }
+    at += n; return value;
+  };
+  const name = () => {
+    const namespace = string() || null, prefix = string() || null, local = string();
+    if (local.length === 0) fail("empty local name");
+    return { namespace, prefix, local };
+  };
+  const presence = () => { const value = u8(); if (value > 1) fail("invalid presence"); return value === 1; };
+  const digest = () => { need(32); const value = bytes.slice(at, at + 32); at += 32; return value; };
+  for (const value of [83, 80, 67, 49]) if (u8() !== value) fail("magic");
+  if (u16() !== 1 || u16() !== 19 || u32() !== 0) fail("schema, protocol or flags");
+  const root = name(), mountFingerprint = digest(), expectedDigest = digest();
+  const physicalCount = u32();
+  if (physicalCount > settings.maxNodes || physicalCount > Math.floor((bytes.length - at) / 4)) fail("physical node limit");
+  const parent = new Int32Array(physicalCount); parent.fill(-1);
+  const kinds = new Uint8Array(physicalCount);
+  const physical = ordinal => { if (ordinal >= physicalCount) fail("physical reference"); return ordinal; };
+  const containers = [], containerKeys = new Set();
+  const containerCount = count(9, 2 * physicalCount + 1, "container");
+  if (containerCount === 0) fail("missing mount container");
+  for (let i = 0; i < containerCount; i++) {
+    const owner = u32(), role = u8();
+    if (role > 1 || (i === 0 ? owner !== 0xffffffff || role !== 0 : owner === 0xffffffff)) fail("container owner or role");
+    if (i !== 0) physical(owner);
+    const key = `${owner}:${role}`;
+    if (containerKeys.has(key)) fail("duplicate container");
+    containerKeys.add(key);
+    const n = count(4, physicalCount, "child"), children = [];
+    let previous = -1;
+    for (let j = 0; j < n; j++) {
+      const child = physical(u32());
+      if (child <= previous || (i !== 0 && child <= owner)) fail("child preorder");
+      if (parent[child] !== -1) fail("duplicate physical placement");
+      parent[child] = i; children.push(child); previous = child;
+    }
+    containers.push({ owner, role, children });
+  }
+  const container = ordinal => { if (ordinal >= containers.length) fail("container reference"); return containers[ordinal]; };
+  const claim = (ordinal, kind) => {
+    physical(ordinal);
+    if (kinds[ordinal] !== 0) fail("duplicate physical claim");
+    kinds[ordinal] = kind;
+  };
+  const logicalCount = count(5, settings.maxNodes, "logical"), logical = [];
+  const constructed = new Set(), logicalChildren = new Uint32Array(containerCount);
+  for (let i = 0; i < logicalCount; i++) {
+    const target = u8();
+    if (target === 0 || target === 1) {
+      const node = physical(u32()); claim(node, target === 0 ? 1 : 3);
+      if (parent[node] < 0) fail("unplaced physical node");
+      logicalChildren[parent[node]]++;
+      logical.push({ target, physical: node });
+    } else if (target === 2) logical.push({ target, run: u32(), part: u32() });
+    else if (target === 3 || target === 4) {
+      const owner = u32(), childIndex = u32(); container(owner);
+      const key = `${owner}:${childIndex}`;
+      if (constructed.has(key)) fail("duplicate constructed position");
+      constructed.add(key); logicalChildren[owner]++;
+      logical.push({ target, container: owner, logical_child_index: childIndex, data: string() });
+    } else fail("unknown logical target");
+  }
+  const logicalReference = ordinal => { if (ordinal >= logical.length) fail("logical reference"); return logical[ordinal]; };
+  const runCount = count(13, logicalCount, "run"), runs = [], runPositions = new Set(), runContainers = new Set();
+  const textParts = new Uint8Array(logicalCount);
+  for (let i = 0; i < runCount; i++) {
+    const owner = u32(), childIndex = u32(), children = container(owner).children;
+    const present = presence(), node = present ? physical(u32()) : null;
+    if (present ? childIndex >= children.length || children[childIndex] !== node : childIndex > children.length) fail("text run position");
+    const key = `${owner}:${childIndex}`;
+    if (runPositions.has(key)) fail("duplicate text run position");
+    runPositions.add(key); runContainers.add(owner);
+    if (present) claim(node, 2);
+    const n = count(8, logicalCount, "part"), parts = [];
+    if (n === 0) fail("empty text run");
+    let utf16Units = 0;
+    for (let j = 0; j < n; j++) {
+      const ordinal = u32(), units = u32(), entry = logicalReference(ordinal);
+      if (entry.target !== 2 || entry.run !== i || entry.part !== j || textParts[ordinal]) fail("text part back reference");
+      textParts[ordinal] = 1; utf16Units += units;
+      if (!Number.isSafeInteger(utf16Units) || (!present && units !== 0)) fail("text run length");
+      parts.push({ logical: ordinal, utf16Units: units });
+    }
+    logicalChildren[owner] += n;
+    runs.push({ container: owner, childIndex, physical: node, parts, utf16Units });
+  }
+  for (let i = 0; i < logical.length; i++) {
+    const entry = logical[i];
+    if (entry.target === 2 && !textParts[i]) fail("missing text part");
+    if ((entry.target === 3 || entry.target === 4) && entry.logical_child_index >= logicalChildren[entry.container]) fail("constructed position");
+  }
+  const bindings = [], principals = new Set(), holes = new Set();
+  const bindingCount = count(18, Math.floor(bytes.length / 18), "binding");
+  for (let i = 0; i < bindingCount; i++) {
+    const birthOffset = u32(), role = u8(), address = u32(), slot = u32(), kind = u8(), target = u32();
+    logicalReference(target);
+    if (birthOffset === 0 || address === 0 || address === 0xffffffff || role > 3) fail("binding address, birth or role");
+    if ((role === 0 && (slot !== 0 || kind !== 0)) || (role === 1 && kind !== 0) || (role === 2 && (kind < 1 || kind > 6)) || (role === 3 && kind !== 4 && kind !== 5)) fail("binding fields");
+    const index = role === 2 ? holes : principals;
+    const key = role === 2 ? `${birthOffset}:${address}:${slot}` : `${birthOffset}:${address}`;
+    if (index.has(key)) fail("duplicate binding role");
+    index.add(key); bindings.push({ birthOffset, role, address, slot, kind, logical: target });
+  }
+  const scaffolds = [], scaffoldKeys = new Set();
+  const scaffoldCount = count(9, Math.floor(bytes.length / 9), "scaffold");
+  for (let i = 0; i < scaffoldCount; i++) {
+    const role = u8(), owner = physical(u32());
+    if (role === 0) {
+      const target = u32(), c = container(target), present = presence(), node = present ? physical(u32()) : null;
+      if (c.owner !== owner || c.children.length !== (present ? 1 : 0) || (present && c.children[0] !== node) || runContainers.has(target)) fail("control text container");
+      if (present) claim(node, 2);
+      const key = `text:${owner}:${target}`;
+      if (scaffoldKeys.has(key)) fail("duplicate scaffold");
+      scaffoldKeys.add(key); scaffolds.push({ role, owner, container: target, physical: node });
+    } else if (role === 1) {
+      const attribute = name(), original = presence() ? string() : null, value = presence() ? string() : null;
+      const key = JSON.stringify([owner, attribute.namespace, attribute.local]);
+      if (scaffoldKeys.has(key)) fail("duplicate scaffold attribute");
+      scaffoldKeys.add(key); scaffolds.push({ role, owner, name: attribute, original, value });
+    } else if (role === 2) {
+      const node = physical(u32());
+      if (parent[node] < 0 || containers[parent[node]].owner !== owner || containers[parent[node]].role !== 0) fail("selection option parent");
+      claim(node, 1);
+      const key = `selection:${owner}`;
+      if (scaffoldKeys.has(key)) fail("duplicate scaffold");
+      scaffoldKeys.add(key); scaffolds.push({ role, owner, physical: node });
+    } else fail("unknown scaffold role");
+  }
+  if (at !== bytes.length) fail("trailing bytes");
+  const depths = new Uint16Array(physicalCount), ancestry = [];
+  for (let i = 0; i < physicalCount; i++) {
+    if (parent[i] === -1 || kinds[i] === 0) fail("missing physical coverage");
+    if (kinds[i] === 1 && !containerKeys.has(`${i}:0`)) fail("missing element Children container");
+    const owner = containers[parent[i]].owner;
+    if (owner === 0xffffffff) ancestry.length = 0;
+    else {
+      while (ancestry.length && ancestry[ancestry.length - 1] !== owner) ancestry.pop();
+      if (ancestry.length === 0) fail("physical preorder");
+    }
+    depths[i] = owner === 0xffffffff ? 1 : depths[owner] + 1;
+    if (depths[i] > settings.maxDepth) fail("depth limit");
+    ancestry.push(i);
+  }
+  for (let i = 1; i < containers.length; i++) if (kinds[containers[i].owner] !== 1) fail("container owner is not an element");
+  for (const scaffold of scaffolds) if (kinds[scaffold.owner] !== 1) fail("scaffold owner is not an element");
+  return { root, mountFingerprint, expectedDigest, physicalCount, containers, logical, runs, bindings, scaffolds };
+}
+
 // Read one bounded protocol-facts item. Field order, lengths and uniqueness are
 // checked before any lookup table is constructed or app code is initialized.
 export function readProtocolFacts(bytes) {
