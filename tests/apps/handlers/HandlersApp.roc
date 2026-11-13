@@ -309,8 +309,8 @@ HandlersApp := [].{
 		|events| Html.div(
 			"",
 			[
-				Engine.element("button", ["pointermove", "mousemove", "pointerdown", "mousedown", "focus", "pointerup", "mouseup", "click"].map(|event| Engine.on(event, events.update(|log| "${log}${event};"))).concat([Html.aria_label("Record click")]), [Engine.text("Record click")]),
-				Engine.element("button", ["pointermove", "mousemove", "pointerdown", "mousedown", "focus", "pointerup", "mouseup", "click"].map(|event| Engine.on_with(event, { prevent: event == "pointerdown" }, events.update(|log| "${log}${event};"))).concat([Html.aria_label("Record prevented click")]), [Engine.text("Record prevented click")]),
+				Engine.element("button", ["pointermove", "mousemove", "pointerdown", "mousedown", "focus", "pointerup", "mouseup", "click"].map(|event| Engine.on(event, events.update(|log| "${log}${event.text()};"))).concat([Html.aria_label("Record click")]), [Engine.text("Record click")]),
+				Engine.element("button", ["pointermove", "mousemove", "pointerdown", "mousedown", "focus", "pointerup", "mouseup", "click"].map(|event| Engine.on_with(event, { prevent: event == "pointerdown" }, events.update(|log| "${log}${event.text()};"))).concat([Html.aria_label("Record prevented click")]), [Engine.text("Record prevented click")]),
 				Html.p_s(events.signal(), [Engine.test_id("press-events")]),
 			],
 		),

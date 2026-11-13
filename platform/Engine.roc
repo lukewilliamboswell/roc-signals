@@ -1,4 +1,5 @@
 import Core
+import Web
 import Layout
 import TableCore
 
@@ -38,6 +39,19 @@ import TableCore
 ## and never sees their representation. The engine itself is the platform's
 ## internal `Core` module.
 Engine := [].{
+
+	## Validated names are owned by the public Web module; these aliases keep
+	## the constructors available beside the builders that consume them.
+	Tag : Web.Tag
+
+	## Attribute grammar, with literal guidance for class and test-id builders.
+	AttrName : Web.AttrName
+
+	## Open nonempty event types, including computed custom event names.
+	EventType : Web.EventType
+
+	## The same Fetch method token held by requests and File factory defaults.
+	Method : Web.Method
 
 	## The context at the top of an application without a store: the context of
 	## the [Elem] that `program`'s view returns. Nested contexts ([In], [Row])
@@ -1023,7 +1037,7 @@ Engine := [].{
 	## answered and kept as `Http` is.
 	Request : [
 		## `timeout_ms` 0 = no timeout; capped at `max_timeout_ms`.
-		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32, cache : Cache, credentials : Credentials }),
+		Http({ method : Method, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32, cache : Cache, credentials : Credentials }),
 		StorageGet(Str),
 		SessionStorageGet(Str),
 		StorageChanges(Str),
@@ -1064,7 +1078,7 @@ Engine := [].{
 		SessionStorageRemove(Str),
 		ReadBytes({ file : File, max_bytes : U64 }),
 		ReadUtf8({ file : File, max_bytes : U64 }),
-		Upload({ method : Str, url : Str, headers : List((Str, Str)), body : File, timeout_ms : U32, credentials : Credentials }),
+		Upload({ method : Method, url : Str, headers : List((Str, Str)), body : File, timeout_ms : U32, credentials : Credentials }),
 		Sha256(File),
 		ObjectUrl(File),
 
@@ -1084,7 +1098,7 @@ Engine := [].{
 
 		## An HTTP request whose response body becomes a file
 		## (`File.fetch`), answered `Fetched`; kept like `Http`.
-		Fetch({ method : Str, url : Str, headers : List((Str, Str)), timeout_ms : U32, cache : Cache, credentials : Credentials }),
+		Fetch({ method : Method, url : Str, headers : List((Str, Str)), timeout_ms : U32, cache : Cache, credentials : Credentials }),
 	]
 
 	## A request that is emitted and forgotten: the commands of [Request],
@@ -1463,8 +1477,8 @@ Engine := [].{
 
 	## `element(tag, attrs, children)`: an HTML element. `Html` offers typed
 	## helpers for common elements and controls.
-	element : Str, List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
-	element = |tag, attrs, kids| Core.element(tag, attrs, kids)
+	element : Tag, List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
+	element = |tag, attrs, kids| Core.element(tag.text(), attrs, kids)
 
 	## Follow scroll offsets through the report queue, keeping the newest
 	## value before the next frame rather than dispatching every native event.
@@ -1508,24 +1522,24 @@ Engine := [].{
 
 	## Set a static attribute to literal text, keeping an empty nonboolean
 	## attribute present. Use a property builder for names a control claims.
-	attr : Str, Str -> Attr(ctx)
-	attr = |name, value| Core.attr(name, value)
+	attr : AttrName, Str -> Attr(ctx)
+	attr = |name, value| Core.attr(name.text(), value)
 
 	## Follow a signal with an attribute, writing only when it changes. An
 	## empty string keeps a nonboolean attribute present. Names claimed by
 	## an element property are rejected on that property's elements; use
 	## `prop_s` for live control state.
-	attr_s : Str, Signal(ctx, Str) -> Attr(ctx)
+	attr_s : AttrName, Signal(ctx, Str) -> Attr(ctx)
 	attr_s = |name, signal| match signal {
-		Fixed(value) => Core.attr(name, value)
-		Varies(value) => Core.attr_s(name, value)
+		Fixed(value) => Core.attr(name.text(), value)
+		Varies(value) => Core.attr_s(name.text(), value)
 	}
 
 	## Follow explicit presence, keeping `Present("")` as an empty nonboolean
 	## attribute and removing the attribute for `Absent`. As with `attr_s`,
 	## names claimed by a property must use that property's builder instead.
-	attr_presence : Str, Signal(ctx, [Absent, Present(Str)]) -> Attr(ctx)
-	attr_presence = |name, signal| Core.attr_presence(name, core_signal(signal))
+	attr_presence : AttrName, Signal(ctx, [Absent, Present(Str)]) -> Attr(ctx)
+	attr_presence = |name, signal| Core.attr_presence(name.text(), core_signal(signal))
 
 	## A static `class` attribute.
 	class : Str -> Attr(ctx)
@@ -1552,8 +1566,8 @@ Engine := [].{
 	## Listen for an event's text payload by its bare event name. Custom names
 	## may contain a colon. Retired policy/file suffixes are a contract error
 	## at mount; use `on_with` for policies and `on_files` for file handles.
-	on : Str, Handler(ctx) -> Attr(ctx)
-	on = |ev, { h }| Core.on(ev, h)
+	on : EventType, Handler(ctx) -> Attr(ctx)
+	on = |ev, { h }| Core.on(ev.text(), h)
 
 	## Browser policies fixed at declaration: prevention and stopping a
 	## bubbling event before it reaches listeners outside the mount.
@@ -1568,8 +1582,8 @@ Engine := [].{
 	## `prevent` prevents the default; `stop` keeps a bubbling event from
 	## listeners outside this mount. On a non-bubbling event `stop` does nothing,
 	## so the target's own browser listeners still run.
-	on_with : Str, Policy, Handler(ctx) -> Attr(ctx)
-	on_with = |event, policy, { h }| Core.on_with(event, policy, h)
+	on_with : EventType, Policy, Handler(ctx) -> Attr(ctx)
+	on_with = |event, policy, { h }| Core.on_with(event.text(), policy, h)
 
 	## Receive a typed pointer press, move, release or cancellation. Ordinary
 	## moves remain separate occurrences, suitable for drawing a stroke.
@@ -1856,4 +1870,31 @@ expect {
 	page = Engine.element("div", [Engine.attr_s("title", "fixed"), Engine.class_s("fixed"), Engine.test_id_s("fixed"), Engine.ref_s("fixed"), Engine.attr_presence("data-empty", Engine.const(Present("")))], [Engine.text_s("fixed"), Engine.element("input", [Engine.prop_s(Engine.Prop.value, "fixed")], [])])
 	mounted = Core.mount(page)
 	Core.evals(mounted) == 2 and Core.settled(mounted).is_ok()
+}
+
+## Public factories and raw asks share one concrete Method type, including
+## omitted defaults. Reading an ask never turns its method back into text.
+expect {
+	default_fetch = match Engine.File.fetch({ url: "/" }).sent() {
+		Fetch(props) => props.method == "GET"
+		_ => False
+	}
+	default_http = match Engine.http({ url: "/" }).sent() {
+		Http(props) => props.method == "GET"
+		_ => False
+	}
+	file = Core.held_file(Box.box(1.U64))
+	default_upload = match file.upload({ url: "/" }).sent() {
+		Upload(props) => props.method == "POST"
+		_ => False
+	}
+	method : Web.Method
+	method = "PATCH"
+	public_request : Engine.Request
+	public_request = Fetch({ url: "/", method, headers: [], timeout_ms: 0, cache: Default, credentials: SameOrigin })
+	shared = match Engine.raw(public_request).sent() {
+		Fetch(props) => props.method == method
+		_ => False
+	}
+	default_fetch and default_http and default_upload and shared
 }

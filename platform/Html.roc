@@ -86,12 +86,12 @@ Html := [].{
 
 	## A boolean attribute rendered `"true"` or `"false"` (such as `disabled` or
 	## `aria-pressed`).
-	flag : Str, Signal(ctx, Bool) -> Attr(ctx)
+	flag : Engine.AttrName, Signal(ctx, Bool) -> Attr(ctx)
 	flag = |name, v| Engine.attr_s(name, v.map(bool_str))
 
 	## An attribute that is `"true"` while the value is true and absent otherwise
 	## (such as `aria-invalid`).
-	flag_maybe : Str, Signal(ctx, Bool) -> Attr(ctx)
+	flag_maybe : Engine.AttrName, Signal(ctx, Bool) -> Attr(ctx)
 	flag_maybe = |name, v| Engine.attr_presence(name, v.map(|b| if (b) Present("true") else Absent))
 
 	## `button(label, attrs, handler)`: a button with a static label that runs

@@ -95,7 +95,7 @@ item_view = |row| Engine.element(
 	],
 )
 
-heading_tag : U64 -> Str
+heading_tag : U64 -> Engine.Tag
 heading_tag = |level| match level {
 	1 => "h1"
 	2 => "h2"

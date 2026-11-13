@@ -74,8 +74,8 @@ ServicesApp := [].{
 		prevented: 0,
 	}
 
-	press : State(Ctx, S), Str -> Engine.Attr(Ctx)
-	press = |st, ev| Engine.on(ev, st.update(|s| { ..s, presses: s.presses.append(ev) }))
+	press : State(Ctx, S), Engine.EventType -> Engine.Attr(Ctx)
+	press = |st, ev| Engine.on(ev, st.update(|s| { ..s, presses: s.presses.append(ev.text()) }))
 
 	shown : Try(Str, Engine.HttpError) -> Str
 	shown = |r| match r {

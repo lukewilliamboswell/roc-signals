@@ -278,8 +278,8 @@ ControlsApp := [].{
 					[Clean, RetiredPrevent, RetiredFiles, ClickPolicies, ChangeKinds, CheckedDiv, AttributeValue, DuplicateProperty, FileValue],
 					|fault| match fault {
 						Clean => Engine.text("")
-						RetiredPrevent => Engine.element("button", [Engine.on("click:prevent", properties.update(|s| s))], [])
-						RetiredFiles => Engine.element("input", [Engine.on("change:files", properties.update(|s| s))], [])
+						RetiredPrevent => Engine.element("button", [Engine.on(Engine.EventType.from_str("click:prevent") ?? crash "the retired-suffix fixture uses a nonempty event type", properties.update(|s| s))], [])
+						RetiredFiles => Engine.element("input", [Engine.on(Engine.EventType.from_str("change:files") ?? crash "the retired-suffix fixture uses a nonempty event type", properties.update(|s| s))], [])
 						ClickPolicies => Engine.element("button", [Engine.on("click", properties.update(|s| s)), Engine.on_with("click", { prevent: True }, properties.update(|s| s))], [])
 						ChangeKinds => Engine.element("input", [Engine.on("change", properties.update(|s| s)), Engine.on_files(Change, properties.update(|s| s))], [])
 						CheckedDiv => Engine.element("div", [Engine.prop(Engine.Prop.checked, True)], [])

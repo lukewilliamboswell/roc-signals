@@ -1,4 +1,5 @@
 import pf.Url
+import pf.Engine
 import Api
 import Route
 import Locations
@@ -17,7 +18,7 @@ Pages := [].{
 	LoadReq : { key : Str, uri : Str, token : Str }
 
 	## A mutation request snapshot; serial 0 = nothing submitted.
-	Submit : { serial : U64, method : Str, url : Try(Str, Url.SegmentErr), body : Str, token : Str }
+	Submit : { serial : U64, method : Engine.Method, url : Try(Str, Url.SegmentErr), body : Str, token : Str }
 
 	Loads : {
 		feed : Loaded(Api.FeedPage),
@@ -48,7 +49,7 @@ Pages := [].{
 	}
 
 	no_submit : Submit
-	no_submit = { serial: 0, method: "", url: Err(EmptySegment), body: "", token: "" }
+	no_submit = { serial: 0, method: "GET", url: Err(EmptySegment), body: "", token: "" }
 
 	no_load : {} -> Loaded(a)
 	no_load = |_| { key: "", value: Loading }

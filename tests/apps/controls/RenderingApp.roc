@@ -25,7 +25,7 @@ RenderingApp := [].{
 							"foreignObject",
 							[Engine.attr("width", "10"), Engine.attr("height", "10")],
 							[
-								Engine.element("div", [Engine.attr("class", "html-child")], [Engine.text_s(row.key())]),
+								Engine.element("div", [Engine.class("html-child")], [Engine.text_s(row.key())]),
 							],
 						),
 					],

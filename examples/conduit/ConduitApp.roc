@@ -232,7 +232,7 @@ ConduitApp := [].{
 			}
 		}
 	}
-	next : Submit, Str, Try(Str, Url.SegmentErr), Str, Str -> Submit
+	next : Submit, Engine.Method, Try(Str, Url.SegmentErr), Str, Str -> Submit
 	next = |prev, method, url, body, token| { serial: prev.serial + 1, method, url, body, token }
 
 	submit_site : Signal(Engine.StoreRoot(_), Submit), Reaction(Engine.StoreRoot(_), Submit, Try(Engine.Response, Engine.HttpFailure)) -> Elem(Engine.StoreRoot(_))

@@ -12,7 +12,7 @@ Fetch := [].{
 	## A mutation as a click wrote it. Serial 0 means nothing was submitted;
 	## each submission takes the next serial, so an answer to an older one
 	## can be told from an answer to the latest.
-	Submit : { serial : U64, method : Str, url : Try(Str, Url.SegmentErr), body : Str, token : Str }
+	Submit : { serial : U64, method : Engine.Method, url : Try(Str, Url.SegmentErr), body : Str, token : Str }
 
 	## A load. `key` is what a stored value must match to be shown.
 	LoadReq : { key : Str, uri : Str, token : Str }
@@ -24,10 +24,10 @@ Fetch := [].{
 	DeleteResult : [DeleteIdle, DeleteAccepted, DeleteRejected(Str)]
 
 	no_submit : Submit
-	no_submit = { serial: 0, method: "", url: Err(EmptySegment), body: "", token: "" }
+	no_submit = { serial: 0, method: "GET", url: Err(EmptySegment), body: "", token: "" }
 
 	## The submission after `prev`.
-	next : Submit, Str, Try(Str, Url.SegmentErr), Str, Str -> Submit
+	next : Submit, Engine.Method, Try(Str, Url.SegmentErr), Str, Str -> Submit
 	next = |prev, method, url, body, token| { serial: prev.serial + 1, method, url, body, token }
 
 	no_req : LoadReq

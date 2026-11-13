@@ -1,3 +1,4 @@
+import Web
 import Layout
 import TableCore exposing [Table]
 import View
@@ -733,7 +734,7 @@ Core := [].{
 		## request headers, and a timeout (`Unlimited` by default; capped at
 		## ten minutes), with browser cache and credentials policies. `Ms(0)`
 		## is a contract error; use `Unlimited` explicitly for no timeout.
-		FetchProps := { url : Str, method : Str ?? "GET", headers : List((Str, Str)) ?? [], timeout : [Unlimited, Ms(U32)] ?? Unlimited, cache : Cache ?? Default, credentials : Credentials ?? SameOrigin }
+		FetchProps := { url : Str, method : Web.Method ?? "GET", headers : List((Str, Str)) ?? [], timeout : [Unlimited, Ms(U32)] ?? Unlimited, cache : Cache ?? Default, credentials : Credentials ?? SameOrigin }
 
 		## A request for an HTTP response whose body becomes a [File], for an
 		## effect site's plan: the body stays outside Wasm, and the file can be read, digested, shown,
@@ -896,7 +897,7 @@ Core := [].{
 
 	## HTTP options with browser defaults, for an effect site’s plan. A
 	## finite timeout is at least one millisecond; Ms(0) is a contract error.
-	HttpProps := { url : Str, method : Str ?? "GET", headers : List((Str, Str)) ?? [], body : Str ?? "", timeout : [Unlimited, Ms(U32)] ?? Unlimited, cache : Cache ?? Default, credentials : Credentials ?? SameOrigin }
+	HttpProps := { url : Str, method : Web.Method ?? "GET", headers : List((Str, Str)) ?? [], body : Str ?? "", timeout : [Unlimited, Ms(U32)] ?? Unlimited, cache : Cache ?? Default, credentials : Credentials ?? SameOrigin }
 
 	## Build an HTTP request without repeating its default method, body or policies.
 	http : HttpProps -> Ask(Response, HttpFailure)
@@ -926,7 +927,7 @@ Core := [].{
 	## - `credentials`: SameOrigin by default, or Include for credentials across origins.
 	UploadProps := {
 		url : Str,
-		method : Str ?? "POST",
+		method : Web.Method ?? "POST",
 		headers : List((Str, Str)) ?? [],
 		timeout : [Unlimited, Ms(U32)] ?? Unlimited,
 		credentials : Credentials ?? SameOrigin,
@@ -1483,7 +1484,7 @@ Core := [].{
 	## answered and kept as `Http` is.
 	Request : [
 		## `timeout_ms` 0 = no timeout; capped at `max_timeout_ms`.
-		Http({ method : Str, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32, cache : Cache, credentials : Credentials }),
+		Http({ method : Web.Method, url : Str, headers : List((Str, Str)), body : Str, timeout_ms : U32, cache : Cache, credentials : Credentials }),
 		StorageGet(Str),
 		SessionStorageGet(Str),
 		StorageChanges(Str),
@@ -1524,7 +1525,7 @@ Core := [].{
 		SessionStorageRemove(Str),
 		ReadBytes({ file : File, max_bytes : U64 }),
 		ReadUtf8({ file : File, max_bytes : U64 }),
-		Upload({ method : Str, url : Str, headers : List((Str, Str)), body : File, timeout_ms : U32, credentials : Credentials }),
+		Upload({ method : Web.Method, url : Str, headers : List((Str, Str)), body : File, timeout_ms : U32, credentials : Credentials }),
 		Sha256(File),
 		ObjectUrl(File),
 
@@ -1545,7 +1546,7 @@ Core := [].{
 		## An HTTP request whose response body becomes a file
 		## (`File.fetch`), delivering `Fetched`. `timeout_ms` 0 = none, capped
 		## at 10 minutes; kept like `Http`.
-		Fetch({ method : Str, url : Str, headers : List((Str, Str)), timeout_ms : U32, cache : Cache, credentials : Credentials }),
+		Fetch({ method : Web.Method, url : Str, headers : List((Str, Str)), timeout_ms : U32, cache : Cache, credentials : Credentials }),
 	]
 
 	## A request that is emitted and forgotten: the commands of [Request],
@@ -8264,8 +8265,42 @@ request_problem = |request| match request {
 	Timer(ms) if ms > max_browser_timer_ms => Err("contract: Timer(${ms.to_str()}) is longer than a browser timer holds (2147483647 ms, about 24.8 days); the browser would fire it at once")
 	Interval(0) => Err("contract: Interval(0) has no period; the browser would fire it as fast as it can, a turn each time")
 	Interval(ms) if ms > max_browser_timer_ms => Err("contract: Interval(${ms.to_str()}) is longer than a browser timer holds (2147483647 ms, about 24.8 days); the browser would fire it as fast as it can, a turn each time")
-	Upload({ method, url, body, .. }) if method == "GET" or method == "HEAD" => Err("contract: File.upload of \"${body.name}\" to ${url} uses ${method}, which carries no body")
+	Upload({ method, url, body, .. }) if upload_has_no_body(method) => Err("contract: File.upload of \"${body.name}\" to ${url} uses ${method.text()}, which carries no body")
 	_ => Ok({})
+}
+
+## Fetch normalizes these methods in every ASCII case. Compare at admission,
+## where a file body is known, without changing the method's retained spelling.
+upload_has_no_body : Web.Method -> Bool
+upload_has_no_body = |method| match method.text().to_utf8() {
+	[g, e, t] => (g == 'G' or g == 'g') and (e == 'E' or e == 'e') and (t == 'T' or t == 't')
+	[h, e, a, d] => (h == 'H' or h == 'h') and (e == 'E' or e == 'e') and (a == 'A' or a == 'a') and (d == 'D' or d == 'd')
+	_ => False
+}
+
+## File.upload shares the public request family. Every spelling Fetch would
+## normalize to GET or HEAD is refused before admission, while a body-carrying
+## method retains its exact spelling in the ask.
+expect {
+	file = Core.held_file(Box.box(1.U64))
+	refused = ["GET", "get", "GeT", "HEAD", "head", "HeAd"].all(
+		|method| {
+			checked = Web.Method.from_str(method) ?? crash "valid method in upload contract expect"
+			request = file.upload({ url: "/upload", method: checked }).sent()
+			request_problem(request) == Err("contract: File.upload of \"\" to /upload uses ${method}, which carries no body")
+		},
+	)
+	accepted = ["POST", "post", "PROPFIND", "custom"].all(
+		|method| {
+			checked = Web.Method.from_str(method) ?? crash "valid method in upload contract expect"
+			request = file.upload({ url: "/upload", method: checked }).sent()
+			request_problem(request).is_ok() and match request {
+				Upload(props) => props.method.text() == method
+				_ => False
+			}
+		},
+	)
+	refused and accepted
 }
 
 ## Timer limits are contracts before admission; zero is legal only for the
@@ -8292,7 +8327,7 @@ put_fx_progress = |c, id, req, progress_ms| {
 	head = put_u32(c.append(13), id)
 	match req {
 		Http({ method, url, headers, body, timeout_ms, cache, credentials }) => {
-			var $b = put_u32(put_str(put_str(head.append(1), method), url), headers.len().to_u32_wrap())
+			var $b = put_u32(put_str(put_str(head.append(1), method.text()), url), headers.len().to_u32_wrap())
 			for (k, v) in headers {
 				$b = put_str(put_str($b, k), v)
 			}
@@ -8316,7 +8351,7 @@ put_fx_progress = |c, id, req, progress_ms| {
 		ReadBytes({ file, max_bytes }) => put_u64(put_file(head.append(11).append(1), file), max_bytes)
 		ReadUtf8({ file, max_bytes }) => put_u64(put_file(head.append(11).append(2), file), max_bytes)
 		Upload({ method, url, headers, body, timeout_ms, credentials }) => {
-			var $b = put_u32(put_str(put_str(head.append(12), method), url), headers.len().to_u32_wrap())
+			var $b = put_u32(put_str(put_str(head.append(12), method.text()), url), headers.len().to_u32_wrap())
 			for (k, v) in headers {
 				$b = put_str(put_str($b, k), v)
 			}
@@ -8325,7 +8360,7 @@ put_fx_progress = |c, id, req, progress_ms| {
 		Sha256(f) => put_file(head.append(13).append(1), f)
 		ObjectUrl(f) => put_file(head.append(14), f)
 		Fetch({ method, url, headers, timeout_ms, cache, credentials }) => {
-			var $b = put_u32(put_str(put_str(head.append(15), method), url), headers.len().to_u32_wrap())
+			var $b = put_u32(put_str(put_str(head.append(15), method.text()), url), headers.len().to_u32_wrap())
 			for (k, v) in headers {
 				$b = put_str(put_str($b, k), v)
 			}
