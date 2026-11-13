@@ -162,7 +162,9 @@ ToolCheck := [].{
 	picture_builds! = |o, { tool, dir }| {
 		built = run_tool!(tool, dir, ["build", "--picture", "/", "/nested/?open=1#list"])?
 		var $problems = ToolCheck.judge(built, { code: 0, says: ["Built the app into dist/:", "dist/index.html", "dist/nested/index.html"] })
-		if built.code != 0 { return Ok($problems) }
+		if built.code != 0 {
+			return Ok($problems)
+		}
 		page = Path.read_utf8!(Path.utf8("${dir}/dist/index.html"))?
 		nested = Path.read_utf8!(Path.utf8("${dir}/dist/nested/index.html"))?
 		if !page.contains("data-roc-picture-inert=\"added\"") or !nested.contains("data-roc-picture-inert=\"added\"") or !nested.contains("../assets/") {

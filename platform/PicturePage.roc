@@ -28,7 +28,7 @@ PicturePage := [].{
 			name = template.root_name
 			attrs = template.attributes.keep_if(|(attribute, _)| !(attribute.namespace.is_empty() and attribute.prefix.is_empty() and attribute.local == "data-roc-picture"))
 			authored_inert = attrs.any(|(attribute, _)| attribute.namespace.is_empty() and attribute.prefix.is_empty() and attribute.local == "inert")
-			added = if authored_inert [] else [({ namespace: "", prefix: "", local: "inert" }, ""), ({ namespace: "", prefix: "", local: "data-roc-picture-inert" }, "added")]
+			added = if (authored_inert) [] else [({ namespace: "", prefix: "", local: "inert" }, ""), ({ namespace: "", prefix: "", local: "data-roc-picture-inert" }, "added")]
 			Dom.modify(model, model.root, |node| { ..node, namespace: name.namespace, prefix: name.prefix, tag: name.local, svg: name.namespace == Dom.svg_namespace, attrs: attrs.concat(added).append(({ namespace: "", prefix: "", local: "data-roc-picture" }, "")) })
 		}
 
