@@ -53,6 +53,7 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { launch } from "./cdp.mjs";
+import { verifyPointerRecords, verifyClickEvents, beginPointerInput, endPointerInput } from "./pointer-log.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -124,6 +125,7 @@ async function navigating(page, state, act, known = undefined) {
     .catch(() => ({ cross: true, href: "?" }));
   if (nav && nav.cross) {
     if (state.holdingReports) throw new Error("a cross-document navigation cannot leave while reports are held");
+    if (state.pointers.size) throw new Error("a cross-document navigation cannot leave while a pointer is down");
     if (nav.external) throw new Error(`the click navigates to ${nav.href}, which leaves the app`);
     const t0 = Date.now();
     while (state.loads === loads) {
@@ -154,7 +156,127 @@ async function click(page, state, loc, real) {
     if (real) throw new Error(`${showLoc(loc)} is disabled`);
     return;
   }
+  await pointerPoint(page, loc, null, true);
+  await beginPointerInput(page, { loc });
   await navigating(page, state, () => page.clickAt(box));
+  const { raw, records } = await endPointerInput(page);
+  const events = raw.filter((record) => record.typed);
+  verifyClickEvents(raw);
+  verifyPointerRecords(records, events.map((record) => ({ ...record, alias: 1 })), new Map([[1, { alias: 1, kind: "mouse" }]]), 1);
+}
+
+// Locate a spec point without asking the engine to invent layout. The
+// oracle can name only a zone's fractions or the centre outside any zone.
+async function pointerPoint(page, loc, at, click = false) {
+  await need(page, loc);
+  const result = await onEl(page, loc, (element, at, click) => {
+    element.scrollIntoView({ block: "center", inline: "center" });
+    const root = window.__rt.root;
+    let zone = element;
+    while (zone && zone !== root && !zone.__pointerZone) zone = zone.parentElement;
+    if (zone === root) zone = null;
+    const reachesPointer = (type) => {
+      for (let node = element; node && node !== root; node = node.parentElement) {
+        if (node.__h?.[type]) return node.__h[type].kind === 3;
+      }
+      return false;
+    };
+    const typed = !click || ["pointermove", "pointerdown", "pointerup"].some(reachesPointer);
+    if (typed && at === null && zone && zone !== element) return { error: `LOC lies in zone ${zone.__pointerZone}; give :at in that zone using the pointer steps` };
+    if (at !== null && !zone) return { error: ":at needs a pointer zone" };
+    const box = (at === null ? element : zone).getBoundingClientRect();
+    if (box.width <= 0 || box.height <= 0) return { error: "a pointer step cannot place a point in a zero-size box" };
+    const x = box.x + box.width * (at === null ? 0.5 : at.x / 100);
+    const y = box.y + box.height * (at === null ? 0.5 : at.y / 100);
+    const hit = document.elementFromPoint(x, y);
+    if (!hit || !element.contains(hit)) return { error: "the pointer point does not hit LOC or a descendant" };
+    let actualZone = hit;
+    while (actualZone && actualZone !== root && !actualZone.__pointerZone) actualZone = actualZone.parentElement;
+    if (actualZone === root) actualZone = null;
+    if (typed && actualZone !== zone) return { error: "a nested or different pointer zone covers the point" };
+    return { x, y, at: !zone ? null : { zone: zone.__pointerZone, x: at === null ? 5000 : at.x * 100, y: at === null ? 5000 : at.y * 100 }, touchAction: getComputedStyle(element).touchAction };
+  }, at, click);
+  if (result.error) throw new Error(result.error);
+  return result;
+}
+
+const pointerModifiers = (names) => names.reduce((mask, name) => mask | ({ alt: 1, ctrl: 2, meta: 4, shift: 8 })[name], 0);
+const mouseButton = (button) => ({ main: "left", middle: "middle", secondary: "right" })[button];
+const buttonMask = (button) => ({ main: 1, middle: 4, secondary: 2 })[button];
+
+async function pointerStep(page, step, state) {
+  const pointers = state.pointers;
+  const down = step.op === "pointer-down", cancel = step.op === "pointer-cancel", up = step.op === "pointer-up";
+  let pointer = pointers.get(step.id);
+  if (down && pointer) throw new Error(`pointer ${step.id} is already down`);
+  if (!down && !pointer && !(step.op === "pointer-move" && step.id === 1)) throw new Error(`pointer ${step.id} is not down`);
+  if (down) {
+    if (step.pointer === "mouse" && step.id !== 1) throw new Error("the mouse pointer id is 1");
+    if (step.pointer !== "mouse" && step.id === 1) throw new Error("pointer id 1 is reserved for the mouse");
+    if (step.pointer !== "touch" && [...pointers.values()].some((p) => p.kind !== "touch")) throw new Error("the browser replay supports one active mouse or pen press");
+    if ([...pointers.values()].some((p) => (p.kind === "touch") !== (step.pointer === "touch"))) throw new Error("the browser replay cannot mix touch with a mouse or pen press");
+    pointer = { id: step.id, kind: step.pointer, button: step.button, modifiers: step.modifiers, moved: false };
+    if (step.pointer === "touch") {
+      if (pointers.size >= 16) throw new Error("the browser replay supports at most 16 active touch pointers");
+      const used = new Set([...pointers.values()].map((p) => p.driver));
+      pointer.driver = 0;
+      while (used.has(pointer.driver)) pointer.driver += 1;
+    }
+  } else if (!pointer) pointer = { id: 1, kind: "mouse", button: "none", modifiers: [], moved: false };
+  if (cancel && pointer.kind !== "touch") throw new Error("pointer-cancel requires a touch pointer");
+  if (cancel && [...pointers.values()].filter((p) => p.kind === "touch").length !== 1) throw new Error("pointer-cancel cannot cancel only the named touch while several touches are active");
+  const point = cancel ? { x: pointer.x, y: pointer.y, at: null } : await pointerPoint(page, step.loc, step.at);
+  if (down && pointer.kind === "touch" && point.touchAction !== "none") throw new Error("touch pointer-down requires touch-action:none on LOC");
+  if (pointer.kind === "touch" && step.op === "pointer-move" && point.x === pointer.x && point.y === pointer.y) throw new Error("touch pointer-move must change the point beyond tap slop");
+  await beginPointerInput(page, { at: cancel ? null : point.at });
+  await page.evaluate((active) => { window.__pointersActive = active; }, down ? true : up || cancel ? pointers.size > 1 : pointers.size > 0);
+  const modifiers = pointerModifiers(pointer.modifiers);
+  if (up || cancel) pointers.delete(step.id);
+  const dispatch = async () => {
+    if (pointer.kind === "touch") {
+      const touches = [...pointers.values()].filter((p) => p.kind === "touch").map((p) => ({ id: p.driver, x: p.id === step.id ? point.x : p.x, y: p.id === step.id ? point.y : p.y }));
+      if (down) touches.push({ id: pointer.driver, x: point.x, y: point.y });
+      // CDP touchEnd names the released points, whereas start/move describe
+      // active points. An empty end would release every remaining touch.
+      const points = up ? [{ id: pointer.driver, x: point.x, y: point.y }] : touches;
+      await page.send("Input.dispatchTouchEvent", { type: cancel ? "touchCancel" : down ? "touchStart" : up ? "touchEnd" : "touchMove", touchPoints: cancel ? [] : points, modifiers });
+      // Chrome may acknowledge a touch move before its frame-aligned DOM
+      // dispatch. Manual reports remain held while that input reaches listeners.
+      if (!down && !up && !cancel) await page.evaluate(() => new Promise(requestAnimationFrame));
+    } else {
+      await page.send("Input.dispatchMouseEvent", { type: down ? "mousePressed" : up ? "mouseReleased" : "mouseMoved", x: point.x, y: point.y,
+        button: pointer.button === "none" ? "none" : mouseButton(pointer.button), buttons: up ? 0 : buttonMask(pointer.button) ?? 0,
+        clickCount: down || up ? 1 : 0, pointerType: pointer.kind, modifiers });
+    }
+  };
+  await navigating(page, state, dispatch);
+  const { raw, records } = await endPointerInput(page);
+  const type = cancel ? "pointercancel" : down ? "pointerdown" : up ? "pointerup" : "pointermove";
+  const event = raw.find((record) => record.type === type && (!pointer.actual || record.id === pointer.actual));
+  if (!event) throw new Error(pointer.kind === "touch" && type === "pointermove" ? `touch move raised no event beyond the browser's tap slop (${JSON.stringify(raw)})` : `the browser raised no ${type}`);
+  if (event.kind !== pointer.kind || (pointer.kind === "mouse" && event.id !== 1)) throw new Error(`pointer ${step.id} received the wrong browser pointer kind or identity`);
+  pointer.actual = event.id;
+  const aliases = new Map([[1, { alias: 1, kind: "mouse" }]]);
+  for (const active of pointers.values()) aliases.set(active.actual, { alias: active.id, kind: active.kind });
+  aliases.set(pointer.actual, { alias: step.id, kind: pointer.kind });
+  const typed = raw.filter((record) => record.typed);
+  if (typed.some((record) => record.type !== type || record.id !== pointer.actual || record.kind !== pointer.kind) || typed.length > 1) throw new Error(`pointer ${step.id} received an unexpected extra pointer dispatch`);
+  verifyPointerRecords(records, typed.map((record) => ({ ...record, alias: step.id })), aliases, step.id);
+  if (down) {
+    await page.evaluate(({ id, actual }) => {
+      window.__pointerCaptures ??= new Map();
+      for (let element = window.__pointerDownTarget; element && element !== window.__rt.root; element = element.parentElement) {
+        if (element.hasPointerCapture?.(actual)) { window.__pointerCaptures.set(id, { element, actual }); break; }
+      }
+    }, { id: step.id, actual: event.id });
+  }
+  if (up || cancel) {
+    pointers.delete(step.id);
+    await page.evaluate((id) => window.__pointerCaptures?.delete(id), step.id);
+  } else if (down || pointers.has(step.id)) {
+    pointers.set(step.id, { ...pointer, x: point.x, y: point.y, moved: pointer.moved || !down });
+  }
+  return settle(page);
 }
 
 // How long `run-effect` waits for a worker job, as the native runner does
@@ -450,6 +572,10 @@ const sameDocument = (from, to) => to.includes("#") && from.split("#")[0] === to
 
 // One handler per step form of the grammar (`Scm.step_forms`).
 const STEPS = {
+  "pointer-down": pointerStep,
+  "pointer-move": pointerStep,
+  "pointer-up": pointerStep,
+  "pointer-cancel": pointerStep,
   ...PORT_STEPS,
   "hold-reports": async (page, _s, state) => {
     if (state.holdingReports) throw new Error("reports are already held");
@@ -664,6 +790,7 @@ const STEPS = {
     const from = await page.evaluate(() => location.pathname + location.search + location.hash);
     if (sameDocument(from, s.text)) return popstateAfter(page, `location.assign(${JSON.stringify(s.text)})`);
     if (state.holdingReports) throw new Error("a cross-document navigation cannot leave while reports are held");
+    if (state.pointers.size) throw new Error("a cross-document navigation cannot leave while a pointer is down");
     // Any other navigation loads a new document: the app mounts afresh.
     return navigating(page, state, () => page.evaluate((url) => location.assign(url), s.text), { cross: true, href: s.text });
   },
@@ -736,6 +863,17 @@ async function isOccurrence(page, step) {
   if (step.op.startsWith("expect-")) return false;
   if (["hold-reports", "release-reports", "mark-metrics", "stub-http", "stub-http-reject", "set-online", "set-visibility"].includes(step.op)) return false;
   if (step.op === "emit-port") return page.evaluate((port) => window.__rt.portDecls.get(port)?.delivery !== 2, step.port);
+  if (step.op === "pointer-move") return page.evaluate(({ loc, id }) => {
+    const root = window.__rt.root;
+    const capture = window.__pointerCaptures?.get(id);
+    let element = capture?.element;
+    if (!element?.isConnected || !element.hasPointerCapture(capture.actual)) element = window.__loc(loc);
+    for (; element && element !== root; element = element.parentElement) {
+      const handler = element.__h?.pointermove;
+      if (handler) return (handler.policies & 8) === 0;
+    }
+    return true;
+  }, { loc: step.loc, id: step.id });
   return true;
 }
 
@@ -826,6 +964,9 @@ async function installEnvironment(page, state, seed = false) {
 // page-side half of `expect-updates` (per node, the attribute and text
 // mutations after the callback that inserted it).
 function install(attrOfSource) {
+  // Its OS-dependent timing is outside the portable grammar, as hover is.
+  window.addEventListener("contextmenu", (event) => { event.preventDefault(); event.stopImmediatePropagation(); }, true);
+  for (const type of ["gotpointercapture", "lostpointercapture"]) window.addEventListener(type, (event) => event.stopImmediatePropagation(), true);
   // Hover depends on layout, outside the native oracle. Exclude it from
   // every replay, including boundary events Chrome raises after a DOM change.
   for (const type of ["pointerover", "pointerout", "pointerenter", "pointerleave", "mouseover", "mouseout", "mouseenter", "mouseleave"]) {
@@ -850,7 +991,7 @@ function install(attrOfSource) {
     }
     const same = to.hash !== "" && to.pathname === here.pathname && to.search === here.search;
     window.__nav = same ? null : { cross: true, href: to.pathname + to.search + to.hash };
-    if (!same && window.__reportsHeld) e.preventDefault();
+    if (!same && (window.__reportsHeld || window.__pointersActive)) e.preventDefault();
   });
   let cb = 0;
   const born = (n) => {
@@ -928,7 +1069,7 @@ for (const spec of specs) {
   try {
     const setup = setupOf(spec);
     await page.evaluateOnNewDocument(fs.readFileSync(files["locate.js"], "utf8"));
-    const state = { stub: null, mark: null, doc: null, loads: 0, files: setup.files, environment: setup.environment, mount: setup.mount, environmentScript: null, holdingReports: false };
+    const state = { stub: null, mark: null, doc: null, loads: 0, files: setup.files, environment: setup.environment, mount: setup.mount, environmentScript: null, holdingReports: false, pointers: new Map() };
     await installEnvironment(page, state, true);
     await page.evaluateOnNewDocument(install, attrOf.toString());
     await page.goto(`http://127.0.0.1:${port}${setup.environment.url}`);

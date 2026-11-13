@@ -11,7 +11,7 @@
 // that changes them has changed behaviour.
 import { readFile } from "node:fs/promises";
 
-const PROTOCOL_VERSION = 8;
+const PROTOCOL_VERSION = 9;
 const WORK_METRIC_BASE = 16;
 const OPCODES = ["", "INST", "TEXT", "HATTR", "MOVE", "REMOVE", "CLEAR", "TEMPLATE", "ELEM", "ATTR", "TEXTNODE", "LISTEN", "SETTEXT", "FX", "CANCEL", "NAV", "STORAGE", "TITLE", "FOCUS"];
 const FAULTS = ["none", "contract", "resource_limit", "out_of_memory", "app_crash", "expect_failed"];

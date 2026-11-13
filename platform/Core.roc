@@ -2020,6 +2020,19 @@ Core := [].{
 	## propagation must be decided before an event's synchronous window closes.
 	Policy := { prevent : Bool ?? False, stop : Bool ?? False }
 
+	## A pointer's state at dispatch. Its nearest zone is application text;
+	## coordinates are shares of that zone's box, from 0 to 10000 inclusive.
+	## Capture affects routing, while the hit-tested zone stays under the pointer.
+	Pointer : {
+		id : U32,
+		kind : [Mouse, Pen, Touch, Other],
+		button : [None, Main, Middle, Secondary, Back, Forward, Other(U8)],
+		buttons : U16,
+		modifiers : { shift : Bool, ctrl : Bool, alt : Bool, meta : Bool },
+		primary : Bool,
+		at : [Outside, In({ zone : Str, x : U16, y : U16 })],
+	}
+
 	## One typed row of the platform's payload vocabulary. Only an attach
 	## function chooses a kind; applications cannot construct a decoder.
 	Kind(p) :: { code : U8, decode : (Payload, List(U32) -> p) }
@@ -2034,6 +2047,11 @@ Core := [].{
 		## An input's checked state, encoded as a canonical boolean.
 		checked : Prop(Bool)
 		checked = { index: 2, encode: |checked| if (checked) "true" else "false" }
+
+		## The key the pointer hit test reports for this element. Empty text
+		## disables the zone; the key is never interpreted or used as identity.
+		pointer_zone : Prop(Str)
+		pointer_zone = { index: 3, encode: |zone| zone }
 	}
 
 	## Set a property from its typed row; ordinary attributes remain attributes.
@@ -2051,6 +2069,21 @@ Core := [].{
 	## Listen for text with static prevention and propagation policies.
 	on_with : Str, Policy, Handler(ctx) -> Attr(ctx)
 	on_with = |event, policy, handler| attach_kind(event, text_kind, policy_bits(policy), handler)
+
+	## Receive a pointer record from one of the four pointer event types.
+	## Every move is an occurrence unless `on_pointer_paced` declares otherwise.
+	on_pointer : [Down, Move, Up, Cancel], HandlerOf(ctx, Pointer) -> Attr(ctx)
+	on_pointer = |event, handler| attach_kind(pointer_event(event), pointer_kind(event), 0, handler)
+
+	## Capture the pointer on this handler's element during pointerdown,
+	## before its turn can wait. A refused browser capture still dispatches.
+	on_pointer_capture : HandlerOf(ctx, Pointer) -> Attr(ctx)
+	on_pointer_capture = |handler| attach_kind("pointerdown", pointer_kind(Down), 4, handler)
+
+	## Receive the newest waiting move per pointer at the next frame. An up
+	## or another occurrence first delivers moves queued ahead of it.
+	on_pointer_paced : HandlerOf(ctx, Pointer) -> Attr(ctx)
+	on_pointer_paced = |handler| attach_kind("pointermove", pointer_kind(Move), 8, handler)
 
 	## Name this element as a focus reference for `Focus`, `Blur` and `SelectText`
 	## requests, so the app never handles engine node ids. Names are unique
@@ -2267,7 +2300,7 @@ Core := [].{
 	## host exports it, and the runtime refuses an instance whose version it does
 	## not implement.
 	protocol_version : U32
-	protocol_version = 8
+	protocol_version = 9
 
 	## A worker task as the catalogue holds it (design.md, "Workers"): a
 	## namespaced name (`"example.org/search/filter"`) and its effectful
@@ -2631,7 +2664,7 @@ RoutedHandler(ctx) : { run : (ctx, Payload, List(U32) -> (ctx, Layers)) }
 
 EventDecl : { event : Str, kind : U8, policies : U32 }
 
-## The two initial payload rows. Files stay handles until the typed handler
+## Text decodes as UTF-8. Files stay handles until the typed handler
 ## consumes them; a stale route drops the staged handles without decoding.
 text_kind : Core.Kind(Str)
 text_kind = {
@@ -2652,6 +2685,86 @@ files_kind = {
 		}
 		_ => crash "contract: event payload does not match files kind at site ${show_path(site)}"
 	},
+}
+
+## The event tag fixes which browser event can carry this typed record.
+pointer_event : [Down, Move, Up, Cancel] -> Str
+pointer_event = |event| match event {
+	Down => "pointerdown"
+	Move => "pointermove"
+	Up => "pointerup"
+	Cancel => "pointercancel"
+}
+
+## One pointer decoder is selected at declaration. Cancel additionally rules
+## out a hit-tested location, which the browser cannot report for cancellation.
+pointer_kind : [Down, Move, Up, Cancel] -> Core.Kind(Core.Pointer)
+pointer_kind = |event| {
+	code: 3,
+	decode: |payload, site| {
+		pointer = match payload {
+			Ev(bytes) => read_pointer(bytes) ?? crash "contract: event payload does not match pointer kind at site ${show_path(site)}"
+			_ => crash "contract: event payload does not match pointer kind at site ${show_path(site)}"
+		}
+		if event == Cancel and pointer.at != Outside {
+			crash "contract: pointercancel payload must be outside at site ${show_path(site)}"
+		}
+		pointer
+	},
+}
+
+## Validate a bounded pointer record before a handler observes any field.
+## Browser geometry is rounded before encoding; the decoder never clamps it.
+read_pointer : List(U8) -> Try(Core.Pointer, [InvalidPointer])
+read_pointer = |bytes| match bytes {
+	[a, b, c, d, kind_byte, button_byte, buttons_low, buttons_high, mods, primary_byte, at_byte, .. as rest] => {
+		id = a.to_u32() + b.to_u32().shl_wrap(8) + c.to_u32().shl_wrap(16) + d.to_u32().shl_wrap(24)
+		kind = match kind_byte {
+			0 => Mouse
+			1 => Pen
+			2 => Touch
+			3 => Other
+			_ => return Err(InvalidPointer)
+		}
+		button = match button_byte {
+			0 => None
+			1 => Main
+			2 => Middle
+			3 => Secondary
+			4 => Back
+			5 => Forward
+			encoded => Other(encoded - 1)
+		}
+		if mods > 15 or primary_byte > 1 {
+			return Err(InvalidPointer)
+		}
+		at = match (at_byte, rest) {
+			(0, []) => Outside
+			(1, [x_low, x_high, y_low, y_high, .. as text]) => {
+				x = x_low.to_u16() + x_high.to_u16().shl_wrap(8)
+				y = y_low.to_u16() + y_high.to_u16().shl_wrap(8)
+				if x > 10000 or y > 10000 {
+					return Err(InvalidPointer)
+				}
+				(zone, end) = boot_str(text, 0) ? |_| InvalidPointer
+				if zone.is_empty() or end != text.len() {
+					return Err(InvalidPointer)
+				}
+				In({ zone, x, y })
+			}
+			_ => return Err(InvalidPointer)
+		}
+		Ok({
+			id,
+			kind,
+			button,
+			buttons: buttons_low.to_u16() + buttons_high.to_u16().shl_wrap(8),
+			modifiers: { shift: mods.bitwise_and(1) != 0, ctrl: mods.bitwise_and(2) != 0, alt: mods.bitwise_and(4) != 0, meta: mods.bitwise_and(8) != 0 },
+			primary: primary_byte == 1,
+			at,
+		})
+	}
+	_ => Err(InvalidPointer)
 }
 
 policy_bits : Core.Policy -> U32
@@ -2925,7 +3038,16 @@ property_row : U8 -> { name : Str, elements : List(Str), counter : U64 }
 property_row = |index| match index {
 	1 => { name: "value", elements: ["input", "textarea", "select", "option"], counter: w_set_value }
 	2 => { name: "checked", elements: ["input"], counter: w_set_checked }
+	3 => { name: "pointer_zone", elements: [], counter: 0 }
 	_ => crash "internal: unknown property row ${index.to_str()}"
+}
+
+## Only control properties have a dedicated counter; every property command
+## is counted once by its opcode independently of this optional measure.
+count_property : Tx, U8 -> Tx
+count_property = |tx, index| {
+	counter = property_row(index).counter
+	if (counter == 0) tx else bump(tx, counter, 1)
 }
 
 ## Allocate a static node id, reusing a freed one first.
@@ -3327,7 +3449,7 @@ check_element_attrs = |attrs, tag, placed, path| {
 			}
 			Property(index, _) | PropertyV(index, _) => {
 				row = property_row(index)
-				if !row.elements.contains(tag) {
+				if !row.elements.is_empty() and !row.elements.contains(tag) {
 					crash "contract: property \"${row.name}\" is not allowed on <${tag}> at site ${show_path(path)}"
 				}
 				if $properties.contains(index) {
@@ -3406,10 +3528,10 @@ mount_attr = |block, env, attr, id, path, tx| {
 			tx1 = emit_op(count_evals(tx, 1), 9, |c| put_presence(put_str(put_u32(c, id), name), value))
 			(add_hole(block, { node: id, mask: eff_mask(v), attr: name, reference: NotReference, property: 0, read, last: value }), tx1)
 		}
-		Property(index, value) => (block, emit_op(bump(tx, property_row(index).counter, 1), 21, |commands| put_str(put_u32(commands, id).append(index), value)))
+		Property(index, value) => (block, emit_op(count_property(tx, index), 21, |commands| put_str(put_u32(commands, id).append(index), value)))
 		PropertyV(index, value) => {
 			encoded = (value.read)(env)
-			next = emit_op(bump(count_evals(tx, 1), property_row(index).counter, 1), 21, |commands| put_str(put_u32(commands, id).append(index), encoded))
+			next = emit_op(count_property(count_evals(tx, 1), index), 21, |commands| put_str(put_u32(commands, id).append(index), encoded))
 			(add_hole(block, { node: id, mask: eff_mask(value), attr: "", reference: NotReference, property: index, read: |context| Present((value.read)(context)), last: Present(encoded) }), next)
 		}
 		On(ev, handler) => {
@@ -3483,7 +3605,7 @@ refresh = |{ holes, handlers, children, child_reads, child_top, nodes, tops, rea
 				$tx = t1
 			} else {
 				$tx = if property != 0 {
-					emit_op(bump(t1, property_row(property).counter, 1), 21, |commands| put_str(put_u32(commands, node).append(property), observed_text(v)))
+					emit_op(count_property(t1, property), 21, |commands| put_str(put_u32(commands, node).append(property), observed_text(v)))
 				} else match reference {
 					Reference(path) => with_fx(t1, |fx| add_ref(drop_name(fx, { node, name: observed_text(last), path }), { name: observed_text(v), node, path }))
 					NotReference => if attr.is_empty() {
@@ -8134,4 +8256,45 @@ expect {
 	call_bytes = put_u32(put_str(command, "call").concat([2, 0]), 0)
 	ports = put_u32(put_str(call_bytes, "updates").concat([3, 1]), 3)
 	(program.keys)() == put_section(put_section([], 2, keys), 5, ports)
+}
+
+## Pointer bytes retain the browser's button, modifier and zone facts without
+## sharing a codec with the runtime or the independent DOM oracle.
+expect {
+	pointer_bytes = [120, 86, 52, 18, 1, 3, 3, 0, 15, 1, 1, 196, 9, 16, 39].concat(put_str([], "lane:a"))
+	pointer = read_pointer(pointer_bytes)?
+	pointer == {
+		id: 0x12345678,
+		kind: Pen,
+		button: Secondary,
+		buttons: 3,
+		modifiers: { shift: Bool.True, ctrl: Bool.True, alt: Bool.True, meta: Bool.True },
+		primary: Bool.True,
+		at: In({ zone: "lane:a", x: 2500, y: 10000 }),
+	}
+}
+
+## A pointer's no-button and outside cases have one exact encoding. Invalid
+## flags, unknown kinds, bad locations, fractions and UTF-8 are rejected.
+expect {
+	outside = [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]
+	point = [1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1]
+	invalid = [
+		[],
+		outside.drop_last(1),
+		outside.append(0),
+		outside.set(4, 4)?,
+		outside.set(8, 16)?,
+		outside.set(9, 2)?,
+		outside.set(10, 2)?,
+		point.concat([17, 39, 0, 0]).concat(put_str([], "z")),
+		point.concat([0, 0, 0, 0]).concat(put_str([], "")),
+		point.concat([0, 0, 0, 0, 1, 0, 0, 0, 255]),
+	]
+	decoded = read_pointer(outside)?
+	{ at: decoded.at, button: decoded.button, rejected: invalid.map(|bytes| read_pointer(bytes).is_err()) } == {
+		at: Outside,
+		button: None,
+		rejected: List.repeat(Bool.True, invalid.len()),
+	}
 }

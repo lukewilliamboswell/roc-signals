@@ -148,7 +148,7 @@
 // are present for any value other than "" and "false".
 
 // The wire protocol version this runtime implements (design.md, Appendix B).
-export const PROTOCOL_VERSION = 8;
+export const PROTOCOL_VERSION = 9;
 
 // The most events queued behind a running batch (see "Ingress" above).
 export const MAX_QUEUED = 4096;
@@ -241,8 +241,11 @@ const HOLE_PROP = 6;
 
 const KIND_TEXT = 1;
 const KIND_FILES = 2;
+const KIND_POINTER = 3;
 const POLICY_PREVENT = 1;
 const POLICY_STOP = 2;
+const POLICY_CAPTURE = 4;
+const POLICY_PACED = 8;
 
 
 export async function instantiateEngineBytes(bytes) {
@@ -381,12 +384,17 @@ const PROPS = [null, {
     if (el.checked) el.setAttribute("checked", "");
     else el.removeAttribute("checked");
   },
+}, {
+  name: "pointer_zone",
+  elements: null,
+  apply(el, value) { el.__pointerZone = value; },
 }];
 
 function setProp(el, prop, value, node) {
   const row = PROPS[prop];
   if (!row) throw new Error(`unknown element property ${prop}`);
-  if (!row.elements.includes(el.tagName)) throw new Error(`element property ${row.name} does not apply to ${el.tagName}`);
+  if (el.nodeType !== 1) throw new Error(`element property ${row.name} requires an element`);
+  if (row.elements && !row.elements.includes(el.tagName)) throw new Error(`element property ${row.name} does not apply to ${el.tagName}`);
   row.apply(el, value, node);
 }
 
@@ -407,7 +415,9 @@ function handlerEntry(h, kind, policies, type) {
   const row = PAYLOAD_KINDS[kind];
   if (!row) throw new Error(`unknown event payload kind ${kind}`);
   if (row.events && !row.events.includes(type)) throw new Error(`event payload kind ${kind} does not apply to ${type}`);
-  if ((policies & ~(POLICY_PREVENT | POLICY_STOP)) !== 0) throw new Error(`unknown event policy bits ${policies}`);
+  if ((policies & ~(POLICY_PREVENT | POLICY_STOP | POLICY_CAPTURE | POLICY_PACED)) !== 0) throw new Error(`unknown event policy bits ${policies}`);
+  if ((policies & POLICY_CAPTURE) && (kind !== KIND_POINTER || type !== "pointerdown")) throw new Error("capture policy requires a pointerdown pointer handler");
+  if ((policies & POLICY_PACED) && (kind !== KIND_POINTER || type !== "pointermove")) throw new Error("paced policy requires a pointermove pointer handler");
   return { h, kind, policies };
 }
 
@@ -446,6 +456,7 @@ const PAYLOAD_KINDS = {
       return files.length === 0 ? null : { files };
     },
   },
+  [KIND_POINTER]: { events: ["pointerdown", "pointermove", "pointerup", "pointercancel"] },
 };
 
 const utf8enc = new TextEncoder();
@@ -666,6 +677,7 @@ export class WorkMonitor {
       if (pg !== null) {
         const counters = pg.counters ?? [];
         page = { memBytes: pg.memBytes, liveAllocs: pg.liveAllocs, liveBytes: pg.liveBytes, turns: counters.length > 30 ? Number(counters[30]) : 0 };
+        if (pg.captureRefused !== undefined) page.captureRefused = pg.captureRefused;
         if (counters.length >= ENGINE_FX_FIRST + ENGINE_FX_NAMES.length) {
           engine = Object.fromEntries(ENGINE_FX_NAMES.map((n, i) => [n, Number(counters[ENGINE_FX_FIRST + i])]));
         }
@@ -1761,8 +1773,8 @@ export class RocEngineRuntime {
     this.templates = [];
     this.listening = new Map();
     this.internal = [];
-    this.onEvent = (event) => { if (event.bubbles) this.handle(event); };
-    this.onCapture = (event) => { if (!event.bubbles) this.handle(event); };
+    this.onEvent = (event) => { if (event.bubbles) this.guard(() => this.handle(event)); };
+    this.onCapture = (event) => { if (!event.bubbles) this.guard(() => this.handle(event)); };
     this.busy = false;
     this.queue = { head: null, tail: null, length: 0 };
     this.reportSources = new Map();
@@ -1770,6 +1782,8 @@ export class RocEngineRuntime {
     this.reportsReplaced = 0;
     this.reportDrain = null;
     this.reportDue = false;
+    this.pointerLog = [];
+    this.captureRefused = 0;
     this.poisoned = null;
     this.refused = 0;
     this.onFault = options.onFault ?? null;
@@ -2012,6 +2026,8 @@ export class RocEngineRuntime {
     this.issued = [];
     this.reportEpoch = {};
     this.reportsReplaced = 0;
+    this.pointerLog = [];
+    this.captureRefused = 0;
     this.fxOut = [];
     this.busy = false;
     this.poisoned = null;
@@ -2114,22 +2130,102 @@ export class RocEngineRuntime {
     if (event.type === "submit") event.preventDefault();
     let node = event.target;
     let handler = null;
+    let declaring = null;
     while (node && node !== this.root) {
       if (handler === null && (event.bubbles || node === event.target) && node.__h !== undefined) {
         const h = node.__h[type];
-        if (h !== undefined) handler = h;
+        if (h !== undefined) { handler = h; declaring = node; }
       }
       if (node.__rn !== undefined && handler !== null) {
         if ((handler.policies & POLICY_PREVENT) !== 0 || (handler.kind === KIND_FILES && type === "drop")) event.preventDefault();
         // A non-bubbling event is heard during capture; stopping it there
         // would prevent its target's own listeners from running.
         if (event.bubbles && (handler.policies & POLICY_STOP) !== 0) event.stopPropagation();
-        const payload = PAYLOAD_KINDS[handler.kind].payload(event);
-        if (payload !== null) this.dispatch(node.__rn, handler.h, payload, node);
+        if ((handler.policies & POLICY_CAPTURE) !== 0) {
+          try { declaring.setPointerCapture(event.pointerId); }
+          catch (_) {
+            this.captureRefused += 1;
+            this.monitor.emit({ kind: "pointer-capture-refused", pointer: event.pointerId, at: this.monitor.tick() });
+          }
+        }
+        if (handler.kind === KIND_POINTER) {
+          const pointer = this.pointerPayload(event);
+          if (this.manual) {
+            if (this.pointerLog.length >= MAX_QUEUED) {
+              this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} pointer dispatches before the replay drained its log`), "resource_limit");
+              return;
+            }
+            this.pointerLog.push({ type, id: event.pointerId, kind: event.pointerType || "other", at: pointer.at, paced: (handler.policies & POLICY_PACED) !== 0 });
+          }
+          const source = (handler.policies & POLICY_PACED) !== 0 ? this.pointerSource(declaring, handler, event.pointerId) : undefined;
+          this.dispatch(node.__rn, handler.h, pointer.bytes, node, source);
+        } else {
+          const payload = PAYLOAD_KINDS[handler.kind].payload(event);
+          if (payload !== null) this.dispatch(node.__rn, handler.h, payload, node);
+        }
         return;
       }
       node = node.parentNode;
     }
+  }
+
+  // A hit test ignores capture, and returns only the nearest nonempty zone
+  // inside this mount. Fractions are sampled before a report can wait.
+  pointerPayload(event) {
+    if (!Number.isInteger(event.pointerId) || event.pointerId < 0 || event.pointerId > 0xffffffff ||
+        !Number.isInteger(event.button) || event.button < -1 || event.button > 254 ||
+        !Number.isInteger(event.buttons) || event.buttons < 0 || event.buttons > 0xffff) throw new Error("pointer fields do not fit their wire record");
+    let at = null;
+    if (event.type !== "pointercancel") {
+      if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) throw new Error("pointer coordinates are not finite");
+      let hit = this.doc.elementFromPoint(event.clientX, event.clientY);
+      if (hit && this.root.contains(hit)) {
+        while (hit && hit !== this.root) {
+          if (hit.__pointerZone) {
+            const box = hit.getBoundingClientRect();
+            if (![box.x, box.y, box.width, box.height].every(Number.isFinite)) throw new Error("pointer zone box is not finite");
+            if (box.width > 0 && box.height > 0) {
+              const fraction = (point, start, size) => Math.max(0, Math.min(10000, Math.round((point - start) * 10000 / size)));
+              at = { zone: hit.__pointerZone, x: fraction(event.clientX, box.x, box.width), y: fraction(event.clientY, box.y, box.height) };
+            }
+            break;
+          }
+          hit = hit.parentElement;
+        }
+      }
+    }
+    const header = new Uint8Array(at === null ? 11 : 15);
+    const view = new DataView(header.buffer);
+    view.setUint32(0, event.pointerId, true);
+    header[4] = ({ mouse: 0, pen: 1, touch: 2 })[event.pointerType] ?? 3;
+    header[5] = event.button + 1;
+    view.setUint16(6, event.buttons, true);
+    header[8] = (event.shiftKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.altKey ? 4 : 0) | (event.metaKey ? 8 : 0);
+    header[9] = event.isPrimary ? 1 : 0;
+    header[10] = at === null ? 0 : 1;
+    if (at !== null) { view.setUint16(11, at.x, true); view.setUint16(13, at.y, true); }
+    return { at, bytes: at === null ? header : concat([header, encStr(at.zone)]) };
+  }
+
+  // The element owns this cache only while a pointer has queued entries.
+  // Identity never depends on a recyclable engine node id.
+  pointerSource(element, handler, pointer) {
+    const sources = element.__pointerReports ??= new Map();
+    const key = `${handler.h}:${pointer}`;
+    let source = sources.get(key);
+    if (source === undefined || !source.isLive()) {
+      source = { dom: true, dispatching: 0, reports: new Set(), isLive: () => element.isConnected && element.__h?.pointermove === handler,
+        retire: () => { if (source.dispatching === 0 && source.reports.size === 0 && sources.get(key) === source) sources.delete(key); } };
+      sources.set(key, source);
+    }
+    return source;
+  }
+
+  // Manual replay verifies and drains each input step; production retains no log.
+  takePointerLog() {
+    const log = this.pointerLog;
+    this.pointerLog = [];
+    return log;
   }
 
   // An occurrence pins every earlier report in O(1) by advancing the epoch.
@@ -2138,70 +2234,76 @@ export class RocEngineRuntime {
   dispatch(node, handler, payload, el, source) {
     if (this.poisoned || this.ending) {
       this.refused += 1;
+      if (source?.dom) source.retire();
       return;
     }
     const report = source !== undefined;
-    const owner = report ? this.live.get(source) : null;
-    if (report) {
-      if (owner === undefined) return;
-      const waiting = this.reportSources.get(source);
-      if (waiting !== undefined && waiting.epoch === this.reportEpoch) {
-        waiting.payload = payload;
-        this.reportsReplaced += 1;
-        this.guard(() => this.scheduleReports());
-        return true;
-      }
-    }
-    if (!report) this.reportEpoch = {};
-    // Keep an idle occurrence synchronous, including its user activation.
-    if (!report && !this.busy && this.queue.length === 0) {
-      this.busy = true;
-      try {
-        this.guard(() => this.deliver(node, handler, payload));
-      } finally {
-        this.busy = false;
-      }
-      this.drainQueue();
-      return false;
-    }
-    let active = null;
-    if (this.queue.length >= MAX_QUEUED) {
-      if (this.busy) {
-        this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} events queued behind one batch (an event feedback loop)`), "resource_limit");
-        return;
-      }
-      if (report) this.drainQueue(true);
-      // Make room for the occurrence before delivering anything. Reports
-      // raised by that first turn then queue behind the occurrence.
-      else active = this.takeIngress();
-      if (this.poisoned) return;
-      if (report && this.live.get(source) !== owner) return;
-    }
-    const entry = { node, handler, payload, el, source, owner, epoch: this.reportEpoch, next: null };
-    if (this.queue.tail === null) this.queue.head = entry;
-    else this.queue.tail.next = entry;
-    this.queue.tail = entry;
-    this.queue.length += 1;
-    if (report) {
-      this.reportSources.set(source, entry);
-      if (!owner.reports) owner.reports = new Set();
-      owner.reports.add(entry);
-      this.guard(() => this.scheduleReports());
-    } else {
-      if (active !== null) {
-        const first = this.takePayload(active);
-        if (first !== null) {
-          this.busy = true;
-          try {
-            this.guard(() => this.deliver(active.node, active.handler, first));
-          } finally {
-            this.busy = false;
-          }
+    const owner = report ? source.dom ? source : this.live.get(source) : null;
+    if (owner?.dom) owner.dispatching += 1;
+    try {
+      if (report) {
+        if (owner === undefined || (owner.dom && !owner.isLive())) return;
+        const waiting = this.reportSources.get(source);
+        if (waiting !== undefined && waiting.epoch === this.reportEpoch) {
+          waiting.payload = payload;
+          this.reportsReplaced += 1;
+          this.guard(() => this.scheduleReports());
+          return true;
         }
       }
-      this.drainQueue();
+      if (!report) this.reportEpoch = {};
+      // Keep an idle occurrence synchronous, including its user activation.
+      if (!report && !this.busy && this.queue.length === 0) {
+        this.busy = true;
+        try {
+          this.guard(() => this.deliver(node, handler, payload));
+        } finally {
+          this.busy = false;
+        }
+        this.drainQueue();
+        return false;
+      }
+      let active = null;
+      if (this.queue.length >= MAX_QUEUED) {
+        if (this.busy) {
+          this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} events queued behind one batch (an event feedback loop)`), "resource_limit");
+          return;
+        }
+        if (report) this.drainQueue(true);
+        // Make room for the occurrence before delivering anything. Reports
+        // raised by that first turn then queue behind the occurrence.
+        else active = this.takeIngress();
+        if (this.poisoned) return;
+        if (report && (owner.dom ? !owner.isLive() : this.live.get(source) !== owner)) return;
+      }
+      const entry = { node, handler, payload, el, source, owner, epoch: this.reportEpoch, next: null };
+      if (this.queue.tail === null) this.queue.head = entry;
+      else this.queue.tail.next = entry;
+      this.queue.tail = entry;
+      this.queue.length += 1;
+      if (report) {
+        this.reportSources.set(source, entry);
+        if (!owner.reports) owner.reports = new Set();
+        owner.reports.add(entry);
+        this.guard(() => this.scheduleReports());
+      } else {
+        if (active !== null) {
+          const first = this.takePayload(active);
+          if (first !== null) {
+            this.busy = true;
+            try {
+              this.guard(() => this.deliver(active.node, active.handler, first));
+            } finally {
+              this.busy = false;
+            }
+          }
+        }
+        this.drainQueue();
+      }
+      return false;
+    } finally {
+      if (owner?.dom) { owner.dispatching -= 1; owner.retire(); }
     }
-    return false;
   }
 
   // Taking the head retires just that entry's index and ownership links.
@@ -2213,6 +2315,7 @@ export class RocEngineRuntime {
     if (entry.source !== undefined) {
       if (this.reportSources.get(entry.source) === entry) this.reportSources.delete(entry.source);
       entry.owner.reports.delete(entry);
+      if (entry.owner.retire) entry.owner.retire();
     }
     return entry;
   }
@@ -2222,7 +2325,7 @@ export class RocEngineRuntime {
   takePayload(entry) {
     const { node, payload, el } = entry;
     entry.payload = null;
-    if (payload === null || (entry.owner && this.live.get(entry.source) !== entry.owner)) return null;
+    if (payload === null || (entry.owner && (entry.owner.dom ? !entry.owner.isLive() : this.live.get(entry.source) !== entry.owner))) return null;
     if (el !== undefined && (!el.isConnected || el.__rn !== node)) return null;
     if (payload.isLive && !payload.isLive()) return null;
     return payload;
@@ -2310,9 +2413,14 @@ export class RocEngineRuntime {
 
   clearIngress() {
     this.cancelReportDrain();
+    for (const entry of this.reportSources.values()) {
+      entry.owner.reports.clear();
+      if (entry.owner.retire) entry.owner.retire();
+    }
     this.queue = { head: null, tail: null, length: 0 };
     this.reportSources.clear();
     this.reportDue = false;
+    this.pointerLog = [];
     for (const owner of this.live.values()) if (owner.reports) owner.reports.clear();
   }
 
@@ -3943,7 +4051,7 @@ export class RocEngineRuntime {
   // counters.
   pageStats() {
     const x = this.x;
-    return { memBytes: x.memory.buffer.byteLength, liveAllocs: Number(x.metric(4)), liveBytes: Number(x.metric(5)), counters: this.workRecord().counters };
+    return { memBytes: x.memory.buffer.byteLength, liveAllocs: Number(x.metric(4)), liveBytes: Number(x.metric(5)), captureRefused: this.captureRefused, counters: this.workRecord().counters };
   }
 
   // How work runs here: "inline", "workers", or "unavailable" (no Worker

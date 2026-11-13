@@ -1,5 +1,6 @@
 import pf.Engine exposing [Elem, In, Root, State]
 import pf.Html
+import PointerApp
 
 ## Controlled inputs, focus and containment test app.
 ## - "Plain": a controlled text input whose state is exactly what was typed.
@@ -198,7 +199,7 @@ ControlsApp := [].{
 	## The program `main.roc` binds for the browser module and the native spec
 	## runner, and `fuzz-controls.roc` drives as a roc-fuzz target.
 	program : Engine.Program
-	program = Engine.program(|| ControlsApp.main({}))
+	program = Engine.program_boot({}, |boot| if (boot.url.ends_with("#pointer")) PointerApp.view({}) else ControlsApp.main({}))
 
 	main : {} -> Elem(Root)
 	main = |_| Engine.state({ plain: "hello world", upper: "", log: [], ask: { serial: 0, req: None }, rows: [], twice: Neither }, |st| ControlsApp.view(st))

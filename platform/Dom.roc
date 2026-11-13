@@ -7,13 +7,13 @@ Dom := [].{
 	## It is spelled here independently of the engine; the spec runner
 	## refuses a program that speaks another.
 	protocol_version : U32
-	protocol_version = 8
+	protocol_version = 9
 
-	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)) }
+	DNode : { tag : Str, text : Str, attrs : List((Str, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)), detach_count : U64 }
 
 	Listener : { event : Str, handler : U32, kind : U8, policies : U32 }
 
-	Target : { node : U32, handler : U32, event : Str, kind : U8, policies : U32 }
+	Target : { node : U32, handler : U32, event : Str, kind : U8, policies : U32, declaring : U64 }
 
 	THole : { kind : U8, path : List(U8), name : Str, handler : U8, payload_kind : U8, policies : U32, property : U8 }
 
@@ -22,7 +22,7 @@ Dom := [].{
 	Model : { nodes : List(DNode), statics : List(U64), rows : List(Dict(U64, {})), tpls : List(Tpl), root : U64 }
 
 	new : {} -> Model
-	new = |_| { nodes: [{ tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [] }], statics: [], rows: [], tpls: [], root: 0 }
+	new = |_| { nodes: [{ tag: "root", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0 }], statics: [], rows: [], tpls: [], root: 0 }
 
 	u32 : List(U8), U64 -> U32
 	u32 = |b, at| {
@@ -127,7 +127,7 @@ Dom := [].{
 	}
 
 	empty_node : DNode
-	empty_node = { tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [] }
+	empty_node = { tag: "", text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0 }
 
 	## Update node i in place (the node is moved out of the list first, so
 	## its kid list stays uniquely owned).
@@ -182,15 +182,15 @@ Dom := [].{
 				dom,
 				n.parent - 1,
 				|p| {
-					{ tag, text, attrs, kids, parent, rn, hs, ht, ids, props } = p
+					{ tag, text, attrs, kids, parent, rn, hs, ht, ids, props, detach_count } = p
 					kept = match kids.find_last_index(|k| k == i) {
 						Ok(pos) => kids.drop_at(pos)
 						Err(_) => kids
 					}
-					{ tag, text, attrs, kids: kept, parent, rn, hs, ht, ids, props }
+					{ tag, text, attrs, kids: kept, parent, rn, hs, ht, ids, props, detach_count }
 				},
 			)
-			Dom.modify(d1, i, |m| { ..m, parent: 0 })
+			Dom.modify(d1, i, |m| { ..m, parent: 0, detach_count: m.detach_count + 1 })
 		}
 	}
 
@@ -202,7 +202,7 @@ Dom := [].{
 			d0,
 			parent,
 			|p| {
-				{ tag, text, attrs, kids, parent: pp, rn, hs, ht, ids, props } = p
+				{ tag, text, attrs, kids, parent: pp, rn, hs, ht, ids, props, detach_count } = p
 				kids2 = match before {
 					Err(End) => kids.append(i)
 					Ok(b) => {
@@ -210,7 +210,7 @@ Dom := [].{
 						kids.sublist({ start: 0, len: pos }).append(i).concat(kids.sublist({ start: pos, len: kids.len() - pos }))
 					}
 				}
-				{ tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, ids, props }
+				{ tag, text, attrs, kids: kids2, parent: pp, rn, hs, ht, ids, props, detach_count }
 			},
 		)
 		Dom.modify(d1, i, |n| { ..n, parent: parent + 1 })
@@ -237,7 +237,7 @@ Dom := [].{
 		kind = Dom.byte(b, at)
 		if kind == 2 {
 			(t, next) = Dom.str(b, at + 1)
-			(d1, i) = Dom.add_node(dom, { tag: "", text: t, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [] })
+			(d1, i) = Dom.add_node(dom, { tag: "", text: t, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0 })
 			(d1, i, next)
 		} else {
 			(tag, a1) = Dom.str(b, at + 1)
@@ -256,7 +256,7 @@ Dom := [].{
 			}
 			nk = Dom.byte(b, $at).to_u64()
 			$at = $at + 1
-			(d1, i) = Dom.add_node(dom, { tag, text: "", attrs: $attrs, kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [] })
+			(d1, i) = Dom.add_node(dom, { tag, text: "", attrs: $attrs, kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0 })
 			var $d = d1
 			$k = 0
 			while $k < nk {
@@ -403,13 +403,22 @@ Dom := [].{
 	## Invalid numbers come from a protocol mismatch, never an app event.
 	check_listener : { event : Str, kind : U8, policies : U32 } -> {}
 	check_listener = |{ event, kind, policies }| {
-		if kind != 1 and kind != 2 {
+		if kind != 1 and kind != 2 and kind != 3 {
 			crash "executor: unknown payload kind ${kind.to_str()}"
 		}
 		if kind == 2 and !["change", "drop", "paste"].contains(event) {
 			crash "executor: files payload kind on unsupported event ${event}"
 		}
-		if policies.bitwise_and(0xFFFFFFFC) != 0 {
+		if kind == 3 and !["pointerdown", "pointermove", "pointerup", "pointercancel"].contains(event) {
+			crash "executor: pointer payload kind on unsupported event ${event}"
+		}
+		if policies.bitwise_and(4) != 0 and (kind != 3 or event != "pointerdown") {
+			crash "executor: capture policy requires a pointerdown pointer handler"
+		}
+		if policies.bitwise_and(8) != 0 and (kind != 3 or event != "pointermove") {
+			crash "executor: paced policy requires a pointermove pointer handler"
+		}
+		if policies.bitwise_and(0xFFFFFFF0) != 0 {
 			crash "executor: unknown event policy bits ${policies.to_str()}"
 		}
 	}
@@ -419,6 +428,7 @@ Dom := [].{
 	property_name = |property| match property {
 		1 => "value"
 		2 => "checked"
+		3 => "pointer_zone"
 		_ => crash "executor: unknown property index ${property.to_str()}"
 	}
 
@@ -437,6 +447,12 @@ Dom := [].{
 	set_property_on : Model, U64, U8, Str, U32 -> Model
 	set_property_on = |dom, i, property, value, command_node| {
 		name = Dom.property_name(property)
+		if property == 3 {
+			if Dom.node(dom, i).tag.is_empty() {
+				crash "executor: pointer zone property requires an element"
+			}
+			return Dom.set_live_on(dom, i, name, value)
+		}
 		n = Dom.node(dom, i)
 		if property == 1 and Dom.is_file_input(n) {
 			crash "contract: value property on file input at node ${command_node.to_str()}"
@@ -660,7 +676,9 @@ Dom := [].{
 				tpl = $d.tpls.get(Dom.site_of($d, nid) ?? crash "TEXT/HATTR on a non-row node") ?? crash "unknown template"
 				hole = tpl.holes.get(h) ?? crash "unknown hole"
 				target = Dom.node($d, row).ht.get(h) ?? crash "hole target"
-				$written = $written.append(target)
+				if op != 22 or hole.property != 3 {
+					$written = $written.append(target)
+				}
 				$d = if op == 3 {
 					if hole.kind != 2 {
 						crash "executor: HATTR names a non-attribute hole"
@@ -704,7 +722,7 @@ Dom := [].{
 				old_kids = Dom.node($d, p).kids
 				var $dd = Dom.modify($d, p, |pn| { ..pn, kids: [] })
 				for k in old_kids {
-					$dd = Dom.modify(Dom.forget_subtree($dd, k), k, |kn| { ..kn, parent: 0 })
+					$dd = Dom.modify(Dom.forget_subtree($dd, k), k, |kn| { ..kn, parent: 0, detach_count: kn.detach_count + 1 })
 				}
 				# Teardown removed this site's rows, including rows nested below
 				# them; membership is maintained per id, never by scanning nodes.
@@ -736,7 +754,7 @@ Dom := [].{
 				before = Dom.u32(b, $at + 8)
 				(s, next) = Dom.str(b, $at + 12)
 				$at = next
-				fresh = if (op == 8) { tag: s, text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [] } else { tag: "", text: s, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [] }
+				fresh = if (op == 8) { tag: s, text: "", attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0 } else { tag: "", text: s, attrs: [], kids: [], parent: 0, rn: 0, hs: [], ht: [], ids: [], props: [], detach_count: 0 }
 				(d1, i) = Dom.add_node($d, fresh)
 				$d = Dom.bind(Dom.place(d1, i, parent, before), nid, i)
 			} else if op == 9 {
@@ -752,7 +770,9 @@ Dom := [].{
 				(value, next) = Dom.str(b, $at + 5)
 				$at = next
 				i = Dom.lookup($d, id)
-				$written = $written.append(i)
+				if property != 3 {
+					$written = $written.append(i)
+				}
 				if property == 1 {
 					$values = $values.append((i, value))
 				}
@@ -1001,13 +1021,13 @@ Dom := [].{
 			if $found == NoListener and ($at == i or bubbles) {
 				match n.hs.find_first(|listener| listener.event == ev) {
 					Ok(listener) => {
-						$found = Found(listener)
+						$found = Found(listener, $at)
 					}
 					Err(_) => {}
 				}
 			}
 			match $found {
-				Found(listener) if n.rn != 0 => return Ok({ node: n.rn, handler: listener.handler, event: listener.event, kind: listener.kind, policies: listener.policies })
+				Found(listener, declaring) if n.rn != 0 => return Ok({ node: n.rn, handler: listener.handler, event: listener.event, kind: listener.kind, policies: listener.policies, declaring })
 				_ => {}
 			}
 			if n.parent == 0 {
@@ -1015,6 +1035,25 @@ Dom := [].{
 			}
 			$at = n.parent - 1
 		}
+	}
+
+	## The nearest nonempty pointer zone at or above a node. The key is only
+	## returned to the app that authored it, never resolved as engine identity.
+	zone_of : Model, U64 -> Try({ index : U64, key : Str }, [Outside])
+	zone_of = |dom, i| {
+		var $at = i
+		while $at != dom.root {
+			n = Dom.node(dom, $at)
+			key = Dom.live_value(n, "pointer_zone")
+			if !key.is_empty() {
+				return Ok({ index: $at, key })
+			}
+			if n.parent == 0 {
+				return Err(Outside)
+			}
+			$at = n.parent - 1
+		}
+		Err(Outside)
 	}
 
 	render : Model, U64 -> Str
@@ -1103,7 +1142,7 @@ Dom := [].{
 			ancestor: Dom.target(d2, child, "scroll", Bool.False),
 			bubbling: Dom.target(d2, child, "cancel", Bool.True),
 		}
-		actual == { target: Ok({ node: 10, handler: 3, event: "close", kind: 1, policies: 0 }), ancestor: Err(NoHandler), bubbling: Ok({ node: 10, handler: 1, event: "cancel", kind: 1, policies: 0 }) }
+		actual == { target: Ok({ node: 10, handler: 3, event: "close", kind: 1, policies: 0, declaring: child }), ancestor: Err(NoHandler), bubbling: Ok({ node: 10, handler: 1, event: "cancel", kind: 1, policies: 0, declaring: parent }) }
 	}
 
 	## Removing an ancestor drops both a row's routing id and the command

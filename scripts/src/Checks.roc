@@ -81,6 +81,13 @@ Checks := [].{
 	## also hold both runners to rejecting an invalid hold lifecycle.
 	broken_specs : List(Broken)
 	broken_specs = [
+		{ example: "controls", spec: "tests/apps/controls/specs/pointer-many-touches.scm", good: "(pointer-up (test-id \"pointer-capture\") :id 2)", bad: "(pointer-down (test-id \"pointer-capture\") :pointer touch :id 18)", rejection: "at most 16" },
+		{ example: "controls", spec: "tests/apps/controls/specs/pointer-capture.scm", good: "(hold-reports)", bad: "(pointer-down (test-id \"pointer-plain\") :pointer touch :id 2)", rejection: "touch" },
+		{ example: "controls", spec: "tests/apps/controls/specs/pointer-capture.scm", good: "(hold-reports)", bad: "(pointer-down (test-id \"pointer-plain\") :pointer pen :id 2)", rejection: "mouse or pen" },
+		{ example: "controls", spec: "tests/apps/controls/specs/pointer-two-touches.scm", good: ":pointer touch", bad: ":pointer pen", rejection: "mouse or pen" },
+		{ example: "controls", spec: "tests/apps/controls/specs/pointer-capture.scm", good: "(pointer-down (test-id \"pointer-capture\"))", bad: "(click (test-id \"pointer-inside\"))", rejection: "give :at" },
+		{ example: "controls", spec: "tests/apps/controls/specs/pointer-two-touches.scm", good: "(hold-reports)", bad: "(pointer-cancel :id 2)", rejection: "pointer-cancel" },
+		{ example: "controls", spec: "tests/apps/controls/specs/pointer-capture.scm", good: "(pointer-up (test-id \"pointer-outside\"))", bad: "(navigate \"/leave-pointer-document\")", rejection: "cross-document navigation" },
 		{ example: "kanban-board", spec: "examples/kanban-board/specs/initial-render.scm", good: "(expect-text (test-id \"board-total\") \"5\")", bad: "(expect-text (test-id \"board-total\") \"6\")", rejection: "expected \\\"6\\\"" },
 		{ example: "workers", spec: "tests/apps/workers/specs/crash.scm", good: "(expect-text (test-id \"log\") \"crash:lost AppCrash\")", bad: "(expect-text (test-id \"log\") \"crash:lost Contract\")", rejection: "expected \\\"crash:lost Contract\\\"" },
 		{ example: "controls", spec: "tests/apps/controls/specs/focus.scm", good: "(click (role button :name \"Focus upper\"))", bad: "(click (role button :name \"Start focus loop\"))", rejection: "resource_limit" },

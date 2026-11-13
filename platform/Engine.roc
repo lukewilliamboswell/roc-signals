@@ -1173,12 +1173,32 @@ Engine := [].{
 	## bubbling event before it reaches listeners outside the mount.
 	Policy : Core.Policy
 
+	## A pointer's state when the browser dispatches it. `at` is the nearest
+	## declared zone under the pointer, independently of capture; its x and y
+	## are fractions from 0 to 10000. `Outside` means there is no usable zone.
+	Pointer : Core.Pointer
+
 	## Listen for text with policies whose fields the compiler checks.
 	## `prevent` prevents the default; `stop` keeps a bubbling event from
 	## listeners outside this mount. On a non-bubbling event `stop` does nothing,
 	## so the target's own browser listeners still run.
 	on_with : Str, Policy, Handler(ctx) -> Attr(ctx)
 	on_with = |event, policy, { h }| Core.on_with(event, policy, h)
+
+	## Receive a typed pointer press, move, release or cancellation. Ordinary
+	## moves remain separate occurrences, suitable for drawing a stroke.
+	on_pointer : [Down, Move, Up, Cancel], HandlerOf(ctx, Pointer) -> Attr(ctx)
+	on_pointer = |event, { h }| Core.on_pointer(event, h)
+
+	## Receive pointerdown and ask its declaring element to capture that
+	## pointer before the event can wait. A refused capture still dispatches.
+	on_pointer_capture : HandlerOf(ctx, Pointer) -> Attr(ctx)
+	on_pointer_capture = |{ h }| Core.on_pointer_capture(h)
+
+	## Receive the newest waiting pointermove per pointer at the frame. An
+	## occurrence such as pointerup drains its earlier waiting move first.
+	on_pointer_paced : HandlerOf(ctx, Pointer) -> Attr(ctx)
+	on_pointer_paced = |{ h }| Core.on_pointer_paced(h)
 
 	## A typed row of the platform's closed element-property vocabulary.
 	Prop(a) :: { p : Core.Prop(a) }.{
@@ -1193,6 +1213,11 @@ Engine := [].{
 		## checked attribute. Other elements cannot declare this property.
 		checked : Prop(Bool)
 		checked = { p: Core.Prop.checked }
+
+		## Mark any element as a pointer zone. The hit test hands this text
+		## back to the app without interpreting it; empty text disables the zone.
+		pointer_zone : Prop(Str)
+		pointer_zone = { p: Core.Prop.pointer_zone }
 	}
 
 	## Set an element property from a row that fixes its value type. A property

@@ -1,0 +1,15 @@
+(test "Pointers — an empty zone passes to its ancestor and zone writes are not DOM mutations"
+  (setup (initial-location "/#pointer"))
+  (steps
+    (expect-updates (test-id "pointer-capture") 1)
+    (click (role button :name "Disable pointer zone"))
+    (expect-updates (test-id "pointer-capture") 1)
+    (pointer-down (test-id "pointer-capture"))
+    (pointer-up (test-id "pointer-capture"))
+    (expect-text (test-id "pointer-log") "down:mouse:1:outside|up:mouse:0:outside")
+    (click (role button :name "Enable pointer zone"))
+    (expect-updates (test-id "pointer-capture") 1)
+    (click (role button :name "Clear pointer log"))
+    (pointer-down (test-id "pointer-empty-zone") :at 20 35)
+    (pointer-up (test-id "pointer-outside"))
+    (expect-text (test-id "pointer-log") "down:mouse:1:capture:2000:3500|up:mouse:0:outside")))

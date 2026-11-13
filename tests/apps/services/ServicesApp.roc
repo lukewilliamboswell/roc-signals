@@ -181,6 +181,7 @@ ServicesApp := [].{
 				Html.p_s(v.map(|s| s.trimmed), [Engine.test_id("trimmed")]),
 				# Default actions
 				Html.link("Jump", "#jump", []),
+				Html.link("Next pointer document", "/pointer-next-document", [Engine.on_pointer(Down, Engine.handle(|_| [])), Engine.on_pointer(Up, Engine.handle(|_| []))]),
 				Engine.element("a", [Engine.attr("href", "#stay"), Engine.on_with("click", { prevent: True }, st.update(|s| { ..s, prevented: s.prevented + 1 }))], [Engine.text("Stay")]),
 				Html.p_s(v.map(|s| s.prevented.to_str()), [Engine.test_id("prevented")]),
 				Engine.element("input", [Html.aria_label("Commit"), Engine.attr("type", "text"), Html.on_change(st.set_value(|s, t| { ..s, committed: t }))], []),
