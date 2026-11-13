@@ -1703,7 +1703,7 @@ expect {
 expect {
 	base : Url
 	base = "/a/file"
-	["mailto:user@example.test", "ftp://example.test/x", "custom+v1.2:opaque"].all(|reference| base.resolve(reference).is_err())
+	base.resolve("mailto:user@example.test") == Err(UnsupportedScheme("mailto")) and base.resolve("ftp://example.test/x") == Err(UnsupportedScheme("ftp")) and base.resolve("custom+v1.2:opaque") == Err(UnsupportedScheme("custom+v1.2"))
 }
 
 ## A colon in a nonfirst path segment is ordinary relative path text.
