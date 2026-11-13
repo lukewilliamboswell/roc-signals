@@ -202,7 +202,7 @@ ConverterApp := [].{
 						Loading => [File.fetch({ url: "sample.csv" })]
 						Idle => []
 					},
-					Engine.react(|_, res| AppStore.sample_arrived(Engine.fetched(res))),
+					Engine.react(|_, res| AppStore.sample_arrived(Engine.fetched(res))).with_progress({}, Engine.react_progress(|_, transfer| AppStore.sample_progress(transfer))),
 				),
 				Html.p_s(source.map(|s| s.note), [Engine.class("muted"), Engine.test_id("note")]),
 			],

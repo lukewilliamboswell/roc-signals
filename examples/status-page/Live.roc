@@ -30,61 +30,90 @@ Live :: {
 	received : U64,
 	dropped : U32,
 	rejected : U64,
-	feed : Feed,
+	retry : Retry,
+	stopped : [Exhausted, Refused],
+	rng : U64,
+	visible : Bool,
+	after : U32,
 	mode : Mode,
 	generation : U64,
-	outage : Engine.Outbox({ seconds : U32 }),
+	outage : Engine.Outbox({}),
 }.{
 
-	## Where the subscription stands: asked for and not yet heard from
-	## (`Connecting`), delivering (`Streaming`), or ended by the feed or
-	## refused by the page's in-flight bound (`Ended`).
-	Feed : [Connecting, Streaming, Ended(Port.Error)]
+	## A connection waits on one scoped timer between attempts. Opened
+	## alone leaves it Connecting; the first accepted reading makes it Live.
+	Retry : [Live, Connecting(U32), Waiting({ attempt : U32, delay_ms : U32 }), GaveUp]
 
 	## What the reader chose: follow the feed, or stop it to read the chart.
 	Mode : [Following, Paused]
 
-	## What the view is handed, in a store whose type is `st`: whether
-	## the page is showing.
-	Props(st) : { visible : Cell(st, Bool) }
+	## Boot seeds the jitter; visibility is shared with the page's checks.
+	Props(st) : { visible : Cell(st, Bool), seed : U128, initially_visible : Bool }
 
 	## The panel before the feed has said anything.
 	init : Live
-	init = { window: [], drawn: [], received: 0, dropped: 0, rejected: 0, feed: Connecting, mode: Following, generation: 0, outage: Engine.outbox({}) }
+	init = { window: [], drawn: [], received: 0, dropped: 0, rejected: 0, retry: Connecting(0), stopped: Exhausted, rng: 0, visible: True, after: 0, mode: Following, generation: 0, outage: Engine.outbox({}) }
 
-	## One message of the subscription, checked at the door. A reading is
-	## kept only if its sequence number comes after the last one kept and its
-	## time is one the chart can place; anything else is counted as
-	## rejected, and so is a message the port could not read. `Closed` and
-	## `Threw` end the feed; a subscription the in-flight bound refused never
-	## began.
-	receive : Live, Try(Latency.Reading, Port.Error) -> Live
-	receive = |live, message|
-		match message {
-			Ok(reading) =>
-				match Latency.taken(live.window, reading) {
-					Ok(window) => { ..live, window, received: live.received + 1, dropped: reading.dropped, feed: Streaming }
-					Err(_) => { ..live, rejected: live.rejected + 1, feed: Streaming }
-				}
-			Err(Closed) => { ..live, feed: Ended(Closed) }
-			Err(Threw(why)) => { ..live, feed: Ended(Threw(why)) }
-			Err(Refused) => { ..live, feed: Ended(Refused) }
-			Err(Undecodable(_)) | Err(TooLarge) | Err(Timeout) => { ..live, rejected: live.rejected + 1 }
+	## Both halves of the document seed affect this app's random stream.
+	seeded : { seed : U128, visible : Bool } -> Live
+	seeded = |{ seed, visible }| { ..Live.init, rng: seed.to_u64_wrap().bitwise_xor(seed.shr_zf_wrap(64).to_u64_wrap()), visible }
+
+	## Exponential delay for attempts one through five, with at most a
+	## quarter of its base added as jitter. Attempts are checked by lost.
+	backoff : { attempt : U32, random : U64 } -> U32
+	backoff = |{ attempt, random }| {
+		base : U32
+		base = match attempt {
+			1 => 1000
+			2 => 2000
+			3 => 4000
+			4 => 8000
+			5 => 16000
+			_ => crash "Live.backoff: retry attempt is outside one through five"
 		}
+		base + (random % (base // 4 + 1).to_u64()).to_u32_wrap()
+	}
 
-	## Follow the feed again after it ended: a new generation subscribes
-	## afresh.
+	## A message is decoded once at the door. A connection ending starts
+	## a bounded retry; a subscription refused at admission needs a person.
+	receive : Live, Try(Latency.Message, Port.Error) -> Live
+	receive = |live, message| match message {
+		Ok(Opened) => live
+		Ok(Event(reading)) => match Latency.taken(live.window, reading) {
+			Ok(window) => { ..live, window, received: live.received + 1, dropped: reading.dropped, retry: Live }
+			Err(_) => { ..live, rejected: live.rejected + 1 }
+		}
+		Err(Closed) | Err(Threw(_)) => lost(live)
+		Err(Refused) => { ..live, retry: GaveUp, stopped: Refused }
+		Err(Undecodable(_)) | Err(TooLarge) | Err(Timeout) => { ..live, rejected: live.rejected + 1 }
+	}
+
+	## A timer fires a new attempt. Refusal stops here, rather than
+	## retrying into the same full in-flight table.
+	retried : Live, Engine.Result -> Live
+	retried = |live, result| match (live.retry, result) {
+		(Waiting({ attempt, delay_ms: _ }), Fired(_)) => { ..live, retry: Connecting(attempt), generation: live.generation + 1, after: last_seq(live.window) }
+		(Waiting(_), Refused) => { ..live, retry: GaveUp, stopped: Refused }
+		_ => live
+	}
+
+	## Manual reconnect starts a fresh budget and resumes after the last
+	## reading kept. Changing the generation supersedes any connection.
 	reconnect : Live -> Live
-	reconnect = |live| { ..live, feed: Connecting, generation: live.generation + 1 }
+	reconnect = |live| { ..live, retry: Connecting(0), generation: live.generation + 1, after: last_seq(live.window) }
 
-	## Pause or resume. Resuming subscribes afresh; the feed is live, so
-	## the time spent paused is a gap in the chart.
+	## Hiding cancels a waiting timer. Showing starts a fresh connection
+	## after the last kept reading, rather than continuing an old wait.
+	shown : Live, Bool -> Live
+	shown = |live, visible| if (visible) { ..Live.reconnect(live), visible } else { ..live, visible }
+
+	## Pausing draws the current window and disposes the connection or
+	## waiting timer. Resuming starts a fresh retry budget.
 	toggle_mode : Live -> Live
-	toggle_mode = |live|
-		match live.mode {
-			Following => { ..live, mode: Paused, drawn: live.window }
-			Paused => { ..live, mode: Following, feed: Connecting }
-		}
+	toggle_mode = |live| match live.mode {
+		Following => { ..live, mode: Paused, drawn: live.window }
+		Paused => { ..Live.reconnect(live), mode: Following }
+	}
 
 	## How often the chart is redrawn from the window while following.
 	redraw_ms : U32
@@ -94,9 +123,9 @@ Live :: {
 	draw : Live -> Live
 	draw = |live| { ..live, drawn: live.window }
 
-	## Ask the feed to drop its connection for `Latency.outage_seconds`.
+	## Ask the feed to end the connection; reconnect policy stays here.
 	drop_connection : Live -> Live
-	drop_connection = |live| { ..live, outage: live.outage.post({ seconds: Latency.outage_seconds }) }
+	drop_connection = |live| { ..live, outage: live.outage.post({}) }
 
 	## The status line over the chart.
 	status_text : Live -> Str
@@ -104,23 +133,20 @@ Live :: {
 		match live.mode {
 			Paused => "Paused: the feed is unsubscribed until you resume"
 			Following =>
-				match live.feed {
-					Connecting => "Connecting to the latency feed"
-					Streaming => "Live: a reading of every service's p95 every 250 ms"
-					Ended(Closed) => "The feed closed"
-					Ended(Threw(why)) => "The feed failed: ${why}"
-					Ended(Refused) => "The feed could not start: too many requests were in flight"
-					Ended(_) => "The feed ended"
+				match live.retry {
+					Connecting(_) => "Connecting to the latency feed"
+					Live => "Live: a reading of every service's p95 every 250 ms"
+					Waiting({ attempt, delay_ms }) => "Connection lost: reconnecting in ${seconds_text(delay_ms)} s (attempt ${attempt.to_str()})"
+					GaveUp => match live.stopped {
+						Exhausted => "Gave up after 5 attempts"
+						Refused => "Reconnect stopped: too many requests were in flight"
+					}
 				}
 		}
 
-	## Whether the feed has ended, so the page offers to reconnect.
+	## A stopped connection needs a manual restart. Waiting retries itself.
 	has_ended : Live -> Bool
-	has_ended = |live|
-		match live.feed {
-			Ended(_) => live.mode == Following
-			_ => Bool.False
-		}
+	has_ended = |live| live.retry == GaveUp and live.mode == Following
 
 	## The newest reading of the API's p95, for the panel's figure.
 	latest_api_text : Live -> Str
@@ -133,7 +159,7 @@ Live :: {
 	## The panel, with a state of its own for the feed.
 	view : Props(st) -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, st)]
-	view = |props| Engine.state(Live.init, |live| panel(live, props.visible.signal()))
+	view = |props| Engine.state(Live.seeded({ seed: props.seed, visible: props.initially_visible }), |live| panel(live, props.visible.signal()))
 }
 
 ## The panel over its state. The subscription lives in a branch that is
@@ -143,7 +169,7 @@ Live :: {
 panel : State(ctx, Live), Signal(ctx, Bool) -> Elem(ctx)
 panel = |live, visible| {
 	lv = live.signal()
-	following = visible.map2(lv, |showing, l| showing and l.mode == Following)
+	following = visible.map2(lv, |showing, l| showing and l.visible and l.mode == Following)
 	Html.section(
 		"Live latency",
 		Parts.panel_class,
@@ -179,7 +205,7 @@ panel = |live, visible| {
 						|| Html.button("Pause the feed", [Engine.class("button-secondary")], live.update(Live.toggle_mode)),
 						|| Html.button("Resume the feed", [Engine.class("button-primary")], live.update(Live.toggle_mode)),
 					),
-					Html.button("Drop the connection for ${Latency.outage_seconds.to_str()} s", [Engine.class("button-secondary")], live.update(Live.drop_connection)),
+					Html.button("Drop the connection", [Engine.class("button-secondary")], live.update(Live.drop_connection)),
 					Engine.when(
 						lv.map(Live.has_ended),
 						|| Html.button("Reconnect", [Engine.class("button-primary")], live.update(Live.reconnect)),
@@ -195,69 +221,143 @@ panel = |live, visible| {
 				|| Html.div(
 					"hidden",
 					[
-						Engine.watch_latest(
-							lv.map(|l| l.generation),
-							|_| [Latency.readings.subscribe({ seed: Latency.seed })],
-							live.on_result(|l, _, res| Live.receive(l, Latency.readings.message(res))),
+						Engine.when(
+							lv.map(
+								|l| match l.retry {
+									Waiting(_) | GaveUp => False
+									_ => True
+								},
+							),
+							|| Engine.watch_latest(
+								lv.map(|l| { generation: l.generation, after: l.after }),
+								|issue| [Latency.readings.subscribe({ seed: Latency.seed, after: issue.after })],
+								live.on_result(|l, _, res| Live.receive(l, Latency.readings.message(res))),
+							),
+							|| Html.div("hidden", []),
 						),
-						Engine.watch(Engine.const(Live.redraw_ms), |ms| [Interval(ms)], live.on_result(|l, _, _| Live.draw(l))),
+						Engine.when(
+							lv.map(
+								|l| match l.retry {
+									Waiting(_) => True
+									_ => False
+								},
+							),
+							|| Engine.watch(
+								lv.map(
+									|l| match l.retry {
+										Waiting(wait) => wait.delay_ms
+										_ => 0
+									},
+								),
+								|ms| [Timer(ms)],
+								live.on_result(|l, _, res| Live.retried(l, res)),
+							),
+							|| Html.div("hidden", []),
+						),
+						Engine.when(
+							lv.map(
+								|l| match l.retry {
+									Waiting(_) | GaveUp => False
+									_ => True
+								},
+							),
+							|| Engine.watch(Engine.const(Live.redraw_ms), |ms| [Interval(ms)], live.on_result(|l, _, _| Live.draw(l))),
+							|| Html.div("hidden", []),
+						),
 					],
 				),
 				|| Html.div("hidden", []),
 			),
-			Engine.on_post(lv.map(|l| l.outage), |cut| [Latency.disconnect.send(cut)], Engine.ignore({})),
+			Engine.on_post(lv.map(|l| l.outage), |cut| [Latency.drop.send(cut)], Engine.ignore({})),
+			Engine.watch_changes(visible, |_| [Self], live.on_result(|l, showing, _| Live.shown(l, showing))),
 		],
 	)
 }
 
-reading : U32, U32 -> Latency.Reading
-reading = |seq, api| { seq, at_ms: 1_762_852_800_000 + seq.to_i64() * 250, p95_ms: { api, web: 140, database: 110, notifications: 180 }, dropped: 0 }
+## The last accepted sequence is the resume cursor, not a request identity.
+last_seq : List(Latency.Point) -> U32
+last_seq = |window| match window.last() {
+	Ok(point) => point.seq
+	Err(_) => 0
+}
 
-## Readings the door takes are counted as received; one out of order and a
-## message the port could not read are counted as rejected.
-expect {
-	var $live = Live.init
-	for message in [Ok(reading(1, 120)), Ok(reading(2, 130)), Ok(reading(5, 140)), Ok(reading(4, 150)), Err(Undecodable("x"))] {
-		$live = Live.receive($live, message)
+## SplitMix64 advances once for each lost connection that can retry.
+lost : Live -> Live
+lost = |live| {
+	attempt = match live.retry {
+		Connecting(previous) => previous + 1
+		_ => 1
 	}
-	actual =
-		\\kept: ${Str.inspect($live.window.map(|p| p.seq))}
-		\\received: ${$live.received.to_str()}
-		\\rejected: ${$live.rejected.to_str()}
-		\\api: ${Live.latest_api_text($live)}
-	expected =
-		\\kept: [1, 2, 5]
-		\\received: 3
-		\\rejected: 2
-		\\api: 140 ms
-	actual == expected
+	if attempt > 5 {
+		{ ..live, retry: GaveUp, stopped: Exhausted }
+	} else {
+		advanced = live.rng.plus_wrap(0x9e3779b97f4a7c15)
+		first = advanced.bitwise_xor(advanced.shr_zf_wrap(30)).times_wrap(0xbf58476d1ce4e5b9)
+		second = first.bitwise_xor(first.shr_zf_wrap(27)).times_wrap(0x94d049bb133111eb)
+		random = second.bitwise_xor(second.shr_zf_wrap(31))
+		{ ..live, rng: advanced, retry: Waiting({ attempt, delay_ms: Live.backoff({ attempt, random }) }) }
+	}
 }
 
-## The chart shows the window only once it is drawn; pausing draws it.
-expect {
-	taken = Live.receive(Live.init, Ok(reading(1, 120)))
-	actual =
-		\\before: ${taken.drawn.len().to_str()}
-		\\drawn: ${Live.draw(taken).drawn.len().to_str()}
-		\\paused: ${Live.toggle_mode(taken).drawn.len().to_str()} ${Live.status_text(Live.toggle_mode(taken))}
-	expected =
-		\\before: 0
-		\\drawn: 1
-		\\paused: 1 Paused: the feed is unsubscribed until you resume
-	actual == expected
+## Millisecond jitter is shown exactly without floating point rounding.
+seconds_text : U32 -> Str
+seconds_text = |ms| {
+	whole = ms // 1000
+	fraction = ms % 1000
+	if fraction == 0 {
+		whole.to_str()
+	} else {
+		digits = (fraction + 1000).to_str().drop_prefix("1")
+		"${whole.to_str()}.${digits}"
+	}
 }
 
-## The feed ending shows on the status line, and the page offers to
-## reconnect.
+reading : { seq : U32, api : U32 } -> Latency.Message
+reading = |{ seq, api }| Event({ seq, at_ms: 1_762_852_800_000 + seq.to_i64() * 250, p95_ms: { api, web: 140, database: 110, notifications: 180 }, dropped: 0 })
+
+## Backoff doubles its base and never adds over one quarter in jitter.
 expect {
-	ended = Live.receive(Live.init, Err(Threw("socket reset")))
-	actual =
-		\\status: ${Live.status_text(ended)}
-		\\offers reconnect: ${Str.inspect(Live.has_ended(ended))}
-		\\after reconnect: ${Live.status_text(Live.reconnect(ended))}
-	expected =
-		\\status: The feed failed: socket reset
-		\\offers reconnect: True
-		\\after reconnect: Connecting to the latency feed
-	actual == expected
+	[1, 2, 3, 4, 5].map(|attempt| Live.backoff({ attempt, random: 0 })) == [1000, 2000, 4000, 8000, 16000]
+}
+
+## Both halves of the document seed affect jitter identically.
+expect Live.seeded({ seed: 0x10000000000000007, visible: True }).rng == 6
+
+## Opened is not data. The first accepted Event makes the feed live.
+expect {
+	connecting = Live.receive(Live.init, Ok(Opened))
+	taken = Live.receive(connecting, Ok(reading({ seq: 1, api: 120 })))
+	(connecting.retry, taken.retry, taken.received, last_seq(taken.window)) == (Connecting(0), Live, 1, 1)
+}
+
+## A refusal stops retries and tells the truth about why they stopped.
+expect {
+	waiting = Live.receive(Live.init, Err(Closed))
+	stopped = Live.retried(waiting, Refused)
+	(stopped.retry, Live.status_text(stopped)) == (GaveUp, "Reconnect stopped: too many requests were in flight")
+}
+
+## Five failed attempts exhaust the budget; manual reconnect starts anew.
+expect {
+	var $live = Live.receive(Live.init, Err(Closed))
+	for _attempt in 1..=5 {
+		$live = Live.receive(Live.retried($live, Fired(0)), Err(Closed))
+	}
+	($live.retry, Live.status_text($live), Live.reconnect($live).retry) == (GaveUp, "Gave up after 5 attempts", Connecting(0))
+}
+
+## A reopen asks after the last kept reading, and pausing catches the chart up.
+expect {
+	taken = Live.receive(Live.init, Ok(reading({ seq: 9, api: 120 })))
+	(Live.reconnect(taken).after, Live.toggle_mode(taken).drawn.len()) == (9, 1)
+}
+
+## Jitter ranges from zero through exactly a quarter of each base.
+expect {
+	[1, 2, 3, 4, 5].map(
+		|attempt| {
+			base = Live.backoff({ attempt, random: 0 })
+			Live.backoff({ attempt, random: (base // 4).to_u64() }) == base + base // 4
+		},
+	) == [True, True, True, True, True]
 }

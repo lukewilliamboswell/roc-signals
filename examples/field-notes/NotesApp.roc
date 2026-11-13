@@ -236,7 +236,7 @@ sync_lane : U64 -> Elem(ctx)
 sync_lane = |slot| Engine.watch(
 	AppStore.cells.board.signal().map(|b| Notes.issue_at(b, slot)),
 	|issue| match issue.request {
-		Send(token) => [Http({ method: "POST", url: "/api/notes/sync", headers: [], body: token, timeout_ms: 0 })]
+		Send(token) => [Engine.http({ method: "POST", url: "/api/notes/sync", headers: [], body: token })]
 		Idle => []
 	},
 	Engine.react(

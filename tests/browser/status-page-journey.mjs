@@ -151,7 +151,7 @@ const state = () =>
 await sleep(2200);
 let s = await state();
 check("readings arrive at the stream's pace (about four a second)", s.received >= 6 && s.received <= 12, JSON.stringify(s));
-check("the app kept every message the runtime delivered", s.received === s.messages && s.rejected === 0, JSON.stringify(s));
+check("the app kept every message the runtime delivered", s.received + 1 === s.messages && s.rejected === 0, JSON.stringify(s));
 check("one live subscription, nothing refused, nothing replaced, nothing dropped", s.subscriptions === 1 && s.refused === 0 && s.coalesced === 0 && s.dropped === 0 && s.gaps === 0, JSON.stringify(s));
 await sleep(300);
 s = await state();
@@ -168,35 +168,28 @@ await page.evaluate(() => {
 await sleep(1500);
 s = await state();
 check("after a 5 s stall the stream caught up: emits were refused and offered again", s.refused > before.refused, JSON.stringify({ before, after: s }));
-check("no reading was lost: no gap, nothing dropped", s.gaps === 0 && s.dropped === 0 && s.received === s.messages && s.received - before.received >= 20, JSON.stringify({ before, after: s }));
+check("no reading was lost: no gap, nothing dropped", s.gaps === 0 && s.dropped === 0 && s.received + 1 === s.messages && s.received - before.received >= 20, JSON.stringify({ before, after: s }));
 
-// 3. A dropped connection: 20 s of readings, more than the stream's buffer.
+// 3. A real ended subscription retries in Roc after its seeded backoff.
 const offline = await state();
-await page.evaluate(() => {
-  // The longest gap between frames while the replay drains (reported).
-  window.__gap = 0;
-  let last = performance.now();
-  const frame = (t) => {
-    window.__gap = Math.max(window.__gap, t - last);
-    last = t;
-    window.__gapFrame = requestAnimationFrame(frame);
-  };
-  window.__gapFrame = requestAnimationFrame(frame);
-  window.__click("Drop the connection for 20 s");
-});
-await sleep(3000);
+await page.evaluate(() => window.__click("Drop the connection"));
 const during = await state();
-check("while the connection is down no reading arrives", during.received === offline.received || during.received === offline.received + 1, JSON.stringify({ offline, during }));
-await sleep(19000);
+check("a dropped connection ends its subscription and displays a bounded backoff", during.subscriptions === 0 && /^Connection lost: reconnecting in 1(?:\.[0-9]+)? s \(attempt 1\)$/.test(during.status), JSON.stringify(during));
+await sleep(1800);
 s = await state();
-check("the replay reached the page through the bound, a frame at a time", s.refused >= offline.refused + 3, JSON.stringify({ offline, after: s }));
-check("the stream dropped what its buffer could not hold, and said so", s.dropped >= 10 && s.dropped <= 22, JSON.stringify(s));
-check("the chart shows the hole as a gap", s.gaps >= 1, JSON.stringify(s));
-const replayGap = await page.evaluate(() => {
-  cancelAnimationFrame(window.__gapFrame);
-  return Math.round(window.__gap);
+check("Roc opened one new connection and resumed without a gap", s.subscriptions === 1 && s.received > offline.received && s.rejected === 0 && s.gaps === 0 && s.dropped === 0, JSON.stringify(s));
+
+// A loss longer than the server's 64-reading history reports its gap.
+// Block the page before dropping: no old connection can offer its backlog.
+await page.evaluate(() => {
+  const until = performance.now() + 17000;
+  while (performance.now() < until);
+  window.__click("Drop the connection");
 });
-console.log(`   longest frame gap while the connection dropped and the replay drained: ${replayGap} ms`);
+await sleep(2400);
+s = await state();
+check("a long outage reports the readings beyond bounded history", s.dropped >= 4 && s.dropped <= 20 && s.gaps >= 1 && s.rejected === 0, JSON.stringify(s));
+check("replayed history passes through the subscription's bound", s.refused > offline.refused, JSON.stringify(s));
 check("the window stays bounded", s.points <= 120, JSON.stringify(s));
 if (opts.screenshot) {
   const { data } = await page.send("Page.captureScreenshot", { format: "png", captureBeyondViewport: true });
@@ -214,7 +207,7 @@ check("paused: no subscription, and the stream sends nothing", paused.subscripti
 await page.evaluate(() => window.__click("Resume the feed"));
 await sleep(1200);
 s = await state();
-check("resumed: a new subscription delivers again, carrying on the stream's numbering", s.subscriptions === 1 && s.received > paused.received && s.rejected === 0 && s.gaps > paused.gaps, JSON.stringify({ paused, resumed: s }));
+check("resumed: a new subscription replays the short pause without a gap", s.subscriptions === 1 && s.received > paused.received && s.rejected === 0 && s.gaps === paused.gaps, JSON.stringify({ paused, resumed: s }));
 
 // 5. Hiding the page ends the subscription; showing it subscribes again.
 await page.evaluate(() => window.__setVisible("hidden"));

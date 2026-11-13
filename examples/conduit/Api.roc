@@ -204,16 +204,16 @@ Api := {}.{
 		}
 
 	get_request : Str, Str -> Engine.Request
-	get_request = |uri, token| Http({ method: "GET", url: uri, headers: auth_headers(token), body: "", timeout_ms: Api.timeout_ms })
+	get_request = |uri, token| Engine.http({ method: "GET", url: uri, headers: auth_headers(token), body: "", timeout: Ms(Api.timeout_ms) })
 
 	post_request : Str, Str, Str -> Engine.Request
-	post_request = |uri, body, token| Http({ method: "POST", url: uri, headers: json_headers(token), body, timeout_ms: Api.timeout_ms })
+	post_request = |uri, body, token| Engine.http({ method: "POST", url: uri, headers: json_headers(token), body, timeout: Ms(Api.timeout_ms) })
 
 	put_request : Str, Str, Str -> Engine.Request
-	put_request = |uri, body, token| Http({ method: "PUT", url: uri, headers: json_headers(token), body, timeout_ms: Api.timeout_ms })
+	put_request = |uri, body, token| Engine.http({ method: "PUT", url: uri, headers: json_headers(token), body, timeout: Ms(Api.timeout_ms) })
 
 	delete_request : Str, Str -> Engine.Request
-	delete_request = |uri, token| Http({ method: "DELETE", url: uri, headers: auth_headers(token), body: "", timeout_ms: Api.timeout_ms })
+	delete_request = |uri, token| Engine.http({ method: "DELETE", url: uri, headers: auth_headers(token), body: "", timeout: Ms(Api.timeout_ms) })
 
 	## A GET whose body decodes into a page resource.
 	decode_get : Api.ResponseState, (Str -> Api.Remote(a)) -> Api.Remote(a)

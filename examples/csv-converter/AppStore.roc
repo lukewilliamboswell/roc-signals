@@ -45,13 +45,13 @@ AppStore := [Converter].{
 	## that carried no file changes nothing.
 	chosen : Engine.Received -> List(Engine.Write(_))
 	chosen = |{ files, refused: _ }| match files {
-		[first, ..] => [AppStore.cells.source.update(|source| { ..source, file: Chosen(first), note: "" })]
+		[first, ..] => [AppStore.cells.source.update(|source| { ..source, file: Chosen(first), sample: Idle, note: "" })]
 		[] => []
 	}
 
 	## The reader asks for the sample: its download starts.
 	sample_asked : List(Engine.Write(_))
-	sample_asked = [AppStore.cells.source.update(|source| { ..source, sample: Loading })]
+	sample_asked = [AppStore.cells.source.update(|source| { ..source, sample: Loading, note: "Fetching sample…" })]
 
 	## The sample's download answered: with the file to convert, or with
 	## why there is none.
@@ -59,11 +59,23 @@ AppStore := [Converter].{
 	sample_arrived = |answer| [
 		AppStore.cells.source.update(
 			|source| match answer {
-				Ok(sample) => { ..source, file: Chosen(sample), sample: Idle }
+				Ok(sample) => { ..source, file: Chosen(sample), sample: Idle, note: "" }
 				Err(why) => { ..source, sample: Idle, note: "the sample did not load: ${Str.inspect(why)}" }
 			},
 		),
 	]
+
+	## Receiving progress is courtesy text; the sample remains pending until
+	## its result arrives, and choosing a different file hides the old text.
+	sample_progress : Engine.Transfer -> List(Engine.Write(_))
+	sample_progress = |transfer| [AppStore.cells.source.update(|source| if (source.sample == Loading) { ..source, note: AppStore.progress_text(transfer) } else source)]
+
+	## Decimal megabytes keep the transfer figure compact and stable.
+	progress_text : Engine.Transfer -> Str
+	progress_text = |transfer| match transfer.total {
+		Known(total) => "Fetching sample: ${megabytes(transfer.done)} of ${megabytes(total)} MB"
+		Unknown => "Fetching sample: ${megabytes(transfer.done)} MB"
+	}
 
 	## The reader picks a format by the value of its option.
 	format_picked : Str -> List(Engine.Write(_))
@@ -110,3 +122,12 @@ expect {
 
 ## An event that carries no file writes nothing, so the source stays as it was.
 expect AppStore.chosen({ files: [], refused: 0 }).len() == 0
+
+## One decimal place states bytes received without floating point rounding.
+megabytes : U64 -> Str
+megabytes = |bytes| "${(bytes // 1000000).to_str()}.${(bytes // 100000 % 10).to_str()}"
+
+## Progress describes both known and unknown transfer sizes.
+expect {
+	[Known(4800000), Unknown].map(|total| AppStore.progress_text({ direction: Receiving, done: 1200000, total })) == ["Fetching sample: 1.2 of 4.8 MB", "Fetching sample: 1.2 MB"]
+}

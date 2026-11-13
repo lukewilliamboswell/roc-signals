@@ -6,13 +6,13 @@
 //
 // `latency` is a subscription (delivery `Every(16)`): a reading of each
 // service's p95 latency every TICK_MS, one message per reading, in the
-// order measured. `disconnect` is a command: the stream loses its
-// connection for a while and then replays what it buffered.
+// order measured. `drop` is a command: the stream ends, leaving retry to Roc.
 //
 // What a reading says is a pure function of the seed and its sequence
 // number, so a seed always tells the same story; only which sequence
-// numbers a page sees depends on the clock (a page hidden or paused for ten
-// seconds misses ten seconds of the stream, as it would a real one). The
+// numbers a page sees depends on the clock. A reconnect asks after the last
+// sequence Roc kept: a short pause replays every reading, and a pause
+// beyond the server's 64-reading history reports the missing gap. The
 // story repeats every CYCLE readings: about fifteen seconds in, the API's
 // p95 climbs far past its 300 ms objective, the database follows a little,
 // and both recover ten seconds later.
@@ -69,76 +69,87 @@ export function p95(seed, seq) {
   };
 }
 
-// The live streams of this page, so `disconnect` reaches each of them.
+// This EventSource-shaped simulation opens one connection. The port adapter
+// below closes on error; it never reconnects. Roc owns retry and resume.
 const streams = new Set();
-
-// Each seed's stream began once, when the page first subscribed to it, and
-// runs on its own clock from then: a new subscription (after a pause, a
-// hidden page or a reconnect) joins it at the current reading, so sequence
-// numbers only ever go up and the time away is a gap, as with a real feed.
 const clocks = new Map();
 
-function startStream(seed, emit) {
-  if (!clocks.has(seed)) clocks.set(seed, { origin: performance.now(), epoch: Date.now() });
-  const { origin, epoch } = clocks.get(seed);
-  let next = Math.floor((performance.now() - origin) / TICK_MS); // the next sequence number to measure
-  const buffer = [];
-  let dropped = 0;
-  let offline = 0; // until this time (performance.now), the connection is down
-  let frame = 0;
-
-  const measure = () => {
-    const due = Math.floor((performance.now() - origin) / TICK_MS);
-    for (; next <= due; next += 1) {
-      buffer.push({ seq: next, at_ms: String(epoch + next * TICK_MS), p95_ms: p95(seed, next) });
-      if (buffer.length > BUFFER) {
-        buffer.shift();
-        dropped += 1;
+class SimulatedEventSource {
+  constructor({ seed, after }) {
+    if (!clocks.has(seed)) clocks.set(seed, { origin: performance.now(), epoch: Date.now() });
+    const { origin, epoch } = clocks.get(seed);
+    this.closed = false;
+    this.buffer = [];
+    this.dropped = 0;
+    this.frame = 0;
+    // The server keeps the newest BUFFER readings. A short outage can be
+    // replayed whole; an older cursor reports exactly the unavailable gap.
+    const due = Math.floor((performance.now() - origin) / TICK_MS) + 1;
+    let next = Math.max(after + 1, due - BUFFER + 1);
+    this.dropped = Math.max(0, next - after - 1);
+    this.flush = () => {
+      this.frame = 0;
+      if (this.closed) return;
+      while (this.buffer.length) {
+        if (!this.onmessage?.({ data: { ...this.buffer[0], dropped: this.dropped } })) {
+          this.frame = requestAnimationFrame(this.flush);
+          return;
+        }
+        this.buffer.shift();
       }
-    }
-  };
-
-  // Offer the buffer in order until the page refuses or it is empty.
-  const offer = () => {
-    frame = 0;
-    if (performance.now() < offline) return;
-    while (buffer.length > 0) {
-      if (!emit({ ...buffer[0], dropped })) {
-        frame = requestAnimationFrame(offer);
-        return;
+    };
+    const tick = () => {
+      const current = Math.floor((performance.now() - origin) / TICK_MS) + 1;
+      for (; next <= current; next += 1) {
+        this.buffer.push({ seq: next, at_ms: String(epoch + next * TICK_MS), p95_ms: p95(seed, next) });
+        if (this.buffer.length > BUFFER) {
+          this.buffer.shift();
+          this.dropped += 1;
+        }
       }
-      buffer.shift();
-    }
-  };
+      if (!this.frame) this.flush();
+    };
+    this.timer = setInterval(tick, TICK_MS);
+    // Handlers are installed before the first event, as with EventSource.
+    queueMicrotask(() => {
+      if (this.closed) return;
+      this.onopen?.();
+      tick();
+    });
+    streams.add(this);
+  }
 
-  const tick = () => {
-    measure();
-    if (frame === 0) offer();
-  };
-  const timer = setInterval(tick, TICK_MS);
-  tick();
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    clearInterval(this.timer);
+    if (this.frame) cancelAnimationFrame(this.frame);
+    this.buffer.length = 0;
+    streams.delete(this);
+  }
 
-  const stream = {
-    disconnect(seconds) {
-      offline = performance.now() + seconds * 1000;
-    },
-    stop() {
-      clearInterval(timer);
-      if (frame !== 0) cancelAnimationFrame(frame);
-      streams.delete(stream);
-    },
-  };
-  streams.add(stream);
-  return stream;
+  drop() {
+    this.onerror?.(new Error("connection dropped"));
+  }
 }
 
 export default {
   [`${NS}/latency`]: {
-    subscribe: ({ seed }, { emit }) => startStream(seed, emit).stop,
+    subscribe: ({ seed, after }, { emit, close }) => {
+      const source = new SimulatedEventSource({ seed, after });
+      source.onopen = () => emit("Opened");
+      source.onmessage = ({ data }) => emit({ Event: data });
+      source.onerror = (error) => {
+        // Real EventSource also reconnects automatically unless closed here.
+        source.close();
+        close(error);
+      };
+      return () => source.close();
+    },
   },
-  [`${NS}/disconnect`]: {
-    command: ({ seconds }) => {
-      for (const stream of streams) stream.disconnect(seconds);
+  [`${NS}/drop`]: {
+    command: () => {
+      for (const source of streams) source.drop();
     },
   },
 };

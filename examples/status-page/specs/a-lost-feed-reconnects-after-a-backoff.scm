@@ -1,0 +1,17 @@
+(test "Status page — A lost feed reconnects after a backoff"
+  (setup (seed 7))
+  (steps
+    (click (role button :name "Drop the connection"))
+    (expect-port-sent "roc-signals.example/status-page/drop" 1 "{}")
+    (emit-port "roc-signals.example/status-page/latency" "{\"Event\":{\"seq\":1,\"at_ms\":\"1762852800250\",\"p95_ms\":{\"api\":140,\"web\":150,\"database\":115,\"notifications\":190},\"dropped\":0}}")
+    (fail-port "roc-signals.example/status-page/latency" "connection dropped")
+    (expect-text (test-id "live-status") "Connection lost: reconnecting in 1.160 s (attempt 1)")
+    (expect-port-subscriptions "roc-signals.example/status-page/latency" 0)
+    (expect-absent (role button :name "Reconnect"))
+    (run-effect 6)
+    (expect-port-subscriptions "roc-signals.example/status-page/latency" 1)
+    (expect-text (test-id "live-status") "Connecting to the latency feed")
+    (emit-port "roc-signals.example/status-page/latency" "{\"Event\":{\"seq\":2,\"at_ms\":\"1762852800500\",\"p95_ms\":{\"api\":140,\"web\":150,\"database\":115,\"notifications\":190},\"dropped\":0}}")
+    (expect-text (test-id "live-status") "Live: a reading of every service's p95 every 250 ms")
+  )
+)

@@ -65,7 +65,7 @@ StatusApp := [].{
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
 	poll = |url, answered| Engine.watch_latest(
 		StatusStore.cells.serial.signal(),
-		|_| [Http({ method: "GET", url, headers: [], body: "", timeout_ms: 0 })],
+		|_| [Engine.http({ url, cache: NoStore })],
 		Engine.react(|_serial, res| answered(Engine.http_text(res))),
 	)
 
@@ -148,9 +148,9 @@ StatusApp := [].{
 
 	## The page, under the rollup of the four checks. Everything else it
 	## draws it reads from the store's cells where it draws it.
-	page : Signal(ctx, Status.Tally) -> Elem(ctx)
+	page : Signal(ctx, Status.Tally), Engine.Boot -> Elem(ctx)
 		where [ctx.store : () -> Engine.Reach(ctx, _)]
-	page = |totals| {
+	page = |totals, boot| {
 		cells = StatusStore.cells
 		visible = cells.visible.signal()
 		Html.div(
@@ -219,7 +219,7 @@ StatusApp := [].{
 						),
 					],
 				),
-				Live.view({ visible: cells.visible }),
+				Live.view({ visible: cells.visible, seed: boot.seed, initially_visible: boot.visible }),
 				StatusApp.incidents_panel(cells.feed.signal()),
 				# Polling lives inside the visible branch, so hiding the page
 				# disposes the interval. Already-admitted checks finish.
@@ -251,11 +251,11 @@ StatusApp := [].{
 
 	## The page under one rollup of the checks, which every reader of the
 	## rollup shares.
-	view : {} -> Elem(Engine.StoreRoot(_))
-	view = |{}| Engine.derive(StatusStore.totals({}), StatusApp.page)
+	view : Engine.Boot -> Elem(Engine.StoreRoot(_))
+	view = |boot| Engine.derive(StatusStore.totals({}), |totals| StatusApp.page(totals, boot))
 
 	## The program `main.roc` binds for the browser module and the native spec
 	## runner.
 	program : Engine.Program
-	program = Engine.program_store({ storage_keys: [], max_inflight: 32 }, StatusStore.start, |_boot| StatusApp.view({})).with_ports(Latency.registrations)
+	program = Engine.program_store({ storage_keys: [], max_inflight: 32 }, StatusStore.start, StatusApp.view).with_ports(Latency.registrations)
 }
