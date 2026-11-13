@@ -97,6 +97,26 @@ leaves or moves costs a comparison across all of them.
 Here the listing and the window are cells, so buttons change them. Either
 could as well be local state or a constant: each is just a `Signal`.
 
+### Following a scrollbar
+
+A fixed-height list can write the same window from a scroll report instead
+of a paging button:
+
+{{ sample(file="scores/Scores.roc", region="scroll") }}
+
+The scroller's CSS fixes its height, and every row uses the height the
+window calculation assumes. A spacer keeps the full row count's height;
+only the drawn rows change with the window. Set `overflow-anchor: none`
+and keep the spacer independent of drawn rows, so a window write cannot
+move the scrollbar and produce another scroll report. A size report can
+also change the window's count as its container grows or shrinks. Both
+writes use the ordinary turn and preserve rows kept by the final window.
+
+This model assumes fixed-height rows. Measuring each row, page scrolling
+and variable-height virtualization are outside the platform's layout
+vocabulary. [Scrolling and layout](@/docs/effects-and-browser.md#scrolling-and-layout)
+describes size/seen observations and their lifetimes.
+
 ## A drawn row is handed its row
 
 The template runs once for the whole table view, not once per row. It receives the

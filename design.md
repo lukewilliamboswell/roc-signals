@@ -305,7 +305,7 @@ reconsidered.
   never holds a JavaScript value, and is never called by it; every message is
   data in a declared encoding with the channel's id, bound, scope and
   lifetime. A capability the platform models (HTTP, storage, timers, history,
-  focus, workers, files) is not a port's business, and nothing that needs a
+  focus, workers, files, layout observation and media queries) is not a port's business, and nothing that needs a
   synchronous answer (a default to prevent, a layout measurement inside a
   turn) can be one. The hosted effects a worker task calls (see
   [Workers](#workers)) are not an FFI either: they are a closed, typed
@@ -1136,7 +1136,8 @@ inferred from a reused key, and there is no implicit `keep_alive`.
 Every site is a scope. Disposing it:
 
 1. disposes its children in order (each child disposes its own);
-2. releases registrations outside the node tables with `RELEASE`, before
+2. releases registrations outside the node tables with `RELEASE`, including
+   size and seen observations, before
    emitting `REMOVE` for its top-level nodes when its parent is not already
    removing an ancestor (or `CLEAR` when an `each` or view site is the sole
    child of its parent);
@@ -1148,6 +1149,11 @@ Every site is a scope. Disposing it:
 5. hands its admitted requests up as orphans, the jobs of tasks that say
    `on_dispose: Keep` among them (see [Disposal and
    reparenting](#disposal-and-reparenting)).
+
+An observation on an element inside a row belongs to the row root, so one
+`RELEASE` releases its observations without scanning other rows. Nested
+sites dispose and release their own observations before an ancestor removal
+or clear detaches them.
 
 Dropping the site's closure releases its storage. Nothing is left registered in
 the host or the runtime for a disposed scope: the runtime holds DOM nodes by id
@@ -1330,13 +1336,17 @@ The native runner applies the same bound to the turns one step raises.
 ### Reports and occurrences
 
 A report source states a current value. `OnlineChanges`,
-`VisibilityChanges` and port subscriptions declared `Latest` are report
+`VisibilityChanges`, `MediaChanges(query)` and port subscriptions declared
+`Latest` are report
 sources, identified by request id. Other sources join only through a
 declaration that states their identity and which results are reports.
 An `on_pointer_paced` move is identified by its declaring element, handler
 number and pointer id. Element identity, rather than a recycled node id,
 keeps a new element's reports separate; two pointers never replace each
-other's moves.
+other's moves. Scroll reports are identified by element and handler; size
+and seen reports by element and kind. Media uses its subscription id.
+Several observer entries for one target enter in callback order and the
+report index retains the newest. Disconnected targets are skipped.
 Clicks, key presses, input, change, submit, focus and file events, final
 request results, `Every` port messages, subscription `Closed` and `Threw`,
 interval ticks and `Popstate` are occurrences. Their repeated occurrences
@@ -1357,7 +1367,9 @@ The runtime applies the declared delivery policy through one ingress queue:
    `FRAME_WAIT_MS = 100` timer alongside it. Whichever fires first drains
    the queue and cancels the other. When `environment.visible()` answers
    false, a microtask drains at the end of the reporting task instead.
-   A busy runtime waits until its batch has applied.
+   A busy runtime waits until its batch has applied. Size reports drain when
+   their ResizeObserver callback returns: it runs after the frame drain and
+   before paint, so another frame would paint the old layout once.
 4. An occurrence joins the queue and drains it immediately in order when
    idle. Click commands therefore retain user activation. While busy it
    waits for the batch's ordinary drain.
@@ -1533,7 +1545,8 @@ Rules:
   skip commands. Its only state is the id → DOM node tables, parsed templates
   and live effect handles the commands told it to keep, plus the ingress
   queue and its index of report sources, the keymaps rendered on nodes and
-  the document-key registrations commands registered. Manual mode also keeps
+  the document-key registrations commands registered, and the elements
+  commands told it to observe, released by `RELEASE`, teardown or poisoning. Manual mode also keeps
   the bounded passive scroll and native-callback observation data described
   below. `RELEASE`, teardown
   and poisoning remove those registrations. Input delivery applies a declared
@@ -2104,9 +2117,13 @@ is a defaulted nominal record, built and read as ordinary record data, so
 a later field breaks neither a program nor a pure test that builds one.
 
 The mount's `environment` option supplies read-only fact readers, currently
-`online()` and `visible()`. They are called at boot and when the browser's
-own event answers a live subscription. Their defaults read `navigator`
-and `document` through the runtime's existing window and document options.
+`online()` and `visible()` are called at boot and on their browser events
+for live subscriptions. `matchMedia(query)` is called at boot for each
+declared query and when its subscription is created; that subscription
+retains the returned object and reads its `matches` when `change` arrives.
+The object must supply Boolean `matches` and `addEventListener` and
+`removeEventListener` methods. Defaults read the browser through the
+runtime's existing window and document options.
 Report scheduling also reads `visible()` to choose a frame or the hidden
 page's microtask drain.
 Services remain separate: `storage`, `fetch` and `ports` perform requests
@@ -2133,7 +2150,7 @@ Storage predates this naming rule: `local-storage` seeds it and the app's
 writes change it. File fixtures and deployment limits are not environment
 facts.
 
-### Connectivity and visibility
+### Connectivity, visibility and media
 
 As sections of [the environment at boot](#the-environment-at-boot), whether
 the browser is online and the page visible is part of the boot bytes
@@ -2144,6 +2161,24 @@ value, delivered as
 `Online(Bool)` or `Visible(Bool)` from the browser's `online`/`offline` and
 `visibilitychange` events. Like every subscription they are scoped: disposing
 their site stops them.
+
+Programs declare media queries in `ProgramProps.media`, at most 32 distinct
+queries of 1–256 UTF-8 bytes each. Boot includes each declared query and its
+Boolean match, available through `boot_media(boot, query)`; an undeclared
+read returns `Err(Undeclared)`. This pure read has no construction site to
+name, so the error is a value the app must handle. `MediaChanges(query)`
+subscribes to a declared query and reports `Matches(Bool)` through the
+ordinary effect channel. An undeclared subscription is a contract error
+naming the query and site; an admitted subscription uses an awaited slot,
+so the in-flight bound can answer `Refused`.
+
+The environment's `matchMedia(query)` supplies the query object used for
+boot and subscription; the default calls the runtime's window. A first
+render therefore knows the preference rather than learning it a turn later.
+Specs give undeclared-in-setup queries their fixed false default and supply
+query objects the driver can change. `set-media` changes the app's fact,
+not the page's CSS media rules. Cross-document mounts carry these facts as
+they do connectivity and visibility.
 
 ### Storage availability
 
@@ -2460,6 +2495,55 @@ writes the cards and clears the drag together, with the keyboard buttons
 still available. Its target markers are read through a per-lane `derive`,
 so a move does not wake every card's marker reader.
 
+### Layout observations
+
+`Layout` is plain data with `Scroll { top : U32, left : U32 }`,
+`Size { width : U32, height : U32 }` and
+`Seen { intersecting : Bool, ratio_permille : U16 }`. `Html.on_scroll`
+attaches a paced scroll handler. It reads offsets when the event is raised,
+rounds CSS pixels and clamps them to the U32 range. Left is distance from
+the start edge: RTL negates the browser's negative `scrollLeft`; a still
+negative left or top is clamped to zero. Column-reverse and overscroll thus
+report zero for negative positions.
+
+`Html.on_size` and `Html.on_seen(props, handler)` declare observations, not
+DOM listeners or awaited requests. `size` and `seen` are not browser event
+names; real `resize` retains its ordinary DOM meaning. Their typed attach
+functions choose the codec and report policy; `SeenProps.ahead` defaults to
+false and is unavailable on the other kinds.
+
+The runtime has one shared ResizeObserver and one IntersectionObserver for
+each ahead setting. Seen uses the browser's default threshold, reporting
+entry and exit. Ahead uses both `rootMargin: "100%"` and
+`scrollMargin: "100%"` so nested clipping scrollers admit an early sentinel.
+A browser without scrollMargin reports that nested sentinel when it enters
+view instead: later, never a false early fact. Size reports the content box;
+all dimensions are rounded CSS pixels. Nonfinite browser measurements are
+executor faults rather than wrapped integers or substituted values. Seen ratios round to per mille and
+stay within 0–1000.
+
+Each observed element/kind is registered under its engine owner: its own
+node, or the row root for a template element. Reverse lists let `RELEASE`
+unobserve only that owner's elements in O(released observations); removal
+never triggers a sweep of every observation. Teardown and poisoning
+disconnect the shared observers. The live-observation gauge counts the
+registrations, not cumulative work; the oracle rejects removal of anything
+still observed. Observations consume no in-flight slot, so data-sized rows
+are bounded structurally by live nodes rather than a fixed observer cap.
+
+These are facts the app writes into its cells through normal handlers.
+A fixed-height table window follows scroll and size reports at
+O(old window + new window). Its spacer height must come from row count,
+independent of drawn rows, and the container must set `overflow-anchor:
+none`. Otherwise drawing a window can move its scrollbar and generate
+another report. An observed box must take its size from its container,
+not from what its handler draws. Browser depth limits postpone resize
+loops to later frames; neither kind of loop fills the queue, so only the
+app's layout ends it. The guides state these author obligations; Chrome
+contracts check a scroll that settles in one turn and a resize that changes
+once then settles. No measurement request, variable-height virtualization,
+page-scroll model or named intersection root is introduced.
+
 ### Other event policies
 
 A declaration may carry policies from a closed table, as a record the
@@ -2582,7 +2666,9 @@ takes block/inline alignment (`Start`, `Center`, `End`, `Nearest`) and
 `scroll_into_view(name, props)` defaults both alignments to Nearest and
 behavior to Auto, so its result fits requests and cleanup commands alike.
 `ScrollTo` takes top/left `Edge` values (`Keep`, `Start`, `End`, `Px(U32)`)
-and a behavior. End is resolved by the browser when performed; geometry
+and a behavior. Left is distance from the logical start edge; RTL maps
+`Px` and `End` to the corresponding negative CSSOM offset. End is resolved
+by the browser when performed; geometry
 never enters Roc. These commands use the reference map, count missing
 addresses stale and consume no awaited id. A scroll command is an action,
 not a persistent value to reconcile. A spec asserts the performed command,
@@ -2827,7 +2913,9 @@ catalogue does not hold; an upload whose method is `GET` or `HEAD`;
 a port catalogue with a duplicate name, more than
 64 ports, a name that is empty or longer than 128 bytes or an `Every` bound
 outside 1–1024; a request for an undeclared port or for a port of another
-shape; a hosted effect reached outside a job, or a job's entry called on
+shape; a media catalogue with duplicate queries, more than 32 queries or a
+query outside 1–256 UTF-8 bytes, or a subscription to an undeclared query;
+a hosted effect reached outside a job, or a job's entry called on
 the page's instance; `Builder.append!`, `append_file!` or `finish!` on a
 builder that was finished, or that the call which opened it has left
 behind (a builder a prepared state kept); `File.read!` of a range outside
@@ -2917,6 +3005,8 @@ bound and a declared behaviour at the bound:
 | A table's changes | One earlier row for each distinct key one turn writes | Cleared when the turn ends |
 | Runtime ingress queue | 4096 occurrences and reports | A report drains a full queue early while idle; overflow while busy is `resource_limit` poison |
 | Live document-key handlers | 32 per instance, structurally outside rows | `contract` at mount naming the site |
+| Declared media queries | 32 distinct queries, 1–256 UTF-8 bytes each | `contract` at catalogue construction |
+| Live observations | One registration per observed element and kind; follows live nodes | Node resource bound; no fixed data-sized cap |
 | Manual scroll history | Newest 4096 performed records per document, weak target identities, cumulative U64 ordinal | Older assertions fail retained-history diagnostics; ordinal exhaustion disables observation, never scrolling |
 | Manual native-UI readiness | Live controlled nodes; per-node U64 close count or coalesced toggle mark; 20 s observation deadline | Explicit observation failure, never app poison |
 | Manual pointer log | 4096 dispatch records, taken after each input step | `resource_limit` on overflow; production retains no log |
@@ -3076,6 +3166,36 @@ mouse/pen up and scripted change/select/submit/focus do not. A new document
 starts without it. A prevented cancel consumes the opportunity until the
 next actual activation. Native callbacks preserve each task source's order
 and toggle coalescing without promising cross-source ordering.
+
+### Layout and media steps
+
+`initial-media "QUERY" BOOL` in setup provides a declared query's boot
+value; absent values default false. `set-media "QUERY" BOOL` changes its
+subscription reports, refusing an undeclared query. `report-size LOC WIDTH
+HEIGHT` and `report-seen LOC yes|no [PERMILLE]` inject the same facts into
+both runners and fail without a matching observation. Real observer timing
+and geometry belong in Chrome contracts. `expect-observed N` checks the
+live gauge; `expect-media-subscriptions "QUERY" N` checks its subscriptions.
+
+`scroll LOC TOP LEFT` is a report step and a real scroll in Chrome. It
+fails if the browser cannot reach the exact requested position, or if the
+resulting turn leaves it elsewhere. A scroll to the current position raises
+nothing. Typed scroll, size, seen and media honor report holds and grant no
+activation. An ordinary text-kind scroll remains an occurrence: it drains
+earlier reports even inside a hold, rather than acquiring paced delivery
+from the spec form.
+
+On an element with a scroll handler (typed or text), `ScrollTo` with
+`Start`, `Px` or `Keep` updates the oracle's offsets and raises the report
+at the end of the step if they changed. Chrome waits a frame for the real
+event and checks the same position; use Instant for a deterministic command,
+since Smooth or CSS-smooth Auto may still be intermediate then. `End` on a
+handled scroller and `ScrollIntoView` inside one fail in both runners: their
+landing position needs layout the oracle lacks. Chrome also fails any step
+that changed a handled scroller without a scroll step or modelled command,
+including focus, click or drawing that moved its scrollbar. It names the
+element and directs the spec to scroll first. Natively that mistake can
+pass, because there is no layout to reveal it; the Chrome run proves it.
 
 ### Pointer steps
 
@@ -3432,6 +3552,7 @@ of them is platform semantics.
 
 | Issue | Defect | Effect on the engine |
 |---|---|---|
+| [roc-lang/roc#13011](https://github.com/roc-lang/roc/issues/13011) | `nightly-2026-11-12-ce942d6` passes checking but crashes in monotype when an open-tag store initializer is tested through both `with_initial` and decisions returning writes | Log Explorer initializes its theme through the full union constructor; both pure tests remain enabled |
 | [roc-lang/roc#12978](https://github.com/roc-lang/roc/issues/12978) | Since `nightly-2026-11-11-7679cc5`, a method's nominal defaulted props reject `{}` inside a callback stored in a record passed to a generic function | The File Effects test app gives its empty read props the explicit `Engine.ReadProps` type before constructing the callback, preserving the default read bound and every spec |
 | [roc-lang/roc#12949](https://github.com/roc-lang/roc/pull/12949) | Native links now require PIC libraries and PIE startup; roc-fuzz 0.6.0's immutable Linux inputs predate that requirement | The platform builds matching PIC musl inputs with its pinned Zig. Fuzz examples and campaigns explicitly report `SKIP` on `nightly-2026-11-11-7679cc5` until roc-fuzz supplies PIC inputs; the next nightly retries, and the engine targets also require the optimizer fix below |
 | [roc-lang/roc#12976](https://github.com/roc-lang/roc/issues/12976) | `nightly-2026-11-11-7679cc5` crashes in `spec_constr` optimizing a function that returns a value beside a closure capturing it; every store example reaches this shape | On that exact nightly the site builds the examples with `--opt=dev`, and optimized walks, browser soaks and worker scaling explicitly report `SKIP`. Ordinary native/browser specs and dev native soaks remain enabled. The next nightly retries optimized builds automatically |
@@ -3559,14 +3680,15 @@ through an attach function rather than supplying an unchecked codec.
 ```roc
 # Program entry
 program : (() -> Elem(Root)) -> Program
-ProgramProps := { storage_keys : List(Str) ?? [], max_inflight : U64 ?? 32 }
+ProgramProps := { storage_keys : List(Str) ?? [], max_inflight : U64 ?? 32, media : List(Str) ?? [] }
 program_boot : ProgramProps, (Boot -> Elem(Root)) -> Program
 program_store : ProgramProps, (Boot -> Store(st, h)),
                 (Boot -> Elem(StoreRoot(st))) -> Program             # the store start(boot) gives, held at the root
 Root                                          # the top context of a program without a store
 StoreRoot(st)                                 # the top context of a program whose store's storage is st
 Boot := { url : Str ?? "/", storage : List((Str, Str)) ?? [], online : Bool ?? True,
-          visible : Bool ?? True, storage_available : Bool ?? True }
+          visible : Bool ?? True, storage_available : Bool ?? True, media : List((Str, Bool)) ?? [] }
+boot_media : Boot, Str -> Try(Bool, [Undeclared])
 Program                                       # opaque; the app binds it as `main`
 Program.with_workers : Program, List(Registration) -> Program   # the worker catalogue
 Registration                                  # opaque: a task or preparation; Worker makes one
@@ -3758,7 +3880,7 @@ Request : [Http({ method, url, headers, body, timeout_ms }), StorageGet(Str), Ti
        Work({ task : Str, input : List(U8), files : List(File), timeout_ms : U32,
               on_dispose : [Stop, Keep], on_cancel : [Stop, Finish],
               prepared : [Unprepared, Prepared({ name : Str, input_len : U64, input_files : U64 })] }),
-       Interval(U32), Popstate, OnlineChanges, VisibilityChanges, Self, Push(Str),
+       Interval(U32), Popstate, OnlineChanges, VisibilityChanges, MediaChanges(Str), Self, Push(Str),
        Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectText(Str), ApplyValue(Str), FocusInPlace(Str),
        ScrollIntoView(Str, { block : Align, inline : Align, behavior : ScrollBehavior }),
        ScrollTo(Str, { top : Edge, left : Edge, behavior : ScrollBehavior }),
@@ -3774,7 +3896,7 @@ Command : [Push(Str), Replace(Str), Title(Str), Focus(Str), Blur(Str), SelectTex
        StorageSet(Str, Str), StorageRemove(Str), PortCommand({ port, message }),
        Save({ file : File, name : Str })]     # the requests that await nothing: a cleanup's plan
 Result : [Http({ status, headers, body }), Network(Str), Timeout, Value(Str), Missing,
-       Fired, Location(Str), Online(Bool), Visible(Bool), Now, Refused,
+       Fired, Location(Str), Online(Bool), Visible(Bool), Matches(Bool), Now, Refused,
        Work({ output : List(U8), files : List(File) }), WorkLost(WorkFault), FileFailed(FileError),
        FileBytes(List(U8)), FileText(Str), Digest(List(U8)), FileUrl(Str),
        PortAnswer(PortMessage), PortFailed(PortFailure),
@@ -3909,6 +4031,19 @@ The controlled helpers are:
 Html.DialogProps(ctx) := { open : Signal(ctx, Bool), on_close : HandlerOf(ctx, Bool), modal : [Modal, NonModal] ?? Modal }
 Html.dialog : Str, Html.DialogProps(ctx), List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
 Html.PopoverProps(ctx) := { open : Signal(ctx, Bool), on_toggle : HandlerOf(ctx, Bool), dismiss : [Auto, Manual] ?? Auto }
+
+# Layout reports (Layout is plain data, with no engine dependency)
+Layout.Scroll : { top : U32, left : U32 }
+Layout.Size : { width : U32, height : U32 }
+Layout.Seen : { intersecting : Bool, ratio_permille : U16 }
+on_scroll : HandlerOf(ctx, Layout.Scroll) -> Attr(ctx)
+on_size : HandlerOf(ctx, Layout.Size) -> Attr(ctx)
+SeenProps := { ahead : Bool ?? False }
+on_seen : SeenProps, HandlerOf(ctx, Layout.Seen) -> Attr(ctx)
+Html.on_scroll : HandlerOf(ctx, Layout.Scroll) -> Attr(ctx)
+Html.on_size : HandlerOf(ctx, Layout.Size) -> Attr(ctx)
+Html.SeenProps := { ahead : Bool ?? False }
+Html.on_seen : Html.SeenProps, HandlerOf(ctx, Layout.Seen) -> Attr(ctx)
 Html.popover : Str, Html.PopoverProps(ctx), List(Attr(ctx)), List(Elem(ctx)) -> Elem(ctx)
 Html.on_cancel : Handler(ctx) -> Attr(ctx)
 ```
@@ -3923,7 +4058,7 @@ touches the wire, an Appendix B entry.
 All integers are little-endian. `u32` ids. `str` is `u32` byte length followed
 by UTF-8 bytes. `rest` is the remaining bytes of a payload as UTF-8.
 
-This appendix is protocol version **11**. The engine declares it
+This appendix is protocol version **12**. The engine declares it
 (`Core.protocol_version`), the host exports it (`protocol_version()`), the
 runtime refuses to mount a module of another version before running it, and
 the native spec runner refuses a program whose version differs from the one
@@ -3942,7 +4077,7 @@ roc-lang/roc#12953 (see [Compiler Limitations](#compiler-limitations)).
 
 | Symbol | Signature | Meaning |
 |---|---|---|
-| `roc_engine_version` | `() -> u32` | The protocol version (11) |
+| `roc_engine_version` | `() -> u32` | The protocol version (12) |
 | `roc_engine_keys` | `() -> List(U8)` | The program's declaration sections, described under Boot below. An invalid port catalogue is a `contract` crash |
 | `roc_engine_init` | `List(U8) -> { cmds, state, work }` | Mount with the boot bytes |
 | `roc_engine_event` | `Box(Iter(Core.App)), List(U8), List(U8), u32, u32, List(U8) -> { cmds, state, work }` | One turn: state, recycled command buffer, recycled work buffer, node, handler, payload |
@@ -4027,9 +4162,10 @@ space. A dash means that section does not occur in that direction.
 | 3 | connectivity | — | `online:u8` | `environment.online()`, otherwise the browser; true |
 | 4 | visibility | — | `visible:u8` | `environment.visible()`, otherwise the browser; true |
 | 5 | ports | `n:u32 (name:str kind:u8 delivery:u8 bound:u32)*n` | — | `Program.with_ports`; empty catalogue |
+| 6 | media | `n:u32 (query:str)*n` | `matches:u8` for each declared query, in declaration order | `environment.matchMedia(query)`; no queries, and false for an unspecified spec query |
 
 Each applicable section is required exactly once, in ascending tag order:
-boot has 1–4 and declarations have 2 and 5. Unknown, repeated, out-of-order
+boot has 1–4 and 6; declarations have 2, 5 and 6. Unknown, repeated, out-of-order
 or missing sections are errors; tags are not a compatibility mechanism.
 The length bounds the body exactly, with no trailing bytes. Flags are
 strictly `0` or `1`; strings must be UTF-8. A body that overruns its section,
@@ -4038,11 +4174,15 @@ did not declare is a `contract` fault naming the section. Unreadable
 declarations refuse mount before `init()`.
 
 Empty boot bytes alone mean all defaults, including URL `/`. Empty
-declarations are invalid: sections 2 and 5 occur even for empty lists.
+declarations are invalid: sections 2, 5 and 6 occur even for empty lists.
 Storage declarations have no additional bound or duplicate check; declaring
 a key twice reads it twice. Only existing keys are included in boot pairs.
-`Core.read_boot` is the total structural decoder used by harnesses; mount
-also checks storage-key membership against the program's declarations.
+`Core.read_boot_media(bytes, queries)` is the total structural decoder; its
+catalogue supplies media names and expected flag count, since boot carries
+only ordered flags. `read_boot(bytes)` uses an empty catalogue. Mount also
+checks storage-key membership against the program's declarations. Empty
+boot bytes default every declared media query to false. Media declarations
+reject duplicates, more than 32 queries and query lengths outside 1–256 bytes.
 
 In the port table, `kind` is `1` command, `2` call, `3` subscription;
 `delivery` is `0` for a command or call, `1` every or `2` latest;
@@ -4075,6 +4215,7 @@ that has run, in first-run order, with its run count.
 | 40 | Port commands sent (`PORT`, opcode 19, which is counted here and not at index 19) |
 | 41, 42 | `PROP`, `HPROP` commands (opcodes 21, 22; counted here rather than by opcode) |
 | 43 | `RELEASE` commands (`registrations_released`; opcode 23, counted here rather than as rows reused; excluded from `patches_emitted`) |
+| 44 | Live observations (`observations_live`), a gauge |
 
 Index 0 is unused. The metric names the spec language accepts map onto these
 indices (`platform/Scm.roc`, `metric_names`).
@@ -4123,6 +4264,7 @@ An event is `event(node, handler)` with the payload staged first:
 | 19 | `url:rest` | `FileUrl(Str)` |
 | 20 | — | Free |
 | 21 | `status:u16 n:u32 (name:str value:str)*n size:u64 name:str type:str` | `Fetched({ status, headers, body })`, delivered through `event_files` with exactly one staged handle, the body |
+| 22 | `matches:u8` | `Matches(Bool)` for media query changes |
 
 A result payload that does not follow this table (unknown tag, bytes after a
 bare tag, a flag other than `0`/`1`, a fault class outside `1`–`7`, a file
@@ -4178,7 +4320,7 @@ a `contract` fault.
 | 20 | `SAVE` | `token:u64 start:u64 len:u64 name:str` — save a file's range as a download named `name`; not counted by opcode (index 20 of the work record is `set_checked`) |
 | 21 | `PROP` | `node prop:u8 value:str` — set an element property from the closed table below |
 | 22 | `HPROP` | `node hole:u8 value:str` — set a row property hole |
-| 23 | `RELEASE` | `node` — release all document registrations for this node, before removal |
+| 23 | `RELEASE` | `node` — release document-key and size/seen registrations owned by this node before removal; a row root owns observations on its template elements |
 
 `before = 0` appends to `parent`; otherwise the node is inserted before
 `before` (and `parent` is that node's parent). Opcodes 13–18 are collected while
@@ -4211,6 +4353,7 @@ an earlier command. Scroll end is resolved at perform time.
 | 13 | `algorithm:u8 token:u64 start:u64 len:u64` | Digest of a file's range: `algorithm` `1` SHA-256 (tag 18) |
 | 14 | `token:u64 start:u64 len:u64` | A URL that shows a file's range (tag 19) |
 | 15 | `method:str url:str n:u32 (name:str value:str)* timeout_ms:u32` | HTTP whose response body becomes a file (tag 21; failures as kind 1, a body over `maxFileBytes` tag 13 reason 2) |
+| 16 | `query:str` | MediaChanges subscription; answered with tag 22 |
 
 **Template encoding** (`TEMPLATE` bytes): a node tree, then a hole table.
 
@@ -4260,6 +4403,16 @@ site; an unknown kind number in commands is an `executor` fault.
 | 3 Pointer | `id:u32 kind:u8 button:u8 buttons:u16 mods:u8 primary:u8 at:u8 [x:u16 y:u16 zone:str]` | `event` | `pointerdown`, `pointermove`, `pointerup`, `pointercancel` |
 | 4 Key | `flags:u8 key:str code:str heard:u8 heard_key:str` | `event` | `keydown`, `keyup`; pass over a local handler whose keymap hears nothing |
 | 5 OpenState | One byte, strictly `0` or `1` | `event` | Helper-paired dialog `close` or popover `toggle` |
+| 6 Scroll | `top:u32 left:u32` | `event` | `scroll`, paced |
+| 7 Size | `width:u32 height:u32` | `event` | `size`, observation report |
+| 8 Seen | `intersecting:u8 ratio:u16` | `event` | `seen`, observation report |
+
+Kinds **6** and **7** require exactly eight bytes. Kind **8** requires
+exactly three: an intersecting flag strictly 0 or 1, then a ratio no greater
+than 1000. Truncated or trailing payloads and invalid fields are routed-site
+contract faults. Their declarations allow only paced bit 8; Seen may also
+carry ahead bit 32. Prevent, stop, capture, document and all other bits are
+invalid on these layout declarations.
 
 Kind **5 OpenState** is one byte, strictly `0` or `1`, delivered by
 `event`. Its private helper declaration pairs `close` with shown property 6
@@ -4301,11 +4454,14 @@ from the event type or decided by an engine result.
 | 0 (`1`) | `prevent` | Call `preventDefault` |
 | 1 (`2`) | `stop` | Call `stopPropagation` only when `event.bubbles` is true; a non-bubbling event must still reach its target |
 | 2 (`4`) | `capture` | The typed capturing `pointerdown` calls `setPointerCapture(pointerId)` on its declaring element before dispatch; refusal still dispatches and is observed |
-| 3 (`8`) | `paced` | A typed paced `pointermove` is a report source keyed by declaring element, handler and pointer id |
+| 3 (`8`) | `paced` | Typed pointermove, scroll, size or seen is a report source with the identity defined above |
 | 4 (`16`) | `document` | Register a key-kind handler for document dispatch, owned by its declaring node |
+| 5 (`32`) | `ahead` | Seen observation uses both 100% margins |
 
 `capture` is valid only for pointer-kind `pointerdown` and `paced` only
-for pointer-kind `pointermove`; `document` only for key-kind declarations.
+for pointer-kind `pointermove` or the three layout kinds; `ahead` only for
+seen-kind declarations; `document` only for key-kind declarations. The
+three layout kinds require paced delivery.
 Key-kind prevention comes from the keymap, never a static prevent bit. A known bit on another declaration is an
 `executor` fault, just as an unknown policy bit is.
 

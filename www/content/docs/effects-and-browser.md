@@ -148,6 +148,7 @@ list is on, say), lift that state in and map both:
 | `Popstate` | `Location(url)` on every back or forward |
 | `OnlineChanges` | `Online(Bool)`, the newest reported state per frame |
 | `VisibilityChanges` | `Visible(Bool)`, the newest reported state per frame |
+| `MediaChanges(query)` | `Matches(Bool)`, the newest reported state per frame; query must be declared in `ProgramProps.media` |
 | `Work({ task, input, files, timeout_ms, on_dispose, on_cancel, prepared })` | `Work({ output, files })`, `WorkLost(fault)` or `Timeout`: a job of a registered task in a Web Worker. Apps use the typed `Worker` module instead; see [Workers](@/docs/workers.md) |
 | `ReadBytes({ file, max_bytes })`, `ReadUtf8({ file, max_bytes })` | `FileBytes(bytes)` or `FileText(text)`, or `FileFailed(error)`: a file read into the page. Made with `File.read_bytes` and `File.read_utf8`; see [Files](@/docs/files.md) |
 | `Upload({ method, url, headers, body, timeout_ms })` | As `Http`, with a [file](@/docs/files.md) as the body; made with `File.upload` |
@@ -191,16 +192,21 @@ and hands the boot data both to the function that starts the store and to
 the view (see [Shared State](@/docs/shared-state.md#starting-values-from-the-boot-data)).
 
 Both functions accept defaulted `ProgramProps`: omit `storage_keys` for
-none and `max_inflight` for 32, or pass `{}` for both defaults.
+none, `max_inflight` for 32 and `media` for no queries, or pass `{}` for
+all defaults.
 
-A page embedding an app can supply the `environment` mount option with
-`online()` and `visible()` readers. The runtime calls them at boot and when
-the browser's `online`, `offline` or `visibilitychange` event answers a
-live subscription. Each returns a boolean; omitted readers use the
-browser through the runtime's window and document. Report scheduling also
-reads `visible()` to choose a frame or the hidden page's microtask drain.
-This also lets a test
-provide fixed facts while exercising the real subscription listeners.
+A page embedding an app can supply `environment.online()` and `visible()`
+readers, called at boot and when the corresponding browser event answers a
+live subscription. Both return booleans. `environment.matchMedia(query)`
+is called for each declared query at boot and when a media subscription
+starts. It returns an object with Boolean `matches` and `addEventListener`
+and `removeEventListener` methods. The subscription retains that object
+and reads `matches` when its `change` event arrives.
+
+Omitted readers use the browser through the runtime's window and document.
+Report scheduling also reads `visible()` to choose a frame or the hidden
+page's microtask drain. Tests can supply fixed facts while exercising the
+real subscription listeners.
 
 Keep services in their own options: `storage` provides reads and writes,
 `fetch` performs HTTP requests and `ports` supplies port handlers. The URL
@@ -226,7 +232,7 @@ itself is one decision. [Conduit](@/examples/conduit.md) is built this way.
 
 ## Subscriptions and lifetime
 
-Connectivity, visibility and a port's `Latest` messages report current
+Connectivity, visibility, media and a port's `Latest` messages report current
 state. They wait for the next animation frame; a newer waiting report
 from the same subscription replaces the earlier one in place. A visible
 page given no frames drains within 100 ms, and a hidden page drains at the
@@ -246,6 +252,7 @@ subscription drops waiting reports without delivering them. Use
 to state what a frame of reports should do.
 
 Subscriptions (`Interval`, `Popstate`, `OnlineChanges`, `VisibilityChanges`,
+`MediaChanges`,
 a port subscription), timers, operations on files on the page (`ReadBytes`,
 `ReadUtf8`, `Sha256`, `ObjectUrl`) and worker jobs belong to their site.
 Disposing the site — because its branch switched or its row left a list —
@@ -303,12 +310,67 @@ and `Nearest`; behavior is `Auto`, `Instant` or `Smooth`. Its narrow return
 tag fits both a request plan and a cleanup's command plan.
 
 `ScrollTo(name, { top, left, behavior })` scrolls the named element. Each
-edge is `Keep`, `Start`, `End` or `Px(U32)`; the browser resolves `End` when
+edge is `Keep`, `Start`, `End` or `Px(U32)`. Left is distance from the
+logical start edge, including RTL; the browser resolves `End` when
 it performs the command. Both scroll commands run after the whole batch,
 in order with focus and other commands. They use the same reference map
 and stale-name count as focus, and await no result. Layout stays in the
 browser. Specs assert the command performed with
 [`expect-scroll`](@/docs/testing.md#dialogs-popovers-and-scrolling).
+
+## Scrolling and layout
+
+Layout arrives as reports that handlers write into ordinary state or cells.
+`import pf.Layout` supplies three plain records:
+
+| Attach function | Payload | Source |
+|---|---|---|
+| `Html.on_scroll(handler)` | `Layout.Scroll { top, left }` | The element's offsets when its scroll event is raised |
+| `Html.on_size(handler)` | `Layout.Size { width, height }` | The element's content box, observed with ResizeObserver |
+| `Html.on_seen(props, handler)` | `Layout.Seen { intersecting, ratio_permille }` | IntersectionObserver entry and exit, with a ratio from 0 to 1000 |
+
+{{ sample(file="layout.roc", region="observations") }}
+
+Offsets and dimensions are U32 rounded CSS pixels. Left is distance from
+the container's start edge, including RTL. Negative offsets, including
+column-reverse and overscroll, clamp to zero. Seen defaults to observing
+on-screen entry and exit. `ahead: True` also admits an element one screen
+before it enters view, using both root and scroll margins; on browsers
+without scroll-margin support a nested sentinel reports later, when seen.
+
+Each is a report source: the newest value per element and handler (scroll)
+or element and kind (size/seen) waits for a frame. Size reports drain when
+the observer's callback ends, before paint. Disposing a scope releases its
+observations; a row releases the observations on its template elements
+together. Observations take no awaited request slot and have no fixed
+row-count cap.
+
+A scrolling table view writes its window from these reports. Its spacer
+height must come from row count, independent of which rows are drawn, and
+its scroller must set `overflow-anchor: none`. Drawing another window must
+not move the scrollbar. Likewise, an observed box must take its size from
+its container rather than from what its size handler draws. Otherwise the
+app can keep creating a report each frame; the platform cannot infer which
+CSS should change. [Table windows](@/docs/tables-and-views.md#following-a-scrollbar)
+show the fixed-height pattern. Sizes and visibility are observations;
+there is no on-demand measurement request or variable-height row model.
+
+### Media preferences
+
+Declare each query in `ProgramProps.media` before boot reads it. There are
+at most 32 distinct queries, each 1–256 UTF-8 bytes. `Engine.boot_media`
+returns `Ok(matches)` or `Err(Undeclared)`, so the first figure can already
+use the preferred colors. `MediaChanges(query)` then reports changes:
+
+{{ sample(file="layout.roc", region="media") }}
+
+An undeclared subscription is a contract error naming its query and site.
+Subscriptions use the ordinary in-flight bound and can answer `Refused`.
+A page's `environment.matchMedia` reader defaults to the browser's
+`window.matchMedia`. Specs set this reader's facts with `initial-media` and
+`set-media`; they do not change the page's own CSS media rules.
+[Log Explorer](@/examples/log-explorer.md) fits its viewer to the reported
+height and colors its Roc-built timeline from a declared color-scheme query.
 
 ## Cleanup
 

@@ -1,6 +1,6 @@
 +++
 title = "Reference"
-description = "The Engine, Table, Html, Worker, Wire, Port and PortJson APIs at a glance, the platform's limits, and its error classes."
+description = "The Engine, Table, Html, Layout, Worker, Wire, Port and PortJson APIs at a glance, the platform's limits, and its error classes."
 weight = 18
 template = "page.html"
 +++
@@ -8,7 +8,7 @@ template = "page.html"
 # Reference
 
 The [API documentation](../../api/api/) is generated from the platform's source
-and documents every public symbol of `Engine`, `Table`, `Html`, `Worker`, `Wire`, `Port` and `PortJson`:
+and documents every public symbol of `Engine`, `Table`, `Html`, `Layout`, `Worker`, `Wire`, `Port` and `PortJson`:
 the authoring API. Platform-only bridges on exposed types require an
 unexposed `EngineOnly` witness, so apps cannot call them. The engine's storage and executable values are opaque; its implementation
 and the interfaces its hosts and test harnesses use live in the platform's
@@ -18,7 +18,7 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 
 | Area | Symbols | Guide |
 |---|---|---|
-| Programs | `program`, `program_boot`, `program_store` (an app with a store: `ProgramProps`, `Boot -> Store` and `Boot -> Elem(StoreRoot(_))`), `Program`, `Program.with_workers`, `Registration` (made by a `Worker` task's or preparation's `registration`), `Program.with_ports`, `PortRegistration`, `Boot`, `boot_storage` | [Getting Started](@/docs/getting-started.md) |
+| Programs | `program`, `program_boot`, `program_store` (an app with a store: `ProgramProps`, `Boot -> Store` and `Boot -> Elem(StoreRoot(_))`), `Program`, `Program.with_workers`, `Registration` (made by a `Worker` task's or preparation's `registration`), `Program.with_ports`, `PortRegistration`, `Boot`, `boot_storage`, `boot_media` | [Getting Started](@/docs/getting-started.md) |
 | Contexts | `Root`, `StoreRoot(st)` (the top of an app with a store), `In(outer, s)`, `Row(outer, item)`, `Reach(ctx, st)` (how a context reaches the store; a function that uses cells asks `where [ctx.store : () -> Engine.Reach(ctx, _)]`) | [Thinking in Signals](@/docs/thinking-in-signals.md#contexts) |
 | Signals | `Signal`, `const`, `Signal.map`, `Signal.map2` (which Roc's record builder calls: `{ a: va, b: vb }.Engine.Signal` is a signal of the record, the way a decision reads several cells), `Signal.lift`, `Signal.lift_row` | [Thinking in Signals](@/docs/thinking-in-signals.md#signals-declare-what-they-read) |
 | The store | `cell`, `table`, `Cells(whole, st, h)` (a description, built with the record builder: `{ a: .., b: .. }.Engine.Cells`; a store of one cell is `Engine.cell(init).map(\|c\| { c: c })`), `Cells.map`, `Cells.map2`, `Cells.with_reset`, `store`, `Stored(tag, st)`, `Store(st, h)`, `Store.cells`, `Store.with_initial`, `Store.after`, `Store.read` | [Shared State](@/docs/shared-state.md) |
@@ -30,7 +30,7 @@ internal `Core` module, which apps cannot import. This page is the map of it. Th
 | Lists | `each`, `RowRef`, `RowRef.key`, `RowRef.field`, `RowRef.item` (the whole item), `RowRef.select`, `keyed`, `Keyed` | [Conditionals and Lists](@/docs/dynamic-structure.md#keyed-lists) |
 | Table views | `table_view`, `TableViewProps` (`query`, `plan`, `window`), `QueryPlan(k, v, s)` (`keep`, `sort`, `compare`), `Window` (`start`, `count`), `every_row` (the window that draws every row) | [Tables and Table Views](@/docs/tables-and-views.md) |
 | Attributes | `Attr`, `attr`, `attr_s` (present text, including empty), `attr_presence` (a signal of `Absent` or `Present(text)`), `class`, `class_s`, `test_id`, `test_id_s`, `ref`, `ref_s` (a signal of the reference's name, including in a row; the empty name names nothing) | [Attribute values](#attribute-values), [Focus](@/docs/effects-and-browser.md#focus) |
-| Events | `on` (bare event type, text payload), `on_with` (text payload and typed `Policy`: `prevent` and `stop`, both false by default), `on_click`, `on_files` (`Change`, `Drop` or `Paste`, files payload), `on_pointer` (`Down`, `Move`, `Up`, `Cancel`, `Pointer` payload), `on_pointer_capture`, `on_pointer_paced`, `on_key` (`KeyProps`), `on_document_key` (`DocumentKeyProps`, requires `OutsideRows(ctx)`) | [Local State, Events, and Forms](@/docs/state-and-events.md#handlers) |
+| Events | `on` (bare event type, text payload), `on_with` (text payload and typed `Policy`: `prevent` and `stop`, both false by default), `on_click`, `on_files` (`Change`, `Drop` or `Paste`, files payload), `on_pointer` (`Down`, `Move`, `Up`, `Cancel`, `Pointer` payload), `on_pointer_capture`, `on_pointer_paced`, `on_scroll`, `on_size`, `on_seen` (`SeenProps`), `on_key` (`KeyProps`), `on_document_key` (`DocumentKeyProps`, requires `OutsideRows(ctx)`) | [Local State, Events, and Forms](@/docs/state-and-events.md#handlers) |
 | Properties | `Prop(a)`, `Prop.value` (`Str`), `Prop.checked` (`Bool`), `Prop.pointer_zone` (`Str`), `prop`, `prop_s` | [Element properties](#element-properties) |
 | Key data | `Key` (`key`, `code`, `ctrl`, `alt`, `shift`, `meta`, `repeat`, `composing`, `heard`), `Chord` (`plain`, `with_ctrl`, `with_alt`, `with_shift`, `with_meta`, `primary`), `Keymap` (`prevent`, `keep`, `every`, `concat`, `outside_text`) | [Keys and shortcuts](@/docs/state-and-events.md#keys-and-shortcuts) |
 | Reference commands | `Focus`, `Blur`, `SelectText`, `ApplyValue`, `FocusInPlace`, `ScrollIntoView`, `ScrollTo`; `scroll_into_view`, `ScrollProps` (`block ?? Nearest`, `inline ?? Nearest`, `behavior ?? Auto`), `Align` (`Start`, `Center`, `End`, `Nearest`), `Edge` (`Keep`, `Start`, `End`, `Px(U32)`), `ScrollBehavior` (`Auto`, `Instant`, `Smooth`) | [Focus and scrolling](@/docs/effects-and-browser.md#focus) |
@@ -45,7 +45,7 @@ A component is not an API of its own: it is a type module whose view is
 handed the cells it uses ([Components](@/docs/components.md)).
 
 `program_boot` and `program_store` take `ProgramProps`, a record whose
-fields default to `storage_keys: []` and `max_inflight: 32`. Pass only the
+fields default to `storage_keys: []`, `max_inflight: 32` and `media: []`. Pass only the
 fields the app needs:
 
 {{ sample(file="program-props.roc", region="program") }}
@@ -53,7 +53,7 @@ fields the app needs:
 Boot values an app declares belong in these props; catalogues of request
 kinds use `Program.with_workers` and `Program.with_ports`. `Boot` is also a
 record with defaults: URL `/`, empty storage, storage available, online
-and visible. Pure tests can name only the fields they use:
+and visible, with no media pairs. Pure tests can name only the fields they use:
 
 {{ sample(file="program-props.roc", region="boot") }}
 
@@ -95,6 +95,7 @@ takes a constant; `Html.p_s` takes reactive text, for example.
 | Dialogs and popovers | `dialog`, `DialogProps(ctx)` (`open`, `on_close : HandlerOf(ctx, Bool)`, `modal : [Modal, NonModal] ?? Modal`); `popover`, `PopoverProps(ctx)` (`open`, `on_toggle : HandlerOf(ctx, Bool)`, `dismiss : [Auto, Manual] ?? Auto`); both open fields are `Signal(ctx, Bool)` |
 | Attributes | `aria_label`, `aria_label_s`, `aria_describedby`, `aria_invalid`, `disabled`, `flag`, `flag_maybe` |
 | Events | `on_input`, `on_change`, `on_focus`, `on_blur`, `on_submit`, `on_cancel`, `on_drop_files`, `on_paste_files`, `on_pointer_down`, `on_pointer_down_capture`, `on_pointer_move`, `on_pointer_move_paced`, `on_pointer_up`, `on_pointer_cancel` |
+| Layout reports | `on_scroll`, `on_size`, `on_seen` (`SeenProps`: `ahead : Bool ?? False`) |
 | Zones | `zone`, `zone_s` (pointer-zone keys, with empty text marking no zone) |
 
 `section(name, class, children)` names a region for assistive technology
@@ -102,6 +103,22 @@ and the spec locators (`aria-label`); it renders no heading, so put one
 among the children for a visible title.
 
 Anything else is `Engine.element(tag, attrs, children)`.
+
+## Layout
+
+`import pf.Layout` provides plain report data with no engine dependency:
+
+| Type | Fields |
+|---|---|
+| `Scroll` | `top : U32`, `left : U32`, rounded CSS pixels from the start edges |
+| `Size` | `width : U32`, `height : U32`, content-box CSS pixels |
+| `Seen` | `intersecting : Bool`, `ratio_permille : U16`, from 0 to 1000 |
+
+Attach them through `Html.on_scroll`, `on_size` and `on_seen`. Media uses
+`ProgramProps.media`, `Boot.media : List((Str, Bool))`,
+`boot_media(boot, query) : Try(Bool, [Undeclared])` and the scoped
+`MediaChanges(query)` subscription, answered by `Matches(Bool)`.
+See [Scrolling and layout](@/docs/effects-and-browser.md#scrolling-and-layout).
 
 ## Worker
 
@@ -248,7 +265,7 @@ optional.
 | `onPortFault` | none | Called when a command handler or an unsubscribe function fails | [Ports](@/docs/ports.md) |
 | `monitor` | `{ history: 128, userTiming: false, payloads: false }` | What the work monitor keeps and reports | [Monitoring Workers](@/docs/worker-monitoring.md) |
 | `storage` | the page's `localStorage` | The storage `StorageGet` and `StorageSet` use (an object with `localStorage`'s methods) | [Effects and the Browser](@/docs/effects-and-browser.md) |
-| `environment` | browser fact readers | Optional `online()` and `visible()` functions, read at boot and on the browser's subscription events; `visible()` also chooses report drain scheduling. Both return booleans | [Effects and the Browser](@/docs/effects-and-browser.md) |
+| `environment` | browser fact readers | Optional Boolean `online()` and `visible()` readers at boot and on their events; `visible()` also chooses report drain scheduling. `matchMedia(query)` runs at boot and subscription creation; its object supplies Boolean `matches` and change listener methods, and is retained for that subscription | [Effects and the Browser](@/docs/effects-and-browser.md) |
 | `fetch` | the global `fetch` | The function HTTP requests go through, for a page that scripts its own backend | [Effects and the Browser](@/docs/effects-and-browser.md) |
 | `manualEffects` | `false` | Requests wait for the caller (`runEffect`); reports wait for `releaseReports()`. Used by the spec runner in Chrome | [Testing](@/docs/testing.md) |
 | `manualWork` | `false` | Only worker jobs wait for `runEffect`; every other effect runs on its own; used by the repository's long sessions in Chrome | [Contributing](@/docs/contributing.md#walks-and-soaks) |
@@ -273,6 +290,8 @@ them.
 | Handlers for one event on one element | 1 | Contract error at mount; make one handler of two with `also` |
 | Static attributes, children or holes per row template element | 255 | Resource limit |
 | Live document-key handlers | 32 per instance; compile-time exclusion under rows | Contract error at mount naming the site |
+| Declared media queries | 32 distinct queries of 1–256 UTF-8 bytes | Contract error naming the query |
+| Live observations | One per element and kind, structurally bounded by live nodes | Node resource bound; no fixed row-count cap |
 | Live DOM nodes | 2³² − 2 | Resource limit |
 | Ingress entries (occurrences and reports) | 4096 | A report drains a full queue early while idle; overflow while a batch applies is a resource limit |
 | Replaceable reports per source | 1 | A newer report replaces the waiting payload in place |
@@ -317,7 +336,7 @@ construction site, for example `contract: duplicate key "r0" in each at site
 
 | Class | Cause |
 |---|---|
-| `contract` | A rule of the API was broken: a duplicate key in an `each`, two live references with one name, a `switch` value outside its cases, a row template that is not a single element, two handlers for one event type on one element, an event type ending in a retired suffix, a property on an element its row does not allow or declared twice, an attribute with a name a property row claims on that element, a value property on a file input, a controlled helper with reserved attributes or a `beforetoggle` handler, a text-kind key handler, a 33rd live document-key handler, `ApplyValue` without a declared value property at its reference, a decision whose list replaces a cell an earlier write of the same list wrote, `Table.insert` of a key already present, a table built from two rows with one key, two rows of a view that compare `Same`, a view's row read after its key left the table in the same event, an effect feedback loop, an outbox posted twice in one turn, a worker task registered twice or asked for without being registered, a port declared twice or used without being declared or as another shape, a worker effect outside a job, a builder used after `finish!` or after the call that opened it returned, an answer holding more than 16 files, malformed boot or result bytes |
+| `contract` | A rule of the API was broken: a duplicate key in an `each`, two live references with one name, a `switch` value outside its cases, a row template that is not a single element, two handlers for one event type on one element, an event type ending in a retired suffix, a property on an element its row does not allow or declared twice, an attribute with a name a property row claims on that element, a value property on a file input, an invalid media catalogue or an undeclared media subscription, a controlled helper with reserved attributes or a `beforetoggle` handler, a text-kind key handler, a 33rd live document-key handler, `ApplyValue` without a declared value property at its reference, a decision whose list replaces a cell an earlier write of the same list wrote, `Table.insert` of a key already present, a table built from two rows with one key, two rows of a view that compare `Same`, a view's row read after its key left the table in the same event, an effect feedback loop, an outbox posted twice in one turn, a worker task registered twice or asked for without being registered, a port declared twice or used without being declared or as another shape, a worker effect outside a job, a builder used after `finish!` or after the call that opened it returned, an answer holding more than 16 files, malformed boot or result bytes |
 | `resource_limit` | A bound in the table above |
 | `out_of_memory` | The Wasm heap could not grow |
 | `app_crash` | `crash` in app code, or a Roc runtime error |

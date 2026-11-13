@@ -205,12 +205,12 @@ data = ["sample.csv"]
 [[examples]]
 slug = "log-explorer"
 title = "Log Explorer"
-description = "Open a log of any size, or generate one: a worker indexes it once and keeps the index and the file, not its text. A Plume timeline draws entries a minute by level from that index, a search adds its matches to it, a click on it opens the viewer at that time, and the monitor's times show the preparation against each later question."
+description = "Open a log of any size, or generate one: a worker indexes it once and keeps the index and the file, not its text. A Plume timeline follows the declared color preference, a search adds its matches, and a click opens the viewer at that time. The viewer fits its observed height; the monitor shows preparation against each later question."
 source = "examples/log-explorer/main.roc"
 specs = "examples/log-explorer/specs"
 public = true
 section = "workers"
-features = ["Store", "Workers", "Preparations", "Files", "Custom elements"]
+features = ["Store", "Workers", "Preparations", "Files", "Layout observations", "Media queries", "Custom elements"]
 what_to_try = "Generate a sample of a few hundred thousand entries and find the incident on the timeline around midday; search for checkout to see its matches a minute, and click the peak to read the lines from there."
 
 # The timeline: Plotly from its pinned CDN URL (the version Plume 0.6.0

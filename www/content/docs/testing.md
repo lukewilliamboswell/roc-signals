@@ -155,6 +155,7 @@ Without setup forms its values are:
 | Local storage | Available, with no seeded pairs |
 | Connectivity | Online |
 | Visibility | Visible |
+| Declared media query | False unless setup gives its match |
 
 Both runners use these values, including when Chrome's real browser facts
 differ. A value that later steps can change uses `initial-…` in setup and
@@ -168,6 +169,7 @@ deployment limit.
 | `(initial-location "/path?q#h")` | The URL the app boots at; must start with `/`. Without it, `/` |
 | `(initial-online online)` | Boot connectivity, `online` or `offline` |
 | `(initial-visibility hidden)` | Boot page visibility, `visible` or `hidden` |
+| `(initial-media "QUERY" BOOL)` | A declared media query's boot match |
 | `(local-storage "key" "value")` | Seed local storage before mount |
 | `(local-storage-unavailable)` | Every local-storage access throws, as with site data disabled. Seeding storage in the same setup is a spec error |
 | `(file "name" "type" "text" [REPEAT])` | Declare a file the steps can give the app: its name, its MIME type, and its contents, `text` repeated `REPEAT` times (once without it) |
@@ -191,6 +193,10 @@ Storage reads answer by themselves, from storage.
 | `(submit LOC)` | Submit a `<form>` as `requestSubmit` does: nothing is submitted while a control is invalid |
 | `(press LOC "Shift+ArrowDown")` / `(press "Escape")` | Focus the locator if supplied, then keydown and keyup; otherwise use current focus or body. See [Keyboard steps](#keyboard-steps) |
 | `(dismiss)` | Press and release Escape at current focus, with normal key prevention and native dismissal |
+| `(scroll LOC TOP LEFT)` | Scroll to these nonnegative CSS-pixel offsets and report them; Chrome must reach and retain them |
+| `(report-size LOC WIDTH HEIGHT)` | Inject a content-box size report into an element with a size observation |
+| `(report-seen LOC yes\|no [PERMILLE])` | Inject visibility into an element with a seen observation; ratio defaults to 1000 for yes, 0 for no |
+| `(set-media "QUERY" BOOL)` | Report a declared media query's new match |
 | `(focus LOC)` / `(blur LOC)` | Move focus, delivering `blur` and `focus` to handlers that listen. Focusing an element that cannot take focus does nothing |
 
 Focus follows Chrome in both runners: a text control the user changed gets
@@ -330,6 +336,40 @@ it. Mouse/pen pointer down and touch pointer up grant it; move, cancel,
 mouse/pen up, scripted changes, selects, submits and focus do not. A new
 document starts without activation. This matters to native dismissal:
 preventing one `cancel` can consume the activation that allowed it.
+
+### Layout and media
+
+`(initial-media "QUERY" BOOL)` in setup supplies a query's boot match. A
+query the program declares but setup omits starts false. Both runners use
+these same facts; the page's CSS keeps following the real browser.
+`(expect-media-subscriptions "QUERY" N)` checks the live subscriptions;
+`(expect-observed N)` checks live size/seen registrations. An element with
+both observations contributes two. Disposing a row or scope must release
+them before its nodes disappear; the native oracle checks that invariant.
+
+Typed scroll, size, seen and media are reports, honor `hold-reports` and
+grant no user activation. An ordinary text-kind scroll remains an
+occurrence and drains earlier reports even inside a hold. A repeated scroll to the same position raises
+nothing. Size and seen are injected in Chrome too, since the native oracle
+has no geometry. Real observer behavior belongs in browser contracts.
+
+A scroll step checks the real Chrome position again after its turn, so it
+fails if drawing the window moved the scrollbar. `ScrollTo` with `Start`,
+`Px` and `Keep` on a handled scroller updates the oracle and, if changed,
+reports its position at the end of the step. Chrome waits a frame and
+checks the same position, including raw signed offsets; negative physical
+movement cannot pass by rounding or clamping its payload to zero. Prefer
+`Instant`: `Smooth`, or `Auto` with CSS
+smooth scrolling, can still be intermediate at that check. A handled
+scroller means one carrying a typed or text-kind scroll handler.
+
+`ScrollTo` with `End` on a handled scroller, or `ScrollIntoView` inside one,
+fails in both runners because its destination depends on layout. Chrome
+also fails a step that moved a handled scroller without a scroll step or
+modelled command, including a click, focus or drawing that shifted it. The
+failure names the element and says to scroll first. The native run alone
+cannot detect that mistake; running both proves reachability and stable
+scroll geometry.
 
 ### Keyboard steps
 

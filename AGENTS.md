@@ -239,7 +239,8 @@
   request and answers with data, checked against the type the app declared;
   it never decides reactive meaning, never touches the DOM the engine owns,
   and never calls into Roc or holds a Roc value. A service the platform
-  models (HTTP, storage, timers, history, focus, workers, files) is not a
+  models (HTTP, storage, timers, history, focus, workers, files, layout
+  observation and media queries) is not a
   port's business.
 - Keep observation passive. The runtime's monitor reports what the runtime
   and its pool did after they acted and never decides scheduling, a result
