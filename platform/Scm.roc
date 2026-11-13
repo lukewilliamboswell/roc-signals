@@ -321,8 +321,8 @@ Scm := [].{
 		Ok($env)
 	}
 
-	## Facts that survive a new document unchanged. Features with a per-document
-	## value extend this hook instead of giving either runner its own reset rule.
+	## Carry the current clock and browser facts into the next document while
+	## advancing its reproducible seed. Exhaustion is a diagnostic, never a wrap.
 	next_document : Environment -> Try(Environment, Str)
 	next_document = |env| {
 		if env.seed == 340282366920938463463374607431768211455 {

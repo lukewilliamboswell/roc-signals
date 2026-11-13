@@ -1127,8 +1127,10 @@ Engine := [].{
 	## not, the storage list is empty and `StorageSet`/`StorageRemove` do not
 	## persist, so an app that relies on reloads surviving can say so. All
 	## fields have defaults: a URL of `/`, empty available storage, online
-	## and visible, with no media queries. Declared media values arrive before
-	## first paint; boot_media reads one or reports Undeclared.
+	## and visible, with no media queries, time and seed zero, en-US and full-range
+	## UTC. The wall time, entropy seed, languages and zone are fixed facts for
+	## this instance; a fresh clock sample arrives on Fired. Declared media
+	## values arrive before first paint; boot_media reads one or reports Undeclared.
 	Boot : Core.Boot
 
 	## The user's UTC offsets over an inclusive millisecond span. Boot supplies
