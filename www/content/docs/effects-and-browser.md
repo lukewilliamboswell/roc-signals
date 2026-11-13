@@ -307,7 +307,7 @@ Unknown environment keys, non-functions and failed boot reads refuse
 mount; a reader that throws or returns the wrong type later stops the
 instance with an `executor` fault.
 
-## Time, randomness and the user's locale
+## Time, randomness and locale
 
 The first paint has `boot.now_ms` (I64 milliseconds since the Unix epoch),
 `boot.seed` (U128), `boot.languages` in preference order and `boot.zone`.
