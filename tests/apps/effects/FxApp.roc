@@ -65,7 +65,7 @@ FxApp := [].{
 		if c == 0 {
 			[]
 		} else {
-			get = Http({ method: "GET", url: FxApp.url_of(k, c), headers: [("accept", "text/plain")], body: "", timeout_ms: FxApp.timeout_of(c), cache: Default, credentials: SameOrigin })
+			get = Engine.http({ url: FxApp.url_of(k, c), headers: [("accept", "text/plain")], timeout: Ms(FxApp.timeout_of(c)) })
 			if (c % 6 == 0) [get, Self, Self] else if (c % 3 == 0) [get, Self] else [get]
 		}
 	}
@@ -119,7 +119,7 @@ FxApp := [].{
 	## settles a job.
 	Asker := [Asker].{
 		request : Asker, U64 -> Engine.Request
-		request = |_, x| Http({ method: "GET", url: "/x/${x.to_str()}", headers: [], body: "", timeout_ms: 0, cache: Default, credentials: SameOrigin })
+		request = |_, x| Engine.http({ url: "/x/${x.to_str()}" })
 
 		result : Asker, Engine.Result -> Try(Str, Str)
 		result = |_, res| match res {
@@ -154,7 +154,7 @@ FxApp := [].{
 
 	## O's request for the item posted.
 	plan_o : U64, U64 -> List(Engine.Request)
-	plan_o = |query, item| [Http({ method: "GET", url: "/o/${item.to_str()}?q=${query.to_str()}", headers: [], body: "", timeout_ms: 0, cache: Default, credentials: SameOrigin })]
+	plan_o = |query, item| [Engine.http({ url: "/o/${item.to_str()}?q=${query.to_str()}" })]
 
 	## P's ports: a call and a subscription, each sent `p`.
 	port_call : Port.Call(U64, Str)
@@ -173,11 +173,11 @@ FxApp := [].{
 		if q == 0 {
 			[]
 		} else if q % 4 == 1 {
-			[Http({ method: "GET", url: "/l/${q.to_str()}", headers: [], body: "", timeout_ms: 5000, cache: Default, credentials: SameOrigin })]
+			[Engine.http({ url: "/l/${q.to_str()}", timeout: Ms(5000) })]
 		} else if q % 4 == 2 {
 			[Interval(500)]
 		} else if q % 4 == 3 {
-			[Http({ method: "GET", url: "/l/${q.to_str()}", headers: [], body: "", timeout_ms: 0, cache: Default, credentials: SameOrigin }), Self, Self]
+			[Engine.http({ url: "/l/${q.to_str()}" }), Self, Self]
 		} else {
 			[]
 		}
@@ -200,9 +200,9 @@ FxApp := [].{
 		if r == 0 {
 			[]
 		} else if r % 3 == 1 {
-			[Http({ method: "GET", url: "/r/${r.to_str()}", headers: [], body: "", timeout_ms: 0, cache: Default, credentials: SameOrigin })]
+			[Engine.http({ url: "/r/${r.to_str()}" })]
 		} else if r % 3 == 2 {
-			[Http({ method: "GET", url: "/r/${r.to_str()}", headers: [], body: "", timeout_ms: 0, cache: Default, credentials: SameOrigin }), Timer(100)]
+			[Engine.http({ url: "/r/${r.to_str()}" }), Timer(100)]
 		} else {
 			[Interval(700), FxApp.echo.request(r.to_u8_wrap())]
 		}
@@ -283,7 +283,7 @@ FxApp := [].{
 									[
 										Engine.watch(
 											st.signal().map(|s| s.counts.get(k) ?? 0).lift(),
-											|c| if (c == 0) [] else [Http({ method: "GET", url: "/h${k.to_str()}/${c.to_str()}", headers: [], body: "", timeout_ms: 0, cache: Default, credentials: SameOrigin })],
+											|c| if (c == 0) [] else [Engine.http({ url: "/h${k.to_str()}/${c.to_str()}" })],
 											hits.on_result(|h, _, _| h + 1),
 										),
 										Engine.text_s(hits.signal().map(|h| h.to_str())),
@@ -329,7 +329,7 @@ FxApp := [].{
 				Html.button("loop", [], st.update(|s| { ..s, looping: True })),
 				Engine.watch(
 					st.signal().map(|s| if (s.looping) s.n + 1 else 0),
-					|n| if (n == 0) [] else [Http({ method: "GET", url: "/loop/${n.to_str()}", headers: [], body: "", timeout_ms: 0, cache: Default, credentials: SameOrigin })],
+					|n| if (n == 0) [] else [Engine.http({ url: "/loop/${n.to_str()}" })],
 					st.on_result(
 						|s, _, r| match r {
 							Refused => { ..s, n: s.n + 1 }

@@ -171,7 +171,7 @@ ServicesApp := [].{
 				Html.button("Fetch", [], st.update(|s| { ..s, fetches: s.fetches + 1 })),
 				Engine.watch_changes(
 					v.map(|s| s.fetches),
-					|n| [Http({ method: "GET", url: "/api/item/${n.to_str()}", headers: [], body: "", timeout_ms: 100, cache: Default, credentials: SameOrigin })],
+					|n| [Engine.http({ url: "/api/item/${n.to_str()}", timeout: Ms(100) })],
 					st.on_result(|s, _, r| { ..s, fetched: ServicesApp.shown(r) }),
 				),
 				Html.p_s(v.map(|s| s.fetched), [Engine.test_id("fetched")]),
