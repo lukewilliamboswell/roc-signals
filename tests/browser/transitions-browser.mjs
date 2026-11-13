@@ -144,6 +144,110 @@ try {
     const full = [g.root.childNodes.length, g.calls.length, g.rt.queue.length, g.rt.poisoned, g.rt.transitionLog.at(1n).cause]; g.starts[0].finish(); g.end(); return [removed, full];
   });
   check("gap events drop removed targets; a full queue forces apply and drains without loss", queued, [[0, 0], [1, 4097, 0, null, "queue"]]);
+  const occurrenceBarrier = await page.evaluate(() => {
+    const f = __transitionFixture(); f.rt.live.set(7, { cancel() {} });
+    const delivered = [];
+    f.rt.deliver = (_node, _handler, payload) => {
+      delivered.push(payload);
+      if (payload === 1) f.rt.report(7, "new report");
+    };
+    f.raw(1, f.elem(1), f.mark());
+    for (let i = 0; i < 4096; i++) f.rt.dispatch(0, 1, i);
+    f.rt.dispatch(0, 1, "incoming occurrence");
+    const beforeFrame = delivered.slice(-2);
+    f.rt.releaseReports();
+    const result = [beforeFrame, delivered.slice(-2), delivered.slice(0, 4096).every((value, index) => value === index), f.rt.queue.length, f.rt.poisoned];
+    f.starts[0].finish(); f.end(); return result;
+  });
+  check("full waiting queue admits an occurrence before reports raised by older deliveries", occurrenceBarrier,
+    [[4095, "incoming occurrence"], ["incoming occurrence", "new report"], true, 0, null]);
+  const fullReports = await page.evaluate(() => {
+    const results = [];
+    for (const animated of [false, true]) {
+      const f = __transitionFixture(); f.rt.live.set(7, { cancel() {} });
+      const delivered = []; let peak = 0;
+      const dispatch = f.rt.dispatch.bind(f.rt);
+      f.rt.dispatch = (...args) => { peak = Math.max(peak, f.rt.queue.length); const result = dispatch(...args); peak = Math.max(peak, f.rt.queue.length); return result; };
+      f.rt.deliver = (_node, _handler, payload) => {
+        delivered.push(payload);
+        if (payload === 0) f.rt.report(7, "replacement");
+      };
+      if (animated) f.raw(1, f.elem(1), f.mark());
+      else f.rt.busy = true;
+      for (let i = 0; i < 4096; i++) f.rt.dispatch(0, 1, i);
+      if (!animated) f.rt.busy = false;
+      f.rt.report(7, "incoming report");
+      const beforeFrame = delivered.slice(-2); f.rt.releaseReports();
+      results.push([beforeFrame, delivered.slice(-2), delivered.slice(0, 4096).every((value, index) => value === index), f.rt.reportsReplaced, peak, f.rt.queue.length, f.rt.poisoned]);
+      f.starts[0]?.finish(); f.end();
+    }
+    return results;
+  });
+  check("full idle and waiting queues admit reports before older turns replace the same source", fullReports,
+    Array(2).fill([[4094, 4095], [4095, "replacement"], true, 1, 4096, 0, null]));
+  const reportBarrier = await page.evaluate(() => {
+    const f = __transitionFixture(); f.rt.live.set(7, { cancel() {} }); f.rt.live.set(8, { cancel() {} });
+    const delivered = [];
+    f.rt.deliver = (_node, _handler, payload) => { delivered.push(payload); if (payload === 1) f.rt.report(8, "later report"); };
+    f.raw(1, f.elem(1), f.mark());
+    for (let i = 0; i < 4096; i++) f.rt.dispatch(0, 1, i);
+    f.rt.report(7, "incoming report"); const before = [delivered.length, f.rt.queue.length];
+    f.rt.releaseReports(); const result = [before, delivered.slice(-2), f.rt.queue.length, f.rt.poisoned]; f.starts[0].finish(); f.end(); return result;
+  });
+  check("a full waiting queue keeps an arriving report ahead of a later source while both remain paced", reportBarrier,
+    [[4096, 2], ["incoming report", "later report"], 0, null]);
+  const pausedHandoff = await page.evaluate(() => {
+    const f = __transitionFixture(); f.rt.live.set(7, { cancel() {} }); f.rt.live.set(8, { cancel() {} });
+    const delivered = [];
+    f.rt.deliver = (_node, _handler, payload) => {
+      delivered.push(payload);
+      if (payload === 0) f.raw(1, f.elem(2), f.mark("next"));
+      if (payload === 1) f.rt.report(8, "later report");
+    };
+    f.raw(1, f.elem(1), f.mark());
+    for (let i = 0; i < 4096; i++) f.rt.dispatch(0, 1, i);
+    f.rt.report(7, "incoming report");
+    const paused = [delivered.slice(), f.rt.queue.length, f.rt.reportDue, f.starts.length];
+    f.starts[1].update(); const beforeFrame = [delivered.slice(-2), f.rt.queue.length, f.rt.poisoned];
+    f.rt.releaseReports(); const afterFrame = [delivered.slice(-2), f.rt.queue.length, f.rt.poisoned];
+    f.starts.forEach(start => start.finish()); f.end(); return [paused, beforeFrame, afterFrame];
+  });
+  check("a handoff paused by another marked batch keeps capacity draining separate from an actual frame", pausedHandoff,
+    [[[0], 4096, false, 2], [[4094, 4095], 2, null], [["incoming report", "later report"], 0, null]]);
+  const cancelledIncoming = await page.evaluate(() => {
+    const results = [];
+    for (const animated of [false, true]) {
+      const f = __transitionFixture(); f.rt.live.set(7, { cancel() {} }); let cancelled;
+      const delivered = [];
+      f.rt.deliver = (_node, _handler, payload) => {
+        delivered.push(payload);
+        if (payload === 0) { cancelled = f.rt.reportSources.get(7); f.rt.cancel(7); }
+      };
+      if (animated) f.raw(1, f.elem(1), f.mark()); else f.rt.busy = true;
+      for (let i = 0; i < 4096; i++) f.rt.dispatch(0, 1, i);
+      if (!animated) f.rt.busy = false;
+      f.rt.report(7, { files: [new File(["x"], "incoming.txt")] });
+      results.push([cancelled.payload, delivered.length, f.rt.queue.length, f.rt.reportSources.size, f.rt.live.has(7), f.rt.poisoned]); f.starts[0]?.finish(); f.end();
+    }
+    return results;
+  });
+  check("a canceled incoming report clears its file payload and tombstone in full idle and waiting queues", cancelledIncoming,
+    Array(2).fill([null, 4096, 0, 0, false, null]));
+  const activeCleanup = await page.evaluate(() => {
+    const results = [];
+    for (const faults of [false, true]) {
+      const f = __transitionFixture(); f.raw(0, f.elem(1)); const old = f.rt.statics[1]; old.__rn = 1;
+      f.raw(1, f.join([5], f.u32(faults ? 77 : 1)), f.mark());
+      f.rt.dispatch(1, 1, { files: [new File(["x"], "old.txt")] }, old);
+      const oldest = f.rt.queue.head;
+      for (let i = 0; i < 4095; i++) f.rt.dispatch(0, 1, i);
+      f.rt.dispatch(0, 1, "incoming");
+      results.push([oldest.payload, f.calls.length, f.rt.queue.length, f.rt.poisoned?.class ?? null]); f.starts[0].finish(); f.end();
+    }
+    return results;
+  });
+  check("the held oldest payload clears when its target is removed or forced apply faults", activeCleanup,
+    [[null, 4096, 0, null], [null, 0, 0, "executor"]]);
   const faults = await page.evaluate(() => {
     const f = __transitionFixture(); f.rt.perform = () => { throw new Error("early fault"); }; f.raw(1, f.elem(1), f.title("bad"), f.mark());
     const early = [f.root.childNodes.length, f.starts.length, f.rt.poisoned?.class]; f.end();

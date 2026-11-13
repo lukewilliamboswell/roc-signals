@@ -2950,24 +2950,22 @@ export class RocEngineRuntime {
         this.drainQueue();
         return false;
       }
-      let active = null;
+      let active = null, waiting = null;
       if (this.queue.length >= MAX_QUEUED && this.pendingTransition?.phase === "waiting") {
-        this.pendingTransition.update("queue");
-        this.drainQueue(true);
-        if (this.poisoned || this.ending) return;
-        if (report && (owner.dom ? !owner.isLive() : this.live.get(source) !== owner)) return;
+        // Reserve the oldest entry as the active delivery, as on an idle
+        // full queue. Admit this input before any older turn can raise a
+        // newer report; the linked queue stays within MAX_QUEUED.
+        waiting = this.pendingTransition;
+        active = this.takeIngress();
       }
       if (this.queue.length >= MAX_QUEUED) {
         if (this.busy) {
           this.contain(new Error(`resource_limit: more than ${MAX_QUEUED} events queued behind one batch (an event feedback loop)`), "resource_limit");
           return;
         }
-        if (report) this.drainQueue(true);
-        // Make room for the occurrence before delivering anything. Reports
-        // raised by that first turn then queue behind the occurrence.
-        else active = this.takeIngress();
-        if (this.poisoned) return;
-        if (report && (owner.dom ? !owner.isLive() : this.live.get(source) !== owner)) return;
+        // Reports and occurrences both take their FIFO place before an
+        // older delivery can synchronously emit another report.
+        active = this.takeIngress();
       }
       const entry = { node, handler, payload, el, source, owner, epoch: this.reportEpoch, next: null };
       if (this.queue.tail === null) this.queue.head = entry;
@@ -2979,20 +2977,29 @@ export class RocEngineRuntime {
         if (!owner.reports) owner.reports = new Set();
         owner.reports.add(entry);
         this.guard(() => this.scheduleReports());
-      } else {
-        if (active !== null) {
-          const first = this.takePayload(active);
-          if (first !== null) {
-            this.busy = true;
-            try {
-              this.guard(() => this.deliver(active.node, active.handler, first));
-            } finally {
-              this.busy = this.pendingTransition !== null;
-            }
+      }
+      if (waiting !== null) waiting.update("queue", false);
+      if (this.poisoned || this.ending) {
+        if (active !== null) active.payload = null;
+        return false;
+      }
+      if (active !== null) {
+        const first = this.takePayload(active);
+        if (first !== null) {
+          this.busy = true;
+          try {
+            this.guard(() => this.deliver(active.node, active.handler, first));
+          } finally {
+            this.busy = this.pendingTransition !== null;
           }
         }
-        this.drainQueue();
       }
+      if (active !== null && report) {
+        // Capacity pressure flushes older inputs, not this newly admitted
+        // report. Keep its FIFO position and ordinary epoch pacing intact.
+        this.drainQueue(true, entry);
+        this.drainQueue();
+      } else if (!report) this.drainQueue();
       return false;
     } finally {
       if (owner?.dom) { owner.dispatching -= 1; owner.retire(); }
@@ -3026,9 +3033,11 @@ export class RocEngineRuntime {
 
   // A report's payload was captured at arrival, never read again here.
   // Current-epoch reports wait; an occurrence has pinned older epochs.
-  drainQueue(reports = false) {
+  drainQueue(reports = false, before = null) {
     if (this.busy) {
-      if (reports) this.reportDue = true;
+      // A real frame remains due across a batch. Capacity pressure's
+      // bounded older-entry flush is not a frame and persists no release.
+      if (reports && before === null) this.reportDue = true;
       return;
     }
     reports ||= this.reportDue;
@@ -3037,6 +3046,7 @@ export class RocEngineRuntime {
     let turns = 0;
     while (!this.busy && !this.poisoned && this.queue.length > 0) {
       const entry = this.queue.head;
+      if (entry === before) break;
       if (entry.source !== undefined && entry.epoch === this.reportEpoch && !reports && entry.payload !== null) break;
       this.takeIngress();
       const payload = this.takePayload(entry);
@@ -3390,7 +3400,7 @@ export class RocEngineRuntime {
     state.token = pending;
     this.pendingTransition = pending;
     this.busy = true;
-    const update = (cause = "callback") => {
+    const update = (cause = "callback", drain = true) => {
       if (!isCurrent() || pending.cancelled || pending.applied || this.pendingTransition !== pending) return;
       pending.applied = true;
       pending.phase = "applying";
@@ -3411,7 +3421,7 @@ export class RocEngineRuntime {
       if (cause !== "callback" || this.manual || this.poisoned) {
         this.skipTransition(pending);
       }
-      this.drainQueue();
+      if (drain) this.drainQueue();
       if (pending.finished) resolve();
     };
     pending.update = update;
