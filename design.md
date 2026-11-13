@@ -4972,8 +4972,10 @@ and remain plain name/value strings; they use the same value rules.
 An empty value keeps a non-boolean attribute present. `disabled`,
 `selected`, `readonly`, `required`, `hidden`, `multiple` and `open` are present
 for any value other than `""` and `"false"`; those two values remove
-them. `class` on an SVG element is set as an attribute, including when
-empty. Explicit absence removes any attribute.
+them. A present `"true"` is written as `""`; any other present value is
+written as given, including `hidden="until-found"`. `class` on an SVG
+element is set as an attribute, including when empty. Explicit absence
+removes any attribute.
 
 **Payload kinds.** A handler's declaration chooses its payload, decoded once
 at its routed site. A malformed payload is a `contract` fault naming that
@@ -5101,6 +5103,9 @@ The type can follow a signal, so this check cannot be made at mount.
 An unknown index or a value outside its row's encoding is contained as
 `executor`.
 
-**Namespaces.** `<svg>` and its descendants are created in the SVG namespace; a
-row template first instantiated under an SVG parent is re-created in the SVG
-namespace once.
+**Namespaces.** `<svg>` and its descendants are created in the SVG namespace,
+with HTML children inside `foreignObject`. A row template first instantiated
+under an SVG parent is parsed again from its retained bytes under that parent,
+keeping element and attribute names' exact case; later rows clone that parsed
+template. The early pass of a marked batch and its update share the same
+template definition, including its one owned copy of the bytes.

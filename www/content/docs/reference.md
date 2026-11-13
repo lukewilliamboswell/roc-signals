@@ -206,8 +206,9 @@ without replacing the element, including in a row template.
 
 Only the boolean attributes `disabled`, `selected`, `readonly`, `required`,
 `hidden`, `multiple` and `open` treat `""` and `"false"` as absent; every
-other value makes them present. `Html.flag_maybe` omits an attribute when
-false through explicit `Absent`.
+other value makes them present. `"true"` is written as an empty attribute;
+other present text is kept as given, including `hidden="until-found"`.
+`Html.flag_maybe` omits an attribute when false through explicit `Absent`.
 
 {{ sample(file="attributes/main.roc", region="presence") }}
 
