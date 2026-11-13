@@ -25,6 +25,6 @@
     (expect-text (test-id "status-n0") "Synced")
     (expect-visible (text "Outbox is empty"))
     (expect-pending-effects 0)
-    (expect-local-storage "field-notes:notes" "n0|0|1|n0:2|Generator hours 130")
+    (expect-local-storage "field-notes:notes" "n0|0|1|n0:2|unknown|Generator hours 130")
   )
 )

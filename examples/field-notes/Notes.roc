@@ -1,3 +1,5 @@
+import Time
+
 ## Field Notes domain: the persisted note shape, the board (notes,
 ## connectivity, auto-sync and the four sync lanes), every change to the
 ## board as a pure function on it, and the pure derivation from the board
@@ -77,7 +79,11 @@ Notes := {}.{
 		is_eq : _
 	}
 
-	Note : { id : Str, slot : U64, body : Str, queued : Bool, rev : Str }
+	## Restored five-field notes have no capture sample. New notes remain
+	## unknown only until their own timer answers.
+	Captured : [Unknown, At(I64)]
+
+	Note : { id : Str, slot : U64, body : Str, queued : Bool, rev : Str, captured : Captured }
 
 	## One sync lane: the request it last issued, how many sends it has
 	## issued (its generation), and the settlement of its latest send. A
@@ -90,11 +96,12 @@ Notes := {}.{
 	## a resend of the same token is a distinct occurrence.
 	Issue : { request : Notes.Request, generation : U64 }
 
-	## The whole board. Every change works the lanes' requests out again
-	## (`settle`), so the notes and the lanes are one value.
+	## The whole board. Saves advance the id generator alongside the new
+	## note, and sync changes work the lanes' requests out again (`settle`),
+	## so the notes, generator and lanes are one value.
 	Board : {
 		notes : List(Note),
-		adds : U64,
+		rng : U64,
 		online : Bool,
 		auto : Bool,
 		lanes : List(Lane),
@@ -105,6 +112,7 @@ Notes := {}.{
 		body : Str,
 		status : Notes.Status,
 		detail : Str,
+		captured : Captured,
 		queue_disabled : Bool,
 		retry_disabled : Bool,
 	}
@@ -115,7 +123,17 @@ Notes := {}.{
 	## The board at mount: the restored notes, the browser's connectivity,
 	## auto-sync on, and the lanes asked to send whatever is due.
 	initial : List(Note), Bool -> Board
-	initial = |notes, online| Notes.settle({ notes, adds: 0, online, auto: True, lanes: List.repeat(Notes.idle_lane, Notes.slot_count) })
+	initial = |notes, online| Notes.settle({ notes, rng: 0, online, auto: True, lanes: List.repeat(Notes.idle_lane, Notes.slot_count) })
+
+	## The browser supplies a fresh seed for each document. The generator's
+	## state stays beside the notes whose ids it mints.
+	seeded : Board, U128 -> Board
+	seeded = |board, seed| { ..board, rng: Time.seed_state(seed) }
+
+	## The id the next successful save will mint, as a small reading for the
+	## capture outbox. Reading it keeps no reference to the board's notes.
+	next_id : Board -> Str
+	next_id = |board| "n-${Time.hex(Time.next(board.rng).value)}"
 
 	## --- small helpers ---
 	part_at : List(Str), U64 -> Str
@@ -142,7 +160,11 @@ Notes := {}.{
 		} else {
 			"0"
 		}
-		"${note.id}|${note.slot.to_str()}|${queued_text}|${note.rev}|${note.body}"
+		captured_text = match note.captured {
+			Unknown => "unknown"
+			At(at_ms) => at_ms.to_str()
+		}
+		"${note.id}|${note.slot.to_str()}|${queued_text}|${note.rev}|${captured_text}|${note.body}"
 	}
 
 	encode_notes : List(Note) -> Str
@@ -155,25 +177,24 @@ Notes := {}.{
 		parts = chunk.split_on("|")
 		id = Notes.part_at(parts, 0)
 		slot_text = Notes.part_at(parts, 1)
-
 		if id == "" or slot_text == "" {
 			[]
 		} else {
-			## Storage may hold a value this app never wrote, so an unparseable
-			## slot falls back to 0 rather than rejecting the note.
+			# Keep the app's existing recovery of a malformed stored slot.
 			slot = Try.ok_or(U64.from_str(slot_text), 0)
-			if slot >= Notes.slot_count {
-				[]
+			captured = if parts.len() == 5 {
+				Ok(Unknown)
+			} else if Notes.part_at(parts, 4) == "unknown" {
+				Ok(Unknown)
 			} else {
-				[
-					{
-						id: id,
-						slot: slot,
-						body: Notes.part_at(parts, 4),
-						queued: Notes.part_at(parts, 2) == "1",
-						rev: Notes.part_at(parts, 3),
-					},
-				]
+				match I64.from_str(Notes.part_at(parts, 4)) {
+					Ok(at_ms) => Ok(At(at_ms))
+					Err(error) => Err(error)
+				}
+			}
+			match captured {
+				Ok(at) if slot < Notes.slot_count => [{ id, slot, body: Notes.part_at(parts, if (parts.len() == 5) 4 else 5), queued: Notes.part_at(parts, 2) == "1", rev: Notes.part_at(parts, 3), captured: at }]
+				_ => []
 			}
 		}
 	}
@@ -189,7 +210,7 @@ Notes := {}.{
 	## Encoding a note and decoding it again reproduces it exactly, which is
 	## what lets the persisted value restore the board.
 	expect {
-		note = { id: "n0", slot: 0, body: "Generator hours", queued: True, rev: "r7" }
+		note = { id: "n0", slot: 0, body: "Generator hours", queued: True, rev: "r7", captured: Unknown }
 		Notes.decode_note(Notes.encode_note(note)) == [note]
 	}
 
@@ -246,14 +267,14 @@ Notes := {}.{
 	}
 
 	## A note that has never been edited is given its first revision.
-	expect Notes.next_rev({ id: "n0", slot: 0, body: "", queued: True, rev: "r7" }) == "n0:1"
+	expect Notes.next_rev({ id: "n0", slot: 0, body: "", queued: True, rev: "r7", captured: Unknown }) == "n0:1"
 
 	## Each edit gives the revision after the note's own, wherever that came
 	## from: this session, or the storage an earlier one left.
-	expect Notes.next_rev({ id: "n0", slot: 0, body: "", queued: True, rev: "n0:1" }) == "n0:2"
+	expect Notes.next_rev({ id: "n0", slot: 0, body: "", queued: True, rev: "n0:1", captured: Unknown }) == "n0:2"
 
 	## Only a revision under the note's own id counts.
-	expect Notes.next_rev({ id: "n0", slot: 0, body: "", queued: True, rev: "n1:4" }) == "n0:1"
+	expect Notes.next_rev({ id: "n0", slot: 0, body: "", queued: True, rev: "n1:4", captured: Unknown }) == "n0:1"
 
 	map_note : Board, Str, (Note -> Note) -> Board
 	map_note = |board, id, f| { ..board, notes: board.notes.map(|note| if (note.id == id) f(note) else note) }
@@ -263,54 +284,51 @@ Notes := {}.{
 	draft_body : Str -> Str
 	draft_body = |draft| Notes.sanitize(draft).trim()
 
-	## The number of the next session note (`s<n>`): the first after
-	## `given`, the last number this session gave, that no note holds. A
-	## session numbers its notes from one, and the notes it restored from
-	## storage keep the ids the session that saved them gave them, so the
-	## numbers those hold are passed over.
-	free_number : List(Note), U64 -> U64
-	free_number = |notes, given|
-		if notes.any(|note| note.id == "s${(given + 1).to_str()}") {
-			Notes.free_number(notes, given + 1)
-		} else {
-			given + 1
-		}
-
-	## Save `draft` as a new session note in the first free slot, under the
-	## next session id no note holds (`free_number`); a blank draft saves
-	## nothing. `adds` is the last number the session gave, so an id is not
-	## given twice in a session, even after its note is deleted.
+	## Save a nonblank draft in the first free slot under the next generated
+	## id. Its capture time is unknown until the posted Timer(0) answers.
 	save_note : Board, Str -> Board
 	save_note = |board, draft| {
 		body = Notes.draft_body(draft)
-		if body == "" {
+		slot = Notes.free_slot(board.notes, 0)
+		if body == "" or slot >= Notes.slot_count {
 			board
 		} else {
-			adds = Notes.free_number(board.notes, board.adds)
-			slot = Notes.free_slot(board.notes, 0)
-			notes = if (slot >= Notes.slot_count) board.notes else board.notes.append({ id: "s${adds.to_str()}", slot, body, queued: False, rev: "r0" })
-			Notes.settle({ ..board, adds, notes })
+			generated = Time.next(board.rng)
+			note = { id: "n-${Time.hex(generated.value)}", slot, body, queued: False, rev: "r0", captured: Unknown }
+			Notes.settle({ ..board, rng: generated.state, notes: board.notes.append(note) })
 		}
 	}
 
-	## A saved draft is a draft note in the first free slot, numbered for
-	## the session, and a blank one saves nothing.
+	## A timer's answer stamps the note it was issued for, even if a later
+	## save or edit has happened. A deleted note is left absent.
+	stamped : Board, { id : Str, at_ms : I64 } -> Board
+	stamped = |board, { id, at_ms }| Notes.map_note(board, id, |note| { ..note, captured: At(at_ms) })
+
+	## Saving uses the seeded stream and leaves a blank draft unchanged.
 	expect {
-		board = Notes.initial([{ id: "n0", slot: 1, body: "one", queued: True, rev: "r7" }], False)
+		board = Notes.seeded(Notes.initial([{ id: "n0", slot: 1, body: "one", queued: True, rev: "r7", captured: Unknown }], False), 7)
 		saved = Notes.save_note(board, "  Pump | pressure; log ")
 		blank = Notes.save_note(board, " | ")
-		(saved.notes.drop_first(1), blank == board) == ([{ id: "s1", slot: 0, body: "Pump   pressure  log", queued: False, rev: "r0" }], True)
+		(saved.notes.drop_first(1), blank == board) == ([{ id: "n-63cbe1e459320dd7", slot: 0, body: "Pump   pressure  log", queued: False, rev: "r0", captured: Unknown }], True)
 	}
 
-	## A session's ids pass over the ids its restored notes hold, so the
-	## first note saved after a reload is not a second `s1`; and an id the
-	## session gave is not given again once its note is deleted.
+	## A second save takes the next generated id. A new document's seed makes
+	## its first id different from the notes a previous document stored.
 	expect {
-		restored = Notes.initial([{ id: "s1", slot: 0, body: "one", queued: False, rev: "r0" }, { id: "s3", slot: 1, body: "three", queued: False, rev: "r0" }], False)
-		first = Notes.save_note(restored, "two")
-		second = Notes.save_note(first, "four")
-		again = Notes.save_note(Notes.delete_note(second, "s4"), "five")
-		[first, second, again].map(|board| board.notes.map(|note| note.id)) == [["s1", "s3", "s2"], ["s1", "s3", "s2", "s4"], ["s1", "s3", "s2", "s5"]]
+		first = Notes.save_note(Notes.seeded(Notes.initial([], False), 7), "one")
+		second = Notes.save_note(first, "two")
+		reloaded = Notes.seeded(Notes.initial(first.notes, False), 8)
+		{ same_document: second.notes.map(|note| note.id), next_document: Notes.save_note(reloaded, "three").notes.map(|note| note.id) } == {
+			same_document: ["n-63cbe1e459320dd7", "n-044c3cd7f43c661c"],
+			next_document: ["n-63cbe1e459320dd7", "n-9e5651b0ef953636"],
+		}
+	}
+
+	## Stamping keeps the requested note's identity and every other note's time.
+	expect {
+		board = Notes.save_note(Notes.save_note(Notes.seeded(Notes.initial([], False), 7), "one"), "two")
+		at = Notes.stamped(board, { id: "n-63cbe1e459320dd7", at_ms: -1 })
+		at.notes.map(|note| note.captured) == [At(-1), Unknown]
 	}
 
 	## An edit gives the note its next revision, which no lane has settled,
@@ -455,6 +473,7 @@ Notes := {}.{
 					body: note.body,
 					status: status,
 					detail: "Outbox slot ${(note.slot + 1).to_str()}, revision ${note.rev}",
+					captured: note.captured,
 					queue_disabled: note.queued,
 					retry_disabled: match status {
 						Failed => False
@@ -485,26 +504,26 @@ Notes := {}.{
 	## The lane holding the head of the outbox is asked to send that note's
 	## token, as its first generation.
 	expect {
-		board = Notes.initial([{ id: "n0", slot: 0, body: "one", queued: True, rev: "r7" }], True)
+		board = Notes.initial([{ id: "n0", slot: 0, body: "one", queued: True, rev: "r7", captured: Unknown }], True)
 		Notes.issue_at(board, 0) == { request: Send("n0#r7"), generation: 1 }
 	}
 
 	## Every lane that does not hold the head stays idle, so only one send is ever in flight.
 	expect {
-		board = Notes.initial([{ id: "n0", slot: 0, body: "one", queued: True, rev: "r7" }], True)
+		board = Notes.initial([{ id: "n0", slot: 0, body: "one", queued: True, rev: "r7", captured: Unknown }], True)
 		Notes.issue_at(board, 1) == { request: Idle, generation: 0 }
 	}
 
 	## While offline no lane sends, however many notes are queued.
 	expect {
-		board = Notes.initial([{ id: "n0", slot: 0, body: "one", queued: True, rev: "r7" }], False)
+		board = Notes.initial([{ id: "n0", slot: 0, body: "one", queued: True, rev: "r7", captured: Unknown }], False)
 		Notes.request_at(board, 0) == Idle
 	}
 
 	## Going offline and back resends the same token as a new generation, and
 	## the first send's late result is stale.
 	expect {
-		board0 = Notes.initial([{ id: "n0", slot: 0, body: "one", queued: True, rev: "r7" }], True)
+		board0 = Notes.initial([{ id: "n0", slot: 0, body: "one", queued: True, rev: "r7", captured: Unknown }], True)
 		first = Notes.issue_at(board0, 0)
 		board1 = Notes.set_online(Notes.set_online(board0, False), True)
 		late = Notes.settle_send(board1, 0, first, True)
@@ -523,7 +542,7 @@ Notes := {}.{
 	}
 
 	## A single waiting note is counted in the singular.
-	expect Notes.outbox_text([{ id: "a", body: "", status: Queued, detail: "", queue_disabled: True, retry_disabled: True }]) == "1 note waiting to sync"
+	expect Notes.outbox_text([{ id: "a", body: "", status: Queued, detail: "", captured: Unknown, queue_disabled: True, retry_disabled: True }]) == "1 note waiting to sync"
 
 	## An empty outbox still reads as a plural count rather than a special sentence.
 	expect Notes.outbox_text([]) == "0 notes waiting to sync"
@@ -579,7 +598,7 @@ Notes := {}.{
 ## synced, and then edited `edits` times while offline.
 requeued : Str, U64 -> Bool
 requeued = |rev, edits| {
-	restored = Notes.initial([{ id: "n0", slot: 0, body: "one", queued: True, rev }], True)
+	restored = Notes.initial([{ id: "n0", slot: 0, body: "one", queued: True, rev, captured: Unknown }], True)
 	synced = Notes.set_online(Notes.settle_send(restored, 0, Notes.issue_at(restored, 0), True), False)
 	edited = List.repeat({}, edits).fold(synced, |board, _| Notes.edit_note(board, "n0", "two"))
 	edited.notes.all(|note| Notes.is_outstanding(note, Notes.view_at(Notes.views(edited), note.slot)))
@@ -593,12 +612,23 @@ expect [requeued("r7", 1), requeued("n0:1", 1), requeued("n0:2", 1)] == [True, T
 ## revision the lane settled.
 expect [requeued("n0:1", 2), requeued("n0:2", 2)] == [True, True]
 
-## A note saved where a synced note was deleted is not taken for it, even
-## under the same id and revision: a session numbers its notes from one,
-## so after a reload a deleted note's id is given again.
+## Deleting a synced note clears its lane settlement before another id
+## takes that slot, so a new note remains outstanding.
 expect {
-	restored = Notes.initial([{ id: "s1", slot: 0, body: "one", queued: True, rev: "s1:1" }], True)
+	restored = Notes.initial([{ id: "old", slot: 0, body: "one", queued: True, rev: "old:1", captured: Unknown }], True)
 	synced = Notes.settle_send(restored, 0, Notes.issue_at(restored, 0), True)
-	again = Notes.edit_note(Notes.save_note(Notes.delete_note(synced, "s1"), "two"), "s1", "three")
-	again.notes.map(|note| (note.id, note.rev, Notes.is_outstanding(note, Notes.view_at(Notes.views(again), note.slot)))) == [("s1", "s1:1", True)]
+	fresh_id = Notes.next_id(synced)
+	again = Notes.edit_note(Notes.save_note(Notes.delete_note(synced, "old"), "two"), fresh_id, "three")
+	again.notes.map(|note| Notes.is_outstanding(note, Notes.view_at(Notes.views(again), note.slot))) == [True]
 }
+
+## The new storage field preserves negative samples, and old five-field
+## notes remain explicitly unknown instead of acquiring a plausible date.
+expect {
+	legacy = Notes.decode_notes("old|0|0|r0|before clocks")
+	before_epoch = Notes.stamped(Notes.initial(legacy, False), { id: "old", at_ms: -1 })
+	{ legacy: legacy.map(|note| note.captured), round_trip: Notes.decode_notes(Notes.encode_notes(before_epoch.notes)) } == { legacy: [Unknown], round_trip: before_epoch.notes }
+}
+
+## A malformed timestamp is not repaired into a date or an unknown sample.
+expect Notes.decode_notes("bad|0|0|r0|tomorrow|body").is_empty()
