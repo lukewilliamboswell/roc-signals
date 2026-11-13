@@ -25,11 +25,14 @@ function batch() {
   const u8 = () => bytes.getUint8(at++);
   const u32 = () => { const value = bytes.getUint32(at, true); at += 4; return value; };
   const str = () => { const length = u32(); const value = text.decode(new Uint8Array(bytes.buffer, bytes.byteOffset + at, length)); at += length; return value; };
+  // Protocol18 carries resolved namespace/prefix/local identity. This fixture
+  // emits only HTML elements, unnamespaced attributes and ordinary children.
+  const name = (namespace) => { assert.equal(u8(), namespace); assert.equal(str(), ""); return str(); };
   assert.equal(u8(), 0, "fixture batches are unmarked");
   while (at < bytes.byteLength) {
     const op = u8();
-    if (op === 8) { u32(); u32(); u32(); str(); }
-    else if (op === 9) { const node = u32(), name = str(); assert.equal(u8(), 1); const value = str(); if (name === "aria-label") labels.set(value, node); }
+    if (op === 8) { u32(); u32(); u32(); name(0); assert.equal(u8(), 0); }
+    else if (op === 9) { const node = u32(), attribute = name(3); assert.equal(u8(), 1); const value = str(); if (attribute === "aria-label") labels.set(value, node); }
     else if (op === 10) { const node = u32(), parent = u32(); u32(); const value = str(); content.set(node, value); if (listeners.has(parent)) labels.set(value, parent); }
     else if (op === 11) { const node = u32(), handler = u32(); assert.equal(str(), "click"); assert.equal(u8(), 1); assert.equal(u32(), 0); listeners.set(node, handler); }
     else if (op === 12) { content.set(u32(), str()); }

@@ -1545,7 +1545,7 @@ keys a turn wrote in a table.
 | A move of a row within a view | O(W) | O(T) |
 | Change a table view's window | O(old window + new window), plus the chunk count to find the position | touching the ordered keys or the table |
 | Change a table view's query, rewrite a table whole, write more than a fixed fraction of a table's rows in one turn, mount a view | O(T) to filter, and a sort of the rows kept | — |
-| End of turn | One test when no table was written; otherwise O(table cells in the store), clearing those the pass named | visiting a view, or the rows of a table |
+| End of turn | O(exact write-set words + written cell IDs), with expected constant lookup in the construction-time table-cell index; only written tables rearm | visiting every table cell, a view, or the rows of a table |
 | Dispose a scope | O(scope size) | work outside the scope |
 | Effect result lookup | O(in-flight), bounded by the cap | unbounded tables |
 | Mount, rename, dispose or resolve a reference | One map lookup per affected name; duplicate checks visit only names touched by the turn | scanning all references |
@@ -4240,8 +4240,10 @@ pure turn. Generated modifiers start a written table's record before its
 first modifier, and retain its first earlier row per key across the list.
 The turn rearms exactly its written table cells; unrelated tables keep their
 last writing turn's record. `read(table).inverse()` describes that retained
-turn. The bounded metadata folds visit table-cell descriptors, never unrelated
-rows or change records. Reclaiming a written table's preceding record remains
+turn. The existing exact write-set words select only written cell IDs through
+an immutable index of generated table callbacks, built once with the store.
+A turn never scans all table descriptors, unrelated rows or change records.
+Reclaiming a written table's preceding record remains
 O(J_previous), as in a live turn. A component's
 operations on its own type are tested the same way. This is the check that
 sees a transition that left out a reset or wrote the wrong cell of the right

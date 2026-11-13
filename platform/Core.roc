@@ -441,8 +441,8 @@ Core := [].{
 			{ st: held } = w
 			{ st: f(held) }
 		}
-		tables = (d.tables)(0, over).fold(Dict.empty(), |index, table| index.insert(table.cell, table))
-		{ init: tables.fold({ st: d.init }, |st, _, t| (t.stamp)(st)), cells: m(0, |w| w.st, over), tables, table_bits: tables.fold(0.U128, |bits, cell, _| bits.bitwise_or(cell_bit(cell))) }
+		tables = (d.tables)(0, over).fold(Dict.empty(), |index, descriptor| index.insert(descriptor.cell, descriptor))
+		{ init: tables.fold({ st: d.init }, |st, _, t| (t.stamp)(st)), cells: m(0, |w| w.st, over), tables, table_bits: tables.fold(0.U128, |bits, position, _| bits.bitwise_or(cell_bit(position))) }
 	}
 
 	# Nominal rather than opaque (`::`): with the pinned compiler an opaque
@@ -5340,10 +5340,10 @@ end_tables = |st, tables, wrote| {
 	if layers_sig(wrote).bitwise_and(tables.written) == 0 {
 		st
 	} else {
-		var $state = finish_table_word(st, tables.cells, { bits: wrote.cells, base: 0 })
+		var $state = finish_table_word(st, { tables: tables.cells, bits: wrote.cells, base: 0 })
 		var $base = 64.U64
 		for word in wrote.more {
-			$state = finish_table_word($state, tables.cells, { bits: word, base: $base })
+			$state = finish_table_word($state, { tables: tables.cells, bits: word, base: $base })
 			$base = $base + 64
 		}
 		$state
@@ -5353,15 +5353,17 @@ end_tables = |st, tables, wrote| {
 ## A word has at most 64 positions. Zero words require no lookup, and a set
 ## bit that names an ordinary cell never invokes a table callback. Exact IDs
 ## keep tables 64 cells apart independent despite their shared signature bit.
-finish_table_word : st, Dict(U64, Core.TableCell(st)), { bits : U64, base : U64 } -> st
-finish_table_word = |st, tables, { bits, base }| {
+finish_table_word : st, { tables : Dict(U64, Core.TableCell(st)), bits : U64, base : U64 } -> st
+finish_table_word = |st, { tables, bits, base }| {
 	var $state = st
 	var $bits = bits
 	var $cell = base
 	while $bits != 0 {
 		if $bits.bitwise_and(1) != 0 {
 			match tables.get($cell) {
-				Ok(table) => $state = (table.finish)($state)
+				Ok(table) => {
+					$state = (table.finish)($state)
+				}
 				Err(_) => {}
 			}
 		}
