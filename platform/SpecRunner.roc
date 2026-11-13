@@ -664,12 +664,15 @@ SpecRunner := [].{
 			while $s.fault == Healthy and !$s.focus_commands.is_empty() {
 				command = $s.focus_commands.first() ?? crash "SpecRunner.drain_focus: not empty"
 				s = { ..$s, applying_focus: Bool.True, focus_commands: $s.focus_commands.drop_first(1) }
-				i = Dom.lookup(s.dom, command.node)
-				applied = if command.mode == 2 {
-					if (s.focused == i + 1) SpecRunner.move_focus(program, s, 0) else s
-				} else if SpecRunner.attached(s.dom, i) and SpecRunner.focusable(Dom.node(s.dom, i)) {
-					SpecRunner.move_focus(program, s, i + 1)
-				} else s
+				index1 = (s.dom.statics.get(command.node.to_u64()) ?? 0).bitwise_and(1099511627775)
+				applied = if (index1 == 0) s else {
+					i = index1 - 1
+					if command.mode == 2 {
+						if (s.focused == i + 1) SpecRunner.move_focus(program, s, 0) else s
+					} else if SpecRunner.focusable_in(s.dom, i) {
+						SpecRunner.move_focus(program, s, i + 1)
+					} else s
+				}
 				$s = { ..applied, applying_focus: Bool.False }
 			}
 			match $s.event_queue.first() {
@@ -844,7 +847,30 @@ SpecRunner := [].{
 	focusable : Dom.DNode -> Bool
 	focusable = |n| {
 		tag_ok = n.tag == "button" or n.tag == "input" or n.tag == "select" or n.tag == "textarea" or (n.tag == "a" and Dom.attr_of(n, "href") != "") or Dom.attr_of(n, "tabindex") != ""
-		tag_ok and !SpecRunner.disabled(n)
+		tag_ok and !SpecRunner.disabled(n) and !SpecRunner.flag_on(n, "hidden") and !(n.tag == "input" and Dom.attr_of(n, "type") == "hidden")
+	}
+
+	## Focus cannot enter a detached or hidden subtree. The oracle checks
+	## declared HTML attributes; CSS layout remains the browser's domain.
+	focusable_in : Dom.Model, U64 -> Bool
+	focusable_in = |dom, i| {
+		if !SpecRunner.focusable(Dom.node(dom, i)) {
+			return Bool.False
+		}
+		var $at = i
+		while True {
+			n = Dom.node(dom, $at)
+			if SpecRunner.flag_on(n, "hidden") {
+				return Bool.False
+			}
+			if $at == dom.root {
+				return Bool.True
+			}
+			if n.parent == 0 {
+				return Bool.False
+			}
+			$at = n.parent - 1
+		}
 	}
 
 	## The node a press on node `i` focuses (index + 1): the nearest focusable
@@ -852,7 +878,7 @@ SpecRunner := [].{
 	focus_target : Dom.Model, U64 -> U64
 	focus_target = |dom, i| {
 		n = Dom.node(dom, i)
-		if SpecRunner.focusable(n) {
+		if SpecRunner.focusable_in(dom, i) {
 			i + 1
 		} else if n.parent == 0 {
 			0
@@ -1116,7 +1142,7 @@ SpecRunner := [].{
 			ExpectFiles(_) => Err("expect-files counts the handles live in the host; the spec command runs it, through its host")
 			Focus(loc) => {
 				i = SpecRunner.need(dom, loc)?
-				if (SpecRunner.focusable(Dom.node(dom, i))) Ok(SpecRunner.move_focus(program, s, i + 1)) else Ok(s)
+				if (SpecRunner.focusable_in(dom, i)) Ok(SpecRunner.move_focus(program, s, i + 1)) else Ok(s)
 			}
 			Blur(loc) => {
 				i = SpecRunner.need(dom, loc)?
@@ -2897,4 +2923,31 @@ expect {
 	bubbled = SpecRunner.fire(program, { ..s, dom }, child, "focus", "")?
 	done = SpecRunner.drain_focus(program, { ..s, dom, focus_commands: [{ mode: 1, node: 1 }, { mode: 1, node: 2 }] })
 	{ ancestor: bubbled.inst, seen: done.inst, focused: done.focused, turns: done.turns } == { ancestor: [10], seen: [1], focused: 0, turns: 1 }
+}
+
+## A focus command cannot enter a hidden input, a hidden element or a hidden
+## ancestor. A later removal in the same batch can retire its resolved target;
+## applying that command then does nothing, as the browser's missing lookup does.
+expect {
+	program : SpecRunner.Program(U64)
+	program = {
+		version: Dom.protocol_version,
+		keys: || [],
+		init: |_| (0, [], []),
+		event: |seen, _buf, _work, _node, _handler, _payload| (seen + 1, [], List.repeat(0, 8)),
+		files: |seen, _buf, _work, _node, _handler, _payload, _files| (seen, [], List.repeat(0, 8)),
+		settled: |_| Ok({}),
+		live: |_| [],
+	}
+	var $dom = Dom.new({})
+	for item in [{ id: 1.U32, tag: "input", attrs: [] }, { id: 2, tag: "input", attrs: [("type", "hidden")] }, { id: 3, tag: "input", attrs: [("hidden", "true")] }, { id: 4, tag: "div", attrs: [("hidden", "true")] }, { id: 5, tag: "input", attrs: [] }] {
+		(d, i) = Dom.add_node($dom, { ..Dom.empty_node, tag: item.tag, attrs: item.attrs })
+		parent = if (item.id == 5) Dom.lookup(d, 4) else d.root
+		$dom = Dom.bind(Dom.insert(d, parent, i, Err(End)), item.id, i)
+	}
+	s = SpecRunner.fresh(0, SpecRunner.fresh_browser({ url: "/", storage: [], online: Bool.True, visible: Bool.True, storage_available: Bool.True }))
+	focused = SpecRunner.drain_focus(program, { ..s, dom: $dom, focus_commands: [1.U32, 2, 3, 5].map(|id| { mode: 1, node: id }) })
+	cmds = SpecRunner.put_u32([18, 1], 1).concat(SpecRunner.put_u32([5], 1))
+	removed = SpecRunner.drain_focus(program, SpecRunner.take_batch(focused, 0, cmds))
+	{ kept: focused.focused, removed: removed.focused, calls: removed.inst, waiting: removed.focus_commands.len() } == { kept: Dom.lookup(focused.dom, 1) + 1, removed: 0, calls: 0, waiting: 0 }
 }

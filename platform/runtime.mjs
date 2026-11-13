@@ -2017,7 +2017,7 @@ export class RocEngineRuntime {
     this.root.addEventListener(dom, this.onCapture, true);
     if (dom === "drop") {
       // A drop target that takes files lets the drop happen (see "Handler
-      // event names" above); dragover reaches no app handler.
+      // event names" above); this helper itself dispatches no app event.
       const over = (event) => {
         for (let node = event.target; node && node !== this.root; node = node.parentNode) {
           const h = node.__h && node.__h.drop;
