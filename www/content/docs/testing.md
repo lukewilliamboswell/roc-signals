@@ -259,6 +259,38 @@ browsers do.
 | `(set-visibility hidden)` | Change page visibility and notify `VisibilityChanges` subscribers |
 | `(expect-cleanup "name" N)` | The `on_cleanup` site named `name` has run N times |
 
+### Reports
+
+A step normally acts as its own frame: any state reports it raises are
+delivered before the next step. `set-online`, `set-visibility` and
+`emit-port` on a `Latest` subscription raise reports. To check several
+reports meeting before a frame, hold and release them explicitly:
+
+| Step | Meaning |
+|---|---|
+| `(hold-reports)` | Keep reports waiting until a release or an occurrence |
+| `(release-reports)` | Deliver all waiting reports in order and end the hold |
+| `(expect-reports-replaced N)` | Exactly N waiting reports have been replaced in this document |
+
+Newer reports from one source replace its waiting value in place. An
+occurrence inside a hold, such as a click or an effect result, first
+delivers reports queued ahead of it; the hold continues. Assertions read
+the current drawn page without releasing reports. Setting an unchanged
+connectivity or visibility value raises no report.
+
+A hold belongs to one document. Holding twice, releasing without a hold,
+ending a spec while holding or navigating to a new document while holding
+fails the step. The replacement count starts at zero in each document.
+These steps check the same delivery in both runners; browser contract
+tests check real frames and the fallback timer.
+
+This spec sends three revisions before releasing the reports. Only the
+newest reaches the app:
+
+{{ sample(file="ports/specs/reports.scm", syntax="scheme") }}
+
+### Answering effects
+
 Stage one answer immediately before each `run-effect` that answers an HTTP
 request: both runners hold a single staged answer, which that `run-effect`
 consumes. A request that is answered after its owner was disposed is still

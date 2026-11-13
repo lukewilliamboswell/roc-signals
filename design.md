@@ -950,7 +950,8 @@ tree of closures with no back-references, so there are no reference cycles.
 
 A layer or a cell describes a current value. An event describes an
 occurrence. Equality prunes value propagation; it never merges two separately
-accepted events.
+accepted events. A report replaced before delivery was never accepted:
+a source declared as a report states a value rather than an occurrence.
 
 State lives in three places, and each is written in its own way:
 
@@ -1254,7 +1255,8 @@ layers written below it join in the same way. The walk visits the sites on
 the event's path and evaluates nothing outside the subtrees it refreshes.
 
 Effect results and follow-ups are turns of their own, applied in arrival
-order. Which of two concurrent results should win is application state, never
+order, except that a report replaced in place keeps the place of its
+source's waiting entry. Which of two concurrent results should win is application state, never
 a host inference.
 
 ### Equality pruning
@@ -1282,15 +1284,84 @@ Synchronous browser callbacks raised while JavaScript applies a batch, or
 while Wasm runs, never re-enter the engine. They are queued and delivered as
 their own turns after the current batch.
 
-The runtime's ingress queue is bounded at 4096 events. Only a feedback loop
-between the DOM and the engine fills it, so overflow is not refused event by
-event (that would drop non-lossy input or strand an in-flight id): it poisons
-the runtime with class `resource_limit`, reported like any other fault.
+The runtime's ingress queue is bounded at 4096 entries. Reports wait in it
+until the frame, one replaceable entry per source; a full queue of waiting
+reports drains early. While the runtime is busy, a feedback loop between
+the DOM and the engine can fill it. That overflow is not refused event by
+event (which would drop non-lossy input or strand an in-flight id): it
+poisons the runtime with class `resource_limit`, reported like any other fault.
 
 A drain also delivers at most 4096 turns before the runtime returns to
 idle. A loop that raises only one further event per turn never fills the
 queue, but still cannot settle: a 4097th turn poisons with `resource_limit`.
 The native runner applies the same bound to the turns one step raises.
+
+### Reports and occurrences
+
+A report source states a current value. `OnlineChanges`,
+`VisibilityChanges` and port subscriptions declared `Latest` are report
+sources, identified by request id. Other sources join only through a
+declaration that states their identity and which results are reports.
+Clicks, key presses, input, change, submit, focus and file events, final
+request results, `Every` port messages, subscription `Closed` and `Threw`,
+interval ticks and `Popstate` are occurrences. Their repeated occurrences
+remain distinct. A `Latest` message represented by `PortFailed(TooLarge)`
+is still a report; another message can replace it and the subscription
+continues.
+
+A report's payload is fixed when reported, never read again at delivery.
+The runtime applies the declared delivery policy through one ingress queue:
+
+1. A report source has at most one replaceable entry, reached through its
+   source index. A newer report replaces that entry's payload in place,
+   keeping the source's position. A quiet source needs no index entry.
+2. Queuing an occurrence pins all earlier reports in O(1), by advancing
+   the index's epoch. A later report from a pinned source starts a new
+   entry behind the occurrence.
+3. Reports raised while idle wait for `requestAnimationFrame`, with one
+   `FRAME_WAIT_MS = 100` timer alongside it. Whichever fires first drains
+   the queue and cancels the other. When `environment.visible()` answers
+   false, a microtask drains at the end of the reporting task instead.
+   A busy runtime waits until its batch has applied.
+4. An occurrence joins the queue and drains it immediately in order when
+   idle. Click commands therefore retain user activation. While busy it
+   waits for the batch's ordinary drain.
+5. Delivery is an ordinary turn through the event or result's existing
+   entry, and removes its index entry.
+6. A report that finds the queue full while idle drains it early before
+   queuing. The number of sources can follow app data and never causes a
+   poison merely because reports waited for a frame.
+
+An occurrence follows every report queued before it, each with its newest
+value from before the occurrence, and precedes every report raised after
+it joined. Sources keep the order of their first report since the drain.
+`Every` port messages enter ingress when their subscription's turn comes,
+not when the handler emits: a report raised between emit and that turn is
+delivered first. This retains the bound on port traffic; an app needing a
+single order sends both values on one subscription.
+
+`CANCEL` makes all waiting reports of its subscription dead and removes
+its source index entry. Draining skips them without delivery or stale
+counts. A waiting DOM report, when a declaration adds one, follows the
+existing element and node identity checks; a new element with a recycled
+id cannot replace an old element's report. Poison and unmount discard the
+queue and index and cancel scheduled drains.
+
+The frame lets reports from separate browser tasks meet before the page
+draws. Hidden pages use the microtask because background timers can be
+throttled; the 100 ms timer bounds waiting for a visible page given no
+frames. It is a runtime liveness bound, not a mount option. There is only
+one frame request and one timer, and the source index is bounded by the
+ingress queue. These policies change neither engine turns nor wire bytes.
+
+In `manualEffects` mode reports wait for `releaseReports()`. Spec runners
+release after each report step unless `hold-reports` is in force, so a
+step is its own frame. An occurrence inside a hold still drains reports
+ahead of it and leaves the hold in force. A hold and the replacement count
+belong to one document: nesting a hold, releasing without one, ending a
+spec while holding or leaving the document while holding is a step error.
+`manualWork` and `manualIntervals` alone leave reports on the browser's
+frame schedule.
 
 ### Complexity budget
 
@@ -1404,7 +1475,9 @@ Rules:
   applied, so an effect never observes a half-applied DOM.
 - **Decided, not interpreted.** The runtime does not diff, reorder, coalesce or
   skip commands. Its only state is the id → DOM node tables, parsed templates
-  and live effect handles the commands told it to keep.
+  and live effect handles the commands told it to keep, plus the ingress
+  queue and its index of report sources. Input delivery applies a declared
+  policy; it does not decide application meaning.
 - **Fresh views.** Any call may grow Wasm memory. The runtime re-reads
   `memory.buffer` after every call that can allocate, including
   `payload_reserve`, and never holds a view across one.
@@ -1823,10 +1896,11 @@ deployment allows is a mount option, named `max…Bytes` or `maxWorkers`
   together, else `PortFailed(TooLarge)`; one that carries more files than
   the page has free handles for is `PortFailed(TooLarge)` too, and none of
   its files is kept. Each subscription declares how its
-  undelivered messages wait: `Latest` keeps one and a newer one replaces it;
+  undelivered messages wait: `Latest` follows the
+  [report rules](#reports-and-occurrences), keeping one replaceable entry;
   `Every(n)` keeps up to n ≤ 1024 in order and refuses `emit` beyond them (it
-  returns false and takes nothing). The runtime keeps at most one message per
-  subscription in its ingress queue, so port traffic adds at most the
+  returns false and takes nothing). The runtime keeps at most one `Every`
+  message per subscription in its ingress queue, so that traffic adds at most the
   in-flight cap to it. A call's `timeout_ms` is capped at 600 s like HTTP's.
 
 ### Disposal and reparenting
@@ -1969,6 +2043,8 @@ The mount's `environment` option supplies read-only fact readers, currently
 `online()` and `visible()`. They are called at boot and when the browser's
 own event answers a live subscription. Their defaults read `navigator`
 and `document` through the runtime's existing window and document options.
+Report scheduling also reads `visible()` to choose a frame or the hidden
+page's microtask drain.
 Services remain separate: `storage`, `fetch` and `ports` perform requests
 and writes. The URL comes from the document's location, which navigation
 commands write, and deployment limits remain `max…` options.
@@ -1998,7 +2074,9 @@ facts.
 As sections of [the environment at boot](#the-environment-at-boot), whether
 the browser is online and the page visible is part of the boot bytes
 (`Boot.online`, `Boot.visible`), and the `OnlineChanges` and
-`VisibilityChanges` subscriptions deliver every later change as
+`VisibilityChanges` subscriptions report the browser's state: changes
+raised before the next frame reach the app as one turn with the newest
+value, delivered as
 `Online(Bool)` or `Visible(Bool)` from the browser's `online`/`offline` and
 `visibilitychange` events. Like every subscription they are scoped: disposing
 their site stops them.
@@ -2494,7 +2572,12 @@ bound and a declared behaviour at the bound:
 | Port catalogue | 64 ports, names 1–128 bytes | `contract` poison |
 | A port answer or message | `maxPortBytes` (default 4 MiB, at most 64 MiB) | Typed `PortFailed(TooLarge)` |
 | Undelivered messages per port subscription | 1 (`Latest`) or n ≤ 1024 (`Every(n)`) | `Latest` replaces; `Every` refuses `emit` |
-| Port messages in the ingress queue | 1 per subscription | The next waits for its turn |
+| `Every` port messages in the ingress queue | 1 per subscription | The next waits for its turn |
+| Replaceable reports per source | 1 | A newer report replaces its payload in place |
+| Report entries per source | 1 plus entries pinned by queued occurrences | Counted within ingress |
+| Report source index | At most the ingress queue | Removed when delivered or cancelled |
+| Scheduled report drains | One frame request and one timer | Hidden pages use a microtask instead |
+| Wait for a frame | 100 ms | Timer drains |
 | Workers per runtime | `maxWorkers` (default: core count, at most 8) | Jobs queue |
 | Prepared states | One per worker | The least recently used idle holder's is replaced |
 | A worker's linear memory | `maxWorkerBytes` (default 128 MiB), checked after each job | The worker is retired, its state with it |
@@ -2513,7 +2596,7 @@ bound and a declared behaviour at the bound:
 | Bytes of one fetched body | `maxFileBytes` (default 256 MiB) | Typed `FileFailed(TooLarge)` |
 | Live node ids (rows included) | 2³² − 2 | `resource_limit` poison |
 | A table's changes | One earlier row for each distinct key one turn writes | Cleared when the turn ends |
-| Runtime ingress queue | 4096 queued events | `resource_limit` poison |
+| Runtime ingress queue | 4096 occurrences and reports | A report drains a full queue early while idle; overflow while busy is `resource_limit` poison |
 | Turns one drain delivers | 4096 | `resource_limit` poison |
 | Payload kinds and element properties | Closed tables with one-byte indices | Unknown wire numbers are contained as `executor` |
 | Event policies | Closed table of 32 bits | Unknown fields do not compile; unknown wire bits are contained as `executor` |
@@ -2574,8 +2657,9 @@ of steps written against the rendered UI:
   not accept). Subscriptions are addressed by port: `emit-port`,
   `close-port`, `fail-port` and `expect-port-subscriptions`. Commands are
   logged per document: `expect-port-sent port K json` and
-  `expect-port-sends port n`. Delivery policies are runtime behaviour,
-  covered by its contract test.
+  `expect-port-sends port n`. Replacement is observable in both runners
+  through `hold-reports`, `release-reports` and `expect-reports-replaced`;
+  real frames and timers are covered by runtime contract tests.
 - **Work** — `mark-metrics`, `expect-metric-delta`,
   `expect-metric-delta-at-most`, `expect-updates`, `expect-cleanup`,
   `expect-interval`.
@@ -2689,6 +2773,7 @@ metric: soak plateaus assert it.
 | Step or metric | Definition |
 |---|---|
 | `mark-metrics` | Snapshot every counter |
+| `expect-reports-replaced n` | Waiting reports replaced in this document, read from the runner's ingress model or the runtime's manual count; separate from engine work counters |
 | `rows_created` | `INST` commands: rows created by mount, by an `each` reconciliation or by a table view's window |
 | `rows_removed` | Rows a reconciliation removed and rows that left a table view's window (a row disposed with its whole site is a disposed scope, not a removed row) |
 | `rows_reused` | Old rows an `each` reconciliation kept. A reconciliation whose list is equal to the old one (nothing created, removed, moved or changed) counts nothing, and a view, which compares no list, counts none |
@@ -2957,8 +3042,6 @@ These are unresolved mechanism choices within the contracts above.
   pages with many small widgets.
 - **First paint.** Whether streaming compilation and a smaller initial module
   close the startup gap that larger modules open.
-- **High-frequency values.** Whether frame-aligned delivery of continuous
-  inputs helps; any coalescing must be an explicit policy on the source.
 
 ## Appendix A: API Surface
 

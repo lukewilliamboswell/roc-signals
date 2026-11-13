@@ -146,8 +146,8 @@ list is on, say), lift that state in and map both:
 | `Timer(ms)` | `Fired`, once |
 | `Interval(ms)` | `Fired`, until the site is disposed |
 | `Popstate` | `Location(url)` on every back or forward |
-| `OnlineChanges` | `Online(Bool)` on every change |
-| `VisibilityChanges` | `Visible(Bool)` on every change |
+| `OnlineChanges` | `Online(Bool)`, the newest reported state per frame |
+| `VisibilityChanges` | `Visible(Bool)`, the newest reported state per frame |
 | `Work({ task, input, files, timeout_ms, on_dispose, on_cancel, prepared })` | `Work({ output, files })`, `WorkLost(fault)` or `Timeout`: a job of a registered task in a Web Worker. Apps use the typed `Worker` module instead; see [Workers](@/docs/workers.md) |
 | `ReadBytes({ file, max_bytes })`, `ReadUtf8({ file, max_bytes })` | `FileBytes(bytes)` or `FileText(text)`, or `FileFailed(error)`: a file read into the page. Made with `File.read_bytes` and `File.read_utf8`; see [Files](@/docs/files.md) |
 | `Upload({ method, url, headers, body, timeout_ms })` | As `Http`, with a [file](@/docs/files.md) as the body; made with `File.upload` |
@@ -197,7 +197,9 @@ A page embedding an app can supply the `environment` mount option with
 `online()` and `visible()` readers. The runtime calls them at boot and when
 the browser's `online`, `offline` or `visibilitychange` event answers a
 live subscription. Each returns a boolean; omitted readers use the
-browser through the runtime's window and document. This also lets a test
+browser through the runtime's window and document. Report scheduling also
+reads `visible()` to choose a frame or the hidden page's microtask drain.
+This also lets a test
 provide fixed facts while exercising the real subscription listeners.
 
 Keep services in their own options: `storage` provides reads and writes,
@@ -223,6 +225,25 @@ store, so a link anywhere asks to go somewhere with one write, and the move
 itself is one decision. [Conduit](@/examples/conduit.md) is built this way.
 
 ## Subscriptions and lifetime
+
+Connectivity, visibility and a port's `Latest` messages report current
+state. They wait for the next animation frame; a newer waiting report
+from the same subscription replaces the earlier one in place. A visible
+page given no frames drains within 100 ms, and a hidden page drains at the
+end of the reporting task.
+
+Clicks, key presses, interval ticks, final request results and a port's
+`Every` messages are occurrences. Each is delivered separately. An
+occurrence first delivers reports queued ahead of it, so a click sees the
+latest state reported before that click. Reports raised after it wait
+behind it. An `Every` port message joins this order when its subscription's
+turn comes; reports raised while it waited in the port's own queue come
+first.
+
+The runtime captures a report's value when it arrives. Cancelling its
+subscription drops waiting reports without delivering them. Use
+[`hold-reports` and `release-reports`](@/docs/testing.md#reports) in a spec
+to state what a frame of reports should do.
 
 Subscriptions (`Interval`, `Popstate`, `OnlineChanges`, `VisibilityChanges`,
 a port subscription), timers, operations on files on the page (`ReadBytes`,

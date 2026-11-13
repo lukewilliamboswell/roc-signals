@@ -233,12 +233,22 @@ of `Port.Error`:
 `Closed` and `Threw` end a subscription; after them no more messages come.
 Every other error reports one message, and the subscription goes on.
 
-A subscription declares how its messages wait while the app is busy:
-`Latest` keeps only the newest undelivered message, which suits a value
-whose newest state is all that matters (a revision, a position, a status);
+A subscription declares how its messages wait:
+`Latest` keeps the newest waiting report and delivers at the next animation
+frame, which suits a value whose newest state is all that matters (a
+revision, a position, a status). A newer message replaces the waiting
+report in place. An occurrence such as a click first delivers reports
+queued before it. Hidden pages drain at the end of the reporting task;
+visible pages given no frames drain within 100 ms.
+
 `Every(n)` keeps up to `n` (1 to 1024) in order, and `emit` returns `false`
 beyond them, so the JavaScript can slow down or drop. A port never lets a
 busy page's queue grow without bound.
+
+`Closed` and `Threw` are occurrences: a waiting latest message is delivered
+before them. A message refused as `TooLarge` is itself a report and can
+replace or be replaced by another waiting message. Test this delivery with
+[`hold-reports` and `expect-reports-replaced`](@/docs/testing.md#reports).
 
 Declaring a port twice, more than 64 ports, a request on a port the program
 does not declare, or using a port as another shape than its declaration

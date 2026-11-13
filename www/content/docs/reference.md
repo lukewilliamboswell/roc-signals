@@ -224,7 +224,7 @@ optional.
 | `onPortFault` | none | Called when a command handler or an unsubscribe function fails | [Ports](@/docs/ports.md) |
 | `monitor` | `{ history: 128, userTiming: false, payloads: false }` | What the work monitor keeps and reports | [Monitoring Workers](@/docs/worker-monitoring.md) |
 | `storage` | the page's `localStorage` | The storage `StorageGet` and `StorageSet` use (an object with `localStorage`'s methods) | [Effects and the Browser](@/docs/effects-and-browser.md) |
-| `environment` | browser fact readers | Optional `online()` and `visible()` functions, read at boot and on the browser's subscription events; both must return booleans | [Effects and the Browser](@/docs/effects-and-browser.md) |
+| `environment` | browser fact readers | Optional `online()` and `visible()` functions, read at boot and on the browser's subscription events; `visible()` also chooses report drain scheduling. Both return booleans | [Effects and the Browser](@/docs/effects-and-browser.md) |
 | `fetch` | the global `fetch` | The function HTTP requests go through, for a page that scripts its own backend | [Effects and the Browser](@/docs/effects-and-browser.md) |
 | `manualEffects` | `false` | Requests wait until the caller answers or runs them (`runEffect`); used by the spec runner in Chrome | [Testing](@/docs/testing.md) |
 | `manualWork` | `false` | Only worker jobs wait for `runEffect`; every other effect runs on its own; used by the repository's long sessions in Chrome | [Contributing](@/docs/contributing.md#walks-and-soaks) |
@@ -249,7 +249,9 @@ them.
 | Handlers for one event on one element | 1 | Contract error at mount; make one handler of two with `also` |
 | Static attributes, children or holes per row template element | 255 | Resource limit |
 | Live DOM nodes | 2³² − 2 | Resource limit |
-| Events queued while a batch applies | 4096 | Resource limit |
+| Ingress entries (occurrences and reports) | 4096 | A report drains a full queue early while idle; overflow while a batch applies is a resource limit |
+| Replaceable reports per source | 1 | A newer report replaces the waiting payload in place |
+| Wait for a report's frame | 100 ms | Timer drains a visible page given no frames; hidden pages use a microtask |
 | Turns delivered before the runtime returns to idle | 4096 | Resource limit; bounds a focus feedback loop even when only one event waits at a time |
 | Payload kinds, element properties | Closed tables with one-byte indices | Unknown numbers on the wire are contained as `executor` |
 | Event policies | Closed table of 32 bits | Unknown fields do not compile; unknown wire bits are contained as `executor` |
