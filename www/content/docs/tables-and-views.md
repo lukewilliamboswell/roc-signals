@@ -65,16 +65,28 @@ into a `QueryPlan(k, v, s)`, the three functions a table view needs:
 
 {{ sample(file="scores/Scores.roc", region="plan") }}
 
-- `keep` says whether a row is in the table view.
-- `sort` gives the value the row is ordered by.
-- `compare` orders two sort values, answering `Before`, `Same` or `After`.
+`Engine.sort_by` takes `keep`, which selects rows, and `sort`, which gives a
+row's sort value. It compares that value by its type's `order_relative_to`,
+then breaks a tie by the key's own order. A table has no insertion order for
+ties to keep. The key's order must agree with its equality: `Same` exactly
+when the keys are equal.
 
-The order must be total: `compare` may answer `Same` only for a row's own
-sort value, and two rows that compare `Same` are a contract error. End the
-sort value with the key, as `Place` does, whatever the sorted field. A field
-that never ties before or after an event can still tie during one: when one
-event swaps two rows' places, the table view takes its writes one key at a time,
-and after the first both rows hold the same place.
+`Order.asc`, `Order.desc` and `Order.directed(value, descending)` keep both
+directions in one type. `Order.pair(first, second)` compares two priorities;
+nest pairs for more. `Order.utf8(text)` gives identifiers an explicit UTF-8
+byte order, with no allocation during comparison. It is not a reader's
+language-sensitive order: uppercase ASCII precedes lowercase, and different
+normalization forms stay different. Normalize at input when the app requires
+it, and give names an application-defined order when byte order is unsuitable.
+A nominal sort value can provide its own `order_relative_to`, just like a
+number does.
+
+The primitive `QueryPlan` also accepts an explicit `compare`, like
+`List.sort_with` beside `List.sort_by`. Use it for a key without its own order,
+such as `Str`. Its order must be total: `Same` identifies only a row's own
+sort value. Include the key wherever the sorted field can tie. Two rows can
+tie between the keyed writes of one event even when they do not tie before
+or after it; two different rows comparing `Same` are a contract error.
 
 The query is data rather than the functions themselves because functions
 cannot be compared: given a record of functions, the site could not tell a

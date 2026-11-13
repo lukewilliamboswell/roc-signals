@@ -773,14 +773,21 @@ keeps, in the query's order, and of those only the rows inside a window.
   (the order of two sort values). A record of functions cannot be compared, so
   with the functions as the query the site could not tell a changed query from
   the same one.
-- **The order is total.** `compare` answers `Same` only for a row's own sort
-  value. A view finds a row's entry again by its sort value alone; two rows
-  that compare `Same` are a `contract` error at mount, after a write, and
-  between the keyed writes of one event. The site absorbs the changes one key
-  at a time, so two rows that trade places in one event tie once the first
-  is placed and the second is not, though they never tie before the event
-  or after it. A sort value therefore ends with the key, whatever the
-  sorted field.
+- **The order is total.** `Engine.sort_by({ keep, sort })` builds a plan by
+  the sort value's own `order_relative_to`, then the key's own order. A table
+  has no insertion order for ties to keep. The key's order must agree with its
+  equality: `Same` exactly when equal. Lookup still uses its equality and hash.
+  `Order` supplies paired priorities, ascending or descending values in one
+  type, and explicit UTF-8 text order; application types can provide their own
+  order without importing the platform. `Order.utf8` is not locale collation
+  or normalization and allocates no encoded key. The plan stores `(sort, key)`,
+  so it retains the key both there and in the ordered entry.
+  `QueryPlan` with its own `compare` is the primitive, like `List.sort_with`
+  beside `List.sort_by`. With that form, `Same` must identify only one row's
+  sort value. Two different rows comparing `Same` are a contract error at
+  mount, after a write and between keyed writes of one event. The site absorbs
+  changes one key at a time, so two rows trading places can tie between the
+  writes. That form's sort value includes the key wherever its field can tie.
 - **The view's storage.** The site owns the ordered keys of every row the
   query keeps, each with the sort value it was placed by, the window, and the
   keys the window shows. The ordered keys are held in chunks, so placing a
@@ -3363,8 +3370,7 @@ replaces a cell an earlier write of the same list wrote (named by the site
 whose handler or reaction fired, the cell's position in the store and the
 two writes' places in the list, since the record builder hands the engine
 no field names); `Table.insert` of a key
-already present; a table built from two rows with one key; two rows of a
-view that compare `Same`; a table view's row read after its key left the table in
+already present; a table built from two rows with one key; two rows of a plan with its own `compare` that compare `Same`; a table view's row read after its key left the table in
 the same event;
 a typed timeout of `Ms(0)`, an interval of zero milliseconds, or a timer or
 interval longer than 2,147,483,647 milliseconds;
@@ -4413,6 +4419,15 @@ TableViewProps(ctx, q, k, v, s) : { query : Signal(ctx, q), plan : (q -> QueryPl
 table_view : Cell(st, Table(k, v)), TableViewProps(ctx, q, k, v, s),
             (Signal(Row(ctx, k), k), State(Row(ctx, k), v) -> Elem(Row(ctx, k))) -> Elem(ctx)   # q has is_eq
 QueryPlan(k, v, s) : { keep : k, v -> Bool, sort : k, v -> s, compare : s, s -> [Before, Same, After] }
+sort_by : { keep : k, v -> Bool, sort : k, v -> s } -> QueryPlan(k, v, (s, k))
+    where [s.order_relative_to : s, s -> [Before, Same, After], k.order_relative_to : k, k -> [Before, Same, After]]
+Order.Pair(a, b), Order.Direction(a), Order.Utf8
+Order.pair : a, b -> Pair(a, b)
+Order.asc, Order.desc : a -> Direction(a)
+Order.directed : a, Bool -> Direction(a)
+Order.utf8 : Str -> Utf8
+Order.compare : a, a -> [Before, Same, After] where [a.order_relative_to : a, a -> [Before, Same, After]]
+
 Window : { start : U64, count : U64 }
 every_row : Window                            # the window that draws every row a view keeps
 

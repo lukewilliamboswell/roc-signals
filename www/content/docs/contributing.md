@@ -520,6 +520,11 @@ between the native oracle and Chrome, and check that one mounted module cannot
 change another's protocol bindings. `protocol-facts` fixed replays check the
 bounded declaration codec; compiler checks do not replace those replays.
 
+`Order.roc` supplies pure sort values used by table-view plans and ordinary
+Roc sorting. An example's platform-free fuzz modules keep their own ordered
+types and import no platform package; the module mounting their table view
+applies `Engine.sort_by` to the pure plan.
+
 ## Performance
 
 Compiler batches refill a vacant process slot as soon as a job finishes;
