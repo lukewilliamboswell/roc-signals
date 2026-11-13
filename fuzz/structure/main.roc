@@ -622,6 +622,12 @@ scratch_check = |s, tree, what| {
 	s
 }
 
+## These generated operations are clicks. Key, size and seen listeners are
+## still mounted and disposed for lifecycle coverage; they require typed
+## payloads and are not click candidates.
+click_candidates : Dom.Model -> List((U64, Str))
+click_candidates = |dom| SpecRunner.candidates(dom).keep_if(|(_, event)| event == "click")
+
 step : S, U64, U64 -> (S, Str)
 step = |s, op, b| {
 	if op % 4 == 3 {
@@ -645,7 +651,7 @@ step = |s, op, b| {
 			Err(_) => (s, "no answer")
 		}
 	} else {
-		cs = SpecRunner.candidates(s.dom)
+		cs = click_candidates(s.dom)
 		match cs.get(b % cs.len().max(1)) {
 			Ok((i, ev)) =>
 				match Dom.target(s.dom, i, ev, Bool.True) {
@@ -697,43 +703,61 @@ series = |seed, count| {
 	{}
 }
 
-test! : Input => Fuzz.Outcome
-test! = |{ mode, tree, events }| {
+## One runner serves ordinary preflight expects and the compiled fuzz
+## property's leak-checked region, so both replay the exact same histories.
+run_input : Input -> {}
+run_input = |{ mode, tree, events }| {
 	if mode == 3 {
-		Fuzz.expect_no_leaks!(|| observation_release_case({}))
+		observation_release_case({})
 	} else if mode == 2 {
-		Fuzz.expect_no_leaks!(|| series(11 + tree.len().to_u64(), 400))
+		series(11 + tree.len().to_u64(), 400)
 	} else {
-		Fuzz.expect_no_leaks!(|| run(decode(tree), mode == 0, events))
+		run(decode(tree), mode == 0, events)
 	}
+}
+
+test! : Input => Fuzz.Outcome
+test! = |input| {
+	Fuzz.expect_no_leaks!(|| run_input(input))
 	Fuzz.keep
 }
 
-ex : Str, U8, List(U8), List(U8) -> Fuzz.Example(Input)
-ex = |name, mode, tree, events| Fuzz.example({ name, revision: "1", make: || { mode, tree, events } })
+Case : { name : Str, input : Input }
+
+ex : Str, U8, List(U8), List(U8) -> Case
+ex = |name, mode, tree, events| { name, input: { mode, tree, events } }
+
+fixed_cases : List(Case)
+fixed_cases = [
+	# `When(0, [Show(0)], [Layer(state, 0, [Show(1), Bump(1)])])`: a state
+	# that exists only in the branch the `when` mounts second, written by
+	# its own button and by a `Bump`.
+	ex("late-state", 1, [1, 3, 0, 1, 0, 0, 1, 5, 0, 2, 0, 1, 2, 1], [0, 0, 0, 1, 0, 2, 0, 1, 0, 0, 0, 1]),
+	# `Layer(state, 0, [Layer(state, 0, [Bump2(1, 2)])])`: one click
+	# writes two nested states in one turn (issue #175).
+	ex("two-writes", 1, [1, 5, 0, 1, 5, 0, 1, 12, 1, 2], [0, 0, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5]),
+	# `Layer(state, 0, [Layer(state, 0, [Bump2(1, 2), Pair(2, 1), Pair(1, 2)])])`:
+	# one click writes two nested states, and below both a text and a
+	# watch read each with a derive of the other. Clicks 3 is the button
+	# that writes both; 1 and 2 write one each; 0 the root.
+	ex("pairs", 1, [1, 5, 0, 1, 5, 0, 3, 12, 1, 2, 10, 2, 1, 10, 1, 2], [0, 3, 0, 3, 0, 1, 0, 3, 0, 2, 0, 3, 0, 0, 0, 3]),
+	ex("document-release", 0, [1, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0]),
+	ex("clicks-with-observers", 0, [1, 2, 0], [0, 2, 0, 3, 0, 255, 0, 0]),
+	ex("properties-in-late-branch", 0, [1, 3, 0, 0, 1, 20, 0], [0, 0, 0, 0]),
+	ex("properties-in-rows", 0, [1, 7, 0, 1, 20, 0], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+	ex("observation-release", 3, [], []),
+	ex("observations-in-rows", 0, [1, 7, 0, 1, 2, 0], [0, 0, 0, 0, 0, 0, 0, 0]),
+	ex("series", 2, [], []),
+]
+
+## Every declared fixed history runs in the ordinary preflight as well.
+## This catches an invalid generated event before an expensive LLVM build;
+## the compiled fixed replay still checks the same history for leaks.
+expect fixed_cases.map(|case| run_input(case.input)) == List.repeat({}, fixed_cases.len())
 
 target = Fuzz.target_with!({
 	name: "structure",
-	examples: [
-		# `When(0, [Show(0)], [Layer(state, 0, [Show(1), Bump(1)])])`: a state
-		# that exists only in the branch the `when` mounts second, written by
-		# its own button and by a `Bump`.
-		ex("late-state", 1, [1, 3, 0, 1, 0, 0, 1, 5, 0, 2, 0, 1, 2, 1], [0, 0, 0, 1, 0, 2, 0, 1, 0, 0, 0, 1]),
-		# `Layer(state, 0, [Layer(state, 0, [Bump2(1, 2)])])`: one click
-		# writes two nested states in one turn (issue #175).
-		ex("two-writes", 1, [1, 5, 0, 1, 5, 0, 1, 12, 1, 2], [0, 0, 0, 1, 0, 2, 0, 3, 0, 4, 0, 5]),
-		# `Layer(state, 0, [Layer(state, 0, [Bump2(1, 2), Pair(2, 1), Pair(1, 2)])])`:
-		# one click writes two nested states, and below both a text and a
-		# watch read each with a derive of the other. Clicks 3 is the button
-		# that writes both; 1 and 2 write one each; 0 the root.
-		ex("pairs", 1, [1, 5, 0, 1, 5, 0, 3, 12, 1, 2, 10, 2, 1, 10, 1, 2], [0, 3, 0, 3, 0, 1, 0, 3, 0, 2, 0, 3, 0, 0, 0, 3]),
-		ex("document-release", 0, [1, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0]),
-		ex("properties-in-late-branch", 0, [1, 3, 0, 0, 1, 20, 0], [0, 0, 0, 0]),
-		ex("properties-in-rows", 0, [1, 7, 0, 1, 20, 0], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-		ex("observation-release", 3, [], []),
-		ex("observations-in-rows", 0, [1, 7, 0, 1, 2, 0], [0, 0, 0, 0, 0, 0, 0, 0]),
-		ex("series", 2, [], []),
-	],
+	examples: fixed_cases.map(|case| Fuzz.example({ name: case.name, revision: "1", make: || case.input })),
 	generator: { mode: Fuzz.u8_in(0, 1), tree: Fuzz.list(Fuzz.u8, 80), events: Fuzz.list(Fuzz.u8, 80) }.Fuzz,
 	test!,
 	show: Str.inspect,
@@ -876,4 +900,13 @@ expect {
 			half_seen(1, r.written, r.fx, 1)
 		},
 	) == List.repeat(Err("node 1 was created by the turn and then written again by it"), 4)
+}
+
+## The observer and document-key registrations are present, but this
+## session supplies only clicks. Candidate choice never sends their typed
+## handlers an empty click payload. Replay the exact former late-state case.
+expect {
+	held = mount([Bump(0)], True, 0)
+	clicks = click_candidates(held.dom)
+	clicks.len() == 2 and SpecRunner.candidates(held.dom).len() > clicks.len() and clicks.keep_if(|(_, event)| event != "click").is_empty() and run(decode([1, 3, 0, 1, 0, 0, 1, 5, 0, 2, 0, 1, 2, 1]), False, [0, 0, 0, 1, 0, 2, 0, 1, 0, 0, 0, 1]) == {}
 }
