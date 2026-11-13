@@ -307,3 +307,11 @@ expect {
 	refused = AppStore.store.after(AppStore.heard_elsewhere({ revision: 0, saved_revision: Saved(0) }, Refused))
 	(removed.read(AppStore.cells.source), removed.read(AppStore.cells.saved_revision), refused.read(AppStore.cells.source)) == ("", Saved(1), AppStore.sample_document)
 }
+
+## Accepting another tab's smaller document makes a fresh draft attempt, clearing an old quota notice.
+expect {
+	draft = AppStore.store.after(AppStore.replaced("a draft the browser refused"))
+	failed = draft.after(AppStore.storage_failed(StorageFailed({ store: Session, key: "md.draft", reason: Quota })))
+	accepted = failed.after(AppStore.took_theirs({ revision: 1, elsewhere: Changed("small") }))
+	(failed.read(AppStore.cells.draft_status), accepted.read(AppStore.cells.draft_status), accepted.read(AppStore.cells.source), accepted.read(AppStore.cells.saved_revision), accepted.read(AppStore.cells.drafts).last()) == (TooLarge, Ready, "small", Saved(2), Posted({}))
+}
