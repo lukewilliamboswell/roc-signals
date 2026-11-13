@@ -1,5 +1,6 @@
 import Protocol
 import parser.Html as MarkupHtml
+import parser.Markup
 import unicode.GeneralCategory
 import unicode.Scalar
 
@@ -22,6 +23,39 @@ Dom := [].{
 	ExpandedName : { namespace : Str, prefix : Str, local : Str }
 
 	DNode : { namespace : Str, prefix : Str, kind : U8, container : U8, content : [None, Some(U64)], svg : Bool, tag : Str, text : Str, attrs : List((ExpandedName, Str)), kids : List(U64), parent : U64, rn : U32, hs : List(Listener), ht : List(U64), ids : List(U32), props : List((Str, Str)), detach_count : U64, keymaps : Dict(Str, KeyIndex), shown : Shown, shown_intent : { dialog : U64, popover : U64 }, pending_toggle : Bool, toggle_slot : U64, scroll : { top : U32, left : U32 }, observing : U8, observed : List(U64) }
+
+	## Explicit cold-render limits are supplied by the caller's build or display
+	## policy. They never change the app's live node or propagation limits.
+	RenderLimits := { max_bytes : U64, max_nodes : U64, max_depth : U64 }
+
+	## Diagnostics inspect one subtree; a picture serializes its actual mount
+	## element's contents and validates them in that element's parse context.
+	RenderProps := { root : U64, scope : [Subtree, Contents, MountEnvelope] ?? Subtree, mode : [Diagnostic, Picture] ?? Diagnostic, limits : RenderLimits, scripting : Bool ?? True, enclosing : [Unspecified, Document, Element(ExpandedName)] ?? Unspecified }
+
+	## Physical ordinals name positions in one rendered picture only. They are
+	## never engine addresses, application keys or identities across mounts.
+	PictureContainer : { owner : [Mount, Element(U64)], role : [Children, Content], children : List(U64) }
+
+	## Attribute order and both native child containers are observable facts.
+	## An intrinsic content fragment has its own container, not a node ordinal.
+	PictureElement : { name : ExpandedName, attributes : List((ExpandedName, Str)), children : U64, content : [NoContent, Content(U64)] }
+	PictureNode : [Element(PictureElement), Text(Str), Comment(Str)]
+
+	## Logical ordering retains omitted and adjacent text nodes. A model index
+	## lets the native producer join separately derived command binding roles.
+	LogicalNode : { model : U64, target : [Node(U64), TextPart({ run : U64, part : U64 }), Constructed({ container : U64, logical_child_index : U64, data : [Text(Str), Comment(Str)] })] }
+	TextPart : { logical : U64, utf16_units : U64 }
+	TextRun : { container : U64, child_index : U64, physical : [Omitted, Node(U64)], parts : List(TextPart) }
+
+	## Producer-only controls have explicit restoration data. No app spelling
+	## assigns these roles, and ordinary logical children remain separate.
+	Scaffold : [ControlText({ owner : U64, container : U64, physical_text : [Omitted, Node(U64)] }), AttributeOverride({ owner : U64, name : ExpandedName, logical : [Absent, Present(Str)], physical : [Absent, Present(Str)] }), NoSelectionOption({ owner : U64, physical_option : U64 })]
+
+	## The one walk supplies markup and canonical facts together. Diagnostic
+	## output is not a parse-back certification; picture mode returns only after
+	## the parser independently agrees with the declared physical projection.
+	Rendered : { markup : Str, root_name : [ElementRoot(ExpandedName), NonElementRoot], physical : List(PictureNode), containers : List(PictureContainer), logical : List(LogicalNode), text_runs : List(TextRun), scaffolds : List(Scaffold) }
+	RenderError : [RenderLimit({ resource : [Bytes, Nodes, Depth], maximum : U64 }), InvalidModel({ model : U64, rule : Str }), ParseFailure({ line : U64, column : U64, rule : Str }), ParseMismatch({ physical : U64, rule : Str })]
 
 	## Browser top-layer state, separate from the value a property decided.
 	Shown : [Hidden, Open, Modal, Popover]
@@ -961,7 +995,11 @@ Dom := [].{
 		if !allowed {
 			crash "executor: property ${name} on unsupported element ${n.tag}"
 		}
-		mirrored = if (property == 2 and value == "false") Dom.remove_attr_on(dom, i, name) else Dom.set_attr_on(dom, i, name, value)
+		mirrored = if property == 2 {
+			if (value == "false") Dom.remove_attr_on(dom, i, name) else Dom.set_attr_on(dom, i, name, "")
+		} else {
+			Dom.set_attr_on(dom, i, name, value)
+		}
 		Dom.set_live_on(mirrored, i, name, value)
 	}
 
@@ -1732,22 +1770,11 @@ Dom := [].{
 		Err(Outside)
 	}
 
-	## Render the modeled subtree as diagnostic HTML-like text in child order.
-	## Attribute and text values remain literal, without HTML escaping; this is
-	## an inspection of the oracle rather than the browser command executor.
-	render : Model, U64 -> Str
-	render = |dom, i| {
-		n = Dom.node(dom, i)
-		if n.kind == 3 {
-			"<!--${n.text}-->"
-		} else if n.kind == 2 {
-			n.text
-		} else {
-			attrs = n.attrs.map(|(k, v)| " ${Dom.written_name(k)}=\"${v}\"")
-			inner = n.kids.map(|k| Dom.render(dom, k))
-			"<${n.tag}${Str.join_with(attrs, "")}>${Str.join_with(inner, "")}</${n.tag}>"
-		}
-	}
+	## Serialize once from explicit model facts. Picture mode independently parses
+	## the emitted source before returning claims; diagnostics retain the same
+	## representation without certifying its suitability for HTML parsing.
+	render : Model, RenderProps -> Try(Rendered, RenderError)
+	render = render_model
 
 	## Collect text-leaf contents through the subtree's ordered children.
 	## This models textContent for assertions, independently of layout,
@@ -1757,6 +1784,13 @@ Dom := [].{
 		n = Dom.node(dom, i)
 		if (n.kind == 3) "" else if (n.kind == 2) n.text else Str.join_with(n.kids.map(|k| Dom.text_of(dom, k)), "")
 	}
+
+	## Read an option's explicit value or its collapsed ordinary descendant
+	## text. HTML/SVG script contents and inert template content do not contribute;
+	## non-ASCII spaces remain data. This models the browser's value getter, not
+	## a display label or the label getter's image-alt behavior.
+	option_value : Model, U64 -> Str
+	option_value = |dom, index| collect_option_value(dom, { root: index, max_nodes: dom.nodes.len(), max_bytes: 18_446_744_073_709_551_615 }) ?? crash "Dom.option_value: invalid or oversized model text"
 
 	## Attribute presence is independent of its text: an empty value is present.
 	has_attr : DNode, Str -> Bool
@@ -2184,4 +2218,959 @@ expect {
 	d3 = Dom.bind(Dom.insert(d2, fragment, child, Err(End)), 5, child)
 	dom = Dom.forget_subtree(d3, owner)
 	Dom.node(dom, child).ids == [] and (dom.statics.get(5) ?? 0) == 0 and Dom.node(dom, owner).kids == []
+}
+
+## An explicit empty option value wins over its text; qualified and exact-case
+## attributes do not impersonate the ordinary no-namespace value attribute.
+expect {
+	base = { ..Dom.empty_node, tag: "option", kids: [1] }
+	text = { ..Dom.empty_node, kind: 2, tag: "", text: " A  B " }
+	model = { ..Dom.new({}), nodes: [base, text] }
+	explicit = Dom.set_node(model, 0, { ..base, attrs: Dom.attributes([("value", "")]) })
+	qualified = Dom.set_node(model, 0, { ..base, attrs: [({ namespace: "urn:fields", prefix: "x", local: "value" }, "ignored")] })
+	uppercase = Dom.set_node(model, 0, { ..base, attrs: [({ namespace: "", prefix: "", local: "VALUE" }, "ignored")] })
+	{ explicit: Dom.option_value(explicit, 0), qualified: Dom.option_value(qualified, 0), uppercase: Dom.option_value(uppercase, 0) } == { explicit: "", qualified: "A B", uppercase: "A B" }
+}
+
+## Option text follows ordinary descendants, excludes only HTML/SVG scripts,
+## and collapses ASCII spaces without removing NBSP or an em space.
+expect {
+	option = { ..Dom.empty_node, tag: "option", kids: [1, 2, 3] }
+	first = { ..Dom.empty_node, kind: 2, text: " \tA\n" }
+	script = { ..Dom.empty_node, tag: "script", kids: [4] }
+	last = { ..Dom.empty_node, kind: 2, text: " B\u(000C) \u(00A0) C\u(2003) " }
+	skipped = { ..Dom.empty_node, kind: 2, text: "BAD" }
+	model = { ..Dom.new({}), nodes: [option, first, script, last, skipped] }
+	svg = Dom.set_node(model, 2, { ..script, namespace: Dom.svg_namespace })
+	other = Dom.set_node(model, 2, { ..script, namespace: "urn:other" })
+	{ html: Dom.option_value(model, 0), svg: Dom.option_value(svg, 0), other: Dom.option_value(other, 0) } == { html: "A B \u(00A0) C\u(2003)", svg: "A B \u(00A0) C\u(2003)", other: "A BAD B \u(00A0) C\u(2003)" }
+}
+
+## Template content is not an ordinary descendant, while a raw template's
+## ordinary children remain ordinary descendants of the option.
+expect {
+	option = { ..Dom.empty_node, tag: "option", kids: [1, 2, 4] }
+	before = { ..Dom.empty_node, kind: 2, text: "x " }
+	template = { ..Dom.empty_node, tag: "template", content: Some(3) }
+	fragment = { ..Dom.empty_node, kind: 4, namespace: "", kids: [5] }
+	after = { ..Dom.empty_node, kind: 2, text: " y" }
+	inert = { ..Dom.empty_node, kind: 2, text: "inert" }
+	model = { ..Dom.new({}), nodes: [option, before, template, fragment, after, inert] }
+	raw = Dom.set_node(model, 2, { ..template, kids: [5] })
+	{ content: Dom.option_value(model, 0), ordinary: Dom.option_value(raw, 0) } == { content: "x y", ordinary: "x inert y" }
+}
+
+## DOM text offsets count UTF-16 units. A valid UTF-8 scalar starts at one
+## ASCII/leading byte; four-byte scalars take two units, never a split surrogate.
+render_utf16_units : Str -> U64
+render_utf16_units = |text| text.to_utf8().fold(0.U64, |units, byte| if (byte < 128 or byte >= 192) units + if (byte >= 240) 2 else 1 else units)
+
+## Character references preserve text without making data into syntax. Raw
+## text modes are verified by parse-back rather than escaped into other text.
+render_text : Str, MarkupHtml.TextMode -> Str
+render_text = |text, mode| match mode {
+	Data | Rcdata => text.replace_each("&", "&amp;").replace_each("<", "&lt;").replace_each(">", "&gt;").replace_each("\r", "&#13;")
+	RawText | ScriptData | Plaintext => text
+}
+
+## Quoted attribute data is escaped once. A character reference keeps CR from
+## undergoing HTML source newline normalization; presence remains independent.
+render_attribute : Str -> Str
+render_attribute = |text| text.replace_each("&", "&amp;").replace_each("\"", "&quot;").replace_each("<", "&lt;").replace_each("\r", "&#13;")
+
+## Escaping preserves a leading BOM, quotes and CR as data rather than syntax.
+expect {
+	actual = { data: render_text("<>&\r\u(FEFF)", Data), attribute: render_attribute("\"<&\r\u(FEFF)"), raw: render_text("x<&", RawText), units: ["", "a", "é", "😀", "a😀é"].map(render_utf16_units) }
+	actual == { data: "&lt;&gt;&amp;&#13;\u(FEFF)", attribute: "&quot;&lt;&amp;&#13;\u(FEFF)", raw: "x<&", units: [0, 1, 1, 2, 4] }
+}
+
+RenderSelection : [Uncontrolled, Controlled({ owner : U64, value : Str, multiple : Bool, matched : Bool, eligible : Bool })]
+
+RenderToken : [Open(U64), Close(U64), Text({ node : U64, mode : MarkupHtml.TextMode, initial_lf : Bool }), Comment(U64), EnvelopeOpen({ name : Dom.ExpandedName, attributes : List((Dom.ExpandedName, Str)) }), EnvelopeClose(Dom.ExpandedName)]
+
+RenderState : { tokens : List(RenderToken), minimum_bytes : U64, physical : List(Dom.PictureNode), containers : List(Dom.PictureContainer), logical : List(Dom.LogicalNode), text_runs : List(Dom.TextRun), scaffolds : List(Dom.Scaffold), seen : Dict(U64, {}), selection : RenderSelection, props : Dom.RenderProps }
+
+## The plan's lower byte bound rejects oversized text before joining a run or
+## scanning it for UTF-16 boundaries. Final escaping is bounded separately.
+render_reserve : RenderState, U64 -> Try(RenderState, Dom.RenderError)
+render_reserve = |state, bytes| {
+	if bytes > state.props.limits.max_bytes - state.minimum_bytes {
+		return Err(RenderLimit({ resource: Bytes, maximum: state.props.limits.max_bytes }))
+	}
+	Ok({ ..state, minimum_bytes: state.minimum_bytes + bytes })
+}
+
+## The source model is a tree across both child containers. Reject aliasing or
+## a cycle before recursion, rather than silently rendering one lifetime twice.
+render_visit : RenderState, { model : U64, depth : U64 } -> Try(RenderState, Dom.RenderError)
+render_visit = |state, { model, depth }| {
+	if depth > state.props.limits.max_depth {
+		return Err(RenderLimit({ resource: Depth, maximum: state.props.limits.max_depth }))
+	}
+	if state.logical.len() >= state.props.limits.max_nodes {
+		return Err(RenderLimit({ resource: Nodes, maximum: state.props.limits.max_nodes }))
+	}
+	if state.seen.contains(model) {
+		return Err(InvalidModel({ model, rule: "one model lifetime occurs twice across child containers" }))
+	}
+	Ok({ ..state, seen: state.seen.insert(model, {}) })
+}
+
+## Physical records have their own structural bound, including temporary
+## producer scaffolds which have no logical engine lifetime.
+render_physical : RenderState, Dom.PictureNode -> Try({ state : RenderState, ordinal : U64 }, Dom.RenderError)
+render_physical = |state, node| {
+	ordinal = state.physical.len()
+	if ordinal >= state.props.limits.max_nodes {
+		return Err(RenderLimit({ resource: Nodes, maximum: state.props.limits.max_nodes }))
+	}
+	Ok({ state: { ..state, physical: state.physical.append(node) }, ordinal })
+}
+
+## The bounded core is also used while rendering, before joining source text.
+## The ordinary getter supplies the model's own finite size and no byte ceiling.
+collect_option_value : Dom.Model, { root : U64, max_nodes : U64, max_bytes : U64 } -> Try(Str, [OptionTextLimit([Bytes, Nodes])])
+collect_option_value = |dom, { root, max_nodes, max_bytes }| {
+	option = Dom.node(dom, root)
+	if Dom.has_attr(option, "value") {
+		value = Dom.attr_of(option, "value")
+		if value.count_utf8_bytes() > max_bytes {
+			return Err(OptionTextLimit(Bytes))
+		}
+		return Ok(value)
+	}
+	var $stack = []
+	var $pieces = []
+	var $bytes = 0.U64
+	var $visited = 0.U64
+	var $position = option.kids.len()
+	if $position > max_nodes {
+		return Err(OptionTextLimit(Nodes))
+	}
+	while $position > 0 {
+		$position = $position - 1
+		$stack = $stack.append(option.kids.get($position) ?? crash "Dom.option_value: child index")
+	}
+	while !$stack.is_empty() {
+		if $visited == max_nodes {
+			return Err(OptionTextLimit(Nodes))
+		}
+		$visited = $visited + 1
+		child = Dom.node(dom, $stack.last() ?? crash "Dom.option_value: traversal stack")
+		$stack = $stack.drop_last(1)
+		if child.kind == 2 {
+			count = child.text.count_utf8_bytes()
+			if count > max_bytes - $bytes {
+				return Err(OptionTextLimit(Bytes))
+			}
+			$bytes = $bytes + count
+			$pieces = $pieces.append(child.text)
+		} else if !(child.tag == "script" and [Dom.html_namespace, Dom.svg_namespace].contains(child.namespace)) {
+			$position = child.kids.len()
+			if $stack.len() > max_nodes - $visited or $position > max_nodes - $visited - $stack.len() {
+				return Err(OptionTextLimit(Nodes))
+			}
+			while $position > 0 {
+				$position = $position - 1
+				$stack = $stack.append(child.kids.get($position) ?? crash "Dom.option_value: descendant index")
+			}
+		}
+	}
+	words = Str.join_with($pieces, "")
+		.replace_each("\t", " ")
+		.replace_each("\r", " ")
+		.replace_each("\n", " ")
+		.replace_each("\u(000C)", " ")
+		.split_on(" ")
+		.keep_if(|part| !part.is_empty())
+	Ok(Str.join_with(words, " "))
+}
+
+## Container ordinals are allocated before their children, but their child
+## lists have one holder until complete. Appending a child never copies an
+## already accumulated child list through a retained container record.
+render_container : RenderState, { owner : [Mount, Element(U64)], role : [Children, Content] } -> Try({ state : RenderState, ordinal : U64 }, Dom.RenderError)
+render_container = |state, { owner, role }| {
+	ordinal = state.containers.len()
+	if ordinal >= state.props.limits.max_nodes {
+		return Err(RenderLimit({ resource: Nodes, maximum: state.props.limits.max_nodes }))
+	}
+	Ok({ state: { ..state, containers: state.containers.append({ owner, role, children: [] }) }, ordinal })
+}
+
+render_name : Dom.DNode -> Dom.ExpandedName
+render_name = |node| { namespace: node.namespace, prefix: node.prefix, local: node.tag }
+
+render_behavior : Dom.ExpandedName, Bool -> MarkupHtml.ElementBehavior
+render_behavior = |name, scripting| if name.namespace == Dom.html_namespace {
+	MarkupHtml.element_behavior({ element: name.local, scripting })
+} else {
+	{ is_void: False, text_mode: Data, initial_lf: Preserve }
+}
+
+render_model : Dom.Model, Dom.RenderProps -> Try(Dom.Rendered, Dom.RenderError)
+render_model = |dom, props| {
+	root = dom.nodes.get(props.root).map_err(|_| InvalidModel({ model: props.root, rule: "missing root lifetime" }))?
+	root_name = if (root.kind == 1) ElementRoot(render_name(root)) else NonElementRoot
+	if props.scope != Subtree and root.kind != 1 {
+		return Err(InvalidModel({ model: props.root, rule: "picture contents require an actual element root" }))
+	}
+	if props.mode == Picture and props.scope != Subtree and root.namespace == Dom.html_namespace and root.tag == "template" and !root.kids.is_empty() {
+		return Err(InvalidModel({ model: props.root, rule: "ordinary mount children of an HTML template cannot be serialized into its content" }))
+	}
+	if props.mode == Picture and props.scope == MountEnvelope and props.enclosing == Unspecified {
+		return Err(InvalidModel({ model: props.root, rule: "a mount envelope requires its actual enclosing parse context" }))
+	}
+	initial = { tokens: [], minimum_bytes: 0, physical: [], containers: [], logical: [], text_runs: [], scaffolds: [], seen: Dict.empty(), selection: Uncontrolled, props }
+	allocated = render_container(initial, { owner: Mount, role: Children })?
+	var $state = allocated.state
+	if props.scope == Subtree {
+		models = if (root.kind == 4) root.kids else [props.root]
+		$state = render_children(dom, { state: $state, models, container: allocated.ordinal, depth: 0, mode: Data, initial_lf: False })?
+	} else {
+		name = render_name(root)
+		behavior = render_behavior(name, props.scripting)
+		if props.scope == MountEnvelope {
+			$state = render_reserve($state, 2 + Dom.written_name(name).count_utf8_bytes() + if (behavior.is_void) 0 else 3 + Dom.written_name(name).count_utf8_bytes())?
+			for (key, value) in root.attrs {
+				$state = render_reserve($state, Dom.written_name(key).count_utf8_bytes() + 4)?
+				$state = render_reserve($state, value.count_utf8_bytes())?
+			}
+			$state = { ..$state, tokens: $state.tokens.append(EnvelopeOpen({ name, attributes: root.attrs })) }
+		}
+		$state = render_children(dom, { state: $state, models: root.kids, container: allocated.ordinal, depth: 0, mode: behavior.text_mode, initial_lf: behavior.initial_lf == Skip })?
+		if props.scope == MountEnvelope and !behavior.is_void {
+			$state = { ..$state, tokens: $state.tokens.append(EnvelopeClose(name)) }
+		}
+	}
+	markup = render_emit($state).map_err(
+		|error| match error {
+			RenderLimit({ resource: Bytes, .. }) => RenderLimit({ resource: Bytes, maximum: props.limits.max_bytes })
+			other => other
+		},
+	)?
+	rendered = { markup, root_name, physical: $state.physical, containers: $state.containers, logical: $state.logical, text_runs: $state.text_runs, scaffolds: $state.scaffolds }
+	if props.mode == Picture {
+		render_parse_back(rendered, { props, root_attributes: root.attrs })?
+	}
+	Ok(rendered)
+}
+
+## Consecutive logical text nodes have one physical parse node. Empty parts
+## stay in the explicit partition; an all-empty run consumes no physical node.
+render_children : Dom.Model, { state : RenderState, models : List(U64), container : U64, depth : U64, mode : MarkupHtml.TextMode, initial_lf : Bool } -> Try(RenderState, Dom.RenderError)
+render_children = |dom, { state, models, container, depth, mode, initial_lf }| {
+	var $state = state
+	var $children = []
+	var $at = 0.U64
+	while $at < models.len() {
+		model = models.get($at) ?? crash "Dom.render: child position"
+		node = dom.nodes.get(model).map_err(|_| InvalidModel({ model, rule: "missing child lifetime" }))?
+		if node.kind == 2 {
+			run = $state.text_runs.len()
+			var $parts = []
+			var $texts = []
+			while $at < models.len() {
+				next = models.get($at) ?? crash "Dom.render: text position"
+				text_node = dom.nodes.get(next).map_err(|_| InvalidModel({ model: next, rule: "missing text lifetime" }))?
+				if text_node.kind != 2 {
+					break
+				}
+				$state = render_visit($state, { model: next, depth })?
+				$state = render_reserve($state, text_node.text.count_utf8_bytes())?
+				logical = $state.logical.len()
+				part = $parts.len()
+				$state = { ..$state, logical: $state.logical.append({ model: next, target: TextPart({ run, part }) }) }
+				$parts = $parts.append({ logical, utf16_units: render_utf16_units(text_node.text) })
+				$texts = $texts.append(text_node.text)
+				$at = $at + 1
+			}
+			text = Str.join_with($texts, "")
+			child_index = $children.len()
+			physical = if text.is_empty() {
+				Omitted
+			} else {
+				created = render_physical($state, Text(text))?
+				$state = { ..created.state, tokens: created.state.tokens.append(Text({ node: created.ordinal, mode, initial_lf: initial_lf and $children.is_empty() })) }
+				$children = $children.append(created.ordinal)
+				Node(created.ordinal)
+			}
+			$state = { ..$state, text_runs: $state.text_runs.append({ container, child_index, physical, parts: $parts }) }
+		} else {
+			$state = render_visit($state, { model, depth })?
+			match node.kind {
+				3 => {
+					$state = render_reserve($state, 7 + node.text.count_utf8_bytes())?
+					created = render_physical($state, Comment(node.text))?
+					$state = { ..created.state, tokens: created.state.tokens.append(Comment(created.ordinal)), logical: created.state.logical.append({ model, target: Node(created.ordinal) }) }
+					$children = $children.append(created.ordinal)
+				}
+				1 => {
+					created = render_element(dom, { state: $state, model, node, depth })?
+					$state = created.state
+					$children = $children.append(created.ordinal)
+				}
+				_ => return Err(InvalidModel({ model, rule: "a child must be an element, text or comment" }))
+			}
+			$at = $at + 1
+		}
+	}
+	previous = $state.containers.get(container) ?? crash "Dom.render: container position"
+	Ok({ ..$state, containers: $state.containers.set(container, { ..previous, children: $children }) ?? crash "Dom.render: container completion" })
+}
+
+render_element : Dom.Model, { state : RenderState, model : U64, node : Dom.DNode, depth : U64 } -> Try({ state : RenderState, ordinal : U64 }, Dom.RenderError)
+render_element = |dom, { state, model, node, depth }| {
+	props = state.props
+	deferred_selected = node.namespace == Dom.html_namespace and node.tag == "option" and match state.selection {
+		Uncontrolled => False
+		Controlled(selection) => selection.eligible
+	}
+	name = render_name(node)
+	behavior = render_behavior(name, props.scripting)
+	var $reserved = render_reserve(state, 2 + Dom.written_name(name).count_utf8_bytes() + if (behavior.is_void) 0 else 3 + Dom.written_name(name).count_utf8_bytes())?
+	for (key, value) in node.attrs {
+		if !(deferred_selected and key.namespace.is_empty() and key.local == "selected") {
+			$reserved = render_reserve($reserved, Dom.written_name(key).count_utf8_bytes() + 4)?
+			$reserved = render_reserve($reserved, value.count_utf8_bytes())?
+		}
+	}
+	created = render_physical($reserved, Element({ name, attributes: node.attrs, children: 0, content: NoContent }))?
+	ordinal = created.ordinal
+	allocated = render_container(created.state, { owner: Element(ordinal), role: Children })?
+	children = allocated.ordinal
+	var $state = { ..allocated.state, logical: allocated.state.logical.append({ model, target: Node(ordinal) }), tokens: allocated.state.tokens.append(Open(ordinal)) }
+	var $content = NoContent
+	var $content_models = []
+	match node.content {
+		None => {}
+		Some(fragment) => {
+			fragment_node = dom.nodes.get(fragment).map_err(|_| InvalidModel({ model: fragment, rule: "missing intrinsic template fragment" }))?
+			if fragment_node.kind != 4 {
+				return Err(InvalidModel({ model: fragment, rule: "template content must point to an intrinsic fragment" }))
+			}
+			if $state.seen.contains(fragment) {
+				return Err(InvalidModel({ model: fragment, rule: "an intrinsic content fragment has more than one owner" }))
+			}
+			$state = { ..$state, seen: $state.seen.insert(fragment, {}) }
+			allocated_content = render_container($state, { owner: Element(ordinal), role: Content })?
+			$state = allocated_content.state
+			$content = Content(allocated_content.ordinal)
+			$content_models = fragment_node.kids
+		}
+	}
+	if behavior.is_void and !node.kids.is_empty() {
+		return Err(InvalidModel({ model, rule: "a void element has ordinary children" }))
+	}
+	outer_selection = $state.selection
+	is_html = name.namespace == Dom.html_namespace
+	select_value = node.props.find_first(|(key, _)| key == "value")
+	if is_html and name.local == "select" {
+		$state = {
+			..$state,
+			selection: match select_value {
+				Ok((_, value)) => Controlled({ owner: ordinal, value, multiple: Dom.has_attr(node, "multiple"), matched: False, eligible: True })
+				Err(_) => Uncontrolled
+			},
+		}
+	} else if is_html and (name.local == "datalist" or name.local == "option") {
+		$state = {
+			..$state,
+			selection: match $state.selection {
+				Uncontrolled => Uncontrolled
+				Controlled(value) => Controlled({ ..value, eligible: False })
+			},
+		}
+	}
+	if is_html and name.local == "textarea" and select_value.is_ok() {
+		(_, value) = select_value ?? crash "Dom.render: textarea value"
+		$state = render_control_text(dom, { state: $state, models: node.kids, owner: ordinal, container: children, value, depth: depth + 1, mode: behavior.text_mode, initial_lf: behavior.initial_lf == Skip })?
+	} else {
+		$state = render_children(dom, { state: $state, models: node.kids, container: children, depth: depth + 1, mode: behavior.text_mode, initial_lf: behavior.initial_lf == Skip })?
+	}
+	match $content {
+		NoContent => {}
+		Content(container) => {
+			if props.mode == Picture and !node.kids.is_empty() {
+				return Err(InvalidModel({ model, rule: "ordinary children of an HTML template cannot be serialized into its content" }))
+			}
+			$state = render_children(dom, { state: $state, models: $content_models, container, depth: depth + 1, mode: Data, initial_lf: False })?
+		}
+	}
+	var $attributes = node.attrs
+	if is_html and name.local == "option" {
+		$state = { ..$state, selection: outer_selection }
+		match outer_selection {
+			Controlled(selection) if selection.eligible => {
+				value = collect_option_value(dom, { root: model, max_nodes: $state.props.limits.max_nodes, max_bytes: $state.props.limits.max_bytes }).map_err(|OptionTextLimit(resource)| RenderLimit({ resource, maximum: if (resource == Bytes) $state.props.limits.max_bytes else $state.props.limits.max_nodes }))?
+				selected = value == selection.value and !selection.matched
+				changed = render_override($state, { owner: ordinal, attributes: $attributes, name: { namespace: "", prefix: "", local: "selected" }, value: if (selected) Present("") else Absent })?
+				$state = { ..changed.state, selection: Controlled({ ..selection, matched: selection.matched or selected }) }
+				$attributes = changed.attributes
+			}
+			_ => {}
+		}
+	} else if is_html and name.local == "select" {
+		match $state.selection {
+			Controlled(selection) if !selection.multiple and !selection.matched => {
+				$state = render_no_selection($state, { owner: ordinal, container: children, depth: depth + 1 })?
+			}
+			_ => {}
+		}
+		$state = { ..$state, selection: outer_selection }
+	} else if is_html and name.local == "datalist" {
+		$state = { ..$state, selection: outer_selection }
+	}
+	if deferred_selected {
+		match $attributes.find_first(|(key, _)| key.namespace.is_empty() and key.local == "selected") {
+			Ok((key, value)) => {
+				$state = render_reserve($state, Dom.written_name(key).count_utf8_bytes() + 4)?
+				$state = render_reserve($state, value.count_utf8_bytes())?
+			}
+			Err(_) => {}
+		}
+	}
+	$state = { ..$state, physical: $state.physical.set(ordinal, Element({ name, attributes: $attributes, children, content: $content })) ?? crash "Dom.render: element completion" }
+	if !behavior.is_void {
+		$state = { ..$state, tokens: $state.tokens.append(Close(ordinal)) }
+	}
+	Ok({ state: $state, ordinal })
+}
+
+render_scaffold : RenderState, Dom.Scaffold -> Try(RenderState, Dom.RenderError)
+render_scaffold = |state, scaffold| {
+	if state.scaffolds.len() >= state.props.limits.max_nodes {
+		return Err(RenderLimit({ resource: Nodes, maximum: state.props.limits.max_nodes }))
+	}
+	Ok({ ..state, scaffolds: state.scaffolds.append(scaffold) })
+}
+
+## An override records both sides, including raw present-empty/false text.
+## Existing selected text need not be rewritten merely to express presence.
+render_override : RenderState, { owner : U64, attributes : List((Dom.ExpandedName, Str)), name : Dom.ExpandedName, value : [Absent, Present(Str)] } -> Try({ state : RenderState, attributes : List((Dom.ExpandedName, Str)) }, Dom.RenderError)
+render_override = |state, { owner, attributes, name, value }| {
+	previous = attributes.find_first(|(key, _)| key.namespace == name.namespace and key.local == name.local)
+	logical = previous.map_ok(|(_, text)| Present(text)) ?? Absent
+	if logical == value or (value == Present("") and previous.is_ok()) {
+		return Ok({ state, attributes })
+	}
+	var $attributes = []
+	var $found = False
+	for (key, text) in attributes {
+		if key.namespace == name.namespace and key.local == name.local {
+			$found = True
+			match value {
+				Absent => {}
+				Present(replacement) => {
+					$attributes = $attributes.append((key, replacement))
+				}
+			}
+		} else {
+			$attributes = $attributes.append((key, text))
+		}
+	}
+	if !$found {
+		match value {
+			Absent => {}
+			Present(text) => {
+				$attributes = $attributes.append((name, text))
+			}
+		}
+	}
+	changed = render_scaffold(state, AttributeOverride({ owner, name, logical, physical: value }))?
+	Ok({ state: changed, attributes: $attributes })
+}
+
+## A controlled textarea's source text is a declared producer scaffold. The
+## engine's ordinary text/comment lifetimes are explicitly constructed later,
+## with their data in the claims rather than inferred by JavaScript.
+render_control_text : Dom.Model, { state : RenderState, models : List(U64), owner : U64, container : U64, value : Str, depth : U64, mode : MarkupHtml.TextMode, initial_lf : Bool } -> Try(RenderState, Dom.RenderError)
+render_control_text = |dom, { state, models, owner, container, value, depth, mode, initial_lf }| {
+	if !value.is_empty() and depth > state.props.limits.max_depth {
+		return Err(RenderLimit({ resource: Depth, maximum: state.props.limits.max_depth }))
+	}
+	var $state = render_reserve(state, value.count_utf8_bytes())?
+	var $same = True
+	var $pieces = []
+	var $source_bytes = 0.U64
+	for model in models {
+		node = dom.nodes.get(model).map_err(|_| InvalidModel({ model, rule: "missing textarea child lifetime" }))?
+		if node.kind != 2 {
+			$same = False
+		}
+		if node.text.count_utf8_bytes() > state.props.limits.max_bytes - $source_bytes {
+			return Err(RenderLimit({ resource: Bytes, maximum: state.props.limits.max_bytes }))
+		}
+		$source_bytes = $source_bytes + node.text.count_utf8_bytes()
+		$pieces = $pieces.append(node.text)
+	}
+	if $same and Str.join_with($pieces, "") == value {
+		return render_children(dom, { state: state, models, container, depth, mode, initial_lf })
+	}
+	var $child = 0.U64
+	for model in models {
+		node = dom.nodes.get(model).map_err(|_| InvalidModel({ model, rule: "missing textarea logical lifetime" }))?
+		$state = render_visit($state, { model, depth })?
+		data = match node.kind {
+			2 => Text(node.text)
+			3 => Comment(node.text)
+			_ => return Err(InvalidModel({ model, rule: "a controlled textarea scaffold accepts only text/comment logical children" }))
+		}
+		$state = { ..$state, logical: $state.logical.append({ model, target: Constructed({ container, logical_child_index: $child, data }) }) }
+		$child = $child + 1
+	}
+	physical_text = if value.is_empty() {
+		Omitted
+	} else {
+		created = render_physical($state, Text(value))?
+		previous = created.state.containers.get(container) ?? crash "Dom.render: textarea container"
+		$state = { ..created.state, containers: created.state.containers.set(container, { ..previous, children: [created.ordinal] }) ?? crash "Dom.render: textarea content", tokens: created.state.tokens.append(Text({ node: created.ordinal, mode, initial_lf })) }
+		Node(created.ordinal)
+	}
+	render_scaffold($state, ControlText({ owner, container, physical_text }))
+}
+
+## A single select with no matching value needs an explicit temporary selected
+## option, otherwise HTML parsing selects its first ordinary option. Roc names
+## that temporary node and its removal; the adapter does not infer selection.
+render_no_selection : RenderState, { owner : U64, container : U64, depth : U64 } -> Try(RenderState, Dom.RenderError)
+render_no_selection = |state, { owner, container, depth }| {
+	if depth > state.props.limits.max_depth {
+		return Err(RenderLimit({ resource: Depth, maximum: state.props.limits.max_depth }))
+	}
+	reserved = render_reserve(state, 48)?
+	name = { namespace: Dom.html_namespace, prefix: "", local: "option" }
+	created = render_physical(reserved, Element({ name, attributes: Dom.attributes([("hidden", ""), ("selected", ""), ("value", "")]), children: 0, content: NoContent }))?
+	allocated = render_container(created.state, { owner: Element(created.ordinal), role: Children })?
+	element = Element({ name, attributes: Dom.attributes([("hidden", ""), ("selected", ""), ("value", "")]), children: allocated.ordinal, content: NoContent })
+	var $state = allocated.state
+	previous = $state.containers.get(container) ?? crash "Dom.render: select container"
+	$state = { ..$state, physical: $state.physical.set(created.ordinal, element) ?? crash "Dom.render: select scaffold", containers: $state.containers.set(container, { ..previous, children: previous.children.append(created.ordinal) }) ?? crash "Dom.render: select children", tokens: $state.tokens.append(Open(created.ordinal)).append(Close(created.ordinal)) }
+	render_scaffold($state, NoSelectionOption({ owner, physical_option: created.ordinal }))
+}
+
+## The token plan is linear and refers to final physical records, so a select
+## can finish its presence decisions before any attribute source is emitted.
+## Each escaped piece is sized before allocation; pieces are joined once.
+render_emit : RenderState -> Try(Str, Dom.RenderError)
+render_emit = |state| {
+	var $pieces = []
+	var $bytes = 0.U64
+	for token in state.tokens {
+		match token {
+			Open(ordinal) => {
+				element = match state.physical.get(ordinal) ?? crash "Dom.render: open record" {
+					Element(value) => value
+					_ => crash "Dom.render: open kind"
+				}
+				written = render_open(element.name, { attributes: element.attributes, remaining: state.props.limits.max_bytes - $bytes })?
+				$bytes = $bytes + written.count_utf8_bytes()
+				$pieces = $pieces.append(written)
+			}
+			EnvelopeOpen({ name, attributes }) => {
+				written = render_open(name, { attributes, remaining: state.props.limits.max_bytes - $bytes })?
+				$bytes = $bytes + written.count_utf8_bytes()
+				$pieces = $pieces.append(written)
+			}
+			Close(ordinal) => {
+				name = match state.physical.get(ordinal) ?? crash "Dom.render: close record" {
+					Element(value) => value.name
+					_ => crash "Dom.render: close kind"
+				}
+				length = 3 + Dom.written_name(name).count_utf8_bytes()
+				if length > state.props.limits.max_bytes - $bytes {
+					return Err(RenderLimit({ resource: Bytes, maximum: state.props.limits.max_bytes }))
+				}
+				$bytes = $bytes + length
+				$pieces = $pieces.append("</${Dom.written_name(name)}>")
+			}
+			EnvelopeClose(name) => {
+				length = 3 + Dom.written_name(name).count_utf8_bytes()
+				if length > state.props.limits.max_bytes - $bytes {
+					return Err(RenderLimit({ resource: Bytes, maximum: state.props.limits.max_bytes }))
+				}
+				$bytes = $bytes + length
+				$pieces = $pieces.append("</${Dom.written_name(name)}>")
+			}
+			Text({ node, mode, initial_lf }) => {
+				text = match state.physical.get(node) ?? crash "Dom.render: text record" {
+					Text(value) => value
+					_ => crash "Dom.render: text kind"
+				}
+				prefix = if (initial_lf and text.starts_with("\n")) "\n" else ""
+				length = render_escaped_length(text, { mode: if (mode == Data or mode == Rcdata) Text else Raw, remaining: state.props.limits.max_bytes - $bytes })?
+				if prefix.count_utf8_bytes() > state.props.limits.max_bytes - $bytes - length {
+					return Err(RenderLimit({ resource: Bytes, maximum: state.props.limits.max_bytes }))
+				}
+				$bytes = $bytes + length + prefix.count_utf8_bytes()
+				$pieces = $pieces.append(prefix).append(render_text(text, mode))
+			}
+			Comment(ordinal) => {
+				text = match state.physical.get(ordinal) ?? crash "Dom.render: comment record" {
+					Comment(value) => value
+					_ => crash "Dom.render: comment kind"
+				}
+				length = text.count_utf8_bytes()
+				if length > state.props.limits.max_bytes - $bytes or 7 > state.props.limits.max_bytes - $bytes - length {
+					return Err(RenderLimit({ resource: Bytes, maximum: state.props.limits.max_bytes }))
+				}
+				$bytes = $bytes + length + 7
+				$pieces = $pieces.append("<!--${text}-->")
+			}
+		}
+	}
+	Ok(Str.join_with($pieces, ""))
+}
+
+render_escaped_length : Str, { mode : [Text, Attribute, Raw], remaining : U64 } -> Try(U64, Dom.RenderError)
+render_escaped_length = |text, { mode, remaining }| {
+	var $length = 0.U64
+	for byte in text.to_utf8() {
+		count = if mode == Raw {
+			1
+		} else match byte {
+			'&' => 5
+			'<' => 4
+			'>' if mode == Text => 4
+			'"' if mode == Attribute => 6
+			'\r' => 5
+			_ => 1
+		}
+		if count > remaining - $length {
+			return Err(RenderLimit({ resource: Bytes, maximum: remaining }))
+		}
+		$length = $length + count
+	}
+	Ok($length)
+}
+
+render_open : Dom.ExpandedName, { attributes : List((Dom.ExpandedName, Str)), remaining : U64 } -> Try(Str, Dom.RenderError)
+render_open = |name, { attributes, remaining }| {
+	var $bytes = Dom.written_name(name).count_utf8_bytes()
+	if $bytes > remaining or 2 > remaining - $bytes {
+		return Err(RenderLimit({ resource: Bytes, maximum: remaining }))
+	}
+	$bytes = $bytes + 2
+	var $pieces = ["<", Dom.written_name(name)]
+	for (key, value) in attributes {
+		length = Dom.written_name(key).count_utf8_bytes()
+		if length > remaining - $bytes or 4 > remaining - $bytes - length {
+			return Err(RenderLimit({ resource: Bytes, maximum: remaining }))
+		}
+		$bytes = $bytes + length + 4
+		escaped = render_escaped_length(value, { mode: Attribute, remaining: remaining - $bytes })?
+		$bytes = $bytes + escaped
+		$pieces = $pieces.append(" ${Dom.written_name(key)}=\"${render_attribute(value)}\"")
+	}
+	Ok(Str.join_with($pieces.append(">"), ""))
+}
+
+ParseProjection : { physical : List(Dom.PictureNode), containers : List(Dom.PictureContainer), maximum : U64 }
+
+## Parse-back deliberately projects public parser nodes without calling the
+## source-model walk, its text grouping, or its control-scaffold decisions.
+## The parser's parsed XHTML template children belong to content in both
+## syntaxes; ordinary raw-constructor template children remain a distinct fact.
+render_parse_back : Dom.Rendered, { props : Dom.RenderProps, root_attributes : List((Dom.ExpandedName, Str)) } -> Try({}, Dom.RenderError)
+render_parse_back = |rendered, { props, root_attributes }| {
+	root = match rendered.root_name {
+		ElementRoot(name) => name
+		NonElementRoot if props.scope == Subtree => { namespace: Dom.html_namespace, prefix: "", local: "body" }
+		NonElementRoot => return Err(ParseMismatch({ physical: 0, rule: "picture contents require an element root" }))
+	}
+	context = if props.scope == MountEnvelope {
+		match props.enclosing {
+			Element(name) => name
+			Document => root
+			Unspecified => return Err(ParseMismatch({ physical: 0, rule: "missing envelope parse context" }))
+		}
+	} else if props.scope == Contents {
+		root
+	} else {
+		match props.enclosing {
+			Element(name) => name
+			Document => root
+			Unspecified => { namespace: Dom.html_namespace, prefix: "", local: "body" }
+		}
+	}
+	document = (props.scope == MountEnvelope or props.scope == Subtree) and props.enclosing == Document
+	source = if (document) "<!doctype html>${rendered.markup}" else rendered.markup
+	maximum = if (props.limits.max_nodes > 18_446_744_073_709_551_612) 18_446_744_073_709_551_615 else props.limits.max_nodes + 3
+	depth = if (props.limits.max_depth > 18_446_744_073_709_551_612) 18_446_744_073_709_551_615 else props.limits.max_depth + 3
+	parsed = MarkupHtml.parse_source(source, { recovery: Browser, authored_structure: Exact, exact_lexical_diagnostics: Report, scripting: props.scripting, context_namespace: context.namespace, context_element: context.local, max_source_bytes: source.count_utf8_bytes(), max_nodes: maximum, max_elements: maximum, max_attributes: props.limits.max_bytes, max_depth: depth }, !document)
+		.map_err(|InvalidMarkup(error)| ParseFailure({ line: error.line, column: error.column, rule: Str.inspect(error.problem) }))?
+	var $roots = parsed.tree.roots
+	if document {
+		$roots = $roots.keep_if(
+			|index| match (parsed.tree.nodes.get(index) ?? crash "Dom.render: document projection").kind {
+				Doctype(_) => False
+				_ => True
+			},
+		)
+	}
+	if props.scope == MountEnvelope {
+		if $roots.len() != 1 {
+			return Err(ParseMismatch({ physical: 0, rule: "an envelope did not parse as one element" }))
+		}
+		envelope = parsed.tree.nodes.get($roots.first() ?? crash "Dom.render: envelope root") ?? crash "Dom.render: envelope node"
+		match envelope.kind {
+			Element(name) if render_parsed_name(name) == root => {}
+			_ => return Err(ParseMismatch({ physical: 0, rule: "the external mount root expanded identity changed" }))
+		}
+		if envelope.attributes.map(|attribute| (render_parsed_name(attribute.name), attribute.value)) != root_attributes {
+			return Err(ParseMismatch({ physical: 0, rule: "the external mount root ordered attributes changed" }))
+		}
+		$roots = envelope.children
+	}
+	initial = { physical: [], containers: [{ owner: Mount, role: Children, children: [] }], maximum: props.limits.max_nodes }
+	projected = render_project_children(parsed.tree, { projection: initial, roots: $roots, container: 0 })?
+	if projected.physical != rendered.physical {
+		var $at = 0.U64
+		while $at < projected.physical.len() and $at < rendered.physical.len() and projected.physical.get($at) == rendered.physical.get($at) {
+			$at = $at + 1
+		}
+		return Err(ParseMismatch({ physical: $at, rule: "parsed names, ordered attributes, node kinds or data differ from the declared physical picture" }))
+	}
+	if projected.containers != rendered.containers {
+		return Err(ParseMismatch({ physical: 0, rule: "parsed ordinary children or template content differ from the declared containers" }))
+	}
+	Ok({})
+}
+
+render_parsed_name : Markup.Name -> Dom.ExpandedName
+render_parsed_name = |name| {
+	namespace = match name.namespace {
+		NoNamespace => ""
+		Uri(uri) => uri
+	}
+	prefix = match name.prefix {
+		Unprefixed => ""
+		Prefix(text) => text
+	}
+	{ namespace, prefix, local: name.local }
+}
+
+render_project_children : Markup.Tree, { projection : ParseProjection, roots : List(U64), container : U64 } -> Try(ParseProjection, Dom.RenderError)
+render_project_children = |tree, { projection, roots, container }| {
+	var $projection = projection
+	var $children = []
+	for index in roots {
+		node = tree.nodes.get(index) ?? crash "Dom.render: parser child position"
+		ordinal = $projection.physical.len()
+		if ordinal >= projection.maximum {
+			return Err(RenderLimit({ resource: Nodes, maximum: projection.maximum }))
+		}
+		match node.kind {
+			Text(text) => {
+				$projection = { ..$projection, physical: $projection.physical.append(Text(text)) }
+			}
+			Comment(text) => {
+				$projection = { ..$projection, physical: $projection.physical.append(Comment(text)) }
+			}
+			Element(name) => {
+				expanded = render_parsed_name(name)
+				attributes = node.attributes.map(|attribute| (render_parsed_name(attribute.name), attribute.value))
+				children = $projection.containers.len()
+				if children >= projection.maximum {
+					return Err(RenderLimit({ resource: Nodes, maximum: projection.maximum }))
+				}
+				$projection = { ..$projection, containers: $projection.containers.append({ owner: Element(ordinal), role: Children, children: [] }) }
+				var $content = NoContent
+				if expanded.namespace == Dom.html_namespace and expanded.local == "template" {
+					content = $projection.containers.len()
+					if content >= projection.maximum {
+						return Err(RenderLimit({ resource: Nodes, maximum: projection.maximum }))
+					}
+					$projection = { ..$projection, containers: $projection.containers.append({ owner: Element(ordinal), role: Content, children: [] }) }
+					$content = Content(content)
+				}
+				$projection = { ..$projection, physical: $projection.physical.append(Element({ name: expanded, attributes, children, content: $content })) }
+				target = match $content {
+					NoContent => children
+					Content(content) => content
+				}
+				$projection = render_project_children(tree, { projection: $projection, roots: node.children, container: target })?
+			}
+			Doctype(_) | ProcessingInstruction(_) => return Err(ParseMismatch({ physical: ordinal, rule: "an owned UI picture contains an unsupported document node" }))
+		}
+		$children = $children.append(ordinal)
+	}
+	previous = $projection.containers.get(container) ?? crash "Dom.render: parser container"
+	Ok({ ..$projection, containers: $projection.containers.set(container, { ..previous, children: $children }) ?? crash "Dom.render: parser container completion" })
+}
+
+## Empty and adjacent text remain distinct logical lifetimes. Marker-looking
+## comments and attributes are data, with no reserved spelling or lookup role.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1, 2, 3, 4, 5] }
+	text = |value| { ..Dom.empty_node, namespace: "", kind: 2, text: value }
+	comment = { ..Dom.empty_node, namespace: "", kind: 3, text: "roc:node:7" }
+	leaf = { ..Dom.empty_node, tag: "i", attrs: Dom.attributes([("data-n", "7"), ("data-h", "false"), ("hidden", "")]) }
+	dom = { ..Dom.new({}), nodes: [root, text(""), text("<&\r😀"), text(""), comment, leaf] }
+	picture = match Dom.render(dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 1024, max_nodes: 32, max_depth: 8 } }) {
+		Ok(result) => result
+		Err(error) => crash Str.inspect(error)
+	}
+	picture.markup == "&lt;&amp;&#13;😀<!--roc:node:7--><i data-n=\"7\" data-h=\"false\" hidden=\"\"></i>" and picture.physical.len() == 3 and picture.logical.len() == 5 and picture.text_runs == [{ container: 0, child_index: 0, physical: Node(0), parts: [{ logical: 0, utf16_units: 0 }, { logical: 1, utf16_units: 5 }, { logical: 2, utf16_units: 0 }] }]
+}
+
+## HTML's conditional initial-LF consumption is parser metadata. An omitted
+## empty node leaves that opportunity intact; an actual comment consumes it.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1, 4] }
+	pre = { ..Dom.empty_node, tag: "pre", kids: [2, 3] }
+	empty = { ..Dom.empty_node, kind: 2, text: "" }
+	text = { ..empty, text: "\nfirst" }
+	second = { ..pre, kids: [5, 3] }
+	comment = { ..Dom.empty_node, kind: 3, text: "first" }
+	# Reusing one source lifetime twice is forbidden, even if both texts agree.
+	aliased = { ..Dom.new({}), nodes: [root, pre, empty, text, second, comment] }
+	dom = { ..aliased, nodes: aliased.nodes.append(text).set(4, { ..second, kids: [5, 6] }) ?? crash "initial LF fixture" }
+	picture = Dom.render(dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 256, max_nodes: 32, max_depth: 8 } }) ?? crash "initial LF render"
+	picture.markup == "<pre>\n\nfirst</pre><pre><!--first-->\nfirst</pre>" and Dom.render(aliased, { root: 0, scope: Contents, limits: { max_bytes: 256, max_nodes: 32, max_depth: 8 } }).is_err()
+}
+
+## Parsed template content is represented by a separate intrinsic edge, even
+## when empty. A raw template's ordinary childNodes cannot be dropped to make
+## its serialization pass; diagnostics can still describe that valid live DOM.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1] }
+	template = { ..Dom.empty_node, tag: "template", container: 1, content: Some(2) }
+	fragment = { ..Dom.empty_node, namespace: "", kind: 4, kids: [3] }
+	comment = { ..Dom.empty_node, kind: 3, text: "roc:row:7" }
+	dom = { ..Dom.new({}), nodes: [root, template, fragment, comment] }
+	picture = Dom.render(dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 256, max_nodes: 16, max_depth: 8 } }) ?? crash "template render"
+	raw = Dom.set_node(dom, 1, { ..template, container: 0, kids: [3], content: Some(4) })
+	raw_with_fragment = { ..raw, nodes: raw.nodes.append({ ..fragment, kids: [] }) }
+	picture.markup == "<template><!--roc:row:7--></template>" and picture.containers == [{ owner: Mount, role: Children, children: [0] }, { owner: Element(0), role: Children, children: [] }, { owner: Element(0), role: Content, children: [1] }] and Dom.render(raw_with_fragment, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 256, max_nodes: 16, max_depth: 8 } }).is_err() and Dom.render(raw_with_fragment, { root: 0, scope: Contents, limits: { max_bytes: 256, max_nodes: 16, max_depth: 8 } }).is_ok()
+}
+
+## Raw attribute values are not Boolean-normalized, and spelling catalogues
+## never gate grammar-valid dynamic names. Parse-back detects actual HTML
+## repairs instead of blessing a serializer's output as its own oracle.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1] }
+	leaf = { ..Dom.empty_node, tag: "x-raw", attrs: Dom.attributes([("hidden", "false"), ("data-raw", "")]) }
+	dom = { ..Dom.new({}), nodes: [root, leaf] }
+	good = Dom.render(dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 256, max_nodes: 16, max_depth: 8 } }) ?? crash "raw render"
+	table = { ..leaf, tag: "table", attrs: [], kids: [2] }
+	bad = { ..dom, nodes: [root, table, { ..leaf, tag: "tr", attrs: [] }] }
+	good.markup == "<x-raw hidden=\"false\" data-raw=\"\"></x-raw>" and Dom.render(bad, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 256, max_nodes: 16, max_depth: 8 } }).is_err()
+}
+
+## Limits are checked during construction at their smallest boundaries. A
+## maximum-depth element may be empty; one child beyond that depth refuses.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1] }
+	leaf = { ..Dom.empty_node, tag: "i" }
+	dom = { ..Dom.new({}), nodes: [root, leaf] }
+	fits = Dom.render(dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 7, max_nodes: 2, max_depth: 0 } })
+	bytes = Dom.render(dom, { root: 0, scope: Contents, limits: { max_bytes: 6, max_nodes: 2, max_depth: 0 } })
+	nodes = Dom.render(dom, { root: 0, scope: Contents, limits: { max_bytes: 7, max_nodes: 1, max_depth: 0 } })
+	zero = Dom.render(dom, { root: 0, scope: Contents, limits: { max_bytes: 0, max_nodes: 0, max_depth: 0 } })
+	deep = { ..dom, nodes: [root, { ..leaf, kids: [2] }, { ..Dom.empty_node, kind: 2, text: "x" }] }
+	fits.map_ok(|rendered| rendered.markup) == Ok("<i></i>") and bytes == Err(RenderLimit({ resource: Bytes, maximum: 6 })) and nodes == Err(RenderLimit({ resource: Nodes, maximum: 1 })) and zero == Err(RenderLimit({ resource: Nodes, maximum: 0 })) and Dom.render(deep, { root: 0, scope: Contents, limits: { max_bytes: 64, max_nodes: 8, max_depth: 0 } }) == Err(RenderLimit({ resource: Depth, maximum: 0 }))
+}
+
+## A source textarea value can differ from its logical childNodes. Restoration
+## names their exact data, and never assigns an authored marker comment a role.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1] }
+	area = { ..Dom.empty_node, tag: "textarea", attrs: Dom.attributes([("value", "\nvalue<&")]), props: [("value", "\nvalue<&")], kids: [2, 3] }
+	comment = { ..Dom.empty_node, kind: 3, text: "roc:node:7" }
+	text = { ..Dom.empty_node, kind: 2, text: "old" }
+	dom = { ..Dom.new({}), nodes: [root, area, comment, text] }
+	picture = Dom.render(dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 256, max_nodes: 16, max_depth: 8 } }) ?? crash "textarea render"
+	picture.markup == "<textarea value=\"\nvalue&lt;&amp;\">\n\nvalue&lt;&amp;</textarea>" and picture.scaffolds == [ControlText({ owner: 0, container: 1, physical_text: Node(1) })] and picture.logical.map(|logical| logical.target) == [Node(0), Constructed({ container: 1, logical_child_index: 0, data: Comment("roc:node:7") }), Constructed({ container: 1, logical_child_index: 1, data: Text("old") })]
+}
+
+## A select's value setter selects its first matching option even when multiple
+## is present. No match in a single select has an explicit temporary option;
+## raw selected text is restored by a recorded presence override.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1] }
+	select = { ..Dom.empty_node, tag: "select", attrs: Dom.attributes([("multiple", "")]), props: [("value", "x")], kids: [2, 3] }
+	option = { ..Dom.empty_node, tag: "option", attrs: Dom.attributes([("value", "x"), ("selected", "false")]) }
+	dom = { ..Dom.new({}), nodes: [root, select, option, option] }
+	multiple = Dom.render(dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 512, max_nodes: 32, max_depth: 8 } }) ?? crash "multiple select render"
+	missing_dom = Dom.set_node(dom, 1, { ..select, attrs: [], props: [("value", "missing")] })
+	missing = Dom.render(missing_dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 512, max_nodes: 32, max_depth: 8 } }) ?? crash "missing select render"
+	multiple.markup == "<select multiple=\"\"><option value=\"x\" selected=\"false\"></option><option value=\"x\"></option></select>" and multiple.scaffolds == [AttributeOverride({ owner: 2, name: { namespace: "", prefix: "", local: "selected" }, logical: Present("false"), physical: Absent })] and missing.scaffolds.last().map_ok(
+		|scaffold| match scaffold {
+			NoSelectionOption(_) => True
+			_ => False
+		},
+	) == Ok(True)
+}
+
+## The mount wrapper is emitted by the same token plan but remains outside
+## owned ordinals. Its actual enclosing document/element is never guessed.
+expect {
+	root = { ..Dom.empty_node, tag: "section", attrs: Dom.attributes([("data-roc-picture", ""), ("inert", "")]), kids: [1] }
+	dom = { ..Dom.new({}), nodes: [root, { ..Dom.empty_node, tag: "i" }] }
+	picture = Dom.render(dom, { root: 0, scope: MountEnvelope, mode: Picture, enclosing: Element({ namespace: Dom.html_namespace, prefix: "", local: "body" }), limits: { max_bytes: 256, max_nodes: 16, max_depth: 8 } }) ?? crash "mount envelope render"
+	picture.markup == "<section data-roc-picture=\"\" inert=\"\"><i></i></section>" and picture.physical.len() == 1 and picture.logical.map(|logical| logical.model) == [1] and picture.containers.first() == Ok({ owner: Mount, role: Children, children: [0] }) and Dom.render(dom, { root: 0, scope: MountEnvelope, mode: Picture, limits: { max_bytes: 256, max_nodes: 16, max_depth: 8 } }).is_err()
+}
+
+## Browser lexical handling is not permission to change data. A numeric NUL
+## reference decodes to a replacement character, and that exact-data mismatch
+## is refused even though lexical recovery itself can preserve a CR reference.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1] }
+	dom = { ..Dom.new({}), nodes: [root, { ..Dom.empty_node, kind: 2, text: "\u(0000)" }] }
+	props : Dom.RenderProps
+	props = { root: 0, scope: Contents, mode: Diagnostic, limits: { max_bytes: 64, max_nodes: 8, max_depth: 8 } }
+	picture = Dom.render(dom, props) ?? crash "NUL diagnostic render"
+	forged = { ..picture, markup: "&#0;" }
+	match render_parse_back(forged, { props, root_attributes: [] }) {
+		Err(ParseMismatch(_)) => True
+		_ => False
+	}
+}
+
+## A removed selected attribute does not consume the physical output budget.
+## The final option decision reserves only the bytes actually serialized.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1] }
+	select = { ..Dom.empty_node, tag: "select", props: [("value", "y")], kids: [2, 3] }
+	first = { ..Dom.empty_node, tag: "option", attrs: Dom.attributes([("value", "x"), ("selected", "false")]) }
+	second = { ..Dom.empty_node, tag: "option", attrs: Dom.attributes([("value", "y")]) }
+	dom = { ..Dom.new({}), nodes: [root, select, first, second] }
+	output = "<select><option value=\"x\"></option><option value=\"y\" selected=\"\"></option></select>"
+	Dom.render(dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: output.count_utf8_bytes(), max_nodes: 16, max_depth: 8 } }).map_ok(|picture| picture.markup) == Ok(output)
+}
+
+## A diagnostic fragment does not acquire an invented element wrapper or a
+## logical engine lifetime. Picture contents still require an actual element.
+expect {
+	fragment = { ..Dom.empty_node, kind: 4, namespace: "", kids: [1] }
+	dom = { ..Dom.new({}), nodes: [fragment, { ..Dom.empty_node, kind: 3, text: "roc:row:1" }] }
+	picture = Dom.render(dom, { root: 0, limits: { max_bytes: 64, max_nodes: 8, max_depth: 8 } }) ?? crash "fragment diagnostic"
+	picture.markup == "<!--roc:row:1-->" and picture.root_name == NonElementRoot and picture.logical.map(|logical| logical.model) == [1] and Dom.render(dom, { root: 0, scope: Contents, mode: Picture, limits: { max_bytes: 64, max_nodes: 8, max_depth: 8 } }).is_err()
+}
+
+## Producer-only nodes obey the same depth bound as ordinary nodes. Empty
+## source children do not give a control scaffold an unbounded extra level.
+expect {
+	root = { ..Dom.empty_node, tag: "div", kids: [1] }
+	["select", "textarea"].all(
+		|tag| {
+			control = { ..Dom.empty_node, tag, props: [("value", "x")] }
+			dom = { ..Dom.new({}), nodes: [root, control] }
+			Dom.render(dom, { root: 0, scope: Contents, limits: { max_bytes: 256, max_nodes: 16, max_depth: 0 } }) == Err(RenderLimit({ resource: Depth, maximum: 0 }))
+		},
+	)
+}
+
+## A checked property write mirrors presence with empty text exactly as the
+## browser executor does. Ordinary raw attribute text never goes through that
+## property operation and therefore retains both 'false' and 'true' verbatim.
+expect {
+	input = { ..Dom.empty_node, tag: "input", attrs: Dom.attributes([("type", "checkbox"), ("checked", "old")]) }
+	dom = { ..Dom.new({}), nodes: [input] }
+	on = Dom.set_property_on(dom, 0, 2, "true", 1)
+	off = Dom.set_property_on(on, 0, 2, "false", 1)
+	raw_false = Dom.set_attr_on(dom, 0, "checked", "false")
+	raw_true = Dom.set_attr_on(dom, 0, "checked", "true")
+	Dom.has_attr(Dom.node(on, 0), "checked") and Dom.attr_of(Dom.node(on, 0), "checked") == "" and Dom.live_value(Dom.node(on, 0), "checked") == "true" and !Dom.has_attr(Dom.node(off, 0), "checked") and Dom.live_value(Dom.node(off, 0), "checked") == "false" and Dom.attr_of(Dom.node(raw_false, 0), "checked") == "false" and Dom.attr_of(Dom.node(raw_true, 0), "checked") == "true"
 }

@@ -248,17 +248,17 @@ flat = |n, g, inner| match n {
 					|st| {
 						own = if (pure) [] else [Core.element("button", [Core.on_click(st.update(|x| x + 1))], [Core.text("+")])]
 						g2 = { vals: lifted.append(st.signal()), wrs: if (pure) lwrs else lwrs.append(st), pure }
-						Core.element("p", [], [show(st.signal())].concat(own).append(layer(body, g2)))
+						Core.element("div", [], [show(st.signal())].concat(own).append(layer(body, g2)))
 					},
 				)
 			} else if k == 1 {
-				Core.derive(v.map(|x| x * 2 + 1), |d| Core.element("p", [], [show(d), layer(body, { vals: lifted.append(d), wrs: lwrs, pure })]))
+				Core.derive(v.map(|x| x * 2 + 1), |d| Core.element("div", [], [show(d), layer(body, { vals: lifted.append(d), wrs: lwrs, pure })]))
 			} else if k == 2 or pure {
-				Core.resource(v, { init: 0.U64, pending: |_, a| a + 7, plan: |_| [], resolve: |s, _, _| s }, |r| Core.element("p", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
+				Core.resource(v, { init: 0.U64, pending: |_, a| a + 7, plan: |_| [], resolve: |s, _, _| s }, |r| Core.element("div", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
 			} else if k == 3 {
-				Core.resource(v, { init: 0.U64, pending: |_, a| a * 10, plan: |_| [Core.timer(10)], resolve: |s, _, _| s + 1 }, |r| Core.element("p", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
+				Core.resource(v, { init: 0.U64, pending: |_, a| a * 10, plan: |_| [Core.timer(10)], resolve: |s, _, _| s + 1 }, |r| Core.element("div", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
 			} else {
-				Core.resource(v, job_cfg, |r| Core.element("p", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
+				Core.resource(v, job_cfg, |r| Core.element("div", [], [show(r), layer(body, { vals: lifted.append(r), wrs: lwrs, pure })]))
 			}
 		}
 	}
@@ -601,25 +601,19 @@ half_seen = |held, written, fx, turns| {
 	Ok({})
 }
 
-## A canonical tree picture compares expanded identities and both child
-## containers. Explicit text/comment markers and inspected strings keep data
-## from impersonating structure; engine addresses never enter the comparison.
+## Fresh comparison uses the renderer's one model walk. Attribute order is
+## ignored only here; canonical picture data keeps the original order. Logical
+## text partitions remain observable even when HTML merges the physical run.
 render : Dom.Model, U64 -> Str
 render = |dom, i| {
-	n = Dom.node(dom, i)
-	if n.kind == 2 {
-		return "text:${Str.inspect(n.text)}"
-	}
-	if n.kind == 3 {
-		return "comment:${Str.inspect(n.text)}"
-	}
-	attrs = n.attrs.sort_with(|(left, _), (right, _)| compare_bytes(Str.inspect(left).to_utf8(), Str.inspect(right).to_utf8())).map(|(name, value)| Str.inspect({ name, value }))
-	children = Str.join_with(n.kids.map(|child| render(dom, child)), ",")
-	content = match n.content {
-		None => "none"
-		Some(fragment) => "[${Str.join_with(Dom.node(dom, fragment).kids.map(|child| render(dom, child)), ",")}]"
-	}
-	"element:${Str.inspect({ namespace: n.namespace, prefix: n.prefix, local: n.tag })};attrs:[${Str.join_with(attrs, ",")}];children:[${children}];content:${content}"
+	picture = Dom.render(dom, { root: i, limits: { max_bytes: 16_777_216, max_nodes: 262_144, max_depth: 1024 } }) ?? crash "structure diagnostic render exceeded its explicit bounds"
+	physical = picture.physical.map(
+		|physical_node| match physical_node {
+			Element(element) => Element({ ..element, attributes: element.attributes.sort_with(|(left, _), (right, _)| compare_bytes(Str.inspect(left).to_utf8(), Str.inspect(right).to_utf8())) })
+			other => other
+		},
+	)
+	Str.inspect({ physical, containers: picture.containers, logical: picture.logical.map(|logical| logical.target), text_runs: picture.text_runs, scaffolds: picture.scaffolds })
 }
 
 ## Lexicographic order of two byte strings.

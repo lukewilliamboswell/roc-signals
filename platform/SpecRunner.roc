@@ -2066,8 +2066,8 @@ SpecRunner := [].{
 					Ok(i) => {
 						n = Dom.node(r.dom, i)
 						el = if (n.kind == 2 and n.parent != 0) n.parent - 1 else i
-						was = if (el < s.dom.nodes.len()) Dom.render(s.dom, el) else "(new)"
-						"; first write: ${was} -> ${Dom.render(r.dom, el)}${SpecRunner.landmark(r.dom, el)}"
+						was = if (el < s.dom.nodes.len()) SpecRunner.render_diagnostic(s.dom, el) else "(new)"
+						"; first write: ${was} -> ${SpecRunner.render_diagnostic(r.dom, el)}${SpecRunner.landmark(r.dom, el)}"
 					}
 					Err(_) => if (r.fx.is_empty()) "" else "; first effect: ${Str.inspect(r.fx.first() ?? crash "not empty")}"
 				}
@@ -4537,6 +4537,14 @@ SpecRunner := [].{
 	## The host services the `spec` command uses, passed in by the test
 	## program (the test platform's `Cli`), so this package stays pure.
 	Io : { read_file! : Str => List(U8), stdout! : Str => {}, stderr! : Str => {}, now_ns! : () => U64, work! : List(U8), List(List(U8)), List(U8), List(List(U8)), U64 => List(U8), mint_files! : U64 => List(Box(U64)), live_files! : () => U64, sha256! : List(U8) => List(U8), live_allocations! : () => U64, live_bytes! : () => U64 }
+
+	## Bounded diagnostic rendering is best effort only in an existing failure
+	## report. A renderer refusal remains visible instead of masking stale state.
+	render_diagnostic : Dom.Model, U64 -> Str
+	render_diagnostic = |model, root| match Dom.render(model, { root, mode: Diagnostic, limits: { max_bytes: 65536, max_nodes: 4096, max_depth: 256 } }) {
+		Ok(rendered) => rendered.markup
+		Err(problem) => "(diagnostic rendering refused: ${Str.inspect(problem)})"
+	}
 
 	## The command line: which specs, whether to emit their steps or the
 	## grammar instead, and whether to soak them (`soak` cycles of the round
