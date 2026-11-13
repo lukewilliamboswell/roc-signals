@@ -13,10 +13,10 @@ import Store
 ## call that the database. This module builds the app's store, the cells
 ## the page shares.
 ##
-## The app keeps its own copy of the books, a table by id, and changes it
-## in the turn of the click, so the page never waits on the database. Each
-## change the database must learn of is posted to an outbox, which an
-## `on_post` site sends as commands. The database's own copy wins whenever
+## The app keeps its own copy of the books, a table by id. Moves and
+## deletions change it in the click's turn and post commands for the database.
+## An add first samples the clock, then sends a complete book and waits for
+## confirmation. Each stage is posted to an outbox and handled by `on_post`. The database's own copy wins whenever
 ## it reports one: once at start (`load`), and after any tab writes
 ## (`stored`), so every open tab ends up showing what the database holds.
 ##
@@ -174,9 +174,9 @@ ReadingList := [Books].{
 	author_typed : Str -> List(Engine.Write(_))
 	author_typed = |text| [ReadingList.cells.form.update(|form| { ..form, author: text })]
 
-	## The reader adds the book the form holds: it is posted for the
-	## database, and the form and the note are cleared. Nothing happens
-	## while it cannot be added.
+	## The reader submits the form for a fresh time sample. The form and
+	## note clear in this turn; the timer's reaction will mint the book.
+	## Nothing happens while it cannot be added.
 	submitted : Asking -> List(Engine.Write(_))
 	submitted = |at|
 		if ReadingList.can_add(at) {

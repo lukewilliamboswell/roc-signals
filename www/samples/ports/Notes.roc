@@ -32,7 +32,7 @@ Notes := [].{
 	initial : I64 -> S
 	initial = |clock| { prefix: "", draft: "", revision: 0, saves: 0, clock, stamping: Engine.outbox({}), save: { id: "", title: "", saved_ms: 0 }, error: "" }
 
-	## The draft as the next note to save.
+	## Post the next note for its save's time sample, clearing the draft.
 	saved : S -> S
 	saved = |s| {
 		saves = s.saves + 1
@@ -80,7 +80,7 @@ Notes := [].{
 				Html.text_input(Engine.const("Note"), "text", v.map(|s| s.draft), [], st.set_value(|s, t| { ..s, draft: t })),
 				Html.button("Save", [], st.update(Notes.saved)),
 				Engine.on_post(v.map(|s| s.stamping), |_| [Timer(0)], st.on_result(|s, note, result| Notes.stamped(s, { note, result }))),
-				# A save is kept even if the user leaves the view mid-way.
+				# Once stamped, hand the complete note to its storage call.
 				Engine.watch_changes(
 					v.map(|s| s.save),
 					|note| [Notes.put.request(note)],
