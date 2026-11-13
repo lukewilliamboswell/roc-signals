@@ -135,6 +135,10 @@ this document and the implementation are tracked in issues.
     occurrences stay distinct even when their payloads are equal, and one
     event expresses one atomic domain transition, decided by one pure
     function however many pieces of state it spans.
+11. **The first frame comes with the document.** A page can show its first
+    frame before its module arrives: the build renders it from the app's own
+    mount, and the engine adopts it at boot only when its mount fingerprint
+    and the measured tree digest agree with the built frame.
 
 ### Success criteria
 
@@ -152,6 +156,10 @@ this document and the implementation are tracked in issues.
 - **External evidence:** the keyed js-framework-benchmark run against declared
   comparison frameworks, Conduit passing its journey against a RealWorld
   backend in Chrome, and recorded compressed size budgets.
+- **First frame:** every maintained example's picture adopts in Chrome and
+  in the native runner, and the adopted page equals one built from nothing.
+  A picture's first paint does not wait for the module; its size still
+  determines when the page becomes interactive.
 
 ### When a capability is built
 
@@ -270,10 +278,13 @@ of landing whole (see
 Each item is a scope decision with the condition under which it would be
 reconsidered.
 
-- **Server-side rendering, hydration and SEO.** The platform is a client-side
-  runtime. Any future server path must keep the command stream as the only
-  render output; hydration would be the engine adopting existing DOM ids, never
-  JavaScript reconstructing meaning.
+- **Per-request server rendering, streaming and SEO claims.** The platform
+  is a client-side runtime. A first frame rendered at build time is part of
+  the target design: the command stream remains the only render output, the
+  engine adopts existing DOM ids or replaces them, and JavaScript never
+  reconstructs meaning. Per-request rendering or streaming is reconsidered
+  only if a build-time frame cannot serve the intended apps. Search engines
+  may index a picture; the platform makes no promise about it.
 - **A native desktop GUI host.** The engine is web-only. A GUI platform would
   be a separate platform consuming its own command vocabulary, not a second
   engine.
@@ -1649,6 +1660,72 @@ the runtime interprets only how a boolean attribute or SVG `class` is
 written. Each property row fixes its value type, encoding, allowed elements
 and the attribute name it claims, if any; the runtime applies the
 engine-decided value rather than inferring control state from a name.
+
+### A prerendered first page
+
+**Target.** An app may opt in to a first frame rendered at build time inside
+its marked mount root. The native runner mounts the actual program for the
+requested boot, consumes its command batch through the independent oracle,
+and renders that model as a document. This is a rendering of the engine's
+output, not a second engine or an application view run in JavaScript. One
+configured oracle renderer handles diagnostics, documents and the canonical
+shape used for measurement. The first frame arrives with the document;
+the module's arrival decides when it becomes interactive.
+
+The first stage replaces the picture immediately before applying the mount
+batch, in the same task. The picture is inert until then. The runtime removes
+inertness before performing the batch's effects, so focus and reference
+commands observe the mounted page. The app chooses the routes to render;
+no origin, user session or hash route is invented by the build.
+
+Adoption preserves the existing nodes only on the engine's command. The
+build writes node and row-hole marks, the mount batch's fingerprint, and a
+digest of the tree it expects the browser to parse. Before init, the runtime
+measures that same canonical tree and stages the built and measured facts
+with boot bytes, separately from the app-visible Boot. Roc compares those
+facts with its own mount batch and emits adopt or replace. JavaScript never
+turns an adoption into a replacement, patches a mismatch, or judges the facts.
+An assertion that fails after adoption poisons the instance as an executor
+fault; recovery mounts afresh without a picture.
+
+The canonical tree covers namespaces, local names, every attribute and value,
+child order, text and comments, including row marks. Live properties changed
+by a page script, CSS, layout and nodes outside the root are outside that
+measurement. Adoption re-applies the batch's attributes, text and properties.
+The canonical form has independent Roc and JavaScript implementations, kept
+in agreement by Chrome differential tests over every maintained app's picture.
+The wire layouts and hash widths land together in Appendix B with the
+producer and consumers; a fingerprint is never an application-state registry.
+
+A picture is accepted only when the parser preserves the structure and text
+that the oracle rendered. The parser and its browser comparisons are the
+independent check of the renderer. HTML repair is also a construction contract
+error for the declared bounded subset, in live and prerendered views alike:
+paragraph closure, repaired table placement, nested anchors/forms/buttons,
+direct list/option/heading closure, children of voids and element children
+inside text-content elements. Legal insertion-mode exceptions come from the
+parser's grammar. These checks retain finite scope facts and the immediate
+parent, never an ancestor list or a scan of the existing tree. Unknown raw
+names retain their grammar-only escape; vocabulary checks belong at literals.
+
+Dynamic sites receive the context of their enclosing element. Row templates
+are checked once at site construction even for an empty list or table view;
+branches and drawn rows are checked when mounted. Restricted table text is
+checked when created and when replaced, in the size of the new text, without
+retaining an earlier value. The bounded constructor check is not a claim of
+complete HTML parsing: the full parsed-picture check and Chrome digest cover
+repairs outside its declared subset. A default mount reaching a construction
+error fails at the app's compile-time mount declaration; later paths fail in
+the ordinary contained turn.
+
+No event queue accepts interaction with an inert picture before mount. If the
+module or scripting cannot run, the picture remains inert; the root exposes
+its failed state when the runtime can report it, and the app's document gives
+its failure styling and noscript notice. A malformed picture marker is
+reported and staged as absent so a normal mount replaces it. A picture for a
+different boot, a stale frame or a changed measured tree is replaced by Roc's
+verdict. Both spec runners stage these same facts and assert the verdict;
+the browser additionally proves that parsed markup and adopted nodes agree.
 
 ### Applied in a view transition
 
@@ -4006,6 +4083,12 @@ browser — location and history, title, storage, pending requests, live subscri
 emitted. Because the oracle sees only the wire, a spec that passes natively
 exercises the same protocol the browser runtime consumes.
 
+**Target.** The oracle's configured document renderer also writes the
+prerendered first page. It remains independent of `Core.roc`; Chrome
+differential tests and the engine's digest verdict protect the page from a
+renderer error. Rendering and canonical shape follow one node walk rather
+than separate implementations that could disagree inside the oracle.
+
 ### Work assertions
 
 Work assertions read the engine's own counters. The engine keeps them as plain
@@ -4311,8 +4394,6 @@ These are unresolved mechanism choices within the contracts above.
   a coarser site representation is needed for the largest apps.
 - **Many-widget embedding.** Whether one instance per mount is acceptable for
   pages with many small widgets.
-- **First paint.** Whether streaming compilation and a smaller initial module
-  close the startup gap that larger modules open.
 
 ## Appendix A: API Surface
 
