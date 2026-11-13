@@ -5774,7 +5774,7 @@ export function decodePictureEnvelope(bytes, limits = {}) {
   const digest = () => { need(32); const value = bytes.slice(at, at + 32); at += 32; return value; };
   for (const value of [83, 80, 67, 49]) if (u8() !== value) fail("magic");
   if (u16() !== 1 || u16() !== 19 || u32() !== 0) fail("schema, protocol or flags");
-  const root = name(), mountFingerprint = digest(), expectedDigest = digest();
+  const root = name(), batch_bytes = u32(), mountFingerprint = digest(), expectedDigest = digest();
   const physicalCount = u32();
   if (physicalCount > settings.maxNodes || physicalCount > Math.floor((bytes.length - at) / 4)) fail("physical node limit");
   const parent = new Int32Array(physicalCount); parent.fill(-1);
@@ -5858,7 +5858,7 @@ export function decodePictureEnvelope(bytes, limits = {}) {
   for (let i = 0; i < bindingCount; i++) {
     const birthOffset = u32(), role = u8(), address = u32(), slot = u32(), kind = u8(), target = u32();
     logicalReference(target);
-    if (birthOffset === 0 || address === 0 || address === 0xffffffff || role > 3) fail("binding address, birth or role");
+    if (birthOffset === 0 || birthOffset >= batch_bytes || address === 0 || address === 0xffffffff || role > 3) fail("binding address, birth or role");
     if ((role === 0 && (slot !== 0 || kind !== 0)) || (role === 1 && kind !== 0) || (role === 2 && (kind < 1 || kind > 6)) || (role === 3 && kind !== 4 && kind !== 5)) fail("binding fields");
     const index = role === 2 ? holes : principals;
     const key = role === 2 ? `${birthOffset}:${address}:${slot}` : `${birthOffset}:${address}`;
@@ -5907,7 +5907,7 @@ export function decodePictureEnvelope(bytes, limits = {}) {
   }
   for (let i = 1; i < containers.length; i++) if (kinds[containers[i].owner] !== 1) fail("container owner is not an element");
   for (const scaffold of scaffolds) if (kinds[scaffold.owner] !== 1) fail("scaffold owner is not an element");
-  return { root, mountFingerprint, expectedDigest, physicalCount, containers, logical, runs, bindings, scaffolds };
+  return { root, batch_bytes, mountFingerprint, expectedDigest, physicalCount, containers, logical, runs, bindings, scaffolds };
 }
 
 // Read one bounded protocol-facts item. Field order, lengths and uniqueness are
