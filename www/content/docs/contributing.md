@@ -408,7 +408,10 @@ spec, not in the round trip.
 
 `check-slow` also runs a long session of every example in Chrome
 (`tests/browser/soak.mjs`): a seeded walk without a fault, then 30 round
-trips with flat Wasm pages and live allocations. It mounts the app with
+trips with flat Wasm pages and live allocations. A shorter run uses
+`--events N --cycles N`; at least five cycles are required, with three for
+warm-up and two nonempty measured halves. Measurements wait for pending
+transition updates and animations to finish. It mounts the app with
 `manualWork`, so its worker jobs wait to be answered, and its tables give
 each app a round trip and, for an app with ports or a backend, the module
 that answers them.
