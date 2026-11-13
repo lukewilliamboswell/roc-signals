@@ -795,6 +795,9 @@ names the rows it touches.
   rewrite. So a `set` of a new table, a generated reset and a function that
   ignores its argument are all whole rewrites, and none can leave a view
   showing rows the table no longer has.
+  A mounted program's table identities are disjoint from those in a `Store`
+  value, so a table read with `Store.read` and set into a live cell is a whole
+  rewrite.
 
 `Table.update`, `replace` and `remove` of a key the table does not hold leave
 it as it was, because an earlier write of the same event may have removed

@@ -348,6 +348,8 @@ them.
 | Follow-up chain depth per event | 64 | Contract error |
 | Follow-up turns per event that follow-ups led to (those the event's own turn queued are not counted) | 64 per in-flight slot, at least 4096 | Resource limit |
 | HTTP timeout | 600 s | Capped |
+| One-shot timer delay | 0–2,147,483,647 ms | Contract error outside the range, before admission |
+| Interval period | 1–2,147,483,647 ms | Contract error outside the range, before admission |
 | Handlers for one event on one element | 1 | Contract error at mount, or at compile time when the default first page draws it; make one handler of two with `also` |
 | Static attributes, children or holes per row template element | 255 | Resource limit |
 | Live document-key handlers | 32 per instance; compile-time exclusion under rows | Contract error at mount naming the site |
@@ -396,6 +398,18 @@ them.
 | A fetched body | `maxFileBytes` (default 256 MiB) | `Err(TooLarge)` in the typed fetch result |
 
 ## Errors
+
+A typed timeout is `Unlimited` or `Ms(ms)` with at least one millisecond.
+`Ms(0)` is a contract error when the HTTP, file, port or worker request's
+configuration is constructed; a top-level constant can therefore fail while
+compiling. `Unlimited` means no timeout, and a longer finite timeout is still
+capped at ten minutes. Raw request records keep their wire convention that
+`timeout_ms: 0` means none.
+
+`Engine.timer(0)` remains a legal one-shot time sample. `Engine.interval`
+requires a positive period; both use the browser's maximum delay above.
+An invalid delay faults when the effect site issues it, before in-flight
+admission, rather than producing a wrapped browser delay.
 
 The engine never repairs invalid input. A broken contract stops the app with
 a classified diagnostic naming the rule and, where there is one, the

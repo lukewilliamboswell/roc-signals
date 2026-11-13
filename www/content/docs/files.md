@@ -129,6 +129,11 @@ downloading.
 
 ## Acting on a file where it lives
 
+`File.upload` and `File.fetch` timeouts use `Unlimited` for none, or
+`Ms(ms)` with at least one millisecond, capped at ten minutes. `Ms(0)` is a
+contract error when the request is constructed; it does not mean an
+immediate timeout or no timeout.
+
 An operation on a file is a request, made in an effect site's plan like any
 other, which the runtime performs on the browser's own file:
 

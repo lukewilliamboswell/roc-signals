@@ -217,7 +217,9 @@ path whose normalized text begins `//`, which would mean an authority reference.
 Build a request with `Engine.http({ url })`. Its `HttpProps` default to
 `method: "GET"`, empty `headers` and `body`, `timeout: Unlimited`,
 `cache: Default` and `credentials: SameOrigin`. `timeout: Ms(ms)` is capped
-at ten minutes. Cache modes are `Default`, `NoStore`, `Reload`, `NoCache`
+at ten minutes. A finite timeout must be at least one millisecond: `Ms(0)`
+is a contract error when `Engine.http` constructs the ask; use `Unlimited`
+for no timeout. Cache modes are `Default`, `NoStore`, `Reload`, `NoCache`
 and `ForceCache`, passed directly to the browser's fetch policy. A polled
 status endpoint can use `NoStore`; `NoCache` permits a stored response after
 revalidation. `Include` credentials permit cross-origin cookies subject to
@@ -520,8 +522,15 @@ business; the paste event covers text the user chooses to paste.
 
 The first paint has `boot.now_ms` (I64 milliseconds since the Unix epoch),
 `boot.seed` (U128), `boot.languages` in preference order and `boot.zone`.
-They are fixed inputs for the document. A timer or interval answers
-`Fired(at_ms)` with the wall-clock time its callback ran.
+They are fixed inputs for the document. `Engine.timer` and `Engine.interval`
+answer with an I64 wall-clock sample, in milliseconds since the Unix epoch,
+when their callback ran.
+
+`Engine.timer` accepts delays from 0 to 2,147,483,647 milliseconds;
+`Engine.interval` accepts periods from 1 to that same browser limit.
+A zero interval or a larger delay is a contract error when the site issues
+it, before admission. A zero one-shot delay remains legal: it samples time
+on the callback rather than imposing a timeout.
 
 ### A clock for what is shown
 
@@ -536,7 +545,7 @@ holes refresh. It also requests a fresh sample on returning visible.
 
 ### A sample for an action
 
-An action posts to an outbox; its site issues `Timer(0)` and the reaction
+An action posts to an outbox; its site issues `Engine.timer(0)` and the reaction
 uses that timer's sample:
 
 {{ sample(file="time/TimeApp.roc", region="stamp") }}

@@ -49,6 +49,11 @@ made from a props record: `Port.command({ name })`,
 
 {{ sample(file="ports/Notes.roc", region="ports") }}
 
+A call's timeout is `Unlimited` for none, or `Ms(ms)` with at least one
+millisecond, capped at ten minutes. `Ms(0)` is a contract error when
+`Port.call` is constructed, including a compile-time error for a bad
+top-level constant.
+
 Port names are global strings, so namespace them (`"example.org/notes/list"`).
 Keep a module's ports in one annotated record. Its fields are `Port.Command`,
 `Port.Call`, `Port.Subscription`, or nested records of them. Derive every entry

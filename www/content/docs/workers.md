@@ -493,6 +493,11 @@ changes, so tell the user, as the rows do, or ask again from a button.
 Jobs beyond the number of workers wait for a free one. The pool's size is
 the page's `maxWorkers` option (see [Serving the app](#serving-the-app)).
 
+Task and prepared-task timeouts use `Unlimited` for none, or `Ms(ms)` with
+at least one millisecond. `Ms(0)` is a contract error when `Worker.task` or
+the preparation's task constructor is called. A bad top-level constant
+fails while compiling; a computed bad timeout faults when constructed.
+
 **A timeout stops a job that takes too long.** `timeout: Ms(ms)` stops a
 job that has not answered `ms` milliseconds after it was asked for, and
 delivers the result `Timeout`:

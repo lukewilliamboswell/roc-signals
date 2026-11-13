@@ -54,7 +54,7 @@ try {
       svg: [byId("svg-one").namespaceURI, byId("svg-one").localName],
       foreign: [foreign.namespaceURI, foreign.prefix, foreign.localName],
       math: [byId("literal-math").namespaceURI, byId("literal-math").localName],
-      path: [byId("literal-path").getAttribute("pathLength"), byId("literal-path").pathLength.baseVal.value],
+      path: [byId("literal-path").getAttribute("pathLength"), byId("literal-path").pathLength.baseVal],
       gradients: [document.querySelector("#literal-gradient").localName, byId("svg-one").querySelector("linearGradient").localName],
       boolean: [input.disabled, input.hasAttribute("disabled"), input.getAttribute("disabled")],
       hidden: byId("literal-hidden").getAttribute("hidden"),
@@ -89,7 +89,7 @@ try {
       order: [...byId("html-rows").children].map(node => node.dataset.testid),
       text: byId("literal-text").textContent,
       count: byId("literal-count").textContent,
-      path: [byId("svg-one").querySelector("path").getAttribute("pathLength"), byId("svg-one").querySelector("path").pathLength.baseVal.value],
+      path: [byId("svg-one").querySelector("path").getAttribute("pathLength"), byId("svg-one").querySelector("path").pathLength.baseVal],
     };
   }), { same: [true, true, true, true], order: ["html-two", "html-one"], text: "second", count: "1", path: ["1", 1] });
   await click("Toggle region");
